@@ -8,9 +8,7 @@ import {
   useMemo,
   useRef,
   useState,
-  useTransition,
 } from "react";
-import { useRouter } from "next/navigation";
 import {
   Box,
   Button,
@@ -33,10 +31,18 @@ import {
   clipDurationBounds,
   clipDurationWithinBounds,
   splitUtterancesIntoSentences,
-  userErrorMessage,
   type ClipAspectRatio,
   type TranscriptUtterance,
 } from "@narriflow/validators";
+import { skipToken, useMutation, useQuery } from "@tanstack/react-query";
+import { type Intent, invalidateScoped, scopedKey } from "@narriflow/api-client";
+import {
+  clipCommands,
+  clipMutationOptions,
+  invalidateAfterClipChange,
+} from "@narriflow/api-client/clips";
+import { intentIn, requireClipApi, useClipApi } from "@/lib/clip-media";
+import { clipActionErrorCopy } from "./clip-action-error-copy";
 
 /** Word gaps at or above this render as an inline silence chip, mirroring the
  *  transcript's real pauses so users can end a clip on a natural break. */
@@ -68,37 +74,17 @@ interface FlatTranscript {
   sourceDurationSec: number;
 }
 
-/** Module-level cache: the source transcript is identical for every clip in a
- *  project, so the second dialog (or a reopen after remount) opens instantly. */
-const transcriptCache = new Map<string, FlatTranscript>();
-const transcriptPromises = new Map<string, Promise<FlatTranscript>>();
+/**
+ * The source transcript is identical for every clip in a Project, so every
+ * dialog reads one shared query: the second dialog (or a reopen) opens from
+ * the cache, already sentence-split and flattened. `select` is module-level so
+ * the parsed result keeps its identity between renders.
+ */
+const TRANSCRIPT_STALE_MS = 5 * 60 * 1000;
+const TRANSCRIPT_UNAVAILABLE_KEY = ["nf", "projects", "transcript-utterances", "unavailable"] as const;
 
-function loadProjectTranscript(projectId: string): Promise<FlatTranscript> {
-  const cached = transcriptCache.get(projectId);
-  if (cached) return Promise.resolve(cached);
-
-  let pending = transcriptPromises.get(projectId);
-  if (!pending) {
-    pending = fetch(`/api/projects/${projectId}/transcript/utterances`)
-      .then((response) => {
-        if (!response.ok) {
-          throw new Error(`transcript fetch failed (${response.status})`);
-        }
-        return response.json() as Promise<{ utterances: TranscriptUtterance[] }>;
-      })
-      .then((snapshot) => {
-        const flat = flatten(splitUtterancesIntoSentences(snapshot.utterances ?? []));
-        transcriptCache.set(projectId, flat);
-        transcriptPromises.delete(projectId);
-        return flat;
-      })
-      .catch((err) => {
-        transcriptPromises.delete(projectId);
-        throw err;
-      });
-    transcriptPromises.set(projectId, pending);
-  }
-  return pending;
+function flattenTranscript(snapshot: { utterances?: unknown }): FlatTranscript {
+  return flatten(splitUtterancesIntoSentences((snapshot.utterances ?? []) as TranscriptUtterance[]));
 }
 
 function formatClock(seconds: number): string {
@@ -249,14 +235,30 @@ export function EditClipLengthDialog(props: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
-  const router = useRouter();
-  const [, startTransition] = useTransition();
-  const [loading, setLoading] = useState(false);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const api = useClipApi();
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [autoReframe, setAutoReframe] = useState(true);
-  const [flat, setFlat] = useState<FlatTranscript | null>(null);
+  // Lean word-level transcript, read once the dialog first opens.
+  const transcriptQuery = useQuery({
+    queryKey: api ? scopedKey(api.scope, "projects", "transcript-utterances", props.projectId) : TRANSCRIPT_UNAVAILABLE_KEY,
+    queryFn: api
+      ? async ({ signal }) =>
+          // A refusal throws in the transport, so a body here is the transcript.
+          (await (
+            await api.projects.projects[":id"].transcript.utterances.$get(
+              { param: { id: props.projectId } },
+              { init: { signal } },
+            )
+          ).json()) as { utterances?: unknown }
+      : skipToken,
+    select: flattenTranscript,
+    staleTime: TRANSCRIPT_STALE_MS,
+    enabled: props.open,
+  });
+  const flat: FlatTranscript | null = transcriptQuery.data ?? null;
+  const loading = props.open && transcriptQuery.isPending && transcriptQuery.fetchStatus !== "idle";
+  const loadError = transcriptQuery.isError ? "Could not load the transcript." : null;
   const [sel, setSel] = useState<{ start: number; end: number }>({ start: 0, end: 0 });
   const dragState = useRef<
     | { mode: "range"; anchor: number; moved: boolean }
@@ -329,51 +331,6 @@ export function EditClipLengthDialog(props: {
     if (editingField !== "end") setEndInput(formatClockCs(selection.endSec));
     // eslint-disable-next-line react-hooks/exhaustive-deps -- object identity churns; times are the real deps
   }, [selection?.startSec, selection?.endSec, editingField]);
-
-  // Load + sentence-split the full transcript on first open (module cache
-  // makes every later open instant). Guarded by a ref, NOT the loading
-  // state: a state dep would re-run this effect and fire the cleanup,
-  // cancelling the very fetch it just started.
-  const loadStartedRef = useRef(false);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: the ref deliberately permits one transcript load per mounted dialog.
-  useEffect(() => {
-    if (!props.open || loadStartedRef.current) return;
-    loadStartedRef.current = true;
-
-    const cached = transcriptCache.get(props.projectId);
-    if (cached) {
-      setFlat(cached);
-      setSel(selectionForWindow(cached.words, props.initialStartSec, props.initialEndSec));
-      return;
-    }
-
-    let cancelled = false;
-    setLoading(true);
-    setLoadError(null);
-    loadProjectTranscript(props.projectId)
-      .then((flattened) => {
-        if (cancelled) return;
-        setFlat(flattened);
-        setSel(
-          selectionForWindow(flattened.words, props.initialStartSec, props.initialEndSec),
-        );
-      })
-      .catch((err) => {
-        console.warn(JSON.stringify({ level: "error", message: "clip_length_transcript_load_failed", errorName: err instanceof Error ? err.name : "UnknownError" }));
-        if (!cancelled) {
-          setLoadError("Could not load the transcript.");
-          loadStartedRef.current = false; // allow retry on reopen
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- one-shot load per open
-  }, [props.open]);
 
   // Every (re)open starts from the clip's CURRENT bounds — the dialog must
   // never carry stale selection state across opens or live refreshes. Closing
@@ -678,66 +635,61 @@ export function EditClipLengthDialog(props: {
     setSel(next);
   }, []);
 
+  // One intent per re-render request: a retry after a timeout or lost response
+  // replays the queued render instead of queuing another.
+  const reframeIntent = useRef<Intent<unknown> | null>(null);
+  const saveClipLength = useMutation({
+    ...clipMutationOptions,
+    mutationFn: async (window: { startSec: number; endSec: number }) => {
+      const { runtime, studio, clips, scope, queryClient } = requireClipApi(api);
+      // The boundary replacement is naturally idempotent, so it carries no key.
+      await studio.projects[":id"].clips[":clipId"].$patch({
+        param: { id: props.projectId, clipId: props.clipId },
+        json: window,
+      });
+      let reframeFailure: unknown = null;
+      // The trimmed clip's old renders are gone (the save invalidates them);
+      // Auto reframe immediately queues fresh ones so the clip comes back in
+      // its formats with the reframing pass applied.
+      if (autoReframe && props.renderAspectRatios.length > 0) {
+        const input = { clipIds: [props.clipId], aspectRatios: props.renderAspectRatios };
+        const intent = intentIn(reframeIntent, runtime);
+        try {
+          await clipCommands.render(clips, props.projectId, input, intent.keyFor(input));
+          intent.complete();
+        } catch (failure) {
+          reframeFailure = failure;
+        }
+      }
+      // The trim saved either way: the clip row, its renders, credits and any open Studio document moved.
+      await Promise.all([
+        invalidateAfterClipChange(queryClient, scope, props.projectId),
+        invalidateScoped(queryClient, scope, "studio"),
+      ]);
+      return { reframeFailure };
+    },
+  });
+
   async function handleSave() {
     if (!selection || !durationValid || saving) return;
     setSaving(true);
     setSaveError(null);
     try {
-      const response = await fetch(
-        `/api/projects/${props.projectId}/clips/${props.clipId}`,
-        {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            startSec: selection.startSec,
-            endSec: selection.endSec,
-          }),
-        },
-      );
-      if (!response.ok) {
-        const body = await response.json().catch(() => null);
-        console.warn(JSON.stringify({ level: "error", message: "clip_length_save_failed", status: response.status }));
-        setSaveError(
-          userErrorMessage(body?.error) ?? "Could not save the new clip length.",
-        );
+      const { reframeFailure } = await saveClipLength.mutateAsync({
+        startSec: selection.startSec,
+        endSec: selection.endSec,
+      });
+      if (reframeFailure) {
+        console.warn(JSON.stringify({ level: "error", message: "clip_length_reframe_queue_failed" }));
+        // The trim itself saved — surface the queue failure without
+        // closing so the user can retry from the row's Render button.
+        setSaveError(clipActionErrorCopy(reframeFailure, "Trim saved, but reframing could not be queued."));
         return;
       }
-      // The trimmed clip's old renders are gone (the save invalidates them);
-      // Auto reframe immediately queues fresh ones so the clip comes back in
-      // its formats with the reframing pass applied.
-      if (autoReframe && props.renderAspectRatios.length > 0) {
-        const renderResponse = await fetch(
-          `/api/projects/${props.projectId}/clips/render`,
-          {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "idempotency-key": crypto.randomUUID(),
-            },
-            body: JSON.stringify({
-              clipIds: [props.clipId],
-              aspectRatios: props.renderAspectRatios,
-            }),
-          },
-        );
-        if (!renderResponse.ok) {
-          const body = await renderResponse.json().catch(() => null);
-          console.warn(JSON.stringify({ level: "error", message: "clip_length_reframe_queue_failed", status: renderResponse.status }));
-          // The trim itself saved — surface the queue failure without
-          // closing so the user can retry from the row's Render button.
-          setSaveError(
-            userErrorMessage(body?.error) ??
-              "Trim saved, but reframing could not be queued.",
-          );
-          startTransition(() => router.refresh());
-          return;
-        }
-      }
       props.onOpenChange(false);
-      startTransition(() => router.refresh());
     } catch (err) {
       console.warn(JSON.stringify({ level: "error", message: "clip_length_save_failed", errorName: err instanceof Error ? err.name : "UnknownError" }));
-      setSaveError("Could not save the new clip length.");
+      setSaveError(clipActionErrorCopy(err, "Could not save the new clip length."));
     } finally {
       setSaving(false);
     }

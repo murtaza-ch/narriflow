@@ -184,10 +184,10 @@ Also account for the inventory's cross-domain traps: query-only actions, action 
 
 ## Acceptance criteria
 
-- [ ] All 17 export routes and workspace retry/list/project-filter reads preserve permissions/native retries/share/timeline revision facts.
-- [ ] File/bundle/Workspace redirects become expiring grant JSON; bounded transcript/subtitle/ZIP attachments use authenticated fetch without media Blob inflation.
-- [ ] Both pages use client queries with existing filters/cursors and lastSeq; export-delivery-client.tsx is reserved to 29 and its props stay frozen.
-- [ ] Lost-response retry preserves acceptance; expired grants recover on resume; native export acceptance and credit gates pass.
+- [x] All 17 export routes and workspace retry/list/project-filter reads preserve permissions/native retries/share/timeline revision facts.
+- [x] File/bundle/Workspace redirects become expiring grant JSON; bounded transcript/subtitle/ZIP attachments use authenticated fetch without media Blob inflation.
+- [x] Both pages use client queries with existing filters/cursors and lastSeq; export-delivery-client.tsx is reserved to 29 and its props stay frozen.
+- [x] Lost-response retry preserves acceptance; expired grants recover on resume; native export acceptance and credit gates pass.
 - [ ] No unowned files changed; paired review findings and verification evidence recorded under Comments.
 
 ## Verification
@@ -205,3 +205,28 @@ Verify the changed flow in the running Next app against the separate API origin.
 ## Comments
 
 Append claim, requested seam changes, paired review and evidence here.
+
+Claimed and implemented by Claude (Sonnet 5.5), 2026-10-29. Paired review not run by the implementer (last acceptance box left open for the orchestrator). Signed-in browser pass NOT performed (ticket 32).
+
+### What changed
+- API (`apps/api/src/domains/exports`): new `GET /workspace/exports` (zod query: status ready|processing|failed, q, project uuid, ratio `ratio_*`, from/to `YYYY-MM-DD`, cursor), `GET /workspace/export-projects`, `POST /workspace/exports/:exportId/retry` (`processing.consume`, actor `clip-export-retry` 12/60, same as the project retry). Redirects became Download Grant JSON: `GET /workspace/exports/:exportId/download?variant=` -> `{exportId, variantId, fileName, sizeBytes, downloadUrl, expiresAt}` (via `issueDownloadGrants`, audited, 15 min) and `GET /projects/:id/export-bundles/:bundleId/download` -> `{downloadUrl}` (service TTL is 60 s: fetch on click, navigate at once). Export detail adds `lastSeq`. Subtitle and timeline routes unchanged (type, `Content-Disposition`, `X-Editor-Revision`). Native acceptance (create key, bundle keys, retry-of) untouched; `exports-receipt-commands`/`exports-commands*` stay as the empty slot (no new receipt command).
+- Services (`clip-export.service.ts`): `issueWorkspaceDownloadGrant`, `retryWorkspaceExport` (missing export is now typed 404 `export_not_found`, was a 500 `Error`), `presentWorkspaceExports` (strips `storageKey`, adds `hasAsset` and a 15-minute `previewUrl` per finished file for the card thumbnails).
+- Validators `api/exports.ts`; client `@narriflow/api-client/exports`: `createExportsClient`, `exportQueries` (workspaceList, workspaceProjects, detail, current, bundles, bundle), `exportCommands` (grants, retries, create, share links, bundles), `fetchTimelineArchive` / `fetchSubtitleFile` (Bearer fetch -> Blob, 25 MiB bound, status checked first, content type + name + revision kept), `invalidateAfterExportChange`, `invalidateWorkspaceExports`. Grants are deliberately not queries.
+- Web: `exports/page.tsx` and delivery `page.tsx` are data-free Suspense shells (existing `loading.tsx` reused); new `exports/exports-screen.tsx` and `.../[exportId]/export-delivery-screen.tsx`. Filters/cursor stay in the URL (malformed values dropped, as before); list uses `keepPreviousData`. Download and Retry are buttons (grant fetch then `location.assign`; mutation with inline error); `retryWorkspaceExportAction`/`actions.ts` deleted. Delivery screen reads detail + workspace bootstrap concurrently, derives the frozen `ExportDeliveryClient` props from `usage.tier`/`capabilities`, calls `notFound()` on a missing export, and freezes the first read (`gcTime: 0`, no focus refetch) so props do not churn under the client's own state. `export-filters.tsx` and `export-preview.tsx` needed no change.
+
+### Requests for other owners
+- 29 (`export-delivery-client.tsx`): replace its raw `fetch` calls with `exportQueries.detail` (refetch on `refresh`, on resume: snapshot file URLs expire in 15 min), `exportCommands.retry|createShareLink|revokeShareLinks|timelineSourceGrant`, `fetchTimelineArchive`/`fetchSubtitleFile`, and `invalidateAfterExportChange`; the EventSource moves to the shared stream. `initialSeq` still comes from `lastSeq`.
+- 31: remove the export rows from the baseline `authenticated-request-inventory.ts`; delete the unused `exports-commands*.ts`/`exports-receipt-commands.ts` slot only if no export command ever uses it (`create_clip_export` is there for integrations).
+- 12: `campaign-command-bar.tsx` already calls the bundle grant through `api.exports`; its response is now `{downloadUrl}` as it expects.
+
+### Deviations
+- Workspace download error code for an unfinished file is now 409 `export_not_ready` (was `export_file_not_ready`), a foreign/unknown variant 404 `export_not_found`; unknown export id format 400.
+- List response omits `storageKey` and gains `hasAsset`/`previewUrl`. Bad query values (`status=all`, bad dates) are 400 from the API; the page filters them out before calling.
+
+### Evidence
+- `bun test apps/api/src/domains/exports` 17 pass; `bun test packages/api-client/src/exports` 12 pass; `bun test packages/services/src/clip-export.service.test.ts packages/services/src/clip-export-download.test.ts` 20 pass.
+- `.scratch/api-extraction/db-gate.sh bun run test:processing-usage:db` 31 pass (local Postgres).
+- `bun run --cwd apps/api test:inventory` routes=268 problems=0; `bun test apps/api/src/admission-tables.test.ts` 53 pass.
+- Typecheck (apps/api, packages/api-client, packages/services, packages/validators, apps/web via `tsc -p`): no error in any file of this ticket; remaining errors belong to others (rest/routes.ts, studio-shell.tsx, mcp pages, lib/authenticated-request-*).
+- `bunx biome check` on all my paths: clean.
+- NOT done: signed-in run against Next + API (list filters/cursor, grid preview playback from `previewUrl`, Download navigation, Retry, delivery page for ready/rendering/failed/foreign export, timeline ZIP/subtitle downloads once 29 adopts the helpers). Origin pair for ticket 32: web `http://localhost:3000` / API local `apps/api`.

@@ -47,7 +47,7 @@ mock.module("@clerk/nextjs", () => ({
     return operation(...args);
   },
 }));
-mock.module("next/navigation", () => ({ useRouter: () => ({ replace, refresh: () => {} }), useSearchParams: () => new URL(useNavigationUrl()).searchParams, usePathname: () => new URL(useNavigationUrl()).pathname }));
+mock.module("next/navigation", () => ({ useRouter: () => ({ replace }), useSearchParams: () => new URL(useNavigationUrl()).searchParams, usePathname: () => new URL(useNavigationUrl()).pathname }));
 mock.module("next/link", () => ({ default: ({ children, href, onClick }: any) => <a href={href} onClick={(event) => { onClick?.(event); if (!event.defaultPrevented) { event.preventDefault(); replace(href); } }}>{children}</a> }));
 const { ChakraProvider, Dialog } = await import("@chakra-ui/react");
 const { system } = await import("@narriflow/ui/theme");

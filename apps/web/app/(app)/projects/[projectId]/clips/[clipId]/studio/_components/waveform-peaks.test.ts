@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { ClipPreviewPeaks } from "@narriflow/services";
+import type { ClipPreviewPeaks } from "@narriflow/validators/clip-preview-peaks";
 import {
   isClipPreviewPeaksShape,
   sampleAmplitudeAtSourceTime,

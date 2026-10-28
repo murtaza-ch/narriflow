@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { OAuthErrorCode } from "@modelcontextprotocol/server";
 import { createNarriflowTokenVerifier, McpAuthUnavailableError } from "./mcp-auth";
 
-const resource = "https://app.narriflow.com/mcp";
+const resource = "https://api.narriflow.test/mcp";
 const claims = {
   object: "clerk_idp_oauth_access_token", id: "oat_0123456789abcdef0123456789abcdef",
   client_id: "client_123", subject: "user_123", scopes: ["projects:read"], aud: [resource],
@@ -26,7 +26,7 @@ describe("online MCP credential verification", () => {
     expect(JSON.stringify(result.extra)).not.toContain("access-token");
   });
   for (const patch of [
-    { aud: undefined }, { aud: ["https://another.example/mcp"] }, { revoked: true },
+    { aud: undefined }, { aud: ["https://app.narriflow.test/mcp"] }, { aud: ["https://api.narriflow.test"] }, { aud: ["https://another.example/mcp"] }, { revoked: true },
     { expired: true }, { expiration: 1_800_000_000 }, { expiration: null },
   ]) {
     test(`rejects inactive or incorrectly bound token ${JSON.stringify(patch)}`, async () => {

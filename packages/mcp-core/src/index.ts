@@ -19,7 +19,10 @@ const write = { readOnlyHint: false, destructiveHint: false, idempotentHint: tru
 const admission = new McpToolAdmission(workspaceService);
 const uploadSessions = integrationUploadSessions(uploadSessionService);
 export interface NarriflowMcpServerOptions {
+  /** Human handoffs and review pages on WEB_ORIGIN. */
   appOrigin?: string;
+  /** API resource and direct media requests on API_ORIGIN. */
+  apiOrigin?: string;
   protocolEra?: "modern" | "legacy";
   authenticatePrincipal?: () => Promise<NarriflowMcpPrincipal>;
   assertNewMutationAllowed?: (context: { tool: NarriflowMcpToolName; principal: NarriflowMcpPrincipal; workspaceId: string }) => void | Promise<void>;
@@ -35,14 +38,14 @@ function config<T extends z.ZodType>(title: string, description: string, output:
     ...(view ? { _meta: getNarriflowAppToolMeta(view) } : {}) };
 }
 export function buildNarriflowMcpServer(principal: NarriflowMcpPrincipal, options: NarriflowMcpServerOptions = {}) {
-  const appOrigin = new URL(options.appOrigin ?? process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000").origin;
+  const appOrigin = new URL(options.appOrigin ?? process.env.WEB_ORIGIN ?? "http://localhost:3000").origin;
   const currentPrincipal = options.authenticatePrincipal ?? (async () => principal);
   const server = new McpServer({ name: NARRIFLOW_MCP_SERVER_NAME, version: NARRIFLOW_MCP_SERVER_VERSION }, {
     instructions: NARRIFLOW_MCP_INSTRUCTIONS,
     cacheHints: { "server/discover": { ttlMs: 300_000, cacheScope: "public" }, "tools/list": { ttlMs: 300_000, cacheScope: "public" } },
     requestState: { verify: async (state) => verifyMcpPreparation(state, { principal: await currentPrincipal() }) },
   });
-  installNarriflowTasks(server, { principal, authenticatePrincipal: options.authenticatePrincipal, assertNewMutationAllowed: options.assertNewMutationAllowed });
+  installNarriflowTasks(server, { principal, authenticatePrincipal: options.authenticatePrincipal, assertNewMutationAllowed: options.assertNewMutationAllowed, appOrigin });
   const mutation = (tool: NarriflowMcpToolName, current: NarriflowMcpPrincipal, workspaceId: string, key: string): IntegrationMutation => ({
     clientIdempotencyKey: key, beforeAccept: async () => { await options.assertNewMutationAllowed?.({ tool, principal: current, workspaceId }); },
   });
@@ -285,7 +288,7 @@ export function buildNarriflowMcpServer(principal: NarriflowMcpPrincipal, option
     const actor = await workspace("narriflow_publish_social_publication_again", current, input.workspaceId);
     return { data: await socialService.republishPublication(actor, input.socialPostId, { reason: input.reason, duplicateRiskAcknowledged: input.duplicateRiskAcknowledged }, undefined, mutation("narriflow_publish_social_publication_again", current, actor.workspaceId, input.clientIdempotencyKey)) };
   }));
-  registerNarriflowMcpApps(server, { appOrigin, protocolEra: options.protocolEra, connectDomains: options.appConnectDomains, resourceDomains: options.appResourceDomains,
+  registerNarriflowMcpApps(server, { appOrigin, apiOrigin: options.apiOrigin ?? process.env.API_ORIGIN ?? "http://localhost:4000", protocolEra: options.protocolEra, connectDomains: options.appConnectDomains, resourceDomains: options.appResourceDomains,
     callUpload: async (action, input) => {
       try {
       const current = await currentPrincipal();

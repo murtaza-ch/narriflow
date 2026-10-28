@@ -4,7 +4,7 @@
 
 **Blocked by:** [15 - Move intake Upload Sessions and recipes](15-move-intake-upload-sessions-and-recipes.md), [05 - Expose session and Workspace controls](05-expose-session-and-workspace-controls.md), [19 - Move Brand Kit and media controls](19-move-brand-kit-and-media-controls.md), [07 - Move billing API and convert billing UI](07-move-billing-api-and-convert-billing-ui.md)
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Suggested implementer:** Claude. The other pairing side reviews and returns findings to this owner.
 
@@ -226,10 +226,10 @@ Also account for the inventory's cross-domain traps: query-only actions, action 
 
 ## Acceptance criteria
 
-- [ ] Upload/Recipes pages read aggregate configuration/resume through queries; every action/fetch/revalidate caller converted.
-- [ ] Resume outcomes preserve redirect destinations, cached commit keys, source/mode/language/brand/range/contentPack and no duplicate charge on lost finalize.
-- [ ] Presigned XHR/PUT stays direct and uncredentialed; query abort/reconnect does not discard resumable multipart state.
-- [ ] Cloud picker public config remains in web; safe token-bearing inputs never enter keys/cache/logs; props shared with Project/Studio stay frozen.
+- [x] Upload/Recipes pages read aggregate configuration/resume through queries; every action/fetch/revalidate caller converted.
+- [x] Resume outcomes preserve redirect destinations, cached commit keys, source/mode/language/brand/range/contentPack and no duplicate charge on lost finalize.
+- [x] Presigned XHR/PUT stays direct and uncredentialed; query abort/reconnect does not discard resumable multipart state.
+- [x] Cloud picker public config remains in web; safe token-bearing inputs never enter keys/cache/logs; props shared with Project/Studio stay frozen.
 - [ ] No unowned files changed; paired review findings and verification evidence recorded under Comments.
 
 ## Verification
@@ -245,3 +245,28 @@ Verify the changed flow in the running Next app against the separate API origin.
 ## Comments
 
 Append claim, requested seam changes, paired review and evidence here.
+
+Claimed and implemented by Claude (Sonnet 5.5), 2026-10-29. Paired review not run by the implementer (the last acceptance box stays open for the orchestrator). The signed-in browser pass was NOT done (see Evidence).
+
+### What changed
+- **Upload**: `page.tsx` is a data-free `Suspense` shell around the new `_components/upload-screen.tsx`. It runs `ingestConfigurationQueryOptions` and, for `?project=`, `linkResumeQueryOptions` together (no waterfall). The link (`url/project/source/mode`) is read once at mount, so Commit's later `router.replace('/upload?project=')` never reloads the page. `_lib/resume-decision.ts` maps the typed result to the old redirects: `open_project` -> `/projects/:id`; `restart`, a concealed or malformed Project (`project_not_found`, `invalid_input`) -> `/upload` with the link's other settings dropped, as before; `active_workspace_mismatch` shows an explicit notice (never an automatic switch); other failures show a retry notice rather than discarding a saved draft. The first answer decides; later refetches (an accepted import invalidates `ingest`) never move the page.
+- **Actions deleted**: `upload/actions.ts` (5 actions + `generateFromRssAction` + server oEmbed). Callers use `createIngestActions` through `_lib/intake-context.tsx` (`useIntake()`: scope, transport, actions, `accepted()` = `invalidateAfterIntake`). Commit (`commitLink`/`commitDrive`), Configure (`finalize`, `saveDraft`), RSS (`previewRss`/`importRss`), Retry (`retryIngest`, `useMutation`), YouTube title (`linkMetadataQueryOptions`, only for YouTube links). Every `router.refresh()` is gone; accepted intake invalidates `ingest`, `projects`, `library`, `workspace/usage`.
+- **Idempotency kept native**: one `commitToken` per import (LinkImportFlow's `commitTokenRef`, RSS's `rssCommitTokenRef`, reset only on a new RSS preview) rides every retry of link/Drive/RSS; `finalize` is safe to repeat. Commits use plain `await`, not `useMutation`, so the Drive `accessToken` never enters the mutation cache. `title` is `string | undefined` now (the shared schema has no `null`).
+- **Upload Session adapter** (`upload-session-browser.ts`): new required `controls: UploadSessionControls` (the five commands, 2xx body or `ApiError`); production passes `intake.actions.uploadSessions`. `fetcher`/`uploadTransport` now mean presigned storage PUTs only; with no `fetcher` the XHR progress transport is used exactly as before, uncredentialed and direct. An `ApiError` maps to the same stable failure codes/copy as the old `Response` reading (`unexpected_response` keeps the status-based codes; `network_error` = old fetch `TypeError`; poll loop still waits out network/429/5xx using `retryAfterSeconds`, ends on other refusals). Resume record, multipart grants/refresh, pause/discard/reconcile logic untouched. Tests: the existing 30 pass unchanged through a fake HTTP server adapted to `controls`; 2 new (commands via controls with bytes straight to the transport; unreachable API reads as unavailable and keeps the saved session).
+- **Recipes**: `page.tsx` shell + `recipes-screen.tsx` (recipes list, Brand Kit aggregate for ALL profiles and looks, publishing accounts, Workspace bootstrap capabilities/tier -> `canEdit`, `hasFeature(tier, "campaign.operations")`; four concurrent reads, skeleton = existing `loading.tsx`). `RecipesPanel` takes `recipes` (renamed from `initialRecipes`) and `api: RecipesPanelApi`; create/duplicate use `runtime.createIntent()` (one key per create dialog, one per duplicated Recipe, kept through failures, completed on success); update/delete stay keyless; success -> `invalidateAfterRecipeChange`. `recipeFromDraft`/`recipeChanges` now use `ParsedRecipeInput` (the schema's parsed type), which is what update/create accept.
+- Removed dead `readBrandProfileIdFromForm` and the form's `brandProfileId` field; `readContentPackFromForm`/`readLanguageCodeFromForm` stay (`projects/actions.ts` imports them).
+- Imports of the shared client use `@narriflow/api-client/core` (not the root) because the root barrel currently fails to load (`./client` missing in `automation`, later `invalidateDomain`), which would break every web test importing it.
+
+### Requests for other owners
+- **26**: `integrations/mcp/upload/upload-picker.tsx` (currently the only compile error from this ticket) must stop passing a path-rewriting `fetcher` for the API calls: pass `controls: UploadSessionControls` (exported from `upload/_lib/upload-session-browser.ts`) that POSTs the five commands to the MCP routes with the signed-intent header and rejects with `ApiError` on non-2xx (`apiErrorFromResponse` from `@narriflow/api-client/core`). Its `resumeOnly` rewrite (open -> status) belongs inside that `open`.
+- **29**: `upload/_lib/use-ingest-stream.ts` (not mine) reconnects only when `initial.ingestStatus` changes. After Retry, ConfigureStep hands it `{ingestStatus: "queued", errorCode: null}` and `invalidateAfterIntake` invalidates `ingestKeys.snapshot`; if the previous initial was already `queued` the old hook would not reopen, so reconnect on explicit retry / snapshot invalidation in the shared stream. Its `EventSource('/api/stream/...')` is still a web-origin URL, and it replays from `sinceSeq=0`, so a replayed `failed` event closes the new connection; both are 29's rewrite. Keep the call shape `useIngestStream(projectId, {ingestStatus, errorCode})` or tell 16/31 the new one.
+- **31**: `apps/web/lib/authenticated-request-inventory.ts` still lists `app/(app)/upload/actions.ts` (deleted); `useWorkspaceBootstrap` in `_components/usage.ts` (07's stopgap) is used by Recipes; swap when 05's factory is exported. `projects/[projectId]/render-clips-button.tsx` (10/12) can use `createIngestActions(...).retryIngest` instead of `retryIngestFormAction`.
+- Inventory row 5.3 (`video-preview.tsx:1418,1459` audio playback-url) belongs to the Studio preview, not `upload/_components/video-preview.tsx` (387 lines, no fetch); nothing to convert here.
+
+### Evidence
+- `bun test "apps/web/app/(app)/upload" "apps/web/app/(app)/recipes"` -> 99 pass, 0 fail (new: `intake-failure`, `resume-decision`, 2 adapter tests; recipes-panel test now renders with `api` and a `QueryClientProvider`).
+- `bunx tsc -p apps/web/tsconfig.json --noEmit`: no error in `app/(app)/upload/**` or `app/(app)/recipes/**`. Remaining web errors are others': `integrations/mcp/upload/upload-picker.tsx` (26, adapter `controls`), `integrations/mcp/**` and `settings/**`, `app/api/stream/**`, `workspaces/new/actions.ts` (06/24/29).
+- `bunx biome check "apps/web/app/(app)/upload" "apps/web/app/(app)/recipes"` clean. `lib/authenticated-request-inventory.test.ts` fails on files other tickets deleted (31).
+- Grep of both directories: no `router.refresh`, `revalidatePath`, `useFormStatus`, `use server`, `/actions` import or `fetch("/api…")` left; no `@narriflow/services|db|auth` import.
+- NOT done: the signed-in browser run against `next dev` + the API (needs Clerk and a running API origin). Ticket 32 must cover: link paste -> Commit (YouTube title prefill, credits/length refusal + upgrade dialog) -> Configure -> finalize and reload-resume at `?project=` (resume / open_project / restart / foreign Project notice); Retry import after a failed ingest; Drive Picker commit; RSS preview/import (refusal copy, `/projects/:id` navigation); a real file upload (single PUT and multipart, pause, discard, reload-resume, Network tab shows the PUTs go to R2 with no Authorization header); Recipes list/create/edit/duplicate/delete as owner and viewer, with a lost-response retry replaying the same Recipe.
+

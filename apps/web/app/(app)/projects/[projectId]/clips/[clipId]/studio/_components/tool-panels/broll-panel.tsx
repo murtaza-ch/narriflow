@@ -18,6 +18,9 @@ import { formatDuration } from "@/lib/format";
 import { useStudio } from "../studio-shell";
 import { manualBrollPreviewWindow } from "../broll-preview";
 import { GeneratedImagesPanel } from "./generated-images-panel";
+import { createLibraryClient } from "@narriflow/api-client/library";
+import { apiFailureBody, requireStudioApi } from "../studio-api";
+import { useStudioApi } from "../use-studio-api";
 
 interface BrollResult {
   id: number;
@@ -49,6 +52,7 @@ export function BRollPanel() {
     setBrollPreviewAsset,
     seekTo,
   } = useStudio("clipInfo", "aspectRatio", "brollUrl", "brollPreviewAsset", "setBrollUrl", "setBrollPreviewAsset", "seekTo");
+  const studioApi = useStudioApi();
   const orientation =
     aspectRatio === "16:9"
       ? "landscape"
@@ -108,15 +112,16 @@ export function BRollPanel() {
       setLoading(true);
       setError(null);
       try {
-        const res = await fetch(
-          `/api/broll/search?query=${encodeURIComponent(q)}&orientation=${orientation}`,
-        );
-        const json = (await res.json()) as {
-          configured?: boolean;
-          results?: BrollResult[];
-          error?: string;
-        };
-        if (!res.ok) throw new Error(userErrorMessage(json.error) ?? "Search failed. Try again.");
+        const api = requireStudioApi(studioApi);
+        let json: { configured?: boolean; results?: BrollResult[] };
+        try {
+          const response = await createLibraryClient(api.runtime.transport.scoped(api.scope)).broll.search.$get({
+            query: { query: q, orientation },
+          });
+          json = (await response.json()) as typeof json;
+        } catch (failure) {
+          throw new Error(userErrorMessage(apiFailureBody(failure).error) ?? "Search failed. Try again.");
+        }
         setConfigured(json.configured !== false);
         setResults(json.results ?? []);
       } catch (e) {
@@ -125,7 +130,7 @@ export function BRollPanel() {
         setLoading(false);
       }
     },
-    [orientation],
+    [orientation, studioApi],
   );
 
   // Auto-suggest from the derived query on first open.

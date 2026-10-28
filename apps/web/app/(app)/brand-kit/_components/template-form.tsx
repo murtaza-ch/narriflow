@@ -1,7 +1,8 @@
 "use client";
 
 import { brandFontReference, useBrandFontLibrary } from "./brand-fonts";
-import { useEffect, useRef, useState, useTransition, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Box, Flex, Grid, Stack, Text, chakra } from "@chakra-ui/react";
@@ -36,14 +37,9 @@ import { CaptionPresetPreview, CaptionSamplePreview } from "../../_shared/captio
 import { CAPTION_BACKDROPS, captionBackdropSrc, captionStyleBackdrop, type CaptionBackdrop } from "../../_shared/caption-preset-backdrops";
 import { PlanLimitNotice } from "../../_components/plan-limit-notice";
 import { Panel } from "./brand-kit-ui";
-import {
-  createBrandTemplateAction,
-  updateBrandTemplateAction,
-} from "../style-actions";
-import {
-  authenticatedRequestFailureMessage,
-  isAuthenticatedActionFailure,
-} from "@/lib/authenticated-request-browser";
+import { failureMessage, useBrandApi, useIntent } from "./brand-api";
+
+type LogoContentType = Parameters<ReturnType<typeof useBrandApi>["mutations"]["presignLogoUpload"]>[0]["contentType"];
 
 const POSITION_GRID: LogoPosition[][] = [
   ["top-left", "top-center", "top-right"],
@@ -122,7 +118,8 @@ function defaultInput(): BrandTemplateInput {
 
 export function TemplateForm({ mode, initialTemplate, cancelHref }: TemplateFormProps) {
   const router = useRouter();
-  const [pending, startTransition] = useTransition();
+  const { mutations, queries, invalidate } = useBrandApi();
+  const createIntent = useIntent<BrandTemplateInput>();
   const [error, setError] = useState<string | null>(null);
   const [logoUploading, setLogoUploading] = useState(false);
   const [logoPreviewUrl, setLogoPreviewUrl] = useState<string | null>(null);
@@ -158,24 +155,16 @@ export function TemplateForm({ mode, initialTemplate, cancelHref }: TemplateForm
     }));
   }, [state.primaryColor, state.secondaryColor]);
 
-  // Edit mode: resolve the stored logo into a signed URL so the preview can
-  // composite it. A freshly-uploaded blob URL always wins over this fetch.
+  // Edit mode: resolve the stored logo into a short-lived signed URL so the
+  // preview can composite it. A freshly-uploaded blob URL always wins over it.
+  const storedLogo = useQuery({
+    ...queries.templateLogoUrl(initialTemplate?.id ?? ""),
+    enabled: mode === "edit" && Boolean(initialTemplate?.logoStorageKey),
+  });
+  const storedLogoUrl = storedLogo.data?.url;
   useEffect(() => {
-    if (mode !== "edit" || !initialTemplate?.logoStorageKey) return;
-    let cancelled = false;
-    void fetch(`/api/brand-templates/${initialTemplate.id}/logo-url`)
-      .then((res) => (res.ok ? (res.json() as Promise<{ url?: string }>) : null))
-      .then((body) => {
-        if (cancelled || !body?.url) return;
-        setLogoPreviewUrl((prev) => prev ?? body.url ?? null);
-      })
-      .catch(() => {
-        // Preview falls back to the ghost placeholder.
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [mode, initialTemplate]);
+    if (storedLogoUrl) setLogoPreviewUrl((prev) => prev ?? storedLogoUrl);
+  }, [storedLogoUrl]);
 
   // Cmd/Ctrl+S saves, as in the Studio.
   const submitRef = useRef<() => void>(() => {});
@@ -218,23 +207,11 @@ export function TemplateForm({ mode, initialTemplate, cancelHref }: TemplateForm
     setLogoUploading(true);
     setError(null);
     try {
-      const presignRes = await fetch("/api/brand-templates/logo/presign", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contentType: file.type || "image/png",
-          sizeBytes: file.size,
-        }),
+      const { key, uploadUrl, contentType } = await mutations.presignLogoUpload({
+        // The server refuses anything but the listed image types.
+        contentType: (file.type || "image/png") as LogoContentType,
+        sizeBytes: file.size,
       });
-      if (!presignRes.ok) {
-        const body = await presignRes.json().catch(() => ({}));
-        throw new Error(body.message ?? "Logo presign failed");
-      }
-      const { key, uploadUrl, contentType } = (await presignRes.json()) as {
-        key: string;
-        uploadUrl: string;
-        contentType: string;
-      };
       const putRes = await fetch(uploadUrl, {
         method: "PUT",
         headers: { "Content-Type": contentType },
@@ -249,8 +226,7 @@ export function TemplateForm({ mode, initialTemplate, cancelHref }: TemplateForm
       toaster.create({
         type: "error",
         title: "Logo upload failed",
-        description:
-          uploadError instanceof Error ? uploadError.message : "Please try again.",
+        description: failureMessage(uploadError),
       });
     } finally {
       setLogoUploading(false);
@@ -264,51 +240,28 @@ export function TemplateForm({ mode, initialTemplate, cancelHref }: TemplateForm
       setError(parsed.error.issues[0]?.message ?? "Invalid style");
       return;
     }
-    startTransition(async () => {
-      try {
-        if (mode === "create") {
-          const created = await createBrandTemplateAction(parsed.data);
-          if (isAuthenticatedActionFailure(created)) {
-            toaster.create({
-              type: "error",
-              title: "Save failed",
-              description: authenticatedRequestFailureMessage(
-                created,
-                window.location.pathname,
-                "The style could not be created.",
-              ),
-            });
-            return;
-          }
-          toaster.create({ type: "success", title: "Style created" });
-          router.push(`/brand-kit/styles/${created.id}`);
-        } else if (initialTemplate) {
-          const updated = await updateBrandTemplateAction(initialTemplate.id, parsed.data);
-          if (isAuthenticatedActionFailure(updated)) {
-            toaster.create({
-              type: "error",
-              title: "Save failed",
-              description: authenticatedRequestFailureMessage(
-                updated,
-                window.location.pathname,
-                "The style could not be saved.",
-              ),
-            });
-            return;
-          }
-          toaster.create({ type: "success", title: "Style saved" });
-          router.refresh();
-        }
-      } catch (submitError) {
-        toaster.create({
-          type: "error",
-          title: "Save failed",
-          description:
-            submitError instanceof Error ? submitError.message : "Please try again.",
-        });
-      }
-    });
+    save.mutate(parsed.data);
   }
+
+  const save = useMutation({
+    mutationFn: (input: BrandTemplateInput) =>
+      mode === "create"
+        ? mutations.createTemplate(input, createIntent.keyFor(input))
+        : mutations.updateTemplate(initialTemplate?.id ?? "", input),
+    onSuccess: (saved) => {
+      if (mode === "create") {
+        createIntent.complete();
+        toaster.create({ type: "success", title: "Style created" });
+        router.push(`/brand-kit/styles/${saved.id}`);
+      } else {
+        toaster.create({ type: "success", title: "Style saved" });
+      }
+      return invalidate();
+    },
+    onError: (submitError) =>
+      toaster.create({ type: "error", title: "Save failed", description: failureMessage(submitError) }),
+  });
+  const pending = save.isPending;
 
   submitRef.current = () => {
     if (!pending) handleSubmit();

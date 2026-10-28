@@ -7,9 +7,9 @@ import { ArrowUpRight, Clapperboard, X } from "lucide-react";
 import { PLAN_CATALOG } from "@narriflow/validators";
 import { Button, IconButton } from "@narriflow/ui/components/button";
 import { EmptyState } from "@narriflow/ui/components/empty-state";
-import type { ProjectListItem } from "@narriflow/services";
 import { featureUpgradePrompt } from "@/lib/feature-upgrade-prompt";
 import { UpgradeGem, useUpgrade } from "../_components/upgrade";
+import type { ProjectListItem } from "../projects/_lib/api";
 
 import { ToolArtwork, tiltScene, resetScene } from "./hero-experience";
 import styles from "./hero-experience.module.css";

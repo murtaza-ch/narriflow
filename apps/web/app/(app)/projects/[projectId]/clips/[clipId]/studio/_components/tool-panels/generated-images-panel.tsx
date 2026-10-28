@@ -30,7 +30,8 @@ import {
 } from "lucide-react";
 import { Spinner } from "@narriflow/ui/components/spinner";
 import { toaster } from "@narriflow/ui/components/toaster";
-import type { GeneratedImageUsageSummary } from "@narriflow/services";
+import type { BrandClient } from "@narriflow/api-client/brand";
+import type { InferResponseType } from "hono/client";
 import { STUDIO_EDIT_LIMITS } from "@narriflow/validators";
 import type { StudioVisualAsset } from "../studio-shell";
 import { upgradePromptFromFailure, type BrowserRequestFailure } from "@/lib/authenticated-request-browser";
@@ -38,7 +39,12 @@ import { useUpgrade } from "@/app/(app)/_components/upgrade";
 import { useStudio } from "../studio-shell";
 import { StudioLockGem } from "../studio-lock-gem";
 import { generatedImagesExhaustedCopy, generatedImagesUpgradePrompt } from "../studio-upgrade";
+import { useAudioApi } from "./audio-library";
 import { assetInUseCopy, createGeneratedImagesBrowserApi } from "./generated-images-browser";
+
+type GeneratedImageUsageSummary = NonNullable<
+  InferResponseType<BrandClient["projects"][":projectId"]["generated-media"]["jobs"]["$get"], 200>["usage"]
+>;
 
 type PromptOrigin = "transcript_selection" | "broll_cue" | "manual";
 type Style = "editorial" | "cinematic" | "photoreal" | "illustration";
@@ -142,7 +148,11 @@ export function GeneratedImagesPanel() {
   const { currentTier, openUpgrade } = useUpgrade();
   const [cueIndex, setCueIndex] = useState(0);
   const cue = clipInfo.brollCues[cueIndex] ?? null;
-  const browserApi = useMemo(() => createGeneratedImagesBrowserApi(clipInfo.projectId), [clipInfo.projectId]);
+  const brandApi = useAudioApi();
+  const browserApi = useMemo(
+    () => (brandApi ? createGeneratedImagesBrowserApi(clipInfo.projectId, brandApi) : null),
+    [brandApi, clipInfo.projectId],
+  );
   const selectionContext = useMemo(() => {
     if (!transcriptSelectionRange) return "";
     return utterances
@@ -185,6 +195,7 @@ export function GeneratedImagesPanel() {
     if (refreshInFlight.current) return;
     refreshInFlight.current = true;
     try {
+      if (!browserApi) return;
       const response = await browserApi.list(clipInfo.id);
       const payload = await response.json() as { jobs?: GeneratedJob[]; usage?: GeneratedImageUsageSummary; error?: string; message?: string };
       if (!response.ok) throw new Error(generatedMediaErrorCopy(payload.error, "Could not load generated images"));
@@ -229,6 +240,7 @@ export function GeneratedImagesPanel() {
       const composedPrompt = [authored, context ? `Spoken context: ${context}` : ""]
         .filter(Boolean)
         .join("\n\n");
+      if (!browserApi) throw new Error("Image generation could not start");
       const response = await browserApi.create({
           projectId: clipInfo.projectId,
           clipId: clipInfo.id,
@@ -258,6 +270,7 @@ export function GeneratedImagesPanel() {
   };
 
   const cancel = async (job: GeneratedJob) => {
+    if (!browserApi) return;
     const response = await browserApi.cancel(job.id);
     const payload = await response.json().catch(() => null) as GeneratedJob | { error?: string; message?: string } | null;
     if (!response.ok || !payload || !("id" in payload)) {
@@ -340,11 +353,12 @@ export function GeneratedImagesPanel() {
   };
 
   const saveToBrand = async (asset: NonNullable<GeneratedJob["resultAsset"]>) => {
-    if (!brandProfileId) return;
-    const response = await fetch(`/api/brand-profiles/${brandProfileId}/membership`, {
-      method: "PUT",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ kind: "asset", resourceId: asset.id, role: "image", position: 0 }),
+    if (!brandProfileId || !browserApi) return;
+    const response = await browserApi.saveToBrandProfile(brandProfileId, {
+      kind: "asset",
+      resourceId: asset.id,
+      role: "image",
+      position: 0,
     });
     if (!response.ok) {
       const payload = await response.json().catch(() => ({})) as BrowserRequestFailure & { error?: string };
@@ -359,6 +373,7 @@ export function GeneratedImagesPanel() {
 
   const deleteAsset = async (job: GeneratedJob) => {
     if (!job.resultAsset) return;
+    if (!browserApi) return;
     const response = await browserApi.deleteResult(job.id);
     if (!response.ok) {
       const payload = await response.json().catch(() => ({})) as BrowserRequestFailure & { error?: string };

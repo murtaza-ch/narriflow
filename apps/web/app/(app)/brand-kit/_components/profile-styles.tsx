@@ -9,7 +9,7 @@ import { IconButton } from "@narriflow/ui/components/button";
 import { CoverChip } from "./brand-kit-ui";
 import { StyleThumb } from "../../_shared/style-thumb";
 import { STYLE_GRID_COLUMNS } from "./template-gallery";
-import { putProfileMembership, useMembershipChange } from "./profile-membership";
+import { useMembershipChange } from "./profile-membership";
 import { useProfilePatch } from "./profile-editor";
 
 export interface ProfileStyle {
@@ -59,7 +59,7 @@ export function ProfileStyleGrid({
 function ProfileStyleCard({ profileId, style, isDefault, highlighted, canSetDefault, canRemove }: { profileId: string; style: ProfileStyle; isDefault: boolean; highlighted: boolean; canSetDefault: boolean; canRemove: boolean }) {
   const patch = useProfilePatch();
   const [pending, setPending] = useState(false);
-  const { busy, run } = useMembershipChange(`Could not remove ${style.name}`);
+  const { busy, run, put } = useMembershipChange(`Could not remove ${style.name}`);
   const editHref = `/brand-kit/styles/${style.id}`;
   async function makeDefault() {
     setPending(true);
@@ -119,7 +119,7 @@ function ProfileStyleCard({ profileId, style, isDefault, highlighted, canSetDefa
                     <Menu.Separator />
                     <Menu.Item
                       value="remove"
-                      onClick={() => void run(() => putProfileMembership(profileId, { kind: "template", resourceId: style.id, position: 0, remove: true }))}
+                      onClick={() => void run(() => put(profileId, { kind: "template", resourceId: style.id, position: 0, remove: true }))}
                     >
                       <X size={14} /> Remove from profile
                     </Menu.Item>

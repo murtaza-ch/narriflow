@@ -1,11 +1,20 @@
-import type { ReactNode } from "react";
+"use client";
+
+import { type ReactNode, useEffect, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { Box, Flex, Heading, Stack, Text } from "@chakra-ui/react";
+import { describeApiFailure, isApiErrorCode, sha256Hex } from "@narriflow/api-client";
+import { acceptInviteMutation, inviteQuery } from "@narriflow/api-client/session";
 import { MailX, UserRound } from "lucide-react";
 import { Logo } from "@narriflow/ui/components/logo";
 import { Button } from "@narriflow/ui/components/button";
+import { Spinner } from "@narriflow/ui/components/spinner";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { ApiProvider, useApiRuntime, useIdentityScope } from "@/app/_components/api-provider";
+import { ApiErrorNotice, QueryLoadError } from "@/app/_components/query-mutation-form";
+import { authEntryHref } from "@/lib/auth-entry";
 import { formatDate } from "@/lib/format";
-import { AuthenticatedActionForm } from "@/app/_components/authenticated-action-form";
 
 /** What each role can do, matching the workspace capability table. */
 const ROLE_COPY: Record<string, string> = {
@@ -61,14 +70,19 @@ export function InviteCard({
   role,
   email,
   expiresAt,
-  action,
+  onAccept,
+  pending,
+  error,
 }: {
   workspaceName: string;
   role: string;
   /** The address the invitation was sent to. */
   email: string;
   expiresAt: Date | string;
-  action: (formData: FormData) => Promise<unknown>;
+  onAccept: () => void;
+  pending: boolean;
+  /** The failed acceptance, if any. */
+  error: unknown;
 }) {
   return (
     <InviteShell>
@@ -99,15 +113,84 @@ export function InviteCard({
         ) : null}
       </Stack>
       <Stack w="full" gap="3">
-        <AuthenticatedActionForm action={action}>
-          <Button type="submit" size="lg" w="full">
+        <Box>
+          <Button size="lg" w="full" loading={pending} onClick={onAccept}>
             Accept invitation
           </Button>
-        </AuthenticatedActionForm>
+          {error ? <ApiErrorNotice error={error} fallback="The invitation could not be accepted." /> : null}
+        </Box>
         <Text fontSize="12px" color="fg.subtle">
           For {email} · expires {formatDate(expiresAt)}. Your personal workspace and its subscription stay separate.
         </Text>
       </Stack>
     </InviteShell>
+  );
+}
+
+const SIGNED_OUT = { userId: "" };
+
+function InviteContent({ token }: { token: string }) {
+  const runtime = useApiRuntime();
+  const router = useRouter();
+  const identity = useIdentityScope();
+  // The token is a credential: only its digest is part of the query key.
+  const [digest, setDigest] = useState<string | null>(null);
+  useEffect(() => {
+    let current = true;
+    void sha256Hex(token).then((value) => {
+      if (current) setDigest(value);
+    });
+    return () => {
+      current = false;
+    };
+  }, [token]);
+  useEffect(() => {
+    if (identity === null) router.replace(authEntryHref("sign-in", `/invite/${encodeURIComponent(token)}`));
+  }, [identity, token, router]);
+
+  const scope = identity ?? SIGNED_OUT;
+  const preview = useQuery({
+    ...inviteQuery(runtime.transport, scope, { token, digest: digest ?? "" }),
+    enabled: identity !== null && digest !== null,
+  });
+  const accept = useMutation(acceptInviteMutation(runtime, scope));
+
+  if (preview.isError) {
+    const unavailable =
+      isApiErrorCode(preview.error, "workspace_invite_invalid") || describeApiFailure(preview.error).kind === "missing";
+    if (unavailable) return <InviteUnavailable />;
+    return (
+      <InviteShell>
+        <QueryLoadError error={preview.error} what="This invitation" onRetry={() => void preview.refetch()} />
+      </InviteShell>
+    );
+  }
+  if (!preview.data) {
+    return (
+      <InviteShell>
+        <Spinner />
+        <Text role="status" fontSize="14px" color="fg.muted">Opening your invitation…</Text>
+      </InviteShell>
+    );
+  }
+  return (
+    <InviteCard
+      workspaceName={preview.data.workspaceName}
+      role={preview.data.role}
+      email={preview.data.email}
+      expiresAt={preview.data.expiresAt}
+      pending={accept.isPending}
+      error={accept.error}
+      // The mutation adopts the joined Workspace as the selection; the invitee then goes where the API says.
+      onAccept={() => accept.mutate(token, { onSuccess: (accepted) => router.push(accepted.destination) })}
+    />
+  );
+}
+
+export function InviteScreen({ token }: { token: string }) {
+  return (
+    <ApiProvider fallback={<InviteShell><Spinner /></InviteShell>}>
+      <InviteContent token={token} />
+    </ApiProvider>
   );
 }

@@ -22,6 +22,12 @@ import {
   isCensorSegmentStale,
   resolvePricingTier,
 } from "@narriflow/validators";
+import type {
+  ExportDownloadGrant,
+  WorkspaceExportItem,
+  WorkspaceExportPage,
+  WorkspaceExportVariant,
+} from "@narriflow/validators/api/exports";
 import { deriveClipExportAggregate } from "./clip-export-aggregate";
 export { deriveClipExportAggregate } from "./clip-export-aggregate";
 import { hasFeature, requirePlanFeature } from "./plan-features";
@@ -45,6 +51,16 @@ import {
 } from "./clip-editor-document-persistence";
 
 const EXPORT_DOWNLOAD_TTL_SECONDS = 15 * 60;
+
+/** What `workspaceLibraryService.listExports` returns; the service strips `storageKey` for the browser. */
+export interface WorkspaceExportPageSource {
+  items: Array<
+    Omit<WorkspaceExportItem, "variants"> & {
+      variants: Array<Omit<WorkspaceExportVariant, "hasAsset" | "previewUrl"> & { storageKey: string | null }>;
+    }
+  >;
+  nextCursor: string | null;
+}
 
 function requirePrisma() {
   const prisma = getPrismaClient();
@@ -798,6 +814,63 @@ export class ClipExportService {
       include: exportInclude,
     });
     return row ? toExportSnapshot(row, true) : null;
+  }
+
+  /**
+   * One Download Grant for a Workspace export file: the requested finished
+   * variant, or the first finished one. Short-lived; the audit log never
+   * records the URL.
+   */
+  async issueWorkspaceDownloadGrant(
+    scope: ActorScope,
+    exportId: string,
+    variantId?: string,
+  ): Promise<ExportDownloadGrant> {
+    const grants = await this.issueDownloadGrants(scope, exportId, {
+      ...(variantId ? { variantId } : {}),
+      credentialKind: "session",
+    });
+    const [grant] = grants.variants;
+    if (!grant) throw new ClipExportError("export_not_ready", "No finished file is available for this export yet");
+    return {
+      exportId: grants.exportId,
+      variantId: grant.variantId,
+      fileName: grant.fileName,
+      sizeBytes: grant.sizeBytes,
+      downloadUrl: grant.downloadUrl,
+      expiresAt: grant.expiresAt,
+    };
+  }
+
+  /** Retry a failed Workspace export from the Exports list, which knows only the export id. */
+  async retryWorkspaceExport(scope: ActorScope, exportId: string) {
+    const exported = await this.getWorkspaceOwned(scope, exportId);
+    if (!exported) throw new ClipExportError("export_not_found", "Export not found");
+    return this.retryFailed(scope, exported.projectId, exported.clipId, exported.id);
+  }
+
+  /**
+   * Shapes a Workspace export page for the browser: storage keys never leave
+   * the service, and each finished file gets a short-lived playback URL for
+   * its card thumbnail.
+   */
+  async presentWorkspaceExports(page: WorkspaceExportPageSource): Promise<WorkspaceExportPage> {
+    const items = await Promise.all(
+      page.items.map(async (item) => ({
+        ...item,
+        variants: await Promise.all(
+          item.variants.map(async ({ storageKey, ...variant }) => {
+            const hasAsset = variant.status === "completed" && Boolean(storageKey);
+            const previewUrl =
+              hasAsset && storageKey
+                ? await presignDownloadUrl({ key: storageKey, expiresIn: EXPORT_DOWNLOAD_TTL_SECONDS }).catch(() => null)
+                : null;
+            return { ...variant, hasAsset, previewUrl };
+          }),
+        ),
+      })),
+    );
+    return { items, nextCursor: page.nextCursor };
   }
 
   async listCurrentProjectExports(

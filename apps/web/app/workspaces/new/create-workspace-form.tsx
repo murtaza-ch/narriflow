@@ -1,16 +1,33 @@
 "use client";
 
-import { useActionState, useEffect } from "react";
-import { Box, Flex, Stack, Text, chakra } from "@chakra-ui/react";
+import { useMemo, useState } from "react";
+import { Box, Flex, Stack, Text } from "@chakra-ui/react";
+import { isApiError } from "@narriflow/api-client";
+import { startBusinessWorkspaceCheckout } from "@narriflow/api-client/billing";
 import { ArrowRight, Check } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
 import { Input } from "@narriflow/ui/components/input";
 import { Label } from "@narriflow/ui/components/label";
 import { SegmentedControl } from "@narriflow/ui/components/segmented-control";
+import {
+  businessWorkspaceCheckoutRecoverySchema,
+  type BusinessWorkspaceCheckoutRequest,
+} from "@narriflow/validators/api/billing";
 import { formatUsdCents, PLAN_CATALOG } from "@narriflow/validators";
-import { createBusinessWorkspaceAction, type CreateWorkspaceState } from "./actions";
+import { useMutation } from "@tanstack/react-query";
+import { useApiRuntime, useIdentityScope } from "@/app/_components/api-provider";
+import {
+  apiErrorMessage,
+  apiErrorSupportId,
+  QueryMutationForm,
+} from "@/app/_components/query-mutation-form";
+import {
+  buildBusinessWorkspaceCheckoutRequest,
+  type PreservedWorkspaceCheckoutState,
+  recoverBusinessWorkspaceCheckoutFields,
+} from "./checkout-request";
 
-const INITIAL_STATE: CreateWorkspaceState = {};
+const SIGNED_OUT = { userId: "" };
 
 const { monthlyPriceCents, annualPriceCents } = PLAN_CATALOG.business;
 const ANNUAL_SAVING_PERCENT = Math.round((1 - annualPriceCents / (monthlyPriceCents * 12)) * 100);
@@ -22,19 +39,57 @@ const INCLUDED = [
 ];
 
 export function CreateWorkspaceForm() {
-  const [state, action, pending] = useActionState(createBusinessWorkspaceAction, INITIAL_STATE);
+  const runtime = useApiRuntime();
+  const identity = useIdentityScope() ?? SIGNED_OUT;
+  // What a failed attempt keeps for the retry: the pending Workspace that already
+  // exists and the checkout key, so a retry resumes it instead of creating another.
+  const [state, setState] = useState<PreservedWorkspaceCheckoutState>({});
+  const [failures, setFailures] = useState(0);
+  const [redirecting, setRedirecting] = useState(false);
 
-  useEffect(() => {
-    if (state.checkoutUrl) window.location.assign(state.checkoutUrl);
-  }, [state.checkoutUrl]);
+  const checkout = useMutation({
+    mutationFn: (input: BusinessWorkspaceCheckoutRequest) =>
+      startBusinessWorkspaceCheckout(runtime.transport, identity, input),
+    onSuccess: (started) => {
+      // The new Workspace becomes the explicit selection before the person leaves for Stripe.
+      // Checkout proves nothing about entitlement: Billing observes the verified state on return.
+      runtime.selectWorkspace(started.selection.workspaceId);
+      setRedirecting(true);
+      window.location.assign(started.checkoutUrl);
+    },
+    onError: (error, input) => {
+      const recovery = isApiError(error)
+        ? businessWorkspaceCheckoutRecoverySchema.safeParse(error.details?.recovery)
+        : null;
+      setState((previous) => ({
+        ...previous,
+        ...recoverBusinessWorkspaceCheckoutFields(previous, input),
+        ...(recovery?.success ? recovery.data : {}),
+      }));
+      setFailures((count) => count + 1);
+    },
+  });
+  const pending = checkout.isPending;
+  const message = checkout.error
+    ? apiErrorMessage(checkout.error, "Workspace checkout could not be started")
+    : null;
+  const supportId = checkout.error ? apiErrorSupportId(checkout.error) : null;
+  const formKey = useMemo(() => `${failures}:${state.workspaceName ?? ""}`, [failures, state.workspaceName]);
 
   return (
-    <chakra.form action={action}>
+    <QueryMutationForm
+      mutation={checkout}
+      hideError
+      // The API validates the strict request schema; a bad value comes back as `invalid_input`.
+      toVariables={(formData) =>
+        buildBusinessWorkspaceCheckoutRequest(state, formData) as BusinessWorkspaceCheckoutRequest
+      }
+    >
       <Stack gap="6">
         <Stack gap="1.5">
           <Label htmlFor="workspace-name">Workspace name</Label>
           <Input
-            key={`${state.requestId ?? "initial"}:${state.workspaceName ?? ""}`}
+            key={formKey}
             id="workspace-name"
             name="name"
             size="md"
@@ -55,7 +110,7 @@ export function CreateWorkspaceForm() {
         <Stack gap="3">
           <Label id="workspace-interval-label">Billing</Label>
           <SegmentedControl
-            key={`${state.requestId ?? "initial"}:${state.interval ?? "annual"}`}
+            key={`${formKey}:${state.interval ?? "annual"}`}
             name="interval"
             aria-labelledby="workspace-interval-label"
             w="full"
@@ -106,24 +161,24 @@ export function CreateWorkspaceForm() {
           </Stack>
         </Stack>
 
-        {state.error ? (
+        {message ? (
           <Box role="alert" bg="danger.subtle" borderRadius="l2" px="4" py="3">
-            <Text fontSize="13px" color="danger.fg">{state.error}</Text>
+            <Text fontSize="13px" color="danger.fg">{message}</Text>
             {state.workspaceId ? (
               <Text fontSize="12px" color="fg.subtle" mt="1">
                 Your pending workspace was preserved. Submit again to retry checkout.
               </Text>
             ) : null}
-            {state.requestId ? (
+            {supportId ? (
               <Text fontSize="12px" color="fg.subtle" mt="1">
-                Support ID: {state.requestId}
+                Support ID: {supportId}
               </Text>
             ) : null}
           </Box>
         ) : null}
 
         <Stack gap="3">
-          <Button type="submit" size="md" h="11" w="full" loading={pending} disabled={Boolean(state.checkoutUrl)}>
+          <Button type="submit" size="md" h="11" w="full" loading={pending} disabled={redirecting}>
             Continue to secure checkout
             <ArrowRight size={16} />
           </Button>
@@ -132,6 +187,6 @@ export function CreateWorkspaceForm() {
           </Text>
         </Stack>
       </Stack>
-    </chakra.form>
+    </QueryMutationForm>
   );
 }

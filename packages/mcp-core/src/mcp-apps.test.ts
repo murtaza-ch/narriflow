@@ -8,7 +8,7 @@ afterEach(async () => { await Promise.all(clients.splice(0).map((client) => clie
 async function connect(apps: boolean, mode: "auto" | "legacy" = "auto") {
   const handler = createMcpHandler(({ era }) => {
     const server = new McpServer({ name: "apps-test", version: "1" });
-    registerNarriflowMcpApps(server, { appOrigin: "https://narriflow.test", protocolEra: era, connectDomains: ["https://bucket.storage.test"], callUpload: async () => ({ content: [], structuredContent: { action: "grants", outcome: "granted" }, _meta: { uploadTransfer: { grants: [{ url: "https://bucket.storage.test/private-grant" }] } } }), acceptPublication: async () => ({ content: [], structuredContent: { status: "confirmed" }, _meta: { confirmationReceipt: "private-receipt" } }) });
+    registerNarriflowMcpApps(server, { appOrigin: "https://narriflow.test", apiOrigin: "https://api.narriflow.test", protocolEra: era, connectDomains: ["https://bucket.storage.test"], callUpload: async () => ({ content: [], structuredContent: { action: "grants", outcome: "granted" }, _meta: { uploadTransfer: { grants: [{ url: "https://bucket.storage.test/private-grant" }] } } }), acceptPublication: async () => ({ content: [], structuredContent: { status: "confirmed" }, _meta: { confirmationReceipt: "private-receipt" } }) });
     return server;
   });
   const client = new Client({ name: "apps-client", version: "1" }, { capabilities: apps ? { extensions: { "io.modelcontextprotocol/ui": { mimeTypes: ["text/html;profile=mcp-app"] } } } : {}, versionNegotiation: { mode } });
@@ -33,7 +33,7 @@ describe("MCP Apps delivery", () => {
     expect(content?.mimeType).toBe("text/html;profile=mcp-app");
     expect(content && "text" in content ? content.text : "").toContain("Upload and generate clips");
     expect(content && "text" in content ? content.text : "").not.toContain("private-grant");
-    expect(content?._meta).toEqual({ ui: { csp: { connectDomains: ["https://narriflow.test", "https://bucket.storage.test"], resourceDomains: ["https://narriflow.test"], frameDomains: [] } } });
+    expect(content?._meta).toEqual({ ui: { csp: { connectDomains: ["https://api.narriflow.test", "https://bucket.storage.test"], resourceDomains: ["https://api.narriflow.test"], frameDomains: [] } } });
   });
 
   test("CSP permits the bucket origin used by signed upload and preview URLs", async () => {

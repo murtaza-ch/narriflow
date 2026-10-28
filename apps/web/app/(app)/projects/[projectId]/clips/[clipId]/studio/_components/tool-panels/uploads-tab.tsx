@@ -8,7 +8,8 @@ import { Spinner } from "@narriflow/ui/components/spinner";
 import { toaster } from "@narriflow/ui/components/toaster";
 import type { AudioAssetKindInput } from "@narriflow/validators";
 import { formatDuration } from "@/lib/format";
-import { useAudioAssetList, type AudioAssetListRow } from "./audio-library";
+import { brandMutations } from "@narriflow/api-client/brand";
+import { useAudioApi, useAudioAssetList, type AudioAssetListRow } from "./audio-library";
 import { AUDIO_UPLOAD_ACCEPT, AUDIO_UPLOAD_MAX_MB, uploadAudioFile } from "./audio-upload";
 import { AudioListError, AudioPager } from "./music-tab";
 
@@ -66,6 +67,7 @@ export function UploadsTab({ reloadKey, onLibraryChange }: UploadsTabProps) {
   const [uploadKind, setUploadKind] = useState<AudioAssetKindInput>("music");
   const [uploading, setUploading] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const audioApi = useAudioApi();
 
   const musicList = useAudioAssetList("music", null, reloadKey, { scope: "user" });
   const sfxList = useAudioAssetList("sfx", null, reloadKey, { scope: "user" });
@@ -85,7 +87,7 @@ export function UploadsTab({ reloadKey, onLibraryChange }: UploadsTabProps) {
   async function handleUpload(file: File) {
     setUploading(true);
     try {
-      await uploadAudioFile(file, uploadKind);
+      await uploadAudioFile(file, uploadKind, audioApi);
       toaster.create({ type: "success", title: "Uploaded" });
       onLibraryChange();
     } catch (error) {
@@ -102,8 +104,8 @@ export function UploadsTab({ reloadKey, onLibraryChange }: UploadsTabProps) {
   async function handleDelete(asset: AudioAssetListRow) {
     setDeletingId(asset.id);
     try {
-      const res = await fetch(`/api/audio-assets/${asset.id}`, { method: "DELETE" });
-      if (!res.ok) throw new Error("Delete failed");
+      if (!audioApi) throw new Error("Delete failed");
+      await brandMutations(audioApi).deleteAudio(asset.id);
       onLibraryChange();
     } catch {
       toaster.create({

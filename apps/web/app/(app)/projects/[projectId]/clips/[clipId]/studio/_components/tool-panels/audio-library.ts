@@ -1,12 +1,22 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { RefObject } from "react";
-import type { AudioAssetListRow } from "@narriflow/services";
+import { type BrandApi, type BrandClient, brandClientFor, brandMutations } from "@narriflow/api-client/brand";
+import type { InferResponseType } from "hono/client";
 import type { AudioAssetKindInput, BrandAudioReference } from "@narriflow/validators";
 import { toaster } from "@narriflow/ui/components/toaster";
+import { useApiRuntime, useWorkspaceScope } from "@/app/_components/api-provider";
 
-export type { AudioAssetListRow };
+/** One row of the Music/SFX library, as the API lists it. */
+export type AudioAssetListRow = InferResponseType<BrandClient["audio-assets"]["$get"], 200>["assets"][number];
+
+/** The transport + selected Workspace the audio helpers call the Brand API with. */
+export function useAudioApi(): BrandApi | null {
+  const runtime = useApiRuntime();
+  const scope = useWorkspaceScope();
+  return useMemo(() => (scope ? { transport: runtime.transport, scope } : null), [runtime, scope]);
+}
 
 interface AudioAssetPage {
   assets: AudioAssetListRow[];
@@ -35,6 +45,7 @@ export function useAudioAssetList(
   options: { search?: string; scope?: "all" | "user"; favorited?: boolean } = {},
 ): UseAudioAssetListResult {
   const { search, scope, favorited } = options;
+  const api = useAudioApi();
   const [assets, setAssets] = useState<AudioAssetListRow[]>([]);
   const [moodTags, setMoodTags] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
@@ -48,15 +59,19 @@ export function useAudioAssetList(
   const retry = useCallback(() => setRetryVersion((version) => version + 1), []);
 
   const fetchPage = useCallback(async (offset: number): Promise<AudioAssetPage> => {
-    const params = new URLSearchParams({ kind, limit: "30", offset: String(offset) });
-    if (mood) params.set("mood", mood);
-    if (search?.trim()) params.set("search", search.trim());
-    if (scope) params.set("scope", scope);
-    if (favorited !== undefined) params.set("favorited", String(favorited));
-    const response = await fetch(`/api/audio-assets?${params.toString()}`);
-    if (!response.ok) throw new Error("Couldn't load the audio library.");
-    return response.json();
-  }, [kind, mood, search, scope, favorited]);
+    if (!api) throw new Error("Couldn't load the audio library.");
+    const query: { kind: AudioAssetKindInput } & Record<string, string> = { kind, limit: "30", offset: String(offset) };
+    if (mood) query.mood = mood;
+    if (search?.trim()) query.search = search.trim();
+    if (scope) query.scope = scope;
+    if (favorited !== undefined) query.favorited = String(favorited);
+    try {
+      const response = await brandClientFor(api)["audio-assets"].$get({ query });
+      return await response.json();
+    } catch {
+      throw new Error("Couldn't load the audio library.");
+    }
+  }, [api, kind, mood, search, scope, favorited]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: reloadKey is an explicit caller-controlled refetch trigger.
   useEffect(() => {
@@ -107,25 +122,44 @@ export function useAudioAssetList(
     const previous = assets.find((asset) => asset.id === assetId)?.favorited ?? false;
     setAssets((current) => current.map((asset) => asset.id === assetId ? { ...asset, favorited } : asset));
     try {
-      const response = await fetch(`/api/audio-assets/${assetId}/favorite`, {
-        method: favorited ? "PUT" : "DELETE",
-      });
-      if (!response.ok) throw new Error("Couldn't update Saved tracks.");
+      if (!api) throw new Error("Couldn't update Saved tracks.");
+      const mutations = brandMutations(api);
+      await (favorited ? mutations.favoriteAudio(assetId) : mutations.unfavoriteAudio(assetId));
     } catch (error) {
       setAssets((current) => current.map((asset) => asset.id === assetId ? { ...asset, favorited: previous } : asset));
       throw error;
     }
-  }, [assets]);
+  }, [api, assets]);
 
   return { assets, moodTags, loading, error, retry, hasMore: nextOffset !== null, loadingMore, loadMoreError, loadMore, setFavorite };
 }
 
 /** Each user action refreshes the short-lived URL through the existing endpoint. */
-export async function resolveAudioPlaybackUrl(assetId: string): Promise<string> {
-  const response = await fetch(`/api/audio-assets/${assetId}/playback-url`);
-  if (!response.ok) throw new Error("Couldn't load this audio. Please try again.");
-  const source = await response.json() as { url: string };
-  return source.url;
+export async function resolveAudioPlaybackUrl(assetId: string, api: BrandApi | null): Promise<string> {
+  try {
+    if (!api) throw new Error("no workspace");
+    const response = await brandClientFor(api)["audio-assets"][":id"]["playback-url"].$get({ param: { id: assetId } });
+    const body = await response.json();
+    if (!("url" in body)) throw new Error("no url");
+    return body.url;
+  } catch {
+    throw new Error("Couldn't load this audio. Please try again.");
+  }
+}
+
+/** The playback URL and duration the Studio preview needs; null when it cannot be resolved. */
+export async function fetchAudioPlayback(
+  api: BrandApi | null,
+  assetId: string,
+): Promise<{ url?: string; durationSec?: number } | null> {
+  if (!api) return null;
+  try {
+    const response = await brandClientFor(api)["audio-assets"][":id"]["playback-url"].$get({ param: { id: assetId } });
+    const body = await response.json();
+    return "url" in body ? body : null;
+  } catch {
+    return null;
+  }
 }
 
 export interface PreviewPlayer {
@@ -153,6 +187,7 @@ export interface PreviewPlayer {
  * bed, at panel scope instead of stage scope.
  */
 export function usePreviewPlayer(): PreviewPlayer {
+  const api = useAudioApi();
   const audioRef = useRef<HTMLAudioElement>(null);
   const activeIdRef = useRef<string | null>(null);
   const playbackRequest = useRef(0);
@@ -222,7 +257,7 @@ export function usePreviewPlayer(): PreviewPlayer {
     setDuration(0);
     setLoadingId(id);
     try {
-      const url = await resolveAudioPlaybackUrl(id);
+      const url = await resolveAudioPlaybackUrl(id, api);
       if (request !== playbackRequest.current) return;
       audio.src = url;
       audio.load();
@@ -234,7 +269,7 @@ export function usePreviewPlayer(): PreviewPlayer {
       setLoadingId(null);
       toaster.create({ type: "error", title: "Couldn't preview this audio", description: "Please try again." });
     }
-  }, []);
+  }, [api]);
 
   const seek = useCallback((seconds: number) => {
     const audio = audioRef.current;

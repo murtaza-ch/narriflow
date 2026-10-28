@@ -72,15 +72,19 @@ import {
 	browserPublishingStorage,
 	currentPublicationExport,
 	publishingDraftKey,
-	publishingRequest,
-	PublishingRequestError,
 } from "./publishing-draft";
+import { createProjectPublishingApi, type ProjectPublishingApi } from "./publishing-api";
 import { createPublishingCompositionSession, type PublishingCompositionSession, type PublishingOptions } from "./publishing-composition-session";
 import { PublishingPosts } from "./publishing-posts";
 import { PanelHeader } from "./panel-header";
 import { PublishingCover } from "./publishing-cover";
-import { proposeToQueueAction } from "../../calendar/queue/actions";
-import { authenticatedActionResultMessage, isAuthenticatedActionFailure, upgradePromptFromFailure } from "@/lib/authenticated-request-browser";
+import { isApiError, type Intent } from "@narriflow/api-client";
+import { invalidatePublishing, type ProposeInput } from "@narriflow/api-client/publishing";
+import { invalidateProject } from "@narriflow/api-client/projects";
+import { useQueryClient } from "@tanstack/react-query";
+import { useApiRuntime, useWorkspaceScope } from "@/app/_components/api-provider";
+import { apiFailureMessage, browserFailureFromApiError } from "@/lib/publishing-client";
+import { upgradePromptFromFailure } from "@/lib/authenticated-request-browser";
 import { LockedButton, useUpgrade, type UpgradePrompt } from "../../_components/upgrade";
 import { PlanLimitNotice } from "../../_components/plan-limit-notice";
 import { featureUpgradePrompt } from "@/lib/feature-upgrade-prompt";
@@ -117,6 +121,7 @@ type PublishingContextValue = {
 	loadOlderPosts(): Promise<void>;
 	nextPostsCursor: string | null;
 	config: Config;
+	api: ProjectPublishingApi;
 };
 
 export function mergeRefreshedPosts(
@@ -152,6 +157,7 @@ export function ProjectPosts() {
 				description="Every post from this project's clips, and where it stands."
 			/>
 			<PublishingPosts
+				api={c.api}
 				projectId={c.config.projectId}
 				timeZone={c.config.workspaceTimezone}
 				posts={c.posts}
@@ -190,6 +196,10 @@ export function PublishingProvider({
 	const [submission, setSubmission] = useState<BulkResult | null>(null);
 	const router = useRouter();
 	const params = useSearchParams();
+	const runtime = useApiRuntime();
+	const scope = useWorkspaceScope();
+	if (!scope) throw new Error("Publishing requires a selected Workspace");
+	const api = useMemo(() => createProjectPublishingApi(runtime.transport, scope), [runtime.transport, scope]);
 	useEffect(() => setPosts(config.initialPosts), [config.initialPosts]);
 	useEffect(() => setNextPostsCursor(config.initialPostsCursor), [config.initialPostsCursor]);
 	const refresh = useCallback(async () => {
@@ -197,20 +207,18 @@ export function PublishingProvider({
 		const batch = nextTrackedPostBatch(live, trackedRefreshOffset.current);
 		const tracked = batch.ids;
 		trackedRefreshOffset.current = batch.nextOffset;
-		const result = await publishingRequest<{ posts: unknown; nextCursor: string | null }>(
-			`/api/projects/${config.projectId}/social-posts?active=1&tracked=${encodeURIComponent(tracked.join(","))}`,
-		);
+		const result = await api.activePosts(config.projectId, tracked);
 		const activePosts = socialPostSnapshotSchema.array().parse(result.posts);
 		setPosts((current) => mergeRefreshedPosts(current, activePosts));
 		setStatusError("");
-	}, [config.projectId, posts]);
+	}, [api, config.projectId, posts]);
 	const loadOlderPosts = useCallback(async () => {
 		if (!nextPostsCursor) return;
-		const result = await publishingRequest<{ posts: unknown; nextCursor: string | null }>(`/api/projects/${config.projectId}/social-posts?cursor=${encodeURIComponent(nextPostsCursor)}`);
+		const result = await api.olderPosts(config.projectId, nextPostsCursor);
 		const older = socialPostSnapshotSchema.array().parse(result.posts);
 		setPosts((current) => [...current, ...older.filter((post) => !current.some((existing) => existing.id === post.id))]);
 		setNextPostsCursor(result.nextCursor);
-	}, [config.projectId, nextPostsCursor]);
+	}, [api, config.projectId, nextPostsCursor]);
 	useEffect(() => {
 		let alive = true;
 		const tick = () => {
@@ -295,7 +303,7 @@ export function PublishingProvider({
 	});
 	return (
 		<PublishingContext.Provider
-			value={{ posts, compose, viewPosts, refresh, loadOlderPosts, nextPostsCursor, config }}
+			value={{ posts, compose, viewPosts, refresh, loadOlderPosts, nextPostsCursor, config, api }}
 		>
 			{children}
 			<Drawer.Root
@@ -343,6 +351,7 @@ export function PublishingProvider({
 							</Drawer.CloseTrigger>
 							{mode === "compose" && selected.length > 0 && !composition.recoveryUnavailable ? (
 								<PublishingComposer
+									api={api}
 									config={config}
 									session={session}
 									clips={selected}
@@ -351,7 +360,7 @@ export function PublishingProvider({
 									onSubmitted={onSubmitted}
 								/>
 							) : mode === "compose" && (composition.pending || composition.recoveryUnavailable) ? (
-								<PublishingRecoveryComposer session={session} onSubmitted={onSubmitted} projectId={config.projectId} />
+								<PublishingRecoveryComposer api={api} session={session} onSubmitted={onSubmitted} projectId={config.projectId} />
 							) : (
 								<Drawer.Body p={{ base: "4", md: "6" }} mx={{ base: "0", md: "2" }} mb={{ base: "0", md: "2" }} overflowY="auto" bg="bg" borderRadius={{ base: "0", md: "12px" }}>
 								{submission?.items.some(
@@ -398,6 +407,7 @@ export function PublishingProvider({
 										</Text>
 									)}
 									<PublishingPosts
+										api={api}
 										timeZone={config.workspaceTimezone}
 										projectId={config.projectId}
 										posts={posts.filter(
@@ -423,8 +433,8 @@ export function PublishingProvider({
 /** Rethrows a refused publishing request after opening the upgrade dialog when a plan would lift it. */
 function openUpgradeOnRefusal(openUpgrade: (prompt: UpgradePrompt) => void) {
 	return (error: unknown): never => {
-		if (error instanceof PublishingRequestError && error.status === 402) {
-			const prompt = upgradePromptFromFailure(error.failure);
+		if (isApiError(error) && error.status === 402) {
+			const prompt = upgradePromptFromFailure(browserFailureFromApiError(error));
 			if (prompt) openUpgrade(prompt);
 		}
 		throw error;
@@ -433,7 +443,7 @@ function openUpgradeOnRefusal(openUpgrade: (prompt: UpgradePrompt) => void) {
 
 type Options = PublishingOptions;
 type BulkResult = BulkSocialScheduleOutcome;
-function PublishingRecoveryComposer({ session, onSubmitted, projectId }: { session: PublishingCompositionSession; onSubmitted(outcome: BulkResult): Promise<void>; projectId: string }) {
+function PublishingRecoveryComposer({ api, session, onSubmitted, projectId }: { api: ProjectPublishingApi; session: PublishingCompositionSession; onSubmitted(outcome: BulkResult): Promise<void>; projectId: string }) {
 	const { openUpgrade } = useUpgrade();
 	const snapshot = useSyncExternalStore(session.subscribe, session.getSnapshot, session.getSnapshot);
 	return <>
@@ -441,12 +451,13 @@ function PublishingRecoveryComposer({ session, onSubmitted, projectId }: { sessi
 			<Text>{snapshot.recoveryUnavailable ? "Saved publishing information could not be read. Check it before composing another post." : "The previous submission is saved. Check its result before composing another post."}</Text>
 			{snapshot.error && <Text role="status" color="warning.fg" mt="3">{snapshot.error}</Text>}
 		</Drawer.Body>
-		<Drawer.Footer><Button size="sm" disabled={snapshot.busy || (!snapshot.pending && !snapshot.recoveryUnavailable)} onClick={() => void session.submit({ exports: [], options: {} }, (payload) => publishingRequest(`/api/projects/${projectId}/campaign-operations/schedule`, payload).catch(openUpgradeOnRefusal(openUpgrade))).then((outcome) => outcome ? onSubmitted(outcome) : undefined)}>
+		<Drawer.Footer><Button size="sm" disabled={snapshot.busy || (!snapshot.pending && !snapshot.recoveryUnavailable)} onClick={() => void session.submit({ exports: [], options: {} }, (payload) => api.schedule(projectId, payload).catch(openUpgradeOnRefusal(openUpgrade))).then((outcome) => outcome ? onSubmitted(outcome) : undefined)}>
 			{snapshot.busy && <Spinner size="xs" />} Check previous submission
 		</Button></Drawer.Footer>
 	</>;
 }
 function PublishingComposer({
+	api,
 	config,
 	session,
 	clips,
@@ -454,6 +465,7 @@ function PublishingComposer({
 	open,
 	onSubmitted,
 }: {
+	api: ProjectPublishingApi;
 	config: Config;
 	session: PublishingCompositionSession;
 	clips: ClipSnapshot[];
@@ -461,7 +473,11 @@ function PublishingComposer({
 	open: boolean;
 	onSubmitted(outcome: BulkResult): Promise<void>;
 }) {
-	const router = useRouter();
+	const runtime = useApiRuntime();
+	const scope = useWorkspaceScope();
+	const queryClient = useQueryClient();
+	const proposeIntents = useRef(new Map<string, Intent<ProposeInput>>());
+	const exportIntent = useMemo(() => runtime.createIntent<{ clipId: string; expectedRevision: number; resolution: string }>(), [runtime]);
 	const { openUpgrade, currentTier } = useUpgrade();
 	const campaignUpgrade = featureUpgradePrompt(currentTier, "campaign.operations", "Upgrade to publish multiple posts together");
 	const campaignRequirement = planFeatureRequirement(currentTier, "campaign.operations")?.message
@@ -523,14 +539,12 @@ function PublishingComposer({
 		[clips, accounts],
 	);
 	useEffect(() => {
-		void session.checkSavedCovers(() => publishingRequest("/api/visual-assets"));
-	}, [session]);
+		void session.checkSavedCovers(() => api.visualAssets());
+	}, [session, api]);
 	const refreshExports = useCallback(async () => {
-		const response = await publishingRequest<{ exports: unknown }>(
-			`/api/projects/${config.projectId}/exports/current`,
-		);
+		const response = await api.currentExports(config.projectId);
 		setExports(clipExportSnapshotSchema.array().parse(response.exports));
-	}, [config.projectId]);
+	}, [api, config.projectId]);
 	const staleRevision = exports.some((item) =>
 		clips.some(
 			(clip) =>
@@ -538,9 +552,10 @@ function PublishingComposer({
 				item.currentEditorRevision > clip.editorRevision,
 		),
 	);
+	// A newer edit exists than the clips this drawer was opened with: re-read the Project's clips.
 	useEffect(() => {
-		if (staleRevision) router.refresh();
-	}, [staleRevision, router]);
+		if (staleRevision && scope) void invalidateProject(queryClient, scope, config.projectId);
+	}, [staleRevision, queryClient, scope, config.projectId]);
 	useEffect(() => {
 		if (!open) return;
 		void refreshExports().catch((e) => setError(e.message));
@@ -554,11 +569,10 @@ function PublishingComposer({
 		let alive = true;
 		for (const account of accounts) {
 			if (options[account.id] || optionErrors[account.id]) continue;
-			void publishingRequest<Options>(
-				`/api/projects/${config.projectId}/social-accounts/${account.id}/publishing-options`,
-			)
+			void api
+				.publishingOptions(config.projectId, account.id)
 				.then((value) => {
-					if (alive) setOptions((o) => ({ ...o, [account.id]: value }));
+					if (alive) setOptions((o) => ({ ...o, [account.id]: value as Options }));
 				})
 				.catch((e) => {
 					if (alive)
@@ -568,7 +582,7 @@ function PublishingComposer({
 		return () => {
 			alive = false;
 		};
-	}, [accounts, config.projectId, options, optionErrors]);
+	}, [accounts, api, config.projectId, options, optionErrors]);
 	const timingSignature = JSON.stringify({
 		...timing,
 		clipIds: clips.map((c) => c.id),
@@ -584,15 +598,11 @@ function PublishingComposer({
 		setSlots([]);
 		const timer = setTimeout(
 			() =>
-				void publishingRequest<{
-					slots: Array<{ clipId: string; scheduledFor: string }>;
-				}>(
-					`/api/projects/${config.projectId}/campaign-operations/schedule/preview`,
-					JSON.parse(timingSignature),
-				)
+				void api
+					.previewSchedule(config.projectId, JSON.parse(timingSignature))
 					.then((v) => {
 						if (alive) {
-							setSlots(v.slots);
+							setSlots(v.slots.flatMap((slot) => (slot.clipId ? [{ clipId: slot.clipId, scheduledFor: slot.scheduledFor }] : [])));
 							setPreviewError("");
 						}
 					})
@@ -605,28 +615,37 @@ function PublishingComposer({
 			alive = false;
 			clearTimeout(timer);
 		};
-	}, [timingSignature, open, config.projectId]);
+	}, [timingSignature, open, api, config.projectId]);
 	function update(key: string, patch: Partial<PublishingDraft>) {
 		session.updateDraft(key, patch);
 	}
 	/** Hands the draft's export and caption to the account's publishing queue, where a person accepts it into a slot. */
 	async function proposeToQueue(key: string, clipId: string, exportId: string, socialAccountId: string, caption: string) {
+		if (!scope) return;
 		setQueued((current) => ({ ...current, [key]: { state: "pending" } }));
-		const result = await proposeToQueueAction({
-			clipId, exportId, socialAccountId, idempotencyKey: crypto.randomUUID(),
-			...(caption.trim() ? { caption: caption.trim() } : {}),
-		});
-		setQueued((current) => ({
-			...current,
-			[key]: isAuthenticatedActionFailure(result)
-				? { state: "error", message: authenticatedActionResultMessage(result, "The post could not be proposed.") }
-				: { state: "done" },
-		}));
+		const proposal = { clipId, exportId, socialAccountId, ...(caption.trim() ? { caption: caption.trim() } : {}) };
+		// One key per draft and content: a retry after a lost answer replays the same proposal, an edited caption is a new one.
+		let intent = proposeIntents.current.get(key);
+		if (!intent) {
+			intent = runtime.createIntent<typeof proposal>();
+			proposeIntents.current.set(key, intent);
+		}
+		try {
+			await api.propose(proposal, intent.keyFor(proposal));
+			intent.complete();
+			setQueued((current) => ({ ...current, [key]: { state: "done" } }));
+			void invalidatePublishing(queryClient, scope);
+		} catch (error) {
+			setQueued((current) => ({
+				...current,
+				[key]: { state: "error", message: apiFailureMessage(error, "The post could not be proposed.") },
+			}));
+		}
 	}
 	function generate(clip: ClipSnapshot, targets: typeof pairs, force = false) {
-		return session.generate({ clipId: clip.id, accountIds: targets.map((target) => target.account.id), force, instruction, lockedPhrases: lockedPhrases.split(",").map((value) => value.trim()).filter(Boolean), lockedHashtags: lockedHashtags.match(/#[^\s#]+/gu) ?? [] }, (input) => publishingRequest(`/api/projects/${config.projectId}/assisted-copy/generations`, input));
+		return session.generate({ clipId: clip.id, accountIds: targets.map((target) => target.account.id), force, instruction, lockedPhrases: lockedPhrases.split(",").map((value) => value.trim()).filter(Boolean), lockedHashtags: lockedHashtags.match(/#[^\s#]+/gu) ?? [] }, (input) => api.assistedCopy(config.projectId, input));
 	}
-	const generateInBackground = useEffectEvent(() => session.generateMissing({ instruction, lockedPhrases: lockedPhrases.split(",").map((value) => value.trim()).filter(Boolean), lockedHashtags: lockedHashtags.match(/#[^\s#]+/gu) ?? [] }, (input) => publishingRequest(`/api/projects/${config.projectId}/assisted-copy/generations`, input)));
+	const generateInBackground = useEffectEvent(() => session.generateMissing({ instruction, lockedPhrases: lockedPhrases.split(",").map((value) => value.trim()).filter(Boolean), lockedHashtags: lockedHashtags.match(/#[^\s#]+/gu) ?? [] }, (input) => api.assistedCopy(config.projectId, input)));
 	useEffect(() => {
 		if (restored && open && config.assistedCopyEnabled && !pending && generating.length < 2 && generationNeeded) generateInBackground();
 	}, [restored, open, config.assistedCopyEnabled, pending, generating.length, generationNeeded]);
@@ -662,16 +681,20 @@ function PublishingComposer({
 		setRenderBusy(true);
 		setError("");
 		try {
-			await publishingRequest(
-				activeExport?.status === "failed"
-					? `/api/projects/${config.projectId}/clips/${active.id}/exports/${activeExport.id}/retry`
-					: `/api/projects/${config.projectId}/clips/${active.id}/exports`,
-				{
-					expectedRevision: active.editorRevision,
-					aspectRatios: ["9:16"],
-					resolution: config.can1080pExport ? "1080p" : "720p",
-				},
-			);
+			if (activeExport?.status === "failed") {
+				await api.retryExport(config.projectId, active.id, activeExport.id);
+			} else {
+				const resolution = config.can1080pExport ? "1080p" : "720p";
+				const request = { clipId: active.id, expectedRevision: active.editorRevision, resolution };
+				// Rendering spends credits: a retry after a lost answer reuses the key and gets the accepted export back.
+				await api.createExport(
+					config.projectId,
+					active.id,
+					{ expectedRevision: active.editorRevision, aspectRatios: ["9:16"], resolution },
+					exportIntent.keyFor(request),
+				);
+				exportIntent.complete();
+			}
 			await refreshExports();
 		} catch (e) {
 			setError(
@@ -682,7 +705,7 @@ function PublishingComposer({
 		}
 	}
 	async function submit() {
-		const outcome = await session.submit({ exports, options, optionErrors, preferredExportId, reviewOverrideReason: override }, (payload) => publishingRequest(`/api/projects/${config.projectId}/campaign-operations/schedule`, payload).catch(openUpgradeOnRefusal(openUpgrade)));
+		const outcome = await session.submit({ exports, options, optionErrors, preferredExportId, reviewOverrideReason: override }, (payload) => api.schedule(config.projectId, payload).catch(openUpgradeOnRefusal(openUpgrade)));
 		if (outcome) await onSubmitted(outcome);
 	}
 	const activeExport = exports.find(
@@ -1383,13 +1406,12 @@ minH="220px" p="4" lineHeight="1.8"
 																size="xs"
 																variant="subtle"
 																onClick={() =>
-																void publishingRequest<Options>(
-																		`/api/projects/${config.projectId}/social-accounts/${account.id}/publishing-options`,
-																	)
+																void api
+																		.publishingOptions(config.projectId, account.id)
 																		.then((value) => {
 																			setOptions((o) => ({
 																				...o,
-																				[account.id]: value,
+																				[account.id]: value as Options,
 																			}));
 																			setOptionErrors((o) => {
 																				const next = { ...o };
@@ -1740,6 +1762,7 @@ minH="220px" p="4" lineHeight="1.8"
 			</Drawer.Footer>
 			{coverPair && coverMedia && (
 				<PublishingCover
+					api={api}
 					projectId={config.projectId}
 					clipId={active.id}
 					platform={coverPair.account.platform}

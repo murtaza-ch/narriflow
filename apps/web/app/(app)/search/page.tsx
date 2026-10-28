@@ -1,18 +1,12 @@
-import { admitWorkspacePage } from "@/lib/authenticated-request-page";
+import { Suspense } from "react";
 import { LibrarySearch } from "./library-search";
+import Loading from "./loading";
 
-export default async function SearchPage({
-  searchParams,
-}: {
-  searchParams: Promise<{ q?: string }>;
-}) {
-  const appUser = await admitWorkspacePage("content.view");
-  const { q } = await searchParams;
-
+// Data-free shell: the query lives in the URL and the search is a scoped API read.
+export default function SearchPage() {
   return (
-    <LibrarySearch
-      initialQuery={q?.slice(0, 300) ?? ""}
-      canCreate={appUser.workspace.role !== "viewer" && appUser.workspace.status === "active"}
-    />
+    <Suspense fallback={<Loading />}>
+      <LibrarySearch />
+    </Suspense>
   );
 }

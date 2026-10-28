@@ -133,7 +133,7 @@ async function main() {
   if (values.recipe && (values.brand || values.settings || values.finishing)) throw new Error("A Recipe replaces --brand, --settings, and --finishing. Send --recipe or those, not both.");
   const settings = generationSettingsSchema.parse(values.settings ? JSON.parse(await readFile(values.settings, "utf8")) : {});
   const finishing = values.finishing ? finishingSettingsSchema.parse(JSON.parse(await readFile(values.finishing, "utf8"))) : undefined;
-  const result = await uploadVideo({ endpoint: process.env.NARRIFLOW_URL ?? "http://localhost:3000", apiKey: process.env.NARRIFLOW_API_KEY ?? "", workspaceId: values.workspace, filePath: values.file, clientIdempotencyKey, title: values.title, brandProfileId: values.brand, recipeId: values.recipe, contentType: values["content-type"] as UploadMimeType | undefined, generationContext: buildGenerationContext(settings, finishing) });
+  const result = await uploadVideo({ endpoint: process.env.NARRIFLOW_URL ?? "http://localhost:4000", apiKey: process.env.NARRIFLOW_API_KEY ?? "", workspaceId: values.workspace, filePath: values.file, clientIdempotencyKey, title: values.title, brandProfileId: values.brand, recipeId: values.recipe, contentType: values["content-type"] as UploadMimeType | undefined, generationContext: buildGenerationContext(settings, finishing) });
   // The Upload Session is the intake operation to follow with narriflow_get_operation.
   process.stdout.write(`${JSON.stringify({ ...result, operation: { kind: "intake", id: result.sessionId }, statusTool: "narriflow_get_operation" })}\n`);
 }

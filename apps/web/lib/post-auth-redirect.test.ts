@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { resolvePostAuthRedirect } from "./post-auth-redirect";
+import { resolveAuthContinuation, resolvePostAuthRedirect } from "./post-auth-redirect";
 
 const appOrigin = "http://localhost:3000";
 const clerkIssuer = "https://clerk.example.test";
@@ -53,4 +53,35 @@ describe("resolvePostAuthRedirect", () => {
     expect(resolvePostAuthRedirect(destination, appOrigin, clerkIssuer).href).toBe(`${appOrigin}${destination}`);
   });
 
+});
+
+describe("resolveAuthContinuation", () => {
+  const config = { issuerUrl: "https://example.clerk.accounts.dev", consentOrigin: null };
+
+  test("an approved Clerk authorization page keeps its SDK hand-off", () => {
+    const destination = `${config.issuerUrl}/oauth/authorize-with-immediate-redirect?client_id=test&state=original`;
+    expect(resolveAuthContinuation(destination, appOrigin, config)).toEqual({ kind: "clerk", href: destination });
+  });
+
+  test("a page of this app is followed as a path with its query and fragment", () => {
+    expect(resolveAuthContinuation(`${appOrigin}/projects/abc?clip=123#preview`, appOrigin, config)).toEqual({
+      kind: "app",
+      path: "/projects/abc?clip=123#preview",
+    });
+    expect(resolveAuthContinuation("/invite/token", appOrigin, config)).toEqual({ kind: "app", path: "/invite/token" });
+  });
+
+  test("untrusted or missing destinations default to home", () => {
+    for (const destination of ["https://evil.example.test/", null, "/auth/continue"]) {
+      expect(resolveAuthContinuation(destination, appOrigin, config)).toEqual({ kind: "app", path: "/home" });
+    }
+  });
+
+  test("without API-supplied Clerk configuration no external destination is followed", () => {
+    const destination = "https://example.clerk.accounts.dev/oauth/authorize-with-immediate-redirect?client_id=test";
+    expect(resolveAuthContinuation(destination, appOrigin, { issuerUrl: null, consentOrigin: null })).toEqual({
+      kind: "app",
+      path: "/home",
+    });
+  });
 });

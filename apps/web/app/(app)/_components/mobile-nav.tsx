@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useClerk } from "@clerk/nextjs";
+import { useAuth, useClerk } from "@clerk/nextjs";
 import { Box, Drawer, Flex, Portal, Stack, Text } from "@chakra-ui/react";
 import { CircleHelp, LogOut, Menu as MenuIcon, Moon, Plus, Sparkles, Sun, X } from "lucide-react";
 import { Logo } from "@narriflow/ui/components/logo";
@@ -13,6 +13,7 @@ import { Meter } from "@narriflow/ui/components/meter";
 import { Button, IconButton } from "@narriflow/ui/components/button";
 import { useColorMode } from "@narriflow/ui/components/color-mode";
 import { NAV_ITEMS } from "./nav-items";
+import { useApiRuntime } from "@/app/_components/api-provider";
 import { AccountAvatar } from "./account-menu";
 import { getDisplayName, getInitials } from "@/lib/account-display";
 import { isStudioRoute } from "./theme-toggle";
@@ -52,6 +53,8 @@ export function MobileNav({
   const [isSigningOut, setIsSigningOut] = useState(false);
   const { colorMode, toggleColorMode } = useColorMode();
   const { signOut } = useClerk();
+  const { userId } = useAuth();
+  const runtime = useApiRuntime();
   const pathname = usePathname();
   const { canManageBilling } = useUpgrade();
 
@@ -69,8 +72,12 @@ export function MobileNav({
   async function onSignOut() {
     if (isSigningOut) return;
     setIsSigningOut(true);
+    // Abort and clear everything cached for this person before their session ends.
+    runtime.setIdentity(null);
     try {
       await signOut({ redirectUrl: "/" });
+    } catch {
+      runtime.setIdentity(userId ?? null);
     } finally {
       setIsSigningOut(false);
     }

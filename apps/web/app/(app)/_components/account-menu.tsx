@@ -10,7 +10,20 @@ import { toaster } from "@narriflow/ui/components/toaster";
 import { getDisplayName, getInitials } from "@/lib/account-display";
 import { useUpgrade } from "./upgrade";
 
+/**
+ * What the menu needs from the signed-in app's API session. The shell supplies
+ * it; the marketing header shows the same menu with no API session, so it has
+ * neither a billing portal nor anything to clear on sign-out.
+ */
+export interface AccountSession {
+  /** The Stripe billing portal URL for the selected Workspace. */
+  openPortal(): Promise<string>;
+  /** Aborts and clears everything cached for this person; returns a way back if sign-out fails. */
+  beginSignOut(): () => void;
+}
+
 interface AccountMenuProps {
+  session?: AccountSession;
   firstName: string | null;
   lastName: string | null;
   email: string | null;
@@ -58,6 +71,7 @@ const MENU_LINKS = [
 ] as const;
 
 export function AccountMenu({
+  session,
   firstName,
   lastName,
   email,
@@ -80,21 +94,23 @@ export function AccountMenu({
   async function onSignOut() {
     if (isSigningOut) return;
     setIsSigningOut(true);
+    // Abort and clear everything cached for this person before their session ends,
+    // so nothing in flight can fail into a sign-in redirect and nothing outlives it.
+    const restore = session?.beginSignOut();
     try {
       await signOut({ redirectUrl: "/" });
+    } catch {
+      restore?.();
     } finally {
       setIsSigningOut(false);
     }
   }
 
   async function openBillingPortal() {
-    if (isOpeningPortal) return;
+    if (isOpeningPortal || !session) return;
     setIsOpeningPortal(true);
     try {
-      const response = await fetch("/api/billing/portal", { method: "POST" });
-      const body = (await response.json()) as { url?: string; message?: string };
-      if (!response.ok || !body.url) throw new Error(body.message ?? "Billing portal unavailable");
-      window.location.assign(body.url);
+      window.location.assign(await session.openPortal());
     } catch {
       toaster.create({ type: "error", title: "The billing portal could not be opened", description: "Open Billing to manage your plan." });
     } finally {

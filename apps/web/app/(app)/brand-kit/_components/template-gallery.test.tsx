@@ -4,12 +4,12 @@ import { system } from "@narriflow/ui/theme";
 import { DEFAULT_CAPTION_PRESET, type BrandTemplateSummary } from "@narriflow/validators";
 import { renderToStaticMarkup } from "react-dom/server";
 
-mock.module("../style-actions", () => ({
-  deleteBrandTemplateAction: async () => ({ ok: true }),
-  duplicateBrandTemplateAction: async () => ({ ok: true }),
-  setDefaultBrandTemplateAction: async () => ({ ok: true }),
+mock.module("next/navigation", () => ({
+  useRouter: () => ({ push: () => {}, replace: () => {} }),
+  notFound: () => {},
 }));
 const { TemplateGallery } = await import("./template-gallery");
+const { StubBrandApi } = await import("./brand-api.test-support");
 
 const builtIn: BrandTemplateSummary = {
   id: "10000000-0000-4000-8000-000000000001",
@@ -32,12 +32,14 @@ const builtIn: BrandTemplateSummary = {
 function render(canManage: boolean, canSetDefault: boolean) {
   return renderToStaticMarkup(
     <ChakraProvider value={system}>
+      <StubBrandApi>
       <TemplateGallery
         builtIns={[builtIn]}
         mine={[]}
         defaultId={null}
         access={{ canManage, canSetDefault, customUpgrade: null, duplicateBlocked: null }}
       />
+      </StubBrandApi>
     </ChakraProvider>,
   );
 }

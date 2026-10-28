@@ -3,12 +3,16 @@ import { ChakraProvider } from "@chakra-ui/react";
 import { system } from "@narriflow/ui/theme";
 import { renderToStaticMarkup } from "react-dom/server";
 
-mock.module("next/navigation", () => ({ useRouter: () => ({ refresh: () => {} }) }));
+mock.module("next/navigation", () => ({
+  useRouter: () => ({ push: () => {}, replace: () => {} }),
+  notFound: () => {},
+}));
+const { StubBrandApi } = await import("./brand-api.test-support");
 const { MembershipRemoveButton, StyleAdder } = await import("./profile-membership");
 const { ProfileAudioPicker } = await import("./profile-audio-picker");
 const { BrandProfileDeleteButton, describeBrandProfileUsage } = await import("./brand-profile-delete-button");
 
-const render = (node: React.ReactNode) => renderToStaticMarkup(<ChakraProvider value={system}>{node}</ChakraProvider>);
+const render = (node: React.ReactNode) => renderToStaticMarkup(<ChakraProvider value={system}><StubBrandApi>{node}</StubBrandApi></ChakraProvider>);
 
 describe("profile membership controls", () => {
   test("adding a style opens a menu of the styles still free to add", () => {

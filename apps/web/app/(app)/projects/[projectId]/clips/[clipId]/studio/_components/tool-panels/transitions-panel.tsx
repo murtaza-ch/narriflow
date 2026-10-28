@@ -23,7 +23,10 @@ import {
   MOTION_EXIT_OPTIONS,
   TRANSITION_OPTIONS,
 } from "@/lib/motion-options";
-import { upgradePromptFromFailure, type BrowserRequestFailure } from "@/lib/authenticated-request-browser";
+import { upgradePromptFromFailure } from "@/lib/authenticated-request-browser";
+import { createClipsClient, invalidateAfterClipChange } from "@narriflow/api-client/clips";
+import { apiFailureBody, requireStudioApi } from "../studio-api";
+import { useStudioApi } from "../use-studio-api";
 import { useUpgrade } from "@/app/(app)/_components/upgrade";
 import { useStudio } from "../studio-shell";
 import { StudioLockGem } from "../studio-lock-gem";
@@ -189,6 +192,7 @@ export function TransitionsPanel() {
     "setActiveTool",
   );
   const { openUpgrade } = useUpgrade();
+  const studioApi = useStudioApi();
   const { studioEdits, setStudioEdits, clipInfo, editorDocument, setMotionPreview, upgradePrompts } = studio;
   const motionPrompt = upgradePrompts.motion;
   const [tab, setTab] = useState<MotionTab>("transition");
@@ -291,18 +295,22 @@ export function TransitionsPanel() {
     setStudioEdits((previous) => ({ ...previous, transition: { type: selected, durationSec: duration } }));
     setApplyState("applying");
     try {
-      const response = await fetch(`/api/projects/${clipInfo.projectId}/clips/apply-studio-edits`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ patches: [{ transition: { type: selected, durationSec: duration } }], excludeClipId: clipInfo.id }),
-      });
-      if (!response.ok) {
-        const failure = await response.json().catch(() => null) as BrowserRequestFailure | null;
-        const upgrade = failure ? upgradePromptFromFailure(failure) : null;
+      const api = requireStudioApi(studioApi);
+      let data: { updated: number };
+      try {
+        const response = await createClipsClient(api.runtime.transport.scoped(api.scope)).projects[":id"].clips[
+          "apply-studio-edits"
+        ].$post({
+          param: { id: clipInfo.projectId },
+          json: { patches: [{ transition: { type: selected, durationSec: duration } }], excludeClipId: clipInfo.id },
+        });
+        data = (await response.json()) as { updated: number };
+      } catch (error) {
+        const upgrade = upgradePromptFromFailure(apiFailureBody(error));
         if (upgrade) openUpgrade(upgrade);
         throw new Error("apply failed");
       }
-      const data = (await response.json()) as { updated: number };
+      void invalidateAfterClipChange(api.runtime.queryClient, api.scope, clipInfo.projectId);
       setApplyState("applied");
       toaster.create({ type: "success", title: data.updated > 0 ? `Applied to ${data.updated} other clip${data.updated === 1 ? "" : "s"}` : "Every other clip already matches" });
       setTimeout(() => setApplyState("idle"), 2_000);

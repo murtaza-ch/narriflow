@@ -1,45 +1,35 @@
 "use client";
 
-import { useState } from "react";
+import { useMutation } from "@tanstack/react-query";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { Box, Flex, Menu, Portal, Stack, Text, chakra } from "@chakra-ui/react";
 import { LayoutTemplate, Plus, X } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
 import { toaster } from "@narriflow/ui/components/toaster";
+import type { BrandProfileMembership } from "@narriflow/api-client/brand";
+import { failureMessage, useBrandApi } from "./brand-api";
 
-/** `PUT /brand-profiles/:id/membership`; throws the server's message on refusal. */
-export async function putProfileMembership(
-  profileId: string,
-  body: { kind: "template" | "audio"; resourceId: string; position: number; remove?: true },
-) {
-  const response = await fetch(`/api/brand-profiles/${profileId}/membership`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  if (!response.ok) {
-    const payload = (await response.json().catch(() => null)) as { message?: string } | null;
-    throw new Error(payload?.message ?? "The profile could not be saved.");
-  }
-}
-
-/** Runs a membership change with a busy flag and an error toast, then refreshes the page. */
+/**
+ * Runs a membership change with a busy flag and an error toast. A confirmed
+ * change refreshes the profile and everything that lists it. `put` is
+ * `PUT /brand-profiles/:id/membership`; it throws the server's message on refusal.
+ */
 export function useMembershipChange(title: string) {
-  const router = useRouter();
-  const [busy, setBusy] = useState(false);
-  async function run(change: () => Promise<void>) {
-    setBusy(true);
-    try {
-      await change();
-      router.refresh();
-    } catch (error) {
-      toaster.create({ type: "error", title, description: error instanceof Error ? error.message : "Please try again." });
-    } finally {
-      setBusy(false);
-    }
-  }
-  return { busy, run };
+  const { mutations, invalidate } = useBrandApi();
+  const change = useMutation({
+    mutationFn: (run: () => Promise<unknown>) => run(),
+    onSuccess: () => invalidate(),
+    onError: (error) => toaster.create({ type: "error", title, description: failureMessage(error) }),
+  });
+  const put = (profileId: string, body: BrandProfileMembership) => mutations.setProfileMembership(profileId, body);
+  return {
+    busy: change.isPending,
+    run: (run: () => Promise<unknown>) => change.mutateAsync(run).then(
+      () => true,
+      () => false,
+    ),
+    put,
+  };
 }
 
 export function MembershipRemoveButton({
@@ -53,7 +43,7 @@ export function MembershipRemoveButton({
   resourceId: string;
   label: string;
 }) {
-  const { busy, run } = useMembershipChange(`Could not remove ${label}`);
+  const { busy, run, put } = useMembershipChange(`Could not remove ${label}`);
   return (
     <Button
       size="xs"
@@ -61,7 +51,7 @@ export function MembershipRemoveButton({
       color="fg.muted"
       aria-label={`Remove ${label}`}
       disabled={busy}
-      onClick={() => void run(() => putProfileMembership(profileId, { kind, resourceId, position: 0, remove: true }))}
+      onClick={() => void run(() => put(profileId, { kind, resourceId, position: 0, remove: true }))}
     >
       <X size={13} />
     </Button>
@@ -87,7 +77,7 @@ export function StyleAdder({
   /** `tile` ends a grid of thumbnails; `button` sits in an empty state. */
   variant?: "tile" | "button";
 }) {
-  const { busy, run } = useMembershipChange("Could not add the style");
+  const { busy, run, put } = useMembershipChange("Could not add the style");
   return (
     <Menu.Root positioning={{ placement: variant === "tile" ? "bottom-start" : "bottom", gutter: 6 }}>
       <Menu.Trigger asChild>
@@ -111,7 +101,7 @@ export function StyleAdder({
                   <Menu.Item
                     key={style.id}
                     value={style.id}
-                    onClick={() => void run(() => putProfileMembership(profileId, { kind: "template", resourceId: style.id, position: nextPosition }))}
+                    onClick={() => void run(() => put(profileId, { kind: "template", resourceId: style.id, position: nextPosition }))}
                   >
                     <LayoutTemplate size={14} />
                     <Text truncate>{style.name}</Text>

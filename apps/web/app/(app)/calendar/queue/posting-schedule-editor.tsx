@@ -1,7 +1,6 @@
 "use client";
 
-import { useRouter } from "next/navigation";
-import { useState, useTransition } from "react";
+import { useState } from "react";
 import { Box, Flex, Grid, IconButton, Stack, Text, VisuallyHidden } from "@chakra-ui/react";
 import { AlertTriangle, Globe, Plus, X } from "lucide-react";
 import {
@@ -15,10 +14,9 @@ import {
 } from "@narriflow/validators";
 import { Button } from "@narriflow/ui/components/button";
 import { TimePicker } from "@narriflow/ui/components/time-picker";
-import { authenticatedActionResultMessage, isAuthenticatedActionFailure } from "@/lib/authenticated-request-browser";
+import { apiFailureMessage, isUncertainFailure } from "@/lib/publishing-client";
 import { PlanLimitNotice } from "../../_components/plan-limit-notice";
 import { LockedButton, type UpgradePrompt } from "../../_components/upgrade";
-import { savePostingScheduleAction } from "./actions";
 import { AccountMark, Chip } from "./queue-parts";
 
 const WEEKDAY_LABELS: Record<PostingWeekday, string> = {
@@ -37,9 +35,14 @@ function twelveHour(time: string) {
 	return `${hour % 12 === 0 ? 12 : hour % 12}:${minutes} ${hour < 12 ? "AM" : "PM"}`;
 }
 
-function AccountSchedule({ account, canManage, scheduleUpgrade }: { account: SocialAccountSnapshot; canManage: boolean; scheduleUpgrade: UpgradePrompt | null }) {
-	const router = useRouter();
-	const [pending, startTransition] = useTransition();
+/** Saves an account's weekly slots (null clears them); `onChanged` refreshes the schedule, queue and calendar. */
+export interface PostingScheduleApi {
+	save(accountId: string, schedule: PostingSchedule | null): Promise<unknown>;
+	onChanged(): void;
+}
+
+function AccountSchedule({ account, api, canManage, scheduleUpgrade }: { account: SocialAccountSnapshot; api: PostingScheduleApi; canManage: boolean; scheduleUpgrade: UpgradePrompt | null }) {
+	const [pending, setPending] = useState(false);
 	const [slots, setSlots] = useState(account.postingSchedule?.slots ?? []);
 	const [adding, setAdding] = useState<PostingWeekday | null>(null);
 	const [draftTime, setDraftTime] = useState("09:00");
@@ -53,17 +56,20 @@ function AccountSchedule({ account, canManage, scheduleUpgrade }: { account: Soc
 		setAdding(null);
 	}
 
-	function save(schedule: PostingSchedule | null) {
+	async function save(schedule: PostingSchedule | null) {
 		setMessage(null);
-		startTransition(async () => {
-			const result = await savePostingScheduleAction(account.id, schedule);
-			if (isAuthenticatedActionFailure(result)) setMessage(authenticatedActionResultMessage(result, "The schedule could not be saved."));
-			else {
-				setSlots(schedule?.slots ?? []);
-				setMessage(schedule ? "Schedule saved." : "Schedule cleared.");
-			}
-			router.refresh();
-		});
+		setPending(true);
+		try {
+			await api.save(account.id, schedule);
+			setSlots(schedule?.slots ?? []);
+			setMessage(schedule ? "Schedule saved." : "Schedule cleared.");
+			api.onChanged();
+		} catch (error) {
+			setMessage(apiFailureMessage(error, "The schedule could not be saved."));
+			if (isUncertainFailure(error)) api.onChanged();
+		} finally {
+			setPending(false);
+		}
 	}
 
 	return (
@@ -156,7 +162,7 @@ function AccountSchedule({ account, canManage, scheduleUpgrade }: { account: Soc
 							Save schedule
 						</LockedButton>
 					) : (
-						<Button size="sm" disabled={!dirty || pending} onClick={() => save(slots.length > 0 ? { slots } : null)}>
+						<Button size="sm" disabled={!dirty || pending} onClick={() => void save(slots.length > 0 ? { slots } : null)}>
 							Save schedule
 						</Button>
 					)}
@@ -174,11 +180,13 @@ function AccountSchedule({ account, canManage, scheduleUpgrade }: { account: Soc
 
 export function PostingScheduleEditor({
 	accounts,
+	api,
 	timeZone,
 	canManage,
 	scheduleUpgrade = null,
 }: {
 	accounts: SocialAccountSnapshot[];
+	api: PostingScheduleApi;
 	timeZone: string;
 	canManage: boolean;
 	/** Set when the plan can't schedule: saving slots then offers the upgrade. */
@@ -196,7 +204,7 @@ export function PostingScheduleEditor({
 				<PlanLimitNotice message={`Posting slots need the ${PLAN_CATALOG[scheduleUpgrade.tier].name} plan.`} upgrade={scheduleUpgrade} />
 			) : null}
 			{accounts.map((account) => (
-				<AccountSchedule key={`${account.id}:${JSON.stringify(account.postingSchedule)}`} account={account} canManage={canManage} scheduleUpgrade={scheduleUpgrade} />
+				<AccountSchedule key={`${account.id}:${JSON.stringify(account.postingSchedule)}`} account={account} api={api} canManage={canManage} scheduleUpgrade={scheduleUpgrade} />
 			))}
 		</Stack>
 	);

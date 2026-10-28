@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useState } from "react";
+import { useMutation } from "@tanstack/react-query";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Flex, Grid, Heading, Stack, Text, chakra } from "@chakra-ui/react";
@@ -9,7 +10,9 @@ import { Button, IconButton } from "@narriflow/ui/components/button";
 import { Input } from "@narriflow/ui/components/input";
 import { SegmentedControl } from "@narriflow/ui/components/segmented-control";
 import { toaster } from "@narriflow/ui/components/toaster";
+import { failureMessage, useBrandApi, useIntent } from "./brand-api";
 import { PlanLimitNotice } from "../../_components/plan-limit-notice";
+import type { CreateBrandProfileInput } from "@narriflow/api-client/brand";
 import type { UpgradePrompt } from "../../_components/upgrade";
 import { BrandMark, Panel, PaletteDots, type BrandColors } from "./brand-kit-ui";
 import { BrandColorPreview, BrandColorTiles, EMPTY_VOICE, VoiceFields, type VoiceDraft } from "./profile-fields";
@@ -29,7 +32,8 @@ export function BrandProfileCreateForm({
   governance: { message: string; upgrade: UpgradePrompt | null } | null;
 }) {
   const router = useRouter();
-  const [pending, startTransition] = useTransition();
+  const { mutations, invalidate } = useBrandApi();
+  const intent = useIntent<CreateBrandProfileInput>();
   const [name, setName] = useState("");
   const [slug, setSlug] = useState("");
   const [slugEdited, setSlugEdited] = useState(false);
@@ -37,28 +41,26 @@ export function BrandProfileCreateForm({
   const [voice, setVoice] = useState<VoiceDraft>(EMPTY_VOICE);
   const [approvalRule, setApprovalRule] = useState("none");
 
+  const create = useMutation({
+    mutationFn: (input: CreateBrandProfileInput) => mutations.createProfile(input, intent.keyFor(input)),
+    onSuccess: (created) => {
+      intent.complete();
+      toaster.create({ type: "success", title: "Brand Profile created" });
+      router.push(`/brand-kit/${created.id}`);
+      void invalidate();
+    },
+    onError: (error) =>
+      toaster.create({ type: "error", title: "Could not create profile", description: failureMessage(error, "The profile could not be created.") }),
+  });
+  const pending = create.isPending;
+
   function submit() {
-    startTransition(async () => {
-      try {
-        const response = await fetch("/api/brand-profiles", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            name,
-            slug: slug || slugify(name),
-            identity: { ...colors, primaryLogoAssetId: null, alternateLogoAssetId: null },
-            voice: { ...voice, audience: voice.audience.trim(), hashtagGuidance: voice.hashtagGuidance.trim() },
-            approvalRule,
-          }),
-        });
-        const payload = await response.json().catch(() => null) as { id?: string; message?: string } | null;
-        if (!response.ok || !payload?.id) throw new Error(payload?.message ?? "The profile could not be created.");
-        toaster.create({ type: "success", title: "Brand Profile created" });
-        router.push(`/brand-kit/${payload.id}`);
-        router.refresh();
-      } catch (error) {
-        toaster.create({ type: "error", title: "Could not create profile", description: error instanceof Error ? error.message : "Please try again." });
-      }
+    create.mutate({
+      name,
+      slug: slug || slugify(name),
+      identity: { ...colors, primaryLogoAssetId: null, alternateLogoAssetId: null },
+      voice: { ...voice, audience: voice.audience.trim(), hashtagGuidance: voice.hashtagGuidance.trim() },
+      approvalRule: approvalRule as CreateBrandProfileInput["approvalRule"],
     });
   }
 

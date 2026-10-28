@@ -1,11 +1,16 @@
 "use client";
 
-import { usePathname, useRouter } from "next/navigation";
-import { useState, useTransition } from "react";
+import { useAuth } from "@clerk/nextjs";
+import { usePathname } from "next/navigation";
+import { type ComponentProps, type ReactNode, useMemo, useState } from "react";
 import Link from "next/link";
 import { Box, Flex, Text } from "@chakra-ui/react";
 import { UserPlus } from "lucide-react";
-import { hasFeature, lowestTierWithFeature, planUpgradeHighlight } from "@narriflow/validators";
+import { STALE_TIME, type WorkspaceScope } from "@narriflow/api-client";
+import { billingStateQueryOptions, createBillingActions } from "@narriflow/api-client/billing";
+import { hasFeature, lowestTierWithFeature, planUpgradeHighlight, resolvePricingTier } from "@narriflow/validators";
+import type { WorkspaceBootstrap } from "@narriflow/validators/api/workspace";
+import { useQuery } from "@tanstack/react-query";
 import { Button } from "@narriflow/ui/components/button";
 import { Logo } from "@narriflow/ui/components/logo";
 import { SettingsChrome } from "./settings-chrome";
@@ -14,19 +19,24 @@ import { isSettingsPath } from "@/lib/settings-return";
 import { ProjectWorkspace } from "./project-workspace";
 import { Sidebar } from "./sidebar";
 import { MobileNav } from "./mobile-nav";
-import { AccountMenu } from "./account-menu";
+import { AccountMenu, type AccountSession } from "./account-menu";
 import { ThemeToggle } from "./theme-toggle";
 import { GlobalSearch } from "./global-search";
 import { CreditsMenu } from "./credits-menu";
-import { LockedButton } from "./upgrade";
+import { LockedButton, UpgradeProvider } from "./upgrade";
 import { ShellHeader, ShellPanel } from "./shell-panel";
 import { WorkspaceStatusNotice } from "./workspace-status-notice";
 import type { WorkspaceMenuPresentation, WorkspaceSwitcherItem } from "./workspace-switcher";
-import { switchWorkspaceAction } from "../_actions/workspace";
+import { useApiRuntime, useWorkspaceScope } from "@/app/_components/api-provider";
+import { ApiErrorNotice } from "@/app/_components/query-mutation-form";
 import {
-  authenticatedActionResultMessage,
-  isAuthenticatedActionFailure,
-} from "@/lib/authenticated-request-browser";
+  SessionGate,
+  useSessionGate,
+  useWorkspaceSwitch,
+  WorkspaceQueryGate,
+} from "@/app/_components/workspace-query-gate";
+import { upgradeBillingMode } from "@/lib/billing-view-model";
+import Loading from "../loading";
 
 interface AppChromeProps {
   email: string | null;
@@ -50,11 +60,8 @@ interface AppChromeProps {
 }
 
 function WorkspaceChangedNotice({ workspaceId }: { workspaceId: string }) {
-  const router = useRouter();
-  const [visible, setVisible] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [pending, startTransition] = useTransition();
-  if (!visible) return null;
+  const { dismissSelectionChanged } = useSessionGate();
+  const { switchTo, pending, error } = useWorkspaceSwitch();
   return (
     <Flex
       align="center"
@@ -72,28 +79,36 @@ function WorkspaceChangedNotice({ workspaceId }: { workspaceId: string }) {
         size="sm"
         variant="subtle"
         loading={pending}
-        onClick={() =>
-          startTransition(async () => {
-            const result = await switchWorkspaceAction(workspaceId);
-            if (isAuthenticatedActionFailure(result)) {
-              setError(
-                authenticatedActionResultMessage(
-                  result,
-                  "The Workspace could not be selected.",
-                ),
-              );
-              return;
-            }
-            setVisible(false);
-            router.refresh();
-          })
-        }
+        onClick={async () => {
+          if (await switchTo(workspaceId)) dismissSelectionChanged();
+        }}
       >
         Continue here
       </Button>
-      {error ? <Text role="alert" fontSize="xs" color="danger.fg">{error}</Text> : null}
+      {error ? <ApiErrorNotice error={error} fallback="The Workspace could not be selected." /> : null}
     </Flex>
   );
+}
+
+/** The account menu wired to the app's API session: billing portal and sign-out clearing. */
+function ShellAccountMenu(props: Omit<ComponentProps<typeof AccountMenu>, "session">) {
+  const runtime = useApiRuntime();
+  const scope = useWorkspaceScope();
+  const { userId } = useAuth();
+  const session = useMemo<AccountSession>(
+    () => ({
+      openPortal: async () => {
+        if (!scope) throw new Error("No Workspace is selected");
+        return createBillingActions(runtime.transport, scope).openPortal();
+      },
+      beginSignOut: () => {
+        runtime.setIdentity(null);
+        return () => runtime.setIdentity(userId ?? null);
+      },
+    }),
+    [runtime, scope, userId],
+  );
+  return <AccountMenu {...props} session={session} />;
 }
 
 /** The panel header (desktop only): search, usage, plan actions and the
@@ -150,7 +165,7 @@ function DesktopTopBar({
         askOwner={!canManageBilling}
       />
       <ThemeToggle />
-      <AccountMenu email={email} firstName={firstName} imageUrl={imageUrl} lastName={lastName} />
+      <ShellAccountMenu email={email} firstName={firstName} imageUrl={imageUrl} lastName={lastName} />
     </ShellHeader>
   );
 }
@@ -188,7 +203,7 @@ function FocusedTopBar({
         askOwner={workspaceRole !== "owner"}
       />
       <ThemeToggle />
-      <AccountMenu email={email} firstName={firstName} imageUrl={imageUrl} lastName={lastName} />
+      <ShellAccountMenu email={email} firstName={firstName} imageUrl={imageUrl} lastName={lastName} />
     </ShellHeader>
   );
 }
@@ -241,7 +256,7 @@ export function AppChrome({
         workspaceName={workspaces.find((workspace) => workspace.id === activeWorkspaceId)?.name ?? "Workspace"}
         canManageApi={workspaceMenu.canManageApi}
         backHref={backHref}
-        account={<AccountMenu email={email} firstName={firstName} imageUrl={imageUrl} lastName={lastName} />}
+        account={<ShellAccountMenu email={email} firstName={firstName} imageUrl={imageUrl} lastName={lastName} />}
         themeToggle={<ThemeToggle />}
       >
         {workspaceSelectionChanged ? <WorkspaceChangedNotice workspaceId={activeWorkspaceId} /> : null}
@@ -253,7 +268,7 @@ export function AppChrome({
 
   if (/^\/projects\/[^/]+(?:\/|$)/.test(pathname)) {
     return (
-      <ProjectWorkspace account={<AccountMenu email={email} firstName={firstName} imageUrl={imageUrl} lastName={lastName} />} themeToggle={<ThemeToggle />}>
+      <ProjectWorkspace account={<ShellAccountMenu email={email} firstName={firstName} imageUrl={imageUrl} lastName={lastName} />} themeToggle={<ThemeToggle />}>
         {workspaceSelectionChanged ? <WorkspaceChangedNotice workspaceId={activeWorkspaceId} /> : null}
         <WorkspaceStatusNotice status={workspaceStatus} role={workspaceRole} pathname={pathname} />
         {children}
@@ -361,5 +376,101 @@ export function AppChrome({
         </ShellPanel>
       </Flex>
     </>
+  );
+}
+
+function ShellPending() {
+  return (
+    <Box minH="100dvh" bg="bg.sidebar" color="fg">
+      <Box maxW="1400px" mx="auto" px={{ base: "4", md: "10" }} py={{ base: "6", md: "10" }}>
+        <Loading />
+      </Box>
+    </Box>
+  );
+}
+
+/**
+ * The shell's data: identity bootstrap first (it adopts the effective
+ * Workspace), then the Workspace bootstrap and billing state for it. The
+ * children, and so every screen, render only once the shell can show its
+ * credits and plan, inside a Workspace that is in force for this session.
+ */
+function WorkspaceShell({
+  bootstrap,
+  scope,
+  children,
+}: {
+  bootstrap: WorkspaceBootstrap;
+  scope: WorkspaceScope;
+  children: ReactNode;
+}) {
+  const { transport } = useApiRuntime();
+  const { selectionChanged } = useSessionGate();
+  // The shell reads billing only to word upgrade links; a failed read must not
+  // hold the app back, so it neither retries nor blocks past its first answer.
+  const billing = useQuery({
+    ...billingStateQueryOptions({ transport, scope }),
+    staleTime: STALE_TIME.default,
+    retry: false,
+  });
+  if (billing.isPending) return <ShellPending />;
+
+  const { user, workspace, memberships, capabilities, usage } = bootstrap;
+  const tier = resolvePricingTier(workspace.pricingTier);
+  const canManageBilling = capabilities["billing.manage"];
+  let planAction: string | null = null;
+  if (canManageBilling) {
+    if (workspace.status === "pending_payment") planAction = "Complete setup";
+    else if (workspace.status === "restricted") planAction = "Manage billing";
+    else if (tier !== "business") planAction = "Upgrade your plan";
+  }
+
+  return (
+    <UpgradeProvider
+      currentTier={tier}
+      billingMode={billing.data ? upgradeBillingMode(billing.data.view) : "billing"}
+      canManageBilling={canManageBilling}
+    >
+      <AppChrome
+        email={user.email}
+        firstName={user.firstName}
+        lastName={user.lastName}
+        imageUrl={user.imageUrl}
+        remainingCredits={usage.remainingCredits}
+        usedCredits={usage.usedCredits}
+        reservedCredits={usage.reservedCredits}
+        limitCredits={usage.limitCredits}
+        creditsRenewAt={usage.renewsAt}
+        activeWorkspaceId={workspace.id}
+        workspaceSelectionChanged={selectionChanged}
+        workspaceRole={workspace.role}
+        workspaceStatus={workspace.status}
+        workspaceTier={tier}
+        workspaces={memberships}
+        workspaceMenu={{
+          tier,
+          canManageApi: capabilities["api.manage"],
+          canInvite: capabilities["members.invite"] && hasFeature(workspace.pricingTier, "workspace.members"),
+          planAction,
+        }}
+      >
+        {children}
+      </AppChrome>
+    </UpgradeProvider>
+  );
+}
+
+/** Session and Workspace gates around the app chrome: every authenticated screen renders inside it. */
+export function AppShell({ children }: { children: ReactNode }) {
+  return (
+    <SessionGate fallback={<ShellPending />}>
+      <WorkspaceQueryGate fallback={<ShellPending />}>
+        {(bootstrap, scope) => (
+          <WorkspaceShell bootstrap={bootstrap} scope={scope}>
+            {children}
+          </WorkspaceShell>
+        )}
+      </WorkspaceQueryGate>
+    </SessionGate>
   );
 }

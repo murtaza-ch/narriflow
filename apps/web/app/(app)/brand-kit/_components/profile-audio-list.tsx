@@ -5,12 +5,13 @@ import { Box, Flex, Stack, Text, chakra } from "@chakra-ui/react";
 import { AudioLines, Pause, Play } from "lucide-react";
 import { Spinner } from "@narriflow/ui/components/spinner";
 import { toaster } from "@narriflow/ui/components/toaster";
-import { resolveAudioPlaybackUrl } from "@/app/(app)/projects/[projectId]/clips/[clipId]/studio/_components/tool-panels/audio-library";
 import { formatDuration } from "@/lib/format";
+import { failureMessage, useBrandApi } from "./brand-api";
 import { MembershipRemoveButton } from "./profile-membership";
 
 /** One shared <audio> per list: starting a track stops the one before it. */
 export function useAudioPreview() {
+  const { queries, queryClient } = useBrandApi();
   const audio = useRef<HTMLAudioElement | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [loadingId, setLoadingId] = useState<string | null>(null);
@@ -58,7 +59,8 @@ export function useAudioPreview() {
     setProgress(0);
     setLoadingId(id);
     try {
-      const url = await resolveAudioPlaybackUrl(id);
+      // A short-lived signed link, refetched on every start.
+      const { url } = await queryClient.fetchQuery(queries.audioPlaybackUrl(id));
       if (ticket !== request.current) return;
       element.src = url;
       await element.play();
@@ -66,7 +68,7 @@ export function useAudioPreview() {
       // A newer start pauses this one, which rejects its play() with AbortError.
       if (ticket !== request.current || (error instanceof DOMException && error.name === "AbortError")) return;
       setActiveId(null);
-      toaster.create({ type: "error", title: "Couldn't play this audio", description: error instanceof Error ? error.message : "Please try again." });
+      toaster.create({ type: "error", title: "Couldn't play this audio", description: failureMessage(error) });
     } finally {
       if (ticket === request.current) setLoadingId(null);
     }

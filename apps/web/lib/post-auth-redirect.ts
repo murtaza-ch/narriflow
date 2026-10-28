@@ -45,3 +45,29 @@ export function resolvePostAuthRedirect(
 
   return fallback;
 }
+
+export type AuthContinuationTarget =
+  /** A page of this app: `pathname + search + hash`. */
+  | { kind: "app"; path: string }
+  /** An approved Clerk authorization or consent page, reached through Clerk's SDK hand-off. */
+  | { kind: "clerk"; href: string };
+
+/**
+ * Where `/auth/continue` goes once the identity bootstrap has provisioned the
+ * person. `config` is the API's validated Clerk configuration, never anything
+ * the request supplied; `webOrigin` is this app's own origin.
+ */
+export function resolveAuthContinuation(
+  destination: string | null,
+  webOrigin: string,
+  config: { issuerUrl: string | null; consentOrigin: string | null },
+): AuthContinuationTarget {
+  const target = resolvePostAuthRedirect(
+    destination,
+    webOrigin,
+    config.issuerUrl ?? undefined,
+    config.consentOrigin ?? undefined,
+  );
+  if (target.origin !== new URL(webOrigin).origin) return { kind: "clerk", href: target.href };
+  return { kind: "app", path: `${target.pathname}${target.search}${target.hash}` };
+}

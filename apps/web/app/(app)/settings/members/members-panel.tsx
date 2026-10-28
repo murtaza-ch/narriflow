@@ -2,20 +2,24 @@
 
 import { UpgradeHero } from "../../_components/upgrade";
 import { TeamVisual } from "../../_components/upgrade-visuals";
-import { useRef, useState, useTransition } from "react";
-import { useRouter } from "next/navigation";
+import { useMemo, useRef, useState } from "react";
 import { Box, Flex, Input, Stack, Text } from "@chakra-ui/react";
+import type { WorkspaceScope } from "@narriflow/api-client";
+import {
+  changeMemberRoleMutation,
+  inviteMemberMutation,
+  invalidateWorkspaceMembers,
+  removeMemberMutation,
+  resendInviteMutation,
+  revokeInviteMutation,
+} from "@narriflow/api-client/workspace";
+import { useMutation } from "@tanstack/react-query";
 import { Clock, Copy, Mail, Trash2, UserPlus, Users, X } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
 import { Spinner } from "@narriflow/ui/components/spinner";
 import { Select } from "@narriflow/ui/components/select";
-import {
-  changeMemberRoleAction,
-  inviteMemberAction,
-  removeMemberAction,
-  resendInviteAction,
-  revokeInviteAction,
-} from "../actions";
+import { useApiRuntime } from "@/app/_components/api-provider";
+import { apiErrorMessage } from "@/app/_components/query-mutation-form";
 import {
   BUSINESS_ADDITIONAL_SEAT_PRICE_CENTS,
   formatUsdCents,
@@ -29,10 +33,6 @@ import { AccessNote } from "../_components/access-note";
 import { SettingsCard } from "../_components/settings-ui";
 import { formatDate } from "@/lib/format";
 import { shouldShowSeatSyncStatus } from "@/lib/billing-view-model";
-import {
-  authenticatedActionResultMessage,
-  isAuthenticatedActionFailure,
-} from "@/lib/authenticated-request-browser";
 
 type Role = "owner" | "admin" | "editor" | "viewer";
 
@@ -81,6 +81,7 @@ function BillingLink() {
 }
 
 export function MembersPanel({
+  scope,
   members,
   invites,
   actorRole,
@@ -88,6 +89,8 @@ export function MembersPanel({
   workspaceStatus,
   billingView,
 }: {
+  /** The Workspace these members belong to; every command is bound to it. */
+  scope: WorkspaceScope;
   members: Array<{
     id: string;
     role: Role;
@@ -106,14 +109,29 @@ export function MembersPanel({
   workspaceStatus: "active" | "pending_payment" | "restricted";
   billingView: WorkspaceBillingView;
 }) {
-  const router = useRouter();
+  const runtime = useApiRuntime();
   const [email, setEmail] = useState("");
   const [role, setRole] = useState<"admin" | "editor" | "viewer">("viewer");
   const [roleFilter, setRoleFilter] = useState<Role | "all">("all");
-  const [feedback, setFeedback] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState<{ text: string; ok: boolean } | null>(null);
   const [inviteUrl, setInviteUrl] = useState<string | null>(null);
-  const [pending, startTransition] = useTransition();
   const inviteEmailRef = useRef<HTMLInputElement>(null);
+  // One idempotency intent per form (and per row for resend), so a retry after a
+  // lost response replays the same invitation instead of sending a second one.
+  const invite = useMutation(useMemo(() => inviteMemberMutation(runtime, scope), [runtime, scope]));
+  const resendInvite = useMutation(useMemo(() => resendInviteMutation(runtime, scope), [runtime, scope]));
+  const revokeInvite = useMutation(useMemo(() => revokeInviteMutation(runtime, scope), [runtime, scope]));
+  const changeRoleCommand = useMutation(useMemo(() => changeMemberRoleMutation(runtime, scope), [runtime, scope]));
+  const removeMemberCommand = useMutation(useMemo(() => removeMemberMutation(runtime, scope), [runtime, scope]));
+  const pending =
+    invite.isPending ||
+    resendInvite.isPending ||
+    revokeInvite.isPending ||
+    changeRoleCommand.isPending ||
+    removeMemberCommand.isPending;
+  // A role change or removal that failed may still have landed (or conflicted
+  // with a concurrent change), so the lists are read again either way.
+  const rereadMembers = () => void invalidateWorkspaceMembers(runtime.queryClient, scope);
   // The capability every member action admits with: a pending workspace's
   // owner can't manage members yet, a restricted one can remove or demote.
   const canManageMembers = workspaceAllowsCapability({ role: actorRole, status: workspaceStatus }, "members.invite");
@@ -135,60 +153,62 @@ export function MembersPanel({
     { value: "viewer", label: "Viewer" },
   ];
 
+  function failed(error: unknown, fallback: string) {
+    const text = apiErrorMessage(error, fallback);
+    setFeedback(text === null ? null : { text, ok: false });
+  }
+
   function submitInvite(event: React.FormEvent) {
     event.preventDefault();
     setFeedback(null);
     setInviteUrl(null);
-    startTransition(async () => {
-      const result = await inviteMemberAction({ email, role });
-      if (!result.ok) {
-        setFeedback(authenticatedActionResultMessage(result, "The invitation could not be created."));
-        inviteEmailRef.current?.focus();
-        return;
-      }
-      setEmail("");
-      setInviteUrl(result.inviteUrl);
-      setFeedback(
-        result.emailSent
-          ? "Invitation sent. You can also copy the secure link."
-          : "Invitation created, but email delivery is unavailable. Copy the secure link instead.",
-      );
-      router.refresh();
-    });
+    invite.mutate(
+      { email, role },
+      {
+        onSuccess: (result) => {
+          setEmail("");
+          setInviteUrl(result.inviteUrl);
+          setFeedback({
+            ok: true,
+            text:
+              result.emailSent === null
+                ? "This invitation was already created. Use Resend to send a fresh link."
+                : result.emailSent
+                  ? "Invitation sent. You can also copy the secure link."
+                  : "Invitation created, but email delivery is unavailable. Copy the secure link instead.",
+          });
+        },
+        onError: (error) => {
+          failed(error, "The invitation could not be created.");
+          inviteEmailRef.current?.focus();
+        },
+      },
+    );
   }
 
   function resend(inviteId: string) {
     setFeedback(null);
     setInviteUrl(null);
-    startTransition(async () => {
-      const result = await resendInviteAction(inviteId);
-      if (!result.ok) {
-        setFeedback(authenticatedActionResultMessage(result, "The invitation could not be resent."));
-        return;
-      }
-      setInviteUrl(result.inviteUrl);
-      setFeedback(
-        result.emailSent
-          ? "A new invitation was sent; the previous link is now invalid."
-          : "A new invitation link was created, but email delivery is unavailable.",
-      );
-      router.refresh();
+    resendInvite.mutate(inviteId, {
+      onSuccess: (result) => {
+        setInviteUrl(result.inviteUrl);
+        setFeedback({
+          ok: true,
+          text:
+            result.emailSent === null
+              ? "This invitation was already resent. Check the recipient's inbox."
+              : result.emailSent
+                ? "A new invitation was sent; the previous link is now invalid."
+                : "A new invitation link was created, but email delivery is unavailable.",
+        });
+      },
+      onError: (error) => failed(error, "The invitation could not be resent."),
     });
   }
 
   function revoke(inviteId: string) {
-    startTransition(async () => {
-      const result = await revokeInviteAction(inviteId);
-      if (isAuthenticatedActionFailure(result)) {
-        setFeedback(
-          authenticatedActionResultMessage(
-            result,
-            "The invitation could not be revoked.",
-          ),
-        );
-        return;
-      }
-      router.refresh();
+    revokeInvite.mutate(inviteId, {
+      onError: (error) => failed(error, "The invitation could not be revoked."),
     });
   }
 
@@ -203,24 +223,25 @@ export function MembersPanel({
       !window.confirm(`This role adds a paid seat (${formatUsdCents(BUSINESS_ADDITIONAL_SEAT_PRICE_CENTS.monthly)}/month or ${formatUsdCents(BUSINESS_ADDITIONAL_SEAT_PRICE_CENTS.annual)}/year). Continue?`)
     ) return;
     setFeedback(null);
-    startTransition(async () => {
-      const result = await changeMemberRoleAction(memberId, nextRole);
-      if (!result.ok) {
-        setFeedback(authenticatedActionResultMessage(result, "The role could not be changed."));
-      }
-      router.refresh();
-    });
+    changeRoleCommand.mutate(
+      { memberId, role: nextRole },
+      {
+        onError: (error) => {
+          failed(error, "The role could not be changed.");
+          rereadMembers();
+        },
+      },
+    );
   }
 
   function remove(memberId: string, name: string) {
     if (!window.confirm(`Remove ${name} from this workspace?`)) return;
     setFeedback(null);
-    startTransition(async () => {
-      const result = await removeMemberAction(memberId);
-      if (!result.ok) {
-        setFeedback(authenticatedActionResultMessage(result, "The member could not be removed."));
-      }
-      router.refresh();
+    removeMemberCommand.mutate(memberId, {
+      onError: (error) => {
+        failed(error, "The member could not be removed.");
+        rereadMembers();
+      },
     });
   }
 
@@ -326,7 +347,7 @@ export function MembersPanel({
               <Button type="submit" size="sm" flexShrink={0} disabled={!(role === "viewer" ? canInviteViewer : canAddBillable) || pending}>{pending ? <Spinner size="xs" /> : <Mail size={14} />}Send invite</Button>
             </Flex>
             {inviteHint}
-            {feedback ? <Text fontSize="12px" color={inviteUrl ? "fg" : "danger.fg"}>{feedback}</Text> : null}
+            {feedback ? <Text fontSize="12px" color={feedback.ok ? "fg" : "danger.fg"}>{feedback.text}</Text> : null}
             {inviteUrl ? (
               <Flex gap="2"><Input value={inviteUrl} readOnly fontSize="12px" /><Button type="button" variant="subtle" size="sm" onClick={() => navigator.clipboard.writeText(inviteUrl)}><Copy size={14} />Copy</Button></Flex>
             ) : null}

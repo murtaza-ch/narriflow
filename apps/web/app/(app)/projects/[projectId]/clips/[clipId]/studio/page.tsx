@@ -1,327 +1,200 @@
-import { replaceCensorWordsAction, resetCensorWordsAction } from "@/app/(app)/settings/workspace/censor-words-actions";
-import { BrandFontsProvider, type BrandFontChoice } from "@/app/(app)/brand-kit/_components/brand-fonts";
-import { notFound } from "next/navigation";
-import { admitProjectPage } from "@/lib/authenticated-request-page";
-import { executeProjectAction } from "@/lib/authenticated-request-action";
-import {
-  clipService,
-  hasFeature,
+"use client";
 
-  projectService,
-  presignDownloadUrl,
-  visualAssetService,
-  sceneTemplateService,
-  brandFontService,
-  brandPlanRequirement,
-  brandProfileService,
-  generatedImageCapability,
-  autoCensorService,
-} from "@narriflow/services";
-import {
-  brandTemplateSnapshotSchema, getEffectiveClipTiming, planFeatureRequirement, sceneTemplateDefinitionSchema,
-  type AutoCensorAnalyticsInput,
-} from "@narriflow/validators";
-import { compositionAssetRef } from "@narriflow/composition-plan";
-import { StudioShell } from "./_components/studio-shell";
-import type { ClipInfo, StudioBrandLogo, StudioSceneFont, StudioVisualAsset } from "./_components/studio-shell";
+import { replaceCensorWordsMutation, resetCensorWordsMutation } from "@narriflow/api-client/workspace";
+import { toaster } from "@narriflow/ui/components/toaster";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { notFound, useRouter } from "next/navigation";
+import { use, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { BrandFontsProvider } from "@/app/(app)/brand-kit/_components/brand-fonts";
 import { buildSegmentsFromUtterances } from "./_components/edited-timeline";
 import { resolveCompositionPlanQaFixture } from "./_components/composition-plan-qa-fixture";
+import { StudioShell } from "./_components/studio-shell";
+import {
+  apiFailureBody,
+  apiFailureStatus,
+  recordCensorEvent,
+  replaceProjectCensorTerms,
+  type StudioApi,
+  studioPollers,
+  studioQueries,
+} from "./_components/studio-api";
 import { studioUpgradePrompts } from "./_components/studio-upgrade";
+import { useStudioApi } from "./_components/use-studio-api";
+import StudioLoading from "./loading";
 
-export default async function StudioPage({
+/**
+ * The Studio's data view. One bootstrap read seeds the Editing Session once;
+ * the session itself keeps drafts, history, revision barriers, write ownership
+ * and cloud convergence. Query refetches never reach it: the seed is frozen
+ * until a completed reset asks for a fresh one.
+ */
+export default function StudioPage({
   params,
   searchParams,
 }: {
   params: Promise<{ projectId: string; clipId: string }>;
   searchParams: Promise<{ qaCompositionPlan?: string | string[] }>;
 }) {
-  const [{ projectId, clipId }, query] = await Promise.all([params, searchParams,
-  ]);
-  const appUser = await admitProjectPage(projectId, "content.edit");
-  const compositionPlanQaFixture = resolveCompositionPlanQaFixture(
-    query.qaCompositionPlan,
-    process.env.NODE_ENV,
+  const { projectId, clipId } = use(params);
+  const query = use(searchParams);
+  const api = useStudioApi();
+  if (!api) return <StudioLoading />;
+  return (
+    <StudioData
+      key={`${api.scope.workspaceId}:${projectId}:${clipId}`}
+      api={api}
+      projectId={projectId}
+      clipId={clipId}
+      qaCompositionPlan={query.qaCompositionPlan}
+    />
   );
+}
 
-  const [snapshot, clips, previewSource, rawBrandSnapshot, brandAudio, pricingTier] = await Promise.all([
-    projectService.getProjectSnapshot(appUser, projectId),
-    clipService.listClips(appUser, projectId),
-    clipService.getClipPreviewSource(appUser, projectId, clipId),
-    // The project's frozen brand snapshot (captured once at ingest) —
-    // the source of truth for the logo ASSET. The studio only overrides
-    // how it's *shown* per clip (studioEdits.logo); see brand-template-panel.tsx.
-    projectService.getProjectBrandSnapshot(appUser, projectId),
-    // Brand music/SFX frozen with the profile; the Music and SFX tabs list them first.
-    projectService.getProjectBrandAudio(appUser, projectId),
-    Promise.resolve(appUser.pricingTier),
-  ]);
+const MISSING_CODES: ReadonlySet<string> = new Set(["project_not_found", "clip_not_found"]);
 
-  if (!snapshot.project) notFound();
-
-  const autoCensorPolicy = await autoCensorService.getPolicy(appUser, projectId);
-
-  // Scenes in a clip, including inserting and editing template-backed ones,
-  // need only the plan feature (scene-document-mutation.ts). Creating reusable
-  // Scene Templates follows the shared-workspace branding rule, in Brand kit.
-  const scenesRequirement = planFeatureRequirement(pricingTier, "brand.scenes");
-  const scenesEntitled = scenesRequirement === null;
-  const generatedImagesCapability = generatedImageCapability(appUser);
-  // A temporarily unavailable provider still shows the images already made.
-  const generatedImagesEntitled = generatedImagesCapability.reason !== "entitlement_required";
-  const sceneWriteCapabilities = {
-    cards: scenesEntitled,
-    images: scenesEntitled,
-    videos: scenesEntitled,
-    templates: scenesEntitled,
-  };
-  const upgradePrompts = studioUpgradePrompts(pricingTier, scenesRequirement);
-
-  const clip = clips.find((c) => c.id === clipId);
-  if (!clip) notFound();
-
-  const parsedBrandSnapshot = rawBrandSnapshot
-    ? brandTemplateSnapshotSchema.safeParse(rawBrandSnapshot)
-    : null;
-  const brandSnapshot = parsedBrandSnapshot?.success ? parsedBrandSnapshot.data : null;
-
-  // Only fetched once clip existence is confirmed above — getClipEditorDocument
-  // throws on a missing clip (unlike getClipPreviewSource's soft-empty
-  // return), so running it before the notFound() check would surface an
-  // unhandled error instead of a clean 404.
-  const [sourceVideoUrl, editorDoc, brandLogoUrl, activeVisualAssets, rawSceneTemplates, activeProfile] = await Promise.all([
-    // Presign source video URL (works for both uploads and YouTube — both
-    // stored in R2). Non-fatal: a presign failure just means no source
-    // playback, not a broken page.
-    snapshot.project.sourceStorageKey
-      ? presignDownloadUrl({
-          key: snapshot.project.sourceStorageKey,
-          expiresIn: 3600,
-        }).catch(() => null)
-      : Promise.resolve(null),
-    clipService.getClipEditorDocument(appUser, projectId, clipId,
-    ),
-    // Presign the brand logo (if any) for the preview overlay. Non-fatal —
-    // a presign failure just means no logo overlay in preview, not a broken
-    // studio. NOTE: this URL expires with the presign TTL below (1h); a
-    // studio session left open longer than that will see the preview logo
-    // silently stop loading (broken <img>) until the page is reloaded. The
-    // render pipeline is unaffected — it downloads the logo fresh per render.
-    brandSnapshot?.logoStorageKey
-      ? presignDownloadUrl({
-          key: brandSnapshot.logoStorageKey,
-          expiresIn: 3600,
-        }).catch(() => null)
-      : Promise.resolve(null),
-    scenesEntitled || generatedImagesEntitled ? visualAssetService.list(appUser) : Promise.resolve([]),
-    scenesEntitled && snapshot.project.brandProfileId
-      ? sceneTemplateService.list(appUser, snapshot.project.brandProfileId)
-      : Promise.resolve([]),
-    scenesEntitled && snapshot.project.brandProfileId
-      ? brandProfileService.get(appUser, snapshot.project.brandProfileId).catch(() => null)
-      : Promise.resolve(null),
-  ]);
-	const [retainedSceneVisualAssets, retainedBrollVisualAssets, retainedSceneFonts] = await Promise.all([
-		visualAssetService.resolveSceneReferences(appUser, editorDoc.document.sceneBlocks),
-		visualAssetService.resolveVisualBrollReferences(appUser, editorDoc.document.studioEdits.visualBroll),
-		scenesEntitled
-			? brandFontService.resolveSceneReferences(appUser, editorDoc.document.sceneBlocks)
-			: Promise.resolve([]),
-	]);
-	const visualAssets = [...new Map<string, StudioVisualAsset>([
-		...retainedSceneVisualAssets.map((asset) => [asset.id, asset as StudioVisualAsset] as const),
-		...retainedBrollVisualAssets.map((asset) => [asset.id, asset as StudioVisualAsset] as const),
-		...activeVisualAssets.map((asset) => [asset.id, { ...asset, missing: asset.accessUrl === null, insertable: true }] as const),
-	]).values()];
-	const activeSceneFonts: StudioSceneFont[] = (activeProfile?.fonts ?? []).map((font) => ({
-		id: font.id,
-		family: font.family,
-		style: font.style,
-		weight: font.weight,
-		fingerprint: font.fingerprint,
-		accessUrl: font.accessUrl,
-		missing: font.missing,
-		insertable: !font.missing,
-	}));
-	const sceneFonts = [...new Map<string, StudioSceneFont>([
-		...retainedSceneFonts.map((font) => [font.id, font as StudioSceneFont] as const),
-		...activeSceneFonts.map((font) => [font.id, font] as const),
-	]).values()];
-  const sceneTemplates = rawSceneTemplates.flatMap((template) => {
-    const definition = sceneTemplateDefinitionSchema.safeParse(template.definition);
-    return definition.success ? [{ id: template.id, name: template.name, revision: template.revision, fingerprint: template.fingerprint, role: template.role, definition: definition.data }] : [];
-  });
-
-  const brandLogo: StudioBrandLogo | null =
-    brandSnapshot?.logoStorageKey
-      ? {
-          url: brandLogoUrl,
-          ref: compositionAssetRef("logo", brandSnapshot.logoStorageKey),
-          position: brandSnapshot.logoPosition,
-          opacity: brandSnapshot.logoOpacity,
-          scalePct: brandSnapshot.logoScalePct,
-        }
-      : null;
-
-  // tailPadSec 0 — slice-only input: stored bounds are final (must stay in
-  // lockstep with toClipSnapshot/preview/render or the studio timeline shows
-  // a different duration than the rendered clip).
-  const effective = getEffectiveClipTiming({
-    utterances: clip.transcriptSlice,
-    startSec: clip.startSec,
-    endSec: clip.endSec,
-    sourceDurationSec: snapshot.project.sourceEdgeSec,
-    tailPadSec: 0,
-  });
-  const utterances = effective.transcriptSlice;
-
-  const fontRequirement = brandPlanRequirement(appUser, "brand.customFonts");
-  const fontReferences = [editorDoc.document.captionPreset.fontAsset, ...editorDoc.document.studioEdits.textLayers.map((layer) => layer.fontAsset)].filter((ref): ref is NonNullable<typeof ref> => Boolean(ref));
-  const [activeFonts, retainedFonts] = await Promise.all([
-    brandFontService.list(appUser), brandFontService.resolveReferences(appUser, fontReferences),
-  ]);
-  const fonts = [...new Map<string, BrandFontChoice>([...retainedFonts.map((font) => [font.id, { ...font, insertable: false }] as const), ...activeFonts.map((font) => [font.id, { ...font, insertable: true }] as const)]).values()];
-
-  const clipInfo: ClipInfo = {
-    id: clip.id,
-    projectId: clip.projectId,
-    title: clip.hookText,
-    clipTitle: clip.title,
-    duration: effective.durationSec,
-    startSec: effective.startSec,
-    endSec: effective.endSec,
-    aspectRatio: clip.renderVariants[0]?.aspectRatio ?? "9:16",
-    viralityScore: clip.viralityScore,
-    category: clip.category,
-    sourceKind:
-      snapshot.project.sourceMimeType?.startsWith("audio/") ||
-      snapshot.project.sourceType === "rss"
-        ? "audio"
-        : "video",
-    wholeSource: clip.wholeSource,
-    sourceEdgeSec: snapshot.project.sourceEdgeSec,
-    brollCues: clip.brollCues ?? [],
-    can1080pExport: hasFeature(pricingTier, "export.1080p"),
-    exportHasWatermark: !hasFeature(pricingTier, "export.noWatermark"),
-    canPersistMotion: hasFeature(pricingTier, "editor.motion"),
-  };
-
-  /**
-   * Server Action — re-checks whether this clip's preview proxy has landed
-   * yet. A thin wrapper around the exact same `getClipPreviewSource` call
-   * this page makes above for its own first render, so the Studio Editing
-   * Session's poll adapter and the initial SSR paint always agree on what
-   * "ready" means. Bound to the authenticated user/project/clip via closure (not a
-   * client-supplied id), so polling can't be used to probe another user's
-   * clip.
-   *
-   * Passed down as a prop rather than imported by name into the (client)
-   * studio-shell.tsx: a Server Action importable-by-name from a Client
-   * Component has to live in a module with a top-of-file "use server"
-   * directive, and this page is a regular Server Component, not that — the
-   * documented mechanism for a Server-Component-local action is to hand it
-   * down as a prop instead.
-   */
-  async function fetchPreviewStatus() {
-    "use server";
-    return executeProjectAction(projectId, "content.edit", async (actor) =>
-      clipService.getClipPreviewSource(actor, projectId, clipId),
-    );
+/** The page-level recovery the old server admission performed, driven by the stable error code. */
+function recoveryDestination(error: unknown, projectId: string): string | null {
+  const body = apiFailureBody(error);
+  if (body.error === "active_workspace_mismatch") {
+    const workspaceId = String(body.details?.workspaceId ?? "");
+    const workspaceName = String(body.details?.workspaceName ?? "Workspace");
+    const returnTo = `/projects/${projectId}`;
+    return `/projects?requestFailure=active_workspace_mismatch&workspaceId=${encodeURIComponent(workspaceId)}&workspaceName=${encodeURIComponent(workspaceName)}&returnTo=${encodeURIComponent(returnTo)}`;
   }
-
-  /**
-   * Server Action for worker-derived automatic framing. Analysis normally
-   * lands shortly after the preview proxy, so an already-open studio needs
-   * a small authenticated refresh loop instead of requiring a page reload.
-   * Identity is closure-bound exactly like fetchPreviewStatus above.
-   */
-  async function fetchAutoLayoutAnalysis() {
-    "use server";
-    return executeProjectAction(projectId, "content.edit", async (actor) =>
-      clipService.getClipAutoLayoutAnalysis(actor, projectId, clipId),
-    );
+  if (body.error === "workspace_restricted") {
+    // A paused workspace: the owner goes to billing; other members go to a page
+    // outside the app shell, because /home would refuse them again.
+    const destination = body.details?.ownerCanResolve === true ? "/settings/billing" : "/workspace-unavailable";
+    return `${destination}?requestFailure=workspace_restricted&requestId=${encodeURIComponent(body.requestId ?? "")}`;
   }
+  return null;
+}
 
-  async function fetchSplitLayoutAnalysis() {
-    "use server";
-    return executeProjectAction(projectId, "content.edit", async (actor) =>
-      clipService.getClipSplitLayoutOutcome(actor, projectId, clipId),
-    );
-  }
+function StudioData({
+  api,
+  projectId,
+  clipId,
+  qaCompositionPlan,
+}: {
+  api: StudioApi;
+  projectId: string;
+  clipId: string;
+  qaCompositionPlan: string | string[] | undefined;
+}) {
+  const router = useRouter();
+  const target = useMemo(() => ({ projectId, clipId }), [projectId, clipId]);
+  const queries = useMemo(() => studioQueries(api), [api]);
+  const bootstrap = useQuery(queries.bootstrap(target));
 
-  async function fetchScreenLayoutAnalysis() {
-    "use server";
-    return executeProjectAction(projectId, "content.edit", async (actor) =>
-      clipService.getClipLayoutAnalysisOutcome(actor, projectId, clipId),
-    );
-  }
+  // Frozen on first arrival; replaced only by a completed reset.
+  const seedRef = useRef(bootstrap.data);
+  const [generation, setGeneration] = useState(0);
+  if (seedRef.current === undefined && bootstrap.data !== undefined) seedRef.current = bootstrap.data;
 
-  async function updateProjectCensorTerms(terms: string[]) {
-    "use server";
-    return executeProjectAction(projectId, "content.edit", async (actor) => ({
-      terms: await autoCensorService.replaceProjectTerms(actor, projectId, terms),
-    }));
-  }
+  const pollers = useMemo(() => studioPollers(api, target), [api, target]);
+  const replaceWorkspaceWords = useMutation(replaceCensorWordsMutation(api.runtime, api.scope));
+  const resetWorkspaceWords = useMutation(resetCensorWordsMutation(api.runtime, api.scope));
 
-  async function recordAutoCensorEvent(input: AutoCensorAnalyticsInput) {
-    "use server";
-    return executeProjectAction(projectId, "content.view", async (actor) => {
-      await autoCensorService.recordEvent(actor, projectId, clipId, input);
-      return { recorded: true as const };
-    });
+  const onResetComplete = useCallback(() => {
+    void api.runtime.queryClient
+      .fetchQuery({ ...queries.bootstrap(target), staleTime: 0 })
+      .then((fresh) => {
+        seedRef.current = fresh;
+        setGeneration((current) => current + 1);
+      })
+      .catch(() => {
+        toaster.create({
+          type: "error",
+          title: "Reset finished, but the editor could not reload",
+          description: "Your clip was reset. Reload the page to continue editing.",
+        });
+      });
+  }, [api, queries, target]);
+
+  const error = bootstrap.error;
+  const redirectTo = error ? recoveryDestination(error, projectId) : null;
+  useEffect(() => {
+    if (redirectTo) router.replace(redirectTo);
+  }, [redirectTo, router]);
+
+  const seed = seedRef.current;
+  if (error && !seed) {
+    const body = apiFailureBody(error);
+    if (apiFailureStatus(error) === 404 || (body.error && MISSING_CODES.has(body.error))) notFound();
+    if (!redirectTo) throw error;
   }
+  if (!seed) return <StudioLoading />;
+
+  const { plan } = seed;
+  const upgradePrompts = studioUpgradePrompts(plan.pricingTier, plan.scenesRequirement);
+  const fontRequirement = plan.fontRequirement;
+  const compositionPlanQaFixture = resolveCompositionPlanQaFixture(qaCompositionPlan, process.env.NODE_ENV);
 
   return (
-    <BrandFontsProvider fonts={fonts} requirement={fontRequirement?.message ?? null} upgrade={fontRequirement?.requiredTier ? { tier: fontRequirement.requiredTier, headline: "Upgrade to use custom fonts", canManageBilling: appUser.role === "owner" } : null}><StudioShell
-      clipInfo={clipInfo}
-      timelineSegments={buildSegmentsFromUtterances(
-        utterances,
-        effective.startSec,
-        effective.durationSec,
-      )}
-      initialEditorDocument={editorDoc.document}
-      initialEditorRevision={editorDoc.revision}
-      initialEditorOriginal={editorDoc.original}
-      sourceVideoUrl={sourceVideoUrl}
-      sourcePreviewId={snapshot.project.sourceStorageKey ?? snapshot.project.id}
-      clipStartSec={effective.startSec}
-      clipEndSec={effective.endSec}
-      previewVideoUrl={previewSource.previewUrl}
-      previewStartSec={previewSource.previewStartSec}
-      previewDurationSec={previewSource.previewDurationSec}
-      waveformPeaksUrl={previewSource.waveformPeaksUrl}
-      // Once the source is purged, a still-missing proxy can never arrive —
-      // the worker that cuts it reads straight from source storage — so the
-      // studio shows a terminal message instead of polling/spinning forever.
-      sourcePurged={!snapshot.project.sourceStorageKey}
-      fetchPreviewStatus={fetchPreviewStatus}
-      fetchAutoLayoutAnalysis={fetchAutoLayoutAnalysis}
-      fetchSplitLayoutAnalysis={fetchSplitLayoutAnalysis}
-      fetchScreenLayoutAnalysis={fetchScreenLayoutAnalysis}
-      brandLogo={brandLogo}
-      // PiP persistence packet C: the worker's screen-mode facecam layout
-      // analysis (packet A/B), rides alongside `editorDoc.document`/
-      // `.original`/`.revision` as a sibling from `getClipEditorDocument`
-      // — see `StudioContextValue.layoutAnalysis`'s doc comment for why
-      // this is read-only and never folds into the editor document.
-      layoutAnalysis={editorDoc.layoutAnalysis}
-      autoLayoutAnalysis={editorDoc.autoLayoutAnalysis}
-      splitLayoutAnalysis={editorDoc.splitLayoutAnalysis}
-      splitLayoutFailure={editorDoc.splitLayoutFailure}
-      layoutAnalysisFailure={editorDoc.layoutAnalysisFailure}
-      compositionPlanQaFixture={compositionPlanQaFixture}
-      visualAssets={visualAssets}
-		brandProfileId={snapshot.project.brandProfileId}
-      brandAudio={brandAudio}
-		sceneFonts={sceneFonts}
-      sceneTemplates={sceneTemplates}
-      sceneWriteCapabilities={sceneWriteCapabilities}
-      generatedImagesCapability={generatedImagesCapability}
-      autoCensorPolicy={autoCensorPolicy}
-      upgradePrompts={upgradePrompts}
-      updateProjectCensorTerms={updateProjectCensorTerms}
-      replaceWorkspaceCensorWords={replaceCensorWordsAction}
-      resetWorkspaceCensorWords={resetCensorWordsAction}
-      recordAutoCensorEvent={recordAutoCensorEvent}
-    /></BrandFontsProvider>
+    <BrandFontsProvider
+      fonts={seed.fonts}
+      requirement={fontRequirement?.message ?? null}
+      upgrade={
+        fontRequirement?.requiredTier
+          ? {
+              tier: fontRequirement.requiredTier,
+              headline: "Upgrade to use custom fonts",
+              canManageBilling: plan.canManageBilling,
+            }
+          : null
+      }
+    >
+      <StudioShell
+        key={generation}
+        clipInfo={seed.clipInfo}
+        timelineSegments={buildSegmentsFromUtterances(
+          seed.utterances,
+          seed.clipInfo.startSec,
+          seed.clipInfo.duration,
+        )}
+        initialEditorDocument={seed.editor.document}
+        initialEditorRevision={seed.editor.revision}
+        initialEditorOriginal={seed.editor.original}
+        sourceVideoUrl={seed.source.videoUrl}
+        sourcePreviewId={seed.source.previewId}
+        clipStartSec={seed.clipInfo.startSec}
+        clipEndSec={seed.clipInfo.endSec}
+        previewVideoUrl={seed.preview.previewUrl}
+        previewStartSec={seed.preview.previewStartSec}
+        previewDurationSec={seed.preview.previewDurationSec}
+        waveformPeaksUrl={seed.preview.waveformPeaksUrl}
+        // Once the source is purged, a still-missing proxy can never arrive —
+        // the worker that cuts it reads straight from source storage — so the
+        // studio shows a terminal message instead of polling/spinning forever.
+        sourcePurged={seed.source.purged}
+        fetchPreviewStatus={pollers.fetchPreviewStatus}
+        fetchAutoLayoutAnalysis={pollers.fetchAutoLayoutAnalysis}
+        fetchSplitLayoutAnalysis={pollers.fetchSplitLayoutAnalysis}
+        fetchScreenLayoutAnalysis={pollers.fetchScreenLayoutAnalysis}
+        brandLogo={seed.brandLogo}
+        // The worker's screen-mode facecam layout analysis rides alongside the
+        // document as a read-only sibling; it never folds into the editor document.
+        layoutAnalysis={seed.editor.layoutAnalysis}
+        autoLayoutAnalysis={seed.editor.autoLayoutAnalysis}
+        splitLayoutAnalysis={seed.editor.splitLayoutAnalysis}
+        splitLayoutFailure={seed.editor.splitLayoutFailure}
+        layoutAnalysisFailure={seed.editor.layoutAnalysisFailure}
+        compositionPlanQaFixture={compositionPlanQaFixture}
+        visualAssets={seed.visualAssets}
+        brandProfileId={seed.brandProfileId}
+        brandAudio={seed.brandAudio}
+        sceneFonts={seed.sceneFonts}
+        sceneTemplates={seed.sceneTemplates}
+        sceneWriteCapabilities={seed.sceneWriteCapabilities}
+        generatedImagesCapability={seed.generatedImagesCapability}
+        autoCensorPolicy={seed.autoCensorPolicy}
+        upgradePrompts={upgradePrompts}
+        updateProjectCensorTerms={(terms) => replaceProjectCensorTerms(api, projectId, terms)}
+        replaceWorkspaceCensorWords={(words) => replaceWorkspaceWords.mutateAsync({ words })}
+        resetWorkspaceCensorWords={() => resetWorkspaceWords.mutateAsync()}
+        recordAutoCensorEvent={(input) => recordCensorEvent(api, target, input)}
+        onResetComplete={onResetComplete}
+      />
+    </BrandFontsProvider>
   );
 }

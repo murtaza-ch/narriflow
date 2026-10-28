@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 
-import { brandPlanRequirement } from "@narriflow/services";
+import { type ClipsClient, createClipsClient } from "@narriflow/api-client/clips";
+import type { BrandMutations } from "@narriflow/api-client/brand";
+import { hasFeature, planFeatureRequirement, type PricingTier } from "@narriflow/validators";
 
 import {
   buildApplyMotionSelectedInput,
@@ -13,7 +15,22 @@ import {
   deriveCampaignCommandState,
   deriveCampaignMotionDialogState,
   serializeCampaignEditorActionPreflightRequest,
+  submitCampaignEditorAction,
 } from "./campaign-command-state";
+
+/**
+ * The branding rule the page derives from the Workspace's plan: a personal
+ * Workspace needs the feature; a shared one also needs members, which only
+ * Business has among the paid plans.
+ */
+function brandPlanRequirement(
+  scope: { pricingTier: PricingTier; isPersonalWorkspace: boolean },
+  feature: "brand.profiles",
+) {
+  if (scope.isPersonalWorkspace) return planFeatureRequirement(scope.pricingTier, feature);
+  if (hasFeature(scope.pricingTier, feature) && hasFeature(scope.pricingTier, "workspace.members")) return null;
+  return { requiredTier: "business" as const };
+}
 
 const ALL_ENABLED = {
   exports: "enabled",
@@ -317,5 +334,91 @@ describe("campaign command state", () => {
     expect(serializeCampaignEditorActionPreflightRequest(request)).toBe(
       serializeCampaignEditorActionPreflightRequest(structuredClone(request)),
     );
+  });
+});
+
+describe("submitCampaignEditorAction", () => {
+  const PROJECT = "40000000-0000-4000-8000-000000000001";
+  const PROFILE = "40000000-0000-4000-8000-000000000002";
+  const TEMPLATE = "40000000-0000-4000-8000-000000000003";
+  const RETRY_OF = "50000000-0000-4000-8000-000000000001";
+  const FINGERPRINT = "a".repeat(64);
+  const clips = [{ clipId: "40000000-0000-4000-8000-000000000004", expectedEditorRevision: 3 }];
+
+  function harness() {
+    const calls: Array<{ url: string; key: string | null; retryOf: string | null }> = [];
+    const clipsClient: ClipsClient = createClipsClient({
+      baseUrl: "https://api.example.test",
+      fetch: (async (input: unknown, init?: RequestInit) => {
+        const headers = new Headers(init?.headers);
+        calls.push({
+          url: String(input),
+          key: headers.get("idempotency-key"),
+          retryOf: headers.get("campaign-retry-of"),
+        });
+        return Response.json({ operationId: "op-1" });
+      }) as typeof fetch,
+    });
+    const brand = {
+      applySceneTemplate: async (
+        target: { projectId: string; profileId: string; templateId: string },
+        _input: unknown,
+        options: { idempotencyKey: string; retryOfId?: string },
+      ) => {
+        calls.push({
+          url: `scene:${target.profileId}:${target.templateId}`,
+          key: options.idempotencyKey,
+          retryOf: options.retryOfId ?? null,
+        });
+        return { operationId: "op-scene" };
+      },
+    } as unknown as BrandMutations;
+    return { calls, api: { clips: clipsClient, brand } };
+  }
+
+  test("every editor action carries the intent's key and the operation it retries", async () => {
+    const { api, calls } = harness();
+    const options = { idempotencyKey: "intent-1", retryOfId: RETRY_OF };
+    await submitCampaignEditorAction(api, PROJECT, {
+      action: "apply_brand_profile",
+      input: { profileFingerprint: FINGERPRINT, styleFingerprint: null, clips },
+    }, options);
+    await submitCampaignEditorAction(api, PROJECT, {
+      action: "apply_style",
+      input: { templateId: TEMPLATE, templateFingerprint: FINGERPRINT, clips },
+    }, options);
+    await submitCampaignEditorAction(api, PROJECT, {
+      action: "apply_motion",
+      input: {
+        change: { scope: "clip_transition", transition: { type: "fade", durationSec: 0.4 } },
+        clips,
+      },
+    }, options);
+    await submitCampaignEditorAction(api, PROJECT, {
+      action: "apply_scene_template",
+      profileId: PROFILE,
+      templateId: TEMPLATE,
+      input: { templateFingerprint: FINGERPRINT, placement: "start", clips },
+    }, options);
+
+    expect(calls.map((call) => call.url.replace("https://api.example.test", ""))).toEqual([
+      `/api/projects/${PROJECT}/campaign-operations/apply-brand-profile`,
+      `/api/projects/${PROJECT}/campaign-operations/apply-style`,
+      `/api/projects/${PROJECT}/campaign-operations/apply-motion`,
+      `scene:${PROFILE}:${TEMPLATE}`,
+    ]);
+    for (const call of calls) {
+      expect(call.key).toBe("intent-1");
+      expect(call.retryOf).toBe(RETRY_OF);
+    }
+  });
+
+  test("a first attempt names no operation to retry", async () => {
+    const { api, calls } = harness();
+    await submitCampaignEditorAction(api, PROJECT, {
+      action: "apply_style",
+      input: { templateId: TEMPLATE, templateFingerprint: FINGERPRINT, clips },
+    }, { idempotencyKey: "intent-2" });
+    expect(calls[0]).toMatchObject({ key: "intent-2", retryOf: null });
   });
 });

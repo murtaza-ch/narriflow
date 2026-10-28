@@ -7,8 +7,6 @@ import { Archivo } from "next/font/google";
 import { ClerkProvider } from "@clerk/nextjs";
 import { Provider } from "@narriflow/ui/provider";
 import { Toaster } from "@narriflow/ui/components/toaster";
-import { billingService } from "@narriflow/services";
-import { validateCoreEnv } from "../lib/env";
 import { AuthModal } from "./_components/auth/auth-modal";
 import { captionFontVariables } from "./caption-fonts";
 
@@ -59,9 +57,6 @@ export const metadata: Metadata = {
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
-  validateCoreEnv();
-  billingService.validateConfiguration({ surface: "web" });
-
   return (
     <html
       lang="en"

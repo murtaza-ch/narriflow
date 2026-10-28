@@ -1,7 +1,7 @@
 import {
   isClipPreviewPeaks as isClipPreviewPeaksShape,
   type ClipPreviewPeaks,
-} from "@narriflow/services/clip-preview-storage";
+} from "@narriflow/validators/clip-preview-peaks";
 
 export { isClipPreviewPeaksShape };
 
@@ -40,18 +40,26 @@ export function sampleAmplitudeAtSourceTime(
   return Math.max(0, Math.min(1, raw / 100));
 }
 
-// Same-origin endpoint responses are immutable for one preview attempt. Cache
-// both success and failure so timeline remounts/resizes never repeat the web
-// request or R2 metadata read.
+/** Where peaks are read from; `cacheScope` keeps accounts and Workspaces apart. */
+export interface PeaksSource {
+  readonly cacheScope: string;
+  peaks(path: string): Promise<unknown>;
+}
+
+// Endpoint responses are immutable for one preview attempt. Cache both success
+// and failure so timeline remounts/resizes never repeat the request or R2
+// metadata read.
 const peaksRequestCache = new Map<string, Promise<ClipPreviewPeaks | null>>();
 
-export function loadClipPreviewPeaks(url: string): Promise<ClipPreviewPeaks | null> {
-  const cached = peaksRequestCache.get(url);
+/** `path` is the API-relative URL the preview source returns; the source adds the origin and Bearer token. */
+export function loadClipPreviewPeaks(path: string, source: PeaksSource): Promise<ClipPreviewPeaks | null> {
+  const cacheKey = `${source.cacheScope}:${path}`;
+  const cached = peaksRequestCache.get(cacheKey);
   if (cached) return cached;
-  const request = fetch(url, { credentials: "same-origin" })
-    .then((response) => (response.ok ? (response.json() as Promise<unknown>) : null))
+  const request = source
+    .peaks(path)
     .then((value) => (isClipPreviewPeaksShape(value) ? value : null))
     .catch(() => null);
-  peaksRequestCache.set(url, request);
+  peaksRequestCache.set(cacheKey, request);
   return request;
 }

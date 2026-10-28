@@ -1,8 +1,6 @@
-import { admitSignedInPage } from "@/lib/authenticated-request-page";
 import { NewWorkspaceScreen } from "./new-workspace-screen";
 
-export default async function NewWorkspacePage() {
-  await admitSignedInPage("/workspaces/new");
-
+// Data-free: creating a Workspace is a signed-in API call made by the form.
+export default function NewWorkspacePage() {
   return <NewWorkspaceScreen />;
 }

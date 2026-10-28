@@ -1,4 +1,5 @@
 import { afterAll, afterEach, beforeAll, expect, mock, test } from "bun:test";
+import { createApiRuntime } from "@narriflow/api-client/core";
 import { studioEditsSchema, type BrandAudioSnapshot } from "@narriflow/validators";
 import { Window } from "happy-dom";
 import { act } from "react";
@@ -14,6 +15,21 @@ const studio = {
   playbackClock: { getSnapshot: () => 0, subscribe: () => () => {} },
 };
 mock.module("../studio-shell", () => ({ useStudio: () => studio }));
+
+// The audio helpers call the Brand API through the shared runtime. Requests go to
+// an absolute API origin with a Bearer token and reach the per-test `globalThis.fetch`.
+const apiRuntime = createApiRuntime({
+  baseUrl: "https://api.test",
+  getToken: async () => "token",
+  fetch: ((input: RequestInfo | URL, init?: RequestInit) => globalThis.fetch(input, init)) as typeof fetch,
+});
+apiRuntime.setIdentity("user_1");
+apiRuntime.selectWorkspace("ws_1");
+const workspaceScope = { userId: "user_1", workspaceId: "ws_1" };
+mock.module("../../../../../../../../_components/api-provider", () => ({
+  useApiRuntime: () => apiRuntime,
+  useWorkspaceScope: () => workspaceScope,
+}));
 
 let UploadsTab: typeof import("./uploads-tab").UploadsTab;
 let MusicPanel: typeof import("./music-panel").MusicPanel;

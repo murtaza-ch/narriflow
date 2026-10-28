@@ -5,7 +5,6 @@ import {
 	type SocialPlatform,
 	SOCIAL_PROVIDER_CAPABILITIES,
 } from "@narriflow/validators";
-import type { BrowserRequestFailure } from "@/lib/authenticated-request-browser";
 
 // Access storage only when the client session opens, never during rendering.
 export const browserPublishingStorage = {
@@ -91,44 +90,4 @@ export function currentPublicationExport(
 		if (variant) return { export: item, variant };
 	}
 	return null;
-}
-export class PublishingRequestError extends Error {
-	constructor(
-		message: string,
-		readonly status: number,
-		readonly code?: string,
-		readonly details?: Record<string, unknown>,
-	) {
-		super(message);
-	}
-	/** The refusal in the shape `upgradePromptFromFailure` reads. */
-	get failure(): BrowserRequestFailure {
-		return { error: this.code, message: this.message, details: this.details };
-	}
-}
-export async function publishingRequest<T>(
-	url: string,
-	body?: unknown,
-	method = body === undefined ? "GET" : "POST",
-): Promise<T> {
-	const response = await fetch(url, {
-		method,
-		cache: "no-store",
-		headers:
-			body === undefined ? undefined : { "Content-Type": "application/json" },
-		body: body === undefined ? undefined : JSON.stringify(body),
-	});
-	const payload = await response.json().catch(() => null);
-	if (!response.ok)
-		throw new PublishingRequestError(
-			payload?.message ??
-				payload?.issues?.[0]?.message ??
-				"The request could not be completed. Please try again.",
-			response.status,
-			payload?.error ?? payload?.code,
-			payload?.details && typeof payload.details === "object" && !Array.isArray(payload.details)
-				? payload.details
-				: undefined,
-		);
-	return payload as T;
 }

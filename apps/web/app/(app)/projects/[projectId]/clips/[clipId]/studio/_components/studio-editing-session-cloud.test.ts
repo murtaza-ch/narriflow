@@ -515,6 +515,37 @@ test("close attempts one keepalive only when dirty and no regular save is active
   ]);
 });
 
+test("a close-time write that cannot be sent leaves the Device Draft as the recoverable copy", async () => {
+  const cloud = new ControlledCloud(3, makeDocument());
+  // The transport reports nothing sent (no token snapshot, body over the keepalive budget).
+  cloud.keepalive = () => undefined;
+  const removed: unknown[] = [];
+  const written: Array<{ document: unknown; baseRevision: number }> = [];
+  const session = await makeSession(cloud, new ManualRuntime(), "writer", {
+    load: async () => null,
+    write: async (record) => {
+      written.push({ document: record.document, baseRevision: record.baseRevision });
+      return "written";
+    },
+    remove: async (key) => {
+      removed.push(key);
+      return "removed";
+    },
+  });
+  session.dispatch({
+    type: "document.edit",
+    action: { type: "setBrollUrl", brollUrl: "https://cdn.example.com/a.mp4" },
+  });
+
+  await session.perform({ type: "close", reason: "pagehide" });
+
+  expect(removed).toEqual([]);
+  expect(written.at(-1)).toMatchObject({
+    baseRevision: 3,
+    document: expect.objectContaining({ brollUrl: "https://cdn.example.com/a.mp4" }),
+  });
+});
+
 test("close rejects new edits while its final Device Draft is still writing", async () => {
   const cloud = new ControlledCloud(3, makeDocument());
   const draftWrite = deferred<"written" | "stale">();

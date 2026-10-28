@@ -8,9 +8,9 @@ import {
 	guidanceGroupLabel,
 	summarizePerformance,
 	type GuidanceVideo,
-	type GuidanceView,
 	type PerformanceVideo,
 } from "@narriflow/services";
+import type { GuidanceView } from "@/lib/publishing-client";
 import { WhatWorked } from "./what-worked";
 
 const noGuidance: GuidanceView = {

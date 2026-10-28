@@ -4,12 +4,15 @@ import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Box, Dialog, Flex, Input, Portal, Stack, Text } from "@chakra-ui/react";
 import { Captions, Folder, History, type LucideIcon, Search, SearchX, Video } from "lucide-react";
+import { libraryQueries } from "@narriflow/api-client/library";
+import { keepPreviousData, skipToken, useQuery } from "@tanstack/react-query";
 import { Spinner } from "@narriflow/ui/components/spinner";
 import { Bone } from "@narriflow/ui/components/page-loading";
 import {
   matchNavigationActions,
   type NavigationAction,
 } from "@/lib/navigation-actions";
+import { useLibraryApi } from "../projects/_lib/api";
 
 type SearchResult = {
   id: string;
@@ -141,12 +144,23 @@ function SearchingRows() {
   );
 }
 
+/** Title search over Projects, folders and clips for the selected Workspace; idle without a term. */
+function useWorkspaceSearch(term: string) {
+  const api = useLibraryApi();
+  const options = api && term ? libraryQueries.workspaceSearch(api.library, api.scope, term) : null;
+  return useQuery({
+    queryKey: options?.queryKey ?? ["nf", "workspace-search-idle"],
+    queryFn: options?.queryFn ?? skipToken,
+    staleTime: options?.staleTime,
+    placeholderData: keepPreviousData,
+  });
+}
+
 export function GlobalSearch({ workspaceId }: { workspaceId: string }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
-  const [results, setResults] = useState<SearchResult[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [debounced, setDebounced] = useState("");
   const [activeIndex, setActiveIndex] = useState(0);
   const [recentSearches, setRecentSearches] = useState<string[]>([]);
   // The list follows the arrow keys, not the pointer: a hovered row stays put.
@@ -173,34 +187,29 @@ export function GlobalSearch({ workspaceId }: { workspaceId: string }) {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
+  // The title search runs once typing pauses; the previous results stay up meanwhile.
   useEffect(() => {
     const normalized = query.trim();
     if (normalized.length < 2) {
-      setResults([]);
-      setLoading(false);
+      setDebounced("");
       return;
     }
-    const controller = new AbortController();
-    const timer = window.setTimeout(async () => {
-      setLoading(true);
-      try {
-        const response = await fetch(`/api/workspace/search?q=${encodeURIComponent(normalized)}`, {
-          signal: controller.signal,
-        });
-        const body = (await response.json()) as { results?: SearchResult[] };
-        setResults(response.ok ? (body.results ?? []) : []);
-        setActiveIndex(0);
-      } catch (error) {
-        if (!(error instanceof DOMException && error.name === "AbortError")) setResults([]);
-      } finally {
-        setLoading(false);
-      }
-    }, 180);
-    return () => {
-      window.clearTimeout(timer);
-      controller.abort();
-    };
+    const timer = window.setTimeout(() => setDebounced(normalized), 180);
+    return () => window.clearTimeout(timer);
   }, [query]);
+
+  const search = useWorkspaceSearch(debounced);
+  const results = useMemo<SearchResult[]>(
+    () => (query.trim().length < 2 || search.isError ? [] : (search.data?.results ?? [])),
+    [query, search.data, search.isError],
+  );
+  const loading = query.trim().length >= 2 && (debounced !== query.trim() || search.isFetching);
+
+  // New results start the highlight from the top.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the results are the trigger, not a value read here.
+  useEffect(() => {
+    setActiveIndex(0);
+  }, [search.data]);
 
   // A new query starts the list from its top.
   // biome-ignore lint/correctness/useExhaustiveDependencies: query is the trigger, not a value read here.

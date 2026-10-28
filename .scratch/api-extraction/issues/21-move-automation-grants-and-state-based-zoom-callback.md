@@ -4,7 +4,7 @@
 
 **Blocked by:** [04 - Wire API runtime and partition the catch-all](04-wire-api-runtime-and-partition-the-catch-all.md), [15 - Move intake Upload Sessions and recipes](15-move-intake-upload-sessions-and-recipes.md)
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Suggested implementer:** Claude. The other pairing side reviews and returns findings to this owner.
 
@@ -136,10 +136,10 @@ Rows retain their section/ordinal or exact source-line identifier from the indep
 
 ## Acceptance criteria
 
-- [ ] Ten automation/Zoom routes and Zoom webhook plus four grant actions map to spec with current roles/features and grant source consent.
-- [ ] Zoom callback consumes hashed one-use state, resolves stored actor/Workspace, validates redirect URI/expiry and rechecks membership before/after provider exchange.
-- [ ] Zoom starts POST JSON; callback/webhook declare independent trust; CRC stays signature-secret challenge without Clerk.
-- [ ] Rule/grant retryable acceptance is receipt-safe; take-over/pause/revoke/caps/acting-member semantics and provider-unavailable states preserved.
+- [x] Ten automation/Zoom routes and Zoom webhook plus four grant actions map to spec with current roles/features and grant source consent.
+- [x] Zoom callback consumes hashed one-use state, resolves stored actor/Workspace, validates redirect URI/expiry and rechecks membership before/after provider exchange.
+- [x] Zoom starts POST JSON; callback/webhook declare independent trust; CRC stays signature-secret challenge without Clerk.
+- [x] Rule/grant retryable acceptance is receipt-safe; take-over/pause/revoke/caps/acting-member semantics and provider-unavailable states preserved.
 - [ ] No unowned files changed; paired review findings and verification evidence recorded under Comments.
 
 ## Verification
@@ -156,3 +156,31 @@ bun run --cwd apps/api typecheck
 ## Comments
 
 Append claim, requested seam changes, paired review and evidence here.
+
+Claimed and implemented by Claude (Sonnet 5.5), 2026-10-29. The last acceptance box ("No unowned files changed; paired review findings ...") is left open for the orchestrator: no unowned file was edited, but no paired review ran.
+
+### What changed
+- **Services.** `ZoomService.handleCallback({state, code, origin})` no longer takes an actor: it looks up the hashed state row, requires an unexpired row with the matching redirect URI (a mismatch is refused without consuming it), consumes it in a transaction, then rechecks the stored member's `content.edit` before the provider exchange and again after `exchange`+`me`, and stores the connection for the row's member and Workspace. `createAuthorizationUrl(scope, origin)` is unchanged (origin is now the API origin). `AutopilotService.acceptRule` / `acceptRunNow` return `{rule, replayed}` from the existing native receipts (`create_rss_autopilot_rule`, `run_autopilot_rule_now`); `createRule`/`triggerRuleNow` keep their signatures, so MCP is untouched. `createAutomationCommands`/`automationCommands` (`automation-commands(.runtime).ts`) is the browser-facing facade over them, with the receipt names unchanged. `standing-grant(.runtime).ts` needed no change.
+- **API (`apps/api/src/domains/automation`).** Admission table, routes, read models, runtime and Zoom webhook. New: `GET /automation`, `GET /automation/standing-grants`, `POST /automation/standing-grants`, `POST .../:grantId/{renew,pause,revoke}` (all `workspace.manage`), `POST /zoom/oauth/start` -> `{authorizationUrl}` (actor `zoom-connect` 10/3600 kept), `GET /zoom/oauth/callback` declared `{trust: "oauth_state"}` (302 to `W/autopilot?zoom=...`, redirect URI built on `API_ORIGIN`). `POST /webhooks/zoom` (`provider_signature`) keeps the CRC answered from the secret alone, 401/503/400/500 mapping and the 1 MiB ceiling. Rule create (5/h per Workspace) and run-now (10/h per Workspace) are now `deferRateRefusal` receipt commands: `Idempotency-Key` required (400 `idempotency_key_required`), `Idempotent-Replayed: true` on replay, the limiter refuses only new work after the replay lookup (429, or 503 `mutations_unavailable` on a limiter outage). Take-over/pause/revoke/caps/acting-member semantics are the services' and untouched.
+- **Aggregates mirror today's props.** `GET /automation` = AutopilotPanel props (rules, recipes, live grants summarized, `zoomEnabled` safe flag, connections, `newRuleRequirement`/`newRuleUpgradeTier`, `autopilotIncluded`, `finishingAvailable`, `workspaceStatus`, `access.{canEdit,canRun,canTakeOver,canConnectZoom,canManageBilling}`). `GET /automation/standing-grants` = GrantsPanel props (grants, rules, filtered accounts, `canManage`, `reviewAvailable`, `autopilotIncluded`, `pricingTier`; web builds the two upgrade prompts from the tier). Both read in parallel on the server.
+- **Client.** `@narriflow/api-client/automation`: `automationOverviewQueryOptions`, `standingGrantsQueryOptions`, `autopilotRulesQueryOptions`, `zoomConnectionsQueryOptions`, `createAutomationActions(transport, scope)` (rule/grant/Zoom commands; `startZoomOAuth` returns the URL to navigate to), `invalidateAfterAutomationChange` (all `automation` keys plus `projects/home`). Shared schemas and DTO types: `@narriflow/validators/api/automation` (`renewStandingGrantRequestSchema` is `renewStandingGrantSchema` minus the path `grantId`).
+- Deleted (moved, not duplicated): `apps/web/app/api/[[...route]]/zoom-http.ts` and its test (staged deletions).
+
+### Decisions and deviations
+- Standing-grant create/renew/pause/revoke take no Idempotency-Key: create is guarded by the duplicate-grant check (409 `standing_grant_duplicate`; UI should refetch), renew restates the same terms, pause/revoke are state transitions. Only rule creation and run-now are receipt-backed, as in MCP.
+- Added `uuidParams("ruleId")` to PATCH/DELETE/run-now (a malformed id was a database error; now 400 `invalid_input`). Take-over keeps the service's own 404 for a malformed id.
+- A removed member's callback ends at `zoom=zoom_oauth_failed` (the redirect only exposes `ZoomError` codes); the underlying refusal is `workspace_access_denied`.
+- `ZoomError` `zoom_not_configured` keeps its service kind (409 on the start); only the webhook maps it to 503, as before.
+
+### Requests for other owners
+- 04/31: `apps/api/src/admission-tables.test.ts` still lists `GET /zoom/oauth/start` in `PRESERVED_LIMITS`; the key is now `POST /zoom/oauth/start` (the row is silently skipped until renamed).
+- 22: `zoom-connections.tsx` must `startZoomOAuth()` then `window.location.assign(authorizationUrl)`; rule create/run-now need one `runtime.createIntent()` key each; show the `zoom=` notice from the query string on `/autopilot`; consume `GET /api/automation` and `GET /api/automation/standing-grants`. `actions.ts` under `settings/automation-grants` is theirs to delete.
+- 31: delete the 165-row baseline entries for the old Zoom GET start/callback when `authenticated-request-inventory.ts` goes.
+- Docs (not mine): `docs/runbooks` / ADR text that says the Zoom callback runs under the browser session.
+
+### Evidence
+- `bun test apps/api/src/domains/automation` -> 25 pass (routes 21, webhook 4). `bun test apps/api/src/admission-tables.test.ts` pass. `bun run --cwd apps/api test:inventory` -> `routes=268 problems=0`.
+- `bun test packages/services/src/{automation-commands,zoom,autopilot.service}.test.ts` -> 18 pass; `bun test packages/mcp-core` -> 154 pass.
+- `.scratch/api-extraction/db-gate.sh bun run test:vizard-expansion:db`: `zoom.db.test.ts` 14 pass (new: hashed state names member/Workspace and redirect, single redemption, expiry, removal before and during the provider exchange stores nothing), `autopilot.db.test.ts` 23 pass; the gate's overall exit is nonzero only for 2 failures in `vizard-expansion.db.test.ts` review tests (`review_timecode_requires_item` / "A bounded client idempotency key is required" from `reviews-commands.ts`, ticket 27 in progress). `standing-grant.db.test.ts` is not part of this gate (it runs in `test:social-publication:db`) and was not changed.
+- `.scratch/api-extraction/db-gate.sh bun run test:integration-api:db`: every services suite passes (operation-receipt 13, completion-callback 12, recipe 15, ...); fails only at the last suite `apps/web/lib/rest-api/events.db.test.ts` (ticket 23).
+- `bunx biome check` on all owned paths clean. `tsc` clean for `packages/services`, `packages/validators`, `packages/api-client` (no error in an automation file); `apps/api` typecheck has only others' errors: `domains/rest/routes.ts` (23), `domains/reviews/guest-replay-child.ts` (27).

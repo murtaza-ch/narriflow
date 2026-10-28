@@ -35,6 +35,12 @@ export interface TrimTranscript {
   sourceDurationSec: number;
 }
 
+/** Where the cache fills from; `cacheScope` keeps accounts and Workspaces apart. */
+export interface TrimTranscriptSource {
+  readonly cacheScope: string;
+  utterances(projectId: string): Promise<TranscriptUtterance[]>;
+}
+
 const transcriptCache = new Map<string, TrimTranscript>();
 const transcriptPromises = new Map<string, Promise<TrimTranscript>>();
 
@@ -59,44 +65,42 @@ function flattenWords(utterances: TranscriptUtterance[]): TrimWord[] {
 /** Fetches and flattens the full project transcript once per project,
  *  session-cached (module-level, like the dialog's own cache) so the second
  *  handle grab — or a reopen of the studio in the same tab — is instant. */
-export function loadTrimTranscript(projectId: string): Promise<TrimTranscript> {
-  const cached = transcriptCache.get(projectId);
+export function loadTrimTranscript(
+  projectId: string,
+  source: TrimTranscriptSource,
+): Promise<TrimTranscript> {
+  const cacheKey = `${source.cacheScope}:${projectId}`;
+  const cached = transcriptCache.get(cacheKey);
   if (cached) return Promise.resolve(cached);
 
-  let pending = transcriptPromises.get(projectId);
+  let pending = transcriptPromises.get(cacheKey);
   if (!pending) {
-    pending = fetch(`/api/projects/${projectId}/transcript/utterances`)
-      .then((response) => {
-        if (!response.ok) {
-          throw new Error(`transcript fetch failed (${response.status})`);
-        }
-        return response.json() as Promise<{ utterances: TranscriptUtterance[] }>;
-      })
-      .then((snapshot) => {
-        const rawUtterances = snapshot.utterances ?? [];
+    pending = source
+      .utterances(projectId)
+      .then((rawUtterances) => {
         const words = flattenWords(splitUtterancesIntoSentences(rawUtterances));
         const result: TrimTranscript = {
           words,
           rawUtterances,
           sourceDurationSec: words.at(-1)?.endSec ?? 0,
         };
-        transcriptCache.set(projectId, result);
-        transcriptPromises.delete(projectId);
+        transcriptCache.set(cacheKey, result);
+        transcriptPromises.delete(cacheKey);
         return result;
       })
       .catch((err) => {
-        transcriptPromises.delete(projectId);
+        transcriptPromises.delete(cacheKey);
         throw err;
       });
-    transcriptPromises.set(projectId, pending);
+    transcriptPromises.set(cacheKey, pending);
   }
   return pending;
 }
 
 /** Fire-and-forget warmup — call on pointerdown of a trim handle so the drag
  *  itself never blocks on the fetch. */
-export function prefetchTrimTranscript(projectId: string) {
-  void loadTrimTranscript(projectId).catch(() => {});
+export function prefetchTrimTranscript(projectId: string, source: TrimTranscriptSource) {
+  void loadTrimTranscript(projectId, source).catch(() => {});
 }
 
 /** Index of the word whose START (edge "start") or END (edge "end") is

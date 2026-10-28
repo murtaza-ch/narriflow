@@ -1,7 +1,19 @@
 "use client";
 
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
+import { type QueryClient, skipToken, useMutation, useQuery } from "@tanstack/react-query";
+import { type Intent, invalidateScoped, type WorkspaceScope } from "@narriflow/api-client";
+import {
+  CLIP_RESOURCES,
+  clipCommands,
+  clipMutationOptions,
+  clipQueries,
+  invalidateAfterClipChange,
+  invalidateProjectClips,
+} from "@narriflow/api-client/clips";
+import { playableMediaUrl, intentIn, requireClipApi, useClipApi } from "@/lib/clip-media";
+import { clipActionErrorCopy, failureNeedsStateRefetch } from "./clip-action-error-copy";
 import {
   Box,
   Drawer,
@@ -45,11 +57,11 @@ import { RenderClipsButton } from "./render-clips-button";
 import {
   buildApplyMotionSelectedInput,
   buildCampaignEditorRetryRequest,
+  submitCampaignEditorAction,
   type CampaignActionAvailability,
   type CampaignAvailableAction,
   type CampaignCommandState,
   type CampaignEditorRetryIntent,
-  type CampaignEditorRetryRequest,
 } from "./campaign-command-state";
 import {
   CampaignEditorActionPreview,
@@ -198,22 +210,6 @@ function bundleAttentionMessage(item: BundlePreflight["items"][number]) {
   return "The requested export is not ready";
 }
 
-function campaignEditorRetryEndpoint(
-  projectId: string,
-  request: CampaignEditorRetryRequest,
-) {
-  if (request.action === "apply_brand_profile") {
-    return `/api/projects/${projectId}/campaign-operations/apply-brand-profile`;
-  }
-  if (request.action === "apply_style") {
-    return `/api/projects/${projectId}/campaign-operations/apply-style`;
-  }
-  if (request.action === "apply_motion") {
-    return `/api/projects/${projectId}/campaign-operations/apply-motion`;
-  }
-  return `/api/projects/${projectId}/brand-profiles/${request.profileId}/scene-templates/${request.templateId}/apply`;
-}
-
 function MotionSelectionPreview({
   change,
 }: {
@@ -306,7 +302,14 @@ export function CampaignCommandBar({
   onClear(): void;
 }) {
   const router = useRouter();
+  const api = useClipApi();
   const { openUpgrade } = useUpgrade();
+  // One intent per user action: a retry after a timeout or lost response replays
+  // the accepted command; changed input, or a confirmed acceptance, is a new intent.
+  const bundleIntent = useRef<Intent<unknown> | null>(null);
+  const retryBundleIntent = useRef<Intent<unknown> | null>(null);
+  const motionIntent = useRef<Intent<unknown> | null>(null);
+  const retryActionIntent = useRef<Intent<unknown> | null>(null);
   const resolution: ClipRenderResolution = can1080pExport ? "1080p" : "720p";
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -413,32 +416,26 @@ export function CampaignCommandBar({
     [operation, retryIntent, state.selectedItems],
   );
 
+  // A running operation is read again every 2 seconds while its drawer is open;
+  // a missed poll is harmless, the next one reconciles it.
+  const operationRunning =
+    drawerOpen && operation !== null && !["completed", "partial", "failed"].includes(operation.status);
+  const operationsOptions = api ? clipQueries.campaignOperations(api.clips, api.scope, projectId) : null;
+  const operationPoll = useQuery({
+    queryKey: operationsOptions?.queryKey ?? ["nf", "clips", "campaign-operations", "unavailable"],
+    queryFn: operationsOptions?.queryFn ?? skipToken,
+    enabled: operationRunning,
+    refetchInterval: operationRunning ? 2_000 : false,
+  });
+  const polledOperation = operation
+    ? operationPoll.data?.operations.find((candidate) => candidate.id === operation.id)
+    : undefined;
   useEffect(() => {
-    if (!drawerOpen || !operation || ["completed", "partial", "failed"].includes(operation.status)) {
-      return;
-    }
-    let stopped = false;
-    const timer = setInterval(async () => {
-      try {
-        const response = await fetch(`/api/projects/${projectId}/campaign-operations`, {
-          cache: "no-store",
-        });
-        if (!response.ok) return;
-        const payload = (await response.json()) as { operations?: CampaignOperation[] };
-        const next = payload.operations?.find((candidate) => candidate.id === operation.id);
-        if (!stopped && next) setOperation(next);
-      } catch {
-        // A missed poll is harmless; the next bounded interval reconciles it.
-      }
-    }, 2_000);
-    return () => {
-      stopped = true;
-      clearInterval(timer);
-    };
-  }, [drawerOpen, operation, projectId]);
+    if (polledOperation) setOperation(polledOperation);
+  }, [polledOperation]);
 
   useEffect(() => {
-    if (!drawerOpen || !previewingMotion) {
+    if (!api || !drawerOpen || !previewingMotion) {
       setMotionPreflightState("idle");
       setMotionPreflight(null);
       return;
@@ -447,42 +444,31 @@ export function CampaignCommandBar({
     setMotionPreflightState("loading");
     setMotionPreflight(null);
     setError(null);
-    void fetch(
-      `/api/projects/${projectId}/campaign-operations/preview-editor-action`,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          action: "apply_motion",
-          input: JSON.parse(motionPreflightKey),
-        }),
-        signal: controller.signal,
-      },
-    )
-      .then(async (response) => {
-        const payload = (await response.json().catch(() => null)) as
-          | (MotionPreflight & { message?: string })
-          | null;
-        if (!response.ok || !payload?.counts || !payload.items) {
-          throw new Error(payload?.message || "Motion preflight could not be completed.");
+    void api.clips.projects[":id"]["campaign-operations"]["preview-editor-action"].$post(
+        {
+          param: { id: projectId },
+          json: { action: "apply_motion", input: JSON.parse(motionPreflightKey) },
+        },
+        { init: { signal: controller.signal } },
+      )
+      .then((response) => response.json())
+      .then((payload) => {
+        if (!payload.counts || !payload.items) {
+          throw new Error("Motion preflight could not be completed.");
         }
-        setMotionPreflight(payload);
+        setMotionPreflight(payload as MotionPreflight);
         setMotionPreflightState("ready");
       })
       .catch((preflightError: unknown) => {
         if (controller.signal.aborted) return;
         setMotionPreflightState("error");
-        setError(
-          preflightError instanceof Error
-            ? preflightError.message
-            : "Motion preflight could not be completed.",
-        );
+        setError(clipActionErrorCopy(preflightError, "Motion preflight could not be completed."));
       });
     return () => controller.abort();
-  }, [drawerOpen, motionPreflightKey, previewingMotion, projectId]);
+  }, [drawerOpen, motionPreflightKey, previewingMotion, projectId, api]);
 
   useEffect(() => {
-    if (!drawerOpen || !previewingBundle) {
+    if (!api || !drawerOpen || !previewingBundle) {
       setBundlePreflightState("idle");
       setBundlePreflight(null);
       return;
@@ -491,35 +477,55 @@ export function CampaignCommandBar({
     setBundlePreflightState("loading");
     setBundlePreflight(null);
     setError(null);
-    void fetch(`/api/projects/${projectId}/export-bundles/preview`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: bundlePreflightKey,
-      signal: controller.signal,
-    })
-      .then(async (response) => {
-        const payload = (await response.json().catch(() => null)) as
-          | (BundlePreflight & { message?: string })
-          | null;
-        if (!response.ok || !payload?.counts || !payload.items) {
-          throw new Error(
-            payload?.message || "Bundle availability could not be checked.",
-          );
+    void api.exports.projects[":id"]["export-bundles"].preview.$post(
+        { param: { id: projectId }, json: JSON.parse(bundlePreflightKey) },
+        { init: { signal: controller.signal } },
+      )
+      .then((response) => response.json())
+      .then((payload) => {
+        if (!payload.counts || !payload.items) {
+          throw new Error("Bundle availability could not be checked.");
         }
-        setBundlePreflight(payload);
+        setBundlePreflight(payload as BundlePreflight);
         setBundlePreflightState("ready");
       })
       .catch((preflightError: unknown) => {
         if (controller.signal.aborted) return;
         setBundlePreflightState("error");
-        setError(
-          preflightError instanceof Error
-            ? preflightError.message
-            : "Bundle availability could not be checked.",
-        );
+        setError(clipActionErrorCopy(preflightError, "Bundle availability could not be checked."));
       });
     return () => controller.abort();
-  }, [bundlePreflightKey, drawerOpen, previewingBundle, projectId]);
+  }, [bundlePreflightKey, drawerOpen, previewingBundle, projectId, api]);
+
+  const createBundleMutation = useMutation({
+    ...clipMutationOptions,
+    mutationFn: async () => {
+      const { runtime, exports, scope, queryClient } = requireClipApi(api);
+      const input = JSON.parse(bundlePreflightKey) as typeof bundlePreflightInput;
+      const intent = intentIn(bundleIntent, runtime);
+      const accepted = await exports.projects[":id"]["export-bundles"].$post(
+        { param: { id: projectId }, json: input },
+        { headers: { "Idempotency-Key": intent.keyFor(input) } },
+      ).then((response) => response.json());
+      intent.complete();
+      await invalidateBundleReads(queryClient, scope);
+      return accepted;
+    },
+    onError: refetchWhenUncertain,
+  });
+
+  /** A bundle freezes finished exports: the operation list and the Project's exports move. */
+  function invalidateBundleReads(queryClient: QueryClient, scope: WorkspaceScope) {
+    return Promise.all([
+      invalidateScoped(queryClient, scope, "clips", CLIP_RESOURCES.campaignOperations, projectId),
+      invalidateScoped(queryClient, scope, "exports"),
+    ]);
+  }
+
+  /** After a lost response or a conflict, the domain state says whether the command was accepted. */
+  function refetchWhenUncertain(failure: unknown) {
+    if (api && failureNeedsStateRefetch(failure)) void invalidateProjectClips(api.queryClient, api.scope, projectId);
+  }
 
   async function createBundle() {
     if (
@@ -531,33 +537,7 @@ export function CampaignCommandBar({
     setSubmitting(true);
     setError(null);
     try {
-      const response = await fetch(`/api/projects/${projectId}/export-bundles`, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "idempotency-key": crypto.randomUUID(),
-        },
-        body: bundlePreflightKey,
-      });
-      const payload = (await response.json().catch(() => null)) as
-        | {
-            error?: string;
-            message?: string;
-            operationId?: string;
-            manifest?: {
-              included: Array<{ clipId: string }>;
-              excluded: Array<{ clipId: string; code: string }>;
-            };
-          }
-        | null;
-      if (!response.ok || !payload?.operationId) {
-        setError(
-          payload?.message ||
-            (payload?.error && userErrorMessage(payload.error)) ||
-            "The export bundle could not be queued.",
-        );
-        return;
-      }
+      const payload = await createBundleMutation.mutateAsync();
       setPreviewingBundle(false);
       setPreviewingRender(false);
       setPreviewingMotion(false);
@@ -595,39 +575,63 @@ export function CampaignCommandBar({
         ],
         bundle: null,
       });
-    } catch {
-      setError("The export bundle could not be queued. Try again.");
+    } catch (failure) {
+      setError(clipActionErrorCopy(failure, "The export bundle could not be queued. Try again."));
     } finally {
       setSubmitting(false);
     }
   }
+
+  const retryBundleMutation = useMutation({
+    ...clipMutationOptions,
+    mutationFn: async (operationId: string) => {
+      const { runtime, exports, scope, queryClient } = requireClipApi(api);
+      const intent = intentIn(retryBundleIntent, runtime);
+      const accepted = await exports.projects[":id"]["campaign-operations"][":operationId"]["retry-export-bundle"]
+        .$post(
+          { param: { id: projectId, operationId } },
+          { headers: { "Idempotency-Key": intent.keyFor({ operationId }) } },
+        )
+        .then((response) => response.json());
+      intent.complete();
+      await invalidateBundleReads(queryClient, scope);
+      return accepted;
+    },
+    onError: refetchWhenUncertain,
+  });
 
   async function retryBundle() {
     if (!operation || submitting) return;
     setSubmitting(true);
     setError(null);
     try {
-      const response = await fetch(
-        `/api/projects/${projectId}/campaign-operations/${operation.id}/retry-export-bundle`,
-        {
-          method: "POST",
-          headers: { "idempotency-key": crypto.randomUUID() },
-        },
-      );
-      const payload = (await response.json().catch(() => null)) as {
-        operationId?: string;
-        error?: string;
-        message?: string;
-      } | null;
-      if (!response.ok || !payload?.operationId) {
-        setError(payload?.message || "No failed bundle items can be retried.");
-        return;
-      }
+      const payload = await retryBundleMutation.mutateAsync(operation.id);
       setOperation({ ...operation, id: payload.operationId, status: "running" });
-    } catch {
-      setError("The failed bundle items could not be retried.");
+    } catch (failure) {
+      setError(clipActionErrorCopy(failure, "The failed bundle items could not be retried."));
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  const [downloadingBundle, setDownloadingBundle] = useState(false);
+  /** The ZIP is a short-lived grant: ask for a fresh one, then the browser fetches it directly (no Clerk token). */
+  async function downloadBundle(bundleId: string | undefined) {
+    if (!bundleId || downloadingBundle) return;
+    setDownloadingBundle(true);
+    setError(null);
+    try {
+      const { exports } = requireClipApi(api);
+      const grant = await exports.projects[":id"]["export-bundles"][":bundleId"].download
+        .$get({ param: { id: projectId, bundleId } })
+        .then((response) => response.json());
+      const url = playableMediaUrl(grant.downloadUrl);
+      if (!url) throw new Error("invalid_download_grant");
+      window.location.assign(url);
+    } catch (failure) {
+      setError(clipActionErrorCopy(failure, "The ZIP could not be downloaded. Try again."));
+    } finally {
+      setDownloadingBundle(false);
     }
   }
 
@@ -675,29 +679,36 @@ export function CampaignCommandBar({
     setDrawerOpen(true);
   }
 
+  /** The settled operation with its item rows, or `null` when the history read misses once. */
+  async function hydrateOperation(operationId: string): Promise<CampaignOperation | null> {
+    if (!api) return null;
+    try {
+      const list = await api.queryClient.fetchQuery({
+        ...clipQueries.campaignOperations(api.clips, api.scope, projectId),
+        staleTime: 0,
+      });
+      return list.operations.find((candidate) => candidate.id === operationId) ?? null;
+    } catch {
+      // The settled summary stays truthful when history hydration misses one
+      // request; the Project reads refetched below reconcile the item rows.
+      return null;
+    }
+  }
+
+  /** Clips, editor revisions and operations moved; a Studio opened next must not read a cached older document. */
+  async function invalidateAfterCampaignApply() {
+    if (!api) return;
+    await Promise.all([
+      invalidateAfterClipChange(api.queryClient, api.scope, projectId),
+      invalidateScoped(api.queryClient, api.scope, "studio"),
+    ]);
+  }
+
   async function receiveEditorActionResult(
     result: CampaignEditorOperationResult,
     nextRetryIntent: CampaignEditorRetryIntent,
   ) {
-    let hydrated: CampaignOperation | null = null;
-    try {
-      const response = await fetch(
-        `/api/projects/${projectId}/campaign-operations`,
-        { cache: "no-store" },
-      );
-      if (response.ok) {
-        const payload = (await response.json()) as {
-          operations?: CampaignOperation[];
-        };
-        hydrated =
-          payload.operations?.find(
-            (candidate) => candidate.id === result.operationId,
-          ) ?? null;
-      }
-    } catch {
-      // The settled operation summary remains truthful when history hydration
-      // misses one request. Project refresh reconciles the item rows.
-    }
+    const hydrated = await hydrateOperation(result.operationId);
     const action =
       editorActionKind === "brand_profile"
         ? "apply_brand_profile"
@@ -721,8 +732,25 @@ export function CampaignCommandBar({
         bundle: null,
       },
     );
-    router.refresh();
+    await invalidateAfterCampaignApply();
   }
+
+  const motionMutation = useMutation({
+    ...clipMutationOptions,
+    mutationFn: async () => {
+      const { runtime, clips } = requireClipApi(api);
+      const intent = intentIn(motionIntent, runtime);
+      const accepted = await clipCommands.applyMotion(
+        clips,
+        projectId,
+        motionPreflightInput,
+        intent.keyFor(motionPreflightInput),
+      );
+      intent.complete();
+      return accepted;
+    },
+    onError: refetchWhenUncertain,
+  });
 
   async function applySelectedMotion() {
     if (
@@ -735,63 +763,8 @@ export function CampaignCommandBar({
     setSubmitting(true);
     setError(null);
     try {
-      const response = await fetch(
-        `/api/projects/${projectId}/campaign-operations/apply-motion`,
-        {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            "idempotency-key": crypto.randomUUID(),
-          },
-          body: JSON.stringify(
-            motionPreflightInput,
-          ),
-        },
-      );
-      const payload = (await response.json().catch(() => null)) as
-        | {
-            error?: string;
-            message?: string;
-            operationId?: string;
-            status?: string;
-            requestedCount?: number;
-            counts?: {
-              succeeded: number;
-              unchanged: number;
-              stale: number;
-              ineligible: number;
-              failed: number;
-            };
-          }
-        | null;
-      if (!response.ok || !payload?.operationId || !payload.counts) {
-        setError(
-          payload?.message ||
-            (payload?.error && userErrorMessage(payload.error)) ||
-            "Motion could not be applied to the selected clips.",
-        );
-        return;
-      }
-
-      let hydrated: CampaignOperation | null = null;
-      try {
-        const listResponse = await fetch(
-          `/api/projects/${projectId}/campaign-operations`,
-          { cache: "no-store" },
-        );
-        if (listResponse.ok) {
-          const list = (await listResponse.json()) as {
-            operations?: CampaignOperation[];
-          };
-          hydrated =
-            list.operations?.find(
-              (candidate) => candidate.id === payload.operationId,
-            ) ?? null;
-        }
-      } catch {
-        // The settled snapshot below remains truthful if operation-history
-        // hydration misses one request; a later project refresh reconciles it.
-      }
+      const payload = await motionMutation.mutateAsync();
+      const hydrated = await hydrateOperation(payload.operationId);
       setPreviewingMotion(false);
       setRetryIntent({ action: "apply_motion", change: motionChange });
       setOperation(
@@ -809,64 +782,44 @@ export function CampaignCommandBar({
           bundle: null,
         },
       );
-      router.refresh();
-    } catch {
-      setError("Motion could not be applied. Check the connection and try again.");
+      await invalidateAfterCampaignApply();
+    } catch (failure) {
+      setError(clipActionErrorCopy(failure, "Motion could not be applied to the selected clips."));
     } finally {
       setSubmitting(false);
     }
   }
+
+  const retryEditorActionMutation = useMutation({
+    ...clipMutationOptions,
+    mutationFn: async (input: { request: NonNullable<typeof editorRetryRequest>; retryOfId: string }) => {
+      const { runtime, clips, brand } = requireClipApi(api);
+      // The same failed items retried again after a lost response keep one key;
+      // the retry-of header names the operation being continued.
+      const intent = intentIn(retryActionIntent, runtime);
+      const accepted = await submitCampaignEditorAction({ clips, brand }, projectId, input.request, {
+        idempotencyKey: intent.keyFor(input),
+        retryOfId: input.retryOfId,
+      });
+      intent.complete();
+      return accepted;
+    },
+    onError: refetchWhenUncertain,
+  });
 
   async function retryEditorAction() {
     if (!operation || !editorRetryRequest || submitting) return;
     setSubmitting(true);
     setError(null);
     try {
-      const response = await fetch(
-        campaignEditorRetryEndpoint(projectId, editorRetryRequest),
-        {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            "idempotency-key": crypto.randomUUID(),
-            "campaign-retry-of": operation.id,
-          },
-          body: JSON.stringify(editorRetryRequest.input),
-        },
-      );
-      const payload = (await response.json().catch(() => null)) as
-        | (Partial<CampaignEditorOperationResult> & {
-            error?: string;
-            message?: string;
-          })
-        | null;
-      if (!response.ok || !payload?.operationId || !payload.counts) {
-        throw new Error(
-          payload?.message ||
-            (payload?.error && userErrorMessage(payload.error)) ||
-            "The failed campaign items could not be retried.",
-        );
+      const payload = await retryEditorActionMutation.mutateAsync({
+        request: editorRetryRequest,
+        retryOfId: operation.id,
+      });
+      if (!payload.operationId || !payload.counts) {
+        throw new Error("incomplete_retry_response");
       }
-
-      let hydrated: CampaignOperation | null = null;
-      try {
-        const listResponse = await fetch(
-          `/api/projects/${projectId}/campaign-operations`,
-          { cache: "no-store" },
-        );
-        if (listResponse.ok) {
-          const list = (await listResponse.json()) as {
-            operations?: CampaignOperation[];
-          };
-          hydrated =
-            list.operations?.find(
-              (candidate) => candidate.id === payload.operationId,
-            ) ?? null;
-        }
-      } catch {
-        // The settled retry summary remains truthful if item hydration misses
-        // this request; the project refresh below reconciles the item rows.
-      }
+      const hydrated = await hydrateOperation(payload.operationId);
       setOperation(
         hydrated ?? {
           id: payload.operationId,
@@ -883,13 +836,9 @@ export function CampaignCommandBar({
           bundle: null,
         },
       );
-      router.refresh();
-    } catch (retryError) {
-      setError(
-        retryError instanceof Error
-          ? retryError.message
-          : "The failed campaign items could not be retried.",
-      );
+      await invalidateAfterCampaignApply();
+    } catch (failure) {
+      setError(clipActionErrorCopy(failure, "The failed campaign items could not be retried."));
     } finally {
       setSubmitting(false);
     }
@@ -1462,13 +1411,13 @@ export function CampaignCommandBar({
                       </Text>
                     ) : null}
                     {operation.bundle?.status === "completed" ? (
-                      <Button size="sm" asChild>
-                        <a
-                          href={`/api/projects/${projectId}/export-bundles/${operation.bundle.id}/download`}
-                        >
-                          <Download size={14} />
-                          <Text ms="1">Download ZIP</Text>
-                        </a>
+                      <Button
+                        size="sm"
+                        disabled={downloadingBundle}
+                        onClick={() => void downloadBundle(operation.bundle?.id)}
+                      >
+                        {downloadingBundle ? <Spinner size="xs" /> : <Download size={14} />}
+                        <Text ms="1">Download ZIP</Text>
                       </Button>
                     ) : null}
                   </Stack>

@@ -26,6 +26,7 @@ import { formatDuration } from "@/lib/format";
 import { useStudio } from "../studio-shell";
 import {
   brandAudioRows,
+  useAudioApi,
   useAudioAssetList,
   resolveAudioPlaybackUrl,
   type AudioAssetListRow,
@@ -333,6 +334,7 @@ function TrackRow({
 }
 
 export function MusicTab({ reloadKey, player, onOpenUploads }: MusicTabProps) {
+  const audioApi = useAudioApi();
   const { studioEdits, setStudioEdits, endCoalesce, brandAudio } = useStudio("studioEdits", "setStudioEdits", "endCoalesce", "brandAudio");
   const music = studioEdits.music;
   const [category, setCategory] = useState("all");
@@ -380,7 +382,7 @@ export function MusicTab({ reloadKey, player, onOpenUploads }: MusicTabProps) {
   const applyTrack = async (asset: AudioAssetListRow) => {
     const request = ++applyRequest.current;
     try {
-      const url = await resolveAudioPlaybackUrl(asset.id);
+      const url = await resolveAudioPlaybackUrl(asset.id, audioApi);
       if (request !== applyRequest.current) return;
       updateMusic({ assetId: asset.id, title: asset.title, url });
       setShowMix(true);

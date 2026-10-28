@@ -8,7 +8,7 @@ import { AutopilotService } from "./autopilot.service";
 import { ProcessingUsageError } from "./processing-usage";
 import { projectService } from "./project.service";
 import { ZoomService } from "./zoom.service";
-import { createZoomTokenCipher, ZOOM_SCOPES, ZoomError } from "./zoom";
+import { createZoomTokenCipher, ZOOM_SCOPES, ZoomError, zoomStateHash } from "./zoom";
 import type { ZoomApi } from "./zoom-api";
 import { ruleFingerprint } from "./standing-grant";
 
@@ -146,20 +146,61 @@ describeDb("Zoom recording admission and authorization", () => {
     await expect(zoom.recordingDownload({ connectionId: f.connection.id, projectId: randomUUID(), meetingUuid: "meeting", recordingId: "recording" })).rejects.toMatchObject({ code: "zoom_recording_unavailable" });
   });
 
-  test("OAuth state binds member, Workspace and redirect URI and can be redeemed only once", async () => {
-    const f = await fixture(), other = await fixture(), zoom = service();
-    const url = new URL(await zoom.createAuthorizationUrl(f.scope, "https://narriflow.test"));
+  test("OAuth state is hashed, names its member and Workspace, binds the redirect URI and is redeemed once", async () => {
+    const f = await fixture(), zoom = service();
+    const url = new URL(await zoom.createAuthorizationUrl(f.scope, "https://api.narriflow.test"));
     const state = url.searchParams.get("state")!;
-    const input = { state, code: "private-code", origin: "https://narriflow.test" };
-    await expect(zoom.handleCallback(other.scope, input)).rejects.toMatchObject({ code: "zoom_oauth_state_invalid" });
-    await expect(zoom.handleCallback(f.scope, { ...input, origin: "https://other.test" })).rejects.toMatchObject({ code: "zoom_oauth_state_invalid" });
-    const results = await Promise.allSettled([zoom.handleCallback(f.scope, input), zoom.handleCallback(f.scope, input)]);
+    expect(url.searchParams.get("redirect_uri")).toBe("https://api.narriflow.test/api/zoom/oauth/callback");
+    const stored = await prisma.zoomOAuthState.findFirstOrThrow({ where: { workspaceId: f.workspace.id } });
+    expect(stored).toMatchObject({ userId: f.user.id, stateHash: zoomStateHash(state) });
+    expect(stored.stateHash).not.toBe(state);
+    const input = { state, code: "private-code", origin: "https://api.narriflow.test" };
+    // Only the state authenticates the callback; another origin is refused without burning it.
+    await expect(zoom.handleCallback({ ...input, origin: "https://other.test" })).rejects.toMatchObject({ code: "zoom_oauth_state_invalid" });
+    await expect(zoom.handleCallback({ ...input, state: "x".repeat(43) })).rejects.toMatchObject({ code: "zoom_oauth_state_invalid" });
+    expect(await prisma.zoomOAuthState.count({ where: { workspaceId: f.workspace.id } })).toBe(1);
+    const results = await Promise.allSettled([zoom.handleCallback(input), zoom.handleCallback(input)]);
     expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
-    const stored = await prisma.zoomConnection.findUniqueOrThrow({ where: { id: f.connection.id } });
-    expect(stored.accessTokenEncrypted).not.toContain(tokens.access_token);
-    expect(createZoomTokenCipher(config.encryptionKey).open(stored.accessTokenEncrypted!)).toBe(tokens.access_token);
+    const connection = await prisma.zoomConnection.findUniqueOrThrow({ where: { id: f.connection.id } });
+    expect(connection.accessTokenEncrypted).not.toContain(tokens.access_token);
+    expect(createZoomTokenCipher(config.encryptionKey).open(connection.accessTokenEncrypted!)).toBe(tokens.access_token);
     expect(JSON.stringify(await zoom.listConnections(f.scope))).not.toContain("Token");
-    expect(await prisma.zoomOAuthState.count({ where: { stateHash: state } })).toBe(0);
+    expect(await prisma.zoomOAuthState.count({ where: { workspaceId: f.workspace.id } })).toBe(0);
+    await expect(zoom.handleCallback(input)).rejects.toMatchObject({ code: "zoom_oauth_state_invalid" });
+  });
+
+  test("an expired OAuth state is refused and the callback leaves no connection behind", async () => {
+    const f = await fixture(), zoom = service();
+    const state = new URL(await zoom.createAuthorizationUrl(f.scope, "https://api.narriflow.test")).searchParams.get("state")!;
+    await prisma.zoomOAuthState.updateMany({ where: { workspaceId: f.workspace.id }, data: { expiresAt: new Date(Date.now() - 1000) } });
+    await expect(zoom.handleCallback({ state, code: "code", origin: "https://api.narriflow.test" })).rejects.toMatchObject({ code: "zoom_oauth_state_invalid" });
+  });
+
+  test("the callback rechecks the stored member's access before and after the provider exchange", async () => {
+    const f = await fixture();
+    const before = await prisma.zoomConnection.findUniqueOrThrow({ where: { id: f.connection.id } });
+    const origin = "https://api.narriflow.test";
+    const stateOf = async (zoom: ZoomService) => new URL(await zoom.createAuthorizationUrl(f.scope, origin)).searchParams.get("state")!;
+
+    // Removed before the callback: the provider is never called.
+    let exchanges = 0;
+    const counting = new ZoomService({ config: () => config, api: { ...api, exchange: async () => { exchanges++; return tokens; } } });
+    const first = await stateOf(counting);
+    await prisma.workspaceMember.deleteMany({ where: { workspaceId: f.workspace.id, userId: f.user.id } });
+    await expect(counting.handleCallback({ state: first, code: "code", origin })).rejects.toMatchObject({ code: "workspace_access_denied" });
+    expect(exchanges).toBe(0);
+
+    // Removed while the provider call is in flight: nothing is stored.
+    await prisma.workspaceMember.create({ data: { workspaceId: f.workspace.id, userId: f.user.id, role: "owner" } });
+    const racing = new ZoomService({ config: () => config, api: { ...api, me: async () => {
+      await prisma.workspaceMember.deleteMany({ where: { workspaceId: f.workspace.id, userId: f.user.id } });
+      return { id: "zoom-host", account_id: "zoom-account", displayName: "Dana on Zoom" };
+    } } });
+    const second = await stateOf(racing);
+    await expect(racing.handleCallback({ state: second, code: "code", origin })).rejects.toMatchObject({ code: "workspace_access_denied" });
+    const after = await prisma.zoomConnection.findUniqueOrThrow({ where: { id: f.connection.id } });
+    expect(after.updatedAt).toEqual(before.updatedAt);
+    expect(await prisma.zoomOAuthState.count({ where: { workspaceId: f.workspace.id } })).toBe(0);
   });
 
   test("connecting Zoom needs the plan that runs Autopilot; existing connections stay readable and disconnectable", async () => {
@@ -224,7 +265,7 @@ describeDb("Zoom recording admission and authorization", () => {
     await zoom.processDueNotifications();
     expect(await prisma.autopilotRule.findUniqueOrThrow({ where: { id: f.rule.id } })).toMatchObject({ pauseKind: "zoom_connection", status: "paused" });
     const url = new URL(await zoom.createAuthorizationUrl(f.scope, "https://narriflow.test"));
-    await zoom.handleCallback(f.scope, { state: url.searchParams.get("state")!, code: "code", origin: "https://narriflow.test" });
+    await zoom.handleCallback({ state: url.searchParams.get("state")!, code: "code", origin: "https://narriflow.test" });
     await zoom.acceptWebhook(signed({ event: "app_deauthorized", event_ts: 1, payload: { account_id: "zoom-account", user_id: "zoom-host" } }));
     await zoom.processDueNotifications();
     expect((await prisma.zoomConnection.findUniqueOrThrow({ where: { id: f.connection.id } })).revokedAt).toBeNull();

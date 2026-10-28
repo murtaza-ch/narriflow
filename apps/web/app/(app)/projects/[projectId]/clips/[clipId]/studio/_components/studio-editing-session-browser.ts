@@ -10,6 +10,7 @@ import {
   renewEditorLease,
   EDITOR_LEASE_HEARTBEAT_MS,
 } from "./local-editor-draft";
+import type { StudioCloudHttp } from "./studio-cloud-http";
 import type {
   StudioCoordinationParticipant,
   StudioDraftRecord,
@@ -46,7 +47,9 @@ export function classifyStudioCloudResponse(
   if (status >= 500) return { kind: "transient", reason: "server" };
   if (status === 401 || status === 403) return { kind: "authentication-lost" };
   if (status === 404) return { kind: "missing" };
-  if (status === 409) {
+  // The explicit Workspace selection moved: the app re-bootstraps, and this
+  // write is never replayed into another Workspace.
+  if (status === 409 && errorCode !== "workspace_selection_changed") {
     const details = isRecord(body) && isRecord(body.details)
       ? body.details
       : null;
@@ -71,11 +74,11 @@ export function classifyStudioCloudResponse(
   };
 }
 
-async function parseSuccessfulCloudWrite(
-  response: Response,
-): Promise<StudioCloudSaveOutcome> {
-  const body = (await response.json().catch(() => null)) as unknown;
-  if (!response.ok) return classifyStudioCloudResponse(response.status, body);
+function parseSuccessfulCloudWrite(
+  status: number,
+  body: unknown,
+): StudioCloudSaveOutcome {
+  if (status < 200 || status >= 300) return classifyStudioCloudResponse(status, body);
   if (
     !isRecord(body) ||
     typeof body.revision !== "number" ||
@@ -423,6 +426,7 @@ class BrowserStudioCoordinationAdapter implements StudioCoordinationAdapter {
 
 export function createBrowserStudioSessionDependencies(
   input: StudioSessionIdentity,
+  cloud: StudioCloudHttp,
   preview?: StudioSessionDependencies["preview"],
 ): StudioSessionDependencies {
   const expectedDraftKey = editorDraftKey(input.projectId, input.clipId);
@@ -431,7 +435,6 @@ export function createBrowserStudioSessionDependencies(
       throw new Error("Device Draft key does not match this Studio session");
     }
   };
-  const editorUrl = `/api/projects/${input.projectId}/clips/${input.clipId}/editor`;
   return {
     drafts: {
       load: async (key) => {
@@ -450,9 +453,9 @@ export function createBrowserStudioSessionDependencies(
     coordination: new BrowserStudioCoordinationAdapter(input.projectId, input.clipId),
     cloud: {
       loadHead: async () => {
-        const response = await fetch(editorUrl, { cache: "no-store" });
-        if (!response.ok) throw new Error(`Could not refresh editor head (${response.status})`);
-        const value = (await response.json()) as { revision?: unknown; document?: unknown };
+        const { status, body } = await cloud.load();
+        if (status < 200 || status >= 300) throw new Error(`Could not refresh editor head (${status})`);
+        const value = (isRecord(body) ? body : {}) as { revision?: unknown; document?: unknown };
         if (typeof value.revision !== "number" || !Number.isInteger(value.revision)) {
           throw new Error("Editor head returned an invalid revision");
         }
@@ -463,12 +466,8 @@ export function createBrowserStudioSessionDependencies(
       },
       save: async ({ baseRevision, document }) => {
         try {
-          const response = await fetch(editorUrl, {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ baseRevision, document }),
-          });
-          return parseSuccessfulCloudWrite(response);
+          const { status, body } = await cloud.save({ baseRevision, document });
+          return parseSuccessfulCloudWrite(status, body);
         } catch {
           return {
             kind: "transient",
@@ -478,12 +477,8 @@ export function createBrowserStudioSessionDependencies(
       },
       reset: async ({ baseRevision }): Promise<StudioCloudResetOutcome> => {
         try {
-          const response = await fetch(`${editorUrl}/reset`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ baseRevision }),
-          });
-          const outcome = await parseSuccessfulCloudWrite(response);
+          const { status, body } = await cloud.reset({ baseRevision });
+          const outcome = parseSuccessfulCloudWrite(status, body);
           return outcome.kind === "saved"
             ? {
                 kind: "reset",
@@ -498,13 +493,10 @@ export function createBrowserStudioSessionDependencies(
           };
         }
       },
+      // Fire-and-forget. A write that cannot be sent leaves the Device Draft as
+      // the only copy; nothing here removes it.
       keepalive: ({ baseRevision, document }) => {
-        void fetch(editorUrl, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ baseRevision, document }),
-          keepalive: true,
-        }).catch(() => undefined);
+        cloud.keepalive({ baseRevision, document });
       },
     },
     ...(preview ? { preview } : {}),

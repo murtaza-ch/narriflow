@@ -2,7 +2,9 @@
 import { SocialPlatformMark } from "@/lib/social-platform-mark";
 import { SocialPostLinks } from "@/lib/social-post-links";
 import { describeCounts } from "@/lib/performance-format";
-import { useState } from "react";
+import { useRef, useState } from "react";
+import { createIntent } from "@narriflow/api-client";
+import { apiFailureMessage } from "@/lib/publishing-client";
 import Link from "next/link";
 import {
 	Box,
@@ -39,7 +41,7 @@ import {
 	describeSocialPost,
 	SOCIAL_PLATFORM_LABELS,
 } from "@/lib/social-post-status";
-import { publishingRequest } from "./publishing-draft";
+import type { ProjectPublishingApi } from "./publishing-api";
 import { EmptyState } from "@narriflow/ui/components/empty-state";
 import { FeatureHero } from "../../_components/feature-hero";
 const FILTERS = [
@@ -107,6 +109,7 @@ function PostsHeroVisual() {
 }
 
 export function PublishingPosts({
+	api,
 	projectId,
 	posts,
 	clips,
@@ -118,6 +121,7 @@ export function PublishingPosts({
 	filterable = false,
 	timeZone,
 }: {
+	api: Pick<ProjectPublishingApi, "cancelPost" | "refreshInbox" | "recheck" | "confirm" | "publishAgain">;
 	projectId: string;
 	posts: SocialPostSnapshot[];
 	clips: ClipSnapshot[];
@@ -141,41 +145,37 @@ export function PublishingPosts({
 	const [evidence, setEvidence] = useState("platform_url");
 	const [reference, setReference] = useState("");
 	const [ack, setAck] = useState(false);
+	// One key per recovery decision: a retry after a timeout replays the first answer, a changed reason or evidence is a new decision.
+	const decision = useRef(createIntent<unknown>());
 	async function act(post: SocialPostSnapshot, action: string) {
 		setBusy(post.id);
 		setError("");
 		try {
-			const base = `/api/projects/${projectId}/social-posts/${post.id}`;
-			if (action === "cancel")
-				await publishingRequest(base, undefined, "DELETE");
-			else if (action === "refresh-inbox")
-				await publishingRequest(`${base}/refresh-inbox`, {});
-			else
-				await publishingRequest(
-					`${base}/${action === "confirm_published" ? "confirm" : action === "publish_again" ? "publish-again" : "recheck"}`,
-					{
-						reason,
-						...(action === "publish_again"
-							? { duplicateRiskAcknowledged: ack }
+			if (action === "cancel") await api.cancelPost(projectId, post.id);
+			else if (action === "refresh-inbox") await api.refreshInbox(projectId, post.id);
+			else if (action === "confirm_published") {
+				const input = {
+					reason,
+					evidenceKind: evidence,
+					...(evidence === "platform_url"
+						? { externalUrl: reference }
+						: evidence === "provider_reference"
+							? { providerReference: reference }
 							: {}),
-						...(action === "confirm_published"
-							? {
-									evidenceKind: evidence,
-									...(evidence === "platform_url"
-										? { externalUrl: reference }
-										: evidence === "provider_reference"
-											? { providerReference: reference }
-											: {}),
-								}
-							: {}),
-					},
-				);
+				};
+				await api.confirm(projectId, post.id, input as Parameters<typeof api.confirm>[2], decision.current.keyFor({ action, postId: post.id, input }));
+			} else if (action === "publish_again") {
+				const input = { reason, duplicateRiskAcknowledged: ack };
+				await api.publishAgain(projectId, post.id, input as Parameters<typeof api.publishAgain>[2], decision.current.keyFor({ action, postId: post.id, input }));
+			} else {
+				const input = { reason };
+				await api.recheck(projectId, post.id, input as Parameters<typeof api.recheck>[2], decision.current.keyFor({ action, postId: post.id, input }));
+			}
+			decision.current.complete();
 			setRecovery(null);
 			await refresh();
 		} catch (e) {
-			setError(
-				e instanceof Error ? e.message : "The post could not be updated.",
-			);
+			setError(apiFailureMessage(e, "The post could not be updated."));
 		} finally {
 			setBusy(null);
 		}

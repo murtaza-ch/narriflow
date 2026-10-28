@@ -1,4 +1,8 @@
 import type { AdmissionTable } from "../platform/admission-table";
 
-/** Admission of the integrations routes, keyed by `METHOD /path` under `/api`. */
-export const integrationsAdmission = {} as const satisfies AdmissionTable;
+export const integrationsAdmission = {
+  "GET /integrations/mcp/status": { kind: "workspace", capability: "content.view" },
+  "GET /integrations/mcp/preparations": { kind: "signed_in" },
+  "GET /integrations/mcp/upload-handoff": { kind: "signed_in" },
+  "POST /mcp/confirmations": { kind: "signed_in", deferRateRefusal: true },
+} as const satisfies AdmissionTable;

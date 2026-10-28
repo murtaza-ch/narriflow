@@ -1,41 +1,29 @@
 "use client";
 
-import { useTransition } from "react";
-import { useRouter } from "next/navigation";
+import { useMutation } from "@tanstack/react-query";
 import { Check } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
 import { toaster } from "@narriflow/ui/components/toaster";
+import { failureMessage, useBrandApi } from "./brand-api";
 
 export function BrandProfileDefaultButton({ profileId }: { profileId: string }) {
-  const router = useRouter();
-  const [pending, startTransition] = useTransition();
-
-  function setDefault() {
-    startTransition(async () => {
-      try {
-        const response = await fetch(`/api/brand-profiles/${profileId}/set-default`, {
-          method: "POST",
-        });
-        const payload = (await response.json().catch(() => null)) as
-          | { message?: string }
-          | null;
-        if (!response.ok) {
-          throw new Error(payload?.message ?? "The default profile could not be changed.");
-        }
-        toaster.create({ type: "success", title: "Default Brand Profile updated" });
-        router.refresh();
-      } catch (error) {
-        toaster.create({
-          type: "error",
-          title: "Could not update the default profile",
-          description: error instanceof Error ? error.message : "Please try again.",
-        });
-      }
-    });
-  }
+  const { mutations, invalidate } = useBrandApi();
+  const setDefault = useMutation({
+    mutationFn: () => mutations.setDefaultProfile(profileId),
+    onSuccess: async () => {
+      toaster.create({ type: "success", title: "Default Brand Profile updated" });
+      await invalidate();
+    },
+    onError: (error) =>
+      toaster.create({
+        type: "error",
+        title: "Could not update the default profile",
+        description: failureMessage(error),
+      }),
+  });
 
   return (
-    <Button size="sm" variant="subtle" onClick={setDefault} loading={pending}>
+    <Button size="sm" variant="subtle" onClick={() => setDefault.mutate()} loading={setDefault.isPending}>
       <Check size={13} />
       Make default
     </Button>

@@ -1,7 +1,10 @@
 import { describe, expect, test } from "bun:test";
+import { ApiError, apiErrorFromResponse } from "@narriflow/api-client/core";
 import {
-  createUploadSessionBrowserAdapter,
+  createUploadSessionBrowserAdapter as createAdapterWithControls,
+  type UploadSessionBrowserAdapter,
   type UploadSessionBrowserAdapterDependencies,
+  type UploadSessionControls,
   type UploadSessionBrowserSnapshot,
   type UploadSessionBrowserStartInput,
   uploadRetryDelayMs,
@@ -19,6 +22,39 @@ function memoryStorage(): UploadResumeStorage & { values: Map<string, string> } 
     setItem: (key, value) => values.set(key, value),
     removeItem: (key) => values.delete(key),
   };
+}
+
+/**
+ * The five commands over a fake server that speaks HTTP, the way the API client's ingest
+ * actions do: a 2xx body resolves, any other status rejects with the `ApiError` its error
+ * envelope describes. The same `fetcher` also plays presigned storage for the byte PUTs.
+ */
+function controlsFromFetcher(fetcher: typeof fetch): UploadSessionControls {
+  const command = (action: string) => async (input: unknown, signal?: AbortSignal) => {
+    const response = await fetcher(`/api/upload-sessions/${action}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+      signal,
+    });
+    if (!response.ok) throw await apiErrorFromResponse(response);
+    return (await response.json().catch(() => null)) as unknown;
+  };
+  return {
+    open: command("open"),
+    status: command("status"),
+    grants: command("grants"),
+    finalize: command("finalize"),
+    discard: command("discard"),
+  };
+}
+
+type LegacyAdapterDependencies = Omit<UploadSessionBrowserAdapterDependencies, "controls"> & {
+  fetcher: typeof fetch;
+};
+
+function createUploadSessionBrowserAdapter(dependencies: LegacyAdapterDependencies): UploadSessionBrowserAdapter {
+  return createAdapterWithControls({ ...dependencies, controls: controlsFromFetcher(dependencies.fetcher) });
 }
 
 type AdapterTransferTestInput = UploadSessionBrowserStartInput &
@@ -2413,5 +2449,79 @@ describe("Upload Session browser adapter", () => {
 
     expect(requests).toEqual(["/api/upload-sessions/status"]);
     expect(navigations).toEqual([]);
+  });
+  test("byte transfers go straight to storage while the commands go through the controls", async () => {
+    const storage = memoryStorage();
+    const source = new File([new Uint8Array([1, 2, 3, 4])], "direct.wav", { type: "audio/wav", lastModified: 7 });
+    const commands: string[] = [];
+    const transfers: Array<{ url: string; body: Blob }> = [];
+    const navigations: string[] = [];
+    const sessionId = "11111111-1111-4111-8111-111111111111";
+    const projectId = "22222222-2222-4222-8222-222222222222";
+    const adapter = createAdapterWithControls({
+      storage,
+      createClientKey: () => "44444444-4444-4444-8444-444444444444",
+      navigate: (id) => navigations.push(id),
+      controls: {
+        async open() {
+          commands.push("open");
+          return {
+            outcome: "uploading",
+            sessionId,
+            projectId,
+            transfer: { kind: "single", contentType: "audio/wav", grant: { url: "https://upload.invalid/single", contentType: "audio/wav" } },
+          };
+        },
+        async finalize() {
+          commands.push("finalize");
+          return { outcome: "queued_for_ingest", sessionId, projectId, queuedJobId: "33333333-3333-4333-8333-333333333333" };
+        },
+        async status() {
+          throw new Error("status is for resume only");
+        },
+        async grants() {
+          throw new Error("a single PUT needs no grant refresh");
+        },
+        async discard() {
+          throw new Error("nothing to discard");
+        },
+      },
+      // No fetcher: the bytes would use XHR in a browser; the injected transport stands in for it.
+      uploadTransport: async ({ url, body }) => {
+        transfers.push({ url, body });
+        return { etag: null };
+      },
+    });
+
+    await adapter.start({ file: source, title: "Direct", brandTemplateId: null, generationContext: { languageCode: "en", contentPack: {} } });
+
+    expect(commands).toEqual(["open", "finalize"]);
+    expect(transfers.map((transfer) => transfer.url)).toEqual(["https://upload.invalid/single"]);
+    expect(navigations).toEqual([projectId]);
+  });
+
+  test("an unreachable API reads as unavailable storage and keeps the saved session", async () => {
+    const storage = memoryStorage();
+    const source = new File([new Uint8Array([1])], "offline.wav", { type: "audio/wav", lastModified: 9 });
+    const adapter = createAdapterWithControls({
+      storage,
+      createClientKey: () => "44444444-4444-4444-8444-444444444444",
+      navigate: () => {},
+      controls: {
+        open: async () => {
+          throw new ApiError({ code: "network_error", message: "Could not reach the server.", status: 0 });
+        },
+        status: async () => ({}),
+        grants: async () => ({}),
+        finalize: async () => ({}),
+        discard: async () => ({}),
+      },
+    });
+
+    await adapter.start({ file: source, title: "Offline", brandTemplateId: null, generationContext: { languageCode: "en", contentPack: {} } });
+
+    expect(adapter.snapshot().phase).toBe("failed");
+    expect(adapter.snapshot().failureCode).toBe("upload_session_unavailable");
+    expect(storage.values.get(UPLOAD_RESUME_STORAGE_KEY)).toBeDefined();
   });
 });

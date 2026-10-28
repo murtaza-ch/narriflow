@@ -24,6 +24,9 @@ import { useStudio } from "../studio-shell";
 import { CaptionCue, captionFontStyle, useLiveCaption } from "../caption-style-engine";
 import type { CaptionWord } from "../use-current-caption";
 import { PresetCard } from "./preset-card";
+import { createClipsClient, invalidateAfterClipChange } from "@narriflow/api-client/clips";
+import { requireStudioApi } from "../studio-api";
+import { useStudioApi } from "../use-studio-api";
 
 const ANIMATIONS = Object.entries(CAPTION_MOTIONS).map(([id, spec]) => ({
   id: id as CaptionAnimation,
@@ -713,26 +716,26 @@ export function CaptionsPanel() {
   const [applyState, setApplyState] = useState<
     "idle" | "applying" | "applied" | "error"
   >("idle");
+  const studioApi = useStudioApi();
 
   async function handleApplyToAll() {
     if (applyState === "applying") return;
     setApplyState("applying");
     try {
-      const res = await fetch(
-        `/api/projects/${clipInfo.projectId}/clips/apply-caption-preset`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          // excludeClipId: this session's own clip already has the preset
-          // applied locally (it's already `captionPreset` in the open
-          // document) and will persist it through the normal
-          // revision-guarded autosave — including it here would bump its
-          // editorRevision server-side and 409 that autosave.
-          body: JSON.stringify({ captionPreset, excludeClipId: clipInfo.id }),
-        },
-      );
-      if (!res.ok) throw new Error("apply failed");
-      const { updated } = (await res.json()) as { updated: number };
+      const api = requireStudioApi(studioApi);
+      // excludeClipId: this session's own clip already has the preset
+      // applied locally (it's already `captionPreset` in the open
+      // document) and will persist it through the normal
+      // revision-guarded autosave — including it here would bump its
+      // editorRevision server-side and 409 that autosave.
+      const response = await createClipsClient(api.runtime.transport.scoped(api.scope)).projects[":id"].clips[
+        "apply-caption-preset"
+      ].$post({
+        param: { id: clipInfo.projectId },
+        json: { captionPreset, excludeClipId: clipInfo.id },
+      });
+      const { updated } = (await response.json()) as { updated: number };
+      void invalidateAfterClipChange(api.runtime.queryClient, api.scope, clipInfo.projectId);
       setApplyState("applied");
       toaster.create({
         type: "success",

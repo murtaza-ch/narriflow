@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, useTransition } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { PlanLimitNotice } from "../../_components/plan-limit-notice";
 import { AccessNote, type WorkspaceAccess } from "../_components/access-note";
@@ -12,6 +12,8 @@ import { SettingsCard, StatusPill } from "../_components/settings-ui";
 import { Button } from "@narriflow/ui/components/button";
 import { useConfirm } from "@narriflow/ui/components/confirm-dialog";
 import { toaster } from "@narriflow/ui/components/toaster";
+import { isApiError } from "@narriflow/api-client";
+import { apiFailureMessage } from "@/lib/publishing-client";
 import {
 	PLAN_CATALOG,
 	SOCIAL_PROVIDER_CAPABILITIES,
@@ -98,10 +100,24 @@ const platforms: SocialPlatform[] = [
 	"linkedin",
 ];
 
-function connectHref(platform: SocialPlatform, returnTo?: string) {
-	if (returnTo)
-		return `/api/social/oauth/start/${platform}?redirect=${encodeURIComponent(returnTo)}`;
-	return `/api/social/oauth/start/${platform}?redirect=/settings/social-accounts`;
+/** Where a connected account returns to: the publishing draft it came from, else this page. */
+function connectRedirect(returnTo?: string) {
+	return returnTo ?? "/settings/social-accounts";
+}
+
+export type FacebookPageChoice = { id: string; name: string | null; avatarUrl: string | null };
+
+/** The social account commands, bound to the selected Workspace by the screen. */
+export interface SocialAccountsApi {
+	/** Starts the provider sign-in; resolves to the provider's authorization URL. */
+	startConnect(platform: SocialPlatform, redirect: string): Promise<string>;
+	facebookPages(token: string, signal?: AbortSignal): Promise<FacebookPageChoice[]>;
+	selectFacebookPage(token: string, pageId: string): Promise<{ displayName: string }>;
+	disconnect(accountId: string): Promise<unknown>;
+	/** Refreshes the accounts and what depends on them (queue, calendar, composer). */
+	onChanged(): void;
+	/** Leaves for the provider; only ever called with the URL `startConnect` returned. */
+	navigate(url: string): void;
 }
 
 function SocialAvatar({
@@ -147,6 +163,7 @@ function SocialAvatar({
 
 export function SocialAccountsPanel({
 	accounts,
+	api,
 	connectedCount,
 	errorCode,
 	facebookSelectionToken,
@@ -159,6 +176,7 @@ export function SocialAccountsPanel({
 	canManageBilling,
 }: {
 	accounts: SocialAccountSnapshot[];
+	api: SocialAccountsApi;
 	connectedCount: number | null;
 	errorCode: string | null;
 	facebookSelectionToken: string | null;
@@ -177,11 +195,9 @@ export function SocialAccountsPanel({
 	const mayConnect = canManage && connectRequirement === null;
 	const { openUpgrade } = useUpgrade();
 	const router = useRouter();
-	const [isPending, startTransition] = useTransition();
 	const [disconnecting, setDisconnecting] = useState<string | null>(null);
-	const [facebookPages, setFacebookPages] = useState<
-		Array<{ id: string; name: string | null; avatarUrl: string | null }>
-	>([]);
+	const [connecting, setConnecting] = useState<SocialPlatform | null>(null);
+	const [facebookPages, setFacebookPages] = useState<FacebookPageChoice[]>([]);
 	const [selectingPage, setSelectingPage] = useState<string | null>(null);
 	const { confirm, dialog } = useConfirm();
 	const callbackFired = useRef(false);
@@ -219,62 +235,55 @@ export function SocialAccountsPanel({
 
 	useEffect(() => {
 		if (!facebookSelectionToken) return;
-		fetch(
-			`/api/social/oauth/facebook-selection/${encodeURIComponent(facebookSelectionToken)}`,
-			{ cache: "no-store" },
-		)
-			.then(async (response) => {
-				const payload = await response.json();
-				if (!response.ok)
-					throw new Error(
-						payload.message || "Facebook Pages could not be loaded",
-					);
-				setFacebookPages(payload.pages);
-			})
-			.catch((reason) =>
+		const controller = new AbortController();
+		api
+			.facebookPages(facebookSelectionToken, controller.signal)
+			.then(setFacebookPages)
+			.catch((reason) => {
+				if (controller.signal.aborted) return;
 				toaster.create({
 					type: "error",
 					title: "Could not load Facebook Pages",
-					description:
-						reason instanceof Error
-							? reason.message
-							: "Try connecting Facebook again.",
-				}),
-			);
-	}, [facebookSelectionToken]);
+					description: apiFailureMessage(reason, "Try connecting Facebook again."),
+				});
+			});
+		return () => controller.abort();
+	}, [facebookSelectionToken, api]);
+
+	/** Starts the provider sign-in; the page only navigates once the API has stored the OAuth state and answered. */
+	async function connect(platform: SocialPlatform) {
+		setConnecting(platform);
+		try {
+			api.navigate(await api.startConnect(platform, connectRedirect(returnTo)));
+		} catch (reason) {
+			setConnecting(null);
+			toaster.create({
+				type: "error",
+				title: "Connection failed",
+				description:
+					(isApiError(reason) ? userErrorMessage(reason.code) : null) ??
+					"Social connection failed. Please try connecting again.",
+			});
+		}
+	}
 
 	async function selectFacebookPage(pageId: string) {
 		if (!facebookSelectionToken) return;
 		setSelectingPage(pageId);
 		try {
-			const response = await fetch(
-				`/api/social/oauth/facebook-selection/${encodeURIComponent(facebookSelectionToken)}`,
-				{
-					method: "POST",
-					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ pageId }),
-				},
-			);
-			const payload = await response.json();
-			if (!response.ok)
-				throw new Error(
-					payload.message || "Facebook Page could not be connected",
-				);
+			const account = await api.selectFacebookPage(facebookSelectionToken, pageId);
 			toaster.create({
 				type: "success",
 				title: "Facebook Page connected",
-				description: payload.account.displayName,
+				description: account.displayName,
 			});
 			router.replace("/settings/social-accounts", { scroll: false });
-			startTransition(() => router.refresh());
+			api.onChanged();
 		} catch (reason) {
 			toaster.create({
 				type: "error",
 				title: "Could not connect Facebook Page",
-				description:
-					reason instanceof Error
-						? reason.message
-						: "Try connecting Facebook again.",
+				description: apiFailureMessage(reason, "Try connecting Facebook again."),
 			});
 		} finally {
 			setSelectingPage(null);
@@ -292,45 +301,27 @@ export function SocialAccountsPanel({
 
 		setDisconnecting(account.id);
 		try {
-			const response = await fetch(`/api/social/accounts/${account.id}`, {
-				method: "DELETE",
-			});
-			if (!response.ok) {
-				const body = await response.json().catch(() => null);
-				console.warn(
-					JSON.stringify({
-						level: "error",
-						message: "social_disconnect_failed",
-						status: response.status,
-					}),
-				);
-				toaster.create({
-					type: "error",
-					title: "Could not disconnect",
-					description:
-						userErrorMessage(body?.error) ??
-						"Could not disconnect this account. Please try again.",
-				});
-				return;
-			}
+			await api.disconnect(account.id);
 			toaster.create({
 				type: "success",
 				title: "Account disconnected",
 				description: `${account.displayName} was removed.`,
 			});
-			startTransition(() => router.refresh());
+			api.onChanged();
 		} catch (err) {
 			console.warn(
 				JSON.stringify({
 					level: "error",
 					message: "social_disconnect_failed",
-					errorName: err instanceof Error ? err.name : "UnknownError",
+					...(isApiError(err) ? { status: err.status, code: err.code } : { errorName: err instanceof Error ? err.name : "UnknownError" }),
 				}),
 			);
 			toaster.create({
 				type: "error",
 				title: "Could not disconnect",
-				description: "Could not disconnect this account. Please try again.",
+				description:
+					(isApiError(err) ? userErrorMessage(err.code) : null) ??
+					"Could not disconnect this account. Please try again.",
 			});
 		} finally {
 			setDisconnecting(null);
@@ -438,9 +429,8 @@ export function SocialAccountsPanel({
 								{canManage ? (
 									<Flex gap="1" align="center" flexShrink={0}>
 										{account.status !== "active" ? (
-											<Button variant="subtle" size="sm" asChild>
-												{/* A plain anchor: starting OAuth writes state, so it must not be prefetched. */}
-												<a href={connectHref(account.platform, returnTo)}><RefreshCw size={13} />Reconnect</a>
+											<Button variant="subtle" size="sm" loading={connecting === account.platform} disabled={connecting !== null} onClick={() => void connect(account.platform)}>
+												<RefreshCw size={13} />Reconnect
 											</Button>
 										) : null}
 										<Button
@@ -450,7 +440,7 @@ export function SocialAccountsPanel({
 											_hover={{ color: "danger.fg", bg: "bg.soft" }}
 											aria-label={`Disconnect ${account.displayName}`}
 											loading={disconnecting === account.id}
-											disabled={isPending || disconnecting !== null}
+											disabled={disconnecting !== null}
 											onClick={() => void disconnect(account)}
 										>
 											<Trash2 size={14} />
@@ -534,13 +524,15 @@ export function SocialAccountsPanel({
 									outlineOffset: "3px",
 								}}
 							>
-								<a
-									href={connectHref(platform, returnTo)}
+								<button
+									type="button"
+									disabled={connecting !== null}
+									onClick={() => void connect(platform)}
 									aria-label={`Connect ${platformLabels[platform]} account${enabled ? "" : " (publishing coming soon)"}`}
 								>
 									{content}
 									{addMark}
-								</a>
+								</button>
 							</Flex>
 						) : canManage && connectUpgrade?.tier ? (
 							// At the plan's account limit the tile explains the upgrade instead of greying out.

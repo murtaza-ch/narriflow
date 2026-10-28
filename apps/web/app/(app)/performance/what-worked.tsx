@@ -4,12 +4,12 @@ import { ArrowRight, Check, ChevronDown, Clock, Eye, Film, Heart, Lightbulb, Mes
 import type { ReactNode } from "react";
 import { PageHeader } from "@narriflow/ui/components/page-header";
 import { Button } from "@narriflow/ui/components/button";
-import type { GuidanceView, PerformanceGroup, PerformanceSummary } from "@narriflow/services";
 import {
 	PERFORMANCE_GUIDANCE_DIMENSIONS,
 	PERFORMANCE_SYNC_SUPPORT,
 	type SocialPlatform,
 } from "@narriflow/validators";
+import type { GuidanceView, PerformanceGroupView as PerformanceGroup, PerformanceSummaryView as PerformanceSummary } from "@/lib/publishing-client";
 import { SOCIAL_PLATFORM_LABELS } from "@/lib/social-post-status";
 import { BrandTile } from "../integrations/_components/brand-tile";
 

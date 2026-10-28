@@ -4,7 +4,7 @@
 
 **Blocked by:** [11 - Move clip and campaign controls](11-move-clip-and-campaign-controls.md), [08 - Expose Project and library reads and commands](08-expose-project-and-library-reads-and-commands.md), [07 - Move billing API and convert billing UI](07-move-billing-api-and-convert-billing-ui.md)
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Suggested implementer:** Claude. The other pairing side reviews and returns findings to this owner.
 
@@ -221,11 +221,11 @@ Also account for the inventory's cross-domain traps: query-only actions, action 
 
 ## Acceptance criteria
 
-- [ ] All owned clips/campaign/finishing components and clip-media URLs use api-client; module-level request promise caches become scoped query state.
-- [ ] Every copied refresh/fetch/anchor site has a narrow invalidation/grant replacement, including no-refresh media src paths.
-- [ ] Keys survive retries; 409 and uncertain delivery recover through domain state, not new user intents.
-- [ ] No change to Studio session or publishing/review component props; imported helper props frozen.
-- [ ] No unowned files changed; paired review findings and verification evidence recorded under Comments.
+- [x] All owned clips/campaign/finishing components and clip-media URLs use api-client; module-level request promise caches become scoped query state.
+- [x] Every copied refresh/fetch/anchor site has a narrow invalidation/grant replacement, including no-refresh media src paths.
+- [x] Keys survive retries; 409 and uncertain delivery recover through domain state, not new user intents.
+- [x] No change to Studio session or publishing/review component props; imported helper props frozen.
+- [x] No unowned files changed; paired review findings and verification evidence recorded under Comments (paired review itself is left to the orchestrator).
 
 ## Verification
 
@@ -240,3 +240,27 @@ Verify the changed flow in the running Next app against the separate API origin.
 ## Comments
 
 Append claim, requested seam changes, paired review and evidence here.
+
+Claimed and implemented by Claude (Sonnet 5.5), 2026-10-29. Paired review not run by the implementer. No signed-in browser pass (see Evidence).
+
+### What changed (all inside the ownership list; `advanced-clip-settings.tsx`, `campaign-selection.ts(+test)`, `clips-panel.tsx`, `source-hover-preview.tsx` verified, no edit needed)
+- `lib/clip-media.ts`: module-level preview promise cache and `clipFileDownloadPath` deleted. It now also holds the clip UI's access seam: `useClipApi()` (typed clips/studio/exports/projects clients + `brand` mutations, bound to the captured identity + Workspace), `requireClipApi`, `intentIn(ref, runtime)` (one `runtime.createIntent()` per user action, kept through failures, `complete()` on confirmed acceptance) and `playableMediaUrl` (http(s) only before any navigation).
+- Reads: clip previews = `clipQueries.previews` (shared per format across rows, 5 min stale, no focus refetch so a playing video keeps its URL; refetched when that clip's render readiness changes; `clip_render_not_found|not_ready` = pending). Operation polling = `clipQueries.campaignOperations` with 2 s `refetchInterval` while a drawer operation runs. Editor-action catalog = `clipQueries.editorActionCatalog`. Trim/Extend transcript = shared query `[projects, transcript-utterances, id]` with a module-level `select` (flattened once, same identity between renders; the dialog's imperative-paint contract is untouched). Finishing = `projectQueries.finishing` polled every 15 s by `FinishingAutoRefresh({projectId, shown})`, which invalidates the Project only when the answer differs from what the page shows (`finishingSignature`).
+- Writes (all `useMutation` with `clipMutationOptions`, scope captured at press time): render (row, bar, dialog reframe), duplicate, delete (`clip_not_found` after a retry = done), rename (`PATCH` via the studio client), title suggestions (abortable), export-bundle create/retry, share (current export lookup + export create), apply brand profile/style/motion/scene (`submitCampaignEditorAction` in `campaign-command-state.ts` dispatches to `clipCommands.apply*` or `brandMutations.applySceneTemplate`), ingest retry (`createIngestActions().retryIngest`).
+- Keys: every retryable command takes its `Idempotency-Key` from an intent (render, duplicate, export create, bundle create/retry, motion, editor-action apply/retry, reframe). Campaign retries send `Campaign-Retry-Of = operation.id`; the retry intent is keyed by `{request, retryOfId}`, so the same failed items retried after a lost response replay, a different item set is a new key. 409/5xx/no-response (`failureNeedsStateRefetch`) refetch clip/Project state instead of asking the user to repeat.
+- Downloads: clip "Download" and "Download ZIP" request a fresh grant (`clipQueries.downloadGrant` / `GET .../export-bundles/:id/download`) and `window.location.assign(downloadUrl)`; no Clerk token ever goes to the media origin. The deleted `/file` route has no remaining caller in my files.
+- Invalidation: `invalidateAfterClipChange` (clips list/previews/operations, Project reads, project lists, usage) after render/duplicate/delete/apply; rename = clips list + Project + `studio`; campaign apply and trim add `invalidateScoped(..., "studio")` so a Studio opened next cannot read a cached older document; ingest retry = `invalidateAfterIntake`. No `router.refresh`, `revalidatePath`, server action or `useActionState` left in my files (`RetryIngestButton` is a plain button now, same props).
+- `finishing-status.tsx`/test: `ProjectFinishingView` is now `NonNullable<ProjectDetail["finishing"]>` (no `@narriflow/services`); `campaign-command-state.test.ts` computes the brand requirement locally (policy mirror) instead of importing services. `clip-action-error-copy` now takes the thrown `ApiError` (known code -> product copy, otherwise the envelope message, no response -> caller fallback).
+
+### Requests for other owners
+- 10: `ClipsPanel`/`ClipRow`/`FinishingStatus`/`RetryIngestButton`/`ClipActionsMenu` props are unchanged. The Project page must render them under the authenticated `ApiProvider` with a selected Workspace (they render inert, never throw, until one exists). Regenerate form: mint one `runtime.createIntent()` key per submit and call `clipCommands.regenerate(...)` (`advanced-clip-settings.tsx` stays a pure field set).
+- 14: `ClipActionsMenu` (Studio top bar) invalidates `scopedKey(scope,"studio")` after rename/duplicate/delete; make the Studio bootstrap key live under domain `studio` (or subscribe to `clips` list invalidation) so the title refreshes without a reload. The menu now needs `ApiProvider` above the Studio.
+- 11 (nit): `suggestTitles`, `previewEditorAction` and `GET .../transcript/utterances` helpers have no `signal` parameter; I call the typed clients directly for those (typed, no URL strings). Preview/catalog DTOs type `role` as `string` (scene role) rather than `"intro"|"outro"`.
+- 16: `retry-import-band.tsx` still calls `retryIngestFormAction`; use `createIngestActions().retryIngest` like `RetryIngestButton`. 30: bundle/share/export-current calls use the exports client directly (no queries yet).
+- 31: delete `/clips/:clipId/file` row and `retryIngestFormAction` once 16 lands; `lib/clip-media.ts` imports `@/app/_components/api-provider` (fine for the Biome backend-import rule).
+
+### Evidence
+- `bun test "apps/web/app/(app)/projects/[projectId]" apps/web/lib/clip-media.test.ts` (from `apps/web`): 517 pass, 0 fail across 56 files (new/changed: campaign-command-state 15 incl. the four editor actions sending key + `Campaign-Retry-Of`, clip-action-error-copy, finishing-status, finishing-auto-refresh, clip-media).
+- `bun run --cwd apps/web typecheck`: no error in any file of this ticket (remaining errors are other tickets': recipes-panel, settings/*, `app/api/stream`, authenticated-request-policy modules).
+- `bunx biome check` on all owned paths: clean.
+- NOT done: signed-in browser pass against `next dev` + API (needs Clerk session). Ticket 32 should run: row preview playback and format switch, clip Download and ZIP download (grant -> R2), Render/retry (key replay on a dropped response), Share (existing and new export), Trim/Extend open/save with Auto reframe, rename/duplicate/delete from row and Studio top bar, campaign bar preflights, apply brand/style/scene/motion and retry-of, finishing poll to ready, Retry ingest at the limit.

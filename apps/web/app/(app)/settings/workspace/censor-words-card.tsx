@@ -1,27 +1,37 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Flex, Stack, Text } from "@chakra-ui/react";
+import type { WorkspaceScope } from "@narriflow/api-client";
+import {
+  replaceCensorWordsMutation,
+  resetCensorWordsMutation,
+} from "@narriflow/api-client/workspace";
+import { useMutation } from "@tanstack/react-query";
 import { ShieldCheck } from "lucide-react";
+import { useApiRuntime } from "@/app/_components/api-provider";
 import { Button } from "@narriflow/ui/components/button";
 import { CensorWordListDialog, censorChipLabel } from "../../_components/censor-word-list-dialog";
-import { replaceCensorWordsAction, resetCensorWordsAction } from "./censor-words-actions";
 import { SettingsCard } from "../_components/settings-ui";
 
 const PREVIEW_COUNT = 8;
 
 /** The Workspace's censored words: a glance at the list and the editor behind one button. */
 export function CensorWordsCard({
-  initialWords,
+  scope,
+  words,
   customized,
   canManage,
 }: {
-  initialWords: string[];
+  scope: WorkspaceScope;
+  /** The saved list, from the Workspace censor-words query. Saves write the new list back to it. */
+  words: readonly string[];
   customized: boolean;
   canManage: boolean;
 }) {
-  const [list, setList] = useState({ words: initialWords, customized });
-  const { words } = list;
+  const runtime = useApiRuntime();
+  const replace = useMutation(useMemo(() => replaceCensorWordsMutation(runtime, scope), [runtime, scope]));
+  const reset = useMutation(useMemo(() => resetCensorWordsMutation(runtime, scope), [runtime, scope]));
   const [open, setOpen] = useState(false);
   const preview = words.slice(0, PREVIEW_COUNT);
   const rest = words.length - preview.length;
@@ -88,11 +98,12 @@ export function CensorWordsCard({
         tone="app"
         workspace={{
           words,
-          customized: list.customized,
+          customized,
           canEdit: canManage,
-          save: replaceCensorWordsAction,
-          reset: resetCensorWordsAction,
-          onChange: setList,
+          save: (next) => replace.mutateAsync({ words: next }),
+          reset: () => reset.mutateAsync(),
+          // The mutations already wrote the saved list to the query; nothing else to hold.
+          onChange: () => {},
         }}
       />
     </SettingsCard>

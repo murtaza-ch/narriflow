@@ -4,6 +4,14 @@ import {
   createBrowserStudioSessionDependencies,
   parseStudioCoordinationEvent,
 } from "./studio-editing-session-browser";
+import type { StudioCloudHttp } from "./studio-cloud-http";
+
+const unusedCloudHttp: StudioCloudHttp = {
+  load: async () => ({ status: 500, body: null }),
+  save: async () => ({ status: 500, body: null }),
+  reset: async () => ({ status: 500, body: null }),
+  keepalive: () => false,
+};
 
 test("classifies retryable and terminal editor responses without conflating them", () => {
   expect(classifyStudioCloudResponse(408, null)).toEqual({
@@ -47,6 +55,12 @@ test("classifies retryable and terminal editor responses without conflating them
   expect(
     classifyStudioCloudResponse(409, { details: { currentRevision: 9 } }),
   ).toEqual({ kind: "revision-conflict", currentRevision: 9 });
+});
+
+test("a refused Workspace selection is rejected, never read as a revision conflict", () => {
+  expect(
+    classifyStudioCloudResponse(409, { error: "workspace_selection_changed", message: "Changed" }),
+  ).toEqual({ kind: "rejected", code: "workspace_selection_changed", message: "Changed" });
 });
 
 describe("browser Studio coordination adapter", () => {
@@ -135,10 +149,10 @@ describe("browser Studio coordination adapter", () => {
       value: undefined,
     });
     try {
-      const coordination = createBrowserStudioSessionDependencies({
-        projectId: "project",
-        clipId: "clip",
-      }).coordination;
+      const coordination = createBrowserStudioSessionDependencies(
+        { projectId: "project", clipId: "clip" },
+        unusedCloudHttp,
+      ).coordination;
       expect(await coordination.start({
         onTakeoverRequested: async () => "checkpointed",
         onOwnershipLost: () => { ownershipLosses += 1; },

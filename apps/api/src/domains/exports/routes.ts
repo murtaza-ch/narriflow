@@ -2,6 +2,8 @@ import {
   campaignOperationService,
   clipExportService,
   clipTimelineService,
+  getLastWorkflowSeq,
+  workspaceLibraryService,
 } from "@narriflow/services";
 import {
   createClipExportSchema,
@@ -10,6 +12,12 @@ import {
   resolvePricingTier,
   timelineFormatSchema,
 } from "@narriflow/validators";
+import {
+  type ClipExportDetail,
+  type ExportBundleDownloadGrant,
+  workspaceExportDownloadQuerySchema,
+  workspaceExportsQuerySchema,
+} from "@narriflow/validators/api/exports";
 import { createRouteApp, getActor } from "../../http/admission";
 import { getIdempotencyKey, requireIdempotencyKey } from "../../http/idempotency";
 import { validate } from "../../http/route";
@@ -21,36 +29,74 @@ export interface ExportsRouteDeps {
   campaignOperationService: typeof campaignOperationService;
   clipExportService: typeof clipExportService;
   clipTimelineService: typeof clipTimelineService;
+  workspaceLibraryService: Pick<typeof workspaceLibraryService, "listExports" | "listExportProjects">;
+  getLastWorkflowSeq: typeof getLastWorkflowSeq;
 }
 
 const NO_STORE = { "Cache-Control": "private, no-store" } as const;
 
 /** Export bundles, versioned clip exports, subtitles, timelines and share links. */
 export function createExportsRoutes(deps: ExportsRouteDeps) {
-  const { campaignOperationService, clipExportService, clipTimelineService } = deps;
+  const {
+    campaignOperationService,
+    clipExportService,
+    clipTimelineService,
+    workspaceLibraryService,
+    getLastWorkflowSeq,
+  } = deps;
 
   return createRouteApp(access)
+    // The Exports page: the Workspace's exports under its filters, newest first.
+    .get(
+      "/workspace/exports",
+      validate("query", workspaceExportsQuerySchema),
+      async (c) => {
+        const { status, q, project, ratio, from, to, cursor } = c.req.valid("query");
+        const page = await workspaceLibraryService.listExports(getActor(c), {
+          ...(status ? { status } : {}),
+          ...(q ? { query: q } : {}),
+          ...(project ? { projectId: project } : {}),
+          ...(ratio ? { aspectRatio: ratio } : {}),
+          ...(from ? { from: new Date(`${from}T00:00:00.000Z`) } : {}),
+          ...(to ? { to: new Date(`${to}T23:59:59.999Z`) } : {}),
+          ...(cursor ? { cursor } : {}),
+        });
+        return c.json(await clipExportService.presentWorkspaceExports(page), 200, NO_STORE);
+      },
+    )
+
+    .get(
+      "/workspace/export-projects",
+      async (c) => {
+        const projects = await workspaceLibraryService.listExportProjects(getActor(c));
+        return c.json({ projects }, 200, NO_STORE);
+      },
+    )
+
+    // A Download Grant: JSON, so the page navigates to the short-lived file URL itself.
     .get(
       "/workspace/exports/:exportId/download",
+      uuidParams("exportId"),
+      validate("query", workspaceExportDownloadQuerySchema),
       async (c) => {
-        const exported = await clipExportService.getWorkspaceOwned(
+        const grant = await clipExportService.issueWorkspaceDownloadGrant(
           getActor(c),
-          c.req.param("exportId"),
+          c.req.valid("param").exportId,
+          c.req.valid("query").variant,
         );
-        if (!exported) return c.json({ error: "export_not_found" }, 404);
-        const requestedVariantId = c.req.query("variant");
-        const variant = requestedVariantId
-          ? exported.variants.find(
-              (candidate) => candidate.id === requestedVariantId && candidate.downloadUrl,
-            )
-          : exported.variants.find((candidate) => candidate.downloadUrl);
-        if (!variant?.downloadUrl) {
-          return c.json(
-            { error: "export_file_not_ready", message: "Export file is not ready" },
-            409,
-          );
-        }
-        return c.redirect(variant.downloadUrl, 302);
+        return c.json(grant, 200, NO_STORE);
+      },
+    )
+
+    .post(
+      "/workspace/exports/:exportId/retry",
+      uuidParams("exportId"),
+      async (c) => {
+        const result = await clipExportService.retryWorkspaceExport(
+          getActor(c),
+          c.req.valid("param").exportId,
+        );
+        return c.json(result, 202);
       },
     )
 
@@ -191,7 +237,7 @@ export function createExportsRoutes(deps: ExportsRouteDeps) {
       async (c) => {
         const appUser = getActor(c);
         const { id, bundleId } = c.req.valid("param");
-        const url = await campaignOperationService.getExportBundleDownload(
+        const downloadUrl = await campaignOperationService.getExportBundleDownload(
           {
             actorUserId: appUser.actorUserId,
             workspaceId: appUser.workspaceId,
@@ -201,7 +247,8 @@ export function createExportsRoutes(deps: ExportsRouteDeps) {
           },
           bundleId,
         );
-        return c.redirect(url, 307);
+        const grant: ExportBundleDownloadGrant = { downloadUrl };
+        return c.json(grant, 200, NO_STORE);
       },
     )
 
@@ -241,14 +288,19 @@ export function createExportsRoutes(deps: ExportsRouteDeps) {
     .get(
       "/projects/:id/clips/:clipId/exports/:exportId",
       async (c) => {
-        const result = await clipExportService.getOwned(
-          getActor(c),
-          c.req.param("id"),
-          c.req.param("clipId"),
-          c.req.param("exportId"),
-        );
+        const projectId = c.req.param("id");
+        const [result, lastSeq] = await Promise.all([
+          clipExportService.getOwned(
+            getActor(c),
+            projectId,
+            c.req.param("clipId"),
+            c.req.param("exportId"),
+          ),
+          getLastWorkflowSeq(projectId),
+        ]);
         if (!result) return c.json({ error: "export_not_found" }, 404);
-        return c.json(result, 200, NO_STORE);
+        const detail: ClipExportDetail = { ...result, lastSeq };
+        return c.json(detail, 200, NO_STORE);
       },
     )
 

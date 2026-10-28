@@ -1,6 +1,4 @@
-import { admitWorkspacePage } from "@/lib/authenticated-request-page";
-
-export default async function SettingsLayout({ children }: { children: React.ReactNode }) {
-  await admitWorkspacePage("content.view");
+// The app shell's gates already admit `content.view` for the selected Workspace.
+export default function SettingsLayout({ children }: { children: React.ReactNode }) {
   return children;
 }

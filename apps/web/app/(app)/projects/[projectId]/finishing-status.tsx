@@ -1,8 +1,11 @@
 import Link from "next/link";
 import { Flex, Stack, Text } from "@chakra-ui/react";
 import { AlertTriangle, CheckCircle2, Loader2 } from "lucide-react";
-import type { ProjectFinishingView } from "@narriflow/services";
+import type { ProjectDetail } from "@narriflow/api-client/projects";
 import { FinishingAutoRefresh } from "./finishing-auto-refresh";
+
+/** What finishing did for a Project's newest generation, as the API serves it. */
+export type ProjectFinishingView = NonNullable<ProjectDetail["finishing"]>;
 
 const WORKING = new Set(["waiting", "due", "running", "exporting"]);
 
@@ -35,7 +38,7 @@ export function FinishingStatus({ projectId, finishing }: { projectId: string; f
               ? "Narriflow will export the best clips and write copy when clip generation finishes."
               : "Exporting the best clips and writing copy. This page updates on its own."}
           </Text>
-          <FinishingAutoRefresh />
+          <FinishingAutoRefresh projectId={projectId} shown={finishing} />
         </>
       ) : null}
       {finishing.message ? (

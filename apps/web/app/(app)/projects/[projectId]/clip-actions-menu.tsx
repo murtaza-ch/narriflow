@@ -1,7 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, useTransition } from "react";
-import { useRouter } from "next/navigation";
+import { useEffect, useRef, useState } from "react";
 import { Flex, Stack, Text } from "@chakra-ui/react";
 import { Button, IconButton } from "@narriflow/ui/components/button";
 import { ActionMenu, type ActionMenuItem } from "@narriflow/ui/components/menu";
@@ -15,7 +14,17 @@ import {
   type ClipSnapshot,
 } from "@narriflow/validators";
 import { AlertTriangle, Copy, MoreVertical, Pencil, Sparkles, Trash2, Wand2 } from "lucide-react";
-import { clipActionErrorCopy } from "./clip-action-error-copy";
+import { useMutation } from "@tanstack/react-query";
+import { type Intent, invalidateScoped, isApiErrorCode } from "@narriflow/api-client";
+import {
+  CLIP_RESOURCES,
+  clipCommands,
+  clipMutationOptions,
+  invalidateAfterClipChange,
+} from "@narriflow/api-client/clips";
+import { invalidateProject } from "@narriflow/api-client/projects";
+import { intentIn, requireClipApi, useClipApi } from "@/lib/clip-media";
+import { clipActionErrorCopy, failureNeedsStateRefetch } from "./clip-action-error-copy";
 
 function titleSuggestionsFromPayload(payload: unknown): string[] | null {
   if (!payload || typeof payload !== "object") return null;
@@ -25,6 +34,10 @@ function titleSuggestionsFromPayload(payload: unknown): string[] | null {
     (item): item is string => typeof item === "string" && item.trim().length > 0,
   );
   return titles.length > 0 ? titles : null;
+}
+
+function isAbort(error: unknown): boolean {
+  return error instanceof Error && error.name === "AbortError";
 }
 
 export interface ClipActionsMenuProps {
@@ -52,9 +65,9 @@ export interface ClipActionsMenuProps {
  * stay in step — a rename reachable from one and not the other is how the two
  * views drift apart.
  *
- * Every action routes through the API (not a server action) because the clip
- * rows are a client component driven by SSE refreshes, and `router.refresh()`
- * is already the established way this view picks up server state.
+ * Every action is a typed API call; a confirmed change invalidates the clip
+ * and Project reads it touched, so the row list and the studio pick it up
+ * without reloading the page.
  */
 export function ClipActionsMenu({
   projectId,
@@ -65,8 +78,10 @@ export function ClipActionsMenu({
   onDuplicated,
   onDeleted,
 }: ClipActionsMenuProps) {
-  const router = useRouter();
-  const [, startTransition] = useTransition();
+  const api = useClipApi();
+  // One intent per Duplicate press: a retry after a timeout or lost response
+  // replays the same copy instead of making a second one.
+  const duplicateIntent = useRef<Intent<{ projectId: string; clipId: string }> | null>(null);
 
   const [renameOpen, setRenameOpen] = useState(false);
   const [renameValue, setRenameValue] = useState(title ?? fallbackTitle);
@@ -97,27 +112,36 @@ export function ClipActionsMenu({
   }, [title, fallbackTitle]);
 
   // Don't leave an LLM call running for a row that no longer exists — a
-  // router.refresh() after a delete unmounts these mid-request.
+  // delete unmounts these mid-request.
   useEffect(() => {
     return () => suggestAbortRef.current?.abort();
   }, []);
 
+  const renameClip = useMutation({
+    ...clipMutationOptions,
+    mutationFn: async (nextTitle: string) => {
+      const { studio, scope, queryClient } = requireClipApi(api);
+      await studio.projects[":id"].clips[":clipId"].$patch({
+        param: { id: projectId, clipId },
+        json: { title: nextTitle },
+      });
+      // The list, the Project's clip rows and the studio's title read this clip's name.
+      await Promise.all([
+        invalidateScoped(queryClient, scope, "clips", CLIP_RESOURCES.list, projectId),
+        invalidateScoped(queryClient, scope, "studio"),
+        invalidateProject(queryClient, scope, projectId),
+      ]);
+      return true;
+    },
+  });
+
   async function saveTitle(nextTitle: string): Promise<boolean> {
-    const response = await fetch(`/api/projects/${projectId}/clips/${clipId}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ title: nextTitle }),
-    });
-
-    if (!response.ok) {
-      const payload: unknown = await response.json().catch(() => null);
-      console.warn(JSON.stringify({ level: "error", message: "clip_rename_failed", status: response.status }));
-      throw new Error(
-        clipActionErrorCopy(payload, "Could not rename this clip."),
-      );
+    try {
+      return await renameClip.mutateAsync(nextTitle);
+    } catch (error) {
+      console.warn(JSON.stringify({ level: "error", message: "clip_rename_failed" }));
+      throw new Error(clipActionErrorCopy(error, "Could not rename this clip."));
     }
-
-    return true;
   }
 
   async function handleRenameSubmit() {
@@ -136,7 +160,6 @@ export function ClipActionsMenu({
     try {
       await saveTitle(nextTitle);
       setRenameOpen(false);
-      startTransition(() => router.refresh());
     } catch (error) {
       setRenameError(
         error instanceof Error ? error.message : "Could not rename this clip.",
@@ -166,20 +189,11 @@ export function ClipActionsMenu({
     setSuggestError(null);
     setSuggestions([]);
     try {
-      const response = await fetch(
-        `/api/projects/${projectId}/clips/${clipId}/title-suggestions`,
-        { method: "POST", signal: controller.signal },
-      );
-      const payload: unknown = await response.json().catch(() => null);
+      const { clips } = requireClipApi(api);
+      const payload: unknown = await clips.projects[":id"].clips[":clipId"]["title-suggestions"]
+        .$post({ param: { id: projectId, clipId } }, { init: { signal: controller.signal } })
+        .then((response) => response.json());
       if (!isCurrent()) return;
-
-      if (!response.ok) {
-        console.warn(JSON.stringify({ level: "error", message: "clip_title_suggestions_failed", status: response.status }));
-        setSuggestError(
-          clipActionErrorCopy(payload, "Could not come up with title ideas."),
-        );
-        return;
-      }
 
       const titles = titleSuggestionsFromPayload(payload);
       if (!titles) {
@@ -190,9 +204,9 @@ export function ClipActionsMenu({
       setSuggestions(titles);
     } catch (error) {
       // An abort is a deliberate cancel, not a failure to report.
-      if ((error as Error)?.name === "AbortError" || !isCurrent()) return;
+      if (isAbort(error) || !isCurrent()) return;
       console.warn(JSON.stringify({ level: "error", message: "clip_title_suggestions_failed" }));
-      setSuggestError("Could not come up with title ideas.");
+      setSuggestError(clipActionErrorCopy(error, "Could not come up with title ideas."));
     } finally {
       if (isCurrent()) setSuggestLoading(false);
     }
@@ -221,7 +235,6 @@ export function ClipActionsMenu({
       await saveTitle(nextTitle);
       closeSuggestions();
       toaster.create({ type: "success", title: "Clip renamed" });
-      startTransition(() => router.refresh());
     } catch (error) {
       setSuggestError(
         error instanceof Error ? error.message : "Could not rename this clip.",
@@ -231,82 +244,76 @@ export function ClipActionsMenu({
     }
   }
 
+  /** After a lost response or a conflict, the domain state says whether the command took effect. */
+  function refetchWhenUncertain(failure: unknown) {
+    if (api && failureNeedsStateRefetch(failure)) void invalidateAfterClipChange(api.queryClient, api.scope, projectId);
+  }
+
+  const duplicateClip = useMutation({
+    ...clipMutationOptions,
+    mutationFn: async () => {
+      const { runtime, clips, scope, queryClient } = requireClipApi(api);
+      const intent = intentIn(duplicateIntent, runtime);
+      const copy = await clipCommands.duplicate(clips, projectId, clipId, intent.keyFor({ projectId, clipId }));
+      // Confirmed: the next Duplicate press is a new intent.
+      intent.complete();
+      await invalidateAfterClipChange(queryClient, scope, projectId);
+      return copy;
+    },
+    onError: refetchWhenUncertain,
+  });
+
   async function handleDuplicate() {
     if (duplicating) return;
     setDuplicating(true);
     try {
-      const response = await fetch(
-        `/api/projects/${projectId}/clips/${clipId}/duplicate`,
-        { method: "POST" },
-      );
-      const payload: unknown = await response.json().catch(() => null);
-
-      if (!response.ok) {
-        console.warn(JSON.stringify({ level: "error", message: "clip_duplicate_failed", status: response.status }));
-        toaster.create({
-          type: "error",
-          title: "Could not duplicate clip",
-          description: clipActionErrorCopy(payload, "Please try again."),
-        });
-        return;
-      }
-
+      const copy = await duplicateClip.mutateAsync();
       toaster.create({
         type: "success",
         title: "Clip duplicated",
         description: "The copy keeps this clip's edits and rendered video.",
       });
-
-      if (onDuplicated && payload && typeof payload === "object") {
-        onDuplicated(payload as ClipSnapshot);
-        return;
-      }
-      startTransition(() => router.refresh());
-    } catch {
+      onDuplicated?.(copy);
+    } catch (error) {
       console.warn(JSON.stringify({ level: "error", message: "clip_duplicate_failed" }));
       toaster.create({
         type: "error",
         title: "Could not duplicate clip",
-        description: "Please try again.",
+        description: clipActionErrorCopy(error, "Please try again."),
       });
     } finally {
       setDuplicating(false);
     }
   }
 
+  const deleteClip = useMutation({
+    ...clipMutationOptions,
+    mutationFn: async () => {
+      const { clips, scope, queryClient } = requireClipApi(api);
+      try {
+        await clipCommands.remove(clips, projectId, clipId);
+      } catch (error) {
+        // A retry after a lost response finds the clip already gone: that is the goal.
+        if (!isApiErrorCode(error, "clip_not_found")) throw error;
+      }
+      await invalidateAfterClipChange(queryClient, scope, projectId);
+    },
+    onError: refetchWhenUncertain,
+  });
+
   async function handleDelete() {
     setDeleting(true);
     try {
-      const response = await fetch(
-        `/api/projects/${projectId}/clips/${clipId}`,
-        { method: "DELETE" },
-      );
-
-      if (!response.ok) {
-        const payload: unknown = await response.json().catch(() => null);
-        console.warn(JSON.stringify({ level: "error", message: "clip_delete_failed", status: response.status }));
-        toaster.create({
-          type: "error",
-          title: "Could not delete clip",
-          description: clipActionErrorCopy(payload, "Please try again."),
-        });
-        return;
-      }
-
+      await deleteClip.mutateAsync();
       setDeleteOpen(false);
       toaster.create({ type: "success", title: "Clip deleted" });
-
-      if (onDeleted) {
-        onDeleted();
-        return;
-      }
-      startTransition(() => router.refresh());
-    } catch {
+      onDeleted?.();
+    } catch (error) {
       console.warn(JSON.stringify({ level: "error", message: "clip_delete_failed" }));
       toaster.create({
         type: "error",
         title: "Could not delete clip",
-        description: "Please try again.",
+        description: clipActionErrorCopy(error, "Please try again."),
       });
     } finally {
       setDeleting(false);

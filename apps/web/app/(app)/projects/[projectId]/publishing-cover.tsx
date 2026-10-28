@@ -25,7 +25,8 @@ import {
 	type SocialPlatform,
 	type SocialThumbnailSelection,
 } from "@narriflow/validators";
-import { publishingRequest } from "./publishing-draft";
+import { createIntent } from "@narriflow/api-client";
+import type { ProjectPublishingApi } from "./publishing-api";
 
 type Asset = {
 	id: string;
@@ -128,6 +129,7 @@ function frameTime(durationSec: number, index: number, count: number): number {
 }
 
 export function PublishingCover({
+	api,
 	projectId,
 	clipId,
 	platform,
@@ -136,6 +138,7 @@ export function PublishingCover({
 	onChoose,
 	onClose,
 }: {
+	api: Pick<ProjectPublishingApi, "visualAssets" | "requestThumbnailFrame" | "thumbnailFrame" | "presignCoverUpload" | "createCoverAsset">;
 	projectId: string;
 	clipId: string;
 	platform: SocialPlatform;
@@ -153,12 +156,14 @@ export function PublishingCover({
 	const video = useRef<HTMLVideoElement>(null);
 	const frameCanvases = useRef<Array<HTMLCanvasElement | null>>([]);
 	const mounted = useRef(true);
+	const frameKey = useRef(createIntent<unknown>()).current;
 	useEffect(() => {
 		mounted.current = true;
 		if (platform !== "tiktok")
-			void publishingRequest<{ assets: Asset[] }>("/api/visual-assets")
+			void api
+				.visualAssets()
 				.then((v) => {
-					if (mounted.current) setAssets(v.assets);
+					if (mounted.current) setAssets(v.assets as Asset[]);
 				})
 				.catch((e) => {
 					if (mounted.current) setError(e.message);
@@ -169,7 +174,7 @@ export function PublishingCover({
 		return () => {
 			mounted.current = false;
 		};
-	}, [platform]);
+	}, [platform, api]);
 	function compatible(a: Asset) {
 		return (
 			a.kind === "image" &&
@@ -193,24 +198,20 @@ export function PublishingCover({
 		setError("");
 		try {
 			const ms = Math.round(Number(seconds) * 1000);
-			let op = await publishingRequest<{
-				id: string;
-				status: string;
-				asset?: { id: string; fingerprint: string };
-			}>(`/api/projects/${projectId}/thumbnail-frames`, {
+			let op: { id: string; status: string; asset?: { id: string; fingerprint: string } | null } = await api.requestThumbnailFrame(projectId, {
 				clipId,
 				exportVariantId: variant.id,
 				sourceTimeMs: ms,
-				idempotencyKey: crypto.randomUUID(),
+				idempotencyKey: frameKey.keyFor({ clipId, exportVariantId: variant.id, sourceTimeMs: ms }),
 			});
+			// Accepted: a lost answer is what the key protects against, and this one arrived.
+			frameKey.complete();
 			for (let i = 0; i < 40 && op.status !== "completed"; i++) {
 				if (op.status === "failed")
 					throw new Error("The frame could not be prepared. Try again.");
 				await new Promise((r) => setTimeout(r, 1500));
 				if (!mounted.current) return;
-				op = await publishingRequest(
-					`/api/projects/${projectId}/thumbnail-frames/${op.id}`,
-				);
+				op = await api.thumbnailFrame(projectId, op.id);
 			}
 			if (!op.asset)
 				throw new Error("The frame is still preparing. Try again shortly.");
@@ -252,10 +253,7 @@ export function PublishingCover({
 			const fingerprint = [...new Uint8Array(digest)]
 				.map((v) => v.toString(16).padStart(2, "0"))
 				.join("");
-			const prepared = await publishingRequest<{
-				key: string;
-				uploadUrl: string;
-			}>("/api/visual-assets/presign-upload", {
+			const prepared = await api.presignCoverUpload({
 				contentType: file.type,
 				sizeBytes: file.size,
 			});
@@ -265,14 +263,15 @@ export function PublishingCover({
 				body: file,
 			});
 			if (!result.ok) throw new Error("The image could not be uploaded.");
-			const asset = await publishingRequest<Asset>("/api/visual-assets", {
+			const asset = (await api.createCoverAsset({
 				key: prepared.key,
-				contentType: file.type,
+				// Checked against the accepted types above.
+				contentType: file.type as "image/jpeg" | "image/png" | "image/webp",
 				sizeBytes: file.size,
 				fingerprint,
 				title: file.name.slice(0, 120),
 				provenance: "uploaded",
-			});
+			})) as Asset;
 			if (mounted.current) choose(asset);
 		} catch (e) {
 			if (mounted.current)

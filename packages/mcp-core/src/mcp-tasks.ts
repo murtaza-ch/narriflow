@@ -13,6 +13,7 @@ import { McpToolAdmission, mcpOperationReadScope, type NarriflowMcpPrincipal, ty
 
 type Registry = ReturnType<typeof createMcpTaskRegistry>;
 type TaskOptions = {
+  appOrigin?: string;
   principal: NarriflowMcpPrincipal;
   authenticatePrincipal?: () => Promise<NarriflowMcpPrincipal>;
   assertNewMutationAllowed?: (context: { tool: NarriflowMcpToolName; principal: NarriflowMcpPrincipal; workspaceId: string }) => void | Promise<void>;
@@ -114,7 +115,7 @@ function productionRegistry(principal: NarriflowMcpPrincipal, options: TaskOptio
         if (!snapshot) return { status: "failed", error: { code: -32003, message: "Export is unavailable" } };
         const initial = (record.initialResult as CallToolResult).structuredContent as { data: Record<string, unknown> };
         return { status: "completed", result: mcpTaskTerminalResult(record, status.state === "failed" ? "failed" : "completed",
-          { ...initial.data, export: exportView(snapshot, new URL(process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000").origin) }) };
+          { ...initial.data, export: exportView(snapshot, new URL(options.appOrigin ?? process.env.WEB_ORIGIN ?? "http://localhost:3000").origin) }) };
       }
       return { status: "completed", result: mcpTaskTerminalResult(record, status.state === "failed" ? "failed" : "completed") };
     },

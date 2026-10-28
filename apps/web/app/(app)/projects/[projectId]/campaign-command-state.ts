@@ -11,6 +11,8 @@ import {
   type ClipSnapshot,
   type PricingTier,
 } from "@narriflow/validators";
+import { type ClipsClient, clipCommands } from "@narriflow/api-client/clips";
+import type { BrandMutations } from "@narriflow/api-client/brand";
 import type { UpgradePrompt } from "@/app/(app)/_components/upgrade";
 import { featureUpgradePrompt } from "@/lib/feature-upgrade-prompt";
 
@@ -186,6 +188,48 @@ export type CampaignEditorRetryRequest =
       input: ApplySceneTemplateInput;
     }
   | { action: "apply_motion"; input: ApplyMotionSelectedInput };
+
+/** What the API answers once it accepted a campaign command; the operation list holds the item rows. */
+export type CampaignOperationAcceptance = {
+  operationId?: string;
+  status?: string;
+  requestedCount?: number;
+  counts?: {
+    succeeded: number;
+    unchanged: number;
+    stale: number;
+    ineligible: number;
+    failed: number;
+  };
+};
+
+/**
+ * Sends one campaign editor command. `idempotencyKey` is minted once per user
+ * intent and reused by every retry of it; `retryOfId` names the operation a
+ * retry continues, so the server keeps one identity for both.
+ */
+export function submitCampaignEditorAction(
+  api: { clips: ClipsClient; brand: BrandMutations },
+  projectId: string,
+  request: CampaignEditorRetryRequest,
+  options: { idempotencyKey: string; retryOfId?: string },
+): Promise<CampaignOperationAcceptance> {
+  const { idempotencyKey, retryOfId } = options;
+  switch (request.action) {
+    case "apply_brand_profile":
+      return clipCommands.applyBrandProfile(api.clips, projectId, request.input, idempotencyKey, retryOfId);
+    case "apply_style":
+      return clipCommands.applyStyle(api.clips, projectId, request.input, idempotencyKey, retryOfId);
+    case "apply_motion":
+      return clipCommands.applyMotion(api.clips, projectId, request.input, idempotencyKey, retryOfId);
+    case "apply_scene_template":
+      return api.brand.applySceneTemplate(
+        { projectId, profileId: request.profileId, templateId: request.templateId },
+        request.input,
+        { idempotencyKey, retryOfId },
+      );
+  }
+}
 
 function revisionFences(selectedItems: CampaignCommandState["selectedItems"]) {
   return selectedItems.map(({ clipId, expectedEditorRevision }) => ({

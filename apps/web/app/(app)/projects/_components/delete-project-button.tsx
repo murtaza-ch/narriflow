@@ -1,6 +1,5 @@
 "use client";
 
-import { useTransition } from "react";
 import { Text } from "@chakra-ui/react";
 import { MoreHorizontal, Trash2 } from "lucide-react";
 import { Button, IconButton } from "@narriflow/ui/components/button";
@@ -8,22 +7,15 @@ import { ActionMenu } from "@narriflow/ui/components/menu";
 import { useConfirm } from "@narriflow/ui/components/confirm-dialog";
 import { Spinner } from "@narriflow/ui/components/spinner";
 import { toaster } from "@narriflow/ui/components/toaster";
-import { deleteProjectFormAction } from "../actions";
-import { authenticatedActionResultMessage } from "@/lib/authenticated-request-browser";
-
-/**
- * Server-action redirects surface as a thrown NEXT_REDIRECT error when the
- * action is awaited directly (outside a `<form action>`) — rethrow so
- * Next's own navigation handling takes over instead of our error toast.
- */
-function isNextRedirect(error: unknown): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "digest" in error &&
-    String((error as { digest?: unknown }).digest).startsWith("NEXT_REDIRECT")
-  );
-}
+import { isApiErrorCode } from "@narriflow/api-client";
+import {
+  invalidateAfterProjectDeleted,
+  projectCommands,
+  projectMutationOptions,
+} from "@narriflow/api-client/projects";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useRouter } from "next/navigation";
+import { failureMessage, useLibraryApi } from "../_lib/api";
 
 interface DeleteProjectButtonProps {
   projectId: string;
@@ -37,10 +29,8 @@ interface DeleteProjectButtonProps {
  * Delete affordance shared by the project card and the project detail page.
  * Confirms via the shared ConfirmDialog (names the project, states the
  * deletion is permanent and irreversible), then calls
- * deleteProjectFormAction directly. Success redirects to /projects (thrown
- * as NEXT_REDIRECT, re-thrown below so Next handles the navigation);
- * expected failures come back as {ok:false, error} and surface as a toast
- * instead of navigating.
+ * the delete command. A Project that is already gone counts as deleted.
+ * Success navigates to /projects; a refusal surfaces as a toast instead.
  *
  * Not a solid button in either variant — delete is a danger/ghost action,
  * keeping the one-solid-ultramarine-button-per-view rule intact.
@@ -50,37 +40,34 @@ export function DeleteProjectButton({
   projectTitle,
   variant = "button",
 }: DeleteProjectButtonProps) {
-  const [pending, startTransition] = useTransition();
+  const api = useLibraryApi();
+  const router = useRouter();
+  const queryClient = useQueryClient();
   const { confirm, dialog } = useConfirm();
 
-  function runDelete() {
-    startTransition(async () => {
-      const formData = new FormData();
-      formData.set("projectId", projectId);
-
+  const remove = useMutation({
+    ...projectMutationOptions,
+    mutationFn: async () => {
+      if (!api) throw new Error("No Workspace is selected.");
       try {
-        const result = await deleteProjectFormAction(formData);
-        if (result && !result.ok) {
-          toaster.create({
-            type: "error",
-            title: "Could not delete project",
-            description: authenticatedActionResultMessage(
-              result,
-              "Please try again.",
-            ),
-          });
-        }
-        // Otherwise the action redirected on success — nothing left to do.
+        await projectCommands.remove(api.projects, projectId);
       } catch (error) {
-        if (isNextRedirect(error)) throw error;
-        toaster.create({
-          type: "error",
-          title: "Could not delete project",
-          description: "Please try again.",
-        });
+        if (!isApiErrorCode(error, "project_not_found")) throw error;
       }
-    });
-  }
+    },
+    onSuccess: () => {
+      router.push("/projects");
+      if (api) void invalidateAfterProjectDeleted(queryClient, api.scope, projectId);
+    },
+    onError: (error) =>
+      toaster.create({
+        type: "error",
+        title: "Could not delete project",
+        description: failureMessage(error, "Please try again."),
+      }),
+  });
+  const pending = remove.isPending;
+  const disabled = pending || !api;
 
   async function handleTriggerClick(event?: { preventDefault: () => void; stopPropagation: () => void }) {
     // The card variant's trigger sits over a whole-card <Link> — stop the
@@ -98,7 +85,7 @@ export function DeleteProjectButton({
       confirmLabel: "Delete project",
       destructive: true,
     });
-    if (confirmed) runDelete();
+    if (confirmed) remove.mutate();
   }
 
   return (
@@ -107,7 +94,7 @@ export function DeleteProjectButton({
         <ActionMenu
           ariaLabel="Project actions"
           trigger={
-            <IconButton aria-label="Project actions" variant="subtle" size="sm" disabled={pending}>
+            <IconButton aria-label="Project actions" variant="subtle" size="sm" disabled={disabled}>
               <MoreHorizontal size={16} />
             </IconButton>
           }
@@ -139,7 +126,7 @@ export function DeleteProjectButton({
           color="studio.fg"
           _hover={{ bg: "studio.scrimStrong", color: "studio.danger" }}
           aria-label={`Delete "${projectTitle}"`}
-          disabled={pending}
+          disabled={disabled}
           onClick={handleTriggerClick}
         >
           {pending ? <Spinner size="xs" /> : <Trash2 size={16} />}
@@ -150,7 +137,7 @@ export function DeleteProjectButton({
           size="sm"
           variant="ghost"
           colorPalette="danger"
-          disabled={pending}
+          disabled={disabled}
           onClick={handleTriggerClick}
         >
           {pending ? <Spinner size="xs" /> : <Trash2 size={16} />}

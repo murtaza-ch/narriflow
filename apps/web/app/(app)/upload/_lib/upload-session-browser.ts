@@ -1,3 +1,4 @@
+import { type ApiError, isApiError } from "@narriflow/api-client/core";
 import {
   createPendingUploadResume,
   createUploadFileFingerprint,
@@ -10,6 +11,7 @@ import {
   authenticatedRequestFailureMessage,
   upgradePromptFromFailure,
 } from "@/lib/authenticated-request-browser";
+import { failureFromApiError } from "./intake-failure";
 import type { UpgradePrompt } from "@/app/(app)/_components/upgrade";
 
 type UploadProgress = {
@@ -59,9 +61,24 @@ export interface UploadSessionBrowserStartInput {
   declaredDurationSeconds?: number | null;
 }
 
+/**
+ * The five Upload Session commands. Each resolves with the JSON body of a 2xx answer
+ * (202 included) and rejects with `ApiError` for any other status, which is what the
+ * API client's ingest actions do. The adapter validates every body itself.
+ */
+export interface UploadSessionControls {
+  open(input: unknown, signal?: AbortSignal): Promise<unknown>;
+  status(input: unknown, signal?: AbortSignal): Promise<unknown>;
+  grants(input: unknown, signal?: AbortSignal): Promise<unknown>;
+  finalize(input: unknown, signal?: AbortSignal): Promise<unknown>;
+  discard(input: unknown, signal?: AbortSignal): Promise<unknown>;
+}
+
 export interface UploadSessionBrowserAdapterDependencies {
   storage: UploadResumeStorage | null;
   navigate(projectId: string): void;
+  controls: UploadSessionControls;
+  /** Presigned storage PUTs only; never carries Narriflow credentials. Defaults to XHR progress transport. */
   fetcher?: typeof fetch;
   createClientKey?: () => string;
   waitBeforeRetry?: (attempt: number) => Promise<void>;
@@ -92,6 +109,7 @@ interface RunUploadSessionTransferInput {
   recipeId?: string;
   declaredDurationSeconds?: number | null;
   storage: UploadResumeStorage | null;
+  controls: UploadSessionControls;
   fetcher?: typeof fetch;
   createClientKey?: () => string;
   signal?: AbortSignal;
@@ -304,10 +322,6 @@ function parseOpenOutcome(value: unknown): OpenOutcome | null {
   };
 }
 
-async function responsePayload(response: Response) {
-  return response.json().catch(() => null) as Promise<unknown>;
-}
-
 class UploadSessionBrowserFailure extends Error {
   constructor(
     readonly code: string,
@@ -339,61 +353,62 @@ const UPLOAD_FAILURE_MESSAGES: Record<string, string> = {
     "Upload storage is temporarily unavailable. Your saved session is unchanged.",
 };
 
-function responseError(
-  response: Response,
-  payload: unknown,
-  fallback: string) {
-  const payloadCode =
-    isRecord(payload) && typeof payload.error === "string"
-      ? payload.error
-      : null;
-  const code =
-    payloadCode ??
-    (response.status === 401
-      ? "authentication_required"
-      : response.status === 403
+/** A body that is not the API envelope keeps the old status-based reading. */
+function failureCode(error: ApiError): string {
+  if (error.code !== "unexpected_response") return error.code;
+  return error.status === 401
+    ? "authentication_required"
+    : error.status === 403
       ? "capability_denied"
-      : response.status === 429
+      : error.status === 429
         ? "rate_limited"
-        : response.status >= 500
+        : error.status >= 500
           ? "upload_session_unavailable"
-          : "upload_failed");
+          : "upload_failed";
+}
+
+function apiFailure(error: ApiError, fallback: string) {
+  const code = failureCode(error);
   // The server states the exact credits or length it refused; the generic text is the fallback.
   const serverMessage =
-    (code === "credits_exhausted" || code === "upload_too_long") &&
-    isRecord(payload) &&
-    typeof payload.message === "string" &&
-    payload.message
-      ? payload.message
+    (code === "credits_exhausted" || code === "upload_too_long") && error.message
+      ? error.message
       : null;
   const message =
     serverMessage ??
     UPLOAD_FAILURE_MESSAGES[code] ??
     authenticatedRequestFailureMessage(
-      isRecord(payload)
-        ? {
-            error: code,
-            message:
-              typeof payload.message === "string" ? payload.message : undefined,
-            requestId:
-              typeof payload.requestId === "string"
-                ? payload.requestId
-                : undefined,
-            details: isRecord(payload.details) ? payload.details : undefined,
-            retryAfterSeconds:
-              Number(response.headers.get("Retry-After")) || undefined,
-          }
-        : { error: code },
+      { ...failureFromApiError(error), error: code },
       typeof window === "undefined"
-      ? "/upload"
-      : `${window.location.pathname}${window.location.search}`,
+        ? "/upload"
+        : `${window.location.pathname}${window.location.search}`,
       fallback,
     );
   return new UploadSessionBrowserFailure(
     code,
     message,
-    isRecord(payload) && isRecord(payload.details) ? payload.details : undefined,
+    error.details ? { ...error.details } : undefined,
   );
+}
+
+/** Not reaching the API at all, as opposed to the API refusing. */
+function isNetworkFailure(error: unknown): boolean {
+  return isApiError(error) && error.status === 0 && error.code === "network_error";
+}
+
+/**
+ * Runs one Upload Session command. A refusal becomes a stable browser failure; an
+ * unreachable API becomes the same `TypeError` a failed fetch used to be; an abort
+ * passes through unchanged.
+ */
+async function control<T>(run: () => Promise<T>, fallback: string): Promise<T> {
+  try {
+    return await run();
+  } catch (error) {
+    if (!isApiError(error)) throw error;
+    if (isNetworkFailure(error)) throw new TypeError("The upload service could not be reached.");
+    throw apiFailure(error, fallback);
+  }
 }
 
 class UploadHttpError extends Error {
@@ -575,53 +590,43 @@ async function runUploadSessionTransfer(
   });
 
   const contentType = input.file.type || "video/mp4";
-  const openedResponse = await fetcher(
-    existing
-      ? "/api/upload-sessions/status"
-      : "/api/upload-sessions/open",
-    {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(
+  const openedPayload = await control(
+    () =>
       existing
-        ? {
-            clientIdempotencyKey: resume.clientIdempotencyKey,
-            sessionId: resume.sessionId,
-            browserFingerprint: fingerprint,
-          }
-        : {
-            clientIdempotencyKey: resume.clientIdempotencyKey,
-            title: input.title,
-            source: {
-              fileName: input.file.name,
-              sizeBytes: input.file.size,
-              contentType,
+        ? input.controls.status(
+            {
+              clientIdempotencyKey: resume.clientIdempotencyKey,
+              sessionId: resume.sessionId,
               browserFingerprint: fingerprint,
             },
-            ...(input.recipeId
-              ? { recipeId: input.recipeId }
-              : {
-                  brandTemplateId: input.brandTemplateId,
-                  // Omitted (not null) lets an assistant handoff use the Workspace default.
-                  ...(input.brandProfileId === undefined ? {} : { brandProfileId: input.brandProfileId }),
-                  generationContext: input.generationContext,
-                }),
-            ...(input.declaredDurationSeconds
-              ? { declaredDurationSeconds: input.declaredDurationSeconds }
-              : {}),
-          },
-    ),
-    signal: input.signal,
-    },
+            input.signal,
+          )
+        : input.controls.open(
+            {
+              clientIdempotencyKey: resume.clientIdempotencyKey,
+              title: input.title,
+              source: {
+                fileName: input.file.name,
+                sizeBytes: input.file.size,
+                contentType,
+                browserFingerprint: fingerprint,
+              },
+              ...(input.recipeId
+                ? { recipeId: input.recipeId }
+                : {
+                    brandTemplateId: input.brandTemplateId,
+                    // Omitted (not null) lets an assistant handoff use the Workspace default.
+                    ...(input.brandProfileId === undefined ? {} : { brandProfileId: input.brandProfileId }),
+                    generationContext: input.generationContext,
+                  }),
+              ...(input.declaredDurationSeconds
+                ? { declaredDurationSeconds: input.declaredDurationSeconds }
+                : {}),
+            },
+            input.signal,
+          ),
+    "Failed to open Upload Session.",
   );
-  const openedPayload = await responsePayload(openedResponse);
-  if (!openedResponse.ok) {
-    throw responseError(
-      openedResponse,
-      openedPayload,
-      "Failed to open Upload Session.",
-    );
-  }
   const opened = parseOpenOutcome(openedPayload);
   if (!opened) throw new Error("The upload service returned an invalid contract.");
   if (opened.outcome === "terminal") return opened;
@@ -738,23 +743,14 @@ async function runUploadSessionTransfer(
         expiresAtMs: Date.parse(transfer.grantExpiresAt),
       }));
     const requestGrantWindow = async (partNumbers: number[]) => {
-      const grantResponse = await fetcher("/api/upload-sessions/grants", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          sessionId: opened.sessionId,
-          partNumbers,
-        }),
-        signal: input.signal,
-      });
-      const grantPayload = await responsePayload(grantResponse);
-      if (!grantResponse.ok) {
-        throw responseError(
-          grantResponse,
-          grantPayload,
-          "Failed to refresh upload grants.",
-        );
-      }
+      const grantPayload = await control(
+        () =>
+          input.controls.grants(
+            { sessionId: opened.sessionId, partNumbers },
+            input.signal,
+          ),
+        "Failed to refresh upload grants.",
+      );
       if (
         !isRecord(grantPayload) ||
         grantPayload.outcome !== "granted" ||
@@ -880,23 +876,14 @@ async function runUploadSessionTransfer(
     transferredBytes: input.file.size,
     totalBytes: input.file.size,
   });
-  const finalizedResponse = await fetcher("/api/upload-sessions/finalize", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      sessionId: opened.sessionId,
-      parts: completedParts,
-    }),
-    signal: input.signal,
-  });
-  const finalized = await responsePayload(finalizedResponse);
-  if (!finalizedResponse.ok) {
-    throw responseError(
-      finalizedResponse,
-      finalized,
-      "Failed to verify upload.",
-    );
-  }
+  const finalized = await control(
+    () =>
+      input.controls.finalize(
+        { sessionId: opened.sessionId, parts: completedParts },
+        input.signal,
+      ),
+    "Failed to verify upload.",
+  );
   if (
     isRecord(finalized) &&
     finalized.outcome === "reconciling" &&
@@ -1025,7 +1012,6 @@ export function createUploadSessionBrowserAdapter(
     firstRetryAfterSeconds: number,
     purpose: "finalize" | "discard" = "finalize",
   ) => {
-    const fetcher = dependencies.fetcher ?? fetch;
     const waitBeforePoll =
       dependencies.waitBeforePoll ??
       ((delayMs: number) =>
@@ -1049,18 +1035,16 @@ export function createUploadSessionBrowserAdapter(
       if (!resume) {
         throw new Error("The saved Upload Session is unavailable.");
       }
-      let response: Response;
+      let payload: unknown;
       try {
-        response = await fetcher("/api/upload-sessions/status", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
+        payload = await dependencies.controls.status(
+          {
             clientIdempotencyKey: resume.clientIdempotencyKey,
             sessionId: resume.sessionId,
             browserFingerprint: resume.fingerprint,
-          }),
-          signal: lifecycleController.signal,
-        });
+          },
+          lifecycleController.signal,
+        );
       } catch (error) {
         if (
           disposed ||
@@ -1068,28 +1052,19 @@ export function createUploadSessionBrowserAdapter(
         ) {
           return;
         }
+        // An unreachable API, a rate limit or a server error is waited out; any other refusal ends the check.
+        const refusal = isApiError(error) && !isNetworkFailure(error) ? error : null;
+        if (refusal && refusal.status !== 429 && refusal.status < 500) {
+          throw apiFailure(refusal, "Upload verification could not continue.");
+        }
         transientFailures += 1;
         if (transientFailures >= 8) break;
-        retryAfterSeconds = Math.min(30, 2 ** (transientFailures - 1));
-        continue;
-      }
-      const payload = await responsePayload(response);
-      if (response.status === 429 || response.status >= 500) {
-        transientFailures += 1;
-        if (transientFailures >= 8) break;
-        const retryHeader = Number(response.headers.get("Retry-After"));
+        const retryAfter = refusal?.retryAfterSeconds;
         retryAfterSeconds =
-          Number.isInteger(retryHeader) && retryHeader > 0
-            ? Math.min(30, retryHeader)
+          retryAfter !== undefined && Number.isInteger(retryAfter) && retryAfter > 0
+            ? Math.min(30, retryAfter)
             : Math.min(30, 2 ** (transientFailures - 1));
         continue;
-      }
-      if (!response.ok) {
-        throw responseError(
-          response,
-          payload,
-          "Upload verification could not continue.",
-        );
       }
       const outcome = parseOpenOutcome(payload);
       if (!outcome) {
@@ -1144,6 +1119,7 @@ export function createUploadSessionBrowserAdapter(
         const result = await runUploadSessionTransfer({
           ...input,
           storage: dependencies.storage,
+          controls: dependencies.controls,
           fetcher: dependencies.fetcher,
           createClientKey: dependencies.createClientKey,
           signal: controller.signal,
@@ -1302,15 +1278,12 @@ export function createUploadSessionBrowserAdapter(
         return;
       }
 
-      const fetcher = dependencies.fetcher ?? fetch;
-      let response: Response;
+      let payload: unknown;
       try {
-        response = await fetcher("/api/upload-sessions/discard", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ sessionId: resume.sessionId }),
-          signal: lifecycleController.signal,
-        });
+        payload = await dependencies.controls.discard(
+          { sessionId: resume.sessionId },
+          lifecycleController.signal,
+        );
       } catch (error) {
         if (
           disposed ||
@@ -1330,9 +1303,7 @@ export function createUploadSessionBrowserAdapter(
         });
         return;
       }
-      const payload = await responsePayload(response);
       if (
-        !response.ok ||
         !isRecord(payload) ||
         payload.sessionId !== resume.sessionId ||
         (payload.outcome !== "discarded" &&

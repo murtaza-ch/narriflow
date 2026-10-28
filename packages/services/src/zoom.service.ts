@@ -43,6 +43,7 @@ export class ZoomService {
     return connection;
   }
 
+  /** `origin` is the API origin: Zoom redirects the browser to `{origin}/api/zoom/oauth/callback`. */
   async createAuthorizationUrl(scope: ActorScope, origin: string) {
     const actor = await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.edit");
     // A connection only feeds Autopilot rules, so connecting needs the plan that runs them.
@@ -58,12 +59,19 @@ export class ZoomService {
     return url.href;
   }
 
-  async handleCallback(scope: ActorScope, input: { state: string; code: string; origin: string }) {
+  /**
+   * Completes the provider redirect. That navigation carries no Clerk session, so identity comes
+   * only from the stored one-use state: its hash is looked up, its expiry and redirect URI are
+   * checked, and it is consumed before any provider call. The connecting member and Workspace are
+   * the ones the row names; membership is rechecked before and again after the provider I/O.
+   * A state whose redirect URI differs is refused without being consumed.
+   */
+  async handleCallback(input: { state: string; code: string; origin: string }): Promise<void> {
     if (!/^[A-Za-z0-9_-]{43}$/.test(input.state)) throw new ZoomError("zoom_oauth_state_invalid");
     const redirectUri = new URL(ZOOM_CALLBACK_PATH, input.origin).href;
     const state = await db().$transaction(async (tx) => {
       const row = await tx.zoomOAuthState.findUnique({ where: { stateHash: zoomStateHash(input.state) } });
-      if (!row || row.userId !== scope.actorUserId || row.workspaceId !== scope.workspaceId || row.redirectUri !== redirectUri || row.expiresAt <= this.now()) throw new ZoomError("zoom_oauth_state_invalid");
+      if (!row || row.redirectUri !== redirectUri || row.expiresAt <= this.now()) throw new ZoomError("zoom_oauth_state_invalid");
       const consumed = await tx.zoomOAuthState.deleteMany({ where: { id: row.id } });
       if (consumed.count !== 1) throw new ZoomError("zoom_oauth_state_invalid");
       return row;

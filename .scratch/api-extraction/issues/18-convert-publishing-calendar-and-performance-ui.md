@@ -4,7 +4,7 @@
 
 **Blocked by:** [17 - Move publishing OAuth queue and performance API](17-move-publishing-oauth-queue-and-performance-api.md), [05 - Expose session and Workspace controls](05-expose-session-and-workspace-controls.md), [07 - Move billing API and convert billing UI](07-move-billing-api-and-convert-billing-ui.md)
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Suggested implementer:** Claude. The other pairing side reviews and returns findings to this owner.
 
@@ -283,10 +283,10 @@ Also account for the inventory's cross-domain traps: query-only actions, action 
 
 ## Acceptance criteria
 
-- [ ] Calendar/new/queue/performance/social accounts and Project publishing UI convert every action/fetch/refresh/OAuth anchor site.
-- [ ] Composer preservation includes revision/export barriers and publication uncertain/recheck/publish-again semantics; no duplicate scheduling intent on transport retry.
-- [ ] Adaptive calendar and proposal polling and mutation invalidation target posts/accounts/proposals/counts/schedules; cached old Workspace data is discarded.
-- [ ] Provider connect navigates only after authenticated JSON start, and returns/selection/reconnect notices preserve existing behavior.
+- [x] Calendar/new/queue/performance/social accounts and Project publishing UI convert every action/fetch/refresh/OAuth anchor site.
+- [x] Composer preservation includes revision/export barriers and publication uncertain/recheck/publish-again semantics; no duplicate scheduling intent on transport retry.
+- [x] Adaptive calendar and proposal polling and mutation invalidation target posts/accounts/proposals/counts/schedules; cached old Workspace data is discarded.
+- [x] Provider connect navigates only after authenticated JSON start, and returns/selection/reconnect notices preserve existing behavior.
 - [ ] No unowned files changed; paired review findings and verification evidence recorded under Comments.
 
 ## Verification
@@ -301,4 +301,23 @@ Verify the changed flow in the running Next app against the separate API origin.
 
 ## Comments
 
-Append claim, requested seam changes, paired review and evidence here.
+Claimed and implemented by Claude (Sonnet 5.5), 2026-10-29. Paired review not run (the last acceptance box is left open for the orchestrator). Signed-in browser pass NOT done (ticket 32).
+
+### What changed
+- Pages are data-free shells (`Suspense` + client screen): `calendar/calendar-screen.tsx`, `calendar/new/choose-clip-screen.tsx`, `calendar/queue/queue-screen.tsx`, `performance/performance-screen.tsx`, `settings/social-accounts/social-accounts-screen.tsx`. Reads are `useQuery` through new `apps/web/lib/publishing-client.ts` (`publishingQueries.*`, keys from `publishingKeys`, AbortSignal passed, guidance keyed `scopedKey(scope,"publishing","guidance")`); plan facts and capabilities come from the Workspace bootstrap (`useWorkspaceBootstrap`). Access refusals map to the old page redirects in `lib/publishing-load-error.tsx` (restricted -> billing / workspace-unavailable, forbidden -> /home).
+- Deleted `calendar/actions.ts`, `calendar/queue/actions.ts`, `calendar/calendar-live-refresh.tsx`. Calendar polling is the query's `refetchInterval` from `socialPollDelayMs` (stops when nothing is live); the queue re-reads every 30 s. All commands invalidate `invalidatePublishing` (posts, accounts, proposals, count, schedules, calendar); failures re-read only when uncertain (409, 5xx, network: `isUncertainFailure`).
+- Inbox/schedule/social-accounts components take a bound `api` prop (testable without a provider). Provider connect is now a button: `POST /social/oauth/start/:platform {redirect}` then `window.location.assign(authorizationUrl)`; a refusal toasts "Connection failed" with the `userErrorMessage(code)` text the `?error=` redirect used. Facebook Page list/selection and disconnect use the typed client.
+- Project publishing: `publishing-api.ts` (typed publishing/exports/clips/brand clients) replaces `publishingRequest`/`PublishingRequestError` (removed; the session uses `ApiError.status`). `Idempotency-Key` per intent: propose (per draft + content), recheck/confirm/publish-again (per decision), and export creation (`POST .../exports` now requires it; retry of a failed export uses `exportCommands.retry`). Assisted copy, bulk schedule and thumbnail frames keep their body-native identities (frame key now per intent instead of a fresh UUID per click). The stale-revision `router.refresh()` is `invalidateProject(...)`.
+- `GET /social/accounts` is `content.view` in the admission table already, so read-only members keep the Social accounts page.
+
+### Deviations / notes for others
+- The provider's local post (5 s / 30 s) and export (5 s) refresh loops remain `setInterval`s calling the typed API; they feed `initialPosts`/props frozen for ticket 10, so converting them to queries would change the provider contract. Ticket 10 can replace them when it owns the project aggregate.
+- `PublishingProvider` now calls `useApiRuntime()`/`useWorkspaceScope()` and throws without a selected Workspace; it must render under `ApiProvider` (ticket 06 layout). Config props are unchanged.
+- `performance/what-worked.test.tsx` still imports pure fixture builders (`summarizePerformance`, `computePerformanceGuidance`, `guidanceGroupLabel`) from `@narriflow/services`. Ticket 31's Biome rule needs a test exemption, or those fixtures must be written out.
+- `Idempotent-Replayed`/limiter 429/503 from the receipt commands surface through `apiFailureMessage` (existing wording helper), no special UI.
+- New (unlisted) files: `apps/web/lib/publishing-client.{ts,test.ts}`, `apps/web/lib/publishing-load-error.tsx`, the five screens above and `projects/[projectId]/publishing-api.ts`.
+
+### Evidence
+- `bun test "apps/web/app/(app)/calendar" "apps/web/app/(app)/performance"` plus social-accounts, `projects/[projectId]/publishing*` (incl. the happy-dom drawer fixture, now over the real typed client with Idempotency-Key assertions), `lib/performance-format`, `lib/social-post-status`: 92 pass; `./apps/web/lib/publishing-client.test.ts`: 4 pass (calendar key/scope, poll cadence, guidance key, uncertain-failure rule).
+- `bun run --cwd apps/web typecheck`: no error in any file of this ticket (remaining errors belong to 06/16/other in-flight tickets). `bunx biome check` on all owned and new paths: clean.
+- Not done: signed-in browser run against `next dev` + API (OAuth connect/return/Facebook selection, calendar polling while a post publishes, cancel, queue accept/accept-all/TikTok choices, composer propose/schedule/recovery with transport retry).

@@ -3,8 +3,8 @@ import { Flex, Heading, SimpleGrid, Stack } from "@chakra-ui/react";
 import { ArrowRight, FolderOpen } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
 import { EmptyState } from "@narriflow/ui/components/empty-state";
-import type { ProjectListItem } from "@narriflow/services";
 import { ProjectCard } from "../projects/_components/project-card";
+import { usePrefetchExplorer, type ProjectListItem } from "../projects/_lib/api";
 
 export function RecentProjects({
   items,
@@ -13,6 +13,7 @@ export function RecentProjects({
   items: ProjectListItem[];
   canCreate: boolean;
 }) {
+  const prefetchExplorer = usePrefetchExplorer();
   return (
     <Stack as="section" gap="5">
       <Flex align="center" justify="space-between" gap="4">
@@ -21,7 +22,7 @@ export function RecentProjects({
         </Heading>
         {items.length > 0 ? (
           <Button asChild variant="ghost" size="sm" color="fg.muted">
-            <Link href="/projects">
+            <Link href="/projects" onPointerEnter={() => prefetchExplorer()} onFocus={() => prefetchExplorer()}>
               View all <ArrowRight size={14} />
             </Link>
           </Button>

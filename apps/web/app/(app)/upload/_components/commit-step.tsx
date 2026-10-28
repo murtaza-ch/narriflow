@@ -1,6 +1,9 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { linkMetadataQueryOptions } from "@narriflow/api-client/ingest";
+import { isApiError } from "@narriflow/api-client/core";
+import { useQuery } from "@tanstack/react-query";
 import {
   Box,
   chakra,
@@ -47,15 +50,11 @@ import { VideoPreview } from "./video-preview";
 import { PlanLimitNotice } from "../../_components/plan-limit-notice";
 import type { UpgradePrompt } from "../../_components/upgrade";
 import { UploadRefusalUpgrade } from "./upload-session-status";
-import {
-  fetchYoutubeMetadataAction,
-  commitDriveImportAction,
-  commitLinkImportAction,
-} from "../actions";
 import type { DrivePick } from "../_lib/google-drive-picker";
+import { useIntake } from "../_lib/intake-context";
+import { failureFromApiError, intakeFailureMessage } from "../_lib/intake-failure";
 import {
   creditsUpgradePrompt,
-  isAuthenticatedActionFailure,
   upgradePromptFromFailure,
   uploadLengthUpgradePrompt,
 } from "@/lib/authenticated-request-browser";
@@ -152,6 +151,7 @@ export function CommitStep({
   commitToken,
   onCommitted,
 }: CommitStepProps) {
+  const intake = useIntake();
   const [title, setTitle] = useState(() => driveTitle(driveFile));
   const titleTouchedRef = useRef(false);
 
@@ -198,28 +198,14 @@ export function CommitStep({
   const youtubeId =
     linkProvider === "youtube" ? extractYoutubeId(linkUrl) : null;
 
-  // YouTube oEmbed prefill — server-side fetch, ~3s timeout, silent fallback.
+  // YouTube title prefill (server-side oEmbed, silent fallback): a title the person has not edited yet.
+  const { data: metadata } = useQuery({
+    ...linkMetadataQueryOptions({ transport: intake.transport, scope: intake.scope, url: linkUrl }),
+    enabled: linkProvider === "youtube",
+  });
   useEffect(() => {
-    if (linkProvider !== "youtube") return;
-    let cancelled = false;
-    fetchYoutubeMetadataAction(linkUrl)
-      .then((result) => {
-        if (
-          cancelled ||
-          titleTouchedRef.current ||
-          isAuthenticatedActionFailure(result) ||
-          !result.title
-        )
-          return;
-        setTitle(result.title);
-      })
-      .catch(() => {
-        // Silent fallback — title stays editable and empty.
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [linkUrl, linkProvider]);
+    if (metadata?.title && !titleTouchedRef.current) setTitle(metadata.title);
+  }, [metadata?.title]);
 
   function handleDurationKnown(seconds: number) {
     setDurationSec((prev) => {
@@ -291,7 +277,7 @@ export function CommitStep({
     const processingStartSec = hasCustomWindow ? Math.floor(startSec) : null;
     const processingEndSec = hasCustomWindow ? Math.floor(endSec) : null;
     const settings = {
-      title: title.trim() || null,
+      title: title.trim() || undefined,
       brandTemplateId,
       brandProfileId,
       commitToken,
@@ -300,29 +286,26 @@ export function CommitStep({
       processingStartSec,
       processingEndSec,
     };
-    const result = driveFile
-      ? await commitDriveImportAction({
-          ...settings,
-          fileId: driveFile.fileId,
-          accessToken: driveFile.accessToken,
-        })
-      : await commitLinkImportAction({ ...settings, url: linkUrl });
-    if (!result.ok) {
-      setErrorMessage(result.message);
+    let accepted: Awaited<ReturnType<typeof intake.actions.commitLink>>;
+    try {
+      accepted = driveFile
+        ? await intake.actions.commitDrive({
+            ...settings,
+            fileId: driveFile.fileId,
+            accessToken: driveFile.accessToken,
+          })
+        : await intake.actions.commitLink({ ...settings, url: linkUrl });
+    } catch (error) {
+      setErrorMessage(intakeFailureMessage(error, "Could not start this import. Please try again."));
       // The link, Drive pick, and settings stay as they are; the owner can open the plan dialog.
-      setRefusalUpgrade(
-        upgradePromptFromFailure({
-          error: result.code,
-          message: result.message,
-          details: "details" in result ? result.details : undefined,
-        }),
-      );
+      setRefusalUpgrade(isApiError(error) ? upgradePromptFromFailure(failureFromApiError(error)) : null);
       setSubmitting(false);
       return;
     }
+    void intake.accepted();
     onCommitted({
-      projectId: result.projectId,
-      title: result.title,
+      projectId: accepted.project.id,
+      title: accepted.project.title,
       languageCode,
       mode,
       processingStartSec,

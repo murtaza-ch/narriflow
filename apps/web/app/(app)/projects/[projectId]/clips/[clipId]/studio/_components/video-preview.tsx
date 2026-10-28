@@ -47,6 +47,7 @@ import {
   type ResolvedSpeakerLayoutScene,
 } from "@narriflow/validators";
 import { useStudio } from "./studio-shell";
+import { fetchAudioPlayback, useAudioApi } from "./tool-panels/audio-library";
 import type { AspectRatio } from "./studio-shell";
 import {
   sceneFontPreviewFamily,
@@ -418,6 +419,7 @@ export function VideoPreview() {
     reportCompositionPlanStatus,
     compositionPlanQaFixture,
   } = useStudio("editorDocument", "motionPreview", "clipInfo", "aspectRatio", "setAspectRatio", "activeTool", "setActiveTool", "reportLayoutScene", "studioEdits", "mediaRef", "playbackClock", "setSourceAudioEnvelope", "sourceVideoUrl", "previewVideoUrl", "sourcePurged", "useOriginalSourceFallback", "setUseOriginalSourceFallback", "reloadPlayback", "activeVideoUrl", "activeOffsetSec", "brollUrl", "brollPreviewAsset", "visualAssets", "sceneFonts", "setBrollPreviewAsset", "editedTimeMap", "compositeToBaseEdited", "deselectCaption", "deselectTextLayer", "captionSelected", "selectedTextLayerId", "setStudioEdits", "endCoalesce", "isPlaying", "duration", "brandLogo", "layoutAnalysis", "layoutAnalysisFailure", "autoLayoutAnalysis", "splitLayoutAnalysis", "splitLayoutFailure", "autoLayoutAnalysisStatus", "reportCompositionPlanStatus", "compositionPlanQaFixture");
+  const audioApi = useAudioApi();
   const previewEditorDocument = useMemo(
     () => applyCompositionDocumentQaFixture(
       applyStudioMotionPreview(editorDocument, motionPreview),
@@ -1415,12 +1417,7 @@ export function VideoPreview() {
     }
     let canceled = false;
     setMusicAssetResolution({ assetId, state: "pending" });
-    fetch(`/api/audio-assets/${assetId}/playback-url`)
-      .then((res) =>
-        res.ok
-          ? (res.json() as Promise<{ url?: string; durationSec?: number }>)
-          : null,
-      )
+    fetchAudioPlayback(audioApi, assetId)
       .then((data) => {
         if (!canceled && data?.url && data.durationSec && data.durationSec > 0) {
           setMusicAssetResolution({
@@ -1441,7 +1438,7 @@ export function VideoPreview() {
     return () => {
       canceled = true;
     };
-  }, [studioEdits.music.assetId]);
+  }, [studioEdits.music.assetId, audioApi]);
 
   // Same stale-presign resolution for SFX placements, batched by unique
   // assetId so N placements sharing one asset cost one request each, not N.
@@ -1456,13 +1453,8 @@ export function VideoPreview() {
     void Promise.all(
       missingIds.map(async (id) => {
         try {
-          const res = await fetch(`/api/audio-assets/${id}/playback-url`);
-          if (!res.ok) return [id, { state: "failed" as const }] as const;
-          const data = (await res.json()) as {
-            url?: string;
-            durationSec?: number;
-          };
-          return data.url && data.durationSec && data.durationSec > 0
+          const data = await fetchAudioPlayback(audioApi, id);
+          return data?.url && data.durationSec && data.durationSec > 0
             ? ([
                 id,
                 {
@@ -1481,7 +1473,7 @@ export function VideoPreview() {
         adoptResolvedAudioAssets(current, entries),
       );
     });
-  }, [sfxAssetIdsKey]);
+  }, [sfxAssetIdsKey, audioApi]);
 
   useEffect(() => playbackClock.subscribe(() => {
     setCurrentTime(playbackClock.getSnapshot());

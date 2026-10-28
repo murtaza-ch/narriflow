@@ -1,15 +1,74 @@
-export interface ClipMediaResponse {
-  ok: boolean;
-  status: number;
-  json(): Promise<unknown>;
+import {
+  ApiError,
+  type ApiRuntime,
+  CLIENT_ERROR_CODES,
+  createClipsClient,
+  createExportsClient,
+  createProjectsClient,
+  createStudioClient,
+  type Intent,
+  type WorkspaceScope,
+} from "@narriflow/api-client";
+import { type BrandMutations, brandMutations } from "@narriflow/api-client/brand";
+import { useQueryClient, type QueryClient } from "@tanstack/react-query";
+import { useMemo } from "react";
+import { useApiRuntime, useWorkspaceScope } from "@/app/_components/api-provider";
+
+/**
+ * Typed clients for the clip and campaign UI, bound to one identity and
+ * Workspace. Capture it where an action starts: a request and its cache
+ * invalidation then stay in the Workspace the user clicked in.
+ */
+export interface ClipApi {
+  runtime: ApiRuntime;
+  scope: WorkspaceScope;
+  queryClient: QueryClient;
+  clips: ReturnType<typeof createClipsClient>;
+  studio: ReturnType<typeof createStudioClient>;
+  exports: ReturnType<typeof createExportsClient>;
+  projects: ReturnType<typeof createProjectsClient>;
+  /** Brand Kit commands the campaign bar issues (applying a scene to clips). */
+  brand: BrandMutations;
 }
 
-export type ClipMediaFetcher = (input: string) => Promise<ClipMediaResponse>;
+/** `null` until the signed-in user has a selected Workspace. */
+export function useClipApi(): ClipApi | null {
+  const runtime = useApiRuntime();
+  const scope = useWorkspaceScope();
+  const queryClient = useQueryClient();
+  return useMemo(() => {
+    if (!scope) return null;
+    const transport = runtime.transport.scoped(scope);
+    return {
+      runtime,
+      scope,
+      queryClient,
+      clips: createClipsClient(transport),
+      studio: createStudioClient(transport),
+      exports: createExportsClient(transport),
+      projects: createProjectsClient(transport),
+      brand: brandMutations({ transport: runtime.transport, scope }),
+    };
+  }, [runtime, scope, queryClient]);
+}
 
-export interface ClipMediaHttpResult {
-  ok: boolean;
-  status: number;
-  payload: unknown;
+/** The intent held in `ref` for the current user action, created on first use. */
+export function intentIn<TInput>(
+  ref: { current: Intent<TInput> | null },
+  runtime: ApiRuntime,
+): Intent<TInput> {
+  if (!ref.current) ref.current = runtime.createIntent<TInput>();
+  return ref.current;
+}
+
+/** For an action handler: the bound clients, or the typed "no Workspace yet" failure. */
+export function requireClipApi(api: ClipApi | null): ClipApi {
+  if (api) return api;
+  throw new ApiError({
+    code: CLIENT_ERROR_CODES.workspaceSelectionRequired,
+    message: "Choose a Workspace first.",
+    status: 0,
+  });
 }
 
 export interface ClipMediaDescriptor {
@@ -19,14 +78,6 @@ export interface ClipMediaDescriptor {
   isPreviewProxy: boolean;
   previewStartSec: number;
 }
-
-interface PreviewCacheEntry {
-  requestedAt: number;
-  promise: Promise<ClipMediaHttpResult>;
-}
-
-const PREVIEW_CACHE_TTL_MS = 5 * 60 * 1000;
-const previewCache = new Map<string, PreviewCacheEntry>();
 
 function readString(payload: unknown, key: string): string | null {
   if (!payload || typeof payload !== "object") return null;
@@ -44,19 +95,23 @@ export function clipMediaPayloadForClip(
   return (previews as Record<string, unknown>)[clipId] ?? null;
 }
 
-export function clipMediaDescriptorFromPayload(
-  payload: unknown,
-): ClipMediaDescriptor | null {
-  const downloadUrl = readString(payload, "downloadUrl");
-  const fileName = readString(payload, "fileName");
-  if (!downloadUrl || !fileName) return null;
-
+/** A signed media URL the browser may open or play: plain http(s), nothing else. */
+export function playableMediaUrl(value: unknown): string | null {
+  if (typeof value !== "string" || value.length === 0) return null;
   try {
-    const url = new URL(downloadUrl);
-    if (url.protocol !== "https:" && url.protocol !== "http:") return null;
+    const url = new URL(value);
+    return url.protocol === "https:" || url.protocol === "http:" ? value : null;
   } catch {
     return null;
   }
+}
+
+export function clipMediaDescriptorFromPayload(
+  payload: unknown,
+): ClipMediaDescriptor | null {
+  const downloadUrl = playableMediaUrl(readString(payload, "downloadUrl"));
+  const fileName = readString(payload, "fileName");
+  if (!downloadUrl || !fileName) return null;
 
   const value = payload as Record<string, unknown>;
   const rawExpiry = value.expiresInSeconds;
@@ -74,46 +129,4 @@ export function clipMediaDescriptorFromPayload(
         ? rawOffset
         : 0,
   };
-}
-
-/** Shares signed-preview discovery across React remounts and sibling callers. */
-export function loadClipPreview(
-  requestUrl: string,
-  fetcher: ClipMediaFetcher = fetch,
-): Promise<ClipMediaHttpResult> {
-  const now = Date.now();
-  const cached = previewCache.get(requestUrl);
-  if (cached && now - cached.requestedAt < PREVIEW_CACHE_TTL_MS) {
-    return cached.promise;
-  }
-
-  const promise = fetcher(requestUrl)
-    .then(async (response) => ({
-      ok: response.ok,
-      status: response.status,
-      payload: await response.json().catch(() => null),
-    }))
-    .then((result) => {
-      if (!result.ok) previewCache.delete(requestUrl);
-      return result;
-    })
-    .catch((error: unknown) => {
-      previewCache.delete(requestUrl);
-      throw error;
-    });
-
-  previewCache.set(requestUrl, { requestedAt: now, promise });
-  return promise;
-}
-
-export function clipFileDownloadPath(
-  projectId: string,
-  clipId: string,
-  aspectRatio: string,
-): string {
-  return (
-    `/api/projects/${encodeURIComponent(projectId)}` +
-    `/clips/${encodeURIComponent(clipId)}/file` +
-    `?aspectRatio=${encodeURIComponent(aspectRatio)}`
-  );
 }

@@ -17,6 +17,7 @@ import {
   type StudioSessionSnapshot,
 } from "./studio-editing-session";
 import { createBrowserStudioSessionDependencies } from "./studio-editing-session-browser";
+import type { StudioCloudHttp } from "./studio-cloud-http";
 import { createBrowserStudioMediaAdapter } from "./studio-editing-session-media-browser";
 import {
   createSessionPlaybackClock,
@@ -154,12 +155,14 @@ export interface StudioEditingSessionReactAdapter {
 }
 
 export interface StudioEditingSessionReactAdapters {
+  /** HTTP adapter for the clip's editor routes; the session owns every decision about it. */
+  cloud: StudioCloudHttp;
   preview?: StudioSessionDependencies["preview"];
 }
 
 export function useStudioEditingSession(
   seed: StudioSessionSeed,
-  adapters: StudioEditingSessionReactAdapters = {},
+  adapters: StudioEditingSessionReactAdapters,
 ): StudioEditingSessionReactAdapter {
   const [{ session, media }] = useState(() => {
     const media = createBrowserStudioMediaAdapter();
@@ -170,7 +173,7 @@ export function useStudioEditingSession(
             ...createBrowserStudioSessionDependencies({
               projectId: seed.projectId,
               clipId: seed.clipId,
-            }, adapters.preview),
+            }, adapters.cloud, adapters.preview),
             media,
           }
         : undefined,

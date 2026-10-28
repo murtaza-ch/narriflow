@@ -4,7 +4,7 @@
 
 **Blocked by:** [05 - Expose session and Workspace controls](05-expose-session-and-workspace-controls.md), [07 - Move billing API and convert billing UI](07-move-billing-api-and-convert-billing-ui.md)
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Suggested implementer:** Claude. The other pairing side reviews and returns findings to this owner.
 
@@ -549,10 +549,10 @@ Rows retain their section/ordinal or exact source-line identifier from the indep
 
 ## Acceptance criteria
 
-- [ ] Every owned page/layout direct read and Server Action caller is converted; root no longer validates DB/Stripe and no data gate wraps identity/billing recovery.
-- [ ] Scope switching validates membership, cancels/discards old responses, persists only a user-keyed hint and handles other-tab storage events.
-- [ ] Auth continuation provisions through bootstrap before validated destination/Clerk consent navigation; invite and checkout forms use mutation state.
-- [ ] Shell usage/billing/avatars use shared scoped queries; errors retain Support ID and owner/member recovery; all owned refresh/revalidate assumptions removed.
+- [x] Every owned page/layout direct read and Server Action caller is converted; root no longer validates DB/Stripe and no data gate wraps identity/billing recovery.
+- [x] Scope switching validates membership, cancels/discards old responses, persists only a user-keyed hint and handles other-tab storage events.
+- [x] Auth continuation provisions through bootstrap before validated destination/Clerk consent navigation; invite and checkout forms use mutation state.
+- [x] Shell usage/billing/avatars use shared scoped queries; errors retain Support ID and owner/member recovery; all owned refresh/revalidate assumptions removed.
 - [ ] No unowned files changed; paired review findings and verification evidence recorded under Comments.
 
 ## Verification
@@ -568,4 +568,29 @@ Verify the changed flow in the running Next app against the separate API origin.
 
 ## Comments
 
-Append claim, requested seam changes, paired review and evidence here.
+Claimed and implemented by Claude (Sonnet 5.5), 2026-10-29. Paired review not run by the implementer (last acceptance box left open for the orchestrator). Signed-in browser pass NOT done (ticket 32).
+
+### What changed
+- **Gates** (`app/_components/workspace-query-gate.tsx`, new): `SessionGate` runs the identity bootstrap and adopts `selection.workspaceId` with `runtime.selectWorkspace` BEFORE any scoped query can start (children render only afterwards); it re-bootstraps and re-adopts whenever the transport reports 409 `workspace_selection_changed` (`SessionApiProvider` wires the transport callback to the gate; the refused request is never retried). `WorkspaceQueryGate` reads the Workspace bootstrap for the selected Workspace, remounts its children per Workspace, sends a member who lacks `content.view` (derived from the identity bootstrap's role and status, no content probing) or a late `workspace_restricted` to `/workspace-unavailable` (owner who can resolve: `/settings/billing`), and shows `GateFailure` (Support ID, retry) for other failures. `useWorkspaceSwitch()` = `selectWorkspaceMutation` (membership-only, works from a restricted Workspace; runtime cancels/clears the old scope).
+- **Shell**: `(app)/layout.tsx` is a data-free server shell around `SessionApiProvider` + `AppShell` (in `app-chrome.tsx`: `SessionGate` > `WorkspaceQueryGate` > `UpgradeProvider` > `AppChrome`). Shell data = Workspace bootstrap (profile, memberships with avatars, capabilities, usage) + billing state (`retry:false`, only words upgrade links). `AppChrome` props unchanged. Account menu/mobile nav: portal through `createBillingActions(...).openPortal()`, sign-out aborts and clears the API session first (`runtime.setIdentity(null)`; restored if Clerk's sign-out fails). `AccountMenu` takes an optional `AccountSession` because the marketing header renders it with no API session.
+- **Root layout**: `validateCoreEnv` and billing validation removed.
+- **Settings**: layout is a pass-through; profile, workspace (profile, bootstrap, guidance, censor words fetched concurrently) and members (members, billing state, bootstrap concurrently) pages are client data views reusing their `loading.tsx`. Mutations with `useMutation`: update workspace, guidance, avatar (presign, direct PUT with `credentials: "omit"`, set/remove), invite/resend (one idempotency intent per form/row), revoke, role change, remove (role change and removal re-read the lists on failure too), censor words. `MembersPanel` gained a `scope` prop; `CensorWordsCard` and `WorkspaceAvatarControl` gained `scope` and read/write the shared query keys.
+- **Auth/continuations**: `/auth/continue` is a client flow (`AuthContinuation`): identity bootstrap provisions and adopts, then `resolveAuthContinuation` (new pure function in `lib/post-auth-redirect.ts`, validated against the API's `authContinuation` issuer/consent origin, never `process.env`) either `router.replace`s an app path or hands off to Clerk. A rejected token ends in a retry, not another sign-in round trip. `auth-form` no longer calls `router.refresh()` (the next page mounts its own session). `error.tsx` now uses Next's `reset`.
+- **Invite / New Workspace / unavailable**: invite page = `inviteQuery` + `acceptInviteMutation` then `router.push(destination)`; `workspaces/new` = `startBusinessWorkspaceCheckout` (identity scope), `details.recovery` feeds the preserved fields, adopts `selection.workspaceId` then `window.location.assign(checkoutUrl)`; workspace-unavailable reads memberships from the identity bootstrap and Open uses `useWorkspaceSwitch`.
+- **Deleted**: `(app)/_actions/workspace.ts`, `settings/workspace/censor-words-actions.ts`, `invite/[token]/actions.ts`, `workspaces/new/actions.ts`.
+- **Tests/fixtures**: `workspace-entry.db.fixture.ts` rewritten on `getAppUserForClerkIdentity` (a directory outage is now `ClerkDirectoryUnavailableError`); `auth-server.contract.fixture.ts` keeps the proxy page contracts, drops the API-401 cases (proxy API branch belongs to 31) and the server continuation page; `post-auth-redirect.test.ts` covers `resolveAuthContinuation`; new `workspace-query-gate.browser.fixture.tsx` (+ `.test.ts` launcher; real ApiProvider/runtime/transport against a fake API: stale hint, paused Workspace, switch, mid-session removal without replay) and `query-mutation-form.test.tsx`; `members-panel.test.tsx` updated.
+
+### Requests for other owners
+- **31**: `app/_components/authenticated-action-form.tsx` is still imported by `projects/[projectId]/{page,processing-panel}.tsx` (10) and `lib/plan-upgrade-pages.contract.fixture.ts`; delete it (and `lib/authenticated-request-browser.ts` only after nothing imports it: the new `query-mutation-form.tsx` still uses its failure wording) when those convert. `lib/authenticated-request-inventory.ts` still lists the deleted actions (its 4 tests fail). `(app)/_components/usage.ts` (07) can switch to `workspaceBootstrapQuery` from `@narriflow/api-client/workspace` (same key). `NEXT_PUBLIC_API_URL` must exist at web build time: `ApiProvider` reads it while prerendering.
+- **26**: `integrations/mcp/workspace-billing-link.tsx` imports the deleted `_actions/workspace`; use `useWorkspaceSwitch()` from `@/app/_components/workspace-query-gate` (or `selectWorkspaceMutation`). 10/09: same for `workspace-mismatch-notice.tsx` if still on the action.
+- **02/31**: wire `apps/web/lib/workspace-entry.db.fixture.ts` into `apps/api/scripts/run-authenticated-request-policy-db-tests.ts` (needs `AUTHENTICATED_REQUEST_POLICY_TEST_DATABASE_URL`/`_SCHEMA`, run with `bun test ./apps/web/lib/workspace-entry.db.fixture.ts`; the runner does not execute it).
+- **Other screens mounting `ApiProvider` outside `(app)`** (review, share, MCP continuation pages outside the shell) should use `ApiProvider` directly; use `SessionApiProvider` + `SessionGate` only when they need the adopted Workspace.
+
+### Evidence
+- `bun test apps/web/lib/auth-flow.test.ts apps/web/lib/post-auth-redirect.test.ts` 37 pass (incl. 4 new `resolveAuthContinuation`).
+- `cd apps/web && bun test lib/auth-form.test.ts lib/auth-flow.test.ts lib/post-auth-redirect.test.ts lib/safe-redirect.test.ts lib/settings-return.test.ts lib/navigation-actions.test.ts lib/format.test.ts lib/personal-workspace-auth.test.ts app/caption-fonts.test.ts app/workspaces app/_components "app/(app)/_components/workspace-status-notice.test.tsx" "app/(app)/settings/_components" "app/(app)/settings/members" "app/(app)/settings/workspace"` 107 pass, 0 fail; `bun test "app/(app)/_components"` 23 pass.
+- `bun test ./apps/web/app/_components/workspace-query-gate.browser.fixture.tsx` 5 pass.
+- `.scratch/api-extraction/db-gate.sh` + a disposable `authenticated_request_policy_test_*` schema (all migrations): `bun test ./apps/web/lib/workspace-entry.db.fixture.ts` 7 pass.
+- `bunx tsc --noEmit -p apps/web/tsconfig.json`: no error in any file of this ticket. Remaining errors belong to others: `integrations/mcp/{confirm/actions,page,upload/upload-picker,workspace-billing-link}` (26), `recipes/recipes-panel` (16), `settings/actions.ts` and `settings/api/callback-secret-panel` (25), Studio audio/music tool panels (14), `app/api/stream` (29), `lib/authenticated-request-{action,page}`, `workflow-stream-reauthorization` (31), `apps/api/.../rest/routes.ts` (23).
+- `bunx biome check` on every owned/created path: clean.
+- NOT done: signed-in browser run against `next dev` + the API (shell load, stale-hint fallback banner, switch, sign-out clearing, restricted member redirect, invite accept, New Workspace to Stripe, `/auth/continue` with a Clerk OAuth `redirect_url`). Ticket 32 must run these.

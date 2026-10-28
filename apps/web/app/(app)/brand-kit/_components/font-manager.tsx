@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { useRouter } from "next/navigation";
 import { Box, Flex, Grid, Stack, Text, chakra } from "@chakra-ui/react";
 import { FileType2, Trash2, Type, Upload } from "lucide-react";
 import { Checkbox } from "@narriflow/ui/components/checkbox";
@@ -11,6 +10,7 @@ import { EmptyState } from "@narriflow/ui/components/empty-state";
 import { useConfirm } from "@narriflow/ui/components/confirm-dialog";
 import { toaster } from "@narriflow/ui/components/toaster";
 import { brandFontUploadSchema } from "@narriflow/validators";
+import { failureMessage, useBrandApi } from "./brand-api";
 import {
   BrandFontsProvider,
   brandFontStyle,
@@ -20,19 +20,6 @@ import {
 
 const SPECIMEN = "The quick brown fox jumps over the lazy dog";
 const MAX_FONT_MB = 20;
-
-async function jsonRequest(url: string, init?: RequestInit) {
-  const response = await fetch(url, {
-    ...init,
-    headers: { "Content-Type": "application/json", ...init?.headers },
-  });
-  const result = await response.json();
-  if (!response.ok)
-    throw new Error(
-      result.message ?? "The font request failed. Please try again.",
-    );
-  return result;
-}
 
 function fontContentType(file: File) {
   const extension = file.name.split(".").pop()?.toLowerCase();
@@ -47,7 +34,7 @@ export function FontLibrary({
   fonts: BrandFontChoice[];
   canManage: boolean;
 }) {
-  const router = useRouter();
+  const { mutations, invalidate } = useBrandApi();
   const { confirm, dialog } = useConfirm();
   const [busy, setBusy] = useState<string | null>(null);
 
@@ -61,14 +48,14 @@ export function FontLibrary({
     if (!confirmed) return;
     setBusy(font.id);
     try {
-      await jsonRequest(`/api/brand-fonts/${font.id}`, { method: "DELETE", body: "{}" });
+      await mutations.deleteFont(font.id);
       toaster.create({ type: "success", title: "Font deleted" });
-      router.refresh();
+      await invalidate();
     } catch (error) {
       toaster.create({
         type: "error",
         title: "Font could not be deleted",
-        description: error instanceof Error ? error.message : "Please try again.",
+        description: failureMessage(error),
       });
     } finally {
       setBusy(null);
@@ -143,7 +130,7 @@ type Draft = { file: File; bytes: ArrayBuffer; family: string } | { file: File; 
 
 /** "Upload font": pick a file, see it set in the face, confirm the license, upload. */
 export function FontUploadButton() {
-  const router = useRouter();
+  const { mutations, invalidate } = useBrandApi();
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [licenseConfirmed, setLicenseConfirmed] = useState(false);
@@ -204,33 +191,27 @@ export function FontUploadButton() {
         new Uint8Array(await crypto.subtle.digest("SHA-256", draft.bytes)),
         (value) => value.toString(16).padStart(2, "0"),
       ).join("");
-      const presigned = await jsonRequest("/api/brand-fonts/presign-upload", {
-        method: "POST",
-        body: JSON.stringify(metadata),
-      });
+      const presigned = await mutations.presignFontUpload(metadata);
       const uploaded = await fetch(presigned.uploadUrl, {
         method: "PUT",
         headers: { "Content-Type": presigned.contentType },
         body: draft.file,
       });
       if (!uploaded.ok) throw new Error("Upload failed. Please try again.");
-      const result = await jsonRequest("/api/brand-fonts", {
-        method: "POST",
-        body: JSON.stringify({ ...metadata, key: presigned.key, fingerprint }),
-      });
+      const result = await mutations.finalizeFontUpload({ ...metadata, key: presigned.key, fingerprint });
       toaster.create({
         type: "success",
         title: result.replayed ? "Font already uploaded" : "Font uploaded",
       });
       setUploading(false);
       close();
-      router.refresh();
+      await invalidate();
     } catch (error) {
       setUploading(false);
       toaster.create({
         type: "error",
         title: "Font upload failed",
-        description: error instanceof Error ? error.message : "Please try again.",
+        description: failureMessage(error),
       });
     }
   }

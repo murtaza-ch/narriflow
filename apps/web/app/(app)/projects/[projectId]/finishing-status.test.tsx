@@ -2,10 +2,13 @@ import { describe, expect, mock, test } from "bun:test";
 import { ChakraProvider } from "@chakra-ui/react";
 import { system } from "@narriflow/ui/theme";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { ProjectFinishingView } from "@narriflow/services";
 
-mock.module("next/navigation", () => ({ useRouter: () => ({ refresh() {} }) }));
+// The poller is tested on its own; here it only has to be mounted while finishing is working.
+mock.module("./finishing-auto-refresh", () => ({
+  FinishingAutoRefresh: () => <span data-finishing-poll />,
+}));
 const { FinishingStatus } = await import("./finishing-status");
+type ProjectFinishingView = import("./finishing-status").ProjectFinishingView;
 
 const PROJECT = "00000000-0000-4000-8000-000000000001";
 const CLIP = "00000000-0000-4000-8000-000000000002";
@@ -36,6 +39,9 @@ describe("Project finishing status", () => {
     expect(waiting).toContain("when clip generation finishes");
     expect(render(view({ state: "running", clips: [] }))).toContain("Exporting the best clips and writing copy");
     expect(waiting).not.toContain("/exports/");
+    // The page keeps looking while it is working, and only then.
+    expect(waiting).toContain("data-finishing-poll");
+    expect(render(view({}))).not.toContain("data-finishing-poll");
     // Parked while its renders run is still working.
     expect(render(view({ state: "exporting" }))).toContain("Finishing in progress");
   });

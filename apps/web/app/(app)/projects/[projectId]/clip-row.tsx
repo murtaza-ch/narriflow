@@ -4,9 +4,18 @@ import { describeCounts, sumLatestCounts } from "@/lib/performance-format";
 import { usePublishing } from "./publishing-provider";
 
 import type { ReactNode, SyntheticEvent } from "react";
-import { useEffect, useRef, useState, useTransition } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
+import { skipToken, useMutation, useQuery } from "@tanstack/react-query";
+import { ApiError, invalidateScoped, type Intent } from "@narriflow/api-client";
+import {
+	clipCommands,
+	clipMutationOptions,
+	clipQueries,
+	invalidateAfterClipChange,
+	invalidateProjectClips,
+} from "@narriflow/api-client/clips";
 import { MediaWell } from "@narriflow/ui/components/media-well";
 import { EditClipLengthDialog } from "./edit-clip-length-dialog";
 import { Button, IconButton } from "@narriflow/ui/components/button";
@@ -34,12 +43,15 @@ import {
 } from "lucide-react";
 import { formatDuration, formatTimecode } from "@/lib/format";
 import {
-	clipFileDownloadPath,
 	clipMediaPayloadForClip,
 	clipMediaDescriptorFromPayload,
-	loadClipPreview,
+	playableMediaUrl,
+	intentIn,
+	requireClipApi,
+	useClipApi,
 } from "@/lib/clip-media";
 import { ClipActionsMenu } from "./clip-actions-menu";
+import { clipActionErrorCopy, failureNeedsStateRefetch } from "./clip-action-error-copy";
 import { LockedButton } from "../../_components/upgrade";
 
 /** Width/height of the tallest preview format — the media stage's shape. */
@@ -82,20 +94,12 @@ function getInitialAspectRatio(clip: ClipSnapshot): ClipAspectRatio {
 	return firstAvailable?.aspectRatio ?? "9:16";
 }
 
-function readPayloadString(payload: unknown, key: string): string | null {
-	if (!payload || typeof payload !== "object") return null;
-	const value = (payload as Record<string, unknown>)[key];
-	return typeof value === "string" && value.length > 0 ? value : null;
-}
+/** A clip with no render for the requested format yet: the row waits for one instead of failing. */
+const RENDER_PENDING_CODES = new Set(["clip_render_not_found", "clip_render_not_ready"]);
 
-function apiErrorCopy(payload: unknown, fallback: string): string {
-	const errorCode = readPayloadString(payload, "error");
-	return (
-		userErrorMessage(errorCode) ??
-		readPayloadString(payload, "message") ??
-		fallback
-	);
-}
+/** Signed preview URLs stay valid for an hour; a row keeps the one it has this long, like the playback it feeds. */
+const PREVIEW_STALE_MS = 5 * 60 * 1000;
+const PREVIEWS_UNAVAILABLE_KEY = ["nf", "clips", "previews", "unavailable"] as const;
 
 function isRenderQueueResponse(payload: unknown): boolean {
 	if (!payload || typeof payload !== "object") return false;
@@ -392,8 +396,8 @@ export function ClipRow({
 	const publishing = usePublishing();
 	const clipPosts = publishing.posts.filter((post) => post.clipId === clip.id);
 	const router = useRouter();
+	const api = useClipApi();
 	const { confirm, dialog } = useConfirm();
-	const [, startTransition] = useTransition();
 	const [reasoningExpanded, setReasoningExpanded] = useState(false);
 	const [transcriptExpanded, setTranscriptExpanded] = useState(false);
 	const searchParams = useSearchParams();
@@ -402,12 +406,6 @@ export function ClipRow({
 	const [actionError, setActionError] = useState<string | null>(null);
 	const [selectedAspectRatio, setSelectedAspectRatio] =
 		useState<ClipAspectRatio>(() => getInitialAspectRatio(clip));
-	const [previewUrl, setPreviewUrl] = useState<string | null>(null);
-	const [previewIsProxy, setPreviewIsProxy] = useState(false);
-	const [previewOffsetSec, setPreviewOffsetSec] = useState(0);
-	const [previewLoading, setPreviewLoading] = useState(false);
-	const [previewPending, setPreviewPending] = useState(false);
-	const [previewError, setPreviewError] = useState<string | null>(null);
 	const [queuedAspectRatios, setQueuedAspectRatios] = useState<
 		ClipAspectRatio[]
 	>([]);
@@ -433,108 +431,89 @@ export function ClipRow({
 		Boolean(selectedVariant?.hasAsset) &&
 		!queuedAspectRatios.includes(selectedAspectRatio);
 
-	// Same "always show something playable" preview-fetch effect as the
-	// original ClipCard — see there for the full rationale on hasPreview
-	// being in the deps.
-	// biome-ignore lint/correctness/useExhaustiveDependencies: asset readiness fields intentionally retrigger the preview fetch.
-	useEffect(() => {
-		let cancelled = false;
-
-		const loadPreview = async () => {
-			setPreviewLoading(true);
-			setPreviewError(null);
-			setPreviewPending(false);
-			try {
-				const result = await loadClipPreview(
-					`/api/projects/${clip.projectId}/clips/previews?aspectRatio=${encodeURIComponent(selectedAspectRatio)}`,
-				);
-
-				if (!result.ok) {
-					const message = readPayloadString(result.payload, "message");
-					if (
-						message === "clip render not found" ||
-						message === "clip has not been rendered for this aspect ratio"
-					) {
-						if (!cancelled) {
-							setPreviewUrl(null);
-							setPreviewPending(true);
-						}
-						return;
-					}
-					console.warn(
-						JSON.stringify({
-							level: "error",
-							message: "clip_preview_load_failed",
-							status: result.status,
-						}),
-					);
-					if (!cancelled) {
-						setPreviewUrl(null);
-						setPreviewError(
-							apiErrorCopy(result.payload, "Could not load this preview."),
-						);
-					}
-					return;
-				}
-
-				const payload = clipMediaPayloadForClip(result.payload, clip.id);
-				if (!payload) {
-					if (!cancelled) {
-						setPreviewUrl(null);
-						setPreviewPending(true);
-					}
-					return;
-				}
-
-				const descriptor = clipMediaDescriptorFromPayload(payload);
-				if (!descriptor) {
-					console.warn(
-						JSON.stringify({
-							level: "error",
-							message: "clip_preview_load_failed_invalid_response",
-						}),
-					);
-					if (!cancelled) {
-						setPreviewUrl(null);
-						setPreviewError("Could not load this preview.");
-					}
-					return;
-				}
-
-				if (!cancelled) {
-					setPreviewUrl(descriptor.downloadUrl);
-					setPreviewIsProxy(descriptor.isPreviewProxy);
-					setPreviewOffsetSec(descriptor.previewStartSec);
-				}
-			} catch {
-				console.warn(
-					JSON.stringify({
-						level: "error",
-						message: "clip_preview_load_failed",
-					}),
-				);
-				if (!cancelled) {
-					setPreviewUrl(null);
-					setPreviewError("Could not load this preview.");
-				}
-			} finally {
-				if (!cancelled) setPreviewLoading(false);
-			}
-		};
-
-		void loadPreview();
-		return () => {
-			cancelled = true;
-		};
-	}, [
-		clip.id,
-		clip.projectId,
+	// "Always show something playable": every row asks for its Project's preview
+	// grants (one shared request per format), and refetches when this clip's
+	// render readiness changes. Grants expire, so they are never persisted.
+	const previewOptions = api
+		? clipQueries.previews(api.clips, api.scope, clip.projectId, { aspectRatio: selectedAspectRatio })
+		: null;
+	const previews = useQuery({
+		queryKey: previewOptions?.queryKey ?? PREVIEWS_UNAVAILABLE_KEY,
+		queryFn: previewOptions?.queryFn ?? skipToken,
+		staleTime: PREVIEW_STALE_MS,
+		// A new signed URL would reload a playing video for nothing.
+		refetchOnWindowFocus: false,
+	});
+	const previewReadiness = [
 		clip.hasPreview,
-		selectedAspectRatio,
 		selectedVariantHasAsset,
 		selectedVariant?.status,
 		selectedVariant?.completedAt,
-	]);
+	].join("|");
+	const seenPreviewReadiness = useRef(previewReadiness);
+	useEffect(() => {
+		if (seenPreviewReadiness.current === previewReadiness) return;
+		seenPreviewReadiness.current = previewReadiness;
+		if (api) void invalidateScoped(api.queryClient, api.scope, "clips", "previews", { id: clip.projectId });
+	}, [previewReadiness, api, clip.projectId]);
+
+	const preview = useMemo(() => {
+		const idle: { url: string | null; isProxy: boolean; offsetSec: number; pending: boolean; error: string | null } = {
+			url: null,
+			isProxy: false,
+			offsetSec: 0,
+			pending: false,
+			error: null,
+		};
+		if (previews.error) {
+			if (previews.error instanceof ApiError && RENDER_PENDING_CODES.has(previews.error.code)) {
+				return { ...idle, pending: true };
+			}
+			return { ...idle, error: clipActionErrorCopy(previews.error, "Could not load this preview.") };
+		}
+		if (!previews.data) return idle;
+		const payload = clipMediaPayloadForClip(previews.data, clip.id);
+		if (!payload) return { ...idle, pending: true };
+		const descriptor = clipMediaDescriptorFromPayload(payload);
+		if (!descriptor) return { ...idle, error: "Could not load this preview." };
+		return {
+			...idle,
+			url: descriptor.downloadUrl,
+			isProxy: descriptor.isPreviewProxy,
+			offsetSec: descriptor.previewStartSec,
+		};
+	}, [previews.data, previews.error, clip.id]);
+	const previewUrl = preview.url;
+	const previewIsProxy = preview.isProxy;
+	const previewOffsetSec = preview.offsetSec;
+	const previewLoading = previews.isPending && previews.fetchStatus !== "idle";
+	const previewPending = preview.pending;
+	const previewError = preview.error;
+	useEffect(() => {
+		if (previews.error && !preview.pending) {
+			console.warn(JSON.stringify({ level: "error", message: "clip_preview_load_failed" }));
+		}
+	}, [previews.error, preview.pending]);
+
+	// One intent per requested format: a retry after a timeout or lost response
+	// replays the queued render instead of queuing another.
+	const renderIntent = useRef<Intent<unknown> | null>(null);
+	const renderFormat = useMutation({
+		...clipMutationOptions,
+		mutationFn: async (aspectRatio: ClipAspectRatio) => {
+			const { runtime, clips, scope, queryClient } = requireClipApi(api);
+			const input = { clipIds: [clip.id], aspectRatios: [aspectRatio] };
+			const intent = intentIn(renderIntent, runtime);
+			const result: unknown = await clipCommands.render(clips, clip.projectId, input, intent.keyFor(input));
+			if (!isRenderQueueResponse(result)) {
+				// It may have queued: let the domain state say so, and keep the key for the retry.
+				await invalidateProjectClips(queryClient, scope, clip.projectId);
+				throw new Error("incomplete_render_response");
+			}
+			intent.complete();
+			await invalidateAfterClipChange(queryClient, scope, clip.projectId);
+		},
+	});
 
 	async function queueRender(aspectRatio: ClipAspectRatio) {
 		setSelectedAspectRatio(aspectRatio);
@@ -545,53 +524,16 @@ export function ClipRow({
 		let accepted = false;
 
 		try {
-			const response = await fetch(
-				`/api/projects/${clip.projectId}/clips/render`,
-				{
-					method: "POST",
-					headers: {
-						"Content-Type": "application/json",
-						"idempotency-key": crypto.randomUUID(),
-					},
-					body: JSON.stringify({
-						clipIds: [clip.id],
-						aspectRatios: [aspectRatio],
-					}),
-				},
-			);
-			const payload: unknown = await response.json().catch(() => null);
-
-			if (!response.ok) {
-				console.warn(
-					JSON.stringify({
-						level: "error",
-						message: "clip_render_queue_failed",
-						status: response.status,
-					}),
-				);
-				setActionError(apiErrorCopy(payload, "Could not queue this render."));
-				return;
-			}
-			if (!isRenderQueueResponse(payload)) {
-				console.warn(
-					JSON.stringify({
-						level: "error",
-						message: "clip_render_queue_invalid_response",
-					}),
-				);
-				setActionError(
-					"The render may have queued, but the response was incomplete.",
-				);
-				return;
-			}
-
+			await renderFormat.mutateAsync(aspectRatio);
 			accepted = true;
-			startTransition(() => router.refresh());
-		} catch {
-			console.warn(
-				JSON.stringify({ level: "error", message: "clip_render_queue_failed" }),
-			);
-			setActionError("Could not queue this render.");
+		} catch (error) {
+			console.warn(JSON.stringify({ level: "error", message: "clip_render_queue_failed" }));
+			if (error instanceof Error && error.message === "incomplete_render_response") {
+				setActionError("The render may have queued, but the response was incomplete.");
+			} else {
+				setActionError(clipActionErrorCopy(error, "Could not queue this render."));
+				if (api && failureNeedsStateRefetch(error)) void invalidateProjectClips(api.queryClient, api.scope, clip.projectId);
+			}
 		} finally {
 			if (!accepted) {
 				setQueuedAspectRatios((current) =>
@@ -616,6 +558,9 @@ export function ClipRow({
 	}
 
 	const [sharing, setSharing] = useState(false);
+	// One intent per prepared video: a retry after a lost response replays the
+	// export that was already started.
+	const exportIntent = useRef<Intent<unknown> | null>(null);
 	/**
 	 * Share opens the clip's export page (link, publish, review, downloads).
 	 * It reuses the clip's current export when there is one; otherwise an
@@ -625,18 +570,14 @@ export function ClipRow({
 		setSharing(true);
 		setActionError(null);
 		try {
+			const { runtime, exports, scope, queryClient } = requireClipApi(api);
 			const exportPage = (exportId: string) =>
 				`/projects/${clip.projectId}/clips/${clip.id}/exports/${exportId}`;
-			const response = await fetch(`/api/projects/${clip.projectId}/exports/current`, { cache: "no-store" });
-			const payload = (await response.json().catch(() => null)) as {
-				exports?: Array<{ id: string; clipId: string; variants: Array<{ aspectRatio: string }> }>;
-			} | null;
-			// A failed or malformed lookup is not "no export": say so, and don't offer to render.
-			if (!response.ok || !Array.isArray(payload?.exports)) {
-				setActionError(apiErrorCopy(payload, "Could not check this clip's exports. Try again."));
-				return;
-			}
-			const mine = payload.exports.filter((item) => item.clipId === clip.id);
+			// A failed or malformed lookup is not "no export": it throws, and nothing offers to render.
+			const lookup = await exports.projects[":id"].exports.current
+				.$get({ param: { id: clip.projectId } })
+				.then((response) => response.json());
+			const mine = lookup.exports.filter((item) => item.clipId === clip.id);
 			const current =
 				mine.find((item) => item.variants.some((variant) => variant.aspectRatio === selectedAspectRatio)) ?? mine[0];
 			if (current) {
@@ -654,25 +595,52 @@ export function ClipRow({
 				confirmLabel: "Render and share",
 			});
 			if (!confirmed) return;
-			const created = await fetch(`/api/projects/${clip.projectId}/clips/${clip.id}/exports`, {
-				method: "POST",
-				headers: { "Content-Type": "application/json", "idempotency-key": crypto.randomUUID() },
-				body: JSON.stringify({
-					expectedRevision: clip.editorRevision,
-					aspectRatios: [selectedAspectRatio],
-					resolution: publishing.config.can1080pExport ? "1080p" : "720p",
-				}),
-			});
-			const body = (await created.json().catch(() => null)) as { export?: { id?: string } } | null;
-			if (!created.ok || !body?.export?.id) {
-				setActionError(apiErrorCopy(body, "Could not prepare a video to share."));
-				return;
-			}
-			router.push(exportPage(body.export.id));
-		} catch {
-			setActionError("Could not open sharing. Try again.");
+			const input = {
+				expectedRevision: clip.editorRevision,
+				aspectRatios: [selectedAspectRatio],
+				resolution: publishing.config.can1080pExport ? ("1080p" as const) : ("720p" as const),
+			};
+			const intent = intentIn(exportIntent, runtime);
+			const created = await exports.projects[":id"].clips[":clipId"].exports
+				.$post(
+					{ param: { id: clip.projectId, clipId: clip.id }, json: input },
+					{ headers: { "Idempotency-Key": intent.keyFor(input) } },
+				)
+				.then((response) => response.json());
+			intent.complete();
+			// The new export spends render capacity and shows on the Project's exports.
+			void Promise.all([
+				invalidateScoped(queryClient, scope, "exports"),
+				invalidateScoped(queryClient, scope, "workspace", "usage"),
+			]);
+			router.push(exportPage(created.export.id));
+		} catch (error) {
+			setActionError(clipActionErrorCopy(error, "Could not open sharing. Try again."));
 		} finally {
 			setSharing(false);
+		}
+	}
+
+	const [downloading, setDownloading] = useState(false);
+	/** A download is a short-lived grant: ask for a fresh one, then let the browser fetch the media directly (no Clerk token). */
+	async function downloadSelected() {
+		if (downloading) return;
+		setDownloading(true);
+		setActionError(null);
+		try {
+			const { clips, scope, queryClient } = requireClipApi(api);
+			const grant = await queryClient.fetchQuery({
+				...clipQueries.downloadGrant(clips, scope, clip.projectId, clip.id, { aspectRatio: selectedAspectRatio }),
+				staleTime: 0,
+			});
+			const url = playableMediaUrl(grant.downloadUrl);
+			if (!url) throw new Error("invalid_download_grant");
+			window.location.assign(url);
+		} catch (error) {
+			console.warn(JSON.stringify({ level: "error", message: "clip_download_failed" }));
+			setActionError(clipActionErrorCopy(error, "Could not start this download."));
+		} finally {
+			setDownloading(false);
 		}
 	}
 
@@ -1159,18 +1127,14 @@ export function ClipRow({
 								</Link>
 							</Button>
 							{selectedVariantHasAsset ? (
-								<Button size="sm" variant="subtle" asChild>
-									<a
-										href={clipFileDownloadPath(
-											clip.projectId,
-											clip.id,
-											selectedAspectRatio,
-										)}
-										download
-									>
-										<Download size={16} />
-										Download
-									</a>
+								<Button
+									size="sm"
+									variant="subtle"
+									disabled={downloading}
+									onClick={() => void downloadSelected()}
+								>
+									{downloading ? <Spinner size="xs" /> : <Download size={16} />}
+									Download
 								</Button>
 							) : !canEdit ? null : (
 								<Button

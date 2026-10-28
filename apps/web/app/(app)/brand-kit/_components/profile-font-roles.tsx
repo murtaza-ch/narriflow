@@ -1,13 +1,10 @@
 "use client";
 
-import { useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { Box, Flex, Stack, Text } from "@chakra-ui/react";
 import { Upload } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
 import { Select } from "@narriflow/ui/components/select";
-import { toaster } from "@narriflow/ui/components/toaster";
 import {
   BrandFontsProvider,
   brandFontStyle,
@@ -17,6 +14,7 @@ import {
 import { PlanLimitNotice } from "../../_components/plan-limit-notice";
 import type { UpgradePrompt } from "../../_components/upgrade";
 import { Panel } from "./brand-kit-ui";
+import { useMembershipChange } from "./profile-membership";
 
 const ROLES = [
   { role: "display", label: "Display", sample: "Headline" },
@@ -62,43 +60,22 @@ export function ProfileFontRoles({
   requirement: string | null;
   upgrade: UpgradePrompt | null;
 }) {
-  const router = useRouter();
-  const [busy, setBusy] = useState(false);
+  const { busy, run, put } = useMembershipChange("Font role could not be saved");
   const choices = fonts.filter((font) => font.accessUrl && !requirement);
   async function assign(role: Role, id: string) {
     const current = memberships.find((font) => font.role === role);
     if (!id && !current) return;
-    setBusy(true);
-    try {
-      const response = await fetch(
-        `/api/brand-profiles/${profileId}/membership`,
-        {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            kind: "font",
-            role,
-            resourceId: id || current?.id,
-            position: ROLES.findIndex((item) => item.role === role),
-            ...(!id ? { remove: true } : {}),
-          }),
-        },
-      );
-      if (!response.ok) {
-        const body = await response.json();
-        throw new Error(body.message ?? "The font role could not be saved.");
-      }
-      router.refresh();
-    } catch (error) {
-      toaster.create({
-        type: "error",
-        title: "Font role could not be saved",
-        description:
-          error instanceof Error ? error.message : "Please try again.",
-      });
-    } finally {
-      setBusy(false);
-    }
+    const resourceId = id || current?.id;
+    if (!resourceId) return;
+    await run(() =>
+      put(profileId, {
+        kind: "font",
+        role,
+        resourceId,
+        position: ROLES.findIndex((item) => item.role === role),
+        ...(!id ? { remove: true as const } : {}),
+      }),
+    );
   }
   const noUploads = canManage && !requirement && choices.length === 0;
   return (

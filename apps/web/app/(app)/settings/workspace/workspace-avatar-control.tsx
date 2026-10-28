@@ -1,58 +1,61 @@
 "use client";
 
-import { useState, useTransition } from "react";
-import { useRouter } from "next/navigation";
+import { useMemo, useState } from "react";
 import { Box, Flex, Image, Input, Stack, Text } from "@chakra-ui/react";
+import type { WorkspaceScope } from "@narriflow/api-client";
+import { presignAvatarMutation, setAvatarMutation } from "@narriflow/api-client/workspace";
+import { useMutation } from "@tanstack/react-query";
 import { Building2, Trash2, Upload } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
 import { Spinner } from "@narriflow/ui/components/spinner";
+import { useApiRuntime } from "@/app/_components/api-provider";
+import { apiErrorMessage } from "@/app/_components/query-mutation-form";
 
 export function WorkspaceAvatarControl({
+  scope,
   avatarUrl,
   workspaceName,
   canManage,
 }: {
+  scope: WorkspaceScope;
   avatarUrl: string | null;
   workspaceName: string;
   canManage: boolean;
 }) {
-  const router = useRouter();
+  const runtime = useApiRuntime();
   const [feedback, setFeedback] = useState<string | null>(null);
-  const [pending, startTransition] = useTransition();
+  const presign = useMutation(useMemo(() => presignAvatarMutation(runtime, scope), [runtime, scope]));
+  const setAvatar = useMutation(useMemo(() => setAvatarMutation(runtime, scope), [runtime, scope]));
+  const [uploading, setUploading] = useState(false);
+  const pending = uploading || presign.isPending || setAvatar.isPending;
 
   // Choosing a file uploads it: one control for the job.
-  function upload(file: File) {
+  async function upload(file: File) {
     setFeedback(null);
-    startTransition(async () => {
-      try {
-        const presign = await fetch("/api/workspace/avatar/presign", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ contentType: file.type, sizeBytes: file.size }),
-        });
-        const signed = (await presign.json()) as { key?: string; uploadUrl?: string; contentType?: string; message?: string };
-        if (!presign.ok || !signed.key || !signed.uploadUrl || !signed.contentType) throw new Error(signed.message ?? "Could not prepare avatar upload");
-        const stored = await fetch(signed.uploadUrl, { method: "PUT", headers: { "Content-Type": signed.contentType }, body: file });
-        if (!stored.ok) throw new Error("Could not upload the avatar image");
-        const saved = await fetch("/api/workspace/avatar", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ storageKey: signed.key }) });
-        if (!saved.ok) {
-          const body = (await saved.json()) as { message?: string };
-          throw new Error(body.message ?? "Could not save the workspace avatar");
-        }
-        setFeedback("Workspace avatar updated.");
-        router.refresh();
-      } catch (error) {
-        setFeedback(error instanceof Error ? error.message : "Avatar upload failed");
-      }
-    });
+    setUploading(true);
+    try {
+      const signed = await presign.mutateAsync({ contentType: file.type, sizeBytes: file.size });
+      // Straight to storage: the upload URL is the credential, so no session token goes along.
+      const stored = await fetch(signed.uploadUrl, {
+        method: "PUT",
+        headers: { "Content-Type": signed.contentType },
+        body: file,
+        credentials: "omit",
+      });
+      if (!stored.ok) throw new Error("Could not upload the avatar image");
+      await setAvatar.mutateAsync(signed.key);
+      setFeedback("Workspace avatar updated.");
+    } catch (error) {
+      setFeedback(apiErrorMessage(error, "Avatar upload failed"));
+    } finally {
+      setUploading(false);
+    }
   }
 
   function remove() {
     setFeedback(null);
-    startTransition(async () => {
-      const response = await fetch("/api/workspace/avatar", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ storageKey: null }) });
-      if (!response.ok) return setFeedback("Could not remove the workspace avatar.");
-      router.refresh();
+    setAvatar.mutate(null, {
+      onError: (error) => setFeedback(apiErrorMessage(error, "Could not remove the workspace avatar.")),
     });
   }
 

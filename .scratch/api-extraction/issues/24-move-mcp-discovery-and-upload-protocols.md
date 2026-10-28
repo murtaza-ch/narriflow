@@ -4,7 +4,7 @@
 
 **Blocked by:** [04 - Wire API runtime and partition the catch-all](04-wire-api-runtime-and-partition-the-catch-all.md), [15 - Move intake Upload Sessions and recipes](15-move-intake-upload-sessions-and-recipes.md)
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Suggested implementer:** Sol. The other pairing side reviews and returns findings to this owner.
 
@@ -142,11 +142,11 @@ Rows retain their section/ordinal or exact source-line identifier from the indep
 
 ## Acceptance criteria
 
-- [ ] MCP transport, metadata/discovery, host/origin rules and exact API/mcp audience move without Clerk-session middleware wrapping independent protocols.
-- [ ] OAuth/API-key scopes/roles/plan and current originating-principal checks survive both publication and upload continuations.
-- [ ] All five upload POSTs share relocated Upload Session adapter; signed browser handoff only admits initial open while valid and can identify resume after expiry.
-- [ ] Status/preparation/handoff/confirm JSON endpoints replace server reads/action with safe destinations; no raw web Prisma query remains.
-- [ ] CLI/native upload defaults, stdio examples and E2E endpoints use API; mcp-core human handoffs and Apps CSP keep correct web/API meanings.
+- [x] MCP transport, metadata/discovery, host/origin rules and exact API/mcp audience move without Clerk-session middleware wrapping independent protocols.
+- [x] OAuth/API-key scopes/roles/plan and current originating-principal checks survive both publication and upload continuations.
+- [x] All five upload POSTs share relocated Upload Session adapter; signed browser handoff only admits initial open while valid and can identify resume after expiry.
+- [x] Status/preparation/handoff/confirm JSON endpoints replace server reads/action with safe destinations; no raw web Prisma query remains.
+- [x] CLI/native upload defaults, stdio examples and E2E endpoints use API; mcp-core human handoffs and Apps CSP keep correct web/API meanings.
 - [ ] No unowned files changed; paired review findings and verification evidence recorded under Comments.
 
 ## Verification
@@ -163,3 +163,30 @@ bun run --cwd apps/api typecheck
 ## Comments
 
 Append claim, requested seam changes, paired review and evidence here.
+
+- Claimed by GPT-6.1-Sol for ticket 24 in the shared checkout. Edits limited to the ownership list and new integrations domain paths.
+
+### Implemented contract and requests for owners
+
+- MCP and the three discovery paths now live under `apps/api/src/domains/integrations`. The existing `createNarriflowMcpHttpHandler` stays outside first-party session middleware and CORS. Resource and audience use exactly `API_ORIGIN + /mcp`; only the API host is implicitly allowed. MCP origins include the explicit web origin for browser handoffs, plus the protocol allowlist. Discovery proxies the unchanged Clerk issuer document with an hour-long process cache, a 10-second fetch timeout, public GET/OPTIONS CORS and safe 502s.
+- The five upload POSTs reuse ticket 15's `ingest/upload-session-http.ts`. Handoff requests verify Clerk **session Bearer** rather than cookies. Initial open verifies the unexpired signed intent and rechecks the originating OAuth token/key, scopes, Workspace role/status/plan and frozen settings. Subsequent transfer calls retain owner authority and signed session binding after expiry. Expired handoff preview uses `uploadSessionService.hasOwnSessionByClientKey(actor, integrationUploadSessionKey(actor.actorUserId, intent.clientIdempotencyKey))`; it performs no raw page DB query.
+- Browser routes are `GET /api/integrations/mcp/status`, `/preparations?token=...`, `/upload-handoff?intent=...` and `POST /api/mcp/confirmations {token,decision}`. Continuations use signed-in admission and their signed Workspace, never `X-Workspace-Id`. Success DTOs contain the UI facts and frozen intent, never the encrypted originating OAuth token or caller state. Current member refusals include `details: {reason: role|plan|status, workspace: {workspaceId,workspaceName,role,status,pricingTier}}` for the existing connector recovery UI. Confirmation keeps the native signed publication acceptance identity and defers baseline/principal limiter refusal to `beforeAccept`, after replay lookup.
+- **26**: consume `@narriflow/api-client/integrations`: `mcpStatusQueryOptions({transport,scope})`, `mcpPreparationQueryOptions({transport,scope,token,digest})`, `mcpUploadHandoffQueryOptions({transport,scope,intent,digest})`, `mcpContinuationDigest(token)`, `mcpConfirmationMutationOptions({transport,scope})`, `invalidateAfterMcpConfirmation(queryClient,signedWorkspaceScope)` and `createMcpUploadControls({transport,scope,workspaceId,token,resumeOnly})`. Preparation returns `{workspaceId, workspaceName, destinationAccount, expiresAt, intent}`. Upload handoff returns `{workspaceId, clientIdempotencyKey, title?, brandProfileId?, recipeId?, recipeName, resumeOnly, generationContext?}`. The controls match ticket 16's updated `UploadSessionControls` interface. Pass them as `controls` to the browser Upload Session adapter; remove the old path-rewriting `fetcher`. Control methods call A with identity Bearer + signed intent and map expired opens to status. Keep direct storage traffic on the adapter's existing credential-free transport. Keep existing picker props. Delete the old page/action backend imports and raw upload-page Prisma query in your ownership; their old helpers were removed here.
+- **31 / composition owner**: inject the process's existing Clerk client into `createMcpTransportDeps(config, clerkClient)` from `apps/api/src/runtime.ts`, passing it through `createExternalRoutes`; the second parameter is supported now. Without that central edit the factory creates its own client, so session verification works but duplicates the core client. Only the handoff branch uses this session verifier; machine MCP remains independent.
+- **31**: change `packages/services/scripts/run-integration-api-db-tests.ts`'s final suite from `apps/web/lib/rest-api/events.db.test.ts` to `apps/api/src/domains/rest/events.db.test.ts` and rerun the root gate. The relocated suite already passes independently under the disposable wrapper.
+- **31 / configuration owner**: add `NARRIFLOW_URL=http://localhost:4000` and an explicit human `WEB_ORIGIN` to the MCP example, and update the MCP client setup docs to A/mcp. No `.env*` file, including `.env.example`, was edited because the user prohibited env edits. CLI upload and stdio resource defaults are 4000 now; stdio passes `NARRIFLOW_URL` as the API CSP origin. Human links and Task export review URLs retain WEB_ORIGIN; Apps connect/resource CSP uses API/storage domains.
+- Paired review is reserved for Claude/orchestrator; no delegate was started. The final acceptance checkbox stays open until that review. No changes were made to files outside ticket 24 ownership, no commits, installs or environment edits.
+
+### Verification evidence
+
+- `bun test apps/api/src/domains/integrations`: **42 pass**, 0 fail, 7 files. Covers exact resource metadata, process TTL, discovery outage, host/origin before credential admission, MCP preflight including signed upload header, every upload action, chunked body bound, **W/mcp OAuth audience refusal**, signed-in-only policy before validation, signed Workspace independent of header, JSON confirmation, route inventory, expired handoff service lookup and current role/plan/status recovery.
+- `bun test packages/mcp-core apps/api/src/domains/integrations`: **196 pass**, 0 fail, 22 files. Existing protocol, credential scopes/revocation, continuation, Apps, Task and wire assertions survive.
+- `bun test packages/mcp-core apps/api/src/domains/integrations apps/mcp/src packages/api-client/src/integrations`: **204 pass**, 0 fail, 24 files. Includes five client tests for digest-only query keys, abortable identity Bearer reads, scoped status, typed JSON confirmation/errors and expired-upload control mapping. API-client source exports inferred read and mutation DTOs through the chained integrations route type.
+- `.scratch/api-extraction/db-gate.sh bun run test:integration-api:db`: **148 pass**, 0 fail/skip in its first nine suites, then the command fails because its last path still names the deleted web REST events test. `.scratch/api-extraction/db-gate.sh bun apps/api/src/domains/rest/run-db-tests.ts`: relocated REST/MCP events suite **7 pass**, 0 fail/skip. All DB execution used the wrapper's local throwaway PostgreSQL, never shared Neon. Root integrated gate still needs the runner path fix and a clean rerun by 31.
+- `bun run --cwd packages/mcp-core typecheck`, `bun run --cwd apps/mcp typecheck`, `bun run --cwd packages/validators typecheck`: clean.
+- `bun run --cwd apps/api typecheck` and `bun run --cwd packages/api-client typecheck`: no ticket 24 source error. Transitional errors: `apps/api/src/domains/rest/routes.ts:176` middleware environment cast, ticket **23**; `apps/api/src/domains/reviews/guest-replay-child.ts:6` duplicate `@types/pg` Pool types, ticket **27**, API check only. API-client check reports the REST cast only.
+- `bun run --cwd apps/web typecheck`: transitional failures in the unconverted MCP pages/action/picker/billing link, ticket **26**, plus `settings/actions.ts`, `settings/api/callback-secret-panel.tsx`, ticket **25**; `settings/workspace/censor-words-card.tsx`, ticket **10**; progress route/reauthorization, ticket **29**; old authenticated action/page helpers, ticket **31**; and REST's cast, ticket **23**. No surviving owned web implementation remains.
+- `bunx biome check` on the **33** surviving owned source paths, including new directories: clean. `git diff --check` on owned source paths: clean. No source, manifests, env files or tracker files owned by another ticket were edited by this implementer.
+- Paired review pending Claude. Implementation is complete within ticket ownership; the explicit central/config/UI requests above remain with their owners. No disagreement with the spec; env/example edits were withheld under the user's stricter instruction.
+
+- Close-out: **done** for implementation, with the paired-review checkbox deliberately pending Claude. The endpoint migration provides replacements for ticket 26's still-unconverted web reads/action. Environment/example changes remain withheld by user instruction; the exact central changes needed from other owners are recorded above.

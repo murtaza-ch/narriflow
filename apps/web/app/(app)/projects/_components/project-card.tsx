@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { Box, Flex, Stack, Text } from "@chakra-ui/react";
 import { Checkbox } from "@narriflow/ui/components/checkbox";
-import type { ProjectListItem } from "@narriflow/services";
+import type { ProjectListItem } from "../_lib/api";
 import { formatDate } from "@/lib/format";
 import { DeleteProjectButton } from "./delete-project-button";
 import { ProjectExpiration } from "./project-expiration";

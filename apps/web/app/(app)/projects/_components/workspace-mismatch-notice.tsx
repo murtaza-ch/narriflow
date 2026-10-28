@@ -1,27 +1,53 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Flex, Text } from "@chakra-ui/react";
 import { Button } from "@narriflow/ui/components/button";
-import { switchWorkspaceAction } from "../../_actions/workspace";
-import {
-  authenticatedActionResultMessage,
-  isAuthenticatedActionFailure,
-} from "@/lib/authenticated-request-browser";
+import type { IdentityScope } from "@narriflow/api-client";
+import { selectWorkspaceMutation } from "@narriflow/api-client/session";
+import { useMutation } from "@tanstack/react-query";
+import { useApiRuntime, useIdentityScope } from "@/app/_components/api-provider";
+import { failureMessage } from "../_lib/api";
 
-export function WorkspaceMismatchNotice({
-  workspaceId,
-  workspaceName,
-  returnTo,
-}: {
+interface WorkspaceMismatchNoticeProps {
   workspaceId: string;
   workspaceName: string;
   returnTo: string;
-}) {
+}
+
+export function WorkspaceMismatchNotice(props: WorkspaceMismatchNoticeProps) {
+  const identity = useIdentityScope();
+  return identity ? <SwitchNotice {...props} identity={identity} /> : null;
+}
+
+function SwitchNotice({
+  workspaceId,
+  workspaceName,
+  returnTo,
+  identity,
+}: WorkspaceMismatchNoticeProps & { identity: IdentityScope }) {
   const router = useRouter();
-  const [pending, startTransition] = useTransition();
+  const runtime = useApiRuntime();
   const [error, setError] = useState<string | null>(null);
+  // The selection command changes the scope (and drops the old Workspace's queries)
+  // before this navigates, so nothing from the old Workspace is replayed in the new one.
+  const select = useMutation({
+    ...selectWorkspaceMutation(runtime, identity),
+    retry: false,
+  });
+  const pending = select.isPending;
+
+  async function switchWorkspace() {
+    setError(null);
+    try {
+      await select.mutateAsync(workspaceId);
+      router.push(returnTo.startsWith("/") && !returnTo.startsWith("//") ? returnTo : "/projects");
+    } catch (failure) {
+      setError(failureMessage(failure, "The Workspace could not be selected."));
+    }
+  }
+
   return (
     <Flex
       align={{ base: "stretch", md: "center" }}
@@ -43,30 +69,7 @@ export function WorkspaceMismatchNotice({
         size="sm"
         variant="subtle"
         loading={pending}
-        onClick={() =>
-          startTransition(async () => {
-            try {
-              const result = await switchWorkspaceAction(workspaceId);
-              if (isAuthenticatedActionFailure(result)) {
-                setError(
-                  authenticatedActionResultMessage(
-                    result,
-                    "The Workspace could not be selected.",
-                  ),
-                );
-                return;
-              }
-              router.push(
-                returnTo.startsWith("/") && !returnTo.startsWith("//")
-                  ? returnTo
-                  : "/projects",
-              );
-              router.refresh();
-            } catch {
-              setError("The Workspace could not be switched.");
-            }
-          })
-        }
+        onClick={() => void switchWorkspace()}
       >
         Switch Workspace
       </Button>

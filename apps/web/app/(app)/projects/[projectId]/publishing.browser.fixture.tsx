@@ -2,6 +2,8 @@ import { afterAll, afterEach, beforeAll, expect, mock, test } from "bun:test";
 import { Window } from "happy-dom";
 import { act } from "react";
 import type { Root } from "react-dom/client";
+import { apiErrorFromResponse, createIntent } from "@narriflow/api-client";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 let createRoot: typeof import("react-dom/client").createRoot;
 import type {
 	ClipSnapshot,
@@ -17,14 +19,23 @@ mock.module("next/navigation", () => ({
 	useRouter: () => router,
 	useSearchParams: () => params,
 }));
-// The server action is a plain function here; the real one is a server reference.
-const proposed: unknown[] = [];
-mock.module("../../calendar/queue/actions", () => ({
-	proposeToQueueAction: async (input: unknown) => {
-		proposed.push(input);
-		return { proposalId: "00000000-0000-4000-8000-0000000000aa" };
+// The API runtime: scoped requests go to the fixture's fetch, so each test sees the real typed client's calls.
+const scope = { userId: "user_clerk", workspaceId: "00000000-0000-4000-8000-000000000007" };
+const runtime = {
+	transport: {
+		scoped: () => ({
+			baseUrl: "http://api.test",
+			// Like the real transport: a non-2xx answer is a typed ApiError, never a body to parse.
+			fetch: async (input: string | URL, init?: RequestInit) => {
+				const response = await globalThis.fetch(input, init);
+				if (!response.ok) throw await apiErrorFromResponse(response);
+				return response;
+			},
+		}),
 	},
-}));
+	createIntent: <T,>() => createIntent<T>(),
+};
+mock.module("@/app/_components/api-provider", () => ({ useApiRuntime: () => runtime, useWorkspaceScope: () => scope }));
 const id = (n: number) =>
 	`00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const projectId = id(1);
@@ -98,7 +109,7 @@ let ChakraProvider: typeof import("@chakra-ui/react").ChakraProvider;
 let system: typeof import("@narriflow/ui/theme").system;
 let UpgradeProvider: typeof import("../../_components/upgrade").UpgradeProvider;
 let root: Root;
-let requests: Array<{ url: string; body: any }> = [];
+let requests: Array<{ url: string; body: any; headers: Headers }> = [];
 let generate: (body: any) => Promise<Response>;
 let admit: (body: any) => Promise<Response>;
 function Entry() {
@@ -185,7 +196,8 @@ async function render(
 	globalThis.fetch = (async (url: any, init?: RequestInit) => {
 		const value = String(url);
 		const body = init?.body ? JSON.parse(String(init.body)) : null;
-		requests.push({ url: value, body });
+		requests.push({ url: value, body, headers: new Headers(init?.headers) });
+		if (value.endsWith("/social/proposals")) return Response.json({ proposalId: "00000000-0000-4000-8000-0000000000aa" }, { status: 201 });
 		if (value.endsWith("/visual-assets")) return Response.json({ assets: [] });
 		if (value.endsWith("exports/current")) return Response.json({ exports });
 		if (value.endsWith("publishing-options"))
@@ -212,6 +224,7 @@ async function render(
 	root = createRoot(container as unknown as HTMLElement);
 	await act(async () =>
 		root.render(
+			<QueryClientProvider client={new QueryClient()}>
 			<ChakraProvider value={system}>
 				<UpgradeProvider currentTier="creator" billingMode="change_plan" canManageBilling>
 				<Provider
@@ -242,7 +255,8 @@ async function render(
 					<Entry />
 				</Provider>
 				</UpgradeProvider>
-			</ChakraProvider>,
+			</ChakraProvider>
+			</QueryClientProvider>,
 		),
 	);
 }
@@ -320,9 +334,10 @@ test("proposes the draft's export and caption to the account's queue once, and s
 	const caption = browser.document.querySelector('textarea[aria-label="Description"]')!;
 	await edit(caption, "A caption for the queue");
 	await click("Propose to queue");
-	expect(proposed).toHaveLength(1);
-	expect(proposed[0]).toMatchObject({ clipId: clips[1]!.id, exportId: exports[1]!.id, socialAccountId: accounts[0]!.id, caption: "A caption for the queue" });
-	expect((proposed[0] as { idempotencyKey: string }).idempotencyKey).toMatch(/^[0-9a-f-]{36}$/);
+	const proposals = requests.filter((r) => r.url.endsWith("/social/proposals"));
+	expect(proposals).toHaveLength(1);
+	expect(proposals[0]!.body).toMatchObject({ clipId: clips[1]!.id, exportId: exports[1]!.id, socialAccountId: accounts[0]!.id, caption: "A caption for the queue" });
+	expect(proposals[0]!.headers.get("Idempotency-Key")).toMatch(/^[0-9a-f-]{36}$/);
 	expect(browser.document.querySelector('[role="dialog"]')?.textContent).toContain("Accept it in the queue");
 	// Proposing again from the same draft is not offered.
 	expect(button("Propose to queue").hasAttribute("disabled")).toBe(true);
@@ -563,7 +578,7 @@ test("generation failure leaves manual composition available", async () => {
 	await render();
 	generate = async () =>
 		Response.json(
-			{ message: "Description generation unavailable" },
+			{ error: "assisted_copy_unavailable", message: "Description generation unavailable", requestId: "req_test" },
 			{ status: 503 },
 		);
 	await click("Exact clip");

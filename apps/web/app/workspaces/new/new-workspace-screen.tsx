@@ -3,6 +3,8 @@ import { Flex, Heading, Stack, Text } from "@chakra-ui/react";
 import { ArrowLeft } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
 import { Logo } from "@narriflow/ui/components/logo";
+import { Box } from "@chakra-ui/react";
+import { ApiProvider } from "@/app/_components/api-provider";
 import { CreateWorkspaceForm } from "./create-workspace-form";
 
 /** Business workspace creation: the shell, the pitch in one line, then the form. */
@@ -28,7 +30,9 @@ export function NewWorkspaceScreen() {
               A shared space with its own projects, members, usage and subscription.
             </Text>
           </Stack>
-          <CreateWorkspaceForm />
+          <ApiProvider fallback={<Box minH="64" />}>
+            <CreateWorkspaceForm />
+          </ApiProvider>
         </Stack>
       </Flex>
     </Flex>

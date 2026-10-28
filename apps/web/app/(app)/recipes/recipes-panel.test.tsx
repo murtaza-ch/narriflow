@@ -1,13 +1,11 @@
-import { describe, expect, mock, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { ChakraProvider } from "@chakra-ui/react";
+import { createIntent } from "@narriflow/api-client/core";
 import { system } from "@narriflow/ui/theme";
 import { buildGenerationContentPack, finishingSettingsSchema, type RecipeSnapshot } from "@narriflow/validators";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderToStaticMarkup } from "react-dom/server";
-
-mock.module("next/navigation", () => ({
-  useRouter: () => ({ refresh() {}, push() {} }),
-}));
-const { RecipesPanel } = await import("./recipes-panel");
+import { RecipesPanel, type RecipesPanelApi } from "./recipes-panel";
 
 const BRAND_PROFILE_ID = "00000000-0000-4000-8000-0000000000b1";
 
@@ -28,17 +26,30 @@ function recipe(overrides: Partial<RecipeSnapshot> = {}): RecipeSnapshot {
   };
 }
 
+/** Nothing here is called while the panel is only rendered. */
+const unused = async (): Promise<never> => {
+  throw new Error("not used while rendering");
+};
+const api: RecipesPanelApi = {
+  actions: { create: unused, duplicate: unused, update: unused, remove: unused },
+  createIntent: () => createIntent(),
+  changed: async () => {},
+};
+
 function render(recipes: RecipeSnapshot[], options: { canEdit?: boolean; finishingAvailable?: boolean } = {}) {
   return renderToStaticMarkup(
+    <QueryClientProvider client={new QueryClient()}>
     <ChakraProvider value={system}>
       <RecipesPanel
-        initialRecipes={recipes}
+        recipes={recipes}
         brandProfiles={[{ id: BRAND_PROFILE_ID, name: "Acme", isDefault: true }]}
         canEdit={options.canEdit ?? true}
         finishingAvailable={options.finishingAvailable ?? true}
         queueAccounts={[]}
+        api={api}
       />
-    </ChakraProvider>,
+    </ChakraProvider>
+    </QueryClientProvider>,
   );
 }
 

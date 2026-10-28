@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { Box, Flex, Stack, Text } from "@chakra-ui/react";
 import { Checkbox } from "@narriflow/ui/components/checkbox";
-import type { ProjectListItem } from "@narriflow/services";
+import type { ProjectListItem } from "../_lib/api";
 import { formatDuration } from "@/lib/format";
 import { ProjectThumbnail } from "./project-thumbnail";
 import { getProjectActivity, ProjectMeta, ShimmerStrip } from "./project-card";

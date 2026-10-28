@@ -1,7 +1,9 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { useMutation } from "@tanstack/react-query";
 import { Box, Flex, Grid, Menu, Portal, Stack, Text, chakra } from "@chakra-ui/react";
 import { Check, Copy, Gem, LayoutTemplate, MoreVertical, Pencil, Trash2 } from "lucide-react";
 import { IconButton } from "@narriflow/ui/components/button";
@@ -12,15 +14,7 @@ import { toaster } from "@narriflow/ui/components/toaster";
 import type { BrandTemplateSummary } from "@narriflow/validators";
 import { CoverChip } from "./brand-kit-ui";
 import { StyleThumb } from "../../_shared/style-thumb";
-import {
-  deleteBrandTemplateAction,
-  duplicateBrandTemplateAction,
-  setDefaultBrandTemplateAction,
-} from "../style-actions";
-import {
-  authenticatedActionResultMessage,
-  isAuthenticatedActionFailure,
-} from "@/lib/authenticated-request-browser";
+import { failureMessage, useBrandApi, useIntent } from "./brand-api";
 import { useUpgrade, type UpgradePrompt } from "../../_components/upgrade";
 
 /**
@@ -44,16 +38,6 @@ interface TemplateGalleryProps {
   /** The Brand Profile each style belongs to, by style id. */
   profileByStyle?: Record<string, string>;
   access: TemplateGalleryAccess;
-}
-
-/** Server-action redirects surface as thrown NEXT_REDIRECT errors — rethrow. */
-function isNextRedirect(error: unknown): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "digest" in error &&
-    String((error as { digest?: unknown }).digest).startsWith("NEXT_REDIRECT")
-  );
 }
 
 export function TemplateGallery({
@@ -155,11 +139,48 @@ function TemplateCard({ template, isDefault, profileName, ownership, access }: T
   // A kept custom style on a plan without custom styles: editing and choosing it open the upgrade.
   const lockedCustom = ownership === "mine" ? access.customUpgrade : null;
   const canDuplicate = access.canManage && !(access.duplicateBlocked && !access.duplicateBlocked.upgrade);
-  const [pending, startTransition] = useTransition();
-  const [pendingAction, setPendingAction] = useState<
-    "default" | "duplicate" | "delete" | null
-  >(null);
+  const router = useRouter();
+  const { mutations, invalidate } = useBrandApi();
+  const duplicateIntent = useIntent<{ id: string }>();
+  // The new style's editor opens once it exists; the card stays busy until then.
+  const [opening, setOpening] = useState(false);
   const { confirm, dialog } = useConfirm();
+
+  const setDefault = useMutation({
+    mutationFn: () => mutations.setDefaultTemplate(template.id),
+    onSuccess: async () => {
+      toaster.create({
+        type: "success",
+        title: "Default style updated",
+        description: `New projects will use "${template.name}".`,
+      });
+      await invalidate();
+    },
+    onError: (error) =>
+      toaster.create({ type: "error", title: "Could not set default", description: failureMessage(error, "The default style could not be changed.") }),
+  });
+  const duplicate = useMutation({
+    mutationFn: () => mutations.duplicateTemplate(template.id, {}, duplicateIntent.keyFor({ id: template.id })),
+    onSuccess: (created) => {
+      duplicateIntent.complete();
+      setOpening(true);
+      router.push(`/brand-kit/styles/${created.id}`);
+      void invalidate();
+    },
+    onError: (error) =>
+      toaster.create({ type: "error", title: "Could not duplicate style", description: failureMessage(error, "The style could not be duplicated.") }),
+  });
+  const remove = useMutation({
+    mutationFn: () => mutations.deleteTemplate(template.id),
+    onSuccess: async () => {
+      toaster.create({ type: "success", title: "Style deleted" });
+      await invalidate();
+    },
+    onError: (error) =>
+      toaster.create({ type: "error", title: "Could not delete style", description: failureMessage(error, "The style could not be deleted.") }),
+  });
+  const pending = setDefault.isPending || duplicate.isPending || remove.isPending || opening;
+  const pendingAction = setDefault.isPending ? "default" : duplicate.isPending || opening ? "duplicate" : remove.isPending ? "delete" : null;
 
   function chooseDefault() {
     if (lockedCustom) {
@@ -171,65 +192,11 @@ function TemplateCard({ template, isDefault, profileName, ownership, access }: T
 
   function handleSetDefault() {
     if (isDefault || pending) return;
-    setPendingAction("default");
-    startTransition(async () => {
-      try {
-        const result = await setDefaultBrandTemplateAction(template.id);
-        if (isAuthenticatedActionFailure(result)) {
-          toaster.create({
-            type: "error",
-            title: "Could not set default",
-            description: authenticatedActionResultMessage(
-              result,
-              "The default style could not be changed.",
-            ),
-          });
-          return;
-        }
-        toaster.create({
-          type: "success",
-          title: "Default style updated",
-          description: `New projects will use "${template.name}".`,
-        });
-      } catch (error) {
-        if (isNextRedirect(error)) throw error;
-        toaster.create({
-          type: "error",
-          title: "Could not set default",
-          description: "Please try again.",
-        });
-      } finally {
-        setPendingAction(null);
-      }
-    });
+    setDefault.mutate();
   }
 
   function handleDuplicate() {
-    setPendingAction("duplicate");
-    startTransition(async () => {
-      try {
-        const result = await duplicateBrandTemplateAction(template.id);
-        if (isAuthenticatedActionFailure(result)) {
-          toaster.create({
-            type: "error",
-            title: "Could not duplicate style",
-            description: authenticatedActionResultMessage(
-              result,
-              "The style could not be duplicated.",
-            ),
-          });
-          setPendingAction(null);
-        }
-      } catch (error) {
-        if (isNextRedirect(error)) throw error;
-        setPendingAction(null);
-        toaster.create({
-          type: "error",
-          title: "Could not duplicate style",
-          description: "Please try again.",
-        });
-      }
-    });
+    duplicate.mutate();
   }
 
   async function handleDelete() {
@@ -240,33 +207,7 @@ function TemplateCard({ template, isDefault, profileName, ownership, access }: T
       destructive: true,
     });
     if (!confirmed) return;
-    setPendingAction("delete");
-    startTransition(async () => {
-      try {
-        const result = await deleteBrandTemplateAction(template.id);
-        if (isAuthenticatedActionFailure(result)) {
-          toaster.create({
-            type: "error",
-            title: "Could not delete style",
-            description: authenticatedActionResultMessage(
-              result,
-              "The style could not be deleted.",
-            ),
-          });
-          return;
-        }
-        toaster.create({ type: "success", title: "Style deleted" });
-      } catch (error) {
-        if (isNextRedirect(error)) throw error;
-        toaster.create({
-          type: "error",
-          title: "Could not delete style",
-          description: "Please try again.",
-        });
-      } finally {
-        setPendingAction(null);
-      }
-    });
+    remove.mutate();
   }
 
   const preset = template.captionPreset;

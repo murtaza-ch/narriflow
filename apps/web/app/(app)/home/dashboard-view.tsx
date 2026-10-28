@@ -2,13 +2,13 @@ import Link from "next/link";
 import { Box, Flex, Heading, Stack, Text } from "@chakra-ui/react";
 import { Button } from "@narriflow/ui/components/button";
 import { ArrowRight, Rss } from "lucide-react";
-import type { ProjectListItem } from "@narriflow/services";
 import type { PricingTier } from "@narriflow/validators";
 import { HeroExperience, type ReadOnlyReason } from "./hero-experience";
 import { RetentionBanner } from "../projects/_components/retention-banner";
 import { PlanBadge } from "../_components/upgrade";
 import { CreationTools } from "./creation-tools";
 import { RecentProjects } from "./recent-projects";
+import type { ProjectListItem } from "../projects/_lib/api";
 
 export interface AutopilotSummary {
   /** The plan that adds Autopilot, when this Workspace's plan lacks it. */
@@ -19,7 +19,6 @@ export interface AutopilotSummary {
 }
 
 export function DashboardView({ items, canCreate, readOnlyReason = null, showRetentionBanner, canManageBilling, autopilot }: {
-  greeting: string;
   items: ProjectListItem[];
   canCreate: boolean;
   /** Why this member can't import: their role, or a paused (unpaid) workspace. */

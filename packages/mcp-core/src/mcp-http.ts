@@ -35,8 +35,8 @@ export function mcpCorsResponse(response: Response, request: Request, allowed: r
   if (origin && isAcceptedMcpOrigin(origin, allowed)) {
     headers.set("Access-Control-Allow-Origin", origin);
     headers.set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
-    headers.set("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept, MCP-Protocol-Version, MCP-Method, MCP-Name");
-    headers.set("Access-Control-Expose-Headers", "WWW-Authenticate, MCP-Protocol-Version, Retry-After");
+    headers.set("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept, MCP-Protocol-Version, MCP-Method, MCP-Name, X-Narriflow-Upload-Intent");
+    headers.set("Access-Control-Expose-Headers", "WWW-Authenticate, MCP-Protocol-Version, Retry-After, X-Request-ID");
   }
   return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
 }

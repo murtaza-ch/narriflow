@@ -5,7 +5,7 @@ import Image from "next/image";
 import { Link2, Rss, Upload, Youtube } from "lucide-react";
 import { useState } from "react";
 import { MediaWell } from "@narriflow/ui/components/media-well";
-import type { ProjectListItem } from "@narriflow/services";
+import type { ProjectListItem } from "../_lib/api";
 import { LINK_PROVIDERS } from "@narriflow/validators";
 import { formatDuration } from "@/lib/format";
 import { extractYoutubeId, youtubeThumbnailUrl } from "../_lib/youtube";

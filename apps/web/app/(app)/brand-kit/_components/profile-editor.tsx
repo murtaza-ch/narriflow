@@ -1,15 +1,17 @@
 "use client";
 
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
-import { useRouter } from "next/navigation";
 import { Flex, Stack, Text } from "@chakra-ui/react";
+import { useMutation } from "@tanstack/react-query";
 import { Pencil } from "lucide-react";
+import { describeApiFailure } from "@narriflow/api-client";
 import type { BrandProfileUpdateInput } from "@narriflow/validators";
 import { Button } from "@narriflow/ui/components/button";
 import { SegmentedControl } from "@narriflow/ui/components/segmented-control";
 import { toaster } from "@narriflow/ui/components/toaster";
 import { PlanLimitNotice } from "../../_components/plan-limit-notice";
 import { LockedButton, type UpgradePrompt } from "../../_components/upgrade";
+import { failureMessage, useBrandApi } from "./brand-api";
 import { Panel, type BrandColors } from "./brand-kit-ui";
 import { BrandColorPreview, BrandColorTiles, EMPTY_VOICE, VoiceFields, type VoiceDraft } from "./profile-fields";
 
@@ -19,38 +21,35 @@ const ProfilePatchContext = createContext<((patch: Patch, title: string) => Prom
 
 /**
  * One writer for the profile's `PATCH`: it sends the latest revision it knows
- * (the response's, until the page refreshes), so saving two panels in a row
- * doesn't conflict with itself.
+ * (the response's, until the refetched profile arrives), so saving two panels
+ * in a row doesn't conflict with itself.
  */
 export function ProfileEditorProvider({ profileId, revision, children }: { profileId: string; revision: number; children: ReactNode }) {
-  const router = useRouter();
+  const { mutations, invalidate } = useBrandApi();
   const latest = useRef(revision);
   useEffect(() => {
     latest.current = Math.max(latest.current, revision);
   }, [revision]);
 
-  async function patch(body: Patch, title: string) {
-    try {
-      const response = await fetch(`/api/brand-profiles/${profileId}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...body, revision: latest.current }),
-      });
-      const payload = (await response.json().catch(() => null)) as { revision?: number; message?: string } | null;
-      if (!response.ok) {
-        // Changed elsewhere: load the latest revision so the next save can succeed.
-        if (response.status === 409) router.refresh();
-        throw new Error(payload?.message ?? "The profile could not be saved.");
-      }
-      if (payload?.revision) latest.current = payload.revision;
+  const save = useMutation({
+    mutationFn: ({ body }: { body: Patch; title: string }) =>
+      mutations.updateProfile(profileId, { ...body, revision: latest.current }),
+    onSuccess: async (updated, { title }) => {
+      if (updated.revision) latest.current = updated.revision;
       toaster.create({ type: "success", title });
-      router.refresh();
-      return true;
-    } catch (error) {
-      toaster.create({ type: "error", title: "Could not save the profile", description: error instanceof Error ? error.message : "Please try again." });
-      return false;
-    }
-  }
+      await invalidate();
+    },
+    onError: async (error) => {
+      // Changed elsewhere: load the latest revision so the next save can succeed.
+      if (describeApiFailure(error).kind === "conflict") await invalidate();
+      toaster.create({ type: "error", title: "Could not save the profile", description: failureMessage(error) });
+    },
+  });
+  const patch = (body: Patch, title: string) =>
+    save.mutateAsync({ body, title }).then(
+      () => true,
+      () => false,
+    );
   return <ProfilePatchContext.Provider value={patch}>{children}</ProfilePatchContext.Provider>;
 }
 

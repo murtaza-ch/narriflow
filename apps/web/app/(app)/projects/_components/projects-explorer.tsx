@@ -13,67 +13,61 @@ import {
   Stack,
   Text,
 } from "@chakra-ui/react";
-import {
-  startTransition,
-  useEffect,
-  useEffectEvent,
-  useMemo,
-  useState,
-  useTransition,
-} from "react";
+import { startTransition, useEffect, useEffectEvent, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Folder, FolderInput, Inbox, Search, TriangleAlert } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
 import { EmptyState } from "@narriflow/ui/components/empty-state";
+import {
+  invalidateAfterProjectMoved,
+  projectCommands,
+  projectMutationOptions,
+  projectQueries,
+  type ProjectListFilters,
+} from "@narriflow/api-client/projects";
 import type {
-  ProjectListItem,
-  ProjectListPage,
-  ProjectListSort,
-  ProjectListSourceFilter,
-  ProjectListStatusFilter,
-} from "@narriflow/services";
+  ProjectListSortValue,
+  ProjectListSourceFilterValue,
+  ProjectListStatusFilterValue,
+} from "@narriflow/validators/api/projects";
+import { keepPreviousData, useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { FilterToolbar } from "./filter-toolbar";
 import { PROJECT_DRAG_TYPE } from "./folders-panel";
 import { ProjectCard } from "./project-card";
 import { ProjectRow } from "./project-row";
-import { moveProjectToFolderAction } from "../actions";
-import {
-  authenticatedActionResultMessage,
-  isAuthenticatedActionFailure,
-} from "@/lib/authenticated-request-browser";
+import { ProjectsGridSkeleton } from "./projects-skeleton";
+import { failureMessage, type LibraryApi, type ProjectListItem } from "../_lib/api";
 
-export type StatusFilter = ProjectListStatusFilter;
-export type SourceFilter = ProjectListSourceFilter;
-export type SortOption = ProjectListSort;
+export type StatusFilter = ProjectListStatusFilterValue;
+export type SourceFilter = ProjectListSourceFilterValue;
+export type SortOption = ProjectListSortValue;
 
 export type ViewMode = "grid" | "list";
 
 interface ProjectsExplorerProps {
-  initialProjects: ProjectListItem[];
-  initialNextCursor: string | null;
-  totalCount: number;
-  initialQuery: string;
-  initialStatus: StatusFilter;
-  initialSource: SourceFilter;
-  initialSort: SortOption;
-  folderId?: string;
+  api: LibraryApi;
+  /** The filters in the URL. */
+  filters: ProjectListFilters;
+  /** False while the explorer is still loading page 1 for `filters`. */
+  ready: boolean;
   folderName?: string;
   folders: Array<{ id: string; name: string }>;
   canEdit: boolean;
 }
 
 function MoveProjectsDialog({
+  api,
   projects,
   folders,
   onMoved,
 }: {
+  api: LibraryApi;
   projects: ProjectListItem[];
   folders: Array<{ id: string; name: string }>;
   onMoved: () => void;
 }) {
-  const router = useRouter();
-  const [pending, startMove] = useTransition();
+  const queryClient = useQueryClient();
   const [moveError, setMoveError] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -93,25 +87,28 @@ function MoveProjectsDialog({
     ...folders.map((folder) => ({ id: folder.id, name: folder.name })),
   ].filter((folder) => folder.name.toLowerCase().includes(query.trim().toLowerCase()));
 
-  function move() {
-    startMove(async () => {
-      const results = await Promise.all(
-        projects.map((project) =>
-          moveProjectToFolderAction(project.id, selectedFolderId || null),
-        ),
+  const moveMutation = useMutation({
+    ...projectMutationOptions,
+    mutationFn: async (folderId: string | null) => {
+      const results = await Promise.allSettled(
+        projects.map((project) => projectCommands.moveToFolder(api.projects, project.id, folderId)),
       );
-      const failure = results.find(isAuthenticatedActionFailure);
-      if (failure) {
-        setMoveError(
-          authenticatedActionResultMessage(failure, "The projects could not be moved."),
-        );
-        return;
-      }
+      // Some moves may have landed even when another failed, so the lists refresh either way.
+      await Promise.all(projects.map((project) => invalidateAfterProjectMoved(queryClient, api.scope, project.id)));
+      const failure = results.find((result) => result.status === "rejected");
+      if (failure) throw failure.reason;
+    },
+    onSuccess: () => {
       setMoveError(null);
       setOpen(false);
       onMoved();
-      router.refresh();
-    });
+    },
+    onError: (error) => setMoveError(failureMessage(error, "The projects could not be moved.")),
+  });
+  const pending = moveMutation.isPending;
+
+  function move() {
+    moveMutation.mutate(selectedFolderId || null);
   }
 
   const title =
@@ -225,44 +222,26 @@ export function isProjectActive(project: Pick<ProjectListItem, "progress">): boo
 /** How often the list re-asks the server while something is still processing. */
 const LIVE_REFRESH_INTERVAL_MS = 6000;
 
-/** A page fetched by "Load more" — kept alongside its own cursor/total so the
- *  derived values below need no effect to stay in sync. */
-interface LoadedPage {
-  items: ProjectListItem[];
-  nextCursor: string | null;
-  totalCount: number;
-}
-
 export function ProjectsExplorer({
-  initialProjects,
-  initialNextCursor,
-  totalCount: initialTotalCount,
-  initialQuery,
-  initialStatus,
-  initialSource,
-  initialSort,
-  folderId,
+  api,
+  filters,
+  ready,
   folderName,
   folders,
   canEdit,
 }: ProjectsExplorerProps) {
   const router = useRouter();
-  // Page 1 always comes from the server props; only the extra pages that
-  // "Load more" fetched live in state. Deriving the merged list (instead of
-  // mirroring `initialProjects` into state via an effect) is what keeps a
-  // `router.refresh()` to a single render pass — the old effect re-ran on
-  // every refresh because the RSC payload hands over fresh array identities,
-  // so each poll cost a setState + a second render of the whole grid, and
-  // silently threw away every page the user had loaded.
-  const [extraPages, setExtraPages] = useState<LoadedPage[]>([]);
+  const initialQuery = filters.q ?? "";
+  const initialStatus = filters.status ?? "all";
+  const initialSource = filters.source ?? "all";
+  const initialSort = filters.sort ?? "newest";
+  const folderId = filters.folder;
   const [query, setQuery] = useState(initialQuery);
   const [status, setStatus] = useState<StatusFilter>(initialStatus);
   const [source, setSource] = useState<SourceFilter>(initialSource);
   const [sort, setSort] = useState<SortOption>(initialSort);
   const [view, setView] = useState<ViewMode>("grid");
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
-  const [isLoadingMore, setIsLoadingMore] = useState(false);
-  const [loadError, setLoadError] = useState<string | null>(null);
 
   const filterKey = `${initialQuery}\u0000${initialStatus}\u0000${initialSource}\u0000${initialSort}\u0000${folderId ?? ""}`;
   const [lastFilterKey, setLastFilterKey] = useState(filterKey);
@@ -272,17 +251,31 @@ export function ProjectsExplorer({
     setStatus(initialStatus);
     setSource(initialSource);
     setSort(initialSort);
-    setExtraPages([]);
     setSelectedIds([]);
   }
 
-  // Refreshed page 1 wins on id collisions (a project created since the last
-  // "Load more" can push older rows across the page boundary).
+  // Every loaded page of these filters. Page 1 comes from the explorer read; a
+  // refetch (polling, focus) re-reads each loaded page in order, so extra pages
+  // keep their place instead of being thrown away. The list query's progress
+  // meaning is shared across intake and Workflow Runs, so polling continues
+  // through transcription, detection and rendering until every visible Project
+  // reaches a terminal outcome. It runs only while the tab is visible, and
+  // focus refetches once on the way back.
+  const list = useInfiniteQuery({
+    ...projectQueries.list(api.projects, api.scope, filters),
+    enabled: ready,
+    placeholderData: keepPreviousData,
+    refetchInterval: (current) =>
+      current.state.data?.pages.some((page) => page.items.some(isProjectActive)) ? LIVE_REFRESH_INTERVAL_MS : false,
+  });
+  const pages = list.data?.pages;
+
+  // Earlier pages win on id collisions (a project created since the last
+  // "Load more" can push older rows across a page boundary).
   const projects = useMemo(() => {
-    if (extraPages.length === 0) return initialProjects;
-    const merged = [...initialProjects];
-    const seen = new Set(merged.map((project) => project.id));
-    for (const page of extraPages) {
+    const merged: ProjectListItem[] = [];
+    const seen = new Set<string>();
+    for (const page of pages ?? []) {
       for (const project of page.items) {
         if (seen.has(project.id)) continue;
         seen.add(project.id);
@@ -290,7 +283,7 @@ export function ProjectsExplorer({
       }
     }
     return merged;
-  }, [initialProjects, extraPages]);
+  }, [pages]);
   const selectedProjects = useMemo(
     () => projects.filter((project) => selectedIds.includes(project.id)),
     [projects, selectedIds],
@@ -306,66 +299,10 @@ export function ProjectsExplorer({
     );
   }
 
-  const lastPage = extraPages.at(-1);
-  const nextCursor = lastPage ? lastPage.nextCursor : initialNextCursor;
-  const totalCount = lastPage
-    ? Math.max(lastPage.totalCount, initialTotalCount)
-    : initialTotalCount;
-
-  // The list query resolves one product progress meaning across intake and
-  // Workflow Runs, so polling continues through transcription, detection,
-  // and rendering until every visible Project reaches a terminal outcome.
-  const hasActiveProjects = useMemo(
-    () => projects.some(isProjectActive),
-    [projects],
-  );
-
-  function apiParams(cursor: string) {
-    const params = new URLSearchParams({ cursor, limit: "50" });
-    if (folderId) params.set("folder", folderId);
-    if (initialQuery) params.set("q", initialQuery);
-    if (initialStatus !== "all") params.set("status", initialStatus);
-    if (initialSource !== "all") params.set("source", initialSource);
-    if (initialSort !== "newest") params.set("sort", initialSort);
-    return params;
-  }
-
-  const refresh = useEffectEvent(async () => {
-    startTransition(() => router.refresh());
-
-    if (extraPages.length === 0 || !initialNextCursor) return;
-    const refreshed: LoadedPage[] = [];
-    let cursor: string | null = initialNextCursor;
-    for (let index = 0; index < extraPages.length && cursor; index += 1) {
-      const response = await fetch(`/api/projects?${apiParams(cursor)}`);
-      if (!response.ok) return;
-      const page = (await response.json()) as ProjectListPage;
-      refreshed.push(page);
-      cursor = page.nextCursor;
-    }
-    setExtraPages(refreshed);
-  });
-
-  useEffect(() => {
-    if (!hasActiveProjects) return;
-
-    // A background tab has nothing to repaint, and each refresh re-runs the
-    // layout (auth + usage stats) plus the paginated project query. Poll only
-    // while visible, and catch up once on the way back.
-    const interval = setInterval(() => {
-      if (document.visibilityState === "visible") void refresh();
-    }, LIVE_REFRESH_INTERVAL_MS);
-
-    const onVisibilityChange = () => {
-      if (document.visibilityState === "visible") void refresh();
-    };
-    document.addEventListener("visibilitychange", onVisibilityChange);
-
-    return () => {
-      clearInterval(interval);
-      document.removeEventListener("visibilitychange", onVisibilityChange);
-    };
-  }, [hasActiveProjects]);
+  const nextCursor = pages?.at(-1)?.nextCursor ?? null;
+  const totalCount = Math.max(pages?.[0]?.totalCount ?? 0, pages?.at(-1)?.totalCount ?? 0);
+  const isLoadingMore = list.isFetchingNextPage;
+  const loadError = list.isFetchNextPageError ? "Could not load more projects. Try again." : null;
 
   function navigate(next: {
     query?: string;
@@ -407,32 +344,11 @@ export function ProjectsExplorer({
     navigate({ query: "", status: "all", source: "all" });
   }
 
-  async function loadMoreProjects() {
-    if (!nextCursor || isLoadingMore) return;
-
-    setIsLoadingMore(true);
-    setLoadError(null);
-
-    try {
-      const params = apiParams(nextCursor);
-      const response = await fetch(`/api/projects?${params.toString()}`);
-      if (!response.ok) throw new Error("Failed to load more projects");
-      const page = (await response.json()) as ProjectListPage;
-
-      setExtraPages((current) => [
-        ...current,
-        {
-          items: page.items,
-          nextCursor: page.nextCursor,
-          totalCount: page.totalCount,
-        },
-      ]);
-    } catch {
-      setLoadError("Could not load more projects. Try again.");
-    } finally {
-      setIsLoadingMore(false);
-    }
+  function loadMoreProjects() {
+    if (nextCursor && !list.isFetchingNextPage) void list.fetchNextPage();
   }
+
+  if (!pages) return <ProjectsGridSkeleton />;
 
   return (
     <Stack gap="5">
@@ -461,6 +377,7 @@ export function ProjectsExplorer({
         selectionAction={
           canEdit ? (
             <MoveProjectsDialog
+              api={api}
               projects={selectedProjects}
               folders={folders}
               onMoved={() => setSelectedIds([])}

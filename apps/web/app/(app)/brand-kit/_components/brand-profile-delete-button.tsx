@@ -1,15 +1,22 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { NativeSelect, Stack, Text } from "@chakra-ui/react";
+import { useMutation } from "@tanstack/react-query";
 import { Trash2 } from "lucide-react";
-import type { BrandProfileUsage } from "@narriflow/services";
 import { Button, IconButton } from "@narriflow/ui/components/button";
 import { Dialog, Portal } from "@narriflow/ui/components/dialog";
 import { toaster } from "@narriflow/ui/components/toaster";
+import { failureMessage, useBrandApi } from "./brand-api";
 
 const NO_PROFILE = "";
+
+/** What deleting a profile would move: it is the default, and the Recipes that name it. */
+export interface BrandProfileUsage {
+  isDefault: boolean;
+  recipes: readonly { id: string; name: string }[];
+}
 
 /** "Default for new projects · Used by 2 Recipes: A, B", or null when nothing uses the profile. */
 export function describeBrandProfileUsage(usage: BrandProfileUsage): string | null {
@@ -38,35 +45,32 @@ export function BrandProfileDeleteButton({
   replacements: { id: string; name: string }[];
 }) {
   const router = useRouter();
-  const [pending, startTransition] = useTransition();
+  const { mutations, invalidate } = useBrandApi();
   const [open, setOpen] = useState(false);
   const [replacement, setReplacement] = useState(NO_PROFILE);
   const usageText = describeBrandProfileUsage(usage);
 
-  function remove() {
-    startTransition(async () => {
-      try {
-        const response = await fetch(`/api/brand-profiles/${profileId}`, {
-          method: "DELETE",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ revision, ...(usageText ? { replacementProfileId: replacement || null } : {}) }),
-        });
-        const payload = (await response.json().catch(() => null)) as { message?: string } | null;
-        if (!response.ok) throw new Error(payload?.message ?? "The profile could not be deleted.");
-        toaster.create({ type: "success", title: "Brand Profile deleted" });
-        setOpen(false);
-        // The button lives on the profile's own page, which no longer exists.
-        router.replace("/brand-kit");
-        router.refresh();
-      } catch (error) {
-        toaster.create({
-          type: "error",
-          title: "Could not delete the profile",
-          description: error instanceof Error ? error.message : "Please try again.",
-        });
-      }
-    });
-  }
+  const removal = useMutation({
+    mutationFn: () =>
+      mutations.deleteProfile(profileId, {
+        revision,
+        ...(usageText ? { replacementProfileId: replacement || null } : {}),
+      }),
+    onSuccess: () => {
+      toaster.create({ type: "success", title: "Brand Profile deleted" });
+      setOpen(false);
+      // The button lives on the profile's own page, which no longer exists.
+      router.replace("/brand-kit");
+      void invalidate();
+    },
+    onError: (error) =>
+      toaster.create({
+        type: "error",
+        title: "Could not delete the profile",
+        description: failureMessage(error),
+      }),
+  });
+  const pending = removal.isPending;
 
   return (
     <>
@@ -132,7 +136,7 @@ export function BrandProfileDeleteButton({
               </Dialog.Body>
               <Dialog.Footer px="5" pb="4" pt="0" gap="2">
                 <Button variant="outline" size="sm" disabled={pending} onClick={() => setOpen(false)}>Cancel</Button>
-                <Button variant="solid" size="sm" colorPalette="danger" loading={pending} onClick={remove}>Delete</Button>
+                <Button variant="solid" size="sm" colorPalette="danger" loading={pending} onClick={() => removal.mutate()}>Delete</Button>
               </Dialog.Footer>
             </Dialog.Content>
           </Dialog.Positioner>

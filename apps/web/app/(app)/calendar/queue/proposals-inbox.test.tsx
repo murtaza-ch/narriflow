@@ -1,22 +1,24 @@
-import { describe, expect, mock, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { ChakraProvider } from "@chakra-ui/react";
 import { system } from "@narriflow/ui/theme";
-import type { ProposalInboxItem } from "@narriflow/services";
+import type { ProposalInboxItem } from "@/lib/publishing-client";
 import type { SocialAccountSnapshot } from "@narriflow/validators";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { UpgradePrompt } from "../../_components/upgrade";
 
-mock.module("next/navigation", () => ({ useRouter: () => ({ refresh() {}, push() {} }) }));
-mock.module("./actions", () => ({
-	acceptAllProposalsAction: async () => ({ ok: true }),
-	acceptProposalAction: async () => ({ ok: true }),
-	rejectProposalAction: async () => ({ ok: true }),
-	tiktokAcceptanceOptionsAction: async () => ({ ok: true }),
-	updateProposalCaptionAction: async () => ({ ok: true }),
-	savePostingScheduleAction: async () => ({ ok: true }),
-}));
-const { ProposalsInbox } = await import("./proposals-inbox");
-const { PostingScheduleEditor } = await import("./posting-schedule-editor");
+import { PostingScheduleEditor, type PostingScheduleApi } from "./posting-schedule-editor";
+import { ProposalsInbox, type ProposalsApi } from "./proposals-inbox";
+
+const noop = async () => ({});
+const proposalsApi: ProposalsApi = {
+	tiktokOptions: async () => ({ directEnabled: true, inboxEnabled: true, privacyOptions: [], commentDisabled: false, duetDisabled: false, stitchDisabled: false }),
+	updateCaption: noop,
+	reject: noop,
+	accept: noop,
+	acceptAll: async () => ({ accepted: [], skippedTikTok: 0, failed: [], nextCursor: null }),
+	onChanged() {},
+};
+const scheduleApi: PostingScheduleApi = { save: noop, onChanged() {} };
 
 const UPGRADE: UpgradePrompt = { tier: "creator", headline: "Upgrade to schedule posts" };
 
@@ -47,7 +49,7 @@ function proposal(overrides: Partial<ProposalInboxItem> = {}): ProposalInboxItem
 
 const wrap = (node: React.ReactNode) => renderToStaticMarkup(<ChakraProvider value={system}>{node}</ChakraProvider>);
 const inbox = (proposals: ProposalInboxItem[], canManage = true, scheduleUpgrade: UpgradePrompt | null = null) =>
-	wrap(<ProposalsInbox proposals={proposals} timeZone="UTC" canManage={canManage} scheduleUpgrade={scheduleUpgrade} />);
+	wrap(<ProposalsInbox proposals={proposals} api={proposalsApi} timeZone="UTC" canManage={canManage} scheduleUpgrade={scheduleUpgrade} />);
 
 describe("Publishing queue", () => {
 	test("an empty inbox points managers to Finishing", () => {
@@ -80,7 +82,7 @@ describe("Publishing queue", () => {
 			status: "active",
 			postingSchedule: { slots: [{ weekday: "mon", time: "09:00" }] },
 		} as unknown as SocialAccountSnapshot;
-		const html = wrap(<PostingScheduleEditor accounts={[account]} timeZone="UTC" canManage scheduleUpgrade={UPGRADE} />);
+		const html = wrap(<PostingScheduleEditor accounts={[account]} api={scheduleApi} timeZone="UTC" canManage scheduleUpgrade={UPGRADE} />);
 		expect(html).toContain("Posting slots need the Creator plan.");
 		expect(html).toContain("(needs Creator)");
 	});

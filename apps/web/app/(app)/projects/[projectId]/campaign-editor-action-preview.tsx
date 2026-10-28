@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { Box, Flex, Grid, NativeSelect, Stack, Text } from "@chakra-ui/react";
 import { AlertTriangle, Check, LayoutTemplate, Palette, Sparkles } from "lucide-react";
@@ -8,6 +8,10 @@ import { Button } from "@narriflow/ui/components/button";
 import { SegmentedControl } from "@narriflow/ui/components/segmented-control";
 import { Spinner } from "@narriflow/ui/components/spinner";
 import { userErrorMessage } from "@narriflow/validators";
+import { skipToken, useMutation, useQuery } from "@tanstack/react-query";
+import type { Intent } from "@narriflow/api-client";
+import { clipMutationOptions, clipQueries } from "@narriflow/api-client/clips";
+import { intentIn, requireClipApi, useClipApi } from "@/lib/clip-media";
 import {
   buildApplyProjectBrandProfileSelectedInput,
   buildApplySceneTemplateSelectedInput,
@@ -15,7 +19,9 @@ import {
   type CampaignCommandState,
   type CampaignEditorRetryIntent,
   serializeCampaignEditorActionPreflightRequest,
+  submitCampaignEditorAction,
 } from "./campaign-command-state";
+import { clipActionErrorCopy } from "./clip-action-error-copy";
 
 export type CampaignEditorActionKind = "brand_profile" | "style" | "scene";
 
@@ -34,7 +40,7 @@ type CatalogStyle = {
 type CatalogScene = {
   id: string;
   name: string;
-  role: "intro" | "outro";
+  role: string;
   fingerprint: string;
   durationSec: number;
   contentKind: "video" | "image" | "color" | "text";
@@ -340,8 +346,21 @@ export function CampaignEditorActionPreview({
     retryIntent: CampaignEditorRetryIntent,
   ): Promise<void>;
 }) {
-  const [catalog, setCatalog] = useState<CampaignEditorActionCatalog | null>(null);
-  const [loadState, setLoadState] = useState<"loading" | "ready" | "error">("loading");
+  const api = useClipApi();
+  // The catalog is read fresh when the drawer opens and left alone while the user chooses.
+  const catalogOptions = api ? clipQueries.editorActionCatalog(api.clips, api.scope, projectId) : null;
+  const catalogQuery = useQuery({
+    queryKey: catalogOptions?.queryKey ?? ["nf", "clips", "editor-action-catalog", "unavailable"],
+    queryFn: catalogOptions?.queryFn ?? skipToken,
+    staleTime: 0,
+    refetchOnWindowFocus: false,
+  });
+  const catalog: CampaignEditorActionCatalog | null = catalogQuery.data ?? null;
+  const loadState: "loading" | "ready" | "error" = catalogQuery.isError
+    ? "error"
+    : catalogQuery.isPending
+      ? "loading"
+      : "ready";
   const [selectedStyleId, setSelectedStyleId] = useState("");
   const [placement, setPlacement] = useState<"start" | "end">("start");
   const [selectedSceneId, setSelectedSceneId] = useState("");
@@ -356,46 +375,14 @@ export function CampaignEditorActionPreview({
   const copy = actionCopy(kind);
 
   useEffect(() => {
-    let stopped = false;
-    setLoadState("loading");
-    setError(null);
-    void fetch(
-      `/api/projects/${projectId}/campaign-operations/editor-action-catalog`,
-      { cache: "no-store" },
-    )
-      .then(async (response) => {
-        const payload = (await response.json().catch(() => null)) as
-          | (CampaignEditorActionCatalog & { error?: string; message?: string })
-          | null;
-        if (!response.ok || !payload) {
-          throw new Error(
-            payload?.message ||
-              (payload?.error && userErrorMessage(payload.error)) ||
-              "Campaign styles could not be loaded.",
-          );
-        }
-        if (stopped) return;
-        setCatalog(payload);
-        setSelectedStyleId(
-          payload.styles.find((style) => style.current)?.id ??
-            payload.styles[0]?.id ??
-            "",
-        );
-        setLoadState("ready");
-      })
-      .catch((loadError: unknown) => {
-        if (stopped) return;
-        setLoadState("error");
-        setError(
-          loadError instanceof Error
-            ? loadError.message
-            : "Campaign styles could not be loaded.",
-        );
-      });
-    return () => {
-      stopped = true;
-    };
-  }, [projectId]);
+    if (!catalog) return;
+    setSelectedStyleId(
+      catalog.styles.find((style) => style.current)?.id ?? catalog.styles[0]?.id ?? "",
+    );
+  }, [catalog]);
+  const loadErrorMessage = catalogQuery.error
+    ? clipActionErrorCopy(catalogQuery.error, "Campaign styles could not be loaded.")
+    : null;
 
   const scenes = useMemo(
     () => catalog?.scenes.filter((scene) => scene.role === (placement === "start" ? "intro" : "outro")) ?? [],
@@ -465,47 +452,31 @@ export function CampaignEditorActionPreview({
       setPreviewError(null);
       return;
     }
+    if (!api) return;
     const controller = new AbortController();
     setPreflight(null);
     setPreflightState("loading");
     setPreviewError(null);
-    void fetch(
-      `/api/projects/${projectId}/campaign-operations/preview-editor-action`,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: preflightRequestBody,
-        signal: controller.signal,
-      },
-    )
-      .then(async (response) => {
-        const payload = (await response.json().catch(() => null)) as
-          | (CampaignEditorActionPreflight & {
-              error?: string;
-              message?: string;
-            })
-          | null;
-        if (!response.ok || !payload?.items || !payload.counts) {
-          throw new Error(
-            payload?.message ||
-              (payload?.error && userErrorMessage(payload.error)) ||
-              "Clip eligibility could not be checked.",
-          );
+    void api.clips.projects[":id"]["campaign-operations"]["preview-editor-action"]
+      .$post(
+        { param: { id: projectId }, json: JSON.parse(preflightRequestBody) },
+        { init: { signal: controller.signal } },
+      )
+      .then((response) => response.json())
+      .then((payload) => {
+        if (!payload.items || !payload.counts) {
+          throw new Error("Clip eligibility could not be checked.");
         }
-        setPreflight(payload);
+        setPreflight(payload as CampaignEditorActionPreflight);
         setPreflightState("ready");
       })
       .catch((previewFailure: unknown) => {
         if (controller.signal.aborted) return;
         setPreflightState("error");
-        setPreviewError(
-          previewFailure instanceof Error
-            ? previewFailure.message
-            : "Clip eligibility could not be checked.",
-        );
-    });
+        setPreviewError(clipActionErrorCopy(previewFailure, "Clip eligibility could not be checked."));
+      });
     return () => controller.abort();
-  }, [preflightRequestBody, projectId]);
+  }, [preflightRequestBody, projectId, api]);
 
   const targetAvailable =
     kind === "brand_profile"
@@ -516,6 +487,22 @@ export function CampaignEditorActionPreview({
   const hasActionableItems =
     preflight != null &&
     preflight.counts.eligible + preflight.counts.unchanged > 0;
+
+  // One intent per apply: a retry of the same choice after a timeout or lost
+  // response replays the accepted operation; a changed choice is a new intent.
+  const applyIntent = useRef<Intent<unknown> | null>(null);
+  const applyAction = useMutation({
+    ...clipMutationOptions,
+    mutationFn: async (request: NonNullable<typeof previewRequest>) => {
+      const { runtime, clips, brand } = requireClipApi(api);
+      const intent = intentIn(applyIntent, runtime);
+      const accepted = await submitCampaignEditorAction({ clips, brand }, projectId, request, {
+        idempotencyKey: intent.keyFor(request),
+      });
+      intent.complete();
+      return accepted;
+    },
+  });
 
   async function apply() {
     if (
@@ -529,28 +516,20 @@ export function CampaignEditorActionPreview({
     ) {
       return;
     }
-    let endpoint: string;
-    let body: unknown;
     let retryIntent: CampaignEditorRetryIntent;
     if (previewRequest.action === "apply_brand_profile") {
-      endpoint = `/api/projects/${projectId}/campaign-operations/apply-brand-profile`;
-      body = previewRequest.input;
       retryIntent = {
         action: previewRequest.action,
         profileFingerprint: previewRequest.input.profileFingerprint,
         styleFingerprint: previewRequest.input.styleFingerprint,
       };
     } else if (previewRequest.action === "apply_style") {
-      endpoint = `/api/projects/${projectId}/campaign-operations/apply-style`;
-      body = previewRequest.input;
       retryIntent = {
         action: previewRequest.action,
         templateId: previewRequest.input.templateId,
         templateFingerprint: previewRequest.input.templateFingerprint,
       };
     } else if (previewRequest.action === "apply_scene_template") {
-      endpoint = `/api/projects/${projectId}/brand-profiles/${previewRequest.profileId}/scene-templates/${previewRequest.templateId}/apply`;
-      body = previewRequest.input;
       retryIntent = {
         action: previewRequest.action,
         profileId: previewRequest.profileId,
@@ -565,26 +544,9 @@ export function CampaignEditorActionPreview({
     setSubmitting(true);
     setError(null);
     try {
-      const response = await fetch(endpoint, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "idempotency-key": crypto.randomUUID(),
-        },
-        body: JSON.stringify(body),
-      });
-      const payload = (await response.json().catch(() => null)) as
-        | (Partial<CampaignEditorOperationResult> & {
-            error?: string;
-            message?: string;
-          })
-        | null;
-      if (!response.ok || !payload?.operationId || !payload.counts) {
-        throw new Error(
-          payload?.message ||
-            (payload?.error && userErrorMessage(payload.error)) ||
-            "The campaign action could not be applied.",
-        );
+      const payload = await applyAction.mutateAsync(previewRequest);
+      if (!payload.operationId || !payload.counts) {
+        throw new Error("The campaign action could not be applied.");
       }
       await onApplied(
         {
@@ -596,11 +558,7 @@ export function CampaignEditorActionPreview({
         retryIntent,
       );
     } catch (applyError) {
-      setError(
-        applyError instanceof Error
-          ? applyError.message
-          : "The campaign action could not be applied.",
-      );
+      setError(clipActionErrorCopy(applyError, "The campaign action could not be applied."));
     } finally {
       setSubmitting(false);
     }
@@ -756,9 +714,9 @@ export function CampaignEditorActionPreview({
         ]}
       />
 
-      {error ? (
+      {error ?? loadErrorMessage ? (
         <CampaignNotice tone="danger" role="alert">
-          {error}
+          {error ?? loadErrorMessage}
         </CampaignNotice>
       ) : null}
 

@@ -61,8 +61,8 @@ export function AuthForm({
   const finish = useCallback(async (progress: AuthProgress) => {
     if ("sessionId" in progress) {
       await signInHook.setActive?.({ session: progress.sessionId });
+      // /auth/continue mounts its own API session for the new identity.
       router.replace(completion);
-      router.refresh();
     } else {
       setStep(progress.step);
       setCode("");

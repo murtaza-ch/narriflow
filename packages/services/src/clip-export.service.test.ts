@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { autoCensorWordId, editorDocumentSchema } from "@narriflow/validators";
 import { brandOwnerForWorkspace } from "./brand-ownership";
 import {
@@ -9,6 +9,7 @@ import {
   clipExportVariantStorageKey,
   deriveClipExportAggregate,
   hashClipShareToken,
+  clipExportService,
   resolveClipExportOutput,
 } from "./clip-export.service";
 
@@ -259,5 +260,111 @@ describe("explicit export output", () => {
     expect(resolveClipExportOutput("free", "1080p")).toEqual({ requested: { resolution: "1080p" }, granted: { resolution: "720p", watermark: true }, reason: "plan_limit" });
     expect(resolveClipExportOutput("free", "720p")).toEqual({ requested: { resolution: "720p" }, granted: { resolution: "720p", watermark: true }, reason: "plan_limit" });
     expect(resolveClipExportOutput("business", "1080p")).toEqual({ requested: { resolution: "1080p" }, granted: { resolution: "1080p", watermark: false }, reason: null });
+  });
+});
+
+describe("Workspace export delivery", () => {
+  const scope = { actorUserId: "actor", workspaceId: "workspace" };
+  const R2_ENV = {
+    R2_ACCOUNT_ID: "account",
+    R2_ACCESS_KEY_ID: "access",
+    R2_SECRET_ACCESS_KEY: "secret",
+    R2_BUCKET: "bucket",
+  };
+  const previous = { ...process.env };
+  beforeEach(() => {
+    Object.assign(process.env, R2_ENV);
+  });
+  afterEach(() => {
+    for (const key of Object.keys(R2_ENV)) {
+      if (previous[key] === undefined) delete process.env[key];
+      else process.env[key] = previous[key];
+    }
+  });
+
+  const item = (variants: Array<{ id: string; status: "pending" | "rendering" | "completed" | "failed"; storageKey: string | null }>) => ({
+    id: "export-1",
+    projectId: "project-1",
+    clipId: "clip-1",
+    status: "ready" as const,
+    progress: 100,
+    resolution: "1080p",
+    watermark: false,
+    createdAt: "2026-10-29T00:00:00.000Z",
+    completedAt: null,
+    errorCode: null,
+    project: { title: "Launch" },
+    clip: { title: null, hookText: "Hook" },
+    variants: variants.map((variant) => ({ ...variant, aspectRatio: "ratio_9_16" as const, sizeBytes: 10 })),
+  });
+
+  test("a page never exposes storage keys and previews only finished files", async () => {
+    const page = await clipExportService.presentWorkspaceExports({
+      items: [
+        item([
+          { id: "done", status: "completed", storageKey: "projects/p/exports/e/done.mp4" },
+          { id: "failed", status: "failed", storageKey: null },
+          { id: "lost", status: "completed", storageKey: null },
+        ]),
+      ],
+      nextCursor: "next",
+    });
+    expect(page.nextCursor).toBe("next");
+    const [done, failed, lost] = page.items[0]!.variants;
+    expect(done).toMatchObject({ id: "done", hasAsset: true });
+    expect(new URL(done!.previewUrl!).searchParams.get("X-Amz-Expires")).toBe("900");
+    expect(failed).toMatchObject({ hasAsset: false, previewUrl: null });
+    expect(lost).toMatchObject({ hasAsset: false, previewUrl: null });
+    expect(JSON.stringify(page)).not.toContain("storageKey");
+  });
+
+  test("a grant is the first finished variant's file, name and expiry, without the subtitles", async () => {
+    const grants = spyOn(clipExportService, "issueDownloadGrants").mockResolvedValue({
+      exportId: "export-1",
+      projectId: "project-1",
+      clipId: "clip-1",
+      editorRevision: 3,
+      variants: [
+        { variantId: "v1", aspectRatio: "9:16", resolution: "720p", watermark: false, fileName: "a.mp4", sizeBytes: 5, downloadUrl: "https://files.example/a", expiresAt: "2026-10-29T00:15:00.000Z" },
+        { variantId: "v2", aspectRatio: "1:1", resolution: "720p", watermark: false, fileName: "b.mp4", sizeBytes: 6, downloadUrl: "https://files.example/b", expiresAt: "2026-10-29T00:15:00.000Z" },
+      ],
+      subtitles: [],
+    } as never);
+    try {
+      const grant = await clipExportService.issueWorkspaceDownloadGrant(scope, "export-1", "v1");
+      expect(grants).toHaveBeenCalledWith(scope, "export-1", { variantId: "v1", credentialKind: "session" });
+      expect(grant).toEqual({
+        exportId: "export-1",
+        variantId: "v1",
+        fileName: "a.mp4",
+        sizeBytes: 5,
+        downloadUrl: "https://files.example/a",
+        expiresAt: "2026-10-29T00:15:00.000Z",
+      });
+      await clipExportService.issueWorkspaceDownloadGrant(scope, "export-1");
+      expect(grants).toHaveBeenLastCalledWith(scope, "export-1", { credentialKind: "session" });
+    } finally {
+      grants.mockRestore();
+    }
+  });
+
+  test("a Workspace retry resolves the export's project and clip, and a foreign export is not found", async () => {
+    const owned = spyOn(clipExportService, "getWorkspaceOwned");
+    const retry = spyOn(clipExportService, "retryFailed").mockResolvedValue({ id: "export-1" } as never);
+    try {
+      owned.mockResolvedValueOnce({ id: "export-1", projectId: "project-1", clipId: "clip-1" } as never);
+      await clipExportService.retryWorkspaceExport(scope, "export-1");
+      expect(retry).toHaveBeenCalledWith(scope, "project-1", "clip-1", "export-1");
+
+      owned.mockResolvedValueOnce(null);
+      await expect(clipExportService.retryWorkspaceExport(scope, "other")).rejects.toMatchObject({
+        code: "export_not_found",
+        kind: "missing",
+      });
+      expect(retry).toHaveBeenCalledTimes(1);
+    } finally {
+      owned.mockRestore();
+      retry.mockRestore();
+    }
   });
 });

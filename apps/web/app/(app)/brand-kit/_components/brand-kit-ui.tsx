@@ -19,7 +19,7 @@ export interface BrandTab {
   count?: number;
 }
 
-/** Page tabs that navigate (each tab is its own server render); styled like the project tabs. */
+/** Page tabs that navigate (the active tab is a search parameter); styled like the project tabs. */
 export function BrandTabs({ label, tabs }: { label: string; tabs: BrandTab[] }) {
   return (
     <Flex

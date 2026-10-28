@@ -3,15 +3,23 @@ import { Window } from "happy-dom";
 import { act } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createRoot, type Root } from "react-dom/client";
+import { ApiError } from "@narriflow/api-client";
 import type { SocialAccountSnapshot } from "@narriflow/validators";
+import type { SocialAccountsApi } from "./social-accounts-panel";
 
 const browser = new Window({ url: "http://localhost:3000/settings/social-accounts" });
 const replace = mock(() => undefined);
-const refresh = mock(() => undefined);
 const notify = mock(() => undefined);
 const confirm = mock(async () => false);
-const request = mock(async (_url: string, _options?: RequestInit) => Response.json({}));
-mock.module("next/navigation", () => ({ useRouter: () => ({ replace, refresh }), usePathname: () => "/settings/social-accounts" }));
+const api = {
+	startConnect: mock(async (_platform: string, _redirect: string) => "https://provider.example/authorize"),
+	facebookPages: mock(async (_token: string, _signal?: AbortSignal) => [] as Array<{ id: string; name: string | null; avatarUrl: string | null }>),
+	selectFacebookPage: mock(async (_token: string, _pageId: string) => ({ displayName: "My Page" })),
+	disconnect: mock(async (_accountId: string) => ({ ok: true })),
+	onChanged: mock(() => undefined),
+	navigate: mock((_url: string) => undefined),
+} satisfies SocialAccountsApi;
+mock.module("next/navigation", () => ({ useRouter: () => ({ replace }), usePathname: () => "/settings/social-accounts" }));
 mock.module("@narriflow/ui/components/toaster", () => ({ toaster: { create: notify } }));
 mock.module("@narriflow/ui/components/confirm-dialog", () => ({ useConfirm: () => ({ confirm, dialog: null }) }));
 let Panel: typeof import("./social-accounts-panel").SocialAccountsPanel;
@@ -27,24 +35,36 @@ beforeAll(async () => {
   ({ system } = await import("@narriflow/ui/theme"));
 });
 async function render(overrides: Partial<Parameters<typeof Panel>[0]> = {}) {
-  globalThis.fetch = request as unknown as typeof fetch;
   const container = browser.document.createElement("div");
   browser.document.body.append(container);
   root = createRoot(container as unknown as HTMLElement);
-  await act(async () => { root.render(<ChakraProvider value={system}><Panel accounts={[]} connectedCount={null} errorCode={null} facebookSelectionToken={null} canManage access={{ role: "owner", status: "active" }} accountLimit={3} connectRequirement={null} connectUpgrade={null} canManageBilling {...overrides} /></ChakraProvider>); });
+  await act(async () => { root.render(<ChakraProvider value={system}><Panel accounts={[]} api={api} connectedCount={null} errorCode={null} facebookSelectionToken={null} canManage access={{ role: "owner", status: "active" }} accountLimit={3} connectRequirement={null} connectUpgrade={null} canManageBilling {...overrides} /></ChakraProvider>); });
   return container;
 }
 async function settle() { await act(async () => { await browser.happyDOM.waitUntilComplete(); }); }
-afterEach(async () => { await act(async () => root?.unmount()); browser.document.body.replaceChildren(); request.mockClear(); confirm.mockClear(); notify.mockClear(); replace.mockClear(); refresh.mockClear(); });
+afterEach(async () => { await act(async () => root?.unmount()); browser.document.body.replaceChildren(); for (const fn of Object.values(api)) fn.mockClear(); confirm.mockClear(); notify.mockClear(); replace.mockClear(); });
 afterAll(() => browser.close());
 
-test("empty state has six labeled OAuth links in platform order", async () => {
+test("empty state has six labeled connect buttons in platform order", async () => {
   const dom = await render();
   expect(dom.textContent).toContain("Connect your first social account");
-  const links = [...dom.querySelectorAll("a")];
-  expect(links.map((link) => link.getAttribute("aria-label"))).toEqual(["Connect TikTok account", "Connect YouTube account", "Connect Instagram account", "Connect Facebook account (publishing coming soon)", "Connect X account", "Connect LinkedIn account"]);
-  expect(links[3]?.getAttribute("href")).toBe("/api/social/oauth/start/facebook_reels?redirect=/settings/social-accounts");
-  expect(links[3]?.textContent).toContain("Publishing coming soon");
+  const tiles = [...dom.querySelectorAll("button")];
+  expect(tiles.map((tile) => tile.getAttribute("aria-label"))).toEqual(["Connect TikTok account", "Connect YouTube account", "Connect Instagram account", "Connect Facebook account (publishing coming soon)", "Connect X account", "Connect LinkedIn account"]);
+  expect(dom.querySelectorAll("a").length).toBe(0);
+  expect(tiles[3]?.textContent).toContain("Publishing coming soon");
+});
+test("connecting asks the API first and only then navigates to the provider", async () => {
+  const dom = await render({ returnTo: "/projects/abc?publishClips=def" });
+  await act(async () => { (dom.querySelectorAll("button")[1] as unknown as HTMLElement).click(); });
+  expect(api.startConnect).toHaveBeenCalledWith("youtube_shorts", "/projects/abc?publishClips=def");
+  expect(api.navigate).toHaveBeenCalledWith("https://provider.example/authorize");
+});
+test("a refused connection stays on the page with the reason", async () => {
+  api.startConnect.mockRejectedValueOnce(new ApiError({ code: "social_provider_unavailable", message: "Unavailable", status: 503 }));
+  const dom = await render();
+  await act(async () => { (dom.querySelectorAll("button")[0] as unknown as HTMLElement).click(); });
+  expect(api.navigate).not.toHaveBeenCalled();
+  expect(notify).toHaveBeenCalledWith(expect.objectContaining({ title: "Connection failed" }));
 });
 test("a connected Facebook Page shows publishing as coming soon", async () => {
   const dom = await render({ accounts: [{ ...account, id: "facebook", platform: "facebook_reels", displayName: "Brand Page" }] });
@@ -78,17 +98,17 @@ test("canceling disconnect makes no request", async () => {
   const dom = await render({ accounts: [account] });
   await act(async () => { dom.querySelector("button")?.click(); });
   expect(confirm).toHaveBeenCalledTimes(1);
-  expect(request).not.toHaveBeenCalled();
+  expect(api.disconnect).not.toHaveBeenCalled();
 });
 test("failed disconnect reports failure and keeps the profile", async () => {
   confirm.mockResolvedValueOnce(true);
-  request.mockResolvedValueOnce(Response.json({}, { status: 500 }));
+  api.disconnect.mockRejectedValueOnce(new ApiError({ code: "internal_error", message: "Failed", status: 500 }));
   const dom = await render({ accounts: [account] });
   await act(async () => { dom.querySelector("button")?.click(); });
-  expect(request).toHaveBeenCalledWith("/api/social/accounts/one", { method: "DELETE" });
+  expect(api.disconnect).toHaveBeenCalledWith("one");
   expect(notify).toHaveBeenCalledWith(expect.objectContaining({ title: "Could not disconnect" }));
   expect(dom.textContent).toContain("My channel");
-  expect(refresh).not.toHaveBeenCalled();
+  expect(api.onChanged).not.toHaveBeenCalled();
 });
 test("OAuth callback success is announced and cleared", async () => {
   await render({ connectedCount: 2 }); await settle();
@@ -101,13 +121,12 @@ test("OAuth callback failure is announced and cleared", async () => {
   expect(replace).toHaveBeenCalledTimes(1);
 });
 test("Facebook selection keeps the Page choice before the platform cards", async () => {
-  request.mockResolvedValueOnce(Response.json({ pages: [{ id: "page-one", name: "My Page", avatarUrl: null }] }));
+  api.facebookPages.mockResolvedValueOnce([{ id: "page-one", name: "My Page", avatarUrl: null }]);
   const dom = await render({ facebookSelectionToken: "selection" }); await settle();
   expect(dom.textContent).toContain("Choose one Facebook Page");
-  request.mockResolvedValueOnce(Response.json({ account: { displayName: "My Page" } }));
   await act(async () => { dom.querySelector("button")?.click(); });
-  expect(request).toHaveBeenLastCalledWith("/api/social/oauth/facebook-selection/selection", expect.objectContaining({ method: "POST", body: JSON.stringify({ pageId: "page-one" }) }));
-  expect(refresh).toHaveBeenCalledTimes(1);
+  expect(api.selectFacebookPage).toHaveBeenCalledWith("selection", "page-one");
+  expect(api.onChanged).toHaveBeenCalledTimes(1);
 });
 
 test("settings navigation keeps long workspace names and respects developer permissions", async () => {

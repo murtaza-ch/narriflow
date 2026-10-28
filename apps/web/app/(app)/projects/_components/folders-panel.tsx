@@ -1,56 +1,78 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { Flex, Grid, Input, Menu, Portal, Stack, Text, Tooltip } from "@chakra-ui/react";
 import { Folder, FolderInput, Info, MoreHorizontal, Pencil, Trash2 } from "lucide-react";
 import { IconButton } from "@narriflow/ui/components/button";
 import { useConfirm } from "@narriflow/ui/components/confirm-dialog";
 import { Spinner } from "@narriflow/ui/components/spinner";
-import { deleteFolderAction, moveProjectToFolderAction, renameFolderAction } from "../actions";
-import {
-  authenticatedActionResultMessage,
-  isAuthenticatedActionFailure,
-} from "@/lib/authenticated-request-browser";
+import { folderCommands, libraryMutationOptions } from "@narriflow/api-client/library";
+import { invalidateAfterProjectMoved, projectCommands, projectMutationOptions } from "@narriflow/api-client/projects";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { failureMessage, invalidateAfterFolderChanged, type LibraryApi, usePrefetchExplorer } from "../_lib/api";
 
 /** The drag payload a project card or row carries: its id. */
 export const PROJECT_DRAG_TYPE = "application/x-narriflow-project";
 
 export function FoldersPanel({
+  api,
   folders,
   canEdit,
 }: {
+  api: LibraryApi;
   folders: Array<{ id: string; name: string; count: number }>;
   canEdit: boolean;
 }) {
-  const router = useRouter();
+  const queryClient = useQueryClient();
+  const prefetchExplorer = usePrefetchExplorer();
   const [error, setError] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState("");
   const [dropTargetId, setDropTargetId] = useState<string | null>(null);
-  const [pending, startTransition] = useTransition();
   const { confirm, dialog } = useConfirm();
+
+  const rename = useMutation({
+    ...libraryMutationOptions,
+    mutationFn: (input: { folderId: string; name: string }) =>
+      folderCommands.rename(api.library, input.folderId, input.name),
+    onSuccess: () => {
+      setEditingId(null);
+      setEditingName("");
+      setError(null);
+      void invalidateAfterFolderChanged(queryClient, api.scope);
+    },
+    onError: (failure) => setError(failureMessage(failure, "The folder could not be renamed.")),
+  });
+  const remove = useMutation({
+    ...libraryMutationOptions,
+    mutationFn: (folderId: string) => folderCommands.remove(api.library, folderId),
+    onSuccess: () => {
+      setError(null);
+      void invalidateAfterFolderChanged(queryClient, api.scope);
+    },
+    onError: (failure) => setError(failureMessage(failure, "The folder could not be deleted.")),
+  });
+  const move = useMutation({
+    ...projectMutationOptions,
+    mutationFn: (input: { projectId: string; folderId: string }) =>
+      projectCommands.moveToFolder(api.projects, input.projectId, input.folderId),
+    onSuccess: () => setError(null),
+    onError: (failure) => setError(failureMessage(failure, "The project could not be moved.")),
+    // A refused move may still have changed what is shown; ordinary refusals need no refresh.
+    onSettled: (_data, _failure, input) => {
+      void invalidateAfterProjectMoved(queryClient, api.scope, input.projectId);
+    },
+  });
+  const pending = rename.isPending || remove.isPending || move.isPending;
 
   function saveRename(folderId: string) {
     if (!editingName.trim()) {
       setError("Enter a folder name");
       return;
     }
-
-    startTransition(async () => {
-      const result = await renameFolderAction(folderId, editingName);
-      if (!result.ok) {
-        setError(
-          authenticatedActionResultMessage(result, "The folder could not be renamed."),
-        );
-        return;
-      }
-      setEditingId(null);
-      setEditingName("");
-      setError(null);
-      router.refresh();
-    });
+    if (rename.isPending) return;
+    rename.mutate({ folderId, name: editingName });
   }
 
   async function deleteFolder(folderId: string, folderName: string) {
@@ -62,18 +84,7 @@ export function FoldersPanel({
       destructive: true,
     });
     if (!confirmed) return;
-
-    startTransition(async () => {
-      const result = await deleteFolderAction(folderId);
-      if (isAuthenticatedActionFailure(result)) {
-        setError(
-          authenticatedActionResultMessage(result, "The folder could not be deleted."),
-        );
-        return;
-      }
-      setError(null);
-      router.refresh();
-    });
+    remove.mutate(folderId);
   }
 
   function dropProject(event: React.DragEvent, folderId: string) {
@@ -81,18 +92,7 @@ export function FoldersPanel({
     setDropTargetId(null);
     const projectId = event.dataTransfer.getData(PROJECT_DRAG_TYPE);
     if (!projectId) return;
-
-    startTransition(async () => {
-      const result = await moveProjectToFolderAction(projectId, folderId);
-      if (isAuthenticatedActionFailure(result)) {
-        setError(
-          authenticatedActionResultMessage(result, "The project could not be moved."),
-        );
-        return;
-      }
-      setError(null);
-      router.refresh();
-    });
+    move.mutate({ projectId, folderId });
   }
 
   if (folders.length === 0) return null;
@@ -205,7 +205,11 @@ export function FoldersPanel({
                 px="3"
                 color="fg"
               >
-                <Link href={`/projects?folder=${folder.id}`}>
+                <Link
+                  href={`/projects?folder=${folder.id}`}
+                  onPointerEnter={() => prefetchExplorer({ folder: folder.id })}
+                  onFocus={() => prefetchExplorer({ folder: folder.id })}
+                >
                   <Flex
                     boxSize="9"
                     flexShrink={0}

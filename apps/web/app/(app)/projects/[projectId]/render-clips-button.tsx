@@ -1,7 +1,6 @@
 "use client";
 
-import { useActionState, useCallback, useEffect, useRef, useState, useTransition } from "react";
-import { useRouter } from "next/navigation";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { Button } from "@narriflow/ui/components/button";
 import { SegmentedControl } from "@narriflow/ui/components/segmented-control";
@@ -9,7 +8,6 @@ import { Spinner } from "@narriflow/ui/components/spinner";
 import {
   clipAspectRatioOptions,
   planFeatureRequirement,
-  userErrorMessage,
   type ClipAspectRatio,
   type ClipRenderResolution,
 } from "@narriflow/validators";
@@ -25,11 +23,21 @@ import {
   VisuallyHidden,
 } from "@chakra-ui/react";
 import { AlertTriangle, Check, ChevronDown, Film, Gem, Info } from "lucide-react";
-import { retryIngestFormAction } from "../actions";
-import { authenticatedActionResultMessage } from "@/lib/authenticated-request-browser";
+import { useMutation } from "@tanstack/react-query";
+import type { Intent } from "@narriflow/api-client";
+import {
+  clipCommands,
+  clipMutationOptions,
+  invalidateAfterClipChange,
+  invalidateProjectClips,
+} from "@narriflow/api-client/clips";
+import { createIngestActions, invalidateAfterIntake } from "@narriflow/api-client/ingest";
+import { invalidateProject } from "@narriflow/api-client/projects";
+import { intentIn, requireClipApi, useClipApi } from "@/lib/clip-media";
 import { featureUpgradePrompt } from "@/lib/feature-upgrade-prompt";
 import { PlanLimitNotice } from "../../_components/plan-limit-notice";
 import { useUpgrade } from "../../_components/upgrade";
+import { clipActionErrorCopy, failureNeedsStateRefetch } from "./clip-action-error-copy";
 
 /** Preselects exactly the given aspect ratio (falling back to 9:16 when
  *  none is provided) — never a hardcoded 9:16 regardless of what the
@@ -198,9 +206,8 @@ export function RenderClipsButton({
   placement?: "bottom-start" | "top-start";
   onQueued?(): void;
 }) {
-  const router = useRouter();
+  const api = useClipApi();
   const { currentTier } = useUpgrade();
-  const [isPending, startTransition] = useTransition();
   const [isOpen, setIsOpen] = useState(false);
   const [selection, setSelection] = useState<Record<ClipAspectRatio, boolean>>(
     () => buildDefaultSelection(defaultAspectRatio),
@@ -221,7 +228,7 @@ export function RenderClipsButton({
   const scope = clipCount
     ? `${clipCount} selected clip${clipCount === 1 ? "" : "s"}`
     : "All clips";
-  const busy = isPending || submitting;
+  const busy = submitting;
   const onQueuedRef = useRef(onQueued);
   onQueuedRef.current = onQueued;
   // Set when a render is queued, cleared once the caller has been told, so
@@ -244,6 +251,30 @@ export function RenderClipsButton({
     return () => clearTimeout(timer);
   }, [queued, reportQueued]);
 
+  // One intent per render request: a retry after a timeout or lost response
+  // replays the queued render instead of queuing another.
+  const renderIntent = useRef<Intent<unknown> | null>(null);
+  const renderClips = useMutation({
+    ...clipMutationOptions,
+    mutationFn: async () => {
+      const { runtime, clips, scope, queryClient } = requireClipApi(api);
+      const input = {
+        aspectRatios: selectedAspectRatios,
+        resolution,
+        ...(clipIds && clipIds.length > 0 ? { clipIds } : {}),
+      };
+      const intent = intentIn(renderIntent, runtime);
+      await clipCommands.render(clips, projectId, input, intent.keyFor(input));
+      // Accepted: the next press is a new intent. The Project's clips, processing and credits move.
+      intent.complete();
+      await invalidateAfterClipChange(queryClient, scope, projectId);
+    },
+    onError: (failure) => {
+      // An uncertain or conflicting answer: the domain state says whether the render queued.
+      if (api && failureNeedsStateRefetch(failure)) void invalidateProjectClips(api.queryClient, api.scope, projectId);
+    },
+  });
+
   async function handleRender() {
     if (selectedAspectRatios.length === 0 || submitting) {
       return;
@@ -253,37 +284,12 @@ export function RenderClipsButton({
     setError(null);
 
     try {
-      const response = await fetch(`/api/projects/${projectId}/clips/render`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "idempotency-key": crypto.randomUUID(),
-        },
-        body: JSON.stringify({
-          aspectRatios: selectedAspectRatios,
-          resolution,
-          ...(clipIds && clipIds.length > 0 ? { clipIds } : {}),
-        }),
-      });
-
-      if (!response.ok) {
-        const body = await response.json().catch(() => null);
-        console.warn(JSON.stringify({ level: "error", message: "render_clips_failed", status: response.status }));
-        setError(
-          userErrorMessage(body?.error) ??
-            "Could not start rendering. Please try again.",
-        );
-        return;
-      }
-
+      await renderClips.mutateAsync();
       queuedUnreportedRef.current = true;
       setQueued(true);
-      startTransition(() => {
-        router.refresh();
-      });
     } catch (err) {
       console.warn(JSON.stringify({ level: "error", message: "render_clips_failed", errorName: err instanceof Error ? err.name : "UnknownError" }));
-      setError("Could not start rendering. Please try again.");
+      setError(clipActionErrorCopy(err, "Could not start rendering. Please try again."));
     } finally {
       setSubmitting(false);
     }
@@ -303,9 +309,9 @@ export function RenderClipsButton({
       positioning={{ placement, gutter: 12 }}
     >
       <Popover.Trigger asChild>
-        <Button size={size} disabled={disabled || isPending}>
-          {isPending ? <Spinner size="xs" borderTopColor="accent.contrast" /> : null}
-          <Text ms={isPending ? "1" : "0"}>{buttonLabel}</Text>
+        <Button size={size} disabled={disabled || submitting}>
+          {submitting ? <Spinner size="xs" borderTopColor="accent.contrast" /> : null}
+          <Text ms={submitting ? "1" : "0"}>{buttonLabel}</Text>
           <ChevronDown size={16} aria-hidden />
         </Button>
       </Popover.Trigger>
@@ -455,16 +461,10 @@ export function RenderClipsButton({
   );
 }
 
-type RetryIngestState = { ok: boolean; error: string | null };
-
-const initialRetryIngestState: RetryIngestState = { ok: true, error: null };
-
 /**
- * Re-queues ingest for a project stuck in "failed". Wraps
- * retryIngestFormAction (a Server Action) with useActionState for a real
- * pending state and an inline, user-visible error — a bare
- * `<form action={fn}>` would show nothing for expected failures like hitting
- * the retry limit, since Next redacts thrown action errors in production.
+ * Re-queues ingest for a project stuck in "failed". An expected refusal (retry
+ * limit reached, already retried elsewhere, Drive re-pick) shows its own copy
+ * inline, and the Project's ingest status refreshes once the API accepted it.
  */
 export function RetryIngestButton({
   projectId,
@@ -476,24 +476,21 @@ export function RetryIngestButton({
   /** Shown instead of the button once the retry limit has been reached. */
   limitReachedMessage?: string | null;
 }) {
-  const router = useRouter();
-  const [state, formAction, isPending] = useActionState<
-    RetryIngestState,
-    FormData
-  >(async (_previous, formData) => {
-    const result = await retryIngestFormAction(formData);
-    if (result.ok) {
-      router.refresh();
-      return { ok: true, error: null };
-    }
-    return {
-      ok: false,
-      error: authenticatedActionResultMessage(
-        result,
-        "Could not retry ingest. Please try again.",
-      ),
-    };
-  }, initialRetryIngestState);
+  const api = useClipApi();
+  const [error, setError] = useState<string | null>(null);
+  const retry = useMutation({
+    ...clipMutationOptions,
+    mutationFn: async () => {
+      const { runtime, scope, queryClient } = requireClipApi(api);
+      await createIngestActions(runtime.transport, scope).retryIngest(projectId);
+      await invalidateAfterIntake(queryClient, scope);
+    },
+    onError: (failure) => {
+      // A conflict or lost response may mean the job moved on elsewhere: show the real state.
+      if (api && failureNeedsStateRefetch(failure)) void invalidateProject(api.queryClient, api.scope, projectId);
+      setError(clipActionErrorCopy(failure, "Could not retry ingest. Please try again."));
+    },
+  });
 
   if (disabled && limitReachedMessage) {
     // A dead end with no way forward is the thing this whole retry flow was
@@ -510,27 +507,26 @@ export function RetryIngestButton({
   }
 
   return (
-    <form action={formAction}>
-      <input type="hidden" name="projectId" value={projectId} />
-      <Stack gap="1.5" align="flex-start">
-        <Button
-          type="submit"
-          size="sm"
-          variant="subtle"
-          disabled={disabled || isPending}
-        >
-          {isPending ? (
-            <Spinner size="xs" borderTopColor="accent.fg" />
-          ) : null}
-          <Text ms={isPending ? "1" : "0"}>Retry ingest</Text>
-        </Button>
-        {state.error ? (
-          <Flex align="center" gap="1.5" color="danger.fg">
-            <AlertTriangle size={12} aria-hidden />
-            <Text fontSize="xs">{state.error}</Text>
-          </Flex>
-        ) : null}
-      </Stack>
-    </form>
+    <Stack gap="1.5" align="flex-start">
+      <Button
+        type="button"
+        size="sm"
+        variant="subtle"
+        disabled={disabled || retry.isPending}
+        onClick={() => {
+          setError(null);
+          retry.mutate();
+        }}
+      >
+        {retry.isPending ? <Spinner size="xs" borderTopColor="accent.fg" /> : null}
+        <Text ms={retry.isPending ? "1" : "0"}>Retry ingest</Text>
+      </Button>
+      {error ? (
+        <Flex align="center" gap="1.5" color="danger.fg">
+          <AlertTriangle size={12} aria-hidden />
+          <Text fontSize="xs">{error}</Text>
+        </Flex>
+      ) : null}
+    </Stack>
   );
 }

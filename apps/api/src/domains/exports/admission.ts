@@ -2,7 +2,10 @@ import type { AdmissionTable } from "../platform/admission-table";
 
 /** Admission of the exports routes, keyed by `METHOD /path` under `/api`. */
 export const exportsAdmission = {
+  "GET /workspace/exports": { kind: "workspace", capability: "content.view" },
+  "GET /workspace/export-projects": { kind: "workspace", capability: "content.view" },
   "GET /workspace/exports/:exportId/download": { kind: "workspace", capability: "content.download" },
+  "POST /workspace/exports/:exportId/retry": { kind: "workspace", capability: "processing.consume", rate: { scope: "actor", prefix: "clip-export-retry", limit: 12 } },
   "POST /projects/:id/export-bundles": { kind: "project", capability: "content.download", projectParam: "id", rate: { scope: "actor", prefix: "export-bundle", limit: 10, windowSeconds: 3600 } },
   "POST /projects/:id/export-bundles/preview": { kind: "project", capability: "content.download", projectParam: "id", rate: { scope: "actor", prefix: "export-bundle-preview", limit: 60 } },
   "GET /projects/:id/export-bundles": { kind: "project", capability: "content.view", projectParam: "id" },

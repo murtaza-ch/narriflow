@@ -247,6 +247,26 @@ export class AutopilotService {
     /** The calling API key or connection, when there is one (the browser has none). */
     credential?: { scopes: readonly string[] },
   ): Promise<AutopilotRuleSnapshot> {
+    if (mutation) return (await this.acceptRule(scope, input, mutation, credential)).rule;
+    return (await this.createRuleOnce(scope, input, undefined, credential)).rule;
+  }
+
+  /** Creates a rule once per caller key; `replayed` is true when the key had already been accepted. */
+  async acceptRule(
+    scope: ActorScope,
+    input: AutopilotRuleInput,
+    mutation: IntegrationMutation,
+    credential?: { scopes: readonly string[] },
+  ): Promise<{ rule: AutopilotRuleSnapshot; replayed: boolean }> {
+    return this.createRuleOnce(scope, input, mutation, credential);
+  }
+
+  private async createRuleOnce(
+    scope: ActorScope,
+    input: AutopilotRuleInput,
+    mutation: IntegrationMutation | undefined,
+    credential?: { scopes: readonly string[] },
+  ): Promise<{ rule: AutopilotRuleSnapshot; replayed: boolean }> {
     const actor = await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.edit");
     // Refused before the feed is fetched; the slot count is checked again with the write.
     requirePlanFeature(actor.pricingTier, "automation.autopilot");
@@ -331,10 +351,10 @@ export class AutopilotService {
           };
         },
       });
-      return accepted.value;
+      return { rule: accepted.value, replayed: accepted.replayed };
     }
     await prepare();
-    return prisma.$transaction(create);
+    return { rule: await prisma.$transaction(create), replayed: false };
   }
 
   async updateRule(
@@ -482,6 +502,23 @@ export class AutopilotService {
     ruleId: string,
     mutation?: IntegrationMutation,
   ): Promise<AutopilotRuleSnapshot> {
+    return (await this.triggerRuleOnce(scope, ruleId, mutation)).rule;
+  }
+
+  /** Runs a rule now once per caller key; `replayed` is true when the key had already been accepted. */
+  async acceptRunNow(
+    scope: ActorScope,
+    ruleId: string,
+    mutation: IntegrationMutation,
+  ): Promise<{ rule: AutopilotRuleSnapshot; replayed: boolean }> {
+    return this.triggerRuleOnce(scope, ruleId, mutation);
+  }
+
+  private async triggerRuleOnce(
+    scope: ActorScope,
+    ruleId: string,
+    mutation: IntegrationMutation | undefined,
+  ): Promise<{ rule: AutopilotRuleSnapshot; replayed: boolean }> {
     const actor = await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "processing.consume");
     // Running a rule now is new automation, and turns a paused rule back on.
     requirePlanFeature(actor.pricingTier, "automation.autopilot");
@@ -552,9 +589,9 @@ export class AutopilotService {
           };
         },
       });
-      return accepted.value;
+      return { rule: accepted.value, replayed: accepted.replayed };
     }
-    return prisma.$transaction(trigger);
+    return { rule: await prisma.$transaction(trigger), replayed: false };
   }
 
   /** A Workspace Owner or Admin becomes the rule's acting member and resumes

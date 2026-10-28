@@ -4,7 +4,7 @@
 
 **Blocked by:** [13 - Expose Studio bootstrap and persistence](13-expose-studio-bootstrap-and-persistence.md), [05 - Expose session and Workspace controls](05-expose-session-and-workspace-controls.md), [11 - Move clip and campaign controls](11-move-clip-and-campaign-controls.md), [19 - Move Brand Kit and media controls](19-move-brand-kit-and-media-controls.md), [07 - Move billing API and convert billing UI](07-move-billing-api-and-convert-billing-ui.md)
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Suggested implementer:** Claude. The other pairing side reviews and returns findings to this owner.
 
@@ -420,11 +420,11 @@ Also account for the inventory's cross-domain traps: query-only actions, action 
 
 ## Acceptance criteria
 
-- [ ] Page and six closures use Studio client; retained assets/fonts and source/preview offsets match previous bootstrap; development QA fixture remains web-side.
-- [ ] Inject transport into existing Editing Session; query refetch does not overwrite dirty drafts, redo history or create autosave effects.
-- [ ] Unload uses current in-memory token snapshot with keepalive bounds and leaves Device Draft intact on best-effort failure; localStorage heartbeat stays local.
-- [ ] Polling/cache promise helpers, audio direct uploads, waveform fetches, layout/censor operations and reset reload use correct typed transport.
-- [ ] Conflict/reset/two-tab ownership/offline recovery and export barriers retain existing session tests and real runtime behavior.
+- [x] Page and six closures use Studio client; retained assets/fonts and source/preview offsets match previous bootstrap; development QA fixture remains web-side.
+- [x] Inject transport into existing Editing Session; query refetch does not overwrite dirty drafts, redo history or create autosave effects.
+- [x] Unload uses current in-memory token snapshot with keepalive bounds and leaves Device Draft intact on best-effort failure; localStorage heartbeat stays local.
+- [x] Polling/cache promise helpers, audio direct uploads, waveform fetches, layout/censor operations and reset reload use correct typed transport.
+- [x] Conflict/reset/two-tab ownership/offline recovery and export barriers retain existing session tests and real runtime behavior.
 - [ ] No unowned files changed; paired review findings and verification evidence recorded under Comments.
 
 ## Verification
@@ -440,4 +440,25 @@ Verify the changed flow in the running Next app against the separate API origin.
 
 ## Comments
 
-Append claim, requested seam changes, paired review and evidence here.
+Claimed and implemented by Claude (Sonnet 5.5), 2026-10-29. Paired review not run by the implementer (last acceptance box left open for the orchestrator). Signed-in browser run NOT performed (ticket 32).
+
+### What changed
+- `page.tsx` is a client data view: `use(params/searchParams)`, one `useQuery(studioQueries.bootstrap)` (infinite staleTime, no focus/reconnect/mount refetch, gcTime 0), `StudioLoading` as the pending state, `notFound()` on 404/`project_not_found`/`clip_not_found`, `router.replace` to the old recovery destinations for `active_workspace_mismatch` and `workspace_restricted`, other errors thrown to `error.tsx`. The first bootstrap is frozen in a ref; only a completed reset replaces it. Timeline segments are built from `bootstrap.utterances` (`buildSegmentsFromUtterances`), upgrade prompts from `plan.*` (`studioUpgradePrompts`, font requirement + `canManageBilling`). QA fixture stays web-side. The six server closures and `censor-words-actions` imports are gone; polls are `fetchQuery` calls (`staleTime: 0`) behind the shell's existing bounded loops, censor terms/events use the studio client, Workspace words use 05's `replaceCensorWordsMutation`/`resetCensorWordsMutation` (`useMutation`).
+- New (within the Studio directory, not in the manifest because 13 shipped no queryOptions): `_components/studio-api.ts` (+test; query factories, pollers, censor calls, `apiFailureBody`, `StudioReads`), `use-studio-api.ts` (hook on `useApiRuntime`/`useWorkspaceScope`), `studio-cloud-http.ts` (+test).
+- Editing Session unchanged. `createBrowserStudioSessionDependencies(identity, cloud, preview?)` now takes a `StudioCloudHttp` (load/save/reset resolve `{status, body}` for any API response and reject only when none arrived, so `classifyStudioCloudResponse` and every outcome mapping are untouched; a 409 `workspace_selection_changed` is now `rejected`, never a revision conflict). `useStudioEditingSession(seed, {cloud, preview})`. Nothing observes the working document or autosaves outside the session.
+- Close-time write: the shell keeps a `TokenSnapshot` (Clerk `getToken` every 20 s, on focus and on visibility hidden; read from the JWT `exp`, unusable within 1.5 s of expiry). `keepalive` is synchronous: PUT with `keepalive:true`, `credentials:'omit'`, Bearer and `X-Workspace-Id`; returns false (sends nothing) without a usable token, after the scope moved, or over 48 KiB (browser budget 64 KiB). Nothing in it removes the Device Draft (new session test proves the final draft is written and not removed when the write can't be sent).
+- Reset: the session still closes itself with `reset-complete`; instead of `window.location.reload()` the shell calls `onResetComplete`, the page re-fetches the bootstrap and remounts a fresh shell (boundaries/preview proxy re-seeded). 
+- Waveform: `waveform-peaks.ts`/`timeline.tsx` import the guard from `@narriflow/validators/clip-preview-peaks`; the API-relative `waveformPeaksUrl` is fetched through the bound transport (resolves against the API origin, Bearer, refuses other origins; 204 -> null). Peaks and trim-transcript module caches are keyed by `user:workspace`.
+- Export POST, create-from-selection, apply-caption-preset/apply-studio-edits (+`invalidateAfterClipChange`), B-roll search, caption templates (`brandQueries.templates`), audio list/favorite/playback/upload/delete, generated-image jobs and brand membership all use typed clients; presigned audio PUT stays plain `fetch` with `credentials:'omit'`. Export keeps one `Idempotency-Key` per click.
+
+### Deviations / requests
+- `resolveAudioPlaybackUrl(id, api)` and `uploadAudioFile(file, kind, api)` gained a required `api` (`useAudioApi()`); the ticket asked to keep interfaces, but a plain function cannot reach the runtime otherwise. Ticket 20's files no longer call them (they use `profile-audio-library`), so nothing else breaks; `useAudioAssetList` keeps its signature.
+- Authentication loss: a 401 after the one forced refresh now goes through the transport's `onAuthenticationFailed` (sign-in redirect) instead of the session's old "authentication-lost" in-page state. The Device Draft is kept.
+- Still imports `@/lib/authenticated-request-browser` (`upgradePromptFromFailure`, `BrowserRequestFailure`) in `save-issue.ts`, `studio-shell.tsx`, `transitions-panel.tsx`, generated-image files; ticket 31 must keep it or move it. `@/app/(app)/_components/upgrade` imports unchanged.
+- Hono-inferred JSON types satisfy the shell props without casts; `GeneratedImageCapability`/usage types are derived from the API client types (no `@narriflow/services` import left in the Studio directory).
+
+### Evidence
+- `bun test "apps/web/app/(app)/projects/[projectId]/clips/[clipId]/studio"` (from `apps/web`): 379 pass, 0 fail (new: studio-api 9, studio-cloud-http 9 incl. keepalive bounds/scope/no-token and refusal passthrough, browser 409 guard, generated-images rewritten onto the real client, session close keeps Device Draft).
+- `.scratch/api-extraction/db-gate.sh bun run test:clip-editor-persistence:db`: 7 pass, 0 fail.
+- `bunx biome check --write` on the Studio directory: clean (one pre-existing warning in `caption-presets.prototype.html`). `bun run --cwd apps/web typecheck`: no errors in any Studio file (remaining errors belong to other tickets: app/api/stream, lib/authenticated-request-*, settings, integrations).
+- Not done: signed-in browser pass against `next dev` + API (open Studio, edit, autosave, conflict/two-tab, reset, export, close-tab keepalive with real Clerk token and cross-origin preflight, audio upload, waveform). Ticket 32 must run these.

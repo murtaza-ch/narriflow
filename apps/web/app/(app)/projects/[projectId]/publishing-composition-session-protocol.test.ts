@@ -10,7 +10,9 @@ import {
   createPublishingCompositionSession,
   type PublishingCompositionStorage,
 } from "./publishing-composition-session";
-import { PublishingRequestError } from "./publishing-draft";
+import { ApiError } from "@narriflow/api-client";
+
+const refusal = (message: string, status: number) => new ApiError({ code: "test_refusal", message, status });
 
 const id = (n: number) =>
   `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
@@ -174,7 +176,7 @@ test.each([408, 409, 429, 500, 503])(
     const { session } = harness(storage);
     prepare(session);
     await session.submit(submissionFacts, async () => {
-      throw new PublishingRequestError("Unconfirmed", status);
+      throw refusal("Unconfirmed", status);
     });
     const original = pending(storage)!;
     await session.submit(submissionFacts, async (payload) => {
@@ -194,7 +196,7 @@ test.each([400, 401, 403, 404, 422])(
     let rejectedKey = "";
     await session.submit(submissionFacts, async (payload) => {
       rejectedKey = payload.idempotencyKey;
-      throw new PublishingRequestError("Rejected", status);
+      throw refusal("Rejected", status);
     });
     expect(pending(storage)).toBeNull();
     expect(session.getSnapshot().pending).toBeNull();

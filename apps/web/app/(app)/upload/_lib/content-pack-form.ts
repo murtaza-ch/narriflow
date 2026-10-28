@@ -167,11 +167,6 @@ export function readLanguageCodeFromForm(
   return sourceLanguageCodeFromFormValue(formData.get("languageCode"));
 }
 
-/** RSS intake always states its Brand Profile choice; an empty field means none. */
-export function readBrandProfileIdFromForm(formData: FormData): string | null {
-  return String(formData.get("brandProfileId") ?? "").trim() || null;
-}
-
 export type UploadSettingsFormInput = {
   languageCode: string;
   mode: GenerationMode;
@@ -182,7 +177,6 @@ export type UploadSettingsFormInput = {
   processingEndSec: number | null;
   captionPreset: CaptionPresetId;
   brandTemplateId: string | null;
-  brandProfileId?: string | null;
   defaultAspectRatio?: ContentPack["defaultAspectRatio"];
   clipCountTarget: number;
   platformTargets: ClipPlatformTarget[];
@@ -197,8 +191,6 @@ export function buildUploadSettingsFormData(input: UploadSettingsFormInput) {
   formData.set("captionPreset", input.captionPreset);
   formData.set("autoHook", String(input.autoHook));
   formData.set("defaultAspectRatio", input.defaultAspectRatio ?? "9:16");
-  if (input.brandProfileId)
-    formData.set("brandProfileId", input.brandProfileId);
   formData.set("specificMoments", input.specificMoments);
   if (input.processingStartSec !== null) {
     formData.set("processingStartSec", String(input.processingStartSec));

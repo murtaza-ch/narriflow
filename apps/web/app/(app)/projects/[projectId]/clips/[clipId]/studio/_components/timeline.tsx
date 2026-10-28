@@ -34,7 +34,7 @@ import {
   SILENCE_DEFAULT_PAD_SEC,
 } from "@narriflow/validators";
 import type { EditedTimeMap, SourceRange, TranscriptUtterance } from "@narriflow/validators";
-import type { ClipPreviewPeaks } from "@narriflow/services";
+import type { ClipPreviewPeaks } from "@narriflow/validators/clip-preview-peaks";
 import { useStudio } from "./studio-shell";
 import { resolveTrimPosition, trimLimits, trimSourceCeilingSec } from "./trim-control";
 import { usePlaybackTime } from "./playback-clock";
@@ -340,7 +340,7 @@ const WaveformCanvas = memo(function WaveformCanvas({
   duration: number;
   width: number;
   height: number;
-  /** Same-origin authenticated endpoint for validated real amplitude data. */
+  /** API-relative authenticated endpoint for validated real amplitude data. */
   waveformPeaksUrl: string | null;
   compositeToBaseEdited: (timeSec: number) => number;
   isInsertedSceneTime: (timeSec: number) => boolean;
@@ -372,19 +372,20 @@ const WaveformCanvas = memo(function WaveformCanvas({
   }
 
   const [peaksData, setPeaksData] = useState<ClipPreviewPeaks | null>(null);
+  const { reads } = useStudio("reads");
   useEffect(() => {
     if (!waveformPeaksUrl) {
       setPeaksData(null);
       return;
     }
     let cancelled = false;
-    loadClipPreviewPeaks(waveformPeaksUrl).then((data) => {
+    loadClipPreviewPeaks(waveformPeaksUrl, reads).then((data) => {
       if (!cancelled) setPeaksData(data);
     });
     return () => {
       cancelled = true;
     };
-  }, [waveformPeaksUrl]);
+  }, [waveformPeaksUrl, reads]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -1393,7 +1394,7 @@ const TrimHandle = memo(function TrimHandle({
   pxPerSec: number;
   trackHeight: number;
 }) {
-  const { clipInfo, clipStartSec, clipEndSec, commitTrim, trimHandlesDisabled } = useStudio("clipInfo", "clipStartSec", "clipEndSec", "commitTrim", "trimHandlesDisabled");
+  const { clipInfo, clipStartSec, clipEndSec, commitTrim, trimHandlesDisabled, reads } = useStudio("clipInfo", "clipStartSec", "clipEndSec", "commitTrim", "trimHandlesDisabled", "reads");
   // Stable between renders: the pointer handler's deps must not churn with clipInfo.
   const trimClip = useMemo(
     () => ({ wholeSource: clipInfo.wholeSource, sourceEdgeSec: clipInfo.sourceEdgeSec }),
@@ -1421,8 +1422,8 @@ const TrimHandle = memo(function TrimHandle({
         // non-capturable pointer; bubbling still delivers move/up
       }
 
-      prefetchTrimTranscript(clipInfo.projectId);
-      loadTrimTranscript(clipInfo.projectId)
+      prefetchTrimTranscript(clipInfo.projectId, reads);
+      loadTrimTranscript(clipInfo.projectId, reads)
         .then((t) => {
           transcriptRef.current = t;
         })
@@ -1440,7 +1441,7 @@ const TrimHandle = memo(function TrimHandle({
       gripRef.current?.classList.add("trimming");
       if (labelRef.current) labelRef.current.style.opacity = "1";
     },
-    [trimHandlesDisabled, clipInfo.projectId, clipStartSec, clipEndSec, side],
+    [trimHandlesDisabled, clipInfo.projectId, clipStartSec, clipEndSec, side, reads],
   );
 
   const paintDrag = useCallback((dxPx: number, drag: TrimDragState) => {
@@ -1528,7 +1529,7 @@ const TrimHandle = memo(function TrimHandle({
     if (trimHandlesDisabled || keyboardTrimPending.current || dragRef.current) return;
     keyboardTrimPending.current = true;
     try {
-      const transcript = await loadTrimTranscript(clipInfo.projectId);
+      const transcript = await loadTrimTranscript(clipInfo.projectId, reads);
       transcriptRef.current = transcript;
       const current = side === "start" ? clipStartSec : clipEndSec;
       const next = resolveTrimPosition({ side, startSec: clipStartSec, endSec: clipEndSec,

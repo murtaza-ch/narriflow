@@ -4,7 +4,7 @@
 
 **Blocked by:** [19 - Move Brand Kit and media controls](19-move-brand-kit-and-media-controls.md), [07 - Move billing API and convert billing UI](07-move-billing-api-and-convert-billing-ui.md)
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Suggested implementer:** Claude. The other pairing side reviews and returns findings to this owner.
 
@@ -266,10 +266,10 @@ Also account for the inventory's cross-domain traps: query-only actions, action 
 
 ## Acceptance criteria
 
-- [ ] All five Brand Kit pages and five actions plus every owned fetch/refresh site convert to queries/mutations; redirects return explicit new ids.
-- [ ] Profile conflict fetches latest revision; membership/default/style/font changes invalidate exact dependents, preserving governance/usage prompts.
-- [ ] Client-safe DTO types replace backend types and props used by Project/Studio/Upload remain frozen.
-- [ ] No public API list default is abused to retrieve unbounded choices; aggregate/summaries retain existing page behavior.
+- [x] All five Brand Kit pages and five actions plus every owned fetch/refresh site convert to queries/mutations; redirects return explicit new ids.
+- [x] Profile conflict fetches latest revision; membership/default/style/font changes invalidate exact dependents, preserving governance/usage prompts.
+- [x] Client-safe DTO types replace backend types and props used by Project/Studio/Upload remain frozen.
+- [x] No public API list default is abused to retrieve unbounded choices; aggregate/summaries retain existing page behavior.
 - [ ] No unowned files changed; paired review findings and verification evidence recorded under Comments.
 
 ## Verification
@@ -284,4 +284,22 @@ Verify the changed flow in the running Next app against the separate API origin.
 
 ## Comments
 
-Append claim, requested seam changes, paired review and evidence here.
+
+Claimed and implemented by Claude (Sonnet 5.5), 2026-10-29. Paired review not run by the implementer (last acceptance box left open for the orchestrator). Signed-in browser verification NOT performed.
+
+### What landed
+- Five pages are data-free shells (`Suspense` + the route's existing `loading.tsx`) over client screens: `brand-kit-screen.tsx`, `[id]/profile-screen.tsx`, `new/new-profile-screen.tsx`, `styles/new/new-style-screen.tsx`, `styles/[id]/style-screen.tsx`. Markup is the old page markup; only the data source changed. Reads: `brandQueries.kit()` (all profiles, default, fonts, plan facts; no 24-row list), `profileDetail(id, section)` (only the active section), `template` + `templateProfile` + `templateEditorAssets` in parallel, plus the shared Workspace bootstrap (`useWorkspaceBootstrap`: role/status for `AccessNote`, `workspace.manage` for the style default radio, tier for the custom-styles prompt).
+- `_components/brand-api.tsx` (context, `useBrandApi`, `useIntent`, `BrandLoadFailure` -> `notFound()` for `missing`) and `brand-api-provider.tsx` (binds `brandQueries/brandMutations/invalidateBrand` to the selected Workspace). Split so component tests need no Clerk.
+- All fetch/action/refresh sites converted (create/default/delete profile, profile PATCH with 409 -> `invalidate` to fetch the latest revision, membership, font roles, fonts, scene templates, style create/update/delete/default/duplicate, logo presign + `templateLogoUrl` query). Creates (`createProfile`, `createTemplate`, `duplicateTemplate`, `createScene`) mint one key per intent (`useIntent`) and complete it on confirmed success. `duplicate` navigates to the returned id. `style-actions.ts` deleted. No `router.refresh`, `revalidatePath`, server action, `@narriflow/services|db` import left in the directory. Remaining `fetch` calls are the credential-free presigned PUTs to storage.
+- Audio picker/list use their own `profile-audio-library.ts` (paged `audioAssets` queries, `audioPlaybackUrl` fetch, presign/PUT/finalize) because the Studio helpers (`audio-library.ts`, `audio-upload.ts`, ticket 14) are plain `fetch` modules that must change signature. Only the constants `AUDIO_UPLOAD_MAX_MB`/`AUDIO_UPLOAD_ACCEPT` are still imported from Studio's `audio-upload.ts`. 31 can dedupe once 14 lands.
+- Create screens (`/brand-kit/new`, `/styles/new`) latch the plan decision on first load so the invalidation after a create cannot flip the form to the limit notice while the new item opens. Capability-less viewers are sent to `/home?requestFailure=capability_denied` (was the server redirect).
+- `brand-fonts.tsx`, `brand-kit-ui.tsx` (comment only), `profile-fields.tsx` prop contracts unchanged for Studio/Project/Recipes.
+
+### Requests for other owners
+- 31: `apps/web/lib/plan-upgrade-pages.contract.fixture.ts` (and `plan-upgrade-pages.test.ts`) import `brand-kit/page` and `styles/new/page` and call them as async server pages with services; they are now shells. Rewrite or delete that fixture for the client screens.
+- 31: `useWorkspaceBootstrap` is imported from `(app)/_components/usage.ts` (07's local factory); swap to 05's export when it lands.
+- 32 (browser): create/rename/delete profile, 409 revision conflict (two tabs), default profile, membership add/remove, font upload/delete, scene create/default/delete, style create/edit/duplicate/delete/default, audio picker upload and playback, `ColorPicker` lazyMount dialogs, viewer/editor/owner/free-plan variants, deleted-profile URL -> not found.
+
+### Evidence
+- `bun test "apps/web/app/(app)/brand-kit"` (from apps/web) -> 11 pass (gallery access matrix, membership controls, delete-usage copy, font picker; components rendered against a stub `BrandApiContext` via `_components/brand-api.test-support.tsx`).
+- `bun run --cwd apps/web typecheck`: 0 errors in `app/(app)/brand-kit/**` (remaining errors are other tickets' files). `bunx biome check "apps/web/app/(app)/brand-kit"` clean.

@@ -1,12 +1,19 @@
 import { describe, expect, mock, test } from "bun:test";
 import { ChakraProvider } from "@chakra-ui/react";
 import { system } from "@narriflow/ui/theme";
-import type { ProjectListItem } from "@narriflow/services";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderToStaticMarkup } from "react-dom/server";
+import type { ProjectListItem } from "../_lib/api";
 
-mock.module("../actions", () => ({ deleteProjectFormAction: async () => undefined }));
+// Static markup runs no command; the hooks the delete button reads are stand-ins.
+mock.module("next/navigation", () => ({ useRouter: () => ({ push: () => undefined }) }));
+mock.module("@/app/_components/api-provider", () => ({
+  useApiRuntime: () => ({}),
+  useWorkspaceScope: () => null,
+}));
 
 const { ProjectCard } = await import("./project-card");
+const queryClient = new QueryClient();
 
 function project(expiresAt: string | null): ProjectListItem {
   return {
@@ -27,9 +34,11 @@ function project(expiresAt: string | null): ProjectListItem {
 
 function render(item: ProjectListItem, canDelete = false) {
   return renderToStaticMarkup(
-    <ChakraProvider value={system}>
-      <ProjectCard project={item} canDelete={canDelete} />
-    </ChakraProvider>,
+    <QueryClientProvider client={queryClient}>
+      <ChakraProvider value={system}>
+        <ProjectCard project={item} canDelete={canDelete} />
+      </ChakraProvider>
+    </QueryClientProvider>,
   );
 }
 

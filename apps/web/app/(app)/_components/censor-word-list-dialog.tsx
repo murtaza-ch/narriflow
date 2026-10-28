@@ -17,10 +17,7 @@ import {
   WORKSPACE_CENSOR_WORDS_MAX,
   type WorkspaceCensorWords,
 } from "@narriflow/validators";
-import {
-  authenticatedActionResultMessage,
-  isAuthenticatedActionFailure,
-} from "@/lib/authenticated-request-browser";
+import { apiErrorMessage } from "@/app/_components/query-mutation-form";
 
 /**
  * The censored-word list editor: the Workspace list (shared by every project),
@@ -71,8 +68,8 @@ const DEFAULT_TERMS = new Set(DEFAULT_CENSOR_WORD_LIST.map(foldedTerm));
 
 /**
  * The Workspace list and how to change it. The save and reset callbacks are the
- * caller's server actions (this dialog stays free of server imports), and
- * resolve with the action's result.
+ * caller's API mutations; they resolve with the stored list and reject with the
+ * API's error.
  */
 export interface WorkspaceCensorWordsEditor {
   words: readonly string[];
@@ -734,19 +731,19 @@ export function CensorWordListDialog({
       const result = await run();
       const saved = result as { words?: unknown; customized?: unknown } | null;
       if (
-        isAuthenticatedActionFailure(result) ||
         !saved ||
         typeof saved !== "object" ||
         !Array.isArray(saved.words) ||
         typeof saved.customized !== "boolean"
       ) {
-        fail("Word list not saved", authenticatedActionResultMessage(result, UNCHANGED));
+        fail("Word list not saved", UNCHANGED);
         return false;
       }
       workspace.onChange({ words: saved.words as string[], customized: saved.customized });
       return true;
-    } catch {
-      fail("Word list not saved", UNCHANGED);
+    } catch (error) {
+      const message = apiErrorMessage(error, UNCHANGED);
+      if (message !== null) fail("Word list not saved", message);
       return false;
     } finally {
       setWorkspaceDraft(null);

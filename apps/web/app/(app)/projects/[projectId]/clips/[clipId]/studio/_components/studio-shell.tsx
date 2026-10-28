@@ -17,7 +17,9 @@ import { Box, Button, Flex, Heading, Stack, Text } from "@chakra-ui/react";
 import { Monitor } from "lucide-react";
 import { useConfirm } from "@narriflow/ui/components/confirm-dialog";
 import { toaster } from "@narriflow/ui/components/toaster";
-import type { GeneratedImageCapability } from "@narriflow/services";
+import { useAuth } from "@clerk/nextjs";
+import type { StudioBootstrap } from "@narriflow/api-client/studio";
+import { createExportsClient } from "@narriflow/api-client/exports";
 import {
   compositionAssetRef,
   screenLayoutInputFingerprint,
@@ -118,11 +120,11 @@ import type {
   StudioExportState,
 } from "./studio-export-policy";
 import {
-  authenticatedRequestFailureMessage,
-  isAuthenticatedActionFailure,
   upgradePromptFromFailure,
-  type BrowserRequestFailure,
 } from "@/lib/authenticated-request-browser";
+import { apiFailureBody, apiFailureStatus, requireStudioApi, studioReads, type StudioReads } from "./studio-api";
+import { useStudioApi } from "./use-studio-api";
+import { createTokenSnapshot, createStudioCloudHttp } from "./studio-cloud-http";
 import { useUpgrade } from "@/app/(app)/_components/upgrade";
 
 class StudioExportRequestError extends Error {
@@ -147,27 +149,7 @@ const STUDIO_EXPORT_REFUSAL_CODES: ReadonlySet<string> = new Set([
   "scene_font_unavailable",
 ]);
 
-type StudioAuthenticatedActionFailure = BrowserRequestFailure & {
-  ok: false;
-  error: string;
-  code: string;
-  requestId: string;
-};
-
-function unwrapStudioActionResult<T>(
-  result: T | StudioAuthenticatedActionFailure,
-): T {
-  if (isAuthenticatedActionFailure(result)) {
-    throw new Error(
-      authenticatedRequestFailureMessage(
-        result,
-        window.location.pathname,
-        "Studio access changed. Refresh before continuing.",
-      ),
-    );
-  }
-  return result as T;
-}
+type GeneratedImageCapability = StudioBootstrap["generatedImagesCapability"];
 
 /**
  * Below this width the transcript panel has already hidden (it collapses
@@ -708,10 +690,12 @@ interface StudioFields extends StudioState {
   censorWords: StudioCensorWords;
   setCensorWords: React.Dispatch<React.SetStateAction<StudioCensorWords>>;
   updateProjectCensorTerms: (terms: string[]) => Promise<unknown>;
-  /** The Workspace word list's server actions, handed through so the word-list dialog stays server-free. */
+  /** The Workspace word list's API commands, handed through so the word-list dialog stays transport-free. */
   replaceWorkspaceCensorWords: (words: string[]) => Promise<unknown>;
   resetWorkspaceCensorWords: () => Promise<unknown>;
   recordAutoCensorEvent: (input: AutoCensorAnalyticsInput) => Promise<unknown>;
+  /** Reads behind the module-level trim-transcript and waveform-peaks caches. */
+  reads: StudioReads;
 }
 
 const StudioContext = createContext<StudioAccess<StudioFields> | null>(null);
@@ -761,9 +745,9 @@ interface StudioShellProps {
   initialEditorDocument: EditorDocument;
   initialEditorRevision: number;
   /** The immutable revision-zero snapshot Reset-to-original restores. Reset
-   *  itself is still a server round-trip + full reload (see handleReset
-   *  below — boundaries/preview proxy may change, so re-seeding from a
-   *  fresh server render is simpler and safer than patching client state in
+   *  itself is still a server round-trip followed by a re-seed from a fresh
+   *  Studio bootstrap (see handleReset below — boundaries/preview proxy may
+   *  change, so re-seeding is simpler and safer than patching client state in
    *  place) — but this is read client-side to derive `canReset`: reset is
    *  only offered when the live document (or what the server already held
    *  at load) actually differs from this snapshot, not just because
@@ -800,23 +784,20 @@ interface StudioShellProps {
   /** True when the project's source has been purged — see the doc comment
    *  on `StudioFields.sourcePurged`. */
   sourcePurged?: boolean;
-  /** Server Action that re-checks this clip's preview-proxy readiness,
-   *  defined in studio/page.tsx (see its doc comment for why it's threaded
-   *  through as a prop rather than imported by name). Polled by the effect
-   *  below while `previewVideoUrl` is still null; omitted entirely (e.g. in
-   *  tests) simply disables polling rather than throwing. */
-  fetchPreviewStatus?: () => Promise<StudioAuthenticatedActionFailure | {
+  /** Re-checks this clip's preview-proxy readiness through the Studio API
+   *  (polled by the session while `previewVideoUrl` is still null); omitted
+   *  (e.g. in tests) simply disables polling. Rejects with the typed API error. */
+  fetchPreviewStatus?: () => Promise<{
     previewUrl: string | null;
     previewStartSec: number;
     previewDurationSec: number | null;
     waveformPeaksUrl: string | null;
   }>;
-  /** Authenticated Server Action used while worker-derived shot analysis is
-   *  still pending. The client accepts only a plan matching its live clip
-   *  window and deleted ranges. */
-  fetchAutoLayoutAnalysis?: () => Promise<StudioAuthenticatedActionFailure | ClipAutoLayoutAnalysis | null>;
-  fetchSplitLayoutAnalysis?: () => Promise<StudioAuthenticatedActionFailure | ClipSplitLayoutOutcome | null>;
-  fetchScreenLayoutAnalysis?: () => Promise<StudioAuthenticatedActionFailure | ClipLayoutAnalysisOutcome | null>;
+  /** Used while worker-derived shot analysis is still pending. The client
+   *  accepts only a plan matching its live clip window and deleted ranges. */
+  fetchAutoLayoutAnalysis?: () => Promise<ClipAutoLayoutAnalysis | null>;
+  fetchSplitLayoutAnalysis?: () => Promise<ClipSplitLayoutOutcome | null>;
+  fetchScreenLayoutAnalysis?: () => Promise<ClipLayoutAnalysisOutcome | null>;
   /** Server-seeded brand logo (see studio/page.tsx and `StudioBrandLogo`'s
    *  doc comment), or null/omitted when the project has none. */
   brandLogo?: StudioBrandLogo | null;
@@ -842,10 +823,14 @@ interface StudioShellProps {
   autoCensorPolicy: StudioAutoCensorPolicy;
   upgradePrompts?: StudioUpgradePrompts;
   updateProjectCensorTerms: (terms: string[]) => Promise<unknown>;
-  /** The Workspace word list's server actions, handed through so the word-list dialog stays server-free. */
+  /** The Workspace word list's API commands, handed through so the word-list dialog stays transport-free. */
   replaceWorkspaceCensorWords: (words: string[]) => Promise<unknown>;
   resetWorkspaceCensorWords: () => Promise<unknown>;
   recordAutoCensorEvent: (input: AutoCensorAnalyticsInput) => Promise<unknown>;
+  /** The session reset the clip and closed itself. The host re-reads the Studio
+   *  bootstrap and mounts a fresh shell: boundaries and the preview proxy may have
+   *  changed, so they are re-seeded rather than patched in place. */
+  onResetComplete: () => void;
 }
 
 const EMPTY_BRAND_AUDIO: BrandAudioSnapshot = { music: [], sfx: [] };
@@ -890,7 +875,40 @@ export function StudioShell({
   replaceWorkspaceCensorWords,
   resetWorkspaceCensorWords,
   recordAutoCensorEvent,
+  onResetComplete,
 }: StudioShellProps) {
+  const studioApi = useStudioApi();
+  const { getToken } = useAuth();
+  const getTokenRef = useRef(getToken);
+  getTokenRef.current = getToken;
+  // One HTTP adapter and token snapshot per shell: the page keys the shell by
+  // Workspace, so the captured scope is the one this session lives in.
+  const [transport] = useState(() => {
+    const api = requireStudioApi(studioApi);
+    const tokens = createTokenSnapshot({ getToken: () => getTokenRef.current() });
+    return {
+      tokens,
+      reads: studioReads(api),
+      cloud: createStudioCloudHttp({ api, projectId: clipInfo.projectId, clipId: clipInfo.id, tokens }),
+    };
+  });
+  // Keep an in-memory token ready for the close-time write: Clerk tokens live about
+  // a minute and nothing can be awaited during unload. Never stored or logged.
+  useEffect(() => {
+    const refresh = () => void transport.tokens.refresh();
+    refresh();
+    const timer = window.setInterval(refresh, 20_000);
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") refresh();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("focus", refresh);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("focus", refresh);
+    };
+  }, [transport]);
   const isViewportTooSmall = useIsViewportBelow(STUDIO_MIN_VIEWPORT_WIDTH);
   const [brollPreviewAsset, setBrollPreviewAsset] =
     useState<StudioBrollPreviewAsset | null>(null);
@@ -945,19 +963,10 @@ export function StudioShell({
       },
     },
     {
+      cloud: transport.cloud,
       preview: {
-        ...(fetchPreviewStatus
-          ? {
-              fetchProxyStatus: async () =>
-                unwrapStudioActionResult(await fetchPreviewStatus()),
-            }
-          : {}),
-        ...(fetchAutoLayoutAnalysis
-          ? {
-              fetchAutomaticLayout: async () =>
-                unwrapStudioActionResult(await fetchAutoLayoutAnalysis()),
-            }
-          : {}),
+        ...(fetchPreviewStatus ? { fetchProxyStatus: fetchPreviewStatus } : {}),
+        ...(fetchAutoLayoutAnalysis ? { fetchAutomaticLayout: fetchAutoLayoutAnalysis } : {}),
       },
     },
   );
@@ -1025,7 +1034,6 @@ export function StudioShell({
       try {
         const next = await fetchScreenLayoutAnalysis();
         if (cancelled) return;
-        if (isAuthenticatedActionFailure(next)) return;
         const failed = next && "state" in next;
         setLayoutAnalysis(failed ? null : next);
         setLayoutAnalysisFailure(failed ? next : null);
@@ -1080,7 +1088,6 @@ export function StudioShell({
       try {
         const next = await fetchSplitLayoutAnalysis();
         if (cancelled) return;
-        if (isAuthenticatedActionFailure(next)) return;
         const failed = next && "state" in next;
         setSplitLayoutAnalysis(failed ? null : next);
         setSplitLayoutFailure(failed ? next : null);
@@ -1840,7 +1847,7 @@ export function StudioShell({
   // fetch, not the common path.
   const commitTrim = useCallback(
     async (newStartSec: number, newEndSec: number) => {
-      const { rawUtterances } = await loadTrimTranscript(clipInfo.projectId);
+      const { rawUtterances } = await loadTrimTranscript(clipInfo.projectId, transport.reads);
       const rawSlice = buildTranscriptSliceForWindow(rawUtterances, {
         startSec: newStartSec,
         endSec: newEndSec,
@@ -1876,7 +1883,7 @@ export function StudioShell({
         segments: newSegments,
       });
     },
-    [clipInfo.projectId, doc.transcriptSlice, studioSession],
+    [clipInfo.projectId, doc.transcriptSlice, studioSession, transport.reads],
   );
 
   // Cloud checkpoint and reset barriers are projected by the session.
@@ -1927,31 +1934,34 @@ export function StudioShell({
       if (prepared.kind !== "cloud-prepared") {
         throw new Error("save failed before export");
       }
-      const response = await fetch(
-        `/api/projects/${clipInfo.projectId}/clips/${clipInfo.id}/exports`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "idempotency-key": crypto.randomUUID(),
+      const api = requireStudioApi(studioApi);
+      let created: { export: { id: string } };
+      try {
+        const response = await createExportsClient(
+          api.runtime.transport.scoped(api.scope),
+        ).projects[":id"].clips[":clipId"].exports.$post(
+          {
+            param: { id: clipInfo.projectId, clipId: clipInfo.id },
+            json: {
+              expectedRevision: prepared.revision,
+              aspectRatios: options.aspectRatios,
+              resolution: options.resolution,
+            },
           },
-          body: JSON.stringify({
-            expectedRevision: prepared.revision,
-            aspectRatios: options.aspectRatios,
-            resolution: options.resolution,
-          }),
-        },
-      );
-      const body = await response.json().catch(() => null);
-      if (!response.ok || !body?.export?.id) {
-        if (response.status === 409) {
+          // One key per Export click, held through the request: a replay returns the same export.
+          { headers: { "Idempotency-Key": crypto.randomUUID() } },
+        );
+        created = (await response.json()) as { export: { id: string } };
+      } catch (failure) {
+        const body = apiFailureBody(failure);
+        if (apiFailureStatus(failure) === 409 && body.error !== "workspace_selection_changed") {
           throw new StudioExportRequestError("editor_revision_conflict");
         }
-        if (body?.error === "censor_segments_stale") {
+        if (body.error === "censor_segments_stale") {
           throw new StudioExportRequestError("censor_segments_stale");
         }
-        if (typeof body?.error === "string" && STUDIO_EXPORT_REFUSAL_CODES.has(body.error)) {
-          const upgrade = upgradePromptFromFailure(body as BrowserRequestFailure);
+        if (typeof body.error === "string" && STUDIO_EXPORT_REFUSAL_CODES.has(body.error)) {
+          const upgrade = upgradePromptFromFailure(body);
           if (upgrade) openUpgrade(upgrade);
           throw new StudioExportRequestError(
             "export_refused",
@@ -1962,7 +1972,7 @@ export function StudioShell({
       }
       setExportState("queued");
       router.push(
-        `/projects/${clipInfo.projectId}/clips/${clipInfo.id}/exports/${body.export.id}`,
+        `/projects/${clipInfo.projectId}/clips/${clipInfo.id}/exports/${created.export.id}`,
       );
     } catch (error) {
       setExportState("idle");
@@ -1982,6 +1992,7 @@ export function StudioShell({
   }, [
     compositionPlanStatus,
     studioSession,
+    studioApi,
     clipInfo.projectId,
     clipInfo.id,
     router,
@@ -2001,7 +2012,7 @@ export function StudioShell({
         );
       }
       suppressNavigationWarning();
-      window.location.reload();
+      onResetComplete();
     } catch {
       toaster.create({
         type: "error",
@@ -2011,7 +2022,7 @@ export function StudioShell({
     } finally {
       setResetState((s) => (s === "resetting" ? "idle" : s));
     }
-  }, [hasWriteOwnership, resetState, studioSession, suppressNavigationWarning]);
+  }, [hasWriteOwnership, resetState, studioSession, suppressNavigationWarning, onResetComplete]);
 
   const handleTakeOverEditing = useCallback(() => {
     void studioSession.perform({ type: "take-over" }).then((result) => {
@@ -2348,6 +2359,7 @@ export function StudioShell({
     handleUndo, handleRedo, handleReset, commitTrim, trimHandlesDisabled,
     insertSceneBlock, moveSceneBlock, trimSceneBlock, duplicateSceneBlock, replaceSceneBlock, updateSceneMotion, upsertMediaMotion, deleteSceneBlock,
     setCensorSegments, censorWords, setCensorWords, updateProjectCensorTerms, replaceWorkspaceCensorWords, resetWorkspaceCensorWords, recordAutoCensorEvent,
+    reads: transport.reads,
   };
   const [studioAccessSource] = useState(() => createStudioAccess(fields));
   useLayoutEffect(() => {

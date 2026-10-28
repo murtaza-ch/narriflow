@@ -1,17 +1,12 @@
 "use client";
 
-import { useState, useTransition } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { Box, Flex, Image, Menu, Portal, Stack, Text } from "@chakra-ui/react";
 import { Building2, Check, ChevronDown, Plus, Settings, Users, Share2, Braces, Gem } from "lucide-react";
 import { Spinner } from "@narriflow/ui/components/spinner";
 import { PLAN_CATALOG, resolvePricingTier } from "@narriflow/validators";
-import { switchWorkspaceAction } from "../_actions/workspace";
-import {
-  authenticatedActionResultMessage,
-  isAuthenticatedActionFailure,
-} from "@/lib/authenticated-request-browser";
+import { apiErrorMessage } from "@/app/_components/query-mutation-form";
+import { useWorkspaceSwitch } from "@/app/_components/workspace-query-gate";
 
 export interface WorkspaceMenuPresentation {
   tier: string;
@@ -37,31 +32,13 @@ export function WorkspaceSwitcher({
   items: WorkspaceSwitcherItem[];
   presentation: WorkspaceMenuPresentation;
 }) {
-  const router = useRouter();
-  const [isPending, startTransition] = useTransition();
-  const [switchingTo, setSwitchingTo] = useState<string | null>(null);
-  const [switchError, setSwitchError] = useState<string | null>(null);
+  const { switchTo, pending: isPending, pendingId: switchingTo, error } = useWorkspaceSwitch();
+  const switchError = error ? apiErrorMessage(error, "The Workspace could not be selected.") : null;
   const active = items.find((item) => item.id === activeWorkspaceId) ?? items[0];
 
   function selectWorkspace(workspaceId: string) {
     if (workspaceId === activeWorkspaceId || isPending) return;
-    setSwitchingTo(workspaceId);
-    startTransition(async () => {
-      setSwitchError(null);
-      const result = await switchWorkspaceAction(workspaceId);
-      if (isAuthenticatedActionFailure(result)) {
-        setSwitchError(
-          authenticatedActionResultMessage(
-            result,
-            "The Workspace could not be selected.",
-          ),
-        );
-        setSwitchingTo(null);
-        return;
-      }
-      router.refresh();
-      setSwitchingTo(null);
-    });
+    void switchTo(workspaceId);
   }
 
   return (

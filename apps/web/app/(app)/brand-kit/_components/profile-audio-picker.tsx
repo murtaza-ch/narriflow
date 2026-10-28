@@ -7,10 +7,10 @@ import type { AudioAssetKindInput } from "@narriflow/validators";
 import { Button } from "@narriflow/ui/components/button";
 import { Dialog, Portal } from "@narriflow/ui/components/dialog";
 import { SegmentedControl } from "@narriflow/ui/components/segmented-control";
-import { useAudioAssetList } from "@/app/(app)/projects/[projectId]/clips/[clipId]/studio/_components/tool-panels/audio-library";
-import { AUDIO_UPLOAD_ACCEPT, AUDIO_UPLOAD_MAX_MB, uploadAudioFile } from "@/app/(app)/projects/[projectId]/clips/[clipId]/studio/_components/tool-panels/audio-upload";
+import { AUDIO_UPLOAD_ACCEPT, AUDIO_UPLOAD_MAX_MB } from "@/app/(app)/projects/[projectId]/clips/[clipId]/studio/_components/tool-panels/audio-upload";
 import { formatDuration } from "@/lib/format";
-import { putProfileMembership, useMembershipChange } from "./profile-membership";
+import { useAudioLibrary, useAudioUpload } from "./profile-audio-library";
+import { useMembershipChange } from "./profile-membership";
 import { PlayButton, useAudioPreview } from "./profile-audio-list";
 
 const KINDS = [
@@ -70,14 +70,15 @@ function AudioLibraryList({
 }) {
   const [kind, setKind] = useState<AudioAssetKindInput>("music");
   const [search, setSearch] = useState("");
-  const { assets, loading, error, retry, hasMore, loadingMore, loadMore } = useAudioAssetList(kind, null, 0, { search });
-  const { busy, run } = useMembershipChange("Could not add the audio");
+  const { assets, loading, error, retry, hasMore, loadingMore, loadMore } = useAudioLibrary(kind, search);
+  const uploadAudioFile = useAudioUpload();
+  const { busy, run, put } = useMembershipChange("Could not add the audio");
   const preview = useAudioPreview();
   const libraryEmpty = !search.trim() && assets.length === 0;
   const upload = (file: File) =>
     void run(async () => {
       const asset = await uploadAudioFile(file, kind);
-      await putProfileMembership(profileId, { kind: "audio", resourceId: asset.id, position: nextPosition });
+      await put(profileId, { kind: "audio", resourceId: asset.id, position: nextPosition });
     });
   return (
     <Stack gap="4">
@@ -147,7 +148,7 @@ function AudioLibraryList({
                     variant="subtle"
                     aria-label={`Add ${asset.title}`}
                     disabled={busy}
-                    onClick={() => void run(() => putProfileMembership(profileId, { kind: "audio", resourceId: asset.id, position: nextPosition }))}
+                    onClick={() => void run(() => put(profileId, { kind: "audio", resourceId: asset.id, position: nextPosition }))}
                   >
                     Add
                   </Button>

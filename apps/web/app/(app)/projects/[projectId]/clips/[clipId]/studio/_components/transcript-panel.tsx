@@ -35,6 +35,10 @@ import {
 import { transcriptHighlight, type TranscriptHighlight } from "./transcript-highlight";
 import { StudioLockGem } from "./studio-lock-gem";
 import { useUpgrade, type UpgradePrompt } from "@/app/(app)/_components/upgrade";
+import { ApiError } from "@narriflow/api-client/core";
+import { createClipsClient, invalidateAfterClipChange } from "@narriflow/api-client/clips";
+import { apiFailureBody, requireStudioApi } from "./studio-api";
+import { useStudioApi } from "./use-studio-api";
 
 // ─── Pause threshold (seconds) ──────────────────────────────────────────────
 
@@ -947,6 +951,7 @@ export function TranscriptPanel() {
   const highlight = useMemo(() => transcriptHighlight(captionPreset), [captionPreset]);
   const { openUpgrade } = useUpgrade();
   const router = useRouter();
+  const studioApi = useStudioApi();
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const manualScrollRef = useRef(false);
@@ -1224,24 +1229,26 @@ export function TranscriptPanel() {
     creatingClipRef.current = true;
     setCreatingClip(true);
     try {
-      const response = await fetch(
-        `/api/projects/${clipInfo.projectId}/clips/${clipInfo.id}/create-from-selection`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ startSec: range.startSec, endSec: range.endSec }),
-        },
-      );
-      const payload: unknown = await response.json().catch(() => null);
-
-      if (!response.ok) {
+      const api = requireStudioApi(studioApi);
+      let payload: unknown;
+      try {
+        const response = await createClipsClient(api.runtime.transport.scoped(api.scope)).projects[":id"].clips[
+          ":clipId"
+        ]["create-from-selection"].$post({
+          param: { id: clipInfo.projectId, clipId: clipInfo.id },
+          json: { startSec: range.startSec, endSec: range.endSec },
+        });
+        payload = await response.json();
+      } catch (failure) {
+        if (!(failure instanceof ApiError) || failure.status === 0) throw failure;
         toaster.create({
           type: "error",
           title: "Could not create clip",
-          description: apiErrorCopy(payload, "Please try again."),
+          description: apiErrorCopy(apiFailureBody(failure), "Please try again."),
         });
         return;
       }
+      void invalidateAfterClipChange(api.runtime.queryClient, api.scope, clipInfo.projectId);
 
       const newClip = payload as ClipSnapshot;
       dismissSelection();
@@ -1266,7 +1273,7 @@ export function TranscriptPanel() {
       creatingClipRef.current = false;
       setCreatingClip(false);
     }
-  }, [clipInfo.projectId, clipInfo.id, dismissSelection, router]);
+  }, [clipInfo.projectId, clipInfo.id, dismissSelection, router, studioApi]);
 
   // ⌫ deletes the transcript selection, and ⇧⌘C (⇧Ctrl+C on Windows/Linux)
   // creates a clip from it, ONLY when a selection is active — otherwise

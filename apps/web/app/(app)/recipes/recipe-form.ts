@@ -5,7 +5,6 @@ import {
   recipeInputSchema,
   type ClipLengthPreset,
   type ContentPack,
-  type RecipeInput,
   type RecipeSnapshot,
   type RecipeWarning,
 } from "@narriflow/validators";
@@ -15,6 +14,9 @@ import {
   finishingFromDraft,
   type FinishingDraft,
 } from "./finishing-form";
+
+/** A Recipe input as the shared schema parses it: what the API's create and update accept. */
+export type ParsedRecipeInput = ReturnType<typeof recipeInputSchema.parse>;
 
 /** The Recipe form. Numbers stay strings while the person types;
  * `recipeFromDraft` turns the draft into the shared input, or says what to fix.
@@ -62,7 +64,7 @@ export function recipeFromDraft(
   draft: RecipeDraft,
   /** The pack being edited; a new Recipe starts from the defaults. */
   base: ContentPack = buildGenerationContentPack(),
-): { input: RecipeInput } | { error: string } {
+): { input: ParsedRecipeInput } | { error: string } {
   if (!draft.name.trim()) return { error: "Recipe name is required." };
   const clipCountTarget = Number(draft.clipCountTarget);
   if (!Number.isInteger(clipCountTarget) || clipCountTarget < 3 || clipCountTarget > 30) {
@@ -95,7 +97,7 @@ export function recipeFromDraft(
 /** The fields a form changed on a saved Recipe: all a PATCH needs to send.
  * Finishing is compared as the person left it: opening the form fills in
  * defaults (such as an explicit export format) that must not count as an edit. */
-export function recipeChanges(input: RecipeInput, recipe: RecipeSnapshot, finishingEdited: boolean) {
+export function recipeChanges(input: ParsedRecipeInput, recipe: RecipeSnapshot, finishingEdited: boolean) {
   const differs = (next: unknown, current: unknown) => JSON.stringify(next ?? null) !== JSON.stringify(current ?? null);
   return {
     ...(input.name !== recipe.name && { name: input.name }),

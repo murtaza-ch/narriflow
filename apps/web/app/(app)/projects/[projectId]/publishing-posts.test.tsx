@@ -5,6 +5,8 @@ import type { SocialPostSnapshot } from "@narriflow/validators";
 import { renderToStaticMarkup } from "react-dom/server";
 import { PublishingPosts } from "./publishing-posts";
 
+const unused = {} as Parameters<typeof PublishingPosts>[0]["api"];
+
 const post = {
 	id: "33333333-3333-4333-8333-333333333333",
 	projectId: "22222222-2222-4222-8222-222222222222",
@@ -40,6 +42,7 @@ function renderPosts(posts: SocialPostSnapshot[], canManage: boolean, filterable
 	return renderToStaticMarkup(
 		<ChakraProvider value={system}>
 			<PublishingPosts
+				api={unused}
 				projectId={post.projectId}
 				posts={posts}
 				filterable={filterable}

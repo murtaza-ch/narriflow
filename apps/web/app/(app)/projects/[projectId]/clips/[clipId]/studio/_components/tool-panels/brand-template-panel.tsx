@@ -15,6 +15,9 @@ import {
 } from "@narriflow/validators";
 import { useStudio } from "../studio-shell";
 import { CaptionCue } from "../caption-style-engine";
+import { brandQueries } from "@narriflow/api-client/brand";
+import { requireStudioApi } from "../studio-api";
+import { useStudioApi } from "../use-studio-api";
 
 interface BrandTemplateResponse {
   builtIns: BrandTemplateSummary[];
@@ -309,14 +312,17 @@ export function BrandTemplatePanel() {
     "idle" | "applied" | "missing"
   >("idle");
 
+  const studioApi = useStudioApi();
+
   useEffect(() => {
     let canceled = false;
     async function loadTemplates() {
       setLoadState("loading");
       try {
-        const response = await fetch("/api/brand-templates");
-        if (!response.ok) throw new Error("failed");
-        const payload = (await response.json()) as BrandTemplateResponse;
+        const api = requireStudioApi(studioApi);
+        const payload = (await api.runtime.queryClient.fetchQuery(
+          brandQueries({ transport: api.runtime.transport, scope: api.scope }).templates(),
+        )) as unknown as BrandTemplateResponse;
         if (canceled) return;
         setTemplates(payload);
         setSelectedId(payload.defaultId ?? payload.mine[0]?.id ?? payload.builtIns[0]?.id ?? null);
@@ -329,7 +335,7 @@ export function BrandTemplatePanel() {
     return () => {
       canceled = true;
     };
-  }, []);
+  }, [studioApi]);
 
   const allTemplates = useMemo(
     () => [...(templates?.mine ?? []), ...(templates?.builtIns ?? [])],

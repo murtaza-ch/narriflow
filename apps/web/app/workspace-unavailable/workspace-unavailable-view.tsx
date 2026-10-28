@@ -1,6 +1,11 @@
+"use client";
+
 import { Box, Flex, Heading, Stack, Text } from "@chakra-ui/react";
 import { PauseCircle } from "lucide-react";
 import { Logo } from "@narriflow/ui/components/logo";
+import { workspaceCapabilities } from "@narriflow/validators/api/session";
+import { ApiProvider } from "@/app/_components/api-provider";
+import { SessionGate, useSessionGate } from "@/app/_components/workspace-query-gate";
 import { OpenWorkspaceButton } from "./open-workspace-button";
 
 export interface UnavailableWorkspace {
@@ -60,5 +65,31 @@ export function WorkspaceUnavailableView({ workspaces }: { workspaces: Unavailab
         </Stack>
       </Stack>
     </Flex>
+  );
+}
+
+function Memberships() {
+  const { session } = useSessionGate();
+  return (
+    <WorkspaceUnavailableView
+      workspaces={session.memberships.map((membership) => ({
+        id: membership.id,
+        name: membership.isPersonal ? "Personal workspace" : membership.name,
+        paused: membership.status !== "active",
+        canOpen: workspaceCapabilities(membership)["content.view"],
+      }))}
+    />
+  );
+}
+
+/** The signed-in person's workspaces, read from the identity bootstrap. */
+export function WorkspaceUnavailableScreen() {
+  const pending = <Flex minH="100dvh" bg="bg.sidebar" role="status" aria-label="Loading workspaces" />;
+  return (
+    <ApiProvider fallback={pending}>
+      <SessionGate fallback={pending} title="Your workspaces couldn’t load">
+        <Memberships />
+      </SessionGate>
+    </ApiProvider>
   );
 }

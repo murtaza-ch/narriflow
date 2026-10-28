@@ -1,27 +1,18 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { useEffect, useState, useTransition } from "react";
+import { useEffect, useState } from "react";
 import { Box, chakra, Flex, Grid, Stack, Text } from "@chakra-ui/react";
 import { AlertTriangle, Braces, CalendarClock, Check, Info, Inbox, type LucideIcon, Play, Sparkles, UserRound, X } from "lucide-react";
-import type { ProposalInboxItem } from "@narriflow/services";
 import type { SocialPostProposalSource } from "@narriflow/validators";
 import { Button } from "@narriflow/ui/components/button";
 import { Select } from "@narriflow/ui/components/select";
 import { Switch } from "@narriflow/ui/components/switch";
 import { Textarea } from "@narriflow/ui/components/textarea";
 import { SOCIAL_PLATFORM_LABELS } from "@/lib/social-post-status";
-import { authenticatedActionResultMessage, isAuthenticatedActionFailure } from "@/lib/authenticated-request-browser";
+import { apiFailureMessage, isUncertainFailure, type ProposalInboxItem, type TikTokOptionsView } from "@/lib/publishing-client";
 import { LockedButton, type UpgradePrompt } from "../../_components/upgrade";
 import { AccountMark, Chip, QueueEmpty } from "./queue-parts";
-import {
-	acceptAllProposalsAction,
-	acceptProposalAction,
-	rejectProposalAction,
-	tiktokAcceptanceOptionsAction,
-	updateProposalCaptionAction,
-} from "./actions";
 
 const SOURCES: Record<SocialPostProposalSource, { label: string; icon: LucideIcon }> = {
 	person: { label: "From a teammate", icon: UserRound },
@@ -36,19 +27,35 @@ const PRIVACY_LABELS: Record<string, string> = {
 	SELF_ONLY: "Only me",
 };
 
-type TikTokOptions = {
-	directEnabled: boolean;
-	inboxEnabled: boolean;
-	privacyOptions: string[];
-	commentDisabled: boolean;
-	duetDisabled: boolean;
-	stitchDisabled: boolean;
+type TikTokOptions = TikTokOptionsView;
+
+export type TikTokChoices = {
+	deliveryMode: "direct" | "tiktok_inbox";
+	privacyLevel?: string;
+	disableComment: boolean;
+	disableDuet: boolean;
+	disableStitch: boolean;
+	isAigc: boolean;
 };
 
-type Notice = { tone: "info" | "error"; text: string };
+export type AcceptAllBatch = {
+	accepted: unknown[];
+	skippedTikTok: number;
+	failed: Array<{ message: string }>;
+	nextCursor: string | null;
+};
 
-const failed = (result: unknown) =>
-	isAuthenticatedActionFailure(result) || (typeof result === "object" && result !== null && "ok" in result && result.ok === false);
+/** The queue's commands, bound to the selected Workspace by the screen; `onChanged` refreshes what they touch. */
+export interface ProposalsApi {
+	tiktokOptions(accountId: string): Promise<TikTokOptions>;
+	updateCaption(proposalId: string, caption: string): Promise<unknown>;
+	reject(proposalId: string): Promise<unknown>;
+	accept(proposalId: string, choices: { tiktok?: TikTokChoices }): Promise<unknown>;
+	acceptAll(after: string | null): Promise<AcceptAllBatch>;
+	onChanged(): void;
+}
+
+type Notice = { tone: "info" | "error"; text: string };
 
 function slotLabel(iso: string, timeZone: string) {
 	return new Intl.DateTimeFormat("en-US", { timeZone, weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).format(new Date(iso));
@@ -70,12 +77,14 @@ function FormatTile({ aspectRatio }: { aspectRatio: string }) {
 
 function TikTokAcceptance({
 	proposal,
+	api,
 	onAccept,
 	onCancel,
 	pending,
 }: {
 	proposal: ProposalInboxItem;
-	onAccept: (choices: { deliveryMode: "direct" | "tiktok_inbox"; privacyLevel?: string; disableComment: boolean; disableDuet: boolean; disableStitch: boolean; isAigc: boolean }) => void;
+	api: Pick<ProposalsApi, "tiktokOptions">;
+	onAccept: (choices: TikTokChoices) => void;
 	onCancel: () => void;
 	pending: boolean;
 }) {
@@ -91,22 +100,23 @@ function TikTokAcceptance({
 	// TikTok's own limits for this creator load once, when the form opens.
 	useEffect(() => {
 		let alive = true;
-		void tiktokAcceptanceOptionsAction(proposal.socialAccountId).then((result) => {
-			if (!alive) return;
-			if (failed(result)) setError(authenticatedActionResultMessage(result, "TikTok settings could not be loaded."));
-			else {
-				const loaded = result as TikTokOptions;
+		api.tiktokOptions(proposal.socialAccountId).then(
+			(loaded) => {
+				if (!alive) return;
 				setOptions(loaded);
 				setMode(loaded.directEnabled ? "direct" : "tiktok_inbox");
 				setComment(loaded.commentDisabled);
 				setDuet(loaded.duetDisabled);
 				setStitch(loaded.stitchDisabled);
-			}
-		});
+			},
+			(reason: unknown) => {
+				if (alive) setError(apiFailureMessage(reason, "TikTok settings could not be loaded."));
+			},
+		);
 		return () => {
 			alive = false;
 		};
-	}, [proposal.socialAccountId]);
+	}, [proposal.socialAccountId, api]);
 
 	if (error) return <Text fontSize="13px" color="danger.fg" role="alert">{error}</Text>;
 	if (!options) return <Text fontSize="13px" color="fg.muted">Loading TikTok settings…</Text>;
@@ -174,32 +184,39 @@ function BlockedReason({ proposal }: { proposal: ProposalInboxItem }) {
 
 function ProposalCard({
 	proposal,
+	api,
 	timeZone,
 	canManage,
 	scheduleUpgrade,
 	onResult,
 }: {
 	proposal: ProposalInboxItem;
+	api: ProposalsApi;
 	timeZone: string;
 	canManage: boolean;
 	scheduleUpgrade: UpgradePrompt | null;
 	onResult: (notice: Notice | null) => void;
 }) {
-	const router = useRouter();
-	const [pending, startTransition] = useTransition();
+	const [pending, setPending] = useState(false);
 	const [caption, setCaption] = useState(proposal.caption);
 	const [choosing, setChoosing] = useState(false);
 	const isTikTok = proposal.platform === "tiktok";
 	const blocked = proposal.accountStatus !== "active" || !proposal.hasPostingSchedule;
 
-	function run(task: () => Promise<unknown>, fallback: string, success?: string) {
+	async function run(task: () => Promise<unknown>, fallback: string, success?: string) {
 		onResult(null);
-		startTransition(async () => {
-			const result = await task();
-			if (failed(result)) onResult({ tone: "error", text: authenticatedActionResultMessage(result, fallback) });
-			else if (success) onResult({ tone: "info", text: success });
-			router.refresh();
-		});
+		setPending(true);
+		try {
+			await task();
+			if (success) onResult({ tone: "info", text: success });
+			api.onChanged();
+		} catch (error) {
+			onResult({ tone: "error", text: apiFailureMessage(error, fallback) });
+			// A conflict or an unreachable API may still have changed the proposal: read it again.
+			if (isUncertainFailure(error)) api.onChanged();
+		} finally {
+			setPending(false);
+		}
 	}
 
 	const source = SOURCES[proposal.source];
@@ -237,7 +254,7 @@ function ProposalCard({
 				readOnly={!canManage}
 				onChange={(event) => setCaption(event.target.value)}
 				onBlur={() => {
-					if (canManage && caption !== proposal.caption) run(() => updateProposalCaptionAction(proposal.proposalId, caption), "The caption could not be saved.");
+					if (canManage && caption !== proposal.caption) void run(() => api.updateCaption(proposal.proposalId, caption), "The caption could not be saved.");
 				}}
 				bg="bg.panel"
 				_hover={{ bg: "bg.panel" }}
@@ -260,7 +277,7 @@ function ProposalCard({
 				)}
 				{canManage ? (
 					<Flex gap="2" ml="auto">
-						<Button size="sm" variant="ghost" color="fg.muted" disabled={pending} onClick={() => run(() => rejectProposalAction(proposal.proposalId), "The proposal could not be rejected.")}>
+						<Button size="sm" variant="ghost" color="fg.muted" disabled={pending} onClick={() => void run(() => api.reject(proposal.proposalId), "The proposal could not be rejected.")}>
 							<X size={14} />
 							Reject
 						</Button>
@@ -273,7 +290,7 @@ function ProposalCard({
 							<Button
 								size="sm"
 								disabled={pending || blocked || (!isTikTok && !proposal.nextSlot)}
-								onClick={() => (isTikTok ? setChoosing(true) : run(() => acceptProposalAction(proposal.proposalId, {}), "The proposal could not be accepted.", "Added to the queue."))}
+								onClick={() => (isTikTok ? setChoosing(true) : void run(() => api.accept(proposal.proposalId, {}), "The proposal could not be accepted.", "Added to the queue."))}
 							>
 								<Check size={14} />
 								Accept
@@ -285,9 +302,10 @@ function ProposalCard({
 			{choosing ? (
 				<TikTokAcceptance
 					proposal={proposal}
+					api={api}
 					pending={pending}
 					onCancel={() => setChoosing(false)}
-					onAccept={(choices) => run(() => acceptProposalAction(proposal.proposalId, { tiktok: choices }), "The proposal could not be accepted.", "Added to the queue.")}
+					onAccept={(choices) => void run(() => api.accept(proposal.proposalId, { tiktok: choices }), "The proposal could not be accepted.", "Added to the queue.")}
 				/>
 			) : null}
 		</Stack>
@@ -296,51 +314,52 @@ function ProposalCard({
 
 export function ProposalsInbox({
 	proposals,
+	api,
 	timeZone,
 	canManage,
 	scheduleUpgrade = null,
 }: {
 	proposals: ProposalInboxItem[];
+	api: ProposalsApi;
 	timeZone: string;
 	canManage: boolean;
 	/** Set when the plan can't schedule: accepting then offers the upgrade. */
 	scheduleUpgrade?: UpgradePrompt | null;
 }) {
-	const router = useRouter();
 	const [notice, setNotice] = useState<Notice | null>(null);
-	const [pending, startTransition] = useTransition();
+	const [pending, setPending] = useState(false);
 	const acceptable = proposals.filter((proposal) => proposal.platform !== "tiktok");
 	const tiktokCount = proposals.length - acceptable.length;
 
-	function acceptAll() {
+	async function acceptAll() {
 		setNotice(null);
-		startTransition(async () => {
-			// One call takes a batch, so a long inbox never outlasts a request: keep going from where it stopped.
-			let after: string | null = null;
-			let accepted = 0;
-			let skippedTikTok = 0;
-			const problems: string[] = [];
-			let stopped: string | null = null;
+		setPending(true);
+		// One call takes a batch, so a long inbox never outlasts a request: keep going from where it stopped.
+		let after: string | null = null;
+		let accepted = 0;
+		let skippedTikTok = 0;
+		const problems: string[] = [];
+		let stopped: string | null = null;
+		try {
 			for (;;) {
-				const result: unknown = await acceptAllProposalsAction(after);
-				if (failed(result)) {
-					stopped = authenticatedActionResultMessage(result, "The proposals could not be accepted.");
-					break;
-				}
-				const batch = result as { accepted: unknown[]; skippedTikTok: number; failed: Array<{ message: string }>; nextCursor: string | null };
+				const batch: AcceptAllBatch = await api.acceptAll(after);
 				accepted += batch.accepted.length;
 				skippedTikTok = batch.skippedTikTok;
 				problems.push(...batch.failed.map((entry) => entry.message));
 				if (!batch.nextCursor) break;
 				after = batch.nextCursor;
 			}
-			const parts = [`Accepted ${accepted}.`];
-			if (skippedTikTok > 0) parts.push(`${skippedTikTok} for TikTok ${skippedTikTok === 1 ? "was" : "were"} skipped: accept each one to make its TikTok choices.`);
-			if (problems.length > 0) parts.push(`${problems.length} could not be accepted: ${[...new Set(problems)].join(" ")}`);
-			if (stopped) parts.push(`Stopped early: ${stopped}`);
-			setNotice({ tone: problems.length > 0 || stopped ? "error" : "info", text: parts.join(" ") });
-			router.refresh();
-		});
+		} catch (error) {
+			stopped = apiFailureMessage(error, "The proposals could not be accepted.");
+		}
+		const parts = [`Accepted ${accepted}.`];
+		if (skippedTikTok > 0) parts.push(`${skippedTikTok} for TikTok ${skippedTikTok === 1 ? "was" : "were"} skipped: accept each one to make its TikTok choices.`);
+		if (problems.length > 0) parts.push(`${problems.length} could not be accepted: ${[...new Set(problems)].join(" ")}`);
+		if (stopped) parts.push(`Stopped early: ${stopped}`);
+		setNotice({ tone: problems.length > 0 || stopped ? "error" : "info", text: parts.join(" ") });
+		// Batches already accepted changed the queue even when a later one stopped.
+		api.onChanged();
+		setPending(false);
 	}
 
 	if (proposals.length === 0) {
@@ -375,7 +394,7 @@ export function ProposalsInbox({
 						Accept all{tiktokCount > 0 ? " except TikTok" : ""}
 					</LockedButton>
 				) : (
-					<Button size="sm" variant="subtle" disabled={pending} onClick={acceptAll}>
+					<Button size="sm" variant="subtle" disabled={pending} onClick={() => void acceptAll()}>
 						Accept all{tiktokCount > 0 ? " except TikTok" : ""}
 					</Button>
 				)}
@@ -387,7 +406,7 @@ export function ProposalsInbox({
 			) : null}
 			<Grid templateColumns={{ base: "1fr", xl: "repeat(2, minmax(0, 1fr))" }} gap="3" alignItems="start">
 				{proposals.map((proposal) => (
-					<ProposalCard key={proposal.proposalId} proposal={proposal} timeZone={timeZone} canManage={canManage} scheduleUpgrade={scheduleUpgrade} onResult={setNotice} />
+					<ProposalCard key={proposal.proposalId} proposal={proposal} api={api} timeZone={timeZone} canManage={canManage} scheduleUpgrade={scheduleUpgrade} onResult={setNotice} />
 				))}
 			</Grid>
 		</Stack>

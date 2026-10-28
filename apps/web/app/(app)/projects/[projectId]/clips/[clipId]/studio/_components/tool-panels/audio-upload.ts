@@ -1,5 +1,7 @@
 "use client";
 
+import { ApiError } from "@narriflow/api-client/core";
+import { type BrandApi, brandMutations } from "@narriflow/api-client/brand";
 import { AUDIO_UPLOAD_MAX_BYTES, audioUploadContentTypeSchema, type AudioAssetKindInput } from "@narriflow/validators";
 
 export const AUDIO_UPLOAD_ACCEPT = ".mp3,.wav,.m4a,audio/mpeg,audio/wav,audio/x-wav,audio/mp4,audio/x-m4a";
@@ -56,52 +58,53 @@ function stripExtension(name: string): string {
   return idx > 0 ? name.slice(0, idx) : name;
 }
 
+/** The server's own explanation when it sent one, else the fallback copy. */
+function failureCopy(error: unknown, fallback: string): string {
+  return error instanceof ApiError && error.status > 0 && error.message ? error.message : fallback;
+}
+
 /** Uploads one file into the owner's audio library and returns the new asset.
+ *  The bytes go straight to storage on a presigned URL, without session credentials.
  *  Throws an Error whose message is user-facing copy. */
-export async function uploadAudioFile(file: File, kind: AudioAssetKindInput): Promise<{ id: string }> {
+export async function uploadAudioFile(
+  file: File,
+  kind: AudioAssetKindInput,
+  api: BrandApi | null,
+): Promise<{ id: string }> {
   if (file.size > AUDIO_UPLOAD_MAX_BYTES) {
     throw new Error(`Audio uploads are capped at ${AUDIO_UPLOAD_MAX_MB}MB.`);
   }
   const contentType = resolveContentType(file);
   if (!contentType) throw new Error("Upload an MP3, WAV, or M4A file.");
+  if (!api) throw new Error("Couldn't start the upload.");
+  const mutations = brandMutations(api);
 
   const durationSec = await readAudioDuration(file);
-  const presignRes = await fetch("/api/audio-assets/presign-upload", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ contentType, sizeBytes: file.size }),
-  });
-  if (!presignRes.ok) {
-    const body = await presignRes.json().catch(() => ({}));
-    throw new Error(body.message ?? "Couldn't start the upload.");
+  let presigned: Awaited<ReturnType<typeof mutations.presignAudioUpload>>;
+  try {
+    presigned = await mutations.presignAudioUpload({ contentType, sizeBytes: file.size } as Parameters<typeof mutations.presignAudioUpload>[0]);
+  } catch (error) {
+    throw new Error(failureCopy(error, "Couldn't start the upload."));
   }
-  const { key, uploadUrl, contentType: signedContentType } = (await presignRes.json()) as {
-    key: string;
-    uploadUrl: string;
-    contentType: string;
-  };
+  const { key, uploadUrl, contentType: signedContentType } = presigned;
 
   const putRes = await fetch(uploadUrl, {
     method: "PUT",
     headers: { "Content-Type": signedContentType },
     body: file,
+    credentials: "omit",
   });
   if (!putRes.ok) throw new Error(`Upload failed (${putRes.status})`);
 
-  const finalizeRes = await fetch("/api/audio-assets", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
+  try {
+    return await mutations.finalizeAudioUpload({
       key,
       kind,
       title: stripExtension(file.name).slice(0, 120) || "Untitled",
       durationSec,
       sizeBytes: file.size,
-    }),
-  });
-  if (!finalizeRes.ok) {
-    const body = await finalizeRes.json().catch(() => ({}));
-    throw new Error(body.message ?? "Couldn't save the upload.");
+    } as Parameters<typeof mutations.finalizeAudioUpload>[0]);
+  } catch (error) {
+    throw new Error(failureCopy(error, "Couldn't save the upload."));
   }
-  return (await finalizeRes.json()) as { id: string };
 }

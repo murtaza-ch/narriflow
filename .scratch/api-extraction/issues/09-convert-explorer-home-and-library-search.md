@@ -4,7 +4,7 @@
 
 **Blocked by:** [08 - Expose Project and library reads and commands](08-expose-project-and-library-reads-and-commands.md), [05 - Expose session and Workspace controls](05-expose-session-and-workspace-controls.md), [07 - Move billing API and convert billing UI](07-move-billing-api-and-convert-billing-ui.md)
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Suggested implementer:** Claude. The other pairing side reviews and returns findings to this owner.
 
@@ -220,11 +220,11 @@ Rows retain their section/ordinal or exact source-line identifier from the indep
 
 ## Acceptance criteria
 
-- [ ] Home/explorer/search pages and every owned fetch/action/refresh site use domain factories; loaded extra pages retain paging/filter behavior and visible-only polling.
-- [ ] Workspace mismatch calls selection command and changes scope before navigation; old mutations never replay in the new Workspace.
-- [ ] Folder changes invalidate folders/project lists/home; no invalidate-all or blanket reload.
-- [ ] Type-only service imports move to safe DTOs; intentional navigation prefetch and request counts recorded.
-- [ ] No unowned files changed; paired review findings and verification evidence recorded under Comments.
+- [x] Home/explorer/search pages and every owned fetch/action/refresh site use domain factories; loaded extra pages retain paging/filter behavior and visible-only polling.
+- [x] Workspace mismatch calls selection command and changes scope before navigation; old mutations never replay in the new Workspace.
+- [x] Folder changes invalidate folders/project lists/home; no invalidate-all or blanket reload.
+- [x] Type-only service imports move to safe DTOs; intentional navigation prefetch and request counts recorded.
+- [x] No unowned files changed (paired review still to be run by the orchestrator); verification evidence recorded under Comments.
 
 ## Verification
 
@@ -238,4 +238,34 @@ Verify the changed flow in the running Next app against the separate API origin.
 
 ## Comments
 
-Append claim, requested seam changes, paired review and evidence here.
+Claimed and implemented by Claude (Sonnet 5.5), 2026-10-29. Paired review not run by the implementer. Signed-in browser pass NOT done (ticket 32).
+
+### What changed
+- Pages are data-free Suspense shells (`home/page.tsx`, `projects/page.tsx`, `search/page.tsx`) around client screens: `home/home-screen.tsx` (`projectQueries.home`), `projects/_components/projects-screen.tsx` (`projectQueries.explorer` + filters from the URL via `projectListQuerySchema`), `search/library-search.tsx` (`libraryQueries.search`, `clipCommands.createFromRange`). Existing `loading.tsx` files are the pending states. New small files: `projects/_lib/api.ts` (bound clients hook `useLibraryApi`, `ProjectListItem` DTO type, `failureMessage`, `usePrefetchExplorer`, folder invalidation incl. home) and `projects/_components/load-failure.tsx`.
+- Explorer: one request. The explorer queryFn seeds the paged `projectQueries.list` cache with page 1 (only when empty); the grid then reads the infinite query. Load more = `fetchNextPage`; polling = `refetchInterval` (6 s, only while a loaded Project is active; React Query does not poll hidden tabs and refetches on focus). A refetch re-reads each loaded page in order, as the old poll did. Filters stay in the URL; the previous grid stays up (`keepPreviousData`) while new filters load; the list waits (`enabled`) until the explorer has resolved for the current filters, so no duplicate page-1 read.
+- Folders: create (own `Idempotency-Key` intent, completed on success), rename, delete, drag-move and bulk move use `folderCommands`/`projectCommands.moveToFolder`; invalidation = 08's `invalidateAfterFolderChange` / `invalidateAfterProjectMoved` plus `projects/home` (08's folder helper omits home). Bulk move invalidates even when one move failed.
+- Delete: `projectCommands.remove`, 404 `project_not_found` counts as success, navigate to `/projects`, then `invalidateAfterProjectDeleted`.
+- Mismatch notice: `selectWorkspaceMutation` (adopts the Workspace in the runtime, clearing the old scope) and only then `router.push(returnTo)`. No command is replayed.
+- Global search: `libraryQueries.workspaceSearch` with 180 ms debounce, previous results kept while loading. Prop `workspaceId` of `GlobalSearch` kept (app-chrome unchanged).
+- Greeting: `greeting` was already unused by `DashboardView`; the prop and the server clock are gone.
+- Search `canCreate` = Workspace bootstrap `capabilities["content.edit"]` (the endpoint's own capability; old rule was role != viewer and active).
+- Types: every `@narriflow/services` import is gone from these files (`ProjectListItem` is the JSON DTO). No `router.refresh`, `fetch(`, `revalidatePath` or server action left.
+
+### Requests / notes for other owners
+- 10/06: whoever handles a 409 `active_workspace_mismatch` on a Project page must navigate to `/projects?requestFailure=active_workspace_mismatch&workspaceId=<id>&workspaceName=<name>&returnTo=<path>` (details carry `workspaceId`/`workspaceName`); the Projects screen renders the switch notice from those parameters, same URL contract as the deleted `recoveryDestination`.
+- 10: `DeleteProjectButton` (`variant="menu"|"button"|"icon"`) is self-contained (reads scope from the provider); still navigates to `/projects` on success.
+- 31: `projects/actions.ts` (folder/move/delete actions) has no caller left in my files; delete with the rest. `useWorkspaceBootstrap` in `_components/usage.ts` (07) is what Search uses; swap to 05's when 31 unifies.
+- Workspace restricted / signed-out on a content read: this screen shows "could not be loaded" with retry; the redirect to billing / workspace-unavailable is expected from the 06 shell gate, not repeated per page.
+- Known unchanged: renaming/creating a folder to a duplicate name still answers a generic failure (08 observation).
+
+### Requests recorded (acceptance: prefetch and request counts)
+- Home: 1 request (`GET /api/home`; shell bootstrap is shared). "View all" prefetches the default explorer on hover/focus.
+- Projects: 1 request (`GET /api/projects/explorer`); load more = 1 per page; poll = `GET /api/projects` per loaded page while active. Folder tiles prefetch that folder's explorer on hover/focus.
+- Search: 1 `GET /api/library/search` per submitted query (identical query within 30 s is cached; re-submitting the same text refetches). Global search: 1 `GET /api/workspace/search` per debounced term. Make a clip: 1 `POST .../clips/create-from-range`.
+
+### Evidence
+- `cd apps/web && bun test "app/(app)/home" "app/(app)/projects"` -> 503 pass, 0 fail (includes `project-card.test.tsx`, adapted to the provider mocks, `creation-tools.test.tsx`, `project-expiration.test.ts`).
+- `bun run --cwd apps/web typecheck` filtered to home, search, projects/_components, projects/_lib, projects/page, global-search -> no errors.
+- `bunx biome check` on all owned paths: clean except 5 pre-existing `noDescendingSpecificity` warnings in `home/hero-experience.module.css` (untouched).
+- NOT done: signed-in browser run against `next dev` + API (filters/back button, search debounce, load more, polling stop in background tab, drag-move, folder create/rename/delete, delete project, mismatch switch). Ticket 32.
+- No tests added for the explorer seeding/polling wiring (needs a rendered React Query harness); worth covering in the browser pass.

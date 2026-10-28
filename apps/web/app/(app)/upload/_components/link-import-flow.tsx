@@ -9,6 +9,7 @@ import type {
   LinkProviderId,
   RecipeSnapshot,
 } from "@narriflow/validators";
+import type { LinkResumeData } from "@narriflow/validators/api/ingest";
 import {
   DEFAULT_LINK_CONFIGURE_STATE,
   type LinkConfigureState,
@@ -18,20 +19,8 @@ import type { IngestStageStatus } from "../_lib/use-ingest-stream";
 import { CommitStep, type CommitStepResult } from "./commit-step";
 import { ConfigureStep } from "./configure-step";
 
-export interface LinkResumeData {
-  projectId: string;
-  title: string;
-  sourceProvider: string | null;
-  sourceMediaUrl: string;
-  /** The link as pasted; a stored media URL doesn't always say which video it is. */
-  sourceInput: string | null;
-  languageCode: string | null;
-  ingestStatus: IngestStageStatus;
-  ingestErrorCode: string | null;
-  /** The ingest is a Google Drive Picker import, which can't be retried. */
-  ingestFromDrivePicker: boolean;
-  contentPack: ContentPack;
-}
+/** The draft Step 2 (Configure) rehydrates, from `GET /api/ingest/:projectId/resume`. */
+export type { LinkResumeData };
 
 export interface UploadUsageSummary {
   tier: string;
@@ -64,7 +53,7 @@ interface LinkImportFlowProps {
   };
   usageSummary: UploadUsageSummary;
   /** Present when the page mounted with `?project=<id>` — skips Step 1
-   *  entirely and rehydrates Step 2 from the server-loaded draft. */
+   *  entirely and rehydrates Step 2 from the resumed draft. */
   resumeData: LinkResumeData | null;
   /** A file chosen in the Google Drive Picker; Step 1 imports it instead of a link. */
   driveFile?: DrivePick | null;

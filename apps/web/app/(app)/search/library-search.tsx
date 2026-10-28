@@ -1,17 +1,24 @@
 "use client";
 
-import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useRef, useState, type FormEvent, type ReactNode } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Box, chakra, Flex, Skeleton, Stack, Text } from "@chakra-ui/react";
 import { ArrowRight, Quote, RotateCw, Scissors, Search, SearchX, Sparkles } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
 import { EmptyState } from "@narriflow/ui/components/empty-state";
+import SearchLoading from "./loading";
 import { PageHeader } from "@narriflow/ui/components/page-header";
 import { Spinner } from "@narriflow/ui/components/spinner";
 import { toaster } from "@narriflow/ui/components/toaster";
-import { userErrorMessage, type LibraryPassage } from "@narriflow/validators";
+import { clipCommands, invalidateAfterClipChange } from "@narriflow/api-client/clips";
+import { type LibrarySearchData, libraryQueries } from "@narriflow/api-client/library";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { formatDuration } from "@/lib/format";
+import { useWorkspaceBootstrap } from "../_components/usage";
+import { failureMessage, type LibraryApi, useLibraryApi } from "../projects/_lib/api";
+
+type LibraryPassage = LibrarySearchData["results"][number];
 
 type SearchState =
   | { status: "idle" }
@@ -19,10 +26,8 @@ type SearchState =
   | { status: "error"; message: string }
   | { status: "done"; query: string; results: LibraryPassage[] };
 
-async function failureMessage(response: Response) {
-  const payload = (await response.json().catch(() => null)) as { error?: string; message?: string } | null;
-  return userErrorMessage(payload?.error) ?? payload?.message ?? "Something went wrong. Please try again.";
-}
+const SEARCH_FAILURE = "Something went wrong. Please try again.";
+const MAX_QUERY_LENGTH = 300;
 
 const EXAMPLES = ["What did we say about pricing?", "a funny story", "our biggest mistake", "advice for beginners"];
 
@@ -42,16 +47,42 @@ function highlight(text: string, query: string): ReactNode {
   );
 }
 
-export function LibrarySearch({ initialQuery, canCreate }: { initialQuery: string; canCreate: boolean }) {
+export function LibrarySearch() {
+  const api = useLibraryApi();
+  return api ? <SearchContent api={api} /> : <SearchLoading />;
+}
+
+function SearchContent({ api }: { api: LibraryApi }) {
   const router = useRouter();
+  const queryClient = useQueryClient();
+  const initialQuery = useSearchParams().get("q")?.slice(0, MAX_QUERY_LENGTH) ?? "";
   const [query, setQuery] = useState(initialQuery);
-  const [state, setState] = useState<SearchState>({ status: "idle" });
+  // A shared link opens with its results.
+  const [submitted, setSubmitted] = useState<string | null>(
+    initialQuery.trim().length >= 2 ? initialQuery.trim() : null,
+  );
   const [creating, setCreating] = useState<string | null>(null);
   const [tooShort, setTooShort] = useState(false);
-  const latest = useRef(0);
   const input = useRef<HTMLInputElement>(null);
+  const results = useQuery({
+    ...libraryQueries.search(api.library, api.scope, { q: submitted ?? "" }),
+    enabled: submitted !== null,
+  });
+  // Making a clip needs the same capability as the endpoint; the shell already loaded it.
+  const canCreate = useWorkspaceBootstrap(api.scope).data?.capabilities["content.edit"] ?? false;
+  // One intent for the clip being made: a retry replays it instead of making a second clip.
+  const [clipIntent] = useState(() => api.runtime.createIntent<{ projectId: string; startSec: number; endSec: number }>());
 
-  async function search(text: string) {
+  const state = ((): SearchState => {
+    if (submitted === null) return { status: "idle" };
+    if (results.data) return { status: "done", query: submitted, results: results.data.results };
+    if (results.isError && !results.isFetching) {
+      return { status: "error", message: failureMessage(results.error, SEARCH_FAILURE) };
+    }
+    return { status: "loading" };
+  })();
+
+  function search(text: string) {
     const normalized = text.trim();
     // The button stays live; a too-short query says why instead of greying it out.
     setTooShort(normalized.length < 2);
@@ -59,59 +90,46 @@ export function LibrarySearch({ initialQuery, canCreate }: { initialQuery: strin
       input.current?.focus();
       return;
     }
-    const request = ++latest.current;
-    setState({ status: "loading" });
     router.replace(`/search?q=${encodeURIComponent(normalized)}`, { scroll: false });
-    try {
-      const response = await fetch(`/api/library/search?q=${encodeURIComponent(normalized)}`);
-      if (request !== latest.current) return;
-      if (!response.ok) {
-        setState({ status: "error", message: await failureMessage(response) });
-        return;
-      }
-      const body = (await response.json()) as { results: LibraryPassage[] };
-      setState({ status: "done", query: normalized, results: body.results });
-    } catch {
-      if (request === latest.current) setState({ status: "error", message: "Network error. Please try again." });
-    }
+    if (normalized === submitted) void results.refetch();
+    else setSubmitted(normalized);
   }
-
-  // A shared link opens with its results.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: runs once for the URL's query
-  useEffect(() => {
-    if (initialQuery.trim().length >= 2) void search(initialQuery);
-  }, []);
 
   function submit(event: FormEvent) {
     event.preventDefault();
-    void search(query);
+    search(query);
   }
 
-  async function makeClip(passage: LibraryPassage) {
-    const key = `${passage.projectId}:${passage.startMs}`;
-    setCreating(key);
-    try {
-      const response = await fetch(`/api/projects/${passage.projectId}/clips/create-from-range`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ startSec: passage.startMs / 1000, endSec: passage.endMs / 1000 }),
-      });
-      if (!response.ok) {
-        toaster.create({ type: "error", title: "Could not create the clip", description: await failureMessage(response) });
-        return;
-      }
-      const clip = (await response.json()) as { id: string };
-      router.push(`/projects/${passage.projectId}/clips/${clip.id}/studio`);
-    } catch {
-      toaster.create({ type: "error", title: "Could not create the clip", description: "Network error. Please try again." });
-    } finally {
-      setCreating(null);
-    }
+  const makeClip = useMutation({
+    retry: false,
+    mutationFn: async (passage: LibraryPassage) => {
+      const range = { startSec: passage.startMs / 1000, endSec: passage.endMs / 1000 };
+      const clip = await clipCommands.createFromRange(
+        api.clips,
+        passage.projectId,
+        range,
+        clipIntent.keyFor({ projectId: passage.projectId, ...range }),
+      );
+      clipIntent.complete();
+      return { projectId: passage.projectId, clipId: clip.id };
+    },
+    onSuccess: ({ projectId, clipId }) => {
+      router.push(`/projects/${projectId}/clips/${clipId}/studio`);
+      void invalidateAfterClipChange(queryClient, api.scope, projectId);
+    },
+    onError: (error) =>
+      toaster.create({ type: "error", title: "Could not create the clip", description: failureMessage(error, "Network error. Please try again.") }),
+    onSettled: () => setCreating(null),
+  });
+
+  function startClip(passage: LibraryPassage) {
+    setCreating(`${passage.projectId}:${passage.startMs}`);
+    makeClip.mutate(passage);
   }
 
   const runExample = (example: string) => {
     setQuery(example);
-    void search(example);
+    search(example);
   };
 
   return (
@@ -227,7 +245,7 @@ export function LibrarySearch({ initialQuery, canCreate }: { initialQuery: strin
             title="Search is unavailable"
             description={state.message}
             action={
-              <Button size="sm" variant="subtle" onClick={() => void search(query)}>
+              <Button size="sm" variant="subtle" onClick={() => search(query)}>
                 <RotateCw size={13} aria-hidden /> Try again
               </Button>
             }
@@ -277,7 +295,7 @@ export function LibrarySearch({ initialQuery, canCreate }: { initialQuery: strin
                       </Text>
                     </Stack>
                     {canCreate ? (
-                      <Button size="sm" variant="subtle" flexShrink={0} disabled={creating !== null} onClick={() => void makeClip(passage)}>
+                      <Button size="sm" variant="subtle" flexShrink={0} disabled={creating !== null} onClick={() => startClip(passage)}>
                         {creating === key ? <Spinner size="xs" /> : <Scissors size={13} aria-hidden />}
                         Make a clip
                       </Button>

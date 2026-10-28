@@ -17,13 +17,13 @@ import {
 	type PublishingPreviewRequest,
 	type SocialAccountSnapshot,
 } from "@narriflow/validators";
+import { isApiError } from "@narriflow/api-client";
 import { formatDateInputInTimeZone } from "@/lib/format";
 import {
 	applyGeneratedDescription,
 	blankPublishingDraft,
 	currentPublicationExport,
 	publishingDraftKey,
-	PublishingRequestError,
 } from "./publishing-draft";
 
 export type PublishingCompositionFacts = {
@@ -509,7 +509,7 @@ export function createPublishingCompositionSession(dependencies: {
 			return merged;
 		} catch (error) {
 			if (
-				error instanceof PublishingRequestError &&
+				isApiError(error) &&
 				error.status >= 400 &&
 				error.status < 500 &&
 				![408, 409, 429].includes(error.status)

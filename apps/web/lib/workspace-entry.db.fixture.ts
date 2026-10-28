@@ -1,6 +1,7 @@
-import { afterAll, beforeAll, describe, expect, mock, setDefaultTimeout, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, mock, setDefaultTimeout, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
+import type { ClerkUserDirectory } from "@narriflow/auth";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@prisma/client";
 import { Pool } from "pg";
@@ -14,11 +15,18 @@ let payload: Record<string, unknown>;
 let failProvisioning = false;
 let templateId: string;
 const { ClerkAPIResponseError } = createRequire(import.meta.resolve("@clerk/nextjs"))("@clerk/shared/error");
-const getClerkUser = mock(async (id: string) => ({ id }));
-mock.module("server-only", () => ({}));
+// The Clerk Backend API as the API sees it: the verified user is fetched by id, and a
+// different id is the previous holder of an email, whose lookup a test can script.
+let previousIdentityLookup: (() => Promise<unknown>) | null = null;
+const getClerkUser = mock(async (id: string) => {
+  if (id !== payload.id && previousIdentityLookup) return previousIdentityLookup();
+  return id === payload.id ? payload : { id };
+});
+const clerkDirectory = { users: { getUser: getClerkUser } } as unknown as ClerkUserDirectory;
 mock.module("@narriflow/db/client", () => ({ getPrismaClient: () => failProvisioning ? { ...prisma, workspace: { ...prisma.workspace, upsert: async () => { throw new Error("Injected database outage"); } } } : prisma }));
-mock.module("@clerk/nextjs/server", () => ({ auth: async () => ({ userId: payload.id }), currentUser: async () => payload, clerkClient: async () => ({ users: { getUser: getClerkUser } }) }));
-const { getCurrentAppUser, syncClerkUserPayload, markUserDeletedByClerkId } = await import("@narriflow/auth");
+const { ClerkDirectoryUnavailableError, getAppUserForClerkIdentity, syncClerkUserPayload, markUserDeletedByClerkId } = await import("@narriflow/auth");
+/** What the API runs for a verified session token: lookup, first-login sync, personal Workspace. */
+const getCurrentAppUser = () => getAppUserForClerkIdentity(String(payload.id), clerkDirectory);
 
 function clerkProfile(name?: string, provider = "oauth_apple") {
   const id = `workspace-entry-${randomUUID()}`;
@@ -32,6 +40,7 @@ beforeAll(async () => {
   const template = await prisma.brandTemplate.upsert({ where: { builtInKey: "karaoke" }, create: { name: "Karaoke", builtInKey: "karaoke", isBuiltIn: true, captionPreset: {} }, update: {} });
   templateId = template.id;
 });
+afterEach(() => { previousIdentityLookup = null; });
 afterAll(async () => { await prisma?.$disconnect(); await pool?.end(); });
 
 async function expectWorkspace(userId: string, name: string) {
@@ -102,7 +111,7 @@ describe("automatic workspace entry before webhook delivery", () => {
     const previous = clerkProfile(); payload = previous;
     const oldUser = await getCurrentAppUser();
     const next = clerkProfile(); next.emailAddresses[0].emailAddress = previous.emailAddresses[0].emailAddress; payload = next;
-    getClerkUser.mockRejectedValueOnce(new ClerkAPIResponseError("Not found", { status: 404, data: [{ code: "resource_not_found", message: "Not found" }] }));
+    previousIdentityLookup = async () => { throw new ClerkAPIResponseError("Not found", { status: 404, data: [{ code: "resource_not_found", message: "Not found" }] }); };
     const newUser = await getCurrentAppUser();
     expect(getClerkUser).toHaveBeenLastCalledWith(previous.id);
     expect(newUser!.id).not.toBe(oldUser!.id);
@@ -117,8 +126,9 @@ describe("automatic workspace entry before webhook delivery", () => {
     expect(identityCount).toBeGreaterThan(0);
     const next = clerkProfile(); next.emailAddresses[0].emailAddress = previous.emailAddresses[0].emailAddress; payload = next;
     await expect(getCurrentAppUser()).rejects.toMatchObject({ code: "P2002" });
-    getClerkUser.mockRejectedValueOnce(new ClerkAPIResponseError("Clerk unavailable", { status: 503, data: [] }));
-    await expect(getCurrentAppUser()).rejects.toThrow("Clerk unavailable");
+    previousIdentityLookup = async () => { throw new ClerkAPIResponseError("Clerk unavailable", { status: 503, data: [] }); };
+    // A directory outage is a retryable 503 for the API, never a sign-out.
+    await expect(getCurrentAppUser()).rejects.toBeInstanceOf(ClerkDirectoryUnavailableError);
     const retainedUser = await prisma.user.findUniqueOrThrow({ where: { id: oldUser!.id } });
     expect(retainedUser.deletedAt).toBeNull(); expect(retainedUser.primaryEmail).toBe(previous.emailAddresses[0].emailAddress);
     expect(await prisma.authIdentity.count({ where: { userId: oldUser!.id } })).toBe(identityCount);

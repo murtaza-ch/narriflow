@@ -4,7 +4,7 @@ import { PlanLimitNotice } from "../../_components/plan-limit-notice";
 import { LockedButton, useUpgrade, type UpgradePrompt } from "../../_components/upgrade";
 import { Box, Flex, Grid, Menu, Portal, Stack, Text, chakra } from "@chakra-ui/react";
 import { Check, Gem, MoreVertical, Plus, Star, Trash2, Type } from "lucide-react";
-import { useRouter } from "next/navigation";
+import { useMutation } from "@tanstack/react-query";
 import { useState } from "react";
 import { Button, IconButton } from "@narriflow/ui/components/button";
 import { Checkbox } from "@narriflow/ui/components/checkbox";
@@ -16,6 +16,7 @@ import { SegmentedControl } from "@narriflow/ui/components/segmented-control";
 import { Slider } from "@narriflow/ui/components/slider";
 import { toaster } from "@narriflow/ui/components/toaster";
 import type { SceneTemplateDefinition, SceneTemplateRole } from "@narriflow/validators";
+import { failureMessage, useBrandApi, useIntent } from "../_components/brand-api";
 import { CoverChip, SWATCH_RING, TabToolbar, plural, type BrandColors } from "../_components/brand-kit-ui";
 import { STYLE_GRID_COLUMNS } from "../_components/template-gallery";
 
@@ -36,6 +37,13 @@ export interface SceneTemplateFont {
 	missing: boolean;
 }
 
+interface SceneJob {
+  /** What is busy while it runs: a scene id, or `create`. */
+  key: string;
+  success: string;
+  run: () => Promise<unknown>;
+}
+
 const ROLE_LABEL: Record<SceneTemplateRole, string> = { intro: "Intro", inline: "Inline", outro: "Outro" };
 const ROLE_OPTIONS = (["intro", "inline", "outro"] as const).map((value) => ({ label: ROLE_LABEL[value], value }));
 
@@ -51,31 +59,27 @@ function ScenePreview({ text, color, backgroundColor, fontFamily, large = false 
 }
 
 export function SceneTemplateManager({ profileId, scenes, fonts, colors, canManage, canManageDefaults, createRequirement, createUpgrade, defaultsRequirement, defaultsUpgrade }: { profileId: string; scenes: SceneTemplateCard[]; fonts: SceneTemplateFont[]; /** The profile's palette, offered for scene text and backgrounds. */ colors: BrandColors; /** `brand.manage`: without it the scenes are read-only (the page says whom to ask). */ canManage: boolean; canManageDefaults: boolean; /** Why the plan can't create scenes; `null` when it can. Deleting stays available. */ createRequirement: string | null; /** The plan that lifts `createRequirement`; `null` when none does. */ createUpgrade: UpgradePrompt | null; /** Why the plan can't set default intros and outros; `null` when it can. */ defaultsRequirement: string | null; /** The plan that unlocks default intros and outros; `null` when the plan has them or none does. */ defaultsUpgrade: UpgradePrompt | null }) {
-  const router = useRouter();
-  const [busy, setBusy] = useState<string | null>(null);
+  const { mutations, invalidate } = useBrandApi();
+  const createIntent = useIntent<unknown>();
   const [composing, setComposing] = useState(false);
   const { confirm, dialog } = useConfirm();
-	const activeFont = fonts.find((font) => !font.missing) ?? null;
+  const activeFont = fonts.find((font) => !font.missing) ?? null;
 
-  const request = async (key: string, url: string, init: RequestInit, success: string) => {
-    setBusy(key);
-    try {
-      const response = await fetch(url, { ...init, headers: { "Content-Type": "application/json", ...init.headers } });
-      const payload = await response.json().catch(() => null);
-      if (!response.ok) throw new Error(payload?.message || "Scene template could not be saved");
-      toaster.create({ type: "success", title: success });
-      router.refresh();
-      return true;
-    } catch (reason) {
-      toaster.create({ type: "error", title: "Scene not saved", description: reason instanceof Error ? reason.message : "Scene template could not be saved" });
-      return false;
-    } finally { setBusy(null); }
-  };
+  const save = useMutation({
+    mutationFn: (job: SceneJob) => job.run(),
+    onSuccess: async (_result, job) => {
+      toaster.create({ type: "success", title: job.success });
+      await invalidate();
+    },
+    onError: (reason) => toaster.create({ type: "error", title: "Scene not saved", description: failureMessage(reason, "Scene template could not be saved") }),
+  });
+  const busy = save.isPending ? save.variables.key : null;
+  const request = (job: SceneJob) => save.mutateAsync(job).then(() => true, () => false);
 
   async function remove(scene: SceneTemplateCard) {
     const confirmed = await confirm({ title: `Delete "${scene.name}"?`, description: "Clips that already use it keep their copy.", confirmLabel: "Delete", destructive: true });
     if (!confirmed) return;
-    await request(scene.id, `/api/brand-profiles/${profileId}/scene-templates/${scene.id}`, { method: "DELETE", body: JSON.stringify({ expectedRevision: scene.revision }) }, "Scene deleted");
+    await request({ key: scene.id, success: "Scene deleted", run: () => mutations.deleteScene(profileId, scene.id, { expectedRevision: scene.revision }) });
   }
 
   const newScene = !canManage ? null : createRequirement === null ? (
@@ -127,7 +131,7 @@ export function SceneTemplateManager({ profileId, scenes, fonts, colors, canMana
                         <Menu.Positioner>
                           <Menu.Content>
                             {canDefault && canManageDefaults ? (
-                              <Menu.Item value="default" onClick={() => void request(scene.id, `/api/brand-profiles/${profileId}/scene-templates/${scene.id}`, { method: "PATCH", body: JSON.stringify({ expectedRevision: scene.revision, makeDefault: true }) }, `Default ${scene.role} updated`)}>
+                              <Menu.Item value="default" onClick={() => void request({ key: scene.id, success: `Default ${scene.role} updated`, run: () => mutations.updateScene(profileId, scene.id, { expectedRevision: scene.revision, makeDefault: true }) })}>
                                 <Star size={14} /> Make default {scene.role}
                               </Menu.Item>
                             ) : null}
@@ -159,14 +163,16 @@ export function SceneTemplateManager({ profileId, scenes, fonts, colors, canMana
           saving={busy === "create"}
           defaultsNotice={defaultsRequirement && defaultsUpgrade ? { message: defaultsRequirement, upgrade: defaultsUpgrade } : null}
           onCreate={async (input) => {
-            const ok = await request("create", `/api/brand-profiles/${profileId}/scene-templates`, {
-              method: "POST",
-              body: JSON.stringify({
-                name: input.name.trim(), role: input.role, makeDefault: canManageDefaults && input.role !== "inline" && input.makeDefault,
-                definition: { schemaVersion: 1, durationSec: input.durationSec, content: { kind: "text", text: input.text.trim(), fontFamily: activeFont?.family ?? "Archivo", fontAsset: activeFont ? { kind: "brand_font", id: activeFont.id, fingerprint: activeFont.fingerprint } : null, color: input.color, backgroundColor: input.backgroundColor }, motion: { entrance: "fade", exit: "fade" } },
-              }),
-            }, "Scene saved");
-            if (ok) setComposing(false);
+            const body = {
+              name: input.name.trim(), role: input.role, makeDefault: canManageDefaults && input.role !== "inline" && input.makeDefault,
+              definition: { schemaVersion: 1 as const, durationSec: input.durationSec, content: { kind: "text" as const, text: input.text.trim(), fontFamily: activeFont?.family ?? "Archivo", fontAsset: activeFont ? { kind: "brand_font" as const, id: activeFont.id, fingerprint: activeFont.fingerprint } : null, color: input.color, backgroundColor: input.backgroundColor }, motion: { entrance: "fade" as const, exit: "fade" as const } },
+            };
+            // The same draft keeps its idempotency key through retries; a changed one is a new scene.
+            const ok = await request({ key: "create", success: "Scene saved", run: () => mutations.createScene(profileId, body, createIntent.keyFor(body)) });
+            if (ok) {
+              createIntent.complete();
+              setComposing(false);
+            }
             return ok;
           }}
         />

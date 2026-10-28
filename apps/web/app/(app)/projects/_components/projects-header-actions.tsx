@@ -1,50 +1,51 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { Flex, Input, Popover, Portal, Stack, Text } from "@chakra-ui/react";
 import { FolderPlus, Plus } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
-import { createFolderAction } from "../actions";
-import { authenticatedActionResultMessage } from "@/lib/authenticated-request-browser";
+import { folderCommands, libraryMutationOptions } from "@narriflow/api-client/library";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { failureMessage, invalidateAfterFolderChanged, type LibraryApi } from "../_lib/api";
 
 export function ProjectsHeaderActions({
+  api,
   canCreate,
   canEdit,
 }: {
+  api: LibraryApi;
   canCreate: boolean;
   canEdit: boolean;
 }) {
-  const router = useRouter();
+  const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [pending, startTransition] = useTransition();
+  // One intent per form: a retry after a timeout replays the same folder instead of making a second.
+  const [intent] = useState(() => api.runtime.createIntent<{ name: string }>());
+
+  const create = useMutation({
+    ...libraryMutationOptions,
+    mutationFn: (folderName: string) =>
+      folderCommands.create(api.library, folderName, intent.keyFor({ name: folderName })),
+    onSuccess: () => {
+      intent.complete();
+      setName("");
+      setError(null);
+      setOpen(false);
+      void invalidateAfterFolderChanged(queryClient, api.scope);
+    },
+    onError: (failure) => setError(failureMessage(failure, "The folder could not be created.")),
+  });
+  const pending = create.isPending;
 
   function save() {
     if (!name.trim()) {
       setError("Enter a folder name");
       return;
     }
-
-    startTransition(async () => {
-      const result = await createFolderAction(name);
-      if (!result.ok) {
-        setError(
-          authenticatedActionResultMessage(
-            result,
-            "The folder could not be created.",
-          ),
-        );
-        return;
-      }
-
-      setName("");
-      setError(null);
-      setOpen(false);
-      router.refresh();
-    });
+    create.mutate(name);
   }
 
   return (

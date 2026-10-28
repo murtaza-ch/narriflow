@@ -1,17 +1,16 @@
 "use client";
 
-import { useState, useTransition } from "react";
-import { useRouter } from "next/navigation";
 import { Stack, Text } from "@chakra-ui/react";
 import { ArrowRight } from "lucide-react";
+import { useRouter } from "next/navigation";
 import { Button } from "@narriflow/ui/components/button";
-import { switchWorkspaceAction } from "../(app)/_actions/workspace";
-import { authenticatedActionResultMessage, isAuthenticatedActionFailure } from "@/lib/authenticated-request-browser";
+import { apiErrorMessage } from "@/app/_components/query-mutation-form";
+import { useWorkspaceSwitch } from "@/app/_components/workspace-query-gate";
 
 export function OpenWorkspaceButton({ workspaceId }: { workspaceId: string }) {
   const router = useRouter();
-  const [pending, startTransition] = useTransition();
-  const [error, setError] = useState<string | null>(null);
+  const { switchTo, pending, error } = useWorkspaceSwitch();
+  const message = error ? apiErrorMessage(error, "This workspace could not be opened.") : null;
   return (
     <Stack gap="1" align="flex-end" flexShrink={0}>
       <Button
@@ -20,21 +19,14 @@ export function OpenWorkspaceButton({ workspaceId }: { workspaceId: string }) {
         bg="bg.panel"
         _hover={{ bg: "bg.muted" }}
         loading={pending}
-        onClick={() =>
-          startTransition(async () => {
-            const result = await switchWorkspaceAction(workspaceId);
-            if (isAuthenticatedActionFailure(result)) {
-              setError(authenticatedActionResultMessage(result, "This workspace could not be opened."));
-              return;
-            }
-            router.push("/home");
-          })
-        }
+        onClick={async () => {
+          if (await switchTo(workspaceId)) router.push("/home");
+        }}
       >
         Open
         <ArrowRight size={14} aria-hidden />
       </Button>
-      {error ? <Text role="alert" fontSize="12px" color="danger.fg">{error}</Text> : null}
+      {message ? <Text role="alert" fontSize="12px" color="danger.fg">{message}</Text> : null}
     </Stack>
   );
 }

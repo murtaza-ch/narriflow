@@ -2,24 +2,25 @@
 
 import { useEffect, useEffectEvent, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import { linkMetadataQueryOptions } from "@narriflow/api-client/ingest";
+import { useQuery } from "@tanstack/react-query";
 import { chakra, Flex, Stack, Text } from "@chakra-ui/react";
 import { Sparkles, ArrowRight } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
 import { Spinner } from "@narriflow/ui/components/spinner";
-import type {
-  CaptionPresetId,
-  ClipLengthPreset,
-  ClipPlatformTarget,
-  ContentPack,
-  GenerationMode,
-} from "@narriflow/validators";
 import {
-  fetchYoutubeMetadataAction,
-  finalizeLinkConfigureAction,
-  saveGenerationDraftAction,
-} from "../actions";
-import { isAuthenticatedActionFailure, upgradePromptFromFailure } from "@/lib/authenticated-request-browser";
+  detectLinkProvider,
+  type CaptionPresetId,
+  type ClipLengthPreset,
+  type ClipPlatformTarget,
+  type ContentPack,
+  type GenerationMode,
+} from "@narriflow/validators";
+import { isApiError } from "@narriflow/api-client/core";
+import { upgradePromptFromFailure } from "@/lib/authenticated-request-browser";
 import type { UpgradePrompt } from "../../_components/upgrade";
+import { useIntake } from "../_lib/intake-context";
+import { failureFromApiError, intakeFailureMessage } from "../_lib/intake-failure";
 import { UploadRefusalUpgrade } from "./upload-session-status";
 import {
   buildLinkContentPack,
@@ -63,10 +64,13 @@ export function ConfigureStep({
   initialStep2,
 }: ConfigureStepProps) {
   const router = useRouter();
-  const ingestStream = useIngestStream(projectId, {
+  const intake = useIntake();
+  // What the stream starts from. A retry hands it a fresh queued import.
+  const [ingestStart, setIngestStart] = useState({
     ingestStatus: initialIngestStatus,
     errorCode: initialIngestErrorCode,
   });
+  const ingestStream = useIngestStream(projectId, ingestStart);
 
   const [clipLengthPreset, setClipLengthPreset] = useState<ClipLengthPreset>(
     initialStep2.clipLengthPreset,
@@ -98,26 +102,14 @@ export function ConfigureStep({
   const [saveDraftError, setSaveDraftError] = useState<string | null>(null);
   const [displayTitle, setDisplayTitle] = useState(title);
 
+  // A link imported without a title shows the one YouTube publishes; no title is simply no change.
+  const { data: metadata } = useQuery({
+    ...linkMetadataQueryOptions({ transport: intake.transport, scope: intake.scope, url: sourceMediaUrl }),
+    enabled: title === "Link Import" && detectLinkProvider(sourceMediaUrl) === "youtube",
+  });
   useEffect(() => {
-    if (title !== "Link Import") return;
-
-    let cancelled = false;
-    fetchYoutubeMetadataAction(sourceMediaUrl)
-      .then((result) => {
-        if (
-          cancelled ||
-          isAuthenticatedActionFailure(result) ||
-          !result.title
-        )
-          return;
-        setDisplayTitle(result.title);
-      })
-      .catch(() => {});
-
-    return () => {
-      cancelled = true;
-    };
-  }, [sourceMediaUrl, title]);
+    if (metadata?.title) setDisplayTitle(metadata.title);
+  }, [metadata?.title]);
 
   // Same builder finalize uses, kept as one ContentPack the "finish later"
   // paths and the CTA both read from — a user who never touches these
@@ -162,16 +154,17 @@ export function ConfigureStep({
     if (savingDraft) return;
     setSavingDraft(true);
     setSaveDraftError(null);
-    const result = await saveGenerationDraftAction({
-      projectId,
-      contentPack: currentContentPack,
-      languageCode: languageCode === "auto" ? null : languageCode,
-    });
-    if (!result.ok) {
+    try {
+      await intake.actions.saveDraft(projectId, {
+        contentPack: currentContentPack,
+        languageCode: languageCode === "auto" ? null : languageCode,
+      });
+    } catch (error) {
       setSavingDraft(false);
-      setSaveDraftError(result.message);
+      setSaveDraftError(intakeFailureMessage(error, "Could not save your settings. Please try again."));
       return;
     }
+    void intake.accepted();
     router.push(`/projects/${projectId}`);
   }
 
@@ -180,21 +173,21 @@ export function ConfigureStep({
     setFinalizeError(null);
     setFinalizeUpgrade(null);
 
-    const contentPack = currentContentPack;
-
-    const result = await finalizeLinkConfigureAction({
-      projectId,
-      contentPack,
-      languageCode: languageCode === "auto" ? null : languageCode,
-    });
-
-    if (!result.ok) {
+    let result: Awaited<ReturnType<typeof intake.actions.finalize>>;
+    try {
+      result = await intake.actions.finalize(projectId, {
+        contentPack: currentContentPack,
+        languageCode: languageCode === "auto" ? null : languageCode,
+      });
+    } catch (error) {
       setCtaPhase("idle");
-      setFinalizeError(result.message);
-      setFinalizeUpgrade(upgradePromptFromFailure(result));
+      setFinalizeError(intakeFailureMessage(error, "Could not start clip generation. Please try again."));
+      // Same refusal shape as Commit, so Configure can offer the plan that admits the source.
+      setFinalizeUpgrade(isApiError(error) ? upgradePromptFromFailure(failureFromApiError(error)) : null);
       return;
     }
     if (result.started) {
+      void intake.accepted();
       router.push(`/projects/${projectId}`);
       return;
     }
@@ -258,6 +251,7 @@ export function ConfigureStep({
             projectId={projectId}
             errorCode={ingestStream.errorCode}
             fromDrivePicker={ingestFromDrivePicker}
+            onRetried={() => setIngestStart({ ingestStatus: "queued", errorCode: null })}
             onSaveAndFinishLater={handleSaveAndFinishLater}
             savingDraft={savingDraft}
             saveDraftError={saveDraftError}

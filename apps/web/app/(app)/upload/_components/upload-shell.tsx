@@ -43,6 +43,7 @@ import {
   googleDriveFileViewUrl,
   LINK_PROVIDERS,
 } from "@narriflow/validators";
+import { isApiError } from "@narriflow/api-client/core";
 import { formatDate, formatTimecode } from "@/lib/format";
 import {
   authenticatedRequestFailureMessage,
@@ -66,13 +67,11 @@ import {
   UploadSessionSecondaryActions,
   UploadSessionStatusPanel,
 } from "./upload-session-status";
-import {
-  buildUploadGenerationContext,
-  buildUploadSettingsFormData,
-} from "../_lib/content-pack-form";
+import { buildUploadGenerationContext } from "../_lib/content-pack-form";
+import { useIntake } from "../_lib/intake-context";
+import { failureFromApiError } from "../_lib/intake-failure";
 import { safelyGetUploadResumeStorage } from "../_lib/upload-resume";
 import { createUploadSessionBrowserAdapter } from "../_lib/upload-session-browser";
-import { generateFromRssAction } from "../actions";
 import type { DrivePick } from "../_lib/google-drive-picker";
 import type { SourcePickerConfig } from "../_lib/source-pickers";
 import { SourcePickers } from "./source-pickers";
@@ -159,7 +158,7 @@ interface UploadShellProps {
   initialSource?: PasteOverride;
   initialMode?: GenerationMode;
   /** Present when the page mounted with `?project=<id>` — the link flow's
-   *  Step 2 (Configure) resume, loaded and validated server-side. */
+   *  Step 2 (Configure) resume, read from the resume query. */
   resumeData: LinkResumeData | null;
   usageSummary: UploadUsageSummary;
   /** Cloud file pickers the deployment has configured. */
@@ -178,16 +177,19 @@ export function UploadShell({
   sourcePickers,
 }: UploadShellProps) {
   const router = useRouter();
+  const intake = useIntake();
   const createUploadAdapter = useCallback(
     () =>
       createUploadSessionBrowserAdapter({
         storage: safelyGetUploadResumeStorage(() => window.localStorage),
+        // The bytes go straight to storage; only these five commands reach the API.
+        controls: intake.actions.uploadSessions,
         navigate(projectId) {
+          void intake.accepted();
           router.push(`/projects/${projectId}`);
-          router.refresh();
         },
       }),
-    [router],
+    [router, intake],
   );
   // A disposed adapter ignores every later call, so the effect that disposes
   // an adapter must also be the one that created it. A memoized adapter
@@ -589,7 +591,6 @@ export function UploadShell({
       processingEndSec: hasCustomWindow ? nextEndSec : null,
       captionPreset,
       brandTemplateId,
-      brandProfileId,
       clipCountTarget,
       platformTargets,
       toneConstraints,
@@ -638,39 +639,21 @@ export function UploadShell({
     setRssNotice(null);
     setRssError(null);
     try {
-      const response = await fetch("/api/ingest/rss/preview", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ rssUrl: url.trim() }),
-      });
-      const payload = (await response.json()) as {
-        error?: string;
-        message?: string;
-        requestId?: string;
-        details?: Record<string, unknown>;
-        issues?: BrowserRequestFailure["issues"];
-        retryAfterSeconds?: number;
-        episodes?: RssEpisode[];
-      };
-      if (!response.ok || !payload.episodes) {
-        const message = recoverRssRequest(
-          payload,
-          setRssError,
-          "Could not load RSS episodes.",
-        );
-        toaster.error({ title: "RSS preview failed", description: message });
-        return;
-      }
-      setRssEpisodes(payload.episodes);
-      setSelectedEpisodeIds(payload.episodes.slice(0, 1).map((e) => e.id));
+      const payload = await intake.actions.previewRss({ rssUrl: url.trim() });
+      const episodes: RssEpisode[] = payload.episodes;
+      setRssEpisodes(episodes);
+      setSelectedEpisodeIds(episodes.slice(0, 1).map((e) => e.id));
       setRssEpisodeQuery("");
       setRssEpisodeLimit(RSS_EPISODE_PAGE_SIZE);
       rssCommitTokenRef.current = null;
-      setRssNotice(`Found ${payload.episodes.length} episodes.`);
+      setRssNotice(`Found ${episodes.length} episodes.`);
     } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Could not preview RSS feed.";
-      setRssError(message);
+      const message = isApiError(error)
+        ? recoverRssRequest(failureFromApiError(error), setRssError, "Could not load RSS episodes.")
+        : error instanceof Error
+          ? error.message
+          : "Could not preview RSS feed.";
+      if (!isApiError(error)) setRssError(message);
       toaster.error({ title: "RSS preview failed", description: message });
     } finally {
       setRssPreviewLoading(false);
@@ -690,39 +673,32 @@ export function UploadShell({
     setStatusMessage("Importing episode and queueing generation…");
 
     try {
-      const formData = buildUploadSettingsFormData(getFormValues(ratio));
-      formData.set("rssUrl", rssUrl.trim());
-      formData.set("titlePrefix", title.trim());
-      formData.set(
-        "episodeIds",
-        JSON.stringify(selectedEpisodeIds.slice(0, 1)),
-      );
       rssCommitTokenRef.current ??= crypto.randomUUID();
-      formData.set("commitToken", rssCommitTokenRef.current);
-      const result = await generateFromRssAction(formData);
-      if (!result.ok) {
-        const message = recoverRssRequest(
-          result,
-          setErrorMessage,
-          "RSS import failed.",
-        );
-        // The feed, episode, and settings stay as they are; nothing is retried.
-        setRefusalUpgrade(upgradePromptFromFailure(result));
-        toaster.error({ title: "RSS import failed", description: message });
-        return;
-      }
-      if (result.projectId) {
-        router.push(`/projects/${result.projectId}`);
-        router.refresh();
-      } else {
-        router.push("/projects");
-        router.refresh();
-      }
+      const { contentPack, languageCode } = buildUploadGenerationContext(getFormValues(ratio));
+      const imported = await intake.actions.importRss({
+        rssUrl: rssUrl.trim(),
+        titlePrefix: title.trim() || undefined,
+        episodeIds: selectedEpisodeIds.slice(0, 1),
+        commitToken: rssCommitTokenRef.current,
+        brandProfileId,
+        contentPack,
+        languageCode,
+      });
+      void intake.accepted();
+      const projectId = imported.projects?.[0]?.project.id;
+      router.push(projectId ? `/projects/${projectId}` : "/projects");
     } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "RSS import failed.";
-      setErrorMessage(message);
-      toaster.error({ title: "RSS import failed", description: message });
+      if (isApiError(error)) {
+        const failure = failureFromApiError(error);
+        const message = recoverRssRequest(failure, setErrorMessage, "RSS import failed.");
+        // The feed, episode, and settings stay as they are; nothing is retried.
+        setRefusalUpgrade(upgradePromptFromFailure(failure));
+        toaster.error({ title: "RSS import failed", description: message });
+      } else {
+        const message = error instanceof Error ? error.message : "RSS import failed.";
+        setErrorMessage(message);
+        toaster.error({ title: "RSS import failed", description: message });
+      }
     } finally {
       setSubmitting(false);
       setStatusMessage(null);

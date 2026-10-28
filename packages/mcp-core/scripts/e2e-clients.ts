@@ -75,7 +75,7 @@ async function main() {
 	const configured = process.env.MCP_E2E_BASE_URL;
 	assert(
 		configured,
-		"MCP_E2E_BASE_URL must name the deployed or locally running Narriflow origin",
+		"MCP_E2E_BASE_URL must name the deployed or locally running Narriflow API origin",
 	);
 	const base = new URL(configured);
 	assert(

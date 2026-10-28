@@ -1,17 +1,16 @@
 import { describe, expect, mock, test } from "bun:test";
+import { createApiRuntime } from "@narriflow/api-client";
+import { QueryClientProvider } from "@tanstack/react-query";
 import { ChakraProvider } from "@chakra-ui/react";
 import { system } from "@narriflow/ui/theme";
 import type { WorkspaceBillingView } from "@narriflow/validators";
 import { renderToStaticMarkup } from "react-dom/server";
 
-mock.module("next/navigation", () => ({ useRouter: () => ({ refresh() {}, push() {} }) }));
-mock.module("../actions", () => ({
-  changeMemberRoleAction: async () => ({ ok: true }),
-  inviteMemberAction: async () => ({ ok: true }),
-  removeMemberAction: async () => ({ ok: true }),
-  resendInviteAction: async () => ({ ok: true }),
-  revokeInviteAction: async () => ({ ok: true }),
-}));
+const runtime = createApiRuntime({ baseUrl: "http://api.test", getToken: async () => null });
+runtime.setIdentity("user_test");
+const scope = { userId: "user_test", workspaceId: "11111111-1111-4111-8111-111111111111" };
+runtime.selectWorkspace(scope.workspaceId);
+mock.module("@/app/_components/api-provider", () => ({ useApiRuntime: () => runtime }));
 const { MembersPanel } = await import("./members-panel");
 
 const billingView = { plan: "business", health: "current", desiredAdditionalSeats: 0, synchronizedAdditionalSeats: 0 } as WorkspaceBillingView;
@@ -23,7 +22,9 @@ const members = [
 function render(actorRole: "owner" | "admin" | "editor" | "viewer", workspaceStatus: "active" | "pending_payment" | "restricted", view = billingView) {
   return renderToStaticMarkup(
     <ChakraProvider value={system}>
-      <MembersPanel actorRole={actorRole} isBusiness workspaceStatus={workspaceStatus} billingView={view} members={members} invites={[]} />
+      <QueryClientProvider client={runtime.queryClient}>
+      <MembersPanel scope={scope} actorRole={actorRole} isBusiness workspaceStatus={workspaceStatus} billingView={view} members={members} invites={[]} />
+      </QueryClientProvider>
     </ChakraProvider>,
   );
 }

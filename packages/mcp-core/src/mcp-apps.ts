@@ -20,6 +20,7 @@ export function supportsNarriflowApps(capabilities?: ClientCapabilities | null, 
 
 export interface NarriflowMcpAppsOptions {
   appOrigin: string;
+  apiOrigin?: string;
   protocolEra?: "modern" | "legacy";
   connectDomains?: string[];
   resourceDomains?: string[];
@@ -44,7 +45,8 @@ export function registerNarriflowMcpApps(server: McpServer, options: NarriflowMc
   if (storageDomains.length && /^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/.test(process.env.R2_BUCKET ?? "")) {
     storageDomains.push(`https://${process.env.R2_BUCKET}.${process.env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`);
   }
-  const csp = { connectDomains: [...new Set([appOrigin, ...storageDomains, ...(options.connectDomains ?? []).map(origin)])], resourceDomains: [...new Set([appOrigin, ...storageDomains, ...(options.resourceDomains ?? []).map(origin)])], frameDomains: [] };
+  const apiDomains = options.apiOrigin ? [origin(options.apiOrigin)] : [];
+  const csp = { connectDomains: [...new Set([...apiDomains, ...storageDomains, ...(options.connectDomains ?? []).map(origin)])], resourceDomains: [...new Set([...apiDomains, ...storageDomains, ...(options.resourceDomains ?? []).map(origin)])], frameDomains: [] };
   for (const view of views) {
     const uri = `ui://narriflow/v2/${view}.html`;
     const resourceConfig = { cacheHint: { cacheScope: "public" as const, ttlMs: 86_400_000 }, _meta: { ui: { csp } } };

@@ -1,8 +1,10 @@
 "use client";
 
-import { useId, useState, useTransition, type ReactNode } from "react";
+import { useId, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { isApiError, type Intent } from "@narriflow/api-client/core";
+import type { RecipesActions } from "@narriflow/api-client/recipes";
+import { useMutation } from "@tanstack/react-query";
 import { Box, chakra, Flex, Grid, Stack, Text } from "@chakra-ui/react";
 import { AlertTriangle, ArrowUpRight, Bot, Copy, Languages, Pencil, Plus, Scissors, Sparkles, Timer, Trash2, Zap } from "lucide-react";
 import { Button, IconButton } from "@narriflow/ui/components/button";
@@ -15,7 +17,7 @@ import { Select } from "@narriflow/ui/components/select";
 import { Slider } from "@narriflow/ui/components/slider";
 import { Switch } from "@narriflow/ui/components/switch";
 import { toaster } from "@narriflow/ui/components/toaster";
-import { clipAspectRatioOptions, type ClipLengthPreset, type ContentPack, type RecipeSnapshot, type RecipeWarning, type SocialPlatform } from "@narriflow/validators";
+import { clipAspectRatioOptions, type ClipLengthPreset, type ContentPack, type RecipeSnapshot, recipeWarningSchema, type SocialPlatform } from "@narriflow/validators";
 import { docsUrl } from "@/lib/docs-url";
 import { SOCIAL_PLATFORM_LABELS } from "@/lib/social-post-status";
 import { FeatureHero } from "../_components/feature-hero";
@@ -27,21 +29,21 @@ import { LanguageSelect } from "../upload/_components/language-select";
 import { BrandProfileSelect, type RecipeBrandProfile } from "./brand-profile-select";
 import { FinishingFields } from "./finishing-fields";
 import { describeFinishing } from "./finishing-form";
-import { describeRecipeWarnings, draftFromRecipe, emptyRecipeDraft, recipeChanges, recipeFromDraft, type RecipeDraft } from "./recipe-form";
+import { describeRecipeWarnings, draftFromRecipe, emptyRecipeDraft, recipeChanges, recipeFromDraft, type ParsedRecipeInput, type RecipeDraft } from "./recipe-form";
 import { BrandMark, type BrandColors } from "../brand-kit/_components/brand-kit-ui";
 
-async function request(url: string, init?: RequestInit, onSaved?: (body: unknown) => void): Promise<string | null> {
-  try {
-    const response = await fetch(url, init);
-    if (!response.ok) {
-      const payload = (await response.json().catch(() => null)) as { message?: string; error?: string } | null;
-      return payload?.message ?? payload?.error ?? "Request failed";
-    }
-    if (onSaved) onSaved(await response.json().catch(() => null));
-    return null;
-  } catch {
-    return "Network error — please try again.";
-  }
+/** A failed Recipe command's sentence: the server's own text, or the network wording when nothing answered. */
+function recipeFailureMessage(error: unknown): string {
+  if (isApiError(error)) return error.code === "network_error" ? "Network error — please try again." : error.message;
+  return error instanceof Error && error.message ? error.message : "Request failed";
+}
+
+/** What the panel needs to change Recipes: the commands, one idempotency intent per create or duplicate, and the cache refresh. */
+export interface RecipesPanelApi {
+  actions: RecipesActions;
+  createIntent<TInput>(): Intent<TInput>;
+  /** Refreshes what a created, changed, duplicated or deleted Recipe touches. */
+  changed(): Promise<void>;
 }
 
 const languageLabel = (code: string | null) =>
@@ -75,14 +77,15 @@ export interface RecipeBrandLook {
 }
 
 export function RecipesPanel({
-  initialRecipes,
+  recipes,
   brandProfiles,
   brandLooks = {},
   canEdit,
   finishingAvailable,
   queueAccounts,
+  api,
 }: {
-  initialRecipes: RecipeSnapshot[];
+  recipes: RecipeSnapshot[];
   brandProfiles: RecipeBrandProfile[];
   brandLooks?: Record<string, RecipeBrandLook>;
   /** Members who can edit content can save Recipes; others read them. */
@@ -90,29 +93,43 @@ export function RecipesPanel({
   /** Finishing needs the Pro plan; a Recipe below it still imports and generates clips. */
   finishingAvailable: boolean;
   queueAccounts: Array<{ id: string; platform: SocialPlatform; displayName: string }>;
+  api: RecipesPanelApi;
 }) {
-  const router = useRouter();
-  const [, startTransition] = useTransition();
   const { confirm, dialog: confirmDialog } = useConfirm();
   // `null` is closed, "new" is a blank form, and a Recipe is its edit form.
   const [editing, setEditing] = useState<RecipeSnapshot | "new" | null>(null);
   const [pending, setPending] = useState<Record<string, "duplicate" | "delete" | undefined>>({});
   const defaultBrandProfileId = brandProfiles.find((profile) => profile.isDefault)?.id ?? null;
-  const refresh = () => startTransition(() => router.refresh());
+
+  // One idempotency key per duplicate click, kept through a failed or lost attempt so a retry
+  // replays the first copy instead of saving a second.
+  const duplicateIntents = useRef(new Map<string, Intent<string>>());
+  const duplicate = useMutation({
+    mutationFn: (recipe: RecipeSnapshot) => {
+      const intent = duplicateIntents.current.get(recipe.id) ?? api.createIntent<string>();
+      duplicateIntents.current.set(recipe.id, intent);
+      return api.actions.duplicate(recipe.id, intent.keyFor(recipe.id));
+    },
+    onSuccess: async (_copy, recipe) => {
+      duplicateIntents.current.delete(recipe.id);
+      await api.changed();
+    },
+  });
+  const deleteRecipe = useMutation({
+    mutationFn: (recipe: RecipeSnapshot) => api.actions.remove(recipe.id),
+    onSuccess: () => api.changed(),
+  });
 
   async function act(recipe: RecipeSnapshot, action: "duplicate" | "delete") {
     setPending((current) => ({ ...current, [recipe.id]: action }));
-    const error =
-      action === "duplicate"
-        ? await request(`/api/recipes/${recipe.id}/duplicate`, { method: "POST" })
-        : await request(`/api/recipes/${recipe.id}`, { method: "DELETE" });
-    setPending((current) => ({ ...current, [recipe.id]: undefined }));
-    if (error) {
-      toaster.create({ type: "error", title: action === "duplicate" ? "Could not duplicate Recipe" : "Could not delete Recipe", description: error });
-      return;
+    try {
+      await (action === "duplicate" ? duplicate : deleteRecipe).mutateAsync(recipe);
+      toaster.create({ type: "success", title: action === "duplicate" ? "Recipe duplicated" : "Recipe deleted", description: recipe.name });
+    } catch (error) {
+      toaster.create({ type: "error", title: action === "duplicate" ? "Could not duplicate Recipe" : "Could not delete Recipe", description: recipeFailureMessage(error) });
+    } finally {
+      setPending((current) => ({ ...current, [recipe.id]: undefined }));
     }
-    toaster.create({ type: "success", title: action === "duplicate" ? "Recipe duplicated" : "Recipe deleted", description: recipe.name });
-    refresh();
   }
 
   async function remove(recipe: RecipeSnapshot) {
@@ -142,7 +159,7 @@ export function RecipesPanel({
       </Box>
 
       <Box as="section" animation="fade-up" animationDelay="80ms" animationFillMode="backwards">
-        {initialRecipes.length === 0 ? (
+        {recipes.length === 0 ? (
           <FeatureHero
             title="Reuse your settings on every new video"
             points={[
@@ -169,7 +186,7 @@ export function RecipesPanel({
           />
         ) : (
           <Grid templateColumns={{ base: "1fr", lg: "repeat(2, minmax(0, 1fr))" }} gap="4">
-            {initialRecipes.map((recipe) => {
+            {recipes.map((recipe) => {
               const brand = recipe.brandProfileId ? brandProfiles.find((profile) => profile.id === recipe.brandProfileId) : null;
               const brandName = recipe.brandProfileId ? (brand?.name ?? "Unavailable Brand Profile") : null;
               const look = recipe.brandProfileId ? (brandLooks[recipe.brandProfileId] ?? null) : null;
@@ -280,11 +297,9 @@ export function RecipesPanel({
         defaultBrandProfileId={defaultBrandProfileId}
         finishingAvailable={finishingAvailable}
         queueAccounts={queueAccounts}
+        api={api}
         onClose={() => setEditing(null)}
-        onSaved={() => {
-          setEditing(null);
-          refresh();
-        }}
+        onSaved={() => setEditing(null)}
       />
       {confirmDialog}
     </Stack>
@@ -329,6 +344,7 @@ function RecipeDialog({
   defaultBrandProfileId,
   finishingAvailable,
   queueAccounts,
+  api,
   onClose,
   onSaved,
 }: {
@@ -337,6 +353,7 @@ function RecipeDialog({
   defaultBrandProfileId: string | null;
   finishingAvailable: boolean;
   queueAccounts: Array<{ id: string; platform: SocialPlatform; displayName: string }>;
+  api: RecipesPanelApi;
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -345,8 +362,20 @@ function RecipeDialog({
   // The parent keys this dialog by Recipe, so every open starts a fresh draft.
   const [opened] = useState<RecipeDraft>(() => (recipe ? draftFromRecipe(recipe) : emptyRecipeDraft(defaultBrandProfileId)));
   const [draft, setDraft] = useState<RecipeDraft>(opened);
-  const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // One idempotency key for this dialog's create, kept through a failed or lost attempt.
+  const [createIntent] = useState(() => api.createIntent<ParsedRecipeInput>());
+  const saveRecipe = useMutation({
+    mutationFn: ({ input, changes }: { input: ParsedRecipeInput; changes: ReturnType<typeof recipeChanges> | null }) =>
+      recipe && changes
+        ? api.actions.update(recipe.id, { ...changes, expectedRevision: recipe.revision })
+        : api.actions.create(input, createIntent.keyFor(input)),
+    onSuccess: async () => {
+      if (!recipe) createIntent.complete();
+      await api.changed();
+    },
+  });
+  const saving = saveRecipe.isPending;
   const set = (patch: Partial<RecipeDraft>) => setDraft((current) => ({ ...current, ...patch }));
 
   async function save() {
@@ -362,29 +391,17 @@ function RecipeDialog({
       return;
     }
     setError(null);
-    setSaving(true);
-    let warnings: RecipeWarning[] = [];
-    const failure = recipe
-      ? await request(
-          `/api/recipes/${recipe.id}`,
-          {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ ...changes, expectedRevision: recipe.revision }),
-          },
-          (body) => {
-            warnings = (body as { warnings?: RecipeWarning[] } | null)?.warnings ?? [];
-          },
-        )
-      : await request("/api/recipes", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(result.input) });
-    setSaving(false);
-    if (failure) {
-      setError(failure);
+    let saved: Awaited<ReturnType<typeof saveRecipe.mutateAsync>>;
+    try {
+      saved = await saveRecipe.mutateAsync({ input: result.input, changes });
+    } catch (failure) {
+      setError(recipeFailureMessage(failure));
       return;
     }
     toaster.create({ type: "success", title: recipe ? "Recipe updated" : "Recipe created", description: draft.name.trim() });
     // The save went through; this says which rules won't do everything it asks.
-    const warning = describeRecipeWarnings(warnings);
+    const warnings = recipeWarningSchema.array().safeParse("warnings" in saved ? saved.warnings : []);
+    const warning = recipe && warnings.success ? describeRecipeWarnings(warnings.data) : null;
     if (warning) toaster.create({ type: "warning", title: "Some rules can't propose posts", description: warning });
     onSaved();
   }
