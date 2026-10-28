@@ -1,18 +1,17 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { ReviewPreselection } from "@/lib/review-preselection";
 import { useRouter } from "next/navigation";
 import {
   AlertTriangle,
   Check,
-  ChevronRight,
   Clock3,
   Copy,
   ExternalLink,
-  Link2,
-  ListChecks,
+  MessageSquare,
   MessageSquareText,
+  Play,
   RefreshCw,
   RotateCcw,
   Send,
@@ -30,6 +29,7 @@ import { formatDateTime, formatDuration, formatTimecode } from "@/lib/format";
 import { restoreCampaignSelection } from "./campaign-selection";
 import { upgradePromptFromFailure } from "@/lib/authenticated-request-browser";
 import { LockedButton, useUpgrade } from "../../_components/upgrade";
+import { FeatureHero } from "../../_components/feature-hero";
 import { featureUpgradePrompt } from "@/lib/feature-upgrade-prompt";
 
 type Variant = { id: string; aspectRatio: string; durationSec: number | null };
@@ -121,24 +121,96 @@ function eventLabel(value: string) {
   return value.replaceAll("_", " ");
 }
 
-/** How a round works — shown until the first one is sent. */
-const ROUND_STEPS = [
-  {
-    icon: <ListChecks size={16} />,
-    title: "Pick finished exports",
-    body: "Choose the clips and formats to share. Sending freezes those exact revisions.",
-  },
-  {
-    icon: <Link2 size={16} />,
-    title: "Share a private room",
-    body: "Send the link by email, or copy it. Add a passcode, an expiry or downloads.",
-  },
-  {
-    icon: <MessageSquareText size={16} />,
-    title: "Collect feedback and approval",
-    body: "Reviewers leave comments pinned to a moment in the clip and approve it. You can require approval before anything publishes.",
-  },
+const CLIP_FILLS = [
+  "linear-gradient(140deg,#c1d2f2,#5c6c96)",
+  "linear-gradient(135deg,#8cace0,#31486f)",
+  "linear-gradient(140deg,#c9bcf0,#74619e)",
 ];
+
+/** A small stand-in for a clip: the app has no thumbnail for an export, so tiles are decorative. */
+function ClipTile({ index }: { index: number }) {
+  return (
+    <Flex flexShrink={0} w="30px" h="46px" align="center" justify="center" borderRadius="6px" color="white" aria-hidden style={{ backgroundImage: CLIP_FILLS[index % CLIP_FILLS.length] }}>
+      <Play size={11} fill="currentColor" />
+    </Flex>
+  );
+}
+
+function Initials({ name, guest = false }: { name: string; guest?: boolean }) {
+  return (
+    <Flex boxSize="8" flexShrink={0} align="center" justify="center" borderRadius="full" bg={guest ? "accent.muted" : "bg.soft"} color={guest ? "accent.fg" : "fg.muted"} fontSize="12px" fontWeight="600" aria-hidden>
+      {(name.trim().charAt(0) || "?").toUpperCase()}
+    </Flex>
+  );
+}
+
+function ApprovalMeter({ approved, total }: { approved: number; total: number }) {
+  return (
+    <Flex align="center" gap="3">
+      <Box flex="1" h="6px" bg="bg.soft" borderRadius="full" overflow="hidden" aria-hidden>
+        <Box h="full" w={`${total > 0 ? Math.round((approved / total) * 100) : 0}%`} bg="accent.solid" borderRadius="full" transition="width 0.3s ease" />
+      </Box>
+      <Text fontSize="12px" fontVariantNumeric="tabular-nums" color="fg.subtle" whiteSpace="nowrap">{approved}/{total} approved</Text>
+    </Flex>
+  );
+}
+
+function SideCard({ icon, title, children }: { icon: ReactNode; title: string; children: ReactNode }) {
+  return (
+    <Stack gap="3" p="4" bg="bg.subtle" borderRadius="l3">
+      <Flex align="center" gap="2" color="fg.muted">
+        {icon}
+        <Text textStyle="eyebrow">{title}</Text>
+      </Flex>
+      {children}
+    </Stack>
+  );
+}
+
+/** What a review round is, drawn: clips to watch, a comment pinned to a moment, an approval. */
+function ReviewHeroVisual() {
+  return (
+    <Box position="absolute" inset="0">
+      <Flex position="absolute" inset="0" align="center" justify="center" ps="4" pt="2">
+        {CLIP_FILLS.map((fill, index) => (
+          <Flex
+            key={fill}
+            position="relative"
+            w="76px"
+            h="132px"
+            ms={index ? "-10px" : "0"}
+            zIndex={index === 1 ? 1 : 0}
+            align="center"
+            justify="center"
+            borderRadius="12px"
+            color="white"
+            transform={`rotate(${(index - 1) * 8}deg)${index === 1 ? " translateY(-6px)" : ""}`}
+            style={{ backgroundImage: fill }}
+          >
+            {index === 1 ? (
+              <>
+                <Play size={18} fill="currentColor" />
+                <Box position="absolute" insetX="2.5" bottom="3" h="3px" borderRadius="full" bg="whiteAlpha.500">
+                  <Box w="34%" h="full" borderRadius="full" bg="white" />
+                  <Box position="absolute" left="34%" top="50%" boxSize="9px" ms="-4px" mt="-4.5px" borderRadius="full" bg="white" />
+                </Box>
+              </>
+            ) : null}
+          </Flex>
+        ))}
+      </Flex>
+      <Flex position="absolute" zIndex="2" top="16%" right="6%" align="center" gap="1.5" px="3" py="2" bg="bg.panel" borderRadius="12px 12px 12px 3px" fontSize="12px" color="fg">
+        <MessageSquare size={12} />
+        Love this hook
+        <Text as="span" textStyle="data" fontSize="11px" color="accent.fg">0:04</Text>
+      </Flex>
+      <Flex position="absolute" zIndex="2" bottom="14%" left="8%" align="center" gap="1" h="7" px="3" bg="bg.panel" color="accent.fg" borderRadius="full" fontSize="12px" fontWeight="500">
+        <Check size={13} />
+        Approved
+      </Flex>
+    </Box>
+  );
+}
 
 function parseRecipients(value: string) {
   return [...new Set(value.split(/[\s,;]+/).map((email) => email.trim().toLowerCase()).filter(Boolean))];
@@ -338,7 +410,7 @@ export function ReviewPanel({ projectId, initialData, canManage, preselection = 
       <PanelHeader
         icon={<Send size={20} />}
         title="Review history"
-        description="Quick shares start from the project header. Come here to send another round with a passcode or expiry, and to read every comment."
+        description="Send rounds for review and read the feedback."
         // While the empty-state explainer shows, its button is the one entry point.
         actions={canManage && (data.rounds.length > 0 || creating) ? reviewUpgrade && !creating ? (
           // The plan is the first thing in the way, so say so before the form is filled in.
@@ -350,29 +422,30 @@ export function ReviewPanel({ projectId, initialData, canManage, preselection = 
         </Button> : null}
       />
 
-      {notice ? <Flex role="status" aria-live="polite" gap="2" align="center" color="success.fg" borderStartWidth="3px" borderColor="success.solid" ps="3" py="2"><Check size={14} /><Text fontSize="sm">{notice}</Text></Flex> : null}
-      {error ? <Flex role="alert" gap="2" align="center" color="danger.fg" borderStartWidth="3px" borderColor="danger.solid" ps="3" py="2"><AlertTriangle size={14} /><Text fontSize="sm">{error}</Text></Flex> : null}
+      {notice ? <Flex role="status" aria-live="polite" gap="2" align="center" bg="accent.subtle" color="accent.fg" borderRadius="l2" px="3" py="2.5"><Check size={14} /><Text fontSize="sm">{notice}</Text></Flex> : null}
+      {error ? <Flex role="alert" gap="2" align="center" bg="danger.subtle" color="danger.fg" borderRadius="l2" px="3" py="2.5"><AlertTriangle size={14} /><Text fontSize="sm">{error}</Text></Flex> : null}
 
       {canManage && creating ? (
-        <Box bg="bg.panel" borderWidth="1px" borderColor="border.card" borderRadius="l3" overflow="hidden">
-          <Flex px={{ base: "4", md: "6" }} py="4" justify="space-between" align="start" gap="4">
+        <Stack gap="4">
+          <Flex justify="space-between" align="center" gap="4">
             <Box ref={createHeadingRef} tabIndex={-1} outline="none">
               <Text fontSize="16px" fontWeight="500">Choose what reviewers will see</Text>
             </Box>
             {data.rounds.length > 0 ? <Button size="sm" variant="ghost" onClick={() => setCreating(false)}><X size={14} /> Close</Button> : null}
           </Flex>
-          <Flex direction={{ base: "column", xl: "row" }}>
-            <Stack flex="1.25" gap="0">
+          <Flex direction={{ base: "column", xl: "row" }} gap="4" align="start">
+            <Stack flex="1.25" w="full" minW="0" gap="2">
               {data.candidates.map((candidate, index) => {
                 const selection = selections[candidate.id];
                 const selectedExport = candidate.exports.find((item) => item.id === selection?.exportId) ?? candidate.exports[0];
                 return (
-                  <Box key={candidate.id} px={{ base: "4", md: "6" }} py="4" borderBottomWidth={index === data.candidates.length - 1 ? "0" : "1px"} borderColor="border.subtle" bg={selection ? "accent.subtle" : "transparent"}>
+                  <Box key={candidate.id} p="4" borderRadius="l3" bg={selection ? "accent.subtle" : "bg.subtle"} transition="background 0.15s ease">
                     <Flex align="start" gap="3">
                       <Checkbox checked={Boolean(selection)} onCheckedChange={(checked) => toggleCandidate(candidate, checked)} aria-label={`Include ${candidate.title}`} mt="0.5" />
+                      <ClipTile index={index} />
                       <Stack gap="3" flex="1" minW="0">
                         <Flex justify="space-between" gap="3" align="start">
-                          <Box minW="0"><Text fontSize="sm" fontWeight="650" truncate>{candidate.title}</Text><Text fontSize="12px" color="fg.subtle">Current editor revision {candidate.editorRevision}</Text></Box>
+                          <Box minW="0"><Text fontSize="sm" fontWeight="550" truncate>{candidate.title}</Text><Text fontSize="12px" fontVariantNumeric="tabular-nums" color="fg.subtle">Editor revision {candidate.editorRevision}</Text></Box>
                           {selection ? <Checkbox checked={selection.required} onCheckedChange={(checked) => updateSelection(candidate.id, { required: checked })}>Approval required</Checkbox> : null}
                         </Flex>
                         {selection && selectedExport ? (
@@ -400,14 +473,14 @@ export function ReviewPanel({ projectId, initialData, canManage, preselection = 
                 );
               })}
             </Stack>
-            <Stack flex="0.75" p={{ base: "4", md: "6" }} gap="4" bg="bg.subtle">
-              {contextCommentIds.length > 0 ? <Box borderStartWidth="3px" borderColor="accent.solid" ps="3" py="1"><Text textStyle="eyebrow" color="accent.fg">Carried-over feedback</Text><Text fontSize="12px" color="fg.muted" mt="1">{contextCommentIds.length} open thread{contextCommentIds.length === 1 ? "" : "s"} from the last round come along as internal notes. Your note to reviewers is not copied.</Text></Box> : null}
+            <Stack flex="0.75" w="full" p={{ base: "4", md: "6" }} gap="4" bg="bg.subtle" borderRadius="l3">
+              {contextCommentIds.length > 0 ? <Box bg="accent.subtle" borderRadius="l2" p="3"><Text textStyle="eyebrow" color="accent.fg">Carried-over feedback</Text><Text fontSize="12px" color="fg.muted" mt="1">{contextCommentIds.length} open thread{contextCommentIds.length === 1 ? "" : "s"} from the last round come along as internal notes. Your note to reviewers is not copied.</Text></Box> : null}
               <Stack gap="1.5"><chakra.label htmlFor="review-title" fontSize="12px" fontWeight="650">Round name</chakra.label><Input id="review-title" value={title} maxLength={160} onChange={(event) => setTitle(event.target.value)} /></Stack>
               <Stack gap="1.5"><chakra.label htmlFor="review-message" fontSize="12px" fontWeight="650">Note to reviewers</chakra.label><Textarea id="review-message" value={message} maxLength={2000} rows={3} onChange={(event) => setMessage(event.target.value)} /></Stack>
               <Stack gap="1.5"><chakra.label htmlFor="review-recipients" fontSize="12px" fontWeight="650">Notification recipients</chakra.label><Textarea id="review-recipients" value={recipientText} rows={2} placeholder="client@example.com, producer@example.com" onChange={(event) => setRecipientText(event.target.value)} /><Text fontSize="12px" color="fg.subtle">{recipients.length === 0 ? "The private link will only be copied, not emailed." : `${recipients.length} recipient${recipients.length === 1 ? "" : "s"}`}</Text></Stack>
               <Flex gap="3" direction={{ base: "column", sm: "row" }}><Stack gap="1.5" flex="1"><chakra.label htmlFor="review-expiry" fontSize="12px" fontWeight="650">Expires</chakra.label><Input id="review-expiry" type="datetime-local" value={expiresAt} onChange={(event) => setExpiresAt(event.target.value)} /></Stack><Stack gap="1.5" flex="1"><chakra.label htmlFor="review-passcode" fontSize="12px" fontWeight="650">Passcode</chakra.label><Input id="review-passcode" type="password" minLength={6} maxLength={128} value={passcode} placeholder="Optional" onChange={(event) => setPasscode(event.target.value)} /></Stack></Flex>
               <Stack gap="2"><Checkbox checked={allowDownloads} onCheckedChange={setAllowDownloads}>Allow downloads</Checkbox><Checkbox checked={approvalRequired} onCheckedChange={setApprovalRequired}>Clips need approval before they publish</Checkbox><Text fontSize="12px" color="fg.subtle">{data.project.approvalRequiredByDefault ? "Your Brand Profile turns this on by default." : "Your Brand Profile leaves this off by default."} You can't change it after sending.</Text></Stack>
-              <Box pt="4">
+              <Box pt="2">
                 {reviewUpgrade ? (
                   <LockedButton w="full" prompt={reviewUpgrade} disabled={busy || Object.keys(selections).length === 0}>
                     <Send size={14} /> Send round with {Object.keys(selections).length} clip{Object.keys(selections).length === 1 ? "" : "s"}
@@ -419,45 +492,36 @@ export function ReviewPanel({ projectId, initialData, canManage, preselection = 
               </Box>
             </Stack>
           </Flex>
-        </Box>
+        </Stack>
       ) : null}
 
       {data.rounds.length === 0 && !creating ? (
         canManage ? (
-          <Stack gap="5" py={{ base: "5", md: "7" }}>
-            <Box>
-              <Text fontSize="15px" fontWeight="500" color="fg">No review rounds yet</Text>
-              <Text fontSize="13px" color="fg.muted" mt="1">Get sign-off from a client or teammate without sending files around.</Text>
-            </Box>
-            <Flex direction={{ base: "column", md: "row" }} gap="4">
-              {ROUND_STEPS.map((step, index) => (
-                <Stack key={step.title} flex="1" gap="3" p="5" bg="bg.soft" borderRadius="l2">
-                  <Flex align="center" justify="space-between">
-                    <Box color="fg.muted" aria-hidden="true">{step.icon}</Box>
-                    <Text fontSize="12px" fontVariantNumeric="tabular-nums" color="fg.subtle">{String(index + 1).padStart(2, "0")}</Text>
-                  </Flex>
-                  <Box>
-                    <Text fontSize="14px" fontWeight="550" color="fg">{step.title}</Text>
-                    <Text fontSize="13px" color="fg.muted" mt="1" lineHeight="1.55">{step.body}</Text>
-                  </Box>
-                </Stack>
-              ))}
-            </Flex>
-            <Flex align="center" gap="3" wrap="wrap">
-              {reviewUpgrade ? (
-                <LockedButton size="sm" prompt={reviewUpgrade}>
-                  <Send size={14} /> Start a review round
-                </LockedButton>
-              ) : (
-                <Button size="sm" onClick={startRound} disabled={data.candidates.length === 0}>
-                  <Send size={14} /> Start a review round
-                </Button>
-              )}
-              {!reviewUpgrade && data.candidates.length === 0 ? (
-                <Text fontSize="12px" color="fg.subtle">Export a clip first. Rounds share finished exports.</Text>
-              ) : null}
-            </Flex>
-          </Stack>
+          <FeatureHero
+            title="Get sign-off without sending files"
+            points={[
+              "Pick the finished exports to share.",
+              "One private link, optional passcode and expiry.",
+              "Comments pinned to moments, plus approval.",
+            ]}
+            visual={<ReviewHeroVisual />}
+            action={
+              <Flex align="center" gap="3" wrap="wrap">
+                {reviewUpgrade ? (
+                  <LockedButton size="sm" prompt={reviewUpgrade}>
+                    <Send size={14} /> Start a review round
+                  </LockedButton>
+                ) : (
+                  <Button size="sm" onClick={startRound} disabled={data.candidates.length === 0}>
+                    <Send size={14} /> Start a review round
+                  </Button>
+                )}
+                {!reviewUpgrade && data.candidates.length === 0 ? (
+                  <Text fontSize="12px" color="fg.subtle">Export a clip first. Rounds share finished exports.</Text>
+                ) : null}
+              </Flex>
+            }
+          />
         ) : (
           <EmptyState title="No review rounds yet" description="No exports shared for review." />
         )
@@ -465,55 +529,139 @@ export function ReviewPanel({ projectId, initialData, canManage, preselection = 
 
       {data.rounds.length > 0 ? (
         <Flex align="start" direction={{ base: "column", lg: "row" }} gap="6">
-          <Stack w={{ base: "full", lg: "300px" }} flexShrink="0" gap="1">
+          <Stack w={{ base: "full", lg: "300px" }} flexShrink="0" gap="2">
             {data.rounds.map((round) => {
               const approved = round.items.filter((item) => item.currentDecision === "approved").length;
-              return <chakra.button key={round.id} type="button" textAlign="start" w="full" py="4" px="3" borderRadius="l2" bg={activeRound?.id === round.id ? "accent.subtle" : "transparent"} _hover={{ bg: activeRound?.id === round.id ? "accent.subtle" : "bg.soft" }} onClick={() => setActiveRoundId(round.id)} aria-pressed={activeRound?.id === round.id}>
-                <Flex justify="space-between" gap="3"><Box minW="0"><Text textStyle="eyebrow" color="fg.muted">Round {String(round.revision).padStart(2, "0")}</Text><Text fontSize="sm" fontWeight="650" mt="1" truncate>{round.title}</Text></Box><ChevronRight size={15} aria-hidden /></Flex>
-                <Flex align="center" gap="2" mt="3"><StatusBadge label={eventLabel(round.status)} status={STATUS_BADGE_STATUS[round.status] ?? "pending"} /><Text fontSize="12px" fontVariantNumeric="tabular-nums" color="fg.subtle">{approved}/{round.items.length} approved</Text></Flex>
-              </chakra.button>;
+              const selected = activeRound?.id === round.id;
+              return (
+                <chakra.button key={round.id} type="button" textAlign="start" w="full" p="4" borderRadius="l3" bg={selected ? "accent.subtle" : "bg.subtle"} transition="background 0.15s ease" _hover={{ bg: selected ? "accent.subtle" : "bg.soft" }} onClick={() => setActiveRoundId(round.id)} aria-pressed={selected}>
+                  <Flex justify="space-between" align="center" gap="3">
+                    <Text textStyle="eyebrow" color={selected ? "accent.fg" : "fg.muted"}>Round {String(round.revision).padStart(2, "0")}</Text>
+                    <StatusBadge label={eventLabel(round.status)} status={STATUS_BADGE_STATUS[round.status] ?? "pending"} />
+                  </Flex>
+                  <Text fontSize="sm" fontWeight="550" mt="2" truncate>{round.title}</Text>
+                  <Box mt="3"><ApprovalMeter approved={approved} total={round.items.length} /></Box>
+                </chakra.button>
+              );
             })}
           </Stack>
 
           {activeRound ? (
-            <Stack flex="1" minW="0" w="full" gap="6">
-              <Box>
-                <Flex justify="space-between" align="start" gap="4" wrap="wrap"><Box><Flex align="center" gap="2"><Text textStyle="eyebrow" color="fg.muted">Round {String(activeRound.revision).padStart(2, "0")}</Text><StatusBadge label={eventLabel(activeRound.status)} status={STATUS_BADGE_STATUS[activeRound.status] ?? "pending"} /></Flex><Text textStyle="title" fontSize="xl" mt="2">{activeRound.title}</Text><Text fontSize="sm" color="fg.muted" mt="1">Sent {formatDateTime(activeRound.sentAt)} · {activeRound.items.length} clip{activeRound.items.length === 1 ? "" : "s"}</Text></Box>{canManage && activeRound.path ? <Flex gap="2" wrap="wrap"><Button size="sm" variant="subtle" onClick={() => void copyLink(activeRound)}><Copy size={14} /> Copy link</Button><Button size="sm" variant="subtle" asChild><a href={activeRound.path} target="_blank" rel="noreferrer"><ExternalLink size={14} /> Open room</a></Button></Flex> : null}</Flex>
-                {activeRound.newerWorkAvailable ? <Flex mt="4" borderStartWidth="3px" borderColor="warning.solid" ps="3" py="2" gap="2" align="center" color="warning.fg"><AlertTriangle size={14} /><Text fontSize="sm">There is newer finished work. This round still shows the exact exports reviewers saw.</Text></Flex> : null}
-              </Box>
-
-              <Flex gap="8" wrap="wrap">
-                <Stack gap="0" minW="150px"><Text textStyle="eyebrow" color="fg.muted">Opened</Text><Text fontSize="14px" fontVariantNumeric="tabular-nums" mt="1">{activeRound.guests[0] ? formatDateTime(activeRound.guests[0].firstSeenAt) : "Not yet"}</Text></Stack>
-                <Stack gap="0" minW="150px"><Text textStyle="eyebrow" color="fg.muted">Decision</Text><Text fontSize="14px" mt="1">{eventLabel(activeRound.decision ?? "pending")}</Text></Stack>
-                <Stack gap="0" minW="150px"><Text textStyle="eyebrow" color="fg.muted">Expires</Text><Text fontSize="14px" fontVariantNumeric="tabular-nums" mt="1">{activeRound.expiresAt ? formatDateTime(activeRound.expiresAt) : "No expiry"}</Text></Stack>
-              </Flex>
-
-              <Stack gap="0">
-                {activeRound.items.map((item) => <Flex key={item.id} py="3" px="2" borderBottomWidth="1px" borderColor="border.subtle" align={{ base: "start", md: "center" }} direction={{ base: "column", md: "row" }} justify="space-between" gap="3"><Box><Text fontSize="sm" fontWeight="650">{item.clipTitle}</Text><Flex gap="2" mt="1" wrap="wrap"><Text fontSize="12px" fontVariantNumeric="tabular-nums" color="fg.subtle">Revision {item.editorRevision}</Text>{item.variants.map((variant) => <Text key={variant.id} fontSize="12px" fontVariantNumeric="tabular-nums" color="fg.subtle">{aspectLabel(variant.aspectRatio)}</Text>)}</Flex></Box><StatusBadge label={eventLabel(item.currentDecision ?? "awaiting decision")} status={item.currentDecision === "approved" ? "completed" : "pending"} /></Flex>)}
+            <Stack flex="1" minW="0" w="full" gap="5">
+              <Stack gap="4" p={{ base: "4", md: "5" }} bg="bg.subtle" borderRadius="l3">
+                <Flex justify="space-between" align="start" gap="4" wrap="wrap">
+                  <Box minW="0">
+                    <Flex align="center" gap="2"><Text textStyle="eyebrow" color="fg.muted">Round {String(activeRound.revision).padStart(2, "0")}</Text><StatusBadge label={eventLabel(activeRound.status)} status={STATUS_BADGE_STATUS[activeRound.status] ?? "pending"} /></Flex>
+                    <Text textStyle="title" fontSize="xl" mt="2">{activeRound.title}</Text>
+                    <Text fontSize="sm" color="fg.muted" mt="1">Sent {formatDateTime(activeRound.sentAt)} · {activeRound.items.length} clip{activeRound.items.length === 1 ? "" : "s"}</Text>
+                  </Box>
+                  {canManage && activeRound.path ? <Flex gap="2" wrap="wrap"><Button size="sm" variant="subtle" onClick={() => void copyLink(activeRound)}><Copy size={14} /> Copy link</Button><Button size="sm" variant="subtle" asChild><a href={activeRound.path} target="_blank" rel="noreferrer"><ExternalLink size={14} /> Open room</a></Button></Flex> : null}
+                </Flex>
+                {activeRound.items.length > 0 ? <ApprovalMeter approved={activeRound.items.filter((item) => item.currentDecision === "approved").length} total={activeRound.items.length} /> : null}
+                {activeRound.newerWorkAvailable ? <Flex bg="warning.subtle" borderRadius="l2" px="3" py="2.5" gap="2" align="center" color="warning.fg"><AlertTriangle size={14} /><Text fontSize="sm">There is newer finished work. This round still shows the exact exports reviewers saw.</Text></Flex> : null}
+                <Flex gap="2" wrap="wrap">
+                  <Stack gap="0" flex="1" minW="150px" p="3" bg="bg.panel" borderRadius="l2"><Text fontSize="12px" color="fg.subtle">Opened</Text><Text fontSize="14px" fontVariantNumeric="tabular-nums" mt="0.5">{activeRound.guests[0] ? formatDateTime(activeRound.guests[0].firstSeenAt) : "Not yet"}</Text></Stack>
+                  <Stack gap="0" flex="1" minW="150px" p="3" bg="bg.panel" borderRadius="l2"><Text fontSize="12px" color="fg.subtle">Decision</Text><Text fontSize="14px" mt="0.5">{eventLabel(activeRound.decision ?? "pending")}</Text></Stack>
+                  <Stack gap="0" flex="1" minW="150px" p="3" bg="bg.panel" borderRadius="l2"><Text fontSize="12px" color="fg.subtle">Expires</Text><Text fontSize="14px" fontVariantNumeric="tabular-nums" mt="0.5">{activeRound.expiresAt ? formatDateTime(activeRound.expiresAt) : "No expiry"}</Text></Stack>
+                </Flex>
               </Stack>
 
-              {activeRound.context.length > 0 ? <Box><Flex align="center" justify="space-between" gap="3"><Text textStyle="eyebrow" color="fg.muted">Open feedback from earlier rounds</Text><Text fontSize="12px" color="fg.subtle">Internal only</Text></Flex><Stack gap="0" mt="2">{activeRound.context.map((context) => <Box key={context.id} py="3" borderBottomWidth="1px" borderColor="border.subtle"><Flex gap="2" wrap="wrap" align="center"><Text fontSize="12px" fontWeight="700">{context.authorName}</Text><Text fontSize="12px" fontVariantNumeric="tabular-nums" color="fg.subtle">Round {String(context.sourceRoundRevision).padStart(2, "0")}</Text>{context.clipTitle ? <Text fontSize="12px" color="fg.subtle">{context.clipTitle}</Text> : null}{context.timestampSec !== null ? <Text textStyle="data" fontSize="12px" color="accent.fg">{formatTimecode(context.timestampSec)}</Text> : null}</Flex><Text fontSize="12px" color="fg.muted" mt="1" whiteSpace="pre-wrap">{context.body}</Text></Box>)}</Stack></Box> : null}
+              <Stack gap="2">
+                {activeRound.items.map((item, index) => (
+                  <Flex key={item.id} px="4" py="3" bg="bg.subtle" borderRadius="l2" align="center" justify="space-between" gap="3">
+                    <Flex align="center" gap="3" minW="0">
+                      <ClipTile index={index} />
+                      <Box minW="0">
+                        <Flex align="center" gap="2"><Text fontSize="sm" fontWeight="550" truncate>{item.clipTitle}</Text>{item.required ? null : <Text fontSize="11px" color="fg.muted" bg="bg.soft" px="1.5" py="0.5" borderRadius="full">Optional</Text>}</Flex>
+                        <Text fontSize="12px" fontVariantNumeric="tabular-nums" color="fg.subtle" mt="0.5">{["Revision " + item.editorRevision, ...item.variants.map((variant) => aspectLabel(variant.aspectRatio))].join(" · ")}</Text>
+                      </Box>
+                    </Flex>
+                    <StatusBadge label={eventLabel(item.currentDecision ?? "awaiting decision")} status={item.currentDecision === "approved" ? "completed" : "pending"} />
+                  </Flex>
+                ))}
+              </Stack>
+
+              {activeRound.context.length > 0 ? (
+                <Stack gap="2">
+                  <Flex align="center" justify="space-between" gap="3"><Text textStyle="eyebrow" color="fg.muted">Open feedback from earlier rounds</Text><Text fontSize="12px" color="fg.subtle">Internal only</Text></Flex>
+                  {activeRound.context.map((context) => (
+                    <Flex key={context.id} gap="3" p="4" bg="bg.subtle" borderRadius="l3">
+                      <Initials name={context.authorName} guest />
+                      <Box minW="0">
+                        <Flex gap="2" wrap="wrap" align="center"><Text fontSize="13px" fontWeight="600">{context.authorName}</Text><Text fontSize="12px" fontVariantNumeric="tabular-nums" color="fg.subtle">Round {String(context.sourceRoundRevision).padStart(2, "0")}</Text>{context.clipTitle ? <Text fontSize="12px" color="fg.subtle">{context.clipTitle}</Text> : null}{context.timestampSec !== null ? <Text textStyle="data" fontSize="12px" color="accent.fg" bg="accent.muted" px="1.5" py="0.5" borderRadius="full">{formatTimecode(context.timestampSec)}</Text> : null}</Flex>
+                        <Text fontSize="13px" color="fg.muted" mt="1" whiteSpace="pre-wrap">{context.body}</Text>
+                      </Box>
+                    </Flex>
+                  ))}
+                </Stack>
+              ) : null}
 
               <Flex direction={{ base: "column", xl: "row" }} gap="6" align="start">
-                <Stack flex="1" w="full" gap="4">
-                  <Flex align="center" justify="space-between"><Flex align="center" gap="2"><Box color="fg.muted"><MessageSquareText size={16} /></Box><Text textStyle="eyebrow" color="fg.muted">Feedback</Text></Flex><Text fontSize="12px" fontVariantNumeric="tabular-nums" color="fg.subtle">{activeRound.comments.filter((comment) => !comment.parentId).length} threads</Text></Flex>
-                  <Stack gap="0">
-                    {activeRound.comments.filter((comment) => !comment.parentId).map((thread) => {
-                      const replies = activeRound.comments.filter((comment) => comment.parentId === thread.id);
-                      return <Box key={thread.id} borderBottomWidth="1px" borderColor="border.subtle" py="4"><Flex justify="space-between" gap="3" align="start"><Box><Flex align="center" gap="2"><Text fontSize="12px" fontWeight="700">{thread.authorName}</Text><Text fontSize="12px" color="fg.subtle">{thread.authorKind === "guest" ? "Client" : "Team"}</Text>{thread.timestampSec !== null ? <Text textStyle="data" color="accent.fg" fontSize="12px">{formatTimecode(thread.timestampSec)}</Text> : null}</Flex><Text fontSize="13px" color="fg.muted" mt="1" whiteSpace="pre-wrap">{thread.body}</Text></Box><StatusBadge label={thread.resolvedAt ? "resolved" : "open"} status={thread.resolvedAt ? "completed" : "pending"} /></Flex>{replies.map((reply) => <Box key={reply.id} ms="5" mt="3" ps="3" borderStartWidth="2px" borderColor="border.emphasized"><Text fontSize="12px" fontWeight="700">{reply.authorName}</Text><Text fontSize="13px" color="fg.muted" mt="0.5">{reply.body}</Text></Box>)}{canManage ? <Flex gap="2" mt="3"><Button size="sm" variant="ghost" onClick={() => { setReplyParentId(thread.id); setReplyBody(""); requestAnimationFrame(() => replyRef.current?.focus()); }}>Reply</Button><Button size="sm" variant="ghost" onClick={() => void mutate(`/${activeRound.id}/comments/${thread.id}/${thread.resolvedAt ? "reopen" : "resolve"}`)} disabled={busy}>{thread.resolvedAt ? <RotateCcw size={12} /> : <Check size={12} />}{thread.resolvedAt ? "Reopen" : "Resolve"}</Button></Flex> : null}</Box>;
-                    })}
-                  </Stack>
-                  {canManage ? <Box><Text fontSize="12px" fontWeight="650">{replyParentId ? "Reply to thread" : "Add team note"}</Text><Textarea ref={replyRef} mt="2" rows={3} value={replyBody} onChange={(event) => setReplyBody(event.target.value.slice(0, 2000))} placeholder={activeRound.recipientEmails.length > 0 ? `Mention a recipient with @${activeRound.recipientEmails[0]}` : "Write a clear response"} /><Flex mt="2" justify="space-between" gap="2"><Button size="sm" variant="ghost" disabled={!replyParentId} onClick={() => { setReplyParentId(null); setReplyBody(""); }}>Cancel reply</Button><Button size="sm" variant="subtle" disabled={!replyBody.trim() || busy} onClick={() => void submitReply(activeRound)}><Send size={13} /> Add reply</Button></Flex></Box> : null}
+                <Stack flex="1" w="full" minW="0" gap="3">
+                  <Flex align="center" justify="space-between"><Flex align="center" gap="2" color="fg.muted"><MessageSquareText size={16} /><Text textStyle="eyebrow">Feedback</Text></Flex><Text fontSize="12px" fontVariantNumeric="tabular-nums" color="fg.subtle">{activeRound.comments.filter((comment) => !comment.parentId).length} threads</Text></Flex>
+                  {activeRound.comments.filter((comment) => !comment.parentId).map((thread) => {
+                    const replies = activeRound.comments.filter((comment) => comment.parentId === thread.id);
+                    const fromGuest = thread.authorKind === "guest";
+                    return (
+                      <Stack key={thread.id} gap="3" p="4" bg="bg.subtle" borderRadius="l3">
+                        <Flex justify="space-between" gap="3" align="start">
+                          <Flex gap="3" minW="0">
+                            <Initials name={thread.authorName} guest={fromGuest} />
+                            <Box minW="0">
+                              <Flex align="center" gap="2" wrap="wrap"><Text fontSize="13px" fontWeight="600">{thread.authorName}</Text><Text fontSize="12px" color="fg.subtle">{fromGuest ? "Client" : "Team"}</Text>{thread.timestampSec !== null ? <Text textStyle="data" color="accent.fg" fontSize="12px" bg="accent.muted" px="1.5" py="0.5" borderRadius="full">{formatTimecode(thread.timestampSec)}</Text> : null}</Flex>
+                              <Text fontSize="13px" color="fg.muted" mt="1" whiteSpace="pre-wrap">{thread.body}</Text>
+                            </Box>
+                          </Flex>
+                          <StatusBadge label={thread.resolvedAt ? "resolved" : "open"} status={thread.resolvedAt ? "completed" : "pending"} />
+                        </Flex>
+                        {replies.map((reply) => <Box key={reply.id} ms="11" p="3" bg="bg.panel" borderRadius="l2"><Text fontSize="12px" fontWeight="600">{reply.authorName}</Text><Text fontSize="13px" color="fg.muted" mt="0.5" whiteSpace="pre-wrap">{reply.body}</Text></Box>)}
+                        {canManage ? <Flex gap="2" ms="9"><Button size="sm" variant="ghost" onClick={() => { setReplyParentId(thread.id); setReplyBody(""); requestAnimationFrame(() => replyRef.current?.focus()); }}>Reply</Button><Button size="sm" variant="ghost" onClick={() => void mutate(`/${activeRound.id}/comments/${thread.id}/${thread.resolvedAt ? "reopen" : "resolve"}`)} disabled={busy}>{thread.resolvedAt ? <RotateCcw size={12} /> : <Check size={12} />}{thread.resolvedAt ? "Reopen" : "Resolve"}</Button></Flex> : null}
+                      </Stack>
+                    );
+                  })}
+                  {canManage ? <Stack gap="2" p="4" bg="bg.subtle" borderRadius="l3"><Text fontSize="12px" fontWeight="650">{replyParentId ? "Reply to thread" : "Add team note"}</Text><Textarea ref={replyRef} rows={3} value={replyBody} onChange={(event) => setReplyBody(event.target.value.slice(0, 2000))} placeholder={activeRound.recipientEmails.length > 0 ? `Mention a recipient with @${activeRound.recipientEmails[0]}` : "Write a clear response"} /><Flex justify="space-between" gap="2"><Button size="sm" variant="ghost" disabled={!replyParentId} onClick={() => { setReplyParentId(null); setReplyBody(""); }}>Cancel reply</Button><Button size="sm" variant="subtle" disabled={!replyBody.trim() || busy} onClick={() => void submitReply(activeRound)}><Send size={13} /> Add reply</Button></Flex></Stack> : null}
                 </Stack>
 
-                <Stack w={{ base: "full", xl: "310px" }} flexShrink="0" gap="6">
-                  <Box><Flex align="center" gap="2"><Box color="fg.muted"><UserRound size={15} /></Box><Text textStyle="eyebrow" color="fg.muted">Reviewers</Text></Flex>{activeRound.guests.length === 0 ? <Text fontSize="13px" color="fg.muted" mt="3">No one has opened the review room yet.</Text> : canManage ? activeRound.guests.map((guest) => <Box key={guest.id} py="3" borderBottomWidth="1px" borderColor="border.subtle"><Text fontSize="13px" fontWeight="650">{guest.displayName}</Text><Text fontSize="12px" color="fg.subtle">{guest.email}</Text><Text fontSize="12px" color="fg.subtle" mt="1">Last seen {formatDateTime(guest.lastSeenAt)}</Text></Box>) : <Text fontSize="13px" color="fg.muted" mt="3">{activeRound.guests.length} reviewer{activeRound.guests.length === 1 ? " has" : "s have"} opened the room.</Text>}</Box>
-                  {canManage ? <Box><Flex align="center" gap="2"><Box color="fg.muted"><Send size={15} /></Box><Text textStyle="eyebrow" color="fg.muted">Delivery</Text></Flex>{activeRound.recipientEmails.length > 0 ? <Stack gap="1" mt="3">{activeRound.recipientEmails.map((email) => <Text key={email} fontSize="12px">{email}</Text>)}</Stack> : <Text fontSize="13px" color="fg.muted" mt="3">No one was emailed for this round.</Text>}{activeRound.recipientEmails.length > 0 && activeRound.notifications.length === 0 ? <Text fontSize="12px" color="fg.subtle" mt="2">Emails were paused when this round went out.</Text> : activeRound.notifications.map((notification) => <Flex key={notification.id} py="3" borderBottomWidth="1px" borderColor="border.subtle" justify="space-between" gap="2" align="start"><Box minW="0"><Text fontSize="12px" truncate>{notification.recipientEmail}</Text><Text fontSize="12px" color="fg.subtle">{eventLabel(notification.kind)} · {notification.status}</Text>{notification.failureCode ? <Text fontSize="12px" color="danger.fg">{eventLabel(notification.failureCode)}</Text> : null}</Box>{notification.status === "failed" ? <Button size="sm" variant="ghost" onClick={() => void mutate(`/${activeRound.id}/notifications/retry`, { ledgerId: notification.id })} disabled={busy}><RefreshCw size={12} /> Retry</Button> : null}</Flex>)}</Box> : null}
-                  {canManage ? <Box><Flex align="center" gap="2"><Box color="fg.muted"><Clock3 size={15} /></Box><Text textStyle="eyebrow" color="fg.muted">Audit history</Text></Flex><Stack gap="0" mt="2">{activeRound.auditEvents.slice(0, 12).map((event) => <Flex key={event.id} py="2" borderBottomWidth="1px" borderColor="border.subtle" justify="space-between" gap="3"><Text fontSize="12px">{eventLabel(event.kind)}</Text><Text fontSize="12px" fontVariantNumeric="tabular-nums" color="fg.subtle">{formatDateTime(event.createdAt)}</Text></Flex>)}</Stack></Box> : null}
+                <Stack w={{ base: "full", xl: "310px" }} flexShrink={0} gap="3">
+                  <SideCard icon={<UserRound size={15} />} title="Reviewers">
+                    {activeRound.guests.length === 0 ? <Text fontSize="13px" color="fg.muted">No one has opened the review room yet.</Text> : canManage ? activeRound.guests.map((guest) => (
+                      <Flex key={guest.id} gap="3" align="center" minW="0">
+                        <Initials name={guest.displayName ?? guest.email ?? ""} guest />
+                        <Box minW="0">
+                          <Text fontSize="13px" fontWeight="600" truncate>{guest.displayName ?? guest.email ?? "Reviewer"}</Text>
+                          {guest.displayName && guest.email ? <Text fontSize="12px" color="fg.subtle" truncate>{guest.email}</Text> : null}
+                          <Text fontSize="12px" fontVariantNumeric="tabular-nums" color="fg.subtle">Last seen {formatDateTime(guest.lastSeenAt)}</Text>
+                        </Box>
+                      </Flex>
+                    )) : <Text fontSize="13px" color="fg.muted">{activeRound.guests.length} reviewer{activeRound.guests.length === 1 ? " has" : "s have"} opened the room.</Text>}
+                  </SideCard>
+                  {canManage ? (
+                    <SideCard icon={<Send size={15} />} title="Delivery">
+                      {activeRound.recipientEmails.length > 0 ? <Flex gap="1.5" wrap="wrap">{activeRound.recipientEmails.map((email) => <Text key={email} fontSize="12px" bg="bg.soft" px="2" py="1" borderRadius="full" maxW="full" truncate>{email}</Text>)}</Flex> : <Text fontSize="13px" color="fg.muted">No one was emailed for this round.</Text>}
+                      {activeRound.recipientEmails.length > 0 && activeRound.notifications.length === 0 ? <Text fontSize="12px" color="fg.subtle">Emails were paused when this round went out.</Text> : activeRound.notifications.map((notification) => (
+                        <Flex key={notification.id} justify="space-between" gap="2" align="center">
+                          <Box minW="0">
+                            <Text fontSize="12px" truncate>{notification.recipientEmail}</Text>
+                            <Text fontSize="12px" color="fg.subtle">{eventLabel(notification.kind)}</Text>
+                            {notification.failureCode ? <Text fontSize="12px" color="danger.fg">{eventLabel(notification.failureCode)}</Text> : null}
+                          </Box>
+                          <Flex align="center" gap="1" flexShrink={0}>
+                            <StatusBadge label={notification.status} status={notification.status === "failed" ? "failed" : notification.status === "sent" ? "completed" : "pending"} />
+                            {notification.status === "failed" ? <Button size="sm" variant="ghost" onClick={() => void mutate(`/${activeRound.id}/notifications/retry`, { ledgerId: notification.id })} disabled={busy}><RefreshCw size={12} /> Retry</Button> : null}
+                          </Flex>
+                        </Flex>
+                      ))}
+                    </SideCard>
+                  ) : null}
+                  {canManage ? (
+                    <SideCard icon={<Clock3 size={15} />} title="Audit history">
+                      <Stack gap="2">{activeRound.auditEvents.slice(0, 12).map((event) => <Flex key={event.id} justify="space-between" gap="3"><Text fontSize="12px">{eventLabel(event.kind)}</Text><Text fontSize="12px" fontVariantNumeric="tabular-nums" color="fg.subtle">{formatDateTime(event.createdAt)}</Text></Flex>)}</Stack>
+                    </SideCard>
+                  ) : null}
                 </Stack>
               </Flex>
 
-              {canManage ? <Flex pt="4" justify="space-between" gap="3" wrap="wrap"><Button variant="subtle" onClick={() => prepareNext(activeRound)}><RefreshCw size={14} /> Prepare next round</Button>{!activeRound.revokedAt ? <Button variant="ghost" colorPalette="danger" onClick={() => void mutate(`/${activeRound.id}/revoke`)} disabled={busy}><ShieldCheck size={14} /> Revoke access</Button> : null}</Flex> : null}
+              {canManage ? <Flex justify="space-between" gap="3" wrap="wrap"><Button variant="subtle" onClick={() => prepareNext(activeRound)}><RefreshCw size={14} /> Prepare next round</Button>{!activeRound.revokedAt ? <Button variant="ghost" colorPalette="danger" onClick={() => void mutate(`/${activeRound.id}/revoke`)} disabled={busy}><ShieldCheck size={14} /> Revoke access</Button> : null}</Flex> : null}
             </Stack>
           ) : null}
         </Flex>

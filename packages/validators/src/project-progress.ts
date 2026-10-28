@@ -136,6 +136,8 @@ export interface ProcessingNode {
   /** "est. 43%" (transcribe, elapsed-time based), "67%" (detect/render), or
    *  an ingest stage word — null when there's nothing to show. */
   detail: string | null;
+  /** Known percent for an active stage (0 < p < 100); null when unknown. */
+  progress: number | null;
   errorCode: string | null;
 }
 
@@ -183,62 +185,56 @@ export function deriveProcessingChecklist(
   const isDone = importState === "done" && transcribeState === "done"
     && detectState === "done" && renderState === "done";
 
-  const nodes: ProcessingNode[] = [
+  const transcribeProgress = activeProgress(transcribeState, input.transcribe);
+  const detectProgress = activeProgress(detectState, input.detect);
+  const renderProgress = activeProgress(renderState, input.render);
+
+  return [
     {
       id: "import",
       label: "Import",
       state: importState,
       detail: importState === "active" ? ingestStageWord(input.ingestStatus) : null,
+      progress: null,
       errorCode: null,
     },
     {
       id: "transcribe",
       label: "Transcribe",
       state: transcribeState,
-      detail:
-        transcribeState === "active" &&
-        input.transcribe.progress > 0 &&
-        input.transcribe.progress < 100
-          ? `est. ${Math.round(input.transcribe.progress)}%`
-          : null,
+      detail: transcribeProgress === null ? null : `est. ${Math.round(transcribeProgress)}%`,
+      progress: transcribeProgress,
       errorCode: input.transcribe.errorCode,
     },
     {
       id: "detect",
       label: "Find best moments",
       state: detectState,
-      detail:
-        detectState === "active" &&
-        input.detect.progress > 0 &&
-        input.detect.progress < 100
-          ? `${Math.round(input.detect.progress)}%`
-          : null,
+      detail: detectProgress === null ? null : `${Math.round(detectProgress)}%`,
+      progress: detectProgress,
       errorCode: input.detect.errorCode,
     },
+    {
+      id: "render",
+      label: renderLabel,
+      state: renderState,
+      detail: renderProgress === null ? null : `${Math.round(renderProgress)}%`,
+      progress: renderProgress,
+      errorCode: input.render.errorCode,
+    },
+    {
+      id: "done",
+      label: "Done",
+      state: isDone ? "done" : "todo",
+      detail: isDone ? doneCopy : null,
+      progress: null,
+      errorCode: null,
+    },
   ];
+}
 
-  nodes.push({
-    id: "render",
-    label: renderLabel,
-    state: renderState,
-    detail:
-      renderState === "active" &&
-      input.render.progress > 0 &&
-      input.render.progress < 100
-        ? `${Math.round(input.render.progress)}%`
-        : null,
-    errorCode: input.render.errorCode,
-  });
-
-  nodes.push({
-    id: "done",
-    label: "Done",
-    state: isDone ? "done" : "todo",
-    detail: isDone ? doneCopy : null,
-    errorCode: null,
-  });
-
-  return nodes;
+function activeProgress(state: PipelineStepState, stage: ProcessingStageInput): number | null {
+  return state === "active" && stage.progress > 0 && stage.progress < 100 ? stage.progress : null;
 }
 
 function stageToStepState(stage: ProcessingStageInput): PipelineStepState {

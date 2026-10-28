@@ -6,6 +6,7 @@ import { useState } from "react";
 import Link from "next/link";
 import {
 	Box,
+	chakra,
 	Flex,
 	Stack,
 	Text,
@@ -21,6 +22,7 @@ import {
 	AlertCircle,
 	ChevronDown,
 	Copy,
+	Play,
 	X,
 } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
@@ -28,13 +30,81 @@ import { Input } from "@narriflow/ui/components/input";
 import { Textarea } from "@narriflow/ui/components/textarea";
 import { Checkbox } from "@narriflow/ui/components/checkbox";
 import { Spinner } from "@narriflow/ui/components/spinner";
-import type { SocialPostSnapshot, ClipSnapshot } from "@narriflow/validators";
+import type {
+	SocialPlatform,
+	SocialPostSnapshot,
+	ClipSnapshot,
+} from "@narriflow/validators";
 import {
 	describeSocialPost,
 	SOCIAL_PLATFORM_LABELS,
 } from "@/lib/social-post-status";
 import { publishingRequest } from "./publishing-draft";
 import { EmptyState } from "@narriflow/ui/components/empty-state";
+import { FeatureHero } from "../../_components/feature-hero";
+const FILTERS = [
+	["all", "All posts"],
+	["scheduled", "Scheduled"],
+	["posted", "Published"],
+	["inbox", "TikTok inbox"],
+	["attention", "Needs attention"],
+] as const;
+
+/** Soft status pill colors by tone; success is the accent, as everywhere in the app. */
+const TONE_PILL = {
+	success: { bg: "success.muted", color: "success.fg" },
+	accent: { bg: "accent.muted", color: "accent.fg" },
+	danger: { bg: "danger.muted", color: "danger.fg" },
+	warning: { bg: "warning.muted", color: "warning.fg" },
+	neutral: { bg: "bg.soft", color: "fg.muted" },
+} as const;
+
+const HERO_PLATFORMS: Array<{ platform: SocialPlatform; top: string; right: string }> = [
+	{ platform: "tiktok", top: "12%", right: "14%" },
+	{ platform: "youtube_shorts", top: "33%", right: "5%" },
+	{ platform: "instagram_reels", top: "54%", right: "12%" },
+];
+
+/** What Posts is for, drawn: a clip, the platforms it goes to, and where it stands. */
+function PostsHeroVisual() {
+	return (
+		<Box position="absolute" inset="0">
+			<Flex
+				position="absolute"
+				left="22%"
+				top="50%"
+				mt="-82px"
+				w="92px"
+				h="164px"
+				direction="column"
+				align="center"
+				justify="space-between"
+				pt="14"
+				pb="4"
+				borderRadius="14px"
+				color="white"
+				transform="rotate(-4deg)"
+				style={{ backgroundImage: "linear-gradient(135deg,#8cace0,#31486f)" }}
+			>
+				<Play size={20} fill="currentColor" />
+				<Stack gap="1" w="full" px="3.5">
+					<Box h="5px" w="full" borderRadius="full" bg="whiteAlpha.800" />
+					<Box h="5px" w="60%" alignSelf="center" borderRadius="full" bg="whiteAlpha.800" />
+				</Stack>
+			</Flex>
+			{HERO_PLATFORMS.map(({ platform, top, right }) => (
+				<Flex key={platform} position="absolute" top={top} right={right} align="center" gap="1.5" h="8" ps="2.5" pe="3" bg="bg.panel" borderRadius="full" fontSize="12px" fontWeight="500" color="fg">
+					<SocialPlatformMark platform={platform} size="4" />
+					{SOCIAL_PLATFORM_LABELS[platform]}
+				</Flex>
+			))}
+			<Flex position="absolute" bottom="9%" left="22%" align="center" gap="1.5" h="7" px="3" bg="bg.panel" borderRadius="full" fontSize="12px" fontWeight="500" color="accent.fg">
+				<Clock3 size={12} />
+				Scheduled · Fri 9:00
+			</Flex>
+		</Box>
+	);
+}
 
 export function PublishingPosts({
 	projectId,
@@ -120,49 +190,81 @@ export function PublishingPosts({
 					? p.status === "inbox_delivered"
 					: p.status === "posted");
 	const visible = posts.filter((p) => matches(p, filter));
+	// A project that has never posted gets the feature intro, not five zeroed tabs.
+	if (filterable && posts.length === 0 && !nextCursor) {
+		return canManage ? (
+			<FeatureHero
+				title="Publish clips and track every post"
+				points={[
+					"Schedule posts, or publish now.",
+					"Send drafts to your TikTok inbox.",
+					"Follow each post to its live link.",
+				]}
+				visual={<PostsHeroVisual />}
+				action={
+					<Button asChild size="sm">
+						<Link href={`/projects/${projectId}`}>Choose a clip</Link>
+					</Button>
+				}
+			/>
+		) : (
+			<EmptyState
+				icon={<Send />}
+				title="Nothing published yet"
+				description="Posts made from this project's clips show up here, from upload to the live link."
+			/>
+		);
+	}
+	// Only categories that have posts, plus the one being viewed.
+	const filters = FILTERS.map(([value, label]) => ({
+		value,
+		label,
+		count: posts.filter((p) => matches(p, value)).length,
+	})).filter(({ value, count }) => value === "all" || value === filter || count > 0);
 	return (
 		<Stack gap="4">
 			{filterable && (
 				<Flex justify="space-between" align="center" gap="3" wrap="wrap">
-					<Flex
-					gap="1"
-					wrap="wrap"
-					role="group"
-					aria-label="Filter posts"
-					>
-						{[
-							["all", "All posts"],
-							["scheduled", "Scheduled"],
-							["posted", "Published"],
-							["inbox", "TikTok inbox"],
-							["attention", "Needs attention"],
-						].map(([value, label]) => {
-							const count = posts.filter((p) => matches(p, value!)).length;
-							const active = filter === value;
-							return (
-								<Button
-									key={value}
-									variant={active ? "subtle" : "ghost"}
-									size="sm"
-									color={active ? "fg" : "fg.muted"}
-									aria-pressed={active}
-									onClick={() => setFilter(value!)}
-								>
-									{label}
-									<Text
-										as="span"
-										fontSize="12px"
-										fontVariantNumeric="tabular-nums"
-										color={
-										value === "attention" && count > 0 ? "danger.fg" : "fg.subtle"
-										}
+					{filters.length > 1 ? (
+						<Flex gap="2" wrap="wrap" role="group" aria-label="Filter posts">
+							{filters.map(({ value, label, count }) => {
+								const active = filter === value;
+								return (
+									<chakra.button
+										key={value}
+										type="button"
+										display="inline-flex"
+										alignItems="center"
+										gap="1.5"
+										h="8"
+										px="3"
+										borderRadius="full"
+										fontSize="13px"
+										fontWeight="500"
+										bg={active ? "accent.muted" : "bg.soft"}
+										color={active ? "accent.fg" : "fg.muted"}
+										_hover={{ bg: active ? "accent.muted" : "bg.softHover" }}
+										_focusVisible={{ outline: "2px solid", outlineColor: "accent.focusRing", outlineOffset: "2px" }}
+										transition="background 0.15s ease"
+										aria-pressed={active}
+										onClick={() => setFilter(value)}
 									>
-										{count}
-									</Text>
-								</Button>
-							);
-						})}
-					</Flex>
+										{label}
+										<Text
+											as="span"
+											fontSize="12px"
+											fontVariantNumeric="tabular-nums"
+											color={value === "attention" && count > 0 ? "danger.fg" : active ? "accent.fg" : "fg.subtle"}
+										>
+											{count}
+										</Text>
+									</chakra.button>
+								);
+							})}
+						</Flex>
+					) : (
+						<Box />
+					)}
 					<Button
 						aria-label="Refresh"
 						title="Refresh"
@@ -180,27 +282,10 @@ export function PublishingPosts({
 				</Text>
 			)}
 			{!visible.length &&
-				(filterable && posts.length > 0 ? (
+				(filterable ? (
 					<Text py="10" textAlign="center" fontSize="sm" color="fg.muted">
 						No posts match this filter.
 					</Text>
-				) : filterable ? (
-					<EmptyState
-						icon={<Send />}
-						title="Nothing published yet"
-						description={
-							canManage
-								? "Publish or schedule a clip and follow it here, from upload to the live link."
-								: "Posts made from this project's clips show up here, from upload to the live link."
-						}
-						action={
-							canManage ? (
-								<Button asChild size="sm">
-									<Link href={`/projects/${projectId}`}>Choose a clip</Link>
-								</Button>
-							) : undefined
-						}
-					/>
 				) : (
 					<EmptyState
 						icon={<Send />}
@@ -219,10 +304,8 @@ export function PublishingPosts({
 						gridTemplateColumns="minmax(0, 1fr) auto"
 						gap="3"
 						p="4"
-						borderWidth="1px"
-						borderColor="border.card"
 						borderRadius="l3"
-						bg="bg.panel"
+						bg="bg.subtle"
 						>
 						<Flex
 							gridColumn="1 / -1"
@@ -233,45 +316,43 @@ export function PublishingPosts({
 						>
 							<Flex align="center" gap="3" minW="0">
 								<Flex
-									boxSize="10"
-									borderRadius="full"
-									bg="bg.soft"
-									align="center"
-									justify="center"
+								boxSize="10"
+								flexShrink={0}
+								borderRadius="full"
+								bg="bg.panel"
+								align="center"
+								justify="center"
 								>
 									<SocialPlatformMark platform={post.platform} />
 								</Flex>
 								<Box minW="0">
-									<Text fontSize="sm" fontWeight="semibold">
-										{post.accountDisplayName ??
-											SOCIAL_PLATFORM_LABELS[post.platform]}
+									<Text fontSize="sm" fontWeight="550" lineClamp={1}>
+									{post.accountDisplayName ??
+									SOCIAL_PLATFORM_LABELS[post.platform]}
 									</Text>
 									<Text fontSize="xs" color="fg.muted" lineClamp={1}>
-										{filterable && clip
-											? (clip.title ?? clip.hookText)
-											: (post.accountHandle ??
-												SOCIAL_PLATFORM_LABELS[post.platform])}
+									{filterable && clip
+									? [
+									post.accountDisplayName
+									? SOCIAL_PLATFORM_LABELS[post.platform]
+									: null,
+									clip.title ?? clip.hookText,
+									]
+									.filter(Boolean)
+									.join(" · ")
+									: (post.accountHandle ??
+									SOCIAL_PLATFORM_LABELS[post.platform])}
 									</Text>
 								</Box>
 							</Flex>
 							<Flex
-								gap="1.5"
-								align="center"
-								px="2"
-								py="1"
-								borderRadius="full"
-								bg="bg.soft"
-								color={
-								feedback.tone === "success"
-								? "success.fg"
-								: feedback.tone === "accent"
-								? "accent.fg"
-								: feedback.tone === "danger"
-								? "danger.fg"
-								: feedback.tone === "warning"
-								? "warning.fg"
-								: "fg.muted"
-								}
+							gap="1.5"
+							align="center"
+							px="2.5"
+							py="1"
+							borderRadius="full"
+							bg={TONE_PILL[feedback.tone].bg}
+							color={TONE_PILL[feedback.tone].color}
 							>
 								{feedback.isBusy ? (
 									<Spinner size="xs" />
@@ -290,12 +371,16 @@ export function PublishingPosts({
 						</Flex>
 						{feedback.error && (
 							<Text
-								gridColumn="1 / -1"
-								role="status"
-								fontSize="xs"
-								color="danger.fg"
+							gridColumn="1 / -1"
+							role="status"
+							fontSize="xs"
+							color="danger.fg"
+							bg="bg.panel"
+							borderRadius="l2"
+							px="3"
+							py="2"
 							>
-								{feedback.error}
+							{feedback.error}
 							</Text>
 						)}
 						{post.latestMetrics && (
@@ -312,8 +397,8 @@ export function PublishingPosts({
 						)}
 						<Collapsible.Root minW="0">
 							<Flex align="center" justify="space-between" gap="2">
-								<Flex align="center" gap="1.5" color="fg.muted" fontSize="xs">
-									<Clock3 size={12} />
+								<Flex align="center" gap="1.5" color="fg.muted" fontSize="xs" fontVariantNumeric="tabular-nums">
+								<Clock3 size={12} />
 									{post.postedAt || post.nextAttemptAt || post.scheduledFor ? (
 										<time
 											dateTime={
@@ -453,11 +538,13 @@ export function PublishingPosts({
 						</Flex>
 						{recovery?.id === post.id && (
 							<Stack
-								gridColumn="1 / -1"
-								gap="3"
-								pt="3"
-								>
-								<Field.Root>
+							gridColumn="1 / -1"
+							gap="3"
+							p="4"
+							bg="bg.panel"
+							borderRadius="l2"
+							>
+							<Field.Root>
 								<Field.Label>Reason</Field.Label>
 									<Textarea
 										value={reason}

@@ -1,10 +1,11 @@
 "use client";
 
 import { useMemo, useState, useTransition } from "react";
+import type { ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { Box, Flex, Grid, Stack, Text } from "@chakra-ui/react";
-import { AlertTriangle, ArrowRight, Download, Languages, Mic2 } from "lucide-react";
+import { AlertTriangle, ArrowRight, Download, Languages, Mic2, Play } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
 import { Select } from "@narriflow/ui/components/select";
 import { Spinner } from "@narriflow/ui/components/spinner";
@@ -15,9 +16,9 @@ import type {
   ClipDubSnapshot,
   ClipSnapshot,
 } from "@narriflow/validators";
-import { userErrorMessage } from "@narriflow/validators";
+import { clipAspectRatioOptions, userErrorMessage } from "@narriflow/validators";
 import type { DubUsageSummary } from "@narriflow/services";
-import { EmptyState } from "@narriflow/ui/components/empty-state";
+import { formatDuration } from "@/lib/format";
 import { PlanLimitNotice } from "../../_components/plan-limit-notice";
 import { LockedButton, useUpgrade, type UpgradePrompt } from "../../_components/upgrade";
 import { upgradePromptFromFailure, type BrowserRequestFailure } from "@/lib/authenticated-request-browser";
@@ -86,6 +87,20 @@ const dubBadgeStatus: Record<
   queued: "pending",
 };
 
+const dubStatusLabel: Record<ClipDubSnapshot["status"], string> = {
+  completed: "Completed",
+  failed: "Failed",
+  processing: "Processing",
+  queued: "Queued",
+};
+
+/** The clip-tile gradients; a clip keeps the same one everywhere it appears. */
+const CLIP_GRADIENTS = [
+  "linear-gradient(140deg,#c1d2f2,#5c6c96)",
+  "linear-gradient(135deg,#8cace0,#31486f)",
+  "linear-gradient(140deg,#c9bcf0,#74619e)",
+];
+
 function languageLabel(code: string) {
   return languageOptions.find((option) => option.value === code)?.label ?? code.toUpperCase();
 }
@@ -94,11 +109,120 @@ function voiceLabel(value: string) {
   return voiceOptions.find((option) => option.value === value)?.label ?? value;
 }
 
+/** "05 · Big screen, big drain"; a clip without a title is just "Clip 05". */
+function clipLabel(clip: ClipSnapshot) {
+  const number = String(clip.index + 1).padStart(2, "0");
+  return clip.title ? `${number} · ${clip.title}` : `Clip ${number}`;
+}
+
 function FieldLabel({ children }: { children: string }) {
   return (
     <Text fontSize="12px" fontWeight="500" color="fg.muted" mb="1.5">
       {children}
     </Text>
+  );
+}
+
+/** A clip drawn in its own shape, 44px on its longest side, centered in a square slot. */
+function ClipTile({
+  ratio,
+  gradientIndex,
+  children,
+}: {
+  ratio: ClipAspectRatio;
+  gradientIndex: number;
+  children?: ReactNode;
+}) {
+  const option = clipAspectRatioOptions.find((candidate) => candidate.value === ratio);
+  const longest = option ? Math.max(option.iconW, option.iconH) : 16;
+  const width = option ? (option.iconW / longest) * 44 : 25;
+  const height = option ? (option.iconH / longest) * 44 : 44;
+  return (
+    <Flex boxSize="44px" flexShrink={0} align="center" justify="center" aria-hidden="true">
+      <Flex
+        w={`${width}px`}
+        h={`${height}px`}
+        align="center"
+        justify="center"
+        borderRadius="l1"
+        background={CLIP_GRADIENTS[gradientIndex % CLIP_GRADIENTS.length]}
+        color="white"
+      >
+        {children}
+      </Flex>
+    </Flex>
+  );
+}
+
+const WAVEFORM = [5, 10, 7, 13, 8, 11, 6];
+
+/** A small waveform glyph that marks a voice. */
+function Waveform() {
+  return (
+    <Flex align="center" gap="1.5px" h="14px" flexShrink={0} aria-hidden="true">
+      {WAVEFORM.map((height, index) => (
+        <Box key={index} w="2px" h={`${height}px`} borderRadius="full" bg="accent.solid" />
+      ))}
+    </Flex>
+  );
+}
+
+function Chip({ children }: { children: ReactNode }) {
+  return (
+    <Flex align="center" gap="2" px="3" h="8" borderRadius="full" bg="bg.soft" fontSize="13px" color="fg" flexShrink={0}>
+      {children}
+    </Flex>
+  );
+}
+
+/** Small meter for the month's dubs: how much of the allowance is left. */
+function AllowanceMeter({ remaining, limit }: { remaining: number; limit: number }) {
+  const percent = limit > 0 ? Math.min(100, Math.max(0, (remaining / limit) * 100)) : 0;
+  return (
+    <Stack gap="1.5" minW="150px">
+      <Text fontSize="12px" color="fg.muted" fontVariantNumeric="tabular-nums">
+        {`${remaining} of ${limit} left this month`}
+      </Text>
+      <Box
+        role="meter"
+        aria-label="Dubs left this month"
+        aria-valuemin={0}
+        aria-valuemax={limit}
+        aria-valuenow={remaining}
+        h="6px"
+        bg="bg.soft"
+        borderRadius="full"
+        overflow="hidden"
+      >
+        <Box h="full" w={`${percent}%`} bg="accent.solid" borderRadius="full" transition="width 200ms ease" />
+      </Box>
+    </Stack>
+  );
+}
+
+/** What a dub produces, drawn: a dubbed video and a narration-only audio file. */
+function DubsEmpty({ canEdit }: { canEdit: boolean }) {
+  return (
+    <Flex align="center" gap="5" bg="bg.subtle" borderRadius="l3" px={{ base: "5", md: "6" }} py="5" wrap="wrap">
+      <Flex align="center" gap="3" aria-hidden="true">
+        <ClipTile ratio="9:16" gradientIndex={0}>
+          <Play size={12} fill="currentColor" strokeWidth={0} />
+        </ClipTile>
+        <Flex align="center" h="10" px="3.5" borderRadius="full" bg="bg.soft">
+          <Waveform />
+        </Flex>
+      </Flex>
+      <Box minW="0" flex="1">
+        <Text fontSize="14px" fontWeight="550" color="fg">
+          No dubs yet
+        </Text>
+        <Text fontSize="13px" color="fg.muted">
+          {canEdit
+            ? "Each dub comes with a video and a narration-only audio file."
+            : "Voiceover dubs made from this project's clips show up here."}
+        </Text>
+      </Box>
+    </Flex>
   );
 }
 
@@ -148,7 +272,7 @@ export function DubbingPanel({
         ? [{ value: "", label: "No rendered clips", disabled: true }]
         : renderedClips.map((clip) => ({
             value: clip.id,
-            label: `Clip ${clip.index + 1}`,
+            label: clipLabel(clip),
           })),
     [renderedClips],
   );
@@ -261,226 +385,229 @@ export function DubbingPanel({
       <PanelHeader
         icon={<Languages size={20} />}
         title="Voiceover dubs"
-        description="Translate a rendered clip and narrate it with an AI voice. Your original render doesn't change."
+        description="Narrate a rendered clip in another language with an AI voice."
       />
 
       {/* Composer */}
       {canEdit ? (
-      <Box
-        bg="bg.panel"
-        borderWidth="1px"
-        borderColor="border.card"
-        borderRadius="l3"
-        overflow="hidden"
-      >
-        <Flex align="center" gap="2" px="5" pt="5">
-          <Box color="fg.muted">
-            <Mic2 size={16} aria-hidden />
-          </Box>
-          <Text fontSize="16px" fontWeight="500" color="fg">
-            New dub
-          </Text>
-        </Flex>
-
-        <Grid
-          templateColumns={{
-            base: "1fr",
-            sm: "repeat(2, minmax(0, 1fr))",
-            lg: "repeat(4, minmax(0, 1fr))",
-          }}
-          gap="4"
-          p="5"
-        >
-          <Box>
-            <FieldLabel>Clip</FieldLabel>
-            <Select
-              items={clipItems}
-              value={clipId}
-              onValueChange={(nextId) => {
-                setClipId(nextId);
-                const nextClip = renderedClips.find((clip) => clip.id === nextId);
-                const nextAspect = nextClip
-                  ? renderedAspectRatios(nextClip)[0]
-                  : null;
-                if (nextAspect) setAspectRatio(nextAspect);
-              }}
-              size="sm"
-              placeholder="No rendered clips"
-              disabled={renderedClips.length === 0}
-              aria-label="Clip to dub"
-            />
-          </Box>
-
-          <Box>
-            <FieldLabel>Format</FieldLabel>
-            <Select
-              items={aspectRatioItems}
-              value={aspectRatio}
-              onValueChange={(value) => setAspectRatio(value as ClipAspectRatio)}
-              size="sm"
-              placeholder="Format"
-              disabled={aspectRatios.length === 0}
-              aria-label="Render format"
-            />
-          </Box>
-
-          <Box>
-            <FieldLabel>Language</FieldLabel>
-            <Select
-              items={languageOptions}
-              value={targetLanguageCode}
-              onValueChange={setTargetLanguageCode}
-              size="sm"
-              aria-label="Target language"
-            />
-          </Box>
-
-          <Box>
-            <FieldLabel>Voice</FieldLabel>
-            <Select
-              items={voiceOptions}
-              value={voice}
-              onValueChange={setVoice}
-              size="sm"
-              aria-label="Voice"
-            />
-          </Box>
-        </Grid>
-
-        <Flex
-          align="center"
-          justify="space-between"
-          gap="3"
-          wrap="wrap"
-          px="5"
-          pb="5"
-        >
-          {selectedClip ? (
-            <Flex align="center" gap="2" fontSize="13px" color="fg.muted" minW="0">
-              <Text color="fg">Clip {selectedClip.index + 1}</Text>
-              <Text fontSize="12px" fontVariantNumeric="tabular-nums">
-                {aspectRatio}
-              </Text>
-              <ArrowRight size={13} aria-hidden />
-              <Text color="fg">{languageLabel(targetLanguageCode)}</Text>
-              <Text>· {voiceLabel(voice)} voice</Text>
-            </Flex>
-          ) : (
-            <Text fontSize="13px" color="fg.muted">
-              Render a clip first. Dubs narrate over a finished render.{" "}
-              <Link href={`/projects/${projectId}`} style={{ textDecoration: "underline", textUnderlineOffset: "3px" }}>
-                Go to clips
-              </Link>
-            </Text>
-          )}
-          <Flex align="center" gap="3">
-            {allowance && !blockedMessage ? (
-              <Text fontSize="12px" color="fg.muted" fontVariantNumeric="tabular-nums">
-                {allowance.remaining} of {allowance.limit} dubs left this month
-              </Text>
-            ) : null}
-            {blockedMessage && upgrade?.tier ? (
-              // A plan lock stays clickable and explains the upgrade, like every other locked action.
-              <LockedButton size="sm" prompt={upgrade}>
-                <Mic2 size={14} />
-                Generate dub
-              </LockedButton>
-            ) : (
-              <Button
+        <Stack gap="5" bg="bg.subtle" borderRadius="l3" p={{ base: "5", md: "6" }}>
+          <Grid
+            templateColumns={{
+              base: "1fr",
+              sm: "repeat(2, minmax(0, 1fr))",
+              lg: "minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1.3fr) minmax(0, 1.3fr)",
+            }}
+            gap="4"
+          >
+            <Box>
+              <FieldLabel>Clip</FieldLabel>
+              <Select
+                items={clipItems}
+                value={clipId}
+                onValueChange={(nextId) => {
+                  setClipId(nextId);
+                  const nextClip = renderedClips.find((clip) => clip.id === nextId);
+                  const nextAspect = nextClip
+                    ? renderedAspectRatios(nextClip)[0]
+                    : null;
+                  if (nextAspect) setAspectRatio(nextAspect);
+                }}
                 size="sm"
-                disabled={
-                  busy ||
-                  !selectedClip ||
-                  aspectRatios.length === 0 ||
-                  blockedMessage !== null ||
-                  clipTooLong
-                }
-                onClick={requestDub}
+                placeholder="No rendered clips"
+                disabled={renderedClips.length === 0}
+                aria-label="Clip to dub"
+              />
+            </Box>
+
+            <Box>
+              <FieldLabel>Format</FieldLabel>
+              <Select
+                items={aspectRatioItems}
+                value={aspectRatio}
+                onValueChange={(value) => setAspectRatio(value as ClipAspectRatio)}
+                size="sm"
+                placeholder="Format"
+                disabled={aspectRatios.length === 0}
+                aria-label="Render format"
+              />
+            </Box>
+
+            <Box>
+              <FieldLabel>Language</FieldLabel>
+              <Select
+                items={languageOptions}
+                value={targetLanguageCode}
+                onValueChange={setTargetLanguageCode}
+                size="sm"
+                aria-label="Target language"
+              />
+            </Box>
+
+            <Box>
+              <FieldLabel>Voice</FieldLabel>
+              <Select
+                items={voiceOptions}
+                value={voice}
+                onValueChange={setVoice}
+                size="sm"
+                aria-label="Voice"
+              />
+            </Box>
+          </Grid>
+
+          <Flex align="center" justify="space-between" gap="4" wrap="wrap">
+            {selectedClip ? (
+              <Flex
+                align="center"
+                gap="3"
+                wrap="wrap"
+                flex="1 1 380px"
+                minW="0"
+                bg="bg.panel"
+                borderRadius="l2"
+                px="3"
+                py="2.5"
               >
-                {busy ? <Spinner size="xs" /> : <Mic2 size={14} />}
-                {busy ? "Queueing" : "Generate dub"}
-              </Button>
-            )}
-          </Flex>
-        </Flex>
-        {blockedMessage || clipTooLong ? (
-          <Box px="5" pb="5" mt="-3">
-            {blockedMessage ? (
-              <PlanLimitNotice message={blockedMessage} upgrade={upgrade} />
+                <Flex align="center" gap="2.5" minW="0">
+                  <ClipTile ratio={aspectRatio} gradientIndex={selectedClip.index}>
+                    <Play size={12} fill="currentColor" strokeWidth={0} />
+                  </ClipTile>
+                  <Box minW="0">
+                    <Text fontSize="13px" fontWeight="550" color="fg" truncate maxW="240px">
+                      {clipLabel(selectedClip)}
+                    </Text>
+                    <Text textStyle="data" fontSize="11px" color="fg.subtle">
+                      {`${aspectRatio} · ${formatDuration(selectedClip.durationSec)}`}
+                    </Text>
+                  </Box>
+                </Flex>
+                <Box color="fg.subtle" aria-hidden="true">
+                  <ArrowRight size={14} />
+                </Box>
+                <Chip>
+                  <Text as="span" textStyle="data" fontSize="10px" color="accent.fg">
+                    {targetLanguageCode.toUpperCase()}
+                  </Text>
+                  {languageLabel(targetLanguageCode)}
+                </Chip>
+                <Box color="fg.subtle" aria-hidden="true">
+                  <ArrowRight size={14} />
+                </Box>
+                <Chip>
+                  <Waveform />
+                  {voiceLabel(voice)}
+                </Chip>
+              </Flex>
             ) : (
-              <Text fontSize="xs" color="warning.fg">
-                Dubs work on clips up to {Math.round((allowance?.maxClipSeconds ?? 0) / 60)} minutes. Trim this clip
-                first.
+              <Text fontSize="13px" color="fg.muted">
+                Render a clip first. Dubs narrate over a finished render.{" "}
+                <Link href={`/projects/${projectId}`} style={{ textDecoration: "underline", textUnderlineOffset: "3px" }}>
+                  Go to clips
+                </Link>
               </Text>
             )}
-          </Box>
-        ) : null}
-      </Box>
+            <Flex align="center" gap="4" ms="auto">
+              {allowance && !blockedMessage ? (
+                <AllowanceMeter remaining={allowance.remaining} limit={allowance.limit} />
+              ) : null}
+              {blockedMessage && upgrade?.tier ? (
+                // A plan lock stays clickable and explains the upgrade, like every other locked action.
+                <LockedButton size="sm" prompt={upgrade}>
+                  <Mic2 size={14} />
+                  Generate dub
+                </LockedButton>
+              ) : (
+                <Button
+                  size="sm"
+                  disabled={
+                    busy ||
+                    !selectedClip ||
+                    aspectRatios.length === 0 ||
+                    blockedMessage !== null ||
+                    clipTooLong
+                  }
+                  onClick={requestDub}
+                >
+                  {busy ? <Spinner size="xs" /> : <Mic2 size={14} />}
+                  {busy ? "Queueing" : "Generate dub"}
+                </Button>
+              )}
+            </Flex>
+          </Flex>
+          {blockedMessage || clipTooLong ? (
+            <Box mt="-2">
+              {blockedMessage ? (
+                <PlanLimitNotice message={blockedMessage} upgrade={upgrade} />
+              ) : (
+                <Text fontSize="xs" color="warning.fg">
+                  Dubs work on clips up to {Math.round((allowance?.maxClipSeconds ?? 0) / 60)} minutes. Trim this clip
+                  first.
+                </Text>
+              )}
+            </Box>
+          ) : null}
+        </Stack>
       ) : null}
 
       {message ? (
         <Flex
           role="alert"
           align="center"
-          gap="2"
+          gap="2.5"
+          bg="danger.subtle"
           color="danger.fg"
-          borderStartWidth="3px"
-          borderColor="danger.solid"
-          ps="3"
-          py="2"
+          borderRadius="l2"
+          px="4"
+          py="3"
         >
-          <AlertTriangle size={14} aria-hidden />
-          <Text fontSize="sm">{message}</Text>
+          <AlertTriangle size={15} aria-hidden />
+          <Text fontSize="13px">{message}</Text>
         </Flex>
       ) : null}
 
       {dubs.length > 0 ? (
-        <Box
-          bg="bg.panel"
-          borderWidth="1px"
-          borderColor="border.card"
-          borderRadius="l3"
-          overflow="hidden"
-        >
+        <Stack gap="2">
           {dubs.map((dub) => {
-            const clipIndex = clips.find((clip) => clip.id === dub.clipId)?.index;
+            const clip = clips.find((candidate) => candidate.id === dub.clipId);
             return (
               <Flex
                 key={dub.id}
                 align="center"
                 gap="4"
-                px="5"
-                py="3.5"
-                borderBottomWidth="1px"
-                borderColor="border.subtle"
+                px="4"
+                py="3"
+                bg="bg.subtle"
+                borderRadius="l3"
                 flexWrap="wrap"
                 transition="background 120ms ease"
-                _hover={{ bg: "bg.subtle" }}
-                _last={{ borderBottomWidth: "0" }}
+                _hover={{ bg: "bg.muted" }}
               >
-                <Flex
-                  boxSize="10"
-                  flexShrink={0}
-                  align="center"
-                  justify="center"
-                  borderRadius="full"
-                  bg="bg.soft"
-                  color="fg.muted"
-                  fontSize="12px"
-                  fontWeight="600"
-                  aria-hidden="true"
-                >
-                  {dub.targetLanguageCode.toUpperCase()}
-                </Flex>
-                <Box minW="0" flex="1">
-                  <Text fontSize="14px" fontWeight="550" color="fg" truncate>
-                    {languageLabel(dub.targetLanguageCode)} · {voiceLabel(dub.voice)}
+                <ClipTile ratio={dub.aspectRatio} gradientIndex={clip?.index ?? 0}>
+                  <Text fontSize="10px" fontWeight="600" lineHeight="1">
+                    {dub.targetLanguageCode.toUpperCase()}
                   </Text>
+                </ClipTile>
+                <Box minW="0" flex="1">
+                  <Flex align="center" gap="2.5" minW="0">
+                    <Text fontSize="14px" fontWeight="550" color="fg" truncate>
+                      {languageLabel(dub.targetLanguageCode)}
+                    </Text>
+                    <Flex align="center" gap="1.5" fontSize="13px" color="fg.muted" flexShrink={0}>
+                      <Waveform />
+                      {voiceLabel(dub.voice)}
+                    </Flex>
+                  </Flex>
                   <Text fontSize="12px" color="fg.subtle" truncate>
-                    Clip {clipIndex === undefined ? "?" : clipIndex + 1} ·{" "}
+                    {clip ? clipLabel(clip) : "Clip"} ·{" "}
                     <Text as="span" fontVariantNumeric="tabular-nums">
                       {dub.aspectRatio}
                     </Text>
+                    {dub.status === "completed" && dub.durationSec !== null ? (
+                      <Text as="span" textStyle="data">
+                        {" "}
+                        · {formatDuration(dub.durationSec)}
+                      </Text>
+                    ) : null}
                     {dub.errorCode ? (
                       <Text as="span" color="danger.fg">
                         {" "}
@@ -490,7 +617,7 @@ export function DubbingPanel({
                   </Text>
                 </Box>
                 {dub.status !== "completed" ? (
-                  <StatusBadge status={dubBadgeStatus[dub.status]} label={dub.status} />
+                  <StatusBadge status={dubBadgeStatus[dub.status]} label={dubStatusLabel[dub.status]} />
                 ) : null}
                 {dub.status === "completed" ? (
                   <Flex gap="1.5" flexShrink={0}>
@@ -509,7 +636,7 @@ export function DubbingPanel({
                     </Button>
                     <Button
                       size="sm"
-                      variant="ghost"
+                      variant="subtle"
                       disabled={downloadingAsset !== null}
                       onClick={() => downloadDub(dub, "audio")}
                     >
@@ -525,17 +652,9 @@ export function DubbingPanel({
               </Flex>
             );
           })}
-        </Box>
+        </Stack>
       ) : (
-        <EmptyState
-          icon={<Mic2 />}
-          title="No dubs yet"
-          description={
-            canEdit
-              ? "Pick a rendered clip, choose a language and a voice, and generate. Each dub comes with a video and a narration-only audio file."
-              : "Voiceover dubs made from this project's clips show up here."
-          }
-        />
+        <DubsEmpty canEdit={canEdit} />
       )}
     </Stack>
   );

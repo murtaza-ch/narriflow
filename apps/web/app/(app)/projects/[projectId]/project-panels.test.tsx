@@ -58,6 +58,43 @@ describe("Dubbing panel", () => {
 		expect(html).toContain(`href="/projects/${projectId}"`);
 	});
 
+	test("the summary names the clip by its title and the allowance shows as a meter", () => {
+		const titled = { ...rendered, index: 4, title: "Big screen, big drain" } as unknown as ClipSnapshot;
+		const html = dubbing({
+			clips: [titled],
+			allowance: { remaining: 12, limit: 30, maxClipSeconds: 180, renewsAt: null } as unknown as Parameters<typeof DubbingPanel>[0]["allowance"],
+		});
+		expect(html).toContain("05 · Big screen, big drain");
+		expect(html).toContain("12 of 30 left this month");
+		expect(html).toContain('role="meter"');
+	});
+
+	test("a finished dub keeps its video and audio downloads", () => {
+		const dub = {
+			id: "33333333-3333-4333-8333-333333333333",
+			clipId: rendered.id,
+			aspectRatio: "9:16",
+			targetLanguageCode: "es",
+			voice: "marin",
+			status: "completed",
+			durationSec: 42,
+			errorCode: null,
+		} as unknown as Parameters<typeof DubbingPanel>[0]["dubs"][number];
+		const html = dubbing({ dubs: [dub] });
+		expect(html).toContain("Spanish");
+		expect(html).toContain("Marin");
+		expect(html).toContain("0:42");
+		expect(html).toContain(">Video<");
+		expect(html).toContain(">Audio<");
+		expect(html).not.toContain("No dubs yet");
+	});
+
+	test("with no dubs it says what a dub comes with", () => {
+		const html = dubbing({});
+		expect(html).toContain("No dubs yet");
+		expect(html).toContain("narration-only audio file");
+	});
+
 	test("a member who can't edit sees finished dubs only, with no upgrade offer", () => {
 		const html = dubbing({ canEdit: false, planRequirement: "Voice-over dubbing needs the Pro plan.", upgrade: proPrompt });
 		expect(html).not.toContain("Generate dub");

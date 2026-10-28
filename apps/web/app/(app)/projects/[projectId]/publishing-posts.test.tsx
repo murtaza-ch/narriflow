@@ -33,11 +33,16 @@ const post = {
 } as unknown as SocialPostSnapshot;
 
 function render(snapshot: SocialPostSnapshot, canManage: boolean) {
+	return renderPosts([snapshot], canManage);
+}
+
+function renderPosts(posts: SocialPostSnapshot[], canManage: boolean, filterable = false) {
 	return renderToStaticMarkup(
 		<ChakraProvider value={system}>
 			<PublishingPosts
-				projectId={snapshot.projectId}
-				posts={[snapshot]}
+				projectId={post.projectId}
+				posts={posts}
+				filterable={filterable}
 				clips={[]}
 				refresh={async () => {}}
 				loadOlderPosts={async () => {}}
@@ -69,5 +74,29 @@ describe("publishing post actions", () => {
 		expect(html).not.toContain("Confirm published");
 		expect(html).not.toContain("Reconnect account");
 		expect(html).not.toContain("Ask an owner or admin");
+	});
+});
+
+describe("project Posts tab", () => {
+	test("a project with no posts shows the intro and no zeroed filter tabs", () => {
+		const html = renderPosts([], true, true);
+		expect(html).toContain("Publish clips and track every post");
+		expect(html).toContain("Choose a clip");
+		expect(html).not.toContain("Filter posts");
+		expect(html).not.toContain("Needs attention");
+	});
+
+	test("a viewer with no posts is not offered a clip to publish", () => {
+		const html = renderPosts([], false, true);
+		expect(html).toContain("Nothing published yet");
+		expect(html).not.toContain("Choose a clip");
+	});
+
+	test("filter tabs list All and only the categories that have posts", () => {
+		const html = renderPosts([post], true, true);
+		expect(html).toContain("All posts");
+		expect(html).toContain("Needs attention");
+		expect(html).not.toContain("Scheduled");
+		expect(html).not.toContain("TikTok inbox");
 	});
 });

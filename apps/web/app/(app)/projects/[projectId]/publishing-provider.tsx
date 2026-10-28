@@ -149,7 +149,7 @@ export function ProjectPosts() {
 			<PanelHeader
 				icon={<Send size={20} />}
 				title="Posts"
-				description="Every post made from this project's clips, scheduled or live, and where it stands on each platform."
+				description="Every post from this project's clips, and where it stands."
 			/>
 			<PublishingPosts
 				projectId={c.config.projectId}

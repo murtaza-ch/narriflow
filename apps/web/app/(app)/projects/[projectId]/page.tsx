@@ -3,7 +3,6 @@ import { randomUUID } from "node:crypto";
 import Link from "next/link";
 import Image from "next/image";
 import { Button } from "@narriflow/ui/components/button";
-import { Select } from "@narriflow/ui/components/select";
 import { ActionSubmitButton } from "@narriflow/ui/components/action-submit-button";
 import { StatusBadge } from "@narriflow/ui/components/status-badge";
 import { MediaWell } from "@narriflow/ui/components/media-well";
@@ -57,8 +56,9 @@ import { dubAllowanceUpgradePrompt, featureUpgradePrompt } from "@/lib/feature-u
 import { ProjectTabs, TabCountBadge } from "./project-tabs";
 import { projectTabFromSearchParam } from "./project-tab";
 import { ProcessingPanel } from "./processing-panel";
+import { ProjectBrandPicker } from "./project-brand-picker";
+import { SourceHoverPreview } from "./source-hover-preview";
 import {
-	applyProjectBrandProfileFormAction,
 	queueTranscriptionFormAction,
 	regenerateClipsFormAction,
 } from "../actions";
@@ -66,7 +66,7 @@ import { AuthenticatedActionForm } from "@/app/_components/authenticated-action-
 import { DeleteProjectButton } from "../_components/delete-project-button";
 import { ProjectExpiration } from "../_components/project-expiration";
 import { PlanLimitNotice } from "../../_components/plan-limit-notice";
-import { LockedButton, UpgradeBanner, type UpgradePrompt } from "../../_components/upgrade";
+import { UpgradeBanner, type UpgradePrompt } from "../../_components/upgrade";
 import { TranscriptPanel } from "./transcript-panel";
 import { ClipsPanel } from "./clips-panel";
 import { deriveCampaignActionPlan } from "./campaign-command-state";
@@ -79,7 +79,7 @@ import { ProjectShareButton } from "./project-share-button";
 import { PublishingProvider, ProjectPosts } from "./publishing-provider";
 import { RetryIngestButton } from "./render-clips-button";
 import { AdvancedClipSettings } from "./advanced-clip-settings";
-import { extractYoutubeId, youtubeThumbnailUrl } from "../_lib/youtube";
+import { extractYoutubeId, youtubeFrameUrls, youtubeThumbnailUrl } from "../_lib/youtube";
 import { gradientForId } from "../_lib/gradient";
 import { formatDate, formatDuration } from "@/lib/format";
 import { getDisplayName, getInitials } from "@/lib/account-display";
@@ -298,7 +298,6 @@ export default async function ProjectDetailPage({
 		: dubAllowance && dubAllowance.remaining <= 0
 			? dubAllowanceUpgrade
 			: null;
-	const canApplyBrandProfile = canEdit && brandRequirement === null;
 
 	const isIngestReady = snapshot.project.ingestStatus === "ready";
 	const isIngestFailed = snapshot.project.ingestStatus === "failed";
@@ -356,8 +355,14 @@ export default async function ProjectDetailPage({
 	const clipsDefaultAspectRatio = defaultAspectRatioParsed.success
 		? defaultAspectRatioParsed.data
 		: "9:16";
+	const sourceYoutubeId =
+		snapshot.project.sourceType === "youtube"
+			? extractYoutubeId(snapshot.project.sourceInput, snapshot.project.sourceMediaUrl)
+			: null;
 	const advancedSettingsProps = {
 		sourceDurationSec: snapshot.project.sourceDurationSeconds,
+		// Drawn as a film strip behind the processing timeframe.
+		sourceFrames: sourceYoutubeId ? youtubeFrameUrls(sourceYoutubeId) : [],
 		defaultProcessingStartSec: latestContentPack?.processingStartSec ?? null,
 		defaultProcessingEndSec: latestContentPack?.processingEndSec ?? null,
 		defaultCaptionPreset,
@@ -692,70 +697,24 @@ export default async function ProjectDetailPage({
 
 						{brandProfiles.length > 0 ? (
 							<Box mt="5">
-								<AuthenticatedActionForm
-									action={applyProjectBrandProfileFormAction}
-								>
-									<input type="hidden" name="projectId" value={projectId} />
-									<Flex
-										align={{ base: "stretch", md: "center" }}
-										direction={{ base: "column", md: "row" }}
-										justify="space-between"
-										gap="4"
-										p="4"
-										bg="bg.panel"
-										borderRadius="l3"
-										borderWidth="1px"
-										borderColor="border.card"
-									>
-										<Stack gap="1">
-											<Text textStyle="eyebrow" color="fg.muted">
-												Project identity
-											</Text>
-											<Text fontSize="sm" color="fg.muted">
-												Set the brand profile for future clips.
-											</Text>
-										</Stack>
-										<Flex gap="2" align="center" minW={{ md: "360px" }}>
-											<Select
-												key={snapshot.project.brandProfileId ?? "unassigned"}
-												name="profileId"
-												ariaLabel="Brand profile"
-												placeholder="Select a Brand Profile"
-												defaultValue={
-													snapshot.project.brandProfileId ?? undefined
-												}
-												items={brandProfiles.map((profile) => ({
-													label: profile.name,
-													value: profile.id,
-												}))}
-												flex="1"
-												minW="0"
-												size="sm"
-												disabled={!canApplyBrandProfile}
-											/>
-											{!canEdit ? null : brandApplyUpgrade ? (
-												<LockedButton type="button" size="sm" variant="subtle" prompt={brandApplyUpgrade}>
-													Apply
-												</LockedButton>
-											) : (
-												<ActionSubmitButton
-													type="submit"
-													size="sm"
-													variant="subtle"
-													pendingLabel="Applying…"
-													disabled={!canApplyBrandProfile}
-												>
-													Apply
-												</ActionSubmitButton>
-											)}
-										</Flex>
-									</Flex>
-									{canEdit && brandRequirement && !brandApplyUpgrade ? (
-										<Text fontSize="xs" color="fg.muted" mt="2">
-											{brandRequirement.message}
-										</Text>
-									) : null}
-								</AuthenticatedActionForm>
+								<ProjectBrandPicker
+									projectId={projectId}
+									brands={brandProfiles.map((profile) => ({
+										id: profile.id,
+										name: profile.name,
+										colors: profile.identity,
+										logoUrl:
+											profile.assets.find(
+												(asset) =>
+													asset.id === profile.identity.primaryLogoAssetId ||
+													asset.role === "logo",
+											)?.accessUrl ?? null,
+									}))}
+									currentBrandId={snapshot.project.brandProfileId}
+									canEdit={canEdit}
+									upgrade={brandApplyUpgrade}
+									requirementMessage={brandRequirement?.message ?? null}
+								/>
 							</Box>
 						) : null}
 					</Collapsible.Content>
@@ -870,17 +829,18 @@ export default async function ProjectDetailPage({
 														: undefined
 												}
 											>
-												<SourceThumb
-													projectId={projectId}
-													title={snapshot.project.title}
-													sourceType={snapshot.project.sourceType}
-													sourceInput={snapshot.project.sourceInput}
-													sourceMediaUrl={snapshot.project.sourceMediaUrl}
-												/>
+												<SourceHoverPreview src={sourceVideoUrl}>
+													<SourceThumb
+														projectId={projectId}
+														title={snapshot.project.title}
+														sourceType={snapshot.project.sourceType}
+														sourceInput={snapshot.project.sourceInput}
+														sourceMediaUrl={snapshot.project.sourceMediaUrl}
+													/>
+												</SourceHoverPreview>
 											</MediaWell>
 										}
 										projectTitle={snapshot.project.title}
-										durationSec={durationSec}
 										notifyOnComplete={snapshot.project.notifyOnComplete}
 										ingestStatus={snapshot.project.ingestStatus}
 										ingestErrorCode={snapshot.project.ingestErrorCode}

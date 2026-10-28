@@ -9,10 +9,14 @@ import {
   Check,
   Copy,
   FileText,
+  MessageCircle,
   Newspaper,
   NotebookText,
   Quote,
+  Repeat2,
+  Send,
   Sparkles,
+  ThumbsUp,
 } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
 import { Spinner } from "@narriflow/ui/components/spinner";
@@ -28,29 +32,34 @@ import { PlanLimitNotice } from "../../_components/plan-limit-notice";
 import { LockedButton, useUpgrade, type UpgradePrompt } from "../../_components/upgrade";
 import { upgradePromptFromFailure } from "@/lib/authenticated-request-browser";
 
-/** What each output is, shown before and while it is written. */
+/** What each output is, shown before and while it is written. Each line states what the writer is asked for. */
 const OUTPUT_DETAILS: Record<TextOutputType, { icon: ReactNode; description: string }> = {
   blog_post: {
     icon: <FileText size={16} />,
-    description: "A full article written from the main points of the video.",
+    description: "An article with a title and sections.",
   },
   x_thread: {
     icon: <AtSign size={16} />,
-    description: "A numbered thread, one point per post.",
+    description: "A numbered thread, one idea per post.",
   },
   newsletter_excerpt: {
     icon: <Newspaper size={16} />,
-    description: "A LinkedIn or newsletter post that sends readers to the full video.",
+    description: "A short post that ends with a question.",
   },
   show_notes: {
     icon: <NotebookText size={16} />,
-    description: "A summary of the main moments for a video description or podcast feed.",
+    description: "A summary, timestamps and key takeaways.",
   },
   quote_cards: {
     icon: <Quote size={16} />,
-    description: "Short lines that work as quote posts on their own.",
+    description: "Three to five quotable lines.",
   },
 };
+
+/** The clip-tile gradients, reused for avatars and covers in the mockups. */
+const COVER = "linear-gradient(140deg,#c1d2f2,#5c6c96)";
+const QUOTE_FRONT = "linear-gradient(135deg,#8cace0,#31486f)";
+const QUOTE_BACK = "linear-gradient(140deg,#c9bcf0,#74619e)";
 
 function TypeTile({ type }: { type: string }) {
   return (
@@ -69,104 +78,185 @@ function TypeTile({ type }: { type: string }) {
   );
 }
 
-/** Neutral bar used to sketch each format's shape. */
-function Bar(props: { w: string; h?: string; accent?: boolean }) {
+/** A line of text inside a mockup: a darker headline or a lighter body line. */
+function Line(props: { w: string; headline?: boolean }) {
   return (
     <Box
-      h={props.h ?? "1.5"}
+      h={props.headline ? "7px" : "5px"}
       w={props.w}
       borderRadius="full"
-      bg={props.accent ? "accent.muted" : "bg.softHover"}
+      bg={props.headline ? "fg" : "bg.muted"}
+      opacity={props.headline ? 0.8 : 1}
       flexShrink={0}
     />
   );
 }
 
-/** A drawn sketch of what each output looks like — shape only, no content. */
+/** The white page every text format is drawn on. */
+function Page({ children }: { children: ReactNode }) {
+  return (
+    <Box h="full" bg="bg.panel" borderRadius="l2" p="3.5" overflow="hidden">
+      {children}
+    </Box>
+  );
+}
+
+const THREAD_POSTS = [
+  { n: 1, widths: ["100%", "72%"] },
+  { n: 2, widths: ["96%", "58%"] },
+  { n: 3, widths: ["100%", "66%"] },
+] as const;
+
+const SHOW_NOTE_MOMENTS = [
+  { time: "00:14", w: "78%" },
+  { time: "02:31", w: "64%" },
+  { time: "05:08", w: "86%" },
+] as const;
+
+/** A small mockup of what each output looks like when it is written. */
 function FormatSketch({ type }: { type: TextOutputType }) {
   switch (type) {
     case "blog_post":
       return (
-        <Stack gap="2">
-          <Box h="9" borderRadius="l1" bg="bg.soft" />
-          <Bar w="78%" h="2" accent />
-          <Bar w="100%" />
-          <Bar w="92%" />
-          <Bar w="60%" />
-        </Stack>
+        <Page>
+          <Stack gap="2">
+            <Box h="46px" borderRadius="l1" background={COVER} />
+            <Line w="86%" headline />
+            <Stack gap="1.5" pt="0.5">
+              <Line w="100%" />
+              <Line w="94%" />
+              <Line w="68%" />
+            </Stack>
+          </Stack>
+        </Page>
       );
     case "x_thread":
       return (
-        <Stack gap="2.5" position="relative">
-          <Box position="absolute" left="7px" top="3" bottom="3" w="1px" bg="bg.softHover" />
-          {(
-            [
-              ["90%", "64%"],
-              ["82%", "48%"],
-              ["70%", "55%"],
-            ] as const
-          ).map(([first, second]) => (
-            <Flex key={first} gap="2.5" align="flex-start">
-              <Box boxSize="4" borderRadius="full" bg="accent.muted" flexShrink={0} position="relative" />
-              <Stack gap="1.5" flex="1" pt="0.5">
-                <Bar w={first} />
-                <Bar w={second} />
-              </Stack>
-            </Flex>
-          ))}
-        </Stack>
+        <Page>
+          <Stack gap="0">
+            {THREAD_POSTS.map((post, index) => (
+              <Flex key={post.n} gap="2.5">
+                <Flex direction="column" align="center" flexShrink={0}>
+                  <Box boxSize="5" borderRadius="full" background={COVER} />
+                  {index < THREAD_POSTS.length - 1 ? <Box flex="1" w="1.5px" my="1" bg="accent.muted" /> : null}
+                </Flex>
+                <Stack gap="1.5" flex="1" minW="0" pt="0.5" pb={index < THREAD_POSTS.length - 1 ? "2.5" : "0"}>
+                  <Flex align="center" gap="1.5">
+                    <Text
+                      fontSize="10px"
+                      fontWeight="600"
+                      lineHeight="1"
+                      color="accent.fg"
+                      fontVariantNumeric="tabular-nums"
+                    >
+                      {post.n}/
+                    </Text>
+                    <Line w="40%" headline />
+                  </Flex>
+                  {post.widths.map((width) => (
+                    <Line key={width} w={width} />
+                  ))}
+                </Stack>
+              </Flex>
+            ))}
+          </Stack>
+        </Page>
       );
     case "newsletter_excerpt":
       return (
-        <Stack gap="2.5">
-          <Flex gap="2" align="center">
-            <Box boxSize="6" borderRadius="full" bg="accent.muted" />
-            <Stack gap="1" flex="1">
-              <Bar w="45%" h="2" />
-              <Bar w="30%" />
+        <Page>
+          <Stack gap="2.5">
+            <Flex gap="2" align="center">
+              <Box boxSize="6" borderRadius="full" background={COVER} flexShrink={0} />
+              <Stack gap="1.5" flex="1">
+                <Line w="48%" headline />
+                <Line w="30%" />
+              </Stack>
+            </Flex>
+            <Stack gap="1.5">
+              <Line w="100%" />
+              <Line w="96%" />
+              <Line w="82%" />
+              <Line w="54%" />
             </Stack>
-          </Flex>
-          <Bar w="100%" />
-          <Bar w="94%" />
-          <Bar w="72%" />
-          <Flex gap="1.5" pt="0.5">
-            <Box boxSize="2.5" borderRadius="full" bg="bg.softHover" />
-            <Box boxSize="2.5" borderRadius="full" bg="bg.softHover" />
-            <Box boxSize="2.5" borderRadius="full" bg="bg.softHover" />
-          </Flex>
-        </Stack>
+            <Flex gap="3.5" align="center" color="fg.subtle" pt="0.5">
+              <Box color="accent.fg">
+                <ThumbsUp size={12} />
+              </Box>
+              <MessageCircle size={12} />
+              <Repeat2 size={13} />
+              <Send size={12} />
+            </Flex>
+          </Stack>
+        </Page>
       );
     case "show_notes":
       return (
-        <Stack gap="2.5">
-          <Bar w="55%" h="2" accent />
-          {["88%", "74%", "92%", "66%"].map((width) => (
-            <Flex key={width} gap="2" align="center">
-              <Box h="2" w="7" borderRadius="sm" bg="accent.muted" flexShrink={0} />
-              <Bar w={width} />
-            </Flex>
-          ))}
-        </Stack>
+        <Page>
+          <Stack gap="2.5">
+            <Line w="52%" headline />
+            <Stack gap="1.5">
+              <Line w="100%" />
+              <Line w="82%" />
+            </Stack>
+            <Stack gap="2">
+              {SHOW_NOTE_MOMENTS.map((moment) => (
+                <Flex key={moment.time} align="center" gap="2">
+                  <Text
+                    textStyle="data"
+                    fontSize="9.5px"
+                    lineHeight="1"
+                    px="1.5"
+                    py="1"
+                    borderRadius="sm"
+                    bg="accent.subtle"
+                    color="accent.fg"
+                  >
+                    {moment.time}
+                  </Text>
+                  <Line w={moment.w} />
+                </Flex>
+              ))}
+            </Stack>
+          </Stack>
+        </Page>
       );
     case "quote_cards":
       return (
-        <Stack
-          gap="2"
-          align="center"
-          justify="center"
-          h="full"
-          px="3"
-          py="2.5"
-          borderRadius="l1"
-          bg="bg.soft"
-        >
-          <Box color="accent.fg" opacity={0.8}>
-            <Quote size={16} />
-          </Box>
-          <Bar w="88%" h="2" />
-          <Bar w="70%" h="2" />
-          <Bar w="30%" />
-        </Stack>
+        <Box position="relative" h="full">
+          <Box
+            position="absolute"
+            top="3"
+            bottom="0"
+            insetStart="9"
+            insetEnd="0"
+            borderRadius="l2"
+            background={QUOTE_BACK}
+          />
+          <Flex
+            position="absolute"
+            top="0"
+            bottom="3"
+            insetStart="0"
+            insetEnd="9"
+            direction="column"
+            justify="space-between"
+            px="3.5"
+            py="3"
+            borderRadius="l2"
+            background={QUOTE_FRONT}
+            color="white"
+          >
+            <Text aria-hidden="true" fontSize="44px" fontWeight="700" lineHeight="0.8" opacity={0.85}>
+              &ldquo;
+            </Text>
+            <Stack gap="1.5">
+              <Box h="8px" w="92%" borderRadius="full" bg="white" opacity={0.92} />
+              <Box h="8px" w="64%" borderRadius="full" bg="white" opacity={0.92} />
+              <Box h="4px" w="32%" mt="1" borderRadius="full" bg="white" opacity={0.5} />
+            </Stack>
+          </Flex>
+        </Box>
       );
   }
 }
@@ -174,23 +264,16 @@ function FormatSketch({ type }: { type: TextOutputType }) {
 /** One card per output format — before generation, and while it is written. */
 function FormatCard({ type, writing }: { type: TextOutputType; writing: boolean }) {
   return (
-    <Stack
-      gap="0"
-      bg="bg.panel"
-      borderWidth="1px"
-      borderColor="border.card"
-      borderRadius="l3"
-      overflow="hidden"
-    >
-      <Box position="relative" h="148px" p="5" bg="bg.subtle">
+    <Stack gap="3" bg="bg.subtle" borderRadius="l3" p="3" transition="background 120ms ease" _hover={{ bg: "bg.muted" }}>
+      <Box position="relative" h="156px">
         <Box h="full" animation={writing ? "pulse" : undefined}>
           <FormatSketch type={type} />
         </Box>
         {writing ? (
           <Flex
             position="absolute"
-            top="3"
-            insetEnd="3"
+            top="2"
+            insetEnd="2"
             align="center"
             gap="1.5"
             px="2"
@@ -205,7 +288,7 @@ function FormatCard({ type, writing }: { type: TextOutputType; writing: boolean 
           </Flex>
         ) : null}
       </Box>
-      <Stack gap="1" p="4">
+      <Stack gap="1" px="2" pb="1.5">
         <Flex align="center" gap="2">
           <Box color="fg.muted" aria-hidden="true">
             {OUTPUT_DETAILS[type].icon}
@@ -214,13 +297,20 @@ function FormatCard({ type, writing }: { type: TextOutputType; writing: boolean 
             {TEXT_OUTPUT_TYPE_LABELS[type]}
           </Text>
         </Flex>
-        <Text fontSize="13px" color="fg.muted" lineHeight="1.55">
+        <Text fontSize="13px" color="fg.muted" lineHeight="1.5">
           {OUTPUT_DETAILS[type].description}
         </Text>
       </Stack>
     </Stack>
   );
 }
+
+const FORMAT_COLUMNS = {
+  base: "1fr",
+  sm: "repeat(2, minmax(0, 1fr))",
+  lg: "repeat(3, minmax(0, 1fr))",
+  xl: "repeat(5, minmax(0, 1fr))",
+} as const;
 
 function labelFor(type: string): string {
   return (
@@ -245,14 +335,7 @@ function AssetRow({ asset }: { asset: ContentAsset }) {
   const wordCount = asset.body.split(/\s+/).filter(Boolean).length;
 
   return (
-    <Stack
-      gap="4"
-      p="5"
-      bg="bg.panel"
-      borderWidth="1px"
-      borderColor="border.card"
-      borderRadius="l3"
-    >
+    <Stack gap="4" p="5" bg="bg.subtle" borderRadius="l3">
       <Flex align="center" justify="space-between" gap="3">
         <Flex align="center" gap="3" minW="0">
           <TypeTile type={asset.type} />
@@ -265,7 +348,15 @@ function AssetRow({ asset }: { asset: ContentAsset }) {
             </Text>
           </Box>
         </Flex>
-        <Button size="sm" variant="subtle" onClick={copy} flexShrink={0}>
+        <Button
+          size="sm"
+          variant="subtle"
+          onClick={copy}
+          flexShrink={0}
+          aria-live="polite"
+          bg={copied ? "accent.subtle" : undefined}
+          color={copied ? "accent.fg" : undefined}
+        >
           {copied ? <Check size={13} /> : <Copy size={13} />}
           {copied ? "Copied" : "Copy"}
         </Button>
@@ -275,7 +366,7 @@ function AssetRow({ asset }: { asset: ContentAsset }) {
         maxH="300px"
         overflowY="auto"
         borderRadius="l2"
-        bg="bg.soft"
+        bg="bg.panel"
         px="4"
         py="3.5"
         fontSize="13px"
@@ -393,7 +484,7 @@ export function ContentSuitePanel({
       <PanelHeader
         icon={<Sparkles size={20} />}
         title="Repurpose"
-        description="Write a blog post, an X thread, a LinkedIn post, show notes and quote cards from this transcript in one go."
+        description="Five written formats from the transcript, generated together."
         actions={
           !canEdit ? null : planRequirement !== null && upgrade?.tier ? (
             <LockedButton size="sm" variant={assets.length > 0 ? "subtle" : "solid"} prompt={upgrade}>
@@ -424,36 +515,28 @@ export function ContentSuitePanel({
         <Flex
           role="alert"
           align="center"
-          gap="2"
+          gap="2.5"
+          bg="danger.subtle"
           color="danger.fg"
-          borderStartWidth="3px"
-          borderColor="danger.solid"
-          ps="3"
-          py="2"
+          borderRadius="l2"
+          px="4"
+          py="3"
         >
-          <AlertTriangle size={14} aria-hidden />
-          <Text fontSize="sm">{error}</Text>
+          <AlertTriangle size={15} aria-hidden />
+          <Text fontSize="13px">{error}</Text>
         </Flex>
       ) : null}
 
       {loading ? (
-        <Grid templateColumns={{ base: "1fr", md: "repeat(2, minmax(0, 1fr))", xl: "repeat(3, minmax(0, 1fr))" }} gap="4">
-          {ALL_TEXT_OUTPUT_TYPES.slice(0, 3).map((type) => (
-            <Skeleton key={type} variant="pulse" bg="bg.muted" h="40" borderRadius="l3" />
+        <Grid templateColumns={FORMAT_COLUMNS} gap="4">
+          {ALL_TEXT_OUTPUT_TYPES.map((type) => (
+            <Skeleton key={type} variant="pulse" bg="bg.subtle" h="64" borderRadius="l3" />
           ))}
         </Grid>
       ) : null}
 
       {showFormats ? (
-        <Grid
-          templateColumns={{
-            base: "1fr",
-            sm: "repeat(2, minmax(0, 1fr))",
-            lg: "repeat(3, minmax(0, 1fr))",
-            xl: "repeat(5, minmax(0, 1fr))",
-          }}
-          gap="4"
-        >
+        <Grid templateColumns={FORMAT_COLUMNS} gap="4">
           {ALL_TEXT_OUTPUT_TYPES.map((type) => (
             <FormatCard key={type} type={type} writing={generating} />
           ))}
@@ -461,7 +544,13 @@ export function ContentSuitePanel({
       ) : null}
 
       {assets.length > 0 ? (
-        <Grid templateColumns={{ base: "1fr", xl: "repeat(2, minmax(0, 1fr))" }} gap="4" alignItems="stretch">
+        <Grid
+          templateColumns={{ base: "1fr", xl: "repeat(2, minmax(0, 1fr))" }}
+          gap="4"
+          alignItems="stretch"
+          opacity={generating ? 0.55 : 1}
+          transition="opacity 160ms ease"
+        >
           {assets.map((asset) => (
             <AssetRow key={asset.id} asset={asset} />
           ))}

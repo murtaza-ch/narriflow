@@ -1,7 +1,11 @@
 import type { ReactNode } from "react";
 import { Box, Flex, Text } from "@chakra-ui/react";
 
-/** The shared head of a project tab: what this surface is, and its actions. */
+/**
+ * The shared head of a project tab: what this surface is, and its actions.
+ * The tab above already names it, so the head stays quiet: a small icon and
+ * title, one line of description, no rule.
+ */
 export function PanelHeader({
 	icon,
 	title,
@@ -17,41 +21,27 @@ export function PanelHeader({
 }) {
 	return (
 		<Flex
-			align={{ base: "stretch", md: "flex-end" }}
+			align={{ base: "stretch", md: "center" }}
 			justify="space-between"
 			gap="4"
 			direction={{ base: "column", md: "row" }}
-			pb="5"
-			borderBottomWidth="1px"
-			borderColor="border.subtle"
 		>
-			<Flex align="center" gap="4" minW="0">
-				<Flex
-					boxSize="11"
-					flexShrink={0}
-					align="center"
-					justify="center"
-					borderRadius="l2"
-					bg="accent.subtle"
-					color="accent.fg"
-					aria-hidden="true"
-				>
-					{icon}
-				</Flex>
-				<Box minW="0">
-					<Flex align="center" gap="2.5" wrap="wrap">
-						<Text as="h2" textStyle="title" fontSize="22px" color="fg">
-							{title}
-						</Text>
-						{badge}
+			<Box minW="0">
+				<Flex align="center" gap="2" wrap="wrap">
+					<Flex color="accent.fg" flexShrink={0} aria-hidden="true" css={{ "& svg": { width: "18px", height: "18px" } }}>
+						{icon}
 					</Flex>
-					{description ? (
-						<Text fontSize="sm" color="fg.muted" mt="1" maxW="640px">
-							{description}
-						</Text>
-					) : null}
-				</Box>
-			</Flex>
+					<Text as="h2" fontSize="17px" fontWeight="550" letterSpacing="-0.01em" color="fg">
+						{title}
+					</Text>
+					{badge}
+				</Flex>
+				{description ? (
+					<Text fontSize="13px" color="fg.muted" mt="1" maxW="72ch">
+						{description}
+					</Text>
+				) : null}
+			</Box>
 			{actions ? (
 				<Flex gap="2" align="center" flexShrink={0} wrap="wrap">
 					{actions}

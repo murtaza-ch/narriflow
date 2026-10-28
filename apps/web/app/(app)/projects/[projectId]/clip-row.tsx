@@ -19,9 +19,10 @@ import {
 	type ClipAspectRatio,
 	type ClipSnapshot,
 } from "@narriflow/validators";
-import { Box, Flex, HStack, Stack, Text } from "@chakra-ui/react";
+import { Box, Flex, SimpleGrid, Stack, Text } from "@chakra-ui/react";
 import {
 	AlertTriangle,
+	Check,
 	ChevronDown,
 	Clapperboard,
 	Download,
@@ -43,17 +44,31 @@ const PREVIEW_STAGE_RATIO = Math.min(
 	...clipAspectRatioOptions.map((option) => option.width / option.height),
 );
 
-const platformLabels = [
-	{ key: "tiktokScore" as const, label: "TikTok" },
-	{ key: "youtubeScore" as const, label: "YouTube" },
-	{ key: "instagramScore" as const, label: "Instagram" },
-];
+/** Each platform's score, with the fit tag detection marks a strong match with. */
+const PLATFORMS = [
+	{ fit: "tiktok", score: "tiktokScore", label: "TikTok" },
+	{ fit: "youtube_shorts", score: "youtubeScore", label: "YouTube Shorts" },
+	{ fit: "instagram_reels", score: "instagramScore", label: "Instagram Reels" },
+] as const;
 
-const platformFitLabels: Record<string, string> = {
-	tiktok: "TikTok",
-	youtube_shorts: "Shorts",
-	instagram_reels: "Reels",
-};
+/** Consecutive lines from one speaker read as one turn, not sentence fragments. */
+function speakerTurns(slice: ClipSnapshot["transcriptSlice"]) {
+	const turns: { key: string; speakerLabel: string; startSec: number; text: string }[] = [];
+	for (const utterance of slice) {
+		const last = turns.at(-1);
+		if (last && last.speakerLabel === utterance.speakerLabel) {
+			last.text = `${last.text} ${utterance.text}`;
+		} else {
+			turns.push({
+				key: `${utterance.index}-${utterance.startSec}`,
+				speakerLabel: utterance.speakerLabel,
+				startSec: utterance.startSec,
+				text: utterance.text,
+			});
+		}
+	}
+	return turns;
+}
 
 function getInitialAspectRatio(clip: ClipSnapshot): ClipAspectRatio {
 	const preferred = clip.renderVariants.find(
@@ -175,6 +190,9 @@ function ClipVideo({
 			<video
 				src={`${src}#t=${startSec},${endSec}`}
 				controls
+				// The row has its own Download; the native overflow menu only repeated it.
+				controlsList="nodownload noplaybackrate"
+				disablePictureInPicture
 				preload={shouldLoad ? "metadata" : "none"}
 				style={{
 					width: "100%",
@@ -777,6 +795,7 @@ export function ClipRow({
 								{!isCaptionOnly && `Clip ${String(rank).padStart(2, "0")} · `}
 								<Box
 									as="span"
+									textTransform="capitalize"
 									color={clip.category === "hook" ? "accent.fg" : undefined}
 								>
 									{clip.category}
@@ -844,9 +863,24 @@ export function ClipRow({
 											maxW={measure}
 										>
 											{clip.reasoning}
-											{clip.payoffText ? ` Payoff: ${clip.payoffText}` : ""}
 										</Text>
-										<Stack gap="1.5" maxW={measure}>
+										{clip.payoffText ? (
+											<Box maxW={measure} px="3.5" py="3" borderRadius="l2" bg="bg.soft">
+												<Text textStyle="eyebrow" color="fg.subtle" mb="1">
+													Payoff
+												</Text>
+												<Text fontSize="sm" color="fg" lineHeight="1.6">
+													“{clip.payoffText}”
+												</Text>
+											</Box>
+										) : null}
+										{/* Two columns where the row is wide enough, so the scores read at a glance. */}
+										<SimpleGrid
+											columns={{ base: 1, lg: isGallery ? 1 : 2 }}
+											columnGap="8"
+											rowGap="1.5"
+											maxW={measure}
+										>
 											<SubScoreBar label="Hook" value={clip.hookStrengthScore} />
 											<SubScoreBar
 												label="Emotion"
@@ -861,29 +895,40 @@ export function ClipRow({
 												label="Duration"
 												value={clip.durationOptimalityScore}
 											/>
-										</Stack>
-										<HStack gap="3" wrap="wrap">
-											{platformLabels.map(({ key, label }) => (
-												<HStack key={key} gap="1">
-													<Text fontSize="12px" color="fg.muted">
-														{label}
-													</Text>
-													<Text
+										</SimpleGrid>
+										<Flex gap="2" wrap="wrap" align="center">
+											<Text fontSize="12px" color="fg.subtle" me="1">
+												Platform fit
+											</Text>
+											{PLATFORMS.map((platform) => {
+												const strong = clip.platformFit.includes(platform.fit);
+												return (
+													<Flex
+														key={platform.fit}
+														align="center"
+														gap="1.5"
+														h="6"
+														px="2.5"
+														borderRadius="full"
+														bg={strong ? "accent.subtle" : "bg.soft"}
+														color={strong ? "accent.fg" : "fg.muted"}
 														fontSize="12px"
-														fontWeight="600"
-														fontVariantNumeric="tabular-nums"
-														color="fg"
+														title={strong ? `A strong fit for ${platform.label}` : undefined}
 													>
-														{clip[key]}
-													</Text>
-												</HStack>
-											))}
-											{clip.platformFit.map((platform) => (
-												<Text key={platform} textStyle="eyebrow" color="fg.subtle">
-													{platformFitLabels[platform] ?? platform}
-												</Text>
-											))}
-										</HStack>
+														{strong ? <Check size={11} aria-label="Strong fit" /> : null}
+														{platform.label}
+														<Text
+															as="span"
+															fontWeight="600"
+															fontVariantNumeric="tabular-nums"
+															color={strong ? "accent.fg" : "fg"}
+														>
+															{clip[platform.score]}
+														</Text>
+													</Flex>
+												);
+											})}
+										</Flex>
 									</Stack>
 								</DetailDisclosure>
 							)}
@@ -918,33 +963,28 @@ export function ClipRow({
 										)
 									}
 								>
-									<Stack maxH="9rem" gap="0" overflowY="auto" pb="2">
-										{clip.transcriptSlice.map((utterance, index) => (
-											<Box
-												key={`${utterance.index}-${utterance.startSec}`}
-												py="1.5"
-												borderTopWidth={index > 0 ? "1px" : "0"}
-												borderColor="border.subtle"
-											>
-												<Flex gap="1.5" align="center" mb="0.5">
+									<Stack maxH="16rem" gap="3" overflowY="auto" pb="4" pe="2">
+										{speakerTurns(clip.transcriptSlice).map((turn) => (
+											<Box key={turn.key}>
+												<Flex gap="1.5" align="center" mb="1">
 													<Text fontSize="12px" fontWeight="500" color="fg">
-														{utterance.speakerLabel}
+														{turn.speakerLabel}
 													</Text>
 													<Text
 														textStyle="data"
 														fontSize="12px"
 														color="fg.timecode"
 													>
-														{formatTimecode(utterance.startSec)}
+														{formatTimecode(turn.startSec)}
 													</Text>
 												</Flex>
 												<Text
-													fontSize="xs"
-													lineHeight="1.5"
-													color="fg"
+													fontSize="sm"
+													lineHeight="1.7"
+													color="fg.muted"
 													maxW={measure}
 												>
-													{utterance.text}
+													{turn.text}
 												</Text>
 											</Box>
 										))}

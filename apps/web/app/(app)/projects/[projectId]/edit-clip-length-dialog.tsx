@@ -14,6 +14,7 @@ import { useRouter } from "next/navigation";
 import {
   Box,
   Button,
+  chakra,
   Dialog,
   Flex,
   Grid,
@@ -309,6 +310,11 @@ export function EditClipLengthDialog(props: {
         }
       : null;
   const durationSec = selection ? selection.endSec - selection.startSec : 0;
+  const openedDurationSec = useMemo(() => {
+    if (words.length === 0) return null;
+    const opened = selectionForWindow(words, props.initialStartSec, props.initialEndSec);
+    return (words[opened.end]?.endSec ?? 0) - (words[opened.start]?.startSec ?? 0);
+  }, [words, props.initialStartSec, props.initialEndSec]);
   const { minSec: MIN_DURATION_SEC, maxSec: MAX_DURATION_SEC } = clipDurationBounds(props.wholeSource);
   const durationValid = clipDurationWithinBounds(durationSec, props.wholeSource, 0);
 
@@ -437,8 +443,8 @@ export function EditClipLengthDialog(props: {
                     : 0;
                 if (gap >= SILENCE_CHIP_MIN_SEC) {
                   nodes.push(
-                    <span key={`g${index}`} className="eclgap">
-                      [{gap.toFixed(1)}s]
+                    <span key={`g${index}`} className="eclgap" title={`${gap.toFixed(1)}s pause`}>
+                      {gap.toFixed(1)}s
                     </span>,
                   );
                 }
@@ -863,6 +869,13 @@ export function EditClipLengthDialog(props: {
       ? Math.min(100, Math.max(0, (playheadSec / totalSec) * 100))
       : null;
 
+  // Measured from the clip as it opened, snapped to words like every edit, so
+  // an untouched clip reads as unchanged.
+  const lengthChangeSec = openedDurationSec === null ? 0 : durationSec - openedDurationSec;
+  // The content mounts only once opened (lazyMount), so this never reaches server HTML.
+  const saveShortcut =
+    typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.userAgent) ? "⌘S" : "Ctrl+S";
+
   const clipElapsedSec =
     playheadSec !== null && selection
       ? Math.min(durationSec, Math.max(0, playheadSec - selection.startSec))
@@ -1011,9 +1024,23 @@ export function EditClipLengthDialog(props: {
 
               {/* Transcript side */}
               <Flex direction="column" flex="1" minW="0">
-                <Flex align="center" gap="2.5" ps="6" pe="16" pt="5" pb="2">
-                  <Search size={16} color="var(--chakra-colors-fg-subtle)" />
-                  <Input
+                <Flex ps="6" pe="16" pt="5" pb="2">
+                  <Flex
+                    align="center"
+                    gap="2"
+                    flex="1"
+                    h="9"
+                    px="3"
+                    bg="bg.soft"
+                    borderRadius="control"
+                    borderWidth="1px"
+                    borderColor="transparent"
+                    color="fg.subtle"
+                    transition="border-color 120ms ease"
+                    _focusWithin={{ borderColor: "border.focus" }}
+                  >
+                  <Search size={15} aria-hidden />
+                  <chakra.input
                     value={query}
                     onChange={(e) => setQuery(e.target.value)}
                     onKeyDown={(e) => {
@@ -1022,22 +1049,31 @@ export function EditClipLengthDialog(props: {
                         cycleMatch(e.shiftKey ? -1 : 1);
                       }
                     }}
-                    placeholder="Search"
+                    placeholder="Search transcript"
                     aria-label="Search transcript"
-                    size="sm"
-                    variant="flushed"
-                    borderColor="transparent"
-                    fontSize="14px"
                     flex="1"
-                    _focusVisible={{ borderColor: "border.focus", boxShadow: "none" }}
+                    minW="0"
+                    h="full"
+                    bg="transparent"
+                    outline="none"
+                    fontSize="14px"
+                    color="fg"
+                    _placeholder={{ color: "fg.subtle" }}
                   />
                   {query.trim().length >= 2 && (
-                    <Text fontSize="12px" color="fg.subtle" fontVariantNumeric="tabular-nums" flexShrink={0}>
+                    <Text
+                      fontSize="12px"
+                      color="fg.subtle"
+                      fontVariantNumeric="tabular-nums"
+                      flexShrink={0}
+                      title="Enter for the next match, Shift+Enter for the previous"
+                    >
                       {matchInfo.count === 0
-                        ? "0 matches"
-                        : `${matchInfo.active + 1}/${matchInfo.count}`}
+                        ? "No matches"
+                        : `${matchInfo.active + 1} of ${matchInfo.count}`}
                     </Text>
                   )}
+                  </Flex>
                 </Flex>
 
                 <Box
@@ -1079,10 +1115,14 @@ export function EditClipLengthDialog(props: {
                       color: "var(--chakra-colors-fg)",
                     },
                     "& .eclgap": {
-                      fontStyle: "italic",
-                      fontSize: "13px",
+                      fontFamily: "var(--chakra-fonts-mono)",
+                      fontSize: "11px",
                       color: "var(--chakra-colors-fg-subtle)",
-                      margin: "0 5px",
+                      background: "var(--chakra-colors-bg-soft)",
+                      borderRadius: "999px",
+                      padding: "2px 7px",
+                      margin: "0 4px",
+                      verticalAlign: "1px",
                     },
                     // Each word's box reaches half a space either side (padding
                     // offset by an equal negative margin, so layout never moves):
@@ -1344,6 +1384,12 @@ export function EditClipLengthDialog(props: {
                 ) : (
                   <Skeleton variant="pulse" bg="bg.muted" h="56px" borderRadius="l2" />
                 )}
+                {totalSec > 0 ? (
+                  <Flex justify="space-between" mt="1.5" textStyle="data" fontSize="11px" color="fg.subtle">
+                    <span>{formatClock(0)}</span>
+                    <span>{formatClock(totalSec)}</span>
+                  </Flex>
+                ) : null}
               </Box>
             )}
 
@@ -1360,6 +1406,23 @@ export function EditClipLengthDialog(props: {
                     <Text as="span" color="fg" fontWeight="600" fontVariantNumeric="tabular-nums">
                       {durationSec.toFixed(1)}s
                     </Text>
+                    {Math.abs(lengthChangeSec) >= 0.05 ? (
+                      <Text
+                        as="span"
+                        ms="2"
+                        px="1.5"
+                        py="0.5"
+                        borderRadius="full"
+                        bg={lengthChangeSec > 0 ? "accent.subtle" : "bg.soft"}
+                        color={lengthChangeSec > 0 ? "accent.fg" : "fg.muted"}
+                        fontSize="12px"
+                        fontVariantNumeric="tabular-nums"
+                        title="Change from the saved length"
+                      >
+                        {lengthChangeSec > 0 ? "+" : "−"}
+                        {Math.abs(lengthChangeSec).toFixed(1)}s
+                      </Text>
+                    ) : null}
                   </Text>
                 ) : null}
                 {saveError && (
@@ -1435,6 +1498,11 @@ export function EditClipLengthDialog(props: {
                   disabled={!selection || !durationValid || saving || loading}
                 >
                   {saving ? "Saving…" : "Save"}
+                  {saving ? null : (
+                    <Text as="span" fontSize="11px" opacity={0.55} fontFamily="mono" aria-hidden>
+                      {saveShortcut}
+                    </Text>
+                  )}
                 </Button>
               </Flex>
             </Grid>

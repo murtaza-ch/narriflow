@@ -7,12 +7,15 @@ import { ProcessingTimeline } from "../../_shared/processing-timeline";
 
 interface ProcessingTimeframeFieldsProps {
   sourceDurationSec: number | null;
+  /** Frames from across the source, drawn behind the range. */
+  frames?: string[];
   defaultStartSec?: number | null;
   defaultEndSec?: number | null;
 }
 
 export function ProcessingTimeframeFields({
   sourceDurationSec,
+  frames = [],
   defaultStartSec = null,
   defaultEndSec = null,
 }: ProcessingTimeframeFieldsProps) {
@@ -65,6 +68,7 @@ export function ProcessingTimeframeFields({
   return (
     <Box>
       <ProcessingTimeline
+        frames={frames}
         durationSec={durationSec}
         startSec={startSec}
         endSec={endSec}
