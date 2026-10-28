@@ -15,6 +15,7 @@ import {
 } from "@narriflow/validators";
 import { Button, type ButtonProps } from "@narriflow/ui/components/button";
 import { CloseButton, Dialog, Portal } from "@narriflow/ui/components/dialog";
+import { FeatureHero } from "./feature-hero";
 
 /**
  * How this workspace changes plan, from its billing view's allowed actions:
@@ -414,11 +415,8 @@ export function LockedButton({
   );
 }
 
-/**
- * Banner for a page the plan doesn't include (Vizard's brand kit pattern):
- * what the feature does, two benefits, a gold call to action that opens the
- * upgrade dialog, and an illustration of the feature on the right.
- */
+/** `FeatureHero` for a page the plan doesn't include: a gold call to action
+ * that opens the upgrade dialog. */
 export function UpgradeHero({
   title,
   points,
@@ -435,48 +433,22 @@ export function UpgradeHero({
   const { openUpgrade, canManageBilling: contextCanManageBilling } = useUpgrade();
   const canManageBilling = prompt.canManageBilling ?? contextCanManageBilling;
   return (
-    <Flex
-      as="section"
-      aria-label={title}
-      position="relative"
-      overflow="hidden"
-      borderRadius="l3"
-      bgGradient="to-r"
-      gradientFrom="accent.subtle"
-      gradientTo="accent.muted"
-      minH={{ base: "auto", md: "220px" }}
-      align="stretch"
-    >
-      <Stack gap="4" px={{ base: "6", md: "9" }} py={{ base: "6", md: "8" }} flex="1" minW="0" justify="center" position="relative" zIndex="1">
-        <Text as="h2" textStyle="title" fontSize={{ base: "19px", md: "22px" }} lineHeight="1.25" color="fg">
-          {title}
-        </Text>
-        <Stack as="ul" gap="1.5" listStyleType="none">
-          {points.map((point) => (
-            <Flex as="li" key={point} align="flex-start" gap="2" fontSize="14px" color="fg.muted">
-              <Box color="accent.fg" mt="0.5" flexShrink={0}>
-                <Check size={15} aria-hidden />
-              </Box>
-              {point}
-            </Flex>
-          ))}
-        </Stack>
-        <Box pt="2">
-          {!prompt.tier ? null : canManageBilling ? (
-            <Button size="sm" {...upgradeFill} onClick={() => openUpgrade(prompt)} aria-haspopup="dialog">
-              <Gem size={14} aria-hidden />
-              {ctaLabel}
-            </Button>
-          ) : (
-            <Text fontSize="13px" color="fg.muted">
-              Ask the workspace owner to upgrade to {PLAN_CATALOG[prompt.tier].name}.
-            </Text>
-          )}
-        </Box>
-      </Stack>
-      <Box display={{ base: "none", md: "block" }} position="relative" flexShrink={0} w={{ md: "320px", xl: "400px" }} aria-hidden="true">
-        {visual}
-      </Box>
-    </Flex>
+    <FeatureHero
+      title={title}
+      points={points}
+      visual={visual}
+      action={
+        !prompt.tier ? null : canManageBilling ? (
+          <Button size="sm" {...upgradeFill} onClick={() => openUpgrade(prompt)} aria-haspopup="dialog">
+            <Gem size={14} aria-hidden />
+            {ctaLabel}
+          </Button>
+        ) : (
+          <Text fontSize="13px" color="fg.muted">
+            Ask the workspace owner to upgrade to {PLAN_CATALOG[prompt.tier].name}.
+          </Text>
+        )
+      }
+    />
   );
 }

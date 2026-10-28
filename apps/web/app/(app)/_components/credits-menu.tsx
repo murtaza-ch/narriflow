@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { Box, Flex, Popover, Portal, Stack, Text } from "@chakra-ui/react";
-import { CircleAlert, Sparkles } from "lucide-react";
+import { BarChart3, CircleAlert, CreditCard, Sparkles } from "lucide-react";
 import { PLAN_CATALOG, PRICING_TIER_ORDER, lowestTier, type PricingTier } from "@narriflow/validators";
 import { Button } from "@narriflow/ui/components/button";
 import { UpgradeButton } from "./upgrade";
@@ -83,6 +83,9 @@ export function CreditsMenu({
     timeZone: "UTC",
   }).format(new Date(renewsAt));
   const balance = formatCredits(remainingCredits);
+  // The bar's two parts: settled credits, then the ones held for videos in progress.
+  const usedPct = limitCredits > 0 ? Math.min(pct, (usedCredits / limitCredits) * 100) : 0;
+  const reservedPct = Math.max(0, pct - usedPct);
 
   return (
     <Flex align="center" gap="1" p="0.5" borderRadius="control" bg="bg.soft">
@@ -122,9 +125,12 @@ export function CreditsMenu({
                     bg="bg.emphasized"
                     overflow="hidden"
                   >
-                    <Box h="full" w={`${pct}%`} borderRadius="full" bg={`${palette}.solid`} />
+                    <Flex h="full" w={`${pct}%`} gap="2px">
+                      {usedPct > 0 ? <Box h="full" flex={usedPct} borderRadius="full" bg={`${palette}.solid`} /> : null}
+                      {reservedPct > 0 ? <Box h="full" flex={reservedPct} borderRadius="full" bg={`${palette}.solid`} opacity={0.4} /> : null}
+                    </Flex>
                   </Box>
-                  <Text mt="2" fontSize="12px" color="fg.muted" fontVariantNumeric="tabular-nums">
+                  <Text mt="2" fontSize="12px" color="fg.muted" fontVariantNumeric="tabular-nums" title={reservedCredits > 0 ? "Reserved credits are held for videos still processing." : undefined}>
                     {usage}
                   </Text>
                   {status ? (
@@ -136,15 +142,23 @@ export function CreditsMenu({
                     </Text>
                   ) : null}
                 </Box>
-                {upgradeTier ? (
-                  <UpgradeButton tier={upgradeTier} w="full">Upgrade</UpgradeButton>
-                ) : (
-                  <Text fontSize="13px">
-                    <Link href={canManageBilling ? "/settings/billing" : "/settings/usage"} style={{ textDecoration: "underline", textUnderlineOffset: "3px" }}>
-                      {canManageBilling ? "Billing" : "Usage"}
-                    </Link>
-                  </Text>
-                )}
+                <Stack gap="2">
+                  {upgradeTier ? <UpgradeButton tier={upgradeTier} w="full">Upgrade</UpgradeButton> : null}
+                  <Flex gap="2">
+                    <Button asChild size="sm" variant="subtle" flex="1">
+                      <Link href="/settings/usage">
+                        <BarChart3 size={14} aria-hidden /> Usage
+                      </Link>
+                    </Button>
+                    {canManageBilling ? (
+                      <Button asChild size="sm" variant="subtle" flex="1">
+                        <Link href="/settings/billing">
+                          <CreditCard size={14} aria-hidden /> Billing
+                        </Link>
+                      </Button>
+                    ) : null}
+                  </Flex>
+                </Stack>
               </Stack>
             </Popover.Content>
           </Popover.Positioner>

@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 import { useClerk } from "@clerk/nextjs";
 import { Box, Flex, Image, Menu, Portal, Text } from "@chakra-ui/react";
 import Link from "next/link";
-import { BadgeDollarSign, CreditCard, LogOut, UserRound } from "lucide-react";
+import { BadgeDollarSign, CreditCard, LogOut, UserRound, ExternalLink } from "lucide-react";
 import { Spinner } from "@narriflow/ui/components/spinner";
 import { toaster } from "@narriflow/ui/components/toaster";
 import { getDisplayName, getInitials } from "@/lib/account-display";
@@ -44,7 +44,7 @@ export function AccountAvatar({
       flexShrink={0}
     >
       {imageUrl ? (
-        <Image alt={alt} h="full" w="full" objectFit="cover" src={imageUrl} />
+        <Image alt={alt} boxSize="full" objectFit="cover" src={imageUrl} />
       ) : (
         initials
       )}
@@ -146,7 +146,9 @@ export function AccountMenu({
               onClick={openBillingPortal}
             >
               {isOpeningPortal ? <Spinner size="xs" /> : <CreditCard size={14} />}
-              {isOpeningPortal ? "Opening billing…" : "Payment & billing"}
+              {/* Stripe's portal, apart from the plan page that "Billing" opens. */}
+              {isOpeningPortal ? "Opening Stripe…" : "Invoices & payment"}
+              {isOpeningPortal ? null : <Box as="span" ms="auto" color="fg.subtle"><ExternalLink size={12} aria-hidden /></Box>}
             </Menu.Item> : null}
             <Menu.Separator />
             <Menu.Item

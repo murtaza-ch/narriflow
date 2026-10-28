@@ -220,7 +220,11 @@ export function StudioExportMenu() {
                     h="44px"
                     px="3"
                     textAlign="left"
-                    {...tileProps(checked)}
+                    // A checked format is told by its filled box and a soft
+                    // accent fill; an outline on top would say it twice.
+                    {...tileProps(false)}
+                    bg={checked ? "studio.accentSubtle" : "studio.subtle"}
+                    _hover={{ bg: checked ? "studio.accentSubtle" : "studio.raised" }}
                     onClick={() =>
                       setSelection((current) => ({
                         ...current,

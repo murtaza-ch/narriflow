@@ -599,10 +599,13 @@ const SubtitleLineEditor = memo(function SubtitleLineEditor({
   utterance,
   index,
   isLast,
+  showSpeaker,
 }: {
   utterance: TranscriptUtterance;
   index: number;
   isLast: boolean;
+  /** Only when the speaker changes: a label on every line just repeats itself. */
+  showSpeaker: boolean;
 }) {
   const {
     updateUtteranceText,
@@ -639,9 +642,11 @@ const SubtitleLineEditor = memo(function SubtitleLineEditor({
     >
       <Flex align="center" justify="space-between" gap="2" minH="28px">
         <Flex align="center" gap="8px" minW="0">
-          <Text fontSize="12px" fontWeight="500" color="studio.fgSubtle">
-            {utterance.speakerLabel}
-          </Text>
+          {showSpeaker ? (
+            <Text fontSize="12px" fontWeight="500" color="studio.fgSubtle">
+              {utterance.speakerLabel}
+            </Text>
+          ) : null}
           <Text textStyle="data" fontSize="11px" color="studio.timecode">
             {Math.max(0, editedStartSec).toFixed(2)}–{Math.max(0, editedEndSec).toFixed(2)}
           </Text>
@@ -1337,6 +1342,7 @@ export function TranscriptPanel() {
               utterance={utterance}
               index={index}
               isLast={index === utterances.length - 1}
+              showSpeaker={index === 0 || utterances[index - 1]?.speakerLabel !== utterance.speakerLabel}
             />
           ))}
 
@@ -1361,16 +1367,20 @@ export function TranscriptPanel() {
               data-timestamp={clipRelativeTimestamp}
               data-utterance-index={i}
             >
-              {/* Speaker label */}
-              <Text
-                fontSize="12px"
-                fontWeight="500"
-                color="studio.fgSubtle"
-                px="20px"
-                pt={i === 0 ? "4px" : "14px"}
-              >
-                {utterance.speakerLabel}
-              </Text>
+              {/* Speaker label, only when the speaker changes */}
+              {i === 0 || utterances[i - 1]?.speakerLabel !== utterance.speakerLabel ? (
+                <Text
+                  fontSize="12px"
+                  fontWeight="500"
+                  color="studio.fgSubtle"
+                  px="20px"
+                  pt={i === 0 ? "4px" : "14px"}
+                >
+                  {utterance.speakerLabel}
+                </Text>
+              ) : (
+                <Box h="6px" />
+              )}
 
               <EditableUtterance
                 utterance={utterance}

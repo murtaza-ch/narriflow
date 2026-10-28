@@ -2,7 +2,6 @@
 
 import { useState, type ReactNode } from "react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
 import { Box, Drawer, Flex, Portal, Stack, Text } from "@chakra-ui/react";
 import { ArrowLeft, Bell, Braces, Building2, ChartNoAxesCombined, CreditCard, Menu, Share2, ShieldCheck, UserRound, Users, X } from "lucide-react";
 import { Logo } from "@narriflow/ui/components/logo";
@@ -29,8 +28,6 @@ export function SettingsChrome({ workspaceName, canManageApi, backHref, account,
   account: ReactNode; themeToggle: ReactNode; children: ReactNode;
 }) {
   const [open, setOpen] = useState(false);
-  const pathname = usePathname();
-  const section = [...accountLinks, ...workspaceLinks].find((link) => pathname.startsWith(link.href))?.label;
   const navigation = (
     <Stack as="nav" aria-label="Settings sections" gap="6" px="3" py="5" onClick={(event) => {
       if ((event.target as HTMLElement).closest("a")) setOpen(false);
@@ -55,7 +52,6 @@ export function SettingsChrome({ workspaceName, canManageApi, backHref, account,
       <Flex direction="column" flex="1" minW="0" minH="100dvh" ms={{ base: "0", lg: "256px" }} p={{ base: "0", lg: "2" }}>
         <ShellPanel>
           <ShellHeader
-            crumbs={section ? ["Settings", section] : ["Settings"]}
             start={
               <Flex gap="1" align="center" display={{ base: "flex", lg: "none" }}>
                 <Drawer.Root open={open} onOpenChange={(details) => setOpen(details.open)} placement="start">
@@ -73,7 +69,7 @@ export function SettingsChrome({ workspaceName, canManageApi, backHref, account,
             {themeToggle}
             {account}
           </ShellHeader>
-          <Box as="main" css={{ "&:has([data-page-error])": { maxWidth: "none", paddingBlock: "0", "& [data-page-error]": { minHeight: "calc(100dvh - 64px)" } } }} w="full" maxW="1120px" px={{ base: "4", lg: "8" }} pt="6" pb="12">{children}</Box>
+          <Box as="main" css={{ "&:has([data-page-error])": { maxWidth: "none", paddingBlock: "0", "& [data-page-error]": { minHeight: "calc(100dvh - 64px)" } } }} w="full" maxW="1120px" mx="auto" px={{ base: "4", lg: "8" }} pt="6" pb="12">{children}</Box>
         </ShellPanel>
       </Flex>
     </Flex>

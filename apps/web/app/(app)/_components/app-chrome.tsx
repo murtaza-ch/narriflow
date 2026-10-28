@@ -96,10 +96,9 @@ function WorkspaceChangedNotice({ workspaceId }: { workspaceId: string }) {
   );
 }
 
-/** The panel header (desktop only): workspace / section breadcrumb on the
- *  left, search, usage, plan actions and the account menu on the right. */
+/** The panel header (desktop only): search, usage, plan actions and the
+ *  account menu on the right. */
 function DesktopTopBar({
-  workspaceName,
   email,
   firstName,
   lastName,
@@ -113,17 +112,14 @@ function DesktopTopBar({
   workspaceStatus,
   workspaceTier,
   activeWorkspaceId,
-}: { workspaceName: string } & Pick<AppChromeProps,
+}: Pick<AppChromeProps,
   | "email" | "firstName" | "lastName" | "imageUrl" | "remainingCredits" | "usedCredits" | "reservedCredits" | "limitCredits" | "creditsRenewAt" | "workspaceRole" | "workspaceStatus" | "workspaceTier" | "activeWorkspaceId">) {
-  const pathname = usePathname();
-  const section = pathname.split("/")[1] ?? "home";
-  const title = ({ home: "Home", projects: "Projects", exports: "Exports", calendar: "Calendar", autopilot: "Autopilot", recipes: "Recipes", "brand-kit": "Brand kit", integrations: "Integrations", settings: "Settings", help: "Help", "whats-new": "What's new" } as Record<string, string>)[section] ?? "Workspace";
   const canManageBilling = workspaceRole === "owner";
   const hasMembers = hasFeature(workspaceTier, "workspace.members");
   const membersTier = lowestTierWithFeature("workspace.members");
   const canInvite = workspaceStatus === "active" && hasMembers && (workspaceRole === "owner" || workspaceRole === "admin");
   return (
-    <ShellHeader crumbs={pathname.startsWith("/integrations/mcp") ? [workspaceName, title, "AI assistants"] : [workspaceName, title]} display={{ base: "none", lg: "flex" }}>
+    <ShellHeader display={{ base: "none", lg: "flex" }}>
       <GlobalSearch workspaceId={activeWorkspaceId} />
       {canInvite ? (
         <Button variant="subtle" size="sm" asChild>
@@ -338,7 +334,6 @@ export function AppChrome({
         <ShellPanel>
           {/* Panel header (desktop) — the page below owns its PageHeader */}
           <DesktopTopBar
-            workspaceName={workspaces.find((workspace) => workspace.id === activeWorkspaceId)?.name ?? "Workspace"}
             email={email}
             firstName={firstName}
             lastName={lastName}

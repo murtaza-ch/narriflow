@@ -1,9 +1,9 @@
 import { Box, Flex, Text, type BoxProps } from "@chakra-ui/react";
-import { Bot, Check, Play, Rss, Webhook } from "lucide-react";
+import { BookMarked, Bot, Check, Play, Rss, Webhook } from "lucide-react";
 import { BrandTile } from "../integrations/_components/brand-tile";
 
 /**
- * Decorative illustrations for `UpgradeHero`: a few tilted cards that show
+ * Decorative illustrations for `FeatureHero` and `UpgradeHero`: a few tilted cards that show
  * what the feature makes, in the spirit of Vizard's brand kit banner. Pure
  * markup with no data, so they render the same for every workspace.
  */
@@ -105,6 +105,37 @@ export function AutopilotVisual() {
       <Flex position="absolute" right="16%" bottom="10%" align="center" gap="1" px="2" py="1" borderRadius="full" bg="bg.panel" boxShadow="0 10px 24px -12px rgba(16, 19, 71, 0.4)" fontSize="10.5px" fontWeight="600" color="accent.fg">
         <Check size={11} /> Scheduled
       </Flex>
+    </Box>
+  );
+}
+
+const RECIPE_SETTINGS = ["10 clips", "9:16", "Auto length", "Hook"];
+
+/** One saved Recipe feeding Autopilot and an assistant, and the clips it makes. */
+export function RecipeVisual() {
+  return (
+    <Box position="absolute" inset="0">
+      <Card left="4%" top="16%" w="196px" px="3.5" py="3" transform="rotate(-3deg)">
+        <Flex align="center" gap="2" mb="2.5">
+          <Flex boxSize="22px" borderRadius="6px" bg="accent.subtle" color="accent.fg" align="center" justify="center"><BookMarked size={12} /></Flex>
+          <Text fontSize="11.5px" fontWeight="600" color="fg">Weekly podcast</Text>
+        </Flex>
+        <Flex wrap="wrap" gap="1" mb="2.5">
+          {RECIPE_SETTINGS.map((setting) => (
+            <Text key={setting} fontSize="9.5px" fontWeight="500" color="fg.muted" bg="bg.soft" px="1.5" py="0.5" borderRadius="full">{setting}</Text>
+          ))}
+        </Flex>
+        <Flex align="center" gap="1.5">
+          <Flex boxSize="16px" borderRadius="4px" bg="#111522" color="white" align="center" justify="center" fontSize="7.5px" fontWeight="700">Aa</Flex>
+          <Text fontSize="10px" color="fg.muted">Acme brand · captions</Text>
+        </Flex>
+      </Card>
+      <Flex position="absolute" left="9%" bottom="11%" align="center" gap="1.5" px="2" py="1" borderRadius="full" bg="bg.panel" boxShadow="0 10px 24px -12px rgba(16, 19, 71, 0.4)" fontSize="10.5px" fontWeight="600" color="fg">
+        <Box color="upgrade.fg" display="inline-flex"><Rss size={11} /></Box> Autopilot rule
+      </Flex>
+      <BrandTile brand="claude" size="sm" position="absolute" left="calc(9% + 116px)" bottom="8%" transform="rotate(6deg)" boxShadow="0 10px 24px -12px rgba(0,0,0,0.5)" />
+      <Clip src="/images/caption-backdrops/navy-podcast.webp" caption="Same look every time" right="24%" top="12%" transform="rotate(-5deg)" />
+      <Clip src="/images/caption-backdrops/warm-podcast.webp" caption="Ready to post" right="5%" top="24%" transform="rotate(5deg)" />
     </Box>
   );
 }
