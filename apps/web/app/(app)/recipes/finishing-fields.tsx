@@ -9,6 +9,7 @@ import { clipAspectRatioOptions, PLAN_CATALOG, socialPlatformSchema, type ClipAs
 import { featureUpgradePrompt } from "@/lib/feature-upgrade-prompt";
 import { SOCIAL_PLATFORM_LABELS } from "@/lib/social-post-status";
 import { PlanLimitNotice } from "../_components/plan-limit-notice";
+import { ToggleCard } from "../_shared/settings-fields";
 import { UpgradeGem, useUpgrade } from "../_components/upgrade";
 import type { FinishingDraft } from "./finishing-form";
 
@@ -39,33 +40,25 @@ export function FinishingFields({
   const reviewUpgrade = featureUpgradePrompt(currentTier, "review.rooms", "Upgrade to send review rounds");
   return (
     <Stack gap="3">
-      <Flex align="center" justify="space-between" gap="4">
-        <Box minW="0">
-          <Text fontSize="13px" fontWeight="500" color="fg">
-            Finish new clips automatically
-          </Text>
-          <Text fontSize="12px" color="fg.muted">
-            Export the best clips and write copy, then leave them ready to review.
-          </Text>
-        </Box>
-        <Flex align="center" gap="2" flexShrink={0}>
-          {upgrade?.tier ? <UpgradeGem label={`Needs ${PLAN_CATALOG[upgrade.tier].name}`} /> : null}
-          <Switch
-            size="sm"
-            checked={draft.enabled && available}
-            // Below Pro the switch stays clickable and explains the upgrade instead of greying out.
-            disabled={!available && !draft.enabled && !upgrade?.tier}
-            onCheckedChange={(enabled) => {
-              if (enabled && !available) {
-                if (upgrade) openUpgrade(upgrade);
-                return;
-              }
-              set({ enabled });
-            }}
-            inputProps={{ "aria-label": "Finish new clips automatically" }}
-          />
-        </Flex>
-      </Flex>
+      <ToggleCard
+        title="Finish new clips automatically"
+        description="Export the best clips and write copy, then leave them ready to review."
+      >
+        {upgrade?.tier ? <UpgradeGem label={`Needs ${PLAN_CATALOG[upgrade.tier].name}`} /> : null}
+        <Switch
+          checked={draft.enabled && available}
+          // Below Pro the switch stays clickable and explains the upgrade instead of greying out.
+          disabled={!available && !draft.enabled && !upgrade?.tier}
+          onCheckedChange={(enabled) => {
+            if (enabled && !available) {
+              if (upgrade) openUpgrade(upgrade);
+              return;
+            }
+            set({ enabled });
+          }}
+          inputProps={{ "aria-label": "Finish new clips automatically" }}
+        />
+      </ToggleCard>
 
       {!available ? (
         <PlanLimitNotice

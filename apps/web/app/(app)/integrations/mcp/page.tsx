@@ -96,8 +96,7 @@ export default async function McpIntegrationPage() {
 
   return (
     <Stack gap="10" maxW="880px" mx="auto" w="full" pt={{ base: "2", md: "4" }}>
-      {/* The breadcrumb leads back on desktop; small screens get a link. */}
-      <Button asChild size="sm" variant="ghost" color="fg.muted" alignSelf="flex-start" mb="-8" display={{ base: "inline-flex", lg: "none" }}>
+      <Button asChild size="sm" variant="ghost" color="fg.muted" alignSelf="flex-start" mb="-8">
         <Link href="/integrations">
           <ArrowLeft size={16} />
           Integrations

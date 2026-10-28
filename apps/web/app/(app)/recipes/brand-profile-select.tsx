@@ -1,5 +1,6 @@
 "use client";
 
+import { Text } from "@chakra-ui/react";
 import { Select } from "@narriflow/ui/components/select";
 
 export interface RecipeBrandProfile {
@@ -24,7 +25,12 @@ export function BrandProfileSelect({
   const unavailable = value !== null && !profiles.some((profile) => profile.id === value);
   return (
     <Select
-      label="Brand Profile"
+      ariaLabel="Brand Profile"
+      startElement={
+        <Text color="fg.muted" fontSize="13px" whiteSpace="nowrap">
+          Brand
+        </Text>
+      }
       items={[
         { label: "No Brand Profile", value: NO_BRAND_PROFILE },
         ...(unavailable ? [{ label: "Unavailable Brand Profile", value }] : []),
@@ -32,7 +38,7 @@ export function BrandProfileSelect({
       ]}
       value={value ?? NO_BRAND_PROFILE}
       onValueChange={(next) => onChange(next === NO_BRAND_PROFILE ? null : next)}
-      size="sm"
+      size="md"
     />
   );
 }

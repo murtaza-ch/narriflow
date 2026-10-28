@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { LockedButton, PlanBadge, UpgradeGem, type UpgradePrompt } from "../_components/upgrade";
 import { Box, Flex, Grid, Stack, Text } from "@chakra-ui/react";
-import { ArrowRight, Braces, Plus, Webhook } from "lucide-react";
+import { ArrowRight, ArrowUpRight, Braces, ChevronRight, Plus, Webhook } from "lucide-react";
 import { callbackSigningSecrets, socialOAuthService, workspaceAllowsCapability, workspaceService } from "@narriflow/services";
 import { Button } from "@narriflow/ui/components/button";
 import { PageHeader } from "@narriflow/ui/components/page-header";
@@ -12,13 +12,13 @@ import { featureUpgradePrompt } from "@/lib/feature-upgrade-prompt";
 import { type AssistantBrand, BrandTile } from "./_components/brand-tile";
 import { UpgradeTileButton } from "./_components/upgrade-tile-button";
 
-const PLATFORMS: Array<{ id: SocialPlatform; name: string }> = [
-  { id: "tiktok", name: "TikTok" },
-  { id: "youtube_shorts", name: "YouTube" },
-  { id: "instagram_reels", name: "Instagram" },
-  { id: "facebook_reels", name: "Facebook" },
-  { id: "linkedin", name: "LinkedIn" },
-  { id: "x", name: "X" },
+const PLATFORMS: Array<{ id: SocialPlatform; name: string; posts: string }> = [
+  { id: "tiktok", name: "TikTok", posts: "Short videos" },
+  { id: "youtube_shorts", name: "YouTube", posts: "Shorts" },
+  { id: "instagram_reels", name: "Instagram", posts: "Reels" },
+  { id: "facebook_reels", name: "Facebook", posts: "Page Reels" },
+  { id: "linkedin", name: "LinkedIn", posts: "Video posts" },
+  { id: "x", name: "X", posts: "Video posts" },
 ];
 
 const ASSISTANTS: AssistantBrand[] = ["claude", "chatgpt", "cursor", "codex"];
@@ -124,17 +124,33 @@ function AddMark() {
   );
 }
 
+/** Where a tile leads: a page in the app, or the docs in a new tab. */
+function GoMark({ external = false }: { external?: boolean }) {
+  return (
+    <Flex boxSize="7" borderRadius="8px" color="fg.subtle" align="center" justify="center" flexShrink={0} aria-hidden="true">
+      {external ? <ArrowUpRight size={15} /> : <ChevronRight size={16} />}
+    </Flex>
+  );
+}
+
 function accountLabel([first, ...rest]: [SocialAccountSnapshot, ...SocialAccountSnapshot[]]) {
   const name = first.handle ? `@${first.handle.replace(/^@/, "")}` : first.displayName;
   return rest.length ? `${name} +${rest.length}` : name;
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function Section({ title, meta, children }: { title: string; meta?: string; children: React.ReactNode }) {
   return (
     <Stack as="section" gap="3">
-      <Text as="h2" fontSize="14px" fontWeight="500" color="fg.muted">
-        {title}
-      </Text>
+      <Flex align="center" gap="2">
+        <Text as="h2" fontSize="14px" fontWeight="500" color="fg.muted">
+          {title}
+        </Text>
+        {meta ? (
+          <Text as="span" h="5" px="2" display="inline-flex" alignItems="center" borderRadius="full" bg="bg.soft" fontSize="11.5px" color="fg.muted" fontVariantNumeric="tabular-nums">
+            {meta}
+          </Text>
+        ) : null}
+      </Flex>
       <Grid templateColumns={{ base: "1fr", sm: "repeat(2, minmax(0, 1fr))", lg: "repeat(3, minmax(0, 1fr))" }} gap="2">
         {children}
       </Grid>
@@ -165,8 +181,8 @@ export default async function IntegrationsPage() {
   );
 
   return (
-    <Stack gap="8" maxW="1120px" mx="auto" w="full">
-      <PageHeader title="Integrations" />
+    <Stack gap="8" w="full">
+      <PageHeader title="Integrations" description="Where your clips get posted, and the tools that can run Narriflow for you." />
 
       <Flex
         align={{ base: "flex-start", md: "center" }}
@@ -216,8 +232,8 @@ export default async function IntegrationsPage() {
         )}
       </Flex>
 
-      <Section title="Publishing">
-        {PLATFORMS.map(({ id, name }) => {
+      <Section title="Publishing" meta={`${PLATFORMS.filter(({ id }) => accounts.some((account) => account.platform === id && account.status === "active")).length} of ${PLATFORMS.length} connected`}>
+        {PLATFORMS.map(({ id, name, posts }) => {
           const connected = accounts.filter((account) => account.platform === id);
           const [firstActive, ...moreActive] = connected.filter((account) => account.status === "active");
           const canAdd = canManageSocial && connected.length === 0;
@@ -241,7 +257,7 @@ export default async function IntegrationsPage() {
               logo={<BrandTile brand={id} />}
               name={name}
               tone={firstActive ? "on" : connected.length ? "warn" : "off"}
-              status={firstActive ? accountLabel([firstActive, ...moreActive]) : connected.length ? "Needs reconnecting" : "Not connected"}
+              status={firstActive ? accountLabel([firstActive, ...moreActive]) : connected.length ? "Needs reconnecting" : posts}
               trailing={slotUpgrade ? <UpgradeGem /> : canConnect ? <AddMark /> : undefined}
             />
           );
@@ -256,6 +272,7 @@ export default async function IntegrationsPage() {
           name="n8n"
           tone="off"
           status="Google Drive to clips template"
+          trailing={<GoMark external />}
         />
         <IntegrationTile
           href={canManageApi ? "/settings/api" : docsUrl("api/introduction")}
@@ -266,6 +283,7 @@ export default async function IntegrationsPage() {
             </IconTile>
           }
           name="REST API"
+          trailing={<GoMark external={!canManageApi} />}
           tone={keys?.length ? "on" : "off"}
           status={!hasApi ? apiPlan : keys ? (keys.length ? `${keys.length} ${keys.length === 1 ? "key" : "keys"}` : "No keys yet") : "Workspace API keys"}
         />
@@ -278,6 +296,7 @@ export default async function IntegrationsPage() {
             </IconTile>
           }
           name="Webhooks"
+          trailing={<GoMark external={!canManageApi} />}
           tone={signing?.current ? "on" : "off"}
           status={!hasApi ? apiPlan : signing ? (signing.current ? "Signing secret set" : "Not set up") : "Completion callbacks"}
         />

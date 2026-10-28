@@ -6,27 +6,38 @@ import { useRouter } from "next/navigation";
 import { PlanLimitNotice } from "../_components/plan-limit-notice";
 import { LockedButton, UpgradeHero, useUpgrade, type UpgradePrompt } from "../_components/upgrade";
 import { AutopilotVisual } from "../_components/upgrade-visuals";
+import { FeatureHero } from "../_components/feature-hero";
 import { lowestTierWithFeature, planUpgradeHighlight, type PricingTier, type WorkspaceAccessStatus } from "@narriflow/validators";
 import { Box, chakra, Flex, SimpleGrid, Stack, Text } from "@chakra-ui/react";
 import {
   AlertTriangle,
+  ArrowRight,
+  BookMarked,
+  CalendarClock,
+  Check,
   ChevronDown,
+  Download,
+  History,
   Pencil,
   Plus,
   RotateCw,
   Rss,
+  Sparkles,
+  Timer,
   Trash2,
   UserCheck,
+  Video,
   X,
 } from "lucide-react";
 import { Button, IconButton } from "@narriflow/ui/components/button";
 import { Dialog, Portal } from "@narriflow/ui/components/dialog";
 import { useConfirm } from "@narriflow/ui/components/confirm-dialog";
-import { EmptyState } from "@narriflow/ui/components/empty-state";
 import { Input } from "@narriflow/ui/components/input";
 import { NumberInput } from "@narriflow/ui/components/number-input";
 import { PageHeader } from "@narriflow/ui/components/page-header";
 import { Select } from "@narriflow/ui/components/select";
+import { SegmentedControl } from "@narriflow/ui/components/segmented-control";
+import { Slider } from "@narriflow/ui/components/slider";
 import { Switch } from "@narriflow/ui/components/switch";
 import { toaster } from "@narriflow/ui/components/toaster";
 import {
@@ -45,17 +56,6 @@ const INTERVAL_OPTIONS = [
   { label: "Every 12 hours", value: "720" },
   { label: "Daily", value: "1440" },
   { label: "Weekly", value: "10080" },
-];
-
-const INITIAL_IMPORT_OPTIONS = [
-  {
-    label: "Future episodes only",
-    value: "future_only",
-  },
-  {
-    label: "Import latest episodes",
-    value: "latest",
-  },
 ];
 
 function intervalLabel(minutes: number): string {
@@ -97,40 +97,48 @@ async function request(
   }
 }
 
-/** The Recipe a rule imports with. Its settings are edited on the Recipes page. */
+/** The Recipe a rule imports with, as a list of choice cards. Its settings are edited on the Recipes page. */
 export function RecipeSelect({
   recipes,
   value,
   onChange,
 }: {
-  recipes: Array<Pick<RecipeSnapshot, "id" | "name">>;
+  recipes: Array<Pick<RecipeSnapshot, "id" | "name"> & Partial<Pick<RecipeSnapshot, "contentPack">>>;
   value: string | null;
   onChange: (id: string) => void;
 }) {
   if (recipes.length === 0) {
     return (
-      <Box bg="bg.subtle" borderRadius="l2" px="3" py="2.5">
-        <Text fontSize="12.5px" color="fg.muted">
+      <Flex align="center" gap="3" bg="bg.soft" borderRadius="l2" px="3.5" py="3">
+        <Flex boxSize="8" flexShrink={0} align="center" justify="center" borderRadius="8px" bg="bg.soft" color="fg.muted">
+          <BookMarked size={15} />
+        </Flex>
+        <Text fontSize="13px" color="fg.muted">
           Rules import with a Recipe.{" "}
           <chakra.span asChild color="fg.accent" fontWeight="600" textDecoration="underline" textUnderlineOffset="3px">
             <Link href="/recipes">Create one first</Link>
           </chakra.span>
           .
         </Text>
-      </Box>
+      </Flex>
     );
   }
   return (
-    <Stack gap="1.5">
-      <Select
-        label="Recipe"
-        items={recipes.map((recipe) => ({ label: recipe.name, value: recipe.id }))}
-        value={value ?? undefined}
-        onValueChange={onChange}
-        placeholder="Choose a Recipe"
-        size="sm"
-      />
+    <Stack gap="2">
+      <Stack role="radiogroup" aria-label="Recipe" gap="1.5" maxH="216px" overflowY="auto" mx="-1" px="1" py="1">
+        {recipes.map((recipe) => (
+          <ChoiceCard
+            key={recipe.id}
+            selected={value === recipe.id}
+            onSelect={() => onChange(recipe.id)}
+            icon={<BookMarked size={15} />}
+            title={recipe.name}
+            description={recipe.contentPack ? `${recipe.contentPack.clipCountTarget} clips · ${recipe.contentPack.defaultAspectRatio}` : undefined}
+          />
+        ))}
+      </Stack>
       <Text fontSize="12px" color="fg.muted">
+        {value ? "" : "Choose a Recipe. "}
         Brand Profile, language, clip settings, and finishing come from the Recipe.{" "}
         <chakra.span asChild color="fg.accent" fontWeight="500" textDecoration="underline" textUnderlineOffset="3px">
           <Link href="/recipes">Manage Recipes</Link>
@@ -140,14 +148,96 @@ export function RecipeSelect({
   );
 }
 
-function FieldGroup({ label, children }: { label: string; children: ReactNode }) {
+/** One option in a set, as a soft card: the chosen one gets the accent tint and a check. */
+function ChoiceCard({
+  selected,
+  onSelect,
+  icon,
+  title,
+  description,
+  children,
+}: {
+  selected: boolean;
+  onSelect: () => void;
+  icon: ReactNode;
+  title: string;
+  description?: string;
+  children?: ReactNode;
+}) {
   return (
-    <Box>
-      <Text textStyle="eyebrow" color="fg.muted" mb="2.5">
-        {label}
-      </Text>
-      <Stack gap="3">{children}</Stack>
-    </Box>
+    <chakra.div
+      role="radio"
+      aria-checked={selected}
+      tabIndex={0}
+      onClick={onSelect}
+      onKeyDown={(event) => {
+        if (event.key === " " || event.key === "Enter") {
+          event.preventDefault();
+          onSelect();
+        }
+      }}
+      display="flex"
+      alignItems="flex-start"
+      gap="3"
+      px="3.5"
+      py="3"
+      borderRadius="l2"
+      cursor="pointer"
+      bg={selected ? "accent.subtle" : "bg.soft"}
+      outline="1.5px solid"
+      outlineColor={selected ? "accent.solid" : "transparent"}
+      outlineOffset="-1.5px"
+      transition="background 120ms ease, outline-color 120ms ease"
+      _hover={{ bg: selected ? "accent.subtle" : "bg.softHover" }}
+      _focusVisible={{ outlineColor: "accent.solid" }}
+      textAlign="left"
+      minW="0"
+    >
+      <Flex boxSize="8" flexShrink={0} align="center" justify="center" borderRadius="8px" bg={selected ? "accent.muted" : "bg.soft"} color={selected ? "accent.fg" : "fg.muted"}>
+        {icon}
+      </Flex>
+      <Stack gap="0.5" flex="1" minW="0" pt="0.5">
+        <Text fontSize="13.5px" fontWeight="500" color="fg" truncate>
+          {title}
+        </Text>
+        {description ? (
+          <Text fontSize="12px" color="fg.muted">
+            {description}
+          </Text>
+        ) : null}
+        {children}
+      </Stack>
+      <Flex boxSize="4.5" mt="1.5" flexShrink={0} align="center" justify="center" borderRadius="full" bg={selected ? "accent.solid" : "transparent"} borderWidth={selected ? "0" : "1.5px"} borderColor="border.emphasized" color="accent.contrast">
+        {selected ? <Check size={11} strokeWidth={3} /> : null}
+      </Flex>
+    </chakra.div>
+  );
+}
+
+/** One fact about a rule as a soft chip. */
+function RuleChip({ icon, children }: { icon: ReactNode; children: ReactNode }) {
+  return (
+    <Flex align="center" gap="1.5" h="7" px="2.5" borderRadius="8px" bg="bg.soft" fontSize="12px" color="fg.muted" fontVariantNumeric="tabular-nums" maxW="full">
+      <Flex flexShrink={0}>{icon}</Flex>
+      <Text as="span" truncate>{children}</Text>
+    </Flex>
+  );
+}
+
+/** A numbered step of the new-rule form. */
+function Step({ number, title, children }: { number: number; title: string; children: ReactNode }) {
+  return (
+    <Stack as="section" gap="3.5">
+      <Flex align="center" gap="2.5">
+        <Flex boxSize="6" borderRadius="full" bg="bg.soft" color="fg" align="center" justify="center" fontSize="12px" fontWeight="600" fontVariantNumeric="tabular-nums">
+          {number}
+        </Flex>
+        <Text as="h3" fontSize="14px" fontWeight="500" color="fg">
+          {title}
+        </Text>
+      </Flex>
+      <Stack gap="3.5" ps={{ base: "0", sm: "8.5" }}>{children}</Stack>
+    </Stack>
   );
 }
 
@@ -488,10 +578,11 @@ export function AutopilotPanel({
   }
 
   return (
-    <Stack gap="8" maxW="1080px" mx="auto">
+    <Stack gap="8">
       <Box animation="fade-up" animationFillMode="backwards">
         <PageHeader
           title="Autopilot"
+          description={zoomEnabled ? "New episodes and Zoom recordings become clips on their own." : "New episodes become clips on their own."}
           actions={
             !canEdit ? undefined : slotUpgrade ? (
               <LockedButton prompt={slotUpgrade}>
@@ -549,29 +640,33 @@ export function AutopilotPanel({
         animationFillMode="backwards"
       >
         {initialRules.length === 0 && !autopilotIncluded ? null : initialRules.length === 0 ? (
-          <EmptyState
-            icon={<Rss size={20} strokeWidth={1.75} />}
+          <FeatureHero
             title="No autopilot rules yet"
-            description={zoomEnabled ? "Add an RSS feed or Zoom connection to clip new recordings automatically." : "Add an RSS feed to clip new episodes automatically."}
+            points={[
+              zoomEnabled ? "Watch an RSS feed or a Zoom account for new recordings." : "Watch an RSS feed for new episodes.",
+              "Each new one becomes captioned clips with a Recipe's settings.",
+              recipes.length > 0
+                ? `Pick one of your ${recipes.length} ${recipes.length === 1 ? "Recipe" : "Recipes"} when you create the rule.`
+                : "Rules import with a Recipe, so create one first.",
+            ]}
+            visual={<AutopilotVisual />}
             action={
-              /* Header owns the solid CTA — this is a quiet accent link. */
-              !canEdit ? undefined : <Button
-                variant="plain"
-                size="sm"
-                color="fg.accent"
-                fontWeight="600"
-                textDecoration="underline"
-                textUnderlineOffset="3px"
-                _hover={{ color: "fg" }}
-                onClick={() => setDialogOpen(true)}
-                disabled={newRuleRequirement !== null}
-              >
-                Create your first rule
-              </Button>
+              !canEdit ? undefined : recipes.length === 0 ? (
+                <Button asChild size="sm">
+                  <Link href="/recipes">
+                    Create a Recipe <ArrowRight size={14} aria-hidden />
+                  </Link>
+                </Button>
+              ) : (
+                <Button size="sm" onClick={() => setDialogOpen(true)} disabled={newRuleRequirement !== null}>
+                  <Plus size={15} strokeWidth={2} aria-hidden />
+                  Create your first rule
+                </Button>
+              )
             }
           />
         ) : (
-          <Box display="grid" gap="3">
+          <Box display="grid" gap="2.5">
             {initialRules.map((rule) => {
               // A paused rule with an error was stopped by Autopilot itself.
               const pauseReason = rule.status === "paused" ? rule.lastError : null;
@@ -584,73 +679,56 @@ export function AutopilotPanel({
               const expanded = Boolean(expandedErrors[rule.id]);
 
               return (
-                <Box
-                  key={rule.id}
-                  position="relative"
-                  borderRadius="l3"
-                  borderWidth="1px"
-                  borderColor="border.card"
-                  bg="bg.panel"
-                  px="4"
-                  transition="background 120ms ease"
-                  _hover={{ bg: "bg.subtle" }}
-                >
-                  <Box
-                    aria-hidden
-                    position="absolute"
-                    insetInlineStart="0"
-                    top="4"
-                    bottom="4"
-                    w="3px"
-                    borderRadius="full"
-                    bg={meta.stripe}
-                  />
-                  <Flex ps="5" pe="2" py="4" gap="4" align="center" wrap="wrap">
+                <Box key={rule.id} borderRadius="l3" bg="bg.subtle" p="4" ps="5">
+                  <Flex gap="4" align="flex-start" wrap="wrap">
+                    {/* The source, marked with the rule's status. */}
+                    <Box position="relative" flexShrink={0}>
+                      <Flex boxSize="11" borderRadius="12px" bg="bg.soft" color="fg" align="center" justify="center" aria-hidden>
+                        {rule.sourceKind === "zoom" ? <Video size={18} /> : <Rss size={18} />}
+                      </Flex>
+                      <Box position="absolute" right="-0.5" bottom="-0.5" boxSize="3" borderRadius="full" bg={meta.stripe} boxShadow="0 0 0 2px var(--chakra-colors-bg-subtle)" aria-hidden />
+                    </Box>
                     <Box minW="0" flex="1">
                       <Flex align="center" gap="2.5" minW="0">
                         <Text
-                          fontSize="14px"
-                          textStyle="title"
+                          fontSize="15px"
+                          fontWeight="500"
                           color="fg"
                           truncate
                         >
                           {rule.name}
                         </Text>
-                        <Text
-                          fontSize="12px"
-                          fontWeight="500"
-                          color={meta.color}
-                          flexShrink={0}
-                        >
-                          {meta.label}
-                        </Text>
+                        <Flex align="center" gap="1.5" h="6" px="2" borderRadius="full" bg="bg.soft" flexShrink={0}>
+                          <Box boxSize="1.5" borderRadius="full" bg={meta.stripe} />
+                          <Text fontSize="11.5px" fontWeight="500" color={meta.color}>
+                            {meta.label}
+                          </Text>
+                        </Flex>
                       </Flex>
                       <Text fontSize="13px" color="fg.muted" truncate mt="1">
                         {rule.sourceKind === "zoom" ? `Zoom: ${zoomConnections.find((entry) => entry.id === rule.zoomConnectionId)?.displayName ?? "connected member"}${rule.zoomTopicFilter ? ` • Topics containing “${rule.zoomTopicFilter}”` : ""}` : `${rule.feedTitle ? `${rule.feedTitle} · ` : ""}${rule.rssUrl}`}
                       </Text>
-                      <Text
-                        mt="1.5"
-                        fontSize="12px"
-                        color="fg.subtle"
-                        fontVariantNumeric="tabular-nums"
-                      >
-                        {rule.sourceKind === "zoom" ? "When a recording completes" : intervalLabel(rule.intervalMinutes)} ·{" "}
-                        {rule.importedEpisodeCount} imported · last{" "}
-                        {rule.lastSuccessAt
-                          ? `healthy ${formatDateTime(rule.lastSuccessAt)}`
-                          : rule.lastCheckedAt
-                          ? formatDateTime(rule.lastCheckedAt)
-                          : "never"}{" "}
-                        {rule.sourceKind === "rss" ? ` · next ${formatDateTime(rule.nextRunAt)}` : ""}
-                        {` · Recipe: ${rule.recipeName}`}
-                      </Text>
+                      <Flex mt="3" gap="1.5" wrap="wrap">
+                        <RuleChip icon={<Timer size={12} />}>{rule.sourceKind === "zoom" ? "When a recording completes" : intervalLabel(rule.intervalMinutes)}</RuleChip>
+                        <RuleChip icon={<Download size={12} />}>{`${rule.importedEpisodeCount} imported`}</RuleChip>
+                        <RuleChip icon={<Check size={12} />}>
+                          {`last ${rule.lastSuccessAt ? `healthy ${formatDateTime(rule.lastSuccessAt)}` : rule.lastCheckedAt ? formatDateTime(rule.lastCheckedAt) : "never"}`}
+                        </RuleChip>
+                        {rule.sourceKind === "rss" ? <RuleChip icon={<CalendarClock size={12} />}>{`next ${formatDateTime(rule.nextRunAt)}`}</RuleChip> : null}
+                        <RuleChip icon={<BookMarked size={12} />}>{`Recipe: ${rule.recipeName}`}</RuleChip>
+                      </Flex>
 
                       {recipe?.finishing ? (
-                        <Text mt="1" fontSize="12px" color={finishingAvailable ? "fg.subtle" : "warning.fg"}>
-                          {finishingAvailable
-                            ? `Finishing: ${describeFinishing(recipe.finishing, (platform) => SOCIAL_PLATFORM_LABELS[platform])}`
-                            : "Finishing is off: it needs the Pro plan. New episodes still import and generate clips."}
-                        </Text>
+                        <Flex mt="3" gap="2.5" align="flex-start" px="3" py="2.5" borderRadius="l2" bg={finishingAvailable ? "accent.subtle" : "upgrade.subtle"}>
+                          <Box mt="0.5" color={finishingAvailable ? "accent.fg" : "upgrade.fg"} flexShrink={0}>
+                            <Sparkles size={13} />
+                          </Box>
+                          <Text fontSize="12.5px" color={finishingAvailable ? "fg" : "upgrade.fg"} lineHeight="1.45">
+                            {finishingAvailable
+                              ? `Finishing: ${describeFinishing(recipe.finishing, (platform) => SOCIAL_PLATFORM_LABELS[platform])}`
+                              : "Finishing is off: it needs the Pro plan. New episodes still import and generate clips."}
+                          </Text>
+                        </Flex>
                       ) : null}
 
                       <RuleGrants ruleId={rule.id} grants={grants} canManage={canTakeOver} />
@@ -814,12 +892,12 @@ export function AutopilotPanel({
           <Dialog.Backdrop />
           <Dialog.Positioner>
             <Dialog.Content
-              maxW="480px"
+              maxW="600px"
             >
               <Dialog.Header
                 px="6"
                 pt="5"
-                pb="4"
+                pb="5"
                 flexDirection="column"
                 alignItems="stretch"
                 gap="1"
@@ -827,6 +905,9 @@ export function AutopilotPanel({
                 <Dialog.Title textStyle="title" fontSize="18px" color="fg">
                   New autopilot rule
                 </Dialog.Title>
+                <Text fontSize="13px" color="fg.muted">
+                  New {sourceKind === "zoom" ? "recordings" : "episodes"} become clips on their own.
+                </Text>
               </Dialog.Header>
               <Dialog.CloseTrigger asChild>
                 <IconButton
@@ -843,30 +924,49 @@ export function AutopilotPanel({
               </Dialog.CloseTrigger>
 
               <Dialog.Body px="6" py="0">
-                <Stack gap="5">
-                  <FieldGroup label="Source">
-                    {zoomEnabled ? <Select label="Import from" items={[{ label: "RSS feed", value: "rss" }, { label: "Zoom cloud recordings", value: "zoom" }]} value={sourceKind} onValueChange={(value) => { setSourceKind(value as "rss" | "zoom"); if (name === "Podcast autopilot" || name === "Zoom autopilot") setName(value === "zoom" ? "Zoom autopilot" : "Podcast autopilot"); }} size="sm" /> : null}
-                    <Field label="Rule name" htmlFor="autopilot-rule-name">
-                      <Input
-                        id="autopilot-rule-name"
-                        value={name}
-                        onChange={(event) => setName(event.target.value)}
-                        fontSize="13px"
-                        size="sm"
-                      />
-                    </Field>
+                <Stack gap="7" pb="2">
+                  <Step number={1} title="Source">
+                    {zoomEnabled ? (
+                      <SimpleGrid role="radiogroup" aria-label="Import from" columns={{ base: 1, sm: 2 }} gap="2">
+                        {([
+                          { value: "rss", title: "RSS feed", description: "Podcasts and shows", icon: <Rss size={15} /> },
+                          { value: "zoom", title: "Zoom recordings", description: "Cloud recordings", icon: <Video size={15} /> },
+                        ] as const).map((option) => (
+                          <ChoiceCard
+                            key={option.value}
+                            selected={sourceKind === option.value}
+                            onSelect={() => {
+                              setSourceKind(option.value);
+                              if (name === "Podcast autopilot" || name === "Zoom autopilot") setName(option.value === "zoom" ? "Zoom autopilot" : "Podcast autopilot");
+                            }}
+                            icon={option.icon}
+                            title={option.title}
+                            description={option.description}
+                          />
+                        ))}
+                      </SimpleGrid>
+                    ) : null}
                     {sourceKind === "rss" ? <Field label="RSS feed URL" htmlFor="autopilot-rss-url">
-                      <Input
-                        id="autopilot-rss-url"
-                        value={rssUrl}
-                        onChange={(event) => setRssUrl(event.target.value)}
-                        placeholder="https://feeds.example.com/podcast.xml"
-                        fontSize="13px"
-                        size="sm"
-                      />
+                      <Flex align="center" gap="2.5" ps="3" bg="bg.soft" borderRadius="control" color="fg.muted" borderWidth="1px" borderColor="transparent" _focusWithin={{ borderColor: "border.focus" }}>
+                        <Rss size={14} aria-hidden />
+                        <Input
+                          id="autopilot-rss-url"
+                          value={rssUrl}
+                          onChange={(event) => setRssUrl(event.target.value)}
+                          placeholder="https://feeds.example.com/podcast.xml"
+                          fontSize="13px"
+                          size="md"
+                          ps="0"
+                          bg="transparent"
+                          borderWidth="0"
+                          _hover={{ bg: "transparent" }}
+                          _focus={{ borderColor: "transparent" }}
+                          _focusVisible={{ borderColor: "transparent" }}
+                        />
+                      </Flex>
                     </Field> : <Stack gap="3">
                       {liveZoomConnections.length === 0 ? (
-                        <Box bg="bg.subtle" borderRadius="l2" px="3" py="2.5">
+                        <Box bg="bg.soft" borderRadius="l2" px="3.5" py="3">
                           <Text fontSize="12.5px" color="fg.muted">
                             Zoom rules watch a connected Zoom account.{" "}
                             {canConnectZoom ? (
@@ -879,88 +979,108 @@ export function AutopilotPanel({
                           </Text>
                         </Box>
                       ) : (
-                        <Select label="Zoom connection" items={liveZoomConnections.map((entry) => ({ label: entry.displayName, value: entry.id }))} value={zoomConnectionId || undefined} onValueChange={setZoomConnectionId} placeholder="Choose a connected member" size="sm" />
+                        <Select label="Zoom connection" items={liveZoomConnections.map((entry) => ({ label: entry.displayName, value: entry.id }))} value={zoomConnectionId || undefined} onValueChange={setZoomConnectionId} placeholder="Choose a connected member" size="md" />
                       )}
-                      <Field label="Topic contains (optional)" htmlFor="autopilot-zoom-topic"><Input id="autopilot-zoom-topic" value={zoomTopicFilter} onChange={(event) => setZoomTopicFilter(event.target.value)} maxLength={200} size="sm" /></Field>
+                      <Field label="Topic contains (optional)" htmlFor="autopilot-zoom-topic"><Input id="autopilot-zoom-topic" value={zoomTopicFilter} onChange={(event) => setZoomTopicFilter(event.target.value)} maxLength={200} size="md" fontSize="13px" placeholder="e.g. webinar" /></Field>
                       <Text fontSize="12px" color="fg.muted">Watches future cloud recordings hosted by this Zoom user. Topic matching ignores letter case. Shared screen with speaker view is preferred.</Text>
                     </Stack>}
-                    <Field
-                      label="Title prefix (optional)"
-                      htmlFor="autopilot-title-prefix"
-                    >
-                      <Input
-                        id="autopilot-title-prefix"
-                        value={titlePrefix}
-                        onChange={(event) => setTitlePrefix(event.target.value)}
-                        placeholder="Weekly show —"
-                        fontSize="13px"
-                        size="sm"
-                      />
-                    </Field>
-                  </FieldGroup>
-
-                  {sourceKind === "rss" ? <FieldGroup label="Schedule">
                     <SimpleGrid columns={{ base: 1, sm: 2 }} gap="3">
-                      <Select
-                        label="Check interval"
-                        items={INTERVAL_OPTIONS}
-                        value={intervalMinutes}
-                        onValueChange={setIntervalMinutes}
-                        size="sm"
-                      />
+                      <Field label="Rule name" htmlFor="autopilot-rule-name">
+                        <Input
+                          id="autopilot-rule-name"
+                          value={name}
+                          onChange={(event) => setName(event.target.value)}
+                          fontSize="13px"
+                          size="md"
+                        />
+                      </Field>
                       <Field
-                        label="Max episodes per run"
-                        htmlFor="autopilot-max-episodes"
+                        label="Title prefix (optional)"
+                        htmlFor="autopilot-title-prefix"
                       >
-                        <NumberInput
-                          value={maxEpisodesPerRun}
-                          onValueChange={(value) =>
-                            setMaxEpisodesPerRun(value)
-                          }
-                          min={1}
-                          max={10}
-                          size="sm"
-                          inputProps={{ id: "autopilot-max-episodes" }}
+                        <Input
+                          id="autopilot-title-prefix"
+                          value={titlePrefix}
+                          onChange={(event) => setTitlePrefix(event.target.value)}
+                          placeholder="e.g. Weekly show —"
+                          fontSize="13px"
+                          size="md"
                         />
                       </Field>
                     </SimpleGrid>
-                    <SimpleGrid columns={{ base: 1, sm: 2 }} gap="3">
-                      <Select
-                        label="Existing episodes"
-                        items={INITIAL_IMPORT_OPTIONS}
-                        value={initialImportMode}
-                        onValueChange={(value) =>
-                          setInitialImportMode(value as "future_only" | "latest")
-                        }
-                        size="sm"
-                      />
-                      {initialImportMode === "latest" ? (
-                        <Field
-                          label="Initial episodes"
-                          htmlFor="autopilot-initial-episodes"
-                        >
-                          <NumberInput
-                            value={initialImportCount}
-                            onValueChange={setInitialImportCount}
-                            min={1}
-                            max={10}
-                            size="sm"
-                            inputProps={{ id: "autopilot-initial-episodes" }}
-                          />
-                        </Field>
-                      ) : (
-                        <Flex align="end" pb="2">
-                          <Text fontSize="12px" color="fg.muted">
-                            Current episodes establish the baseline and are not imported.
-                          </Text>
-                        </Flex>
-                      )}
-                    </SimpleGrid>
-                  </FieldGroup> : null}
+                  </Step>
 
-                  <FieldGroup label="Output">
+                  {sourceKind === "rss" ? <Step number={2} title="Schedule">
+                    <Stack gap="1.5">
+                      <Text fontSize="13px" fontWeight="500" color="fg">Check the feed</Text>
+                      <SegmentedControl
+                        aria-label="Check interval"
+                        items={INTERVAL_OPTIONS.map((option) => ({ label: option.label.replace("Every ", ""), value: option.value }))}
+                        value={intervalMinutes}
+                        onValueChange={setIntervalMinutes}
+                        size="md"
+                        w="full"
+                        css={{ "& > [data-part=item]": { flex: "1", justifyContent: "center" } }}
+                      />
+                    </Stack>
+                    <Slider
+                      label="Max episodes per run"
+                      showValueText
+                      min={1}
+                      max={10}
+                      step={1}
+                      value={Number(maxEpisodesPerRun) || 1}
+                      onValueChange={(value) => setMaxEpisodesPerRun(String(Array.isArray(value) ? (value[0] ?? 1) : value))}
+                    />
+                    <Stack gap="1.5">
+                      <Text fontSize="13px" fontWeight="500" color="fg">Existing episodes</Text>
+                      <SimpleGrid role="radiogroup" aria-label="Existing episodes" columns={{ base: 1, sm: 2 }} gap="2">
+                        <ChoiceCard
+                          selected={initialImportMode === "future_only"}
+                          onSelect={() => setInitialImportMode("future_only")}
+                          icon={<Sparkles size={15} />}
+                          title="Future episodes only"
+                          description="Episodes already out are skipped."
+                        />
+                        <ChoiceCard
+                          selected={initialImportMode === "latest"}
+                          onSelect={() => setInitialImportMode("latest")}
+                          icon={<History size={15} />}
+                          title="Start with the latest"
+                          description="Import recent episodes now."
+                        >
+                          {initialImportMode === "latest" ? (
+                            <Box pt="2" onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}>
+                              <NumberInput
+                                value={initialImportCount}
+                                onValueChange={setInitialImportCount}
+                                min={1}
+                                max={10}
+                                size="sm"
+                                w="24"
+                                inputProps={{ id: "autopilot-initial-episodes", "aria-label": "Initial episodes" }}
+                              />
+                            </Box>
+                          ) : null}
+                        </ChoiceCard>
+                      </SimpleGrid>
+                    </Stack>
+                  </Step> : null}
+
+                  <Step number={sourceKind === "rss" ? 3 : 2} title="Recipe">
                     <RecipeSelect recipes={recipes} value={recipeId} onChange={setRecipeId} />
-                  </FieldGroup>
+                  </Step>
+
+                  {/* What the rule will do, in one sentence, as the form changes. */}
+                  <Flex gap="2.5" align="flex-start" px="4" py="3" borderRadius="l2" bg="bg.subtle">
+                    <Box mt="0.5" color="accent.fg" flexShrink={0}><RotateCw size={14} /></Box>
+                    <Text fontSize="13px" color="fg.muted" lineHeight="1.5">
+                      {sourceKind === "rss"
+                        ? `Checks ${intervalLabel(Number(intervalMinutes)).toLowerCase()} and imports up to ${maxEpisodesPerRun} new episode${maxEpisodesPerRun === "1" ? "" : "s"} each time${initialImportMode === "latest" ? `, starting with the latest ${initialImportCount}` : ""}`
+                        : "Imports each new Zoom cloud recording as it completes"}
+                      {recipeId ? `, using “${recipes.find((entry) => entry.id === recipeId)?.name ?? "the Recipe"}”.` : ". Choose a Recipe to finish."}
+                    </Text>
+                  </Flex>
 
                   {formError ? (
                     <Flex align="center" gap="2" color="danger.fg">

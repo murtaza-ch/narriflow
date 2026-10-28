@@ -15,7 +15,7 @@ export default async function NewCalendarPostPage({ searchParams }: { searchPara
 		{ query: params.q, cursor: params.cursor },
 	);
 	return (
-		<Stack gap="6" maxW="760px">
+		<Stack gap="6" maxW="760px" mx="auto" w="full">
 			<PageHeader
 				title="Choose a clip"
 				description="Open the publishing drawer to choose accounts, write a description, and schedule delivery."

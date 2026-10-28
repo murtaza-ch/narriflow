@@ -1,21 +1,23 @@
 import { SocialPostLinks } from "@/lib/social-post-links";
 import Link from "next/link";
 import { Box, Flex, Grid, Stack, Text } from "@chakra-ui/react";
-import { CalendarDays, ChevronLeft, ChevronRight, Inbox, Plus, X } from "lucide-react";
+import { ArrowRight, CalendarDays, ChevronLeft, ChevronRight, Columns3, Globe, Inbox, List as ListIcon, Plus, X } from "lucide-react";
 import { PageHeader } from "@narriflow/ui/components/page-header";
 import { EmptyState } from "@narriflow/ui/components/empty-state";
 import { Button } from "@narriflow/ui/components/button";
 import { ActionSubmitButton } from "@narriflow/ui/components/action-submit-button";
-import { Select } from "@narriflow/ui/components/select";
 import { publishingQueue, workspaceLibraryService, workspaceService } from "@narriflow/services";
 import { admitWorkspacePage } from "@/lib/authenticated-request-page";
 import type { SocialPlatform, SocialPostStatus } from "@prisma/client";
 import {
 	describeSocialPost,
 	socialPollDelayMs,
+	SOCIAL_PLATFORM_LABELS,
 	SOCIAL_POST_STATUS_LABELS,
 	type SocialPostTone,
 } from "@/lib/social-post-status";
+import { BrandTile } from "../integrations/_components/brand-tile";
+import { CalendarFilters } from "./calendar-filters";
 import { cancelWorkspacePostAction } from "./actions";
 import { CalendarLiveRefresh } from "./calendar-live-refresh";
 import { AuthenticatedActionForm } from "@/app/_components/authenticated-action-form";
@@ -221,57 +223,57 @@ export default async function CalendarPage({
 		return `/calendar?${query}`;
 	}
 
+	const timeInZone = (value: string) =>
+		new Intl.DateTimeFormat("en-US", { timeZone: timezone, hour: "numeric", minute: "2-digit" }).format(new Date(value));
+	// A glance at the period: how many posts are waiting, out, or need someone.
+	const summary = [
+		{ label: "Scheduled", tone: "accent.solid", count: visiblePosts.filter((post) => ["draft", "preparing_video", "scheduled", "publishing", "processing", "reconciling"].includes(post.status)).length },
+		{ label: "Posted", tone: "fg.subtle", count: visiblePosts.filter((post) => post.status === "posted" || post.status === "inbox_delivered").length },
+		{ label: "Needs attention", tone: "danger.solid", count: visiblePosts.filter((post) => post.status === "needs_attention" || post.status === "failed").length },
+	].filter((entry) => entry.count > 0);
+	const scheduleAction = !canPublish ? null : publishUpgrade ? (
+		<LockedButton prompt={publishUpgrade}>
+			<Plus size={14} />
+			Schedule post
+		</LockedButton>
+	) : (
+		<Button asChild>
+			<Link href="/calendar/new">
+				<Plus size={14} />
+				Schedule post
+			</Link>
+		</Button>
+	);
+
 	return (
-		<Stack gap="8">
+		<Stack gap="6">
 			<CalendarLiveRefresh delayMs={liveRefreshDelay} />
-			<PageHeader
-				title="Calendar"
-				actions={
-					<>
-						<Button asChild variant="subtle">
-							<Link href="/calendar/queue">
-								<Inbox size={14} />
-								{proposalCount > 0 ? `Queue · ${proposalCount} to review` : "Queue"}
-							</Link>
-						</Button>
-						{!canPublish ? null : publishUpgrade ? (
-							<LockedButton prompt={publishUpgrade}>
-								<Plus size={14} />
-								Schedule post
-							</LockedButton>
-						) : (
-							<Button asChild>
-								<Link href="/calendar/new">
-									<Plus size={14} />
-									Schedule post
+			<Box animation="fade-up" animationFillMode="backwards" mb="2">
+				<PageHeader
+					title="Calendar"
+					actions={
+						<>
+							<Button asChild variant="subtle">
+								<Link href="/calendar/queue">
+									<Inbox size={14} />
+									{proposalCount > 0 ? `Queue · ${proposalCount} to review` : "Queue"}
 								</Link>
 							</Button>
-						)}
-					</>
-				}
-			/>
+							{scheduleAction}
+						</>
+					}
+				/>
+			</Box>
+
 			<Flex align="center" justify="space-between" gap="3" wrap="wrap">
-				<Flex align="baseline" gap="3" wrap="wrap">
-					<Text textStyle="title" fontSize="18px">
-						{window.label}
-					</Text>
-					<Text fontSize="12px" color="fg.subtle">
-						Timezone · {timezone}
-					</Text>
-				</Flex>
-				<Flex gap="4" align="center" wrap="wrap">
-					<Flex gap="1" align="center">
-						<Button
-							asChild
-							variant="ghost"
-							size="sm"
-							aria-label="Previous period"
-						>
+				<Flex align="center" gap="3" wrap="wrap">
+					<Flex gap="0.5" align="center" bg="bg.soft" borderRadius="control" p="0.5">
+						<Button asChild variant="ghost" size="sm" aria-label="Previous period">
 							<Link href={navigationHref(-1)}>
 								<ChevronLeft size={16} />
 							</Link>
 						</Button>
-						<Button asChild variant="subtle" size="sm">
+						<Button asChild variant="ghost" size="sm">
 							<Link href={`/calendar?view=${view}`}>Today</Link>
 						</Button>
 						<Button asChild variant="ghost" size="sm" aria-label="Next period">
@@ -280,103 +282,76 @@ export default async function CalendarPage({
 							</Link>
 						</Button>
 					</Flex>
-					<Flex gap="1" align="center">
-						<Button
-							size="sm"
-							variant={view === "month" ? "subtle" : "ghost"}
-							asChild
-						>
-							<Link href={navigationHref(0, "month")}>Month</Link>
-						</Button>
-						<Button
-							size="sm"
-							variant={view === "week" ? "subtle" : "ghost"}
-							asChild
-						>
-							<Link href={navigationHref(0, "week")}>Week</Link>
-						</Button>
-						<Button
-							size="sm"
-							variant={view === "list" ? "subtle" : "ghost"}
-							asChild
-						>
-							<Link href={navigationHref(0, "list")}>List</Link>
-						</Button>
+					<Text textStyle="title" fontSize="20px">
+						{window.label}
+					</Text>
+					<Flex align="center" gap="1.5" h="6" px="2.5" borderRadius="full" bg="bg.soft" fontSize="11.5px" color="fg.muted">
+						<Globe size={12} aria-hidden />
+						{timezone}
 					</Flex>
 				</Flex>
+				{/* View switch: a segmented track of links, the current one raised. */}
+				<Flex as="nav" aria-label="Calendar view" gap="0.5" align="center" bg="bg.soft" borderRadius="control" p="0.5">
+					{(["month", "week", "list"] as const).map((option) => (
+						<Button
+							key={option}
+							asChild
+							size="sm"
+							variant="ghost"
+							h="8"
+							bg={view === option ? { _light: "white", _dark: "whiteAlpha.200" } : "transparent"}
+							color={view === option ? "fg" : "fg.muted"}
+							_hover={{ bg: view === option ? { _light: "white", _dark: "whiteAlpha.200" } : "bg.softHover", color: "fg" }}
+						>
+							<Link href={navigationHref(0, option)} aria-current={view === option ? "page" : undefined}>
+								{option === "month" ? <CalendarDays size={13} /> : option === "week" ? <Columns3 size={13} /> : <ListIcon size={13} />}
+								{option.charAt(0).toUpperCase() + option.slice(1)}
+							</Link>
+						</Button>
+					))}
+				</Flex>
 			</Flex>
-			<form
-				method="get"
-				style={{
-					display: "flex",
-					gap: "0.5rem",
-					flexWrap: "wrap",
-					alignItems: "flex-end",
-				}}
-			>
-				<input type="hidden" name="date" value={params.date ?? ""} />
-				<input type="hidden" name="month" value={params.month ?? ""} />
-				<input type="hidden" name="view" value={params.view ?? "month"} />
-				<Select
-					ariaLabel="Post status"
-					name="status"
-					defaultValue={params.status ?? ""}
-					size="sm"
-					w="170px"
-					items={[
-						{ value: "", label: "All statuses" },
-						...statuses.map((value) => ({
-							value,
-							label: SOCIAL_POST_STATUS_LABELS[value],
-						})),
+
+			<Flex align="center" justify="space-between" gap="3" wrap="wrap">
+				<CalendarFilters
+					filters={[
+						{ name: "status", label: "Post status", width: "170px", items: [{ value: "", label: "All statuses" }, ...statuses.map((value) => ({ value, label: SOCIAL_POST_STATUS_LABELS[value] }))] },
+						{ name: "platform", label: "Platform", width: "170px", items: [{ value: "", label: "All platforms" }, ...platforms.map((value) => ({ value, label: SOCIAL_PLATFORM_LABELS[value] }))] },
+						{ name: "account", label: "Social account", width: "190px", items: [{ value: "", label: "All accounts" }, ...filters.accounts.map((account) => ({ value: account.id, label: account.displayName }))] },
+						{ name: "project", label: "Project", width: "220px", items: [{ value: "", label: "All projects" }, ...filters.projects.map((project) => ({ value: project.id, label: project.title }))] },
 					]}
 				/>
-				<Select
-					ariaLabel="Platform"
-					name="platform"
-					defaultValue={params.platform ?? ""}
-					size="sm"
-					w="170px"
-					items={[
-						{ value: "", label: "All platforms" },
-						...platforms.map((value) => ({
-							value,
-							label: value.replace("_", " "),
-						})),
-					]}
-				/>
-				<Select
-					ariaLabel="Social account"
-					name="account"
-					defaultValue={params.account ?? ""}
-					size="sm"
-					w="190px"
-					items={[
-						{ value: "", label: "All accounts" },
-						...filters.accounts.map((account) => ({
-							value: account.id,
-							label: account.displayName,
-						})),
-					]}
-				/>
-				<Select
-					ariaLabel="Project"
-					name="project"
-					defaultValue={params.project ?? ""}
-					size="sm"
-					w="220px"
-					items={[
-						{ value: "", label: "All projects" },
-						...filters.projects.map((project) => ({
-							value: project.id,
-							label: project.title,
-						})),
-					]}
-				/>
-				<Button type="submit" size="sm" variant="subtle">
-					Apply filters
-				</Button>
-			</form>
+				{summary.length > 0 ? (
+					<Flex gap="2" wrap="wrap">
+						{summary.map((entry) => (
+							<Flex key={entry.label} align="center" gap="1.5" h="7" px="2.5" borderRadius="full" bg="bg.subtle" fontSize="12px" color="fg.muted">
+								<Box boxSize="1.5" borderRadius="full" bg={entry.tone} />
+								<Text as="span" color="fg" fontWeight="500" fontVariantNumeric="tabular-nums">
+									{entry.count}
+								</Text>
+								{entry.label}
+							</Flex>
+						))}
+					</Flex>
+				) : null}
+			</Flex>
+
+			{visiblePosts.length === 0 && view !== "list" ? (
+				<Flex align="center" justify="space-between" gap="3" wrap="wrap" px="4" py="3" borderRadius="l2" bg="bg.subtle">
+					<Flex align="center" gap="2.5" fontSize="13px" color="fg.muted">
+						<CalendarDays size={15} aria-hidden />
+						<Text>Nothing scheduled {view === "week" ? "this week" : `in ${window.label.split(" ")[0]}`}. Pick a clip and choose when it goes out.</Text>
+					</Flex>
+					{canPublish && !publishUpgrade ? (
+						<Button asChild size="sm" variant="subtle">
+							<Link href="/calendar/new">
+								Choose a clip <ArrowRight size={13} />
+							</Link>
+						</Button>
+					) : null}
+				</Flex>
+			) : null}
+
 			{visiblePosts.length === 0 && view === "list" ? (
 				<EmptyState
 					icon={<CalendarDays size={20} />}
@@ -393,7 +368,7 @@ export default async function CalendarPage({
 					}
 				/>
 			) : view === "list" ? (
-				<Stack gap="3">
+				<Stack gap="2">
 					{visiblePosts.map((post) => {
 						const feedback = describeSocialPost(post, Date.now(), timezone);
 						return (
@@ -403,24 +378,26 @@ export default async function CalendarPage({
 								direction={{ base: "column", md: "row" }}
 								gap="4"
 								p="4"
-								bg="bg.panel"
+								bg="bg.subtle"
 								borderRadius="l3"
-								borderWidth="1px"
-								borderColor="border.card"
 							>
-								<Stack gap="0.5" flex="1" minW="0">
-									<Text fontSize="14px" fontWeight="500" lineClamp={1}>
-										{post.caption}
-									</Text>
-									<Text fontSize="12px" color="fg.subtle">
-										{post.project.title} ·{" "}
-										{post.socialAccount?.displayName ?? "No account selected"}
-									</Text>
-								</Stack>
-								<Stack gap="0" align={{ md: "flex-end" }}>
-									<Text fontSize="13px" color="fg.muted">
-										{post.platform.replace("_", " ")} · {feedback.label}
-									</Text>
+								<Flex align="center" gap="3" flex="1" minW="0">
+									<BrandTile brand={post.platform} size="sm" flexShrink={0} />
+									<Stack gap="0.5" minW="0">
+										<Text fontSize="14px" fontWeight="500" lineClamp={1}>
+											{post.caption}
+										</Text>
+										<Text fontSize="12px" color="fg.subtle">
+											{post.project.title} ·{" "}
+											{post.socialAccount?.displayName ?? "No account selected"}
+										</Text>
+									</Stack>
+								</Flex>
+								<Stack gap="0.5" align={{ md: "flex-end" }}>
+									<Flex align="center" gap="1.5" fontSize="12.5px" color="fg">
+										<Box boxSize="1.5" borderRadius="full" bg={statusStripe(feedback.tone)} />
+										{feedback.label}
+									</Flex>
 									<Text
 										fontSize="12px"
 										color="fg.subtle"
@@ -464,34 +441,17 @@ export default async function CalendarPage({
 					})}
 				</Stack>
 			) : (
-				<Box
-					borderRadius="l3"
-					overflowX="auto"
-					borderWidth="1px"
-					borderColor="border.card"
-				>
-					{/* The 1px gap over a hairline ground draws the grid lines between cells. */}
-					<Grid
-						templateColumns="repeat(7, minmax(120px, 1fr))"
-						minW="840px"
-						gap="1px"
-						bg="border.subtle"
-					>
+				<Box overflowX="auto" mx="-1" px="1" pb="1">
+					<Grid templateColumns="repeat(7, minmax(120px, 1fr))" minW="840px" gap="1.5">
 						{["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((label) => (
-							<Box
-								key={label}
-								px="3"
-								py="2"
-								bg="bg.panel"
-								textStyle="eyebrow"
-								color="fg.muted"
-							>
+							<Text key={label} px="3" pb="1" fontSize="12px" fontWeight="500" color="fg.subtle">
 								{label}
-							</Box>
+							</Text>
 						))}
 						{days.map((day) => {
 							const key = dateKey(day, "UTC");
 							const isToday = key === todayKey;
+							const isPast = key < todayKey;
 							const dayPosts = visiblePosts.filter(
 								(post) =>
 									post.scheduledFor &&
@@ -503,31 +463,38 @@ export default async function CalendarPage({
 							return (
 								<Stack
 									key={key}
-									gap="2"
-									minH={view === "week" ? "360px" : "126px"}
-									p="2.5"
-									bg={muted ? "bg.subtle" : "bg.panel"}
+									gap="1.5"
+									minH={view === "week" ? "360px" : "118px"}
+									p="2"
+									borderRadius="l2"
+									bg={isToday ? "accent.subtle" : muted ? "transparent" : "bg.subtle"}
+									opacity={muted ? 0.55 : 1}
+									transition="background 120ms ease"
 								>
-									<Text
-										fontSize="12px"
-										fontVariantNumeric="tabular-nums"
-										color={
-											isToday
-												? "accent.contrast"
-												: muted
-													? "fg.subtle"
-													: "fg.muted"
-										}
-										bg={isToday ? "accent.solid" : "transparent"}
-										borderRadius="full"
-										boxSize="6"
-										display="grid"
-										placeItems="center"
-										aria-current={isToday ? "date" : undefined}
-										title={isToday ? "Today" : undefined}
-									>
-										{day.getUTCDate()}
-									</Text>
+									<Flex align="center" justify="space-between" gap="1">
+										<Text
+											fontSize="12.5px"
+											fontWeight={isToday ? "600" : "500"}
+											fontVariantNumeric="tabular-nums"
+											color={isToday ? "accent.contrast" : isPast || muted ? "fg.subtle" : "fg.muted"}
+											bg={isToday ? "accent.solid" : "transparent"}
+											borderRadius="full"
+											minW="6"
+											h="6"
+											px="1.5"
+											display="grid"
+											placeItems="center"
+											aria-current={isToday ? "date" : undefined}
+											title={isToday ? "Today" : undefined}
+										>
+											{day.getUTCDate()}
+										</Text>
+										{isToday ? (
+											<Text fontSize="11px" fontWeight="500" color="accent.fg" pe="1">
+												Today
+											</Text>
+										) : null}
+									</Flex>
 									{dayPosts.map((post) => {
 										const feedback = describeSocialPost(
 											post,
@@ -535,33 +502,45 @@ export default async function CalendarPage({
 											timezone,
 										);
 										return (
-											<Box
+											<Stack
 												key={post.id}
+												position="relative"
+												overflow="hidden"
+												gap="1"
 												p="2"
-												borderLeftWidth="3px"
-												borderColor={statusStripe(feedback.tone)}
-												bg="bg.muted"
-												borderRadius="l1"
+												ps="3"
+												bg="bg.panel"
+												borderRadius="8px"
 											>
+												{/* Status stripe: the colour says where the post is; the label under the time says it in words. */}
+												<Box position="absolute" insetY="0" left="0" w="3px" bg={statusStripe(feedback.tone)} aria-hidden />
+												<Flex align="center" gap="1.5" minW="0">
+													<BrandTile brand={post.platform} size="sm" boxSize="18px" borderRadius="5px" flexShrink={0} />
+													<Text fontSize="11.5px" color="fg.muted" fontVariantNumeric="tabular-nums" flexShrink={0}>
+														{post.scheduledFor ? timeInZone(post.scheduledFor) : ""}
+													</Text>
+													<Text fontSize="11px" color="fg.subtle" truncate>
+														{feedback.label}
+													</Text>
+												</Flex>
 												<Text fontSize="12px" fontWeight="500" lineClamp={2}>
 													{post.caption}
-												</Text>
-												<Text mt="1" fontSize="12px" color="fg.subtle">
-													{post.platform.replace("_", " ")} · {feedback.label}
 												</Text>
 												{post.status === "needs_attention" ? (
 													<Link href={`/projects/${post.projectId}?tab=posts`}>
 														<Text
-															mt="1"
 															fontSize="12px"
+															color="danger.fg"
+															fontWeight="500"
 															textDecoration="underline"
+															textUnderlineOffset="3px"
 														>
 															Resolve safely
 														</Text>
 													</Link>
 												) : null}
 												<SocialPostLinks post={post} />
-											</Box>
+											</Stack>
 										);
 									})}
 								</Stack>

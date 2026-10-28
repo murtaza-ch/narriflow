@@ -46,7 +46,7 @@ describe("Recipes panel", () => {
   test("lists each Recipe with its settings, Brand Profile, and where it is used", () => {
     const html = render([recipe({ ruleCount: 2 })]);
     expect(html).toContain("Weekly show");
-    expect(html).toContain("10 clips · 9:16 · English");
+    for (const setting of ["10 clips", "9:16", "English"]) expect(html).toContain(setting);
     expect(html).toContain("Brand: Acme");
     expect(html).toContain("Used by 2 Autopilot rules");
     expect(html).toContain("Edit Recipe Weekly show");
@@ -78,7 +78,12 @@ describe("Recipes panel", () => {
     expect(viewer).not.toContain("Edit Recipe Weekly show");
     expect(viewer).not.toContain("New Recipe");
     const empty = render([]);
-    expect(empty).toContain("No Recipes yet");
+    expect(empty).toContain("Reuse your settings on every new video");
     expect(empty).toContain("Create your first Recipe");
+    expect(empty).toContain('href="/docs/recipes"');
+    // A viewer still learns what Recipes are, with no create action.
+    const emptyViewer = render([], { canEdit: false });
+    expect(emptyViewer).toContain("How Recipes work");
+    expect(emptyViewer).not.toContain("Create your first Recipe");
   });
 });
