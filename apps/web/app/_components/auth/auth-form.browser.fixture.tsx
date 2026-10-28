@@ -193,7 +193,7 @@ describe("custom authentication forms", () => {
   test("duplicate submissions start one authentication attempt", async () => {
     let release!: () => void;
     signin.create = mock(async () => { await new Promise<void>((resolve) => { release = resolve; }); return { status: "complete", createdSessionId: "once" }; });
-    await render("sign-in");
+    await render("sign-in"); await enter("auth-email", "user@example.com"); await enter("auth-password", "test-password");
     await act(async () => { const form = browser.document.querySelector("form")!; form.dispatchEvent(new browser.Event("submit", { bubbles: true })); form.dispatchEvent(new browser.Event("submit", { bubbles: true })); });
     expect(signin.create).toHaveBeenCalledTimes(1);
     await act(async () => release());
@@ -283,9 +283,18 @@ describe("custom authentication forms", () => {
     expect(replace).toHaveBeenCalledWith("/auth/continue?redirect_url=%2Fprojects%2Fabc%3Fclip%3D123");
   });
 
+  test("a missing field gets an inline message and never reaches Clerk", async () => {
+    await render("sign-in"); await submit();
+    expect(browser.document.querySelector('[role="alert"]')?.textContent).toContain("Enter your email address.");
+    expect(signin.create).not.toHaveBeenCalled();
+    await enter("auth-email", "user@example.com"); await submit();
+    expect(browser.document.querySelector('[role="alert"]')?.textContent).toContain("Enter your password.");
+    expect(signin.create).not.toHaveBeenCalled();
+  });
+
   test("unexpected runtime failures use a fixed public message", async () => {
     signin.create.mockRejectedValueOnce(new Error("Clerk: internal configuration and developer details"));
-    await render("sign-in"); await submit();
+    await render("sign-in"); await enter("auth-email", "user@example.com"); await enter("auth-password", "test-password"); await submit();
     expect(browser.document.querySelector('[role="alert"]')?.textContent).toContain("Please try again");
     expect(browser.document.querySelector('[role="alert"]')?.textContent).not.toContain("developer details");
   });

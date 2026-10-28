@@ -9,7 +9,6 @@ import { ArrowRight, LockKeyhole, Mail, ShieldCheck } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
 import { Input } from "@narriflow/ui/components/input";
 import { Label } from "@narriflow/ui/components/label";
-import { LabeledDivider } from "@narriflow/ui/components/divider";
 import { Logo } from "@narriflow/ui/components/logo";
 import { authContinuationHref, authEntryHref, oauthCallbackHref, type AuthMode } from "@/lib/auth-entry";
 import { advanceSignIn, advanceSignUp, supportsPasskeys, type AuthProgress, type AuthStep, type SignIn, type SignUp } from "@/lib/auth-flow";
@@ -123,6 +122,21 @@ export function AuthForm({
 
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    // The form is noValidate: a missing field gets the same inline error as
+    // every other problem, not the browser's tooltip.
+    const missing =
+      showEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())
+        ? { field: "auth-email", message: email.trim() ? "Enter a valid email address." : "Enter your email address." }
+        : showCode && !/^[0-9]{6}$/.test(code)
+          ? { field: "auth-code", message: "Enter the 6-digit code from the email." }
+          : showPassword && !password
+            ? { field: "auth-password", message: "Enter your password." }
+            : null;
+    if (missing) {
+      setError(missing.message);
+      document.getElementById(missing.field)?.focus();
+      return;
+    }
     await run(async () => {
       const signIn = signInHook.signIn as SignIn;
       const signUp = signUpHook.signUp as SignUp;
@@ -203,12 +217,10 @@ export function AuthForm({
     </Stack>
     {showProviders && <>
       <AuthModeTabs mode={formMode === "sign-up" ? "sign-up" : "sign-in"} destination={destination} disabled={pending} />
-      <Stack gap="5">
-        <SignInMethods pending={method} disabled={!loaded || pending} passkey={formMode === "sign-in" && passkeysSupported} onSelect={selectMethod} />
-        <LabeledDivider />
-      </Stack>
+      {/* No rule or label: the section gap alone separates the providers from email. */}
+      <SignInMethods pending={method} disabled={!loaded || pending} passkey={formMode === "sign-in" && passkeysSupported} onSelect={selectMethod} />
     </>}
-    <form onSubmit={submit}>
+    <form onSubmit={submit} noValidate>
       <Stack gap="4">
         {showEmail && <Stack gap="1.5">
           <Label htmlFor="auth-email">Email</Label>

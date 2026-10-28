@@ -39,7 +39,7 @@ export function AuthModal() {
     <Portal>
       <Dialog.Backdrop bg="blackAlpha.700" backdropFilter="blur(6px)" />
       <Dialog.Positioner p={{ base: "3", sm: "6" }}>
-        <Dialog.Content bg="bg.panel" color="fg" borderRadius="xl" maxH="calc(100dvh - 24px)" boxShadow="2xl">
+        <Dialog.Content bg="bg.panel" color="fg" borderRadius="xl" maxH="calc(100dvh - 24px)" borderWidth="0" boxShadow="none">
           <Dialog.CloseTrigger asChild><CloseButton aria-label="Close authentication" variant="ghost" size="sm" borderRadius="full" position="absolute" top="3" right="3" zIndex="1" /></Dialog.CloseTrigger>
           <Dialog.Body p={{ base: "6", sm: "8" }}>
             <AuthForm key={mode} mode={mode} destination={params.get("redirect_url")} initialEmail={params.get("email")} />

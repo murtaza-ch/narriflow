@@ -76,26 +76,26 @@ interface SignInMethodsProps {
 }
 
 /**
- * One row of equal icon tiles, the primary path into the app, rendered above
- * the email form. Visually hidden text names each tile; the tooltip repeats
- * it for pointer users.
+ * One row of equal icon tiles, the primary path into the app, above the
+ * email form. Visually hidden text names each tile; a tooltip in the app's
+ * own style repeats it for pointer users.
  */
 export function SignInMethods({ pending, disabled, passkey, onSelect }: SignInMethodsProps) {
   const methods = passkey ? [...OAUTH_METHODS, PASSKEY_METHOD] : OAUTH_METHODS;
 
   return (
-    <Grid templateColumns={`repeat(${methods.length}, minmax(0, 1fr))`} gap="2.5" w="full">
+    <Grid templateColumns={`repeat(${methods.length}, minmax(0, 1fr))`} gap="2" w="full">
       {methods.map(({ method, label, mark }) => {
         const busy = pending === method;
         return (
-          <Tooltip.Root key={method} openDelay={150} closeDelay={0} positioning={{ placement: "top" }}>
+          <Tooltip.Root key={method} openDelay={300} closeDelay={0} positioning={{ placement: "top" }}>
             <Tooltip.Trigger asChild>
               <chakra.button
                 type="button"
                 aria-busy={busy}
                 disabled={disabled || pending !== null}
                 onClick={() => onSelect(method)}
-                h="12"
+                h="11"
                 display="flex"
                 alignItems="center"
                 justifyContent="center"
@@ -103,10 +103,9 @@ export function SignInMethods({ pending, disabled, passkey, onSelect }: SignInMe
                 bg="bg.soft"
                 color="fg"
                 cursor="pointer"
-                transition="background 120ms ease, transform 160ms ease, opacity 160ms ease"
-                _hover={{ bg: "bg.softHover", transform: "translateY(-1px)" }}
-                _active={{ transform: "translateY(0)" }}
-                _disabled={{ cursor: "default", transform: "none", opacity: busy ? 1 : 0.4 }}
+                transition="background 120ms ease, opacity 160ms ease"
+                _hover={{ bg: "bg.softHover" }}
+                _disabled={{ cursor: "default", opacity: busy ? 1 : 0.4 }}
               >
                 {busy ? <Spinner size="xs" /> : mark}
                 <VisuallyHidden>{label}</VisuallyHidden>
@@ -114,16 +113,7 @@ export function SignInMethods({ pending, disabled, passkey, onSelect }: SignInMe
             </Tooltip.Trigger>
             <Portal>
               <Tooltip.Positioner>
-                <Tooltip.Content
-                  bg="bg.inverted"
-                  color="fg.inverted"
-                  borderRadius="l1"
-                  px="2.5"
-                  py="1.5"
-                  fontSize="xs"
-                  fontWeight="500"
-                  boxShadow="md"
-                >
+                <Tooltip.Content bg="bg.muted" color="fg" borderRadius="l2" px="3" py="1.5" fontSize="12px" boxShadow="none">
                   {label}
                 </Tooltip.Content>
               </Tooltip.Positioner>

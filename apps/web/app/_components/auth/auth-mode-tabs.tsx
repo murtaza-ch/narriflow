@@ -44,7 +44,8 @@ export function AuthModeTabs({
             fontSize="13px"
             fontWeight="500"
             color={current ? "fg" : "fg.muted"}
-            bg={current ? "bg.raised" : "transparent"}
+            // The app's segmented-control indicator, so the current tab reads the same here as everywhere.
+            bg={current ? { _light: "#FFFFFF", _dark: "rgba(255, 255, 255, 0.12)" } : "transparent"}
             transition="color 120ms ease, background 120ms ease"
             _hover={current ? undefined : { color: "fg" }}
           >
