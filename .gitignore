@@ -24,3 +24,4 @@ apps/worker/models/
 /.claude/settings.local.json
 .scratch/research/*.html
 .scratch/research/*.jpg
+.neon

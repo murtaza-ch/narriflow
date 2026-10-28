@@ -68,7 +68,7 @@ Local apps and deployed development apps intentionally use the same resources.
 
 | Resource                         | Shared selection                                                                                                 |
 | -------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| Neon project / branch / database | `narriflow-dev` / `deployed-dev` / `neondb`                                                                      |
+| Neon project / branch / database | `narriflow-dev` / `production` / `neondb`                                                                      |
 | Redis                            | Upstash `narriflow-dev-live`                                                                                     |
 | R2 bucket                        | `narriflow-dev`                                                                                                  |
 | Applications                     | Local web and worker via `bun run dev`; Vercel `narriflow-dev`; Railway `@narriflow/worker` in environment `dev` |

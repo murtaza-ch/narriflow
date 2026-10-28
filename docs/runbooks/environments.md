@@ -7,11 +7,11 @@ set. This is the standard setup for Narriflow's pre-production development.
 
 | Resource | Selection |
 | --- | --- |
-| Neon project | `narriflow-dev` (`fragrant-sun-47011044`) |
-| Neon branch | `deployed-dev` (`br-fragrant-lab-aim9z0dg`) |
+| Neon project | `narriflow-dev` (`ancient-violet-37185608`) |
+| Neon branch | `production` (`br-twilight-surf-b5rozv0y`) |
 | PostgreSQL database | `neondb` |
-| Pooled host | `ep-floral-dream-aiy6m4jd-pooler.c-4.us-east-1.aws.neon.tech` |
-| Direct host | `ep-floral-dream-aiy6m4jd.c-4.us-east-1.aws.neon.tech` |
+| Pooled host | `ep-rough-hill-b57kvyah-pooler.c-7.us-east-2.aws.neon.tech` |
+| Direct host | `ep-rough-hill-b57kvyah.c-7.us-east-2.aws.neon.tech` |
 | R2 bucket | `narriflow-dev` |
 | Cloudflare account | `5359f28d385b8632c3abee12d1f5b011` |
 | Upstash database | `narriflow-dev-live` (`af538fa1-440d-47ed-896e-c78ae9a6a409`) |
@@ -25,6 +25,14 @@ set. This is the standard setup for Narriflow's pre-production development.
 
 Keep secrets in `apps/web/.env.local`, `apps/worker/.env`, and
 `packages/db/.env`. Never create a root `.env` or commit real credentials.
+
+The Neon CLI links this checkout through the ignored `.neon` file. `neon.ts`
+declares Postgres only; Clerk, R2, and Upstash remain the app's other providers.
+`neon deploy` pulls Neon variables into the ignored root `.env.local`. This
+file is CLI output, not the web or worker's runtime configuration. When changing
+the connection, update the app-local files, `apps/mcp/.env`, Vercel's Production
+variables, and the Railway `dev` worker. Map Neon's `DATABASE_URL_UNPOOLED` to
+the app's `DIRECT_URL`, then redeploy both hosted apps and restart local apps.
 
 Use the Railway worker's `dev` variables as the source for shared resource
 settings. Set `DATABASE_URL` to the pooled connection and `DIRECT_URL` to the

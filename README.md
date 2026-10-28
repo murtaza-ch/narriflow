@@ -172,7 +172,7 @@ Use app-local env files instead of inventing a root `.env`.
 ### Use the shared development resources
 
 Local apps, Vercel, and Railway share the Neon `narriflow-dev` project's
-`deployed-dev` branch and `neondb` database, the `narriflow-dev` R2 bucket,
+`production` branch and `neondb` database, the `narriflow-dev` R2 bucket,
 and Upstash `narriflow-dev-live`. PostgreSQL carries the durable ingest and
 workflow queues. A local worker can process jobs created on Vercel, and the
 Railway worker can process jobs created on localhost. Redis broadcasts their
