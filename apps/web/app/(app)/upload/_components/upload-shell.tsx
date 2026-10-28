@@ -782,7 +782,6 @@ export function UploadShell({
             borderColor="accent.solid"
             borderRadius="l3"
             bg="bg.panel"
-            boxShadow="cardHover"
           >
             <Box color="accent.fg">
               <Upload size={24} strokeWidth={1.75} />

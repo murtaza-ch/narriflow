@@ -31,9 +31,10 @@ export interface ActionMenuProps {
 
 /**
  * Action menu (the kebab / "…" overflow pattern) on Chakra v3 Menu. The theme's
- * menu recipe draws the surface and rows. Destructive items are grouped last
- * behind a separator so the irreversible action is never adjacent to an
- * ordinary one.
+ * menu recipe draws the flat surface and rows; each row leads with its icon in
+ * a small soft tile that brightens with the row. Destructive items are grouped
+ * last behind a separator, their tile tinted, so the irreversible action is
+ * never adjacent to an ordinary one.
  */
 export function ActionMenu({
   trigger,
@@ -53,25 +54,38 @@ export function ActionMenu({
         onSelect={item.onSelect}
         display="flex"
         alignItems="center"
+        minH="10"
+        ps="1.5"
+        gap="2.5"
         color={item.destructive ? "danger.fg" : "fg"}
+        fontWeight="500"
         _highlighted={{ bg: item.destructive ? "danger.subtle" : "bg.soft" }}
         _disabled={{ color: "fg.disabled", cursor: "not-allowed" }}
+        css={{
+          "&[data-highlighted] [data-menu-icon]": item.destructive
+            ? { bg: "danger.muted" }
+            : { bg: "bg.softHover", color: "fg" },
+        }}
       >
         {/* Plain span, never Menu.ItemText — ItemText is a styled text slot
             that claims flex space, so using it for the icon squeezed the label
             into an ellipsis and pushed it to the right edge. */}
-        {item.busy ? (
-          <Spinner size="xs" flexShrink={0} />
-        ) : item.icon ? (
+        {item.busy || item.icon ? (
           <Box
             as="span"
+            data-menu-icon=""
             display="flex"
             alignItems="center"
+            justifyContent="center"
+            boxSize="7"
             flexShrink={0}
+            borderRadius="8px"
+            bg={item.destructive ? "danger.subtle" : "bg.soft"}
             color={item.destructive ? "danger.fg" : "fg.muted"}
+            transition="background 120ms ease, color 120ms ease"
             aria-hidden="true"
           >
-            {item.icon}
+            {item.busy ? <Spinner size="xs" /> : item.icon}
           </Box>
         ) : null}
         <ChakraMenu.ItemText flex="1" textAlign="start" truncate>

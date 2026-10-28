@@ -318,7 +318,11 @@ export function ClipActionsMenu({
       value: "rename-ai",
       label: "Rename title",
       icon: <Wand2 size={14} />,
-      hint: "AI",
+      hint: (
+        <Flex as="span" align="center" gap="1" h="5" px="1.5" borderRadius="full" bg="accent.subtle" color="accent.fg" fontSize="11px" fontWeight="500">
+          <Sparkles size={10} aria-hidden /> AI
+        </Flex>
+      ),
       onSelect: openSuggestions,
     },
     {

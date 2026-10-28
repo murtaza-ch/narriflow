@@ -264,7 +264,6 @@ export function InteractiveSpeakerLayer({
             bg="studio.surface"
             color="studio.fg"
             borderRadius="10px"
-            boxShadow="0 8px 24px rgba(0, 0, 0, 0.45)"
             onPointerDown={(event) => event.stopPropagation()}
             zIndex={20}
           >

@@ -382,7 +382,7 @@ export function AutoCensorReviewDrawer({ onClose }: { onClose: () => void }) {
         color="studio.fg"
         zIndex={200}
         direction="column"
-        layerStyle="panel"
+        borderRadius="l3"
       >
         <Box px="6" pt="5" pb="4" flexShrink={0}>
           <Flex align="center" justify="space-between" gap="3">

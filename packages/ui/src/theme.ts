@@ -1,4 +1,5 @@
 import { createSystem, defaultConfig, defineConfig, defineRecipe, defineSlotRecipe } from "@chakra-ui/react";
+import { colorPickerAnatomy, comboboxAnatomy, hoverCardAnatomy, tooltipAnatomy } from "@chakra-ui/react/anatomy";
 
 /** One size scale for every single-line control. */
 const controlSizes = {
@@ -224,8 +225,9 @@ const config = defineConfig({
         l3: { value: "1.25rem" },
       },
       shadows: {
-        // Near-none in light — structure is drawn, not lifted. One ambient
-        // elevation shadow for true cards (modals, menus, toasts).
+        // Near-none in light — structure is drawn, not lifted. Overlays
+        // (modals, menus, dropdowns) carry none; this is for toasts and the
+        // few lifted objects left.
         card: {
           value: "0 1px 2px rgba(16, 16, 16, 0.05)",
         },
@@ -744,7 +746,8 @@ const config = defineConfig({
             bg: "bg.dialog",
             borderWidth: "0",
             borderRadius: "l3",
-            boxShadow: "0 24px 80px #0006",
+            // Flat like every overlay: the scrim behind it does the separating.
+            boxShadow: "none",
             maxH: "calc(100dvh - 32px)",
           },
           header: { px: "6", pt: "5", pb: "4" },
@@ -822,6 +825,13 @@ const config = defineConfig({
         // one hover fill instead.
         variants: { variant: { subtle: { item: { _highlighted: { bg: "bg.soft" } } } } },
       }),
+      // The rest of the floating surfaces sit flat too (menus, selects and
+      // popovers and the date picker already use dropdownSurface): no overlay
+      // carries a shadow.
+      tooltip: defineSlotRecipe({ slots: tooltipAnatomy.keys(), base: { content: { boxShadow: "none" } } }),
+      hoverCard: defineSlotRecipe({ slots: hoverCardAnatomy.keys(), base: { content: { boxShadow: "none" } } }),
+      colorPicker: defineSlotRecipe({ slots: colorPickerAnatomy.keys(), base: { content: { boxShadow: "none" } } }),
+      combobox: defineSlotRecipe({ slots: comboboxAnatomy.keys(), base: { content: { boxShadow: "none" } } }),
       popover: defineSlotRecipe({
         slots: [
           "content",
