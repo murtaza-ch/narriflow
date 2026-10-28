@@ -12,6 +12,8 @@ export interface SelectOption {
   value: string
   disabled?: boolean
   icon?: React.ReactNode
+  /** A quiet second line in the open list, saying what the option means. */
+  description?: string
 }
 
 type SelectSize = "sm" | "md"
@@ -141,7 +143,16 @@ export const Select = React.forwardRef<HTMLDivElement, SelectProps>(
                           {item.icon}
                         </span>
                       ) : null}
-                      {item.label}
+                      {item.description ? (
+                        <span style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
+                          {item.label}
+                          <span style={{ fontSize: "12px", color: "var(--chakra-colors-fg-muted)" }}>
+                            {item.description}
+                          </span>
+                        </span>
+                      ) : (
+                        item.label
+                      )}
                     </span>
                   </ChakraSelect.ItemText>
                   <ChakraSelect.ItemIndicator color="accent.fg" />

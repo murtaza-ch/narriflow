@@ -81,6 +81,13 @@ const config = defineConfig({
       bg: "accent.muted",
       color: "fg",
     },
+    // Browsers paint autofilled fields their own blue; keep the field's own
+    // fill (the long transition never lets theirs show) and the theme's ink.
+    "input:-webkit-autofill, input:-webkit-autofill:hover, input:-webkit-autofill:focus": {
+      WebkitTextFillColor: "var(--chakra-colors-fg)",
+      caretColor: "var(--chakra-colors-fg)",
+      transition: "background-color 600000s 0s, color 600000s 0s",
+    },
     "*:focus-visible": {
       outline: "2px solid",
       outlineColor: "{colors.accent.solid}",
@@ -662,6 +669,8 @@ const config = defineConfig({
           root: {
             bg: "bg.soft",
             borderWidth: "0",
+            // Chakra's default draws a 1px inset ring; controls separate by fill.
+            boxShadow: "none",
             borderRadius: "control",
             p: "0.5",
           },
@@ -679,6 +688,8 @@ const config = defineConfig({
             cursor: "pointer",
             _checked: { color: "fg" },
             _hover: { color: "fg" },
+            // No divider lines between options; the indicator marks the choice.
+            _before: { display: "none" },
           },
         },
       }),

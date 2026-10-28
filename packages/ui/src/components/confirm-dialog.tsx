@@ -1,6 +1,8 @@
 "use client"
 
 import * as React from "react"
+import { Flex } from "@chakra-ui/react"
+import { TriangleAlert } from "lucide-react"
 import { Dialog, Portal } from "./dialog"
 import { Button } from "./button"
 
@@ -53,7 +55,13 @@ export function ConfirmDialog(props: ConfirmDialogProps) {
           <Dialog.Content
             maxW="sm"
           >
-            <Dialog.Header pt="5" pb="0" px="5">
+            <Dialog.Header pt="5" pb="0" px="5" flexDirection="column" alignItems="flex-start" gap="4">
+              {/* A destructive question leads with a soft danger mark, so it reads before the words. */}
+              {destructive ? (
+                <Flex boxSize="10" borderRadius="full" bg="danger.subtle" color="danger.fg" align="center" justify="center" aria-hidden>
+                  <TriangleAlert size={18} />
+                </Flex>
+              ) : null}
               <Dialog.Title
                 textStyle="title"
                 fontSize="15px"
