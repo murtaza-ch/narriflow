@@ -9,9 +9,10 @@ import {
 } from "@narriflow/composition-plan";
 import type { SceneLayoutPreset } from "@narriflow/validators";
 import type { SceneLayoutChoice } from "./layout-panel-model";
+import { SectionLabel, SelectedCheck, tileProps } from "./panel-ui";
 
 const THUMBNAIL_CANVAS = { width: 900, height: 1600 } as const;
-const THUMBNAIL_HEIGHT_PX = 64;
+const THUMBNAIL_HEIGHT_PX = 80;
 
 const CATEGORY_LABELS: Record<SceneLayoutPresetDefinition["category"], string> = {
   automatic: "Automatic",
@@ -43,8 +44,8 @@ function maskRadius(layer: ResolvedSceneLayoutTemplateLayer): string | undefined
 function SpeakerGlyph() {
   return (
     <Flex position="absolute" inset="0" direction="column" align="center" justify="center">
-      <Box w="23%" maxW="9px" aspectRatio={1} borderRadius="full" bg="currentColor" />
-      <Box w="48%" maxW="18px" h="20%" minH="3px" mt="2px" borderRadius="50% 50% 18% 18%" bg="currentColor" />
+      <Box w="23%" maxW="11px" aspectRatio={1} borderRadius="full" bg="currentColor" />
+      <Box w="48%" maxW="22px" h="20%" minH="3px" mt="2px" borderRadius="50% 50% 18% 18%" bg="currentColor" />
     </Flex>
   );
 }
@@ -84,39 +85,37 @@ function TemplateLayer({ layer }: { layer: ResolvedSceneLayoutTemplateLayer }) {
   );
 }
 
-function LayoutArt({ preset }: { preset: SceneLayoutPresetDefinition | null }) {
+function LayoutArt({ preset, active }: { preset: SceneLayoutPresetDefinition | null; active: boolean }) {
   const layers = preset
     ? resolveSceneLayoutPresetTemplate(preset.id, THUMBNAIL_CANVAS)
     : [];
   return (
-    <Flex h="70px" align="center" justify="center" bg="studio.canvas" borderRadius="l1">
-      <Box
-        position="relative"
-        h={`${THUMBNAIL_HEIGHT_PX}px`}
-        aspectRatio={THUMBNAIL_CANVAS.width / THUMBNAIL_CANVAS.height}
-        overflow="hidden"
-        bg="black"
-        color="studio.fgMuted"
-        borderWidth="1px"
-        borderColor="studio.border"
-      >
-        {preset?.id === "auto" ? (
-          <>
-            <SpeakerGlyph />
-            <Box position="absolute" inset="14%" borderWidth="1px" borderStyle="dashed" borderColor="studio.accent" />
-          </>
-        ) : preset ? (
-          layers.map((layer, index) => (
-            <TemplateLayer key={`${layer.kind}-${layer.subjectIndex ?? "source"}-${index}`} layer={layer} />
-          ))
-        ) : (
-          <>
-            <SpeakerGlyph />
-            <Box position="absolute" inset="14%" borderWidth="1px" borderStyle="dashed" borderColor="studio.borderStrong" />
-          </>
-        )}
-      </Box>
-    </Flex>
+    <Box
+      position="relative"
+      flexShrink={0}
+      h={`${THUMBNAIL_HEIGHT_PX}px`}
+      aspectRatio={THUMBNAIL_CANVAS.width / THUMBNAIL_CANVAS.height}
+      overflow="hidden"
+      borderRadius="6px"
+      bg="black"
+      color={active ? "studio.accentFg" : "studio.fgMuted"}
+    >
+      {preset?.id === "auto" ? (
+        <>
+          <SpeakerGlyph />
+          <Box position="absolute" inset="14%" borderWidth="1px" borderStyle="dashed" borderColor="studio.accent" />
+        </>
+      ) : preset ? (
+        layers.map((layer, index) => (
+          <TemplateLayer key={`${layer.kind}-${layer.subjectIndex ?? "source"}-${index}`} layer={layer} />
+        ))
+      ) : (
+        <>
+          <SpeakerGlyph />
+          <Box position="absolute" inset="14%" borderWidth="1px" borderStyle="dashed" borderColor="studio.borderStrong" />
+        </>
+      )}
+    </Box>
   );
 }
 
@@ -145,44 +144,36 @@ function LayoutCard({
   return (
     <Flex
       as="button"
-      direction="column"
-      alignItems="stretch"
-      justifyContent="flex-start"
+      align="center"
+      gap="3"
       w="100%"
-      h="auto"
-      minH="108px"
+      minH="96px"
       minW="0"
-      p="6px"
-      gap="8px"
-      borderWidth="2px"
-      borderColor={active ? "studio.accent" : "transparent"}
-      borderRadius="10px"
-      bg="studio.subtle"
-      color={active ? "studio.fg" : "studio.fgSubtle"}
-      transition="background 120ms ease, border-color 120ms ease"
-      cursor={disabled ? "not-allowed" : "pointer"}
-      opacity={disabled ? 0.5 : 1}
+      p="2"
+      textAlign="left"
+      {...tileProps(active)}
+      {...(disabled ? { cursor: "not-allowed", opacity: 0.5, _hover: undefined } : null)}
       aria-disabled={disabled}
       aria-pressed={active}
       aria-label={choice === "clip-default" ? "Use clip default layout" : `Use ${label} layout${availability}`}
       onClick={() => {
         if (!disabled) onSelect(choice);
       }}
-      _hover={disabled ? undefined : { bg: "studio.raised" }}
     >
-      <Box position="relative">
-        <LayoutArt preset={preset} />
+      <LayoutArt preset={preset} active={active} />
+      <Flex direction="column" align="flex-start" gap="1.5" flex="1" minW="0" pe="1">
+        <Text fontSize="12px" fontWeight="500" lineHeight="1.35" lineClamp="3">
+          {label}
+        </Text>
         {hint !== "ready" ? (
-          <Text position="absolute" right="4px" bottom="3px" px="4px" py="1px" borderRadius="full" bg="studio.surface/92" color="studio.fgSubtle" fontSize="8px" lineHeight="1.4">
+          <Text px="6px" py="1px" borderRadius="full" bg="studio.raised" color="studio.fgMuted" fontSize="11px" fontWeight="500" lineHeight="1.4">
             {hint === "speaker-count"
               ? `${minimumSpeakers} ${minimumSpeakers === 1 ? "speaker" : "speakers"}`
               : "Analyze"}
           </Text>
         ) : null}
-      </Box>
-      <Text px="2px" pb="2px" color={active ? "studio.fg" : "studio.fgMuted"} fontSize="12px" fontWeight="500" textAlign="left" lineHeight="1.3" lineClamp="2">
-        {label}
-      </Text>
+      </Flex>
+      <SelectedCheck show={active} />
     </Flex>
   );
 }
@@ -205,7 +196,7 @@ export function SceneLayoutPresetGrid({
     SceneLayoutPresetDefinition["category"]
   >;
   return (
-    <Stack gap="20px">
+    <Stack gap="5">
       {categories.map((category) => {
         const presets = SCENE_LAYOUT_PRESET_CATALOG.filter(
           (preset) => preset.category === category,
@@ -213,10 +204,8 @@ export function SceneLayoutPresetGrid({
         if (presets.length === 0) return null;
         return (
           <Box key={category}>
-            <Text mb="10px" fontSize="13px" fontWeight="500" color="studio.fgMuted">
-              {CATEGORY_LABELS[category]}
-            </Text>
-            <Box display="grid" gridTemplateColumns="repeat(2, minmax(0, 1fr))" gap="10px">
+            <SectionLabel>{CATEGORY_LABELS[category]}</SectionLabel>
+            <Box display="grid" gridTemplateColumns="repeat(2, minmax(0, 1fr))" gap="2">
               {category === "automatic" ? (
                 <LayoutCard
                   choice="clip-default"

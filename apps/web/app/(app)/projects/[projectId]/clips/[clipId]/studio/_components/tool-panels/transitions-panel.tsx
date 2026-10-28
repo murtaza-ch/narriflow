@@ -2,11 +2,22 @@
 
 import { useMemo, useState } from "react";
 import Link from "next/link";
+import { Global } from "@emotion/react";
 import { Box, Button, Flex, NativeSelect, Slider, Stack, Text } from "@chakra-ui/react";
-import { PanelButton, PanelTabs, softButtonProps, tileProps, studioSliderCss } from "./panel-ui";
+import {
+  PANEL_PX,
+  PanelButton,
+  PanelEmpty,
+  PanelTabs,
+  SectionLabel,
+  SelectedCheck,
+  softButtonProps,
+  studioSliderCss,
+  tileProps,
+} from "./panel-ui";
 import { Layers, Move, Sparkles, Zap } from "lucide-react";
 import { toaster } from "@narriflow/ui/components/toaster";
-import { PLAN_CATALOG, type MediaMotion, type SceneMotion } from "@narriflow/validators";
+import { PLAN_CATALOG, type MediaMotion, type SceneMotion, type StudioTransition } from "@narriflow/validators";
 import {
   MOTION_ENTRANCE_OPTIONS,
   MOTION_EXIT_OPTIONS,
@@ -22,26 +33,108 @@ type MotionTab = "transition" | "media";
 const TRANSITIONS = TRANSITION_OPTIONS.map((option) => ({
   id: option.value,
   label: option.shortLabel,
-  family: option.family,
 }));
 const ENTRANCES = MOTION_ENTRANCE_OPTIONS.map((option) => ({ id: option.value, label: option.label }));
 const EXITS = MOTION_EXIT_OPTIONS.map((option) => ({ id: option.value, label: option.label }));
 
-function PresetPreview({ family }: { family: (typeof TRANSITIONS)[number]["family"] }) {
+// Each tile stages the transition between two stand-in shots: A (neutral) and
+// B (accent). At rest the tile holds a mid-transition frame; on hover/focus it
+// plays A -> B and back, and the chosen tile loops. Reduced motion keeps the
+// still frame. A pose is the resting style, a keyframes name the motion; the
+// animation overrides the pose while it runs, so every frame sets what it moves.
+const LEG = "0%, 16%";
+const END = "84%, 100%";
+const MOTION_KEYFRAMES = {
+  "@keyframes nf-tx-cut": { "0%, 49%": { opacity: 0, clipPath: "inset(0)" }, "50%, 100%": { opacity: 1, clipPath: "inset(0)" } },
+  "@keyframes nf-tx-fade": { [LEG]: { opacity: 0 }, [END]: { opacity: 1 } },
+  "@keyframes nf-tx-dip-b": { "0%, 44%": { opacity: 0, clipPath: "inset(0)" }, "56%, 100%": { opacity: 1, clipPath: "inset(0)" } },
+  "@keyframes nf-tx-dip": { "0%, 10%": { opacity: 0 }, "50%": { opacity: 1 }, "90%, 100%": { opacity: 0 } },
+  "@keyframes nf-tx-wipe-left": { [LEG]: { clipPath: "inset(0 0 0 100%)" }, [END]: { clipPath: "inset(0 0 0 0)" } },
+  "@keyframes nf-tx-wipe-right": { [LEG]: { clipPath: "inset(0 100% 0 0)" }, [END]: { clipPath: "inset(0 0 0 0)" } },
+  "@keyframes nf-tx-wipe-up": { [LEG]: { clipPath: "inset(100% 0 0 0)" }, [END]: { clipPath: "inset(0 0 0 0)" } },
+  "@keyframes nf-tx-wipe-down": { [LEG]: { clipPath: "inset(0 0 100% 0)" }, [END]: { clipPath: "inset(0 0 0 0)" } },
+  "@keyframes nf-tx-in-from-right": { [LEG]: { transform: "translateX(100%)" }, [END]: { transform: "translateX(0)" } },
+  "@keyframes nf-tx-in-from-left": { [LEG]: { transform: "translateX(-100%)" }, [END]: { transform: "translateX(0)" } },
+  "@keyframes nf-tx-in-from-bottom": { [LEG]: { transform: "translateY(100%)" }, [END]: { transform: "translateY(0)" } },
+  "@keyframes nf-tx-in-from-top": { [LEG]: { transform: "translateY(-100%)" }, [END]: { transform: "translateY(0)" } },
+  "@keyframes nf-tx-out-to-left": { [LEG]: { transform: "translateX(0)" }, [END]: { transform: "translateX(-100%)" } },
+  "@keyframes nf-tx-out-to-right": { [LEG]: { transform: "translateX(0)" }, [END]: { transform: "translateX(100%)" } },
+  "@keyframes nf-tx-out-to-top": { [LEG]: { transform: "translateY(0)" }, [END]: { transform: "translateY(-100%)" } },
+  "@keyframes nf-tx-out-to-bottom": { [LEG]: { transform: "translateY(0)" }, [END]: { transform: "translateY(100%)" } },
+  "@keyframes nf-tx-grow": { [LEG]: { transform: "scale(0.5)" }, [END]: { transform: "scale(1)" } },
+  "@keyframes nf-tx-shrink": { [LEG]: { transform: "scale(1)" }, [END]: { transform: "scale(0.5)" } },
+};
+
+type Shot = { pose?: React.CSSProperties; animation?: string };
+type Demo = { a?: Shot; b: Shot; dip?: Shot & { color: "studio.canvas" | "studio.fg" }; aOnTop?: boolean };
+
+const wipe = (direction: "left" | "right" | "up" | "down", pose: string): Demo => ({
+  b: { pose: { clipPath: pose }, animation: `nf-tx-wipe-${direction}` },
+});
+const slide = (
+  pose: { a: string; b: string },
+  anim: { a: string; b: string },
+): Demo => ({
+  a: { pose: { transform: pose.a }, animation: anim.a },
+  b: { pose: { transform: pose.b }, animation: anim.b },
+});
+
+const DEMOS: Record<StudioTransition["type"], Demo> = {
+  none: { b: { pose: { clipPath: "inset(0 0 0 50%)" }, animation: "nf-tx-cut" } },
+  fade: { b: { pose: { opacity: 0.5 }, animation: "nf-tx-fade" } },
+  "fade-black": { b: { pose: { clipPath: "inset(0 0 0 50%)" }, animation: "nf-tx-dip-b" }, dip: { color: "studio.canvas", pose: { opacity: 0.55 }, animation: "nf-tx-dip" } },
+  "dip-white": { b: { pose: { clipPath: "inset(0 0 0 50%)" }, animation: "nf-tx-dip-b" }, dip: { color: "studio.fg", pose: { opacity: 0.55 }, animation: "nf-tx-dip" } },
+  "wipe-left": wipe("left", "inset(0 0 0 50%)"),
+  "wipe-right": wipe("right", "inset(0 50% 0 0)"),
+  "wipe-up": wipe("up", "inset(50% 0 0 0)"),
+  "wipe-down": wipe("down", "inset(0 0 50% 0)"),
+  "slide-left": slide({ a: "translateX(-50%)", b: "translateX(50%)" }, { a: "nf-tx-out-to-left", b: "nf-tx-in-from-right" }),
+  "slide-right": slide({ a: "translateX(50%)", b: "translateX(-50%)" }, { a: "nf-tx-out-to-right", b: "nf-tx-in-from-left" }),
+  "slide-up": slide({ a: "translateY(-50%)", b: "translateY(50%)" }, { a: "nf-tx-out-to-top", b: "nf-tx-in-from-bottom" }),
+  "slide-down": slide({ a: "translateY(50%)", b: "translateY(-50%)" }, { a: "nf-tx-out-to-bottom", b: "nf-tx-in-from-top" }),
+  "zoom-in": { b: { pose: { transform: "scale(0.55)" }, animation: "nf-tx-grow" } },
+  "zoom-out": { a: { pose: { transform: "scale(0.55)" }, animation: "nf-tx-shrink" }, b: {}, aOnTop: true },
+};
+
+const PLAY_ON_HOVER = {
+  "@media (prefers-reduced-motion: no-preference)": {
+    "&:hover [data-shot], &:focus-visible [data-shot], &[aria-pressed=true] [data-shot]": {
+      animationDuration: "1.1s",
+      animationIterationCount: "infinite",
+      animationDirection: "alternate",
+      animationTimingFunction: "cubic-bezier(0.65, 0, 0.35, 1)",
+    },
+  },
+} as const;
+
+function ShotLayer({ bg, glyph, shot, z = 0, dim = false }: { bg: string; glyph: string; shot?: Shot; z?: number; dim?: boolean }) {
   return (
-    <Box position="relative" w="full" h="40px" overflow="hidden" bg="studio.canvas" borderRadius="6px">
-      <Box
-        position="absolute"
-        inset="5px"
-        borderWidth="1px"
-        borderColor="studio.borderStrong"
-        bg={family === "fade" ? "studio.subtle" : "studio.surface"}
-        opacity={family === "cut" ? 0.72 : 1}
-        transform={family === "slide" ? "translateX(-16%)" : family === "zoom" ? "scale(.82)" : undefined}
-        clipPath={family === "wipe" ? "inset(0 42% 0 0)" : undefined}
-        transition="transform 180ms ease, clip-path 180ms ease, opacity 180ms ease"
-      />
-      {family !== "cut" ? <Box position="absolute" left="50%" top="0" bottom="0" w="1px" bg="studio.fgSubtle" /> : null}
+    <Box
+      data-shot
+      position="absolute"
+      inset="0"
+      display="flex"
+      alignItems="center"
+      justifyContent="center"
+      bg={bg}
+      zIndex={z}
+      filter={dim ? "brightness(0.78)" : undefined}
+      style={{ ...shot?.pose, animationName: shot?.animation }}
+    >
+      <Box boxSize="14px" borderRadius="full" bg={glyph} />
+    </Box>
+  );
+}
+
+function PresetPreview({ type }: { type: StudioTransition["type"] }) {
+  const demo = DEMOS[type];
+  return (
+    <Box position="relative" w="full" h="48px" overflow="hidden" bg="studio.canvas" borderRadius="8px" aria-hidden>
+      <ShotLayer bg="studio.raised" glyph="studio.borderStrong" shot={demo.a} z={demo.aOnTop ? 2 : 0} />
+      <ShotLayer bg="studio.accent" glyph="studio.accentSubtle" shot={demo.b} z={1} dim />
+      {demo.dip ? (
+        <Box data-shot position="absolute" inset="0" bg={demo.dip.color} zIndex={2} style={{ ...demo.dip.pose, animationName: demo.dip.animation }} />
+      ) : null}
     </Box>
   );
 }
@@ -49,18 +142,28 @@ function PresetPreview({ family }: { family: (typeof TRANSITIONS)[number]["famil
 function DurationControl({ value, max, onChange, label }: { value: number; max: number; onChange: (value: number) => void; label: string }) {
   return (
     <Box>
-      <Flex align="center" justify="space-between" mb="8px">
-        <Text fontSize="13px" fontWeight="500" color="studio.fgMuted">{label}</Text>
-        <Text fontSize="13px" color="studio.fg" fontVariantNumeric="tabular-nums">{value.toFixed(2)}s</Text>
-      </Flex>
+      <SectionLabel
+        action={
+          <Text fontSize="13px" color="studio.fg" fontVariantNumeric="tabular-nums">
+            {value.toFixed(2)}s
+          </Text>
+        }
+      >
+        {label}
+      </SectionLabel>
       <Slider.Root aria-label={[label]} value={[value]} min={0.1} max={max} step={0.05} onValueChange={(event) => onChange(event.value[0]!)} size="sm" css={studioSliderCss}>
         <Slider.Control><Slider.Track><Slider.Range /></Slider.Track><Slider.Thumbs /></Slider.Control>
       </Slider.Root>
-      <Flex justify="space-between" mt="4px">
-        <Text fontSize="12px" color="studio.fgSubtle" fontVariantNumeric="tabular-nums">0.10s</Text>
-        <Text fontSize="12px" color="studio.fgSubtle" fontVariantNumeric="tabular-nums">{max.toFixed(2)}s</Text>
-      </Flex>
     </Box>
+  );
+}
+
+// The tab's one solid action; the quieter siblings use PanelButton.
+function PrimaryButton({ children, onClick }: { children: React.ReactNode; onClick: () => void }) {
+  return (
+    <Button w="full" h="44px" borderRadius="10px" fontSize="14px" fontWeight="500" colorPalette="brand" onClick={onClick}>
+      {children}
+    </Button>
   );
 }
 
@@ -212,6 +315,7 @@ export function TransitionsPanel() {
 
   return (
     <Stack gap="0">
+      <Global styles={MOTION_KEYFRAMES} />
       <PanelTabs
         ariaLabel="Motion"
         items={[
@@ -221,67 +325,74 @@ export function TransitionsPanel() {
         value={tab}
         onChange={setTab}
       />
-    <Stack gap="20px" px="20px" pt="16px" pb="20px">
+    <Stack gap="5" px={PANEL_PX} pt="4" pb="5">
 
       {tab === "transition" ? (
         <>
           <Box>
-            <Flex align="baseline" justify="space-between" mb="10px"><Text fontSize="13px" fontWeight="500" color="studio.fgMuted">Preset</Text><Text fontSize="11px" color="studio.fgSubtle">Linear timing</Text></Flex>
-            <Box display="grid" gridTemplateColumns="repeat(3, minmax(0, 1fr))" gap="8px">
+            <SectionLabel action={<Text fontSize="11px" color="studio.fgSubtle">Linear timing</Text>}>Preset</SectionLabel>
+            <Box display="grid" gridTemplateColumns="repeat(3, minmax(0, 1fr))" gap="2">
               {TRANSITIONS.map((transition) => {
                 const active = selected === transition.id;
                 return (
-                  <Box key={transition.id} as="button" overflow="hidden" p="6px" {...tileProps(active)} aria-label={`${transition.label} transition`} aria-pressed={active} onClick={() => setSelected(transition.id)}>
-                    <PresetPreview family={transition.family} />
-                    <Text pt="6px" fontSize="12px" lineHeight="1.2" color={active ? "studio.fg" : "studio.fgMuted"} fontWeight="500">{transition.label}</Text>
+                  <Box key={transition.id} as="button" p="6px" pb="2" css={PLAY_ON_HOVER} {...tileProps(active)} aria-label={`${transition.label} transition`} aria-pressed={active} onClick={() => setSelected(transition.id)}>
+                    <PresetPreview type={transition.id} />
+                    <Text pt="2" fontSize="12px" lineHeight="1.2" fontWeight="500">{transition.label}</Text>
+                    <SelectedCheck show={active} />
                   </Box>
                 );
               })}
             </Box>
           </Box>
           <DurationControl value={duration} max={1.5} onChange={setDuration} label="Transition duration" />
-          <SecondaryButton onClick={applyTransitionToClip}><Zap size={13} /> {canPersist || selected === "none" ? "Apply to this clip" : "Preview on this clip"}</SecondaryButton>
-          {!canPersist && motionPrompt?.tier ? (
-            <SecondaryButton onClick={() => openUpgrade(motionPrompt)}>
-              <Layers size={13} />Apply to all clips<StudioLockGem tier={motionPrompt.tier} />
-            </SecondaryButton>
-          ) : (
-            <SecondaryButton disabled={!canPersist || applyState === "applying"} onClick={handleApplyToAll}>
-              <Layers size={13} />{applyState === "applying" ? "Applying…" : applyState === "applied" ? "Applied to all clips" : applyState === "error" ? "Try apply to all again" : "Apply to all clips"}
-            </SecondaryButton>
-          )}
-          <Text fontSize="12px" color="studio.fgSubtle" lineHeight="1.5">Need a subset? Use <Text as="span" color="studio.accentFg" textDecoration="underline"><Link href={`/projects/${clipInfo.projectId}`}>campaign selection</Link></Text> from the Clips view.</Text>
+          <Stack gap="2">
+            <PrimaryButton onClick={applyTransitionToClip}><Zap size={14} /> {canPersist || selected === "none" ? "Apply to this clip" : "Preview on this clip"}</PrimaryButton>
+            {!canPersist && motionPrompt?.tier ? (
+              <SecondaryButton onClick={() => openUpgrade(motionPrompt)}>
+                <Layers size={14} />Apply to all clips<StudioLockGem tier={motionPrompt.tier} />
+              </SecondaryButton>
+            ) : (
+              <SecondaryButton disabled={!canPersist || applyState === "applying"} onClick={handleApplyToAll}>
+                <Layers size={14} />{applyState === "applying" ? "Applying…" : applyState === "applied" ? "Applied to all clips" : applyState === "error" ? "Try apply to all again" : "Apply to all clips"}
+              </SecondaryButton>
+            )}
+          </Stack>
+          <Text fontSize="12px" color="studio.fgSubtle" lineHeight="1.5">Only some clips? Use <Text as="span" color="studio.accentFg" textDecoration="underline"><Link href={`/projects/${clipInfo.projectId}`}>campaign selection</Link></Text>.</Text>
         </>
       ) : target ? (
             <>
               <Box>
-                <Text fontSize="13px" fontWeight="500" color="studio.fgMuted" mb="7px">Target</Text>
+                <SectionLabel>Target</SectionLabel>
                 <NativeSelect.Root size="sm"><NativeSelect.Field aria-label="Motion target" value={target.id} onChange={(event) => chooseTarget(event.currentTarget.value)} bg="studio.subtle" borderWidth="0" borderRadius="10px" h="40px">{mediaTargets.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.label}</option>)}</NativeSelect.Field><NativeSelect.Indicator /></NativeSelect.Root>
               </Box>
-              <Flex gap="8px">
-                <Box flex="1"><Text fontSize="13px" fontWeight="500" color="studio.fgMuted" mb="7px">Entrance</Text><NativeSelect.Root size="sm"><NativeSelect.Field aria-label="Entrance motion" value={mediaEntrance} onChange={(event) => setMediaEntrance(event.currentTarget.value as SceneMotion["entrance"])} bg="studio.subtle" borderWidth="0" borderRadius="10px" h="40px">{ENTRANCES.map((motion) => <option key={motion.id} value={motion.id}>{motion.label}</option>)}</NativeSelect.Field><NativeSelect.Indicator /></NativeSelect.Root></Box>
-                <Box flex="1"><Text fontSize="13px" fontWeight="500" color="studio.fgMuted" mb="7px">Exit</Text><NativeSelect.Root size="sm"><NativeSelect.Field aria-label="Exit motion" value={mediaExit} onChange={(event) => setMediaExit(event.currentTarget.value as SceneMotion["exit"])} bg="studio.subtle" borderWidth="0" borderRadius="10px" h="40px">{EXITS.map((motion) => <option key={motion.id} value={motion.id}>{motion.label}</option>)}</NativeSelect.Field><NativeSelect.Indicator /></NativeSelect.Root></Box>
+              <Flex gap="2">
+                <Box flex="1"><SectionLabel>Entrance</SectionLabel><NativeSelect.Root size="sm"><NativeSelect.Field aria-label="Entrance motion" value={mediaEntrance} onChange={(event) => setMediaEntrance(event.currentTarget.value as SceneMotion["entrance"])} bg="studio.subtle" borderWidth="0" borderRadius="10px" h="40px">{ENTRANCES.map((motion) => <option key={motion.id} value={motion.id}>{motion.label}</option>)}</NativeSelect.Field><NativeSelect.Indicator /></NativeSelect.Root></Box>
+                <Box flex="1"><SectionLabel>Exit</SectionLabel><NativeSelect.Root size="sm"><NativeSelect.Field aria-label="Exit motion" value={mediaExit} onChange={(event) => setMediaExit(event.currentTarget.value as SceneMotion["exit"])} bg="studio.subtle" borderWidth="0" borderRadius="10px" h="40px">{EXITS.map((motion) => <option key={motion.id} value={motion.id}>{motion.label}</option>)}</NativeSelect.Field><NativeSelect.Indicator /></NativeSelect.Root></Box>
               </Flex>
               <DurationControl value={mediaDuration} max={2} onChange={setMediaDuration} label="Motion duration" />
-              <SecondaryButton onClick={applyMediaMotion}><Sparkles size={13} /> {canPersist || (mediaEntrance === "none" && mediaExit === "none") ? "Apply media motion" : "Preview media motion"}</SecondaryButton>
+              <PrimaryButton onClick={applyMediaMotion}><Sparkles size={14} /> {canPersist || (mediaEntrance === "none" && mediaExit === "none") ? "Apply media motion" : "Preview media motion"}</PrimaryButton>
             </>
       ) : (
-            <Box bg="studio.subtle" borderRadius="10px" p="16px">
-              <Text fontSize="14px" color="studio.fg" fontWeight="500">No media target yet</Text>
-              <Text mt="4px" fontSize="13px" color="studio.fgMuted" lineHeight="1.5">Add B-roll or a scene, then return here to animate it.</Text>
-              <Flex mt="10px" gap="8px">
-                <Button size="xs" {...softButtonProps} onClick={() => studio.setActiveTool("broll")}>Add B-roll</Button>
-                <Button size="xs" {...softButtonProps} onClick={() => studio.setActiveTool("scenes")}>Add a scene</Button>
-              </Flex>
-            </Box>
+        <PanelEmpty
+          icon={<Move size={18} />}
+          title="No media target yet"
+          actions={
+            <>
+              <Button size="xs" {...softButtonProps} onClick={() => studio.setActiveTool("broll")}>Add B-roll</Button>
+              <Button size="xs" {...softButtonProps} onClick={() => studio.setActiveTool("scenes")}>Add a scene</Button>
+            </>
+          }
+        >
+          Add B-roll or a scene, then return here to animate it.
+        </PanelEmpty>
       )}
 
       {!canPersist ? (
-        <Box bg="studio.subtle" borderRadius="10px" p="16px">
+        <Box bg="studio.subtle" borderRadius="12px" p="4">
           <Text fontSize="14px" color="studio.fg" fontWeight="500">Motion preview is available</Text>
-          <Text mt="4px" fontSize="13px" color="studio.fgMuted" lineHeight="1.5">Saving motion and including it in exports needs {motionPrompt?.tier ? PLAN_CATALOG[motionPrompt.tier].name : "a higher plan"}.</Text>
+          <Text mt="1" fontSize="13px" color="studio.fgMuted" lineHeight="1.5">Saving motion and including it in exports needs {motionPrompt?.tier ? PLAN_CATALOG[motionPrompt.tier].name : "a higher plan"}.</Text>
           {motionPrompt?.tier ? (
-            <Box as="button" mt="8px" fontSize="13px" color="upgrade.fg" textDecoration="underline" textUnderlineOffset="3px" cursor="pointer" aria-haspopup="dialog" onClick={() => openUpgrade(motionPrompt)}>
+            <Box as="button" mt="2" fontSize="13px" color="upgrade.fg" textDecoration="underline" textUnderlineOffset="3px" cursor="pointer" aria-haspopup="dialog" onClick={() => openUpgrade(motionPrompt)}>
               See what {PLAN_CATALOG[motionPrompt.tier].name} adds
             </Box>
           ) : null}

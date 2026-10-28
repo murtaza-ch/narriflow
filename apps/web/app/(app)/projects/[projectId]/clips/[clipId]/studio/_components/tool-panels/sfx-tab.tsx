@@ -25,7 +25,8 @@ import {
   type PreviewPlayer,
 } from "./audio-library";
 import { brandAudioFirst, filterAudioAssets } from "./audio-library-filter";
-import { chipProps, studioSliderCss, softFocusWithin } from "./panel-ui";
+import { chipProps, PanelEmpty, SectionLabel, softFocusWithin, studioSliderCss } from "./panel-ui";
+import { AudioListError, AudioPager } from "./music-tab";
 
 const MAX_SFX_PLACEMENTS = STUDIO_EDIT_LIMITS.sfx;
 
@@ -52,7 +53,6 @@ function FilterChip({
       flexShrink={0}
       textTransform="capitalize"
       cursor="pointer"
-      transition="background 120ms ease, border-color 120ms ease, color 120ms ease"
       {...chipProps(active)}
       onClick={onClick}
     >
@@ -83,9 +83,10 @@ function SfxRow({
   return (
     <Stack
       gap="0"
-      p="8px"
+      p="2"
       bg={active ? "studio.subtle" : "transparent"}
-      borderRadius="10px"
+      borderRadius="12px"
+      transition="background 120ms ease"
       _hover={{ bg: "studio.subtle" }}
     >
       <Flex align="center" gap="8px">
@@ -131,6 +132,7 @@ function SfxRow({
               justify="center"
               borderRadius="full"
               color={asset.favorited ? "warning.fg" : "studio.fgMuted"}
+              cursor="pointer"
               _hover={{ bg: "studio.subtle", color: asset.favorited ? "warning.fg" : "studio.fg" }}
               onClick={onFavorite}
             >
@@ -241,13 +243,13 @@ export function SfxTab({ reloadKey, player, onOpenUploads }: SfxTabProps) {
   };
 
   return (
-    <Stack gap="14px" px="20px" pt="16px" pb="16px">
-      <Flex align="center" gap="8px">
+    <Stack gap="4" px="5" pt="4" pb="4">
+      <Flex align="center" gap="2">
         <Flex
           align="center"
-          gap="10px"
+          gap="2.5"
           h="40px"
-          px="12px"
+          px="3"
           flex="1"
           bg="studio.subtle"
           borderRadius="10px"
@@ -275,13 +277,16 @@ export function SfxTab({ reloadKey, player, onOpenUploads }: SfxTabProps) {
         <Flex
           as="button"
           aria-label="Open audio uploads"
-          w="40px"
-          h="40px"
+          title="Upload audio"
+          boxSize="40px"
+          flexShrink={0}
           align="center"
           justify="center"
           borderRadius="10px"
           bg="studio.subtle"
           color="studio.fgMuted"
+          cursor="pointer"
+          transition="background 120ms ease, color 120ms ease"
           _hover={{ bg: "studio.raised", color: "studio.fg" }}
           onClick={onOpenUploads}
         >
@@ -289,24 +294,24 @@ export function SfxTab({ reloadKey, player, onOpenUploads }: SfxTabProps) {
         </Flex>
       </Flex>
 
-      <Flex gap="6px" overflowX="auto" pb="2px" css={{ scrollbarWidth: "none" }}>
+      <Flex gap="2" overflowX="auto" css={{ scrollbarWidth: "none" }}>
         <FilterChip label="All" active={category === "all"} onClick={() => setCategory("all")} />
         <FilterChip label="Saved" active={category === "saved"} onClick={() => setCategory("saved")} />
         {moodTags.map((tag) => <FilterChip key={tag} label={tag} active={category === tag} onClick={() => setCategory(tag)} />)}
       </Flex>
 
       {atCap ? (
-        <Flex align="center" gap="6px" color="warning.fg">
-          <AlertTriangle size={12} />
+        <Flex align="center" gap="2" px="3" py="2.5" bg="studio.subtle" borderRadius="10px" color="warning.fg">
+          <AlertTriangle size={13} />
           <Text fontSize="12px">Remove an effect before adding another.</Text>
         </Flex>
       ) : null}
 
-      <Box maxH="300px" overflowY="auto" pr="2px">
-        <Stack gap="3px">
+      <Box maxH="300px" overflowY="auto" mx="-1" px="1">
+        <Stack gap="1">
           {groups.brand.length > 0 ? (
             <>
-              <Text fontSize="12px" fontWeight="500" color="studio.fgMuted" px="8px" pb="2px">Brand</Text>
+              <Text fontSize="12px" fontWeight="500" color="studio.fgSubtle" px="2" pb="1">Brand</Text>
               {groups.brand.map((asset) => (
                 <SfxRow
                   key={asset.id}
@@ -317,38 +322,35 @@ export function SfxTab({ reloadKey, player, onOpenUploads }: SfxTabProps) {
                 />
               ))}
               {groups.library.length > 0 ? (
-                <Text fontSize="12px" fontWeight="500" color="studio.fgMuted" px="8px" pt="8px" pb="2px">Library</Text>
+                <Text fontSize="12px" fontWeight="500" color="studio.fgSubtle" px="2" pt="3" pb="1">Library</Text>
               ) : null}
             </>
           ) : null}
           {loading ? (
-            <Flex align="center" gap="7px" py="18px" justify="center" color="studio.fgMuted">
+            <Flex align="center" gap="2" py="6" justify="center" color="studio.fgMuted">
               <Box animation="spin"><LoaderCircle size={14} /></Box>
               <Text fontSize="13px">Loading effects…</Text>
             </Flex>
           ) : error ? (
-            <Stack align="center" gap="6px" py="14px" role="alert">
-              <Text fontSize="12px" color="studio.danger" textAlign="center">{error}</Text>
-              <Flex as="button" minH="24px" px="8px" align="center" color="studio.fg" fontSize="13px" onClick={retry}>
-                Retry
-              </Flex>
-            </Stack>
+            <AudioListError message={error} onRetry={retry} />
           ) : groups.library.length === 0 && groups.brand.length === 0 ? (
-            <Stack align="center" gap="8px" py="28px" px="12px" textAlign="center">
-              <Sparkles size={18} />
-              <Text fontSize="13px" color="studio.fgMuted" lineHeight="1.5">
-                {category === "saved"
-                  ? "Save effects with the star and they’ll collect here."
-                  : search
-                    ? "No effects match this search."
-                    : "No royalty-free effects have been added yet."}
-              </Text>
-              {!search && category !== "saved" ? (
-                <Flex as="button" minH="24px" minW="24px" align="center" gap="6px" color="studio.fg" fontSize="13px" fontWeight="500" onClick={onOpenUploads}>
-                  <Upload size={12} /> Upload an effect
-                </Flex>
-              ) : null}
-            </Stack>
+            <PanelEmpty
+              icon={<Sparkles size={18} />}
+              title={category === "saved" ? "No saved effects" : search ? "No matches" : "No effects yet"}
+              actions={
+                !search && category !== "saved" ? (
+                  <Flex as="button" minH="28px" minW="24px" px="3" align="center" gap="1.5" borderRadius="8px" bg="studio.raised" color="studio.fg" fontSize="13px" fontWeight="500" cursor="pointer" _hover={{ bg: "studio.borderStrong" }} onClick={onOpenUploads}>
+                    <Upload size={13} /> Upload an effect
+                  </Flex>
+                ) : null
+              }
+            >
+              {category === "saved"
+                ? "Star an effect and it collects here."
+                : search
+                  ? "Try a different search."
+                  : "Royalty-free effects will show up here."}
+            </PanelEmpty>
           ) : groups.library.map((asset) => (
             <SfxRow
               key={asset.id}
@@ -359,45 +361,43 @@ export function SfxTab({ reloadKey, player, onOpenUploads }: SfxTabProps) {
               onFavorite={() => void toggleFavorite(asset)}
             />
           ))}
-          {loadMoreError ? (
-            <Stack align="center" gap="6px" role="alert">
-              <Text fontSize="12px" color="studio.danger">{loadMoreError}</Text>
-              <Flex as="button" minH="24px" minW="24px" px="8px" align="center" fontSize="13px" onClick={loadMore}>Retry</Flex>
-            </Stack>
-          ) : hasMore ? (
-            <Flex as="button" minH="32px" minW="24px" align="center" justify="center" fontSize="13px" aria-disabled={loadingMore} onClick={loadingMore ? undefined : loadMore}>
-              {loadingMore ? "Loading…" : "Load more"}
-            </Flex>
-          ) : null}
+          <AudioPager error={loadMoreError} hasMore={hasMore} loading={loadingMore} onLoadMore={loadMore} />
         </Stack>
       </Box>
 
-      <Box pt="3px">
-        <Text fontSize="13px" fontWeight="500" color="studio.fgMuted" mb="6px">
-          On this clip · {placements.length}/{MAX_SFX_PLACEMENTS}
-        </Text>
+      <Box>
+        <SectionLabel action={<Text textStyle="data" fontSize="12px" color="studio.fgSubtle">{placements.length}/{MAX_SFX_PLACEMENTS}</Text>}>
+          On this clip
+        </SectionLabel>
         {placements.length === 0 ? (
-          <Text fontSize="13px" color="studio.fgSubtle">Effects are added at the playhead.</Text>
+          <Flex align="center" h="40px" px="3" bg="studio.subtle" borderRadius="12px" color="studio.fgSubtle" fontSize="13px">
+            Effects are added at the playhead.
+          </Flex>
         ) : (
-          <Stack gap="6px">
+          <Stack gap="2">
             {[...placements].sort((a, b) => a.startSec - b.startSec).map((placement) => (
-              <Stack key={placement.id} gap="8px" p="12px" bg="studio.subtle" borderRadius="10px">
-                <Flex align="center" justify="space-between" gap="8px">
-                  <Flex align="center" gap="7px" minW="0">
-                    <Text fontVariantNumeric="tabular-nums" fontSize="12px" color="studio.timecode">{formatTimecode(placement.startSec)}</Text>
+              <Stack key={placement.id} gap="3" p="3" bg="studio.subtle" borderRadius="12px">
+                <Flex align="center" justify="space-between" gap="2">
+                  <Flex align="center" gap="2" minW="0">
+                    <Text textStyle="data" fontSize="12px" color="studio.timecode">{formatTimecode(placement.startSec)}</Text>
                     <Text fontSize="13px" color="studio.fg" fontWeight="500" truncate>{placement.title ?? "Sound effect"}</Text>
                   </Flex>
                   <Flex
                     as="button"
                     aria-label={`Remove ${placement.title ?? "sound effect"}`}
+                    minW="24px"
+                    minH="24px"
+                    align="center"
+                    justify="center"
                     color="studio.fgMuted"
+                    cursor="pointer"
                     _hover={{ color: "studio.danger" }}
                     onClick={() => setStudioEdits((prev) => ({ ...prev, sfx: prev.sfx.filter((item) => item.id !== placement.id) }))}
                   >
-                    <X size={12} />
+                    <X size={14} />
                   </Flex>
                 </Flex>
-                <Flex align="center" gap="8px">
+                <Flex align="center" gap="3">
                   <Slider.Root
                     aria-label={[`${placement.title ?? "Sound effect"} volume`]}
                     value={[placement.volume]}
@@ -411,7 +411,7 @@ export function SfxTab({ reloadKey, player, onOpenUploads }: SfxTabProps) {
                   >
                     <Slider.Control><Slider.Track><Slider.Range /></Slider.Track><Slider.Thumbs /></Slider.Control>
                   </Slider.Root>
-                  <Text fontVariantNumeric="tabular-nums" fontSize="12px" color="studio.fgMuted" w="32px" textAlign="right">{placement.volume}%</Text>
+                  <Text textStyle="data" fontSize="12px" color="studio.fgMuted" w="40px" textAlign="right">{placement.volume}%</Text>
                 </Flex>
               </Stack>
             ))}

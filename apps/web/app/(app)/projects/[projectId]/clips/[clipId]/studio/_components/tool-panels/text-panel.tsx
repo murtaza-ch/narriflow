@@ -3,7 +3,9 @@
 import { useEffect, useState } from "react";
 import {
   Box,
+  Button,
   Flex,
+  SimpleGrid,
   Text,
   Stack,
   Textarea,
@@ -14,7 +16,16 @@ import {
   Portal,
   parseColor,
 } from "@chakra-ui/react";
-import { PanelButton, PanelTabs, softFieldProps, tileProps, studioSliderCss } from "./panel-ui";
+import {
+  PANEL_PX,
+  PanelTabs,
+  SectionLabel,
+  SelectedCheck,
+  chipProps,
+  softFieldProps,
+  studioSliderCss,
+  tileProps,
+} from "./panel-ui";
 import { Plus, X, Bold } from "lucide-react";
 import { BrandFontPicker, brandFontReference } from "@/app/(app)/brand-kit/_components/brand-fonts";
 import { useStudio } from "../studio-shell";
@@ -23,12 +34,12 @@ import { STUDIO_EDIT_LIMITS, type StudioTextLayer } from "@narriflow/validators"
 // Preview styles mirror the USER text-layer colors that get burned in —
 // they intentionally stay literal.
 const PRESETS = [
-  { id: "lower-third",  label: "Lower Third",  preview: "Name / Title",     style: { fontSize: "11px", fontWeight: "600", color: "#fff", textShadow: "0 1px 4px rgba(0,0,0,0.8)" } },
-  { id: "title-card",   label: "Title Card",   preview: "BIG TITLE",        style: { fontSize: "14px", fontWeight: "900", color: "#fff", letterSpacing: "0.08em" } },
-  { id: "minimal",      label: "Minimal",      preview: "subtitle text",    style: { fontSize: "11px", color: "#ccc", letterSpacing: "0.1em" } },
-  { id: "bold-callout", label: "Bold Callout", preview: "KEY POINT",        style: { fontSize: "13px", fontWeight: "900", color: "#00ff88" } },
-  { id: "quote",        label: "Quote",        preview: '"Inspiring quote"', style: { fontSize: "11px", color: "#fbbf24", fontStyle: "italic" } },
-  { id: "caption",      label: "Caption",      preview: "Description text", style: { fontSize: "11px", color: "#aaa" } },
+  { id: "lower-third",  label: "Lower Third",  preview: "Name / Title",     lowered: true,  style: { fontSize: "11px", fontWeight: "600", color: "#fff", textShadow: "0 1px 4px rgba(0,0,0,0.8)" } },
+  { id: "title-card",   label: "Title Card",   preview: "BIG TITLE",        lowered: false, style: { fontSize: "14px", fontWeight: "900", color: "#fff", letterSpacing: "0.08em" } },
+  { id: "minimal",      label: "Minimal",      preview: "subtitle text",    lowered: false, style: { fontSize: "11px", color: "#ccc", letterSpacing: "0.1em" } },
+  { id: "bold-callout", label: "Bold Callout", preview: "KEY POINT",        lowered: false, style: { fontSize: "13px", fontWeight: "900", color: "#00ff88" } },
+  { id: "quote",        label: "Quote",        preview: '"Inspiring quote"', lowered: false, style: { fontSize: "11px", color: "#fbbf24", fontStyle: "italic" } },
+  { id: "caption",      label: "Caption",      preview: "Description text", lowered: false, style: { fontSize: "11px", color: "#aaa" } },
 ];
 
 // Same font list captions-panel.tsx offers — kept as a separate local copy
@@ -44,6 +55,15 @@ const FONTS = [
 // an unusably thin (or zero-width) sliver, matching the timeline track's
 // own minimum chip duration.
 const MIN_TEXT_LAYER_DURATION_SEC = 0.5;
+
+// Chip look for controls that sit inside the layer card (already studio.subtle):
+// resting chips lift to raised so they stay visible against it.
+function insetChipProps(selected: boolean) {
+  return {
+    ...chipProps(selected),
+    ...(selected ? {} : { bg: "studio.raised", _hover: { bg: "studio.borderStrong", color: "studio.fg" } }),
+  } as const;
+}
 
 function ToggleBtn({
   active,
@@ -64,19 +84,13 @@ function ToggleBtn({
       align="center"
       justify="center"
       gap="4px"
+      cursor="pointer"
+      onClick={onClick}
+      {...insetChipProps(active)}
       w="56px"
       h="48px"
-      borderRadius="10px"
-      bg={active ? "studio.raised" : "studio.subtle"}
-      borderWidth="2px"
-      borderColor={active ? "studio.accent" : "transparent"}
-      color={active ? "studio.fg" : "studio.fgMuted"}
-      cursor="pointer"
+      px="0"
       fontSize="11px"
-      fontWeight="500"
-      onClick={onClick}
-      transition="background 120ms ease, border-color 120ms ease, color 120ms ease"
-      _hover={{ bg: "studio.raised", color: "studio.fg" }}
     >
       {icon}
       {label}
@@ -128,16 +142,10 @@ function ColorField({
         <Portal>
           <ColorPicker.Positioner>
             {/* Portaled — style with mode-invariant studio tokens only */}
-            <ColorPicker.Content
-              bg="studio.surface"
-              borderWidth="1px"
-              borderColor="studio.borderStrong"
-              borderRadius="l3"
-              boxShadow="0 12px 32px rgba(0,0,0,0.6)"
-            >
+            <ColorPicker.Content bg="studio.raised" borderWidth="0" borderRadius="12px" boxShadow="none">
               <ColorPicker.Area />
               <HStack>
-                <ColorPicker.EyeDropper size="xs" variant="outline" color="studio.fg" borderColor="studio.borderStrong" />
+                <ColorPicker.EyeDropper size="xs" variant="ghost" bg="studio.borderStrong" color="studio.fg" />
                 <ColorPicker.Sliders />
               </HStack>
             </ColorPicker.Content>
@@ -275,6 +283,7 @@ function TextLayerDetail({ layer }: { layer: StudioTextLayer }) {
           variant="outline"
           fontSize="13px"
           {...softFieldProps}
+              bg="studio.canvas"
           resize="vertical"
         />
       </Box>
@@ -289,24 +298,14 @@ function TextLayerDetail({ layer }: { layer: StudioTextLayer }) {
                 key={f}
                 as="button"
                 aria-pressed={isActive}
-                px="10px"
-                h="32px"
-                borderRadius="8px"
-                bg={isActive ? "studio.raised" : "studio.canvas"}
-                borderWidth="2px"
-                borderColor={isActive ? "studio.accent" : "transparent"}
                 cursor="pointer"
                 onClick={() => update({ fontName: f, fontAsset: null })}
-                transition="background 120ms ease, border-color 120ms ease"
-                _hover={{ bg: "studio.raised" }}
+                {...insetChipProps(isActive)}
+                px="10px"
+                fontSize="12px"
+                style={{ fontFamily: `"${f}", Arial, sans-serif` }}
               >
-                <Text
-                  fontSize="12px"
-                  color={isActive ? "studio.fg" : "studio.fgMuted"}
-                  style={{ fontFamily: `"${f}", Arial, sans-serif` }}
-                >
-                  {f}
-                </Text>
+                {f}
               </Box>
             );
           })}
@@ -459,6 +458,7 @@ function TextLayerDetail({ layer }: { layer: StudioTextLayer }) {
               size="sm"
               fontSize="13px"
               {...softFieldProps}
+              bg="studio.canvas"
             />
           </Box>
           <Box flex="1">
@@ -474,11 +474,160 @@ function TextLayerDetail({ layer }: { layer: StudioTextLayer }) {
               size="sm"
               fontSize="13px"
               {...softFieldProps}
+              bg="studio.canvas"
             />
           </Box>
         </Flex>
       </Box>
     </Stack>
+  );
+}
+
+// The panel's one solid action; disabled it goes flat grey rather than a faded copy.
+const primaryButtonProps = {
+  w: "full",
+  h: "44px",
+  borderRadius: "10px",
+  fontSize: "14px",
+  fontWeight: "500",
+  colorPalette: "brand",
+  _disabled: { bg: "studio.raised", color: "studio.fgSubtle", opacity: 1, cursor: "not-allowed" },
+} as const;
+
+// A preset as a small overlay-on-video card: the sample sits on a dark mini
+// frame, the name is a quiet label, and the add button shows on hover/focus
+// (always on touch, and once the card is selected).
+function PresetCard({
+  preset,
+  selected,
+  disabled,
+  onSelect,
+  onAdd,
+}: {
+  preset: (typeof PRESETS)[number];
+  selected: boolean;
+  disabled: boolean;
+  onSelect: () => void;
+  onAdd: () => void;
+}) {
+  const showAdd = { opacity: 1, transform: "scale(1)" };
+  return (
+    <Box
+      position="relative"
+      css={{
+        "&:hover [data-add], &:focus-within [data-add]": showAdd,
+        "@media (hover: none)": { "& [data-add]": showAdd },
+      }}
+    >
+      <Box
+        as="button"
+        w="full"
+        p="6px"
+        pb="2.5"
+        textAlign="left"
+        aria-pressed={selected}
+        onClick={onSelect}
+        {...tileProps(selected)}
+      >
+        <Flex
+          position="relative"
+          h="80px"
+          px="2"
+          pb={preset.lowered ? "3" : "0"}
+          align={preset.lowered ? "flex-end" : "center"}
+          justify="center"
+          overflow="hidden"
+          borderRadius="8px"
+          bgGradient="to-br"
+          gradientFrom="studio.raised"
+          gradientTo="studio.canvas"
+        >
+          {/* A faint talking head, so the sample reads as an overlay on footage */}
+          <Box position="absolute" bottom="-22px" insetX="0" mx="auto" w="64px" h="46px" borderRadius="full" bg="studio.borderStrong" opacity={0.4} aria-hidden />
+          <Box position="absolute" bottom="18px" insetX="0" mx="auto" boxSize="22px" borderRadius="full" bg="studio.borderStrong" opacity={0.4} aria-hidden />
+          <Text position="relative" style={preset.style} lineClamp="1" textAlign="center">
+            {preset.preview}
+          </Text>
+        </Flex>
+        <Text mt="2" px="1" fontSize="12px" fontWeight="500" lineHeight="1.2">
+          {preset.label}
+        </Text>
+        <SelectedCheck show={selected} />
+      </Box>
+      {/* Frame-aligned layer, so the add button sits on the frame, not the label */}
+      <Box position="absolute" top="6px" insetX="6px" h="80px" pointerEvents="none">
+        <Box
+          as="button"
+          data-add
+          aria-label={`Add ${preset.label} overlay`}
+          aria-disabled={disabled}
+          position="absolute"
+          top="2"
+          insetStart="2"
+          boxSize="26px"
+          display="flex"
+          alignItems="center"
+          justifyContent="center"
+          borderRadius="full"
+          bg={disabled ? "studio.raised" : "studio.fg"}
+          color={disabled ? "studio.fgSubtle" : "studio.canvas"}
+          pointerEvents="auto"
+          cursor={disabled ? "not-allowed" : "pointer"}
+          opacity={selected ? 1 : 0.55}
+          transform={selected ? "scale(1)" : "scale(0.92)"}
+          transition="opacity 120ms ease, transform 120ms ease"
+          _hover={disabled ? undefined : { transform: "scale(1.08)" }}
+          onClick={onAdd}
+        >
+          <Plus size={14} strokeWidth={2.5} />
+        </Box>
+      </Box>
+    </Box>
+  );
+}
+
+// Slider with its name and live value on one row above it.
+function SliderRow({
+  label,
+  value,
+  min,
+  max,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <Box>
+      <SectionLabel
+        action={
+          <Text fontVariantNumeric="tabular-nums" fontSize="13px" color="studio.fg">
+            {value}
+          </Text>
+        }
+      >
+        {label}
+      </SectionLabel>
+      <Slider.Root
+        aria-label={[label]}
+        value={[value]}
+        min={min}
+        max={max}
+        onValueChange={(event) => onChange(event.value[0] ?? value)}
+        size="sm"
+        css={studioSliderCss}
+      >
+        <Slider.Control>
+          <Slider.Track>
+            <Slider.Range />
+          </Slider.Track>
+          <Slider.Thumbs />
+        </Slider.Control>
+      </Slider.Root>
+    </Box>
   );
 }
 
@@ -561,70 +710,43 @@ export function TextPanel() {
       />
 
       {atLayerCap ? (
-        <Text px="20px" pt="14px" fontSize="12px" color="studio.fgMuted">
+        <Text px={PANEL_PX} pt="14px" fontSize="12px" color="studio.fgMuted">
           A clip holds up to {MAX_TEXT_LAYERS} text layers. Remove one to add another.
         </Text>
       ) : null}
 
       {activeTab === "presets" && (
-        <Stack gap="8px" px="20px" pt="16px" pb="16px">
+        <SimpleGrid columns={2} gap="2" px={PANEL_PX} pt="4" pb="4">
           {PRESETS.map((p) => (
-            <Flex
+            <PresetCard
               key={p.id}
-              align="center"
-              justify="space-between"
-              px="16px"
-              py="14px"
-              {...tileProps(selectedPreset === p.id)}
-              onClick={() => setSelectedPreset(selectedPreset === p.id ? null : p.id)}
-            >
-              <Box>
-                <Text fontSize="12px" color="studio.fgMuted" mb="4px" fontWeight="500">{p.label}</Text>
-                <Text style={p.style}>{p.preview}</Text>
-              </Box>
-              <Box
-                as="button"
-                aria-label={`Add ${p.label} overlay`}
-                aria-disabled={atLayerCap}
-                w="32px"
-                h="32px"
-                borderRadius="full"
-                bg="studio.raised"
-                display="flex"
-                alignItems="center"
-                justifyContent="center"
-                cursor={atLayerCap ? "not-allowed" : "pointer"}
-                opacity={atLayerCap ? 0.45 : 1}
-                color="studio.fg"
-                _hover={atLayerCap ? undefined : { bg: "studio.fg", color: "studio.canvas" }}
-                transition="background 120ms ease, color 120ms ease"
-                onClick={(e: React.MouseEvent) => {
-                  e.stopPropagation();
-                  addLayer({
-                    text: p.preview,
-                    fontSize: p.id === "title-card" ? 62 : 42,
-                    color:
-                      p.id === "bold-callout"
-                        ? "#00FF88"
-                        : p.id === "quote"
-                          ? "#FBBF24"
-                          : "#FFFFFF",
-                    positionY: p.id === "lower-third" ? 76 : 18,
-                    bold: p.id !== "minimal",
-                  });
-                }}
-              >
-                <Plus size={15} />
-              </Box>
-            </Flex>
+              preset={p}
+              selected={selectedPreset === p.id}
+              disabled={atLayerCap}
+              onSelect={() => setSelectedPreset(selectedPreset === p.id ? null : p.id)}
+              onAdd={() =>
+                addLayer({
+                  text: p.preview,
+                  fontSize: p.id === "title-card" ? 62 : 42,
+                  color:
+                    p.id === "bold-callout"
+                      ? "#00FF88"
+                      : p.id === "quote"
+                        ? "#FBBF24"
+                        : "#FFFFFF",
+                  positionY: p.id === "lower-third" ? 76 : 18,
+                  bold: p.id !== "minimal",
+                })
+              }
+            />
           ))}
-        </Stack>
+        </SimpleGrid>
       )}
 
       {activeTab === "custom" && (
-        <Stack gap="20px" px="20px" pt="16px" pb="16px">
+        <Stack gap="5" px={PANEL_PX} pt="4" pb="4">
           <Box>
-            <Text fontSize="13px" fontWeight="500" color="studio.fgMuted" mb="6px">Text content</Text>
+            <SectionLabel>Text</SectionLabel>
             <Textarea
               placeholder="Type your text..."
               value={customText}
@@ -638,32 +760,9 @@ export function TextPanel() {
               resize="vertical"
             />
           </Box>
-          <Box>
-            <Text fontSize="13px" fontWeight="500" color="studio.fgMuted" mb="6px">Font size</Text>
-            <Flex align="center" gap="10px">
-              <Slider.Root
-                aria-label={["Font size"]}
-                value={[fontSize]}
-                min={12}
-                max={80}
-                onValueChange={(event) => setFontSize(event.value[0] ?? 44)}
-                size="sm"
-                css={studioSliderCss}
-                flex="1"
-              >
-                <Slider.Control>
-                  <Slider.Track>
-                    <Slider.Range />
-                  </Slider.Track>
-                  <Slider.Thumbs />
-                </Slider.Control>
-              </Slider.Root>
-              <Text fontVariantNumeric="tabular-nums" fontSize="12px" color="studio.fgMuted" w="24px" textAlign="right">
-                {fontSize}
-              </Text>
-            </Flex>
-          </Box>
-          <PanelButton
+          <SliderRow label="Font size" value={fontSize} min={12} max={80} onChange={setFontSize} />
+          <Button
+            {...primaryButtonProps}
             disabled={atLayerCap || !customText.trim()}
             onClick={() => {
               addLayer({ text: customText, fontSize });
@@ -672,15 +771,13 @@ export function TextPanel() {
           >
             <Plus size={16} />
             Add text overlay
-          </PanelButton>
+          </Button>
         </Stack>
       )}
 
       {studioEdits.textLayers.length > 0 && (
-        <Box px="20px" pb="20px" pt="4px">
-          <Text fontSize="13px" fontWeight="500" color="studio.fgMuted" mb="10px">
-            Layers
-          </Text>
+        <Box px={PANEL_PX} pb="5" pt="1">
+          <SectionLabel>Layers</SectionLabel>
           <Stack gap="6px">
             {studioEdits.textLayers.map((layer) => {
               const isSelected = selectedTextLayerId === layer.id;

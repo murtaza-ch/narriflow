@@ -1,9 +1,9 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Box, Flex, Text, Stack, Slider, ColorPicker, HStack, Portal, parseColor, Grid } from "@chakra-ui/react";
-import { PanelTabs, studioSliderCss } from "./panel-ui";
-import { Droplet, Type, AlignCenter, MoveUp, MoveDown, Zap, Smile, Captions, Quote } from "lucide-react";
+import { Box, Flex, Text, Stack, Slider, ColorPicker, HStack, Portal, parseColor, Grid, VisuallyHidden } from "@chakra-ui/react";
+import { PANEL_PX, PanelSegmented, PanelTabs, SectionLabel, chipProps, studioSliderCss } from "./panel-ui";
+import { Check, Type, AlignCenter, MoveUp, MoveDown, Smile, Captions, Quote } from "lucide-react";
 import { useReducedMotion } from "framer-motion";
 import { toaster } from "@narriflow/ui/components/toaster";
 import {
@@ -30,24 +30,59 @@ const ANIMATIONS = Object.entries(CAPTION_MOTIONS).map(([id, spec]) => ({
   label: spec.label,
 }));
 
-const SHADOWS: { id: CaptionShadow; label: string }[] = [
-  { id: "none", label: "None" },
-  { id: "soft", label: "Soft" },
-  { id: "hard", label: "Hard" },
-  { id: "extrude", label: "3D" },
+const SHADOWS: { value: CaptionShadow; label: string }[] = [
+  { value: "none", label: "None" },
+  { value: "soft", label: "Soft" },
+  { value: "hard", label: "Hard" },
+  { value: "extrude", label: "3D" },
 ];
 
-type Position = "top" | "center" | "bottom";
+const TEXT_TRANSFORMS: { value: CaptionPreset["textTransform"]; label: string }[] = [
+  { value: "uppercase", label: "AA" },
+  { value: "lowercase", label: "aa" },
+  { value: "capitalize", label: "Aa" },
+  { value: "none", label: "None" },
+];
 
-function SectionLabel({ children }: { children: string }) {
+const POSITIONS = [
+  { id: "top", label: "Top", icon: <MoveUp size={14} /> },
+  { id: "center", label: "Center", icon: <AlignCenter size={14} /> },
+  { id: "bottom", label: "Bottom", icon: <MoveDown size={14} /> },
+] as const;
+
+/** Option chip for choices that wrap (fonts, animations); the chosen one takes the accent tint. */
+function Chip({
+  active,
+  onClick,
+  children,
+  fill = false,
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: ReactNode;
+  fill?: boolean;
+}) {
   return (
-    <Text fontSize="13px" fontWeight="500" color="studio.fgMuted" mb="10px">
+    <Flex
+      as="button"
+      aria-pressed={active}
+      align="center"
+      justify="center"
+      w={fill ? "100%" : undefined}
+      minW="0"
+      cursor="pointer"
+      whiteSpace="nowrap"
+      {...chipProps(active)}
+      px={fill ? "8px" : "12px"}
+      onClick={onClick}
+    >
       {children}
-    </Text>
+    </Flex>
   );
 }
 
-function ToggleBtn({
+/** On/off display option: icon + label, accent tint and a check while on. */
+function ToggleChip({
   active,
   onClick,
   icon,
@@ -55,49 +90,80 @@ function ToggleBtn({
 }: {
   active: boolean;
   onClick: () => void;
-  icon: React.ReactNode;
+  icon: ReactNode;
   label: string;
 }) {
   return (
     <Flex
       as="button"
       aria-pressed={active}
-      direction="column"
       align="center"
-      justify="center"
-      gap="4px"
-      w="56px"
-      h="48px"
-      borderRadius="10px"
-      bg={active ? "studio.raised" : "studio.subtle"}
-      borderWidth="2px"
-      borderColor={active ? "studio.accent" : "transparent"}
-      color={active ? "studio.fg" : "studio.fgMuted"}
+      gap="8px"
+      w="100%"
       cursor="pointer"
-      fontSize="11px"
-      fontWeight="500"
+      {...chipProps(active)}
+      h="36px"
       onClick={onClick}
-      transition="background 120ms ease, border-color 120ms ease, color 120ms ease"
-      _hover={{ bg: "studio.raised", color: "studio.fg" }}
     >
       {icon}
-      {label}
+      <Text as="span" flex="1" textAlign="left" truncate>
+        {label}
+      </Text>
+      {active ? <Check size={13} strokeWidth={2.5} aria-hidden /> : null}
     </Flex>
   );
 }
 
+/** Compact switch for an optional effect. */
+function EffectSwitch({ label, checked, onChange }: { label: string; checked: boolean; onChange: () => void }) {
+  return (
+    <Box
+      as="button"
+      aria-pressed={checked}
+      aria-label={label}
+      position="relative"
+      flexShrink={0}
+      w="34px"
+      h="20px"
+      p="0"
+      borderRadius="full"
+      border="none"
+      bg={checked ? "studio.accent" : "studio.raised"}
+      cursor="pointer"
+      transition="background 120ms ease"
+      onClick={onChange}
+    >
+      <Box
+        position="absolute"
+        top="2px"
+        left="2px"
+        boxSize="16px"
+        borderRadius="full"
+        bg={checked ? "white" : "studio.fgMuted"}
+        transform={checked ? "translateX(14px)" : "none"}
+        transition="transform 140ms ease, background 120ms ease"
+      />
+    </Box>
+  );
+}
+
+/**
+ * A caption colour. The swatch is the user's literal colour; `compact` is the
+ * small trigger that sits beside an effect, the default is a labelled tile.
+ */
 function ColorField({
   label,
   value,
   onChange,
+  compact = false,
 }: {
   label: string;
   value: string;
   onChange: (hex: string) => void;
+  compact?: boolean;
 }) {
   return (
-    <Box>
-      <Text fontSize="12px" color="studio.fgMuted" mb="6px">{label}</Text>
+    <Box minW="0">
       <ColorPicker.Root
         value={parseColor(value)}
         onValueChange={(e) => onChange(e.value.toString("hex"))}
@@ -106,87 +172,43 @@ function ColorField({
         <ColorPicker.HiddenInput />
         <ColorPicker.Control>
           <ColorPicker.Trigger
-            w="36px"
-            h="36px"
-            borderRadius="10px"
+            w={compact ? "28px" : "100%"}
+            h={compact ? "28px" : "40px"}
+            borderRadius={compact ? "8px" : "10px"}
             borderWidth="0"
-            bg="studio.subtle"
+            bg={compact ? "studio.raised" : "studio.subtle"}
             cursor="pointer"
-            p="4px"
+            p={compact ? "4px" : "5px"}
             aria-label={`${label} color`}
           >
-            <ColorPicker.ValueSwatch w="100%" h="100%" borderRadius="l1" />
+            <ColorPicker.ValueSwatch w="100%" h="100%" borderRadius={compact ? "5px" : "6px"} />
           </ColorPicker.Trigger>
         </ColorPicker.Control>
         <Portal>
           <ColorPicker.Positioner>
             {/* Portaled — style with mode-invariant studio tokens only */}
-            <ColorPicker.Content
-              bg="studio.surface"
-              borderWidth="1px"
-              borderColor="studio.borderStrong"
-              borderRadius="l3"
-              boxShadow="0 12px 32px rgba(0,0,0,0.6)"
-            >
+            <ColorPicker.Content bg="studio.raised" borderWidth="0" borderRadius="12px" boxShadow="none">
               <ColorPicker.Area />
               <HStack>
-                <ColorPicker.EyeDropper size="xs" variant="outline" color="studio.fg" borderColor="studio.borderStrong" />
+                <ColorPicker.EyeDropper size="xs" variant="ghost" bg="studio.subtle" color="studio.fg" />
                 <ColorPicker.Sliders />
               </HStack>
             </ColorPicker.Content>
           </ColorPicker.Positioner>
         </Portal>
       </ColorPicker.Root>
-    </Box>
-  );
-}
-
-// ─── Live cue preview ────────────────────────────────────────────────────────
-//
-// Renders the ACTUAL current caption cue with full preset styling (outline,
-// glow, backdrop, highlight box, animation) via the shared caption engine —
-// the same renderer the on-video overlay uses.
-
-
-/** Small pressed-state chip used by the segmented choices below. */
-function Chip({
-  active,
-  onClick,
-  children,
-  label,
-}: {
-  active: boolean;
-  onClick: () => void;
-  children: ReactNode;
-  label?: string;
-}) {
-  return (
-    <Box
-      as="button"
-      aria-pressed={active}
-      aria-label={label}
-      px="12px"
-      h="32px"
-      borderRadius="8px"
-      bg={active ? "studio.raised" : "studio.subtle"}
-      borderWidth="2px"
-      borderColor={active ? "studio.accent" : "transparent"}
-      color={active ? "studio.fg" : "studio.fgMuted"}
-      cursor="pointer"
-      fontSize="12px"
-      fontWeight="500"
-      whiteSpace="nowrap"
-      onClick={onClick}
-      transition="background 120ms ease, border-color 120ms ease, color 120ms ease"
-      _hover={{ bg: "studio.raised", color: "studio.fg" }}
-    >
-      {children}
+      {compact ? null : (
+        <Text fontSize="12px" color="studio.fgMuted" mt="6px">
+          {label}
+        </Text>
+      )}
     </Box>
   );
 }
 
 function ValueSlider({
   label,
+  caption,
   value,
   min,
   max,
@@ -196,6 +218,8 @@ function ValueSlider({
   coalesceKey,
 }: {
   label: string;
+  /** Visible name beside the slider, for sliders nested under an effect. */
+  caption?: string;
   value: number;
   min: number;
   max: number;
@@ -207,6 +231,11 @@ function ValueSlider({
   const { endCoalesce } = useStudio("endCoalesce");
   return (
     <Flex align="center" gap="10px">
+      {caption ? (
+        <Text fontSize="12px" color="studio.fgMuted" w="64px" flexShrink={0}>
+          {caption}
+        </Text>
+      ) : null}
       <Slider.Root
         aria-label={[label]}
         value={[value]}
@@ -226,39 +255,44 @@ function ValueSlider({
           <Slider.Thumbs />
         </Slider.Control>
       </Slider.Root>
-      <Text fontVariantNumeric="tabular-nums" fontSize="12px" color="studio.fgMuted" minW="28px" textAlign="right">
+      <Text fontVariantNumeric="tabular-nums" fontSize="12px" color="studio.fgMuted" minW="32px" textAlign="right">
         {format(value)}
       </Text>
     </Flex>
   );
 }
 
-/** Optional colour with an on/off toggle (pill, plate, glow, outer stroke). */
-function OptionalColor({
+/** One optional effect (second outline, backdrop, pill, glow): name, colour and switch; its controls open while on. */
+function EffectRow({
   label,
-  toggleLabel,
   value,
   fallback,
-  swatch,
   onChange,
+  children,
 }: {
   label: string;
-  toggleLabel: string;
   value: string | undefined;
   fallback: string;
-  swatch: ReactNode;
   onChange: (value: string | undefined) => void;
+  children?: ReactNode;
 }) {
   return (
-    <Flex gap="6px" align="center">
-      <ToggleBtn
-        icon={swatch}
-        label={value ? toggleLabel : "Off"}
-        active={!!value}
-        onClick={() => onChange(value ? undefined : fallback)}
-      />
-      {value && <ColorField label={label} value={value} onChange={onChange} />}
-    </Flex>
+    <Box py="6px">
+      <Flex align="center" justify="space-between" gap="12px" minH="32px">
+        <Text fontSize="13px" color="studio.fg">
+          {label}
+        </Text>
+        <Flex align="center" gap="12px">
+          {value ? <ColorField compact label={label} value={value} onChange={onChange} /> : null}
+          <EffectSwitch label={label} checked={!!value} onChange={() => onChange(value ? undefined : fallback)} />
+        </Flex>
+      </Flex>
+      {value && children ? (
+        <Box pt="6px" pb="2px">
+          {children}
+        </Box>
+      ) : null}
+    </Box>
   );
 }
 
@@ -267,7 +301,7 @@ function OptionalColor({
 // Renders the ACTUAL current caption cue with full preset styling via the
 // shared caption engine — the same renderer the on-video overlay uses.
 
-function LiveCuePreview() {
+function LiveCuePreview({ sticky = false }: { sticky?: boolean }) {
   const { captionPreset, playbackClock, utterances, clipStartSec, editedTimeMap, aspectRatio } =
     useStudio("captionPreset", "playbackClock", "utterances", "clipStartSec", "editedTimeMap", "aspectRatio");
   const caption = useLiveCaption(playbackClock, utterances, clipStartSec, captionPreset.wordsPerCue, editedTimeMap);
@@ -307,31 +341,39 @@ function LiveCuePreview() {
   const scale = stageWidth > 0 ? (stageWidth / renderWidth) * 2 : 0.5;
 
   return (
-    <Flex
-      ref={stageRef}
-      mx="20px"
-      mt="16px"
-      mb="20px"
-      h="112px"
-      borderRadius="10px"
-      overflow="hidden"
-      position="relative"
-      align="center"
-      justify="center"
-      aria-hidden="true"
-      style={{ background: "radial-gradient(120% 140% at 30% 20%, #2B3242 0%, #12151B 70%)" }}
+    // Sticky on Customize so the style stays in view while its controls scroll
+    <Box
+      position={sticky ? "sticky" : undefined}
+      top="0"
+      zIndex="2"
+      bg="studio.canvas"
+      px={PANEL_PX}
+      pt="4"
+      pb={sticky ? "4" : "5"}
     >
-      <CaptionCue
-        preset={captionPreset}
-        words={words}
-        scale={scale}
-        frameWidth={stageWidth}
-        cueKey={caption ? `${caption.utteranceIndex}:${caption.cueIndex}` : "sample"}
-        cueIndex={caption?.cueIndex ?? 0}
-        showEmojis={captionPreset.emojis === true}
-        reducedMotion={reducedMotion}
-      />
-    </Flex>
+      <Flex
+        ref={stageRef}
+        h="112px"
+        borderRadius="12px"
+        overflow="hidden"
+        position="relative"
+        align="center"
+        justify="center"
+        aria-hidden="true"
+        style={{ background: "radial-gradient(120% 140% at 30% 20%, #2B3242 0%, #12151B 70%)" }}
+      >
+        <CaptionCue
+          preset={captionPreset}
+          words={words}
+          scale={scale}
+          frameWidth={stageWidth}
+          cueKey={caption ? `${caption.utteranceIndex}:${caption.cueIndex}` : "sample"}
+          cueIndex={caption?.cueIndex ?? 0}
+          showEmojis={captionPreset.emojis === true}
+          reducedMotion={reducedMotion}
+        />
+      </Flex>
+    </Box>
   );
 }
 
@@ -353,11 +395,11 @@ function PresetsGrid() {
   };
 
   return (
-    <Stack gap="20px" px="20px" pb="16px">
+    <Stack gap="6" px={PANEL_PX} pb="4">
       {CAPTION_PRESET_GROUPS.map((group) => (
         <Box key={group}>
           <SectionLabel>{group}</SectionLabel>
-          <Grid templateColumns="repeat(2, minmax(0, 1fr))" columnGap="12px" rowGap="16px">
+          <Grid templateColumns="repeat(2, minmax(0, 1fr))" gap="10px">
             {CAPTION_PRESETS.filter((p) => p.group === group).map((p) => (
               <PresetCard
                 key={p.id}
@@ -381,116 +423,31 @@ function CustomizeControls() {
   const update = (patch: Partial<CaptionPreset>, coalesceKey?: string) =>
     setCaptionPreset((p) => ({ ...p, ...patch }), coalesceKey);
 
+  const positionY = captionPreset.positionY ?? CAPTION_POSITION_Y_DEFAULTS[captionPreset.position];
+  const positionX = captionPreset.positionX ?? 50;
+  const activePosition =
+    POSITIONS.find(
+      (pos) => Math.abs(positionX - 50) < 5 && Math.abs(positionY - CAPTION_POSITION_Y_DEFAULTS[pos.id]) < 5,
+    )?.id ?? "custom";
+
   return (
-    <Stack gap="20px" px="20px" py="4px">
-      {/* Font */}
+    <Stack gap="6" px={PANEL_PX} pt="1" pb="2">
       <Box>
         <SectionLabel>Font</SectionLabel>
         <Flex gap="6px" wrap="wrap">
           {CAPTION_FONT_NAMES.map((f) => (
             <Chip key={f} active={!captionPreset.fontAsset && captionPreset.fontName === f} onClick={() => update({ fontName: f, fontAsset: null })}>
-              <Text as="span" fontSize="12px" style={captionFontStyle(f)}>
+              <Text as="span" fontSize="13px" style={captionFontStyle(f)}>
                 {f}
               </Text>
             </Chip>
           ))}
         </Flex>
+        <Box mt="4">
+          <BrandFontPicker studio value={captionPreset.fontAsset} onChange={(font) => update({ fontName: "Montserrat", fontAsset: font ? brandFontReference(font) : null })} />
+        </Box>
       </Box>
 
-      {/* Motion */}
-      <Box>
-        <SectionLabel>Animation</SectionLabel>
-        <Flex gap="6px" wrap="wrap">
-          {ANIMATIONS.map((anim) => (
-            <Chip
-              key={anim.id}
-              active={captionPreset.animation === anim.id}
-              onClick={() => update({ animation: anim.id })}
-            >
-              <Flex as="span" align="center" gap="5px">
-                <Zap size={11} />
-                {anim.label}
-              </Flex>
-            </Chip>
-          ))}
-        </Flex>
-      </Box>
-
-      {/* Words per cue */}
-      <Box>
-        <SectionLabel>Words on screen</SectionLabel>
-        <Flex gap="6px">
-          {[1, 2, 3, 4, 5].map((count) => (
-            <Chip
-              key={count}
-              label={`${count} word${count === 1 ? "" : "s"} at a time`}
-              active={captionPreset.wordsPerCue === count}
-              onClick={() => update({ wordsPerCue: count })}
-            >
-              {count}
-            </Chip>
-          ))}
-        </Flex>
-      </Box>
-
-      {/* Display toggles */}
-      <Box>
-        <SectionLabel>Display</SectionLabel>
-        <Flex gap="6px" wrap="wrap">
-          <ToggleBtn
-            icon={<Type size={14} />}
-            label="Outline"
-            active={captionPreset.outlineWidth > 0}
-            onClick={() => update({ outlineWidth: captionPreset.outlineWidth > 0 ? 0 : 6 })}
-          />
-          <ToggleBtn
-            icon={<Smile size={14} />}
-            label="Emoji"
-            active={captionPreset.emojis === true}
-            onClick={() => update({ emojis: !captionPreset.emojis })}
-          />
-          <ToggleBtn
-            icon={<Captions size={14} />}
-            label="Subtitles"
-            active={captionPreset.visible !== false}
-            onClick={() => update({ visible: captionPreset.visible === false })}
-          />
-          <ToggleBtn
-            icon={<Quote size={14} />}
-            label="Punct."
-            active={captionPreset.punctuation !== false}
-            onClick={() => update({ punctuation: captionPreset.punctuation === false })}
-          />
-        </Flex>
-      </Box>
-
-      {/* Colors — user caption color values, literal by design */}
-      <Box>
-        <SectionLabel>Colors</SectionLabel>
-        <Flex gap="12px">
-          <ColorField label="Text" value={captionPreset.primaryColor} onChange={(v) => update({ primaryColor: v })} />
-          <ColorField label="Highlight" value={captionPreset.highlightColor} onChange={(v) => update({ highlightColor: v })} />
-          <ColorField label="Outline" value={captionPreset.outlineColor} onChange={(v) => update({ outlineColor: v })} />
-        </Flex>
-      </Box>
-
-      {/* Outline width */}
-      <Box>
-        <SectionLabel>Outline width</SectionLabel>
-        <ValueSlider
-          label="Outline width"
-          value={captionPreset.outlineWidth}
-          min={0}
-          max={16}
-          step={1}
-          coalesceKey="caption-outlineWidth"
-          onChange={(value, key) => update({ outlineWidth: value }, key)}
-        />
-      </Box>
-
-      <BrandFontPicker studio value={captionPreset.fontAsset} onChange={(font) => update({ fontName: "Montserrat", fontAsset: font ? brandFontReference(font) : null })} />
-
-      {/* Font size */}
       <Box>
         <SectionLabel>Font size</SectionLabel>
         <ValueSlider
@@ -504,44 +461,65 @@ function CustomizeControls() {
         />
       </Box>
 
-      {/* Text transform */}
       <Box>
         <SectionLabel>Text transform</SectionLabel>
-        <Flex gap="6px">
-          {(["uppercase", "lowercase", "capitalize", "none"] as const).map((t) => (
-            <Chip key={t} active={captionPreset.textTransform === t} onClick={() => update({ textTransform: t })}>
-              {t === "none" ? "None" : t === "uppercase" ? "AA" : t === "lowercase" ? "aa" : "Aa"}
-            </Chip>
-          ))}
-        </Flex>
+        <PanelSegmented
+          ariaLabel="Text transform"
+          value={captionPreset.textTransform}
+          onChange={(textTransform) => update({ textTransform })}
+          items={TEXT_TRANSFORMS}
+        />
       </Box>
 
-      {/* Position */}
+      <Box>
+        <SectionLabel>Animation</SectionLabel>
+        <Grid templateColumns="repeat(3, minmax(0, 1fr))" gap="6px">
+          {ANIMATIONS.map((anim) => (
+            <Chip fill key={anim.id} active={captionPreset.animation === anim.id} onClick={() => update({ animation: anim.id })}>
+              {anim.label}
+            </Chip>
+          ))}
+        </Grid>
+      </Box>
+
+      <Box>
+        <SectionLabel>Words on screen</SectionLabel>
+        <PanelSegmented
+          ariaLabel="Words on screen"
+          value={String(captionPreset.wordsPerCue)}
+          onChange={(count) => update({ wordsPerCue: Number(count) })}
+          items={[1, 2, 3, 4, 5].map((count) => ({
+            value: String(count),
+            label: (
+              <>
+                {count}
+                <VisuallyHidden>{` word${count === 1 ? "" : "s"} at a time`}</VisuallyHidden>
+              </>
+            ),
+          }))}
+        />
+      </Box>
+
       <Box>
         <SectionLabel>Position</SectionLabel>
-        <Flex gap="6px">
-          {(["top", "center", "bottom"] as Position[]).map((pos) => {
-            const py = captionPreset.positionY ?? CAPTION_POSITION_Y_DEFAULTS[captionPreset.position];
-            const px = captionPreset.positionX ?? 50;
-            const isActive = Math.abs(px - 50) < 5 && Math.abs(py - CAPTION_POSITION_Y_DEFAULTS[pos]) < 5;
-
-            return (
-              <ToggleBtn
-                key={pos}
-                icon={
-                  pos === "top" ? <MoveUp size={14} /> :
-                  pos === "center" ? <AlignCenter size={14} /> :
-                  <MoveDown size={14} />
-                }
-                label={pos.charAt(0).toUpperCase() + pos.slice(1)}
-                active={isActive}
-                onClick={() => update({ position: pos, positionX: undefined, positionY: undefined })}
-              />
-            );
-          })}
-        </Flex>
+        <PanelSegmented
+          ariaLabel="Caption position"
+          value={activePosition}
+          onChange={(pos) => {
+            if (pos !== "custom") update({ position: pos, positionX: undefined, positionY: undefined });
+          }}
+          items={POSITIONS.map((pos) => ({
+            value: pos.id,
+            label: (
+              <>
+                {pos.icon}
+                {pos.label}
+              </>
+            ),
+          }))}
+        />
         {captionPreset.positionX !== undefined && (
-          <Flex gap="8px" mt="6px" align="center">
+          <Flex gap="12px" mt="8px" align="center">
             <Text fontVariantNumeric="tabular-nums" fontSize="12px" color="studio.fgMuted">
               X: {captionPreset.positionX.toFixed(1)}%
             </Text>
@@ -550,11 +528,10 @@ function CustomizeControls() {
             </Text>
             <Box
               as="button"
-              fontSize="11px"
+              ml="auto"
+              fontSize="12px"
               color="studio.accentFg"
               cursor="pointer"
-              textDecoration="underline"
-              textUnderlineOffset="2px"
               onClick={() => update({ positionX: undefined, positionY: undefined })}
             >
               Reset
@@ -563,41 +540,88 @@ function CustomizeControls() {
         )}
       </Box>
 
-      {/* Shadow */}
       <Box>
-        <SectionLabel>Shadow</SectionLabel>
-        <Flex gap="6px" align="center">
-          {SHADOWS.map((shadow) => (
-            <Chip key={shadow.id} active={captionPreset.shadow === shadow.id} onClick={() => update({ shadow: shadow.id })}>
-              <Flex as="span" align="center" gap="5px">
-                {shadow.id !== "none" && <Droplet size={11} />}
-                {shadow.label}
-              </Flex>
-            </Chip>
-          ))}
-          {captionPreset.shadow !== "none" && (
-            <ColorField label="Color" value={captionPreset.shadowColor} onChange={(v) => update({ shadowColor: v })} />
-          )}
-        </Flex>
+        <SectionLabel>Display</SectionLabel>
+        <Grid templateColumns="repeat(2, minmax(0, 1fr))" gap="6px">
+          <ToggleChip
+            icon={<Type size={14} />}
+            label="Outline"
+            active={captionPreset.outlineWidth > 0}
+            onClick={() => update({ outlineWidth: captionPreset.outlineWidth > 0 ? 0 : 6 })}
+          />
+          <ToggleChip
+            icon={<Smile size={14} />}
+            label="Emoji"
+            active={captionPreset.emojis === true}
+            onClick={() => update({ emojis: !captionPreset.emojis })}
+          />
+          <ToggleChip
+            icon={<Captions size={14} />}
+            label="Subtitles"
+            active={captionPreset.visible !== false}
+            onClick={() => update({ visible: captionPreset.visible === false })}
+          />
+          <ToggleChip
+            icon={<Quote size={14} />}
+            label="Punctuation"
+            active={captionPreset.punctuation !== false}
+            onClick={() => update({ punctuation: captionPreset.punctuation === false })}
+          />
+        </Grid>
       </Box>
 
-      {/* Second outline */}
+      {/* Colors — user caption color values, literal by design */}
       <Box>
-        <SectionLabel>Second outline</SectionLabel>
-        <OptionalColor
-          label="Color"
-          toggleLabel="On"
-          value={captionPreset.outerOutlineColor}
-          fallback="#FFFFFF"
-          swatch={<Box w="14px" h="14px" borderRadius="3px" borderWidth="3px" borderColor="studio.fgSubtle" />}
-          onChange={(v) =>
-            update(v ? { outerOutlineColor: v, outerOutlineWidth: captionPreset.outerOutlineWidth ?? 5 } : { outerOutlineColor: undefined, outerOutlineWidth: undefined })
-          }
+        <SectionLabel>Colors</SectionLabel>
+        <Grid templateColumns="repeat(3, minmax(0, 1fr))" gap="10px">
+          <ColorField label="Text" value={captionPreset.primaryColor} onChange={(v) => update({ primaryColor: v })} />
+          <ColorField label="Highlight" value={captionPreset.highlightColor} onChange={(v) => update({ highlightColor: v })} />
+          <ColorField label="Outline" value={captionPreset.outlineColor} onChange={(v) => update({ outlineColor: v })} />
+        </Grid>
+      </Box>
+
+      <Box>
+        <SectionLabel>Outline width</SectionLabel>
+        <ValueSlider
+          label="Outline width"
+          value={captionPreset.outlineWidth}
+          min={0}
+          max={16}
+          step={1}
+          coalesceKey="caption-outlineWidth"
+          onChange={(value, key) => update({ outlineWidth: value }, key)}
         />
-        {captionPreset.outerOutlineColor && (
-          <Box mt="8px">
+      </Box>
+
+      <Box>
+        <SectionLabel
+          action={
+            captionPreset.shadow !== "none" ? (
+              <Box my="-5px">
+                <ColorField compact label="Shadow" value={captionPreset.shadowColor} onChange={(v) => update({ shadowColor: v })} />
+              </Box>
+            ) : null
+          }
+        >
+          Shadow
+        </SectionLabel>
+        <PanelSegmented ariaLabel="Shadow" value={captionPreset.shadow} onChange={(shadow) => update({ shadow })} items={SHADOWS} />
+      </Box>
+
+      <Box>
+        <SectionLabel>Effects</SectionLabel>
+        <Stack gap="0" px="14px" py="6px" bg="studio.subtle" borderRadius="12px">
+          <EffectRow
+            label="Second outline"
+            value={captionPreset.outerOutlineColor}
+            fallback="#FFFFFF"
+            onChange={(v) =>
+              update(v ? { outerOutlineColor: v, outerOutlineWidth: captionPreset.outerOutlineWidth ?? 5 } : { outerOutlineColor: undefined, outerOutlineWidth: undefined })
+            }
+          >
             <ValueSlider
               label="Second outline width"
+              caption="Width"
               value={captionPreset.outerOutlineWidth ?? 5}
               min={1}
               max={16}
@@ -605,27 +629,19 @@ function CustomizeControls() {
               coalesceKey="caption-outerOutlineWidth"
               onChange={(value, key) => update({ outerOutlineWidth: value }, key)}
             />
-          </Box>
-        )}
-      </Box>
+          </EffectRow>
 
-      {/* Backdrop */}
-      <Box>
-        <SectionLabel>Backdrop</SectionLabel>
-        <OptionalColor
-          label="Color"
-          toggleLabel="On"
-          value={captionPreset.backgroundColor}
-          fallback="#000000"
-          swatch={<Box w="14px" h="14px" bg="studio.fgSubtle" borderRadius="4px" />}
-          onChange={(v) =>
-            update(v ? { backgroundColor: v, backgroundOpacity: captionPreset.backgroundOpacity ?? 0.6 } : { backgroundColor: undefined, backgroundOpacity: undefined })
-          }
-        />
-        {captionPreset.backgroundColor && (
-          <Box mt="8px">
+          <EffectRow
+            label="Backdrop"
+            value={captionPreset.backgroundColor}
+            fallback="#000000"
+            onChange={(v) =>
+              update(v ? { backgroundColor: v, backgroundOpacity: captionPreset.backgroundOpacity ?? 0.6 } : { backgroundColor: undefined, backgroundOpacity: undefined })
+            }
+          >
             <ValueSlider
               label="Backdrop opacity"
+              caption="Opacity"
               value={captionPreset.backgroundOpacity ?? 0.6}
               min={0}
               max={1}
@@ -634,27 +650,19 @@ function CustomizeControls() {
               coalesceKey="caption-backgroundOpacity"
               onChange={(value, key) => update({ backgroundOpacity: value }, key)}
             />
-          </Box>
-        )}
-      </Box>
+          </EffectRow>
 
-      {/* Highlight pill */}
-      <Box>
-        <SectionLabel>Highlight pill</SectionLabel>
-        <OptionalColor
-          label="Color"
-          toggleLabel="On"
-          value={captionPreset.highlightBoxColor}
-          fallback="#6C4DFF"
-          swatch={<Box w="14px" h="14px" bg="#6C4DFF" borderRadius="4px" />}
-          onChange={(v) =>
-            update(v ? { highlightBoxColor: v, highlightBoxOpacity: captionPreset.highlightBoxOpacity ?? 1 } : { highlightBoxColor: undefined, highlightBoxOpacity: undefined })
-          }
-        />
-        {captionPreset.highlightBoxColor && (
-          <Box mt="8px">
+          <EffectRow
+            label="Highlight pill"
+            value={captionPreset.highlightBoxColor}
+            fallback="#6C4DFF"
+            onChange={(v) =>
+              update(v ? { highlightBoxColor: v, highlightBoxOpacity: captionPreset.highlightBoxOpacity ?? 1 } : { highlightBoxColor: undefined, highlightBoxOpacity: undefined })
+            }
+          >
             <ValueSlider
               label="Highlight pill opacity"
+              caption="Opacity"
               value={captionPreset.highlightBoxOpacity ?? 1}
               min={0}
               max={1}
@@ -663,42 +671,33 @@ function CustomizeControls() {
               coalesceKey="caption-highlightBoxOpacity"
               onChange={(value, key) => update({ highlightBoxOpacity: value }, key)}
             />
-          </Box>
-        )}
-      </Box>
+          </EffectRow>
 
-      {/* Glow */}
-      <Box>
-        <SectionLabel>Glow</SectionLabel>
-        <Stack gap="8px">
-          <Flex gap="12px" align="flex-end">
-            <OptionalColor
-              label="All words"
-              toggleLabel="All"
-              value={captionPreset.glowColor}
-              fallback="#FF2BD6"
-              swatch={<Box w="14px" h="14px" bg="#FF2BD6" borderRadius="full" boxShadow="0 0 6px #FF2BD6" />}
-              onChange={(v) => update({ glowColor: v, glowIntensity: captionPreset.glowIntensity ?? 12 })}
-            />
-            <OptionalColor
-              label="Active word"
-              toggleLabel="Active"
-              value={captionPreset.highlightGlowColor}
-              fallback="#22E4FF"
-              swatch={<Box w="14px" h="14px" bg="#22E4FF" borderRadius="full" boxShadow="0 0 6px #22E4FF" />}
-              onChange={(v) => update({ highlightGlowColor: v, glowIntensity: captionPreset.glowIntensity ?? 12 })}
-            />
-          </Flex>
+          <EffectRow
+            label="Glow, all words"
+            value={captionPreset.glowColor}
+            fallback="#FF2BD6"
+            onChange={(v) => update({ glowColor: v, glowIntensity: captionPreset.glowIntensity ?? 12 })}
+          />
+          <EffectRow
+            label="Glow, active word"
+            value={captionPreset.highlightGlowColor}
+            fallback="#22E4FF"
+            onChange={(v) => update({ highlightGlowColor: v, glowIntensity: captionPreset.glowIntensity ?? 12 })}
+          />
           {(captionPreset.glowColor || captionPreset.highlightGlowColor) && (
-            <ValueSlider
-              label="Glow intensity"
-              value={captionPreset.glowIntensity ?? 12}
-              min={0}
-              max={20}
-              step={1}
-              coalesceKey="caption-glowIntensity"
-              onChange={(value, key) => update({ glowIntensity: value }, key)}
-            />
+            <Box py="6px">
+              <ValueSlider
+                label="Glow intensity"
+                caption="Intensity"
+                value={captionPreset.glowIntensity ?? 12}
+                min={0}
+                max={20}
+                step={1}
+                coalesceKey="caption-glowIntensity"
+                onChange={(value, key) => update({ glowIntensity: value }, key)}
+              />
+            </Box>
           )}
         </Stack>
       </Box>
@@ -768,13 +767,13 @@ export function CaptionsPanel() {
       />
 
       {/* Live caption preview — the actual current cue, fully styled */}
-      <LiveCuePreview />
+      <LiveCuePreview sticky={activeTab === "customize"} />
 
       {activeTab === "presets" && <PresetsGrid />}
       {activeTab === "customize" && <CustomizeControls />}
 
       {/* Apply to all — secondary action (Export owns the solid button) */}
-      <Box px="20px" pb="20px" pt="8px">
+      <Box px={PANEL_PX} pb="5" pt="2">
         <Flex
           as="button"
           w="100%"

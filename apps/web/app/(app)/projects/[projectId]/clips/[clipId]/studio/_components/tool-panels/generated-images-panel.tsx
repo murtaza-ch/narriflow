@@ -10,7 +10,15 @@ import {
   Text,
   Textarea,
 } from "@chakra-ui/react";
-import { chipProps, softButtonProps, softFieldProps } from "./panel-ui";
+import {
+  PANEL_PX,
+  PanelEmpty,
+  PanelSegmented,
+  SectionLabel,
+  chipProps,
+  softButtonProps,
+  softFieldProps,
+} from "./panel-ui";
 import {
   BookmarkPlus,
   Download,
@@ -67,6 +75,13 @@ const STYLES: Array<{ id: Style; label: string }> = [
   { id: "photoreal", label: "Photoreal" },
   { id: "illustration", label: "Illustration" },
 ];
+
+// Little ratio glyphs inside the switch, so the choice reads as a shape too.
+const RATIOS = [
+  { id: "9:16", w: "9px", h: "14px" },
+  { id: "16:9", w: "14px", h: "9px" },
+  { id: "1:1", w: "11px", h: "11px" },
+] as const;
 
 function generatedAssetForStudio(asset: NonNullable<GeneratedJob["resultAsset"]>): StudioVisualAsset {
   return {
@@ -376,85 +391,98 @@ export function GeneratedImagesPanel() {
 
   return (
     <Stack gap="0" h="100%" overflowY="auto">
-      <Stack gap="14px" px="20px" pt="16px" pb="20px" borderBottomWidth="1px" borderColor="studio.border">
+      <Stack gap="4" px={PANEL_PX} pt="4" pb="5">
         <Flex align="center" justify="space-between">
           <Text fontSize="13px" fontWeight="500" color="studio.fgMuted">Generate a still</Text>
-          <Text fontFamily="mono" fontSize="11px" color="studio.fgMuted">
-            {usage ? `${usage.remaining}/${usage.limit} remaining` : "Usage loading"}
+          <Text px="2.5" lineHeight="22px" borderRadius="full" bg="studio.subtle" fontSize="11.5px" color="studio.fgMuted" fontVariantNumeric="tabular-nums">
+            {usage ? `${usage.remaining}/${usage.limit} left` : "Usage loading"}
           </Text>
         </Flex>
 
         {!generatedImagesCapability.available ? (
-          <Box bg="studio.subtle" borderRadius="10px" p="14px">
+          <Box bg="studio.subtle" borderRadius="12px" p="3.5">
             <Text fontSize="13px" color="studio.fg" fontWeight="500">New generation is unavailable</Text>
-            <Text mt="4px" fontSize="12px" color="studio.fgMuted">{unavailableCopy}</Text>
+            <Text mt="1" fontSize="12px" lineHeight="1.5" color="studio.fgMuted">{unavailableCopy}</Text>
           </Box>
         ) : null}
 
-        <Flex gap="6px">
-          {([
-            { id: "transcript_selection", label: "Selection", disabled: !selectionContext },
-            { id: "broll_cue", label: "B-roll cue", disabled: !cue },
-            { id: "manual", label: "Manual", disabled: false },
-          ] as const).map((item) => (
-            <Button key={item.id} flex="1" variant="ghost" {...chipProps(origin === item.id)} disabled={item.disabled || !generatedImagesCapability.available} onClick={() => setOrigin(item.id)}>
-              {item.label}
-            </Button>
-          ))}
-        </Flex>
+        <PanelSegmented
+          ariaLabel="Prompt source"
+          value={origin}
+          onChange={setOrigin}
+          items={[
+            { value: "transcript_selection", label: "Selection", disabled: !selectionContext || !generatedImagesCapability.available, title: selectionContext ? undefined : "Select transcript text first" },
+            { value: "broll_cue", label: "B-roll cue", disabled: !cue || !generatedImagesCapability.available, title: cue ? undefined : "No B-roll cue for this clip" },
+            { value: "manual", label: "Manual", disabled: !generatedImagesCapability.available },
+          ]}
+        />
 
         {derivedContext && contextIncluded ? (
-          <Box bg="studio.subtle" borderRadius="10px" p="14px">
-            <Flex justify="space-between" gap="8px" align="start">
-              <Box minW="0">
-                <Text fontSize="13px" fontWeight="500" color="studio.fgMuted">Context</Text>
-                <Text mt="4px" fontSize="13px" lineClamp="3" color="studio.fg">{derivedContext}</Text>
-              </Box>
-              <Button size="2xs" variant="ghost" disabled={!generatedImagesCapability.available} onClick={() => setContextIncluded(false)}>Remove</Button>
-            </Flex>
-          </Box>
+          <Flex justify="space-between" gap="3" align="start" bg="studio.subtle" borderRadius="12px" p="3.5">
+            <Box minW="0">
+              <Text fontSize="12px" fontWeight="500" color="studio.fgMuted">Context</Text>
+              <Text mt="1" fontSize="13px" lineClamp="3" color="studio.fg">{derivedContext}</Text>
+            </Box>
+            <Button size="2xs" {...softButtonProps} disabled={!generatedImagesCapability.available} onClick={() => setContextIncluded(false)}>Remove</Button>
+          </Flex>
         ) : derivedContext ? (
           <Button size="sm" {...softButtonProps} onClick={() => setContextIncluded(true)}>Restore derived context</Button>
         ) : null}
 
         {origin === "broll_cue" && clipInfo.brollCues.length > 1 ? (
-          <Stack gap="5px">
-            <Text fontSize="13px" fontWeight="500" color="studio.fgMuted">B-roll cue</Text>
-            {clipInfo.brollCues.map((item, index) => (
-              <Button key={`${item.atSec}:${item.query}`} variant="ghost" justifyContent="start" gap="2" {...chipProps(cueIndex === index)} disabled={!generatedImagesCapability.available} onClick={() => setCueIndex(index)}>
-                <Text fontFamily="mono" fontSize="11px">{item.atSec.toFixed(1)}s</Text>
-                <Text lineClamp="1">{item.query}</Text>
-              </Button>
-            ))}
-          </Stack>
+          <Box>
+            <SectionLabel>B-roll cue</SectionLabel>
+            <Stack gap="1.5">
+              {clipInfo.brollCues.map((item, index) => (
+                <Button key={`${item.atSec}:${item.query}`} variant="ghost" justifyContent="start" gap="3" {...chipProps(cueIndex === index)} h="36px" disabled={!generatedImagesCapability.available} onClick={() => setCueIndex(index)}>
+                  <Text fontFamily="mono" fontSize="11.5px" fontVariantNumeric="tabular-nums">{item.atSec.toFixed(1)}s</Text>
+                  <Text lineClamp="1">{item.query}</Text>
+                </Button>
+              ))}
+            </Stack>
+          </Box>
         ) : null}
 
         <Textarea
           value={prompt}
           onChange={(event) => setPrompt(event.target.value)}
           placeholder="Describe the frame—subject, setting, light, camera…"
-          minH="96px"
+          minH="88px"
           resize="vertical"
           fontSize="14px"
           {...softFieldProps}
           disabled={!generatedImagesCapability.available}
         />
 
-        <SimpleGrid columns={2} gap="6px">
-          {STYLES.map((item) => (
-            <Button key={item.id} variant="ghost" {...chipProps(style === item.id)} disabled={!generatedImagesCapability.available} onClick={() => setStyle(item.id)}>
-              {item.label}
-            </Button>
-          ))}
-        </SimpleGrid>
+        <Box>
+          <SectionLabel>Style</SectionLabel>
+          <SimpleGrid columns={4} gap="1.5" role="group" aria-label="Style">
+            {STYLES.map((item) => (
+              <Button key={item.id} variant="ghost" aria-pressed={style === item.id} {...chipProps(style === item.id)} px="0" fontSize="12px" disabled={!generatedImagesCapability.available} onClick={() => setStyle(item.id)}>
+                {item.label}
+              </Button>
+            ))}
+          </SimpleGrid>
+        </Box>
 
-        <SimpleGrid columns={3} gap="6px">
-          {(["9:16", "16:9", "1:1"] as const).map((value) => (
-            <Button key={value} variant="ghost" {...chipProps(requestedAspectRatio === value)} disabled={!generatedImagesCapability.available} onClick={() => setRequestedAspectRatio(value)}>
-              {value}
-            </Button>
-          ))}
-        </SimpleGrid>
+        <Box>
+          <SectionLabel>Ratio</SectionLabel>
+          <PanelSegmented
+            ariaLabel="Aspect ratio"
+            value={requestedAspectRatio}
+            onChange={setRequestedAspectRatio}
+            items={RATIOS.map((item) => ({
+              value: item.id,
+              disabled: !generatedImagesCapability.available,
+              label: (
+                <>
+                  <Box w={item.w} h={item.h} borderRadius="2px" bg="currentColor" opacity={0.55} aria-hidden />
+                  {item.id}
+                </>
+              ),
+            }))}
+          />
+        </Box>
 
         {generatedImagesCapability.available && limitExhausted && usage ? (() => {
           // Only a larger allowance on a higher tier is offered; a concurrency limit just waits.
@@ -463,7 +491,7 @@ export function GeneratedImagesPanel() {
           const exhausted = generatedImagesExhaustedCopy(usage, prompt);
           return (
             <Flex align="center" justify="space-between" gap="3" wrap="wrap">
-              <Text fontSize="11px" color="studio.fgMuted">{exhausted.message}</Text>
+              <Text fontSize="12px" color="studio.fgMuted">{exhausted.message}</Text>
               {exhausted.upgrade && prompt?.tier ? (
                 <Button size="2xs" {...softButtonProps} aria-haspopup="dialog" onClick={() => openUpgrade(prompt)}>
                   More images<StudioLockGem tier={prompt.tier} size={12} />
@@ -472,79 +500,79 @@ export function GeneratedImagesPanel() {
             </Flex>
           );
         })() : null}
-        {error ? <Text fontSize="11px" color="danger.fg">{error}</Text> : null}
-        <Button h="44px" borderRadius="10px" fontSize="14px" colorPalette="brand" onClick={() => void generate()} disabled={!generatedImagesCapability.available || limitExhausted || submitting || (!prompt.trim() && !contextIncluded)}>
+        {error ? <Text fontSize="12px" color="danger.fg">{error}</Text> : null}
+        <Button h="44px" borderRadius="10px" fontSize="14px" fontWeight="500" colorPalette="brand" _disabled={{ bg: "studio.raised", color: "studio.fgSubtle", opacity: 1, cursor: "not-allowed" }} onClick={() => void generate()} disabled={!generatedImagesCapability.available || limitExhausted || submitting || (!prompt.trim() && !contextIncluded)}>
           {submitting ? <Spinner size="xs" /> : <Sparkles size={14} />}
           Generate {requestedAspectRatio}
         </Button>
       </Stack>
 
-      <Stack gap="12px" px="20px" pt="16px" pb="20px">
-        <Flex align="center" justify="space-between">
-          <Text fontSize="13px" fontWeight="500" color="studio.fgMuted">Generated media</Text>
-          <Button size="2xs" variant="ghost" aria-label="Refresh generated images" onClick={() => void refresh()}><RefreshCw size={12} /></Button>
-        </Flex>
+      <Stack gap="3" px={PANEL_PX} pt="2" pb="5">
+        <SectionLabel
+          action={<Button size="2xs" variant="ghost" aria-label="Refresh generated images" onClick={() => void refresh()}><RefreshCw size={12} /></Button>}
+        >
+          Generated media
+        </SectionLabel>
 
         {loading ? <Flex py="24px" justify="center"><Spinner /></Flex> : null}
         {pending.map((job) => (
-          <Flex key={job.id} bg="studio.subtle" borderRadius="10px" minH="74px" p="12px" align="center" gap="12px">
-            <Flex w="44px" h="54px" align="center" justify="center" bg="studio.canvas" borderRadius="6px"><Spinner size="xs" /></Flex>
+          <Flex key={job.id} bg="studio.subtle" borderRadius="12px" minH="74px" p="3" align="center" gap="3">
+            <Flex w="44px" h="54px" align="center" justify="center" bg="studio.canvas" borderRadius="8px"><Spinner size="xs" /></Flex>
             <Box minW="0" flex="1">
-              <Text fontSize="11px" color="studio.fg">{jobStatusCopy(job)}</Text>
-              <Text mt="2px" fontFamily="mono" fontSize="9px" color="studio.fgMuted">{job.style.toUpperCase()} · {job.aspectRatio}</Text>
-              <Text mt="4px" fontSize="10px" lineClamp="2" color="studio.fgMuted">Safe to leave Studio</Text>
+              <Text fontSize="13px" color="studio.fg">{jobStatusCopy(job)}</Text>
+              <Text mt="0.5" fontFamily="mono" fontSize="10.5px" color="studio.fgMuted">{job.style.toUpperCase()} · {job.aspectRatio}</Text>
+              <Text mt="1" fontSize="12px" lineClamp="2" color="studio.fgMuted">Safe to leave Studio</Text>
             </Box>
-            <Button size="2xs" variant="ghost" onClick={() => void cancel(job)}>Cancel</Button>
+            <Button size="2xs" {...softButtonProps} onClick={() => void cancel(job)}>Cancel</Button>
           </Flex>
         ))}
 
         {reconciliation.map((job) => (
-          <Flex key={job.id} bg="studio.subtle" borderRadius="10px" p="12px" align="center" justify="space-between" gap="8px">
+          <Flex key={job.id} bg="studio.subtle" borderRadius="12px" p="3" align="center" justify="space-between" gap="2">
             <Box minW="0">
-              <Text fontSize="11px" color="studio.fg">Needs review</Text>
-              <Text mt="2px" fontSize="10px" color="studio.fgMuted" lineClamp="2">The provider outcome is uncertain. Usage remains reserved until reconciliation.</Text>
+              <Text fontSize="13px" color="studio.fg">Needs review</Text>
+              <Text mt="0.5" fontSize="12px" color="studio.fgMuted" lineClamp="2">The provider outcome is uncertain. Usage remains reserved until reconciliation.</Text>
             </Box>
           </Flex>
         ))}
 
         {terminal.map((job) => (
-          <Flex key={job.id} bg="studio.subtle" borderRadius="10px" p="12px" align="center" justify="space-between" gap="8px">
+          <Flex key={job.id} bg="studio.subtle" borderRadius="12px" p="3" align="center" justify="space-between" gap="2">
             <Box minW="0">
-              <Text fontSize="11px" color="studio.fg">{jobStatusCopy(job)}</Text>
-              <Text mt="2px" fontSize="10px" color="studio.fgMuted" lineClamp="2">{generatedMediaErrorCopy(job.errorCode, "No image was created or charged.")}</Text>
+              <Text fontSize="13px" color="studio.fg">{jobStatusCopy(job)}</Text>
+              <Text mt="0.5" fontSize="12px" color="studio.fgMuted" lineClamp="2">{generatedMediaErrorCopy(job.errorCode, "No image was created or charged.")}</Text>
             </Box>
-            <Button size="2xs" variant="ghost" onClick={() => setJobs((current) => current.filter((candidate) => candidate.id !== job.id))}>Dismiss</Button>
+            <Button size="2xs" {...softButtonProps} onClick={() => setJobs((current) => current.filter((candidate) => candidate.id !== job.id))}>Dismiss</Button>
           </Flex>
         ))}
 
         {completed.length === 0 && pending.length === 0 && reconciliation.length === 0 && terminal.length === 0 && !loading ? (
-          <Flex direction="column" align="center" py="28px" px="18px" textAlign="center" color="studio.fgMuted">
-            <ImagePlus size={22} />
-            <Text mt="10px" fontSize="13px" lineHeight="1.5">Generated frames stay here until you insert, save, download or delete them.</Text>
-          </Flex>
+          <PanelEmpty icon={<ImagePlus size={18} />} title="No frames yet">
+            Generated frames stay here until you insert, save, download or delete them.
+          </PanelEmpty>
         ) : null}
 
         {completed.length > 0 ? (
-          <Text fontSize="11px" color="studio.fgMuted" lineHeight="1.5">
+          <Text fontSize="12px" color="studio.fgMuted" lineHeight="1.5">
             {insertBlocked
               ? "B-roll already covers the playhead. Replace it, or move the playhead to a free spot to insert."
               : "Insert adds four seconds of B-roll at the playhead. Move the playhead over B-roll to replace it."}
           </Text>
         ) : null}
 
-        <SimpleGrid columns={2} gap="8px">
+        <SimpleGrid columns={2} gap="2">
         {completed.map((job) => {
           const asset = job.resultAsset!;
           const usedInDocument = editorDocument.studioEdits.visualBroll.some((placement) => placement.asset.id === asset.id) || editorDocument.sceneBlocks.some((scene) => (scene.content.kind === "image" || scene.content.kind === "video") && scene.content.asset.id === asset.id);
           return (
-            <Box key={job.id} bg="studio.subtle" borderRadius="10px" overflow="hidden">
-              <Box aspectRatio={job.aspectRatio === "9:16" ? "9 / 16" : job.aspectRatio === "16:9" ? "16 / 9" : "1"} maxH="190px" bg="studio.canvas" overflow="hidden">
+            <Box key={job.id} bg="studio.subtle" borderRadius="12px" overflow="hidden">
+              <Box w="full" aspectRatio={job.aspectRatio === "9:16" ? "9 / 16" : job.aspectRatio === "16:9" ? "16 / 9" : "1"} maxH="190px" bg="studio.canvas" overflow="hidden">
                 <img src={asset.accessUrl!} alt={asset.title} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
               </Box>
-              <Stack gap="7px" p="9px">
-                <Flex align="center" justify="space-between" gap="8px">
-                  <Text fontSize="11px" lineClamp="1" color="studio.fg">{asset.title}</Text>
-                  <Text fontFamily="mono" fontSize="9px" color="studio.fgMuted">{job.style.toUpperCase()}</Text>
+              <Stack gap="1.5" p="2">
+                <Flex align="baseline" justify="space-between" gap="2" px="1">
+                  <Text fontSize="12px" lineClamp="1" color="studio.fg">{asset.title}</Text>
+                  <Text fontFamily="mono" fontSize="10px" color="studio.fgMuted">{job.style.toUpperCase()}</Text>
                 </Flex>
                 <Button size="xs" {...softButtonProps} disabled={insertBlocked} onClick={() => insertBroll(asset)}><ImagePlus size={12} />Insert at playhead</Button>
                 <Button size="xs" {...softButtonProps} disabled={!selectedBroll} onClick={() => replaceBroll(asset)}><ImagePlus size={12} />Replace selected B-roll</Button>
@@ -553,7 +581,7 @@ export function GeneratedImagesPanel() {
                 ) : sceneWriteCapabilities.images ? (
                   <Button size="xs" {...softButtonProps} onClick={() => insertScene(asset)}><Library size={12} />Insert image scene</Button>
                 ) : null}
-                <SimpleGrid columns={brandProfileId ? 3 : 2} gap="5px">
+                <SimpleGrid columns={brandProfileId ? 3 : 2} gap="1">
                   {brandProfileId ? (
                     <Button size="xs" variant="ghost" aria-label="Save to Brand Profile" title="Save to Brand Profile" onClick={() => void saveToBrand(asset)}><BookmarkPlus size={13} /></Button>
                   ) : null}

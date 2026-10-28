@@ -2,8 +2,8 @@
 
 import { useEffect, useState } from "react";
 import { Box, Checkbox, Flex, Input, Stack, Text } from "@chakra-ui/react";
-import { PanelButton, softFieldProps, tileProps } from "./panel-ui";
-import { AlertTriangle, Ban, ImageIcon, Link2, Palette } from "lucide-react";
+import { PanelButton, PanelSegmented, softFieldProps, softFocusWithin } from "./panel-ui";
+import { AlertTriangle, Ban, Check, ImageIcon, Link2, Palette } from "lucide-react";
 import {
   SCENE_LAYOUT_MIN_DURATION_SEC,
   removeSpeakerLayoutOverrideRange,
@@ -19,15 +19,11 @@ import {
   type SceneLayoutChoice,
 } from "./layout-panel-model";
 
-const BACKGROUND_SUBMODES: {
-  id: "off" | "color" | "image";
-  label: string;
-  icon: React.ReactNode;
-}[] = [
-  { id: "off", label: "None", icon: <Ban size={15} /> },
-  { id: "color", label: "Color", icon: <Palette size={15} /> },
-  { id: "image", label: "Image", icon: <ImageIcon size={15} /> },
-];
+const BACKGROUND_SUBMODES = [
+  { value: "off", label: <><Ban size={14} />None</> },
+  { value: "color", label: <><Palette size={14} />Color</> },
+  { value: "image", label: <><ImageIcon size={14} />Image</> },
+] as const;
 
 const SWATCHES = [
   "#000000", "#FFFFFF", "#111827", "#6B7280", "#DC2626",
@@ -116,6 +112,16 @@ export function LayoutPanel() {
   const evidenceHint = (preset: SceneLayoutPreset) =>
     sceneLayoutEvidenceHint(preset, layoutScene);
   const selectedHint = selected === "clip-default" ? "ready" : evidenceHint(selected);
+  const notice =
+    layoutScene?.coveredBy === "inserted-scene"
+      ? "This playhead is on an inserted scene. Move to source footage to choose its layout."
+      : layoutScene?.coveredBy === "broll"
+        ? "B-roll covers this source scene in the preview. The layout still applies underneath it."
+        : targetTooShort
+          ? "This source scene is too short to save a layout change."
+          : !hasSourceScene
+            ? "No source scene at the playhead. Move to source footage to choose a layout."
+            : null;
 
   const setBackgroundSubmode = (mode: "off" | "color" | "image") => {
     setStudioEdits((previous) => ({
@@ -150,17 +156,12 @@ export function LayoutPanel() {
   };
 
   return (
-    <Stack gap="24px" px="20px" pt="16px" pb="20px">
+    <Stack gap="6" px="5" pt="4" pb="5">
       <Box>
-        <Flex align="center" justify="space-between" gap="8px" mb="10px">
-          <Box>
-            <Text fontSize="13px" fontWeight="500" color="studio.fgMuted">
-              Scene layout
-            </Text>
-            <Text fontSize="12px" color="studio.fgSubtle" mt="2px">
-              {hasSourceScene ? "Scene at the playhead" : "No source scene at the playhead"}
-            </Text>
-          </Box>
+        <Flex align="center" justify="space-between" gap="3" mb="4">
+          <Text fontSize="14px" fontWeight="500" color="studio.fg">
+            Scene layout
+          </Text>
           <Checkbox.Root
             checked={applyToAllScenes}
             onCheckedChange={(event) => setApplyToAllScenes(!!event.checked)}
@@ -179,17 +180,9 @@ export function LayoutPanel() {
           </Checkbox.Root>
         </Flex>
 
-        {layoutScene?.coveredBy === "inserted-scene" ? (
-          <Text mb="10px" px="12px" py="10px" borderRadius="10px" bg="studio.subtle" color="studio.fgMuted" fontSize="12px" lineHeight="1.5">
-            This playhead is on an inserted scene. Move to source footage to choose its layout.
-          </Text>
-        ) : layoutScene?.coveredBy === "broll" ? (
-          <Text mb="10px" px="12px" py="10px" borderRadius="10px" bg="studio.subtle" color="studio.fgMuted" fontSize="12px" lineHeight="1.5">
-            B-roll covers this source scene in the preview. The layout still applies underneath it.
-          </Text>
-        ) : targetTooShort ? (
-          <Text mb="10px" px="12px" py="10px" borderRadius="10px" bg="studio.subtle" color="studio.fgMuted" fontSize="12px" lineHeight="1.5">
-            This source scene is too short to save a layout change.
+        {notice ? (
+          <Text mb="3" px="3" py="2.5" borderRadius="10px" bg="studio.subtle" color="studio.fgMuted" fontSize="12px" lineHeight="1.5">
+            {notice}
           </Text>
         ) : null}
 
@@ -200,7 +193,7 @@ export function LayoutPanel() {
           disabled={!canApplyLayout}
         />
 
-        <Text mt="12px" fontSize="12px" color="studio.fgSubtle" lineHeight="1.5">
+        <Text mt="3" fontSize="12px" color="studio.fgSubtle" lineHeight="1.5">
           {selected === "clip-default"
             ? `Clip default uses ${clipDefault}. This can be Auto, Center, Fit, Split, or Screen.`
             : selectedHint === "speaker-analysis"
@@ -212,35 +205,13 @@ export function LayoutPanel() {
       </Box>
 
       <Box>
-        <Text fontSize="13px" fontWeight="500" color="studio.fgMuted">
+        <Text fontSize="14px" fontWeight="500" color="studio.fg">
           Clip background
         </Text>
-        <Text fontSize="12px" color="studio.fgSubtle" mt="2px" mb="12px">
-          Background changes apply to every scene in this clip.
+        <Text fontSize="12px" color="studio.fgSubtle" mt="0.5" mb="3">
+          Applies to every scene in this clip.
         </Text>
-        <Box display="grid" gridTemplateColumns="repeat(3, 1fr)" gap="8px">
-          {BACKGROUND_SUBMODES.map((mode) => {
-            const active = background.mode === mode.id;
-            return (
-              <Flex
-                key={mode.id}
-                as="button"
-                aria-pressed={active}
-                direction="column"
-                align="center"
-                justify="center"
-                gap="6px"
-                py="14px"
-                {...tileProps(active)}
-                color={active ? "studio.fg" : "studio.fgMuted"}
-                onClick={() => setBackgroundSubmode(mode.id)}
-              >
-                {mode.icon}
-                <Text fontSize="12px" fontWeight="500">{mode.label}</Text>
-              </Flex>
-            );
-          })}
-        </Box>
+        <PanelSegmented ariaLabel="Clip background" items={BACKGROUND_SUBMODES} value={background.mode} onChange={setBackgroundSubmode} />
       </Box>
 
       {background.mode === "color" ? (
@@ -257,16 +228,23 @@ export function LayoutPanel() {
                   onClick={() => setColor(hex)}
                   w="100%"
                   aspectRatio={1}
+                  display="flex"
+                  alignItems="center"
+                  justifyContent="center"
                   borderRadius="8px"
+                  borderWidth="1px"
+                  borderColor="studio.border"
                   bg={hex}
-                  boxShadow={active ? "0 0 0 2px var(--chakra-colors-studio-canvas), 0 0 0 4px var(--chakra-colors-studio-fg)" : "inset 0 0 0 1px rgba(255,255,255,0.08)"}
+                  color={hex === "#FFFFFF" ? "black" : "white"}
                   cursor="pointer"
-                />
+                >
+                  {active ? <Check size={16} strokeWidth={3} /> : null}
+                </Box>
               );
             })}
           </Box>
           <Flex align="center" gap="8px">
-            <Box w="40px" h="40px" flexShrink={0} borderRadius="10px" boxShadow="inset 0 0 0 1px rgba(255,255,255,0.08)" bg={HEX_PATTERN.test(colorDraft) ? colorDraft : "studio.subtle"} />
+            <Box w="40px" h="40px" flexShrink={0} borderRadius="10px" borderWidth="1px" borderColor="studio.border" bg={HEX_PATTERN.test(colorDraft) ? colorDraft : "studio.subtle"} />
             <Input
               aria-label="Background color hex"
               value={colorDraft}
@@ -291,7 +269,7 @@ export function LayoutPanel() {
 
       {background.mode === "image" ? (
         <Stack gap="8px">
-          <Flex align="center" gap="10px" px="12px" h="40px" borderRadius="10px" bg="studio.subtle" borderWidth={imageUrlError ? "1px" : "0"} borderColor="studio.dangerBorder">
+          <Flex align="center" gap="10px" px="12px" h="40px" borderRadius="10px" bg="studio.subtle" borderWidth={imageUrlError ? "1px" : "0"} borderColor="studio.dangerBorder" _focusWithin={imageUrlError ? undefined : softFocusWithin}>
             <Box color="studio.fgSubtle" flexShrink={0}><Link2 size={13} /></Box>
             <Input
               aria-label="Background image URL"

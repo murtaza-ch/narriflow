@@ -1,11 +1,19 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Box, Flex, Text, Stack, Input, SimpleGrid } from "@chakra-ui/react";
-import { PanelTabs, softFocusWithin } from "./panel-ui";
-import { Search, Film, Check, X, AlertTriangle, Play, Sparkles } from "lucide-react";
+import { Box, Button, Flex, Text, Stack, Input, SimpleGrid } from "@chakra-ui/react";
+import {
+  PANEL_PX,
+  PanelEmpty,
+  PanelTabs,
+  SectionLabel,
+  SelectedCheck,
+  softButtonProps,
+  softFocusWithin,
+} from "./panel-ui";
+import { Search, Film, Check, ChevronRight, X, AlertTriangle, Play, Sparkles } from "lucide-react";
 import { Spinner } from "@narriflow/ui/components/spinner";
-import { brollQueryForClip, planBrollCutaways } from "@narriflow/validators";
+import { brollQueryForClip, planBrollCutaways, userErrorMessage } from "@narriflow/validators";
 import { formatDuration } from "@/lib/format";
 import { useStudio } from "../studio-shell";
 import { manualBrollPreviewWindow } from "../broll-preview";
@@ -108,7 +116,7 @@ export function BRollPanel() {
           results?: BrollResult[];
           error?: string;
         };
-        if (!res.ok) throw new Error(json.error ?? "Search failed");
+        if (!res.ok) throw new Error(userErrorMessage(json.error) ?? "Search failed. Try again.");
         setConfigured(json.configured !== false);
         setResults(json.results ?? []);
       } catch (e) {
@@ -166,7 +174,7 @@ export function BRollPanel() {
         <GeneratedImagesPanel />
       ) : (
       <>
-      <Box px="20px" pt="16px" pb="12px">
+      <Box px={PANEL_PX} pt="4" pb="3">
         <Flex
           align="center"
           gap="10px"
@@ -204,19 +212,19 @@ export function BRollPanel() {
         </Flex>
       </Box>
 
-      {/* Selected indicator — success stripe + label, never hue alone */}
+      {/* Selected indicator — accent tint + check + label, never hue alone */}
       {brollUrl ? (
         <Flex
-          mx="20px"
-          mb="12px"
-          px="14px"
-          py="12px"
-          borderRadius="10px"
-          bg="studio.subtle"
+          mx={PANEL_PX}
+          mb="3"
+          px="3.5"
+          py="3"
+          borderRadius="12px"
+          bg="studio.accentSubtle"
           align="center"
           justify="space-between"
         >
-          <Flex align="center" gap="10px" color="studio.fg" minW="0">
+          <Flex align="center" gap="10px" color="studio.accentFg" minW="0">
             <Check size={15} />
             <Stack gap="0" minW="0">
               <Text fontSize="13px" color="studio.fg" fontWeight="500">
@@ -228,7 +236,7 @@ export function BRollPanel() {
                 </Text>
               ) : null}
               {selectedAsset?.authorName ? (
-                <Text fontSize="10px" color="studio.fgMuted" truncate>
+                <Text fontSize="11px" color="studio.fgMuted" truncate>
                   Video by {selectedAsset.authorName} · Pexels
                 </Text>
               ) : null}
@@ -248,11 +256,9 @@ export function BRollPanel() {
           </Box>
         </Flex>
       ) : plannedCutaways.length > 0 ? (
-        <Box mx="20px" mb="12px" px="14px" py="12px" borderRadius="10px" bg="studio.subtle">
-          <Text fontSize="13px" fontWeight="500" color="studio.fgMuted" mb="8px">
-            Planned automatic cutaways
-          </Text>
-          <Stack gap="6px">
+        <Box px={PANEL_PX} pb="3">
+          <SectionLabel>Planned cutaways</SectionLabel>
+          <Stack gap="1.5">
             {plannedCutaways.map((cutaway, index) => (
               <Flex
                 key={`${cutaway.startSec}-${index}`}
@@ -260,28 +266,36 @@ export function BRollPanel() {
                 aria-label={`Preview automatic cutaway ${index + 1}, ${cutaway.query}, at ${formatDuration(cutaway.startSec)}`}
                 title={cutaway.query}
                 align="center"
-                justify="space-between"
-                gap="8px"
+                gap="3"
                 w="100%"
+                h="40px"
+                pl="2"
+                pr="3"
+                borderRadius="10px"
+                bg="studio.subtle"
+                color="studio.fgSubtle"
                 cursor="pointer"
-                borderRadius="l1"
-                _hover={{ bg: "studio.raised" }}
+                transition="background 120ms ease, color 120ms ease"
+                _hover={{ bg: "studio.raised", color: "studio.fg" }}
                 onClick={() => seekTo(cutaway.startSec)}
               >
-                <Text fontSize="12px" color="studio.fgSubtle" flexShrink={0}>
-                  Cutaway {index + 1}
-                </Text>
                 <Text
-                  fontVariantNumeric="tabular-nums"
-                  fontSize="12px"
-                  color="studio.timecode"
+                  px="2"
+                  py="1"
                   flexShrink={0}
+                  borderRadius="6px"
+                  bg="studio.canvas"
+                  fontFamily="mono"
+                  fontVariantNumeric="tabular-nums"
+                  fontSize="11.5px"
+                  color="studio.timecode"
                 >
                   {formatDuration(cutaway.startSec)}–{formatDuration(cutaway.endSec)}
                 </Text>
-                <Text fontSize="12px" color="studio.fgMuted" truncate flex="1" textAlign="right">
+                <Text fontSize="13px" color="studio.fg" truncate flex="1" textAlign="left">
                   {cutaway.query}
                 </Text>
+                <ChevronRight size={14} />
               </Flex>
             ))}
           </Stack>
@@ -289,25 +303,35 @@ export function BRollPanel() {
       ) : null}
 
       {error ? (
-        <Flex role="alert" px="20px" pb="12px" align="center" gap="6px" color="danger.400">
+        <Flex role="alert" px={PANEL_PX} pb="3" align="center" gap="6px" color="danger.400">
           <AlertTriangle size={12} />
-          <Text fontSize="11px" color="danger.400">
+          <Text fontSize="12px" color="danger.400">
             {error}
           </Text>
         </Flex>
       ) : null}
 
       {/* Results */}
-      <Box flex="1" overflowY="auto" px="20px" pb="20px">
+      <Box flex="1" overflowY="auto" px={PANEL_PX} pb="5">
         {!configured ? (
-          <EmptyHint text="Stock B-roll search is temporarily unavailable.">
-            <Flex as="button" minH="24px" align="center" gap="6px" color="studio.fg" fontSize="13px" fontWeight="500" cursor="pointer" onClick={() => setSourceMode("generate")}>
-              <Sparkles size={12} /> Generate an image instead
-            </Flex>
-          </EmptyHint>
+          <PanelEmpty
+            icon={<Film size={18} />}
+            title="Stock search is unavailable"
+            actions={
+              <Button size="xs" {...softButtonProps} onClick={() => setSourceMode("generate")}>
+                <Sparkles size={12} /> Generate an image instead
+              </Button>
+            }
+          >
+            It&apos;s temporarily offline.
+          </PanelEmpty>
         ) : results.length === 0 && !loading ? (
-          <EmptyHint text="No results. Try a different keyword." />
+          <PanelEmpty icon={<Film size={18} />} title="No results">
+            Try a different keyword.
+          </PanelEmpty>
         ) : (
+          <>
+          <SectionLabel>Results</SectionLabel>
           <SimpleGrid columns={2} gap="10px">
             {results.map((result) => {
               const isSelected = brollUrl === result.downloadUrl;
@@ -318,12 +342,8 @@ export function BRollPanel() {
                   position="relative"
                   borderRadius="10px"
                   overflow="hidden"
-                  borderWidth="2px"
-                  borderColor={isSelected ? "studio.accent" : "transparent"}
                   onMouseEnter={() => setPreviewId(result.id)}
                   onMouseLeave={() => setPreviewId((current) => (current === result.id ? null : current))}
-                  _hover={{ borderColor: isSelected ? "studio.accent" : "studio.borderStrong" }}
-                  transition="border-color 120ms ease"
                 >
                   <Box
                     as="button"
@@ -369,16 +389,17 @@ export function BRollPanel() {
 
                   <Flex
                     position="absolute"
-                    top="4px"
-                    right="4px"
-                    w="20px"
-                    h="20px"
+                    top="2"
+                    insetStart="2"
+                    boxSize="22px"
                     align="center"
                     justify="center"
-                    borderRadius="l1"
-                    bg="rgba(0,0,0,0.55)"
-                    color="white"
+                    borderRadius="full"
+                    bg="studio.scrim"
+                    color="studio.fg"
                     cursor="pointer"
+                    transition="background 120ms ease"
+                    _hover={{ bg: "studio.scrimStrong" }}
                     onClick={(event) => {
                       event.stopPropagation();
                       setPreviewId((current) => (current === result.id ? null : result.id));
@@ -386,74 +407,41 @@ export function BRollPanel() {
                     aria-label={isPreviewing ? "Stop preview" : "Preview this clip"}
                     role="button"
                   >
-                    <Play size={11} fill={isPreviewing ? "currentColor" : "none"} />
+                    <Play size={10} fill={isPreviewing ? "currentColor" : "none"} />
                   </Flex>
+                  <SelectedCheck show={isSelected} />
 
                   <Flex
                     position="absolute"
                     bottom="0"
                     left="0"
                     right="0"
-                    px="6px"
-                    py="3px"
-                    justify="space-between"
-                    align="center"
-                    bg="rgba(0,0,0,0.6)"
+                    px="2"
+                    py="1"
+                    pointerEvents="none"
+                    align="baseline"
+                    gap="2"
+                    bg={isSelected ? "studio.accentSubtle" : "studio.scrim"}
+                    color={isSelected ? "studio.accentFg" : "studio.fg"}
                   >
-                    <Stack gap="0" minW="0">
-                      <Text fontVariantNumeric="tabular-nums" fontSize="12px" color="studio.fg">
-                        {result.durationSec}s
+                    <Text fontFamily="mono" fontVariantNumeric="tabular-nums" fontSize="11.5px">
+                      {result.durationSec}s
+                    </Text>
+                    {result.authorName ? (
+                      <Text fontSize="10px" color="studio.fgMuted" truncate>
+                        {result.authorName}
                       </Text>
-                      {result.authorName ? (
-                        <Text fontSize="9px" color="studio.fgMuted" truncate maxW="90px">
-                          {result.authorName}
-                        </Text>
-                      ) : null}
-                    </Stack>
-                    {isSelected ? (
-                      <Box color="studio.fg" flexShrink={0}>
-                        <Check size={12} />
-                      </Box>
                     ) : null}
                   </Flex>
                 </Box>
               );
             })}
           </SimpleGrid>
+          </>
         )}
       </Box>
       </>
       )}
     </Stack>
-  );
-}
-
-function EmptyHint({ text, children }: { text: string; children?: React.ReactNode }) {
-  return (
-    <Flex
-      direction="column"
-      align="center"
-      justify="center"
-      py="32px"
-      px="16px"
-      gap="10px"
-      color="studio.fgSubtle"
-    >
-      {/* Ghost frame — the Blueline empty signature, graphite-tuned */}
-      <Flex
-        w="88px"
-        aspectRatio={16 / 9}
-        align="center"
-        justify="center"
-        bg="studio.subtle"
-        borderRadius="10px"
-      >
-        <Film size={18} strokeWidth={1.5} />
-      </Flex>
-      <Text fontSize="13px" color="studio.fgMuted" textAlign="center" lineHeight="1.5">
-        {text}
-      </Text>
-      {children}
-    </Flex>
   );
 }

@@ -8,7 +8,7 @@ import { usePreviewPlayer } from "./audio-library";
 import { MusicTab } from "./music-tab";
 import { SfxTab } from "./sfx-tab";
 import { UploadsTab } from "./uploads-tab";
-import { studioSliderCss } from "./panel-ui";
+import { PANEL_PX, PanelTabs, SectionLabel, studioSliderCss } from "./panel-ui";
 
 type MusicPanelTab = "music" | "sfx";
 
@@ -41,50 +41,22 @@ export function MusicPanel() {
       {/* biome-ignore lint/a11y/useMediaCaption: private library previews contain no dialogue. */}
       <audio ref={player.audioRef} preload="metadata" style={{ display: "none" }} />
 
-      <Flex
-        px="20px"
-        h="40px"
-        align="end"
-        gap="20px"
-        borderBottomWidth="1px"
-        borderColor="studio.border"
-        role="tablist"
-        aria-label="Music library"
-      >
-        {TABS.map((tab) => {
-          const selected = !showUploads && activeTab === tab.id;
-          return (
-            <Flex
-              key={tab.id}
-              as="button"
-              role="tab"
-              aria-selected={selected}
-              align="center"
-              h="40px"
-              mb="-1px"
-              borderBottomWidth="2px"
-              borderColor={selected ? "studio.accent" : "transparent"}
-              color={selected ? "studio.fg" : "studio.fgMuted"}
-              fontSize="14px"
-              fontWeight="500"
-              _hover={{ color: "studio.fg" }}
-              cursor="pointer"
-              transition="border-color 120ms ease, color 120ms ease"
-              onClick={() => chooseTab(tab.id)}
-            >
-              {tab.label}
-            </Flex>
-          );
-        })}
-      </Flex>
+      {/* No tab is current while the uploads view is open. */}
+      <PanelTabs<MusicPanelTab | "uploads">
+        ariaLabel="Music library"
+        items={TABS}
+        value={showUploads ? "uploads" : activeTab}
+        onChange={(tab) => tab !== "uploads" && chooseTab(tab)}
+      />
 
       {showUploads ? (
         <Box>
-          <Flex px="20px" pt="16px" align="center" justify="space-between">
+          <Flex px={PANEL_PX} pt="4" align="center" justify="space-between">
             <Flex
               as="button"
               align="center"
-              gap="6px"
+              gap="1.5"
+              minH="24px"
               color="studio.fgMuted"
               fontSize="13px"
               fontWeight="500"
@@ -92,11 +64,11 @@ export function MusicPanel() {
               _hover={{ color: "studio.fg" }}
               onClick={() => setShowUploads(false)}
             >
-              <ArrowLeft size={13} /> Back to library
+              <ArrowLeft size={14} /> Back to library
             </Flex>
-            <Flex align="center" gap="6px" color="studio.fgMuted">
-              <Upload size={13} />
-              <Text fontSize="12px" fontWeight="500">Uploads</Text>
+            <Flex align="center" gap="1.5" color="studio.fg">
+              <Upload size={14} />
+              <Text fontSize="13px" fontWeight="500">Uploads</Text>
             </Flex>
           </Flex>
           <UploadsTab
@@ -118,37 +90,43 @@ export function MusicPanel() {
         />
       )}
 
-      <Box px="20px" pb="20px" pt="8px">
-        <Flex align="center" justify="space-between" mb="10px">
-          <Text fontSize="13px" fontWeight="500" color="studio.fgMuted">
-            Source audio
-          </Text>
-          <Flex
-            as="button"
-            aria-pressed={sourceAudio.muted}
-            aria-label={sourceAudio.muted ? "Unmute source audio" : "Mute source audio"}
-            minH="24px"
-            minW="24px"
-            align="center"
-            gap="5px"
-            color={sourceAudio.muted ? "studio.danger" : "studio.fgMuted"}
-            fontSize="12px"
-            fontWeight="500"
-            cursor="pointer"
-            _hover={{ color: sourceAudio.muted ? "studio.danger" : "studio.fg" }}
-            onClick={() => updateSourceAudio({ muted: !sourceAudio.muted })}
-          >
-            {sourceAudio.muted ? <VolumeX size={13} /> : <Volume2 size={13} />}
-            {sourceAudio.muted ? "Muted" : "Original"}
-          </Flex>
-        </Flex>
+      <Box px={PANEL_PX} pb="5" pt="2">
+        <SectionLabel
+          action={
+            <Flex
+              as="button"
+              aria-pressed={sourceAudio.muted}
+              aria-label={sourceAudio.muted ? "Unmute source audio" : "Mute source audio"}
+              h="28px"
+              minW="24px"
+              px="2.5"
+              align="center"
+              gap="1.5"
+              borderRadius="8px"
+              bg="studio.subtle"
+              color={sourceAudio.muted ? "studio.danger" : "studio.fgMuted"}
+              fontSize="12px"
+              fontWeight="500"
+              cursor="pointer"
+              transition="background 120ms ease, color 120ms ease"
+              _hover={{ bg: "studio.surface", color: sourceAudio.muted ? "studio.danger" : "studio.fg" }}
+              onClick={() => updateSourceAudio({ muted: !sourceAudio.muted })}
+            >
+              {sourceAudio.muted ? <VolumeX size={13} /> : <Volume2 size={13} />}
+              {sourceAudio.muted ? "Muted" : "Original"}
+            </Flex>
+          }
+        >
+          Source audio
+        </SectionLabel>
         <Flex
           align="center"
-          gap="12px"
-          px="14px"
+          gap="3"
+          px="4"
           h="44px"
           bg="studio.subtle"
-          borderRadius="10px"
+          borderRadius="12px"
+          opacity={sourceAudio.muted ? 0.6 : 1}
         >
           <Slider.Root
             aria-label={["Source audio volume"]}
@@ -174,7 +152,7 @@ export function MusicPanel() {
               <Slider.Thumbs />
             </Slider.Control>
           </Slider.Root>
-          <Text fontVariantNumeric="tabular-nums" fontSize="12px" color="studio.fgMuted" w="40px" textAlign="right">
+          <Text textStyle="data" fontSize="12px" color="studio.fgMuted" w="44px" textAlign="right">
             {sourceAudio.volume}%
           </Text>
         </Flex>

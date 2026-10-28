@@ -2,8 +2,10 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Box, Flex, Image, Input, Slider, Stack, Text } from "@chakra-ui/react";
-import { chipProps, softFieldProps, studioSliderCss, softFocusWithin } from "./panel-ui";
+import type { ReactNode } from "react";
+import { chipProps, PanelEmpty, softFieldProps, softFocusWithin, studioSliderCss } from "./panel-ui";
 import {
+  AlertTriangle,
   Check,
   ChevronDown,
   Link2,
@@ -12,6 +14,7 @@ import {
   Pause,
   Play,
   Plus,
+  RotateCw,
   Search,
   SlidersHorizontal,
   Star,
@@ -55,12 +58,137 @@ function CategoryChip({
       flexShrink={0}
       textTransform="capitalize"
       cursor="pointer"
-      transition="background 120ms ease, border-color 120ms ease, color 120ms ease"
       {...chipProps(active)}
       onClick={onClick}
     >
       {label}
     </Flex>
+  );
+}
+
+const softActionProps = {
+  as: "button",
+  minH: "28px",
+  minW: "24px",
+  px: "3",
+  align: "center",
+  gap: "1.5",
+  borderRadius: "8px",
+  bg: "studio.raised",
+  color: "studio.fg",
+  fontSize: "13px",
+  fontWeight: "500",
+  cursor: "pointer",
+  _hover: { bg: "studio.borderStrong" },
+} as const;
+
+/** A library list that failed to load: one message and a retry, in the panels' empty-state style. */
+export function AudioListError({ message, onRetry }: { message: string; onRetry: () => void }) {
+  return (
+    <Box role="alert">
+      <PanelEmpty
+        icon={<AlertTriangle size={18} />}
+        title={message}
+        actions={
+          <Flex {...softActionProps} onClick={onRetry}>
+            <RotateCw size={13} />
+            Retry
+          </Flex>
+        }
+      />
+    </Box>
+  );
+}
+
+/** The foot of a paged list: a failed next page with its retry, or the Load more button. */
+export function AudioPager({
+  error,
+  hasMore,
+  loading,
+  onLoadMore,
+}: {
+  error: string | null;
+  hasMore: boolean;
+  loading: boolean;
+  onLoadMore: () => void;
+}) {
+  if (error) {
+    return (
+      <Flex role="alert" align="center" justify="space-between" gap="3" px="3" py="2" bg="studio.subtle" borderRadius="12px">
+        <Flex align="center" gap="2" color="studio.danger" minW="0">
+          <Box flexShrink={0}><AlertTriangle size={13} /></Box>
+          <Text fontSize="12px">{error}</Text>
+        </Flex>
+        <Flex {...softActionProps} onClick={onLoadMore}>Retry</Flex>
+      </Flex>
+    );
+  }
+  if (!hasMore) return null;
+  return (
+    <Flex
+      as="button"
+      minH="36px"
+      minW="24px"
+      align="center"
+      justify="center"
+      borderRadius="10px"
+      bg="studio.subtle"
+      color="studio.fgMuted"
+      fontSize="13px"
+      fontWeight="500"
+      cursor="pointer"
+      _hover={{ bg: "studio.surface", color: "studio.fg" }}
+      aria-disabled={loading}
+      onClick={loading ? undefined : onLoadMore}
+    >
+      {loading ? "Loading…" : "Load more"}
+    </Flex>
+  );
+}
+
+/** One collapsible group: a soft header row, its content flowing below when open. */
+function Disclosure({
+  icon,
+  label,
+  open,
+  onToggle,
+  children,
+}: {
+  icon: ReactNode;
+  label: string;
+  open: boolean;
+  onToggle: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <Stack gap="3">
+      <Flex
+        as="button"
+        aria-expanded={open}
+        align="center"
+        justify="space-between"
+        h="40px"
+        px="3"
+        bg="studio.subtle"
+        borderRadius="12px"
+        color="studio.fg"
+        fontSize="13px"
+        fontWeight="500"
+        cursor="pointer"
+        transition="background 120ms ease"
+        _hover={{ bg: "studio.surface" }}
+        onClick={onToggle}
+      >
+        <Flex align="center" gap="2.5">
+          <Box color="studio.fgMuted">{icon}</Box>
+          {label}
+        </Flex>
+        <Box color="studio.fgMuted" transform={open ? "rotate(180deg)" : undefined} transition="transform 120ms ease">
+          <ChevronDown size={14} />
+        </Box>
+      </Flex>
+      {open ? children : null}
+    </Stack>
   );
 }
 
@@ -86,13 +214,11 @@ function TrackRow({
   return (
     <Stack
       gap="0"
-      p="8px"
-      bg={active || selected ? "studio.subtle" : "transparent"}
-      borderWidth="2px"
-      borderColor={selected ? "studio.accent" : "transparent"}
-      borderRadius="10px"
-      transition="background 120ms ease, border-color 120ms ease"
-      _hover={{ bg: "studio.subtle" }}
+      p="2"
+      bg={selected ? "studio.accentSubtle" : active ? "studio.subtle" : "transparent"}
+      borderRadius="12px"
+      transition="background 120ms ease"
+      _hover={{ bg: selected ? "studio.accentSubtle" : "studio.subtle" }}
     >
       <Flex align="center" gap="8px">
         <Box position="relative" w="44px" h="44px" flexShrink={0} overflow="hidden" borderRadius="8px">
@@ -167,7 +293,7 @@ function TrackRow({
             justify="center"
             borderRadius="full"
             bg={selected ? "studio.accent" : "studio.raised"}
-            color={selected ? "studio.canvas" : "studio.fg"}
+            color={selected ? "white" : "studio.fg"}
             cursor="pointer"
             _hover={selected ? undefined : { bg: "studio.borderStrong" }}
             onClick={onUse}
@@ -288,13 +414,13 @@ export function MusicTab({ reloadKey, player, onOpenUploads }: MusicTabProps) {
   };
 
   return (
-    <Stack gap="14px" px="20px" pt="16px" pb="16px">
-      <Flex align="center" gap="8px">
+    <Stack gap="4" px="5" pt="4" pb="4">
+      <Flex align="center" gap="2">
         <Flex
           align="center"
-          gap="10px"
+          gap="2.5"
           h="40px"
-          px="12px"
+          px="3"
           flex="1"
           bg="studio.subtle"
           borderRadius="10px"
@@ -326,14 +452,16 @@ export function MusicTab({ reloadKey, player, onOpenUploads }: MusicTabProps) {
         <Flex
           as="button"
           aria-label="Open audio uploads"
-          w="40px"
-          h="40px"
+          title="Upload audio"
+          boxSize="40px"
+          flexShrink={0}
           align="center"
           justify="center"
           borderRadius="10px"
           bg="studio.subtle"
           color="studio.fgMuted"
           cursor="pointer"
+          transition="background 120ms ease, color 120ms ease"
           _hover={{ bg: "studio.raised", color: "studio.fg" }}
           onClick={onOpenUploads}
         >
@@ -341,7 +469,7 @@ export function MusicTab({ reloadKey, player, onOpenUploads }: MusicTabProps) {
         </Flex>
       </Flex>
 
-      <Flex gap="6px" overflowX="auto" pb="2px" css={{ scrollbarWidth: "none" }}>
+      <Flex gap="2" overflowX="auto" css={{ scrollbarWidth: "none" }}>
         <CategoryChip label="All" active={category === "all"} onClick={() => setCategory("all")} />
         <CategoryChip label="Saved" active={category === "saved"} onClick={() => setCategory("saved")} />
         {moodTags.map((tag) => (
@@ -349,11 +477,11 @@ export function MusicTab({ reloadKey, player, onOpenUploads }: MusicTabProps) {
         ))}
       </Flex>
 
-      <Box maxH="330px" overflowY="auto" pr="2px">
-        <Stack gap="3px">
+      <Box maxH="330px" overflowY="auto" mx="-1" px="1">
+        <Stack gap="1">
           {groups.brand.length > 0 ? (
             <>
-              <Text fontSize="12px" fontWeight="500" color="studio.fgMuted" px="8px" pb="2px">Brand</Text>
+              <Text fontSize="12px" fontWeight="500" color="studio.fgSubtle" px="2" pb="1">Brand</Text>
               {groups.brand.map((asset) => (
                 <TrackRow
                   key={asset.id}
@@ -364,51 +492,37 @@ export function MusicTab({ reloadKey, player, onOpenUploads }: MusicTabProps) {
                 />
               ))}
               {groups.library.length > 0 ? (
-                <Text fontSize="12px" fontWeight="500" color="studio.fgMuted" px="8px" pt="8px" pb="2px">Library</Text>
+                <Text fontSize="12px" fontWeight="500" color="studio.fgSubtle" px="2" pt="3" pb="1">Library</Text>
               ) : null}
             </>
           ) : null}
           {loading ? (
-            <Flex align="center" gap="7px" py="18px" justify="center" color="studio.fgMuted">
+            <Flex align="center" gap="2" py="6" justify="center" color="studio.fgMuted">
               <Box animation="spin">
                 <LoaderCircle size={14} />
               </Box>
               <Text fontSize="13px">Loading music…</Text>
             </Flex>
           ) : error ? (
-            <Stack align="center" gap="6px" py="14px" role="alert">
-              <Text fontSize="12px" color="studio.danger" textAlign="center">{error}</Text>
-              <Flex as="button" minH="24px" px="8px" align="center" color="studio.fg" fontSize="13px" onClick={retry}>
-                Retry
-              </Flex>
-            </Stack>
+            <AudioListError message={error} onRetry={retry} />
           ) : groups.library.length === 0 && groups.brand.length === 0 ? (
-            <Stack align="center" gap="8px" py="28px" px="12px" textAlign="center">
-              <Music size={20} />
-              <Text fontSize="13px" color="studio.fgMuted" lineHeight="1.5">
-                {category === "saved"
-                  ? "Save tracks with the star and they’ll collect here."
-                  : search
-                    ? "No music matches this search."
-                    : "No royalty-free music has been added yet."}
-              </Text>
-              {!search && category !== "saved" ? (
-                <Flex
-                  as="button"
-                  minH="24px"
-                  minW="24px"
-                  align="center"
-                  gap="5px"
-                  color="studio.fg"
-                  fontSize="13px"
-                  fontWeight="500"
-                  cursor="pointer"
-                  onClick={onOpenUploads}
-                >
-                  <Upload size={12} /> Upload a track
-                </Flex>
-              ) : null}
-            </Stack>
+            <PanelEmpty
+              icon={<Music size={18} />}
+              title={category === "saved" ? "No saved tracks" : search ? "No matches" : "No music yet"}
+              actions={
+                !search && category !== "saved" ? (
+                  <Flex {...softActionProps} onClick={onOpenUploads}>
+                    <Upload size={13} /> Upload a track
+                  </Flex>
+                ) : null
+              }
+            >
+              {category === "saved"
+                ? "Star a track and it collects here."
+                : search
+                  ? "Try a different search."
+                  : "Royalty-free tracks will show up here."}
+            </PanelEmpty>
           ) : (
             groups.library.map((asset) => (
               <TrackRow
@@ -421,59 +535,28 @@ export function MusicTab({ reloadKey, player, onOpenUploads }: MusicTabProps) {
               />
             ))
           )}
-          {loadMoreError ? (
-            <Stack align="center" gap="6px" role="alert">
-              <Text fontSize="12px" color="studio.danger">{loadMoreError}</Text>
-              <Flex as="button" minH="24px" minW="24px" px="8px" align="center" fontSize="13px" onClick={loadMore}>Retry</Flex>
-            </Stack>
-          ) : hasMore ? (
-            <Flex as="button" minH="32px" minW="24px" align="center" justify="center" fontSize="13px" aria-disabled={loadingMore} onClick={loadingMore ? undefined : loadMore}>
-              {loadingMore ? "Loading…" : "Load more"}
-            </Flex>
-          ) : null}
+          <AudioPager error={loadMoreError} hasMore={hasMore} loading={loadingMore} onLoadMore={loadMore} />
         </Stack>
       </Box>
 
       {music.assetId || music.url ? (
-        <Flex
-          align="center"
-          justify="space-between"
-          gap="8px"
-          px="14px"
-          py="12px"
-          bg="studio.subtle"
-          borderRadius="10px"
-        >
-          <Flex align="center" gap="10px" minW="0">
-            <Music size={15} />
+        <Flex align="center" justify="space-between" gap="2" p="2" pe="3" bg="studio.subtle" borderRadius="12px">
+          <Flex align="center" gap="3" minW="0">
+            <Flex boxSize="32px" flexShrink={0} align="center" justify="center" borderRadius="full" bg="studio.accentSubtle" color="studio.accentFg">
+              <Music size={15} />
+            </Flex>
             <Text fontSize="13px" color="studio.fg" fontWeight="500" truncate>
               {music.title ?? "Music applied"}
             </Text>
           </Flex>
-          <Flex as="button" aria-label="Remove music" color="studio.fgMuted" onClick={clearMusic}>
-            <X size={13} />
+          <Flex as="button" aria-label="Remove music" minW="24px" minH="24px" align="center" justify="center" color="studio.fgMuted" cursor="pointer" _hover={{ color: "studio.fg" }} onClick={clearMusic}>
+            <X size={14} />
           </Flex>
         </Flex>
       ) : null}
 
-      <Flex
-        as="button"
-        align="center"
-        justify="space-between"
-        color="studio.fgMuted"
-        fontSize="13px"
-        fontWeight="500"
-        cursor="pointer"
-        _hover={{ color: "studio.fg" }}
-        onClick={() => setShowLinkInput((value) => !value)}
-      >
-        <Flex align="center" gap="8px">
-          <Link2 size={14} /> Paste a link instead
-        </Flex>
-        <ChevronDown size={14} style={{ transform: showLinkInput ? "rotate(180deg)" : undefined }} />
-      </Flex>
-      {showLinkInput ? (
-        <Stack gap="7px">
+      <Disclosure icon={<Link2 size={14} />} label="Paste a link instead" open={showLinkInput} onToggle={() => setShowLinkInput((value) => !value)}>
+        <Stack gap="2">
           <Input
             aria-label="Music URL"
             placeholder="https://example.com/background.mp3"
@@ -484,7 +567,7 @@ export function MusicTab({ reloadKey, player, onOpenUploads }: MusicTabProps) {
             fontSize="13px"
             {...softFieldProps}
           />
-          <Flex gap="7px">
+          <Flex gap="2">
             <Input
               aria-label="Track label"
               placeholder="Track label"
@@ -499,51 +582,31 @@ export function MusicTab({ reloadKey, player, onOpenUploads }: MusicTabProps) {
               as="button"
               align="center"
               justify="center"
-              px="16px"
+              px="4"
               borderRadius="10px"
               bg="studio.fg"
               color="studio.canvas"
               fontSize="13px"
               fontWeight="500"
+              cursor="pointer"
               onClick={applyLink}
             >
               Apply
             </Flex>
           </Flex>
         </Stack>
-      ) : null}
+      </Disclosure>
 
-      <Flex
-        as="button"
-        align="center"
-        justify="space-between"
-        h="40px"
-        px="12px"
-        bg="studio.subtle"
-        borderRadius="10px"
-        color="studio.fg"
-        fontSize="13px"
-        fontWeight="500"
-        cursor="pointer"
-        _hover={{ bg: "studio.raised" }}
-        onClick={() => setShowMix((value) => !value)}
-      >
-        <Flex align="center" gap="8px">
-          <SlidersHorizontal size={14} /> Mix & timing
-        </Flex>
-        <ChevronDown size={14} style={{ transform: showMix ? "rotate(180deg)" : undefined }} />
-      </Flex>
-
-      {showMix ? (
-        <Stack gap="14px" p="14px" bg="studio.subtle" borderRadius="10px">
+      <Disclosure icon={<SlidersHorizontal size={14} />} label="Mix & timing" open={showMix} onToggle={() => setShowMix((value) => !value)}>
+        <Stack gap="4" px="1">
           {([
             ["Volume", music.volume, 0, 100, 1, "%", "Music volume", "music-volume"],
             ["Start", Math.min(music.startOffsetSec, startOffsetMaxSec), 0, startOffsetMaxSec, 0.5, "s", "Music start offset", "music-start-offset"],
             ["Fade in", music.fadeInSec, 0, 5, 0.1, "s", "Music fade in", "music-fade-in"],
             ["Fade out", music.fadeOutSec, 0, 5, 0.1, "s", "Music fade out", "music-fade-out"],
           ] as const).map(([label, value, min, max, step, suffix, aria, coalesceKey]) => (
-            <Flex key={label} align="center" gap="8px">
-              <Text fontSize="12px" color="studio.fgMuted" w="56px" flexShrink={0}>{label}</Text>
+            <Flex key={label} align="center" gap="3">
+              <Text fontSize="13px" color="studio.fgMuted" w="56px" flexShrink={0}>{label}</Text>
               <Slider.Root
                 aria-label={[aria]}
                 value={[value]}
@@ -564,12 +627,12 @@ export function MusicTab({ reloadKey, player, onOpenUploads }: MusicTabProps) {
               >
                 <Slider.Control><Slider.Track><Slider.Range /></Slider.Track><Slider.Thumbs /></Slider.Control>
               </Slider.Root>
-              <Text fontVariantNumeric="tabular-nums" fontSize="12px" color="studio.fgMuted" w="40px" textAlign="right">
+              <Text textStyle="data" fontSize="12px" color="studio.fgMuted" w="44px" textAlign="right">
                 {suffix === "%" ? Math.round(value) : value.toFixed(1)}{suffix}
               </Text>
             </Flex>
           ))}
-          <Flex align="center" justify="space-between" pt="2px">
+          <Flex align="center" justify="space-between" gap="3" pt="1">
             <Stack gap="0">
               <Text fontSize="13px" color="studio.fg" fontWeight="500">Duck under speech</Text>
               <Text fontSize="12px" color="studio.fgSubtle">Lower music while people talk.</Text>
@@ -578,21 +641,25 @@ export function MusicTab({ reloadKey, player, onOpenUploads }: MusicTabProps) {
               as="button"
               aria-pressed={music.ducking}
               aria-label={music.ducking ? "Disable ducking" : "Enable ducking"}
-              h="30px"
-              px="14px"
+              h="28px"
+              minW="48px"
+              px="3"
               align="center"
+              justify="center"
               borderRadius="full"
               bg={music.ducking ? "studio.accent" : "studio.raised"}
-              color={music.ducking ? "studio.canvas" : "studio.fgMuted"}
+              color={music.ducking ? "white" : "studio.fgMuted"}
               fontSize="12px"
               fontWeight="500"
+              cursor="pointer"
+              transition="background 120ms ease, color 120ms ease"
               onClick={() => updateMusic({ ducking: !music.ducking })}
             >
               {music.ducking ? "On" : "Off"}
             </Flex>
           </Flex>
         </Stack>
-      ) : null}
+      </Disclosure>
     </Stack>
   );
 }
