@@ -454,6 +454,10 @@ export default async function ProjectDetailPage({
 				quotaBlockedMidFlight
 			: pipelineStates.hasUnfinishedProcessing || !renderStageSucceeded);
 
+	// The processing panel draws the stages itself, so the header's stepper
+	// only shows where that panel doesn't (the other tabs, or a finished run).
+	const processingPanelVisible = activeTab === "clips" && showProcessingPanel;
+
 	const steps: PipelineStepView[] = [
 		{
 			label: "Ingest",
@@ -627,10 +631,12 @@ export default async function ProjectDetailPage({
 							</MediaWell>
 
 							<Stack flex="1" minW="0" gap="3">
-								<PipelineStepper
-									steps={steps}
-									workflowRunId={activeRun?.workflowRunId ?? null}
-								/>
+								{processingPanelVisible ? null : (
+									<PipelineStepper
+										steps={steps}
+										workflowRunId={activeRun?.workflowRunId ?? null}
+									/>
+								)}
 								{isSourceExpired && (
 									<Flex align="center" gap="2" color="fg.muted">
 										<Info size={13} aria-hidden />

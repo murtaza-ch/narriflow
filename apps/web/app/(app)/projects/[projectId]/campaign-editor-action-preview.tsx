@@ -2,9 +2,10 @@
 
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import Link from "next/link";
-import { Box, Flex, NativeSelect, Stack, Text } from "@chakra-ui/react";
+import { Box, Flex, Grid, NativeSelect, Stack, Text } from "@chakra-ui/react";
 import { AlertTriangle, Check, LayoutTemplate, Palette, Sparkles } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
+import { SegmentedControl } from "@narriflow/ui/components/segmented-control";
 import { Spinner } from "@narriflow/ui/components/spinner";
 import { userErrorMessage } from "@narriflow/validators";
 import {
@@ -92,7 +93,6 @@ type CampaignEditorActionPreflight = {
 function actionCopy(kind: CampaignEditorActionKind) {
   if (kind === "brand_profile") {
     return {
-      title: "Apply project Brand Profile",
       description:
         "Restores the Project’s frozen caption style and makes each clip inherit its frozen logo presentation.",
       icon: <Sparkles size={15} />,
@@ -100,18 +100,157 @@ function actionCopy(kind: CampaignEditorActionKind) {
   }
   if (kind === "style") {
     return {
-      title: "Apply style preset",
       description:
         "Applies one member style through the same caption reducer as Studio. Clip-specific size and position stay intact.",
       icon: <Palette size={15} />,
     };
   }
   return {
-    title: "Add intro or outro",
     description:
       "Copies a frozen Scene Template into every selected editor document. Later template edits cannot change these clips.",
     icon: <LayoutTemplate size={15} />,
   };
+}
+
+/** What a clip's row says about it: done, needs a look, stopped, or still running. */
+export type OutcomeTone = "ok" | "attention" | "failed" | "progress";
+
+const OUTCOME_MARKS: Record<OutcomeTone, { bg: string; fg: string }> = {
+  ok: { bg: "accent.subtle", fg: "accent.fg" },
+  attention: { bg: "warning.subtle", fg: "warning.fg" },
+  failed: { bg: "danger.subtle", fg: "danger.fg" },
+  progress: { bg: "bg.muted", fg: "fg.muted" },
+};
+
+/** A round mark: the colour and glyph say the outcome before the words do. */
+export function OutcomeMark({ tone, large = false }: { tone: OutcomeTone; large?: boolean }) {
+  const colors = OUTCOME_MARKS[tone];
+  return (
+    <Flex
+      boxSize={large ? "10" : "6"}
+      flexShrink={0}
+      align="center"
+      justify="center"
+      borderRadius="full"
+      bg={colors.bg}
+      color={colors.fg}
+      aria-hidden="true"
+    >
+      {tone === "progress" ? (
+        <Spinner size="xs" />
+      ) : tone === "ok" ? (
+        <Check size={large ? 18 : 13} strokeWidth={2.75} />
+      ) : (
+        <AlertTriangle size={large ? 17 : 12} strokeWidth={2.25} />
+      )}
+    </Flex>
+  );
+}
+
+/** One clip in a drawer list, as a soft row: optional outcome mark, name, detail, trailing facts. */
+export function ClipOutcomeRow({
+  tone,
+  title,
+  detail,
+  trailing,
+}: {
+  tone?: OutcomeTone;
+  title: ReactNode;
+  detail?: ReactNode;
+  trailing?: ReactNode;
+}) {
+  return (
+    <Flex align="center" gap="3" px="3" py="2.5" borderRadius="l2" bg="bg.soft">
+      {tone ? <OutcomeMark tone={tone} /> : null}
+      <Box flex="1" minW="0">
+        <Text fontSize="13px" fontWeight="500" lineHeight="1.35">
+          {title}
+        </Text>
+        {detail ? (
+          <Text fontSize="12px" color="fg.muted" lineHeight="1.35">
+            {detail}
+          </Text>
+        ) : null}
+      </Box>
+      {trailing ? (
+        <Box flexShrink={0} textAlign="end">
+          {trailing}
+        </Box>
+      ) : null}
+    </Flex>
+  );
+}
+
+/** A section heading with its running tally on the right. */
+export function CampaignSectionHead({ label, summary }: { label: string; summary?: ReactNode }) {
+  return (
+    <Flex align="baseline" justify="space-between" gap="3" mb="2.5">
+      <Text textStyle="eyebrow" color="fg.muted">
+        {label}
+      </Text>
+      {summary ? (
+        <Text fontSize="12px" fontVariantNumeric="tabular-nums" color="fg.muted">
+          {summary}
+        </Text>
+      ) : null}
+    </Flex>
+  );
+}
+
+/** Counts as soft tiles; a tone tints a tile only while its count is above zero. */
+export function CampaignStatTiles({
+  items,
+}: {
+  items: ReadonlyArray<{ label: string; value: number | string; tone?: "accent" | "warning" | "danger" }>;
+}) {
+  return (
+    <Grid templateColumns={`repeat(${items.length}, minmax(0, 1fr))`} gap="2">
+      {items.map(({ label, value, tone }) => {
+        const lit = tone !== undefined && Number(value) > 0;
+        return (
+          <Box key={label} px="3" py="2.5" borderRadius="l2" bg={lit ? `${tone}.subtle` : "bg.soft"}>
+            <Text
+              fontSize="17px"
+              fontWeight="550"
+              lineHeight="1.2"
+              fontVariantNumeric="tabular-nums"
+              color={lit ? `${tone}.fg` : "fg"}
+            >
+              {value}
+            </Text>
+            <Text fontSize="11px" color={lit ? `${tone}.fg` : "fg.subtle"} mt="0.5">
+              {label}
+            </Text>
+          </Box>
+        );
+      })}
+    </Grid>
+  );
+}
+
+/** A soft notice with its glyph: a warning to look at, or an error that stopped the action. */
+export function CampaignNotice({
+  tone = "warning",
+  role,
+  action,
+  children,
+}: {
+  tone?: "warning" | "danger";
+  role?: "alert";
+  action?: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <Flex role={role} align="center" gap="2.5" px="3" py="2.5" borderRadius="l2" bg={`${tone}.subtle`}>
+      <Box color={`${tone}.fg`} flexShrink={0} aria-hidden="true">
+        <AlertTriangle size={14} />
+      </Box>
+      <Text fontSize="13px" flex="1" color={tone === "danger" ? "danger.fg" : "fg"}>
+        {children}
+      </Text>
+      {action}
+    </Flex>
+  );
 }
 
 function SelectionRevisionPreview({
@@ -130,67 +269,47 @@ function SelectionRevisionPreview({
   );
   return (
     <Box>
-      <Flex align="baseline" justify="space-between" mb="2">
-        <Text textStyle="eyebrow" color="fg.muted">
-        Revision check
-        </Text>
-        <Text fontSize="12px" fontVariantNumeric="tabular-nums" color="fg.muted">
-          {loading
+      <CampaignSectionHead
+        label="Revision check"
+        summary={
+          loading
             ? "Checking…"
             : preflight
               ? `${preflight.counts.eligible} eligible · ${preflight.counts.unchanged} unchanged · ${preflight.counts.stale + preflight.counts.ineligible} attention`
-              : `${state.selectedCount} selected`}
-        </Text>
-      </Flex>
-      <Stack gap="0">
-      {state.selectedItems.map((item, index) => {
+              : `${state.selectedCount} selected`
+        }
+      />
+      <Stack gap="1.5">
+        {state.selectedItems.map((item, index) => {
           const result = itemById.get(item.clipId);
           const attention = result?.status === "stale" || result?.status === "ineligible";
           return (
-            <Flex
+            <ClipOutcomeRow
               key={item.clipId}
-              align="center"
-              justify="space-between"
-              py="2.5"
-              borderBottomWidth="1px"
-              borderColor="border.subtle"
-            >
-              <Flex align="center" gap="2">
-                {loading ? (
-                  <Spinner size="xs" />
-                ) : unavailable || !result ? (
-                  <AlertTriangle size={13} />
-                ) : attention ? (
-                  <AlertTriangle size={13} />
-                ) : (
-                  <Box color="success.fg" display="flex">
-                  <Check size={13} />
-                  </Box>
-                )}
-                <Box>
-                  <Text fontSize="sm">Clip {index + 1}</Text>
-                  {result?.code ? (
-                    <Text fontSize="xs" color="fg.muted">
-                      {userErrorMessage(result.code)}
-                    </Text>
-                  ) : result?.status === "unchanged" ? (
-                    <Text fontSize="xs" color="fg.muted">Already equivalent</Text>
-                  ) : unavailable ? (
-                    <Text fontSize="xs" color="fg.muted">No action target available</Text>
-                  ) : null}
-                </Box>
-              </Flex>
-              <Box textAlign="end">
-                <Text fontSize="12px" fontVariantNumeric="tabular-nums" color="fg.muted">
-                revision {item.expectedEditorRevision}
-                </Text>
-                {result?.status ? (
-                <Text textStyle="eyebrow" fontSize="12px" color={attention ? "warning.fg" : "fg.muted"}>
-                    {result.status}
+              tone={loading ? "progress" : unavailable || !result || attention ? "attention" : "ok"}
+              title={`Clip ${index + 1}`}
+              detail={
+                result?.code
+                  ? userErrorMessage(result.code)
+                  : result?.status === "unchanged"
+                    ? "Already equivalent"
+                    : unavailable
+                      ? "No action target available"
+                      : null
+              }
+              trailing={
+                <>
+                  <Text fontSize="12px" fontVariantNumeric="tabular-nums" color="fg.muted">
+                    revision {item.expectedEditorRevision}
                   </Text>
-                ) : null}
-              </Box>
-            </Flex>
+                  {result?.status && result.status !== "eligible" ? (
+                    <Text fontSize="11px" color={attention ? "warning.fg" : "fg.subtle"} textTransform="capitalize">
+                      {result.status}
+                    </Text>
+                  ) : null}
+                </>
+              }
+            />
           );
         })}
       </Stack>
@@ -498,28 +617,9 @@ export function CampaignEditorActionPreview({
 
   return (
     <Stack gap="5">
-      <Flex align="flex-start" gap="3">
-        <Flex
-        flexShrink={0}
-        w="32px"
-        h="32px"
-        align="center"
-        justify="center"
-        borderRadius="full"
-        bg="bg.soft"
-        color="fg.muted"
-        >
-        {copy.icon}
-        </Flex>
-        <Box>
-        <Text textStyle="title" fontSize="md">
-            {copy.title}
-          </Text>
-          <Text fontSize="xs" color="fg.muted" mt="1">
-            {copy.description}
-          </Text>
-        </Box>
-      </Flex>
+      <Text fontSize="13px" color="fg.muted">
+        {copy.description}
+      </Text>
 
       {kind === "brand_profile" ? (
         catalog?.profile ? (
@@ -586,21 +686,17 @@ export function CampaignEditorActionPreview({
 
       {kind === "scene" ? (
         <Stack gap="3">
-          <Flex gap="1">
-            {([['start', 'Intro'], ['end', 'Outro']] as const).map(([value, label]) => (
-              <Button
-                key={value}
-                flex="1"
-                size="sm"
-                variant={placement === value ? "subtle" : "ghost"}
-                color={placement === value ? "fg" : "fg.muted"}
-                aria-pressed={placement === value}
-                onClick={() => setPlacement(value)}
-              >
-                {label}
-              </Button>
-            ))}
-          </Flex>
+          <SegmentedControl
+            aria-label="Placement"
+            w="full"
+            css={{ "& [data-part=item]": { flex: 1, justifyContent: "center" } }}
+            items={[
+              { label: "Intro", value: "start" },
+              { label: "Outro", value: "end" },
+            ]}
+            value={placement}
+            onValueChange={(value) => setPlacement(value as typeof placement)}
+          />
           <Box>
             <Text textStyle="eyebrow" color="fg.muted" mb="1.5">Scene Template</Text>
             <NativeSelect.Root size="sm" disabled={scenes.length === 0}>
@@ -649,32 +745,21 @@ export function CampaignEditorActionPreview({
       />
 
       {previewError ? (
-        <Flex role="alert" p="3" gap="2" color="warning.fg" bg="warning.subtle" borderStartWidth="3px" borderStartColor="warning.solid">
-          <AlertTriangle size={14} />
-          <Text fontSize="xs">{previewError}</Text>
-        </Flex>
+        <CampaignNotice role="alert">{previewError}</CampaignNotice>
       ) : null}
 
-      <Flex py="3" justify="space-between" gap="3">
-        <Box>
-          <Text fontSize="sm" fontVariantNumeric="tabular-nums">{state.selectedCount}</Text>
-          <Text textStyle="eyebrow" fontSize="12px" color="fg.muted">Selected</Text>
-        </Box>
-        <Box textAlign="center">
-          <Text fontSize="sm" fontVariantNumeric="tabular-nums">0 min</Text>
-          <Text textStyle="eyebrow" fontSize="12px" color="fg.muted">Processing usage</Text>
-        </Box>
-        <Box textAlign="end">
-          <Text fontSize="sm" fontVariantNumeric="tabular-nums">1 max</Text>
-          <Text textStyle="eyebrow" fontSize="12px" color="fg.muted">Revision / changed clip</Text>
-        </Box>
-      </Flex>
+      <CampaignStatTiles
+        items={[
+          { label: "Selected", value: state.selectedCount },
+          { label: "Processing usage", value: "0 min" },
+          { label: "Revision / changed clip", value: "1 max" },
+        ]}
+      />
 
       {error ? (
-        <Flex role="alert" p="3" gap="2" color="danger.fg" bg="danger.subtle" borderStartWidth="3px" borderStartColor="danger.solid">
-          <AlertTriangle size={14} />
-          <Text fontSize="xs">{error}</Text>
-        </Flex>
+        <CampaignNotice tone="danger" role="alert">
+          {error}
+        </CampaignNotice>
       ) : null}
 
       {loadState === "error" ? null : (
@@ -701,12 +786,14 @@ export function CampaignEditorActionPreview({
 /** A missing brand prerequisite, with the way to where it's made. */
 function BrandKitPrerequisite({ children }: { children: ReactNode }) {
   return (
-    <Flex p="3" gap="2" align="center" borderStartWidth="3px" borderStartColor="warning.solid" bg="warning.subtle">
-      <AlertTriangle size={14} />
-      <Text fontSize="xs" flex="1">{children}</Text>
-      <Button size="xs" variant="ghost" asChild>
-        <Link href="/brand-kit">Open Brand Kit</Link>
-      </Button>
-    </Flex>
+    <CampaignNotice
+      action={
+        <Button size="xs" variant="ghost" asChild>
+          <Link href="/brand-kit">Open Brand Kit</Link>
+        </Button>
+      }
+    >
+      {children}
+    </CampaignNotice>
   );
 }

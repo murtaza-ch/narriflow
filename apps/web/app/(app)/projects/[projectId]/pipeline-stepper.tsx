@@ -1,7 +1,7 @@
 "use client";
 
 import { Box, Flex, Stack, Text } from "@chakra-ui/react";
-import { AudioLines, Circle, Download, Film, ScanSearch, Send, type LucideIcon } from "lucide-react";
+import { AlertTriangle, Check } from "lucide-react";
 import {
   mergePipelineStepsWithLiveEvents,
   pipelineStepStateWord,
@@ -10,21 +10,18 @@ import {
 import type { PipelineStepState } from "@narriflow/validators";
 import { useProjectEvents } from "./project-events-provider";
 
-const STEP_ICONS: Record<string, LucideIcon> = {
-  Ingest: Download,
-  Transcribe: AudioLines,
-  Detect: ScanSearch,
-  Render: Film,
-  Publish: Send,
+const LABEL_COLORS: Record<PipelineStepState, string> = {
+  done: "fg.muted",
+  active: "fg",
+  failed: "danger.fg",
+  todo: "fg.subtle",
 };
 
-const STEP_COLORS: Record<PipelineStepState, { bg: string; fg: string }> = {
-  done: { bg: "accent.subtle", fg: "accent.fg" },
-  active: { bg: "accent.solid", fg: "accent.contrast" },
-  failed: { bg: "danger.subtle", fg: "danger.fg" },
-  todo: { bg: "bg.soft", fg: "fg.muted" },
-};
-
+/**
+ * The run as one segment per step, drawn like the processing panel's: done
+ * fills, the running step shimmers, a stop shows in danger. Step progress is
+ * not known here, so the running segment always shimmers.
+ */
 export function PipelineStepper({
   steps,
   workflowRunId,
@@ -47,58 +44,48 @@ export function PipelineStepper({
       listStyleType="none"
       m="0"
       p="0"
+      gap="1.5"
       align="flex-start"
     >
-      {liveSteps.map((step, index) => {
-        const colors = STEP_COLORS[step.state];
-        const StageIcon = STEP_ICONS[step.label] ?? Circle;
+      {liveSteps.map((step) => {
         const stateWord = pipelineStepStateWord(step.state, step.status)
           ?? (step.state === "done" ? "Complete" : "Not started");
-        const isLast = index === liveSteps.length - 1;
         return (
           <Stack
             key={step.label}
             as="li"
             aria-current={step.state === "active" ? "step" : undefined}
             aria-label={`${step.label}: ${stateWord}`}
-            position="relative"
-            flex={isLast ? "0 0 auto" : "1"}
+            flex="1"
             minW="0"
-            gap="2.5"
-            align={isLast ? "flex-end" : "flex-start"}
+            gap="2"
           >
-            {!isLast && (
-              <Box
-                aria-hidden="true"
-                position="absolute"
-                top="18px"
-                left="48px"
-                w="calc(100% - 60px)"
-                h="1px"
-                bg={step.state === "done" ? "accent.solid" : "bg.muted"}
-              />
-            )}
-            <Flex align="center" aria-hidden="true">
-              <Flex
-                w="36px"
-                h="36px"
-                align="center"
-                justify="center"
-                borderRadius="full"
-                bg={colors.bg}
-                color={colors.fg}
-                flexShrink={0}
-              >
-                <StageIcon size={16} strokeWidth={1.75} />
-              </Flex>
+            <Box aria-hidden="true" h="6px" borderRadius="full" overflow="hidden" bg="bg.muted">
+              {step.state === "done" ? (
+                <Box h="full" bg="accent.solid" borderRadius="full" />
+              ) : step.state === "failed" ? (
+                <Box h="full" bg="danger.solid" borderRadius="full" />
+              ) : step.state === "active" ? (
+                <Box
+                  h="full"
+                  backgroundImage="linear-gradient(90deg, transparent 20%, {colors.accent.solid} 50%, transparent 80%)"
+                  backgroundSize="200% 100%"
+                  animation="shimmer"
+                />
+              ) : null}
+            </Box>
+            <Flex align="center" gap="1" color={LABEL_COLORS[step.state]} aria-hidden="true">
+              {step.state === "done" ? (
+                <Box as="span" display="inline-flex" color="accent.fg">
+                  <Check size={12} strokeWidth={3} />
+                </Box>
+              ) : step.state === "failed" ? (
+                <AlertTriangle size={12} strokeWidth={2.25} />
+              ) : null}
+              <Text fontSize="12px" fontWeight="500" truncate>
+                {step.label}
+              </Text>
             </Flex>
-            <Text
-              fontSize="xs"
-              fontWeight="medium"
-              color={step.state === "failed" ? "danger.fg" : step.state === "todo" ? "fg.subtle" : step.state === "active" ? "fg" : "fg.muted"}
-            >
-              {step.label}
-            </Text>
           </Stack>
         );
       })}

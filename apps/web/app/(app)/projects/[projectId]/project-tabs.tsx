@@ -3,7 +3,18 @@
 import type { ReactNode } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Box, Tabs } from "@chakra-ui/react";
-import { projectTabFromSearchParam } from "./project-tab";
+import { type ProjectTab, projectTabFromSearchParam } from "./project-tab";
+
+const TABS: ReadonlyArray<{ value: ProjectTab; label: string }> = [
+	{ value: "clips", label: "Clips" },
+	{ value: "transcript", label: "Transcript" },
+	{ value: "repurpose", label: "Repurpose" },
+	{ value: "dubbing", label: "Dubbing" },
+	{ value: "review", label: "Review" },
+	{ value: "posts", label: "Posts" },
+	{ value: "analytics", label: "Analytics" },
+	{ value: "activity", label: "Activity" },
+];
 
 /** Project destinations preserve their URL selection. Clip composition stays in a drawer. */
 export function ProjectTabs({
@@ -49,115 +60,66 @@ export function ProjectTabs({
 				w="full"
 				minW="0"
 				maxW="full"
+				gap={{ base: "5", md: "7" }}
 				overflowX="auto"
 				overflowY="hidden"
 				css={{
-					scrollbarWidth: "thin",
-					scrollbarColor: "var(--chakra-colors-border-emphasized) transparent",
-					"&::-webkit-scrollbar": { height: "4px" },
-					"&::-webkit-scrollbar-thumb": {
-						background: "var(--chakra-colors-border-emphasized)",
-						borderRadius: "full",
-					},
+					// Eight short labels scroll sideways on a narrow screen; the bar
+					// draws no scrollbar of its own.
+					scrollbarWidth: "none",
+					"&::-webkit-scrollbar": { display: "none" },
 					"--indicator-thickness": "2px",
 				}}
 			>
-				<Tabs.Trigger
-					value="clips"
-					color="fg.muted"
-					flexShrink={0}
-					whiteSpace="nowrap"
-					_selected={{ color: "fg" }}
-				>
-					Clips
-					{clipsCountBadge}
-				</Tabs.Trigger>
-				<Tabs.Trigger
-					value="transcript"
-					color="fg.muted"
-					flexShrink={0}
-					whiteSpace="nowrap"
-					_selected={{ color: "fg" }}
-				>
-					Transcript
-				</Tabs.Trigger>
-				<Tabs.Trigger
-					value="repurpose"
-					color="fg.muted"
-					flexShrink={0}
-					whiteSpace="nowrap"
-					_selected={{ color: "fg" }}
-				>
-					Repurpose
-				</Tabs.Trigger>
-				<Tabs.Trigger
-					value="dubbing"
-					color="fg.muted"
-					flexShrink={0}
-					whiteSpace="nowrap"
-					_selected={{ color: "fg" }}
-				>
-					Dubbing
-				</Tabs.Trigger>
-				<Tabs.Trigger
-					value="review"
-					color="fg.muted"
-					flexShrink={0}
-					whiteSpace="nowrap"
-					_selected={{ color: "fg" }}
-				>
-					Review
-				</Tabs.Trigger>
-				<Tabs.Trigger
-					value="posts"
-					color="fg.muted"
-					flexShrink={0}
-					whiteSpace="nowrap"
-					_selected={{ color: "fg" }}
-				>
-					Posts
-				</Tabs.Trigger>
-				<Tabs.Trigger
-					value="analytics"
-					color="fg.muted"
-					flexShrink={0}
-					whiteSpace="nowrap"
-					_selected={{ color: "fg" }}
-				>
-					Analytics
-				</Tabs.Trigger>
-				<Tabs.Trigger
-					value="activity"
-					color="fg.muted"
-					flexShrink={0}
-					whiteSpace="nowrap"
-					_selected={{ color: "fg" }}
-				>
-					Activity
-				</Tabs.Trigger>
+				{TABS.map(({ value: tab, label }) => (
+					<Tabs.Trigger
+						key={tab}
+						value={tab}
+						px="0.5"
+						fontSize="14px"
+						color="fg.subtle"
+						flexShrink={0}
+						whiteSpace="nowrap"
+						transition="color 120ms ease"
+						_hover={{ color: "fg" }}
+						_selected={{ color: "fg" }}
+					>
+						{label}
+						{tab === "clips" ? clipsCountBadge : null}
+					</Tabs.Trigger>
+				))}
 			</Tabs.List>
 			{children}
 		</Tabs.Root>
 	);
 }
 
-/** Small count badge next to the Clips tab trigger — pulled out so
- *  page.tsx can compute it server-side and pass it through as a node. */
+/** Small count beside the Clips tab: a soft chip that turns accent with its tab.
+ *  Pulled out so page.tsx can compute it server-side and pass it through as a node. */
 export function TabCountBadge({ count }: { count: number }) {
 	if (count <= 0) return null;
 	return (
 		<Box
 			as="span"
 			ms="1.5"
+			minW="5"
 			px="1.5"
 			bg="bg.soft"
 			borderRadius="full"
 			display="inline-block"
+			textAlign="center"
 			fontWeight="500"
 			fontSize="11px"
-			lineHeight="1.5"
+			lineHeight="20px"
 			fontVariantNumeric="tabular-nums"
 			color="fg.muted"
+			transition="background-color 120ms ease, color 120ms ease"
+			css={{
+				"[role=tab][data-selected] > &": {
+					background: "var(--chakra-colors-accent-subtle)",
+					color: "var(--chakra-colors-accent-fg)",
+				},
+			}}
 		>
 			{count}
 		</Box>

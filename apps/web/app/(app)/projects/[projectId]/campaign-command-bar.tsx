@@ -13,13 +13,11 @@ import {
   Stack,
   Text,
 } from "@chakra-ui/react";
-import { Button } from "@narriflow/ui/components/button";
+import { Button, IconButton } from "@narriflow/ui/components/button";
 import { ActionMenu, type ActionMenuItem } from "@narriflow/ui/components/menu";
+import { SegmentedControl } from "@narriflow/ui/components/segmented-control";
 import {
-  AlertTriangle,
   Archive,
-  Check,
-  ChevronRight,
   Download,
   ExternalLink,
   Film,
@@ -28,7 +26,7 @@ import {
   Palette,
   RefreshCw,
   WandSparkles,
-  Trash2,
+  X,
 } from "lucide-react";
 import type {
   ApplyMotionSelectedInput,
@@ -55,8 +53,14 @@ import {
 } from "./campaign-command-state";
 import {
   CampaignEditorActionPreview,
+  CampaignNotice,
+  CampaignSectionHead,
+  CampaignStatTiles,
+  ClipOutcomeRow,
+  OutcomeMark,
   type CampaignEditorActionKind,
   type CampaignEditorOperationResult,
+  type OutcomeTone,
 } from "./campaign-editor-action-preview";
 
 type ManualBrollMotion = Extract<
@@ -136,13 +140,12 @@ function motionLabel(
   )?.label ?? value;
 }
 
-function outcomeColor(status: string) {
-  if (status === "succeeded" || status === "completed" || status === "unchanged") {
-    return "success.solid";
-  }
-  if (status === "stale" || status === "ineligible") return "warning.solid";
-  if (status === "failed") return "danger.solid";
-  return "accent.solid";
+/** How an item or operation status reads: done, needs a look, stopped, or still running. */
+function outcomeTone(status: string): OutcomeTone {
+  if (status === "succeeded" || status === "completed" || status === "unchanged") return "ok";
+  if (status === "stale" || status === "ineligible" || status === "partial") return "attention";
+  if (status === "failed") return "failed";
+  return "progress";
 }
 
 function actionLabel(state: CampaignCommandState) {
@@ -218,13 +221,13 @@ function MotionSelectionPreview({
 }) {
   return (
     <Flex
-      layerStyle="well"
       minH="116px"
       position="relative"
       overflow="hidden"
       align="center"
       justify="center"
-      bg="bg.subtle"
+      borderRadius="l2"
+      bg="bg.soft"
     >
       <Box
         key={
@@ -980,60 +983,118 @@ export function CampaignCommandBar({
           `/projects/${projectId}/clips/${state.selectedClipIds[0]}/studio`,
         ),
     },
-    {
-      value: "clear",
-      label: "Clear selection",
-      icon: <Trash2 size={14} />,
-      onSelect: onClear,
-    },
   ];
 
   if (state.selectedCount === 0) return null;
 
   return (
     <>
-      <Flex align="center" gap="2">
-        {state.primary === "prepare_exports" ? (
-          <RenderClipsButton
-            projectId={projectId}
-            disabled={false}
-            buttonLabel={actionLabel(state)}
-            isFreeTier={isFreeTier}
-            can1080pExport={can1080pExport}
-            clipIds={state.attentionItems.map((item) => item.clipId)}
-            size="sm"
-            defaultAspectRatio={defaultAspectRatio}
-          />
-        ) : state.primary === "render_selected" ? (
-          <RenderClipsButton
-            projectId={projectId}
-            disabled={false}
-            buttonLabel={actionLabel(state)}
-            isFreeTier={isFreeTier}
-            can1080pExport={can1080pExport}
-            clipIds={state.selectedClipIds}
-            size="sm"
-            defaultAspectRatio={defaultAspectRatio}
-          />
-        ) : state.primary ? (
-          <Button size="sm" onClick={runPrimary}>
-            <Archive size={13} />
-            <Text ms="1">{actionLabel(state)}</Text>
-          </Button>
-        ) : null}
-        <ActionMenu
-          ariaLabel="More campaign actions"
-          items={menuItems}
-          trigger={
-            <Button size="sm" variant="subtle" aria-label="More campaign actions">
-              <MoreHorizontal size={14} />
-              <Text display={{ base: "none", md: "inline" }} ms="1">
-                More
+      {/* Floating bar: one flat surface at the foot of the page while clips
+          are selected. It portals out so no scrolling ancestor clips it, and
+          its popovers open upward. */}
+      <Portal>
+        <Flex
+          position="fixed"
+          insetInline="0"
+          bottom={{ base: "4", md: "6" }}
+          justify="center"
+          px="3"
+          zIndex="sticky"
+          pointerEvents="none"
+        >
+          <Flex
+            role="region"
+            aria-label="Selected clips"
+            align="center"
+            gap="1.5"
+            p="2"
+            maxW="full"
+            bg="bg.raised"
+            // The raised fill separates the bar on graphite; porcelain adds a
+            // hairline (none on graphite), like every floating surface.
+            borderWidth="1px"
+            borderColor="border.card"
+            borderRadius="l3"
+            pointerEvents="auto"
+            animation="fade-up"
+          >
+            <Flex align="center" gap="2" ps="1.5" pe="0.5">
+              <Flex
+                minW="6"
+                h="6"
+                px="2"
+                align="center"
+                justify="center"
+                borderRadius="full"
+                bg="accent.subtle"
+                color="accent.fg"
+                fontSize="12px"
+                fontWeight="600"
+                fontVariantNumeric="tabular-nums"
+              >
+                {state.selectedCount}
+              </Flex>
+              <Text fontSize="13px" fontWeight="500" color="fg" whiteSpace="nowrap">
+                selected
               </Text>
-            </Button>
-          }
-        />
-      </Flex>
+              <IconButton
+                size="xs"
+                variant="ghost"
+                aria-label="Clear selection"
+                title="Clear selection"
+                onClick={onClear}
+              >
+                <X size={14} />
+              </IconButton>
+            </Flex>
+            {state.primary === "prepare_exports" ? (
+              <RenderClipsButton
+                projectId={projectId}
+                disabled={false}
+                buttonLabel={actionLabel(state)}
+                isFreeTier={isFreeTier}
+                can1080pExport={can1080pExport}
+                clipIds={state.attentionItems.map((item) => item.clipId)}
+                size="sm"
+                placement="top-start"
+                defaultAspectRatio={defaultAspectRatio}
+              />
+            ) : state.primary === "render_selected" ? (
+              <RenderClipsButton
+                projectId={projectId}
+                disabled={false}
+                buttonLabel={actionLabel(state)}
+                isFreeTier={isFreeTier}
+                can1080pExport={can1080pExport}
+                clipIds={state.selectedClipIds}
+                size="sm"
+                placement="top-start"
+                defaultAspectRatio={defaultAspectRatio}
+              />
+            ) : state.primary ? (
+              <Button size="sm" onClick={runPrimary}>
+                <Archive size={14} />
+                <Text ms="1">{actionLabel(state)}</Text>
+              </Button>
+            ) : null}
+            <ActionMenu
+              ariaLabel="More campaign actions"
+              positioning={{ placement: "top-end", gutter: 12 }}
+              items={menuItems}
+              trigger={
+                <IconButton
+                  size="sm"
+                  variant="subtle"
+                  aria-label="More campaign actions"
+                  title="More actions"
+                >
+                  <MoreHorizontal size={16} />
+                </IconButton>
+              }
+            />
+          </Flex>
+        </Flex>
+      </Portal>
 
       <Drawer.Root
         open={drawerOpen}
@@ -1046,22 +1107,25 @@ export function CampaignCommandBar({
           <Drawer.Positioner>
             <Drawer.Content>
               <Drawer.Header>
-              <Stack gap="1">
-              <Drawer.Title textStyle="title" fontSize="18px" fontWeight="500">
+                <Stack gap="0.5">
+                  <Drawer.Title textStyle="title" fontSize="18px" fontWeight="500">
                     {previewingBundle
                       ? "Review bundle"
                       : previewingRender
                         ? "Render selected"
-                      : editorActionKind === "brand_profile"
-                        ? "Project Brand Profile"
-                        : editorActionKind === "style"
-                          ? "Style preset"
-                          : editorActionKind === "scene"
-                            ? "Intro or outro"
-                      : previewingMotion
-                        ? "Apply motion"
-                        : operationTitle(operation?.action)}
+                        : editorActionKind === "brand_profile"
+                          ? "Project Brand Profile"
+                          : editorActionKind === "style"
+                            ? "Style preset"
+                            : editorActionKind === "scene"
+                              ? "Intro or outro"
+                              : previewingMotion
+                                ? "Apply motion"
+                                : operationTitle(operation?.action)}
                   </Drawer.Title>
+                  <Text fontSize="13px" color="fg.muted">
+                    {state.selectedCount} selected clip{state.selectedCount === 1 ? "" : "s"}
+                  </Text>
                 </Stack>
               </Drawer.Header>
               <Drawer.Body py="5">
@@ -1073,140 +1137,107 @@ export function CampaignCommandBar({
                     onApplied={receiveEditorActionResult}
                   />
                 ) : previewingRender ? (
-                  <Stack gap="4">
+                  <Stack gap="5">
                     <Box>
-                      <Text fontSize="sm" color="fg">
-                        Queue new render variants for all {state.selectedCount} selected
-                        {state.selectedCount === 1 ? " clip" : " clips"}.
+                      <Text fontSize="14px" fontWeight="500" color="fg">
+                        Queue new renders for all {state.selectedCount} selected
+                        {state.selectedCount === 1 ? " clip" : " clips"}
                       </Text>
-                      <Text fontSize="xs" color="fg.muted" mt="1">
-                        Choose any supported aspect ratio and resolution. Existing ready exports remain immutable.
+                      <Text fontSize="13px" color="fg.muted" mt="1">
+                        Pick formats and resolution next. Ready exports stay as they are.
                       </Text>
                     </Box>
-                    <Stack gap="0">
+                    <Stack gap="1.5">
                       {state.selectedItems.map((item, index) => (
-                        <Flex
+                        <ClipOutcomeRow
                           key={item.clipId}
-                          align="center"
-                          justify="space-between"
-                          py="2.5"
-                          borderBottomWidth="1px"
-                          borderColor="border.subtle"
-                        >
-                          <Text fontSize="sm">Clip {index + 1}</Text>
-                          <Text fontSize="12px" fontVariantNumeric="tabular-nums" color="fg.muted">
-                            revision {item.expectedEditorRevision}
-                          </Text>
-                        </Flex>
+                          title={`Clip ${index + 1}`}
+                          trailing={
+                            <Text fontSize="12px" fontVariantNumeric="tabular-nums" color="fg.muted">
+                              revision {item.expectedEditorRevision}
+                            </Text>
+                          }
+                        />
                       ))}
                     </Stack>
                   </Stack>
                 ) : previewingBundle ? (
                   <Stack gap="5">
                     <Box>
-                      <Text fontSize="sm" color="fg">
+                      <Text fontSize="14px" fontWeight="500" color="fg">
                         {bundlePreflightState === "loading"
                           ? "Checking the selected export revisions…"
                           : `${bundlePreflight?.counts.eligible ?? 0} exact export${bundlePreflight?.counts.eligible === 1 ? "" : "s"} will be frozen into one ZIP.`}
                       </Text>
-                      <Text fontSize="xs" color="fg.muted" mt="1">
-                        {defaultAspectRatio} · {resolution}
-                        {bundlePreflight
-                          ? ` · about ${formatBundleSize(bundlePreflight.estimatedSizeBytes)}`
-                          : " · server preflight"}
-                      </Text>
+                      <Flex align="center" gap="2" mt="1.5" wrap="wrap">
+                        <Flex h="6" px="2.5" align="center" borderRadius="full" bg="bg.soft" fontSize="12px" color="fg.muted" fontVariantNumeric="tabular-nums">
+                          {defaultAspectRatio} · {resolution}
+                        </Flex>
+                        <Flex h="6" px="2.5" align="center" borderRadius="full" bg="bg.soft" fontSize="12px" color="fg.muted" fontVariantNumeric="tabular-nums">
+                          {bundlePreflight
+                            ? `about ${formatBundleSize(bundlePreflight.estimatedSizeBytes)}`
+                            : "size on check"}
+                        </Flex>
+                      </Flex>
                     </Box>
                     {bundlePreflightState === "loading" ? (
                       <Flex align="center" gap="2" color="fg.muted">
                         <Spinner size="xs" />
-                        <Text fontSize="xs">Verifying revisions and immutable files</Text>
+                        <Text fontSize="13px">Verifying revisions and immutable files</Text>
                       </Flex>
                     ) : null}
                     {bundlePreflight &&
                     bundlePreflight.counts.stale + bundlePreflight.counts.ineligible > 0 ? (
-                      <Flex
-                        align="flex-start"
-                        gap="2"
-                        p="3"
-                        borderStartWidth="3px"
-                        borderStartColor="warning.solid"
-                        bg="warning.subtle"
-                      >
-                        <AlertTriangle size={14} />
-                        <Text fontSize="xs">
-                          {bundlePreflight.counts.stale + bundlePreflight.counts.ineligible} selected clip
-                          {bundlePreflight.counts.stale + bundlePreflight.counts.ineligible === 1 ? " needs" : "s need"} attention and will not be included.
-                        </Text>
-                      </Flex>
+                      <CampaignNotice>
+                        {bundlePreflight.counts.stale + bundlePreflight.counts.ineligible} selected clip
+                        {bundlePreflight.counts.stale + bundlePreflight.counts.ineligible === 1 ? " needs" : "s need"} attention and will not be included.
+                      </CampaignNotice>
                     ) : null}
-                    <Stack gap="0">
+                    <Stack gap="1.5">
                       {bundlePreflight?.items.map((item) => (
-                        <Flex
+                        <ClipOutcomeRow
                           key={item.clipId}
-                          align="center"
-                          justify="space-between"
-                          py="2.5"
-                          borderBottomWidth="1px"
-                          borderColor="border.subtle"
-                        >
-                          <Flex align="center" gap="2">
-                            {item.status === "eligible" ? (
-                              <Box color="success.fg" display="flex">
-                              <Check size={13} />
-                              </Box>
-                            ) : (
-                              <AlertTriangle size={13} />
-                            )}
-                            <Box>
-                              <Text fontSize="sm">
-                                Clip {clipsById.get(item.clipId) ?? "—"}
-                              </Text>
-                              <Text fontSize="xs" color="fg.muted">
-                                {item.status === "eligible"
-                                  ? `${item.aspectRatios.join(", ")} · ${formatBundleSize(item.estimatedSizeBytes)}`
-                                  : bundleAttentionMessage(item)}
-                              </Text>
-                            </Box>
-                          </Flex>
-                          <Text fontSize="12px" fontVariantNumeric="tabular-nums" color="fg.muted">
-                            {item.status === "stale" && item.currentEditorRevision !== null
-                              ? `${item.expectedEditorRevision} → ${item.currentEditorRevision}`
-                              : `revision ${item.expectedEditorRevision}`}
-                          </Text>
-                        </Flex>
+                          tone={item.status === "eligible" ? "ok" : "attention"}
+                          title={`Clip ${clipsById.get(item.clipId) ?? "—"}`}
+                          detail={
+                            item.status === "eligible"
+                              ? `${item.aspectRatios.join(", ")} · ${formatBundleSize(item.estimatedSizeBytes)}`
+                              : bundleAttentionMessage(item)
+                          }
+                          trailing={
+                            <Text fontSize="12px" fontVariantNumeric="tabular-nums" color="fg.muted">
+                              {item.status === "stale" && item.currentEditorRevision !== null
+                                ? `${item.expectedEditorRevision} → ${item.currentEditorRevision}`
+                                : `revision ${item.expectedEditorRevision}`}
+                            </Text>
+                          }
+                        />
                       ))}
                     </Stack>
                   </Stack>
                 ) : previewingMotion ? (
                   <Stack gap="5">
                     <Box>
-                      <Text fontSize="sm" color="fg">
-                        Apply one validated motion preset to {state.selectedCount} selected
-                        {state.selectedCount === 1 ? " clip" : " clips"}.
+                      <Text fontSize="14px" fontWeight="500" color="fg">
+                        Apply one motion preset to {state.selectedCount} selected
+                        {state.selectedCount === 1 ? " clip" : " clips"}
                       </Text>
-                      <Text fontSize="xs" color="fg.muted" mt="1">
+                      <Text fontSize="13px" color="fg.muted" mt="1">
                         Each clip keeps its own revision fence. Equivalent edits are recorded as unchanged.
                       </Text>
                     </Box>
 
-                    <Flex gap="1">
-                      {([
-                        ["clip_transition", "Clip transition"],
-                        ["manual_broll", "Manual B-roll"],
-                      ] as const).map(([value, label]) => (
-                        <Button
-                          key={value}
-                          flex="1"
-                          size="sm"
-                          variant={motionScope === value ? "subtle" : "ghost"}
-                          color={motionScope === value ? "fg" : "fg.muted"}
-                          aria-pressed={motionScope === value}
-                          onClick={() => setMotionScope(value)}
-                        >
-                          {label}
-                        </Button>
-                      ))}
-                    </Flex>
+                    <SegmentedControl
+                      aria-label="Motion scope"
+                      w="full"
+                      css={{ "& [data-part=item]": { flex: 1, justifyContent: "center" } }}
+                      items={[
+                        { label: "Clip transition", value: "clip_transition" },
+                        { label: "Manual B-roll", value: "manual_broll" },
+                      ]}
+                      value={motionScope}
+                      onValueChange={(value) => setMotionScope(value as typeof motionScope)}
+                    />
 
                     <MotionSelectionPreview change={motionChange} />
 
@@ -1224,8 +1255,7 @@ export function CampaignCommandBar({
                                   event.currentTarget.value as StudioTransition["type"],
                                 )
                               }
-                              
-                              >
+                            >
                               {TRANSITION_OPTIONS.map((option) => (
                                 <option key={option.value} value={option.value}>
                                   {option.label}
@@ -1238,10 +1268,10 @@ export function CampaignCommandBar({
                         <Box>
                           <Flex align="center" justify="space-between" mb="2">
                             <Text textStyle="eyebrow" color="fg.muted">
-                            Duration
+                              Duration
                             </Text>
                             <Text fontSize="12px" fontVariantNumeric="tabular-nums" color="fg.muted">
-                            {transitionDurationSec.toFixed(2)}s
+                              {transitionDurationSec.toFixed(2)}s
                             </Text>
                           </Flex>
                           <Slider.Root
@@ -1265,83 +1295,79 @@ export function CampaignCommandBar({
                         </Box>
                       </Stack>
                     ) : (
-                      <Stack gap="3">
-                      <Flex gap="3" direction={{ base: "column", sm: "row" }}>
-                        <Box flex="1">
-                          <Text textStyle="eyebrow" color="fg.muted" mb="1.5">
-                            Entrance
-                          </Text>
-                          <NativeSelect.Root size="sm">
-                            <NativeSelect.Field
-                              value={motionEntrance}
-                              onChange={(event) =>
-                                setMotionEntrance(
-                                  event.currentTarget.value as ManualBrollMotion["entrance"],
-                                )
-                              }
-                              
+                      <Stack gap="4">
+                        <Flex gap="3" direction={{ base: "column", sm: "row" }}>
+                          <Box flex="1">
+                            <Text textStyle="eyebrow" color="fg.muted" mb="1.5">
+                              Entrance
+                            </Text>
+                            <NativeSelect.Root size="sm">
+                              <NativeSelect.Field
+                                value={motionEntrance}
+                                onChange={(event) =>
+                                  setMotionEntrance(
+                                    event.currentTarget.value as ManualBrollMotion["entrance"],
+                                  )
+                                }
                               >
-                              {ENTRANCE_OPTIONS.map((option) => (
-                                <option key={option.value} value={option.value}>
-                                  {option.label}
-                                </option>
-                              ))}
-                            </NativeSelect.Field>
-                            <NativeSelect.Indicator />
-                          </NativeSelect.Root>
-                        </Box>
-                        <Box flex="1">
-                          <Text textStyle="eyebrow" color="fg.muted" mb="1.5">
-                            Exit
-                          </Text>
-                          <NativeSelect.Root size="sm">
-                            <NativeSelect.Field
-                              value={motionExit}
-                              onChange={(event) =>
-                                setMotionExit(
-                                  event.currentTarget.value as ManualBrollMotion["exit"],
-                                )
-                              }
-                              
+                                {ENTRANCE_OPTIONS.map((option) => (
+                                  <option key={option.value} value={option.value}>
+                                    {option.label}
+                                  </option>
+                                ))}
+                              </NativeSelect.Field>
+                              <NativeSelect.Indicator />
+                            </NativeSelect.Root>
+                          </Box>
+                          <Box flex="1">
+                            <Text textStyle="eyebrow" color="fg.muted" mb="1.5">
+                              Exit
+                            </Text>
+                            <NativeSelect.Root size="sm">
+                              <NativeSelect.Field
+                                value={motionExit}
+                                onChange={(event) =>
+                                  setMotionExit(
+                                    event.currentTarget.value as ManualBrollMotion["exit"],
+                                  )
+                                }
                               >
-                              {EXIT_OPTIONS.map((option) => (
-                                <option key={option.value} value={option.value}>
-                                  {option.label}
-                                </option>
-                              ))}
-                            </NativeSelect.Field>
-                            <NativeSelect.Indicator />
-                          </NativeSelect.Root>
-                        </Box>
-                      </Flex>
-                      <Box>
-                        <Flex align="center" justify="space-between" mb="2">
-                          <Text textStyle="eyebrow" color="fg.muted">Duration</Text>
-                          <Text fontSize="12px" fontVariantNumeric="tabular-nums" color="fg.muted">{motionDurationSec.toFixed(2)}s</Text>
+                                {EXIT_OPTIONS.map((option) => (
+                                  <option key={option.value} value={option.value}>
+                                    {option.label}
+                                  </option>
+                                ))}
+                              </NativeSelect.Field>
+                              <NativeSelect.Indicator />
+                            </NativeSelect.Root>
+                          </Box>
                         </Flex>
-                        <Slider.Root value={[motionDurationSec]} min={0.1} max={2} step={0.05} size="sm" colorPalette="accent" onValueChange={(details) => setMotionDurationSec(details.value[0] ?? 0.5)}>
-                          <Slider.Control><Slider.Track><Slider.Range /></Slider.Track><Slider.Thumbs /></Slider.Control>
-                        </Slider.Root>
-                      </Box>
+                        <Box>
+                          <Flex align="center" justify="space-between" mb="2">
+                            <Text textStyle="eyebrow" color="fg.muted">Duration</Text>
+                            <Text fontSize="12px" fontVariantNumeric="tabular-nums" color="fg.muted">{motionDurationSec.toFixed(2)}s</Text>
+                          </Flex>
+                          <Slider.Root value={[motionDurationSec]} min={0.1} max={2} step={0.05} size="sm" colorPalette="accent" onValueChange={(details) => setMotionDurationSec(details.value[0] ?? 0.5)}>
+                            <Slider.Control><Slider.Track><Slider.Range /></Slider.Track><Slider.Thumbs /></Slider.Control>
+                          </Slider.Root>
+                        </Box>
                       </Stack>
                     )}
 
                     <Box>
-                      <Flex align="baseline" justify="space-between" mb="2">
-                        <Text textStyle="eyebrow" color="fg.muted">
-                        Revision check
-                        </Text>
-                        <Text fontSize="12px" fontVariantNumeric="tabular-nums" color="fg.muted">
-                          {motionPreflightState === "loading"
+                      <CampaignSectionHead
+                        label="Revision check"
+                        summary={
+                          motionPreflightState === "loading"
                             ? "Checking current revisions…"
-                            : `${motionPreflight?.counts.eligible ?? 0} eligible · ${motionAttentionCount} attention`}
-                        </Text>
-                      </Flex>
-                      <Stack gap="0">
+                            : `${motionPreflight?.counts.eligible ?? 0} eligible · ${motionAttentionCount} attention`
+                        }
+                      />
+                      <Stack gap="1.5">
                         {motionPreflightState === "loading" ? (
                           <Flex align="center" gap="2" py="3">
                             <Spinner size="xs" />
-                            <Text fontSize="xs" color="fg.muted">
+                            <Text fontSize="13px" color="fg.muted">
                               Reading the latest clip edits…
                             </Text>
                           </Flex>
@@ -1349,144 +1375,69 @@ export function CampaignCommandBar({
                         {motionPreflight?.items.map((item, index) => {
                           const attention = item.status === "stale" || item.status === "ineligible";
                           return (
-                            <Flex
+                            <ClipOutcomeRow
                               key={item.clipId}
-                              align="center"
-                              justify="space-between"
-                              py="2.5"
-                              borderBottomWidth="1px"
-                              borderColor="border.subtle"
-                            >
-                              <Flex align="center" gap="2">
-                                {attention ? (
-                                  <AlertTriangle size={13} />
-                                ) : (
-                                  <Box color="success.fg" display="flex">
-                                  <Check size={13} />
-                                  </Box>
-                                )}
-                                <Box>
-                                  <Text fontSize="sm">Clip {index + 1}</Text>
-                                  {item.code ? (
-                                    <Text fontSize="xs" color="fg.muted">
-                                      {userErrorMessage(item.code)}
-                                    </Text>
-                                  ) : null}
-                                </Box>
-                              </Flex>
-                              <Text fontSize="12px" fontVariantNumeric="tabular-nums" color="fg.muted">
-                                {item.status} · revision {item.currentEditorRevision ?? "—"}
-                              </Text>
-                            </Flex>
+                              tone={attention ? "attention" : "ok"}
+                              title={`Clip ${index + 1}`}
+                              detail={item.code ? userErrorMessage(item.code) : null}
+                              trailing={
+                                <Text fontSize="12px" fontVariantNumeric="tabular-nums" color="fg.muted">
+                                  {item.status} · revision {item.currentEditorRevision ?? "—"}
+                                </Text>
+                              }
+                            />
                           );
                         })}
                       </Stack>
                     </Box>
 
                     {motionAttentionCount > 0 ? (
-                      <Flex
-                        align="flex-start"
-                        gap="2"
-                        p="3"
-                        borderStartWidth="3px"
-                        borderStartColor="warning.solid"
-                        bg="warning.subtle"
-                      >
-                        <AlertTriangle size={14} />
-                        <Text fontSize="xs">
-                          {(motionPreflight?.counts.eligible ?? 0) === 0
-                            ? "Resolve the stale or ineligible clips before applying this motion."
-                            : "Stale and ineligible clips will be recorded exactly as shown; eligible clips still apply."}
-                        </Text>
-                      </Flex>
+                      <CampaignNotice>
+                        {(motionPreflight?.counts.eligible ?? 0) === 0
+                          ? "Resolve the stale or ineligible clips before applying this motion."
+                          : "Stale and ineligible clips will be recorded exactly as shown; eligible clips still apply."}
+                      </CampaignNotice>
                     ) : null}
                   </Stack>
                 ) : operation ? (
-                  <Stack gap="4">
-                    <Flex align="center" justify="space-between">
-                      <Flex align="center" gap="2">
-                        {!["completed", "partial", "failed"].includes(operation.status) ? (
-                          <Spinner size="xs" />
-                        ) : [
-                            "apply_motion",
-                            "apply_brand_profile",
-                            "apply_style",
-                            "apply_scene_template",
-                          ].includes(operation.action) ? (
-                          <WandSparkles size={14} />
-                        ) : (
-                          <Film size={14} />
-                        )}
-                        <Text textStyle="title" fontSize="sm">
+                  <Stack gap="5">
+                    <Flex align="center" gap="3">
+                      <OutcomeMark tone={outcomeTone(operation.status)} large />
+                      <Box flex="1" minW="0">
+                        <Text textStyle="title" fontSize="16px" textTransform="capitalize">
                           {operation.status.replaceAll("_", " ")}
                         </Text>
-                      </Flex>
-                      <Text fontSize="12px" fontVariantNumeric="tabular-nums" color="fg.subtle">
-                      {operation.items.length || operation.requestedCount} items
-                      </Text>
+                        <Text fontSize="12px" color="fg.muted" fontVariantNumeric="tabular-nums">
+                          {operation.items.length || operation.requestedCount} items
+                        </Text>
+                      </Box>
                     </Flex>
-                    <Flex
-                    py="3"
-                    gap="4"
-                      justify="space-between"
-                      flexWrap="wrap"
-                    >
-                      {([
-                        ["Changed", operation.succeededCount],
-                        ["Unchanged", operation.unchangedCount],
-                        ["Stale", operation.staleCount],
-                        ["Ineligible", operation.ineligibleCount],
-                        ["Failed", operation.failedCount],
-                      ] as const).map(([label, count]) => (
-                        <Box key={label} minW="50px">
-                          <Text fontSize="sm" fontVariantNumeric="tabular-nums" color="fg">
-                          {count}
-                          </Text>
-                          <Text textStyle="eyebrow" fontSize="12px" color="fg.muted">
-                            {label}
-                          </Text>
-                        </Box>
-                      ))}
-                    </Flex>
-                    <Stack gap="0">
+                    <CampaignStatTiles
+                      items={[
+                        { label: "Changed", value: operation.succeededCount, tone: "accent" },
+                        { label: "Unchanged", value: operation.unchangedCount },
+                        { label: "Stale", value: operation.staleCount, tone: "warning" },
+                        { label: "Ineligible", value: operation.ineligibleCount, tone: "warning" },
+                        { label: "Failed", value: operation.failedCount, tone: "danger" },
+                      ]}
+                    />
+                    <Stack gap="1.5">
                       {operation.items.map((item) => (
-                        <Flex
+                        <ClipOutcomeRow
                           key={item.id}
-                          position="relative"
-                          align="center"
-                          justify="space-between"
-                          gap="3"
-                          ps="3"
-                          py="2.5"
-                          borderBottomWidth="1px"
-                          borderColor="border.subtle"
-                        >
-                          <Box
-                            position="absolute"
-                            insetInlineStart="0"
-                            top="0"
-                            bottom="0"
-                            w="3px"
-                            bg={outcomeColor(item.status)}
-                          />
-                          <Box minW="0">
-                            <Text fontSize="sm">
-                              Clip {clipsById.get(item.requestedClipId) ?? "—"}
+                          tone={outcomeTone(item.status)}
+                          title={`Clip ${clipsById.get(item.requestedClipId) ?? "—"}`}
+                          detail={item.errorCode ? userErrorMessage(item.errorCode) : null}
+                          trailing={
+                            <Text fontSize="12px" color="fg.muted" textTransform="capitalize">
+                              {item.status.replaceAll("_", " ")}
                             </Text>
-                            {item.errorCode ? (
-                              <Text fontSize="xs" color="fg.muted">
-                                {userErrorMessage(item.errorCode)}
-                              </Text>
-                            ) : null}
-                          </Box>
-                          <Text textStyle="eyebrow" color="fg.muted">
-                          {item.status.replaceAll("_", " ")}
-                          </Text>
-                        </Flex>
+                          }
+                        />
                       ))}
                     </Stack>
                     {editorRetryRequest ? (
-                      <Text fontSize="xs" color="fg.muted">
+                      <Text fontSize="12px" color="fg.muted">
                         Retry creates a new operation for only the failed or refreshed stale clips. Completed and ineligible items stay untouched.
                       </Text>
                     ) : [
@@ -1496,7 +1447,7 @@ export function CampaignCommandBar({
                         "apply_scene_template",
                       ].includes(operation.action) &&
                       operation.failedCount + operation.staleCount > 0 ? (
-                      <Text fontSize="xs" color="fg.muted">
+                      <Text fontSize="12px" color="fg.muted">
                         Keep these clips selected while the project refreshes their revision fences before retrying.
                       </Text>
                     ) : null}
@@ -1506,7 +1457,7 @@ export function CampaignCommandBar({
                       "apply_style",
                       "apply_scene_template",
                     ].includes(operation.action) && operation.ineligibleCount > 0 ? (
-                      <Text fontSize="xs" color="fg.muted">
+                      <Text fontSize="12px" color="fg.muted">
                         Open ineligible clips in Studio to resolve their document constraints; retry never resubmits them automatically.
                       </Text>
                     ) : null}
@@ -1524,10 +1475,11 @@ export function CampaignCommandBar({
                 ) : null}
 
                 {error ? (
-                  <Flex role="alert" align="flex-start" gap="2" color="danger.fg" mt="4">
-                    <AlertTriangle size={14} />
-                    <Text fontSize="xs">{error}</Text>
-                  </Flex>
+                  <Box mt="4">
+                    <CampaignNotice tone="danger" role="alert">
+                      {error}
+                    </CampaignNotice>
+                  </Box>
                 ) : null}
               </Drawer.Body>
               <Drawer.Footer>
@@ -1558,7 +1510,7 @@ export function CampaignCommandBar({
                     }
                     onClick={createBundle}
                   >
-                    {submitting ? <Spinner size="xs" /> : <ChevronRight size={14} />}
+                    {submitting ? <Spinner size="xs" /> : <Archive size={14} />}
                     <Text ms="1">{submitting ? "Queueing…" : "Build ZIP"}</Text>
                   </Button>
                 ) : previewingMotion ? (

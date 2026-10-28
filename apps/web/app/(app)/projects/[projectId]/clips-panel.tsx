@@ -597,7 +597,8 @@ export function ClipsPanel({
 						</Box>
 
 						{/* Ranked clip cards. */}
-						<Stack data-clip-list gap="0">
+						{/* While clips are selected, leave room for the floating selection bar. */}
+						<Stack data-clip-list gap="0" pb={selectedIds.size > 0 ? { base: "20", md: "24" } : undefined}>
 							{sortedClips.map((clip) => (
 								<Box
 									key={clip.id}
