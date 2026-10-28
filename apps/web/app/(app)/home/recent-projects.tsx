@@ -1,6 +1,6 @@
 import Link from "next/link";
-import { Heading, SimpleGrid, Stack } from "@chakra-ui/react";
-import { FolderOpen } from "lucide-react";
+import { Flex, Heading, SimpleGrid, Stack } from "@chakra-ui/react";
+import { ArrowRight, FolderOpen } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
 import { EmptyState } from "@narriflow/ui/components/empty-state";
 import type { ProjectListItem } from "@narriflow/services";
@@ -15,9 +15,18 @@ export function RecentProjects({
 }) {
   return (
     <Stack as="section" gap="5">
-      <Heading as="h2" fontSize="md" fontWeight="500">
-        Recent projects
-      </Heading>
+      <Flex align="center" justify="space-between" gap="4">
+        <Heading as="h2" fontSize="md" fontWeight="500">
+          Recent projects
+        </Heading>
+        {items.length > 0 ? (
+          <Button asChild variant="ghost" size="sm" color="fg.muted">
+            <Link href="/projects">
+              View all <ArrowRight size={14} />
+            </Link>
+          </Button>
+        ) : null}
+      </Flex>
       {items.length === 0 ? (
         <EmptyState
           icon={<FolderOpen size={20} />}

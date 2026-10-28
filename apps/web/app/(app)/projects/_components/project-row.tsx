@@ -4,9 +4,9 @@ import Link from "next/link";
 import { Box, Flex, Stack, Text } from "@chakra-ui/react";
 import { Checkbox } from "@narriflow/ui/components/checkbox";
 import type { ProjectListItem } from "@narriflow/services";
-import { formatDateTime } from "@/lib/format";
+import { formatDuration } from "@/lib/format";
 import { ProjectThumbnail } from "./project-thumbnail";
-import { getProjectActivity, ShimmerStrip } from "./project-card";
+import { getProjectActivity, ProjectMeta, ShimmerStrip } from "./project-card";
 
 interface ProjectRowProps {
   project: ProjectListItem;
@@ -22,6 +22,7 @@ export function ProjectRow({
   onSelectedChange,
 }: ProjectRowProps) {
   const activity = getProjectActivity(project);
+  const durationSeconds = project.sourceDurationSeconds ?? project.transcript?.durationSeconds ?? null;
 
   return (
     <Box position="relative">
@@ -66,10 +67,13 @@ export function ProjectRow({
           >
             {project.title}
           </Text>
-          <Text fontSize="12px" color="fg.subtle" truncate>
-            {formatDateTime(project.createdAt)}
-          </Text>
+          <ProjectMeta project={project} />
         </Stack>
+        {durationSeconds ? (
+          <Text display={{ base: "none", md: "block" }} flexShrink={0} textStyle="data" fontSize="12px" color="fg.subtle">
+            {formatDuration(durationSeconds)}
+          </Text>
+        ) : null}
       </Flex>
       </Link>
       {selectable ? (

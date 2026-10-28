@@ -34,6 +34,7 @@ import type {
   ProjectListStatusFilter,
 } from "@narriflow/services";
 import { FilterToolbar } from "./filter-toolbar";
+import { PROJECT_DRAG_TYPE } from "./folders-panel";
 import { ProjectCard } from "./project-card";
 import { ProjectRow } from "./project-row";
 import { moveProjectToFolderAction } from "../actions";
@@ -494,7 +495,7 @@ export function ProjectsExplorer({
             <Box
               key={project.id}
               draggable={canEdit}
-              onDragStart={(event) => event.dataTransfer.setData("application/x-narriflow-project", project.id)}
+              onDragStart={(event) => event.dataTransfer.setData(PROJECT_DRAG_TYPE, project.id)}
               animation="fade-up"
               animationFillMode="backwards"
               style={{ animationDelay: `${Math.min(index, 11) * 60}ms` }}
@@ -511,12 +512,12 @@ export function ProjectsExplorer({
           ))}
         </Grid>
       ) : (
-        <Stack gap="4">
+        <Stack gap="2">
           {projects.map((project, index) => (
             <Box
               key={project.id}
               draggable={canEdit}
-              onDragStart={(event) => event.dataTransfer.setData("application/x-narriflow-project", project.id)}
+              onDragStart={(event) => event.dataTransfer.setData(PROJECT_DRAG_TYPE, project.id)}
               animation="fade-up"
               animationFillMode="backwards"
               style={{ animationDelay: `${Math.min(index, 11) * 40}ms` }}

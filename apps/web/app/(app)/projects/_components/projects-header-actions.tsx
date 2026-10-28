@@ -66,22 +66,31 @@ export function ProjectsHeaderActions({
           </Popover.Trigger>
           <Portal>
             <Popover.Positioner>
-              <Popover.Content p="3" minW="280px">
+              <Popover.Content p="4" w="320px">
                 <Stack
                   as="form"
-                  gap="2.5"
+                  gap="3"
                   onSubmit={(event) => {
                     event.preventDefault();
                     save();
                   }}
                 >
+                  <Stack gap="0.5">
+                    <Popover.Title fontSize="14px" fontWeight="500">
+                      New folder
+                    </Popover.Title>
+                    <Popover.Description fontSize="12.5px" color="fg.muted">
+                      Group projects by show, client or campaign. Drag projects onto it to fill it.
+                    </Popover.Description>
+                  </Stack>
                   <Input
                     autoFocus
                     value={name}
                     onChange={(event) => setName(event.currentTarget.value)}
                     maxLength={80}
-                    placeholder="Folder name"
+                    placeholder="e.g. Season 2"
                     aria-label="Folder name"
+                    size="sm"
                     disabled={pending}
                   />
                   {error ? (
@@ -89,9 +98,16 @@ export function ProjectsHeaderActions({
                       {error}
                     </Text>
                   ) : null}
-                  <Button type="submit" size="sm" loading={pending} alignSelf="flex-end">
-                    Create folder
-                  </Button>
+                  <Flex justify="flex-end" gap="2">
+                    <Popover.CloseTrigger asChild>
+                      <Button type="button" size="sm" variant="ghost">
+                        Cancel
+                      </Button>
+                    </Popover.CloseTrigger>
+                    <Button type="submit" size="sm" loading={pending}>
+                      Create folder
+                    </Button>
+                  </Flex>
                 </Stack>
               </Popover.Content>
             </Popover.Positioner>
@@ -102,7 +118,7 @@ export function ProjectsHeaderActions({
         <Button size="sm" asChild>
           <Link href="/upload">
             <Plus size={16} aria-hidden="true" />
-            New Project
+            New project
           </Link>
         </Button>
       ) : null}

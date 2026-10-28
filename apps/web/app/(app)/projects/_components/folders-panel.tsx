@@ -3,8 +3,8 @@
 import { useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Box, Flex, Grid, Input, Menu, Portal, Stack, Text } from "@chakra-ui/react";
-import { Folder, MoreHorizontal, Pencil, Trash2 } from "lucide-react";
+import { Flex, Grid, Input, Menu, Portal, Stack, Text, Tooltip } from "@chakra-ui/react";
+import { Folder, FolderInput, Info, MoreHorizontal, Pencil, Trash2 } from "lucide-react";
 import { IconButton } from "@narriflow/ui/components/button";
 import { useConfirm } from "@narriflow/ui/components/confirm-dialog";
 import { Spinner } from "@narriflow/ui/components/spinner";
@@ -13,6 +13,9 @@ import {
   authenticatedActionResultMessage,
   isAuthenticatedActionFailure,
 } from "@/lib/authenticated-request-browser";
+
+/** The drag payload a project card or row carries: its id. */
+export const PROJECT_DRAG_TYPE = "application/x-narriflow-project";
 
 export function FoldersPanel({
   folders,
@@ -25,6 +28,7 @@ export function FoldersPanel({
   const [error, setError] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState("");
+  const [dropTargetId, setDropTargetId] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
   const { confirm, dialog } = useConfirm();
 
@@ -74,7 +78,8 @@ export function FoldersPanel({
 
   function dropProject(event: React.DragEvent, folderId: string) {
     event.preventDefault();
-    const projectId = event.dataTransfer.getData("application/x-narriflow-project");
+    setDropTargetId(null);
+    const projectId = event.dataTransfer.getData(PROJECT_DRAG_TYPE);
     if (!projectId) return;
 
     startTransition(async () => {
@@ -94,15 +99,46 @@ export function FoldersPanel({
 
   return (
     <Stack gap="3">
-      <Text textStyle="eyebrow" color="fg.muted">
-        Folders
-      </Text>
+      <Flex align="center" gap="1.5">
+        <Text textStyle="eyebrow" color="fg.muted">
+          Folders
+        </Text>
+        {canEdit ? (
+          <Tooltip.Root openDelay={150} closeDelay={0} positioning={{ placement: "right" }}>
+            <Tooltip.Trigger asChild>
+              <Flex
+                as="button"
+                aria-label="Drag a project onto a folder to move it."
+                boxSize="5"
+                align="center"
+                justify="center"
+                borderRadius="full"
+                color="fg.subtle"
+                cursor="help"
+                _hover={{ color: "fg" }}
+                _focusVisible={{ outline: "2px solid", outlineColor: "accent.solid" }}
+              >
+                <Info size={13} aria-hidden />
+              </Flex>
+            </Tooltip.Trigger>
+            <Portal>
+              <Tooltip.Positioner>
+                <Tooltip.Content bg="bg.muted" color="fg" borderRadius="l2" boxShadow="none" px="3" py="2" fontSize="12px">
+                  Drag a project onto a folder to move it.
+                </Tooltip.Content>
+              </Tooltip.Positioner>
+            </Portal>
+          </Tooltip.Root>
+        ) : null}
+      </Flex>
 
       <Grid
         gap="3"
         templateColumns={{ base: "1fr", sm: "repeat(auto-fill, minmax(210px, 240px))" }}
       >
-        {folders.map((folder) => (
+        {folders.map((folder) => {
+          const dropTarget = dropTargetId === folder.id;
+          return (
           <Flex
             key={folder.id}
             align="center"
@@ -111,10 +147,26 @@ export function FoldersPanel({
             borderRadius="l3"
             borderWidth="1px"
             borderColor="border.card"
-            bg="bg.panel"
+            bg={dropTarget ? "accent.subtle" : "bg.panel"}
+            outline={dropTarget ? "2px solid" : "none"}
+            outlineColor="accent.solid"
             transition="background 120ms ease"
-            _hover={{ bg: "bg.subtle" }}
-            onDragOver={(event) => event.preventDefault()}
+            _hover={{ bg: dropTarget ? "accent.subtle" : "bg.subtle" }}
+            css={{
+              "@media (hover: hover) and (pointer: fine)": {
+                "& .folder-menu:not([data-state=open])": { opacity: 0 },
+                "&:hover .folder-menu, &:focus-within .folder-menu": { opacity: 1 },
+              },
+            }}
+            onDragOver={(event) => {
+              // Only a dragged project is something this folder takes.
+              if (!event.dataTransfer.types.includes(PROJECT_DRAG_TYPE)) return;
+              event.preventDefault();
+              if (!dropTarget) setDropTargetId(folder.id);
+            }}
+            onDragLeave={(event) => {
+              if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropTargetId(null);
+            }}
             onDrop={(event) => dropProject(event, folder.id)}
           >
             {editingId === folder.id ? (
@@ -154,15 +206,23 @@ export function FoldersPanel({
                 color="fg"
               >
                 <Link href={`/projects?folder=${folder.id}`}>
-                  <Box color="fg.muted" flexShrink={0}>
-                    <Folder size={18} strokeWidth={1.6} />
-                  </Box>
+                  <Flex
+                    boxSize="9"
+                    flexShrink={0}
+                    align="center"
+                    justify="center"
+                    borderRadius="10px"
+                    bg={dropTarget ? "accent.muted" : "bg.soft"}
+                    color={dropTarget ? "accent.fg" : "fg.muted"}
+                  >
+                    {dropTarget ? <FolderInput size={17} strokeWidth={1.7} /> : <Folder size={17} strokeWidth={1.7} />}
+                  </Flex>
                   <Stack gap="0.5" minW="0">
                     <Text fontSize="13px" fontWeight="500" truncate>
                       {folder.name}
                     </Text>
-                    <Text fontSize="12px" color="fg.subtle" fontVariantNumeric="tabular-nums">
-                      {folder.count} {folder.count === 1 ? "project" : "projects"}
+                    <Text fontSize="12px" color={dropTarget ? "accent.fg" : "fg.subtle"} fontVariantNumeric="tabular-nums">
+                      {dropTarget ? "Drop to move here" : folder.count === 0 ? "Empty" : `${folder.count} ${folder.count === 1 ? "project" : "projects"}`}
                     </Text>
                   </Stack>
                 </Link>
@@ -173,6 +233,7 @@ export function FoldersPanel({
               <Menu.Root positioning={{ placement: "bottom-end", gutter: 4 }}>
                 <Menu.Trigger asChild>
                   <IconButton
+                    className="folder-menu"
                     size="sm"
                     variant="ghost"
                     mr="1"
@@ -210,7 +271,8 @@ export function FoldersPanel({
               </Menu.Root>
             ) : null}
           </Flex>
-        ))}
+          );
+        })}
       </Grid>
 
       {error ? (

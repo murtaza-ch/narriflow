@@ -22,7 +22,11 @@ export function HeroPasteLinkField() {
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!trimmed) return;
+    // An empty submit points at the field instead of greying the button out.
+    if (!trimmed) {
+      event.currentTarget.querySelector("input")?.focus();
+      return;
+    }
     router.push(`/upload?url=${encodeURIComponent(trimmed)}`);
   }
 
@@ -48,13 +52,7 @@ export function HeroPasteLinkField() {
             position="relative"
             _focusVisible={{ zIndex: 1, boxShadow: "none", outline: "none" }}
           />
-          <Button
-            type="submit"
-            size="sm"
-            flexShrink={0}
-
-            disabled={!trimmed}
-          >
+          <Button type="submit" size="sm" flexShrink={0}>
             Get clips <ArrowRight size={16} />
           </Button>
         </form>
@@ -62,7 +60,6 @@ export function HeroPasteLinkField() {
       <Text
         id="hero-paste-link-hint"
         srOnly
-
         fontSize="11.5px"
         color="fg.subtle"
       >

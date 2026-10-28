@@ -6,14 +6,15 @@
 .centerContent h1 span { color: var(--accent); }
 .description { font-size: 12px; line-height: 1.7; margin: 13px auto 27px; color: var(--chakra-colors-fg-muted); }
 .importArea { width: 100%; margin: auto; }
-.importArea form { min-height: 67px; padding: 10px 10px 10px 20px; gap: 12px; border: none; border-radius: 14px; background: #fafafa; box-shadow: 0 0 0 5px #ffffff06, 0 12px 32px #00000030; transition: box-shadow .2s; }
-.importArea form:focus-within { box-shadow: 0 0 0 1px rgba(16, 19, 24, 0.24), 0 12px 32px #0003; }
+.importArea form { min-height: 67px; padding: 10px 10px 10px 20px; gap: 12px; border: none; border-radius: 14px; background: #fafafa; outline: 3px solid transparent; outline-offset: 3px; transition: outline-color .2s; }
+.importArea form:focus-within { outline-color: rgba(140, 140, 140, 0.45); }
+/* No shadow to lift it: on the light hero the field is a soft fill instead. */
+:global(.light) .importArea form { background: var(--chakra-colors-bg-subtle); }
 .importArea form > div { color: #858585; }
 .importArea input { color: #242424; font-size: 14px; min-width: 0; }
 .importArea input::placeholder { color: #808080; }
 .importArea button { background: #303030; color: #fff; height: 44px; padding-inline: 21px; border-radius: 9px; font-size: 12px; }
-.importArea button:disabled { opacity: .7; }
-.importArea button:not(:disabled):hover { background: #454545; }
+.importArea button:hover { background: #454545; }
 .importLinks { display: flex; justify-content: center; align-items: center; gap: 12px; margin-top: 18px; }
 .importLinks a { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--chakra-colors-fg-muted); border: none; background: var(--chakra-colors-bg-soft); padding: 8px 13px; border-radius: 8px; transition: background .2s; }
 .importLinks a:hover { background: var(--chakra-colors-bg-soft-hover); }

@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { Box, Dialog, Flex, Heading, Portal, SimpleGrid, Stack, Text, Tooltip } from "@chakra-ui/react";
+import { Box, Dialog, Flex, Heading, Portal, SimpleGrid, Stack, Text } from "@chakra-ui/react";
 import { ArrowUpRight, Clapperboard, X } from "lucide-react";
 import { PLAN_CATALOG } from "@narriflow/validators";
 import { Button, IconButton } from "@narriflow/ui/components/button";
@@ -53,10 +53,13 @@ export function CreationTools({ items }: { items: ProjectListItem[] }) {
           const content = (
             <>
               <ToolArtwork kind={tool.art} />
-              <Stack gap="1" flex="1" minW="0">
+              <Stack gap="0.5" flex="1" minW="0">
                 <Heading as="h2" fontSize={{ base: "xs", md: "sm" }} fontWeight="500">
                   {tool.title}
                 </Heading>
+                <Text fontSize="12.5px" color="fg.muted" truncate>
+                  {tool.description}
+                </Text>
               </Stack>
               {upgrade?.tier ? (
                 <UpgradeGem label={`Needs ${PLAN_CATALOG[upgrade.tier].name}`} />
@@ -83,33 +86,21 @@ export function CreationTools({ items }: { items: ProjectListItem[] }) {
             transition: "background 150ms",
             _hover: { bg: "bg.subtle" },
           } as const;
-          return (
-            <Tooltip.Root key={tool.title} openDelay={250} closeDelay={0} positioning={{ placement: "top" }}>
-              <Tooltip.Trigger asChild>
-                {"href" in tool ? (
-                  <Flex {...cardProps} asChild>
-                    <Link href={tool.href}>{content}</Link>
-                  </Flex>
-                ) : (
-                  <Flex
-                    {...cardProps}
-                    as="button"
-                    cursor="pointer"
-                    aria-haspopup="dialog"
-                    onClick={() => (upgrade?.tier ? openUpgrade(upgrade) : setSelected(tool.tab))}
-                  >
-                    {content}
-                  </Flex>
-                )}
-              </Tooltip.Trigger>
-              <Portal>
-                <Tooltip.Positioner>
-                  <Tooltip.Content bg="bg.muted" color="fg" borderRadius="l2" px="3" py="2" fontSize="xs" boxShadow="md">
-                    {tool.description}
-                  </Tooltip.Content>
-                </Tooltip.Positioner>
-              </Portal>
-            </Tooltip.Root>
+          return "href" in tool ? (
+            <Flex key={tool.title} {...cardProps} asChild>
+              <Link href={tool.href}>{content}</Link>
+            </Flex>
+          ) : (
+            <Flex
+              key={tool.title}
+              {...cardProps}
+              as="button"
+              cursor="pointer"
+              aria-haspopup="dialog"
+              onClick={() => (upgrade?.tier ? openUpgrade(upgrade) : setSelected(tool.tab))}
+            >
+              {content}
+            </Flex>
           );
         })}
       </SimpleGrid>

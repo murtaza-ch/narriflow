@@ -1,10 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { Box, Stack, Text } from "@chakra-ui/react";
+import { Box, Flex, Stack, Text } from "@chakra-ui/react";
 import { Checkbox } from "@narriflow/ui/components/checkbox";
 import type { ProjectListItem } from "@narriflow/services";
-import { formatDate, formatDateTime, formatDuration } from "@/lib/format";
+import { formatDate } from "@/lib/format";
 import { DeleteProjectButton } from "./delete-project-button";
 import { ProjectExpiration } from "./project-expiration";
 import { ProjectThumbnail } from "./project-thumbnail";
@@ -34,31 +34,30 @@ export function getProjectActivity(project: ProjectListItem): ProjectActivity {
 	return project.progress;
 }
 
-export function buildProjectMeta(project: ProjectListItem): string {
-  const parts: string[] = [formatDate(project.createdAt)];
-
-  const durationSeconds =
-    project.sourceDurationSeconds ??
-    project.transcript?.durationSeconds ??
-    null;
-  if (durationSeconds !== null && durationSeconds > 0) {
-    parts.push(formatDuration(durationSeconds));
-  }
-
-  parts.push(
-    project.clipCount === 0
-      ? "No clips"
-      : `${project.clipCount} ${project.clipCount === 1 ? "clip" : "clips"}`,
+/** A project's quiet line: what's happening if anything is, when it was made, and what came of it. */
+export function ProjectMeta({ project }: { project: ProjectListItem }) {
+  const activity = getProjectActivity(project);
+  const settled = !activity.active && activity.status !== "failed";
+  const parts = [formatDate(project.createdAt)];
+  // A clip count once there is one, or once the project is done.
+  if (project.clipCount > 0) parts.push(`${project.clipCount} ${project.clipCount === 1 ? "clip" : "clips"}`);
+  else if (settled) parts.push("No clips");
+  return (
+    <Flex align="center" gap="1.5" fontSize="12px" color="fg.subtle">
+      {settled ? null : (
+        <>
+          <Flex as="span" align="center" gap="1.5" flexShrink={0} color={activity.active ? "fg.muted" : "danger.fg"}>
+            <Box as="span" boxSize="1.5" borderRadius="full" bg={activity.active ? "accent.solid" : "danger.solid"} />
+            {activity.label}
+          </Flex>
+          <span aria-hidden>·</span>
+        </>
+      )}
+      <Text as="span" truncate>
+        {parts.join(" · ")}
+      </Text>
+    </Flex>
   );
-
-  if (
-    project.transcript?.status === "completed" &&
-    project.transcript.languageCode
-  ) {
-    parts.push(project.transcript.languageCode.replace("_", "-").toUpperCase());
-  }
-
-  return parts.join(" · ");
 }
 
 /**
@@ -102,27 +101,16 @@ export function ProjectCard({
           h="full"
           css={{
             "&:hover .project-card-title": { textDecorationLine: "underline" },
+            "& img": { transition: "transform 400ms ease" },
+            "@media (hover: hover)": { "&:hover img": { transform: "scale(1.03)" } },
           }}
         >
           <Box position="relative">
             <ProjectThumbnail project={project} priority={priority} />
             {activity.active ? <ShimmerStrip /> : null}
-            {activity.status === "failed" ? (
-              <Box
-                position="absolute"
-                top="0"
-                insetInline="0"
-                h="3px"
-                bg="danger.solid"
-                borderTopRadius="l2"
-              />
-            ) : null}
           </Box>
 
-          <Stack gap="1">
-            <Text fontSize="12px" color="fg.subtle">
-              {formatDateTime(project.createdAt)}
-            </Text>
+          <Stack gap="1" minW="0">
             <Text
               className="project-card-title"
               minW="0"
@@ -142,6 +130,7 @@ export function ProjectCard({
             >
               {project.title}
             </Text>
+            <ProjectMeta project={project} />
             {project.expiresAt ? <ProjectExpiration expiresAt={project.expiresAt} /> : null}
           </Stack>
         </Stack>
