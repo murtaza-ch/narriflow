@@ -322,6 +322,7 @@ export function CensorPanel() {
         }}
         onProjectTermsChange={(project) => setCensorWords((current) => ({ ...current, project }))}
         brandTerms={autoCensorPolicy.brandTerms}
+        locale={autoCensorPolicy.locale}
       />
     </Stack>
   );

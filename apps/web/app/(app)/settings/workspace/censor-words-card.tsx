@@ -4,8 +4,7 @@ import { useState } from "react";
 import { Flex, Stack, Text } from "@chakra-ui/react";
 import { ShieldCheck } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
-import { maskCensorTermForDisplay } from "@narriflow/validators";
-import { CensorWordListDialog } from "../../_components/censor-word-list-dialog";
+import { CensorWordListDialog, censorChipLabel } from "../../_components/censor-word-list-dialog";
 import { replaceCensorWordsAction, resetCensorWordsAction } from "./censor-words-actions";
 import { SettingsCard } from "../_components/settings-ui";
 
@@ -30,7 +29,7 @@ export function CensorWordsCard({
     <SettingsCard
       icon={<ShieldCheck size={16} />}
       title="Censored words"
-      description="Auto-censor masks and bleeps these in every project's clips."
+      description="Auto-censor masks and beeps these in every project's clips."
       action={
         <Button size="sm" variant="subtle" onClick={() => setOpen(true)}>
           {canManage ? "Edit word list" : "View word list"}
@@ -48,20 +47,30 @@ export function CensorWordsCard({
           </Text>
         ) : (
           <Flex gap="2" flexWrap="wrap">
-            {preview.map((word) => (
-              <Text
-                key={word}
-                as="span"
-                px="2.5"
-                py="1"
-                borderRadius="8px"
-                bg="bg.soft"
-                fontSize="13px"
-                color="fg"
-              >
-                {maskCensorTermForDisplay(word)}
-              </Text>
-            ))}
+            {preview.map((word) => {
+              const label = censorChipLabel(word, false);
+              return (
+                <Flex
+                  key={word}
+                  as="span"
+                  align="center"
+                  gap="1"
+                  px="2.5"
+                  py="1"
+                  borderRadius="8px"
+                  bg="bg.soft"
+                  fontSize="13px"
+                  color="fg"
+                >
+                  {label.text}
+                  {label.wildcard ? (
+                    <Text as="span" color="accent.fg" fontWeight="600" ms="-0.5" aria-label="and its variants">
+                      +
+                    </Text>
+                  ) : null}
+                </Flex>
+              );
+            })}
             {rest > 0 ? (
               <Text as="span" px="2.5" py="1" borderRadius="8px" bg="bg.soft" fontSize="13px" color="fg.muted">
                 +{rest}

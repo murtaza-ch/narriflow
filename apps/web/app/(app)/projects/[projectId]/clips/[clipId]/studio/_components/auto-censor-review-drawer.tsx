@@ -5,12 +5,16 @@ import { Box, Button, Checkbox, Flex, Input, Stack, Text } from "@chakra-ui/reac
 import { Check, Search, X } from "lucide-react";
 import {
   AUTO_CENSOR_POLICY_VERSION,
+  autoCensorWordId,
+  buildClipCutPlan,
   isCensorSegmentStale,
+  maskCensorTermForDisplay,
+  sourceToEdited,
   PLAN_CATALOG,
   type AutoCensorSuggestion,
   type CensorSegment,
 } from "@narriflow/validators";
-import { formatTimecode } from "@/lib/format";
+import { formatDuration } from "@/lib/format";
 import { useUpgrade } from "@/app/(app)/_components/upgrade";
 import { useStudio } from "./studio-shell";
 import { StudioLockGem } from "./studio-lock-gem";
@@ -147,6 +151,24 @@ export function AutoCensorReviewDrawer({
     );
   }, [query, sourceFilter, suggestions]);
   const groups = useMemo(() => groupAppliedCensorSegments(existing), [existing]);
+  // Times read on the clip's own timeline (what the player and timeline show),
+  // not the source video's.
+  const { clipStartSec, clipEndSec, deletedRanges } = editorDocument;
+  const cutMap = useMemo(
+    () => buildClipCutPlan([...deletedRanges], { startSec: clipStartSec, endSec: clipEndSec }).map,
+    [clipEndSec, clipStartSec, deletedRanges],
+  );
+  const clipTime = (sourceSec: number) => formatDuration(sourceToEdited(cutMap, sourceSec));
+  // An applied word's text, so a row names what it censors.
+  const wordText = useMemo(() => {
+    const byId = new Map<string, string>();
+    for (const utterance of utterances) {
+      utterance.words.forEach((word, wordIndex) => {
+        byId.set(autoCensorWordId({ utteranceIndex: utterance.index, wordIndex, word }), word.word);
+      });
+    }
+    return byId;
+  }, [utterances]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
@@ -300,7 +322,7 @@ export function AutoCensorReviewDrawer({
                       <Flex align="baseline" justify="space-between" gap="2">
                         <Text fontSize="14px" fontWeight="600" truncate>{suggestion.matchedText}</Text>
                         <Text fontSize="12px" color="studio.fgSubtle" fontVariantNumeric="tabular-nums" flexShrink={0}>
-                          {suggestion.sourceStartSec === null ? "No timing" : formatTimecode(suggestion.sourceStartSec)}
+                          {suggestion.sourceStartSec === null ? "No timing" : clipTime(suggestion.sourceStartSec)}
                         </Text>
                       </Flex>
                       <Text mt="0.5" fontSize="13px" color="studio.fgMuted" lineHeight="1.5" lineClamp="2">
@@ -349,8 +371,11 @@ export function AutoCensorReviewDrawer({
                         <Checkbox.HiddenInput /><Checkbox.Control />
                       </Checkbox.Root>
                       <Flex flex="1" minW="0" align="baseline" gap="2">
-                        <Text fontSize="13px" color="studio.fgMuted" fontVariantNumeric="tabular-nums">{formatTimecode(group.sourceStartSec)}</Text>
-                        <Text fontSize="13px" color="studio.fg" truncate>{groupSummary(group)}</Text>
+                        <Text fontSize="13px" color="studio.fgMuted" fontVariantNumeric="tabular-nums" flexShrink={0}>{clipTime(group.sourceStartSec)}</Text>
+                        <Text fontSize="13px" fontWeight="600" color="studio.fg" flexShrink={0}>
+                          {maskCensorTermForDisplay(group.sourceWordIds.map((id) => wordText.get(id) ?? "").join(" ").trim()) || "Word"}
+                        </Text>
+                        <Text fontSize="12px" color="studio.fgSubtle" truncate>{groupSummary(group)}</Text>
                         {stale && <Text fontSize="12px" fontWeight="500" color="studio.danger">Stale</Text>}
                       </Flex>
                       {stale && (
