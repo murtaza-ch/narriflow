@@ -1,23 +1,39 @@
 import { createHash, randomUUID } from "node:crypto";
+import { AUTOMATION_RECEIPT_COMMANDS } from "./automation-receipt-commands";
+import { BRAND_RECEIPT_COMMANDS } from "./brand-receipt-commands";
+import { CLIPS_RECEIPT_COMMANDS } from "./clips-receipt-commands";
+import { DEVELOPER_RECEIPT_COMMANDS } from "./developer-receipt-commands";
+import { EXPORTS_RECEIPT_COMMANDS } from "./exports-receipt-commands";
 import { ExpectedDomainFailureError } from "./expected-domain-failure";
+import { INGEST_RECEIPT_COMMANDS } from "./ingest-receipt-commands";
+import { PROJECTS_RECEIPT_COMMANDS } from "./projects-receipt-commands";
+import { PUBLISHING_RECEIPT_COMMANDS } from "./publishing-receipt-commands";
+import { RECIPES_RECEIPT_COMMANDS } from "./recipes-receipt-commands";
+import { REVIEWS_RECEIPT_COMMANDS } from "./reviews-receipt-commands";
+import { WORKSPACE_RECEIPT_COMMANDS } from "./workspace-receipt-commands";
 
-/** Canonical names of the idempotent mutations integrations accept. Every
- * transport (browser, MCP, REST) records the same command for the same work. */
+/** Canonical names of the idempotent mutations every transport accepts. Each
+ * domain owns a literal-name list; composing them here keeps the union closed,
+ * so an arbitrary string can never be recorded as a command. Browser, MCP and
+ * REST record the same command for the same work. */
 export const RECEIPT_COMMANDS = [
-	"submit_video",
-	"create_captioned_video",
-	"generate_clips",
-	"create_clip_export",
-	"create_rss_autopilot_rule",
-	"run_autopilot_rule_now",
-	"prepare_social_post",
-	"propose_social_post",
-	"recheck_social_publication",
-	"confirm_social_publication",
-	"publish_social_publication_again",
-	"redeliver_callback",
+	...WORKSPACE_RECEIPT_COMMANDS,
+	...PROJECTS_RECEIPT_COMMANDS,
+	...CLIPS_RECEIPT_COMMANDS,
+	...INGEST_RECEIPT_COMMANDS,
+	...RECIPES_RECEIPT_COMMANDS,
+	...PUBLISHING_RECEIPT_COMMANDS,
+	...BRAND_RECEIPT_COMMANDS,
+	...AUTOMATION_RECEIPT_COMMANDS,
+	...DEVELOPER_RECEIPT_COMMANDS,
+	...REVIEWS_RECEIPT_COMMANDS,
+	...EXPORTS_RECEIPT_COMMANDS,
 ] as const;
-export type ReceiptCommand = (typeof RECEIPT_COMMANDS)[number];
+type ComposedReceiptCommand = (typeof RECEIPT_COMMANDS)[number];
+/** Collapses to `never` if a domain list is ever widened to `string[]`, so no caller can compile against an open union. */
+export type ReceiptCommand = string extends ComposedReceiptCommand
+	? never
+	: ComposedReceiptCommand;
 
 /** An Operation Receipt is keyed by the acting user, never the credential, so
  * rotating a key or switching transports replays the original acceptance. */

@@ -348,3 +348,50 @@ describe("Operation Receipt acceptance", () => {
 		expect(h.writes()).toBe(0);
 	});
 });
+
+describe("receipt command registry", () => {
+	test("composes the per-domain lists without duplicates or arbitrary names", async () => {
+		const modules = await Promise.all(
+			[
+				"workspace",
+				"projects",
+				"clips",
+				"ingest",
+				"recipes",
+				"publishing",
+				"brand",
+				"automation",
+				"developer",
+				"reviews",
+				"exports",
+			].map(async (domain) => {
+				const exports = (await import(`./${domain}-receipt-commands`)) as Record<
+					string,
+					readonly string[]
+				>;
+				return exports[`${domain.toUpperCase()}_RECEIPT_COMMANDS`] ?? [];
+			}),
+		);
+		const { RECEIPT_COMMANDS } = await import("./operation-receipt");
+		const names = modules.flat();
+		expect([...RECEIPT_COMMANDS].sort()).toEqual([...names].sort());
+		expect(new Set(names).size).toBe(names.length);
+		for (const name of names) expect(name).toMatch(/^[a-z][a-z0-9_]*$/);
+		for (const existing of [
+			"submit_video",
+			"create_captioned_video",
+			"generate_clips",
+			"create_clip_export",
+			"create_rss_autopilot_rule",
+			"run_autopilot_rule_now",
+			"prepare_social_post",
+			"propose_social_post",
+			"recheck_social_publication",
+			"confirm_social_publication",
+			"publish_social_publication_again",
+			"redeliver_callback",
+		]) {
+			expect(names).toContain(existing);
+		}
+	});
+});

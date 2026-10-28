@@ -10,11 +10,11 @@ import {
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@prisma/client";
 import { Pool } from "pg";
+import { resolveAuthenticatedProject } from "./project-admission";
 import {
-  createAuthenticatedRequestPolicy,
   type ActorScope,
-} from "./authenticated-request-policy";
-import { resolveAuthenticatedProject } from "./authenticated-request-project";
+  createAuthenticatedRequestPolicy,
+} from "./request-policy";
 
 const databaseUrl = process.env.AUTHENTICATED_REQUEST_POLICY_TEST_DATABASE_URL;
 const databaseSchema =
@@ -161,8 +161,7 @@ dbDescribe("Authenticated Request Policy PostgreSQL admission", () => {
   }
 
   function policy() {
-    return createAuthenticatedRequestPolicy({
-      resolveActorScope: resolveActor,
+    const bound = createAuthenticatedRequestPolicy({
       resolveProject: ({ actor, projectId }) =>
         resolveAuthenticatedProject(prisma, {
           actor,
@@ -170,9 +169,15 @@ dbDescribe("Authenticated Request Policy PostgreSQL admission", () => {
           now: new Date("2026-08-29T00:00:00.000Z"),
         }),
       rateLimit: async () => ({ allowed: true }),
-      createRequestId: randomUUID,
       now: Date.now,
     });
+    return {
+      execute: <I, O>(request: Parameters<typeof bound.execute<I, O>>[0]) =>
+        bound.execute(request, {
+          requestId: randomUUID(),
+          resolveActor: resolveActor,
+        }),
+    };
   }
 
   async function admit(
@@ -180,7 +185,7 @@ dbDescribe("Authenticated Request Policy PostgreSQL admission", () => {
     capability: "content.view" | "processing.consume",
   ) {
     return policy().execute({
-      adapter: "page",
+      adapter: "hono",
       operationName: "postgres-admission",
       admission: { kind: "project", capability, projectId },
       operation: async () => true,
@@ -250,6 +255,13 @@ dbDescribe("Authenticated Request Policy PostgreSQL admission", () => {
         code: "active_workspace_mismatch",
         details: { workspaceId: workspaceBId, workspaceName: "Policy B" },
       },
+    });
+  });
+
+  test("a malformed Project identifier is concealed like a missing Project without a database error", async () => {
+    await expect(admit("not-a-uuid", "content.view")).resolves.toMatchObject({
+      ok: false,
+      failure: { code: "project_not_found" },
     });
   });
 

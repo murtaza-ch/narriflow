@@ -1,13 +1,18 @@
 import type { PrismaClient } from "@prisma/client";
-import type {
-  ActorScope,
-  ProjectAdmissionResult,
-} from "./authenticated-request-policy";
+import type { ActorScope, ProjectAdmissionResult } from "./request-policy";
 
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Project ids are Postgres UUIDs. A malformed id cannot name a Project, so it
+ * is concealed exactly like a missing one instead of reaching the database.
+ */
 export async function resolveAuthenticatedProject(
   prisma: Pick<PrismaClient, "project">,
   input: { actor: ActorScope; projectId: string; now?: Date },
 ): Promise<ProjectAdmissionResult> {
+  if (!UUID_PATTERN.test(input.projectId)) return { kind: "missing" };
   const project = await prisma.project.findFirst({
     where: {
       id: input.projectId,

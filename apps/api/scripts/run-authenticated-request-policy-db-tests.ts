@@ -28,8 +28,8 @@ const databaseUrl =
   process.env.DATABASE_URL ??
   envValue(resolve(repositoryRoot, "packages/db/.env"), "DIRECT_URL") ??
   envValue(resolve(repositoryRoot, "packages/db/.env"), "DATABASE_URL") ??
-  envValue(resolve(repositoryRoot, "apps/web/.env.local"), "DIRECT_URL") ??
-  envValue(resolve(repositoryRoot, "apps/web/.env.local"), "DATABASE_URL");
+  envValue(resolve(repositoryRoot, "apps/api/.env"), "DIRECT_URL") ??
+  envValue(resolve(repositoryRoot, "apps/api/.env"), "DATABASE_URL");
 if (!databaseUrl) throw new Error("DIRECT_URL or DATABASE_URL is required");
 
 const schema =
@@ -82,16 +82,9 @@ try {
     client.release();
   }
   await run(
-    ["bun", "test", "apps/web/lib/authenticated-request-policy.db.test.ts"],
+    ["bun", "test", "apps/api/src/http/request-policy.db.test.ts"],
     {
       ALLOW_AUTHENTICATED_REQUEST_POLICY_DB_TESTS: "1",
-      AUTHENTICATED_REQUEST_POLICY_TEST_DATABASE_URL: testUrl.toString(),
-      AUTHENTICATED_REQUEST_POLICY_TEST_DATABASE_SCHEMA: schema,
-    },
-  );
-  await run(
-    ["bun", "test", "./apps/web/lib/workspace-entry.db.fixture.ts"],
-    {
       AUTHENTICATED_REQUEST_POLICY_TEST_DATABASE_URL: testUrl.toString(),
       AUTHENTICATED_REQUEST_POLICY_TEST_DATABASE_SCHEMA: schema,
     },

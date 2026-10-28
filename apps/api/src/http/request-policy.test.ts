@@ -1,12 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import { z } from "zod";
 import {
+  type ActorScope,
+  type AuthenticatedActorScope,
   AuthenticatedRequestFailure,
+  type AuthenticatedRequest,
+  type AuthenticatedRequestPolicyDependencies,
   AuthenticatedRequestUnexpectedError,
   createAuthenticatedRequestPolicy,
-  type ActorScope,
-  type AuthenticatedRequestPolicyDependencies,
-} from "./authenticated-request-policy";
+} from "./request-policy";
 
 const actorScope: ActorScope = {
   actorUserId: "actor-user",
@@ -20,26 +22,46 @@ const actorScope: ActorScope = {
   workspaceSelectionChanged: false,
 };
 
-function makeDependencies(
-  overrides: Partial<AuthenticatedRequestPolicyDependencies> = {},
-): AuthenticatedRequestPolicyDependencies {
-  return {
-    resolveActorScope: async () => actorScope,
+type TestOptions<TActor extends AuthenticatedActorScope> =
+  Partial<AuthenticatedRequestPolicyDependencies> & {
+    resolveActorScope?: () => Promise<TActor | null>;
+    createRequestId?: () => string;
+  };
+
+/** Binds the per-request half (outer request ID and actor promise) so each case reads like one request. */
+function createPolicy<TActor extends AuthenticatedActorScope = ActorScope>(
+  options: TestOptions<TActor> = {},
+) {
+  const {
+    resolveActorScope = async () => actorScope as unknown as TActor,
+    createRequestId = () => "request-1",
+    ...overrides
+  } = options;
+  const policy = createAuthenticatedRequestPolicy({
     resolveProject: async () => ({ kind: "active", projectId: "project-a" }),
     rateLimit: async () => ({ allowed: true }),
-    createRequestId: () => "request-1",
     now: () => 1_000,
     ...overrides,
+  });
+  return {
+    execute: <I, O>(request: AuthenticatedRequest<I, O, TActor>) =>
+      policy.execute(request, {
+        requestId: createRequestId(),
+        resolveActor: resolveActorScope,
+      }),
   };
+}
+
+function makeDependencies(
+  overrides: TestOptions<ActorScope> = {},
+): TestOptions<ActorScope> {
+  return overrides;
 }
 
 describe("Authenticated Request Policy", () => {
   test("admits identity-only requests without resolving an active Workspace", async () => {
     const diagnostics: Array<Record<string, unknown>> = [];
-    const dependencies: AuthenticatedRequestPolicyDependencies<{
-      actorUserId: string;
-      clerkId: string;
-    }> = {
+    const policy = createPolicy<{ actorUserId: string; clerkId: string }>({
       resolveActorScope: async () => ({
         actorUserId: "actor-user",
         clerkId: "clerk-user",
@@ -47,15 +69,12 @@ describe("Authenticated Request Policy", () => {
       resolveProject: async () => {
         throw new Error("Project admission must not run");
       },
-      rateLimit: async () => ({ allowed: true }),
       createRequestId: () => "identity-request",
-      now: () => 1_000,
       recordDiagnostic: (value) => diagnostics.push(value),
-    };
-    const policy = createAuthenticatedRequestPolicy(dependencies);
+    });
 
     const result = await policy.execute({
-      adapter: "server_action",
+      adapter: "hono",
       operationName: "identity-bootstrap",
       admission: { kind: "signed_in" },
       operation: async ({ actor }) => actor.clerkId,
@@ -133,13 +152,13 @@ describe("Authenticated Request Policy", () => {
               ? roleAllows
               : role === "owner" &&
                 ownerByStatus[status].has(capability as never);
-          const policy = createAuthenticatedRequestPolicy(
+          const policy = createPolicy(
             makeDependencies({
               resolveActorScope: async () => ({ ...actorScope, role, status }),
             }),
           );
           const result = await policy.execute({
-            adapter: "page",
+            adapter: "stream",
             operationName: `${role}-${status}-${capability}`,
             admission: { kind: "workspace", capability },
             operation: async () => true,
@@ -156,7 +175,7 @@ describe("Authenticated Request Policy", () => {
   });
 
   test("keeps actor and Workspace owner identity distinct through the operation", async () => {
-    const policy = createAuthenticatedRequestPolicy(makeDependencies());
+    const policy = createPolicy();
 
     const result = await policy.execute({
       adapter: "hono",
@@ -180,7 +199,7 @@ describe("Authenticated Request Policy", () => {
 
   test("runs authentication, capability, rate limit, Project, input, then operation", async () => {
     const calls: string[] = [];
-    const policy = createAuthenticatedRequestPolicy(
+    const policy = createPolicy(
       makeDependencies({
         resolveActorScope: async () => {
           calls.push("authentication-and-workspace");
@@ -239,7 +258,7 @@ describe("Authenticated Request Policy", () => {
 
   test("forbidden requests do not rate-limit, resolve a Project, parse, or run domain work", async () => {
     const calls: string[] = [];
-    const policy = createAuthenticatedRequestPolicy(
+    const policy = createPolicy(
       makeDependencies({
         resolveActorScope: async () => ({ ...actorScope, role: "viewer" }),
         rateLimit: async () => {
@@ -254,7 +273,7 @@ describe("Authenticated Request Policy", () => {
     );
 
     const result = await policy.execute({
-      adapter: "server_action",
+      adapter: "hono",
       operationName: "forbidden-operation",
       admission: {
         kind: "project",
@@ -287,12 +306,12 @@ describe("Authenticated Request Policy", () => {
   });
 
   test("conceals inaccessible Projects but exposes an entitled Workspace mismatch", async () => {
-    const missingPolicy = createAuthenticatedRequestPolicy(
+    const missingPolicy = createPolicy(
       makeDependencies({
         resolveProject: async () => ({ kind: "missing" }),
       }),
     );
-    const mismatchPolicy = createAuthenticatedRequestPolicy(
+    const mismatchPolicy = createPolicy(
       makeDependencies({
         resolveProject: async () => ({
           kind: "workspace_mismatch",
@@ -303,7 +322,7 @@ describe("Authenticated Request Policy", () => {
       }),
     );
     const request = {
-      adapter: "page" as const,
+      adapter: "stream" as const,
       operationName: "open-project",
       admission: {
         kind: "project" as const,
@@ -329,7 +348,7 @@ describe("Authenticated Request Policy", () => {
 
   test("bounds validation details and never runs the operation for invalid input", async () => {
     let operated = false;
-    const policy = createAuthenticatedRequestPolicy(makeDependencies());
+    const policy = createPolicy();
 
     const result = await policy.execute({
       adapter: "hono",
@@ -360,7 +379,7 @@ describe("Authenticated Request Policy", () => {
   });
 
   test("returns typed expected failures and lets unknown exceptions escape", async () => {
-    const policy = createAuthenticatedRequestPolicy(makeDependencies());
+    const policy = createPolicy();
 
     const expected = await policy.execute({
       adapter: "hono",
@@ -400,7 +419,7 @@ describe("Authenticated Request Policy", () => {
   test("bounds rate-limit recovery and records safe diagnostics for every disposition", async () => {
     const diagnostics: unknown[] = [];
     let now = 100;
-    const policy = createAuthenticatedRequestPolicy(
+    const policy = createPolicy(
       makeDependencies({
         rateLimit: async () => ({ allowed: false, retryAfterSeconds: 2.2 }),
         now: () => now++,
@@ -408,7 +427,7 @@ describe("Authenticated Request Policy", () => {
       }),
     );
     const result = await policy.execute({
-      adapter: "server_action",
+      adapter: "hono",
       operationName: "rate-limited-action",
       admission: { kind: "workspace", capability: "content.edit" },
       rateLimit: {
@@ -429,7 +448,7 @@ describe("Authenticated Request Policy", () => {
     expect(diagnostics).toEqual([
       expect.objectContaining({
         requestId: "request-1",
-        adapter: "server_action",
+        adapter: "hono",
         operationName: "rate-limited-action",
         failureCode: "rate_limited",
         actorUserId: "actor-user",
@@ -441,8 +460,7 @@ describe("Authenticated Request Policy", () => {
 
   test("classifies a normalized adapter error response before recording diagnostics", async () => {
     const diagnostics: unknown[] = [];
-    const policy = createAuthenticatedRequestPolicy({
-      ...makeDependencies(),
+    const policy = createPolicy({
       recordDiagnostic: (value) => diagnostics.push(value),
     });
 
@@ -470,7 +488,7 @@ describe("Authenticated Request Policy", () => {
 
   test("wraps dependency failures with the same request identifier without exposing their message", async () => {
     const diagnostics: unknown[] = [];
-    const policy = createAuthenticatedRequestPolicy(
+    const policy = createPolicy(
       makeDependencies({
         resolveActorScope: async () => {
           throw new Error("private provider token");
@@ -502,25 +520,161 @@ describe("Authenticated Request Policy", () => {
     ]);
   });
 
-  test("preserves framework control-flow exceptions for the transport", async () => {
-    const frameworkSignal = new Error("framework-control-flow");
-    const policy = createAuthenticatedRequestPolicy(
-      makeDependencies({
-        resolveActorScope: async () => {
-          throw frameworkSignal;
+  test("uses the outer request ID for results, failures and diagnostics", async () => {
+    const diagnostics: Array<{ requestId: string }> = [];
+    const policy = createPolicy({
+      createRequestId: () => "outer-request",
+      resolveActorScope: async () => null,
+      recordDiagnostic: (value) => diagnostics.push(value),
+    });
+
+    const result = await policy.execute({
+      adapter: "hono",
+      operationName: "anonymous",
+      admission: { kind: "signed_in" },
+      operation: async () => true,
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      requestId: "outer-request",
+      failure: { code: "authentication_required", status: 401, requestId: "outer-request" },
+    });
+    expect(diagnostics.map((value) => value.requestId)).toEqual(["outer-request"]);
+  });
+
+  test("a typed actor-resolution refusal stops before capability, limits, Project, input and operation", async () => {
+    const calls: string[] = [];
+    const policy = createPolicy({
+      resolveActorScope: async () => {
+        throw new AuthenticatedRequestFailure({
+          code: "workspace_selection_changed",
+          category: "workspace_selection",
+          status: 409,
+          message: "Your Workspace selection changed. Reload to continue.",
+        });
+      },
+      rateLimit: async () => {
+        calls.push("rate-limit");
+        return { allowed: true };
+      },
+      resolveProject: async () => {
+        calls.push("project");
+        return { kind: "active", projectId: "project-a" };
+      },
+    });
+
+    const result = await policy.execute({
+      adapter: "hono",
+      operationName: "stale-selection",
+      admission: {
+        kind: "project",
+        capability: "content.edit",
+        projectId: "project-a",
+      },
+      rateLimit: { key: () => "k", limit: 1, windowSeconds: 60 },
+      input: {
+        load: async () => {
+          calls.push("input");
+          return {};
         },
-        rethrowFrameworkControlFlow: (error) => {
-          if (error === frameworkSignal) throw error;
-        },
-      }),
-    );
-    await expect(
-      policy.execute({
-        adapter: "page",
-        operationName: "dynamic-page",
-        admission: { kind: "signed_in" },
-        operation: async () => true,
-      }),
-    ).rejects.toBe(frameworkSignal);
+        schema: z.object({}),
+      },
+      operation: async () => {
+        calls.push("operation");
+        return null;
+      },
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      failure: { code: "workspace_selection_changed", status: 409 },
+    });
+    expect(calls).toEqual([]);
+  });
+
+  test("checks every rate rule in order and stops at the first exhausted window", async () => {
+    const keys: string[] = [];
+    const policy = createPolicy({
+      rateLimit: async ({ key }) => {
+        keys.push(key);
+        return key === "baseline" ? { allowed: false, retryAfterSeconds: 4.2 } : { allowed: true };
+      },
+    });
+
+    const result = await policy.execute({
+      adapter: "hono",
+      operationName: "two-rules",
+      admission: { kind: "workspace", capability: "content.edit" },
+      rateLimit: [
+        { key: () => "baseline", limit: 60, windowSeconds: 60 },
+        { key: () => "operation", limit: 5, windowSeconds: 3600 },
+      ],
+      operation: async () => true,
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      failure: { code: "rate_limited", status: 429, retryAfterSeconds: 5 },
+    });
+    expect(keys).toEqual(["baseline"]);
+  });
+
+  test("a deferred rate refusal still admits, and hands the recorded outcome to the operation", async () => {
+    const calls: string[] = [];
+    const policy = createPolicy({
+      rateLimit: async ({ key }) => {
+        calls.push(`rate:${key}`);
+        return key === "operation"
+          ? { allowed: false, limit: 5, remaining: 0, availability: "available", retryAfterSeconds: 90 }
+          : { allowed: true, limit: 60, remaining: 59, availability: "available" };
+      },
+      resolveProject: async () => {
+        calls.push("project");
+        return { kind: "active", projectId: "project-a" };
+      },
+    });
+
+    const result = await policy.execute({
+      adapter: "hono",
+      operationName: "receipt-command",
+      admission: { kind: "project", capability: "content.edit", projectId: "project-a" },
+      deferRateRefusal: true,
+      rateLimit: [
+        { key: () => "baseline", limit: 60, windowSeconds: 60 },
+        { key: () => "operation", limit: 5, windowSeconds: 3600 },
+      ],
+      operation: async ({ rateLimit }) => rateLimit,
+    });
+
+    expect(calls).toEqual(["rate:baseline", "rate:operation", "project"]);
+    expect(result).toMatchObject({
+      ok: true,
+      value: {
+        allowed: false,
+        availability: "available",
+        retryAfterSeconds: 90,
+        limit: 5,
+        remaining: 0,
+      },
+    });
+  });
+
+  test("an unavailable limiter is recorded rather than failing open silently", async () => {
+    const policy = createPolicy({
+      rateLimit: async () => ({ allowed: true, availability: "unavailable" }),
+    });
+    const result = await policy.execute({
+      adapter: "hono",
+      operationName: "limiter-outage",
+      admission: { kind: "workspace", capability: "content.edit" },
+      deferRateRefusal: true,
+      rateLimit: { key: () => "k", limit: 1, windowSeconds: 60 },
+      operation: async ({ rateLimit }) => rateLimit,
+    });
+    expect(result).toMatchObject({
+      ok: true,
+      value: { allowed: true, availability: "unavailable" },
+    });
   });
 });

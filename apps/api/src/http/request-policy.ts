@@ -1,14 +1,13 @@
 import {
   roleHasWorkspaceCapability,
-  workspaceAllowsCapability,
   type WorkspaceAccessRole,
   type WorkspaceAccessStatus,
   type WorkspaceCapability,
+  workspaceAllowsCapability,
 } from "@narriflow/validators";
-import type { ZodType, ZodIssue } from "zod";
+import type { ZodIssue, ZodType } from "zod";
 
-export type AuthenticatedRequestAdapter =
-  "hono" | "server_action" | "page" | "stream";
+export type AuthenticatedRequestAdapter = "hono" | "stream";
 
 export type AuthenticatedRequestFailureCategory =
   | "authentication"
@@ -58,10 +57,22 @@ export interface AuthenticatedRequestIssue {
   message: string;
 }
 
+export type AuthenticatedRequestFailureStatus =
+  | 400
+  | 401
+  | 402
+  | 403
+  | 404
+  | 409
+  | 415
+  | 422
+  | 429
+  | 503;
+
 export interface AuthenticatedRequestFailureValue {
   code: string;
   category: AuthenticatedRequestFailureCategory;
-  status: 400 | 401 | 402 | 403 | 404 | 409 | 422 | 429 | 503;
+  status: AuthenticatedRequestFailureStatus;
   message: string;
   requestId: string;
   issues?: AuthenticatedRequestIssue[];
@@ -74,6 +85,7 @@ type FailureWithoutRequestId = Omit<
   "requestId"
 >;
 
+/** An expected refusal. Thrown by actor resolvers and operations; the policy turns it into a typed result. */
 export class AuthenticatedRequestFailure extends Error {
   readonly failure: FailureWithoutRequestId;
 
@@ -84,6 +96,7 @@ export class AuthenticatedRequestFailure extends Error {
   }
 }
 
+/** Anything the policy did not expect. Carries the request ID so the transport answers a generic 500 with it. */
 export class AuthenticatedRequestUnexpectedError extends Error {
   readonly requestId: string;
   override readonly cause: unknown;
@@ -105,6 +118,22 @@ export type AuthenticatedRequestAdmission =
       projectId: string;
     };
 
+/**
+ * The limiter's answer for the whole request. Commands that must replay an
+ * accepted receipt before refusing (`deferRateRefusal`) receive it in the
+ * operation context and enforce it only for genuinely new work.
+ */
+export interface RecordedRateLimit {
+  allowed: boolean;
+  availability: "available" | "unavailable";
+  /** Seconds until the tightest exhausted window reopens, when known. */
+  retryAfterSeconds?: number;
+  /** The most constraining window, for `RateLimit-*` response headers. */
+  limit?: number;
+  remaining?: number;
+  resetSeconds?: number;
+}
+
 export interface AuthenticatedRequestOperationContext<
   I,
   TActor extends AuthenticatedActorScope = ActorScope,
@@ -113,6 +142,14 @@ export interface AuthenticatedRequestOperationContext<
   project: ActiveProjectScope | null;
   input: I;
   requestId: string;
+  /** Null when the request declared no limits. */
+  rateLimit: RecordedRateLimit | null;
+}
+
+export interface RateLimitRule<TActor extends AuthenticatedActorScope> {
+  key(actor: TActor): string;
+  limit: number;
+  windowSeconds: number;
 }
 
 interface AuthenticatedRequestCommon<
@@ -122,11 +159,14 @@ interface AuthenticatedRequestCommon<
   adapter: AuthenticatedRequestAdapter;
   operationName: string;
   admission: AuthenticatedRequestAdmission;
-  rateLimit?: {
-    key(actor: TActor): string;
-    limit: number;
-    windowSeconds: number;
-  };
+  /** Every rule is checked in order; the first exhausted window refuses the request. */
+  rateLimit?: RateLimitRule<TActor> | readonly RateLimitRule<TActor>[];
+  /**
+   * Record limiter outcomes instead of refusing. Receipt-backed commands set
+   * this so an immutable replay is answered before an exhausted or unavailable
+   * limiter can refuse, then enforce the recorded outcome in `beforeAccept`.
+   */
+  deferRateRefusal?: boolean;
   diagnoseResult?(value: O): Promise<{
     disposition: "refused" | "failed";
     failureCode: string;
@@ -161,34 +201,53 @@ export type AuthenticatedRequestResult<O> =
   | { ok: true; requestId: string; value: O }
   | { ok: false; requestId: string; failure: AuthenticatedRequestFailureValue };
 
-export interface AuthenticatedRequestPolicyDependencies<
-  TActor extends AuthenticatedActorScope = ActorScope,
-> {
-  resolveActorScope(): Promise<TActor | null>;
+export interface RateLimitCheck {
+  allowed: boolean;
+  availability?: "available" | "unavailable";
+  limit?: number;
+  remaining?: number;
+  retryAfterSeconds?: number;
+}
+
+export interface AuthenticatedRequestDiagnostic {
+  requestId: string;
+  adapter: AuthenticatedRequestAdapter;
+  operationName: string;
+  failureCode?: string;
+  status?: number;
+  actorUserId?: string;
+  workspaceId?: string;
+  projectId?: string;
+  elapsedMs: number;
+  disposition: "succeeded" | "refused" | "failed";
+}
+
+/** Process-wide collaborators. Nothing here is request-scoped, so nothing authorization-related is cached. */
+export interface AuthenticatedRequestPolicyDependencies {
   resolveProject(input: {
-    actor: TActor & ActorScope;
+    actor: ActorScope;
     projectId: string;
   }): Promise<ProjectAdmissionResult>;
   rateLimit(input: {
     key: string;
     limit: number;
     windowSeconds: number;
-  }): Promise<{ allowed: boolean; retryAfterSeconds?: number }>;
-  createRequestId(): string;
+  }): Promise<RateLimitCheck>;
   now(): number;
-  recordDiagnostic?(diagnostic: {
-    requestId: string;
-    adapter: AuthenticatedRequestAdapter;
-    operationName: string;
-    failureCode?: string;
-    status?: number;
-    actorUserId?: string;
-    workspaceId?: string;
-    projectId?: string;
-    elapsedMs: number;
-    disposition: "succeeded" | "refused" | "failed";
-  }): void;
-  rethrowFrameworkControlFlow?(error: unknown): void;
+  recordDiagnostic?(diagnostic: AuthenticatedRequestDiagnostic): void;
+}
+
+/**
+ * The per-request half of an execution: the outer request ID (the policy never
+ * generates its own) and the request-local actor promise. Resolving may return
+ * `null` for "not signed in" or throw `AuthenticatedRequestFailure` for a
+ * typed refusal such as an unavailable identity provider.
+ */
+export interface AuthenticatedRequestInvocation<
+  TActor extends AuthenticatedActorScope,
+> {
+  requestId: string;
+  resolveActor(): Promise<TActor | null>;
 }
 
 function failure(
@@ -202,7 +261,7 @@ function failure(
   };
 }
 
-function boundedIssue(issue: ZodIssue): AuthenticatedRequestIssue {
+export function boundedIssue(issue: ZodIssue): AuthenticatedRequestIssue {
   return {
     path: issue.path
       .slice(0, 5)
@@ -227,14 +286,26 @@ function isWorkspaceActorScope(
   );
 }
 
-export function createAuthenticatedRequestPolicy<
-  TActor extends AuthenticatedActorScope = ActorScope,
->(dependencies: AuthenticatedRequestPolicyDependencies<TActor>) {
+function ruleList<TActor extends AuthenticatedActorScope>(
+  value: AuthenticatedRequestCommon<unknown, TActor>["rateLimit"],
+): readonly RateLimitRule<TActor>[] {
+  if (!value) return [];
+  return "key" in value ? [value] : value;
+}
+
+export function createAuthenticatedRequestPolicy(
+  dependencies: AuthenticatedRequestPolicyDependencies,
+) {
   return {
-    async execute<I, O>(
+    async execute<
+      I,
+      O,
+      TActor extends AuthenticatedActorScope = ActorScope,
+    >(
       request: AuthenticatedRequest<I, O, TActor>,
+      invocation: AuthenticatedRequestInvocation<TActor>,
     ): Promise<AuthenticatedRequestResult<O>> {
-      const requestId = dependencies.createRequestId();
+      const { requestId } = invocation;
       const startedAt = dependencies.now();
       let actor: TActor | null = null;
       const record = (
@@ -266,7 +337,8 @@ export function createAuthenticatedRequestPolicy<
       };
 
       try {
-        actor = await dependencies.resolveActorScope();
+        // 1. Identity, and for scoped admissions the explicitly selected Workspace.
+        actor = await invocation.resolveActor();
 
         if (!actor) {
           return failed({
@@ -277,6 +349,7 @@ export function createAuthenticatedRequestPolicy<
           });
         }
 
+        // 2. Capability and Workspace status.
         let workspaceActor: (TActor & ActorScope) | null = null;
         if (request.admission.kind !== "signed_in") {
           if (!isWorkspaceActorScope(actor)) {
@@ -308,29 +381,33 @@ export function createAuthenticatedRequestPolicy<
           }
         }
 
-        if (request.rateLimit) {
-          const rateLimit = await dependencies.rateLimit({
-            key: request.rateLimit.key(actor),
-            limit: request.rateLimit.limit,
-            windowSeconds: request.rateLimit.windowSeconds,
+        // 3. Rate limits.
+        let recorded: RecordedRateLimit | null = null;
+        for (const rule of ruleList(request.rateLimit)) {
+          const check = await dependencies.rateLimit({
+            key: rule.key(actor),
+            limit: rule.limit,
+            windowSeconds: rule.windowSeconds,
           });
-          if (!rateLimit.allowed) {
+          recorded = mergeRateLimit(
+            recorded,
+            check,
+            rule.windowSeconds,
+            dependencies.now(),
+          );
+          if (!check.allowed) {
+            if (request.deferRateRefusal) break;
             return failed({
               code: "rate_limited",
               category: "rate_limit",
               status: 429,
               message: "Too many requests. Wait before trying again.",
-              retryAfterSeconds: Math.max(
-                1,
-                Math.ceil(
-                  rateLimit.retryAfterSeconds ??
-                    request.rateLimit.windowSeconds,
-                ),
-              ),
+              retryAfterSeconds: recorded.retryAfterSeconds ?? rule.windowSeconds,
             });
           }
         }
 
+        // 4. Project concealment and Workspace mismatch.
         let project: ActiveProjectScope | null = null;
         if (request.admission.kind === "project") {
           if (!workspaceActor) {
@@ -363,6 +440,7 @@ export function createAuthenticatedRequestPolicy<
           project = { projectId: admitted.projectId };
         }
 
+        // 5. Input.
         let input: I | undefined;
         if (request.input) {
           const parsed = request.input.schema.safeParse(
@@ -380,6 +458,7 @@ export function createAuthenticatedRequestPolicy<
           input = parsed.data;
         }
 
+        // 6. Operation.
         const operation = request.operation as (
           context: AuthenticatedRequestOperationContext<I, TActor>,
         ) => Promise<O>;
@@ -388,6 +467,7 @@ export function createAuthenticatedRequestPolicy<
           project,
           input,
           requestId,
+          rateLimit: recorded,
         } as AuthenticatedRequestOperationContext<I, TActor>);
         const diagnosed = await request.diagnoseResult?.(value);
         if (diagnosed) {
@@ -401,7 +481,6 @@ export function createAuthenticatedRequestPolicy<
         }
         return { ok: true, requestId, value };
       } catch (error) {
-        dependencies.rethrowFrameworkControlFlow?.(error);
         if (error instanceof AuthenticatedRequestFailure) {
           return failed(error.failure);
         }
@@ -410,6 +489,48 @@ export function createAuthenticatedRequestPolicy<
         throw new AuthenticatedRequestUnexpectedError(requestId, error);
       }
     },
+  };
+}
+
+function mergeRateLimit(
+  previous: RecordedRateLimit | null,
+  check: RateLimitCheck,
+  windowSeconds: number,
+  nowMs: number,
+): RecordedRateLimit {
+  const retryAfterSeconds = check.allowed
+    ? previous?.retryAfterSeconds
+    : Math.max(1, Math.ceil(check.retryAfterSeconds ?? windowSeconds));
+  const tighter =
+    check.availability !== "unavailable" &&
+    check.limit !== undefined &&
+    check.remaining !== undefined &&
+    (previous?.remaining === undefined || check.remaining < previous.remaining);
+  const window = tighter
+    ? {
+        limit: check.limit,
+        remaining: check.remaining,
+        resetSeconds:
+          windowSeconds - (Math.floor(nowMs / 1000) % windowSeconds),
+      }
+    : {
+        limit: previous?.limit,
+        remaining: previous?.remaining,
+        resetSeconds: previous?.resetSeconds,
+      };
+  return {
+    allowed: (previous?.allowed ?? true) && check.allowed,
+    availability:
+      check.availability === "unavailable" ||
+      previous?.availability === "unavailable"
+        ? "unavailable"
+        : "available",
+    ...(retryAfterSeconds === undefined ? {} : { retryAfterSeconds }),
+    ...(window.limit === undefined ? {} : { limit: window.limit }),
+    ...(window.remaining === undefined ? {} : { remaining: window.remaining }),
+    ...(window.resetSeconds === undefined
+      ? {}
+      : { resetSeconds: window.resetSeconds }),
   };
 }
 
