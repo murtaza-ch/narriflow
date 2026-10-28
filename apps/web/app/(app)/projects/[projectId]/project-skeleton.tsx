@@ -6,7 +6,7 @@ import { ChevronDown } from "lucide-react";
 import { useSearchParams } from "next/navigation";
 import type { ReactNode } from "react";
 
-/** The project tabs, in order; the page lands on Clips. */
+/** The project tabs, in order; the page lands on Clips unless `?tab=` names another. */
 const TABS = ["Clips", "Transcript", "Repurpose", "Dubbing", "Review", "Posts", "Analytics", "Activity"];
 
 /** Action widths: Publish · Edit · Download/Render. */
@@ -20,7 +20,10 @@ const ACTION_WIDTHS = [70, 73, 93];
  * full-width desk rows. Static labels are real text; bones stand in for data.
  */
 export function ProjectSkeleton() {
-	const isGallery = useSearchParams().get("view") !== "desk";
+	const params = useSearchParams();
+	const isGallery = params.get("view") !== "desk";
+	// A link straight to a tab (e.g. Send for review) shows that tab loading.
+	const current = TABS.find((tab) => tab.toLowerCase() === params.get("tab")) ?? "Clips";
 
 	return (
 		// Same root as the page: a 1400px column with a 24px rhythm.
@@ -59,7 +62,7 @@ export function ProjectSkeleton() {
 			</Flex>
 
 			<Box>
-				{/* Tabs — Clips is current; its count is data */}
+				{/* Tabs — the current one underlined; the Clips count is data */}
 				<Flex
 					data-scope="tabs"
 					data-part="list"
@@ -68,7 +71,7 @@ export function ProjectSkeleton() {
 					borderBottomWidth="1px"
 					borderColor="border.subtle"
 				>
-					{TABS.map((tab, index) => (
+					{TABS.map((tab) => (
 						<Flex
 							key={tab}
 							position="relative"
@@ -78,40 +81,68 @@ export function ProjectSkeleton() {
 							fontSize="sm"
 							fontWeight="500"
 							whiteSpace="nowrap"
-							color={index === 0 ? "fg" : "fg.muted"}
+							color={tab === current ? "fg" : "fg.muted"}
 						>
 							{tab}
-							{index === 0 ? (
-								<>
-									<Bone h="4" w="5" ms="1.5" borderRadius="full" />
-									<Box position="absolute" insetInline="0" bottom="-1px" h="2px" bg="accent.solid" />
-								</>
+							{tab === "Clips" ? <Bone h="4" w="5" ms="1.5" borderRadius="full" /> : null}
+							{tab === current ? (
+								<Box position="absolute" insetInline="0" bottom="-1px" h="2px" bg="accent.solid" />
 							) : null}
 						</Flex>
 					))}
 				</Flex>
 
-				<Box pt="6">
-					{/* Toolbar — layout toggle, sort, filters · select all */}
-					<Flex align="center" justify="space-between" gap="3" pb="3" mb="1">
-						<Flex align="center" gap="3">
-							<Bone h="9" w="86px" borderRadius="control" />
-							<Bone h="9" w="152px" borderRadius="control" />
-							<Bone boxSize="9" borderRadius="l2" />
+				{current === "Clips" ? (
+					<Box pt="6">
+						{/* Toolbar — layout toggle, sort, filters · select all */}
+						<Flex align="center" justify="space-between" gap="3" pb="3" mb="1">
+							<Flex align="center" gap="3">
+								<Bone h="9" w="86px" borderRadius="control" />
+								<Bone h="9" w="152px" borderRadius="control" />
+								<Bone boxSize="9" borderRadius="l2" />
+							</Flex>
+							<Flex align="center" gap="2" fontSize="13px" color="fg.muted">
+								<Bone boxSize="4" />
+								Select all
+							</Flex>
 						</Flex>
-						<Flex align="center" gap="2" fontSize="13px" color="fg.muted">
-							<Bone boxSize="4" />
-							Select all
-						</Flex>
-					</Flex>
 
-					<Stack data-clip-list gap="0" pt="3">
-						{Array.from({ length: 6 }).map((_, index) => (
-							<SkeletonClipCard key={index} isGallery={isGallery} />
-						))}
-					</Stack>
-				</Box>
+						<Stack data-clip-list gap="0" pt="3">
+							{Array.from({ length: 6 }).map((_, index) => (
+								<SkeletonClipCard key={index} isGallery={isGallery} />
+							))}
+						</Stack>
+					</Box>
+				) : (
+					<PanelSkeleton />
+				)}
 			</Box>
+		</Stack>
+	);
+}
+
+/**
+ * Any other tab: its quiet header (icon, title, one line) over a few soft
+ * rows — the shape every non-Clips tab opens with.
+ */
+function PanelSkeleton() {
+	return (
+		<Stack pt="6" gap="6">
+			<Flex align="flex-start" justify="space-between" gap="4">
+				<Stack gap="2">
+					<Flex align="center" gap="2">
+						<Bone boxSize="5" />
+						<Bone h="5" w="40" />
+					</Flex>
+					<Bone h="3.5" w="64" maxW="70vw" />
+				</Stack>
+				<Bone h="9" w="28" borderRadius="control" flexShrink={0} />
+			</Flex>
+			<Stack gap="3">
+				{[0, 1, 2].map((row) => (
+					<Bone key={row} h="20" borderRadius="l3" />
+				))}
+			</Stack>
 		</Stack>
 	);
 }
