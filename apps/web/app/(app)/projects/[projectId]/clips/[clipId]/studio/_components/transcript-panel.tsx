@@ -27,6 +27,7 @@ import {
 import { subtitleParagraphGroups } from "./subtitle-lines";
 import { sceneTextContent } from "./scene-fonts";
 import { AutoCensorReviewDrawer } from "./auto-censor-review-drawer";
+import { transcriptHighlight, type TranscriptHighlight } from "./transcript-highlight";
 import { StudioLockGem } from "./studio-lock-gem";
 import { useUpgrade, type UpgradePrompt } from "@/app/(app)/_components/upgrade";
 
@@ -319,12 +320,15 @@ const EditableUtterance = memo(function EditableUtterance({
   utteranceIndex,
   isActive,
   activeWordIndex,
+  highlight,
   onSeek,
 }: {
   utterance: TranscriptUtterance;
   utteranceIndex: number;
   isActive: boolean;
   activeWordIndex: number;
+  /** The caption style's active-word look; null keeps the Studio accent. */
+  highlight: TranscriptHighlight | null;
   onSeek: (editedTime: number) => void;
 }) {
   const { editedTimeMap, updateWord, deletedRanges } = useStudio("editedTimeMap", "updateWord", "deletedRanges");
@@ -393,6 +397,9 @@ const EditableUtterance = memo(function EditableUtterance({
         const wordIdx = words.indexOf(token.word);
         const isActiveWord = wordIdx === activeWordIndex;
         const isDeleted = isWordDeleted(token.word, deletedRanges);
+        // The spoken word looks as it does in the captions; a pill grows by
+        // a shadow, not padding, so the line never reflows as it moves.
+        const pill = isActiveWord && !isDeleted ? (highlight?.pill ?? null) : null;
         const isEditingThisWord = editingWordIndex === wordIdx;
 
         return (
@@ -413,16 +420,18 @@ const EditableUtterance = memo(function EditableUtterance({
                   isDeleted
                     ? "studio.fgSubtle"
                     : isActiveWord
-                      ? "studio.accentFg"
+                      ? (highlight?.color ?? "studio.accentFg")
                       : "studio.fg"
                 }
+                bg={pill ?? undefined}
+                boxShadow={pill ? `0 0 0 2px ${pill}` : undefined}
                 textDecoration={isDeleted ? "line-through" : "none"}
                 opacity={isDeleted ? 0.65 : 1}
                 fontWeight="inherit"
                 cursor="pointer"
-                borderRadius="2px"
+                borderRadius={pill ? "3px" : "2px"}
                 transition="color 80ms ease-out"
-                _hover={{ bg: "rgba(255,255,255,0.06)" }}
+                _hover={pill ? undefined : { bg: "rgba(255,255,255,0.06)" }}
                 onClick={(e: React.MouseEvent) => {
                   e.preventDefault();
                   // `sourceToEdited` already collapses an instant inside a
@@ -841,7 +850,6 @@ function SelectionToolbar({
     <Flex
       bg="studio.raised"
       borderRadius="10px"
-      boxShadow="0 8px 24px rgba(0, 0, 0, 0.45)"
       position="absolute"
       style={{
         top: `${top}px`,
@@ -902,7 +910,10 @@ export function TranscriptPanel() {
     sceneWriteCapabilities,
     sceneFonts,
     upgradePrompts,
-  } = useStudio("utterances", "transcriptOnly", "setTranscriptOnly", "seekTo", "clipStartSec", "editedTimeMap", "playbackClock", "deletedRanges", "deleteSourceRange", "revertDeletedRange", "clipInfo", "setTranscriptSelectionRange", "insertSceneBlock", "baseEditedToComposite", "sceneWriteCapabilities", "sceneFonts", "upgradePrompts");
+    captionPreset,
+  } = useStudio("utterances", "transcriptOnly", "setTranscriptOnly", "seekTo", "clipStartSec", "editedTimeMap", "playbackClock", "deletedRanges", "deleteSourceRange", "revertDeletedRange", "clipInfo", "setTranscriptSelectionRange", "insertSceneBlock", "baseEditedToComposite", "sceneWriteCapabilities", "sceneFonts", "upgradePrompts", "captionPreset");
+  // The spoken word follows the clip's caption style, so it reads like the captions on the video.
+  const highlight = useMemo(() => transcriptHighlight(captionPreset), [captionPreset]);
   const { openUpgrade } = useUpgrade();
   const router = useRouter();
 
@@ -1387,6 +1398,7 @@ export function TranscriptPanel() {
                 utteranceIndex={i}
                 isActive={isActive}
                 activeWordIndex={isActive ? activeState.wordIndex : -1}
+                highlight={highlight}
                 onSeek={seekTo}
               />
 
