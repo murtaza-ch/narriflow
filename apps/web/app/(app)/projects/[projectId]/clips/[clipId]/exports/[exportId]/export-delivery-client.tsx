@@ -3,28 +3,30 @@
 import { PlanLimitNotice } from "../../../../../../_components/plan-limit-notice";
 import { LockedButton, useUpgrade, type UpgradePrompt } from "../../../../../../_components/upgrade";
 import { upgradePromptFromFailure } from "@/lib/authenticated-request-browser";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { Box, Flex, Grid, HStack, Stack, Text } from "@chakra-ui/react";
+import { Box, Flex, Grid, HStack, Image, Portal, Stack, Text, Tooltip } from "@chakra-ui/react";
 import {
 	AlertTriangle,
 	ArrowLeft,
 	Check,
+	Clapperboard,
 	Clock3,
 	Copy,
 	Download,
-	ExternalLink,
 	FileText,
 	Film,
+	Info,
 	Link2,
+	Lock,
 	RefreshCw,
+	Send,
 	ShieldCheck,
 } from "lucide-react";
-import { Button } from "@narriflow/ui/components/button";
-import { MediaWell } from "@narriflow/ui/components/media-well";
+import { Button, IconButton } from "@narriflow/ui/components/button";
 import { Progress } from "@narriflow/ui/components/progress";
+import { SegmentedControl } from "@narriflow/ui/components/segmented-control";
 import { Spinner } from "@narriflow/ui/components/spinner";
-import { StatusBadge } from "@narriflow/ui/components/status-badge";
 import type { ClipExportSnapshot } from "@narriflow/validators";
 import { formatDateTime, formatDuration } from "@/lib/format";
 import {
@@ -35,9 +37,9 @@ import {
 const ACTIVE_STATUSES = new Set(["queued", "rendering", "partial_ready"]);
 
 const TIMELINE_DOWNLOADS = [
-	{ format: "xmeml", label: "Premiere" },
-	{ format: "fcpxml", label: "Final Cut, Resolve" },
-	{ format: "edl", label: "EDL" },
+	{ format: "xmeml", label: "Premiere", hint: "XML timeline" },
+	{ format: "fcpxml", label: "Final Cut, Resolve", hint: "FCPXML timeline" },
+	{ format: "edl", label: "EDL", hint: "Any editor" },
 ] as const;
 
 type TimelineTarget = (typeof TIMELINE_DOWNLOADS)[number]["format"] | "source";
@@ -62,27 +64,27 @@ function statusCopy(status: ClipExportSnapshot["status"]) {
 		case "ready":
 			return {
 				label: "Ready",
-				detail: "Every requested variant is ready to deliver.",
+				detail: "Every format is ready.",
 			};
 		case "partial_ready":
 			return {
 				label: "Partially ready",
-				detail: "Ready variants are available; failed ones can be retried.",
+				detail: "Some formats are ready; retry the rest.",
 			};
 		case "failed":
 			return {
 				label: "Failed",
-				detail: "No variant completed. Retry the failed render.",
+				detail: "No format finished rendering.",
 			};
 		case "rendering":
 			return {
 				label: "Rendering",
-				detail: "Your saved version is rendering in the background.",
+				detail: "Rendering your saved version.",
 			};
 		default:
 			return {
 				label: "Queued",
-				detail: "Your export is waiting for render capacity.",
+				detail: "Waiting for a render slot.",
 			};
 	}
 }
@@ -319,6 +321,10 @@ export function ExportDeliveryClient({
 	}
 
 	const timelineLocked = timelineRequirement !== null;
+	const active = ACTIVE_STATUSES.has(data.status);
+	const videoRef = useRef<HTMLVideoElement>(null);
+	const ambientRef = useRef<HTMLCanvasElement>(null);
+	useAmbientGlow(videoRef, ambientRef, selected?.previewUrl ?? selected?.downloadUrl ?? null);
 
 	const ratio =
 		selected?.aspectRatio === "9:16"
@@ -329,12 +335,21 @@ export function ExportDeliveryClient({
 					? 4 / 5
 					: 16 / 9;
 
+	const facts = [
+		selected?.aspectRatio,
+		data.resolution,
+		selected?.durationSec ? formatDuration(selected.durationSec) : null,
+		selected?.sizeBytes ? formatBytes(selected.sizeBytes) : null,
+		data.watermark ? "Watermark" : null,
+	].filter((fact): fact is string => Boolean(fact));
+
 	return (
 		// Same layout as the Studio it opens from: separate panels on the frame,
 		// 8px apart — a header, the preview, and one side panel.
 		<Flex
 			direction="column"
 			minH="100dvh"
+			h={{ lg: "100dvh" }}
 			bg="bg.sidebar"
 			p={{ base: "0", md: "2" }}
 			gap="2"
@@ -358,16 +373,13 @@ export function ExportDeliveryClient({
 							<ArrowLeft size={16} /> Studio
 						</Link>
 					</Button>
-					<Text fontSize="16px" fontWeight="500" truncate>
+					<Text fontSize="15px" fontWeight="500" truncate>
 						{data.clipTitle}
 					</Text>
+					<Text fontSize="13px" color="fg.subtle" truncate display={{ base: "none", md: "block" }}>
+						{data.projectTitle}
+					</Text>
 				</HStack>
-				{data.status === "ready" ? null : (
-					<StatusBadge
-						status={data.status === "failed" ? "failed" : "processing"}
-						label={copy.label}
-					/>
-				)}
 			</Flex>
 
 			{data.isOlderVersion ? (
@@ -381,15 +393,19 @@ export function ExportDeliveryClient({
 					bg="bg"
 					borderRadius={{ base: "0", md: "12px" }}
 				>
-					<Box>
-						<Text fontWeight="500" fontSize="14px">
-							A newer editor version exists
-						</Text>
-						<Text fontSize="13px" color="fg.muted">
-							This delivery stays pinned to version {data.editorRevision}.
-							Open Studio to export version {data.currentEditorRevision}.
-						</Text>
-					</Box>
+					<Flex gap="3" align="center">
+						<Mark tone="warning">
+							<Clock3 size={16} />
+						</Mark>
+						<Box>
+							<Text fontWeight="500" fontSize="14px">
+								A newer version exists
+							</Text>
+							<Text fontSize="13px" color="fg.muted">
+								This export stays on v{data.editorRevision}; the Studio is on v{data.currentEditorRevision}.
+							</Text>
+						</Box>
+					</Flex>
 					<Button asChild size="sm" variant="subtle">
 						<Link
 							href={`/projects/${data.projectId}/clips/${data.clipId}/studio`}
@@ -401,34 +417,53 @@ export function ExportDeliveryClient({
 			) : null}
 
 			<Flex flex="1" minH="0" gap="2" direction={{ base: "column", lg: "row" }}>
-				{/* Preview panel — the video at its own aspect ratio, sized to the height */}
+				{/* Preview panel — the video at its own aspect ratio, sized to the
+				    height, over a soft glow drawn from its own frames. */}
 				<Flex
+					position="relative"
 					flex="1"
 					minW="0"
 					direction="column"
 					align="center"
 					justify="center"
-					gap="4"
-					p={{ base: "4", md: "6" }}
+					gap="5"
+					p={{ base: "4", md: "8" }}
 					bg="bg"
 					borderRadius={{ base: "0", md: "12px" }}
+					overflow="hidden"
 				>
-					<MediaWell
-						ratio={ratio}
-						h={{ base: "auto", lg: "min(calc(100dvh - 200px), 820px)" }}
+					<Box
+						asChild
+						position="absolute"
+						inset="0"
+						w="full"
+						h="full"
+						opacity={0.4}
+						pointerEvents="none"
+						style={{ filter: "blur(72px) saturate(1.2)", transform: "scale(1.2)" }}
+					>
+						<canvas ref={ambientRef} width={48} height={48} aria-hidden />
+					</Box>
+
+					{/* The player takes the height the panel has left, at the video's own shape. */}
+					<Flex position="relative" flex={{ lg: "1" }} minH="0" w="full" maxH="820px" justify="center">
+					<Box
+						position="relative"
+						aspectRatio={ratio}
+						h={{ base: "auto", lg: "full" }}
 						w={{ base: "full", lg: "auto" }}
-						maxW="full"
-						timecode={
-							selected?.durationSec
-								? formatDuration(selected.durationSec)
-								: undefined
-						}
+						maxW={{ base: "420px", lg: "full" }}
+						borderRadius="l3"
+						overflow="hidden"
+						bg="studio.canvas"
 					>
 						{selected?.downloadUrl ? (
-							<Box asChild w="full" h="full" bg="studio.canvas">
+							<Box asChild w="full" h="full">
 								{/* biome-ignore lint/a11y/useMediaCaption: This is the final rendered export, which already burns the user's configured captions into the video. */}
 								<video
+									ref={videoRef}
 									controls
+									controlsList="nodownload noplaybackrate"
 									playsInline
 									preload="metadata"
 									src={selected.previewUrl ?? selected.downloadUrl}
@@ -443,6 +478,8 @@ export function ExportDeliveryClient({
 								justify="center"
 								direction="column"
 								gap="3"
+								px="6"
+								textAlign="center"
 								color="studio.fgMuted"
 							>
 								{data.status === "failed" ? (
@@ -453,42 +490,39 @@ export function ExportDeliveryClient({
 								<Text fontSize="13px">
 									{data.status === "failed"
 										? "Render failed"
-										: "Rendering your saved version"}
+										: `Rendering · ${data.progress}%`}
 								</Text>
 							</Flex>
 						)}
-					</MediaWell>
-
-					<Flex gap="2" wrap="wrap" justify="center" aria-label="Export variants">
-						{data.variants.map((variant) => (
-							<Button
-								key={variant.id}
-								size="sm"
-								variant="subtle"
-								borderWidth="2px"
-								borderColor={
-									variant.id === selected?.id ? "accent.solid" : "transparent"
-								}
-								bg={variant.id === selected?.id ? "accent.subtle" : undefined}
-								color="fg"
-								disabled={!variant.hasAsset}
-								onClick={() => setSelectedVariantId(variant.id)}
-								aria-pressed={variant.id === selected?.id}
-							>
-								{variant.status === "completed" ? (
-									<Check size={14} />
-								) : variant.status === "failed" ? (
-									<AlertTriangle size={14} />
-								) : (
-									<Clock3 size={14} />
-								)}
-								{variant.aspectRatio}
-							</Button>
-						))}
+					</Box>
 					</Flex>
+
+					{/* Only a choice when there is one to make. */}
+					{data.variants.length > 1 ? (
+						<SegmentedControl
+							position="relative"
+							aria-label="Export format"
+							value={selected?.id ?? ""}
+							onValueChange={setSelectedVariantId}
+							items={data.variants.map((variant) => ({
+								value: variant.id,
+								disabled: !variant.hasAsset,
+								label: (
+									<Flex align="center" gap="1.5">
+										{variant.status === "failed" ? (
+											<AlertTriangle size={13} />
+										) : variant.status !== "completed" ? (
+											<Clock3 size={13} />
+										) : null}
+										{variant.aspectRatio}
+									</Flex>
+								),
+							}))}
+						/>
+					) : null}
 				</Flex>
 
-				{/* Side panel — status, details and actions on one surface */}
+				{/* Side panel — status, facts, then what to do with the export */}
 				<Stack
 					w={{ base: "full", lg: "380px" }}
 					flexShrink={0}
@@ -498,245 +532,398 @@ export function ExportDeliveryClient({
 					borderRadius={{ base: "0", md: "12px" }}
 					overflowY="auto"
 				>
-					<Stack gap="3">
-						<Flex align="baseline" justify="space-between" gap="3">
-							<Text fontSize="20px" fontWeight="500">
-								{copy.label}
-							</Text>
-							<Text fontSize="13px" fontVariantNumeric="tabular-nums" color="fg.muted">
-								{data.progress}%
-							</Text>
-						</Flex>
-						<Box
-							role="progressbar"
-							aria-label="Export progress"
-							aria-valuemin={0}
-							aria-valuemax={100}
-							aria-valuenow={data.progress}
-						>
-							<Progress value={data.progress} />
-						</Box>
-						<Text fontSize="13px" color="fg.muted">
-							{copy.detail}
-						</Text>
-					</Stack>
-
-					<Grid templateColumns="1fr 1fr" columnGap="4" rowGap="4">
-						{(
-							[
-								["Version", `v${data.editorRevision}`],
-								["Created", formatDateTime(data.createdAt)],
-								["Resolution", data.resolution],
-								["Watermark", data.watermark ? "Included" : "None"],
-							] as const
-						).map(([label, value]) => (
-							<Box key={label}>
-								<Text textStyle="eyebrow" color="fg.muted">
-									{label}
+					<Stack gap="4">
+						<Flex align="center" gap="3">
+							<Mark tone={data.status === "failed" ? "danger" : data.status === "partial_ready" ? "warning" : "accent"}>
+								{data.status === "ready" ? (
+									<Check size={18} strokeWidth={2.5} />
+								) : data.status === "failed" || data.status === "partial_ready" ? (
+									<AlertTriangle size={17} />
+								) : (
+									<Spinner size="xs" />
+								)}
+							</Mark>
+							<Box flex="1" minW="0">
+								<Text fontSize="17px" fontWeight="550" letterSpacing="-0.01em">
+									{copy.label}
 								</Text>
-								<Text fontSize="14px" mt="0.5" fontVariantNumeric="tabular-nums">
-									{value}
+								<Text fontSize="12px" color="fg.muted">
+									{data.status === "ready"
+										? formatDateTime(data.completedAt ?? data.createdAt)
+										: copy.detail}
 								</Text>
 							</Box>
-						))}
-					</Grid>
-
-					<Stack gap="2">
-						<Button
-							asChild={Boolean(selected?.downloadUrl)}
-							colorPalette="brand"
-							disabled={!selected?.downloadUrl}
-							w="full"
-							size="md"
-						>
-							{selected?.downloadUrl ? (
-								<a
-									href={selected.downloadUrl}
-									download={`narriflow-${selected.aspectRatio.replace(":", "x")}.mp4`}
-								>
-									<Download size={16} /> Download {selected.aspectRatio} ·{" "}
-									{formatBytes(selected.sizeBytes)}
-								</a>
-							) : (
-								<>
-									<Download size={16} /> Download when ready
-								</>
-							)}
-						</Button>
-						<Flex gap="2">
-							{(["srt", "vtt"] as const).map((format) => (
-								<Button key={format} asChild={hasReady} variant="subtle" size="md" flex="1" disabled={!hasReady}>
-									{hasReady ? (
-										<a href={`${apiPath}/subtitles/${format}`} download>
-											<FileText size={16} /> {format.toUpperCase()} subtitles
-										</a>
-									) : (
-										<>
-											<FileText size={16} /> {format.toUpperCase()} subtitles
-										</>
-									)}
-								</Button>
-							))}
-						</Flex>
-						{canEdit ? (
-							<>
-								<Button
-									variant="subtle"
-									size="md"
-									w="full"
-									disabled={!hasReady || action === "share"}
-									onClick={() => void createShareLink()}
-								>
-									{action === "share" ? (
-										<Spinner size="xs" />
-									) : (
-										<Link2 size={16} />
-									)}
-									Create 7-day private link
-								</Button>
-								{publishingUpgrade ? (
-									<LockedButton variant="subtle" size="md" w="full" prompt={publishingUpgrade}>
-										<ExternalLink size={16} /> Publish to social
-									</LockedButton>
-								) : (
-									<Button asChild variant="subtle" size="md" w="full" disabled={!hasReady}>
-										<Link
-											href={`/projects/${data.projectId}?publishClip=${data.clipId}&publishExport=${data.id}`}
-										>
-											<ExternalLink size={16} /> Publish to social
-										</Link>
-									</Button>
-								)}
-							</>
-						) : null}
-						<Stack gap="2" mt="2">
-							<Text textStyle="eyebrow" color="fg.muted">
-								Edit in your own editor
-							</Text>
-							<Flex gap="2">
-								{TIMELINE_DOWNLOADS.map(({ format, label }) => (
-									timelineLocked && timelineUpgrade ? (
-										<LockedButton key={format} variant="subtle" size="md" flex="1" prompt={timelineUpgrade}>
-											<Film size={16} /> {label}
-										</LockedButton>
-									) : (
-										<Button
-											key={format}
-											variant="subtle"
-											size="md"
-											flex="1"
-											disabled={timelineTarget !== null || timelineLocked}
-											onClick={() => void downloadTimeline(format)}
-										>
-											{timelineTarget === format ? <Spinner size="xs" /> : <Film size={16} />}{" "}
-											{label}
-										</Button>
-									)
-								))}
-							</Flex>
-							{timelineLocked && timelineUpgrade ? (
-								<LockedButton variant="subtle" size="md" w="full" prompt={timelineUpgrade}>
-									<Download size={16} /> Original video
-								</LockedButton>
-							) : (
-								<Button
-									variant="subtle"
-									size="md"
-									w="full"
-									disabled={timelineTarget !== null || timelineLocked}
-									onClick={() => void downloadTimeline("source")}
-								>
-									{timelineTarget === "source" ? <Spinner size="xs" /> : <Download size={16} />}{" "}
-									Original video
-								</Button>
-							)}
-							<PlanLimitNotice message={timelineRequirement} upgrade={timelineUpgrade} />
-							<Text fontSize="12px" color="fg.muted">
-								Cuts the original video at the clip&apos;s current edit. Put the
-								video beside the timeline before opening it. Scenes and overlays
-								are not included; the ZIP has the captions as SRT.
-							</Text>
-							{timelineNote ? (
-								<Text fontSize="12px" color="fg.muted" role="status">
-									{timelineNote}
+							{active ? (
+								<Text fontSize="13px" fontVariantNumeric="tabular-nums" color="fg.muted">
+									{data.progress}%
 								</Text>
 							) : null}
-							{timelineError ? (
-								<Flex gap="2" color="danger.fg" role="alert">
-									<AlertTriangle size={14} />
-									<Text fontSize="12px">{timelineError}</Text>
-								</Flex>
-							) : null}
-						</Stack>
+						</Flex>
+						{active ? (
+							<Box
+								role="progressbar"
+								aria-label="Export progress"
+								aria-valuemin={0}
+								aria-valuemax={100}
+								aria-valuenow={data.progress}
+							>
+								<Progress value={data.progress} />
+							</Box>
+						) : null}
 						{hasFailed && canEdit ? (
 							<Button
 								variant="subtle"
-								size="md"
-								w="full"
+								size="sm"
+								alignSelf="flex-start"
 								disabled={action === "retry"}
 								onClick={() => void retry()}
 							>
-								{action === "retry" ? (
-									<Spinner size="xs" />
-								) : (
-									<RefreshCw size={16} />
-								)}{" "}
-								Retry failed variants
+								{action === "retry" ? <Spinner size="xs" /> : <RefreshCw size={14} />}
+								Retry failed formats
 							</Button>
 						) : null}
 
-						{shareUrl ? (
-							<Box mt="2" p="3" bg="bg.soft" borderRadius="l2">
-								<Flex align="center" gap="2" mb="2">
-									<ShieldCheck size={14} />
-									<Text fontSize="13px" fontWeight="500">
-										Private link copied
-									</Text>
-								</Flex>
-								<Text fontSize="12px" color="fg.muted" wordBreak="break-all">
-									{shareUrl}
-								</Text>
-								<Flex gap="2" mt="3">
-									<Button
-										size="sm"
-										variant="subtle"
-										onClick={() => void copyShareLink()}
-									>
-										<Copy size={14} /> Copy again
-									</Button>
-									{canEdit ? (
-										<Button
-											size="sm"
-											variant="ghost"
-											disabled={action === "revoke"}
-											onClick={() => void revokeLinks()}
-										>
-											Revoke all
-										</Button>
-									) : null}
-								</Flex>
-							</Box>
-						) : null}
-						{actionError ? (
-							<Flex mt="1" gap="2" color="danger.fg" role="alert">
-								<AlertTriangle size={14} />
-								<Text fontSize="12px">{actionError}</Text>
-							</Flex>
-						) : null}
+						<Flex gap="1.5" wrap="wrap">
+							<InfoTip label="Later edits make a new version, so this export and its links never change.">
+								<Fact>
+									<Lock size={11} /> v{data.editorRevision}
+								</Fact>
+							</InfoTip>
+							{facts.map((fact) => (
+								<Fact key={fact}>{fact}</Fact>
+							))}
+						</Flex>
 					</Stack>
 
-					{/* Quiet note at the foot of the panel, not a box */}
-					<Flex gap="2.5" align="flex-start" mt="auto" color="fg.subtle">
-						<Box flexShrink={0} mt="0.5">
-							<Film size={14} />
-						</Box>
-						<Text fontSize="12px" lineHeight="1.5">
-							Immutable delivery: later edits create a new version, so this
-							export and its links never silently change.
-						</Text>
-					</Flex>
+					<Button
+						asChild={Boolean(selected?.downloadUrl)}
+						colorPalette="brand"
+						disabled={!selected?.downloadUrl}
+						w="full"
+						size="lg"
+					>
+						{selected?.downloadUrl ? (
+							<a
+								href={selected.downloadUrl}
+								download={`narriflow-${selected.aspectRatio.replace(":", "x")}.mp4`}
+							>
+								<Download size={17} /> Download video
+							</a>
+						) : (
+							<>
+								<Download size={17} /> Download when ready
+							</>
+						)}
+					</Button>
+
+					{canEdit ? (
+						<Section title="Share">
+							<Grid templateColumns="1fr 1fr" gap="2">
+								<Tile
+									icon={action === "share" ? <Spinner size="xs" /> : <Link2 size={16} />}
+									label="Private link"
+									hint="Expires in 7 days"
+									disabled={!hasReady || action === "share"}
+									onClick={() => void createShareLink()}
+								/>
+								{publishingUpgrade ? (
+									<LockedButton {...TILE_PROPS} prompt={publishingUpgrade}>
+										<TileBody icon={<Send size={16} />} label="Publish" hint="To your socials" />
+									</LockedButton>
+								) : (
+									<Button {...TILE_PROPS} asChild={hasReady} disabled={!hasReady}>
+										{hasReady ? (
+											<Link href={`/projects/${data.projectId}?publishClip=${data.clipId}&publishExport=${data.id}`}>
+												<TileBody icon={<Send size={16} />} label="Publish" hint="To your socials" />
+											</Link>
+										) : (
+											<TileBody icon={<Send size={16} />} label="Publish" hint="To your socials" />
+										)}
+									</Button>
+								)}
+							</Grid>
+							{shareUrl ? (
+								<Flex align="center" gap="2" mt="2" ps="3" pe="1" py="1" bg="accent.subtle" borderRadius="l2">
+									<ShieldCheck size={14} color="var(--chakra-colors-accent-fg)" />
+									<Text fontSize="12px" color="accent.fg" flex="1" minW="0" truncate title={shareUrl}>
+										{shareUrl.replace(/^https?:\/\//, "")}
+									</Text>
+									<IconButton size="xs" variant="ghost" aria-label="Copy the private link" onClick={() => void copyShareLink()}>
+										<Copy size={13} />
+									</IconButton>
+									<Button size="xs" variant="ghost" disabled={action === "revoke"} onClick={() => void revokeLinks()}>
+										Revoke
+									</Button>
+								</Flex>
+							) : null}
+							{actionError ? <ErrorLine>{actionError}</ErrorLine> : null}
+						</Section>
+					) : null}
+
+					<Section title="Subtitles">
+						<Grid templateColumns="1fr 1fr" gap="2">
+							{(
+								[
+									["srt", "SRT", "Most editors"],
+									["vtt", "VTT", "Web players"],
+								] as const
+							).map(([format, label, hint]) =>
+								hasReady ? (
+									<Button key={format} {...TILE_PROPS} asChild>
+										<a href={`${apiPath}/subtitles/${format}`} download>
+											<TileBody icon={<FileText size={16} />} label={label} hint={hint} />
+										</a>
+									</Button>
+								) : (
+									<Button key={format} {...TILE_PROPS} disabled>
+										<TileBody icon={<FileText size={16} />} label={label} hint={hint} />
+									</Button>
+								),
+							)}
+						</Grid>
+					</Section>
+
+					<Section
+						title="Edit in your own editor"
+						info="Cuts the original video at the clip's current edit. Put the video beside the timeline before opening it. Scenes and overlays aren't included; the ZIP has the captions as SRT."
+					>
+						<Grid templateColumns="1fr 1fr" gap="2">
+							{[...TIMELINE_DOWNLOADS, { format: "source", label: "Original video", hint: "Source cut" } as const].map(
+								({ format, label, hint }) => {
+									const icon = timelineIcon(timelineTarget === format, format);
+									return timelineLocked && timelineUpgrade ? (
+										<LockedButton key={format} {...TILE_PROPS} prompt={timelineUpgrade}>
+											<TileBody icon={icon} label={label} hint={hint} />
+										</LockedButton>
+									) : (
+										<Tile
+											key={format}
+											icon={icon}
+											label={label}
+											hint={hint}
+											disabled={timelineTarget !== null || timelineLocked}
+											onClick={() => void downloadTimeline(format)}
+										/>
+									);
+								},
+							)}
+						</Grid>
+						<PlanLimitNotice message={timelineRequirement} upgrade={timelineUpgrade} />
+						{timelineNote ? (
+							<Text fontSize="12px" color="fg.muted" role="status" mt="2">
+								{timelineNote}
+							</Text>
+						) : null}
+						{timelineError ? <ErrorLine>{timelineError}</ErrorLine> : null}
+					</Section>
 				</Stack>
 			</Flex>
+		</Flex>
+	);
+}
+
+/**
+ * Paints the playing video, shrunk, onto a canvas that the page blurs into
+ * a soft glow behind the player (an "ambient mode"). A cross-origin video
+ * taints the canvas, which only stops reading pixels back, never drawing.
+ */
+function useAmbientGlow(
+	videoRef: React.RefObject<HTMLVideoElement | null>,
+	canvasRef: React.RefObject<HTMLCanvasElement | null>,
+	src: string | null,
+) {
+	// biome-ignore lint/correctness/useExhaustiveDependencies: src re-binds the listeners to the new video source.
+	useEffect(() => {
+		const video = videoRef.current;
+		const canvas = canvasRef.current;
+		const context = canvas?.getContext("2d");
+		if (!video || !canvas || !context) return;
+		const paint = () => {
+			if (video.readyState < 2) return;
+			try {
+				context.drawImage(video, 0, 0, canvas.width, canvas.height);
+			} catch {
+				// A frame that can't be drawn leaves the last glow in place.
+			}
+		};
+		const events = ["loadeddata", "seeked", "timeupdate"] as const;
+		for (const event of events) video.addEventListener(event, paint);
+		// The first frame can be ready before it can be drawn, and a paused
+		// video sends no more events, so a slow repaint (48x48, twice a
+		// second) also keeps the glow honest.
+		const repaint = setInterval(paint, 500);
+		paint();
+		return () => {
+			clearInterval(repaint);
+			for (const event of events) video.removeEventListener(event, paint);
+		};
+	}, [videoRef, canvasRef, src]);
+}
+
+function timelineIcon(busy: boolean, format: TimelineTarget) {
+	if (busy) return <Spinner size="xs" />;
+	if (format === "xmeml") return <EditorMark name="Premiere" light="premiere.svg" />;
+	// One FCPXML opens in both; Final Cut's icon isn't licensed for this, so Resolve's mark stands in.
+	if (format === "fcpxml") return <EditorMark name="DaVinci Resolve" light="davinci-resolve-light.svg" dark="davinci-resolve-dark.svg" />;
+	return format === "source" ? <Clapperboard size={16} /> : <Film size={16} />;
+}
+
+/** An editor's own icon (public/images/editors), with a dark-mode file when the mark is one colour. */
+function EditorMark({ name, light, dark }: { name: string; light: string; dark?: string }) {
+	return (
+		<Box boxSize="5" flexShrink={0} aria-hidden>
+			<Image src={`/images/editors/${light}`} alt={name} boxSize="full" objectFit="contain" _dark={dark ? { display: "none" } : undefined} />
+			{dark ? (
+				<Image src={`/images/editors/${dark}`} alt={name} boxSize="full" objectFit="contain" display="none" _dark={{ display: "block" }} />
+			) : null}
+		</Box>
+	);
+}
+
+/** A round status mark: the colour says the state before the words do. */
+function Mark({ tone, children }: { tone: "accent" | "warning" | "danger"; children: ReactNode }) {
+	return (
+		<Flex
+			boxSize="10"
+			flexShrink={0}
+			borderRadius="full"
+			align="center"
+			justify="center"
+			bg={`${tone}.subtle`}
+			color={`${tone}.fg`}
+			aria-hidden
+		>
+			{children}
+		</Flex>
+	);
+}
+
+/** One fact about the export as a soft chip. */
+function Fact({ children }: { children: ReactNode }) {
+	return (
+		<Flex
+			align="center"
+			gap="1"
+			h="6"
+			px="2.5"
+			borderRadius="full"
+			bg="bg.soft"
+			color="fg.muted"
+			fontSize="12px"
+			fontVariantNumeric="tabular-nums"
+		>
+			{children}
+		</Flex>
+	);
+}
+
+/** A labelled group of actions, with its longer explanation behind an ⓘ. */
+function Section({ title, info, children }: { title: string; info?: string; children: ReactNode }) {
+	return (
+		<Box>
+			<Flex align="center" gap="1.5" mb="2.5">
+				<Text textStyle="eyebrow" color="fg.muted">
+					{title}
+				</Text>
+				{info ? (
+					<InfoTip label={info}>
+						<Flex
+							as="button"
+							aria-label={info}
+							boxSize="5"
+							align="center"
+							justify="center"
+							borderRadius="full"
+							color="fg.subtle"
+							cursor="help"
+							_hover={{ color: "fg" }}
+							_focusVisible={{ outline: "2px solid", outlineColor: "accent.solid" }}
+						>
+							<Info size={13} aria-hidden />
+						</Flex>
+					</InfoTip>
+				) : null}
+			</Flex>
+			{children}
+		</Box>
+	);
+}
+
+function InfoTip({ label, children }: { label: string; children: ReactNode }) {
+	return (
+		<Tooltip.Root openDelay={150} closeDelay={0} positioning={{ placement: "top" }}>
+			<Tooltip.Trigger asChild>{children}</Tooltip.Trigger>
+			<Portal>
+				<Tooltip.Positioner>
+					<Tooltip.Content bg="bg.muted" color="fg" borderRadius="l2" boxShadow="none" px="3" py="2" fontSize="12px" maxW="280px">
+						{label}
+					</Tooltip.Content>
+				</Tooltip.Positioner>
+			</Portal>
+		</Tooltip.Root>
+	);
+}
+
+/** Action tiles share one shape: a soft card with an icon, a label and a
+ *  hint; a locked tile's upgrade gem lands at the end of the row. */
+const TILE_PROPS = {
+	variant: "subtle",
+	h: "auto",
+	minH: "14",
+	px: "3",
+	py: "2.5",
+	borderRadius: "l2",
+	justifyContent: "flex-start",
+	gap: "2.5",
+	whiteSpace: "normal",
+	textAlign: "start",
+} as const;
+
+function TileBody({ icon, label, hint }: { icon: ReactNode; label: string; hint: string }) {
+	return (
+		<>
+			<Flex color="fg.muted" flexShrink={0} align="center">
+				{icon}
+			</Flex>
+			<Box flex="1" minW="0">
+				<Text fontSize="13px" fontWeight="500" color="fg" lineHeight="1.3">
+					{label}
+				</Text>
+				<Text fontSize="11px" color="fg.subtle" fontWeight="400" lineHeight="1.3">
+					{hint}
+				</Text>
+			</Box>
+		</>
+	);
+}
+
+function Tile({
+	icon,
+	label,
+	hint,
+	disabled,
+	onClick,
+}: {
+	icon: ReactNode;
+	label: string;
+	hint: string;
+	disabled?: boolean;
+	onClick: () => void;
+}) {
+	return (
+		<Button {...TILE_PROPS} disabled={disabled} onClick={onClick}>
+			<TileBody icon={icon} label={label} hint={hint} />
+		</Button>
+	);
+}
+
+function ErrorLine({ children }: { children: ReactNode }) {
+	return (
+		<Flex mt="2" gap="2" color="danger.fg" role="alert">
+			<Box flexShrink={0} mt="0.5">
+				<AlertTriangle size={14} />
+			</Box>
+			<Text fontSize="12px">{children}</Text>
 		</Flex>
 	);
 }
