@@ -1,5 +1,3 @@
-import "server-only";
-
 export * from "./mailer";
 export {
   clipsReady,

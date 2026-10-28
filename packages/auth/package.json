@@ -17,11 +17,11 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@clerk/nextjs": "^6.39.5",
+    "@clerk/backend": "^2.33.5",
     "@narriflow/db": "workspace:*",
     "@narriflow/validators": "workspace:*",
     "@prisma/client": "^7.4.2",
-    "next": "16.3.6"
+    "svix": "^1.86.0"
   },
   "devDependencies": {
     "@types/node": "26.2.0"
