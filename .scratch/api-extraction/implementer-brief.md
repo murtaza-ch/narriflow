@@ -54,3 +54,25 @@ under `## Comments`, and set `**Status:** done` — or `blocked` with the reason
 Final reply (≤25 lines): files changed, verification commands and results,
 deviations from the spec and why, requests for other owners, and anything
 you think the spec got wrong.
+
+## UI conversion tickets (added for wave C)
+- Visual parity: the converted page must look and behave the same. Reuse the
+  route's existing `loading.tsx` skeleton (or its components) as the pending
+  state; reuse existing empty/error components. No redesigns, no new borders
+  or styles (see the UI taste notes in AGENTS.md / existing components).
+- Data: `useQuery`/`useSuspenseQuery` with the domain's `queryOptions` from
+  `@narriflow/api-client/<domain>` (see `## Client import convention` in the
+  spec). Pages never build URL strings. Pass the AbortSignal. Fetch the
+  page's aggregate and any independent reads concurrently — no waterfalls.
+- Mutations: `useMutation` with the domain's mutation options; mint the
+  idempotency key once per user intent (api-client helper); on success
+  invalidate exactly what the spec's invalidation map / ticket says. Delete
+  every `router.refresh()`, `revalidatePath`, `useFormStatus`/server-action
+  prop in your files — no blanket reload substitutes.
+- Redirects/gates move to client gates driven by `ApiError.code` per the spec.
+- Server components you keep must not import `@narriflow/services`,
+  `@narriflow/db`, `@narriflow/auth` or any backend module (ticket 31 will
+  enforce this with Biome). Delete the server actions your ticket replaces.
+- Verify with `bun run --cwd apps/web typecheck` filtered to your files, the
+  web tests for your files, and biome on your paths. A signed-in browser pass
+  happens in ticket 32; note anything that needs it.
