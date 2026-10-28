@@ -42,6 +42,8 @@ COPY apps/worker/package.json apps/worker/package.json
 COPY apps/web/package.json apps/web/package.json
 COPY apps/mcp/package.json apps/mcp/package.json
 COPY packages packages
+# bun install applies the patchedDependencies listed in package.json.
+COPY patches patches
 
 RUN bun install --frozen-lockfile
 
