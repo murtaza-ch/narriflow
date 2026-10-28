@@ -1,0 +1,28 @@
+diff --git a/dist/cjs/utils/memo.cjs b/dist/cjs/utils/memo.cjs
+index 69b42ebaef6b10ac13a9f4538c08eb4f2aa9bd54..abbe81e591568ae6a7570145dcdbb3b7ee5b1aca 100644
+--- a/dist/cjs/utils/memo.cjs
++++ b/dist/cjs/utils/memo.cjs
+@@ -16,7 +16,8 @@ function simpleHash(value) {
+     return `a:[${value.map(simpleHash).join(",")}]`;
+   }
+   if (type === "object") {
+-    const keys = Object.keys(value).sort();
++    // Insertion order, not sorted: the cached result keeps its keys in call order, so a sorted key made the output depend on which order was cached first (server vs client hydration mismatch).
++    const keys = Object.keys(value);
+     return `o:{${keys.map((k) => `${k}:${simpleHash(value[k])}`).join(",")}}`;
+   }
+   return String(value);
+diff --git a/dist/esm/utils/memo.js b/dist/esm/utils/memo.js
+index fc514d509407af49ff50b319628308ae2abe525c..d8f876a9c454498e875363cf3117f29a2f394ee6 100644
+--- a/dist/esm/utils/memo.js
++++ b/dist/esm/utils/memo.js
+@@ -14,7 +14,8 @@ function simpleHash(value) {
+     return `a:[${value.map(simpleHash).join(",")}]`;
+   }
+   if (type === "object") {
+-    const keys = Object.keys(value).sort();
++    // Insertion order, not sorted: the cached result keeps its keys in call order, so a sorted key made the output depend on which order was cached first (server vs client hydration mismatch).
++    const keys = Object.keys(value);
+     return `o:{${keys.map((k) => `${k}:${simpleHash(value[k])}`).join(",")}}`;
+   }
+   return String(value);

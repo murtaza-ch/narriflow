@@ -228,6 +228,9 @@
       },
     },
   },
+  "patchedDependencies": {
+    "@chakra-ui/react@3.34.0": "patches/@chakra-ui%2Freact@3.34.0.patch",
+  },
   "overrides": {
     "brace-expansion": "2.1.6",
     "deepmerge-ts": "8.0.2",
