@@ -9,7 +9,7 @@ import {
   type CaptionPresetId,
   type NamedCaptionPreset,
 } from "@narriflow/validators";
-import { CaptionPresetPreview } from "../../_shared/caption-preset-preview";
+import { CaptionPresetPreview } from "./caption-preset-preview";
 
 export function CaptionPresetGallery({
   value,

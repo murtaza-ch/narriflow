@@ -12,6 +12,11 @@ export function extractYoutubeId(
   return null;
 }
 
+/** YouTube's auto-generated frames from about ¼, ½ and ¾ of the way through a video. */
+export function youtubeFrameUrls(id: string): string[] {
+  return [1, 2, 3].map((n) => `https://i.ytimg.com/vi/${id}/hq${n}.jpg`);
+}
+
 export function youtubeThumbnailUrl(id: string, quality: "max" | "hq" = "max") {
   const file = quality === "max" ? "maxresdefault.jpg" : "hqdefault.jpg";
   return `https://i.ytimg.com/vi/${id}/${file}`;

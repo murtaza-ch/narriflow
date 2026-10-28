@@ -2,17 +2,21 @@
 
 import { useState } from "react";
 import { Box, chakra, Flex, Grid, Stack, Text } from "@chakra-ui/react";
-import { ChevronDown } from "lucide-react";
-import { Input } from "@narriflow/ui/components/input";
-import { Checkbox } from "@narriflow/ui/components/checkbox";
-import { NumberInput } from "@narriflow/ui/components/number-input";
+import { ChevronDown, Minus, Plus } from "lucide-react";
+import { IconButton } from "@narriflow/ui/components/button";
 import type { ClipPlatformTarget } from "@narriflow/validators";
+import { SocialPlatformMark } from "@/lib/social-platform-mark";
+import { ChoiceChip } from "../../_shared/choice-chip";
+import { ToneChips } from "../../_shared/tone-chips";
 
 const platformOptions = [
-  { value: "tiktok", label: "TikTok" },
-  { value: "youtube_shorts", label: "YouTube Shorts" },
-  { value: "instagram_reels", label: "Instagram Reels" },
+  { value: "tiktok", label: "TikTok", short: "TikTok" },
+  { value: "youtube_shorts", label: "YouTube Shorts", short: "Shorts" },
+  { value: "instagram_reels", label: "Instagram Reels", short: "Reels" },
 ] as const;
+
+const CLIP_COUNT_MIN = 3;
+const CLIP_COUNT_MAX = 30;
 
 interface AdvancedSettingsProps {
   platformTargets: ClipPlatformTarget[];
@@ -41,6 +45,18 @@ export function AdvancedSettings({
         : [...platformTargets, value],
     );
   };
+  const setCount = (value: number) =>
+    onClipCountTargetChange(Math.min(CLIP_COUNT_MAX, Math.max(CLIP_COUNT_MIN, Math.round(value))));
+  // The collapsed row says what's set, so most people never need to open it.
+  const summary = [
+    platformTargets.length === platformOptions.length
+      ? "All platforms"
+      : platformOptions
+          .filter((option) => platformTargets.includes(option.value))
+          .map((option) => option.short)
+          .join(", ") || "No platform",
+    `${clipCountTarget} clips`,
+  ].join(" · ");
 
   return (
     <Box>
@@ -48,79 +64,113 @@ export function AdvancedSettings({
         type="button"
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
-        display="inline-flex"
+        display="flex"
         alignItems="center"
-        gap="1.5"
-        textStyle="eyebrow"
-        color="fg.muted"
+        gap="2"
+        w="full"
+        minH="44px"
+        px="3"
+        borderRadius="l2"
+        bg="bg.soft"
+        fontSize="14px"
+        color="fg"
         cursor="pointer"
-        transition="color 120ms ease"
-        _hover={{ color: "fg" }}
+        transition="background 120ms ease"
+        _hover={{ bg: "bg.softHover" }}
       >
+        Advanced
+        <Text as="span" ms="auto" fontSize="13px" color="fg.muted" truncate>
+          {summary}
+        </Text>
         <Box
-          transform={open ? "rotate(0deg)" : "rotate(-90deg)"}
+          color="fg.muted"
+          flexShrink={0}
+          transform={open ? "rotate(180deg)" : undefined}
           transition="transform 200ms cubic-bezier(0.22, 1, 0.36, 1)"
         >
-          <ChevronDown size={13} />
+          <ChevronDown size={15} />
         </Box>
-        Advanced
       </chakra.button>
 
       {open && (
-        <Stack
-          gap="3.5"
-          mt="3"
-          animation="fade-up"
-        >
+        <Stack gap="5" px="1" pt="4" animation="fade-up">
           <Box>
             <Text textStyle="eyebrow" color="fg.muted" mb="2">
               Platform targets
             </Text>
-            <Flex gap="4" rowGap="2" flexWrap="wrap">
-              {platformOptions.map((option) => (
-                <Checkbox
-                  key={option.value}
-                  checked={platformTargets.includes(option.value)}
-                  onCheckedChange={() => togglePlatform(option.value)}
-                  inputProps={{ name: "platformTargets", value: option.value }}
-                >
-                  {option.label}
-                </Checkbox>
-              ))}
+            {/* The same named values the old checkboxes carried. */}
+            {platformTargets.map((target) => (
+              <input key={target} type="hidden" name="platformTargets" value={target} />
+            ))}
+            <Flex gap="2" flexWrap="wrap" role="group" aria-label="Platform targets">
+              {platformOptions.map((option) => {
+                const on = platformTargets.includes(option.value);
+                return (
+                  <ChoiceChip
+                    key={option.value}
+                    on={on}
+                   
+                    onToggle={() => togglePlatform(option.value)}
+                    icon={
+                      <Box opacity={on ? 1 : 0.45} filter={on ? undefined : "grayscale(1)"} transition="opacity 120ms ease, filter 120ms ease">
+                        <SocialPlatformMark platform={option.value} size="5" />
+                      </Box>
+                    }
+                  >
+                    {option.label}
+                  </ChoiceChip>
+                );
+              })}
             </Flex>
           </Box>
 
-          <Grid templateColumns="1fr 1fr" gap="3">
+          <Grid templateColumns={{ base: "1fr", sm: "auto 1fr" }} gap="5" alignItems="start">
             <Box>
-              <Text textStyle="eyebrow" color="fg.muted" mb="1.5">
+              <Text textStyle="eyebrow" color="fg.muted" mb="2">
                 Clip count
               </Text>
-              <NumberInput
-                value={String(clipCountTarget)}
-                min={3}
-                max={30}
-                step={1}
-                size="sm"
-                onValueChange={(_, valueAsNumber) => {
-                  if (!Number.isFinite(valueAsNumber)) return;
-                  onClipCountTargetChange(
-                    Math.min(30, Math.max(3, Math.round(valueAsNumber))),
-                  );
-                }}
-                inputProps={{ name: "clipCountTarget" }}
-              />
+              <Flex align="center" gap="1" h="9" px="1" borderRadius="full" bg="bg.soft" w="fit-content">
+                <IconButton
+                  size="xs"
+                  variant="ghost"
+                  borderRadius="full"
+                  aria-label="Fewer clips"
+                  disabled={clipCountTarget <= CLIP_COUNT_MIN}
+                  onClick={() => setCount(clipCountTarget - 1)}
+                >
+                  <Minus size={14} />
+                </IconButton>
+                <Text
+                  as="output"
+                  aria-live="polite"
+                  aria-label={`${clipCountTarget} clips`}
+                  minW="7"
+                  textAlign="center"
+                  fontSize="14px"
+                  fontWeight="500"
+                  fontVariantNumeric="tabular-nums"
+                >
+                  {clipCountTarget}
+                </Text>
+                <IconButton
+                  size="xs"
+                  variant="ghost"
+                  borderRadius="full"
+                  aria-label="More clips"
+                  disabled={clipCountTarget >= CLIP_COUNT_MAX}
+                  onClick={() => setCount(clipCountTarget + 1)}
+                >
+                  <Plus size={14} />
+                </IconButton>
+              </Flex>
+              <input type="hidden" name="clipCountTarget" value={clipCountTarget} />
             </Box>
-            <Box>
-              <Text textStyle="eyebrow" color="fg.muted" mb="1.5">
+            <Box minW="0">
+              <Text textStyle="eyebrow" color="fg.muted" mb="2">
                 Tone preferences
               </Text>
-              <Input
-                name="toneConstraints"
-                value={toneConstraints}
-                onChange={(event) => onToneConstraintsChange(event.target.value)}
-                size="sm"
-                fontSize="13px"
-              />
+              <input type="hidden" name="toneConstraints" value={toneConstraints} />
+              <ToneChips value={toneConstraints} onChange={onToneConstraintsChange} />
             </Box>
           </Grid>
         </Stack>

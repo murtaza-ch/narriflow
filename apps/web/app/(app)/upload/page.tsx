@@ -70,6 +70,7 @@ async function loadLinkResumeData(
     title: snapshot.project.title,
     sourceProvider: snapshot.project.sourceProvider,
     sourceMediaUrl: snapshot.project.sourceMediaUrl,
+    sourceInput: snapshot.project.sourceInput,
     languageCode: snapshot.project.languageCode,
     ingestStatus: toIngestStageStatus(snapshot.project.ingestStatus),
     ingestErrorCode: snapshot.project.ingestErrorCode,

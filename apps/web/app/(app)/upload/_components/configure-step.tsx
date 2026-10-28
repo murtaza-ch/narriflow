@@ -40,6 +40,7 @@ interface ConfigureStepProps {
   projectId: string;
   title: string;
   sourceMediaUrl: string;
+  sourceInput: string | null;
   initialIngestStatus: IngestStageStatus;
   initialIngestErrorCode: string | null;
   /** The ingest is a Google Drive Picker import, which can't be retried. */
@@ -53,6 +54,7 @@ export function ConfigureStep({
   projectId,
   title,
   sourceMediaUrl,
+  sourceInput,
   initialIngestStatus,
   initialIngestErrorCode,
   ingestFromDrivePicker,
@@ -221,6 +223,7 @@ export function ConfigureStep({
       <ImportPill
         title={displayTitle}
         sourceMediaUrl={sourceMediaUrl}
+        sourceInput={sourceInput}
         ingestStatus={ingestStream.ingestStatus}
       />
       <ClipStyleSettings

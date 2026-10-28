@@ -16,6 +16,7 @@ import {
   Link2,
   ArrowRight,
   ChevronDown,
+  Palette,
   Sparkles,
 } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
@@ -30,9 +31,10 @@ import {
   type LinkProviderId,
   type RecipeSnapshot,
 } from "@narriflow/validators";
-import { formatTimecode } from "@/lib/format";
+import { formatDuration, formatTimecode } from "@/lib/format";
 import {
   extractYoutubeId,
+  youtubeFrameUrls,
   youtubeThumbnailUrl,
 } from "../../projects/_lib/youtube";
 import { ProcessingTimeline } from "../../_shared/processing-timeline";
@@ -237,6 +239,16 @@ export function CommitStep({
     ? creditsForSourceSeconds(durationSec)
     : null;
   const creditsLeft = usageSummary.remainingCredits;
+  // An explicit locale so the server render and the browser agree.
+  const credits = (value: number) => value.toLocaleString("en-US");
+  // What "Brand preferences" holds right now, so it reads without opening.
+  const brandSummary =
+    [
+      brandProfiles.items.find((profile) => profile.id === brandProfileId)?.name,
+      [...brandTemplates.mine, ...brandTemplates.builtIns].find((template) => template.id === brandTemplateId)?.name,
+    ]
+      .filter(Boolean)
+      .join(" · ") || "System default";
 
   const overUploadCap =
     hasKnownDuration && (durationSec as number) > usageSummary.maxUploadSeconds;
@@ -351,11 +363,12 @@ export function CommitStep({
 
         {/* Metadata row */}
         <Box>
-          <Flex gap="3" align="center">
+          <Flex gap="4" align="center">
             <MediaWell
               ratio={16 / 9}
-              w={{ base: "80px", sm: "96px" }}
+              w={{ base: "96px", sm: "136px" }}
               flexShrink={0}
+              timecode={hasKnownDuration ? formatDuration(durationSec as number) : undefined}
             >
               {youtubeId ? (
                 <img
@@ -381,7 +394,8 @@ export function CommitStep({
                 </Flex>
               )}
             </MediaWell>
-            <Flex flex="1" minW="0" gap="3" align="center" wrap={{ base: "wrap", sm: "nowrap" }}>
+            <Stack flex="1" minW="0" gap="1.5" align="flex-start">
+              {/* Reads as the title; editable in place. */}
               <Input
                 value={title}
                 onChange={(event) => {
@@ -391,8 +405,14 @@ export function CommitStep({
                 placeholder="Give your project a name"
                 aria-label="Project title"
                 size="sm"
-                flex="1"
-                minW="120px"
+                w="full"
+                px="2"
+                ms="-2"
+                fontSize="15px"
+                fontWeight="500"
+                bg="transparent"
+                _hover={{ bg: "bg.soft" }}
+                _focus={{ bg: "bg.soft" }}
               />
               {youtubeId ? (
                 <Popover.Root positioning={{ placement: "bottom-start" }}>
@@ -412,18 +432,28 @@ export function CommitStep({
                       _hover={{ bg: "bg.softHover" }}
                     >
                       <Clock size={12} strokeWidth={1.75} />
-                      <Text textStyle="data" fontSize="12px" color="fg">
-                        {hasKnownDuration
-                          ? formatTimecode(durationSec as number)
-                          : "Detecting…"}
+                      <Text fontSize="12px" color="fg">
+                        {!hasKnownDuration
+                          ? "Detecting length…"
+                          : hasCustomWindow
+                            ? "Part of the video"
+                            : "Whole video"}
                       </Text>
+                      {hasKnownDuration ? (
+                        <Text textStyle="data" fontSize="12px" color="fg.muted">
+                          {hasCustomWindow
+                            ? `${formatTimecode(startSec)}–${formatTimecode(endSec)}`
+                            : formatTimecode(durationSec as number)}
+                        </Text>
+                      ) : null}
                       <ChevronDown size={12} />
                     </chakra.button>
                   </Popover.Trigger>
                   <Portal>
                     <Popover.Positioner>
-                      <Popover.Content minW="320px" p="3">
+                      <Popover.Content w="min(400px, calc(100vw - 24px))" p="4">
                         <ProcessingTimeline
+                          frames={youtubeFrameUrls(youtubeId)}
                           durationSec={durationSec}
                           startSec={startSec}
                           endSec={endSec}
@@ -440,11 +470,10 @@ export function CommitStep({
                 </Popover.Root>
               ) : (
                 <Text fontSize="12px" color="fg.muted" lineHeight="1.5">
-                  Details appear after import — the video is fetched and its
-                  duration detected during processing.
+                  Length is detected during import.
                 </Text>
               )}
-            </Flex>
+            </Stack>
           </Flex>
         </Box>
 
@@ -459,29 +488,48 @@ export function CommitStep({
             flexDirection="row-reverse"
             justifyContent="space-between"
             w="full"
-            minH="40px"
+            minH="52px"
             px="3"
             py="2"
             borderRadius="l2"
             bg="bg.soft"
           >
-            <Flex align="center" gap="2">
+            <Flex align="center" gap="2.5">
               <Sparkles size={16} strokeWidth={1.75} aria-hidden="true" />
-              Get AI clips
+              <Stack gap="0">
+                <Text as="span" fontSize="14px">Get AI clips</Text>
+                <Text as="span" fontSize="12px" color="fg.muted">
+                  {mode === "clip" ? "Find the best moments as short clips" : "Caption the whole video, no clips"}
+                </Text>
+              </Stack>
             </Flex>
           </Switch>
         </Stack>
 
-        <chakra.details>
+        <chakra.details css={{ "&[open] .brand-chevron": { transform: "rotate(180deg)" } }}>
           <chakra.summary
             display="flex"
             alignItems="center"
-            justifyContent="space-between"
+            gap="2.5"
+            minH="44px"
+            px="3"
+            borderRadius="l2"
+            bg="bg.soft"
             cursor="pointer"
-            fontSize="13px"
-            fontWeight="500"
+            fontSize="14px"
+            listStyleType="none"
+            transition="background 120ms ease"
+            _hover={{ bg: "bg.softHover" }}
+            css={{ "&::-webkit-details-marker": { display: "none" } }}
           >
-            Brand preferences <ChevronDown size={15} />
+            <Palette size={16} strokeWidth={1.75} aria-hidden="true" />
+            Brand
+            <Text as="span" ms="auto" fontSize="13px" color="fg.muted" truncate>
+              {brandSummary}
+            </Text>
+            <Box as="span" className="brand-chevron" color="fg.muted" transition="transform 150ms ease" flexShrink={0}>
+              <ChevronDown size={15} />
+            </Box>
           </chakra.summary>
           <Box pt="4">
             <BrandTemplatePicker
@@ -527,8 +575,8 @@ export function CommitStep({
             fontVariantNumeric="tabular-nums"
           >
             {hasKnownDuration
-              ? `Uses ${estimatedCredits} ${estimatedCredits === 1 ? "credit" : "credits"} · ${creditsLeft} of ${usageSummary.limitCredits} credits left`
-              : `Credits confirmed after import · ${creditsLeft} of ${usageSummary.limitCredits} credits left`}
+              ? `Uses ${credits(estimatedCredits ?? 0)} ${estimatedCredits === 1 ? "credit" : "credits"} · ${credits(creditsLeft)} of ${credits(usageSummary.limitCredits)} left`
+              : `Credits confirmed after import · ${credits(creditsLeft)} of ${credits(usageSummary.limitCredits)} left`}
           </Text>
         </Stack>
       </Stack>

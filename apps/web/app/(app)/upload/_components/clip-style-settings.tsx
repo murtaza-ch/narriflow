@@ -1,7 +1,7 @@
 "use client";
 
-import { Box, chakra, Field, Flex, Grid, Stack, Text } from "@chakra-ui/react";
-import { Info } from "lucide-react";
+import { Box, chakra, Field, Flex, Stack, Text } from "@chakra-ui/react";
+import { Info, Zap } from "lucide-react";
 import { Switch } from "@narriflow/ui/components/switch";
 import { Textarea } from "@narriflow/ui/components/textarea";
 import type {
@@ -13,7 +13,8 @@ import type {
 } from "@narriflow/validators";
 import { AdvancedSettings } from "./advanced-settings";
 import { FormatSettings } from "./format-settings";
-import { CaptionPresetGallery } from "./caption-preset-gallery";
+import { CaptionPresetGallery } from "../../_shared/caption-preset-gallery";
+import { MomentSuggestions } from "../../_shared/moment-suggestions";
 
 export interface ClipStyleSettingsProps {
   mode: GenerationMode;
@@ -72,32 +73,26 @@ export function ClipStyleSettings({
       />
       <CaptionPresetGallery value={captionPreset} onChange={setCaptionPreset} />
       {mode === "clip" ? (
-        <Grid
-          templateColumns="1fr"
-          gap="4"
-          bg="bg.soft"
-          borderRadius="l2"
-          p="4"
-        >
-          <Flex align="center" justify="space-between" gap="3">
-            <Box>
-              <Text id="auto-hook-label" fontSize="14px" fontWeight="500">
-                Start with a hook
-              </Text>
-              <Text fontSize="13px" color="fg.muted" mt="1">
-                Prioritize attention-grabbing openings.
-              </Text>
-            </Box>
-            <Switch
-              checked={autoHook}
-              onCheckedChange={setAutoHook}
-              inputProps={{
-                name: "autoHook",
-                "aria-labelledby": "auto-hook-label",
-              }}
-            />
-          </Flex>
-        </Grid>
+        // The same row as the import card's "Get AI clips": icon, what it does, a switch.
+        <Flex align="center" gap="2.5" minH="52px" px="3" py="2" bg="bg.soft" borderRadius="l2">
+          <Zap size={16} strokeWidth={1.75} aria-hidden="true" />
+          <Box flex="1" minW="0">
+            <Text id="auto-hook-label" fontSize="14px">
+              Start with a hook
+            </Text>
+            <Text fontSize="12px" color="fg.muted">
+              Prefer clips that open on an attention-grabbing line
+            </Text>
+          </Box>
+          <Switch
+            checked={autoHook}
+            onCheckedChange={setAutoHook}
+            inputProps={{
+              name: "autoHook",
+              "aria-labelledby": "auto-hook-label",
+            }}
+          />
+        </Flex>
       ) : (
         <Flex
           gap="2"
@@ -123,13 +118,15 @@ export function ClipStyleSettings({
                   Optional
                 </chakra.span>
               </Field.Label>
-              <Text
-                fontSize="12px"
-                color="fg.subtle"
-                fontVariantNumeric="tabular-nums"
-              >
-                {specificMoments.length}/500
-              </Text>
+              {specificMoments.length > 0 ? (
+                <Text
+                  fontSize="12px"
+                  color="fg.subtle"
+                  fontVariantNumeric="tabular-nums"
+                >
+                  {specificMoments.length}/500
+                </Text>
+              ) : null}
             </Flex>
             <Textarea
               name="specificMoments"
@@ -140,6 +137,7 @@ export function ClipStyleSettings({
               maxLength={500}
               fontSize="13px"
             />
+            <MomentSuggestions value={specificMoments} onChange={setSpecificMoments} />
           </Field.Root>
           <AdvancedSettings
             platformTargets={platformTargets}

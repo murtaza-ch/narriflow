@@ -23,6 +23,8 @@ export interface LinkResumeData {
   title: string;
   sourceProvider: string | null;
   sourceMediaUrl: string;
+  /** The link as pasted; a stored media URL doesn't always say which video it is. */
+  sourceInput: string | null;
   languageCode: string | null;
   ingestStatus: IngestStageStatus;
   ingestErrorCode: string | null;
@@ -184,6 +186,7 @@ export function LinkImportFlow({
       projectId={projectId}
       title={title}
       sourceMediaUrl={sourceMediaUrl}
+      sourceInput={resumeData?.sourceInput ?? linkUrl}
       initialIngestStatus={ingestStatus}
       initialIngestErrorCode={ingestErrorCode}
       ingestFromDrivePicker={fromDrivePicker}

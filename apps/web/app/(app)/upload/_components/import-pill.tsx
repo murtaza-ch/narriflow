@@ -19,18 +19,23 @@ import {
 export function ImportPill({
   title,
   sourceMediaUrl,
+  sourceInput = null,
   ingestStatus,
 }: {
   title: string;
   sourceMediaUrl: string;
+  /** The link as pasted, which names the video when the stored URL doesn't. */
+  sourceInput?: string | null;
   ingestStatus: IngestStageStatus;
 }) {
-  const youtubeId = extractYoutubeId(sourceMediaUrl);
+  const youtubeId = extractYoutubeId(sourceInput, sourceMediaUrl);
   const stageWord = ingestStageWord(ingestStatus);
   const isTerminal = ingestStatus === "ready" || ingestStatus === "failed";
 
   return (
     <Flex
+      position="relative"
+      overflow="hidden"
       align="center"
       gap="3"
       bg="bg.panel"
@@ -40,6 +45,20 @@ export function ImportPill({
       py="2.5"
       borderRadius="l3"
     >
+      {/* While the import runs, a sheen travels the bottom edge (the same
+          signature as a processing project card). */}
+      {!isTerminal ? (
+        <Box
+          position="absolute"
+          insetX="0"
+          bottom="0"
+          h="2px"
+          backgroundImage="linear-gradient(90deg, transparent 20%, {colors.accent.solid} 50%, transparent 80%)"
+          backgroundSize="200% 100%"
+          animation="shimmer"
+          pointerEvents="none"
+        />
+      ) : null}
       <MediaWell
         ratio={16 / 9}
         w={{ base: "72px", sm: "80px" }}
