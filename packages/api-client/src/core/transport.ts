@@ -1,0 +1,330 @@
+import { API_PLATFORM_ERROR_CODES } from "@narriflow/validators/api/errors";
+import {
+  ApiError,
+  apiErrorFromResponse,
+  CLIENT_ERROR_CODES,
+  scopeChangedError,
+} from "./error";
+import type { IdentityScope, WorkspaceScope } from "./keys";
+import type { ApiScope, ScopeTarget, TrackedRequest } from "./scope";
+
+export const AUTHORIZATION_HEADER = "Authorization";
+export const WORKSPACE_HEADER = "X-Workspace-Id";
+export const IDEMPOTENCY_KEY_HEADER = "Idempotency-Key";
+export const CAMPAIGN_RETRY_OF_HEADER = "Campaign-Retry-Of";
+
+export interface GetTokenOptions {
+  /** Bypass the token cache; used for the single retry after a 401. */
+  skipCache?: boolean;
+}
+
+export type GetToken = (options?: GetTokenOptions) => Promise<string | null>;
+
+export interface TransportOptions {
+  /** Full API origin, e.g. `https://api.example.com`. Requests to any other origin are refused. */
+  baseUrl: string;
+  scope: ApiScope;
+  /** Supplies the current session token at request time. Never cached or logged here. */
+  getToken: GetToken;
+  /** Defaults to `globalThis.fetch`. */
+  fetch?: typeof fetch;
+  /** Called once when a request ends unauthenticated (no token, or 401 after one forced refresh). */
+  onAuthenticationFailed?: (error: ApiError) => void;
+  /** Called when the API refuses the explicit Workspace selection (409 `workspace_selection_changed`). */
+  onWorkspaceSelectionChanged?: (error: ApiError) => void;
+}
+
+type QueryValue = string | number | boolean | null | undefined;
+
+export interface JsonRequestOptions<T> {
+  method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+  query?: Readonly<Record<string, QueryValue | readonly QueryValue[]>>;
+  /** Serialized as the JSON body. */
+  json?: unknown;
+  headers?: HeadersInit;
+  signal?: AbortSignal;
+  /** Minted once per user intent (see `createIntent`); sent as `Idempotency-Key`. */
+  idempotencyKey?: string;
+  /** Validates/narrows the parsed body (for example `schema.parse`). */
+  parse?: (data: unknown) => T;
+}
+
+interface Performed extends OpenedResponse {
+  tracked: TrackedRequest;
+}
+
+export interface OpenedResponse {
+  response: Response;
+  /** Stops scope tracking; call when the body is finished or abandoned. */
+  release(): void;
+}
+
+/**
+ * Calls bound to one explicit identity (+ Workspace). The `X-Workspace-Id`
+ * header comes from the bound scope, never from ambient state, and every call
+ * is refused if that scope is no longer the current one.
+ *
+ * `fetch` is shaped for Hono's `hc(baseUrl, { fetch })` (or per call
+ * `$get(args, { fetch })`). Non-2xx responses throw `ApiError`.
+ */
+export interface BoundTransport {
+  readonly baseUrl: string;
+  fetch(input: string | URL, init?: RequestInit): Promise<Response>;
+  json<T = unknown>(path: string, options?: JsonRequestOptions<T>): Promise<T>;
+  /** Streaming responses (SSE): scope tracking continues until `release()`. */
+  open(path: string, init?: RequestInit): Promise<OpenedResponse>;
+}
+
+export interface ApiTransport {
+  readonly baseUrl: string;
+  /** Workspace-scoped calls for exactly this identity and Workspace. */
+  scoped(scope: WorkspaceScope): BoundTransport;
+  /** Identity-only calls (session bootstrap, workspace selection); no Workspace header. */
+  identity(scope: IdentityScope): BoundTransport;
+}
+
+const MAX_KEY_LENGTH = 128;
+
+function normalizeBaseUrl(value: string): URL {
+  const base = new URL(value);
+  if (base.protocol !== "https:" && base.protocol !== "http:") {
+    throw new TypeError("baseUrl must be an http(s) origin");
+  }
+  if (base.username || base.password) {
+    throw new TypeError("baseUrl must not contain credentials");
+  }
+  return new URL(base.origin);
+}
+
+function resolveUrl(input: string | URL, base: URL): URL {
+  if (typeof input !== "string" && !(input instanceof URL)) {
+    throw new TypeError("Pass a URL or path and an init object, not a Request");
+  }
+  const url = new URL(input, base);
+  if (url.origin !== base.origin || url.username || url.password) {
+    // The bearer token must never be sent anywhere but the configured API.
+    throw new TypeError("Refusing to send credentials to a different origin");
+  }
+  return url;
+}
+
+function appendQuery(url: URL, query: JsonRequestOptions<unknown>["query"]): void {
+  if (!query) return;
+  for (const [name, value] of Object.entries(query)) {
+    const values = Array.isArray(value) ? value : [value];
+    for (const entry of values as QueryValue[]) {
+      if (entry === undefined || entry === null) continue;
+      url.searchParams.append(name, String(entry));
+    }
+  }
+}
+
+function isStreamBody(body: RequestInit["body"]): boolean {
+  return typeof ReadableStream !== "undefined" && body instanceof ReadableStream;
+}
+
+export function createApiTransport(options: TransportOptions): ApiTransport {
+  const base = normalizeBaseUrl(options.baseUrl);
+  const { scope } = options;
+  const send = options.fetch ?? ((input, init) => globalThis.fetch(input, init));
+
+  const assertCurrent = (target: ScopeTarget): void => {
+    if (!scope.isCurrent(target)) throw scopeChangedError();
+  };
+
+  const requireToken = async (skipCache: boolean): Promise<string> => {
+    let token: string | null;
+    try {
+      token = await options.getToken(skipCache ? { skipCache: true } : undefined);
+    } catch (cause) {
+      throw new ApiError({
+        code: API_PLATFORM_ERROR_CODES.authenticationUnavailable,
+        message: "Could not obtain a session token.",
+        status: 0,
+        cause,
+      });
+    }
+    if (!token) {
+      throw new ApiError({
+        code: API_PLATFORM_ERROR_CODES.authenticationRequired,
+        message: "Sign in to continue.",
+        status: 401,
+      });
+    }
+    return token;
+  };
+
+  const buildHeaders = (init: RequestInit, target: ScopeTarget, token: string): Headers => {
+    const headers = new Headers(init.headers);
+    if (!headers.has("Accept")) headers.set("Accept", "application/json");
+    headers.set(AUTHORIZATION_HEADER, `Bearer ${token}`);
+    if (target.workspaceId === null) headers.delete(WORKSPACE_HEADER);
+    else headers.set(WORKSPACE_HEADER, target.workspaceId);
+    return headers;
+  };
+
+  const attempt = async (
+    url: URL,
+    init: RequestInit,
+    target: ScopeTarget,
+    tracked: TrackedRequest,
+    skipCache: boolean,
+  ): Promise<Response> => {
+    const token = await requireToken(skipCache);
+    assertCurrent(target);
+    return send(url.toString(), {
+      ...init,
+      headers: buildHeaders(init, target, token),
+      credentials: "omit",
+      signal: tracked.signal,
+    });
+  };
+
+  const discard = (response: Response): void => {
+    void response.body?.cancel().catch(() => undefined);
+  };
+
+  const toFailure = (
+    error: unknown,
+    tracked: TrackedRequest,
+    external: AbortSignal | undefined,
+  ): unknown => {
+    if (tracked.scopeAborted) return scopeChangedError();
+    if (error instanceof ApiError) return error;
+    if (external?.aborted) return error;
+    return new ApiError({
+      code: CLIENT_ERROR_CODES.network,
+      message: "Could not reach the server.",
+      status: 0,
+      cause: error,
+    });
+  };
+
+  const notifyFailure = (error: ApiError): void => {
+    if (error.status === 401) options.onAuthenticationFailed?.(error);
+    else if (error.code === API_PLATFORM_ERROR_CODES.workspaceSelectionChanged) {
+      options.onWorkspaceSelectionChanged?.(error);
+    }
+  };
+
+  /** Sends one logical request: token, at most one forced refresh on 401, scope checks, error mapping. */
+  const perform = async (
+    target: ScopeTarget,
+    url: URL,
+    init: RequestInit,
+  ): Promise<Performed> => {
+    const external = init.signal ?? undefined;
+    const tracked = scope.track(target, external);
+    try {
+      assertCurrent(target);
+      let response = await attempt(url, init, target, tracked, false);
+      if (response.status === 401 && !isStreamBody(init.body)) {
+        discard(response);
+        response = await attempt(url, init, target, tracked, true);
+      }
+      if (!scope.isCurrent(target)) {
+        discard(response);
+        throw scopeChangedError();
+      }
+      if (!response.ok) throw await apiErrorFromResponse(response);
+      const admitted = response.headers.get(WORKSPACE_HEADER);
+      if (target.workspaceId !== null && admitted !== null && admitted !== target.workspaceId) {
+        discard(response);
+        throw new ApiError({
+          code: CLIENT_ERROR_CODES.workspaceResponseMismatch,
+          message: "The response was for a different Workspace and was discarded.",
+          status: response.status,
+        });
+      }
+      return { response, release: tracked.release, tracked };
+    } catch (error) {
+      tracked.release();
+      const failure = toFailure(error, tracked, external);
+      if (failure instanceof ApiError && failure.code !== CLIENT_ERROR_CODES.scopeChanged) {
+        notifyFailure(failure);
+      }
+      throw failure;
+    }
+  };
+
+  const bind = (target: ScopeTarget): BoundTransport => ({
+    baseUrl: base.origin,
+
+    async fetch(input, init = {}) {
+      const url = resolveUrl(input, base);
+      const opened = await perform(target, url, init);
+      opened.release();
+      return opened.response;
+    },
+
+    async open(path, init = {}) {
+      const { response, release } = await perform(target, resolveUrl(path, base), init);
+      return { response, release };
+    },
+
+    async json<T>(path: string, request: JsonRequestOptions<T> = {}): Promise<T> {
+      const url = resolveUrl(path, base);
+      appendQuery(url, request.query);
+      const headers = new Headers(request.headers);
+      if (request.idempotencyKey !== undefined) {
+        if (request.idempotencyKey.length < 1 || request.idempotencyKey.length > MAX_KEY_LENGTH) {
+          throw new TypeError("Idempotency keys are 1-128 characters");
+        }
+        headers.set(IDEMPOTENCY_KEY_HEADER, request.idempotencyKey);
+      }
+      let body: string | undefined;
+      if (request.json !== undefined) {
+        body = JSON.stringify(request.json);
+        headers.set("Content-Type", "application/json");
+      }
+      const init: RequestInit = {
+        method: request.method ?? (body === undefined ? "GET" : "POST"),
+        headers,
+        body,
+        signal: request.signal,
+      };
+      const { response, release, tracked } = await perform(target, url, init);
+      try {
+        const text = await response.text();
+        assertCurrent(target);
+        const data: unknown = text ? parseJsonBody(text, response.status) : undefined;
+        return request.parse ? request.parse(data) : (data as T);
+      } catch (error) {
+        throw toFailure(error, tracked, request.signal);
+      } finally {
+        release();
+      }
+    },
+  });
+
+  return {
+    baseUrl: base.origin,
+    scoped: (workspaceScope) =>
+      bind({ userId: workspaceScope.userId, workspaceId: requireWorkspace(workspaceScope) }),
+    identity: (identityScope) => bind({ userId: identityScope.userId, workspaceId: null }),
+  };
+}
+
+function requireWorkspace(scope: WorkspaceScope): string {
+  if (!scope.workspaceId) {
+    throw new ApiError({
+      code: CLIENT_ERROR_CODES.workspaceSelectionRequired,
+      message: "Select a Workspace to continue.",
+      status: 0,
+    });
+  }
+  return scope.workspaceId;
+}
+
+function parseJsonBody(text: string, status: number): unknown {
+  try {
+    return JSON.parse(text);
+  } catch (cause) {
+    throw new ApiError({
+      code: CLIENT_ERROR_CODES.unexpectedResponse,
+      message: "The server response was not valid JSON.",
+      status,
+      cause,
+    });
+  }
+}

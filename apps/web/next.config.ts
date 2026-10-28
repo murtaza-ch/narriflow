@@ -20,6 +20,7 @@ const nextConfig: NextConfig = {
     ],
   },
   transpilePackages: [
+    "@narriflow/api-client",
     "@narriflow/auth",
     "@narriflow/db",
     "@narriflow/email",

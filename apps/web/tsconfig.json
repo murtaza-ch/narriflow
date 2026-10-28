@@ -4,6 +4,8 @@
     "baseUrl": ".",
     "paths": {
       "@/*": ["./*"],
+      "@narriflow/api-client": ["../../packages/api-client/src/index.ts"],
+      "@narriflow/api-client/*": ["../../packages/api-client/src/*"],
       "@narriflow/auth": ["../../packages/auth/src/index.ts"],
       "@narriflow/auth/*": ["../../packages/auth/src/*"],
       "@narriflow/db": ["../../packages/db/src/index.ts"],
