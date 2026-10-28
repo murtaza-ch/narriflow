@@ -6,6 +6,7 @@
  */
 import type { GenerateProjectInput } from "@narriflow/validators";
 import type { ProjectsClient } from "./projects";
+import type { BrandClient } from "./brand";
 
 export async function projectsReadInference(client: ProjectsClient) {
   const response = await client.projects[":id"].$get({ param: { id: "p" } });
@@ -31,4 +32,19 @@ export async function projectsMutationInference(client: ProjectsClient, input: G
   // @ts-expect-error a wrongly typed field is refused by the shared schema type
   await client.projects[":id"].generate.$post({ param: { id: "p" }, json: { forceRegenerate: 1 } });
   return null;
+}
+
+export async function brandInference(client: BrandClient) {
+  const read = await client["brand-templates"][":id"].$get({ param: { id: "template" } });
+  const template = await read.json();
+  const id: string = template.id;
+  // @ts-expect-error the read response must not widen to any
+  const wrongId: number = template.id;
+  const created = await client["brand-templates"].$post({
+    json: { name: "Review", captionPreset: {} },
+  });
+  const createdId: string = (await created.json()).id;
+  // @ts-expect-error the shared mutation schema requires a string name
+  await client["brand-templates"].$post({ json: { name: 1, captionPreset: {} } });
+  return { id, createdId, wrongId };
 }

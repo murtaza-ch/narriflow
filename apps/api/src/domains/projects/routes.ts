@@ -15,9 +15,7 @@ import {
   requestClipDubSchema,
   transcriptExportFormatSchema,
 } from "@narriflow/validators";
-import { Hono } from "hono";
-import { admit, getActor } from "../../http/admission";
-import type { ApiEnv } from "../../http/env";
+import { createRouteApp, getActor } from "../../http/admission";
 import { getIdempotencyKey, requireIdempotencyKey } from "../../http/idempotency";
 import { validate } from "../../http/route";
 import { projectsAdmission as access } from "./admission";
@@ -39,8 +37,8 @@ const SORTS = ["newest", "oldest", "title", "clips"];
 export function createProjectsRoutes(deps: ProjectsRouteDeps) {
   const { projectService, workspaceLibraryService, contentSuiteService, analyticsService, dubbingService } = deps;
 
-  return new Hono<ApiEnv>()
-    .get("/projects", admit(access["GET /projects"]), async (c) => {
+  return createRouteApp(access)
+    .get("/projects", async (c) => {
       const appUser = getActor(c);
       const limitRaw = c.req.query("limit");
       const limit = limitRaw ? Number(limitRaw) : undefined;
@@ -74,7 +72,6 @@ export function createProjectsRoutes(deps: ProjectsRouteDeps) {
 
     .post(
       "/projects/:id/generate",
-      admit(access["POST /projects/:id/generate"]),
       requireIdempotencyKey(),
       validate("json", generateProjectRequestSchema),
       async (c) => {
@@ -88,7 +85,7 @@ export function createProjectsRoutes(deps: ProjectsRouteDeps) {
       },
     )
 
-    .get("/projects/:id", admit(access["GET /projects/:id"]), async (c) => {
+    .get("/projects/:id", async (c) => {
       const snapshot = await projectService.getProjectSnapshot(getActor(c), c.req.param("id"));
       if (!snapshot.project) {
         return c.json({ error: "project_not_found" }, 404);
@@ -98,7 +95,6 @@ export function createProjectsRoutes(deps: ProjectsRouteDeps) {
 
     .get(
       "/projects/:id/runs/:workflowRunId",
-      admit(access["GET /projects/:id/runs/:workflowRunId"]),
       async (c) => {
         const snapshot = await projectService.getWorkflowRun(
           getActor(c),
@@ -115,7 +111,7 @@ export function createProjectsRoutes(deps: ProjectsRouteDeps) {
       },
     )
 
-    .get("/projects/:id/transcript", admit(access["GET /projects/:id/transcript"]), async (c) => {
+    .get("/projects/:id/transcript", async (c) => {
       const transcript = await projectService.getTranscriptSnapshot(getActor(c), c.req.param("id"));
       if (!transcript) {
         return c.json({ error: "transcript_not_found", message: "Transcript not found" }, 404);
@@ -128,7 +124,6 @@ export function createProjectsRoutes(deps: ProjectsRouteDeps) {
     // browser-cached: React Query deduplicates it and the default is no-store.
     .get(
       "/projects/:id/transcript/utterances",
-      admit(access["GET /projects/:id/transcript/utterances"]),
       async (c) => {
         const utterances = await projectService.getTranscriptUtterancesRaw(
           getActor(c),
@@ -143,7 +138,6 @@ export function createProjectsRoutes(deps: ProjectsRouteDeps) {
 
     .get(
       "/projects/:id/transcript/export",
-      admit(access["GET /projects/:id/transcript/export"]),
       async (c) => {
         const format = transcriptExportFormatSchema.safeParse(c.req.query("format") ?? "txt");
         if (!format.success) {
@@ -168,7 +162,6 @@ export function createProjectsRoutes(deps: ProjectsRouteDeps) {
 
     .get(
       "/projects/:id/content-suite",
-      admit(access["GET /projects/:id/content-suite"]),
       async (c) => {
         const assets = await contentSuiteService.list(getActor(c), c.req.param("id"));
         return c.json({ assets }, 200);
@@ -177,7 +170,6 @@ export function createProjectsRoutes(deps: ProjectsRouteDeps) {
 
     .post(
       "/projects/:id/content-suite",
-      admit(access["POST /projects/:id/content-suite"]),
       validate("json", generateContentSuiteRequestSchema),
       async (c) => {
         const assets = await contentSuiteService.generate(
@@ -189,19 +181,18 @@ export function createProjectsRoutes(deps: ProjectsRouteDeps) {
       },
     )
 
-    .get("/projects/:id/analytics", admit(access["GET /projects/:id/analytics"]), async (c) => {
+    .get("/projects/:id/analytics", async (c) => {
       const analytics = await analyticsService.getProjectAnalytics(getActor(c), c.req.param("id"));
       return c.json(analytics, 200);
     })
 
-    .get("/projects/:id/dubs", admit(access["GET /projects/:id/dubs"]), async (c) => {
+    .get("/projects/:id/dubs", async (c) => {
       const dubs = await dubbingService.listProjectDubs(getActor(c), c.req.param("id"));
       return c.json({ dubs }, 200);
     })
 
     .post(
       "/projects/:id/dubs",
-      admit(access["POST /projects/:id/dubs"]),
       requireIdempotencyKey(),
       validate("json", requestClipDubSchema),
       async (c) => {
@@ -217,7 +208,6 @@ export function createProjectsRoutes(deps: ProjectsRouteDeps) {
 
     .get(
       "/projects/:id/dubs/:dubId/download",
-      admit(access["GET /projects/:id/dubs/:dubId/download"]),
       validate("query", dubDownloadQuerySchema),
       async (c) => {
         const result = await dubbingService.getDubDownloadUrl(

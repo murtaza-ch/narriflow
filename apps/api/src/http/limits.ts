@@ -3,7 +3,6 @@ import {
   requireNewMutationAllowed,
 } from "@narriflow/services";
 import type { Context, MiddlewareHandler } from "hono";
-import { bodyLimit } from "hono/body-limit";
 import type { ApiEnv } from "./env";
 import { failureResponse, jsonError, payloadTooLargeResponse, requestIdOf } from "./errors";
 import type {
@@ -23,9 +22,24 @@ export const BODY_LIMIT_BYTES = {
   control: 1024 * KIB,
   /** Clerk, Stripe, TikTok and Zoom webhooks. */
   webhook: 1024 * KIB,
-  /** Studio document and bulk campaign writes. Also Bun's process maximum. */
+  /** Studio document and bulk campaign writes. */
   editor: 8 * 1024 * KIB,
 } as const;
+
+/**
+ * Bun's own ceiling, enforced before any application code runs: a body over it
+ * gets Bun's bare 413 (no JSON envelope, request ID or CORS headers), and a
+ * declared Content-Length over it never reaches `fetch`. Twice the largest route
+ * class, so every plausible oversize request (a client sending the wrong thing
+ * to a control route) is refused by the application in the common envelope,
+ * with CORS, after at most the route class plus one chunk has been read.
+ * Only a body beyond this is an intentional native-ingress exception.
+ *
+ * Bun 1.3.6 (the image) applies the cap to a declared Content-Length only;
+ * a chunked body is bounded by `limitBody`, which counts actual bytes and
+ * cancels at the route class. Bun 1.4 also errors a chunked read at the cap.
+ */
+export const NATIVE_BODY_CAP_BYTES = BODY_LIMIT_BYTES.editor * 2;
 export type BodyLimitClass = keyof typeof BODY_LIMIT_BYTES;
 
 export const MAX_REQUEST_URL_BYTES = 8 * KIB;
@@ -33,24 +47,63 @@ export const MAX_REQUEST_HEADER_BYTES = 32 * KIB;
 
 /**
  * Rejects an oversized body even when it is chunked or lies about
- * Content-Length: Hono counts the bytes as they stream, before any handler
+ * Content-Length: count the bytes as they stream, before any handler
  * reads, clones or parses the body.
  */
 export function limitBody(limitClass: BodyLimitClass): MiddlewareHandler<ApiEnv> {
-  return bodyLimit({
-    maxSize: BODY_LIMIT_BYTES[limitClass],
-    onError: (c) => payloadTooLargeResponse(requestIdOf(c as Context<ApiEnv>)),
-  }) as MiddlewareHandler<ApiEnv>;
+  const maxSize = BODY_LIMIT_BYTES[limitClass];
+  return async (c, next) => {
+    const request = c.req.raw;
+    if (!request.body) return next();
+    if (Number(request.headers.get("content-length")) > maxSize) {
+      return payloadTooLargeResponse(requestIdOf(c));
+    }
+    const reader = request.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        size += value.byteLength;
+        if (size > maxSize) {
+          void reader.cancel().catch(() => undefined);
+          return payloadTooLargeResponse(requestIdOf(c));
+        }
+        chunks.push(value);
+      }
+    } finally {
+      reader.releaseLock();
+    }
+    // Preserve the exact bytes for signature verification and subsequent parsing.
+    if (!c.get("ingressRequest")) c.set("ingressRequest", request);
+    c.req.raw = new Request(request, {
+      body: new ReadableStream<Uint8Array>({
+        start(controller) {
+          for (const chunk of chunks) controller.enqueue(chunk);
+          controller.close();
+        },
+      }),
+    });
+    return next();
+  };
 }
 
 const encoder = new TextEncoder();
 
-/** Bounded safe failures for oversized URLs (414) and header blocks (431) at application ingress. */
-export function limitRequestEnvelope(): MiddlewareHandler<ApiEnv> {
+/**
+ * Bounded safe failures for oversized URLs (414) and header blocks (431) at
+ * application ingress. They run before identity and routing, so
+ * `refusalHeaders` (the first-party CORS headers for an allowed origin) is how
+ * a browser caller still reads the typed refusal and request ID.
+ */
+export function limitRequestEnvelope(
+  refusalHeaders: (request: Request) => Record<string, string> = () => ({}),
+): MiddlewareHandler<ApiEnv> {
   return async (c, next) => {
     const url = new URL(c.req.url);
     if (encoder.encode(url.pathname + url.search).byteLength > MAX_REQUEST_URL_BYTES) {
-      return jsonError(414, "uri_too_long", "The request URL is too long.", requestIdOf(c));
+      return jsonError(414, "uri_too_long", "The request URL is too long.", requestIdOf(c), refusalHeaders(c.req.raw));
     }
     let headerBytes = 0;
     for (const [name, value] of c.req.raw.headers) {
@@ -61,6 +114,7 @@ export function limitRequestEnvelope(): MiddlewareHandler<ApiEnv> {
           "request_headers_too_large",
           "The request headers are too large.",
           requestIdOf(c),
+          refusalHeaders(c.req.raw),
         );
       }
     }

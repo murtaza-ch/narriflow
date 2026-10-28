@@ -53,6 +53,10 @@ function isPlainObject(value: object): boolean {
  * instead of silently splitting the cache.
  */
 export function canonicalize(value: unknown, path = "$"): CanonicalValue {
+  return canonicalizeValue(value, path, true);
+}
+
+function canonicalizeValue(value: unknown, path: string, rejectCredentials: boolean): CanonicalValue {
   if (value === null) return null;
   switch (typeof value) {
     case "string":
@@ -75,7 +79,7 @@ export function canonicalize(value: unknown, path = "$"): CanonicalValue {
       if (entry === undefined) {
         throw new TypeError(`Query key array entry at ${path}[${index}] is undefined`);
       }
-      return canonicalize(entry, `${path}[${index}]`);
+      return canonicalizeValue(entry, `${path}[${index}]`, rejectCredentials);
     });
   }
   if (!isPlainObject(value)) {
@@ -87,16 +91,18 @@ export function canonicalize(value: unknown, path = "$"): CanonicalValue {
   for (const name of Object.keys(value).sort()) {
     const entry = (value as Record<string, unknown>)[name];
     if (entry === undefined) continue;
-    if (CREDENTIAL_PROPERTY.test(name)) {
+    if (rejectCredentials && CREDENTIAL_PROPERTY.test(name)) {
       throw new TypeError(`Query key property "${name}" looks like a credential and must not be keyed`);
     }
-    result[name] = canonicalize(entry, `${path}.${name}`);
+    result[name] = canonicalizeValue(entry, `${path}.${name}`, rejectCredentials);
   }
   return result;
 }
 
 export function canonicalJson(value: unknown): string {
-  return JSON.stringify(canonicalize(value));
+  // Command inputs may contain passcodes or signed continuations. This stays
+  // in the intent's memory and is never a query key or persisted cache value.
+  return JSON.stringify(canonicalizeValue(value, "$", false));
 }
 
 export interface IdentityScope {

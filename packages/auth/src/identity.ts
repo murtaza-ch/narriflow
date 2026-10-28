@@ -10,7 +10,7 @@ import {
   parseDate,
   type ClerkIdentityShape,
 } from "./clerk-payload";
-import { isClerkNotFound } from "./clerk";
+import { ClerkDirectoryUnavailableError, isClerkNotFound, isClerkUnavailable } from "./clerk";
 import { getRequiredPrisma, isUniqueViolation } from "./database";
 import { ensurePersonalWorkspace } from "./workspace";
 
@@ -232,6 +232,18 @@ export async function markUserDeletedByClerkId(clerkId: string) {
   return result;
 }
 
+/** Backend API lookup that reports an unreachable directory as `ClerkDirectoryUnavailableError`. */
+async function fetchClerkUser(directory: ClerkUserDirectory, clerkUserId: string) {
+  try {
+    return await directory.users.getUser(clerkUserId);
+  } catch (error) {
+    if (!isClerkNotFound(error) && isClerkUnavailable(error)) {
+      throw new ClerkDirectoryUnavailableError(error);
+    }
+    throw error;
+  }
+}
+
 async function releaseDeletedEmailOwner(
   primaryEmail: string,
   clerkId: string,
@@ -246,7 +258,7 @@ async function releaseDeletedEmailOwner(
     // account or an unavailable Clerk API; only a confirmed 404 releases the
     // email.
     try {
-      await directory.users.getUser(previousUser.clerkId);
+      await fetchClerkUser(directory, previousUser.clerkId);
       return false;
     } catch (error) {
       if (!isClerkNotFound(error)) throw error;
@@ -280,13 +292,13 @@ export async function getAppUserForClerkIdentity(
     }
     await ensurePersonalWorkspace(existing.id);
     if (needsUserRefresh(existing)) {
-      return syncClerkUserPayload(await clerkClient.users.getUser(clerkUserId), clerkClient);
+      return syncClerkUserPayload(await fetchClerkUser(clerkClient, clerkUserId), clerkClient);
     }
 
     return existing;
   }
 
-  return syncClerkUserPayload(await clerkClient.users.getUser(clerkUserId), clerkClient);
+  return syncClerkUserPayload(await fetchClerkUser(clerkClient, clerkUserId), clerkClient);
 }
 
 export async function getAppUserByClerkId(clerkId: string): Promise<AppUser | null> {

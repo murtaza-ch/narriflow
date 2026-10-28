@@ -147,6 +147,12 @@ export interface EventStreamOptions<TEvent> {
 }
 
 const DEFAULT_BACKOFF: BackoffOptions = { baseMs: 1_000, maxMs: 30_000 };
+/**
+ * A server `Retry-After` is honored in full up to this long, independent of the
+ * backoff cap (reconnecting sooner would just be refused again). A longer
+ * refusal ends the run with that error, as the query retry policy does.
+ */
+export const MAX_STREAM_RETRY_AFTER_SECONDS = 300;
 /** Statuses where trying again later can succeed. Everything else 4xx ends the stream. */
 const RETRYABLE_STATUSES = new Set([0, 408, 429]);
 
@@ -177,7 +183,8 @@ class DecodeFailure extends Error {}
  * a frame that fails to decode forces a reconnect from that cursor instead of
  * skipping it. HTTP failures are inspected before parsing: auth, permission,
  * conflict and missing-resource refusals end the run, transport/5xx/429
- * back off with jitter (honouring `Retry-After`), and a server-side close
+ * back off with jitter (honouring `Retry-After` up to
+ * `MAX_STREAM_RETRY_AFTER_SECONDS`, beyond which the run ends), and a server-side close
  * reconnects. Resolves when `signal` aborts or a fatal refusal arrives.
  */
 export async function runEventStream<TEvent>(
@@ -232,7 +239,10 @@ export async function runEventStream<TEvent>(
       if (error instanceof DecodeFailure) {
         failure = streamError("stream_protocol", "The event stream sent an unreadable frame.");
       } else if (isApiError(error)) {
-        if (!isRetryable(error)) {
+        if (
+          !isRetryable(error) ||
+          (error.retryAfterSeconds ?? 0) > MAX_STREAM_RETRY_AFTER_SECONDS
+        ) {
           onStatus?.({ state: "closed" });
           return { reason: "fatal", error };
         }
@@ -247,7 +257,7 @@ export async function runEventStream<TEvent>(
     const jittered = Math.round(ceiling * (0.5 + random() / 2));
     const retryInMs =
       failure?.retryAfterSeconds !== undefined
-        ? Math.min(failure.retryAfterSeconds * 1000, backoff.maxMs)
+        ? failure.retryAfterSeconds * 1000
         : jittered;
     onStatus?.({ state: "reconnecting", attempt, retryInMs, error: failure });
     await sleep(retryInMs, signal);

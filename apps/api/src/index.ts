@@ -1,5 +1,5 @@
 import { getPrismaClient } from "@narriflow/db/client";
-import { BODY_LIMIT_BYTES } from "./http/limits";
+import { NATIVE_BODY_CAP_BYTES } from "./http/limits";
 import { loadApiConfig } from "./config";
 import { applyApiPoolDefaults, createProductionApp } from "./runtime";
 import { createLifecycle, type ServerBindings, type ServerHandle } from "./server-hooks";
@@ -34,8 +34,8 @@ const server = Bun.serve({
   port: config.port,
   hostname: "0.0.0.0",
   idleTimeout: IDLE_TIMEOUT_SECONDS,
-  // Bun rejects larger bodies before any route limit; keep it equal to the largest class.
-  maxRequestBodySize: BODY_LIMIT_BYTES.editor,
+  // A hard bound above every route class, so ordinary oversize requests get the app's 413 envelope.
+  maxRequestBodySize: NATIVE_BODY_CAP_BYTES,
   fetch: (request, bunServer) =>
     app.fetch(request, { server: bunServer, lifecycle } satisfies ServerBindings),
 });

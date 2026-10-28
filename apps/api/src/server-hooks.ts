@@ -12,32 +12,66 @@ export interface ServerHandle {
  * Process lifecycle that routes can hook into. Long-lived work (the progress
  * stream) registers a closer; `beginDrain` runs them all on SIGTERM so no
  * subscriber outlives the process.
+ *
+ * Draining starts synchronously: from the first line of `beginDrain` the app
+ * refuses new requests (`drainGate`), and a closer registered after that point
+ * (a request that was already past admission when SIGTERM arrived) runs
+ * immediately instead of waiting for a drain that has already happened.
  */
 export interface ApiLifecycle {
   readonly draining: boolean;
-  /** Returns an unregister function; call it when the work ends on its own. */
+  /**
+   * Returns an unregister function; call it when the work ends on its own.
+   * While draining the closer is invoked at once and the function is a no-op.
+   */
   onDrain(closer: () => void | Promise<void>): () => void;
+  /** Idempotent: every call resolves when the same drain has finished. */
   beginDrain(): Promise<void>;
+}
+
+function logCloserFailure(error: unknown): void {
+  console.warn(
+    JSON.stringify({
+      level: "error",
+      message: "api_drain_closer_failed",
+      errorName: error instanceof Error ? error.name : typeof error,
+    }),
+  );
+}
+
+/** Runs one closer to completion; a synchronous throw or a rejection never stops the others. */
+async function runCloser(closer: () => void | Promise<void>): Promise<void> {
+  try {
+    await closer();
+  } catch (error) {
+    logCloserFailure(error);
+  }
 }
 
 export function createLifecycle(): ApiLifecycle {
   const closers = new Set<() => void | Promise<void>>();
   let draining = false;
+  let drained: Promise<void> | undefined;
   return {
     get draining() {
       return draining;
     },
     onDrain(closer) {
+      if (draining) {
+        void runCloser(closer);
+        return () => undefined;
+      }
       closers.add(closer);
       return () => {
         closers.delete(closer);
       };
     },
-    async beginDrain() {
+    beginDrain() {
       draining = true;
-      const pending = [...closers];
-      closers.clear();
-      await Promise.allSettled(pending.map((closer) => closer()));
+      drained ??= Promise.all([...closers].map(runCloser)).then(() => {
+        closers.clear();
+      });
+      return drained;
     },
   };
 }
@@ -58,7 +92,7 @@ function bindings(c: Context<ApiEnv>): ServerBindings {
  * request is admitted; ordinary requests keep the process-wide timeout.
  */
 export function disableIdleTimeout(c: Context<ApiEnv>): void {
-  bindings(c).server?.timeout(c.req.raw, 0);
+  bindings(c).server?.timeout(c.get("ingressRequest") ?? c.req.raw, 0);
 }
 
 export function getLifecycle(c: Context<ApiEnv>): ApiLifecycle | undefined {
@@ -67,5 +101,5 @@ export function getLifecycle(c: Context<ApiEnv>): ApiLifecycle | undefined {
 
 /** The socket peer address, for per-IP limits when no trusted ingress header applies. */
 export function socketAddress(c: Context<ApiEnv>): string | undefined {
-  return bindings(c).server?.requestIP(c.req.raw)?.address;
+  return bindings(c).server?.requestIP(c.get("ingressRequest") ?? c.req.raw)?.address;
 }

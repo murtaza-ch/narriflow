@@ -10,9 +10,7 @@ import {
   resolvePricingTier,
   timelineFormatSchema,
 } from "@narriflow/validators";
-import { Hono } from "hono";
-import { admit, getActor } from "../../http/admission";
-import type { ApiEnv } from "../../http/env";
+import { createRouteApp, getActor } from "../../http/admission";
 import { getIdempotencyKey, requireIdempotencyKey } from "../../http/idempotency";
 import { validate } from "../../http/route";
 import { uuidParams } from "../platform/params";
@@ -31,10 +29,9 @@ const NO_STORE = { "Cache-Control": "private, no-store" } as const;
 export function createExportsRoutes(deps: ExportsRouteDeps) {
   const { campaignOperationService, clipExportService, clipTimelineService } = deps;
 
-  return new Hono<ApiEnv>()
+  return createRouteApp(access)
     .get(
       "/workspace/exports/:exportId/download",
-      admit(access["GET /workspace/exports/:exportId/download"]),
       async (c) => {
         const exported = await clipExportService.getWorkspaceOwned(
           getActor(c),
@@ -59,7 +56,6 @@ export function createExportsRoutes(deps: ExportsRouteDeps) {
 
     .post(
       "/projects/:id/export-bundles",
-      admit(access["POST /projects/:id/export-bundles"]),
       uuidParams("id"),
       requireIdempotencyKey(),
       validate("json", createExportBundleSchema),
@@ -85,7 +81,6 @@ export function createExportsRoutes(deps: ExportsRouteDeps) {
 
     .post(
       "/projects/:id/export-bundles/preview",
-      admit(access["POST /projects/:id/export-bundles/preview"]),
       uuidParams("id"),
       validate("json", createExportBundleSchema),
       async (c) => {
@@ -109,7 +104,6 @@ export function createExportsRoutes(deps: ExportsRouteDeps) {
 
     .get(
       "/projects/:id/export-bundles",
-      admit(access["GET /projects/:id/export-bundles"]),
       async (c) => {
         const appUser = getActor(c);
         return c.json(
@@ -127,7 +121,6 @@ export function createExportsRoutes(deps: ExportsRouteDeps) {
 
     .get(
       "/projects/:id/export-bundles/:bundleId",
-      admit(access["GET /projects/:id/export-bundles/:bundleId"]),
       uuidParams("id", "bundleId"),
       async (c) => {
         const appUser = getActor(c);
@@ -144,7 +137,6 @@ export function createExportsRoutes(deps: ExportsRouteDeps) {
 
     .post(
       "/projects/:id/export-bundles/:bundleId/retry",
-      admit(access["POST /projects/:id/export-bundles/:bundleId/retry"]),
       uuidParams("id", "bundleId"),
       requireIdempotencyKey(),
       async (c) => {
@@ -170,7 +162,6 @@ export function createExportsRoutes(deps: ExportsRouteDeps) {
 
     .post(
       "/projects/:id/campaign-operations/:operationId/retry-export-bundle",
-      admit(access["POST /projects/:id/campaign-operations/:operationId/retry-export-bundle"]),
       uuidParams("id", "operationId"),
       requireIdempotencyKey(),
       async (c) => {
@@ -196,7 +187,6 @@ export function createExportsRoutes(deps: ExportsRouteDeps) {
 
     .get(
       "/projects/:id/export-bundles/:bundleId/download",
-      admit(access["GET /projects/:id/export-bundles/:bundleId/download"]),
       uuidParams("id", "bundleId"),
       async (c) => {
         const appUser = getActor(c);
@@ -217,7 +207,6 @@ export function createExportsRoutes(deps: ExportsRouteDeps) {
 
     .post(
       "/projects/:id/clips/:clipId/exports",
-      admit(access["POST /projects/:id/clips/:clipId/exports"]),
       requireIdempotencyKey(),
       validate("json", createClipExportSchema),
       async (c) => {
@@ -234,7 +223,6 @@ export function createExportsRoutes(deps: ExportsRouteDeps) {
 
     .get(
       "/projects/:id/exports/current",
-      admit(access["GET /projects/:id/exports/current"]),
       uuidParams("id"),
       async (c) => {
         return c.json(
@@ -252,7 +240,6 @@ export function createExportsRoutes(deps: ExportsRouteDeps) {
 
     .get(
       "/projects/:id/clips/:clipId/exports/:exportId",
-      admit(access["GET /projects/:id/clips/:clipId/exports/:exportId"]),
       async (c) => {
         const result = await clipExportService.getOwned(
           getActor(c),
@@ -268,7 +255,6 @@ export function createExportsRoutes(deps: ExportsRouteDeps) {
     // SRT and VTT for one export, derived on demand from its frozen snapshot.
     .get(
       "/projects/:id/clips/:clipId/exports/:exportId/subtitles/:format",
-      admit(access["GET /projects/:id/clips/:clipId/exports/:exportId/subtitles/:format"]),
       async (c) => {
         const format = c.req.param("format");
         if (format !== "srt" && format !== "vtt") {
@@ -294,7 +280,6 @@ export function createExportsRoutes(deps: ExportsRouteDeps) {
     // The editor revision travels in a header so the page can show what it fetched.
     .get(
       "/projects/:id/clips/:clipId/timeline/:format",
-      admit(access["GET /projects/:id/clips/:clipId/timeline/:format"]),
       async (c) => {
         const format = timelineFormatSchema.safeParse(c.req.param("format"));
         if (!format.success) return c.json({ error: "timeline_format_invalid" }, 400);
@@ -317,7 +302,6 @@ export function createExportsRoutes(deps: ExportsRouteDeps) {
     // timelines refer to. JSON, so the page can show a refusal.
     .get(
       "/projects/:id/clips/:clipId/timeline-source",
-      admit(access["GET /projects/:id/clips/:clipId/timeline-source"]),
       async (c) => {
         const source = await clipTimelineService.issueSourceGrant(
           getActor(c),
@@ -331,7 +315,6 @@ export function createExportsRoutes(deps: ExportsRouteDeps) {
 
     .post(
       "/projects/:id/clips/:clipId/exports/:exportId/retry",
-      admit(access["POST /projects/:id/clips/:clipId/exports/:exportId/retry"]),
       async (c) => {
         const result = await clipExportService.retryFailed(
           getActor(c),
@@ -345,7 +328,6 @@ export function createExportsRoutes(deps: ExportsRouteDeps) {
 
     .post(
       "/projects/:id/clips/:clipId/exports/:exportId/share-links",
-      admit(access["POST /projects/:id/clips/:clipId/exports/:exportId/share-links"]),
       validate("json", createClipShareLinkSchema),
       async (c) => {
         const result = await clipExportService.createShareLink(
@@ -361,7 +343,6 @@ export function createExportsRoutes(deps: ExportsRouteDeps) {
 
     .delete(
       "/projects/:id/clips/:clipId/exports/:exportId/share-links",
-      admit(access["DELETE /projects/:id/clips/:clipId/exports/:exportId/share-links"]),
       async (c) => {
         const result = await clipExportService.revokeShareLinks(
           getActor(c),

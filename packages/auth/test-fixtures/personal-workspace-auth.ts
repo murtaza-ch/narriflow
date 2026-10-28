@@ -157,6 +157,7 @@ let storedUser: User | null;
 mock.module("@narriflow/db/client", () => ({ getPrismaClient: () => prisma }));
 const auth = await import("../src");
 const {
+  ClerkDirectoryUnavailableError,
   ensurePersonalWorkspace,
   getAppUserForClerkIdentity,
   markUserDeletedByClerkId,
@@ -335,11 +336,38 @@ describe("App User for a verified Clerk identity", () => {
     expect(calls).toContain("personal-membership-read");
   });
 
-  test("a Clerk lookup failure propagates instead of inventing a user", async () => {
+  test("a first-login Clerk outage is a typed unavailable error and invents no user", async () => {
     storedUser = null;
-    directoryOutcome = { error: new FakeClerkApiError(503) };
-    await expect(getAppUserForClerkIdentity(user.clerkId, directory)).rejects.toThrow("clerk 503");
+    for (const error of [new FakeClerkApiError(503), new FakeClerkApiError(429), new TypeError("fetch failed")]) {
+      directoryOutcome = { error };
+      const failure = await getAppUserForClerkIdentity(user.clerkId, directory).catch((e: unknown) => e);
+      expect(failure).toBeInstanceOf(ClerkDirectoryUnavailableError);
+      expect((failure as Error).cause).toBe(error);
+    }
     expect(userWrites).toEqual([]);
+  });
+
+  test("a stale-profile refresh outage is a typed unavailable error and keeps the stored user", async () => {
+    storedUser = { ...user, lastSignInAt: null } as User;
+    directoryOutcome = { error: new FakeClerkApiError(502) };
+    await expect(getAppUserForClerkIdentity(user.clerkId, directory)).rejects.toBeInstanceOf(
+      ClerkDirectoryUnavailableError,
+    );
+    expect(userWrites).toEqual([]);
+  });
+
+  test("a non-outage Clerk refusal and a database failure stay ordinary errors", async () => {
+    storedUser = null;
+    directoryOutcome = { error: new FakeClerkApiError(401) };
+    const refusal = await getAppUserForClerkIdentity(user.clerkId, directory).catch((e: unknown) => e);
+    expect(refusal).not.toBeInstanceOf(ClerkDirectoryUnavailableError);
+    expect((refusal as Error).message).toBe("clerk 401");
+
+    directoryOutcome = { user: clerkPayload };
+    userUpsertFailures = [new Error("database down")];
+    const database = await getAppUserForClerkIdentity(user.clerkId, directory).catch((e: unknown) => e);
+    expect(database).not.toBeInstanceOf(ClerkDirectoryUnavailableError);
+    expect((database as Error).message).toBe("database down");
   });
 });
 
@@ -383,7 +411,9 @@ describe("Clerk user sync uniqueness races", () => {
     userUpsertFailures = [p2002()];
     emailOwner = { ...user, id: "other-user", clerkId: "clerk-other", deletedAt: null } as User;
     directoryOutcome = { error: new FakeClerkApiError(500) };
-    await expect(syncClerkUserPayload(clerkPayload, directory)).rejects.toThrow("clerk 500");
+    await expect(syncClerkUserPayload(clerkPayload, directory)).rejects.toBeInstanceOf(
+      ClerkDirectoryUnavailableError,
+    );
     expect(calls.some((call) => call.startsWith("user-soft-delete"))).toBe(false);
   });
 

@@ -1,9 +1,8 @@
 import type { Hono } from "hono";
 import { ADMISSION_TABLES } from "./domains";
-import { type AdmissionEntry, UNGATED_TRUST } from "./domains/platform/admission-table";
+import type { AdmissionEntry } from "./domains/platform/admission-table";
+import { type RegistrationMark, registrationOf } from "./http/admission";
 import type { ApiEnv } from "./http/env";
-
-const ADMISSION_MARK = Symbol.for("narriflow.api.admission");
 
 /** Apps with their own credential model and checks: public REST, MCP and its discovery documents. */
 const PROTOCOL_PREFIXES = ["/api/v1", "/mcp", "/.well-known/"] as const;
@@ -25,15 +24,8 @@ export interface InventoryReport {
 interface EndpointGroup {
   method: string;
   path: string;
-  /** How many handlers in the group carry an admission marker. */
-  admissions: number;
-}
-
-function isMarked(handler: unknown): boolean {
-  return (
-    typeof handler === "function" &&
-    (handler as unknown as Record<symbol, unknown>)[ADMISSION_MARK] === true
-  );
+  /** Registration marks of the group's entries in registration order; `undefined` for an unregistered handler. */
+  marks: (RegistrationMark | undefined)[];
 }
 
 function isProtocol(path: string): boolean {
@@ -45,8 +37,8 @@ function endpointGroups(app: Hono<ApiEnv>): Map<string, EndpointGroup> {
   for (const route of app.routes) {
     if (route.method === "ALL") continue;
     const key = `${route.method} ${route.path}`;
-    const group = groups.get(key) ?? { method: route.method, path: route.path, admissions: 0 };
-    if (isMarked(route.handler)) group.admissions += 1;
+    const group = groups.get(key) ?? { method: route.method, path: route.path, marks: [] };
+    group.marks.push(registrationOf(route.handler));
     groups.set(key, group);
   }
   return groups;
@@ -65,12 +57,37 @@ export function declaredRoutes(): Map<string, AdmissionEntry> {
   return declared;
 }
 
-function needsMarker(entry: AdmissionEntry): boolean {
-  return !("trust" in entry) || !UNGATED_TRUST.has(entry.trust);
-}
-
 function samplePath(pattern: string): string {
   return pattern.replace(/:[A-Za-z0-9_]+/g, "sample");
+}
+
+/**
+ * Every entry answering a route must come from one `createRouteApp` /
+ * `registerRoute` registration whose first entry is the declared admission (or
+ * trust). Entries of another registration, or registered any other way, are
+ * duplicates of the route and are reported even when the other registration is
+ * itself guarded.
+ */
+function registrationProblems(
+  key: string,
+  group: EndpointGroup,
+  entry: AdmissionEntry,
+): InventoryProblem[] {
+  const problems: InventoryProblem[] = [];
+  const first = group.marks[0];
+  const expected = "trust" in entry ? "trust" : "admission";
+  if (!first) {
+    problems.push({ kind: "missing_admission", route: key, detail: "first handler is not registered with its declaration" });
+  } else if (first.role !== expected) {
+    problems.push({ kind: "missing_admission", route: key, detail: `first handler is ${first.role}, declared ${expected}` });
+  }
+  const registrations = new Set(group.marks.map((mark) => mark?.registration));
+  if (registrations.size > 1) {
+    problems.push({ kind: "duplicate_registration", route: key, detail: `${registrations.size} registrations` });
+  } else if (first && group.marks.some((mark) => !mark)) {
+    problems.push({ kind: "missing_admission", route: key, detail: "unregistered handler in the chain" });
+  }
+  return problems;
 }
 
 /**
@@ -103,12 +120,7 @@ export function checkRouteInventory(
       problems.push({ kind: "undeclared_route", route: key });
       continue;
     }
-    if (needsMarker(entry) && group.admissions === 0) {
-      problems.push({ kind: "missing_admission", route: key });
-    }
-    if (group.admissions > 1) {
-      problems.push({ kind: "duplicate_registration", route: key, detail: `${group.admissions} admissions` });
-    }
+    problems.push(...registrationProblems(key, group, entry));
     // Each match is `[[handler, route], params]`; registration order decides which answers.
     const matched = app.router.match(group.method, samplePath(group.path))[0] as unknown as Array<
       [[unknown, { method: string; path: string }], unknown]

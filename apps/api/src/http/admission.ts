@@ -1,6 +1,11 @@
 import type { WorkspaceCapability } from "@narriflow/validators";
-import type { Context, MiddlewareHandler } from "hono";
+import { Hono, type Context, type MiddlewareHandler } from "hono";
 import { matchedRoutes, routePath } from "hono/route";
+import type {
+  AdmissionEntry,
+  AdmissionTable,
+  RouteMethod,
+} from "../domains/platform/admission-table";
 import type { ApiEnv } from "./env";
 import {
   failureResponse,
@@ -77,33 +82,146 @@ export type IndependentTrust =
   | "oauth_state"
   | "provider_signature";
 
-const ADMISSION_MARK = Symbol.for("narriflow.api.admission");
+const REGISTRATION_MARK = Symbol.for("narriflow.api.registration");
 
-function mark<T extends MiddlewareHandler<ApiEnv>>(handler: T): T {
-  Object.defineProperty(handler, ADMISSION_MARK, { value: true });
-  return handler;
+/** What a route entry in a mounted app says about the registration that created it. */
+export interface RegistrationMark {
+  /** Identity of the registration; every entry of one `registerRoute` call shares it. */
+  readonly registration: object;
+  /** The first entry of a registration is its admission or trust declaration. */
+  readonly role: "admission" | "trust" | "handler";
 }
 
-function isMarked(handler: unknown): boolean {
-  return (
-    typeof handler === "function" &&
-    (handler as unknown as Record<symbol, unknown>)[ADMISSION_MARK] === true
-  );
+/** Reads the mark of a mounted route handler (also through Hono's composed-handler wrapper). */
+export function registrationOf(handler: unknown): RegistrationMark | undefined {
+  if (typeof handler !== "function") return undefined;
+  const record = handler as unknown as Record<string | symbol, unknown>;
+  const direct = record[REGISTRATION_MARK] as RegistrationMark | undefined;
+  if (direct) return direct;
+  const composed = record.__COMPOSED_HANDLER;
+  return composed === undefined ? undefined : registrationOf(composed);
 }
 
-/** Used by staff admission so the fail-closed guard recognizes it. */
-export function markAdmissionHandler<T extends MiddlewareHandler<ApiEnv>>(
-  handler: T,
-): T {
-  return mark(handler);
-}
-
-export function declareIndependentTrust(
-  _trust: IndependentTrust,
+function tag(
+  handler: MiddlewareHandler<ApiEnv>,
+  mark: RegistrationMark,
 ): MiddlewareHandler<ApiEnv> {
-  return mark(async (_c, next) => {
-    await next();
-  });
+  // A fresh function per registration, so a handler shared between two routes
+  // cannot carry one route's mark into the other. Other symbol markers (the
+  // body class) are carried over.
+  const tagged: MiddlewareHandler<ApiEnv> = (c, next) => handler(c, next);
+  for (const symbol of Object.getOwnPropertySymbols(handler)) {
+    const descriptor = Object.getOwnPropertyDescriptor(handler, symbol);
+    if (descriptor) Object.defineProperty(tagged, symbol, descriptor);
+  }
+  Object.defineProperty(tagged, REGISTRATION_MARK, { value: mark });
+  return tagged;
+}
+
+const noop: MiddlewareHandler<ApiEnv> = async (_c, next) => {
+  await next();
+};
+
+/**
+ * The complete handler chain of one registration: the declaration's admission
+ * (or, for independent trust, a no-op that only records the trust), then the
+ * route's own validators and handler. Every entry is marked with the same
+ * registration, so the fail-closed guard and the inventory can tell this
+ * registration from any other that answers the same method and path.
+ */
+function registrationChain(
+  entry: AdmissionEntry,
+  handlers: readonly MiddlewareHandler<ApiEnv>[],
+): MiddlewareHandler<ApiEnv>[] {
+  const registration = {};
+  const declaration = "trust" in entry ? null : entry;
+  return [
+    tag(declaration ? admit(declaration) : noop, {
+      registration,
+      role: declaration ? "admission" : "trust",
+    }),
+    ...handlers.map((handler) => tag(handler, { registration, role: "handler" })),
+  ];
+}
+
+/**
+ * Marks an app-level guard middleware that belongs to a trust area (the staff
+ * `use("*")`), so the fail-closed guard accepts the area's handlers.
+ */
+export function guardMiddleware(handler: MiddlewareHandler<ApiEnv>): MiddlewareHandler<ApiEnv> {
+  return tag(handler, { registration: {}, role: "admission" });
+}
+
+export class RouteRegistrationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RouteRegistrationError";
+  }
+}
+
+type OnRoute = (
+  method: string,
+  path: string,
+  ...handlers: MiddlewareHandler<ApiEnv>[]
+) => unknown;
+
+function onOf(app: Hono<ApiEnv>): OnRoute {
+  return (app as unknown as { on: OnRoute }).on.bind(app);
+}
+
+const ROUTE_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const satisfies readonly RouteMethod[];
+const UNSUPPORTED_REGISTRATIONS = ["use", "all", "on", "route", "mount"] as const;
+
+/**
+ * The only way a domain registers HTTP routes. The returned app is a normal
+ * chained Hono app (so `typeof` it feeds the Hono RPC client), except that
+ * `.get/.post/.put/.patch/.delete(path, ...handlers)` look `METHOD path` up in
+ * the domain's admission table and install the declared admission (or trust)
+ * ahead of the handlers. A route with no declaration, a second registration of
+ * the same route, and any other way of adding routes (`use`, `all`, `on`,
+ * `route`, `mount`) throw at construction, so an unguarded or shadowing
+ * registration cannot exist.
+ */
+export function createRouteApp(table: AdmissionTable): Hono<ApiEnv> {
+  const app = new Hono<ApiEnv>();
+  const on = onOf(app);
+  const registered = new Set<string>();
+  const methods = app as unknown as Record<string, unknown>;
+
+  for (const method of ROUTE_METHODS) {
+    methods[method.toLowerCase()] = (path: string, ...handlers: MiddlewareHandler<ApiEnv>[]) => {
+      const key = `${method} ${path}`;
+      const entry = (table as Readonly<Record<string, AdmissionEntry | undefined>>)[key];
+      if (!entry) throw new RouteRegistrationError(`${key} has no admission declaration`);
+      if (registered.has(key)) throw new RouteRegistrationError(`${key} is registered twice`);
+      if (handlers.length === 0) throw new RouteRegistrationError(`${key} has no handler`);
+      registered.add(key);
+      on(method, path, ...registrationChain(entry, handlers));
+      return app;
+    };
+  }
+  for (const name of UNSUPPORTED_REGISTRATIONS) {
+    methods[name] = () => {
+      throw new RouteRegistrationError(
+        `Domain apps register routes only through get/post/put/patch/delete, not ${name}`,
+      );
+    };
+  }
+  return app;
+}
+
+/**
+ * Registers one route on an app that is not built by `createRouteApp` (the
+ * reserved staff area, which owns its guard). Same chain, same marks.
+ */
+export function registerRoute(
+  app: Hono<ApiEnv>,
+  method: RouteMethod,
+  path: string,
+  entry: AdmissionEntry,
+  handlers: readonly MiddlewareHandler<ApiEnv>[],
+): void {
+  onOf(app)(method, path, ...registrationChain(entry, handlers));
 }
 
 /** App-level: makes the policy and this request's fresh actor promises available to `admit`. */
@@ -119,21 +237,16 @@ export function installRequestPolicy(
 
 /**
  * App-level, registered after every other `use("*")` and before the domain
- * routes: a first-party endpoint that no `admit(...)`/`declareIndependentTrust`
- * precedes is refused before its handler runs. Paths without any endpoint fall
- * through to the JSON 404.
+ * routes: every handler that can answer this request must belong to a
+ * registration that begins with its admission or trust declaration. A handler
+ * registered any other way (a raw Hono registration or `use`, in front of or
+ * behind a declared one) is refused before any handler runs. Paths without any
+ * handler fall through to the JSON 404.
  */
 export function requireAdmissionDeclaration(): MiddlewareHandler<ApiEnv> {
   return async (c, next) => {
-    const matched = matchedRoutes(c);
-    if (matched.length === c.req.routeIndex + 1) {
-      await next();
-      return;
-    }
-    // An admission that matches this request and precedes the endpoint runs
-    // before it, whatever pattern it was registered under (`/admin/*`, `/x/:id`).
-    const declared = matched.some((route) => isMarked(route.handler));
-    if (declared) {
+    const downstream = matchedRoutes(c).slice(c.req.routeIndex + 1);
+    if (downstream.every((route) => registrationOf(route.handler) !== undefined)) {
       await next();
       return;
     }
@@ -237,7 +350,7 @@ async function diagnoseResponse(response: Response) {
 export function admit(
   declaration: AdmissionDeclaration,
 ): MiddlewareHandler<ApiEnv> {
-  return mark(async (c, next) => {
+  return async (c, next) => {
     const runtime = c.get("policyRuntime");
     const actors = c.get("requestActors");
     if (!runtime || !actors) {
@@ -281,6 +394,7 @@ export function admit(
               ...common,
               operation: async ({ actor, project, rateLimit }) => {
                 c.set("actor", actor);
+                c.header("X-Workspace-Id", actor.workspaceId);
                 if (project) c.set("project", project);
                 return proceed(rateLimit);
               },
@@ -289,7 +403,7 @@ export function admit(
           );
 
     if (!result.ok) return markEnvelope(c, failureResponse(result.failure));
-  });
+  };
 }
 
 function admitted<T>(value: T | undefined, what: string): T {

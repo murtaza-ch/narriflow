@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { ApiError, CLIENT_ERROR_CODES } from "./error";
 import { ApiScope } from "./scope";
 import {
+  MAX_STREAM_RETRY_AFTER_SECONDS,
   readStreamMessages,
   runEventStream,
   type StreamMessage,
@@ -250,6 +251,40 @@ describe("runEventStream", () => {
     expect(delays).toEqual([3_000, 2_000, 4_000]);
     const reconnects = statuses.filter((s) => s.state === "reconnecting");
     expect(reconnects.map((s) => (s as { attempt: number }).attempt)).toEqual([1, 2, 3]);
+  });
+
+  test("Retry-After beyond the backoff cap is honored in full; one beyond the stream bound ends the run", async () => {
+    const long = harness([
+      () => errorResponse(503, "unavailable", { retryAfterSeconds: 120 }),
+      () => sseResponse([frame(1)]),
+    ]);
+    const controller = new AbortController();
+    const delays: number[] = [];
+    await runEventStream({
+      transport: long.bound,
+      path: "/api/stream/p1",
+      signal: controller.signal,
+      decode,
+      onEvent: () => controller.abort(),
+      backoff: { baseMs: 1_000, maxMs: 30_000 },
+      sleep: async (ms) => void delays.push(ms),
+    });
+    expect(delays).toEqual([120_000]);
+
+    const excessive = harness([
+      () => errorResponse(429, "rate_limited", { retryAfterSeconds: MAX_STREAM_RETRY_AFTER_SECONDS + 1 }),
+    ]);
+    const end = await runEventStream({
+      transport: excessive.bound,
+      path: "/api/stream/p1",
+      signal: new AbortController().signal,
+      decode,
+      onEvent: () => undefined,
+      sleep: async () => {
+        throw new Error("must not wait");
+      },
+    });
+    expect(end.reason).toBe("fatal");
   });
 
   test("backoff grows while nothing is delivered and resets after a delivered event", async () => {

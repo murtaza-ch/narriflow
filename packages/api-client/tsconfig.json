@@ -1,19 +1,7 @@
 {
   "extends": "../config/tsconfig.base.json",
   "compilerOptions": {
-    "baseUrl": ".",
-    "types": ["node"],
-    "paths": {
-      "@narriflow/auth": ["../auth/src/index.ts"],
-      "@narriflow/composition-plan": ["../composition-plan/src/index.ts"],
-      "@narriflow/db": ["../db/src/index.ts"],
-      "@narriflow/db/*": ["../db/src/*"],
-      "@narriflow/email": ["../email/src/index.ts"],
-      "@narriflow/services": ["../services/src/index.ts"],
-      "@narriflow/services/*": ["../services/src/*"],
-      "@narriflow/validators": ["../validators/src/index.ts"],
-      "@narriflow/validators/*": ["../validators/src/*"]
-    }
+    "types": ["node"]
   },
   "include": ["src"],
   "exclude": ["src/**/*.test.ts"]

@@ -1,7 +1,7 @@
 import { createClerkClient } from "@clerk/backend";
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { createSign, generateKeyPairSync } from "node:crypto";
-import { createBearerAuthenticator, isClerkNotFound, type SessionTokenVerifier } from "./clerk";
+import { createBearerAuthenticator, isClerkNotFound, isClerkUnavailable, type SessionTokenVerifier } from "./clerk";
 import { parseStaffAllowlist, resolvePlatformActor } from "./staff";
 
 const WEB_ORIGIN = "https://narriflow-dev.vercel.app";
@@ -113,6 +113,14 @@ describe("Bearer session verification", () => {
     expect(await authenticate(request({ authorization: `Bearer ${token}` }))).toEqual({
       status: "unauthenticated",
       reason: "rejected_token",
+    });
+  });
+
+  test("a verified session without the optional azp claim is accepted", async () => {
+    const token = sessionToken({ azp: undefined });
+    expect(await authenticate(request({ authorization: `Bearer ${token}` }))).toMatchObject({
+      status: "authenticated",
+      identity: { clerkUserId: "user_clerk_1" },
     });
   });
 
@@ -237,6 +245,18 @@ describe("Clerk 404 detection", () => {
     expect(isClerkNotFound(Object.assign(new Error("x"), { status: 404 }))).toBe(false);
     expect(isClerkNotFound(null)).toBe(false);
     expect(isClerkNotFound("404")).toBe(false);
+  });
+
+  test("an outage is a network failure, timeout, 429 or 5xx, never a confirmed answer", () => {
+    for (const status of [408, 429, 500, 502, 503]) {
+      expect(isClerkUnavailable(new ClerkAPIResponseError(status))).toBe(true);
+    }
+    expect(isClerkUnavailable(new TypeError("fetch failed"))).toBe(true);
+    for (const status of [400, 401, 403, 404, 422]) {
+      expect(isClerkUnavailable(new ClerkAPIResponseError(status))).toBe(false);
+    }
+    expect(isClerkUnavailable("boom")).toBe(false);
+    expect(isClerkUnavailable(null)).toBe(false);
   });
 });
 

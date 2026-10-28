@@ -3,6 +3,7 @@ import { routeBodyLimit } from "./body-limits";
 import type { ApiConfig } from "./config";
 import { handleClerkWebhook } from "./domains/platform/clerk/webhook";
 import type { ClerkWebhookDependencies } from "./domains/platform/clerk/webhook";
+import { platformAdmission } from "./domains/platform/admission";
 import { createHealthRoutes, type HealthDependencies } from "./domains/platform/health";
 import {
   FIRST_PARTY_DOMAINS,
@@ -11,8 +12,9 @@ import {
   type ApiWebhookRoutes,
 } from "./domains";
 import { createAdminRoutes, type AdminDependencies } from "./http/admin";
-import { installRequestPolicy, requireAdmissionDeclaration } from "./http/admission";
-import { apiSecurityHeaders, firstPartyCors } from "./http/cors";
+import { createRouteApp, installRequestPolicy, requireAdmissionDeclaration } from "./http/admission";
+import { apiSecurityHeaders, firstPartyCors, firstPartyRefusalHeaders } from "./http/cors";
+import { drainGate } from "./http/drain";
 import type { ApiEnv } from "./http/env";
 import {
   apiErrorHandler,
@@ -44,7 +46,9 @@ export interface ApiAppDependencies {
 /**
  * The one composition owner. Mount order:
  *
- * 1. request ID, bounded request log, secure headers, URL/header size limits;
+ * 1. request ID, bounded request log, secure headers, the drain gate (503
+ *    once draining begins) and URL/header size limits, both readable by an
+ *    allowed first-party origin;
  * 2. liveness/readiness, webhooks (1 MiB, raw bytes), REST v1 and MCP, each
  *    with its own credential model and error envelope;
  * 3. the first-party chain (CORS, error envelope, per-route body limit, JSON
@@ -61,14 +65,16 @@ export function createApiApp(deps: ApiAppDependencies): Hono<ApiEnv> {
   app.use("*", apiRequestId());
   app.use("*", requestLogger({ skipRoutes: ["/api/health", "/api/ready"] }));
   app.use("*", apiSecurityHeaders({ production: config.nodeEnv === "production" }));
-  app.use("*", limitRequestEnvelope());
+  const refusalHeaders = firstPartyRefusalHeaders(config.corsAllowedOrigins);
+  app.use("*", drainGate({ isDraining: deps.health.isDraining, refusalHeaders }));
+  app.use("*", limitRequestEnvelope(refusalHeaders));
   app.onError(apiErrorHandler);
   app.notFound(apiNotFoundHandler);
 
   app.route("/api", createHealthRoutes(deps.health));
 
   app.use("/api/webhooks/*", limitBody("webhook"));
-  const webhooks = new Hono<ApiEnv>().post("/webhooks/clerk", (c) =>
+  const webhooks = createRouteApp(platformAdmission).post("/webhooks/clerk", (c) =>
     handleClerkWebhook(c.req.raw, deps.clerkWebhook),
   );
   app.route("/api", webhooks);

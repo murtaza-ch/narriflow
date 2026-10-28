@@ -1,16 +1,16 @@
 import { describe, expect, mock, test } from "bun:test";
-import type { AppUser, WorkspaceActorContext } from "@narriflow/auth";
+import { type AppUser, ClerkDirectoryUnavailableError, type WorkspaceActorContext } from "@narriflow/auth";
 import { ExpectedDomainFailureError } from "@narriflow/services";
 import { Hono } from "hono";
 import { z } from "zod";
 import {
-  admit,
-  declareIndependentTrust,
   getActor,
+  guardMiddleware,
   getProject,
   getRecordedRateLimit,
   getSignedInActor,
   installRequestPolicy,
+  registerRoute,
   requireAdmissionDeclaration,
 } from "./admission";
 import type { ApiEnv } from "./env";
@@ -44,6 +44,7 @@ const workspaceContext: WorkspaceActorContext = {
 };
 
 interface HarnessOptions {
+  loadAppUser?: () => Promise<AppUser>;
   context?: WorkspaceActorContext | null;
   project?: ProjectAdmissionResult;
   rateLimit?: (input: { key: string; limit: number; windowSeconds: number }) => RateLimitCheck;
@@ -77,7 +78,7 @@ function harness(options: HarnessOptions = {}) {
     authenticate,
     loadAppUser: async () => {
       calls.push("user");
-      return user;
+      return options.loadAppUser ? options.loadAppUser() : user;
     },
     resolveScopedWorkspace: async (_user, hint) => {
       calls.push(`workspace:${hint ?? "none"}`);
@@ -93,9 +94,8 @@ function harness(options: HarnessOptions = {}) {
   app.notFound(apiNotFoundHandler);
   app.use("*", installRequestPolicy(runtime));
   app.use("*", requireAdmissionDeclaration());
-  app.get("/api/ping", admit({ kind: "workspace", capability: "content.view" }), (c) =>
-    c.json({ workspace: getActor(c).workspaceId }),
-  );
+  registerRoute(app, "GET", "/api/ping", { kind: "workspace", capability: "content.view" }, [(c) =>
+    c.json({ workspace: getActor(c).workspaceId })]);
   options.register?.(app);
   const request = (path: string, init: RequestInit = {}) =>
     app.request(path, {
@@ -111,6 +111,13 @@ function harness(options: HarnessOptions = {}) {
 }
 
 const PROJECT_ID = "11111111-1111-4111-8111-111111111111";
+
+test("a scoped response reports the admitted Workspace rather than an unverified hint", async () => {
+  const { request } = harness();
+  const response = await request("/api/ping");
+  expect(response.status).toBe(200);
+  expect(response.headers.get("X-Workspace-Id")).toBe("workspace-a");
+});
 
 describe("fail-closed route registration", () => {
   test.each(["GET", "POST", "PUT", "PATCH", "DELETE"])(
@@ -146,12 +153,48 @@ describe("fail-closed route registration", () => {
     },
   );
 
+  // The F01 shape: the first registration that matches answers, so a later
+  // marker must never vouch for an earlier unguarded handler.
+  test("an unguarded duplicate registered before the guarded route is refused, not served", async () => {
+    const unguarded = mock(() => Response.json({ unauthorized: true }));
+    const guarded = mock(() => Response.json({ guarded: true }));
+    const { request, authenticate } = harness({
+      register: (app) => {
+        app.get("/api/probe", unguarded);
+        registerRoute(app, "GET", "/api/probe", { kind: "workspace", capability: "content.view" }, [guarded]);
+      },
+    });
+    for (const headers of [{ authorization: "" }, {}]) {
+      const response = await request("/api/probe", { headers });
+      expect(response.status).toBe(500);
+      expect(await response.json()).toMatchObject({ error: "request_policy_missing" });
+    }
+    expect(unguarded).not.toHaveBeenCalled();
+    expect(guarded).not.toHaveBeenCalled();
+    expect(authenticate).not.toHaveBeenCalled();
+  });
+
+  test("an unguarded duplicate registered behind the guarded route is refused too", async () => {
+    const unguarded = mock(() => Response.json({ unauthorized: true }));
+    const guarded = mock(() => Response.json({ guarded: true }));
+    const { request } = harness({
+      register: (app) => {
+        registerRoute(app, "GET", "/api/probe", { kind: "workspace", capability: "content.view" }, [guarded]);
+        app.get("/api/probe", unguarded);
+      },
+    });
+    const response = await request("/api/probe");
+    expect(response.status).toBe(500);
+    expect(unguarded).not.toHaveBeenCalled();
+    expect(guarded).not.toHaveBeenCalled();
+  });
+
   test("lets a route with declared independent trust run without a session", async () => {
     const { request, authenticate } = harness({
       register: (app) => {
-        app.get("/api/share/:token", declareIndependentTrust("public_share_token"), (c) =>
-          c.json({ shared: true }),
-        );
+        registerRoute(app, "GET", "/api/share/:token", { trust: "public_share_token" }, [
+          (c) => c.json({ shared: true }),
+        ]);
       },
     });
     const response = await request("/api/share/abc", { headers: { authorization: "" } });
@@ -165,7 +208,7 @@ describe("Authenticated Request Policy order over HTTP", () => {
     const handler = mock(() => Response.json({}));
     const { request, calls } = harness({
       register: (app) => {
-        app.get("/api/guarded", admit({ kind: "workspace", capability: "content.view" }), handler);
+        registerRoute(app, "GET", "/api/guarded", { kind: "workspace", capability: "content.view" }, [handler]);
       },
     });
     const response = await request("/api/guarded", { headers: { authorization: "" } });
@@ -182,7 +225,7 @@ describe("Authenticated Request Policy order over HTTP", () => {
     const handler = mock(() => Response.json({}));
     const { request, calls } = harness({
       register: (app) => {
-        app.post("/api/commands", admit({ kind: "workspace", capability: "content.edit" }), handler);
+        registerRoute(app, "POST", "/api/commands", { kind: "workspace", capability: "content.edit" }, [handler]);
       },
     });
     const removed = await request("/api/commands", {
@@ -204,9 +247,8 @@ describe("Authenticated Request Policy order over HTTP", () => {
   test("signed-in admission ignores the Workspace selection entirely", async () => {
     const { request, calls } = harness({
       register: (app) => {
-        app.get("/api/session/bootstrap", admit({ kind: "signed_in" }), (c) =>
-          c.json({ actor: getSignedInActor(c).actorUserId }),
-        );
+        registerRoute(app, "GET", "/api/session/bootstrap", { kind: "signed_in" }, [(c) =>
+          c.json({ actor: getSignedInActor(c).actorUserId })]);
       },
     });
     const response = await request("/api/session/bootstrap", {
@@ -220,18 +262,14 @@ describe("Authenticated Request Policy order over HTTP", () => {
   test("runs identity, Workspace, capability, rate, Project, input then the handler", async () => {
     const { request, calls } = harness({
       register: (app) => {
-        app.post(
-          "/api/projects/:id/rename",
-          admit({ kind: "project", capability: "content.edit", projectParam: "id" }),
-          validate("json", z.object({ title: z.string() }).strict()),
+        registerRoute(app, "POST", "/api/projects/:id/rename", { kind: "project", capability: "content.edit", projectParam: "id" }, [validate("json", z.object({ title: z.string() }).strict()),
           (c) => {
             calls.push("handler");
             return c.json({
               project: getProject(c).projectId,
               title: c.req.valid("json").title,
             });
-          },
-        );
+          }]);
       },
     });
     const response = await request(`/api/projects/${PROJECT_ID}/rename`, {
@@ -256,11 +294,7 @@ describe("Authenticated Request Policy order over HTTP", () => {
     const { request, calls } = harness({
       context: { ...workspaceContext, role: "viewer" },
       register: (app) => {
-        app.post(
-          "/api/projects/:id/rename",
-          admit({ kind: "project", capability: "content.edit", projectParam: "id" }),
-          handler,
-        );
+        registerRoute(app, "POST", "/api/projects/:id/rename", { kind: "project", capability: "content.edit", projectParam: "id" }, [handler]);
       },
     });
     const response = await request(`/api/projects/${PROJECT_ID}/rename`, { method: "POST" });
@@ -274,12 +308,8 @@ describe("Authenticated Request Policy order over HTTP", () => {
   test("invalid input is reported only after admission and never reaches the handler", async () => {
     const handler = mock(() => Response.json({}));
     const register = (app: Hono<ApiEnv>) => {
-      app.post(
-        "/api/things",
-        admit({ kind: "workspace", capability: "content.edit" }),
-        validate("json", z.object({ title: z.string() }).strict()),
-        handler,
-      );
+      registerRoute(app, "POST", "/api/things", { kind: "workspace", capability: "content.edit" }, [validate("json", z.object({ title: z.string() }).strict()),
+        handler]);
     };
     const anonymous = harness({ register });
     const refused = await anonymous.request("/api/things", {
@@ -316,12 +346,8 @@ describe("Authenticated Request Policy order over HTTP", () => {
   test("an absent optional body validates as an empty object and malformed JSON stays distinguishable", async () => {
     const { request } = harness({
       register: (app) => {
-        app.post(
-          "/api/optional",
-          admit({ kind: "workspace", capability: "content.edit" }),
-          validate("json", z.object({ note: z.string().optional() }).strict()),
-          (c) => c.json({ received: c.req.valid("json") }),
-        );
+        registerRoute(app, "POST", "/api/optional", { kind: "workspace", capability: "content.edit" }, [validate("json", z.object({ note: z.string().optional() }).strict()),
+          (c) => c.json({ received: c.req.valid("json") })]);
       },
     });
     const empty = await request("/api/optional", { method: "POST" });
@@ -336,11 +362,7 @@ describe("Authenticated Request Policy order over HTTP", () => {
 
   test("conceals a missing Project and reports an entitled Workspace mismatch", async () => {
     const register = (app: Hono<ApiEnv>) => {
-      app.get(
-        "/api/projects/:id",
-        admit({ kind: "project", capability: "content.view", projectParam: "id" }),
-        (c) => c.json({ id: getProject(c).projectId }),
-      );
+      registerRoute(app, "GET", "/api/projects/:id", { kind: "project", capability: "content.view", projectParam: "id" }, [(c) => c.json({ id: getProject(c).projectId })]);
     };
     const missing = harness({ project: { kind: "missing" }, register });
     const concealed = await missing.request(`/api/projects/${PROJECT_ID}`);
@@ -372,7 +394,7 @@ describe("Authenticated Request Policy order over HTTP", () => {
     const denied = harness({
       context: { ...workspaceContext, role: "viewer" },
       register: (app) => {
-        app.post("/api/x", admit({ kind: "workspace", capability: "content.edit" }), (c) => c.json({}));
+        registerRoute(app, "POST", "/api/x", { kind: "workspace", capability: "content.edit" }, [(c) => c.json({})]);
       },
     });
     const refusal = await denied.request("/api/x", { method: "POST" });
@@ -387,9 +409,8 @@ describe("actor resolution is per request", () => {
   test("one request verifies the token once even across several reads", async () => {
     const { request, authenticate } = harness({
       register: (app) => {
-        app.get("/api/twice", admit({ kind: "workspace", capability: "content.view" }), (c) =>
-          c.json({ ok: Boolean(c.get("requestActors")) }),
-        );
+        registerRoute(app, "GET", "/api/twice", { kind: "workspace", capability: "content.view" }, [(c) =>
+          c.json({ ok: Boolean(c.get("requestActors")) })]);
       },
     });
     await request("/api/twice");
@@ -420,7 +441,7 @@ describe("actor resolution is per request", () => {
     app.use("*", apiRequestId());
     app.onError(apiErrorHandler);
     app.use("*", installRequestPolicy(runtime));
-    app.get("/api/ping", admit({ kind: "signed_in" }), (c) => c.json({}));
+    registerRoute(app, "GET", "/api/ping", { kind: "signed_in" }, [(c) => c.json({})]);
     const response = await app.request("/api/ping", { headers: { authorization: "Bearer x" } });
     expect(response.status).toBe(503);
     expect(response.headers.get("retry-after")).toBe("5");
@@ -429,20 +450,38 @@ describe("actor resolution is per request", () => {
 });
 
 describe("rate limiting", () => {
+  test("a Clerk directory outage while provisioning is a retryable 503, not a 500 or a sign-out", async () => {
+    const outage = harness({
+      loadAppUser: async () => {
+        throw new ClerkDirectoryUnavailableError(new TypeError("fetch failed"));
+      },
+    });
+    const response = await outage.request("/api/ping");
+    expect(response.status).toBe(503);
+    expect(response.headers.get("retry-after")).toBe("5");
+    expect(await response.json()).toMatchObject({
+      error: "authentication_unavailable",
+      requestId: "outer-request-1",
+    });
+
+    const database = harness({
+      loadAppUser: async () => {
+        throw new Error("database down");
+      },
+    });
+    expect((await database.request("/api/ping")).status).toBe(500);
+  });
+
   test("GET uses the read tier and POST the mutation tier, with the operation limit after the baseline", async () => {
     const { request, rateKeys } = harness({
       register: (app) => {
-        app.get("/api/items", admit({ kind: "workspace", capability: "content.view" }), (c) => c.json({}));
-        app.post(
-          "/api/projects/:id/generate",
-          admit({
+        registerRoute(app, "GET", "/api/items", { kind: "workspace", capability: "content.view" }, [(c) => c.json({})]);
+        registerRoute(app, "POST", "/api/projects/:id/generate", {
             kind: "project",
             capability: "processing.consume",
             projectParam: "id",
             rate: { scope: "actor", prefix: "gen", limit: 20 },
-          }),
-          (c) => c.json({}),
-        );
+          }, [(c) => c.json({})]);
       },
     });
     await request("/api/items");
@@ -457,16 +496,12 @@ describe("rate limiting", () => {
   test("the editor tier has its own per-clip and actor-global buckets and skips the mutation bucket", async () => {
     const { request, rateKeys } = harness({
       register: (app) => {
-        app.put(
-          "/api/projects/:id/clips/:clipId/editor-document",
-          admit({
+        registerRoute(app, "PUT", "/api/projects/:id/clips/:clipId/editor-document", {
             kind: "project",
             capability: "content.edit",
             projectParam: "id",
             tier: "editor",
-          }),
-          (c) => c.json({}),
-        );
+          }, [(c) => c.json({})]);
       },
     });
     await request(`/api/projects/${PROJECT_ID}/clips/clip-1/editor-document`, { method: "PUT" });
@@ -479,11 +514,7 @@ describe("rate limiting", () => {
   test("a tier override moves a polling POST to the read bucket", async () => {
     const { request, rateKeys } = harness({
       register: (app) => {
-        app.post(
-          "/api/upload-sessions/status",
-          admit({ kind: "workspace", capability: "processing.consume", tier: "read" }),
-          (c) => c.json({}),
-        );
+        registerRoute(app, "POST", "/api/upload-sessions/status", { kind: "workspace", capability: "processing.consume", tier: "read" }, [(c) => c.json({})]);
       },
     });
     await request("/api/upload-sessions/status", { method: "POST" });
@@ -495,7 +526,7 @@ describe("rate limiting", () => {
     const { request } = harness({
       rateLimit: () => ({ allowed: false, retryAfterSeconds: 12 }),
       register: (app) => {
-        app.post("/api/limited", admit({ kind: "workspace", capability: "content.edit" }), handler);
+        registerRoute(app, "POST", "/api/limited", { kind: "workspace", capability: "content.edit" }, [handler]);
       },
     });
     const response = await request("/api/limited", { method: "POST" });
@@ -525,10 +556,7 @@ describe("rate limiting", () => {
       return harness({
         rateLimit: options.rateLimit,
         register: (app) => {
-          app.post(
-            "/api/folders",
-            admit({ kind: "workspace", capability: "content.edit", deferRateRefusal: true }),
-            requireIdempotencyKey(),
+          registerRoute(app, "POST", "/api/folders", { kind: "workspace", capability: "content.edit", deferRateRefusal: true }, [requireIdempotencyKey(),
             (c) => {
               // The domain replays an immutable receipt before it enforces the limiter.
               if (options.replayed) {
@@ -537,8 +565,7 @@ describe("rate limiting", () => {
               }
               enforceRecordedRateLimit(getRecordedRateLimit(c));
               return c.json({ id: "folder-2" }, 201);
-            },
-          );
+            }]);
         },
       });
     }
@@ -595,7 +622,7 @@ describe("handler failures keep the common envelope", () => {
   const testApp = (handler: () => Response | Promise<Response>) =>
     harness({
       register: (app) => {
-        app.get("/api/projects-list", admit({ kind: "workspace", capability: "content.view" }), handler);
+        registerRoute(app, "GET", "/api/projects-list", { kind: "workspace", capability: "content.view" }, [handler]);
       },
     });
 
@@ -691,8 +718,8 @@ describe("JSON content type guard", () => {
     const handler = mock(() => Response.json({}));
     const h = harness({
       register: (app) => {
-        app.use("/api/json/*", requireJsonContentType());
-        app.post("/api/json/thing", admit({ kind: "workspace", capability: "content.edit" }), handler);
+        app.use("/api/json/*", guardMiddleware(requireJsonContentType()));
+        registerRoute(app, "POST", "/api/json/thing", { kind: "workspace", capability: "content.edit" }, [handler]);
       },
     });
     const response = await h.request("/api/json/thing", {

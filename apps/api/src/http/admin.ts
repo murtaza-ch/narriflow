@@ -1,6 +1,6 @@
 import type { PlatformActor } from "@narriflow/auth";
 import { Hono, type Context, type MiddlewareHandler } from "hono";
-import { markAdmissionHandler } from "./admission";
+import { guardMiddleware, registerRoute } from "./admission";
 import type { ApiEnv } from "./env";
 import {
   apiNotFoundHandler,
@@ -46,6 +46,9 @@ export class AdminAuditRequiredError extends Error {
   }
 }
 
+/** Every staff route is guarded by the area's `requireStaff`; the registration records that trust. */
+const STAFF = { trust: "staff" } as const;
+
 function isMutation(method: string): boolean {
   return method !== "GET" && method !== "HEAD" && method !== "OPTIONS";
 }
@@ -59,7 +62,7 @@ function isMutation(method: string): boolean {
 export function requireStaff(
   dependencies: Pick<AdminDependencies, "rateLimit">,
 ): MiddlewareHandler<ApiEnv> {
-  return markAdmissionHandler(async (c, next) => {
+  return async (c, next) => {
     const actors = c.get("requestActors");
     if (!actors) throw new Error("installRequestPolicy must precede admin routes");
     const requestId = requestIdOf(c);
@@ -114,7 +117,7 @@ export function requireStaff(
     }
     c.set("platformActor", staff);
     await next();
-  });
+  };
 }
 
 export function getPlatformActor(c: Context<ApiEnv>): PlatformActor {
@@ -151,19 +154,19 @@ export interface AdminRoutes {
  */
 export function createAdminRoutes(dependencies: AdminDependencies): AdminRoutes {
   const app = new Hono<ApiEnv>();
-  app.use("*", requireStaff(dependencies));
+  app.use("*", guardMiddleware(requireStaff(dependencies)));
   app.notFound(apiNotFoundHandler);
   const now = dependencies.now ?? (() => new Date());
 
   return {
     app,
     read(path, handler) {
-      app.get(path, handler);
+      registerRoute(app, "GET", path, STAFF, [async (c) => handler(c)]);
     },
     mutation(route, handler) {
       const { audit } = dependencies;
       if (!audit) throw new AdminAuditRequiredError(route.action);
-      app.on(route.method, route.path, async (c) => {
+      registerRoute(app, route.method, route.path, STAFF, [async (c) => {
         const staff = getPlatformActor(c);
         let outcome: AdminAuditEntry["outcome"] = "succeeded";
         let response: Response | undefined;
@@ -187,7 +190,7 @@ export function createAdminRoutes(dependencies: AdminDependencies): AdminRoutes 
         });
         if (failure !== undefined) throw failure;
         return response as Response;
-      });
+      }]);
     },
   };
 }

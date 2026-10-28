@@ -5,10 +5,7 @@ import {
   socialOAuthService,
 } from "@narriflow/services";
 import { generateAssistedCopySchema, socialPlatformSchema } from "@narriflow/validators";
-import { Hono } from "hono";
-import { admit, getActor } from "../../http/admission";
-import { declareIndependentTrust } from "../../http/admission";
-import type { ApiEnv } from "../../http/env";
+import { createRouteApp, getActor } from "../../http/admission";
 import { validate } from "../../http/route";
 import { uuidParams } from "../platform/params";
 import { publishingAdmission as access } from "./admission";
@@ -30,10 +27,9 @@ const FACEBOOK_SELECTION_TOKEN = /^[A-Za-z0-9_-]{32,128}$/;
 export function createPublishingRoutes(deps: PublishingRouteDeps) {
   const { socialOAuthService, assistedSocialCopyService, callbackOrigin, webOrigin } = deps;
 
-  return new Hono<ApiEnv>()
+  return createRouteApp(access)
     .post(
       "/projects/:id/assisted-copy/generations",
-      admit(access["POST /projects/:id/assisted-copy/generations"]),
       uuidParams("id"),
       validate("json", generateAssistedCopySchema),
       async (c) => {
@@ -50,14 +46,13 @@ export function createPublishingRoutes(deps: PublishingRouteDeps) {
       },
     )
 
-    .get("/social/accounts", admit(access["GET /social/accounts"]), async (c) => {
+    .get("/social/accounts", async (c) => {
       const accounts = await socialOAuthService.listAccounts(getActor(c));
       return c.json({ accounts }, 200);
     })
 
     .get(
       "/social/oauth/start/:platform",
-      admit(access["GET /social/oauth/start/:platform"]),
       async (c) => {
         const platform = socialPlatformSchema.safeParse(c.req.param("platform"));
         if (!platform.success) {
@@ -84,7 +79,6 @@ export function createPublishingRoutes(deps: PublishingRouteDeps) {
     // one-use OAuth state, never from a Clerk token.
     .get(
       "/social/oauth/callback",
-      declareIndependentTrust(access["GET /social/oauth/callback"].trust),
       async (c) => {
         const redirect = new URL("/settings/social-accounts", webOrigin);
         const code = c.req.query("code");
@@ -125,7 +119,6 @@ export function createPublishingRoutes(deps: PublishingRouteDeps) {
 
     .get(
       "/social/oauth/facebook-selection/:token",
-      admit(access["GET /social/oauth/facebook-selection/:token"]),
       async (c) => {
         const token = c.req.param("token");
         if (!FACEBOOK_SELECTION_TOKEN.test(token)) {
@@ -151,7 +144,6 @@ export function createPublishingRoutes(deps: PublishingRouteDeps) {
 
     .post(
       "/social/oauth/facebook-selection/:token",
-      admit(access["POST /social/oauth/facebook-selection/:token"]),
       async (c) => {
         const token = c.req.param("token");
         const payload = (await c.req.json().catch(() => null)) as { pageId?: unknown } | null;
@@ -190,7 +182,6 @@ export function createPublishingRoutes(deps: PublishingRouteDeps) {
 
     .delete(
       "/social/accounts/:accountId",
-      admit(access["DELETE /social/accounts/:accountId"]),
       async (c) => {
         await socialOAuthService.disconnectAccount(getActor(c), c.req.param("accountId"));
         return c.json({ ok: true }, 200);

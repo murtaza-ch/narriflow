@@ -1,8 +1,10 @@
 export type { WorkspaceCapability } from "@narriflow/validators";
 export {
+  ClerkDirectoryUnavailableError,
   createBearerAuthenticator,
   createServerClerkClient,
   isClerkNotFound,
+  isClerkUnavailable,
   type BearerAuthenticatorOptions,
   type BearerAuthResult,
   type ClerkServerConfig,

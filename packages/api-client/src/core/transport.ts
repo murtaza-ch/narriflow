@@ -65,7 +65,9 @@ export interface OpenedResponse {
  * is refused if that scope is no longer the current one.
  *
  * `fetch` is shaped for Hono's `hc(baseUrl, { fetch })` (or per call
- * `$get(args, { fetch })`). Non-2xx responses throw `ApiError`.
+ * `$get(args, { fetch })`). Non-2xx responses throw `ApiError`. The returned
+ * body stays scope-tracked until it is consumed or cancelled, so a Workspace
+ * switch during `await response.json()` rejects with `scope_changed`.
  */
 export interface BoundTransport {
   readonly baseUrl: string;
@@ -123,13 +125,19 @@ function isStreamBody(body: RequestInit["body"]): boolean {
   return typeof ReadableStream !== "undefined" && body instanceof ReadableStream;
 }
 
+/** Releases scope tracking for a bound-fetch Response whose body was never read or cancelled. */
+const abandoned =
+  typeof FinalizationRegistry === "undefined"
+    ? undefined
+    : new FinalizationRegistry<() => void>((release) => release());
+
 export function createApiTransport(options: TransportOptions): ApiTransport {
   const base = normalizeBaseUrl(options.baseUrl);
   const { scope } = options;
   const send = options.fetch ?? ((input, init) => globalThis.fetch(input, init));
 
-  const assertCurrent = (target: ScopeTarget): void => {
-    if (!scope.isCurrent(target)) throw scopeChangedError();
+  const assertCurrent = (target: ScopeTarget, tracked?: TrackedRequest): void => {
+    if (tracked?.scopeAborted || !scope.isCurrent(target)) throw scopeChangedError();
   };
 
   const requireToken = async (skipCache: boolean): Promise<string> => {
@@ -171,7 +179,7 @@ export function createApiTransport(options: TransportOptions): ApiTransport {
     skipCache: boolean,
   ): Promise<Response> => {
     const token = await requireToken(skipCache);
-    assertCurrent(target);
+    assertCurrent(target, tracked);
     return send(url.toString(), {
       ...init,
       headers: buildHeaders(init, target, token),
@@ -207,6 +215,77 @@ export function createApiTransport(options: TransportOptions): ApiTransport {
     }
   };
 
+  /**
+   * Hands the caller a Response whose body stays under scope tracking until it
+   * is read to the end, errors or is cancelled. A Workspace switch or sign-out
+   * mid-body errors the stream with `scope_changed`, the caller's own abort
+   * still surfaces as that abort, and the end of the body is refused if the
+   * scope moved even when the underlying fetch ignored the abort. A body that is
+   * dropped without being read is released when the Response is collected.
+   */
+  const guardBody = (
+    response: Response,
+    target: ScopeTarget,
+    tracked: TrackedRequest,
+    external: AbortSignal | undefined,
+  ): Response => {
+    const source = response.body;
+    if (!source) {
+      tracked.release();
+      return response;
+    }
+    const reader = source.getReader();
+    let onAbort: (() => void) | undefined;
+    let settled = false;
+    const settle = (): void => {
+      if (settled) return;
+      settled = true;
+      tracked.release();
+      if (onAbort) tracked.signal.removeEventListener("abort", onAbort);
+    };
+    const stream = new ReadableStream<Uint8Array>(
+      {
+        start(controller) {
+          onAbort = () => {
+            settle();
+            controller.error(toFailure(tracked.signal.reason, tracked, external));
+            void reader.cancel().catch(() => undefined);
+          };
+          if (tracked.signal.aborted) onAbort();
+          else tracked.signal.addEventListener("abort", onAbort, { once: true });
+        },
+        async pull(controller) {
+          try {
+            const chunk = await reader.read();
+            assertCurrent(target, tracked);
+            if (chunk.done) {
+              settle();
+              controller.close();
+            } else {
+              controller.enqueue(chunk.value);
+            }
+          } catch (error) {
+            settle();
+            controller.error(toFailure(error, tracked, external));
+            void reader.cancel().catch(() => undefined);
+          }
+        },
+        cancel(reason) {
+          settle();
+          return reader.cancel(reason);
+        },
+      },
+      { highWaterMark: 0 },
+    );
+    const guarded = new Response(stream, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: response.headers,
+    });
+    abandoned?.register(guarded, tracked.release);
+    return guarded;
+  };
+
   /** Sends one logical request: token, at most one forced refresh on 401, scope checks, error mapping. */
   const perform = async (
     target: ScopeTarget,
@@ -222,7 +301,7 @@ export function createApiTransport(options: TransportOptions): ApiTransport {
         discard(response);
         response = await attempt(url, init, target, tracked, true);
       }
-      if (!scope.isCurrent(target)) {
+      if (tracked.scopeAborted || !scope.isCurrent(target)) {
         discard(response);
         throw scopeChangedError();
       }
@@ -252,9 +331,8 @@ export function createApiTransport(options: TransportOptions): ApiTransport {
 
     async fetch(input, init = {}) {
       const url = resolveUrl(input, base);
-      const opened = await perform(target, url, init);
-      opened.release();
-      return opened.response;
+      const { response, tracked } = await perform(target, url, init);
+      return guardBody(response, target, tracked, init.signal ?? undefined);
     },
 
     async open(path, init = {}) {
@@ -286,7 +364,7 @@ export function createApiTransport(options: TransportOptions): ApiTransport {
       const { response, release, tracked } = await perform(target, url, init);
       try {
         const text = await response.text();
-        assertCurrent(target);
+        assertCurrent(target, tracked);
         const data: unknown = text ? parseJsonBody(text, response.status) : undefined;
         return request.parse ? request.parse(data) : (data as T);
       } catch (error) {

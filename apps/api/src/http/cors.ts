@@ -73,6 +73,40 @@ export function firstPartyCors(options: {
   };
 }
 
+/** Endpoint groups under `/api` that answer to their own credential model, not to first-party browsers. */
+const NON_FIRST_PARTY_PREFIXES = ["/api/v1", "/api/webhooks/", "/api/health", "/api/ready"] as const;
+
+function isFirstPartyPath(pathname: string): boolean {
+  return (
+    pathname.startsWith("/api/") &&
+    !NON_FIRST_PARTY_PREFIXES.some(
+      (prefix) => pathname === prefix || pathname.startsWith(prefix.endsWith("/") ? prefix : `${prefix}/`),
+    )
+  );
+}
+
+/**
+ * Headers that make an ingress refusal (414/431 before routing, 503 while
+ * draining) readable by an allowed first-party browser origin, so the typed
+ * error and request ID reach the app instead of an opaque network failure.
+ * Never added for other origins, other credential models (REST, MCP,
+ * webhooks), or when no `Origin` is sent. Identity is not involved.
+ */
+export function firstPartyRefusalHeaders(allowedOrigins: readonly string[]) {
+  const allowed = new Set(allowedOrigins);
+  return (request: Request): Record<string, string> => {
+    const origin = request.headers.get("origin");
+    if (origin === null || !allowed.has(origin) || !isFirstPartyPath(new URL(request.url).pathname)) {
+      return {};
+    }
+    return {
+      "Access-Control-Allow-Origin": origin,
+      "Access-Control-Expose-Headers": CORS_EXPOSED_HEADERS.join(","),
+      Vary: "Origin",
+    };
+  };
+}
+
 /** Public discovery documents may be read from anywhere, read-only. */
 export function publicReadCors(): MiddlewareHandler<ApiEnv> {
   return cors({

@@ -1,6 +1,6 @@
-import { Hono } from "hono";
 import type { acceptTikTokPublicationWebhook, TikTokPublicationWebhookError } from "@narriflow/services";
-import type { ApiEnv } from "../../http/env";
+import { createRouteApp } from "../../http/admission";
+import { publishingAdmission } from "./admission";
 
 export interface PublishingWebhookDeps {
   acceptTikTokPublicationWebhook: typeof acceptTikTokPublicationWebhook;
@@ -14,7 +14,7 @@ export interface PublishingWebhookDeps {
  * outside the first-party chain: no session, no CORS, original bytes preserved.
  */
 export function createPublishingWebhookRoutes(deps: PublishingWebhookDeps) {
-  return new Hono<ApiEnv>().post("/webhooks/tiktok/publication", async (c) => {
+  return createRouteApp(publishingAdmission).post("/webhooks/tiktok/publication", async (c) => {
     const credentials = deps.tiktokCredentials();
     if (!credentials) {
       return c.json({ error: "tiktok_webhook_not_configured" }, 503);

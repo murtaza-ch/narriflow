@@ -1,10 +1,10 @@
 import { describe, expect, mock, test } from "bun:test";
 import type { AppUser, WorkspaceActorContext } from "@narriflow/auth";
 import { Hono } from "hono";
-import { createLifecycle } from "./server-hooks";
-import { disableIdleTimeout } from "./server-hooks";
+import { createLifecycle, disableIdleTimeout, getLifecycle } from "./server-hooks";
+import { NATIVE_BODY_CAP_BYTES } from "./http/limits";
 import { bodyClass } from "./body-limits";
-import { admit, getActor } from "./http/admission";
+import { createRouteApp, getActor } from "./http/admission";
 import type { ApiEnv } from "./http/env";
 import { createRequestPolicyRuntime } from "./http/request-policy-runtime";
 import { createProjectsRoutes, type ProjectsRouteDeps } from "./domains/projects/routes";
@@ -162,12 +162,9 @@ describe("request bodies", () => {
   });
 
   test("a route that declares the editor class accepts what the control class refuses", async () => {
-    const editorRoute = new Hono<ApiEnv>().post(
-      "/bulk",
-      bodyClass("editor"),
-      admit({ kind: "workspace", capability: "content.edit" }),
-      (c) => c.json({ workspace: getActor(c).workspaceId }),
-    );
+    const editorRoute = createRouteApp({
+      "POST /bulk": { kind: "workspace", capability: "content.edit" },
+    }).post("/bulk", bodyClass("editor"), (c) => c.json({ workspace: getActor(c).workspaceId }));
     const app = createInventoryApp({
       policyRuntime: policyRuntime(),
       domains: { studio: editorRoute },
@@ -288,5 +285,159 @@ describe("server hooks", () => {
     await lifecycle.beginDrain();
     expect(lifecycle.draining).toBe(true);
     expect(closed).toEqual(["a"]);
+  });
+});
+
+describe("draining", () => {
+  test("a closer registered after the drain began runs at once and never waits for a drain that already happened", async () => {
+    const lifecycle = createLifecycle();
+    const closed: string[] = [];
+    await lifecycle.beginDrain();
+    const unregister = lifecycle.onDrain(() => void closed.push("late"));
+    expect(closed).toEqual(["late"]);
+    unregister();
+    // Also while the earlier closers are still running.
+    const slow = createLifecycle();
+    let release!: () => void;
+    slow.onDrain(() => new Promise<void>((resolve) => (release = resolve)));
+    const draining = slow.beginDrain();
+    slow.onDrain(() => void closed.push("during"));
+    expect(closed).toEqual(["late", "during"]);
+    release();
+    await draining;
+  });
+
+  test("every closer runs even when one throws synchronously or rejects, and a second drain shares the first", async () => {
+    const lifecycle = createLifecycle();
+    const closed: string[] = [];
+    lifecycle.onDrain(() => {
+      throw new Error("sync failure");
+    });
+    lifecycle.onDrain(async () => {
+      throw new Error("async failure");
+    });
+    lifecycle.onDrain(() => void closed.push("after"));
+    const first = lifecycle.beginDrain();
+    expect(lifecycle.beginDrain()).toBe(first);
+    await first;
+    expect(closed).toEqual(["after"]);
+  });
+
+  test("once draining, a first-party request is a 503 envelope with Retry-After and CORS", async () => {
+    const lifecycle = createLifecycle();
+    const app = createInventoryApp({ health: { isDraining: () => lifecycle.draining } });
+    expect((await app.request("/api/recipes", { headers: { origin: WEB } })).status).toBe(401);
+    await lifecycle.beginDrain();
+    const response = await app.request("/api/recipes", {
+      headers: { origin: WEB, "x-request-id": "req-drain" },
+    });
+    expect(response.status).toBe(503);
+    expect(response.headers.get("retry-after")).toBe("5");
+    expect(response.headers.get("access-control-allow-origin")).toBe(WEB);
+    expect(await response.json()).toMatchObject({
+      error: "server_draining",
+      requestId: "req-drain",
+      retryAfterSeconds: 5,
+    });
+    // Readiness is how the platform learns; liveness stays up.
+    expect((await app.request("/api/health")).status).toBe(200);
+    expect((await app.request("/api/ready")).status).toBe(503);
+  });
+
+  test("a request paused before it registers its stream closer is closed when SIGTERM begins the drain", async () => {
+    const lifecycle = createLifecycle();
+    let proceed!: () => void;
+    const paused = new Promise<void>((resolve) => (proceed = resolve));
+    const reached = mock(() => {});
+    const closer = mock(() => {});
+    const stream = createRouteApp({ "GET /stream": { trust: "public_share_token" } }).get("/stream", async (c) => {
+      reached();
+      await paused;
+      getLifecycle(c)?.onDrain(closer);
+      return c.text("subscribed");
+    });
+    const app = createInventoryApp({
+      domains: { progress: stream },
+      health: { isDraining: () => lifecycle.draining },
+    });
+    const inflight = app.request("/api/stream", {}, { lifecycle });
+    while (reached.mock.calls.length === 0) await Promise.resolve();
+
+    const drain = lifecycle.beginDrain();
+    // New admission is already refused while the paused request is still in flight.
+    expect((await app.request("/api/stream", {}, { lifecycle })).status).toBe(503);
+    proceed();
+    expect((await inflight).status).toBe(200);
+    await drain;
+    expect(closer).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("ingress refusals stay readable by first-party browsers", () => {
+  test("a 414 or 431 for an allowed origin carries CORS headers; other origins and API classes do not", async () => {
+    const app = createInventoryApp();
+    const longPath = `/api/recipes?q=${"a".repeat(9 * 1024)}`;
+    const allowed = await app.request(longPath, { headers: { origin: WEB } });
+    expect(allowed.status).toBe(414);
+    expect(allowed.headers.get("access-control-allow-origin")).toBe(WEB);
+    expect(allowed.headers.get("vary")).toContain("Origin");
+    expect(allowed.headers.get("access-control-allow-credentials")).toBeNull();
+    expect(await allowed.json()).toMatchObject({ error: "uri_too_long" });
+
+    const padded: Record<string, string> = { origin: WEB };
+    for (let index = 0; index < 10; index += 1) padded[`x-pad-${index}`] = "v".repeat(4 * 1024);
+    const headers = await app.request("/api/recipes", { headers: padded });
+    expect(headers.status).toBe(431);
+    expect(headers.headers.get("access-control-allow-origin")).toBe(WEB);
+
+    const foreign = await app.request(longPath, { headers: { origin: "https://evil.example" } });
+    expect(foreign.status).toBe(414);
+    expect(foreign.headers.get("access-control-allow-origin")).toBeNull();
+
+    const webhook = await app.request(`/api/webhooks/clerk?q=${"a".repeat(9 * 1024)}`, {
+      headers: { origin: WEB },
+    });
+    expect(webhook.status).toBe(414);
+    expect(webhook.headers.get("access-control-allow-origin")).toBeNull();
+    const rest = await app.request(`/api/v1/projects?q=${"a".repeat(9 * 1024)}`, { headers: { origin: WEB } });
+    expect(rest.headers.get("access-control-allow-origin")).toBeNull();
+  });
+});
+
+describe("native body ceiling", () => {
+  const request = (url: string, bytes: number) =>
+    fetch(url, {
+      method: "POST",
+      headers: { origin: WEB, "content-type": "application/json", authorization: "Bearer good", "x-workspace-id": "workspace-a" },
+      body: new Uint8Array(bytes),
+    });
+
+  test("a body over the route class but under Bun's cap gets the common 413 envelope with CORS; beyond the cap Bun answers natively", async () => {
+    const app = createInventoryApp({ policyRuntime: policyRuntime() });
+    expect(NATIVE_BODY_CAP_BYTES).toBeGreaterThan(8 * 1024 * 1024);
+    const server = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      maxRequestBodySize: NATIVE_BODY_CAP_BYTES,
+      fetch: (req, bunServer) => app.fetch(req, { server: bunServer }),
+    });
+    try {
+      const url = `http://127.0.0.1:${server.port}/api/recipes`;
+      const enveloped = await request(url, 9 * 1024 * 1024);
+      expect(enveloped.status).toBe(413);
+      expect(enveloped.headers.get("access-control-allow-origin")).toBe(WEB);
+      expect(enveloped.headers.get("x-request-id")).toBeTruthy();
+      expect(await enveloped.json()).toMatchObject({ error: "payload_too_large" });
+
+      // The documented exception: Bun refuses a declared length over its cap
+      // before the application runs (413, or a bare 400 on a reused connection
+      // in the Bun 1.3.6 image), so there is no envelope or request ID.
+      const native = await request(url, NATIVE_BODY_CAP_BYTES + 1);
+      expect([400, 413]).toContain(native.status);
+      expect(native.headers.get("x-request-id")).toBeNull();
+      expect(await native.text()).toBe("");
+    } finally {
+      await server.stop(true);
+    }
   });
 });

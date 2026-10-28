@@ -1,5 +1,5 @@
-import { Hono } from "hono";
-import type { ApiEnv } from "../../http/env";
+import { createRouteApp } from "../../http/admission";
+import { platformAdmission } from "./admission";
 
 export interface HealthDependencies {
   /** Short revision label; never a secret. */
@@ -37,7 +37,7 @@ async function databaseReady(dependencies: HealthDependencies): Promise<boolean>
  * startup configuration, and it fails while the process drains.
  */
 export function createHealthRoutes(dependencies: HealthDependencies) {
-  return new Hono<ApiEnv>()
+  return createRouteApp(platformAdmission)
     .get("/health", (c) =>
       c.json({ ok: true, service: "narriflow-api", version: dependencies.version }),
     )

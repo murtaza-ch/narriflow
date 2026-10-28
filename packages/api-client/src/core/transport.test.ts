@@ -294,6 +294,27 @@ describe("token handling", () => {
 });
 
 describe("scope safety", () => {
+  test("an A to B to A switch still discards an earlier request if fetch ignores abort", async () => {
+    const gate = deferred<Response>();
+    const scope = new ApiScope();
+    scope.setUser(USER);
+    scope.selectWorkspace(WORKSPACE_A);
+    const transport = createApiTransport({
+      baseUrl: BASE,
+      scope,
+      getToken: async () => "t",
+      fetch: (() => gate.promise) as unknown as typeof fetch,
+    });
+    const pending = transport.scoped(scopeA).json("/a");
+    await Promise.resolve();
+    await Promise.resolve();
+    scope.selectWorkspace(WORKSPACE_B);
+    scope.selectWorkspace(WORKSPACE_A);
+    gate.resolve(jsonResponse({ stale: true }));
+    const error = (await pending.catch((e: unknown) => e)) as ApiError;
+    expect(error.code).toBe(CLIENT_ERROR_CODES.scopeChanged);
+  });
+
   test("a bound scope that is no longer current is refused without a network call", async () => {
     const { transport, scope, calls } = setup({ handlers: [() => jsonResponse({})] });
     const bound = transport.scoped(scopeA);
@@ -378,5 +399,157 @@ describe("scope safety", () => {
     });
     expect(await transport.scoped(scopeA).json("/a")).toEqual({ n: 1 });
     expect(await transport.scoped(scopeA).json("/a")).toEqual({ n: 2 });
+  });
+});
+
+/** A response whose body the test feeds by hand: the first half now, the rest on demand. */
+function splitBodyResponse(first: string) {
+  let controller!: ReadableStreamDefaultController<Uint8Array>;
+  const encoder = new TextEncoder();
+  const body = new ReadableStream<Uint8Array>({
+    start(c) {
+      controller = c;
+      c.enqueue(encoder.encode(first));
+    },
+  });
+  return {
+    response: new Response(body, { headers: { "Content-Type": "application/json" } }),
+    finish: (rest: string) => {
+      try {
+        controller.enqueue(encoder.encode(rest));
+        controller.close();
+      } catch {
+        // The guard already cancelled the source after the scope moved.
+      }
+    },
+  };
+}
+
+describe("bound fetch keeps scope tracking through the response body", () => {
+  function setupBody(handler: () => Response) {
+    const scope = new ApiScope();
+    scope.setUser(USER);
+    scope.selectWorkspace(WORKSPACE_A);
+    const released: string[] = [];
+    const track = scope.track.bind(scope);
+    scope.track = (target, external) => {
+      const tracked = track(target, external);
+      const release = tracked.release;
+      return Object.assign(Object.create(tracked) as typeof tracked, {
+        release: () => {
+          released.push("release");
+          release();
+        },
+      });
+    };
+    const transport = createApiTransport({
+      baseUrl: BASE,
+      scope,
+      getToken: async () => "t",
+      // Ignores the abort signal, like a hostile or buggy fetch.
+      fetch: (async () => handler()) as unknown as typeof fetch,
+    });
+    return { scope, bound: transport.scoped(scopeA), released };
+  }
+
+  test("a Workspace switch while .json() is reading rejects with scope_changed", async () => {
+    const half = splitBodyResponse('{"stale":');
+    const { scope, bound } = setupBody(() => half.response);
+    const response = await bound.fetch("/api/x");
+    const pending = response.json();
+    scope.selectWorkspace(WORKSPACE_B);
+    half.finish("true}");
+    const error = (await pending.catch((e: unknown) => e)) as ApiError;
+    expect(error.code).toBe(CLIENT_ERROR_CODES.scopeChanged);
+  });
+
+  test("a scope that moved before the last chunk arrives still rejects, and A to B to A is not a return", async () => {
+    const half = splitBodyResponse('{"stale":');
+    const { scope, bound } = setupBody(() => half.response);
+    const response = await bound.fetch("/api/x");
+    const pending = response.text();
+    scope.selectWorkspace(WORKSPACE_B);
+    scope.selectWorkspace(WORKSPACE_A);
+    half.finish("true}");
+    const error = (await pending.catch((e: unknown) => e)) as ApiError;
+    expect(error.code).toBe(CLIENT_ERROR_CODES.scopeChanged);
+  });
+
+  test("reading to the end releases tracking exactly once and the body parses", async () => {
+    const { bound, released } = setupBody(() => jsonResponse({ ok: true }));
+    const response = await bound.fetch("/api/x");
+    expect(released).toEqual([]);
+    expect(await response.json()).toEqual({ ok: true });
+    expect(released).toEqual(["release"]);
+  });
+
+  test("cancelling the body releases tracking", async () => {
+    const half = splitBodyResponse("{");
+    const { bound, released } = setupBody(() => half.response);
+    const response = await bound.fetch("/api/x");
+    await response.body?.cancel();
+    expect(released).toEqual(["release"]);
+  });
+
+  test("a caller abort during the body surfaces as that abort, not scope_changed", async () => {
+    const half = splitBodyResponse("{");
+    const { bound, released } = setupBody(() => half.response);
+    const caller = new AbortController();
+    const response = await bound.fetch("/api/x", { signal: caller.signal });
+    const pending = response.json();
+    caller.abort(new DOMException("stop", "AbortError"));
+    const error = (await pending.catch((e: unknown) => e)) as Error;
+    expect(error.name).toBe("AbortError");
+    expect(released).toEqual(["release"]);
+  });
+
+  test("a bodiless response is released immediately", async () => {
+    const { bound, released } = setupBody(() => new Response(null, { status: 204 }));
+    await bound.fetch("/api/x");
+    expect(released).toEqual(["release"]);
+  });
+
+  test("real loopback server: switching Workspace between header and end of the JSON body rejects", async () => {
+    const encoder = new TextEncoder();
+    let finish!: () => void;
+    const finished = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const server = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch() {
+        return new Response(
+          new ReadableStream<Uint8Array>({
+            async start(controller) {
+              controller.enqueue(encoder.encode('{"stale":'));
+              await finished;
+              controller.enqueue(encoder.encode("true}"));
+              controller.close();
+            },
+          }),
+          { headers: { "Content-Type": "application/json" } },
+        );
+      },
+    });
+    try {
+      const scope = new ApiScope();
+      scope.setUser(USER);
+      scope.selectWorkspace(WORKSPACE_A);
+      const transport = createApiTransport({
+        baseUrl: `http://127.0.0.1:${server.port}`,
+        scope,
+        getToken: async () => "t",
+      });
+      const response = await transport.scoped(scopeA).fetch("/api/x");
+      const pending = response.json();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      scope.selectWorkspace(WORKSPACE_B);
+      finish();
+      const error = (await pending.catch((e: unknown) => e)) as ApiError;
+      expect(error.code).toBe(CLIENT_ERROR_CODES.scopeChanged);
+    } finally {
+      await server.stop(true);
+    }
   });
 });

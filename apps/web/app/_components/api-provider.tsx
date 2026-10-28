@@ -24,6 +24,7 @@ import {
   useSyncExternalStore,
 } from "react";
 import { authEntryHref } from "../../lib/auth-entry";
+import { browserStorage } from "./browser-storage";
 
 /**
  * Data layer for authenticated UI (app shell, continuations, review pages).
@@ -96,7 +97,7 @@ export function ApiProvider({
     createApiRuntime({
       baseUrl: apiBaseUrl(),
       getToken: (options) => getTokenRef.current(options),
-      hintStorage: typeof window === "undefined" ? null : window.localStorage,
+      hintStorage: browserStorage(),
       onAuthenticationFailed: (error) => {
         if (handlers.current.onAuthenticationFailed) {
           handlers.current.onAuthenticationFailed(error);
@@ -118,7 +119,7 @@ export function ApiProvider({
       const current = runtime.scope.snapshot().userId;
       if (
         current !== null &&
-        event.storageArea === window.localStorage &&
+        event.storageArea === browserStorage() &&
         event.key === runtime.hints.keyFor(current)
       ) {
         runtime.syncHintFromStorage();

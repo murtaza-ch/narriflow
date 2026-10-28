@@ -11,6 +11,19 @@ const FORBIDDEN_WORKSPACES =
   /(^|\/)(apps\/api|apps\/web|packages\/(services|db|auth|email|mcp-core|ui))\//;
 
 describe("api-client core stays framework-agnostic", () => {
+  test("the full client, including typed domain RPC clients, bundles without backend values", async () => {
+    const result = await Bun.build({
+      entrypoints: [resolve(repoRoot, "packages/api-client/src/index.ts")],
+      target: "browser",
+      write: false,
+      metafile: true,
+    } as Parameters<typeof Bun.build>[0]);
+    expect(result.success).toBe(true);
+    const graph = Object.keys((result as unknown as { metafile: { inputs: object } }).metafile.inputs);
+    expect(graph.filter((path) => FORBIDDEN_WORKSPACES.test(path))).toEqual([]);
+    expect(graph.filter((path) => /node_modules\/\.bun\/(next@|server-only@|@clerk\+|@prisma\+|stripe@|ioredis@)/.test(path))).toEqual([]);
+  });
+
   test("browser bundle graph has no Next, React, Clerk, Hono or backend modules", async () => {
     const result = await Bun.build({
       entrypoints: [entry],

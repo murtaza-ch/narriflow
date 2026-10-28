@@ -1,5 +1,6 @@
 import {
   type AppUser,
+  ClerkDirectoryUnavailableError,
   type BearerAuthResult,
   getAppUserForClerkIdentity,
   type ClerkUserDirectory,
@@ -81,6 +82,16 @@ function workspaceSelectionChanged(): AuthenticatedRequestFailure {
   });
 }
 
+function authenticationUnavailable(): AuthenticatedRequestFailure {
+  return new AuthenticatedRequestFailure({
+    code: "authentication_unavailable",
+    category: "unavailable",
+    status: 503,
+    message: "Sign-in is temporarily unavailable. Try again shortly.",
+    retryAfterSeconds: 5,
+  });
+}
+
 export function createRequestPolicyRuntime(
   options: RequestPolicyRuntimeOptions,
 ): RequestPolicyRuntime {
@@ -91,19 +102,21 @@ export function createRequestPolicyRuntime(
         const result = await options.authenticate(request);
         if (result.status === "authenticated") return result.identity;
         if (result.status === "unavailable") {
-          throw new AuthenticatedRequestFailure({
-            code: "authentication_unavailable",
-            category: "unavailable",
-            status: 503,
-            message: "Sign-in is temporarily unavailable. Try again shortly.",
-            retryAfterSeconds: 5,
-          });
+          throw authenticationUnavailable();
         }
         return null;
       });
       const appUser = once(async () => {
         const verified = await identity();
-        return verified ? options.loadAppUser(verified.clerkUserId) : null;
+        if (!verified) return null;
+        try {
+          return await options.loadAppUser(verified.clerkUserId);
+        } catch (error) {
+          // The session is valid; only the Clerk directory lookup that
+          // provisions or refreshes the App User could not be answered.
+          if (error instanceof ClerkDirectoryUnavailableError) throw authenticationUnavailable();
+          throw error;
+        }
       });
       const signedIn = once(async (): Promise<SignedInActorScope | null> => {
         const user = await appUser();

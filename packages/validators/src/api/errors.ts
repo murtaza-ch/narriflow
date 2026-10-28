@@ -47,6 +47,7 @@ export const API_PLATFORM_ERROR_CODES = {
   mutationsUnavailable: "mutations_unavailable",
   credentialAlreadyIssued: "credential_already_issued",
   requestPolicyMissing: "request_policy_missing",
+  serverDraining: "server_draining",
   internalError: "internal_error",
 } as const;
 export type ApiPlatformErrorCode =

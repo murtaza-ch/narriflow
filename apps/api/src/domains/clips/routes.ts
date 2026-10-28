@@ -17,10 +17,8 @@ import {
   resolvePricingTier,
   triggerClipRenderSchema,
 } from "@narriflow/validators";
-import { Hono } from "hono";
-import { admit, getActor } from "../../http/admission";
+import { createRouteApp, getActor } from "../../http/admission";
 import { bodyClass } from "../../body-limits";
-import type { ApiEnv } from "../../http/env";
 import {
   getIdempotencyKey,
   readCampaignRetryOf,
@@ -51,8 +49,8 @@ export function createClipsRoutes(deps: ClipsRouteDeps) {
     thumbnailFramePreparationService,
   } = deps;
 
-  return new Hono<ApiEnv>()
-    .get("/projects/:id/clips", admit(access["GET /projects/:id/clips"]), async (c) => {
+  return createRouteApp(access)
+    .get("/projects/:id/clips", async (c) => {
       const clips = await clipService.listClips(getActor(c), c.req.param("id"));
       return c.json({ clips }, 200);
     })
@@ -61,7 +59,6 @@ export function createClipsRoutes(deps: ClipsRouteDeps) {
     // artifact so no bucket-wide CORS dependency is needed.
     .get(
       "/projects/:id/clips/:clipId/preview-peaks",
-      admit(access["GET /projects/:id/clips/:clipId/preview-peaks"]),
       async (c) => {
         const peaks = await clipService.getClipPreviewPeaks(
           getActor(c),
@@ -79,7 +76,6 @@ export function createClipsRoutes(deps: ClipsRouteDeps) {
     // because each call is a real LLM completion.
     .post(
       "/projects/:id/clips/:clipId/title-suggestions",
-      admit(access["POST /projects/:id/clips/:clipId/title-suggestions"]),
       async (c) => {
         const titles = await clipService.suggestClipTitles(
           getActor(c),
@@ -95,7 +91,6 @@ export function createClipsRoutes(deps: ClipsRouteDeps) {
     // click from fanning out into dozens of R2 copies.
     .post(
       "/projects/:id/clips/:clipId/duplicate",
-      admit(access["POST /projects/:id/clips/:clipId/duplicate"]),
       async (c) => {
         const clip = await clipService.duplicateClip(
           getActor(c),
@@ -111,7 +106,6 @@ export function createClipsRoutes(deps: ClipsRouteDeps) {
     // failure). `clip_selection_invalid` maps to 422.
     .post(
       "/projects/:id/clips/:clipId/create-from-selection",
-      admit(access["POST /projects/:id/clips/:clipId/create-from-selection"]),
       validate("json", createClipFromSelectionSchema),
       async (c) => {
         const clip = await clipService.createClipFromSelection(
@@ -129,7 +123,6 @@ export function createClipsRoutes(deps: ClipsRouteDeps) {
     // clips yet is refused with `clip_source_missing` (409).
     .post(
       "/projects/:id/clips/create-from-range",
-      admit(access["POST /projects/:id/clips/create-from-range"]),
       uuidParams("id"),
       validate("json", createClipFromSelectionSchema),
       async (c) => {
@@ -146,7 +139,6 @@ export function createClipsRoutes(deps: ClipsRouteDeps) {
     // `clip_has_scheduled_posts` while scheduled or publishing posts exist.
     .delete(
       "/projects/:id/clips/:clipId",
-      admit(access["DELETE /projects/:id/clips/:clipId"]),
       async (c) => {
         await clipService.deleteClip(getActor(c), c.req.param("id"), c.req.param("clipId"));
         return c.json({ ok: true }, 200);
@@ -155,7 +147,6 @@ export function createClipsRoutes(deps: ClipsRouteDeps) {
 
     .post(
       "/projects/:id/clips/render",
-      admit(access["POST /projects/:id/clips/render"]),
       requireIdempotencyKey(),
       validate("json", triggerClipRenderSchema),
       async (c) => {
@@ -191,7 +182,6 @@ export function createClipsRoutes(deps: ClipsRouteDeps) {
 
     .get(
       "/projects/:id/campaign-operations",
-      admit(access["GET /projects/:id/campaign-operations"]),
       async (c) => {
         const appUser = getActor(c);
         return c.json(
@@ -209,7 +199,6 @@ export function createClipsRoutes(deps: ClipsRouteDeps) {
 
     .post(
       "/projects/:id/thumbnail-frames",
-      admit(access["POST /projects/:id/thumbnail-frames"]),
       uuidParams("id"),
       validate("json", requestThumbnailFrameSchema),
       async (c) => {
@@ -228,7 +217,6 @@ export function createClipsRoutes(deps: ClipsRouteDeps) {
 
     .get(
       "/projects/:id/thumbnail-frames/:operationId",
-      admit(access["GET /projects/:id/thumbnail-frames/:operationId"]),
       uuidParams("id", "operationId"),
       async (c) => {
         const { id, operationId } = c.req.valid("param");
@@ -241,7 +229,6 @@ export function createClipsRoutes(deps: ClipsRouteDeps) {
 
     .post(
       "/projects/:id/thumbnail-frames/:operationId/retry",
-      admit(access["POST /projects/:id/thumbnail-frames/:operationId/retry"]),
       uuidParams("id", "operationId"),
       async (c) => {
         const { id, operationId } = c.req.valid("param");
@@ -254,7 +241,6 @@ export function createClipsRoutes(deps: ClipsRouteDeps) {
 
     .get(
       "/projects/:id/campaign-operations/editor-action-catalog",
-      admit(access["GET /projects/:id/campaign-operations/editor-action-catalog"]),
       uuidParams("id"),
       async (c) => {
         const appUser = getActor(c);
@@ -276,7 +262,6 @@ export function createClipsRoutes(deps: ClipsRouteDeps) {
 
     .post(
       "/projects/:id/campaign-operations/preview-editor-action",
-      admit(access["POST /projects/:id/campaign-operations/preview-editor-action"]),
       uuidParams("id"),
       validate("json", previewCampaignEditorActionSchema),
       async (c) => {
@@ -303,7 +288,6 @@ export function createClipsRoutes(deps: ClipsRouteDeps) {
     .post(
       "/projects/:id/campaign-operations/apply-brand-profile",
       bodyClass("editor"),
-      admit(access["POST /projects/:id/campaign-operations/apply-brand-profile"]),
       uuidParams("id"),
       requireIdempotencyKey(),
       readCampaignRetryOf(),
@@ -334,7 +318,6 @@ export function createClipsRoutes(deps: ClipsRouteDeps) {
     .post(
       "/projects/:id/campaign-operations/apply-style",
       bodyClass("editor"),
-      admit(access["POST /projects/:id/campaign-operations/apply-style"]),
       uuidParams("id"),
       requireIdempotencyKey(),
       readCampaignRetryOf(),
@@ -365,7 +348,6 @@ export function createClipsRoutes(deps: ClipsRouteDeps) {
     .post(
       "/projects/:id/campaign-operations/apply-motion",
       bodyClass("editor"),
-      admit(access["POST /projects/:id/campaign-operations/apply-motion"]),
       uuidParams("id"),
       requireIdempotencyKey(),
       readCampaignRetryOf(),
@@ -393,7 +375,6 @@ export function createClipsRoutes(deps: ClipsRouteDeps) {
 
     .post(
       "/projects/:id/clips/apply-caption-preset",
-      admit(access["POST /projects/:id/clips/apply-caption-preset"]),
       validate("json", applyCaptionPresetToAllSchema),
       async (c) => {
         const appUser = getActor(c);
@@ -412,7 +393,6 @@ export function createClipsRoutes(deps: ClipsRouteDeps) {
     .post(
       "/projects/:id/clips/apply-studio-edits",
       bodyClass("editor"),
-      admit(access["POST /projects/:id/clips/apply-studio-edits"]),
       validate("json", applyStudioEditsToAllSchema),
       async (c) => {
         const appUser = getActor(c);
@@ -437,7 +417,6 @@ export function createClipsRoutes(deps: ClipsRouteDeps) {
 
     .get(
       "/projects/:id/clips/previews",
-      admit(access["GET /projects/:id/clips/previews"]),
       validate("query", clipDownloadQuerySchema),
       async (c) => {
         const result = await clipService.getProjectClipPreviewUrls(
@@ -451,7 +430,6 @@ export function createClipsRoutes(deps: ClipsRouteDeps) {
 
     .get(
       "/projects/:id/clips/:clipId/download",
-      admit(access["GET /projects/:id/clips/:clipId/download"]),
       validate("query", clipDownloadQuerySchema),
       async (c) => {
         const result = await clipService.getClipDownloadUrl(
@@ -466,7 +444,6 @@ export function createClipsRoutes(deps: ClipsRouteDeps) {
 
     .get(
       "/projects/:id/clips/:clipId/file",
-      admit(access["GET /projects/:id/clips/:clipId/file"]),
       validate("query", clipDownloadQuerySchema),
       async (c) => {
         const result = await clipService.getClipDownloadUrl(

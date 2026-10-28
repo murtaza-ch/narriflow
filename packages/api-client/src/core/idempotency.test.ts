@@ -9,6 +9,14 @@ function counter() {
 }
 
 describe("createIntent", () => {
+  test("valid review passcode inputs participate in intent identity without entering query keys", () => {
+    const intent = createIntent<{ passcode: string | null }>({ randomUUID: counter() });
+    expect(intent.keyFor({ passcode: null })).toBe("key-1");
+    expect(intent.keyFor({ passcode: null })).toBe("key-1");
+    expect(intent.keyFor({ passcode: "review-passcode" })).toBe("key-2");
+    expect(intent.keyFor({ passcode: "changed-passcode" })).toBe("key-3");
+  });
+
   test("the same input keeps its key across retries until completed", () => {
     const intent = createIntent<{ name: string }>({ randomUUID: counter() });
     expect(intent.keyFor({ name: "a" })).toBe("key-1");

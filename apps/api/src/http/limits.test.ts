@@ -15,6 +15,7 @@ import {
   trustedIngressIp,
 } from "./limits";
 import { apiRequestId } from "./logging";
+import { socketAddress } from "../server-hooks";
 
 function app(register: (app: Hono<ApiEnv>) => void) {
   const instance = new Hono<ApiEnv>();
@@ -26,6 +27,37 @@ function app(register: (app: Hono<ApiEnv>) => void) {
 }
 
 describe("body limits", () => {
+  test("retains the native request for trusted socket lookup after buffering a body", async () => {
+    const server = app((a) => {
+      a.post("/guest", limitBody("guest"), (c) => c.json({ address: socketAddress(c) }));
+    });
+    const request = new Request("http://localhost/guest", { method: "POST", body: "exact bytes" });
+    const response = await server.fetch(request, {
+      server: { requestIP: (candidate: Request) => candidate === request ? { address: "127.0.0.1" } : null },
+    });
+    expect(await response.json()).toEqual({ address: "127.0.0.1" });
+  });
+
+  test("counts actual bytes even when Content-Length claims a smaller body", async () => {
+    let invoked = false;
+    const server = app((a) => {
+      a.post("/guest", limitBody("guest"), (c) => {
+        invoked = true;
+        return c.json({ ok: true });
+      });
+    });
+    for (const length of ["1", "invalid", "-1"]) {
+      const response = await server.request("/guest", {
+        method: "POST",
+        headers: { "content-length": length },
+        body: "x".repeat(BODY_LIMIT_BYTES.guest + 1),
+      });
+      expect(response.status).toBe(413);
+      expect(await response.json()).toMatchObject({ error: "payload_too_large" });
+    }
+    expect(invoked).toBe(false);
+  });
+
   test("rejects an oversized declared body before the handler reads it", async () => {
     let read = false;
     const server = app((a) => {

@@ -7,9 +7,7 @@ import {
   retryReviewNotificationSchema,
   workspaceAllowsCapability,
 } from "@narriflow/validators";
-import { Hono } from "hono";
-import { admit, getActor } from "../../http/admission";
-import type { ApiEnv } from "../../http/env";
+import { createRouteApp, getActor } from "../../http/admission";
 import { validate } from "../../http/route";
 import { uuidParams } from "../platform/params";
 import { reviewsAdmission as access } from "./admission";
@@ -24,10 +22,9 @@ export interface ReviewsRouteDeps {
 export function createReviewsRoutes(deps: ReviewsRouteDeps) {
   const { reviewService, reviewNotificationService } = deps;
 
-  return new Hono<ApiEnv>()
+  return createRouteApp(access)
     .post(
       "/projects/:id/review-rounds",
-      admit(access["POST /projects/:id/review-rounds"]),
       uuidParams("id"),
       validate("json", createReviewRoundSchema),
       async (c) => {
@@ -49,7 +46,6 @@ export function createReviewsRoutes(deps: ReviewsRouteDeps) {
 
     .get(
       "/projects/:id/review-rounds",
-      admit(access["GET /projects/:id/review-rounds"]),
       uuidParams("id"),
       async (c) => {
         const appUser = getActor(c);
@@ -70,7 +66,6 @@ export function createReviewsRoutes(deps: ReviewsRouteDeps) {
 
     .post(
       "/projects/:id/review-rounds/:roundId/invite",
-      admit(access["POST /projects/:id/review-rounds/:roundId/invite"]),
       uuidParams("id", "roundId"),
       validate("json", inviteReviewersSchema),
       async (c) => {
@@ -94,7 +89,6 @@ export function createReviewsRoutes(deps: ReviewsRouteDeps) {
 
     .post(
       "/projects/:id/review-rounds/:roundId/comments",
-      admit(access["POST /projects/:id/review-rounds/:roundId/comments"]),
       uuidParams("id", "roundId"),
       validate("json", internalReviewCommentSchema),
       async (c) => {
@@ -113,7 +107,6 @@ export function createReviewsRoutes(deps: ReviewsRouteDeps) {
 
     .post(
       "/projects/:id/review-rounds/:roundId/comments/:commentId/resolve",
-      admit(access["POST /projects/:id/review-rounds/:roundId/comments/:commentId/resolve"]),
       uuidParams("id", "roundId", "commentId"),
       async (c) => {
         const appUser = getActor(c);
@@ -132,7 +125,6 @@ export function createReviewsRoutes(deps: ReviewsRouteDeps) {
 
     .post(
       "/projects/:id/review-rounds/:roundId/comments/:commentId/reopen",
-      admit(access["POST /projects/:id/review-rounds/:roundId/comments/:commentId/reopen"]),
       uuidParams("id", "roundId", "commentId"),
       async (c) => {
         const appUser = getActor(c);
@@ -151,7 +143,6 @@ export function createReviewsRoutes(deps: ReviewsRouteDeps) {
 
     .post(
       "/projects/:id/review-rounds/:roundId/notifications/retry",
-      admit(access["POST /projects/:id/review-rounds/:roundId/notifications/retry"]),
       uuidParams("id", "roundId"),
       validate("json", retryReviewNotificationSchema),
       async (c) => {
@@ -176,7 +167,6 @@ export function createReviewsRoutes(deps: ReviewsRouteDeps) {
 
     .post(
       "/projects/:id/review-rounds/:roundId/revoke",
-      admit(access["POST /projects/:id/review-rounds/:roundId/revoke"]),
       uuidParams("id", "roundId"),
       async (c) => {
         const appUser = getActor(c);

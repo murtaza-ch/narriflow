@@ -142,3 +142,37 @@ export function isClerkNotFound(error: unknown): boolean {
   const kind = (error.constructor as { kind?: unknown } | undefined)?.kind;
   return kind === "ClerkAPIResponseError" && "status" in error && error.status === 404;
 }
+
+/**
+ * The Clerk directory (Backend API user lookup) could not answer: a network
+ * failure, timeout, 408, 429 or 5xx. Callers answer a retryable 503 and keep
+ * the session; confirmed 404s and DB failures are different outcomes.
+ */
+export class ClerkDirectoryUnavailableError extends Error {
+  constructor(cause: unknown) {
+    super("Clerk user directory is unavailable", { cause });
+    this.name = "ClerkDirectoryUnavailableError";
+  }
+}
+
+function isClerkApiResponseError(error: unknown): error is { status: unknown } {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    (error.constructor as { kind?: unknown } | undefined)?.kind === "ClerkAPIResponseError" &&
+    "status" in error
+  );
+}
+
+/**
+ * Whether a failed Backend API call means Clerk could not be reached or is
+ * overloaded. Other API refusals (401/403 for a bad secret key, validation)
+ * are configuration or programming faults and stay ordinary errors.
+ */
+export function isClerkUnavailable(error: unknown): boolean {
+  if (isClerkApiResponseError(error)) {
+    const status = Number(error.status);
+    return status === 408 || status === 429 || status >= 500;
+  }
+  return error instanceof Error;
+}
