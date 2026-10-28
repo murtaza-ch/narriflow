@@ -1427,6 +1427,7 @@ describe("Workspace Billing", () => {
 
   test("rechecks activating accounts on the short recovery cadence", async () => {
     let now = new Date("2026-08-28T10:00:00.000Z");
+    const records: string[] = [];
     const store = createInMemoryWorkspaceBillingStore([
       {
         workspaceId: "workspace-activating-cadence",
@@ -1465,15 +1466,27 @@ describe("Workspace Billing", () => {
         }),
       },
       clock: { now: () => now },
-      diagnostics: { record: () => undefined },
+      diagnostics: { record: (event) => records.push(String(event.message)) },
+      metrics: { observe: (metric) => records.push(metric) },
     });
 
     expect(await billing.reconcileCurrentState("workspace-activating-cadence"))
       .toMatchObject({ view: { health: "activating" } });
     now = new Date(now.getTime() + 29_999);
-    expect(await billing.reconcileDueAccounts()).toMatchObject({ claimed: 0 });
+    records.length = 0;
+    expect(await billing.reconcileDueAccounts()).toEqual({
+      claimed: 0, reconciled: 0, retried: 0, unresolved: 0, staleSettlements: 0,
+    });
+    // An idle worker poll is silent.
+    expect(records).toEqual([]);
     now = new Date(now.getTime() + 1);
     expect(await billing.reconcileDueAccounts()).toMatchObject({ claimed: 1 });
+    expect(records).toEqual(expect.arrayContaining([
+      "workspace_billing_accounts_claimed",
+      "workspace_billing_claims_total",
+      "workspace_billing_batch_settled",
+      "workspace_billing_settlements_total",
+    ]));
   });
 
   test("billing accounts do not exhaust their leases waiting for a worker slot", async () => {

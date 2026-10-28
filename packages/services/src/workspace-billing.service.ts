@@ -3345,6 +3345,15 @@ export function createWorkspaceBillingModule(dependencies: {
         limit: Math.min(dependencies.catalog.worker.batchSize, dependencies.catalog.worker.concurrency),
         leaseMs: dependencies.catalog.worker.leaseMs,
       });
+      const summary = {
+        claimed: claims.length,
+        reconciled: 0,
+        retried: 0,
+        unresolved: 0,
+        staleSettlements: 0,
+      };
+      // The worker polls every few seconds; an empty poll is not an event.
+      if (claims.length === 0) return summary;
       dependencies.diagnostics.record({
         level: "info",
         message: "workspace_billing_accounts_claimed",
@@ -3361,13 +3370,6 @@ export function createWorkspaceBillingModule(dependencies: {
           {},
         );
       }
-      const summary = {
-        claimed: claims.length,
-        reconciled: 0,
-        retried: 0,
-        unresolved: 0,
-        staleSettlements: 0,
-      };
       let cursor = 0;
       const worker = async () => {
         for (;;) {

@@ -159,7 +159,7 @@ bun --env-file=apps/web/.env.local run packages/services/scripts/workspace-billi
 
 Compare local plan, access, health, desired/synchronized seats, ownership classification, subscription count/status, mapped base plan, cancellation, period facts, and provider seat quantity. Then inspect structured `workspace_billing_*` diagnostics by Workspace and phase. Never paste raw Stripe errors, webhook bodies, signatures, URLs, email, address, payment details, or full provider IDs into logs, tickets, analytics, or product copy.
 
-The service emits `workspace_billing_metric` records for delivery disposition and acceptance latency, provider-call success/failure, claim source, queue age, bounded retry bands and delay, settlement outcome, operation duration, desired/synchronized seat quantity, conflicts, grace entry/recovery, restrictions, retention changes, and terminal health. Labels are bounded billing facts such as event class, operation, outcome, retry band, health, access, and transition; they never contain Workspace or provider identifiers.
+The service emits `workspace_billing_metric` records for delivery disposition and acceptance latency, provider-call success/failure, claim source, queue age, bounded retry bands and delay, settlement outcome, operation duration, desired/synchronized seat quantity, conflicts, grace entry/recovery, restrictions, retention changes, and terminal health. Labels are bounded billing facts such as event class, operation, outcome, retry band, health, access, and transition; they never contain Workspace or provider identifiers. A worker poll that claims no account records nothing; check the worker's `/health` loop status for liveness.
 
 For a safe manual current-state retry, add the explicit switch:
 
