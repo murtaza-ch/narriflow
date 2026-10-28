@@ -2,8 +2,8 @@
 
 import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
-import { Box, Flex, IconButton, Stack, Text } from "@chakra-ui/react";
-import { Plus, X } from "lucide-react";
+import { Box, Flex, Grid, IconButton, Stack, Text, VisuallyHidden } from "@chakra-ui/react";
+import { AlertTriangle, Globe, Plus, X } from "lucide-react";
 import {
 	PLAN_CATALOG,
 	POSTING_SCHEDULE_MAX_SLOTS,
@@ -15,11 +15,11 @@ import {
 } from "@narriflow/validators";
 import { Button } from "@narriflow/ui/components/button";
 import { TimePicker } from "@narriflow/ui/components/time-picker";
-import { SocialPlatformMark } from "@/lib/social-platform-mark";
 import { authenticatedActionResultMessage, isAuthenticatedActionFailure } from "@/lib/authenticated-request-browser";
 import { PlanLimitNotice } from "../../_components/plan-limit-notice";
 import { LockedButton, type UpgradePrompt } from "../../_components/upgrade";
 import { savePostingScheduleAction } from "./actions";
+import { AccountMark, Chip } from "./queue-parts";
 
 const WEEKDAY_LABELS: Record<PostingWeekday, string> = {
 	mon: "Monday",
@@ -67,26 +67,46 @@ function AccountSchedule({ account, canManage, scheduleUpgrade }: { account: Soc
 	}
 
 	return (
-		<Stack gap="3.5" bg="bg.subtle" borderRadius="l3" p="4">
-			<Flex align="center" gap="2.5">
-				<SocialPlatformMark platform={account.platform} />
-				<Text fontSize="14px" fontWeight="500">{account.displayName}</Text>
-				{account.handle ? <Text fontSize="13px" color="fg.subtle">{account.handle}</Text> : null}
-				{account.status !== "active" ? <Text fontSize="12px" color="warning.fg" ml="auto">Reconnect to post</Text> : null}
+		<Stack gap="4" bg="bg.subtle" borderRadius="l3" p={{ base: "4", md: "5" }}>
+			<Flex align="center" gap="3" wrap="wrap">
+				<AccountMark platform={account.platform} />
+				<Box flex="1" minW="0">
+					<Text fontSize="14px" fontWeight="500" truncate>{account.displayName}</Text>
+					{account.handle ? <Text fontSize="12px" color="fg.subtle" truncate>{account.handle}</Text> : null}
+				</Box>
+				{account.status !== "active" ? (
+					<Chip tone="warning" icon={<AlertTriangle size={12} />}>Reconnect to post</Chip>
+				) : null}
+				<Chip>{slots.length === 0 ? "No slots yet" : `${slots.length} ${slots.length === 1 ? "slot" : "slots"} a week`}</Chip>
 			</Flex>
-			<Stack gap="1">
+			{/* A week: seven columns on a wide screen, one row per day below it. */}
+			<Grid templateColumns={{ base: "1fr", lg: "repeat(7, minmax(0, 1fr))" }} gap="2">
 				{POSTING_WEEKDAYS.map((weekday) => {
 					const times = slots.filter((slot) => slot.weekday === weekday);
+					const label = WEEKDAY_LABELS[weekday];
 					return (
-						<Flex key={weekday} align="center" gap="3" minH="9" wrap="wrap">
-							<Text fontSize="13px" color="fg.muted" w="24">{WEEKDAY_LABELS[weekday]}</Text>
-							<Flex gap="1.5" wrap="wrap" align="center" flex="1">
+						<Flex
+							key={weekday}
+							direction={{ base: "row", lg: "column" }}
+							align={{ base: "center", lg: "stretch" }}
+							wrap={{ base: "wrap", lg: "nowrap" }}
+							gap={{ base: "3", lg: "2.5" }}
+							bg="bg.panel"
+							borderRadius="l2"
+							p="3"
+							minH={{ base: "14", lg: "32" }}
+						>
+							<Text fontSize="13px" fontWeight="500" color={times.length > 0 ? "fg" : "fg.subtle"} w={{ base: "10", lg: "auto" }} flexShrink={0}>
+								{label.slice(0, 3)}
+								<VisuallyHidden>{label.slice(3)}</VisuallyHidden>
+							</Text>
+							<Flex direction={{ base: "row", lg: "column" }} wrap="wrap" gap="1.5" align={{ base: "center", lg: "stretch" }} flex="1" minW="0">
 								{times.map((slot) => (
-									<Flex key={slot.time} align="center" gap="1" bg="bg.soft" borderRadius="l2" pl="2.5" pr="1" h="7">
+									<Flex key={slot.time} align="center" justify="space-between" gap="1" bg="bg.soft" borderRadius="l1" pl="2.5" pr="1" h="7">
 										<Text fontSize="13px" fontVariantNumeric="tabular-nums">{twelveHour(slot.time)}</Text>
 										{canManage ? (
 											<IconButton
-												aria-label={`Remove ${WEEKDAY_LABELS[weekday]} ${twelveHour(slot.time)}`}
+												aria-label={`Remove ${label} ${twelveHour(slot.time)}`}
 												size="2xs"
 												variant="ghost"
 												color="fg.muted"
@@ -98,23 +118,26 @@ function AccountSchedule({ account, canManage, scheduleUpgrade }: { account: Soc
 										) : null}
 									</Flex>
 								))}
-								{times.length === 0 && adding !== weekday ? <Text fontSize="13px" color="fg.subtle">No posts</Text> : null}
+								{times.length === 0 && adding !== weekday ? <Text fontSize="12px" color="fg.subtle">No posts</Text> : null}
 								{adding === weekday ? (
-									<Flex align="center" gap="2">
-										<Box w="40">
-											<TimePicker ariaLabel={`${WEEKDAY_LABELS[weekday]} time`} value={draftTime} onValueChange={setDraftTime} />
-										</Box>
-										<Button size="xs" onClick={() => add(weekday)}>Add</Button>
-										<Button size="xs" variant="ghost" onClick={() => setAdding(null)}>Cancel</Button>
-									</Flex>
+									<Stack gap="1.5" w="full" maxW={{ base: "240px", lg: "none" }}>
+										<TimePicker ariaLabel={`${label} time`} value={draftTime} onValueChange={setDraftTime} />
+										<Flex gap="1.5">
+											<Button size="xs" onClick={() => add(weekday)}>Add</Button>
+											<Button size="xs" variant="ghost" onClick={() => setAdding(null)}>Cancel</Button>
+										</Flex>
+									</Stack>
 								) : null}
 							</Flex>
 							{canManage && adding !== weekday && slots.length < POSTING_SCHEDULE_MAX_SLOTS ? (
 								<IconButton
-									aria-label={`Add a ${WEEKDAY_LABELS[weekday]} slot`}
+									aria-label={`Add a ${label} slot`}
 									size="xs"
 									variant="ghost"
 									color="fg.muted"
+									w={{ lg: "full" }}
+									mt={{ lg: "auto" }}
+									ml={{ base: "auto", lg: "0" }}
 									disabled={pending}
 									onClick={() => setAdding(weekday)}
 								>
@@ -124,7 +147,7 @@ function AccountSchedule({ account, canManage, scheduleUpgrade }: { account: Soc
 						</Flex>
 					);
 				})}
-			</Stack>
+			</Grid>
 			{canManage ? (
 				<Flex align="center" gap="2" wrap="wrap">
 					{/* Clearing slots works on any plan; saving new ones offers the upgrade. */}
@@ -163,9 +186,12 @@ export function PostingScheduleEditor({
 }) {
 	return (
 		<Stack gap="3">
-			<Text fontSize="13px" color="fg.muted">
-				Slots are in your Workspace time zone ({timeZone}). An accepted post takes the account&apos;s next free slot.
-			</Text>
+			<Flex align="center" gap="2" color="fg.muted" fontSize="13px">
+				<Globe size={14} aria-hidden />
+				<Text>
+					Times are in {timeZone}. An accepted post takes the account&apos;s next free slot.
+				</Text>
+			</Flex>
 			{canManage && scheduleUpgrade?.tier ? (
 				<PlanLimitNotice message={`Posting slots need the ${PLAN_CATALOG[scheduleUpgrade.tier].name} plan.`} upgrade={scheduleUpgrade} />
 			) : null}

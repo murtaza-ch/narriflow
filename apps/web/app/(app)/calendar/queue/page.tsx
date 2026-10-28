@@ -1,21 +1,38 @@
 import Link from "next/link";
-import { Stack, Text } from "@chakra-ui/react";
-import { ArrowLeft, CalendarDays } from "lucide-react";
+import { Flex, Stack, Text } from "@chakra-ui/react";
+import { ArrowLeft } from "lucide-react";
 import { publishingQueue, socialOAuthService, workspaceService } from "@narriflow/services";
 import { Button } from "@narriflow/ui/components/button";
-import { EmptyState } from "@narriflow/ui/components/empty-state";
 import { PageHeader } from "@narriflow/ui/components/page-header";
 import { workspaceAllowsCapability } from "@narriflow/validators";
+import { SocialPlatformMark } from "@/lib/social-platform-mark";
 import { admitWorkspacePage } from "@/lib/authenticated-request-page";
 import { featureUpgradePrompt } from "@/lib/feature-upgrade-prompt";
 import { PostingScheduleEditor } from "./posting-schedule-editor";
 import { ProposalsInbox } from "./proposals-inbox";
+import { Chip, QueueEmpty } from "./queue-parts";
 
-function SectionTitle({ children }: { children: React.ReactNode }) {
+function SectionTitle({ count, children }: { count?: number; children: React.ReactNode }) {
 	return (
-		<Text as="h2" fontSize="14px" fontWeight="500" color="fg.muted" mb="3">
-			{children}
-		</Text>
+		<Flex align="center" gap="2" mb="3">
+			<Text as="h2" fontSize="14px" fontWeight="500" color="fg.muted">
+				{children}
+			</Text>
+			{count ? <Chip>{count}</Chip> : null}
+		</Flex>
+	);
+}
+
+/** Three platforms as round marks: what an account connects to. */
+function PlatformStack() {
+	return (
+		<Flex gap="2">
+			{(["tiktok", "youtube_shorts", "instagram_reels"] as const).map((platform) => (
+				<Flex key={platform} boxSize="11" align="center" justify="center" borderRadius="full" bg="bg.panel">
+					<SocialPlatformMark platform={platform} />
+				</Flex>
+			))}
+		</Flex>
 	);
 }
 
@@ -48,14 +65,14 @@ export default async function PublishingQueuePage() {
 				}
 			/>
 			<section>
-				<SectionTitle>Proposed posts</SectionTitle>
+				<SectionTitle count={proposals.length}>Proposed posts</SectionTitle>
 				<ProposalsInbox proposals={proposals} timeZone={timeZone} canManage={canManage} scheduleUpgrade={scheduleUpgrade} />
 			</section>
 			<section id="posting-schedule">
 				<SectionTitle>Posting schedule</SectionTitle>
 				{accounts.length === 0 ? (
-					<EmptyState
-						icon={<CalendarDays />}
+					<QueueEmpty
+						visual={<PlatformStack />}
 						title="No connected accounts"
 						description={
 							canConnect
@@ -64,7 +81,7 @@ export default async function PublishingQueuePage() {
 						}
 						action={
 							canConnect ? (
-								<Button asChild>
+								<Button asChild size="sm" flexShrink={0}>
 									<Link href="/settings/social-accounts">Connect an account</Link>
 								</Button>
 							) : undefined

@@ -3,19 +3,18 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState, useTransition } from "react";
-import { Box, chakra, Flex, Stack, Text } from "@chakra-ui/react";
-import { Check, Inbox, X } from "lucide-react";
+import { Box, chakra, Flex, Grid, Stack, Text } from "@chakra-ui/react";
+import { AlertTriangle, Braces, CalendarClock, Check, Info, Inbox, type LucideIcon, Play, Sparkles, UserRound, X } from "lucide-react";
 import type { ProposalInboxItem } from "@narriflow/services";
 import type { SocialPostProposalSource } from "@narriflow/validators";
 import { Button } from "@narriflow/ui/components/button";
-import { EmptyState } from "@narriflow/ui/components/empty-state";
 import { Select } from "@narriflow/ui/components/select";
 import { Switch } from "@narriflow/ui/components/switch";
 import { Textarea } from "@narriflow/ui/components/textarea";
-import { SocialPlatformMark } from "@/lib/social-platform-mark";
 import { SOCIAL_PLATFORM_LABELS } from "@/lib/social-post-status";
 import { authenticatedActionResultMessage, isAuthenticatedActionFailure } from "@/lib/authenticated-request-browser";
 import { LockedButton, type UpgradePrompt } from "../../_components/upgrade";
+import { AccountMark, Chip, QueueEmpty } from "./queue-parts";
 import {
 	acceptAllProposalsAction,
 	acceptProposalAction,
@@ -24,10 +23,10 @@ import {
 	updateProposalCaptionAction,
 } from "./actions";
 
-const SOURCE_LABELS: Record<SocialPostProposalSource, string> = {
-	person: "Proposed by a teammate",
-	integration: "Proposed through the API",
-	finishing: "Proposed by Finishing",
+const SOURCES: Record<SocialPostProposalSource, { label: string; icon: LucideIcon }> = {
+	person: { label: "From a teammate", icon: UserRound },
+	integration: { label: "Via the API", icon: Braces },
+	finishing: { label: "From Finishing", icon: Sparkles },
 };
 
 const PRIVACY_LABELS: Record<string, string> = {
@@ -53,6 +52,20 @@ const failed = (result: unknown) =>
 
 function slotLabel(iso: string, timeZone: string) {
 	return new Intl.DateTimeFormat("en-US", { timeZone, weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).format(new Date(iso));
+}
+
+/** The clip's shape, drawn at its own aspect ratio: portrait and landscape read at a glance. */
+function FormatTile({ aspectRatio }: { aspectRatio: string }) {
+	const [width = 9, height = 16] = aspectRatio.split(":").map(Number);
+	const ratio = width / height;
+	const edge = 24;
+	return (
+		<Flex boxSize="10" flexShrink={0} align="center" justify="center" borderRadius="l1" bg="bg.panel" aria-hidden>
+			<Flex align="center" justify="center" w={`${ratio >= 1 ? edge : edge * ratio}px`} h={`${ratio >= 1 ? edge / ratio : edge}px`} borderRadius="4px" bg="bg.muted" color="fg.subtle">
+				<Play size={10} fill="currentColor" />
+			</Flex>
+		</Flex>
+	);
 }
 
 function TikTokAcceptance({
@@ -99,7 +112,7 @@ function TikTokAcceptance({
 	if (!options) return <Text fontSize="13px" color="fg.muted">Loading TikTok settings…</Text>;
 	const direct = mode === "direct";
 	return (
-		<Stack gap="3" bg="bg.soft" borderRadius="l2" p="3.5">
+		<Stack gap="3" bg="bg.panel" borderRadius="l2" p="4">
 			<Text fontSize="13px" fontWeight="500">TikTok needs your choices for this post</Text>
 			<Select
 				ariaLabel="How to send to TikTok"
@@ -189,18 +202,34 @@ function ProposalCard({
 		});
 	}
 
+	const source = SOURCES[proposal.source];
+	const SourceIcon = source.icon;
+
 	return (
-		<Stack gap="3" bg="bg.subtle" borderRadius="l3" p="4">
-			<Flex align="center" gap="2.5" wrap="wrap">
-				<SocialPlatformMark platform={proposal.platform} />
-				<Text fontSize="14px" fontWeight="500">{proposal.accountDisplayName}</Text>
-				{proposal.accountHandle ? <Text fontSize="13px" color="fg.subtle">{proposal.accountHandle}</Text> : null}
-				<Text fontSize="12px" color="fg.subtle" ml="auto">{SOURCE_LABELS[proposal.source]}</Text>
+		<Stack gap="4" bg="bg.subtle" borderRadius="l3" p={{ base: "4", md: "5" }}>
+			<Flex align="center" gap="3">
+				<AccountMark platform={proposal.platform} />
+				<Box flex="1" minW="0">
+					<Text fontSize="14px" fontWeight="500" truncate>{proposal.accountDisplayName}</Text>
+					<Text fontSize="12px" color="fg.subtle" truncate>{proposal.accountHandle ?? SOCIAL_PLATFORM_LABELS[proposal.platform]}</Text>
+				</Box>
+				<Chip icon={<SourceIcon size={12} />}>{source.label}</Chip>
 			</Flex>
-			<Text fontSize="13px" color="fg.muted">
-				<Link href={`/projects/${proposal.projectId}`}>{proposal.projectTitle}</Link> · {proposal.clipTitle} · {proposal.aspectRatio}
-				{proposal.durationSec ? ` · ${Math.round(proposal.durationSec)}s` : ""}
-			</Text>
+			<Flex align="center" gap="3">
+				<FormatTile aspectRatio={proposal.aspectRatio} />
+				<Box flex="1" minW="0">
+					<Text fontSize="14px" fontWeight="500" truncate>{proposal.clipTitle}</Text>
+					<Text fontSize="13px" color="fg.muted" truncate>
+						<chakra.span asChild _hover={{ color: "fg", textDecoration: "underline" }} textUnderlineOffset="3px">
+							<Link href={`/projects/${proposal.projectId}`}>{proposal.projectTitle}</Link>
+						</chakra.span>
+					</Text>
+				</Box>
+				<Flex gap="1.5" flexShrink={0}>
+					<Chip>{proposal.aspectRatio}</Chip>
+					{proposal.durationSec ? <Chip>{Math.round(proposal.durationSec)}s</Chip> : null}
+				</Flex>
+			</Flex>
 			<Textarea
 				aria-label={`Caption for ${SOCIAL_PLATFORM_LABELS[proposal.platform]}`}
 				value={caption}
@@ -210,17 +239,28 @@ function ProposalCard({
 				onBlur={() => {
 					if (canManage && caption !== proposal.caption) run(() => updateProposalCaptionAction(proposal.proposalId, caption), "The caption could not be saved.");
 				}}
-				bg="bg.soft"
+				bg="bg.panel"
+				_hover={{ bg: "bg.panel" }}
 				borderWidth="0"
 				fontSize="13px"
 			/>
 			<Flex align="center" justify="space-between" gap="3" wrap="wrap">
-				<Text fontSize="13px" color="fg.muted">
-					{blocked ? <BlockedReason proposal={proposal} /> : (isTikTok ? "TikTok asks for your choices when you accept" : proposal.nextSlot ? `Next free slot: ${slotLabel(proposal.nextSlot, timeZone)}` : "No free slot in the next year")}
-				</Text>
+				{blocked ? (
+					<Chip tone="warning" icon={<AlertTriangle size={12} />}>
+						<BlockedReason proposal={proposal} />
+					</Chip>
+				) : isTikTok ? (
+					<Chip icon={<Info size={12} />}>TikTok asks for your choices when you accept</Chip>
+				) : proposal.nextSlot ? (
+					<Chip tone="accent" icon={<CalendarClock size={12} />}>
+						Next free slot: {slotLabel(proposal.nextSlot, timeZone)}
+					</Chip>
+				) : (
+					<Chip tone="warning" icon={<AlertTriangle size={12} />}>No free slot in the next year</Chip>
+				)}
 				{canManage ? (
-					<Flex gap="2">
-						<Button size="sm" variant="ghost" disabled={pending} onClick={() => run(() => rejectProposalAction(proposal.proposalId), "The proposal could not be rejected.")}>
+					<Flex gap="2" ml="auto">
+						<Button size="sm" variant="ghost" color="fg.muted" disabled={pending} onClick={() => run(() => rejectProposalAction(proposal.proposalId), "The proposal could not be rejected.")}>
 							<X size={14} />
 							Reject
 						</Button>
@@ -305,13 +345,17 @@ export function ProposalsInbox({
 
 	if (proposals.length === 0) {
 		return (
-			<EmptyState
-				icon={<Inbox />}
+			<QueueEmpty
+				visual={
+					<Flex boxSize="11" align="center" justify="center" borderRadius="full" bg="bg.soft" color="fg.muted">
+						<Inbox size={20} />
+					</Flex>
+				}
 				title="Nothing waiting to be accepted"
 				description="Posts proposed by Finishing, the API, or your assistants wait here until you accept them into a slot."
 				action={
 					canManage ? (
-						<Button asChild variant="subtle" size="sm">
+						<Button asChild variant="subtle" size="sm" flexShrink={0}>
 							<Link href="/recipes">Set up Finishing</Link>
 						</Button>
 					) : undefined
@@ -341,9 +385,11 @@ export function ProposalsInbox({
 					<Text fontSize="13px" color={notice.tone === "error" ? "danger.fg" : "fg.muted"}>{notice.text}</Text>
 				</Box>
 			) : null}
-			{proposals.map((proposal) => (
-				<ProposalCard key={proposal.proposalId} proposal={proposal} timeZone={timeZone} canManage={canManage} scheduleUpgrade={scheduleUpgrade} onResult={setNotice} />
-			))}
+			<Grid templateColumns={{ base: "1fr", xl: "repeat(2, minmax(0, 1fr))" }} gap="3" alignItems="start">
+				{proposals.map((proposal) => (
+					<ProposalCard key={proposal.proposalId} proposal={proposal} timeZone={timeZone} canManage={canManage} scheduleUpgrade={scheduleUpgrade} onResult={setNotice} />
+				))}
+			</Grid>
 		</Stack>
 	);
 }

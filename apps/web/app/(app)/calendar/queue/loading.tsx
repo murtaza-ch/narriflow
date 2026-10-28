@@ -1,8 +1,6 @@
-import { Flex, Stack, Text } from "@chakra-ui/react";
+import { Flex, Grid, Stack, Text } from "@chakra-ui/react";
 import { PageHeader } from "@narriflow/ui/components/page-header";
 import { Bone, LoadingScreen } from "@narriflow/ui/components/page-loading";
-
-const WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 
 function SectionTitle({ children }: { children: React.ReactNode }) {
   return (
@@ -12,7 +10,21 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
   );
 }
 
-/** Publishing queue: a proposed-post card, then one account's weekly posting schedule. */
+/** One account's header: round mark, name and handle, a count chip. */
+function AccountHeader() {
+  return (
+    <Flex align="center" gap="3">
+      <Bone boxSize="9" borderRadius="full" />
+      <Stack gap="1.5" flex="1">
+        <Bone h="4" w="28" />
+        <Bone h="3" w="20" />
+      </Stack>
+      <Bone h="6" w="24" borderRadius="full" />
+    </Flex>
+  );
+}
+
+/** Publishing queue: a proposed-post card, then one account's week of posting slots. */
 export default function PublishingQueueLoading() {
   return (
     <LoadingScreen label="Loading Publishing queue">
@@ -23,47 +35,54 @@ export default function PublishingQueueLoading() {
       />
       <section>
         <SectionTitle>Proposed posts</SectionTitle>
-        <Stack gap="3" bg="bg.subtle" borderRadius="l3" p="4">
-          <Flex align="center" gap="2.5">
-            <Bone boxSize="6" />
-            <Bone h="4" w="28" />
-            <Bone h="3.5" w="20" />
-            <Bone h="3" w="32" ml="auto" />
-          </Flex>
-          <Bone h="3.5" w="72" maxW="90%" />
-          <Bone h="20" borderRadius="control" />
-          <Flex align="center" justify="space-between" gap="3" wrap="wrap">
-            <Bone h="3.5" w="48" />
-            <Flex gap="2">
-              <Bone h="9" w="24" borderRadius="control" />
-              <Bone h="9" w="24" borderRadius="control" />
+        <Grid templateColumns={{ base: "1fr", xl: "repeat(2, minmax(0, 1fr))" }} gap="3">
+          <Stack gap="4" bg="bg.subtle" borderRadius="l3" p={{ base: "4", md: "5" }}>
+            <AccountHeader />
+            <Flex align="center" gap="3">
+              <Bone boxSize="10" borderRadius="l1" />
+              <Stack gap="1.5" flex="1">
+                <Bone h="4" w="40" maxW="90%" />
+                <Bone h="3.5" w="28" />
+              </Stack>
+              <Bone h="6" w="12" borderRadius="full" />
             </Flex>
-          </Flex>
-        </Stack>
+            <Bone h="20" borderRadius="control" />
+            <Flex align="center" justify="space-between" gap="3" wrap="wrap">
+              <Bone h="6" w="56" borderRadius="full" />
+              <Flex gap="2">
+                <Bone h="9" w="24" borderRadius="control" />
+                <Bone h="9" w="24" borderRadius="control" />
+              </Flex>
+            </Flex>
+          </Stack>
+        </Grid>
       </section>
       <section>
         <SectionTitle>Posting schedule</SectionTitle>
         <Stack gap="3">
           <Bone h="3.5" w="xl" maxW="90%" />
-          <Stack gap="3.5" bg="bg.subtle" borderRadius="l3" p="4">
-            <Flex align="center" gap="2.5">
-              <Bone boxSize="6" />
-              <Bone h="4" w="28" />
-              <Bone h="3.5" w="20" />
-            </Flex>
-            <Stack gap="1">
-              {WEEKDAYS.map((weekday, index) => (
-                <Flex key={weekday} align="center" gap="3" minH="9">
-                  <Text fontSize="13px" color="fg.muted" w="24">
-                    {weekday}
-                  </Text>
-                  <Flex gap="1.5" flex="1">
-                    {index % 2 === 0 ? <Bone h="7" w="20" borderRadius="l2" /> : null}
+          <Stack gap="4" bg="bg.subtle" borderRadius="l3" p={{ base: "4", md: "5" }}>
+            <AccountHeader />
+            <Grid templateColumns={{ base: "1fr", lg: "repeat(7, minmax(0, 1fr))" }} gap="2">
+              {Array.from({ length: 7 }, (_, day) => (
+                <Flex
+                  key={day}
+                  direction={{ base: "row", lg: "column" }}
+                  align={{ base: "center", lg: "stretch" }}
+                  gap={{ base: "3", lg: "2.5" }}
+                  bg="bg.panel"
+                  borderRadius="l2"
+                  p="3"
+                  minH={{ base: "14", lg: "32" }}
+                >
+                  <Bone h="4" w="9" />
+                  <Flex direction={{ base: "row", lg: "column" }} gap="1.5" flex="1">
+                    {day % 2 === 0 ? <Bone h="7" borderRadius="l1" w={{ base: "20", lg: "full" }} /> : null}
                   </Flex>
-                  <Bone boxSize="8" borderRadius="control" />
+                  <Bone boxSize="8" borderRadius="control" w={{ lg: "full" }} />
                 </Flex>
               ))}
-            </Stack>
+            </Grid>
             <Bone h="9" w="32" borderRadius="control" />
           </Stack>
         </Stack>
