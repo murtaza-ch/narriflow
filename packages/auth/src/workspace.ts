@@ -16,7 +16,7 @@ export interface WorkspaceActorContext {
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** Workspace ids are Postgres UUIDs; anything else cannot name a membership. */
-function isWorkspaceId(value: string | undefined): value is string {
+export function isWorkspaceId(value: string | undefined): value is string {
   return value !== undefined && UUID_PATTERN.test(value);
 }
 
@@ -99,20 +99,16 @@ export async function ensurePersonalWorkspace(userId: string) {
   return workspace;
 }
 
-const includeWorkspace = {
-  workspace: {
-    select: {
-      id: true,
-      name: true,
-      ownerUserId: true,
-      personalOwnerUserId: true,
-      status: true,
-      pricingTier: true,
-    },
-  },
+const workspaceSelect = {
+  id: true,
+  name: true,
+  ownerUserId: true,
+  personalOwnerUserId: true,
+  status: true,
+  pricingTier: true,
 } as const;
 
-function toWorkspaceActorContext(
+export function toWorkspaceActorContext(
   input: {
     userId: string;
     role: WorkspaceRole;
@@ -140,14 +136,36 @@ function toWorkspaceActorContext(
   };
 }
 
-/** Live membership read: the only thing that makes a selection hint valid. */
+/**
+ * Live membership read: the only thing that makes a selection hint valid.
+ * The membership and the Workspace are two single-table reads issued together,
+ * one round trip where a relation include would be two sequential ones.
+ */
 async function readSelectedMembership(userId: string, workspaceId: string | undefined) {
   if (!isWorkspaceId(workspaceId)) return null;
 
-  return getRequiredPrisma().workspaceMember.findUnique({
-    where: { workspaceId_userId: { workspaceId, userId } },
-    include: includeWorkspace,
-  });
+  const prisma = getRequiredPrisma();
+  const [membership, workspace] = await Promise.all([
+    prisma.workspaceMember.findUnique({
+      where: { workspaceId_userId: { workspaceId, userId } },
+      select: { role: true },
+    }),
+    prisma.workspace.findUnique({ where: { id: workspaceId }, select: workspaceSelect }),
+  ]);
+  return membership && workspace ? { userId, role: membership.role, workspace } : null;
+}
+
+/** The user's Owner membership of their own personal Workspace, read in one round trip. */
+async function readPersonalMembership(userId: string) {
+  const prisma = getRequiredPrisma();
+  const [membership, workspace] = await Promise.all([
+    prisma.workspaceMember.findFirst({
+      where: { userId, role: "owner", workspace: { personalOwnerUserId: userId } },
+      select: { role: true },
+    }),
+    prisma.workspace.findUnique({ where: { personalOwnerUserId: userId }, select: workspaceSelect }),
+  ]);
+  return membership && workspace ? { userId, role: membership.role, workspace } : null;
 }
 
 /**
@@ -160,32 +178,15 @@ export async function resolveWorkspaceContext(
   user: Pick<User, "id">,
   requestedWorkspaceId?: string,
 ): Promise<WorkspaceActorContext | null> {
-  const prisma = getRequiredPrisma();
-
   const requestedMembership = await readSelectedMembership(user.id, requestedWorkspaceId);
   if (requestedMembership) {
     return toWorkspaceActorContext(requestedMembership);
   }
 
-  let fallbackMembership = await prisma.workspaceMember.findFirst({
-    where: {
-      userId: user.id,
-      role: "owner",
-      workspace: { personalOwnerUserId: user.id },
-    },
-    include: includeWorkspace,
-  });
+  let fallbackMembership = await readPersonalMembership(user.id);
   if (!fallbackMembership) {
-    const personalWorkspace = await ensurePersonalWorkspace(user.id);
-    fallbackMembership = await prisma.workspaceMember.findUnique({
-      where: {
-        workspaceId_userId: {
-          workspaceId: personalWorkspace.id,
-          userId: user.id,
-        },
-      },
-      include: includeWorkspace,
-    });
+    await ensurePersonalWorkspace(user.id);
+    fallbackMembership = await readPersonalMembership(user.id);
   }
 
   return fallbackMembership

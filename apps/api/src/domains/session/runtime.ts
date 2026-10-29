@@ -3,7 +3,7 @@ import {
   resolveWorkspaceContext,
   selectWorkspaceForActor,
 } from "@narriflow/auth";
-import { workspaceMembershipService, workspaceService } from "@narriflow/services";
+import { projectService, workspaceMembershipService, workspaceService } from "@narriflow/services";
 import { parseOrigin } from "@narriflow/validators/api/origins";
 import type { ApiConfig } from "../../config";
 import type { SessionRouteDeps } from "./routes";
@@ -21,6 +21,7 @@ export function createSessionRouteDeps(_config: ApiConfig): SessionRouteDeps {
     listUserWorkspaces,
     workspaceService,
     workspaceMembershipService,
+    projectService,
     authContinuation: {
       issuerUrl: configuredOrigin(process.env.CLERK_OAUTH_ISSUER),
       consentOrigin: configuredOrigin(process.env.CLERK_OAUTH_CONSENT_ORIGIN),

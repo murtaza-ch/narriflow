@@ -23,7 +23,6 @@ import {
   type WorkspaceBootstrap,
   type WorkspaceMembers,
   type WorkspaceProfile,
-  type WorkspaceUsage,
 } from "@narriflow/validators/api/workspace";
 import type { Context } from "hono";
 import { createRouteApp, getActor, getRecordedRateLimit } from "../../http/admission";
@@ -32,7 +31,7 @@ import { getIdempotencyKey, requireIdempotencyKey } from "../../http/idempotency
 import { enforceRecordedRateLimit } from "../../http/limits";
 import { validate } from "../../http/route";
 import { uuidParams } from "../platform/params";
-import { readMemberships, toSessionUser } from "../session/projection";
+import { readMemberships, toSessionUser, toUsage } from "../session/projection";
 import { workspaceAdmission as access } from "./admission";
 import { deliverWorkspaceInvite } from "./invite-delivery";
 
@@ -56,21 +55,6 @@ export interface WorkspaceRouteDeps {
 /** The column is free text; only the two known intervals are exposed. */
 function billingIntervalOf(value: string | null | undefined): "monthly" | "annual" | null {
   return value === "monthly" || value === "annual" ? value : null;
-}
-
-function toUsage(summary: Awaited<ReturnType<WorkspaceRouteDeps["projectService"]["getUsageSummary"]>>): WorkspaceUsage {
-  return {
-    tier: resolvePricingTier(summary.tier),
-    usedCredits: summary.usedCredits,
-    reservedCredits: summary.reservedCredits,
-    limitCredits: summary.limitCredits,
-    remainingCredits: summary.remainingCredits,
-    periodStart: summary.periodStart.toISOString(),
-    renewsAt: summary.renewsAt.toISOString(),
-    inFlight: summary.inFlight,
-    inFlightLimit: summary.inFlightLimit,
-    maxUploadSeconds: summary.maxUploadSeconds,
-  };
 }
 
 /** Workspace profile and settings, members and invites, censor words and avatar. */

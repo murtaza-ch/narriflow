@@ -3,7 +3,7 @@ import type {
   resolveWorkspaceContext,
   selectWorkspaceForActor,
 } from "@narriflow/auth";
-import type { workspaceMembershipService, workspaceService } from "@narriflow/services";
+import type { projectService, workspaceMembershipService, workspaceService } from "@narriflow/services";
 import { WorkspaceOperationError } from "@narriflow/services";
 import { resolvePricingTier } from "@narriflow/validators";
 import {
@@ -21,7 +21,7 @@ import { createRouteApp, getSignedInActor } from "../../http/admission";
 import { WORKSPACE_HEADER } from "../../http/request-policy-runtime";
 import { validate } from "../../http/route";
 import { sessionAdmission as access } from "./admission";
-import { readMemberships, toSessionUser } from "./projection";
+import { readMemberships, toSessionUser, toUsage } from "./projection";
 
 /** Services the session routes call. `runtime.ts` supplies the production instances. */
 export interface SessionRouteDeps {
@@ -30,6 +30,7 @@ export interface SessionRouteDeps {
   listUserWorkspaces: typeof listUserWorkspaces;
   workspaceService: Pick<typeof workspaceService, "getAvatarUrls" | "getInvitePreview">;
   workspaceMembershipService: Pick<typeof workspaceMembershipService, "acceptInvite">;
+  projectService: Pick<typeof projectService, "getUsageSummary">;
   /** Validated Clerk origins for client navigation; never request-supplied. */
   authContinuation: AuthContinuationConfig;
 }
@@ -64,11 +65,27 @@ export function createSessionRoutes(deps: SessionRouteDeps) {
       const user = getSignedInActor(c);
       // Identity-only client requests never carry the header, so the hint may also come as a query parameter.
       const hint = c.req.header(WORKSPACE_HEADER)?.trim() || c.req.valid("query").workspaceId;
-      const [context, memberships] = await Promise.all([
-        deps.resolveWorkspaceContext({ id: user.actorUserId }, hint),
+      const contextRead = deps.resolveWorkspaceContext({ id: user.actorUserId }, hint);
+      // The shell's credits ride along so it needs no second request. They start
+      // as soon as the Workspace is known and overlap the memberships. A
+      // Workspace this member cannot view gets none: its own bootstrap says why.
+      const usageRead = contextRead.then(async (resolved) =>
+        resolved && workspaceCapabilities(resolved)["content.view"]
+          ? toUsage(
+              await deps.projectService.getUsageSummary({
+                actorUserId: user.actorUserId,
+                workspaceId: resolved.workspaceId,
+              }),
+            )
+          : null,
+      );
+      const [context, memberships, usage] = await Promise.all([
+        contextRead,
         readMemberships(deps, user.actorUserId),
+        usageRead,
       ]);
       if (!context) throw new Error("A signed-in user has no Workspace to select");
+      const capabilities = workspaceCapabilities(context);
       c.header("X-Workspace-Id", context.workspaceId);
       const body: SessionBootstrap = {
         user: toSessionUser(user),
@@ -77,7 +94,8 @@ export function createSessionRoutes(deps: SessionRouteDeps) {
           workspaceId: context.workspaceId,
           workspaceSelectionChanged: context.workspaceSelectionChanged,
         },
-        capabilities: workspaceCapabilities(context),
+        capabilities,
+        usage,
         authContinuation: deps.authContinuation,
       };
       return c.json(body, 200);

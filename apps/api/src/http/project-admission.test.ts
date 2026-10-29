@@ -6,9 +6,14 @@ import type { ActorScope } from "./request-policy";
 const actor = { actorUserId: "u", workspaceId: "w" } as ActorScope;
 const id = "11111111-1111-4111-8111-111111111111";
 
-function prismaReturning(project: unknown) {
+function prismaReturning(project: unknown, workspaceName = "X") {
   const findFirst = mock(async () => project);
-  return { prisma: { project: { findFirst } } as unknown as Pick<PrismaClient, "project">, findFirst };
+  const findUnique = mock(async () => ({ name: workspaceName }));
+  return {
+    prisma: { project: { findFirst }, workspace: { findUnique } } as unknown as Pick<PrismaClient, "project" | "workspace">,
+    findFirst,
+    findUnique,
+  };
 }
 
 describe("Project admission", () => {
@@ -20,23 +25,30 @@ describe("Project admission", () => {
     expect(findFirst).not.toHaveBeenCalled();
   });
 
-  test("conceals a Project the actor is not a member of", async () => {
-    const { prisma } = prismaReturning({ id, workspace: { id: "w", name: "W", members: [] } });
+  test("conceals a Project the actor is not a member of by filtering on the membership", async () => {
+    const { prisma, findFirst } = prismaReturning(null);
     await expect(resolveAuthenticatedProject(prisma, { actor, projectId: id })).resolves.toEqual({ kind: "missing" });
+    const query = (findFirst.mock.calls as unknown as Array<[{ where: { workspace: unknown } }]>)[0]?.[0];
+    expect(query?.where.workspace).toEqual({ members: { some: { userId: "u" } } });
   });
 
-  test("reports an entitled mismatch and admits a matching Workspace", async () => {
-    const other = prismaReturning({ id, workspace: { id: "x", name: "X", members: [{ id: "m" }] } });
+  test("admits a matching Workspace in one read", async () => {
+    const same = prismaReturning({ id, workspaceId: "w" });
+    await expect(resolveAuthenticatedProject(same.prisma, { actor, projectId: id })).resolves.toEqual({
+      kind: "active",
+      projectId: id,
+    });
+    expect(same.findFirst).toHaveBeenCalledTimes(1);
+    expect(same.findUnique).not.toHaveBeenCalled();
+  });
+
+  test("reports an entitled mismatch with the other Workspace's name", async () => {
+    const other = prismaReturning({ id, workspaceId: "x" });
     await expect(resolveAuthenticatedProject(other.prisma, { actor, projectId: id })).resolves.toEqual({
       kind: "workspace_mismatch",
       projectId: id,
       workspaceId: "x",
       workspaceName: "X",
-    });
-    const same = prismaReturning({ id, workspace: { id: "w", name: "W", members: [{ id: "m" }] } });
-    await expect(resolveAuthenticatedProject(same.prisma, { actor, projectId: id })).resolves.toEqual({
-      kind: "active",
-      projectId: id,
     });
   });
 });

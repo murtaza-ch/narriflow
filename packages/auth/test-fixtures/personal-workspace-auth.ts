@@ -27,12 +27,47 @@ let selectedMembership: { role: WorkspaceRole; userId: string; workspace: Worksp
 let upsertFailure: unknown;
 let calls: string[];
 
+// Simulated database latency. Queries issued together share one round trip;
+// a query issued after another finished starts a new one.
+let inFlight = 0;
+let roundTrips = 0;
+let queryCount = 0;
+async function trip(): Promise<void> {
+  if (inFlight === 0) roundTrips++;
+  inFlight++;
+  queryCount++;
+  await Bun.sleep(1);
+  inFlight--;
+}
+
 const membershipFindFirst = mock(async (input: {
-  where: { userId: string; role?: WorkspaceRole; workspace: { personalOwnerUserId: string } };
+  where: {
+    userId?: string;
+    workspaceId?: string;
+    role?: WorkspaceRole;
+    user?: { clerkId: string };
+    workspace?: { personalOwnerUserId?: string; personalOwner?: { clerkId: string } };
+  };
 }) => {
+  await trip();
+  if (input.where.user && input.where.workspace?.personalOwner) {
+    // Keyed by the verified Clerk id: the personal-Workspace invariant.
+    calls.push("personal-ownership-read");
+    expect(input.where.user.clerkId).toBe(user.clerkId);
+    return currentWorkspace && personalRole === "owner" ? { id: "owner-membership" } : null;
+  }
+  if (input.where.user) {
+    // Keyed by the verified Clerk id: the selected Workspace's membership.
+    calls.push("selected-membership-by-clerk-read");
+    expect(input.where.user.clerkId).toBe(user.clerkId);
+    if (input.where.workspaceId === currentWorkspace?.id) {
+      return personalRole ? { userId: user.id, role: personalRole } : null;
+    }
+    return selectedMembership ? { userId: user.id, role: selectedMembership.role } : null;
+  }
   calls.push("personal-membership-read");
   expect(input.where.userId).toBe(user.id);
-  expect(input.where.workspace.personalOwnerUserId).toBe(user.id);
+  expect(input.where.workspace?.personalOwnerUserId).toBe(user.id);
   if (!currentWorkspace || !personalRole ||
     input.where.role && input.where.role !== personalRole) return null;
   return { userId: user.id, role: personalRole, workspace: { ...currentWorkspace } };
@@ -40,6 +75,7 @@ const membershipFindFirst = mock(async (input: {
 const membershipFindUnique = mock(async (input: {
   where: { workspaceId_userId: { userId: string; workspaceId: string } };
 }) => {
+  await trip();
   calls.push("selected-membership-read");
   expect(input.where.workspaceId_userId.userId).toBe(user.id);
   if (input.where.workspaceId_userId.workspaceId === currentWorkspace?.id) {
@@ -108,6 +144,7 @@ const prisma = {
       return storedUser ?? user;
     }),
     findFirst: mock(async () => {
+      await trip();
       calls.push("authenticated-user-read");
       return storedUser;
     }),
@@ -143,7 +180,11 @@ const prisma = {
   $transaction: mock(async (operations: Array<Promise<unknown>>) => Promise.all(operations)),
   workspace: {
     upsert: workspaceUpsert,
-    findUnique: mock(async () => currentWorkspace),
+    findUnique: mock(async (input: { where: { id?: string; personalOwnerUserId?: string } }) => {
+      await trip();
+      if (input.where.id && input.where.id !== currentWorkspace?.id) return selectedMembership?.workspace ?? null;
+      return currentWorkspace ? { ...currentWorkspace } : null;
+    }),
   },
   workspaceMember: {
     findFirst: membershipFindFirst,
@@ -161,6 +202,7 @@ const {
   ensurePersonalWorkspace,
   getAppUserForClerkIdentity,
   markUserDeletedByClerkId,
+  readWorkspaceRequestActor,
   resolveScopedWorkspaceContext,
   resolveWorkspaceContext,
   selectWorkspaceForActor,
@@ -227,7 +269,11 @@ beforeEach(() => {
   identityUpserts = [];
   directoryLookups = [];
   directoryOutcome = "complete-user-only";
+  inFlight = 0;
+  roundTrips = 0;
+  queryCount = 0;
   prisma.user.update.mockClear();
+  workspaceUpsert.mockClear();
   prisma.$transaction.mockClear();
 });
 
@@ -301,8 +347,16 @@ describe("personal workspace provisioning", () => {
 describe("App User for a verified Clerk identity", () => {
   test("an intact signed-in user takes two reads and never asks Clerk", async () => {
     expect(await getAppUserForClerkIdentity(user.clerkId, directory)).toEqual(user);
-    expect(calls).toEqual(["authenticated-user-read", "personal-membership-read"]);
+    expect(calls).toEqual(["authenticated-user-read", "personal-ownership-read"]);
     expect(directoryLookups).toEqual([]);
+    expect(roundTrips).toBe(1);
+  });
+
+  test("a user missing the personal Workspace is repaired after the same single read", async () => {
+    personalRole = null;
+    expect(await getAppUserForClerkIdentity(user.clerkId, directory)).toEqual(user);
+    expect(calls.slice(0, 2)).toEqual(["authenticated-user-read", "personal-ownership-read"]);
+    expect(calls).toContain("workspace-provision");
   });
 
   test("a user without a default brand template receives the built-in first-use template", async () => {
@@ -333,7 +387,7 @@ describe("App User for a verified Clerk identity", () => {
       expect.objectContaining({ provider: "email_password", providerUserId: user.clerkId }),
       expect.objectContaining({ provider: "google", providerUserId: "google-1" }),
     ]);
-    expect(calls).toContain("personal-membership-read");
+    expect(calls).toContain("personal-ownership-read");
   });
 
   test("a first-login Clerk outage is a typed unavailable error and invents no user", async () => {
@@ -534,5 +588,59 @@ describe("workspace selection", () => {
     });
     selectedMembership = null;
     expect(await selectWorkspaceForActor(user.id, OTHER_WORKSPACE_ID)).toBeNull();
+  });
+});
+
+describe("Workspace-scoped request actor", () => {
+  const teamId = OTHER_WORKSPACE_ID;
+  const team = (role: WorkspaceRole = "editor") => ({
+    userId: user.id,
+    role,
+    workspace: { ...workspace, id: teamId, personalOwnerUserId: null } as Workspace,
+  });
+
+  test("a warm request resolves the user, membership and Workspace in one round trip with no writes", async () => {
+    selectedMembership = team("admin");
+    const actor = await readWorkspaceRequestActor(user.clerkId, teamId);
+    expect(actor?.user).toEqual(user);
+    expect(actor?.context).toMatchObject({
+      userId: user.id,
+      workspaceId: teamId,
+      role: "admin",
+      isPersonal: false,
+      workspaceSelectionChanged: false,
+    });
+    expect(roundTrips).toBe(1);
+    expect(queryCount).toBe(4);
+    expect(prisma.user.update).not.toHaveBeenCalled();
+    expect(workspaceUpsert).not.toHaveBeenCalled();
+    expect(directoryLookups).toEqual([]);
+  });
+
+  test("the full path costs the same one round trip each for user and membership", async () => {
+    selectedMembership = team();
+    const full = await getAppUserForClerkIdentity(user.clerkId, directory);
+    const context = await resolveScopedWorkspaceContext(full, teamId);
+    expect(context?.workspaceId).toBe(teamId);
+    expect(roundTrips).toBe(2);
+  });
+
+  test.each([
+    ["a malformed hint", () => undefined, "not-a-uuid"],
+    ["an absent hint", () => undefined, undefined],
+    ["a removed membership", () => undefined, teamId],
+    ["a user without the first-use template", () => { storedUser = { ...user, defaultBrandTemplateId: null } as User; selectedMembership = team(); }, teamId],
+    ["an incomplete profile", () => { storedUser = { ...user, lastSignInAt: null } as User; selectedMembership = team(); }, teamId],
+    ["a missing personal Workspace", () => { personalRole = null; selectedMembership = team(); }, teamId],
+    ["an unknown user", () => { storedUser = null; selectedMembership = team(); }, teamId],
+  ] as const)("%s defers to the full path instead of deciding", async (_name, arrange, hint) => {
+    arrange();
+    expect(await readWorkspaceRequestActor(user.clerkId, hint)).toBeNull();
+  });
+
+  test("a membership that belongs to a different App User is never accepted", async () => {
+    selectedMembership = team();
+    storedUser = { ...user, id: "someone-else" } as User;
+    expect(await readWorkspaceRequestActor(user.clerkId, teamId)).toBeNull();
   });
 });

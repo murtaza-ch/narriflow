@@ -248,9 +248,10 @@ describe("Authenticated Request Policy", () => {
     expect(result).toMatchObject({ ok: true, value: "A clip" });
     expect(calls).toEqual([
       "authentication-and-workspace",
+      // The Project read starts with the limiter; the decisions stay ordered.
+      "project",
       "rate-key:actor-user",
       "rate-limit",
-      "project",
       "input",
       "operation",
     ]);
@@ -620,6 +621,55 @@ describe("Authenticated Request Policy", () => {
     expect(keys).toEqual(["baseline"]);
   });
 
+  test("a rate refusal is answered before a missing Project, though the Project read overlaps the limiter", async () => {
+    const events: string[] = [];
+    const policy = createPolicy({
+      rateLimit: async () => {
+        events.push("rate:start");
+        await Bun.sleep(10);
+        events.push("rate:end");
+        return { allowed: false, retryAfterSeconds: 3 };
+      },
+      resolveProject: async () => {
+        events.push("project:start");
+        await Bun.sleep(1);
+        events.push("project:end");
+        return { kind: "missing" };
+      },
+    });
+
+    const result = await policy.execute({
+      adapter: "hono",
+      operationName: "limited-and-missing",
+      admission: { kind: "project", capability: "content.edit", projectId: "project-a" },
+      rateLimit: { key: () => "k", limit: 1, windowSeconds: 60 },
+      operation: async () => true,
+    });
+
+    expect(result).toMatchObject({ ok: false, failure: { code: "rate_limited", status: 429 } });
+    // The Project read ran concurrently with the limiter's round trip.
+    expect(events.indexOf("project:start")).toBeLessThan(events.indexOf("rate:end"));
+  });
+
+  test("a failing Project read that the limiter already refused never surfaces", async () => {
+    const policy = createPolicy({
+      rateLimit: async () => ({ allowed: false, retryAfterSeconds: 3 }),
+      resolveProject: async () => {
+        throw new Error("database unavailable");
+      },
+    });
+
+    const result = await policy.execute({
+      adapter: "hono",
+      operationName: "limited-and-failing",
+      admission: { kind: "project", capability: "content.edit", projectId: "project-a" },
+      rateLimit: { key: () => "k", limit: 1, windowSeconds: 60 },
+      operation: async () => true,
+    });
+
+    expect(result).toMatchObject({ ok: false, failure: { code: "rate_limited" } });
+  });
+
   test("a deferred rate refusal still admits, and hands the recorded outcome to the operation", async () => {
     const calls: string[] = [];
     const policy = createPolicy({
@@ -647,7 +697,7 @@ describe("Authenticated Request Policy", () => {
       operation: async ({ rateLimit }) => rateLimit,
     });
 
-    expect(calls).toEqual(["rate:baseline", "rate:operation", "project"]);
+    expect(calls).toEqual(["project", "rate:baseline", "rate:operation"]);
     expect(result).toMatchObject({
       ok: true,
       value: {

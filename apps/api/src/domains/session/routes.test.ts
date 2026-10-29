@@ -77,6 +77,20 @@ function deps(over: Partial<SessionRouteDeps> = {}): SessionRouteDeps {
     workspaceMembershipService: {
       acceptInvite: mock(async () => ({ workspaceId: RESTRICTED, workspaceName: "Team", role: "editor" })),
     } as never,
+    projectService: {
+      getUsageSummary: mock(async () => ({
+        tier: "creator",
+        usedCredits: 5,
+        reservedCredits: 1,
+        limitCredits: 100,
+        remainingCredits: 94,
+        periodStart: new Date("2030-01-01T00:00:00Z"),
+        renewsAt: new Date("2030-02-01T00:00:00Z"),
+        inFlight: 0,
+        inFlightLimit: 2,
+        maxUploadSeconds: 600,
+      })),
+    } as never,
     authContinuation: { issuerUrl: "https://clerk.example.com", consentOrigin: null },
     ...over,
   };
@@ -120,6 +134,25 @@ describe("GET /api/session/bootstrap", () => {
     expect(body.capabilities["content.edit"]).toBe(false);
     expect(body.authContinuation).toEqual({ issuerUrl: "https://clerk.example.com", consentOrigin: null });
     expect(JSON.stringify(body)).not.toContain("clerk-1");
+  });
+
+  test("carries the effective Workspace's credits so the shell needs no second request", async () => {
+    const routeDeps = deps();
+    const response = await app(routeDeps).request("/api/session/bootstrap", { headers: headers({ "x-workspace-id": PERSONAL }) });
+    const body = await response.json();
+    expect(body.usage).toMatchObject({ tier: "creator", remainingCredits: 94, renewsAt: "2030-02-01T00:00:00.000Z" });
+    expect(routeDeps.projectService.getUsageSummary).toHaveBeenCalledWith({ actorUserId: "user-1", workspaceId: PERSONAL });
+  });
+
+  test("a Workspace the member cannot view carries no credits and never reads them", async () => {
+    const routeDeps = deps({
+      resolveWorkspaceContext: mock(async () => context(RESTRICTED, { role: "viewer", status: "pending_payment" })) as never,
+    });
+    const response = await app(routeDeps).request("/api/session/bootstrap", { headers: headers() });
+    const body = await response.json();
+    expect(body.capabilities["content.view"]).toBe(false);
+    expect(body.usage).toBeNull();
+    expect(routeDeps.projectService.getUsageSummary).not.toHaveBeenCalled();
   });
 
   test("identity-only clients send the saved selection as a query parameter", async () => {

@@ -16,6 +16,7 @@ export {
   invalidateWorkspaceMembers,
   invalidateWorkspaceProfile,
   invalidateWorkspaceUsage,
+  seedWorkspaceBootstrapFromSession,
   workspaceBootstrapQuery,
   workspaceCensorWordsQuery,
   workspaceMembersQuery,

@@ -3,6 +3,8 @@ import {
   ClerkDirectoryUnavailableError,
   type BearerAuthResult,
   getAppUserForClerkIdentity,
+  isWorkspaceId,
+  readWorkspaceRequestActor,
   type ClerkUserDirectory,
   type PlatformActor,
   resolvePlatformActor,
@@ -55,6 +57,22 @@ export interface RequestPolicyRuntimeOptions {
     user: Pick<AppUser, "id">,
     requestedWorkspaceId: string | undefined,
   ): Promise<WorkspaceActorContext | null>;
+  /**
+   * Single-round-trip answer for a provisioned, fresh user with a current
+   * membership of the selected Workspace. Null means "take the full path"
+   * (`loadAppUser` then `resolveScopedWorkspace`), which provisions, refreshes
+   * or refuses; it is never a refusal by itself.
+   */
+  readWorkspaceActor?(
+    clerkUserId: string,
+    requestedWorkspaceId: string | undefined,
+  ): Promise<{ user: AppUser; context: WorkspaceActorContext } | null>;
+  /**
+   * Whether a non-empty `X-Workspace-Id` is shaped like a Workspace id. A
+   * header that is not is a 400 `invalid_input` before any read; a well-formed
+   * id that is not a current membership stays a 409. Defaults to accepting any.
+   */
+  isWorkspaceHint?(hint: string): boolean;
   staffAllowlist: StaffAllowlist;
   policy: AuthenticatedRequestPolicyDependencies;
 }
@@ -79,6 +97,17 @@ function workspaceSelectionChanged(): AuthenticatedRequestFailure {
     category: "workspace_selection",
     status: 409,
     message: "Your Workspace selection changed. Reload to continue.",
+  });
+}
+
+/** A header that is not a Workspace id at all is a malformed request, not a stale selection. */
+function malformedWorkspaceHeader(): AuthenticatedRequestFailure {
+  return new AuthenticatedRequestFailure({
+    code: "invalid_input",
+    category: "validation",
+    status: 400,
+    message: "Check the highlighted fields and try again.",
+    issues: [{ path: ["header", WORKSPACE_HEADER], code: "invalid_string", message: "Must be a Workspace id" }],
   });
 }
 
@@ -125,10 +154,21 @@ export function createRequestPolicyRuntime(
         return { ...rest, actorUserId: id };
       });
       const workspace = once(async (): Promise<BrowserActorScope | null> => {
-        const user = await appUser();
-        if (!user) return null;
+        const verified = await identity();
+        if (!verified) return null;
         const hint = request.headers.get(WORKSPACE_HEADER)?.trim() || undefined;
-        const context = await options.resolveScopedWorkspace(user, hint);
+        if (hint !== undefined && options.isWorkspaceHint?.(hint) === false) throw malformedWorkspaceHeader();
+        const fast = await options.readWorkspaceActor?.(verified.clerkUserId, hint);
+        let user: AppUser;
+        let context: WorkspaceActorContext | null;
+        if (fast) {
+          ({ user, context } = fast);
+        } else {
+          const loaded = await appUser();
+          if (!loaded) return null;
+          user = loaded;
+          context = await options.resolveScopedWorkspace(user, hint);
+        }
         // An absent or removed selection never falls through to another Workspace.
         if (!context || context.userId !== user.id) {
           throw workspaceSelectionChanged();
@@ -184,6 +224,8 @@ export function createProductionRequestPolicyRuntime(config: {
     loadAppUser: (clerkUserId) =>
       getAppUserForClerkIdentity(clerkUserId, config.clerkClient),
     resolveScopedWorkspace: resolveScopedWorkspaceContext,
+    readWorkspaceActor: readWorkspaceRequestActor,
+    isWorkspaceHint: isWorkspaceId,
     staffAllowlist: config.staffAllowlist,
     policy: {
       async resolveProject(input) {

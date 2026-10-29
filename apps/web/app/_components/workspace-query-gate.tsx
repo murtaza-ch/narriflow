@@ -9,7 +9,7 @@ import {
   type WorkspaceScope,
 } from "@narriflow/api-client";
 import { selectWorkspaceMutation, sessionBootstrapQuery } from "@narriflow/api-client/session";
-import { workspaceBootstrapQuery } from "@narriflow/api-client/workspace";
+import { seedWorkspaceBootstrapFromSession, workspaceBootstrapQuery } from "@narriflow/api-client/workspace";
 import { Button } from "@narriflow/ui/components/button";
 import { type SessionBootstrap, workspaceCapabilities } from "@narriflow/validators/api/session";
 import type { WorkspaceBootstrap } from "@narriflow/validators/api/workspace";
@@ -47,7 +47,9 @@ import {
  * the bootstrap again and adopts what it reports; the refused command is never
  * replayed in the other Workspace.
  *
- * `WorkspaceQueryGate` then reads the Workspace bootstrap. A Workspace the
+ * `WorkspaceQueryGate` then reads the Workspace bootstrap, which the identity
+ * bootstrap already seeded for the effective Workspace, so it only requests
+ * one when the seed is absent (a Workspace the member cannot view) or stale. A Workspace the
  * person cannot view (a member of a paused one) is sent to the page outside the
  * shell that always offers a way out.
  */
@@ -159,10 +161,20 @@ export function SessionGate({
   useEffect(() => {
     if (!data || !settled || !needsAdoption.current) return;
     needsAdoption.current = false;
+    // The identity bootstrap carries the Workspace bootstrap's data for the
+    // effective Workspace: seed it so the shell opens without a second request.
+    // Seeding is not a scoped request, so it may precede the adoption.
+    if (identity) {
+      seedWorkspaceBootstrapFromSession(
+        runtime.queryClient,
+        { userId: identity.userId, workspaceId: data.selection.workspaceId },
+        data,
+      );
+    }
     runtime.selectWorkspace(data.selection.workspaceId);
     setSelectionChanged(data.selection.workspaceSelectionChanged);
     setAdopted(true);
-  }, [data, settled, runtime]);
+  }, [data, settled, runtime, identity]);
 
   const userId = identity?.userId ?? null;
   const revalidate = useCallback(() => {

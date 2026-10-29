@@ -16,11 +16,13 @@ export {
   getAppUserForClerkIdentity,
   getWebhookDeliveryLog,
   markUserDeletedByClerkId,
+  readWorkspaceRequestActor,
   recordWebhookDeliveryLog,
   syncClerkUserPayload,
   type AppUser,
   type ClerkUserDirectory,
   type ClerkUserSource,
+  type WorkspaceRequestActor,
 } from "./identity";
 export {
   parseStaffAllowlist,
@@ -35,6 +37,7 @@ export {
 } from "./webhook";
 export {
   ensurePersonalWorkspace,
+  isWorkspaceId,
   listUserWorkspaces,
   resolveScopedWorkspaceContext,
   resolveWorkspaceContext,

@@ -283,8 +283,8 @@ describe("Authenticated Request Policy order over HTTP", () => {
       "authenticate",
       "user",
       "workspace:workspace-a",
-      "rate",
       "project",
+      "rate",
       "handler",
     ]);
   });

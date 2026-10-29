@@ -6,7 +6,7 @@ import { createApiRuntime } from "../core/runtime";
 import { scopedKey, sessionKey } from "../core/keys";
 import { errorResponse, fakeFetch, jsonResponse, USER, WORKSPACE_A } from "../core/test-helpers";
 import { inviteMemberMutation, replaceCensorWordsMutation, updateWorkspaceMutation } from "./mutations";
-import { workspaceBootstrapQuery } from "./queries";
+import { seedWorkspaceBootstrapFromSession, workspaceBootstrapQuery } from "./queries";
 
 const scope = { userId: USER, workspaceId: WORKSPACE_A };
 
@@ -31,6 +31,34 @@ describe("workspace queries", () => {
     expect(calls[0]?.headers.get("x-workspace-id")).toBe(WORKSPACE_A);
     expect(calls[0]?.init.credentials).toBe("omit");
     expect(api.queryClient.getQueryData(scopedKey(scope, "workspace", "usage") as never)).toEqual(usage);
+  });
+});
+
+describe("seeding the Workspace bootstrap from the identity bootstrap", () => {
+  const summary = { id: WORKSPACE_A, name: "W", role: "owner", status: "active", pricingTier: "pro", isPersonal: true, avatarUrl: null };
+  const session = {
+    user: { id: "u", email: null, firstName: null, lastName: null, imageUrl: null },
+    memberships: [summary],
+    selection: { workspaceId: WORKSPACE_A, workspaceSelectionChanged: false },
+    capabilities: { "content.view": true },
+    usage,
+    authContinuation: { issuerUrl: null, consentOrigin: null },
+  } as never;
+
+  test("a fresh seed answers the bootstrap query without a request, and seeds usage", async () => {
+    const { api, calls } = setup(() => jsonResponse({}));
+    expect(seedWorkspaceBootstrapFromSession(api.queryClient, scope, session)).toBe(true);
+    const bootstrap = await api.queryClient.fetchQuery(workspaceBootstrapQuery(api.transport, scope));
+    expect(bootstrap).toMatchObject({ workspace: summary, usage, memberships: [summary] });
+    expect(calls).toHaveLength(0);
+    expect(api.queryClient.getQueryData(scopedKey(scope, "workspace", "usage") as never)).toEqual(usage);
+  });
+
+  test("a session without usage or the Workspace seeds nothing, so the request runs", () => {
+    const { api } = setup(() => jsonResponse({}));
+    expect(seedWorkspaceBootstrapFromSession(api.queryClient, scope, { ...(session as object), usage: null } as never)).toBe(false);
+    expect(seedWorkspaceBootstrapFromSession(api.queryClient, { ...scope, workspaceId: "other" }, session)).toBe(false);
+    expect(api.queryClient.getQueryData(scopedKey(scope, "workspace", "bootstrap") as never)).toBeUndefined();
   });
 });
 

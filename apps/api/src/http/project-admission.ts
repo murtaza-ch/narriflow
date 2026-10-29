@@ -9,42 +9,34 @@ const UUID_PATTERN =
  * is concealed exactly like a missing one instead of reaching the database.
  */
 export async function resolveAuthenticatedProject(
-  prisma: Pick<PrismaClient, "project">,
+  prisma: Pick<PrismaClient, "project" | "workspace">,
   input: { actor: ActorScope; projectId: string; now?: Date },
 ): Promise<ProjectAdmissionResult> {
   if (!UUID_PATTERN.test(input.projectId)) return { kind: "missing" };
+  // One single-table read: the actor's membership is a filter, not a second
+  // lookup, and the Workspace name is fetched only to explain a mismatch.
   const project = await prisma.project.findFirst({
     where: {
       id: input.projectId,
       purgeStartedAt: null,
       OR: [{ expiresAt: null }, { expiresAt: { gt: input.now ?? new Date() } }],
+      workspace: { members: { some: { userId: input.actor.actorUserId } } },
     },
-    select: {
-      id: true,
-      workspace: {
-        select: {
-          id: true,
-          name: true,
-          members: {
-            where: { userId: input.actor.actorUserId },
-            select: { id: true },
-            take: 1,
-          },
-        },
-      },
-    },
+    select: { id: true, workspaceId: true },
   });
 
-  if (!project || project.workspace.members.length === 0) {
-    return { kind: "missing" };
+  if (!project) return { kind: "missing" };
+  if (project.workspaceId === input.actor.workspaceId) {
+    return { kind: "active", projectId: project.id };
   }
-  if (project.workspace.id !== input.actor.workspaceId) {
-    return {
-      kind: "workspace_mismatch",
-      projectId: project.id,
-      workspaceId: project.workspace.id,
-      workspaceName: project.workspace.name,
-    };
-  }
-  return { kind: "active", projectId: project.id };
+  const workspace = await prisma.workspace.findUnique({
+    where: { id: project.workspaceId },
+    select: { name: true },
+  });
+  return {
+    kind: "workspace_mismatch",
+    projectId: project.id,
+    workspaceId: project.workspaceId,
+    workspaceName: workspace?.name ?? "",
+  };
 }

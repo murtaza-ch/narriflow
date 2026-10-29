@@ -1,7 +1,8 @@
 import type { listUserWorkspaces } from "@narriflow/auth";
-import type { workspaceService } from "@narriflow/services";
+import type { projectService, workspaceService } from "@narriflow/services";
 import { resolvePricingTier } from "@narriflow/validators";
 import type { SessionUser, WorkspaceSummary } from "@narriflow/validators/api/session";
+import type { WorkspaceUsage } from "@narriflow/validators/api/workspace";
 
 /** What both bootstrap reads need to list a user's Workspaces. */
 export interface MembershipReads {
@@ -45,4 +46,20 @@ export async function readMemberships(
     isPersonal: workspace.personalOwnerUserId !== null,
     avatarUrl: avatarUrls[workspace.id] ?? null,
   }));
+}
+
+/** The wire shape of the Workspace's processing usage. */
+export function toUsage(summary: Awaited<ReturnType<typeof projectService.getUsageSummary>>): WorkspaceUsage {
+  return {
+    tier: resolvePricingTier(summary.tier),
+    usedCredits: summary.usedCredits,
+    reservedCredits: summary.reservedCredits,
+    limitCredits: summary.limitCredits,
+    remainingCredits: summary.remainingCredits,
+    periodStart: summary.periodStart.toISOString(),
+    renewsAt: summary.renewsAt.toISOString(),
+    inFlight: summary.inFlight,
+    inFlightLimit: summary.inFlightLimit,
+    maxUploadSeconds: summary.maxUploadSeconds,
+  };
 }

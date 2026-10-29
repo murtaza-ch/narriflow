@@ -381,6 +381,20 @@ export function createAuthenticatedRequestPolicy(
           }
         }
 
+        // The Project read does not depend on the limiter's answer, so it starts
+        // now and overlaps the limiter round trips. The decision order is
+        // unchanged: a rate refusal is answered before the Project is
+        // consulted, and an unused read is discarded.
+        const admission = request.admission;
+        const projectRead =
+          admission.kind === "project" && workspaceActor
+            ? dependencies.resolveProject({
+                actor: workspaceActor,
+                projectId: admission.projectId,
+              })
+            : null;
+        projectRead?.catch(() => undefined);
+
         // 3. Rate limits.
         let recorded: RecordedRateLimit | null = null;
         for (const rule of ruleList(request.rateLimit)) {
@@ -409,14 +423,8 @@ export function createAuthenticatedRequestPolicy(
 
         // 4. Project concealment and Workspace mismatch.
         let project: ActiveProjectScope | null = null;
-        if (request.admission.kind === "project") {
-          if (!workspaceActor) {
-            throw new Error("Project admission requires a Workspace actor");
-          }
-          const admitted = await dependencies.resolveProject({
-            actor: workspaceActor,
-            projectId: request.admission.projectId,
-          });
+        if (projectRead) {
+          const admitted = await projectRead;
           if (admitted.kind === "missing") {
             return failed({
               code: "project_not_found",

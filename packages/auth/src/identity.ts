@@ -12,7 +12,12 @@ import {
 } from "./clerk-payload";
 import { ClerkDirectoryUnavailableError, isClerkNotFound, isClerkUnavailable } from "./clerk";
 import { getRequiredPrisma, isUniqueViolation } from "./database";
-import { ensurePersonalWorkspace } from "./workspace";
+import {
+  ensurePersonalWorkspace,
+  isWorkspaceId,
+  toWorkspaceActorContext,
+  type WorkspaceActorContext,
+} from "./workspace";
 
 export type AppUser = User;
 
@@ -272,25 +277,47 @@ function needsUserRefresh(user: AppUser): boolean {
   return !user.primaryEmail || !user.emailVerifiedAt || !user.lastSignInAt;
 }
 
+/** The App User row of a live Clerk identity. */
+function readLiveUser(clerkUserId: string) {
+  return getRequiredPrisma().user.findFirst({ where: { clerkId: clerkUserId, deletedAt: null } });
+}
+
+/** Whether the identity owns its personal Workspace membership; keyed by Clerk id so it needs no App User first. */
+function readPersonalOwnership(clerkUserId: string) {
+  return getRequiredPrisma().workspaceMember.findFirst({
+    where: {
+      role: "owner",
+      user: { clerkId: clerkUserId, deletedAt: null },
+      workspace: { personalOwner: { clerkId: clerkUserId } },
+    },
+    select: { id: true },
+  });
+}
+
 /**
  * Resolves the App User for a verified Clerk user id, provisioning on first
  * login. Callers must pass an id from verified session claims, never from a
  * request header or body.
+ *
+ * A provisioned, refreshed user costs one round trip: the user row and the
+ * personal-Workspace invariant are read together, and nothing is written.
  */
 export async function getAppUserForClerkIdentity(
   clerkUserId: string,
   clerkClient: ClerkUserDirectory,
 ): Promise<AppUser> {
-  const prisma = getRequiredPrisma();
-  const existing = await prisma.user.findFirst({
-    where: { clerkId: clerkUserId, deletedAt: null },
-  });
+  const [existing, personalOwnership] = await Promise.all([
+    readLiveUser(clerkUserId),
+    readPersonalOwnership(clerkUserId),
+  ]);
 
   if (existing) {
     if (!existing.defaultBrandTemplateId) {
       await ensureFirstUseBrandTemplate(existing.id);
     }
-    await ensurePersonalWorkspace(existing.id);
+    if (!personalOwnership) {
+      await ensurePersonalWorkspace(existing.id);
+    }
     if (needsUserRefresh(existing)) {
       return syncClerkUserPayload(await fetchClerkUser(clerkClient, clerkUserId), clerkClient);
     }
@@ -299,6 +326,64 @@ export async function getAppUserForClerkIdentity(
   }
 
   return syncClerkUserPayload(await fetchClerkUser(clerkClient, clerkUserId), clerkClient);
+}
+
+export interface WorkspaceRequestActor {
+  user: AppUser;
+  context: WorkspaceActorContext;
+}
+
+/**
+ * The hot path of a Workspace-scoped request in one round trip: the App User,
+ * the live membership of the selected Workspace, that Workspace and the
+ * personal-Workspace invariant are independent reads keyed by the verified
+ * Clerk id, so they are issued together. Returns null whenever anything needs
+ * provisioning, refreshing or refusing; the caller then takes the full path
+ * (`getAppUserForClerkIdentity` and `resolveScopedWorkspaceContext`), which
+ * makes the decision. Nothing is cached across requests.
+ */
+export async function readWorkspaceRequestActor(
+  clerkUserId: string,
+  requestedWorkspaceId: string | undefined,
+): Promise<WorkspaceRequestActor | null> {
+  if (!isWorkspaceId(requestedWorkspaceId)) return null;
+
+  const prisma = getRequiredPrisma();
+  const [user, membership, workspace, personalOwnership] = await Promise.all([
+    readLiveUser(clerkUserId),
+    prisma.workspaceMember.findFirst({
+      where: {
+        workspaceId: requestedWorkspaceId,
+        user: { clerkId: clerkUserId, deletedAt: null },
+      },
+      select: { userId: true, role: true },
+    }),
+    prisma.workspace.findUnique({
+      where: { id: requestedWorkspaceId },
+      select: {
+        id: true,
+        name: true,
+        ownerUserId: true,
+        personalOwnerUserId: true,
+        status: true,
+        pricingTier: true,
+      },
+    }),
+    readPersonalOwnership(clerkUserId),
+  ]);
+
+  if (
+    !user ||
+    !membership ||
+    !workspace ||
+    !personalOwnership ||
+    membership.userId !== user.id ||
+    !user.defaultBrandTemplateId ||
+    needsUserRefresh(user)
+  ) {
+    return null;
+  }
+  return { user, context: toWorkspaceActorContext({ userId: user.id, role: membership.role, workspace }) };
 }
 
 export async function getAppUserByClerkId(clerkId: string): Promise<AppUser | null> {

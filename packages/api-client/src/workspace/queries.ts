@@ -1,4 +1,6 @@
 import type { QueryClient } from "@tanstack/query-core";
+import type { SessionBootstrap } from "@narriflow/validators/api/session";
+import type { WorkspaceBootstrap } from "@narriflow/validators/api/workspace";
 import { queryOptions } from "@tanstack/react-query";
 import {
   type ApiTransport,
@@ -29,6 +31,33 @@ export function workspaceBootstrapQuery(transport: ApiTransport, scope: Workspac
     },
     staleTime: STALE_TIME.default,
   });
+}
+
+/**
+ * The identity bootstrap already carries everything the Workspace bootstrap
+ * does for the effective Workspace. Adopting that Workspace seeds the same
+ * cache entries, so the shell needs no second request. Returns false (and
+ * seeds nothing) when the session lacks the Workspace or its usage, for
+ * instance a Workspace the member cannot view; the bootstrap request then
+ * runs and reports why.
+ */
+export function seedWorkspaceBootstrapFromSession(
+  queryClient: QueryClient,
+  scope: WorkspaceScope,
+  session: SessionBootstrap,
+): boolean {
+  const workspace = session.memberships.find((entry) => entry.id === scope.workspaceId);
+  if (!workspace || !session.usage || session.selection.workspaceId !== scope.workspaceId) return false;
+  const bootstrap: WorkspaceBootstrap = {
+    user: session.user,
+    workspace,
+    memberships: session.memberships,
+    capabilities: session.capabilities,
+    usage: session.usage,
+  };
+  queryClient.setQueryData(key(scope, "bootstrap"), bootstrap);
+  queryClient.setQueryData(key(scope, "usage"), bootstrap.usage);
+  return true;
 }
 
 export function workspaceProfileQuery(transport: ApiTransport, scope: WorkspaceScope) {
