@@ -194,6 +194,9 @@ function createCoreRenderPathTracer(input: {
 			medianDiffMean: number;
 		}>;
 	} | null;
+	/** Decoded-peak measurements returned in order by the fake ffmpeg (default:
+	 *  a mix that fits). Real-media tests measure the real output instead. */
+	mixPeaks?: Array<{ samplePeak: number; truePeak: number }>;
 	realMedia?: {
 		sourcePath: string;
 		logoPath?: string;
@@ -279,6 +282,7 @@ function createCoreRenderPathTracer(input: {
 	let pipDetectorCount = 0;
 	let sceneDetectorCount = 0;
 	let workspaceCleanupCount = 0;
+	let mixPeakMeasurements = 0;
 	let settlementCalls = 0;
 
 	const variantIdFromPath = (path: string): string | null =>
@@ -466,6 +470,17 @@ function createCoreRenderPathTracer(input: {
 						}
 					}
 					expect(command).toBe("ffmpeg");
+					if (args.some((arg) => arg.includes("ametadata=mode=print"))) {
+						if (input.realMedia) return productionWorkerProcessModule.execute(request);
+						const peak = input.mixPeaks?.[mixPeakMeasurements++] ??
+							input.mixPeaks?.at(-1) ?? { samplePeak: 0.5, truePeak: 0.5 };
+						return {
+							exitCode: 0,
+							stdout: Buffer.from(
+								`lavfi.astats.Overall.Max_level=${peak.samplePeak}\nlavfi.r128.true_peak=${peak.truePeak}\n`,
+							),
+						};
+					}
 					const ids = recordCommand(args);
 					if (input.failFirstRenderCommand && ids.length > 0 && commands.length === 1) {
 						throw new WorkflowFailure(
@@ -2217,6 +2232,115 @@ test("ClipRenderAttempt does not report degradation when the required fallback c
 	expect(harness.diagnostics).not.toContainEqual({
 		message: "clip_render_optional_asset_fallback",
 		context: expect.objectContaining({ phase: "command" }),
+	});
+});
+
+describe("ClipRenderAttempt music mix peak guard", () => {
+	const musicEdits = {
+		studioEdits: {
+			music: { url: "https://media.example/music.mp3", volume: 25 },
+		},
+	};
+	const hot = { samplePeak: 1.8, truePeak: 1.9 };
+	const quiet = { samplePeak: 0.6, truePeak: 0.62 };
+
+	test("a mix that fits keeps its single original encode and uploads", async () => {
+		const harness = createCoreRenderPathTracer({
+			topology: "single-video",
+			clipOverrides: musicEdits,
+			mixPeaks: [quiet],
+		});
+		await expect(
+			harness.clipRenderAttempt.execute(
+				harness.attempt,
+				attemptContext(new AbortController().signal),
+			),
+		).resolves.toMatchObject({ status: "completed", succeeded: 1 });
+		expect(harness.commands).toHaveLength(1);
+		expect(harness.commands[0]!.args.join(" ")).not.toContain("alimiter");
+	});
+
+	test("a clipping mix is re-encoded once with the limiter before upload", async () => {
+		const harness = createCoreRenderPathTracer({
+			topology: "single-video",
+			clipOverrides: musicEdits,
+			mixPeaks: [hot, quiet],
+		});
+		await expect(
+			harness.clipRenderAttempt.execute(
+				harness.attempt,
+				attemptContext(new AbortController().signal),
+			),
+		).resolves.toMatchObject({ status: "completed", succeeded: 1 });
+		expect(harness.commands).toHaveLength(2);
+		expect(harness.commands[0]!.args.join(" ")).not.toContain("alimiter");
+		expect(harness.commands[1]!.args.join(" ")).toContain(
+			"alimiter=limit=0.950:level=disabled",
+		);
+		// Same frozen composition: only the limiter differs.
+		expect(
+			harness.commands[1]!.args.join(" ").replace(
+				"apad=pad_dur=0.005,alimiter=limit=0.950:level=disabled,atrim=start=0.004972,asetpts=PTS-STARTPTS,",
+				"",
+			),
+		).toBe(harness.commands[0]!.args.join(" "));
+		expect(harness.diagnostics).toContainEqual({
+			message: "render_mix_peak_limited",
+			context: expect.objectContaining({
+				tier: 1,
+				before: expect.objectContaining({ samplePeak: 1.8 }),
+				after: expect.objectContaining({ samplePeak: 0.6 }),
+			}),
+		});
+	});
+
+	test("a first limiter tier that still overshoots escalates to the next and then uploads", async () => {
+		const harness = createCoreRenderPathTracer({
+			topology: "single-video",
+			clipOverrides: musicEdits,
+			mixPeaks: [hot, { samplePeak: 1.03, truePeak: 1.04 }, quiet],
+		});
+		await expect(
+			harness.clipRenderAttempt.execute(
+				harness.attempt,
+				attemptContext(new AbortController().signal),
+			),
+		).resolves.toMatchObject({ status: "completed", succeeded: 1 });
+		expect(harness.commands).toHaveLength(3);
+		expect(harness.commands[1]!.args.join(" ")).toContain("alimiter=limit=0.950:level=disabled");
+		expect(harness.commands[2]!.args.join(" ")).toContain("alimiter=limit=0.890:level=disabled");
+		expect(harness.commands[2]!.args.join(" ")).not.toContain("limit=0.950");
+		expect(harness.uploadedVariantIds).toEqual(["variant-9x16"]);
+		expect(harness.diagnostics).toContainEqual({
+			message: "render_mix_peak_limited",
+			context: expect.objectContaining({
+				tier: 2,
+				ceiling: 0.89,
+				before: expect.objectContaining({ samplePeak: 1.8 }),
+				after: expect.objectContaining({ samplePeak: 0.6 }),
+			}),
+		});
+	});
+
+	test("a mix still above full scale after every limiter tier fails typed and never uploads", async () => {
+		const harness = createCoreRenderPathTracer({
+			topology: "single-video",
+			clipOverrides: musicEdits,
+			mixPeaks: [hot],
+		});
+		await expect(
+			harness.clipRenderAttempt.execute(
+				harness.attempt,
+				attemptContext(new AbortController().signal),
+			),
+		).resolves.toMatchObject({ succeeded: 0 });
+		expect(harness.commands).toHaveLength(4);
+		expect(harness.commands[3]!.args.join(" ")).toContain("limit=0.790");
+		expect(harness.uploadedVariantIds).toEqual([]);
+		expect(harness.failureCodes.get("variant-9x16")).toBe(
+			"render_output_invalid",
+		);
+		expect(harness.failureDispositions.get("variant-9x16")).toBe("permanent");
 	});
 });
 

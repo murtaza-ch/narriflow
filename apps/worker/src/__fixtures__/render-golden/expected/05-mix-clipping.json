@@ -1,0 +1,54 @@
+{
+  "ticket": "05",
+  "cases": {
+    "hot-mix": {
+      "contract": [
+        {
+          "id": "renders",
+          "metric": "render.ok",
+          "op": "eq",
+          "value": true
+        },
+        {
+          "id": "sample-peak",
+          "metric": "audio.samplePeak",
+          "op": "lte",
+          "value": 1
+        },
+        {
+          "id": "true-peak",
+          "metric": "audio.truePeakDbtp",
+          "op": "lte",
+          "value": 0
+        },
+        {
+          "id": "audio-spans-video",
+          "metric": "audio.spanDeficitSec",
+          "op": "lte",
+          "value": 0.055
+        },
+        {
+          "id": "video-frames",
+          "metric": "video.frameCountDelta",
+          "op": "eq",
+          "value": 0
+        },
+        {
+          "id": "video-duration",
+          "metric": "output.durationDeltaFrames",
+          "op": "lte",
+          "value": 1
+        }
+      ],
+      "retain": [
+        "plan",
+        "crop",
+        "cue",
+        "layer",
+        "captions",
+        "argv",
+        "frames"
+      ]
+    }
+  }
+}

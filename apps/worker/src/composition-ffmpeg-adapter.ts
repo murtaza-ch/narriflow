@@ -1854,6 +1854,10 @@ export interface ClipCompositionCommandInput {
 	audio: BoundCompositionAudioRenderRequest;
 	encoder: { preset: string; crf: string };
 	cutPlan?: ClipCutPlan | null;
+	/** Set only by a corrective re-encode of a mix whose decoded peak exceeded
+	 *  full scale (`render-mix-peak.ts`): the limiter ceiling, linear. Unset
+	 *  keeps every argument byte-identical. */
+	mixPeakCeiling?: number;
 	assets: {
 		subtitlePath: string | null;
 		logo?: LogoOverlay | null;
@@ -1889,6 +1893,7 @@ export function compileClipCompositionCommand(
 		audio: input.audio,
 		encoder: input.encoder,
 		cutPlan: input.cutPlan,
+		mixPeakCeiling: input.mixPeakCeiling,
 		subtitlePath: input.assets.subtitlePath,
 		logo: input.assets.logo,
 		background: input.assets.background,
@@ -2322,6 +2327,19 @@ function buildMusicDuckingSuffix(
 }
 
 /**
+ * The corrective mix limiter (render-mix-peak.ts): a brick-wall at the given
+ * ceiling (0.95, then lower tiers) with automatic level boost disabled. `alimiter` delays its output by its 5 ms
+ * lookahead, so the mix is padded by that much first and the delay is trimmed
+ * off the front afterwards; dialogue keeps its onset and the stream its
+ * length. The measured delay is `floor(rate * 0.005) - 1` samples (239 at
+ * 48 kHz); `atrim` rounds its start to the nearest sample, and 0.004972 s
+ * lands on that count at 32, 44.1 and 48 kHz (one sample early below that).
+ */
+function mixPeakLimiterFilter(ceiling: number): string {
+	return `apad=pad_dur=0.005,alimiter=limit=${ceiling.toFixed(3)}:level=disabled,atrim=start=0.004972,asetpts=PTS-STARTPTS`;
+}
+
+/**
  * The single audio-mixing choke point for every render path that has music
  * and/or one-shot SFX active (see call sites in `buildSingleVideoArgs`,
  * `buildBrollVideoArgs`, `buildAudiogramArgs`) — generalizes what used to be
@@ -2366,6 +2384,9 @@ function buildAudioMixFilter(params: {
 	dialogueInputRef?: string;
 	musicInputIndex: number | null;
 	sfxInputIndexes: readonly number[];
+	/** Limiter ceiling of a corrective re-encode (linear); every other mix
+	 *  keeps its exact graph. */
+	peakCeiling?: number;
 }): string {
 	const duration = Math.max(0.1, params.clipDurationSec);
 	const fadeChain = buildAudioFadeChain(params.audio.outputFades);
@@ -2451,14 +2472,20 @@ function buildAudioMixFilter(params: {
 		return `anullsrc=channel_layout=stereo:sample_rate=48000,atrim=duration=${duration.toFixed(3)}[outa]`;
 	}
 
+	const peakLimiter =
+		params.peakCeiling === undefined
+			? null
+			: mixPeakLimiterFilter(params.peakCeiling);
+
 	if (branchLabels.length === 1) {
 		const limiter =
 			beepEntries.length > 0 ? "alimiter=limit=0.950:level=disabled," : "";
-		return `${branchFilters[0]};${branchLabels[0]}${limiter}${fadeChain}[outa]`;
+		return `${branchFilters[0]};${branchLabels[0]}${limiter}${peakLimiter ? `${peakLimiter},` : ""}${fadeChain}[outa]`;
 	}
 
 	const limiter =
-		beepEntries.length > 0 ? ",alimiter=limit=0.950:level=disabled" : "";
+		(beepEntries.length > 0 ? ",alimiter=limit=0.950:level=disabled" : "") +
+		(peakLimiter ? `,${peakLimiter}` : "");
 	return [
 		...branchFilters,
 		`${branchLabels.join("")}amix=inputs=${branchLabels.length}:duration=first:dropout_transition=0:normalize=0${limiter},${fadeChain}[outa]`,
@@ -2476,6 +2503,8 @@ function assertBoundAudioMatchesPlan(
 }
 
 function buildSingleVideoArgs(params: {
+	/** Corrective pass: see `mixPeakLimiterFilter`. */
+	mixPeakCeiling?: number;
 	encoder: { preset: string; crf: string };
 	sourcePath: string;
 	outputPath: string;
@@ -2675,6 +2704,7 @@ function buildSingleVideoArgs(params: {
 	if (hasMixedAudio) {
 		filterParts.push(
 			buildAudioMixFilter({
+				peakCeiling: params.mixPeakCeiling,
 				audio: audioForRender,
 				clipDurationSec,
 				dialogueInputRef:
@@ -2733,6 +2763,8 @@ function buildSingleVideoArgs(params: {
  * every planned interval so callers cannot supply a parallel timing model.
  */
 function buildBrollVideoArgs(params: {
+	/** Corrective pass: see `mixPeakLimiterFilter`. */
+	mixPeakCeiling?: number;
 	encoder: { preset: string; crf: string };
 	sourcePath: string;
 	resolvedBrollAssets: Readonly<Record<string, string>>;
@@ -2972,6 +3004,7 @@ function buildBrollVideoArgs(params: {
 	if (hasMixedAudio) {
 		parts.push(
 			buildAudioMixFilter({
+				peakCeiling: params.mixPeakCeiling,
 				audio: audioForRender,
 				clipDurationSec,
 				dialogueInputRef:
@@ -3020,6 +3053,8 @@ function buildBrollVideoArgs(params: {
 }
 
 function buildAudiogramArgs(params: {
+	/** Corrective pass: see `mixPeakLimiterFilter`. */
+	mixPeakCeiling?: number;
 	encoder: { preset: string; crf: string };
 	sourcePath: string;
 	outputPath: string;
@@ -3251,6 +3286,7 @@ function buildAudiogramArgs(params: {
 	if (hasMusicOrSfx) {
 		chain.push(
 			buildAudioMixFilter({
+				peakCeiling: params.mixPeakCeiling,
 				audio: audioForRender,
 				clipDurationSec: outputDurationSec,
 				dialogueInputRef: dialogueAudioLabel,

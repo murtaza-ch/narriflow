@@ -86,6 +86,7 @@ import {
 	type BoundCompositionAudioRenderRequest,
 } from "../composition-ffmpeg-adapter";
 import { classifyRenderObjectKey } from "../render-object-key";
+import { guardMixPeak, mixPeakMeasureDeadlineMs } from "../render-mix-peak";
 import {
 	type RenderClockAdapter,
 	type RenderWorkspaceAdapter,
@@ -801,6 +802,13 @@ function recordCompositionResourceSampleSafely(
 	}
 }
 
+/** One compiled mode (primary, or the optional-asset fallback) of a render:
+ *  its audio plan and how to compile the same command with the mix limiter. */
+interface MixPeakGuardMode {
+	audio: Pick<BoundCompositionAudioRenderRequest, "music" | "soundEffects">;
+	limitedArgs: (ceiling: number) => string[];
+}
+
 async function executeRenderCommandWithOptionalFallback(input: {
 	primaryArgs: string[];
 	fallbackArgs?: () => string[];
@@ -812,6 +820,14 @@ async function executeRenderCommandWithOptionalFallback(input: {
 	recordCommand?: (args: readonly string[]) => void;
 	recordSourceDecodeCompleted?: () => void;
 	recordResourceSample?: (rssBytes: number) => void;
+	/** Music/SFX mixes are decoded once after encoding; a peak above full
+	 *  scale buys one limiter re-encode (`render-mix-peak.ts`). */
+	mixPeak?: {
+		outputPath: string;
+		editedDurationSec: number;
+		primary: MixPeakGuardMode;
+		fallback?: MixPeakGuardMode;
+	};
 }): Promise<"primary" | "fallback"> {
 	const execute = async (args: string[]): Promise<void> => {
 		assertCompositionCommandWithinBudget(args, input.context);
@@ -835,14 +851,44 @@ async function executeRenderCommandWithOptionalFallback(input: {
 			stopSampling();
 		}
 	};
+	const enforceMixPeak = async (mode: "primary" | "fallback"): Promise<void> => {
+		const guard = mode === "primary" ? input.mixPeak?.primary : input.mixPeak?.fallback;
+		if (!input.mixPeak || !guard) return;
+		const { outputPath, editedDurationSec } = input.mixPeak;
+		const result = await guardMixPeak({
+			audio: guard.audio,
+			outputPath,
+			limitedArgs: guard.limitedArgs,
+			measureStdout: (args) =>
+				runCommand("ffmpeg", args, {
+					timeoutMs: mixPeakMeasureDeadlineMs(editedDurationSec),
+					captureStdout: true,
+				}),
+			execute,
+		});
+		if (!result) return;
+		log("info", result.outcome === "limited" ? "render_mix_peak_limited" : "clip_render_mix_peak", {
+			...input.context,
+			phase: "mix_peak",
+			mode,
+			...(result.outcome === "limited"
+				? {
+						tier: result.tier,
+						ceiling: result.ceiling,
+						before: result.initial,
+						after: result.measured,
+					}
+				: { outcome: result.outcome, measured: result.measured }),
+		});
+	};
+	let mode: "primary" | "fallback";
 	try {
 		await execute(input.primaryArgs);
-		return "primary";
+		mode = "primary";
 	} catch (error) {
 		rethrowRenderControlFlow(error);
 		if (!input.fallbackArgs || input.optionalAssets.length === 0) throw error;
-		const fallbackArgs = input.fallbackArgs();
-		await execute(fallbackArgs);
+		await execute(input.fallbackArgs());
 		for (const asset of input.optionalAssets) {
 			diagnoseOptionalAssetFallback({
 				assetClass: asset.assetClass,
@@ -851,8 +897,10 @@ async function executeRenderCommandWithOptionalFallback(input: {
 				context: input.context,
 			});
 		}
-		return "fallback";
+		mode = "fallback";
 	}
+	await enforceMixPeak(mode);
+	return mode;
 }
 
 // Encoding is the dominant cost of a render. veryfast/CRF21 measured
@@ -3293,55 +3341,78 @@ async function renderClipGroup(input: {
 						assetClass === "music" ||
 						assetClass === "sound_effect",
 				);
-				const ffmpegArgs = currentRenderAdapters().composition.compileCommand({
-					sourcePath,
-					outputPath: output.outputPath,
-					startSec: clipStartSec,
-					endSec: clipEndSec,
-					audio: plannedAudio,
-					cutPlan,
-					source: probe,
-					plan: compositionForOutput.plan,
-					targetId: compositionForOutput.targetId,
-					encoder: { preset: x264Preset(), crf: x264Crf() },
-					assets: {
-						subtitlePath: output.subtitlePath ?? null,
-						logo: logo,
-						scenes: resolvedSceneAssets,
-						fonts: resolvedSceneFonts,
+				const compileAudioOnly = (mixPeakCeiling: number | null) =>
+					currentRenderAdapters().composition.compileCommand({
+						sourcePath,
+						outputPath: output.outputPath,
+						startSec: clipStartSec,
+						endSec: clipEndSec,
+						audio: plannedAudio,
+						cutPlan,
+						source: probe,
+						plan: compositionForOutput.plan,
+						targetId: compositionForOutput.targetId,
+						encoder: { preset: x264Preset(), crf: x264Crf() },
+						...(mixPeakCeiling === null ? {} : { mixPeakCeiling }),
+						assets: {
+							subtitlePath: output.subtitlePath ?? null,
+							logo: logo,
+							scenes: resolvedSceneAssets,
+							fonts: resolvedSceneFonts,
  captionFontsDirectory,
-					},
-				});
+						},
+					});
+				const compileAudioOnlyFallback =
+					fallbackCompositionForOutput &&
+					fallbackAudio &&
+					audioOptionalAssets.length > 0
+						? (mixPeakCeiling: number | null) =>
+								currentRenderAdapters().composition.compileCommand({
+									sourcePath,
+									outputPath: output.outputPath,
+									startSec: clipStartSec,
+									endSec: clipEndSec,
+									audio: fallbackAudio,
+									cutPlan,
+									source: probe,
+									plan: fallbackCompositionForOutput.plan,
+									targetId: fallbackCompositionForOutput.targetId,
+									encoder: { preset: x264Preset(), crf: x264Crf() },
+									...(mixPeakCeiling === null ? {} : { mixPeakCeiling }),
+									assets: {
+										subtitlePath: output.subtitlePath ?? null,
+										logo: null,
+										scenes: resolvedSceneAssets,
+										fonts: resolvedSceneFonts,
+ captionFontsDirectory,
+									},
+								})
+						: null;
+				const ffmpegArgs = compileAudioOnly(null);
 
 				const encodeStartedAtMs = currentTimeMs();
 				const commandMode = await executeRenderCommandWithOptionalFallback({
 					primaryArgs: ffmpegArgs,
-					fallbackArgs:
-						fallbackCompositionForOutput &&
-						fallbackAudio &&
-						audioOptionalAssets.length > 0
-							? () =>
-									currentRenderAdapters().composition.compileCommand({
-										sourcePath,
-										outputPath: output.outputPath,
-										startSec: clipStartSec,
-										endSec: clipEndSec,
-										audio: fallbackAudio,
-										cutPlan,
-										source: probe,
-										plan: fallbackCompositionForOutput.plan,
-										targetId: fallbackCompositionForOutput.targetId,
-										encoder: { preset: x264Preset(), crf: x264Crf() },
-										assets: {
-											subtitlePath: output.subtitlePath ?? null,
-											logo: null,
-											scenes: resolvedSceneAssets,
-											fonts: resolvedSceneFonts,
- captionFontsDirectory,
-										},
-									})
-							: undefined,
+					fallbackArgs: compileAudioOnlyFallback
+						? () => compileAudioOnlyFallback(null)
+						: undefined,
 					optionalAssets: audioOptionalAssets,
+					mixPeak: {
+						outputPath: output.outputPath,
+						editedDurationSec: compositionPlan.editedDurationSec,
+						primary: {
+							audio: plannedAudio,
+							limitedArgs: (ceiling) => compileAudioOnly(ceiling),
+						},
+						...(compileAudioOnlyFallback && fallbackAudio
+							? {
+									fallback: {
+										audio: fallbackAudio,
+										limitedArgs: (ceiling) => compileAudioOnlyFallback(ceiling),
+									},
+								}
+							: {}),
+					},
 					context: {
 						workflowRunId: run.id,
 						clipId: clip.id,
@@ -3433,54 +3504,71 @@ async function renderClipGroup(input: {
 						}),
 					),
 				};
-				const ffmpegArgs = currentRenderAdapters().composition.compileCommand({
-					sourcePath,
-					outputPath: output.outputPath,
-					startSec: clipStartSec,
-					endSec: clipEndSec,
-					source: probe,
-					plan: compositionForOutput.plan,
-					targetId: compositionForOutput.targetId,
-					audio: plannedAudio,
-					cutPlan,
-					encoder: { preset: x264Preset(), crf: x264Crf() },
-					assets: {
-						broll: resolvedBrollAssets,
-						subtitlePath: output.subtitlePath ?? null,
-						logo,
-						background: backgroundPlan,
-						scenes: resolvedSceneAssets,
-						fonts: resolvedSceneFonts,
+				const compileVideo = (mixPeakCeiling: number | null) =>
+					currentRenderAdapters().composition.compileCommand({
+						sourcePath,
+						outputPath: output.outputPath,
+						startSec: clipStartSec,
+						endSec: clipEndSec,
+						source: probe,
+						plan: compositionForOutput.plan,
+						targetId: compositionForOutput.targetId,
+						audio: plannedAudio,
+						cutPlan,
+						encoder: { preset: x264Preset(), crf: x264Crf() },
+						...(mixPeakCeiling === null ? {} : { mixPeakCeiling }),
+						assets: {
+							broll: resolvedBrollAssets,
+							subtitlePath: output.subtitlePath ?? null,
+							logo,
+							background: backgroundPlan,
+							scenes: resolvedSceneAssets,
+							fonts: resolvedSceneFonts,
  captionFontsDirectory,
-					},
-				});
+						},
+					});
+				const compileVideoFallback = (mixPeakCeiling: number | null) =>
+					currentRenderAdapters().composition.compileCommand({
+						sourcePath,
+						outputPath: output.outputPath,
+						startSec: clipStartSec,
+						endSec: clipEndSec,
+						audio: fallbackAudio ?? plannedAudio,
+						cutPlan,
+						source: probe,
+						plan: fallbackCompositionForOutput.plan,
+						targetId: fallbackCompositionForOutput.targetId,
+						encoder: { preset: x264Preset(), crf: x264Crf() },
+						...(mixPeakCeiling === null ? {} : { mixPeakCeiling }),
+						assets: {
+							subtitlePath: output.subtitlePath ?? null,
+							logo: null,
+							background: fallbackBackgroundPlan,
+							scenes: resolvedSceneAssets,
+							fonts: resolvedSceneFonts,
+ captionFontsDirectory,
+						},
+					});
+				const ffmpegArgs = compileVideo(null);
 				const encodeStartedAtMs = currentTimeMs();
 				const commandMode = await executeRenderCommandWithOptionalFallback({
 					primaryArgs: ffmpegArgs,
 					fallbackArgs:
 						optionalCommandAssets.length > 0
-							? () =>
-									currentRenderAdapters().composition.compileCommand({
-										sourcePath,
-										outputPath: output.outputPath,
-										startSec: clipStartSec,
-										endSec: clipEndSec,
-										audio: fallbackAudio ?? plannedAudio,
-										cutPlan,
-										source: probe,
-										plan: fallbackCompositionForOutput.plan,
-										targetId: fallbackCompositionForOutput.targetId,
-										encoder: { preset: x264Preset(), crf: x264Crf() },
-										assets: {
-											subtitlePath: output.subtitlePath ?? null,
-											logo: null,
-											background: fallbackBackgroundPlan,
-											scenes: resolvedSceneAssets,
-											fonts: resolvedSceneFonts,
- captionFontsDirectory,
-										},
-									})
+							? () => compileVideoFallback(null)
 							: undefined,
+					mixPeak: {
+						outputPath: output.outputPath,
+						editedDurationSec: compositionPlan.editedDurationSec,
+						primary: {
+							audio: plannedAudio,
+							limitedArgs: (ceiling) => compileVideo(ceiling),
+						},
+						fallback: {
+							audio: fallbackAudio ?? plannedAudio,
+							limitedArgs: (ceiling) => compileVideoFallback(ceiling),
+						},
+					},
 					optionalAssets: optionalCommandAssets,
 					context: {
 						workflowRunId: run.id,

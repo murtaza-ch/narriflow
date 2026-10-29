@@ -55,6 +55,7 @@ import {
   compileCompositionPlanAudioSchedule,
   compileCompositionPlanCaptions,
 } from "../src/composition-ffmpeg-adapter";
+import { guardMixPeak, MixPeakError, mixPeakMeasureDeadlineMs } from "../src/render-mix-peak";
 import { compositionSourceFor } from "../src/tasks/clip-render-attempt";
 import { productionWorkerProcessModule, type WorkerMediaInspection } from "../src/worker-process";
 import {
@@ -160,7 +161,7 @@ export interface TargetRecord {
   };
   captions: { assSha256: string | null };
   command: { argv: string[]; argvSha256: string; filterGraph: string | null; filterGraphSha256: string | null; argBytes: number };
-  encode: { exitCode: number | null; diagnostics: string[] };
+  encode: { exitCode: number | null; diagnostics: string[]; mixPeak?: Dict };
   output: null | {
     sizeBytes: number;
     ffprobe: Dict;
@@ -1023,20 +1024,22 @@ export async function runCase(context: CaseContext, id: string): Promise<CaseRec
       }
       const outputPath = join(caseDir, `${target.id}.mp4`);
       let argv: string[];
+      const compile = (mixPeakCeiling: number | null) => compileClipCompositionCommand({
+        sourcePath: sourceArg,
+        outputPath,
+        startSec: planned.document.clipStartSec,
+        endSec: planned.document.clipEndSec,
+        source: planned.inspection,
+        plan: planned.plan,
+        targetId: target.id,
+        audio,
+        encoder: context.inputs.manifest.encoder,
+        cutPlan: planned.cutPlan,
+        ...(mixPeakCeiling === null ? {} : { mixPeakCeiling }),
+        assets: { subtitlePath, logo: planned.assets.logo as any, background: planned.assets.background as any, broll: planned.assets.broll, scenes: planned.assets.scenes, fonts: {}, captionFontsDirectory: fonts },
+      });
       try {
-        argv = compileClipCompositionCommand({
-          sourcePath: sourceArg,
-          outputPath,
-          startSec: planned.document.clipStartSec,
-          endSec: planned.document.clipEndSec,
-          source: planned.inspection,
-          plan: planned.plan,
-          targetId: target.id,
-          audio,
-          encoder: context.inputs.manifest.encoder,
-          cutPlan: planned.cutPlan,
-          assets: { subtitlePath, logo: planned.assets.logo as any, background: planned.assets.background as any, broll: planned.assets.broll, scenes: planned.assets.scenes, fonts: {}, captionFontsDirectory: fonts },
-        });
+        argv = compile(null);
       } catch (error) {
         record.failure = { stage: "compile", code: failureCode(error), message: normalize(String((error as Error).message ?? error)).slice(0, 500) };
         targetRecord.measurements["render.ok"] = false;
@@ -1053,6 +1056,30 @@ export async function runCase(context: CaseContext, id: string): Promise<CaseRec
         targetRecord.measurements["render.ok"] = false;
         targetRecord.measurements["render.exitCode"] = run.code;
         record.failure ??= { stage: "encode", code: null, message: normalize(run.stderr.split("\n").filter(Boolean).slice(-3).join(" | ")).slice(0, 500) };
+        continue;
+      }
+      // The same guard the worker runs before upload: decode once, and re-encode
+      // with the limiter only when the mix is above full scale.
+      try {
+        const peak = await guardMixPeak({
+          audio,
+          outputPath,
+          encodedArgs: argv,
+          limitedArgs: (ceiling) => compile(ceiling),
+          measureStdout: async (args) => {
+            const measure = await runProcess("ffmpeg", args, { timeoutMs: mixPeakMeasureDeadlineMs(planned.plan.editedDurationSec) });
+            if (measure.code !== 0) throw new Error(`mix peak measurement failed: ${measure.stderr.slice(-300)}`);
+            return measure.stdout.toString("utf8");
+          },
+          execute: async (args) => {
+            const corrective = await runProcess("ffmpeg", args, { timeoutMs: 600_000 });
+            if (corrective.code !== 0) throw new Error(`corrective encode failed: ${corrective.stderr.slice(-300)}`);
+          },
+        });
+        if (peak) targetRecord.encode.mixPeak = peak as unknown as Dict;
+      } catch (error) {
+        targetRecord.measurements["render.ok"] = false;
+        record.failure ??= { stage: "encode", code: error instanceof MixPeakError ? error.code : "mix_peak_failed", message: normalize(String((error as Error).message ?? error)).slice(0, 500) };
         continue;
       }
       try {
