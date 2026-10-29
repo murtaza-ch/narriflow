@@ -1,3 +1,4 @@
+import { transportRenderCommand } from "../src/render-command-transport";
 /**
  * Render golden parity harness (render hardening ticket 01).
  *
@@ -62,7 +63,7 @@ import {
 } from "../src/composition-ffmpeg-adapter";
 import { compositionOutputExpectation, validateRenderOutput } from "../src/render-output-validation";
 import { guardMixPeak, MixPeakError, mixPeakMeasureDeadlineMs } from "../src/render-mix-peak";
-import { compositionSourceFor, deriveRenderCompositionEvidence } from "../src/tasks/clip-render-attempt";
+import { compositionSourceFor, deriveRenderCompositionEvidence, deriveRenderCompositionAssets } from "../src/tasks/clip-render-attempt";
 import { productionWorkerProcessModule, type WorkerMediaInspection } from "../src/worker-process";
 import {
   collectRuntimeFingerprint,
@@ -567,10 +568,9 @@ async function planCase(context: CaseContext, id: string, definition: CaseDefini
   }
 
   const broll: Record<string, string> = {};
-  const brollPlacements = studio.visualBroll.map((placement) => {
+  studio.visualBroll.forEach((placement) => {
     const ref = compositionAssetRef("visual_asset", `${placement.asset.id}:${placement.asset.fingerprint}`);
     if (scenes[ref]) broll[ref] = scenes[ref]!.path;
-    return { id: placement.id, ref, kind: "image" as const, startSec: placement.startSec, endSec: placement.endSec };
   });
 
   let music: Dict | undefined;
@@ -611,15 +611,14 @@ async function planCase(context: CaseContext, id: string, definition: CaseDefini
       availability: { automaticLayout: evidence.automaticLayout, splitLayout: evidence.splitLayout ?? { state: "missing" }, screenLayout: evidence.screenLayout ?? { state: "missing" } },
       sourceIdentity, clipStartSec: document.clipStartSec, clipEndSec: document.clipEndSec, deletedRanges: document.deletedRanges,
     }),
-    assets: {
-      backgroundImage: backgroundImage as any,
-      sceneVisuals,
-      sceneFonts: {},
-      ...(music ? { music: music as any } : {}),
-      soundEffects: soundEffects as any,
-      ...(brollPlacements.length > 0 ? { broll: { state: "available", placements: brollPlacements } as any } : {}),
-      ...(plannedLogo ? { logo: { state: "available", ref: plannedLogo.ref, settings: plannedLogo.settings } as any } : {}),
-    },
+    assets: deriveRenderCompositionAssets({
+      document, resolvedSceneAssets: scenes, sceneVisualAvailability: sceneVisuals, sceneFontAvailability: {},
+      backgroundImage: backgroundImage as any, brollPlan: null, userBrollUrl: document.brollUrl,
+      brandLogo: plannedLogo ? { ...logo, ref: plannedLogo.ref } as any : null,
+      brandLogoWasRequested: Boolean(plannedLogo), plannedLogoSettings: plannedLogo?.settings ?? null,
+      musicPlan: musicPath ? { path: musicPath.path, ref: musicPath.sourceRef, durationSec: music?.durationSec } : null,
+      sfxPlans: sfxPaths.map((effect) => ({ id: effect.id, path: effect.path, ref: effect.sourceRef, durationSec: soundEffects[effect.id].durationSec })),
+    }),
     capabilities: {
       automaticSpeakerLayout: true,
       automaticSpeakerEngineVersion: CLIP_AUTO_LAYOUT_ENGINE,
@@ -1086,7 +1085,7 @@ export async function runCase(context: CaseContext, id: string): Promise<CaseRec
       const graph = graphOf(normalized);
       targetRecord.command = { argv: normalized, argvSha256: sha256(canonicalJson(normalized)), filterGraph: graph, filterGraphSha256: graph === null ? null : sha256(graph), argBytes: argv.reduce((total, arg) => total + Buffer.byteLength(arg) + 1, 0) };
 
-      const run = await runProcess("ffmpeg", argv, { timeoutMs: 600_000 });
+      const run = await runProcess("ffmpeg", await transportRenderCommand({ args: argv, directory: join(caseDir, "work") }), { timeoutMs: 600_000 });
       targetRecord.encode = { exitCode: run.code, diagnostics: diagnosticLines(run.stderr).map(normalize) };
       // The worker fails the variant when libass proves a glyph unrenderable, even though ffmpeg exits zero.
       const glyphFailure = run.code === 0 ? captionRenderDiagnosticsFailure(classifyCaptionRenderDiagnostics(run.stderr.split(/\r?\n|\r/).filter((line) => CAPTION_RENDER_DIAGNOSTIC_PATTERN.test(line)))) : null;
@@ -1115,7 +1114,7 @@ export async function runCase(context: CaseContext, id: string): Promise<CaseRec
             return measure.stdout.toString("utf8");
           },
           execute: async (args) => {
-            const corrective = await runProcess("ffmpeg", args, { timeoutMs: 600_000 });
+            const corrective = await runProcess("ffmpeg", await transportRenderCommand({ args, directory: join(caseDir, "work") }), { timeoutMs: 600_000 });
             if (corrective.code !== 0) throw new Error(`corrective encode failed: ${corrective.stderr.slice(-300)}`);
           },
         });

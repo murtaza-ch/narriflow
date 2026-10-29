@@ -1,3 +1,4 @@
+import { WorkerProcessFailure } from "../worker-process";
 import { createRenderOutputFixture } from "../render-output-validation.test-fixture";
 import { describe, expect, test } from "bun:test";
 import { WorkflowFailure, type WorkflowAttemptContext } from "@narriflow/services";
@@ -46,6 +47,8 @@ function fixture(input: {
   completionAccepted?: boolean;
   cancelAssetDownload?: boolean;
   runtimeValidation?: boolean;
+ videoScene?: boolean;
+ validationFailure?: { phase: "probe" | "decode"; error: Error };
 } = {}) {
   const attempt: ClipRenderingWorkflowAttempt = {
     workflowRunId: "30000000-0000-4000-8000-000000000001",
@@ -62,7 +65,7 @@ function fixture(input: {
       transcriptSlice: [], deletedRanges: null, captionPreset: null, studioEdits: null,
       wholeSource: false,
       editorDocumentVersion: 1,
-      sceneBlocks: [scene(1, imageContent, 1), scene(2, textContent, 4),
+      sceneBlocks: [scene(1, input.videoScene ? { kind: "video", asset: { kind: "visual_asset", id: VISUAL_ID, fingerprint: FINGERPRINT }, sourceStartSec: 2, sourceEndSec: 3, fit: "contain", backgroundColor: "#000000", muted: false, volume: 100 } : imageContent, 1), scene(2, textContent, 4),
         ...(input.duplicates ? [scene(3, imageContent, 7), scene(4, textContent, 9)] : [])],
       censorSegments: [], mediaMotions: [], brollCues: null, brollUrl: null, category: "other",
     },
@@ -111,11 +114,12 @@ function fixture(input: {
       assets: { loadSceneSources: async (request) => {
         loaded.push(request);
         if (input.loadFailure) throw input.loadFailure;
-        return input.sources ?? { visuals: [VISUAL], fonts: [FONT] };
+        return input.sources ?? { visuals: [input.videoScene ? { ...VISUAL, kind: "video", storageKey: "visuals/scene.mp4" } : VISUAL], fonts: [FONT] };
       } },
       workerProcess: {
         inspectMedia: async ({ sourcePath, diagnose }) => {
           const output = renderOutput.inspect(sourcePath); if (output) return output;
+          if (input.validationFailure?.phase === "probe" && sourcePath.includes("/scene-")) throw input.validationFailure.error;
           diagnose?.({ operation: "exit", status: "completed", elapsedMs: sourcePath.endsWith(".png") ? 77 : 5 });
           return { durationSec: 10, width: 1920, height: 1080,
             hasVideo: true, hasVisualStream: true, hasAudio: true, fps: 30 };
@@ -125,6 +129,7 @@ function fixture(input: {
           expect(command).toBe("ffmpeg");
           const decoded = renderOutput.decode(args); if (decoded) return decoded;
           if (args.includes("-filter_complex") || args.includes("-map")) commands.push([...args]);
+          if (input.validationFailure?.phase === "decode" && args.includes("null")) throw input.validationFailure.error;
           diagnose?.({ operation: "exit", status: "completed", elapsedMs: args.includes("null") ? 88 : 6 });
           return { exitCode: 0, stdout: Buffer.alloc(0) };
         },
@@ -187,7 +192,7 @@ describe("Clip Render Attempt Scene assets", () => {
         workflowAttemptId: tracer.attempt.attemptId, projectId: tracer.attempt.projectId,
         stage: tracer.attempt.stage, attemptCount: tracer.attempt.attemptCount });
     }
-    expect(tracer.commands[0]).toEqual(["-v", "error", "-i", tracer.downloads.find((download) => download.key === VISUAL.storageKey)!.path, "-map", "0:v:0", "-f", "null", "-"]);
+    expect(tracer.commands[0]).toEqual(["-xerror", "-v", "error", "-i", tracer.downloads.find((download) => download.key === VISUAL.storageKey)!.path, "-map", "0:v:0", "-frames:v", "1", "-f", "null", "-"]);
     expect(tracer.completions[0]!.durationSec).toBe(12);
   });
 
@@ -286,4 +291,32 @@ describe("Clip Render Attempt Scene assets", () => {
     expect(tracer.failures).toEqual([]);
     expect(tracer.settlements()).toBe(1);
   });
+});
+
+for (const phase of ["probe", "decode"] as const) {
+  for (const code of ["worker_command_timeout", "worker_command_spawn_failed"] as const) {
+    test(`runtime asset ${phase} ${code} preserves its typed failure`, async () => {
+      const failure = new WorkerProcessFailure(code, "retryable", "Injected validation failure", "", null,
+        code === "worker_command_spawn_failed" ? { errno: "EBADF", failureScope: "executor", executableClass: "ffmpeg" } : undefined);
+      const tracer = fixture({ runtimeValidation: true, validationFailure: { phase, error: failure } });
+      if (failure.failureScope) {
+        await expect(tracer.execute()).rejects.toBe(failure);
+        expect(tracer.failures).toEqual([]);
+        expect(tracer.settlements()).toBe(0);
+      } else {
+        expect((await tracer.execute()).status).toBe("requeued");
+        expect(tracer.failures).toEqual([{ code, disposition: "retryable" }]);
+      }
+      expect(tracer.uploads).toEqual([]);
+    });
+  }
+}
+
+test("runtime required scene validation decodes the selected source range with a bounded deadline", async () => {
+  const tracer = fixture({ runtimeValidation: true, videoScene: true });
+  expect((await tracer.execute()).status).toBe("completed");
+  const decode = tracer.commands.find((args) => args.includes("null"))!;
+  expect(decode).toBeDefined();
+  expect(decode.slice(0, 5)).toEqual(["-xerror", "-v", "error", "-ss", "2"]);
+  expect(decode.slice(decode.indexOf("-t"), decode.indexOf("-t") + 2)).toEqual(["-t", "1"]);
 });

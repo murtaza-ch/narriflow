@@ -14,6 +14,7 @@ import {
 	createByteLimitTransform,
 	deleteObject as productionDeleteObject,
 	downloadObjectToFile as productionDownloadObjectToFile,
+	listObjectPageByPrefix,
 	guardedFetch as productionGuardedFetch,
 	getLayoutEvidenceLifecycle,
 	getWorkflowRunLifecycle,
@@ -29,6 +30,7 @@ import {
 import type { RenderConfig } from "../render-config";
 import {
 	productionWorkerProcessModule,
+	WorkerProcessFailure,
 	type WorkerProcessDiagnostic,
 } from "../worker-process";
 import { productionRenderDiagnosticAdapter } from "../render-diagnostic-adapter";
@@ -50,6 +52,7 @@ import {
 } from "./broll";
 import {
 	ClipRenderAttempt,
+	normalizeRenderProcessFailure,
 	type ClipRenderAttemptDependencies,
 	type ClipRenderAttemptAdapters,
 	type ClipRenderAttemptAdapterOverrides,
@@ -109,6 +112,12 @@ function createRuntimeAdapters(
 	const rethrowRenderControlFlow = (error: unknown): void => {
 		rethrowWorkflowAttemptLost(error);
 		signal.throwIfAborted();
+		const failure = normalizeRenderProcessFailure(error);
+		if (
+			failure instanceof WorkerProcessFailure &&
+			(failure.failureScope || failure.code !== "worker_command_input_invalid")
+		)
+			throw failure;
 	};
 	const rethrowRenderCancellation = (_error: unknown): void => {
 		signal.throwIfAborted();
@@ -324,6 +333,14 @@ function createRuntimeAdapters(
 		storage: {
 			deleteObject: productionDeleteObject,
 			downloadObjectToFile: productionDownloadObjectToFile,
+			sourceSizeBytes: async (key, signal) => {
+				const page = await listObjectPageByPrefix(key, 1, undefined, { signal });
+				const object = page.objects.find((object) => object.key === key);
+				if (!object) {
+					throw new WorkflowFailure("source_object_missing", "permanent", "Required source object is missing");
+				}
+				return object.sizeBytes;
+			},
 			presignDownloadUrl: productionPresignDownloadUrl,
 			putFileFromPath: productionPutFileFromPath,
 		},
@@ -374,6 +391,7 @@ function createRuntimeAdapters(
 			).hasVisualStream;
 		} catch (error) {
 			rethrowRenderControlFlow(error);
+			if (!isInvalidBinding(error)) throw error;
 			return false;
 		}
 	}
@@ -382,12 +400,10 @@ function createRuntimeAdapters(
 	 * Probes a local media file's container duration. Used to size the B-roll
 	 * cutaway window against the *real* footage instead of a guess — required for
 	 * studio-picked B-roll, which (unlike the Pexels auto-search path) has no
-	 * API-reported duration up front. Returns null on any failure so callers can
-	 * treat it exactly like "no usable B-roll" and skip the cutaway.
+	 * API-reported duration up front. Returns null only for proven invalid media; infrastructure failures
+	 * propagate so requested cutaways survive retries.
 	 */
-	async function probeMediaDurationSec(
-		filePath: string,
-	): Promise<number | null> {
+	async function probeMediaDurationSec(filePath: string): Promise<number | null> {
 		try {
 			return (
 				await adapters.workerProcess.inspectMedia({
@@ -399,8 +415,17 @@ function createRuntimeAdapters(
 			).durationSec;
 		} catch (error) {
 			rethrowRenderControlFlow(error);
+			if (!isInvalidBinding(error)) throw error;
 			return null;
 		}
+	}
+
+	function isInvalidBinding(error: unknown): boolean {
+		return (
+			(error instanceof WorkerProcessFailure &&
+				error.code === "worker_command_input_invalid") ||
+			(error instanceof WorkflowFailure && error.code === "source_media_invalid")
+		);
 	}
 
 	type OptionalMediaKind = "video" | "audio" | "image";
@@ -410,20 +435,22 @@ function createRuntimeAdapters(
 	function validateOptionalMedia(
 		filePath: string,
 		kind: OptionalMediaKind,
+		window?: { startSec: number; durationSec: number },
 	): Promise<boolean> {
 		return validateMediaOnce({
 			cache: adapters.facts,
 			filePath,
-			kind,
+			kind: `${kind}:${window?.startSec ?? 0}:${window?.durationSec ?? "full"}:selected-v1`,
 			signal,
 			rethrowControl: rethrowRenderControlFlow,
-			decode: () => decodeOptionalMedia(filePath, kind),
+			decode: () => decodeOptionalMedia(filePath, kind, window),
 		});
 	}
 
 	async function decodeOptionalMedia(
 		filePath: string,
 		kind: OptionalMediaKind,
+		window?: { startSec: number; durationSec: number },
 	): Promise<boolean> {
 		try {
 			const probe = await adapters.workerProcess.inspectMedia({
@@ -439,14 +466,26 @@ function createRuntimeAdapters(
 						? probe.hasVisualStream
 						: probe.hasVideo;
 			if (!expectedStream) return false;
-			await execCommand(
-				"ffmpeg",
-				compileOptionalMediaValidationCommand(filePath, kind),
-				{ timeoutMs: config.probeCommandTimeoutMs },
-			);
+			const args = compileOptionalMediaValidationCommand(filePath, kind);
+			args.unshift("-xerror");
+			if (window) {
+				args.splice(args.indexOf("-i"), 0, "-ss", String(window.startSec));
+				args.splice(args.indexOf("-f"), 0, "-t", String(window.durationSec));
+			} else if (kind === "image")
+				args.splice(args.indexOf("-f"), 0, "-frames:v", "1");
+			await execCommand("ffmpeg", args, {
+				timeoutMs: Math.min(
+					config.probeCommandTimeoutMs,
+					Math.max(
+						30_000,
+						2_000 * (window?.durationSec ?? probe.durationSec ?? 120),
+					),
+				),
+			});
 			return true;
 		} catch (error) {
 			rethrowRenderControlFlow(error);
+			if (!isInvalidBinding(error)) throw error;
 			return false;
 		}
 	}

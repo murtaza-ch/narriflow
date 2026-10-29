@@ -1,3 +1,5 @@
+import { statfs } from "node:fs/promises";
+import { transportRenderCommand } from "../render-command-transport";
 import { RenderFactCache, sourceProbeIdentity } from "../render-fact-cache";
 import { documentFontReferences, resolveRenderBrandFonts, prepareCaptionFontsDirectory, brandFontKey } from "../brand-font-resolution";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -335,6 +337,7 @@ export interface ClipRenderAttemptAdapters {
 		validateOptionalMedia(
 			path: string,
 			kind: "video" | "audio" | "image",
+			window?: { startSec: number; durationSec: number },
 		): Promise<boolean>;
 		resolveBrollCutaways: typeof resolveBrollCutaways;
 		getCachedBrollAssetPath: typeof getCachedBrollAssetPath;
@@ -358,11 +361,12 @@ export interface ClipRenderAttemptAdapters {
 	};
 	storage: {
 		deleteObject: typeof productionDeleteObject;
+		sourceSizeBytes(key: string, signal: AbortSignal): Promise<number>;
 		downloadObjectToFile: typeof productionDownloadObjectToFile;
 		presignDownloadUrl: typeof productionPresignDownloadUrl;
 		putFileFromPath: typeof productionPutFileFromPath;
 	};
-	workspace: RenderWorkspaceAdapter;
+	workspace: RenderWorkspaceAdapter & { statfs?: typeof statfs };
 	clock: RenderClockAdapter;
 	resource: {
 		measure(): CompositionResourceMeasurement;
@@ -497,6 +501,135 @@ export function compositionSourceFor(
 	};
 }
 
+/** Derives planner asset availability from the bindings this attempt resolved.
+ * The golden runner uses this same boundary, including named missing bindings. */
+export function deriveRenderCompositionAssets(input: {
+	document: EditorDocument;
+	resolvedSceneAssets: Record<string, { path: string }>;
+	sceneVisualAvailability: NonNullable<
+		ClipCompositionPlanInput["assets"]
+	>["sceneVisuals"];
+	sceneFontAvailability: NonNullable<
+		ClipCompositionPlanInput["assets"]
+	>["sceneFonts"];
+	backgroundImage: NonNullable<
+		ClipCompositionPlanInput["assets"]
+	>["backgroundImage"];
+	brollPlan: Pick<BrollPlan, "cutaways"> | null;
+	userBrollUrl: string | null;
+	brandLogo: LogoOverlay | null;
+	brandLogoWasRequested: boolean;
+	plannedLogoSettings: ReturnType<typeof resolveEffectiveLogoSettings> | null;
+	musicPlan: ResolvedMusicAsset | null;
+	sfxPlans: ResolvedSfxAsset[];
+}): NonNullable<ClipCompositionPlanInput["assets"]> {
+	const {
+		document,
+		resolvedSceneAssets,
+		sceneVisualAvailability,
+		sceneFontAvailability,
+		backgroundImage,
+		brollPlan,
+		userBrollUrl,
+		brandLogo,
+		brandLogoWasRequested,
+		plannedLogoSettings,
+		musicPlan,
+		sfxPlans,
+	} = input;
+	const studioEdits = document.studioEdits;
+	const visualBrollAvailable = studioEdits.visualBroll.every((placement) =>
+		Boolean(
+			resolvedSceneAssets[
+				compositionAssetRef(
+					"visual_asset",
+					`${placement.asset.id}:${placement.asset.fingerprint}`,
+				)
+			],
+		),
+	);
+	const brollAvailable = Boolean(brollPlan) || visualBrollAvailable;
+	const logoAvailable = Boolean(brandLogo);
+	const musicAvailable = Boolean(musicPlan);
+	const soundEffectsAvailable = sfxPlans.length > 0;
+	return {
+		backgroundImage,
+		sceneVisuals: sceneVisualAvailability,
+		sceneFonts: sceneFontAvailability,
+		...(studioEdits.music.assetId || studioEdits.music.url
+			? {
+					music:
+						musicAvailable && musicPlan?.ref
+							? {
+									state: "available" as const,
+									ref: musicPlan.ref,
+									durationSec: musicPlan.durationSec,
+								}
+							: { state: "failed" as const },
+				}
+			: {}),
+		soundEffects: Object.fromEntries(
+			studioEdits.sfx.map((placement) => {
+				const resolved = soundEffectsAvailable
+					? sfxPlans.find((candidate) => candidate.id === placement.id)
+					: undefined;
+				return [
+					placement.id,
+					resolved?.ref
+						? {
+								state: "available" as const,
+								ref: resolved.ref,
+								durationSec: resolved.durationSec,
+							}
+						: { state: "failed" as const },
+				];
+			}),
+		),
+		...(studioEdits.visualBroll.length > 0 && brollAvailable
+			? {
+					broll: {
+						state: "available" as const,
+						placements: studioEdits.visualBroll.map((placement) => ({
+							id: placement.id,
+							ref: compositionAssetRef(
+								"visual_asset",
+								`${placement.asset.id}:${placement.asset.fingerprint}`,
+							),
+							kind: "image" as const,
+							startSec: placement.startSec,
+							endSec: placement.endSec,
+						})),
+					},
+				}
+			: brollPlan && brollAvailable
+				? {
+						broll: {
+							state: "available" as const,
+							placements: brollPlan.cutaways.map((cutaway, index) => ({
+								id: `cutaway-${index}`,
+								ref: cutaway.ref,
+								startSec: cutaway.window.startSec,
+								endSec: cutaway.window.endSec,
+							})),
+						},
+					}
+				: userBrollUrl || brollPlan || studioEdits.visualBroll.length > 0
+					? { broll: { state: "failed" as const } }
+					: {}),
+		...(brandLogo && logoAvailable && plannedLogoSettings
+			? {
+					logo: {
+						state: "available" as const,
+						ref: brandLogo.ref,
+						settings: plannedLogoSettings,
+					},
+				}
+			: brandLogoWasRequested
+				? { logo: { state: "failed" as const } }
+				: {}),
+	};
+}
+
 interface PendingRenderOutput {
 	clipRenderId: string;
 	clipId: string;
@@ -549,9 +682,53 @@ function rethrowRenderCancellation(error: unknown): void {
 	throw new DOMException("Clip render cancelled", "AbortError");
 }
 
+/** A missing required HDR filter is image health, never corrupt clip content. */
+export function normalizeRenderProcessFailure(error: unknown): unknown {
+	if (!(error instanceof WorkerProcessFailure) || error.failureScope)
+		return error;
+	const filter = /No such filter:\s*['"]?(zscale|tonemap)\b/i.exec(
+		error.diagnostic,
+	)?.[1];
+	if (!filter) return error;
+	return new WorkerProcessFailure(
+		"worker_render_filter_unavailable",
+		"retryable",
+		`Required render filter ${filter} is unavailable`,
+		"",
+		error.exitCode,
+		{ cause: error, executableClass: "ffmpeg", failureScope: "configuration" },
+	);
+}
+
+/** Only demonstrated ranged transport limitations warrant a full-object read.
+ * A generic deadline, corrupt input, or failed process start proves nothing
+ * about HTTP range support. These diagnostics come from the sole process owner. */
+export function isRecoverableRangedSourceFailure(error: unknown): boolean {
+	if (
+		error instanceof WorkflowFailure &&
+		error.code === "source_media_invalid" &&
+		error.cause instanceof WorkerProcessFailure
+	)
+		error = error.cause;
+	if (
+		!(error instanceof WorkerProcessFailure) ||
+		error.failureScope ||
+		!["worker_command_failed", "worker_command_input_invalid"].includes(
+			error.code,
+		)
+	)
+		return false;
+	return /HTTP error (?:403|408|429|5\d\d)\b|Server returned (?:403|408|429|5\d\d|5XX)\b|Connection (?:reset by peer|timed out)|Connection refused|Network is unreachable|Stream ends prematurely|HTTP server does not support (?:byte )?range|(?:Cannot|Unable to) seek (?:backward|in HTTP)/i.test(
+		error.diagnostic,
+	);
+}
+
 function rethrowRenderControlFlow(error: unknown): void {
 	rethrowWorkflowAttemptLost(error);
 	rethrowRenderCancellation(error);
+	const failure = normalizeRenderProcessFailure(error);
+	if (failure instanceof WorkerProcessFailure && failure.failureScope)
+		throw failure;
 }
 
 async function withRenderOperationDeadline<T>(input: {
@@ -763,9 +940,17 @@ function diagnoseOptionalAssetFallback(input: {
 		...input.context,
 		phase: input.phase,
 		assetClass: input.assetClass,
+		bindingId: input.context.assetRef ?? input.context.sfxId ?? `${input.assetClass}:${input.context.clipId ?? input.context.projectId}`,
 		failureCode: input.failureCode,
 		disposition: "degraded",
 	});
+}
+
+function rethrowOptionalAssetFailure(error: unknown): void {
+	rethrowRenderControlFlow(error);
+	// Typed validation returns false only for this binding's invalid bytes.
+	// A failed decoder start, timeout or OOM is never that proof.
+	if (error instanceof WorkerProcessFailure) throw error;
 }
 
 function optionalAccessFailure(
@@ -993,13 +1178,9 @@ function inspectCaptionRenderDiagnostics(
 	return { missing, failure };
 }
 
-async function executeRenderCommandWithOptionalFallback(input: {
+async function executeRenderCommand(input: {
+	directory: string;
 	primaryArgs: string[];
-	fallbackArgs?: () => string[];
-	optionalAssets: Array<{
-		assetClass: OptionalAssetClass;
-		failureCode: string;
-	}>;
 	context: Record<string, unknown>;
 	recordCommand?: (args: readonly string[]) => void;
 	recordSourceDecodeCompleted?: () => void;
@@ -1014,10 +1195,9 @@ async function executeRenderCommandWithOptionalFallback(input: {
 		outputPath: string;
 		editedDurationSec: number;
 		primary: MixPeakGuardMode;
-		fallback?: MixPeakGuardMode;
 	};
-  recordMixPeak?(result: MixPeakResult | null): void;
-}): Promise<"primary" | "fallback"> {
+	recordMixPeak?(result: MixPeakResult | null): void;
+}): Promise<void> {
 	let captionDiagnostics: readonly string[] = [];
 	const execute = async (args: string[]): Promise<void> => {
 		assertCompositionCommandWithinBudget(args, input.context);
@@ -1033,7 +1213,28 @@ async function executeRenderCommandWithOptionalFallback(input: {
 			safeRecordResourceSample,
 		);
 		try {
-			await execCommand("ffmpeg", args, {
+			const transportedArgs = await transportRenderCommand({
+				args,
+				directory: input.directory,
+				writeGraph: (path, graph) =>
+					currentRenderAdapters().workspace.writeFile(path, graph, "utf8"),
+			});
+			log("info", "clip_render_command_transport", {
+				...input.context,
+				graphBytes: args.reduce(
+					(total, arg, index) =>
+						total +
+						(args[index - 1] === "-filter_complex"
+							? Buffer.byteLength(arg)
+							: 0),
+					0,
+				),
+				maxArgBytes: Math.max(
+					...transportedArgs.map((arg) => Buffer.byteLength(arg)),
+				),
+				fileBacked: transportedArgs.includes("-filter_complex_script"),
+			});
+			await execCommand("ffmpeg", transportedArgs, {
 				recordResourceSample: safeRecordResourceSample,
 				onStderrLines: (lines) => {
 					captionDiagnostics = lines;
@@ -1044,8 +1245,8 @@ async function executeRenderCommandWithOptionalFallback(input: {
 			stopSampling();
 		}
 	};
-	const enforceMixPeak = async (mode: "primary" | "fallback"): Promise<void> => {
-		const guard = mode === "primary" ? input.mixPeak?.primary : input.mixPeak?.fallback;
+	const enforceMixPeak = async (): Promise<void> => {
+		const guard = input.mixPeak?.primary;
 		if (!input.mixPeak || !guard) return;
 		const { outputPath, editedDurationSec } = input.mixPeak;
 		const result = await guardMixPeak({
@@ -1061,49 +1262,46 @@ async function executeRenderCommandWithOptionalFallback(input: {
 		});
 		input.recordMixPeak?.(result);
 		if (!result) return;
-		log("info", result.outcome === "limited" ? "render_mix_peak_limited" : "clip_render_mix_peak", {
-			...input.context,
-			phase: "mix_peak",
-			mode,
-			...(result.outcome === "limited"
-				? {
-						tier: result.tier,
-						ceiling: result.ceiling,
-						before: result.initial,
-						after: result.measured,
-					}
-				: { outcome: result.outcome, measured: result.measured }),
-		});
+		log(
+			"info",
+			result.outcome === "limited"
+				? "render_mix_peak_limited"
+				: "clip_render_mix_peak",
+			{
+				...input.context,
+				phase: "mix_peak",
+				...(result.outcome === "limited"
+					? {
+							tier: result.tier,
+							ceiling: result.ceiling,
+							before: result.initial,
+							after: result.measured,
+						}
+					: { outcome: result.outcome, measured: result.measured }),
+			},
+		);
 	};
-	let mode: "primary" | "fallback";
-	try {
-		await execute(input.primaryArgs);
-		mode = "primary";
-	} catch (error) {
-		rethrowRenderControlFlow(error);
-		if (!input.fallbackArgs || input.optionalAssets.length === 0) throw error;
-		await execute(input.fallbackArgs());
-		for (const asset of input.optionalAssets) {
-			diagnoseOptionalAssetFallback({
-				assetClass: asset.assetClass,
-				phase: "command",
-				failureCode: asset.failureCode,
-				context: input.context,
-			});
-		}
-		mode = "fallback";
-	}
-	let captionOutcome = inspectCaptionRenderDiagnostics(captionDiagnostics, input.context);
+	await execute(input.primaryArgs);
+	let captionOutcome = inspectCaptionRenderDiagnostics(
+		captionDiagnostics,
+		input.context,
+	);
 	if (captionOutcome.missing.size > 0 && input.captionRecovery) {
 		await input.captionRecovery(captionOutcome.missing);
-		await execute(mode === "primary" ? input.primaryArgs : input.fallbackArgs!());
-		captionOutcome = inspectCaptionRenderDiagnostics(captionDiagnostics, input.context);
+		await execute(input.primaryArgs);
+		captionOutcome = inspectCaptionRenderDiagnostics(
+			captionDiagnostics,
+			input.context,
+		);
 	}
 	if (captionOutcome.failure) {
-		throw new WorkflowWorkerError(captionOutcome.failure.code, captionOutcome.failure.message, "permanent");
+		throw new WorkflowWorkerError(
+			captionOutcome.failure.code,
+			captionOutcome.failure.message,
+			"permanent",
+		);
 	}
-	await enforceMixPeak(mode);
-	return mode;
+	await enforceMixPeak();
 }
 
 // Encoding is the dominant cost of a render. veryfast/CRF21 measured
@@ -1146,7 +1344,7 @@ function runCommand(
 		.then((result) => {
 			options.onStderrLines?.(result.stderrLines ?? []);
 			return result.stdout.toString("utf8");
-		});
+		}).catch((error: unknown) => { throw normalizeRenderProcessFailure(error); });
 }
 
 function diagnoseRenderProcessOperation(event: WorkerProcessDiagnostic): void {
@@ -1184,7 +1382,7 @@ async function execCommand(
  *  11.72s wall for a 38s cut off a 531MB 4K source with this exact pattern.
  *  For a 2h podcast, 6-10 clips read ~5-8% of the source bytes vs 100% for
  *  the old full-file download. `WORKER_RENDER_SOURCE_MODE=download` restores
- *  the old behavior; any presign/probe failure falls back to it per run. */
+ *  the old behavior. Only demonstrated ranged transport failures permit recovery. */
 const RENDER_SOURCE_URL_TTL_SEC = 12 * 60 * 60;
 
 function isHttpSource(input: string): boolean {
@@ -1282,8 +1480,7 @@ async function resolveRequiredSource(input: {
 		} catch (error) {
 			rethrowRenderControlFlow(error);
 			const failure =
-				error instanceof WorkflowFailure &&
-				error.code === "source_presign_timeout"
+				error instanceof WorkflowFailure
 					? error
 					: new WorkflowFailure(
 							"source_presign_failed",
@@ -1296,6 +1493,15 @@ async function resolveRequiredSource(input: {
 				startedAtMs: presignStartedAtMs,
 				failure,
 			});
+			throw failure;
+		}
+
+		if (!presignedUrl || !isHttpSource(presignedUrl)) {
+			throw new WorkflowFailure(
+				"source_presign_failed",
+				"retryable",
+				"Required source access location is unavailable",
+			);
 		}
 
 		if (presignedUrl) {
@@ -1336,8 +1542,46 @@ async function resolveRequiredSource(input: {
 					startedAtMs: probeStartedAtMs,
 					failure: workflowFailureFromUnknown(error),
 				});
+				if (!isRecoverableRangedSourceFailure(error)) throw error;
 			}
 		}
+	}
+
+	if (currentRenderConfig().sourceMode !== "download") {
+		const sizeBytes =
+			input.sourceSizeBytes ??
+			(await withRenderOperationDeadline({
+				operation: () =>
+					currentRenderAdapters().storage.sourceSizeBytes(
+						sourceStorageKey,
+						renderStorageSignal(),
+					),
+				deadlineMs: currentRenderConfig().storageOperationTimeoutMs,
+				timeoutFailure: () =>
+					new WorkflowFailure(
+						"source_metadata_timeout",
+						"retryable",
+						"Source metadata lookup timed out",
+					),
+			}));
+		if (!sizeBytes || !Number.isSafeInteger(sizeBytes) || sizeBytes <= 0)
+			throw new WorkflowFailure(
+				"source_download_size_unavailable",
+				"retryable",
+				"Source download requires a known object size",
+			);
+		const disk = await (currentRenderAdapters().workspace.statfs ?? statfs)(
+			input.tempDir,
+		);
+		const freeBytes = Number(disk.bavail) * Number(disk.bsize);
+		const volumeBytes = Number(disk.blocks) * Number(disk.bsize);
+		// Reserve a source-sized output as well as the source and volume headroom.
+		if (!Number.isFinite(freeBytes) || !Number.isFinite(volumeBytes) || volumeBytes <= 0 || freeBytes < Math.max(1024 ** 3, volumeBytes * 0.1) + 2 * sizeBytes)
+			throw new WorkflowFailure(
+				"render_scratch_disk_low",
+				"retryable",
+				"Insufficient scratch space for source recovery",
+			);
 	}
 
 	currentRenderSignal()?.throwIfAborted();
@@ -1982,7 +2226,7 @@ async function resolveClipAudioAssets(input: {
 				});
 			}
 		} catch (error) {
-			rethrowRenderControlFlow(error);
+			rethrowOptionalAssetFailure(error);
 			const accessFailure = optionalAccessFailure(error, "music");
 			diagnoseOptionalAssetFallback({
 				assetClass: "music",
@@ -2023,6 +2267,7 @@ async function resolveClipAudioAssets(input: {
 					await currentRenderAdapters().optionalAssets.validateOptionalMedia(
 						musicPath,
 						"audio",
+      { startSec: studioEdits.music.startOffsetSec, durationSec: clipDurationSec },
 					);
 				if (decodable) {
 					musicPlan = {
@@ -2042,7 +2287,7 @@ async function resolveClipAudioAssets(input: {
 					});
 				}
 			} catch (error) {
-				rethrowRenderControlFlow(error);
+				rethrowOptionalAssetFailure(error);
 				diagnoseOptionalAssetFallback({
 					assetClass: "music",
 					phase: "download",
@@ -2095,7 +2340,7 @@ async function resolveClipAudioAssets(input: {
 				});
 			}
 		} catch (error) {
-			rethrowRenderControlFlow(error);
+			rethrowOptionalAssetFailure(error);
 			const accessFailure = optionalAccessFailure(error, "sound_effect");
 			diagnoseOptionalAssetFallback({
 				assetClass: "sound_effect",
@@ -2114,7 +2359,7 @@ async function resolveClipAudioAssets(input: {
 			assertPublicHttpUrl(sfxUrl);
 			sfxUrlSafe = true;
 		} catch (error) {
-			rethrowRenderControlFlow(error);
+			rethrowOptionalAssetFailure(error);
 			diagnoseOptionalAssetFallback({
 				assetClass: "sound_effect",
 				phase: "lookup",
@@ -2147,6 +2392,7 @@ async function resolveClipAudioAssets(input: {
 				await currentRenderAdapters().optionalAssets.validateOptionalMedia(
 					sfxPath,
 					"audio",
+     { startSec: 0, durationSec: Math.min(sfxDurationSec ?? clipDurationSec, clipDurationSec - placement.startSec) },
 				);
 			if (decodable && sfxDurationSec && sfxDurationSec > 0) {
 				sfxPlans.push({
@@ -2168,7 +2414,7 @@ async function resolveClipAudioAssets(input: {
 				});
 			}
 		} catch (error) {
-			rethrowRenderControlFlow(error);
+			rethrowOptionalAssetFailure(error);
 			diagnoseOptionalAssetFallback({
 				assetClass: "sound_effect",
 				phase: "download",
@@ -2488,6 +2734,7 @@ async function renderClipGroup(input: {
 					await currentRenderAdapters().optionalAssets.validateOptionalMedia(
 						brollPath,
 						"video",
+      { startSec: 0, durationSec: clipDurationSec },
 					);
 				if (!decodable) {
 					diagnoseOptionalAssetFallback({
@@ -2538,7 +2785,7 @@ async function renderClipGroup(input: {
 					}
 				}
 			} catch (error) {
-				rethrowRenderControlFlow(error);
+				rethrowOptionalAssetFailure(error);
 				brollPlan = null;
 				diagnoseOptionalAssetFallback({
 					assetClass: "broll",
@@ -2642,6 +2889,7 @@ async function renderClipGroup(input: {
 								await currentRenderAdapters().optionalAssets.validateOptionalMedia(
 									brollPath,
 									"video",
+         { startSec: 0, durationSec: resolved.endSec - resolved.startSec },
 								);
 							if (!decodable) {
 								diagnoseOptionalAssetFallback({
@@ -2652,6 +2900,7 @@ async function renderClipGroup(input: {
 										workflowRunId: run.id,
 										clipId: clip.id,
 										query: resolved.query,
+          assetRef: compositionAssetRef("broll", resolved.downloadUrl),
 									},
 								});
 								continue;
@@ -2663,7 +2912,7 @@ async function renderClipGroup(input: {
 										brollPath,
 									);
 								} catch (error) {
-									rethrowRenderControlFlow(error);
+									rethrowOptionalAssetFailure(error);
 									diagnoseOptionalAssetFallback({
 										assetClass: "broll",
 										phase: "cleanup",
@@ -2672,6 +2921,7 @@ async function renderClipGroup(input: {
 											workflowRunId: run.id,
 											clipId: clip.id,
 											query: resolved.query,
+          assetRef: compositionAssetRef("broll", resolved.downloadUrl),
 										},
 									});
 								}
@@ -2693,7 +2943,7 @@ async function renderClipGroup(input: {
 								pageUrl: resolved.attribution.pageUrl,
 							});
 						} catch (error) {
-							rethrowRenderControlFlow(error);
+							rethrowOptionalAssetFailure(error);
 							diagnoseOptionalAssetFallback({
 								assetClass: "broll",
 								phase: "download",
@@ -2702,6 +2952,7 @@ async function renderClipGroup(input: {
 									workflowRunId: run.id,
 									clipId: clip.id,
 									query: resolved.query,
+          assetRef: compositionAssetRef("broll", resolved.downloadUrl),
 								},
 							});
 						}
@@ -2718,7 +2969,7 @@ async function renderClipGroup(input: {
 						});
 					}
 				} catch (error) {
-					rethrowRenderControlFlow(error);
+					rethrowOptionalAssetFailure(error);
 					diagnoseOptionalAssetFallback({
 						assetClass: "broll",
 						phase: "lookup",
@@ -2830,17 +3081,13 @@ async function renderClipGroup(input: {
 				filePath: path,
 				signal: renderStorageSignal(),
 			});
-			const decodable =
-				await currentRenderAdapters().optionalAssets.validateOptionalMedia(
-					path,
-					asset.kind,
-				);
-			if (!decodable)
-				throw new WorkflowWorkerError(
-					"scene_asset_invalid",
-					"An inserted scene asset is not decodable",
-					"permanent",
-				);
+   const windows = compositionDocument.sceneBlocks.flatMap((block) =>
+    block.content.kind === "video" && block.content.asset.id === asset.id
+     ? [{ startSec: block.content.sourceStartSec, durationSec: block.content.sourceEndSec - block.content.sourceStartSec }] : []);
+   for (const window of windows.length ? windows : [undefined]) {
+    const decodable = await currentRenderAdapters().optionalAssets.validateOptionalMedia(path, asset.kind, window);
+    if (!decodable) throw new WorkflowWorkerError("scene_asset_invalid", "An inserted scene asset is not decodable", "permanent");
+   }
 			const sceneProbe =
 				asset.kind === "video" ? await probeSource(path) : null;
 			if (sceneProbe) {
@@ -3247,7 +3494,7 @@ async function renderClipGroup(input: {
 						imagePath: backgroundImagePath,
 					});
 				} catch (error) {
-					rethrowRenderControlFlow(error);
+					rethrowOptionalAssetFailure(error);
 					diagnoseOptionalAssetFallback({
 						assetClass: "background",
 						phase: "download",
@@ -3260,59 +3507,8 @@ async function renderClipGroup(input: {
 		}
 	}
 
-	const optionalCommandAssets: Array<{
-		assetClass: OptionalAssetClass;
-		failureCode: string;
-	}> = [
-		...(logo
-			? [
-					{
-						assetClass: "logo" as const,
-						failureCode: "brand_logo_command_failed",
-					},
-				]
-			: []),
-		...(brollPlan || studioEdits.visualBroll.length > 0
-			? [
-					{
-						assetClass: "broll" as const,
-						failureCode: "broll_command_failed",
-					},
-				]
-			: []),
-		...(musicPlan
-			? [
-					{
-						assetClass: "music" as const,
-						failureCode: "music_mix_failed",
-					},
-				]
-			: []),
-		...(sfxPlans.length > 0
-			? [
-					{
-						assetClass: "sound_effect" as const,
-						failureCode: "sound_effect_mix_failed",
-					},
-				]
-			: []),
-		...(backgroundPlan?.mode === "image"
-			? [
-					{
-						assetClass: "background" as const,
-						failureCode: "background_image_command_failed",
-					},
-				]
-			: []),
-	];
-	const fallbackBackgroundPlan: BackgroundPlan | null =
-		backgroundPlan?.mode === "image"
-			? { mode: "color", color: backgroundPlan.color, imagePath: null }
-			: backgroundPlan;
-
 	const requestedCompositionMode = resolveEffectiveFramingMode(studioEdits);
 	let plannedAudio: BoundCompositionAudioRenderRequest | null = null;
-	let fallbackAudio: BoundCompositionAudioRenderRequest | null = null;
 	let compositionPlan: ClipCompositionPlan | null = null;
 	/** Rewrites an output's caption script without code points libass found no glyph for. */
 	const captionRecoveryFor =
@@ -3332,138 +3528,7 @@ async function renderClipGroup(input: {
 			recordCaptionWarnings(output, track);
 			await currentRenderAdapters().workspace.writeFile(output.subtitlePath, track.ass, "utf-8");
 		};
-	let fallbackCompositionPlan: ClipCompositionPlan | null = null;
 	{
-		const planWithAssetAvailability = (
-			backgroundImage:
-				| { state: "missing" | "failed" }
-				| { state: "available"; ref: string },
-			availability: {
-				broll?: boolean;
-				logo?: boolean;
-				music?: boolean;
-				soundEffects?: boolean;
-			} = {},
-		) => {
-			const visualBrollAvailable = studioEdits.visualBroll.every((placement) =>
-				Boolean(
-					resolvedSceneAssets[
-						compositionAssetRef(
-							"visual_asset",
-							`${placement.asset.id}:${placement.asset.fingerprint}`,
-						)
-					],
-				),
-			);
-			const brollAvailable =
-				availability.broll ?? (Boolean(brollPlan) || visualBrollAvailable);
-			const logoAvailable = availability.logo ?? Boolean(brandLogo);
-			const musicAvailable = availability.music ?? Boolean(musicPlan);
-			const soundEffectsAvailable =
-				availability.soundEffects ?? sfxPlans.length > 0;
-			return planClipComposition({
-				document: compositionDocument,
-				source: plannerSource,
-				evidence: compositionEvidence,
-				assets: {
-					backgroundImage,
-					sceneVisuals: sceneVisualAvailability,
-					sceneFonts: sceneFontAvailability,
-					...(studioEdits.music.assetId || studioEdits.music.url
-						? {
-								music:
-									musicAvailable && musicPlan?.ref
-										? {
-												state: "available" as const,
-												ref: musicPlan.ref,
-												durationSec: musicPlan.durationSec,
-											}
-										: { state: "failed" as const },
-							}
-						: {}),
-					soundEffects: Object.fromEntries(
-						studioEdits.sfx.map((placement) => {
-							const resolved = soundEffectsAvailable
-								? sfxPlans.find((candidate) => candidate.id === placement.id)
-								: undefined;
-							return [
-								placement.id,
-								resolved?.ref
-									? {
-											state: "available" as const,
-											ref: resolved.ref,
-											durationSec: resolved.durationSec,
-										}
-									: { state: "failed" as const },
-							];
-						}),
-					),
-					...(studioEdits.visualBroll.length > 0 && brollAvailable
-						? {
-								broll: {
-									state: "available" as const,
-									placements: studioEdits.visualBroll.map((placement) => ({
-										id: placement.id,
-										ref: compositionAssetRef(
-											"visual_asset",
-											`${placement.asset.id}:${placement.asset.fingerprint}`,
-										),
-										kind: "image" as const,
-										startSec: placement.startSec,
-										endSec: placement.endSec,
-									})),
-								},
-							}
-						: brollPlan && brollAvailable
-							? {
-									broll: {
-										state: "available" as const,
-										placements: brollPlan.cutaways.map((cutaway, index) => ({
-											id: `cutaway-${index}`,
-											ref: cutaway.ref,
-											startSec: cutaway.window.startSec,
-											endSec: cutaway.window.endSec,
-										})),
-									},
-								}
-							: userBrollUrl || brollPlan || studioEdits.visualBroll.length > 0
-								? { broll: { state: "failed" as const } }
-								: {}),
-					...(brandLogo && logoAvailable && plannedLogoSettings
-						? {
-								logo: {
-									state: "available" as const,
-									ref: brandLogo.ref,
-									settings: plannedLogoSettings,
-								},
-							}
-						: brandLogoWasRequested
-							? { logo: { state: "failed" as const } }
-							: {}),
-				},
-				capabilities: {
-					automaticSpeakerLayout: true,
-					automaticSpeakerEngineVersion: CLIP_AUTO_LAYOUT_ENGINE,
-					explicitSplitLayout: true,
-					splitEngineVersion: "explicit-split-v1",
-					screenLayout: true,
-					screenEngineVersion: SCREEN_LAYOUT_ENGINE_VERSION,
-				},
-				targets: outputs.map((output) => {
-					const target = aspectRatioConfig.get(output.aspectRatio)!;
-					return {
-						id: output.clipRenderId,
-						aspectRatio: output.aspectRatio,
-						width: target.width,
-						height: target.height,
-						outputTreatment: {
-							resolution: output.resolution,
-							watermark: output.watermark,
-						},
-					};
-				}),
-			});
-		};
 		const backgroundImageAvailability =
 			needsCanvasBackground &&
 			backgroundPlan?.mode === "image" &&
@@ -3480,7 +3545,37 @@ async function renderClipGroup(input: {
 					? ({ state: "failed" } as const)
 					: ({ state: "missing" } as const);
 		const planningStartedAtMs = currentTimeMs();
-		const planned = planWithAssetAvailability(backgroundImageAvailability);
+		const planned = planClipComposition({
+			document: compositionDocument,
+			source: plannerSource,
+			evidence: compositionEvidence,
+			assets: deriveRenderCompositionAssets({
+				document: compositionDocument, resolvedSceneAssets, sceneVisualAvailability, sceneFontAvailability,
+				backgroundImage: backgroundImageAvailability, brollPlan, userBrollUrl, brandLogo,
+				brandLogoWasRequested, plannedLogoSettings, musicPlan, sfxPlans,
+			}),
+			capabilities: {
+				automaticSpeakerLayout: true,
+				automaticSpeakerEngineVersion: CLIP_AUTO_LAYOUT_ENGINE,
+				explicitSplitLayout: true,
+				splitEngineVersion: "explicit-split-v1",
+				screenLayout: true,
+				screenEngineVersion: SCREEN_LAYOUT_ENGINE_VERSION,
+			},
+			targets: outputs.map((output) => {
+				const target = aspectRatioConfig.get(output.aspectRatio)!;
+				return {
+					id: output.clipRenderId,
+					aspectRatio: output.aspectRatio,
+					width: target.width,
+					height: target.height,
+					outputTreatment: {
+						resolution: output.resolution,
+						watermark: output.watermark,
+					},
+				};
+			}),
+		});
 		const planningDurationMs = Math.max(
 			0,
 			currentTimeMs() - planningStartedAtMs,
@@ -3574,7 +3669,7 @@ async function renderClipGroup(input: {
 			applyScope: "clip",
 			fallbackCodes: planned.plan.notices
 				.map((notice) => notice.code)
-				.filter((code) => code.includes("motion")),
+				.filter((code) => code.includes("motion") || /(?:music|sound_effect|broll|logo|background)/.test(code)),
 			renderOutcome: "completed",
 		});
 		for (const output of outputs) {
@@ -3625,26 +3720,6 @@ async function renderClipGroup(input: {
 				output.captionEmoji = captions.emoji;
 			}
 		}
-		if (optionalCommandAssets.length > 0) {
-			const fallbackPlan = planWithAssetAvailability(
-				backgroundImageAvailability.state === "available"
-					? { state: "failed" }
-					: backgroundImageAvailability,
-				{
-					broll: false,
-					logo: false,
-					music: false,
-					soundEffects: false,
-				},
-			);
-			if (fallbackPlan.status !== "invalid") {
-				fallbackCompositionPlan = fallbackPlan.plan;
-				fallbackAudio = bindCompositionPlanAudioInputs(
-					compileCompositionPlanAudioSchedule(fallbackPlan.plan),
-					{},
-				);
-			}
-		}
 	}
 
   const validateOutput = (output: PendingRenderOutput, plan: ClipCompositionPlan, audio: BoundCompositionAudioRenderRequest, mixPeak: MixPeakResult | null) => validateRenderOutput({
@@ -3675,19 +3750,6 @@ async function renderClipGroup(input: {
 					plan: compositionPlan,
 					targetId: output.clipRenderId,
 				};
-				const fallbackCompositionForOutput =
-					fallbackCompositionPlan && fallbackAudio
-						? {
-								plan: fallbackCompositionPlan,
-								targetId: output.clipRenderId,
-							}
-						: null;
-				const audioOptionalAssets = optionalCommandAssets.filter(
-					({ assetClass }) =>
-						assetClass === "logo" ||
-						assetClass === "music" ||
-						assetClass === "sound_effect",
-				);
 				const compileAudioOnly = (mixPeakCeiling: number | null) =>
 					currentRenderAdapters().composition.compileCommand({
 						sourcePath,
@@ -3710,45 +3772,15 @@ async function renderClipGroup(input: {
 							captionEmoji: output.captionEmoji,
 						},
 					});
-				const compileAudioOnlyFallback =
-					fallbackCompositionForOutput &&
-					fallbackAudio &&
-					audioOptionalAssets.length > 0
-						? (mixPeakCeiling: number | null) =>
-								currentRenderAdapters().composition.compileCommand({
-									sourcePath,
-									outputPath: output.outputPath,
-									startSec: clipStartSec,
-									endSec: clipEndSec,
-									audio: fallbackAudio,
-									cutPlan,
-									source: probe,
-									plan: fallbackCompositionForOutput.plan,
-									targetId: fallbackCompositionForOutput.targetId,
-									encoder: { preset: x264Preset(), crf: x264Crf() },
-									...(mixPeakCeiling === null ? {} : { mixPeakCeiling }),
-									assets: {
-										subtitlePath: output.subtitlePath ?? null,
-										logo: null,
-										scenes: resolvedSceneAssets,
-										fonts: resolvedSceneFonts,
- captionFontsDirectory,
-							captionEmoji: output.captionEmoji,
-									},
-								})
-						: null;
 				const ffmpegArgs = compileAudioOnly(null);
 
 				const encodeStartedAtMs = currentTimeMs();
 				let mixPeak: MixPeakResult | null = null;
-				const commandMode = await executeRenderCommandWithOptionalFallback({
+				await executeRenderCommand({
+          directory: tempDir,
           recordMixPeak: (result) => { mixPeak = result; },
 					primaryArgs: ffmpegArgs,
 					captionRecovery: captionRecoveryFor(output),
-					fallbackArgs: compileAudioOnlyFallback
-						? () => compileAudioOnlyFallback(null)
-						: undefined,
-					optionalAssets: audioOptionalAssets,
 					mixPeak: {
 						outputPath: output.outputPath,
 						editedDurationSec: compositionPlan.editedDurationSec,
@@ -3756,14 +3788,6 @@ async function renderClipGroup(input: {
 							audio: plannedAudio,
 							limitedArgs: (ceiling) => compileAudioOnly(ceiling),
 						},
-						...(compileAudioOnlyFallback && fallbackAudio
-							? {
-									fallback: {
-										audio: fallbackAudio,
-										limitedArgs: (ceiling) => compileAudioOnlyFallback(ceiling),
-									},
-								}
-							: {}),
 					},
 					context: {
 						workflowRunId: run.id,
@@ -3782,14 +3806,13 @@ async function renderClipGroup(input: {
 				// this catch now only ever sees ENCODE failures.
 				scheduleUpload(output, {
 					validated: await validateOutput(output,
-            commandMode === "fallback" ? fallbackCompositionForOutput!.plan : compositionPlan,
-            commandMode === "fallback" ? fallbackAudio! : plannedAudio, mixPeak),
+            compositionPlan,
+            plannedAudio, mixPeak),
 					encodeMs: encodeDurationMs,
 					motionAnalytics: withCaptionWarningCodes(motionAnalytics, output),
 				});
 			} catch (error) {
-				rethrowWorkflowAttemptLost(error);
-				rethrowRenderCancellation(error);
+				rethrowRenderControlFlow(error);
 				const errorCode =
 					error instanceof WorkflowFailure
 						? error.code
@@ -3821,15 +3844,7 @@ async function renderClipGroup(input: {
 		const brollCredits =
 			plan && plan.credits.length > 0 ? JSON.stringify(plan.credits) : null;
 		for (const cutaway of plan?.cutaways ?? []) {
-			let cutawayProbe: SourceProbe;
-			try {
-				cutawayProbe = await probeSource(cutaway.path);
-			} catch (error) {
-				// Decodability was validated when it was downloaded; an unreadable
-				// probe leaves the cutaway on the SDR path.
-				rethrowRenderControlFlow(error);
-				continue;
-			}
+			const cutawayProbe = await probeSource(cutaway.path);
 			const cutawayHdr = hdrColorOf(cutawayProbe);
 			if (cutawayHdr) hdrAssets[cutaway.ref] = cutawayHdr;
 		}
@@ -3843,12 +3858,6 @@ async function renderClipGroup(input: {
 			}
 			const compositionForOutput = {
 				plan: compositionPlan,
-				targetId: output.clipRenderId,
-			};
-			const optionalAssetFallbackPlan =
-				fallbackCompositionPlan ?? compositionPlan;
-			const fallbackCompositionForOutput = {
-				plan: optionalAssetFallbackPlan,
 				targetId: output.clipRenderId,
 			};
 			try {
@@ -3892,41 +3901,14 @@ async function renderClipGroup(input: {
 							captionEmoji: output.captionEmoji,
 						},
 					});
-				const compileVideoFallback = (mixPeakCeiling: number | null) =>
-					currentRenderAdapters().composition.compileCommand({
-						sourcePath,
-						outputPath: output.outputPath,
-						startSec: clipStartSec,
-						endSec: clipEndSec,
-						audio: fallbackAudio ?? plannedAudio,
-						cutPlan,
-						source: probe,
-						plan: fallbackCompositionForOutput.plan,
-						targetId: fallbackCompositionForOutput.targetId,
-						encoder: { preset: x264Preset(), crf: x264Crf() },
-						...(mixPeakCeiling === null ? {} : { mixPeakCeiling }),
-						assets: {
-							subtitlePath: output.subtitlePath ?? null,
-							logo: null,
-							background: fallbackBackgroundPlan,
-							hdr: hdrAssets,
-							scenes: resolvedSceneAssets,
-							fonts: resolvedSceneFonts,
- captionFontsDirectory,
-							captionEmoji: output.captionEmoji,
-						},
-					});
 				const ffmpegArgs = compileVideo(null);
 				const encodeStartedAtMs = currentTimeMs();
 				let mixPeak: MixPeakResult | null = null;
-				const commandMode = await executeRenderCommandWithOptionalFallback({
+				await executeRenderCommand({
+          directory: tempDir,
           recordMixPeak: (result) => { mixPeak = result; },
 					primaryArgs: ffmpegArgs,
 					captionRecovery: captionRecoveryFor(output),
-					fallbackArgs:
-						optionalCommandAssets.length > 0
-							? () => compileVideoFallback(null)
-							: undefined,
 					mixPeak: {
 						outputPath: output.outputPath,
 						editedDurationSec: compositionPlan.editedDurationSec,
@@ -3934,12 +3916,7 @@ async function renderClipGroup(input: {
 							audio: plannedAudio,
 							limitedArgs: (ceiling) => compileVideo(ceiling),
 						},
-						fallback: {
-							audio: fallbackAudio ?? plannedAudio,
-							limitedArgs: (ceiling) => compileVideoFallback(ceiling),
-						},
 					},
-					optionalAssets: optionalCommandAssets,
 					context: {
 						workflowRunId: run.id,
 						clipId: clip.id,
@@ -3955,15 +3932,14 @@ async function renderClipGroup(input: {
 				// now only ever sees encode/build failures.
 				scheduleUpload(output, {
 					validated: await validateOutput(output,
-            commandMode === "fallback" ? optionalAssetFallbackPlan : compositionPlan,
-            commandMode === "fallback" ? fallbackAudio ?? plannedAudio : plannedAudio, mixPeak),
-					brollCredits: commandMode === "primary" ? brollCredits : null,
+            compositionPlan,
+            plannedAudio, mixPeak),
+					brollCredits: brollCredits,
 					encodeMs: encodeDurationMs,
 					motionAnalytics: withCaptionWarningCodes(motionAnalytics, output),
 				});
 			} catch (error) {
-				rethrowWorkflowAttemptLost(error);
-				rethrowRenderCancellation(error);
+				rethrowRenderControlFlow(error);
 				const contractFailure = compositionContractFailure(error);
 				const renderFailure =
 					error instanceof WorkflowFailure ? error : contractFailure;
@@ -4160,7 +4136,7 @@ async function executeClipRenderAttemptInScratch(params: {
 							});
 						}
 					} catch (error) {
-						rethrowRenderControlFlow(error);
+						rethrowOptionalAssetFailure(error);
 						diagnoseOptionalAssetFallback({
 							assetClass: "logo",
 							phase: "download",
@@ -4173,7 +4149,7 @@ async function executeClipRenderAttemptInScratch(params: {
 					}
 				}
 			} catch (error) {
-				rethrowRenderControlFlow(error);
+				rethrowOptionalAssetFailure(error);
 				diagnoseOptionalAssetFallback({
 					assetClass: "logo",
 					phase: "parse",

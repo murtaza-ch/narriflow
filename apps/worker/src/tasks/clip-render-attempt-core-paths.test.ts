@@ -1,3 +1,4 @@
+import { RenderFactCache } from "../render-fact-cache";
 import {
 	createClipRenderAttempt,
 	type ClipRenderAttemptRuntimeOptions,
@@ -158,6 +159,8 @@ function createCoreRenderPathTracer(input: {
 		ClipRenderAttemptRuntimeOptions["adapters"]
 	>["remoteMedia"];
 	optionalMediaInvalidFor?: "video" | "audio" | "image";
+ optionalValidationFailure?: Error;
+ renderFailure?: Error;
 	backgroundDecodable?: boolean;
 	faceAnalysisSamples?: Array<{ t: number; cx: number | null }> | null;
 	faceAnalysisFailure?: Error;
@@ -210,6 +213,9 @@ function createCoreRenderPathTracer(input: {
 	sourceAccess?: {
 		presignedUrl: string;
 		failRangedProbe?: boolean;
+ probeFailure?: Error;
+ sourceSizeBytes?: number | null;
+ diskFreeBytes?: number;
 	};
 	compositionAdapterFailure?: Error;
 	workspaceCleanupFailure?: Error;
@@ -279,7 +285,8 @@ function createCoreRenderPathTracer(input: {
 		message: string;
 		context?: Record<string, unknown>;
 	}> = [];
-	const brollCacheWrites: string[] = [];
+	const sourceDownloads: string[] = [];
+ const brollCacheWrites: string[] = [];
 	const persistedAutoLayouts: Array<unknown> = [];
 	const persistedSplitLayouts: Array<unknown> = [];
 	const persistedScreenLayouts: Array<unknown> = [];
@@ -390,7 +397,8 @@ function createCoreRenderPathTracer(input: {
 		},
 		adapters: {
 			...(input.remoteMedia ? { remoteMedia: input.remoteMedia } : {}),
-			// Nothing was stored since the snapshot; never reach the database.
+			facts: new RenderFactCache(),
+   // Nothing was stored since the snapshot; never reach the database.
 			layoutEvidence: { readCompatibleDurable: async () => null },
 			state: {
 				getProjectRenderStorageReferences: async () => new Set<string>(),
@@ -399,6 +407,7 @@ function createCoreRenderPathTracer(input: {
 						input.topology === "audiogram" ? "m4a" : "mp4"
 					}`,
 					sourceDurationSeconds: 20,
+     sourceSizeBytes: input.sourceAccess?.sourceSizeBytes === undefined ? 4096 : input.sourceAccess.sourceSizeBytes,
 					workspaceOwnerUserId: "user-core-paths",
 					workspaceId: "workspace",
 					pricingTier: input.pricingTier ?? "creator",
@@ -415,16 +424,13 @@ function createCoreRenderPathTracer(input: {
 			},
 			workerProcess: {
 				inspectMedia: async (request) => {
+     if (input.sourceAccess?.probeFailure && request.sourcePath === input.sourceAccess.presignedUrl) throw input.sourceAccess.probeFailure;
 					if (input.realMedia) {
 						if (
 							input.sourceAccess?.failRangedProbe &&
 							request.sourcePath === input.sourceAccess.presignedUrl
 						) {
-							throw new WorkflowFailure(
-								"worker_command_failed",
-								"retryable",
-								"Injected ranged probe failure",
-							);
+							throw new WorkerProcessFailure("worker_command_failed", "retryable", "Injected ranged probe failure", "HTTP error 503 Service Unavailable");
 						}
 						if (outputExpectations.has(request.sourcePath)) {
               await input.realMedia.probeCandidate?.(variantIdFromPath(request.sourcePath)!, request.sourcePath);
@@ -523,6 +529,7 @@ function createCoreRenderPathTracer(input: {
 						};
 					}
 					const ids = recordCommand(args);
+     if (ids.length && input.renderFailure) throw input.renderFailure;
 					if (input.failFirstRenderCommand && ids.length > 0 && commands.length === 1) {
 						throw new WorkflowFailure(
 							"worker_command_input_invalid",
@@ -591,8 +598,10 @@ function createCoreRenderPathTracer(input: {
 				reportProgress: async () => {},
 			},
 			optionalAssets: {
-				validateOptionalMedia: async (_path, kind) =>
-					input.optionalMediaInvalidFor !== kind,
+				validateOptionalMedia: async (_path, kind) => {
+     if (input.optionalValidationFailure) throw input.optionalValidationFailure;
+     return input.optionalMediaInvalidFor !== kind;
+    },
 				...(input.brollProviderFailure
 					? {
 							resolveBrollCutaways: async () => {
@@ -786,6 +795,7 @@ function createCoreRenderPathTracer(input: {
 			storage: {
 				presignDownloadUrl: async () => input.sourceAccess?.presignedUrl ?? "",
 				downloadObjectToFile: async ({ key, filePath }) => {
+     sourceDownloads.push(key);
 					if (input.logoDownloadFailure && key.endsWith("/logo.png")) {
 						throw input.logoDownloadFailure;
 					}
@@ -815,6 +825,7 @@ function createCoreRenderPathTracer(input: {
 				deleteObject: async (key) => ({ key }),
 			},
 			workspace: {
+    ...(input.sourceAccess?.diskFreeBytes === undefined ? {} : { statfs: async () => ({ bavail: input.sourceAccess!.diskFreeBytes!, bsize: 1, blocks: 20 * 1024 ** 3 }) as never }),
 				stat: input.realMedia ? stat : async () => ({ size: 4096, isFile: () => true }) as never,
 				writeFile: async (path, content, options) => {
 					writtenFiles.push({ path: String(path), content: String(content) });
@@ -839,6 +850,7 @@ function createCoreRenderPathTracer(input: {
 			scene: sceneDetectorCount,
 		}),
 		brollCacheWrites,
+  sourceDownloads,
 		clipRenderAttempt,
 		commands,
 		diagnostics,
@@ -1767,7 +1779,7 @@ test("ClipRenderAttempt omits an unavailable brand logo and diagnoses the fallba
 	);
 });
 
-test("ClipRenderAttempt retries an audio-only render without a command-failing logo", async () => {
+test("ClipRenderAttempt preserves an audio-only logo when an encode fails", async () => {
 	const harness = createCoreRenderPathTracer({
 		topology: "audiogram",
 		failFirstRenderCommand: true,
@@ -1789,9 +1801,9 @@ test("ClipRenderAttempt retries an audio-only render without a command-failing l
 			harness.attempt,
 			attemptContext(new AbortController().signal),
 		),
-	).resolves.toMatchObject({ status: "completed", succeeded: 2, failed: 0 });
-	expect(harness.commands).toHaveLength(3);
-	expect(harness.diagnostics).toContainEqual({
+	).resolves.toMatchObject({ status: "partial", succeeded: 1, failed: 1 });
+	expect(harness.commands).toHaveLength(2);
+	expect(harness.diagnostics).not.toContainEqual({
 		message: "clip_render_optional_asset_fallback",
 		context: expect.objectContaining({
 			phase: "command",
@@ -1986,7 +1998,7 @@ test("ClipRenderAttempt preserves stock B-roll attribution after successful sele
 	});
 });
 
-test("ClipRenderAttempt retries a failed stock B-roll composition without B-roll", async () => {
+test("ClipRenderAttempt preserves B-roll on an unattributed encode failure", async () => {
 	const harness = createCoreRenderPathTracer({
 		topology: "single-video",
 		clipWindow: { startSec: 0, endSec: 15 },
@@ -2001,9 +2013,9 @@ test("ClipRenderAttempt retries a failed stock B-roll composition without B-roll
 			harness.attempt,
 			attemptContext(new AbortController().signal),
 		),
-	).resolves.toMatchObject({ status: "completed", succeeded: 1, failed: 0 });
-	expect(harness.commands).toHaveLength(2);
-	expect(harness.diagnostics).toContainEqual({
+	).resolves.toMatchObject({ status: "failed", succeeded: 0, failed: 1 });
+	expect(harness.commands).toHaveLength(1);
+	expect(harness.diagnostics).not.toContainEqual({
 		message: "clip_render_optional_asset_fallback",
 		context: expect.objectContaining({
 			phase: "command",
@@ -2198,7 +2210,7 @@ test("ClipRenderAttempt skips a corrupt sound effect after decode validation", a
 	});
 });
 
-test("ClipRenderAttempt retries a failed sound-effect mix without sound effects", async () => {
+test("ClipRenderAttempt preserves sound effects on an unattributed encode failure", async () => {
 	const harness = createCoreRenderPathTracer({
 		topology: "single-video",
 		clipOverrides: {
@@ -2221,9 +2233,9 @@ test("ClipRenderAttempt retries a failed sound-effect mix without sound effects"
 			harness.attempt,
 			attemptContext(new AbortController().signal),
 		),
-	).resolves.toMatchObject({ status: "completed", succeeded: 1, failed: 0 });
-	expect(harness.commands).toHaveLength(2);
-	expect(harness.diagnostics).toContainEqual({
+	).resolves.toMatchObject({ status: "failed", succeeded: 0, failed: 1 });
+	expect(harness.commands).toHaveLength(1);
+	expect(harness.diagnostics).not.toContainEqual({
 		message: "clip_render_optional_asset_fallback",
 		context: expect.objectContaining({
 			phase: "command",
@@ -2233,7 +2245,7 @@ test("ClipRenderAttempt retries a failed sound-effect mix without sound effects"
 	});
 });
 
-test("ClipRenderAttempt retries a failed optional music mix without music", async () => {
+test("ClipRenderAttempt preserves music on an unattributed encode failure", async () => {
 	const harness = createCoreRenderPathTracer({
 		topology: "single-video",
 		clipOverrides: {
@@ -2249,9 +2261,9 @@ test("ClipRenderAttempt retries a failed optional music mix without music", asyn
 			harness.attempt,
 			attemptContext(new AbortController().signal),
 		),
-	).resolves.toMatchObject({ status: "completed", succeeded: 1, failed: 0 });
-	expect(harness.commands).toHaveLength(2);
-	expect(harness.diagnostics).toContainEqual({
+	).resolves.toMatchObject({ status: "failed", succeeded: 0, failed: 1 });
+	expect(harness.commands).toHaveLength(1);
+	expect(harness.diagnostics).not.toContainEqual({
 		message: "clip_render_optional_asset_fallback",
 		context: expect.objectContaining({
 			phase: "command",
@@ -4684,4 +4696,78 @@ test("ClipRenderAttempt propagates analysis startup failure to executor recovery
  expect(harness.persistedVariantIds).toHaveLength(0);
  expect(harness.failureCodes.size).toBe(0);
  expect(harness.settlementCalls()).toBe(0);
+});
+
+const fallbackBrandSnapshot = {
+  templateId: null, captionPreset: {}, logoStorageKey: "projects/brand/logo.png",
+  logoPosition: "bot-right", logoOpacity: 80, logoScalePct: 15,
+  primaryColor: "#FFFFFF", secondaryColor: "#00FF88", accentColor: null,
+};
+const fallbackMusicEdits = { studioEdits: { framing: { mode: "center" }, music: { url: "https://media.example/music.mp3", volume: 25 } } };
+
+for (const topology of ["single-video", "audiogram"] as const) {
+  test(`${topology} source timeout preserves logo/music and issues no stripped encode`, async () => {
+    const harness = createCoreRenderPathTracer({ topology, clipOverrides: fallbackMusicEdits, projectBrandSnapshot: fallbackBrandSnapshot,
+      renderFailure: new WorkerProcessFailure("worker_command_timeout", "retryable", "Source read timed out", "") });
+    const result = await harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal));
+    expect(result.status).toBe("requeued");
+    expect(harness.commands).toHaveLength(topology === "audiogram" ? 2 : 1);
+    for (const command of harness.commands) {
+      expect(command.args.some((arg) => arg.includes("brand-logo"))).toBe(true);
+      expect(command.args.some((arg) => arg.includes("music-"))).toBe(true);
+    }
+    expect(harness.diagnostics.some((event) => event.message === "clip_render_optional_asset_fallback")).toBe(false);
+    expect(harness.uploadedVariantIds).toEqual([]);
+  });
+}
+
+for (const phase of ["probe", "validation", "encode"] as const) {
+  test(`EBADF during ${phase} escapes without download repair, altered encode, or media settlement`, async () => {
+    const failure = new WorkerProcessFailure("worker_command_spawn_failed", "retryable", "Cannot spawn", "", null, { errno: "EBADF", failureScope: "executor", executableClass: "ffprobe" });
+    const harness = createCoreRenderPathTracer({ topology: "single-video", clipOverrides: fallbackMusicEdits, projectBrandSnapshot: fallbackBrandSnapshot,
+      ...(phase === "probe" ? { sourceAccess: { presignedUrl: "https://source.example/input.mp4", probeFailure: failure } }
+      : phase === "validation" ? { optionalValidationFailure: failure } : { renderFailure: failure }) });
+    await expect(harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal))).rejects.toBe(failure);
+    expect(harness.commands).toHaveLength(phase === "encode" ? 1 : 0);
+    expect(harness.sourceDownloads.filter((key) => key.includes("/source/"))).toHaveLength(phase === "probe" ? 0 : 1);
+    expect(harness.failureCodes.size).toBe(0);
+    expect(harness.settlementCalls()).toBe(0);
+    expect(harness.uploadedVariantIds).toEqual([]);
+    expect(harness.diagnostics.some((event) => event.message === "clip_render_optional_asset_fallback")).toBe(false);
+  });
+}
+
+test("a proven invalid music binding removes only music, retains logo and records the notice", async () => {
+  const harness = createCoreRenderPathTracer({ topology: "single-video", clipOverrides: fallbackMusicEdits,
+    projectBrandSnapshot: fallbackBrandSnapshot, optionalMediaInvalidFor: "audio" });
+  expect((await harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal))).status).toBe("completed");
+  expect(harness.commands).toHaveLength(1);
+  expect(harness.commands[0]!.args.some((arg) => arg.includes("brand-logo"))).toBe(true);
+  expect(harness.commands[0]!.args.some((arg) => arg.includes("music-"))).toBe(false);
+  expect(harness.diagnostics).toContainEqual({ message: "clip_render_optional_asset_fallback", context: expect.objectContaining({ assetClass: "music", failureCode: "music_media_invalid", phase: "decode" }) });
+});
+
+test("validation timeout retries the requested composition instead of dropping a valid binding", async () => {
+  const harness = createCoreRenderPathTracer({ topology: "single-video", clipOverrides: fallbackMusicEdits,
+    optionalValidationFailure: new WorkerProcessFailure("worker_command_timeout", "retryable", "Validation deadline", "") });
+  expect((await harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal))).status).toBe("requeued");
+  expect(harness.commands).toHaveLength(0);
+  expect(harness.diagnostics.some((event) => event.message === "clip_render_optional_asset_fallback")).toBe(false);
+});
+
+for (const filter of ["zscale", "tonemap"]) test(`missing ${filter} escapes encode without clip failure or stripped content`, async () => {
+  const harness = createCoreRenderPathTracer({ topology: "single-video", clipOverrides: fallbackMusicEdits,
+    renderFailure: new WorkerProcessFailure("worker_command_failed", "retryable", "Missing filter", `No such filter: '${filter}'`) });
+  await expect(harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal))).rejects.toMatchObject({ failureScope: "configuration", code: "worker_render_filter_unavailable" });
+  expect(harness.commands).toHaveLength(1);
+  expect(harness.failureCodes.size).toBe(0);
+  expect(harness.settlementCalls()).toBe(0);
+});
+
+test("eligible source recovery refuses a full download under disk pressure", async () => {
+  const harness = createCoreRenderPathTracer({ topology: "single-video", sourceAccess: { presignedUrl: "https://source.example/input.mp4",
+    probeFailure: new WorkerProcessFailure("worker_command_failed", "retryable", "Read reset", "Connection reset by peer"), diskFreeBytes: 1024 ** 3 } });
+  expect((await harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal))).status).toBe("requeued");
+  expect(harness.sourceDownloads).toEqual([]);
+  expect([...harness.failureCodes.values()]).toEqual(["render_scratch_disk_low"]);
 });

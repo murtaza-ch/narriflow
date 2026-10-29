@@ -1,3 +1,4 @@
+import { RenderFactCache } from "../render-fact-cache";
 import { RenderObjectReconciler } from "../render-object-reconciler";
 import { createRenderOutputFixture } from "../render-output-validation.test-fixture";
 import { createClipRenderAttempt } from "./clip-render-attempt-runtime";
@@ -20,6 +21,7 @@ import {
 import { parseRenderConfig } from "../render-config";
 import {
 	productionWorkerProcessModule,
+ WorkerProcessFailure,
 	type WorkerProcessModule,
 } from "../worker-process";
 import {
@@ -53,6 +55,7 @@ function frozenRenderingState(
 				? "projects/project/source/input.mp4"
 				: overrides.sourceStorageKey,
 		sourceDurationSeconds: 10,
+ sourceSizeBytes: 4096,
 		workspaceOwnerUserId: "user",
 		workspaceId: "workspace",
 		pricingTier: overrides.pricingTier ?? "creator",
@@ -224,6 +227,7 @@ function createOrdinaryTracer(input: {
 				title: "Ordinary tracer",
 				sourceStorageKey: `projects/${attempt.projectId}/source/input.mp3`,
 				sourceDurationSeconds: 10,
+ sourceSizeBytes: 4096,
 				workspaceOwnerUserId: "user",
 				workspaceId: "workspace",
 			},
@@ -250,6 +254,7 @@ function createOrdinaryTracer(input: {
 			},
 		},
 		adapters: {
+   facts: new RenderFactCache(),
       composition: { compileCommand: renderOutput.compileCommand },
 			state: {
 				getProjectRenderStorageReferences: async (projectId) => {
@@ -272,6 +277,7 @@ function createOrdinaryTracer(input: {
 					return {
 						sourceStorageKey: `projects/${attempt.projectId}/source/input.mp3`,
 						sourceDurationSeconds: 10,
+ sourceSizeBytes: 4096,
 						workspaceOwnerUserId: "user",
 						workspaceId: "workspace",
 						pricingTier: "creator" as const,
@@ -300,12 +306,13 @@ function createOrdinaryTracer(input: {
 						expect(deadlineMs).toBeGreaterThan(0);
 						interruptSource(`${mode}_probe`);
 						if (shouldFail(`${mode}_probe`)) {
-							throw new WorkflowFailure(
+							throw new WorkerProcessFailure(
 								mode === "ranged"
 									? "worker_command_failed"
 									: "worker_command_input_invalid",
 								mode === "ranged" ? "retryable" : "permanent",
 								`injected ${mode} probe failure`,
+        mode === "ranged" ? "HTTP error 503 Service Unavailable" : "moov atom not found",
 							);
 						}
 						return {
@@ -513,6 +520,7 @@ function createOrdinaryTracer(input: {
 				},
 			},
 			workspace: {
+    statfs: async () => ({ bavail: 10 * 1024 ** 3, bsize: 1, blocks: 20 * 1024 ** 3 }) as never,
 				stat: async () => ({ size: 4096, isFile: () => true }) as never,
 			},
 			clock: {
@@ -627,6 +635,7 @@ function createUploadQueueTracer(input: {
 				title: "Upload queue tracer",
 				sourceStorageKey: `projects/${attempt.projectId}/source/input.mp3`,
 				sourceDurationSeconds: 10,
+ sourceSizeBytes: 4096,
 				workspaceOwnerUserId: "user",
 				workspaceId: "workspace",
 			},
@@ -861,6 +870,7 @@ test("ClipRenderAttempt discards an uploaded object when cancellation wins befor
 				title: "Post-upload cancellation",
 				sourceStorageKey: `projects/${attempt.projectId}/source/input.mp3`,
 				sourceDurationSeconds: 10,
+ sourceSizeBytes: 4096,
 				workspaceOwnerUserId: "user",
 				workspaceId: "workspace",
 			},
@@ -1042,6 +1052,7 @@ test("ClipRenderAttempt can reuse frozen injected adapters without retaining ano
 		},
 		storage: {
 			deleteObject: unexpectedOperation,
+   sourceSizeBytes: unexpectedOperation,
 			downloadObjectToFile: unexpectedOperation,
 			presignDownloadUrl: unexpectedOperation,
 			putFileFromPath: unexpectedOperation,
@@ -1268,6 +1279,7 @@ test("ClipRenderAttempt cancellation drains to cleanup without persisting outcom
 				title: "Cancelled render",
 				sourceStorageKey: `projects/${attempt.projectId}/source/input.mp4`,
 				sourceDurationSeconds: 10,
+ sourceSizeBytes: 4096,
 				workspaceOwnerUserId: "user",
 				workspaceId: "workspace",
 			},
@@ -1384,6 +1396,7 @@ test("ClipRenderAttempt permanently rejects a stored document with an empty time
 				title: "Fully deleted clip",
 				sourceStorageKey: `projects/${attempt.projectId}/source/input.mp4`,
 				sourceDurationSeconds: 10,
+ sourceSizeBytes: 4096,
 				workspaceOwnerUserId: "user",
 				workspaceId: "workspace",
 			},
@@ -1774,7 +1787,7 @@ test.skipIf(!FFMPEG_AVAILABLE || !FFPROBE_AVAILABLE)(
 		const server = Bun.serve({
 			hostname: "127.0.0.1",
 			port: 0,
-			fetch: () => new Response("not media", { status: 200 }),
+			fetch: () => new Response("Service unavailable", { status: 503 }),
 		});
 		await mkdir(workspaceDirectory);
 		try {
@@ -1820,8 +1833,8 @@ test.skipIf(!FFMPEG_AVAILABLE || !FFPROBE_AVAILABLE)(
 				message: "clip_render_source_operation_failed",
 				context: expect.objectContaining({
 					operation: "ranged_probe",
-					failureCode: "source_media_invalid",
-					disposition: "permanent",
+					failureCode: "worker_command_failed",
+					disposition: "retryable",
 				}),
 			});
 			expect(harness.diagnostics).toContainEqual({
@@ -1835,11 +1848,11 @@ test.skipIf(!FFMPEG_AVAILABLE || !FFPROBE_AVAILABLE)(
 	},
 );
 
-test("ClipRenderAttempt falls back when source presigning fails", async () => {
+test("ClipRenderAttempt retries presigning failures without a full download", async () => {
 	const expected: RenderWorkSetOutcome = {
-		status: "completed",
+		status: "requeued",
 		requested: 1,
-		succeeded: 1,
+		succeeded: 0,
 		failed: 0,
 		superseded: 0,
 		followUpWorkflowRunId: null,
@@ -1857,8 +1870,8 @@ test("ClipRenderAttempt falls back when source presigning fails", async () => {
 			attemptContext(new AbortController().signal),
 		),
 	).resolves.toEqual(expected);
-	expect(harness.actions).toContain("download");
-	expect(harness.actions).toContain("probe:local");
+	expect(harness.actions).not.toContain("download");
+	expect(harness.actions).not.toContain("probe:local");
 	expect(harness.actions).not.toContain("probe:ranged");
 	expect(harness.diagnostics).toContainEqual({
 		message: "clip_render_source_operation_failed",
@@ -1870,13 +1883,13 @@ test("ClipRenderAttempt falls back when source presigning fails", async () => {
 	});
 });
 
-test("ClipRenderAttempt bounds presigning and falls back to a local source", async () => {
+test("ClipRenderAttempt bounds presigning without selecting an unproven source fallback", async () => {
 	const harness = createOrdinaryTracer({
 		attemptId: "30000000-0000-4000-8000-000000000067",
 		outcome: {
-			status: "completed",
+			status: "requeued",
 			requested: 1,
-			succeeded: 1,
+			succeeded: 0,
 			failed: 0,
 			superseded: 0,
 			followUpWorkflowRunId: null,
@@ -1891,9 +1904,9 @@ test("ClipRenderAttempt bounds presigning and falls back to a local source", asy
 	);
 	while (!harness.actions.includes("presign")) await Promise.resolve();
 	harness.advanceClock(5);
-	await expect(executing).resolves.toMatchObject({ status: "completed" });
-	expect(harness.actions).toContain("download");
-	expect(harness.actions).toContain("probe:local");
+	await expect(executing).resolves.toMatchObject({ status: "requeued" });
+	expect(harness.actions).not.toContain("download");
+	expect(harness.actions).not.toContain("probe:local");
 	expect(harness.actions).not.toContain("probe:ranged");
 	expect(harness.diagnostics).toContainEqual({
 		message: "clip_render_source_operation_failed",
