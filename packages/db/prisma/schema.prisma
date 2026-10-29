@@ -620,6 +620,8 @@ model WorkflowRun {
   /// Fixed-membership marker for a clip-rendering Render Work Set. Null means
   /// this run has not frozen a Render Work Set.
   renderWorkSetFrozenAt DateTime?
+  /// Stable across coordinator claims. Allocated once with group membership.
+  renderWorkSetGeneration String? @db.Uuid
   // The immutable configuration bound to a generation run. Detection reads
   // this pack, never "latest for project"; a missing binding fails permanently.
   // Render rescue and dubbing can run without a ContentPack binding.
@@ -630,6 +632,7 @@ model WorkflowRun {
   project        Project              @relation(fields: [projectId], references: [id], onDelete: Cascade)
   contentPack    ContentPack?         @relation(fields: [contentPackId], references: [id], onDelete: SetNull)
   renderVariants ClipRender[]
+  renderGroups   RenderGroup[]
   exportBundle   ExportBundle?
   ingestHandoffs IngestJob[]          @relation("IngestJobGenerationRun")
   finishing      GenerationFinishing?
@@ -638,10 +641,129 @@ model WorkflowRun {
   // 20260729000000_one_live_clip_rendering_run migration): at most one
   // clip_rendering run per project may be queued/running at a time. Creation
   // paths must catch the unique violation and reuse the existing live run.
+  @@unique([id, renderWorkSetGeneration])
   @@unique([projectId, idempotencyKey])
   @@index([stage, status, nextAttemptAt, createdAt])
   @@index([status, leaseExpiresAt])
   @@index([status, nextPollAt])
+}
+
+enum RenderGroupStatus {
+  queued
+  running
+  completed
+  partial
+  failed
+  superseded
+}
+
+enum RenderGroupExecutionResult {
+  completed
+  partial
+  failed
+  interrupted
+  released
+  superseded
+}
+
+enum RenderGroupVariantResult {
+  completed
+  retryable
+  permanent
+  superseded
+}
+
+/// A partition of one fixed Render Work Set, never another Workflow Run.
+/// clipId and exportIdentity are historical identities, not mutable inputs.
+model RenderGroup {
+  id                    String            @id @default(uuid()) @db.Uuid
+  workflowRunId         String            @db.Uuid
+  workSetGeneration     String            @db.Uuid
+  clipId                String            @db.Uuid
+  exportIdentity        String
+  status                RenderGroupStatus @default(queued)
+  attemptToken          String?           @unique @db.Uuid
+  leaseOwner            String?
+  leaseExpiresAt        DateTime?
+  heartbeatAt           DateTime?
+  nextAttemptAt         DateTime?
+  chargedAttemptCount   Int               @default(0)
+  errorCode             String?
+  failureDisposition    ClipRenderFailureDisposition?
+  settledAt             DateTime?
+  createdAt             DateTime          @default(now())
+  updatedAt             DateTime          @updatedAt
+
+  workflowRun      WorkflowRun            @relation(fields: [workflowRunId, workSetGeneration], references: [id, renderWorkSetGeneration], onDelete: Cascade, onUpdate: Restrict)
+  members          RenderGroupMember[]
+  executions       RenderGroupExecution[] @relation("RenderGroupExecutions")
+  currentExecution RenderGroupExecution?  @relation("CurrentRenderGroupExecution", fields: [attemptToken, id], references: [token, groupId], onDelete: NoAction, onUpdate: Restrict)
+
+  @@unique([workflowRunId, workSetGeneration, clipId, exportIdentity], map: "RenderGroup_identity_key")
+  @@unique([id, workflowRunId, workSetGeneration])
+  @@unique([attemptToken, id])
+  @@index([status, nextAttemptAt, createdAt])
+  @@index([status, leaseExpiresAt])
+}
+
+/// Historical membership survives deletion or reassignment of a ClipRender.
+/// Admission validates clipRenderId against the group's clip and frozen inputs.
+/// Invalidating a member is explicit; it never expands or rewrites the work set.
+model RenderGroupMember {
+  groupId           String    @db.Uuid
+  workflowRunId     String    @db.Uuid
+  workSetGeneration String    @db.Uuid
+  clipRenderId      String    @db.Uuid
+  invalidatedAt     DateTime?
+  createdAt         DateTime  @default(now())
+
+  group    RenderGroup                 @relation(fields: [groupId, workflowRunId, workSetGeneration], references: [id, workflowRunId, workSetGeneration], onDelete: Cascade, onUpdate: Restrict)
+  outcomes RenderGroupVariantOutcome[]
+
+  @@id([groupId, clipRenderId])
+  @@unique([workflowRunId, workSetGeneration, clipRenderId], map: "RenderGroupMember_membership_key")
+}
+
+/// One immutable claim token and owner per execution. Execution start and
+/// charging commit together; graceful release refunds the charge exactly once.
+model RenderGroupExecution {
+  token                String                      @id @db.Uuid
+  groupId              String                      @db.Uuid
+  owner                String
+  claimedAt            DateTime                    @default(now())
+  startedAt            DateTime?
+  finishedAt           DateTime?
+  charged              Boolean                     @default(false)
+  result               RenderGroupExecutionResult?
+  errorCode            String?
+  failureDisposition   ClipRenderFailureDisposition?
+  sourceFingerprint    String?
+  analysisFingerprint  String?
+  toolchainFingerprint String?
+
+  group      RenderGroup                 @relation("RenderGroupExecutions", fields: [groupId], references: [id], onDelete: Cascade, onUpdate: Restrict)
+  currentFor RenderGroup?                 @relation("CurrentRenderGroupExecution")
+  outcomes   RenderGroupVariantOutcome[]
+
+  @@unique([token, groupId])
+  @@index([groupId, claimedAt])
+}
+
+/// Idempotent execution outcomes remain after mutable variant retries.
+/// No URLs, commands, render manifests, or raw user text belong here.
+model RenderGroupVariantOutcome {
+  token        String                   @db.Uuid
+  groupId      String                   @db.Uuid
+  clipRenderId String                   @db.Uuid
+  result       RenderGroupVariantResult
+  errorCode    String?
+  recordedAt   DateTime                 @default(now())
+
+  execution RenderGroupExecution @relation(fields: [token, groupId], references: [token, groupId], onDelete: Cascade, onUpdate: Restrict)
+  member    RenderGroupMember    @relation(fields: [groupId, clipRenderId], references: [groupId, clipRenderId], onDelete: Cascade, onUpdate: Restrict)
+
+  @@id([token, clipRenderId])
+  @@index([groupId, clipRenderId])
 }
 
 /// Send-once ledger for terminal-outcome notifications (Phase 2b of the
@@ -1564,13 +1686,13 @@ model ClipRender {
   sizeBytes          BigInt?
   durationSec        Float?
   errorCode          String?
-  /// Informational Render Work Set lineage. Workflow Attempt fencing remains
-  /// the only authority for mutating this variant.
+  /// Render Work Set lineage. Group membership supplies child mutation
+  /// authority after the integrated group runtime is enabled.
   workflowRunId      String?                       @db.Uuid
   /// Recovery classification for a failed variant.
   failureDisposition ClipRenderFailureDisposition?
-  /// Fencing reference to the parent Workflow Attempt. It is not an
-  /// independent lease or retry counter.
+  /// Parent-only execution fence, removed from runtime use by ticket 20.
+  /// Group tokens live in RenderGroup, not in this historical field.
   workflowAttemptId  String?                       @db.Uuid
   startedAt          DateTime?
   completedAt        DateTime?

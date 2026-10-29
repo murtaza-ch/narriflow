@@ -86,16 +86,20 @@ One exclusive, time-bounded claim to execute a Workflow Run, identified by an im
 _Avoid_: Retry, worker, lease
 
 **Clip Render Attempt**:
-One execution of a clip-rendering Workflow Attempt that owns a fixed set of requested render variants through resolution, encoding, delivery, and settlement.
+One execution of a Render Group through resolution, encoding, delivery, and settlement, preserving the same frozen output configuration across retries.
 _Avoid_: Render job, FFmpeg run, child attempt
 
 **Clip Render Variant**:
-One requested rendered artifact for a clip, aspect ratio, and frozen output configuration. Its outcome is tracked independently while ownership remains with its Clip Render Attempt.
+One requested rendered artifact for a clip, aspect ratio, and frozen output configuration. Its outcome is tracked independently within its Render Group.
 _Avoid_: Output file, encode task, child job
 
 **Render Work Set**:
 The fixed membership of Clip Render Variants assigned to one clip-rendering Workflow Run. Variants created after membership is fixed belong to a later Workflow Run.
-_Avoid_: Pending renders, render queue, clip group
+_Avoid_: Pending renders, render queue, Render Group
+
+**Render Group**:
+One partition of a Render Work Set containing one clip and one frozen export configuration, including its requested aspect variants. Groups can execute and retry independently while belonging to the same Workflow Run.
+_Avoid_: Render Work Set, per-clip Workflow Run, render queue
 
 **Frozen Rendering State**:
 The canonical project, clip, entitlement, and output state a Clip Render Attempt uses for all decisions in one execution. Expiring access locations may be refreshed without changing that state.
