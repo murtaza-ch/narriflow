@@ -1156,7 +1156,10 @@ export function compareTarget(caseId: string, base: TargetRecord, cand: TargetRe
     while (at < a.length && at < b.length && a[at] === b[at]) at++;
     add("graph", `filtergraph differs at byte ${at}: ...${a.slice(Math.max(0, at - 40), at + 60)} -> ...${b.slice(Math.max(0, at - 40), at + 60)}`);
   }
-  if (!wants("output")) return out;
+  // "frames" retains the decoded video frames and PTS alone, for corrections that
+  // change the audio track and promise the picture stays bit-identical.
+  if (!wants("output") && !wants("frames")) return out;
+  const wholeOutput = wants("output");
   if (Boolean(base.output) !== Boolean(cand.output)) {
     add("render", base.output ? "candidate no longer renders this target" : "candidate renders a target the baseline could not");
     return out;
@@ -1171,6 +1174,7 @@ export function compareTarget(caseId: string, base: TargetRecord, cand: TargetRe
         ? `frame count ${bv.frames.length} -> ${cv.frames.length} (first difference at frame ${index})`
         : `frame ${index} (pts ${bv.frames[index]?.[0]}) hash ${bv.frames[index]?.[1]} -> ${cv.frames[index]?.[1]}`);
     }
+    if (!wholeOutput) return out;
     const ba = base.output.audio;
     const ca = cand.output.audio;
     if (Boolean(ba) !== Boolean(ca)) add("audio", "audio stream presence differs");

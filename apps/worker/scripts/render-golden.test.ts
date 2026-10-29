@@ -205,6 +205,21 @@ describe("capture, verify and the gate", () => {
     expect(compareCase(current, changed).map((item) => item.category)).toContain("inspection");
   });
 
+  test("retaining frames lets the audio change but not the picture", () => {
+    const base = baseline.cases[CASE]!;
+    const retain = ["plan", "frames"];
+    const audioChanged = clone(base);
+    const audio = audioChanged.targets[0]!.output!.audio!;
+    audio.pcmSha256 = "padded";
+    audio.sampleCount += 4800;
+    audioChanged.targets[0]!.command.argvSha256 = "changed";
+    expect(compareCase(base, audioChanged, retain)).toEqual([]);
+    expect(compareCase(base, audioChanged).map((item) => item.category)).toContain("audio");
+    const frameChanged = clone(audioChanged);
+    frameChanged.targets[0]!.output!.video!.framesSha256 = "changed";
+    expect(compareCase(base, frameChanged, retain).map((item) => item.category)).toEqual(["frames"]);
+  });
+
   test("verify passes on the same code and writes a report", async () => {
     const out = join(work, "verify-ok");
     const { report, exitCode } = await verifySuite({ suite: "normal", cases: [CASE], out, baseline: baselineDir, cacheDir, fixtureDir });

@@ -2070,6 +2070,75 @@ function buildCutConcatFilter(params: {
 	return { filterParts, videoLabel: includeVideo ? videoOutLabel : null, audioLabel: params.includeAudio ? audioOutLabel : null };
 }
 
+const ALIGNED_SOURCE_AUDIO_LABEL = "[composition_source_audio_clock]";
+const AAC_FRAME_SAMPLES = 1024;
+
+/**
+ * Lays the source's dialogue on the clip's own clock when the inspected audio
+ * stream demonstrably misses part of the clip window. FFmpeg keeps each
+ * stream's own timestamps, but every `atrim` + `asetpts=PTS-STARTPTS` stage
+ * below (cuts, scene sources, the mix) restarts the clock at the first sample
+ * it sees: audio that begins late then plays early, and audio that ends early
+ * ends the whole mix (`-shortest`) or shifts every later cut segment.
+ *
+ * `aresample=async=1:first_pts=0` fills the missing lead with silence (the
+ * first sample keeps its time), `apad` fills the missing tail up to the window
+ * and async compensation fills larger timestamp gaps, so the planned video
+ * length stays authoritative. A track that covers the window within one video
+ * frame at the start and one video frame plus one AAC packet at the end (the
+ * tolerance of output validation) is untouched: same args, same samples.
+ * Without header facts, or where the picture itself ends before the window,
+ * nothing is claimed, so nothing changes.
+ */
+function alignSourceAudioClock(params: {
+	probe: SourceProbe;
+	startSec: number;
+	endSec: number;
+}): { filterParts: string[]; label: string } | null {
+	const { probe } = params;
+	const audio = probe.facts?.audios[0];
+	if (!probe.hasAudio || !audio) return null;
+	const windowSec = params.endSec - params.startSec;
+	if (!(windowSec > 0)) return null;
+	const frameSec = 1 / (probe.fps > 0 ? probe.fps : 30);
+	const containerStart =
+		probe.facts?.format.startTimeSec ??
+		Math.min(
+			...[audio.startTimeSec, probe.facts?.videos[0]?.startTimeSec].filter(
+				(value): value is number => value != null,
+			),
+		);
+	const origin = Number.isFinite(containerStart) ? containerStart : 0;
+	const leadSec =
+		audio.startTimeSec == null ? 0 : audio.startTimeSec - origin - params.startSec;
+	const endAbsolute =
+		audio.endTimeSec ??
+		(audio.startTimeSec != null && audio.durationSec != null
+			? audio.startTimeSec + audio.durationSec
+			: null);
+	// The planned video length is authoritative only where the video exists. A
+	// window past the end of the picture is the source-end defect, not audio.
+	const video = probe.facts?.videos[0];
+	const videoEnd =
+		video?.endTimeSec ??
+		(video?.startTimeSec != null && video.durationSec != null
+			? video.startTimeSec + video.durationSec
+			: null);
+	if (videoEnd == null || params.endSec - (videoEnd - origin) > frameSec) {
+		return null;
+	}
+	const packetSec = AAC_FRAME_SAMPLES / (audio.sampleRate ?? 48000);
+	const tailSec =
+		endAbsolute == null ? 0 : params.endSec - (endAbsolute - origin);
+	if (leadSec <= frameSec && tailSec <= frameSec + packetSec) return null;
+	return {
+		label: ALIGNED_SOURCE_AUDIO_LABEL,
+		filterParts: [
+			`[0:a:0]aresample=async=1:first_pts=0,apad=whole_dur=${windowSec.toFixed(3)}${ALIGNED_SOURCE_AUDIO_LABEL}`,
+		],
+	};
+}
+
 function buildAudioFadeChain(
 	fades: BoundCompositionAudioRenderRequest["outputFades"],
 ) {
@@ -2261,10 +2330,12 @@ function buildMusicDuckingSuffix(
  * `duration=first` stays anchored on the dialogue branch whenever dialogue
  * is present. Every branch is built to be EXACTLY `clipDurationSec` long
  * before the mix, so `duration=first` is a formality (all branches already
- * share one duration) rather than a real anchor choice — dialogue and music
- * get there via a plain `atrim=duration=D` because they're backed by a
- * stream that's always at least D long (the source itself, or a
- * `-stream_loop -1`'d music file); one-shot SFX branches are NOT backed by
+ * share one duration) rather than a real anchor choice — music gets there
+ * via a plain `atrim=duration=D` because it is backed by a
+ * `-stream_loop -1`'d file, and dialogue because `alignSourceAudioClock`
+ * lays a source track that starts late or ends early on the clip window
+ * before any cut, scene or mix stage reads it (a source that already covers
+ * the window needs no help); one-shot SFX branches are NOT backed by
  * anything that long on their own (a short SFX file plus `adelay` can end
  * far short of D), so `buildSfxAudioFilter` pads with `apad` BEFORE its own
  * `atrim=duration=D` to actually guarantee this invariant instead of just
@@ -2444,11 +2515,13 @@ function buildSingleVideoArgs(params: {
 	const isCut = Boolean(params.cutPlan && !params.cutPlan.isUncut);
 	const clipDurationSec = params.composition.plan.editedDurationSec;
 
+	const alignedAudio = alignSourceAudioClock(params);
 	const cutConcat = isCut
 		? buildCutConcatFilter({
 				cutPlan: params.cutPlan!,
 				clipStartSec: params.startSec,
 				includeAudio: params.probe.hasAudio,
+				...(alignedAudio ? { audioInputRef: alignedAudio.label } : {}),
 			})
 		: null;
 	const sourceVideo = displaySourceStage(
@@ -2460,7 +2533,7 @@ function buildSingleVideoArgs(params: {
 	const audioInputLabel = cutConcat
 		? cutConcat.audioLabel
 		: params.probe.hasAudio
-			? "[0:a:0]"
+			? (alignedAudio?.label ?? "[0:a:0]")
 			: null;
 
 	// Input index bookkeeping: source is always 0; background image (fit mode
@@ -2507,6 +2580,7 @@ function buildSingleVideoArgs(params: {
 	const sfxInputIndexes = params.audio.soundEffects.map(() => nextInputIndex++);
 
 	const filterParts: string[] = [
+		...(alignedAudio?.filterParts ?? []),
 		...(cutConcat ? cutConcat.filterParts : []),
 		...sourceVideo.filterParts,
 	];
@@ -2604,7 +2678,8 @@ function buildSingleVideoArgs(params: {
 				audio: audioForRender,
 				clipDurationSec,
 				dialogueInputRef:
-					sceneDialogueLabel ?? (cutConcat ? cutConcat.audioLabel! : undefined),
+					sceneDialogueLabel ??
+					(cutConcat ? cutConcat.audioLabel! : alignedAudio?.label),
 				musicInputIndex,
 				sfxInputIndexes,
 			}),
@@ -2740,11 +2815,13 @@ function buildBrollVideoArgs(params: {
 	const isCut = Boolean(params.cutPlan && !params.cutPlan.isUncut);
 	const clipDurationSec = params.composition.plan.editedDurationSec;
 
+	const alignedAudio = alignSourceAudioClock(params);
 	const cutConcat = isCut
 		? buildCutConcatFilter({
 				cutPlan: params.cutPlan!,
 				clipStartSec: params.startSec,
 				includeAudio: params.probe.hasAudio,
+				...(alignedAudio ? { audioInputRef: alignedAudio.label } : {}),
 			})
 		: null;
 	const sourceVideo = displaySourceStage(
@@ -2756,10 +2833,11 @@ function buildBrollVideoArgs(params: {
 	const audioInputLabel = cutConcat
 		? cutConcat.audioLabel
 		: params.probe.hasAudio
-			? "[0:a:0]"
+			? (alignedAudio?.label ?? "[0:a:0]")
 			: null;
 
 	const parts: string[] = [
+		...(alignedAudio?.filterParts ?? []),
 		...(cutConcat ? cutConcat.filterParts : []),
 		...sourceVideo.filterParts,
 	];
@@ -2897,7 +2975,8 @@ function buildBrollVideoArgs(params: {
 				audio: audioForRender,
 				clipDurationSec,
 				dialogueInputRef:
-					sceneDialogueLabel ?? (cutConcat ? cutConcat.audioLabel! : undefined),
+					sceneDialogueLabel ??
+					(cutConcat ? cutConcat.audioLabel! : alignedAudio?.label),
 				musicInputIndex: params.audio.music ? musicInputIndex : null,
 				sfxInputIndexes,
 			}),

@@ -1,0 +1,131 @@
+{
+  "ticket": "04",
+  "cases": {
+    "audio-late-start": {
+      "contract": [
+        {
+          "id": "renders",
+          "metric": "render.ok",
+          "op": "eq",
+          "value": true
+        },
+        {
+          "id": "dialogue-onset",
+          "metric": "sync.avOffsetSec",
+          "op": "absLte",
+          "value": 0.034
+        },
+        {
+          "id": "audio-spans-video",
+          "metric": "audio.spanDeficitSec",
+          "op": "lte",
+          "value": 0.055
+        },
+        {
+          "id": "video-frames",
+          "metric": "video.frameCountDelta",
+          "op": "eq",
+          "value": 0
+        },
+        {
+          "id": "video-duration",
+          "metric": "output.durationDeltaFrames",
+          "op": "lte",
+          "value": 1
+        }
+      ],
+      "retain": [
+        "plan",
+        "crop",
+        "cue",
+        "layer",
+        "captions",
+        "frames"
+      ]
+    },
+    "audio-short": {
+      "contract": [
+        {
+          "id": "renders",
+          "metric": "render.ok",
+          "op": "eq",
+          "value": true
+        },
+        {
+          "id": "dialogue-onset",
+          "metric": "sync.avOffsetSec",
+          "op": "absLte",
+          "value": 0.034
+        },
+        {
+          "id": "audio-spans-video",
+          "metric": "audio.spanDeficitSec",
+          "op": "lte",
+          "value": 0.055
+        },
+        {
+          "id": "video-frames",
+          "metric": "video.frameCountDelta",
+          "op": "eq",
+          "value": 0
+        },
+        {
+          "id": "video-duration",
+          "metric": "output.durationDeltaFrames",
+          "op": "lte",
+          "value": 1
+        }
+      ],
+      "retain": [
+        "plan",
+        "crop",
+        "cue",
+        "layer",
+        "captions",
+        "frames"
+      ]
+    },
+    "audio-late-cut-scene-music": {
+      "contract": [
+        {
+          "id": "renders",
+          "metric": "render.ok",
+          "op": "eq",
+          "value": true
+        },
+        {
+          "id": "dialogue-onset",
+          "metric": "sync.avOffsetSec",
+          "op": "absLte",
+          "value": 0.034
+        },
+        {
+          "id": "audio-spans-video",
+          "metric": "audio.spanDeficitSec",
+          "op": "lte",
+          "value": 0.055
+        },
+        {
+          "id": "video-frames",
+          "metric": "video.frameCountDelta",
+          "op": "eq",
+          "value": 0
+        },
+        {
+          "id": "video-duration",
+          "metric": "output.durationDeltaFrames",
+          "op": "lte",
+          "value": 1
+        }
+      ],
+      "retain": [
+        "plan",
+        "crop",
+        "cue",
+        "layer",
+        "captions",
+        "frames"
+      ]
+    }
+  }
+}
