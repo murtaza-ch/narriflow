@@ -1162,6 +1162,56 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     ).toMatchObject({ status: "failed", requestedCount: 1, failedCount: 1 });
   });
 
+  test.each(["recovered", "exhausted"])("successful siblings survive transient backoff until %s", async (ending) => {
+    const { project, run } = await fixture("clip_rendering");
+    const clip = await clipFixture(project.id, run.id);
+    const completed = await prisma.clipRender.create({ data: { clipId: clip.id, aspectRatio: "ratio_9_16" } });
+    const transient = await prisma.clipRender.create({ data: { clipId: clip.id, aspectRatio: "ratio_1_1" } });
+    const permanent = await prisma.clipRender.create({ data: { clipId: clip.id, aspectRatio: "ratio_16_9" } });
+    let { lifecycle, attempt } = await claimRenderAttempt();
+    await lifecycle.beginRenderWorkSet(attempt);
+    await lifecycle.markClipRenderVariantRendering(attempt, completed.id);
+    await lifecycle.completeClipRenderVariant(attempt, completed.id, { storageKey: "tests/preserved-success.mp4", sizeBytes: 123, durationSec: 10 });
+    await failOwnedRenderVariant(lifecycle, attempt, permanent.id, "permanent", "source_media_invalid");
+    const preserved = await prisma.clipRender.findUniqueOrThrow({ where: { id: completed.id } });
+    const permanentRow = await prisma.clipRender.findUniqueOrThrow({ where: { id: permanent.id } });
+    for (let count = 1; count <= 3; count += 1) {
+      expect(attempt.attemptCount).toBe(count);
+      await failOwnedRenderVariant(lifecycle, attempt, transient.id, "retryable", "storage_temporarily_unavailable");
+      const before = Date.now();
+      const outcome = await lifecycle.settleRenderWorkSet(attempt);
+      if (count === 3) {
+        expect(outcome).toMatchObject({ status: "partial", succeeded: 1, failed: 2 });
+        expect(await lifecycle.settleRenderWorkSet(attempt)).toEqual(outcome);
+        break;
+      }
+      expect(outcome).toMatchObject({ status: "requeued", succeeded: 1, failed: 1 });
+      const queued = await prisma.workflowRun.findUniqueOrThrow({ where: { id: run.id } });
+      expect(queued).toMatchObject({ status: "queued", progress: 60, succeededCount: 1, failedCount: 1 });
+      expect(queued.nextAttemptAt!.getTime()).toBeGreaterThanOrEqual(before + count * 30_000);
+      expect(await prisma.workflowEvent.count({ where: { workflowRunId: run.id, notificationRequired: true } })).toBe(0);
+      expect(await prisma.clipRender.findUniqueOrThrow({ where: { id: transient.id } })).toMatchObject({ status: "pending", workflowAttemptId: null, failureDisposition: null });
+      expect(await prisma.clipRender.findUniqueOrThrow({ where: { id: completed.id } })).toEqual(preserved);
+      expect(await prisma.clipRender.findUniqueOrThrow({ where: { id: permanent.id } })).toEqual(permanentRow);
+      expect(await lifecycle.claim("clip_rendering")).toBeNull();
+      await prisma.workflowRun.update({ where: { id: run.id }, data: { nextAttemptAt: new Date(Date.now() - 1000) } });
+      ({ lifecycle, attempt } = await claimRenderAttempt());
+      expect(await prisma.workflowRun.findUniqueOrThrow({ where: { id: run.id } })).toMatchObject({ progress: 60, succeededCount: 1, failedCount: 1 });
+      await lifecycle.beginRenderWorkSet(attempt);
+      expect(await lifecycle.markClipRenderVariantRendering(attempt, completed.id)).toBe(false);
+      expect(await lifecycle.markClipRenderVariantRendering(attempt, permanent.id)).toBe(false);
+      if (ending === "recovered") {
+        await lifecycle.markClipRenderVariantRendering(attempt, transient.id);
+        await lifecycle.completeClipRenderVariant(attempt, transient.id, { storageKey: "tests/recovered.mp4", sizeBytes: 123, durationSec: 10 });
+        expect(await lifecycle.settleRenderWorkSet(attempt)).toMatchObject({ status: "partial", succeeded: 2, failed: 1 });
+        break;
+      }
+    }
+    expect(await prisma.workflowEvent.count({ where: { workflowRunId: run.id, notificationRequired: true } })).toBe(1);
+    expect(await prisma.clipRender.findUniqueOrThrow({ where: { id: completed.id } })).toEqual(preserved);
+    expect(await prisma.clipRender.findUniqueOrThrow({ where: { id: permanent.id } })).toEqual(permanentRow);
+  });
+
   test("zero success requeues only retryable variants and reports durable failure counts", async () => {
     const { project, run } = await fixture("clip_rendering");
     const clip = await clipFixture(project.id, run.id);
@@ -2743,7 +2793,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     const { lifecycle, attempt } = await claimRenderAttempt();
     await lifecycle.beginRenderWorkSet(attempt);
     await lifecycle.markClipRenderVariantRendering(attempt, render.id);
-    if (ending === "retry exhaustion") await prisma.workflowRun.update({ where: { id: run.id }, data: { attemptCount: 3 } });
+    if (ending !== "retry success") await prisma.workflowRun.update({ where: { id: run.id }, data: { attemptCount: 3 } });
     if (ending === "partial success") {
       const sibling = await prisma.clipRender.create({ data: { clipId: clip.id, aspectRatio: "ratio_1_1", workflowRunId: run.id, workflowAttemptId: attempt.attemptId, status: "rendering" } });
       await lifecycle.completeClipRenderVariant(attempt, sibling.id, { storageKey: "tests/sibling.mp4", sizeBytes: 100, durationSec: 5 });
@@ -3035,6 +3085,83 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     expect(await peer.claim("dubbing")).toBeNull();
     await prisma.workflowRun.update({ where: { id: run.id }, data: { nextAttemptAt: new Date(Date.now() - 1) } });
     expect(await peer.claim("dubbing")).toMatchObject({ workflowRunId: run.id, attemptCount: 1 });
+  });
+
+  test("a heartbeat blocked behind the handler's committed render settlement does not lose ownership", async () => {
+    const { project, run } = await fixture("clip_rendering");
+    const clip = await clipFixture(project.id, run.id);
+    const variant = await prisma.clipRender.create({ data: { clipId: clip.id, aspectRatio: "ratio_9_16" } });
+    const claimed = await claimRenderAttempt();
+    await claimed.lifecycle.beginRenderWorkSet(claimed.attempt);
+    await claimed.lifecycle.markClipRenderVariantRendering(claimed.attempt, variant.id);
+    await claimed.lifecycle.completeClipRenderVariant(claimed.attempt, variant.id, { storageKey: "tests/heartbeat-success.mp4", sizeBytes: 123, durationSec: 10 });
+    let entered!: () => void;
+    const settlementWritten = new Promise<void>((resolve) => { entered = resolve; });
+    let commit!: () => void;
+    const allowCommit = new Promise<void>((resolve) => { commit = resolve; });
+    let heartbeatStarted!: () => void;
+    const heartbeatPending = new Promise<void>((resolve) => { heartbeatStarted = resolve; });
+    let heartbeatReturned!: () => void;
+    const heartbeatDone = new Promise<void>((resolve) => { heartbeatReturned = resolve; });
+    const adapter = new Proxy(prisma, {
+      get(target, property, receiver) {
+        if (property === "$transaction") return (operation: (tx: Prisma.TransactionClient) => Promise<unknown>) => target.$transaction(async (tx) => {
+          const result = await operation(tx);
+          entered();
+          await allowCommit;
+          return result;
+        });
+        const value = Reflect.get(target, property, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const runner = new WorkflowRunLifecycle({ prisma: adapter, leaseOwner: claimed.lifecycle.leaseOwner,
+      leaseDurationMs: 10_000, heartbeatIntervalMs: 5 });
+    const heartbeat = runner.heartbeat.bind(runner);
+    runner.heartbeat = async (attempt) => {
+      await settlementWritten;
+      heartbeatStarted();
+      try { await heartbeat(attempt); } finally { heartbeatReturned(); }
+    };
+    const result = runner.runAttempt(claimed.attempt, async ({ signal }) => {
+      const settlement = runner.settleRenderWorkSet(claimed.attempt);
+      try {
+        await heartbeatPending;
+        // PostgreSQL reports the real heartbeat UPDATE waiting on settlement.
+        let waiting = false;
+        for (let check = 0; check < 100 && !waiting; check += 1) {
+          const rows = await pool.query<{ waiting: boolean }>(`SELECT EXISTS (
+            SELECT 1 FROM pg_stat_activity WHERE datname = current_database()
+              AND query LIKE '%UPDATE%"heartbeatAt"%' AND wait_event_type = 'Lock'
+          ) AS waiting`);
+          waiting = rows.rows[0]!.waiting;
+          if (!waiting) await Bun.sleep(5);
+        }
+        expect(waiting).toBe(true);
+        expect(signal.aborted).toBe(false);
+      } finally { commit(); }
+      expect(await settlement).toMatchObject({ status: "completed" });
+      await heartbeatDone;
+      await Bun.sleep(10);
+      expect(signal.aborted).toBe(false);
+      return "settled";
+    });
+    await expect(result).resolves.toBe("settled");
+  });
+
+  test("true lease loss before render settlement commits still aborts the handler", async () => {
+    const { project, run } = await fixture("clip_rendering");
+    const clip = await clipFixture(project.id, run.id);
+    await prisma.clipRender.create({ data: { clipId: clip.id, aspectRatio: "ratio_9_16" } });
+    const { lifecycle, attempt } = await claimRenderAttempt();
+    await lifecycle.beginRenderWorkSet(attempt);
+    await prisma.workflowRun.update({ where: { id: run.id }, data: { leaseExpiresAt: new Date(Date.now() - 1000) } });
+    await expect(lifecycle.runAttempt(attempt, async ({ signal }) => {
+      await lifecycle.settleRenderWorkSet(attempt);
+      signal.throwIfAborted();
+    })).rejects.toBeInstanceOf(WorkflowAttemptLost);
+    expect(await prisma.workflowRun.findUniqueOrThrow({ where: { id: run.id } })).toMatchObject({ status: "running" });
+    expect(await prisma.workflowEvent.count({ where: { workflowRunId: run.id, notificationRequired: true } })).toBe(0);
   });
 
   test("heartbeat renews ownership and a live attempt is not reaped", async () => {

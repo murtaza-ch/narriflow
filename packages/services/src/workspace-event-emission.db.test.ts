@@ -233,17 +233,24 @@ dbDescribe("Workspace Events written by operation settlement", () => {
     expect(await feed(f.workspace.id)).toHaveLength(1);
   });
 
-  test("an export with a failed format and a completed one finishes partial once its run settles", async () => {
+  test("an export with a failed format and a completed one finishes partial once the format's retries are exhausted", async () => {
     const f = await fixture();
     const x = await exportFixture(f, 2);
-    const { lifecycle, attempt } = await claimRender();
-    await lifecycle.markClipRenderVariantRendering(attempt, x.renders[0]!.id);
-    await lifecycle.completeClipRenderVariant(attempt, x.renders[0]!.id, done);
-    await lifecycle.markClipRenderVariantRendering(attempt, x.renders[1]!.id);
-    await lifecycle.failClipRenderVariant(attempt, x.renders[1]!.id, "encode_failed", "retryable");
-    // The failed format could still be retried while its run is live.
-    expect(await feed(f.workspace.id)).toEqual([]);
-    await lifecycle.settleRenderWorkSet(attempt);
+    let current = await claimRender();
+    await current.lifecycle.markClipRenderVariantRendering(current.attempt, x.renders[0]!.id);
+    await current.lifecycle.completeClipRenderVariant(current.attempt, x.renders[0]!.id, done);
+    // A retryable failure beside a completed sibling is retried automatically (ADR 0003),
+    // so the export is not finished while the run requeues it.
+    for (;;) {
+      await current.lifecycle.markClipRenderVariantRendering(current.attempt, x.renders[1]!.id);
+      await current.lifecycle.failClipRenderVariant(current.attempt, x.renders[1]!.id, "encode_failed", "retryable");
+      expect(await feed(f.workspace.id)).toEqual([]);
+      const settled = await current.lifecycle.settleRenderWorkSet(current.attempt);
+      if (settled.status !== "requeued") break;
+      expect(await feed(f.workspace.id)).toEqual([]);
+      await prisma.workflowRun.update({ where: { id: x.run.id }, data: { nextAttemptAt: new Date(Date.now() - 1_000) } });
+      current = await claimRender();
+    }
     expect(await subjects(f.workspace.id)).toEqual([exportSubject(x, "partial")]);
   });
 

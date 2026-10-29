@@ -16,6 +16,7 @@ describe("Workflow Attempt heartbeat recovery", () => {
     projectId: "heartbeat-project",
     stage: "dubbing",
     attemptId: "heartbeat-attempt",
+    attemptCount: 1,
   };
 
   function lifecycle() {
@@ -62,6 +63,44 @@ describe("Workflow Attempt heartbeat recovery", () => {
       }, { once: true }));
     })).rejects.toBe(lost);
     expect(executionAborted).toBe(true);
+  });
+
+  test.each(["commit", "rollback"])("an in-flight heartbeat waits for settlement %s before deciding ownership", async (outcome) => {
+    let commit!: () => void;
+    let rollback!: (error: unknown) => void;
+    const transaction = new Promise<void>((resolve, reject) => { commit = resolve; rollback = reject; });
+    let started!: () => void;
+    const heartbeatStarted = new Promise<void>((resolve) => { started = resolve; });
+    let finishHeartbeat!: () => void;
+    const heartbeatReleased = new Promise<void>((resolve) => { finishHeartbeat = resolve; });
+    const runner = new WorkflowRunLifecycle({
+      prisma: { $transaction: () => transaction } as unknown as PrismaClient,
+      leaseOwner: "heartbeat-worker", leaseDurationMs: 100, heartbeatIntervalMs: 5,
+    });
+    runner.heartbeat = async () => { started(); await heartbeatReleased; throw new WorkflowAttemptLost(attempt); };
+    const result = runner.runAttempt(attempt, async ({ signal }) => {
+      const settlement = runner.completeStage(attempt);
+      await heartbeatStarted;
+      finishHeartbeat();
+      // Let the heartbeat rejection reach the settlement barrier before commit.
+      await Bun.sleep(10);
+      expect(signal.aborted).toBe(false);
+      if (outcome === "commit") {
+        commit();
+        await settlement;
+        await Bun.sleep(10);
+        expect(signal.aborted).toBe(false);
+        return "settled";
+      }
+      const failed = settlement.catch((error: unknown) => error);
+      rollback(new Error("commit rejected"));
+      expect(await failed).toEqual(new Error("commit rejected"));
+      if (!signal.aborted) await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+      signal.throwIfAborted();
+      return "unreachable";
+    });
+    if (outcome === "commit") await expect(result).resolves.toBe("settled");
+    else await expect(result).rejects.toBeInstanceOf(WorkflowAttemptLost);
   });
 
   test("a sustained database outage stops execution once the lease cannot be renewed", async () => {

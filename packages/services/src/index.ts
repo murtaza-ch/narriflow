@@ -636,3 +636,5 @@ export { CredentialAlreadyIssuedError, createDeveloperCommands, type DeveloperCo
 export { developerCommands } from "./developer-commands-runtime";
 export { createReviewsCommands, type ReviewsCommandDependencies, type ReviewsCommands } from "./reviews-commands";
 export { reviewsCommands } from "./reviews-commands-runtime";
+
+export { syncClipExportAggregate, syncClipExportAggregates } from "./clip-export-aggregates";

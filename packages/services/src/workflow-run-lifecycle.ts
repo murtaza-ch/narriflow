@@ -19,11 +19,11 @@ import {
   publishPersistedWorkflowEvent,
 } from "./workflow.service";
 import { notificationService, type NotificationOutcome } from "./notification.service";
-import { deriveClipExportAggregate } from "./clip-export-aggregate";
+import { syncClipExportAggregates } from "./clip-export-aggregates";
 import {
   admitRetiredClipMediaCleanup,
 } from "./media-cleanup";
-import { queueExportFinished, queueExportsFinishedByRun, queueFinishedGenerations } from "./operation-finished";
+import { queueExportsFinishedByRun, queueFinishedGenerations } from "./operation-finished";
 import { flushWorkspaceEvents } from "./workspace-event";
 import { finalizeGenerationUsage, releaseFailedDubUsage } from "./generated-media-usage-ledger";
 import { appendWorkflowEvent, type WorkflowEventInput } from "./workflow-event-append";
@@ -327,6 +327,23 @@ export class WorkflowRunLifecycle {
     WorkflowLifecycleDependencies["handoffNotification"]
   >;
 
+  private readonly executions = new Map<string, { settled: boolean; finished: boolean; settlement?: Promise<unknown> }>();
+
+  /** Publish the local marker only after the fenced settlement commits. A
+   * heartbeat blocked on its row lock must wait for that commit or rollback. */
+  private async settlementTransaction<T>(attempt: WorkflowAttemptRef, operation: (tx: TransactionClient) => Promise<T>): Promise<T> {
+    const execution = this.executions.get(attempt.attemptId);
+    const settlement = this.transaction(operation);
+    if (execution) execution.settlement = settlement;
+    try {
+      const result = await settlement;
+      if (execution) execution.settled = true;
+      return result;
+    } finally {
+      if (execution?.settlement === settlement) execution.settlement = undefined;
+    }
+  }
+
   constructor(dependencies: WorkflowLifecycleDependencies = {}) {
     const prisma = dependencies.prisma ?? getPrismaClient();
     if (!prisma) throw new Error("Database client unavailable");
@@ -575,6 +592,58 @@ export class WorkflowRunLifecycle {
     }
   }
 
+  /** Manual retries share admission serialization with rescue and settlement.
+   * Only settled failed children may leave their old lineage. Unassigned work
+   * joins an unfrozen run or its normal drain follow-up. */
+  async retryFailedClipExport(input: {
+    projectId: string;
+    exportId: string;
+    expectedRetryCount: number;
+    variantIds: string[];
+  }): Promise<boolean> {
+    return this.transaction(async (tx) => {
+      await this.lockAdmissionProject(tx, input.projectId);
+      const failed = await tx.clipExportVariant.findMany({
+        where: {
+          id: { in: input.variantIds }, exportId: input.exportId, status: "failed",
+          export: { projectId: input.projectId, retryCount: input.expectedRetryCount, project: accessibleProjectWhere() },
+          render: {
+            status: "failed",
+            OR: [{ workflowRunId: null }, { workflowRun: { status: { in: ["completed", "partial", "failed", "cancelled"] } } }],
+          },
+        },
+        select: { id: true },
+      });
+      if (failed.length === 0) return false;
+      const ids = failed.map((variant) => variant.id);
+      const reset = { status: "pending" as const, errorCode: null, startedAt: null,
+        completedAt: null, storageKey: null, sizeBytes: null, durationSec: null };
+      await tx.clipRender.updateMany({
+        where: { exportVariantId: { in: ids }, status: "failed" },
+        data: { ...reset, workflowRunId: null, workflowAttemptId: null, failureDisposition: null },
+      });
+      await tx.clipExportVariant.updateMany({
+        where: { id: { in: ids }, status: "failed" }, data: reset,
+      });
+      const exported = await tx.clipExport.update({
+        where: { id: input.exportId },
+        data: { retryCount: { increment: 1 } },
+        select: { retryCount: true },
+      });
+      const active = await tx.workflowRun.findFirst({
+        where: { projectId: input.projectId, stage: "clip_rendering", status: { in: ["queued", "running", "waiting"] } },
+        select: { id: true },
+      });
+      const admitted = active ?? await this.admitWithinTransaction(tx, {
+        projectId: input.projectId, stage: "clip_rendering",
+        idempotencyKey: `export-retry:${input.exportId}:${exported.retryCount}`,
+      });
+      await tx.clipExport.update({ where: { id: input.exportId }, data: { workflowRunId: admitted.id } });
+      await syncClipExportAggregates(tx, ids);
+      return true;
+    });
+  }
+
   /** Recovers unassigned render work without creating another active run.
    * Admission, its event, and pending export linkage share the Project lock
    * and transaction used by ordinary render admission. */
@@ -784,7 +853,7 @@ export class WorkflowRunLifecycle {
           },
         },
         orderBy: { createdAt: "asc" },
-        select: { id: true },
+        select: { id: true, progress: true },
       });
       if (!candidate) return null;
 
@@ -796,7 +865,7 @@ export class WorkflowRunLifecycle {
         },
         data: {
           status: "running",
-          progress: 10,
+          progress: stage === "clip_rendering" ? Math.max(10, candidate.progress) : 10,
           attemptCount: { increment: 1 },
           attemptId,
           leaseOwner: this.leaseOwner,
@@ -809,10 +878,10 @@ export class WorkflowRunLifecycle {
           // A frozen Render Work Set keeps its original size even when
           // editor changes remove variants before a retry starts.
           ...(stage === "clip_rendering" ? {} : { requestedCount: null }),
-          // Completed dubs remain owned by their original attempt. Keep the
-          // successful prefix saved when that attempt was interrupted.
-          ...(stage === "dubbing" ? {} : { succeededCount: null }),
-          failedCount: null,
+          // Completed children remain owned by their original attempt. Keep
+          // settled render counts and the successful dubbing prefix on retry.
+          ...(stage === "dubbing" || stage === "clip_rendering" ? {} : { succeededCount: null }),
+          ...(stage === "clip_rendering" ? {} : { failedCount: null }),
         },
       });
       if (won.count === 0) return null;
@@ -1267,52 +1336,6 @@ export class WorkflowRunLifecycle {
     if (!ownedVariant) throw new WorkflowAttemptLost(attempt);
   }
 
-  /** Recompute each Clip Export that owns one of these variants. Every
-   * variant write must end here, or the export keeps a stale status. */
-  private async syncClipExportAggregates(
-    tx: TransactionClient,
-    exportVariantIds: string[],
-  ): Promise<void> {
-    if (exportVariantIds.length === 0) return;
-    const owners = await tx.clipExportVariant.findMany({
-      where: { id: { in: exportVariantIds } },
-      select: { exportId: true },
-      distinct: ["exportId"],
-      orderBy: { exportId: "asc" },
-    });
-    for (const { exportId } of owners) {
-      // Serialize aggregate recomputation for siblings. Without locking the
-      // parent first, two child completions can each observe the other child
-      // as non-terminal and leave the export stuck below 100%. Locks are
-      // taken in id order so bulk settlements cannot deadlock each other.
-      await tx.$queryRaw<Array<{ id: string }>>`
-        SELECT "id"
-        FROM "ClipExport"
-        WHERE "id" = ${exportId}::uuid
-        FOR UPDATE
-      `;
-      const variants = await tx.clipExportVariant.findMany({
-        where: { exportId },
-        select: { status: true, errorCode: true },
-      });
-      const aggregate = deriveClipExportAggregate(
-        variants.map((item) => item.status),
-      );
-      const firstError =
-        variants.find((item) => item.errorCode)?.errorCode ?? null;
-      await tx.clipExport.update({
-        where: { id: exportId },
-        data: {
-          status: aggregate.status,
-          progress: aggregate.progress,
-          errorCode: aggregate.status === "failed" ? firstError : null,
-          completedAt: aggregate.terminal ? new Date() : null,
-        },
-      });
-      if (aggregate.terminal) await queueExportFinished(tx, exportId);
-    }
-  }
-
   /** Queues the Workspace Events for operations a run's terminal settlement
    * finished; the transaction wrapper writes them last. Call it after follow-up
    * work is admitted: a lineage is only terminal once nothing is left to drain. */
@@ -1347,7 +1370,7 @@ export class WorkflowRunLifecycle {
       where: { id: exportVariantId },
       data,
     });
-    await this.syncClipExportAggregates(tx, [exportVariantId]);
+    await syncClipExportAggregates(tx, [exportVariantId]);
   }
 
   async replaceDetectedClips(
@@ -1840,6 +1863,8 @@ export class WorkflowRunLifecycle {
     handler: (context: WorkflowAttemptContext) => Promise<T>,
     options: { signal?: AbortSignal } = {},
   ): Promise<T> {
+    const execution = { settled: false, finished: false, settlement: undefined as Promise<unknown> | undefined };
+    this.executions.set(attempt.attemptId, execution);
     const controller = new AbortController();
     let shutdownRelease: Promise<void> | undefined;
     const stopForWorkerShutdown = () => {
@@ -1852,18 +1877,33 @@ export class WorkflowRunLifecycle {
     if (options.signal?.aborted) {
       stopForWorkerShutdown();
       await shutdownRelease;
+      this.executions.delete(attempt.attemptId);
       controller.signal.throwIfAborted();
     }
     options.signal?.addEventListener("abort", stopForWorkerShutdown, { once: true });
     let ownershipError: WorkflowAttemptLost | null = null;
+    let checkingOwnershipLoss = false;
+    const confirmOwnershipLoss = async (error: WorkflowAttemptLost) => {
+      if (checkingOwnershipLoss || execution.settled || execution.finished) return;
+      checkingOwnershipLoss = true;
+      try {
+        // Settlement's fence decides authority while its transaction owns the
+        // row. A rejected settlement cannot hide a genuine lease loss.
+        await execution.settlement?.catch(() => undefined);
+        if (execution.settled || execution.finished) return;
+        ownershipError = error;
+        controller.abort(error);
+      } finally {
+        checkingOwnershipLoss = false;
+      }
+    };
     let heartbeatInFlight = false;
     let lastHeartbeatAt = performance.now();
     const heartbeatTimer = setInterval(() => {
-      if (controller.signal.aborted || ownershipError) return;
+      if (controller.signal.aborted || ownershipError || execution.settled) return;
       // Check the lease even while a database request is still pending.
       if (performance.now() - lastHeartbeatAt >= this.leaseDurationMs) {
-        ownershipError = new WorkflowAttemptLost(attempt);
-        controller.abort(ownershipError);
+        void confirmOwnershipLoss(new WorkflowAttemptLost(attempt));
         return;
       }
       if (heartbeatInFlight) return;
@@ -1871,12 +1911,12 @@ export class WorkflowRunLifecycle {
       const heartbeatStartedAt = performance.now();
       void this.heartbeat(attempt)
         .then(() => { lastHeartbeatAt = heartbeatStartedAt; })
-        .catch((error: unknown) => {
+        .catch(async (error: unknown) => {
+          if (execution.settled || execution.finished) return;
           // A connection error is not evidence that another attempt owns
           // the run. Retry within the lease; durable writes remain fenced.
           if (error instanceof WorkflowAttemptLost || performance.now() - lastHeartbeatAt >= this.leaseDurationMs) {
-            ownershipError = error instanceof WorkflowAttemptLost ? error : new WorkflowAttemptLost(attempt);
-            controller.abort(ownershipError);
+            await confirmOwnershipLoss(error instanceof WorkflowAttemptLost ? error : new WorkflowAttemptLost(attempt));
             return;
           }
           console.warn(JSON.stringify({
@@ -1904,6 +1944,8 @@ export class WorkflowRunLifecycle {
       if (ownershipError) throw ownershipError;
       throw error;
     } finally {
+      execution.finished = true;
+      this.executions.delete(attempt.attemptId);
       clearInterval(heartbeatTimer);
       options.signal?.removeEventListener("abort", stopForWorkerShutdown);
       if (options.signal?.aborted) {
@@ -2026,7 +2068,7 @@ export class WorkflowRunLifecycle {
     attempt: WorkflowAttemptRef,
     input: { providerJobId: string; nextPollAt: Date },
   ) {
-    await this.transaction(async (tx) => {
+    await this.settlementTransaction(attempt, async (tx) => {
       const databaseNow = await this.databaseNow(tx);
       const won = await tx.workflowRun.updateMany({
         where: {
@@ -2073,7 +2115,7 @@ export class WorkflowRunLifecycle {
     attempt: WorkflowAttemptRef,
     input: CompleteTranscriptInput,
   ) {
-    await this.transaction(async (tx) => {
+    await this.settlementTransaction(attempt, async (tx) => {
       const databaseNow = await this.databaseNow(tx);
       const run = await tx.workflowRun.findFirst({
         where: {
@@ -2223,7 +2265,7 @@ export class WorkflowRunLifecycle {
     attempt: WorkflowAttemptRef,
   ): Promise<RenderWorkSetOutcome> {
     if (attempt.stage !== "clip_rendering") throw new WorkflowAttemptLost(attempt);
-    return this.transaction(async (tx) => {
+    return this.settlementTransaction(attempt, async (tx) => {
       await this.lockAdmissionProject(tx, attempt.projectId);
       const existingRun = await tx.workflowRun.findUniqueOrThrow({
         where: { id: attempt.workflowRunId },
@@ -2303,11 +2345,11 @@ export class WorkflowRunLifecycle {
       );
       const superseded = Math.max(0, requested - variants.length);
       const shouldRequeue =
-        succeeded === 0 &&
         retryable.length > 0 &&
         run.attemptCount < WORKFLOW_MAX_ATTEMPTS;
 
       if (shouldRequeue) {
+        const progress = requested > 0 ? Math.min(95, Math.round(90 * (succeeded + settledFailed.length) / requested)) : 0;
         const settledFailedCount = settledFailed.length;
         const databaseNow = await this.databaseNow(tx);
         await tx.clipRender.updateMany({
@@ -2340,13 +2382,13 @@ export class WorkflowRunLifecycle {
               completedAt: null,
             },
           });
-          await this.syncClipExportAggregates(tx, exportVariantIds);
+          await syncClipExportAggregates(tx, exportVariantIds);
         }
         await tx.workflowRun.update({
           where: { id: attempt.workflowRunId },
           data: {
             status: "queued",
-            progress: 0,
+            progress,
             errorCode: null,
             attemptId: null,
             leaseOwner: null,
@@ -2366,7 +2408,7 @@ export class WorkflowRunLifecycle {
           attemptId: attempt.attemptId,
           stage: "clip_rendering",
           status: "queued",
-          progress: 0,
+          progress,
           errorCode: null,
           transition: `requeued:${run.attemptCount}`,
         });
@@ -2504,7 +2546,7 @@ export class WorkflowRunLifecycle {
     aggregate: WorkflowAggregateResult | null,
     admit?: (tx: TransactionClient) => Promise<{ exportId: string; clipId: string }>,
   ) {
-    await this.transaction(async (tx) => {
+    await this.settlementTransaction(attempt, async (tx) => {
       const databaseNow = await this.databaseNow(tx);
       const won = await tx.workflowRun.updateMany({
         where: {
@@ -2546,7 +2588,7 @@ export class WorkflowRunLifecycle {
     failure: WorkflowFailure,
     options: { expiredLeaseOnly?: boolean } = {},
   ) {
-    await this.transaction(async (tx) => {
+    await this.settlementTransaction(attempt, async (tx) => {
       const databaseNow = await this.databaseNow(tx);
       if (attempt.stage === "clip_rendering") {
         await this.lockAdmissionProject(tx, attempt.projectId);
@@ -2713,7 +2755,7 @@ export class WorkflowRunLifecycle {
           completedAt: new Date(),
         },
       });
-      await this.syncClipExportAggregates(tx, failedExportVariantIds);
+      await syncClipExportAggregates(tx, failedExportVariantIds);
     }
     const settledFailureExportIds = input.variants.flatMap((variant) =>
       variant.status === "failed" && variant.exportVariantId ? [variant.exportVariantId] : [],
@@ -2723,7 +2765,7 @@ export class WorkflowRunLifecycle {
         where: { id: { in: settledFailureExportIds }, status: { in: ["pending", "rendering"] } },
         data: { status: "failed", completedAt: new Date() },
       });
-      await this.syncClipExportAggregates(tx, settledFailureExportIds);
+      await syncClipExportAggregates(tx, settledFailureExportIds);
     }
     await tx.workflowRun.update({
       where: { id: attempt.workflowRunId },
@@ -2867,7 +2909,7 @@ export class WorkflowRunLifecycle {
                 completedAt: new Date(),
               },
         });
-        await this.syncClipExportAggregates(tx, exportVariantIds);
+        await syncClipExportAggregates(tx, exportVariantIds);
       }
     }
     if (attempt.stage === "dubbing") {

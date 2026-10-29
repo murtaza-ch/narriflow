@@ -28,7 +28,8 @@ import type {
   WorkspaceExportPage,
   WorkspaceExportVariant,
 } from "@narriflow/validators/api/exports";
-import { deriveClipExportAggregate } from "./clip-export-aggregate";
+import { syncClipExportAggregate } from "./clip-export-aggregates";
+import { flushWorkspaceEvents } from "./workspace-event";
 export { deriveClipExportAggregate } from "./clip-export-aggregate";
 import { hasFeature, requirePlanFeature } from "./plan-features";
 import { brandOwnerForWorkspace, brandOwnerWhereFor } from "./brand-ownership";
@@ -36,9 +37,8 @@ import { analyticsService } from "./analytics.service";
 import { accessibleProjectWhere } from "./project-access";
 import { headObject, presignDownloadUrl } from "./r2-storage";
 import { clipExportSubtitleFiles } from "./clip-export-subtitles";
-import { emitExportFinished } from "./operation-finished";
 import { workspaceService } from "./workspace.service";
-import type { WorkflowAttemptRef } from "./workflow-run-lifecycle";
+import { WorkflowRunLifecycle, type WorkflowAttemptRef } from "./workflow-run-lifecycle";
 import {
   ExpectedDomainFailureError,
   type ExpectedDomainFailureCatalog,
@@ -333,6 +333,7 @@ async function upsertClipExport(
     update: {},
     include: exportInclude,
   });
+  if (row.id === exportId) await syncClipExportAggregate(tx, row.id);
   return { row, reused: row.id !== exportId };
 }
 
@@ -932,7 +933,7 @@ export class ClipExportService {
       return this.getOwned(scope, projectId, clipId, exportId);
     }
     const frozenSnapshot = failed.find((variant) => variant.render)?.render?.clipSnapshot;
-    if (!frozenSnapshot) {
+    if (!frozenSnapshot || failed.some((variant) => !variant.render?.clipSnapshot)) {
       throw new ClipExportError("export_snapshot_missing", "Export snapshot is missing");
     }
     const frozenDocument = decodeFrozenClipEditorDocument(
@@ -951,31 +952,8 @@ export class ClipExportService {
       })),
     );
 
-    await prisma.$transaction(async (tx) => {
-      for (const variant of failed) {
-        await tx.clipExportVariant.update({
-          where: { id: variant.id },
-          data: { status: "pending", errorCode: null, startedAt: null, completedAt: null },
-        });
-        if (variant.render) {
-          await tx.clipRender.update({
-            where: { id: variant.render.id },
-            data: {
-              status: "pending",
-              errorCode: null,
-              startedAt: null,
-              completedAt: null,
-              storageKey: null,
-              sizeBytes: null,
-              durationSec: null,
-            },
-          });
-        }
-      }
-      await tx.clipExport.update({
-        where: { id: exportId },
-        data: { status: "queued", progress: 0, errorCode: null, completedAt: null, retryCount: { increment: 1 } },
-      });
+    await new WorkflowRunLifecycle({ prisma }).retryFailedClipExport({
+      projectId, exportId, expectedRetryCount: owned.retryCount, variantIds: failed.map((variant) => variant.id),
     });
 
     return this.getOwned(scope, projectId, clipId, exportId);
@@ -1097,45 +1075,16 @@ export class ClipExportService {
       });
       if (cancelled.count === 0) return false;
 
-      await tx.$queryRaw`SELECT "id" FROM "ClipExport" WHERE "id" = ${exportId}::uuid FOR UPDATE`;
-      const variants = await tx.clipExportVariant.findMany({
-        where: { exportId }, select: { status: true, errorCode: true },
-      });
-      const aggregate = deriveClipExportAggregate(variants.map((variant) => variant.status));
-      await tx.clipExport.update({
-        where: { id: exportId },
-        data: {
-          status: aggregate.status,
-          progress: aggregate.progress,
-          errorCode: aggregate.status === "failed" ? variants.find((variant) => variant.errorCode)?.errorCode ?? null : null,
-          completedAt: aggregate.terminal ? completedAt : null,
-        },
-      });
-      if (aggregate.terminal) await emitExportFinished(tx, exportId);
+      await syncClipExportAggregate(tx, exportId);
+      await flushWorkspaceEvents(tx);
       return true;
     });
   }
 
   async syncAggregate(exportId: string) {
     return requirePrisma().$transaction(async (tx) => {
-      // The export row serializes sibling settlements, as in the lifecycle.
-      await tx.$queryRaw`SELECT "id" FROM "ClipExport" WHERE "id" = ${exportId}::uuid FOR UPDATE`;
-      const variants = await tx.clipExportVariant.findMany({
-        where: { exportId },
-        select: { status: true, errorCode: true },
-      });
-      const aggregate = deriveClipExportAggregate(variants.map((variant) => variant.status));
-      const firstError = variants.find((variant) => variant.errorCode)?.errorCode ?? null;
-      await tx.clipExport.update({
-        where: { id: exportId },
-        data: {
-          status: aggregate.status,
-          progress: aggregate.progress,
-          errorCode: aggregate.status === "failed" ? firstError : null,
-          completedAt: aggregate.terminal ? new Date() : null,
-        },
-      });
-      if (aggregate.terminal) await emitExportFinished(tx, exportId);
+      const aggregate = await syncClipExportAggregate(tx, exportId);
+      await flushWorkspaceEvents(tx);
       return aggregate;
     });
   }
