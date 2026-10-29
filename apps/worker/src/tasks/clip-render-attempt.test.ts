@@ -1,12 +1,16 @@
+import { RenderObjectReconciler } from "../render-object-reconciler";
 import { createRenderOutputFixture } from "../render-output-validation.test-fixture";
 import { createClipRenderAttempt } from "./clip-render-attempt-runtime";
-import { expect, test } from "bun:test";
+import { expect, mock, spyOn, test } from "bun:test";
+import * as database from "@narriflow/db/client";
+import * as services from "@narriflow/services";
 import { spawnSync } from "node:child_process";
 import { copyFile, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	clipService,
+	analyticsService,
 	type MotionRenderAnalyticsMetadata,
 	type RenderWorkSetOutcome,
 	type WorkflowAttemptContext,
@@ -90,6 +94,12 @@ function createOrdinaryTracer(input: {
 	initialVariantState?: "pending" | "completed";
 	outcome: RenderWorkSetOutcome;
 	failureWriteRejects?: boolean;
+	productionCompletion?: boolean;
+	commitAcknowledgementLost?: boolean;
+	completionControlFlow?: "cancellation" | "ownership_loss";
+	cancelAfterUpload?: boolean;
+	cleanupStalls?: boolean;
+	referenceRead?: "rejected" | "stalled" | "referenced";
 	waitForCommandAbort?: boolean;
 	sourceFailures?: readonly SourceFailure[];
 	sourceInterruption?: {
@@ -189,6 +199,10 @@ function createOrdinaryTracer(input: {
 		}
 	};
 	const sourceController = new AbortController();
+	const completionControlError = input.completionControlFlow === "ownership_loss"
+		? new WorkflowAttemptLost(attempt) : new DOMException("cancelled", "AbortError");
+	const cleanupSignals: AbortSignal[] = [];
+	let finishReferenceRead: ((keys: Set<string>) => void) | undefined;
 	const shouldFail = (failure: SourceFailure) =>
 		input.failure === failure || input.sourceFailures?.includes(failure);
 	const interruptSource = (operation: SourceFailure): void => {
@@ -238,6 +252,20 @@ function createOrdinaryTracer(input: {
 		adapters: {
       composition: { compileCommand: renderOutput.compileCommand },
 			state: {
+				getProjectRenderStorageReferences: async (projectId) => {
+					expect(projectId).toBe(attempt.projectId);
+					actions.push("reference_read");
+					if (input.referenceRead === "rejected") throw injectedError;
+					if (input.referenceRead === "stalled") {
+						advanceClock(5_000);
+						return new Promise<Set<string>>((resolve) => {
+							finishReferenceRead = resolve;
+						});
+					}
+					return new Set(
+						input.referenceRead === "referenced" ? uploadedKeys : objectReferences,
+					);
+				},
 				getFrozenRenderingStateForWorkSet: async () => {
 					actions.push("state_load");
 					if (input.failure === "state_load") throw injectedError;
@@ -384,22 +412,35 @@ function createOrdinaryTracer(input: {
 			},
 			clip: {
 				completeClipAutoLayoutAnalysis: async () => false,
-				completeClipRenderVariant: async (_attempt, _variantId, completion) => {
-					actions.push("guarded_completion");
-					if (input.failure === "guarded_completion") {
-						throw new WorkflowAttemptLost(attempt);
-					}
-					if (input.failure === "guarded_completion_rejected") {
-						throw injectedError;
-					}
-					if (input.superseded) {
-						variantState = "superseded";
-						return { persisted: false };
-					}
-					variantState = "completed";
-					objectReferences.push(completion.storageKey);
-					return { persisted: true };
-				},
+				...(input.productionCompletion
+					? {}
+					: {
+							completeClipRenderVariant: async (
+								_attempt: ClipRenderingWorkflowAttempt,
+								_variantId: string,
+								completion: { storageKey: string },
+							) => {
+								actions.push("guarded_completion");
+								if (input.failure === "guarded_completion") {
+									throw new WorkflowAttemptLost(attempt);
+								}
+								if (input.failure === "guarded_completion_rejected") {
+									throw injectedError;
+								}
+								if (input.superseded) {
+									variantState = "superseded";
+									return { persisted: false };
+								}
+								variantState = "completed";
+								objectReferences.push(completion.storageKey);
+								if (input.completionControlFlow) {
+									sourceController.abort(completionControlError);
+									throw completionControlError;
+								}
+								if (input.commitAcknowledgementLost) throw injectedError;
+								return { persisted: true };
+							},
+						}),
 				failClipRenderVariant: async (
 					_attempt,
 					_variantId,
@@ -410,7 +451,7 @@ function createOrdinaryTracer(input: {
 					actions.push(`variant_failure:${code}:${disposition}`);
 					if (motionAnalytics) failureMotionAnalytics.push(motionAnalytics);
 					if (input.failureWriteRejects) throw injectedError;
-					variantState = "failed";
+					if (variantState === "rendering") variantState = "failed";
 				},
 				markClipRenderVariantRendering: async () => {
 					actions.push("guarded_claim");
@@ -453,10 +494,19 @@ function createOrdinaryTracer(input: {
 					}
 					uploads.push({ key, contentType, metadata });
 					uploadedKeys.push(key);
+					if (input.cancelAfterUpload) sourceController.abort(completionControlError);
 					return { key };
 				},
-				deleteObject: async (key) => {
+				deleteObject: async (key, options) => {
 					actions.push("object_cleanup");
+					if (options?.signal) cleanupSignals.push(options.signal);
+					if (input.cleanupStalls) {
+						expect(options?.signal?.aborted).toBe(false);
+						advanceClock(4_999);
+						expect(options?.signal?.aborted).toBe(false);
+						advanceClock(1);
+						return new Promise<never>(() => {});
+					}
 					if (input.failure === "object_cleanup") throw injectedError;
 					deletedKeys.push(key);
 					return { key };
@@ -496,6 +546,9 @@ function createOrdinaryTracer(input: {
 		deletedKeys,
 		diagnostics,
 		failureMotionAnalytics,
+		cleanupSignals,
+		completionControlError,
+		finishReferenceRead: () => finishReferenceRead?.(new Set()),
 		injectedError,
 		objectReferences,
 		settlementCalls: () => settlementCalls,
@@ -604,6 +657,7 @@ function createUploadQueueTracer(input: {
 		adapters: {
       composition: { compileCommand: renderOutput.compileCommand },
 			state: {
+				getProjectRenderStorageReferences: async () => new Set<string>(),
 				getFrozenRenderingStateForWorkSet: async () =>
 					frozenRenderingState(
 						pendingRenders.filter((render) => {
@@ -767,7 +821,7 @@ test("ClipRenderAttempt discards an uploaded object when cancellation wins befor
 		workflowRunId: "10000000-0000-0000-0000-000000000001",
 		projectId: "20000000-0000-0000-0000-000000000002",
 		stage: "clip_rendering",
-		attemptId: "30000000-0000-0000-0000-000000000003",
+		attemptId: "30000000-0000-4000-8000-000000000003",
 		attemptCount: 1,
 	};
 	const pendingRender = {
@@ -824,6 +878,7 @@ test("ClipRenderAttempt discards an uploaded object when cancellation wins befor
 		adapters: {
       composition: { compileCommand: renderOutput.compileCommand },
 			state: {
+				getProjectRenderStorageReferences: async () => new Set<string>(),
 				getFrozenRenderingStateForWorkSet: async () =>
 					frozenRenderingState([pendingRender]),
 			},
@@ -955,7 +1010,7 @@ test("ClipRenderAttempt can reuse frozen injected adapters without retaining ano
 			inspectMedia: unexpectedOperation,
 			withScratchDirectory: unexpectedOperation,
 		},
-		state: { getFrozenRenderingStateForWorkSet: unexpectedOperation },
+		state: { getProjectRenderStorageReferences: async () => new Set<string>(), getFrozenRenderingStateForWorkSet: unexpectedOperation },
 		project: { reportProgress: unexpectedOperation },
 		clip: {
 			markClipRenderVariantRendering: unexpectedOperation,
@@ -1143,6 +1198,7 @@ test("ClipRenderAttempt drives failure and cleanup through construction adapters
 		},
 		adapters: {
 			state: {
+				getProjectRenderStorageReferences: async () => new Set<string>(),
 				getFrozenRenderingStateForWorkSet: async () =>
 					frozenRenderingState([{ id: "variant-1" } as PendingClipRender], {
 						sourceStorageKey: null,
@@ -1228,6 +1284,7 @@ test("ClipRenderAttempt cancellation drains to cleanup without persisting outcom
 		},
 		adapters: {
 			state: {
+				getProjectRenderStorageReferences: async () => new Set<string>(),
 				getFrozenRenderingStateForWorkSet: async () =>
 					frozenRenderingState([{ id: "variant-1" } as PendingClipRender], {
 						sourceStorageKey: `projects/${attempt.projectId}/source/input.mp4`,
@@ -1343,6 +1400,7 @@ test("ClipRenderAttempt permanently rejects a stored document with an empty time
 		},
 		adapters: {
 			state: {
+				getProjectRenderStorageReferences: async () => new Set<string>(),
 				getFrozenRenderingStateForWorkSet: async () =>
 					frozenRenderingState([pendingRender]),
 			},
@@ -2404,7 +2462,7 @@ for (const failure of ["begin", "state_load"] as const) {
 	});
 }
 
-test("ClipRenderAttempt cleans a provisional object when guarded completion loses ownership", async () => {
+test("ClipRenderAttempt retains a provisional object when completion loses ownership", async () => {
 	const harness = createOrdinaryTracer({
 		attemptId: "30000000-0000-4000-8000-000000000060",
 		failure: "guarded_completion",
@@ -2424,7 +2482,7 @@ test("ClipRenderAttempt cleans a provisional object when guarded completion lose
 			attemptContext(new AbortController().signal),
 		),
 	).rejects.toBeInstanceOf(WorkflowAttemptLost);
-	expect(harness.deletedKeys).toEqual(harness.uploadedKeys);
+	expect(harness.deletedKeys).toEqual([]);
 	expect(harness.objectReferences).toEqual([]);
 	expect(harness.settlementCalls()).toBe(0);
 	expect(
@@ -2445,7 +2503,7 @@ test("ClipRenderAttempt cleans a provisional object when guarded completion lose
 	});
 });
 
-test("ClipRenderAttempt cleans a provisional object when guarded completion is rejected", async () => {
+test("ClipRenderAttempt retains a provisional object when guarded completion is uncertain", async () => {
 	const expected: RenderWorkSetOutcome = {
 		status: "requeued",
 		requested: 1,
@@ -2466,7 +2524,7 @@ test("ClipRenderAttempt cleans a provisional object when guarded completion is r
 			attemptContext(new AbortController().signal),
 		),
 	).resolves.toEqual(expected);
-	expect(harness.deletedKeys).toEqual(harness.uploadedKeys);
+	expect(harness.deletedKeys).toEqual([]);
 	expect(harness.objectReferences).toEqual([]);
 	expect(harness.actions).toContain(
 		"variant_failure:render_persistence_failed:retryable",
@@ -2479,7 +2537,7 @@ test("ClipRenderAttempt cleans a provisional object when guarded completion is r
 			operation: "complete_clip_render_variant",
 			failureCode: "render_persistence_failed",
 			disposition: "retryable",
-			cleanupResult: "deleted",
+			cleanupResult: "orphan_candidate",
 		}),
 	});
 });
@@ -2514,3 +2572,251 @@ test("ClipRenderAttempt diagnoses cleanup failure without reversing settlement",
 		}),
 	});
 });
+
+for (const phase of ["lookup", "enqueue", "synchronous_enqueue"] as const) {
+	test(`ClipRenderAttempt keeps committed bytes when analytics ${phase} fails`, async () => {
+		const outcome: RenderWorkSetOutcome = {
+			status: "completed",
+			requested: 1,
+			succeeded: 1,
+			failed: 0,
+			superseded: 0,
+			followUpWorkflowRunId: null,
+		};
+		const harness = createOrdinaryTracer({
+			attemptId: "30000000-0000-4000-8000-000000000070",
+			outcome,
+			productionCompletion: true,
+			diagnoseThrows: true,
+		});
+		const references = new Set<string>();
+		const lookup = async () => {
+			if (phase === "lookup") throw new Error("analytics read unavailable");
+			return {
+				aspectRatio: "ratio_9_16",
+				clipId: "clip-ordinary",
+				clip: { projectId: harness.attempt.projectId },
+			};
+		};
+		const prisma = spyOn(database, "getPrismaClient").mockReturnValue({
+			clipRender: { findUnique: lookup },
+		} as never);
+		const completion = mock<
+			ClipRenderAttemptAdapters["clip"]["completeClipRenderVariant"]
+		>(async (_attempt, _id, result) => {
+			references.add(result.storageKey);
+			return { persisted: true };
+		});
+		const lifecycle = spyOn(
+			services,
+			"getWorkflowRunLifecycle",
+		).mockReturnValue({
+			completeClipRenderVariant: async (
+				...args: Parameters<typeof completion>
+			) => (await completion(...args)).persisted,
+		} as never);
+		const analytics = spyOn(
+			analyticsService,
+			"recordProjectEvent",
+		).mockImplementation(() => {
+			if (phase === "synchronous_enqueue")
+				throw new Error("analytics enqueue unavailable");
+			return Promise.reject(new Error("analytics enqueue unavailable"));
+		});
+		try {
+			await expect(
+				harness.clipRenderAttempt.execute(
+					harness.attempt,
+					attemptContext(new AbortController().signal),
+				),
+			).resolves.toEqual(outcome);
+			expect(completion).toHaveBeenCalledTimes(1);
+			expect([...references]).toEqual(harness.uploadedKeys);
+			expect(references.size).toBe(1);
+			expect(harness.deletedKeys).toEqual([]);
+			expect(
+				harness.actions.some((action) => action.startsWith("variant_failure:")),
+			).toBe(false);
+		} finally {
+			analytics.mockRestore();
+			prisma.mockRestore();
+			lifecycle.mockRestore();
+		}
+	});
+}
+
+test("ClipRenderAttempt preserves a completed object's bytes after lost commit acknowledgement", async () => {
+	const outcome: RenderWorkSetOutcome = {
+		status: "completed",
+		requested: 1,
+		succeeded: 1,
+		failed: 0,
+		superseded: 0,
+		followUpWorkflowRunId: null,
+	};
+	const harness = createOrdinaryTracer({
+		attemptId: "30000000-0000-4000-8000-000000000071",
+		outcome,
+		commitAcknowledgementLost: true,
+	});
+	await expect(
+		harness.clipRenderAttempt.execute(
+			harness.attempt,
+			attemptContext(new AbortController().signal),
+		),
+	).resolves.toEqual(outcome);
+	expect(harness.variantState()).toBe("completed");
+	expect(harness.objectReferences).toEqual(harness.uploadedKeys);
+	expect(harness.objectReferences).toHaveLength(1);
+	expect(harness.deletedKeys).toEqual([]);
+	expect(harness.diagnostics).toContainEqual({
+		message: "clip_render_variant_failed",
+		context: expect.objectContaining({
+			failureCode: "render_persistence_failed",
+			cleanupResult: "orphan_candidate",
+		}),
+	});
+	let referenceReads = 0;
+	const recoveredDeletes: string[] = [];
+	const reconciler = new RenderObjectReconciler({
+		now: () => new Date("2026-10-29T12:00:00Z"),
+		storage: {
+			listPage: async (prefix) => ({
+				objects: harness.uploadedKeys
+					.filter((key) => key.startsWith(prefix))
+					.map((key) => ({
+						key,
+						lastModified: new Date("2026-10-27T12:00:00Z"),
+					})),
+				nextContinuationToken: null,
+			}),
+			delete: async (key) => {
+				recoveredDeletes.push(key);
+			},
+		},
+		persistence: {
+			listReferencedKeys: async () =>
+				++referenceReads === 1
+					? new Set<string>()
+					: new Set(harness.objectReferences),
+		},
+	});
+	await expect(
+		reconciler.execute({ projectId: harness.attempt.projectId, delete: true }),
+	).resolves.toMatchObject({ referenced: 1, orphaned: 0, deleted: 0 });
+	expect(referenceReads).toBe(2);
+	expect(recoveredDeletes).toEqual([]);
+});
+
+for (const referenceRead of ["rejected", "stalled", "referenced"] as const) {
+	test(`ClipRenderAttempt retains a stale upload when its reference read is ${referenceRead}`, async () => {
+		const outcome: RenderWorkSetOutcome = {
+			status: "completed",
+			requested: 1,
+			succeeded: 0,
+			failed: 0,
+			superseded: 1,
+			followUpWorkflowRunId: null,
+		};
+		const harness = createOrdinaryTracer({
+			attemptId: "30000000-0000-4000-8000-000000000072",
+			outcome,
+			superseded: true,
+			referenceRead,
+		});
+		await expect(
+			harness.clipRenderAttempt.execute(
+				harness.attempt,
+				attemptContext(harness.sourceSignal),
+			),
+		).resolves.toEqual(outcome);
+		harness.finishReferenceRead();
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		expect(harness.actions).toContain("reference_read");
+		expect(harness.actions).not.toContain("object_cleanup");
+		expect(harness.deletedKeys).toEqual([]);
+		expect(harness.diagnostics).toContainEqual({
+			message: "clip_render_variant_completion_stale_discarded",
+			context: expect.objectContaining({
+				cleanupResult:
+					referenceRead === "referenced" ? "referenced" : "orphan_candidate",
+			}),
+		});
+	});
+}
+
+for (const cancelAfterUpload of [false, true]) {
+	test(`ClipRenderAttempt bounds a stalled cleanup ${cancelAfterUpload ? "after cancellation" : "after supersession"}`, async () => {
+		const outcome: RenderWorkSetOutcome = {
+			status: "completed",
+			requested: 1,
+			succeeded: 0,
+			failed: 0,
+			superseded: 1,
+			followUpWorkflowRunId: null,
+		};
+		const harness = createOrdinaryTracer({
+			attemptId: "30000000-0000-4000-8000-000000000073",
+			outcome,
+			superseded: true,
+			cancelAfterUpload,
+			cleanupStalls: true,
+		});
+		const execution = harness.clipRenderAttempt.execute(
+			harness.attempt,
+			attemptContext(harness.sourceSignal),
+		);
+		if (cancelAfterUpload)
+			await expect(execution).rejects.toBe(harness.completionControlError);
+		else await expect(execution).resolves.toEqual(outcome);
+		expect(harness.cleanupSignals).toHaveLength(1);
+		expect(harness.cleanupSignals[0]?.aborted).toBe(true);
+		expect(harness.deletedKeys).toEqual([]);
+		expect(harness.actions.at(-1)).toBe("workspace_cleanup");
+		expect(harness.diagnostics).toContainEqual({
+			message: "clip_render_provisional_cleanup_failed",
+			context: expect.objectContaining({
+				cleanupResult: "orphan_candidate",
+				errorCode: "TimeoutError",
+			}),
+		});
+		if (cancelAfterUpload)
+			expect(harness.actions).not.toContain("guarded_completion");
+	});
+}
+
+for (const completionControlFlow of [
+	"cancellation",
+	"ownership_loss",
+] as const) {
+	test(`ClipRenderAttempt preserves committed bytes and original ${completionControlFlow} during completion`, async () => {
+		const outcome: RenderWorkSetOutcome = {
+			status: "completed",
+			requested: 1,
+			succeeded: 1,
+			failed: 0,
+			superseded: 0,
+			followUpWorkflowRunId: null,
+		};
+		const harness = createOrdinaryTracer({
+			attemptId: "30000000-0000-4000-8000-000000000074",
+			outcome,
+			completionControlFlow,
+		});
+		await expect(
+			harness.clipRenderAttempt.execute(
+				harness.attempt,
+				attemptContext(harness.sourceSignal),
+			),
+		).rejects.toBe(harness.completionControlError);
+		expect(harness.variantState()).toBe("completed");
+		expect(harness.objectReferences).toEqual(harness.uploadedKeys);
+		expect(harness.objectReferences).toHaveLength(1);
+		expect(harness.actions).not.toContain("reference_read");
+		expect(harness.actions).not.toContain("object_cleanup");
+		expect(harness.deletedKeys).toEqual([]);
+		expect(
+			harness.actions.some((action) => action.startsWith("variant_failure:")),
+		).toBe(false);
+	});
+}

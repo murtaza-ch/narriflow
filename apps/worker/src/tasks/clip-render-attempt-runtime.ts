@@ -232,53 +232,53 @@ function createRuntimeAdapters(
 		outcome: "completed" | "failed",
 		motionAnalytics?: MotionRenderAnalyticsMetadata,
 	) {
-		const prisma = getPrismaClient();
-		if (!prisma) return;
-		const render = await prisma.clipRender.findUnique({
-			where: { id: clipRenderId },
-			select: {
-				aspectRatio: true,
-				clipId: true,
-				clip: { select: { projectId: true } },
-			},
-		});
-		if (!render) return;
-		const events = [];
-		if (outcome === "completed") {
-			events.push(
-				analyticsService.recordProjectEvent({
-					projectId: render.clip.projectId,
-					clipId: render.clipId,
-					type: "render_completed",
-					metadata: { aspectRatio: render.aspectRatio },
-				}),
-			);
+		try {
+			const prisma = getPrismaClient();
+			if (!prisma) return;
+			const render = await prisma.clipRender.findUnique({
+				where: { id: clipRenderId },
+				select: {
+					aspectRatio: true,
+					clipId: true,
+					clip: { select: { projectId: true } },
+				},
+			});
+			if (!render) return;
+			const events: Array<() => Promise<unknown>> = [];
+			if (outcome === "completed") {
+				events.push(() =>
+					analyticsService.recordProjectEvent({
+						projectId: render.clip.projectId,
+						clipId: render.clipId,
+						type: "render_completed",
+						metadata: { aspectRatio: render.aspectRatio },
+					}),
+				);
+			}
+			if (motionAnalytics && motionAnalytics.targetCount > 0) {
+				events.push(() =>
+					analyticsService.recordProjectEvent({
+						projectId: render.clip.projectId,
+						clipId: render.clipId,
+						type: "motion_render_outcome",
+						metadata: {
+							aspectRatio: render.aspectRatio,
+							...motionAnalytics,
+							renderOutcome: outcome,
+						},
+					}),
+				);
+			}
+			await Promise.all(events.map(async (record) => record()));
+		} catch {
+			// Lookup, enqueue and diagnostics are all outside durable settlement.
+			log("error", "render_analytics_record_failed", {
+				clipRenderId,
+				phase: "diagnostics",
+				operation: "record_render_analytics",
+				outcome,
+			});
 		}
-		if (motionAnalytics && motionAnalytics.targetCount > 0) {
-			events.push(
-				analyticsService.recordProjectEvent({
-					projectId: render.clip.projectId,
-					clipId: render.clipId,
-					type: "motion_render_outcome",
-					metadata: {
-						aspectRatio: render.aspectRatio,
-						...motionAnalytics,
-						renderOutcome: outcome,
-					},
-				}),
-			);
-		}
-		await Promise.all(events).catch((error) => {
-			console.warn(
-				JSON.stringify({
-					level: "warn",
-					message: "render_analytics_record_failed",
-					projectId: render.clip.projectId,
-					clipId: render.clipId,
-					error: error instanceof Error ? error.message : String(error),
-				}),
-			);
-		});
 	}
 
 	const defaults: ClipRenderAttemptAdapters & {

@@ -101,7 +101,9 @@ function fixture(input: {
     },
     adapters: {
       composition: { compileCommand: renderOutput.compileCommand },
-      state: { getFrozenRenderingStateForWorkSet: async () => ({
+      state: {
+        getProjectRenderStorageReferences: async () => new Set<string>(),
+        getFrozenRenderingStateForWorkSet: async () => ({
         sourceStorageKey: "source/input.mp4", sourceDurationSeconds: 10,
         workspaceId: WORKSPACE_ID, workspaceOwnerUserId: "asset-owner", pricingTier: "creator",
         brandSnapshot: { status: "available", value: null }, pendingRenders: [pendingRender],

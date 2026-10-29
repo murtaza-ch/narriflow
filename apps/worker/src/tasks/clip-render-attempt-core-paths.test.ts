@@ -391,6 +391,7 @@ function createCoreRenderPathTracer(input: {
 		adapters: {
 			...(input.remoteMedia ? { remoteMedia: input.remoteMedia } : {}),
 			state: {
+				getProjectRenderStorageReferences: async () => new Set<string>(),
 				getFrozenRenderingStateForWorkSet: async () => ({
 					sourceStorageKey: `projects/${attempt.projectId}/source/input.${
 						input.topology === "audiogram" ? "m4a" : "mp4"

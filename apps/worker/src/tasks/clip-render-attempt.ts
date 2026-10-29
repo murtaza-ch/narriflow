@@ -71,6 +71,7 @@ import { type RenderConfig } from "../render-config";
 import {
 	clipExportAttemptStorageKey,
 	clipRenderAttemptStorageKey,
+	isAttemptUniqueProjectRenderObjectKey,
 } from "../render-object-key";
 import {
 	resolveDisplayGeometry,
@@ -232,7 +233,7 @@ export interface ClipRenderAttemptAdapters {
 	workerProcess: WorkerProcessModule;
 	state: Pick<
 		typeof productionClipService,
-		"getFrozenRenderingStateForWorkSet"
+		"getFrozenRenderingStateForWorkSet" | "getProjectRenderStorageReferences"
 	>;
 	project: {
 		reportProgress(
@@ -539,13 +540,11 @@ function currentTimeMs(): number {
 	return currentRenderAdapters().clock.nowMs();
 }
 
-function renderStorageSignal(includeAttemptSignal = true): AbortSignal {
+function renderStorageSignal(): AbortSignal {
 	const timeoutSignal = AbortSignal.timeout(
 		currentRenderConfig().storageOperationTimeoutMs,
 	);
-	const attemptSignal = includeAttemptSignal
-		? currentRenderSignal()
-		: undefined;
+	const attemptSignal = currentRenderSignal();
 	return attemptSignal
 		? AbortSignal.any([attemptSignal, timeoutSignal])
 		: timeoutSignal;
@@ -613,6 +612,7 @@ class RenderPersistenceFailure extends WorkflowWorkerError {
 		);
 		this.name = "RenderPersistenceFailure";
 		this.cleanupResult = cleanupResult;
+		this.cause = cause;
 	}
 }
 
@@ -1448,22 +1448,26 @@ function uploadConcurrency(): number {
 async function commitProvisionalRenderUpload<T>(input: {
 	signal?: AbortSignal;
 	complete: () => Promise<T>;
-	discard: (reason: string) => Promise<"deleted" | "orphan_candidate">;
+	discard: (
+		reason: string,
+	) => Promise<"deleted" | "referenced" | "orphan_candidate">;
+	retain: (reason: string) => void;
 }): Promise<T> {
+	if (input.signal?.aborted) {
+		// Completion has never been invoked for this attempt-unique object.
+		await input.discard("attempt_cancelled_after_upload");
+		input.signal.throwIfAborted();
+	}
 	try {
-		input.signal?.throwIfAborted();
 		return await input.complete();
 	} catch (error) {
-		const reason = input.signal?.aborted
-			? "attempt_cancelled_after_upload"
-			: error instanceof WorkflowAttemptLost
-				? "ownership_lost"
-				: "persistence_rejected";
-		const cleanupResult = await input.discard(reason);
+		// A thrown call is not proof of rollback, even on ownership loss or
+		// cancellation. The transaction may have committed before losing its ACK.
+		input.retain("completion_uncertain");
 		if (input.signal?.aborted || error instanceof WorkflowAttemptLost) {
 			throw error;
 		}
-		throw new RenderPersistenceFailure(error, cleanupResult);
+		throw new RenderPersistenceFailure(error, "orphan_candidate");
 	}
 }
 
@@ -1487,36 +1491,87 @@ async function uploadRenderedOutput(params: {
 	encodeMs?: number;
 	motionAnalytics: MotionRenderAnalyticsMetadata;
 }): Promise<boolean> {
-	const deleteProvisionalObject = async (reason: string) => {
-		try {
-			await currentRenderAdapters().storage.deleteObject(
-				params.output.storageKey,
-				{
-					signal: renderStorageSignal(false),
-				},
-			);
-			return "deleted" as const;
-		} catch (error) {
-			log("error", "clip_render_provisional_cleanup_failed", {
+	const orphanCandidate = (reason: string, error?: unknown) => {
+		log(
+			"error",
+			reason === "completion_uncertain"
+				? "clip_render_provisional_object_retained"
+				: "clip_render_provisional_cleanup_failed",
+			{
 				workflowRunId: params.workflowRunId,
 				attemptId: params.attempt.attemptId,
 				projectId: params.projectId,
 				clipId: params.output.clipId,
 				clipRenderId: params.output.clipRenderId,
 				phase: "cleanup",
-				operation: "storage_delete",
+				operation:
+					reason === "completion_uncertain"
+						? "reconcile_object"
+						: "storage_delete",
 				reason,
 				objectKey: params.output.storageKey,
-				objectKeyClass: params.output.storageKey.includes("/exports/")
-					? "export_attempt"
-					: "ordinary_attempt",
-				failureCode: "provisional_object_delete_failed",
+				objectKeyClass: classifyRenderObjectKey(params.output.storageKey),
+				failureCode:
+					reason === "completion_uncertain"
+						? "render_commit_uncertain"
+						: "provisional_object_delete_failed",
 				disposition: "orphan_candidate",
 				cleanupResult: "orphan_candidate",
-				errorCode:
-					error instanceof Error ? error.name : "storage_delete_failed",
+				...(error
+					? {
+							errorCode:
+								error instanceof Error ? error.name : "storage_delete_failed",
+						}
+					: {}),
+			},
+		);
+	};
+	const deleteProvisionalObject = async (reason: string) => {
+		// Cleanup gets a fresh budget after cancellation, independent of PUT's
+		// deadline. Race the operation as well, so a stuck adapter cannot hang it.
+		const controller = new AbortController();
+		const clock = currentRenderAdapters().clock;
+		let timer: ReturnType<typeof clock.setTimeout> | undefined;
+		try {
+			return await new Promise<"deleted" | "referenced">((resolve, reject) => {
+				timer = clock.setTimeout(() => {
+					const error = new DOMException(
+						"Render object cleanup timed out",
+						"TimeoutError",
+					);
+					controller.abort(error);
+					reject(error);
+				}, 5_000);
+				Promise.resolve()
+					.then(async () => {
+						if (
+							!isAttemptUniqueProjectRenderObjectKey(
+								params.output.storageKey,
+								params.projectId,
+							)
+						) {
+							throw new Error("Unexpected provisional render object key");
+						}
+						const references =
+							await currentRenderAdapters().state.getProjectRenderStorageReferences(
+								params.projectId,
+							);
+						controller.signal.throwIfAborted();
+						if (references.has(params.output.storageKey))
+							return "referenced" as const;
+						await currentRenderAdapters().storage.deleteObject(
+							params.output.storageKey,
+							{ signal: controller.signal },
+						);
+						return "deleted" as const;
+					})
+					.then(resolve, reject);
 			});
+		} catch (error) {
+			orphanCandidate(reason, error);
 			return "orphan_candidate" as const;
+		} finally {
+			if (timer !== undefined) clock.clearTimeout(timer);
 		}
 	};
 
@@ -1550,14 +1605,13 @@ async function uploadRenderedOutput(params: {
 				},
 			),
 		discard: deleteProvisionalObject,
+		retain: orphanCandidate,
 	});
 
 	if (!persisted) {
-		// The ClipRender row this attempt was rendering for is gone — an editor
-		// save/reset invalidated it (deleted the row) while this encode was in
-		// flight. The storage key is attempt-unique (clipRenderAttemptStorageKey),
-		// so this object can never be the one any other row points at; deleting
-		// it is always safe and never touches another attempt's bytes.
+		// Acknowledged false proves this call did not publish its unique key.
+		// Recheck references before deleting, including a same-token replay.
+		// Thrown calls never reach this deletion path.
 		const cleanupResult = await deleteProvisionalObject("variant_superseded");
 		log("info", "clip_render_variant_completion_stale_discarded", {
 			workflowRunId: params.workflowRunId,

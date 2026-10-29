@@ -375,3 +375,36 @@ test("caller cancellation actively aborts destructive storage operations", async
   ).rejects.toMatchObject({ name: "AbortError" });
   expect(deleteSignal?.aborted).toBe(true);
 });
+
+test("destructive reconciliation retains an ambiguous upload when the fresh reference read fails", async () => {
+  const projectId = "11111111-1111-1111-1111-111111111111";
+  const key = `projects/${projectId}/exports/export/variant-9x16-bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb.mp4`;
+  const failure = new Error("reference refresh unavailable");
+  let reads = 0;
+  const deleted: string[] = [];
+  const reconciler = new RenderObjectReconciler({
+    now: () => new Date("2026-10-29T12:00:00Z"),
+    storage: {
+      listPage: async (prefix) => ({
+        objects: key.startsWith(prefix)
+          ? [{ key, lastModified: new Date("2026-10-27T12:00:00Z") }]
+          : [],
+        nextContinuationToken: null,
+      }),
+      delete: async (objectKey) => {
+        deleted.push(objectKey);
+      },
+    },
+    persistence: {
+      listReferencedKeys: async () => {
+        if (++reads > 1) throw failure;
+        return new Set<string>();
+      },
+    },
+  });
+  await expect(reconciler.execute({ projectId, delete: true })).rejects.toBe(
+    failure,
+  );
+  expect(reads).toBe(2);
+  expect(deleted).toEqual([]);
+});
