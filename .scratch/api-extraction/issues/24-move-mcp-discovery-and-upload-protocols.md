@@ -4,7 +4,7 @@
 
 **Blocked by:** [04 - Wire API runtime and partition the catch-all](04-wire-api-runtime-and-partition-the-catch-all.md), [15 - Move intake Upload Sessions and recipes](15-move-intake-upload-sessions-and-recipes.md)
 
-**Status:** done
+**Status:** blocked
 
 **Suggested implementer:** Sol. The other pairing side reviews and returns findings to this owner.
 
@@ -147,7 +147,7 @@ Rows retain their section/ordinal or exact source-line identifier from the indep
 - [x] All five upload POSTs share relocated Upload Session adapter; signed browser handoff only admits initial open while valid and can identify resume after expiry.
 - [x] Status/preparation/handoff/confirm JSON endpoints replace server reads/action with safe destinations; no raw web Prisma query remains.
 - [x] CLI/native upload defaults, stdio examples and E2E endpoints use API; mcp-core human handoffs and Apps CSP keep correct web/API meanings.
-- [ ] No unowned files changed; paired review findings and verification evidence recorded under Comments.
+- [x] No unowned files changed; paired review findings and verification evidence recorded under Comments.
 
 ## Verification
 
@@ -190,3 +190,13 @@ Append claim, requested seam changes, paired review and evidence here.
 - Paired review pending Claude. Implementation is complete within ticket ownership; the explicit central/config/UI requests above remain with their owners. No disagreement with the spec; env/example edits were withheld under the user's stricter instruction.
 
 - Close-out: **done** for implementation, with the paired-review checkbox deliberately pending Claude. The endpoint migration provides replacements for ticket 26's still-unconverted web reads/action. Environment/example changes remain withheld by user instruction; the exact central changes needed from other owners are recorded above.
+
+- Sol claimed the paired-review fixes on 2026-10-29. No commits, env changes or dependency installs; concurrent 28/29 source ownership retained.
+
+### Sol paired-review resolution, 2026-10-29
+
+- Findings and decisions are recorded per finding in [the paired review's Resolution (Sol)](../review-claude-sol-tickets.md#resolution-sol). Both API type errors are fixed without an install; all seven internal review receipt names now obey the registry naming rule.
+- Final scoped tests: 329 pass, 17 DB-only skips, no failures; Zapier 74 pass and Make 13 pass. API, API-client, services and Zapier typechecks pass. OpenAPI still matches all 31 operations. Scoped Biome checks all 15 supported changed code files clean; integrations are excluded by the repository configuration and pass their own checks.
+- All DB commands used `db-gate.sh` against local disposable PostgreSQL only. Policy gate 4 pass; review replay gate 6 pass; moved REST/MCP parity gate 7 pass. The top-level integration gate passed 148 service tests then failed solely on its deleted web REST suite path. Ticket 31 must replace `apps/web/lib/rest-api/events.db.test.ts` with `apps/api/src/domains/rest/events.db.test.ts` in `packages/services/scripts/run-integration-api-db-tests.ts` and rerun the command. No unowned runner edited.
+- Restored non-production localhost/127.0.0.1/[::1] host admission without changing canonical API/mcp resource or token audience. Missing issuer now refuses protected-resource discovery safely. Existing post-expiry confirmation refusal remains intentional, as explained for L14.
+- Status is blocked on ticket 31 correcting and rerunning the required top-level integration DB runner. The service suites and moved REST/MCP suite passed separately; no DB suite is waived.

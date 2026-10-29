@@ -10,28 +10,16 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { useRouter } from "next/navigation";
+import { CLIENT_ERROR_CODES } from "@narriflow/api-client/core";
+import { invalidateProject } from "@narriflow/api-client/projects";
+import { useProgressStream } from "@narriflow/api-client/progress";
 import type { WorkflowStageUpdatedEvent } from "@narriflow/validators";
+import { useApiRuntime, useWorkspaceScope } from "@/app/_components/api-provider";
 import {
   PROJECT_EVENT_ROW_LIMIT,
-  parseWorkflowEventMessage,
   rememberBoundedIdentity,
   workflowEventRowIdentity,
-  workflowTerminalEventIdentity,
 } from "@/lib/project-state";
-import {
-  parseWorkflowAuthorizationControl,
-  recoverFromWorkflowAuthorizationLoss,
-} from "@/lib/workflow-stream-authorization";
-
-// Incremental (non-terminal) progress events — e.g. an individual clip's
-// preview or render landing mid-run — should refresh the page so newly
-// available clips/previews show up without waiting for the whole run to
-// finish, but a burst of them (several clips completing back-to-back)
-// shouldn't cause a refresh storm. This is a trailing-edge throttle: at most
-// one refresh per window fires immediately, and one more is guaranteed
-// shortly after the last event in a burst.
-const PROGRESS_REFRESH_THROTTLE_MS = 5_000;
 
 function sortAndCapEvents(
   events: readonly WorkflowStageUpdatedEvent[],
@@ -39,6 +27,18 @@ function sortAndCapEvents(
   return [...events]
     .sort((left, right) => left.seq - right.seq)
     .slice(-PROJECT_EVENT_ROW_LIMIT);
+}
+
+function latestStageMap(
+  events: readonly WorkflowStageUpdatedEvent[],
+  base: Record<string, WorkflowStageUpdatedEvent> = {},
+): Record<string, WorkflowStageUpdatedEvent> {
+  const map = { ...base };
+  for (const event of [...events].sort((a, b) => a.seq - b.seq)) {
+    const existing = map[event.stage];
+    if (!existing || existing.seq < event.seq) map[event.stage] = event;
+  }
+  return map;
 }
 
 interface ProjectEventsContextValue {
@@ -59,13 +59,23 @@ const ProjectEventsContext = createContext<ProjectEventsContextValue | null>(
 );
 
 /**
- * Owns the single EventSource connection for a project's workflow stream.
- * Lifted out of ProjectEvents (Activity tab) so the processing checklist
- * (Phase 2a) can consume live events directly without opening a second
- * connection or triggering extra refreshes — both this provider's consumers
- * share the same throttled router.refresh() below.
+ * Feeds the Project page's live workflow state. The connection belongs to the
+ * shared progress stream (one per Project, also used by the upload and export
+ * pages), which also refreshes the Project's cached reads on its 5-second
+ * trailing throttle and once per terminal outcome. This provider only holds
+ * the bounded event history and the latest event per stage for its consumers.
  */
-export function ProjectEventsProvider({
+export function ProjectEventsProvider(props: {
+  projectId: string;
+  initialSeq: number;
+  initialEvents: WorkflowStageUpdatedEvent[];
+  children: ReactNode;
+}) {
+  // A different Project starts from its own history.
+  return <ProjectEventsState key={props.projectId} {...props} />;
+}
+
+function ProjectEventsState({
   projectId,
   initialSeq,
   initialEvents,
@@ -76,158 +86,64 @@ export function ProjectEventsProvider({
   initialEvents: WorkflowStageUpdatedEvent[];
   children: ReactNode;
 }) {
-  const router = useRouter();
+  const runtime = useApiRuntime();
+  const scope = useWorkspaceScope();
   const [events, setEvents] = useState<WorkflowStageUpdatedEvent[]>(() =>
     sortAndCapEvents(initialEvents),
   );
   const [latestByStage, setLatestByStage] = useState<
     Record<string, WorkflowStageUpdatedEvent>
-  >(() => {
-    const map: Record<string, WorkflowStageUpdatedEvent> = {};
-    for (const event of [...initialEvents].sort((a, b) => a.seq - b.seq)) {
-      map[event.stage] = event;
-    }
-    return map;
-  });
-  const seenEventRows = useRef(new Set<string>());
-  const refreshedTerminalEvents = useRef(new Set<string>());
-  const lastIncrementalRefreshAtRef = useRef(0);
-  const pendingIncrementalRefreshTimerRef = useRef<ReturnType<
-    typeof setTimeout
-  > | null>(null);
-
-  const scheduleIncrementalRefresh = useCallback(() => {
-    const now = Date.now();
-    const elapsed = now - lastIncrementalRefreshAtRef.current;
-
-    if (elapsed >= PROGRESS_REFRESH_THROTTLE_MS) {
-      lastIncrementalRefreshAtRef.current = now;
-      router.refresh();
-      return;
-    }
-
-    // A trailing refresh is already scheduled for this burst — let it fire.
-    if (pendingIncrementalRefreshTimerRef.current !== null) return;
-
-    pendingIncrementalRefreshTimerRef.current = setTimeout(() => {
-      pendingIncrementalRefreshTimerRef.current = null;
-      lastIncrementalRefreshAtRef.current = Date.now();
-      router.refresh();
-    }, PROGRESS_REFRESH_THROTTLE_MS - elapsed);
-  }, [router]);
-
-  // biome-ignore lint/correctness/useExhaustiveDependencies: projectId intentionally resets event state when the provider changes projects.
-  useEffect(() => {
-    setEvents(sortAndCapEvents(initialEvents));
-    setLatestByStage(() => {
-      const map: Record<string, WorkflowStageUpdatedEvent> = {};
-      for (const event of [...initialEvents].sort((a, b) => a.seq - b.seq)) {
-        map[event.stage] = event;
-      }
-      return map;
-    });
-    seenEventRows.current.clear();
+  >(() => latestStageMap(initialEvents));
+  const seenEventRows = useRef<Set<string> | null>(null);
+  if (seenEventRows.current === null) {
+    seenEventRows.current = new Set();
     for (const event of initialEvents) {
-      rememberBoundedIdentity(seenEventRows.current, workflowEventRowIdentity(event),
-      );
+      rememberBoundedIdentity(seenEventRows.current, workflowEventRowIdentity(event));
     }
-    refreshedTerminalEvents.current.clear();
-    // Re-seeds whenever the server hands us a fresh history snapshot
-    // (navigation to a different project, or any router.refresh()) — the SSE
-    // effect below only ever delivers seq > initialSeq, so there's no
-    // overlap with what's seeded here.
-  }, [projectId, initialEvents]);
+  }
 
+  // A refetched Project brings its history up to date; merge it rather than
+  // replace, so a live event the refetch has not caught up with is not lost.
   useEffect(() => {
-    const streamUrl = `/api/stream/${projectId}?sinceSeq=${initialSeq}`;
-    const source = new EventSource(streamUrl);
+    const seen = seenEventRows.current;
+    if (!seen) return;
+    const fresh = initialEvents.filter((event) =>
+      rememberBoundedIdentity(seen, workflowEventRowIdentity(event)),
+    );
+    if (fresh.length === 0) return;
+    setEvents((current) => sortAndCapEvents([...current, ...fresh]));
+    setLatestByStage((current) => latestStageMap(fresh, current));
+  }, [initialEvents]);
 
-    const onWorkflowUpdate = (event: MessageEvent<string>) => {
-      const parsed = parseWorkflowEventMessage(event.data);
-      if (!parsed) {
-        console.warn(JSON.stringify({ level: "error", message: "workflow_event_invalid" }));
-        return;
-      }
-      if (parsed.projectId !== projectId) {
-        console.warn(JSON.stringify({ level: "error", message: "workflow_event_project_mismatch" }));
-        return;
-      }
-      if (
-        !rememberBoundedIdentity(
-          seenEventRows.current,
-          workflowEventRowIdentity(parsed),
-        )
-      ) {
-        return;
-      }
-
-      setEvents((current) => {
-        const updated = [...current, parsed];
-        updated.sort((left, right) => left.seq - right.seq);
-        return updated.slice(-PROJECT_EVENT_ROW_LIMIT);
-      });
+  const onEvent = useCallback(
+    (event: WorkflowStageUpdatedEvent) => {
+      if (event.projectId !== projectId) return;
+      const seen = seenEventRows.current;
+      if (!seen || !rememberBoundedIdentity(seen, workflowEventRowIdentity(event))) return;
+      setEvents((current) => sortAndCapEvents([...current, event]));
       setLatestByStage((current) => {
-        const existing = current[parsed.stage];
-        if (existing && existing.seq >= parsed.seq) return current;
-        return { ...current, [parsed.stage]: parsed };
+        const existing = current[event.stage];
+        if (existing && existing.seq >= event.seq) return current;
+        return { ...current, [event.stage]: event };
       });
+    },
+    [projectId],
+  );
 
-      const isTerminal =
-        parsed.status === "completed" ||
-        parsed.status === "partial" ||
-        parsed.status === "failed";
-      if (isTerminal) {
-        if (
-          rememberBoundedIdentity(
-            refreshedTerminalEvents.current,
-            workflowTerminalEventIdentity(parsed),
-          )
-        ) {
-          router.refresh();
-        }
-        return;
-      }
+  // Access ended or the stream was refused: re-read the Project, whose own
+  // answer (missing, restricted, mismatch) drives the existing recovery gates.
+  const reread = useCallback(() => {
+    if (scope) void invalidateProject(runtime.queryClient, scope, projectId);
+  }, [runtime, scope, projectId]);
 
-      // Incremental progress (e.g. an individual clip's preview/render
-      // landing) — throttled so a burst of these can't cause a refresh
-      // storm, but still visible well before the run finishes.
-      scheduleIncrementalRefresh();
-    };
-
-    const onAuthorizationRevoked = (event: MessageEvent<string>) => {
-      const control = parseWorkflowAuthorizationControl(event.data);
-      source.close();
-      if (!control) {
-        router.refresh();
-        return;
-      }
-      recoverFromWorkflowAuthorizationLoss(
-        control,
-        `${window.location.pathname}${window.location.search}`,
-      );
-    };
-
-    source.addEventListener("workflow.stage.updated", onWorkflowUpdate as EventListener,
-    );
-    source.addEventListener(
-      "authorization.revoked",
-      onAuthorizationRevoked as EventListener,
-    );
-
-    return () => {
-      source.removeEventListener("workflow.stage.updated", onWorkflowUpdate as EventListener,
-      );
-      source.removeEventListener(
-        "authorization.revoked",
-        onAuthorizationRevoked as EventListener,
-      );
-      source.close();
-      if (pendingIncrementalRefreshTimerRef.current !== null) {
-        clearTimeout(pendingIncrementalRefreshTimerRef.current);
-        pendingIncrementalRefreshTimerRef.current = null;
-      }
-    };
-  }, [projectId, initialSeq, router, scheduleIncrementalRefresh]);
+  useProgressStream(runtime, scope, projectId, {
+    sinceSeq: initialSeq,
+    onEvent,
+    onRevoked: reread,
+    onFatal: (error) => {
+      if (error.code !== CLIENT_ERROR_CODES.scopeChanged) reread();
+    },
+  });
 
   const value = useMemo<ProjectEventsContextValue>(
     () => ({ events, latestByStage }),

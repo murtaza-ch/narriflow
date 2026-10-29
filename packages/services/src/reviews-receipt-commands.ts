@@ -1,4 +1,4 @@
 export const REVIEWS_RECEIPT_COMMANDS = [
-  "review.round.create", "review.reviewers.invite", "review.internal-comment.create",
-  "review.comment.resolve", "review.comment.reopen", "review.notification.retry", "review.round.revoke",
+  "create_review_round", "invite_reviewers", "create_internal_review_comment",
+  "resolve_review_comment", "reopen_review_comment", "retry_review_notification", "revoke_review_round",
 ] as const;

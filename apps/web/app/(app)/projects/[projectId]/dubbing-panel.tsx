@@ -18,6 +18,7 @@ import type {
 import { clipAspectRatioOptions, userErrorMessage } from "@narriflow/validators";
 import { IDEMPOTENCY_KEY_HEADER, invalidateScoped, isApiError, type Intent } from "@narriflow/api-client";
 import { invalidateProject, PROJECT_RESOURCES, type ProjectDetail } from "@narriflow/api-client/projects";
+import { invalidateWorkspaceUsage } from "@narriflow/api-client/workspace";
 import { useMutation } from "@tanstack/react-query";
 import { formatDuration } from "@/lib/format";
 import { intentIn, playableMediaUrl, requireClipApi, useClipApi } from "@/lib/clip-media";
@@ -281,7 +282,7 @@ export function DubbingPanel({
       await Promise.all([
         invalidateProject(queryClient, scope, projectId),
         invalidateScoped(queryClient, scope, "projects", PROJECT_RESOURCES.dubsAllowance, projectId),
-        invalidateScoped(queryClient, scope, "workspace", "usage"),
+        invalidateWorkspaceUsage(queryClient, scope),
       ]);
     },
     onError: (failure) => {

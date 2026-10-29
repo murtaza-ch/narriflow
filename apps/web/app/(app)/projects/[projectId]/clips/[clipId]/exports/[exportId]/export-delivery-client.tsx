@@ -3,7 +3,20 @@
 import { PlanLimitNotice } from "../../../../../../_components/plan-limit-notice";
 import { LockedButton, useUpgrade, type UpgradePrompt } from "../../../../../../_components/upgrade";
 import { upgradePromptFromFailure } from "@/lib/authenticated-request-browser";
+import { browserFailureFromApiError } from "@/lib/publishing-client";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { CLIENT_ERROR_CODES, invalidateScoped, isApiError, type WorkspaceScope } from "@narriflow/api-client/core";
+import {
+	createExportsClient,
+	exportCommands,
+	exportQueries,
+	fetchSubtitleFile,
+	fetchTimelineArchive,
+	invalidateAfterExportChange,
+} from "@narriflow/api-client/exports";
+import { useProgressStream } from "@narriflow/api-client/progress";
+import { useApiRuntime, useWorkspaceScope } from "@/app/_components/api-provider";
 import Link from "next/link";
 import { Box, Flex, Grid, HStack, Image, Portal, Stack, Text, Tooltip } from "@chakra-ui/react";
 import {
@@ -30,10 +43,6 @@ import { SegmentedControl } from "@narriflow/ui/components/segmented-control";
 import { Spinner } from "@narriflow/ui/components/spinner";
 import type { ClipExportSnapshot } from "@narriflow/validators";
 import { formatDateTime, formatDuration } from "@/lib/format";
-import {
-	parseWorkflowAuthorizationControl,
-	recoverFromWorkflowAuthorizationLoss,
-} from "@/lib/workflow-stream-authorization";
 
 const ACTIVE_STATUSES = new Set(["queued", "rendering", "partial_ready"]);
 
@@ -44,6 +53,11 @@ const TIMELINE_DOWNLOADS = [
 ] as const;
 
 type TimelineTarget = (typeof TIMELINE_DOWNLOADS)[number]["format"] | "source";
+
+/** Older than this, a snapshot's signed file URLs are close to their 15-minute expiry. */
+const SNAPSHOT_RESUME_AGE_MS = 10 * 60_000;
+/** The stream is the signal; this only covers a stream that is down or a change it does not publish. */
+const ACTIVE_FALLBACK_POLL_MS = 10_000;
 
 function saveFile(url: string, fileName: string) {
 	const link = document.createElement("a");
@@ -116,7 +130,14 @@ export function ExportDeliveryClient({
 	reviewUpgrade: UpgradePrompt | null;
 }) {
 	const { openUpgrade } = useUpgrade();
-	const [data, setData] = useState(initialExport);
+	const runtime = useApiRuntime();
+	const selectedScope = useWorkspaceScope();
+	if (!selectedScope) throw new Error("The export page requires a selected Workspace");
+	const scope: WorkspaceScope = selectedScope;
+	const queryClient = useQueryClient();
+	const client = useMemo(() => createExportsClient(runtime.transport.scoped(scope)), [runtime.transport, scope]);
+	const { projectId, clipId } = initialExport;
+	const detailOptions = exportQueries.detail(client, scope, projectId, clipId, initialExport.id);
 	const [selectedVariantId, setSelectedVariantId] = useState(
 		initialExport.variants.find((variant) => variant.hasAsset)?.id ??
 			initialExport.variants[0]?.id ??
@@ -130,80 +151,69 @@ export function ExportDeliveryClient({
 	const [timelineTarget, setTimelineTarget] = useState<TimelineTarget | null>(null);
 	const [timelineError, setTimelineError] = useState<string | null>(null);
 	const [timelineNote, setTimelineNote] = useState<string | null>(null);
+	const [subtitleFormat, setSubtitleFormat] = useState<"srt" | "vtt" | null>(null);
 	const lastSeqRef = useRef(initialSeq);
 
-	const clipPath = `/api/projects/${data.projectId}/clips/${data.clipId}`;
-	const apiPath = `${clipPath}/exports/${data.id}`;
+	// The export is a cached read seeded with the page's first answer. Progress
+	// events and the fallback poll refetch it; nothing else replaces it.
+	const detail = useQuery({
+		...detailOptions,
+		initialData: { ...initialExport, lastSeq: initialSeq },
+		refetchOnMount: false,
+		refetchOnWindowFocus: false,
+		refetchInterval: (query) =>
+			query.state.data && ACTIVE_STATUSES.has(query.state.data.status) ? ACTIVE_FALLBACK_POLL_MS : false,
+	});
+	const { lastSeq: _lastSeq, ...data } = detail.data;
+	const active = ACTIVE_STATUSES.has(data.status);
+	const refetchDetail = detail.refetch;
 	const refresh = useCallback(async () => {
-		const response = await fetch(apiPath, { cache: "no-store" });
-		if (!response.ok) return;
-		const next = (await response.json()) as ClipExportSnapshot;
-		setData(next);
-		setSelectedVariantId((current) =>
-			next.variants.some(
-				(variant) => variant.id === current && variant.hasAsset,
-			)
-				? current
-				: (next.variants.find((variant) => variant.hasAsset)?.id ?? current),
-		);
-	}, [apiPath]);
+		await refetchDetail();
+	}, [refetchDetail]);
 
-	// biome-ignore lint/correctness/useExhaustiveDependencies: initialSeq intentionally reconnects the stream from a new server cursor.
+	// A newer snapshot may carry a format that finished: keep the choice on a file that exists.
 	useEffect(() => {
-		if (!ACTIVE_STATUSES.has(data.status)) return;
-		let fallback: ReturnType<typeof setInterval> | null = null;
-		const source = new EventSource(
-			`/api/stream/${data.projectId}?sinceSeq=${lastSeqRef.current}`,
+		setSelectedVariantId((current) =>
+			data.variants.some((variant) => variant.id === current && variant.hasAsset)
+				? current
+				: (data.variants.find((variant) => variant.hasAsset)?.id ?? current),
 		);
-		const onUpdate = (event: MessageEvent<string>) => {
-			try {
-				const payload = JSON.parse(event.data) as {
-					stage?: unknown;
-					seq?: unknown;
-				};
-				if (typeof payload.seq === "number") {
-					lastSeqRef.current = Math.max(lastSeqRef.current, payload.seq);
-				}
-				if (payload.stage !== "clip_rendering") return;
-			} catch {
-				return;
-			}
-			void refresh();
-		};
-		const onAuthorizationRevoked = (event: MessageEvent<string>) => {
-			source.close();
-			const control = parseWorkflowAuthorizationControl(event.data);
-			if (control) {
-				recoverFromWorkflowAuthorizationLoss(
-					control,
-					`${window.location.pathname}${window.location.search}`,
-				);
-			} else {
-				window.location.reload();
+	}, [data.variants]);
+
+	// Snapshot file URLs expire in 15 minutes: after a long absence (a hidden
+	// tab, a sleeping laptop) read the export again before anyone clicks one.
+	const dataUpdatedAt = useRef(detail.dataUpdatedAt);
+	dataUpdatedAt.current = detail.dataUpdatedAt;
+	useEffect(() => {
+		const onVisible = () => {
+			if (document.visibilityState === "visible" && Date.now() - dataUpdatedAt.current > SNAPSHOT_RESUME_AGE_MS) {
+				void refetchDetail();
 			}
 		};
-		source.addEventListener("workflow.stage.updated", onUpdate);
-		source.addEventListener("authorization.revoked", onAuthorizationRevoked);
-		source.onerror = () => {
-			source.close();
-			if (fallback !== null) clearInterval(fallback);
-			fallback = setInterval(() => {
-				if (document.visibilityState === "visible") void refresh();
-			}, 5_000);
-		};
-		fallback = setInterval(() => {
-			if (document.visibilityState === "visible") void refresh();
-		}, 10_000);
-		return () => {
-			source.removeEventListener("workflow.stage.updated", onUpdate);
-			source.removeEventListener(
-				"authorization.revoked",
-				onAuthorizationRevoked,
-			);
-			source.close();
-			if (fallback !== null) clearInterval(fallback);
-		};
-	}, [data.projectId, data.status, initialSeq, refresh]);
+		document.addEventListener("visibilitychange", onVisible);
+		return () => document.removeEventListener("visibilitychange", onVisible);
+	}, [refetchDetail]);
+
+	// Access ended or the stream was refused: re-read the export, whose own answer (missing, forbidden) drives the page.
+	const reread = useCallback(() => {
+		void invalidateScoped(queryClient, scope, "exports");
+	}, [queryClient, scope]);
+	useProgressStream(runtime, scope, projectId, {
+		enabled: active,
+		sinceSeq: lastSeqRef.current,
+		onEvent: (event) => {
+			lastSeqRef.current = Math.max(lastSeqRef.current, event.seq);
+			if (event.stage === "clip_rendering") void refresh();
+		},
+		// Events may have been missed while disconnected, and file URLs may have aged.
+		onOpen: ({ reconnected }) => {
+			if (reconnected) void refresh();
+		},
+		onRevoked: reread,
+		onFatal: (error) => {
+			if (error.code !== CLIENT_ERROR_CODES.scopeChanged) reread();
+		},
+	});
 
 	const selected =
 		data.variants.find((variant) => variant.id === selectedVariantId) ??
@@ -229,17 +239,11 @@ export function ExportDeliveryClient({
 		setAction("share");
 		setActionError(null);
 		try {
-			const response = await fetch(`${apiPath}/share-links`, {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ expiresInDays: 7 }),
-			});
-			const body = await response.json().catch(() => null);
-			if (!response.ok || !body?.path) throw new Error("share_failed");
-			setSharePath(body.path);
-			await navigator.clipboard.writeText(
-				`${window.location.origin}${body.path}`,
-			);
+			const link = await exportCommands.createShareLink(client, projectId, clipId, data.id, 7);
+			if (!link.path) throw new Error("share_failed");
+			setSharePath(link.path);
+			void invalidateAfterExportChange(queryClient, scope, projectId);
+			await navigator.clipboard.writeText(`${window.location.origin}${link.path}`);
 		} catch {
 			setActionError("The private link could not be created. Try again.");
 		} finally {
@@ -262,11 +266,9 @@ export function ExportDeliveryClient({
 		setAction("revoke");
 		setActionError(null);
 		try {
-			const response = await fetch(`${apiPath}/share-links`, {
-				method: "DELETE",
-			});
-			if (!response.ok) throw new Error("revoke_failed");
+			await exportCommands.revokeShareLinks(client, projectId, clipId, data.id);
 			setSharePath(null);
+			void invalidateAfterExportChange(queryClient, scope, projectId);
 		} catch {
 			setActionError("Share links could not be revoked. Try again.");
 		} finally {
@@ -278,14 +280,29 @@ export function ExportDeliveryClient({
 		setAction("retry");
 		setActionError(null);
 		try {
-			const response = await fetch(`${apiPath}/retry`, { method: "POST" });
-			if (!response.ok) throw new Error("retry_failed");
-			const next = (await response.json()) as ClipExportSnapshot;
-			if (next) setData(next);
+			const next = await exportCommands.retry(client, projectId, clipId, data.id);
+			// Show the requeued formats at once; the invalidation below re-reads the rest (credits, lists).
+			queryClient.setQueryData(detailOptions.queryKey, { ...(next as ClipExportSnapshot), lastSeq: lastSeqRef.current });
+			void invalidateAfterExportChange(queryClient, scope, projectId);
 		} catch {
 			setActionError("The failed variants could not be requeued. Try again.");
 		} finally {
 			setAction(null);
+		}
+	}
+
+	async function downloadSubtitles(format: "srt" | "vtt") {
+		setSubtitleFormat(format);
+		setActionError(null);
+		try {
+			const file = await fetchSubtitleFile(client, projectId, clipId, data.id, format);
+			const url = URL.createObjectURL(file.blob);
+			saveFile(url, file.fileName);
+			setTimeout(() => URL.revokeObjectURL(url), 60_000);
+		} catch {
+			setActionError("The subtitles could not be downloaded. Try again.");
+		} finally {
+			setSubtitleFormat(null);
 		}
 	}
 
@@ -296,42 +313,34 @@ export function ExportDeliveryClient({
 		setTimelineTarget(target);
 		setTimelineError(null);
 		setTimelineNote(null);
-		let failure = "The timeline could not be downloaded. Try again.";
 		try {
-			const response = await fetch(
-				target === "source" ? `${clipPath}/timeline-source` : `${clipPath}/timeline/${target}`,
-				{ cache: "no-store" },
-			);
-			if (!response.ok) {
-				const body = await response.json().catch(() => null);
-				if (typeof body?.message === "string") failure = body.message;
-				if (response.status === 402 && body) {
-					const prompt = upgradePromptFromFailure(body);
-					if (prompt) openUpgrade(prompt);
-				}
-				throw new Error(failure);
-			}
 			if (target === "source") {
-				const grant = (await response.json()) as { downloadUrl: string; fileName: string };
+				const grant = await exportCommands.timelineSourceGrant(client, projectId, clipId);
 				saveFile(grant.downloadUrl, grant.fileName);
 				setTimelineNote(`Downloading ${grant.fileName}.`);
 				return;
 			}
-			const fileName = /filename="([^"]+)"/.exec(response.headers.get("Content-Disposition") ?? "")?.[1] ?? "timeline.zip";
-			const url = URL.createObjectURL(await response.blob());
-			saveFile(url, fileName);
+			const archive = await fetchTimelineArchive(client, projectId, clipId, target);
+			const url = URL.createObjectURL(archive.blob);
+			saveFile(url, archive.fileName);
 			setTimeout(() => URL.revokeObjectURL(url), 60_000);
-			const revision = response.headers.get("X-Editor-Revision");
-			setTimelineNote(`Downloaded ${fileName}${revision ? `, cut from edit v${revision}` : ""}.`);
-		} catch {
-			setTimelineError(failure);
+			setTimelineNote(
+				`Downloaded ${archive.fileName}${archive.editorRevision !== null ? `, cut from edit v${archive.editorRevision}` : ""}.`,
+			);
+		} catch (failure) {
+			if (isApiError(failure) && failure.status === 402) {
+				const prompt = upgradePromptFromFailure(browserFailureFromApiError(failure));
+				if (prompt) openUpgrade(prompt);
+			}
+			setTimelineError(
+				isApiError(failure) && failure.message ? failure.message : "The timeline could not be downloaded. Try again.",
+			);
 		} finally {
 			setTimelineTarget(null);
 		}
 	}
 
 	const timelineLocked = timelineRequirement !== null;
-	const active = ACTIVE_STATUSES.has(data.status);
 	const videoRef = useRef<HTMLVideoElement>(null);
 	const ambientRef = useRef<HTMLCanvasElement>(null);
 	useAmbientGlow(videoRef, ambientRef, selected?.previewUrl ?? selected?.downloadUrl ?? null);
@@ -709,10 +718,17 @@ export function ExportDeliveryClient({
 								] as const
 							).map(([format, label, hint]) =>
 								hasReady ? (
-									<Button key={format} {...TILE_PROPS} asChild>
-										<a href={`${apiPath}/subtitles/${format}`} download>
-											<TileBody icon={<FileText size={16} />} label={label} hint={hint} />
-										</a>
+									<Button
+										key={format}
+										{...TILE_PROPS}
+										disabled={subtitleFormat !== null}
+										onClick={() => void downloadSubtitles(format)}
+									>
+										<TileBody
+											icon={subtitleFormat === format ? <Spinner size="xs" /> : <FileText size={16} />}
+											label={label}
+											hint={hint}
+										/>
 									</Button>
 								) : (
 									<Button key={format} {...TILE_PROPS} disabled>

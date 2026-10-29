@@ -74,12 +74,12 @@ export function createReviewsCommands(deps: ReviewsCommandDependencies) {
     return { value: deps.reveal(accepted.value.protectedResult) as JsonSnapshot<T>, replayed: accepted.replayed };
   }
   return {
-    createRound: (scope: ReviewScope, input: unknown, mutation: IntegrationMutation) => execute(scope, mutation, "review.round.create", { projectId: scope.projectId, input }, (tx) => deps.service.createRound(scope, input, { tx })),
-    invite: (scope: ReviewScope, roundId: string, input: unknown, mutation: IntegrationMutation) => execute(scope, mutation, "review.reviewers.invite", { projectId: scope.projectId, roundId, input }, (tx) => deps.service.inviteReviewers(scope, roundId, input, tx)),
-    comment: (scope: ReviewScope, roundId: string, input: unknown, mutation: IntegrationMutation) => execute(scope, mutation, "review.internal-comment.create", { projectId: scope.projectId, roundId, input }, (tx) => deps.service.addInternalComment(scope, roundId, input, tx)),
-    resolve: (scope: ReviewScope, roundId: string, commentId: string, resolved: boolean, mutation: IntegrationMutation) => execute(scope, mutation, resolved ? "review.comment.resolve" : "review.comment.reopen", { projectId: scope.projectId, roundId, commentId }, (tx) => deps.service.resolveComment(scope, roundId, commentId, resolved, tx)),
-    revoke: (scope: ReviewScope, roundId: string, mutation: IntegrationMutation) => execute(scope, mutation, "review.round.revoke", { projectId: scope.projectId, roundId }, (tx) => deps.service.revokeRound(scope, roundId, tx)),
-    retry: (scope: ReviewScope, roundId: string, ledgerId: string, mutation: IntegrationMutation) => execute(scope, mutation, "review.notification.retry", { projectId: scope.projectId, roundId, ledgerId }, (tx) => deps.retry(tx, scope, roundId, ledgerId)),
+    createRound: (scope: ReviewScope, input: unknown, mutation: IntegrationMutation) => execute(scope, mutation, "create_review_round", { projectId: scope.projectId, input }, (tx) => deps.service.createRound(scope, input, { tx })),
+    invite: (scope: ReviewScope, roundId: string, input: unknown, mutation: IntegrationMutation) => execute(scope, mutation, "invite_reviewers", { projectId: scope.projectId, roundId, input }, (tx) => deps.service.inviteReviewers(scope, roundId, input, tx)),
+    comment: (scope: ReviewScope, roundId: string, input: unknown, mutation: IntegrationMutation) => execute(scope, mutation, "create_internal_review_comment", { projectId: scope.projectId, roundId, input }, (tx) => deps.service.addInternalComment(scope, roundId, input, tx)),
+    resolve: (scope: ReviewScope, roundId: string, commentId: string, resolved: boolean, mutation: IntegrationMutation) => execute(scope, mutation, resolved ? "resolve_review_comment" : "reopen_review_comment", { projectId: scope.projectId, roundId, commentId }, (tx) => deps.service.resolveComment(scope, roundId, commentId, resolved, tx)),
+    revoke: (scope: ReviewScope, roundId: string, mutation: IntegrationMutation) => execute(scope, mutation, "revoke_review_round", { projectId: scope.projectId, roundId }, (tx) => deps.service.revokeRound(scope, roundId, tx)),
+    retry: (scope: ReviewScope, roundId: string, ledgerId: string, mutation: IntegrationMutation) => execute(scope, mutation, "retry_review_notification", { projectId: scope.projectId, roundId, ledgerId }, (tx) => deps.retry(tx, scope, roundId, ledgerId)),
   };
 }
 export type ReviewsCommands = ReturnType<typeof createReviewsCommands>;

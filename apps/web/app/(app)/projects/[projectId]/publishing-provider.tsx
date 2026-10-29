@@ -78,10 +78,11 @@ import { createPublishingCompositionSession, type PublishingCompositionSession, 
 import { PublishingPosts } from "./publishing-posts";
 import { PanelHeader } from "./panel-header";
 import { PublishingCover } from "./publishing-cover";
-import { isApiError, type Intent } from "@narriflow/api-client";
+import { isApiError, scopedKey, type Intent } from "@narriflow/api-client";
 import { invalidatePublishing, type ProposeInput } from "@narriflow/api-client/publishing";
+import { createExportsClient, exportQueries } from "@narriflow/api-client/exports";
 import { invalidateProject } from "@narriflow/api-client/projects";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useApiRuntime, useWorkspaceScope } from "@/app/_components/api-provider";
 import { apiFailureMessage, browserFailureFromApiError } from "@/lib/publishing-client";
 import { upgradePromptFromFailure } from "@/lib/authenticated-request-browser";
@@ -202,16 +203,41 @@ export function PublishingProvider({
 	const api = useMemo(() => createProjectPublishingApi(runtime.transport, scope, runtime.queryClient), [runtime.transport, scope, runtime.queryClient]);
 	useEffect(() => setPosts(config.initialPosts), [config.initialPosts]);
 	useEffect(() => setNextPostsCursor(config.initialPostsCursor), [config.initialPostsCursor]);
-	const refresh = useCallback(async () => {
-		const live = posts.filter(isLiveSocialPostSnapshot).map((post) => post.id);
-		const batch = nextTrackedPostBatch(live, trackedRefreshOffset.current);
-		const tracked = batch.ids;
-		trackedRefreshOffset.current = batch.nextOffset;
-		const result = await api.activePosts(config.projectId, tracked);
-		const activePosts = socialPostSnapshotSchema.array().parse(result.posts);
-		setPosts((current) => mergeRefreshedPosts(current, activePosts));
+	// Live posts are re-read every 5s while any is in flight, every 30s otherwise,
+	// only while the tab is visible and again when it regains focus. Each answer is
+	// merged into the list; one batch of at most 100 tracked ids per read.
+	const postsRef = useRef(posts);
+	postsRef.current = posts;
+	const hasLivePosts = posts.some(isLiveSocialPostSnapshot);
+	const postPoll = useQuery({
+		queryKey: scopedKey(scope, "publishing", "project-posts-poll", config.projectId) as unknown[],
+		queryFn: async () => {
+			const live = postsRef.current.filter(isLiveSocialPostSnapshot).map((post) => post.id);
+			const batch = nextTrackedPostBatch(live, trackedRefreshOffset.current);
+			trackedRefreshOffset.current = batch.nextOffset;
+			const result = await api.activePosts(config.projectId, batch.ids);
+			return socialPostSnapshotSchema.array().parse(result.posts);
+		},
+		staleTime: 0,
+		retry: false,
+		refetchInterval: hasLivePosts ? 5000 : 30000,
+		refetchOnWindowFocus: true,
+	});
+	// biome-ignore lint/correctness/useExhaustiveDependencies: dataUpdatedAt re-merges an unchanged answer into a list another effect reset.
+	useEffect(() => {
+		if (!postPoll.data) return;
+		const polled = postPoll.data;
+		setPosts((current) => mergeRefreshedPosts(current, polled));
 		setStatusError("");
-	}, [api, config.projectId, posts]);
+	}, [postPoll.data, postPoll.dataUpdatedAt]);
+	// biome-ignore lint/correctness/useExhaustiveDependencies: errorUpdatedAt re-shows the message after each failed read.
+	useEffect(() => {
+		if (postPoll.error) setStatusError("Post status could not be refreshed. Try Refresh.");
+	}, [postPoll.error, postPoll.errorUpdatedAt]);
+	const refetchPosts = postPoll.refetch;
+	const refresh = useCallback(async () => {
+		await refetchPosts({ throwOnError: true });
+	}, [refetchPosts]);
 	const loadOlderPosts = useCallback(async () => {
 		if (!nextPostsCursor) return;
 		const result = await api.olderPosts(config.projectId, nextPostsCursor);
@@ -219,26 +245,6 @@ export function PublishingProvider({
 		setPosts((current) => [...current, ...older.filter((post) => !current.some((existing) => existing.id === post.id))]);
 		setNextPostsCursor(result.nextCursor);
 	}, [api, config.projectId, nextPostsCursor]);
-	useEffect(() => {
-		let alive = true;
-		const tick = () => {
-			if (document.visibilityState === "visible")
-				void refresh().catch(() => {
-					if (alive)
-						setStatusError("Post status could not be refreshed. Try Refresh.");
-				});
-		};
-		const timer = setInterval(
-			tick,
-			posts.some(isLiveSocialPostSnapshot) ? 5000 : 30000,
-		);
-		window.addEventListener("focus", tick);
-		return () => {
-			alive = false;
-			clearInterval(timer);
-			window.removeEventListener("focus", tick);
-		};
-	}, [posts, refresh]);
 	const { openUpgrade } = useUpgrade();
 	const compose = useCallback(
 		(next: string[], preferred?: string) => {
@@ -487,7 +493,6 @@ function PublishingComposer({
 	const setError = session.setError;
 	const setTiming = session.updateTiming;
 	const [activeId, setActiveId] = useState(clips[0]!.id);
-	const [exports, setExports] = useState<ClipExportSnapshot[]>([]);
 	const [options, setOptions] = useState<Record<string, Options>>({});
 	const [optionErrors, setOptionErrors] = useState<Record<string, string>>({});
 	const [slots, setSlots] = useState<
@@ -541,10 +546,30 @@ function PublishingComposer({
 	useEffect(() => {
 		void session.checkSavedCovers(() => api.visualAssets());
 	}, [session, api]);
+	// The Project's current exports, re-read every 5s while the drawer is open (renders finish meanwhile).
+	const exportsClient = useMemo(
+		() => (scope ? createExportsClient(runtime.transport.scoped(scope)) : null),
+		[runtime.transport, scope],
+	);
+	const currentExports = useQuery({
+		...(scope && exportsClient
+			? exportQueries.current(exportsClient, scope, config.projectId)
+			: { queryKey: ["publishing-exports-idle", config.projectId], queryFn: async () => ({ exports: [] }) }),
+		enabled: open && scope !== null,
+		refetchInterval: 5000,
+	});
+	const exports = useMemo<ClipExportSnapshot[]>(
+		() => (currentExports.data ? clipExportSnapshotSchema.array().parse(currentExports.data.exports) : []),
+		[currentExports.data],
+	);
+	const refetchExports = currentExports.refetch;
 	const refreshExports = useCallback(async () => {
-		const response = await api.currentExports(config.projectId);
-		setExports(clipExportSnapshotSchema.array().parse(response.exports));
-	}, [api, config.projectId]);
+		await refetchExports({ throwOnError: true });
+	}, [refetchExports]);
+	// biome-ignore lint/correctness/useExhaustiveDependencies: errorUpdatedAt re-reports each failed read.
+	useEffect(() => {
+		if (currentExports.error) setError(currentExports.error.message);
+	}, [currentExports.error, currentExports.errorUpdatedAt, setError]);
 	const staleRevision = exports.some((item) =>
 		clips.some(
 			(clip) =>
@@ -556,15 +581,6 @@ function PublishingComposer({
 	useEffect(() => {
 		if (staleRevision && scope) void invalidateProject(queryClient, scope, config.projectId);
 	}, [staleRevision, queryClient, scope, config.projectId]);
-	useEffect(() => {
-		if (!open) return;
-		void refreshExports().catch((e) => setError(e.message));
-		const timer = setInterval(
-			() => void refreshExports().catch((e) => setError(e.message)),
-			5000,
-		);
-		return () => clearInterval(timer);
-	}, [open, refreshExports, setError]);
 	useEffect(() => {
 		let alive = true;
 		for (const account of accounts) {

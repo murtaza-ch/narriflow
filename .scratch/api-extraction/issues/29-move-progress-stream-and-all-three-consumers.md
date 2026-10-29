@@ -4,7 +4,7 @@
 
 **Blocked by:** [03 - Build typed client transport and cache scope](03-build-typed-client-transport-and-cache-scope.md), [10 - Convert Project detail composition and panels](10-convert-project-detail-composition-and-panels.md), [16 - Convert upload intake and recipe UI](16-convert-upload-intake-and-recipe-ui.md), [30 - Move exports downloads and delivery pages](30-move-exports-downloads-and-delivery-pages.md)
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Suggested implementer:** Claude. The other pairing side reviews and returns findings to this owner.
 
@@ -139,10 +139,10 @@ Also account for the inventory's cross-domain traps: query-only actions, action 
 
 ## Acceptance criteria
 
-- [ ] Server preserves DB replay/Redis subscribe/catch-up/gap/fallback/bounds, 15s heartbeat with fresh token/membership/status/Project checks and cleanup.
-- [ ] Wire protocol event names/data.seq and authorization control match current schema; one safe revoke then close; HTTP failures checked before parser.
-- [ ] All three exact EventSource sites replaced by shared refcounted fetch/parser owner and 5s trailing/terminal-dedup invalidation.
-- [ ] Scope change/expiry/revocation/Redis loss/reconnect and >60s run verified without reload storms or unbounded memory/connections.
+- [x] Server preserves DB replay/Redis subscribe/catch-up/gap/fallback/bounds, 15s heartbeat with fresh token/membership/status/Project checks and cleanup.
+- [x] Wire protocol event names/data.seq and authorization control match current schema; one safe revoke then close; HTTP failures checked before parser.
+- [x] All three exact EventSource sites replaced by shared refcounted fetch/parser owner and 5s trailing/terminal-dedup invalidation.
+- [x] Scope change/expiry/revocation/Redis loss/reconnect and >60s run verified without reload storms or unbounded memory/connections.
 - [ ] No unowned files changed; paired review findings and verification evidence recorded under Comments.
 
 ## Verification
@@ -161,3 +161,28 @@ Verify the changed flow in the running Next app against the separate API origin.
 ## Comments
 
 Append claim, requested seam changes, paired review and evidence here.
+
+Claimed and implemented by Claude (Sonnet 5.5), 2026-10-29. Paired review not run (last acceptance box left open for the orchestrator). No signed-in browser pass (ticket 32).
+
+### What changed
+- **API** (`apps/api/src/domains/progress`): `GET /api/stream/:projectId` (admission project `content.view`, tier `stream` = 30 starts/min/actor). `stream.ts` is the transport-free core: DB replay, subscribe then post-subscribe catch-up, gap recovery from the log, 15 s fallback polling when live is absent or lost, live buffer bound 1000 (then polling), unread-frame bound 256 (slow client dropped, reconnects from its cursor). `redis.ts` is the ioredis subscriber (bounded retries). Each heartbeat (15 s) calls `runtime.actorsFor(request)` anew (token re-verified, membership/status/Project resolved from scratch) through the policy; first refusal sends one `authorization.revoked` control {error, requestId?} then closes (expired token = `authentication_required`, client reconnects with a fresh token). Three consecutive `authentication_unavailable` checks are tolerated before closing (a Clerk blip is not a sign-out). `disableIdleTimeout` only after admission; drain closer registered (and runs at once if already draining); `API_STREAM_MAX_CONNECTIONS(_PER_ACTOR)` enforced (503 / 429 `too_many_streams`, Retry-After 5).
+- **Wire**: `packages/validators/src/api/progress.ts` (event names, revoke/connected schemas, `parseSinceSeq`, cursor helpers). `connected` no longer carries the internal Redis `channel`.
+- **Client** (`packages/api-client/src/progress`): `createProgressHub` (one `runEventStream` per identity+Workspace+Project, refcounted with 3 s linger, bounded 500-event replay buffer, per-subscriber cursors so late joiners replay and never see duplicates, restart from a lower cursor only when the buffer cannot cover it, fatal/revoked fan-out and slot release), `useProgressStream(runtime, scope, projectId, handlers)`, `decodeProgressMessage` (schema-invalid events skipped, not reconnect loops), `invalidateAfterProgress` / `invalidateAfterTerminalProgress`. The hub owns the cache effects once per connection: non-terminal events -> 5 s leading+trailing throttle (`invalidateProjectClips` incl. `invalidateProject`, ingest snapshot); each terminal identity once (project, clips, collections, usage, exports, dub allowance, ingest snapshot).
+- **Consumers**: `project-events-provider.tsx` (no router; merges refetched history instead of replacing; `key={projectId}`; revoke/fatal -> `invalidateProject` so ticket 10's gates answer), `use-ingest-stream.ts` (same `useIngestStream(projectId, {ingestStatus, errorCode})` shape; resumes after its last applied seq, re-joins when `initial` changes after Retry, leaves on terminal), `export-delivery-client.tsx` (detail is `exportQueries.detail` seeded from the page's first read; 10 s poll only while active; refetch on reconnect and when the tab returns after >10 min because snapshot URLs expire in 15; `exportCommands.createShareLink|revokeShareLinks|retry|timelineSourceGrant`, `fetchTimelineArchive`, `fetchSubtitleFile` (subtitle anchors are now buttons), `invalidateAfterExportChange`).
+- **Also**: `publishing-provider.tsx` post poll (5 s live / 30 s idle, visible-tab only, refetch on focus) and drawer export poll (5 s while open) are `useQuery` `refetchInterval`s; `dubbing-panel.tsx` uses `invalidateWorkspaceUsage`.
+- **Deleted**: `apps/web/app/api/stream/[projectId]/route.ts`, `lib/workflow-stream.ts`, `lib/workflow-stream-authorization.ts`, `lib/workflow-stream-reauthorization.ts` and their tests (moved to the API as `reauthorization.ts`/`reauthorization.test.ts`; revoke recovery moved to client gates).
+
+### Deviations
+- `project-events-provider` does not call `invalidateProject` itself on the throttle/terminal events (request from 10): the shared hub does, once, for all three consumers; the provider calls it only on revoke/fatal.
+- An unreadable revoke control is treated as revoked (old code refreshed the page).
+
+### Requests for other owners
+- **31**: delete `"app/api/stream/[projectId]/route.ts"` from `apps/web/lib/authenticated-request-inventory.ts` (line ~1346) and `"/api/stream(.*)"` from the public-route matcher in `apps/web/proxy.ts`; the API origin owns the stream now.
+- **32** (browser): project page live-updates (Clips tab refresh while a render runs), upload import pill through Retry, export page rendering -> ready with video swap, expired-token reconnect, membership removal recovery, one `/api/stream/:id` request per Project in the Network panel, `Authorization` on it, no `EventSource`.
+
+### Evidence
+- `bun test apps/api/src/domains/progress`: 35 pass (stream core 13, reauthorization/cursor/registry 14, routes 8), live test skipped by default.
+- `LIVE_STREAM_SECONDS=70 bun test src/domains/progress/live.test.ts` (apps/api): pass in 82 s. Real `Bun.serve` (idleTimeout 2 s, quiet gaps 4 s, heartbeat 3 s, token TTL 5 s), real `redis-server` killed at 40 %, real `createApiRuntime` transport + hub with two subscribers: every event once and in order for both, reconnects bounded (one per token expiry, none per idle timeout), `onOpen` count equals server connections, heap growth < 64 MiB, revocation ends with one control/409 and no further connections, `server.pendingRequests` 0 after unsubscribe. 9 s variant also passes.
+- `bun test packages/api-client/src` 220 pass (progress hub 14); `bun test apps/api/src` 785 pass, 23 skip, 0 fail; `bun run --cwd apps/api test:inventory` routes=281 problems=0; `.scratch/api-extraction/db-gate.sh bun run test:authenticated-request-policy:db` 4 pass; web `app/(app)/projects/[projectId]` + `app/(app)/upload` 613 pass.
+- Typecheck: `apps/api`, `packages/api-client`: clean except `domains/rest/public-openapi.ts` (rest owner); `tsc -p apps/web` filtered to my files: clean. `bunx biome check` on all my paths clean.
+- Not done: signed-in browser run (ticket 32); paired review.

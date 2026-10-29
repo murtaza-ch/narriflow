@@ -15,6 +15,8 @@ import {
   type ReviewHandoffExport,
 } from "./review.service";
 import { workspaceService } from "./workspace.service";
+import * as db from "@narriflow/db/client";
+import * as storage from "./r2-storage";
 
 describe("review guest security primitives", () => {
   const secret = "s".repeat(64);
@@ -141,6 +143,25 @@ describe("assistant review handoff", () => {
 
 describe("review media authorization", () => {
   afterEach(() => { mock.restore(); });
+  test("playback grants last 15 minutes and never outlive the session or round", async () => {
+    const itemId = crypto.randomUUID(); const variantId = crypto.randomUUID();
+    const now = Date.now();
+    spyOn(Date, "now").mockReturnValue(now);
+    const presign = spyOn(storage, "presignDownloadUrl").mockResolvedValue("https://storage.test/signed");
+    spyOn(db, "getPrismaClient").mockReturnValue({ clipExportVariant: { findUnique: async () => ({ storageKey: "frozen-media" }) } } as never);
+    const room = spyOn(reviewService, "readRound");
+    for (const remaining of [3600, 120, 2]) {
+      const exp = Math.floor(now / 1000) + remaining;
+      room.mockResolvedValue({ claims: { exp }, round: { expiresAt: null, items: [{ id: itemId, selectedVariantIds: [variantId], export: { variants: [{ id: variantId, status: "completed" }] } }] } } as never);
+      const grant = await reviewService.resolveMedia("session", "secret", itemId, variantId);
+      const ttl = Math.min(900, Math.floor(exp - now / 1000));
+      expect(presign.mock.calls.at(-1)?.[0]).toMatchObject({ expiresIn: ttl });
+      expect(Date.parse(grant.expiresAt)).toBe(now + ttl * 1000);
+      expect(Date.parse(grant.expiresAt)).toBeLessThanOrEqual(exp * 1000);
+    }
+    room.mockResolvedValue({ claims: { exp: Math.floor(now / 1000) + 3600 }, round: { expiresAt: new Date(now + 90_000), items: [{ id: itemId, selectedVariantIds: [variantId], export: { variants: [{ id: variantId, status: "completed" }] } }] } } as never);
+    expect(Date.parse((await reviewService.resolveMedia("session", "secret", itemId, variantId)).expiresAt)).toBe(now + 90_000);
+  });
   test("download disabled, unselected and incomplete variants cannot receive grants", async () => {
     const itemId = crypto.randomUUID(); const selected = crypto.randomUUID(); const unselected = crypto.randomUUID();
     const round = { allowDownloads: false, items: [{ id: itemId, selectedVariantIds: [selected], export: { variants: [{ id: selected, status: "pending" }, { id: unselected, status: "completed" }] } }] };

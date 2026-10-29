@@ -1,31 +1,40 @@
-export type WorkflowStreamReauthorizationResult =
+import type { AuthenticatedRequestResult } from "../../http/request-policy";
+
+export type ReauthorizationResult =
   | { ok: true }
   | { ok: false; error: string; requestId?: string };
 
-export function workflowStreamAuthorizationResult(
+/** The stable failure code and request ID of a refused re-check; nothing else about the refusal is exposed. */
+export function reauthorizationResult(
   result: AuthenticatedRequestResult<unknown>,
-): WorkflowStreamReauthorizationResult {
+): ReauthorizationResult {
   return result.ok
     ? { ok: true }
-    : {
-        ok: false,
-        error: result.failure.code,
-        requestId: result.requestId,
-      };
+    : { ok: false, error: result.failure.code, requestId: result.requestId };
 }
 
-export function createWorkflowStreamReauthorizationGuard(dependencies: {
-  authorize(): Promise<WorkflowStreamReauthorizationResult>;
+export interface ReauthorizationControl {
+  error: string;
+  requestId?: string;
+}
+
+/**
+ * Serializes the stream's periodic access checks. A check in flight absorbs
+ * further calls; the first refusal (or unexpected failure) sends exactly one
+ * control event, cleans up and closes, and every later call is a no-op.
+ */
+export function createReauthorizationGuard(dependencies: {
+  authorize(): Promise<ReauthorizationResult>;
   onAuthorized(): void;
-  onRevoked(control: { error: string; requestId?: string }): void;
+  onRevoked(control: ReauthorizationControl): void;
   cleanup(): void;
   close(): void;
-  unexpectedControl(error: unknown): { error: string; requestId?: string };
+  unexpectedControl(error: unknown): ReauthorizationControl;
 }) {
   let active = true;
   let inFlight: Promise<void> | null = null;
 
-  function revoke(control: { error: string; requestId?: string }) {
+  function revoke(control: ReauthorizationControl) {
     if (!active) return;
     active = false;
     try {
@@ -64,4 +73,3 @@ export function createWorkflowStreamReauthorizationGuard(dependencies: {
     },
   };
 }
-import type { AuthenticatedRequestResult } from "./authenticated-request-policy";

@@ -10,7 +10,7 @@ built and tested on its own. Users guide: `apps/web/content/docs/api/zapier.mdx`
 
 | Kind | Name | REST calls |
 | --- | --- | --- |
-| Authentication | Workspace API key as a Bearer token, plus a `Narriflow URL` field (default `http://localhost:4000`) | `GET /workspace` tests the key and labels the connection with the Workspace name |
+| Authentication | Workspace API key as a Bearer token, plus a `Narriflow URL` field (required API origin) | `GET /workspace` tests the key and labels the connection with the Workspace name |
 | Trigger | Clips Ready | `GET /events` (`operation.finished`, generation `completed` or `partial`), then `GET /projects/{id}` and `GET /projects/{id}/clips` |
 | Trigger | Export Finished | `GET /events` (`operation.finished`, export `completed` or `partial`), then `GET /operations/{id}` |
 | Trigger | Finishing Ready | `GET /events` (`finishing.finished`, `ready` or `partial`), then `GET /projects/{id}` |
@@ -80,7 +80,7 @@ on, which is how a key without `publishing:read` surfaces on the two post trigge
 Everything else is a Zapier error with the API's `error` code, `message` and
 `requestId`.
 
-**The URL is a connection field.** `Narriflow URL` defaults to the local API origin. It
+**The URL is a connection field.** `Narriflow URL` is required and has no default. It
 accepts a pasted API origin or API URL, and it must be `https://` except for
 `localhost`. Point a connection at the deployed dev API to test against dev.
 
@@ -149,4 +149,4 @@ owner's approval. Zapier's current publishing checklist governs; expect to need:
 Decide on OAuth before applying: the REST API accepts Workspace API keys only
 today.
 
-The default API origin is `http://localhost:4000` for local development. Hosted Make and Zapier connections must use the configured public HTTPS API origin. Existing connections using the web origin must update their Narriflow URL at cutover. Human review and queue links remain on the web origin.
+Narriflow URL is required configuration with no default. Enter the public HTTPS API origin for hosted Make and Zapier connections. The documented placeholder `https://configure-api-origin.invalid` deliberately cannot connect; the cutover ticket assigns the final hostname. For local testing, explicitly enter `http://localhost:4000`. Existing connections using the web origin must update their Narriflow URL at cutover. Human review and queue links remain on the web origin.

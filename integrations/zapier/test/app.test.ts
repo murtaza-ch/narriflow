@@ -53,13 +53,13 @@ describe('app definition', () => {
     }
   });
 
-  it('authenticates with an API key and a configurable URL that defaults to the local API origin', () => {
+  it('authenticates with an API key and a required API origin without a default', () => {
     assert.equal(app.authentication.type, 'custom');
     const [apiKey, baseUrl] = app.authentication.fields;
     assert.equal(apiKey.key, 'apiKey');
     assert.equal(apiKey.type, 'password');
     assert.equal(baseUrl.key, 'baseUrl');
-    assert.equal(baseUrl.default, 'http://localhost:4000');
-    assert.notEqual(baseUrl.required, true);
+    assert.equal(baseUrl.default, undefined);
+    assert.equal(baseUrl.required, true);
   });
 });

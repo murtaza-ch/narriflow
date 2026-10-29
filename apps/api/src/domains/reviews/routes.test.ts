@@ -94,15 +94,42 @@ describe("review HTTP migration", () => {
     expect((await request(limited.app, "/share/signed")).status).toBe(429);
     expect((await request(limited.app, `/review/${token}/access`, "POST", {})).status).toBe(429);
   });
+  test("400 media variants and downloads have separate IP budgets from room, share and opt-out reads", async () => {
+    const buckets = new Map<string, { count: number; limit: number }>();
+    const resolveMedia = mock(async () => ({ url: "https://storage.test/signed", expiresAt: new Date(Date.now() + 900_000).toISOString() }));
+    const { app } = setup({ reviewService: { ...reviewService, resolveMedia, authorizeSession: async () => {}, readRound: async () => ({ claims: { identity: "Client", guestId: uuid, subject: "subject" }, round: { id: uuid, title: "Review", message: null, project: { title: "Project" }, workspace: { name: "Studio" }, revision: 1, status: "open", revokedAt: null, expiresAt: null, decision: null, allowDownloads: true, approvalRequired: false, items: [], comments: [] } }) } as never,
+      rateLimit: async ({ key, limit }) => { const bucket = buckets.get(key) ?? { count: 0, limit }; bucket.count++; buckets.set(key, bucket); return { allowed: bucket.count <= limit, availability: "available" }; },
+    });
+    const headers = { authorization: `Bearer ${session}` };
+    for (let i = 0; i < 400; i++) {
+      expect((await request(app, `/review/${token}/media/${uuid}/${uuid}`, "GET", undefined, headers)).status).toBe(200);
+      expect((await request(app, `/review/${token}/download/${uuid}/${uuid}`, "GET", undefined, headers)).status).toBe(200);
+    }
+    expect((await request(app, "/share/signed")).status).toBe(404);
+    expect((await request(app, "/review/opt-out?token=signed")).status).toBe(200);
+    expect((await request(app, `/review/${token}`, "GET", undefined, headers)).status).toBe(200);
+    expect(buckets.get("review-media:trusted-ip")).toEqual({ count: 400, limit: 2400 });
+    expect(buckets.get("review-download:trusted-ip")).toEqual({ count: 400, limit: 800 });
+    expect(buckets.get("review-room:trusted-ip")?.limit).toBe(120);
+    expect(buckets.get("review-share:trusted-ip")?.limit).toBe(120);
+    expect(buckets.get("review-opt-out:trusted-ip")?.limit).toBe(60);
+  });
   test("public reads omit private variant data and offer only completed downloadable media", async () => {
     const exported = { id: uuid, projectId: uuid, clipId: uuid, clipTitle: "Clip", projectTitle: "Project", editorRevision: 1, currentEditorRevision: 1, isOlderVersion: false, resolution: "1080p", watermark: false, status: "ready", progress: 100, errorCode: null, createdAt: new Date().toISOString(), completedAt: null,
       privateToken: "must-not-leak", variants: [
-        { id: uuid, aspectRatio: "9:16", resolution: "1080p", watermark: false, status: "completed", sizeBytes: 123, durationSec: 10, errorCode: null, hasAsset: true, previewUrl: null, downloadUrl: "https://storage.test/download", completedAt: null, storageKey: "must-not-leak" },
+        { id: uuid, aspectRatio: "9:16", resolution: "1080p", watermark: false, status: "completed", sizeBytes: 123, durationSec: 10, errorCode: null, hasAsset: true, previewUrl: null, downloadUrl: `https://storage.test/download?X-Amz-Date=${new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "")}&X-Amz-Expires=900`, completedAt: null, storageKey: "must-not-leak" },
         { id: uuid, status: "pending", hasAsset: false },
       ] };
     const { app } = setup({ sharedExport: async () => exported as never });
     const response = await request(app, "/share/public-token"); expect(response.status).toBe(200);
     const body = await response.json(); expect(body.variants).toHaveLength(1); expect(body.expiresAt).toBeString(); expect(JSON.stringify(body)).not.toContain("must-not-leak");
+    expect(Date.parse(body.expiresAt) - Date.now()).toBeGreaterThan(14 * 60_000);
+    expect(Date.parse(body.expiresAt) - Date.now()).toBeLessThan(15 * 60_000);
+    // Project retention can clamp R2 URLs below the normal 15-minute lifetime.
+    exported.variants[0]!.downloadUrl = exported.variants[0]!.downloadUrl!.replace("X-Amz-Expires=900", "X-Amz-Expires=120");
+    const shortened = await (await request(app, "/share/public-token")).json();
+    expect(Date.parse(shortened.expiresAt) - Date.now()).toBeGreaterThan(80_000);
+    expect(Date.parse(shortened.expiresAt) - Date.now()).toBeLessThan(90_000);
     const room = guestRoom({ claims: { identity: "Client", guestId: uuid, subject: "secret" }, round: { id: uuid, title: "Review", message: null, project: { title: "Project" }, workspace: { name: "Studio" }, revision: 1, status: "open", revokedAt: null, expiresAt: null, decision: null, allowDownloads: false, approvalRequired: true, items: [], comments: [], deliveryTokenEncrypted: "must-not-leak", recipientEmails: ["private@example.test"] } } as never);
     expect(JSON.stringify(room)).not.toContain("must-not-leak"); expect(JSON.stringify(room)).not.toContain("private@example.test");
   });

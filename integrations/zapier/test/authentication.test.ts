@@ -60,9 +60,8 @@ describe('authentication', () => {
 describe('Narriflow URL', () => {
   const root = (baseUrl?: string) => apiRoot({ errors: (zapier as any).errors } as never, { authData: { baseUrl } } as never);
 
-  it('defaults to the local API origin', () => {
-    assert.equal(root(undefined), 'http://localhost:4000/api/v1');
-    assert.equal(root(''), 'http://localhost:4000/api/v1');
+  it('requires an explicitly configured API origin', () => {
+    for (const value of [undefined, '', '   ']) assert.throws(() => root(value), (err) => zapierError(err).code === 'api_origin_required');
   });
 
   it('accepts a dev origin however it was pasted', () => {

@@ -466,7 +466,7 @@ Rows retain their section/ordinal or exact source-line identifier from the indep
 - [x] Deterministic generated OpenAPI JSON is consumed by docs without loading runtime/services/provider secrets; regeneration check compares normalized servers.
 - [x] Docs search stays web/content-only with existing scoring/snippets/results; playground and connector page advertise/call API.
 - [x] Snapshots/tests move with REST and callback SSRF/DNS protection is retained.
-- [ ] No unowned files changed; paired review findings and verification evidence recorded under Comments.
+- [x] No unowned files changed; paired review findings and verification evidence recorded under Comments.
 
 ## Verification
 
@@ -515,3 +515,13 @@ Final handoff status: implementation complete, ticket **blocked on compile/build
 Full API/API-client/web typechecks were attempted but did not finish under heavy shared compiler/memory contention. I stopped my remaining compiler processes after verifying their exact parent/command; an isolated owned-file TypeScript project also stalled and was stopped. No full typecheck success is claimed for those three packages. Validators and Zapier typechecks passed. The web build ended with exit 143 during compilation. Claude/31 must rerun full package typechecks and web build after the parallel compiler load subsides, then complete paired review and close the remaining checkbox. The earlier ticket 27 `guest-replay-child.ts` diagnostic was unowned; no unrelated file was changed to address it.
 
 Requests remain exactly as listed above: 31 updates the integration DB runner/parity test imports and central artifact CI/build wiring; 31/32 selects the public HTTPS API hostname and replaces integration local defaults at cutover. The accidental termination of the other compiler process is also recorded above so its owner can rerun that check. There is no known remaining REST behavior failure.
+
+- Sol claimed the paired-review fixes on 2026-10-29. No commits, env changes or dependency installs; concurrent 28/29 source ownership retained.
+
+### Sol paired-review resolution, 2026-10-29
+
+- Findings and decisions are recorded per finding in [the paired review's Resolution (Sol)](../review-claude-sol-tickets.md#resolution-sol). Both API type errors are fixed without an install; all seven internal review receipt names now obey the registry naming rule.
+- Final scoped tests: 329 pass, 17 DB-only skips, no failures; Zapier 74 pass and Make 13 pass. API, API-client, services and Zapier typechecks pass. OpenAPI still matches all 31 operations. Scoped Biome checks all 15 supported changed code files clean; integrations are excluded by the repository configuration and pass their own checks.
+- All DB commands used `db-gate.sh` against local disposable PostgreSQL only. Policy gate 4 pass; review replay gate 6 pass; moved REST/MCP parity gate 7 pass. The top-level integration gate passed 148 service tests then failed solely on its deleted web REST suite path. Ticket 31 must replace `apps/web/lib/rest-api/events.db.test.ts` with `apps/api/src/domains/rest/events.db.test.ts` in `packages/services/scripts/run-integration-api-db-tests.ts` and rerun the command. No unowned runner edited.
+- This review pass fixes REST fallthrough, OpenAPI-suffix auth, malformed-operation validation and vendor JSON. Zapier/Make require an explicit API origin with no default; saved incomplete Make connections fail against the documented `https://configure-api-origin.invalid` placeholder. Ticket 31/32 must assign the public hostname and reconnect old web-origin connections. M4 docs-page hard-coding remains with 31.
+- Status remains blocked only on the previously outstanding required web build and the central integration runner correction/integrated cutover checks. This scoped review work and its requested typechecks/tests are complete. No web source/build touched in this pass.

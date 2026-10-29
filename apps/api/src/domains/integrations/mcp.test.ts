@@ -40,6 +40,21 @@ function harness() {
 }
 
 describe("API MCP transport", () => {
+  test("non-production accepts each loopback host without widening the canonical resource", async () => {
+    const auth = createMcpAuth(config, { CLERK_OAUTH_ISSUER: issuerUrl });
+    for (const host of ["localhost", "127.0.0.1", "[::1]"]) expect(auth.allowedHosts).toContain(host);
+    expect(auth.resourceUrl).toBe(`${apiOrigin}/mcp`);
+    const production = createMcpAuth({ ...config, nodeEnv: "production" }, { CLERK_OAUTH_ISSUER: issuerUrl });
+    for (const host of ["localhost", "127.0.0.1", "[::1]"]) expect(production.allowedHosts).not.toContain(host);
+  });
+  test("missing issuer refuses protected-resource discovery with public CORS", async () => {
+    const auth = createMcpAuth(config, {});
+    const app = createMcpTransportRoutes({ ...auth, handleMcp: async () => new Response(), handleUpload: async () => new Response() });
+    const response = await request(app, `${apiOrigin}/.well-known/oauth-protected-resource`);
+    expect(response.status).toBe(502);
+    expect(await response.json()).toEqual({ error: "protected_resource_metadata_unavailable" });
+    expect(response.headers.get("Access-Control-Allow-Origin")).toBe("*");
+  });
   test("both protected-resource paths advertise exactly A/mcp and keep Clerk's issuer", async () => {
     const h = harness();
     for (const path of ["/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource/mcp"]) {

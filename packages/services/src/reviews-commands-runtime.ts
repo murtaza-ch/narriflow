@@ -13,7 +13,7 @@ export const reviewsCommands = createReviewsCommands({
   service: reviewService,
   async authorize(scope, command) {
     const actor = await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "review.manage");
-    if (command === "review.round.create" || command === "review.reviewers.invite") requirePlanFeature(actor.pricingTier, "review.rooms");
+    if (command === "create_review_round" || command === "invite_reviewers") requirePlanFeature(actor.pricingTier, "review.rooms");
     const project = await getPrismaClient()?.project.findFirst({ where: { id: scope.projectId, workspaceId: scope.workspaceId, ...accessibleProjectWhere() }, select: { id: true } });
     if (!project) throw new ReviewServiceError("review_project_not_found", "Project was not found");
   },

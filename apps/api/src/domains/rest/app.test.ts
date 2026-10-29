@@ -95,6 +95,48 @@ describe("REST v1 OpenAPI document", () => {
 });
 
 describe("REST v1 authentication and admission", () => {
+  test("an OpenAPI suffix on another route still requires API-key authentication", async () => {
+    const { call } = harness();
+    for (const path of ["/projects/openapi.json", "/recipes/openapi.json"]) {
+      const response = await call(path, { key: null });
+      expect(response.status).toBe(401);
+      expect(await response.json()).toMatchObject({ error: "authentication_required" });
+    }
+  });
+
+  test("unknown REST paths terminate before the first-party middleware", async () => {
+    const { app, call } = harness();
+    let firstPartyCalls = 0;
+    app.use("/api/*", (c) => { firstPartyCalls++; return c.json({ error: "first_party" }, 415); });
+    for (const method of ["GET", "POST"]) {
+      const response = await call("/unknown/path", { method });
+      expect(response.status).toBe(404);
+      expect(await response.json()).toMatchObject({ error: "route_not_found" });
+    }
+    expect(firstPartyCalls).toBe(0);
+  });
+
+  test("malformed operation IDs fail validation after scope and Workspace admission", async () => {
+    const { call, requireActor } = harness();
+    for (const [path, method] of [["/operations/op_bad", "GET"], ["/operations/op_bad/callback/redeliver", "POST"]]) {
+      const response = await call(path!, { method, idempotencyKey: "redeliver" });
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({ error: "invalid_request" });
+    }
+    expect(requireActor).toHaveBeenCalledTimes(2);
+    const refused = await harness({ scopes: [] }).call("/operations/op_bad");
+    expect(refused.status).toBe(403);
+    expect(await refused.json()).toMatchObject({ error: "scope_required" });
+  });
+
+  test("vendor JSON content types reach the ordinary body validator", async () => {
+    const intake = spy(projectService, "queueLinkIngest").mockResolvedValue(linkIntake() as never);
+    const { call } = harness();
+    const response = await call("/projects", { method: "POST", idempotencyKey: "vendor-json", headers: { "content-type": "application/vnd.narriflow+json; charset=utf-8" }, body: JSON.stringify({ url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ" }) });
+    expect(response.status).toBe(202);
+    expect(intake).toHaveBeenCalledTimes(1);
+  });
+
   test("requires a Bearer API key", async () => {
     const { call } = harness();
     for (const header of [null, "Basic abc", "Bearer not-a-key"]) {
@@ -471,7 +513,7 @@ describe("REST v1 operations", () => {
     expect(allowed.status).toBe(200);
     expect(await allowed.json()).toMatchObject({ operationId, kind: "export", state: "completed", results: { exportId: EXPORT_ID } });
     expect(read).toHaveBeenCalledWith(expect.anything(), { kind: "export", id: EXPORT_ID });
-    expect((await harness().call("/operations/op_notanoperationidvalue12")).status).toBe(404);
+    expect((await harness().call("/operations/op_notanoperationidvalue12")).status).toBe(400);
   });
 
   test("redelivery needs the original mutation's scope and an Idempotency-Key", async () => {

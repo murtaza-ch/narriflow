@@ -1,7 +1,7 @@
 import type { Bundle, ZObject } from 'zapier-platform-core';
 
-/** Local API default. Hosted connections configure their public HTTPS API origin. */
-export const DEFAULT_BASE_URL = 'http://localhost:4000';
+/** Documentation example only; connections must configure their API origin. */
+export const API_ORIGIN_PLACEHOLDER = 'https://configure-api-origin.invalid';
 
 type Query = Record<string, string | number | boolean | undefined>;
 
@@ -36,11 +36,12 @@ type Connection = Pick<Bundle, 'authData'>;
 /** `https://host/api/v1` for the connection's Narriflow URL. */
 export function apiRoot(z: ZObject, bundle: Connection): string {
   const configured = String(bundle.authData?.baseUrl ?? '').trim();
+  if (!configured) throw new z.errors.Error('Set Narriflow URL to your public HTTPS API origin before connecting.', 'api_origin_required', 400);
   let url: URL;
   try {
-    url = new URL(configured || DEFAULT_BASE_URL);
+    url = new URL(configured);
   } catch {
-    throw new z.errors.Error(`"${configured}" is not a URL. Use an address such as ${DEFAULT_BASE_URL}.`, 'invalid_base_url', 400);
+    throw new z.errors.Error(`"${configured}" is not a URL. Replace ${API_ORIGIN_PLACEHOLDER} with your API origin.`, 'invalid_base_url', 400);
   }
   const local = url.hostname === 'localhost' || url.hostname === '127.0.0.1';
   if (url.protocol !== 'https:' && !(local && url.protocol === 'http:')) {

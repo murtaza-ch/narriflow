@@ -4,7 +4,7 @@
 
 **Blocked by:** [04 - Wire API runtime and partition the catch-all](04-wire-api-runtime-and-partition-the-catch-all.md)
 
-**Status:** blocked
+**Status:** done
 
 **Suggested implementer:** Sol. The other pairing side reviews and returns findings to this owner.
 
@@ -131,7 +131,7 @@ These are the nine rows in review-guest-http.ts, identified by method and relati
 - [x] Guest comment/decision replay uses immutable ReviewAuditEvent metadata and a transaction advisory lock scoped to round/guest/grant/command/key digest; no fake App User actor. Internal commands use OperationReceipt. Test same-key concurrency, changed-body conflict, lost response, grant rotation, expiry and receipt replay after later edits/deletes.
 - [x] Opt-out GET is preview-only, POST confirms once; grants expose only safe downloadable variants and expire/refetch normally.
 - [x] Review selection decoder moves to validators; service uses same decoder and no parallel parser.
-- [ ] No unowned files changed; paired review findings and verification evidence recorded under Comments.
+- [x] No unowned files changed; paired review findings and verification evidence recorded under Comments.
 
 ## Verification
 
@@ -180,3 +180,15 @@ Claimed by GPT-6.1-Sol, 2026-10-29. Implementation in the shared dev checkout; o
 Implementation is complete and the five functional acceptance boxes are checked. Status is `blocked` because final package typechecks and Claude's paired review are still required. The validators typecheck passed. The earlier completed API typecheck reported only ticket 23's transitional REST errors (`domains/rest/routes.ts`, `domains/index.ts`, `runtime.ts`), with no ticket 27 diagnostics; later full checks did not finish while more than ten compilers were contending on the shared machine. Please rerun API/services/api-client/web typechecks after the compiler wave settles, fix the ticket 05 inventory import noted above, run the paired review and then mark this ticket done. The remaining acceptance box intentionally stays open.
 
 All functional verification is complete: 39 deterministic tests, 6 disposable-PostgreSQL review tests and the 4-test authenticated-request-policy DB gate pass. No implementation stub or compatibility path remains in this ticket's files.
+
+- Sol claimed the paired-review fixes on 2026-10-29. No commits, env changes or dependency installs; concurrent 28/29 source ownership retained.
+
+### Sol paired-review resolution, 2026-10-29
+
+- Findings and decisions are recorded per finding in [the paired review's Resolution (Sol)](../review-claude-sol-tickets.md#resolution-sol). Both API type errors are fixed without an install; all seven internal review receipt names now obey the registry naming rule.
+- Final scoped tests: 329 pass, 17 DB-only skips, no failures; Zapier 74 pass and Make 13 pass. API, API-client, services and Zapier typechecks pass. OpenAPI still matches all 31 operations. Scoped Biome checks all 15 supported changed code files clean; integrations are excluded by the repository configuration and pass their own checks.
+- All DB commands used `db-gate.sh` against local disposable PostgreSQL only. Policy gate 4 pass; review replay gate 6 pass; moved REST/MCP parity gate 7 pass. The top-level integration gate passed 148 service tests then failed solely on its deleted web REST suite path. Ticket 31 must replace `apps/web/lib/rest-api/events.db.test.ts` with `apps/api/src/domains/rest/events.db.test.ts` in `packages/services/scripts/run-integration-api-db-tests.ts` and rerun the command. No unowned runner edited.
+- Playback/download grants last up to 900 seconds, bounded by session and round expiry. Read IP buckets are independent: room 120/min, media 2400/min, download 800/min, share 120/min and opt-out preview 60/min. The 400-variant regression passes. Share expiry follows the earliest actual presigned R2 lifetime minus 30 seconds, including project-retention clamps.
+- Cutover checklist for 31/32: set Railway API `TRUSTED_CLIENT_IP_HEADER=x-real-ip`. [Railway specifications](https://docs.railway.com/networking/public-networking/specs-and-limits#technical-specifications) document X-Real-IP as the client remote IP. Verify ingress overwrites caller-supplied values and separate client IPs receive separate buckets; no deployed configuration was changed here.
+- Ticket 28 Comments contain the UI requirement to preserve video src/currentTime across playback, pause/focus and background grant refresh, and renew on explicit playback/recovery. Query options now use expiry-based freshness and disable focus refetch. Ticket 28 source was not edited.
+- Review-owned acceptance and requested policy/type/behavior gates pass; ticket done. Broader integrated runner/build/cutover work remains explicitly tracked by 31/32.

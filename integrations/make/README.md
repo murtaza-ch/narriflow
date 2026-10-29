@@ -11,7 +11,7 @@ build step because Make interprets the files. Users guide:
 
 | Kind | Name | REST calls |
 | --- | --- | --- |
-| Connection | Workspace API key as a Bearer token, plus an advanced `Narriflow URL` (default `http://localhost:4000`) | `GET /workspace` tests the key and labels the connection with the Workspace name |
+| Connection | Workspace API key as a Bearer token, plus a required `Narriflow URL` API origin | `GET /workspace` tests the key and labels the connection with the Workspace name |
 | Trigger | Watch events | `GET /events` for the chosen types (`operation.finished`, `finishing.finished`, `autopilot.episode_imported`, `social_post.finished`) |
 | Action | Submit a video link | `POST /projects` |
 | Action | Generate clips | `POST /projects/{id}/generations` |
@@ -182,9 +182,7 @@ demand. Make's current review process (developers.make.com, App review) works li
   in search modules, triggers and RPCs wherever the API supports them. The trigger and
   both RPCs have a limit; Get export download has none yet, and the API does not
   paginate it.
-- **Only the credentials the service requires.** The advanced `Narriflow URL` field is
-  for development. Remove it, and hard-code your deployed API origin in the base
-  and the connection, before requesting a review.
+- **Only the credentials the service requires.** The required `Narriflow URL` field selects the API deployment. Before requesting a review, the cutover owner must select the public hostname and decide whether to retain deployment selection or use that origin in the base and connection.
 - **Test scenarios.** One scenario that runs every module without errors, plus one that
   produces an error, with execution logs that hold no personal data. Re-run them right
   before the request: log retention is short and the reviewer cannot see old logs.
@@ -199,4 +197,4 @@ demand. Make's current review process (developers.make.com, App review) works li
 
 Decide on OAuth before applying: the REST API accepts Workspace API keys only today.
 
-The default API origin is `http://localhost:4000` for local development. Hosted Make and Zapier connections must use the configured public HTTPS API origin. Existing connections using the web origin must update their Narriflow URL at cutover. Human review and queue links remain on the web origin.
+Narriflow URL is required configuration with no default. Enter the public HTTPS API origin for hosted Make and Zapier connections. The documented placeholder `https://configure-api-origin.invalid` deliberately cannot connect; the cutover ticket assigns the final hostname. For local testing, explicitly enter `http://localhost:4000`. Existing connections using the web origin must update their Narriflow URL at cutover. Human review and queue links remain on the web origin.

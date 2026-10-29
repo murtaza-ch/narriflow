@@ -145,6 +145,13 @@ test('the base authenticates every request and keeps the key out of logs', () =>
   const connection = json('connections/narriflow/narriflow.communication.iml.json');
   assert.match(connection.url, /\/api\/v1\/workspace$/);
   assert.deepEqual(connection.log.sanitize, ['request.headers.authorization']);
+  const origin = json('connections/narriflow/narriflow.params.iml.json').find((field) => field.name === 'baseUrl');
+  assert.equal(origin.required, true);
+  assert.equal(origin.default, undefined);
+  for (const url of [base.baseUrl, connection.url]) {
+    assert.match(url, /https:\/\/configure-api-origin\.invalid/);
+    assert.doesNotMatch(url, /localhost/);
+  }
 });
 
 test('the trigger reads forward from a persisted cursor and never combines it with order=desc', () => {
@@ -236,5 +243,5 @@ test('the export download search returns one bundle for each format', () => {
 test('the universal module keeps requests on the connection’s host', () => {
   const call = json(manifest.components.module.makeAnApiCall.codeFiles.communication);
   // The path always follows a `/` after the host, so a pasted `@host` or `.host` cannot change it.
-  assert.match(call.url, /^\{\{ifempty\(connection\.baseUrl, 'http:\/\/localhost:4000'\)\}\}\/\{\{parameters\.url\}\}$/);
+  assert.match(call.url, /^\{\{ifempty\(connection\.baseUrl, 'https:\/\/configure-api-origin\.invalid'\)\}\}\/\{\{parameters\.url\}\}$/);
 });

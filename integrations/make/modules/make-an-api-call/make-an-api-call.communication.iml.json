@@ -1,5 +1,5 @@
 {
-    "url": "{{ifempty(connection.baseUrl, 'http://localhost:4000')}}/{{parameters.url}}",
+    "url": "{{ifempty(connection.baseUrl, 'https://configure-api-origin.invalid')}}/{{parameters.url}}",
     "method": "{{parameters.method}}",
     "headers": {
         "{{...}}": "{{toCollection(parameters.headers, 'key', 'value')}}"

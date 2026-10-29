@@ -25,7 +25,13 @@ const discoveryHeaders = {
 export function createMcpTransportRoutes(deps: McpTransportDeps) {
   let cached: { expiresAt: number; document: unknown } | undefined;
   const now = deps.now ?? Date.now;
-  const discovery = () => Response.json(deps.protectedResourceMetadata(), { headers: discoveryHeaders });
+  const discovery = () => {
+    try {
+      return Response.json(deps.protectedResourceMetadata(), { headers: discoveryHeaders });
+    } catch {
+      return Response.json({ error: "protected_resource_metadata_unavailable" }, { status: 502, headers: discoveryHeaders });
+    }
+  };
   const options = () => new Response(null, { status: 204, headers: discoveryHeaders });
   const authorization = async () => {
     try {

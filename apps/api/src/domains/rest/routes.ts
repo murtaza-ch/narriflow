@@ -173,13 +173,12 @@ export function createRestOpenApiRoutes(dependencies: RestRouteDeps) {
     exposeHeaders: ["X-Request-Id", "Retry-After", "Idempotent-Replayed", "RateLimit-Limit", "RateLimit-Remaining"],
     credentials: false,
   }));
-  app.use("*", limitBody("control") as MiddlewareHandler<Env>);
+  app.use("*", limitBody("control") as unknown as MiddlewareHandler<Env>);
   app.get("/openapi.json", (c) => c.json(restOpenApiDocument(app, apiOrigin())));
 
   // Authentication: the key is the Workspace. Membership, role, and plan are
   // rechecked by admission on every request.
   app.use("*", async (c, next) => {
-    if (c.req.path.endsWith("/openapi.json")) return next();
     const header = c.req.header("authorization") ?? "";
     const match = /^Bearer (nf_[A-Za-z0-9_-]+)$/.exec(header);
     const challenge = { "WWW-Authenticate": 'Bearer realm="narriflow"' };
@@ -215,8 +214,6 @@ export function createRestOpenApiRoutes(dependencies: RestRouteDeps) {
     return respond(500, { error: "internal_error", message: "Narriflow could not complete this request. Retry with the same idempotency key, or contact support with the request ID." });
   });
 
-  app.notFound((c) => { throw new RestFailure(404, "route_not_found", `No ${c.req.method} ${c.req.path} endpoint exists`); });
-
   const requireActor = (c: RestContext) => c.get("restActor");
   function route<const R extends RouteConfig>(config: R) {
     const endpoint = `${config.method.toUpperCase()} ${config.path}` as RestEndpoint;
@@ -228,10 +225,10 @@ export function createRestOpenApiRoutes(dependencies: RestRouteDeps) {
       }
       const command = REST_ENDPOINT_COMMANDS[endpoint];
       const operation = endpoint === "GET /operations/{id}" || endpoint === "POST /operations/{id}/callback/redeliver"
-        ? decodeOperation(c.req.param("id") ?? "") : undefined;
+        ? decodeOperationId(c.req.param("id") ?? "") : undefined;
       const scope = operation ? (command === "get_operation" ? operationReadScope(operation.kind) : operationWriteScope(operation.kind)) : undefined;
       c.set("restActor", await admission.requireWorkspace(command, c.get("restPrincipal"), { surface: "rest", scope }));
-      if (config.request?.body && c.req.header("content-type")?.split(";")[0]?.trim().toLowerCase() !== "application/json") {
+      if (config.request?.body && !/^application\/(?:[a-z0-9!#$&^_.+-]+\+)?json$/i.test(c.req.header("content-type")?.split(";")[0]?.trim() ?? "")) {
         throw new RestFailure(400, "invalid_request", "Send the request body as application/json");
       }
       await next();
@@ -290,11 +287,11 @@ export function createRestOpenApiRoutes(dependencies: RestRouteDeps) {
   };
   const decodeOperation = (value: string) => {
     const operation = decodeOperationId(value);
-    if (!operation) throw new ExpectedDomainFailureError({ code: "operation_not_found", kind: "missing", message: "This operation doesn't exist in the key's workspace. Use the operation ID returned by the accepted request." });
+    if (!operation) throw new RestFailure(400, "invalid_request", "Use the operation ID returned by the accepted request.");
     return operation;
   };
 
-  return app
+  const routes = app
     .openapi(route({ method: "get", path: "/workspace", summary: "Get the key's Workspace, plan, and credit usage", tags: ["Workspace"],
       responses: { 200: json(schemas.workspaceResultSchema, "Workspace and usage") } }), async (c) => {
       const actor = requireActor(c);
@@ -548,6 +545,8 @@ export function createRestOpenApiRoutes(dependencies: RestRouteDeps) {
       replayed(c, result.replayed);
       return c.json({ callbacks: result.callbacks as Array<{ eventId: string; state: "waiting" | "pending" | "delivered" | "failed" | "cancelled" }> }, 202);
     });
+  routes.all("*", (c) => { throw new RestFailure(404, "route_not_found", `No ${c.req.method} ${c.req.path} endpoint exists`); });
+  return routes;
 }
 
 /** Mount the independent OpenAPI app without adding its variables to first-party auth state. */

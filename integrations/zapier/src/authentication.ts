@@ -1,5 +1,5 @@
 import type { Authentication, Bundle, ZObject } from 'zapier-platform-core';
-import { api, DEFAULT_BASE_URL } from './api';
+import { api } from './api';
 
 interface WorkspaceResult {
   workspace: { workspaceId: string; name: string };
@@ -20,9 +20,8 @@ const authentication: Authentication = {
       key: 'baseUrl',
       label: 'Narriflow URL',
       type: 'string',
-      required: false,
-      default: DEFAULT_BASE_URL,
-      helpText: `Set your public HTTPS API origin for hosted connections. Local development uses ${DEFAULT_BASE_URL}.`,
+      required: true,
+      helpText: 'Enter the public HTTPS API origin supplied by your deployment. Use the API host, with no /api/v1 path. For local testing, explicitly enter http://localhost:4000.',
     },
   ],
   // The connection test reads the Workspace, which also proves the key's Workspace has API access.

@@ -1,5 +1,5 @@
 {
-    "baseUrl": "{{ifempty(connection.baseUrl, 'http://localhost:4000')}}/api/v1",
+    "baseUrl": "{{ifempty(connection.baseUrl, 'https://configure-api-origin.invalid')}}/api/v1",
     "headers": {
         "authorization": "Bearer {{connection.apiKey}}",
         "accept": "application/json"

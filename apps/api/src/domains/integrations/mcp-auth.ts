@@ -17,7 +17,7 @@ export function createMcpAuth(config: ApiConfig, env: ApiEnvironment = process.e
     throw new Error("CLERK_OAUTH_ISSUER must be an HTTPS issuer URL");
   }
   const issuerUrl = issuer?.href.replace(/\/$/, "");
-  const allowedHosts = [...new Set([new URL(config.apiOrigin).hostname, ...(env.MCP_ALLOWED_HOSTS ?? "").split(",").map((value) => value.trim()).filter(Boolean).map((value) => value.includes("://") ? new URL(value).hostname : value)])];
+  const allowedHosts = [...new Set([new URL(config.apiOrigin).hostname, ...(config.nodeEnv === "production" ? [] : ["localhost", "127.0.0.1", "[::1]"]), ...(env.MCP_ALLOWED_HOSTS ?? "").split(",").map((value) => value.trim()).filter(Boolean).map((value) => value.includes("://") ? new URL(value).hostname : value)])];
   const allowedOrigins = [...new Set(parseMcpOrigins([config.apiOrigin, config.webOrigin, ...(env.MCP_ALLOWED_ORIGINS ?? "").split(",").map((value) => value.trim()).filter(Boolean)]))];
   const verifier: OAuthTokenVerifier = createNarriflowTokenVerifier({
     resourceUrl: () => resourceUrl,
@@ -31,7 +31,10 @@ export function createMcpAuth(config: ApiConfig, env: ApiEnvironment = process.e
   });
   return {
     resourceUrl, metadataUrl, issuerUrl, allowedHosts, allowedOrigins, verifier,
-    protectedResourceMetadata: () => ({ resource: resourceUrl, authorization_servers: issuerUrl ? [issuerUrl] : [], bearer_methods_supported: ["header"], scopes_supported: [...WORKSPACE_API_KEY_SCOPES] }),
+    protectedResourceMetadata: () => {
+      if (!issuerUrl) throw new Error("CLERK_OAUTH_ISSUER is required for OAuth discovery");
+      return { resource: resourceUrl, authorization_servers: [issuerUrl], bearer_methods_supported: ["header"], scopes_supported: [...WORKSPACE_API_KEY_SCOPES] };
+    },
     async authenticate(request: Request) {
       const header = request.headers.get("authorization") ?? "";
       if (!/^Bearer [^\s,]+$/i.test(header)) throw new OAuthError(OAuthErrorCode.InvalidToken, "Expected one Bearer credential");

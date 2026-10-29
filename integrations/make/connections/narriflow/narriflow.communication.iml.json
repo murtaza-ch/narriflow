@@ -1,5 +1,5 @@
 {
-    "url": "{{ifempty(parameters.baseUrl, 'http://localhost:4000')}}/api/v1/workspace",
+    "url": "{{ifempty(parameters.baseUrl, 'https://configure-api-origin.invalid')}}/api/v1/workspace",
     "method": "GET",
     "headers": {
         "authorization": "Bearer {{parameters.apiKey}}",

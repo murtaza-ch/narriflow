@@ -706,7 +706,7 @@ export class ReviewService {
   }
 
   async resolveMedia(session: string, secret: string, itemId: string, variantId: string, mode: "playback" | "download" = "playback") {
-    const { round } = await this.readRound(session, secret);
+    const { round, claims } = await this.readRound(session, secret);
     if (mode === "download" && !round.allowDownloads) {
       throw new ReviewServiceError("review_download_forbidden", "Downloads are disabled for this review round");
     }
@@ -718,10 +718,13 @@ export class ReviewService {
     if (!item || !variant || variant.status !== "completed") throw new ReviewServiceError("review_media_not_found", "Review media was not found");
     const stored = await requirePrisma().clipExportVariant.findUnique({ where: { id: variant.id }, select: { storageKey: true } });
     if (!stored?.storageKey) throw new ReviewServiceError("review_media_not_found", "Review media was not found");
-    const expiresAt = new Date(Date.now() + 60_000).toISOString();
+    const now = Date.now();
+    const expiresIn = Math.floor(Math.min(15 * 60, claims.exp - now / 1000, round.expiresAt ? (round.expiresAt.getTime() - now) / 1000 : Infinity));
+    if (expiresIn < 1) throw new ReviewServiceError("review_session_invalid", "Review session is invalid or expired");
+    const expiresAt = new Date(now + expiresIn * 1000).toISOString();
     const url = await presignDownloadUrl({
       key: stored.storageKey,
-      expiresIn: 60,
+      expiresIn,
       ...(mode === "download" ? { fileName: `review-${item.id}-${variant.id}.mp4` } : {}),
     });
     return { url, expiresAt };

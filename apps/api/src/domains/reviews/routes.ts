@@ -5,7 +5,7 @@ import {
   reviewGuestAccessSchema, reviewCommentSchema, reviewCommentEditSchema, reviewDecisionSchema,
   reviewTokenParamsSchema, reviewCommentParamsSchema, reviewMediaParamsSchema, reviewOptOutSchema,
 } from "@narriflow/validators/api/reviews";
-import type { Context } from "hono";
+import type { Context, MiddlewareHandler } from "hono";
 import { bodyClass } from "../../body-limits";
 import { createRouteApp, getActor, getRecordedRateLimit } from "../../http/admission";
 import type { ApiEnv } from "../../http/env";
@@ -41,12 +41,32 @@ function mutation(c: Context<ApiEnv>) {
 function replay(c: Context<ApiEnv>, accepted: { replayed: boolean }) {
   if (accepted.replayed) c.header("Idempotent-Replayed", "true");
 }
+/** R2 grants carry their signing instant and lifetime; share refresh uses the earliest actual expiry. */
+function storageGrantExpiry(url: string): number {
+  const query = new URL(url).searchParams;
+  const signedAt = query.get("X-Amz-Date")?.replace(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z$/, "$1-$2-$3T$4:$5:$6Z");
+  const seconds = Number(query.get("X-Amz-Expires"));
+  const expiry = Date.parse(signedAt ?? "") + seconds * 1000;
+  if (!Number.isFinite(expiry) || !Number.isSafeInteger(seconds) || seconds <= 0) throw new Error("Storage grant expiry is unavailable");
+  return expiry;
+}
 export function createReviewsRoutes(deps: ReviewsRouteDeps) {
   const service = deps.reviewService;
   const commands = deps.commands;
   const origin = reviewOrigin(deps.allowedOrigins);
   const guest = guestCredential(deps.sessionSecret, (session, secret) => service.authorizeSession(session, secret));
-  const readLimit = ipRateLimit({ prefix: "review-public-read", tier: "publicRead", clientIp: deps.clientIp, rateLimit: deps.rateLimit });
+  const readLimit = (name: string, limit: number): MiddlewareHandler<ApiEnv> => async (c, next) => {
+    const check = await deps.rateLimit({ key: `review-${name}:${deps.clientIp(c)}`, limit, windowSeconds: 60 });
+    if (!check.allowed) throw new AuthenticatedRequestFailure({ code: "rate_limited", category: "rate_limit", status: 429, message: "Too many requests. Wait before trying again.", retryAfterSeconds: Math.max(1, Math.ceil(check.retryAfterSeconds ?? 60)) });
+    await next();
+  };
+  // A full round has 100 items x 4 variants. Media allows six full-round
+  // fetches per minute behind one NAT; downloads allow two, independently.
+  const roomLimit = readLimit("room", 120);
+  const mediaLimit = readLimit("media", 2400);
+  const downloadLimit = readLimit("download", 800);
+  const shareLimit = readLimit("share", 120);
+  const optOutLimit = readLimit("opt-out", 60);
   const exchangeLimit = ipRateLimit({ prefix: "review-exchange", tier: "guestExchange", clientIp: deps.clientIp, rateLimit: deps.rateLimit });
   const exchange = async (c: Context<ApiEnv>, token: string, input: unknown) => {
     const sessionToken = await service.authenticate(token, input, deps.clientIp(c), deps.sessionSecret());
@@ -82,22 +102,24 @@ export function createReviewsRoutes(deps: ReviewsRouteDeps) {
       const { id, roundId } = c.req.valid("param"); const result = await commands.revoke(scope(c, id), roundId, mutation(c)); replay(c, result); return c.json(result.value, 200);
     })
     // Literal opt-out routes must precede /review/:token.
-    .get("/review/opt-out", bodyClass("guest"), origin, readLimit, validate("query", reviewOptOutSchema), async (c) => {
+    .get("/review/opt-out", bodyClass("guest"), origin, optOutLimit, validate("query", reviewOptOutSchema), async (c) => {
       const result = await deps.optOut.preview(c.req.valid("query").token); if (!result) missing("review_opt_out_invalid", "This opt-out link is invalid"); return c.json(result, 200);
     })
     .post("/review/opt-out", bodyClass("guest"), origin, exchangeLimit, validate("json", reviewOptOutSchema), async (c) => {
       const result = await deps.optOut.confirm(c.req.valid("json").token); if (!result) missing("review_opt_out_invalid", "This opt-out link is invalid"); return c.json(result, 200);
     })
-    .get("/share/:token", origin, readLimit, validate("param", reviewTokenParamsSchema), async (c) => {
+    .get("/share/:token", origin, shareLimit, validate("param", reviewTokenParamsSchema), async (c) => {
       const exported = await deps.sharedExport(c.req.valid("param").token);
       const variants = exported?.variants.filter((v) => v.status === "completed" && v.hasAsset && v.downloadUrl) ?? [];
       if (!exported || !variants.length) missing("share_not_found", "Shared export was not found");
       // Match the page's existing export DTO, with safe, completed variants only.
-      return c.json({ ...clipExportSnapshotSchema.parse({ ...exported, variants }), expiresAt: new Date(Date.now() + 60_000).toISOString() }, 200);
+      const urls = variants.flatMap((variant) => [variant.previewUrl, variant.downloadUrl]).filter((url): url is string => !!url);
+      const expiresAt = new Date(Math.min(...urls.map(storageGrantExpiry)) - 30_000).toISOString();
+      return c.json({ ...clipExportSnapshotSchema.parse({ ...exported, variants }), expiresAt }, 200);
     })
     .post("/review/:token", bodyClass("guest"), origin, exchangeLimit, validate("param", reviewTokenParamsSchema), validate("json", reviewGuestAccessSchema), async (c) => c.json(await exchange(c, c.req.valid("param").token, c.req.valid("json")), 200))
     .post("/review/:token/access", bodyClass("guest"), origin, exchangeLimit, validate("param", reviewTokenParamsSchema), validate("json", reviewGuestAccessSchema), async (c) => c.json(await exchange(c, c.req.valid("param").token, c.req.valid("json")), 200))
-    .get("/review/:token", bodyClass("guest"), origin, guest, readLimit, validate("param", reviewTokenParamsSchema), async (c) => c.json(guestRoom(await service.readRound(guestSession(c, deps.sessionSecret()), deps.sessionSecret())), 200))
+    .get("/review/:token", bodyClass("guest"), origin, guest, roomLimit, validate("param", reviewTokenParamsSchema), async (c) => c.json(guestRoom(await service.readRound(guestSession(c, deps.sessionSecret()), deps.sessionSecret())), 200))
     .post("/review/:token/comments", bodyClass("guest"), origin, guest, requireIdempotencyKey(), validate("param", reviewTokenParamsSchema), validate("json", reviewCommentSchema), async (c) => {
       const result = await service.addComment(guestSession(c, deps.sessionSecret()), deps.sessionSecret(), c.req.valid("json"), { clientIdempotencyKey: getIdempotencyKey(c) }); replay(c, result); return c.json(result.value, 201);
     })
@@ -109,10 +131,10 @@ export function createReviewsRoutes(deps: ReviewsRouteDeps) {
       return c.json(updated, 200);
     })
     .delete("/review/:token/comments/:commentId", bodyClass("guest"), origin, guest, validate("param", reviewCommentParamsSchema), async (c) => c.json(await service.deleteComment(guestSession(c, deps.sessionSecret()), deps.sessionSecret(), c.req.valid("param").commentId), 200))
-    .get("/review/:token/media/:itemId/:variantId", bodyClass("guest"), origin, guest, readLimit, validate("param", reviewMediaParamsSchema), async (c) => {
+    .get("/review/:token/media/:itemId/:variantId", bodyClass("guest"), origin, guest, mediaLimit, validate("param", reviewMediaParamsSchema), async (c) => {
       const { itemId, variantId } = c.req.valid("param"); return c.json(await service.resolveMedia(guestSession(c, deps.sessionSecret()), deps.sessionSecret(), itemId, variantId, "playback"), 200);
     })
-    .get("/review/:token/download/:itemId/:variantId", bodyClass("guest"), origin, guest, readLimit, validate("param", reviewMediaParamsSchema), async (c) => {
+    .get("/review/:token/download/:itemId/:variantId", bodyClass("guest"), origin, guest, downloadLimit, validate("param", reviewMediaParamsSchema), async (c) => {
       const { itemId, variantId } = c.req.valid("param"); return c.json(await service.resolveMedia(guestSession(c, deps.sessionSecret()), deps.sessionSecret(), itemId, variantId, "download"), 200);
     });
 }
