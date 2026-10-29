@@ -298,6 +298,7 @@ interface RawProbeStream {
 }
 
 export interface WorkerProcessModuleDependencies {
+  admission?: WorkerProcessAdmission;
   killGraceMs?: number;
   spawn?: typeof spawn;
   execute?: (request: WorkerProcessRequest) => Promise<WorkerProcessResult>;
@@ -374,12 +375,35 @@ function cancellationFailureCode(signal: AbortSignal): string {
     : "worker_command_cancelled";
 }
 
+/** Finds process health failures even when an adapter retained them as a cause. */
+export function executorProcessFailure(error: unknown): WorkerProcessFailure | null {
+  for (let depth = 0; depth < 8 && error instanceof Error; depth += 1) {
+    if (error instanceof WorkerProcessFailure && error.failureScope) return error;
+    error = error.cause;
+  }
+  return null;
+}
+
+export interface WorkerProcessAdmission {
+  beforeStart(command: string): void;
+  failed(error: unknown): void;
+}
+let productionAdmission: WorkerProcessAdmission | undefined;
+export function configureWorkerProcessAdmission(admission: WorkerProcessAdmission): void {
+  productionAdmission = admission;
+}
+
 function exitFailure(
   code: number | null,
   stderr: string,
   invalidInput: boolean,
 ): WorkerProcessFailure {
   const diagnostic = boundedDiagnostic(stderr);
+  if (/No such filter:\s*['"]?[a-z0-9_]+/i.test(diagnostic)) {
+    return new WorkerProcessFailure("worker_render_filter_unavailable", "retryable",
+      "Required FFmpeg filter is unavailable", diagnostic, code,
+      { executableClass: "ffmpeg", failureScope: "configuration" });
+  }
   if (invalidInput) {
     return new WorkerProcessFailure(
       "worker_command_input_invalid",
@@ -757,6 +781,16 @@ class ProductionWorkerProcessModule implements WorkerProcessModule {
   }
 
   async execute(request: WorkerProcessRequest): Promise<WorkerProcessResult> {
+    try {
+      if (!request.signal.aborted) (this.dependencies.admission ?? (this === productionWorkerProcessModule ? productionAdmission : undefined))?.beforeStart(request.command);
+      return await this.executeAdmitted(request);
+    } catch (error) {
+      (this.dependencies.admission ?? (this === productionWorkerProcessModule ? productionAdmission : undefined))?.failed(error);
+      throw error;
+    }
+  }
+
+  private async executeAdmitted(request: WorkerProcessRequest): Promise<WorkerProcessResult> {
     if (!Number.isFinite(request.deadlineMs) || request.deadlineMs <= 0) {
       throw new Error("Worker process deadline must be finite and positive");
     }
@@ -1005,6 +1039,16 @@ class ProductionWorkerProcessModule implements WorkerProcessModule {
   }
 
   async start(request: WorkerPersistentProcessRequest): Promise<WorkerPersistentProcess> {
+    try {
+      if (!request.signal.aborted) (this.dependencies.admission ?? (this === productionWorkerProcessModule ? productionAdmission : undefined))?.beforeStart(request.command);
+      return await this.startAdmitted(request);
+    } catch (error) {
+      (this.dependencies.admission ?? (this === productionWorkerProcessModule ? productionAdmission : undefined))?.failed(error);
+      throw error;
+    }
+  }
+
+  private async startAdmitted(request: WorkerPersistentProcessRequest): Promise<WorkerPersistentProcess> {
     const startedAt = Date.now();
     const diagnose = (event: Omit<WorkerProcessDiagnostic, "elapsedMs">) =>
       safeDiagnose(request.diagnose, { ...event, elapsedMs: Date.now() - startedAt });
@@ -1259,8 +1303,9 @@ class ProductionWorkerProcessModule implements WorkerProcessModule {
           const time = numberFact(packet?.pts_time ?? packet?.dts_time);
           return time === null ? [] : [time];
         });
-      } catch {
+      } catch (error) {
         request.signal.throwIfAborted();
+        if (executorProcessFailure(error)) throw error;
         return null;
       }
     });
@@ -1472,6 +1517,12 @@ export interface ScratchSweepResult {
   failed: string[];
 }
 
+function localScratchOwnerAlive(pid: number): boolean {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; }
+  catch (error) { return (error as NodeJS.ErrnoException).code !== "ESRCH"; }
+}
+
 export async function sweepAbandonedScratch(options: ScratchSweepOptions = {}): Promise<ScratchSweepResult> {
   const root = options.root ?? tmpdir();
   const nowMs = options.nowMs ?? Date.now();
@@ -1502,7 +1553,7 @@ export async function sweepAbandonedScratch(options: ScratchSweepOptions = {}): 
       result.skipped.push({ directory, reason: "unmarked" });
     } else if (record.host !== hostname()) {
       result.skipped.push({ directory, reason: "other_host" });
-    } else if (activeScratch.has(directory)) {
+    } else if (activeScratch.has(directory) || localScratchOwnerAlive(record.pid)) {
       result.skipped.push({ directory, reason: "active_local" });
     } else if (nowMs - markerMtimeMs < staleAfterMs) {
       // A live local worker refreshes its marker; a young one may belong to it.

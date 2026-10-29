@@ -4,6 +4,9 @@ import type {
   WorkflowAttemptRef,
 } from "@narriflow/services";
 import { WorkflowAttemptLost } from "@narriflow/services";
+import { executorProcessFailure } from "./worker-process";
+import { RenderResourceDeferral } from "./render-resource-budget";
+import { renderInterruptionMediaStarted } from "./render-executor-health";
 
 interface WorkflowAttemptRunner {
   runAttempt<T>(
@@ -17,7 +20,7 @@ type ClaimedAttemptFor<TStage extends WorkflowAttemptRef["stage"]> =
   ClaimedWorkflowAttempt & { stage: TStage };
 
 interface WorkflowAttemptClaimer extends WorkflowAttemptRunner {
-  releaseAttempt(attempt: WorkflowAttemptRef): Promise<boolean>;
+  releaseAttempt(attempt: WorkflowAttemptRef, options?: { refundAttempt?: boolean; reason?: string }): Promise<boolean>;
   claim<TStage extends WorkflowAttemptRef["stage"]>(
     stage: TStage,
   ): Promise<ClaimedAttemptFor<TStage> | null>;
@@ -39,15 +42,17 @@ export async function executeNextWorkflowAttempt<
   ) => void;
   /** Worker lifetime cancellation stops heartbeats and active subprocesses. */
   signal?: AbortSignal;
+  canStart?: () => boolean;
+  onExecutorFailure?: (error: unknown) => void;
   /** Wraps the claimed attempt's execution so the caller can tell the lease
    * heartbeat, not a tick budget, is now bounding the work. */
   holdingLease?: <T>(work: () => Promise<T>) => Promise<T>;
 }): Promise<0 | 1> {
-  if (input.signal?.aborted) return 0;
+  if (input.signal?.aborted || input.canStart?.() === false) return 0;
   const claimed = await input.lifecycle.claim(input.stage);
   // Shutdown can arrive while the claim is in flight. Return it without
   // starting its handler or charging a failed execution.
-  if (input.signal?.aborted) {
+  if (input.signal?.aborted || input.canStart?.() === false) {
     if (claimed) await input.lifecycle.releaseAttempt(claimed);
     return 0;
   }
@@ -63,7 +68,19 @@ export async function executeNextWorkflowAttempt<
       onAttemptLost: (error) =>
         input.onAttemptLost?.(attempt, error, startedAtMs),
     });
-  await (input.holdingLease ? input.holdingLease(execute) : execute());
+  try {
+    await (input.holdingLease ? input.holdingLease(execute) : execute());
+  } catch (error) {
+    const healthFailure = executorProcessFailure(error);
+    if (!healthFailure && !(error instanceof RenderResourceDeferral)) throw error;
+    if (healthFailure) input.onExecutorFailure?.(healthFailure);
+    // runAttempt has stopped its heartbeat before this fenced release.
+    await input.lifecycle.releaseAttempt(attempt, {
+      refundAttempt: !renderInterruptionMediaStarted(error),
+      reason: healthFailure?.code ?? (error as RenderResourceDeferral).code,
+    });
+    return 0;
+  }
   return 1;
 }
 

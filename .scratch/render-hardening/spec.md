@@ -269,3 +269,5 @@ extract that derivation into an exported function, switch
 baseline (exit 0), and only then change behavior. Parity gate command:
 `bun apps/worker/scripts/render-golden.ts verify --baseline /tmp/narriflow-golden/baseline --suite all --out /tmp/narriflow-golden/candidate-NN`
 (durable baseline copy: `~/.cache/narriflow-render-golden/baseline-5680477046-90cf30a3`).
+
+Ticket 17 ownership amendment, 2026-10-30: adds workflow-run-lifecycle.ts and its DB test, worker-process/clip-preview/clip-render-attempt tests and clip-preview.ts, and render-object-reconciler.ts/test.ts to support fenced charged/unstarted release, health propagation and bounded reconciliation. Prior owners 02/10/11/15/16 are closed; downstream 20 depends on 17.

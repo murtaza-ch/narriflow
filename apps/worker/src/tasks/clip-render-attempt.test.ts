@@ -105,6 +105,8 @@ function createOrdinaryTracer(input: {
 	referenceRead?: "rejected" | "stalled" | "referenced";
 	waitForCommandAbort?: boolean;
 	sourceFailures?: readonly SourceFailure[];
+    sourceHealthFailure?: Error;
+    commandHealthFailure?: Error;
 	sourceInterruption?: {
 		operation: SourceFailure;
 		reason: "cancellation" | "ownership_loss";
@@ -294,6 +296,7 @@ function createOrdinaryTracer(input: {
             const output = renderOutput.inspect(request.sourcePath);
             if (output) return output;
             if (input.productionMedia) return input.productionMedia.inspectMedia(request);
+            if (input.sourceHealthFailure) throw input.sourceHealthFailure;
             const { sourcePath, signal, deadlineMs } = request;
 						const mode = sourcePath.startsWith("https://") ? "ranged" : "local";
 						if (
@@ -327,7 +330,8 @@ function createOrdinaryTracer(input: {
 					},
 				execute: async ({ command, args, deadlineMs, diagnose, signal }) => {
             const decoded = renderOutput.decode(args); if (decoded) return decoded;
-					if (command === "ffprobe") {
+					if (input.commandHealthFailure) { diagnose?.({ operation: "spawn", status: "completed", elapsedMs: 0 }); throw input.commandHealthFailure; }
+                    if (command === "ffprobe") {
 						throw new Error("source probes must use inspectMedia");
 					}
 					expect(signal).toBeInstanceOf(AbortSignal);
@@ -2834,4 +2838,20 @@ for (const completionControlFlow of [
 			harness.actions.some((action) => action.startsWith("variant_failure:")),
 		).toBe(false);
 	});
+}
+
+for (const phase of ["source", "encode"] as const) {
+  test(`ClipRenderAttempt propagates ${phase} executor failure without variant fan-out or settlement`, async () => {
+    const failure = new WorkerProcessFailure("worker_command_spawn_failed", "retryable", "spawn EBADF", "", null,
+      { failureScope: "executor", errno: "EBADF", executableClass: phase === "source" ? "ffprobe" : "ffmpeg" });
+    const harness = createOrdinaryTracer({ attemptId: "30000000-0000-4000-8000-000000000099",
+      ...(phase === "source" ? { sourceHealthFailure: failure } : { commandHealthFailure: failure }),
+      outcome: { status: "failed", requested: 1, succeeded: 0, failed: 1, superseded: 0, followUpWorkflowRunId: null } });
+    await expect(harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal))).rejects.toBe(failure);
+    expect(harness.settlementCalls()).toBe(0);
+    expect(harness.uploadedKeys).toEqual([]);
+    expect(harness.actions.some((action) => action.startsWith("variant_failure:"))).toBe(false);
+    const { renderInterruptionMediaStarted } = await import("../render-executor-health");
+    expect(renderInterruptionMediaStarted(failure)).toBe(false);
+  });
 }

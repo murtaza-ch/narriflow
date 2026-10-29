@@ -408,3 +408,14 @@ test("destructive reconciliation retains an ambiguous upload when the fresh refe
   expect(reads).toBe(2);
   expect(deleted).toEqual([]);
 });
+
+test("maintenance bounds pages per project prefix even when inventory keeps growing", async () => {
+  let pages = 0;
+  const reconciler = new RenderObjectReconciler({ storage: {
+    listPage: async () => { pages += 1; return { objects: [], nextContinuationToken: "more" }; },
+    delete: async () => { throw new Error("maintenance must stay dry-run"); },
+  }, persistence: { listReferencedKeys: async () => new Set() } });
+  const result = await reconciler.execute({ projectId: "11111111-1111-1111-1111-111111111111", maxPagesPerPrefix: 1 });
+  expect(pages).toBe(2);
+  expect(result.deleted).toBe(0);
+});

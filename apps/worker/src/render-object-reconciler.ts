@@ -75,6 +75,8 @@ export class RenderObjectReconciler {
     projectId: string;
     delete?: boolean;
     signal?: AbortSignal;
+    /** Bounds one maintenance pass; omitted by the explicit operator CLI. */
+    maxPagesPerPrefix?: number;
   }): Promise<RenderObjectReconciliationResult> {
     if (!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(input.projectId)) {
       throw new Error("A valid project UUID is required");
@@ -92,6 +94,7 @@ export class RenderObjectReconciler {
       `projects/${input.projectId}/exports/`,
     ]) {
       let continuationToken: string | undefined;
+      let pages = 0;
       do {
         signal?.throwIfAborted();
         const operationSignal = this.#storageSignal(signal);
@@ -107,7 +110,8 @@ export class RenderObjectReconciler {
           ),
         );
         continuationToken = page.nextContinuationToken ?? undefined;
-      } while (continuationToken);
+        pages += 1;
+      } while (continuationToken && pages < (input.maxPagesPerPrefix ?? Number.POSITIVE_INFINITY));
     }
 
     const result: RenderObjectReconciliationResult = {

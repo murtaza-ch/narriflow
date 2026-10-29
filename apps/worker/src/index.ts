@@ -1,4 +1,12 @@
-import { createServer } from "node:http";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { tmpdir } from "node:os";
+import { getPrismaClient } from "@narriflow/db/client";
+import { RenderExecutorHealth, reserveWorkerHealthPort, verifySharedRenderEnvironment } from "./render-executor-health";
+import { configureWorkerProcessAdmission, sweepAbandonedScratch } from "./worker-process";
+import { renderResourceBudgetFor, readDiskFacts, judgeAdmission } from "./render-resource-budget";
+import { mediaWorkScheduler } from "./media-work-scheduler";
+import { pruneBrollAssetCache } from "./tasks/broll";
+import { reconcileRenderObjectsForMaintenance } from "./reconcile-render-objects";
 import { getYoutubeProxyUrl, startYoutubeTokenServer, superviseYoutubeTokenServer } from "./youtube-import";
 import {
 	createIsolatedPollLoop,
@@ -65,7 +73,12 @@ import {
 } from "./notifications";
 import { executeNextWorkflowAttempt } from "./workflow-attempt-executor";
 
-const port = Number(process.env.PORT || 0);
+const port = Number(process.env.PORT || 4001);
+if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("Worker health PORT must be a fixed port from 1 to 65535");
+let startupComplete = false;
+const server = createServer((req, res) => { void handleWorkerRequest(req, res); });
+// Await listen: EADDRINUSE must reject before any shared-queue claim or sweep.
+await reserveWorkerHealthPort(server, port);
 const workerShutdown = new AbortController();
 let youtubeLinkIntakeAvailable = false;
 const youtubeProxyUrl = getYoutubeProxyUrl();
@@ -108,6 +121,52 @@ const maxConsecutivePollFailures = Number(
 	process.env.WORKER_MAX_CONSECUTIVE_POLL_FAILURES ?? "20",
 );
 const renderConfig = parseWorkerRenderConfig();
+const renderResources = renderResourceBudgetFor(renderConfig);
+const executorHealth = new RenderExecutorHealth({
+  check: verifySharedRenderEnvironment,
+  recycle: () => beginGracefulShutdown(1),
+  diagnose: (event) => console.warn(JSON.stringify({ level: "error", ...event })),
+});
+configureWorkerProcessAdmission(executorHealth);
+let scratchReady = false;
+
+async function refreshScratchReadiness(): Promise<void> {
+  try {
+    const disk = await readDiskFacts(tmpdir());
+    scratchReady = judgeAdmission(renderConfig, disk, renderResources.snapshot().reservedBytes, 0) === "admit";
+  } catch { scratchReady = false; }
+}
+
+async function maintainRenderResources(): Promise<void> {
+  const prisma = getPrismaClient();
+  if (!prisma) throw new Error("Database unavailable for render maintenance");
+  const scratch = await sweepAbandonedScratch({
+    graceMs: renderConfig.scratchSweepGraceMs,
+    isOwnerActive: async (owner) => {
+      if (!owner?.workflowRunId && !owner?.attemptId) return false;
+      return Boolean(await prisma.workflowRun.findFirst({
+        where: { ...(owner.workflowRunId ? { id: owner.workflowRunId } : {}),
+          ...(owner.attemptId ? { attemptId: owner.attemptId } : {}),
+          status: "running", leaseExpiresAt: { gt: new Date() } }, select: { id: true },
+      })) || Boolean(await prisma.renderGroup.findFirst({
+        where: { ...(owner.workflowRunId ? { workflowRunId: owner.workflowRunId } : {}),
+          ...(owner.attemptId ? { attemptToken: owner.attemptId } : {}),
+          status: "running", leaseExpiresAt: { gt: new Date() } }, select: { id: true },
+      }));
+    },
+  });
+  const cache = await pruneBrollAssetCache({ maxBytes: renderConfig.brollCacheMaxBytes, ttlMs: renderConfig.brollAssetCacheTtlMs });
+  await refreshScratchReadiness();
+  console.warn(JSON.stringify({ level: "info", message: "render_resource_maintenance", scratch, cache, resources: renderResources.snapshot() }));
+}
+
+async function runBackgroundMedia(name: string, work: () => Promise<number>): Promise<number> {
+  if (!executorHealth.snapshot().ready || !scratchReady || renderResources.snapshot().blockedProducers > 0) return 0;
+  return mediaWorkScheduler.run("background", name, workerShutdown.signal, async () => {
+    if (!executorHealth.snapshot().ready || !scratchReady || renderResources.snapshot().encoding) return 0;
+    return work();
+  });
+}
 
 // Preview proxies are short ffmpeg cuts, but "short" is ~12s each and a batch
 // runs them in sequence — roughly a minute of CPU+network per tick.
@@ -346,13 +405,14 @@ function createPollLoop(
 ): PollLoop {
 	const loop = createIsolatedPollLoop({
 		name,
-		run: async (context) => workerShutdown.signal.aborted ? 0 : fn(context),
+		run: async (context) => !startupComplete || workerShutdown.signal.aborted ? 0 : fn(context),
 		stallAfterMs: stallBudgetMs(intervalMs),
 		maximumConsecutiveFailures: maxConsecutivePollFailures,
 		onProcessed: (processed) => {
 			processedCount += processed;
 		},
 		onFailure: (error, consecutiveFailures) => {
+        executorHealth.failed(error);
 			console.warn(
 				JSON.stringify({
 					level: "error",
@@ -519,6 +579,10 @@ function processNextWorkflowAttempt<
 		...input,
 		signal: workerShutdown.signal,
 		lifecycle: getWorkflowRunLifecycle(),
+        ...(input.stage === "clip_rendering" ? {
+          canStart: () => executorHealth.snapshot().ready && scratchReady,
+          onExecutorFailure: executorHealth.failed,
+        } : {}),
 		onAttemptLost: (attempt, error, startedAtMs) =>
 			diagnoseWorkflowAttemptLost({ run: attempt, error, startedAtMs }),
 	});
@@ -616,6 +680,7 @@ createPollLoop("finishing", finishingPollIntervalMs, async () => {
 
 /** CPU-bound stage: clip rendering only. */
 const renderLoop = createPollLoop("render", renderPollIntervalMs, async ({ holdingLease }) => {
+	if (!executorHealth.snapshot().ready || !scratchReady) return 0;
 	const lifecycle = getWorkflowRunLifecycle();
 	await lifecycle.rescuePendingClipRenderingRun();
 	return processNextWorkflowAttempt({
@@ -636,14 +701,14 @@ const renderLoop = createPollLoop("render", renderPollIntervalMs, async ({ holdi
 /** Preview proxies: bounded ffmpeg cuts on their own loop so they can neither
  *  block ingest/STT nor delay due social posts. */
 createPollLoop("preview", previewPollIntervalMs, async () => {
-	return processPendingClipPreviews({ signal: workerShutdown.signal });
+	return runBackgroundMedia("preview", () => processPendingClipPreviews({ batchSize: 1, signal: workerShutdown.signal }));
 });
 
 /** Face/shot analysis runs against the small preview proxies and publishes
  * the shared plan consumed by both studio and render. Separate mutex keeps
  * it from blocking proxy generation or workflow claims. */
 createPollLoop("auto_layout", autoLayoutPollIntervalMs, async () => {
-	return processPendingAutoLayoutAnalyses({ signal: workerShutdown.signal, config: renderConfig });
+	return runBackgroundMedia("auto_layout", () => processPendingAutoLayoutAnalyses({ limit: 1, signal: workerShutdown.signal, config: renderConfig }));
 });
 
 /** Durable terminal-email retries. The service performs an atomic
@@ -690,7 +755,7 @@ createPollLoop("generated_media", generatedMediaPollIntervalMs, async () => {
 });
 
 const thumbnailFrameLoop = createPollLoop("thumbnail_frames", thumbnailFramePollIntervalMs, async () => {
-	return thumbnailFramePreparationService.processPending(1);
+	return runBackgroundMedia("thumbnail_frames", () => thumbnailFramePreparationService.processPending(1));
 });
 
 /** Embeds completed transcripts into searchable passages. A provider failure
@@ -705,18 +770,21 @@ createPollLoop("library_index", libraryIndexPollIntervalMs, async () => {
 	return indexed;
 });
 
-const server = createServer(async (req, res) => {
+async function handleWorkerRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
 	if (req.url === "/health") {
 		const loops = allLoops.map(({ loop }) => ({ name: loop.name, status: loop.status() }));
 		const stalledLoops = unhealthyLoops(loops);
-		res.writeHead(stalledLoops.length > 0 ? 503 : 200, { "content-type": "application/json" });
+        const ready = startupComplete && !workerShutdown.signal.aborted && executorHealth.snapshot().ready && scratchReady && stalledLoops.length === 0;
+		res.writeHead(ready ? 200 : 503, { "content-type": "application/json" });
 		res.end(
 			JSON.stringify({
-				ok: stalledLoops.length === 0,
+				ok: ready,
 				stalledLoops,
 				service: "narriflow-worker",
 		render: {
-					enabled: true,
+					enabled: executorHealth.snapshot().ready,
+                    executor: executorHealth.snapshot(), scratchReady,
+                    resources: renderResources.snapshot(), scheduling: mediaWorkScheduler.snapshot(),
 		},
 		youtubeLinkIntake: { available: youtubeLinkIntakeAvailable },
 				queue: {
@@ -729,7 +797,7 @@ const server = createServer(async (req, res) => {
 	}
 
 	if (req.url === "/poll-once" && req.method === "POST") {
-		if (workerShutdown.signal.aborted) {
+		if (!startupComplete || workerShutdown.signal.aborted) {
 			res.writeHead(503, { "content-type": "application/json" });
 			res.end(JSON.stringify({ error: "worker_shutting_down" }));
 			return;
@@ -742,15 +810,18 @@ const server = createServer(async (req, res) => {
 
 	res.writeHead(404, { "content-type": "application/json" });
 	res.end(JSON.stringify({ error: "not_found" }));
-});
+}
 
 let loopIntervals: ReturnType<typeof setInterval>[] = [];
-process.once("SIGTERM", beginGracefulShutdown);
-process.once("SIGINT", beginGracefulShutdown);
+process.once("SIGTERM", () => beginGracefulShutdown());
+process.once("SIGINT", () => beginGracefulShutdown());
 
 // YouTube is one link-intake dependency. It must never decide whether billing,
 // publishing, or other worker loops can start or remain alive.
 // Keep retrying so a temporary helper failure cannot strand queued imports.
+await executorHealth.checkIfDue();
+await maintainRenderResources();
+startupComplete = true;
 void superviseYoutubeTokenServer(
   workerShutdown.signal,
   () => startYoutubeTokenServer(
@@ -762,12 +833,26 @@ void superviseYoutubeTokenServer(
     if (available) console.warn(JSON.stringify({ level: "info", message: "youtube_network_configured", mode: youtubeProxyUrl ? "proxy" : "direct" }));
   },
 );
-
-server.listen(port, () => {
-	const address = server.address();
-	const resolvedPort =
-		typeof address === "object" && address ? address.port : port;
-	console.log(`narriflow worker listening on :${resolvedPort}`);
+createPollLoop("render_executor_health", 5_000, async () => {
+  await executorHealth.checkIfDue();
+  await refreshScratchReadiness();
+  return 0;
+});
+createPollLoop("render_resources", renderConfig.scratchSweepIntervalMs, async () => {
+  await maintainRenderResources();
+  return 0;
+});
+let reconciliationCursor: string | undefined;
+createPollLoop("render_objects", 60 * 60 * 1000, async () => {
+  const prisma = getPrismaClient();
+  if (!prisma) return 0;
+  const projects = await prisma.project.findMany({
+    where: reconciliationCursor ? { id: { gt: reconciliationCursor } } : {},
+    orderBy: { id: "asc" }, take: 1, select: { id: true },
+  });
+  reconciliationCursor = projects[0]?.id;
+  if (reconciliationCursor) await reconcileRenderObjectsForMaintenance(reconciliationCursor, workerShutdown.signal);
+  return 0;
 });
 
 loopIntervals = allLoops.map(({ loop, intervalMs }) =>
@@ -776,8 +861,9 @@ loopIntervals = allLoops.map(({ loop, intervalMs }) =>
 	}, intervalMs),
 );
 
-function beginGracefulShutdown() {
+function beginGracefulShutdown(exitCode = 0) {
 	if (workerShutdown.signal.aborted) return;
+    process.exitCode = exitCode;
 	youtubeLinkIntakeAvailable = false;
 	workerShutdown.abort();
 	for (const interval of loopIntervals) clearInterval(interval);
@@ -786,7 +872,7 @@ function beginGracefulShutdown() {
 	// reaps descendants on abort. Do not let an adapter that ignores cancellation
 	// keep a deployment hostage forever.
 	// The same drain sets how long released work waits before a peer may claim it.
-	const forceExit = setTimeout(() => process.exit(0), workerShutdownDrainMs());
+	const forceExit = setTimeout(() => process.exit(exitCode), workerShutdownDrainMs());
 	forceExit.unref();
 }
 

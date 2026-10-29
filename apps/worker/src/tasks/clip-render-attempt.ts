@@ -1,3 +1,6 @@
+import { mediaWorkScheduler } from "../media-work-scheduler";
+import { recordRenderInterruption } from "../render-executor-health";
+import { executorProcessFailure } from "../worker-process";
 import { statfs } from "node:fs/promises";
 import { transportRenderCommand } from "../render-command-transport";
 import { RenderFactCache, sourceProbeIdentity } from "../render-fact-cache";
@@ -666,6 +669,7 @@ interface PendingRenderOutput {
 }
 
 interface RenderExecutionContext {
+	mediaStarted: boolean;
 	config: Readonly<RenderConfig>;
 	signal: AbortSignal;
 	adapters: ClipRenderAttemptAdapters;
@@ -741,7 +745,7 @@ function rethrowRenderControlFlow(error: unknown): void {
 	// Deferred work belongs to no clip: the attempt is released, not failed.
 	if (error instanceof RenderResourceDeferral) throw error;
 	const failure = normalizeRenderProcessFailure(error);
-	if (failure instanceof WorkerProcessFailure && failure.failureScope)
+	if (executorProcessFailure(failure))
 		throw failure;
 }
 
@@ -1228,6 +1232,7 @@ async function executeRenderCommand(input: {
 		const stopSampling = startCompositionResourceSampling(
 			safeRecordResourceSample,
 		);
+        const mediaStartedBeforeCommand = requireExecutionContext().mediaStarted;
 		try {
 			const transportedArgs = await transportRenderCommand({
 				args,
@@ -1253,11 +1258,17 @@ async function executeRenderCommand(input: {
 			await execCommand("ffmpeg", transportedArgs, {
 				timeoutMs: input.deadlineMs,
 				recordResourceSample: safeRecordResourceSample,
+				onSpawn: () => { requireExecutionContext().mediaStarted = true; },
 				onStderrLines: (lines) => {
 					captionDiagnostics = lines;
 				},
 			});
 			input.recordSourceDecodeCompleted?.();
+        } catch (error) {
+            // A spawned command can reject its filter graph before decoding.
+            // Preserve earlier completed/started encodes, not this failed start.
+            if (executorProcessFailure(error)) requireExecutionContext().mediaStarted = mediaStartedBeforeCommand;
+            throw error;
 		} finally {
 			stopSampling();
 		}
@@ -1345,6 +1356,7 @@ function runCommand(
 		recordResourceSample?: (rssBytes: number) => void;
 		/** Receives the libass/drawtext stderr lines of a successful run. */
 		onStderrLines?: (lines: readonly string[]) => void;
+		onSpawn?: () => void;
 	},
 ): Promise<string> {
 	return currentRenderAdapters()
@@ -1355,10 +1367,14 @@ function runCommand(
 			deadlineMs: options.timeoutMs,
 			captureStdout: options.captureStdout,
 			recordResourceSample: options.recordResourceSample,
-			diagnose: diagnoseRenderProcessOperation,
+			diagnose: (event) => {
+                if (event.operation === "spawn" && event.status === "completed") options.onSpawn?.();
+                diagnoseRenderProcessOperation(event);
+            },
 			...(options.onStderrLines ? { stderrLinePattern: CAPTION_RENDER_DIAGNOSTIC_PATTERN } : {}),
 		})
 		.then((result) => {
+			options.onSpawn?.();
 			options.onStderrLines?.(result.stderrLines ?? []);
 			return result.stdout.toString("utf8");
 		}).catch((error: unknown) => { throw normalizeRenderProcessFailure(error); });
@@ -1382,6 +1398,7 @@ async function execCommand(
 		timeoutMs?: number;
 		recordResourceSample?: (rssBytes: number) => void;
 		onStderrLines?: (lines: readonly string[]) => void;
+		onSpawn?: () => void;
 	},
 ) {
 	await runCommand(command, args, {
@@ -1390,6 +1407,7 @@ async function execCommand(
 		captureStdout: false,
 		recordResourceSample: options?.recordResourceSample,
 		onStderrLines: options?.onStderrLines,
+		onSpawn: options?.onSpawn,
 	});
 }
 
@@ -2192,6 +2210,7 @@ export class ClipRenderAttempt {
 		};
 		return renderExecutionStorage.run(
 			{
+				mediaStarted: false,
 				config: this.#config,
 				signal,
 				adapters,
@@ -2237,6 +2256,9 @@ export class ClipRenderAttempt {
 							retryState: "reaper_owned",
 							elapsedMs: currentTimeMs() - attemptStartedAtMs,
 						});
+					}
+					if (executorProcessFailure(error) || error instanceof RenderResourceDeferral) {
+						recordRenderInterruption(error, requireExecutionContext().mediaStarted);
 					}
 					throw error;
 				}
@@ -4496,7 +4518,7 @@ async function executeClipRenderAttemptInScratch(params: {
 			signal?.throwIfAborted();
 			const renderGroup = clipGroups[clipGroupIndex]!;
 			try {
-				await renderClipGroup({
+				await mediaWorkScheduler.run("render", renderGroup[0]!.clipId, signal, () => renderClipGroup({
 					run,
 					attempt,
 					renderGroup,
@@ -4511,13 +4533,13 @@ async function executeClipRenderAttemptInScratch(params: {
 					applyWatermark,
 					scratch,
 					scheduleUpload,
-				});
+				}));
 			} catch (error) {
 				rethrowRenderControlFlow(error);
 				// Any delivery already scheduled must settle before failure writes.
 				await uploadQueue.drain();
 				signal.throwIfAborted();
-				if (error instanceof WorkerProcessFailure && error.failureScope) throw error;
+				if (executorProcessFailure(error)) throw error;
 				const failure = workflowFailureFromUnknown(error);
 				for (const render of renderGroup) {
 					await currentRenderAdapters().clip.markClipRenderVariantRendering(
@@ -4588,11 +4610,12 @@ async function executeClipRenderAttemptInScratch(params: {
 			throw error;
 		}
 		rethrowRenderCancellation(error);
+		rethrowRenderControlFlow(error);
 		if (settlementStarted) throw error;
 		if (uploadQueueRef) {
 			await uploadQueueRef.drain();
 		}
-		if (error instanceof WorkerProcessFailure && error.failureScope) throw error;
+		if (executorProcessFailure(error)) throw error;
 		if (error instanceof RenderResourceDeferral) throw error;
 		const failure = workflowFailureFromUnknown(error);
 		const code = failure.code;

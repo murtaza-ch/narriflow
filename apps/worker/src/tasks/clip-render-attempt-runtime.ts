@@ -31,6 +31,7 @@ import type { RenderConfig } from "../render-config";
 import {
 	productionWorkerProcessModule,
 	WorkerProcessFailure,
+	executorProcessFailure,
 	type WorkerProcessDiagnostic,
 } from "../worker-process";
 import { productionRenderDiagnosticAdapter } from "../render-diagnostic-adapter";
@@ -113,9 +114,10 @@ function createRuntimeAdapters(
 		rethrowWorkflowAttemptLost(error);
 		signal.throwIfAborted();
 		const failure = normalizeRenderProcessFailure(error);
+		if (executorProcessFailure(failure)) throw failure;
 		if (
 			failure instanceof WorkerProcessFailure &&
-			(failure.failureScope || failure.code !== "worker_command_input_invalid")
+			failure.code !== "worker_command_input_invalid"
 		)
 			throw failure;
 	};

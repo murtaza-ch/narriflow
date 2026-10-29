@@ -1860,7 +1860,11 @@ export class WorkflowRunLifecycle {
   /** A graceful shutdown returns owned work after `WORKFLOW_RELEASE_GRACE_MS`
    * instead of a full lease and refunds only this claim's retry. Expired,
    * waiting, and superseded attempts are untouched. */
-  async releaseAttempt(attempt: WorkflowAttemptRef): Promise<boolean> {
+  async releaseAttempt(attempt: WorkflowAttemptRef, options: {
+    /** An interrupted parent that already encoded retains its charged claim. */
+    refundAttempt?: boolean;
+    reason?: string;
+  } = {}): Promise<boolean> {
     return this.transaction(async (tx) => {
       if (attempt.stage === "clip_rendering") await this.lockAdmissionProject(tx, attempt.projectId);
       const now = await this.databaseNow(tx);
@@ -1871,14 +1875,14 @@ export class WorkflowRunLifecycle {
           leaseExpiresAt: { gt: now },
         },
         data: {
-          status: "queued", progress: 0, attemptCount: { decrement: 1 }, attemptId: null,
+          status: "queued", progress: 0, ...(options.refundAttempt !== false ? { attemptCount: { decrement: 1 } } : {}), attemptId: null,
           leaseOwner: null, leaseExpiresAt: null, heartbeatAt: null,
           nextAttemptAt: new Date(now.getTime() + WORKFLOW_RELEASE_GRACE_MS),
           nextPollAt: null, waitingSince: null, errorCode: null,
         },
       });
       if (changed.count === 0) return false;
-      await this.settleAttemptChildren(tx, attempt, { requeue: true, errorCode: "worker_shutdown" });
+      await this.settleAttemptChildren(tx, attempt, { requeue: true, errorCode: options.reason ?? "worker_shutdown" });
       if (attempt.stage === "dubbing") {
         const aggregate = await this.dubbingAggregate(tx, attempt);
         await tx.workflowRun.update({ where: { id: attempt.workflowRunId }, data: { succeededCount: aggregate.succeededCount } });

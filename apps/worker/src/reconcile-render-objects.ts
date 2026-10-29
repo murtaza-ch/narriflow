@@ -30,6 +30,15 @@ async function main() {
   else if (result.orphaned > result.deleted) process.exitCode = 1;
 }
 
+/** Periodic inventory is dry-run until its evidence has been reviewed. */
+export async function reconcileRenderObjectsForMaintenance(projectId: string, signal: AbortSignal): Promise<void> {
+  await createProductionRenderObjectReconciler().execute({
+    projectId, signal: AbortSignal.any([signal, AbortSignal.timeout(120_000)]),
+    delete: false, maxPagesPerPrefix: 1,
+  });
+}
+
+if (import.meta.main) {
 try {
   await main();
 } catch (error) {
@@ -42,4 +51,6 @@ try {
     }),
   );
   process.exitCode = 3;
+}
+
 }

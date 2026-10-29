@@ -204,3 +204,59 @@ window cannot publish Automatic evidence. Queue completion is fenced by the live
 renewed claim lease, editor revision, and proxy identity. Ownership loss aborts
 media work, and shutdown releases the current claim immediately. Transient
 publication failures use the configured durable backoff.
+
+## Shared-queue render health and recovery
+
+Shared render and preview consumers must run the pinned worker image. Startup
+reserves `PORT` first, default `4001`, and verifies the runtime lock, model,
+vendored fonts, required filters and an actual libass glyph render before media
+admission. Report-only native hosts may run the isolated golden fixtures, but
+cannot claim shared render/preview work. An isolated-fixture override does not
+relax this check. Use a single non-watch worker for shared-queue verification.
+
+`/health` combines the existing poll-loop stall watchdog with executor health,
+shutdown state and scratch headroom. It reports resource reservations, waiting
+uploads, CPU ownership and background queue age. Spawn/configuration failures
+quarantine media starts immediately. Readiness is checked after 30 seconds;
+two failed checks initiate a nonzero graceful recycle. Source transport fallback
+and optional-asset degradation do not repair executor failures.
+
+An unstarted claim or disk deferral is released under the current fence, refunds
+that claim and backs off for the shutdown drain before another executor can
+claim it. Before group-worker integration, a parent that already started a full
+encode keeps its charge on executor/resource release. Completed siblings remain
+completed. Shutdown retains its existing refundable release protocol. Ticket 20
+must carry this behavior over to the group release/execution ledger.
+
+The CPU scheduler admits one render group or one background preview, automatic
+layout or thumbnail batch at a time. Each background batch starts at most one
+item; one waiting background item gets a turn between render groups. Already
+running work finishes within its operation bound or observes shutdown.
+
+Worker-owned scratch and the b-roll cache are swept at startup and every
+`WORKER_SCRATCH_SWEEP_INTERVAL_MS`, default ten minutes. Scratch must have a valid
+owner marker, an expired grace period, no live local owner PID and no unexpired
+workflow/group claim. Unknown/unmarked paths are preserved. B-roll entries are
+copied into group scratch before use; cache pruning does not remove those copies.
+Reference-aware object reconciliation runs hourly for one project and one page
+per render/export prefix, with a two-minute pass budget. It stays dry-run. Review
+its evidence before invoking `reconcile:render-objects --project <uuid> --delete`;
+the explicit command rechecks references and protects objects younger than 24h.
+
+Deployment draining must be **at least `WORKER_SHUTDOWN_DRAIN_MS`**, default
+30 seconds. This must be configured on Railway before deployment, separately
+from the release/reclaim tests. Read-only inspection on 2026-10-30 confirmed the
+worker's `startCommand` overrides Dockerfile `CMD` and `/health` is configured,
+but the returned live config did not declare draining duration. It is not
+verified and was not changed here. Ticket 21 must verify the effective value
+and a drained deployment's release/reclaim behavior.
+
+Incomplete multipart uploads require an enabled, whole-bucket abort lifecycle
+rule with a finite age, currently documented as seven days for `narriflow-dev`.
+`R2_INCOMPLETE_MULTIPART_LIFECYCLE_DAYS` is a startup prerequisite declaration,
+not proof of provider configuration. A read-only S3
+`GetBucketLifecycleConfiguration` on 2026-10-30 returned `AccessDenied` / HTTP
+403 with the worker credentials, so the deployed rule remains unverified.
+An account operator must inspect the Cloudflare bucket lifecycle and record the
+enabled rule, scope and abort age before the deployment gate closes. No bucket
+policy or Railway setting was changed during ticket 17.

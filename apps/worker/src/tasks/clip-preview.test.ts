@@ -719,3 +719,14 @@ describe("preview storage lifetimes", () => {
     expect(calls.claims).toBe(1);
   });
 });
+
+test("optional peaks cannot swallow executor health failure or publish a proxy after it", async () => {
+  const { WorkerProcessFailure } = await import("../worker-process");
+  const failure = new WorkerProcessFailure("worker_command_spawn_failed", "retryable", "spawn EBADF", "", null, { failureScope: "executor", executableClass: "ffmpeg", errno: "EBADF" });
+  let persisted = false;
+  await expect(persistOptionalClipPreviewPeaks({ workerProcess: processModuleWithExecute(async () => { throw failure; }),
+    signal: new AbortController().signal, proxyFilePath: "/tmp/fixture.mp4", windowStartSec: 0, windowDurationSec: 1,
+    persist: async () => { persisted = true; }, diagnose: () => {},
+  })).rejects.toBe(failure);
+  expect(persisted).toBe(false);
+});

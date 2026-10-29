@@ -1,3 +1,4 @@
+import { executorProcessFailure } from "../worker-process";
 /**
  * Generates lightweight preview proxies for clips so the studio and the
  * project-page clip cards never have to stream the full (multi-hundred-MB
@@ -812,6 +813,7 @@ export async function persistOptionalClipPreviewPeaks(params: {
     return true;
   } catch (error) {
     params.signal.throwIfAborted();
+    if (executorProcessFailure(error)) throw error;
     params.diagnose(error);
     return false;
   }
@@ -1200,7 +1202,7 @@ export async function processPendingClipPreviews(
 
   for (const [projectId, clips] of byProject) {
     signal.throwIfAborted();
-    await workerProcess.withScratchDirectory("clip-preview-", async (tempDir) => {
+    await workerProcess.withScratchDirectory("narriflow-clip-preview-", async (tempDir) => {
       const sourceStorageKey = clips[0]!.sourceStorageKey;
 
       // Stream the source over HTTP rather than downloading it. Sources here
@@ -1242,6 +1244,7 @@ export async function processPendingClipPreviews(
           previewFailureBackoff.recordSuccess(clip.id);
         } catch (error) {
           signal.throwIfAborted();
+          if (executorProcessFailure(error)) throw error;
           previewFailureBackoff.recordFailure(clip.id, Date.now());
           log("error", "clip_preview_failed", {
             clipId: clip.id,
