@@ -31,3 +31,25 @@ Evidence available: real renders today on project
 (read-only `psql` with `DIRECT_URL` from `packages/db/.env`): recent
 `ClipRender`/`ClipExportVariant`/`WorkflowRun` rows, failure codes and durations.
 Measure failure rate and per-clip wall-clock from that data before claiming anything.
+
+## Hard constraint: output parity (owner, 2026-10-29)
+
+"The output of the clips rendering and framing should be same as before."
+Hardening and speedups must not change what a rendered clip looks or sounds like:
+framing/reframe crop decisions, layout (solo/two-up/split/screen), caption cue
+text, timing, positions and styling, overlays (logo, b-roll, scenes, text layers,
+background), clip in/out timing, audio mix and loudness, resolution, frame rate
+and aspect ratio stay as they are today.
+- Proposals that would change visible output (e.g. different crop math, a
+  different scaler, caption layout changes, a different loudness target) are
+  out of scope unless they fix a demonstrated defect — and then they go to the
+  owner as a decision first.
+- Encoder-level changes (preset, threads, HW encode, container flags) are allowed
+  only if a parity check proves the output is visually equivalent.
+- Every implementation change is gated by a golden parity check: render a fixed
+  set of reference clips (solo, two-up/speaker layout, screen/split, captions
+  with RTL/CJK/emoji, logo + b-roll + music, speed change, clip at source end)
+  before and after; compare stream metadata (codec, profile, pix_fmt, fps,
+  resolution, duration ±1 frame, audio rate/channels), per-frame SSIM ≥ 0.99
+  (and identical crop rectangles / caption cue lists from the composition plan),
+  and audio loudness within ±0.5 LU.
