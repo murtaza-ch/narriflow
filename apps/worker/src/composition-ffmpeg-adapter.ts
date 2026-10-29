@@ -5,6 +5,7 @@ import {
 	clipAspectRatioOptions,
 	type ClipAspectRatio,
 	type BrandTemplateSnapshot,
+	type MediaFacts,
 } from "@narriflow/validators";
 import type { CompositionCaptionVisualLayer } from "@narriflow/composition-plan";
 import {
@@ -1020,6 +1021,7 @@ export function compileCompositionPlanInsertedSceneSequence(input: {
 	outputLabel: string;
 	trailingChain?: string;
 	fps?: GeneratedFrameRate;
+	hdrAssets?: Readonly<Record<string, HdrColor>>;
 	resolvedSceneAssets?: Readonly<
 		Record<string, { path: string; kind: "image" | "video" }>
 	>;
@@ -1066,6 +1068,7 @@ function compileInsertedSceneSequence(input: {
 	outputLabel: string;
 	trailingChain?: string;
 	fps?: GeneratedFrameRate;
+	hdrAssets?: Readonly<Record<string, HdrColor>>;
 	resolvedSceneAssets?: Readonly<
 		Record<string, { path: string; kind: "image" | "video" }>
 	>;
@@ -1214,8 +1217,9 @@ function compileInsertedSceneSequence(input: {
 			inserted.content.kind === "video"
 				? `trim=start=${inserted.content.sourceStartSec.toFixed(3)}:end=${inserted.content.sourceEndSec.toFixed(3)},setpts=PTS-STARTPTS,tpad=stop_mode=clone:stop_duration=${duration.toFixed(3)},trim=duration=${duration.toFixed(3)}`
 				: `trim=duration=${duration.toFixed(3)},setpts=PTS-STARTPTS`;
+		const hdr = inserted.sourceRef ? input.hdrAssets?.[inserted.sourceRef] : undefined;
 		parts.push(
-			`[${asset.inputIndex}:v]${trim},${fit},setsar=1,format=yuv420p${motionFilters}${output}`,
+			`[${asset.inputIndex}:v]${trim},${hdr ? `${hdrToSdrChain(hdr)},` : ""}${fit},setsar=1,format=yuv420p${motionFilters}${output}`,
 		);
 	});
 	const trailingSuffix = input.trailingChain ? `,${input.trailingChain}` : "";
@@ -1243,6 +1247,128 @@ function rationalText(rate: { numerator: number; denominator: number }): string 
 function generatedFrameRateOf(probe: WorkerMediaInspection): GeneratedFrameRate {
 	const constant = probe.videoClock?.constantRate;
 	return constant ? rationalText(constant) : probe.fps;
+}
+
+type MediaVideoFacts = MediaFacts["videos"][number];
+
+/** How one HDR video is read: the zscale names of its signal and the peak the
+ *  tone map is scaled to. */
+export interface HdrColor {
+	transfer: "smpte2084" | "arib-std-b67";
+	primaries: "2020" | "709" | "smpte432" | "smpte431";
+	matrix: "2020_ncl" | "2020_cl" | "709" | "170m" | "470bg";
+	range: "limited" | "full";
+	/** Signal peak in units of 100 cd/m2, the linear scale the tone map runs at. */
+	peak: number;
+}
+
+/** Peak assumed for PQ without usable mastering or content-light metadata, and
+ *  the nominal peak of HLG (1000 cd/m2, 10 on the 100-nit linear scale). */
+const HDR_DEFAULT_PEAK = 10;
+const HDR_PRIMARIES: Readonly<Record<string, HdrColor["primaries"]>> = {
+	bt2020: "2020",
+	bt709: "709",
+	smpte432: "smpte432",
+	smpte431: "smpte431",
+};
+const HDR_MATRICES: Readonly<Record<string, HdrColor["matrix"]>> = {
+	bt2020nc: "2020_ncl",
+	bt2020c: "2020_cl",
+	bt709: "709",
+	smpte170m: "170m",
+	bt470bg: "470bg",
+};
+
+function usableNits(nits: number | null | undefined): number | null {
+	return typeof nits === "number" && Number.isFinite(nits) && nits >= 100 && nits <= 10_000
+		? nits
+		: null;
+}
+
+/** Dolby Vision streams decode through their base layer. Profile 5 and any
+ *  stream without a signal-compatible base layer cannot be converted correctly
+ *  with FFmpeg's CPU filters, so they fail instead of being relabeled. */
+function assertDolbyVisionBaseLayer(video: MediaVideoFacts): void {
+	const dolby = video.dolbyVision;
+	if (!dolby) return;
+	if (!dolby.baseLayerPresent || dolby.profile === 5 || dolby.baseLayerSignalCompatibilityId === 0) {
+		throw new CompositionCommandFailure(
+			"hdr_dolby_vision_unsupported",
+			`Dolby Vision profile ${dolby.profile ?? "unknown"} has no HDR10, HLG or SDR compatible base layer to convert`,
+			"permanent",
+		);
+	}
+}
+
+/** The HDR reading of a source video, or null when it is SDR (and so keeps its
+ *  existing filter path). A PQ or HLG transfer decides it; any missing or odd
+ *  companion fact takes a documented assumption so the video is still converted
+ *  correctly instead of failing: BT.2020 primaries and matrix, limited range,
+ *  and the default peak. PQ scales to MaxCLL, else the mastering display peak,
+ *  when either is a plausible 100..10000 cd/m2. */
+export function hdrColorOf(probe: WorkerMediaInspection): HdrColor | null {
+	const video = probe.hasVideo ? probe.facts?.videos[0] : undefined;
+	if (!video) return null;
+	const transfer = video.colorTransfer;
+	if (transfer !== "smpte2084" && transfer !== "arib-std-b67") return null;
+	assertDolbyVisionBaseLayer(video);
+	const primaries = HDR_PRIMARIES[video.colorPrimaries ?? ""] ?? "2020";
+	const peak =
+		transfer === "arib-std-b67"
+			? HDR_DEFAULT_PEAK
+			: (usableNits(video.contentLight?.maxContent) ??
+					usableNits(video.masteringDisplay?.maxLuminance) ??
+					HDR_DEFAULT_PEAK * 100) / 100;
+	return {
+		transfer,
+		primaries,
+		matrix: HDR_MATRICES[video.colorSpace ?? ""] ?? (primaries === "709" ? "709" : "2020_ncl"),
+		range: video.colorRange === "pc" ? "full" : "limited",
+		peak: Math.round(peak * 1000) / 1000,
+	};
+}
+
+/** Linearize in the source's own signal, convert primaries in linear light,
+ *  tone-map with Hable, and encode limited-range BT.709 yuv420p. Declares the
+ *  frames BT.709 SDR, which drops the PQ/HLG tags with them. The first zscale
+ *  states the input explicitly so untagged or half-tagged files still convert. */
+function hdrToSdrChain(hdr: HdrColor): string {
+	return (
+		`zscale=tin=${hdr.transfer}:pin=${hdr.primaries}:min=${hdr.matrix}:rin=${hdr.range}:t=linear:npl=100,` +
+		"format=gbrpf32le,zscale=p=bt709," +
+		`tonemap=tonemap=hable:desat=0:peak=${hdr.peak},` +
+		"zscale=t=bt709:m=bt709:p=bt709:r=limited:dither=ordered,format=yuv420p"
+	);
+}
+
+/** A render that converted any HDR video declares its limited-range BT.709
+ *  result on the final frames, so a concat or overlay after the conversion
+ *  cannot leave the file untagged. SDR renders add nothing. */
+function sdrTagStage(
+	probe: WorkerMediaInspection,
+	hdrAssets: Readonly<Record<string, HdrColor>> | undefined,
+	label: string,
+): { label: string; filterParts: string[] } {
+	if (!hdrColorOf(probe) && Object.keys(hdrAssets ?? {}).length === 0) {
+		return { label, filterParts: [] };
+	}
+	const output = "[composition_sdr_out]";
+	return {
+		label: output,
+		filterParts: [
+			`${label}setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv${output}`,
+		],
+	};
+}
+
+function hdrSourceStage(
+	probe: WorkerMediaInspection,
+	label: string,
+): { label: string; filterParts: string[] } {
+	const hdr = hdrColorOf(probe);
+	if (!hdr) return { label, filterParts: [] };
+	const output = "[composition_sdr_source]";
+	return { label: output, filterParts: [`${label}${hdrToSdrChain(hdr)}${output}`] };
 }
 
 /** A variable-rate source becomes constant-rate here, before any scene or
@@ -1282,7 +1408,11 @@ function displaySourceStage(
 ): { label: string; filterParts: string[] } {
 	const geometry = displayGeometryStage(probe, plan, label);
 	const rate = constantRateSourceStage(probe, geometry.label, clockIsEdited);
-	return { label: rate.label, filterParts: [...geometry.filterParts, ...rate.filterParts] };
+	const sdr = hdrSourceStage(probe, rate.label);
+	return {
+		label: sdr.label,
+		filterParts: [...geometry.filterParts, ...rate.filterParts, ...sdr.filterParts],
+	};
 }
 
 function displayGeometryStage(
@@ -1319,6 +1449,9 @@ export function compileCompositionPlanVideo(input: {
 	trailingChain?: string;
 	backgroundImageInputIndex?: number | null;
 	fps?: GeneratedFrameRate;
+	/** HDR optional video layers by asset ref; each is tone-mapped to SDR
+	 *  before it is fitted or overlaid. Absent for ordinary SDR layers. */
+	hdrAssets?: Readonly<Record<string, HdrColor>>;
 	resolvedBrollAssets?: Readonly<Record<string, string>>;
 	brollInputStartIndex?: number;
 	resolvedSceneAssets?: Readonly<
@@ -1439,8 +1572,9 @@ export function compileCompositionPlanVideo(input: {
 			const visible = brollPlacements[index]!.visibleRanges.map(
 				(range) => `gte(t,${range.startSec})*lt(t,${range.endSec})`,
 			).join("+");
+			const hdr = input.hdrAssets?.[asset.sourceRef];
 			result.filterParts.push(
-				`[${asset.inputIndex}:v]scale=${plannedTarget.canvas.width}:${plannedTarget.canvas.height}:` +
+				`[${asset.inputIndex}:v]${hdr ? `${hdrToSdrChain(hdr)},` : ""}scale=${plannedTarget.canvas.width}:${plannedTarget.canvas.height}:` +
 					`force_original_aspect_ratio=increase,crop=${plannedTarget.canvas.width}:` +
 					`${plannedTarget.canvas.height},format=rgba` +
 					compositionMotionFilters({
@@ -1768,6 +1902,7 @@ export function compileCompositionPlanVideo(input: {
 				trailingChain:
 					brollInputs.length === 0 ? input.trailingChain : undefined,
 				fps: input.fps,
+				hdrAssets: input.hdrAssets,
 				resolvedSceneAssets: input.resolvedSceneAssets,
 				resolvedSceneFonts: input.resolvedSceneFonts,
 				sceneInputStartIndex: input.sceneInputStartIndex,
@@ -1918,6 +2053,9 @@ export interface ClipCompositionCommandInput {
 		logo?: LogoOverlay | null;
 		background?: BackgroundPlan | null;
 		broll?: Readonly<Record<string, string>>;
+		/** HDR optional video assets by asset ref (`hdrColorOf` of each one's
+		 *  inspection); SDR assets are left out. */
+		hdr?: Readonly<Record<string, HdrColor>>;
 		scenes?: Readonly<
 			Record<
 				string,
@@ -1953,6 +2091,7 @@ export function compileClipCompositionCommand(
 		logo: input.assets.logo,
 		background: input.assets.background,
 		resolvedSceneAssets: input.assets.scenes,
+		hdrAssets: input.assets.hdr,
 		resolvedSceneFonts: input.assets.fonts,
  captionFontsDirectory: input.assets.captionFontsDirectory,
 	};
@@ -2586,6 +2725,7 @@ function buildSingleVideoArgs(params: {
 	resolvedSceneAssets?: Readonly<
 		Record<string, { path: string; kind: "image" | "video"; hasAudio: boolean }>
 	>;
+	hdrAssets?: Readonly<Record<string, HdrColor>>;
 	resolvedSceneFonts?: Readonly<Record<string, string>>;
 }) {
 	assertBoundAudioMatchesPlan(params.composition.plan, params.audio);
@@ -2678,6 +2818,7 @@ function buildSingleVideoArgs(params: {
 		outputLabel: "[composition_base]",
 		backgroundImageInputIndex: bgImageInputIndex,
 		fps: generatedFrameRateOf(params.probe),
+		hdrAssets: params.hdrAssets,
 		resolvedSceneAssets: params.resolvedSceneAssets,
 		resolvedSceneFonts: params.resolvedSceneFonts,
 		sceneInputStartIndex: sceneInputStartIndex ?? undefined,
@@ -2712,7 +2853,9 @@ function buildSingleVideoArgs(params: {
 	) {
 		throw new Error("clip_composition_logo_asset_mismatch");
 	}
-	const finalLabel = "[outv]";
+	const sdrTag = sdrTagStage(params.probe, params.hdrAssets, "[outv]");
+	filterParts.push(...sdrTag.filterParts);
+	const finalLabel = sdrTag.label;
 
 	const args = [
 		"-y",
@@ -2845,6 +2988,7 @@ function buildBrollVideoArgs(params: {
 	resolvedSceneAssets?: Readonly<
 		Record<string, { path: string; kind: "image" | "video"; hasAudio: boolean }>
 	>;
+	hdrAssets?: Readonly<Record<string, HdrColor>>;
 	resolvedSceneFonts?: Readonly<Record<string, string>>;
 }) {
 	assertBoundAudioMatchesPlan(params.composition.plan, params.audio);
@@ -2944,6 +3088,7 @@ function buildBrollVideoArgs(params: {
 		outputLabel: "[stage0]",
 		backgroundImageInputIndex: bgImageInputIndex,
 		fps: generatedFrameRateOf(params.probe),
+		hdrAssets: params.hdrAssets,
 		resolvedBrollAssets: params.resolvedBrollAssets,
 		brollInputStartIndex: 1 + bgOffset,
 		resolvedSceneAssets: params.resolvedSceneAssets,
@@ -2994,7 +3139,9 @@ function buildBrollVideoArgs(params: {
 	) {
 		throw new Error("clip_composition_logo_asset_mismatch");
 	}
-	const finalLabel = "[outv]";
+	const sdrTag = sdrTagStage(params.probe, params.hdrAssets, "[outv]");
+	parts.push(...sdrTag.filterParts);
+	const finalLabel = sdrTag.label;
 
 	const args = [
 		"-y",

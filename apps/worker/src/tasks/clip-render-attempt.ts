@@ -83,7 +83,9 @@ import {
 	compileCompositionPlanCaptions,
 	bindCompositionPlanAudioInputs,
 	compileCompositionPlanAudioSchedule,
+	hdrColorOf,
 	type BoundCompositionAudioRenderRequest,
+	type HdrColor,
 } from "../composition-ffmpeg-adapter";
 import { classifyRenderObjectKey } from "../render-object-key";
 import { guardMixPeak, mixPeakMeasureDeadlineMs } from "../render-mix-peak";
@@ -2522,6 +2524,8 @@ async function renderClipGroup(input: {
 		{ path: string; kind: "image" | "video"; hasAudio: boolean }
 	> = {};
 	const resolvedSceneFonts: Record<string, string> = {};
+	/** HDR optional video layers (inserted scenes, B-roll) by asset ref. */
+	const hdrAssets: Record<string, HdrColor> = {};
 	const sceneSources =
 		sceneAssetReferences.length > 0 || sceneFontReferences.length > 0 || customFontReferences.length > 0
 			? await currentRenderAdapters().assets.loadSceneSources({
@@ -2588,13 +2592,17 @@ async function renderClipGroup(input: {
 					);
 				}
 			}
-			resolvedSceneAssets[
-				compositionAssetRef("visual_asset", `${asset.id}:${asset.fingerprint}`)
-			] = {
+			const sceneRef = compositionAssetRef(
+				"visual_asset",
+				`${asset.id}:${asset.fingerprint}`,
+			);
+			resolvedSceneAssets[sceneRef] = {
 				path,
 				kind: asset.kind,
 				hasAudio: sceneProbe?.hasAudio ?? false,
 			};
+			const sceneHdr = sceneProbe ? hdrColorOf(sceneProbe) : null;
+			if (sceneHdr) hdrAssets[sceneRef] = sceneHdr;
 		}
 	}
 	if (sceneFontReferences.length > 0) {
@@ -3470,6 +3478,19 @@ async function renderClipGroup(input: {
 		const plan = brollPlan;
 		const brollCredits =
 			plan && plan.credits.length > 0 ? JSON.stringify(plan.credits) : null;
+		for (const cutaway of plan?.cutaways ?? []) {
+			let cutawayProbe: SourceProbe;
+			try {
+				cutawayProbe = await probeSource(cutaway.path);
+			} catch (error) {
+				// Decodability was validated when it was downloaded; an unreadable
+				// probe leaves the cutaway on the SDR path.
+				rethrowRenderControlFlow(error);
+				continue;
+			}
+			const cutawayHdr = hdrColorOf(cutawayProbe);
+			if (cutawayHdr) hdrAssets[cutaway.ref] = cutawayHdr;
+		}
 		for (const output of outputs) {
 			if (!compositionPlan || !plannedAudio) {
 				throw new WorkflowWorkerError(
@@ -3519,6 +3540,7 @@ async function renderClipGroup(input: {
 						...(mixPeakCeiling === null ? {} : { mixPeakCeiling }),
 						assets: {
 							broll: resolvedBrollAssets,
+							hdr: hdrAssets,
 							subtitlePath: output.subtitlePath ?? null,
 							logo,
 							background: backgroundPlan,
@@ -3544,6 +3566,7 @@ async function renderClipGroup(input: {
 							subtitlePath: output.subtitlePath ?? null,
 							logo: null,
 							background: fallbackBackgroundPlan,
+							hdr: hdrAssets,
 							scenes: resolvedSceneAssets,
 							fonts: resolvedSceneFonts,
  captionFontsDirectory,

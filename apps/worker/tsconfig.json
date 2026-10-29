@@ -10,6 +10,6 @@
       "@narriflow/validators/*": ["../../packages/validators/src/*"]
     }
   },
-  "include": ["src"],
-  "exclude": ["src/**/*.test.ts"]
+  "include": ["src", "scripts"],
+  "exclude": ["src/**/*.test.ts", "scripts/**/*.test.ts"]
 }

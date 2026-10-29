@@ -1,0 +1,111 @@
+{
+  "ticket": "07",
+  "cases": {
+    "hdr-pq": {
+      "contract": [
+        {
+          "id": "renders",
+          "metric": "render.ok",
+          "op": "eq",
+          "value": true
+        },
+        {
+          "id": "bt709-transfer",
+          "metric": "output.colorTransfer",
+          "op": "eq",
+          "value": "bt709"
+        },
+        {
+          "id": "bt709-primaries",
+          "metric": "output.colorPrimaries",
+          "op": "eq",
+          "value": "bt709"
+        },
+        {
+          "id": "bt709-matrix",
+          "metric": "output.colorSpace",
+          "op": "eq",
+          "value": "bt709"
+        },
+        {
+          "id": "limited-range",
+          "metric": "output.colorRange",
+          "op": "eq",
+          "value": "tv"
+        },
+        {
+          "id": "yuv420p",
+          "metric": "output.pixFmt",
+          "op": "eq",
+          "value": "yuv420p"
+        },
+        {
+          "id": "no-hdr-side-data",
+          "metric": "output.hdrSideData",
+          "op": "eq",
+          "value": false
+        }
+      ],
+      "retain": [
+        "plan",
+        "crop",
+        "cue",
+        "layer",
+        "captions"
+      ]
+    },
+    "hdr-hlg": {
+      "contract": [
+        {
+          "id": "renders",
+          "metric": "render.ok",
+          "op": "eq",
+          "value": true
+        },
+        {
+          "id": "bt709-transfer",
+          "metric": "output.colorTransfer",
+          "op": "eq",
+          "value": "bt709"
+        },
+        {
+          "id": "bt709-primaries",
+          "metric": "output.colorPrimaries",
+          "op": "eq",
+          "value": "bt709"
+        },
+        {
+          "id": "bt709-matrix",
+          "metric": "output.colorSpace",
+          "op": "eq",
+          "value": "bt709"
+        },
+        {
+          "id": "limited-range",
+          "metric": "output.colorRange",
+          "op": "eq",
+          "value": "tv"
+        },
+        {
+          "id": "yuv420p",
+          "metric": "output.pixFmt",
+          "op": "eq",
+          "value": "yuv420p"
+        },
+        {
+          "id": "no-hdr-side-data",
+          "metric": "output.hdrSideData",
+          "op": "eq",
+          "value": false
+        }
+      ],
+      "retain": [
+        "plan",
+        "crop",
+        "cue",
+        "layer",
+        "captions"
+      ]
+    }
+  }
+}

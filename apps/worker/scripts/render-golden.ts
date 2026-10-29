@@ -54,6 +54,8 @@ import {
   compileClipCompositionCommand,
   compileCompositionPlanAudioSchedule,
   compileCompositionPlanCaptions,
+  hdrColorOf,
+  type HdrColor,
 } from "../src/composition-ffmpeg-adapter";
 import { guardMixPeak, MixPeakError, mixPeakMeasureDeadlineMs } from "../src/render-mix-peak";
 import { compositionSourceFor } from "../src/tasks/clip-render-attempt";
@@ -478,6 +480,7 @@ interface Planned {
     background: Dict | null;
     broll: Record<string, string>;
     scenes: Record<string, { path: string; kind: "image" | "video"; hasAudio: boolean }>;
+    hdr: Record<string, HdrColor>;
     musicPath: { sourceRef: string; path: string } | null;
     soundEffects: Array<{ id: string; sourceRef: string; path: string }>;
     assetHashes: Record<string, string>;
@@ -527,13 +530,16 @@ async function planCase(context: CaseContext, id: string, definition: CaseDefini
   }
 
   const scenes: Planned["assets"]["scenes"] = {};
+  const hdr: Planned["assets"]["hdr"] = {};
   const sceneVisuals: Dict = {};
   const visualDefs: Dict = assetDefs.visualAssets ?? {};
   for (const [assetId, def] of Object.entries<Dict>(visualDefs)) {
     const ref = compositionAssetRef("visual_asset", `${assetId}:${def.fingerprint}`);
     const path = fixturePath(def.fixture);
-    const hasAudio = def.kind === "video" ? (await productionWorkerProcessModule.inspectMedia({ sourcePath: path, signal, deadlineMs: 120_000 })).hasAudio : false;
-    scenes[ref] = { path, kind: def.kind, hasAudio };
+    const layerInspection = def.kind === "video" ? await productionWorkerProcessModule.inspectMedia({ sourcePath: path, signal, deadlineMs: 120_000 }) : null;
+    scenes[ref] = { path, kind: def.kind, hasAudio: layerInspection?.hasAudio ?? false };
+    const layerHdr = layerInspection ? hdrColorOf(layerInspection) : null;
+    if (layerHdr) hdr[ref] = layerHdr;
   }
   for (const block of document.sceneBlocks) {
     if (block.content.kind === "image" || block.content.kind === "video") {
@@ -609,7 +615,7 @@ async function planCase(context: CaseContext, id: string, definition: CaseDefini
     (error as any).code = result.error.code;
     throw error;
   }
-  return { plan: result.plan, document, inspection, sourcePath, assets: { logo, background, broll, scenes, musicPath, soundEffects: sfxPaths, assetHashes }, cutPlan };
+  return { plan: result.plan, document, inspection, sourcePath, assets: { logo, background, broll, scenes, hdr, musicPath, soundEffects: sfxPaths, assetHashes }, cutPlan };
 }
 
 // ---------------------------------------------------------------------------
@@ -1036,7 +1042,7 @@ export async function runCase(context: CaseContext, id: string): Promise<CaseRec
         encoder: context.inputs.manifest.encoder,
         cutPlan: planned.cutPlan,
         ...(mixPeakCeiling === null ? {} : { mixPeakCeiling }),
-        assets: { subtitlePath, logo: planned.assets.logo as any, background: planned.assets.background as any, broll: planned.assets.broll, scenes: planned.assets.scenes, fonts: {}, captionFontsDirectory: fonts },
+        assets: { subtitlePath, logo: planned.assets.logo as any, background: planned.assets.background as any, broll: planned.assets.broll, hdr: planned.assets.hdr, scenes: planned.assets.scenes, fonts: {}, captionFontsDirectory: fonts },
       });
       try {
         argv = compile(null);
@@ -1064,7 +1070,6 @@ export async function runCase(context: CaseContext, id: string): Promise<CaseRec
         const peak = await guardMixPeak({
           audio,
           outputPath,
-          encodedArgs: argv,
           limitedArgs: (ceiling) => compile(ceiling),
           measureStdout: async (args) => {
             const measure = await runProcess("ffmpeg", args, { timeoutMs: mixPeakMeasureDeadlineMs(planned.plan.editedDurationSec) });
