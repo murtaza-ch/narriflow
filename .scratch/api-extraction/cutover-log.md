@@ -7,4 +7,5 @@
 - Vercel: `NEXT_PUBLIC_API_URL=A` added (production, preview, development). Backend variables removed only after the new revision is verified.
 - Stripe (test mode, shared account): new endpoint `we_1UVobgFB4NArILpPk1Kkgqrh` → `A/api/webhooks/stripe`, 19 events, API version 2026-07-29.dahlia. Old `we_1UVAePFB4NArILpPYhhohq93` (W) still enabled → delete after a replayed event succeeds on A.
 - Clerk (Svix app `app_3A6erResDeLW2LSCIAiyDeT2Mlx`, region eu): new endpoint `ep_3LMRzWiJTuD0IHgU2pw9SrUS5rr` → `A/api/webhooks/clerk`, user.created/updated/deleted. Old `ep_3J5HEK3LlnPNmL64ReI6Oe4RpXp` (W) → delete after cutover.
-- Google / TikTok redirect URIs: in progress via the owner's Chrome.
+- Google (project `narrifllow-dev`, OAuth client `narriflow-dev`): added `A/api/social/oauth/callback`. The Vercel callback was never registered (only `http://localhost:3000/...`), so deployed YouTube connect never worked before; it will on A. JavaScript origins unchanged (`http://localhost:3000` only — the Drive picker is a separate client).
+- TikTok (app `7683396282354599957`): Production config is an empty draft (no products/scopes; needs owner review submission for real users). Sandbox "Local development" holds Login Kit: added `A/api/social/oauth/callback` alongside the existing ngrok URI. No Content Posting webhook is registered anywhere.
