@@ -7,6 +7,7 @@ import {
 	planClipComposition,
 	sceneLayoutPresetShowsBackground,
 	type ClipCompositionPlan,
+	type ClipCompositionPlanInput,
 	type CompositionMode,
 } from "@narriflow/composition-plan";
 import {
@@ -56,6 +57,7 @@ import { buildClipCutPlan } from "./cut-plan";
 import {
 	LayoutEvidence,
 	type LayoutEvidenceDetectors,
+	type LayoutEvidenceAvailability,
 } from "../layout-evidence";
 import {
 	brollQueryForClip,
@@ -75,6 +77,7 @@ import {
 } from "../render-object-key";
 import {
 	resolveDisplayGeometry,
+	WorkerProcessFailure,
 	type WorkerMediaInspection,
 	type WorkerProcessDiagnostic,
 	type WorkerProcessModule,
@@ -409,8 +412,39 @@ type CompositionPlannerSource = Parameters<
 	typeof planClipComposition
 >[0]["source"];
 
-/** The one derivation of the planner's source facts from a media inspection.
- *  Production rendering and the golden parity harness both call it. */
+/** The render and golden runner share the exact evidence supplied to the planner. */
+export function deriveRenderCompositionEvidence(input: {
+ availability: LayoutEvidenceAvailability;
+ framingDegraded?: ClipCompositionPlanInput["evidence"]["framingDegraded"];
+ /** Frozen golden fixtures may deliberately request provisional evidence. */
+ unavailableAutomaticState?: "missing" | "pending" | "failed" | "disabled";
+ sourceIdentity: string;
+ clipStartSec: number;
+ clipEndSec: number;
+ deletedRanges: EditorDocument["deletedRanges"];
+}): ClipCompositionPlanInput["evidence"] {
+ const automatic = input.availability.automaticLayout;
+ return {
+  automaticLayout: automatic.state === "available" ? {
+   state: "available",
+   value: {
+    sourceIdentity: input.sourceIdentity,
+    inputFingerprint: automaticLayoutInputFingerprint({
+     sourceIdentity: input.sourceIdentity, clipStartSec: input.clipStartSec,
+     clipEndSec: input.clipEndSec, deletedRanges: input.deletedRanges,
+     engineVersion: CLIP_AUTO_LAYOUT_ENGINE,
+    }),
+    engineVersion: CLIP_AUTO_LAYOUT_ENGINE,
+    analysis: automatic.value.analysis,
+   },
+  } : { state: automatic.state === "disabled" ? "disabled" : automatic.state === "failed" ? "failed" : input.unavailableAutomaticState ?? "failed" },
+  ...(input.framingDegraded ? { framingDegraded: input.framingDegraded } : {}),
+  splitLayout: input.availability.splitLayout,
+  screenLayout: input.availability.screenLayout,
+ };
+}
+
+/** The one derivation of display-oriented planner source facts. */
 export function compositionSourceFor(
 	probe: SourceProbe,
 	identity: string,
@@ -2195,6 +2229,7 @@ async function renderClipGroup(input: {
 		visualLayerCount: 0,
 		planningDurationMs: 0,
 		analysisRequestKeys: new Set<string>(),
+		analysisAttempts: 0,
 		analysisExecutionCount: 0,
 		detectorExecutionCount: 0,
 		extractedSegmentCount: 0,
@@ -2992,6 +3027,7 @@ async function renderClipGroup(input: {
 	await layoutEvidence.fulfill(requestedLayoutEvidence);
 	for (const key of layoutEvidence.resources.requestKeys)
 		compositionResources.analysisRequestKeys.add(key);
+	compositionResources.analysisAttempts += layoutEvidence.resources.analysisAttempts;
 	compositionResources.analysisExecutionCount +=
 		layoutEvidence.resources.analysisExecutionCount;
 	compositionResources.detectorExecutionCount +=
@@ -3001,8 +3037,10 @@ async function renderClipGroup(input: {
 		automaticAvailability.state === "available"
 			? automaticAvailability.value.analysis
 			: null;
-	const automaticLayoutEvidenceFailure =
-		automaticAvailability.state === "disabled" ? "disabled" : "failed";
+ const compositionEvidence = deriveRenderCompositionEvidence({
+  availability: layoutEvidence.availability, framingDegraded: layoutEvidence.framingDegraded, sourceIdentity: compositionSourceIdentity,
+  clipStartSec, clipEndSec, deletedRanges,
+ });
 	const automaticLayoutEvidenceSource = layoutEvidence.automaticSource;
 	const splitLayoutEvidenceForPlan = layoutEvidence.availability.splitLayout;
 	const screenLayoutEvidenceForPlan = layoutEvidence.availability.screenLayout;
@@ -3217,27 +3255,7 @@ async function renderClipGroup(input: {
 			return planClipComposition({
 				document: compositionDocument,
 				source: plannerSource,
-				evidence: {
-					automaticLayout: automaticLayoutAnalysisForPlan
-						? {
-								state: "available",
-								value: {
-									sourceIdentity: compositionSourceIdentity,
-									inputFingerprint: automaticLayoutInputFingerprint({
-										sourceIdentity: compositionSourceIdentity,
-										clipStartSec,
-										clipEndSec,
-										deletedRanges,
-										engineVersion: CLIP_AUTO_LAYOUT_ENGINE,
-									}),
-									engineVersion: CLIP_AUTO_LAYOUT_ENGINE,
-									analysis: automaticLayoutAnalysisForPlan,
-								},
-							}
-						: { state: automaticLayoutEvidenceFailure },
-					splitLayout: splitLayoutEvidenceForPlan,
-					screenLayout: screenLayoutEvidenceForPlan,
-				},
+				evidence: compositionEvidence,
 				assets: {
 					backgroundImage,
 					sceneVisuals: sceneVisualAvailability,
@@ -3882,6 +3900,8 @@ async function renderClipGroup(input: {
 		targetCount: outputs.length,
 		analysisRequestCount: compositionResources.analysisRequestKeys.size,
 		analysisRequestKeys: [...compositionResources.analysisRequestKeys].sort(),
+		analysisAttempts: compositionResources.analysisAttempts,
+		analysisAttemptLimit: 3,
 		analysisExecutionCount: compositionResources.analysisExecutionCount,
 		detectorExecutionCount: compositionResources.detectorExecutionCount,
 		extractedSegmentCount: compositionResources.extractedSegmentCount,
@@ -4177,6 +4197,7 @@ async function executeClipRenderAttemptInScratch(params: {
 				// Any delivery already scheduled must settle before failure writes.
 				await uploadQueue.drain();
 				signal.throwIfAborted();
+				if (error instanceof WorkerProcessFailure && error.failureScope) throw error;
 				const failure = workflowFailureFromUnknown(error);
 				for (const render of renderGroup) {
 					await currentRenderAdapters().clip.markClipRenderVariantRendering(
@@ -4250,6 +4271,7 @@ async function executeClipRenderAttemptInScratch(params: {
 		if (uploadQueueRef) {
 			await uploadQueueRef.drain();
 		}
+		if (error instanceof WorkerProcessFailure && error.failureScope) throw error;
 		const failure = workflowFailureFromUnknown(error);
 		const code = failure.code;
 

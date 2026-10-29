@@ -173,7 +173,9 @@ def main() -> int:
             try:
                 _, faces = detector.detect(detect_frame)
             except Exception:
-                faces = None
+                cap.release()
+                print(json.dumps({"error": "face inference failed"}))
+                return 6
 
             if multi:
                 gray = cv2.cvtColor(detect_frame, cv2.COLOR_BGR2GRAY)
@@ -221,6 +223,9 @@ def main() -> int:
         idx += 1
 
     cap.release()
+    if not samples:
+        print(json.dumps({"error": "no decoded frames"}))
+        return 4
     print(json.dumps({"width": width, "height": height, "samples": samples}))
     return 0
 

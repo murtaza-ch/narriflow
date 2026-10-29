@@ -206,6 +206,11 @@ export interface ClipCompositionPlanInput {
   readonly document: EditorDocument;
   readonly source: CompositionSourceFacts;
   readonly evidence: {
+    readonly framingDegraded?: {
+      readonly attempts: number;
+      readonly causeCode: string;
+      readonly modes: readonly ("auto" | "screen" | "split")[];
+    };
     readonly automaticLayout: AutomaticLayoutEvidenceAvailability;
     readonly splitLayout?: CompositionEvidenceAvailability<
       SplitLayoutEvidence,
@@ -554,6 +559,8 @@ export interface CompositionEvidenceRequest {
 }
 
 export interface CompositionNotice {
+  readonly attempts?: number;
+  readonly causeCode?: string;
   readonly code: string;
   readonly fidelity: "pending" | "degraded";
   readonly targetId: string;
@@ -2852,6 +2859,7 @@ export function planClipComposition(
                 }
               : { state: input.evidence.screenLayout?.state ?? "missing" },
         },
+      ...(input.evidence.framingDegraded ? { framingDegraded: input.evidence.framingDegraded } : {}),
       capabilities: input.capabilities,
       targets: input.targets,
     }),
@@ -3012,6 +3020,18 @@ export function planClipComposition(
             ],
           },
         ],
+      };
+    }
+    const degraded = input.evidence.framingDegraded;
+    if (degraded && degraded.modes.some((mode) => mode === requestedMode)) {
+      notices.push({ code: "framing_degraded", fidelity: "degraded", targetId: target.id, sceneId: null, effectiveFallback: "center", userActionPossible: false, attempts: degraded.attempts, causeCode: degraded.causeCode });
+      return {
+        id: target.id, aspectRatio: target.aspectRatio, requestedMode, effectiveMode: "center", canvas,
+        scenes: [{ id: `scene:framing-degraded:${target.id}:0`, startSec: 0, endSec: editedTimeMap.editedDurationSec, layers: [{
+          id: `layer:source:${target.id}:0`, kind: "source-video", sourceRef: input.source.identity,
+          sourceCrop: centeredCoverCrop(input.source, target), destination: { x: 0, y: 0, width: target.width, height: target.height },
+          fit: "cover", rotationDeg: 0, opacity: 1, zIndex: 0,
+        }] }],
       };
     }
     if (requestedMode === "split") {
@@ -3512,11 +3532,19 @@ export function planClipComposition(
             background: sceneBackground,
           })
         : [];
+      const degraded = input.evidence.framingDegraded;
+      const sceneLayouts = degraded?.modes.includes("auto")
+        ? activeSceneLayouts.map((selection) => {
+            if (selection.aspectRatio !== baseTarget.aspectRatio || !sceneLayoutPresetNeedsAutomaticEvidence(selection.preset)) return selection;
+            notices.push({ code: "framing_degraded", fidelity: "degraded", targetId: baseTarget.id, sceneId: selection.id, effectiveFallback: "center", userActionPossible: false, attempts: degraded.attempts, causeCode: degraded.causeCode });
+            return { ...selection, preset: "center" as const };
+          })
+        : activeSceneLayouts;
       const applied = applySceneLayoutSelections({
         target: baseTarget,
         targetInput,
         source: input.source,
-        selections: activeSceneLayouts,
+        selections: sceneLayouts,
         automaticScenes,
         automaticDefaultScenes,
         automaticSegments: automaticAnalysis?.segments ?? [],

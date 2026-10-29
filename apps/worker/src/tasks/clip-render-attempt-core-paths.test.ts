@@ -38,7 +38,7 @@ import {
 	screenLayoutInputFingerprint,
 } from "@narriflow/composition-plan";
 import { parseRenderConfig } from "../render-config";
-import { productionWorkerProcessModule } from "../worker-process";
+import { productionWorkerProcessModule, WorkerProcessFailure } from "../worker-process";
 import {
 	compileClipCompositionCommand,
 	bindCompositionPlanAudioInputs,
@@ -493,7 +493,7 @@ function createCoreRenderPathTracer(input: {
 								throw reason;
 							}
 							default:
-								throw new Error(`Unexpected analysis command: ${command}`);
+								return { exitCode: 0, stdout: Buffer.from(JSON.stringify(args[0]?.endsWith("pip_detect.py") ? { movingPxFrac: null, insufficientSamples: true, candidates: [] } : { samples: [] })) };
 						}
 					}
 					expect(command).toBe("ffmpeg");
@@ -1574,7 +1574,7 @@ test("a screen scene layout requests only Automatic evidence under clip-wide Cen
 	expect(graph).toContain("composition_scene_0_layer_1_src");
 });
 
-test("ClipRenderAttempt degrades shared extraction failure without changing settlement", async () => {
+test("ClipRenderAttempt exhausts three shared extraction operations before flagged center fallback", async () => {
 	const harness = createCoreRenderPathTracer({
 		topology: "studio-per-output",
 
@@ -1583,12 +1583,12 @@ test("ClipRenderAttempt degrades shared extraction failure without changing sett
 
 	await expect(
 		harness.clipRenderAttempt.execute(
-			harness.attempt,
+			{ ...harness.attempt, attemptCount: 3 },
 			attemptContext(new AbortController().signal),
 		),
 	).resolves.toMatchObject({ status: "completed", succeeded: 2, failed: 0 });
 	expect(harness.analysisCounts()).toEqual({
-		extraction: 1,
+		extraction: 3,
 		face: 0,
 		multiFace: 0,
 		pip: 0,
@@ -1598,18 +1598,19 @@ test("ClipRenderAttempt degrades shared extraction failure without changing sett
 	expect(harness.workspaceCleanupCount()).toBe(1);
 	expect(harness.settlementCalls()).toBe(1);
 	expect(harness.diagnostics).toContainEqual({
-		message: "clip_reframe_segment_extract_failed",
+		message: "framing_degraded",
 		context: expect.objectContaining({
 			phase: "media_analysis",
-			analysisMode: "segment_extraction",
-			failureCode: "analysis_input_unavailable",
+			fallbackMode: "center_crop",
+			causeCode: "analysis_unavailable",
+			attempts: 3,
 			disposition: "degraded",
 		}),
 	});
 	expect(harness.diagnostics).toContainEqual({
 		message: "clip_composition_resources",
 		context: expect.objectContaining({
-			analysisExecutionCount: 1,
+			analysisExecutionCount: 3,
 			detectorExecutionCount: 0,
 			extractedSegmentCount: 0,
 		}),
@@ -2607,51 +2608,16 @@ test("ClipRenderAttempt propagates ownership loss from fenced analysis persisten
 	expect(harness.settlementCalls()).toBe(0);
 });
 
-test("ClipRenderAttempt records degraded Screen evidence when analysis is unavailable", async () => {
-	const harness = createCoreRenderPathTracer({
-		topology: "single-video",
-		clipOverrides: {
-			studioEdits: { framing: { mode: "screen" } },
-			previewStorageKey: "projects/test/previews/current.mp4",
-			editorRevision: 0,
-		},
-
-		faceAnalysisSamples: null,
-		pipAnalysisResult: null,
-	});
-
-	await expect(
-		harness.clipRenderAttempt.execute(
-			harness.attempt,
-			attemptContext(new AbortController().signal),
-		),
-	).resolves.toMatchObject({ status: "completed", succeeded: 1, failed: 0 });
-	expect(harness.diagnostics).toContainEqual({
-		message: "clip_screen_pip_fallback",
-		context: expect.objectContaining({
-			phase: "media_analysis",
-			analysisMode: "picture_in_picture",
-			fallbackMode: "speaker_band",
-			failureCode: "detection_unavailable",
-			disposition: "degraded",
-			durationMs: expect.any(Number),
-		}),
-	});
-	expect(harness.diagnostics).toContainEqual({
-		message: "clip_composition_plan",
-		context: expect.objectContaining({
-			requestedMode: "screen",
-			noticeCodes: ["screen_detection_unavailable"],
-		}),
-	});
-	expect(harness.persistedScreenLayouts).toContainEqual(
-		expect.objectContaining({
-			state: "failed",
-			reason: "detection_unavailable",
-			sourceIdentity: expect.any(String),
-			inputFingerprint: expect.stringMatching(/^[0-9a-f]{16}$/),
-		}),
-	);
+test("ClipRenderAttempt exhausts Screen analysis without persisting infrastructure failures", async () => {
+ const harness = createCoreRenderPathTracer({
+  topology: "single-video", clipOverrides: { studioEdits: { framing: { mode: "screen" } }, previewStorageKey: "projects/test/previews/current.mp4", editorRevision: 0 },
+  faceAnalysisFailure: new WorkflowFailure("analysis_unavailable", "retryable", "transient detector failure"), pipAnalysisResult: null,
+ });
+ await expect(harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal))).resolves.toMatchObject({ status: "completed", succeeded: 1, failed: 0 });
+ expect(harness.analysisCounts().face).toBe(3);
+ expect(harness.diagnostics).toContainEqual({ message: "framing_degraded", context: expect.objectContaining({ phase: "media_analysis", fallbackMode: "center_crop", causeCode: "analysis_unavailable", attempts: 3 }) });
+ expect(harness.diagnostics).toContainEqual({ message: "clip_composition_plan", context: expect.objectContaining({ requestedMode: "screen", noticeCodes: ["framing_degraded"] }) });
+ expect(harness.persistedScreenLayouts).toEqual([]);
 });
 
 const qualifyingPipCandidate = {
@@ -4701,4 +4667,16 @@ describe("ClipRenderAttempt real-media plan fixtures", () => {
 			30_000,
 		);
 	}
+});
+
+
+test("ClipRenderAttempt propagates analysis startup failure to executor recovery without settling variants", async () => {
+ const failure = new WorkerProcessFailure("worker_command_spawn_failed", "retryable", "spawn", "", null, { failureScope: "executor", errno: "EBADF" });
+ const harness = createCoreRenderPathTracer({ topology: "single-video", analysisExtractionFailure: failure });
+ await expect(harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal))).rejects.toBe(failure);
+ expect(harness.analysisCounts().extraction).toBe(1);
+ expect(harness.commands).toHaveLength(0);
+ expect(harness.persistedVariantIds).toHaveLength(0);
+ expect(harness.failureCodes.size).toBe(0);
+ expect(harness.settlementCalls()).toBe(0);
 });

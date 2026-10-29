@@ -3,6 +3,7 @@ import {
   screenLayoutInputFingerprint,
   splitLayoutInputFingerprint,
   type AutomaticLayoutEvidenceAvailability,
+  type ClipCompositionPlanInput,
   type CompositionEvidenceAvailability,
   type CompositionEvidenceRequest,
   type ScreenLayoutEvidence,
@@ -17,7 +18,6 @@ import {
   SCREEN_LAYOUT_VERSION,
   clipAutoLayoutAnalysisSchema,
   clipAutoLayoutMatchesInputs,
-  clipLayoutAnalysisFailureSchema,
   clipLayoutAnalysisSchema,
   clipSplitLayoutFailureSchema,
   parseClipAutoLayoutAnalysis,
@@ -34,6 +34,9 @@ import {
   type SourceRange,
   type TranscriptUtterance,
 } from "@narriflow/validators";
+import { WorkflowFailure } from "@narriflow/services";
+import { WorkerProcessFailure } from "./worker-process";
+import { setTimeout as delay } from "node:timers/promises";
 import { automaticLayoutFrameOptions } from "./tasks/auto-layout-zoom";
 import { buildClipCutPlan, type ClipCutPlan } from "./tasks/cut-plan";
 import { buildAutoLayoutPlan, speechWordsFromUtterances } from "./tasks/layout-engine";
@@ -79,6 +82,8 @@ export interface LayoutEvidenceInput {
   hasBroll: boolean;
   pipMotionThreshold: number;
   signal: AbortSignal;
+  /** Background work uses the durable claim backoff instead of local retries. */
+  retryPolicy?: "background";
   /** Camera cuts use the original video clock, never a retimed face proxy. */
   sceneSource: { path: string; startSec: number };
   /** The returned local media must cover the whole uncut Clip window. */
@@ -98,6 +103,7 @@ export interface LayoutEvidenceDependencies {
    * A false result skips the durable write; frozen render evidence stays usable. */
   persist(write: LayoutEvidenceWrite, clip: LayoutEvidenceInput["clip"]): Promise<boolean | undefined>;
   now(): number;
+  delay?(ms: number, signal: AbortSignal): Promise<void>;
   /** Preserve caller-specific ownership control signals before degrading IO. */
   rethrowControl(error: unknown): void;
   diagnose(message: string, context: Record<string, unknown>): void;
@@ -114,7 +120,8 @@ export interface LayoutEvidenceAvailability {
  * consume this interface; composition decisions remain in the planner. */
 export class LayoutEvidence {
   readonly availability: LayoutEvidenceAvailability;
-  readonly resources = { requestKeys: new Set<string>(), analysisExecutionCount: 0, detectorExecutionCount: 0, persistenceFailures: 0, persistenceSkipped: 0 };
+  framingDegraded?: NonNullable<ClipCompositionPlanInput["evidence"]["framingDegraded"]>;
+  readonly resources = { analysisAttempts: 0, requestKeys: new Set<string>(), analysisExecutionCount: 0, detectorExecutionCount: 0, persistenceFailures: 0, persistenceSkipped: 0 };
   automaticSource: "durable" | "analysis" | "failed" | "disabled";
   private readonly cutPlan: ClipCutPlan;
   private readonly durationSec: number;
@@ -144,20 +151,20 @@ export class LayoutEvidence {
     const screen = parseClipLayoutAnalysis(input.durable.screen);
     if (input.enabled.screen && !input.hasBroll && screen && this.matchesScreen(screen)) this.setScreen(screen, "durable-pip");
     const screenFailure = parseClipLayoutAnalysisFailure(input.durable.screen);
-    if (input.enabled.screen && !screen && screenFailure?.sourceIdentity === source.identity && screenFailure.inputFingerprint === this.fingerprint(SCREEN_LAYOUT_ENGINE_VERSION, "screen")) this.availability.screenLayout = { state: "failed", reason: screenFailure.reason };
+    if (input.enabled.screen && !screen && screenFailure && !["detection_unavailable", "analysis_unavailable"].includes(screenFailure.reason) && screenFailure.sourceIdentity === source.identity && screenFailure.inputFingerprint === this.fingerprint(SCREEN_LAYOUT_ENGINE_VERSION, "screen")) this.availability.screenLayout = { state: "failed", reason: screenFailure.reason };
     const split = parseClipSplitLayoutAnalysis(input.durable.split);
     if (input.enabled.split && !input.hasBroll && split && this.matchesEnvelope(split)) this.setSplit(split, "durable-explicit");
     const splitFailure = parseClipSplitLayoutFailure(input.durable.split);
-    if (input.enabled.split && !split && splitFailure?.sourceIdentity === source.identity && splitFailure.inputFingerprint === this.fingerprint("explicit-split-v1", "split")) this.availability.splitLayout = { state: "failed", reason: splitFailure.reason };
+    if (input.enabled.split && !split && splitFailure && splitFailure.reason !== "detection_unavailable" && splitFailure.sourceIdentity === source.identity && splitFailure.inputFingerprint === this.fingerprint("explicit-split-v1", "split")) this.availability.splitLayout = { state: "failed", reason: splitFailure.reason };
   }
 
   async fulfill(requests: readonly CompositionEvidenceRequest[]): Promise<LayoutEvidenceAvailability> {
+    const pending: CompositionEvidenceRequest[] = [];
     for (const request of requests) {
       this.checkpoint();
       const engine = request.kind === "automatic-speaker-layout" ? CLIP_AUTO_LAYOUT_ENGINE : request.kind === "screen-layout" ? SCREEN_LAYOUT_ENGINE_VERSION : "explicit-split-v1";
       if (request.engineVersion !== engine) throw new Error("unsupported_clip_composition_evidence_version");
-      if (this.fulfilled.has(request.kind)) continue;
-      this.fulfilled.add(request.kind);
+      if (this.fulfilled.has(request.kind) || pending.some((value) => value.kind === request.kind)) continue;
       const state = request.kind === "automatic-speaker-layout" ? this.availability.automaticLayout : request.kind === "screen-layout" ? this.availability.screenLayout : this.availability.splitLayout;
       if (state.state === "available" || state.state === "disabled" || state.state === "failed") continue;
       if (this.input.hasBroll && request.kind !== "automatic-speaker-layout") {
@@ -165,11 +172,51 @@ export class LayoutEvidence {
         else this.availability.splitLayout = { state: "failed", reason: "broll_conflict" };
         continue;
       }
+      pending.push(request);
       this.resources.requestKeys.add(request.key);
-      this.resources.analysisExecutionCount += 1;
-      if (request.kind === "automatic-speaker-layout") await this.automatic();
-      else if (request.kind === "screen-layout") await this.screen();
-      else await this.split();
+    }
+    let causeCode: string | undefined;
+    // The budget belongs to this owner/group, not to the parent Workflow claim.
+    const limit = this.input.retryPolicy === "background" ? 1 : 3;
+    while (pending.length > 0 && this.resources.analysisAttempts < limit) {
+      this.resources.analysisAttempts++;
+      try {
+        while (pending.length > 0) {
+          this.checkpoint();
+          const request = pending[0]!;
+          this.resources.analysisExecutionCount++;
+          if (request.kind === "automatic-speaker-layout") await this.automatic();
+          else if (request.kind === "screen-layout") await this.screen();
+          else await this.split();
+          this.fulfilled.add(request.kind);
+          pending.shift();
+        }
+      } catch (error) {
+        this.control(error);
+        // Startup/configuration and permanent source failures retain their
+        // identity for executor recovery or permanent settlement.
+        if (error instanceof WorkerProcessFailure && error.failureScope || error instanceof WorkflowFailure && error.disposition === "permanent") throw error;
+        const failure = error instanceof WorkflowFailure ? error : new WorkflowFailure("analysis_unavailable", "retryable", "Layout analysis unavailable", { cause: error });
+        causeCode ??= failure.code;
+        if (this.input.retryPolicy === "background") throw failure;
+        if (this.resources.analysisAttempts < limit) {
+          const ms = this.resources.analysisAttempts * 1000;
+          this.deps.diagnose("layout_analysis_retry", { clipId: this.input.clip.id, attempts: this.resources.analysisAttempts, causeCode: failure.code, delayMs: ms });
+          if (this.deps.delay) await this.deps.delay(ms, this.input.signal);
+          else await delay(ms, undefined, { signal: this.input.signal }).catch((error: unknown) => { this.control(error); throw error; });
+          this.checkpoint();
+        }
+      }
+    }
+    if (pending.length > 0) {
+      const modes = pending.map((request) => {
+        this.fulfilled.add(request.kind);
+        if (request.kind === "automatic-speaker-layout") { this.availability.automaticLayout = { state: "failed" }; return "auto" as const; }
+        if (request.kind === "screen-layout") { this.availability.screenLayout = { state: "failed", reason: "analysis_unavailable" }; return "screen" as const; }
+        this.availability.splitLayout = { state: "failed", reason: "detection_unavailable" }; return "split" as const;
+      });
+      this.framingDegraded = { attempts: this.resources.analysisAttempts, causeCode: causeCode ?? "analysis_unavailable", modes };
+      this.deps.diagnose("framing_degraded", { clipId: this.input.clip.id, ...this.framingDegraded, phase: "media_analysis", fallbackMode: "center_crop", disposition: "degraded" });
     }
     this.checkpoint();
     return this.availability;
@@ -200,23 +247,32 @@ export class LayoutEvidence {
     this.checkpoint();
     this.segmentPromise ??= this.input.getSegment().then((segment) => {
       this.checkpoint();
-      // Never stamp full-window identity onto partially covered preview facts.
       if (segment && segment.durationSec + 0.05 >= this.rawDurationSec) return segment;
-      this.deps.diagnose("layout_evidence_input_unavailable", { clipId: this.input.clip.id, reason: segment ? "partial_clip_coverage" : "segment_unavailable" });
-      return null;
-    }).catch((error) => { this.control(error); this.deps.diagnose("clip_reframe_segment_extract_failed", { clipId: this.input.clip.id, phase: "media_analysis", analysisMode: "segment_extraction", failureCode: "analysis_input_unavailable", disposition: "degraded" }); return null; });
+      throw new WorkflowFailure("analysis_input_unavailable", "retryable", "Layout analysis segment does not cover the clip window");
+    }).catch((error: unknown) => { this.segmentPromise = undefined; throw error; });
     return this.segmentPromise;
   }
   private control(error: unknown): void { this.checkpoint(); this.deps.rethrowControl(error); }
-  private async detect<T>(work: () => Promise<T>, fallback: T): Promise<T> {
+  private async detect<T>(work: () => Promise<T>): Promise<T> {
     this.checkpoint();
     this.resources.detectorExecutionCount += 1;
-    try { const value = await work(); this.checkpoint(); return value; }
-    catch (error) { this.control(error); this.deps.diagnose("layout_evidence_detection_unavailable", { clipId: this.input.clip.id }); return fallback; }
+    const value = await work(); this.checkpoint(); return value;
+  }
+  private async pair<A, B>(left: Promise<A>, right: Promise<B>): Promise<[A, B]> {
+    // Drain both detectors before retrying, including ones ignoring abort.
+    const results = await Promise.allSettled([left, right]);
+    for (const result of results) if (result.status === "rejected") {
+      this.control(result.reason);
+      if (result.reason instanceof WorkerProcessFailure && result.reason.failureScope || result.reason instanceof WorkflowFailure && result.reason.disposition === "permanent") throw result.reason;
+    }
+    const [a, b] = results;
+    if (a.status === "rejected") throw a.reason;
+    if (b.status === "rejected") throw b.reason;
+    return [a.value, b.value];
   }
   private detectionInput(segment: { path: string; startSec: number }): LayoutDetectionInput { return { sourcePath: segment.path, startSec: segment.startSec, durationSec: this.rawDurationSec, logContext: { clipId: this.input.clip.id } }; }
   private multi(segment: { path: string; startSec: number }): Promise<{ samples: MultiFaceSample[] } | null> {
-    this.multiPromise ??= this.detect(() => this.deps.detectors.detectMultiFacePath(this.detectionInput(segment)), null);
+    this.multiPromise ??= this.detect(() => this.deps.detectors.detectMultiFacePath(this.detectionInput(segment))).catch((error: unknown) => { this.multiPromise = undefined; throw error; });
     return this.multiPromise;
   }
   private async persist(write: LayoutEvidenceWrite): Promise<void> {
@@ -240,17 +296,16 @@ export class LayoutEvidence {
     if (this.input.source.hasVideo) {
       const segment = await this.segment();
       if (!segment) { this.availability.automaticLayout = { state: "failed" }; return; }
-      const [multi, sceneCuts] = await Promise.all([
+      const [multi, sceneCuts] = await this.pair(
         this.multi(segment),
         this.detect(() => this.deps.detectors.detectSceneCuts({
           sourcePath: this.input.sceneSource.path,
           startSec: this.input.sceneSource.startSec,
           durationSec: this.rawDurationSec,
           logContext: { clipId: this.input.clip.id },
-        }), []),
-      ]);
-      if (!multi) { this.availability.automaticLayout = { state: "failed" }; return; }
-      samples = remapMultiFaceSamplesForCutPlan(multi.samples, this.cutPlan, this.input.clip.startSec);
+        })),
+      );
+      samples = remapMultiFaceSamplesForCutPlan(multi?.samples ?? [], this.cutPlan, this.input.clip.startSec);
       cuts = remapSceneCutsForCutPlan(sceneCuts, this.cutPlan, this.input.clip.startSec);
     }
     const base = { samples, sceneCuts: cuts, words: speechWordsFromUtterances(this.input.clip.utterances, this.cutPlan, this.input.clip.startSec, this.input.clip.endSec), durationSec: this.durationSec, options: { frameOptions: automaticLayoutFrameOptions(), activeSpeakerCuts: false } };
@@ -264,14 +319,9 @@ export class LayoutEvidence {
   private async screen(): Promise<void> {
     if (this.input.hasBroll) { this.availability.screenLayout = { state: "failed", reason: "broll_conflict" }; return; }
     const segment = await this.segment();
-    const [pip, face] = segment ? await Promise.all([this.detect(() => this.deps.detectors.detectPipPath(this.detectionInput(segment)), null), this.detect(() => this.deps.detectors.detectFacePath(this.detectionInput(segment)), null)]) : [null, null];
-    if (!pip || !face) {
-      const reason = pip ? "analysis_unavailable" : "detection_unavailable";
-      this.availability.screenLayout = { state: "failed", reason };
-      this.deps.diagnose("clip_screen_pip_fallback", { clipId: this.input.clip.id, phase: "media_analysis", analysisMode: "picture_in_picture", fallbackMode: "speaker_band", failureCode: reason, disposition: "degraded", durationMs: 0 });
-      await this.persist({ kind: "screen-failure", value: clipLayoutAnalysisFailureSchema.parse({ version: SCREEN_LAYOUT_VERSION, engine: SCREEN_LAYOUT_ENGINE_VERSION, state: "failed", sourceIdentity: this.input.source.identity, inputFingerprint: this.fingerprint(SCREEN_LAYOUT_ENGINE_VERSION, "screen"), analyzedAtISO: new Date(this.deps.now()).toISOString(), reason }) });
-      return;
-    }
+    const [pipResult, faceResult] = segment ? await this.pair(this.detect(() => this.deps.detectors.detectPipPath(this.detectionInput(segment))), this.detect(() => this.deps.detectors.detectFacePath(this.detectionInput(segment)))) : [null, null];
+    const pip = pipResult ?? { movingPxFrac: null, insufficientSamples: true, candidates: [] };
+    const face = faceResult ?? { samples: [] };
     const rect = selectPipRect(pip.candidates);
     const decision = decidePipUsage({ segmentExtracted: true, detection: pip, selectedRect: rect, faceConfirmed: confirmsFaceInRect(face.samples, rect), screencastThreshold: this.input.pipMotionThreshold });
     this.deps.diagnose(decision.useRect ? "clip_screen_pip_selected" : "clip_screen_pip_fallback", { clipId: this.input.clip.id, phase: "media_analysis", analysisMode: "picture_in_picture", selectedMode: decision.useRect ? "pip_crop" : undefined, fallbackMode: decision.useRect ? undefined : "speaker_band", failureCode: decision.useRect ? undefined : decision.reason, disposition: decision.useRect ? "available" : "degraded", analysisSource: "fresh", durationMs: 0 });
@@ -284,7 +334,7 @@ export class LayoutEvidence {
     const segment = await this.segment();
     const multi = segment ? await this.multi(segment) : null;
     const plan = multi ? buildSplitLayoutPlan(remapMultiFaceSamplesForCutPlan(multi.samples, this.cutPlan, this.input.clip.startSec), this.durationSec) : null;
-    const reason = decideSplitFallback({ hasBrollPlan: false, detectionAvailable: Boolean(multi), plan });
+    const reason = decideSplitFallback({ hasBrollPlan: false, detectionAvailable: true, plan });
     if (reason || !plan) {
       const failure = reason ?? "empty_plan";
       this.availability.splitLayout = { state: "failed", reason: failure };

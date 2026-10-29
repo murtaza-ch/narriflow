@@ -264,6 +264,9 @@ def main() -> int:
         idx += 1
 
     cap.release()
+    if not frames:
+        print(json.dumps({"error": "no decoded frames"}))
+        return 4
 
     coverage_frac = (last_sampled_t / duration) if duration > 0 else 0.0
 

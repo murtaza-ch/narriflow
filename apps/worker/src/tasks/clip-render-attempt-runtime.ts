@@ -437,8 +437,7 @@ function createRuntimeAdapters(
 	 * copy snaps to the previous keyframe and would shift every face sample by
 	 * up to a GOP). Returns the ORIGINAL `sourcePath`/`clipStartSec` unchanged
 	 * for a local/non-HTTP source (no extraction needed, unless `orientedSource`
-	 * says the display matrix must be baked in by FFmpeg first), or null on any
-	 * extraction failure — callers already fall back to a static/center crop.
+	 * says the display matrix must be baked in by FFmpeg first), and preserves typed extraction failures for the analysis retry owner.
 	 * `suffix` keeps the two call sites' temp files from colliding when both run
 	 * for the same clip (split falling back to auto-reframe within one render).
 	 */
@@ -459,31 +458,11 @@ function createRuntimeAdapters(
 			params.tempDir,
 			`face-seg-${params.clipId}${params.suffix ?? ""}.mp4`,
 		);
-		try {
-			await execCommand(
-				"ffmpeg",
-				compileLayoutEvidenceSegmentCommand({
-					sourcePath: params.sourcePath,
-					outputPath: segmentPath,
-					startSec: params.clipStartSec,
-					durationSec: params.durationSec,
-				}),
-			);
-			return { path: segmentPath, startSec: 0 };
-		} catch (segmentError) {
-			rethrowRenderControlFlow(segmentError);
-			log("error", "clip_reframe_segment_extract_failed", {
-				workflowRunId: params.workflowRunId,
-				clipId: params.clipId,
-				phase: "media_analysis",
-				analysisMode: "segment_extraction",
-				fallbackMode: "center_crop",
-				failureCode: "analysis_input_unavailable",
-				disposition: "degraded",
-				durationMs: 0,
-			});
-			return null;
-		}
+  await execCommand(
+    "ffmpeg",
+    compileLayoutEvidenceSegmentCommand({ sourcePath: params.sourcePath, outputPath: segmentPath, startSec: params.clipStartSec, durationSec: params.durationSec }),
+  );
+  return { path: segmentPath, startSec: 0 };
 	}
 
 	type DownloadUrlToFileOverrides = Parameters<

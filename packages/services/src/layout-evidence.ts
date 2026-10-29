@@ -99,6 +99,24 @@ export class LayoutEvidenceLifecycle {
   constructor(private readonly deps: LayoutEvidenceLifecycleDependencies) {}
   private now(): Date { return this.deps.now?.() ?? new Date(); }
 
+  /** Explicit, bounded repair for pre-hardening infrastructure envelopes.
+   * Supply reviewed clip IDs; valid content evidence and live claims stay intact. */
+  async resetTransientFailures(clipIds: readonly string[]): Promise<{ screen: number; split: number }> {
+    if (clipIds.length === 0 || clipIds.length > 1000 || clipIds.some((id) => !id.trim())) throw new Error("Expected 1-1000 explicit clip IDs");
+    return this.deps.prisma.$transaction(async (tx) => {
+      const reset = async (field: "layoutAnalysis" | "splitLayoutAnalysis") => tx.clip.updateMany({
+        where: { id: { in: [...clipIds] }, AND: [
+          { [field]: { path: ["state"], equals: "failed" } },
+          { OR: ["analysis_unavailable", "detection_unavailable"].map((reason) => ({ [field]: { path: ["reason"], equals: reason } })) },
+        ] },
+        data: { [field]: Prisma.DbNull },
+      });
+      const screen = await reset("layoutAnalysis");
+      const split = await reset("splitLayoutAnalysis");
+      return { screen: screen.count, split: split.count };
+    });
+  }
+
   /**
    * Finds clips still missing a preview proxy, highest `viralityScore`
    * first (users look at the top clips first) — scoped to projects whose

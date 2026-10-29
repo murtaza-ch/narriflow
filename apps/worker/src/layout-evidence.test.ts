@@ -1,10 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { compositionAssetRef, type CompositionEvidenceRequest } from "@narriflow/composition-plan";
-import { CLIP_AUTO_LAYOUT_ENGINE, SCREEN_LAYOUT_ENGINE_VERSION } from "@narriflow/validators";
+import { compositionAssetRef, planClipComposition, splitLayoutInputFingerprint, type CompositionEvidenceRequest } from "@narriflow/composition-plan";
+import { CLIP_AUTO_LAYOUT_ENGINE, SCREEN_LAYOUT_ENGINE_VERSION, editorDocumentSchema, captionPresetSchema } from "@narriflow/validators";
 import { LayoutEvidence, type LayoutEvidenceDependencies, type LayoutEvidenceInput, type LayoutEvidenceWrite } from "./layout-evidence";
 import { parseRenderConfig } from "./render-config";
 import { analyzeClipAutoLayout } from "./tasks/auto-layout-analysis";
-import type { WorkerProcessModule } from "./worker-process";
+import { WorkflowFailure } from "@narriflow/services";
+import { deriveRenderCompositionEvidence } from "./tasks/clip-render-attempt";
+import { WorkerProcessFailure, type WorkerProcessModule } from "./worker-process";
 
 const requests: CompositionEvidenceRequest[] = [
   { key: "automatic", kind: "automatic-speaker-layout", engineVersion: CLIP_AUTO_LAYOUT_ENGINE },
@@ -36,7 +38,7 @@ function harness(value = input(), overrides: Partial<LayoutEvidenceDependencies>
     },
     persist: async (write, snapshot) => { expect(snapshot.editorRevision).toBe(7); writes.push(write); return true; },
     now: () => 1_700_000_000_000,
-    rethrowControl: () => {}, diagnose: () => {}, ...overrides,
+    rethrowControl: () => {}, diagnose: () => {}, delay: async () => {}, ...overrides,
   };
   const owner = new LayoutEvidence({ ...value, getSegment: async () => { calls.segment += 1; return value.getSegment(); } }, dependencies);
   return { owner, writes, calls, dependencies };
@@ -139,14 +141,14 @@ describe("LayoutEvidence", () => {
   test("partial proxy coverage cannot publish an Automatic full-window envelope", async () => {
     const h = harness(input({ getSegment: async () => ({ path: "truncated.mp4", startSec: 0, durationSec: 6 }) }));
     expect(await h.owner.fulfill(requests)).toMatchObject({ automaticLayout: { state: "failed" }, screenLayout: { state: "failed" }, splitLayout: { state: "failed" } });
-    expect(h.calls).toEqual({ segment: 1, multi: 0, face: 0, pip: 0, cuts: 0 });
-    expect(h.writes.some((write) => write.kind === "automatic")).toBe(false);
+    expect(h.calls).toEqual({ segment: 3, multi: 0, face: 0, pip: 0, cuts: 0 });
+    expect(h.writes).toEqual([]);
   });
 
-  test("memoizes a failed segment and represents unavailable detection separately from conclusive no-face evidence", async () => {
+  test("retries a failed segment and keeps infrastructure failure separate from conclusive no-face evidence", async () => {
     const unavailable = harness(input({ getSegment: async () => { throw new Error("range unavailable"); } }));
     await unavailable.owner.fulfill(requests);
-    expect(unavailable.calls.segment).toBe(1);
+    expect(unavailable.calls.segment).toBe(3);
     expect(unavailable.owner.availability.automaticLayout).toEqual({ state: "failed" });
     const empty = harness();
     empty.dependencies.detectors.detectMultiFacePath = async () => ({ samples: [] });
@@ -233,18 +235,124 @@ describe("LayoutEvidence", () => {
   });
 });
 
-test("matching durable Screen and Split failures reuse typed degradation without detectors", async () => {
-  const failed = harness();
-  failed.dependencies.detectors.detectFacePath = async () => null;
-  failed.dependencies.detectors.detectPipPath = async () => null;
-  failed.dependencies.detectors.detectMultiFacePath = async () => null;
-  await failed.owner.fulfill(requests.slice(1));
-  const durable = { screen: failed.writes.find((write) => write.kind === "screen-failure")!.value, split: failed.writes.find((write) => write.kind === "split-failure")!.value };
-  const reused = harness(input({ durable }));
-  expect(await reused.owner.fulfill(requests.slice(1))).toMatchObject({ screenLayout: { state: "failed", reason: "detection_unavailable" }, splitLayout: { state: "failed", reason: "detection_unavailable" } });
-  expect(reused.calls.segment).toBe(0);
-  expect(reused.writes).toEqual([]);
-  const changed = input({ durable }); changed.clip = { ...changed.clip, endSec: 19 };
-  const stale = harness(changed); await stale.owner.fulfill(requests.slice(1));
-  expect(stale.calls.segment).toBe(1);
+test("content-only Split failures remain reusable and conclusive no-face Screen evidence is cacheable", async () => {
+  const empty = harness();
+  empty.dependencies.detectors.detectFacePath = async () => ({ samples: [] });
+  empty.dependencies.detectors.detectMultiFacePath = async () => ({ samples: [] });
+  await empty.owner.fulfill(requests.slice(1));
+  const durable = { screen: empty.writes.find((write) => write.kind === "screen")!.value, split: empty.writes.find((write) => write.kind === "split-failure")!.value };
+  const reused = harness(input({ durable })); await reused.owner.fulfill(requests.slice(1));
+  expect(reused.owner.availability).toMatchObject({ screenLayout: { state: "available" }, splitLayout: { state: "failed", reason: "insufficient_clusters" } });
+  expect(reused.calls.segment).toBe(0); expect(reused.writes).toEqual([]);
+});
+
+describe("bounded analysis operations", () => {
+  test.each(["segment", "detector"])("rebuilds a failed %s and lets third-operation success win", async (failure) => {
+    const delays: number[] = [];
+    let executions = 0;
+    const transient = new WorkflowFailure("analysis_input_unavailable", "retryable", "temporary failure");
+    const h = harness(input(failure === "segment" ? { getSegment: async () => {
+      if (++executions < 3) throw transient;
+      return { path: "recovered.mp4", startSec: 0, durationSec: 10 };
+    } } : {}), { delay: async (ms) => { delays.push(ms); } });
+    if (failure === "detector") h.dependencies.detectors.detectMultiFacePath = async () => {
+      if (++executions < 3) throw transient;
+      return { samples };
+    };
+    await h.owner.fulfill(requests.slice(0, 1));
+    const reference = harness(); await reference.owner.fulfill(requests.slice(0, 1));
+    expect(h.owner.availability).toEqual(reference.owner.availability);
+    expect(executions).toBe(3);
+    expect(delays).toEqual([1000, 2000]);
+    expect(h.writes).toEqual(reference.writes);
+    expect(h.owner.framingDegraded).toBeUndefined();
+  });
+
+  test.each([0, 1, 2])("exhausts exactly three operations and renders center for engine %s", async (engine) => {
+    const delays: number[] = [];
+    const diagnoses: Array<{ message: string; context: Record<string, unknown> }> = [];
+    const h = harness(input(), { delay: async (ms) => { delays.push(ms); }, diagnose: (message, context) => diagnoses.push({ message, context }) });
+    let executions = 0;
+    const fail = async () => { executions++; throw new WorkflowFailure("worker_command_timeout", "retryable", "timeout"); };
+    if (engine === 1) h.dependencies.detectors.detectPipPath = fail;
+    else h.dependencies.detectors.detectMultiFacePath = fail;
+    await h.owner.fulfill([requests[engine]!]);
+    expect(executions).toBe(3);
+    expect(delays).toEqual([1000, 2000]);
+    expect(h.writes).toEqual([]);
+    expect(h.owner.framingDegraded).toMatchObject({ attempts: 3, causeCode: "worker_command_timeout" });
+    expect(diagnoses.find((entry) => entry.message === "framing_degraded")?.context).toMatchObject({ attempts: 3, causeCode: "worker_command_timeout", fallbackMode: "center_crop" });
+    const mode = ["auto", "screen", "split"][engine]!;
+    const document = editorDocumentSchema.parse({ version: 1, clipStartSec: 10, clipEndSec: 20, captionPreset: captionPresetSchema.parse({}), transcriptSlice: [], studioEdits: { framing: { mode } }, brollUrl: null, deletedRanges: [] });
+    const planned = planClipComposition({
+      document, source: { identity: "source", kind: "video", width: 1920, height: 1080 },
+      evidence: deriveRenderCompositionEvidence({ availability: h.owner.availability, sourceIdentity: "source", clipStartSec: 10, clipEndSec: 20, deletedRanges: [], framingDegraded: h.owner.framingDegraded }),
+      assets: { backgroundImage: { state: "missing" } }, capabilities: { automaticSpeakerLayout: true, automaticSpeakerEngineVersion: CLIP_AUTO_LAYOUT_ENGINE },
+      targets: [{ id: "portrait", aspectRatio: "9:16", width: 1080, height: 1920 }],
+    });
+    if (planned.status === "invalid") throw new Error(planned.error.code);
+    expect(planned.plan.targets[0]?.effectiveMode).toBe("center");
+    expect(planned.plan.targets[0]?.scenes[0]?.layers).toHaveLength(1);
+    expect(planned.plan.notices).toContainEqual(expect.objectContaining({ code: "framing_degraded", effectiveFallback: "center", attempts: 3, causeCode: "worker_command_timeout" }));
+  });
+
+  test("one group budget covers multiple engines and concurrent failures finish before retry", async () => {
+    let inFlight = 0; let maximum = 0; let passes = 0;
+    const h = harness(input(), { delay: async () => { expect(inFlight).toBe(0); } });
+    h.dependencies.detectors.detectMultiFacePath = async () => {
+      passes++; if (passes < 2) throw new Error("temporary multi failure"); return { samples };
+    };
+    h.dependencies.detectors.detectPipPath = async () => { throw new Error("temporary pip failure"); };
+    h.dependencies.detectors.detectFacePath = async () => { inFlight++; maximum = Math.max(maximum, inFlight); await Bun.sleep(1); inFlight--; return { samples: [] }; };
+    await h.owner.fulfill(requests);
+    expect(h.owner.resources.analysisAttempts).toBe(3);
+    expect(maximum).toBe(1);
+    expect(h.writes.map((write) => write.kind)).toEqual(["automatic"]);
+    expect(h.owner.framingDegraded?.modes).toEqual(["screen", "split"]);
+  });
+
+  test.each([
+    new WorkflowFailure("source_media_invalid", "permanent", "invalid source"),
+    new WorkerProcessFailure("worker_command_spawn_failed", "retryable", "spawn", "", null, { failureScope: "executor", errno: "EBADF" }),
+    new WorkerProcessFailure("worker_command_unavailable", "retryable", "missing", "", null, { failureScope: "configuration" }),
+  ])("propagates source/executor failures before delay or persistence", async (failure) => {
+    const h = harness(input({ getSegment: async () => { throw failure; } }), { delay: async () => { throw new Error("must not sleep"); } });
+    await expect(h.owner.fulfill(requests)).rejects.toBe(failure);
+    expect(h.calls.segment).toBe(1);
+    expect(h.writes).toEqual([]);
+  });
+
+  test("cancellation during the default backoff stops retries", async () => {
+    const controller = new AbortController(); const reason = new Error("ownership lost");
+    let calls = 0;
+    const h = harness(input({ signal: controller.signal, getSegment: async () => { calls++; setTimeout(() => controller.abort(reason), 10); throw new Error("temporary"); } }), { delay: undefined });
+    await expect(h.owner.fulfill(requests)).rejects.toBe(reason);
+    expect(calls).toBe(1); expect(h.writes).toEqual([]);
+  });
+});
+
+test("old transient Screen/Split envelopes cannot short-circuit fresh evidence", async () => {
+  const fresh = harness(); await fresh.owner.fulfill(requests);
+  const screen = fresh.writes.find((write) => write.kind === "screen")!.value;
+  if (!("inputFingerprint" in screen)) throw new Error("expected Screen evidence");
+  const split = fresh.writes.find((write) => write.kind === "split")!.value;
+  const durable = {
+    screen: { version: 1, engine: SCREEN_LAYOUT_ENGINE_VERSION, state: "failed", sourceIdentity: screen.sourceIdentity, inputFingerprint: screen.inputFingerprint, analyzedAtISO: screen.analyzedAtISO, reason: "detection_unavailable" },
+    split: { ...split, state: "failed", inputFingerprint: splitLayoutInputFingerprint({ sourceIdentity: split.sourceIdentity, clipStartSec: 10, clipEndSec: 20, deletedRanges: [], engineVersion: "explicit-split-v1" }), reason: "detection_unavailable", segments: undefined, noSplitSegments: undefined },
+  };
+  const current = harness(input({ durable })); await current.owner.fulfill(requests.slice(1));
+  expect(current.calls.segment).toBe(1);
+  expect(current.owner.availability.screenLayout.state).toBe("available");
+  expect(current.owner.availability.splitLayout.state).toBe("available");
+});
+
+test("exhausted scene speaker analysis becomes a center crop with a causal notice", async () => {
+  const h = harness(input({ getSegment: async () => { throw new WorkflowFailure("analysis_input_unavailable", "retryable", "input"); } }));
+  await h.owner.fulfill(requests.slice(0, 1));
+  const document = editorDocumentSchema.parse({ version: 1, clipStartSec: 10, clipEndSec: 20, captionPreset: captionPresetSchema.parse({}), transcriptSlice: [], studioEdits: { framing: { mode: "center" }, sceneLayouts: [{ id: "speaker-scene", aspectRatio: "9:16", startSec: 0, endSec: 10, preset: "screen-top" }] }, brollUrl: null, deletedRanges: [] });
+  const planned = planClipComposition({ document, source: { identity: "source", kind: "video", width: 1920, height: 1080 }, evidence: deriveRenderCompositionEvidence({ availability: h.owner.availability, framingDegraded: h.owner.framingDegraded, sourceIdentity: "source", clipStartSec: 10, clipEndSec: 20, deletedRanges: [] }), assets: { backgroundImage: { state: "missing" } }, capabilities: { automaticSpeakerLayout: true, automaticSpeakerEngineVersion: CLIP_AUTO_LAYOUT_ENGINE }, targets: [{ id: "portrait", aspectRatio: "9:16", width: 1080, height: 1920 }] });
+  if (planned.status === "invalid") throw new Error(planned.error.code);
+  const layer = planned.plan.targets[0]!.scenes[0]!.layers.find((layer) => layer.kind === "source-video");
+  expect(layer?.destination).toEqual({ x: 0, y: 0, width: 1080, height: 1920 });
+  expect(planned.plan.notices).toContainEqual(expect.objectContaining({ code: "framing_degraded", sceneId: "speaker-scene", attempts: 3, causeCode: "analysis_input_unavailable" }));
 });

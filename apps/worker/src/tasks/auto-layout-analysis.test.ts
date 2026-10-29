@@ -3,9 +3,9 @@ import { spawnSync } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { LayoutEvidenceClaimLost, type ClipPendingAutoLayoutAnalysis } from "@narriflow/services";
+import { LayoutEvidenceClaimLost, WorkflowFailure, type ClipPendingAutoLayoutAnalysis } from "@narriflow/services";
 import { parseRenderConfig } from "../render-config";
-import type { WorkerProcessModule } from "../worker-process";
+import { WorkerProcessFailure, type WorkerProcessModule } from "../worker-process";
 import {
   analyzeClipAutoLayout,
   processPendingAutoLayoutAnalyses,
@@ -220,4 +220,46 @@ test("background ownership loss stops source work without ordinary failure defer
   expect(inspected).toBe(false);
   expect(persisted).toBe(false);
   expect(deferred).toBe(false);
+});
+
+test("background transient detector failure schedules durable backoff without publishing failed evidence", async () => {
+  const claim = candidate(); let commands = 0; let published = 0; let deferred = 0;
+  const config = parseRenderConfig({ WORKER_AUTO_LAYOUT_FAILURE_BACKOFF_MS: "10000" });
+  type Options = NonNullable<Parameters<typeof processPendingAutoLayoutAnalyses>[0]>;
+  const before = Date.now();
+  const lifecycle: NonNullable<Options["lifecycle"]> = {
+    claimAutomatic: async () => claim,
+    runAutomaticClaim: async (_claim, work) => work({ signal: new AbortController().signal }),
+    completeAutomatic: async () => { published++; return true; },
+    deferAutomatic: async (_id, _token, at) => { deferred++; expect(at.getTime()).toBeGreaterThanOrEqual(before + 10000); return true; },
+  };
+  const workerProcess: WorkerProcessModule = {
+    inspectMedia: async () => ({ durationSec: 30, width: 1920, height: 1080, hasVideo: true, hasAudio: true, hasVisualStream: true, fps: 30 }),
+    execute: async (request) => { if (request.command !== "ffmpeg") { commands++; throw new WorkflowFailure("worker_command_timeout", "retryable", "timeout"); } return { exitCode: 0, stdout: Buffer.alloc(0) }; },
+    withScratchDirectory: async (_prefix, work) => work("scratch"),
+  };
+  expect(await processPendingAutoLayoutAnalyses({ limit: 1, lifecycle, workerProcess, config, storage: {
+    presignDownloadUrl: async () => "original.mp4",
+    downloadObjectToFile: async (request) => ({ key: request.key, contentType: "video/mp4" }),
+  } })).toBe(0);
+  expect(commands).toBe(1); expect(published).toBe(0); expect(deferred).toBe(1);
+});
+
+test("background helper configuration failure exits to executor recovery after safe deferral", async () => {
+  const failure = new WorkerProcessFailure("worker_command_unavailable", "retryable", "missing model", "", null, { failureScope: "configuration" });
+  let published = 0; let deferred = 0;
+  await expect(processPendingAutoLayoutAnalyses({ limit: 1, config: parseRenderConfig({}), lifecycle: {
+    claimAutomatic: async () => candidate(),
+    runAutomaticClaim: async (_claim, work) => work({ signal: new AbortController().signal }),
+    completeAutomatic: async () => { published++; return true; },
+    deferAutomatic: async () => { deferred++; return true; },
+  }, storage: {
+    presignDownloadUrl: async () => "original.mp4",
+    downloadObjectToFile: async (request) => ({ key: request.key, contentType: "video/mp4" }),
+  }, workerProcess: {
+    inspectMedia: async () => { throw failure; },
+    execute: async () => { throw new Error("unused"); },
+    withScratchDirectory: async (_prefix, work) => work("scratch"),
+  } })).rejects.toBe(failure);
+  expect(published).toBe(0); expect(deferred).toBe(1);
 });

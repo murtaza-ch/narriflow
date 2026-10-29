@@ -37,6 +37,7 @@ import {
   screenLayoutInputFingerprint,
   splitLayoutInputFingerprint,
   type ClipCompositionPlan,
+  type ClipCompositionPlanInput,
 } from "@narriflow/composition-plan";
 import {
   CLIP_AUTO_LAYOUT_ENGINE,
@@ -61,7 +62,7 @@ import {
 } from "../src/composition-ffmpeg-adapter";
 import { compositionOutputExpectation, validateRenderOutput } from "../src/render-output-validation";
 import { guardMixPeak, MixPeakError, mixPeakMeasureDeadlineMs } from "../src/render-mix-peak";
-import { compositionSourceFor } from "../src/tasks/clip-render-attempt";
+import { compositionSourceFor, deriveRenderCompositionEvidence } from "../src/tasks/clip-render-attempt";
 import { productionWorkerProcessModule, type WorkerMediaInspection } from "../src/worker-process";
 import {
   collectRuntimeFingerprint,
@@ -430,7 +431,7 @@ function aspectOption(aspectRatio: string) {
   return option;
 }
 
-function buildEvidence(definition: Dict, name: string | undefined, input: { sourceIdentity: string; clipStartSec: number; clipEndSec: number; deletedRanges: any[]; editedDurationSec: number; width: number; height: number }) {
+function buildEvidence(definition: Dict, name: string | undefined, input: { sourceIdentity: string; clipStartSec: number; clipEndSec: number; deletedRanges: any[]; editedDurationSec: number; width: number; height: number }): ClipCompositionPlanInput["evidence"] {
   if (!name) return { automaticLayout: { state: "missing" as const } };
   const entry = definition[name];
   if (!entry) throw new Error(`unknown evidence ${name}`);
@@ -513,7 +514,7 @@ async function planCase(context: CaseContext, id: string, definition: CaseDefini
   const cutPlan = buildClipCutPlan(document.deletedRanges, { startSec: document.clipStartSec, endSec: document.clipEndSec });
   const hasVideo = inspection.hasVideo;
   const plannerSource = compositionSourceFor(inspection, sourceIdentity);
-  const evidence = hasVideo
+  const evidence: ClipCompositionPlanInput["evidence"] = hasVideo
     ? buildEvidence(context.inputs.evidence, definition.evidence, {
         sourceIdentity, clipStartSec: document.clipStartSec, clipEndSec: document.clipEndSec, deletedRanges: document.deletedRanges,
         editedDurationSec: cutPlan.isUncut ? document.clipEndSec - document.clipStartSec : cutPlan.editedDurationSec, width: plannerSource.width, height: plannerSource.height,
@@ -598,7 +599,11 @@ async function planCase(context: CaseContext, id: string, definition: CaseDefini
   const result = planClipComposition({
     document,
     source: plannerSource,
-    evidence: evidence as any,
+    evidence: deriveRenderCompositionEvidence({
+      unavailableAutomaticState: "missing",
+      availability: { automaticLayout: evidence.automaticLayout, splitLayout: evidence.splitLayout ?? { state: "missing" }, screenLayout: evidence.screenLayout ?? { state: "missing" } },
+      sourceIdentity, clipStartSec: document.clipStartSec, clipEndSec: document.clipEndSec, deletedRanges: document.deletedRanges,
+    }),
     assets: {
       backgroundImage: backgroundImage as any,
       sceneVisuals,

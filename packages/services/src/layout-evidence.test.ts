@@ -1,5 +1,8 @@
+import { randomUUID } from "node:crypto";
+import { PrismaPg } from "@prisma/adapter-pg";
+import { Pool } from "pg";
 import { describe, expect, test } from "bun:test";
-import type { PrismaClient } from "@prisma/client";
+import { Prisma, PrismaClient } from "@prisma/client";
 import { LayoutEvidenceClaimLost, LayoutEvidenceLifecycle, type ClipPendingAutoLayoutAnalysis } from "./layout-evidence";
 
 function executionFixture() {
@@ -93,4 +96,59 @@ describe("Layout Evidence background execution", () => {
     finish();
     await work;
   });
+});
+
+test("targeted transient evidence reset is bounded and touches only failed infrastructure envelopes", async () => {
+  const updates: unknown[] = [];
+  const prisma = {
+    clip: { updateMany: async (query: unknown) => { updates.push(query); return { count: 2 }; } },
+    $transaction: async (work: (tx: unknown) => Promise<unknown>) => work(prisma),
+  } as unknown as PrismaClient;
+  const lifecycle = new LayoutEvidenceLifecycle({ prisma });
+  await expect(lifecycle.resetTransientFailures([])).rejects.toThrow();
+  await expect(lifecycle.resetTransientFailures(Array.from({ length: 1001 }, (_, i) => `clip-${i}`))).rejects.toThrow();
+  expect(updates).toEqual([]);
+  expect(await lifecycle.resetTransientFailures(["clip-1", "clip-2"])).toEqual({ screen: 2, split: 2 });
+  expect(updates).toEqual([
+    { where: { id: { in: ["clip-1", "clip-2"] }, AND: [
+      { layoutAnalysis: { path: ["state"], equals: "failed" } },
+      { OR: ["analysis_unavailable", "detection_unavailable"].map((reason) => ({ layoutAnalysis: { path: ["reason"], equals: reason } })) },
+    ] }, data: { layoutAnalysis: Prisma.DbNull } },
+    { where: { id: { in: ["clip-1", "clip-2"] }, AND: [
+      { splitLayoutAnalysis: { path: ["state"], equals: "failed" } },
+      { OR: ["analysis_unavailable", "detection_unavailable"].map((reason) => ({ splitLayoutAnalysis: { path: ["reason"], equals: reason } })) },
+    ] }, data: { splitLayoutAnalysis: Prisma.DbNull } },
+  ]);
+});
+
+
+test.skipIf(process.env.ALLOW_LAYOUT_EVIDENCE_RESET_DB_TESTS !== "1")("resets old transient envelopes on disposable local Postgres and preserves valid content", async () => {
+  const url = process.env.WORKFLOW_TEST_DATABASE_URL;
+  if (!url || new URL(url).hostname !== "localhost" || new URL(url).port !== "55432") throw new Error("Use db-gate.sh for the local reset gate");
+  const schema = `layout_reset_test_${randomUUID().replaceAll("-", "")}`;
+  const pool = new Pool({ connectionString: url, max: 2 });
+  const prisma = new PrismaClient({ adapter: new PrismaPg(pool as unknown as ConstructorParameters<typeof PrismaPg>[0], { schema }) });
+  const ids = Array.from({ length: 4 }, () => randomUUID());
+  try {
+    await pool.query(`CREATE SCHEMA "${schema}"`);
+    await pool.query(`CREATE TABLE "${schema}"."Clip" (id uuid PRIMARY KEY, "layoutAnalysis" jsonb, "splitLayoutAnalysis" jsonb, "updatedAt" timestamp DEFAULT now())`);
+    const envelopes = [
+      { state: "failed", reason: "analysis_unavailable" },
+      { state: "failed", reason: "detection_unavailable" },
+      { state: "failed", reason: "no_trustworthy_faces" },
+      { state: "available", reason: "analysis_unavailable", segments: [] },
+    ];
+    for (let i = 0; i < ids.length; i++) await pool.query(`INSERT INTO "${schema}"."Clip" (id, "layoutAnalysis", "splitLayoutAnalysis") VALUES ($1, $2::jsonb, $2::jsonb)`, [ids[i], JSON.stringify(envelopes[i])]);
+    const lifecycle = new LayoutEvidenceLifecycle({ prisma });
+    expect(await lifecycle.resetTransientFailures([ids[0]!])).toEqual({ screen: 1, split: 1 });
+    expect(await lifecycle.resetTransientFailures(ids)).toEqual({ screen: 1, split: 1 });
+    expect(await lifecycle.resetTransientFailures(ids)).toEqual({ screen: 0, split: 0 });
+    const rows = await pool.query(`SELECT "layoutAnalysis", "splitLayoutAnalysis" FROM "${schema}"."Clip" ORDER BY array_position($1::uuid[], id)`, [ids]);
+    expect(rows.rows.map((row) => row.layoutAnalysis)).toEqual([null, null, envelopes[2], envelopes[3]]);
+    expect(rows.rows.map((row) => row.splitLayoutAnalysis)).toEqual([null, null, envelopes[2], envelopes[3]]);
+  } finally {
+    await prisma.$disconnect();
+    await pool.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
+    await pool.end();
+  }
 });

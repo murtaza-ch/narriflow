@@ -1,11 +1,11 @@
 import { join } from "node:path";
 import { compositionAssetRef } from "@narriflow/composition-plan";
-import { getLayoutEvidenceLifecycle, LayoutEvidenceClaimLost, downloadObjectToFile, presignDownloadUrl, type LayoutEvidenceLifecycle, type ClipPendingAutoLayoutAnalysis } from "@narriflow/services";
+import { getLayoutEvidenceLifecycle, LayoutEvidenceClaimLost, WorkflowFailure, downloadObjectToFile, presignDownloadUrl, type LayoutEvidenceLifecycle, type ClipPendingAutoLayoutAnalysis } from "@narriflow/services";
 import { CLIP_AUTO_LAYOUT_ENGINE, type ClipAutoLayoutAnalysis } from "@narriflow/validators";
 import { LayoutEvidence, type LayoutEvidenceDependencies } from "../layout-evidence";
 import { createLayoutEvidenceDetectors } from "../layout-evidence-runtime";
 import { parseWorkerRenderConfig, type RenderConfig } from "../render-config";
-import { productionWorkerProcessModule, resolveDisplayGeometry, type WorkerProcessModule } from "../worker-process";
+import { productionWorkerProcessModule, resolveDisplayGeometry, WorkerProcessFailure, type WorkerProcessModule } from "../worker-process";
 
 function log(level: "info" | "warn" | "error", message: string, context?: Record<string, unknown>): void {
   console.warn(JSON.stringify({ level, message, ...context }));
@@ -37,7 +37,7 @@ export async function analyzeClipAutoLayout(params: {
   const owner = new LayoutEvidence({
     source: { identity: sourceIdentity, hasVideo: original.hasVideo, width: display.width || 1, height: display.height || 1 },
     clip: { id: clip.id, startSec: clip.startSec, endSec: clip.endSec, deletedRanges: clip.deletedRanges, utterances: clip.transcriptSlice, editorRevision: clip.editorRevision, previewStorageKey: clip.previewStorageKey },
-    durable: {}, enabled: { automatic: true, screen: false, split: false }, hasBroll: false, pipMotionThreshold: config.pipMotionThreshold, signal,
+    durable: {}, enabled: { automatic: true, screen: false, split: false }, hasBroll: false, retryPolicy: "background", pipMotionThreshold: config.pipMotionThreshold, signal,
     sceneSource: { path: params.originalSourcePath, startSec: clip.startSec },
     getSegment: async () => {
       const offset = clip.startSec - clip.previewStartSec;
@@ -103,10 +103,11 @@ export async function processPendingAutoLayoutAnalyses(options: {
         // claim loss. Ordinary failures use the configured durable backoff.
         claimSignal.throwIfAborted();
         await lifecycle.deferAutomatic(clip.id, clip.autoLayoutClaimToken, new Date(Date.now() + config.autoLayoutFailureBackoffMs)).catch((deferError: unknown) => {
-          log("error", "clip_auto_layout_analysis_defer_failed", { clipId: clip.id, message: deferError instanceof Error ? deferError.message : "unknown" });
+          log("error", "clip_auto_layout_analysis_defer_failed", { clipId: clip.id, failureCode: deferError instanceof WorkflowFailure ? deferError.code : "analysis_defer_failed" });
         });
         claimSignal.throwIfAborted();
-        log("error", "clip_auto_layout_analysis_failed", { clipId: clip.id, projectId: clip.projectId, message: error instanceof Error ? error.message : "unknown" });
+        if (error instanceof WorkerProcessFailure && error.failureScope) throw error;
+        log("error", "clip_auto_layout_analysis_failed", { clipId: clip.id, projectId: clip.projectId, failureCode: error instanceof WorkflowFailure ? error.code : "analysis_unavailable" });
       }
     }), { signal }).catch((error: unknown) => {
       if (error instanceof LayoutEvidenceClaimLost) {
