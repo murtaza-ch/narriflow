@@ -39,6 +39,9 @@ export async function executeNextWorkflowAttempt<
   ) => void;
   /** Worker lifetime cancellation stops heartbeats and active subprocesses. */
   signal?: AbortSignal;
+  /** Wraps the claimed attempt's execution so the caller can tell the lease
+   * heartbeat, not a tick budget, is now bounding the work. */
+  holdingLease?: <T>(work: () => Promise<T>) => Promise<T>;
 }): Promise<0 | 1> {
   if (input.signal?.aborted) return 0;
   const claimed = await input.lifecycle.claim(input.stage);
@@ -51,14 +54,16 @@ export async function executeNextWorkflowAttempt<
   if (!claimed) return 0;
   const attempt = claimed;
   const startedAtMs = Date.now();
-  await executeClaimedWorkflowAttempt({
-    attempt,
-    lifecycle: input.lifecycle,
-    signal: input.signal,
-    process: input.process,
-    onAttemptLost: (error) =>
-      input.onAttemptLost?.(attempt, error, startedAtMs),
-  });
+  const execute = () =>
+    executeClaimedWorkflowAttempt({
+      attempt,
+      lifecycle: input.lifecycle,
+      signal: input.signal,
+      process: input.process,
+      onAttemptLost: (error) =>
+        input.onAttemptLost?.(attempt, error, startedAtMs),
+    });
+  await (input.holdingLease ? input.holdingLease(execute) : execute());
   return 1;
 }
 

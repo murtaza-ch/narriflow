@@ -7,13 +7,40 @@ const globalForPrisma = globalThis as unknown as {
 };
 
 /**
- * Optional pool sizing from the environment. Only settings that are present
- * (and positive integers) are returned, so a process without them keeps the
- * driver defaults and the API can supply its own.
+ * Driver defaults for a process with no pool settings in its environment.
+ * `@neondatabase/serverless` ships with no connection timeout and no query
+ * timeout, so a websocket that dies without a clean close (Neon dropping a
+ * pooled connection, a NAT idling it out) leaves every pending
+ * `pool.connect()` or query awaiting forever — and with it every worker poll
+ * loop that is waiting on one. Bounding both makes a dead connection reject,
+ * so the caller's normal failure path runs.
+ *
+ * `query_timeout` is a client-side read timeout on a single statement; it is
+ * deliberately not Prisma's interactive-transaction timeout (see
+ * `transactionOptions` below), and it is not a server `statement_timeout`,
+ * which the Neon pooler does not accept as a startup parameter.
+ */
+export const DATABASE_POOL_DEFAULTS = {
+  idleTimeoutMillis: 30_000,
+  connectionTimeoutMillis: 10_000,
+  query_timeout: 60_000,
+} as const;
+
+export interface DatabasePoolOptions {
+  max?: number;
+  idleTimeoutMillis?: number;
+  connectionTimeoutMillis?: number;
+  query_timeout?: number;
+}
+
+/**
+ * Optional pool settings from the environment. Only settings that are present
+ * (and positive integers) are returned; `databasePoolConfig` layers them over
+ * `DATABASE_POOL_DEFAULTS`.
  */
 export function databasePoolOptions(
   env: Record<string, string | undefined> = process.env,
-): { max?: number; idleTimeoutMillis?: number; connectionTimeoutMillis?: number } {
+): DatabasePoolOptions {
   const read = (name: string) => {
     const value = Number(env[name]);
     return Number.isSafeInteger(value) && value > 0 ? value : undefined;
@@ -21,11 +48,20 @@ export function databasePoolOptions(
   const max = read("DATABASE_POOL_MAX");
   const idleTimeoutMillis = read("DATABASE_POOL_IDLE_TIMEOUT_MS");
   const connectionTimeoutMillis = read("DATABASE_POOL_CONNECTION_TIMEOUT_MS");
+  const queryTimeout = read("DATABASE_POOL_QUERY_TIMEOUT_MS");
   return {
     ...(max ? { max } : {}),
     ...(idleTimeoutMillis ? { idleTimeoutMillis } : {}),
     ...(connectionTimeoutMillis ? { connectionTimeoutMillis } : {}),
+    ...(queryTimeout ? { query_timeout: queryTimeout } : {}),
   };
+}
+
+/** Defaults plus environment overrides: the pool config every process uses. */
+export function databasePoolConfig(
+  env: Record<string, string | undefined> = process.env,
+): DatabasePoolOptions {
+  return { ...DATABASE_POOL_DEFAULTS, ...databasePoolOptions(env) };
 }
 
 export function getPrismaClient() {
@@ -36,7 +72,7 @@ export function getPrismaClient() {
   if (!globalForPrisma.narriflowAdapter) {
     globalForPrisma.narriflowAdapter = new PrismaNeon({
       connectionString: process.env.DATABASE_URL,
-      ...databasePoolOptions(),
+      ...databasePoolConfig(),
     });
   }
 

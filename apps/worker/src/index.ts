@@ -1,6 +1,12 @@
 import { createServer } from "node:http";
 import { getYoutubeProxyUrl, startYoutubeTokenServer, superviseYoutubeTokenServer } from "./youtube-import";
-import { createIsolatedPollLoop, type PollLoop } from "./poll-loop";
+import {
+	createIsolatedPollLoop,
+	type PollLoop,
+	type PollRunContext,
+	stallBudgetMs,
+	unhealthyLoops,
+} from "./poll-loop";
 import {
 	billingService,
 	mediaCleanupWorker,
@@ -321,6 +327,8 @@ function diagnoseWorkflowAttemptLost(input: {
 		}),
 	);
 }
+const allLoops: Array<{ loop: PollLoop; intervalMs: number }> = [];
+
 /**
  * One loop per stage, each with its own mutex and consecutive-failure circuit
  * breaker. The old single IO loop held one mutex across ingest + stt +
@@ -331,10 +339,15 @@ function diagnoseWorkflowAttemptLost(input: {
  * (WorkflowRunLifecycle / IngestJob conditional updates), so loops
  * on this process and on other replicas can never double-claim a job.
  */
-function createPollLoop(name: string, fn: () => Promise<number>): PollLoop {
-	return createIsolatedPollLoop({
+function createPollLoop(
+	name: string,
+	intervalMs: number,
+	fn: (context: PollRunContext) => Promise<number>,
+): PollLoop {
+	const loop = createIsolatedPollLoop({
 		name,
-		run: async () => workerShutdown.signal.aborted ? 0 : fn(),
+		run: async (context) => workerShutdown.signal.aborted ? 0 : fn(context),
+		stallAfterMs: stallBudgetMs(intervalMs),
 		maximumConsecutiveFailures: maxConsecutivePollFailures,
 		onProcessed: (processed) => {
 			processedCount += processed;
@@ -351,6 +364,18 @@ function createPollLoop(name: string, fn: () => Promise<number>): PollLoop {
 				}),
 			);
 		},
+		onStall: ({ stallAfterMs, consecutiveStalls }) => {
+			console.warn(
+				JSON.stringify({
+					level: "error",
+					message: "worker_poll_stalled",
+					ts: new Date().toISOString(),
+					loop: name,
+					stallAfterMs,
+					consecutiveStalls,
+				}),
+			);
+		},
 		onFailureLimit: (consecutiveFailures) => {
 			console.warn(
 				JSON.stringify({
@@ -364,15 +389,19 @@ function createPollLoop(name: string, fn: () => Promise<number>): PollLoop {
 			process.exit(1);
 		},
 	});
+	allLoops.push({ loop, intervalMs });
+	return loop;
 }
 
-const ingestLoop = createPollLoop("ingest", async () => {
+const ingestLoop = createPollLoop("ingest", pollIntervalMs, async ({ holdingLease }) => {
 	if (workerShutdown.signal.aborted) return 0;
 	const lifecycle = getIngestJobLifecycle();
 	const ingestJob = await lifecycle.claim({ youtubeAvailable: youtubeLinkIntakeAvailable });
 	if (!ingestJob) return 0;
 	try {
-		await lifecycle.runClaim(ingestJob, ({ signal }) => processIngestJob(ingestJob, { signal }), { signal: workerShutdown.signal });
+		await holdingLease(() =>
+			lifecycle.runClaim(ingestJob, ({ signal }) => processIngestJob(ingestJob, { signal }), { signal: workerShutdown.signal }),
+		);
 	} catch (error) {
 		if (!(error instanceof IngestJobClaimLost)) throw error;
 	}
@@ -384,7 +413,7 @@ const ingestLoop = createPollLoop("ingest", async () => {
 // multi-hour link download blocked all reaping for its whole duration. The
 // loop ticks every minute; reapStalledRunsIfDue's internal lastReapAt gate
 // enforces the actual WORKER_REAP_INTERVAL_MS cadence.
-const maintenanceLoop = createPollLoop("maintenance", async () => {
+const maintenanceLoop = createPollLoop("maintenance", 60 * 1000, async () => {
 	if (workerShutdown.signal.aborted) return 0;
 	await reapStalledRunsIfDue();
 	await getIngestJobLifecycle().processGenerationHandoffs();
@@ -416,14 +445,14 @@ const maintenanceLoop = createPollLoop("maintenance", async () => {
 });
 
 const uploadSessionMaintenanceLoop = createPollLoop(
-	"upload_session_maintenance",
+	"upload_session_maintenance", 30 * 1000,
 	async () => {
 		const uploads = await uploadSessionService.reconcileDueSessions();
 		return uploads.claimed;
 	},
 );
 
-const workflowLeaseLoop = createPollLoop("workflow_lease", async () => {
+createPollLoop("workflow_lease", workflowLeaseReapIntervalMs, async () => {
 	const reaped = await getWorkflowRunLifecycle().reapExpiredAttempts();
 	if (reaped > 0) {
 		console.warn(
@@ -437,14 +466,14 @@ const workflowLeaseLoop = createPollLoop("workflow_lease", async () => {
 	return reaped;
 });
 
-const workflowEventLoop = createPollLoop("workflow_events", async () => {
+createPollLoop("workflow_events", workflowEventDispatchIntervalMs, async () => {
 	return getWorkflowRunLifecycle().dispatchEvents(100);
 });
 
 // Completion Callbacks: observe accepted operations until terminal, then
 // deliver signed events. Observation backs off per row; this cadence only
 // bounds how soon a due row is noticed.
-const completionCallbackLoop = createPollLoop("completion_callbacks", async () => {
+createPollLoop("completion_callbacks", completionCallbackPollIntervalMs, async () => {
 	if (workerShutdown.signal.aborted) return 0;
 	const callbacks = getCompletionCallbackProcessor();
 	return (await callbacks.observe()) + (await callbacks.deliver());
@@ -453,14 +482,14 @@ const completionCallbackLoop = createPollLoop("completion_callbacks", async () =
 // Webhook Subscriptions: send each active subscription its next Workspace Events
 // in order, then email the creator of any that were just disabled. It shares the
 // callback cadence; a caught-up subscription is looked at again every few seconds.
-const webhookDeliveryLoop = createPollLoop("webhook_deliveries", async () => {
+createPollLoop("webhook_deliveries", completionCallbackPollIntervalMs, async () => {
 	if (workerShutdown.signal.aborted) return 0;
 	const webhooks = getWebhookDeliveryProcessor(getWorkerAppBaseUrl);
 	const delivered = await webhooks.deliver();
 	return delivered + (await webhooks.notifyDisabled());
 });
 
-const workspaceBillingLoop = createPollLoop("workspace_billing", async () => {
+const workspaceBillingLoop = createPollLoop("workspace_billing", workspaceBillingPollIntervalMs, async () => {
 	if (!billingService.isConfigured()) return 0;
 	const result = await billingService.reconcileDueAccounts();
 	if (result.claimed > 0) {
@@ -479,6 +508,7 @@ function processNextWorkflowAttempt<
 	TStage extends WorkflowAttemptRef["stage"],
 >(input: {
 	stage: TStage;
+	holdingLease: PollRunContext["holdingLease"];
 	process: (
 		attempt: ClaimedWorkflowAttempt & { stage: TStage },
 		context: WorkflowAttemptContext,
@@ -496,33 +526,37 @@ function processNextWorkflowAttempt<
 
 // Submit-and-release: this claim only covers the AssemblyAI submission round
 // trip (seconds), not the transcription itself — see sttResultsLoop.
-const sttLoop = createPollLoop("stt", async () => {
+const sttLoop = createPollLoop("stt", pollIntervalMs, async ({ holdingLease }) => {
 	return processNextWorkflowAttempt({
+		holdingLease,
 		stage: "stt",
 		process: processTranscriptRun,
 	});
 });
 
-const sttResultsLoop = createPollLoop("stt_results", async () => {
+createPollLoop("stt_results", sttResultPollIntervalMs, async () => {
 	return processSubmittedTranscriptResults();
 });
 
-const detectionLoop = createPollLoop("moment_detection", async () => {
+createPollLoop("moment_detection", pollIntervalMs, async ({ holdingLease }) => {
 	return processNextWorkflowAttempt({
+		holdingLease,
 		stage: "moment_detection",
 		process: processClipDetectionRun,
 	});
 });
 
-const dubbingLoop = createPollLoop("dubbing", async () => {
+createPollLoop("dubbing", pollIntervalMs, async ({ holdingLease }) => {
 	return processNextWorkflowAttempt({
+		holdingLease,
 		stage: "dubbing",
 		process: processDubbingRun,
 	});
 });
 
-const exportBundleLoop = createPollLoop("export_bundle", async () => {
+const exportBundleLoop = createPollLoop("export_bundle", pollIntervalMs, async ({ holdingLease }) => {
 	return processNextWorkflowAttempt({
+		holdingLease,
 		stage: "export_bundle",
 		process: processExportBundleRun,
 	});
@@ -530,7 +564,7 @@ const exportBundleLoop = createPollLoop("export_bundle", async () => {
 
 // Deadline-sensitive scheduled posts have a dedicated loop. Remote RSS feeds
 // can be slow or unavailable and must never delay a due social publish.
-const publishLoop = createPollLoop("publish", async () => {
+createPollLoop("publish", pollIntervalMs, async () => {
 	return processDueSocialPosts(workerShutdown.signal);
 });
 
@@ -538,7 +572,7 @@ const publishLoop = createPollLoop("publish", async () => {
 // revoked grant only delays or skips captures; it never touches the Social Post.
 // This loop is optional, so its failures are logged instead of tripping the
 // circuit breaker that would restart publishing with it.
-const performanceSyncLoop = createPollLoop("performance_sync", async () => {
+createPollLoop("performance_sync", performanceSyncPollIntervalMs, async () => {
 	try {
 		return await getPerformanceSync().run();
 	} catch (error) {
@@ -556,7 +590,7 @@ const performanceSyncLoop = createPollLoop("performance_sync", async () => {
 
 // Recomputes each Workspace's Performance Guidance about nightly. Optional, so
 // a failure is logged instead of tripping the circuit breaker.
-const performanceGuidanceLoop = createPollLoop("performance_guidance", async () => {
+createPollLoop("performance_guidance", performanceGuidancePollIntervalMs, async () => {
 	try {
 		return await getPerformanceGuidance().refreshStale();
 	} catch (error) {
@@ -572,19 +606,20 @@ const performanceGuidanceLoop = createPollLoop("performance_guidance", async () 
 	}
 });
 
-const autopilotLoop = createPollLoop("autopilot", async () => {
+createPollLoop("autopilot", autopilotPollIntervalMs, async () => {
 	return processDueAutopilotRules();
 });
 
-const finishingLoop = createPollLoop("finishing", async () => {
+createPollLoop("finishing", finishingPollIntervalMs, async () => {
 	return processDueGenerationFinishing();
 });
 
 /** CPU-bound stage: clip rendering only. */
-const renderLoop = createPollLoop("render", async () => {
+const renderLoop = createPollLoop("render", renderPollIntervalMs, async ({ holdingLease }) => {
 	const lifecycle = getWorkflowRunLifecycle();
 	await lifecycle.rescuePendingClipRenderingRun();
 	return processNextWorkflowAttempt({
+		holdingLease,
 		stage: "clip_rendering",
 		process: async (attempt, context) => {
 			const run = { ...attempt, id: attempt.workflowRunId };
@@ -600,20 +635,20 @@ const renderLoop = createPollLoop("render", async () => {
 
 /** Preview proxies: bounded ffmpeg cuts on their own loop so they can neither
  *  block ingest/STT nor delay due social posts. */
-const previewLoop = createPollLoop("preview", async () => {
+createPollLoop("preview", previewPollIntervalMs, async () => {
 	return processPendingClipPreviews({ signal: workerShutdown.signal });
 });
 
 /** Face/shot analysis runs against the small preview proxies and publishes
  * the shared plan consumed by both studio and render. Separate mutex keeps
  * it from blocking proxy generation or workflow claims. */
-const autoLayoutLoop = createPollLoop("auto_layout", async () => {
+createPollLoop("auto_layout", autoLayoutPollIntervalMs, async () => {
 	return processPendingAutoLayoutAnalyses({ signal: workerShutdown.signal, config: renderConfig });
 });
 
 /** Durable terminal-email retries. The service performs an atomic
  *  pending/expired-lease claim, so this loop is safe across worker replicas. */
-const notificationRetryLoop = createPollLoop("notification_retry", async () => {
+const notificationRetryLoop = createPollLoop("notification_retry", notificationRetryPollIntervalMs, async () => {
 	const startedAtMs = Date.now();
 	const [result, reviewResult] = await Promise.all([
 		retryPendingNotifications(notificationRetryBatchSize),
@@ -639,14 +674,14 @@ const notificationRetryLoop = createPollLoop("notification_retry", async () => {
 	return claimed;
 });
 
-const mediaCleanupLoop = createPollLoop("media_cleanup", async () => {
+const mediaCleanupLoop = createPollLoop("media_cleanup", mediaCleanupPollIntervalMs, async () => {
 	const result = await mediaCleanupWorker.processDue({
 		signal: workerShutdown.signal,
 	});
 	return result.claimed;
 });
 
-const generatedMediaLoop = createPollLoop("generated_media", async () => {
+createPollLoop("generated_media", generatedMediaPollIntervalMs, async () => {
 	// Without image settings nothing can be admitted or generated; idle rather
 	// than failing every tick until the loop gives up.
 	if (!generatedImageProviderConfigured(process.env)) return 0;
@@ -654,13 +689,13 @@ const generatedMediaLoop = createPollLoop("generated_media", async () => {
 	return jobs.length;
 });
 
-const thumbnailFrameLoop = createPollLoop("thumbnail_frames", async () => {
+const thumbnailFrameLoop = createPollLoop("thumbnail_frames", thumbnailFramePollIntervalMs, async () => {
 	return thumbnailFramePreparationService.processPending(1);
 });
 
 /** Embeds completed transcripts into searchable passages. A provider failure
  * backs that transcript off and ends the tick without failing the loop. */
-const libraryIndexLoop = createPollLoop("library_index", async () => {
+createPollLoop("library_index", libraryIndexPollIntervalMs, async () => {
 	let indexed = 0;
 	while (indexed < libraryIndexBatchSize && !workerShutdown.signal.aborted) {
 		const count = await getLibrarySearch().indexNext();
@@ -670,41 +705,15 @@ const libraryIndexLoop = createPollLoop("library_index", async () => {
 	return indexed;
 });
 
-const allLoops: Array<{ loop: PollLoop; intervalMs: number }> = [
-	{ loop: maintenanceLoop, intervalMs: 60 * 1000 },
-	{ loop: uploadSessionMaintenanceLoop, intervalMs: 30 * 1000 },
-	{ loop: workflowLeaseLoop, intervalMs: workflowLeaseReapIntervalMs },
-	{ loop: workflowEventLoop, intervalMs: workflowEventDispatchIntervalMs },
-	{ loop: completionCallbackLoop, intervalMs: completionCallbackPollIntervalMs },
-	{ loop: webhookDeliveryLoop, intervalMs: completionCallbackPollIntervalMs },
-	{ loop: workspaceBillingLoop, intervalMs: workspaceBillingPollIntervalMs },
-	{ loop: ingestLoop, intervalMs: pollIntervalMs },
-	{ loop: sttLoop, intervalMs: pollIntervalMs },
-	{ loop: sttResultsLoop, intervalMs: sttResultPollIntervalMs },
-	{ loop: detectionLoop, intervalMs: pollIntervalMs },
-	{ loop: dubbingLoop, intervalMs: pollIntervalMs },
-	{ loop: exportBundleLoop, intervalMs: pollIntervalMs },
-	{ loop: publishLoop, intervalMs: pollIntervalMs },
-	{ loop: performanceSyncLoop, intervalMs: performanceSyncPollIntervalMs },
-	{ loop: performanceGuidanceLoop, intervalMs: performanceGuidancePollIntervalMs },
-	{ loop: autopilotLoop, intervalMs: autopilotPollIntervalMs },
-	{ loop: finishingLoop, intervalMs: finishingPollIntervalMs },
-	{ loop: renderLoop, intervalMs: renderPollIntervalMs },
-	{ loop: previewLoop, intervalMs: previewPollIntervalMs },
-	{ loop: autoLayoutLoop, intervalMs: autoLayoutPollIntervalMs },
-	{ loop: notificationRetryLoop, intervalMs: notificationRetryPollIntervalMs },
-	{ loop: mediaCleanupLoop, intervalMs: mediaCleanupPollIntervalMs },
-	{ loop: generatedMediaLoop, intervalMs: generatedMediaPollIntervalMs },
-	{ loop: thumbnailFrameLoop, intervalMs: thumbnailFramePollIntervalMs },
-	{ loop: libraryIndexLoop, intervalMs: libraryIndexPollIntervalMs },
-];
-
 const server = createServer(async (req, res) => {
 	if (req.url === "/health") {
-		res.writeHead(200, { "content-type": "application/json" });
+		const loops = allLoops.map(({ loop }) => ({ name: loop.name, status: loop.status() }));
+		const stalledLoops = unhealthyLoops(loops);
+		res.writeHead(stalledLoops.length > 0 ? 503 : 200, { "content-type": "application/json" });
 		res.end(
 			JSON.stringify({
-				ok: true,
+				ok: stalledLoops.length === 0,
+				stalledLoops,
 				service: "narriflow-worker",
 		render: {
 					enabled: true,
@@ -712,9 +721,7 @@ const server = createServer(async (req, res) => {
 		youtubeLinkIntake: { available: youtubeLinkIntakeAvailable },
 				queue: {
 					processedCount,
-					loops: Object.fromEntries(
-						allLoops.map(({ loop }) => [loop.name, loop.status()]),
-					),
+					loops: Object.fromEntries(loops.map(({ name, status }) => [name, status])),
 				},
 			}),
 		);

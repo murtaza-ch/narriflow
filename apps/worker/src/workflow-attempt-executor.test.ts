@@ -217,3 +217,41 @@ test("a shutdown interruption is worker control flow rather than a poll failure"
     process: async () => {},
   })).toBe("interrupted");
 });
+
+test("only the claimed attempt's execution runs under the held lease, not the claim", async () => {
+  const attempt = {
+    workflowRunId: "run-1",
+    projectId: "project-1",
+    stage: "stt",
+    attemptId: "attempt-1",
+    attemptCount: 1,
+  } as ClaimedWorkflowAttempt & { stage: "stt" };
+  const events: string[] = [];
+
+  const processed = await executeNextWorkflowAttempt({
+    stage: "stt",
+    lifecycle: {
+      claim: async () => {
+        events.push("claim");
+        return attempt;
+      },
+      releaseAttempt: async () => true,
+      runAttempt: async (_attempt, handler) =>
+        handler({ signal: new AbortController().signal, reportProgress: async () => {} }),
+    },
+    holdingLease: async (work) => {
+      events.push("lease:start");
+      try {
+        return await work();
+      } finally {
+        events.push("lease:end");
+      }
+    },
+    process: async () => {
+      events.push("process");
+    },
+  });
+
+  expect(processed).toBe(1);
+  expect(events).toEqual(["claim", "lease:start", "process", "lease:end"]);
+});
