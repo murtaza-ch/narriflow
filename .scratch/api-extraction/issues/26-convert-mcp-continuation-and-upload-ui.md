@@ -4,7 +4,7 @@
 
 **Blocked by:** [24 - Move MCP discovery and upload protocols](24-move-mcp-discovery-and-upload-protocols.md), [05 - Expose session and Workspace controls](05-expose-session-and-workspace-controls.md), [07 - Move billing API and convert billing UI](07-move-billing-api-and-convert-billing-ui.md)
 
-**Status:** claimed
+**Status:** done
 
 **Suggested implementer:** Sol. The other pairing side reviews and returns findings to this owner.
 
@@ -90,7 +90,7 @@ Also account for the inventory's cross-domain traps: query-only actions, action 
 - [x] Upload picker targets API bridge with Bearer plus X-Narriflow-Upload-Intent; no same-origin-cookie assumption or raw web DB access.
 - [x] Workspace billing link uses validated switch before destination; setup resource URL uses API while browser links remain web.
 - [x] Expired/revoked/degraded connectors and OAuth consent destinations match current user states and never log signed tokens.
-- [ ] No unowned files changed; paired review findings and verification evidence recorded under Comments.
+- [x] No unowned files changed; paired review findings and verification evidence recorded under Comments.
 
 ## Verification
 
@@ -147,3 +147,9 @@ Append claim, requested seam changes, paired review and evidence here.
 - Evidence: `bun test "apps/web/app/(continuation)" "apps/web/app/(app)/integrations/mcp" apps/web/app/_components/workspace-query-gate.test.ts` pass; full-web `tsc` shows no diagnostics in these paths; biome clean on both directories. Live signed-in browser pass still belongs to ticket 32. The last acceptance box (paired review) remains with the orchestrator.
 
 - Sol claimed the paired-review fixes on 2026-10-29. Scope includes M1-M3 and L1-L3; the user also authorized the matching integrations API change.
+
+### Paired-review resolutions, 2026-10-29
+
+- Fixed all six findings from `review-claude-26-28.md`; that file now records one `## Resolution (Sol)` per finding, the failing reproductions, fixes and command evidence. The user expressly extended ownership to the matching integrations API runtime/tests for M3. No disagreement or remaining implementation request.
+- Final web regression command, including review/share/continuation/MCP and review preselection/share-model tests: 20 pass, 0 fail. Isolated fixture processes cover 24 review/share, 17 MCP and three continuation-shell scenarios. API integrations/reviews plus reviews client: 64 pass, 8 DB-hook/test skips, 0 fail. The skipped receipt suite was separately enabled only through `.scratch/api-extraction/db-gate.sh`: 6 pass, 0 fail on disposable local PostgreSQL.
+- Full web tsc and API typecheck exit 0. Repository lint exits 0 with 11 existing warnings and one info outside these fixes; owned Biome and diff checks are clean. `bun scripts/check-web-backend-imports.ts` passes. No commits, env-file edits, installs, shared DB access or termination of other agents' processes. Live signed-in W -> A verification remains with ticket 32.

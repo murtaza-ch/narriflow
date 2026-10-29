@@ -4,7 +4,7 @@
 
 **Blocked by:** [27 - Move review guest share and opt-out API](27-move-review-guest-share-and-opt-out-api.md), [07 - Move billing API and convert billing UI](07-move-billing-api-and-convert-billing-ui.md)
 
-**Status:** claimed
+**Status:** done
 
 **Suggested implementer:** Sol. The other pairing side reviews and returns findings to this owner.
 
@@ -136,3 +136,9 @@ Append claim, requested seam changes, paired review and evidence here.
 - Ticket 31 request, confirmed in the live browser: add `new URL(NEXT_PUBLIC_API_URL).origin` to review `connect-src` and the applicable report-only policy in `apps/web/next.config.ts`, preserving existing restrictive directives/noindex/no-referrer/no-store. The review page emitted no-referrer and noindex/nofollow/noarchive; config retains private/no-store, while Next dev overrides Cache-Control to no-cache/must-revalidate, so verify production headers in 32. No unsafe HTML/script interpolation was found; the hostile-text regression passes. No spec deviation or design objection; CSP/configuration and the final cross-origin pass remain with their named owners.
 
 - Sol claimed the paired-review fixes on 2026-10-29. Scope includes M1-M3 and L1-L3; the user also authorized the matching integrations API change.
+
+### Paired-review resolutions, 2026-10-29
+
+- Fixed all six findings from `review-claude-26-28.md`; that file now records one `## Resolution (Sol)` per finding, the failing reproductions, fixes and command evidence. The user expressly extended ownership to the matching integrations API runtime/tests for M3. No disagreement or remaining implementation request.
+- Final web regression command, including review/share/continuation/MCP and review preselection/share-model tests: 20 pass, 0 fail. Isolated fixture processes cover 24 review/share, 17 MCP and three continuation-shell scenarios. API integrations/reviews plus reviews client: 64 pass, 8 DB-hook/test skips, 0 fail. The skipped receipt suite was separately enabled only through `.scratch/api-extraction/db-gate.sh`: 6 pass, 0 fail on disposable local PostgreSQL.
+- Full web tsc and API typecheck exit 0. Repository lint exits 0 with 11 existing warnings and one info outside these fixes; owned Biome and diff checks are clean. `bun scripts/check-web-backend-imports.ts` passes. No commits, env-file edits, installs, shared DB access or termination of other agents' processes. Live signed-in W -> A verification remains with ticket 32.

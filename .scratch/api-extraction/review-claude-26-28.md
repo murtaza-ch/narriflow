@@ -148,3 +148,13 @@ Regression evidence: download fixtures first reproduced silent expired-grant res
 L3, fixed. The continuation picker uses identity-bootstrap membership facts for the signed Workspace when an upload refusal offers an upgrade. Its owner gets the existing WorkspaceBillingLink with the suggested plan. Selection must validate before billing navigation; other roles retain the ask-owner instruction. The picker replaces the unusable provider-dependent upgrade notice locally, retaining the upload failure message and status panel.
 
 Regression evidence: the credits-refusal fixture first timed out because no billing action existed for the owner. It now verifies selection of the signed Workspace, rather than the unrelated selected Workspace, before billing navigation. The editor case verifies that no billing action is offered. No backend imports, new UpgradeProvider or billing query was added to the continuation shell.
+
+### Verification of all six resolutions
+
+- Web: bun test apps/web/app/review apps/web/app/share "apps/web/app/(continuation)" "apps/web/app/(app)/integrations/mcp" "apps/web/app/(app)/projects/[projectId]/project-share-model.test.ts" apps/web/lib/review-preselection.test.ts: 20 pass, 0 fail. The three isolated DOM fixture processes cover 24 review/share scenarios, 17 MCP scenarios and three continuation-shell scenarios.
+- API/client: bun test apps/api/src/domains/reviews apps/api/src/domains/integrations packages/api-client/src/reviews: 64 pass, 8 DB-hook/test skips, 0 fail.
+- DB: .scratch/api-extraction/db-gate.sh env ALLOW_REVIEW_REPLAY_DB_TESTS=1 bun test apps/api/src/domains/reviews/guest-replay.db.test.ts: 6 pass, 0 fail against the disposable local PostgreSQL schema. No shared database was used.
+- bunx tsc -p apps/web/tsconfig.json --noEmit: exit 0, no diagnostics, including none in the owned-file filter. bun run --cwd apps/api typecheck: exit 0.
+- bun run lint: exit 0, with 11 existing warnings and one info outside these fixes. Targeted Biome check of the owned source and tests: clean. Owned git diff --check: clean.
+- bun scripts/check-web-backend-imports.ts: passed, including the available client-bundle scan.
+- No commits, installs, env-file edits, or termination of other agents' processes. Changes stay in ticket 26/28 files, their trackers, this review, and the explicitly authorized integrations runtime/tests. Concurrent UI, Studio and clips changes were left alone. Live signed-in W -> A evidence remains with ticket 32.
