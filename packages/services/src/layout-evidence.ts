@@ -101,8 +101,7 @@ function autoLayoutClaimStateWhere(now: Date): Prisma.ClipWhereInput {
   };
 }
 
-/** Owns preview admission and background evidence claims. Workflow render
- * evidence remains fenced by its Workflow Attempt persistence adapter. */
+/** Owns preview admission and background evidence claims. Render evidence writes use the Render Group membership and token fence. */
 export class LayoutEvidenceLifecycle {
   constructor(private readonly deps: LayoutEvidenceLifecycleDependencies) {}
   private now(): Date { return this.deps.now?.() ?? new Date(); }
@@ -408,7 +407,7 @@ export class LayoutEvidenceLifecycle {
         continue;
       }
       const claimToken = randomUUID();
-      const claim = await prisma.clip.updateMany({
+      const claim = await this.claimWithoutLiveRender(clip.id, async (tx) => tx.clip.updateMany({
         where: {
           id: clip.id,
           editorRevision: clip.editorRevision,
@@ -428,7 +427,7 @@ export class LayoutEvidenceLifecycle {
           autoLayoutLeaseExpiresAt: leaseExpiresAt,
           autoLayoutAttemptCount: { increment: 1 },
         },
-      });
+      }));
       if (claim.count === 0) continue;
 
       return {
@@ -448,6 +447,24 @@ export class LayoutEvidenceLifecycle {
       };
     }
     return null;
+  }
+
+  /** Parent locks serialize the final background admission with group claims.
+   * Recheck DB time after waiting; a coordinator lease is never a child lease. */
+  private async claimWithoutLiveRender(clipId: string, write: (tx: Prisma.TransactionClient) => Promise<{ count: number }>): Promise<{ count: number }> {
+    return this.deps.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT run."id" FROM "WorkflowRun" AS run
+        WHERE run."id" IN (SELECT "workflowRunId" FROM "RenderGroup" WHERE "clipId" = ${clipId}::uuid)
+        ORDER BY run."id" FOR UPDATE`;
+      const live = await tx.$queryRaw<Array<{ id: string }>>`SELECT g."id" FROM "RenderGroup" AS g
+        JOIN "WorkflowRun" AS run ON run."id" = g."workflowRunId" AND run."renderWorkSetGeneration" = g."workSetGeneration"
+        WHERE g."clipId" = ${clipId}::uuid AND g."status" = 'running'
+          AND g."leaseExpiresAt" > (clock_timestamp() AT TIME ZONE 'UTC')
+          AND run."status" IN ('queued', 'running') AND run."stage" = 'clip_rendering'
+          AND EXISTS (SELECT 1 FROM "RenderGroupMember" AS m JOIN "ClipRender" AS r ON r."id" = m."clipRenderId"
+            WHERE m."groupId" = g."id" AND m."invalidatedAt" IS NULL AND r."workflowRunId" = run."id") LIMIT 1`;
+      return live.length ? { count: 0 } : write(tx);
+    });
   }
 
   /** Keeps one active background claim leased and cancels its IO when an

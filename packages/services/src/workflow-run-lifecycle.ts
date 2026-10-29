@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { cancelRenderGroupsWithinTransaction, admitRenderGroupsWithinTransaction, renderGroupParentSettlement, type RenderGroupAdmission } from "./render-group-lifecycle";
+import type { RenderGroupRef } from "./render-group-contract";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
 import {
@@ -135,7 +137,7 @@ export interface RenderWorkSet {
 export type RenderVariantFailureDisposition = "retryable" | "permanent";
 
 export interface RenderWorkSetOutcome {
-  status: "completed" | "partial" | "failed" | "requeued";
+  status: "completed" | "partial" | "failed" | "requeued" | "pending";
   requested: number;
   succeeded: number;
   failed: number;
@@ -337,7 +339,7 @@ export class WorkflowRunLifecycle {
     if (execution) execution.settlement = settlement;
     try {
       const result = await settlement;
-      if (execution) execution.settled = true;
+      if (execution && !(result && typeof result === "object" && "status" in result && result.status === "pending")) execution.settled = true;
       return result;
     } finally {
       if (execution?.settlement === settlement) execution.settlement = undefined;
@@ -402,7 +404,7 @@ export class WorkflowRunLifecycle {
     // Prisma adapters decode raw timestamps as UTC. Return a UTC wall-clock
     // timestamp explicitly so a database session timezone cannot shift leases.
     const databaseClock = await tx.$queryRaw<Array<{ databaseNow: Date }>>`
-      SELECT (CURRENT_TIMESTAMP AT TIME ZONE 'UTC') AS "databaseNow"
+      SELECT (clock_timestamp() AT TIME ZONE 'UTC') AS "databaseNow"
     `;
     const databaseNow = databaseClock[0]?.databaseNow;
     if (!databaseNow) throw new Error("Database clock unavailable");
@@ -926,7 +928,7 @@ export class WorkflowRunLifecycle {
         });
       }
 
-      if (stage === "clip_rendering") {
+      if (stage === "clip_rendering" && !run.renderWorkSetGeneration) {
         await tx.clipRender.updateMany({
           where: {
             status: "rendering",
@@ -972,6 +974,8 @@ export class WorkflowRunLifecycle {
     errorCode: string;
   }): Promise<number> {
     return this.transaction(async (tx) => {
+      await this.lockAdmissionProject(tx, input.projectId);
+      await tx.$queryRaw`SELECT "id" FROM "WorkflowRun" WHERE "projectId" = ${input.projectId}::uuid AND "status" = 'queued' ORDER BY "id" FOR UPDATE`;
       const queued = await tx.workflowRun.findMany({
         where: { projectId: input.projectId, status: "queued" },
         select: { id: true, stage: true },
@@ -981,6 +985,7 @@ export class WorkflowRunLifecycle {
         data: { status: "cancelled", errorCode: input.errorCode },
       });
       for (const run of queued) {
+        if (run.stage === "clip_rendering") await cancelRenderGroupsWithinTransaction(tx, run.id);
         await this.emitFinishedOperations(tx, { workflowRunId: run.id, projectId: input.projectId, stage: run.stage });
       }
       return cancelled.count;
@@ -1061,16 +1066,16 @@ export class WorkflowRunLifecycle {
     const updated = await this.prisma.$executeRaw`
       UPDATE "WorkflowRun"
       SET
-        "heartbeatAt" = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC'),
-        "leaseExpiresAt" = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC') + (${this.leaseDurationMs} * INTERVAL '1 millisecond'),
-        "updatedAt" = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+        "heartbeatAt" = (clock_timestamp() AT TIME ZONE 'UTC'),
+        "leaseExpiresAt" = (clock_timestamp() AT TIME ZONE 'UTC') + (${this.leaseDurationMs} * INTERVAL '1 millisecond'),
+        "updatedAt" = (clock_timestamp() AT TIME ZONE 'UTC')
       WHERE "id" = ${attempt.workflowRunId}
         AND "projectId" = ${attempt.projectId}::uuid
         AND "stage" = ${attempt.stage}
         AND "status" = 'running'
         AND "attemptId" = ${attempt.attemptId}::uuid
         AND "leaseOwner" = ${this.leaseOwner}
-        AND "leaseExpiresAt" > (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+        AND "leaseExpiresAt" > (clock_timestamp() AT TIME ZONE 'UTC')
     `;
     if (updated === 0) throw new WorkflowAttemptLost(attempt);
   }
@@ -1088,7 +1093,7 @@ export class WorkflowRunLifecycle {
           OR (
             "status" = 'running'
             AND "leaseOwner" = ${this.leaseOwner}
-            AND "leaseExpiresAt" > (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+            AND "leaseExpiresAt" > (clock_timestamp() AT TIME ZONE 'UTC')
           )
         )
       LIMIT 1
@@ -1239,7 +1244,13 @@ export class WorkflowRunLifecycle {
     attempt: WorkflowAttemptRef,
   ): Promise<RenderWorkSet> {
     return this.transaction(async (tx) => {
+      await this.lockAdmissionProject(tx, attempt.projectId);
       await this.fenceChildMutation(tx, attempt, "clip_rendering");
+      return this.beginRenderWorkSetWithinTransaction(tx, attempt);
+    });
+  }
+
+  private async beginRenderWorkSetWithinTransaction(tx: TransactionClient, attempt: WorkflowAttemptRef): Promise<RenderWorkSet> {
       const run = await tx.workflowRun.findUniqueOrThrow({
         where: { id: attempt.workflowRunId },
         select: { renderWorkSetFrozenAt: true },
@@ -1288,7 +1299,22 @@ export class WorkflowRunLifecycle {
         frozenAt,
         variantIds: variants.map((variant) => variant.id),
       };
+  }
+
+  /** Freeze and admit the complete partition in one coordinator transaction.
+   * Configurations come from the worker's frozen export/entitlement snapshot. */
+  async admitRenderGroups(attempt: WorkflowAttemptRef, groups: readonly RenderGroupAdmission[]): Promise<RenderGroupRef[]> {
+    return this.transaction(async (tx) => {
+      await this.lockAdmissionProject(tx, attempt.projectId);
+      await this.fenceChildMutation(tx, attempt, "clip_rendering");
+      await this.beginRenderWorkSetWithinTransaction(tx, attempt);
+      return admitRenderGroupsWithinTransaction(tx, { workflowRunId: attempt.workflowRunId, projectId: attempt.projectId, groups });
     });
+  }
+
+  private async fenceParentOnlyRenderMutation(tx: TransactionClient, attempt: WorkflowAttemptRef): Promise<void> {
+    const run = await tx.workflowRun.findUniqueOrThrow({ where: { id: attempt.workflowRunId }, select: { renderWorkSetGeneration: true } });
+    if (run.renderWorkSetGeneration) throw new WorkflowAttemptLost(attempt);
   }
 
   /**
@@ -1311,10 +1337,12 @@ export class WorkflowRunLifecycle {
         AND "attemptId" = ${attempt.attemptId}::uuid
         AND "stage" = ${expectedStage}
         AND "leaseOwner" = ${this.leaseOwner}
-        AND "leaseExpiresAt" > (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+        AND "leaseExpiresAt" > (clock_timestamp() AT TIME ZONE 'UTC')
       FOR UPDATE
     `;
     if (owned.length === 0) throw new WorkflowAttemptLost(attempt);
+    const current = await tx.workflowRun.findFirst({ where: this.ownedAttemptWhere(attempt, await this.databaseNow(tx)), select: { id: true } });
+    if (!current) throw new WorkflowAttemptLost(attempt);
   }
 
   private async fenceRenderAnalysisMutation(
@@ -1323,6 +1351,7 @@ export class WorkflowRunLifecycle {
     clipId: string,
   ): Promise<void> {
     await this.fenceChildMutation(tx, attempt, "clip_rendering");
+    await this.fenceParentOnlyRenderMutation(tx, attempt);
     const ownedVariant = await tx.clipRender.findFirst({
       where: {
         clipId,
@@ -1419,6 +1448,7 @@ export class WorkflowRunLifecycle {
   ) {
     return this.transaction(async (tx) => {
       await this.fenceChildMutation(tx, attempt, "clip_rendering");
+      await this.fenceParentOnlyRenderMutation(tx, attempt);
       const render = await this.findAttemptRender(tx, attempt, clipRenderId);
       if (!render) return false;
       const startedAt = new Date();
@@ -1458,6 +1488,7 @@ export class WorkflowRunLifecycle {
   ) {
     return this.transaction(async (tx) => {
       await this.fenceChildMutation(tx, attempt, "clip_rendering");
+      await this.fenceParentOnlyRenderMutation(tx, attempt);
       const render = await this.findAttemptRender(tx, attempt, clipRenderId);
       if (!render) return false;
       const completedAt = new Date();
@@ -1515,6 +1546,7 @@ export class WorkflowRunLifecycle {
   ) {
     return this.transaction(async (tx) => {
       await this.fenceChildMutation(tx, attempt, "clip_rendering");
+      await this.fenceParentOnlyRenderMutation(tx, attempt);
       const render = await this.findAttemptRender(tx, attempt, clipRenderId);
       if (!render) return false;
       const claim = await tx.clipRender.updateMany({
@@ -2313,8 +2345,27 @@ export class WorkflowRunLifecycle {
       await this.fenceChildMutation(tx, attempt, "clip_rendering");
       const run = await tx.workflowRun.findUniqueOrThrow({
         where: { id: attempt.workflowRunId },
-        select: { requestedCount: true, attemptCount: true },
+        select: { requestedCount: true, attemptCount: true, renderWorkSetGeneration: true },
       });
+      if (run.renderWorkSetGeneration) {
+        const decision = await renderGroupParentSettlement(tx, attempt.workflowRunId);
+        if (!decision.eligible) {
+          const progress = decision.requested > 0 ? Math.min(95, Math.round(90 * (decision.succeeded + decision.failed + decision.superseded) / decision.requested)) : 0;
+          await tx.workflowRun.update({ where: { id: attempt.workflowRunId }, data: { progress, succeededCount: decision.succeeded, failedCount: decision.failed } });
+          await this.appendEvent(tx, { ...attempt, status: "running", progress, errorCode: null, transition: `groups_progress:${decision.succeeded}:${decision.failed}:${decision.superseded}` });
+          return { status: "pending" as const, requested: run.requestedCount ?? 0, succeeded: decision.succeeded,
+            failed: decision.failed, superseded: decision.superseded, followUpWorkflowRunId: null };
+        }
+        const members = await tx.renderGroupMember.findMany({ where: { workflowRunId: attempt.workflowRunId, invalidatedAt: null }, select: { clipRenderId: true } });
+        const variants = await tx.clipRender.findMany({ where: { id: { in: members.map((m) => m.clipRenderId) }, workflowRunId: attempt.workflowRunId }, select: { id: true, status: true, exportVariantId: true } });
+        const terminal = await this.settleTerminalRenderLineage(tx, attempt, { requestedCount: decision.requested, variants, failureErrorCode: "render_work_set_failed" });
+        await this.appendEvent(tx, { ...attempt, status: terminal.status, progress: 100, errorCode: terminal.errorCode,
+          transition: `terminal:${terminal.status}`, analyticsRequired: true, notification: decision.notify ? terminal.notification : undefined });
+        const followUpWorkflowRunId = await this.admitLateRenderFollowUp(tx, attempt);
+        await this.emitFinishedOperations(tx, attempt);
+        return { status: terminal.status, requested: terminal.requested, succeeded: terminal.succeeded,
+          failed: terminal.failed, superseded: terminal.superseded, followUpWorkflowRunId };
+      }
       const variants = await tx.clipRender.findMany({
         where: { workflowRunId: attempt.workflowRunId },
         select: {
@@ -2547,6 +2598,11 @@ export class WorkflowRunLifecycle {
     admit?: (tx: TransactionClient) => Promise<{ exportId: string; clipId: string }>,
   ) {
     await this.settlementTransaction(attempt, async (tx) => {
+      if (attempt.stage === "clip_rendering") {
+        await this.lockAdmissionProject(tx, attempt.projectId);
+        await this.fenceChildMutation(tx, attempt, "clip_rendering");
+        await this.fenceParentOnlyRenderMutation(tx, attempt);
+      }
       const databaseNow = await this.databaseNow(tx);
       const won = await tx.workflowRun.updateMany({
         where: {
@@ -2604,6 +2660,18 @@ export class WorkflowRunLifecycle {
       });
       if (!run) throw new WorkflowAttemptLost(attempt);
 
+      if (attempt.stage === "clip_rendering" && run.renderWorkSetGeneration) {
+        await tx.$queryRaw`SELECT "id" FROM "WorkflowRun" WHERE "id" = ${run.id}::uuid FOR UPDATE`;
+        const now = await this.databaseNow(tx);
+        const changed = await tx.workflowRun.updateMany({ where: options.expiredLeaseOnly
+          ? { id: run.id, attemptId: attempt.attemptId, status: "running", leaseExpiresAt: { lte: now } }
+          : this.ownedAttemptWhere(attempt, now),
+          data: { status: "queued", attemptId: null, leaseOwner: null, leaseExpiresAt: null, heartbeatAt: null,
+            nextAttemptAt: now, errorCode: null } });
+        if (!changed.count) throw new WorkflowAttemptLost(attempt);
+        await this.appendEvent(tx, { ...attempt, status: "queued", progress: run.progress, errorCode: null, transition: `coordinator_requeued:${attempt.attemptId}` });
+        return;
+      }
       const requeue =
         failure.disposition === "retryable" && run.attemptCount < WORKFLOW_MAX_ATTEMPTS;
       const status: WorkflowStatus = requeue ? "queued" : "failed";
@@ -2839,6 +2907,8 @@ export class WorkflowRunLifecycle {
     outcome: { requeue: boolean; errorCode: string },
   ) {
     if (attempt.stage === "clip_rendering") {
+      const parent = await tx.workflowRun.findUniqueOrThrow({ where: { id: attempt.workflowRunId }, select: { renderWorkSetGeneration: true } });
+      if (parent.renderWorkSetGeneration) return;
       const renderWhere: Prisma.ClipRenderWhereInput = {
         clip: { projectId: attempt.projectId },
         workflowAttemptId: attempt.attemptId,
@@ -2972,7 +3042,7 @@ export class WorkflowRunLifecycle {
   async reapExpiredAttempts(): Promise<number> {
     const databaseClock = await this.prisma.$queryRaw<
       Array<{ databaseNow: Date }>
-    >`SELECT (CURRENT_TIMESTAMP AT TIME ZONE 'UTC') AS "databaseNow"`;
+    >`SELECT (clock_timestamp() AT TIME ZONE 'UTC') AS "databaseNow"`;
     const now = databaseClock[0]?.databaseNow;
     if (!now) throw new Error("Database clock unavailable");
     const expired = await this.prisma.workflowRun.findMany({
