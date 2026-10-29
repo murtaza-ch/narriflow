@@ -1,4 +1,13 @@
 import { type ZoomRecordingNotification } from "@narriflow/validators";
+
+/**
+ * The only language a Project row may hold: a provider code, or null for
+ * automatic detection. `auto`, empty and unknown values become null so the
+ * transcription stage never receives a value it can't submit.
+ */
+export function storedLanguageCode(value: unknown): string | null {
+	return sourceLanguageInputSchema.safeParse(value).data ?? null;
+}
 import { ZoomError, zoomRecordingIdentity } from "./zoom";
 import type { ActorScope } from "./actor-scope";
 import { getOperationReceiptExecutor } from "./operation-receipt-runtime";
@@ -37,6 +46,7 @@ import {
 	rssImportSchema,
 	rssPreviewSchema,
 	sourceLanguageCodeSchema,
+	sourceLanguageInputSchema,
 	workflowStageUpdatedEventSchema,
 	type WorkflowStageUpdatedEvent,
 	brandProfileSnapshotSchema,
@@ -1441,7 +1451,7 @@ export class ProjectService {
 					contentPack: contentPackId
 						? undefined
 						: parseStoredContentPack(parsed.contentPack),
-					languageCode: parsed.languageCode,
+					languageCode: storedLanguageCode(parsed.languageCode),
 					transcriptProvider: STT_PROVIDER,
 					transcriptProviderModel: STT_PROVIDER_MODEL,
 				},
@@ -1976,7 +1986,7 @@ export class ProjectService {
 							ingestStatus: "queued",
 							sourceMimeType: episode.mimeType ?? null,
 							sourceDurationSeconds: episode.durationSeconds ?? null,
-							languageCode: options.generationContext?.languageCode ?? null,
+							languageCode: storedLanguageCode(options.generationContext?.languageCode),
 							commitToken: input.commitToken ?? null,
 							...intakeBrandColumns(brand),
 							createdAt,
@@ -2211,7 +2221,7 @@ export class ProjectService {
 			where: { id: projectId },
 			select: { languageCode: true },
 		});
-		return row?.languageCode ?? null;
+		return storedLanguageCode(row?.languageCode);
 	}
 
 	/**
@@ -2305,7 +2315,7 @@ export class ProjectService {
 				workspaceId: scope.workspaceId,
 				...accessibleProjectWhere(),
 			},
-			data: { languageCode, updatedByUserId: scope.actorUserId },
+			data: { languageCode: storedLanguageCode(languageCode), updatedByUserId: scope.actorUserId },
 		});
 
 		// Pack committed — NOW read ingest state (the ordering invariant).
@@ -2396,7 +2406,7 @@ export class ProjectService {
 					workspaceId: scope.workspaceId,
 					...accessibleProjectWhere(),
 				},
-				data: { languageCode, updatedByUserId: scope.actorUserId },
+				data: { languageCode: storedLanguageCode(languageCode), updatedByUserId: scope.actorUserId },
 			});
 		});
 		return true;
