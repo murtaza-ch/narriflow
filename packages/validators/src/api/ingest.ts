@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { type ContentPack, contentPackSchema } from "../content-pack";
 import { driveIngestSchema, rssImportSchema } from "../ingest";
+import { sourceLanguageInputSchema } from "../language";
 import { detectLinkProvider, linkIngestSchema } from "../link-providers";
 
 // Commit token: the browser mints one per import before its first attempt. It is the
@@ -33,7 +34,7 @@ export type LinkMetadataQuery = z.infer<typeof linkMetadataQuerySchema>;
 export const generationSetupSchema = z
   .object({
     contentPack: contentPackSchema,
-    languageCode: z.string().min(1).nullable(),
+    languageCode: sourceLanguageInputSchema,
   })
   .strict();
 export type GenerationSetupInput = z.infer<typeof generationSetupSchema>;
@@ -43,7 +44,7 @@ export const rssImportRequestSchema = rssImportSchema
   .required({ commitToken: true })
   .extend({
     contentPack: contentPackSchema,
-    languageCode: z.string().min(1).nullable(),
+    languageCode: sourceLanguageInputSchema,
   })
   .strict();
 export type RssImportRequest = z.infer<typeof rssImportRequestSchema>;

@@ -159,6 +159,20 @@ describe("Configure step", () => {
     expect(saveGenerationDraft).toHaveBeenCalledTimes(1);
   });
 
+  test("the picker's auto language is stored as automatic detection, and unknown codes are refused", async () => {
+    const finalizeGenerationSetup = mock(async () => ({ started: true, ingestStatus: "ready", workflowRunId: "run-1" }));
+    const routes = app({ projectService: { finalizeGenerationSetup } as never });
+
+    for (const [languageCode, stored] of [["auto", null], ["", null], ["EN_US", "en_us"]] as const) {
+      const finalize = post(`/api/projects/${PROJECT_ID}/generation/finalize`, { contentPack, languageCode });
+      expect((await routes.request(finalize.path, finalize.init)).status).toBe(200);
+      expect(finalizeGenerationSetup.mock.calls.at(-1)?.[3]).toBe(stored);
+    }
+
+    const unknown = post(`/api/projects/${PROJECT_ID}/generation/finalize`, { contentPack, languageCode: "klingon" });
+    expect((await routes.request(unknown.path, unknown.init)).status).toBe(400);
+  });
+
   test("unknown fields are refused and a usage refusal at finalize keeps its details", async () => {
     const finalizeGenerationSetup = mock(async () => {
       throw new ExpectedDomainFailureError({

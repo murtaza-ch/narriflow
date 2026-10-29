@@ -400,6 +400,20 @@ export const sourceLanguageCodeSchema = z.preprocess(
 
 export type SourceLanguageCode = z.infer<typeof sourceLanguageCodeSchema>;
 
+/**
+ * Browser input for a source language: the picker's `auto` (or an empty value)
+ * means automatic detection and is stored as null; anything else must be a
+ * provider code. Use at HTTP boundaries so `auto` never reaches the worker.
+ */
+export const sourceLanguageInputSchema = z.preprocess(
+  (value) => {
+    if (typeof value !== "string") return value;
+    const normalized = value.trim().toLowerCase();
+    return normalized === "" || normalized === "auto" ? null : normalized;
+  },
+  assemblyAiTranscriptLanguageCodeSchema.nullable(),
+);
+
 export function sourceLanguageCodeFromFormValue(
   value: unknown,
 ): SourceLanguageCode {
