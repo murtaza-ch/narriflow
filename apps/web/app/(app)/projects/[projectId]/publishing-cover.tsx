@@ -18,6 +18,7 @@ import { Check, ImagePlus, Upload } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
 import { SegmentedControl } from "@narriflow/ui/components/segmented-control";
 import { Spinner } from "@narriflow/ui/components/spinner";
+import { useOpenAfterMount } from "@narriflow/ui/components/use-open-after-mount";
 import {
 	clipAspectRatioOptions,
 	type ClipAspectRatio,
@@ -313,9 +314,11 @@ export function PublishingCover({
 		if (video.current) video.current.currentTime = time;
 	}
 	const showImages = platform !== "tiktok" && mode === "image";
+	// This dialog mounts already open; see useOpenAfterMount.
+	const open = useOpenAfterMount(true);
 	return (
 		<Dialog.Root
-			open
+			open={open}
 			onOpenChange={(d) => {
 				if (!d.open) onClose();
 			}}

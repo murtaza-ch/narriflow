@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import config from "./next.config";
 
 async function cspFor(source: string): Promise<string> {
@@ -27,5 +28,12 @@ describe("page Content-Security-Policy", () => {
 
   test("the review CSP allows Clerk's blob worker", async () => {
     expect(await cspFor("/review/:path*")).toContain("worker-src 'self' blob:");
+  });
+
+  // The policy admits Clerk's own hosts and no third-party beacon, so Clerk's
+  // browser telemetry is switched off instead of allowed.
+  test("Clerk browser telemetry is disabled rather than admitted by the CSP", async () => {
+    expect(readFileSync(new URL("./app/layout.tsx", import.meta.url), "utf8")).toMatch(/<ClerkProvider\s+telemetry=\{false\}/);
+    expect(await reportOnlyCspFor("/:path*")).not.toContain("clerk-telemetry.com");
   });
 });

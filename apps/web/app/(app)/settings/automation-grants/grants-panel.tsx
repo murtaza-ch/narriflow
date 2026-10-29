@@ -31,6 +31,7 @@ import { SegmentedControl } from "@narriflow/ui/components/segmented-control";
 import { Select } from "@narriflow/ui/components/select";
 import { Spinner } from "@narriflow/ui/components/spinner";
 import { Textarea } from "@narriflow/ui/components/textarea";
+import { useOpenAfterMount } from "@narriflow/ui/components/use-open-after-mount";
 import { SOCIAL_PLATFORM_LABELS } from "@/lib/social-post-status";
 
 // A fixed locale and zone keep server and client renders identical.
@@ -221,8 +222,10 @@ function GrantDialog({
 		onClose();
 	}
 
+	// This dialog mounts already open; see useOpenAfterMount.
+	const open = useOpenAfterMount(true);
 	return (
-		<Dialog.Root open onOpenChange={(details) => !details.open && onClose()} placement="center">
+		<Dialog.Root open={open} onOpenChange={(details) => !details.open && onClose()} placement="center">
 			<Portal>
 				<Dialog.Backdrop />
 				<Dialog.Positioner>

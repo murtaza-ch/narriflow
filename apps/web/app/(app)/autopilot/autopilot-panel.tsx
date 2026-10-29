@@ -42,6 +42,7 @@ import { SegmentedControl } from "@narriflow/ui/components/segmented-control";
 import { Slider } from "@narriflow/ui/components/slider";
 import { Switch } from "@narriflow/ui/components/switch";
 import { toaster } from "@narriflow/ui/components/toaster";
+import { useOpenAfterMount } from "@narriflow/ui/components/use-open-after-mount";
 import {
   type AutopilotRuleSnapshot,
   type AutopilotStatus,
@@ -1208,9 +1209,11 @@ function EditRuleDialog({
     onClose();
   }
 
+  // A rule opens this dialog already open (its key changes with the rule); see useOpenAfterMount.
+  const open = useOpenAfterMount(rule !== null);
   return (
     <Dialog.Root
-      open={rule !== null}
+      open={open}
       onOpenChange={(details) => {
         if (saving || details.open) return;
         onClose();

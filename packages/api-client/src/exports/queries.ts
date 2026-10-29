@@ -34,6 +34,10 @@ export const EXPORT_RESOURCES = {
   bundle: "bundle",
 } as const;
 
+/** Statuses of an export a worker is still rendering; `partial_ready` and `failed` are settled. */
+const ACTIVE_EXPORT_STATUSES: ReadonlySet<string> = new Set(["queued", "rendering"]);
+export const ACTIVE_EXPORT_POLL_MS = 5_000;
+
 /** Exports Download Grants are never queries: they expire in minutes (a bundle's in one), so they are fetched on the click that uses them. */
 export const exportQueries = {
   /** The Exports page: the Workspace's exports under its filters and cursor. */
@@ -44,6 +48,10 @@ export const exportQueries = {
       staleTime: STALE_TIME.live,
       queryFn: async ({ signal }): Promise<WorkspaceExportPage> =>
         (await client.workspace.exports.$get({ query: filters }, withSignal(signal))).json(),
+      // This page has no progress stream of its own, so it polls while a
+      // listed export is still rendering and stops once all have settled.
+      refetchInterval: (query) =>
+        query.state.data?.items.some((item) => ACTIVE_EXPORT_STATUSES.has(item.status)) ? ACTIVE_EXPORT_POLL_MS : false,
     });
   },
 

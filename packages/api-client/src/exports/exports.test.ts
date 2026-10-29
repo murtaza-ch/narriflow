@@ -35,6 +35,17 @@ describe("exports reads", () => {
     expect(options.queryKey).not.toEqual(exportQueries.workspaceList(client, scope, {}).queryKey);
   });
 
+  test("the Workspace list polls while an export is rendering and stops once all have settled", () => {
+    const { client } = clientWith(() => jsonResponse({}));
+    const poll = exportQueries.workspaceList(client, scope).refetchInterval as (query: unknown) => number | false;
+    const page = (...statuses: string[]) => ({ state: { data: { items: statuses.map((status) => ({ status })), nextCursor: null } } });
+    expect(poll(page("ready", "rendering"))).toBe(5_000);
+    expect(poll(page("queued"))).toBe(5_000);
+    expect(poll(page("ready", "partial_ready", "failed"))).toBe(false);
+    expect(poll(page())).toBe(false);
+    expect(poll({ state: { data: undefined } })).toBe(false);
+  });
+
   test("the detail read carries the workflow cursor", async () => {
     const { client, calls } = clientWith(() => jsonResponse({ id: EXPORT, lastSeq: 12 }));
     const detail = await exportQueries.detail(client, scope, PROJECT, CLIP, EXPORT).queryFn?.({ signal: new AbortController().signal } as never);

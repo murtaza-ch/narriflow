@@ -17,6 +17,7 @@ import { Select } from "@narriflow/ui/components/select";
 import { Slider } from "@narriflow/ui/components/slider";
 import { Switch } from "@narriflow/ui/components/switch";
 import { toaster } from "@narriflow/ui/components/toaster";
+import { useOpenAfterMount } from "@narriflow/ui/components/use-open-after-mount";
 import { clipAspectRatioOptions, type ClipLengthPreset, type ContentPack, type RecipeSnapshot, recipeWarningSchema, type SocialPlatform } from "@narriflow/validators";
 import { docsUrl } from "@/lib/docs-url";
 import { SOCIAL_PLATFORM_LABELS } from "@/lib/social-post-status";
@@ -406,9 +407,11 @@ function RecipeDialog({
     onSaved();
   }
 
+  // A target opens this dialog already open (its key changes with the target); see useOpenAfterMount.
+  const open = useOpenAfterMount(target !== null);
   return (
     <Dialog.Root
-      open={target !== null}
+      open={open}
       onOpenChange={(details) => {
         if (saving || details.open) return;
         onClose();

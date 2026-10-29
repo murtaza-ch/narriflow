@@ -24,6 +24,20 @@ export function activeShareRound(data: ReviewRoomData): ReviewRound | null {
   ) ?? null;
 }
 
+/** A round the member picked, remembered with the newest round at that moment. */
+export type RoundPick = { id: string; newestId: string | null };
+
+/**
+ * The round the panel shows. Rounds arrive newest first. A pick holds only
+ * until a newer round exists: sending a round supersedes the older room link,
+ * so the panel moves to the new round instead of keeping a dead link selected.
+ */
+export function shownRound(rounds: ReviewRound[], pick: RoundPick | null): ReviewRound | null {
+  const newest = rounds[0] ?? null;
+  if (!pick || pick.newestId !== (newest?.id ?? null)) return newest;
+  return rounds.find((round) => round.id === pick.id) ?? newest;
+}
+
 export function quickReviewItems(data: ReviewRoomData) {
   return data.candidates.flatMap((candidate) => {
     const latestExport = candidate.exports[0];

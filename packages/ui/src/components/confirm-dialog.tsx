@@ -5,6 +5,7 @@ import { Flex } from "@chakra-ui/react"
 import { TriangleAlert } from "lucide-react"
 import { Dialog, Portal } from "./dialog"
 import { Button } from "./button"
+import { useOpenAfterMount } from "./use-open-after-mount"
 
 export interface ConfirmDialogProps {
   open: boolean
@@ -37,10 +38,12 @@ export function ConfirmDialog(props: ConfirmDialogProps) {
     loading = false,
   } = props
   const cancelButtonRef = React.useRef<HTMLButtonElement>(null)
+  // The first question mounts this dialog already open; see useOpenAfterMount.
+  const shown = useOpenAfterMount(open)
 
   return (
     <Dialog.Root
-      open={open}
+      open={shown}
       onOpenChange={(details) => {
         if (loading) return
         onOpenChange(details.open)

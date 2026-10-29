@@ -80,7 +80,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           })();`}
         </Script>
         <Provider>
-          <ClerkProvider signInUrl="/?auth=sign-in" signUpUrl="/?auth=sign-up" signInFallbackRedirectUrl="/auth/continue" signUpFallbackRedirectUrl="/auth/continue">
+          <ClerkProvider telemetry={false} signInUrl="/?auth=sign-in" signUpUrl="/?auth=sign-up" signInFallbackRedirectUrl="/auth/continue" signUpFallbackRedirectUrl="/auth/continue">
             {children}
             <Suspense fallback={null}><AuthModal /></Suspense>
           </ClerkProvider>

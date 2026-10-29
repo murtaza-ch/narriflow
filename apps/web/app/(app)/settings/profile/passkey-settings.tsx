@@ -8,6 +8,7 @@ import { Fingerprint, KeyRound, X } from "lucide-react";
 import { Button, IconButton } from "@narriflow/ui/components/button";
 import { Input } from "@narriflow/ui/components/input";
 import { Label } from "@narriflow/ui/components/label";
+import { useOpenAfterMount } from "@narriflow/ui/components/use-open-after-mount";
 import { supportsPasskeys } from "@/lib/auth-flow";
 import { PasswordInput } from "@/app/_components/auth/password-input";
 import { FormError } from "@/app/_components/auth/form-error";
@@ -148,7 +149,8 @@ function ReverificationDialog({ request, onClose }: { request: VerificationReque
     finally { busy.current = false; setPending(false); }
   }
 
-  return <Dialog.Root open onOpenChange={({ open }) => { if (!open) cancel(); }} placement="center" scrollBehavior="inside">
+  const open = useOpenAfterMount(true);
+  return <Dialog.Root open={open} onOpenChange={({ open }) => { if (!open) cancel(); }} placement="center" scrollBehavior="inside">
     <Portal><Dialog.Backdrop /><Dialog.Positioner p="4"><Dialog.Content maxW="420px" bg="bg.panel" color="fg">
       <Dialog.CloseTrigger asChild><IconButton aria-label="Cancel verification" variant="ghost" borderRadius="full" boxSize="8" position="absolute" top="3" right="3"><X size={16} /></IconButton></Dialog.CloseTrigger>
       <Dialog.Header><Dialog.Title fontSize="18px" fontWeight="500">Verify it’s you</Dialog.Title></Dialog.Header>

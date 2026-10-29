@@ -5,6 +5,7 @@ import {
   invalidReviewerEmails,
   reviewerEmailsFromText,
   reviewApprovalProgress,
+  shownRound,
 } from "./project-share-model";
 import type { ReviewRoomData } from "./review-panel";
 
@@ -89,5 +90,20 @@ describe("project share model", () => {
     const room = { ...data, rounds: [expired, round] } satisfies ReviewRoomData;
     expect(activeShareRound(room)?.id).toBe("round-live");
     expect(reviewApprovalProgress(round)).toEqual({ approved: 1, required: 2 });
+  });
+
+  test("moves to a newly sent round instead of keeping the superseded one selected", () => {
+    const round = (id: string, revision: number) => ({ ...(data.rounds[0] ?? {}), id, revision }) as unknown as ReviewRoomData["rounds"][number];
+    const old = round("round-2", 2);
+    const fresh = round("round-3", 3);
+    // Nothing picked: the newest round.
+    expect(shownRound([old], null)?.id).toBe("round-2");
+    // A pick holds while no newer round exists.
+    expect(shownRound([fresh, old], { id: "round-2", newestId: "round-3" })?.id).toBe("round-2");
+    // A round sent after the pick takes over, however the pick was made.
+    expect(shownRound([fresh, old], { id: "round-2", newestId: "round-2" })?.id).toBe("round-3");
+    // A pick that no longer exists falls back to the newest.
+    expect(shownRound([fresh], { id: "gone", newestId: "round-3" })?.id).toBe("round-3");
+    expect(shownRound([], null)).toBeNull();
   });
 });

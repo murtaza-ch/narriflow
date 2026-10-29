@@ -35,6 +35,7 @@ import { upgradePromptFromFailure } from "@/lib/authenticated-request-browser";
 import { LockedButton, useUpgrade } from "../../_components/upgrade";
 import { FeatureHero } from "../../_components/feature-hero";
 import { featureUpgradePrompt } from "@/lib/feature-upgrade-prompt";
+import { type RoundPick, shownRound } from "./project-share-model";
 
 type Variant = { id: string; aspectRatio: string; durationSec: number | null };
 type CandidateExport = { id: string; editorRevision: number; createdAt: string; variants: Variant[] };
@@ -296,7 +297,7 @@ export function ReviewPanel({ projectId, initialData, canManage, preselection = 
   const { openUpgrade, currentTier } = useUpgrade();
   const reviewUpgrade = featureUpgradePrompt(currentTier, "review.rooms", "Upgrade to share projects for client review");
   const data = room.data ?? initialData;
-  const [activeRoundId, setActiveRoundId] = useState(initialData.rounds[0]?.id ?? null);
+  const [roundPick, setRoundPick] = useState<RoundPick | null>(null);
   // An assistant's review handoff opens the composer with its checked exports;
   // the member still chooses recipients, passcode, expiry, and sends.
   const [creating, setCreating] = useState(Boolean(preselection && Object.keys(preselection.selections).length > 0));
@@ -323,7 +324,7 @@ export function ReviewPanel({ projectId, initialData, canManage, preselection = 
   const selectionInitializedRef = useRef(false);
 
 
-  const activeRound = data.rounds.find((round) => round.id === activeRoundId) ?? data.rounds[0] ?? null;
+  const activeRound = shownRound(data.rounds, roundPick);
   const recipients = useMemo(() => parseRecipients(recipientText), [recipientText]);
 
   useEffect(() => {
@@ -587,7 +588,7 @@ export function ReviewPanel({ projectId, initialData, canManage, preselection = 
               const approved = round.items.filter((item) => item.currentDecision === "approved").length;
               const selected = activeRound?.id === round.id;
               return (
-                <chakra.button key={round.id} type="button" textAlign="start" w="full" p="4" borderRadius="l3" bg={selected ? "accent.subtle" : "bg.subtle"} transition="background 0.15s ease" _hover={{ bg: selected ? "accent.subtle" : "bg.soft" }} onClick={() => setActiveRoundId(round.id)} aria-pressed={selected}>
+                <chakra.button key={round.id} type="button" textAlign="start" w="full" p="4" borderRadius="l3" bg={selected ? "accent.subtle" : "bg.subtle"} transition="background 0.15s ease" _hover={{ bg: selected ? "accent.subtle" : "bg.soft" }} onClick={() => setRoundPick({ id: round.id, newestId: data.rounds[0]?.id ?? null })} aria-pressed={selected}>
                   <Flex justify="space-between" align="center" gap="3">
                     <Text textStyle="eyebrow" color={selected ? "accent.fg" : "fg.muted"}>Round {String(round.revision).padStart(2, "0")}</Text>
                     <StatusBadge label={eventLabel(round.status)} status={STATUS_BADGE_STATUS[round.status] ?? "pending"} />
