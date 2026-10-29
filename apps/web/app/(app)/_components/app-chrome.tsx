@@ -391,9 +391,10 @@ function ShellPending() {
 
 /**
  * The shell's data: identity bootstrap first (it adopts the effective
- * Workspace), then the Workspace bootstrap and billing state for it. The
- * children, and so every screen, render only once the shell can show its
- * credits and plan, inside a Workspace that is in force for this session.
+ * Workspace), then the Workspace bootstrap for it. The children, and so every
+ * screen, render once the shell can show its credits and plan, inside a
+ * Workspace that is in force for this session. Billing state only words the
+ * upgrade links and settles beside the screen.
  */
 function WorkspaceShell({
   bootstrap,
@@ -406,14 +407,14 @@ function WorkspaceShell({
 }) {
   const { transport } = useApiRuntime();
   const { selectionChanged } = useSessionGate();
-  // The shell reads billing only to word upgrade links; a failed read must not
-  // hold the app back, so it neither retries nor blocks past its first answer.
+  // The shell reads billing only to word upgrade links, so it never holds the
+  // page back: routes load beside it, the links say "billing" until it answers,
+  // and a failed read neither retries nor blocks.
   const billing = useQuery({
     ...billingStateQueryOptions({ transport, scope }),
     staleTime: STALE_TIME.default,
     retry: false,
   });
-  if (billing.isPending) return <ShellPending />;
 
   const { user, workspace, memberships, capabilities, usage } = bootstrap;
   const tier = resolvePricingTier(workspace.pricingTier);

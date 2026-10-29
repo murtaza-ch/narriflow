@@ -19,7 +19,11 @@ function brandApi(handler: (url: string, init: RequestInit) => Response | Promis
   });
   runtime.setIdentity("user_1");
   runtime.selectWorkspace("ws_1");
-  return { transport: runtime.transport, scope: { userId: "user_1", workspaceId: "ws_1" } };
+  return {
+    transport: runtime.transport,
+    scope: { userId: "user_1", workspaceId: "ws_1" },
+    intent: runtime.createIntent<Record<string, unknown>>(),
+  };
 }
 
 describe("generated image browser lifecycle", () => {
@@ -37,17 +41,40 @@ describe("generated image browser lifecycle", () => {
       return Response.json({ jobs: [...jobs.values()] });
     });
 
-    const firstSession = createGeneratedImagesBrowserApi(PROJECT_1, api);
+    const firstSession = createGeneratedImagesBrowserApi(PROJECT_1, api, api.intent);
     expect((await firstSession.create({ prompt: "frame" })).status).toBe(202);
     jobs.set("job-1", { id: "job-1", status: "completed" });
 
-    const reopenedSession = createGeneratedImagesBrowserApi(PROJECT_1, api);
+    const reopenedSession = createGeneratedImagesBrowserApi(PROJECT_1, api, api.intent);
     expect(await (await reopenedSession.list("clip-1")).json()).toEqual({
       jobs: [{ id: "job-1", status: "completed" }],
     });
-    const refused = await createGeneratedImagesBrowserApi(PROJECT_2, api).list("clip-1");
+    const refused = await createGeneratedImagesBrowserApi(PROJECT_2, api, api.intent).list("clip-1");
     expect(refused.status).toBe(404);
     expect(await refused.json()).toMatchObject({ error: "project_not_found" });
+  });
+
+  test("a retry after a lost response keeps the paid job's idempotency key until accepted", async () => {
+    const keys: string[] = [];
+    let attempt = 0;
+    const api = brandApi(async (_url, init) => {
+      keys.push((JSON.parse(String(init.body)) as { idempotencyKey: string }).idempotencyKey);
+      attempt += 1;
+      if (attempt === 1) throw new TypeError("network lost after the server accepted");
+      return Response.json({ id: "job-1", status: "queued" }, { status: 202 });
+    });
+    const browser = createGeneratedImagesBrowserApi(PROJECT_1, api, api.intent);
+    const body = { clipId: "clip-1", prompt: "frame", style: "editorial" };
+    await expect(browser.create(body)).rejects.toBeInstanceOf(Error);
+    expect((await browser.create({ ...body })).status).toBe(202);
+    expect(keys[1]).toBe(keys[0]);
+    // Accepted: the next Generate, even with the same inputs, is a new job.
+    await browser.create(body);
+    expect(keys[2]).not.toBe(keys[0]);
+    // A changed prompt mid-retry is a different intent.
+    attempt = 0;
+    await expect(browser.create({ ...body, prompt: "other" })).rejects.toBeInstanceOf(Error);
+    expect(keys[3]).not.toBe(keys[2]);
   });
 
   test("cancel and deletion remain available when new admission is rolled back", async () => {
@@ -60,7 +87,7 @@ describe("generated image browser lifecycle", () => {
       });
       return Response.json({ ok: true });
     });
-    const browser = createGeneratedImagesBrowserApi(PROJECT_1, api);
+    const browser = createGeneratedImagesBrowserApi(PROJECT_1, api, api.intent);
     await browser.cancel(JOB);
     await browser.deleteResult(JOB);
     expect(calls).toEqual([

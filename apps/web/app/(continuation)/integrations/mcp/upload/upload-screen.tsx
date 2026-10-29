@@ -1,5 +1,6 @@
 "use client";
 
+import { useRef } from "react";
 import { useSearchParams } from "next/navigation";
 import { Stack, Text } from "@chakra-ui/react";
 import { useQuery } from "@tanstack/react-query";
@@ -22,10 +23,12 @@ export function McpUploadScreen() {
 
 function UploadView({ scope, token, digest }: { scope: IdentityScope; token: string; digest: string }) {
   const { transport } = useApiRuntime();
-  const query = useQuery(mcpUploadHandoffQueryOptions({ transport, scope, intent: token, digest }));
-  if (query.isError) return <McpContinuationUnavailable kind="upload" error={query.error} />;
-  if (!query.data) return <Loading />;
-  const { generationContext, recipeName, ...handoff } = query.data;
+  const query = useQuery({ ...mcpUploadHandoffQueryOptions({ transport, scope, intent: token, digest }), refetchOnWindowFocus: false, refetchOnReconnect: false });
+  const firstHandoff = useRef(query.data);
+  firstHandoff.current ??= query.data;
+  if (query.isError && !firstHandoff.current) return <McpContinuationUnavailable kind="upload" error={query.error} />;
+  if (!firstHandoff.current) return <Loading />;
+  const { generationContext, recipeName, ...handoff } = firstHandoff.current;
   return (
     <Stack gap="6" maxW="800px" mx="auto" w="full">
       <PageHeader title="Choose a video for your assistant" description="The assistant's generation settings are committed with this upload. File bytes travel directly to Narriflow storage." />

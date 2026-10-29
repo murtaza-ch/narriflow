@@ -47,9 +47,16 @@ export const clipCommands = {
       .then((response) => response.json());
   },
 
-  createFromSelection(client: ClipsClient, projectId: string, clipId: string, range: CreateClipFromSelection) {
+  /** A clip carved out of the source clip's transcript selection. A replay with the same key returns the accepted clip. */
+  createFromSelection(
+    client: ClipsClient,
+    projectId: string,
+    clipId: string,
+    range: CreateClipFromSelection,
+    idempotencyKey: string,
+  ) {
     return client.projects[":id"].clips[":clipId"]["create-from-selection"]
-      .$post({ param: { id: projectId, clipId }, json: range })
+      .$post({ param: { id: projectId, clipId }, json: range }, withKey(idempotencyKey))
       .then((response) => response.json());
   },
 

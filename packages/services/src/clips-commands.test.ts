@@ -81,6 +81,13 @@ function fakeClips(options: { beforeAccept?: Promise<void>; failWrite?: boolean 
 				create(acceptance as ClipCreationAcceptance),
 			createClipFromRange: (_actor: ActorScope, _p: string, _r: unknown, acceptance?: ClipCreationAcceptance) =>
 				create(acceptance as ClipCreationAcceptance),
+			createClipFromSelection: (
+				_actor: ActorScope,
+				_p: string,
+				_c: string,
+				_r: unknown,
+				acceptance?: ClipCreationAcceptance,
+			) => create(acceptance as ClipCreationAcceptance),
 		},
 	};
 }
@@ -154,6 +161,21 @@ describe("clip creation receipts", () => {
 		const range = await commands.createClipFromRange(actor, PROJECT, { startSec: 1, endSec: 9 }, { clientIdempotencyKey: "k1" });
 		expect(range.replayed).toBe(false);
 		expect(receipts.receipts()).toBe(2);
+	});
+
+	test("a selection create retried after a lost response returns the accepted clip, never a second", async () => {
+		const { commands, receipts, fake } = build();
+		const range = { startSec: 1, endSec: 9 };
+		const first = await commands.createClipFromSelection(actor, PROJECT, "clip-0", range, { clientIdempotencyKey: "k1" });
+		const retry = await commands.createClipFromSelection(actor, PROJECT, "clip-0", range, { clientIdempotencyKey: "k1" });
+		expect(first.replayed).toBe(false);
+		expect(retry).toMatchObject({ replayed: true, clip: { id: "clip-1" } });
+		expect(fake.state.created).toBe(1);
+		expect(receipts.clipRows()).toEqual(["clip-1"]);
+		// The source clip is part of the durable input.
+		await expect(
+			commands.createClipFromSelection(actor, PROJECT, "clip-9", range, { clientIdempotencyKey: "k1" }),
+		).rejects.toBeInstanceOf(OperationIdempotencyConflictError);
 	});
 
 	test("an exhausted limiter refuses new work before any media is copied", async () => {

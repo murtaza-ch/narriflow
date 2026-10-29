@@ -34,6 +34,8 @@ interface Call {
 }
 let calls: Call[];
 let memberships: Member[];
+let restrictedContent = false;
+let ownerCanResolve = false;
 const replaced: string[] = [];
 
 const router = { replace: (href: string) => replaced.push(href), push: (href: string) => replaced.push(href) };
@@ -84,6 +86,13 @@ async function fakeApi(input: string | URL | Request, init?: RequestInit): Promi
   const selected = memberships.find((member) => member.id === call.workspaceHeader);
   if (!selected) {
     return json({ error: "workspace_selection_changed", message: "Your Workspace selection changed.", requestId: "r-409" }, 409);
+  }
+  if (call.path === "/api/projects/explorer" && restrictedContent) {
+    return json(
+      { error: "workspace_restricted", message: "Paused", requestId: "r-paused", details: { ownerCanResolve: ownerCanResolve } },
+      403,
+      { "X-Workspace-Id": selected.id },
+    );
   }
   if (call.path === "/api/workspace/bootstrap") {
     const body: WorkspaceBootstrap = {
@@ -213,6 +222,8 @@ beforeEach(() => {
   probe = null;
   runtimeRef = null;
   memberships = [personal, team];
+  restrictedContent = false;
+  ownerCanResolve = false;
   browser.localStorage.clear();
 });
 
@@ -278,6 +289,41 @@ describe("session and Workspace gates", () => {
     expect(after.some((call) => call.path === "/api/workspace/bootstrap" && call.workspaceHeader === TEAM)).toBe(true);
     expect(runtimeRef?.queryClient.getQueryData(["nf", USER, PERSONAL, "workspace", "bootstrap"])).toBeUndefined();
     expect(browser.localStorage.getItem(HINT_KEY)).toBe(TEAM);
+  });
+
+  test("a content read refused as paused sends the person to the recovery page without a retry loop", async () => {
+    browser.localStorage.setItem(HINT_KEY, PERSONAL);
+    const container = await mount((modules) => <Gates modules={modules} />);
+    await until(() => text(container, "workspace") === PERSONAL, "the personal Workspace");
+    restrictedContent = true;
+    const runtime = runtimeRef;
+    if (!runtime) throw new Error("runtime not captured");
+    const scope = { userId: USER, workspaceId: PERSONAL };
+    await act(async () => {
+      await runtime.queryClient
+        .fetchQuery({
+          queryKey: ["nf", USER, PERSONAL, "projects", "explorer", {}],
+          queryFn: () => runtime.transport.scoped(scope).json("/api/projects/explorer"),
+          retry: false,
+        })
+        .catch(() => undefined);
+    });
+    await until(() => replaced.length > 0, "the recovery redirect");
+    expect(replaced).toEqual(["/workspace-unavailable"]);
+
+    replaced.length = 0;
+    ownerCanResolve = true;
+    await act(async () => {
+      await runtime.queryClient
+        .fetchQuery({
+          queryKey: ["nf", USER, PERSONAL, "projects", "explorer", { again: true }],
+          queryFn: () => runtime.transport.scoped(scope).json("/api/projects/explorer"),
+          retry: false,
+        })
+        .catch(() => undefined);
+    });
+    await until(() => replaced.length > 0, "the owner's billing redirect");
+    expect(replaced).toEqual(["/settings/billing"]);
   });
 
   test("a selection removed mid-session is re-bootstrapped and the refused command is never replayed", async () => {

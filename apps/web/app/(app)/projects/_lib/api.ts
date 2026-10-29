@@ -13,6 +13,7 @@ import {
   createProjectsClient,
   PROJECT_RESOURCES,
   projectQueries,
+  type ExplorerData,
   type ProjectListFilters,
   type ProjectListPage,
 } from "@narriflow/api-client/projects";
@@ -50,13 +51,40 @@ export function useLibraryApi(): LibraryApi | null {
   }, [runtime, scope]);
 }
 
+/**
+ * The explorer read, which also hands its first page to the paged list so "load
+ * more" and polling start from it without asking the API for the same page
+ * again. Screen and prefetch share this, so a prefetched explorer seeds the list
+ * exactly as a mounted one does. A list already loaded further is left alone.
+ */
+export function explorerQueryOptions(
+  queryClient: QueryClient,
+  api: Pick<LibraryApi, "projects" | "scope">,
+  filters: ProjectListFilters = {},
+) {
+  const options = projectQueries.explorer(api.projects, api.scope, filters);
+  const listKey = projectQueries.list(api.projects, api.scope, filters).queryKey;
+  return {
+    ...options,
+    queryFn: async (context: Parameters<NonNullable<typeof options.queryFn>>[0]): Promise<ExplorerData> => {
+      const { queryFn } = options;
+      if (typeof queryFn !== "function") throw new Error("The explorer query has no fetcher.");
+      const data = await queryFn(context);
+      if (!queryClient.getQueryData(listKey)) {
+        queryClient.setQueryData(listKey, { pages: [data.page], pageParams: [null] });
+      }
+      return data;
+    },
+  };
+}
+
 /** Warms the explorer for a link the person is about to follow (hover or keyboard focus). */
 export function usePrefetchExplorer(): (filters?: ProjectListFilters) => void {
   const api = useLibraryApi();
   const queryClient = useQueryClient();
   return useCallback(
     (filters) => {
-      if (api) void queryClient.prefetchQuery(projectQueries.explorer(api.projects, api.scope, filters));
+      if (api) void queryClient.prefetchQuery(explorerQueryOptions(queryClient, api, filters));
     },
     [api, queryClient],
   );

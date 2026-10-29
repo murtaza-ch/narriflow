@@ -40,6 +40,7 @@ import { useStudio } from "../studio-shell";
 import { StudioLockGem } from "../studio-lock-gem";
 import { generatedImagesExhaustedCopy, generatedImagesUpgradePrompt } from "../studio-upgrade";
 import { useAudioApi } from "./audio-library";
+import { useStudioApi } from "../use-studio-api";
 import { assetInUseCopy, createGeneratedImagesBrowserApi } from "./generated-images-browser";
 
 type GeneratedImageUsageSummary = NonNullable<
@@ -149,9 +150,13 @@ export function GeneratedImagesPanel() {
   const [cueIndex, setCueIndex] = useState(0);
   const cue = clipInfo.brollCues[cueIndex] ?? null;
   const brandApi = useAudioApi();
+  const studioApi = useStudioApi();
+  const studioRuntime = studioApi?.runtime;
+  // One image intent per panel: Generate pressed again with the same inputs reuses its key until accepted.
+  const imageIntent = useMemo(() => studioRuntime?.createIntent<Record<string, unknown>>() ?? null, [studioRuntime]);
   const browserApi = useMemo(
-    () => (brandApi ? createGeneratedImagesBrowserApi(clipInfo.projectId, brandApi) : null),
-    [brandApi, clipInfo.projectId],
+    () => (brandApi && imageIntent ? createGeneratedImagesBrowserApi(clipInfo.projectId, brandApi, imageIntent) : null),
+    [brandApi, imageIntent, clipInfo.projectId],
   );
   const selectionContext = useMemo(() => {
     if (!transcriptSelectionRange) return "";
@@ -244,7 +249,6 @@ export function GeneratedImagesPanel() {
       const response = await browserApi.create({
           projectId: clipInfo.projectId,
           clipId: clipInfo.id,
-          idempotencyKey: crypto.randomUUID(),
           prompt: composedPrompt,
           promptOrigin: origin,
           aspectRatio: requestedAspectRatio,

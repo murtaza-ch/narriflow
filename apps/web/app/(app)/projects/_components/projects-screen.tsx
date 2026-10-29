@@ -1,7 +1,6 @@
 "use client";
 
 import { HStack, Stack, Text } from "@chakra-ui/react";
-import { projectQueries, type ExplorerData } from "@narriflow/api-client/projects";
 import { Button } from "@narriflow/ui/components/button";
 import { EmptyState } from "@narriflow/ui/components/empty-state";
 import { PageHeader } from "@narriflow/ui/components/page-header";
@@ -11,7 +10,7 @@ import { ChevronRight, FolderOpen } from "lucide-react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useMemo } from "react";
-import { type LibraryApi, useLibraryApi } from "../_lib/api";
+import { explorerQueryOptions, type LibraryApi, useLibraryApi } from "../_lib/api";
 import { FoldersPanel } from "./folders-panel";
 import { LoadFailure } from "./load-failure";
 import { ProjectsExplorer } from "./projects-explorer";
@@ -73,23 +72,10 @@ function WorkspaceRecovery() {
 function ProjectsContent({ api }: { api: LibraryApi }) {
   const filters = useUrlFilters();
   const queryClient = useQueryClient();
-  const explorerOptions = projectQueries.explorer(api.projects, api.scope, filters);
-  const listOptions = projectQueries.list(api.projects, api.scope, filters);
   const explorer = useQuery({
-    ...explorerOptions,
+    ...explorerQueryOptions(queryClient, api, filters),
     // The previous filters' page stays on screen while the new one loads.
     placeholderData: keepPreviousData,
-    // The explorer carries page 1: hand it to the paged list so "load more" and
-    // polling start from it without asking the API for the same page again.
-    queryFn: async (context): Promise<ExplorerData> => {
-      const { queryFn } = explorerOptions;
-      if (typeof queryFn !== "function") throw new Error("The explorer query has no fetcher.");
-      const data = await queryFn(context);
-      if (!queryClient.getQueryData(listOptions.queryKey)) {
-        queryClient.setQueryData(listOptions.queryKey, { pages: [data.page], pageParams: [null] });
-      }
-      return data;
-    },
   });
 
   if (explorer.isError) {

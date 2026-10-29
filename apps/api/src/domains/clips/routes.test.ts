@@ -187,6 +187,27 @@ describe("duplicate and create-from-range receipts", () => {
     expect(createClipFromRange.mock.calls[0]?.slice(1, 3)).toEqual([PROJECT_ID, { startSec: 1, endSec: 20 }]);
   });
 
+  test("create-from-selection needs a key and replays through the receipt command", async () => {
+    const selectionUrl = `${base}/${CLIP_ID}/create-from-selection`;
+    const createClipFromSelection = mock(async () => ({ clip, replayed: true }));
+    const app = appWith({ clipsCommands: { createClipFromSelection } as never });
+    const missing = await app.request(selectionUrl, post({ startSec: 1, endSec: 20 }, null));
+    expect(missing.status).toBe(400);
+    expect(await missing.json()).toMatchObject({ error: "idempotency_key_required" });
+    expect(createClipFromSelection).not.toHaveBeenCalled();
+
+    const response = await app.request(selectionUrl, post({ startSec: 1, endSec: 20 }, "s-1"));
+    expect(response.status).toBe(201);
+    expect(response.headers.get("idempotent-replayed")).toBe("true");
+    expect(createClipFromSelection.mock.calls[0]).toMatchObject([
+      { actorUserId: "actor-user", workspaceId: "workspace-a" },
+      PROJECT_ID,
+      CLIP_ID,
+      { startSec: 1, endSec: 20 },
+      { clientIdempotencyKey: "s-1" },
+    ]);
+  });
+
   test("the recorded limiter outcome is enforced by the command, never at admission", async () => {
     // Admission only records the exhausted limiter; a replay would still be answered.
     let enforced: unknown;

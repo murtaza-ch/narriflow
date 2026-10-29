@@ -3,8 +3,8 @@ import { SOCIAL_POST_STATUS_LABELS } from "@/lib/social-post-status";
 import { describeCounts, sumLatestCounts } from "@/lib/performance-format";
 import { usePublishing } from "./publishing-provider";
 
-import type { ReactNode, SyntheticEvent } from "react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { skipToken, useMutation, useQuery } from "@tanstack/react-query";
@@ -36,9 +36,7 @@ import {
 	ChevronDown,
 	Clapperboard,
 	Download,
-	Pause,
 	Pencil,
-	Play,
 	Scissors,
 	Share2,
 } from "lucide-react";
@@ -52,6 +50,7 @@ import {
 	useClipApi,
 } from "@/lib/clip-media";
 import { ClipActionsMenu } from "./clip-actions-menu";
+import { ClipVideo } from "./clip-video";
 import { clipActionErrorCopy, failureNeedsStateRefetch } from "./clip-action-error-copy";
 import { LockedButton } from "../../_components/upgrade";
 
@@ -100,6 +99,8 @@ const RENDER_PENDING_CODES = new Set(["clip_render_not_found", "clip_render_not_
 
 /** Signed preview URLs stay valid for an hour; a row keeps the one it has this long, like the playback it feeds. */
 const PREVIEW_STALE_MS = 5 * 60 * 1000;
+/** A failing player renews its grant at most this often. */
+const PREVIEW_RENEW_MIN_MS = 10_000;
 const PREVIEWS_UNAVAILABLE_KEY = ["nf", "clips", "previews", "unavailable"] as const;
 
 function isRenderQueueResponse(payload: unknown): boolean {
@@ -135,155 +136,6 @@ function SubScoreBar({ label, value }: { label: string; value: number }) {
 				{value}
 			</Text>
 		</Flex>
-	);
-}
-
-/**
- * Preview player for one clip segment.
- *
- * Only rows at or near the viewport are allowed to touch the network. A
- * project renders every clip at once (10 by default), and each preview is a
- * cross-origin R2 object, so `preload="metadata"` on all of them put ten
- * simultaneous range requests in flight on mount — they contend, none of them
- * paints a first frame, and the wells sit empty exactly as long as the slowest
- * one takes. Loading two or three at a time instead means the visible clips
- * paint promptly and offscreen ones cost nothing until scrolled to.
- *
- * The `#t=` media fragment is what actually puts a frame on screen: the
- * browser seeks to the clip's in-point while loading metadata, natively,
- * instead of waiting for `loadedmetadata` to round-trip through React. The
- * handlers below stay as the fallback for browsers that ignore the fragment,
- * and to loop back to the in-point at the end.
- */
-function ClipVideo({
-	src,
-	startSec,
-	endSec,
-}: {
-	src: string;
-	startSec: number;
-	endSec: number;
-}) {
-	const containerRef = useRef<HTMLDivElement>(null);
-	const videoRef = useRef<HTMLVideoElement>(null);
-	const [shouldLoad, setShouldLoad] = useState(false);
-	const [playing, setPlaying] = useState(false);
-	// Seconds into the clip, for the countdown on the duration chip.
-	const [elapsed, setElapsed] = useState(0);
-	const clipDuration = Math.max(0, endSec - startSec);
-
-	function togglePlay() {
-		const video = videoRef.current;
-		if (!video) return;
-		if (video.paused) {
-			if (video.currentTime < startSec || video.currentTime >= endSec) video.currentTime = startSec;
-			void video.play();
-		} else {
-			video.pause();
-		}
-	}
-
-	useEffect(() => {
-		const element = containerRef.current;
-		if (!element) return;
-
-		// No IntersectionObserver (or SSR-hydrated older browser) — fall back to
-		// the previous always-load behaviour rather than showing nothing.
-		if (typeof IntersectionObserver === "undefined") {
-			setShouldLoad(true);
-			return;
-		}
-
-		const observer = new IntersectionObserver(
-			(entries) => {
-				if (!entries.some((entry) => entry.isIntersecting)) return;
-				setShouldLoad(true);
-				observer.disconnect();
-			},
-			// Start a row early so scrolling lands on a painted frame, not a gap.
-			{ rootMargin: "300px" },
-		);
-
-		observer.observe(element);
-		return () => observer.disconnect();
-	}, []);
-
-	return (
-		// Custom controls only: one play/pause button and the duration, which
-		// counts down while the clip plays. A click anywhere on the video toggles it.
-		<Box ref={containerRef} w="full" h="full" position="relative" className="group" cursor="pointer" onClick={togglePlay}>
-			{/* biome-ignore lint/a11y/useMediaCaption: preview player for a clip segment; no caption/VTT source is available in this component. */}
-			<video
-				ref={videoRef}
-				src={`${src}#t=${startSec},${endSec}`}
-				playsInline
-				disablePictureInPicture
-				preload={shouldLoad ? "metadata" : "none"}
-				onPlay={() => setPlaying(true)}
-				onPause={() => setPlaying(false)}
-				style={{
-					width: "100%",
-					height: "100%",
-					display: "block",
-					objectFit: "contain",
-				}}
-				onLoadedMetadata={(event: SyntheticEvent<HTMLVideoElement>) => {
-					const video = event.currentTarget;
-					if (video.currentTime < startSec) video.currentTime = startSec;
-				}}
-				onTimeUpdate={(event: SyntheticEvent<HTMLVideoElement>) => {
-					const video = event.currentTarget;
-					if (video.currentTime >= endSec) {
-						video.pause();
-						video.currentTime = startSec;
-					}
-					setElapsed(Math.min(clipDuration, Math.max(0, video.currentTime - startSec)));
-				}}
-			/>
-			<Flex
-				as="button"
-				aria-label={playing ? "Pause clip" : "Play clip"}
-				position="absolute"
-				top="50%"
-				left="50%"
-				transform="translate(-50%, -50%)"
-				boxSize="12"
-				align="center"
-				justify="center"
-				borderRadius="full"
-				bg="studio.scrimStrong"
-				color="white"
-				border="none"
-				cursor="pointer"
-				// Hidden while playing until the pointer is over the clip.
-				opacity={playing ? 0 : 1}
-				transition="opacity 150ms ease, transform 150ms ease"
-				_groupHover={{ opacity: 1 }}
-				_focusVisible={{ opacity: 1, outline: "2px solid", outlineColor: "accent.solid", outlineOffset: "2px" }}
-				onClick={(event: React.MouseEvent) => {
-					event.stopPropagation();
-					togglePlay();
-				}}
-			>
-				{playing ? <Pause size={18} fill="currentColor" /> : <Play size={18} fill="currentColor" style={{ marginLeft: 2 }} />}
-			</Flex>
-			<Box
-				position="absolute"
-				bottom="1.5"
-				insetEnd="1.5"
-				px="1.5"
-				py="0.5"
-				borderRadius="l1"
-				bg="studio.scrim"
-				color="studio.timecode"
-				textStyle="data"
-				fontSize="11px"
-				lineHeight="1.4"
-				pointerEvents="none"
-			>
-				{formatDuration(playing || elapsed > 0 ? clipDuration - elapsed : clipDuration)}
-			</Box>
-		</Box>
 	);
 }
 
@@ -442,9 +294,13 @@ export function ClipRow({
 		queryKey: previewOptions?.queryKey ?? PREVIEWS_UNAVAILABLE_KEY,
 		queryFn: previewOptions?.queryFn ?? skipToken,
 		staleTime: PREVIEW_STALE_MS,
-		// A new signed URL would reload a playing video for nothing.
-		refetchOnWindowFocus: false,
+		// A tab resumed after the grants went stale renews them; the player keeps a playing URL until it pauses.
 	});
+	const { dataUpdatedAt, refetch: refetchPreviews } = previews;
+	// A media failure usually means the grant expired. Renew it, but not in a loop when the media is truly gone.
+	const renewPreviewGrant = useCallback(() => {
+		if (Date.now() - dataUpdatedAt > PREVIEW_RENEW_MIN_MS) void refetchPreviews();
+	}, [dataUpdatedAt, refetchPreviews]);
 	const previewReadiness = [
 		clip.hasPreview,
 		selectedVariantHasAsset,
@@ -773,6 +629,7 @@ export function ClipRow({
 							{previewUrl ? (
 								<ClipVideo
 									src={previewUrl}
+									onMediaError={renewPreviewGrant}
 									startSec={
 										previewIsProxy
 											? Math.max(0, clip.startSec - previewOffsetSec)

@@ -1765,6 +1765,7 @@ export class ClipService {
     projectId: string,
     sourceClipId: string,
     input: { startSec: number; endSec: number },
+    acceptance?: ClipCreationAcceptance,
   ): Promise<ClipSnapshot> {
     await this.authorizeActor(scope, "content.edit");
     const prisma = requirePrisma();
@@ -1828,6 +1829,7 @@ export class ClipService {
         brollUrl: sourceDocument.brollUrl,
       },
       origin: { reasoning: "Created from a transcript selection in the studio.", llmModel: "transcript-selection" },
+      acceptance,
     });
   }
 

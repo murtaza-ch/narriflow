@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { ReviewPreselection } from "@/lib/review-preselection";
 import { createReviewsClient, reviewQueries, reviewMutationOptions, invalidateReviewMutation } from "@narriflow/api-client/reviews";
-import { isApiError } from "@narriflow/api-client/core";
+import { isApiError, type Intent } from "@narriflow/api-client/core";
 import type { CreateReviewRoundInput, InternalReviewCommentInput, InviteReviewersInput } from "@narriflow/validators";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useApiRuntime, useWorkspaceScope } from "@/app/_components/api-provider";
@@ -114,6 +114,14 @@ export type ReviewCommand =
   | { kind: "retry"; roundId: string; ledgerId: string }
   | { kind: "revoke"; roundId: string };
 
+function reviewCommandIdentity(command: ReviewCommand): string {
+  if (command.kind === "create") return "create";
+  const target = command.kind === "resolve" || command.kind === "reopen" ? command.commentId
+    : command.kind === "retry" ? command.ledgerId
+    : command.kind === "comment" ? `${command.input.itemId ?? "round"}:${command.input.parentId ?? "root"}` : "";
+  return `${command.kind}:${command.roundId}:${target}`;
+}
+
 /** Both internal review surfaces share the captured Workspace room and commands. */
 export function useInternalReviews(projectId: string, initialData?: ReviewRoomData, enabled = true) {
   const runtime = useApiRuntime();
@@ -121,9 +129,9 @@ export function useInternalReviews(projectId: string, initialData?: ReviewRoomDa
   const queryClient = useQueryClient();
   const api = useMemo(() => {
     const captured = scope ?? { userId: "", workspaceId: "" };
-    return { scope: captured, client: createReviewsClient(runtime.transport.scoped(captured)), intent: runtime.createIntent<ReviewCommand>() };
-  }, [runtime, scope]);
-  const roomOptions = reviewQueries.room(api.client, api.scope, projectId);
+    return { scope: captured, projectId, client: createReviewsClient(runtime.transport.scoped(captured)), intents: new Map<string, Intent<ReviewCommand>>() };
+  }, [runtime, scope, projectId]);
+  const roomOptions = reviewQueries.room(api.client, api.scope, api.projectId);
   const room = useQuery<ReviewRoomData>({
     ...roomOptions,
     queryFn: async ({ signal }): Promise<ReviewRoomData> => {
@@ -141,8 +149,11 @@ export function useInternalReviews(projectId: string, initialData?: ReviewRoomDa
     ...reviewMutationOptions,
     mutationFn: async (command: ReviewCommand) => {
       const root = api.client.projects[":id"]["review-rounds"];
-      const param = { id: projectId };
-      const options = { headers: { "Idempotency-Key": api.intent.keyFor(command) } };
+      const param = { id: api.projectId };
+      const identity = reviewCommandIdentity(command);
+      let intent = api.intents.get(identity);
+      if (!intent) { intent = runtime.createIntent<ReviewCommand>(); api.intents.set(identity, intent); }
+      const options = { headers: { "Idempotency-Key": intent.keyFor(command) } };
       if (command.kind === "create") return (await root.$post({ param, json: command.input }, options)).json();
       const round = root[":roundId"];
       const roundParam = { ...param, roundId: command.roundId };
@@ -154,9 +165,9 @@ export function useInternalReviews(projectId: string, initialData?: ReviewRoomDa
         case "revoke": return (await round.revoke.$post({ param: roundParam }, options)).json();
       }
     },
-    onSuccess: async () => {
-      api.intent.complete();
-      await invalidateReviewMutation(queryClient, api.scope, projectId);
+    onSuccess: async (_result, command) => {
+      api.intents.delete(reviewCommandIdentity(command));
+      await invalidateReviewMutation(queryClient, api.scope, api.projectId);
     },
   });
   return { room, mutation };

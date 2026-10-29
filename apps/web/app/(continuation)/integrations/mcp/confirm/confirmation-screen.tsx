@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Flex, Stack, Text } from "@chakra-ui/react";
@@ -29,13 +30,17 @@ export function McpConfirmationScreen() {
 function ConfirmationView({ scope, token, digest }: { scope: IdentityScope; token: string; digest: string }) {
   const runtime = useApiRuntime();
   const router = useRouter();
-  const query = useQuery(mcpPreparationQueryOptions({ transport: runtime.transport, scope, token, digest }));
+  const query = useQuery({ ...mcpPreparationQueryOptions({ transport: runtime.transport, scope, token, digest }), refetchOnWindowFocus: false, refetchOnReconnect: false });
   const { mutationFn: confirm, retry } = mcpConfirmationMutationOptions({ transport: runtime.transport, scope });
+  const [uncertainConfirmation, setUncertainConfirmation] = useState(false);
   const mutation = useMutation<{ destination: string }, ApiError, McpConfirmationInput["decision"]>({
     retry,
     gcTime: 0,
     // Only the decision enters mutation state; the signed token stays in this closure.
     mutationFn: (decision: McpConfirmationInput["decision"], context) => confirm!({ token, decision }, context),
+    onError: (error, decision) => {
+      if (decision === "confirm" && isRetryableContinuationFailure(error)) setUncertainConfirmation(true);
+    },
     onSuccess: async ({ destination }, decision) => {
       if (decision === "confirm" && query.data) {
         await invalidateAfterMcpConfirmation(runtime.queryClient, { ...scope, workspaceId: query.data.workspaceId });
@@ -43,7 +48,7 @@ function ConfirmationView({ scope, token, digest }: { scope: IdentityScope; toke
       if (runtime.scope.isCurrent({ ...scope, workspaceId: null })) router.push(destination);
     },
   });
-  if (query.isError) return <McpContinuationUnavailable kind="confirmation" error={query.error} />;
+  if (query.isError && !query.data) return <McpContinuationUnavailable kind="confirmation" error={query.error} />;
   if (mutation.isError && !isRetryableContinuationFailure(mutation.error)) return <McpContinuationUnavailable kind="confirmation" error={mutation.error} />;
   if (!query.data) return <Loading />;
   const { intent, workspaceName, destinationAccount, expiresAt } = query.data;
@@ -58,9 +63,10 @@ function ConfirmationView({ scope, token, digest }: { scope: IdentityScope; toke
       <Stack gap="3">
         <Text fontSize="13px" color="fg.muted">Confirmation expires at {expiresAt}.</Text>
         <Flex gap="3">
-          <Button type="button" disabled={mutation.isPending || mutation.isSuccess} loading={mutation.isPending && mutation.variables === "confirm"} onClick={() => mutation.mutate("confirm")}>Confirm and schedule</Button>
-          <Button type="button" disabled={mutation.isPending || mutation.isSuccess} loading={mutation.isPending && mutation.variables === "decline"} onClick={() => mutation.mutate("decline")} variant="subtle">Decline</Button>
+          <Button type="button" disabled={mutation.isPending || mutation.isSuccess} loading={mutation.isPending && mutation.variables === "confirm"} onClick={() => mutation.mutate("confirm")}>{uncertainConfirmation ? "Try again" : "Confirm and schedule"}</Button>
+          <Button type="button" disabled={mutation.isPending || mutation.isSuccess || uncertainConfirmation} loading={mutation.isPending && mutation.variables === "decline"} onClick={() => mutation.mutate("decline")} variant="subtle">Decline</Button>
         </Flex>
+        {uncertainConfirmation ? <Text fontSize="13px" color="fg.muted">Scheduling may have succeeded. Try again to check the same publication.</Text> : null}
         {mutation.isError ? <ApiErrorNotice error={mutation.error} fallback="Confirmation could not be completed. Try again." /> : null}
       </Stack>
     </Stack>

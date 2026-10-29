@@ -6,7 +6,7 @@ export const clipsAdmission = {
   "GET /projects/:id/clips/:clipId/preview-peaks": { kind: "project", capability: "content.view", projectParam: "id" },
   "POST /projects/:id/clips/:clipId/title-suggestions": { kind: "project", capability: "processing.consume", projectParam: "id", rate: { scope: "actor", prefix: "clip-title-suggest", limit: 30 } },
   "POST /projects/:id/clips/:clipId/duplicate": { kind: "project", capability: "content.edit", projectParam: "id", rate: { scope: "actor", prefix: "clip-duplicate", limit: 30 }, deferRateRefusal: true },
-  "POST /projects/:id/clips/:clipId/create-from-selection": { kind: "project", capability: "content.edit", projectParam: "id" },
+  "POST /projects/:id/clips/:clipId/create-from-selection": { kind: "project", capability: "content.edit", projectParam: "id", deferRateRefusal: true },
   "POST /projects/:id/clips/create-from-range": { kind: "project", capability: "content.edit", projectParam: "id", deferRateRefusal: true },
   "DELETE /projects/:id/clips/:clipId": { kind: "project", capability: "content.edit", projectParam: "id" },
   "POST /projects/:id/clips/regenerate": { kind: "project", capability: "processing.consume", projectParam: "id", rate: { scope: "actor", prefix: "regenerate", limit: 20 } },

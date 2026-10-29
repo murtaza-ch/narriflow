@@ -112,3 +112,39 @@ current state of every owned file in tickets 26 and 28 (compared against the ori
 
 ## Residual risk
 - There is no live W -> A browser evidence yet for guest access, media, share, opt-out, MCP confirm or upload. That remains with ticket 32.
+
+## Resolution (Sol)
+
+M1, fixed. The upload screen freezes its first successful handoff for that signed identity and token. Upload and preparation queries disable focus/reconnect refetches, and a failed reread keeps loaded data. The picker captures its initial resume-only policy rather than rebuilding the adapter when that flag changes. The API still authorizes each control independently.
+
+Regression evidence: the continuation DOM fixture failed before the fix when focus/reconnect after ten minutes reread the handoff. Both the resume-only and failed-reread cases now retain the same file input, uploading phase and active storage PUT without an abort, including an explicit reread. A separate failed preparation reread also reproduced the disappearing confirmation and now preserves its loaded facts.
+
+## Resolution (Sol)
+
+M2, fixed. Guest and internal review commands keep separate intents by command kind and target. Guest edits/deletes do not mint keys. Success clears only the successful command's intent. Internal intents are also scoped to the captured Project, user and Workspace.
+
+Regression evidence: the guest lost-comment/approve/retry, lost-comment/edit/retry and internal lost-create/resolve/retry fixtures all failed with different retry keys before the fix and now reuse the original keys and payload. Additional coverage checks lost-decision/comment/retry and lost-invite/resolve/retry. The existing disposable PostgreSQL receipt suite also passes, including concurrent replay, decision events and atomic round notification intent.
+
+## Resolution (Sol)
+
+M3, fixed in the continuation and matching integrations API. An uncertain Confirm disables Decline for that mounted confirmation and exposes Try again with the same signed token. The API decline path calls the scheduling service's authorized immutable replay lookup and returns an already accepted publication's destination. It never schedules from Decline. Declined-page copy no longer asserts that nothing was scheduled, so opening that URL directly or racing another confirmation cannot make that claim.
+
+Regression evidence: the UI test first reproduced enabled Decline after a lost Confirm response. It now checks that clicking Decline sends nothing and Try again sends the identical confirmation body. The API runtime test first reproduced a declined destination despite an accepted publication; accepted and unaccepted decline cases now return the appropriate destination without scheduling.
+
+## Resolution (Sol)
+
+L1, fixed. Playback errors force a fresh API grant regardless of client-clock expiry, bypassing a still-fresh cached grant. Each mounted URL can trigger only one error renewal; a repeated rejection displays an inline error. Ordinary background renewal still leaves the mounted video URL and playhead alone.
+
+Regression evidence: review and public-share DOM tests first reproduced no renewal for a rejected URL whose advertised expiry was still fifteen minutes away. They now observe one fresh request, preserve the playhead and report a repeated rejection without another renewal. Existing expired-play/error restoration and long-playback/focus tests remain green.
+
+## Resolution (Sol)
+
+L2, fixed. Review downloads reject already-expired refreshed grants. Public-share downloads report failed refreshes, missing download URLs and expired refreshed grants inline. A fresh click clears the prior error before retrying.
+
+Regression evidence: download fixtures first reproduced silent expired-grant results in review and share, plus a silent refused share refresh. All four review/share refusal and expired-grant cases now display an alert and keep the visitor on the page.
+
+## Resolution (Sol)
+
+L3, fixed. The continuation picker uses identity-bootstrap membership facts for the signed Workspace when an upload refusal offers an upgrade. Its owner gets the existing WorkspaceBillingLink with the suggested plan. Selection must validate before billing navigation; other roles retain the ask-owner instruction. The picker replaces the unusable provider-dependent upgrade notice locally, retaining the upload failure message and status panel.
+
+Regression evidence: the credits-refusal fixture first timed out because no billing action existed for the owner. It now verifies selection of the signed Workspace, rather than the unrelated selected Workspace, before billing navigation. The editor case verifies that no billing action is offered. No backend imports, new UpgradeProvider or billing query was added to the continuation shell.

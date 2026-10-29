@@ -1,4 +1,6 @@
-import { type ApiRuntime, ApiError, type WorkspaceScope } from "@narriflow/api-client/core";
+import { type ApiRuntime, ApiError, type Intent, type WorkspaceScope } from "@narriflow/api-client/core";
+import { clipCommands, createClipsClient } from "@narriflow/api-client/clips";
+import { createExportsClient } from "@narriflow/api-client/exports";
 import {
   type StudioClient,
   type StudioClipTarget,
@@ -8,6 +10,7 @@ import {
 import { createProjectsClient } from "@narriflow/api-client/projects";
 import type { TranscriptUtterance } from "@narriflow/validators";
 import type { BrowserRequestFailure } from "@/lib/authenticated-request-browser";
+import { projectGateDestination } from "../../../../project-load-error";
 
 /**
  * Studio transport. The Editing Session keeps drafts, history, revision
@@ -55,6 +58,101 @@ export function apiFailureBody(error: unknown): BrowserRequestFailure {
 
 export function apiFailureStatus(error: unknown): number | null {
   return error instanceof ApiError && error.status > 0 ? error.status : null;
+}
+
+// ─── Admission failures ──────────────────────────────────────────────────────
+
+const MISSING_CODES: ReadonlySet<string> = new Set(["project_not_found", "clip_not_found"]);
+
+export type StudioBootstrapFailure =
+  | { kind: "redirect"; to: string }
+  | { kind: "missing" }
+  | { kind: "error" };
+
+/**
+ * What a refused Studio bootstrap does. Admission refusals leave exactly as the
+ * Project page does (another Workspace, a paused one, or a viewer without
+ * `content.edit` going home with the safe failure parameters); a missing
+ * Project or clip is the app's not-found page; anything else is an error.
+ */
+export function studioBootstrapFailure(error: unknown, projectId: string): StudioBootstrapFailure {
+  const to = projectGateDestination(error, projectId);
+  if (to) return { kind: "redirect", to };
+  const body = apiFailureBody(error);
+  if (apiFailureStatus(error) === 404 || (body.error && MISSING_CODES.has(body.error))) return { kind: "missing" };
+  return { kind: "error" };
+}
+
+// ─── Seed and presentation ───────────────────────────────────────────────────
+
+/**
+ * The frozen seed's clip facts with the title the API currently reports. The
+ * Editing Session's document is seeded once, but the title is presentation:
+ * a rename from the Studio's own menu invalidates the bootstrap and must show.
+ * Returns `seed` itself while the title is unchanged, so props stay stable.
+ */
+export function withLiveClipTitle<T extends { clipTitle: string | null }>(seed: T, latest: T | undefined): T {
+  if (!latest || latest.clipTitle === seed.clipTitle) return seed;
+  return { ...seed, clipTitle: latest.clipTitle };
+}
+
+// ─── Export ──────────────────────────────────────────────────────────────────
+
+/** What one Export click sends; also the fingerprint of its idempotency intent. */
+export interface StudioExportInput {
+  projectId: string;
+  clipId: string;
+  expectedRevision: number;
+  aspectRatios: Array<"9:16" | "1:1" | "16:9" | "4:5">;
+  resolution: "720p" | "1080p";
+}
+
+/**
+ * One Export intent: the same Idempotency-Key through retries and lost
+ * responses until the API confirms acceptance, so a retry replays the original
+ * receipt. A changed revision/format/resolution is a new intent.
+ */
+export async function createStudioExport(
+  api: StudioApi,
+  intent: Intent<StudioExportInput>,
+  input: StudioExportInput,
+): Promise<{ export: { id: string } }> {
+  const { projectId, clipId, ...json } = input;
+  const response = await createExportsClient(api.runtime.transport.scoped(api.scope)).projects[":id"].clips[
+    ":clipId"
+  ].exports.$post(
+    { param: { id: projectId, clipId }, json },
+    { headers: { "Idempotency-Key": intent.keyFor(input) } },
+  );
+  const created = (await response.json()) as { export: { id: string } };
+  intent.complete();
+  return created;
+}
+
+/** One "Create clip from selection" press; also the fingerprint of its idempotency intent. */
+export interface StudioSelectionClipInput {
+  projectId: string;
+  clipId: string;
+  startSec: number;
+  endSec: number;
+}
+
+/** Same intent contract as Export: a retry after a lost response returns the clip already created. */
+export async function createClipFromStudioSelection(
+  api: StudioApi,
+  intent: Intent<StudioSelectionClipInput>,
+  input: StudioSelectionClipInput,
+): Promise<unknown> {
+  const { projectId, clipId, ...range } = input;
+  const created = await clipCommands.createFromSelection(
+    createClipsClient(api.runtime.transport.scoped(api.scope)),
+    projectId,
+    clipId,
+    range,
+    intent.keyFor(input),
+  );
+  intent.complete();
+  return created;
 }
 
 // ─── Bootstrap and polls (React Query owns these reads) ──────────────────────

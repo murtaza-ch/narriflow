@@ -29,7 +29,7 @@ import { Spinner } from "@narriflow/ui/components/spinner";
 import { formatTimecode } from "@/lib/format";
 import { buildReviewCommentPayload, reviewApprovalProgress, ReviewQueryProvider, useReviewTokenDigest, reviewApiOrigin, readReviewSession, reviewSessionKey, useExpiringReviewGrant, useReviewPlayback } from "./review-client-model";
 import { createGuestReviewsClient, reviewQueries, reviewMutationOptions, invalidateGuestReviewMutation } from "@narriflow/api-client/reviews";
-import { createIntent, guestKey, isApiError } from "@narriflow/api-client/core";
+import { createIntent, guestKey, isApiError, type Intent } from "@narriflow/api-client/core";
 import type { ReviewCommentInput, ReviewDecisionInput } from "@narriflow/validators";
 import type { ReviewMediaGrant, ReviewSession } from "@narriflow/validators/api/reviews";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -131,7 +131,7 @@ export function ReviewPending() {
 
 export function ReviewPlaybackVideo({ grant, refreshGrant, onGrantError, ...props }: Omit<ComponentProps<"video">, "src" | "onPlay" | "onError" | "onLoadedMetadata"> & {
   grant: ReviewMediaGrant | undefined;
-  refreshGrant: () => Promise<ReviewMediaGrant>;
+  refreshGrant: (force?: boolean) => Promise<ReviewMediaGrant>;
   onGrantError?: (reason: unknown) => void;
 }) {
   const playback = useReviewPlayback(grant, refreshGrant, onGrantError);
@@ -143,6 +143,12 @@ type GuestCommand =
   | { kind: "decision"; input: ReviewDecisionInput }
   | { kind: "edit"; commentId: string; body: string }
   | { kind: "delete"; commentId: string };
+
+function guestCommandIdentity(command: GuestCommand): string | null {
+  if (command.kind === "comment") return `comment:${command.input.itemId ?? "round"}:${command.input.parentId ?? "root"}`;
+  if (command.kind === "decision") return `decision:${command.input.itemId ?? "round"}`;
+  return null;
+}
 
 function ReviewRoom({ token, digest }: { token: string; digest: string }) {
   const queryClient = useQueryClient();
@@ -237,13 +243,16 @@ function ReviewRoom({ token, digest }: { token: string; digest: string }) {
     },
   });
   const pendingComment = useRef<{ fingerprint: string; input: ReviewCommentInput } | null>(null);
-  const [intent] = useState(() => createIntent<GuestCommand>());
+  const [intents] = useState(() => new Map<string, Intent<GuestCommand>>());
   const responseMutation = useMutation({
     ...reviewMutationOptions,
     mutationFn: async (command: GuestCommand) => {
       const root = client.review[":token"];
       const param = { token };
-      const options = { headers: { "Idempotency-Key": intent.keyFor(command) } };
+      const identity = guestCommandIdentity(command);
+      let intent = identity ? intents.get(identity) : undefined;
+      if (identity && !intent) { intent = createIntent<GuestCommand>(); intents.set(identity, intent); }
+      const options = intent ? { headers: { "Idempotency-Key": intent.keyFor(command) } } : undefined;
       switch (command.kind) {
         case "comment": await root.comments.$post({ param, json: command.input }, options); break;
         case "decision": await root.decision.$post({ param, json: command.input }, options); break;
@@ -251,8 +260,9 @@ function ReviewRoom({ token, digest }: { token: string; digest: string }) {
         case "delete": await root.comments[":commentId"].$delete({ param: { ...param, commentId: command.commentId } }); break;
       }
     },
-    onSuccess: async () => {
-      intent.complete();
+    onSuccess: async (_result, command) => {
+      const identity = guestCommandIdentity(command);
+      if (identity) intents.delete(identity);
       await invalidateGuestReviewMutation(queryClient, digest);
     },
   });
@@ -260,8 +270,10 @@ function ReviewRoom({ token, digest }: { token: string; digest: string }) {
     ...reviewMutationOptions,
     mutationFn: async () => {
       if (!activeItem || !activeVariant) return;
+      setError(null);
       const grant = await queryClient.fetchQuery<ReviewMediaGrant>(reviewQueries.media(client, token, digest, activeItem.id, activeVariant.id, true));
-      if (Date.parse(grant.expiresAt) > Date.now()) window.location.assign(grant.url);
+      if (!(Date.parse(grant.expiresAt) > Date.now())) throw new Error("This download link has expired. Try downloading again.");
+      window.location.assign(grant.url);
     },
   });
   const busy = accessMutation.isPending || responseMutation.isPending || downloadMutation.isPending;
@@ -569,7 +581,7 @@ function ReviewRoom({ token, digest }: { token: string; digest: string }) {
                     preload="metadata"
                     aria-label={`${activeItem.clipTitle}, ${aspectLabel(activeVariant.aspectRatio)} submitted export`}
                     grant={mediaQuery.data}
-                    refreshGrant={() => queryClient.fetchQuery<ReviewMediaGrant>(mediaOptions)}
+                    refreshGrant={(force) => queryClient.fetchQuery<ReviewMediaGrant>({ ...mediaOptions, ...(force ? { staleTime: 0 } : {}) })}
                     onGrantError={(reason) => setError(reason instanceof Error ? reason.message : "Media could not be loaded")}
                     style={{ width: "100%", height: "100%", objectFit: "contain" }}
                   />

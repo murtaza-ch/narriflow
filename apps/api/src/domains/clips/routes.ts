@@ -117,17 +117,24 @@ export function createClipsRoutes(deps: ClipsRouteDeps) {
 
     // A new, from-scratch clip carved out of a transcript selection (not a
     // duplicate-and-retrim chain, which can orphan copied assets on partial
-    // failure). `clip_selection_invalid` maps to 422.
+    // failure). `clip_selection_invalid` maps to 422. The Idempotency-Key makes
+    // a retry after a lost response return the accepted clip.
     .post(
       "/projects/:id/clips/:clipId/create-from-selection",
+      requireIdempotencyKey(),
       validate("json", createClipFromSelectionSchema),
       async (c) => {
-        const clip = await clipService.createClipFromSelection(
+        const { clip, replayed } = await clipsCommands.createClipFromSelection(
           getActor(c),
           c.req.param("id"),
           c.req.param("clipId"),
           c.req.valid("json"),
+          {
+            clientIdempotencyKey: getIdempotencyKey(c),
+            beforeAccept: async () => enforceRecordedRateLimit(getRecordedRateLimit(c)),
+          },
         );
+        if (replayed) c.header("Idempotent-Replayed", "true");
         return c.json(clip, 201);
       },
     )

@@ -33,7 +33,7 @@ export function McpContinuationUnavailable({ kind, declined = false, invalidLink
     <Stack gap={declined || invalidLink ? "5" : "4"}>
       <PageHeader
         title={declined ? "Publication declined" : confirmation ? "Confirmation unavailable" : "Upload handoff unavailable"}
-        description={declined ? "No post was scheduled." : confirmation && invalidLink ? "Ask your assistant to prepare the post again. The confirmation may have expired or workspace access changed." : confirmation ? "Prepare this post again from your assistant. This confirmation may have expired or belong to another account." : "Open the upload tool again from your assistant. This handoff may have expired or belong to another account."}
+        description={declined ? "You declined this confirmation. Any previously confirmed publication is unchanged." : confirmation && invalidLink ? "Ask your assistant to prepare the post again. The confirmation may have expired or workspace access changed." : confirmation ? "Prepare this post again from your assistant. This confirmation may have expired or belong to another account." : "Open the upload tool again from your assistant. This handoff may have expired or belong to another account."}
       />
       <Button asChild variant="subtle"><Link href="/integrations/mcp">Back to MCP integration</Link></Button>
     </Stack>

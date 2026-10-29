@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import { createMcpUploadHandoff, type NarriflowMcpPrincipal } from "@narriflow/mcp-core";
-import { integrationUploadSessionKey, uploadSessionService, workspaceService, type WorkspaceActorContext } from "@narriflow/services";
+import { createMcpConfirmation, createMcpUploadHandoff, type NarriflowMcpPrincipal } from "@narriflow/mcp-core";
+import { integrationUploadSessionKey, socialPublicationScheduling, uploadSessionService, workspaceService, type WorkspaceActorContext } from "@narriflow/services";
 import { loadApiConfig } from "../../config";
 import { createIntegrationsRouteDeps, requireContinuationActor } from "./runtime";
 
@@ -28,6 +28,23 @@ function expiredHandoff() {
 }
 
 describe("MCP continuation runtime", () => {
+  for (const alreadyAccepted of [false, true]) test(`declining ${alreadyAccepted ? "an accepted" : "an unaccepted"} confirmation checks the durable publication`, async () => {
+    admitActor();
+    process.env.MCP_CONTINUATION_SECRET = "shared-test-continuation-secret-at-least-32-bytes";
+    const intent = { workspaceId, clientIdempotencyKey: keyId, projectId: actorId, clipId: keyId, clipExportId: keyId, clipExportVariantId: keyId, expectedEditorRevision: 1, accountId: keyId, platform: "tiktok" as const, aspectRatio: "9:16" as const, resolution: "1080p" as const, scheduledFor: "2026-11-01T09:00:00.000Z", caption: "Frozen caption", providerSettings: {} };
+    const token = createMcpConfirmation({ ...principal, scopes: ["publishing:write"] }, intent).token;
+    const accepted: NonNullable<Awaited<ReturnType<typeof socialPublicationScheduling.replay>>> = {
+      id: "accepted-publication", createdByUserId: actorId, workspaceId, projectId: actorId, clipId: keyId, clientIdempotencyKey: keyId,
+      immutableRequestHash: "accepted-hash", status: "scheduled", submissionEligible: true, reviewApprovalOverrideId: null,
+      frozen: { clipExportId: keyId, clipExportVariantId: keyId, editorRevision: 1, exportFingerprint: "export-hash", storageKey: "private/video.mp4", sizeBytes: 10, durationSec: 1, aspectRatio: "9:16", caption: intent.caption, providerSettings: {}, socialAccountId: keyId, platform: "tiktok", capabilityVersion: "test", scheduledFor: new Date(intent.scheduledFor) },
+      createdAt: new Date(), updatedAt: new Date(),
+    };
+    const replay = track(spyOn(socialPublicationScheduling, "replay").mockResolvedValue(alreadyAccepted ? accepted : null));
+    const schedule = track(spyOn(socialPublicationScheduling, "schedule").mockRejectedValue(new Error("Decline must not schedule")));
+    expect(await createIntegrationsRouteDeps(config).confirm(actorId, { token, decision: "decline" }, () => {})).toEqual({ destination: alreadyAccepted ? `/projects/${actorId}?publicationId=accepted-publication` : "/integrations/mcp/confirm?declined=1" });
+    expect(replay).toHaveBeenCalledWith({ ...intent, deliveryMode: "direct", actorUserId: actorId, scheduledFor: new Date(intent.scheduledFor) }, { actor });
+    expect(schedule).not.toHaveBeenCalled();
+  });
   test("expired handoff resume goes through the service with the originating actor's stored key", async () => {
     admitActor();
     const lookup = track(spyOn(uploadSessionService, "hasOwnSessionByClientKey").mockResolvedValue(true));

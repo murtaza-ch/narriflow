@@ -4,7 +4,7 @@
 
 **Blocked by:** [27 - Move review guest share and opt-out API](27-move-review-guest-share-and-opt-out-api.md), [07 - Move billing API and convert billing UI](07-move-billing-api-and-convert-billing-ui.md)
 
-**Status:** done
+**Status:** claimed
 
 **Suggested implementer:** Sol. The other pairing side reviews and returns findings to this owner.
 
@@ -134,3 +134,5 @@ Append claim, requested seam changes, paired review and evidence here.
 - Typecheck: ran `bunx tsc -p apps/web/tsconfig.json --noEmit` exactly once, exit 2. It reported three owned grant-inference errors at review-client.tsx:264/572 and shared-export-client.tsx:31; fixed all three by supplying explicit `ReviewMediaGrant`/`SharedExport` fetchQuery result types. Did not repeat the command, per the implementer instruction. The 13 unrelated diagnostics are in `apps/web/lib/authenticated-request-action.ts` and `authenticated-request-page.ts`, missing moved policy modules and dependent implicit/unknown types, owned by ticket 31. The final integrated typecheck remains a 31/32 gate; this is not a claim of a green whole-web typecheck.
 - Runtime: started only Next with a process-local public API origin override, W=`http://localhost:3000`, A=`http://localhost:4000`; no env file was edited and no API/worker was started. Next 16.3.6 Turbopack MCP `get_compilation_issues` returned `issues: []`; `get_errors` returned no config/session errors. The real browser rendered the original Name/Email/Passcode access form and Open review control. Preview snapshots timed out twice, so switched to agent-browser 0.33.1, observed the DOM, submitted synthetic access input and captured `securitypolicyviolation`: enforced `connect-src` blocks A's `/api/review/.../access`; the existing inline network error appeared. Live successful guest/media/share/opt-out and signed-in flows therefore remain for 32 after the configuration seam below. Both browser sessions and only the Next process started here were closed.
 - Ticket 31 request, confirmed in the live browser: add `new URL(NEXT_PUBLIC_API_URL).origin` to review `connect-src` and the applicable report-only policy in `apps/web/next.config.ts`, preserving existing restrictive directives/noindex/no-referrer/no-store. The review page emitted no-referrer and noindex/nofollow/noarchive; config retains private/no-store, while Next dev overrides Cache-Control to no-cache/must-revalidate, so verify production headers in 32. No unsafe HTML/script interpolation was found; the hostile-text regression passes. No spec deviation or design objection; CSP/configuration and the final cross-origin pass remain with their named owners.
+
+- Sol claimed the paired-review fixes on 2026-10-29. Scope includes M1-M3 and L1-L3; the user also authorized the matching integrations API change.

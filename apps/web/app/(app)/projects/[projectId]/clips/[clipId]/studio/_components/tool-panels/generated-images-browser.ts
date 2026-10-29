@@ -1,4 +1,4 @@
-import { ApiError } from "@narriflow/api-client/core";
+import { ApiError, type Intent } from "@narriflow/api-client/core";
 import { type BrandApi, brandClientFor } from "@narriflow/api-client/brand";
 import { apiFailureBody } from "../studio-api";
 import type { BrowserRequestFailure } from "@/lib/authenticated-request-browser";
@@ -11,7 +11,8 @@ import type { BrowserRequestFailure } from "@/lib/authenticated-request-browser"
  */
 export interface GeneratedImagesBrowserApi {
   list(clipId: string): Promise<Response>;
-  create(body: unknown): Promise<Response>;
+  /** The key is the intent's: the same body keeps it through retries and lost responses, until accepted. */
+  create(body: Record<string, unknown>): Promise<Response>;
   cancel(jobId: string): Promise<Response>;
   deleteResult(jobId: string): Promise<Response>;
   saveToBrandProfile(profileId: string, body: unknown): Promise<Response>;
@@ -29,14 +30,24 @@ async function settled(request: () => Promise<Response>): Promise<Response> {
   }
 }
 
-export function createGeneratedImagesBrowserApi(projectId: string, api: BrandApi): GeneratedImagesBrowserApi {
+export type GeneratedImageIntent = Intent<Record<string, unknown>>;
+
+export function createGeneratedImagesBrowserApi(
+  projectId: string,
+  api: BrandApi,
+  intent: GeneratedImageIntent,
+): GeneratedImagesBrowserApi {
   const jobs = () => brandClientFor(api).projects[":projectId"]["generated-media"].jobs;
   return {
     list: (clipId) => settled(() => jobs().$get({ param: { projectId }, query: { clipId } })),
-    create: (body) =>
-      settled(() =>
-        jobs().$post({ param: { projectId }, json: body as Parameters<ReturnType<typeof jobs>["$post"]>[0]["json"] }),
-      ),
+    create: async (body) => {
+      const json = { ...body, idempotencyKey: intent.keyFor(body) };
+      const response = await settled(() =>
+        jobs().$post({ param: { projectId }, json: json as Parameters<ReturnType<typeof jobs>["$post"]>[0]["json"] }),
+      );
+      if (response.ok) intent.complete();
+      return response;
+    },
     cancel: (jobId) => settled(() => jobs()[":id"].cancel.$post({ param: { projectId, id: jobId } })),
     deleteResult: (jobId) => settled(() => jobs()[":id"].result.$delete({ param: { projectId, id: jobId } })),
     saveToBrandProfile: (profileId, body) =>

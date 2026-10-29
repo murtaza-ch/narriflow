@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { createGuestReviewsClient, reviewQueries } from "@narriflow/api-client/reviews";
 import { ReviewQueryProvider, useReviewTokenDigest, reviewApiOrigin, useExpiringReviewGrant } from "../../review/[token]/review-client-model";
@@ -28,7 +28,7 @@ function SharedExportQuery({ token, digest }: { token: string; digest: string })
   useExpiringReviewGrant(query.data?.expiresAt, query.refetch);
   if (query.isPending) return <ReviewPending />;
   if (!query.data) return <SharedClipUnavailable />;
-  return <SharedExportClient exported={query.data} refreshExport={() => queryClient.fetchQuery<SharedExport>(options)} />;
+  return <SharedExportClient exported={query.data} refreshExport={(force) => queryClient.fetchQuery<SharedExport>({ ...options, ...(force ? { staleTime: 0 } : {}) })} />;
 }
 
 function formatBytes(value: number | null): string | null {
@@ -53,7 +53,8 @@ function Fact({ children }: { children: string }) {
 
 type SharedExport = ClipExportSnapshot & { expiresAt: string };
 
-export function SharedExportClient({ exported, refreshExport }: { exported: SharedExport; refreshExport: () => Promise<SharedExport> }) {
+export function SharedExportClient({ exported, refreshExport }: { exported: SharedExport; refreshExport: (force?: boolean) => Promise<SharedExport> }) {
+  const [error, setError] = useState<string | null>(null);
   const ready = exported.variants.filter(
     (variant) => variant.hasAsset && variant.downloadUrl,
   );
@@ -92,13 +93,14 @@ export function SharedExportClient({ exported, refreshExport }: { exported: Shar
                   playsInline
                   preload="metadata"
                   grant={playbackGrant}
-                  refreshGrant={async () => {
-                    const fresh = await refreshExport();
+                  refreshGrant={async (force) => {
+                    const fresh = await refreshExport(force);
                     const variant = fresh.variants.find((entry) => entry.id === primary.id);
                     const url = variant?.previewUrl ?? variant?.downloadUrl;
                     if (!url) throw new Error("This shared video is unavailable.");
                     return { url, expiresAt: fresh.expiresAt };
                   }}
+                  onGrantError={() => setError("This video could not be loaded. Try opening the link again.")}
                   aria-label={`${primary.aspectRatio} shared video`}
                 />
               </Box>
@@ -108,6 +110,7 @@ export function SharedExportClient({ exported, refreshExport }: { exported: Shar
 
         <Flex w={{ base: "full", lg: "380px" }} flexShrink={0} direction="column" gap="6" p={{ base: "5", md: "6" }} bg="bg" borderRadius={panelRadius} overflowY="auto">
           <Stack gap="2">
+            {error ? <Text role="alert" fontSize="13px" color="danger.fg">{error}</Text> : null}
             <Heading as="h1" textStyle="title" fontSize="22px" overflowWrap="anywhere">
               {exported.clipTitle}
             </Heading>
@@ -135,12 +138,15 @@ export function SharedExportClient({ exported, refreshExport }: { exported: Shar
                   href={variant.downloadUrl ?? undefined}
                   download={`narriflow-${variant.aspectRatio.replace(":", "x")}.mp4`}
                   onClick={(event) => {
+                    setError(null);
                     if (Date.parse(exported.expiresAt) > Date.now() + 30_000) return;
                     event.preventDefault();
                     void refreshExport().then((fresh) => {
                       const url = fresh.variants.find((entry) => entry.id === variant.id)?.downloadUrl;
-                      if (url && Date.parse(fresh.expiresAt) > Date.now()) window.location.assign(url);
-                    }).catch(() => undefined);
+                      if (!url) throw new Error("This download is unavailable. Try opening the link again.");
+                      if (!(Date.parse(fresh.expiresAt) > Date.now())) throw new Error("This download link has expired. Try downloading again.");
+                      window.location.assign(url);
+                    }).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "This download could not be refreshed. Try again."));
                   }}
                 >
                   <Download size={index === 0 ? 17 : 15} /> Download {variant.aspectRatio} · {variant.resolution}

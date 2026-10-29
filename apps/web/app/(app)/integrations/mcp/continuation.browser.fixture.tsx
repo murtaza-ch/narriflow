@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, beforeEach, expect, mock, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, expect, mock, setSystemTime, test } from "bun:test";
 import { Window } from "happy-dom";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -20,6 +20,21 @@ let refusal: { error: string; message: string; requestId: string; details?: Reco
 let lostResponse = false;
 let selectedAllowed = true;
 let verified = true;
+let transferStartedAt: number | null = null;
+let handoffReads = 0;
+let handoffFailure = false;
+let uploadPlanRefusal = false;
+let signedRole = "owner";
+const originalXhr = globalThis.XMLHttpRequest;
+let transfers: PendingTransfer[] = [];
+class PendingTransfer extends browser.EventTarget {
+  upload = new browser.EventTarget();
+  aborted = false;
+  open() {}
+  setRequestHeader() {}
+  send() { transfers.push(this); }
+  abort() { this.aborted = true; this.dispatchEvent(new browser.Event("abort")); }
+}
 const preparation: McpPreparationData = {
   workspaceId: SIGNED, workspaceName: "Signed team", destinationAccount: "Ada (@ada) · social-account", expiresAt: "2026-11-01T10:00:00.000Z",
   intent: {
@@ -35,6 +50,7 @@ const json = (value: unknown, status = 200) => Response.json(value, { status });
 async function fakeApi(input: string | URL | Request, init: RequestInit = {}): Promise<Response> {
   const url = new URL(String(input instanceof Request ? input.url : input));
   requests.push({ url, headers: new Headers(init.headers), init });
+  if (url.pathname === "/api/session/bootstrap") return json({ memberships: [{ id: SIGNED, name: "Signed team", role: signedRole, status: "active", pricingTier: "pro" }] });
   if (url.pathname === "/api/session/workspace-selection") {
     if (!selectedAllowed) return json({ error: "workspace_access_denied", message: "Denied", requestId: "switch-denied" }, 403);
     return json({ workspace: { id: JSON.parse(String(init.body)).workspaceId } });
@@ -47,8 +63,13 @@ async function fakeApi(input: string | URL | Request, init: RequestInit = {}): P
     const { decision } = JSON.parse(String(init.body));
     return json({ destination: decision === "confirm" ? "/projects/project?publicationId=publication" : "/integrations/mcp/confirm?declined=1" });
   }
-  if (url.pathname === "/api/integrations/mcp/upload-handoff") return json({ workspaceId: SIGNED, clientIdempotencyKey: "00000000-0000-4000-8000-000000000003", recipeName: null, recipeId: SIGNED, resumeOnly: true });
-  if (url.pathname.startsWith(`/mcp/integrations/${SIGNED}/upload-sessions/`)) return json({ error: "upload_session_not_found", message: "No existing upload", requestId: "resume-missing" }, 404);
+  if (url.pathname === "/api/integrations/mcp/upload-handoff") {
+    handoffReads++;
+    if (handoffFailure) return json({ error: "unavailable", message: "Try again", requestId: "handoff" }, 503);
+    return json({ workspaceId: SIGNED, clientIdempotencyKey: "00000000-0000-4000-8000-000000000003", recipeName: null, recipeId: SIGNED, resumeOnly: transferStartedAt === null || Date.now() >= transferStartedAt + 600_000 });
+  }
+  if (url.pathname.endsWith("/upload-sessions/open") && transferStartedAt !== null) return json({ outcome: "uploading", sessionId: "00000000-0000-4000-8000-000000000005", projectId: "00000000-0000-4000-8000-000000000006", expiresAt: new Date(Date.now() + 3_600_000).toISOString(), transfer: { kind: "single", contentType: "video/mp4", grant: { url: "https://storage.test/video", contentType: "video/mp4" } } });
+  if (url.pathname.startsWith(`/mcp/integrations/${SIGNED}/upload-sessions/`)) return uploadPlanRefusal ? json({ error: "credits_exhausted", message: "This video needs more credits.", requestId: "credits", details: { tier: "pro", limitCredits: 1200, remainingCredits: 10, spentCredits: 1190, requestedCredits: 40, renewsAt: "2026-11-01T00:00:00.000Z" } }, 402) : json({ error: "upload_session_not_found", message: "No existing upload", requestId: "resume-missing" }, 404);
   throw new Error(`Unexpected fixture request to ${url.pathname}`);
 }
 
@@ -66,12 +87,17 @@ beforeEach(() => {
   requests = []; navigated = []; refusal = null; lostResponse = false; selectedAllowed = true; verified = true; runtime = null;
   browser.localStorage.clear();
   browser.localStorage.setItem(`narriflow:workspace:${USER}`, SELECTED);
+  transferStartedAt = null; handoffReads = 0; handoffFailure = false; transfers = [];
+  uploadPlanRefusal = false; signedRole = "owner";
+  globalThis.XMLHttpRequest = PendingTransfer as unknown as typeof XMLHttpRequest;
 });
 afterEach(async () => {
   await act(async () => root?.unmount());
   runtime?.queryClient.clear();
   root = null;
   browser.document.body.replaceChildren();
+  setSystemTime();
+  globalThis.XMLHttpRequest = originalXhr;
 });
 afterAll(() => browser.close());
 
@@ -148,6 +174,17 @@ test("confirmation displays frozen facts, invalidates the signed Workspace and n
   assertIdentityRequests();
 });
 
+test("a failed preparation reread preserves the loaded confirmation", async () => {
+  const container = await mount((m) => <m.McpConfirmationScreen />);
+  await until(() => container.textContent?.includes("Frozen caption") === true, "preparation");
+  refusal = { error: "unavailable", message: "Try again", requestId: "reread" };
+  await act(async () => { await runtime!.queryClient.refetchQueries({ predicate: (q) => q.queryKey.includes("mcp-preparation") }); });
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 30)); });
+  expect(requests.filter((r) => r.url.pathname.endsWith("/preparations"))).toHaveLength(2);
+  expect(container.textContent).toContain("Frozen caption");
+  expect(container.textContent).not.toContain("Confirmation unavailable");
+});
+
 test("decline follows the returned web destination without invalidating publishing", async () => {
   const container = await mount((m) => <m.McpConfirmationScreen />);
   await until(() => container.textContent?.includes("Frozen caption") === true, "preparation");
@@ -167,7 +204,11 @@ test("uncertain confirmation can retry with exactly the same signed acceptance",
   await click(container, "Confirm and schedule");
   await until(() => container.querySelector('[role="alert"]') !== null, "retry notice");
   expect(navigated).toEqual([]);
-  await click(container, "Confirm and schedule");
+  const decline = Array.from(container.querySelectorAll("button")).find((element) => element.textContent === "Decline")!;
+  expect(decline.hasAttribute("disabled")).toBe(true);
+  await click(container, "Decline");
+  expect(requests.filter((r) => r.url.pathname === "/api/mcp/confirmations")).toHaveLength(1);
+  await click(container, "Try again");
   await until(() => navigated.length === 1, "retry navigation");
   const posts = requests.filter((r) => r.url.pathname === "/api/mcp/confirmations");
   expect(posts).toHaveLength(2);
@@ -222,6 +263,36 @@ test("expired upload preview loads with identity scope and keeps the existing pi
   expect(requests[0]?.url.searchParams.get("intent")).toBe(TOKEN);
 });
 
+for (const failure of [false, true]) test(`active upload survives focus past handoff expiry and ${failure ? "failed" : "resume-only"} reread`, async () => {
+  transferStartedAt = Date.now();
+  search = new URLSearchParams({ intent: TOKEN });
+  const container = await mount((m) => <m.McpUploadScreen />);
+  await until(() => container.querySelector('input[type="file"]') !== null, "upload handoff");
+  const input = container.querySelector('input[type="file"]')!;
+  Object.defineProperty(input, "files", { value: [new File(["video"], "talk.mp4", { type: "video/mp4", lastModified: 1 })] });
+  await act(async () => input.dispatchEvent(new browser.Event("change", { bubbles: true })));
+  await click(container, "Upload and generate clips");
+  await until(() => transfers.length === 1, "active storage PUT");
+  setSystemTime(transferStartedAt + 660_000);
+  handoffFailure = failure;
+  const { focusManager, onlineManager } = await import("@tanstack/react-query");
+  await act(async () => {
+    focusManager.setFocused(false); focusManager.setFocused(true);
+    onlineManager.setOnline(false); onlineManager.setOnline(true);
+    browser.dispatchEvent(new browser.Event("focus"));
+    await new Promise((resolve) => setTimeout(resolve, 30));
+  });
+  expect(handoffReads).toBe(1);
+  // Even an explicit reread must not replace or unmount the active picker.
+  await act(async () => { await runtime!.queryClient.refetchQueries({ predicate: (q) => q.queryKey.includes("mcp-upload-handoff") }); });
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 30)); });
+  expect(handoffReads).toBe(2);
+  expect(transfers[0]?.aborted).toBe(false);
+  expect(container.querySelector('input[type="file"]')).toBe(input);
+  expect(container.textContent).toContain("Uploading");
+  expect(container.textContent).not.toContain("Upload handoff unavailable");
+});
+
 test("expired picker uses signed MCP status controls and displays a typed refusal", async () => {
   search = new URLSearchParams({ intent: TOKEN });
   const container = await mount((m) => <m.McpUploadScreen />);
@@ -245,6 +316,28 @@ test("declined links preserve their empty state without a read", async () => {
   search = new URLSearchParams({ declined: "1" });
   const container = await mount((m) => <m.McpConfirmationScreen />);
   await until(() => container.textContent?.includes("Publication declined") === true, "declined state");
-  expect(container.textContent).toContain("No post was scheduled.");
+  expect(container.textContent).toContain("Any previously confirmed publication is unchanged.");
   expect(requests).toEqual([]);
+});
+
+for (const role of ["owner", "editor"]) test(`upload credit refusal gives the signed Workspace ${role} a billing recovery`, async () => {
+  uploadPlanRefusal = true; signedRole = role;
+  search = new URLSearchParams({ intent: TOKEN });
+  const container = await mount((m) => <m.McpUploadScreen />);
+  await until(() => container.querySelector('input[type="file"]') !== null, "upload handoff");
+  const input = container.querySelector('input[type="file"]')!;
+  Object.defineProperty(input, "files", { value: [new File(["video"], "talk.mp4", { type: "video/mp4", lastModified: 1 })] });
+  await act(async () => input.dispatchEvent(new browser.Event("change", { bubbles: true })));
+  await click(container, "Upload and generate clips");
+  await until(() => container.textContent?.includes("This video needs more credits.") === true, "credit refusal");
+  if (role === "owner") {
+    await until(() => container.querySelector('a[href^="/settings/billing"]') !== null, "signed Workspace billing link");
+    await click(container, "See plans");
+    expect(runtime!.scope.snapshot().workspaceId).toBe(SIGNED);
+    expect(navigated[0]).toContain("/settings/billing");
+    expect(JSON.parse(String(requests.find((r) => r.url.pathname.endsWith("workspace-selection"))?.init.body))).toEqual({ workspaceId: SIGNED });
+  } else {
+    expect(container.querySelector('a[href^="/settings/billing"]')).toBeNull();
+    expect(container.textContent).toContain("Ask the workspace owner");
+  }
 });

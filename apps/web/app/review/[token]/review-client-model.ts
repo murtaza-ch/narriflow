@@ -71,7 +71,7 @@ export function useExpiringReviewGrant(expiresAt: string | undefined, refetch: (
 /** One mounted item/variant/mode keeps its URL, even after a background grant refresh. */
 export function useReviewPlayback(
   grant: ReviewMediaGrant | undefined,
-  refreshGrant: () => Promise<ReviewMediaGrant>,
+  refreshGrant: (force?: boolean) => Promise<ReviewMediaGrant>,
   onGrantError?: (reason: unknown) => void,
 ) {
   const [selected, setSelected] = useState(grant);
@@ -79,6 +79,7 @@ export function useReviewPlayback(
   const currentRef = useRef(current);
   const mounted = useRef(true);
   const renewing = useRef(false);
+  const rejectedUrls = useRef(new Set<string>());
   const restore = useRef<{ time: number; play: boolean } | null>(null);
   useEffect(() => {
     if (!selected && grant) setSelected(grant);
@@ -89,13 +90,13 @@ export function useReviewPlayback(
     return () => { mounted.current = false; };
   }, []);
 
-  async function renew(video: HTMLVideoElement) {
+  async function renew(video: HTMLVideoElement, force = false) {
     if (renewing.current) return;
     renewing.current = true;
     const position = { time: video.currentTime, play: !video.paused };
     video.pause();
     try {
-      const next = await refreshGrant();
+      const next = await refreshGrant(force);
       if (!mounted.current) return;
       if (Date.parse(next.expiresAt) <= Date.now()) throw new Error("This media link has expired. Try playing again.");
       currentRef.current = next;
@@ -122,7 +123,16 @@ export function useReviewPlayback(
   return {
     src: current?.url,
     onPlay: renewExpired,
-    onError: renewExpired,
+    onError(event: SyntheticEvent<HTMLVideoElement>) {
+      const url = currentRef.current?.url;
+      if (!url || renewing.current) return;
+      if (rejectedUrls.current.has(url)) {
+        onGrantError?.(new Error("This video could not be loaded. Try opening the link again."));
+        return;
+      }
+      rejectedUrls.current.add(url);
+      void renew(event.currentTarget, true);
+    },
     onLoadedMetadata(event: SyntheticEvent<HTMLVideoElement>) {
       const pending = restore.current;
       if (!pending) return;

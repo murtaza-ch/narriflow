@@ -240,6 +240,11 @@ export function WorkspaceQueryGate({
   );
 }
 
+/** A paused Workspace: the owner repairs billing, anyone else leaves for the page outside the shell. */
+function restrictedDestination(error: unknown): string {
+  return isApiError(error) && error.details?.ownerCanResolve === true ? "/settings/billing" : WORKSPACE_UNAVAILABLE_PATH;
+}
+
 function WorkspaceBootstrapView({
   scope,
   fallback,
@@ -257,10 +262,19 @@ function WorkspaceBootstrapView({
 
   // The status changed since the bootstrap: the owner repairs billing, anyone else leaves.
   useEffect(() => {
-    if (!restricted) return;
-    const ownerCanResolve = isApiError(query.error) && query.error.details?.ownerCanResolve === true;
-    router.replace(ownerCanResolve ? "/settings/billing" : WORKSPACE_UNAVAILABLE_PATH);
+    if (restricted) router.replace(restrictedDestination(query.error));
   }, [restricted, query.error, router]);
+
+  // The same answer to any other read of this Workspace (Home, Projects, search): the
+  // bootstrap is cached, so no screen would otherwise leave, and retrying could not help.
+  useEffect(() => {
+    return runtime.queryClient.getQueryCache().subscribe((event) => {
+      if (event.type !== "updated" || event.action.type !== "error") return;
+      if (event.query.queryKey[2] !== scope.workspaceId) return;
+      if (describeApiFailure(event.action.error).kind !== "workspace_restricted") return;
+      router.replace(restrictedDestination(event.action.error));
+    });
+  }, [runtime, scope.workspaceId, router]);
 
   if (query.data) return <>{children(query.data, scope)}</>;
   // Superseded: the Workspace changed under this request; the remounted gate reads the new one.

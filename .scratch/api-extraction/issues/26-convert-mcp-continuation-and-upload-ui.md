@@ -4,7 +4,7 @@
 
 **Blocked by:** [24 - Move MCP discovery and upload protocols](24-move-mcp-discovery-and-upload-protocols.md), [05 - Expose session and Workspace controls](05-expose-session-and-workspace-controls.md), [07 - Move billing API and convert billing UI](07-move-billing-api-and-convert-billing-ui.md)
 
-**Status:** done
+**Status:** claimed
 
 **Suggested implementer:** Sol. The other pairing side reviews and returns findings to this owner.
 
@@ -145,3 +145,5 @@ Append claim, requested seam changes, paired review and evidence here.
 - Shared helpers stay in `(app)/integrations/mcp/` (`continuation.tsx` etc.); the moved screens import them by `@/app/(app)/...` alias. `continuation.browser.fixture.tsx` imports the moved screens from the new group.
 - New test `(continuation)/continuation-shell.test.ts` (+ `.browser.fixture.tsx`, 3 cases): confirmation renders with a restricted selected Workspace and never reads `/api/workspace/bootstrap`; signed-out visitor redirected to sign-in with the original link; `AppShell` with the same restricted Workspace still redirects to `/workspace-unavailable` without rendering the page.
 - Evidence: `bun test "apps/web/app/(continuation)" "apps/web/app/(app)/integrations/mcp" apps/web/app/_components/workspace-query-gate.test.ts` pass; full-web `tsc` shows no diagnostics in these paths; biome clean on both directories. Live signed-in browser pass still belongs to ticket 32. The last acceptance box (paired review) remains with the orchestrator.
+
+- Sol claimed the paired-review fixes on 2026-10-29. Scope includes M1-M3 and L1-L3; the user also authorized the matching integrations API change.

@@ -69,7 +69,10 @@ export function createIntegrationsRouteDeps(config: ApiConfig): IntegrationsRout
     async confirm(userId, input, beforeAccept) {
       const state = verifyMcpPreparation(input.token, { actorUserId: userId });
       const actor = await requireContinuationActor(userId, state.workspaceId, "publishing.manage");
-      if (input.decision === "decline") return { destination: "/integrations/mcp/confirm?declined=1" };
+      if (input.decision === "decline") {
+        const accepted = await socialPublicationScheduling.replay({ ...state.intent, actorUserId: userId, scheduledFor: new Date(state.intent.scheduledFor) }, { actor });
+        return { destination: accepted ? `/projects/${state.intent.projectId}?publicationId=${encodeURIComponent(accepted.id)}` : "/integrations/mcp/confirm?declined=1" };
+      }
       acceptMcpConfirmation(input.token, { actorUserId: userId, accepted: true });
       const guard = await getMcpMutationGuard(await admitContinuation(state, "publishing:write"));
       const publication = await socialPublicationScheduling.schedule({ ...state.intent, actorUserId: userId, scheduledFor: new Date(state.intent.scheduledFor), beforeAccept: async () => {

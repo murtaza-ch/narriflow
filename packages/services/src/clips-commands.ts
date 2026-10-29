@@ -19,7 +19,7 @@ import { CLIPS_RECEIPT_COMMANDS } from "./clips-receipt-commands";
 /** Dependencies of the clips receipt-backed commands. */
 export interface ClipsCommandDependencies {
   persistence: OperationReceiptPersistence<Prisma.TransactionClient>;
-  clips: Pick<ClipService, "duplicateClip" | "createClipFromRange">;
+  clips: Pick<ClipService, "duplicateClip" | "createClipFromRange" | "createClipFromSelection">;
   requireEditor(actorUserId: string, workspaceId: string): Promise<unknown>;
 }
 
@@ -35,7 +35,7 @@ type ClipCreation = (acceptance: ClipCreationAcceptance) => Promise<ClipSnapshot
  * Receipt-backed retryable commands of the clips domain. Only names registered
  * in `CLIPS_RECEIPT_COMMANDS` may be recorded.
  *
- * Duplicating a clip and making one from a range create rows (and, for a
+ * Duplicating a clip and making one from a range or a transcript selection create rows (and, for a
  * duplicate, copy media). The receipt is written in the same transaction as the
  * new clip's rows, so a lost response or a retry returns the clip that was
  * accepted instead of creating a second one. A replay is answered before the
@@ -47,7 +47,7 @@ export function createClipsCommands(dependencies: ClipsCommandDependencies) {
 
   async function createClip(
     actor: ActorScope,
-    command: "duplicate_clip" | "create_clip_from_range",
+    command: "duplicate_clip" | "create_clip_from_range" | "create_clip_from_selection",
     input: unknown,
     mutation: IntegrationMutation,
     create: ClipCreation,
@@ -120,6 +120,22 @@ export function createClipsCommands(dependencies: ClipsCommandDependencies) {
     duplicateClip(actor: ActorScope, projectId: string, clipId: string, mutation: IntegrationMutation) {
       return createClip(actor, "duplicate_clip", { projectId, clipId }, mutation, (acceptance) =>
         clips.duplicateClip(actor, projectId, clipId, acceptance),
+      );
+    },
+
+    createClipFromSelection(
+      actor: ActorScope,
+      projectId: string,
+      sourceClipId: string,
+      range: { startSec: number; endSec: number },
+      mutation: IntegrationMutation,
+    ) {
+      return createClip(
+        actor,
+        "create_clip_from_selection",
+        { projectId, sourceClipId, startSec: range.startSec, endSec: range.endSec },
+        mutation,
+        (acceptance) => clips.createClipFromSelection(actor, projectId, sourceClipId, range, acceptance),
       );
     },
 

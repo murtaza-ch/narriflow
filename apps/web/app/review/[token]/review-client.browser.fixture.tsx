@@ -230,6 +230,8 @@ test("guest comments retain their intent key and playhead through a lost respons
   video.currentTime = 4;
   await act(async () => button.click()); await settle();
   expect(comments).toHaveLength(1);
+  const approve = [...container.querySelectorAll("button")].find((entry) => entry.textContent?.trim() === "Approve clip")!;
+  await act(async () => approve.click()); await settle();
   video.currentTime = 9;
   await act(async () => button.click()); await settle();
   expect(comments).toHaveLength(2);
@@ -238,6 +240,61 @@ test("guest comments retain their intent key and playhead through a lost respons
   expect(JSON.parse(comments[0]!.body).timestampSec).toBe(4);
   expect(mediaReads).toBe(1);
   expect(container.textContent).toContain("Comment added at");
+});
+
+test("an edit cannot discard an uncertain guest comment's retry key", async () => {
+  await seedSession();
+  const comments: string[] = [];
+  const existing = { id: "old-comment", itemId: "item-1", parentId: null, authorKind: "guest", authorName: "Reviewer", body: "Earlier note", timestampSec: null, resolvedAt: null, editedAt: null, createdAt: new Date().toISOString(), canEdit: true };
+  globalThis.fetch = mock(async (input, init) => {
+    const path = new URL(input.toString()).pathname;
+    if (path.endsWith("/comments") && init?.method === "POST") {
+      comments.push(new Headers(init.headers).get("Idempotency-Key")!);
+      if (comments.length === 1) throw new TypeError("response lost");
+      return Response.json({ id: "new-comment" }, { status: 201 });
+    }
+    if (init?.method === "PATCH") {
+      expect(new Headers(init.headers).has("Idempotency-Key")).toBe(false);
+      return Response.json({ id: existing.id });
+    }
+    return Response.json(path.includes("/media/") ? grant() : { round: { ...snapshot.round, comments: [existing] } });
+  }) as typeof fetch;
+  const container = await renderReview();
+  const field = container.querySelector("textarea") as HTMLTextAreaElement;
+  const write = async (value: string) => { await act(async () => { Object.getOwnPropertyDescriptor(browser.HTMLTextAreaElement.prototype, "value")?.set?.call(field, value); field.dispatchEvent(new browser.InputEvent("input", { bubbles: true })); }); };
+  const click = async (label: string) => { await act(async () => [...container.querySelectorAll("button")].find((entry) => entry.textContent?.trim() === label)!.click()); await settle(); };
+  await write("New feedback"); await click("Comment");
+  await click("Edit"); await write("Updated earlier note"); await click("Save");
+  await write("New feedback"); await click("Comment");
+  expect(comments).toHaveLength(2);
+  expect(comments[0]).toBeTruthy();
+  expect(comments[1]).toBe(comments[0]);
+});
+
+test("a successful guest comment cannot discard an uncertain decision's retry key", async () => {
+  await seedSession();
+  const decisions: string[] = [];
+  globalThis.fetch = mock(async (input, init) => {
+    const path = new URL(input.toString()).pathname;
+    if (path.endsWith("/decision")) {
+      decisions.push(new Headers(init?.headers).get("Idempotency-Key")!);
+      if (decisions.length === 1) throw new TypeError("response lost");
+      return Response.json({ decision: "approved" });
+    }
+    if (init?.method === "POST") return Response.json({ id: "comment-1" });
+    return Response.json(path.includes("/media/") ? grant() : snapshot);
+  }) as typeof fetch;
+  const container = await renderReview();
+  const approve = [...container.querySelectorAll("button")].find((entry) => entry.textContent?.trim() === "Approve clip")!;
+  await act(async () => approve.click()); await settle();
+  const field = container.querySelector("textarea") as HTMLTextAreaElement;
+  await act(async () => { Object.getOwnPropertyDescriptor(browser.HTMLTextAreaElement.prototype, "value")?.set?.call(field, "Keep this beat"); field.dispatchEvent(new browser.InputEvent("input", { bubbles: true })); });
+  const comment = [...container.querySelectorAll("button")].find((entry) => entry.textContent?.trim() === "Comment")!;
+  await act(async () => comment.click()); await settle();
+  await act(async () => approve.click()); await settle();
+  expect(decisions).toHaveLength(2);
+  expect(decisions[0]).toBeTruthy();
+  expect(decisions[1]).toBe(decisions[0]);
 });
 
 test("long review playback and paused focus keep the mounted URL through background renewal", async () => {
@@ -318,6 +375,29 @@ test("an expired playback error renews the grant and restores the playhead", asy
   expect(video.paused).toBe(false);
 });
 
+for (const shared of [false, true]) test(`${shared ? "share" : "review"} playback renews a rejected grant despite a slow client clock, once per URL`, async () => {
+  await seedSession(3_600_000);
+  let mediaReads = 0;
+  const expiresAt = new Date(Date.now() + 900_000).toISOString();
+  globalThis.fetch = mock(async (input) => {
+    if (shared) {
+      mediaReads++;
+      return Response.json({ id: "export-1", clipTitle: "Shared", projectTitle: "Project", createdAt: new Date().toISOString(), editorRevision: 1, expiresAt, variants: [{ id: "variant-1", aspectRatio: "9:16", resolution: "1080p", hasAsset: true, previewUrl: "https://storage.review.test/rejected.mp4", downloadUrl: "https://storage.review.test/download.mp4" }] });
+    }
+    if (new URL(input.toString()).pathname.includes("/media/")) { mediaReads++; return Response.json({ url: "https://storage.review.test/rejected.mp4", expiresAt }); }
+    return Response.json(snapshot);
+  }) as typeof fetch;
+  const container = await renderReview(shared ? <SharedExportPageClient token="public-share" /> : undefined);
+  const video = container.querySelector("video") as HTMLVideoElement;
+  video.currentTime = 42;
+  await act(async () => video.dispatchEvent(new browser.Event("error"))); await settle();
+  expect(mediaReads).toBe(2);
+  await act(async () => video.dispatchEvent(new browser.Event("error"))); await settle();
+  expect(mediaReads).toBe(2);
+  expect(video.currentTime).toBe(42);
+  expect(container.querySelector('[role="alert"]')).not.toBeNull();
+});
+
 test("switching the selected review item mounts its own playback grant", async () => {
   await seedSession();
   const second = { ...snapshot.round.items[0]!, id: "item-2", clipTitle: "Second clip", export: { variants: [{ id: "variant-2", aspectRatio: "ratio_1_1", durationSec: 40, status: "completed" }] } };
@@ -390,6 +470,30 @@ test("public shares use a separate credential-free read and retain storage links
   expect(calls[0]?.headers.has("X-Workspace-Id")).toBe(false);
 });
 
+for (const shared of [false, true]) for (const failedRefresh of [false, true]) test(`${shared ? "share" : "review"} download reports ${failedRefresh ? "refresh refusal" : "an expired refreshed grant"}`, async () => {
+  const now = Date.now();
+  await seedSession(3_600_000);
+  let downloads = 0;
+  globalThis.fetch = mock(async (input) => {
+    const path = new URL(input.toString()).pathname;
+    if (shared || path.includes("/download/")) {
+      downloads++;
+      if (failedRefresh && (!shared || downloads > 1)) return Response.json({ error: "grant_unavailable", message: "Download could not be refreshed" }, { status: 403 });
+      const expiresAt = new Date(now + (shared && downloads === 1 ? 60_000 : -1)).toISOString();
+      if (!shared) return Response.json({ url: "https://storage.review.test/expired.mp4", expiresAt });
+      return Response.json({ id: "export-1", clipTitle: "Shared", projectTitle: "Project", createdAt: new Date(now).toISOString(), editorRevision: 1, expiresAt, variants: [{ id: "variant-1", aspectRatio: "9:16", resolution: "1080p", hasAsset: true, previewUrl: "https://storage.review.test/preview.mp4", downloadUrl: "https://storage.review.test/expired.mp4" }] });
+    }
+    return Response.json(path.includes("/media/") ? grant() : { round: { ...snapshot.round, allowDownloads: true } });
+  }) as typeof fetch;
+  const container = await renderReview(shared ? <SharedExportPageClient token="public-share" /> : undefined);
+  setSystemTime(now + 61_000);
+  const control = shared ? container.querySelector("a[download]")! : [...container.querySelectorAll("button")].find((entry) => entry.textContent?.includes("Download"))!;
+  await act(async () => control.dispatchEvent(new browser.MouseEvent("click", { bubbles: true, cancelable: true }))); await settle();
+  expect(downloads).toBeGreaterThanOrEqual(shared ? 2 : 1);
+  expect(container.querySelector('[role="alert"]')?.textContent).toMatch(/download|expired/i);
+  expect(browser.location.hostname).toBe("localhost");
+});
+
 
 test("shared video keeps its source and playhead while expiry refresh updates download links", async () => {
   const now = Date.now();
@@ -456,14 +560,16 @@ test("a share without completed downloadable media uses its existing unavailable
 });
 
 
-test("internal review commands preserve scoped intents and invalidate only affected reads", async () => {
+for (const kind of ["create", "invite"] as const) test(`internal review ${kind} preserves its scoped intent across another successful command`, async () => {
   const { createApiRuntime, scopedKey } = await import("@narriflow/api-client/core");
   const { QueryClientProvider } = await import("@tanstack/react-query");
   const { buildQuickReviewRoundInput } = await import("../../(app)/projects/[projectId]/project-share-model");
   const room = { project: { title: "Project", workspace: { name: "Team" }, approvalRequiredByDefault: true }, candidates: [], rounds: [] };
   const posts: Array<{ key: string | null; workspace: string | null; auth: string | null }> = [];
+  let resolves = 0;
   let reads = 0;
-  globalThis.fetch = mock(async (_input, init) => {
+  globalThis.fetch = mock(async (input, init) => {
+    if (new URL(input.toString()).pathname.endsWith("/resolve")) { resolves++; return Response.json({ id: "comment-1" }); }
     if (init?.method === "POST") {
       const headers = new Headers(init.headers);
       posts.push({ key: headers.get("Idempotency-Key"), workspace: headers.get("X-Workspace-Id"), auth: headers.get("Authorization") });
@@ -483,20 +589,22 @@ test("internal review commands preserve scoped intents and invalidate only affec
   for (const key of [detailKey, foreignKey, unrelatedKey]) internalRuntime.queryClient.setQueryData(key, {});
   function Commands() {
     const { room: query, mutation } = useInternalReviews("project-1");
-    return <button type="button" disabled={!query.data || mutation.isPending} onClick={() => void mutation.mutateAsync({ kind: "create", input: buildQuickReviewRoundInput(room, []) }).catch(() => undefined)}>Create</button>;
+    return <><button type="button" disabled={!query.data || mutation.isPending} onClick={() => void mutation.mutateAsync(kind === "create" ? { kind, input: buildQuickReviewRoundInput(room, []) } : { kind, roundId: "round-1", input: { emails: ["reviewer@example.test"] } }).catch(() => undefined)}>Submit</button><button type="button" onClick={() => mutation.mutate({ kind: "resolve", roundId: "round-1", commentId: "comment-1" })}>Resolve</button></>;
   }
   const container = await renderReview(<QueryClientProvider client={internalRuntime.queryClient}><Commands /></QueryClientProvider>);
   const button = container.querySelector("button")!;
   await act(async () => button.click()); await settle();
   expect(posts).toHaveLength(1);
   expect(internalRuntime.queryClient.getQueryState(detailKey)?.isInvalidated).toBe(false);
+  await act(async () => container.querySelectorAll("button")[1]!.click()); await settle();
+  expect(resolves).toBe(1);
   await act(async () => button.click()); await settle();
   expect(posts).toHaveLength(2);
   expect(posts[1]).toEqual(posts[0]);
   expect(posts[1]?.key).toBeTruthy();
   expect(posts[1]?.workspace).toBe(internalScope.workspaceId);
   expect(posts[1]?.auth).toBe("Bearer clerk-session");
-  expect(reads).toBe(2);
+  expect(reads).toBe(3);
   expect(internalRuntime.queryClient.getQueryState(detailKey)?.isInvalidated).toBe(true);
   expect(internalRuntime.queryClient.getQueryState(foreignKey)?.isInvalidated).toBe(false);
   expect(internalRuntime.queryClient.getQueryState(unrelatedKey)?.isInvalidated).toBe(false);

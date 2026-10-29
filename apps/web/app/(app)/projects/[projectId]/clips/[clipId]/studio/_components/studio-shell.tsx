@@ -19,7 +19,6 @@ import { useConfirm } from "@narriflow/ui/components/confirm-dialog";
 import { toaster } from "@narriflow/ui/components/toaster";
 import { useAuth } from "@clerk/nextjs";
 import type { StudioBootstrap } from "@narriflow/api-client/studio";
-import { createExportsClient } from "@narriflow/api-client/exports";
 import {
   compositionAssetRef,
   screenLayoutInputFingerprint,
@@ -122,7 +121,7 @@ import type {
 import {
   upgradePromptFromFailure,
 } from "@/lib/authenticated-request-browser";
-import { apiFailureBody, apiFailureStatus, requireStudioApi, studioReads, type StudioReads } from "./studio-api";
+import { apiFailureBody, apiFailureStatus, createStudioExport, requireStudioApi, type StudioExportInput, studioReads, type StudioReads } from "./studio-api";
 import { useStudioApi } from "./use-studio-api";
 import { createTokenSnapshot, createStudioCloudHttp } from "./studio-cloud-http";
 import { useUpgrade } from "@/app/(app)/_components/upgrade";
@@ -878,6 +877,9 @@ export function StudioShell({
   onResetComplete,
 }: StudioShellProps) {
   const studioApi = useStudioApi();
+  // One Export intent per shell: a retry after a lost response reuses its key until the API accepts.
+  const exportRuntime = studioApi?.runtime;
+  const exportIntent = useMemo(() => exportRuntime?.createIntent<StudioExportInput>() ?? null, [exportRuntime]);
   const { getToken } = useAuth();
   const getTokenRef = useRef(getToken);
   getTokenRef.current = getToken;
@@ -1935,23 +1937,16 @@ export function StudioShell({
         throw new Error("save failed before export");
       }
       const api = requireStudioApi(studioApi);
+      if (!exportIntent) throw new Error("Select a Workspace to continue.");
       let created: { export: { id: string } };
       try {
-        const response = await createExportsClient(
-          api.runtime.transport.scoped(api.scope),
-        ).projects[":id"].clips[":clipId"].exports.$post(
-          {
-            param: { id: clipInfo.projectId, clipId: clipInfo.id },
-            json: {
-              expectedRevision: prepared.revision,
-              aspectRatios: options.aspectRatios,
-              resolution: options.resolution,
-            },
-          },
-          // One key per Export click, held through the request: a replay returns the same export.
-          { headers: { "Idempotency-Key": crypto.randomUUID() } },
-        );
-        created = (await response.json()) as { export: { id: string } };
+        created = await createStudioExport(api, exportIntent, {
+          projectId: clipInfo.projectId,
+          clipId: clipInfo.id,
+          expectedRevision: prepared.revision,
+          aspectRatios: options.aspectRatios,
+          resolution: options.resolution,
+        });
       } catch (failure) {
         const body = apiFailureBody(failure);
         if (apiFailureStatus(failure) === 409 && body.error !== "workspace_selection_changed") {
@@ -1993,6 +1988,7 @@ export function StudioShell({
     compositionPlanStatus,
     studioSession,
     studioApi,
+    exportIntent,
     clipInfo.projectId,
     clipInfo.id,
     router,

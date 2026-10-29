@@ -36,8 +36,13 @@ import { transcriptHighlight, type TranscriptHighlight } from "./transcript-high
 import { StudioLockGem } from "./studio-lock-gem";
 import { useUpgrade, type UpgradePrompt } from "@/app/(app)/_components/upgrade";
 import { ApiError } from "@narriflow/api-client/core";
-import { createClipsClient, invalidateAfterClipChange } from "@narriflow/api-client/clips";
-import { apiFailureBody, requireStudioApi } from "./studio-api";
+import { invalidateAfterClipChange } from "@narriflow/api-client/clips";
+import {
+  apiFailureBody,
+  createClipFromStudioSelection,
+  requireStudioApi,
+  type StudioSelectionClipInput,
+} from "./studio-api";
 import { useStudioApi } from "./use-studio-api";
 
 // ─── Pause threshold (seconds) ──────────────────────────────────────────────
@@ -952,6 +957,12 @@ export function TranscriptPanel() {
   const { openUpgrade } = useUpgrade();
   const router = useRouter();
   const studioApi = useStudioApi();
+  const studioRuntime = studioApi?.runtime;
+  // One intent for "Create clip": pressing it again over the same selection after a lost response reuses its key.
+  const selectionClipIntent = useMemo(
+    () => studioRuntime?.createIntent<StudioSelectionClipInput>() ?? null,
+    [studioRuntime],
+  );
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const manualScrollRef = useRef(false);
@@ -1230,15 +1241,15 @@ export function TranscriptPanel() {
     setCreatingClip(true);
     try {
       const api = requireStudioApi(studioApi);
+      if (!selectionClipIntent) throw new Error("Select a Workspace to continue.");
       let payload: unknown;
       try {
-        const response = await createClipsClient(api.runtime.transport.scoped(api.scope)).projects[":id"].clips[
-          ":clipId"
-        ]["create-from-selection"].$post({
-          param: { id: clipInfo.projectId, clipId: clipInfo.id },
-          json: { startSec: range.startSec, endSec: range.endSec },
+        payload = await createClipFromStudioSelection(api, selectionClipIntent, {
+          projectId: clipInfo.projectId,
+          clipId: clipInfo.id,
+          startSec: range.startSec,
+          endSec: range.endSec,
         });
-        payload = await response.json();
       } catch (failure) {
         if (!(failure instanceof ApiError) || failure.status === 0) throw failure;
         toaster.create({
@@ -1273,7 +1284,7 @@ export function TranscriptPanel() {
       creatingClipRef.current = false;
       setCreatingClip(false);
     }
-  }, [clipInfo.projectId, clipInfo.id, dismissSelection, router, studioApi]);
+  }, [clipInfo.projectId, clipInfo.id, dismissSelection, router, studioApi, selectionClipIntent]);
 
   // ⌫ deletes the transcript selection, and ⇧⌘C (⇧Ctrl+C on Windows/Linux)
   // creates a clip from it, ONLY when a selection is active — otherwise

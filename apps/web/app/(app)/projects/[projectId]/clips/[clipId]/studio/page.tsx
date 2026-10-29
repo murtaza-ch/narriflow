@@ -10,13 +10,13 @@ import { buildSegmentsFromUtterances } from "./_components/edited-timeline";
 import { resolveCompositionPlanQaFixture } from "./_components/composition-plan-qa-fixture";
 import { StudioShell } from "./_components/studio-shell";
 import {
-  apiFailureBody,
-  apiFailureStatus,
   recordCensorEvent,
   replaceProjectCensorTerms,
   type StudioApi,
+  studioBootstrapFailure,
   studioPollers,
   studioQueries,
+  withLiveClipTitle,
 } from "./_components/studio-api";
 import { studioUpgradePrompts } from "./_components/studio-upgrade";
 import { useStudioApi } from "./_components/use-studio-api";
@@ -48,26 +48,6 @@ export default function StudioPage({
       qaCompositionPlan={query.qaCompositionPlan}
     />
   );
-}
-
-const MISSING_CODES: ReadonlySet<string> = new Set(["project_not_found", "clip_not_found"]);
-
-/** The page-level recovery the old server admission performed, driven by the stable error code. */
-function recoveryDestination(error: unknown, projectId: string): string | null {
-  const body = apiFailureBody(error);
-  if (body.error === "active_workspace_mismatch") {
-    const workspaceId = String(body.details?.workspaceId ?? "");
-    const workspaceName = String(body.details?.workspaceName ?? "Workspace");
-    const returnTo = `/projects/${projectId}`;
-    return `/projects?requestFailure=active_workspace_mismatch&workspaceId=${encodeURIComponent(workspaceId)}&workspaceName=${encodeURIComponent(workspaceName)}&returnTo=${encodeURIComponent(returnTo)}`;
-  }
-  if (body.error === "workspace_restricted") {
-    // A paused workspace: the owner goes to billing; other members go to a page
-    // outside the app shell, because /home would refuse them again.
-    const destination = body.details?.ownerCanResolve === true ? "/settings/billing" : "/workspace-unavailable";
-    return `${destination}?requestFailure=workspace_restricted&requestId=${encodeURIComponent(body.requestId ?? "")}`;
-  }
-  return null;
 }
 
 function StudioData({
@@ -112,18 +92,24 @@ function StudioData({
   }, [api, queries, target]);
 
   const error = bootstrap.error;
-  const redirectTo = error ? recoveryDestination(error, projectId) : null;
+  const failure = error ? studioBootstrapFailure(error, projectId) : null;
+  const redirectTo = failure?.kind === "redirect" ? failure.to : null;
   useEffect(() => {
     if (redirectTo) router.replace(redirectTo);
   }, [redirectTo, router]);
 
   const seed = seedRef.current;
+  const seedClipInfo = seed?.clipInfo;
+  const latestClipInfo = bootstrap.data?.clipInfo;
+  const clipInfo = useMemo(
+    () => (seedClipInfo ? withLiveClipTitle(seedClipInfo, latestClipInfo) : undefined),
+    [seedClipInfo, latestClipInfo],
+  );
   if (error && !seed) {
-    const body = apiFailureBody(error);
-    if (apiFailureStatus(error) === 404 || (body.error && MISSING_CODES.has(body.error))) notFound();
+    if (failure?.kind === "missing") notFound();
     if (!redirectTo) throw error;
   }
-  if (!seed) return <StudioLoading />;
+  if (!seed || !clipInfo) return <StudioLoading />;
 
   const { plan } = seed;
   const upgradePrompts = studioUpgradePrompts(plan.pricingTier, plan.scenesRequirement);
@@ -146,7 +132,7 @@ function StudioData({
     >
       <StudioShell
         key={generation}
-        clipInfo={seed.clipInfo}
+        clipInfo={clipInfo}
         timelineSegments={buildSegmentsFromUtterances(
           seed.utterances,
           seed.clipInfo.startSec,
