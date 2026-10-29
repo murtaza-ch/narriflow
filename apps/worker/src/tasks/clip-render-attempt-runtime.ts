@@ -436,7 +436,8 @@ function createRuntimeAdapters(
 	 * duplicated this exact extraction. Re-encodes (never `-c copy`: a stream
 	 * copy snaps to the previous keyframe and would shift every face sample by
 	 * up to a GOP). Returns the ORIGINAL `sourcePath`/`clipStartSec` unchanged
-	 * for a local/non-HTTP source (no extraction needed), or null on any
+	 * for a local/non-HTTP source (no extraction needed, unless `orientedSource`
+	 * says the display matrix must be baked in by FFmpeg first), or null on any
 	 * extraction failure — callers already fall back to a static/center crop.
 	 * `suffix` keeps the two call sites' temp files from colliding when both run
 	 * for the same clip (split falling back to auto-reframe within one render).
@@ -449,8 +450,9 @@ function createRuntimeAdapters(
 		clipStartSec: number;
 		durationSec: number;
 		suffix?: string;
+		orientedSource?: boolean;
 	}): Promise<{ path: string; startSec: number } | null> {
-		if (!isHttpSource(params.sourcePath)) {
+		if (!isHttpSource(params.sourcePath) && !params.orientedSource) {
 			return { path: params.sourcePath, startSec: params.clipStartSec };
 		}
 		const segmentPath = join(

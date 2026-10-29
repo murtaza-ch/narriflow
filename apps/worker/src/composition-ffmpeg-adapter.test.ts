@@ -1675,7 +1675,7 @@ describe("composition FFmpeg adapter", () => {
 			}),
 		).toEqual({
 			filterParts: [
-				"[0:v]crop=608:1080:656:0,scale=1080:1920,format=yuv420p[outv]",
+				"[0:v]crop=608:1080:656:0,scale=1080:1920,setsar=1,format=yuv420p[outv]",
 			],
 			backgroundImageInputRequired: false,
 			brollInputs: [],
@@ -1817,7 +1817,7 @@ describe("composition FFmpeg adapter", () => {
 			sceneInputs: [],
 			filterParts: [
 				"[1:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,fps=30[composition_bg]",
-				"[0:v]crop=1920:1080:0:0,scale=1080:608[composition_source]",
+				"[0:v]crop=1920:1080:0:0,scale=1080:608,setsar=1[composition_source]",
 				"[composition_bg][composition_source]overlay=0:656,format=yuv420p[outv]",
 			],
 		});
@@ -1826,7 +1826,7 @@ describe("composition FFmpeg adapter", () => {
 			brollInputs: [],
 			sceneInputs: [],
 			filterParts: [
-				"[0:v]crop=1920:1080:0:0,scale=1080:608,pad=1080:1920:0:656:color=0x123456,format=yuv420p[outv]",
+				"[0:v]crop=1920:1080:0:0,scale=1080:608,setsar=1,pad=1080:1920:0:656:color=0x123456,format=yuv420p[outv]",
 			],
 		});
 	});

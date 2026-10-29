@@ -55,6 +55,7 @@ import {
   compileCompositionPlanAudioSchedule,
   compileCompositionPlanCaptions,
 } from "../src/composition-ffmpeg-adapter";
+import { compositionSourceFor } from "../src/tasks/clip-render-attempt";
 import { productionWorkerProcessModule, type WorkerMediaInspection } from "../src/worker-process";
 import {
   collectRuntimeFingerprint,
@@ -128,7 +129,9 @@ export interface KnownDefect {
 
 export interface Activation {
   ticket: string;
-  cases: Record<string, { contract: Assertion[]; retain?: string[] }>;
+  /** `change: "output-sar"` marks a normal case whose only allowed difference
+   * is the appended `,setsar=1` and the SAR/DAR tags (with the extradata size of the SPS that carries them) becoming 1:1. */
+  cases: Record<string, { contract: Assertion[]; retain?: string[]; change?: "output-sar" }>;
 }
 
 export interface Inputs {
@@ -297,12 +300,17 @@ export function suiteCaseIds(inputs: Inputs, suite: string, only?: string[]): st
   return selected;
 }
 
-function activationFor(inputs: Inputs, caseId: string): { ticket: string; contract: Assertion[]; retain: string[] } | null {
+function activationFor(inputs: Inputs, caseId: string): { ticket: string; contract: Assertion[]; retain: string[]; change?: "output-sar" } | null {
   for (const activation of Object.values(inputs.activations)) {
     const entry = activation.cases[caseId];
-    if (entry) return { ticket: activation.ticket, contract: entry.contract, retain: entry.retain ?? [] };
+    if (entry && entry.contract.length > 0) return { ticket: activation.ticket, contract: entry.contract, retain: entry.retain ?? [], change: entry.change };
   }
   return null;
+}
+
+/** A case may carry the approved SAR-declaration change with or without a corrected contract. */
+function allowsOutputSar(inputs: Inputs, caseId: string): boolean {
+  return Object.values(inputs.activations).some((activation) => activation.cases[caseId]?.change === "output-sar");
 }
 
 // ---------------------------------------------------------------------------
@@ -489,10 +497,11 @@ async function planCase(context: CaseContext, id: string, definition: CaseDefini
   const sourceIdentity = `golden:${definition.source}`;
   const cutPlan = buildClipCutPlan(document.deletedRanges, { startSec: document.clipStartSec, endSec: document.clipEndSec });
   const hasVideo = inspection.hasVideo;
+  const plannerSource = compositionSourceFor(inspection, sourceIdentity);
   const evidence = hasVideo
     ? buildEvidence(context.inputs.evidence, definition.evidence, {
         sourceIdentity, clipStartSec: document.clipStartSec, clipEndSec: document.clipEndSec, deletedRanges: document.deletedRanges,
-        editedDurationSec: cutPlan.isUncut ? document.clipEndSec - document.clipStartSec : cutPlan.editedDurationSec, width: inspection.width, height: inspection.height,
+        editedDurationSec: cutPlan.isUncut ? document.clipEndSec - document.clipStartSec : cutPlan.editedDurationSec, width: plannerSource.width, height: plannerSource.height,
       })
     : { automaticLayout: { state: "missing" as const } };
 
@@ -570,7 +579,7 @@ async function planCase(context: CaseContext, id: string, definition: CaseDefini
 
   const result = planClipComposition({
     document,
-    source: { identity: sourceIdentity, kind: hasVideo ? "video" : "audio", width: hasVideo ? inspection.width : 0, height: hasVideo ? inspection.height : 0, hasAudio: inspection.hasAudio },
+    source: plannerSource,
     evidence: evidence as any,
     assets: {
       backgroundImage: backgroundImage as any,
@@ -1193,7 +1202,57 @@ function matchesInspectionBaseline(base: unknown, candidate: unknown): boolean {
   return canonicalJson(base) === canonicalJson(candidate);
 }
 
-export function compareCase(base: CaseRecord, cand: CaseRecord, retain: string[] | null = null, signatureOnly = false): Mismatch[] {
+const SETSAR = ",setsar=1";
+const countOf = (text: string, part: string) => text.split(part).length - 1;
+const withoutSetsar = (text: string) => text.split(SETSAR).join("");
+const neutralFilterIndex = (text: string) => text.replace(/(Parsed_\w+?_)\d+/g, "$1N");
+
+/** The one approved normal-case change: each output declares SAR 1:1. Allows
+ * only the appended `,setsar=1` (argv, graph, and the filter instance numbers
+ * it shifts in diagnostics) and the SAR/DAR tags becoming 1:1. Frames, PTS,
+ * PCM, loudness and decode keep their exact comparison. */
+function allowOutputSar(base: CaseRecord, cand: CaseRecord): { base: CaseRecord; cand: CaseRecord; problems: Mismatch[] } {
+  const problems: Mismatch[] = [];
+  const adjust = (target: TargetRecord, side: "base" | "cand"): TargetRecord => {
+    const copy = structuredClone(target);
+    const argv = copy.command.argv.map(withoutSetsar);
+    copy.command = { ...copy.command, argv, argvSha256: sha256(canonicalJson(argv)), filterGraph: copy.command.filterGraph === null ? null : withoutSetsar(copy.command.filterGraph) };
+    copy.command.filterGraphSha256 = copy.command.filterGraph === null ? null : sha256(copy.command.filterGraph);
+    copy.encode = { ...copy.encode, diagnostics: copy.encode.diagnostics.map(neutralFilterIndex) } as typeof copy.encode;
+    for (const stream of copy.output?.ffprobe.streams ?? []) {
+      if (stream.codec_type !== "video") continue;
+      if (side === "cand" && (stream.sample_aspect_ratio !== "1:1" || (stream.display_aspect_ratio !== undefined && stream.display_aspect_ratio !== `${stream.width / gcd(stream.width, stream.height)}:${stream.height / gcd(stream.width, stream.height)}`))) {
+        problems.push({ case: base.id, target: target.targetId, category: "sar", detail: `output SAR ${stream.sample_aspect_ratio} DAR ${stream.display_aspect_ratio} is not square-pixel` });
+      }
+      delete stream.sample_aspect_ratio;
+      delete stream.display_aspect_ratio;
+      // The SAR lives in the SPS VUI, so its tag changes the codec extradata size.
+      delete stream.extradata_size;
+    }
+    return copy;
+  };
+  base.targets.forEach((target, index) => {
+    const candTarget = cand.targets[index];
+    if (!candTarget) return;
+    const added = countOf(candTarget.command.argv.join("\0"), SETSAR) - countOf(target.command.argv.join("\0"), SETSAR);
+    if (added < 0) problems.push({ case: base.id, target: target.targetId, category: "argv", detail: "candidate removed an existing setsar=1" });
+  });
+  return {
+    base: { ...base, targets: base.targets.map((target) => adjust(target, "base")) },
+    cand: { ...cand, targets: cand.targets.map((target) => adjust(target, "cand")) },
+    problems,
+  };
+}
+
+function gcd(a: number, b: number): number {
+  return b === 0 ? a : gcd(b, a % b);
+}
+
+export function compareCase(base: CaseRecord, cand: CaseRecord, retain: string[] | null = null, signatureOnly = false, outputSar = false): Mismatch[] {
+  if (outputSar) {
+    const allowed = allowOutputSar(base, cand);
+    return [...compareCase(allowed.base, allowed.cand, retain, signatureOnly), ...allowed.problems];
+  }
   const out: Mismatch[] = [];
   if (signatureOnly) {
     if (canonicalJson(failureSignature(base)) !== canonicalJson(failureSignature(cand))) out.push({ case: base.id, category: "status", detail: `${canonicalJson(failureSignature(base))} -> ${canonicalJson(failureSignature(cand))}` });
@@ -1328,19 +1387,20 @@ export function buildReport(input: { inputs: Inputs; baseline: CaptureFile; cand
       continue;
     }
     const activation = activationFor(inputs, id);
+    const outputSar = allowsOutputSar(inputs, id);
     const assertions = (cand.defects?.results ?? []).map((result) => ({ targetId: result.targetId, id: result.assertionId, pass: result.pass, actual: result.actual }));
     let mismatches: Mismatch[];
     let verdict: CaseVerdict["verdict"];
     if (cand.class === "normal") {
-      mismatches = compareCase(base, cand);
+      mismatches = compareCase(base, cand, null, false, outputSar);
       verdict = mismatches.length === 0 ? "pass" : "fail";
     } else if (activation) {
-      mismatches = compareCase(base, cand, activation.retain);
+      mismatches = compareCase(base, cand, activation.retain, false, outputSar);
       const failed = assertions.filter((entry) => !entry.pass);
       for (const entry of failed) mismatches.push({ case: id, target: entry.targetId, category: "contract", detail: `corrected contract ${entry.id} not met (actual ${canonicalJson(entry.actual)}) [ticket ${activation.ticket}]` });
       verdict = mismatches.length === 0 ? "activated-pass" : "activated-fail";
     } else {
-      mismatches = compareCase(base, cand, null, definition.compare === "signature");
+      mismatches = compareCase(base, cand, null, definition.compare === "signature", outputSar);
       const anyFailing = assertions.some((entry) => !entry.pass);
       if (inputs.knownDefects[id]?.expect === "pass") {
         for (const entry of assertions.filter((assertion) => !assertion.pass)) mismatches.push({ case: id, target: entry.targetId, category: "contract", detail: `regression guard ${entry.id} broke (actual ${canonicalJson(entry.actual)}); this fixture is already rendered correctly` });

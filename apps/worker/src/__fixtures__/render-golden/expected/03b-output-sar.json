@@ -1,0 +1,121 @@
+{
+  "ticket": "03",
+  "cases": {
+    "rtl-arabic-captions": {
+      "contract": [],
+      "change": "output-sar"
+    },
+    "cjk-dense-captions": {
+      "contract": [],
+      "change": "output-sar"
+    },
+    "logo-broll-music-sfx-censor": {
+      "contract": [],
+      "change": "output-sar"
+    },
+    "exact-source-end": {
+      "contract": [],
+      "change": "output-sar"
+    },
+    "treatments-720p-watermark-1080p": {
+      "contract": [],
+      "change": "output-sar"
+    },
+    "image-background-fit": {
+      "contract": [],
+      "change": "output-sar"
+    },
+    "mono-44k": {
+      "contract": [],
+      "change": "output-sar"
+    },
+    "silent-video": {
+      "contract": [],
+      "change": "output-sar"
+    },
+    "ntsc-24000-1001": {
+      "contract": [],
+      "change": "output-sar"
+    },
+    "ntsc-30000-1001": {
+      "contract": [],
+      "change": "output-sar"
+    },
+    "text-layers-transition": {
+      "contract": [],
+      "change": "output-sar"
+    },
+    "rot180": {
+      "contract": [],
+      "change": "output-sar"
+    },
+    "mirror-h": {
+      "contract": [],
+      "change": "output-sar"
+    },
+    "audio-late-start": {
+      "contract": [],
+      "change": "output-sar"
+    },
+    "audio-short": {
+      "contract": [],
+      "change": "output-sar"
+    },
+    "hdr-pq": {
+      "contract": [],
+      "change": "output-sar"
+    },
+    "hdr-hlg": {
+      "contract": [],
+      "change": "output-sar"
+    },
+    "hot-mix": {
+      "contract": [],
+      "change": "output-sar"
+    },
+    "emoji-sequences": {
+      "contract": [],
+      "change": "output-sar"
+    },
+    "missing-glyph": {
+      "contract": [],
+      "change": "output-sar"
+    },
+    "seek-past-source-end": {
+      "contract": [],
+      "change": "output-sar"
+    },
+    "odd-321x181": {
+      "contract": [
+        {
+          "id": "renders",
+          "metric": "render.ok",
+          "op": "eq",
+          "value": true
+        },
+        {
+          "id": "canvas",
+          "metric": "output.dimensions",
+          "op": "eq",
+          "value": "1080x1920"
+        },
+        {
+          "id": "square-pixels",
+          "metric": "output.sar",
+          "op": "eq",
+          "value": "1:1"
+        }
+      ],
+      "retain": [
+        "plan",
+        "crop",
+        "cue",
+        "layer",
+        "captions",
+        "argv",
+        "output"
+      ],
+      "change": "output-sar"
+    }
+  }
+}

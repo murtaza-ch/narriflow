@@ -9,6 +9,7 @@ import {
 import type { CompositionCaptionVisualLayer } from "@narriflow/composition-plan";
 import {
 	HTTP_SOURCE_RW_TIMEOUT_US,
+	resolveDisplayGeometry,
 	type WorkerMediaInspection,
 } from "./worker-process";
 import { buildDuckingVolumeExpression } from "./tasks/ducking";
@@ -1224,6 +1225,35 @@ function compileInsertedSceneSequence(input: {
 	return { filterParts: parts, sceneInputs };
 }
 
+/** FFmpeg autorotation has already applied the display matrix when the source
+ *  is decoded, so the planner works in display orientation. A non-square pixel
+ *  aspect is the one correction left for the graph: scale to the planned square
+ *  pixel size and declare SAR 1:1 before any crop. Ordinary sources add
+ *  nothing. */
+function displaySourceStage(
+	probe: WorkerMediaInspection,
+	plan: ClipCompositionPlan,
+	label: string,
+): { label: string; filterParts: string[] } {
+	const unchanged = { label, filterParts: [] };
+	if (!probe.hasVideo) return unchanged;
+	const geometry = resolveDisplayGeometry(probe);
+	if (!geometry.oriented && !geometry.anamorphic) return unchanged;
+	if (plan.source.width !== geometry.width || plan.source.height !== geometry.height) {
+		throw new CompositionCommandFailure(
+			"clip_composition_source_geometry_mismatch",
+			`The plan was made for ${plan.source.width}x${plan.source.height} but the displayed source is ${geometry.width}x${geometry.height}`,
+			"permanent",
+		);
+	}
+	if (!geometry.anamorphic) return unchanged;
+	const output = "[composition_display_source]";
+	return {
+		label: output,
+		filterParts: [`${label}scale=${geometry.width}:${geometry.height},setsar=1${output}`],
+	};
+}
+
 export function compileCompositionPlanVideo(input: {
 	plan: ClipCompositionPlan;
 	targetId: string;
@@ -1741,7 +1771,8 @@ export function compileCompositionPlanVideo(input: {
 		);
 		const sourceChain =
 			`${input.videoInputLabel}crop=${crop.width}:${crop.height}:${crop.x}:${crop.y},` +
-			`scale=${sourceLayer.destination.width}:${sourceLayer.destination.height}`;
+			`scale=${sourceLayer.destination.width}:${sourceLayer.destination.height}` +
+			",setsar=1";
 		if (backgroundLayer.imageRef) {
 			if (input.backgroundImageInputIndex == null) {
 				throw new Error("clip_composition_background_input_missing");
@@ -1791,7 +1822,8 @@ export function compileCompositionPlanVideo(input: {
 	return finalize({
 		filterParts: [
 			`${input.videoInputLabel}crop=${crop.width}:${crop.height}:${crop.x}:${crop.y},` +
-				`scale=${target.canvas.width}:${target.canvas.height},format=yuv420p${baseSuffix}${baseOutputLabel}`,
+				`scale=${target.canvas.width}:${target.canvas.height},setsar=1,` +
+				`format=yuv420p${baseSuffix}${baseOutputLabel}`,
 		],
 		backgroundImageInputRequired: false,
 	});
@@ -2419,7 +2451,12 @@ function buildSingleVideoArgs(params: {
 				includeAudio: params.probe.hasAudio,
 			})
 		: null;
-	const videoInputLabel = cutConcat ? cutConcat.videoLabel! : "[0:v]";
+	const sourceVideo = displaySourceStage(
+		params.probe,
+		params.composition.plan,
+		cutConcat ? cutConcat.videoLabel! : "[0:v]",
+	);
+	const videoInputLabel = sourceVideo.label;
 	const audioInputLabel = cutConcat
 		? cutConcat.audioLabel
 		: params.probe.hasAudio
@@ -2469,7 +2506,10 @@ function buildSingleVideoArgs(params: {
 	const musicInputIndex = params.audio.music ? nextInputIndex++ : null;
 	const sfxInputIndexes = params.audio.soundEffects.map(() => nextInputIndex++);
 
-	const filterParts: string[] = cutConcat ? [...cutConcat.filterParts] : [];
+	const filterParts: string[] = [
+		...(cutConcat ? cutConcat.filterParts : []),
+		...sourceVideo.filterParts,
+	];
 
 	const compiled = compileCompositionPlanVideo({
 		plan: params.composition.plan,
@@ -2707,14 +2747,22 @@ function buildBrollVideoArgs(params: {
 				includeAudio: params.probe.hasAudio,
 			})
 		: null;
-	const videoInputLabel = cutConcat ? cutConcat.videoLabel! : "[0:v]";
+	const sourceVideo = displaySourceStage(
+		params.probe,
+		params.composition.plan,
+		cutConcat ? cutConcat.videoLabel! : "[0:v]",
+	);
+	const videoInputLabel = sourceVideo.label;
 	const audioInputLabel = cutConcat
 		? cutConcat.audioLabel
 		: params.probe.hasAudio
 			? "[0:a:0]"
 			: null;
 
-	const parts: string[] = cutConcat ? [...cutConcat.filterParts] : [];
+	const parts: string[] = [
+		...(cutConcat ? cutConcat.filterParts : []),
+		...sourceVideo.filterParts,
+	];
 	// One input per planned placement, so a reused asset takes two slots and
 	// resolved assets outside the plan take none.
 	const cutawayCount = plannedCompositionBrollPlacements(

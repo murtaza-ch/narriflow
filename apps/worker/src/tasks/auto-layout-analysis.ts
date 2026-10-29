@@ -5,7 +5,7 @@ import { CLIP_AUTO_LAYOUT_ENGINE, type ClipAutoLayoutAnalysis } from "@narriflow
 import { LayoutEvidence, type LayoutEvidenceDependencies } from "../layout-evidence";
 import { createLayoutEvidenceDetectors } from "../layout-evidence-runtime";
 import { parseWorkerRenderConfig, type RenderConfig } from "../render-config";
-import { productionWorkerProcessModule, type WorkerProcessModule } from "../worker-process";
+import { productionWorkerProcessModule, resolveDisplayGeometry, type WorkerProcessModule } from "../worker-process";
 
 function log(level: "info" | "warn" | "error", message: string, context?: Record<string, unknown>): void {
   console.warn(JSON.stringify({ level, message, ...context }));
@@ -29,10 +29,13 @@ export async function analyzeClipAutoLayout(params: {
   signal.throwIfAborted();
   const original = await workerProcess.inspectMedia({ sourcePath: params.originalSourcePath, signal, deadlineMs: config.probeCommandTimeoutMs });
   signal.throwIfAborted();
-  if (original.hasVideo && (original.width <= 0 || original.height <= 0)) throw new Error("original source dimensions unavailable");
   const sourceIdentity = compositionAssetRef("source", clip.projectId);
+  // Detector coordinates come from the autorotated proxy, so the analysis is
+  // recorded against display-oriented, square-pixel source dimensions.
+  const display = original.hasVideo ? resolveDisplayGeometry(original) : { width: 0, height: 0 };
+  if (original.hasVideo && (display.width <= 0 || display.height <= 0)) throw new Error("original source dimensions unavailable");
   const owner = new LayoutEvidence({
-    source: { identity: sourceIdentity, hasVideo: original.hasVideo, width: original.width || 1, height: original.height || 1 },
+    source: { identity: sourceIdentity, hasVideo: original.hasVideo, width: display.width || 1, height: display.height || 1 },
     clip: { id: clip.id, startSec: clip.startSec, endSec: clip.endSec, deletedRanges: clip.deletedRanges, utterances: clip.transcriptSlice, editorRevision: clip.editorRevision, previewStorageKey: clip.previewStorageKey },
     durable: {}, enabled: { automatic: true, screen: false, split: false }, hasBroll: false, pipMotionThreshold: config.pipMotionThreshold, signal,
     sceneSource: { path: params.originalSourcePath, startSec: clip.startSec },

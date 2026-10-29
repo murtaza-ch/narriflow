@@ -579,6 +579,30 @@ describe("composition preview adapter", () => {
     ).toEqual({ width: 960, height: 540 });
   });
 
+  test("ignores durable evidence recorded in a different orientation or pixel aspect", () => {
+    const proxy = { width: 540, height: 960 };
+    // Coded landscape dimensions of a rotated source.
+    expect(
+      plannedCompositionSourceDimensions(proxy, {
+        sourceWidth: 1920,
+        sourceHeight: 1080,
+      }),
+    ).toEqual(proxy);
+    // Anamorphic coded dimensions against a square-pixel proxy.
+    expect(
+      plannedCompositionSourceDimensions(
+        { width: 960, height: 270 },
+        { sourceWidth: 1440, sourceHeight: 1080 },
+      ),
+    ).toEqual({ width: 960, height: 270 });
+    expect(
+      plannedCompositionSourceDimensions(proxy, {
+        sourceWidth: 1080,
+        sourceHeight: 1920,
+      }),
+    ).toEqual({ width: 1080, height: 1920 });
+  });
+
   test("adopts exact planned geometry at the final edited frame without changing media identity", () => {
     const adopted = adoptCompositionPreview(centerPlan(), "9:16", 6);
 

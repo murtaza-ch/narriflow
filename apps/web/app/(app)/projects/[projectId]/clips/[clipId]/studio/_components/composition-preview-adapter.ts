@@ -382,11 +382,22 @@ export function compositionInvalidText(code: string): string {
   return "This composition is invalid for the selected format. Choose another format or adjust the layout before exporting.";
 }
 
+/** Durable evidence carries the original's full-resolution dimensions. The
+ * browser proxy is already display-oriented with square pixels, so evidence
+ * recorded in another orientation or pixel aspect (coded rotated or anamorphic
+ * dimensions) is not used to plan; the proxy's own dimensions are. */
+const DURABLE_ASPECT_TOLERANCE = 0.01;
+
 export function plannedCompositionSourceDimensions(
   proxy: { width: number; height: number },
   durable: { sourceWidth: number; sourceHeight: number } | null,
 ): { width: number; height: number } {
-  return durable
+  if (!durable || durable.sourceWidth <= 0 || durable.sourceHeight <= 0) {
+    return proxy;
+  }
+  const aspectRatio =
+    durable.sourceWidth / durable.sourceHeight / (proxy.width / proxy.height);
+  return Math.abs(aspectRatio - 1) <= DURABLE_ASPECT_TOLERANCE
     ? { width: durable.sourceWidth, height: durable.sourceHeight }
     : proxy;
 }

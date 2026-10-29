@@ -1,0 +1,104 @@
+{
+  "ticket": "03",
+  "cases": {
+    "rot90": {
+      "contract": [
+        {
+          "id": "renders",
+          "metric": "render.ok",
+          "op": "eq",
+          "value": true
+        },
+        {
+          "id": "subject-orientation",
+          "metric": "video.quadrants",
+          "op": "eq",
+          "value": {
+            "ref": "expected.quadrants"
+          }
+        }
+      ],
+      "retain": [
+        "cue",
+        "layer",
+        "captions"
+      ]
+    },
+    "rot270": {
+      "contract": [
+        {
+          "id": "renders",
+          "metric": "render.ok",
+          "op": "eq",
+          "value": true
+        },
+        {
+          "id": "subject-orientation",
+          "metric": "video.quadrants",
+          "op": "eq",
+          "value": {
+            "ref": "expected.quadrants"
+          }
+        }
+      ],
+      "retain": [
+        "cue",
+        "layer",
+        "captions"
+      ]
+    },
+    "rot90-mirror": {
+      "contract": [
+        {
+          "id": "renders",
+          "metric": "render.ok",
+          "op": "eq",
+          "value": true
+        },
+        {
+          "id": "subject-orientation",
+          "metric": "video.quadrants",
+          "op": "eq",
+          "value": {
+            "ref": "expected.quadrants"
+          }
+        }
+      ],
+      "retain": [
+        "cue",
+        "layer",
+        "captions"
+      ]
+    },
+    "sar-2x1": {
+      "contract": [
+        {
+          "id": "renders",
+          "metric": "render.ok",
+          "op": "eq",
+          "value": true
+        },
+        {
+          "id": "square-pixels",
+          "metric": "output.sar",
+          "op": "eq",
+          "value": "1:1"
+        },
+        {
+          "id": "round-circle",
+          "metric": "video.circleDisplayAspect",
+          "op": "between",
+          "value": [
+            0.95,
+            1.05
+          ]
+        }
+      ],
+      "retain": [
+        "cue",
+        "layer",
+        "captions"
+      ]
+    }
+  }
+}

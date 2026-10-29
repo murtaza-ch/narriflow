@@ -73,6 +73,7 @@ import {
 	clipRenderAttemptStorageKey,
 } from "../render-object-key";
 import {
+	resolveDisplayGeometry,
 	type WorkerMediaInspection,
 	type WorkerProcessDiagnostic,
 	type WorkerProcessModule,
@@ -327,6 +328,9 @@ export interface ClipRenderAttemptAdapters {
 			clipStartSec: number;
 			durationSec: number;
 			suffix?: string;
+			/** The source's display matrix rotates or reflects the frame. Detectors
+			 *  must read the autorotated segment, never the original. */
+			orientedSource?: boolean;
 		}): Promise<{ path: string; startSec: number } | null>;
 	};
 	storage: {
@@ -386,6 +390,28 @@ export interface ClipRenderAttemptDependencies {
 }
 
 type SourceProbe = WorkerMediaInspection;
+
+type CompositionPlannerSource = Parameters<
+	typeof planClipComposition
+>[0]["source"];
+
+/** The one derivation of the planner's source facts from a media inspection.
+ *  Production rendering and the golden parity harness both call it. */
+export function compositionSourceFor(
+	probe: SourceProbe,
+	identity: string,
+): CompositionPlannerSource {
+	// Display-oriented, square-pixel dimensions: the coordinate system FFmpeg's
+	// decoded frame and the compiler's crops share.
+	const display = probe.hasVideo ? resolveDisplayGeometry(probe) : null;
+	return {
+		identity,
+		kind: probe.hasVideo ? "video" : "audio",
+		width: display?.width ?? 0,
+		height: display?.height ?? 0,
+		hasAudio: probe.hasAudio,
+	};
+}
 
 interface PendingRenderOutput {
 	clipRenderId: string;
@@ -1989,6 +2015,9 @@ async function renderClipGroup(input: {
 				workflowRunId: run.id,
 				clipStartSec,
 				durationSec: effective.durationSec,
+				...(resolveDisplayGeometry(probe).oriented
+					? { orientedSource: true }
+					: {}),
 			});
 		if (segment && segment.path !== sourcePath)
 			compositionResources.extractedSegmentCount += 1;
@@ -2390,6 +2419,7 @@ async function renderClipGroup(input: {
 		"source",
 		run.projectId,
 	);
+	const plannerSource = compositionSourceFor(probe, compositionSourceIdentity);
 	const compositionDocument: EditorDocument = {
 		...editorDocument,
 		clipStartSec,
@@ -2601,8 +2631,8 @@ async function renderClipGroup(input: {
 			source: {
 				identity: compositionSourceIdentity,
 				hasVideo: probe.hasVideo,
-				width: probe.width || 1,
-				height: probe.height || 1,
+				width: plannerSource.width || 1,
+				height: plannerSource.height || 1,
 			},
 			clip: {
 				id: clip.id,
@@ -2694,8 +2724,8 @@ async function renderClipGroup(input: {
 				source: {
 					identity: compositionSourceIdentity,
 					kind: "video",
-					width: probe.width,
-					height: probe.height,
+					width: plannerSource.width,
+					height: plannerSource.height,
 				},
 				evidence: layoutEvidence.availability,
 				assets: {
@@ -2935,13 +2965,7 @@ async function renderClipGroup(input: {
 				availability.soundEffects ?? sfxPlans.length > 0;
 			return planClipComposition({
 				document: compositionDocument,
-				source: {
-					identity: compositionSourceIdentity,
-					kind: probe.hasVideo ? "video" : "audio",
-					width: probe.hasVideo ? probe.width : 0,
-					height: probe.hasVideo ? probe.height : 0,
-					hasAudio: probe.hasAudio,
-				},
+				source: plannerSource,
 				evidence: {
 					automaticLayout: automaticLayoutAnalysisForPlan
 						? {

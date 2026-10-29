@@ -43,7 +43,7 @@ import {
 import type { ClipPreviewPeaks } from "@narriflow/services";
 import { DEFAULT_CAPTION_PRESET } from "@narriflow/validators";
 import type { CaptionPreset } from "@narriflow/validators";
-import { productionWorkerProcessModule, type WorkerProcessModule } from "../worker-process";
+import { productionWorkerProcessModule, resolveDisplayGeometry, type WorkerProcessModule } from "../worker-process";
 
 import type { ClipPendingPreview } from "@narriflow/services";
 
@@ -425,6 +425,11 @@ export function clipPreviewAttemptStorageKey(
   return `projects/${projectId}/previews/${clipId}/${attemptId}.mp4`;
 }
 
+function squarePixelPreview(probe: Parameters<typeof resolveDisplayGeometry>[0]): { squarePixelAspect?: number } {
+  const geometry = resolveDisplayGeometry(probe);
+  return geometry.anamorphic ? { squarePixelAspect: geometry.width / geometry.height } : {};
+}
+
 /**
  * Builds the ffmpeg args for one preview cut: fast input seek (`-ss` before
  * `-i` — measured at 6.91s vs 94.29s for the naive `-ss` after `-i` form
@@ -438,12 +443,18 @@ export function buildClipPreviewArgs(params: {
   windowDurationSec: number;
   hasAudio: boolean;
   maxHeight?: number;
+  /** Displayed width / height of an anamorphic source. Its proxy is scaled to
+   *  square pixels so the proxy's frame size is its displayed size. */
+  squarePixelAspect?: number;
   x264Preset?: string;
   x264Crf?: string;
   audioBitrate?: string;
   x264Threads?: string;
 }): string[] {
   const maxHeight = params.maxHeight ?? previewMaxHeight();
+  const scaleFilter = params.squarePixelAspect
+    ? `scale=${Math.max(2, Math.round((maxHeight * params.squarePixelAspect) / 2) * 2)}:${maxHeight},setsar=1`
+    : `scale=-2:${maxHeight}`;
 
   const args = [
     "-y",
@@ -455,7 +466,7 @@ export function buildClipPreviewArgs(params: {
     "-i",
     params.sourcePath,
     "-vf",
-    `scale=-2:${maxHeight}`,
+    scaleFilter,
     "-map",
     "0:v:0",
     "-c:v",
@@ -848,6 +859,7 @@ async function cutAndUploadClipPreview(params: {
         windowStartSec: window.startSec,
         windowDurationSec: window.durationSec,
         hasAudio: probe.hasAudio,
+        ...squarePixelPreview(probe),
       })
     : buildAudiogramPreviewArgs({
         sourcePath,
