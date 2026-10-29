@@ -4,7 +4,7 @@
 
 **Blocked by:** [24 - Move MCP discovery and upload protocols](24-move-mcp-discovery-and-upload-protocols.md), [05 - Expose session and Workspace controls](05-expose-session-and-workspace-controls.md), [07 - Move billing API and convert billing UI](07-move-billing-api-and-convert-billing-ui.md)
 
-**Status:** blocked
+**Status:** done
 
 **Suggested implementer:** Sol. The other pairing side reviews and returns findings to this owner.
 
@@ -86,7 +86,7 @@ Also account for the inventory's cross-domain traps: query-only actions, action 
 
 ## Acceptance criteria
 
-- [ ] MCP setup/confirm/upload pages query status/preparation/handoff and mutation confirmation, preserving signed-in admission independent of active Workspace.
+- [x] MCP setup/confirm/upload pages query status/preparation/handoff and mutation confirmation, preserving signed-in admission independent of active Workspace.
 - [x] Upload picker targets API bridge with Bearer plus X-Narriflow-Upload-Intent; no same-origin-cookie assumption or raw web DB access.
 - [x] Workspace billing link uses validated switch before destination; setup resource URL uses API while browser links remain web.
 - [x] Expired/revoked/degraded connectors and OAuth consent destinations match current user states and never log signed tokens.
@@ -138,3 +138,10 @@ Append claim, requested seam changes, paired review and evidence here.
 - No intentional deviation from the API contract and no disagreement with the spec. The unowned shell gate is an implementation defect against its explicit signed-in continuation requirement.
 
 - Final targeted TypeScript result, including the normally excluded tests/DOM fixture with installed Bun types: **16 files, 0 diagnostics**. Final Biome check: **16 files clean**; owned `git diff --check`: clean.
+
+### Selected-Workspace exemption (resolved by Claude, 2026-10-29)
+
+- `/integrations/mcp/confirm` and `/integrations/mcp/upload` moved (`git mv`, URLs unchanged) from `(app)` to a new route group `apps/web/app/(continuation)/`. Its `layout.tsx` + `continuation-shell.tsx` render `SessionApiProvider > RequireSignIn > SessionGate` in the focused-flow frame (logo, theme toggle, panel): signed-in required (signed-out goes to sign-in and back to the same link), identity bootstrap only, no Workspace bootstrap, billing read, credits or paused-Workspace redirect. `(app)/layout.tsx`/`AppShell` are untouched, so every other app route (including the `/integrations/mcp` setup page) still goes through `WorkspaceQueryGate`.
+- Shared helpers stay in `(app)/integrations/mcp/` (`continuation.tsx` etc.); the moved screens import them by `@/app/(app)/...` alias. `continuation.browser.fixture.tsx` imports the moved screens from the new group.
+- New test `(continuation)/continuation-shell.test.ts` (+ `.browser.fixture.tsx`, 3 cases): confirmation renders with a restricted selected Workspace and never reads `/api/workspace/bootstrap`; signed-out visitor redirected to sign-in with the original link; `AppShell` with the same restricted Workspace still redirects to `/workspace-unavailable` without rendering the page.
+- Evidence: `bun test "apps/web/app/(continuation)" "apps/web/app/(app)/integrations/mcp" apps/web/app/_components/workspace-query-gate.test.ts` pass; full-web `tsc` shows no diagnostics in these paths; biome clean on both directories. Live signed-in browser pass still belongs to ticket 32. The last acceptance box (paired review) remains with the orchestrator.

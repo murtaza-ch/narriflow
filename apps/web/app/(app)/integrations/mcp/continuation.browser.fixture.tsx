@@ -77,7 +77,7 @@ afterAll(() => browser.close());
 
 async function modules() {
   const [provider, { ChakraProvider }, { system }, confirm, upload, setup, billing] = await Promise.all([
-    import("@/app/_components/api-provider"), import("@chakra-ui/react"), import("@narriflow/ui/theme"), import("./confirm/confirmation-screen"), import("./upload/upload-screen"), import("./page"), import("./workspace-billing-link"),
+    import("@/app/_components/api-provider"), import("@chakra-ui/react"), import("@narriflow/ui/theme"), import("@/app/(continuation)/integrations/mcp/confirm/confirmation-screen"), import("@/app/(continuation)/integrations/mcp/upload/upload-screen"), import("./page"), import("./workspace-billing-link"),
   ]);
   return { ...provider, ChakraProvider, system, ...confirm, ...upload, McpSetup: setup.default, ...billing };
 }

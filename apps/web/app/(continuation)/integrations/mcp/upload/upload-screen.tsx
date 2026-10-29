@@ -7,7 +7,7 @@ import { mcpUploadHandoffQueryOptions } from "@narriflow/api-client/integrations
 import type { IdentityScope } from "@narriflow/api-client/core";
 import { PageHeader } from "@narriflow/ui/components/page-header";
 import { useApiRuntime, useIdentityScope } from "@/app/_components/api-provider";
-import { McpContinuationUnavailable, useContinuationDigest } from "../continuation";
+import { McpContinuationUnavailable, useContinuationDigest } from "@/app/(app)/integrations/mcp/continuation";
 import { McpUploadPicker } from "./upload-picker";
 import Loading from "./loading";
 

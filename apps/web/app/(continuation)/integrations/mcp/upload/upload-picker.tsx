@@ -8,8 +8,8 @@ import { invalidateAfterIntake } from "@narriflow/api-client/ingest";
 import { useApiRuntime, useIdentityScope } from "@/app/_components/api-provider";
 import { Button } from "@narriflow/ui/components/button";
 import { type OpenUploadSessionInput } from "@narriflow/validators";
-import { createUploadSessionBrowserAdapter } from "../../../upload/_lib/upload-session-browser";
-import { UploadSessionStatusPanel } from "../../../upload/_components/upload-session-status";
+import { createUploadSessionBrowserAdapter } from "@/app/(app)/upload/_lib/upload-session-browser";
+import { UploadSessionStatusPanel } from "@/app/(app)/upload/_components/upload-session-status";
 
 /** `resumeOnly` serves an expired handoff: it can find and finish this person's
  * existing Upload Session, but never asks the server to open a new one. */

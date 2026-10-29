@@ -11,7 +11,7 @@ import { Button } from "@narriflow/ui/components/button";
 import { PageHeader } from "@narriflow/ui/components/page-header";
 import { useApiRuntime, useIdentityScope } from "@/app/_components/api-provider";
 import { ApiErrorNotice } from "@/app/_components/query-mutation-form";
-import { isRetryableContinuationFailure, McpContinuationUnavailable, useContinuationDigest } from "../continuation";
+import { isRetryableContinuationFailure, McpContinuationUnavailable, useContinuationDigest } from "@/app/(app)/integrations/mcp/continuation";
 import Loading from "./loading";
 
 export function McpConfirmationScreen() {
