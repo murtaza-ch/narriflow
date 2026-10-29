@@ -23,7 +23,7 @@ interface WorkspaceEvent {
   subject: Record<string, unknown>;
 }
 
-const base = "https://app.narriflow.com/api/v1";
+const base = "https://api.narriflow.example/api/v1";
 const headers = { Authorization: `Bearer ${process.env.NARRIFLOW_API_KEY}` };
 
 export async function pollEvents(
@@ -45,7 +45,7 @@ export async function pollEvents(
 ```
 
 ```bash curl
-curl "https://app.narriflow.com/api/v1/events?after=41&limit=100" \
+curl "https://api.narriflow.example/api/v1/events?after=41&limit=100" \
   -H "Authorization: Bearer $NARRIFLOW_API_KEY"
 ```
 
@@ -58,7 +58,7 @@ Poll every 15 to 60 seconds. Requests count against the key's [rate limit](/docs
 A poller that only needs recent events can ask for the newest page each time, with no cursor to store. Send `order=desc`: the response holds the newest `limit` matching events, newest first. Deduplicate by `id`.
 
 ```bash
-curl "https://app.narriflow.com/api/v1/events?order=desc&limit=100" \
+curl "https://api.narriflow.example/api/v1/events?order=desc&limit=100" \
   -H "Authorization: Bearer $NARRIFLOW_API_KEY"
 ```
 

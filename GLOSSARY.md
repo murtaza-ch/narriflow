@@ -9,8 +9,16 @@ Navigation and page titles name destinations. Use a page eyebrow only for changi
 ## Request admission
 
 **Authenticated Request Policy**:
-The browser-session application module that resolves signed-in App User identity and, when the declared admission requires it, one active Workspace Actor Scope. It enforces one explicitly declared capability, optionally admits an active Project and a common rate limit, sequences validation, and gives every adapter one typed request result and support identifier. Identity-only bootstrap flows never borrow authority or restrictions from an unrelated active Workspace.
+The API's browser-session application module that resolves signed-in App User identity from a Clerk session Bearer token and, when the declared admission requires it, one selected Workspace Actor Scope. It enforces one explicitly declared capability, optionally admits an active Project and a common rate limit, sequences validation, and gives every adapter one typed request result and support identifier. Identity-only bootstrap flows never borrow authority or restrictions from an unrelated active Workspace.
 _Avoid_: Auth middleware, current-user helper, generic Project middleware
+
+**Web origin / API origin**:
+The web app (Next.js, human-facing pages and links) and the standalone API (Hono, `/api/*`, `/api/v1/*`, `/mcp`, provider webhooks and the progress stream) are served from separate origins. Human links, notifications and review URLs use the web origin; provider callbacks, machine clients, REST `statusUrl` and the MCP resource use the API origin. The browser calls the API directly; neither origin is ever derived from a request's `Host`.
+_Avoid_: App URL (ambiguous), backend URL
+
+**Workspace Selection Hint**:
+The Workspace a signed-in browser asks to act in, kept per user in local storage and sent as `X-Workspace-Id`. It selects among the person's current memberships and is never authority: a removed or foreign selection is refused (or, for bootstrap, falls back to the personal Workspace) rather than silently acted on.
+_Avoid_: Active-workspace cookie, current workspace
 
 **Actor Scope**:
 The immutable request fact set whose actor user ID always names the signed-in person and whose Workspace ID, Workspace owner user ID, role, status, tier, and personal-Workspace state are separately named.

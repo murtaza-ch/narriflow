@@ -79,7 +79,7 @@ settings are documented in [the REST guide](../rest-api.md#finishing).
    name `Authorization` and value `Bearer nf_…`. Select it on every Narriflow
    HTTP Request node. The key never goes in workflow JSON.
 3. Define these n8n Variables (or environment variables on self-hosted n8n):
-   - `NARRIFLOW_URL`, for example `https://app.narriflow.com`.
+   - `NARRIFLOW_URL`, for example `https://api.narriflow.example` (the API address; the Narriflow app address does not serve the REST API).
    - `NARRIFLOW_CALLBACK_SECRET`, the `whsec_…` signing secret.
    - `NARRIFLOW_TOP_CLIPS`, optional, defaults to 3.
 4. Self-hosted n8n must allow the Code node's `crypto` module
@@ -176,7 +176,7 @@ and posts nothing; activate the workflow to see messages.
    Drive template (name `Authorization`, value `Bearer nf_…`) and select it on
    the four Narriflow HTTP Request nodes. The key never goes in workflow JSON.
 3. Define the n8n Variable `NARRIFLOW_URL`, for example
-   `https://app.narriflow.com`.
+   `https://api.narriflow.example` (the API address; the Narriflow app address does not serve the REST API).
 4. Replace `REPLACE_WITH_SLACK_CHANNEL`, connect the Slack credential, and
    activate the workflow.
 5. Turn on finishing where the clips come from: the Autopilot rule's finishing

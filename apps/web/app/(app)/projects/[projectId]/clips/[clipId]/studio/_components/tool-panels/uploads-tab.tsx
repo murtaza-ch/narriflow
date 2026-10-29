@@ -10,7 +10,7 @@ import type { AudioAssetKindInput } from "@narriflow/validators";
 import { formatDuration } from "@/lib/format";
 import { brandMutations } from "@narriflow/api-client/brand";
 import { useAudioApi, useAudioAssetList, type AudioAssetListRow } from "./audio-library";
-import { AUDIO_UPLOAD_ACCEPT, AUDIO_UPLOAD_MAX_MB, uploadAudioFile } from "./audio-upload";
+import { AUDIO_UPLOAD_ACCEPT, AUDIO_UPLOAD_MAX_MB, uploadAudioFile } from "@/lib/audio-upload";
 import { AudioListError, AudioPager } from "./music-tab";
 
 interface UploadsTabProps {
@@ -87,7 +87,8 @@ export function UploadsTab({ reloadKey, onLibraryChange }: UploadsTabProps) {
   async function handleUpload(file: File) {
     setUploading(true);
     try {
-      await uploadAudioFile(file, uploadKind, audioApi);
+      if (!audioApi) throw new Error("Couldn't start the upload.");
+      await uploadAudioFile(file, uploadKind, brandMutations(audioApi));
       toaster.create({ type: "success", title: "Uploaded" });
       onLibraryChange();
     } catch (error) {

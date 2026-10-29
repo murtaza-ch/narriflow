@@ -2,15 +2,15 @@ import { describe, expect, test } from "bun:test";
 import { ChakraProvider } from "@chakra-ui/react";
 import { system } from "@narriflow/ui/theme";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { ClipFacts } from "@narriflow/validators";
+import type { GuidanceView, PerformanceSummaryView } from "@/lib/publishing-client";
 import {
-	computePerformanceGuidance,
-	guidanceGroupLabel,
-	summarizePerformance,
-	type GuidanceVideo,
-	type PerformanceVideo,
-} from "@narriflow/services";
-import type { GuidanceView } from "@/lib/publishing-client";
+	emptySummary,
+	littleSummary,
+	manyGuidance,
+	manySummary,
+	realSummary,
+	waitingSummary,
+} from "./what-worked.fixtures";
 import { WhatWorked } from "./what-worked";
 
 const noGuidance: GuidanceView = {
@@ -30,7 +30,7 @@ const noGuidance: GuidanceView = {
 	maximumScoreGap: 15,
 };
 
-function render(summary: ReturnType<typeof summarizePerformance>, guidance: GuidanceView = noGuidance) {
+function render(summary: PerformanceSummaryView, guidance: GuidanceView = noGuidance) {
 	return renderToStaticMarkup(
 		<ChakraProvider value={system}>
 			<WhatWorked summary={summary} guidance={guidance} />
@@ -38,36 +38,16 @@ function render(summary: ReturnType<typeof summarizePerformance>, guidance: Guid
 	);
 }
 
-const facts = (overrides: Partial<ClipFacts> = {}): ClipFacts => ({
-	viralityScore: 80,
-	category: "insight",
-	hookStrengthScore: 85,
-	durationSec: 30,
-	aspectRatio: "9:16",
-	platform: "youtube_shorts",
-	postedHour: 9,
-	...overrides,
-});
-
-const video = (views: number, overrides: Partial<PerformanceVideo> = {}): PerformanceVideo => ({
-	platform: "youtube_shorts",
-	facts: facts(),
-	views,
-	likes: Math.round(views / 10),
-	comments: 2,
-	...overrides,
-});
-
 describe("What worked", () => {
 	test("empty data says no posts are measured and names the platforms it can't read", () => {
-		const markup = render(summarizePerformance([], 0));
+		const markup = render(emptySummary);
 		expect(markup).toContain("No posts measured yet");
 		expect(markup).toContain("Facebook Reels");
 		expect(markup).not.toContain("Median views");
 	});
 
 	test("the empty page names the next step for who is looking", () => {
-		const empty = summarizePerformance([], 0);
+		const empty = emptySummary;
 		const page = (emptyNextStep: "publish" | "connect" | "ask" | null) =>
 			renderToStaticMarkup(
 				<ChakraProvider value={system}>
@@ -82,14 +62,14 @@ describe("What worked", () => {
 	});
 
 	test("a video still waiting for its 7-day reading is not an empty page", () => {
-		const markup = render(summarizePerformance([], 2));
+		const markup = render(waitingSummary);
 		expect(markup).not.toContain("No posts measured yet");
 		expect(markup).toContain("2 videos are younger than 7 days");
 		expect(markup).toContain("Too little data to compare yet");
 	});
 
 	test("too little data is stated plainly, with the sample size", () => {
-		const markup = render(summarizePerformance([video(100), video(300)], 0));
+		const markup = render(littleSummary);
 		expect(markup).toContain("Too little data to compare yet");
 		expect(markup).toContain("2 videos have been measured");
 		// Groups still show their sample sizes.
@@ -97,24 +77,7 @@ describe("What worked", () => {
 	});
 
 	test("real data lists totals and medians with sample sizes for every grouping", () => {
-		const markup = render(
-			summarizePerformance(
-				[
-					video(100, { facts: facts({ category: "story", postedHour: 8 }) }),
-					video(300, { facts: facts({ category: "story", postedHour: 8 }) }),
-					video(900, { facts: facts({ category: "story", postedHour: 18, hookStrengthScore: 55 }) }),
-					video(1_000, {
-						platform: "tiktok",
-						facts: facts({ category: "humor", platform: "tiktok", durationSec: 45, postedHour: 18 }),
-					}),
-					video(2_000, {
-						platform: "tiktok",
-						facts: facts({ category: "humor", platform: "tiktok", durationSec: 45, postedHour: 18 }),
-					}),
-				],
-				1,
-			),
-		);
+		const markup = render(realSummary);
 		expect(markup).not.toContain("Too little data to compare yet");
 		for (const heading of ["Category", "Hook strength", "Length", "Platform", "Posted hour"]) {
 			expect(markup).toContain(heading);
@@ -130,32 +93,20 @@ describe("What worked", () => {
 	});
 
 	describe("audience data", () => {
-		const guidanceVideo = (views: number, category: ClipFacts["category"], index: number): GuidanceVideo => ({
-			...video(views, { facts: facts({ category }) }),
-			clip: `clip-${index}`,
-		});
-		const many = [
-			...Array.from({ length: 15 }, (_, index) => guidanceVideo(1_000, "story", index)),
-			...Array.from({ length: 15 }, (_, index) => guidanceVideo(200, "insight", 100 + index)),
-			...Array.from({ length: 10 }, (_, index) => guidanceVideo(100, "humor", 200 + index)),
-		];
-		const guidance = computePerformanceGuidance(many);
 		const view = (overrides: Partial<GuidanceView> = {}): GuidanceView => ({
 			...noGuidance,
 			enabled: true,
 			qualifies: true,
 			applied: true,
 			computedAt: "2026-10-24T03:00:00.000Z",
-			totalPosts: guidance.totalPosts,
-			platforms: [...guidance.platforms, { platform: "tiktok", posts: 12, medianViews: 3_100 }],
-			groups: guidance.groups
-				.map((group) => ({ ...group, label: guidanceGroupLabel(group)! }))
-				.sort((left, right) => right.lift - left.lift),
+			totalPosts: manyGuidance.totalPosts,
+			platforms: [...manyGuidance.platforms, { platform: "tiktok", posts: 12, medianViews: 3_100 }],
+			groups: manyGuidance.groups,
 			...overrides,
 		});
 
 		test("explains current guidance: sample sizes, lifts, a typical post per platform, and how it is used", () => {
-			const markup = render(summarizePerformance(many, 0), view());
+			const markup = render(manySummary, view());
 			expect(markup).toContain("Your audience data");
 			expect(markup).toContain("Narriflow is using this to pick clips.");
 			expect(markup).toContain("Computed Oct 24 among 40 clips you posted from Narriflow in the last 180 days");
@@ -172,13 +123,13 @@ describe("What worked", () => {
 		});
 
 		test("says when it is switched off", () => {
-			const markup = render(summarizePerformance(many, 0), view({ enabled: false, applied: false }));
+			const markup = render(manySummary, view({ enabled: false, applied: false }));
 			expect(markup).toContain("switched off in Workspace settings");
 			expect(markup).toContain("Use my performance data to pick clips: off");
 		});
 
 		test("says plainly what it needs when there is too little data", () => {
-			const markup = render(summarizePerformance([video(100), video(300)], 0), { ...noGuidance, totalPosts: 2 });
+			const markup = render(littleSummary, { ...noGuidance, totalPosts: 2 });
 			expect(markup).toContain("Not enough data yet.");
 			expect(markup).toContain("2 clips counted at the last check");
 			expect(markup).toContain("Only clips you posted from Narriflow to YouTube Shorts and TikTok are measured");

@@ -1,6 +1,7 @@
 import { rehypeCodeDefaultOptions, type RehypeCodeOptions } from "fumadocs-core/mdx-plugins";
 import { defineConfig } from "fumadocs-mdx/config";
 import { CODE_SHIKI_THEMES } from "../../packages/ui/src/code-theme";
+import { withDocsApiOrigin } from "./lib/docs/api-origin";
 
 type Transformer = NonNullable<RehypeCodeOptions["transformers"]>[number];
 type Themes = Extract<RehypeCodeOptions, { themes: unknown }>["themes"];
@@ -64,9 +65,32 @@ const mintlifyMeta: Transformer = {
   },
 };
 
+type MdastNode = {
+  value?: string;
+  url?: string;
+  children?: MdastNode[];
+  attributes?: { type: string; value?: unknown }[];
+};
+
+/** Replaces the docs API-origin placeholder in text, code, links and JSX attributes (see lib/docs/api-origin.ts). */
+function remarkApiOrigin() {
+  const walk = (node: MdastNode) => {
+    if (typeof node.value === "string") node.value = withDocsApiOrigin(node.value);
+    if (typeof node.url === "string") node.url = withDocsApiOrigin(node.url);
+    for (const attribute of node.attributes ?? []) {
+      if (attribute.type === "mdxJsxAttribute" && typeof attribute.value === "string") {
+        attribute.value = withDocsApiOrigin(attribute.value);
+      }
+    }
+    for (const child of node.children ?? []) walk(child);
+  };
+  return (tree: MdastNode) => walk(tree);
+}
+
 // MDX options for the docs in content/docs (lib/docs/source.ts).
 export default defineConfig({
   mdxOptions: {
+    remarkPlugins: (plugins) => [remarkApiOrigin, ...plugins],
     rehypeCodeOptions: {
       // Narriflow's one code theme, as a CSS variable per colour mode on each token (see CodeFrame);
       // the fill and base colour come from the surrounding block.

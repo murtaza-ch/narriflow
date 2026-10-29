@@ -1,9 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { PRICING_TIER_ORDER, hasFeature, type PlanFeature } from "@narriflow/validators";
+import { PRICING_TIER_ORDER, brandPlanRequirement, hasFeature, type PlanFeature } from "@narriflow/validators";
 import {
   assertBrandMutationAllowed,
   brandCountRequirement,
-  brandPlanRequirement,
   type BrandActorScope,
 } from "./brand-ownership";
 import { PlanRequirementError } from "./plan-features";

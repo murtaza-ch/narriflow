@@ -21,10 +21,10 @@ export async function fetchTranscriptFile(
 	format: TranscriptFormat,
 	signal?: AbortSignal,
 ): Promise<TranscriptFile> {
-	// The route reads `format` from the query string without declaring a
-	// validator, so its type shows only the path parameter.
-	const args = { param: { id: projectId }, query: { format } } as { param: { id: string } };
-	const response = await client.projects[":id"].transcript.export.$get(args, signal ? { init: { signal } } : undefined);
+	const response = await client.projects[":id"].transcript.export.$get(
+		{ param: { id: projectId }, query: { format } },
+		signal ? { init: { signal } } : undefined,
+	);
 	if (!response.ok) throw await apiErrorFromResponse(response);
 	const declared = Number(response.headers.get("Content-Length"));
 	if (Number.isFinite(declared) && declared > EXPORT_ATTACHMENT_MAX_BYTES) {

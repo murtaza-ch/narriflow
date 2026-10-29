@@ -1,6 +1,5 @@
 import { afterAll, afterEach, beforeAll, describe, expect, mock, setDefaultTimeout, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { createRequire } from "node:module";
 import type { ClerkUserDirectory } from "@narriflow/auth";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@prisma/client";
@@ -9,12 +8,22 @@ import { Pool } from "pg";
 setDefaultTimeout(180_000);
 const url = process.env.AUTHENTICATED_REQUEST_POLICY_TEST_DATABASE_URL;
 const schema = process.env.AUTHENTICATED_REQUEST_POLICY_TEST_DATABASE_SCHEMA;
+const enabled = process.env.ALLOW_AUTHENTICATED_REQUEST_POLICY_DB_TESTS === "1" && Boolean(url);
+const dbDescribe = enabled ? describe : describe.skip;
 let prisma: PrismaClient;
 let pool: Pool;
 let payload: Record<string, unknown>;
 let failProvisioning = false;
 let templateId: string;
-const { ClerkAPIResponseError } = createRequire(import.meta.resolve("@clerk/nextjs"))("@clerk/shared/error");
+// Shaped like the Clerk Backend API's response error, which auth recognizes by class kind and status.
+class ClerkAPIResponseError extends Error {
+  static kind = "ClerkAPIResponseError";
+  readonly status: number;
+  constructor(message: string, options: { status: number; data: unknown[] }) {
+    super(message);
+    this.status = options.status;
+  }
+}
 // The Clerk Backend API as the API sees it: the verified user is fetched by id, and a
 // different id is the previous holder of an email, whose lookup a test can script.
 let previousIdentityLookup: (() => Promise<unknown>) | null = null;
@@ -23,8 +32,13 @@ const getClerkUser = mock(async (id: string) => {
   return id === payload.id ? payload : { id };
 });
 const clerkDirectory = { users: { getUser: getClerkUser } } as unknown as ClerkUserDirectory;
-mock.module("@narriflow/db/client", () => ({ getPrismaClient: () => failProvisioning ? { ...prisma, workspace: { ...prisma.workspace, upsert: async () => { throw new Error("Injected database outage"); } } } : prisma }));
-const { ClerkDirectoryUnavailableError, getAppUserForClerkIdentity, syncClerkUserPayload, markUserDeletedByClerkId } = await import("@narriflow/auth");
+// mock.module is process-wide, so the mock and the auth import exist only when this suite runs.
+if (enabled) {
+  mock.module("@narriflow/db/client", () => ({ getPrismaClient: () => failProvisioning ? { ...prisma, workspace: { ...prisma.workspace, upsert: async () => { throw new Error("Injected database outage"); } } } : prisma }));
+}
+const { ClerkDirectoryUnavailableError, getAppUserForClerkIdentity, syncClerkUserPayload, markUserDeletedByClerkId } = enabled
+  ? await import("@narriflow/auth")
+  : ({} as typeof import("@narriflow/auth"));
 /** What the API runs for a verified session token: lookup, first-login sync, personal Workspace. */
 const getCurrentAppUser = () => getAppUserForClerkIdentity(String(payload.id), clerkDirectory);
 
@@ -34,6 +48,7 @@ function clerkProfile(name?: string, provider = "oauth_apple") {
 }
 
 beforeAll(async () => {
+  if (!enabled) return;
   if (!url || !schema || !schema.startsWith("authenticated_request_policy_test_")) throw new Error("Disposable authentication schema required");
   pool = new Pool({ connectionString: url, max: 4 });
   prisma = new PrismaClient({ adapter: new PrismaPg(pool, { schema }) });
@@ -56,7 +71,7 @@ async function expectWorkspace(userId: string, name: string) {
   return workspaces[0];
 }
 
-describe("automatic workspace entry before webhook delivery", () => {
+dbDescribe("automatic workspace entry before webhook delivery", () => {
   test("concurrent first sign-ins create one free workspace, owner, and billing account", async () => {
     payload = clerkProfile("Ada");
     const users = await Promise.all([getCurrentAppUser(), getCurrentAppUser(), getCurrentAppUser()]);

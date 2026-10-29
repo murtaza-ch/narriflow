@@ -174,3 +174,16 @@ On Claude, also call every public tool at least once. These inherited gates must
 ### Submission
 
 Listing materials live in [docs/integrations/listing](../integrations/listing/README.md). Submitting to Claude's directory is outward-facing: the owner submits or explicitly authorizes it at the time, after this journey passes and the processing usage ledger is accepted. ChatGPT materials are prepared alongside; that submission waits for the Claude listing and the owner's go-ahead. Re-check both directories' requirement pages on the day of submission.
+
+## 2026-10-29: the MCP resource moved to the API origin
+
+The MCP endpoint, its upload paths and its discovery documents are served by the standalone API (`apps/api`), not by the web app. The canonical resource is `${API_ORIGIN}/mcp`; the discovery documents are `${API_ORIGIN}/.well-known/oauth-protected-resource`, `${API_ORIGIN}/.well-known/oauth-protected-resource/mcp` and `${API_ORIGIN}/.well-known/oauth-authorization-server`. Human handoff pages (`/integrations/mcp/upload`, `/integrations/mcp/confirm`) stay on the web origin and call the API with the signed-in session Bearer plus the signed continuation.
+
+Before this setup is usable again:
+
+1. In Clerk, set the OAuth resource and audience to the exact `${API_ORIGIN}/mcp`. Clerk stays the authorization-server issuer; the API advertises it unchanged.
+2. Set `CLERK_OAUTH_ISSUER`, `CLERK_OAUTH_CONSENT_ORIGIN`, `MCP_CONTINUATION_SECRET`, `MCP_ALLOWED_HOSTS` and `MCP_ALLOWED_ORIGINS` on the API service. They are no longer read from Vercel. Copy the existing continuation secret so signed links already issued stay valid, or let them expire.
+3. Reconnect every MCP client (Codex, Claude, ChatGPT, Cursor) to `${API_ORIGIN}/mcp`; old registrations point at the web origin and will fail audience verification. Existing development connections are dropped on purpose (pre-production, no users).
+4. Point the CLI helper at the API: `NARRIFLOW_URL=${API_ORIGIN}` in `apps/mcp/.env` and in the end-to-end run (`MCP_E2E_BASE_URL`).
+
+Re-run the acceptance walkthroughs below against the API origin and record the origin pair (web, API) with each result. The deterministic suites now live in `apps/api/src/domains/integrations` and `apps/api/src/integration-admission-parity.test.ts`; `bun run test:mcp:integration` runs them with the shared MCP packages.

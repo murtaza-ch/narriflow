@@ -55,7 +55,7 @@ The key needs `publishing:read` to list accounts and `publishing:write` to propo
 <CodeGroup>
 
 ```typescript TypeScript
-const base = "https://app.narriflow.com/api/v1";
+const base = "https://api.narriflow.example/api/v1";
 const headers = { Authorization: `Bearer ${process.env.NARRIFLOW_API_KEY}` };
 
 const { accounts, timeZone } = (await (await fetch(`${base}/social-accounts`, { headers })).json()) as {
@@ -65,7 +65,7 @@ const { accounts, timeZone } = (await (await fetch(`${base}/social-accounts`, { 
 ```
 
 ```bash curl
-curl "https://app.narriflow.com/api/v1/social-accounts" \
+curl "https://api.narriflow.example/api/v1/social-accounts" \
   -H "Authorization: Bearer $NARRIFLOW_API_KEY"
 ```
 
@@ -85,7 +85,7 @@ const { proposal, queueUrl } = (await response.json()) as { proposal: { proposal
 ```
 
 ```bash curl
-curl -X POST "https://app.narriflow.com/api/v1/social-posts/proposals" \
+curl -X POST "https://api.narriflow.example/api/v1/social-posts/proposals" \
   -H "Authorization: Bearer $NARRIFLOW_API_KEY" \
   -H "Idempotency-Key: clip-42-youtube" \
   -H "Content-Type: application/json" \

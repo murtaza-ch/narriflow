@@ -56,7 +56,7 @@ Both the API and AI assistants return the timeline as text along with a download
 ```typescript TypeScript
 import { writeFile } from "node:fs/promises";
 
-const BASE = "https://app.narriflow.com/api/v1";
+const BASE = "https://api.narriflow.example/api/v1";
 const response = await fetch(`${BASE}/clips/${clipId}/timeline?format=fcpxml`, {
   headers: { Authorization: `Bearer ${process.env.NARRIFLOW_API_KEY}` },
 });
@@ -75,7 +75,7 @@ curl "$BASE/clips/$CLIP_ID/timeline?format=fcpxml" \
 ```python Python
 import os, requests
 
-BASE = "https://app.narriflow.com/api/v1"
+BASE = "https://api.narriflow.example/api/v1"
 result = requests.get(
     f"{BASE}/clips/{clip_id}/timeline",
     params={"format": "fcpxml"},

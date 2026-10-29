@@ -19,9 +19,11 @@ describe("repository verification commands", () => {
 
   test("official workspace aggregates contain no successful no-op lint or test tasks", () => {
     const workspaces = [
+      "apps/api/package.json",
       "apps/mcp/package.json",
       "apps/web/package.json",
       "apps/worker/package.json",
+      "packages/api-client/package.json",
       "packages/auth/package.json",
       "packages/composition-plan/package.json",
       "packages/config/package.json",

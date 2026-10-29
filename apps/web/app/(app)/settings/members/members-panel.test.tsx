@@ -10,7 +10,7 @@ const runtime = createApiRuntime({ baseUrl: "http://api.test", getToken: async (
 runtime.setIdentity("user_test");
 const scope = { userId: "user_test", workspaceId: "11111111-1111-4111-8111-111111111111" };
 runtime.selectWorkspace(scope.workspaceId);
-mock.module("@/app/_components/api-provider", () => ({ useApiRuntime: () => runtime }));
+mock.module("@/app/_components/api-provider", () => ({ useApiRuntime: () => runtime, useWorkspaceScope: () => scope }));
 const { MembersPanel } = await import("./members-panel");
 
 const billingView = { plan: "business", health: "current", desiredAdditionalSeats: 0, synchronizedAdditionalSeats: 0 } as WorkspaceBillingView;

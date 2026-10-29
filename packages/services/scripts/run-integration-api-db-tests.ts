@@ -83,7 +83,7 @@ try {
 		"packages/services/src/generation-finishing.db.test.ts",
 		"packages/services/src/recipe.db.test.ts",
 		"packages/services/src/recipe-migration.db.test.ts",
-		"apps/web/lib/rest-api/events.db.test.ts",
+		"apps/api/src/domains/rest/events.db.test.ts",
 	]) {
 		await run(["bun", "test", suite], {
 			ALLOW_INTEGRATION_DB_TESTS: "1",

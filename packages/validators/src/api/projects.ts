@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { brandProfileProjectApplicationSchema } from "../brand-profile";
+import { transcriptExportFormatSchema } from "../transcript";
 
 /** Project detail tabs; `clips` is the default for anything unrecognised. */
 export const PROJECT_TABS = [
@@ -66,6 +67,11 @@ export const projectListQuerySchema = z.object({
 export type ProjectListQuery = z.output<typeof projectListQuerySchema>;
 
 /** `GET /api/projects/:id/detail?tab=`: the tab whose data the aggregate also carries. */
+/** `GET /projects/:id/transcript/export`: the file format, text by default. */
+export const transcriptExportQuerySchema = z.object({
+  format: transcriptExportFormatSchema.default("txt"),
+});
+
 export const projectDetailQuerySchema = z.object({
   tab: z
     .string()

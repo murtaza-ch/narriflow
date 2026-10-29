@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { driveIngestSchema, rssImportSchema } from "./ingest";
+import { driveIngestSchema, isQuotaBlockedMidFlight, MAX_INGEST_RETRY_ATTEMPTS, rssImportSchema } from "./ingest";
 
 describe("driveIngestSchema", () => {
   const valid = { fileId: "1AbCdEfGhIjKlMnOpQrStUvWxYz_-0123", accessToken: "ya29.token" };
@@ -75,4 +75,23 @@ describe("rssImportSchema authoritative boundary", () => {
     expect(rssImportSchema.parse(base).brandProfileId).toBeUndefined();
     expect(rssImportSchema.safeParse({ ...base, brandTemplateId: brandProfileId }).success).toBe(false);
   });
+});
+
+describe("isQuotaBlockedMidFlight (typed refusal, never usage arithmetic)", () => {
+  test("shows for persisted Processing Usage refusals", () => {
+    expect(isQuotaBlockedMidFlight({ ingestErrorCode: "credits_exhausted" })).toBe(true);
+    expect(isQuotaBlockedMidFlight({ ingestErrorCode: "upload_too_long" })).toBe(true);
+  });
+
+  test("ignores other failures and healthy projects", () => {
+    expect(isQuotaBlockedMidFlight({ ingestErrorCode: "media_duration_unavailable" })).toBe(false);
+    // A released reservation needs a retry, not more credits.
+    expect(isQuotaBlockedMidFlight({ ingestErrorCode: "credits_reservation_released" })).toBe(false);
+    expect(isQuotaBlockedMidFlight({ ingestErrorCode: "ingest_retries_exhausted" })).toBe(false);
+    expect(isQuotaBlockedMidFlight({ ingestErrorCode: null })).toBe(false);
+  });
+});
+
+test("the ingest retry cap is a positive whole number", () => {
+  expect(Number.isInteger(MAX_INGEST_RETRY_ATTEMPTS) && MAX_INGEST_RETRY_ATTEMPTS > 0).toBe(true);
 });

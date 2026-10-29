@@ -11,8 +11,8 @@ Codex stores MCP servers in one `config.toml`, so the CLI, the desktop app and t
       <Tab title="CLI">
         ```bash
         codex mcp add narriflow \
-          --url https://app.narriflow.com/mcp \
-          --oauth-resource https://app.narriflow.com/mcp
+          --url https://api.narriflow.example/mcp \
+          --oauth-resource https://api.narriflow.example/mcp
         ```
       </Tab>
       <Tab title="config.toml">
@@ -20,7 +20,7 @@ Codex stores MCP servers in one `config.toml`, so the CLI, the desktop app and t
 
         ```toml
         [mcp_servers.narriflow]
-        url = "https://app.narriflow.com/mcp"
+        url = "https://api.narriflow.example/mcp"
         ```
       </Tab>
     </Tabs>
@@ -47,7 +47,7 @@ For unattended runs, read a Workspace API key from an environment variable. Crea
 
 ```toml
 [mcp_servers.narriflow]
-url = "https://app.narriflow.com/mcp"
+url = "https://api.narriflow.example/mcp"
 bearer_token_env_var = "NARRIFLOW_API_KEY"
 ```
 

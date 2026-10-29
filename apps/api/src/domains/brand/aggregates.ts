@@ -1,15 +1,15 @@
 import {
   brandCountRequirement,
-  brandPlanRequirement,
   type BrandActorScope,
   type BrandFontService,
-  type BrandPlanRequirement,
   type BrandProfileService,
   type BrandTemplateService,
   type SceneTemplateService,
 } from "@narriflow/services";
 import {
+  brandPlanRequirement,
   planCountRequirement,
+  type BrandPlanRequirement,
   planFeatureRequirement,
   workspaceAllowsCapability,
 } from "@narriflow/validators";

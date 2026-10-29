@@ -61,3 +61,23 @@ export type RssPreviewInput = z.infer<typeof rssPreviewSchema>;
 export type RssEpisodeInput = z.infer<typeof rssEpisodeSchema>;
 export type RssImportInput = z.infer<typeof rssImportSchema>;
 export type IngestStatus = z.infer<typeof ingestStatusSchema>;
+
+/**
+ * How many ingest attempts a Project gets before Retry is refused. The ingest
+ * lifecycle enforces it; the Project page reads it to say so up front.
+ */
+export const MAX_INGEST_RETRY_ATTEMPTS = 5;
+
+/**
+ * Processing-panel state for a Project whose speech-to-text admission was
+ * refused by Processing Usage: the typed refusal persisted on the Project is
+ * the only input, so web, MCP, and REST render the same recovery copy.
+ */
+export function isQuotaBlockedMidFlight(input: {
+  ingestErrorCode: string | null | undefined;
+}): boolean {
+  return (
+    input.ingestErrorCode === "credits_exhausted" ||
+    input.ingestErrorCode === "upload_too_long"
+  );
+}

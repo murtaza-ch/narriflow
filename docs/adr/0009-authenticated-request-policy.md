@@ -54,3 +54,14 @@ The shared destination validator defaults to `/home`, rejects external targets a
 ## 2026-10-27: OAuth continuations recheck the originating token
 
 This supersedes the 2026-10-08 sentence that bounds OAuth continuations by expiry alone. An OAuth continuation carries the originating access token, encrypted with a key derived from `MCP_CONTINUATION_SECRET`, inside its signed state. Admission decrypts it on the server, verifies it online again, checks the acting user and OAuth client, and intersects current scopes with the signed grant. Revocation, expiry, removed scopes, or an unavailable verifier refuse the write. Immediate revocation still depends on Clerk issuing opaque access tokens; see the [MCP launch acceptance runbook](../runbooks/mcp-launch-acceptance.md).
+
+## 2026-10-29: The policy runs in the API, and a Bearer token replaces the cookie
+
+This supersedes the sentences above that name Server Actions, server-rendered pages, the active-Workspace cookie and the web inventory; see [ADR 0017](0017-standalone-api.md). The module moved with its tests to `apps/api/src/http` (`request-policy.ts`, `project-admission.ts`, `request-policy-runtime.ts`) and its order is unchanged: authentication, selected Workspace, capability, rate limit, Project, input, operation.
+
+- Identity comes from an explicit `Authorization: Bearer` Clerk session token verified with `CLERK_AUTHORIZED_PARTIES`; cookies are never read. A missing or malformed header is a JSON 401 and a Clerk outage a safe 503, never a redirect or an apparent sign-out.
+- The Workspace is chosen by the `X-Workspace-Id` hint and revalidated against live membership on each request. Identity bootstrap falls back to the personal Workspace and reports `workspaceSelectionChanged`; every later scoped request with a removed selection is refused with `409 workspace_selection_changed` before the operation, never run in the personal Workspace. Signed-in-only admission still carries no Workspace facts.
+- Adapters are Hono routes only. Each domain's `admission.ts` is its route declaration table (capability, Project parameter, rate scope, or an independent trust such as `provider_signature`, `public_share_token`, `oauth_state`, `public_health`, `staff`). `createRouteApp` installs the declaration ahead of validators and the handler, and a fail-closed guard refuses any handler that could answer a path without one. The exhaustive inventory is now a runtime comparison of mounted routes and tables in both directions (`bun run --cwd apps/api test:inventory`), and the browser, MCP and REST capability parity test compares the integration command table with these tables.
+- Streams reauthorize on their heartbeat as before; the progress stream is an API route.
+- Request-local actor promises live in the Hono context. The outer request ID is reused rather than generating a second one.
+

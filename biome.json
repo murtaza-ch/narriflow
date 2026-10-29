@@ -63,5 +63,44 @@
         "noImplicitAnyLet": "off"
       }
     }
-  }
+  },
+  "overrides": [
+    {
+      "includes": [
+        "apps/web/**"
+      ],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "paths": {
+                  "@narriflow/services": "The web app is a client of the API: it must not import backend packages. Use @narriflow/api-client and @narriflow/validators.",
+                  "@narriflow/db": "The web app is a client of the API: it must not import backend packages. Use @narriflow/api-client and @narriflow/validators.",
+                  "@narriflow/auth": "The web app is a client of the API: it must not import backend packages. Use @narriflow/api-client and @narriflow/validators.",
+                  "@narriflow/mcp-core": "The web app is a client of the API: it must not import backend packages. Use @narriflow/api-client and @narriflow/validators.",
+                  "@narriflow/email": "The web app is a client of the API: it must not import backend packages. Use @narriflow/api-client and @narriflow/validators.",
+                  "@narriflow/api": "The web app is a client of the API: it must not import backend packages. Use @narriflow/api-client and @narriflow/validators."
+                },
+                "patterns": [
+                  {
+                    "group": [
+                      "@narriflow/services/*",
+                      "@narriflow/db/*",
+                      "@narriflow/auth/*",
+                      "@narriflow/mcp-core/*",
+                      "@narriflow/email/*",
+                      "@narriflow/api/*"
+                    ],
+                    "message": "The web app is a client of the API: it must not import backend packages. Use @narriflow/api-client and @narriflow/validators."
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
 }

@@ -75,7 +75,7 @@ export function ProjectShareButton({
     try {
       return await mutation.mutateAsync(command);
     } catch (reason) {
-      const prompt = isApiError(reason) ? upgradePromptFromFailure({ error: reason.code, message: reason.message, ...reason.details }) : null;
+      const prompt = isApiError(reason) ? upgradePromptFromFailure({ error: reason.code, message: reason.message, ...(reason.details ? { details: reason.details } : {}) }) : null;
       if (prompt) openUpgrade(prompt);
       setError(reason instanceof Error ? reason.message : "Sharing could not be updated");
       return null;

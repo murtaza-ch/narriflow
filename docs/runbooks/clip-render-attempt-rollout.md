@@ -2,7 +2,7 @@
 
 Clip Render Attempt is the render execution path. Starting a worker starts render claiming.
 
-Narriflow is pre-production. Deploy web, services, and workers from the same revision after applying migrations. Drain existing render workers before replacing them.
+Narriflow is pre-production. Deploy the API, services, and workers from the same revision after applying migrations. Drain existing render workers before replacing them.
 
 ## Deployment
 

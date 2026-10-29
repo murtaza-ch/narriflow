@@ -1,16 +1,16 @@
 # Social Publication operations
 
-Social Publication Attempt is the only owner of provider delivery. Deploy the database migrations through `20260909010000_publishing_delivery` before starting the web or worker process. Drain social workers before migration. Narriflow has no production users or mixed-version deployment contract, so obsolete local publication rows without frozen intent are deleted instead of supported through dual paths.
+Social Publication Attempt is the only owner of provider delivery. Deploy the database migrations through `20260909010000_publishing_delivery` before starting the API or worker process. Drain social workers before migration. Narriflow has no production users or mixed-version deployment contract, so obsolete local publication rows without frozen intent are deleted instead of supported through dual paths.
 
 ## Configuration
 
-Place worker secrets in `apps/worker/.env` and webhook scheduling configuration in the owning web environment. Never use a root `.env`.
+Place worker secrets in `apps/worker/.env` and webhook scheduling configuration in the owning API environment (`apps/api/.env`). Never use a root `.env`.
 
 Required worker configuration:
 
 - `SOCIAL_PUBLICATION_CHECKPOINT_KEY`: at least 32 characters; encrypts provider operation checkpoints.
 - Existing provider OAuth/application credentials required by each enabled native adapter.
-- `TIKTOK_CLIENT_KEY` and `TIKTOK_CLIENT_SECRET` in the web environment for the verified Content Posting webhook at `/api/webhooks/tiktok/publication`.
+- `TIKTOK_CLIENT_KEY` and `TIKTOK_CLIENT_SECRET` in the API environment for the verified Content Posting webhook at `${API_ORIGIN}/api/webhooks/tiktok/publication` (re-register the endpoint in TikTok's developer portal when the API origin changes).
 
 Bounded worker controls:
 
@@ -76,12 +76,12 @@ In the product, Confirm published requires `publishing.manage` and records manua
 ## Deploy, rollback, and escalation
 
 1. Drain every social worker and verify there are no live claims before applying migrations.
-2. Apply the complete migration chain, deploy web and worker from the same revision, then restart workers.
+2. Apply the complete migration chain, deploy the API and worker from the same revision, then restart workers.
 3. Observe representative accepted, processing, definitive failure, and Needs attention outcomes plus TikTok webhook signature failures and delivery retries.
 4. For rollback, drain workers first. Preserve attempts, encrypted checkpoints, operation lookup hashes, receipts, and manual decisions. Never roll back by scheduling uncertain rows or deleting evidence.
 5. Escalate when exact lookup returns multiple matches, provider read permission is unavailable, a processing deadline expires without final evidence, or receipt uniqueness conflicts. Verify the provider account before authorizing Publish again.
 
-For a local-only reset, stop web and worker processes, reset the local database deliberately, reapply migrations, and reconnect provider test accounts. Do not add compatibility reads for obsolete fixture shapes.
+For a local-only reset, stop API and worker processes, reset the local database deliberately, reapply migrations, and reconnect provider test accounts. Do not add compatibility reads for obsolete fixture shapes.
 
 ## Verification
 
@@ -113,7 +113,7 @@ Use a real authenticated Chrome session to check Publish and Calendar at desktop
 
 Enable the Content Posting API’s **Upload** capability and obtain approval for `video.upload` in the TikTok developer application. Direct Post continues to require `video.publish`. Narriflow requests both during connection; reconnect existing accounts to grant inbox upload. An account missing one scope remains eligible for the other mode.
 
-Configure the verified callback `/api/webhooks/tiktok/publication` with the application client key and secret. Subscribe to `post.publish.inbox_delivered`, `post.publish.complete`, `post.publish.publicly_available`, and `post.publish.failed`. Signature verification uses the unmodified request body and a bounded replay window. Inbox events use `publish_type=INBOX_SHARE`; direct events use `DIRECT_POST`.
+Configure the verified callback `${API_ORIGIN}/api/webhooks/tiktok/publication` with the application client key and secret. Subscribe to `post.publish.inbox_delivered`, `post.publish.complete`, `post.publish.publicly_available`, and `post.publish.failed`. Signature verification uses the unmodified request body and a bounded replay window. Inbox events use `publish_type=INBOX_SHARE`; direct events use `DIRECT_POST`.
 
 Inbox requests use `/v2/post/publish/inbox/video/init/` with FILE_UPLOAD `source_info` only. Do not add title, privacy, interaction, cover, or suggested-description fields. Upload chunks retain the existing encrypted checkpoints and resume the same upload after interruption. `SEND_TO_USER_INBOX` settles Sent to TikTok. No periodic poll or delivery timeout continues while the creator decides when to publish.
 
@@ -123,7 +123,7 @@ References: [Upload video](https://developers.tiktok.com/doc/content-posting-api
 
 ## Performance sync
 
-The worker's `performance_sync` loop reads view and engagement counts back from YouTube Shorts and TikTok. Deploy migration `20261024110000_performance_sync` before the web or worker process; it drops the never-written `SocialPostMetric` table and the always-null `ProviderReceipt.metrics` column.
+The worker's `performance_sync` loop reads view and engagement counts back from YouTube Shorts and TikTok. Deploy migration `20261024110000_performance_sync` before the API or worker process; it drops the never-written `SocialPostMetric` table and the always-null `ProviderReceipt.metrics` column.
 
 - Every verified `PublishedSocialVideo` on a read platform becomes a Tracked Video with five Performance Captures at about 1 hour, 24 hours, 3 days, 7 days, and 28 days after publication. A native adapter's receipt lists the post IDs the platform verified (`platformPostIds`), and settlement writes them as `PublishedSocialVideo`; a TikTok inbox delivery gets one only when a verified webhook reports a public post. A webhook receiver's self-reported `externalPostId` and a manual confirmation never create one. YouTube uploads the platform reports as private or unlisted are not tracked.
 - Workers claim due captures with a lease token fenced on every settlement, so two workers capture once and a worker that lost its lease cannot overwrite the newer result. Captures are batched per account: YouTube `videos.list?part=statistics` takes 50 IDs for 1 quota unit, TikTok `POST /v2/video/query/` takes 20. Tokens refresh through the Social OAuth service.

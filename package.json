@@ -13,10 +13,11 @@
     "dev:mcp": "bun --filter @narriflow/mcp-server dev",
     "mcp:upload": "bun run --cwd apps/mcp upload",
     "env:check": "bun run scripts/env-check.ts",
+    "check:web-split": "bun scripts/check-web-backend-imports.ts",
     "build": "turbo run build",
     "lint": "biome check .",
     "typecheck": "turbo run typecheck",
-    "test": "bun -e 'console.log(\"Fast tests exclude disposable-schema PostgreSQL invariants; run the test:*:db commands separately.\")' && bun test scripts/env-check.test.ts && turbo run test",
+    "test": "bun -e 'console.log(\"Fast tests exclude disposable-schema PostgreSQL invariants; run the test:*:db commands separately.\")' && bun test scripts/env-check.test.ts scripts/check-web-backend-imports.test.ts && turbo run test",
     "test:workflow:db": "bun packages/services/scripts/run-workflow-db-tests.ts",
     "test:upload-session:db": "bun packages/services/scripts/run-upload-session-db-tests.ts",
     "test:processing-usage:db": "bun packages/services/scripts/run-processing-usage-db-tests.ts",
@@ -28,10 +29,10 @@
     "test:integration-api:db": "bun packages/services/scripts/run-integration-api-db-tests.ts",
     "test:library-search:db": "bun packages/services/scripts/run-library-search-db-tests.ts",
     "test:vizard-expansion:db": "bun packages/services/scripts/run-vizard-expansion-db-tests.ts",
-    "test:mcp:e2e": "bun --cwd apps/web ../../packages/mcp-core/scripts/e2e-clients.ts",
+    "test:mcp:e2e": "bun --cwd apps/api ../../packages/mcp-core/scripts/e2e-clients.ts",
     "audit:production": "bun audit --production --audit-level=high",
     "clean": "turbo run clean && rm -rf .turbo node_modules",
-    "test:mcp:integration": "bun test packages/mcp-core/src apps/mcp/src apps/web/lib/integration-admission-parity.test.ts apps/web/lib/mcp-configuration.test.ts apps/web/lib/mcp-upload-http.test.ts apps/web/lib/mcp-upload-handoff.test.ts apps/web/lib/mcp-continuation-principal.test.ts"
+    "test:mcp:integration": "bun test packages/mcp-core/src apps/mcp/src apps/api/src/integration-admission-parity.test.ts apps/api/src/domains/integrations/mcp.test.ts apps/api/src/domains/integrations/mcp-configuration.test.ts apps/api/src/domains/integrations/mcp-upload-http.test.ts apps/api/src/domains/integrations/mcp-upload-handoff.test.ts apps/api/src/domains/integrations/mcp-continuation-principal.test.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.2",
@@ -40,8 +41,7 @@
   },
   "dependencies": {
     "@neon/config": "^1.9.5",
-    "@neon/env": "^1.6.6",
-    "stripe": "^22.5.0"
+    "@neon/env": "^1.6.6"
   },
   "overrides": {
     "brace-expansion": "2.1.6",

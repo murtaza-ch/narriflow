@@ -6,7 +6,7 @@ Use this procedure after restoring the application Postgres database to an earli
 
 - The restored database is reachable through `DATABASE_URL`.
 - The worker has read/write access to the production R2 bucket.
-- Web and worker deployments are stopped or otherwise prevented from serving traffic.
+- API, web and worker deployments are stopped or otherwise prevented from serving traffic.
 - The R2 `retention-receipts/v1/` prefix has not been altered.
 
 ## Replay
@@ -26,7 +26,7 @@ Treat any invalid tombstone as a blocking warning. Investigate the named operati
 1. Run the replay a second time; `projectsRemoved` must be `0`.
 2. Confirm no project whose SHA-256 ID hash appears in an unexpired tombstone exists in `Project`.
 3. Confirm the worker health endpoint is healthy with retention maintenance still stopped.
-4. Re-enable the worker, then the web/API deployment.
+4. Re-enable the worker, then the API and web deployments.
 5. Monitor `expired_project_purge_failed`, `project_retention_maintenance`, and project-not-found rates for at least 30 minutes.
 
 ## Backup policy

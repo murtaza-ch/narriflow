@@ -1,12 +1,18 @@
-import { afterAll, afterEach, beforeAll, describe, expect, mock, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test";
 import { Window } from "happy-dom";
 import { act } from "react";
 import type { Root } from "react-dom/client";
 import type { UpgradeBillingMode } from "./upgrade";
 import type { ReviewRoomData, ReviewRound } from "../projects/[projectId]/review-panel";
 
-mock.module("next/navigation", () => ({ useRouter: () => ({ refresh() {} }) }));
+const navigation = await import("next/navigation");
+mock.module("next/navigation", () => ({ ...navigation, useRouter: () => ({ refresh() {} }) }));
 mock.module("./account-menu", () => ({ AccountAvatar: () => <span /> }));
+// The review surfaces read through the real API provider; only Clerk and HTTP are controlled.
+const USER = "user_upgrade";
+const WORKSPACE = "00000000-0000-4000-8000-000000000001";
+mock.module("@clerk/nextjs", () => ({ useAuth: () => ({ isLoaded: true, userId: USER, getToken: async () => "session-token" }) }));
+process.env.NEXT_PUBLIC_API_URL = "https://api.test";
 
 const browser = new Window({ url: "http://localhost:3000/home" });
 
@@ -14,6 +20,7 @@ let LockedButton: typeof import("./upgrade").LockedButton;
 let UpgradeProvider: typeof import("./upgrade").UpgradeProvider;
 let ChakraProvider: typeof import("@chakra-ui/react").ChakraProvider;
 let system: typeof import("@narriflow/ui/theme").system;
+let ApiProvider: typeof import("@/app/_components/api-provider").ApiProvider;
 let ReviewPanel: typeof import("../projects/[projectId]/review-panel").ReviewPanel;
 let ProjectShareButton: typeof import("../projects/[projectId]/project-share-button").ProjectShareButton;
 let root: Root | null = null;
@@ -76,6 +83,7 @@ beforeAll(async () => {
   ({ LockedButton, UpgradeProvider } = await import("./upgrade"));
   ({ ChakraProvider } = await import("@chakra-ui/react"));
   ({ system } = await import("@narriflow/ui/theme"));
+  ({ ApiProvider } = await import("@/app/_components/api-provider"));
   ({ ReviewPanel } = await import("../projects/[projectId]/review-panel"));
   ({ ProjectShareButton } = await import("../projects/[projectId]/project-share-button"));
 });
@@ -85,6 +93,11 @@ afterEach(async () => {
   root = null;
   browser.document.body.replaceChildren();
   globalThis.fetch = realFetch;
+  browser.localStorage.clear();
+});
+
+beforeEach(() => {
+  browser.localStorage.setItem(`narriflow:workspace:${USER}`, WORKSPACE);
 });
 
 const room: ReviewRoomData = {
@@ -112,7 +125,9 @@ async function renderReview(node: React.ReactNode, currentTier: "business" | "cr
   root = createRoot(container as unknown as HTMLDivElement);
   await act(async () => root?.render(
     <ChakraProvider value={system}>
-      <UpgradeProvider currentTier={currentTier} billingMode="change_plan" canManageBilling>{node}</UpgradeProvider>
+      <ApiProvider>
+        <UpgradeProvider currentTier={currentTier} billingMode="change_plan" canManageBilling>{node}</UpgradeProvider>
+      </ApiProvider>
     </ChakraProvider>,
   ));
 }

@@ -32,7 +32,7 @@ Add the server to `~/.cursor/mcp.json`, or to `.cursor/mcp.json` in one project.
 {
   "mcpServers": {
     "narriflow": {
-      "url": "https://app.narriflow.com/mcp"
+      "url": "https://api.narriflow.example/mcp"
     }
   }
 }
@@ -48,7 +48,7 @@ For unattended runs, send a Workspace API key instead of signing in. Create the 
 {
   "mcpServers": {
     "narriflow": {
-      "url": "https://app.narriflow.com/mcp",
+      "url": "https://api.narriflow.example/mcp",
       "headers": {
         "Authorization": "Bearer ${env:NARRIFLOW_API_KEY}"
       }

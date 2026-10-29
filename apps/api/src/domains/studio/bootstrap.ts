@@ -12,9 +12,9 @@ import {
   type projectService,
   type sceneTemplateService,
   type visualAssetService,
-  brandPlanRequirement,
 } from "@narriflow/services";
 import {
+  brandPlanRequirement,
   type EditorDocument,
   brandTemplateSnapshotSchema,
   getEffectiveClipTiming,

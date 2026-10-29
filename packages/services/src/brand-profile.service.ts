@@ -2,6 +2,7 @@ import { Prisma, type BrandProfile, type BrandTemplate } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
 import {
   brandAudioSnapshotSchema,
+  brandPlanRequirement,
   brandProfileCreateSchema,
   brandProfileListSchema,
   brandProfileMembershipSchema,
@@ -25,7 +26,6 @@ import {
   assertBrandManageAllowed,
   assertBrandMutationAllowed,
   assertBrandMutationAllowedWithAnalytics,
-  brandPlanRequirement,
   brandOwnerWhere,
   lockBrandOwner,
   resolveBrandOwner,

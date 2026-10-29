@@ -8,22 +8,6 @@ import {
 
 export const PROJECT_EVENT_ROW_LIMIT = 20;
 
-/**
- * How many ingest attempts a Project gets before Retry is refused. Mirrors
- * `MAX_INGEST_RETRY_ATTEMPTS` in `packages/services/src/ingest-job-lifecycle.ts`
- * (the browser cannot import services); the service remains the authority and
- * refuses a further retry either way.
- */
-export const MAX_INGEST_RETRY_ATTEMPTS = 5;
-
-/**
- * Ingest stopped because the plan's credits or per-video length ran out, so the
- * Project shows the limit and an upgrade instead of a plain failure. Mirrors
- * `isQuotaBlockedMidFlight` in `packages/services/src/generation-sequencing.ts`.
- */
-export function isQuotaBlockedMidFlight(input: { ingestErrorCode: string | null | undefined }): boolean {
-  return input.ingestErrorCode === "credits_exhausted" || input.ingestErrorCode === "upload_too_long";
-}
 export const PROJECT_EVENT_IDENTITY_LIMIT = 100;
 
 /**

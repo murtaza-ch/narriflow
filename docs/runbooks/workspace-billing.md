@@ -4,7 +4,7 @@ Workspace Billing is the only owner of Stripe synchronization and Workspace enti
 
 ## Deployment gate and configuration
 
-Deploy database migrations before web or worker code. For this cutover the required order is the complete Prisma migration chain through:
+Deploy database migrations before API or worker code. For this cutover the required order is the complete Prisma migration chain through:
 
 1. `20260828100000_workspace_entitlement_cutover`
 2. `20260828110000_workspace_billing_account`
@@ -16,13 +16,13 @@ Deploy database migrations before web or worker code. For this cutover the requi
 8. `20261026000001_checkout_slot`
 9. `20261027140000_workspace_plan_changes`
 
-Run `bun --cwd packages/db run prisma:generate`, then `bun --cwd packages/db run prisma:migrate:deploy` with `packages/db/.env`. Start web and worker only after deployment succeeds.
+Run `bun --cwd packages/db run prisma:generate`, then `bun --cwd packages/db run prisma:migrate:deploy` with `packages/db/.env`. Start the API and worker only after deployment succeeds.
 
 Stripe SDK requests and webhook fixtures are pinned to API version `2026-07-29.dahlia`, the version represented by the installed Stripe SDK. The Stripe webhook endpoint must use the same version. Upgrade the SDK, pinned API version, fixtures, and endpoint together.
 
 Place secrets only in the owning app-local environment file; never create a root `.env` and never commit credentials:
 
-- `apps/web/.env.local`: `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PORTAL_CONFIGURATION_ID`, all eight price IDs, and `DATABASE_URL`.
+- `apps/api/.env`: `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PORTAL_CONFIGURATION_ID`, all eight price IDs, and `DATABASE_URL`.
 - `apps/worker/.env`: `STRIPE_SECRET_KEY`, all eight price IDs, `DATABASE_URL`, and optional bounded worker controls.
 - `packages/db/.env`: `DATABASE_URL` and `DIRECT_URL` for migrations and disposable database drills.
 
@@ -45,7 +45,7 @@ Values must be finite integers. Invalid values stop startup.
 
 ## Stripe webhook endpoint
 
-Register `/api/webhooks/stripe` for exactly these event types:
+Register `${API_ORIGIN}/api/webhooks/stripe` (the API origin, not the web origin; Checkout success/cancel and portal return URLs stay on the web origin's `/settings/billing`) for exactly these event types:
 
 - `checkout.session.completed`
 - `checkout.session.async_payment_succeeded`
@@ -73,7 +73,7 @@ Keep sandbox and live completely separate: distinct keys, endpoint, signing secr
 
 Use one **Narriflow plans** product containing the six fixed USD base prices and one separate **Narriflow Business additional seat** product containing the two seat prices. Stripe charges the subscription; Narriflow reserves and settles monthly processing credits. Annual payment does not grant an annual credit pool. Product and price metadata are diagnostic; configured price IDs own the mapping.
 
-Processing Capacity is also a catalog limit: Free/Creator/Pro/Business allow 2/5/10/20 videos in flight. Admission, usage summaries, and the public comparison read the same catalog value in web and worker. There are no environment overrides for this limit. Worker concurrency settings control execution separately.
+Processing Capacity is also a catalog limit: Free/Creator/Pro/Business allow 2/5/10/20 videos in flight. Admission, usage summaries, and the public comparison read the same catalog value in the API and worker. There are no environment overrides for this limit. Worker concurrency settings control execution separately.
 
 Source credits and length caps use the probed duration: 60.01 seconds costs 2 credits, and a source a fraction over its plan's length cap is refused. Ingest ceilings the integer source-duration column while retaining the exact probe for media timing.
 
@@ -103,7 +103,7 @@ Reconciliation resumes an interrupted confirming attempt with its original quote
 Check the configured catalog and recovery-only portal without creating objects:
 
 ```sh
-RUN_STRIPE_SANDBOX_CONTRACTS=1 bun --env-file=apps/web/.env.local test \
+RUN_STRIPE_SANDBOX_CONTRACTS=1 bun --env-file=apps/api/.env test \
   packages/services/src/workspace-billing.sandbox.test.ts -t "match the plan catalog"
 ```
 
@@ -153,7 +153,7 @@ Provider timeouts retain the last verified projection and retry with bounded bac
 Start with read-only inspection. The command reports normalized local and provider state without customer, subscription, item, Checkout, event, or attempt IDs:
 
 ```sh
-bun --env-file=apps/web/.env.local run packages/services/scripts/workspace-billing-operator.ts \
+bun --env-file=apps/api/.env run packages/services/scripts/workspace-billing-operator.ts \
   --workspace 11111111-1111-4111-8111-111111111111
 ```
 
@@ -164,7 +164,7 @@ The service emits `workspace_billing_metric` records for delivery disposition an
 For a safe manual current-state retry, add the explicit switch:
 
 ```sh
-bun --env-file=apps/web/.env.local run packages/services/scripts/workspace-billing-operator.ts \
+bun --env-file=apps/api/.env run packages/services/scripts/workspace-billing-operator.ts \
   --workspace 11111111-1111-4111-8111-111111111111 \
   --reconcile
 ```
@@ -194,7 +194,7 @@ bun run build
 bun test packages/services/src/workspace-billing.service.test.ts --rerun-each 2
 bun test packages/services/src/workspace-billing.stripe-contract.test.ts
 bun run packages/services/scripts/run-workspace-billing-db-tests.ts
-RUN_STRIPE_SANDBOX_CONTRACTS=1 bun --env-file=apps/web/.env.local test \
+RUN_STRIPE_SANDBOX_CONTRACTS=1 bun --env-file=apps/api/.env test \
   packages/services/src/workspace-billing.sandbox.test.ts
 ```
 
@@ -208,6 +208,6 @@ This is a direct pre-production cutover. Do not add a flag, shadow handler, dual
 
 For application rollback, preserve `WebhookDeliveryLog`, `WorkspaceBillingAccount`, `WorkspaceCheckoutAttempt`, and `WorkspaceBillingTransition` evidence. Roll back code only to a version that understands the deployed schema; otherwise roll forward. Do not reverse migrations against shared data and do not mutate live Stripe objects as part of code rollback.
 
-Because there are no production users or data, inconsistent local fixtures may instead be reset deliberately: stop web and worker, export any evidence needed for debugging, delete only the identified local test Workspaces or recreate the local database, delete only sandbox customers carrying the known test fixture metadata, apply the full migration chain, and restart. Never use a broad customer deletion query and never apply this reset procedure to live mode.
+Because there are no production users or data, inconsistent local fixtures may instead be reset deliberately: stop the API and worker, export any evidence needed for debugging, delete only the identified local test Workspaces or recreate the local database, delete only sandbox customers carrying the known test fixture metadata, apply the full migration chain, and restart. Never use a broad customer deletion query and never apply this reset procedure to live mode.
 
 Live-mode mutations remain prohibited until the sandbox matrix, exact event registration, portal catalog, secrets, migration deploy, operator command, database drill, repository checks, and browser checks all pass and are recorded.

@@ -28,14 +28,27 @@ jobs:
       - name: Test
         run: bun run test
 
+      - name: API route inventory
+        run: bun run --cwd apps/api test:inventory
+
+      - name: Public OpenAPI artifact matches the REST routes
+        run: bun run --cwd apps/api openapi:check
+
       - name: MCP wire and workflow acceptance
         run: bun run test:mcp:integration
 
       - name: Production dependency audit
         run: bun run audit:production
 
+      # The browser reads the API origin at build time. CI builds against the local default.
       - name: Production build
         run: bun run build
+        env:
+          NEXT_PUBLIC_API_URL: http://localhost:4000
+          NEXT_PUBLIC_APP_URL: http://localhost:3000
+
+      - name: Web is a client of the API (imports, Server Actions, route handlers, client bundle)
+        run: bun scripts/check-web-backend-imports.ts --bundle
 
   # integrations/zapier is its own npm project, so the Bun jobs above never run it.
   zapier:

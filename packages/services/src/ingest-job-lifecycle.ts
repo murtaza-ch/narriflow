@@ -5,6 +5,7 @@ import {
   defaultAspectRatioSchema,
   finishingSettingsSchema,
   sourceLanguageCodeSchema,
+  MAX_INGEST_RETRY_ATTEMPTS,
   sourceProbeSchema,
   USER_ERROR_MESSAGES,
   wholeSourceWindow,
@@ -32,7 +33,6 @@ import { admitMediaCleanupObligations } from "./media-cleanup";
 import { emitIntakeFinished, queueIntakeFinishedByGeneration } from "./operation-finished";
 import { flushWorkspaceEvents } from "./workspace-event";
 
-export const MAX_INGEST_RETRY_ATTEMPTS = 5;
 function intakeKindFor(jobType: IngestJob["jobType"]) {
   return jobType === "upload_finalize"
     ? ("upload" as const)

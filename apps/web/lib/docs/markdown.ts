@@ -1,3 +1,4 @@
+import { withDocsApiOrigin } from "./api-origin";
 import { endpointMarkdown } from "./endpoint-markdown";
 import { docsEntries } from "./entries";
 import { mdxToMarkdown } from "./mdx-to-markdown";
@@ -29,7 +30,7 @@ async function partsOf(href: string): Promise<Parts | undefined> {
   const page = docsSource.getPage(slugOf(href));
   if (page) {
     const { title, description } = page.data;
-    return { title, description, body: linkToMarkdown(withoutHeadingIds(mdxToMarkdown(await page.data.getText("processed")))) };
+    return { title, description, body: withDocsApiOrigin(linkToMarkdown(withoutHeadingIds(mdxToMarkdown(await page.data.getText("processed"))))) };
   }
   const operation = findOperation(href);
   if (!operation) return undefined;

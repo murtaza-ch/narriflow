@@ -19,7 +19,7 @@ The Narriflow app for Zapier covers the same ground as the [REST API](/docs/api/
     Open the invite link while signed in to Zapier and select **Accept Invite & Build a Zap**.
   </Step>
   <Step title="Connect Narriflow">
-    Add a Narriflow step to a Zap, select **Sign in** and paste the API key. Leave **Narriflow URL** as `https://app.narriflow.com`. Zapier names the connection after your Workspace.
+    Add a Narriflow step to a Zap, select **Sign in** and paste the API key. Enter `https://api.narriflow.example` as **Narriflow URL**. It is the API address, not the address of the Narriflow app. Zapier names the connection after your Workspace.
   </Step>
 </Steps>
 
@@ -96,4 +96,4 @@ Turn on **Finish Automatically** in Submit Video Link or an Autopilot rule so th
 | `plan_feature_required` | The Workspace's plan doesn't include the API. It needs Pro or Business. |
 | `integration_access_unavailable` | The Workspace isn't active, for example while a payment is overdue. |
 | Post Published and Post Needs Attention fail, naming `publishing:read` | The key lacks that permission, so Narriflow hides events about posts from it. |
-| The connection test fails with a URL message | **Narriflow URL** must be an `https://` address. Leave it as `https://app.narriflow.com` unless Narriflow gave you a development address. |
+| The connection test fails with a URL message | **Narriflow URL** must be the `https://` API address, `https://api.narriflow.example`. A connection made before the API moved to its own address needs this field updated. |

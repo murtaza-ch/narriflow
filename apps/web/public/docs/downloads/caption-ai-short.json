@@ -93,7 +93,7 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "={{ $vars.NARRIFLOW_URL || 'https://app.narriflow.com' }}/api/v1/captioned-videos",
+        "url": "={{ $vars.NARRIFLOW_URL || 'https://api.narriflow.example' }}/api/v1/captioned-videos",
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
         "sendHeaders": true,
@@ -170,7 +170,7 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "={{ $vars.NARRIFLOW_URL || 'https://app.narriflow.com' }}/api/v1/uploads/{{ $('Open upload').item.json.upload.uploadId }}/finalize",
+        "url": "={{ $vars.NARRIFLOW_URL || 'https://api.narriflow.example' }}/api/v1/uploads/{{ $('Open upload').item.json.upload.uploadId }}/finalize",
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
         "sendBody": true,
@@ -408,7 +408,7 @@
     {
       "parameters": {
         "method": "GET",
-        "url": "={{ $vars.NARRIFLOW_URL || 'https://app.narriflow.com' }}/api/v1/exports/{{ $json.results.exportId }}/download",
+        "url": "={{ $vars.NARRIFLOW_URL || 'https://api.narriflow.example' }}/api/v1/exports/{{ $json.results.exportId }}/download",
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
         "options": {}

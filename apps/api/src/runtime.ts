@@ -106,6 +106,7 @@ export function createDomainRoutes(config: ApiConfig): ApiDomainRoutes {
 /** The apps mounted outside the first-party chain: webhooks, public REST and the MCP transport. */
 export function createExternalRoutes(
   config: ApiConfig,
+  clerkClient?: ReturnType<typeof createServerClerkClient>,
 ): Pick<ApiAppDependencies, "webhooks" | "rest" | "mcp"> {
   return {
     webhooks: {
@@ -114,7 +115,7 @@ export function createExternalRoutes(
       automation: createAutomationWebhookRoutes(createAutomationWebhookDeps()),
     },
     rest: createRestRoutes(createRestRouteDeps(config)),
-    mcp: createMcpTransportRoutes(createMcpTransportDeps(config)),
+    mcp: createMcpTransportRoutes(createMcpTransportDeps(config, clerkClient)),
   };
 }
 
@@ -145,7 +146,7 @@ export function createProductionApp(config: ApiConfig, lifecycle: ApiLifecycle):
       clerkClient,
     }),
     domains: createDomainRoutes(config),
-    ...createExternalRoutes(config),
+    ...createExternalRoutes(config, clerkClient),
     admin: {
       rateLimit: ({ key, limit, windowSeconds }) => checkRateLimit(key, limit, windowSeconds),
     },

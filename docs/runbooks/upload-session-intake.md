@@ -21,14 +21,14 @@ machine. This is a pre-production direct cutover with no compatibility mode.
    The prefix must start with `test/` or `tests/`. Every fixture adds a UUID
    below it and cleans up in `finally`; never substitute a workspace or project
    prefix.
-4. Deploy the web and worker together. There is no feature flag, shadow write,
+4. Deploy the API and worker together. There is no feature flag, shadow write,
    legacy payload, or old Project-owned upload fallback.
 5. Run the authenticated browser checklist below, then watch terminal outcomes
    and reconciliation age before accepting the cutover.
 
 ## R2 browser contract
 
-The bucket CORS policy must allow the web origins to issue `PUT` and `OPTIONS`,
+The bucket CORS policy must allow the web origins (the browser uploads directly; the API origin is not a browser origin for R2) to issue `PUT` and `OPTIONS`,
 allow the `Content-Type` request header, and expose the `ETag` response header.
 The signed direct PUT includes the normalized media `Content-Type`; the browser
 must send that exact value. Multipart part signatures do not authorize a
@@ -144,7 +144,7 @@ lost browser responses or provider instability.
 
 ## Rollback and cleanup
 
-Stop the upgraded web and worker together before rolling code back. Because
+Stop the upgraded API and worker together before rolling code back. Because
 there are no production users or mixed-version deployments, either keep the
 new schema and resume with the upgraded code, or deliberately reset local
 Upload Session rows and version-3 browser resume records. Do not restore the

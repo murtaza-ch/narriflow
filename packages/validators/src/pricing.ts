@@ -297,6 +297,32 @@ export function planFeatureRequirement(
   };
 }
 
+export type BrandPlanRequirement = { requiredTier: PricingTier | null; message: string };
+
+/**
+ * Why this Workspace's plan can't use a branding `feature`, or `null` when it
+ * can. Branding in a collaborative Workspace is part of team collaboration, so
+ * there the plan needs the feature and `workspace.members`. The service refusal
+ * and every upgrade prompt read this one policy, so an offered tier always
+ * unlocks the action.
+ */
+export function brandPlanRequirement(
+  scope: { pricingTier: string | null | undefined; isPersonalWorkspace: boolean },
+  feature: PlanFeature,
+): BrandPlanRequirement | null {
+  if (scope.isPersonalWorkspace) return planFeatureRequirement(scope.pricingTier, feature);
+  if (hasFeature(scope.pricingTier, feature) && hasFeature(scope.pricingTier, "workspace.members")) {
+    return null;
+  }
+  const requiredTier = lowestTier((plan) => plan.features[feature] && plan.features["workspace.members"]);
+  return {
+    requiredTier,
+    message: requiredTier
+      ? `Branding in a shared Workspace needs the ${PLAN_CATALOG[requiredTier].name} plan.`
+      : "Branding in a shared Workspace is not available on any plan.",
+  };
+}
+
 /** Count limits enforced when an object is created or activated. */
 export type PlanCountLimit =
   | "brandProfiles"

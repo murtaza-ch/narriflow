@@ -3,9 +3,8 @@ import { ADMISSION_TABLES } from "./domains";
 import type { AdmissionEntry } from "./domains/platform/admission-table";
 
 /**
- * The 50 preserved per-operation limits of the spec (scope, key prefix, limit,
- * window seconds, capability). Rows whose route belongs to a domain that has
- * not yet relocated its sibling module are checked as soon as it declares them.
+ * The preserved per-operation limits of the spec (scope, key prefix, limit,
+ * window seconds, capability).
  */
 const PRESERVED_LIMITS: ReadonlyArray<readonly [string, "actor" | "workspace", string, number, number, string]> = [
   ["POST /autopilot/rules", "workspace", "autopilot-create", 5, 3600, "content.edit"],
@@ -57,7 +56,7 @@ const PRESERVED_LIMITS: ReadonlyArray<readonly [string, "actor" | "workspace", s
   ["POST /projects/:id/campaign-operations/schedule", "actor", "campaign-schedule", 20, 3600, "publishing.manage"],
   ["GET /projects/:id/social-accounts/:accountId/publishing-options", "actor", "publishing-options", 30, 60, "content.view"],
   ["POST /projects/:id/social-posts/:postId/refresh-inbox", "actor", "refresh-inbox", 20, 60, "publishing.manage"],
-  ["GET /zoom/oauth/start", "actor", "zoom-connect", 10, 3600, "content.edit"],
+  ["POST /zoom/oauth/start", "actor", "zoom-connect", 10, 3600, "content.edit"],
 ];
 
 function declaration(key: string): AdmissionEntry | undefined {
@@ -69,10 +68,11 @@ function declaration(key: string): AdmissionEntry | undefined {
 }
 
 describe("preserved admission declarations", () => {
-  const present = PRESERVED_LIMITS.filter(([key]) => declaration(key));
+  const present = PRESERVED_LIMITS;
 
-  test("the partition carries at least the limits of the catch-all's own routes", () => {
-    expect(present.length).toBeGreaterThanOrEqual(35);
+  test("every preserved limit still names a declared route (a renamed key must not be skipped)", () => {
+    const missing = PRESERVED_LIMITS.filter(([key]) => !declaration(key)).map(([key]) => key);
+    expect(missing).toEqual([]);
   });
 
   test.each(present)("%s keeps its scope, bucket, window and capability", (key, scope, prefix, limit, windowSeconds, capability) => {

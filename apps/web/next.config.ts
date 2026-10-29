@@ -2,29 +2,27 @@ import path from "node:path";
 import { createMDX } from "fumadocs-mdx/next";
 import type { NextConfig } from "next";
 
+// The browser calls the API origin directly (Bearer fetch, streams, review and
+// share reads), so it must be allowed by connect-src. The build fails loudly
+// without it rather than shipping pages that cannot reach their data.
+function apiOrigin(): string {
+  const value = process.env.NEXT_PUBLIC_API_URL?.trim();
+  if (!value) {
+    if (process.env.NODE_ENV === "production") throw new Error("NEXT_PUBLIC_API_URL is required to build the web app");
+    return "http://localhost:4000";
+  }
+  return new URL(value).origin;
+}
+const API_ORIGIN = apiOrigin();
+
 const reviewScriptSource = process.env.NODE_ENV === "development"
   ? "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://*.clerk.accounts.dev https://*.clerk.com"
   : "script-src 'self' 'unsafe-inline' https://*.clerk.accounts.dev https://*.clerk.com";
 
 const nextConfig: NextConfig = {
   outputFileTracingRoot: path.join(__dirname, "../.."),
-  serverExternalPackages: ["@node-rs/argon2", "@ffprobe-installer/ffprobe", "sharp"],
-  outputFileTracingIncludes: {
-    "/*": [
-      "../../node_modules/sharp/**/*",
-      "../../node_modules/@img/sharp*-linux-x64/**/*",
-    ],
-    "/api/*": [
-      "../../node_modules/@ffprobe-installer/*/{ffprobe,**/*.js,**/*.json}",
-      "../../node_modules/.bun/@ffprobe-installer+*/node_modules/@ffprobe-installer/*/{ffprobe,**/*.js,**/*.json}",
-    ],
-  },
   transpilePackages: [
     "@narriflow/api-client",
-    "@narriflow/auth",
-    "@narriflow/db",
-    "@narriflow/email",
-    "@narriflow/services",
     "@narriflow/ui",
     "@narriflow/validators",
   ],
@@ -101,7 +99,7 @@ const nextConfig: NextConfig = {
               "style-src 'self' 'unsafe-inline'",
               // Google Identity Services and Picker, and the Dropbox Chooser, for the upload page's cloud pickers.
               "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://*.clerk.accounts.dev https://*.clerk.com https://accounts.google.com https://apis.google.com https://www.dropbox.com",
-              "connect-src 'self' https://*.clerk.accounts.dev https://*.clerk.com https://*.r2.cloudflarestorage.com https://*.upstash.io https://accounts.google.com",
+              `connect-src 'self' ${API_ORIGIN} https://*.clerk.accounts.dev https://*.clerk.com https://*.r2.cloudflarestorage.com https://accounts.google.com`,
               "frame-src 'self' https://*.clerk.accounts.dev https://*.clerk.com https://accounts.google.com https://docs.google.com https://content.googleapis.com https://www.dropbox.com",
               "worker-src 'self' blob:",
             ].join("; ") + ";",
@@ -124,7 +122,7 @@ const nextConfig: NextConfig = {
           { key: "Cache-Control", value: "private, no-store, max-age=0" },
           {
             key: "Content-Security-Policy",
-            value: `default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; img-src 'self' data: blob: https://*.clerk.accounts.dev https://*.clerk.com; media-src 'self' blob: https://*.r2.cloudflarestorage.com; font-src 'self' data:; style-src 'self' 'unsafe-inline'; ${reviewScriptSource}; connect-src 'self' https://*.clerk.accounts.dev https://*.clerk.com; frame-src 'self' https://*.clerk.accounts.dev https://*.clerk.com;`,
+            value: `default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; img-src 'self' data: blob: https://*.clerk.accounts.dev https://*.clerk.com; media-src 'self' blob: https://*.r2.cloudflarestorage.com; font-src 'self' data:; style-src 'self' 'unsafe-inline'; ${reviewScriptSource}; connect-src 'self' ${API_ORIGIN} https://*.clerk.accounts.dev https://*.clerk.com; frame-src 'self' https://*.clerk.accounts.dev https://*.clerk.com;`,
           },
         ],
       },

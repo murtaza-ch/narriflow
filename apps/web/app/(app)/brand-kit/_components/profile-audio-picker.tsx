@@ -7,7 +7,7 @@ import type { AudioAssetKindInput } from "@narriflow/validators";
 import { Button } from "@narriflow/ui/components/button";
 import { Dialog, Portal } from "@narriflow/ui/components/dialog";
 import { SegmentedControl } from "@narriflow/ui/components/segmented-control";
-import { AUDIO_UPLOAD_ACCEPT, AUDIO_UPLOAD_MAX_MB } from "@/app/(app)/projects/[projectId]/clips/[clipId]/studio/_components/tool-panels/audio-upload";
+import { AUDIO_UPLOAD_ACCEPT, AUDIO_UPLOAD_MAX_MB } from "@/lib/audio-upload";
 import { formatDuration } from "@/lib/format";
 import { useAudioLibrary, useAudioUpload } from "./profile-audio-library";
 import { useMembershipChange } from "./profile-membership";

@@ -6,7 +6,7 @@ description: Add Narriflow to Claude Code as a remote HTTP MCP server.
 <Steps>
   <Step title="Add the server">
     ```bash
-    claude mcp add --transport http narriflow https://app.narriflow.com/mcp
+    claude mcp add --transport http narriflow https://api.narriflow.example/mcp
     ```
   </Step>
   <Step title="Sign in">
@@ -30,7 +30,7 @@ description: Add Narriflow to Claude Code as a remote HTTP MCP server.
 For unattended runs, send a Workspace API key instead of signing in. Create the key in **Settings → Developer access** and keep it in an environment variable.
 
 ```bash
-claude mcp add --transport http narriflow https://app.narriflow.com/mcp \
+claude mcp add --transport http narriflow https://api.narriflow.example/mcp \
   --header "Authorization: Bearer $NARRIFLOW_API_KEY"
 ```
 

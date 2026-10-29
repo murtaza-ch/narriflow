@@ -8,7 +8,7 @@ description: Connect any client that supports remote Streamable HTTP MCP servers
 | Setting | Value |
 | --- | --- |
 | Transport | Streamable HTTP |
-| URL | `https://app.narriflow.com/mcp` |
+| URL | `https://api.narriflow.example/mcp` |
 | Sign-in | OAuth 2.1 with PKCE (S256), or `Authorization: Bearer nf_…` with a Workspace API key |
 | Rate limit | 300 authenticated requests per minute per credential |
 
@@ -18,9 +18,9 @@ Use OAuth when a person signs in. The client discovers everything from the serve
 
 | Document | URL |
 | --- | --- |
-| Protected resource metadata | `https://app.narriflow.com/.well-known/oauth-protected-resource/mcp` |
+| Protected resource metadata | `https://api.narriflow.example/.well-known/oauth-protected-resource/mcp` |
 
-The client must send the resource indicator (RFC 8707) with the exact MCP URL, `https://app.narriflow.com/mcp`. Narriflow rejects tokens issued for any other audience. Read scopes are granted by default. Each write scope needs explicit approval. See [Permissions](/docs/ai/permissions) for the scope list.
+The client must send the resource indicator (RFC 8707) with the exact MCP URL, `https://api.narriflow.example/mcp`. Narriflow rejects tokens issued for any other audience. Read scopes are granted by default. Each write scope needs explicit approval. See [Permissions](/docs/ai/permissions) for the scope list.
 
 ## API key
 
@@ -39,7 +39,7 @@ A key works in one Workspace. Do not paste it into prompts or share it in config
 <Steps>
   <Step title="Start the Inspector">
     ```bash
-    npx @modelcontextprotocol/inspector --server-url https://app.narriflow.com/mcp --transport http
+    npx @modelcontextprotocol/inspector --server-url https://api.narriflow.example/mcp --transport http
     ```
   </Step>
   <Step title="Connect">

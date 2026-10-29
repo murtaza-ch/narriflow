@@ -1,20 +1,21 @@
 import { describe, expect, test } from "bun:test";
 import { MCP_TOOL_COMMANDS } from "@narriflow/mcp-core";
 import { INTEGRATION_COMMANDS, type IntegrationCommand } from "@narriflow/services";
-import { createRestApi, REST_ENDPOINT_COMMANDS } from "./rest-api/app";
-import {
-  browserSessionHonoSurfaces,
-  browserSessionPages,
-} from "./authenticated-request-inventory";
+import { Hono } from "hono";
+import { ADMISSION_TABLES } from "./domains";
+import type { AdmissionEntry } from "./domains/platform/admission-table";
+import { REST_ENDPOINT_COMMANDS } from "./domains/rest/admission";
+import { createRestRoutes } from "./domains/rest/routes";
 
-type BrowserPeer = { method: "GET" | "POST"; path: string } | { module: string };
+type BrowserPeer = { method: "GET" | "POST"; path: string };
 
-// The web app checks its own declarations without making integrations depend
-// on browser policy. Every integration command has a browser peer.
+// The API checks its own first-party declarations without making integrations
+// depend on browser policy. Every integration command has a first-party peer
+// route in the domain admission tables.
 const browserPeers = {
   list_projects: { method: "GET", path: "/projects" },
-  get_project: { module: "app/(app)/projects/[projectId]/page.tsx" },
-  get_workspace_usage: { module: "app/(app)/settings/usage/page.tsx" },
+  get_project: { method: "GET", path: "/projects/:id" },
+  get_workspace_usage: { method: "GET", path: "/workspace/usage" },
   // Events report what finished across the Workspace's projects, so they take the project list's role.
   list_events: { method: "GET", path: "/projects" },
   // Webhooks deliver those same events, so reading them takes the project list's role.
@@ -37,14 +38,14 @@ const browserPeers = {
   get_clip: { method: "GET", path: "/projects/:id/clips" },
   create_clip_export: { method: "POST", path: "/projects/:id/clips/:clipId/exports" },
   get_clip_export: { method: "GET", path: "/projects/:id/clips/:clipId/exports/:exportId" },
-  list_social_accounts: { module: "app/(app)/projects/[projectId]/page.tsx" },
+  list_social_accounts: { method: "GET", path: "/social/accounts" },
   get_publishing_options: { method: "GET", path: "/projects/:id/social-accounts/:accountId/publishing-options" },
   prepare_social_post: { method: "POST", path: "/projects/:id/campaign-operations/schedule/preview" },
   // Proposing queues a post for acceptance; accepting it schedules it, which takes the same role.
   propose_social_post: { method: "POST", path: "/projects/:id/campaign-operations/schedule" },
   schedule_social_post: { method: "POST", path: "/projects/:id/campaign-operations/schedule" },
   list_social_publications: { method: "GET", path: "/projects/:id/social-posts" },
-  get_operation: { module: "app/(app)/projects/[projectId]/page.tsx" },
+  get_operation: { method: "GET", path: "/projects/:id" },
   // Starting work and asking for its completion notice again need the same role.
   redeliver_callback: { method: "POST", path: "/projects/:id/generate" },
   get_export_download: { method: "GET", path: "/projects/:id/clips/:clipId/exports/:exportId" },
@@ -56,6 +57,14 @@ const browserPeers = {
   get_review_round: { method: "GET", path: "/projects/:id/review-rounds" },
 } satisfies Record<IntegrationCommand, BrowserPeer>;
 
+function firstPartyEntry(key: string): AdmissionEntry | undefined {
+  for (const table of Object.values(ADMISSION_TABLES)) {
+    const entry = (table as Record<string, AdmissionEntry>)[key];
+    if (entry) return entry;
+  }
+  return undefined;
+}
+
 describe("integration and browser capability parity", () => {
   test("every MCP workspace tool is an integration command; only discovery is MCP-only", () => {
     const commands = Object.entries(MCP_TOOL_COMMANDS);
@@ -64,7 +73,13 @@ describe("integration and browser capability parity", () => {
   });
 
   test("every REST endpoint admits one integration command with a browser peer", async () => {
-    const app = createRestApi({ checkRateLimit: async () => ({ allowed: true, availability: "available", remaining: 1, limit: 1 }), appOrigin: () => "https://narriflow.test", log: () => {} });
+    const app = new Hono().route("/api/v1", createRestRoutes({
+      checkRateLimit: async () => ({ allowed: true, availability: "available", remaining: 1, limit: 1 }),
+      apiOrigin: () => "https://api.narriflow.test",
+      webOrigin: () => "https://narriflow.test",
+      corsAllowedOrigins: ["https://narriflow.test"],
+      log: () => {},
+    }));
     const document = await (await app.request("/api/v1/openapi.json")).json() as { paths: Record<string, Record<string, unknown>> };
     const documented = Object.entries(document.paths).flatMap(([path, methods]) => Object.keys(methods).map((method) => `${method.toUpperCase()} ${path.replace("/api/v1", "")}`));
     expect(documented.sort()).toEqual(Object.keys(REST_ENDPOINT_COMMANDS).sort());
@@ -75,20 +90,10 @@ describe("integration and browser capability parity", () => {
     test(`${command} uses its browser peer's capability`, () => {
       const peer: BrowserPeer = browserPeers[command];
       const policy = INTEGRATION_COMMANDS[command];
-      if ("module" in peer) {
-        const surface = browserSessionPages.find((entry) => entry.module === peer.module);
-        expect(surface).toBeDefined();
-        expect(surface?.admission).not.toBe("signed_in");
-        if (!surface || surface.admission === "signed_in") throw new Error(`Missing Workspace page peer for ${command}`);
-        expect(policy.capability).toBe(surface.capability);
-      } else {
-        const surface = browserSessionHonoSurfaces.find((entry) =>
-          entry.method === peer.method && entry.path === peer.path,
-        );
-        expect(surface).toBeDefined();
-        if (!surface) throw new Error(`Missing browser route peer for ${command}`);
-        expect(policy.capability).toBe(surface.capability);
-      }
+      const entry = firstPartyEntry(`${peer.method} ${peer.path}`);
+      expect(entry).toBeDefined();
+      if (!entry || "trust" in entry) throw new Error(`Missing first-party peer route for ${command}`);
+      expect(policy.capability).toBe(entry.capability);
     });
   }
 });

@@ -18,7 +18,14 @@ import {
 	campaignOperationService,
 } from "./campaign-operation.service";
 import { clipEditorDocumentPersistence } from "./clip-editor-document-persistence";
-import { ReviewServiceError, reviewService } from "./review.service";
+import { ReviewService, ReviewServiceError, reviewService } from "./review.service";
+
+/** New guest commands need an available limiter (no Redis in a disposable gate) and a caller key each. */
+const guestReviews = new ReviewService(async (_key, limit) => ({ allowed: true, availability: "available", remaining: limit, limit }));
+const decideAsGuest = (session: string, secret: string, input: unknown) =>
+	guestReviews.decide(session, secret, input, { clientIdempotencyKey: randomUUID() });
+const addGuestComment = async (session: string, secret: string, input: unknown) =>
+	(await guestReviews.addComment(session, secret, input, { clientIdempotencyKey: randomUUID() })).value;
 import { sceneTemplateService } from "./scene-template.service";
 import { socialOAuthService } from "./social-oauth.service";
 import { visualAssetService } from "./visual-asset.service";
@@ -2124,7 +2131,7 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 			),
 		).rejects.toMatchObject({ code: "review_download_forbidden" });
 		await expect(
-			reviewService.addComment(secondSession, sessionSecret, {
+			addGuestComment(secondSession, sessionSecret, {
 				itemId: null,
 				parentId: null,
 				body: "Impossible round timecode",
@@ -2132,14 +2139,14 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 			}),
 		).rejects.toMatchObject({ code: "review_timecode_requires_item" });
 		await expect(
-			reviewService.addComment(secondSession, sessionSecret, {
+			addGuestComment(secondSession, sessionSecret, {
 				itemId: item.id,
 				parentId: null,
 				body: "Past the frozen export",
 				timestampSec: 11,
 			}),
 		).rejects.toMatchObject({ code: "review_timecode_out_of_range" });
-		const parentComment = await reviewService.addComment(
+		const parentComment = await addGuestComment(
 			secondSession,
 			sessionSecret,
 			{
@@ -2149,7 +2156,7 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 				timestampSec: 10,
 			},
 		);
-		const internalReplyParent = await reviewService.addComment(
+		const internalReplyParent = await addGuestComment(
 			secondSession,
 			sessionSecret,
 			{
@@ -2235,25 +2242,34 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 				},
 			}),
 		).toBe(4);
-		const auditPayload = JSON.stringify(
-			await prisma.reviewAuditEvent.findMany({
-				where: { reviewRoundId: created.id },
-			}),
-		);
+		const auditEvents = await prisma.reviewAuditEvent.findMany({
+			where: { reviewRoundId: created.id },
+		});
+		// Credentials, recipient addresses and links appear nowhere in the audit trail.
+		const auditPayload = JSON.stringify(auditEvents);
 		for (const secretValue of [
 			created.token,
 			"review-secret",
-			"Client updated",
 			"client@example.test",
 			"second@example.test",
 			"third@example.test",
 			"fourth@example.test",
-			parentComment.body,
 			"https://review.example/private",
 		]) {
 			expect(auditPayload).not.toContain(secretValue);
 		}
-		const reply = await reviewService.addComment(
+		// A guest command's replay snapshot (its comment text and display name) lives only under
+		// `metadata.receipt`; everything else on the event stays free of guest content.
+		const eventsWithoutReceipts = JSON.stringify(
+			auditEvents.map((event) => {
+				const { receipt: _receipt, ...rest } = (event.metadata ?? {}) as Record<string, unknown>;
+				return { ...event, metadata: rest };
+			}),
+		);
+		for (const guestContent of ["Client updated", parentComment.body]) {
+			expect(eventsWithoutReceipts).not.toContain(guestContent);
+		}
+		const reply = await addGuestComment(
 			additionalSessions[0]!,
 			sessionSecret,
 			{
@@ -2286,12 +2302,12 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 		).resolves.toEqual({ deleted: true });
 
 		const decisions = await Promise.all([
-			reviewService.decide(secondSession, sessionSecret, {
+			decideAsGuest(secondSession, sessionSecret, {
 				itemId: item.id,
 				decision: "approved",
 				reason: null,
 			}),
-			reviewService.decide(secondSession, sessionSecret, {
+			decideAsGuest(secondSession, sessionSecret, {
 				itemId: item.id,
 				decision: "changes_requested",
 				reason: "Tighten the opening",
@@ -2308,17 +2324,17 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 				where: { reviewRoundId: created.id, supersededAt: null },
 			}),
 		).toBe(1);
-		await reviewService.decide(secondSession, sessionSecret, {
+		await decideAsGuest(secondSession, sessionSecret, {
 			itemId: item.id,
 			decision: "changes_requested",
 			reason: "Tighten the opening",
 		});
-		await reviewService.decide(secondSession, sessionSecret, {
+		await decideAsGuest(secondSession, sessionSecret, {
 			itemId: item.id,
 			decision: "approved",
 			reason: null,
 		});
-		await reviewService.decide(secondSession, sessionSecret, {
+		await decideAsGuest(secondSession, sessionSecret, {
 			itemId: null,
 			decision: "approved",
 			reason: null,
@@ -2508,7 +2524,7 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 			"203.0.113.77",
 			sessionSecret,
 		);
-		const unresolved = await reviewService.addComment(
+		const unresolved = await addGuestComment(
 			reviewSession,
 			sessionSecret,
 			{

@@ -1,15 +1,12 @@
 import type { Prisma } from "@prisma/client";
 import {
-  hasFeature,
-  lowestTier,
+  brandPlanRequirement,
   planCountRequirement,
-  planFeatureRequirement,
-  PLAN_CATALOG,
   PRICING_TIER_ORDER,
   resolvePricingTier,
   workspaceAllowsCapability,
+  type BrandPlanRequirement,
   type PlanCountLimit,
-  type PricingTier,
   type WorkspaceAccessRole,
   type WorkspaceAccessStatus,
 } from "@narriflow/validators";
@@ -115,35 +112,6 @@ export function assertBrandManageAllowed(
   if (!workspaceAllowsCapability({ role: scope.role, status: scope.status }, "brand.manage")) {
     throw new BrandAccessError("brand_forbidden");
   }
-}
-
-export interface BrandPlanRequirement {
-  requiredTier: PricingTier | null;
-  message: string;
-}
-
-/**
- * Why this Workspace's plan can't use a branding `feature`, or `null` when it
- * can. Branding in a collaborative Workspace is part of team collaboration, so
- * there the plan needs the feature and `workspace.members`. The service refusal
- * and every upgrade prompt read this one policy, so an offered tier always
- * unlocks the action.
- */
-export function brandPlanRequirement(
-  scope: Pick<BrandActorScope, "pricingTier" | "isPersonalWorkspace">,
-  feature: PlanFeature,
-): BrandPlanRequirement | null {
-  if (scope.isPersonalWorkspace) return planFeatureRequirement(scope.pricingTier, feature);
-  if (hasFeature(scope.pricingTier, feature) && hasFeature(scope.pricingTier, "workspace.members")) {
-    return null;
-  }
-  const requiredTier = lowestTier((plan) => plan.features[feature] && plan.features["workspace.members"]);
-  return {
-    requiredTier,
-    message: requiredTier
-      ? `Branding in a shared Workspace needs the ${PLAN_CATALOG[requiredTier].name} plan.`
-      : "Branding in a shared Workspace is not available on any plan.",
-  };
 }
 
 /**

@@ -19,7 +19,7 @@ The Narriflow app for Make covers the same ground as the [REST API](/docs/api/in
     Open the invite link while signed in to Make and confirm the installation in your organization.
   </Step>
   <Step title="Create a connection">
-    Add a Narriflow module to a scenario, select **Add** next to **Connection** and paste the API key. Leave **Narriflow URL** (under **Show advanced settings**) as `https://app.narriflow.com`. Make names the connection after your Workspace.
+    Add a Narriflow module to a scenario, select **Add** next to **Connection** and paste the API key. Enter `https://api.narriflow.example` as **Narriflow URL** (under **Show advanced settings**). It is the API address, not the address of the Narriflow app. Make names the connection after your Workspace.
   </Step>
 </Steps>
 
@@ -97,4 +97,4 @@ Turn on **Finish automatically** in Submit a video link or an Autopilot rule so 
 | `integration_access_unavailable` | The Workspace isn't active, for example while a payment is overdue. |
 | Social post events fail, naming `publishing:read` | The key lacks that permission, so Narriflow hides events about posts from it. |
 | A module returns an earlier result and **Replay of an earlier identical request** is true | The same Run key and inputs were used before. Change an input, or map a new Run key. |
-| The connection test fails with a URL message | **Narriflow URL** must be an `https://` origin. Leave it as `https://app.narriflow.com` unless Narriflow gave you a development address. |
+| The connection test fails with a URL message | **Narriflow URL** must be the `https://` API origin, `https://api.narriflow.example`. A connection made before the API moved to its own address needs this field updated. |

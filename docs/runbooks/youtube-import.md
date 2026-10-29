@@ -24,7 +24,7 @@ docker build -f apps/worker/Dockerfile -t narriflow-worker .
 docker run --rm --env-file apps/worker/.env narriflow-worker
 ```
 
-Do not publish port 4416. The web app still needs its own environment file.
+Do not publish port 4416. The API and web app still need their own environment files.
 The worker image contains no application secrets.
 
 ## Native development

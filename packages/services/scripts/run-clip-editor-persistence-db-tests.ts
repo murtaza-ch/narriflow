@@ -76,6 +76,7 @@ try {
   for (const testFile of [
     "packages/services/src/clip-editor-document-persistence.db.test.ts",
     "packages/services/src/clip-duplicate-media.db.test.ts",
+    "packages/services/src/clips-commands.db.test.ts",
   ]) {
     await run(["bun", "test", testFile], testEnv);
   }

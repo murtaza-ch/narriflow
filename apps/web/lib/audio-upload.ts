@@ -1,13 +1,15 @@
 "use client";
 
 import { ApiError } from "@narriflow/api-client/core";
-import { type BrandApi, brandMutations } from "@narriflow/api-client/brand";
+import type { BrandMutations } from "@narriflow/api-client/brand";
 import { AUDIO_UPLOAD_MAX_BYTES, audioUploadContentTypeSchema, type AudioAssetKindInput } from "@narriflow/validators";
 
 export const AUDIO_UPLOAD_ACCEPT = ".mp3,.wav,.m4a,audio/mpeg,audio/wav,audio/x-wav,audio/mp4,audio/x-m4a";
 export const AUDIO_UPLOAD_MAX_MB = Math.floor(AUDIO_UPLOAD_MAX_BYTES / (1024 * 1024));
 
-const EXTENSION_CONTENT_TYPE: Record<string, string> = {
+type AudioContentType = ReturnType<typeof audioUploadContentTypeSchema.parse>;
+
+const EXTENSION_CONTENT_TYPE: Record<string, AudioContentType> = {
   mp3: "audio/mpeg",
   wav: "audio/wav",
   m4a: "audio/mp4",
@@ -16,7 +18,7 @@ const EXTENSION_CONTENT_TYPE: Record<string, string> = {
 /** Browsers are inconsistent about `File.type` for audio (empty string for
  *  some .m4a files, "audio/x-m4a" vs "audio/mp4" for others) — fall back to
  *  the extension when the reported type isn't one the server accepts. */
-function resolveContentType(file: File): string | null {
+function resolveContentType(file: File): AudioContentType | null {
   const reportedType = audioUploadContentTypeSchema.safeParse(file.type);
   if (reportedType.success) return reportedType.data;
   const ext = file.name.split(".").pop()?.toLowerCase();
@@ -65,24 +67,22 @@ function failureCopy(error: unknown, fallback: string): string {
 
 /** Uploads one file into the owner's audio library and returns the new asset.
  *  The bytes go straight to storage on a presigned URL, without session credentials.
- *  Throws an Error whose message is user-facing copy. */
+ *  Throws an Error whose message is user-facing copy. Studio and the Brand Kit both upload through this. */
 export async function uploadAudioFile(
   file: File,
   kind: AudioAssetKindInput,
-  api: BrandApi | null,
+  mutations: Pick<BrandMutations, "presignAudioUpload" | "finalizeAudioUpload">,
 ): Promise<{ id: string }> {
   if (file.size > AUDIO_UPLOAD_MAX_BYTES) {
     throw new Error(`Audio uploads are capped at ${AUDIO_UPLOAD_MAX_MB}MB.`);
   }
   const contentType = resolveContentType(file);
   if (!contentType) throw new Error("Upload an MP3, WAV, or M4A file.");
-  if (!api) throw new Error("Couldn't start the upload.");
-  const mutations = brandMutations(api);
 
   const durationSec = await readAudioDuration(file);
   let presigned: Awaited<ReturnType<typeof mutations.presignAudioUpload>>;
   try {
-    presigned = await mutations.presignAudioUpload({ contentType, sizeBytes: file.size } as Parameters<typeof mutations.presignAudioUpload>[0]);
+    presigned = await mutations.presignAudioUpload({ contentType, sizeBytes: file.size });
   } catch (error) {
     throw new Error(failureCopy(error, "Couldn't start the upload."));
   }
@@ -103,7 +103,7 @@ export async function uploadAudioFile(
       title: stripExtension(file.name).slice(0, 120) || "Untitled",
       durationSec,
       sizeBytes: file.size,
-    } as Parameters<typeof mutations.finalizeAudioUpload>[0]);
+    });
   } catch (error) {
     throw new Error(failureCopy(error, "Couldn't save the upload."));
   }

@@ -1,12 +1,15 @@
 import type { ProjectDetail } from "@narriflow/api-client/projects";
 import {
 	BRAND_DEFAULT_CAPTION_PRESET_ID,
+	brandPlanRequirement,
 	captionPresetIdSchema,
 	creditsForSourceSeconds,
 	type CaptionPresetId,
 	defaultAspectRatioSchema,
 	deriveProjectPipeline,
 	hasFeature,
+	isQuotaBlockedMidFlight,
+	MAX_INGEST_RETRY_ATTEMPTS,
 	planDefinition,
 	planFeatureRequirement,
 	planUpgradeHighlight,
@@ -16,11 +19,7 @@ import {
 import type { UpgradePrompt } from "../../_components/upgrade";
 import { creditsUpgradePrompt, uploadLengthUpgradePrompt } from "@/lib/authenticated-request-browser";
 import { dubAllowanceUpgradePrompt, featureUpgradePrompt } from "@/lib/feature-upgrade-prompt";
-import {
-	isQuotaBlockedMidFlight,
-	MAX_INGEST_RETRY_ATTEMPTS,
-	type PipelineStepView,
-} from "@/lib/project-state";
+import type { PipelineStepView } from "@/lib/project-state";
 import { extractYoutubeId, youtubeFrameUrls } from "../_lib/youtube";
 import { deriveCampaignActionPlan } from "./campaign-command-state";
 import { projectViewOnlyNote } from "./project-access";
@@ -37,25 +36,11 @@ export type ProjectDetailData = ProjectDetail;
 export type ProjectRecord = NonNullable<ProjectDetail["snapshot"]["project"]>;
 type BrandRequirement = { requiredTier: PricingTier | null; message: string } | null;
 
-/**
- * The plan rule for applying a Brand Profile, mirroring the service's policy
- * (`brandPlanRequirement` in `packages/services/src/brand-ownership.ts`): a
- * personal Workspace needs the feature; a shared one also needs members, which
- * only Business has among the paid plans. The browser cannot import services.
- */
+/** The plan rule for applying a Brand Profile: the one policy the service refuses with. */
 export function brandApplyRequirement(
 	scope: { pricingTier: PricingTier; isPersonalWorkspace: boolean },
 ): BrandRequirement {
-	if (scope.isPersonalWorkspace) {
-		return planFeatureRequirement(scope.pricingTier, "brand.profiles");
-	}
-	if (hasFeature(scope.pricingTier, "brand.profiles") && hasFeature(scope.pricingTier, "workspace.members")) {
-		return null;
-	}
-	return {
-		requiredTier: "business",
-		message: `Branding in a shared Workspace needs the ${planDefinition("business").name} plan.`,
-	};
+	return brandPlanRequirement(scope, "brand.profiles");
 }
 
 export function brandApplyUpgradePrompt(requirement: BrandRequirement): UpgradePrompt | null {

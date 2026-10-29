@@ -163,7 +163,7 @@ export function useInternalReviews(projectId: string, initialData?: ReviewRoomDa
 }
 
 function reviewFailurePrompt(reason: unknown) {
-  return isApiError(reason) ? upgradePromptFromFailure({ error: reason.code, message: reason.message, ...reason.details }) : null;
+  return isApiError(reason) ? upgradePromptFromFailure({ error: reason.code, message: reason.message, ...(reason.details ? { details: reason.details } : {}) }) : null;
 }
 
 type DraftSelection = { exportId: string; variantIds: string[]; required: boolean };

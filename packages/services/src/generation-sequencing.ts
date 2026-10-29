@@ -56,20 +56,6 @@ export function isUniqueConstraintError(error: unknown): boolean {
   );
 }
 
-/**
- * Processing-panel state for a Project whose speech-to-text admission was
- * refused by Processing Usage: the typed refusal persisted on the Project is
- * the only input, so web, MCP, and REST render the same recovery copy.
- */
-export function isQuotaBlockedMidFlight(input: {
-  ingestErrorCode: string | null | undefined;
-}): boolean {
-  return (
-    input.ingestErrorCode === "credits_exhausted" ||
-    input.ingestErrorCode === "upload_too_long"
-  );
-}
-
 export type FinalizeSetupResult = {
   started: boolean;
   ingestStatus: string;

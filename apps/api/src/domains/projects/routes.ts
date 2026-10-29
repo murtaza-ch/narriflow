@@ -20,7 +20,6 @@ import {
   generateContentSuiteRequestSchema,
   generateProjectRequestSchema,
   requestClipDubSchema,
-  transcriptExportFormatSchema,
 } from "@narriflow/validators";
 import { moveProjectToFolderRequestSchema } from "@narriflow/validators/api/library";
 import {
@@ -28,6 +27,7 @@ import {
   notifyPreferenceRequestSchema,
   projectDetailQuerySchema,
   projectListQuerySchema,
+  transcriptExportQuerySchema,
   transcriptViewQuerySchema,
 } from "@narriflow/validators/api/projects";
 import { createRouteApp, getActor } from "../../http/admission";
@@ -260,21 +260,12 @@ export function createProjectsRoutes(deps: ProjectsRouteDeps) {
 
     .get(
       "/projects/:id/transcript/export",
+      validate("query", transcriptExportQuerySchema),
       async (c) => {
-        const format = transcriptExportFormatSchema.safeParse(c.req.query("format") ?? "txt");
-        if (!format.success) {
-          return c.json(
-            {
-              error: "invalid_transcript_export_format",
-              message: "Invalid transcript export format",
-            },
-            400,
-          );
-        }
         const exported = await projectService.getTranscriptExport(
           getActor(c),
           c.req.param("id"),
-          format.data,
+          c.req.valid("query").format,
         );
         c.header("Content-Type", exported.contentType);
         c.header("Content-Disposition", `attachment; filename="${exported.fileName}"`);

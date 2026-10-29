@@ -13,53 +13,25 @@ const isProtectedRoute = createRouteMatcher([
   "/workspaces(.*)",
   "/settings(.*)",
   "/upload(.*)",
+  "/recipes(.*)",
+  "/search(.*)",
+  "/integrations(.*)",
+  "/help(.*)",
+  "/whats-new(.*)",
   "/auth/continue",
-  "/api/projects(.*)",
-  "/api/upload-sessions(.*)",
-  "/api/ingest(.*)",
-  "/api/stream(.*)",
-  "/api/workspace(.*)",
-  "/api/billing(.*)",
-  "/api/autopilot(.*)",
-  "/api/social(.*)",
-  "/api/zoom(.*)",
-  "/api/brand-templates(.*)",
-  "/api/audio-assets(.*)",
-  "/api/brand-profiles(.*)",
-  "/api/brand-fonts(.*)",
-  "/api/visual-assets(.*)",
-  "/api/generated-media(.*)",
-]);
-
-const isPublicInfrastructureRoute = createRouteMatcher([
-  "/api/health",
-  "/api/v1(.*)",
-  "/mcp(.*)",
-  "/.well-known/oauth-protected-resource(.*)",
-  "/.well-known/oauth-authorization-server(.*)",
 ]);
 
 export default clerkMiddleware(async (auth, req) => {
-  // MCP verifies its own OAuth/API-key bearer token and the REST API verifies
-  // its own API keys. Their discovery documents and the health check are
-  // public infrastructure endpoints, so none should wait on or depend on
-  // Clerk's browser-session middleware.
-  if (isPublicInfrastructureRoute(req)) return NextResponse.next();
-
+  // UI-only page protection: unsigned navigations go to the sign-in modal.
+  // The API on its own origin admits every data request with a session Bearer
+  // token, so nothing here decides access to data.
   const { userId } = await auth();
 
   if (isProtectedRoute(req)) {
-    if (req.nextUrl.pathname.startsWith("/api/")) {
-      // Clerk's page detection can classify API fetches as page requests in
-      // Next's server context. Keep the API response independent of that heuristic.
-      if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-      await auth.protect();
-    } else {
-      const destination = req.nextUrl.pathname === "/auth/continue"
-        ? req.nextUrl.searchParams.get("redirect_url") ?? "/home"
-        : req.url;
-      await auth.protect({ unauthenticatedUrl: new URL(authEntryHref("sign-in", destination), req.url).href });
-    }
+    const destination = req.nextUrl.pathname === "/auth/continue"
+      ? req.nextUrl.searchParams.get("redirect_url") ?? "/home"
+      : req.url;
+    await auth.protect({ unauthenticatedUrl: new URL(authEntryHref("sign-in", destination), req.url).href });
   }
 
   if (req.nextUrl.pathname === "/" && isAuthMode(req.nextUrl.searchParams.get("auth")) && userId) {
@@ -71,6 +43,6 @@ export default clerkMiddleware(async (auth, req) => {
 
 export const config = {
   matcher: [
-    "/((?!_next|mcp(?:/|$)|api/v1(?:/|$)|\\.well-known/oauth-(?:protected-resource|authorization-server)(?:/|$)|api/health(?:/|$)|[^?]*\\.(?:html?|css|js(?!on)|jpe?g|png|gif|svg|ttf|woff2?|ico|csv|docx?|xlsx?|zip|webmanifest)).*)",
+    "/((?!_next|[^?]*\\.(?:html?|css|js(?!on)|jpe?g|png|gif|svg|ttf|woff2?|ico|csv|docx?|xlsx?|zip|webmanifest)).*)",
   ],
 };

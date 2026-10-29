@@ -1,7 +1,7 @@
 # Cloud file pickers
 
 The upload page can import a recording straight from Google Drive or Dropbox.
-Each picker appears only when its environment values are set on the web app, so
+Each picker appears only when its public environment values are set on the web app, so
 a deployment can offer one, both, or neither.
 
 | Picker | Variables (web) | Also needed |
@@ -15,7 +15,7 @@ secret in them. Changing one needs a web redeploy, not a worker deploy.
 ## Rollout order
 
 Local and Railway workers share one queue, and any worker can claim a
-`drive_import` job created by any web app. Release in this order:
+`drive_import` job created by any API. Release in this order:
 
 1. Apply the `20261024120000_drive_picker_intake` migration to the shared database.
 2. Deploy **every** worker (local, Railway) with the new code. A worker on an old
@@ -101,7 +101,7 @@ with a rate-limit reason is retried like a 429; other 403s
 
 ## Verify
 
-1. Set the variables in `apps/web/.env.local`, restart the web app, and open
+1. Set the `NEXT_PUBLIC_*` variables in `apps/web/.env.local` (and `NEXT_PUBLIC_GOOGLE_CLIENT_ID` plus `SOCIAL_TOKEN_ENCRYPTION_KEY` in `apps/api/.env`; the API verifies the picker token against the client ID), restart the web app and API, and open
    `/upload`. An **Import from** row shows one button per configured picker, and
    no row appears when none is configured.
 2. Drive: choose a short video. The commit step opens with its name as the title.
@@ -125,4 +125,4 @@ with a rate-limit reason is retried like a 429; other 403s
   the web server's `NEXT_PUBLIC_GOOGLE_CLIENT_ID`, or the server doesn't have that
   variable at run time, or `drive.file` was not granted.
 - **Drive imports fail with an invalid-payload code.** The worker's
-  `SOCIAL_TOKEN_ENCRYPTION_KEY` is missing or differs from the web app's.
+  `SOCIAL_TOKEN_ENCRYPTION_KEY` is missing or differs from the API's.
