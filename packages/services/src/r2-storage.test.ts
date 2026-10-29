@@ -1,12 +1,15 @@
-import { describe, expect, setDefaultTimeout, test } from "bun:test";
+import { afterEach, describe, expect, setDefaultTimeout, spyOn, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm, truncate, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import {
+  AbortMultipartUploadCommand,
   CompleteMultipartUploadCommand,
+  CreateMultipartUploadCommand,
   S3Client,
+  UploadPartCommand,
 } from "@aws-sdk/client-s3";
 import {
   abortMultipartUpload,
@@ -28,6 +31,7 @@ import {
   presignMultipartPartUrls,
   putFileFromPath,
   presignSingleUploadUrl,
+  putJson,
   sanitizeObjectMetadata,
 } from "./r2-storage";
 
@@ -275,6 +279,157 @@ test("R2 object operations reject a pre-aborted signal before storage access", a
       { signal: controller.signal },
     ),
   ).rejects.toBe(reason);
+});
+
+describe("multipart failure cleanup is bounded", () => {
+  const MIB = 1024 * 1024;
+  const environment = {
+    R2_ACCOUNT_ID: "test-account",
+    R2_ACCESS_KEY_ID: "test",
+    R2_SECRET_ACCESS_KEY: "test",
+    R2_BUCKET: "test-bucket",
+  };
+  const previous = Object.fromEntries(
+    Object.keys(environment).map((name) => [name, process.env[name]]),
+  );
+  let directory: string | null = null;
+  const restores: Array<() => void> = [];
+
+  afterEach(async () => {
+    for (const restore of restores.splice(0)) restore();
+    for (const [name, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+    if (directory) await rm(directory, { recursive: true, force: true });
+    directory = null;
+  });
+
+  async function sparseFile(bytes: number) {
+    Object.assign(process.env, environment);
+    directory = await mkdtemp(join(tmpdir(), "narriflow-r2-multipart-"));
+    const filePath = join(directory, "upload.mp4");
+    await writeFile(filePath, "");
+    await truncate(filePath, bytes);
+    return filePath;
+  }
+
+  function stubSend(
+    handle: (command: unknown, options?: { abortSignal?: AbortSignal }) => Promise<unknown>,
+  ) {
+    const spy = spyOn(S3Client.prototype, "send").mockImplementation(
+      ((command: unknown, options?: { abortSignal?: AbortSignal }) =>
+        handle(command, options)) as never,
+    );
+    restores.push(() => spy.mockRestore());
+    const warn = spyOn(console, "warn").mockImplementation(() => undefined);
+    restores.push(() => warn.mockRestore());
+    return warn;
+  }
+
+  test("a rejected part followed by a never-settling abort returns the original failure within the cleanup grace", async () => {
+    const filePath = await sparseFile(16 * MIB + 1);
+    const partFailure = new Error("part 1 rejected");
+    let siblingCancelled = false;
+    let abortCalls = 0;
+    const warn = stubSend((command, options) => {
+      if (command instanceof CreateMultipartUploadCommand) {
+        return Promise.resolve({ UploadId: "upload-1" });
+      }
+      if (command instanceof UploadPartCommand) {
+        if (command.input.PartNumber === 1) return Promise.reject(partFailure);
+        return new Promise((_, reject) => {
+          const cancelled = () => {
+            siblingCancelled = true;
+            reject(new DOMException("cancelled", "AbortError"));
+          };
+          if (options?.abortSignal?.aborted) return cancelled();
+          options?.abortSignal?.addEventListener("abort", cancelled);
+        });
+      }
+      if (command instanceof AbortMultipartUploadCommand) {
+        abortCalls += 1;
+        return new Promise(() => undefined);
+      }
+      throw new Error("unexpected command");
+    });
+
+    const startedAt = Date.now();
+    await expect(
+      putFileFromPath({ key: "test/multipart/stalled-abort.mp4", filePath }),
+    ).rejects.toBe(partFailure);
+    const elapsedMs = Date.now() - startedAt;
+
+    expect(abortCalls).toBe(1);
+    expect(siblingCancelled).toBe(true);
+    expect(elapsedMs).toBeGreaterThanOrEqual(4_900);
+    expect(elapsedMs).toBeLessThan(7_000);
+    expect(String(warn.mock.calls.at(-1)?.[0])).toContain("r2_multipart_abort_unconfirmed");
+  });
+
+  test("a caller-cancelled upload still gets its own abort request", async () => {
+    const filePath = await sparseFile(16 * MIB + 1);
+    const controller = new AbortController();
+    let abortSignalWasLive: boolean | null = null;
+    stubSend((command, options) => {
+      if (command instanceof CreateMultipartUploadCommand) {
+        return Promise.resolve({ UploadId: "upload-2" });
+      }
+      if (command instanceof UploadPartCommand) {
+        return new Promise((_, reject) => {
+          const cancelled = () => reject(new DOMException("cancelled", "AbortError"));
+          if (options?.abortSignal?.aborted) return cancelled();
+          options?.abortSignal?.addEventListener("abort", cancelled);
+          queueMicrotask(() => controller.abort());
+        });
+      }
+      if (command instanceof AbortMultipartUploadCommand) {
+        abortSignalWasLive = options?.abortSignal?.aborted === false;
+        return Promise.resolve({});
+      }
+      throw new Error("unexpected command");
+    });
+
+    await expect(
+      putFileFromPath({
+        key: "test/multipart/cancelled.mp4",
+        filePath,
+        signal: controller.signal,
+      }),
+    ).rejects.toMatchObject({ name: "AbortError" });
+    expect(abortSignalWasLive).toBe(true);
+  });
+
+  test("parts complete in ascending order regardless of finish order", async () => {
+    const filePath = await sparseFile(32 * MIB + 1);
+    let completed: number[] = [];
+    stubSend(async (command) => {
+      if (command instanceof CreateMultipartUploadCommand) return { UploadId: "upload-3" };
+      if (command instanceof UploadPartCommand) {
+        const partNumber = command.input.PartNumber ?? 0;
+        await new Promise((resolve) => setTimeout(resolve, (4 - partNumber) * 20));
+        return { ETag: `"etag-${partNumber}"` };
+      }
+      if (command instanceof CompleteMultipartUploadCommand) {
+        completed = (command.input.MultipartUpload?.Parts ?? []).map(
+          (part) => part.PartNumber ?? 0,
+        );
+        return {};
+      }
+      throw new Error("unexpected command");
+    });
+
+    await putFileFromPath({ key: "test/multipart/ordered.mp4", filePath });
+    expect(completed).toEqual([1, 2, 3]);
+  });
+
+  test("putJson honours a cancelled signal before storage access", async () => {
+    const controller = new AbortController();
+    controller.abort(new DOMException("shutdown", "AbortError"));
+    await expect(
+      putJson({ key: "test/json.json", value: {}, signal: controller.signal }),
+    ).rejects.toMatchObject({ name: "AbortError" });
+  });
 });
 
 const configuredContractPrefix = process.env.R2_CONTRACT_TEST_PREFIX?.trim();

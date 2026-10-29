@@ -26,6 +26,10 @@ const SIGNED_URL_TTL_SECONDS = 60 * 60;
  *  streamed single PUT is not an option against R2. 16 MB comfortably covers
  *  preview proxies (~1-3 MB) and dub audio without risking the worker's heap. */
 const BUFFERED_PUT_MAX_BYTES = 16 * 1024 * 1024;
+/** Cleanup of a failed multipart upload gets its own clock: it must outlive a
+ *  cancelled caller signal, but a stalled abort may never hold the caller past
+ *  this grace. An unconfirmed abort leaves an orphan for the maintenance reaper. */
+const MULTIPART_ABORT_CLEANUP_DEADLINE_MS = 5_000;
 const OBJECT_METADATA_TOTAL_MAX_BYTES = 2 * 1024;
 const OBJECT_METADATA_VALUE_MAX_BYTES = 384;
 const OBJECT_METADATA_KEY_PATTERN = /^[a-z0-9][a-z0-9_.-]{0,127}$/;
@@ -586,6 +590,61 @@ export async function hashObjectSha256(
   return digest.digest("hex");
 }
 
+/**
+ * Aborts a failed multipart upload without ever blocking or replacing the
+ * original failure. Independent of the caller's signal (which is usually the
+ * reason we are here) and bounded by its own deadline; both a rejected and a
+ * stalled abort are reported as an orphan candidate instead of thrown.
+ */
+async function abortMultipartUploadBestEffort(params: {
+  client: S3Client;
+  bucket: string;
+  key: string;
+  uploadId: string;
+}): Promise<void> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const reportOrphan = (reason: string) => {
+    console.warn(
+      JSON.stringify({
+        level: "warn",
+        message: "r2_multipart_abort_unconfirmed",
+        key: params.key,
+        uploadId: params.uploadId,
+        reason,
+      }),
+    );
+  };
+  const stalled = new Promise<"stalled">((resolve) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      resolve("stalled");
+    }, MULTIPART_ABORT_CLEANUP_DEADLINE_MS);
+  });
+  const attempt = params.client
+    .send(
+      new AbortMultipartUploadCommand({
+        Bucket: params.bucket,
+        Key: params.key,
+        UploadId: params.uploadId,
+      }),
+      { abortSignal: controller.signal },
+    )
+    .then(
+      () => "aborted" as const,
+      (error: unknown) =>
+        isExactMissingMultipartUploadError(error)
+          ? ("aborted" as const)
+          : ("failed" as const),
+    );
+  try {
+    const outcome = await Promise.race([attempt, stalled]);
+    if (outcome !== "aborted") reportOrphan(outcome);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function putFileFromPath(params: {
   key: string;
   filePath: string;
@@ -653,6 +712,12 @@ export async function putFileFromPath(params: {
       let nextPartNumber = 1;
       let firstError: unknown = null;
       let aborted = false;
+      // The first failed part cancels its siblings' in-flight requests, so a
+      // stalled sibling cannot hold the failure (or the abort cleanup) hostage.
+      const partFailure = new AbortController();
+      const partSignal = params.signal
+        ? AbortSignal.any([params.signal, partFailure.signal])
+        : partFailure.signal;
 
       const worker = async () => {
         for (;;) {
@@ -672,7 +737,7 @@ export async function putFileFromPath(params: {
           );
 
           try {
-            params.signal?.throwIfAborted();
+            partSignal.throwIfAborted();
             // Read the part fully into memory rather than streaming it, for the
             // same reason as the single-PUT path above: a streamed body makes the
             // SDK use aws-chunked framing that R2 rejects, and the failure surfaces
@@ -691,21 +756,21 @@ export async function putFileFromPath(params: {
                 Body: body,
                 ContentLength: end - start,
               }),
-              { abortSignal: params.signal },
+              { abortSignal: partSignal },
             );
             if (!uploaded.ETag) {
               throw new Error("R2 multipart part did not return an etag");
             }
             parts.push({ ETag: uploaded.ETag, PartNumber: partNumber });
           } catch (error) {
-            // Stop this worker and every other one from claiming new parts;
-            // in-flight parts on other workers are left to finish (awaited via
-            // Promise.allSettled below) rather than abandoned, so their
-            // promises never reject unhandled.
+            // Stop this worker and every other one from claiming new parts and
+            // cancel in-flight siblings; they are still awaited via
+            // Promise.allSettled below, so their promises never reject unhandled.
             aborted = true;
             if (!firstError) {
               firstError = error;
             }
+            partFailure.abort();
             return;
           }
         }
@@ -735,15 +800,12 @@ export async function putFileFromPath(params: {
         { abortSignal: params.signal },
       );
     } catch (error) {
-      await client
-        .send(
-          new AbortMultipartUploadCommand({
-            Bucket: bucket,
-            Key: params.key,
-            UploadId: uploadId,
-          }),
-        )
-        .catch(() => undefined);
+      await abortMultipartUploadBestEffort({
+        client,
+        bucket,
+        key: params.key,
+        uploadId,
+      });
       throw error;
     }
   }
@@ -1091,7 +1153,9 @@ export async function putJson(params: {
   key: string;
   value: unknown;
   metadata?: Record<string, string>;
+  signal?: AbortSignal;
 }) {
+  params.signal?.throwIfAborted();
   await projectStorageDeadline(params.key);
   const client = getClient();
   const { bucket } = getR2Config();
@@ -1104,6 +1168,7 @@ export async function putJson(params: {
       ContentType: "application/json",
       Metadata: sanitizeObjectMetadata(params.metadata),
     }),
+    { abortSignal: params.signal },
   );
 
   return { key: params.key };

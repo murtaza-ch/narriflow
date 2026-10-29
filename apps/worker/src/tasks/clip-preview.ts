@@ -129,6 +129,15 @@ const HTTP_SOURCE_ARGS = [
 const DEFAULT_PREVIEW_FFMPEG_TIMEOUT_MS = 120_000;
 const DEFAULT_PREVIEW_FFPROBE_TIMEOUT_MS = 30_000;
 const PREVIEW_PEAKS_MAX_STDOUT_BYTES = 32 * 1024 * 1024;
+// Storage lifetimes. Each is a ceiling on one R2 operation, layered on the
+// worker shutdown signal, so a stalled PUT/DELETE can never pin the preview
+// loop. A preview proxy is ~1-3 MB (multipart only past 16 MB) and the peaks
+// JSON is a few KB; cleanup deletes are best-effort and never fail a clip.
+export const PREVIEW_STORAGE_TIMEOUTS = {
+  mediaUploadMs: 120_000,
+  peaksUploadMs: 30_000,
+  cleanupMs: 10_000,
+} as const;
 // A permanently-broken clip (corrupt source slice, unsupported codec, ...)
 // must not monopolize every tick's batch forever — see the
 // ClipPreviewFailureBackoff class below. Base delay doubles per consecutive
@@ -850,6 +859,196 @@ export async function encodeAndValidateClipPreview(params: {
 
 // ─── Orchestration ──────────────────────────────────────────────────────────
 
+// ─── Storage lifetime ───────────────────────────────────────────────────────
+
+export interface ClipPreviewStorage {
+  putFileFromPath: typeof putFileFromPath;
+  putJson: typeof putJson;
+  deleteObject: typeof deleteObject;
+}
+
+const productionClipPreviewStorage: ClipPreviewStorage = {
+  putFileFromPath,
+  putJson,
+  deleteObject,
+};
+
+/**
+ * Deletes objects this attempt wrote, each under its own deadline and
+ * independent of the (possibly already aborted) attempt signal. Never throws
+ * and never outlives `timeoutMs`: an unconfirmed delete is logged and left to
+ * the maintenance reaper, so cleanup can neither fail nor stall a render.
+ */
+export async function deleteClipPreviewObjectsBestEffort(params: {
+  storage: ClipPreviewStorage;
+  keys: readonly string[];
+  timeoutMs: number;
+  context: { clipId: string; projectId: string };
+}): Promise<void> {
+  await Promise.all(
+    params.keys.map(async (key) => {
+      const controller = new AbortController();
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const stalled = new Promise<"timeout">((resolve) => {
+        timer = setTimeout(() => {
+          controller.abort();
+          resolve("timeout");
+        }, params.timeoutMs);
+      });
+      const attempt = params.storage
+        .deleteObject(key, { signal: controller.signal })
+        .then(
+          () => "deleted" as const,
+          (error: unknown) => error,
+        );
+      try {
+        const outcome = await Promise.race([attempt, stalled]);
+        if (outcome !== "deleted") {
+          log("warn", "clip_preview_cleanup_unconfirmed", {
+            ...params.context,
+            key,
+            reason: outcome === "timeout" ? "timeout" : "failed",
+            error: outcome instanceof Error ? outcome.message : undefined,
+          });
+        }
+      } finally {
+        clearTimeout(timer);
+      }
+    }),
+  );
+}
+
+/**
+ * Uploads a validated preview (and optional peaks), then claims it for the
+ * clip. Every storage call carries the worker shutdown signal plus its own
+ * deadline; shutdown after the upload stops before the claim, so an aborted
+ * attempt can never publish a ready preview. Objects written by an attempt
+ * that does not publish are deleted best-effort (bounded); once the claim has
+ * been issued nothing is deleted on error, since it may have committed.
+ */
+export async function storeAndPublishClipPreview(params: {
+  workerProcess: WorkerProcessModule;
+  signal: AbortSignal;
+  clip: ClipPendingPreview;
+  outputPath: string;
+  hasAudio: boolean;
+  window: ClipPreviewWindow;
+  validatedDurationSec: number;
+  storage?: ClipPreviewStorage;
+  completePreview?: ReturnType<typeof getLayoutEvidenceLifecycle>["completePreview"];
+  timeouts?: typeof PREVIEW_STORAGE_TIMEOUTS;
+}): Promise<{ persisted: true; peaksKey: string | null } | { persisted: false }> {
+  const { clip, window, signal } = params;
+  const storage = params.storage ?? productionClipPreviewStorage;
+  const timeouts = params.timeouts ?? PREVIEW_STORAGE_TIMEOUTS;
+  const context = { clipId: clip.id, projectId: clip.projectId };
+  const cleanup = (keys: readonly string[]) =>
+    deleteClipPreviewObjectsBestEffort({ storage, keys, timeoutMs: timeouts.cleanupMs, context });
+
+  // Attempt-unique key. Two workers racing the same clip used to upload to
+  // one shared key and claim afterwards, so the loser's cleanup deleted the
+  // very object the winner's row now pointed at (and concurrent writes to a
+  // single key also breach R2's ~1 write/sec/key limit). With a per-attempt
+  // key the loser can only ever delete its own bytes.
+  const key = clipPreviewAttemptStorageKey(clip.projectId, clip.id, randomUUID());
+  const candidatePeaksKey = derivePeaksStorageKey(key);
+  let peaksWriteStarted = false;
+  let peaksKey: string | null = null;
+
+  try {
+    await storage.putFileFromPath({
+      key,
+      filePath: params.outputPath,
+      contentType: "video/mp4",
+      metadata: {
+        project_id: clip.projectId,
+        clip_id: clip.id,
+        kind: "preview",
+      },
+      signal: AbortSignal.any([signal, AbortSignal.timeout(timeouts.mediaUploadMs)]),
+    });
+
+    // Waveform peaks: uploaded BEFORE the DB claim below, exactly like the mp4
+    // itself — completeClipPreview's existing conditional claim (previewStorageKey
+    // IS NULL + boundary-window match) already guards staleness for the whole
+    // attempt, so nothing extra is needed to keep the peaks key "attached" to
+    // the same completion; it's simply present (or not) by the time the claim
+    // runs. Silent-video previews (no audio track — see buildClipPreviewArgs's
+    // `hasAudio` branch) never get a peaks artifact, since there's nothing to
+    // extract; the studio's WaveformCanvas falls back to its synthetic
+    // waveform for those exactly as it does for a still-pending proxy. A
+    // peaks-generation failure (including its own upload deadline) is logged
+    // and swallowed rather than failing the whole preview attempt — a proxy
+    // with no waveform is still a working proxy, and this pass runs on the
+    // small local proxy file, not the remote source. Only worker shutdown
+    // (the parent signal) stops the attempt.
+    if (params.hasAudio) {
+      const persisted = await persistOptionalClipPreviewPeaks({
+        workerProcess: params.workerProcess,
+        signal,
+        proxyFilePath: params.outputPath,
+        windowStartSec: window.startSec,
+        windowDurationSec: params.validatedDurationSec,
+        persist: (peaksPayload) => {
+          peaksWriteStarted = true;
+          return storage.putJson({
+            key: candidatePeaksKey,
+            value: peaksPayload,
+            metadata: {
+              project_id: clip.projectId,
+              clip_id: clip.id,
+              kind: "preview_peaks",
+            },
+            signal: AbortSignal.any([signal, AbortSignal.timeout(timeouts.peaksUploadMs)]),
+          });
+        },
+        diagnose: (error) =>
+          log("warn", "clip_preview_peaks_failed", {
+            ...context,
+            error: error instanceof Error ? error.message : "Unknown error",
+          }),
+      });
+      peaksKey = persisted ? candidatePeaksKey : null;
+      // A timed-out PUT may still land server-side; do not leave it behind.
+      if (!persisted && peaksWriteStarted) await cleanup([candidatePeaksKey]);
+    }
+
+    signal.throwIfAborted();
+  } catch (error) {
+    await cleanup(peaksWriteStarted ? [key, candidatePeaksKey] : [key]);
+    throw error;
+  }
+
+  const completePreview =
+    params.completePreview ??
+    ((id, input) => getLayoutEvidenceLifecycle().completePreview(id, input));
+  const result = await completePreview(clip.id, {
+    storageKey: key,
+    startSec: window.startSec,
+    durationSec: window.durationSec,
+    // The clip boundary window this cut was made for (see
+    // ClipPendingPreview's comment) — NOT `window`, which is the padded
+    // preview window derived from it. A boundary edit/reset that lands
+    // while this cut was in flight moves the clip's stored startSec/endSec
+    // away from these values, so the service's claim correctly rejects a
+    // stale attempt instead of persisting a proxy for the wrong window.
+    expectedClipStartSec: clip.startSec,
+    expectedClipEndSec: clip.endSec,
+    expectedEditorRevision: clip.editorRevision,
+  });
+
+  if (!result.persisted) {
+    // Lost the race to another worker cutting the same clip concurrently.
+    // `key` (and `peaksKey`, if this attempt generated one) are this
+    // attempt's own unique objects, so deleting them can never touch the
+    // bytes the winning row points at.
+    await cleanup(peaksKey ? [key, peaksKey] : [key]);
+    log("info", "clip_preview_lost_claim_race", context);
+    return { persisted: false };
+  }
+  return { persisted: true, peaksKey };
+}
+
 async function cutAndUploadClipPreview(params: {
   workerProcess: WorkerProcessModule;
   signal: AbortSignal;
@@ -925,93 +1124,17 @@ async function cutAndUploadClipPreview(params: {
     }),
   });
 
-  // Attempt-unique key. Two workers racing the same clip used to upload to
-  // one shared key and claim afterwards, so the loser's cleanup deleted the
-  // very object the winner's row now pointed at (and concurrent writes to a
-  // single key also breach R2's ~1 write/sec/key limit). With a per-attempt
-  // key the loser can only ever delete its own bytes.
-  const key = clipPreviewAttemptStorageKey(clip.projectId, clip.id, randomUUID());
-  await putFileFromPath({
-    key,
-    filePath: outputPath,
-    contentType: "video/mp4",
-    metadata: {
-      project_id: clip.projectId,
-      clip_id: clip.id,
-      kind: "preview",
-    },
+  const stored = await storeAndPublishClipPreview({
+    workerProcess: params.workerProcess,
+    signal: params.signal,
+    clip,
+    outputPath,
+    hasAudio: probe.hasAudio,
+    window,
+    validatedDurationSec: validated.durationSec,
   });
-
-  // Waveform peaks: uploaded BEFORE the DB claim below, exactly like the mp4
-  // itself — completeClipPreview's existing conditional claim (previewStorageKey
-  // IS NULL + boundary-window match) already guards staleness for the whole
-  // attempt, so nothing extra is needed to keep the peaks key "attached" to
-  // the same completion; it's simply present (or not) by the time the claim
-  // runs. Silent-video previews (no audio track — see buildClipPreviewArgs's
-  // `hasAudio` branch) never get a peaks artifact, since there's nothing to
-  // extract; the studio's WaveformCanvas falls back to its synthetic
-  // waveform for those exactly as it does for a still-pending proxy. A
-  // peaks-generation failure is logged and swallowed rather than failing the
-  // whole preview attempt — a proxy with no waveform is still a working
-  // proxy, and this pass runs on the small local proxy file, not the remote
-  // source, so it can never be the expensive part of this attempt.
-  let peaksKey: string | null = null;
-  if (probe.hasAudio) {
-    const candidatePeaksKey = derivePeaksStorageKey(key);
-    const persisted = await persistOptionalClipPreviewPeaks({
-      workerProcess: params.workerProcess,
-      signal: params.signal,
-      proxyFilePath: outputPath,
-      windowStartSec: window.startSec,
-      windowDurationSec: validated.durationSec,
-      persist: (peaksPayload) =>
-        putJson({
-          key: candidatePeaksKey,
-          value: peaksPayload,
-          metadata: {
-            project_id: clip.projectId,
-            clip_id: clip.id,
-            kind: "preview_peaks",
-          },
-        }),
-      diagnose: (error) =>
-        log("warn", "clip_preview_peaks_failed", {
-          clipId: clip.id,
-          projectId: clip.projectId,
-          message: error instanceof Error ? error.message : "Unknown error",
-        }),
-    });
-    peaksKey = persisted ? candidatePeaksKey : null;
-  }
-
-  const result = await getLayoutEvidenceLifecycle().completePreview(clip.id, {
-    storageKey: key,
-    startSec: window.startSec,
-    durationSec: window.durationSec,
-    // The clip boundary window this cut was made for (see
-    // ClipPendingPreview's comment) — NOT `window`, which is the padded
-    // preview window derived from it. A boundary edit/reset that lands
-    // while this cut was in flight moves the clip's stored startSec/endSec
-    // away from these values, so the service's claim correctly rejects a
-    // stale attempt instead of persisting a proxy for the wrong window.
-    expectedClipStartSec: clip.startSec,
-    expectedClipEndSec: clip.endSec,
-    expectedEditorRevision: clip.editorRevision,
-  });
-
-  if (!result.persisted) {
-    // Lost the race to another worker cutting the same clip concurrently.
-    // `key` (and `peaksKey`, if this attempt generated one) are this
-    // attempt's own unique objects, so deleting them can never touch the
-    // bytes the winning row points at.
-    await deleteObject(key).catch(() => {});
-    if (peaksKey) await deleteObject(peaksKey).catch(() => {});
-    log("info", "clip_preview_lost_claim_race", {
-      clipId: clip.id,
-      projectId: clip.projectId,
-    });
-    return false;
-  }
+  if (!stored.persisted) return false;
+  const peaksKey = stored.peaksKey;
 
   log("info", "clip_preview_generated", {
     clipId: clip.id,

@@ -14,12 +14,14 @@ import {
   computeAmplitudePeaks,
   computeClipPreviewWindow,
   clipPreviewOutputExpectation,
+  type ClipPreviewStorage,
   encodeAndValidateClipPreview,
   generateClipPreviewPeaks,
   persistOptionalClipPreviewPeaks,
   previewTimeToSourceTime,
   quantizePeaks,
   sourceTimeToPreviewTime,
+  storeAndPublishClipPreview,
 } from "./clip-preview";
 
 function processModuleWithExecute(
@@ -555,4 +557,165 @@ describe("preview output validation before storage", () => {
         expected: clipPreviewOutputExpectation(probe, 2, 90) })).rejects.toMatchObject({ code: "render_output_invalid", disposition: "retryable" });
     });
   }
+});
+
+
+describe("preview storage lifetimes", () => {
+  const clip = {
+    id: "clip-1",
+    projectId: "00000000-0000-4000-8000-000000000001",
+    startSec: 10,
+    endSec: 20,
+    editorRevision: 1,
+  } as Parameters<typeof storeAndPublishClipPreview>[0]["clip"];
+  const window = { startSec: 8, durationSec: 14 };
+  const timeouts = { mediaUploadMs: 40, peaksUploadMs: 40, cleanupMs: 40 };
+  const pcm = Buffer.alloc(16_000 * 2);
+  const peakProcess = processModuleWithExecute(async () => ({ exitCode: 0, stdout: pcm }));
+
+  const hangUntilAborted = (signal?: AbortSignal) =>
+    new Promise<never>((_, reject) => {
+      const cancelled = () => reject(signal?.reason ?? new Error("aborted"));
+      if (signal?.aborted) return cancelled();
+      signal?.addEventListener("abort", cancelled);
+    });
+
+  function harness(overrides: Partial<ClipPreviewStorage> = {}) {
+    const calls = { put: [] as string[], json: [] as string[], deleted: [] as string[], claims: 0 };
+    const storage: ClipPreviewStorage = {
+      putFileFromPath: (async (input: { key: string }) => {
+        calls.put.push(input.key);
+        return { key: input.key, fileName: "p.mp4" };
+      }) as ClipPreviewStorage["putFileFromPath"],
+      putJson: (async (input: { key: string }) => {
+        calls.json.push(input.key);
+        return { key: input.key };
+      }) as ClipPreviewStorage["putJson"],
+      deleteObject: (async (key: string) => {
+        calls.deleted.push(key);
+        return { key };
+      }) as ClipPreviewStorage["deleteObject"],
+      ...overrides,
+    };
+    const completePreview = (async () => {
+      calls.claims += 1;
+      return { persisted: true };
+    }) as never;
+    const run = (signal: AbortSignal, hasAudio = true) =>
+      storeAndPublishClipPreview({
+        workerProcess: peakProcess,
+        signal,
+        clip,
+        outputPath: "/tmp/preview.mp4",
+        hasAudio,
+        window,
+        validatedDurationSec: 14,
+        storage,
+        completePreview,
+        timeouts,
+      });
+    return { calls, run };
+  }
+
+  test("publishes media and peaks, then claims the clip", async () => {
+    const { calls, run } = harness();
+    const result = await run(new AbortController().signal);
+    expect(result).toMatchObject({ persisted: true });
+    expect(calls.put).toHaveLength(1);
+    expect(calls.json).toHaveLength(1);
+    expect(calls.claims).toBe(1);
+    expect(calls.deleted).toEqual([]);
+  });
+
+  test("shutdown during the media upload stops it, cleans up and never claims", async () => {
+    const controller = new AbortController();
+    const reason = new DOMException("shutdown", "AbortError");
+    const { calls, run } = harness({
+      putFileFromPath: ((input: { signal?: AbortSignal }) => {
+        queueMicrotask(() => controller.abort(reason));
+        return hangUntilAborted(input.signal);
+      }) as ClipPreviewStorage["putFileFromPath"],
+    });
+    await expect(run(controller.signal)).rejects.toBe(reason);
+    expect(calls.claims).toBe(0);
+    expect(calls.deleted).toHaveLength(1);
+  });
+
+  test("shutdown during the peaks upload stops the attempt and never claims", async () => {
+    const controller = new AbortController();
+    const reason = new DOMException("shutdown", "AbortError");
+    const { calls, run } = harness({
+      putJson: ((input: { signal?: AbortSignal }) => {
+        queueMicrotask(() => controller.abort(reason));
+        return hangUntilAborted(input.signal);
+      }) as ClipPreviewStorage["putJson"],
+    });
+    await expect(run(controller.signal)).rejects.toBe(reason);
+    expect(calls.claims).toBe(0);
+    expect(calls.deleted).toHaveLength(2);
+  });
+
+  test("shutdown after the last upload but before the claim cannot publish", async () => {
+    const controller = new AbortController();
+    const { calls, run } = harness({
+      putJson: (async (input: { key: string }) => {
+        controller.abort(new DOMException("shutdown", "AbortError"));
+        return { key: input.key };
+      }) as ClipPreviewStorage["putJson"],
+    });
+    await expect(run(controller.signal)).rejects.toMatchObject({ name: "AbortError" });
+    expect(calls.claims).toBe(0);
+  });
+
+  test("a stalled media upload hits its own deadline", async () => {
+    const { calls, run } = harness({
+      putFileFromPath: ((input: { signal?: AbortSignal }) =>
+        hangUntilAborted(input.signal)) as ClipPreviewStorage["putFileFromPath"],
+    });
+    await expect(run(new AbortController().signal)).rejects.toMatchObject({ name: "TimeoutError" });
+    expect(calls.claims).toBe(0);
+  });
+
+  test("a stalled peaks upload degrades to a preview without peaks", async () => {
+    const { calls, run } = harness({
+      putJson: ((input: { signal?: AbortSignal }) =>
+        hangUntilAborted(input.signal)) as ClipPreviewStorage["putJson"],
+    });
+    const result = await run(new AbortController().signal);
+    expect(result).toEqual({ persisted: true, peaksKey: null });
+    expect(calls.claims).toBe(1);
+    expect(calls.deleted).toHaveLength(1);
+  });
+
+  test("a delete that never settles is abandoned without failing a lost-claim attempt", async () => {
+    const lost = storeAndPublishClipPreview({
+      workerProcess: peakProcess,
+      signal: new AbortController().signal,
+      clip,
+      outputPath: "/tmp/preview.mp4",
+      hasAudio: true,
+      window,
+      validatedDurationSec: 14,
+      storage: {
+        putFileFromPath: (async () => ({ key: "k", fileName: "p.mp4" })) as never,
+        putJson: (async () => ({ key: "k" })) as never,
+        deleteObject: (() => new Promise(() => undefined)) as never,
+      },
+      completePreview: (async () => ({ persisted: false })) as never,
+      timeouts,
+    });
+    const startedAt = Date.now();
+    await expect(lost).resolves.toEqual({ persisted: false });
+    expect(Date.now() - startedAt).toBeLessThan(1_000);
+  });
+
+  test("a failed delete after a committed claim does not mask it", async () => {
+    const { calls, run } = harness({
+      deleteObject: (async () => {
+        throw new Error("delete failed");
+      }) as ClipPreviewStorage["deleteObject"],
+    });
+    await expect(run(new AbortController().signal)).resolves.toMatchObject({ persisted: true });
+    expect(calls.claims).toBe(1);
+  });
 });
