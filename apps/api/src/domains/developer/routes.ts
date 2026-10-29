@@ -19,6 +19,7 @@ import {
   type IntegrationsOverview,
   type WebhookCreatedResult,
   type WebhookEnabledResult,
+  type WebhookTestResult,
   type WebhooksResult,
 } from "@narriflow/validators/api/developer";
 import type { Context } from "hono";
@@ -33,9 +34,9 @@ import { developerAdmission as access } from "./admission";
 /** Services the developer routes call. `runtime.ts` supplies the production instances. */
 export interface DeveloperRouteDeps {
   workspaceService: Pick<typeof workspaceService, "listApiKeys" | "revokeApiKey">;
-  developerCommands: Pick<DeveloperCommands, "createApiKey" | "rotateCallbackSigningSecret" | "createWebhook">;
+  developerCommands: Pick<DeveloperCommands, "createApiKey" | "rotateCallbackSigningSecret" | "createWebhook" | "testWebhook">;
   callbackSigningSecrets: Pick<typeof callbackSigningSecrets, "status">;
-  webhookSubscriptions: Pick<typeof webhookSubscriptions, "list" | "delete" | "enable" | "test">;
+  webhookSubscriptions: Pick<typeof webhookSubscriptions, "list" | "delete" | "enable">;
   socialOAuthService: Pick<typeof socialOAuthService, "listAccounts">;
 }
 
@@ -168,10 +169,14 @@ export function createDeveloperRoutes(deps: DeveloperRouteDeps) {
       return c.json(body, 200);
     })
 
-    // Sends one signed `webhook.test` event now; the service allows one per webhook every few seconds.
-    .post("/workspace/webhooks/:webhookId/test", uuidParams("webhookId"), async (c) => {
+    // Sends one signed `webhook.test` event now. The endpoint's answer is recorded under the caller's key, so a
+    // retry after a lost response replays it; the service still allows one new test per webhook every few seconds.
+    .post("/workspace/webhooks/:webhookId/test", requireIdempotencyKey(), uuidParams("webhookId"), async (c) => {
       requireApiPlan(c);
-      return c.json(await webhookSubscriptions.test(getActor(c), c.req.valid("param").webhookId), 200);
+      const tested = await developerCommands.testWebhook(getActor(c), c.req.valid("param").webhookId, mutationFor(c));
+      if (tested.replayed) c.header("Idempotent-Replayed", "true");
+      const body: WebhookTestResult = tested.result;
+      return c.json(body, 200);
     });
 }
 

@@ -28,17 +28,35 @@ function fileNameOf(response: Response, fallback: string): string {
   return /filename="([^"]+)"/.exec(response.headers.get("Content-Disposition") ?? "")?.[1] ?? fallback;
 }
 
+const TOO_LARGE = "Attachment is too large to download in the browser";
+
+/** Reads the body chunk by chunk and cancels it the moment it crosses the bound, whatever `Content-Length` claimed. */
+async function readBoundedBlob(response: Response): Promise<Blob> {
+  const reader = response.body?.getReader();
+  if (!reader) return new Blob([], { type: response.headers.get("Content-Type") ?? "" });
+  const chunks: Uint8Array[] = [];
+  let received = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    received += value.byteLength;
+    if (received > EXPORT_ATTACHMENT_MAX_BYTES) {
+      void reader.cancel().catch(() => undefined);
+      throw new RangeError(TOO_LARGE);
+    }
+    chunks.push(value);
+  }
+  return new Blob(chunks as BlobPart[], { type: response.headers.get("Content-Type") ?? "" });
+}
+
 async function readBounded(response: Response, fallbackName: string): Promise<ExportAttachment> {
   if (!response.ok) throw await apiErrorFromResponse(response);
   const declared = Number(response.headers.get("Content-Length"));
   if (Number.isFinite(declared) && declared > EXPORT_ATTACHMENT_MAX_BYTES) {
     void response.body?.cancel().catch(() => undefined);
-    throw new RangeError("Attachment is too large to download in the browser");
+    throw new RangeError(TOO_LARGE);
   }
-  const blob = await response.blob();
-  if (blob.size > EXPORT_ATTACHMENT_MAX_BYTES) {
-    throw new RangeError("Attachment is too large to download in the browser");
-  }
+  const blob = await readBoundedBlob(response);
   return {
     blob,
     contentType: response.headers.get("Content-Type") ?? blob.type,

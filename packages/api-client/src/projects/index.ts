@@ -12,6 +12,7 @@ export type ProjectsClient = ReturnType<typeof createProjectsClient>;
 
 export { canonicalListFilters, listRequestQuery, type ProjectListFilters } from "./filters";
 export {
+  clearProjectAccess,
   invalidateAfterBrandApplied,
   invalidateAfterGeneration,
   invalidateAfterNotifyPreference,

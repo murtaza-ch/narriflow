@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, describe, expect, mock, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, mock, setSystemTime, test } from "bun:test";
 import { Window } from "happy-dom";
 import { act, type ReactNode } from "react";
 import type { Root } from "react-dom/client";
@@ -85,6 +85,7 @@ afterEach(async () => {
   browser.document.body.replaceChildren();
   browser.sessionStorage.clear();
   globalThis.fetch = originalFetch;
+  setSystemTime();
 });
 
 afterAll(() => { browser.close(); if (originalApiOrigin === undefined) delete process.env.NEXT_PUBLIC_API_URL; else process.env.NEXT_PUBLIC_API_URL = originalApiOrigin; });
@@ -239,19 +240,116 @@ test("guest comments retain their intent key and playhead through a lost respons
   expect(container.textContent).toContain("Comment added at");
 });
 
-test("media grants renew after tab focus without reloading the room", async () => {
-  await seedSession();
+test("long review playback and paused focus keep the mounted URL through background renewal", async () => {
+  const now = Date.now();
+  await seedSession(3_600_000);
   let mediaReads = 0;
   let roomReads = 0;
   globalThis.fetch = mock(async (input) => {
-    if (new URL(input.toString()).pathname.includes("/media/")) { mediaReads += 1; return Response.json(grant()); }
-    roomReads += 1; return Response.json(snapshot);
+    if (new URL(input.toString()).pathname.includes("/media/")) {
+      mediaReads += 1;
+      return Response.json({ url: `https://storage.review.test/${mediaReads}.mp4`, expiresAt: new Date(Date.now() + 900_000).toISOString() });
+    }
+    roomReads += 1;
+    return Response.json(snapshot);
   }) as typeof fetch;
-  await renderReview();
+  const container = await renderReview();
+  const video = container.querySelector("video") as HTMLVideoElement;
+  await act(async () => video.play());
+  video.currentTime = 75;
+  setSystemTime(now + 75_000);
+  await act(async () => browser.dispatchEvent(new browser.Event("focus")));
+  await settle();
   expect(mediaReads).toBe(1);
-  await act(async () => { browser.dispatchEvent(new browser.Event("focus")); }); await settle();
+  expect(video.src).toBe("https://storage.review.test/1.mp4");
+  expect(video.currentTime).toBe(75);
+  expect(video.paused).toBe(false);
+
+  await act(async () => video.pause());
+  setSystemTime(now + 880_000);
+  await act(async () => browser.dispatchEvent(new browser.Event("focus")));
+  await settle();
   expect(mediaReads).toBe(2);
   expect(roomReads).toBe(1);
+  expect(container.querySelector("video")).toBe(video);
+  expect(video.src).toBe("https://storage.review.test/1.mp4");
+  expect(video.currentTime).toBe(75);
+  expect(video.paused).toBe(true);
+
+  // The selected URL may expire while paused; the next play adopts the fresh cached grant.
+  setSystemTime(now + 910_000);
+  await act(async () => video.play());
+  await settle();
+  expect(mediaReads).toBe(2);
+  expect(video.src).toBe("https://storage.review.test/2.mp4");
+  await act(async () => {
+    video.currentTime = 0;
+    video.dispatchEvent(new browser.Event("loadedmetadata"));
+  });
+  expect(video.currentTime).toBe(75);
+  expect(video.paused).toBe(false);
+});
+
+test("an expired playback error renews the grant and restores the playhead", async () => {
+  const now = Date.now();
+  await seedSession(3_600_000);
+  let mediaReads = 0;
+  globalThis.fetch = mock(async (input) => {
+    if (new URL(input.toString()).pathname.includes("/media/")) {
+      mediaReads += 1;
+      return Response.json({ url: `https://storage.review.test/recovered-${mediaReads}.mp4`, expiresAt: new Date(Date.now() + 900_000).toISOString() });
+    }
+    return Response.json(snapshot);
+  }) as typeof fetch;
+  const container = await renderReview();
+  const video = container.querySelector("video") as HTMLVideoElement;
+  await act(async () => video.play());
+  video.currentTime = 135;
+  setSystemTime(now + 910_000);
+  await act(async () => video.dispatchEvent(new browser.Event("error")));
+  await settle();
+  expect(mediaReads).toBe(2);
+  expect(video.src).toBe("https://storage.review.test/recovered-2.mp4");
+  await act(async () => {
+    video.currentTime = 0;
+    video.dispatchEvent(new browser.Event("loadedmetadata"));
+  });
+  expect(video.currentTime).toBe(135);
+  expect(video.paused).toBe(false);
+});
+
+test("switching the selected review item mounts its own playback grant", async () => {
+  await seedSession();
+  const second = { ...snapshot.round.items[0]!, id: "item-2", clipTitle: "Second clip", export: { variants: [{ id: "variant-2", aspectRatio: "ratio_1_1", durationSec: 40, status: "completed" }] } };
+  globalThis.fetch = mock(async (input) => {
+    const path = new URL(input.toString()).pathname;
+    if (path.includes("/media/")) return Response.json({ ...grant(), url: `https://storage.review.test/${path.includes("item-2") ? "second" : "first"}.mp4` });
+    return Response.json({ round: { ...snapshot.round, items: [...snapshot.round.items, second] } });
+  }) as typeof fetch;
+  const container = await renderReview();
+  const first = container.querySelector("video") as HTMLVideoElement;
+  first.currentTime = 12;
+  await act(async () => {
+    const tab = [...container.querySelectorAll('[role="tab"]')].find(entry => entry.textContent?.includes("Second clip")) as HTMLButtonElement;
+    tab.click();
+  });
+  await settle();
+  const secondVideo = container.querySelector("video") as HTMLVideoElement;
+  expect(secondVideo).not.toBe(first);
+  expect(secondVideo.src).toBe("https://storage.review.test/second.mp4");
+  expect(secondVideo.currentTime).toBe(0);
+});
+
+test("review copy renders untrusted text without HTML interpolation", async () => {
+  await seedSession();
+  const text = '<img src=x onerror="window.reviewCredentialLeak=true">';
+  globalThis.fetch = mock(async input => Response.json(new URL(input.toString()).pathname.includes("/media/")
+    ? grant()
+    : { round: { ...snapshot.round, projectTitle: text, message: text } })) as typeof fetch;
+  const container = await renderReview();
+  expect(container.querySelector("h1")?.textContent).toBe(text);
+  expect(container.textContent).toContain(text);
+  expect(container.querySelector('img[src="x"]')).toBeNull();
 });
 
 test("opt-out previews on GET and confirms only after the person's click", async () => {
@@ -290,6 +388,71 @@ test("public shares use a separate credential-free read and retain storage links
   expect(calls[0]?.origin).toBe(apiOrigin);
   expect(calls[0]?.headers.has("Authorization")).toBe(false);
   expect(calls[0]?.headers.has("X-Workspace-Id")).toBe(false);
+});
+
+
+test("shared video keeps its source and playhead while expiry refresh updates download links", async () => {
+  const now = Date.now();
+  let reads = 0;
+  globalThis.fetch = mock(async () => {
+    reads += 1;
+    return Response.json({
+      id: "export-1", clipTitle: "Shared clip", projectTitle: "Project", createdAt: new Date(now).toISOString(), editorRevision: 3,
+      expiresAt: new Date(Date.now() + 900_000).toISOString(),
+      variants: [{ id: "variant-1", aspectRatio: "9:16", resolution: "1080p", sizeBytes: 1024, durationSec: 200, hasAsset: true, previewUrl: `https://storage.review.test/preview-${reads}.mp4`, downloadUrl: `https://storage.review.test/download-${reads}.mp4` }],
+    });
+  }) as typeof fetch;
+  const container = await renderReview(<SharedExportPageClient token="public-share" />);
+  const video = container.querySelector("video") as HTMLVideoElement;
+  await act(async () => video.play());
+  video.currentTime = 125;
+  setSystemTime(now + 125_000);
+  await act(async () => browser.dispatchEvent(new browser.Event("focus")));
+  await settle();
+  expect(reads).toBe(1);
+  expect(video.src).toBe("https://storage.review.test/preview-1.mp4");
+  expect(video.currentTime).toBe(125);
+
+  setSystemTime(now + 880_000);
+  await act(async () => browser.dispatchEvent(new browser.Event("focus")));
+  await settle();
+  expect(reads).toBe(2);
+  expect(container.querySelector("video")).toBe(video);
+  expect(video.src).toBe("https://storage.review.test/preview-1.mp4");
+  expect(video.currentTime).toBe(125);
+  expect(video.paused).toBe(false);
+  expect(container.querySelector("a[download]")?.getAttribute("href")).toBe("https://storage.review.test/download-2.mp4");
+
+  setSystemTime(now + 910_000);
+  await act(async () => browser.dispatchEvent(new browser.Event("focus")));
+  await settle();
+  expect(video.src).toBe("https://storage.review.test/preview-1.mp4");
+  expect(video.currentTime).toBe(125);
+  await act(async () => video.pause());
+  await act(async () => browser.dispatchEvent(new browser.Event("focus")));
+  await settle();
+  expect(video.src).toBe("https://storage.review.test/preview-1.mp4");
+  expect(video.paused).toBe(true);
+  await act(async () => video.play());
+  await settle();
+  expect(reads).toBe(2);
+  expect(video.src).toBe("https://storage.review.test/preview-2.mp4");
+  await act(async () => {
+    video.currentTime = 0;
+    video.dispatchEvent(new browser.Event("loadedmetadata"));
+  });
+  expect(video.currentTime).toBe(125);
+  expect(video.paused).toBe(false);
+});
+
+test("a share without completed downloadable media uses its existing unavailable view", async () => {
+  globalThis.fetch = mock(async () => Response.json({
+    id: "export-empty", clipTitle: "Shared clip", projectTitle: "Project", createdAt: new Date().toISOString(), editorRevision: 3,
+    expiresAt: new Date(Date.now() + 900_000).toISOString(), variants: [],
+  })) as typeof fetch;
+  const container = await renderReview(<SharedExportPageClient token="empty-share" />);
+  expect(container.querySelector("h1")?.textContent).toBe("This link isn't available");
+  expect(container.querySelector("video")).toBeNull();
 });
 
 

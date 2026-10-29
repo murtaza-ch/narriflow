@@ -1,12 +1,14 @@
 import type { QueryClient } from "@tanstack/query-core";
 import { type WorkspaceScope, invalidateScoped } from "../core";
 import { invalidateAfterClipChange, invalidateProjectClips } from "../clips/mutations";
+import { EXPORT_RESOURCES } from "../exports/queries";
 import { PROJECT_RESOURCES } from "../projects/queries";
 
 /**
  * Non-terminal progress (a clip's preview or render landing mid-run): the
- * Project's screen, finishing, clip list and previews, and the intake snapshot.
- * The hub calls it behind the 5-second trailing throttle.
+ * Project's screen, finishing, clip list and previews, the intake snapshot and
+ * the Project's open export pages. The hub calls it behind the 5-second
+ * trailing throttle, so no consumer needs to refetch on events itself.
  */
 export async function invalidateAfterProgress(
   queryClient: QueryClient,
@@ -16,6 +18,7 @@ export async function invalidateAfterProgress(
   await Promise.all([
     invalidateProjectClips(queryClient, scope, projectId),
     invalidateScoped(queryClient, scope, "ingest", "snapshot", projectId),
+    invalidateScoped(queryClient, scope, "exports", EXPORT_RESOURCES.detail, { id: projectId }),
   ]);
 }
 

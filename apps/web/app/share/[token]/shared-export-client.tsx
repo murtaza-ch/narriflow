@@ -2,16 +2,17 @@
 
 import Link from "next/link";
 import { useMemo } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { createGuestReviewsClient, reviewQueries } from "@narriflow/api-client/reviews";
 import { ReviewQueryProvider, useReviewTokenDigest, reviewApiOrigin, useExpiringReviewGrant } from "../../review/[token]/review-client-model";
-import { ReviewPending } from "../../review/[token]/review-client";
+import { ReviewPending, ReviewPlaybackVideo } from "../../review/[token]/review-client";
 import SharedClipUnavailable from "./not-found";
 import { Box, Flex, Heading, Stack, Text } from "@chakra-ui/react";
 import { Download, Lock } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
 import { Logo } from "@narriflow/ui/components/logo";
 import type { ClipExportSnapshot } from "@narriflow/validators";
+import type { ReviewMediaGrant } from "@narriflow/validators/api/reviews";
 import { formatDate, formatDuration } from "@/lib/format";
 
 export function SharedExportPageClient({ token }: { token: string }) {
@@ -20,12 +21,14 @@ export function SharedExportPageClient({ token }: { token: string }) {
 }
 
 function SharedExportQuery({ token, digest }: { token: string; digest: string }) {
+  const queryClient = useQueryClient();
   const client = useMemo(() => createGuestReviewsClient({ baseUrl: reviewApiOrigin(), getSession: () => null }), []);
-  const query = useQuery({ ...reviewQueries.share(client, token, digest), refetchOnWindowFocus: false });
-  const usable = useExpiringReviewGrant(query.data?.expiresAt, query.refetch);
+  const options = reviewQueries.share(client, token, digest);
+  const query = useQuery(options);
+  useExpiringReviewGrant(query.data?.expiresAt, query.refetch);
   if (query.isPending) return <ReviewPending />;
-  if (query.error || !query.data || !usable) return <SharedClipUnavailable />;
-  return <SharedExportClient exported={query.data} />;
+  if (!query.data) return <SharedClipUnavailable />;
+  return <SharedExportClient exported={query.data} refreshExport={() => queryClient.fetchQuery<SharedExport>(options)} />;
 }
 
 function formatBytes(value: number | null): string | null {
@@ -48,11 +51,15 @@ function Fact({ children }: { children: string }) {
   );
 }
 
-export function SharedExportClient({ exported }: { exported: ClipExportSnapshot }) {
+type SharedExport = ClipExportSnapshot & { expiresAt: string };
+
+export function SharedExportClient({ exported, refreshExport }: { exported: SharedExport; refreshExport: () => Promise<SharedExport> }) {
   const ready = exported.variants.filter(
     (variant) => variant.hasAsset && variant.downloadUrl,
   );
-  const primary = ready[0]!;
+  const primary = ready[0];
+  if (!primary) return <SharedClipUnavailable />;
+  const playbackGrant: ReviewMediaGrant = { url: primary.previewUrl ?? primary.downloadUrl!, expiresAt: exported.expiresAt };
   const ratio = aspectNumber(primary.aspectRatio);
   const facts = [
     primary.aspectRatio,
@@ -78,13 +85,20 @@ export function SharedExportClient({ exported }: { exported: ClipExportSnapshot 
               bg="studio.canvas"
             >
               <Box asChild w="full" h="full">
-                {/* biome-ignore lint/a11y/useMediaCaption: This is the final rendered export, which already burns the user's configured captions into the video. */}
-                <video
+                <ReviewPlaybackVideo
+                  key={`${exported.id}:${primary.id}:preview`}
                   controls
                   controlsList="nodownload"
                   playsInline
                   preload="metadata"
-                  src={primary.previewUrl ?? primary.downloadUrl ?? undefined}
+                  grant={playbackGrant}
+                  refreshGrant={async () => {
+                    const fresh = await refreshExport();
+                    const variant = fresh.variants.find((entry) => entry.id === primary.id);
+                    const url = variant?.previewUrl ?? variant?.downloadUrl;
+                    if (!url) throw new Error("This shared video is unavailable.");
+                    return { url, expiresAt: fresh.expiresAt };
+                  }}
                   aria-label={`${primary.aspectRatio} shared video`}
                 />
               </Box>
@@ -120,6 +134,14 @@ export function SharedExportClient({ exported }: { exported: ClipExportSnapshot 
                 <a
                   href={variant.downloadUrl ?? undefined}
                   download={`narriflow-${variant.aspectRatio.replace(":", "x")}.mp4`}
+                  onClick={(event) => {
+                    if (Date.parse(exported.expiresAt) > Date.now() + 30_000) return;
+                    event.preventDefault();
+                    void refreshExport().then((fresh) => {
+                      const url = fresh.variants.find((entry) => entry.id === variant.id)?.downloadUrl;
+                      if (url && Date.parse(fresh.expiresAt) > Date.now()) window.location.assign(url);
+                    }).catch(() => undefined);
+                  }}
                 >
                   <Download size={index === 0 ? 17 : 15} /> Download {variant.aspectRatio} · {variant.resolution}
                 </a>

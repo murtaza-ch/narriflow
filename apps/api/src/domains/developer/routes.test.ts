@@ -84,6 +84,10 @@ function deps(over: Partial<DeveloperRouteDeps> = {}) {
         await mutation.beforeAccept?.();
         return { webhook, replayed: false };
       }),
+      testWebhook: mock(async (_actor: unknown, _id: string, mutation: { beforeAccept?: () => Promise<void> }) => {
+        await mutation.beforeAccept?.();
+        return { result: { eventId: HOOK, delivered: true, status: 200, durationMs: 12 }, replayed: false };
+      }),
     },
     callbackSigningSecrets: {
       status: mock(async () => ({ current: { createdAt: "2030-01-01T00:00:00.000Z" }, previousRetiresAt: null })),
@@ -92,7 +96,6 @@ function deps(over: Partial<DeveloperRouteDeps> = {}) {
       list: mock(async () => [webhook]),
       delete: mock(async (_actor: unknown, id: string) => ({ webhookId: id })),
       enable: mock(async () => webhook),
-      test: mock(async () => ({ eventId: HOOK, delivered: true, status: 200, durationMs: 12 })),
     },
     socialOAuthService: { listAccounts: mock(async () => []) },
     ...over,
@@ -252,12 +255,12 @@ describe("keys and webhooks", () => {
       ["POST", `/workspace/webhooks/${HOOK}/enable`],
       ["POST", `/workspace/webhooks/${HOOK}/test`],
     ] as const) {
-      const response = await send(routeApp, method, path);
+      const response = await send(routeApp, method, path, undefined, keyed);
       expect(response.status).toBe(402);
       expect(await response.json()).toMatchObject({ error: "plan_feature_required" });
     }
     expect(d.webhookSubscriptions.delete).not.toHaveBeenCalled();
-    expect(d.webhookSubscriptions.test).not.toHaveBeenCalled();
+    expect(d.developerCommands.testWebhook).not.toHaveBeenCalled();
   });
 
   test("create is idempotent: a replay is 200 with the replay header", async () => {
@@ -284,6 +287,26 @@ describe("keys and webhooks", () => {
     const routeApp = app(deps());
     expect(await (await send(routeApp, "DELETE", `/workspace/webhooks/${HOOK}`)).json()).toEqual({ webhookId: HOOK, deleted: true });
     expect(await (await send(routeApp, "POST", `/workspace/webhooks/${HOOK}/enable`)).json()).toEqual({ webhook });
-    expect(await (await send(routeApp, "POST", `/workspace/webhooks/${HOOK}/test`)).json()).toEqual({ eventId: HOOK, delivered: true, status: 200, durationMs: 12 });
+  });
+
+  test("a test needs a key, and a retry with the same key replays the recorded answer", async () => {
+    const d = deps();
+    const path = `/workspace/webhooks/${HOOK}/test`;
+    expect((await send(app(d), "POST", path)).status).toBe(400);
+    expect(d.developerCommands.testWebhook).not.toHaveBeenCalled();
+
+    const sent = await send(app(d), "POST", path, undefined, keyed);
+    expect(sent.status).toBe(200);
+    expect(sent.headers.get("idempotent-replayed")).toBeNull();
+    expect(await sent.json()).toEqual({ eventId: HOOK, delivered: true, status: 200, durationMs: 12 });
+    expect(d.developerCommands.testWebhook).toHaveBeenCalledWith(expect.anything(), HOOK, expect.objectContaining({ clientIdempotencyKey: "intent-1" }));
+
+    const replayDeps = deps({
+      developerCommands: { ...d.developerCommands, testWebhook: mock(async () => ({ result: { eventId: HOOK, delivered: true, status: 200, durationMs: 12 }, replayed: true })) } as never,
+    });
+    const replay = await send(app(replayDeps), "POST", path, undefined, keyed);
+    expect(replay.status).toBe(200);
+    expect(replay.headers.get("idempotent-replayed")).toBe("true");
+    expect(await replay.json()).toMatchObject({ eventId: HOOK });
   });
 });

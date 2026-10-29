@@ -90,7 +90,8 @@ export async function invalidateAfterProposalChange(queryClient: QueryClient, sc
 
 /**
  * An account was connected, disconnected or rescheduled. Project screens carry
- * account snapshots, and Recipes and Autopilot offer accounts as choices.
+ * account snapshots, Recipes and Autopilot offer accounts as choices, Standing
+ * Grants name destinations, and the Integrations overview lists the accounts.
  */
 export async function invalidateAfterAccountChange(queryClient: QueryClient, scope: WorkspaceScope): Promise<void> {
   await Promise.all([
@@ -99,5 +100,7 @@ export async function invalidateAfterAccountChange(queryClient: QueryClient, sco
     invalidateScoped(queryClient, scope, "recipes"),
     invalidateScoped(queryClient, scope, "automation", "overview"),
     invalidateScoped(queryClient, scope, "automation", "rules"),
+    invalidateScoped(queryClient, scope, "automation", "standing-grants"),
+    invalidateScoped(queryClient, scope, "developer", "overview"),
   ]);
 }

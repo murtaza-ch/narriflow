@@ -33,7 +33,8 @@ export function CreateKeyDialog({ scope }: { scope: WorkspaceScope }) {
   const [secret, setSecret] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   // One idempotency intent per dialog: a retry after a lost response is the same request.
-  const createKey = useMutation(useMemo(() => createApiKeyMutation(runtime, scope), [runtime, scope]));
+  // The mutation hands the secret straight to this state and returns nothing secret.
+  const createKey = useMutation(useMemo(() => createApiKeyMutation(runtime, scope, setSecret), [runtime, scope]));
   const pending = createKey.isPending;
 
   function reset() {
@@ -54,11 +55,6 @@ export function CreateKeyDialog({ scope }: { scope: WorkspaceScope }) {
     createKey.mutate(
       { name, scopes: [...WORKSPACE_API_KEY_READ_SCOPES, ...writes] },
       {
-        onSuccess: (created) => {
-          setSecret(created.secret);
-          // The mutation result is not kept: the secret is held here only.
-          createKey.reset();
-        },
         onError: (failure) => setError(developerFailureMessage(failure, "The API key could not be created.")),
       },
     );

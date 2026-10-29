@@ -55,9 +55,9 @@ const webhookView = (id: string) => ({
   lastDeliveredAt: null, createdAt: "2030-01-01T00:00:00.000Z",
 });
 
-function fixture(options: { loseCommitResponse?: boolean; tier?: "free" | "pro"; duplicateUrl?: boolean } = {}) {
+function fixture(options: { loseCommitResponse?: boolean; tier?: "free" | "pro"; duplicateUrl?: boolean; throttleTest?: boolean } = {}) {
   const harness = receiptHarness(options);
-  const calls = { keys: 0, secrets: 0, webhooks: 0, prepared: 0, urlChecks: 0 };
+  const calls = { keys: 0, secrets: 0, webhooks: 0, prepared: 0, urlChecks: 0, tests: 0 };
   const tier = options.tier ?? "pro";
   const workspaces = {
     requireActor: async (userId: string, workspaceId: string) => ({
@@ -87,6 +87,14 @@ function fixture(options: { loseCommitResponse?: boolean; tier?: "free" | "pro";
       if (options.duplicateUrl) throw Object.assign(new Error("unique"), { code: "P2002" });
       calls.webhooks += 1;
       return webhookView(`hook-${calls.webhooks}`);
+    },
+    // A fresh id per send, so a second send is visible in the result.
+    test: async () => {
+      calls.tests += 1;
+      if (options.throttleTest && calls.tests > 1) {
+        throw new ExpectedDomainFailureError({ code: "webhook_test_throttled", kind: "rate_limited", message: "wait", retryAfterSeconds: 5 });
+      }
+      return { eventId: `event-${calls.tests}`, delivered: true, status: 200, durationMs: 4 };
     },
     explainInsertFailure: async (_actor: unknown, _prepared: unknown, error: unknown) =>
       (error as { code?: string }).code === "P2002"
@@ -231,5 +239,45 @@ describe("create_webhook", () => {
     const { commands, calls } = fixture({ tier: "free" });
     await expect(commands.createWebhook(actor, input, mutation("w1"))).rejects.toBeInstanceOf(PlanRequirementError);
     expect(calls).toMatchObject({ webhooks: 0, urlChecks: 0 });
+  });
+});
+
+describe("test_webhook", () => {
+  const HOOK = "00000000-0000-4000-8000-000000000040";
+
+  test("sends one test; a retry of a lost response replays the recorded answer instead of sending or being throttled", async () => {
+    const { commands, calls } = fixture({ loseCommitResponse: true, throttleTest: true });
+    // The commit succeeded but its response was lost; the retry finds the receipt.
+    const first = await commands.testWebhook(actor, HOOK, mutation("t1")).catch((error: unknown) => error);
+    expect(first).toMatchObject({ result: { eventId: "event-1", delivered: true } });
+    const retry = await commands.testWebhook(actor, HOOK, mutation("t1"));
+    expect(retry).toMatchObject({ replayed: true, result: { eventId: "event-1", delivered: true, status: 200 } });
+    expect(calls.tests).toBe(1);
+  });
+
+  test("a new intent is a new test, and the service's throttle still applies to it", async () => {
+    const { commands, calls } = fixture({ throttleTest: true });
+    await commands.testWebhook(actor, HOOK, mutation("t1"));
+    await expect(commands.testWebhook(actor, HOOK, mutation("t2"))).rejects.toMatchObject({ code: "webhook_test_throttled" });
+    expect(calls.tests).toBe(2);
+  });
+
+  test("the new-mutation limiter runs after the replay lookup and before anything is sent", async () => {
+    const { commands, calls } = fixture();
+    await commands.testWebhook(actor, HOOK, mutation("t1"));
+    const refused = new ExpectedDomainFailureError({ code: "rate_limited", kind: "rate_limited", message: "slow down" });
+    const blocked = { clientIdempotencyKey: "t1", beforeAccept: async () => { throw refused; } };
+    expect(await commands.testWebhook(actor, HOOK, blocked)).toMatchObject({ replayed: true });
+    await expect(commands.testWebhook(actor, HOOK, { ...blocked, clientIdempotencyKey: "t2" })).rejects.toBe(refused);
+    expect(calls.tests).toBe(1);
+  });
+
+  test("the same key for another webhook conflicts, and a plan without API access sends nothing", async () => {
+    const { commands, calls } = fixture();
+    await commands.testWebhook(actor, HOOK, mutation("t1"));
+    await expect(commands.testWebhook(actor, "00000000-0000-4000-8000-000000000041", mutation("t1"))).rejects.toBeInstanceOf(OperationIdempotencyConflictError);
+    const free = fixture({ tier: "free" });
+    await expect(free.commands.testWebhook(actor, HOOK, mutation("t1"))).rejects.toBeInstanceOf(PlanRequirementError);
+    expect(calls.tests + free.calls.tests).toBe(1);
   });
 });

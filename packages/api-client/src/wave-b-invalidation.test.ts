@@ -1,11 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { QueryClient } from "@tanstack/query-core";
+import { QueryClient, QueryObserver } from "@tanstack/query-core";
 import { invalidateBillingDependents } from "./billing";
 import { invalidateAfterClipChange } from "./clips/mutations";
 import { scopedKey, sessionKey } from "./core/keys";
 import { USER, WORKSPACE_A, WORKSPACE_B } from "./core/test-helpers";
+import { invalidateAfterAutomationChange } from "./automation/invalidation";
+import { invalidateBrand } from "./brand/queries";
 import { invalidateAfterIntake } from "./ingest/invalidation";
-import { invalidateAfterProjectDeleted } from "./projects";
+import { clearProjectAccess, invalidateAfterProjectDeleted } from "./projects";
 import {
   invalidateAfterAccountChange,
   invalidateAfterPostChange,
@@ -119,5 +121,72 @@ describe("publishing changes refresh the Project and account consumers (Sol B06)
     await invalidatePublishing(queryClient, scope);
     expect(stale("queue")).toBe(true);
     expect(stale("thisProject")).toBe(false);
+  });
+});
+
+describe("lost Project access clears what the Project showed (Sol UI-2 R6)", () => {
+  test("a mounted Project read drops its data and surfaces the refusal; other Projects and Workspaces are untouched", async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    let revoked = false;
+    const keys = {
+      detail: detail(PID),
+      clips: scopedKey(scope, "clips", "list", PID),
+      exportDetail: scopedKey(scope, "exports", "detail", { id: PID, clipId: "c1", exportId: "e1" }),
+      otherProject: detail(OTHER_PID),
+      otherWorkspace: [...scopedKey(other, "projects", "detail", PID), "overview"],
+    };
+    for (const [name, key] of Object.entries(keys)) queryClient.setQueryData([...key], { name, media: "https://cdn.example/signed" });
+    const observer = new QueryObserver(queryClient, {
+      queryKey: [...keys.detail],
+      staleTime: Number.POSITIVE_INFINITY,
+      queryFn: async () => {
+        if (revoked) throw new Error("project_not_found");
+        return { name: "detail" };
+      },
+    });
+    const stop = observer.subscribe(() => undefined);
+    expect(observer.getCurrentResult().data).toBeDefined();
+
+    revoked = true;
+    await clearProjectAccess(queryClient, scope, PID);
+
+    // The cached Project is gone and only the refusal remains; a plain invalidation would have kept the data beside the error.
+    expect(observer.getCurrentResult()).toMatchObject({ data: undefined, isError: true });
+    expect(queryClient.getQueryData([...keys.clips])).toBeUndefined();
+    expect(queryClient.getQueryData([...keys.exportDetail])).toBeUndefined();
+    expect(queryClient.getQueryData([...keys.otherProject])).toBeDefined();
+    expect(queryClient.getQueryData([...keys.otherWorkspace])).toBeDefined();
+    stop();
+  });
+});
+
+describe("dependent aggregates follow their sources (Sol UI-2 R9)", () => {
+  const keys = {
+    integrations: scopedKey(scope, "developer", "overview"),
+    grants: scopedKey(scope, "automation", "standing-grants"),
+    recipes: scopedKey(scope, "recipes", "list"),
+    zoom: scopedKey(scope, "automation", "zoom-connections"),
+    otherWorkspaceGrants: scopedKey(other, "automation", "standing-grants"),
+  };
+
+  test("connecting or disconnecting an account refreshes Integrations and Standing Grants", async () => {
+    const { queryClient, stale } = cache(keys);
+    await invalidateAfterAccountChange(queryClient, scope);
+    for (const name of ["integrations", "grants", "recipes"]) expect(stale(name)).toBe(true);
+    expect(stale("otherWorkspaceGrants")).toBe(false);
+  });
+
+  test("a Brand Profile change refreshes Standing Grants, which pause when their Recipe changes", async () => {
+    const { queryClient, stale } = cache(keys);
+    await invalidateBrand(queryClient, scope);
+    expect(stale("grants")).toBe(true);
+    expect(stale("otherWorkspaceGrants")).toBe(false);
+  });
+
+  test("an automation change refreshes the Recipes that show their rule use", async () => {
+    const { queryClient, stale } = cache(keys);
+    await invalidateAfterAutomationChange(queryClient, scope);
+    for (const name of ["grants", "zoom", "recipes"]) expect(stale(name)).toBe(true);
+    expect(stale("otherWorkspaceGrants")).toBe(false);
   });
 });

@@ -6,8 +6,9 @@ import { upgradePromptFromFailure } from "@/lib/authenticated-request-browser";
 import { browserFailureFromApiError } from "@/lib/publishing-client";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { CLIENT_ERROR_CODES, invalidateScoped, isApiError, type WorkspaceScope } from "@narriflow/api-client/core";
+import { CLIENT_ERROR_CODES, isApiError, type WorkspaceScope } from "@narriflow/api-client/core";
 import {
+	type ClipExportDetailData,
 	createExportsClient,
 	exportCommands,
 	exportQueries,
@@ -16,6 +17,7 @@ import {
 	invalidateAfterExportChange,
 } from "@narriflow/api-client/exports";
 import { useProgressStream } from "@narriflow/api-client/progress";
+import { clearProjectAccess } from "@narriflow/api-client/projects";
 import { useApiRuntime, useWorkspaceScope } from "@/app/_components/api-provider";
 import Link from "next/link";
 import { Box, Flex, Grid, HStack, Image, Portal, Stack, Text, Tooltip } from "@chakra-ui/react";
@@ -154,17 +156,22 @@ export function ExportDeliveryClient({
 	const [subtitleFormat, setSubtitleFormat] = useState<"srt" | "vtt" | null>(null);
 	const lastSeqRef = useRef(initialSeq);
 
-	// The export is a cached read seeded with the page's first answer. Progress
-	// events and the fallback poll refetch it; nothing else replaces it.
+	// The export is the screen's cached read; this view only observes it, so a cache
+	// reset on lost access (below) swaps the page for the screen's own recovery
+	// instead of re-seeding the old snapshot. The shared
+	// progress hub refreshes it behind its throttle (terminal outcomes at once);
+	// the fallback poll and a reconnect cover a stream that is down.
 	const detail = useQuery({
 		...detailOptions,
-		initialData: { ...initialExport, lastSeq: initialSeq },
 		refetchOnMount: false,
 		refetchOnWindowFocus: false,
 		refetchInterval: (query) =>
 			query.state.data && ACTIVE_STATUSES.has(query.state.data.status) ? ACTIVE_FALLBACK_POLL_MS : false,
 	});
-	const { lastSeq: _lastSeq, ...data } = detail.data;
+	// The last good read; the screen unmounts this view in the render where the read is gone.
+	const lastRead = useRef<ClipExportDetailData>({ ...initialExport, lastSeq: initialSeq } as ClipExportDetailData);
+	if (detail.data) lastRead.current = detail.data;
+	const { lastSeq: _lastSeq, ...data } = lastRead.current;
 	const active = ACTIVE_STATUSES.has(data.status);
 	const refetchDetail = detail.refetch;
 	const refresh = useCallback(async () => {
@@ -194,16 +201,16 @@ export function ExportDeliveryClient({
 		return () => document.removeEventListener("visibilitychange", onVisible);
 	}, [refetchDetail]);
 
-	// Access ended or the stream was refused: re-read the export, whose own answer (missing, forbidden) drives the page.
+	// Access ended or the stream was refused: clear what the Project showed and re-read the
+	// export, whose own answer (missing, forbidden) drives the screen.
 	const reread = useCallback(() => {
-		void invalidateScoped(queryClient, scope, "exports");
-	}, [queryClient, scope]);
+		void clearProjectAccess(queryClient, scope, projectId);
+	}, [queryClient, scope, projectId]);
 	useProgressStream(runtime, scope, projectId, {
 		enabled: active,
 		sinceSeq: lastSeqRef.current,
 		onEvent: (event) => {
 			lastSeqRef.current = Math.max(lastSeqRef.current, event.seq);
-			if (event.stage === "clip_rendering") void refresh();
 		},
 		// Events may have been missed while disconnected, and file URLs may have aged.
 		onOpen: ({ reconnected }) => {

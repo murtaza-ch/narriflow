@@ -4,4 +4,5 @@ export const DEVELOPER_RECEIPT_COMMANDS = [
 	"create_api_key",
 	"rotate_callback_signing_secret",
 	"create_webhook",
+	"test_webhook",
 ] as const;

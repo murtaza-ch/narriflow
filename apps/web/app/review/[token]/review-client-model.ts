@@ -1,7 +1,7 @@
-import { createElement, type ReactNode, useEffect, useState } from "react";
+import { createElement, type ReactNode, type SyntheticEvent, useEffect, useRef, useState } from "react";
 import { createApiQueryClient, sha256Hex } from "@narriflow/api-client/core";
 import { QueryClientProvider } from "@tanstack/react-query";
-import type { ReviewSession } from "@narriflow/validators/api/reviews";
+import type { ReviewMediaGrant, ReviewSession } from "@narriflow/validators/api/reviews";
 
 /** A separate, memory-only cache; guest pages never depend on Clerk bootstrap. */
 export function ReviewQueryProvider({ children }: { children: ReactNode }) {
@@ -46,27 +46,91 @@ export function readReviewSession(storage: Pick<Storage, "getItem" | "removeItem
 }
 
 export function grantRefreshDelay(expiresAt: string, now = Date.now()): number {
-  return Math.max(0, Date.parse(expiresAt) - now - 5_000);
+  return Math.max(0, Date.parse(expiresAt) - now - 30_000);
 }
 
-/** Renew shortly before expiry and after tab resume. Expired URLs stop rendering even if renewal fails. */
-export function useExpiringReviewGrant(expiresAt: string | undefined, refetch: () => Promise<unknown>): boolean {
-  const [clock, setClock] = useState(Date.now);
+/** Refresh cached grants by their advertised expiry. Mounted playback owns its URL. */
+export function useExpiringReviewGrant(expiresAt: string | undefined, refetch: () => Promise<unknown>): void {
   useEffect(() => {
     if (!expiresAt) return;
-    const refresh = () => { setClock(Date.now()); void refetch(); };
-    const resume = () => { if (document.visibilityState === "visible") refresh(); };
+    const refresh = () => { void refetch(); };
+    const resume = () => {
+      if (document.visibilityState === "visible" && grantRefreshDelay(expiresAt) === 0) refresh();
+    };
     const renewal = window.setTimeout(refresh, grantRefreshDelay(expiresAt));
-    const expiry = window.setTimeout(() => setClock(Date.now()), Math.max(0, Date.parse(expiresAt) - Date.now()));
-    window.addEventListener("focus", refresh);
+    window.addEventListener("focus", resume);
     document.addEventListener("visibilitychange", resume);
     return () => {
-      window.clearTimeout(renewal); window.clearTimeout(expiry);
-      window.removeEventListener("focus", refresh);
+      window.clearTimeout(renewal);
+      window.removeEventListener("focus", resume);
       document.removeEventListener("visibilitychange", resume);
     };
   }, [expiresAt, refetch]);
-  return Boolean(expiresAt && Date.parse(expiresAt) > Math.max(clock, Date.now()));
+}
+
+/** One mounted item/variant/mode keeps its URL, even after a background grant refresh. */
+export function useReviewPlayback(
+  grant: ReviewMediaGrant | undefined,
+  refreshGrant: () => Promise<ReviewMediaGrant>,
+  onGrantError?: (reason: unknown) => void,
+) {
+  const [selected, setSelected] = useState(grant);
+  const current = selected ?? grant;
+  const currentRef = useRef(current);
+  const mounted = useRef(true);
+  const renewing = useRef(false);
+  const restore = useRef<{ time: number; play: boolean } | null>(null);
+  useEffect(() => {
+    if (!selected && grant) setSelected(grant);
+  }, [grant, selected]);
+  useEffect(() => { currentRef.current = current; }, [current]);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
+
+  async function renew(video: HTMLVideoElement) {
+    if (renewing.current) return;
+    renewing.current = true;
+    const position = { time: video.currentTime, play: !video.paused };
+    video.pause();
+    try {
+      const next = await refreshGrant();
+      if (!mounted.current) return;
+      if (Date.parse(next.expiresAt) <= Date.now()) throw new Error("This media link has expired. Try playing again.");
+      currentRef.current = next;
+      if (next.url !== video.getAttribute("src")) {
+        restore.current = position;
+        setSelected(next);
+      } else {
+        setSelected(next);
+        if (position.play) void video.play().catch(() => undefined);
+      }
+    } catch (reason) {
+      if (mounted.current) onGrantError?.(reason);
+    } finally {
+      renewing.current = false;
+    }
+  }
+
+  function renewExpired(event: SyntheticEvent<HTMLVideoElement>) {
+    if (currentRef.current && Date.parse(currentRef.current.expiresAt) <= Date.now()) {
+      void renew(event.currentTarget);
+    }
+  }
+
+  return {
+    src: current?.url,
+    onPlay: renewExpired,
+    onError: renewExpired,
+    onLoadedMetadata(event: SyntheticEvent<HTMLVideoElement>) {
+      const pending = restore.current;
+      if (!pending) return;
+      restore.current = null;
+      event.currentTarget.currentTime = pending.time;
+      if (pending.play) void event.currentTarget.play().catch(() => undefined);
+    },
+  };
 }
 
 export type ReviewCommentTarget = {

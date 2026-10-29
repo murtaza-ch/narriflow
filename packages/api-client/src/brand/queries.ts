@@ -308,11 +308,12 @@ function stringified(filters: object): Record<string, string> {
 /**
  * Brand Kit changes reach the Brand Kit's own reads and the aggregates that
  * show brand data: Recipes (brand looks), intake configuration (default
- * profile, styles) and the Studio's retained fonts/scenes/assets. Deleted
+ * profile, styles), Standing Grants (a Recipe whose brand changed pauses the
+ * grants that use it) and the Studio's retained fonts/scenes/assets. Deleted
  * references stay resolvable on the server, so only reads are marked stale.
  */
 export function invalidateBrand(queryClient: QueryClient, scope: WorkspaceScope): Promise<void> {
-  const under = (domain: "brand" | "recipes" | "ingest" | "studio", resource?: string) =>
+  const under = (domain: "brand" | "recipes" | "ingest" | "studio" | "automation", resource?: string) =>
     queryClient.invalidateQueries({
       queryKey: scopedKey(scope, domain, resource) as unknown[],
     });
@@ -320,6 +321,7 @@ export function invalidateBrand(queryClient: QueryClient, scope: WorkspaceScope)
     under("brand"),
     under("recipes"),
     under("ingest", "configuration"),
+    under("automation", "standing-grants"),
     under("studio", "editor-assets"),
     under("studio", "brand-snapshot"),
   ]).then(() => undefined);

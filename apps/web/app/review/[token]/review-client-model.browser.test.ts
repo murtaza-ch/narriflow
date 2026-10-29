@@ -76,9 +76,9 @@ describe("review credential and grant lifetime", () => {
     expect(readReviewSession(storage, digest)).toBeNull();
     expect(rows.has(key)).toBe(false);
   });
-  test("renews media five seconds before expiry, including already expired grants", () => {
+  test("renews media thirty seconds before expiry, including already expired grants", () => {
     const now = Date.parse("2026-10-29T12:00:00.000Z");
-    expect(grantRefreshDelay(new Date(now + 60_000).toISOString(), now)).toBe(55_000);
+    expect(grantRefreshDelay(new Date(now + 60_000).toISOString(), now)).toBe(30_000);
     expect(grantRefreshDelay(new Date(now - 1).toISOString(), now)).toBe(0);
   });
 });

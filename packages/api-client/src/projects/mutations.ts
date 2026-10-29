@@ -4,7 +4,7 @@ import type {
   ApplyProjectBrandProfileRequest,
   NotifyPreferenceRequest,
 } from "@narriflow/validators/api/projects";
-import { IDEMPOTENCY_KEY_HEADER, invalidateScoped, scopedKey, type WorkspaceScope } from "../core";
+import { IDEMPOTENCY_KEY_HEADER, invalidateScoped, isWorkspaceKey, scopedKey, type WorkspaceScope } from "../core";
 import { invalidateWorkspaceUsage } from "../workspace/queries";
 import type { ProjectsClient } from "./index";
 import { PROJECT_RESOURCES } from "./queries";
@@ -72,6 +72,19 @@ export async function invalidateProject(queryClient: QueryClient, scope: Workspa
     invalidateScoped(queryClient, scope, "projects", PROJECT_RESOURCES.finishing, projectId),
     invalidateScoped(queryClient, scope, "projects", PROJECT_RESOURCES.workflowHistory, projectId),
   ]);
+}
+
+/**
+ * Access to one Project ended (membership removed, Workspace restricted, Project gone):
+ * cancel and reset every cached read of it in this Workspace, whichever domain cached it,
+ * so nothing it showed stays rendered. Reads that are still mounted refetch, and the
+ * server's own answer (missing, restricted, forbidden) drives the screen's recovery.
+ */
+export async function clearProjectAccess(queryClient: QueryClient, scope: WorkspaceScope, projectId: string) {
+  await queryClient.resetQueries({
+    predicate: (query) =>
+      isWorkspaceKey(query.queryKey, scope.userId, scope.workspaceId) && JSON.stringify(query.queryKey).includes(projectId),
+  });
 }
 
 /**

@@ -31,6 +31,16 @@ export function projectGateDestination(error: unknown, projectId: string): strin
 	return null;
 }
 
+/**
+ * Whether a failed re-read means the Project is no longer the person's to see: gone,
+ * forbidden, or its Workspace restricted or elsewhere. Such an answer replaces data
+ * already on screen; a transport failure or throttle keeps showing the last good read.
+ */
+export function projectAccessLost(error: unknown): boolean {
+	const { kind } = describeApiFailure(error);
+	return kind === "missing" || kind === "forbidden" || kind === "workspace_restricted" || kind === "workspace_mismatch";
+}
+
 /** The Project could not be read or rendered: try again, or go back to the list. */
 export function ProjectLoadError({
 	onRetry,

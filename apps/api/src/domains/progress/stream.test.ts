@@ -108,6 +108,40 @@ describe("progress stream", () => {
     stream.close();
   });
 
+  test("live events piling up behind a blocked gap read are bounded, then recovered from the log", async () => {
+    const backend = createFakeBackend([ev(1)]);
+    const underlying = backend.getEventsSince;
+    let release: () => void = () => undefined;
+    let blockNext = false;
+    let finishedReads = 0;
+    backend.getEventsSince = async (project, since) => {
+      if (blockNext) {
+        blockNext = false;
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+      }
+      const events = await underlying(project, since);
+      finishedReads += 1;
+      return events;
+    };
+    const { reader, stream } = open(backend, { maxBufferedEvents: 3, fallbackPollMs: 20 });
+    // Initial replay and post-subscribe catch-up are both done: the stream is live.
+    await reader.until(() => backend.liveCount === 1 && finishedReads === 2);
+    blockNext = true;
+    backend.emit(ev(2), { publish: false });
+    backend.emit(ev(3), { publish: false });
+    backend.emit(ev(4)); // seq 4 > cursor + 1: starts a gap read that stays blocked
+    for (let seq = 5; seq <= 50; seq += 1) backend.emit(ev(seq));
+    // Past the bound the live channel is dropped and the pending deliveries are discarded.
+    expect(backend.liveCount).toBe(0);
+    release();
+    await reader.until(() => reader.seqs().length === 50);
+    expect(reader.seqs()).toEqual(Array.from({ length: 50 }, (_, index) => index + 1));
+    stream.close();
+    expect(backend.state.closed).toBe(1);
+  });
+
   test("ignores a malformed cursor and never sends a sequence twice across the replay and live paths", async () => {
     const backend = createFakeBackend([ev(1), ev(2)]);
     const { reader, stream } = open(backend);

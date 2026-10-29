@@ -44,7 +44,7 @@ export interface ProgressStreamOptions {
   heartbeatMs: number;
   /** Poll interval while there is no live channel. */
   fallbackPollMs: number;
-  /** Live events held while the replay catches up; past this the stream falls back to polling. */
+  /** Live events held while the replay catches up or a gap read is pending; past this the stream falls back to polling. */
   maxBufferedEvents: number;
   /** Frames a slow client may leave unread before the connection is dropped (it reconnects from its cursor). */
   maxQueuedFrames: number;
@@ -209,11 +209,31 @@ export function openProgressStream(options: ProgressStreamOptions): ProgressStre
   async function connectLive(subscribeLive: SubscribeLive): Promise<void> {
     let catchingUp = true;
     const buffered: SequencedEvent[] = [];
-    let chain: Promise<void> = Promise.resolve();
-    const queueLive = (event: SequencedEvent) => {
-      chain = chain.then(() => deliverLive(event)).catch(() => {
+    const pending: SequencedEvent[] = [];
+    let draining = false;
+    const drain = async (): Promise<void> => {
+      draining = true;
+      try {
+        while (active && pending.length > 0) {
+          await deliverLive(pending.shift() as SequencedEvent);
+        }
+      } catch {
         if (active) fallbackToPolling();
-      });
+      } finally {
+        pending.length = 0;
+        draining = false;
+      }
+    };
+    const queueLive = (event: SequencedEvent) => {
+      // A stalled log read must not let live events pile up: past the bound, drop the
+      // queue and the live channel and recover from the durable cursor by polling.
+      if (pending.length >= options.maxBufferedEvents) {
+        pending.length = 0;
+        fallbackToPolling();
+        return;
+      }
+      pending.push(event);
+      if (!draining) void drain();
     };
     const subscription = await subscribeLive(projectId, {
       onEvent: (event) => {

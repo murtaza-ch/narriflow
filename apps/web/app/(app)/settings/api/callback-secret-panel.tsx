@@ -27,17 +27,13 @@ export function CallbackSecretPanel({
   // The secret is shown once and lives in this component alone: never in a query, a cache or a key.
   const [secret, setSecret] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const rotation = useMutation(useMemo(() => rotateCallbackSigningSecretMutation(runtime, scope), [runtime, scope]));
+  // The mutation hands the secret straight to this state and returns nothing secret.
+  const rotation = useMutation(useMemo(() => rotateCallbackSigningSecretMutation(runtime, scope, setSecret), [runtime, scope]));
   const pending = rotation.isPending;
 
   function rotate() {
     setError(null);
     rotation.mutate(undefined, {
-      onSuccess: (rotated) => {
-        setSecret(rotated.secret);
-        // The mutation result is not kept: the secret is held here only.
-        rotation.reset();
-      },
       onError: (failure) => setError(developerFailureMessage(failure, "The signing secret could not be created.")),
     });
   }

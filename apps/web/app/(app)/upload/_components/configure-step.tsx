@@ -70,7 +70,9 @@ export function ConfigureStep({
     ingestStatus: initialIngestStatus,
     errorCode: initialIngestErrorCode,
   });
-  const ingestStream = useIngestStream(projectId, ingestStart);
+  // Counts accepted retries, so a retry resets the stream even though it restarts at the same queued/null.
+  const [retryAttempt, setRetryAttempt] = useState(0);
+  const ingestStream = useIngestStream(projectId, ingestStart, { attempt: retryAttempt });
 
   const [clipLengthPreset, setClipLengthPreset] = useState<ClipLengthPreset>(
     initialStep2.clipLengthPreset,
@@ -251,7 +253,10 @@ export function ConfigureStep({
             projectId={projectId}
             errorCode={ingestStream.errorCode}
             fromDrivePicker={ingestFromDrivePicker}
-            onRetried={() => setIngestStart({ ingestStatus: "queued", errorCode: null })}
+            onRetried={() => {
+              setIngestStart({ ingestStatus: "queued", errorCode: null });
+              setRetryAttempt((attempt) => attempt + 1);
+            }}
             onSaveAndFinishLater={handleSaveAndFinishLater}
             savingDraft={savingDraft}
             saveDraftError={saveDraftError}

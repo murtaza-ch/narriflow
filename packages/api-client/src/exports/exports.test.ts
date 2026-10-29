@@ -140,4 +140,37 @@ describe("attachments", () => {
     );
     await expect(fetchSubtitleFile(client, PROJECT, CLIP, EXPORT, "vtt")).rejects.toBeInstanceOf(RangeError);
   });
+
+  test("a body without a trustworthy length stops being read once it crosses the bound", async () => {
+    const chunk = new Uint8Array(1024 * 1024);
+    let pulled = 0;
+    let cancelled = false;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulled += 1;
+        controller.enqueue(chunk);
+        if (pulled >= 40) controller.close();
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const { client } = clientWith(() => new Response(stream, { headers: { "Content-Disposition": 'attachment; filename="t.zip"' } }));
+    await expect(fetchTimelineArchive(client, PROJECT, CLIP, "fcpxml")).rejects.toBeInstanceOf(RangeError);
+    expect(cancelled).toBe(true);
+    expect(pulled).toBeLessThan(EXPORT_ATTACHMENT_MAX_BYTES / chunk.byteLength + 4);
+  });
+
+  test("a body within the bound keeps its type, name and revision", async () => {
+    const { client } = clientWith(
+      () =>
+        new Response(new Blob(["a", "b"]).stream(), {
+          headers: { "Content-Type": "application/zip", "Content-Disposition": 'attachment; filename="t.zip"', "X-Editor-Revision": "7" },
+        }),
+    );
+    const archive = await fetchTimelineArchive(client, PROJECT, CLIP, "fcpxml");
+    expect(archive).toMatchObject({ fileName: "t.zip", contentType: "application/zip", editorRevision: 7 });
+    expect(await archive.blob.text()).toBe("ab");
+    expect(archive.blob.type).toBe("application/zip");
+  });
 });

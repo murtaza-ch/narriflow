@@ -1,6 +1,6 @@
 "use client";
 
-import { type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { type ComponentProps, type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   ArrowRight,
@@ -27,11 +27,11 @@ import { Progress } from "@narriflow/ui/components/progress";
 import { SegmentedControl } from "@narriflow/ui/components/segmented-control";
 import { Spinner } from "@narriflow/ui/components/spinner";
 import { formatTimecode } from "@/lib/format";
-import { buildReviewCommentPayload, reviewApprovalProgress, ReviewQueryProvider, useReviewTokenDigest, reviewApiOrigin, readReviewSession, reviewSessionKey, useExpiringReviewGrant } from "./review-client-model";
+import { buildReviewCommentPayload, reviewApprovalProgress, ReviewQueryProvider, useReviewTokenDigest, reviewApiOrigin, readReviewSession, reviewSessionKey, useExpiringReviewGrant, useReviewPlayback } from "./review-client-model";
 import { createGuestReviewsClient, reviewQueries, reviewMutationOptions, invalidateGuestReviewMutation } from "@narriflow/api-client/reviews";
 import { createIntent, guestKey, isApiError } from "@narriflow/api-client/core";
 import type { ReviewCommentInput, ReviewDecisionInput } from "@narriflow/validators";
-import type { ReviewSession } from "@narriflow/validators/api/reviews";
+import type { ReviewMediaGrant, ReviewSession } from "@narriflow/validators/api/reviews";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 type ReviewComment = {
@@ -129,6 +129,15 @@ export function ReviewPending() {
   return <Flex minH="100dvh" bg="bg.sidebar" direction="column" align="center" justify="center" gap="6" px="4" py="10"><Logo size="md" /><Spinner size="md" /></Flex>;
 }
 
+export function ReviewPlaybackVideo({ grant, refreshGrant, onGrantError, ...props }: Omit<ComponentProps<"video">, "src" | "onPlay" | "onError" | "onLoadedMetadata"> & {
+  grant: ReviewMediaGrant | undefined;
+  refreshGrant: () => Promise<ReviewMediaGrant>;
+  onGrantError?: (reason: unknown) => void;
+}) {
+  const playback = useReviewPlayback(grant, refreshGrant, onGrantError);
+  return <video {...props} {...playback} />;
+}
+
 type GuestCommand =
   | { kind: "comment"; input: ReviewCommentInput }
   | { kind: "decision"; input: ReviewDecisionInput }
@@ -208,12 +217,13 @@ function ReviewRoom({ token, digest }: { token: string; digest: string }) {
     [activeItem?.id, round?.comments],
   );
 
+  const mediaOptions = reviewQueries.media(client, token, digest, activeItem?.id ?? "", activeVariant?.id ?? "");
   const mediaQuery = useQuery({
-    ...reviewQueries.media(client, token, digest, activeItem?.id ?? "", activeVariant?.id ?? ""),
+    ...mediaOptions,
     enabled: session !== null && activeItem !== null && activeVariant !== null,
     refetchOnWindowFocus: false,
   });
-  const mediaUsable = useExpiringReviewGrant(mediaQuery.data?.expiresAt, mediaQuery.refetch);
+  useExpiringReviewGrant(mediaQuery.data?.expiresAt, mediaQuery.refetch);
   const accessMutation = useMutation({
     ...reviewMutationOptions,
     mutationFn: async () => {
@@ -250,7 +260,7 @@ function ReviewRoom({ token, digest }: { token: string; digest: string }) {
     ...reviewMutationOptions,
     mutationFn: async () => {
       if (!activeItem || !activeVariant) return;
-      const grant = await queryClient.fetchQuery(reviewQueries.media(client, token, digest, activeItem.id, activeVariant.id, true));
+      const grant = await queryClient.fetchQuery<ReviewMediaGrant>(reviewQueries.media(client, token, digest, activeItem.id, activeVariant.id, true));
       if (Date.parse(grant.expiresAt) > Date.now()) window.location.assign(grant.url);
     },
   });
@@ -548,18 +558,19 @@ function ReviewRoom({ token, digest }: { token: string; digest: string }) {
                   overflow="hidden"
                   bg="studio.canvas"
                 >
-                  {/* biome-ignore lint/a11y/useMediaCaption: submitted exports contain the final burned-in captions. */}
-                  <video
+                  <ReviewPlaybackVideo
                     ref={(node) => {
                       if (node) videoRefs.current.set(activeItem.id, node);
                       else videoRefs.current.delete(activeItem.id);
                     }}
-                    key={activeVariant.id}
+                    key={`${activeItem.id}:${activeVariant.id}:media`}
                     controls
                     playsInline
                     preload="metadata"
                     aria-label={`${activeItem.clipTitle}, ${aspectLabel(activeVariant.aspectRatio)} submitted export`}
-                    src={mediaUsable ? mediaQuery.data?.url : undefined}
+                    grant={mediaQuery.data}
+                    refreshGrant={() => queryClient.fetchQuery<ReviewMediaGrant>(mediaOptions)}
+                    onGrantError={(reason) => setError(reason instanceof Error ? reason.message : "Media could not be loaded")}
                     style={{ width: "100%", height: "100%", objectFit: "contain" }}
                   />
                 </Box>

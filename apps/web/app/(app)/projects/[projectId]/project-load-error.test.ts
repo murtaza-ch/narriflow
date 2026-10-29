@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { ApiError } from "@narriflow/api-client";
-import { projectGateDestination } from "./project-load-error";
+import { projectAccessLost, projectGateDestination } from "./project-load-error";
 
 const projectId = "11111111-1111-4111-8111-111111111111";
 const failure = (status: number, code: string, details?: Record<string, unknown>) =>
@@ -32,5 +32,18 @@ describe("Project gate destinations", () => {
 		);
 		expect(projectGateDestination(failure(404, "project_not_found"), projectId)).toBeNull();
 		expect(projectGateDestination(failure(503, "authentication_unavailable"), projectId)).toBeNull();
+	});
+});
+
+describe("lost Project access", () => {
+	test("gone, forbidden, restricted and foreign answers replace a cached page; outages and throttles keep it", () => {
+		expect(projectAccessLost(failure(404, "project_not_found"))).toBe(true);
+		expect(projectAccessLost(failure(403, "capability_denied"))).toBe(true);
+		expect(projectAccessLost(failure(403, "workspace_restricted"))).toBe(true);
+		expect(projectAccessLost(failure(409, "active_workspace_mismatch"))).toBe(true);
+		expect(projectAccessLost(failure(503, "authentication_unavailable"))).toBe(false);
+		expect(projectAccessLost(failure(429, "rate_limited"))).toBe(false);
+		expect(projectAccessLost(failure(500, "internal_error"))).toBe(false);
+		expect(projectAccessLost(new TypeError("network"))).toBe(false);
 	});
 });

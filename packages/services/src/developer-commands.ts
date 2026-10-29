@@ -1,5 +1,6 @@
 import type { Prisma } from "@prisma/client";
 import type { WorkspaceEventType, WebhookView } from "@narriflow/validators";
+import type { WebhookTestResult } from "@narriflow/validators/api/developer";
 import type { ActorScope } from "./actor-scope";
 import { ExpectedDomainFailureError } from "./expected-domain-failure";
 import type { IntegrationMutation } from "./operation-receipt";
@@ -18,7 +19,7 @@ export interface DeveloperCommandDependencies {
   signingSecrets: {
     issue(tx: Prisma.TransactionClient, workspaceId: string): Promise<{ id: string; secret: string; createdAt: string }>;
   };
-  webhooks: Pick<WebhookSubscriptions, "prepareCreate" | "insert" | "explainInsertFailure">;
+  webhooks: Pick<WebhookSubscriptions, "prepareCreate" | "insert" | "explainInsertFailure" | "test">;
   /** The SSRF guard for a webhook URL: HTTPS, public host, port 443. Resolves DNS. */
   assertCallbackUrl: (raw: string) => Promise<URL>;
 }
@@ -51,6 +52,11 @@ export interface SigningSecretIssued {
 
 export interface WebhookCreated {
   webhook: WebhookView;
+  replayed: boolean;
+}
+
+export interface WebhookTested {
+  result: WebhookTestResult;
   replayed: boolean;
 }
 
@@ -205,6 +211,39 @@ export function createDeveloperCommands(deps: DeveloperCommandDependencies) {
       } catch (error) {
         throw state.prepared ? await webhooks.explainInsertFailure(actor, state.prepared, error) : error;
       }
+    },
+
+    /**
+     * Sends one signed `webhook.test` event and records the endpoint's answer under the caller's
+     * key. A retry after a lost response replays that answer: it neither sends again nor meets the
+     * per-webhook throttle. The send happens outside any database transaction, before the answer
+     * commits; if the process dies in between, the retry sends once more once the throttle allows
+     * (a test event is a diagnostic, so at-least-once is the contract).
+     */
+    async testWebhook(actor: ActorScope, webhookId: string, mutation: DeveloperMutation): Promise<WebhookTested> {
+      const state: { result: WebhookTestResult | null } = { result: null };
+      const accepted = await receipts().execute<WebhookTestResult>({
+        identity: {
+          workspaceId: actor.workspaceId,
+          actorUserId: actor.actorUserId,
+          command: "test_webhook",
+          clientIdempotencyKey: mutation.clientIdempotencyKey,
+        },
+        input: { webhookId },
+        authorize: async () => {
+          await requireApiAccess(actor);
+        },
+        // The send is new work, so the limiter's recorded outcome is enforced before it, after the replay lookup.
+        prepare: async () => {
+          await mutation.beforeAccept?.();
+          state.result = await webhooks.test(actor, webhookId);
+        },
+        mutate: async () => {
+          if (!state.result) throw new Error("The webhook test was not sent");
+          return { resourceType: "webhook_subscription", resourceId: webhookId, value: state.result };
+        },
+      });
+      return { result: accepted.value, replayed: accepted.replayed };
     },
   };
 }

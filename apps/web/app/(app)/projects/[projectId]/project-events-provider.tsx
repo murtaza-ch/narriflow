@@ -11,7 +11,7 @@ import {
   type ReactNode,
 } from "react";
 import { CLIENT_ERROR_CODES } from "@narriflow/api-client/core";
-import { invalidateProject } from "@narriflow/api-client/projects";
+import { clearProjectAccess } from "@narriflow/api-client/projects";
 import { useProgressStream } from "@narriflow/api-client/progress";
 import type { WorkflowStageUpdatedEvent } from "@narriflow/validators";
 import { useApiRuntime, useWorkspaceScope } from "@/app/_components/api-provider";
@@ -130,10 +130,11 @@ function ProjectEventsState({
     [projectId],
   );
 
-  // Access ended or the stream was refused: re-read the Project, whose own
-  // answer (missing, restricted, mismatch) drives the existing recovery gates.
+  // Access ended or the stream was refused: clear what the Project showed and
+  // re-read it, so the server's own answer (missing, restricted, mismatch)
+  // drives the existing recovery gates instead of the cached page.
   const reread = useCallback(() => {
-    if (scope) void invalidateProject(runtime.queryClient, scope, projectId);
+    if (scope) void clearProjectAccess(runtime.queryClient, scope, projectId);
   }, [runtime, scope, projectId]);
 
   useProgressStream(runtime, scope, projectId, {

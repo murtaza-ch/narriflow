@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { QueryClient } from "@tanstack/query-core";
+import { QueryClient, QueryObserver } from "@tanstack/query-core";
 import type { WorkflowStageUpdatedEvent } from "@narriflow/validators/api/progress";
 import { fakeTransport } from "./test-support";
 import { ApiError, type EventStreamOptions, type StreamEnd, scopedKey } from "../core";
@@ -160,6 +160,30 @@ describe("progress hub", () => {
     expect(count()).toBe(1);
     await sleep(80);
     expect(count()).toBe(2); // one trailing for the whole burst
+  });
+
+  test("a burst of render events refetches an open export page once behind the throttle, and a terminal one at once", async () => {
+    const clock = 10_000;
+    const { hub, runs, queryClient } = harness({ now: () => clock, throttleMs: 5_000 });
+    const fetches = { mine: 0, other: 0 };
+    const observe = (project: string, counter: keyof typeof fetches) =>
+      new QueryObserver(queryClient, {
+        queryKey: scopedKey(SCOPE, "exports", "detail", { id: project, clipId: "c1", exportId: "e1" }) as unknown[],
+        queryFn: async () => {
+          fetches[counter] += 1;
+          return { n: fetches[counter] };
+        },
+      }).subscribe(() => undefined);
+    const stops = [observe(PROJECT, "mine"), observe("50000000-0000-4000-8000-000000000002", "other")];
+    await sleep(5);
+    hub.subscribe(SCOPE, PROJECT, {});
+    for (let seq = 1; seq <= 30; seq += 1) await runs[0]?.push(live(seq));
+    await sleep(10);
+    expect(fetches).toEqual({ mine: 2, other: 1 }); // the first read plus one leading refetch for the whole burst
+    await runs[0]?.push(live(31, { status: "completed" }));
+    await sleep(10);
+    expect(fetches).toEqual({ mine: 3, other: 2 }); // a terminal outcome refreshes every export read, once
+    for (const stop of stops) stop();
   });
 
   test("a terminal outcome invalidates once, even when it is replayed or arrives with others", async () => {

@@ -23,7 +23,7 @@ import { ProjectClipsTab } from "./project-clips-tab";
 import { ProjectEvents } from "./project-events";
 import { ProjectEventsProvider } from "./project-events-provider";
 import { ProjectHeader } from "./project-header";
-import { ProjectLoadError, projectGateDestination } from "./project-load-error";
+import { ProjectLoadError, projectAccessLost, projectGateDestination } from "./project-load-error";
 import { ProjectSkeleton } from "./project-skeleton";
 import { ProjectTabs, TabCountBadge } from "./project-tabs";
 import { type ProjectTab, projectTabFromSearchParam } from "./project-tab";
@@ -62,7 +62,9 @@ function ProjectData({ api, projectId }: { api: ClipApi; projectId: string }) {
 		placeholderData: (previous) => (previous?.snapshot.project?.id === projectId ? previous : undefined),
 	});
 
-	const failure = detailQuery.isError && !detailQuery.data ? detailQuery.error : null;
+	// Cached data hides a failed re-read only while the failure is recoverable; losing access replaces the page.
+	const failure =
+		detailQuery.isError && (!detailQuery.data || projectAccessLost(detailQuery.error)) ? detailQuery.error : null;
 	const destination = failure ? projectGateDestination(failure, projectId) : null;
 	useEffect(() => {
 		if (destination) router.replace(destination);
