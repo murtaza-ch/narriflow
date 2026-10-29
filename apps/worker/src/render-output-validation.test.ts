@@ -3,7 +3,9 @@ import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { MediaFacts } from "@narriflow/validators";
+import { SDR_OUTPUT_COLOR } from "./composition-ffmpeg-adapter";
 import {
+	passthroughColor,
 	RenderOutputInvalid,
 	validateRenderOutput,
 	type RenderOutputExpectation,
@@ -25,6 +27,7 @@ const expected: RenderOutputExpectation = {
 	frameRate: { numerator: 30, denominator: 1 },
 	sampleAspectRatio: { numerator: 1, denominator: 1 },
 	audio: { sampleRate: 48000, channels: 1 },
+	color: passthroughColor(undefined),
 };
 const make = async (file: string, extra: string[] = []) =>
 	processes.execute({
@@ -102,10 +105,26 @@ const validate = (
 		signal,
 	});
 
+// Truncation and unreadable output are worth another encode; a mismatch
+// against the plan or the pipeline's color contract fails the same way again.
+const TRANSIENT = new Set([
+	"output_video_stream_missing_or_extra",
+	"output_decode_failed",
+	"output_video_stream_unreadable",
+	"output_video_duration_mismatch",
+	"output_video_timestamps_invalid",
+	"output_video_frame_count_mismatch",
+	"output_audio_duration_mismatch",
+	"output_container_duration_mismatch",
+]);
+
 async function rejectsWith(
 	worker: WorkerProcessModule,
 	code: string,
 	contract = expected,
+	disposition: "retryable" | "permanent" = TRANSIENT.has(code)
+		? "retryable"
+		: "permanent",
 ): Promise<void> {
 	try {
 		await validate(worker, contract);
@@ -114,7 +133,7 @@ async function rejectsWith(
 		expect(error).toBeInstanceOf(RenderOutputInvalid);
 		expect(error).toMatchObject({
 			code: "render_output_invalid",
-			disposition: "retryable",
+			disposition,
 		});
 		expect((error as RenderOutputInvalid).diagnosticCodes).toContain(code);
 	}
@@ -251,17 +270,138 @@ describe("render output admission", () => {
 			durationSec: 30,
 		});
 	});
-	test("requires color facts and removes stale HDR metadata", async () => {
-		await rejectsWith(injected(media), "output_colorSpace_mismatch", {
+	test("converted SDR asserts exact BT.709 tags and removes stale HDR metadata", async () => {
+		const asserted: RenderOutputExpectation = {
 			...expected,
-			color: { colorSpace: "bt709" },
-		});
-		const facts = structuredClone(media);
+			color: { mode: "asserted", tags: SDR_OUTPUT_COLOR },
+		};
+		await rejectsWith(injected(media), "output_colorSpace_mismatch", asserted);
+		const tagged = structuredClone(media);
+		Object.assign(tagged.videos[0]!, SDR_OUTPUT_COLOR);
+		await validate(injected(tagged), asserted);
+		tagged.videos[0]!.colorTransfer = null;
+		await rejectsWith(injected(tagged), "output_colorTransfer_mismatch", asserted);
+		const facts = structuredClone(tagged);
+		Object.assign(facts.videos[0]!, SDR_OUTPUT_COLOR);
 		facts.videos[0]!.contentLight = { maxContent: 1000, maxAverage: 400 };
-		await rejectsWith(injected(facts), "output_hdr_metadata_present", {
-			...expected,
-			sdr: true,
+		await rejectsWith(injected(facts), "output_hdr_metadata_present", asserted);
+	});
+	// Real 1080p60 podcast footage (fully BT.709 tagged AV1) rendered through a
+	// caption/RGB overlay stage: swscale writes the matrix and range but leaves
+	// transfer and primaries unspecified. Passthrough must accept that.
+	test("passthrough accepts partial, absent or rewritten SDR tags", async () => {
+		const source = {
+			colorRange: "tv",
+			colorSpace: "bt709",
+			colorTransfer: "bt709",
+			colorPrimaries: "bt709",
+		};
+		const contract = { ...expected, color: passthroughColor(source) };
+		for (const tags of [
+			{},
+			{ colorRange: "tv", colorSpace: "bt709" },
+			{ colorRange: "tv", colorSpace: "bt709", colorTransfer: "unknown" },
+			{ colorSpace: "smpte170m", colorTransfer: "bt709", colorPrimaries: "bt470bg" },
+			source,
+		]) {
+			const facts = structuredClone(media);
+			Object.assign(facts.videos[0]!, {
+				colorRange: null,
+				colorSpace: null,
+				colorTransfer: null,
+				colorPrimaries: null,
+				...tags,
+			});
+			await validate(injected(facts), contract);
+		}
+	});
+	// Real mechanism behind the 1080p60 podcast failures: a two-up stack (and an
+	// overlay on a generated background) keeps range and matrix but loses the
+	// transfer and primaries, even from a fully BT.709-tagged source.
+	test("a fully tagged source rendered through vstack validates as passthrough", async () => {
+		const tagged = join(directory, "tagged-source.mp4");
+		await make(tagged, [
+			"-vf",
+			"setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv",
+		]);
+		const source = (
+			await processes.inspectMedia({
+				sourcePath: tagged,
+				signal,
+				deadlineMs: 30_000,
+			})
+		).facts!.videos[0]!;
+		expect(source).toMatchObject(SDR_OUTPUT_COLOR);
+		const stacked = join(directory, "stacked.mp4");
+		await processes.execute({
+			command: "ffmpeg",
+			signal,
+			deadlineMs: 30_000,
+			args: [
+				"-v",
+				"error",
+				"-y",
+				"-i",
+				tagged,
+				"-filter_complex",
+				"[0:v]split[a][b];[a]crop=160:44:0:0[t];[b]crop=160:44:0:44[u];[t][u]vstack,format=yuv420p[o]",
+				"-map",
+				"[o]",
+				"-map",
+				"0:a",
+				"-c:v",
+				"libx264",
+				"-c:a",
+				"aac",
+				stacked,
+			],
 		});
+		const output = (
+			await processes.inspectMedia({
+				sourcePath: stacked,
+				signal,
+				deadlineMs: 30_000,
+			})
+		).facts!.videos[0]!;
+		expect(output.colorSpace).toBe("bt709");
+		expect(output.colorTransfer).not.toBe("bt709");
+		const stackedExpected = { ...expected, height: 88 };
+		await validate(
+			processes,
+			{ ...stackedExpected, color: passthroughColor(source) },
+			stacked,
+		);
+		// The pre-fix contract: exact source tags, which the stack never wrote.
+		await rejectsWith(processes, "output_colorTransfer_mismatch", {
+			...stackedExpected,
+			color: { mode: "asserted", tags: SDR_OUTPUT_COLOR },
+		}, "permanent");
+	});
+	test("passthrough rejects HDR tags the source did not carry", async () => {
+		for (const [key, value, code] of [
+			["colorTransfer", "smpte2084", "output_colorTransfer_mismatch"],
+			["colorTransfer", "arib-std-b67", "output_colorTransfer_mismatch"],
+			["colorPrimaries", "bt2020", "output_colorPrimaries_mismatch"],
+			["colorSpace", "bt2020nc", "output_colorSpace_mismatch"],
+		] as const) {
+			const facts = structuredClone(media);
+			Object.assign(facts.videos[0]!, { [key]: value });
+			await rejectsWith(injected(facts), code);
+			// The same tag is the source's own and so is not a conversion defect.
+			await validate(injected(facts), {
+				...expected,
+				color: passthroughColor({ [key]: value }),
+			});
+		}
+	});
+	test("a deterministic mismatch is permanent, truncation stays retryable", async () => {
+		const facts = structuredClone(media);
+		facts.videos[0]!.colorTransfer = "smpte2084";
+		facts.videos[0]!.width = 162;
+		await rejectsWith(injected(facts), "output_canvas_mismatch", expected, "permanent");
+		const short = structuredClone(media);
+		short.format.durationSec = 1.1;
+		await rejectsWith(injected(short), "output_container_duration_mismatch", expected, "retryable");
 	});
 	test("rejects accidental audio in a silent plan", async () => {
 		await rejectsWith(processes, "output_audio_stream_missing_or_extra", {

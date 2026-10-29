@@ -30,7 +30,7 @@
  * never fails the batch).
  */
 
-import { validateRenderOutput, type RenderOutputExpectation } from "../render-output-validation";
+import { passthroughColor, validateRenderOutput, type RenderOutputExpectation } from "../render-output-validation";
 import { standardFrameRate } from "@narriflow/validators";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
@@ -840,8 +840,7 @@ export function clipPreviewOutputExpectation(
     frameRate: probe.hasVideo ? video?.rFrameRate ?? standardFrameRate(probe.fps) ?? { numerator: 30, denominator: 1 } : { numerator: 25, denominator: 1 },
     sampleAspectRatio: sar,
     audio: probe.hasAudio ? { channels: 1, ...(audio?.sampleRate ? { sampleRate: audio.sampleRate } : {}) } : null,
-    color: video ? Object.fromEntries((["colorRange", "colorSpace", "colorTransfer", "colorPrimaries"] as const)
-      .flatMap((key) => video[key] && video[key] !== "unknown" ? [[key, video[key]]] : [])) : {},
+    color: passthroughColor(video),
   };
 }
 

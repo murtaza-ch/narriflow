@@ -441,7 +441,7 @@ function createCoreRenderPathTracer(input: {
               facts: {
                 format: { name: "mov,mp4,m4a,3gp,3g2,mj2", startTimeSec: 0, durationSec, sizeBytes: 4096, bitRate: null }, attachedPictureCount: 0,
                 videos: input.invalidOutput === "no-stream" ? [] : [{ ...stream, width: expected.width, height: expected.height, codedWidth: expected.width, codedHeight: expected.height, displayWidth: expected.width, displayHeight: expected.height,
-                  sampleAspectRatio: expected.sampleAspectRatio, displayMatrix: null, rotationDeg: 0, reflected: false, avgFrameRate: expected.frameRate, rFrameRate: expected.frameRate, pixelFormat: "yuv420p", colorRange: null, colorSpace: null, colorTransfer: null, colorPrimaries: null, chromaLocation: null, fieldOrder: null, masteringDisplay: null, contentLight: null, dolbyVision: null, ...expected.color }],
+                  sampleAspectRatio: expected.sampleAspectRatio, displayMatrix: null, rotationDeg: 0, reflected: false, avgFrameRate: expected.frameRate, rFrameRate: expected.frameRate, pixelFormat: "yuv420p", colorRange: null, colorSpace: null, colorTransfer: null, colorPrimaries: null, chromaLocation: null, fieldOrder: null, masteringDisplay: null, contentLight: null, dolbyVision: null, ...(expected.color.mode === "asserted" ? expected.color.tags : {}) }],
                 audios: expected.audio === null ? [] : [{ ...stream, index: 1, codec: "aac", profile: "LC", frameCount: null, sampleRate: expected.audio.sampleRate ?? 48000, channels: expected.audio.channels ?? 2, channelLayout: "stereo", sampleFormat: "fltp", initialPadding: 0, trailingPadding: 0 }],
               },
             };
@@ -3528,6 +3528,7 @@ interface RenderedMediaProbe {
 	durationSec: number;
 	videoCodec: string | null;
 	audioCodec: string | null;
+	pixelFormat: string | null;
 }
 
 function probeRenderedMedia(
@@ -3556,6 +3557,7 @@ function probeRenderedMedia(
 			codec_name?: string;
 			width?: number;
 			height?: number;
+			pix_fmt?: string;
 		}>;
 		format?: { duration?: string };
 	};
@@ -3568,6 +3570,7 @@ function probeRenderedMedia(
 		durationSec: Number(data.format?.duration ?? 0),
 		videoCodec: video?.codec_name ?? null,
 		audioCodec: audio?.codec_name ?? null,
+		pixelFormat: video?.pix_fmt ?? null,
 	};
 }
 
@@ -3916,7 +3919,7 @@ describe("ClipRenderAttempt real-media plan fixtures", () => {
 	);
 
 	test.skipIf(!ffmpegAvailable || !ffprobeAvailable)(
-		"rejects the current 4:4:4 visual stack before upload while preserving its compiled layers",
+		"encodes the logo and dip-white visual stack as 4:2:0 while preserving its compiled layers",
 		async () => {
 			let output: RenderedMediaProbe | undefined;
 			let boundaryFrameHashes: string[] = [];
@@ -3970,8 +3973,7 @@ describe("ClipRenderAttempt real-media plan fixtures", () => {
 				realMedia: {
 					sourcePath: videoSourcePath,
 					logoPath: logoSourcePath,
-					probeOutput: async () => { throw new Error("invalid candidate uploaded"); },
-          probeCandidate: async (variantId, filePath) => {
+					probeOutput: async (variantId, filePath) => {
 						output = probeRenderedMedia(variantId, filePath);
 						boundaryFrameHashes = [0, 0.1, 0.15, 0.2, 0.3, 0.6, 0.65, 0.75].map(
 							(timeSec) => hashRenderedFrame(filePath, timeSec),
@@ -3986,19 +3988,20 @@ describe("ClipRenderAttempt real-media plan fixtures", () => {
 					attemptContext(new AbortController().signal),
 				),
 			).resolves.toMatchObject({
-				status: "requeued",
-				succeeded: 0,
+				status: "completed",
+				succeeded: 1,
 				failed: 0,
 			});
 
-      expect(harness.uploadedVariantIds).toEqual([]);
-      expect([...harness.failureCodes.values()]).toEqual(["render_output_invalid"]);
+			expect(harness.uploadedVariantIds).toEqual(["variant-visual-stack"]);
+			expect([...harness.failureCodes.values()]).toEqual([]);
 			expect(output).toMatchObject({
 				variantId: "variant-visual-stack",
 				width: 720,
 				height: 1280,
 				videoCodec: "h264",
 				audioCodec: "aac",
+				pixelFormat: "yuv420p",
 			});
 			expect(output?.durationSec).toBeGreaterThan(0.7);
 			expect(boundaryFrameHashes).toHaveLength(8);

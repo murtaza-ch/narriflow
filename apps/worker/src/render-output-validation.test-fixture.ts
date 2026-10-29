@@ -89,7 +89,7 @@ export function createRenderOutputFixture() {
 							masteringDisplay: null,
 							contentLight: null,
 							dolbyVision: null,
-							...expected.color,
+							...(expected.color.mode === "asserted" ? expected.color.tags : {}),
 						},
 					],
 					audios:

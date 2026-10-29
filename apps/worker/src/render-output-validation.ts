@@ -8,7 +8,9 @@ import {
 } from "@narriflow/validators";
 import type { OmittedGlyph, SkippedEmoji } from "./caption-glyphs";
 import {
-	hdrColorOf,
+	OUTPUT_PIXEL_FORMAT,
+	rendersConvertedSdr,
+	SDR_OUTPUT_COLOR,
 	type BoundCompositionAudioRenderRequest,
 } from "./composition-ffmpeg-adapter";
 import {
@@ -21,6 +23,61 @@ import type {
 	WorkerProcessModule,
 } from "./worker-process";
 
+type ColorTags = Pick<
+	MediaFacts["videos"][number],
+	"colorRange" | "colorSpace" | "colorTransfer" | "colorPrimaries"
+>;
+
+/** Color tags are asserted only where the pipeline writes them. A converted
+ * SDR render (HDR to SDR, ticket 07) writes exact BT.709 tags. Every other
+ * render leaves the tags the filter graph happens to carry: partial, absent or
+ * rewritten by an RGB overlay stage are all valid. It must only never present
+ * itself as HDR, unless that is what its source already said. */
+export type RenderColorExpectation =
+	| { mode: "asserted"; tags: Readonly<ColorTags> }
+	| { mode: "passthrough"; source: Partial<ColorTags> };
+
+const HDR_TAG_VALUES: Readonly<Record<keyof ColorTags, readonly string[]>> = {
+	colorRange: [],
+	colorSpace: ["bt2020nc", "bt2020c", "ictcp"],
+	colorTransfer: ["smpte2084", "arib-std-b67"],
+	colorPrimaries: ["bt2020"],
+};
+
+export function passthroughColor(
+	source: Partial<ColorTags> | undefined,
+): RenderColorExpectation {
+	return {
+		mode: "passthrough",
+		source: {
+			colorRange: source?.colorRange ?? null,
+			colorSpace: source?.colorSpace ?? null,
+			colorTransfer: source?.colorTransfer ?? null,
+			colorPrimaries: source?.colorPrimaries ?? null,
+		},
+	};
+}
+
+/** Failures that say the file is incomplete or unreadable, which a fresh
+ * encode may fix. Any other code is a mismatch against the plan or the
+ * pipeline's own contract; the same inputs fail the same way. */
+const TRANSIENT_OUTPUT_CODES: ReadonlySet<string> = new Set([
+	"output_missing",
+	"output_file_empty_or_too_small",
+	"output_probe_failed",
+	"output_probe_facts_missing",
+	"output_video_stream_unreadable",
+	"output_video_stream_missing_or_extra",
+	"output_decode_failed",
+	"output_video_timestamps_invalid",
+	"output_video_duration_mismatch",
+	"output_video_frame_count_mismatch",
+	"output_video_header_duration_mismatch",
+	"output_audio_timestamps_invalid",
+	"output_audio_duration_mismatch",
+	"output_container_duration_mismatch",
+]);
+
 export interface RenderOutputExpectation {
 	durationSec: number;
 	width: number;
@@ -30,13 +87,7 @@ export interface RenderOutputExpectation {
 	/** Inserted-scene concat preserves its authored variable frame spacing. */
 	variableFrameSpacing?: boolean;
 	audio: { sampleRate?: number; channels?: number } | null;
-	color?: Partial<
-		Pick<
-			MediaFacts["videos"][number],
-			"colorRange" | "colorSpace" | "colorTransfer" | "colorPrimaries"
-		>
-	>;
-	sdr?: boolean;
+	color: RenderColorExpectation;
 }
 
 export interface DecodedStreamFacts {
@@ -66,9 +117,12 @@ export class RenderOutputInvalid extends WorkflowFailure {
 	) {
 		// An output cannot establish that an immutable source is invalid. That
 		// requires a refreshed content-bound probe and repeat local reproduction.
+		// Only an incomplete or unreadable file is worth another encode.
 		super(
 			"render_output_invalid",
-			"retryable",
+			diagnosticCodes.every((code) => TRANSIENT_OUTPUT_CODES.has(code))
+				? "retryable"
+				: "permanent",
 			`Rendered media failed validation: ${diagnosticCodes.join(", ")}`,
 		);
 		this.name = "RenderOutputInvalid";
@@ -108,7 +162,7 @@ export function compositionOutputExpectation(input: {
 		input.audio.censors.some((censor) => censor.treatment === "beep") ||
 		sceneAudio;
 	const hasAudio = input.audio.source.available || mixed;
-	const sdr = Boolean(hdrColorOf(input.source)) || Boolean(input.hdrAssets);
+	const converted = rendersConvertedSdr(input.source, Boolean(input.hdrAssets));
 	return {
 		durationSec: input.plan.editedDurationSec,
 		width: Math.trunc((target.canvas.width * scale) / 2) * 2,
@@ -134,30 +188,9 @@ export function compositionOutputExpectation(input: {
 						: {}),
 				}
 			: null,
-		color: sdr
-			? {
-					colorRange: "tv",
-					colorSpace: "bt709",
-					colorTransfer: "bt709",
-					colorPrimaries: "bt709",
-				}
-			: sourceVideo
-				? Object.fromEntries(
-						(
-							[
-								"colorRange",
-								"colorSpace",
-								"colorTransfer",
-								"colorPrimaries",
-							] as const
-						).flatMap((key) =>
-							sourceVideo[key] && sourceVideo[key] !== "unknown"
-								? [[key, sourceVideo[key]]]
-								: [],
-						),
-					)
-				: {},
-		sdr,
+		color: converted
+			? { mode: "asserted", tags: SDR_OUTPUT_COLOR }
+			: passthroughColor(sourceVideo),
 	};
 }
 
@@ -330,13 +363,15 @@ export async function validateRenderOutput(input: {
 		return reject(["output_video_stream_missing_or_extra"]);
 	// ffprobe spells full-range planar 8-bit 4:2:0 as yuvj420p. It is the
 	// same chroma/bit-depth contract; keep that measured spelling and range.
-	if (
+	if (video.pixelFormat === null || video.profile === null)
+		codes.push("output_video_stream_unreadable");
+	else if (
 		video.codec !== "h264" ||
 		!(
-			video.pixelFormat === "yuv420p" ||
+			video.pixelFormat === OUTPUT_PIXEL_FORMAT ||
 			(video.pixelFormat === "yuvj420p" &&
 				video.colorRange === "pc" &&
-				!expected.sdr)
+				expected.color.mode === "passthrough")
 		) ||
 		video.profile !== "High"
 	)
@@ -352,12 +387,18 @@ export async function validateRenderOutput(input: {
 		!video.avgFrameRate
 	)
 		codes.push("output_frame_rate_mismatch");
-	for (const [key, value] of Object.entries(expected.color ?? {})) {
-		if (video[key as keyof typeof expected.color] !== value)
-			codes.push(`output_${key}_mismatch`);
+	for (const key of Object.keys(HDR_TAG_VALUES) as (keyof ColorTags)[]) {
+		const actual = video[key];
+		const invalid =
+			expected.color.mode === "asserted"
+				? actual !== expected.color.tags[key]
+				: actual !== null &&
+					HDR_TAG_VALUES[key].includes(actual) &&
+					actual !== expected.color.source[key];
+		if (invalid) codes.push(`output_${key}_mismatch`);
 	}
 	if (
-		expected.sdr &&
+		expected.color.mode === "asserted" &&
 		(video.masteringDisplay || video.contentLight || video.dolbyVision)
 	)
 		codes.push("output_hdr_metadata_present");

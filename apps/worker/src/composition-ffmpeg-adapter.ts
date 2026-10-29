@@ -1380,6 +1380,43 @@ function hdrToSdrChain(hdr: HdrColor): string {
 	);
 }
 
+/** The color tags a converted-SDR render writes on its final frames. The
+ *  encoder stage below and the output validator both read this one value. */
+export const SDR_OUTPUT_COLOR = {
+	colorRange: "tv",
+	colorSpace: "bt709",
+	colorTransfer: "bt709",
+	colorPrimaries: "bt709",
+} as const;
+
+/** The delivered pixel format of every composition render. Declared on the
+ *  encoder, so a graph that ends in 4:4:4 (an RGB overlay under a transition)
+ *  is converted rather than encoded as High 4:4:4 Predictive. */
+export const OUTPUT_PIXEL_FORMAT = "yuv420p";
+
+function x264VideoArgs(encoder: { preset: string; crf: string }): string[] {
+	return [
+		"-c:v",
+		"libx264",
+		"-preset",
+		encoder.preset,
+		"-crf",
+		encoder.crf,
+		"-pix_fmt",
+		OUTPUT_PIXEL_FORMAT,
+	];
+}
+
+/** Whether a render converts HDR to SDR, and so asserts {@link SDR_OUTPUT_COLOR}.
+ *  Every other render passes its source tags through whatever the filter graph
+ *  leaves on the frames, which the validator checks for HDR tags only. */
+export function rendersConvertedSdr(
+	probe: WorkerMediaInspection,
+	hasHdrAssets: boolean,
+): boolean {
+	return Boolean(hdrColorOf(probe)) || hasHdrAssets;
+}
+
 /** A render that converted any HDR video declares its limited-range BT.709
  *  result on the final frames, so a concat or overlay after the conversion
  *  cannot leave the file untagged. SDR renders add nothing. */
@@ -1388,14 +1425,15 @@ function sdrTagStage(
 	hdrAssets: Readonly<Record<string, HdrColor>> | undefined,
 	label: string,
 ): { label: string; filterParts: string[] } {
-	if (!hdrColorOf(probe) && Object.keys(hdrAssets ?? {}).length === 0) {
+	if (!rendersConvertedSdr(probe, Object.keys(hdrAssets ?? {}).length > 0)) {
 		return { label, filterParts: [] };
 	}
 	const output = "[composition_sdr_out]";
+	const tags = SDR_OUTPUT_COLOR;
 	return {
 		label: output,
 		filterParts: [
-			`${label}setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv${output}`,
+			`${label}setparams=color_primaries=${tags.colorPrimaries}:color_trc=${tags.colorTransfer}:colorspace=${tags.colorSpace}:range=${tags.colorRange}${output}`,
 		],
 	};
 }
@@ -2973,12 +3011,7 @@ function buildSingleVideoArgs(params: {
 		filterParts.join(";"),
 		"-map",
 		finalLabel,
-		"-c:v",
-		"libx264",
-		"-preset",
-		params.encoder.preset,
-		"-crf",
-		params.encoder.crf,
+		...x264VideoArgs(params.encoder),
 	);
 
 	if (hasMixedAudio) {
@@ -3289,12 +3322,7 @@ function buildBrollVideoArgs(params: {
 	// even with every B-roll input now trimmed, this guarantees the encoded
 	// output can never exceed the clip's own planned duration.
 	args.push(
-		"-c:v",
-		"libx264",
-		"-preset",
-		params.encoder.preset,
-		"-crf",
-		params.encoder.crf,
+		...x264VideoArgs(params.encoder),
 		"-t",
 		clipDurationSec.toFixed(3),
 		"-movflags",
@@ -3563,12 +3591,7 @@ function buildAudiogramArgs(params: {
 		"-shortest",
 		"-t",
 		outputDurationSec.toFixed(3),
-		"-c:v",
-		"libx264",
-		"-preset",
-		params.encoder.preset,
-		"-crf",
-		params.encoder.crf,
+		...x264VideoArgs(params.encoder),
 		"-c:a",
 		"aac",
 		"-b:a",

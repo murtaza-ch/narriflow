@@ -220,6 +220,23 @@ describe("capture, verify and the gate", () => {
     expect(compareCase(base, frameChanged, retain).map((item) => item.category)).toEqual(["frames"]);
   });
 
+  test("the output-pixel-format change allows only the appended -pix_fmt yuv420p", () => {
+    const base = baseline.cases[CASE]!;
+    const changed = clone(base);
+    const command = changed.targets[0]!.command;
+    command.argv = [...command.argv, "-pix_fmt", "yuv420p"];
+    command.argvSha256 = "changed";
+    expect(compareCase(base, changed).map((item) => item.category)).toContain("argv");
+    expect(compareCase(base, changed, null, false, false, false, true)).toEqual([]);
+    command.argv = [...command.argv, "-crf", "1"];
+    expect(compareCase(base, changed, null, false, false, false, true).map((item) => item.category)).toContain("argv");
+    const frames = clone(base);
+    frames.targets[0]!.command.argv = [...frames.targets[0]!.command.argv, "-pix_fmt", "yuv420p"];
+    frames.targets[0]!.command.argvSha256 = "changed";
+    frames.targets[0]!.output!.video!.framesSha256 = "changed";
+    expect(compareCase(base, frames, null, false, false, false, true).map((item) => item.category)).toContain("frames");
+  });
+
   test("the glyph-coverage change allows the ASS script and frames, nothing else", () => {
     const base = baseline.cases[CASE]!;
     const changed = clone(base);

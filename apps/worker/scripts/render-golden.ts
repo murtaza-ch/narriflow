@@ -139,8 +139,10 @@ export interface Activation {
   /** `change: "output-sar"` marks a normal case whose only allowed difference
    * is the appended `,setsar=1` and the SAR/DAR tags (with the extradata size of the SPS that carries them) becoming 1:1.
    * `change: "glyph-coverage"` marks a normal case whose captions use glyphs outside the caption face: the ASS script, the
-   * decoded frames and libass's font diagnostics may change (host-font fallback becomes the pinned chain), nothing else. */
-  cases: Record<string, { contract: Assertion[]; retain?: string[]; change?: "output-sar" | "glyph-coverage" }>;
+   * decoded frames and libass's font diagnostics may change (host-font fallback becomes the pinned chain), nothing else.
+   * `change: "output-pixel-format"` marks a case whose only allowed difference is the appended `-pix_fmt yuv420p` argv pair
+   * (the encoder declares the contracted 4:2:0 format); frames, PTS, PCM, loudness, ffprobe and decode stay exact. */
+  cases: Record<string, { contract: Assertion[]; retain?: string[]; change?: "output-sar" | "glyph-coverage" | "output-pixel-format" }>;
 }
 
 export interface Inputs {
@@ -310,7 +312,7 @@ export function suiteCaseIds(inputs: Inputs, suite: string, only?: string[]): st
   return selected;
 }
 
-function activationFor(inputs: Inputs, caseId: string): { ticket: string; contract: Assertion[]; retain: string[]; change?: "output-sar" | "glyph-coverage" } | null {
+function activationFor(inputs: Inputs, caseId: string): { ticket: string; contract: Assertion[]; retain: string[]; change?: "output-sar" | "glyph-coverage" | "output-pixel-format" } | null {
   for (const activation of Object.values(inputs.activations)) {
     const entry = activation.cases[caseId];
     if (entry && entry.contract.length > 0) return { ticket: activation.ticket, contract: entry.contract, retain: entry.retain ?? [], change: entry.change };
@@ -321,6 +323,11 @@ function activationFor(inputs: Inputs, caseId: string): { ticket: string; contra
 /** A case may carry the approved SAR-declaration change with or without a corrected contract. */
 function allowsOutputSar(inputs: Inputs, caseId: string): boolean {
   return Object.values(inputs.activations).some((activation) => activation.cases[caseId]?.change === "output-sar");
+}
+
+/** A case may carry the approved encoder pixel-format declaration. */
+function allowsOutputPixelFormat(inputs: Inputs, caseId: string): boolean {
+  return Object.values(inputs.activations).some((activation) => activation.cases[caseId]?.change === "output-pixel-format");
 }
 
 /** A case may carry the approved glyph-coverage change: the pinned fallback chain replaces host fonts. */
@@ -1329,6 +1336,40 @@ function allowOutputSar(base: CaseRecord, cand: CaseRecord): { base: CaseRecord;
   };
 }
 
+/** Removes the one approved argv pair, `-pix_fmt yuv420p`, from an encoder argv. Every other byte compares exactly. */
+function withoutPixelFormat(argv: string[]): string[] {
+  const out: string[] = [];
+  for (let index = 0; index < argv.length; index++) {
+    if (argv[index] === "-pix_fmt" && argv[index + 1] === "yuv420p") { index++; continue; }
+    out.push(argv[index]!);
+  }
+  return out;
+}
+
+/** The approved encoder pixel-format change: the candidate appends `-pix_fmt yuv420p` to each encode and nothing else
+ * differs. For an already-4:2:0 graph the encoder inserts no conversion, so the decoded frames, PTS, PCM, loudness
+ * and ffprobe facts keep their exact comparison. The argv and its digest compare after removing the pair. */
+function allowOutputPixelFormat(base: CaseRecord, cand: CaseRecord): { base: CaseRecord; cand: CaseRecord; problems: Mismatch[] } {
+  const problems: Mismatch[] = [];
+  const adjust = (target: TargetRecord): TargetRecord => {
+    const copy = structuredClone(target);
+    const argv = withoutPixelFormat(copy.command.argv);
+    copy.command = { ...copy.command, argv, argvSha256: sha256(canonicalJson(argv)) };
+    return copy;
+  };
+  base.targets.forEach((target, index) => {
+    const candTarget = cand.targets[index];
+    if (!candTarget) return;
+    const count = (argv: string[]) => argv.length - withoutPixelFormat(argv).length;
+    if (count(candTarget.command.argv) < count(target.command.argv)) problems.push({ case: base.id, target: target.targetId, category: "argv", detail: "candidate removed an existing -pix_fmt yuv420p" });
+  });
+  return {
+    base: { ...base, targets: base.targets.map(adjust) },
+    cand: { ...cand, targets: cand.targets.map(adjust) },
+    problems,
+  };
+}
+
 function gcd(a: number, b: number): number {
   return b === 0 ? a : gcd(b, a % b);
 }
@@ -1352,8 +1393,12 @@ function allowGlyphCoverage(base: CaseRecord, cand: CaseRecord, mismatches: Mism
   return out;
 }
 
-export function compareCase(base: CaseRecord, cand: CaseRecord, retain: string[] | null = null, signatureOnly = false, outputSar = false, glyphCoverage = false): Mismatch[] {
-  if (glyphCoverage) return allowGlyphCoverage(base, cand, compareCase(base, cand, retain, signatureOnly, outputSar, false));
+export function compareCase(base: CaseRecord, cand: CaseRecord, retain: string[] | null = null, signatureOnly = false, outputSar = false, glyphCoverage = false, pixelFormat = false): Mismatch[] {
+  if (glyphCoverage) return allowGlyphCoverage(base, cand, compareCase(base, cand, retain, signatureOnly, outputSar, false, pixelFormat));
+  if (pixelFormat) {
+    const allowed = allowOutputPixelFormat(base, cand);
+    return [...compareCase(allowed.base, allowed.cand, retain, signatureOnly, outputSar, false, false), ...allowed.problems];
+  }
   if (outputSar) {
     const allowed = allowOutputSar(base, cand);
     return [...compareCase(allowed.base, allowed.cand, retain, signatureOnly), ...allowed.problems];
@@ -1494,19 +1539,20 @@ export function buildReport(input: { inputs: Inputs; baseline: CaptureFile; cand
     const activation = activationFor(inputs, id);
     const outputSar = allowsOutputSar(inputs, id);
     const glyphCoverage = allowsGlyphCoverage(inputs, id);
+    const pixelFormat = allowsOutputPixelFormat(inputs, id);
     const assertions = (cand.defects?.results ?? []).map((result) => ({ targetId: result.targetId, id: result.assertionId, pass: result.pass, actual: result.actual }));
     let mismatches: Mismatch[];
     let verdict: CaseVerdict["verdict"];
     if (cand.class === "normal") {
-      mismatches = compareCase(base, cand, null, false, outputSar, glyphCoverage);
+      mismatches = compareCase(base, cand, null, false, outputSar, glyphCoverage, pixelFormat);
       verdict = mismatches.length === 0 ? "pass" : "fail";
     } else if (activation) {
-      mismatches = compareCase(base, cand, activation.retain, false, outputSar, glyphCoverage);
+      mismatches = compareCase(base, cand, activation.retain, false, outputSar, glyphCoverage, pixelFormat);
       const failed = assertions.filter((entry) => !entry.pass);
       for (const entry of failed) mismatches.push({ case: id, target: entry.targetId, category: "contract", detail: `corrected contract ${entry.id} not met (actual ${canonicalJson(entry.actual)}) [ticket ${activation.ticket}]` });
       verdict = mismatches.length === 0 ? "activated-pass" : "activated-fail";
     } else {
-      mismatches = compareCase(base, cand, null, definition.compare === "signature", outputSar, glyphCoverage);
+      mismatches = compareCase(base, cand, null, definition.compare === "signature", outputSar, glyphCoverage, pixelFormat);
       const anyFailing = assertions.some((entry) => !entry.pass);
       if (inputs.knownDefects[id]?.expect === "pass") {
         for (const entry of assertions.filter((assertion) => !assertion.pass)) mismatches.push({ case: id, target: entry.targetId, category: "contract", detail: `regression guard ${entry.id} broke (actual ${canonicalJson(entry.actual)}); this fixture is already rendered correctly` });

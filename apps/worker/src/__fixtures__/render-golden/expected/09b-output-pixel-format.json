@@ -1,0 +1,149 @@
+{
+  "ticket": "09",
+  "cases": {
+    "solo-auto-vertical": {
+      "contract": [],
+      "change": "output-pixel-format"
+    },
+    "two-up-speaker-vertical": {
+      "contract": [],
+      "change": "output-pixel-format"
+    },
+    "screen-pip-portrait": {
+      "contract": [],
+      "change": "output-pixel-format"
+    },
+    "explicit-split-portrait": {
+      "contract": [],
+      "change": "output-pixel-format"
+    },
+    "rtl-arabic-captions": {
+      "contract": [],
+      "change": "output-pixel-format"
+    },
+    "cjk-dense-captions": {
+      "contract": [],
+      "change": "output-pixel-format"
+    },
+    "logo-broll-music-sfx-censor": {
+      "contract": [],
+      "change": "output-pixel-format"
+    },
+    "cut-and-inserted-scenes": {
+      "contract": [],
+      "change": "output-pixel-format"
+    },
+    "exact-source-end": {
+      "contract": [],
+      "change": "output-pixel-format"
+    },
+    "treatments-720p-watermark-1080p": {
+      "contract": [],
+      "change": "output-pixel-format"
+    },
+    "image-background-fit": {
+      "contract": [],
+      "change": "output-pixel-format"
+    },
+    "audio-only-audiogram": {
+      "contract": [],
+      "change": "output-pixel-format"
+    },
+    "mono-44k": {
+      "contract": [],
+      "change": "output-pixel-format"
+    },
+    "silent-video": {
+      "contract": [],
+      "change": "output-pixel-format"
+    },
+    "ntsc-24000-1001": {
+      "contract": [],
+      "change": "output-pixel-format"
+    },
+    "ntsc-30000-1001": {
+      "contract": [],
+      "change": "output-pixel-format"
+    },
+    "text-layers-transition": {
+      "contract": [],
+      "change": "output-pixel-format"
+    },
+    "speed-playback-rate-ui-only": {
+      "contract": [],
+      "change": "output-pixel-format"
+    },
+    "rot90": {
+      "contract": [],
+      "change": "output-pixel-format"
+    },
+    "rot180": {
+      "contract": [],
+      "change": "output-pixel-format"
+    },
+    "rot270": {
+      "contract": [],
+      "change": "output-pixel-format"
+    },
+    "mirror-h": {
+      "contract": [],
+      "change": "output-pixel-format"
+    },
+    "rot90-mirror": {
+      "contract": [],
+      "change": "output-pixel-format"
+    },
+    "sar-2x1": {
+      "contract": [],
+      "change": "output-pixel-format"
+    },
+    "odd-321x181": {
+      "contract": [],
+      "change": "output-pixel-format"
+    },
+    "audio-late-start": {
+      "contract": [],
+      "change": "output-pixel-format"
+    },
+    "audio-short": {
+      "contract": [],
+      "change": "output-pixel-format"
+    },
+    "audio-late-cut-scene-music": {
+      "contract": [],
+      "change": "output-pixel-format"
+    },
+    "vfr-irregular": {
+      "contract": [],
+      "change": "output-pixel-format"
+    },
+    "hdr-pq": {
+      "contract": [],
+      "change": "output-pixel-format"
+    },
+    "hdr-hlg": {
+      "contract": [],
+      "change": "output-pixel-format"
+    },
+    "hot-mix": {
+      "contract": [],
+      "change": "output-pixel-format"
+    },
+    "emoji-sequences": {
+      "contract": [],
+      "change": "output-pixel-format"
+    },
+    "missing-glyph": {
+      "contract": [],
+      "change": "output-pixel-format"
+    },
+    "seek-past-source-end": {
+      "contract": [],
+      "change": "output-pixel-format"
+    },
+    "http-interrupted-read": {
+      "contract": [],
+      "change": "output-pixel-format"
+    }
+  }
+}
