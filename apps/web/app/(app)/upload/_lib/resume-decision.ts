@@ -36,3 +36,12 @@ export function decideResumeFailure(error: unknown): ResumeDecision {
   if (failure.kind === "workspace_mismatch") return { kind: "workspace_mismatch" };
   return { kind: "failed", error };
 }
+
+/**
+ * A role without import access can never succeed on retry, so it leaves for Home, which
+ * explains the access (the old server page did the same through its admission redirect).
+ */
+export function deniedImportDestination(error: unknown): string | null {
+  if (!error) return null;
+  return describeApiFailure(error).kind === "forbidden" ? "/home?requestFailure=capability_denied" : null;
+}

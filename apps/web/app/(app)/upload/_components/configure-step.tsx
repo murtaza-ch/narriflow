@@ -8,14 +8,7 @@ import { chakra, Flex, Stack, Text } from "@chakra-ui/react";
 import { Sparkles, ArrowRight } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
 import { Spinner } from "@narriflow/ui/components/spinner";
-import {
-  detectLinkProvider,
-  type CaptionPresetId,
-  type ClipLengthPreset,
-  type ClipPlatformTarget,
-  type ContentPack,
-  type GenerationMode,
-} from "@narriflow/validators";
+import { type CaptionPresetId, type ClipLengthPreset, type ClipPlatformTarget, type ContentPack, detectLinkProvider, type GenerationMode, sourceLanguageCodeFromFormValue } from "@narriflow/validators";
 import { isApiError } from "@narriflow/api-client/core";
 import { upgradePromptFromFailure } from "@/lib/authenticated-request-browser";
 import type { UpgradePrompt } from "../../_components/upgrade";
@@ -159,7 +152,7 @@ export function ConfigureStep({
     try {
       await intake.actions.saveDraft(projectId, {
         contentPack: currentContentPack,
-        languageCode: languageCode === "auto" ? null : languageCode,
+        languageCode: sourceLanguageCodeFromFormValue(languageCode),
       });
     } catch (error) {
       setSavingDraft(false);
@@ -179,7 +172,7 @@ export function ConfigureStep({
     try {
       result = await intake.actions.finalize(projectId, {
         contentPack: currentContentPack,
-        languageCode: languageCode === "auto" ? null : languageCode,
+        languageCode: sourceLanguageCodeFromFormValue(languageCode),
       });
     } catch (error) {
       setCtaPhase("idle");

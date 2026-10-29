@@ -122,7 +122,7 @@ const nextConfig: NextConfig = {
           { key: "Cache-Control", value: "private, no-store, max-age=0" },
           {
             key: "Content-Security-Policy",
-            value: `default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; img-src 'self' data: blob: https://*.clerk.accounts.dev https://*.clerk.com; media-src 'self' blob: https://*.r2.cloudflarestorage.com; font-src 'self' data:; style-src 'self' 'unsafe-inline'; ${reviewScriptSource}; connect-src 'self' ${API_ORIGIN} https://*.clerk.accounts.dev https://*.clerk.com; frame-src 'self' https://*.clerk.accounts.dev https://*.clerk.com;`,
+            value: `default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; img-src 'self' data: blob: https://*.clerk.accounts.dev https://*.clerk.com; media-src 'self' blob: https://*.r2.cloudflarestorage.com; font-src 'self' data:; style-src 'self' 'unsafe-inline'; ${reviewScriptSource}; connect-src 'self' ${API_ORIGIN} https://*.clerk.accounts.dev https://*.clerk.com; frame-src 'self' https://*.clerk.accounts.dev https://*.clerk.com; worker-src 'self' blob:;`,
           },
         ],
       },

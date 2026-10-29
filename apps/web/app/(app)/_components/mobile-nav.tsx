@@ -21,6 +21,7 @@ import { hasFeature } from "@narriflow/validators";
 import { usagePalette } from "./usage-palette";
 import { UpgradeGem, useUpgrade } from "./upgrade";
 import { WorkspaceSwitcher, type WorkspaceMenuPresentation, type WorkspaceSwitcherItem } from "./workspace-switcher";
+import { clearSignedInBrowserState } from "@/lib/sign-out-storage";
 
 interface MobileNavProps {
   email: string | null;
@@ -74,6 +75,7 @@ export function MobileNav({
     setIsSigningOut(true);
     // Abort and clear everything cached for this person before their session ends.
     runtime.setIdentity(null);
+    clearSignedInBrowserState(window.localStorage, window.sessionStorage);
     try {
       await signOut({ redirectUrl: "/" });
     } catch {

@@ -7,6 +7,7 @@ import { HStack, Stack } from "@chakra-ui/react";
 import { ArrowRight } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
 import { AccountMenu } from "@/app/(app)/_components/account-menu";
+import { clearSignedInBrowserState } from "@/lib/sign-out-storage";
 
 const WORKSPACE_HREF = "/home";
 
@@ -76,6 +77,7 @@ export function MobileAccountActions() {
           loading={signingOut}
           onClick={async () => {
             setSigningOut(true);
+            clearSignedInBrowserState(window.localStorage, window.sessionStorage);
             try {
               await signOut({ redirectUrl: "/" });
             } finally {

@@ -9,6 +9,7 @@ import { Spinner } from "@narriflow/ui/components/spinner";
 import { toaster } from "@narriflow/ui/components/toaster";
 import { getDisplayName, getInitials } from "@/lib/account-display";
 import { useUpgrade } from "./upgrade";
+import { clearSignedInBrowserState } from "@/lib/sign-out-storage";
 
 /**
  * What the menu needs from the signed-in app's API session. The shell supplies
@@ -97,6 +98,7 @@ export function AccountMenu({
     // Abort and clear everything cached for this person before their session ends,
     // so nothing in flight can fail into a sign-in redirect and nothing outlives it.
     const restore = session?.beginSignOut();
+    clearSignedInBrowserState(window.localStorage, window.sessionStorage);
     try {
       await signOut({ redirectUrl: "/" });
     } catch {

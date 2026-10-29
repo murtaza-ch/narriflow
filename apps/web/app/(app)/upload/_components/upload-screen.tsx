@@ -10,7 +10,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { type ReactNode, useEffect, useState } from "react";
 import { useApiRuntime, useWorkspaceScope } from "@/app/_components/api-provider";
 import { IntakeProvider } from "../_lib/intake-context";
-import { decideResume, decideResumeFailure, type ResumeDecision } from "../_lib/resume-decision";
+import { decideResume, decideResumeFailure, deniedImportDestination, type ResumeDecision } from "../_lib/resume-decision";
 import { type SourcePickerConfig, sourcePickerConfig } from "../_lib/source-pickers";
 import UploadLoading from "../loading";
 import { UploadShell } from "./upload-shell";
@@ -78,6 +78,11 @@ function UploadContent({ scope }: { scope: WorkspaceScope }) {
     else if (resume.error) setDecision(decideResumeFailure(resume.error));
   }, [decision.kind, openedWith.projectId, resume.data, resume.error, resume.isFetching]);
 
+  const denied = deniedImportDestination(configuration.error);
+  useEffect(() => {
+    if (denied) router.replace(denied);
+  }, [denied, router]);
+
   useEffect(() => {
     if (decision.kind === "open_project") router.replace(`/projects/${decision.projectId}`);
     if (decision.kind === "restart") router.replace("/upload");
@@ -96,6 +101,7 @@ function UploadContent({ scope }: { scope: WorkspaceScope }) {
       />
     );
   }
+  if (denied) return <UploadLoading />;
   if (configuration.isError || decision.kind === "failed") {
     const failure = describeApiFailure(configuration.error ?? (decision.kind === "failed" ? decision.error : null));
     return (

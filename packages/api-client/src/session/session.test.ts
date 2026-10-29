@@ -49,6 +49,16 @@ describe("workspace selection", () => {
     expect(api.queryClient.getQueryData(["nf", USER, WORKSPACE_A, "projects", "list"])).toBeUndefined();
   });
 
+  test("switching does not refetch the identity bootstrap, which a mounted gate would send with the previous hint", async () => {
+    const { api } = setup(() => jsonResponse(selection(WORKSPACE_B)));
+    api.selectWorkspace(WORKSPACE_A);
+    const key = sessionKey({ userId: USER }, "bootstrap");
+    api.queryClient.setQueryData(key, { selection: { workspaceId: WORKSPACE_A } });
+    const options = selectWorkspaceMutation(api, { userId: USER });
+    await options.onSuccess?.(selection(WORKSPACE_B) as never, WORKSPACE_B, undefined, undefined as never);
+    expect(api.queryClient.getQueryState(key)?.isInvalidated).toBe(false);
+  });
+
   test("accepting an invitation selects the joined Workspace and returns where to go", async () => {
     const { api, calls } = setup(() => jsonResponse({ ...selection(WORKSPACE_B), destination: "/home" }));
     const options = acceptInviteMutation(api, { userId: USER });

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { ApiError } from "@narriflow/api-client/core";
-import { decideResume, decideResumeFailure } from "./resume-decision";
+import { decideResume, decideResumeFailure, deniedImportDestination } from "./resume-decision";
 
 const failure = (code: string, status: number) => new ApiError({ code, message: code, status });
 
@@ -22,5 +22,17 @@ describe("upload resume decisions", () => {
   test("other failures are shown rather than discarding the saved draft", () => {
     const error = failure("internal_error", 500);
     expect(decideResumeFailure(error)).toEqual({ kind: "failed", error });
+  });
+});
+
+describe("import access", () => {
+  test("a role that cannot import leaves for Home with the access notice, as the old page did", () => {
+    expect(deniedImportDestination(failure("capability_denied", 403))).toBe("/home?requestFailure=capability_denied");
+  });
+
+  test("failures that can recover stay on the page", () => {
+    expect(deniedImportDestination(failure("internal_error", 500))).toBeNull();
+    expect(deniedImportDestination(new Error("offline"))).toBeNull();
+    expect(deniedImportDestination(null)).toBeNull();
   });
 });
