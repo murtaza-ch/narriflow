@@ -3,7 +3,7 @@ import { transportRenderCommand } from "../render-command-transport";
 import { RenderFactCache, sourceProbeIdentity } from "../render-fact-cache";
 import { documentFontReferences, resolveRenderBrandFonts, prepareCaptionFontsDirectory, brandFontKey } from "../brand-font-resolution";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { extname, join } from "node:path";
+import { basename, extname, join } from "node:path";
 import {
 	automaticLayoutInputFingerprint,
 	compositionAssetRef,
@@ -74,6 +74,18 @@ import {
 	type BrollCueInput,
 } from "./broll";
 import { type RenderConfig } from "../render-config";
+import {
+	RenderResourceDeferral,
+	ScratchFileRefs,
+	estimateRenderOutputBytes,
+	renderEncodeDeadlineMs,
+	renderResourceBudgetFor,
+	startTransferWatchdog,
+	transferDeadlineMs,
+	type BudgetEnvironment,
+	type RenderReservation,
+	type ReservationRequest,
+} from "../render-resource-budget";
 import {
 	clipExportAttemptStorageKey,
 	clipRenderAttemptStorageKey,
@@ -726,6 +738,8 @@ export function isRecoverableRangedSourceFailure(error: unknown): boolean {
 function rethrowRenderControlFlow(error: unknown): void {
 	rethrowWorkflowAttemptLost(error);
 	rethrowRenderCancellation(error);
+	// Deferred work belongs to no clip: the attempt is released, not failed.
+	if (error instanceof RenderResourceDeferral) throw error;
 	const failure = normalizeRenderProcessFailure(error);
 	if (failure instanceof WorkerProcessFailure && failure.failureScope)
 		throw failure;
@@ -1180,6 +1194,8 @@ function inspectCaptionRenderDiagnostics(
 
 async function executeRenderCommand(input: {
 	directory: string;
+	/** Work-size deadline for each ffmpeg invocation of this output (encode, caption retry, limiter). */
+	deadlineMs: number;
 	primaryArgs: string[];
 	context: Record<string, unknown>;
 	recordCommand?: (args: readonly string[]) => void;
@@ -1235,6 +1251,7 @@ async function executeRenderCommand(input: {
 				fileBacked: transportedArgs.includes("-filter_complex_script"),
 			});
 			await execCommand("ffmpeg", transportedArgs, {
+				timeoutMs: input.deadlineMs,
 				recordResourceSample: safeRecordResourceSample,
 				onStderrLines: (lines) => {
 					captionDiagnostics = lines;
@@ -1440,6 +1457,7 @@ async function resolveRequiredSource(input: {
 	sourceSizeBytes: number | null;
 	tempDir: string;
 	attempt: ClipRenderingWorkflowAttempt;
+	scratch: RunScratch;
 }): Promise<{ sourcePath: string; probe: SourceProbe }> {
 	const sourceStorageKey = input.sourceStorageKey;
 	if (!sourceStorageKey) {
@@ -1547,6 +1565,7 @@ async function resolveRequiredSource(input: {
 		}
 	}
 
+	let downloadSizeBytes: number | null = input.sourceSizeBytes;
 	if (currentRenderConfig().sourceMode !== "download") {
 		const sizeBytes =
 			input.sourceSizeBytes ??
@@ -1570,27 +1589,36 @@ async function resolveRequiredSource(input: {
 				"retryable",
 				"Source download requires a known object size",
 			);
-		const disk = await (currentRenderAdapters().workspace.statfs ?? statfs)(
-			input.tempDir,
-		);
-		const freeBytes = Number(disk.bavail) * Number(disk.bsize);
-		const volumeBytes = Number(disk.blocks) * Number(disk.bsize);
-		// Reserve a source-sized output as well as the source and volume headroom.
-		if (!Number.isFinite(freeBytes) || !Number.isFinite(volumeBytes) || volumeBytes <= 0 || freeBytes < Math.max(1024 ** 3, volumeBytes * 0.1) + 2 * sizeBytes)
-			throw new WorkflowFailure(
-				"render_scratch_disk_low",
-				"retryable",
-				"Insufficient scratch space for source recovery",
-			);
+		downloadSizeBytes = sizeBytes;
+	}
+	if (downloadSizeBytes) {
+		// Held until the run ends. Waits with backoff for space; an object that can
+		// never fit is rejected here, before a byte is transferred.
+		await reserveScratch(input.scratch, {
+			directory: input.tempDir,
+			bytes: downloadSizeBytes,
+			kind: "source",
+		});
 	}
 
 	currentRenderSignal()?.throwIfAborted();
 	const downloadStartedAtMs = currentTimeMs();
+	const downloadAdapters = currentRenderAdapters();
+	const downloadConfig = currentRenderConfig();
+	const watchdog = startTransferWatchdog({
+		parent: currentRenderSignal(),
+		deadlineMs: transferDeadlineMs(downloadSizeBytes, downloadConfig),
+		noProgressMs: downloadConfig.transferNoProgressMs,
+		measureBytes: async () =>
+			Number((await downloadAdapters.workspace.stat(localSourcePath)).size),
+		clock: downloadAdapters.clock,
+		codePrefix: "source_download",
+	});
 	try {
-		await currentRenderAdapters().storage.downloadObjectToFile({
+		await downloadAdapters.storage.downloadObjectToFile({
 			key: sourceStorageKey,
 			filePath: localSourcePath,
-			signal: renderStorageSignal(),
+			signal: watchdog.signal,
 		});
 		currentRenderSignal()?.throwIfAborted();
 		diagnoseRequiredSourceOperation({
@@ -1600,11 +1628,13 @@ async function resolveRequiredSource(input: {
 		});
 	} catch (error) {
 		rethrowRenderControlFlow(error);
-		const failure = new WorkflowFailure(
-			"source_download_failed",
-			"retryable",
-			"Failed to download required source",
-		);
+		const failure =
+			watchdog.failure() ??
+			new WorkflowFailure(
+				"source_download_failed",
+				"retryable",
+				"Failed to download required source",
+			);
 		diagnoseRequiredSourceOperation({
 			attempt: input.attempt,
 			operation: "source_download",
@@ -1612,6 +1642,8 @@ async function resolveRequiredSource(input: {
 			failure,
 		});
 		throw failure;
+	} finally {
+		watchdog.stop();
 	}
 
 	currentRenderSignal()?.throwIfAborted();
@@ -1773,6 +1805,136 @@ function createBoundedTaskQueue(
 	};
 }
 
+/** Everything one attempt holds in the worker's scratch space beyond its directory:
+ *  reference-counted files and ledger reservations, all released at the end of the run. */
+interface RunScratch {
+	files: ScratchFileRefs;
+	held: RenderReservation[];
+}
+
+function createRunScratch(): RunScratch {
+	return {
+		files: new ScratchFileRefs(undefined, (path, error) =>
+			log("error", "clip_render_scratch_unlink_failed", {
+				phase: "cleanup",
+				operation: "scratch_unlink",
+				failureCode: "scratch_unlink_failed",
+				errorCode: error instanceof Error ? error.name : "unlink_failed",
+				fileName: basename(path),
+			}),
+		),
+		held: [],
+	};
+}
+
+function releaseRunScratch(scratch: RunScratch): void {
+	for (const reservation of scratch.held.splice(0)) reservation.release();
+}
+
+function sleepOnRenderClock(
+	ms: number,
+	signal: AbortSignal | undefined,
+): Promise<void> {
+	const clock = currentRenderAdapters().clock;
+	return new Promise<void>((resolve, reject) => {
+		const timer = clock.setTimeout(() => {
+			signal?.removeEventListener("abort", onAbort);
+			resolve();
+		}, ms);
+		const onAbort = () => {
+			clock.clearTimeout(timer);
+			reject(
+				signal?.reason instanceof Error
+					? signal.reason
+					: new DOMException("Clip render cancelled", "AbortError"),
+			);
+		};
+		signal?.addEventListener("abort", onAbort, { once: true });
+		if (signal?.aborted) onAbort();
+	});
+}
+
+function resourceBudget() {
+	return renderResourceBudgetFor(currentRenderConfig());
+}
+
+function budgetEnvironment(): BudgetEnvironment {
+	const adapters = currentRenderAdapters();
+	return {
+		statfs: adapters.workspace.statfs,
+		nowMs: () => adapters.clock.nowMs(),
+		sleep: sleepOnRenderClock,
+		signal: currentRenderSignal(),
+	};
+}
+
+async function reserveScratch(
+	scratch: RunScratch,
+	request: ReservationRequest,
+): Promise<RenderReservation> {
+	const reservation = await resourceBudget().reserve(
+		request,
+		budgetEnvironment(),
+	);
+	scratch.held.push(reservation);
+	return reservation;
+}
+
+/** Blocks the producer until the upload backlog and disk allow another output,
+ *  then makes the output file this attempt's responsibility until it uploads. */
+async function reserveOutputSlot(
+	scratch: RunScratch,
+	output: PendingRenderOutput,
+	editedDurationSec: number,
+	directory: string,
+): Promise<RenderReservation> {
+	const reservation = await reserveScratch(scratch, {
+		directory,
+		bytes: estimateRenderOutputBytes(editedDurationSec),
+		kind: "output",
+	});
+	scratch.files.retain(output.outputPath);
+	return reservation;
+}
+
+/** An output that never reached an upload: free its reservation and partial file. */
+async function abandonOutputSlot(
+	scratch: RunScratch,
+	output: PendingRenderOutput,
+	reservation: RenderReservation | null,
+): Promise<void> {
+	if (!reservation) return;
+	reservation.release();
+	await scratch.files.release(output.outputPath);
+}
+
+function encodeDeadlineFor(
+	probe: SourceProbe,
+	editedDurationSec: number,
+	hdr: boolean,
+): number {
+	return renderEncodeDeadlineMs(
+		{
+			editedDurationSec,
+			sourceWidth: probe.width,
+			sourceHeight: probe.height,
+			hdr: hdr || hdrColorOf(probe) !== null,
+		},
+		currentRenderConfig(),
+	);
+}
+
+/** Size-derived deadline for moving one output file; the attempt signal still cancels it. */
+function renderTransferSignal(bytes: number): AbortSignal {
+	const timeoutSignal = AbortSignal.timeout(
+		transferDeadlineMs(bytes, currentRenderConfig()),
+	);
+	const attemptSignal = currentRenderSignal();
+	return attemptSignal
+		? AbortSignal.any([attemptSignal, timeoutSignal])
+		: timeoutSignal;
+}
+
 /** Upload concurrency for the Clip Render Attempt's bounded queue —
  *  2 keeps one upload streaming while a burst finishes, without letting a
  *  slow uplink stack every clip's file into concurrent connections. */
@@ -1922,7 +2084,7 @@ async function uploadRenderedOutput(params: {
 			format: params.output.aspectRatio,
 			...(params.brollCredits ? { broll_credits: params.brollCredits } : {}),
 		},
-		signal: renderStorageSignal(),
+		signal: renderTransferSignal(params.validated.sizeBytes),
 	});
 	const uploadMs = currentTimeMs() - uploadStartedAtMs;
 
@@ -2127,10 +2289,23 @@ async function executeClipRenderAttempt(
 	const applyWatermark = !hasFeature(pricingTier, "export.noWatermark");
 
 	const runStartedAtMs = currentTimeMs();
+	const limits = currentRenderConfig();
 	log("info", "clip_rendering_run_started", {
 		workflowRunId: run.id,
 		projectId: run.projectId,
 		pricingTier,
+		// Effective resource policy, recorded so a slow or deferred run is explainable.
+		resourcePolicy: {
+			encodeDeadlineFloorMs: limits.renderDeadlineFloorMs,
+			encodeDeadlineCeilingMs: limits.renderCommandTimeoutMs,
+			uploadMaxWaitingJobs: limits.uploadMaxWaitingJobs,
+			uploadMaxWaitingBytes: limits.uploadMaxWaitingBytes,
+			diskMinFreeBytes: limits.diskMinFreeBytes,
+			diskMinFreeFraction: limits.diskMinFreeFraction,
+			scratchMaxBytes: limits.scratchMaxBytes,
+			scratchMaxVolumeFraction: limits.scratchMaxVolumeFraction,
+			brollCacheMaxBytes: limits.brollCacheMaxBytes,
+		},
 	});
 
 	const touchedOptionalAssetClasses = new Set<OptionalAssetClass>();
@@ -2167,6 +2342,7 @@ async function executeClipRenderAttempt(
 				...event,
 			});
 		},
+		{ workflowRunId: run.id, attemptId: attempt.attemptId },
 	);
 }
 
@@ -2447,6 +2623,9 @@ async function renderClipGroup(input: {
 	touchedOptionalAssetClasses: Set<OptionalAssetClass>;
 	motionAnalyticsByRenderId: Map<string, MotionRenderAnalyticsMetadata>;
 	applyWatermark: boolean;
+	scratch: RunScratch;
+	/** Takes over the output's reservation and file reference: both are released
+	 *  when its upload settles, whatever the outcome. */
 	scheduleUpload(
 		output: PendingRenderOutput,
 		metadata: {
@@ -2454,6 +2633,7 @@ async function renderClipGroup(input: {
 			brollCredits?: string | null;
 			encodeMs: number;
 			motionAnalytics: MotionRenderAnalyticsMetadata;
+			reservation: RenderReservation;
 		},
 	): void;
 }) {
@@ -2470,6 +2650,7 @@ async function renderClipGroup(input: {
 		touchedOptionalAssetClasses,
 		motionAnalyticsByRenderId,
 		applyWatermark,
+		scratch,
 		scheduleUpload,
 	} = input;
 	const storedClip = renderGroup[0]!.clipSnapshot ?? renderGroup[0]!.clip;
@@ -2697,6 +2878,8 @@ async function renderClipGroup(input: {
 	// B-roll. The studio picker's explicit choice, when present, always
 	// wins and stays a single cutaway — a user who hand-picked one asset
 	// didn't ask to see it repeated.
+	/** Downloaded B-roll files this group owns (one reference each, released after its encodes). */
+	const brollGroupFiles: string[] = [];
 	let brollPlan: BrollPlan | null = null;
 	const brollEnabled =
 		currentRenderConfig().pexelsConfigured;
@@ -2884,6 +3067,8 @@ async function renderClipGroup(input: {
 								);
 								brollPath = downloadedPath;
 								downloadedForCache = true;
+								scratch.files.retain(downloadedPath);
+								brollGroupFiles.push(downloadedPath);
 							}
 							const decodable =
 								await currentRenderAdapters().optionalAssets.validateOptionalMedia(
@@ -2910,6 +3095,10 @@ async function renderClipGroup(input: {
 									await currentRenderAdapters().optionalAssets.saveBrollAssetToCache(
 										resolved.downloadUrl,
 										brollPath,
+										{
+											maxBytes: currentRenderConfig().brollCacheMaxBytes,
+											ttlMs: currentRenderConfig().brollAssetCacheTtlMs,
+										},
 									);
 								} catch (error) {
 									rethrowOptionalAssetFailure(error);
@@ -3745,6 +3934,7 @@ async function renderClipGroup(input: {
 			);
 		}
 		for (const output of outputs) {
+			let outputSlot: RenderReservation | null = null;
 			try {
 				const compositionForOutput = {
 					plan: compositionPlan,
@@ -3774,10 +3964,17 @@ async function renderClipGroup(input: {
 					});
 				const ffmpegArgs = compileAudioOnly(null);
 
+				outputSlot = await reserveOutputSlot(
+					scratch,
+					output,
+					compositionPlan.editedDurationSec,
+					tempDir,
+				);
 				const encodeStartedAtMs = currentTimeMs();
 				let mixPeak: MixPeakResult | null = null;
-				await executeRenderCommand({
+				await resourceBudget().trackEncode(() => executeRenderCommand({
           directory: tempDir,
+          deadlineMs: encodeDeadlineFor(probe, compositionPlan.editedDurationSec, false),
           recordMixPeak: (result) => { mixPeak = result; },
 					primaryArgs: ffmpegArgs,
 					captionRecovery: captionRecoveryFor(output),
@@ -3797,7 +3994,7 @@ async function renderClipGroup(input: {
 					recordCommand: recordCompositionCommand,
 					recordSourceDecodeCompleted: recordCompositionSourceDecodeCompleted,
 					recordResourceSample: recordCompositionResourceSample,
-				});
+				}));
 				const encodeDurationMs =
 					recordCompositionEncodeCompleted(encodeStartedAtMs);
 				// Upload runs in the bounded background queue (overlaps the next
@@ -3810,8 +4007,11 @@ async function renderClipGroup(input: {
             plannedAudio, mixPeak),
 					encodeMs: encodeDurationMs,
 					motionAnalytics: withCaptionWarningCodes(motionAnalytics, output),
+					reservation: outputSlot,
 				});
+				outputSlot = null;
 			} catch (error) {
+				await abandonOutputSlot(scratch, output, outputSlot);
 				rethrowRenderControlFlow(error);
 				const errorCode =
 					error instanceof WorkflowFailure
@@ -3860,6 +4060,7 @@ async function renderClipGroup(input: {
 				plan: compositionPlan,
 				targetId: output.clipRenderId,
 			};
+			let outputSlot: RenderReservation | null = null;
 			try {
 				const resolvedBrollAssets = {
 					...Object.fromEntries(
@@ -3902,10 +4103,21 @@ async function renderClipGroup(input: {
 						},
 					});
 				const ffmpegArgs = compileVideo(null);
+				outputSlot = await reserveOutputSlot(
+					scratch,
+					output,
+					compositionPlan.editedDurationSec,
+					tempDir,
+				);
 				const encodeStartedAtMs = currentTimeMs();
 				let mixPeak: MixPeakResult | null = null;
-				await executeRenderCommand({
+				await resourceBudget().trackEncode(() => executeRenderCommand({
           directory: tempDir,
+          deadlineMs: encodeDeadlineFor(
+            probe,
+            compositionPlan.editedDurationSec,
+            Object.keys(hdrAssets).length > 0,
+          ),
           recordMixPeak: (result) => { mixPeak = result; },
 					primaryArgs: ffmpegArgs,
 					captionRecovery: captionRecoveryFor(output),
@@ -3925,7 +4137,7 @@ async function renderClipGroup(input: {
 					recordCommand: recordCompositionCommand,
 					recordSourceDecodeCompleted: recordCompositionSourceDecodeCompleted,
 					recordResourceSample: recordCompositionResourceSample,
-				});
+				}));
 				const encodeDurationMs =
 					recordCompositionEncodeCompleted(encodeStartedAtMs);
 				// Bounded background upload — see `scheduleUpload`. This catch
@@ -3937,8 +4149,11 @@ async function renderClipGroup(input: {
 					brollCredits: brollCredits,
 					encodeMs: encodeDurationMs,
 					motionAnalytics: withCaptionWarningCodes(motionAnalytics, output),
+					reservation: outputSlot,
 				});
+				outputSlot = null;
 			} catch (error) {
+				await abandonOutputSlot(scratch, output, outputSlot);
 				rethrowRenderControlFlow(error);
 				const contractFailure = compositionContractFailure(error);
 				const renderFailure =
@@ -3966,6 +4181,11 @@ async function renderClipGroup(input: {
 			}
 		}
 	}
+
+	// Every output of this group has been encoded: its downloaded B-roll is done.
+	await Promise.all(
+		brollGroupFiles.splice(0).map((path) => scratch.files.release(path)),
+	);
 
 	const finalResourceMeasurement = measureCompositionResourceSafely();
 	if (finalResourceMeasurement) {
@@ -4035,6 +4255,7 @@ async function executeClipRenderAttemptInScratch(params: {
 	// uploads before deleting tempDir (their source files live there).
 	let uploadQueueRef: { drain: () => Promise<void> } | null = null;
 	let settlementStarted = false;
+	const scratch = createRunScratch();
 	const motionAnalyticsByRenderId = new Map<
 		string,
 		MotionRenderAnalyticsMetadata
@@ -4074,6 +4295,7 @@ async function executeClipRenderAttemptInScratch(params: {
 			sourceSizeBytes: frozenState.sourceSizeBytes,
 			tempDir,
 			attempt,
+			scratch,
 		});
 
 		log("info", "clip_rendering_source_probed", {
@@ -4198,9 +4420,12 @@ async function executeClipRenderAttemptInScratch(params: {
 				brollCredits?: string | null;
 				encodeMs: number;
 				motionAnalytics: MotionRenderAnalyticsMetadata;
+				reservation: RenderReservation;
 			},
 		) => {
+			params.reservation.queued(params.validated.sizeBytes);
 			uploadQueue.schedule(async () => {
+				params.reservation.uploading();
 				try {
 					const persisted = await uploadRenderedOutput({
 						attempt,
@@ -4254,6 +4479,11 @@ async function executeClipRenderAttemptInScratch(params: {
 						message:
 							error instanceof Error ? error.message : "Unknown render error",
 					});
+				} finally {
+					// The upload has settled either way: the committed (or failed) file
+					// goes now, not at the end of the run.
+					params.reservation.release();
+					await scratch.files.release(output.outputPath);
 				}
 			});
 		};
@@ -4279,6 +4509,7 @@ async function executeClipRenderAttemptInScratch(params: {
 					touchedOptionalAssetClasses,
 					motionAnalyticsByRenderId,
 					applyWatermark,
+					scratch,
 					scheduleUpload,
 				});
 			} catch (error) {
@@ -4329,6 +4560,7 @@ async function executeClipRenderAttemptInScratch(params: {
 			projectId: run.projectId,
 			scheduledUploads: uploadQueue.scheduledCount(),
 			drainMs: currentTimeMs() - drainStartedAtMs,
+			resources: resourceBudget().snapshot(),
 		});
 
 		settlementStarted = true;
@@ -4361,6 +4593,7 @@ async function executeClipRenderAttemptInScratch(params: {
 			await uploadQueueRef.drain();
 		}
 		if (error instanceof WorkerProcessFailure && error.failureScope) throw error;
+		if (error instanceof RenderResourceDeferral) throw error;
 		const failure = workflowFailureFromUnknown(error);
 		const code = failure.code;
 
@@ -4400,5 +4633,8 @@ async function executeClipRenderAttemptInScratch(params: {
 		// the success path (already drained above). Never let a drain error
 		// block cleanup.
 		if (uploadQueueRef) await uploadQueueRef.drain().catch(() => {});
+		// Reservations are process-wide: whatever a failed or cancelled run still
+		// holds is returned before its scratch directory is removed.
+		releaseRunScratch(scratch);
 	}
 }

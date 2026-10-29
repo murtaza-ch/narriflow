@@ -11,6 +11,7 @@ import { createHash } from "node:crypto";
 import { createServer } from "node:http";
 import {
 	copyFile,
+	mkdir,
 	mkdtemp,
 	readFile,
 	rm,
@@ -39,6 +40,7 @@ import {
 	screenLayoutInputFingerprint,
 } from "@narriflow/composition-plan";
 import { parseRenderConfig } from "../render-config";
+import { renderResourceBudgetFor } from "../render-resource-budget";
 import { productionWorkerProcessModule, WorkerProcessFailure } from "../worker-process";
 import {
 	compileClipCompositionCommand,
@@ -210,6 +212,8 @@ function createCoreRenderPathTracer(input: {
 		probeOutput(variantId: string, filePath: string): Promise<void>;
     probeCandidate?(variantId: string, filePath: string): Promise<void>;
 	};
+	/** Runs inside the fake object store's PUT, so a test can hold an upload open. */
+	uploadGate?: (variantId: string, filePath: string, signal?: AbortSignal) => Promise<void>;
 	sourceAccess?: {
 		presignedUrl: string;
 		failRangedProbe?: boolean;
@@ -371,6 +375,11 @@ function createCoreRenderPathTracer(input: {
 	};
 
 	const writtenFiles: Array<{ path: string; content: string }> = [];
+	const renderDeadlines: number[] = [];
+	const config = parseRenderConfig({
+		WORKER_RENDER_SOURCE_MODE: input.sourceAccess ? "ranged" : "download",
+		...input.configOverrides,
+	});
 	const clipRenderAttempt = createClipRenderAttempt({
 		run: {
 			id: attempt.workflowRunId,
@@ -385,10 +394,7 @@ function createCoreRenderPathTracer(input: {
 				workspaceId: "workspace",
 			},
 		},
-		config: parseRenderConfig({
-			WORKER_RENDER_SOURCE_MODE: input.sourceAccess ? "ranged" : "download",
-			...input.configOverrides,
-		}),
+		config,
 		lifecycle: {
 			beginRenderWorkSet: async () => ({
 				variantIds: variantFixtures.map((variant) => variant.id),
@@ -529,6 +535,7 @@ function createCoreRenderPathTracer(input: {
 						};
 					}
 					const ids = recordCommand(args);
+					if (ids.length) renderDeadlines.push(request.deadlineMs);
      if (ids.length && input.renderFailure) throw input.renderFailure;
 					if (input.failFirstRenderCommand && ids.length > 0 && commands.length === 1) {
 						throw new WorkflowFailure(
@@ -808,9 +815,10 @@ function createCoreRenderPathTracer(input: {
 						);
 					}
 				},
-				putFileFromPath: async ({ filePath, key }) => {
+				putFileFromPath: async ({ filePath, key, signal }) => {
 					const variantId = variantIdFromPath(filePath);
 					if (!variantId) throw new Error(`Unknown output path: ${filePath}`);
+					await input.uploadGate?.(variantId, filePath, signal);
 					if (input.failUploadsForVariantIds?.includes(variantId)) {
 						throw new WorkflowFailure(
 							"render_upload_failed",
@@ -852,6 +860,8 @@ function createCoreRenderPathTracer(input: {
 		brollCacheWrites,
   sourceDownloads,
 		clipRenderAttempt,
+		config,
+		renderDeadlines,
 		commands,
 		diagnostics,
 		failureCodes,
@@ -4764,10 +4774,130 @@ for (const filter of ["zscale", "tonemap"]) test(`missing ${filter} escapes enco
   expect(harness.settlementCalls()).toBe(0);
 });
 
-test("eligible source recovery refuses a full download under disk pressure", async () => {
-  const harness = createCoreRenderPathTracer({ topology: "single-video", sourceAccess: { presignedUrl: "https://source.example/input.mp4",
+test("eligible source recovery defers under disk pressure without downloading or failing a clip", async () => {
+  const harness = createCoreRenderPathTracer({ topology: "single-video", configOverrides: { WORKER_DISK_ADMISSION_WAIT_MS: "0" }, sourceAccess: { presignedUrl: "https://source.example/input.mp4",
     probeFailure: new WorkerProcessFailure("worker_command_failed", "retryable", "Read reset", "Connection reset by peer"), diskFreeBytes: 1024 ** 3 } });
+  await expect(harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal))).rejects.toMatchObject({ code: "render_scratch_disk_low", disposition: "retryable" });
+  expect(harness.sourceDownloads).toEqual([]);
+  expect(harness.failureCodes.size).toBe(0);
+  expect(harness.settlementCalls()).toBe(0);
+});
+
+test("eligible source larger than the scratch limit is rejected before any download or wait", async () => {
+  const harness = createCoreRenderPathTracer({ topology: "single-video", sourceAccess: { presignedUrl: "https://source.example/input.mp4", sourceSizeBytes: 9 * 1024 ** 3,
+    probeFailure: new WorkerProcessFailure("worker_command_failed", "retryable", "Read reset", "Connection reset by peer"), diskFreeBytes: 19 * 1024 ** 3 } });
   expect((await harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal))).status).toBe("requeued");
   expect(harness.sourceDownloads).toEqual([]);
-  expect([...harness.failureCodes.values()]).toEqual(["render_scratch_disk_low"]);
+  expect([...harness.failureCodes.values()]).toEqual(["render_scratch_limit_exceeded"]);
+});
+
+describe("resource bounds", () => {
+	const fourVariants: CoreVariantFixture[] = [
+		{ id: "variant-9x16", aspectRatio: "ratio_9_16" },
+		{ id: "variant-1x1", aspectRatio: "ratio_1_1" },
+		{ id: "variant-16x9", aspectRatio: "ratio_16_9" },
+		{ id: "variant-4x5", aspectRatio: "ratio_4_5" },
+	];
+	const scratchDirectory = "/tmp/narriflow-core-render-paths";
+	const until = async (condition: () => boolean | Promise<boolean>): Promise<void> => {
+		for (let turn = 0; turn < 200; turn++) {
+			if (await condition()) return;
+			await new Promise((resolve) => setTimeout(resolve, 10));
+		}
+		throw new Error("condition not reached");
+	};
+	const exists = (path: string) => stat(path).then(() => true, () => false);
+
+	test("encode deadlines come from the work size and the configured floor, not a flat ceiling", async () => {
+		const harness = createCoreRenderPathTracer({ topology: "single-video" });
+		await harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal));
+		expect(harness.renderDeadlines).toEqual([300_000]);
+
+		// The 10 s edit is 20 x 10 s = 200 s of allowance once the floor no longer dominates.
+		const lowFloor = createCoreRenderPathTracer({ topology: "single-video", configOverrides: { WORKER_RENDER_DEADLINE_FLOOR_MS: "150000" } });
+		await lowFloor.clipRenderAttempt.execute(lowFloor.attempt, attemptContext(new AbortController().signal));
+		expect(lowFloor.renderDeadlines).toEqual([200_000]);
+
+		const highFloor = createCoreRenderPathTracer({ topology: "single-video", configOverrides: { WORKER_RENDER_DEADLINE_FLOOR_MS: "250000" } });
+		await highFloor.clipRenderAttempt.execute(highFloor.attempt, attemptContext(new AbortController().signal));
+		expect(highFloor.renderDeadlines).toEqual([250_000]);
+	});
+
+	test("slow uploads stop the next encode at the waiting-job limit while one upload and one waiting output overlap it", async () => {
+		let release!: () => void;
+		const held = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const harness = createCoreRenderPathTracer({
+			topology: "shared-multi-output",
+			variants: fourVariants,
+			configOverrides: { WORKER_UPLOAD_CONCURRENCY: "1", WORKER_UPLOAD_MAX_WAITING_JOBS: "1" },
+			uploadGate: () => held,
+		});
+		const budget = renderResourceBudgetFor(harness.config);
+		const run = harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal));
+		await until(() => budget.snapshot().blockedProducers === 1);
+		expect(harness.commands).toHaveLength(2);
+		expect(budget.snapshot()).toMatchObject({ activeUploads: 1, waitingUploads: 1, reservations: 3 });
+		release();
+		expect((await run).status).toBe("completed");
+		expect(harness.commands).toHaveLength(4);
+		expect([...harness.uploadedVariantIds].sort()).toEqual(fourVariants.map((variant) => variant.id).sort());
+		expect(budget.snapshot()).toMatchObject({ reservations: 0, reservedBytes: 0, blockedProducers: 0 });
+	});
+
+	test("a committed output is unlinked while another upload still holds its own file", async () => {
+		await mkdir(scratchDirectory, { recursive: true });
+		let release!: () => void;
+		const held = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const paths = new Map<string, string>();
+		const harness = createCoreRenderPathTracer({
+			topology: "shared-multi-output",
+			uploadGate: async (variantId, filePath) => {
+				paths.set(variantId, filePath);
+				await writeFile(filePath, "output bytes");
+				if (variantId === "variant-1x1") await held;
+			},
+		});
+		const run = harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal));
+		await until(async () => harness.uploadedVariantIds.includes("variant-9x16") && !(await exists(paths.get("variant-9x16")!)));
+		expect(await exists(paths.get("variant-1x1")!)).toBe(true);
+		release();
+		expect((await run).status).toBe("completed");
+		await until(async () => !(await exists(paths.get("variant-1x1")!)));
+	});
+
+	test("cancelling while the producer is blocked wakes it and returns every reservation", async () => {
+		const controller = new AbortController();
+		const held = new Promise<void>(() => {});
+		const harness = createCoreRenderPathTracer({
+			topology: "shared-multi-output",
+			variants: fourVariants,
+			configOverrides: { WORKER_UPLOAD_CONCURRENCY: "1", WORKER_UPLOAD_MAX_WAITING_JOBS: "1" },
+			uploadGate: (_variantId, _filePath, signal) =>
+				new Promise<void>((_resolve, reject) => {
+					signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+					void held;
+				}),
+		});
+		const budget = renderResourceBudgetFor(harness.config);
+		const run = harness.clipRenderAttempt.execute(harness.attempt, attemptContext(controller.signal));
+		await until(() => budget.snapshot().blockedProducers === 1);
+		controller.abort(new DOMException("cancelled", "AbortError"));
+		await expect(run).rejects.toMatchObject({ name: "AbortError" });
+		expect(budget.snapshot()).toMatchObject({ reservations: 0, reservedBytes: 0, blockedProducers: 0 });
+		expect(harness.workspaceCleanupCount()).toBe(1);
+	});
+
+	test("an encode that times out returns its reservation and fails only its variant for retry", async () => {
+		const harness = createCoreRenderPathTracer({
+			topology: "single-video",
+			renderFailure: new WorkerProcessFailure("worker_command_timeout", "retryable", "Encode deadline", ""),
+		});
+		expect((await harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal))).status).toBe("requeued");
+		expect([...harness.failureCodes.values()]).toEqual(["worker_command_timeout"]);
+		expect(renderResourceBudgetFor(harness.config).snapshot()).toMatchObject({ reservations: 0, encoding: false });
+	});
 });

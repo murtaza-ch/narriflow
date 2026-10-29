@@ -24,6 +24,31 @@ export interface RenderConfig {
   readonly pipMotionThreshold: number;
   readonly brollAssetCacheTtlMs: number;
   readonly pexelsConfigured: boolean;
+  /** Encode deadline = clamp(realtime factor x edited duration x resolution x
+   *  HDR weight, floor, renderCommandTimeoutMs). */
+  readonly renderDeadlineFloorMs: number;
+  readonly renderDeadlineRealtimeFactor: number;
+  /** Size-aware transfer deadline = clamp(30s + bytes / minBytesPerSec, floor, ceiling),
+   *  plus a no-progress bound for downloads. */
+  readonly transferDeadlineFloorMs: number;
+  readonly transferDeadlineCeilingMs: number;
+  readonly transferMinBytesPerSec: number;
+  readonly transferNoProgressMs: number;
+  /** Finished outputs waiting for an upload slot, per replica. */
+  readonly uploadMaxWaitingJobs: number;
+  readonly uploadMaxWaitingBytes: number;
+  /** Free space must stay above max(diskMinFreeBytes, fraction x volume) plus reservations. */
+  readonly diskMinFreeBytes: number;
+  readonly diskMinFreeFraction: number;
+  /** Worker-managed scratch is bounded by min(scratchMaxBytes, fraction x volume). */
+  readonly scratchMaxBytes: number;
+  readonly scratchMaxVolumeFraction: number;
+  /** How long admission waits (with backoff) for space before deferring the attempt. */
+  readonly diskAdmissionWaitMs: number;
+  readonly brollCacheMaxBytes: number;
+  /** An unowned scratch folder is swept after max lease + this grace. */
+  readonly scratchSweepGraceMs: number;
+  readonly scratchSweepIntervalMs: number;
 }
 
 type RenderEnvironment = Record<string, string | undefined>;
@@ -59,6 +84,15 @@ function boundedInteger(environment: RenderEnvironment, name: string, fallback: 
   const value = raw === undefined || raw === "" ? fallback : Number(raw);
   if (!Number.isSafeInteger(value) || value < minimum || value > maximum) {
     throw new Error(`${name} must be an integer between ${minimum} and ${maximum}`);
+  }
+  return value;
+}
+
+function boundedFraction(environment: RenderEnvironment, name: string, fallback: number, minimum: number, maximum: number): number {
+  const raw = environment[name]?.trim();
+  const value = raw === undefined || raw === "" ? fallback : Number(raw);
+  if (!Number.isFinite(value) || value < minimum || value > maximum) {
+    throw new Error(`${name} must be a number between ${minimum} and ${maximum}`);
   }
   return value;
 }
@@ -149,16 +183,43 @@ export function parseRenderConfig(
     throw new Error("WORKER_COMPOSITION_MAX_COMMAND_BYTES must be an integer");
   }
 
+  const renderCommandTimeoutMs = positiveNumber(
+    environment,
+    "WORKER_RENDER_FFMPEG_TIMEOUT_MS",
+    30 * 60 * 1000,
+  );
+  const renderDeadlineFloorMs = boundedInteger(environment, "WORKER_RENDER_DEADLINE_FLOOR_MS", Math.max(1, Math.min(300_000, Math.floor(renderCommandTimeoutMs))), 1);
+  if (renderDeadlineFloorMs > renderCommandTimeoutMs) {
+    throw new Error("WORKER_RENDER_DEADLINE_FLOOR_MS must not exceed WORKER_RENDER_FFMPEG_TIMEOUT_MS");
+  }
+  const transferDeadlineFloorMs = boundedInteger(environment, "WORKER_TRANSFER_DEADLINE_FLOOR_MS", 120_000, 1_000);
+  const transferDeadlineCeilingMs = boundedInteger(environment, "WORKER_TRANSFER_DEADLINE_CEILING_MS", 1_800_000, 1_000);
+  if (transferDeadlineFloorMs > transferDeadlineCeilingMs) {
+    throw new Error("WORKER_TRANSFER_DEADLINE_FLOOR_MS must not exceed WORKER_TRANSFER_DEADLINE_CEILING_MS");
+  }
+
   return Object.freeze({
     sourceMode,
     uploadConcurrency,
     x264Preset,
     x264Crf,
-    renderCommandTimeoutMs: positiveNumber(
-      environment,
-      "WORKER_RENDER_FFMPEG_TIMEOUT_MS",
-      30 * 60 * 1000,
-    ),
+    renderCommandTimeoutMs,
+    renderDeadlineFloorMs,
+    renderDeadlineRealtimeFactor: boundedFraction(environment, "WORKER_RENDER_DEADLINE_FACTOR", 20, 1, 1_000),
+    transferDeadlineFloorMs,
+    transferDeadlineCeilingMs,
+    transferMinBytesPerSec: boundedInteger(environment, "WORKER_TRANSFER_MIN_BYTES_PER_SEC", 1024 * 1024, 1_024),
+    transferNoProgressMs: boundedInteger(environment, "WORKER_TRANSFER_NO_PROGRESS_MS", 30_000, 1_000),
+    uploadMaxWaitingJobs: boundedInteger(environment, "WORKER_UPLOAD_MAX_WAITING_JOBS", 2, 1, 16),
+    uploadMaxWaitingBytes: boundedInteger(environment, "WORKER_UPLOAD_MAX_WAITING_BYTES", 512 * 1024 ** 2, 1_048_576),
+    diskMinFreeBytes: boundedInteger(environment, "WORKER_DISK_MIN_FREE_BYTES", 1024 ** 3, 0),
+    diskMinFreeFraction: boundedFraction(environment, "WORKER_DISK_MIN_FREE_FRACTION", 0.1, 0, 0.9),
+    scratchMaxBytes: boundedInteger(environment, "WORKER_SCRATCH_MAX_BYTES", 8 * 1024 ** 3, 1_048_576),
+    scratchMaxVolumeFraction: boundedFraction(environment, "WORKER_SCRATCH_MAX_VOLUME_FRACTION", 0.5, 0.05, 1),
+    diskAdmissionWaitMs: boundedInteger(environment, "WORKER_DISK_ADMISSION_WAIT_MS", 5 * 60 * 1000, 0, 60 * 60 * 1000),
+    brollCacheMaxBytes: boundedInteger(environment, "BROLL_ASSET_CACHE_MAX_BYTES", 1024 ** 3, 1_048_576),
+    scratchSweepGraceMs: boundedInteger(environment, "WORKER_SCRATCH_SWEEP_GRACE_MS", 10 * 60 * 1000, 0),
+    scratchSweepIntervalMs: boundedInteger(environment, "WORKER_SCRATCH_SWEEP_INTERVAL_MS", 10 * 60 * 1000, 10_000),
     probeCommandTimeoutMs: positiveNumber(
       environment,
       "WORKER_PROBE_TIMEOUT_MS",

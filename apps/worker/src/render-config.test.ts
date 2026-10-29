@@ -97,3 +97,45 @@ test("accepts exact background lease policy limits", () => {
   expect(parseRenderConfig({ WORKER_AUTO_LAYOUT_LEASE_MS: "30000" }).autoLayoutLeaseMs).toBe(30000);
   expect(parseRenderConfig({ WORKER_AUTO_LAYOUT_LEASE_MS: "900000" }).autoLayoutLeaseMs).toBe(900000);
 });
+
+describe("resource bounds", () => {
+  test("defaults follow the spec and are recorded on the frozen config", () => {
+    expect(parseRenderConfig({})).toMatchObject({
+      renderDeadlineFloorMs: 300_000,
+      renderDeadlineRealtimeFactor: 20,
+      transferDeadlineFloorMs: 120_000,
+      transferDeadlineCeilingMs: 1_800_000,
+      transferMinBytesPerSec: 1024 * 1024,
+      transferNoProgressMs: 30_000,
+      uploadMaxWaitingJobs: 2,
+      uploadMaxWaitingBytes: 512 * 1024 ** 2,
+      diskMinFreeBytes: 1024 ** 3,
+      diskMinFreeFraction: 0.1,
+      scratchMaxBytes: 8 * 1024 ** 3,
+      scratchMaxVolumeFraction: 0.5,
+      brollCacheMaxBytes: 1024 ** 3,
+    });
+  });
+
+  test("a short render ceiling lowers the default floor instead of rejecting startup", () => {
+    expect(parseRenderConfig({ WORKER_RENDER_FFMPEG_TIMEOUT_MS: "60000" }).renderDeadlineFloorMs).toBe(60_000);
+    expect(parseRenderConfig({ WORKER_RENDER_FFMPEG_TIMEOUT_MS: "2.5" }).renderDeadlineFloorMs).toBe(2);
+  });
+
+  test("rejects floors above ceilings and out-of-range limits by name", () => {
+    for (const [name, invalid] of [
+      ["WORKER_RENDER_DEADLINE_FLOOR_MS", "1800001"],
+      ["WORKER_RENDER_DEADLINE_FACTOR", "0.5"],
+      ["WORKER_TRANSFER_DEADLINE_FLOOR_MS", "1800001"],
+      ["WORKER_TRANSFER_MIN_BYTES_PER_SEC", "10"],
+      ["WORKER_TRANSFER_NO_PROGRESS_MS", "10"],
+      ["WORKER_UPLOAD_MAX_WAITING_JOBS", "0"],
+      ["WORKER_UPLOAD_MAX_WAITING_BYTES", "1.5"],
+      ["WORKER_DISK_MIN_FREE_FRACTION", "0.95"],
+      ["WORKER_SCRATCH_MAX_VOLUME_FRACTION", "0"],
+      ["WORKER_DISK_ADMISSION_WAIT_MS", "-1"],
+      ["BROLL_ASSET_CACHE_MAX_BYTES", "NaN"],
+      ["WORKER_SCRATCH_SWEEP_INTERVAL_MS", "5"],
+    ] as const) expect(() => parseRenderConfig({ [name]: invalid })).toThrow(name);
+  });
+});

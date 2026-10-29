@@ -1,15 +1,17 @@
 import { describe, expect, test } from "bun:test";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { sourceProbeSchema } from "@narriflow/validators";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { WorkflowAttemptLost } from "@narriflow/services";
+import { WORKFLOW_LEASE_DURATION_MS, WorkflowAttemptLost } from "@narriflow/services";
 import {
+  activeScratchDirectories,
   createWorkerProcessModule,
+  sweepAbandonedScratch,
   WorkerProcessFailure,
   type WorkerProcessDiagnostic,
   type WorkerProcessRequest,
@@ -1049,4 +1051,151 @@ test("long signed queries stay redacted across stderr chunks and capture truncat
     expect((failure as WorkerProcessFailure).diagnostic).toContain("?[redacted]");
     expect((failure as WorkerProcessFailure).diagnostic.length).toBeLessThanOrEqual(8192);
   }
+});
+
+describe("scratch ownership and the abandoned-directory sweep", () => {
+  const OWNER_FILE = ".narriflow-scratch-owner.json";
+  const HOUR_MS = 60 * 60 * 1000;
+  let root = "";
+
+  async function withRoot<T>(work: (root: string) => Promise<T>): Promise<T> {
+    root = await mkdtemp(join(tmpdir(), "narriflow-sweep-test-"));
+    try {
+      return await work(root);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+
+  async function abandoned(
+    parent: string,
+    name: string,
+    options: { ageMs?: number; host?: string; marker?: boolean; ownership?: { attemptId: string } } = {},
+  ): Promise<string> {
+    const directory = join(parent, name);
+    await mkdir(directory);
+    await writeFile(join(directory, "partial.mp4"), "bytes");
+    if (options.marker !== false) {
+      const marker = join(directory, OWNER_FILE);
+      await writeFile(
+        marker,
+        JSON.stringify({
+          version: 1,
+          instanceId: "dead-worker",
+          host: options.host ?? hostname(),
+          pid: 999_999,
+          createdAtMs: 0,
+          ...(options.ownership ? { ownership: options.ownership } : {}),
+        }),
+      );
+      const at = new Date(Date.now() - (options.ageMs ?? 2 * HOUR_MS));
+      await utimes(marker, at, at);
+    }
+    return directory;
+  }
+
+  test("a scratch directory carries an owner marker while live and is gone afterwards, however the work ends", async () => {
+    await withRoot(async (parent) => {
+      const module = createWorkerProcessModule({ scratchRoot: parent });
+      let seen = "";
+      await module.withScratchDirectory("narriflow-live-", async (directory) => {
+        seen = directory;
+        const record = JSON.parse(await readFile(join(directory, OWNER_FILE), "utf8"));
+        expect(record).toMatchObject({ version: 1, host: hostname(), pid: process.pid, ownership: { attemptId: "attempt-1" } });
+        expect(activeScratchDirectories()).toContain(directory);
+        await writeFile(join(directory, "out.mp4"), "x");
+      }, undefined, { workflowRunId: "run-1", attemptId: "attempt-1" });
+      expect(await readdir(parent)).toEqual([]);
+      expect(activeScratchDirectories()).not.toContain(seen);
+
+      await expect(
+        module.withScratchDirectory("narriflow-fail-", async () => {
+          throw new Error("timeout");
+        }),
+      ).rejects.toThrow("timeout");
+      const controller = new AbortController();
+      await expect(
+        module.withScratchDirectory("narriflow-abort-", async () => {
+          controller.abort(new DOMException("shutdown", "AbortError"));
+          controller.signal.throwIfAborted();
+        }),
+      ).rejects.toMatchObject({ name: "AbortError" });
+      expect(await readdir(parent)).toEqual([]);
+    });
+  });
+
+  test("sweeps a crashed worker's old directory and nothing else", async () => {
+    await withRoot(async (parent) => {
+      const crashed = await abandoned(parent, "narriflow-render-crashed");
+      const fresh = await abandoned(parent, "narriflow-render-fresh", { ageMs: 30_000 });
+      const otherHost = await abandoned(parent, "narriflow-render-remote", { host: "someone-else" });
+      const unmarked = await abandoned(parent, "narriflow-render-unmarked", { marker: false });
+      const foreign = await abandoned(parent, "unrelated-dir");
+      const module = createWorkerProcessModule({ scratchRoot: parent });
+      await module.withScratchDirectory("narriflow-render-active-", async (active) => {
+        const old = new Date(Date.now() - 5 * HOUR_MS);
+        await utimes(join(active, OWNER_FILE), old, old);
+        const result = await sweepAbandonedScratch({ root: parent });
+        expect(result.removed).toEqual([crashed]);
+        expect(new Set(result.skipped.map((entry) => `${entry.directory.split("/").pop()}:${entry.reason}`))).toEqual(
+          new Set([
+            "narriflow-render-fresh:fresh",
+            "narriflow-render-remote:other_host",
+            "narriflow-render-unmarked:unmarked",
+            `${active.split("/").pop()}:active_local`,
+          ]),
+        );
+        expect(await readdir(fresh)).toContain("partial.mp4");
+        expect(await readdir(otherHost)).toContain("partial.mp4");
+        expect(await readdir(unmarked)).toContain("partial.mp4");
+        expect(await readdir(foreign)).toContain("partial.mp4");
+        expect(await readdir(active)).toContain(OWNER_FILE);
+      });
+      await expect(stat(crashed)).rejects.toThrow();
+    });
+  });
+
+  test("keeps an old directory whose database claim is still unexpired and sweeps it once the claim ends", async () => {
+    await withRoot(async (parent) => {
+      const directory = await abandoned(parent, "narriflow-render-claimed", { ownership: { attemptId: "attempt-9" } });
+      const seen: unknown[] = [];
+      let claimed = true;
+      const options = {
+        root: parent,
+        isOwnerActive: async (ownership: unknown) => {
+          seen.push(ownership);
+          return claimed;
+        },
+      };
+      expect((await sweepAbandonedScratch(options)).skipped).toEqual([{ directory, reason: "claim_active" }]);
+      claimed = false;
+      expect((await sweepAbandonedScratch(options)).removed).toEqual([directory]);
+      expect(seen).toEqual([{ attemptId: "attempt-9" }, { attemptId: "attempt-9" }]);
+    });
+  });
+
+  test("the stale threshold is the maximum lease plus the grace", async () => {
+    await withRoot(async (parent) => {
+      const directory = await abandoned(parent, "narriflow-render-edge", { ageMs: WORKFLOW_LEASE_DURATION_MS + 60_000 });
+      expect((await sweepAbandonedScratch({ root: parent, graceMs: 120_000 })).skipped).toEqual([{ directory, reason: "fresh" }]);
+      expect((await sweepAbandonedScratch({ root: parent, graceMs: 30_000 })).removed).toEqual([directory]);
+    });
+  });
+
+  test("a failing removal is reported without aborting the sweep, and a missing root is empty", async () => {
+    await withRoot(async (parent) => {
+      const first = await abandoned(parent, "narriflow-render-a");
+      const second = await abandoned(parent, "narriflow-render-b");
+      const result = await sweepAbandonedScratch({
+        root: parent,
+        remove: async (directory) => {
+          if (directory === first) throw new Error("EBUSY");
+          await rm(directory, { recursive: true, force: true });
+        },
+      });
+      expect(result.failed).toEqual([first]);
+      expect(result.removed).toEqual([second]);
+      expect(await sweepAbandonedScratch({ root: join(parent, "absent") })).toEqual({ scanned: 0, removed: [], skipped: [], failed: [] });
+    });
+  });
 });

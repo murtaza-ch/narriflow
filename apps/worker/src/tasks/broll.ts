@@ -15,7 +15,7 @@
  * B-roll entirely.
  */
 import { createHash } from "node:crypto";
-import { copyFile, mkdir, rename, stat } from "node:fs/promises";
+import { copyFile, mkdir, readdir, rename, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -65,13 +65,27 @@ export type { BrollAttribution, BrollClip } from "@narriflow/services";
 
 const BROLL_ASSET_CACHE_DIR = join(tmpdir(), "narriflow-broll-asset-cache");
 const DEFAULT_ASSET_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const DEFAULT_ASSET_CACHE_MAX_BYTES = 1024 ** 3;
+/** A temporary write older than this belongs to a writer that died. */
+const STALE_TEMP_WRITE_MS = 10 * 60 * 1000;
+const TEMP_WRITE_MARKER = ".tmp-";
+
+export interface BrollCacheOptions {
+  /** Defaults to the shared worker cache directory; tests use their own. */
+  directory?: string;
+  ttlMs?: number;
+  maxBytes?: number;
+}
 
 function assetCacheKey(downloadUrl: string): string {
   return createHash("sha256").update(downloadUrl).digest("hex");
 }
 
-function assetCachePath(downloadUrl: string): string {
-  return join(BROLL_ASSET_CACHE_DIR, `${assetCacheKey(downloadUrl)}.mp4`);
+export function brollAssetCachePath(
+  downloadUrl: string,
+  directory: string = BROLL_ASSET_CACHE_DIR,
+): string {
+  return join(directory, `${assetCacheKey(downloadUrl)}.mp4`);
 }
 
 /**
@@ -83,8 +97,9 @@ function assetCachePath(downloadUrl: string): string {
 export async function getCachedBrollAssetPath(
   downloadUrl: string,
   cacheTtlMs: number = DEFAULT_ASSET_CACHE_TTL_MS,
+  directory?: string,
 ): Promise<string | null> {
-  const path = assetCachePath(downloadUrl);
+  const path = brollAssetCachePath(downloadUrl, directory);
   try {
     const stats = await stat(path);
     if (Date.now() - stats.mtimeMs < cacheTtlMs) return path;
@@ -94,25 +109,97 @@ export async function getCachedBrollAssetPath(
   return null;
 }
 
+export interface BrollCachePruneResult {
+  removedFiles: number;
+  removedBytes: number;
+  remainingBytes: number;
+}
+
+/**
+ * Bounds the cache by lifetime and bytes: expired assets and dead writers'
+ * temporary files go first, then the oldest assets until `reserveBytes` more
+ * fit under `maxBytes`. Never throws; a file that cannot be removed stays.
+ */
+export async function pruneBrollAssetCache(
+  options: BrollCacheOptions & { reserveBytes?: number; nowMs?: number } = {},
+): Promise<BrollCachePruneResult> {
+  const directory = options.directory ?? BROLL_ASSET_CACHE_DIR;
+  const ttlMs = options.ttlMs ?? DEFAULT_ASSET_CACHE_TTL_MS;
+  const maxBytes = options.maxBytes ?? DEFAULT_ASSET_CACHE_MAX_BYTES;
+  const nowMs = options.nowMs ?? Date.now();
+  const result: BrollCachePruneResult = { removedFiles: 0, removedBytes: 0, remainingBytes: 0 };
+  let names: string[];
+  try {
+    names = await readdir(directory);
+  } catch {
+    return result;
+  }
+  const remove = async (path: string, size: number): Promise<boolean> => {
+    try {
+      await rm(path, { force: true });
+      result.removedFiles += 1;
+      result.removedBytes += size;
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const live: Array<{ path: string; size: number; mtimeMs: number }> = [];
+  for (const name of names) {
+    const path = join(directory, name);
+    let stats;
+    try {
+      stats = await stat(path);
+    } catch {
+      continue;
+    }
+    if (!stats.isFile()) continue;
+    const age = nowMs - stats.mtimeMs;
+    const expired = name.includes(TEMP_WRITE_MARKER) ? age >= STALE_TEMP_WRITE_MS : age >= ttlMs;
+    if (expired && (await remove(path, stats.size))) continue;
+    live.push({ path, size: stats.size, mtimeMs: stats.mtimeMs });
+  }
+  let total = live.reduce((sum, file) => sum + file.size, 0);
+  live.sort((left, right) => left.mtimeMs - right.mtimeMs);
+  const budget = maxBytes - (options.reserveBytes ?? 0);
+  while (total > budget && live.length > 0) {
+    const oldest = live.shift()!;
+    if (await remove(oldest.path, oldest.size)) total -= oldest.size;
+  }
+  result.remainingBytes = total;
+  return result;
+}
+
 /**
  * Best-effort: copies an already-downloaded asset into the shared cache dir
  * so future renders (any clip, any run, any user) can reuse it without
  * re-fetching from Pexels. Writes to a temp path and renames into place so a
- * concurrent reader never observes a partially-written file. A cache-write
+ * concurrent reader never observes a partially-written file; a failed write
+ * removes its temp file. An asset larger than the byte bound is not cached,
+ * and older assets are evicted to keep the cache within it. A cache-write
  * failure must never fail the render — this is a pure optimization.
  */
 export async function saveBrollAssetToCache(
   downloadUrl: string,
   sourceFilePath: string,
+  options: BrollCacheOptions = {},
 ): Promise<void> {
+  const directory = options.directory ?? BROLL_ASSET_CACHE_DIR;
+  const maxBytes = options.maxBytes ?? DEFAULT_ASSET_CACHE_MAX_BYTES;
+  let tmpPath: string | null = null;
   try {
-    await mkdir(BROLL_ASSET_CACHE_DIR, { recursive: true });
-    const finalPath = assetCachePath(downloadUrl);
-    const tmpPath = `${finalPath}.tmp-${process.pid}-${Date.now()}`;
+    const { size } = await stat(sourceFilePath);
+    if (size > maxBytes) return;
+    await mkdir(directory, { recursive: true });
+    await pruneBrollAssetCache({ ...options, directory, maxBytes, reserveBytes: size });
+    const finalPath = brollAssetCachePath(downloadUrl, directory);
+    tmpPath = `${finalPath}${TEMP_WRITE_MARKER}${process.pid}-${Date.now()}`;
     await copyFile(sourceFilePath, tmpPath);
     await rename(tmpPath, finalPath);
+    tmpPath = null;
   } catch {
     // Cache is a pure optimization — never let a write failure affect rendering.
+    if (tmpPath) await rm(tmpPath, { force: true }).catch(() => {});
   }
 }
 

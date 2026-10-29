@@ -752,6 +752,7 @@ function createUploadQueueTracer(input: {
 				deleteObject: async (key) => ({ key }),
 			},
 			workspace: {
+				statfs: async () => ({ bavail: 10 * 1024 ** 3, bsize: 1, blocks: 20 * 1024 ** 3 }) as never,
 				stat: async () => ({ size: 4096, isFile: () => true }) as never,
 			},
 			diagnose: () => {},
@@ -943,6 +944,7 @@ test("ClipRenderAttempt discards an uploaded object when cancellation wins befor
 				},
 			},
 			workspace: {
+				statfs: async () => ({ bavail: 10 * 1024 ** 3, bsize: 1, blocks: 20 * 1024 ** 3 }) as never,
 				stat: async () => ({ size: 4096, isFile: () => true }) as never,
 			},
 			diagnose: () => {},

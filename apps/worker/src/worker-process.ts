@@ -1,8 +1,10 @@
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { randomUUID } from "node:crypto";
+import { rmSync } from "node:fs";
+import { mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { hostname, tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { WorkflowFailure } from "@narriflow/services";
+import { WORKFLOW_LEASE_DURATION_MS, WorkflowFailure } from "@narriflow/services";
 import { SOURCE_TIMECODE_PATTERN, standardFrameRate, type FrameRate, type SourceProbe, type MediaFacts } from "@narriflow/validators";
 
 const DEFAULT_KILL_GRACE_MS = 5_000;
@@ -215,6 +217,7 @@ export interface WorkerProcessModule {
     prefix: string,
     work: (directory: string) => Promise<T>,
     diagnose?: (event: WorkerProcessDiagnostic) => void,
+    ownership?: ScratchOwnership,
   ): Promise<T>;
   start?(request: WorkerPersistentProcessRequest): Promise<WorkerPersistentProcess>;
 }
@@ -300,6 +303,8 @@ export interface WorkerProcessModuleDependencies {
   execute?: (request: WorkerProcessRequest) => Promise<WorkerProcessResult>;
   createScratchDirectory?: (prefix: string) => Promise<string>;
   removeScratchDirectory?: (directory: string) => Promise<void>;
+  /** Parent of every scratch directory this module creates (default: the OS temp directory). */
+  scratchRoot?: string;
 }
 
 const PERMANENT_INPUT_EXIT_PATTERNS = [
@@ -1308,18 +1313,23 @@ class ProductionWorkerProcessModule implements WorkerProcessModule {
     prefix: string,
     work: (directory: string) => Promise<T>,
     diagnose?: (event: WorkerProcessDiagnostic) => void,
+    ownership?: ScratchOwnership,
   ): Promise<T> {
     const create =
       this.dependencies.createScratchDirectory ??
-      ((scratchPrefix: string) => mkdtemp(join(tmpdir(), scratchPrefix)));
+      ((scratchPrefix: string) => mkdtemp(join(this.dependencies.scratchRoot ?? tmpdir(), scratchPrefix)));
     const remove =
       this.dependencies.removeScratchDirectory ??
       ((directory: string) => rm(directory, { recursive: true, force: true }));
     const directory = await create(prefix);
     const startedAtMs = Date.now();
+    // Injected directories are the caller's own fixtures; only real ones carry ownership.
+    const owned = this.dependencies.createScratchDirectory === undefined;
     try {
+      if (owned) await registerScratchDirectory(directory, ownership);
       return await work(directory);
     } finally {
+      if (owned) unregisterScratchDirectory(directory);
       try {
         await remove(directory);
       } catch (error) {
@@ -1360,3 +1370,153 @@ function productionKillGraceMs(): number {
 export const productionWorkerProcessModule = createWorkerProcessModule({
   killGraceMs: productionKillGraceMs(),
 });
+
+// --- Scratch ownership, heartbeat and abandoned-directory sweep ----------------
+//
+// Every scratch directory this module creates carries an owner marker. While the
+// process lives, the marker's mtime is refreshed; a crash or SIGKILL leaves the
+// directory behind with a marker that stops moving. The sweep removes only such
+// marked directories, and only when no live local process (a fresh marker) and no
+// unexpired database claim (the injected check) still owns them.
+
+export const SCRATCH_OWNER_FILE = ".narriflow-scratch-owner.json";
+const SCRATCH_DIRECTORY_PREFIX = "narriflow-";
+const SCRATCH_HEARTBEAT_MS = 30_000;
+
+/** Opaque references the database ownership check understands. */
+export interface ScratchOwnership {
+  workflowRunId?: string;
+  attemptId?: string;
+}
+
+interface ScratchOwnerRecord {
+  version: 1;
+  instanceId: string;
+  host: string;
+  pid: number;
+  createdAtMs: number;
+  ownership?: ScratchOwnership;
+}
+
+const workerInstanceId = randomUUID();
+const activeScratch = new Set<string>();
+let scratchHeartbeat: ReturnType<typeof setInterval> | undefined;
+let exitHookInstalled = false;
+
+function touchActiveScratchMarkers(): void {
+  const now = new Date();
+  for (const directory of activeScratch) {
+    utimes(join(directory, SCRATCH_OWNER_FILE), now, now).catch(() => {});
+  }
+}
+
+async function registerScratchDirectory(directory: string, ownership: ScratchOwnership | undefined): Promise<void> {
+  const record: ScratchOwnerRecord = {
+    version: 1,
+    instanceId: workerInstanceId,
+    host: hostname(),
+    pid: process.pid,
+    createdAtMs: Date.now(),
+    ...(ownership ? { ownership } : {}),
+  };
+  await writeFile(join(directory, SCRATCH_OWNER_FILE), JSON.stringify(record), { flag: "w" });
+  activeScratch.add(directory);
+  if (!scratchHeartbeat) {
+    scratchHeartbeat = setInterval(touchActiveScratchMarkers, SCRATCH_HEARTBEAT_MS);
+    scratchHeartbeat.unref();
+  }
+  if (!exitHookInstalled) {
+    exitHookInstalled = true;
+    // process.exit() and signal-driven shutdown skip `finally`: remove what is still live.
+    process.once("exit", () => {
+      for (const active of activeScratch) {
+        try {
+          rmSync(active, { recursive: true, force: true });
+        } catch {
+          // The startup sweep removes it later.
+        }
+      }
+    });
+  }
+}
+
+function unregisterScratchDirectory(directory: string): void {
+  activeScratch.delete(directory);
+  if (activeScratch.size === 0 && scratchHeartbeat) {
+    clearInterval(scratchHeartbeat);
+    scratchHeartbeat = undefined;
+  }
+}
+
+/** Directories this process is using right now (for readiness and tests). */
+export function activeScratchDirectories(): readonly string[] {
+  return [...activeScratch];
+}
+
+export interface ScratchSweepOptions {
+  /** Where scratch directories live (default: the OS temp directory). */
+  root?: string;
+  nowMs?: number;
+  /** Marker age after which a directory counts as abandoned. Default: maximum lease plus `graceMs`. */
+  staleAfterMs?: number;
+  graceMs?: number;
+  /** True while the database still holds an unexpired claim for the recorded work. */
+  isOwnerActive?(ownership: ScratchOwnership | undefined): Promise<boolean>;
+  remove?(directory: string): Promise<void>;
+}
+
+export interface ScratchSweepResult {
+  scanned: number;
+  removed: string[];
+  skipped: Array<{ directory: string; reason: "unmarked" | "other_host" | "active_local" | "fresh" | "claim_active" }>;
+  failed: string[];
+}
+
+export async function sweepAbandonedScratch(options: ScratchSweepOptions = {}): Promise<ScratchSweepResult> {
+  const root = options.root ?? tmpdir();
+  const nowMs = options.nowMs ?? Date.now();
+  const staleAfterMs = options.staleAfterMs ?? WORKFLOW_LEASE_DURATION_MS + (options.graceMs ?? 10 * 60 * 1000);
+  const remove = options.remove ?? ((directory: string) => rm(directory, { recursive: true, force: true }));
+  const result: ScratchSweepResult = { scanned: 0, removed: [], skipped: [], failed: [] };
+  let entries: Array<{ name: string; isDirectory(): boolean }>;
+  try {
+    entries = await readdir(root, { withFileTypes: true });
+  } catch {
+    return result;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !entry.name.startsWith(SCRATCH_DIRECTORY_PREFIX)) continue;
+    const directory = join(root, entry.name);
+    result.scanned += 1;
+    const marker = join(directory, SCRATCH_OWNER_FILE);
+    let record: ScratchOwnerRecord;
+    let markerMtimeMs: number;
+    try {
+      record = JSON.parse(await readFile(marker, "utf8")) as ScratchOwnerRecord;
+      markerMtimeMs = (await stat(marker)).mtimeMs;
+    } catch {
+      result.skipped.push({ directory, reason: "unmarked" });
+      continue;
+    }
+    if (record.version !== 1 || typeof record.host !== "string") {
+      result.skipped.push({ directory, reason: "unmarked" });
+    } else if (record.host !== hostname()) {
+      result.skipped.push({ directory, reason: "other_host" });
+    } else if (activeScratch.has(directory)) {
+      result.skipped.push({ directory, reason: "active_local" });
+    } else if (nowMs - markerMtimeMs < staleAfterMs) {
+      // A live local worker refreshes its marker; a young one may belong to it.
+      result.skipped.push({ directory, reason: "fresh" });
+    } else if (await options.isOwnerActive?.(record.ownership)) {
+      result.skipped.push({ directory, reason: "claim_active" });
+    } else {
+      try {
+        await remove(directory);
+        result.removed.push(directory);
+      } catch {
+        result.failed.push(directory);
+      }
+    }
+  }
+  return result;
+}
