@@ -48,6 +48,8 @@ export interface OperationReceiptIdentity {
 export interface IntegrationMutation {
 	clientIdempotencyKey: string;
 	beforeAccept?: () => Promise<void>;
+	/** Called when the command resolved to an earlier acceptance, so an adapter can say so (`Idempotent-Replayed`). */
+	onReplay?: () => void;
 	/** A validated Completion Callback URL, for commands that start work. */
 	callback?: { url: URL };
 }

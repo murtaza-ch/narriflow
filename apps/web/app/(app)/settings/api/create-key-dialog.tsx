@@ -1,8 +1,10 @@
 "use client";
 
-import { useState, useTransition } from "react";
-import { useRouter } from "next/navigation";
+import { useMemo, useState } from "react";
 import { Box, Field, Flex, Input, Stack, Text } from "@chakra-ui/react";
+import type { WorkspaceScope } from "@narriflow/api-client";
+import { createApiKeyMutation } from "@narriflow/api-client/developer";
+import { useMutation } from "@tanstack/react-query";
 import { Bot, CheckCircle2, Download, Eye, Plus, Scissors, Send } from "lucide-react";
 import { WORKSPACE_API_KEY_READ_SCOPES } from "@narriflow/validators";
 import { Button } from "@narriflow/ui/components/button";
@@ -10,8 +12,8 @@ import { CodeBlock } from "@narriflow/ui/components/code-block";
 import { CloseButton, Dialog, Portal } from "@narriflow/ui/components/dialog";
 import { Spinner } from "@narriflow/ui/components/spinner";
 import { Switch } from "@narriflow/ui/components/switch";
-import { authenticatedActionResultMessage } from "@/lib/authenticated-request-browser";
-import { createApiKeyAction } from "../actions";
+import { useApiRuntime } from "@/app/_components/api-provider";
+import { developerFailureMessage } from "./failure-message";
 
 const WRITE_SCOPES = [
   { scope: "processing:write", label: "Import and clip", description: "Import links, upload files and generate clips", icon: Scissors },
@@ -22,20 +24,24 @@ const WRITE_SCOPES = [
 
 type WriteScope = (typeof WRITE_SCOPES)[number]["scope"];
 
-export function CreateKeyDialog() {
-  const router = useRouter();
+export function CreateKeyDialog({ scope }: { scope: WorkspaceScope }) {
+  const runtime = useApiRuntime();
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [writes, setWrites] = useState<WriteScope[]>([]);
+  // The key is shown once. It lives in this component alone: never in a query, a cache or a key.
   const [secret, setSecret] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [pending, startTransition] = useTransition();
+  // One idempotency intent per dialog: a retry after a lost response is the same request.
+  const createKey = useMutation(useMemo(() => createApiKeyMutation(runtime, scope), [runtime, scope]));
+  const pending = createKey.isPending;
 
   function reset() {
     setName("");
     setWrites([]);
     setSecret(null);
     setError(null);
+    createKey.reset();
   }
 
   function create(event: React.FormEvent) {
@@ -45,15 +51,17 @@ export function CreateKeyDialog() {
       setError("Name the key so you can recognise it later.");
       return;
     }
-    startTransition(async () => {
-      const result = await createApiKeyAction({ name, scopes: [...WORKSPACE_API_KEY_READ_SCOPES, ...writes] });
-      if (!result.ok) {
-        setError(authenticatedActionResultMessage(result, "The API key could not be created."));
-        return;
-      }
-      setSecret(result.key.secret);
-      router.refresh();
-    });
+    createKey.mutate(
+      { name, scopes: [...WORKSPACE_API_KEY_READ_SCOPES, ...writes] },
+      {
+        onSuccess: (created) => {
+          setSecret(created.secret);
+          // The mutation result is not kept: the secret is held here only.
+          createKey.reset();
+        },
+        onError: (failure) => setError(developerFailureMessage(failure, "The API key could not be created.")),
+      },
+    );
   }
 
   return (

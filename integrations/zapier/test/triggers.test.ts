@@ -106,7 +106,7 @@ describe('Export Finished', () => {
     notices: [],
     failureCode: null,
     reviewUrl: `https://app.narriflow.com/projects/${uuid(4)}`,
-    statusUrl: `https://app.narriflow.com/api/v1/operations/${operationId}`,
+    statusUrl: `http://localhost:4000/api/v1/operations/${operationId}`,
   });
 
   it('keeps finished exports and points details at the export operation', async () => {

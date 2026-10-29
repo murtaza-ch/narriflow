@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { Hono } from "hono";
 import { ADMISSION_TABLES } from "./domains";
 import type { AdmissionEntry } from "./domains/platform/admission-table";
-import { createRouteApp, RouteRegistrationError } from "./http/admission";
+import { createRouteApp, requireAdmissionDeclaration, RouteRegistrationError } from "./http/admission";
 import type { ApiEnv } from "./http/env";
 import { checkRouteInventory, declaredRoutes } from "./route-inventory";
 import { createInventoryApp } from "./test-app";
@@ -143,6 +143,89 @@ describe("route inventory comparison", () => {
   });
 });
 
+// F01 (round 3): an `ALL` entry used to be skipped wholesale. Behind the
+// fail-closed guard (or in an app without one) it must belong to a declared
+// registration, whatever way it was added.
+describe("route inventory and ALL entries", () => {
+  const table = { "GET /api/probe": WORKSPACE_READ } as const;
+  const declared = new Map<string, AdmissionEntry>(Object.entries(table));
+  const guarded = (register: (firstParty: Hono<ApiEnv>) => void): Hono<ApiEnv> => {
+    const firstParty = new Hono<ApiEnv>();
+    firstParty.use("*", (_c, next) => next()); // composition middleware, before the guard
+    firstParty.use("*", requireAdmissionDeclaration());
+    register(firstParty);
+    return new Hono<ApiEnv>().route("/", firstParty);
+  };
+  const problem = (route: string) => ({
+    kind: "unregistered_handler",
+    route,
+    detail: "answers every method without belonging to a declared registration",
+  });
+
+  test("the plain-Hono shape Sol reproduced: all() on a clone ahead of the declared GET", () => {
+    const domain = createRouteApp(table);
+    const clone = Hono.prototype.basePath.call(new Hono<ApiEnv>(), "/") as Hono<ApiEnv>;
+    clone.all("/api/probe", (c) => c.json({ unauthorized: true }));
+    const app = new Hono<ApiEnv>().route("/", clone).route("/", domain.get("/api/probe", ok));
+    expect(checkRouteInventory(app, declared).problems).toEqual([problem("ALL /api/probe")]);
+  });
+
+  test.each([
+    ["all", (a: Hono<ApiEnv>) => a.all("/api/probe", ok), "ALL /api/probe"],
+    ["use on the endpoint", (a: Hono<ApiEnv>) => a.use("/api/probe", ok), "ALL /api/probe"],
+    ["use with a wildcard", (a: Hono<ApiEnv>) => a.use("/api/*", ok), "ALL /api/*"],
+    ["on with every method", (a: Hono<ApiEnv>) => a.on(["GET", "POST"], "/api/probe", ok), null],
+    [
+      "route() of a child that holds an ALL entry",
+      (a: Hono<ApiEnv>) => a.route("/", new Hono<ApiEnv>().all("/api/probe", ok)),
+      "ALL /api/probe",
+    ],
+    ["mount", (a: Hono<ApiEnv>) => a.mount("/api/probe", () => new Response("x")), "ALL /api/probe/*"],
+  ] as const)("flags an unregistered ALL handler added by %s (no guard in the app)", (_name, add, route) => {
+    const app = new Hono<ApiEnv>();
+    add(app);
+    app.route("/", createRouteApp(table).get("/api/probe", ok));
+    const found = checkRouteInventory(app, declared).problems;
+    if (route) expect(found).toContainEqual(problem(route));
+    else expect(found.length).toBeGreaterThan(0);
+  });
+
+  test.each([
+    ["all", (a: Hono<ApiEnv>) => a.all("/api/probe", ok), "ALL /api/probe"],
+    ["use with a wildcard", (a: Hono<ApiEnv>) => a.use("/api/*", ok), "ALL /api/*"],
+    [
+      "route() of a child that holds an ALL entry",
+      (a: Hono<ApiEnv>) => a.route("/", new Hono<ApiEnv>().all("/api/probe", ok)),
+      "ALL /api/probe",
+    ],
+  ] as const)("flags an unregistered ALL handler added by %s behind the guard", (_name, add, route) => {
+    const app = guarded((firstParty) => {
+      add(firstParty);
+      firstParty.route("/", createRouteApp(table).get("/api/probe", ok));
+    });
+    expect(checkRouteInventory(app, declared).problems).toContainEqual(problem(route));
+  });
+
+  test("ALL entries in front of the guard are composition middleware and pass", () => {
+    const app = guarded((firstParty) => {
+      firstParty.route("/", createRouteApp(table).get("/api/probe", ok));
+    });
+    expect(checkRouteInventory(app, declared).problems).toEqual([]);
+  });
+
+  test("a marked trust-area guard behind the admission guard passes; protocol prefixes are left alone", () => {
+    const app = guarded((firstParty) => {
+      firstParty.route("/", createRouteApp(table).get("/api/probe", ok));
+      firstParty.use("/api/v1/*", ok);
+    });
+    expect(checkRouteInventory(app, declared).problems).toEqual([]);
+  });
+
+  test("the real composition, with a domain whose hatch attempt was refused, reports nothing", () => {
+    expect(checkRouteInventory(createInventoryApp()).problems).toEqual([]);
+  });
+});
+
 describe("createRouteApp", () => {
   const table = { "GET /a": WORKSPACE_READ, "POST /a": WORKSPACE_EDIT } as const;
 
@@ -161,9 +244,95 @@ describe("createRouteApp", () => {
 
   test("refuses every other way of adding routes", () => {
     const app = createRouteApp(table) as unknown as Record<string, (...args: unknown[]) => unknown>;
-    for (const name of ["use", "all", "on", "route", "mount"]) {
+    for (const name of ["use", "all", "on", "route", "mount", "options", "basePath"]) {
       expect(() => app[name]?.("/a", ok)).toThrow(RouteRegistrationError);
     }
+  });
+
+  test("the sealed methods cannot be reassigned or redefined", () => {
+    const app = createRouteApp(table) as unknown as Record<string, unknown>;
+    expect(() => {
+      app.all = () => app;
+    }).toThrow();
+    expect(() => Object.defineProperty(app, "use", { value: () => app })).toThrow();
+    expect(() => {
+      app.routes = [];
+    }).toThrow();
+    expect(() => {
+      app.router = {};
+    }).toThrow();
+  });
+
+  // F01 (round 3): `basePath` returns Hono's plain clone, which shares the router
+  // and route list. Every registration ends in `router.add` / `routes`, so the
+  // clone, the prototype methods and the internals are all closed.
+  describe("adversarial registration hatches on the returned app", () => {
+    const prototypeMethods = ["route", "mount"] as const;
+
+    test("basePath itself refuses, so no clone exists", () => {
+      expect(() => createRouteApp(table).basePath("/")).toThrow(RouteRegistrationError);
+    });
+
+    test("a clone taken from the shared prototype still cannot register", () => {
+      const app = createRouteApp(table);
+      const clone = Hono.prototype.basePath.call(app, "/") as Hono<ApiEnv>;
+      expect(() => clone.all("/a", ok)).toThrow(RouteRegistrationError);
+      expect(() => clone.use("/a", ok)).toThrow(RouteRegistrationError);
+      expect(() => clone.on("GET", "/a", ok)).toThrow(RouteRegistrationError);
+      expect(() => clone.get("/a", ok)).toThrow(RouteRegistrationError);
+      expect(() => clone.route("/x", new Hono<ApiEnv>().get("/y", ok))).toThrow(RouteRegistrationError);
+      expect(() => clone.mount("/m", () => new Response("x"))).toThrow(RouteRegistrationError);
+      expect(app.routes).toHaveLength(0);
+    });
+
+    for (const name of prototypeMethods) {
+      test(`Hono.prototype.${name} called on the domain app refuses`, () => {
+        const app = createRouteApp(table);
+        const method = (Hono.prototype as unknown as Record<string, (...args: unknown[]) => unknown>)[name];
+        const args =
+          name === "route"
+            ? ["/x", new Hono<ApiEnv>().get("/y", ok)]
+            : name === "mount"
+              ? ["/m", () => new Response("x")]
+              : name === "on"
+                ? ["GET", "/a", ok]
+                : ["/a", ok];
+        expect(() => method?.apply(app, args)).toThrow(RouteRegistrationError);
+        expect(app.routes).toHaveLength(0);
+      });
+    }
+
+    test("the router and the route list refuse direct writes", () => {
+      const app = createRouteApp(table);
+      expect(() => app.router.add("GET", "/a", [ok, {}] as never)).toThrow(RouteRegistrationError);
+      expect(() => app.routes.push({ method: "ALL", path: "/a", handler: ok, basePath: "/" } as never)).toThrow(
+        RouteRegistrationError,
+      );
+      expect(() => app.routes.splice(0, 1)).toThrow(RouteRegistrationError);
+      expect(() => {
+        app.routes.length = 0;
+      }).toThrow(RouteRegistrationError);
+    });
+
+    test("declared registrations still work after refused attempts, and keep their order", () => {
+      const app = createRouteApp(table);
+      expect(() => app.all("/a", ok)).toThrow();
+      app.get("/a", ok).post("/a", ok);
+      expect(app.routes.map((route) => `${route.method} ${route.path}`)).toEqual([
+        "GET /a",
+        "GET /a",
+        "POST /a",
+        "POST /a",
+      ]);
+    });
+
+    test("a refused hatch leaves nothing for the runtime guard to refuse", async () => {
+      const domain = createRouteApp({ "GET /probe": WORKSPACE_READ });
+      expect(() => domain.basePath("/").all("/probe", ok)).toThrow(RouteRegistrationError);
+      domain.get("/probe", ok);
+      const mounted = new Hono<ApiEnv>().route("/api", domain);
+      expect(checkRouteInventory(mounted, new Map([["GET /api/probe", WORKSPACE_READ]])).problems).toEqual([]);
+    });
   });
 
   test("installs exactly one entry per handler, led by the declaration", () => {

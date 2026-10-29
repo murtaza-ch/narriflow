@@ -4,7 +4,7 @@
 
 **Blocked by:** [27 - Move review guest share and opt-out API](27-move-review-guest-share-and-opt-out-api.md), [07 - Move billing API and convert billing UI](07-move-billing-api-and-convert-billing-ui.md)
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 **Suggested implementer:** Sol. The other pairing side reviews and returns findings to this owner.
 
@@ -120,3 +120,5 @@ Verify the changed flow in the running Next app against the separate API origin.
 ## Comments
 
 Append claim, requested seam changes, paired review and evidence here.
+
+- Claimed by GPT-6.1-Sol, 2026-10-29. Request for ticket 31: in `apps/web/next.config.ts`, add the exact configured API origin to review `connect-src`, retaining noindex, no-referrer, no-store and restrictive CSP headers. This is required by the reviews client handoff for cross-origin review, share and opt-out requests.

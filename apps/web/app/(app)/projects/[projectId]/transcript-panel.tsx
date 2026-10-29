@@ -26,9 +26,13 @@ import { ActionMenu } from "@narriflow/ui/components/menu";
 import { EmptyState } from "@narriflow/ui/components/empty-state";
 import { Spinner } from "@narriflow/ui/components/spinner";
 import { StatusBadge } from "@narriflow/ui/components/status-badge";
+import { toaster } from "@narriflow/ui/components/toaster";
 import { userErrorMessage, type TranscriptSnapshot } from "@narriflow/validators";
 import { Box, Flex, Grid, Input, Stack, Text } from "@chakra-ui/react";
 import { formatDuration, formatTimecode } from "@/lib/format";
+import { useClipApi } from "@/lib/clip-media";
+import { clipActionErrorCopy } from "./clip-action-error-copy";
+import { fetchTranscriptFile, saveBlob, type TranscriptFormat } from "./transcript-download";
 import { PanelHeader } from "./panel-header";
 import { groupTranscriptParagraphs, type TranscriptParagraph } from "./transcript-paragraphs";
 
@@ -259,6 +263,28 @@ export function TranscriptPanel({
 	const bodyRef = useRef<HTMLDivElement>(null);
 	const needle = query.trim();
 	const searching = needle.length >= 2;
+	const api = useClipApi();
+	const [downloading, setDownloading] = useState(false);
+
+	// Bearer fetch, then save the Blob: the token never rides on a navigation.
+	const download = useCallback(
+		async (format: TranscriptFormat) => {
+			if (!api || downloading) return;
+			setDownloading(true);
+			try {
+				saveBlob(await fetchTranscriptFile(api.projects, projectId, format));
+			} catch (failure) {
+				toaster.create({
+					type: "error",
+					title: "Download failed",
+					description: clipActionErrorCopy(failure, "The transcript could not be downloaded. Try again."),
+				});
+			} finally {
+				setDownloading(false);
+			}
+		},
+		[api, downloading, projectId],
+	);
 
 	const stats = useMemo(() => {
 		if (!transcript) return null;
@@ -402,7 +428,7 @@ export function TranscriptPanel({
 						<ActionMenu
 							ariaLabel="Download transcript"
 							trigger={
-								<Button size="sm" variant="subtle">
+								<Button size="sm" variant="subtle" disabled={downloading || !api}>
 									<Download size={14} aria-hidden />
 									Download
 									<ChevronDown size={14} aria-hidden />
@@ -411,10 +437,7 @@ export function TranscriptPanel({
 							items={DOWNLOADS.map(({ format, label }) => ({
 								value: format,
 								label,
-								onSelect: () =>
-									window.location.assign(
-										`/api/projects/${projectId}/transcript/export?format=${format}`,
-									),
+								onSelect: () => void download(format),
 							}))}
 						/>
 					) : null

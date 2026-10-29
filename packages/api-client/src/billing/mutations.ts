@@ -13,7 +13,7 @@ import type {
   PlanChangeResult,
   WorkspaceBillingView,
 } from "@narriflow/validators";
-import type { ApiTransport, IdentityScope, WorkspaceScope } from "../core";
+import { IDEMPOTENCY_KEY_HEADER, type ApiTransport, type IdentityScope, type WorkspaceScope } from "../core";
 import { createBillingClient } from "./client";
 
 export type CheckoutReturnOutcome =
@@ -110,7 +110,10 @@ export function createBillingActions(
 /**
  * Creates the pending Business Workspace (or resumes one awaiting payment) and
  * returns the Stripe URL plus the Workspace to select before navigating. It is
- * identity-only: the caller has no Workspace selected for it yet. A failure
+ * identity-only: the caller has no Workspace selected for it yet. Creating
+ * needs the per-intent `idempotencyKey` (mint it once per form submission with
+ * `createIntent`, keep it through a lost response): a retry then resumes the
+ * same pending Workspace instead of creating another. A failure
  * after the Workspace exists carries `details.recovery` (see
  * `businessWorkspaceCheckoutRecoverySchema`) to resubmit against it.
  */
@@ -118,12 +121,13 @@ export async function startBusinessWorkspaceCheckout(
   transport: ApiTransport,
   scope: IdentityScope,
   input: BusinessWorkspaceCheckoutRequest,
+  idempotencyKey: string,
   signal?: AbortSignal,
 ): Promise<BusinessWorkspaceCheckoutResponse> {
   const client = createBillingClient(transport.identity(scope));
   const response = await client.workspaces["business-checkout"].$post(
     { json: input },
-    { init: signal ? { signal } : {} },
+    { headers: { [IDEMPOTENCY_KEY_HEADER]: idempotencyKey }, init: signal ? { signal } : {} },
   );
   return businessWorkspaceCheckoutResponseSchema.parse(await response.json());
 }

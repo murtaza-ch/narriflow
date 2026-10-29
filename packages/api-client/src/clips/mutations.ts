@@ -7,7 +7,8 @@ import {
   invalidateScoped,
   type WorkspaceScope,
 } from "../core";
-import { invalidateProject } from "../projects";
+import { invalidateProject, invalidateProjectCollections } from "../projects";
+import { invalidateWorkspaceUsage } from "../workspace/queries";
 import type { ClipsClient } from "./index";
 import { CLIP_RESOURCES } from "./queries";
 
@@ -151,8 +152,9 @@ export async function invalidateProjectClips(queryClient: QueryClient, scope: Wo
 export async function invalidateAfterClipChange(queryClient: QueryClient, scope: WorkspaceScope, projectId: string) {
   await Promise.all([
     invalidateProjectClips(queryClient, scope, projectId),
-    invalidateScoped(queryClient, scope, "projects", "list"),
-    invalidateScoped(queryClient, scope, "workspace", "usage"),
+    // Home and explorer show each Project's clip count.
+    invalidateProjectCollections(queryClient, scope),
+    invalidateWorkspaceUsage(queryClient, scope),
   ]);
 }
 

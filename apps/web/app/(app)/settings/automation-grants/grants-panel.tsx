@@ -1,8 +1,10 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import type { AutomationActions } from "@narriflow/api-client/automation";
+import { isApiError } from "@narriflow/api-client/core";
+import { useMutation } from "@tanstack/react-query";
 import { Box, Field, Flex, IconButton, Input, Stack, Text } from "@chakra-ui/react";
 import { CalendarClock, ChevronDown, ChevronRight, MoreHorizontal, Pause, Plus, RotateCcw, Send, Trash2, Users } from "lucide-react";
 import {
@@ -29,9 +31,7 @@ import { SegmentedControl } from "@narriflow/ui/components/segmented-control";
 import { Select } from "@narriflow/ui/components/select";
 import { Spinner } from "@narriflow/ui/components/spinner";
 import { Textarea } from "@narriflow/ui/components/textarea";
-import { authenticatedActionResultMessage, isAuthenticatedActionFailure } from "@/lib/authenticated-request-browser";
 import { SOCIAL_PLATFORM_LABELS } from "@/lib/social-post-status";
-import { createStandingGrantAction, pauseStandingGrantAction, renewStandingGrantAction, revokeStandingGrantAction } from "./actions";
 
 // A fixed locale and zone keep server and client renders identical.
 const formatTime = (iso: string) =>
@@ -48,11 +48,22 @@ export interface GrantRuleOption {
 export interface GrantAccountOption {
 	id: string;
 	label: string;
-	platform: keyof typeof SOCIAL_PLATFORM_LABELS;
+	platform: string;
 }
 
-const failed = (result: unknown) =>
-	isAuthenticatedActionFailure(result) || (typeof result === "object" && result !== null && "ok" in result && result.ok === false);
+const platformLabel = (platform: string) => (SOCIAL_PLATFORM_LABELS as Record<string, string>)[platform] ?? platform;
+
+/** What the panel needs to change grants: the commands and the cache refresh. */
+export interface GrantsPanelApi {
+	actions: AutomationActions;
+	/** Refreshes what a created, renewed, paused or revoked grant touches (this page and Autopilot's grant summaries). */
+	changed(): Promise<void>;
+}
+
+function failureMessage(error: unknown, fallback: string): string {
+	if (isApiError(error)) return error.code === "network_error" ? "Network error — please try again." : error.message;
+	return fallback;
+}
 
 function StatusChip({ status }: { status: StandingGrantStatus }) {
 	return (
@@ -151,6 +162,7 @@ function History({ grant }: { grant: StandingGrantView }) {
 }
 
 function GrantDialog({
+	api,
 	grant,
 	rules,
 	accounts,
@@ -159,6 +171,7 @@ function GrantDialog({
 	initialRuleId,
 	onClose,
 }: {
+	api: GrantsPanelApi;
 	/** Present when renewing. */
 	grant: StandingGrantView | null;
 	rules: GrantRuleOption[];
@@ -168,7 +181,6 @@ function GrantDialog({
 	initialRuleId: string | null;
 	onClose: () => void;
 }) {
-	const router = useRouter();
 	const [kind, setKind] = useState<StandingGrantKind>(grant?.kind ?? "publish");
 	const [ruleId, setRuleId] = useState(grant?.autopilotRuleId ?? initialRuleId ?? rules[0]?.id ?? "");
 	const [accountId, setAccountId] = useState(accounts[0]?.id ?? "");
@@ -177,30 +189,36 @@ function GrantDialog({
 	const [weeklyCap, setWeeklyCap] = useState(String(grant?.weeklyCap ?? 10));
 	const [days, setDays] = useState("30");
 	const [error, setError] = useState<string | null>(null);
-	const [pending, startTransition] = useTransition();
+	// A refused change (a duplicate grant, a stale one) also refetches, so the page shows what is true.
+	const save = useMutation({
+		mutationFn: (terms: { dailyCap: number; weeklyCap: number; expiresInDays: number }): Promise<unknown> => {
+			if (grant) {
+				return api.actions.renewGrant(grant.id, { ...terms, ...(grant.kind === "review_send" ? { reviewerEmails: parseEmails(reviewers) } : {}) });
+			}
+			const emails = parseEmails(reviewers);
+			return api.actions.createGrant(
+				kind === "publish"
+					? { kind, autopilotRuleId: ruleId, socialAccountId: accountId, ...terms }
+					: { kind, autopilotRuleId: ruleId, reviewerEmails: emails, ...terms },
+			);
+		},
+		onSettled: () => api.changed(),
+	});
+	const pending = save.isPending;
 	const renewing = grant !== null;
 	const emails = parseEmails(reviewers);
 	const ready = renewing || (ruleId && (kind === "publish" ? accountId : emails.length > 0));
 
-	function submit(event: React.FormEvent) {
+	async function submit(event: React.FormEvent) {
 		event.preventDefault();
 		setError(null);
-		const terms = { dailyCap: Number(dailyCap), weeklyCap: Number(weeklyCap), expiresInDays: Number(days) };
-		startTransition(async () => {
-			const result = grant
-				? await renewStandingGrantAction({ grantId: grant.id, ...terms, ...(grant.kind === "review_send" ? { reviewerEmails: emails } : {}) })
-				: await createStandingGrantAction(
-						kind === "publish"
-							? { kind, autopilotRuleId: ruleId, socialAccountId: accountId, ...terms }
-							: { kind, autopilotRuleId: ruleId, reviewerEmails: emails, ...terms },
-					);
-			if (failed(result)) {
-				setError(authenticatedActionResultMessage(result, renewing ? "The grant could not be renewed." : "The grant could not be created."));
-				return;
-			}
-			onClose();
-			router.refresh();
-		});
+		try {
+			await save.mutateAsync({ dailyCap: Number(dailyCap), weeklyCap: Number(weeklyCap), expiresInDays: Number(days) });
+		} catch (failure) {
+			setError(failureMessage(failure, renewing ? "The grant could not be renewed." : "The grant could not be created."));
+			return;
+		}
+		onClose();
 	}
 
 	return (
@@ -254,7 +272,7 @@ function GrantDialog({
 										<Field.Root>
 											<Field.Label>Account</Field.Label>
 											<Select
-												items={accounts.map((account) => ({ value: account.id, label: `${account.label}, ${SOCIAL_PLATFORM_LABELS[account.platform]}` }))}
+												items={accounts.map((account) => ({ value: account.id, label: `${account.label}, ${platformLabel(account.platform)}` }))}
 												value={accountId}
 												onValueChange={setAccountId}
 												ariaLabel="Account"
@@ -327,6 +345,7 @@ function GrantDialog({
 }
 
 export function GrantsPanel({
+	api,
 	grants,
 	rules,
 	accounts,
@@ -337,6 +356,7 @@ export function GrantsPanel({
 	access,
 	initialRuleId,
 }: {
+	api: GrantsPanelApi;
 	grants: StandingGrantView[];
 	rules: GrantRuleOption[];
 	accounts: GrantAccountOption[];
@@ -350,19 +370,19 @@ export function GrantsPanel({
 	access?: WorkspaceAccess;
 	initialRuleId: string | null;
 }) {
-	const router = useRouter();
 	const { confirm, dialog } = useConfirm();
 	const [editing, setEditing] = useState<{ grant: StandingGrantView | null } | null>(initialRuleId && canManage ? { grant: null } : null);
 	const [message, setMessage] = useState<string | null>(null);
-	const [pending, startTransition] = useTransition();
+	// Refetches whether or not the change went through: a refusal usually means the grant moved on.
+	const change = useMutation({
+		mutationFn: (task: () => Promise<unknown>) => task(),
+		onSettled: () => api.changed(),
+	});
+	const pending = change.isPending;
 
 	function run(task: () => Promise<unknown>, fallback: string) {
 		setMessage(null);
-		startTransition(async () => {
-			const result = await task();
-			if (failed(result)) setMessage(authenticatedActionResultMessage(result, fallback));
-			router.refresh();
-		});
+		change.mutate(task, { onError: (failure) => setMessage(failureMessage(failure, fallback)) });
 	}
 
 	async function revoke(grant: StandingGrantView) {
@@ -372,7 +392,7 @@ export function GrantsPanel({
 			confirmLabel: "Revoke grant",
 			destructive: true,
 		});
-		if (confirmed) run(() => revokeStandingGrantAction(grant.id), "The grant could not be revoked.");
+		if (confirmed) run(() => api.actions.revokeGrant(grant.id), "The grant could not be revoked.");
 	}
 
 	// Never a dead button: a plan without Autopilot offers the upgrade, and a
@@ -466,7 +486,7 @@ export function GrantsPanel({
 											items={[
 												{ value: "renew", label: grant.status === "active" ? "Renew" : "Renew and resume", icon: <RotateCcw size={14} />, onSelect: () => setEditing({ grant }) },
 												...(grant.status === "active"
-													? [{ value: "pause", label: "Pause", icon: <Pause size={14} />, onSelect: () => run(() => pauseStandingGrantAction(grant.id), "The grant could not be paused.") }]
+													? [{ value: "pause", label: "Pause", icon: <Pause size={14} />, onSelect: () => run(() => api.actions.pauseGrant(grant.id), "The grant could not be paused.") }]
 													: []),
 												{ value: "revoke", label: "Revoke", icon: <Trash2 size={14} />, destructive: true, onSelect: () => void revoke(grant) },
 											]}
@@ -514,6 +534,7 @@ export function GrantsPanel({
 			) : null}
 			{editing ? (
 				<GrantDialog
+					api={api}
 					key={editing.grant?.id ?? "new"}
 					grant={editing.grant}
 					rules={rules}

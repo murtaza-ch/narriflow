@@ -1,39 +1,44 @@
 "use client";
 
-import { useState, useTransition } from "react";
-import { useRouter } from "next/navigation";
+import { useMemo, useState } from "react";
 import { Flex, Stack, Text } from "@chakra-ui/react";
+import type { WorkspaceScope } from "@narriflow/api-client";
+import { rotateCallbackSigningSecretMutation } from "@narriflow/api-client/developer";
+import { useMutation } from "@tanstack/react-query";
 import { RefreshCw, Webhook } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
 import { CodeBlock } from "@narriflow/ui/components/code-block";
 import { Spinner } from "@narriflow/ui/components/spinner";
-import { authenticatedActionResultMessage, isAuthenticatedActionFailure } from "@/lib/authenticated-request-browser";
-import { rotateCallbackSigningSecretAction } from "../actions";
+import { useApiRuntime } from "@/app/_components/api-provider";
+import { developerFailureMessage } from "./failure-message";
 
 // A fixed locale and zone keep server and client renders identical.
 const formatTime = (iso: string) =>
   `${new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeStyle: "short", timeZone: "UTC" }).format(new Date(iso))} UTC`;
 
 export function CallbackSecretPanel({
+  scope,
   status,
 }: {
+  scope: WorkspaceScope;
   status: { current: { createdAt: string } | null; previousRetiresAt: string | null };
 }) {
-  const router = useRouter();
+  const runtime = useApiRuntime();
+  // The secret is shown once and lives in this component alone: never in a query, a cache or a key.
   const [secret, setSecret] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [pending, startTransition] = useTransition();
+  const rotation = useMutation(useMemo(() => rotateCallbackSigningSecretMutation(runtime, scope), [runtime, scope]));
+  const pending = rotation.isPending;
 
   function rotate() {
     setError(null);
-    startTransition(async () => {
-      const result = await rotateCallbackSigningSecretAction();
-      if (isAuthenticatedActionFailure(result)) {
-        setError(authenticatedActionResultMessage(result, "The signing secret could not be created."));
-        return;
-      }
-      setSecret(result.secret);
-      router.refresh();
+    rotation.mutate(undefined, {
+      onSuccess: (rotated) => {
+        setSecret(rotated.secret);
+        // The mutation result is not kept: the secret is held here only.
+        rotation.reset();
+      },
+      onError: (failure) => setError(developerFailureMessage(failure, "The signing secret could not be created.")),
     });
   }
 

@@ -22,6 +22,7 @@ import {
   nextAttemptDelayMs,
   prepareCallbackRegistration,
   type CallbackCipher,
+  type CallbackRegistration,
 } from "./completion-callback";
 import { ExpectedDomainFailureError } from "./expected-domain-failure";
 import { IntegrationAdmissionError } from "./integration-admission";
@@ -94,6 +95,11 @@ async function retentionFloor(db: Db, workspaceId: string, head: bigint) {
   return oldest ? oldest.seq - 1n : head;
 }
 
+/** The requested event types in catalog order, without duplicates. */
+export function canonicalWebhookTypes(types: readonly WorkspaceEventType[]): WorkspaceEventType[] {
+  return WORKSPACE_EVENT_TYPES.filter((type) => types.includes(type));
+}
+
 /** Publishing outcomes also need `publishing:read`, as in the feed. */
 export function requireWebhookTypeScopes(types: readonly WorkspaceEventType[], scopes: readonly string[]) {
   if (types.some((type) => WORKSPACE_EVENT_PUBLISHING_TYPES.includes(type)) && !scopes.includes("publishing:read")) {
@@ -145,6 +151,29 @@ export function createWebhookSubscriptions(dependencies: WebhookSubscriptionDepe
     return row;
   }
 
+  type PreparedCreate = { registration: CallbackRegistration; types: WorkspaceEventType[] };
+
+  function prepareCreate(input: { url: URL; types: readonly WorkspaceEventType[] }): PreparedCreate {
+    return { registration: prepareCallbackRegistration(input.url, cipher()), types: canonicalWebhookTypes(input.types) };
+  }
+
+  async function insertSubscription(tx: Prisma.TransactionClient, actor: ActorScope, prepared: PreparedCreate) {
+    const secret = await tx.callbackSigningSecret.findFirst({ where: { workspaceId: actor.workspaceId, retiresAt: null }, select: { id: true } });
+    if (!secret) throw new CallbackSecretRequiredError();
+    if (await tx.webhookSubscription.count({ where: { workspaceId: actor.workspaceId } }) >= WEBHOOK_SUBSCRIPTION_LIMIT) {
+      throw failure("webhook_limit_reached", "conflict", `A workspace can have ${WEBHOOK_SUBSCRIPTION_LIMIT} webhooks. Delete one first.`);
+    }
+    return webhookView(await tx.webhookSubscription.create({
+      data: { workspaceId: actor.workspaceId, createdByUserId: actor.actorUserId, ...prepared.registration, types: prepared.types, lastDeliveredSeq: await headSeq(tx, actor.workspaceId), nextAttemptAt: now() },
+    }));
+  }
+
+  async function explainInsertFailure(actor: ActorScope, prepared: PreparedCreate, error: unknown) {
+    if (!(error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002")) return error;
+    const existing = await prisma.webhookSubscription.findFirst({ where: { workspaceId: actor.workspaceId, urlFingerprint: prepared.registration.urlFingerprint }, select: { id: true } });
+    return failure("webhook_exists", "conflict", "This workspace already has a webhook for this URL. Delete it first to change its event types.", existing ? { webhookId: existing.id } : undefined);
+  }
+
   return {
     async list(actor: ActorScope) {
       const rows = await prisma.webhookSubscription.findMany({ where: { workspaceId: actor.workspaceId }, orderBy: { createdAt: "asc" } });
@@ -154,25 +183,24 @@ export function createWebhookSubscriptions(dependencies: WebhookSubscriptionDepe
     /** Starts at the head of the feed: a subscription receives what happens
      * after it exists. Earlier events are on `GET /events`. */
     async create(actor: ActorScope, input: { url: URL; types: readonly WorkspaceEventType[] }) {
-      const registration = prepareCallbackRegistration(input.url, cipher());
-      const types = WORKSPACE_EVENT_TYPES.filter((type) => input.types.includes(type));
+      const prepared = prepareCreate(input);
       try {
-        return webhookView(await prisma.$transaction(async (tx) => {
-          const secret = await tx.callbackSigningSecret.findFirst({ where: { workspaceId: actor.workspaceId, retiresAt: null }, select: { id: true } });
-          if (!secret) throw new CallbackSecretRequiredError();
-          if (await tx.webhookSubscription.count({ where: { workspaceId: actor.workspaceId } }) >= WEBHOOK_SUBSCRIPTION_LIMIT) {
-            throw failure("webhook_limit_reached", "conflict", `A workspace can have ${WEBHOOK_SUBSCRIPTION_LIMIT} webhooks. Delete one first.`);
-          }
-          return tx.webhookSubscription.create({
-            data: { workspaceId: actor.workspaceId, createdByUserId: actor.actorUserId, ...registration, types, lastDeliveredSeq: await headSeq(tx, actor.workspaceId), nextAttemptAt: now() },
-          });
-        }));
+        return await prisma.$transaction((tx) => insertSubscription(tx, actor, prepared));
       } catch (error) {
-        if (!(error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002")) throw error;
-        const existing = await prisma.webhookSubscription.findFirst({ where: { workspaceId: actor.workspaceId, urlFingerprint: registration.urlFingerprint }, select: { id: true } });
-        throw failure("webhook_exists", "conflict", "This workspace already has a webhook for this URL. Delete it first to change its event types.", existing ? { webhookId: existing.id } : undefined);
+        throw await explainInsertFailure(actor, prepared, error);
       }
     },
+
+    /** The first half of a receipt-backed create: seals the URL, outside any transaction. */
+    prepareCreate,
+
+    /** The write of a create, in the caller's transaction (the Operation Receipt's). A
+     * refused insert goes through `explainInsertFailure` once that transaction has ended. */
+    insert: insertSubscription,
+
+    /** What to throw for an error raised by `insert` or `create`: a second webhook for the
+     * same URL becomes `webhook_exists`; anything else is returned unchanged. */
+    explainInsertFailure,
 
     async delete(actor: ActorScope, id: string) {
       const deleted = await prisma.webhookSubscription.deleteMany({ where: { id, workspaceId: actor.workspaceId } });

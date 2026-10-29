@@ -1,0 +1,383 @@
+"use client";
+
+import Link from "next/link";
+import { useState } from "react";
+import { LockedButton, PlanBadge, UpgradeGem, type UpgradePrompt } from "../_components/upgrade";
+import { Box, chakra, Flex, Grid, Stack, Text } from "@chakra-ui/react";
+import type { WorkspaceScope } from "@narriflow/api-client";
+import { integrationsOverviewQuery } from "@narriflow/api-client/developer";
+import { ArrowRight, ArrowUpRight, Braces, ChevronRight, Plus, Webhook } from "lucide-react";
+import { Button } from "@narriflow/ui/components/button";
+import { PageHeader } from "@narriflow/ui/components/page-header";
+import { hasFeature, lowestTierWithFeature, PLAN_CATALOG, planCountRequirement, planUpgradeHighlight, type SocialAccountSnapshot, type SocialPlatform } from "@narriflow/validators";
+import { useQuery } from "@tanstack/react-query";
+import { useApiRuntime, useWorkspaceScope } from "@/app/_components/api-provider";
+import { docsUrl } from "@/lib/docs-url";
+import { featureUpgradePrompt } from "@/lib/feature-upgrade-prompt";
+import { apiFailureMessage, publishingApi } from "@/lib/publishing-client";
+import { PublishingLoadError } from "@/lib/publishing-load-error";
+import { useWorkspaceBootstrap } from "../_components/usage";
+import { type AssistantBrand, BrandTile } from "./_components/brand-tile";
+import { UpgradeTileButton } from "./_components/upgrade-tile-button";
+import IntegrationsLoading from "./loading";
+
+const PLATFORMS: Array<{ id: SocialPlatform; name: string; posts: string }> = [
+  { id: "tiktok", name: "TikTok", posts: "Short videos" },
+  { id: "youtube_shorts", name: "YouTube", posts: "Shorts" },
+  { id: "instagram_reels", name: "Instagram", posts: "Reels" },
+  { id: "facebook_reels", name: "Facebook", posts: "Page Reels" },
+  { id: "linkedin", name: "LinkedIn", posts: "Video posts" },
+  { id: "x", name: "X", posts: "Video posts" },
+];
+
+const ASSISTANTS: AssistantBrand[] = ["claude", "chatgpt", "cursor", "codex"];
+
+type Tone = "on" | "off" | "warn";
+
+function Status({ tone, children }: { tone: Tone; children: React.ReactNode }) {
+  return (
+    <Flex align="center" gap="1.5" fontSize="12px" minW="0" color={tone === "on" ? "accent.fg" : tone === "warn" ? "warning.fg" : "fg.subtle"}>
+      {tone === "on" ? <Box boxSize="1.5" flexShrink={0} borderRadius="full" bg="accent.solid" /> : null}
+      <Text as="span" truncate>
+        {children}
+      </Text>
+    </Flex>
+  );
+}
+
+function IntegrationTile({
+  href,
+  external = false,
+  onActivate,
+  busy = false,
+  label,
+  logo,
+  name,
+  status,
+  tone,
+  trailing,
+  upgrade,
+}: {
+  href: string;
+  external?: boolean;
+  /** The tile runs an action instead of following `href`: starting OAuth needs the session's Bearer token, which a link cannot carry. */
+  onActivate?: () => void;
+  busy?: boolean;
+  label?: string;
+  logo: React.ReactNode;
+  name: string;
+  status: React.ReactNode;
+  tone: Tone;
+  trailing?: React.ReactNode;
+  /** The plan rules out this tile's action: it opens the upgrade dialog instead of following `href`. */
+  upgrade?: UpgradePrompt | null;
+}) {
+  const body = (
+    <>
+      {logo}
+      <Stack gap="0" flex="1" minW="0">
+        <Text fontSize="14px" fontWeight="500">
+          {name}
+        </Text>
+        <Status tone={tone}>{status}</Status>
+      </Stack>
+      {trailing}
+    </>
+  );
+  if (upgrade) {
+    return (
+      <UpgradeTileButton prompt={upgrade} label={label}>
+        {body}
+      </UpgradeTileButton>
+    );
+  }
+  if (onActivate) {
+    return (
+      <chakra.button
+        type="button"
+        aria-label={label}
+        onClick={onActivate}
+        disabled={busy}
+        display="flex"
+        alignItems="center"
+        gap="3"
+        w="full"
+        p="3.5"
+        bg="bg.subtle"
+        borderRadius="12px"
+        textAlign="start"
+        cursor="pointer"
+        transition="background 120ms ease"
+        _hover={{ bg: "bg.muted" }}
+        _disabled={{ cursor: "progress", opacity: 0.7 }}
+      >
+        {body}
+      </chakra.button>
+    );
+  }
+  return (
+    <Flex
+      asChild
+      align="center"
+      gap="3"
+      p="3.5"
+      bg="bg.subtle"
+      borderRadius="12px"
+      transition="background 120ms ease"
+      _hover={{ bg: "bg.muted" }}
+    >
+      {external ? (
+        <a href={href} target="_blank" rel="noreferrer" aria-label={label}>
+          {body}
+        </a>
+      ) : (
+        <Link href={href} aria-label={label}>
+          {body}
+        </Link>
+      )}
+    </Flex>
+  );
+}
+
+function IconTile({ children }: { children: React.ReactNode }) {
+  return (
+    <Flex boxSize="36px" borderRadius="10px" bg="bg.muted" color="fg" align="center" justify="center" flexShrink={0} aria-hidden="true">
+      {children}
+    </Flex>
+  );
+}
+
+function AddMark() {
+  return (
+    <Flex boxSize="7" borderRadius="8px" bg="bg.soft" color="fg" align="center" justify="center" flexShrink={0} aria-hidden="true">
+      <Plus size={16} />
+    </Flex>
+  );
+}
+
+/** Where a tile leads: a page in the app, or the docs in a new tab. */
+function GoMark({ external = false }: { external?: boolean }) {
+  return (
+    <Flex boxSize="7" borderRadius="8px" color="fg.subtle" align="center" justify="center" flexShrink={0} aria-hidden="true">
+      {external ? <ArrowUpRight size={15} /> : <ChevronRight size={16} />}
+    </Flex>
+  );
+}
+
+function accountLabel([first, ...rest]: [SocialAccountSnapshot, ...SocialAccountSnapshot[]]) {
+  const name = first.handle ? `@${first.handle.replace(/^@/, "")}` : first.displayName;
+  return rest.length ? `${name} +${rest.length}` : name;
+}
+
+function Section({ title, meta, children }: { title: string; meta?: string; children: React.ReactNode }) {
+  return (
+    <Stack as="section" gap="3">
+      <Flex align="center" gap="2">
+        <Text as="h2" fontSize="14px" fontWeight="500" color="fg.muted">
+          {title}
+        </Text>
+        {meta ? (
+          <Text as="span" h="5" px="2" display="inline-flex" alignItems="center" borderRadius="full" bg="bg.soft" fontSize="11.5px" color="fg.muted" fontVariantNumeric="tabular-nums">
+            {meta}
+          </Text>
+        ) : null}
+      </Flex>
+      <Grid templateColumns={{ base: "1fr", sm: "repeat(2, minmax(0, 1fr))", lg: "repeat(3, minmax(0, 1fr))" }} gap="2">
+        {children}
+      </Grid>
+    </Stack>
+  );
+}
+
+/** Integrations for the selected Workspace: one aggregate read; key and signing facts arrive only for a member who can manage the API. */
+export function IntegrationsScreen() {
+  const scope = useWorkspaceScope();
+  if (!scope) return <IntegrationsLoading />;
+  return <IntegrationsContent key={scope.workspaceId} scope={scope} />;
+}
+
+const TITLE = "Integrations";
+const DESCRIPTION = "Where your clips get posted, and the tools that can run Narriflow for you.";
+
+function IntegrationsContent({ scope }: { scope: WorkspaceScope }) {
+  const runtime = useApiRuntime();
+  const overview = useQuery(integrationsOverviewQuery(runtime.transport, scope));
+  const bootstrap = useWorkspaceBootstrap(scope);
+  const [connecting, setConnecting] = useState<SocialPlatform | null>(null);
+  const [connectError, setConnectError] = useState<string | null>(null);
+
+  const error = overview.error ?? bootstrap.error;
+  if (error) {
+    return (
+      <PublishingLoadError
+        error={error}
+        title={TITLE}
+        description={DESCRIPTION}
+        what="Integrations"
+        onRetry={() => {
+          void overview.refetch();
+          void bootstrap.refetch();
+        }}
+      />
+    );
+  }
+  if (!overview.data || !bootstrap.data) return <IntegrationsLoading />;
+
+  const { accounts, apiKeys: keys, signing } = overview.data;
+  const { workspace, capabilities } = bootstrap.data;
+
+  async function connect(platform: SocialPlatform) {
+    setConnecting(platform);
+    setConnectError(null);
+    try {
+      const started = await publishingApi(runtime.transport, scope).commands.startSocialOAuth(platform, "/settings/social-accounts");
+      window.location.assign(started.authorizationUrl);
+    } catch (failure) {
+      setConnecting(null);
+      setConnectError(apiFailureMessage(failure, "The account could not be connected. Try again."));
+    }
+  }
+
+  const hasMcp = hasFeature(workspace.pricingTier, "integrations.mcp");
+  const hasApi = hasFeature(workspace.pricingTier, "integrations.api");
+  const apiPlan = `${PLAN_CATALOG[lowestTierWithFeature("integrations.api") ?? "business"].name} plan`;
+  const canManageApi = capabilities["api.manage"];
+  const canManageSocial = capabilities["social.manage"];
+  const mcpUpgrade = featureUpgradePrompt(workspace.pricingTier, "integrations.mcp", "Upgrade to connect your AI assistant");
+  // A new account takes a slot; if the plan has none left, say so here instead of starting an OAuth that would be refused.
+  const slotRequirement = planCountRequirement(
+    workspace.pricingTier,
+    "socialDestinations",
+    accounts.filter((account) => account.status !== "revoked").length,
+  );
+
+  return (
+    <Stack gap="8" w="full">
+      <PageHeader title={TITLE} description={DESCRIPTION} />
+
+      <Flex
+        align={{ base: "flex-start", md: "center" }}
+        justify="space-between"
+        direction={{ base: "column", md: "row" }}
+        gap="5"
+        p={{ base: "5", md: "6" }}
+        borderRadius="14px"
+        bg="bg.subtle"
+        bgImage="radial-gradient(120% 160% at 90% 0%, color-mix(in srgb, var(--chakra-colors-accent-solid) 18%, transparent) 0%, transparent 55%)"
+      >
+        <Stack gap="4" minW="0">
+          <Flex>
+            {ASSISTANTS.map((brand, index) => (
+              <BrandTile
+                key={brand}
+                brand={brand}
+                size="lg"
+                ms={index ? "-2" : "0"}
+                boxShadow="0 0 0 3px var(--chakra-colors-bg-subtle)"
+              />
+            ))}
+          </Flex>
+          <Stack gap="1">
+            <Flex align="center" gap="2" wrap="wrap">
+              <Text as="h2" fontSize="18px" fontWeight="500" letterSpacing="-0.01em">
+                Use Narriflow from your AI assistant
+              </Text>
+              {!hasMcp ? <PlanBadge tier={lowestTierWithFeature("integrations.mcp") ?? "business"} /> : null}
+            </Flex>
+            <Text fontSize="14px" color="fg.muted">
+              Clip, export and schedule from Claude, ChatGPT, Cursor or Codex.
+            </Text>
+          </Stack>
+        </Stack>
+        {mcpUpgrade ? (
+          <LockedButton size="sm" flexShrink={0} prompt={mcpUpgrade}>
+            Connect
+          </LockedButton>
+        ) : (
+          <Button asChild size="sm" flexShrink={0}>
+            <Link href="/integrations/mcp">
+              Connect
+              <ArrowRight size={16} />
+            </Link>
+          </Button>
+        )}
+      </Flex>
+
+      <Section title="Publishing" meta={`${PLATFORMS.filter(({ id }) => accounts.some((account) => account.platform === id && account.status === "active")).length} of ${PLATFORMS.length} connected`}>
+        {PLATFORMS.map(({ id, name, posts }) => {
+          const connected = accounts.filter((account) => account.platform === id);
+          const [firstActive, ...moreActive] = connected.filter((account) => account.status === "active");
+          const canAdd = canManageSocial && connected.length === 0;
+          const slotUpgrade =
+            canAdd && slotRequirement?.requiredTier
+              ? {
+                  tier: slotRequirement.requiredTier,
+                  headline: slotRequirement.code === "plan_feature_required" ? "Upgrade to publish to your socials" : "Upgrade to connect more accounts",
+                  highlight: planUpgradeHighlight(slotRequirement.requiredTier, "socialDestinations"),
+                }
+              : null;
+          // At the top plan with every slot used, the tile explains on the accounts page rather than starting OAuth.
+          const canConnect = canAdd && slotRequirement === null;
+          return (
+            <IntegrationTile
+              key={id}
+              href="/settings/social-accounts"
+              upgrade={slotUpgrade}
+              onActivate={canConnect ? () => void connect(id) : undefined}
+              busy={connecting !== null}
+              label={canConnect ? `Connect ${name} account` : undefined}
+              logo={<BrandTile brand={id} />}
+              name={name}
+              tone={firstActive ? "on" : connected.length ? "warn" : "off"}
+              status={firstActive ? accountLabel([firstActive, ...moreActive]) : connected.length ? "Needs reconnecting" : posts}
+              trailing={slotUpgrade ? <UpgradeGem /> : canConnect ? <AddMark /> : undefined}
+            />
+          );
+        })}
+      </Section>
+      {connectError ? (
+        <Text role="alert" fontSize="13px" color="danger.fg" mt="-5">
+          {connectError}
+        </Text>
+      ) : null}
+
+      <Section title="Automation">
+        <IntegrationTile
+          href={docsUrl("api/n8n")}
+          external
+          logo={<BrandTile brand="n8n" />}
+          name="n8n"
+          tone="off"
+          status="Google Drive to clips template"
+          trailing={<GoMark external />}
+        />
+        <IntegrationTile
+          href={canManageApi ? "/settings/api" : docsUrl("api/introduction")}
+          external={!canManageApi}
+          logo={
+            <IconTile>
+              <Braces size={18} />
+            </IconTile>
+          }
+          name="REST API"
+          trailing={<GoMark external={!canManageApi} />}
+          tone={keys?.count ? "on" : "off"}
+          status={!hasApi ? apiPlan : keys ? (keys.count ? `${keys.count} ${keys.count === 1 ? "key" : "keys"}` : "No keys yet") : "Workspace API keys"}
+        />
+        <IntegrationTile
+          href={canManageApi ? "/settings/api#callbacks" : docsUrl("api/callbacks")}
+          external={!canManageApi}
+          logo={
+            <IconTile>
+              <Webhook size={18} />
+            </IconTile>
+          }
+          name="Webhooks"
+          trailing={<GoMark external={!canManageApi} />}
+          tone={signing?.configured ? "on" : "off"}
+          status={!hasApi ? apiPlan : signing ? (signing.configured ? "Signing secret set" : "Not set up") : "Completion callbacks"}
+        />
+      </Section>
+    </Stack>
+  );
+}

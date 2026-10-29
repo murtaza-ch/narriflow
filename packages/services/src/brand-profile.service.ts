@@ -305,7 +305,10 @@ async function safeAccessUrl(key: string) {
   }
 }
 
-async function toAggregate(profile: ProfileAggregate) {
+/** `signAccess: false` leaves the access URLs null: a stored snapshot never keeps an expiring grant. */
+async function toAggregate(profile: ProfileAggregate, options: { signAccess?: boolean } = {}) {
+  const signAccess = options.signAccess ?? true;
+  const accessUrlOf = (key: string) => (signAccess ? safeAccessUrl(key) : Promise.resolve(null));
   return {
     id: profile.id,
     name: profile.name,
@@ -332,7 +335,7 @@ async function toAggregate(profile: ProfileAggregate) {
       profile.assets
         .filter(({ asset }) => !asset.deletedAt)
         .map(async ({ asset, role, position }) => {
-          const accessUrl = await safeAccessUrl(asset.storageKey);
+          const accessUrl = await accessUrlOf(asset.storageKey);
           return {
             id: asset.id,
             title: asset.title,
@@ -343,7 +346,7 @@ async function toAggregate(profile: ProfileAggregate) {
             height: asset.height,
             fingerprint: asset.fingerprint,
             accessUrl,
-            missing: accessUrl === null,
+            missing: signAccess && accessUrl === null,
           };
         }),
     ),
@@ -351,7 +354,7 @@ async function toAggregate(profile: ProfileAggregate) {
       profile.fonts
         .filter(({ font }) => !font.deletedAt)
         .map(async ({ font, role, position }) => {
-          const accessUrl = await safeAccessUrl(font.storageKey);
+          const accessUrl = await accessUrlOf(font.storageKey);
           return {
             id: font.id,
             family: font.family,
@@ -361,7 +364,7 @@ async function toAggregate(profile: ProfileAggregate) {
             position,
             fingerprint: font.fingerprint,
             accessUrl,
-            missing: accessUrl === null,
+            missing: signAccess && accessUrl === null,
           };
         }),
     ),
@@ -373,6 +376,29 @@ async function toAggregate(profile: ProfileAggregate) {
       durationSec: audio.durationSec,
     })),
   };
+}
+
+type ProfileAggregateView = Awaited<ReturnType<typeof toAggregate>>;
+
+/**
+ * Gives a stored creation snapshot fresh access URLs. The receipt kept the profile as it was
+ * created, without grants; objects removed since come back `missing`.
+ */
+async function withFreshAccess(snapshot: ProfileAggregateView): Promise<ProfileAggregateView> {
+  const prisma = requirePrisma();
+  const [assets, fonts] = await Promise.all([
+    prisma.visualAsset.findMany({ where: { id: { in: snapshot.assets.map(({ id }) => id) }, deletedAt: null }, select: { id: true, storageKey: true } }),
+    prisma.brandFont.findMany({ where: { id: { in: snapshot.fonts.map(({ id }) => id) }, deletedAt: null }, select: { id: true, storageKey: true } }),
+  ]);
+  const resolve = async <T extends { id: string }>(items: T[], rows: Array<{ id: string; storageKey: string }>) =>
+    Promise.all(
+      items.map(async (item) => {
+        const key = rows.find((row) => row.id === item.id)?.storageKey;
+        const accessUrl = key ? await safeAccessUrl(key) : null;
+        return { ...item, accessUrl, missing: accessUrl === null };
+      }),
+    );
+  return { ...snapshot, assets: await resolve(snapshot.assets, assets), fonts: await resolve(snapshot.fonts, fonts) };
 }
 
 const LIST_ALL_MAX_PAGES = 5;
@@ -395,7 +421,7 @@ export class BrandProfileService {
       take: parsed.limit,
       ...(parsed.cursor ? { cursor: { id: parsed.cursor }, skip: 1 } : {}),
     });
-    return Promise.all(rows.map(toAggregate));
+    return Promise.all(rows.map((row) => toAggregate(row)));
   }
 
   /**
@@ -481,9 +507,14 @@ export class BrandProfileService {
    * returns the profile it already created instead of a second one.
    */
   async create(scope: BrandActorScope, input: BrandProfileCreateInput, mutation?: IntegrationMutation) {
-    await assertBrandMutationAllowedWithAnalytics(scope, "brand.profiles", "profile");
     const parsed = brandProfileCreateSchema.parse(input);
-    assertApprovalRuleAllowed(scope, parsed.approvalRule, null);
+    // Entitlement for new work. With a receipt it runs after the replay lookup, so a plan
+    // change or downgrade since the acceptance cannot hide it or replace a body-conflict 409.
+    const assertNewWorkAllowed = async () => {
+      await assertBrandMutationAllowedWithAnalytics(scope, "brand.profiles", "profile");
+      assertApprovalRuleAllowed(scope, parsed.approvalRule, null);
+    };
+    if (!mutation) await assertNewWorkAllowed();
     const prisma = this.requirePrisma();
     const owner = resolveBrandOwner(scope);
     const createIn = async (tx: Prisma.TransactionClient) => {
@@ -521,11 +552,12 @@ export class BrandProfileService {
       }
       return profile;
     };
+    let aggregate: ProfileAggregateView;
     let createdId: string;
     let replayed = false;
     if (mutation) {
-      // The receipt keeps the identity only. Asset access URLs are signed and expire, so the response is read fresh.
-      const accepted = await getOperationReceiptExecutor().execute({
+      // The receipt keeps the profile as created, without signed asset URLs: they expire, so replay signs fresh ones.
+      const accepted = await getOperationReceiptExecutor().execute<ProfileAggregateView>({
         identity: {
           workspaceId: scope.workspaceId,
           actorUserId: scope.actorUserId,
@@ -538,16 +570,20 @@ export class BrandProfileService {
         },
         beforeAccept: mutation.beforeAccept,
         mutate: async (tx) => {
+          await assertNewWorkAllowed();
           const profile = await createIn(tx);
-          return { resourceType: "brand_profile", resourceId: profile.id, value: { id: profile.id } };
+          const created = await tx.brandProfile.findFirstOrThrow({ where: { id: profile.id }, include: profileInclude });
+          return { resourceType: "brand_profile", resourceId: profile.id, value: await toAggregate(created, { signAccess: false }) };
         },
       });
       createdId = accepted.value.id;
       replayed = accepted.replayed;
+      if (replayed) mutation.onReplay?.();
+      aggregate = await withFreshAccess(accepted.value);
     } else {
       createdId = (await prisma.$transaction(createIn)).id;
+      aggregate = await this.get(scope, createdId);
     }
-    const aggregate = await this.get(scope, createdId);
     if (!replayed) {
       await recordBrandEvent(scope, {
         type: "brand_profile_created",

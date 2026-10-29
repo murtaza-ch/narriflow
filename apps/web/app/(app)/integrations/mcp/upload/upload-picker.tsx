@@ -3,6 +3,9 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useRouter } from "next/navigation";
 import { Field, Flex, Input, Stack, Text } from "@chakra-ui/react";
+import { createMcpUploadControls } from "@narriflow/api-client/integrations";
+import { invalidateAfterIntake } from "@narriflow/api-client/ingest";
+import { useApiRuntime, useIdentityScope } from "@/app/_components/api-provider";
 import { Button } from "@narriflow/ui/components/button";
 import { type OpenUploadSessionInput } from "@narriflow/validators";
 import { createUploadSessionBrowserAdapter } from "../../../upload/_lib/upload-session-browser";
@@ -12,6 +15,14 @@ import { UploadSessionStatusPanel } from "../../../upload/_components/upload-ses
  * existing Upload Session, but never asks the server to open a new one. */
 export function McpUploadPicker(props: { token: string; workspaceId: string; clientIdempotencyKey: string; title?: string; brandProfileId?: string; recipeId?: string; resumeOnly: boolean; generationContext: OpenUploadSessionInput["generationContext"] }) {
   const router = useRouter();
+  const runtime = useApiRuntime();
+  const identity = useIdentityScope();
+  if (!identity) return null;
+  return <UploadPicker key={`${identity.userId}:${props.workspaceId}:${props.clientIdempotencyKey}`} {...props} identity={identity} runtime={runtime} router={router} />;
+}
+
+function UploadPicker(props: Parameters<typeof McpUploadPicker>[0] & { identity: NonNullable<ReturnType<typeof useIdentityScope>>; runtime: ReturnType<typeof useApiRuntime>; router: ReturnType<typeof useRouter> }) {
+  const { identity, runtime, router } = props;
   const [file, setFile] = useState<File | null>(null);
   const statusRef = useRef<HTMLDivElement>(null);
   const adapter = useMemo(() => createUploadSessionBrowserAdapter({
@@ -21,22 +32,12 @@ export function McpUploadPicker(props: { token: string; workspaceId: string; cli
       removeItem: (key) => window.localStorage.removeItem(`mcp:${props.workspaceId}:${props.clientIdempotencyKey}:${key}`),
     },
     createClientKey: () => props.clientIdempotencyKey,
-    navigate: (projectId) => router.push(`/projects/${projectId}`),
-    fetcher: (input, init) => {
-      const path = String(input);
-      if (!path.startsWith("/api/upload-sessions/")) return fetch(input, init);
-      const headers = new Headers(init?.headers);
-      headers.set("X-Narriflow-Upload-Intent", props.token);
-      let action = path.split("/").at(-1);
-      let body = init?.body;
-      if (props.resumeOnly && action === "open" && typeof body === "string") {
-        const opening = JSON.parse(body) as { clientIdempotencyKey: string; source: { browserFingerprint: string } };
-        action = "status";
-        body = JSON.stringify({ clientIdempotencyKey: opening.clientIdempotencyKey, sessionId: null, browserFingerprint: opening.source.browserFingerprint });
-      }
-      return fetch(`/mcp/integrations/${props.workspaceId}/upload-sessions/${action}`, { ...init, body, headers, credentials: "same-origin", redirect: "error" });
+    navigate: (projectId) => {
+      void invalidateAfterIntake(runtime.queryClient, { ...identity, workspaceId: props.workspaceId });
+      router.push(`/projects/${projectId}`);
     },
-  }), [props.workspaceId, props.clientIdempotencyKey, props.token, props.resumeOnly, router]);
+    controls: createMcpUploadControls({ transport: runtime.transport, scope: identity, workspaceId: props.workspaceId, token: props.token, resumeOnly: props.resumeOnly }),
+  }), [props.workspaceId, props.clientIdempotencyKey, props.token, props.resumeOnly, router, runtime, identity]);
   const snapshot = useSyncExternalStore(adapter.subscribe, adapter.snapshot, adapter.snapshot);
   const lifetime = useMemo(() => ({ adapter, mountedEffects: 0 }), [adapter]);
   useEffect(() => {

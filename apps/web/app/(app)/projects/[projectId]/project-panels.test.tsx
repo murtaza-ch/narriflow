@@ -2,13 +2,30 @@ import { describe, expect, mock, test } from "bun:test";
 import { ChakraProvider } from "@chakra-ui/react";
 import { system } from "@narriflow/ui/theme";
 import type { ClipSnapshot } from "@narriflow/validators";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderToStaticMarkup } from "react-dom/server";
 
 mock.module("next/navigation", () => ({ useRouter: () => ({ refresh() {}, push() {} }) }));
+// No signed-in session in a static render: the panels get no Workspace and stay inert.
+const runtime = {
+	transport: { scoped: () => ({ baseUrl: "http://api.test", fetch: () => Promise.reject(new Error("offline")) }) },
+	createIntent: () => ({ keyFor: () => "intent-key", complete() {} }),
+};
+mock.module("@/app/_components/api-provider", () => ({
+	useApiRuntime: () => runtime,
+	useWorkspaceScope: () => null,
+}));
 const { DubbingPanel } = await import("./dubbing-panel");
 const { ContentSuitePanel } = await import("./content-suite-panel");
 const { ReviewPanel } = await import("./review-panel");
 const { UpgradeProvider } = await import("../../_components/upgrade");
+
+const queryClient = new QueryClient();
+const Providers = ({ children }: { children: React.ReactNode }) => (
+	<QueryClientProvider client={queryClient}>
+		<ChakraProvider value={system}>{children}</ChakraProvider>
+	</QueryClientProvider>
+);
 
 const projectId = "22222222-2222-4222-8222-222222222222";
 const rendered = {
@@ -21,7 +38,7 @@ const proPrompt = { tier: "pro" as const, headline: "Upgrade to dub your clips" 
 
 function dubbing(props: Partial<Parameters<typeof DubbingPanel>[0]>) {
 	return renderToStaticMarkup(
-		<ChakraProvider value={system}>
+		<Providers>
 			<DubbingPanel
 				projectId={projectId}
 				clips={[rendered]}
@@ -32,15 +49,15 @@ function dubbing(props: Partial<Parameters<typeof DubbingPanel>[0]>) {
 				canEdit
 				{...props}
 			/>
-		</ChakraProvider>,
+		</Providers>,
 	);
 }
 
 function contentSuite(props: Partial<Parameters<typeof ContentSuitePanel>[0]>) {
 	return renderToStaticMarkup(
-		<ChakraProvider value={system}>
+		<Providers>
 			<ContentSuitePanel projectId={projectId} transcriptReady planRequirement={null} upgrade={null} canEdit {...props} />
-		</ChakraProvider>,
+		</Providers>,
 	);
 }
 
@@ -129,11 +146,11 @@ describe("Review panel", () => {
 
 	test("a plan without review rooms locks the first step, before any form", () => {
 		const html = renderToStaticMarkup(
-			<ChakraProvider value={system}>
+			<Providers>
 				<UpgradeProvider currentTier="pro" billingMode="change_plan" canManageBilling>
 					<ReviewPanel projectId={projectId} initialData={room} canManage />
 				</UpgradeProvider>
-			</ChakraProvider>,
+			</Providers>,
 		);
 		expect(html).toContain("Start a review round");
 		expect(html).toContain("(needs Business)");
@@ -142,11 +159,11 @@ describe("Review panel", () => {
 
 	test("on Business the start step names the missing export", () => {
 		const html = renderToStaticMarkup(
-			<ChakraProvider value={system}>
+			<Providers>
 				<UpgradeProvider currentTier="business" billingMode="change_plan" canManageBilling>
 					<ReviewPanel projectId={projectId} initialData={room} canManage />
 				</UpgradeProvider>
-			</ChakraProvider>,
+			</Providers>,
 		);
 		expect(html).not.toContain("needs Business");
 		expect(html).toContain("Export a clip first");

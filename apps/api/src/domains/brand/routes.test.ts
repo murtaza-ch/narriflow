@@ -398,6 +398,34 @@ describe("retryable creates", () => {
     expect(await response.json()).toMatchObject({ error: "idempotency_key_required" });
   });
 
+  // Sol wave-B B09: the service says when a command resolved to an earlier acceptance; the adapter reports it.
+  test.each([
+    ["profile", "/brand-profiles", { name: "Acme", slug: "acme" }, "profiles", "create"],
+    ["style", "/brand-templates", { name: "Style", captionPreset: {} }, "templates", "create"],
+    ["style duplicate", `/brand-templates/${TEMPLATE_ID}/duplicate`, {}, "templates", "duplicate"],
+    ["scene", `/brand-profiles/${PROFILE_ID}/scene-templates`, {
+      name: "Intro",
+      role: "intro",
+      definition: {
+        schemaVersion: 1,
+        durationSec: 2,
+        content: { kind: "color", color: "#1D4ED8" },
+        motion: { entrance: "none", exit: "none", durationSec: 0.5 },
+      },
+    }, "scenes", "create"],
+  ] as const)("a replayed %s create carries Idempotent-Replayed, a first acceptance does not", async (_name, path, json, service, method) => {
+    const { services, request } = harness();
+    const stub = (services as Record<string, Record<string, ReturnType<typeof mock>>>)[service]![method]!;
+    const post = () => request(path, { method: "POST", json, headers: { "idempotency-key": "intent-r" } });
+    stub.mockImplementationOnce(async () => ({}));
+    expect((await post()).headers.get("idempotent-replayed")).toBeNull();
+    stub.mockImplementationOnce(async (...args: unknown[]) => {
+      (args[args.length - 1] as { onReplay(): void }).onReplay();
+      return {};
+    });
+    expect((await post()).headers.get("idempotent-replayed")).toBe("true");
+  });
+
   test("an exhausted limiter refuses new work only when the receipt reaches acceptance", async () => {
     const { services, request } = harness({
       rateLimit: () => ({ allowed: false, retryAfterSeconds: 30, availability: "available" }),

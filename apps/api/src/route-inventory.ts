@@ -1,14 +1,14 @@
 import type { Hono } from "hono";
 import { ADMISSION_TABLES } from "./domains";
 import type { AdmissionEntry } from "./domains/platform/admission-table";
-import { type RegistrationMark, registrationOf } from "./http/admission";
+import { isAdmissionGuard, type RegistrationMark, registrationOf } from "./http/admission";
 import type { ApiEnv } from "./http/env";
 
 /** Apps with their own credential model and checks: public REST, MCP and its discovery documents. */
 const PROTOCOL_PREFIXES = ["/api/v1", "/mcp", "/.well-known/"] as const;
 
 export interface InventoryProblem {
-  kind: "undeclared_route" | "phantom_declaration" | "missing_admission" | "duplicate_registration" | "shadowed_route" | "unexpected_path";
+  kind: "undeclared_route" | "phantom_declaration" | "missing_admission" | "duplicate_registration" | "shadowed_route" | "unexpected_path" | "unregistered_handler";
   route: string;
   detail?: string;
 }
@@ -42,6 +42,30 @@ function endpointGroups(app: Hono<ApiEnv>): Map<string, EndpointGroup> {
     groups.set(key, group);
   }
   return groups;
+}
+
+/**
+ * `ALL` entries (`use`, `all`, `on` with every method) answer any method, so
+ * they are not endpoints but can still answer an endpoint. Entries before the
+ * fail-closed guard are the app's own composition middleware (request ID,
+ * CORS, limits, policy install); every `ALL` entry behind it must belong to a
+ * declared registration or a marked trust-area guard, exactly as the runtime
+ * guard requires. Without a guard in the app, every `ALL` entry is checked.
+ */
+function unregisteredAllEntries(app: Hono<ApiEnv>): InventoryProblem[] {
+  const guardAt = app.routes.findIndex((route) => isAdmissionGuard(route.handler));
+  const problems: InventoryProblem[] = [];
+  app.routes.forEach((route, index) => {
+    if (index <= guardAt || route.method !== "ALL" || isProtocol(route.path)) return;
+    if (registrationOf(route.handler) === undefined) {
+      problems.push({
+        kind: "unregistered_handler",
+        route: `ALL ${route.path}`,
+        detail: "answers every method without belonging to a declared registration",
+      });
+    }
+  });
+  return problems;
 }
 
 /** Declared keys (`METHOD /api/path`) with their entries, from every domain's admission table. */
@@ -94,7 +118,8 @@ function registrationProblems(
  * Compares the mounted routes with the admission declarations in both
  * directions and checks the three ways composition can silently break
  * admission: a route without its guard, the same route registered twice, and a
- * parameter route registered before a literal path that it would swallow.
+ * parameter route registered before a literal path that it would swallow. `ALL`
+ * entries are compared separately (see `unregisteredAllEntries`).
  */
 export function checkRouteInventory(
   app: Hono<ApiEnv>,
@@ -134,5 +159,6 @@ export function checkRouteInventory(
   for (const key of declared.keys()) {
     if (!groups.has(key)) problems.push({ kind: "phantom_declaration", route: key });
   }
+  problems.push(...unregisteredAllEntries(app));
   return { problems, checkedRoutes, protocolRoutes };
 }

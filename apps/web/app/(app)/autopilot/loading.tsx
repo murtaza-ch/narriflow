@@ -1,42 +1,20 @@
-import { Flex, Stack, Text } from "@chakra-ui/react";
-import { zoomConfigured } from "@narriflow/services";
+import { Flex, Stack } from "@chakra-ui/react";
 import { PageHeader } from "@narriflow/ui/components/page-header";
 import { Bone, LoadingScreen } from "@narriflow/ui/components/page-loading";
 
 /**
- * Mirrors /autopilot: header with "New rule", the Zoom strip when Zoom is
- * configured, then the rule cards (source tile, name and status, chips, actions).
+ * Mirrors /autopilot: header with "New rule", then the rule cards (source tile, name and status,
+ * chips, actions). Whether Zoom is configured is only known with the data, so the Zoom strip and
+ * its header wording are not drawn here.
  */
 export default function Loading() {
-  const zoom = zoomConfigured();
   return (
     <LoadingScreen label="Loading Autopilot">
       <PageHeader
         title="Autopilot"
-        description={zoom ? "New episodes and Zoom recordings become clips on their own." : "New episodes become clips on their own."}
+        description="New episodes become clips on their own."
         actions={<Bone h="10" w="28" borderRadius="control" />}
       />
-      {zoom ? (
-        <Flex
-          direction={{ base: "column", md: "row" }}
-          align={{ base: "stretch", md: "center" }}
-          justify="space-between"
-          gap="4"
-          p={{ base: "4", md: "5" }}
-          bg="bg.subtle"
-          borderRadius="l3"
-        >
-          <Stack gap="1">
-            <Text as="h2" fontSize="14px" fontWeight="600">
-              Zoom recordings
-            </Text>
-            <Text fontSize="13px" color="fg.muted">
-              Connect Zoom, then add a rule to clip future cloud recordings with a Recipe.
-            </Text>
-          </Stack>
-          <Bone h="9" w="28" borderRadius="control" />
-        </Flex>
-      ) : null}
       <Stack gap="2.5">
         {[0, 1, 2].map((rule) => (
           <Flex key={rule} gap="4" align="flex-start" wrap="wrap" p="4" ps="5" bg="bg.subtle" borderRadius="l3">

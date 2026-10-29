@@ -311,10 +311,11 @@ describe("Facebook Page selection", () => {
 });
 
 describe("accounts and posting schedules", () => {
-  test("listing and connecting accounts stay with social.manage; the queue and Performance aggregates carry the accounts members may see", async () => {
+  test("any member who can view content lists accounts; connecting and disconnecting stay with social.manage", async () => {
     const viewer = harness({ role: "viewer" });
-    expect((await viewer.request("/api/social/accounts")).status).toBe(403);
+    expect((await viewer.request("/api/social/accounts")).status).toBe(200);
     expect((await viewer.request("/api/social/oauth/start/tiktok", { method: "POST", json: {} })).status).toBe(403);
+    expect((await viewer.request(`/api/social/accounts/${ACCOUNT_ID}`, { method: "DELETE" })).status).toBe(403);
     expect((await viewer.request("/api/publishing/queue")).status).toBe(200);
     const admin = harness({ role: "admin" });
     expect((await admin.request("/api/social/accounts")).status).toBe(200);
@@ -606,6 +607,28 @@ describe("project publishing", () => {
       overrides: { socialService: { recheckPublication: async () => ({ status: "reconciling" }) } } as unknown as Partial<PublishingRouteDeps>,
     });
     expect((await replay.request(`${publicationPath}/recheck`, { method: "POST", json: { reason: "again" }, key: KEY })).status).toBe(200);
+  });
+
+  test.each([
+    ["recheck", "recheckPublication", { reason: "again" }],
+    ["confirm", "confirmPublication", { reason: "seen it", evidenceKind: "platform_url", externalUrl: "https://example.com/p/1" }],
+    ["publish-again", "republishPublication", { reason: "again", duplicateRiskAcknowledged: true }],
+  ])("a replayed %s decision carries Idempotent-Replayed, a first acceptance does not", async (action, method, json) => {
+    const call = async (replay: boolean) => {
+      const { request } = harness({
+        overrides: {
+          socialService: {
+            [method]: async (...args: unknown[]) => {
+              if (replay) (args[4] as { onReplay(): void }).onReplay();
+              return { status: "scheduled" };
+            },
+          },
+        } as unknown as Partial<PublishingRouteDeps>,
+      });
+      return request(`${publicationPath}/${action}`, { method: "POST", json, key: KEY });
+    };
+    expect((await call(false)).headers.get("idempotent-replayed")).toBeNull();
+    expect((await call(true)).headers.get("idempotent-replayed")).toBe("true");
   });
 
   test("malformed JSON and post identifiers are refused through the policy", async () => {

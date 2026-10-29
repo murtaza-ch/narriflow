@@ -1,5 +1,7 @@
-import { type WorkspaceScope, scopedKey } from "../core";
-import type { PublishingClient } from "./index";
+import { queryOptions } from "@tanstack/react-query";
+import { type ApiTransport, STALE_TIME, type WorkspaceScope, scopedKey } from "../core";
+import { createPublishingClient, type PublishingClient } from "./client";
+import { publishingCommands } from "./mutations";
 
 /** Query inputs, taken from the route types so a changed server schema fails to compile here. */
 type QueryOf<Endpoint extends { $get: (args: any) => unknown }> = Parameters<Endpoint["$get"]>[0] extends {
@@ -67,3 +69,69 @@ export function publishingReads(client: PublishingClient) {
     guidance: async () => (await client.performance.guidance.$get()).json(),
   };
 }
+
+/** The client for one scope; the signal ends the request when the query or screen goes away. */
+export function publishingClientFor(
+  transport: ApiTransport,
+  scope: WorkspaceScope,
+  signal?: AbortSignal,
+): PublishingClient {
+  const bound = transport.scoped(scope);
+  return createPublishingClient({
+    baseUrl: bound.baseUrl,
+    fetch: (input, init) => bound.fetch(input, signal ? { ...init, signal } : init),
+  });
+}
+
+/** The client, its read fetchers and its commands for one scope; the signal reaches every request. */
+export function publishingApi(transport: ApiTransport, scope: WorkspaceScope, signal?: AbortSignal) {
+  const client = publishingClientFor(transport, scope, signal);
+  return { reads: publishingReads(client), commands: publishingCommands(client), client };
+}
+
+type Runtime = { transport: ApiTransport };
+
+/**
+ * `queryOptions` for the publishing reads, keyed by `publishingKeys` and passing
+ * the query's AbortSignal to the request. Screens add their own cadence
+ * (`refetchInterval`) on top.
+ */
+export const publishingQueries = {
+  accounts: (runtime: Runtime, scope: WorkspaceScope) =>
+    queryOptions({
+      queryKey: publishingKeys.accounts(scope),
+      queryFn: ({ signal }) => publishingApi(runtime.transport, scope, signal).reads.accounts(),
+      staleTime: STALE_TIME.default,
+    }),
+  calendar: (runtime: Runtime, scope: WorkspaceScope, query: CalendarQuery) =>
+    queryOptions({
+      queryKey: publishingKeys.calendar(scope, query),
+      queryFn: ({ signal }) => publishingApi(runtime.transport, scope, signal).reads.calendar(query),
+      staleTime: STALE_TIME.default,
+    }),
+  composerOptions: (runtime: Runtime, scope: WorkspaceScope, query: ComposerOptionsQuery) =>
+    queryOptions({
+      queryKey: publishingKeys.composerOptions(scope, query),
+      queryFn: ({ signal }) => publishingApi(runtime.transport, scope, signal).reads.composerOptions(query),
+      staleTime: STALE_TIME.default,
+    }),
+  queue: (runtime: Runtime, scope: WorkspaceScope) =>
+    queryOptions({
+      queryKey: publishingKeys.queue(scope),
+      queryFn: ({ signal }) => publishingApi(runtime.transport, scope, signal).reads.queue(),
+      staleTime: STALE_TIME.default,
+    }),
+  whatWorked: (runtime: Runtime, scope: WorkspaceScope) =>
+    queryOptions({
+      queryKey: publishingKeys.whatWorked(scope),
+      queryFn: ({ signal }) => publishingApi(runtime.transport, scope, signal).reads.whatWorked(),
+      staleTime: STALE_TIME.default,
+    }),
+  /** Keyed where the Workspace guidance setting invalidates it. */
+  guidance: (runtime: Runtime, scope: WorkspaceScope) =>
+    queryOptions({
+      queryKey: publishingKeys.guidance(scope),
+      queryFn: ({ signal }) => publishingApi(runtime.transport, scope, signal).reads.guidance(),
+      staleTime: STALE_TIME.default,
+    }),
+};

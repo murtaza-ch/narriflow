@@ -1,4 +1,4 @@
-import { decodeReviewSelection } from "@narriflow/services";
+import { decodeReviewSelection } from "@narriflow/validators/review-selection";
 
 type Candidate = { id: string; editorRevision: number; exports: Array<{ id: string; editorRevision: number; variants: Array<{ id: string }> }> };
 export type ReviewPreselection = { selections: Record<string, { exportId: string; variantIds: string[]; required: boolean }>; dropped: number };

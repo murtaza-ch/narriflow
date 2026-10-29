@@ -37,7 +37,7 @@ try {
   // names, so every test connection searches the disposable schema.
   const testUrl = new URL(databaseUrl);
   testUrl.searchParams.set("options", `-csearch_path=${schema}`);
-  const child = Bun.spawn([process.execPath, "test", "packages/services/src/brand-profile.db.test.ts"], {
+  const child = Bun.spawn([process.execPath, "test", "packages/services/src/brand-profile.db.test.ts", "packages/services/src/brand-receipts.db.test.ts"], {
     cwd: root,
     env: {
       ...process.env,

@@ -1,8 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { QueryClient } from "@tanstack/query-core";
+import type { ApiError } from "../core/error";
+import { isApiErrorCode } from "../core/error";
 import { createApiRuntime } from "../core/runtime";
 import { scopedKey, sessionKey } from "../core/keys";
-import { fakeFetch, jsonResponse, USER, WORKSPACE_A } from "../core/test-helpers";
+import { errorResponse, fakeFetch, jsonResponse, USER, WORKSPACE_A } from "../core/test-helpers";
 import { inviteMemberMutation, replaceCensorWordsMutation, updateWorkspaceMutation } from "./mutations";
 import { workspaceBootstrapQuery } from "./queries";
 
@@ -17,7 +19,7 @@ function setup(...handlers: Parameters<typeof fakeFetch>) {
 }
 
 const usage = { tier: "pro", usedCredits: 1, reservedCredits: 0, limitCredits: 10, remainingCredits: 9, periodStart: "2030-01-01T00:00:00.000Z", renewsAt: "2030-02-01T00:00:00.000Z", inFlight: 0, inFlightLimit: 2, maxUploadSeconds: 60 };
-const issued = { invite: { id: "i1", email: "a@example.com", role: "editor", expiresAt: "2030-01-01T00:00:00.000Z" }, inviteUrl: "https://web/invite/x", emailSent: true, replayed: false };
+const issued = { invite: { id: "i1", email: "a@example.com", role: "editor", expiresAt: "2030-01-01T00:00:00.000Z" }, inviteUrl: "https://web/invite/x", emailSent: true };
 
 describe("workspace queries", () => {
   test("bootstrap is Workspace-scoped, sends the explicit selection and seeds the usage query", async () => {
@@ -52,6 +54,24 @@ describe("workspace mutations", () => {
     await options.onSuccess?.(issued as never, input, undefined, undefined as never);
     await options.mutationFn?.({ ...input, email: "b@example.com" }, undefined as never);
     expect(calls[2]?.headers.get("idempotency-key")).not.toBe(first);
+  });
+
+  test("a lost invite response is credential_already_issued: the intent ends and the list refreshes for Resend", async () => {
+    const { api, calls } = setup(
+      () => errorResponse(409, "credential_already_issued", { details: { credential: "workspace_invite", inviteId: "i1", recovery: "resend_invite" } }),
+      () => jsonResponse(issued, { status: 201, headers: { "X-Workspace-Id": WORKSPACE_A } }),
+    );
+    api.queryClient.setQueryData(scopedKey(scope, "workspace", "members") as never, { members: [], invites: [] });
+    const options = inviteMemberMutation(api, scope);
+    const input = { email: "a@example.com", role: "editor" as const };
+    const error = await options.mutationFn?.(input, undefined as never).catch((caught: unknown) => caught);
+    expect(isApiErrorCode(error, "credential_already_issued")).toBe(true);
+    expect((error as ApiError).details).toMatchObject({ inviteId: "i1", recovery: "resend_invite" });
+    await options.onError?.(error as never, input, undefined, undefined as never);
+    expect(api.queryClient.getQueryState(scopedKey(scope, "workspace", "members") as never)?.isInvalidated).toBe(true);
+    // The next invite is a new intent, not the same key that already issued.
+    await options.mutationFn?.(input, undefined as never);
+    expect(calls[1]?.headers.get("idempotency-key")).not.toBe(calls[0]?.headers.get("idempotency-key"));
   });
 
   test("saved profile and censor words refresh the cached reads of the same Workspace only", async () => {

@@ -312,7 +312,26 @@ export function createCallbackSigningSecrets(dependencies: { prisma: PrismaClien
   const prisma = () => dependencies.prisma;
   const cipher = () => dependencies.cipher ?? createCallbackCipher();
   const now = dependencies.now ?? (() => new Date());
+
+  /**
+   * Rotates inside the caller's transaction (the Operation Receipt's) and
+   * returns the new secret once: it is stored sealed and never shown again.
+   * `id` names the stored secret, which is all a receipt may keep of it.
+   */
+  async function issue(tx: Tx, workspaceId: string) {
+    const secret = generateCallbackSigningSecret();
+    const at = now();
+    // Serialize rotations so a Workspace never has two current secrets.
+    await tx.$queryRaw`SELECT "id" FROM "Workspace" WHERE "id" = ${workspaceId}::uuid FOR UPDATE`;
+    await tx.callbackSigningSecret.deleteMany({ where: { workspaceId, retiresAt: { lte: at } } });
+    await tx.callbackSigningSecret.updateMany({ where: { workspaceId, retiresAt: { gt: at } }, data: { retiresAt: at } });
+    await tx.callbackSigningSecret.updateMany({ where: { workspaceId, retiresAt: null }, data: { retiresAt: new Date(at.getTime() + CALLBACK_SECRET_OVERLAP_MS) } });
+    const row = await tx.callbackSigningSecret.create({ data: { workspaceId, encryptedSecret: cipher().seal(secret), createdAt: at }, select: { id: true } });
+    return { id: row.id, secret, createdAt: at.toISOString() };
+  }
+
   return {
+    issue,
     async status(workspaceId: string) {
       const at = now();
       const rows = await prisma().callbackSigningSecret.findMany({
@@ -324,19 +343,10 @@ export function createCallbackSigningSecrets(dependencies: { prisma: PrismaClien
       const previous = rows.find((row) => row.retiresAt !== null);
       return { current: current ? { createdAt: current.createdAt.toISOString() } : null, previousRetiresAt: previous?.retiresAt?.toISOString() ?? null };
     },
-    /** Returns the new secret once; it is stored sealed and never shown again. */
+    /** Rotates in its own transaction. Browser rotation goes through the receipt-backed command instead. */
     async rotate(workspaceId: string) {
-      const secret = generateCallbackSigningSecret();
-      const at = now();
-      await prisma().$transaction(async (tx) => {
-        // Serialize rotations so a Workspace never has two current secrets.
-        await tx.$queryRaw`SELECT "id" FROM "Workspace" WHERE "id" = ${workspaceId}::uuid FOR UPDATE`;
-        await tx.callbackSigningSecret.deleteMany({ where: { workspaceId, retiresAt: { lte: at } } });
-        await tx.callbackSigningSecret.updateMany({ where: { workspaceId, retiresAt: { gt: at } }, data: { retiresAt: at } });
-        await tx.callbackSigningSecret.updateMany({ where: { workspaceId, retiresAt: null }, data: { retiresAt: new Date(at.getTime() + CALLBACK_SECRET_OVERLAP_MS) } });
-        await tx.callbackSigningSecret.create({ data: { workspaceId, encryptedSecret: cipher().seal(secret), createdAt: at } });
-      });
-      return { secret, createdAt: at.toISOString() };
+      const { secret, createdAt } = await prisma().$transaction((tx) => issue(tx, workspaceId));
+      return { secret, createdAt };
     },
     /** Current secret first, then any still in its overlap window. */
     async signingSecrets(workspaceId: string) {

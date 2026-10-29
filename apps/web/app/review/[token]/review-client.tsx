@@ -27,7 +27,12 @@ import { Progress } from "@narriflow/ui/components/progress";
 import { SegmentedControl } from "@narriflow/ui/components/segmented-control";
 import { Spinner } from "@narriflow/ui/components/spinner";
 import { formatTimecode } from "@/lib/format";
-import { buildReviewCommentPayload, reviewApprovalProgress } from "./review-client-model";
+import { buildReviewCommentPayload, reviewApprovalProgress, ReviewQueryProvider, useReviewTokenDigest, reviewApiOrigin, readReviewSession, reviewSessionKey, useExpiringReviewGrant } from "./review-client-model";
+import { createGuestReviewsClient, reviewQueries, reviewMutationOptions, invalidateGuestReviewMutation } from "@narriflow/api-client/reviews";
+import { createIntent, guestKey, isApiError } from "@narriflow/api-client/core";
+import type { ReviewCommentInput, ReviewDecisionInput } from "@narriflow/validators";
+import type { ReviewSession } from "@narriflow/validators/api/reviews";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 type ReviewComment = {
   id: string;
@@ -116,12 +121,64 @@ function roundNotice(status: string): { tone: "accent" | "warning" | "neutral"; 
 }
 
 export function ReviewClient({ token }: { token: string }) {
-  const endpoint = `/api/review/${encodeURIComponent(token)}`;
+  const digest = useReviewTokenDigest(token);
+  return <ReviewQueryProvider>{digest ? <ReviewRoom key={digest} token={token} digest={digest} /> : <ReviewPending />}</ReviewQueryProvider>;
+}
+
+export function ReviewPending() {
+  return <Flex minH="100dvh" bg="bg.sidebar" direction="column" align="center" justify="center" gap="6" px="4" py="10"><Logo size="md" /><Spinner size="md" /></Flex>;
+}
+
+type GuestCommand =
+  | { kind: "comment"; input: ReviewCommentInput }
+  | { kind: "decision"; input: ReviewDecisionInput }
+  | { kind: "edit"; commentId: string; body: string }
+  | { kind: "delete"; commentId: string };
+
+function ReviewRoom({ token, digest }: { token: string; digest: string }) {
+  const queryClient = useQueryClient();
+  const [session, setSession] = useState<ReviewSession | null>(null);
+  const sessionRef = useRef<ReviewSession | null>(null);
+  const [sessionReady, setSessionReady] = useState(false);
+  const clearSession = useCallback(() => {
+    sessionRef.current = null;
+    setSession(null);
+    try { window.sessionStorage.removeItem(reviewSessionKey(digest)); } catch { /* Storage may be disabled. */ }
+    const queryKey = guestKey(digest, "room").slice(0, 2);
+    void queryClient.cancelQueries({ queryKey });
+    queryClient.removeQueries({ queryKey });
+  }, [digest, queryClient]);
+  const client = useMemo(() => createGuestReviewsClient({
+    baseUrl: reviewApiOrigin(),
+    getSession: () => {
+      const current = sessionRef.current;
+      if (current && Date.parse(current.expiresAt) <= Date.now()) { clearSession(); return null; }
+      return current?.sessionToken ?? null;
+    },
+    onSessionRefused: clearSession,
+  }), [clearSession]);
+  useEffect(() => {
+    let stored: ReviewSession | null = null;
+    try { stored = readReviewSession(window.sessionStorage, digest); } catch { /* Access must be obtained again. */ }
+    sessionRef.current = stored;
+    setSession(stored);
+    setSessionReady(true);
+  }, [digest]);
+  useEffect(() => {
+    if (!session) return;
+    const check = () => { if (Date.parse(session.expiresAt) <= Date.now()) clearSession(); };
+    const timeout = window.setTimeout(check, Math.max(0, Date.parse(session.expiresAt) - Date.now()));
+    window.addEventListener("focus", check);
+    document.addEventListener("visibilitychange", check);
+    return () => { window.clearTimeout(timeout); window.removeEventListener("focus", check); document.removeEventListener("visibilitychange", check); };
+  }, [session, clearSession]);
+  const roomQuery = useQuery({ ...reviewQueries.guestRoom(client, token, digest), enabled: session !== null });
+  const snapshot = roomQuery.data?.round;
+  const round: ReviewSnapshot | null = session && snapshot ? { ...snapshot, items: snapshot.items.map((item) => ({ ...item, clipTitle: item.clipTitle ?? "" })) } : null;
+  const checking = !sessionReady || (session !== null && roomQuery.isPending);
   const [identity, setIdentity] = useState("");
   const [email, setEmail] = useState("");
   const [passcode, setPasscode] = useState("");
-  const [round, setRound] = useState<ReviewSnapshot | null>(null);
-  const [checking, setChecking] = useState(true);
   const [activeItemId, setActiveItemId] = useState<string | null>(null);
   const [activeVariants, setActiveVariants] = useState<Record<string, string>>({});
   const [comment, setComment] = useState("");
@@ -131,7 +188,6 @@ export function ReviewClient({ token }: { token: string }) {
   const [editingCommentId, setEditingCommentId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
   // The server stops serving a round once it closes (expired, revoked,
   // replaced), so the client learns it from a refused action, not a status.
   const [closed, setClosed] = useState(false);
@@ -152,75 +208,85 @@ export function ReviewClient({ token }: { token: string }) {
     [activeItem?.id, round?.comments],
   );
 
-  const load = useCallback(async () => {
-    const response = await fetch(endpoint, { cache: "no-store" });
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload.message || "Review could not be loaded");
-    setRound(payload.round);
-    setActiveItemId((current) => current && payload.round.items.some((item: ReviewItem) => item.id === current) ? current : payload.round.items[0]?.id ?? null);
-    setActiveVariants((current) => ({
-      ...Object.fromEntries(payload.round.items.map((item: ReviewItem) => [item.id, item.export.variants[0]?.id ?? ""])),
-      ...current,
-    }));
-  }, [endpoint]);
+  const mediaQuery = useQuery({
+    ...reviewQueries.media(client, token, digest, activeItem?.id ?? "", activeVariant?.id ?? ""),
+    enabled: session !== null && activeItem !== null && activeVariant !== null,
+    refetchOnWindowFocus: false,
+  });
+  const mediaUsable = useExpiringReviewGrant(mediaQuery.data?.expiresAt, mediaQuery.refetch);
+  const accessMutation = useMutation({
+    ...reviewMutationOptions,
+    mutationFn: async () => {
+      const response = await client.review[":token"].access.$post({ param: { token }, json: { identity, email, passcode: passcode || null } });
+      const credential = await response.json();
+      sessionRef.current = credential;
+      try { window.sessionStorage.setItem(reviewSessionKey(digest), JSON.stringify(credential)); } catch { /* Current access can still live in memory. */ }
+      setSession(credential);
+      setClosed(false);
+      setPasscode("");
+    },
+  });
+  const pendingComment = useRef<{ fingerprint: string; input: ReviewCommentInput } | null>(null);
+  const [intent] = useState(() => createIntent<GuestCommand>());
+  const responseMutation = useMutation({
+    ...reviewMutationOptions,
+    mutationFn: async (command: GuestCommand) => {
+      const root = client.review[":token"];
+      const param = { token };
+      const options = { headers: { "Idempotency-Key": intent.keyFor(command) } };
+      switch (command.kind) {
+        case "comment": await root.comments.$post({ param, json: command.input }, options); break;
+        case "decision": await root.decision.$post({ param, json: command.input }, options); break;
+        case "edit": await root.comments[":commentId"].$patch({ param: { ...param, commentId: command.commentId }, json: { body: command.body } }); break;
+        case "delete": await root.comments[":commentId"].$delete({ param: { ...param, commentId: command.commentId } }); break;
+      }
+    },
+    onSuccess: async () => {
+      intent.complete();
+      await invalidateGuestReviewMutation(queryClient, digest);
+    },
+  });
+  const downloadMutation = useMutation({
+    ...reviewMutationOptions,
+    mutationFn: async () => {
+      if (!activeItem || !activeVariant) return;
+      const grant = await queryClient.fetchQuery(reviewQueries.media(client, token, digest, activeItem.id, activeVariant.id, true));
+      if (Date.parse(grant.expiresAt) > Date.now()) window.location.assign(grant.url);
+    },
+  });
+  const busy = accessMutation.isPending || responseMutation.isPending || downloadMutation.isPending;
 
   useEffect(() => {
-    void load().catch(() => undefined).finally(() => setChecking(false));
-  }, [load]);
-
+    if (isApiError(roomQuery.error) && roomQuery.error.code === "review_round_closed") setClosed(true);
+  }, [roomQuery.error]);
   useLayoutEffect(() => {
     if (!round && error) accessErrorRef.current?.focus();
   }, [error, round]);
 
   async function access(event: React.FormEvent) {
     event.preventDefault();
-    setBusy(true);
     setError(null);
-    try {
-      const response = await fetch(`${endpoint}/access`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ identity, email, passcode: passcode || null }),
-      });
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.message || "Access could not be verified");
-      await load();
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Access could not be verified");
-    } finally {
-      setBusy(false);
-    }
+    try { await accessMutation.mutateAsync(); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : "Access could not be verified"); }
   }
 
-  async function request(path: string, method: "POST" | "PATCH" | "DELETE", body?: unknown) {
-    setBusy(true);
+  async function request(command: GuestCommand) {
     setError(null);
     setNotice(null);
     try {
-      const response = await fetch(`${endpoint}/${path}`, {
-        method,
-        headers: body === undefined ? undefined : { "Content-Type": "application/json" },
-        body: body === undefined ? undefined : JSON.stringify(body),
-      });
-      const payload = await response.json();
-      if (!response.ok) {
-        if (payload.error === "review_session_invalid" || payload.error === "review_round_closed") setClosed(true);
-        throw new Error(payload.message || "Review response could not be saved");
-      }
-      await load();
+      await responseMutation.mutateAsync(command);
       return true;
     } catch (reason) {
+      if (isApiError(reason) && reason.code === "review_round_closed") setClosed(true);
       setError(reason instanceof Error ? reason.message : "Review response could not be saved");
       return false;
-    } finally {
-      setBusy(false);
     }
   }
 
   async function saveComment() {
     if (!comment.trim()) return;
     if (editingCommentId) {
-      if (await request(`comments/${editingCommentId}`, "PATCH", { body: comment.trim() })) {
+      if (await request({ kind: "edit", commentId: editingCommentId, body: comment.trim() })) {
         setNotice("Comment updated.");
         setComment("");
         setEditingCommentId(null);
@@ -238,7 +304,10 @@ export function ReviewClient({ token }: { token: string }) {
       includeTimecode,
       currentTimeSec: video?.currentTime ?? null,
     });
-    if (await request("comments", "POST", payload)) {
+    const fingerprint = JSON.stringify({ ...payload, timestampSec: includeTimecode && commentScope === "clip" ? "playhead" : null });
+    if (pendingComment.current?.fingerprint !== fingerprint) pendingComment.current = { fingerprint, input: payload };
+    if (await request({ kind: "comment", input: pendingComment.current.input })) {
+      pendingComment.current = null;
       const { timestampSec } = payload;
       setNotice(parent ? "Reply added." : timestampSec === null ? "Comment added." : `Comment added at ${formatTimecode(timestampSec)}.`);
       setComment("");
@@ -248,7 +317,7 @@ export function ReviewClient({ token }: { token: string }) {
   }
 
   async function decide(decision: "approved" | "changes_requested", itemId: string | null) {
-    if (await request("decision", "POST", { decision, itemId, reason: null })) {
+    if (await request({ kind: "decision", input: { decision, itemId, reason: null } })) {
       setNotice(decision === "approved" ? "Approval saved." : "Change request saved.");
     }
   }
@@ -273,6 +342,8 @@ export function ReviewClient({ token }: { token: string }) {
     video.currentTime = seconds;
     void video.play();
   }
+
+  const displayedError = error ?? roomQuery.error?.message ?? mediaQuery.error?.message ?? null;
 
   if (!round) {
     return (
@@ -313,12 +384,12 @@ export function ReviewClient({ token }: { token: string }) {
                 />
               </Stack>
             </Stack>
-            {error ? (
+            {displayedError ? (
               <Flex ref={accessErrorRef} tabIndex={-1} role="alert" align="flex-start" gap="2" px="4" py="3" bg="danger.subtle" color="danger.fg" borderRadius="l2" outline="none">
                 <Box flexShrink={0} mt="0.5">
                   <AlertTriangle size={14} aria-hidden />
                 </Box>
-                <Text fontSize="13px">{error}</Text>
+                <Text fontSize="13px">{displayedError}</Text>
               </Flex>
             ) : null}
             <Button type="submit" size="md" h="11" w="full" disabled={!identity.trim() || !email.trim() || busy}>
@@ -409,10 +480,10 @@ export function ReviewClient({ token }: { token: string }) {
               <Text fontSize="13px">{notice}</Text>
             </Flex>
           ) : null}
-          {error ? (
+          {displayedError ? (
             <Flex role="alert" gap="2" align="center" color="danger.fg">
               <AlertTriangle size={14} aria-hidden />
-              <Text fontSize="13px">{error}</Text>
+              <Text fontSize="13px">{displayedError}</Text>
             </Flex>
           ) : null}
 
@@ -488,7 +559,7 @@ export function ReviewClient({ token }: { token: string }) {
                     playsInline
                     preload="metadata"
                     aria-label={`${activeItem.clipTitle}, ${aspectLabel(activeVariant.aspectRatio)} submitted export`}
-                    src={`${endpoint}/media/${activeItem.id}/${activeVariant.id}`}
+                    src={mediaUsable ? mediaQuery.data?.url : undefined}
                     style={{ width: "100%", height: "100%", objectFit: "contain" }}
                   />
                 </Box>
@@ -516,10 +587,8 @@ export function ReviewClient({ token }: { token: string }) {
                   {activeItem.currentDecision === "changes_requested" ? "Changes requested" : "Request changes"}
                 </Button>
                 {round.allowDownloads ? (
-                  <Button asChild size="md" variant="ghost">
-                    <a href={`${endpoint}/download/${activeItem.id}/${activeVariant.id}`}>
-                      <Download size={16} /> Download {aspectLabel(activeVariant.aspectRatio)}
-                    </a>
+                  <Button size="md" variant="ghost" disabled={busy || frozen} onClick={() => void downloadMutation.mutateAsync().catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "Download could not be loaded"))}>
+                    <Download size={16} /> Download {aspectLabel(activeVariant.aspectRatio)}
                   </Button>
                 ) : null}
               </Flex>
@@ -621,7 +690,7 @@ export function ReviewClient({ token }: { token: string }) {
                               variant="ghost"
                               colorPalette="danger"
                               disabled={busy}
-                              onClick={() => void request(`comments/${entry.id}`, "DELETE").then((saved) => { if (saved) setNotice("Reply deleted."); })}
+                              onClick={() => void request({ kind: "delete", commentId: entry.id }).then((saved) => { if (saved) setNotice("Reply deleted."); })}
                             >
                               <Trash2 size={11} /> Delete
                             </Button>
@@ -643,7 +712,7 @@ export function ReviewClient({ token }: { token: string }) {
                             variant="ghost"
                             colorPalette="danger"
                             disabled={replies.length > 0 || busy}
-                            onClick={() => void request(`comments/${thread.id}`, "DELETE").then((saved) => { if (saved) setNotice("Comment deleted."); })}
+                            onClick={() => void request({ kind: "delete", commentId: thread.id }).then((saved) => { if (saved) setNotice("Comment deleted."); })}
                           >
                             <Trash2 size={11} /> Delete
                           </Button>

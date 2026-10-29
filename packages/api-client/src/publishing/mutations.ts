@@ -1,6 +1,8 @@
 import type { QueryClient } from "@tanstack/query-core";
 import { type WorkspaceScope, IDEMPOTENCY_KEY_HEADER, invalidateScoped } from "../core";
-import type { PublishingClient } from "./index";
+import { invalidateProject } from "../projects";
+import { PROJECT_RESOURCES } from "../projects/queries";
+import type { PublishingClient } from "./client";
 
 type JsonOf<Endpoint extends { $post: (args: any) => unknown }> = Parameters<Endpoint["$post"]>[0] extends {
   json: infer Body;
@@ -56,7 +58,46 @@ export function publishingCommands(client: PublishingClient) {
   };
 }
 
-/** Refreshes every publishing read of this identity + Workspace after a command; nothing broader. */
+/** Refreshes only the publishing reads of this identity + Workspace. Prefer the command-specific invalidators below. */
 export function invalidatePublishing(queryClient: QueryClient, scope: WorkspaceScope): Promise<void> {
   return invalidateScoped(queryClient, scope, "publishing");
+}
+
+/**
+ * A Project's post was cancelled, rechecked, confirmed or published again: the
+ * publishing reads and that Project's own screen, whose tabs keep the post
+ * list under `projects/detail/<id>/<tab>`.
+ */
+export async function invalidateAfterPostChange(
+  queryClient: QueryClient,
+  scope: WorkspaceScope,
+  projectId: string,
+): Promise<void> {
+  await Promise.all([invalidatePublishing(queryClient, scope), invalidateProject(queryClient, scope, projectId)]);
+}
+
+/**
+ * A proposal was accepted, rejected or edited, or a queue slot changed. Accepting
+ * schedules a post on a Project the caller may not know, so every opened Project
+ * screen is marked stale (only cached ones; nothing else is refetched).
+ */
+export async function invalidateAfterProposalChange(queryClient: QueryClient, scope: WorkspaceScope): Promise<void> {
+  await Promise.all([
+    invalidatePublishing(queryClient, scope),
+    invalidateScoped(queryClient, scope, "projects", PROJECT_RESOURCES.detail),
+  ]);
+}
+
+/**
+ * An account was connected, disconnected or rescheduled. Project screens carry
+ * account snapshots, and Recipes and Autopilot offer accounts as choices.
+ */
+export async function invalidateAfterAccountChange(queryClient: QueryClient, scope: WorkspaceScope): Promise<void> {
+  await Promise.all([
+    invalidatePublishing(queryClient, scope),
+    invalidateScoped(queryClient, scope, "projects", PROJECT_RESOURCES.detail),
+    invalidateScoped(queryClient, scope, "recipes"),
+    invalidateScoped(queryClient, scope, "automation", "overview"),
+    invalidateScoped(queryClient, scope, "automation", "rules"),
+  ]);
 }

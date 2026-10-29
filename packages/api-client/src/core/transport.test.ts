@@ -509,6 +509,133 @@ describe("bound fetch keeps scope tracking through the response body", () => {
     expect(released).toEqual(["release"]);
   });
 
+  // F02 (round 3): the original Response being collected, or finishing first, must
+  // not release tracking while a clone (or its buffered tee branch) is still to be read.
+  describe("clones share one scope-tracked body", () => {
+    test("A to B to A while a clone reads rejects the clone and the original, tracking intact until both finish", async () => {
+      const half = splitBodyResponse('{"stale":');
+      const { scope, bound, released } = setupBody(() => half.response);
+      const original = await bound.fetch("/api/x");
+      const clone = original.clone();
+      const cloneRead = clone.json();
+      const originalRead = original.json();
+      scope.selectWorkspace(WORKSPACE_B);
+      scope.selectWorkspace(WORKSPACE_A);
+      half.finish("true}");
+      for (const read of [cloneRead, originalRead]) {
+        const error = (await read.catch((e: unknown) => e)) as ApiError;
+        expect(error.code).toBe(CLIENT_ERROR_CODES.scopeChanged);
+      }
+      expect(released).toEqual(["release"]);
+    });
+
+    test("a clone fully read first does not let the original's buffered bytes through after A to B to A", async () => {
+      const { scope, bound, released } = setupBody(() => jsonResponse({ stale: true }));
+      const original = await bound.fetch("/api/x");
+      const clone = original.clone();
+      expect(await clone.json()).toEqual({ stale: true });
+      expect(released).toEqual([]);
+      scope.selectWorkspace(WORKSPACE_B);
+      scope.selectWorkspace(WORKSPACE_A);
+      const error = (await original.json().catch((e: unknown) => e)) as ApiError;
+      expect(error.code).toBe(CLIENT_ERROR_CODES.scopeChanged);
+      expect(released).toEqual(["release"]);
+    });
+
+    test("an unchanged scope reads both copies and releases exactly once, after the last one", async () => {
+      const { bound, released } = setupBody(() => jsonResponse({ ok: true }));
+      const original = await bound.fetch("/api/x");
+      const clone = original.clone();
+      const second = clone.clone();
+      expect(await original.json()).toEqual({ ok: true });
+      expect(await clone.json()).toEqual({ ok: true });
+      expect(released).toEqual([]);
+      expect(await second.json()).toEqual({ ok: true });
+      expect(released).toEqual(["release"]);
+    });
+
+    test("cancelling every copy releases tracking once", async () => {
+      const half = splitBodyResponse("{");
+      const { bound, released } = setupBody(() => half.response);
+      const original = await bound.fetch("/api/x");
+      const clone = original.clone();
+      // A tee branch's cancel settles only once the other branch is cancelled too.
+      const first = original.body?.cancel();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(released).toEqual([]);
+      await Promise.all([first, clone.body?.cancel()]);
+      expect(released).toEqual(["release"]);
+    });
+
+    test("real loopback server: the original is collected while its clone reads, then A to B to A rejects", async () => {
+      const encoder = new TextEncoder();
+      let finish!: () => void;
+      const finished = new Promise<void>((resolve) => {
+        finish = resolve;
+      });
+      const server = Bun.serve({
+        port: 0,
+        hostname: "127.0.0.1",
+        fetch() {
+          return new Response(
+            new ReadableStream<Uint8Array>({
+              async start(controller) {
+                controller.enqueue(encoder.encode('{"stale":'));
+                await finished;
+                controller.enqueue(encoder.encode("true}"));
+                controller.close();
+              },
+            }),
+            { headers: { "Content-Type": "application/json" } },
+          );
+        },
+      });
+      try {
+        const scope = new ApiScope();
+        scope.setUser(USER);
+        scope.selectWorkspace(WORKSPACE_A);
+        let releases = 0;
+        const track = scope.track.bind(scope);
+        scope.track = (target, external) => {
+          const tracked = track(target, external);
+          return {
+            signal: tracked.signal,
+            get scopeAborted() {
+              return tracked.scopeAborted;
+            },
+            release: () => {
+              releases += 1;
+              tracked.release();
+            },
+          };
+        };
+        const bound = createApiTransport({
+          baseUrl: `http://127.0.0.1:${server.port}`,
+          scope,
+          getToken: async () => "t",
+        }).scoped(scopeA);
+        let original: Response | null = await bound.fetch("/api/x");
+        const clone = original.clone();
+        original = null;
+        const read = clone.json().then(
+          (value) => ({ value }),
+          (error: ApiError) => ({ code: error.code }),
+        );
+        for (let i = 0; i < 20; i++) {
+          Bun.gc(true);
+          await new Promise((resolve) => setTimeout(resolve, 5));
+        }
+        expect(releases).toBe(0);
+        scope.selectWorkspace(WORKSPACE_B);
+        scope.selectWorkspace(WORKSPACE_A);
+        finish();
+        expect(await read).toEqual({ code: CLIENT_ERROR_CODES.scopeChanged });
+      } finally {
+        await server.stop(true);
+      }
+    });
+  });
+
   test("real loopback server: switching Workspace between header and end of the JSON body rejects", async () => {
     const encoder = new TextEncoder();
     let finish!: () => void;

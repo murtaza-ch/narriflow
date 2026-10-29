@@ -78,6 +78,18 @@ export async function invalidateWorkspaceProfile(queryClient: QueryClient, scope
   ]);
 }
 
+/**
+ * Credits were reserved, spent or released (an accepted render, generation,
+ * intake or deletion). The shell, Billing and Usage read the allowance embedded in
+ * the Workspace bootstrap, so refresh both it and the usage read it seeds.
+ */
+export async function invalidateWorkspaceUsage(queryClient: QueryClient, scope: WorkspaceScope): Promise<void> {
+  await Promise.all([
+    invalidateScoped(queryClient, scope, "workspace", "usage"),
+    invalidateScoped(queryClient, scope, "workspace", "bootstrap"),
+  ]);
+}
+
 /** Members or invitations changed: the lists, and seat billing. */
 export async function invalidateWorkspaceMembers(queryClient: QueryClient, scope: WorkspaceScope): Promise<void> {
   await Promise.all([

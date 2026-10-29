@@ -205,7 +205,6 @@ describe("invites", () => {
     const result = await response.json();
     expect(result.inviteUrl).toBe(`${WEB}/invite/raw-token-value`);
     expect(result.emailSent).toBe(true);
-    expect(result.replayed).toBe(false);
     expect(d.sendEmail).toHaveBeenCalledTimes(1);
     const email = (d.sendEmail.mock.calls[0] as unknown as [{ idempotencyKey: string; to: string }])[0];
     expect(email.idempotencyKey).toBe(`workspace-invite/${INVITE}`);
@@ -216,12 +215,14 @@ describe("invites", () => {
     expect(call[2].clientIdempotencyKey).toBe("intent-1");
   });
 
-  test("a replay never sends again and carries no link", async () => {
+  test("a replay never sends again: it is credential_already_issued, naming the invite and Resend", async () => {
     const d = deps();
     const response = await send(app(d), "POST", `/workspace/invites/${INVITE}/resend`, undefined, { "idempotency-key": "intent-2" });
-    expect(response.status).toBe(200);
-    expect(response.headers.get("idempotent-replayed")).toBe("true");
-    expect(await response.json()).toMatchObject({ inviteUrl: null, emailSent: null, replayed: true });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({
+      error: "credential_already_issued",
+      details: { credential: "workspace_invite", inviteId: INVITE, recovery: "resend_invite" },
+    });
     expect(d.sendEmail).not.toHaveBeenCalled();
   });
 
@@ -250,7 +251,8 @@ describe("invites", () => {
       } as never,
     });
     const replay = await send(app(replayDeps, exhausted), "POST", "/workspace/invites", body, { "idempotency-key": "intent-1" });
-    expect(replay.status).toBe(200);
+    expect(replay.status).toBe(409);
+    expect(await replay.json()).toMatchObject({ error: "credential_already_issued" });
 
     const fresh = await send(app(deps(), exhausted), "POST", "/workspace/invites", body, { "idempotency-key": "intent-4" });
     expect(fresh.status).toBe(429);

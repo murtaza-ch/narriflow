@@ -5,6 +5,7 @@ import type {
   NotifyPreferenceRequest,
 } from "@narriflow/validators/api/projects";
 import { IDEMPOTENCY_KEY_HEADER, invalidateScoped, scopedKey, type WorkspaceScope } from "../core";
+import { invalidateWorkspaceUsage } from "../workspace/queries";
 import type { ProjectsClient } from "./index";
 import { PROJECT_RESOURCES } from "./queries";
 
@@ -52,7 +53,8 @@ export const projectCommands = {
 /** Mutations never retry on their own; spread into `useMutation` options. */
 export const projectMutationOptions = { retry: false } as const;
 
-async function invalidateProjectLists(queryClient: QueryClient, scope: WorkspaceScope) {
+/** Home, explorer and list reads: every place a Project and its counts are listed. */
+export async function invalidateProjectCollections(queryClient: QueryClient, scope: WorkspaceScope) {
   await Promise.all([
     invalidateScoped(queryClient, scope, "projects", PROJECT_RESOURCES.home),
     invalidateScoped(queryClient, scope, "projects", PROJECT_RESOURCES.explorer),
@@ -79,9 +81,8 @@ export async function invalidateProject(queryClient: QueryClient, scope: Workspa
 export async function invalidateAfterGeneration(queryClient: QueryClient, scope: WorkspaceScope, projectId: string) {
   await Promise.all([
     invalidateProject(queryClient, scope, projectId),
-    invalidateProjectLists(queryClient, scope),
-    invalidateScoped(queryClient, scope, "workspace", "usage"),
-    invalidateScoped(queryClient, scope, "workspace", "bootstrap"),
+    invalidateProjectCollections(queryClient, scope),
+    invalidateWorkspaceUsage(queryClient, scope),
   ]);
 }
 
@@ -97,7 +98,7 @@ export function invalidateAfterNotifyPreference(queryClient: QueryClient, scope:
 /** After a Project moved folders: lists and folder counts. */
 export async function invalidateAfterProjectMoved(queryClient: QueryClient, scope: WorkspaceScope, projectId: string) {
   await Promise.all([
-    invalidateProjectLists(queryClient, scope),
+    invalidateProjectCollections(queryClient, scope),
     invalidateScoped(queryClient, scope, "library", "folders"),
     invalidateScoped(queryClient, scope, "projects", PROJECT_RESOURCES.detail, projectId),
   ]);
@@ -112,9 +113,9 @@ export async function invalidateAfterProjectDeleted(queryClient: QueryClient, sc
   queryClient.removeQueries({ queryKey: scopedKey(scope, "projects", PROJECT_RESOURCES.detail, projectId) as unknown[] });
   queryClient.removeQueries({ queryKey: scopedKey(scope, "projects", PROJECT_RESOURCES.snapshot, projectId) as unknown[] });
   await Promise.all([
-    invalidateProjectLists(queryClient, scope),
+    invalidateProjectCollections(queryClient, scope),
     invalidateScoped(queryClient, scope, "library", "folders"),
     invalidateScoped(queryClient, scope, "ingest", "resume"),
-    invalidateScoped(queryClient, scope, "workspace", "usage"),
+    invalidateWorkspaceUsage(queryClient, scope),
   ]);
 }

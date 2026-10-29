@@ -138,7 +138,7 @@ describe("billing admission", () => {
       ].sort(),
     );
     expect(billingAdmission["POST /webhooks/stripe"]).toEqual({ trust: "provider_signature" });
-    expect(billingAdmission["POST /workspaces/business-checkout"]).toEqual({ kind: "signed_in" });
+    expect(billingAdmission["POST /workspaces/business-checkout"]).toEqual({ kind: "signed_in", deferRateRefusal: true });
     expect(billingAdmission["GET /billing/state"]).toMatchObject({ capability: "content.view" });
   });
 
@@ -428,7 +428,7 @@ describe("New-Workspace checkout", () => {
     const app = appFor(billing, "viewer");
     const request = {
       method: "POST",
-      headers: { authorization: "Bearer good", origin: WEB, "content-type": "application/json" },
+      headers: { authorization: "Bearer good", origin: WEB, "content-type": "application/json", "idempotency-key": "intent-1" },
       body: JSON.stringify(body),
     };
     const response = await app.request("/api/workspaces/business-checkout", request);
@@ -439,12 +439,27 @@ describe("New-Workspace checkout", () => {
       interval: "annual",
       selection: { workspaceId: "ws-new", workspaceName: "Acme" },
     });
-    expect(billing.startBusinessWorkspaceCheckout.mock.calls[0]?.[0]).toEqual({
+    const call = billing.startBusinessWorkspaceCheckout.mock.calls[0]?.[0] as unknown as Record<string, unknown>;
+    expect(call).toMatchObject({
       actorUserId: user.id,
       name: "Acme",
       interval: "annual",
       returnDestination: `${WEB}/settings/billing`,
+      creation: { clientIdempotencyKey: "intent-1" },
     });
+    expect(call.workspaceId).toBeUndefined();
+  });
+
+  test("creating a Workspace needs the caller's per-intent Idempotency-Key", async () => {
+    const billing = service();
+    const response = await appFor(billing).request("/api/workspaces/business-checkout", {
+      method: "POST",
+      headers: { authorization: "Bearer good", origin: WEB, "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ error: "idempotency_key_required" });
+    expect(billing.startBusinessWorkspaceCheckout).not.toHaveBeenCalled();
   });
 
   test("resumes a pending Workspace with its preserved Checkout key", async () => {
@@ -454,9 +469,10 @@ describe("New-Workspace checkout", () => {
       interval: "monthly",
       checkoutIdempotencyKey: "018f5f6a-4c31-7c75-9a4f-8f74f977bc21",
     };
-    const request = post("/workspaces/business-checkout", recovery);
+    const request = post("/workspaces/business-checkout", recovery, { "idempotency-key": "intent-2" });
     const response = await appFor(billing).request(request.path, request.init);
     expect(response.status).toBe(200);
+    // Resuming an existing pending Workspace needs no creation receipt.
     expect(billing.startBusinessWorkspaceCheckout.mock.calls[0]?.[0]).toEqual({
       actorUserId: user.id,
       ...recovery,
@@ -475,7 +491,7 @@ describe("New-Workspace checkout", () => {
       { name: "Acme", interval: "annual", ownerUserId: "someone" },
       { name: "Acme", workspaceId: "ws", interval: "annual", extra: 1 },
     ]) {
-      const request = post("/workspaces/business-checkout", invalid);
+      const request = post("/workspaces/business-checkout", invalid, { "idempotency-key": "intent-3" });
       const response = await app.request(request.path, request.init);
       expect(response.status).toBe(400);
     }
@@ -499,7 +515,7 @@ describe("New-Workspace checkout", () => {
         });
       }),
     });
-    const request = post("/workspaces/business-checkout", body);
+    const request = post("/workspaces/business-checkout", body, { "idempotency-key": "intent-4" });
     const response = await appFor(billing).request(request.path, request.init);
     expect(response.status).toBe(409);
     expect(await response.json()).toMatchObject({

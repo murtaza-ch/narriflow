@@ -8,7 +8,7 @@ import type {
   workspaceMembershipService,
   workspaceService,
 } from "@narriflow/services";
-import { WorkspaceOperationError } from "@narriflow/services";
+import { CredentialAlreadyIssuedError, WorkspaceOperationError } from "@narriflow/services";
 import { resolvePricingTier } from "@narriflow/validators";
 import { workspaceCapabilities } from "@narriflow/validators/api/session";
 import {
@@ -84,25 +84,40 @@ export function createWorkspaceRoutes(deps: WorkspaceRouteDeps) {
     autoCensorService,
   } = deps;
 
-  /** An invite response: the link and delivery result exist only for the request that issued it. */
+  /**
+   * An invite response. The link and the delivery result exist only for the request that
+   * issued the invite. A replay of a lost response cannot recover them (the receipt keeps
+   * no token), so it is the specified `credential_already_issued` refusal naming the invite
+   * and pointing at Resend, which issues a new link under its own intent. Nothing rotates.
+   */
   async function inviteIssued(
     c: Context<ApiEnv>,
     accepted: Awaited<ReturnType<WorkspaceCommands["inviteMember"]>>,
   ) {
-    let inviteUrl: string | null = null;
-    let emailSent: boolean | null = null;
-    if (accepted.token) {
-      const delivery = await deliverWorkspaceInvite(deps, {
-        ...accepted.invite,
-        token: accepted.token,
-        workspaceName: getActor(c).workspaceName,
-      });
-      inviteUrl = delivery.url;
-      emailSent = delivery.emailSent;
+    if (accepted.replayed || !accepted.token) {
+      throw new CredentialAlreadyIssuedError(
+        "This invitation was already issued and its link cannot be shown again. Resend it to send a new link.",
+        {
+          credential: "workspace_invite",
+          inviteId: accepted.invite.id,
+          email: accepted.invite.email,
+          role: accepted.invite.role,
+          expiresAt: accepted.invite.expiresAt,
+          recovery: "resend_invite",
+        },
+      );
     }
-    if (accepted.replayed) c.header("Idempotent-Replayed", "true");
-    const body: InviteIssued = { invite: accepted.invite, inviteUrl, emailSent, replayed: accepted.replayed };
-    return c.json(body, accepted.replayed ? 200 : 201);
+    const delivery = await deliverWorkspaceInvite(deps, {
+      ...accepted.invite,
+      token: accepted.token,
+      workspaceName: getActor(c).workspaceName,
+    });
+    const body: InviteIssued = {
+      invite: accepted.invite,
+      inviteUrl: delivery.url,
+      emailSent: delivery.emailSent,
+    };
+    return c.json(body, 201);
   }
 
   const mutationFor = (c: Context<ApiEnv>) => ({

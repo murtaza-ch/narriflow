@@ -553,6 +553,7 @@ export const socialPublicationRecovery = {
         })
       : { value: await requirePrisma().$transaction(mutate), replayed: false };
     const result = accepted.value;
+    if (accepted.replayed) input.mutation?.onReplay?.();
     if (!accepted.replayed)
       structuredSocialPublicationMetrics.observe("social_publication_manual_decisions_total", 1, {
         decision: "recheck_requested",
@@ -773,6 +774,7 @@ export const socialPublicationRecovery = {
           replayed: false,
         };
     const result = accepted.value;
+    if (accepted.replayed) input.mutation?.onReplay?.();
     if (!accepted.replayed)
       structuredSocialPublicationMetrics.observe("social_publication_manual_decisions_total", 1, {
         decision: "confirmed_published",
@@ -914,6 +916,7 @@ export const socialPublicationRecovery = {
         })
       : { value: await requirePrisma().$transaction(mutate), replayed: false };
     const result = accepted.value;
+    if (accepted.replayed) input.mutation?.onReplay?.();
     if (!accepted.replayed)
       structuredSocialPublicationMetrics.observe("social_publication_manual_decisions_total", 1, {
         decision: "publish_again",

@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { isApiError } from "@narriflow/api-client/core";
 import {
   AlertTriangle,
   Check,
@@ -22,7 +22,7 @@ import { Spinner } from "@narriflow/ui/components/spinner";
 import { AccountAvatar } from "../../_components/account-menu";
 import { LockedButton, useUpgrade, type UpgradePrompt } from "../../_components/upgrade";
 import { upgradePromptFromFailure } from "@/lib/authenticated-request-browser";
-import type { ReviewRoomData } from "./review-panel";
+import { useInternalReviews, type ReviewCommand } from "./review-panel";
 import {
   activeShareRound,
   buildQuickReviewRoundInput,
@@ -48,17 +48,17 @@ export function ProjectShareButton({
     role: string;
   };
 }) {
-  const router = useRouter();
   const { openUpgrade } = useUpgrade();
   const [open, setOpen] = useState(false);
-  const [data, setData] = useState<ReviewRoomData | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [busy, setBusy] = useState(false);
+  const { room, mutation } = useInternalReviews(projectId, undefined, open && !upgrade);
+  const data = room.data;
+  const loading = room.isFetching;
+  const busy = mutation.isPending;
   const [recipientText, setRecipientText] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
-  const endpoint = `/api/projects/${encodeURIComponent(projectId)}/review-rounds`;
+
   const activeRound = data ? activeShareRound(data) : null;
   const recipientEmails = useMemo(
     () => reviewerEmailsFromText(recipientText),
@@ -69,47 +69,16 @@ export function ProjectShareButton({
     [recipientText],
   );
 
-  async function loadRoom() {
-    setLoading(true);
-    setError(null);
-    try {
-      const response = await fetch(endpoint, { cache: "no-store" });
-      const payload = await response.json();
-      if (!response.ok) {
-        throw new Error(payload.message || "Sharing details could not be loaded");
-      }
-      setData(payload);
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Sharing details could not be loaded");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function post(path: string, body: unknown) {
-    setBusy(true);
+  async function post(command: ReviewCommand) {
     setError(null);
     setNotice(null);
     try {
-      const response = await fetch(`${endpoint}${path}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      const payload = await response.json();
-      if (!response.ok) {
-        const prompt = upgradePromptFromFailure(payload);
-        if (prompt) openUpgrade(prompt);
-        throw new Error(payload.message || "Sharing could not be updated");
-      }
-      await loadRoom();
-      router.refresh();
-      return payload;
+      return await mutation.mutateAsync(command);
     } catch (reason) {
+      const prompt = isApiError(reason) ? upgradePromptFromFailure({ error: reason.code, message: reason.message, ...reason.details }) : null;
+      if (prompt) openUpgrade(prompt);
       setError(reason instanceof Error ? reason.message : "Sharing could not be updated");
       return null;
-    } finally {
-      setBusy(false);
     }
   }
 
@@ -123,7 +92,7 @@ export function ProjectShareButton({
       setError("Render at least one clip before creating a review link.");
       return;
     }
-    const result = await post("", buildQuickReviewRoundInput(data, recipientEmails));
+    const result = await post({ kind: "create", input: buildQuickReviewRoundInput(data, recipientEmails) });
     if (result) {
       setRecipientText("");
       setNotice("Review link created.");
@@ -136,10 +105,10 @@ export function ProjectShareButton({
       setError(`Check ${invalidEmails[0]}.`);
       return;
     }
-    const result = await post(`/${activeRound.id}/invite`, { recipientEmails });
+    const result = await post({ kind: "invite", roundId: activeRound.id, input: { recipientEmails } });
     if (result) {
       setRecipientText("");
-      setNotice(result.addedCount === 0 ? "Those reviewers already have access." : "Invitation queued.");
+      setNotice("addedCount" in result && result.addedCount === 0 ? "Those reviewers already have access." : "Invitation queued.");
     }
   }
 
@@ -192,7 +161,7 @@ export function ProjectShareButton({
       open={open}
       onOpenChange={(details) => {
         setOpen(details.open);
-        if (details.open && !data && !loading) void loadRoom();
+
       }}
       positioning={{ placement: "bottom-end", offset: { mainAxis: 8 } }}
     >
@@ -392,8 +361,8 @@ export function ProjectShareButton({
                 </Stack>
               ) : (
                 <Stack gap="3" px="5" pb="5">
-                  <Text color="danger.fg" fontSize="sm">{error ?? "Sharing details could not be loaded."}</Text>
-                  <Button size="sm" variant="subtle" onClick={() => void loadRoom()}>Try again</Button>
+                  <Text color="danger.fg" fontSize="sm">{error ?? room.error?.message ?? "Sharing details could not be loaded."}</Text>
+                  <Button size="sm" variant="subtle" onClick={() => void room.refetch()}>Try again</Button>
                 </Stack>
               )}
             </Stack>

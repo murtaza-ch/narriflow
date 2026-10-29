@@ -3,7 +3,7 @@ import nock from 'nock';
 import zapier from 'zapier-platform-core';
 import App from '../src';
 
-export const BASE = 'https://app.narriflow.com';
+export const BASE = 'http://localhost:4000';
 export const API_KEY = 'nf_test_key';
 const API = '/api/v1';
 
@@ -43,7 +43,7 @@ export function api(path: string) {
   return `${API}${path}`;
 }
 
-/** An authenticated nock scope for the production origin. */
+/** An authenticated nock scope for the API origin. */
 export function narriflow() {
   return nock(BASE, { reqheaders: { authorization: `Bearer ${API_KEY}`, accept: 'application/json' } });
 }
@@ -83,7 +83,7 @@ export function project(id = uuid(4), title = 'Weekly strategy podcast') {
       durationSeconds: 3120,
       languageCode: 'en',
       createdAt: '2026-10-24T09:00:00.000Z',
-      reviewUrl: `${BASE}/projects/${id}`,
+      reviewUrl: `https://app.narriflow.com/projects/${id}`,
     },
     progress: null,
   };
@@ -100,7 +100,7 @@ export function clip(id: number, title: string | null, revision = 1, projectId =
     endSec: 50,
     durationSec: 40,
     scores: { virality: 90 - id },
-    reviewUrl: `${BASE}/projects/${projectId}/clips/${uuid(id)}`,
+    reviewUrl: `https://app.narriflow.com/projects/${projectId}/clips/${uuid(id)}`,
   };
 }
 

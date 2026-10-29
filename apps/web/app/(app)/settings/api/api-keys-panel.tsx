@@ -1,14 +1,16 @@
 "use client";
 
-import { useState, useTransition } from "react";
-import { useRouter } from "next/navigation";
+import { useMemo, useState } from "react";
 import { IconButton, Table, Text } from "@chakra-ui/react";
+import type { WorkspaceScope } from "@narriflow/api-client";
+import { revokeApiKeyMutation } from "@narriflow/api-client/developer";
+import { useMutation } from "@tanstack/react-query";
 import { KeyRound, MoreHorizontal, Trash2 } from "lucide-react";
 import { useConfirm } from "@narriflow/ui/components/confirm-dialog";
 import { EmptyState } from "@narriflow/ui/components/empty-state";
 import { ActionMenu } from "@narriflow/ui/components/menu";
-import { authenticatedActionResultMessage, isAuthenticatedActionFailure } from "@/lib/authenticated-request-browser";
-import { revokeApiKeyAction } from "../actions";
+import { useApiRuntime } from "@/app/_components/api-provider";
+import { developerFailureMessage } from "./failure-message";
 
 // A fixed locale and zone keep server and client renders identical.
 const formatDate = (iso: string) => new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeZone: "UTC" }).format(new Date(iso));
@@ -41,14 +43,18 @@ function Access({ scopes }: { scopes: string[] }) {
 }
 
 export function ApiKeysPanel({
+  scope,
   keys,
 }: {
+  /** The Workspace these keys belong to; revoking is bound to it. */
+  scope: WorkspaceScope;
   keys: Array<{ id: string; name: string; prefix: string; scopes: string[]; lastUsedAt: string | null; createdAt: string }>;
 }) {
-  const router = useRouter();
+  const runtime = useApiRuntime();
   const { confirm, dialog } = useConfirm();
   const [error, setError] = useState<string | null>(null);
-  const [pending, startTransition] = useTransition();
+  const revokeKey = useMutation(useMemo(() => revokeApiKeyMutation(runtime, scope), [runtime, scope]));
+  const pending = revokeKey.isPending;
 
   async function revoke(key: { id: string; name: string }) {
     const confirmed = await confirm({
@@ -59,13 +65,8 @@ export function ApiKeysPanel({
     });
     if (!confirmed) return;
     setError(null);
-    startTransition(async () => {
-      const result = await revokeApiKeyAction(key.id);
-      if (isAuthenticatedActionFailure(result)) {
-        setError(authenticatedActionResultMessage(result, "The API key could not be revoked."));
-        return;
-      }
-      router.refresh();
+    revokeKey.mutate(key.id, {
+      onError: (failure) => setError(developerFailureMessage(failure, "The API key could not be revoked.")),
     });
   }
 

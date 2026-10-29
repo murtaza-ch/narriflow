@@ -13,7 +13,7 @@ afterEach(() => {
 
 const accepted = (kind: 'intake' | 'generation', operationId: string) => ({
   projectId: uuid(4),
-  operation: { operationId, kind, statusUrl: `https://app.narriflow.com/api/v1/operations/${operationId}` },
+  operation: { operationId, kind, statusUrl: `http://localhost:4000/api/v1/operations/${operationId}` },
   reviewUrl: `https://app.narriflow.com/projects/${uuid(4)}`,
   callback: null,
 });
@@ -118,7 +118,7 @@ describe('Export Clip', () => {
     export: { exportId: uuid(20), projectId: uuid(4), clipId: uuid(10), editorRevision: revision, status: 'queued', reviewUrl: 'https://app.narriflow.com/x' },
     reused: false,
     output: { requested: { resolution: '1080p' }, granted: { resolution: '720p', watermark: true }, reason: 'plan_limit' },
-    operation: { operationId: 'op_BBBBBBBBBBBBBBBBBBBBBBB', kind: 'export', statusUrl: 'https://app.narriflow.com/api/v1/operations/op_BBBBBBBBBBBBBBBBBBBBBBB' },
+    operation: { operationId: 'op_BBBBBBBBBBBBBBBBBBBBBBB', kind: 'export', statusUrl: 'http://localhost:4000/api/v1/operations/op_BBBBBBBBBBBBBBBBBBBBBBB' },
     callback: null,
   });
 
@@ -252,7 +252,7 @@ describe('Run Key', () => {
         export: { exportId: uuid(20), projectId: uuid(4), clipId: uuid(10), editorRevision: 2, status: 'queued', reviewUrl: 'https://app.narriflow.com/x' },
         reused: false,
         output: { requested: { resolution: '1080p' }, granted: { resolution: '1080p', watermark: false }, reason: null },
-        operation: { operationId: 'op_BBBBBBBBBBBBBBBBBBBBBBB', kind: 'export', statusUrl: 'https://app.narriflow.com/api/v1/operations/op_BBBBBBBBBBBBBBBBBBBBBBB' },
+        operation: { operationId: 'op_BBBBBBBBBBBBBBBBBBBBBBB', kind: 'export', statusUrl: 'http://localhost:4000/api/v1/operations/op_BBBBBBBBBBBBBBBBBBBBBBB' },
         callback: null,
       });
       await run('creates', 'export_clip', bundle({ clipId: uuid(10), runKey }));

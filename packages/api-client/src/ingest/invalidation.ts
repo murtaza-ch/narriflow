@@ -1,5 +1,6 @@
 import type { QueryClient } from "@tanstack/query-core";
 import { invalidateScoped, type WorkspaceScope } from "../core";
+import { invalidateWorkspaceUsage } from "../workspace/queries";
 
 /**
  * After intake is accepted (link, Drive, RSS, upload, finalize, retry): the new or
@@ -14,6 +15,6 @@ export async function invalidateAfterIntake(
     invalidateScoped(queryClient, scope, "ingest"),
     invalidateScoped(queryClient, scope, "projects"),
     invalidateScoped(queryClient, scope, "library"),
-    invalidateScoped(queryClient, scope, "workspace", "usage"),
+    invalidateWorkspaceUsage(queryClient, scope),
   ]);
 }

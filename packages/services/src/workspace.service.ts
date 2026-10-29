@@ -590,17 +590,20 @@ export class WorkspaceService {
     });
   }
 
-  async createApiKey(
+  /**
+   * Writes a new key inside the caller's transaction (the Operation Receipt's).
+   * `secret` is returned once and exists nowhere else: only its hash is stored.
+   */
+  async issueApiKey(
+    db: Prisma.TransactionClient,
     userId: string,
     workspaceId: string,
-    input: { name: string; scopes?: string[] },
+    normalized: { name: string; scopes: WorkspaceApiKeyScope[] },
   ) {
-    const actor = await this.requireActor(userId, workspaceId, "api.manage");
-    const normalized = normalizeWorkspaceApiKeyInput(actor.pricingTier, input);
     const secret = `nf_${randomBytes(32).toString("base64url")}`;
     const prefix = secret.slice(0, 11);
     const hashedSecret = createHash("sha256").update(secret).digest("hex");
-    const key = await requiredPrisma().apiKey.create({
+    const key = await db.apiKey.create({
       data: {
         userId,
         workspaceId,

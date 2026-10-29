@@ -1,7 +1,7 @@
 import type { Bundle, ZObject } from 'zapier-platform-core';
 
-/** The production origin. Dev and self-hosted deployments override it in the connection. */
-export const DEFAULT_BASE_URL = 'https://app.narriflow.com';
+/** Local API default. Hosted connections configure their public HTTPS API origin. */
+export const DEFAULT_BASE_URL = 'http://localhost:4000';
 
 type Query = Record<string, string | number | boolean | undefined>;
 
@@ -46,7 +46,7 @@ export function apiRoot(z: ZObject, bundle: Connection): string {
   if (url.protocol !== 'https:' && !(local && url.protocol === 'http:')) {
     throw new z.errors.Error('The Narriflow URL must start with https://.', 'invalid_base_url', 400);
   }
-  // Only the origin matters: people paste the base URL, the app URL or the API URL.
+  // Only the origin matters: people paste the API origin or its /api/v1 path.
   return `${url.origin}/api/v1`;
 }
 

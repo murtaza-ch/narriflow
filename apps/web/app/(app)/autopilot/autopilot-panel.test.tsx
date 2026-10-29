@@ -1,12 +1,11 @@
-import { describe, expect, mock, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { ChakraProvider } from "@chakra-ui/react";
+import { createIntent } from "@narriflow/api-client/core";
 import { system } from "@narriflow/ui/theme";
 import { buildGenerationContentPack, finishingSettingsSchema, type AutopilotRuleSnapshot, type RecipeSnapshot } from "@narriflow/validators";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderToStaticMarkup } from "react-dom/server";
 
-mock.module("next/navigation", () => ({
-  useRouter: () => ({ refresh() {}, push() {} }),
-}));
 const { AutopilotPanel, RecipeSelect } = await import("./autopilot-panel");
 const { BrandProfileSelect } = await import("../recipes/brand-profile-select");
 const { FinishingFields } = await import("../recipes/finishing-fields");
@@ -64,18 +63,43 @@ function rule(overrides: Partial<AutopilotRuleSnapshot>): AutopilotRuleSnapshot 
   };
 }
 
+/** Nothing here is called while the panel is only rendered. */
+const unused = async (): Promise<never> => {
+  throw new Error("not used while rendering");
+};
+const api: import("./autopilot-panel").AutopilotPanelApi = {
+  actions: {
+    createRule: unused,
+    updateRule: unused,
+    deleteRule: unused,
+    takeOverRule: unused,
+    runRuleNow: unused,
+    createGrant: unused,
+    renewGrant: unused,
+    pauseGrant: unused,
+    revokeGrant: unused,
+    disconnectZoom: unused,
+    startZoomOAuth: unused,
+  },
+  createIntent: () => createIntent(),
+  changed: async () => {},
+};
+
 function render(rules: AutopilotRuleSnapshot[], canTakeOver: boolean, finishingAvailable = true, recipes = [recipe()], grants: AutopilotRuleGrant[] = [], extra: Partial<Parameters<typeof AutopilotPanel>[0]> = {}) {
   return renderToStaticMarkup(
+    <QueryClientProvider client={new QueryClient()}>
     <ChakraProvider value={system}>
       <AutopilotPanel
-        initialRules={rules}
+        api={api}
+        rules={rules}
         recipes={recipes}
         canTakeOver={canTakeOver}
         finishingAvailable={finishingAvailable}
         grants={grants}
         {...extra}
       />
-    </ChakraProvider>,
+    </ChakraProvider>
+    </QueryClientProvider>,
   );
 }
 
@@ -95,11 +119,13 @@ describe("Autopilot panel ownership and Recipe", () => {
     const connection = { id: "00000000-0000-4000-8000-0000000000d1", userId: "u1", displayName: "Dana on Zoom", revoked: false, canDisconnect: true };
     const creator = render([], true, false, undefined, [], { zoomEnabled: true, canConnectZoom: true, autopilotIncluded: false, zoomConnections: [connection] });
     expect(creator).toContain("(needs Pro)");
-    expect(creator).not.toContain('href="/api/zoom/oauth/start"');
+    expect(creator).not.toContain("Connect Zoom</button>");
     expect(creator).toContain("Dana on Zoom");
     expect(creator).toContain("Disconnect");
     const pro = render([], true, true, undefined, [], { zoomEnabled: true, canConnectZoom: true, autopilotIncluded: true });
-    expect(pro).toContain('href="/api/zoom/oauth/start"');
+    // Connecting is an authenticated JSON start, not a link a Bearer token cannot ride on.
+    expect(pro).toContain("Connect Zoom</button>");
+    expect(pro).not.toContain("/api/zoom/oauth/start");
   });
   test("a paused rule shows its reason, and only Owners and Admins get Take over", () => {
     const paused = rule({ status: "paused", pauseKind: "acting_member", lastError: PAUSE_REASON });

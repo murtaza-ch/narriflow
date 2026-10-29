@@ -199,7 +199,7 @@ export function PublishingProvider({
 	const runtime = useApiRuntime();
 	const scope = useWorkspaceScope();
 	if (!scope) throw new Error("Publishing requires a selected Workspace");
-	const api = useMemo(() => createProjectPublishingApi(runtime.transport, scope), [runtime.transport, scope]);
+	const api = useMemo(() => createProjectPublishingApi(runtime.transport, scope, runtime.queryClient), [runtime.transport, scope, runtime.queryClient]);
 	useEffect(() => setPosts(config.initialPosts), [config.initialPosts]);
 	useEffect(() => setNextPostsCursor(config.initialPostsCursor), [config.initialPostsCursor]);
 	const refresh = useCallback(async () => {

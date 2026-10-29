@@ -1,20 +1,6 @@
-export const PROJECT_TABS = [
-	"clips",
-	"transcript",
-	"repurpose",
-	"dubbing",
-	"review",
-	"posts",
-	"analytics",
-	"activity",
-] as const;
-
-export type ProjectTab = (typeof PROJECT_TABS)[number];
-
-export function projectTabFromSearchParam(
-	value: string | null | undefined,
-): ProjectTab {
-	return value && (PROJECT_TABS as readonly string[]).includes(value)
-		? (value as ProjectTab)
-		: "clips";
-}
+// The tab list and the URL parser are shared with the API's detail endpoint.
+export {
+	PROJECT_TABS,
+	type ProjectTab,
+	projectTabFromSearchParam,
+} from "@narriflow/validators/api/projects";

@@ -9,6 +9,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { skipToken, useMutation, useQuery } from "@tanstack/react-query";
 import { ApiError, invalidateScoped, type Intent } from "@narriflow/api-client";
+import { invalidateWorkspaceUsage } from "@narriflow/api-client/workspace";
 import {
 	clipCommands,
 	clipMutationOptions,
@@ -611,7 +612,7 @@ export function ClipRow({
 			// The new export spends render capacity and shows on the Project's exports.
 			void Promise.all([
 				invalidateScoped(queryClient, scope, "exports"),
-				invalidateScoped(queryClient, scope, "workspace", "usage"),
+				invalidateWorkspaceUsage(queryClient, scope),
 			]);
 			router.push(exportPage(created.export.id));
 		} catch (error) {

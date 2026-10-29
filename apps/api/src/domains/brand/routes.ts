@@ -103,6 +103,7 @@ function receiptOf(c: Context<ApiEnv>) {
   return {
     clientIdempotencyKey: getIdempotencyKey(c),
     beforeAccept: async () => enforceRecordedRateLimit(getRecordedRateLimit(c)),
+    onReplay: () => c.header("Idempotent-Replayed", "true"),
   };
 }
 

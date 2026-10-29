@@ -18,6 +18,7 @@ export {
   invalidateAfterProjectDeleted,
   invalidateAfterProjectMoved,
   invalidateProject,
+  invalidateProjectCollections,
   projectCommands,
   projectMutationOptions,
 } from "./mutations";

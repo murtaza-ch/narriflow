@@ -22,7 +22,7 @@ const authentication: Authentication = {
       type: 'string',
       required: false,
       default: DEFAULT_BASE_URL,
-      helpText: `Leave as ${DEFAULT_BASE_URL}. Change it only to connect a development or self-hosted deployment.`,
+      helpText: `Set your public HTTPS API origin for hosted connections. Local development uses ${DEFAULT_BASE_URL}.`,
     },
   ],
   // The connection test reads the Workspace, which also proves the key's Workspace has API access.

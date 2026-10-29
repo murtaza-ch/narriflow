@@ -4,7 +4,7 @@
 
 **Blocked by:** [24 - Move MCP discovery and upload protocols](24-move-mcp-discovery-and-upload-protocols.md), [05 - Expose session and Workspace controls](05-expose-session-and-workspace-controls.md), [07 - Move billing API and convert billing UI](07-move-billing-api-and-convert-billing-ui.md)
 
-**Status:** ready-for-agent
+**Status:** blocked
 
 **Suggested implementer:** Sol. The other pairing side reviews and returns findings to this owner.
 
@@ -87,9 +87,9 @@ Also account for the inventory's cross-domain traps: query-only actions, action 
 ## Acceptance criteria
 
 - [ ] MCP setup/confirm/upload pages query status/preparation/handoff and mutation confirmation, preserving signed-in admission independent of active Workspace.
-- [ ] Upload picker targets API bridge with Bearer plus X-Narriflow-Upload-Intent; no same-origin-cookie assumption or raw web DB access.
-- [ ] Workspace billing link uses validated switch before destination; setup resource URL uses API while browser links remain web.
-- [ ] Expired/revoked/degraded connectors and OAuth consent destinations match current user states and never log signed tokens.
+- [x] Upload picker targets API bridge with Bearer plus X-Narriflow-Upload-Intent; no same-origin-cookie assumption or raw web DB access.
+- [x] Workspace billing link uses validated switch before destination; setup resource URL uses API while browser links remain web.
+- [x] Expired/revoked/degraded connectors and OAuth consent destinations match current user states and never log signed tokens.
 - [ ] No unowned files changed; paired review findings and verification evidence recorded under Comments.
 
 ## Verification
@@ -105,3 +105,36 @@ Verify the changed flow in the running Next app against the separate API origin.
 ## Comments
 
 Append claim, requested seam changes, paired review and evidence here.
+
+- Claimed by GPT-6.1-Sol on 2026-10-29 for ticket 26 only.
+
+### Request for shell owner 06 / cleanup 31
+
+- `apps/web/app/(app)/_components/app-chrome.tsx:AppShell` always mounts `SessionGate > WorkspaceQueryGate` before rendering these pages. That blocks signed-in MCP continuations when the unrelated selected Workspace is restricted or unavailable. Exempt `/integrations/mcp/confirm` and `/integrations/mcp/upload` from selected-Workspace admission and render them through an identity-only continuation shell, preserving the existing presentation. Their API reads and controls already use identity scope and their signed Workspace. This file is unowned by 26; it will not be edited here.
+
+
+### Implemented in ticket 26
+
+- Setup is a client status query. It consumes the API's resource URL, configuration and admitted Workspace facts; no web environment/backend read remains. Existing assistant guides, links, cards, notices and `loading.tsx` stay in use.
+- Confirmation and upload pages are data-free metadata/Suspense shells around local client screens. The screens hash signed inputs before constructing identity-only query options, preserve the existing frozen facts, captions, provider settings, Recipe/generation summary, picker and unavailable states, and consume typed connector recovery facts from `ApiError.code`/`details`. Tokens never enter query keys or mutation variables.
+- Deleted `confirm/actions.ts`. Confirmation uses the integrations mutation factory with the original signed acceptance identity on explicit retry. A confirmed acceptance invalidates only publishing in the signed Workspace before navigating to the returned web destination. Decline follows its returned destination without publishing invalidation. No new idempotency wrapper or browser Workspace switch is added to a continuation.
+- `upload-picker.tsx` passes `createMcpUploadControls` as `controls`, preserves the signed client key, and supplies neither a path-rewriting `fetcher` nor cookie credentials. Expired `open` becomes `status` through ticket 24's helper. Storage bytes retain the adapter's direct, uncredentialed XHR transport. Accepted intake invalidates the signed Workspace's ingest/projects/library/usage reads.
+- Billing recovery uses `useWorkspaceSwitch()` and navigates only after membership validation succeeds. A refusal stays on the continuation and displays the existing safe failure wording.
+- All edits are within this ticket's MCP directory and this tracker file. New local screen/helper/test files remain beside the owned implementations. No commits, dependency installs, environment changes, database calls or process termination.
+
+### Verification evidence
+
+- `bun test "apps/web/app/(app)/integrations/mcp"`: **7 pass, 0 fail**, including an isolated launcher that executes **12 passing flow tests**. Those tests use the real API provider/runtime/transport/QueryClient and Chakra views against a controlled API. They cover API resource/degraded configuration, frozen facts, signed-Workspace invalidation, decline, lost-response retry with the same acceptance, expired/revoked preparation, plan recovery, validated/refused billing selection, expired upload preview and actual picker status controls with a typed refusal, and declined-link empty state.
+- `bun test './apps/web/app/(app)/integrations/mcp/continuation.browser.fixture.tsx' packages/api-client/src/integrations 'apps/web/app/(app)/upload/_lib/upload-session-browser.test.ts'`: **48 pass, 0 fail** before the final declined-link test was added. Existing adapter coverage includes direct storage bytes, single/multipart grants, pause/resume/discard, retry, polling, and no credential forwarding.
+- Ran `bunx tsc -p apps/web/tsconfig.json --noEmit` once. It exposed a mutation-variable type error in the new screen, which was fixed. The initial full-web failures outside this ticket were `apps/api/src/domains/rest/routes.ts:176` (**23**), `projects/[projectId]/review-panel.tsx:128` (**28**), `settings/actions.ts` and `settings/api/callback-secret-panel.tsx` (**25**), `app/api/stream/**` and `lib/workflow-stream-reauthorization.ts` (**29/31**), and obsolete `lib/authenticated-request-{action,page}.ts` (**31**). These files were not edited.
+- After the fix, a targeted TypeScript compiler-API check using the web tsconfig reported **13 production files, 0 diagnostics**. A subsequent check also includes the three normally excluded test/fixture files with the already installed Bun type declarations; its final result is recorded below. This checks only owned roots, without repeating the full web typecheck or changing any tsconfig.
+- `bunx biome check "apps/web/app/(app)/integrations/mcp"`: clean, **16 files**. `git diff --check -- 'apps/web/app/(app)/integrations/mcp'`: clean. Source scan: no backend imports, Server Action, raw fetch, same-origin-cookie control, `router.refresh`, `revalidatePath` or `useFormStatus` remains.
+- Live signed-in browser verification was **not run**. Neither localhost **3000** nor **4000** had a listening service. The fixture origin pair is **http://localhost:3000 -> https://api.test**, with mocked Clerk identity/HTTP, not live Next/API browser evidence. Ticket **32** must run W -> A setup, signed confirmation/decline/revoked connector, owner billing recovery and single/multipart upload/resume against configured Clerk/API origins, including an unrelated restricted selected Workspace and direct R2 requests without session credentials.
+
+### Close-out / paired review
+
+- Owned implementation is complete. Status is **blocked** because the first acceptance criterion cannot be met end-to-end until **06/31** fixes the inherited `AppShell` gate described above. The continuation reads, mutation and upload controls themselves are identity-only and tested with an unrelated selected Workspace; a child page cannot bypass a parent gate within this ticket's ownership.
+- Paired review remains with Claude/orchestrator. No review delegate was started by this implementation sub-agent. The last acceptance box stays open for that review; no paired findings have been received.
+- No intentional deviation from the API contract and no disagreement with the spec. The unowned shell gate is an implementation defect against its explicit signed-in continuation requirement.
+
+- Final targeted TypeScript result, including the normally excluded tests/DOM fixture with installed Bun types: **16 files, 0 diagnostics**. Final Biome check: **16 files clean**; owned `git diff --check`: clean.

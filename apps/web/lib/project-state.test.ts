@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 import {
   ingestRecoveryAction,
   ingestRecoveryLabel,
+  isQuotaBlockedMidFlight,
+  MAX_INGEST_RETRY_ATTEMPTS,
   liveIngestStageWord,
   mergePipelineStepsWithLiveEvents,
   mergeStageWithLiveEvent,
@@ -212,4 +214,17 @@ test("processing checklist ignores another run's history just as the header does
   expect(mergeStageWithLiveEvent(server, oldCompletion, FIRST_RUN_ID)).toEqual(server);
   expect(mergeStageWithLiveEvent(server, oldCompletion, null)).toEqual(server);
   expect(mergeStageWithLiveEvent(server, workflowEvent(FIRST_RUN_ID, 11), FIRST_RUN_ID)).toEqual({ status: "completed", progress: 100, errorCode: null });
+});
+
+describe("quota stops", () => {
+  test("credits and length stops are quota-blocked; other ingest failures are not", () => {
+    expect(isQuotaBlockedMidFlight({ ingestErrorCode: "credits_exhausted" })).toBe(true);
+    expect(isQuotaBlockedMidFlight({ ingestErrorCode: "upload_too_long" })).toBe(true);
+    expect(isQuotaBlockedMidFlight({ ingestErrorCode: "ingest_retries_exhausted" })).toBe(false);
+    expect(isQuotaBlockedMidFlight({ ingestErrorCode: null })).toBe(false);
+  });
+
+  test("the retry cap is a positive whole number", () => {
+    expect(Number.isInteger(MAX_INGEST_RETRY_ATTEMPTS) && MAX_INGEST_RETRY_ATTEMPTS > 0).toBe(true);
+  });
 });

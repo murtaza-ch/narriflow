@@ -1,3 +1,5 @@
+"use client";
+
 import Link from "next/link";
 import { Flex, Heading, Stack, Text } from "@chakra-ui/react";
 import { Link2Off } from "lucide-react";

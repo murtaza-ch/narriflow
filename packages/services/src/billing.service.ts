@@ -25,6 +25,9 @@ import {
   type ExpectedDomainFailureCatalog,
 } from "./expected-domain-failure";
 import { WorkspaceOperationError, workspaceService } from "./workspace.service";
+import { workspaceCommands } from "./workspace-commands-runtime";
+import type { WorkspaceMutation } from "./workspace-commands";
+import { uuidV5 } from "./uuid-v5";
 
 const billingFailureCatalog = {
   billing_catalog_invalid: "unavailable",
@@ -197,6 +200,8 @@ function catalogFromEnvironment(): BillingCatalog {
   });
 }
 
+const BUSINESS_CHECKOUT_KEY_NAMESPACE = "5b1e0c52-93d7-5a4e-8f3b-7c2d1a9e4f60";
+
 export interface BusinessWorkspaceCheckoutInput {
   actorUserId: string;
   /** Required to create the Workspace; ignored in favour of the stored name when resuming. */
@@ -204,7 +209,14 @@ export interface BusinessWorkspaceCheckoutInput {
   /** A pending Workspace to resume instead of creating another. */
   workspaceId?: string;
   interval: BillingInterval;
+  /** The Stripe Checkout key. When absent on a creation it derives from `creation`, so a retry reuses it. */
   checkoutIdempotencyKey?: string;
+  /**
+   * Required with `name`: the caller's per-intent key and new-work limiter. The
+   * Workspace is created through a receipt on this key, so a retry after a lost
+   * response resumes the same pending Workspace instead of creating another.
+   */
+  creation?: WorkspaceMutation;
   returnDestination: string;
 }
 
@@ -775,13 +787,17 @@ export class BillingService {
 
   /**
    * Starts Business checkout for a new Workspace, or resumes one that is still
-   * awaiting payment (`workspaceId`). The pending Workspace is created once and
-   * its Checkout key is reused on every retry, so a retried submit continues the
-   * same Checkout. A failure after the Workspace exists carries
+   * awaiting payment (`workspaceId`). The pending Workspace is created through an
+   * Operation Receipt on the caller's key and its Checkout key is reused on every
+   * retry, so a retried submit continues the same Workspace and Checkout. A failure after the Workspace exists carries
    * `details.recovery` so the form can resubmit against it.
    */
   async startBusinessWorkspaceCheckout(input: BusinessWorkspaceCheckoutInput): Promise<BusinessWorkspaceCheckout> {
-    const checkoutIdempotencyKey = input.checkoutIdempotencyKey ?? randomUUID();
+    const checkoutIdempotencyKey =
+      input.checkoutIdempotencyKey ??
+      (input.creation && !input.workspaceId
+        ? uuidV5(BUSINESS_CHECKOUT_KEY_NAMESPACE, JSON.stringify([input.actorUserId, input.creation.clientIdempotencyKey]))
+        : randomUUID());
     let workspaceId = input.workspaceId;
     let workspaceName = input.name;
     try {
@@ -806,11 +822,15 @@ export class BillingService {
         }
         workspaceName = workspaceActor.workspaceName;
       } else {
-        if (!input.name) throw new Error("Validated Workspace creation input is missing a name");
-        const workspace = await workspaceService.createPendingBusinessWorkspace(input.actorUserId, {
-          name: input.name,
-        });
-        workspaceId = workspace.id;
+        if (!input.name || !input.creation) {
+          throw new Error("Validated Workspace creation input is missing a name or caller key");
+        }
+        const workspace = await workspaceCommands.createBusinessWorkspace(
+          input.actorUserId,
+          { name: input.name },
+          input.creation,
+        );
+        workspaceId = workspace.workspaceId;
         workspaceName = workspace.name;
       }
       const checkout = await this.startCheckout({

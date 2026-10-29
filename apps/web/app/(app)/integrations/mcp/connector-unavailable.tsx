@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { isApiError } from "@narriflow/api-client/core";
 import { Flex, Stack } from "@chakra-ui/react";
 import { Button } from "@narriflow/ui/components/button";
 import { PageHeader } from "@narriflow/ui/components/page-header";
@@ -73,4 +74,17 @@ export function ConnectorUnavailable({
       </Flex>
     </Stack>
   );
+}
+
+/** Safe recovery facts supplied by the continuation API after live membership admission. */
+export function connectorWorkspaceFromError(error: unknown): HandoffWorkspace | null {
+  if (!isApiError(error) || error.code !== "integration_access_unavailable") return null;
+  const value = error.details?.workspace;
+  if (typeof value !== "object" || value === null) return null;
+  const workspace = value as Record<string, unknown>;
+  const { workspaceId, workspaceName, role, status, pricingTier } = workspace;
+  if (typeof workspaceId !== "string" || typeof workspaceName !== "string" || typeof pricingTier !== "string") return null;
+  if (role !== "owner" && role !== "admin" && role !== "editor" && role !== "viewer") return null;
+  if (status !== "active" && status !== "pending_payment" && status !== "restricted") return null;
+  return { workspaceId, workspaceName, role, status, pricingTier };
 }

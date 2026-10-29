@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import type { ReactNode } from "react";
 import { Box, Flex, Grid, Skeleton, Stack, Text } from "@chakra-ui/react";
 import {
@@ -23,14 +23,24 @@ import { Spinner } from "@narriflow/ui/components/spinner";
 import {
   ALL_TEXT_OUTPUT_TYPES,
   TEXT_OUTPUT_TYPE_LABELS,
-  userErrorMessage,
   type ContentAsset,
   type TextOutputType,
 } from "@narriflow/validators";
 import { PanelHeader } from "./panel-header";
 import { PlanLimitNotice } from "../../_components/plan-limit-notice";
 import { LockedButton, useUpgrade, type UpgradePrompt } from "../../_components/upgrade";
+import { STALE_TIME, isApiError, scopedKey, type WorkspaceScope } from "@narriflow/api-client";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { upgradePromptFromFailure } from "@/lib/authenticated-request-browser";
+import { requireClipApi, useClipApi } from "@/lib/clip-media";
+import { browserFailureFromApiError } from "@/lib/publishing-client";
+import { clipActionErrorCopy } from "./clip-action-error-copy";
+
+const NO_ASSETS: ContentAsset[] = [];
+
+function contentSuiteKey(scope: WorkspaceScope, projectId: string) {
+  return scopedKey(scope, "projects", "content-suite", projectId);
+}
 
 /** What each output is, shown before and while it is written. Each line states what the writer is asked for. */
 const OUTPUT_DETAILS: Record<TextOutputType, { icon: ReactNode; description: string }> = {
@@ -401,79 +411,46 @@ export function ContentSuitePanel({
   canEdit: boolean;
 }) {
   const { openUpgrade } = useUpgrade();
-  const [assets, setAssets] = useState<ContentAsset[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [generating, setGenerating] = useState(false);
+  const api = useClipApi();
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (!transcriptReady) {
-      setLoading(false);
-      return;
-    }
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await fetch(`/api/projects/${projectId}/content-suite`);
-        const json = (await res.json().catch(() => ({}))) as {
-          assets?: ContentAsset[];
-          message?: string;
-          error?: string;
-        };
-        if (cancelled) return;
-        if (!res.ok) {
-          setError(
-            json.message ??
-              userErrorMessage(json.error) ??
-              "Could not load repurposed content.",
-          );
-          return;
-        }
-        if (json.assets) setAssets(json.assets);
-      } catch (err) {
-        console.warn(JSON.stringify({ level: "error", message: "content_suite_load_failed", errorName: err instanceof Error ? err.name : "UnknownError" }));
-        if (!cancelled) setError("Could not load repurposed content.");
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [projectId, transcriptReady]);
+  // Written assets of this Project; the generate command replaces them wholesale.
+  const key = api ? contentSuiteKey(api.scope, projectId) : null;
+  const list = useQuery({
+    queryKey: key ?? ["nf", "content-suite", "no-workspace"],
+    enabled: transcriptReady && api !== null,
+    staleTime: STALE_TIME.default,
+    queryFn: async ({ signal }) => {
+      const { projects } = requireClipApi(api);
+      const response = await projects.projects[":id"]["content-suite"].$get(
+        { param: { id: projectId } },
+        { init: { signal } },
+      );
+      return (await response.json()).assets as ContentAsset[];
+    },
+  });
+  const assets = list.data ?? NO_ASSETS;
+  const loading = transcriptReady && list.isPending;
+  const loadError = list.isError ? "Could not load repurposed content." : null;
 
-  const generate = useCallback(async () => {
-    setGenerating(true);
-    setError(null);
-    try {
-      const res = await fetch(`/api/projects/${projectId}/content-suite`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
-      });
-      const json = (await res.json().catch(() => ({}))) as {
-        assets?: ContentAsset[];
-        message?: string;
-        error?: string;
-      };
-      if (res.status === 402) {
-        const prompt = upgradePromptFromFailure(json);
+  const generate = useMutation({
+    mutationFn: async () => {
+      const { projects, queryClient, scope } = requireClipApi(api);
+      const response = await projects.projects[":id"]["content-suite"].$post({ param: { id: projectId }, json: {} });
+      const written = (await response.json()).assets as ContentAsset[];
+      queryClient.setQueryData(contentSuiteKey(scope, projectId), written);
+    },
+    onMutate: () => setError(null),
+    onError: (failure) => {
+      if (isApiError(failure) && failure.status === 402) {
+        const prompt = upgradePromptFromFailure(browserFailureFromApiError(failure));
         if (prompt) openUpgrade(prompt);
       }
-      if (!res.ok || !json.assets) {
-        throw new Error(
-          json.message ??
-            userErrorMessage(json.error) ??
-            "Could not generate repurposed content.",
-        );
-      }
-      setAssets(json.assets);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Generation failed");
-    } finally {
-      setGenerating(false);
-    }
-  }, [openUpgrade, projectId]);
+      setError(clipActionErrorCopy(failure, "Could not generate repurposed content."));
+    },
+  });
+  const generating = generate.isPending;
+  const shownError = error ?? loadError;
 
   if (!transcriptReady) return null;
 
@@ -495,7 +472,7 @@ export function ContentSuitePanel({
             <Button
               size="sm"
               variant={assets.length > 0 ? "subtle" : "solid"}
-              onClick={generate}
+              onClick={() => generate.mutate()}
               disabled={generating || loading || planRequirement !== null}
             >
               {generating ? <Spinner size="xs" /> : <Sparkles size={14} />}
@@ -511,7 +488,7 @@ export function ContentSuitePanel({
 
       {canEdit ? <PlanLimitNotice message={planRequirement} upgrade={upgrade} /> : null}
 
-      {error ? (
+      {shownError ? (
         <Flex
           role="alert"
           align="center"
@@ -523,7 +500,7 @@ export function ContentSuitePanel({
           py="3"
         >
           <AlertTriangle size={15} aria-hidden />
-          <Text fontSize="13px">{error}</Text>
+          <Text fontSize="13px">{shownError}</Text>
         </Flex>
       ) : null}
 

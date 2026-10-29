@@ -62,19 +62,30 @@ export function createClipsCommands(dependencies: ClipsCommandDependencies) {
       await requireEditor(actor.actorUserId, actor.workspaceId);
     };
 
-    // Replay first, after current authorization, so a retry never repeats work
-    // and a changed input under the same key conflicts.
-    await authorize();
-    const existing = await persistence.read(identity);
-    if (existing) {
+    const replayOf = async (): Promise<ClipCreationOutcome | null> => {
+      const existing = await persistence.read(identity);
+      if (!existing) return null;
       if (existing.fingerprint !== operationFingerprint(input)) {
         throw new OperationIdempotencyConflictError();
       }
       return { clip: existing.result as ClipSnapshot, replayed: true };
-    }
+    };
+
+    // Replay first, after current authorization, so a retry never repeats work
+    // and a changed input under the same key conflicts.
+    await authorize();
+    const replay = await replayOf();
+    if (replay) return replay;
     // New work: refuse before copying media. The executor repeats the check once
-    // it holds the receipt lock.
-    await mutation.beforeAccept?.();
+    // it holds the receipt lock. A refusal here may race a request that has just
+    // committed this same key, so look for its receipt again before returning it.
+    try {
+      await mutation.beforeAccept?.();
+    } catch (refusal) {
+      const concurrent = await replayOf();
+      if (concurrent) return concurrent;
+      throw refusal;
+    }
 
     try {
       const clip = await create({

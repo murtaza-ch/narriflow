@@ -236,5 +236,5 @@ test('the export download search returns one bundle for each format', () => {
 test('the universal module keeps requests on the connection’s host', () => {
   const call = json(manifest.components.module.makeAnApiCall.codeFiles.communication);
   // The path always follows a `/` after the host, so a pasted `@host` or `.host` cannot change it.
-  assert.match(call.url, /^\{\{ifempty\(connection\.baseUrl, 'https:\/\/app\.narriflow\.com'\)\}\}\/\{\{parameters\.url\}\}$/);
+  assert.match(call.url, /^\{\{ifempty\(connection\.baseUrl, 'http:\/\/localhost:4000'\)\}\}\/\{\{parameters\.url\}\}$/);
 });

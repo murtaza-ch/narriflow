@@ -4,7 +4,7 @@
         "type": "text",
         "label": "URL",
         "required": true,
-        "help": "Enter a path relative to `https://app.narriflow.com`. For example: `/api/v1/operations/op_...`. The REST API reference lists every path."
+        "help": "Enter a path relative to the configured API origin. For example: `/api/v1/operations/op_...`. The REST API reference lists every path."
     },
     {
         "name": "method",

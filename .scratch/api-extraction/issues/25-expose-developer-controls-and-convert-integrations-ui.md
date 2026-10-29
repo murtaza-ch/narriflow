@@ -4,7 +4,7 @@
 
 **Blocked by:** [05 - Expose session and Workspace controls](05-expose-session-and-workspace-controls.md), [06 - Convert app shell and Workspace UI](06-convert-app-shell-and-workspace-ui.md), [17 - Move publishing OAuth queue and performance API](17-move-publishing-oauth-queue-and-performance-api.md), [23 - Move REST v1 and detach docs from backend](23-move-rest-v1-and-detach-docs-from-backend.md), [24 - Move MCP discovery and upload protocols](24-move-mcp-discovery-and-upload-protocols.md)
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Suggested implementer:** Claude. The other pairing side reviews and returns findings to this owner.
 
@@ -244,10 +244,10 @@ Rows retain their section/ordinal or exact source-line identifier from the indep
 
 ## Acceptance criteria
 
-- [ ] Seven developer actions and settings/integrations reads map to explicit api.manage/plan-gated endpoints; viewer overview never fetches forbidden private data.
-- [ ] Create key/rotate signing secret commit credential-neutral receipts; replay returns credential_already_issued recovery without plaintext storage or another issuance.
+- [x] Seven developer actions and settings/integrations reads map to explicit api.manage/plan-gated endpoints; viewer overview never fetches forbidden private data.
+- [x] Create key/rotate signing secret commit credential-neutral receipts; replay returns credential_already_issued recovery without plaintext storage or another issuance.
 - [ ] Webhook create/test/redeliver intent is durable/retry-safe; delivery remains worker-owned, signed and SSRF-protected.
-- [ ] Every owned UI refresh/action/OAuth link converts; one-time secrets stay component-local, never QueryClient cache.
+- [x] Every owned UI refresh/action/OAuth link converts; one-time secrets stay component-local, never QueryClient cache.
 - [ ] workspace.service.ts handoff from 05 is serial through blockers; REST/MCP reuse same command identity without editing their route files.
 - [ ] No unowned files changed; paired review findings and verification evidence recorded under Comments.
 
@@ -264,4 +264,30 @@ bun run --cwd apps/api typecheck
 
 ## Comments
 
-Append claim, requested seam changes, paired review and evidence here.
+
+
+Claimed and implemented by Claude (Sonnet 5.5), 2026-10-29. Three acceptance boxes left open: webhook test/redeliver durability (test stays throttle-based, see Deviations), REST reusing the command identity (REST route file not mine), and the paired review.
+
+### What landed
+- **Routes** (`apps/api/src/domains/developer`): `GET /integrations` (content.view; key count and signing status only when the actor holds api.manage, else null and nothing read), `GET /developer/settings`, `GET|POST /workspace/api-keys`, `DELETE /workspace/api-keys/:keyId`, `GET /workspace/callback-signing-secret`, `POST .../rotate`, `GET|POST /workspace/webhooks`, `DELETE`, `POST .../enable`, `POST .../test`. All api.manage except the overview; webhook routes keep the `integrations.api` plan gate. Create key, rotate and create webhook use `deferRateRefusal` plus the recorded limiter in the acceptance transaction (after replay lookup).
+- **Commands** (`developer-commands.ts`, receipt names `create_api_key`, `rotate_callback_signing_secret`, `create_webhook`): one transaction commits the write and a credential-neutral receipt. Key receipt keeps id/name/prefix/scopes/createdAt; secret receipt keeps the stored secret id and createdAt. A replay (including a lost commit response) throws 409 `credential_already_issued` with safe details and issues nothing. `workspaceService.createApiKey` replaced by tx-aware `issueApiKey`; `callbackSigningSecrets.rotate` removed from the runtime (factory keeps `issue(tx)` and `rotate` for DB tests); `webhookSubscriptions.create` now = `prepareCreate` + `insert` (+ `explainInsertFailure`) so REST keeps its unchanged call.
+- **Client** (`@narriflow/api-client/developer`): settings and overview queries (overview seeds `publishing/accounts`), seven mutations. Key/secret mutations: `retry:false`, `gcTime:0`, intent completes on success or `credential_already_issued`; plaintext is held by the component only.
+- **UI**: `settings/api` and `integrations` are data-free shells + client screens; all five panels/dialogs use mutations; `router.refresh`, server actions and `settings/actions.ts` deleted. The OAuth "Connect" tile is now a button calling `POST /api/social/oauth/start/:platform` then navigating (no link can carry the Bearer token). Quickstart base is `NEXT_PUBLIC_API_URL + /api/v1`. A member without api.manage sees the existing AccessNote (previously a server redirect to /home).
+
+### Deviations
+- Webhook "test" is not receipt-backed: it keeps its existing per-webhook DB throttle (429 `webhook_test_throttled`). No redelivery endpoint exists in this ticket's row, so `redeliver_callback` stays REST's.
+- REST `POST /webhooks` still calls `webhookSubscriptions.create` without a receipt (route file not mine); it does not share the `create_webhook` command identity.
+- No happy-dom test for `CreateKeyDialog` typing flow (React `onChange` did not fire for the portal input in happy-dom); its logic is covered at mutation level (`packages/api-client/src/developer/developer.test.ts`). Needs the ticket 32 browser pass: create key, rotate secret, add/test/delete webhook, Connect tile, viewer on /settings/api and /integrations.
+
+### Requests for other owners
+- Ticket 31: `apps/web/lib/authenticated-request-inventory.ts` still lists `app/(app)/settings/actions.ts`; `repository-verification`/inventory parity must drop it.
+- Ticket 23/runner: `bun run test:integration-api:db` fails at the end on a missing `apps/web/lib/rest-api/events.db.test.ts` (moved by 23); `operation-receipt.test.ts` "composes the per-domain lists" fails on the reviews list name `review.round.create` (dots) (ticket 27).
+- Pre-existing tsc errors outside my scope: `apps/api/src/domains/rest/routes.ts`, `reviews/guest-replay-child.ts` (pg types), web `lib/authenticated-request-*`, `app/api/stream/...`.
+
+### Evidence
+- `bun test apps/api/src/domains/developer` 25 pass; `bun test apps/api/src` 735 pass 0 fail; `bun apps/api/scripts/check-route-inventory.ts`: 280 routes, 0 problems.
+- `bun test packages/services/src/developer-commands.test.ts` 14 pass (replay, lost response, simultaneous, changed input, plan refusal, limiter after replay, webhook SSRF/dup).
+- `bun test packages/api-client/src/developer` 9 pass; `bun test apps/web/app/(app)/settings/api` pass (failure wording, rotate fixture: secret shown once, absent from query and mutation caches).
+- `.scratch/api-extraction/db-gate.sh bun run test:integration-api:db`: completion-callback and webhook-subscription DB suites pass (one earlier mid-drain run flaked at `webhook-subscription.db.test.ts` "deleting a subscription mid-drain", passed on two reruns; untouched code).
+- tsc: no errors in developer files for apps/api, packages/services, packages/validators, packages/api-client, apps/web (filtered to settings/api and integrations). Biome clean on all owned paths.
+

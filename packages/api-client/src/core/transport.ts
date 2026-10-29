@@ -125,11 +125,44 @@ function isStreamBody(body: RequestInit["body"]): boolean {
   return typeof ReadableStream !== "undefined" && body instanceof ReadableStream;
 }
 
-/** Releases scope tracking for a bound-fetch Response whose body was never read or cancelled. */
+/** Releases a hold whose owner (a body stream or a cloned Response) was dropped without being read. */
 const abandoned =
   typeof FinalizationRegistry === "undefined"
     ? undefined
     : new FinalizationRegistry<() => void>((release) => release());
+
+/**
+ * Keeps one tracked request alive until every reader of its body is done. The
+ * body stream holds one reference; the Response and each of its clones hold
+ * another once `clone()` is called (a clone reads from a buffered tee branch
+ * that outlives the original). Defined at module level so the release closures
+ * capture nothing that would keep a registered owner reachable.
+ */
+function createLease(tracked: TrackedRequest): { hold(): () => void; close(): void } {
+  let holders = 0;
+  let closed = false;
+  const close = (): void => {
+    if (closed) return;
+    closed = true;
+    tracked.release();
+  };
+  return {
+    hold() {
+      holders += 1;
+      let held = true;
+      return () => {
+        if (!held) return;
+        held = false;
+        holders -= 1;
+        if (holders === 0) close();
+      };
+    },
+    /** The body failed or was cancelled for every reader: nothing is left to protect. */
+    close,
+  };
+}
+
+const BODY_READERS = ["arrayBuffer", "blob", "bytes", "formData", "json", "text"] as const;
 
 export function createApiTransport(options: TransportOptions): ApiTransport {
   const base = normalizeBaseUrl(options.baseUrl);
@@ -221,7 +254,14 @@ export function createApiTransport(options: TransportOptions): ApiTransport {
    * mid-body errors the stream with `scope_changed`, the caller's own abort
    * still surfaces as that abort, and the end of the body is refused if the
    * scope moved even when the underlying fetch ignored the abort. A body that is
-   * dropped without being read is released when the Response is collected.
+   * dropped without being read is released when its stream is collected.
+   *
+   * Cloning shares the tracked request: the body stream, the Response and every
+   * clone each hold it, and a clone's body reader (or `.json()`, `.text()`...)
+   * ends with a scope check of its own. So the original being collected, or
+   * finishing first, cannot release tracking while another reader (or its
+   * buffered tee branch) is still to be read, and an A to B to A move is still
+   * a change for every one of them.
    */
   const guardBody = (
     response: Response,
@@ -234,13 +274,16 @@ export function createApiTransport(options: TransportOptions): ApiTransport {
       tracked.release();
       return response;
     }
+    const lease = createLease(tracked);
+    const releaseSource = lease.hold();
     const reader = source.getReader();
     let onAbort: (() => void) | undefined;
     let settled = false;
-    const settle = (): void => {
+    const settle = (terminal = true): void => {
       if (settled) return;
       settled = true;
-      tracked.release();
+      if (terminal) lease.close();
+      else releaseSource();
       if (onAbort) tracked.signal.removeEventListener("abort", onAbort);
     };
     const stream = new ReadableStream<Uint8Array>(
@@ -259,7 +302,8 @@ export function createApiTransport(options: TransportOptions): ApiTransport {
             const chunk = await reader.read();
             assertCurrent(target, tracked);
             if (chunk.done) {
-              settle();
+              // Clones may still hold buffered bytes: they keep tracking alive.
+              settle(false);
               controller.close();
             } else {
               controller.enqueue(chunk.value);
@@ -282,7 +326,39 @@ export function createApiTransport(options: TransportOptions): ApiTransport {
       statusText: response.statusText,
       headers: response.headers,
     });
-    abandoned?.register(guarded, tracked.release);
+    // The stream outlives the Response while any clone's tee branch reads from it.
+    abandoned?.register(stream, releaseSource);
+    guarded.clone = () => {
+      enroll(guarded);
+      return guarded.clone();
+    };
+
+    /** Makes `instance` (the original once cloned, or a clone) a holder with its own end-of-read scope check. */
+    function enroll(instance: Response): void {
+      const release = lease.hold();
+      abandoned?.register(instance, release);
+      const record = instance as unknown as Record<string, unknown>;
+      for (const name of BODY_READERS) {
+        const read = record[name];
+        if (typeof read !== "function") continue;
+        record[name] = async (...args: unknown[]): Promise<unknown> => {
+          try {
+            const value = await (read as (...a: unknown[]) => Promise<unknown>).apply(instance, args);
+            assertCurrent(target, tracked);
+            return value;
+          } catch (error) {
+            throw toFailure(error, tracked, external);
+          } finally {
+            release();
+          }
+        };
+      }
+      instance.clone = () => {
+        const copy = Response.prototype.clone.call(instance) as Response;
+        enroll(copy);
+        return copy;
+      };
+    }
     return guarded;
   };
 

@@ -1,11 +1,12 @@
 import { describe, expect, mock, test } from "bun:test";
+import { ApiError } from "@narriflow/api-client/core";
+import type { ReactNode } from "react";
 import { ChakraProvider } from "@chakra-ui/react";
 import { system } from "@narriflow/ui/theme";
 import { renderToStaticMarkup } from "react-dom/server";
 
-mock.module("next/navigation", () => ({ useRouter: () => ({ push() {}, refresh() {} }) }));
-mock.module("../../_actions/workspace", () => ({ switchWorkspaceAction: async () => undefined }));
-const { ConnectorUnavailable, connectorUnavailableReason } = await import("./connector-unavailable");
+mock.module("./workspace-billing-link", () => ({ WorkspaceBillingLink: ({ href, children }: { href: string; children: ReactNode }) => <a href={href}>{children}</a> }));
+const { ConnectorUnavailable, connectorUnavailableReason, connectorWorkspaceFromError } = await import("./connector-unavailable");
 
 type Workspace = Parameters<typeof ConnectorUnavailable>[0]["workspace"];
 const ACME = { workspaceId: "00000000-0000-4000-8000-0000000000a1", workspaceName: "Acme" } as const;
@@ -53,4 +54,11 @@ describe("ConnectorUnavailable", () => {
     expect(connectorUnavailableReason({ ...workspace, pricingTier: "pro" }, "processing.consume")).toBe("status");
     expect(connectorUnavailableReason({ ...workspace, pricingTier: "pro", status: "active" }, "processing.consume")).toBeNull();
   });
+});
+
+test("connector recovery requires the typed refusal and valid Workspace facts", () => {
+  const workspace: Workspace = { ...ACME, role: "owner", status: "restricted", pricingTier: "pro" };
+  expect(connectorWorkspaceFromError(new ApiError({ code: "integration_access_unavailable", status: 402, message: "Unavailable", details: { workspace } }))).toEqual(workspace);
+  expect(connectorWorkspaceFromError(new ApiError({ code: "mcp_continuation_revoked", status: 403, message: "Revoked", details: { workspace } }))).toBeNull();
+  expect(connectorWorkspaceFromError(new ApiError({ code: "integration_access_unavailable", status: 403, message: "Unavailable", details: { workspace: { ...workspace, role: "staff" } } }))).toBeNull();
 });

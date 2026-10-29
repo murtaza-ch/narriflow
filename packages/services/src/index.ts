@@ -637,7 +637,7 @@ export { createBrandCommands, type BrandCommandDependencies, type BrandCommands 
 export { brandCommands } from "./brand-commands-runtime";
 export { createAutomationCommands, type AutomationCommandDependencies, type AutomationCommands } from "./automation-commands";
 export { automationCommands } from "./automation-commands-runtime";
-export { createDeveloperCommands, type DeveloperCommandDependencies, type DeveloperCommands } from "./developer-commands";
+export { CredentialAlreadyIssuedError, createDeveloperCommands, type DeveloperCommandDependencies, type DeveloperCommands } from "./developer-commands";
 export { developerCommands } from "./developer-commands-runtime";
 export { createReviewsCommands, type ReviewsCommandDependencies, type ReviewsCommands } from "./reviews-commands";
 export { reviewsCommands } from "./reviews-commands-runtime";

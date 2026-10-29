@@ -1,17 +1,9 @@
 "use client";
 
-import {
-	type ComponentProps,
-	type ReactNode,
-	useEffect,
-	useOptimistic,
-	useState,
-	useTransition,
-} from "react";
+import { type ReactNode, useState } from "react";
 import Link from "next/link";
 import { Box, Flex, Stack, Text, VisuallyHidden } from "@chakra-ui/react";
 import { Button } from "@narriflow/ui/components/button";
-import { ActionSubmitButton } from "@narriflow/ui/components/action-submit-button";
 import { Switch } from "@narriflow/ui/components/switch";
 import { deriveProcessingChecklist, userErrorMessage, type PipelineStepState, type ProcessingNode, type ProcessingNodeId, type ProcessingStageInput, type CaptionPresetId } from "@narriflow/validators";
 import {
@@ -34,15 +26,17 @@ import {
 import { PlanLimitNotice } from "../../_components/plan-limit-notice";
 import type { UpgradePrompt } from "../../_components/upgrade";
 import {
-  queueTranscriptionFormAction,
-  regenerateClipsFormAction,
-  setNotifyPreferenceAction,
-} from "../actions";
-import { AuthenticatedActionForm } from "@/app/_components/authenticated-action-form";
-import { authenticatedActionResultMessage } from "@/lib/authenticated-request-browser";
+  invalidateAfterNotifyPreference,
+  projectCommands,
+  projectMutationOptions,
+} from "@narriflow/api-client/projects";
+import { useMutation } from "@tanstack/react-query";
+import { requireClipApi, useClipApi } from "@/lib/clip-media";
+import { apiFailureMessage } from "@/lib/publishing-client";
 import { RetryIngestButton } from "./render-clips-button";
 import { useProjectEvents } from "./project-events-provider";
 import { AdvancedClipSettings } from "./advanced-clip-settings";
+import { type GenerationKind, useProjectGeneration } from "./use-project-generation";
 
 const STEP_ICONS: Record<ProcessingNodeId, LucideIcon> = {
   import: Download,
@@ -251,32 +245,35 @@ function FailureMessage({ children }: { children: ReactNode }) {
 }
 
 function RetryForm({
-  action,
+  kind,
   projectId,
-  idempotencyKey,
   label,
   pendingLabel,
   settings,
 }: {
-  action: ComponentProps<typeof AuthenticatedActionForm>["action"];
+  kind: GenerationKind;
   projectId: string;
-  idempotencyKey: string;
   label: string;
   pendingLabel: string;
   settings: ReactNode;
 }) {
+  const { pending, error, onSubmit } = useProjectGeneration(projectId, kind);
   return (
-    <AuthenticatedActionForm action={action}>
-      <input type="hidden" name="projectId" value={projectId} />
-      <input type="hidden" name="idempotencyKey" value={idempotencyKey} />
+    <form onSubmit={onSubmit}>
       <Flex align="center" gap="2" wrap="wrap" mt="1">
-        <ActionSubmitButton pendingLabel={pendingLabel} size="sm">
+        <Button type="submit" size="sm" loading={pending} loadingText={pendingLabel}>
           <RotateCcw size={16} />
           <Text ms="1">{label}</Text>
-        </ActionSubmitButton>
+        </Button>
         {settings}
       </Flex>
-    </AuthenticatedActionForm>
+      {error ? (
+        <Flex align="center" gap="1.5" color="danger.fg" mt="2">
+          <AlertTriangle size={12} aria-hidden />
+          <Text fontSize="xs">{error}</Text>
+        </Flex>
+      ) : null}
+    </form>
   );
 }
 
@@ -287,27 +284,30 @@ function NotifyToggle({
   projectId: string;
   initialNotifyOnComplete: boolean;
 }) {
-  const [committedChecked, setCommittedChecked] = useState(initialNotifyOnComplete);
-  const [checked, setOptimisticChecked] = useOptimistic(committedChecked);
-  const [saving, startSaving] = useTransition();
+  const api = useClipApi();
+  const [checked, setChecked] = useState(initialNotifyOnComplete);
   const [error, setError] = useState<string | null>(null);
-
-  function handleChange(next: boolean) {
-    setError(null);
-    startSaving(async () => {
-      setOptimisticChecked(next);
-      const result = await setNotifyPreferenceAction(projectId, next);
-      if (result.ok) {
-        setCommittedChecked(next);
-      } else {
-        setError(authenticatedActionResultMessage(result, "Could not save this preference."));
-      }
-    });
-  }
+  const save = useMutation({
+    ...projectMutationOptions,
+    mutationFn: async (notifyOnComplete: boolean) => {
+      const { projects, queryClient, scope } = requireClipApi(api);
+      await projectCommands.setNotifyPreference(projects, projectId, { notifyOnComplete });
+      await invalidateAfterNotifyPreference(queryClient, scope, projectId);
+    },
+    onMutate: (next) => {
+      setError(null);
+      setChecked(next);
+    },
+    // The switch returns to what is saved when the change is refused.
+    onError: (failure, next) => {
+      setChecked(!next);
+      setError(apiFailureMessage(failure, "Could not save this preference."));
+    },
+  });
 
   return (
     <Stack gap="1" align="flex-start">
-      <Switch checked={checked} onCheckedChange={handleChange} disabled={saving}>
+      <Switch checked={checked} onCheckedChange={(next) => save.mutate(next)} disabled={save.isPending}>
         Email me when clips are ready
       </Switch>
       {error && (
@@ -330,11 +330,7 @@ export interface ProcessingPanelProps {
   ingestAttemptsExhausted: boolean;
   /** The latest ingest was a Google Drive Picker import, which only a new pick can recover. */
   ingestFromDrivePicker: boolean;
-  /** Pre-formatted "Retry limit reached (N/MAX)…" copy — computed
-   *  server-side (page.tsx already imports MAX_INGEST_RETRY_ATTEMPTS from
-   *  @narriflow/services; that constant lives in the Prisma-backed
-   *  project.service.ts module and must not be imported into this client
-   *  bundle). */
+  /** Pre-formatted "Retry limit reached (N/MAX)…" copy, from the Project screen's view model. */
   ingestRetryLimitMessage: string;
   transcribe: ProcessingStageInput;
   detect: ProcessingStageInput;
@@ -359,29 +355,12 @@ export interface ProcessingPanelProps {
 /**
  * Phase 2a — replaces the Step 01/02 form cards in the Clips tab while a run
  * is in flight, or ingest is still running with a committed pack. Consumes
- * the shared SSE context (ProjectEventsProvider) directly so live progress
- * shows without a second EventSource or extra router.refresh() calls beyond
- * the provider's existing 5s throttle.
+ * the shared progress context (ProjectEventsProvider) directly so live progress
+ * shows without a second connection; the provider also refreshes the Project's
+ * queries on its existing 5s throttle.
  */
 export function ProcessingPanel(props: ProcessingPanelProps) {
   const { latestByStage } = useProjectEvents();
-  const [regenerateIdempotencyKey, setRegenerateIdempotencyKey] = useState(() =>
-    crypto.randomUUID(),
-  );
-  const [transcribeRetryKey, setTranscribeRetryKey] = useState(() =>
-    crypto.randomUUID(),
-  );
-  const liveDetectionRunId = latestByStage.moment_detection?.workflowRunId;
-  const liveTranscriptRunId = latestByStage.stt?.workflowRunId;
-
-  // One key belongs to one admitted run. Rotate when SSE reports a different
-  // run so a deliberate retry cannot resolve to the previous terminal row.
-  useEffect(() => {
-    if (liveDetectionRunId) setRegenerateIdempotencyKey(crypto.randomUUID());
-  }, [liveDetectionRunId]);
-  useEffect(() => {
-    if (liveTranscriptRunId) setTranscribeRetryKey(crypto.randomUUID());
-  }, [liveTranscriptRunId]);
 
   const isIngestFailed = props.ingestStatus === "failed";
   const ingestStageWordLive = liveIngestStageWord(latestByStage, props.ingestStatus);
@@ -446,9 +425,8 @@ export function ProcessingPanel(props: ProcessingPanelProps) {
   const retryDetection = (label: string, pendingLabel: string) =>
     props.canEdit ? (
       <RetryForm
-        action={regenerateClipsFormAction}
+        kind="detection"
         projectId={props.projectId}
-        idempotencyKey={regenerateIdempotencyKey}
         label={label}
         pendingLabel={pendingLabel}
         settings={detectionSettings}
@@ -484,9 +462,8 @@ export function ProcessingPanel(props: ProcessingPanelProps) {
         <FailureMessage>{userErrorMessage(transcribeMerged.errorCode)}</FailureMessage>
         {props.canEdit ? (
           <RetryForm
-            action={queueTranscriptionFormAction}
+            kind="transcription"
             projectId={props.projectId}
-            idempotencyKey={transcribeRetryKey}
             label="Retry transcription"
             pendingLabel="Retrying…"
             settings={

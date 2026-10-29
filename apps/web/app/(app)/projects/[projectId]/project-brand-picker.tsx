@@ -1,14 +1,16 @@
 "use client";
 
-import { useOptimistic, useState, useTransition } from "react";
+import { useState } from "react";
 import Link from "next/link";
 import { Box, Flex, Menu, Portal, Spinner, Text } from "@chakra-ui/react";
 import { AlertTriangle, Check, ChevronDown, Palette, Settings2 } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
-import { authenticatedActionResultMessage, isAuthenticatedActionFailure } from "@/lib/authenticated-request-browser";
+import { invalidateAfterBrandApplied, projectCommands, projectMutationOptions } from "@narriflow/api-client/projects";
+import { useMutation } from "@tanstack/react-query";
+import { requireClipApi, useClipApi } from "@/lib/clip-media";
+import { apiFailureMessage } from "@/lib/publishing-client";
 import { BrandMark } from "../../brand-kit/_components/brand-kit-ui";
 import { LockedButton, type UpgradePrompt } from "../../_components/upgrade";
-import { applyProjectBrandProfileFormAction } from "../actions";
 
 export interface BrandChoice {
   id: string;
@@ -38,28 +40,33 @@ export function ProjectBrandPicker({
   /** Why applying is unavailable when no upgrade clears it. */
   requirementMessage: string | null;
 }) {
-  const [selectedId, setOptimisticId] = useOptimistic(currentBrandId);
-  const [pending, startApplying] = useTransition();
+  const api = useClipApi();
+  // The choice shows at once and settles to the Project's own brand once the
+  // refreshed snapshot arrives (or back to it when the change is refused).
+  const [chosenId, setChosenId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const selectedId = chosenId ?? currentBrandId;
   const current = brands.find((brand) => brand.id === selectedId) ?? null;
+
+  const applyBrand = useMutation({
+    ...projectMutationOptions,
+    mutationFn: async (profileId: string) => {
+      const { projects, queryClient, scope } = requireClipApi(api);
+      await projectCommands.applyBrandProfile(projects, projectId, { profileId, templateId: null });
+      await invalidateAfterBrandApplied(queryClient, scope, projectId);
+    },
+    onMutate: (profileId) => {
+      setError(null);
+      setChosenId(profileId);
+    },
+    onError: (failure) => setError(apiFailureMessage(failure, "Could not apply this brand.")),
+    onSettled: () => setChosenId(null),
+  });
+  const pending = applyBrand.isPending;
 
   function apply(profileId: string) {
     if (profileId === selectedId) return;
-    setError(null);
-    startApplying(async () => {
-      setOptimisticId(profileId);
-      const formData = new FormData();
-      formData.set("projectId", projectId);
-      formData.set("profileId", profileId);
-      try {
-        const result = await applyProjectBrandProfileFormAction(formData);
-        if (isAuthenticatedActionFailure(result)) {
-          setError(authenticatedActionResultMessage(result, "Could not apply this brand."));
-        }
-      } catch {
-        setError("Could not apply this brand.");
-      }
-    });
+    applyBrand.mutate(profileId);
   }
 
   const triggerLabel = current ? "Change brand" : "Choose brand";

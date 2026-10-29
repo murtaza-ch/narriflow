@@ -9,7 +9,7 @@ import { PageHeader } from "@narriflow/ui/components/page-header";
 import { EmptyState } from "@narriflow/ui/components/empty-state";
 import { Button } from "@narriflow/ui/components/button";
 import { toaster } from "@narriflow/ui/components/toaster";
-import { invalidatePublishing } from "@narriflow/api-client/publishing";
+import { invalidateAfterPostChange } from "@narriflow/api-client/publishing";
 import type { WorkspaceScope } from "@narriflow/api-client";
 import type { SocialPlatform, SocialPostStatus } from "@narriflow/validators";
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -160,7 +160,7 @@ function CancelPostButton({ post, scope }: { post: CalendarPost; scope: Workspac
 	const queryClient = useQueryClient();
 	const cancel = useMutation({
 		mutationFn: () => publishingApi(runtime.transport, scope).commands.cancelPost(post.projectId, post.id),
-		onSuccess: () => invalidatePublishing(queryClient, scope),
+		onSuccess: () => invalidateAfterPostChange(queryClient, scope, post.projectId),
 		onError: (error) =>
 			toaster.create({
 				type: "error",

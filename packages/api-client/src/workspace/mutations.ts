@@ -5,7 +5,14 @@ import type {
   UpdateWorkspaceRequest,
 } from "@narriflow/validators/api/workspace";
 import { mutationOptions } from "@tanstack/react-query";
-import { type ApiRuntime, IDEMPOTENCY_KEY_HEADER, invalidateScoped, scopedKey, type WorkspaceScope } from "../core";
+import {
+  type ApiRuntime,
+  IDEMPOTENCY_KEY_HEADER,
+  invalidateScoped,
+  isApiErrorCode,
+  scopedKey,
+  type WorkspaceScope,
+} from "../core";
 import { createWorkspaceClient } from "./client";
 import { invalidateWorkspaceMembers, invalidateWorkspaceProfile } from "./queries";
 
@@ -57,8 +64,11 @@ export function performanceGuidanceMutation(api: ApiRuntime, scope: WorkspaceSco
 
 /**
  * Invites a member. Create one per form (the factory owns the idempotency
- * intent): a retry after a lost response replays the same invitation instead of
- * sending a second one. A replay returns `inviteUrl: null`; use `resendInviteMutation`.
+ * intent): a retry after a lost response never sends a second invitation. It
+ * fails with `credential_already_issued` (409; `details.inviteId` names the
+ * invitation, `details.recovery` is `resend_invite`): the link cannot be shown
+ * again, so offer `resendInviteMutation`. That outcome ends the intent and
+ * refreshes the member list, where the invitation now is.
  */
 export function inviteMemberMutation(api: ApiRuntime, scope: WorkspaceScope) {
   const client = clientFor(api, scope);
@@ -73,6 +83,11 @@ export function inviteMemberMutation(api: ApiRuntime, scope: WorkspaceScope) {
         )
       ).json(),
     onSuccess: async () => {
+      intent.complete();
+      await invalidateWorkspaceMembers(api.queryClient, scope);
+    },
+    onError: async (error) => {
+      if (!isApiErrorCode(error, "credential_already_issued")) return;
       intent.complete();
       await invalidateWorkspaceMembers(api.queryClient, scope);
     },
@@ -93,6 +108,11 @@ export function resendInviteMutation(api: ApiRuntime, scope: WorkspaceScope) {
         )
       ).json(),
     onSuccess: async () => {
+      intent.complete();
+      await invalidateWorkspaceMembers(api.queryClient, scope);
+    },
+    onError: async (error) => {
+      if (!isApiErrorCode(error, "credential_already_issued")) return;
       intent.complete();
       await invalidateWorkspaceMembers(api.queryClient, scope);
     },

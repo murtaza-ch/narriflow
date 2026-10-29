@@ -1,7 +1,11 @@
-import { type ApiRuntime, ApiError, scopedKey, type WorkspaceScope } from "@narriflow/api-client/core";
-import { type StudioClient, createStudioClient } from "@narriflow/api-client/studio";
+import { type ApiRuntime, ApiError, type WorkspaceScope } from "@narriflow/api-client/core";
+import {
+  type StudioClient,
+  type StudioClipTarget,
+  createStudioClient,
+  studioQueries as domainStudioQueries,
+} from "@narriflow/api-client/studio";
 import { createProjectsClient } from "@narriflow/api-client/projects";
-import { queryOptions } from "@tanstack/react-query";
 import type { TranscriptUtterance } from "@narriflow/validators";
 import type { BrowserRequestFailure } from "@/lib/authenticated-request-browser";
 
@@ -55,101 +59,11 @@ export function apiFailureStatus(error: unknown): number | null {
 
 // ─── Bootstrap and polls (React Query owns these reads) ──────────────────────
 
-interface ClipTarget {
-  projectId: string;
-  clipId: string;
-}
+type ClipTarget = StudioClipTarget;
 
-const POLL_STALE_MS = 0;
-
-/**
- * Query factories for the Studio's reads. The bootstrap seeds a session once:
- * it is never refetched in the background (a refetch would race the working
- * document), so focus/reconnect refetch is off and it is dropped on unmount.
- */
+/** The Studio's reads, from the API client's Studio queries (see there for the bootstrap's no-refetch contract). */
 export function studioQueries(api: StudioApi) {
-  const { scope } = api;
-  const key = (resource: string, target: ClipTarget) => scopedKey(scope, "studio", resource, target) as unknown[];
-  const client = () => studioClientFor(api);
-
-  return {
-    bootstrap: (target: ClipTarget) =>
-      queryOptions({
-        queryKey: key("bootstrap", target),
-        queryFn: async ({ signal }) =>
-          (
-            await client().projects[":id"].clips[":clipId"].studio.$get(
-              { param: { id: target.projectId, clipId: target.clipId } },
-              { init: { signal } },
-            )
-          ).json(),
-        staleTime: Number.POSITIVE_INFINITY,
-        gcTime: 0,
-        refetchOnWindowFocus: false,
-        refetchOnReconnect: false,
-        refetchOnMount: false,
-      }),
-
-    previewSource: (target: ClipTarget) =>
-      queryOptions({
-        queryKey: key("preview-source", target),
-        queryFn: async ({ signal }) =>
-          (
-            await client().projects[":id"].clips[":clipId"]["preview-source"].$get(
-              { param: { id: target.projectId, clipId: target.clipId } },
-              { init: { signal } },
-            )
-          ).json(),
-        staleTime: POLL_STALE_MS,
-        gcTime: 0,
-        retry: false,
-      }),
-
-    autoLayout: (target: ClipTarget) =>
-      queryOptions({
-        queryKey: key("layout-auto", target),
-        queryFn: async ({ signal }) =>
-          (
-            await client().projects[":id"].clips[":clipId"].layout.auto.$get(
-              { param: { id: target.projectId, clipId: target.clipId } },
-              { init: { signal } },
-            )
-          ).json(),
-        staleTime: POLL_STALE_MS,
-        gcTime: 0,
-        retry: false,
-      }),
-
-    splitLayout: (target: ClipTarget) =>
-      queryOptions({
-        queryKey: key("layout-split", target),
-        queryFn: async ({ signal }) =>
-          (
-            await client().projects[":id"].clips[":clipId"].layout.split.$get(
-              { param: { id: target.projectId, clipId: target.clipId } },
-              { init: { signal } },
-            )
-          ).json(),
-        staleTime: POLL_STALE_MS,
-        gcTime: 0,
-        retry: false,
-      }),
-
-    screenLayout: (target: ClipTarget) =>
-      queryOptions({
-        queryKey: key("layout-screen", target),
-        queryFn: async ({ signal }) =>
-          (
-            await client().projects[":id"].clips[":clipId"].layout.screen.$get(
-              { param: { id: target.projectId, clipId: target.clipId } },
-              { init: { signal } },
-            )
-          ).json(),
-        staleTime: POLL_STALE_MS,
-        gcTime: 0,
-        retry: false,
-      }),
-  };
+  return domainStudioQueries(api.runtime.transport, api.scope);
 }
 
 /** Closures the shell's bounded polling loops call; each is one fresh cached fetch. */

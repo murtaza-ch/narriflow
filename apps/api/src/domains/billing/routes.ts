@@ -6,7 +6,9 @@ import {
   planChangeConfirmRequestSchema,
   planChangePreviewRequestSchema,
 } from "@narriflow/validators/api/billing";
-import { createRouteApp, getActor, getSignedInActor } from "../../http/admission";
+import { createRouteApp, getActor, getRecordedRateLimit, getSignedInActor } from "../../http/admission";
+import { getIdempotencyKey, requireIdempotencyKey } from "../../http/idempotency";
+import { enforceRecordedRateLimit } from "../../http/limits";
 import { validate } from "../../http/route";
 import { billingAdmission as access } from "./admission";
 
@@ -46,14 +48,26 @@ export function createBillingRoutes(deps: BillingRouteDeps) {
   return createRouteApp(access)
     .post(
       "/workspaces/business-checkout",
+      requireIdempotencyKey(),
       validate("json", businessWorkspaceCheckoutRequestSchema),
       async (c) => {
         const actor = getSignedInActor(c);
         const input = c.req.valid("json");
+        // Creating a Workspace is a retryable command: the caller's per-intent key makes a
+        // retry after a lost response resume the same pending Workspace. Resuming one
+        // that already exists needs no receipt; Checkout has its own native key.
+        const creation =
+          input.workspaceId === undefined
+            ? {
+                clientIdempotencyKey: getIdempotencyKey(c),
+                beforeAccept: async () => enforceRecordedRateLimit(getRecordedRateLimit(c)),
+              }
+            : undefined;
         const result = await billingService.startBusinessWorkspaceCheckout({
           actorUserId: actor.actorUserId,
           ...(input.name === undefined ? {} : { name: input.name }),
           ...(input.workspaceId === undefined ? {} : { workspaceId: input.workspaceId }),
+          ...(creation ? { creation } : {}),
           interval: input.interval,
           ...(input.checkoutIdempotencyKey === undefined
             ? {}

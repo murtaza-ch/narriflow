@@ -1,16 +1,18 @@
 "use client";
 
-import { useState, useTransition } from "react";
-import { useRouter } from "next/navigation";
+import { useMemo, useState } from "react";
 import { IconButton, Table, Text } from "@chakra-ui/react";
+import type { WorkspaceScope } from "@narriflow/api-client";
+import { deleteWebhookMutation, enableWebhookMutation, testWebhookMutation } from "@narriflow/api-client/developer";
+import { useMutation } from "@tanstack/react-query";
 import { MoreHorizontal, Play, RotateCcw, Trash2, Webhook } from "lucide-react";
 import type { WebhookDisabledReason, WebhookView } from "@narriflow/validators";
 import { useConfirm } from "@narriflow/ui/components/confirm-dialog";
 import { EmptyState } from "@narriflow/ui/components/empty-state";
 import { ActionMenu } from "@narriflow/ui/components/menu";
-import { authenticatedActionResultMessage, isAuthenticatedActionFailure } from "@/lib/authenticated-request-browser";
-import { deleteWebhookAction, enableWebhookAction, testWebhookAction } from "../actions";
+import { useApiRuntime } from "@/app/_components/api-provider";
 import { EVENT_LABELS } from "./add-webhook-dialog";
+import { developerFailureMessage } from "./failure-message";
 
 // A fixed locale and zone keep server and client renders identical.
 const formatTime = (iso: string) =>
@@ -50,27 +52,19 @@ function delivery(webhook: WebhookView) {
   return webhook.lastDeliveredAt ? `Delivered ${formatTime(webhook.lastDeliveredAt)}` : "Nothing delivered yet";
 }
 
-const failed = (result: unknown) =>
-  isAuthenticatedActionFailure(result) || (typeof result === "object" && result !== null && "ok" in result && result.ok === false);
-
-export function WebhooksPanel({ webhooks }: { webhooks: WebhookView[] }) {
-  const router = useRouter();
+export function WebhooksPanel({ scope, webhooks }: { scope: WorkspaceScope; webhooks: WebhookView[] }) {
+  const runtime = useApiRuntime();
   const { confirm, dialog } = useConfirm();
   const [message, setMessage] = useState<{ text: string; tone: "info" | "error" } | null>(null);
-  const [pending, startTransition] = useTransition();
+  const deleteWebhook = useMutation(useMemo(() => deleteWebhookMutation(runtime, scope), [runtime, scope]));
+  const enableWebhook = useMutation(useMemo(() => enableWebhookMutation(runtime, scope), [runtime, scope]));
+  const testWebhook = useMutation(useMemo(() => testWebhookMutation(runtime, scope), [runtime, scope]));
+  const pending = deleteWebhook.isPending || enableWebhook.isPending || testWebhook.isPending;
 
-  function run<R>(task: () => Promise<R>, fallback: string, report?: (result: R) => string | null) {
-    setMessage(null);
-    startTransition(async () => {
-      const result = await task();
-      if (failed(result)) setMessage({ text: authenticatedActionResultMessage(result, fallback), tone: "error" });
-      else {
-        const text = report?.(result);
-        if (text) setMessage({ text, tone: "info" });
-      }
-      router.refresh();
-    });
-  }
+  const fail = (fallback: string) => (error: unknown) => {
+    const text = developerFailureMessage(error, fallback);
+    if (text) setMessage({ text, tone: "error" });
+  };
 
   async function remove(webhook: WebhookView) {
     const confirmed = await confirm({
@@ -79,7 +73,26 @@ export function WebhooksPanel({ webhooks }: { webhooks: WebhookView[] }) {
       confirmLabel: "Delete webhook",
       destructive: true,
     });
-    if (confirmed) run(() => deleteWebhookAction(webhook.webhookId), "The webhook could not be deleted.");
+    if (!confirmed) return;
+    setMessage(null);
+    deleteWebhook.mutate(webhook.webhookId, { onError: fail("The webhook could not be deleted.") });
+  }
+
+  function enable(webhook: WebhookView) {
+    setMessage(null);
+    enableWebhook.mutate(webhook.webhookId, { onError: fail("The webhook could not be re-enabled.") });
+  }
+
+  function sendTest(webhook: WebhookView) {
+    setMessage(null);
+    testWebhook.mutate(webhook.webhookId, {
+      onSuccess: (result) =>
+        setMessage({
+          text: result.status ? `${webhook.urlHost} answered ${result.status}.` : `${webhook.urlHost} did not answer.`,
+          tone: "info",
+        }),
+      onError: fail("The test event could not be sent."),
+    });
   }
 
   if (!webhooks.length) {
@@ -147,7 +160,7 @@ export function WebhooksPanel({ webhooks }: { webhooks: WebhookView[] }) {
                             value: "enable",
                             label: "Re-enable",
                             icon: <RotateCcw size={14} />,
-                            onSelect: () => run(() => enableWebhookAction(webhook.webhookId), "The webhook could not be re-enabled."),
+                            onSelect: () => enable(webhook),
                           },
                         ]
                       : []),
@@ -155,10 +168,7 @@ export function WebhooksPanel({ webhooks }: { webhooks: WebhookView[] }) {
                       value: "test",
                       label: "Send test event",
                       icon: <Play size={14} />,
-                      onSelect: () =>
-                        run(() => testWebhookAction(webhook.webhookId), "The test event could not be sent.", (result) =>
-                          "status" in result ? (result.status ? `${webhook.urlHost} answered ${result.status}.` : `${webhook.urlHost} did not answer.`) : null,
-                        ),
+                      onSelect: () => sendTest(webhook),
                     },
                     {
                       value: "delete",

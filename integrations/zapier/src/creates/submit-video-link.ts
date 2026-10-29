@@ -84,7 +84,7 @@ export default defineCreate({
       projectId: '00000000-0000-4000-8000-000000000004',
       operationId: 'op_CCCCCCCCCCCCCCCCCCCCCCC',
       operationKind: 'intake',
-      statusUrl: 'https://app.narriflow.com/api/v1/operations/op_CCCCCCCCCCCCCCCCCCCCCCC',
+      statusUrl: 'http://localhost:4000/api/v1/operations/op_CCCCCCCCCCCCCCCCCCCCCCC',
       reviewUrl: 'https://app.narriflow.com/projects/00000000-0000-4000-8000-000000000004',
       replayed: false,
     },

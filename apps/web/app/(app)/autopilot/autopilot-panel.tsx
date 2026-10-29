@@ -1,8 +1,10 @@
 "use client";
 
-import { useState, useTransition, type ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import type { AutomationActions } from "@narriflow/api-client/automation";
+import { isApiError, type Intent } from "@narriflow/api-client/core";
+import { useMutation } from "@tanstack/react-query";
 import { PlanLimitNotice } from "../_components/plan-limit-notice";
 import { LockedButton, UpgradeHero, useUpgrade, type UpgradePrompt } from "../_components/upgrade";
 import { AutopilotVisual } from "../_components/upgrade-visuals";
@@ -46,9 +48,10 @@ import {
   type RecipeSnapshot,
   type ZoomConnectionSnapshot,
 } from "@narriflow/validators";
+import type { AutopilotRuleInput, AutopilotRuleUpdate } from "@narriflow/validators/api/automation";
 import { formatDateTime } from "@/lib/format";
 import { SOCIAL_PLATFORM_LABELS } from "@/lib/social-post-status";
-import { ZoomConnections } from "./zoom-connections";
+import { useConnectZoom, ZoomConnections } from "./zoom-connections";
 import { describeFinishing } from "../recipes/finishing-form";
 
 const INTERVAL_OPTIONS = [
@@ -78,23 +81,27 @@ const STATUS_META: Record<
 
 type RuleAction = "toggle" | "run" | "delete" | "takeover";
 
-async function request(
-  url: string,
-  init?: RequestInit,
-): Promise<string | null> {
+function failureMessage(error: unknown): string {
+  if (isApiError(error)) return error.code === "network_error" ? "Network error — please try again." : error.message;
+  return error instanceof Error && error.message ? error.message : "Request failed";
+}
+
+/** Runs one command; `null` on success, the message to show otherwise. */
+async function attempt(task: () => Promise<unknown>): Promise<string | null> {
   try {
-    const response = await fetch(url, init);
-    if (!response.ok) {
-      const payload = (await response.json().catch(() => null)) as {
-        message?: string;
-        error?: string;
-      } | null;
-      return payload?.message ?? payload?.error ?? "Request failed";
-    }
+    await task();
     return null;
-  } catch {
-    return "Network error — please try again.";
+  } catch (error) {
+    return failureMessage(error);
   }
+}
+
+/** What the panel needs to change rules and connections: the commands, one idempotency intent per create or run-now, and the cache refresh. */
+export interface AutopilotPanelApi {
+  actions: AutomationActions;
+  createIntent<TInput>(): Intent<TInput>;
+  /** Refreshes what a changed rule, grant or Zoom connection touches. */
+  changed(): Promise<void>;
 }
 
 /** The Recipe a rule imports with, as a list of choice cards. Its settings are edited on the Recipes page. */
@@ -297,7 +304,8 @@ function RuleGrants({ ruleId, grants, canManage }: { ruleId: string; grants: Aut
 }
 
 export function AutopilotPanel({
-  initialRules,
+  api,
+  rules,
   recipes,
   canTakeOver,
   finishingAvailable = true,
@@ -314,6 +322,7 @@ export function AutopilotPanel({
   canRun = true,
   workspaceStatus = "active",
 }: {
+  api: AutopilotPanelApi;
   /** Editors and up in an active Workspace create, change, pause and delete rules. */
   canEdit?: boolean;
   /** Running a rule now spends processing. */
@@ -330,7 +339,7 @@ export function AutopilotPanel({
   zoomConnections?: ZoomConnectionSnapshot[];
   canConnectZoom?: boolean;
   zoomNotice?: string;
-  initialRules: AutopilotRuleSnapshot[];
+  rules: AutopilotRuleSnapshot[];
   recipes: RecipeSnapshot[];
   /** Workspace Owners and Admins can take over a paused rule. */
   canTakeOver: boolean;
@@ -339,8 +348,6 @@ export function AutopilotPanel({
   /** The Workspace's automation grants that are in force or paused, by the rule they cover. */
   grants?: AutopilotRuleGrant[];
 }) {
-  const router = useRouter();
-  const [, startTransition] = useTransition();
   const autopilotTier = lowestTierWithFeature("automation.autopilot");
   const { confirm, dialog: confirmDialog } = useConfirm();
   const { openUpgrade } = useUpgrade();
@@ -355,6 +362,43 @@ export function AutopilotPanel({
         }
       : null;
   const liveZoomConnections = zoomConnections.filter((entry) => !entry.revoked);
+  const zoom = useConnectZoom(api.actions);
+
+  // One idempotency key per new-rule form and per run-now click, kept through a failed or lost
+  // attempt so a retry replays the first acceptance instead of creating or queueing twice.
+  const [createIntent] = useState(() => api.createIntent<AutopilotRuleInput>());
+  const runIntents = useRef(new Map<string, Intent<string>>());
+  const create = useMutation({
+    mutationFn: (input: AutopilotRuleInput) => api.actions.createRule(input, createIntent.keyFor(input)),
+    onSuccess: async () => {
+      createIntent.complete();
+      await api.changed();
+    },
+  });
+  const toggle = useMutation({
+    mutationFn: ({ rule, enabled }: { rule: AutopilotRuleSnapshot; enabled: boolean }) =>
+      api.actions.updateRule(rule.id, { status: enabled ? "active" : "paused" }),
+    onSuccess: () => api.changed(),
+  });
+  const takeOverRule = useMutation({
+    mutationFn: (rule: AutopilotRuleSnapshot) => api.actions.takeOverRule(rule.id),
+    onSuccess: () => api.changed(),
+  });
+  const runRuleNow = useMutation({
+    mutationFn: (rule: AutopilotRuleSnapshot) => {
+      const intent = runIntents.current.get(rule.id) ?? api.createIntent<string>();
+      runIntents.current.set(rule.id, intent);
+      return api.actions.runRuleNow(rule.id, intent.keyFor(rule.id));
+    },
+    onSuccess: async (_run, rule) => {
+      runIntents.current.delete(rule.id);
+      await api.changed();
+    },
+  });
+  const removeRule = useMutation({
+    mutationFn: (rule: AutopilotRuleSnapshot) => api.actions.deleteRule(rule.id),
+    onSuccess: () => api.changed(),
+  });
 
   /** Explains a resume or run the plan has no slot for, instead of letting it fail. */
   function refuseForSlot(): boolean {
@@ -439,21 +483,18 @@ export function AutopilotPanel({
 
     setFormError(null);
     setCreating(true);
-    const error = await request("/api/autopilot/rules", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        name: name.trim(),
-        sourceKind,
-        ...(sourceKind === "rss" ? { rssUrl: rssUrl.trim() } : { zoomConnectionId, zoomTopicFilter: zoomTopicFilter.trim() || null }),
-        titlePrefix: titlePrefix.trim() || null,
-        recipeId,
-        intervalMinutes: Number(intervalMinutes),
-        maxEpisodesPerRun: maxEpisodes,
-        initialImportMode: sourceKind === "zoom" ? "future_only" : initialImportMode,
-        initialImportCount: initialCount,
-      }),
-    });
+    const input: AutopilotRuleInput = {
+      name: name.trim(),
+      sourceKind,
+      ...(sourceKind === "rss" ? { rssUrl: rssUrl.trim() } : { zoomConnectionId, zoomTopicFilter: zoomTopicFilter.trim() || null }),
+      titlePrefix: titlePrefix.trim() || null,
+      recipeId,
+      intervalMinutes: Number(intervalMinutes),
+      maxEpisodesPerRun: maxEpisodes,
+      initialImportMode: sourceKind === "zoom" ? "future_only" : initialImportMode,
+      initialImportCount: initialCount,
+    };
+    const error = await attempt(() => create.mutateAsync(input));
     setCreating(false);
 
     if (error) {
@@ -470,17 +511,12 @@ export function AutopilotPanel({
           ? "The feed baseline is saved; only future episodes will be clipped."
           : `The latest ${initialCount} episode${initialCount === 1 ? "" : "s"} will be queued first.`,
     });
-    startTransition(() => router.refresh());
   }
 
   async function toggleRule(rule: AutopilotRuleSnapshot, enabled: boolean) {
     if (enabled && refuseForSlot()) return;
     setRulePending(rule.id, "toggle");
-    const error = await request(`/api/autopilot/rules/${rule.id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ status: enabled ? "active" : "paused" }),
-    });
+    const error = await attempt(() => toggle.mutateAsync({ rule, enabled }));
     setRulePending(rule.id, undefined);
     if (error) {
       toaster.create({
@@ -495,16 +531,13 @@ export function AutopilotPanel({
       title: enabled ? "Rule resumed" : "Rule paused",
       description: rule.name,
     });
-    startTransition(() => router.refresh());
   }
 
   async function takeOver(rule: AutopilotRuleSnapshot) {
     // Taking over resumes the paused rule, so it needs a slot too.
     if (refuseForSlot()) return;
     setRulePending(rule.id, "takeover");
-    const error = await request(`/api/autopilot/rules/${rule.id}/take-over`, {
-      method: "POST",
-    });
+    const error = await attempt(() => takeOverRule.mutateAsync(rule));
     setRulePending(rule.id, undefined);
     if (error) {
       toaster.create({
@@ -519,16 +552,13 @@ export function AutopilotPanel({
       title: "You now run this rule",
       description: `${rule.name} will check its feed shortly.`,
     });
-    startTransition(() => router.refresh());
   }
 
   async function runNow(rule: AutopilotRuleSnapshot) {
     // Running turns a paused rule back on; with no Autopilot at all, nothing runs.
     if ((!autopilotIncluded || rule.status === "paused" || rule.status === "failed") && refuseForSlot()) return;
     setRulePending(rule.id, "run");
-    const error = await request(`/api/autopilot/rules/${rule.id}/run-now`, {
-      method: "POST",
-    });
+    const error = await attempt(() => runRuleNow.mutateAsync(rule));
     setRulePending(rule.id, undefined);
     if (error) {
       toaster.create({
@@ -543,7 +573,6 @@ export function AutopilotPanel({
       title: "Run queued",
       description: `${rule.name} will check its feed shortly.`,
     });
-    startTransition(() => router.refresh());
   }
 
   async function deleteRule(rule: AutopilotRuleSnapshot) {
@@ -557,9 +586,7 @@ export function AutopilotPanel({
     if (!confirmed) return;
 
     setRulePending(rule.id, "delete");
-    const error = await request(`/api/autopilot/rules/${rule.id}`, {
-      method: "DELETE",
-    });
+    const error = await attempt(() => removeRule.mutateAsync(rule));
     setRulePending(rule.id, undefined);
     if (error) {
       toaster.create({
@@ -574,7 +601,6 @@ export function AutopilotPanel({
       title: "Rule deleted",
       description: rule.name,
     });
-    startTransition(() => router.refresh());
   }
 
   return (
@@ -620,6 +646,7 @@ export function AutopilotPanel({
       ) : null}
 
       {zoomEnabled ? <ZoomConnections
+          api={api}
           connections={zoomConnections}
           canConnect={canConnectZoom}
           askToConnect={!canConnectZoom && workspaceStatus === "active"}
@@ -639,7 +666,7 @@ export function AutopilotPanel({
         animationDelay="80ms"
         animationFillMode="backwards"
       >
-        {initialRules.length === 0 && !autopilotIncluded ? null : initialRules.length === 0 ? (
+        {rules.length === 0 && !autopilotIncluded ? null : rules.length === 0 ? (
           <FeatureHero
             title="No autopilot rules yet"
             points={[
@@ -667,7 +694,7 @@ export function AutopilotPanel({
           />
         ) : (
           <Box display="grid" gap="2.5">
-            {initialRules.map((rule) => {
+            {rules.map((rule) => {
               // A paused rule with an error was stopped by Autopilot itself.
               const pauseReason = rule.status === "paused" ? rule.lastError : null;
               const meta = pauseReason
@@ -970,8 +997,8 @@ export function AutopilotPanel({
                           <Text fontSize="12.5px" color="fg.muted">
                             Zoom rules watch a connected Zoom account.{" "}
                             {canConnectZoom ? (
-                              <chakra.span asChild color="fg.accent" fontWeight="600" textDecoration="underline" textUnderlineOffset="3px">
-                                <a href="/api/zoom/oauth/start">Connect Zoom first</a>
+                              <chakra.span asChild color="fg.accent" fontWeight="600" textDecoration="underline" textUnderlineOffset="3px" cursor="pointer">
+                                <button type="button" onClick={() => void zoom.connect()} disabled={zoom.connecting}>Connect Zoom first</button>
                               </chakra.span>
                             ) : (
                               "Ask a workspace editor or admin to connect Zoom."
@@ -1115,14 +1142,11 @@ export function AutopilotPanel({
 
       <EditRuleDialog
         key={editingRule?.id ?? "closed"}
+        api={api}
         rule={editingRule}
         recipes={recipes}
         zoomConnections={zoomConnections}
         onClose={() => setEditingRule(null)}
-        onSaved={() => {
-          setEditingRule(null);
-          startTransition(() => router.refresh());
-        }}
       />
 
       {confirmDialog}
@@ -1131,17 +1155,17 @@ export function AutopilotPanel({
 }
 
 function EditRuleDialog({
+  api,
   rule,
   recipes,
   zoomConnections,
   onClose,
-  onSaved,
 }: {
+  api: AutopilotPanelApi;
   rule: AutopilotRuleSnapshot | null;
   recipes: RecipeSnapshot[];
   zoomConnections: ZoomConnectionSnapshot[];
   onClose: () => void;
-  onSaved: () => void;
 }) {
   // The parent keys this dialog by rule, so every open starts a fresh draft.
   const [name, setName] = useState(rule?.name ?? "");
@@ -1150,6 +1174,10 @@ function EditRuleDialog({
   const [topicFilter, setTopicFilter] = useState(rule?.zoomTopicFilter ?? "");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const update = useMutation({
+    mutationFn: (changes: AutopilotRuleUpdate) => api.actions.updateRule(rule?.id ?? "", changes),
+    onSuccess: () => api.changed(),
+  });
 
   async function save() {
     if (!rule) return;
@@ -1170,18 +1198,14 @@ function EditRuleDialog({
       return;
     }
     setSaving(true);
-    const failure = await request(`/api/autopilot/rules/${rule.id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(changes),
-    });
+    const failure = await attempt(() => update.mutateAsync(changes));
     setSaving(false);
     if (failure) {
       setError(failure);
       return;
     }
     toaster.create({ type: "success", title: "Rule updated", description: name.trim() });
-    onSaved();
+    onClose();
   }
 
   return (

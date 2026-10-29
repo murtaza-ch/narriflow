@@ -4,7 +4,7 @@
 
 **Blocked by:** [21 - Move automation grants and state-based Zoom callback](21-move-automation-grants-and-state-based-zoom-callback.md), [15 - Move intake Upload Sessions and recipes](15-move-intake-upload-sessions-and-recipes.md), [17 - Move publishing OAuth queue and performance API](17-move-publishing-oauth-queue-and-performance-api.md), [07 - Move billing API and convert billing UI](07-move-billing-api-and-convert-billing-ui.md)
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Suggested implementer:** Claude. The other pairing side reviews and returns findings to this owner.
 
@@ -176,10 +176,10 @@ Also account for the inventory's cross-domain traps: query-only actions, action 
 
 ## Acceptance criteria
 
-- [ ] Autopilot/grants pages/loading remove server reads and server actions, consume safe availability and parallel aggregate queries.
-- [ ] All owned rule/grant/Zoom refresh/action sites invalidate rules/grants/connections/recipes choices narrowly with existing recovery.
-- [ ] Status/role/plan and missing-Zoom UI states preserved; source connect uses authenticated JSON start and source disconnect exposes rule pause.
-- [ ] Static help/notifications/whats-new remain presentation-only under client shell; no invented data fetch.
+- [x] Autopilot/grants pages/loading remove server reads and server actions, consume safe availability and parallel aggregate queries.
+- [x] All owned rule/grant/Zoom refresh/action sites invalidate rules/grants/connections/recipes choices narrowly with existing recovery.
+- [x] Status/role/plan and missing-Zoom UI states preserved; source connect uses authenticated JSON start and source disconnect exposes rule pause.
+- [x] Static help/notifications/whats-new remain presentation-only under client shell; no invented data fetch.
 - [ ] No unowned files changed; paired review findings and verification evidence recorded under Comments.
 
 ## Verification
@@ -195,3 +195,26 @@ Verify the changed flow in the running Next app against the separate API origin.
 ## Comments
 
 Append claim, requested seam changes, paired review and evidence here.
+
+Claimed and implemented by Claude (Sonnet 5.5), 2026-10-29. The last acceptance box ("No unowned files changed; paired review ...") stays open for the orchestrator: no unowned file was edited, no paired review ran, and no signed-in browser pass was done (ticket 32).
+
+### What changed
+- `/autopilot` and `/settings/automation-grants` pages are data-free `Suspense` shells. New client screens `autopilot/autopilot-screen.tsx` and `settings/automation-grants/grants-screen.tsx` read `GET /automation` (`automationOverviewQueryOptions`) and `GET /automation/standing-grants` (`standingGrantsQueryOptions`) with `useQuery`; the grants screen reads `workspace/bootstrap` in parallel (role and status for `AccessNote`). The existing `loading.tsx` skeletons are the pending state; failures show a retry state (offline wording, like Recipes/Billing).
+- Panels take `api: {actions, createIntent?, changed}` (the Recipes pattern) instead of server actions/`fetch`/`router.refresh()`. `AutopilotPanel` props: `initialRules` renamed `rules`; `access.*` flags and `zoomEnabled` come from the aggregate; `?zoom=` notice from `useSearchParams`. Grants page builds both upgrade prompts with `featureUpgradePrompt(pricingTier, ...)`; `?rule=` is checked against the returned rules.
+- Mutations are `useMutation`: rule create (one `runtime.createIntent()` per form, `complete()` on success), run-now (one key per rule, kept through failures, dropped on success), update, take-over, delete, grant create/renew/pause/revoke, Zoom disconnect. All invalidate through `invalidateAfterAutomationChange` (all `automation` keys + `projects/home`). Grant pause/revoke/create/renew refetch on failure too (the old `run()` refreshed on failure; a 409 duplicate/stale grant refetches).
+- Zoom connect: `useConnectZoom` (exported from `zoom-connections.tsx`) calls `startZoomOAuth()` then `window.location.assign(authorizationUrl)`; used by the strip button and the "Connect Zoom first" link in the new-rule dialog (now a button). Disconnect awaits the DELETE then `changed()` (rules pause server-side and reappear paused).
+- Deleted `settings/automation-grants/actions.ts`. `help`, `whats-new`, `settings/notifications` pages and loadings are static and import no backend module: unchanged. `autopilot/loading.tsx` no longer imports `zoomConfigured`.
+
+### Deviations
+- New files `autopilot-screen.tsx` and `grants-screen.tsx` (the shell needs a client entry; same as Billing/Recipes). The ticket's ownership list does not name them.
+- `autopilot/loading.tsx` cannot know whether Zoom is configured without the data (no session flag exists; the spec makes it an aggregate flag). The skeleton now omits the Zoom strip and uses the non-Zoom header wording; with Zoom on, the strip and wording appear when data arrives.
+- Messages shown for failed commands are now `ApiError.message` (network error keeps its fixed text), replacing the old `payload.message ?? payload.error`.
+
+### Evidence
+- `bun test "apps/web/app/(app)/autopilot" "apps/web/app/(app)/settings/automation-grants"` -> 20 pass (panels render with a stub `api`; Connect Zoom is a button, no `/api/zoom/oauth/start` link).
+- `bunx biome check` on all owned directories (autopilot, automation-grants, help, whats-new, settings/notifications): clean.
+- `bun run --cwd apps/web typecheck`: no error in any owned file (28 errors remain, all in other tickets' files).
+- NOT done: no interaction tests (click flows need the happy-dom fixture) and no browser run. Ticket 32 must cover: rule create/pause/resume/take-over/run-now/edit/delete with a lost-response retry (same key), Zoom connect (JSON start -> Zoom -> `/autopilot?zoom=connected|...`), Zoom disconnect pausing rules, grant create/renew/pause/revoke, restricted-owner and viewer states, Zoom-disabled deployment.
+
+### Requests for other owners
+- 31: `apps/web/lib/authenticated-request-inventory.ts` still lists `settings/automation-grants/actions.ts` and the Zoom GET start rows.

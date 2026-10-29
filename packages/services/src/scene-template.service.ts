@@ -100,11 +100,15 @@ export class SceneTemplateService {
    * same key returns the scene it already made.
    */
   async create(scope: BrandActorScope, profileId: string, value: unknown, mutation?: IntegrationMutation) {
-
-    await assertBrandMutationAllowedWithAnalytics(scope, "brand.scenes", "scene");
     const input = sceneTemplateCreateSchema.parse(value);
-    if (input.makeDefault && !defaultField(input.role)) throw new SceneTemplateError("scene_template_default_role_invalid", "Only intro and outro scenes can be defaults");
-    if (input.makeDefault) requirePlanFeature(scope.pricingTier, "brand.defaultScenes");
+    // Entitlement for new work. With a receipt it runs after the replay lookup, so a plan
+    // change since the acceptance cannot hide the replay or replace a body-conflict 409.
+    const assertNewWorkAllowed = async () => {
+      await assertBrandMutationAllowedWithAnalytics(scope, "brand.scenes", "scene");
+      if (input.makeDefault && !defaultField(input.role)) throw new SceneTemplateError("scene_template_default_role_invalid", "Only intro and outro scenes can be defaults");
+      if (input.makeDefault) requirePlanFeature(scope.pricingTier, "brand.defaultScenes");
+    };
+    if (!mutation) await assertNewWorkAllowed();
     const prisma = requirePrisma();
     const createIn = async (tx: Prisma.TransactionClient) => {
       const profile = await tx.brandProfile.findFirst({ where: { id: profileId, ...brandOwnerWhere(scope), deletedAt: null }, select: { id: true } });
@@ -133,10 +137,12 @@ export class SceneTemplateService {
       },
       beforeAccept: mutation.beforeAccept,
       mutate: async (tx) => {
+        await assertNewWorkAllowed();
         const created = await createIn(tx);
         return { resourceType: "scene_template", resourceId: created.id, value: created };
       },
     });
+    if (accepted.replayed) mutation.onReplay?.();
     return accepted.value;
   }
 

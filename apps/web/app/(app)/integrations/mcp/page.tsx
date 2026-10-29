@@ -1,14 +1,18 @@
+"use client";
+
 import Link from "next/link";
 import { Flex, Grid, Stack, Text } from "@chakra-ui/react";
 import { ArrowLeft, ArrowRight, ArrowUpRight, CalendarClock, CircleAlert, Download, Rss, ScanEye, Scissors, Upload } from "lucide-react";
-import { workspaceAllowsCapability } from "@narriflow/services";
-import { hasFeature, lowestTierWithFeature, PLAN_CATALOG, resolvePricingTier } from "@narriflow/validators";
+import { mcpStatusQueryOptions } from "@narriflow/api-client/integrations";
+import { useQuery } from "@tanstack/react-query";
+import { useApiRuntime, useWorkspaceScope } from "@/app/_components/api-provider";
+import { QueryLoadError } from "@/app/_components/query-mutation-form";
+import Loading from "./loading";
+import { hasFeature, lowestTierWithFeature, PLAN_CATALOG, resolvePricingTier, workspaceAllowsCapability } from "@narriflow/validators";
 import { Button } from "@narriflow/ui/components/button";
-import { admitWorkspacePage } from "@/lib/authenticated-request-page";
 import { docsUrl } from "@/lib/docs-url";
 import { featureUpgradePrompt } from "@/lib/feature-upgrade-prompt";
 import { LockedButton } from "../../_components/upgrade";
-import { inspectMcpConfiguration } from "@/lib/mcp-configuration";
 import { AssistantSetup, PromptCards } from "./assistant-setup";
 
 const CAPABILITIES = [
@@ -31,11 +35,17 @@ function SectionTitle({ children, action }: { children: React.ReactNode; action?
   );
 }
 
-export default async function McpIntegrationPage() {
-  const appUser = await admitWorkspacePage("content.view");
-  const mcpUrl = `${process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, "") ?? "http://localhost:3000"}/mcp`;
-  const configuration = await inspectMcpConfiguration({ resourceUrl: process.env.NEXT_PUBLIC_APP_URL ? mcpUrl : undefined, issuerUrl: process.env.CLERK_OAUTH_ISSUER, hasVerificationSecret: Boolean(process.env.CLERK_SECRET_KEY), hasConfirmationSecret: Buffer.byteLength(process.env.MCP_CONTINUATION_SECRET ?? "") >= 32 });
-  const { workspace } = appUser;
+export default function McpIntegrationPage() {
+  const scope = useWorkspaceScope();
+  return scope ? <McpSetupView scope={scope} /> : <Loading />;
+}
+
+function McpSetupView({ scope }: { scope: NonNullable<ReturnType<typeof useWorkspaceScope>> }) {
+  const { transport } = useApiRuntime();
+  const query = useQuery(mcpStatusQueryOptions({ transport, scope }));
+  if (query.isError) return <QueryLoadError error={query.error} what="Assistant setup" onRetry={() => void query.refetch()} />;
+  if (!query.data) return <Loading />;
+  const { mcpUrl, configuration, workspace } = query.data;
   const hasPlan = hasFeature(workspace.pricingTier, "integrations.mcp");
   const requiredPlan = PLAN_CATALOG[lowestTierWithFeature("integrations.mcp") ?? "business"].name;
   const currentPlan = PLAN_CATALOG[resolvePricingTier(workspace.pricingTier)].name;

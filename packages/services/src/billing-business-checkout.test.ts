@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { BillingError, BillingService } from "./billing.service";
 import { isExpectedDomainFailure, type ExpectedDomainFailure } from "./expected-domain-failure";
 import { workspaceService } from "./workspace.service";
+import { workspaceCommands } from "./workspace-commands-runtime";
 
 const KEY = "018f5f6a-4c31-7c75-9a4f-8f74f977bc20";
 const RETURN = "https://app.narriflow.test/settings/billing";
@@ -11,14 +12,22 @@ let saved: Record<string, string | undefined>;
 let service: BillingService;
 let checkouts: Array<Record<string, unknown>>;
 let created: string[];
+const creation = { clientIdempotencyKey: "intent-1" };
 
 function stubWorkspaces(actor: { role: string; status: string; workspaceName: string } | null = null) {
-  spyOn(workspaceService, "createPendingBusinessWorkspace").mockImplementation((async (
+  // Stands in for the receipt-backed command: one Workspace per caller key, replays after.
+  const byKey = new Map<string, { workspaceId: string; name: string }>();
+  spyOn(workspaceCommands, "createBusinessWorkspace").mockImplementation((async (
     _userId: string,
     input: { name: string },
+    mutation: { clientIdempotencyKey: string },
   ) => {
+    const known = byKey.get(mutation.clientIdempotencyKey);
+    if (known) return { ...known, replayed: true };
     created.push(input.name);
-    return { id: "ws-pending", name: input.name, status: "pending_payment", pricingTier: "free" };
+    const workspace = { workspaceId: `ws-pending-${created.length}`, name: input.name };
+    byKey.set(mutation.clientIdempotencyKey, workspace);
+    return { ...workspace, replayed: false };
   }) as never);
   spyOn(workspaceService, "requireActor").mockImplementation((async () => actor) as never);
 }
@@ -54,7 +63,7 @@ afterEach(() => {
     if (saved[name] === undefined) delete process.env[name];
     else process.env[name] = saved[name];
   }
-  (workspaceService.createPendingBusinessWorkspace as { mockRestore?: () => void }).mockRestore?.();
+  (workspaceCommands.createBusinessWorkspace as { mockRestore?: () => void }).mockRestore?.();
   (workspaceService.requireActor as { mockRestore?: () => void }).mockRestore?.();
 });
 
@@ -65,12 +74,13 @@ describe("Business Workspace checkout", () => {
     const result = await service.startBusinessWorkspaceCheckout({
       actorUserId: "user-1",
       name: "Acme",
+      creation,
       interval: "annual",
       checkoutIdempotencyKey: KEY,
       returnDestination: RETURN,
     });
     expect(result).toEqual({
-      workspaceId: "ws-pending",
+      workspaceId: "ws-pending-1",
       workspaceName: "Acme",
       interval: "annual",
       checkoutIdempotencyKey: KEY,
@@ -80,7 +90,7 @@ describe("Business Workspace checkout", () => {
     expect(checkouts).toEqual([
       {
         userId: "user-1",
-        workspaceId: "ws-pending",
+        workspaceId: "ws-pending-1",
         clientIdempotencyKey: KEY,
         tier: "business",
         interval: "annual",
@@ -89,12 +99,43 @@ describe("Business Workspace checkout", () => {
     ]);
   });
 
+  test("a retried submit after a lost response resumes the same pending Workspace and Checkout key", async () => {
+    stubWorkspaces();
+    stubCheckout();
+    const submit = () =>
+      service.startBusinessWorkspaceCheckout({
+        actorUserId: "user-1",
+        name: "Acme",
+        creation,
+        interval: "annual",
+        returnDestination: RETURN,
+      });
+    const first = await submit();
+    const retry = await submit();
+    expect(created).toEqual(["Acme"]);
+    expect(retry.workspaceId).toBe(first.workspaceId);
+    expect(retry.checkoutIdempotencyKey).toBe(first.checkoutIdempotencyKey);
+    expect(checkouts.map((checkout) => checkout.workspaceId)).toEqual([first.workspaceId, first.workspaceId]);
+    expect(checkouts[1]?.clientIdempotencyKey).toBe(checkouts[0]?.clientIdempotencyKey);
+    // Another intent is another Workspace.
+    const other = await service.startBusinessWorkspaceCheckout({
+      actorUserId: "user-1",
+      name: "Acme",
+      creation: { clientIdempotencyKey: "intent-2" },
+      interval: "annual",
+      returnDestination: RETURN,
+    });
+    expect(other.workspaceId).not.toBe(first.workspaceId);
+    expect(created).toEqual(["Acme", "Acme"]);
+  });
+
   test("mints the Checkout key when the caller sent none, and returns it for the retry", async () => {
     stubWorkspaces();
     stubCheckout();
     const result = await service.startBusinessWorkspaceCheckout({
       actorUserId: "user-1",
       name: "Acme",
+      creation,
       interval: "monthly",
       returnDestination: RETURN,
     });
@@ -147,6 +188,7 @@ describe("Business Workspace checkout", () => {
       service.startBusinessWorkspaceCheckout({
         actorUserId: "user-1",
         name: "Acme",
+        creation,
         interval: "annual",
         checkoutIdempotencyKey: KEY,
         returnDestination: RETURN,
@@ -170,6 +212,7 @@ describe("Business Workspace checkout", () => {
       service.startBusinessWorkspaceCheckout({
         actorUserId: "user-1",
         name: "Acme",
+        creation,
         interval: "annual",
         checkoutIdempotencyKey: KEY,
         returnDestination: RETURN,
@@ -177,7 +220,7 @@ describe("Business Workspace checkout", () => {
     );
     expect(failure).toMatchObject({ code: "checkout_in_progress", kind: "conflict" });
     expect(failure.details).toEqual({
-      recovery: { workspaceId: "ws-pending", workspaceName: "Acme", interval: "annual", checkoutIdempotencyKey: KEY },
+      recovery: { workspaceId: "ws-pending-1", workspaceName: "Acme", interval: "annual", checkoutIdempotencyKey: KEY },
     });
   });
 
@@ -192,6 +235,7 @@ describe("Business Workspace checkout", () => {
         service.startBusinessWorkspaceCheckout({
           actorUserId: "user-1",
           name: "Acme",
+          creation,
           interval: "annual",
           checkoutIdempotencyKey: KEY,
           returnDestination: RETURN,
@@ -202,7 +246,7 @@ describe("Business Workspace checkout", () => {
         kind: "unavailable",
         message: "Workspace checkout could not be started",
       });
-      expect(failure.details).toMatchObject({ recovery: { workspaceId: "ws-pending", checkoutIdempotencyKey: KEY } });
+      expect(failure.details).toMatchObject({ recovery: { workspaceId: "ws-pending-1", checkoutIdempotencyKey: KEY } });
       expect(JSON.stringify(failure.details)).not.toContain("hunter2");
       expect(warn.mock.calls.map((call) => String(call[0])).join("\n")).not.toContain("hunter2");
     } finally {

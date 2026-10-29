@@ -1,17 +1,31 @@
-import { describe, expect, mock, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { ChakraProvider } from "@chakra-ui/react";
 import { system } from "@narriflow/ui/theme";
 import type { StandingGrantView } from "@narriflow/validators";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderToStaticMarkup } from "react-dom/server";
+import { GrantsPanel, type GrantsPanelApi } from "./grants-panel";
 
-mock.module("next/navigation", () => ({ useRouter: () => ({ refresh() {}, push() {} }) }));
-mock.module("./actions", () => ({
-	createStandingGrantAction: async () => ({ ok: true }),
-	renewStandingGrantAction: async () => ({ ok: true }),
-	pauseStandingGrantAction: async () => ({ ok: true }),
-	revokeStandingGrantAction: async () => ({ ok: true }),
-}));
-const { GrantsPanel } = await import("./grants-panel");
+/** Nothing here is called while the panel is only rendered. */
+const unused = async (): Promise<never> => {
+	throw new Error("not used while rendering");
+};
+const api: GrantsPanelApi = {
+	actions: {
+		createRule: unused,
+		updateRule: unused,
+		deleteRule: unused,
+		takeOverRule: unused,
+		runRuleNow: unused,
+		createGrant: unused,
+		renewGrant: unused,
+		pauseGrant: unused,
+		revokeGrant: unused,
+		disconnectZoom: unused,
+		startZoomOAuth: unused,
+	},
+	changed: async () => {},
+};
 
 const RULE_ID = "00000000-0000-4000-8000-0000000000a1";
 
@@ -45,9 +59,11 @@ function grant(overrides: Partial<StandingGrantView>): StandingGrantView {
 
 function render(grants: StandingGrantView[], canManage: boolean, access?: { role: "owner" | "admin" | "editor" | "viewer"; status: "active" | "pending_payment" | "restricted" }) {
 	return renderToStaticMarkup(
+		<QueryClientProvider client={new QueryClient()}>
 		<ChakraProvider value={system}>
-			<GrantsPanel grants={grants} rules={[{ id: RULE_ID, name: "Weekly show" }]} accounts={[]} canManage={canManage} reviewAvailable access={access} initialRuleId={null} />
-		</ChakraProvider>,
+			<GrantsPanel api={api} grants={grants} rules={[{ id: RULE_ID, name: "Weekly show" }]} accounts={[]} canManage={canManage} reviewAvailable access={access} initialRuleId={null} />
+		</ChakraProvider>
+		</QueryClientProvider>,
 	);
 }
 

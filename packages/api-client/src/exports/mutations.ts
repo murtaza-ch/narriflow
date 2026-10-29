@@ -7,6 +7,7 @@ import type {
 } from "@narriflow/validators/api/exports";
 import { IDEMPOTENCY_KEY_HEADER, invalidateScoped, type WorkspaceScope } from "../core";
 import { invalidateProject } from "../projects";
+import { invalidateWorkspaceUsage } from "../workspace/queries";
 import type { ExportsClient } from "./index";
 import { EXPORT_RESOURCES } from "./queries";
 
@@ -139,7 +140,6 @@ export async function invalidateAfterExportChange(queryClient: QueryClient, scop
   await Promise.all([
     invalidateScoped(queryClient, scope, "exports"),
     invalidateProject(queryClient, scope, projectId),
-    invalidateScoped(queryClient, scope, "workspace", "usage"),
-    invalidateScoped(queryClient, scope, "workspace", "bootstrap"),
+    invalidateWorkspaceUsage(queryClient, scope),
   ]);
 }

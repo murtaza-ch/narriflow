@@ -5,7 +5,7 @@ import { useSearchParams } from "next/navigation";
 import { Button } from "@narriflow/ui/components/button";
 import { Box, Stack } from "@chakra-ui/react";
 import type { WorkspaceScope } from "@narriflow/api-client";
-import { invalidatePublishing } from "@narriflow/api-client/publishing";
+import { invalidateAfterAccountChange } from "@narriflow/api-client/publishing";
 import { planCountRequirement, planLimits, planUpgradeHighlight } from "@narriflow/validators";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo } from "react";
@@ -53,7 +53,7 @@ function SocialAccountsContent({ scope }: { scope: WorkspaceScope }) {
 				return (await response.json()).account;
 			},
 			disconnect: (accountId) => publishingApi(runtime.transport, scope).commands.disconnectAccount(accountId),
-			onChanged: () => void invalidatePublishing(queryClient, scope),
+			onChanged: () => void invalidateAfterAccountChange(queryClient, scope),
 			navigate: (url) => window.location.assign(url),
 		}),
 		[runtime.transport, scope, queryClient],

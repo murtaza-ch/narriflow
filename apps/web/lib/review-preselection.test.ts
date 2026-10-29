@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { encodeReviewSelection } from "@narriflow/services";
+import { encodeReviewSelection } from "@narriflow/validators/review-selection";
 import { resolveReviewPreselection } from "./review-preselection";
 
 const uuid = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;

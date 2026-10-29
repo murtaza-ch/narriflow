@@ -83,6 +83,7 @@ export type IndependentTrust =
   | "provider_signature";
 
 const REGISTRATION_MARK = Symbol.for("narriflow.api.registration");
+const GUARD_MARK = Symbol.for("narriflow.api.admission-guard");
 
 /** What a route entry in a mounted app says about the registration that created it. */
 export interface RegistrationMark {
@@ -100,6 +101,15 @@ export function registrationOf(handler: unknown): RegistrationMark | undefined {
   if (direct) return direct;
   const composed = record.__COMPOSED_HANDLER;
   return composed === undefined ? undefined : registrationOf(composed);
+}
+
+/** True for the app-level fail-closed guard (also through Hono's composed-handler wrapper). */
+export function isAdmissionGuard(handler: unknown): boolean {
+  if (typeof handler !== "function") return false;
+  const record = handler as unknown as Record<string | symbol, unknown>;
+  if (record[GUARD_MARK] === true) return true;
+  const composed = record.__COMPOSED_HANDLER;
+  return composed === undefined ? false : isAdmissionGuard(composed);
 }
 
 function tag(
@@ -170,7 +180,57 @@ function onOf(app: Hono<ApiEnv>): OnRoute {
 }
 
 const ROUTE_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const satisfies readonly RouteMethod[];
-const UNSUPPORTED_REGISTRATIONS = ["use", "all", "on", "route", "mount"] as const;
+/** Every other Hono method that adds handlers, or clones the app so the clone can. */
+const UNSUPPORTED_REGISTRATIONS = ["use", "all", "on", "route", "mount", "options", "basePath"] as const;
+
+function refusal(what: string): RouteRegistrationError {
+  return new RouteRegistrationError(
+    `Domain apps register routes only through get/post/put/patch/delete, not ${what}`,
+  );
+}
+
+/**
+ * The domain app's registration state is closed at the source, not only at the
+ * methods: every Hono registration (including `Hono.prototype.*.call(app)` and
+ * the clone `basePath` returns, which shares the router and route list) ends in
+ * `router.add` and a push on `routes`, and both refuse unless a declared
+ * `registerDeclared` call is in progress.
+ */
+function sealRegistrations(app: Hono<ApiEnv>): { declared<T>(register: () => T): T } {
+  let open = false;
+  const router = app.router;
+  const add = router.add.bind(router);
+  router.add = (...args: Parameters<typeof add>) => {
+    if (!open) throw refusal("router.add");
+    return add(...args);
+  };
+  const routes = new Proxy(app.routes, {
+    set(target, property, value) {
+      if (!open) throw refusal("routes");
+      return Reflect.set(target, property, value);
+    },
+    defineProperty(target, property, descriptor) {
+      if (!open) throw refusal("routes");
+      return Reflect.defineProperty(target, property, descriptor);
+    },
+    deleteProperty() {
+      throw refusal("routes");
+    },
+  });
+  for (const [name, value] of [["router", router], ["routes", routes]] as const) {
+    Object.defineProperty(app, name, { value, writable: false, configurable: false });
+  }
+  return {
+    declared(register) {
+      open = true;
+      try {
+        return register();
+      } finally {
+        open = false;
+      }
+    },
+  };
+}
 
 /**
  * The only way a domain registers HTTP routes. The returned app is a normal
@@ -179,33 +239,34 @@ const UNSUPPORTED_REGISTRATIONS = ["use", "all", "on", "route", "mount"] as cons
  * the domain's admission table and install the declared admission (or trust)
  * ahead of the handlers. A route with no declaration, a second registration of
  * the same route, and any other way of adding routes (`use`, `all`, `on`,
- * `route`, `mount`) throw at construction, so an unguarded or shadowing
- * registration cannot exist.
+ * `options`, `route`, `mount`, `basePath` clones, or the router and route list
+ * themselves) throw, so an unguarded or shadowing registration cannot exist.
  */
 export function createRouteApp(table: AdmissionTable): Hono<ApiEnv> {
   const app = new Hono<ApiEnv>();
   const on = onOf(app);
+  const seal = sealRegistrations(app);
   const registered = new Set<string>();
-  const methods = app as unknown as Record<string, unknown>;
+  const sealed = (name: string, value: unknown): void => {
+    Object.defineProperty(app, name, { value, writable: false, configurable: false, enumerable: true });
+  };
 
   for (const method of ROUTE_METHODS) {
-    methods[method.toLowerCase()] = (path: string, ...handlers: MiddlewareHandler<ApiEnv>[]) => {
+    sealed(method.toLowerCase(), (path: string, ...handlers: MiddlewareHandler<ApiEnv>[]) => {
       const key = `${method} ${path}`;
       const entry = (table as Readonly<Record<string, AdmissionEntry | undefined>>)[key];
       if (!entry) throw new RouteRegistrationError(`${key} has no admission declaration`);
       if (registered.has(key)) throw new RouteRegistrationError(`${key} is registered twice`);
       if (handlers.length === 0) throw new RouteRegistrationError(`${key} has no handler`);
       registered.add(key);
-      on(method, path, ...registrationChain(entry, handlers));
+      seal.declared(() => on(method, path, ...registrationChain(entry, handlers)));
       return app;
-    };
+    });
   }
   for (const name of UNSUPPORTED_REGISTRATIONS) {
-    methods[name] = () => {
-      throw new RouteRegistrationError(
-        `Domain apps register routes only through get/post/put/patch/delete, not ${name}`,
-      );
-    };
+    sealed(name, () => {
+      throw refusal(name);
+    });
   }
   return app;
 }
@@ -244,7 +305,7 @@ export function installRequestPolicy(
  * handler fall through to the JSON 404.
  */
 export function requireAdmissionDeclaration(): MiddlewareHandler<ApiEnv> {
-  return async (c, next) => {
+  const guard: MiddlewareHandler<ApiEnv> = async (c, next) => {
     const downstream = matchedRoutes(c).slice(c.req.routeIndex + 1);
     if (downstream.every((route) => registrationOf(route.handler) !== undefined)) {
       await next();
@@ -271,6 +332,8 @@ export function requireAdmissionDeclaration(): MiddlewareHandler<ApiEnv> {
       ),
     );
   };
+  Object.defineProperty(guard, GUARD_MARK, { value: true });
+  return guard;
 }
 
 function admissionOf(

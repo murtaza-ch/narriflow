@@ -77,9 +77,10 @@ dbDescribe("Brand Kit create receipts (PostgreSQL)", () => {
     const replay = await brandProfileService.create(f.scope, input, mutation("profile-key-1"));
     expect(replay.id).toBe(first.id);
     expect(await prisma.brandProfile.count({ where: { workspaceId: f.workspace.id } })).toBe(1);
-    // The receipt keeps identity only; signed asset URLs are read fresh.
+    // The receipt keeps the profile as created, without expiring signed URLs.
     const receipt = await prisma.operationReceipt.findFirstOrThrow({ where: { workspaceId: f.workspace.id, command: "create_brand_profile" } });
-    expect(receipt.result).toEqual({ id: first.id });
+    expect(receipt.result).toMatchObject({ id: first.id, name: "Acme", slug: "acme", assets: [], fonts: [] });
+    expect(JSON.stringify(receipt.result)).not.toContain("X-Amz");
     expect(receipt.resourceType).toBe("brand_profile");
     expect(receipt.actorUserId).toBe(f.user.id);
   });
@@ -206,6 +207,79 @@ dbDescribe("Brand Kit create receipts (PostgreSQL)", () => {
     );
     expect(new Set(results.map((scene) => scene.id)).size).toBe(1);
     expect(await prisma.sceneTemplate.count({ where: { profileId: profile.id } })).toBe(1);
+  });
+
+  // Sol wave-B B02: a replay answers from the receipt, never from mutable state.
+  describe("replays ignore later changes to the source, the plan and the profile", () => {
+    const sceneInput = {
+      name: "Intro",
+      role: "intro" as const,
+      makeDefault: true,
+      definition: {
+        schemaVersion: 1,
+        durationSec: 2,
+        content: { kind: "color", color: "#1D4ED8" },
+        motion: { entrance: "none", exit: "none", durationSec: 0.5 },
+      },
+    };
+    const downgrade = (f: Awaited<ReturnType<typeof fixture>>) =>
+      prisma.workspace.update({ where: { id: f.workspace.id }, data: { pricingTier: "free" } });
+
+    test("a duplicate replays after its source was deleted", async () => {
+      const f = await fixture("dup-deleted");
+      const scope = { actorUserId: f.user.id, workspaceId: f.workspace.id };
+      const source = await brandTemplateService.create(scope, { name: "Source", captionPreset: DEFAULT_CAPTION_PRESET } as never, mutation("src"));
+      const copy = await brandTemplateService.duplicate(scope, source.id, "Copy", mutation("dup-del"));
+      await prisma.brandTemplate.update({ where: { id: source.id }, data: { deletedAt: new Date() } });
+      expect(await brandTemplateService.duplicate(scope, source.id, "Copy", mutation("dup-del"))).toEqual(copy);
+      await expect(brandTemplateService.duplicate(scope, source.id, "Other", mutation("dup-del")))
+        .rejects.toMatchObject({ code: "operation_idempotency_conflict" });
+    });
+
+    test("style create and duplicate replay after a downgrade; a changed body still conflicts", async () => {
+      const f = await fixture("style-downgrade");
+      const scope = { actorUserId: f.user.id, workspaceId: f.workspace.id };
+      const input = { name: "Mine", captionPreset: DEFAULT_CAPTION_PRESET };
+      const first = await brandTemplateService.create(scope, input as never, mutation("style-dg"));
+      const copy = await brandTemplateService.duplicate(scope, first.id, "Copy", mutation("dup-dg"));
+      await downgrade(f);
+      expect(await brandTemplateService.create(scope, input as never, mutation("style-dg"))).toEqual(first);
+      expect(await brandTemplateService.duplicate(scope, first.id, "Copy", mutation("dup-dg"))).toEqual(copy);
+      await expect(brandTemplateService.create(scope, { ...input, name: "Changed" } as never, mutation("style-dg")))
+        .rejects.toMatchObject({ code: "operation_idempotency_conflict" });
+      // New work is still refused on the downgraded plan.
+      await expect(brandTemplateService.create(scope, input as never, mutation("style-new")))
+        .rejects.toMatchObject({ code: "plan_feature_required" });
+    });
+
+    test("a profile create replays as created after a downgrade, a later edit and a deletion", async () => {
+      const f = await fixture("profile-downgrade");
+      const input = { name: "Acme", slug: "acme" };
+      const first = await brandProfileService.create(f.scope, input, mutation("profile-dg"));
+      await downgrade(f);
+      const downgraded = { ...f.scope, pricingTier: "free" };
+      expect(await brandProfileService.create(downgraded, input, mutation("profile-dg"))).toEqual(first);
+      await expect(brandProfileService.create(downgraded, { name: "Changed", slug: "acme" }, mutation("profile-dg")))
+        .rejects.toMatchObject({ code: "operation_idempotency_conflict" });
+      await prisma.brandProfile.update({ where: { id: first.id }, data: { name: "Renamed" } });
+      expect((await brandProfileService.create(downgraded, input, mutation("profile-dg"))).name).toBe("Acme");
+      await prisma.brandProfile.update({ where: { id: first.id }, data: { deletedAt: new Date() } });
+      expect(await brandProfileService.create(downgraded, input, mutation("profile-dg"))).toEqual(first);
+      await expect(brandProfileService.create(downgraded, { name: "New", slug: "new" }, mutation("profile-new")))
+        .rejects.toMatchObject({ code: "plan_feature_required" });
+    });
+
+    test("a scene create replays after a downgrade", async () => {
+      const f = await fixture("scene-downgrade");
+      const profile = await brandProfileService.create(f.scope, { name: "Scenes", slug: "scenes" }, mutation("scene-dg-profile"));
+      const first = await sceneTemplateService.create(f.scope, profile.id, sceneInput, mutation("scene-dg"));
+      await downgrade(f);
+      const downgraded = { ...f.scope, pricingTier: "free" };
+      const replay = await sceneTemplateService.create(downgraded, profile.id, sceneInput, mutation("scene-dg"));
+      expect(replay.id).toBe(first.id);
+      await expect(sceneTemplateService.create(downgraded, profile.id, { ...sceneInput, name: "Other" }, mutation("scene-dg")))
+        .rejects.toMatchObject({ code: "operation_idempotency_conflict" });
+    });
   });
 
   test("listAll returns every live profile past the ordinary 24-row page", async () => {

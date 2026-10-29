@@ -1,8 +1,7 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
+import { useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { Box, Flex, Grid, Stack, Text } from "@chakra-ui/react";
 import { AlertTriangle, ArrowRight, Download, Languages, Mic2, Play } from "lucide-react";
@@ -17,11 +16,26 @@ import type {
   ClipSnapshot,
 } from "@narriflow/validators";
 import { clipAspectRatioOptions, userErrorMessage } from "@narriflow/validators";
-import type { DubUsageSummary } from "@narriflow/services";
+import { IDEMPOTENCY_KEY_HEADER, invalidateScoped, isApiError, type Intent } from "@narriflow/api-client";
+import { invalidateProject, PROJECT_RESOURCES, type ProjectDetail } from "@narriflow/api-client/projects";
+import { useMutation } from "@tanstack/react-query";
 import { formatDuration } from "@/lib/format";
+import { intentIn, playableMediaUrl, requireClipApi, useClipApi } from "@/lib/clip-media";
+import { browserFailureFromApiError } from "@/lib/publishing-client";
+import { clipActionErrorCopy, failureNeedsStateRefetch } from "./clip-action-error-copy";
 import { PlanLimitNotice } from "../../_components/plan-limit-notice";
 import { LockedButton, useUpgrade, type UpgradePrompt } from "../../_components/upgrade";
-import { upgradePromptFromFailure, type BrowserRequestFailure } from "@/lib/authenticated-request-browser";
+import { upgradePromptFromFailure } from "@/lib/authenticated-request-browser";
+
+/** This month's dub allowance, as the Project detail reports it. */
+type DubUsageSummary = NonNullable<ProjectDetail["tabData"]["dubAllowance"]>;
+
+interface DubRequest {
+  clipId: string;
+  aspectRatio: ClipAspectRatio;
+  targetLanguageCode: string;
+  voice: string;
+}
 
 const languageOptions = [
   { value: "es", label: "Spanish" },
@@ -48,34 +62,6 @@ function renderedAspectRatios(clip: ClipSnapshot): ClipAspectRatio[] {
     .filter((render) => render.hasAsset)
     .map((render) => render.aspectRatio);
 }
-
-function readPayloadString(payload: unknown, key: string): string | null {
-  if (!payload || typeof payload !== "object") return null;
-  const value = (payload as Record<string, unknown>)[key];
-  return typeof value === "string" && value.length > 0 ? value : null;
-}
-
-function apiErrorCopy(payload: unknown, fallback: string): string {
-  const errorCode = readPayloadString(payload, "error");
-  return (
-    userErrorMessage(errorCode) ??
-    readPayloadString(payload, "message") ??
-    fallback
-  );
-}
-
-function downloadUrlFromPayload(payload: unknown): string | null {
-  const value = readPayloadString(payload, "downloadUrl");
-  if (!value) return null;
-
-  try {
-    const url = new URL(value);
-    return url.protocol === "https:" || url.protocol === "http:" ? value : null;
-  } catch {
-    return null;
-  }
-}
-
 
 const dubBadgeStatus: Record<
   ClipDubSnapshot["status"],
@@ -247,9 +233,10 @@ export function DubbingPanel({
   /** Role and workspace status allow new dubs; otherwise only finished dubs show. */
   canEdit: boolean;
 }) {
-  const router = useRouter();
   const { openUpgrade } = useUpgrade();
-  const [isPending, startTransition] = useTransition();
+  const api = useClipApi();
+  // One key per deliberate request; a retry of the same dub replays it.
+  const dubIntent = useRef<Intent<DubRequest> | null>(null);
   const renderedClips = useMemo(
     () => clips.filter((clip) => renderedAspectRatios(clip).length > 0),
     [clips],
@@ -263,7 +250,6 @@ export function DubbingPanel({
   const [targetLanguageCode, setTargetLanguageCode] = useState("es");
   const [voice, setVoice] = useState("marin");
   const [message, setMessage] = useState<string | null>(null);
-  const [submitting, setSubmitting] = useState(false);
   const [downloadingAsset, setDownloadingAsset] = useState<string | null>(null);
 
   const clipItems = useMemo(
@@ -281,87 +267,69 @@ export function DubbingPanel({
     label: value,
   }));
 
-  async function requestDub() {
-    if (submitting) {
-      return;
-    }
+  const createDub = useMutation({
+    retry: false,
+    mutationFn: async (request: DubRequest) => {
+      const { runtime, scope, queryClient, projects } = requireClipApi(api);
+      const intent = intentIn(dubIntent, runtime);
+      await projects.projects[":id"].dubs.$post(
+        { param: { id: projectId }, json: request },
+        { headers: { [IDEMPOTENCY_KEY_HEADER]: intent.keyFor(request) } },
+      );
+      intent.complete();
+      // The new dub shows in the list, and the month's allowance and credits move.
+      await Promise.all([
+        invalidateProject(queryClient, scope, projectId),
+        invalidateScoped(queryClient, scope, "projects", PROJECT_RESOURCES.dubsAllowance, projectId),
+        invalidateScoped(queryClient, scope, "workspace", "usage"),
+      ]);
+    },
+    onError: (failure) => {
+      if (isApiError(failure) && failure.status === 402) {
+        const prompt = upgradePromptFromFailure(browserFailureFromApiError(failure));
+        if (prompt) openUpgrade(prompt);
+      }
+      // A lost response may still have queued the dub: show the real list.
+      if (api && failureNeedsStateRefetch(failure)) void invalidateProject(api.queryClient, api.scope, projectId);
+      setMessage(clipActionErrorCopy(failure, "Could not queue dub. Please try again."));
+    },
+  });
+
+  function requestDub() {
+    if (createDub.isPending) return;
     if (!selectedClip) {
       setMessage("Render a clip before generating a dub.");
       return;
     }
-
     setMessage(null);
-    setSubmitting(true);
-    try {
-      const response = await fetch(`/api/projects/${projectId}/dubs`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "idempotency-key": crypto.randomUUID(),
-        },
-        body: JSON.stringify({
-          clipId: selectedClip.id,
-          aspectRatio,
-          targetLanguageCode,
-          voice,
-        }),
-      });
-
-      if (!response.ok) {
-        const payload = (await response.json().catch(() => null)) as BrowserRequestFailure | null;
-        if (response.status === 402 && payload) {
-          const prompt = upgradePromptFromFailure(payload);
-          if (prompt) openUpgrade(prompt);
-        }
-        setMessage(
-          payload?.message ??
-            userErrorMessage(payload?.error) ??
-            "Could not queue dub.",
-        );
-        return;
-      }
-
-      startTransition(() => router.refresh());
-    } catch (err) {
-      console.warn(JSON.stringify({ level: "error", message: "request_dub_failed", errorName: err instanceof Error ? err.name : "UnknownError" }));
-      setMessage("Could not queue dub. Please try again.");
-    } finally {
-      setSubmitting(false);
-    }
+    createDub.mutate({ clipId: selectedClip.id, aspectRatio, targetLanguageCode, voice });
   }
 
   async function downloadDub(dub: ClipDubSnapshot, asset: "video" | "audio") {
-    if (downloadingAsset) return;
+    if (downloadingAsset || !api) return;
 
     const downloadKey = `${dub.id}:${asset}`;
     setDownloadingAsset(downloadKey);
     setMessage(null);
     try {
-      const response = await fetch(
-        `/api/projects/${projectId}/dubs/${dub.id}/download?asset=${asset}`,
-      );
-      const payload: unknown = await response.json().catch(() => null);
-      const downloadUrl = downloadUrlFromPayload(payload);
-      if (!response.ok || !downloadUrl) {
-        console.warn(JSON.stringify({ level: "error", message: "dub_download_failed", status: response.status }));
-        setMessage(
-          apiErrorCopy(payload, "Could not prepare this download. Please try again."),
-        );
-        return;
-      }
-
+      const response = await api.projects.projects[":id"].dubs[":dubId"].download.$get({
+        param: { id: projectId, dubId: dub.id },
+        query: { asset },
+      });
+      const grant = (await response.json()) as { downloadUrl?: unknown };
+      const downloadUrl = playableMediaUrl(grant.downloadUrl);
+      if (!downloadUrl) throw new Error("The download link is missing");
+      // The short-lived storage URL carries no session credential.
       window.location.assign(downloadUrl);
-    } catch {
-      console.warn(JSON.stringify({ level: "error", message: "dub_download_failed" }));
-      setMessage("Could not prepare this download. Please try again.");
+    } catch (failure) {
+      console.warn(JSON.stringify({ level: "error", message: "dub_download_failed", status: isApiError(failure) ? failure.status : 0 }));
+      setMessage(clipActionErrorCopy(failure, "Could not prepare this download. Please try again."));
     } finally {
-      setDownloadingAsset((current) =>
-        current === downloadKey ? null : current,
-      );
+      setDownloadingAsset((current) => (current === downloadKey ? null : current));
     }
   }
 
-  const busy = isPending || submitting;
+  const busy = createDub.isPending;
   // Show the plan boundary before the user fills in the form, not after.
   const renewsOn = allowance?.renewsAt
     ? new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", timeZone: "UTC" }).format(

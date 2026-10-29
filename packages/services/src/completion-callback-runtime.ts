@@ -50,8 +50,8 @@ export function getCompletionCallbackProcessor() {
   return processor;
 }
 
-/** Production signing-secret operations on the shared database. */
+/** Production signing-secret operations on the shared database. Rotation happens only inside the receipt-backed developer command (`issue`), never on its own. */
 export const callbackSigningSecrets = {
   status: (workspaceId: string) => createCallbackSigningSecrets({ prisma: requiredPrisma() }).status(workspaceId),
-  rotate: (workspaceId: string) => createCallbackSigningSecrets({ prisma: requiredPrisma() }).rotate(workspaceId),
+  issue: (tx: Prisma.TransactionClient, workspaceId: string) => createCallbackSigningSecrets({ prisma: requiredPrisma() }).issue(tx, workspaceId),
 };

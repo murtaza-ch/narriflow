@@ -1,12 +1,32 @@
 "use client";
 
 import Link from "next/link";
+import { useMemo } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { createGuestReviewsClient, reviewQueries } from "@narriflow/api-client/reviews";
+import { ReviewQueryProvider, useReviewTokenDigest, reviewApiOrigin, useExpiringReviewGrant } from "../../review/[token]/review-client-model";
+import { ReviewPending } from "../../review/[token]/review-client";
+import SharedClipUnavailable from "./not-found";
 import { Box, Flex, Heading, Stack, Text } from "@chakra-ui/react";
 import { Download, Lock } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
 import { Logo } from "@narriflow/ui/components/logo";
 import type { ClipExportSnapshot } from "@narriflow/validators";
 import { formatDate, formatDuration } from "@/lib/format";
+
+export function SharedExportPageClient({ token }: { token: string }) {
+  const digest = useReviewTokenDigest(token);
+  return <ReviewQueryProvider>{digest ? <SharedExportQuery key={digest} token={token} digest={digest} /> : <ReviewPending />}</ReviewQueryProvider>;
+}
+
+function SharedExportQuery({ token, digest }: { token: string; digest: string }) {
+  const client = useMemo(() => createGuestReviewsClient({ baseUrl: reviewApiOrigin(), getSession: () => null }), []);
+  const query = useQuery({ ...reviewQueries.share(client, token, digest), refetchOnWindowFocus: false });
+  const usable = useExpiringReviewGrant(query.data?.expiresAt, query.refetch);
+  if (query.isPending) return <ReviewPending />;
+  if (query.error || !query.data || !usable) return <SharedClipUnavailable />;
+  return <SharedExportClient exported={query.data} />;
+}
 
 function formatBytes(value: number | null): string | null {
   if (value === null || value <= 0) return null;

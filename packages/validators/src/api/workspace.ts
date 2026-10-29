@@ -102,13 +102,14 @@ export interface WorkspaceMembers {
 }
 
 /**
- * `POST /api/workspace/invites` and `/:inviteId/resend`. The link and delivery
- * result are known only to the request that created the invite; a replay of a
- * lost response carries `null` for both, and the admin uses Resend.
+ * `POST /api/workspace/invites` and `/:inviteId/resend` (201). The link and
+ * delivery result are known only to the request that issued the invite. A retry
+ * of a lost response is 409 `credential_already_issued` with the invite's
+ * identity in `details` and `details.recovery: "resend_invite"`: the person uses
+ * Resend, which issues a new link; the original is never recovered or rotated.
  */
 export interface InviteIssued {
   invite: Pick<WorkspaceInviteView, "id" | "email" | "role" | "expiresAt">;
-  inviteUrl: string | null;
-  emailSent: boolean | null;
-  replayed: boolean;
+  inviteUrl: string;
+  emailSent: boolean;
 }

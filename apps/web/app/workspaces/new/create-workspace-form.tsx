@@ -47,10 +47,13 @@ export function CreateWorkspaceForm() {
   const [failures, setFailures] = useState(0);
   const [redirecting, setRedirecting] = useState(false);
 
+  // One key per submission, kept through a lost response: the retry resumes the same pending Workspace.
+  const intent = useMemo(() => runtime.createIntent<BusinessWorkspaceCheckoutRequest>(), [runtime]);
   const checkout = useMutation({
     mutationFn: (input: BusinessWorkspaceCheckoutRequest) =>
-      startBusinessWorkspaceCheckout(runtime.transport, identity, input),
+      startBusinessWorkspaceCheckout(runtime.transport, identity, input, intent.keyFor(input)),
     onSuccess: (started) => {
+      intent.complete();
       // The new Workspace becomes the explicit selection before the person leaves for Stripe.
       // Checkout proves nothing about entitlement: Billing observes the verified state on return.
       runtime.selectWorkspace(started.selection.workspaceId);

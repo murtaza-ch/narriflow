@@ -2,7 +2,11 @@
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { ReviewPreselection } from "@/lib/review-preselection";
-import { useRouter } from "next/navigation";
+import { createReviewsClient, reviewQueries, reviewMutationOptions, invalidateReviewMutation } from "@narriflow/api-client/reviews";
+import { isApiError } from "@narriflow/api-client/core";
+import type { CreateReviewRoundInput, InternalReviewCommentInput, InviteReviewersInput } from "@narriflow/validators";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useApiRuntime, useWorkspaceScope } from "@/app/_components/api-provider";
 import {
   AlertTriangle,
   Check,
@@ -101,6 +105,66 @@ export type ReviewRoomData = {
   candidates: ReviewCandidate[];
   rounds: ReviewRound[];
 };
+
+export type ReviewCommand =
+  | { kind: "create"; input: CreateReviewRoundInput }
+  | { kind: "invite"; roundId: string; input: InviteReviewersInput }
+  | { kind: "comment"; roundId: string; input: InternalReviewCommentInput }
+  | { kind: "resolve" | "reopen"; roundId: string; commentId: string }
+  | { kind: "retry"; roundId: string; ledgerId: string }
+  | { kind: "revoke"; roundId: string };
+
+/** Both internal review surfaces share the captured Workspace room and commands. */
+export function useInternalReviews(projectId: string, initialData?: ReviewRoomData, enabled = true) {
+  const runtime = useApiRuntime();
+  const scope = useWorkspaceScope();
+  const queryClient = useQueryClient();
+  const api = useMemo(() => {
+    const captured = scope ?? { userId: "", workspaceId: "" };
+    return { scope: captured, client: createReviewsClient(runtime.transport.scoped(captured)), intent: runtime.createIntent<ReviewCommand>() };
+  }, [runtime, scope]);
+  const roomOptions = reviewQueries.room(api.client, api.scope, projectId);
+  const room = useQuery<ReviewRoomData>({
+    ...roomOptions,
+    queryFn: async ({ signal }): Promise<ReviewRoomData> => {
+      const value = await roomOptions.queryFn({ signal });
+      return {
+        ...value,
+        candidates: value.candidates.map((candidate) => ({ ...candidate, title: candidate.title ?? "" })),
+        rounds: value.rounds.map((round) => ({ ...round, items: round.items.map((item) => ({ ...item, clipTitle: item.clipTitle ?? "" })) })),
+      };
+    },
+    initialData,
+    enabled: enabled && scope !== null,
+  });
+  const mutation = useMutation({
+    ...reviewMutationOptions,
+    mutationFn: async (command: ReviewCommand) => {
+      const root = api.client.projects[":id"]["review-rounds"];
+      const param = { id: projectId };
+      const options = { headers: { "Idempotency-Key": api.intent.keyFor(command) } };
+      if (command.kind === "create") return (await root.$post({ param, json: command.input }, options)).json();
+      const round = root[":roundId"];
+      const roundParam = { ...param, roundId: command.roundId };
+      switch (command.kind) {
+        case "invite": return (await round.invite.$post({ param: roundParam, json: command.input }, options)).json();
+        case "comment": return (await round.comments.$post({ param: roundParam, json: command.input }, options)).json();
+        case "resolve": case "reopen": return (await round.comments[":commentId"][command.kind].$post({ param: { ...roundParam, commentId: command.commentId } }, options)).json();
+        case "retry": return (await round.notifications.retry.$post({ param: roundParam, json: { ledgerId: command.ledgerId } }, options)).json();
+        case "revoke": return (await round.revoke.$post({ param: roundParam }, options)).json();
+      }
+    },
+    onSuccess: async () => {
+      api.intent.complete();
+      await invalidateReviewMutation(queryClient, api.scope, projectId);
+    },
+  });
+  return { room, mutation };
+}
+
+function reviewFailurePrompt(reason: unknown) {
+  return isApiError(reason) ? upgradePromptFromFailure({ error: reason.code, message: reason.message, ...reason.details }) : null;
+}
 
 type DraftSelection = { exportId: string; variantIds: string[]; required: boolean };
 
@@ -217,15 +281,15 @@ function parseRecipients(value: string) {
 }
 
 export function ReviewPanel({ projectId, initialData, canManage, preselection = null }: { projectId: string; initialData: ReviewRoomData; canManage: boolean; preselection?: ReviewPreselection | null }) {
-  const router = useRouter();
+  const { room, mutation } = useInternalReviews(projectId, initialData);
   const { openUpgrade, currentTier } = useUpgrade();
   const reviewUpgrade = featureUpgradePrompt(currentTier, "review.rooms", "Upgrade to share projects for client review");
-  const [data, setData] = useState(initialData);
+  const data = room.data ?? initialData;
   const [activeRoundId, setActiveRoundId] = useState(initialData.rounds[0]?.id ?? null);
   // An assistant's review handoff opens the composer with its checked exports;
   // the member still chooses recipients, passcode, expiry, and sends.
   const [creating, setCreating] = useState(Boolean(preselection && Object.keys(preselection.selections).length > 0));
-  const [busy, setBusy] = useState(false);
+  const busy = mutation.isPending;
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(preselection?.dropped
     ? `${preselection.dropped} selected export${preselection.dropped === 1 ? " is" : "s are"} no longer current and ${preselection.dropped === 1 ? "was" : "were"} left out.`
@@ -246,7 +310,7 @@ export function ReviewPanel({ projectId, initialData, canManage, preselection = 
   const replyRef = useRef<HTMLTextAreaElement>(null);
   const createHeadingRef = useRef<HTMLDivElement>(null);
   const selectionInitializedRef = useRef(false);
-  const endpoint = `/api/projects/${encodeURIComponent(projectId)}/review-rounds`;
+
 
   const activeRound = data.rounds.find((round) => round.id === activeRoundId) ?? data.rounds[0] ?? null;
   const recipients = useMemo(() => parseRecipients(recipientText), [recipientText]);
@@ -266,38 +330,16 @@ export function ReviewPanel({ projectId, initialData, canManage, preselection = 
     })));
   }, [creating, data.candidates, projectId, selections]);
 
-  async function refresh() {
-    const response = await fetch(endpoint, { cache: "no-store" });
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload.message || "Review room could not be refreshed");
-    setData(payload);
-    setActiveRoundId((current) => current && payload.rounds.some((round: ReviewRound) => round.id === current) ? current : payload.rounds[0]?.id ?? null);
-  }
-
-  async function mutate(path: string, body?: unknown) {
-    setBusy(true);
+  async function mutate(command: ReviewCommand) {
     setError(null);
     setNotice(null);
     try {
-      const response = await fetch(`${endpoint}${path}`, {
-        method: "POST",
-        headers: body === undefined ? undefined : { "Content-Type": "application/json" },
-        body: body === undefined ? undefined : JSON.stringify(body),
-      });
-      const payload = await response.json();
-      if (!response.ok) {
-        const prompt = upgradePromptFromFailure(payload);
-        if (prompt) openUpgrade(prompt);
-        throw new Error(payload.message || "Review action could not be completed");
-      }
-      await refresh();
-      router.refresh();
-      return payload;
+      return await mutation.mutateAsync(command);
     } catch (reason) {
+      const prompt = reviewFailurePrompt(reason);
+      if (prompt) openUpgrade(prompt);
       setError(reason instanceof Error ? reason.message : "Review action could not be completed");
       return null;
-    } finally {
-      setBusy(false);
     }
   }
 
@@ -336,7 +378,7 @@ export function ReviewPanel({ projectId, initialData, canManage, preselection = 
       createHeadingRef.current?.focus();
       return;
     }
-    const result = await mutate("", {
+    const result = await mutate({ kind: "create", input: {
       title: title.trim(),
       message: message.trim() || null,
       passcode: passcode || null,
@@ -346,7 +388,7 @@ export function ReviewPanel({ projectId, initialData, canManage, preselection = 
       recipientEmails: recipients,
       contextCommentIds,
       items,
-    });
+    } });
     if (result) {
       setCreating(false);
       setPasscode("");
@@ -390,13 +432,13 @@ export function ReviewPanel({ projectId, initialData, canManage, preselection = 
     if (!replyBody.trim()) return;
     const mentionRecipients = round.recipientEmails.filter((email) => replyBody.toLowerCase().includes(`@${email.toLowerCase()}`));
     const parent = replyParentId ? round.comments.find((comment) => comment.id === replyParentId) : null;
-    const result = await mutate(`/${round.id}/comments`, {
+    const result = await mutate({ kind: "comment", roundId: round.id, input: {
       itemId: parent?.itemId ?? null,
       parentId: parent?.id ?? null,
       body: replyBody.trim(),
       timestampSec: null,
       mentionRecipients,
-    });
+    } });
     if (result) {
       setReplyBody("");
       setReplyParentId(null);
@@ -615,7 +657,7 @@ export function ReviewPanel({ projectId, initialData, canManage, preselection = 
                           <StatusBadge label={thread.resolvedAt ? "resolved" : "open"} status={thread.resolvedAt ? "completed" : "pending"} />
                         </Flex>
                         {replies.map((reply) => <Box key={reply.id} ms="11" p="3" bg="bg.panel" borderRadius="l2"><Text fontSize="12px" fontWeight="600">{reply.authorName}</Text><Text fontSize="13px" color="fg.muted" mt="0.5" whiteSpace="pre-wrap">{reply.body}</Text></Box>)}
-                        {canManage ? <Flex gap="2" ms="9"><Button size="sm" variant="ghost" onClick={() => { setReplyParentId(thread.id); setReplyBody(""); requestAnimationFrame(() => replyRef.current?.focus()); }}>Reply</Button><Button size="sm" variant="ghost" onClick={() => void mutate(`/${activeRound.id}/comments/${thread.id}/${thread.resolvedAt ? "reopen" : "resolve"}`)} disabled={busy}>{thread.resolvedAt ? <RotateCcw size={12} /> : <Check size={12} />}{thread.resolvedAt ? "Reopen" : "Resolve"}</Button></Flex> : null}
+                        {canManage ? <Flex gap="2" ms="9"><Button size="sm" variant="ghost" onClick={() => { setReplyParentId(thread.id); setReplyBody(""); requestAnimationFrame(() => replyRef.current?.focus()); }}>Reply</Button><Button size="sm" variant="ghost" onClick={() => void mutate({ kind: thread.resolvedAt ? "reopen" : "resolve", roundId: activeRound.id, commentId: thread.id })} disabled={busy}>{thread.resolvedAt ? <RotateCcw size={12} /> : <Check size={12} />}{thread.resolvedAt ? "Reopen" : "Resolve"}</Button></Flex> : null}
                       </Stack>
                     );
                   })}
@@ -647,7 +689,7 @@ export function ReviewPanel({ projectId, initialData, canManage, preselection = 
                           </Box>
                           <Flex align="center" gap="1" flexShrink={0}>
                             <StatusBadge label={notification.status} status={notification.status === "failed" ? "failed" : notification.status === "sent" ? "completed" : "pending"} />
-                            {notification.status === "failed" ? <Button size="sm" variant="ghost" onClick={() => void mutate(`/${activeRound.id}/notifications/retry`, { ledgerId: notification.id })} disabled={busy}><RefreshCw size={12} /> Retry</Button> : null}
+                            {notification.status === "failed" ? <Button size="sm" variant="ghost" onClick={() => void mutate({ kind: "retry", roundId: activeRound.id, ledgerId: notification.id })} disabled={busy}><RefreshCw size={12} /> Retry</Button> : null}
                           </Flex>
                         </Flex>
                       ))}
@@ -661,7 +703,7 @@ export function ReviewPanel({ projectId, initialData, canManage, preselection = 
                 </Stack>
               </Flex>
 
-              {canManage ? <Flex justify="space-between" gap="3" wrap="wrap"><Button variant="subtle" onClick={() => prepareNext(activeRound)}><RefreshCw size={14} /> Prepare next round</Button>{!activeRound.revokedAt ? <Button variant="ghost" colorPalette="danger" onClick={() => void mutate(`/${activeRound.id}/revoke`)} disabled={busy}><ShieldCheck size={14} /> Revoke access</Button> : null}</Flex> : null}
+              {canManage ? <Flex justify="space-between" gap="3" wrap="wrap"><Button variant="subtle" onClick={() => prepareNext(activeRound)}><RefreshCw size={14} /> Prepare next round</Button>{!activeRound.revokedAt ? <Button variant="ghost" colorPalette="danger" onClick={() => void mutate({ kind: "revoke", roundId: activeRound.id })} disabled={busy}><ShieldCheck size={14} /> Revoke access</Button> : null}</Flex> : null}
             </Stack>
           ) : null}
         </Flex>

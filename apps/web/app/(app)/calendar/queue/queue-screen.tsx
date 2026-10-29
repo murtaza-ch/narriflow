@@ -4,7 +4,7 @@ import Link from "next/link";
 import { Flex, Stack, Text } from "@chakra-ui/react";
 import { ArrowLeft } from "lucide-react";
 import type { WorkspaceScope } from "@narriflow/api-client";
-import { invalidatePublishing } from "@narriflow/api-client/publishing";
+import { invalidateAfterProposalChange } from "@narriflow/api-client/publishing";
 import { Button } from "@narriflow/ui/components/button";
 import { PageHeader } from "@narriflow/ui/components/page-header";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -57,7 +57,7 @@ function QueueContent({ scope }: { scope: WorkspaceScope }) {
 	const queue = useQuery(publishingQueries.queue(runtime, scope));
 	const bootstrap = useWorkspaceBootstrap(scope);
 
-	const refresh = useMemo(() => () => void invalidatePublishing(queryClient, scope), [queryClient, scope]);
+	const refresh = useMemo(() => () => void invalidateAfterProposalChange(queryClient, scope), [queryClient, scope]);
 	const proposalsApi = useMemo<ProposalsApi>(() => {
 		const { commands, reads } = publishingApi(runtime.transport, scope);
 		return {

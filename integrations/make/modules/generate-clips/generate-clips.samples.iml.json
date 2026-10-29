@@ -2,7 +2,7 @@
     "projectId": "00000000-0000-4000-8000-000000000004",
     "operationId": "op_AAAAAAAAAAAAAAAAAAAAAAA",
     "operationKind": "generation",
-    "statusUrl": "https://app.narriflow.com/api/v1/operations/op_AAAAAAAAAAAAAAAAAAAAAAA",
+    "statusUrl": "http://localhost:4000/api/v1/operations/op_AAAAAAAAAAAAAAAAAAAAAAA",
     "reviewUrl": "https://app.narriflow.com/projects/00000000-0000-4000-8000-000000000004",
     "replayed": false
 }

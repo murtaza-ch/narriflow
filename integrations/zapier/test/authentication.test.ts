@@ -46,7 +46,7 @@ describe('authentication', () => {
 
   it('sends the key only as a Bearer token', async () => {
     const seen: string[] = [];
-    nock('https://app.narriflow.com')
+    nock('http://localhost:4000')
       .get(api('/workspace'))
       .reply((request: Request) => {
         seen.push(String(request.headers.get('authorization')));
@@ -60,16 +60,16 @@ describe('authentication', () => {
 describe('Narriflow URL', () => {
   const root = (baseUrl?: string) => apiRoot({ errors: (zapier as any).errors } as never, { authData: { baseUrl } } as never);
 
-  it('defaults to production', () => {
-    assert.equal(root(undefined), 'https://app.narriflow.com/api/v1');
-    assert.equal(root(''), 'https://app.narriflow.com/api/v1');
+  it('defaults to the local API origin', () => {
+    assert.equal(root(undefined), 'http://localhost:4000/api/v1');
+    assert.equal(root(''), 'http://localhost:4000/api/v1');
   });
 
   it('accepts a dev origin however it was pasted', () => {
     assert.equal(root('https://dev.example.com'), 'https://dev.example.com/api/v1');
     assert.equal(root('https://dev.example.com/'), 'https://dev.example.com/api/v1');
     assert.equal(root('https://dev.example.com/api/v1'), 'https://dev.example.com/api/v1');
-    assert.equal(root(' http://localhost:3000/projects '), 'http://localhost:3000/api/v1');
+    assert.equal(root(' http://localhost:4000/projects '), 'http://localhost:4000/api/v1');
   });
 
   it('refuses plain http to a remote host and text that is not a URL', () => {

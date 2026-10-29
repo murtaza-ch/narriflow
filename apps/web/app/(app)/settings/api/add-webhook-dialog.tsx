@@ -1,16 +1,18 @@
 "use client";
 
-import { useState, useTransition } from "react";
-import { useRouter } from "next/navigation";
+import { useMemo, useState } from "react";
 import { Field, Flex, Input, Stack, Text } from "@chakra-ui/react";
+import type { WorkspaceScope } from "@narriflow/api-client";
+import { createWebhookMutation } from "@narriflow/api-client/developer";
+import { useMutation } from "@tanstack/react-query";
 import { Plus } from "lucide-react";
 import { WORKSPACE_EVENT_TYPES, type WorkspaceEventType } from "@narriflow/validators";
 import { Button } from "@narriflow/ui/components/button";
 import { CloseButton, Dialog, Portal } from "@narriflow/ui/components/dialog";
 import { Spinner } from "@narriflow/ui/components/spinner";
 import { Switch } from "@narriflow/ui/components/switch";
-import { authenticatedActionResultMessage } from "@/lib/authenticated-request-browser";
-import { createWebhookAction } from "../actions";
+import { useApiRuntime } from "@/app/_components/api-provider";
+import { developerFailureMessage } from "./failure-message";
 
 export const EVENT_LABELS: Record<WorkspaceEventType, { label: string; description: string }> = {
   "operation.finished": { label: "Work finished", description: "An import, clip generation or export reached its final state" },
@@ -22,33 +24,36 @@ export const EVENT_LABELS: Record<WorkspaceEventType, { label: string; descripti
   "grant.expired": { label: "Grants expired", description: "A standing grant reached its expiry and stopped" },
 };
 
-export function AddWebhookDialog({ disabledReason }: { disabledReason: string | null }) {
-  const router = useRouter();
+export function AddWebhookDialog({ scope, disabledReason }: { scope: WorkspaceScope; disabledReason: string | null }) {
+  const runtime = useApiRuntime();
   const [open, setOpen] = useState(false);
   const [url, setUrl] = useState("");
   const [types, setTypes] = useState<WorkspaceEventType[]>(["operation.finished"]);
   const [error, setError] = useState<string | null>(null);
-  const [pending, startTransition] = useTransition();
+  // One idempotency intent per dialog: a retry after a lost response registers the same webhook once.
+  const createWebhook = useMutation(useMemo(() => createWebhookMutation(runtime, scope), [runtime, scope]));
+  const pending = createWebhook.isPending;
 
   function reset() {
     setUrl("");
     setTypes(["operation.finished"]);
     setError(null);
+    createWebhook.reset();
   }
 
   function create(event: React.FormEvent) {
     event.preventDefault();
     setError(null);
-    startTransition(async () => {
-      const result = await createWebhookAction({ url: url.trim(), types });
-      if (!result.ok) {
-        setError(authenticatedActionResultMessage(result, "The webhook could not be created."));
-        return;
-      }
-      setOpen(false);
-      reset();
-      router.refresh();
-    });
+    createWebhook.mutate(
+      { url: url.trim(), types },
+      {
+        onSuccess: () => {
+          setOpen(false);
+          reset();
+        },
+        onError: (failure) => setError(developerFailureMessage(failure, "The webhook could not be created.")),
+      },
+    );
   }
 
   return (

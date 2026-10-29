@@ -7,7 +7,8 @@ import {
 	type WorkspaceScope,
 } from "@narriflow/api-client";
 import { exportCommands } from "@narriflow/api-client/exports";
-import { publishingCommands, publishingReads } from "@narriflow/api-client/publishing";
+import { invalidateAfterPostChange, publishingCommands, publishingReads } from "@narriflow/api-client/publishing";
+import type { QueryClient } from "@tanstack/react-query";
 import type { BulkSocialScheduleRequest, GenerateAssistedCopyRequest, PublishingPreviewRequest } from "@narriflow/validators";
 
 type Json<Fn extends (args: any, ...rest: any[]) => unknown> = Parameters<Fn>[0] extends { json: infer Body } ? Body : never;
@@ -18,7 +19,7 @@ type Json<Fn extends (args: any, ...rest: any[]) => unknown> = Parameters<Fn>[0]
  * (one per user intent, from `runtime.createIntent`); the bulk schedule and
  * assisted copy carry their own identity in the body.
  */
-export function createProjectPublishingApi(transport: ApiTransport, scope: WorkspaceScope) {
+export function createProjectPublishingApi(transport: ApiTransport, scope: WorkspaceScope, queryClient: QueryClient) {
 	const bound = transport.scoped(scope);
 	const publishing = createPublishingClient(bound);
 	const exportsClient = createExportsClient(bound);
@@ -26,6 +27,14 @@ export function createProjectPublishingApi(transport: ApiTransport, scope: Works
 	const brand = createBrandClient(bound);
 	const commands = publishingCommands(publishing);
 	const reads = publishingReads(publishing);
+	/** A confirmed change to a Project's posts also refreshes that Project's cached screen and the publishing reads. */
+	const changesPosts =
+		<Args extends [projectId: string, ...rest: any[]], Result>(command: (...args: Args) => Promise<Result>) =>
+		async (...args: Args): Promise<Result> => {
+			const result = await command(...args);
+			void invalidateAfterPostChange(queryClient, scope, args[0]);
+			return result;
+		};
 
 	return {
 		/** Live posts first (`tracked` is at most one batch of ids), for the bounded refresh. */
@@ -33,12 +42,12 @@ export function createProjectPublishingApi(transport: ApiTransport, scope: Works
 			(await publishing.projects[":id"]["social-posts"].$get({ param: { id: projectId }, query: { active: "1", tracked: tracked.join(",") } })).json(),
 		olderPosts: async (projectId: string, cursor: string) =>
 			(await publishing.projects[":id"]["social-posts"].$get({ param: { id: projectId }, query: { cursor } })).json(),
-		cancelPost: commands.cancelPost,
-		refreshInbox: async (projectId: string, postId: string) =>
-			(await publishing.projects[":id"]["social-posts"][":postId"]["refresh-inbox"].$post({ param: { id: projectId, postId } })).json(),
-		recheck: commands.recheck,
-		confirm: commands.confirm,
-		publishAgain: commands.publishAgain,
+		cancelPost: changesPosts(commands.cancelPost),
+		refreshInbox: changesPosts(async (projectId: string, postId: string) =>
+			(await publishing.projects[":id"]["social-posts"][":postId"]["refresh-inbox"].$post({ param: { id: projectId, postId } })).json()),
+		recheck: changesPosts(commands.recheck),
+		confirm: changesPosts(commands.confirm),
+		publishAgain: changesPosts(commands.publishAgain),
 
 		publishingOptions: async (projectId: string, accountId: string) =>
 			(await publishing.projects[":id"]["social-accounts"][":accountId"]["publishing-options"].$get({ param: { id: projectId, accountId } })).json(),

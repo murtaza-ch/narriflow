@@ -170,6 +170,42 @@ describe("clip creation receipts", () => {
 		expect(receipts.receipts()).toBe(0);
 	});
 
+	// Sol wave-B B03: the early limiter refusal must not hide a receipt a concurrent request just committed.
+	describe.each([
+		["exhausted", "rate_limited"],
+		["unavailable", "mutations_unavailable"],
+	])("a %s limiter that refuses while the same key is being accepted", (_outcome, refusal) => {
+		test("returns the accepted clip instead of the refusal", async () => {
+			const { commands, receipts, fake } = build();
+			const winner = build(fake, receipts);
+			const outcome = await commands.duplicateClip(actor, PROJECT, "clip-0", {
+				clientIdempotencyKey: "k1",
+				beforeAccept: async () => {
+					// A concurrent request commits between our replay read and the limiter's refusal.
+					await winner.commands.duplicateClip(actor, PROJECT, "clip-0", { clientIdempotencyKey: "k1" });
+					throw new Error(refusal);
+				},
+			});
+			expect(outcome).toMatchObject({ replayed: true, clip: { id: "clip-1" } });
+			expect(fake.state.prepared).toBe(1);
+			expect(receipts.clipRows()).toEqual(["clip-1"]);
+		});
+
+		test("a concurrent acceptance of different input is still a conflict, not the refusal", async () => {
+			const { commands, receipts, fake } = build();
+			const winner = build(fake, receipts);
+			await expect(
+				commands.createClipFromRange(actor, PROJECT, { startSec: 2, endSec: 9 }, {
+					clientIdempotencyKey: "k1",
+					beforeAccept: async () => {
+						await winner.commands.createClipFromRange(actor, PROJECT, { startSec: 1, endSec: 9 }, { clientIdempotencyKey: "k1" });
+						throw new Error(refusal);
+					},
+				}),
+			).rejects.toBeInstanceOf(OperationIdempotencyConflictError);
+		});
+	});
+
 	test("a failed insert leaves neither a receipt nor a half-created clip", async () => {
 		const { commands, receipts } = build(fakeClips({ failWrite: true }));
 		await expect(

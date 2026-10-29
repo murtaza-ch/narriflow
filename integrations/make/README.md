@@ -11,7 +11,7 @@ build step because Make interprets the files. Users guide:
 
 | Kind | Name | REST calls |
 | --- | --- | --- |
-| Connection | Workspace API key as a Bearer token, plus an advanced `Narriflow URL` (default `https://app.narriflow.com`) | `GET /workspace` tests the key and labels the connection with the Workspace name |
+| Connection | Workspace API key as a Bearer token, plus an advanced `Narriflow URL` (default `http://localhost:4000`) | `GET /workspace` tests the key and labels the connection with the Workspace name |
 | Trigger | Watch events | `GET /events` for the chosen types (`operation.finished`, `finishing.finished`, `autopilot.episode_imported`, `social_post.finished`) |
 | Action | Submit a video link | `POST /projects` |
 | Action | Generate clips | `POST /projects/{id}/generations` |
@@ -183,7 +183,7 @@ demand. Make's current review process (developers.make.com, App review) works li
   both RPCs have a limit; Get export download has none yet, and the API does not
   paginate it.
 - **Only the credentials the service requires.** The advanced `Narriflow URL` field is
-  for development. Remove it, and hard-code `https://app.narriflow.com` in the base
+  for development. Remove it, and hard-code your deployed API origin in the base
   and the connection, before requesting a review.
 - **Test scenarios.** One scenario that runs every module without errors, plus one that
   produces an error, with execution logs that hold no personal data. Re-run them right
@@ -198,3 +198,5 @@ demand. Make's current review process (developers.make.com, App review) works li
   and answering its users.
 
 Decide on OAuth before applying: the REST API accepts Workspace API keys only today.
+
+The default API origin is `http://localhost:4000` for local development. Hosted Make and Zapier connections must use the configured public HTTPS API origin. Existing connections using the web origin must update their Narriflow URL at cutover. Human review and queue links remain on the web origin.

@@ -191,8 +191,9 @@ describe("New-Workspace checkout", () => {
     const result = await startBusinessWorkspaceCheckout(runtime.transport, { userId: USER }, {
       name: "Acme",
       interval: "annual",
-    });
+    }, "intent-1");
     expect(result).toEqual(response as typeof result);
+    expect(calls[0]?.headers.get("idempotency-key")).toBe("intent-1");
     expect(calls[0]?.url).toBe("https://api.example.test/api/workspaces/business-checkout");
     expect(calls[0]?.headers.get("x-workspace-id")).toBeNull();
     expect(calls[0]?.headers.get("authorization")).toBe("Bearer session-token");
@@ -209,7 +210,7 @@ describe("New-Workspace checkout", () => {
     const error = await startBusinessWorkspaceCheckout(runtime.transport, { userId: USER }, {
       name: "Acme",
       interval: "annual",
-    }).catch((caught: unknown) => caught);
+    }, "intent-2").catch((caught: unknown) => caught);
     expect(isApiError(error) && error.details).toEqual({ recovery });
   });
 });
