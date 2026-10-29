@@ -1019,7 +1019,7 @@ export function compileCompositionPlanInsertedSceneSequence(input: {
 	baseVideoLabel: string;
 	outputLabel: string;
 	trailingChain?: string;
-	fps?: number;
+	fps?: GeneratedFrameRate;
 	resolvedSceneAssets?: Readonly<
 		Record<string, { path: string; kind: "image" | "video" }>
 	>;
@@ -1065,7 +1065,7 @@ function compileInsertedSceneSequence(input: {
 	compiledSourceScenes: ReadonlyMap<string, string>;
 	outputLabel: string;
 	trailingChain?: string;
-	fps?: number;
+	fps?: GeneratedFrameRate;
 	resolvedSceneAssets?: Readonly<
 		Record<string, { path: string; kind: "image" | "video" }>
 	>;
@@ -1127,7 +1127,7 @@ function compileInsertedSceneSequence(input: {
 		throw new Error("invalid_clip_composition_source_scenes");
 	const parts: string[] = [];
 	const outputs: string[] = [];
-	const fps = input.fps && input.fps > 0 ? input.fps : 30;
+	const fps = generatedFrameRate(input.fps);
 	target.scenes.forEach((scene, sceneIndex) => {
 		const output = `[composition_insert_sequence_${sceneIndex}]`;
 		outputs.push(output);
@@ -1225,12 +1225,67 @@ function compileInsertedSceneSequence(input: {
 	return { filterParts: parts, sceneInputs };
 }
 
+/** The rate generated scenes and backgrounds run at: a plain number, or the
+ *  exact rational text of a normalized variable-rate source. */
+export type GeneratedFrameRate = number | string;
+
+function generatedFrameRate(fps: GeneratedFrameRate | undefined): GeneratedFrameRate {
+	if (typeof fps === "string") return fps;
+	return fps && fps > 0 ? fps : 30;
+}
+
+function rationalText(rate: { numerator: number; denominator: number }): string {
+	return rate.denominator === 1 ? `${rate.numerator}` : `${rate.numerator}/${rate.denominator}`;
+}
+
+/** Ordinary sources keep the raw rate; a variable-rate source uses the exact
+ *  rational it was normalized to. */
+function generatedFrameRateOf(probe: WorkerMediaInspection): GeneratedFrameRate {
+	const constant = probe.videoClock?.constantRate;
+	return constant ? rationalText(constant) : probe.fps;
+}
+
+/** A variable-rate source becomes constant-rate here, before any scene or
+ *  layer splits it, so every branch shares one presentation clock. Real time
+ *  is kept: frames repeat or drop, nothing moves. The edited clock of a cut
+ *  already starts at its own zero, so it pads to zero; an uncut source is
+ *  rebased first. Ordinary sources add nothing. */
+function constantRateSourceStage(
+	probe: WorkerMediaInspection,
+	label: string,
+	clockIsEdited: boolean,
+): { label: string; filterParts: string[] } {
+	const constant = probe.hasVideo ? probe.videoClock?.constantRate : null;
+	if (!constant) return { label, filterParts: [] };
+	const output = "[composition_constant_rate_source]";
+	const rate = rationalText(constant);
+	return {
+		label: output,
+		filterParts: [
+			clockIsEdited
+				? `${label}fps=${rate}:start_time=0${output}`
+				: `${label}setpts=PTS-STARTPTS,fps=${rate}${output}`,
+		],
+	};
+}
+
 /** FFmpeg autorotation has already applied the display matrix when the source
  *  is decoded, so the planner works in display orientation. A non-square pixel
  *  aspect is the one correction left for the graph: scale to the planned square
  *  pixel size and declare SAR 1:1 before any crop. Ordinary sources add
  *  nothing. */
 function displaySourceStage(
+	probe: WorkerMediaInspection,
+	plan: ClipCompositionPlan,
+	label: string,
+	clockIsEdited: boolean,
+): { label: string; filterParts: string[] } {
+	const geometry = displayGeometryStage(probe, plan, label);
+	const rate = constantRateSourceStage(probe, geometry.label, clockIsEdited);
+	return { label: rate.label, filterParts: [...geometry.filterParts, ...rate.filterParts] };
+}
+
+function displayGeometryStage(
 	probe: WorkerMediaInspection,
 	plan: ClipCompositionPlan,
 	label: string,
@@ -1263,7 +1318,7 @@ export function compileCompositionPlanVideo(input: {
 	outputLabel: string;
 	trailingChain?: string;
 	backgroundImageInputIndex?: number | null;
-	fps?: number;
+	fps?: GeneratedFrameRate;
 	resolvedBrollAssets?: Readonly<Record<string, string>>;
 	brollInputStartIndex?: number;
 	resolvedSceneAssets?: Readonly<
@@ -1651,7 +1706,7 @@ export function compileCompositionPlanVideo(input: {
 						`${trimLabel}split=${layers.length}${layerSources.join("")}`,
 					);
 				}
-				const fps = input.fps && input.fps > 0 ? input.fps : 30;
+				const fps = generatedFrameRate(input.fps);
 				const durationSec = scene.endSec - scene.startSec;
 				parts.push(
 					`${backgroundInput}loop=loop=-1:size=1:start=0,` +
@@ -1777,7 +1832,7 @@ export function compileCompositionPlanVideo(input: {
 			if (input.backgroundImageInputIndex == null) {
 				throw new Error("clip_composition_background_input_missing");
 			}
-			const fps = input.fps && input.fps > 0 ? input.fps : 30;
+			const fps = generatedFrameRate(input.fps);
 			return finalize({
 				filterParts: [
 					`[${input.backgroundImageInputIndex}:v]scale=${target.canvas.width}:${target.canvas.height}:` +
@@ -2557,6 +2612,7 @@ function buildSingleVideoArgs(params: {
 		params.probe,
 		params.composition.plan,
 		cutConcat ? cutConcat.videoLabel! : "[0:v]",
+		isCut,
 	);
 	const videoInputLabel = sourceVideo.label;
 	const audioInputLabel = cutConcat
@@ -2621,7 +2677,7 @@ function buildSingleVideoArgs(params: {
 		videoClockIsEdited: isCut,
 		outputLabel: "[composition_base]",
 		backgroundImageInputIndex: bgImageInputIndex,
-		fps: params.probe.fps,
+		fps: generatedFrameRateOf(params.probe),
 		resolvedSceneAssets: params.resolvedSceneAssets,
 		resolvedSceneFonts: params.resolvedSceneFonts,
 		sceneInputStartIndex: sceneInputStartIndex ?? undefined,
@@ -2860,6 +2916,7 @@ function buildBrollVideoArgs(params: {
 		params.probe,
 		params.composition.plan,
 		cutConcat ? cutConcat.videoLabel! : "[0:v]",
+		isCut,
 	);
 	const videoInputLabel = sourceVideo.label;
 	const audioInputLabel = cutConcat
@@ -2886,7 +2943,7 @@ function buildBrollVideoArgs(params: {
 		videoClockIsEdited: isCut,
 		outputLabel: "[stage0]",
 		backgroundImageInputIndex: bgImageInputIndex,
-		fps: params.probe.fps,
+		fps: generatedFrameRateOf(params.probe),
 		resolvedBrollAssets: params.resolvedBrollAssets,
 		brollInputStartIndex: 1 + bgOffset,
 		resolvedSceneAssets: params.resolvedSceneAssets,

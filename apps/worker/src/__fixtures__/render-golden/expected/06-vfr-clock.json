@@ -1,0 +1,52 @@
+{
+  "ticket": "06",
+  "cases": {
+    "vfr-irregular": {
+      "contract": [
+        {
+          "id": "renders",
+          "metric": "render.ok",
+          "op": "eq",
+          "value": true
+        },
+        {
+          "id": "measured-average",
+          "metric": "output.avgFrameRate",
+          "op": "eq",
+          "value": "15/1"
+        },
+        {
+          "id": "constant-rate",
+          "metric": "output.rFrameRate",
+          "op": "eq",
+          "value": "15/1"
+        },
+        {
+          "id": "video-frames",
+          "metric": "video.frameCountDelta",
+          "op": "eq",
+          "value": 0
+        },
+        {
+          "id": "video-duration",
+          "metric": "output.durationDeltaFrames",
+          "op": "lte",
+          "value": 1
+        },
+        {
+          "id": "audio-spans-video",
+          "metric": "audio.spanDeficitSec",
+          "op": "lte",
+          "value": 0.055
+        }
+      ],
+      "retain": [
+        "plan",
+        "crop",
+        "cue",
+        "layer",
+        "captions"
+      ]
+    }
+  }
+}

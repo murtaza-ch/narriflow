@@ -13,6 +13,33 @@ const DEFAULT_CAPTURED_STDOUT_BYTES = 8 * 1024 * 1024;
 const MAX_CAPTURED_STDOUT_BYTES = 64 * 1024 * 1024;
 const PROCESS_GROUP_REAP_TIMEOUT_MS = 1_000;
 const RESOURCE_SAMPLE_INTERVAL_MS = 100;
+/** Base and average rates this far apart (relative) put the clock in question. */
+const CLOCK_DISAGREEMENT_RATIO = 0.01;
+/** No constant-rate source reports a base rate above this; ffprobe guesses
+ *  90000/1 or 1000/1 for variable-rate files. */
+const MAX_PLAUSIBLE_BASE_FPS = 240;
+/** The rates a variable source may be normalized to, ascending. */
+const NORMALIZED_RATES: readonly FrameRate[] = [
+  { numerator: 15, denominator: 1 },
+  { numerator: 24000, denominator: 1001 },
+  { numerator: 24, denominator: 1 },
+  { numerator: 25, denominator: 1 },
+  { numerator: 30000, denominator: 1001 },
+  { numerator: 30, denominator: 1 },
+  { numerator: 50, denominator: 1 },
+  { numerator: 60000, denominator: 1001 },
+  { numerator: 60, denominator: 1 },
+];
+const STANDARD_RATE_TOLERANCE = 0.0002;
+const NOT_BELOW_TOLERANCE = 0.01;
+const FALLBACK_NORMALIZED_RATE: FrameRate = { numerator: 30, denominator: 1 };
+/** Packets read for timestamp evidence (about ten seconds of video). */
+const CLOCK_PACKET_BUDGET = 300;
+const MIN_CLOCK_INTERVALS = 8;
+/** An interval this far from the median (relative) is irregular, and this
+ *  share of irregular intervals makes the stream variable. */
+const IRREGULAR_INTERVAL_RATIO = 0.2;
+const VARIABLE_INTERVAL_SHARE = 0.05;
 
 export interface WorkerProcessRequest {
   command: string;
@@ -62,13 +89,32 @@ export interface WorkerMediaInspection {
   hasVideo: boolean;
   hasAudio: boolean;
   hasVisualStream: boolean;
+  /** The rate every generated video branch runs at: the raw base rate, or
+   *  `videoClock.constantRate` when the source needed normalizing. */
   fps: number;
+  /** How the source's frame clock was judged. Present when the base and
+   *  average rates disagreed, so timestamps were examined. */
+  videoClock?: VideoClockDecision;
   /** The facts ingest stores on the Project for timeline exports. Every real
    * inspection carries it; fakes of other tests may leave it out. */
   sourceProbe?: SourceProbe;
   /** Always present on real inspections, including files without a duration. */
   facts?: MediaFacts;
   samples?: WorkerMediaSamples;
+}
+
+/** The constant rate an affected variable-frame-rate source is normalized to,
+ *  with the facts behind the decision. */
+export interface VideoClockDecision {
+  baseRate: FrameRate | null;
+  averageRate: FrameRate | null;
+  /** From bounded packet timestamps; null when none could be read. */
+  variable: boolean | null;
+  packetsSampled: number;
+  /** Set only for a source that needs normalizing: every video branch of its
+   *  graph then runs at this rate. Null leaves the raw clock untouched. */
+  constantRate: FrameRate | null;
+  reason: "variable-timestamps" | "unrealistic-base-rate" | null;
 }
 
 /** The geometry every consumer plans in: display-oriented with square pixels.
@@ -437,6 +483,57 @@ function measuredFrameRate(stream: RawProbeStream): FrameRate | null {
     if (standard) return standard;
   }
   return average ?? base;
+}
+
+/** Whether presentation times (seconds, any order) show a variable frame
+ *  clock: too many intervals differ from the typical one. Null without enough
+ *  evidence to say. */
+export function hasVariableTimestamps(presentationTimesSec: readonly number[]): boolean | null {
+  const times = presentationTimesSec.filter(Number.isFinite).sort((a, b) => a - b);
+  const intervals = times.slice(1).map((time, index) => time - times[index]!);
+  if (intervals.length < MIN_CLOCK_INTERVALS) return null;
+  const median = [...intervals].sort((a, b) => a - b)[Math.floor(intervals.length / 2)]!;
+  if (!(median > 0)) return true;
+  const irregular = intervals.filter((interval) => Math.abs(interval - median) > median * IRREGULAR_INTERVAL_RATIO).length;
+  return irregular / intervals.length > VARIABLE_INTERVAL_SHARE;
+}
+
+/** The constant rate for a variable source: its measured average snapped to
+ *  the smallest standard rate that is not below it (within 1%), so no motion
+ *  is dropped and platforms see a rate they expect. An average that already is
+ *  a standard rate is kept exactly. Above 60 is 60/1, below 15 is 15/1, and an
+ *  unknown average is 30/1. */
+export function chooseConstantFrameRate(average: FrameRate | null): FrameRate {
+  if (!average) return FALLBACK_NORMALIZED_RATE;
+  const fps = average.numerator / average.denominator;
+  if (!(fps > 0)) return FALLBACK_NORMALIZED_RATE;
+  const rateOf = (rate: FrameRate) => rate.numerator / rate.denominator;
+  const exact = NORMALIZED_RATES.find((rate) => Math.abs(rateOf(rate) - fps) / fps <= STANDARD_RATE_TOLERANCE);
+  if (exact) return exact;
+  return NORMALIZED_RATES.find((rate) => rateOf(rate) * (1 + NOT_BELOW_TOLERANCE) >= fps) ?? NORMALIZED_RATES[NORMALIZED_RATES.length - 1]!;
+}
+
+/** Decide the clock of one video stream. `readPresentationTimesSec` is called
+ *  only when the base and average rates are both known and disagree. */
+export async function decideVideoClock(
+  stream: Pick<RawProbeStream, "r_frame_rate" | "avg_frame_rate">,
+  readPresentationTimesSec: () => Promise<number[] | null>,
+): Promise<VideoClockDecision | null> {
+  const baseRate = parseRational(stream.r_frame_rate);
+  const averageRate = parseRational(stream.avg_frame_rate);
+  if (!baseRate) return null;
+  const base = baseRate.numerator / baseRate.denominator;
+  if (averageRate && Math.abs(averageRate.numerator / averageRate.denominator - base) <= base * CLOCK_DISAGREEMENT_RATIO) return null;
+  // Without an average there is nothing to compare, and nothing to choose a
+  // rate from: only an impossible base rate is acted on.
+  if (!averageRate && base <= MAX_PLAUSIBLE_BASE_FPS) return null;
+  const times = averageRate ? await readPresentationTimesSec() : null;
+  const variable = times ? hasVariableTimestamps(times) : null;
+  const reason = variable ? "variable-timestamps" : base > MAX_PLAUSIBLE_BASE_FPS ? "unrealistic-base-rate" : null;
+  return {
+    baseRate, averageRate, variable, packetsSampled: times?.length ?? 0,
+    constantRate: reason ? chooseConstantFrameRate(averageRate) : null, reason,
+  };
 }
 
 function timecodeTag(tags: Record<string, string> | undefined): string | null {
@@ -1077,6 +1174,7 @@ class ProductionWorkerProcessModule implements WorkerProcessModule {
       Number.isFinite(formatDuration) && formatDuration > 0 ? formatDuration : streamDuration;
     const durationSec = Number.isFinite(duration) && duration > 0 ? duration : null;
     const facts = mediaFacts(data);
+    const videoClock = videoStream ? await this.decideClock(request, startedAt, videoStream, streams.indexOf(videoStream)) : null;
     const sourceProbe = buildSourceProbe(
       durationSec,
       streams,
@@ -1092,11 +1190,56 @@ class ProductionWorkerProcessModule implements WorkerProcessModule {
       hasVideo: Boolean(videoStream),
       hasAudio,
       hasVisualStream,
-      fps: parseFrameRate(videoStream?.r_frame_rate),
+      fps: videoClock?.constantRate
+        ? videoClock.constantRate.numerator / videoClock.constantRate.denominator
+        : parseFrameRate(videoStream?.r_frame_rate),
+      ...(videoClock ? { videoClock } : {}),
       ...(sourceProbe ? { sourceProbe } : {}),
       facts,
       ...(request.sample ? { samples: await this.inspectSamples(request, startedAt) } : {}),
     };
+  }
+
+  /** Examine the video clock when the stream's rates disagree. Missing
+   *  timestamp evidence never fails the inspection: the source is rendered
+   *  with the best clock the rates allow. */
+  private async decideClock(
+    request: WorkerMediaInspectionRequest,
+    startedAt: number,
+    stream: RawProbeStream,
+    streamIndex: number,
+  ): Promise<VideoClockDecision | null> {
+    const decision = await decideVideoClock(stream, async () => {
+      const deadlineMs = request.deadlineMs - (Date.now() - startedAt);
+      if (deadlineMs <= 0) return null;
+      try {
+        const result = await this.execute({
+          command: "ffprobe",
+          args: ["-v", "error", "-print_format", "json", "-select_streams", String(stream.index ?? streamIndex),
+            "-read_intervals", `%+#${CLOCK_PACKET_BUDGET}`, "-show_packets", "-show_entries", "packet=pts_time,dts_time",
+            ...(/^https?:\/\//i.test(request.sourcePath) ? ["-rw_timeout", String(HTTP_SOURCE_RW_TIMEOUT_US)] : []),
+            request.sourcePath],
+          signal: request.signal, deadlineMs, captureStdout: true, maxStdoutBytes: 1024 * 1024, diagnose: request.diagnose,
+        });
+        const packets = parseProbeOutput(result.stdout).packets;
+        if (!Array.isArray(packets)) return null;
+        return packets.flatMap((packet) => {
+          const time = numberFact(packet?.pts_time ?? packet?.dts_time);
+          return time === null ? [] : [time];
+        });
+      } catch {
+        request.signal.throwIfAborted();
+        return null;
+      }
+    });
+    if (decision?.constantRate) {
+      console.warn(JSON.stringify({
+        level: "info", message: "Variable frame rate source normalized to a constant rate",
+        reason: decision.reason, constantRate: decision.constantRate, baseRate: decision.baseRate,
+        averageRate: decision.averageRate, variable: decision.variable, packetsSampled: decision.packetsSampled,
+      }));
+    }
+    return decision;
   }
 
   private async inspectSamples(request: WorkerMediaInspectionRequest, startedAt: number): Promise<WorkerMediaSamples> {
