@@ -1,0 +1,10 @@
+# Cutover log (2026-10-29)
+
+- API origin A: `https://narriflowapi-dev.up.railway.app` (Railway `@narriflow/api`, id `ba6b549f-56b3-4df3-9c24-91f5dfa4ee3b`, env `dev`, region us-east4, target port 8080). Repo not yet connected (connect at push).
+- Railway API variables: 52 set from local `apps/api/.env` with deployed origins, worker's `DATABASE_URL`, `TRUSTED_CLIENT_IP_HEADER=x-real-ip`, `PORT=8080`, `RAILWAY_DOCKERFILE_PATH=apps/api/Dockerfile`; `STRIPE_WEBHOOK_SECRET` and `CLERK_WEBHOOK_SECRET` replaced with the new endpoints' secrets.
+- Railway worker: added `REVIEW_ACCESS_SECRET` (it delivers review emails and was missing it; deployed review emails could not be sent before).
+- Secrets canonicalised to the local values: Vercel secrets are write-only, so `REVIEW_*`, `MCP_CONTINUATION_SECRET` now come from local env. Review rounds created via the deployed web before cutover can't have their invite links re-sent.
+- Vercel: `NEXT_PUBLIC_API_URL=A` added (production, preview, development). Backend variables removed only after the new revision is verified.
+- Stripe (test mode, shared account): new endpoint `we_1UVobgFB4NArILpPk1Kkgqrh` → `A/api/webhooks/stripe`, 19 events, API version 2026-07-29.dahlia. Old `we_1UVAePFB4NArILpPYhhohq93` (W) still enabled → delete after a replayed event succeeds on A.
+- Clerk (Svix app `app_3A6erResDeLW2LSCIAiyDeT2Mlx`, region eu): new endpoint `ep_3LMRzWiJTuD0IHgU2pw9SrUS5rr` → `A/api/webhooks/clerk`, user.created/updated/deleted. Old `ep_3J5HEK3LlnPNmL64ReI6Oe4RpXp` (W) → delete after cutover.
+- Google / TikTok redirect URIs: in progress via the owner's Chrome.
