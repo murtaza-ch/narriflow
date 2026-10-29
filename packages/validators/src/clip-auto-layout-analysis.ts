@@ -133,6 +133,11 @@ function speakerLayoutAnalysisSchema<
     engine: z.literal(engine),
     /** Stable logical identity of the source media analyzed. */
     sourceIdentity: z.string().min(1),
+    /** The media the detectors read: a render's own source extraction
+     * ("source") or the Studio preview proxy ("proxy"). The two differ by small
+     * crop amounts, so a render adopts evidence that arrives after its snapshot
+     * only from its own path. Absent: written without provenance. */
+    analysisPath: z.enum(["source", "proxy"]).optional(),
     analyzedAtISO: z.string().datetime(),
     /** Raw source window represented by this plan. */
     clipStartSec: z.number().finite().min(0),

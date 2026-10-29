@@ -1,3 +1,4 @@
+import { RenderFactCache, sourceProbeIdentity } from "../render-fact-cache";
 import { documentFontReferences, resolveRenderBrandFonts, prepareCaptionFontsDirectory, brandFontKey } from "../brand-font-resolution";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { extname, join } from "node:path";
@@ -25,6 +26,7 @@ import {
 	WorkflowAttemptLost,
 	WorkflowFailure,
 	workflowFailureFromUnknown,
+	type LayoutEvidenceLifecycle,
 	type MotionRenderAnalyticsMetadata,
 	type RenderWorkSetOutcome,
 	type WorkflowAttemptContext,
@@ -238,6 +240,10 @@ export interface ClipRenderAttemptAdapters {
 		typeof productionClipService,
 		"getFrozenRenderingStateForWorkSet" | "getProjectRenderStorageReferences"
 	>;
+	/** Layout evidence another group stored since this attempt's snapshot. */
+	layoutEvidence: Pick<LayoutEvidenceLifecycle, "readCompatibleDurable">;
+	/** Immutable facts shared by every render in this worker process. */
+	facts: RenderFactCache;
 	project: {
 		reportProgress(
 			attempt: WorkflowAttemptRef,
@@ -442,6 +448,36 @@ export function deriveRenderCompositionEvidence(input: {
   splitLayout: input.availability.splitLayout,
   screenLayout: input.availability.screenLayout,
  };
+}
+
+type DurableLayoutEvidence = NonNullable<
+	Awaited<ReturnType<LayoutEvidenceLifecycle["readCompatibleDurable"]>>
+>;
+
+/**
+ * The durable evidence a render group plans from: its attempt-start snapshot,
+ * completed by evidence another group stored for the same editor revision and
+ * preview since. Evidence the snapshot holds always wins, so reuse never changes
+ * a decision already made. Screen and Split evidence come only from renders and
+ * are interchangeable. Automatic evidence is also written from the Studio
+ * preview proxy, whose crops differ slightly from a render's own source
+ * extraction, so late Automatic evidence is adopted only when a render wrote it.
+ * Content compatibility (source, window, cuts, engine) is still checked by the
+ * Layout Evidence owner's fingerprints.
+ */
+export function selectDurableLayoutEvidence(
+	frozen: { automatic: unknown; screen: unknown; split: unknown },
+	late: DurableLayoutEvidence | null,
+): { automatic: unknown; screen: unknown; split: unknown } {
+	if (!late) return frozen;
+	const lateAutomatic = late.automatic as { analysisPath?: unknown } | null;
+	return {
+		automatic:
+			frozen.automatic ??
+			(lateAutomatic?.analysisPath === "source" ? late.automatic : null),
+		screen: frozen.screen ?? late.screen,
+		split: frozen.split ?? late.split,
+	};
 }
 
 /** The one derivation of display-oriented planner source facts. */
@@ -1176,6 +1212,7 @@ function diagnoseRequiredSourceOperation(input: {
 	operation: RequiredSourceOperation;
 	startedAtMs: number;
 	failure?: WorkflowFailure;
+	cacheHit?: boolean;
 }): void {
 	log(
 		input.failure ? "error" : "info",
@@ -1194,6 +1231,7 @@ function diagnoseRequiredSourceOperation(input: {
 						disposition: input.failure.disposition,
 					}
 				: {}),
+			...(input.cacheHit ? { cacheHit: true } : {}),
 			elapsedMs: currentTimeMs() - input.startedAtMs,
 		},
 	);
@@ -1201,6 +1239,7 @@ function diagnoseRequiredSourceOperation(input: {
 
 async function resolveRequiredSource(input: {
 	sourceStorageKey: string | null;
+	sourceSizeBytes: number | null;
 	tempDir: string;
 	attempt: ClipRenderingWorkflowAttempt;
 }): Promise<{ sourcePath: string; probe: SourceProbe }> {
@@ -1262,9 +1301,27 @@ async function resolveRequiredSource(input: {
 		if (presignedUrl) {
 			currentRenderSignal()?.throwIfAborted();
 			const probeStartedAtMs = currentTimeMs();
+			// The signed URL is always fresh; only the probe of the immutable
+			// object behind it is reused.
+			const facts = currentRenderAdapters().facts;
+			const probeIdentity = sourceProbeIdentity(
+				sourceStorageKey,
+				input.sourceSizeBytes,
+			);
+			const cachedProbe = facts.sourceProbe(probeIdentity);
+			if (cachedProbe) {
+				diagnoseRequiredSourceOperation({
+					attempt: input.attempt,
+					operation: "ranged_probe",
+					startedAtMs: probeStartedAtMs,
+					cacheHit: true,
+				});
+				return { sourcePath: presignedUrl, probe: cachedProbe };
+			}
 			try {
 				const probe = await probeSource(presignedUrl);
 				currentRenderSignal()?.throwIfAborted();
+				facts.rememberSourceProbe(probeIdentity, probe);
 				diagnoseRequiredSourceOperation({
 					attempt: input.attempt,
 					operation: "ranged_probe",
@@ -2232,6 +2289,8 @@ async function renderClipGroup(input: {
 		analysisAttempts: 0,
 		analysisExecutionCount: 0,
 		detectorExecutionCount: 0,
+		evidenceReadMs: 0,
+		evidenceReused: [] as string[],
 		extractedSegmentCount: 0,
 		commandCount: 0,
 		sourceDecodeCount: 0,
@@ -2852,6 +2911,7 @@ async function renderClipGroup(input: {
    download: async (key, filePath) => {
      await currentRenderAdapters().storage.downloadObjectToFile({ key, filePath, signal: renderStorageSignal() });
    },
+   cache: currentRenderAdapters().facts,
  });
  for (const reference of customFontReferences) {
    const font = customFonts.get(brandFontKey(reference));
@@ -2894,6 +2954,59 @@ async function renderClipGroup(input: {
 				: [],
 		),
 	);
+	// Re-read only the stored layout evidence, as late as planning allows, so
+	// evidence a sibling group stored after this attempt's snapshot is reused
+	// instead of detected again. The editor document is never re-read.
+	const frozenDurable = {
+		automatic: clip.autoLayoutAnalysis,
+		screen: clip.layoutAnalysis,
+		split: clip.splitLayoutAnalysis,
+	};
+	let lateEvidence: DurableLayoutEvidence | null = null;
+	const evidenceReadStartedAtMs = currentTimeMs();
+	if (
+		clip.previewStorageKey &&
+		(frozenDurable.automatic == null ||
+			frozenDurable.screen == null ||
+			frozenDurable.split == null)
+	) {
+		const previewStorageKey = clip.previewStorageKey;
+		try {
+			lateEvidence = await withRenderOperationDeadline({
+				operation: () =>
+					currentRenderAdapters().layoutEvidence.readCompatibleDurable(
+						clip.id,
+						{ editorRevision: clip.editorRevision, previewStorageKey },
+					),
+				deadlineMs: currentRenderConfig().storageOperationTimeoutMs,
+				timeoutFailure: () =>
+					new WorkflowFailure(
+						"layout_evidence_refresh_timeout",
+						"retryable",
+						"Layout evidence refresh timed out",
+					),
+			});
+		} catch (error) {
+			rethrowRenderControlFlow(error);
+			// A missed refresh only costs the analysis it would have saved.
+			log("error", "layout_evidence_refresh_failed", {
+				workflowRunId: run.id,
+				clipId: clip.id,
+				phase: "evidence_read",
+				failureCode:
+					error instanceof WorkflowFailure
+						? error.code
+						: "layout_evidence_refresh_failed",
+			});
+		}
+	}
+	const durableEvidence = selectDurableLayoutEvidence(frozenDurable, lateEvidence);
+	compositionResources.evidenceReadMs = currentTimeMs() - evidenceReadStartedAtMs;
+	compositionResources.evidenceReused = (
+		["automatic", "screen", "split"] as const
+	).filter(
+		(kind) => frozenDurable[kind] == null && durableEvidence[kind] != null,
+	);
 	const layoutEvidence = new LayoutEvidence(
 		{
 			source: {
@@ -2911,11 +3024,7 @@ async function renderClipGroup(input: {
 				editorRevision: clip.editorRevision,
 				previewStorageKey: clip.previewStorageKey,
 			},
-			durable: {
-				automatic: clip.autoLayoutAnalysis,
-				screen: clip.layoutAnalysis,
-				split: clip.splitLayoutAnalysis,
-			},
+			durable: durableEvidence,
 			enabled: {
 				automatic: true,
 				screen: true,
@@ -2947,7 +3056,7 @@ async function renderClipGroup(input: {
 					return adapter.completeClipAutoLayoutAnalysis(
 						attempt,
 						clip.id,
-						write.value,
+						{ ...write.value, analysisPath: "source" },
 						expected,
 					);
 				if (write.kind === "split")
@@ -3904,6 +4013,9 @@ async function renderClipGroup(input: {
 		analysisAttemptLimit: 3,
 		analysisExecutionCount: compositionResources.analysisExecutionCount,
 		detectorExecutionCount: compositionResources.detectorExecutionCount,
+		evidenceReadMs: compositionResources.evidenceReadMs,
+		evidenceReused: compositionResources.evidenceReused,
+		renderFactCache: currentRenderAdapters().facts.stats(),
 		extractedSegmentCount: compositionResources.extractedSegmentCount,
 		commandCount: compositionResources.commandCount,
 		sourceDecodeCount: compositionResources.sourceDecodeCount,
@@ -3983,6 +4095,7 @@ async function executeClipRenderAttemptInScratch(params: {
 		// -i, so both forms behave identically apart from what gets transferred.
 		const { sourcePath, probe } = await resolveRequiredSource({
 			sourceStorageKey: frozenState.sourceStorageKey,
+			sourceSizeBytes: frozenState.sourceSizeBytes,
 			tempDir,
 			attempt,
 		});

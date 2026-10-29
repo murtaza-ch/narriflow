@@ -390,6 +390,8 @@ function createCoreRenderPathTracer(input: {
 		},
 		adapters: {
 			...(input.remoteMedia ? { remoteMedia: input.remoteMedia } : {}),
+			// Nothing was stored since the snapshot; never reach the database.
+			layoutEvidence: { readCompatibleDurable: async () => null },
 			state: {
 				getProjectRenderStorageReferences: async () => new Set<string>(),
 				getFrozenRenderingStateForWorkSet: async () => ({

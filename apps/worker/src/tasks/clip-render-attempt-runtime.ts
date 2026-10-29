@@ -15,6 +15,7 @@ import {
 	deleteObject as productionDeleteObject,
 	downloadObjectToFile as productionDownloadObjectToFile,
 	guardedFetch as productionGuardedFetch,
+	getLayoutEvidenceLifecycle,
 	getWorkflowRunLifecycle,
 	presignDownloadUrl as productionPresignDownloadUrl,
 	putFileFromPath as productionPutFileFromPath,
@@ -36,6 +37,7 @@ import {
 	productionRenderWorkspaceAdapter,
 } from "../render-runtime-adapters";
 import { createLayoutEvidenceDetectors } from "../layout-evidence-runtime";
+import { processRenderFactCache, validateMediaOnce } from "../render-fact-cache";
 import {
 	compileClipCompositionCommand,
 	compileLayoutEvidenceSegmentCommand,
@@ -286,6 +288,11 @@ function createRuntimeAdapters(
 	} = {
 		workerProcess: workerProcess,
 		state: productionClipService,
+		layoutEvidence: {
+			readCompatibleDurable: (clipId, frozen) =>
+				getLayoutEvidenceLifecycle().readCompatibleDurable(clipId, frozen),
+		},
+		facts: processRenderFactCache,
 		project: {
 			reportProgress: (attempt, progress) =>
 				getWorkflowRunLifecycle().reportProgress(attempt, progress),
@@ -398,7 +405,23 @@ function createRuntimeAdapters(
 
 	type OptionalMediaKind = "video" | "audio" | "image";
 
-	async function validateOptionalMedia(
+	/** Decodes optional media once per distinct content: identical bytes decode
+	 *  identically under this process's toolchain, so only a pass is remembered. */
+	function validateOptionalMedia(
+		filePath: string,
+		kind: OptionalMediaKind,
+	): Promise<boolean> {
+		return validateMediaOnce({
+			cache: adapters.facts,
+			filePath,
+			kind,
+			signal,
+			rethrowControl: rethrowRenderControlFlow,
+			decode: () => decodeOptionalMedia(filePath, kind),
+		});
+	}
+
+	async function decodeOptionalMedia(
 		filePath: string,
 		kind: OptionalMediaKind,
 	): Promise<boolean> {

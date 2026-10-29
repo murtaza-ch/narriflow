@@ -54,6 +54,14 @@ export interface ClipPendingAutoLayoutAnalysis {
   leaseMs: number;
 }
 
+/** Durable layout evidence exactly as stored; the consumer validates and
+ * fingerprint-matches it. Each field is null while nothing is stored. */
+export interface DurableLayoutEvidence {
+  automatic: unknown;
+  screen: unknown;
+  split: unknown;
+}
+
 export class LayoutEvidenceClaimLost extends Error {
   constructor(readonly clipId: string) {
     super(`Layout evidence claim for ${clipId} is no longer owned`);
@@ -115,6 +123,30 @@ export class LayoutEvidenceLifecycle {
       const split = await reset("splitLayoutAnalysis");
       return { screen: screen.count, split: split.count };
     });
+  }
+
+  /** Re-reads the stored layout evidence of one Clip just before a render group
+   * plans, without touching its editor document or entitlements. Evidence is
+   * only returned for the exact editor revision and preview the caller froze;
+   * any edit since changes one of them, so evidence for other inputs is never
+   * returned. Content compatibility (source, window, cuts, engine) stays with
+   * the consumer's fingerprint match. */
+  async readCompatibleDurable(
+    clipId: string,
+    frozen: { editorRevision: number; previewStorageKey: string },
+  ): Promise<DurableLayoutEvidence | null> {
+    const clip = await this.deps.prisma.clip.findFirst({
+      where: {
+        id: clipId,
+        editorRevision: frozen.editorRevision,
+        previewStorageKey: frozen.previewStorageKey,
+        project: accessibleProjectWhere(this.now()),
+      },
+      select: { autoLayoutAnalysis: true, layoutAnalysis: true, splitLayoutAnalysis: true },
+    });
+    return clip
+      ? { automatic: clip.autoLayoutAnalysis, screen: clip.layoutAnalysis, split: clip.splitLayoutAnalysis }
+      : null;
   }
 
   /**

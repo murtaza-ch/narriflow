@@ -90,7 +90,8 @@ export async function processPendingAutoLayoutAnalyses(options: {
         const analysis = await analyzeClipAutoLayout({ clip, previewPath, originalSourcePath, signal: claimSignal, workerProcess, config,
           persist: async (write) => {
             if (write.kind !== "automatic") throw new Error("unexpected background layout evidence");
-            persisted = await lifecycle.completeAutomatic(clip.id, write.value, { editorRevision: clip.editorRevision, previewStorageKey: clip.previewStorageKey, claimToken: clip.autoLayoutClaimToken });
+            // Detectors read the preview proxy here, unlike a render's source extraction.
+            persisted = await lifecycle.completeAutomatic(clip.id, { ...write.value, analysisPath: "proxy" }, { editorRevision: clip.editorRevision, previewStorageKey: clip.previewStorageKey, claimToken: clip.autoLayoutClaimToken });
             return persisted;
           },
         });

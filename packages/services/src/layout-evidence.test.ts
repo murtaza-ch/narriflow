@@ -152,3 +152,34 @@ test.skipIf(process.env.ALLOW_LAYOUT_EVIDENCE_RESET_DB_TESTS !== "1")("resets ol
     await pool.end();
   }
 });
+
+test("a late evidence read is bound to the frozen editor revision and preview and returns stored evidence verbatim", async () => {
+  const queries: Array<{ where: Record<string, unknown>; select: Record<string, unknown> }> = [];
+  const row = { autoLayoutAnalysis: { engine: "shot-layout-v1" }, layoutAnalysis: null, splitLayoutAnalysis: { engine: "explicit-split-v1" } };
+  let stored: typeof row | null = row;
+  const prisma = { clip: { findFirst: async (query: { where: Record<string, unknown>; select: Record<string, unknown> }) => { queries.push(query); return stored; } } } as unknown as PrismaClient;
+  const lifecycle = new LayoutEvidenceLifecycle({ prisma, now: () => new Date(1_000) });
+
+  expect(await lifecycle.readCompatibleDurable("clip-1", { editorRevision: 7, previewStorageKey: "preview-a" })).toEqual({
+    automatic: row.autoLayoutAnalysis, screen: null, split: row.splitLayoutAnalysis,
+  });
+  expect(queries[0]!.where).toMatchObject({ id: "clip-1", editorRevision: 7, previewStorageKey: "preview-a", project: expect.anything() });
+  // Evidence only; never the editor document or entitlements.
+  expect(Object.keys(queries[0]!.select).sort()).toEqual(["autoLayoutAnalysis", "layoutAnalysis", "splitLayoutAnalysis"]);
+
+  stored = null;
+  expect(await lifecycle.readCompatibleDurable("clip-1", { editorRevision: 8, previewStorageKey: "preview-a" })).toBeNull();
+});
+
+test("background completion keeps the provenance that tells a render whose crops these are", async () => {
+  const writes: Array<{ data: { autoLayoutAnalysis: { analysisPath?: string } } }> = [];
+  const prisma = { clip: { updateMany: async (query: { data: { autoLayoutAnalysis: { analysisPath?: string } } }) => { writes.push(query); return { count: 1 }; } } } as unknown as PrismaClient;
+  const lifecycle = new LayoutEvidenceLifecycle({ prisma, now: () => new Date(1_000) });
+  const analysis = {
+    version: 1, engine: "shot-layout-v1", sourceIdentity: "source", analysisPath: "proxy", analyzedAtISO: "2026-10-29T00:00:00.000Z",
+    clipStartSec: 0, clipEndSec: 10, deletedRanges: [], editedDurationSec: 10, sourceWidth: 1920, sourceHeight: 1080,
+    segments: [], noSplitSegments: [], shotCount: 0, soloShotCount: 0, multiShotCount: 0, twoUpSegmentCount: 0, speakerCount: 0, mappedSpeakerCount: 0,
+  } as const;
+  expect(await lifecycle.completeAutomatic("clip-1", analysis, { editorRevision: 1, previewStorageKey: "preview", claimToken: "owned" })).toBe(true);
+  expect(writes[0]!.data.autoLayoutAnalysis.analysisPath).toBe("proxy");
+});

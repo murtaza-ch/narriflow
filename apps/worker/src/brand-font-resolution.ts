@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readFile, mkdir, symlink } from "node:fs/promises";
+import { readFile, mkdir, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { CAPTION_FALLBACK_FONTS, CAPTION_FONTS_DIRECTORY } from "@narriflow/caption-fonts";
 import {
@@ -11,6 +11,7 @@ import {
   type CaptionPreset,
   type StudioTextLayer,
 } from "@narriflow/validators";
+import type { RenderFactCache } from "./render-fact-cache";
 
 export type FontReference = NonNullable<CaptionPreset["fontAsset"]>;
 export type RenderBrandFont = ReturnType<typeof brandFontRenderer> & {
@@ -48,6 +49,8 @@ export async function resolveRenderBrandFonts(input: {
   directory: string;
   signal?: AbortSignal;
   download: (key: string, path: string) => Promise<void>;
+  /** Font bytes already verified against their SHA-256 fingerprint. */
+  cache?: Pick<RenderFactCache, "font" | "rememberFont">;
 }) {
   const fonts = new Map<string, RenderBrandFont>();
   for (const reference of input.references) {
@@ -63,13 +66,19 @@ export async function resolveRenderBrandFonts(input: {
       `brand-font-${font.id}.${font.format.toLowerCase()}`,
     );
     try {
-      await input.download(font.storageKey, path);
-      const bytes = await readFile(path);
+      // A fingerprint is the SHA-256 of the bytes, so cached bytes are exactly
+      // what a download would return; only the local file must be rewritten.
+      const cached = input.cache?.font(reference.fingerprint);
+      if (cached) await writeFile(path, cached);
+      else await input.download(font.storageKey, path);
+      const bytes = cached ?? (await readFile(path));
       if (
+        !cached &&
         createHash("sha256").update(bytes).digest("hex") !==
-        reference.fingerprint
+          reference.fingerprint
       )
         continue;
+      if (!cached) input.cache?.rememberFont(reference.fingerprint, bytes);
       fonts.set(brandFontKey(reference), { ...brandFontRenderer(bytes), path });
     } catch (error) {
       rethrowWorkflowAttemptLost(error);

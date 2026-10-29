@@ -2419,6 +2419,7 @@ export class ClipService {
           where: { id: projectId, ...accessibleProjectWhere(snapshotAt) },
           select: {
             sourceStorageKey: true,
+            sourceSizeBytes: true,
             sourceDurationSeconds: true,
             sourceProbe: true,
             workspaceId: true,
@@ -2445,6 +2446,10 @@ export class ClipService {
 
         return {
           sourceStorageKey: project.sourceStorageKey,
+          // Source keys are written once per ingest, so key and byte size
+          // identify the immutable object whose probe a worker may reuse.
+          sourceSizeBytes:
+            project.sourceSizeBytes === null ? null : Number(project.sourceSizeBytes),
           // The exact edge for clip windows (see clipSourceEdgeSec), not the rounded billing seconds.
           sourceDurationSeconds: clipSourceEdgeSec(project),
           workspaceOwnerUserId: project.workspace.ownerUserId,
