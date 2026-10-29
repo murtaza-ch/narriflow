@@ -1,5 +1,24 @@
 import { brandFontKey, type RenderBrandFonts, type RenderBrandFont } from "./brand-font-resolution";
-import { measureCaptionTextEm } from "@narriflow/caption-fonts";
+import {
+	CAPTION_EMOJI_FONT_EM,
+	CAPTION_EMOJI_HEIGHT_EM,
+	CAPTION_EMOJI_WIDTH_EM,
+	captionGraphemes,
+	fontFileAdvanceEm,
+	fontFileCovers,
+	measureCaptionTextEm,
+	resolveCaptionEmoji,
+} from "@narriflow/caption-fonts";
+import {
+	type CaptionFace,
+	type CaptionGlyphNotice,
+	CaptionGlyphPlanner,
+	catalogCaptionFace,
+	monochromeEmojiFace,
+	type OmittedGlyph,
+	type PlannedCluster,
+	type SkippedEmoji,
+} from "./caption-glyphs";
 import { captionWordSegmentEnd, type CompositionCaptionVisualLayer } from "@narriflow/composition-plan";
 import {
 	CAPTION_CUE_TILTS_DEG,
@@ -36,9 +55,14 @@ import {
  *  - overlay: the active word alone, at its measured centre, carrying the
  *    word motion (scale, rise, blur, flip, glitch) through the same layers
  * Word centres come from shaping the vendored font files with fontkit. When a
- * cue contains a character the face lacks (libass would fall back to another
- * font), the cue degrades to the base line only: colours, reveal, karaoke and
- * typewriter still work; pills, plates, overlays and fit-to-width do not.
+ * cue contains a character the face lacks, caption-glyphs.ts picks the pinned
+ * fallback face and the text switches fonts with `\fn` runs; the cue degrades
+ * to the base line only: colours, reveal, karaoke and typewriter still work;
+ * pills, plates, overlays and fit-to-width do not.
+ *
+ * ASS cannot draw colour emoji, so the active word's emoji is not in the
+ * script: it comes back as an overlay schedule the FFmpeg graph composites from
+ * the shared atlas (see CaptionEmojiOverlay).
  */
 
 // The pill sits above the shadows so they never darken it, and below the
@@ -57,6 +81,7 @@ const LAYER = {
 	overlayOuter: 9,
 	overlayGlow: 10,
 	overlayText: 11,
+	emoji: 12,
 } as const;
 
 /** libass `\blur` strength per unit of Gaussian standard deviation. */
@@ -96,16 +121,57 @@ interface CueGeometry {
 	readonly tiltDeg: number;
 }
 
-export function serializeCaptionAss(input: {
+/** One emoji picture the export composites above the active word. Coordinates are canvas px after the cue's tilt. */
+export interface CaptionEmojiOverlay {
+	readonly key: string;
+	readonly column: number;
+	readonly row: number;
+	readonly startSec: number;
+	readonly endSec: number;
+	readonly centerX: number;
+	readonly centerY: number;
+	readonly widthPx: number;
+	readonly heightPx: number;
+	/** Clockwise, like the cue tilt. */
+	readonly rotationDeg: number;
+}
+
+export interface CaptionTrack {
+	readonly ass: string;
+	readonly emoji: readonly CaptionEmojiOverlay[];
+	readonly notices: readonly CaptionGlyphNotice[];
+	/** Code points no pinned face draws, left out of the text (`captionGlyphsOmitted`). */
+	readonly omitted: readonly OmittedGlyph[];
+	/** Plan emoji with no atlas cell and no monochrome glyph, whose overlay is skipped (`captionEmojiSkipped`). */
+	readonly emojiSkipped: readonly SkippedEmoji[];
+}
+
+interface TrackCollector {
+	readonly emoji: CaptionEmojiOverlay[];
+	readonly notices: Map<string, CaptionGlyphNotice>;
+	readonly omitted: Map<string, OmittedGlyph>;
+	readonly emojiSkipped: SkippedEmoji[];
+	readonly forcedOmissions: ReadonlySet<number>;
+}
+
+/**
+ * Serializes the caption cues. A character no pinned face draws is left out of
+ * the text and an emoji nothing draws is skipped, so the clip still renders;
+ * both come back on the track for the caller to record.
+ * `omitCodePoints` forces further code points out (libass reported them).
+ */
+export function renderCaptionTrack(input: {
 	layers: readonly CompositionCaptionVisualLayer[];
 	canvas: { width: number; height: number };
  fonts?: RenderBrandFonts;
-}): string {
+	omitCodePoints?: ReadonlySet<number>;
+}): CaptionTrack {
 	const first = input.layers[0];
-	if (!first) return "";
+	if (!first) return { ass: "", emoji: [], notices: [], omitted: [], emojiSkipped: [] };
 	const face = (first.preset.fontAsset ? input.fonts?.get(brandFontKey(first.preset.fontAsset))?.face : null) ?? captionFontFace(first.preset.fontName);
-	const events = input.layers.flatMap((cue) => cueEvents(cue, input.canvas, cue.preset.fontAsset ? input.fonts?.get(brandFontKey(cue.preset.fontAsset)) : undefined));
-	return [
+	const collector: TrackCollector = { emoji: [], notices: new Map(), omitted: new Map(), emojiSkipped: [], forcedOmissions: input.omitCodePoints ?? new Set() };
+	const events = input.layers.flatMap((cue) => cueEvents(cue, input.canvas, cue.preset.fontAsset ? input.fonts?.get(brandFontKey(cue.preset.fontAsset)) : undefined, collector));
+	const ass = [
 		"[Script Info]",
 		"ScriptType: v4.00+",
 		`PlayResX: ${input.canvas.width}`,
@@ -126,17 +192,26 @@ export function serializeCaptionAss(input: {
 		),
 		"",
 	].join("\n");
+	return { ass, emoji: collector.emoji, notices: [...collector.notices.values()], omitted: [...collector.omitted.values()], emojiSkipped: collector.emojiSkipped };
 }
 
 function cueEvents(
 	cue: CompositionCaptionVisualLayer,
 	canvas: { width: number; height: number },
- customFont?: RenderBrandFont,
+ customFont: RenderBrandFont | undefined,
+	collector: TrackCollector,
 ): AssEvent[] {
 	const preset = cue.preset;
 	const motion: CaptionMotionSpec = CAPTION_MOTIONS[preset.animation];
 	const face = customFont?.face ?? captionFontFace(preset.fontName);
-	const geometry = cueGeometry(cue, face, canvas, customFont);
+	const glyphs = new CaptionGlyphPlanner(
+		customFont ? { assName: face.assName, path: customFont.path, lineHeightEm: face.ascent + face.descent, role: "requested" } : catalogCaptionFace(face, "requested"),
+		customFont ? catalogCaptionFace(captionFontFace(preset.fontName), "saved") : null,
+		collector,
+		cue.cueIndex,
+		collector.forcedOmissions,
+	);
+	const geometry = cueGeometry(cue, face, canvas, customFont, glyphs);
 	const measured = geometry.words !== null;
 	const usesOverlay =
 		measured && (motion.word.length > 0 || motion.effect === "glitch");
@@ -193,7 +268,7 @@ function cueEvents(
 				...(isActive && motion.effect === "typewriter"
 					? {
 							letterDelaysMs: captionTypewriterLetterDelays(
-								[...word.text].length,
+								captionGraphemes(word.text).length,
 								segMs,
 							),
 						}
@@ -204,7 +279,7 @@ function cueEvents(
 		if (spans.some((span) => span.visibility > 0)) {
 			events.push(
 				...stackEvents({
-					preset, face,
+					preset, face, glyphs,
 					px: geometry.px,
 					spans,
 					separator: wordSeparator(preset, geometry.px),
@@ -239,6 +314,30 @@ function cueEvents(
 			);
 		}
 
+		if (activeWord.emoji) {
+			const placed = placeEmoji({
+				emoji: activeWord.emoji,
+				face,
+				geometry,
+				centerX: box?.centerX ?? geometry.anchorX,
+				startSec: segStart,
+				endSec: segEnd,
+				cueIndex: cue.cueIndex,
+				collector,
+			});
+			if (placed) {
+				events.push({
+					layer: LAYER.emoji,
+					startSec: segStart,
+					endSec: segEnd,
+					style: "Caption",
+					text:
+						`{\\an5\\pos(${num(placed.x)},${num(placed.y)})${tilt}${fade}\\fn${placed.face.assName}\\fs${num(geometry.px * CAPTION_EMOJI_FONT_EM * placed.face.lineHeightEm)}` +
+						`\\fsp0\\bord0\\shad0\\1c${assColor(preset.primaryColor)}}${escapeAssText(activeWord.emoji.replace(/[\ufe0e\ufe0f]/g, ""))}`,
+				});
+			}
+		}
+
 		if (usesOverlay && box) {
 			const activeSpan: Span = {
 				text: activeWord.text,
@@ -249,7 +348,7 @@ function cueEvents(
 			if (motion.effect === "glitch") {
 				events.push(
 					...glitchEvents({
-						preset, face,
+						preset, face, glyphs,
 						geometry,
 						box,
 						span: activeSpan,
@@ -261,7 +360,7 @@ function cueEvents(
 			} else {
 				events.push(
 					...stackEvents({
-						preset, face,
+						preset, face, glyphs,
 						px: geometry.px,
 						spans: [activeSpan],
 						separator: "",
@@ -291,7 +390,8 @@ function cueGeometry(
 	cue: CompositionCaptionVisualLayer,
 	face: CaptionFontFace,
 	canvas: { width: number; height: number },
- customFont?: RenderBrandFont,
+ customFont: RenderBrandFont | undefined,
+	glyphs: CaptionGlyphPlanner,
 ): CueGeometry {
 	const preset = cue.preset;
 	const motion = CAPTION_MOTIONS[preset.animation];
@@ -306,7 +406,12 @@ function cueGeometry(
 	const spaceEm = customFont ? customFont.measure(" ", preset.letterSpacing) : measureCaptionTextEm(preset.fontName, " ", preset.letterSpacing);
 	const baseline = (px: number) => anchorY + ((face.ascent - face.descent) / 2) * px;
 	if (spaceEm === null || wordWidthsEm.some((width) => width === null)) {
-		const px = preset.fontSize;
+		// Some glyph comes from a fallback face, whose word boxes we do not place.
+		// The line still fits the frame: its width is the sum of each run's own advance.
+		const naturalEm = fallbackLineWidthEm(cue, glyphs, spaceEm ?? 0.25);
+		const strokePx = preset.outlineWidth + (preset.outerOutlineWidth ?? 0);
+		const fit = Math.min(1, (CAPTION_FIT_WIDTH_FRACTION * canvas.width) / (naturalEm * preset.fontSize + 2 * strokePx));
+		const px = preset.fontSize * fit;
 		return { px, anchorX, anchorY, baselineY: baseline(px), words: null, lineWidth: null, tiltDeg };
 	}
 	const gapEm = spaceEm + (preset.highlightBoxColor ? CAPTION_PILL.extraWordSpacingEm : 0);
@@ -326,6 +431,71 @@ function cueGeometry(
 	return { px, anchorX, anchorY, baselineY: baseline(px), words, lineWidth: lineEm * px, tiltDeg };
 }
 
+/**
+ * Where the active word's emoji goes: a colour picture from the shared atlas
+ * (recorded as an overlay), or, when the atlas lacks that sequence, the
+ * monochrome Noto glyph as an ASS event (returned, and noted as a fallback).
+ * Placement is Studio's: 0.8em above the word, bottom edge on the line box top,
+ * centred on the word, turning with the cue. A sequence neither draws is
+ * skipped and reported.
+ */
+function placeEmoji(input: {
+	emoji: string;
+	face: CaptionFontFace;
+	geometry: CueGeometry;
+	centerX: number;
+	startSec: number;
+	endSec: number;
+	cueIndex: number;
+	collector: TrackCollector;
+}): { x: number; y: number; face: CaptionFace } | null {
+	const { geometry, collector } = input;
+	const boxTop = geometry.anchorY - ((input.face.ascent + input.face.descent) / 2) * geometry.px;
+	const heightPx = CAPTION_EMOJI_HEIGHT_EM * geometry.px;
+	const centerY = boxTop - heightPx / 2;
+	const sprite = resolveCaptionEmoji(input.emoji);
+	if (sprite) {
+		const angle = (geometry.tiltDeg * Math.PI) / 180;
+		const dx = input.centerX - geometry.anchorX;
+		const dy = centerY - geometry.anchorY;
+		collector.emoji.push({
+			...sprite,
+			startSec: input.startSec,
+			endSec: input.endSec,
+			centerX: geometry.anchorX + dx * Math.cos(angle) - dy * Math.sin(angle),
+			centerY: geometry.anchorY + dx * Math.sin(angle) + dy * Math.cos(angle),
+			widthPx: CAPTION_EMOJI_WIDTH_EM * geometry.px,
+			heightPx,
+			rotationDeg: geometry.tiltDeg,
+		});
+		return null;
+	}
+	const mono = monochromeEmojiFace();
+	const glyph = input.emoji.replace(/\ufe0f/g, "");
+	// Only a single pictograph survives as one monochrome picture; a ZWJ, flag
+	// or skin-tone sequence would split into unrelated glyphs.
+	if ([...glyph].length === 1 && fontFileCovers(mono.path, glyph)) {
+		collector.notices.set(`${mono.assName}\0${input.emoji}`, { code: "glyph_fallback_used", cluster: input.emoji, font: mono.assName, sequenceSplit: false });
+		return { x: input.centerX, y: centerY, face: mono };
+	}
+	collector.emojiSkipped.push({ emoji: input.emoji, cueIndex: input.cueIndex });
+	return null;
+}
+
+/** Width in em of a cue whose words use fallback faces: shaped advance of every planned run, letter spacing and word gaps. */
+function fallbackLineWidthEm(cue: CompositionCaptionVisualLayer, glyphs: CaptionGlyphPlanner, spaceEm: number): number {
+	const { preset } = cue;
+	const words = cue.words.map((word) =>
+		glyphs.plan(word.text).reduce(
+			(sum, cluster) =>
+				sum + cluster.parts.reduce((width, part) => width + fontFileAdvanceEm(part.face.path, part.text), 0) + preset.letterSpacing,
+			0,
+		),
+	);
+	const gapEm = spaceEm + preset.letterSpacing + (preset.highlightBoxColor ? CAPTION_PILL.extraWordSpacingEm : 0);
+	return words.reduce((sum, width) => sum + width, 0) + gapEm * (words.length - 1);
+}
+
 /** Pills widen every space by their side padding; libass gets it as `\fsp` on the space. */
 function wordSeparator(preset: CaptionPreset, px: number): string {
 	if (!preset.highlightBoxColor) return " ";
@@ -336,6 +506,7 @@ function wordSeparator(preset: CaptionPreset, px: number): string {
 
 function stackEvents(input: {
  face: CaptionFontFace;
+	glyphs: CaptionGlyphPlanner;
 	preset: CaptionPreset;
 	px: number;
 	spans: readonly Span[];
@@ -362,7 +533,7 @@ function stackEvents(input: {
 		paint: (span: Span) => { fill: string; outline: string; opacity: number } | null,
 	) => {
 		const body = input.spans
-			.map((span) => spanText(span, paint(span), preset.primaryColor))
+			.map((span) => spanText(span, paint(span), preset.primaryColor, input.glyphs, px, preset.letterSpacing))
 			.join(input.separator);
 		const position = motion.position(input.position.x + offset.x, input.position.y + offset.y);
 		events.push({
@@ -435,28 +606,65 @@ function spanText(
 	span: Span,
 	paint: { fill: string; outline: string; opacity: number } | null,
 	primaryColor: string,
+	glyphs: CaptionGlyphPlanner,
+	px: number,
+	letterSpacingEm: number,
 ): string {
-	if (!paint) return `{\\alpha&HFF&}${escapeAssText(span.text)}`;
+	const clusters = glyphs.plan(span.text);
+	if (!paint) return `{\\alpha&HFF&}${assText(clusters, glyphs.requested, px, letterSpacingEm)}`;
 	const colors = `\\1c${assColor(paint.fill)}\\3c${assColor(paint.outline)}\\alpha${assAlpha(paint.opacity)}`;
 	if (span.sweepMs !== undefined) {
 		// Karaoke sweep: unsung = secondary (primary colour), sung = fill.
 		const unsung = paint.fill === primaryColor ? paint.fill : primaryColor;
-		return `{${colors}\\2c${assColor(unsung)}\\kf${Math.max(1, Math.round(span.sweepMs / 10))}}${escapeAssText(span.text)}`;
+		return `{${colors}\\2c${assColor(unsung)}\\kf${Math.max(1, Math.round(span.sweepMs / 10))}}${assText(clusters, glyphs.requested, px, letterSpacingEm)}`;
 	}
 	if (span.letterDelaysMs) {
 		// Typewriter: `\ko` hides each letter (fill via \2a, outline via \ko)
 		// until its syllable starts.
-		const characters = [...span.text];
 		let previous = 0;
-		const letters = characters.map((character, index) => {
+		const letters = assText(clusters, glyphs.requested, px, letterSpacingEm, (index) => {
 			const next = span.letterDelaysMs![index + 1];
 			const duration = next === undefined ? 1 : next - previous;
 			previous = next ?? previous;
-			return `{\\ko${Math.max(0, Math.round(duration / 10))}}${escapeAssText(character)}`;
+			return `{\\ko${Math.max(0, Math.round(duration / 10))}}`;
 		});
-		return `{${colors}\\2a&HFF&}${letters.join("")}`;
+		return `{${colors}\\2a&HFF&}${letters}`;
 	}
-	return `{${colors}}${escapeAssText(span.text)}`;
+	return `{${colors}}${assText(clusters, glyphs.requested, px, letterSpacingEm)}`;
+}
+
+/**
+ * The ASS text of planned clusters. A cluster drawn by a fallback face is
+ * wrapped in `\fn`/`\fs` overrides sized to the same em as the requested
+ * face; text the requested face covers has no overrides at all.
+ */
+function assText(
+	clusters: readonly PlannedCluster[],
+	requested: CaptionFace,
+	px: number,
+	letterSpacingEm: number,
+	/** Override block placed before each cluster (typewriter letters). */
+	beforeCluster?: (index: number) => string,
+): string {
+	let current = requested;
+	let text = "";
+	// libass stops joining and reordering cursive/complex scripts under non-zero `\\fsp`.
+	const switchTo = (face: CaptionFace): string => {
+		const spacing = (face.letterSpacing === "disabled") !== (current.letterSpacing === "disabled") ? `\\fsp${face.letterSpacing === "disabled" ? 0 : num(letterSpacingEm * px)}` : "";
+		return `{\\fn${face.assName}\\fs${num(px * face.lineHeightEm)}${spacing}}`;
+	};
+	for (const [index, cluster] of clusters.entries()) {
+		text += beforeCluster?.(index) ?? "";
+		for (const part of cluster.parts) {
+			if (part.face !== current) {
+				text += switchTo(part.face);
+				current = part.face;
+			}
+			text += escapeAssText(part.text);
+		}
+	}
+	if (current !== requested) text += switchTo(requested);
+	return text;
 }
 
 /**
@@ -560,6 +768,7 @@ function pillEvent(input: {
 
 function glitchEvents(input: {
  face: CaptionFontFace;
+	glyphs: CaptionGlyphPlanner;
 	preset: CaptionPreset;
 	geometry: CueGeometry;
 	box: { centerX: number; width: number };
@@ -604,12 +813,12 @@ function glitchEvents(input: {
 				startSec,
 				endSec,
 				style: "Caption",
-				text: `{\\an5\\pos(${num(x)},${num(y)})${input.tilt}\\fs${fs}\\fsp${fsp}\\bord0\\shad0\\1c${assColor(color)}\\alpha${assAlpha(slice.ghostOpacity)}}${escapeAssText(span.text)}`,
+				text: `{\\an5\\pos(${num(x)},${num(y)})${input.tilt}\\fs${fs}\\fsp${fsp}\\bord0\\shad0\\1c${assColor(color)}\\alpha${assAlpha(slice.ghostOpacity)}}${assText(input.glyphs.plan(span.text), input.glyphs.requested, px, preset.letterSpacing)}`,
 			});
 		});
 		events.push(
 			...stackEvents({
-				preset, face: input.face,
+				preset, face: input.face, glyphs: input.glyphs,
 				px,
 				spans: [span],
 				separator: "",

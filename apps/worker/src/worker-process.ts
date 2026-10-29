@@ -49,6 +49,10 @@ export interface WorkerProcessRequest {
   acceptableExitCodes?: readonly number[];
   captureStdout?: boolean;
   maxStdoutBytes?: number;
+  /** Keep stderr lines matching this pattern for `WorkerProcessResult.stderrLines`.
+   *  The bounded diagnostic tail drops early lines on a long encode, but a
+   *  libass or drawtext warning is needed even when the process exits zero. */
+  stderrLinePattern?: RegExp;
   recordResourceSample?(rssBytes: number): void;
   diagnose?(event: WorkerProcessDiagnostic): void;
 }
@@ -56,7 +60,12 @@ export interface WorkerProcessRequest {
 export interface WorkerProcessResult {
   exitCode: number;
   stdout: Buffer;
+  /** Redacted stderr lines that matched `stderrLinePattern` (first occurrences, bounded). */
+  stderrLines?: readonly string[];
 }
+
+const MAX_CAPTURED_STDERR_LINES = 100;
+const MAX_CAPTURED_STDERR_LINE_CHARS = 400;
 
 export type WorkerExecutableClass = "ffmpeg" | "ffprobe" | "python" | "bun" | "node" | "deno" | "yt-dlp" | "other";
 export interface WorkerProcessHealth {
@@ -788,6 +797,16 @@ class ProductionWorkerProcessModule implements WorkerProcessModule {
       const stdoutChunks: Buffer[] = [];
       let stdoutBytes = 0;
       let stderr = "";
+      const stderrLines: string[] = [];
+      let partialStderrLine = "";
+      const collectStderrLines = (lines: readonly string[]): void => {
+        const pattern = request.stderrLinePattern;
+        if (!pattern) return;
+        for (const line of lines) {
+          if (stderrLines.length >= MAX_CAPTURED_STDERR_LINES || !pattern.test(line)) continue;
+          stderrLines.push(redactUrlSecrets(line).slice(0, MAX_CAPTURED_STDERR_LINE_CHARS));
+        }
+      };
       let invalidInput = false;
       let terminationReason: "timeout" | "cancellation" | "output_limit" | null = null;
       let settled = false;
@@ -880,6 +899,11 @@ class ProductionWorkerProcessModule implements WorkerProcessModule {
         invalidInput ||= PERMANENT_INPUT_EXIT_PATTERNS.some((pattern) => pattern.test(text));
         // Redact before truncation so a long signature cannot lose its query marker.
         stderr = boundedDiagnostic(stderr + text);
+        if (request.stderrLinePattern) {
+          const lines = (partialStderrLine + text).split(/\r\n|\r|\n/);
+          partialStderrLine = lines.pop() ?? "";
+          collectStderrLines(lines);
+        }
       });
       child.once("error", (error: NodeJS.ErrnoException) => {
         if (settled) return;
@@ -957,7 +981,8 @@ class ProductionWorkerProcessModule implements WorkerProcessModule {
         const accepted = request.acceptableExitCodes ?? [0];
         if (code !== null && accepted.includes(code)) {
           diagnose({ operation: "exit", status: "completed" });
-          resolve({ exitCode: code, stdout: Buffer.concat(stdoutChunks) });
+          collectStderrLines([partialStderrLine]);
+          resolve({ exitCode: code, stdout: Buffer.concat(stdoutChunks), ...(request.stderrLinePattern ? { stderrLines } : {}) });
           return;
         }
         const failure = exitFailure(code, stderr, invalidInput);

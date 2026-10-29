@@ -83,6 +83,8 @@ export interface RuntimeFingerprint {
   fontProbes: FontProbeResult[];
   glyphRender: { sha256: string | null; error: string | null };
   captionFonts: Record<string, string>;
+  /** Pinned glyph fallback faces (Noto scripts, symbols, monochrome emoji). */
+  fallbackFonts: Record<string, string>;
   model: { path: string | null; sha256: string | null };
   python: { version: string | null; packages: Record<string, string>; wheelProbeError: string | null };
 }
@@ -116,6 +118,7 @@ export interface RuntimeLock {
     fonts: { packages: string[]; probes: Array<{ query: string; expectedSha256: string | null }> };
   }>;
   captionFonts: { directory: string; sha256: Record<string, string> };
+  fallbackFonts: { directory: string; sha256: Record<string, string> };
 }
 
 interface RunResult {
@@ -227,12 +230,15 @@ async function probeFont(query: string): Promise<FontProbeResult> {
   return { query, family: family ?? null, style: style ?? null, file, sha256: await sha256File(file), ownerPackage };
 }
 
-async function captionFontHashes(repoRoot: string, directory: string): Promise<Record<string, string>> {
+/** Hashes the font files in a directory: only `only` when given, otherwise everything except `exclude`. */
+async function captionFontHashes(repoRoot: string, directory: string, filter: { only?: ReadonlySet<string>; exclude?: ReadonlySet<string> } = {}): Promise<Record<string, string>> {
   const root = join(repoRoot, directory);
   if (!existsSync(root)) return {};
   const entries: Record<string, string> = {};
   for (const name of (await readdir(root)).sort()) {
-    if (/\.(ttf|otf|ttc)$/i.test(name)) entries[name] = await sha256File(join(root, name));
+    if (!/\.(ttf|otf|ttc)$/i.test(name)) continue;
+    if (filter.only ? !filter.only.has(name) : filter.exclude?.has(name)) continue;
+    entries[name] = await sha256File(join(root, name));
   }
   return entries;
 }
@@ -324,7 +330,8 @@ export async function collectRuntimeFingerprint(options: CollectOptions = {}): P
     fontconfig: fontconfig.stdout.trim() || fontconfig.stderr.trim() || null,
     fontProbes: await Promise.all(queries.map(probeFont)),
     glyphRender: await glyphRenderFingerprint(ffmpegPath, existsSync(fontsDirectory) ? fontsDirectory : null),
-    captionFonts: await captionFontHashes(repoRoot, lock.captionFonts.directory),
+    captionFonts: await captionFontHashes(repoRoot, lock.captionFonts.directory, { exclude: new Set(Object.keys(lock.fallbackFonts.sha256)) }),
+    fallbackFonts: await captionFontHashes(repoRoot, lock.fallbackFonts.directory, { only: new Set(Object.keys(lock.fallbackFonts.sha256)) }),
     model: { path: modelPath, sha256: modelPath && existsSync(modelPath) ? await sha256File(modelPath) : null },
     python: await pythonFacts(),
   };
@@ -344,6 +351,8 @@ export function fingerprintIdentity(fingerprint: RuntimeFingerprint): unknown {
     fontProbes: fingerprint.fontProbes.map(({ query, family, style, sha256 }) => ({ query, family, style, sha256 })),
     glyphRender: fingerprint.glyphRender.sha256,
     captionFonts: fingerprint.captionFonts,
+    // fallbackFonts is deliberately outside the identity: ticket 08 added them after the golden baseline was
+    // captured, and lockFindings pins their hashes instead (a differing consumer fails --enforce).
     model: fingerprint.model.sha256,
     python: fingerprint.python.packages,
   };
@@ -384,6 +393,8 @@ export async function lockFindings(fingerprint: RuntimeFingerprint, lock: Runtim
   if (stage !== "build") {
     const tampered = Object.entries(lock.captionFonts.sha256).filter(([file, sha]) => fingerprint.captionFonts[file] !== sha);
     if (tampered.length > 0) findings.push({ level: "mismatch", check: "captionFonts", detail: `vendored caption faces differ: ${tampered.map(([file]) => file).join(", ")}` });
+    const fallbackTampered = Object.entries(lock.fallbackFonts.sha256).filter(([file, sha]) => fingerprint.fallbackFonts[file] !== sha);
+    if (fallbackTampered.length > 0) findings.push({ level: "mismatch", check: "fallbackFonts", detail: `vendored glyph fallback faces differ: ${fallbackTampered.map(([file]) => file).join(", ")}` });
   }
   const entry = lock.platforms[fingerprint.platform];
   if (!entry) {

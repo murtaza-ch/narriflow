@@ -197,6 +197,8 @@ function createCoreRenderPathTracer(input: {
 	/** Decoded-peak measurements returned in order by the fake ffmpeg (default:
 	 *  a mix that fits). Real-media tests measure the real output instead. */
 	mixPeaks?: Array<{ samplePeak: number; truePeak: number }>;
+	/** How many render encodes report a libass missing glyph on stderr (while exiting zero). */
+	captionGlyphReports?: number;
 	realMedia?: {
 		sourcePath: string;
 		logoPath?: string;
@@ -283,6 +285,7 @@ function createCoreRenderPathTracer(input: {
 	let sceneDetectorCount = 0;
 	let workspaceCleanupCount = 0;
 	let mixPeakMeasurements = 0;
+	let captionGlyphReportsLeft = input.captionGlyphReports ?? 0;
 	let settlementCalls = 0;
 
 	const variantIdFromPath = (path: string): string | null =>
@@ -505,6 +508,14 @@ function createCoreRenderPathTracer(input: {
 							"permanent",
 							"Injected optional-media command failure",
 						);
+					}
+					if (captionGlyphReportsLeft > 0 && request.stderrLinePattern) {
+						captionGlyphReportsLeft -= 1;
+						return {
+							exitCode: 0,
+							stdout: Buffer.alloc(0),
+							stderrLines: ["[Parsed_ass_4 @ 0x1] fontselect: failed to find any fallback with glyph 0x2605 for font: (Montserrat Black, 400, 0)"],
+						};
 					}
 					return input.realMedia
 						? productionWorkerProcessModule.execute(request)
@@ -2243,6 +2254,30 @@ describe("ClipRenderAttempt music mix peak guard", () => {
 	};
 	const hot = { samplePeak: 1.8, truePeak: 1.9 };
 	const quiet = { samplePeak: 0.6, truePeak: 0.62 };
+
+	test("libass reporting a missing glyph on a zero exit re-renders once without it and uploads", async () => {
+		const harness = createCoreRenderPathTracer({ topology: "single-video", captionGlyphReports: 1 });
+		await expect(
+			harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal)),
+		).resolves.toMatchObject({ status: "completed", succeeded: 1 });
+		expect(harness.commands).toHaveLength(2);
+		expect(harness.commands[1]!.args).toEqual(harness.commands[0]!.args);
+		expect(harness.diagnostics).toContainEqual({
+			message: "clip_render_caption_glyph_missing",
+			context: expect.objectContaining({ disposition: "degraded" }),
+		});
+		expect(harness.uploadedVariantIds).toEqual(["variant-9x16"]);
+	});
+
+	test("a glyph error that survives the re-render fails the variant typed", async () => {
+		const harness = createCoreRenderPathTracer({ topology: "single-video", captionGlyphReports: 2 });
+		await expect(
+			harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal)),
+		).resolves.toMatchObject({ succeeded: 0 });
+		expect(harness.commands).toHaveLength(2);
+		expect(harness.uploadedVariantIds).toEqual([]);
+		expect(harness.failureCodes.get("variant-9x16")).toBe("caption_glyph_unavailable");
+	});
 
 	test("a mix that fits keeps its single original encode and uploads", async () => {
 		const harness = createCoreRenderPathTracer({

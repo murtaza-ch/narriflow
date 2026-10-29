@@ -142,7 +142,7 @@ describe("uploaded font preview/export contract", () => {
       "a".repeat(64),
     );
     expect(corrupted.fonts.size).toBe(0);
-    const ass = compileCompositionPlanCaptions(
+    const { ass } = compileCompositionPlanCaptions(
       plan("a".repeat(64)),
       "test",
       fonts,
@@ -174,7 +174,7 @@ describe("uploaded font preview/export contract", () => {
     expect(font.face.assName).toBe("Anton Regular");
     expect(font.face.ascent).toBeCloseTo(1.4043, 4);
     expect(font.measure("Hello", 0)).toBeGreaterThan(0);
-    const ass = compileCompositionPlanCaptions(
+    const { ass } = compileCompositionPlanCaptions(
       plan(fingerprint),
       "test",
       fonts,
@@ -190,6 +190,10 @@ describe("uploaded font preview/export contract", () => {
     expect(
       await readFile(join(fontsDirectory, "Montserrat-Black.ttf")),
     ).toEqual(await readFile(captionFontFilePath("Montserrat-Black.ttf")));
+    // The pinned glyph fallback faces ride along, so an uploaded face never loses RTL/CJK/emoji coverage.
+    for (const fallback of ["NotoSansArabic-Regular.ttf", "NotoSansSC-Regular.otf", "NotoEmoji-Regular.ttf"]) {
+      expect((await readFile(join(fontsDirectory, fallback))).length).toBeGreaterThan(1000);
+    }
     const paths = Object.fromEntries(
       [...fonts].map(([key, value]) => [
         compositionAssetRef("brand_font", key),
@@ -258,7 +262,7 @@ describe("uploaded font preview/export contract", () => {
       const assPath = join(temp, "captions.ass");
       await writeFile(
         assPath,
-        compileCompositionPlanCaptions(plan(fingerprint), "test", fonts),
+        compileCompositionPlanCaptions(plan(fingerprint), "test", fonts).ass,
       );
       const result = await productionWorkerProcessModule.execute({
         command: "ffmpeg",

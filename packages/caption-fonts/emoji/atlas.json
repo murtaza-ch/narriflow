@@ -1,0 +1,168 @@
+{
+  "version": 1,
+  "source": {
+    "repository": "https://github.com/googlefonts/noto-emoji",
+    "tag": "v2026-09-24-unicode18_0",
+    "commit": "e20cbc2bbec1926686be9f9bee7d1d2cfa1fea0e",
+    "path": "2D/png/128",
+    "license": "emoji/LICENSE.txt"
+  },
+  "cell": {
+    "width": 128,
+    "height": 128
+  },
+  "columns": 8,
+  "rows": 4,
+  "sheet": {
+    "width": 1024,
+    "height": 512,
+    "sha256": "ac40ff3e154e328443799471b3c750a507b0e3cfb0d6d1c86a8a3455d6f58e1c"
+  },
+  "sequences": {
+    "2705": {
+      "column": 7,
+      "row": 2,
+      "sha256": "9b5a6051081eda2337cd7ce3b883de0d69f7e864c9429c1c48a0654bd6b8508d"
+    },
+    "2728": {
+      "column": 0,
+      "row": 3,
+      "sha256": "b2b75dce4ea6dc9790fa424285f92781b2e06394682350a943b1fea8ea411d84"
+    },
+    "2753": {
+      "column": 2,
+      "row": 3,
+      "sha256": "6fa0420b0f17380e9964925b7e4fee02abe08642010b5377339f3084c64840ca"
+    },
+    "2764": {
+      "column": 3,
+      "row": 3,
+      "sha256": "1d41a1bc85be895f01f0b07997e3a5619ab3f685e3edbf8c0ad6853d378e6fe0"
+    },
+    "1f30d": {
+      "column": 0,
+      "row": 0,
+      "sha256": "3aef04d64546df36f2e6efaf220372ea6d84d75589e1c612b621f70e69311cf6"
+    },
+    "1f3af": {
+      "column": 1,
+      "row": 0,
+      "sha256": "5a4648cdcdc881467cc54ef09c6bd8434a4a4f725699c4cd1c3609ecd1b3f937"
+    },
+    "1f3b5": {
+      "column": 2,
+      "row": 0,
+      "sha256": "587e905d1cdb41ca27e0b0cff9f4d7bcc58b3aaf6c60703162074f0ab2acf59f"
+    },
+    "1f3c6": {
+      "column": 3,
+      "row": 0,
+      "sha256": "0bcb3953b021377ea5846997d19c4d7d988d7fec416312cf4633de4746e569b4"
+    },
+    "1f440": {
+      "column": 4,
+      "row": 0,
+      "sha256": "d815fafb52776522bb3656515e939102bbaa7afd8d5d410fe8e0a24390ba1624"
+    },
+    "1f44d_1f3fd": {
+      "column": 5,
+      "row": 0,
+      "sha256": "67cb910a1e7c095649004bdd77b6b3e701f17f42fc5591c64141a39d9e07201a"
+    },
+    "1f468_200d_1f469_200d_1f467": {
+      "column": 6,
+      "row": 0,
+      "sha256": "8fb9ec1e0c9a918cd4903cf312197df16761b862d652f00c508e423567d6a8b5"
+    },
+    "1f4a1": {
+      "column": 7,
+      "row": 0,
+      "sha256": "3b57447c18ca9a6bd2df7f17fdf22fb5ee1135bd07fda592e2a34c705060c1c2"
+    },
+    "1f4a5": {
+      "column": 0,
+      "row": 1,
+      "sha256": "642a88c313b4094fcf8dcfde69307da99296cac86134fa6ea6259ba6195a61d8"
+    },
+    "1f4aa": {
+      "column": 1,
+      "row": 1,
+      "sha256": "6b045c171481c0eab16be4967cd1e3e2d93e2f9161de8c727fb143119ae3f354"
+    },
+    "1f4b0": {
+      "column": 2,
+      "row": 1,
+      "sha256": "bf5d05ca51639a358bd9a979f255310685cb6478e261d0cc3fcf5a23922b2609"
+    },
+    "1f4c8": {
+      "column": 3,
+      "row": 1,
+      "sha256": "bba7b0436e268398dd04013495aad534d1d6f7c8ac9836eaa38c44d74eb4540f"
+    },
+    "1f4c9": {
+      "column": 4,
+      "row": 1,
+      "sha256": "72c2a37cfde5ef3da3f07f016ccfd45e0b4e83e745438e1fae615fa289115820"
+    },
+    "1f4ca": {
+      "column": 5,
+      "row": 1,
+      "sha256": "cc64fd6b1e738fc30ade8b256be9758bcf82e200a608c69cbbfc02db4619f475"
+    },
+    "1f525": {
+      "column": 6,
+      "row": 1,
+      "sha256": "24bf25eb9bdb8b89a5254fe303b9d4d8f3f96d722b9a8eff1afdec5cf40369a5"
+    },
+    "1f680": {
+      "column": 7,
+      "row": 1,
+      "sha256": "d9b82f12caa1a7708274061407dbc25e11557dd19931c9ef0b2c07cb45222db4"
+    },
+    "1f6ab": {
+      "column": 0,
+      "row": 2,
+      "sha256": "ab4c115fb12ff933cad650d53c90a12601d337dbe9826198ad87f7a10c866bd1"
+    },
+    "1f6d1": {
+      "column": 1,
+      "row": 2,
+      "sha256": "22968726e1945868187e60990b0d8e9002ad549c9467e6aa03e0e360ff2512e2"
+    },
+    "1f6e0": {
+      "column": 2,
+      "row": 2,
+      "sha256": "ce006f45a878891182c81d1782a87eeca6284a9a26a756d227429df69a04b886"
+    },
+    "1f9e0": {
+      "column": 3,
+      "row": 2,
+      "sha256": "21693f4e82fbe351a509fb81b0daedad297fb27c1217c88fd0169ea3871bbd28"
+    },
+    "23f0": {
+      "column": 4,
+      "row": 2,
+      "sha256": "18d1b80c94b6c3a54a4117fd2b051c02d818bcada1e234a5f78749496b5dcb79"
+    },
+    "26a0": {
+      "column": 5,
+      "row": 2,
+      "sha256": "b89ee096456aa8ba6b1867e9477e9f204f14e9d0bc7df55e1271ae9ebf44816f"
+    },
+    "26a1": {
+      "column": 6,
+      "row": 2,
+      "sha256": "20ba944c0ba2d9e067c50754d860ea58df0cfa269b8f630cf9a65e0c847bf03d"
+    },
+    "274c": {
+      "column": 1,
+      "row": 3,
+      "sha256": "aa88eafec6c432b5939c502fceec3b72a4b759bac4e50ee750644facc455e380"
+    },
+    "2b50": {
+      "column": 4,
+      "row": 3,
+      "sha256": "34e9cfe858de23b7643b21c8b58872c9c0099b8160a6bff42c79dc0d26e8f497"
+    }
+  }
+}

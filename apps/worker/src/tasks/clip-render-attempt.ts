@@ -87,6 +87,15 @@ import {
 	type BoundCompositionAudioRenderRequest,
 	type HdrColor,
 } from "../composition-ffmpeg-adapter";
+import type { CaptionEmojiOverlay, CaptionTrack } from "../caption-ass";
+import {
+	CAPTION_RENDER_DIAGNOSTIC_PATTERN,
+	type CaptionGlyphUnavailableError,
+	type OmittedGlyph,
+	type SkippedEmoji,
+	captionRenderDiagnosticsFailure,
+	classifyCaptionRenderDiagnostics,
+} from "../caption-glyphs";
 import { classifyRenderObjectKey } from "../render-object-key";
 import { guardMixPeak, mixPeakMeasureDeadlineMs } from "../render-mix-peak";
 import {
@@ -424,6 +433,12 @@ interface PendingRenderOutput {
 	outputPath: string;
 	storageKey: string;
 	subtitlePath?: string | null;
+	/** Emoji pictures composited above the burned captions. */
+	captionEmoji?: readonly CaptionEmojiOverlay[];
+	/** Code points left out of the burned text, and emoji skipped. */
+	captionWarnings?: CaptionWarnings;
+	/** Code points forced out of the text after libass reported them. */
+	captionOmitCodePoints?: Set<number>;
 	/** Target resolution for this specific render row (vizard-parity Phase C
 	 *  export options) — read off the ClipRender row, already entitlement-
 	 *  clamped by clip.service's triggerClipRendering/autoQueueDefaultRenders.
@@ -811,6 +826,102 @@ interface MixPeakGuardMode {
 	limitedArgs: (ceiling: number) => string[];
 }
 
+/** What a caption burn-in had to leave out for one output. Recorded on the
+ *  render's analytics (`fallbackCode`) and logged with the details. */
+interface CaptionWarnings {
+	omitted: Map<string, OmittedGlyph>;
+	emojiSkipped: SkippedEmoji[];
+}
+
+/** The caption script, emoji overlays and glyph notices for one output. A
+ *  character no pinned face draws is left out of the text (that code point
+ *  only), and a plan emoji nothing draws is skipped: the clip still renders and
+ *  both are logged and recorded. */
+function compileCaptionTrack(
+	plan: Parameters<typeof compileCompositionPlanCaptions>[0],
+	targetId: string,
+	fonts: Parameters<typeof compileCompositionPlanCaptions>[2],
+	context: Record<string, unknown>,
+	omitCodePoints?: ReadonlySet<number>,
+): CaptionTrack {
+	const track = compileCompositionPlanCaptions(plan, targetId, fonts, omitCodePoints);
+	for (const notice of track.notices) {
+		log("info", notice.code, {
+			...context,
+			phase: "caption_glyphs",
+			disposition: "degraded",
+			cluster: notice.cluster,
+			font: notice.font,
+			sequenceSplit: notice.sequenceSplit,
+		});
+	}
+	for (const glyph of track.omitted) {
+		log("error", "caption_glyph_omitted", {
+			...context,
+			phase: "caption_glyphs",
+			disposition: "degraded",
+			codePoint: glyph.codePoint,
+			cueIndex: glyph.cueIndex,
+		});
+	}
+	for (const skipped of track.emojiSkipped) {
+		log("error", "caption_emoji_skipped", {
+			...context,
+			phase: "caption_glyphs",
+			disposition: "degraded",
+			emoji: skipped.emoji,
+			cueIndex: skipped.cueIndex,
+		});
+	}
+	return track;
+}
+
+function recordCaptionWarnings(output: PendingRenderOutput, track: CaptionTrack): void {
+	const warnings: CaptionWarnings = output.captionWarnings ?? { omitted: new Map(), emojiSkipped: [] };
+	output.captionWarnings = warnings;
+	for (const glyph of track.omitted) warnings.omitted.set(`${glyph.cueIndex}:${glyph.codePoint}`, glyph);
+	warnings.emojiSkipped = [...track.emojiSkipped];
+}
+
+/** Analytics for an output, with its caption warnings added as fallback codes. */
+function withCaptionWarningCodes(
+	analytics: MotionRenderAnalyticsMetadata,
+	output: PendingRenderOutput,
+): MotionRenderAnalyticsMetadata {
+	const warnings = output.captionWarnings;
+	const codes = [
+		...(warnings && warnings.omitted.size > 0 ? ["caption_glyph_omitted"] : []),
+		...(warnings && warnings.emojiSkipped.length > 0 ? ["caption_emoji_skipped"] : []),
+	];
+	if (codes.length === 0) return analytics;
+	return { ...analytics, fallbackCode: [...new Set([...analytics.fallbackCode.filter((code) => code !== "none"), ...codes])].sort() };
+}
+
+/** libass and drawtext report missing glyphs and unparsable text on stderr
+ *  while still exiting zero. Returns the code points libass found no glyph
+ *  for (the caller re-renders without them); host-dependent fallbacks and
+ *  parse errors are surfaced in the log. */
+function inspectCaptionRenderDiagnostics(
+	lines: readonly string[],
+	context: Record<string, unknown>,
+): { missing: ReadonlySet<number>; failure: CaptionGlyphUnavailableError | null } {
+	if (lines.length === 0) return { missing: new Set(), failure: null };
+	const diagnostics = classifyCaptionRenderDiagnostics(lines);
+	const failure = captionRenderDiagnosticsFailure(diagnostics);
+	if (diagnostics.hostFallbacks.length > 0 || diagnostics.parseErrors.length > 0 || failure) {
+		log("error", failure ? "clip_render_caption_glyph_missing" : "clip_render_caption_diagnostics", {
+			...context,
+			phase: "caption_burn_in",
+			disposition: "degraded",
+			missingGlyphs: diagnostics.missingGlyphs.slice(0, 5),
+			hostFallbacks: diagnostics.hostFallbacks.slice(0, 5),
+			parseErrors: diagnostics.parseErrors.slice(0, 5),
+		});
+	}
+	const missing = new Set((failure?.glyphs ?? []).flatMap((glyph) => glyph.codePoints.map((codePoint) => Number.parseInt(codePoint.slice(2), 16))));
+	return { missing, failure };
+}
+
 async function executeRenderCommandWithOptionalFallback(input: {
 	primaryArgs: string[];
 	fallbackArgs?: () => string[];
@@ -822,6 +933,10 @@ async function executeRenderCommandWithOptionalFallback(input: {
 	recordCommand?: (args: readonly string[]) => void;
 	recordSourceDecodeCompleted?: () => void;
 	recordResourceSample?: (rssBytes: number) => void;
+	/** libass found no glyph for these code points although ffmpeg exited zero:
+	 *  rewrite the caption script without them; the command is then run once
+	 *  more. A second report fails the variant. */
+	captionRecovery?: (codePoints: ReadonlySet<number>) => Promise<void>;
 	/** Music/SFX mixes are decoded once after encoding; a peak above full
 	 *  scale buys one limiter re-encode (`render-mix-peak.ts`). */
 	mixPeak?: {
@@ -831,6 +946,7 @@ async function executeRenderCommandWithOptionalFallback(input: {
 		fallback?: MixPeakGuardMode;
 	};
 }): Promise<"primary" | "fallback"> {
+	let captionDiagnostics: readonly string[] = [];
 	const execute = async (args: string[]): Promise<void> => {
 		assertCompositionCommandWithinBudget(args, input.context);
 		input.recordCommand?.(args);
@@ -847,6 +963,9 @@ async function executeRenderCommandWithOptionalFallback(input: {
 		try {
 			await execCommand("ffmpeg", args, {
 				recordResourceSample: safeRecordResourceSample,
+				onStderrLines: (lines) => {
+					captionDiagnostics = lines;
+				},
 			});
 			input.recordSourceDecodeCompleted?.();
 		} finally {
@@ -901,6 +1020,15 @@ async function executeRenderCommandWithOptionalFallback(input: {
 		}
 		mode = "fallback";
 	}
+	let captionOutcome = inspectCaptionRenderDiagnostics(captionDiagnostics, input.context);
+	if (captionOutcome.missing.size > 0 && input.captionRecovery) {
+		await input.captionRecovery(captionOutcome.missing);
+		await execute(mode === "primary" ? input.primaryArgs : input.fallbackArgs!());
+		captionOutcome = inspectCaptionRenderDiagnostics(captionDiagnostics, input.context);
+	}
+	if (captionOutcome.failure) {
+		throw new WorkflowWorkerError(captionOutcome.failure.code, captionOutcome.failure.message, "permanent");
+	}
 	await enforceMixPeak(mode);
 	return mode;
 }
@@ -927,6 +1055,8 @@ function runCommand(
 		timeoutMs: number;
 		captureStdout: boolean;
 		recordResourceSample?: (rssBytes: number) => void;
+		/** Receives the libass/drawtext stderr lines of a successful run. */
+		onStderrLines?: (lines: readonly string[]) => void;
 	},
 ): Promise<string> {
 	return currentRenderAdapters()
@@ -938,8 +1068,12 @@ function runCommand(
 			captureStdout: options.captureStdout,
 			recordResourceSample: options.recordResourceSample,
 			diagnose: diagnoseRenderProcessOperation,
+			...(options.onStderrLines ? { stderrLinePattern: CAPTION_RENDER_DIAGNOSTIC_PATTERN } : {}),
 		})
-		.then((result) => result.stdout.toString("utf8"));
+		.then((result) => {
+			options.onStderrLines?.(result.stderrLines ?? []);
+			return result.stdout.toString("utf8");
+		});
 }
 
 function diagnoseRenderProcessOperation(event: WorkerProcessDiagnostic): void {
@@ -959,6 +1093,7 @@ async function execCommand(
 	options?: {
 		timeoutMs?: number;
 		recordResourceSample?: (rssBytes: number) => void;
+		onStderrLines?: (lines: readonly string[]) => void;
 	},
 ) {
 	await runCommand(command, args, {
@@ -966,6 +1101,7 @@ async function execCommand(
 			options?.timeoutMs ?? currentRenderConfig().renderCommandTimeoutMs,
 		captureStdout: false,
 		recordResourceSample: options?.recordResourceSample,
+		onStderrLines: options?.onStderrLines,
 	});
 }
 
@@ -2990,6 +3126,24 @@ async function renderClipGroup(input: {
 	let plannedAudio: BoundCompositionAudioRenderRequest | null = null;
 	let fallbackAudio: BoundCompositionAudioRenderRequest | null = null;
 	let compositionPlan: ClipCompositionPlan | null = null;
+	/** Rewrites an output's caption script without code points libass found no glyph for. */
+	const captionRecoveryFor =
+		(output: PendingRenderOutput) =>
+		async (codePoints: ReadonlySet<number>): Promise<void> => {
+			if (!compositionPlan || !output.subtitlePath) return;
+			const omit = output.captionOmitCodePoints ?? new Set<number>();
+			output.captionOmitCodePoints = omit;
+			for (const codePoint of codePoints) omit.add(codePoint);
+			const track = compileCaptionTrack(
+				compositionPlan,
+				output.clipRenderId,
+				customFonts,
+				{ workflowRunId: run.id, clipId: clip.id, clipRenderId: output.clipRenderId },
+				omit,
+			);
+			recordCaptionWarnings(output, track);
+			await currentRenderAdapters().workspace.writeFile(output.subtitlePath, track.ass, "utf-8");
+		};
 	let fallbackCompositionPlan: ClipCompositionPlan | null = null;
 	{
 		const planWithAssetAvailability = (
@@ -3282,22 +3436,25 @@ async function renderClipGroup(input: {
 					"permanent",
 				);
 			}
-			const assContent = compileCompositionPlanCaptions(
+			const captions = compileCaptionTrack(
 				compositionPlan,
 				output.clipRenderId,
- customFonts,
+				customFonts,
+				{ workflowRunId: run.id, clipId: clip.id, clipRenderId: output.clipRenderId },
 			);
-			if (assContent.length > 0) {
+			recordCaptionWarnings(output, captions);
+			if (captions.ass.length > 0) {
 				const assPath = join(
 					tempDir,
 					`clip-${clip.id}-${output.aspectRatio.replace(":", "x")}.ass`,
 				);
 				await currentRenderAdapters().workspace.writeFile(
 					assPath,
-					assContent,
+					captions.ass,
 					"utf-8",
 				);
 				output.subtitlePath = assPath;
+				output.captionEmoji = captions.emoji;
 			}
 		}
 		if (optionalCommandAssets.length > 0) {
@@ -3368,6 +3525,7 @@ async function renderClipGroup(input: {
 							scenes: resolvedSceneAssets,
 							fonts: resolvedSceneFonts,
  captionFontsDirectory,
+							captionEmoji: output.captionEmoji,
 						},
 					});
 				const compileAudioOnlyFallback =
@@ -3393,6 +3551,7 @@ async function renderClipGroup(input: {
 										scenes: resolvedSceneAssets,
 										fonts: resolvedSceneFonts,
  captionFontsDirectory,
+							captionEmoji: output.captionEmoji,
 									},
 								})
 						: null;
@@ -3401,6 +3560,7 @@ async function renderClipGroup(input: {
 				const encodeStartedAtMs = currentTimeMs();
 				const commandMode = await executeRenderCommandWithOptionalFallback({
 					primaryArgs: ffmpegArgs,
+					captionRecovery: captionRecoveryFor(output),
 					fallbackArgs: compileAudioOnlyFallback
 						? () => compileAudioOnlyFallback(null)
 						: undefined,
@@ -3443,7 +3603,7 @@ async function renderClipGroup(input: {
 								compositionPlan.editedDurationSec)
 							: compositionPlan.editedDurationSec,
 					encodeMs: encodeDurationMs,
-					motionAnalytics,
+					motionAnalytics: withCaptionWarningCodes(motionAnalytics, output),
 				});
 			} catch (error) {
 				rethrowWorkflowAttemptLost(error);
@@ -3547,6 +3707,7 @@ async function renderClipGroup(input: {
 							scenes: resolvedSceneAssets,
 							fonts: resolvedSceneFonts,
  captionFontsDirectory,
+							captionEmoji: output.captionEmoji,
 						},
 					});
 				const compileVideoFallback = (mixPeakCeiling: number | null) =>
@@ -3570,12 +3731,14 @@ async function renderClipGroup(input: {
 							scenes: resolvedSceneAssets,
 							fonts: resolvedSceneFonts,
  captionFontsDirectory,
+							captionEmoji: output.captionEmoji,
 						},
 					});
 				const ffmpegArgs = compileVideo(null);
 				const encodeStartedAtMs = currentTimeMs();
 				const commandMode = await executeRenderCommandWithOptionalFallback({
 					primaryArgs: ffmpegArgs,
+					captionRecovery: captionRecoveryFor(output),
 					fallbackArgs:
 						optionalCommandAssets.length > 0
 							? () => compileVideoFallback(null)
@@ -3613,7 +3776,7 @@ async function renderClipGroup(input: {
 							: compositionPlan.editedDurationSec,
 					brollCredits: commandMode === "primary" ? brollCredits : null,
 					encodeMs: encodeDurationMs,
-					motionAnalytics,
+					motionAnalytics: withCaptionWarningCodes(motionAnalytics, output),
 				});
 			} catch (error) {
 				rethrowWorkflowAttemptLost(error);

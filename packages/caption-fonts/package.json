@@ -9,7 +9,12 @@
     ".": {
       "types": "./src/index.ts",
       "default": "./src/index.ts"
-    }
+    },
+    "./emoji": {
+      "types": "./src/emoji.ts",
+      "default": "./src/emoji.ts"
+    },
+    "./emoji/atlas.png": "./emoji/atlas.png"
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",

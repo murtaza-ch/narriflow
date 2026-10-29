@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFile, mkdir, symlink } from "node:fs/promises";
 import { join } from "node:path";
-import { CAPTION_FONTS_DIRECTORY } from "@narriflow/caption-fonts";
+import { CAPTION_FALLBACK_FONTS, CAPTION_FONTS_DIRECTORY } from "@narriflow/caption-fonts";
 import {
   brandFontRenderer,
   rethrowWorkflowAttemptLost,
@@ -115,6 +115,10 @@ export async function prepareCaptionFontsDirectory(
       join(CAPTION_FONTS_DIRECTORY, face.file),
       join(target, face.file),
     );
+  }
+  // The pinned glyph fallback faces travel with every directory libass is given.
+  for (const fallback of CAPTION_FALLBACK_FONTS) {
+    await link(join(CAPTION_FONTS_DIRECTORY, fallback.file), join(target, fallback.file));
   }
   await link(font.path, join(target, `uploaded.${font.path.split(".").pop()}`));
   return target;

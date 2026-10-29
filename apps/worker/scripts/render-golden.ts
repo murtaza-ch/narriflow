@@ -49,6 +49,8 @@ import {
   resolveEffectiveLogoSettings,
 } from "@narriflow/validators";
 import { prepareCaptionFontsDirectory } from "../src/brand-font-resolution";
+import type { CaptionTrack } from "../src/caption-ass";
+import { CAPTION_RENDER_DIAGNOSTIC_PATTERN, captionRenderDiagnosticsFailure, classifyCaptionRenderDiagnostics } from "../src/caption-glyphs";
 import {
   bindCompositionPlanAudioInputs,
   compileClipCompositionCommand,
@@ -133,8 +135,10 @@ export interface KnownDefect {
 export interface Activation {
   ticket: string;
   /** `change: "output-sar"` marks a normal case whose only allowed difference
-   * is the appended `,setsar=1` and the SAR/DAR tags (with the extradata size of the SPS that carries them) becoming 1:1. */
-  cases: Record<string, { contract: Assertion[]; retain?: string[]; change?: "output-sar" }>;
+   * is the appended `,setsar=1` and the SAR/DAR tags (with the extradata size of the SPS that carries them) becoming 1:1.
+   * `change: "glyph-coverage"` marks a normal case whose captions use glyphs outside the caption face: the ASS script, the
+   * decoded frames and libass's font diagnostics may change (host-font fallback becomes the pinned chain), nothing else. */
+  cases: Record<string, { contract: Assertion[]; retain?: string[]; change?: "output-sar" | "glyph-coverage" }>;
 }
 
 export interface Inputs {
@@ -303,7 +307,7 @@ export function suiteCaseIds(inputs: Inputs, suite: string, only?: string[]): st
   return selected;
 }
 
-function activationFor(inputs: Inputs, caseId: string): { ticket: string; contract: Assertion[]; retain: string[]; change?: "output-sar" } | null {
+function activationFor(inputs: Inputs, caseId: string): { ticket: string; contract: Assertion[]; retain: string[]; change?: "output-sar" | "glyph-coverage" } | null {
   for (const activation of Object.values(inputs.activations)) {
     const entry = activation.cases[caseId];
     if (entry && entry.contract.length > 0) return { ticket: activation.ticket, contract: entry.contract, retain: entry.retain ?? [], change: entry.change };
@@ -314,6 +318,11 @@ function activationFor(inputs: Inputs, caseId: string): { ticket: string; contra
 /** A case may carry the approved SAR-declaration change with or without a corrected contract. */
 function allowsOutputSar(inputs: Inputs, caseId: string): boolean {
   return Object.values(inputs.activations).some((activation) => activation.cases[caseId]?.change === "output-sar");
+}
+
+/** A case may carry the approved glyph-coverage change: the pinned fallback chain replaces host fonts. */
+function allowsGlyphCoverage(inputs: Inputs, caseId: string): boolean {
+  return Object.values(inputs.activations).some((activation) => activation.cases[caseId]?.change === "glyph-coverage");
 }
 
 // ---------------------------------------------------------------------------
@@ -1021,7 +1030,15 @@ export async function runCase(context: CaseContext, id: string): Promise<CaseRec
       };
       record.targets.push(targetRecord);
 
-      const ass = compileCompositionPlanCaptions(planned.plan, target.id, new Map());
+      let captions: CaptionTrack;
+      try {
+        captions = compileCompositionPlanCaptions(planned.plan, target.id, new Map());
+      } catch (error) {
+        record.failure = { stage: "compile", code: failureCode(error), message: normalize(String((error as Error).message ?? error)).slice(0, 500) };
+        targetRecord.measurements["render.ok"] = false;
+        continue;
+      }
+      const ass = captions.ass;
       let subtitlePath: string | null = null;
       if (ass.length > 0) {
         subtitlePath = join(caseDir, "work", `captions-${target.id}.ass`);
@@ -1042,7 +1059,7 @@ export async function runCase(context: CaseContext, id: string): Promise<CaseRec
         encoder: context.inputs.manifest.encoder,
         cutPlan: planned.cutPlan,
         ...(mixPeakCeiling === null ? {} : { mixPeakCeiling }),
-        assets: { subtitlePath, logo: planned.assets.logo as any, background: planned.assets.background as any, broll: planned.assets.broll, hdr: planned.assets.hdr, scenes: planned.assets.scenes, fonts: {}, captionFontsDirectory: fonts },
+        assets: { subtitlePath, logo: planned.assets.logo as any, background: planned.assets.background as any, broll: planned.assets.broll, hdr: planned.assets.hdr, scenes: planned.assets.scenes, fonts: {}, captionFontsDirectory: fonts, captionEmoji: captions.emoji },
       });
       try {
         argv = compile(null);
@@ -1057,6 +1074,13 @@ export async function runCase(context: CaseContext, id: string): Promise<CaseRec
 
       const run = await runProcess("ffmpeg", argv, { timeoutMs: 600_000 });
       targetRecord.encode = { exitCode: run.code, diagnostics: diagnosticLines(run.stderr).map(normalize) };
+      // The worker fails the variant when libass proves a glyph unrenderable, even though ffmpeg exits zero.
+      const glyphFailure = run.code === 0 ? captionRenderDiagnosticsFailure(classifyCaptionRenderDiagnostics(run.stderr.split(/\r?\n|\r/).filter((line) => CAPTION_RENDER_DIAGNOSTIC_PATTERN.test(line)))) : null;
+      if (glyphFailure) {
+        targetRecord.measurements["render.ok"] = false;
+        record.failure ??= { stage: "encode", code: glyphFailure.code, message: normalize(glyphFailure.message).slice(0, 500) };
+        continue;
+      }
       const produced = run.code === 0 && existsSync(outputPath) && (await stat(outputPath)).size > 0;
       if (!produced) {
         targetRecord.measurements["render.ok"] = false;
@@ -1090,7 +1114,8 @@ export async function runCase(context: CaseContext, id: string): Promise<CaseRec
       try {
         const measured = await measureOutput({ outputPath, snapshotDir: join(caseDir, "snapshots"), target: planTarget, plan: planned.plan, probes: definition.probes ?? [], expectedQuadrants });
         targetRecord.output = measured.output;
-        targetRecord.measurements = { ...measured.measurements, "render.exitCode": 0 };
+        // What the burned captions had to leave out (recorded on the worker's render result, `fallbackCode`).
+        targetRecord.measurements = { ...measured.measurements, "render.exitCode": 0, "captions.glyphsOmitted": captions.omitted.length, "captions.emojiSkipped": captions.emojiSkipped.length };
       } catch (error) {
         targetRecord.measurements["render.ok"] = false;
         record.failure ??= { stage: "encode", code: "measurement_failed", message: normalize(String((error as Error).message ?? error)).slice(0, 500) };
@@ -1284,7 +1309,27 @@ function gcd(a: number, b: number): number {
   return b === 0 ? a : gcd(b, a % b);
 }
 
-export function compareCase(base: CaseRecord, cand: CaseRecord, retain: string[] | null = null, signatureOnly = false, outputSar = false): Mismatch[] {
+const HOST_FONT_DIAGNOSTIC = /fontselect: failed to find any fallback|Glyph 0x\w+ not found|Error opening font/i;
+
+/** The approved glyph-coverage change: the ASS script, the decoded frames and libass's font-selection
+ * lines may differ, provided the frames differ only because the script does, and the candidate's
+ * libass never asked the host for a font. Plan, argv, PCM, ffprobe, loudness and decode stay exact. */
+function allowGlyphCoverage(base: CaseRecord, cand: CaseRecord, mismatches: Mismatch[]): Mismatch[] {
+  const out = mismatches.filter((mismatch) => !["captions", "frames", "diagnostics"].includes(mismatch.category));
+  for (const mismatch of mismatches) {
+    if (mismatch.category !== "frames") continue;
+    const scriptChanged = mismatches.some((other) => other.category === "captions" && other.target === mismatch.target);
+    if (!scriptChanged) out.push({ ...mismatch, detail: `${mismatch.detail} (the ASS script is unchanged, so this is not the glyph-coverage change)` });
+  }
+  for (const target of cand.targets) {
+    const lines = target.encode.diagnostics.filter((line) => HOST_FONT_DIAGNOSTIC.test(line));
+    if (lines.length > 0) out.push({ case: base.id, target: target.targetId, category: "glyph", detail: `libass still asked the host for a font: ${clip(lines[0]!)}` });
+  }
+  return out;
+}
+
+export function compareCase(base: CaseRecord, cand: CaseRecord, retain: string[] | null = null, signatureOnly = false, outputSar = false, glyphCoverage = false): Mismatch[] {
+  if (glyphCoverage) return allowGlyphCoverage(base, cand, compareCase(base, cand, retain, signatureOnly, outputSar, false));
   if (outputSar) {
     const allowed = allowOutputSar(base, cand);
     return [...compareCase(allowed.base, allowed.cand, retain, signatureOnly), ...allowed.problems];
@@ -1424,19 +1469,20 @@ export function buildReport(input: { inputs: Inputs; baseline: CaptureFile; cand
     }
     const activation = activationFor(inputs, id);
     const outputSar = allowsOutputSar(inputs, id);
+    const glyphCoverage = allowsGlyphCoverage(inputs, id);
     const assertions = (cand.defects?.results ?? []).map((result) => ({ targetId: result.targetId, id: result.assertionId, pass: result.pass, actual: result.actual }));
     let mismatches: Mismatch[];
     let verdict: CaseVerdict["verdict"];
     if (cand.class === "normal") {
-      mismatches = compareCase(base, cand, null, false, outputSar);
+      mismatches = compareCase(base, cand, null, false, outputSar, glyphCoverage);
       verdict = mismatches.length === 0 ? "pass" : "fail";
     } else if (activation) {
-      mismatches = compareCase(base, cand, activation.retain, false, outputSar);
+      mismatches = compareCase(base, cand, activation.retain, false, outputSar, glyphCoverage);
       const failed = assertions.filter((entry) => !entry.pass);
       for (const entry of failed) mismatches.push({ case: id, target: entry.targetId, category: "contract", detail: `corrected contract ${entry.id} not met (actual ${canonicalJson(entry.actual)}) [ticket ${activation.ticket}]` });
       verdict = mismatches.length === 0 ? "activated-pass" : "activated-fail";
     } else {
-      mismatches = compareCase(base, cand, null, definition.compare === "signature", outputSar);
+      mismatches = compareCase(base, cand, null, definition.compare === "signature", outputSar, glyphCoverage);
       const anyFailing = assertions.some((entry) => !entry.pass);
       if (inputs.knownDefects[id]?.expect === "pass") {
         for (const entry of assertions.filter((assertion) => !assertion.pass)) mismatches.push({ case: id, target: entry.targetId, category: "contract", detail: `regression guard ${entry.id} broke (actual ${canonicalJson(entry.actual)}); this fixture is already rendered correctly` });

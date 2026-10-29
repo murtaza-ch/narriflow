@@ -100,7 +100,7 @@ async function render(input: RenderInput) {
   });
   if (result.status === "invalid") throw new Error(result.error.code);
   const subtitlePath = input.transcript.length > 0 ? join(directory, `${input.label}.ass`) : null;
-  if (subtitlePath) await writeFile(subtitlePath, compileCompositionPlanCaptions(result.plan, "target"));
+  if (subtitlePath) await writeFile(subtitlePath, compileCompositionPlanCaptions(result.plan, "target").ass);
   const outputPath = join(directory, `${input.label}.out.mp4`);
   const args = compileClipCompositionCommand({
     sourcePath: input.source, outputPath, startSec: 0, endSec: DURATION_SEC,

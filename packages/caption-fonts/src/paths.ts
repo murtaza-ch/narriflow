@@ -12,3 +12,6 @@ export const CAPTION_FONTS_DIRECTORY = fileURLToPath(new URL("../fonts/", import
 export function captionFontFilePath(file: string): string {
   return join(CAPTION_FONTS_DIRECTORY, file);
 }
+
+/** Absolute path of the shared emoji artwork sheet (see emoji.ts). */
+export const CAPTION_EMOJI_ATLAS_PATH = fileURLToPath(new URL("../emoji/atlas.png", import.meta.url));

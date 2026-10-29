@@ -1,5 +1,5 @@
 import type { RenderBrandFonts } from "./brand-font-resolution";
-import { CAPTION_FONTS_DIRECTORY } from "@narriflow/caption-fonts";
+import { CAPTION_EMOJI_ATLAS, CAPTION_EMOJI_ATLAS_PATH, CAPTION_FONTS_DIRECTORY } from "@narriflow/caption-fonts";
 import { WorkflowFailure } from "@narriflow/services";
 import {
 	clipAspectRatioOptions,
@@ -14,7 +14,7 @@ import {
 	type WorkerMediaInspection,
 } from "./worker-process";
 import { buildDuckingVolumeExpression } from "./tasks/ducking";
-import { serializeCaptionAss } from "./caption-ass";
+import { type CaptionEmojiOverlay, type CaptionTrack, renderCaptionTrack } from "./caption-ass";
 import type { ClipCutPlan } from "./tasks/cut-plan";
 import {
 	CLIP_COMPOSITION_PLAN_VERSION,
@@ -603,6 +603,42 @@ function textLayerFilter(
 	);
 }
 
+/**
+ * The caption stage with emoji: libass burns the text, then each emoji picture
+ * is cropped out of the shared atlas, scaled (and turned with the cue's tilt)
+ * and overlaid for exactly its word's window. `movie` reads the atlas by path
+ * so the stage needs no extra input slot.
+ */
+function captionEmojiFilters(input: {
+	source: string;
+	filter: string;
+	output: string;
+	stageIndex: number;
+	overlays: readonly CaptionEmojiOverlay[];
+}): string[] {
+	const { cell } = CAPTION_EMOJI_ATLAS;
+	const parts = [`${input.source}${input.filter}[composition_caption_${input.stageIndex}_text]`];
+	let base = `[composition_caption_${input.stageIndex}_text]`;
+	input.overlays.forEach((emoji, index) => {
+		const label = `[composition_emoji_${input.stageIndex}_${index}]`;
+		const width = Math.max(2, Math.round(emoji.widthPx));
+		const height = Math.max(2, Math.round(emoji.heightPx));
+		const turn = emoji.rotationDeg === 0 ? "" : `,rotate=${((emoji.rotationDeg * Math.PI) / 180).toFixed(5)}:c=none:ow=rotw(${((emoji.rotationDeg * Math.PI) / 180).toFixed(5)}):oh=roth(${((emoji.rotationDeg * Math.PI) / 180).toFixed(5)})`;
+		parts.push(
+			`movie=filename='${escapeSubtitlePath(CAPTION_EMOJI_ATLAS_PATH)}',format=rgba,` +
+				`crop=${cell.width}:${cell.height}:${emoji.column * cell.width}:${emoji.row * cell.height},` +
+				`scale=${width}:${height}:flags=lanczos${turn}${label}`,
+		);
+		const next = index === input.overlays.length - 1 ? input.output : `[composition_caption_${input.stageIndex}_${index}]`;
+		parts.push(
+			`${base}${label}overlay=x=${emoji.centerX.toFixed(2)}-w/2:y=${emoji.centerY.toFixed(2)}-h/2:` +
+				`enable='gte(t\\,${emoji.startSec.toFixed(3)})*lt(t\\,${emoji.endSec.toFixed(3)})'${next}`,
+		);
+		base = next;
+	});
+	return parts;
+}
+
 /** Translates the target's already-ordered visual schedule into FFmpeg syntax.
  * It does not inspect the editor document or select timing, precedence,
  * entitlement, geometry, or optional-media fallbacks. */
@@ -613,6 +649,7 @@ export function compileCompositionPlanVisualLayers(input: {
 	outputLabel: string;
  resolvedFonts?: Readonly<Record<string, string>>;
  captionFontsDirectory?: string;
+	captionEmoji?: readonly CaptionEmojiOverlay[];
 	subtitlePath?: string | null;
 	logoInputIndex?: number | null;
 }): {
@@ -666,14 +703,16 @@ export function compileCompositionPlanVisualLayers(input: {
 			}));
 		} else if (layer.kind === "caption" && !captionsAdded) {
 			captionsAdded = true;
-			stages.push((source, output) => {
+			stages.push((source, output, stageIndex) => {
 				if (!input.subtitlePath) {
 					throw new Error("clip_composition_caption_asset_missing");
 				}
 				const filter = input.subtitlePath.endsWith(".ass")
 					? `ass='${escapeSubtitlePath(input.subtitlePath)}':fontsdir='${escapeSubtitlePath(input.captionFontsDirectory ?? CAPTION_FONTS_DIRECTORY)}'`
 					: `subtitles='${escapeSubtitlePath(input.subtitlePath)}'`;
-				return { parts: [`${source}${filter}${output}`] };
+				const emoji = input.captionEmoji ?? [];
+				if (emoji.length === 0) return { parts: [`${source}${filter}${output}`] };
+				return { parts: captionEmojiFilters({ source, filter, output, stageIndex, overlays: emoji }) };
 			});
 		} else if (layer.kind === "logo") {
 			stages.push((source, output, stageIndex) => {
@@ -2064,6 +2103,7 @@ export interface ClipCompositionCommandInput {
 		>;
 		fonts?: Readonly<Record<string, string>>;
  captionFontsDirectory?: string;
+	captionEmoji?: readonly CaptionEmojiOverlay[];
 	};
 }
 
@@ -2094,6 +2134,7 @@ export function compileClipCompositionCommand(
 		hdrAssets: input.assets.hdr,
 		resolvedSceneFonts: input.assets.fonts,
  captionFontsDirectory: input.assets.captionFontsDirectory,
+		captionEmoji: input.assets.captionEmoji,
 	};
 	if (!input.source.hasVideo)
 		return buildAudiogramArgs({
@@ -2145,15 +2186,21 @@ function httpSourceInputArgs(input: string): string[] {
 	];
 }
 
+/** The target's burned captions: the ASS script, the emoji overlays that ride
+ *  above it, the glyph fallback notices, and what had to be left out
+ *  (code points and emoji no pinned face draws). `omitCodePoints` forces
+ *  further code points out of the text. */
 export function compileCompositionPlanCaptions(
 	plan: ClipCompositionPlan,
 	targetId: string,
  fonts?: RenderBrandFonts,
-): string {
+	omitCodePoints?: ReadonlySet<number>,
+): CaptionTrack {
 	const target = plan.targets.find((candidate) => candidate.id === targetId);
 	if (!target) throw new Error("clip_composition_target_missing");
-	return serializeCaptionAss({
+	return renderCaptionTrack({
  fonts,
+		omitCodePoints,
 		layers: target.visualLayers.filter(
 			(layer): layer is CompositionCaptionVisualLayer =>
 				layer.kind === "caption",
@@ -2708,6 +2755,7 @@ function buildSingleVideoArgs(params: {
 	probe: SourceProbe;
 	subtitlePath: string | null;
  captionFontsDirectory?: string;
+	captionEmoji?: readonly CaptionEmojiOverlay[];
 	logo?: LogoOverlay | null;
 	/** The sole versioned composition policy for every video render. */
 	composition: {
@@ -2844,6 +2892,7 @@ function buildSingleVideoArgs(params: {
 		subtitlePath: params.subtitlePath,
  resolvedFonts: params.resolvedSceneFonts,
  captionFontsDirectory: params.captionFontsDirectory,
+		captionEmoji: params.captionEmoji,
 		logoInputIndex,
 	});
 	filterParts.push(...visual.filterParts);
@@ -2974,6 +3023,7 @@ function buildBrollVideoArgs(params: {
 	probe: SourceProbe;
 	subtitlePath: string | null;
  captionFontsDirectory?: string;
+	captionEmoji?: readonly CaptionEmojiOverlay[];
 	logo?: LogoOverlay | null;
 	composition: {
 		plan: ClipCompositionPlan;
@@ -3130,6 +3180,7 @@ function buildBrollVideoArgs(params: {
 		subtitlePath: params.subtitlePath,
  resolvedFonts: params.resolvedSceneFonts,
  captionFontsDirectory: params.captionFontsDirectory,
+		captionEmoji: params.captionEmoji,
 		logoInputIndex,
 	});
 	parts.push(...visual.filterParts);
@@ -3272,6 +3323,7 @@ function buildAudiogramArgs(params: {
 	clipDurationSec: number;
 	subtitlePath: string | null;
  captionFontsDirectory?: string;
+	captionEmoji?: readonly CaptionEmojiOverlay[];
 	logo?: LogoOverlay | null;
 	audio: BoundCompositionAudioRenderRequest;
 	resolvedSceneAssets?: Readonly<
@@ -3447,6 +3499,7 @@ function buildAudiogramArgs(params: {
 		subtitlePath: params.subtitlePath,
  resolvedFonts: params.resolvedSceneFonts,
  captionFontsDirectory: params.captionFontsDirectory,
+		captionEmoji: params.captionEmoji,
 		logoInputIndex,
 	});
 	chain.push(...visual.filterParts);

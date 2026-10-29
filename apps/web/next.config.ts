@@ -23,6 +23,7 @@ const nextConfig: NextConfig = {
   outputFileTracingRoot: path.join(__dirname, "../.."),
   transpilePackages: [
     "@narriflow/api-client",
+    "@narriflow/caption-fonts",
     "@narriflow/ui",
     "@narriflow/validators",
   ],

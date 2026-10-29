@@ -535,5 +535,19 @@
       "TitanOne-Regular.ttf": "563ff6de179bbd44bcd7d2a6c448d6dc3bf935834237cf1250e506e65cd86ff1",
       "Unbounded-ExtraBold.ttf": "0a10aee8e257df15a500f2db43008f6c0cdfb669d11f15c3fefd61384f79c653"
     }
+  },
+  "fallbackFonts": {
+    "directory": "packages/caption-fonts/fonts",
+    "sha256": {
+      "NotoEmoji-Regular.ttf": "259e665c302ba5233983372cdfc1eb6a13e90722397b2888d17fce3cd9240c1e",
+      "NotoSans-Regular.ttf": "478c558ea716033cd60c03438f628dfa75694dcf6b5f6d505a2f05fd2b4f3823",
+      "NotoSansArabic-Regular.ttf": "bdff3e5659d67e67def05b33f749683b9376ae819d65d3dd62ac4640b3aaef48",
+      "NotoSansDevanagari-Regular.ttf": "4e3c66638958c3e2ab5d37f47a8deb89fffeb7be9985c665a519bbc7ba762313",
+      "NotoSansHebrew-Regular.ttf": "cdefaf8efd47045f6820928eba84db5bed7557539328952b5f828315485e02ee",
+      "NotoSansKR-Regular.otf": "69975a0ac8472717870aefeab0a4d52739308d90856b9955313b2ad5e0148d68",
+      "NotoSansSC-Regular.otf": "faa6c9df652116dde789d351359f3d7e5d2285a2b2a1f04a2d7244df706d5ea9",
+      "NotoSansSymbols2-Regular.ttf": "c4a0a80f0041ce4be81e2478faad22776d23edb98ae3f0d19bd37044820ecf9d",
+      "NotoSansThai-Regular.ttf": "61cf814eec46b294d6ea4401ac295d0cecd5207bd2331dcc5a15e7301d30ee44"
+    }
   }
 }

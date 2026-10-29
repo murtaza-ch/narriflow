@@ -1,0 +1,63 @@
+{
+  "ticket": "08",
+  "cases": {
+    "rtl-arabic-captions": {
+      "contract": [],
+      "change": "glyph-coverage"
+    },
+    "cjk-dense-captions": {
+      "contract": [],
+      "change": "glyph-coverage"
+    },
+    "emoji-sequences": {
+      "contract": [
+        {
+          "id": "renders",
+          "metric": "render.ok",
+          "op": "eq",
+          "value": true
+        },
+        {
+          "id": "emoji-pixels",
+          "metric": "video.saturatedPixels",
+          "op": "gte",
+          "value": 100
+        }
+      ],
+      "retain": [
+        "plan",
+        "crop",
+        "cue",
+        "layer"
+      ]
+    },
+    "missing-glyph": {
+      "contract": [
+        {
+          "id": "renders",
+          "metric": "render.ok",
+          "op": "eq",
+          "value": true
+        },
+        {
+          "id": "omission-recorded",
+          "metric": "captions.glyphsOmitted",
+          "op": "gte",
+          "value": 2
+        },
+        {
+          "id": "nothing-else-skipped",
+          "metric": "captions.emojiSkipped",
+          "op": "eq",
+          "value": 0
+        }
+      ],
+      "retain": [
+        "plan",
+        "crop",
+        "cue",
+        "layer"
+      ]
+    }
+  }
+}

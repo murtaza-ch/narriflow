@@ -20,6 +20,14 @@ import { useBrandFont, brandFontStyle } from "@/app/(app)/brand-kit/_components/
 
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { motion, type Transition } from "framer-motion";
+import atlasImage from "@narriflow/caption-fonts/emoji/atlas.png";
+import {
+  CAPTION_EMOJI_HEIGHT_EM,
+  CAPTION_EMOJI_WIDTH_EM,
+  captionEmojiSpriteCss,
+  captionGraphemes,
+  resolveCaptionEmoji,
+} from "@narriflow/caption-fonts/emoji";
 import {
   CAPTION_CUE_TILTS_DEG,
   CAPTION_EXTRUDE,
@@ -464,23 +472,7 @@ export function CaptionCue({
                   {isActive && spec.effect === "karaoke" && (
                     <KaraokeSweep text={text} color={preset.highlightColor} durationMs={durationMs} animated={animated} style={silhouetteStroke(stroke, preset.outlineColor)} />
                   )}
-                  {isActive && emoji && (
-                    <span
-                      aria-hidden
-                      style={{
-                        position: "absolute",
-                        left: "50%",
-                        bottom: "100%",
-                        transform: "translateX(-50%)",
-                        fontSize: "0.8em",
-                        letterSpacing: 0,
-                        fontFamily: "system-ui, sans-serif",
-                        fontStyle: "normal",
-                      }}
-                    >
-                      {emoji}
-                    </span>
-                  )}
+                  {isActive && emoji && <CaptionEmoji emoji={emoji} />}
                 </motion.span>
               </span>
             );
@@ -488,6 +480,35 @@ export function CaptionCue({
         </div>
       </div>
     </motion.div>
+  );
+}
+
+/**
+ * The active word's emoji: the same Noto artwork the export composites from
+ * the shared atlas, 0.8em above the word and centred on it. A sequence the
+ * atlas lacks shows nothing here; the export draws a monochrome glyph for it
+ * or fails the render with `caption_glyph_unavailable`.
+ */
+export function CaptionEmoji({ emoji }: { emoji: string }) {
+  const sprite = resolveCaptionEmoji(emoji);
+  if (!sprite) return null;
+  const url = typeof atlasImage === "string" ? atlasImage : atlasImage.src;
+  return (
+    <span
+      aria-hidden
+      data-caption-emoji={sprite.key}
+      style={{
+        position: "absolute",
+        left: "50%",
+        bottom: "100%",
+        transform: "translateX(-50%)",
+        width: `${CAPTION_EMOJI_WIDTH_EM}em`,
+        height: `${CAPTION_EMOJI_HEIGHT_EM}em`,
+        backgroundImage: `url(${url})`,
+        backgroundRepeat: "no-repeat",
+        ...captionEmojiSpriteCss(sprite),
+      }}
+    />
   );
 }
 
@@ -520,7 +541,8 @@ function KaraokeSweep({
 
 /** Typewriter: the active word's letters appear one at a time. */
 function TypewriterLetters({ text, durationMs }: { text: string; durationMs: number }) {
-  const letters = [...text];
+  // Grapheme clusters, like the burn-in: a ZWJ family or flag appears as one letter.
+  const letters = captionGraphemes(text);
   const delays = captionTypewriterLetterDelays(letters.length, durationMs);
   return letters.map((letter, index) => (
     <motion.span

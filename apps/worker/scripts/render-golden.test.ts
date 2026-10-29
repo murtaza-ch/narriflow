@@ -220,6 +220,31 @@ describe("capture, verify and the gate", () => {
     expect(compareCase(base, frameChanged, retain).map((item) => item.category)).toEqual(["frames"]);
   });
 
+  test("the glyph-coverage change allows the ASS script and frames, nothing else", () => {
+    const base = baseline.cases[CASE]!;
+    const changed = clone(base);
+    const target = changed.targets[0]!;
+    target.captions.assSha256 = "pinned-fallback-runs";
+    target.output!.video!.framesSha256 = "real-glyphs";
+    target.encode.diagnostics = ["[Parsed_ass_4 @ 0xADDR] fontselect: (Montserrat Black, 400, 0) -> NotoSansArabic-Regular, 0, NotoSansArabic-Regular"];
+    expect(compareCase(base, changed).map((item) => item.category)).toEqual(expect.arrayContaining(["captions", "frames", "diagnostics"]));
+    expect(compareCase(base, changed, null, false, false, true)).toEqual([]);
+    // The picture may change only because the script did.
+    const framesOnly = clone(base);
+    framesOnly.targets[0]!.output!.video!.framesSha256 = "unexplained";
+    expect(compareCase(base, framesOnly, null, false, false, true).map((item) => item.category)).toEqual(["frames"]);
+    // Audio, argv and a candidate that still asked the host for a font are not allowed.
+    const audio = clone(changed);
+    audio.targets[0]!.output!.audio!.pcmSha256 = "different";
+    expect(compareCase(base, audio, null, false, false, true).map((item) => item.category)).toContain("audio");
+    const argv = clone(changed);
+    argv.targets[0]!.command.argvSha256 = "different";
+    expect(compareCase(base, argv, null, false, false, true).map((item) => item.category)).toContain("argv");
+    const host = clone(changed);
+    host.targets[0]!.encode.diagnostics = ["[Parsed_ass_4 @ 0xADDR] Glyph 0xADDR not found, selecting one more font for (Montserrat Black, 400, 0)"];
+    expect(compareCase(base, host, null, false, false, true).map((item) => item.category)).toContain("glyph");
+  });
+
   test("verify passes on the same code and writes a report", async () => {
     const out = join(work, "verify-ok");
     const { report, exitCode } = await verifySuite({ suite: "normal", cases: [CASE], out, baseline: baselineDir, cacheDir, fixtureDir });

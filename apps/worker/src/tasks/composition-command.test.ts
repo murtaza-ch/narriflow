@@ -584,7 +584,7 @@ test("planned ASS serialization preserves the planner's punctuation filtering an
 	const layers = target.visualLayers.filter(
 		(layer) => layer.kind === "caption",
 	);
-	const ass = compileCompositionPlanCaptions(result.plan, target.id);
+	const { ass } = compileCompositionPlanCaptions(result.plan, target.id);
 
 	expect(layers.map((layer) => layer.words.map((word) => word.text))).toEqual([
 		["ONE", "TWO", "THREE"],

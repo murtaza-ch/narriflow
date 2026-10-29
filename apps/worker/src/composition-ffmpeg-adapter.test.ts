@@ -33,7 +33,7 @@ import {
 	compileCompositionPlanVisualLayers,
 	bindCompositionPlanAudioInputs,
 } from "./composition-ffmpeg-adapter";
-import { serializeCaptionAss } from "./caption-ass";
+import { renderCaptionTrack } from "./caption-ass";
 import { drawtextLiteralText } from "./ffmpeg-text";
 import { productionWorkerProcessModule } from "./worker-process";
 
@@ -1377,7 +1377,7 @@ describe("composition FFmpeg adapter", () => {
 
 		// Captions: the burn-in file carries the masked text, never the original.
 		const captions = plan.targets[0]!.visualLayers.filter((layer) => layer.kind === "caption");
-		const ass = serializeCaptionAss({ layers: captions, canvas: { width: 1080, height: 1920 } });
+		const ass = renderCaptionTrack({ layers: captions, canvas: { width: 1080, height: 1920 } }).ass;
 		// The default preset uppercases captions after the mask, so F**k becomes F**K.
 		expect(ass).toContain("F**K!");
 		expect(ass).not.toMatch(/fuck/i);
