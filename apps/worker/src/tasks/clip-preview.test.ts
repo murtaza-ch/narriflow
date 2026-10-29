@@ -1,5 +1,9 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { DEFAULT_CAPTION_PRESET } from "@narriflow/validators";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { productionWorkerProcessModule } from "../worker-process";
 import type { WorkerProcessModule, WorkerProcessRequest } from "../worker-process";
 import {
   audiogramPreviewDimensions,
@@ -9,6 +13,8 @@ import {
   clipPreviewAttemptStorageKey,
   computeAmplitudePeaks,
   computeClipPreviewWindow,
+  clipPreviewOutputExpectation,
+  encodeAndValidateClipPreview,
   generateClipPreviewPeaks,
   persistOptionalClipPreviewPeaks,
   previewTimeToSourceTime,
@@ -505,4 +511,48 @@ describe("generateClipPreviewPeaks process contract", () => {
     ).resolves.toBe(false);
     expect(diagnosed).toBe(failure);
   });
+});
+
+
+describe("preview output validation before storage", () => {
+  let directory: string;
+  let source: string;
+  let sourceUrl: string;
+  let server: ReturnType<typeof Bun.serve>;
+  const signal = new AbortController().signal;
+  beforeAll(async () => {
+    directory = await mkdtemp(join(tmpdir(), "preview-validation-09-"));
+    source = join(directory, "source.mp4");
+    await productionWorkerProcessModule.execute({ command: "ffmpeg", signal, deadlineMs: 30_000,
+      args: ["-v", "error", "-f", "lavfi", "-i", "testsrc2=s=160x90:r=30:d=0.8", "-f", "lavfi", "-i", "sine=r=44100:d=0.8", "-c:v", "libx264", "-c:a", "aac", source] });
+    const bytes = await readFile(source);
+    server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {
+      const range = /bytes=(\d+)-(\d*)/.exec(request.headers.get("range") ?? "");
+      const start = range ? Number(range[1]) : 0;
+      const end = Math.min(bytes.length - 1, range?.[2] ? Number(range[2]) : bytes.length - 1);
+      return new Response(bytes.subarray(start, end + 1), { status: range ? 206 : 200,
+        headers: { "Content-Type": "video/mp4", "Accept-Ranges": "bytes", "Content-Length": String(end - start + 1), ...(range ? { "Content-Range": `bytes ${start}-${end}/${bytes.length}` } : {}) } });
+    } });
+    sourceUrl = `http://127.0.0.1:${server.port}/source.mp4`;
+
+  });
+  afterAll(async () => { await server?.stop(true); await rm(directory, { recursive: true, force: true }); });
+  test("valid preview returns measured facts with planned mono AAC", async () => {
+    const probe = await productionWorkerProcessModule.inspectMedia({ sourcePath: source, signal, deadlineMs: 30_000 });
+    const outputPath = join(directory, "valid.mp4");
+    const result = await encodeAndValidateClipPreview({ workerProcess: productionWorkerProcessModule, signal, outputPath,
+      args: buildClipPreviewArgs({ sourcePath: sourceUrl, outputPath, windowStartSec: 0, windowDurationSec: 0.5, hasAudio: true, maxHeight: 90 }),
+      expected: clipPreviewOutputExpectation(probe, 0.5, 90) });
+    expect(result.durationSec).toBeCloseTo(0.5, 5);
+    expect(result.media.audios[0]).toMatchObject({ channels: 1, sampleRate: 44100 });
+  });
+  for (const startSec of [0, 5]) {
+    test(`exit-zero preview at ${startSec}s cannot return a short or empty candidate for upload`, async () => {
+      const probe = await productionWorkerProcessModule.inspectMedia({ sourcePath: source, signal, deadlineMs: 30_000 });
+      const outputPath = join(directory, `invalid-${startSec}.mp4`);
+      await expect(encodeAndValidateClipPreview({ workerProcess: productionWorkerProcessModule, signal, outputPath,
+        args: buildClipPreviewArgs({ sourcePath: sourceUrl, outputPath, windowStartSec: startSec, windowDurationSec: 2, hasAudio: true, maxHeight: 90 }),
+        expected: clipPreviewOutputExpectation(probe, 2, 90) })).rejects.toMatchObject({ code: "render_output_invalid", disposition: "retryable" });
+    });
+  }
 });

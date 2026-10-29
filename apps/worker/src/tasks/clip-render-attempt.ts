@@ -97,7 +97,8 @@ import {
 	classifyCaptionRenderDiagnostics,
 } from "../caption-glyphs";
 import { classifyRenderObjectKey } from "../render-object-key";
-import { guardMixPeak, mixPeakMeasureDeadlineMs } from "../render-mix-peak";
+import { compositionOutputExpectation, validateRenderOutput, type ValidatedRenderResult } from "../render-output-validation";
+import { guardMixPeak, mixPeakMeasureDeadlineMs, type MixPeakResult } from "../render-mix-peak";
 import {
 	type RenderClockAdapter,
 	type RenderWorkspaceAdapter,
@@ -945,6 +946,7 @@ async function executeRenderCommandWithOptionalFallback(input: {
 		primary: MixPeakGuardMode;
 		fallback?: MixPeakGuardMode;
 	};
+  recordMixPeak?(result: MixPeakResult | null): void;
 }): Promise<"primary" | "fallback"> {
 	let captionDiagnostics: readonly string[] = [];
 	const execute = async (args: string[]): Promise<void> => {
@@ -987,6 +989,7 @@ async function executeRenderCommandWithOptionalFallback(input: {
 				}),
 			execute,
 		});
+		input.recordMixPeak?.(result);
 		if (!result) return;
 		log("info", result.outcome === "limited" ? "render_mix_peak_limited" : "clip_render_mix_peak", {
 			...input.context,
@@ -1469,7 +1472,7 @@ async function uploadRenderedOutput(params: {
 	workflowRunId: string;
 	projectId: string;
 	output: PendingRenderOutput;
-	clipDurationSec: number;
+	validated: ValidatedRenderResult;
 	/** Compact JSON-encoded Pexels attribution for any B-roll used in this
 	 *  render, so crediting is possible after the fact. There's no dedicated
 	 *  DB column reachable without a migration or editing clip.service.ts (out
@@ -1516,22 +1519,6 @@ async function uploadRenderedOutput(params: {
 			return "orphan_candidate" as const;
 		}
 	};
-	if (params.output.resolution === "720p") {
-		// Output treatment is already encoded from the composition plan. Probe
-		// the resulting canvas; failures follow the ordinary variant policy.
-		const treatedProbe = await probeSource(params.output.outputPath);
-		log("info", "resolution_export_treatment", {
-			workflowRunId: params.workflowRunId,
-			clipId: params.output.clipId,
-			resolution: params.output.resolution,
-			width: treatedProbe.width,
-			height: treatedProbe.height,
-		});
-	}
-
-	const outputStat = await currentRenderAdapters().workspace.stat(
-		params.output.outputPath,
-	);
 
 	const uploadStartedAtMs = currentTimeMs();
 	await currentRenderAdapters().storage.putFileFromPath({
@@ -1557,8 +1544,8 @@ async function uploadRenderedOutput(params: {
 				params.output.clipRenderId,
 				{
 					storageKey: params.output.storageKey,
-					sizeBytes: Number(outputStat.size),
-					durationSec: params.clipDurationSec,
+					sizeBytes: params.validated.sizeBytes,
+					durationSec: params.validated.durationSec,
 					motionAnalytics: params.motionAnalytics,
 				},
 			),
@@ -1593,7 +1580,7 @@ async function uploadRenderedOutput(params: {
 		clipRenderId: params.output.clipRenderId,
 		clipIndex: params.output.clipIndex,
 		aspectRatio: params.output.aspectRatio,
-		sizeBytes: Number(outputStat.size),
+		sizeBytes: params.validated.sizeBytes,
 		uploadMs,
 		...(params.encodeMs !== undefined ? { encodeMs: params.encodeMs } : {}),
 	});
@@ -2072,7 +2059,7 @@ async function renderClipGroup(input: {
 	scheduleUpload(
 		output: PendingRenderOutput,
 		metadata: {
-			clipDurationSec: number;
+			validated: ValidatedRenderResult;
 			brollCredits?: string | null;
 			encodeMs: number;
 			motionAnalytics: MotionRenderAnalyticsMetadata;
@@ -3479,6 +3466,20 @@ async function renderClipGroup(input: {
 		}
 	}
 
+  const validateOutput = (output: PendingRenderOutput, plan: ClipCompositionPlan, audio: BoundCompositionAudioRenderRequest, mixPeak: MixPeakResult | null) => validateRenderOutput({
+    path: output.outputPath,
+    expected: compositionOutputExpectation({ plan, targetId: output.clipRenderId, source: probe, audio, hdrAssets: Object.keys(hdrAssets).length > 0 }),
+    workerProcess: currentRenderAdapters().workerProcess,
+    signal: currentRenderSignal() ?? new AbortController().signal,
+    statFile: currentRenderAdapters().workspace.stat,
+    mixPeak,
+    captionGlyphsOmitted: [...(output.captionWarnings?.omitted.values() ?? [])],
+    captionEmojiSkipped: output.captionWarnings?.emojiSkipped ?? [],
+    diagnose: (event) => log(event.accepted ? "info" : "error", "clip_render_output_validation", {
+      workflowRunId: run.id, clipId: output.clipId, clipRenderId: output.clipRenderId, ...event,
+    }),
+  });
+
 	if (!probe.hasVideo) {
 		if (!compositionPlan || !plannedAudio) {
 			throw new WorkflowWorkerError(
@@ -3558,7 +3559,9 @@ async function renderClipGroup(input: {
 				const ffmpegArgs = compileAudioOnly(null);
 
 				const encodeStartedAtMs = currentTimeMs();
+				let mixPeak: MixPeakResult | null = null;
 				const commandMode = await executeRenderCommandWithOptionalFallback({
+          recordMixPeak: (result) => { mixPeak = result; },
 					primaryArgs: ffmpegArgs,
 					captionRecovery: captionRecoveryFor(output),
 					fallbackArgs: compileAudioOnlyFallback
@@ -3597,11 +3600,9 @@ async function renderClipGroup(input: {
 				// upload-failure variant marking both live in `scheduleUpload`;
 				// this catch now only ever sees ENCODE failures.
 				scheduleUpload(output, {
-					clipDurationSec:
-						commandMode === "fallback"
-							? (fallbackCompositionForOutput?.plan.editedDurationSec ??
-								compositionPlan.editedDurationSec)
-							: compositionPlan.editedDurationSec,
+					validated: await validateOutput(output,
+            commandMode === "fallback" ? fallbackCompositionForOutput!.plan : compositionPlan,
+            commandMode === "fallback" ? fallbackAudio! : plannedAudio, mixPeak),
 					encodeMs: encodeDurationMs,
 					motionAnalytics: withCaptionWarningCodes(motionAnalytics, output),
 				});
@@ -3736,7 +3737,9 @@ async function renderClipGroup(input: {
 					});
 				const ffmpegArgs = compileVideo(null);
 				const encodeStartedAtMs = currentTimeMs();
+				let mixPeak: MixPeakResult | null = null;
 				const commandMode = await executeRenderCommandWithOptionalFallback({
+          recordMixPeak: (result) => { mixPeak = result; },
 					primaryArgs: ffmpegArgs,
 					captionRecovery: captionRecoveryFor(output),
 					fallbackArgs:
@@ -3770,10 +3773,9 @@ async function renderClipGroup(input: {
 				// Bounded background upload — see `scheduleUpload`. This catch
 				// now only ever sees encode/build failures.
 				scheduleUpload(output, {
-					clipDurationSec:
-						commandMode === "fallback"
-							? optionalAssetFallbackPlan.editedDurationSec
-							: compositionPlan.editedDurationSec,
+					validated: await validateOutput(output,
+            commandMode === "fallback" ? optionalAssetFallbackPlan : compositionPlan,
+            commandMode === "fallback" ? fallbackAudio ?? plannedAudio : plannedAudio, mixPeak),
 					brollCredits: commandMode === "primary" ? brollCredits : null,
 					encodeMs: encodeDurationMs,
 					motionAnalytics: withCaptionWarningCodes(motionAnalytics, output),
@@ -4029,7 +4031,7 @@ async function executeClipRenderAttemptInScratch(params: {
 		const scheduleUpload = (
 			output: PendingRenderOutput,
 			params: {
-				clipDurationSec: number;
+				validated: ValidatedRenderResult;
 				brollCredits?: string | null;
 				encodeMs: number;
 				motionAnalytics: MotionRenderAnalyticsMetadata;
@@ -4042,7 +4044,7 @@ async function executeClipRenderAttemptInScratch(params: {
 						workflowRunId: run.id,
 						projectId: run.projectId,
 						output,
-						clipDurationSec: params.clipDurationSec,
+						validated: params.validated,
 						brollCredits: params.brollCredits,
 						encodeMs: params.encodeMs,
 						motionAnalytics: params.motionAnalytics,

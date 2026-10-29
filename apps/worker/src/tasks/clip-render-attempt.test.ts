@@ -1,3 +1,4 @@
+import { createRenderOutputFixture } from "../render-output-validation.test-fixture";
 import { createClipRenderAttempt } from "./clip-render-attempt-runtime";
 import { expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
@@ -200,6 +201,7 @@ function createOrdinaryTracer(input: {
 		throw reason;
 	};
 
+	const renderOutput = createRenderOutputFixture();
 	const clipRenderAttempt = createClipRenderAttempt({
 		run: {
 			id: attempt.workflowRunId,
@@ -234,6 +236,7 @@ function createOrdinaryTracer(input: {
 			},
 		},
 		adapters: {
+      composition: { compileCommand: renderOutput.compileCommand },
 			state: {
 				getFrozenRenderingStateForWorkSet: async () => {
 					actions.push("state_load");
@@ -253,9 +256,11 @@ function createOrdinaryTracer(input: {
 				},
 			},
 			workerProcess: {
-				inspectMedia:
-					input.productionMedia?.inspectMedia.bind(input.productionMedia) ??
-					(async ({ sourcePath, signal, deadlineMs }) => {
+				inspectMedia: async (request) => {
+            const output = renderOutput.inspect(request.sourcePath);
+            if (output) return output;
+            if (input.productionMedia) return input.productionMedia.inspectMedia(request);
+            const { sourcePath, signal, deadlineMs } = request;
 						const mode = sourcePath.startsWith("https://") ? "ranged" : "local";
 						if (
 							input.sourceMode === "ranged" ||
@@ -284,8 +289,9 @@ function createOrdinaryTracer(input: {
 							hasVisualStream: false,
 							fps: 30,
 						};
-					}),
-				execute: async ({ command, deadlineMs, diagnose, signal }) => {
+					},
+				execute: async ({ command, args, deadlineMs, diagnose, signal }) => {
+            const decoded = renderOutput.decode(args); if (decoded) return decoded;
 					if (command === "ffprobe") {
 						throw new Error("source probes must use inspectMedia");
 					}
@@ -457,7 +463,7 @@ function createOrdinaryTracer(input: {
 				},
 			},
 			workspace: {
-				stat: async () => ({ size: 100 }) as never,
+				stat: async () => ({ size: 4096, isFile: () => true }) as never,
 			},
 			clock: {
 				nowMs: () => clockNowMs,
@@ -559,6 +565,7 @@ function createUploadQueueTracer(input: {
 		releaseUploads = resolve;
 	});
 
+	const renderOutput = createRenderOutputFixture();
 	const clipRenderAttempt = createClipRenderAttempt({
 		run: {
 			id: attempt.workflowRunId,
@@ -595,6 +602,7 @@ function createUploadQueueTracer(input: {
 			},
 		},
 		adapters: {
+      composition: { compileCommand: renderOutput.compileCommand },
 			state: {
 				getFrozenRenderingStateForWorkSet: async () =>
 					frozenRenderingState(
@@ -605,7 +613,7 @@ function createUploadQueueTracer(input: {
 					),
 			},
 			workerProcess: {
-				inspectMedia: async () => ({
+				inspectMedia: async ({ sourcePath }) => renderOutput.inspect(sourcePath) ?? ({
 					durationSec: 10,
 					width: 0,
 					height: 0,
@@ -614,7 +622,7 @@ function createUploadQueueTracer(input: {
 					hasVisualStream: false,
 					fps: 30,
 				}),
-				execute: async () => ({ exitCode: 0, stdout: Buffer.alloc(0) }),
+				execute: async ({ args }) => renderOutput.decode(args) ?? ({ exitCode: 0, stdout: Buffer.alloc(0) }),
 				withScratchDirectory: async (_prefix, work) => {
 					try {
 						return await work("/tmp/narriflow-render-upload-queue-tracer");
@@ -681,7 +689,7 @@ function createUploadQueueTracer(input: {
 				deleteObject: async (key) => ({ key }),
 			},
 			workspace: {
-				stat: async () => ({ size: 100 }) as never,
+				stat: async () => ({ size: 4096, isFile: () => true }) as never,
 			},
 			diagnose: () => {},
 		},
@@ -790,6 +798,7 @@ test("ClipRenderAttempt discards an uploaded object when cancellation wins befor
 			category: "other",
 		},
 	} as unknown as PendingClipRender;
+	const renderOutput = createRenderOutputFixture();
 	const clipRenderAttempt = createClipRenderAttempt({
 		run: {
 			id: attempt.workflowRunId,
@@ -813,12 +822,13 @@ test("ClipRenderAttempt discards an uploaded object when cancellation wins befor
 			},
 		},
 		adapters: {
+      composition: { compileCommand: renderOutput.compileCommand },
 			state: {
 				getFrozenRenderingStateForWorkSet: async () =>
 					frozenRenderingState([pendingRender]),
 			},
 			workerProcess: {
-				inspectMedia: async () => ({
+				inspectMedia: async ({ sourcePath }) => renderOutput.inspect(sourcePath) ?? ({
 					durationSec: 10,
 					width: 0,
 					height: 0,
@@ -827,7 +837,8 @@ test("ClipRenderAttempt discards an uploaded object when cancellation wins befor
 					hasVisualStream: false,
 					fps: 30,
 				}),
-				execute: async () => {
+				execute: async ({ args }) => {
+            const decoded = renderOutput.decode(args); if (decoded) return decoded;
 					actions.push("encode");
 					return { exitCode: 0, stdout: Buffer.alloc(0) };
 				},
@@ -867,7 +878,7 @@ test("ClipRenderAttempt discards an uploaded object when cancellation wins befor
 				},
 			},
 			workspace: {
-				stat: async () => ({ size: 100 }) as never,
+				stat: async () => ({ size: 4096, isFile: () => true }) as never,
 			},
 			diagnose: () => {},
 		},

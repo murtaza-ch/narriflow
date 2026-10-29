@@ -30,6 +30,8 @@
  * never fails the batch).
  */
 
+import { validateRenderOutput, type RenderOutputExpectation } from "../render-output-validation";
+import { standardFrameRate } from "@narriflow/validators";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import {
@@ -806,6 +808,46 @@ export async function persistOptionalClipPreviewPeaks(params: {
   }
 }
 
+/** Expected facts for the existing proxy command; source display geometry
+ * drives its scale, and the waveform path has its own fixed 25 fps canvas. */
+export function clipPreviewOutputExpectation(
+  probe: Parameters<typeof resolveDisplayGeometry>[0] & { hasVideo: boolean; hasAudio: boolean; fps: number },
+  durationSec: number,
+  maxHeight: number = previewMaxHeight(),
+): RenderOutputExpectation {
+  const geometry = resolveDisplayGeometry(probe);
+  const dimensions = probe.hasVideo ? {
+    width: Math.max(2, Math.round(maxHeight * geometry.width / geometry.height / 2) * 2),
+    height: maxHeight,
+  } : audiogramPreviewDimensions(maxHeight);
+  const video = probe.facts?.videos[0];
+  const audio = probe.facts?.audios[0];
+  const sar = !probe.hasVideo || geometry.anamorphic ? { numerator: 1, denominator: 1 } : {
+    numerator: geometry.width * dimensions.height,
+    denominator: geometry.height * dimensions.width,
+  };
+  return {
+    durationSec, ...dimensions,
+    frameRate: probe.hasVideo ? video?.rFrameRate ?? standardFrameRate(probe.fps) ?? { numerator: 30, denominator: 1 } : { numerator: 25, denominator: 1 },
+    sampleAspectRatio: sar,
+    audio: probe.hasAudio ? { channels: 1, ...(audio?.sampleRate ? { sampleRate: audio.sampleRate } : {}) } : null,
+    color: video ? Object.fromEntries((["colorRange", "colorSpace", "colorTransfer", "colorPrimaries"] as const)
+      .flatMap((key) => video[key] && video[key] !== "unknown" ? [[key, video[key]]] : [])) : {},
+  };
+}
+
+export async function encodeAndValidateClipPreview(params: {
+  workerProcess: WorkerProcessModule;
+  signal: AbortSignal;
+  args: string[];
+  outputPath: string;
+  expected: RenderOutputExpectation;
+  diagnose?: Parameters<typeof validateRenderOutput>[0]["diagnose"];
+}) {
+  await params.workerProcess.execute({ command: "ffmpeg", args: params.args, signal: params.signal, deadlineMs: previewFfmpegTimeoutMs() });
+  return validateRenderOutput({ path: params.outputPath, expected: params.expected, workerProcess: params.workerProcess, signal: params.signal, diagnose: params.diagnose });
+}
+
 // ─── Orchestration ──────────────────────────────────────────────────────────
 
 async function cutAndUploadClipPreview(params: {
@@ -817,7 +859,7 @@ async function cutAndUploadClipPreview(params: {
 }): Promise<boolean> {
   const { clip, sourcePath, tempDir } = params;
 
-  const window = computeClipPreviewWindow(
+  let window = computeClipPreviewWindow(
     clip.startSec,
     clip.endSec,
     clip.sourceDurationSec,
@@ -850,6 +892,10 @@ async function cutAndUploadClipPreview(params: {
     return false;
   }
 
+  if (clip.sourceDurationSec === null && probe.durationSec !== null) {
+    window = computeClipPreviewWindow(clip.startSec, clip.endSec, probe.durationSec);
+  }
+
   const outputPath = join(tempDir, `${clip.id}-preview.mp4`);
   const previewKind: "video" | "audiogram" = probe.hasVideo ? "video" : "audiogram";
   const args = probe.hasVideo
@@ -868,13 +914,15 @@ async function cutAndUploadClipPreview(params: {
         windowDurationSec: window.durationSec,
       });
 
-  // Bounded: without this a stalled ffmpeg (dead R2 socket that never errors,
-  // pathological input) would hold the preview loop's mutex indefinitely.
-  await params.workerProcess.execute({
-    command: "ffmpeg",
-    args,
+  const validated = await encodeAndValidateClipPreview({
+    workerProcess: params.workerProcess,
     signal: params.signal,
-    deadlineMs: previewFfmpegTimeoutMs(),
+    args,
+    outputPath,
+    expected: clipPreviewOutputExpectation(probe, window.durationSec),
+    diagnose: (event) => log(event.accepted ? "info" : "error", "clip_preview_output_validation", {
+      clipId: clip.id, projectId: clip.projectId, ...event,
+    }),
   });
 
   // Attempt-unique key. Two workers racing the same clip used to upload to
@@ -915,7 +963,7 @@ async function cutAndUploadClipPreview(params: {
       signal: params.signal,
       proxyFilePath: outputPath,
       windowStartSec: window.startSec,
-      windowDurationSec: window.durationSec,
+      windowDurationSec: validated.durationSec,
       persist: (peaksPayload) =>
         putJson({
           key: candidatePeaksKey,

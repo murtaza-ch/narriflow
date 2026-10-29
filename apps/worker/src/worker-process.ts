@@ -200,6 +200,8 @@ export interface WorkerMediaSamples {
 
 export interface WorkerMediaInspectionRequest {
   sourcePath: string;
+  /** Output validation obtains complete timestamps from its full decode. */
+  analyzeVideoClock?: boolean;
   sample?: WorkerMediaSampleRequest;
   signal: AbortSignal;
   deadlineMs: number;
@@ -1199,7 +1201,7 @@ class ProductionWorkerProcessModule implements WorkerProcessModule {
       Number.isFinite(formatDuration) && formatDuration > 0 ? formatDuration : streamDuration;
     const durationSec = Number.isFinite(duration) && duration > 0 ? duration : null;
     const facts = mediaFacts(data);
-    const videoClock = videoStream ? await this.decideClock(request, startedAt, videoStream, streams.indexOf(videoStream)) : null;
+    const videoClock = request.analyzeVideoClock !== false && videoStream ? await this.decideClock(request, startedAt, videoStream, streams.indexOf(videoStream)) : null;
     const sourceProbe = buildSourceProbe(
       durationSec,
       streams,

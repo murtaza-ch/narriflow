@@ -1,0 +1,19 @@
+{
+  "ticket": "09",
+  "cases": {
+    "seek-past-source-end": {
+      "contract": [
+        { "id": "reject-empty-output", "metric": "render.ok", "op": "eq", "value": false },
+        { "id": "retryable-validation-failure", "metric": "typedFailure", "op": "eq", "value": "render_output_invalid" }
+      ],
+      "retain": ["plan", "crop", "cue", "layer", "captions"]
+    },
+    "http-interrupted-read": {
+      "contract": [
+        { "id": "reject-short-output", "metric": "render.ok", "op": "eq", "value": false },
+        { "id": "retryable-validation-failure", "metric": "typedFailure", "op": "eq", "value": "render_output_invalid" }
+      ],
+      "retain": ["plan", "crop", "cue", "layer", "captions"]
+    }
+  }
+}

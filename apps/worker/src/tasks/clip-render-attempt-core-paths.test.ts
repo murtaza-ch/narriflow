@@ -2,6 +2,7 @@ import {
 	createClipRenderAttempt,
 	type ClipRenderAttemptRuntimeOptions,
 } from "./clip-render-attempt-runtime";
+import { compositionOutputExpectation, type RenderOutputExpectation } from "../render-output-validation";
 import { Writable } from "node:stream";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
@@ -199,10 +200,12 @@ function createCoreRenderPathTracer(input: {
 	mixPeaks?: Array<{ samplePeak: number; truePeak: number }>;
 	/** How many render encodes report a libass missing glyph on stderr (while exiting zero). */
 	captionGlyphReports?: number;
+	invalidOutput?: "no-stream" | "short";
 	realMedia?: {
 		sourcePath: string;
 		logoPath?: string;
 		probeOutput(variantId: string, filePath: string): Promise<void>;
+    probeCandidate?(variantId: string, filePath: string): Promise<void>;
 	};
 	sourceAccess?: {
 		presignedUrl: string;
@@ -267,8 +270,10 @@ function createCoreRenderPathTracer(input: {
 	const failureCodes = new Map<string, string>();
 	const failureDispositions = new Map<string, "retryable" | "permanent">();
 	const commands: CommandProbe[] = [];
+  const outputExpectations = new Map<string, RenderOutputExpectation>();
 	const uploadedVariantIds: string[] = [];
 	const persistedVariantIds: string[] = [];
+  const persistedFacts = new Map<string, { sizeBytes: number; durationSec: number }>();
 	const mutationVariantIds: string[] = [];
 	const diagnostics: Array<{
 		message: string;
@@ -418,8 +423,26 @@ function createCoreRenderPathTracer(input: {
 								"Injected ranged probe failure",
 							);
 						}
-						return productionWorkerProcessModule.inspectMedia(request);
+						if (outputExpectations.has(request.sourcePath)) {
+              await input.realMedia.probeCandidate?.(variantIdFromPath(request.sourcePath)!, request.sourcePath);
+            }
+            return productionWorkerProcessModule.inspectMedia(request);
 					}
+          const expected = outputExpectations.get(request.sourcePath);
+          if (expected) {
+            const durationSec = input.invalidOutput === "short" ? expected.durationSec / 2 : expected.durationSec;
+            const stream = { index: 0, codec: "h264", profile: "High", timeBase: { numerator: 1, denominator: 15360 }, startPts: 0, startTimeSec: 0, durationTs: null, durationSec, endTimeSec: durationSec, frameCount: Math.round(durationSec * expected.frameRate.numerator / expected.frameRate.denominator), bitRate: null };
+            return {
+              durationSec, width: expected.width, height: expected.height, fps: expected.frameRate.numerator / expected.frameRate.denominator,
+              hasVideo: input.invalidOutput !== "no-stream", hasVisualStream: true, hasAudio: expected.audio !== null,
+              facts: {
+                format: { name: "mov,mp4,m4a,3gp,3g2,mj2", startTimeSec: 0, durationSec, sizeBytes: 4096, bitRate: null }, attachedPictureCount: 0,
+                videos: input.invalidOutput === "no-stream" ? [] : [{ ...stream, width: expected.width, height: expected.height, codedWidth: expected.width, codedHeight: expected.height, displayWidth: expected.width, displayHeight: expected.height,
+                  sampleAspectRatio: expected.sampleAspectRatio, displayMatrix: null, rotationDeg: 0, reflected: false, avgFrameRate: expected.frameRate, rFrameRate: expected.frameRate, pixelFormat: "yuv420p", colorRange: null, colorSpace: null, colorTransfer: null, colorPrimaries: null, chromaLocation: null, fieldOrder: null, masteringDisplay: null, contentLight: null, dolbyVision: null, ...expected.color }],
+                audios: expected.audio === null ? [] : [{ ...stream, index: 1, codec: "aac", profile: "LC", frameCount: null, sampleRate: expected.audio.sampleRate ?? 48000, channels: expected.audio.channels ?? 2, channelLayout: "stereo", sampleFormat: "fltp", initialPadding: 0, trailingPadding: 0 }],
+              },
+            };
+          }
 					return {
 						durationSec: 20,
 						width: input.topology === "audiogram" ? 0 : 1920,
@@ -473,6 +496,18 @@ function createCoreRenderPathTracer(input: {
 						}
 					}
 					expect(command).toBe("ffmpeg");
+          if (args.includes("framecrc")) {
+            if (input.realMedia) return productionWorkerProcessModule.execute(request);
+            const expected = outputExpectations.get(args[args.indexOf("-i") + 1]!)!;
+            const fps = expected.frameRate.numerator / expected.frameRate.denominator;
+            const count = Math.round(expected.durationSec * fps * (input.invalidOutput === "short" ? 0.5 : 1));
+            return { exitCode: 0, stdout: Buffer.from(
+              `#tb 0: ${expected.frameRate.denominator}/${expected.frameRate.numerator}\n#media_type 0: video\n` +
+              Array.from({ length: count }, (_, i) => `0, ${i}, ${i}, 1, 416, 0x0`).join("\n") +
+              (expected.audio === null ? "" : `\n#tb 1: 1/48000\n#media_type 1: audio\n1, 0, 0, ${Math.round(count / fps * 48000)}, 4096, 0x0`) + "\n",
+            ) };
+          }
+
 					if (args.some((arg) => arg.includes("ametadata=mode=print"))) {
 						if (input.realMedia) return productionWorkerProcessModule.execute(request);
 						const peak = input.mixPeaks?.[mixPeakMeasurements++] ??
@@ -542,15 +577,13 @@ function createCoreRenderPathTracer(input: {
 					}
 				},
 			},
-			...(input.compositionAdapterFailure
-				? {
-						composition: {
-							compileCommand: () => {
-								throw input.compositionAdapterFailure;
-							},
-						},
-					}
-				: {}),
+      composition: {
+        compileCommand: (request) => {
+          if (input.compositionAdapterFailure) throw input.compositionAdapterFailure;
+          outputExpectations.set(request.outputPath, compositionOutputExpectation({ plan: request.plan, targetId: request.targetId, source: request.source, audio: request.audio! }));
+          return compileClipCompositionCommand(request);
+        },
+      },
 			project: {
 				reportProgress: async () => {},
 			},
@@ -701,7 +734,8 @@ function createCoreRenderPathTracer(input: {
 					persistedSplitLayouts.push(failure);
 					return true;
 				},
-				completeClipRenderVariant: async (_attempt, variantId) => {
+				completeClipRenderVariant: async (_attempt, variantId, result) => {
+          persistedFacts.set(variantId, { sizeBytes: result.sizeBytes, durationSec: result.durationSec });
 					mutationVariantIds.push(variantId);
 					if (input.rejectPersistenceForVariantIds?.includes(variantId)) {
 						throw new Error("Injected guarded persistence rejection");
@@ -778,7 +812,7 @@ function createCoreRenderPathTracer(input: {
 				deleteObject: async (key) => ({ key }),
 			},
 			workspace: {
-				stat: input.realMedia ? stat : async () => ({ size: 256 }) as never,
+				stat: input.realMedia ? stat : async () => ({ size: 4096, isFile: () => true }) as never,
 				writeFile: async (path, content, options) => {
 					writtenFiles.push({ path: String(path), content: String(content) });
 					if (input.realMedia) await writeFile(path, content, options);
@@ -809,6 +843,7 @@ function createCoreRenderPathTracer(input: {
 		failureDispositions,
 		mutationVariantIds,
 		persistedVariantIds,
+    persistedFacts,
 		persistedAutoLayouts,
 		persistedSplitLayouts,
 		persistedScreenLayouts,
@@ -3633,6 +3668,19 @@ function meanVolumeDb(filePath: string, startSec: number): number {
 	return Number(match[1]);
 }
 
+for (const invalidOutput of ["no-stream", "short"] as const) {
+  test(`exit-zero ${invalidOutput} output fails retryably before upload or completion`, async () => {
+    const harness = createCoreRenderPathTracer({ topology: "single-video", invalidOutput });
+    await expect(harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal)))
+      .resolves.toMatchObject({ status: "requeued", succeeded: 0 });
+    expect(harness.uploadedVariantIds).toEqual([]);
+    expect(harness.persistedVariantIds).toEqual([]);
+    expect([...harness.failureCodes.values()]).toEqual(["render_output_invalid"]);
+    expect([...harness.failureDispositions.values()]).toEqual(["retryable"]);
+    expect(harness.diagnostics).toContainEqual({ message: "clip_render_output_validation", context: expect.objectContaining({ accepted: false }) });
+  });
+}
+
 describe("ClipRenderAttempt real-media plan fixtures", () => {
 	let fixtureDirectory = "";
 	let videoSourcePath = "";
@@ -3662,11 +3710,11 @@ describe("ClipRenderAttempt real-media plan fixtures", () => {
 				"-f",
 				"lavfi",
 				"-i",
-				"testsrc2=size=640x360:rate=24:duration=0.8",
+				"testsrc2=size=640x360:rate=24:duration=20",
 				"-f",
 				"lavfi",
 				"-i",
-				"sine=frequency=440:sample_rate=48000:duration=0.8",
+				"sine=frequency=440:sample_rate=48000:duration=20",
 				"-shortest",
 				"-c:v",
 				"libx264",
@@ -3692,7 +3740,7 @@ describe("ClipRenderAttempt real-media plan fixtures", () => {
 				"-f",
 				"lavfi",
 				"-i",
-				"sine=frequency=440:sample_rate=48000:duration=0.8",
+				"sine=frequency=440:sample_rate=48000:duration=20",
 				"-c:a",
 				"aac",
 				audioSourcePath,
@@ -3899,7 +3947,7 @@ describe("ClipRenderAttempt real-media plan fixtures", () => {
 	);
 
 	test.skipIf(!ffmpegAvailable || !ffprobeAvailable)(
-		"renders the planner-owned caption, text, logo, transition, and output treatment stack",
+		"rejects the current 4:4:4 visual stack before upload while preserving its compiled layers",
 		async () => {
 			let output: RenderedMediaProbe | undefined;
 			let boundaryFrameHashes: string[] = [];
@@ -3953,7 +4001,8 @@ describe("ClipRenderAttempt real-media plan fixtures", () => {
 				realMedia: {
 					sourcePath: videoSourcePath,
 					logoPath: logoSourcePath,
-					probeOutput: async (variantId, filePath) => {
+					probeOutput: async () => { throw new Error("invalid candidate uploaded"); },
+          probeCandidate: async (variantId, filePath) => {
 						output = probeRenderedMedia(variantId, filePath);
 						boundaryFrameHashes = [0, 0.1, 0.15, 0.2, 0.3, 0.6, 0.65, 0.75].map(
 							(timeSec) => hashRenderedFrame(filePath, timeSec),
@@ -3968,11 +4017,13 @@ describe("ClipRenderAttempt real-media plan fixtures", () => {
 					attemptContext(new AbortController().signal),
 				),
 			).resolves.toMatchObject({
-				status: "completed",
-				succeeded: 1,
+				status: "requeued",
+				succeeded: 0,
 				failed: 0,
 			});
 
+      expect(harness.uploadedVariantIds).toEqual([]);
+      expect([...harness.failureCodes.values()]).toEqual(["render_output_invalid"]);
 			expect(output).toMatchObject({
 				variantId: "variant-visual-stack",
 				width: 720,
@@ -4240,6 +4291,10 @@ describe("ClipRenderAttempt real-media plan fixtures", () => {
 					),
 				).resolves.toMatchObject({ status: "completed", succeeded: 1 });
 				if (!result) throw new Error(`missing output probe for ${input.id}`);
+        const persisted = harness.persistedFacts.get(input.id)!;
+        expect(persisted.durationSec).toBeCloseTo(10, 5);
+        expect(persisted.sizeBytes).toBeGreaterThan(1024);
+
 				return result;
 			};
 
@@ -4272,8 +4327,8 @@ describe("ClipRenderAttempt real-media plan fixtures", () => {
 			expect(exportResult.hash).toBe(ordinaryProResult.hash);
 			expect(exportResult.hash).not.toBe(ordinaryFreeResult.hash);
 			expect(exportResult.probe).toMatchObject({ width: 720, height: 1280 });
-			expect(exportResult.probe.durationSec).toBeGreaterThanOrEqual(0.35);
-			expect(exportResult.probe.durationSec).toBeLessThanOrEqual(0.9);
+			expect(exportResult.probe.durationSec).toBeGreaterThanOrEqual(10 - 1 / 24);
+			expect(exportResult.probe.durationSec).toBeLessThanOrEqual(10 + 1 / 24 + 1024 / 48000);
 		},
 		30_000,
 	);
@@ -4406,7 +4461,7 @@ describe("ClipRenderAttempt real-media plan fixtures", () => {
 
 			clipOverrides: { studioEdits: { framing: { mode: "screen" } } },
 			faceAnalysisSamples: Array.from({ length: 8 }, (_, index) => ({
-				t: index * 0.04,
+				t: index * 0.5,
 				cx: 0.88,
 			})),
 			multiFaceAnalysisSamples: undefined,
@@ -4440,7 +4495,7 @@ describe("ClipRenderAttempt real-media plan fixtures", () => {
 			clipOverrides: {},
 			faceAnalysisSamples: undefined,
 			multiFaceAnalysisSamples: Array.from({ length: 8 }, (_, index) => ({
-				t: index * 0.04,
+				t: index * 0.5,
 				faces: [
 					{ cx: 0.3, cy: 0.3, w: 0.1, h: 0.2, score: 0.9 },
 					{ cx: 0.7, cy: 0.3, w: 0.1, h: 0.2, score: 0.9 },
@@ -4538,14 +4593,14 @@ describe("ClipRenderAttempt real-media plan fixtures", () => {
 					faceAnalysisSamples:
 						plannedMode === "screen"
 							? Array.from({ length: 8 }, (_, index) => ({
-									t: index * 0.04,
+									t: index * 0.5,
 									cx: 0.88,
 								}))
 							: undefined,
 					multiFaceAnalysisSamples:
 						plannedMode === "split"
 							? Array.from({ length: 8 }, (_, index) => ({
-									t: index * 0.04,
+									t: index * 0.5,
 									faces: [face(0.3), face(0.7)],
 								}))
 							: undefined,

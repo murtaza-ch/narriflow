@@ -1,3 +1,4 @@
+import { createRenderOutputFixture } from "../render-output-validation.test-fixture";
 import { describe, expect, test } from "bun:test";
 import { WorkflowFailure, type WorkflowAttemptContext } from "@narriflow/services";
 import { sceneBlockSchema, type SceneBlock } from "@narriflow/validators";
@@ -80,6 +81,7 @@ function fixture(input: {
   let state: "pending" | "rendering" | "completed" | "failed" | "retryable" | "superseded" = "pending";
   let settlements = 0;
   let cleanups = 0;
+  const renderOutput = createRenderOutputFixture();
   const clipRenderAttempt = createClipRenderAttempt({
     run: { id: attempt.workflowRunId, projectId: attempt.projectId, project: {
       title: "Scene assets", sourceStorageKey: "source/input.mp4", sourceDurationSeconds: 10,
@@ -98,6 +100,7 @@ function fixture(input: {
       },
     },
     adapters: {
+      composition: { compileCommand: renderOutput.compileCommand },
       state: { getFrozenRenderingStateForWorkSet: async () => ({
         sourceStorageKey: "source/input.mp4", sourceDurationSeconds: 10,
         workspaceId: WORKSPACE_ID, workspaceOwnerUserId: "asset-owner", pricingTier: "creator",
@@ -110,6 +113,7 @@ function fixture(input: {
       } },
       workerProcess: {
         inspectMedia: async ({ sourcePath, diagnose }) => {
+          const output = renderOutput.inspect(sourcePath); if (output) return output;
           diagnose?.({ operation: "exit", status: "completed", elapsedMs: sourcePath.endsWith(".png") ? 77 : 5 });
           return { durationSec: 10, width: 1920, height: 1080,
             hasVideo: true, hasVisualStream: true, hasAudio: true, fps: 30 };
@@ -117,6 +121,7 @@ function fixture(input: {
         execute: async ({ command, args, signal, diagnose }) => {
           signal.throwIfAborted();
           expect(command).toBe("ffmpeg");
+          const decoded = renderOutput.decode(args); if (decoded) return decoded;
           if (args.includes("-filter_complex") || args.includes("-map")) commands.push([...args]);
           diagnose?.({ operation: "exit", status: "completed", elapsedMs: args.includes("null") ? 88 : 6 });
           return { exitCode: 0, stdout: Buffer.alloc(0) };
@@ -155,7 +160,7 @@ function fixture(input: {
         putFileFromPath: async ({ key, signal }) => { signal?.throwIfAborted(); uploads.push(key); return { key }; },
         deleteObject: async (key) => { deleted.push(key); return { key }; },
       },
-      workspace: { stat: async () => ({ size: 256 }) as never, writeFile: async () => {} },
+      workspace: { stat: async () => ({ size: 4096, isFile: () => true }) as never, writeFile: async () => {} },
       resource: { measure: () => ({ rssBytes: 1_024, scope: "worker_only" }) },
       diagnose: (event) => diagnostics.push(event),
     },

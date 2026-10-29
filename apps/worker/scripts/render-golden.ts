@@ -59,6 +59,7 @@ import {
   hdrColorOf,
   type HdrColor,
 } from "../src/composition-ffmpeg-adapter";
+import { compositionOutputExpectation, validateRenderOutput } from "../src/render-output-validation";
 import { guardMixPeak, MixPeakError, mixPeakMeasureDeadlineMs } from "../src/render-mix-peak";
 import { compositionSourceFor } from "../src/tasks/clip-render-attempt";
 import { productionWorkerProcessModule, type WorkerMediaInspection } from "../src/worker-process";
@@ -167,6 +168,7 @@ export interface TargetRecord {
   };
   captions: { assSha256: string | null };
   command: { argv: string[]; argvSha256: string; filterGraph: string | null; filterGraphSha256: string | null; argBytes: number };
+  validation?: unknown;
   encode: { exitCode: number | null; diagnostics: string[]; mixPeak?: Dict };
   output: null | {
     sizeBytes: number;
@@ -1111,6 +1113,19 @@ export async function runCase(context: CaseContext, id: string): Promise<CaseRec
         record.failure ??= { stage: "encode", code: error instanceof MixPeakError ? error.code : "mix_peak_failed", message: normalize(String((error as Error).message ?? error)).slice(0, 500) };
         continue;
       }
+      let validationFailure: { code: string; message: string } | null = null;
+      try {
+        await validateRenderOutput({
+          path: outputPath,
+          expected: compositionOutputExpectation({ plan: planned.plan, targetId: target.id, source: planned.inspection, audio, hdrAssets: Object.keys(planned.assets.hdr).length > 0 }),
+          workerProcess: productionWorkerProcessModule, signal: context.signal,
+          mixPeak: targetRecord.encode.mixPeak as unknown as import("../src/render-mix-peak").MixPeakResult ?? null,
+          captionGlyphsOmitted: captions.omitted, captionEmojiSkipped: captions.emojiSkipped,
+          diagnose: (event) => { targetRecord.validation = event; },
+        });
+      } catch (error) {
+        validationFailure = { code: failureCode(error) ?? "render_output_invalid", message: normalize(String((error as Error).message ?? error)).slice(0, 500) };
+      }
       try {
         const measured = await measureOutput({ outputPath, snapshotDir: join(caseDir, "snapshots"), target: planTarget, plan: planned.plan, probes: definition.probes ?? [], expectedQuadrants });
         targetRecord.output = measured.output;
@@ -1119,6 +1134,10 @@ export async function runCase(context: CaseContext, id: string): Promise<CaseRec
       } catch (error) {
         targetRecord.measurements["render.ok"] = false;
         record.failure ??= { stage: "encode", code: "measurement_failed", message: normalize(String((error as Error).message ?? error)).slice(0, 500) };
+      }
+      if (validationFailure) {
+        targetRecord.measurements["render.ok"] = false;
+        record.failure ??= { stage: "encode", ...validationFailure };
       }
     }
     record.status = record.targets.length > 0 && record.targets.every((entry) => entry.output) && !record.failure ? "rendered" : "failed";
