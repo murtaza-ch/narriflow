@@ -1180,6 +1180,19 @@ function failureSignature(record: CaseRecord) {
   return { status: record.status, stage: record.failure?.stage ?? null, code: record.failure?.code ?? null };
 }
 
+/** Compare all previously captured inspection fields exactly. New facts are
+ * recorded by captures, but never added to or substituted into an old baseline. */
+function matchesInspectionBaseline(base: unknown, candidate: unknown): boolean {
+  if (Array.isArray(base)) return Array.isArray(candidate) && base.length === candidate.length &&
+    base.every((value, index) => matchesInspectionBaseline(value, candidate[index]));
+  if (base !== null && typeof base === "object") {
+    if (candidate === null || typeof candidate !== "object" || Array.isArray(candidate)) return false;
+    const actual = candidate as Record<string, unknown>;
+    return Object.entries(base).every(([key, value]) => Object.hasOwn(actual, key) && matchesInspectionBaseline(value, actual[key]));
+  }
+  return canonicalJson(base) === canonicalJson(candidate);
+}
+
 export function compareCase(base: CaseRecord, cand: CaseRecord, retain: string[] | null = null, signatureOnly = false): Mismatch[] {
   const out: Mismatch[] = [];
   if (signatureOnly) {
@@ -1188,7 +1201,7 @@ export function compareCase(base: CaseRecord, cand: CaseRecord, retain: string[]
   }
   if (retain === null) {
     if (canonicalJson(base.inputs) !== canonicalJson(cand.inputs)) out.push({ case: base.id, category: "inputs", detail: `inputs differ: ${clip(canonicalJson(base.inputs))} -> ${clip(canonicalJson(cand.inputs))}` });
-    if (canonicalJson(base.inspection) !== canonicalJson(cand.inspection)) out.push({ case: base.id, category: "inspection", detail: `source inspection differs: ${clip(canonicalJson(base.inspection))} -> ${clip(canonicalJson(cand.inspection))}` });
+    if (!matchesInspectionBaseline(base.inspection, cand.inspection)) out.push({ case: base.id, category: "inspection", detail: `source inspection differs: ${clip(canonicalJson(base.inspection))} -> ${clip(canonicalJson(cand.inspection))}` });
     if (canonicalJson(failureSignature(base)) !== canonicalJson(failureSignature(cand)) || (base.failure?.message ?? "") !== (cand.failure?.message ?? "")) {
       out.push({ case: base.id, category: "status", detail: `${canonicalJson(base.failure)} -> ${canonicalJson(cand.failure)}` });
     }

@@ -12,12 +12,93 @@ export type FrameRate = z.infer<typeof frameRateSchema>;
  * before the frames marks drop-frame. */
 export const SOURCE_TIMECODE_PATTERN = /^\d{2}:\d{2}:\d{2}[:;]\d{2,3}$/;
 
+/** Complete header facts from the worker's sole ffprobe parser. Null means the
+ * container/codec did not report the fact. Sample evidence is bounded and is
+ * deliberately not persisted as proof of a full decode. */
+const nullableNumber = z.number().finite().nullable();
+const nullableInteger = z.number().int().safe().nullable();
+const nullableText = z.string().max(256).nullable();
+const streamFacts = {
+  index: z.number().int().nonnegative(),
+  codec: nullableText,
+  profile: nullableText,
+  timeBase: frameRateSchema.nullable(),
+  startPts: nullableInteger,
+  startTimeSec: nullableNumber,
+  durationTs: nullableInteger,
+  durationSec: z.number().nonnegative().nullable(),
+  endTimeSec: nullableNumber,
+  frameCount: z.number().int().nonnegative().safe().nullable(),
+  bitRate: z.number().nonnegative().nullable(),
+};
+
+export const mediaFactsSchema = z.strictObject({
+  format: z.strictObject({
+    name: nullableText,
+    startTimeSec: nullableNumber,
+    durationSec: z.number().nonnegative().nullable(),
+    sizeBytes: z.number().int().nonnegative().safe().nullable(),
+    bitRate: z.number().nonnegative().nullable(),
+  }),
+  attachedPictureCount: z.number().int().nonnegative(),
+  videos: z.array(z.strictObject({
+    ...streamFacts,
+    width: z.number().int().positive().nullable(),
+    height: z.number().int().positive().nullable(),
+    codedWidth: z.number().int().positive().nullable(),
+    codedHeight: z.number().int().positive().nullable(),
+    displayWidth: z.number().positive().nullable(),
+    displayHeight: z.number().positive().nullable(),
+    sampleAspectRatio: frameRateSchema.nullable(),
+    displayMatrix: z.array(z.number().int().min(-2147483648).max(2147483647)).length(9).nullable(),
+    // Matches ffprobe/libavutil: counterclockwise degrees. A reflection's
+    // orientation must be read from the full matrix, not from this angle alone.
+    rotationDeg: nullableNumber,
+    reflected: z.boolean().nullable(),
+    avgFrameRate: frameRateSchema.nullable(),
+    rFrameRate: frameRateSchema.nullable(),
+    pixelFormat: nullableText,
+    colorRange: nullableText,
+    colorSpace: nullableText,
+    colorTransfer: nullableText,
+    colorPrimaries: nullableText,
+    chromaLocation: nullableText,
+    fieldOrder: nullableText,
+    masteringDisplay: z.strictObject({
+      redX: nullableNumber, redY: nullableNumber,
+      greenX: nullableNumber, greenY: nullableNumber,
+      blueX: nullableNumber, blueY: nullableNumber,
+      whitePointX: nullableNumber, whitePointY: nullableNumber,
+      minLuminance: nullableNumber, maxLuminance: nullableNumber,
+    }).nullable(),
+    contentLight: z.strictObject({ maxContent: nullableNumber, maxAverage: nullableNumber }).nullable(),
+    dolbyVision: z.strictObject({
+      profile: nullableInteger, level: nullableInteger,
+      rpuPresent: z.boolean(), enhancementLayerPresent: z.boolean(), baseLayerPresent: z.boolean(),
+      baseLayerSignalCompatibilityId: nullableInteger,
+    }).nullable(),
+  })),
+  audios: z.array(z.strictObject({
+    ...streamFacts,
+    sampleRate: z.number().int().positive().nullable(),
+    channels: z.number().int().positive().nullable(),
+    channelLayout: nullableText,
+    sampleFormat: nullableText,
+    initialPadding: z.number().int().nonnegative().nullable(),
+    trailingPadding: z.number().int().nonnegative().nullable(),
+  })),
+});
+export type MediaFacts = z.infer<typeof mediaFactsSchema>;
+
 /** What a Project's source file is, measured once at ingest: the facts a
  * timeline for an editor must repeat exactly. `video` is null for audio-only
  * sources, and `startTimecode` is null when the file carries none (it then
  * starts at 00:00:00:00). */
 export const sourceProbeSchema = z.strictObject({
   durationSec: z.number().positive(),
+  // Timeline-only callers can supply the minimal probe. Cache reuse requires
+  // these complete facts; absence is never evidence of an identity transform.
+  facts: mediaFactsSchema.optional(),
   video: z.strictObject({
     width: z.number().int().positive(),
     height: z.number().int().positive(),

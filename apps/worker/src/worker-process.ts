@@ -1,9 +1,9 @@
 import { spawn } from "node:child_process";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { WorkflowFailure } from "@narriflow/services";
-import { SOURCE_TIMECODE_PATTERN, standardFrameRate, type FrameRate, type SourceProbe } from "@narriflow/validators";
+import { SOURCE_TIMECODE_PATTERN, standardFrameRate, type FrameRate, type SourceProbe, type MediaFacts } from "@narriflow/validators";
 
 const DEFAULT_KILL_GRACE_MS = 5_000;
 const DEFAULT_MEDIA_FPS = 30;
@@ -31,7 +31,14 @@ export interface WorkerProcessResult {
   stdout: Buffer;
 }
 
-export interface WorkerProcessDiagnostic {
+export type WorkerExecutableClass = "ffmpeg" | "ffprobe" | "python" | "bun" | "node" | "deno" | "yt-dlp" | "other";
+export interface WorkerProcessHealth {
+  errno?: string;
+  executableClass?: WorkerExecutableClass;
+  failureScope?: "executor" | "configuration";
+}
+
+export interface WorkerProcessDiagnostic extends WorkerProcessHealth {
   operation:
     | "spawn"
     | "timeout"
@@ -45,6 +52,7 @@ export interface WorkerProcessDiagnostic {
   failureCode?: string;
   disposition?: "retryable" | "permanent";
   terminationSignal?: NodeJS.Signals;
+  diagnostic?: string;
 }
 
 export interface WorkerMediaInspection {
@@ -58,10 +66,41 @@ export interface WorkerMediaInspection {
   /** The facts ingest stores on the Project for timeline exports. Every real
    * inspection carries it; fakes of other tests may leave it out. */
   sourceProbe?: SourceProbe;
+  /** Always present on real inspections, including files without a duration. */
+  facts?: MediaFacts;
+  samples?: WorkerMediaSamples;
+}
+
+export interface WorkerMediaSampleRequest {
+  kind: "frames" | "packets";
+  streamIndex: number;
+  startSec?: number;
+  /** Input packet budget, not proof of a complete stream scan. At most 4096. */
+  maxPackets: number;
+}
+export interface WorkerMediaSamples {
+  kind: "frames" | "packets";
+  streamIndex: number;
+  startSec: number;
+  maxPackets: number;
+  items: Array<{
+    streamIndex: number;
+    pts: number | null;
+    ptsSec: number | null;
+    dts: number | null;
+    dtsSec: number | null;
+    duration: number | null;
+    durationSec: number | null;
+    bestEffortTimestampSec: number | null;
+    samples: number | null;
+    keyFrame: boolean | null;
+    sizeBytes: number | null;
+  }>;
 }
 
 export interface WorkerMediaInspectionRequest {
   sourcePath: string;
+  sample?: WorkerMediaSampleRequest;
   signal: AbortSignal;
   deadlineMs: number;
   diagnose?(event: WorkerProcessDiagnostic): void;
@@ -96,22 +135,50 @@ export interface WorkerPersistentProcess {
   stop(): void;
 }
 
-export class WorkerProcessFailure extends WorkflowFailure {
+export class WorkerProcessFailure extends WorkflowFailure implements WorkerProcessHealth {
+  readonly errno?: string;
+  readonly executableClass?: WorkerExecutableClass;
+  readonly failureScope?: "executor" | "configuration";
   constructor(
     code: string,
     disposition: "retryable" | "permanent",
     message: string,
     public readonly diagnostic: string,
     public readonly exitCode: number | null = null,
-    options?: ErrorOptions,
+    options?: ErrorOptions & WorkerProcessHealth,
   ) {
     super(code, disposition, message, options);
     this.name = "WorkerProcessFailure";
+    this.errno = options?.errno;
+    this.executableClass = options?.executableClass;
+    this.failureScope = options?.failureScope;
   }
 }
 
 interface RawProbeStream {
+  index?: number;
   codec_type?: string;
+  profile?: string;
+  coded_width?: number;
+  coded_height?: number;
+  sample_aspect_ratio?: string;
+  time_base?: string;
+  start_pts?: number;
+  start_time?: string;
+  duration_ts?: number;
+  bit_rate?: string;
+  pix_fmt?: string;
+  color_range?: string;
+  color_space?: string;
+  color_transfer?: string;
+  color_primaries?: string;
+  chroma_location?: string;
+  field_order?: string;
+  channel_layout?: string;
+  sample_fmt?: string;
+  initial_padding?: number;
+  trailing_padding?: number;
+  side_data_list?: Array<Record<string, unknown>>;
   codec_name?: string;
   width?: number;
   height?: number;
@@ -127,6 +194,7 @@ interface RawProbeStream {
 
 export interface WorkerProcessModuleDependencies {
   killGraceMs?: number;
+  spawn?: typeof spawn;
   execute?: (request: WorkerProcessRequest) => Promise<WorkerProcessResult>;
   createScratchDirectory?: (prefix: string) => Promise<string>;
   removeScratchDirectory?: (directory: string) => Promise<void>;
@@ -147,6 +215,39 @@ const STILL_IMAGE_CODEC_NAMES: ReadonlySet<string> = new Set([
   "jpeg2000",
   "jpegls",
 ]);
+
+function executableClass(command: string): WorkerExecutableClass {
+  const name = basename(command).replace(/\.exe$/i, "");
+  if (/^python(?:3(?:\.\d+)?)?$/.test(name)) return "python";
+  return ["ffmpeg", "ffprobe", "bun", "node", "deno", "yt-dlp"].includes(name)
+    ? name as WorkerExecutableClass : "other";
+}
+
+function processStartFailure(error: unknown, command: string): WorkerProcessFailure {
+  const rawCode = error && typeof error === "object" && "code" in error ? error.code : null;
+  const errno = typeof rawCode === "string" && /^E[A-Z0-9_]{1,31}$/.test(rawCode) ? rawCode : undefined;
+  const configuration = errno === "ENOENT" || errno === "EACCES" || errno === "EPERM" || errno === "ENOEXEC";
+  const health: WorkerProcessHealth = {
+    ...(errno ? { errno } : {}), executableClass: executableClass(command),
+    failureScope: configuration ? "configuration" : "executor",
+  };
+  return new WorkerProcessFailure(
+    configuration ? "worker_command_unavailable" : "worker_command_spawn_failed",
+    "retryable",
+    configuration ? "Required worker executable is unavailable or forbidden" : "Worker command could not be started",
+    `Could not start ${health.executableClass}${errno ? ` (${errno})` : ""}`,
+    null,
+    { cause: error, ...health },
+  );
+}
+
+function startFailureDiagnostic(failure: WorkerProcessFailure): Omit<WorkerProcessDiagnostic, "elapsedMs"> {
+  return {
+    operation: "spawn", status: "failed", failureCode: failure.code, disposition: failure.disposition,
+    errno: failure.errno, executableClass: failure.executableClass,
+    failureScope: failure.failureScope, diagnostic: failure.diagnostic,
+  };
+}
 
 function redactUrlSecrets(text: string): string {
   return text
@@ -274,7 +375,7 @@ function parseFrameRate(value: string | undefined): number {
 /** ffprobe writes a rate as "30000/1001". */
 function parseRational(value: string | undefined): FrameRate | null {
   const [numerator, denominator = 1] = (value ?? "").split("/").map(Number);
-  return Number.isInteger(numerator) && Number.isInteger(denominator) && numerator! > 0 && denominator > 0
+  return Number.isSafeInteger(numerator) && Number.isSafeInteger(denominator) && numerator! > 0 && denominator > 0
     ? { numerator: numerator!, denominator }
     : null;
 }
@@ -309,18 +410,162 @@ function embeddedStartTimecode(streams: RawProbeStream[], formatTags: Record<str
   return timecodeTag(formatTags);
 }
 
+function numberFact(value: unknown): number | null {
+  if (typeof value !== "number" && (typeof value !== "string" || !value.trim())) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+function integerFact(value: unknown, minimum = Number.MIN_SAFE_INTEGER): number | null {
+  const parsed = numberFact(value);
+  return parsed !== null && Number.isSafeInteger(parsed) && parsed >= minimum ? parsed : null;
+}
+function positiveFact(value: unknown): number | null {
+  const parsed = numberFact(value);
+  return parsed !== null && parsed > 0 ? parsed : null;
+}
+function nonnegativeFact(value: unknown): number | null {
+  const parsed = numberFact(value);
+  return parsed !== null && parsed >= 0 ? parsed : null;
+}
+function textFact(value: unknown): string | null {
+  return typeof value === "string" && value !== "unknown" && value !== "N/A" && value.length > 0
+    ? value.slice(0, 256) : null;
+}
+function fractionFact(value: unknown): number | null {
+  if (typeof value !== "string") return numberFact(value);
+  const [n, d = "1"] = value.split("/");
+  const numerator = numberFact(n), denominator = numberFact(d);
+  return numerator !== null && denominator !== null && denominator !== 0 ? numerator / denominator : null;
+}
+function displayMatrix(value: unknown): number[] | null {
+  if (typeof value !== "string") return null;
+  const rows = value.trim().split("\n").map((row) => row.split(":")[1]?.trim().split(/\s+/).map(Number));
+  const matrix = rows.flat();
+  return matrix.length === 9 && matrix.every((v) => typeof v === "number" && Number.isInteger(v) && v >= -2147483648 && v <= 2147483647)
+    ? matrix as number[] : null;
+}
+function streamFacts(stream: RawProbeStream, fallbackIndex: number) {
+  const startTimeSec = numberFact(stream.start_time);
+  const durationSec = nonnegativeFact(stream.duration);
+  return {
+    index: integerFact(stream.index, 0) ?? fallbackIndex,
+    codec: textFact(stream.codec_name), profile: textFact(stream.profile),
+    timeBase: parseRational(stream.time_base), startPts: integerFact(stream.start_pts), startTimeSec,
+    durationTs: integerFact(stream.duration_ts), durationSec,
+    endTimeSec: startTimeSec !== null && durationSec !== null ? startTimeSec + durationSec : null,
+    frameCount: integerFact(stream.nb_frames, 0), bitRate: nonnegativeFact(stream.bit_rate),
+  };
+}
+function videoFacts(stream: RawProbeStream, index: number): MediaFacts["videos"][number] {
+  const sideData = stream.side_data_list ?? [];
+  const display = sideData.find((side) => side.side_data_type === "Display Matrix");
+  const matrix = displayMatrix(display?.displaymatrix);
+  const sar = parseRational(stream.sample_aspect_ratio?.replace(":", "/"));
+  const width = integerFact(stream.width, 1), height = integerFact(stream.height, 1);
+  const rotationTag = numberFact(stream.tags?.rotate);
+  let rotationDeg: number | null = numberFact(display?.rotation) ?? rotationTag ?? 0;
+  let reflected: boolean | null = false;
+  let displayWidth: number | null = null, displayHeight: number | null = null;
+  if (matrix) {
+    // ISO BMFF uses row vectors; u/v/w use 2.30, the other entries 16.16.
+    const scaleX = Math.hypot(matrix[0]!, matrix[3]!);
+    const scaleY = Math.hypot(matrix[1]!, matrix[4]!);
+    rotationDeg = scaleX && scaleY ? -Math.atan2(matrix[1]! / scaleY, matrix[0]! / scaleX) * 180 / Math.PI : null;
+    const determinant = matrix[0]! * matrix[4]! - matrix[1]! * matrix[3]!;
+    reflected = determinant === 0 ? null : determinant < 0;
+  }
+  if (width && height) {
+    const squareWidth = width * (sar ? sar.numerator / sar.denominator : 1);
+    if (matrix) {
+      const points = [[0, 0], [squareWidth, 0], [0, height], [squareWidth, height]].map(([x, y]) => {
+        const z = (matrix[2]! * x! + matrix[5]! * y! + matrix[8]!) / 2 ** 30;
+        return [(matrix[0]! * x! + matrix[3]! * y! + matrix[6]!) / 65536 / z,
+          (matrix[1]! * x! + matrix[4]! * y! + matrix[7]!) / 65536 / z];
+      });
+      displayWidth = positiveFact(Math.max(...points.map((p) => p[0]!)) - Math.min(...points.map((p) => p[0]!)));
+      displayHeight = positiveFact(Math.max(...points.map((p) => p[1]!)) - Math.min(...points.map((p) => p[1]!)));
+    } else {
+      const angle = (rotationDeg ?? 0) * Math.PI / 180;
+      displayWidth = Math.abs(squareWidth * Math.cos(angle)) + Math.abs(height * Math.sin(angle));
+      displayHeight = Math.abs(squareWidth * Math.sin(angle)) + Math.abs(height * Math.cos(angle));
+    }
+    // Avoid trig noise on exact right angles without rounding anamorphic facts.
+    if (displayWidth !== null && Math.abs(displayWidth - Math.round(displayWidth)) < 1e-8) displayWidth = Math.round(displayWidth);
+    if (displayHeight !== null && Math.abs(displayHeight - Math.round(displayHeight)) < 1e-8) displayHeight = Math.round(displayHeight);
+  }
+  const mastering = sideData.find((side) => side.side_data_type === "Mastering display metadata");
+  const light = sideData.find((side) => side.side_data_type === "Content light level metadata");
+  const dovi = sideData.find((side) => side.side_data_type === "DOVI configuration record");
+  return {
+    ...streamFacts(stream, index), width, height,
+    codedWidth: integerFact(stream.coded_width, 1), codedHeight: integerFact(stream.coded_height, 1),
+    displayWidth, displayHeight, sampleAspectRatio: sar, displayMatrix: matrix,
+    rotationDeg, reflected, avgFrameRate: parseRational(stream.avg_frame_rate), rFrameRate: parseRational(stream.r_frame_rate),
+    pixelFormat: textFact(stream.pix_fmt), colorRange: textFact(stream.color_range), colorSpace: textFact(stream.color_space),
+    colorTransfer: textFact(stream.color_transfer), colorPrimaries: textFact(stream.color_primaries),
+    chromaLocation: textFact(stream.chroma_location), fieldOrder: textFact(stream.field_order),
+    masteringDisplay: mastering ? {
+      redX: fractionFact(mastering.red_x), redY: fractionFact(mastering.red_y),
+      greenX: fractionFact(mastering.green_x), greenY: fractionFact(mastering.green_y),
+      blueX: fractionFact(mastering.blue_x), blueY: fractionFact(mastering.blue_y),
+      whitePointX: fractionFact(mastering.white_point_x), whitePointY: fractionFact(mastering.white_point_y),
+      minLuminance: fractionFact(mastering.min_luminance), maxLuminance: fractionFact(mastering.max_luminance),
+    } : null,
+    contentLight: light ? { maxContent: nonnegativeFact(light.max_content), maxAverage: nonnegativeFact(light.max_average) } : null,
+    dolbyVision: dovi ? {
+      profile: integerFact(dovi.dv_profile, 0), level: integerFact(dovi.dv_level, 0),
+      rpuPresent: dovi.rpu_present_flag === 1, enhancementLayerPresent: dovi.el_present_flag === 1, baseLayerPresent: dovi.bl_present_flag === 1,
+      baseLayerSignalCompatibilityId: integerFact(dovi.dv_bl_signal_compatibility_id, 0),
+    } : null,
+  };
+}
+interface RawProbeData {
+  streams?: RawProbeStream[];
+  format?: { duration?: string; start_time?: string; size?: string; bit_rate?: string; format_name?: string; tags?: Record<string, string> };
+  frames?: Array<Record<string, unknown>>;
+  packets?: Array<Record<string, unknown>>;
+}
+function mediaFacts(data: RawProbeData): MediaFacts {
+  const streams = data.streams ?? [];
+  return {
+    format: {
+      name: textFact(data.format?.format_name), startTimeSec: numberFact(data.format?.start_time),
+      durationSec: nonnegativeFact(data.format?.duration), sizeBytes: integerFact(data.format?.size, 0), bitRate: nonnegativeFact(data.format?.bit_rate),
+    },
+    attachedPictureCount: streams.filter(isAttachedPicture).length,
+    videos: streams.flatMap((stream, index) => stream.codec_type === "video" && !isAttachedPicture(stream) ? [videoFacts(stream, index)] : []),
+    audios: streams.flatMap((stream, index) => stream.codec_type === "audio" ? [{
+      ...streamFacts(stream, index), sampleRate: integerFact(stream.sample_rate, 1), channels: integerFact(stream.channels, 1),
+      channelLayout: textFact(stream.channel_layout), sampleFormat: textFact(stream.sample_fmt),
+      initialPadding: integerFact(stream.initial_padding, 0), trailingPadding: integerFact(stream.trailing_padding, 0),
+    }] : []),
+  };
+}
+function parseProbeOutput(stdout: Buffer): RawProbeData {
+  try {
+    const data = JSON.parse(stdout.toString("utf8")) as RawProbeData;
+    if (!data || typeof data !== "object" || Array.isArray(data) ||
+      (data.streams !== undefined && (!Array.isArray(data.streams) || data.streams.some((stream) => !stream || typeof stream !== "object")))) throw new Error("Invalid probe structure");
+    return data;
+  } catch (error) {
+    throw new WorkflowFailure("source_media_invalid", "permanent", "Media inspection returned malformed output", { cause: error });
+  }
+}
+
 function buildSourceProbe(
   durationSec: number | null,
   streams: RawProbeStream[],
   formatTags: Record<string, string> | undefined,
   videoStream: RawProbeStream | undefined,
   audioStream: RawProbeStream | undefined,
+  facts: MediaFacts,
 ): SourceProbe | undefined {
   if (durationSec === null) return undefined;
   const frameRate = videoStream ? measuredFrameRate(videoStream) : null;
   const sampleRate = Number(audioStream?.sample_rate);
   return {
     durationSec,
+    facts,
     video: videoStream && videoStream.width && videoStream.height && frameRate
       ? { width: videoStream.width, height: videoStream.height, frameRate, startTimecode: embeddedStartTimecode(streams, formatTags) }
       : null,
@@ -354,7 +599,6 @@ class ProductionWorkerProcessModule implements WorkerProcessModule {
   }
 
   async execute(request: WorkerProcessRequest): Promise<WorkerProcessResult> {
-    if (this.dependencies.execute) return this.dependencies.execute(request);
     if (!Number.isFinite(request.deadlineMs) || request.deadlineMs <= 0) {
       throw new Error("Worker process deadline must be finite and positive");
     }
@@ -384,11 +628,21 @@ class ProductionWorkerProcessModule implements WorkerProcessModule {
       request.signal.throwIfAborted();
     }
 
+    if (this.dependencies.execute) return this.dependencies.execute(request);
     return new Promise((resolve, reject) => {
-      const child = spawn(request.command, [...request.args], {
+      let child: ReturnType<typeof spawn>;
+      try {
+        child = (this.dependencies.spawn ?? spawn)(request.command, [...request.args], {
         stdio: ["ignore", "pipe", "pipe"],
         detached: process.platform !== "win32",
-      });
+        });
+      } catch (error) {
+        if (request.signal.aborted) { reject(request.signal.reason); return; }
+        const failure = processStartFailure(error, request.command);
+        diagnose(startFailureDiagnostic(failure));
+        reject(failure);
+        return;
+      }
       const stdoutChunks: Buffer[] = [];
       let stdoutBytes = 0;
       let stderr = "";
@@ -470,7 +724,7 @@ class ProductionWorkerProcessModule implements WorkerProcessModule {
         diagnose({ operation: "spawn", status: "completed" });
         void sampleResources();
       });
-      child.stdout.on("data", (chunk: Buffer) => {
+      child.stdout!.on("data", (chunk: Buffer) => {
         if (!request.captureStdout || terminationReason) return;
         stdoutBytes += chunk.length;
         if (stdoutBytes > maxStdoutBytes) {
@@ -479,10 +733,11 @@ class ProductionWorkerProcessModule implements WorkerProcessModule {
         }
         stdoutChunks.push(chunk);
       });
-      child.stderr.on("data", (chunk: Buffer) => {
+      child.stderr!.on("data", (chunk: Buffer) => {
         const text = chunk.toString();
         invalidInput ||= PERMANENT_INPUT_EXIT_PATTERNS.some((pattern) => pattern.test(text));
-        stderr = (stderr + text).slice(-MAX_DIAGNOSTIC_CHARS * 2);
+        // Redact before truncation so a long signature cannot lose its query marker.
+        stderr = boundedDiagnostic(stderr + text);
       });
       child.once("error", (error: NodeJS.ErrnoException) => {
         if (settled) return;
@@ -514,29 +769,8 @@ class ProductionWorkerProcessModule implements WorkerProcessModule {
           );
           return;
         }
-        const failure =
-          error.code === "ENOENT"
-            ? new WorkerProcessFailure(
-                "worker_command_missing",
-                "permanent",
-                "Required worker executable is unavailable",
-                "",
-                null,
-              )
-            : new WorkerProcessFailure(
-                "worker_command_spawn_failed",
-                "retryable",
-                "Worker command could not be started",
-                "",
-                null,
-                { cause: error },
-              );
-        diagnose({
-          operation: "spawn",
-          status: "failed",
-          failureCode: failure.code,
-          disposition: failure.disposition,
-        });
+        const failure = processStartFailure(error, request.command);
+        diagnose(startFailureDiagnostic(failure));
         reject(failure);
       });
       child.once("close", async (code) => {
@@ -597,7 +831,13 @@ class ProductionWorkerProcessModule implements WorkerProcessModule {
   }
 
   async start(request: WorkerPersistentProcessRequest): Promise<WorkerPersistentProcess> {
-    request.signal.throwIfAborted();
+    const startedAt = Date.now();
+    const diagnose = (event: Omit<WorkerProcessDiagnostic, "elapsedMs">) =>
+      safeDiagnose(request.diagnose, { ...event, elapsedMs: Date.now() - startedAt });
+    if (request.signal.aborted) {
+      diagnose({ operation: "cancellation", status: "failed", failureCode: cancellationFailureCode(request.signal) });
+      request.signal.throwIfAborted();
+    }
     const deadlineMs = request.startupDeadlineMs ?? 45_000;
     if (!Number.isFinite(deadlineMs) || deadlineMs <= 0) {
       throw new Error("Worker helper startup deadline must be finite and positive");
@@ -605,16 +845,27 @@ class ProductionWorkerProcessModule implements WorkerProcessModule {
     if (request.startupReadyMarker && request.startupReadyMarker.length > MAX_DIAGNOSTIC_CHARS) {
       throw new Error("Worker helper readiness marker exceeds the capture limit");
     }
-    const startedAt = Date.now();
-    const diagnose = (event: Omit<WorkerProcessDiagnostic, "elapsedMs">) =>
-      safeDiagnose(request.diagnose, { ...event, elapsedMs: Date.now() - startedAt });
-    const child = spawn(request.command, [...request.args], {
-      cwd: request.cwd,
-      env: request.env,
-      // Keep stdin open for helpers that exit when their owner disappears.
-      stdio: ["pipe", "pipe", "pipe"],
-      detached: process.platform !== "win32",
-    });
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = (this.dependencies.spawn ?? spawn)(request.command, [...request.args], {
+        cwd: request.cwd,
+        env: request.env,
+        // Keep stdin open for helpers that exit when their owner disappears.
+        stdio: ["pipe", "pipe", "pipe"],
+        detached: process.platform !== "win32",
+      });
+    } catch (error) {
+      request.signal.throwIfAborted();
+      const failure = processStartFailure(error, request.command);
+      diagnose(startFailureDiagnostic(failure));
+      throw failure;
+    }
+    let closed = false;
+    let startupSettled = false;
+    let startupReady = false;
+    let startupOutput = "";
+    let startupErrors = "";
+    let forceKill: ReturnType<typeof setTimeout> | undefined;
     const terminate = (signal: NodeJS.Signals): void => {
       diagnose({ operation: "termination", status: "completed", terminationSignal: signal });
       try {
@@ -622,80 +873,109 @@ class ProductionWorkerProcessModule implements WorkerProcessModule {
         else child.kill(signal);
       } catch { /* process already exited */ }
     };
-    let forceKill: ReturnType<typeof setTimeout> | undefined;
     const stop = (): void => {
+      if (closed) return;
       terminate("SIGTERM");
       forceKill ??= setTimeout(() => terminate("SIGKILL"), this.killGraceMs);
     };
+    let resolveStartup!: () => void;
+    let rejectStartup!: (error: unknown) => void;
+    const startup = new Promise<void>((resolve, reject) => {
+      resolveStartup = () => {
+        if (startupSettled) return;
+        startupSettled = true;
+        startupReady = true;
+        startupOutput = "";
+        startupErrors = "";
+        resolve();
+      };
+      rejectStartup = (error) => {
+        if (startupSettled) return;
+        startupSettled = true;
+        reject(error);
+      };
+    });
     const abort = () => {
       diagnose({ operation: "cancellation", status: "failed", failureCode: cancellationFailureCode(request.signal) });
+      rejectStartup(request.signal.reason);
       stop();
     };
-    request.signal.addEventListener("abort", abort, { once: true });
-    let startupOutput = "";
-    // Startup errors precede any request the helper serves, so they cannot
-    // contain helper-generated tokens. Later stderr is drained and discarded.
-    let startupErrors = "";
-    let startupReady = !request.startupReadyMarker;
-    let resolveStartup!: () => void;
-    let rejectStartup!: (error: Error) => void;
-    const startup = new Promise<void>((resolve, reject) => { resolveStartup = resolve; rejectStartup = reject; });
     child.stdout?.on("data", (chunk: Buffer) => {
-      if (startupReady) return;
+      if (startupSettled) return;
+      // Helper stdout can contain authentication tokens. It is only a readiness
+      // signal, never a diagnostic or log payload.
       startupOutput = (startupOutput + chunk.toString()).slice(-MAX_DIAGNOSTIC_CHARS);
-      if (startupOutput.includes(request.startupReadyMarker!)) {
-        startupReady = true;
-        startupErrors = "";
-        resolveStartup();
-      }
+      if (request.startupReadyMarker && startupOutput.includes(request.startupReadyMarker)) resolveStartup();
     });
     child.stderr?.on("data", (chunk: Buffer) => {
-      if (startupReady) return;
-      startupErrors = (startupErrors + chunk.toString()).slice(-MAX_DIAGNOSTIC_CHARS);
+      if (startupSettled) return;
+      startupErrors = boundedDiagnostic(startupErrors + chunk.toString());
     });
     const exited = new Promise<{ exitCode: number | null; signalCode: NodeJS.Signals | null }>((resolve) => {
       child.once("close", async (exitCode, signalCode) => {
-        // A daemon parent can close its stdio while a detached descendant keeps
-        // the process group alive. Reap the group before reporting completion.
-        try {
-          if (process.platform !== "win32" && child.pid) process.kill(-child.pid, "SIGKILL");
-        } catch { /* group has already exited */ }
+        closed = true;
+        // A detached descendant may survive after the parent's stdio closes.
+        if (child.pid) terminate("SIGKILL");
         await waitForProcessGroupExit(child.pid, PROCESS_GROUP_REAP_TIMEOUT_MS);
         if (forceKill) clearTimeout(forceKill);
         request.signal.removeEventListener("abort", abort);
-        // Helper stdout may contain authentication tokens. It is only a
-        // readiness signal, never an error diagnostic or log payload.
         startupOutput = "";
         diagnose({ operation: "exit", status: exitCode === 0 ? "completed" : "failed" });
-        if (!startupReady) rejectStartup(new WorkerProcessFailure("worker_process_startup_failed", "retryable", "Worker helper exited before readiness", boundedDiagnostic(startupErrors), exitCode));
+        if (!startupReady) rejectStartup(new WorkerProcessFailure(
+          "worker_process_startup_failed", "retryable", "Worker helper exited before readiness",
+          boundedDiagnostic(startupErrors), exitCode,
+          { executableClass: executableClass(request.command), failureScope: "executor" },
+        ));
         startupErrors = "";
         resolve({ exitCode, signalCode });
       });
-      child.once("spawn", () => diagnose({ operation: "spawn", status: "completed" }));
-      child.once("error", () => {
-        diagnose({ operation: "spawn", status: "failed" });
-        stop();
+      child.once("spawn", () => {
+        diagnose({ operation: "spawn", status: "completed", executableClass: executableClass(request.command) });
+        if (!request.startupReadyMarker) resolveStartup();
+      });
+      child.once("error", (error) => {
+        const failure = processStartFailure(error, request.command);
+        diagnose(startFailureDiagnostic(failure));
+        rejectStartup(failure);
+        // Failed spawns have no PID. There is no process to terminate.
+        if (child.pid) stop();
       });
     });
-    if (!startupReady) {
-      const timeout = setTimeout(() => {
-        if (startupReady) return;
-        diagnose({ operation: "timeout", status: "failed", failureCode: "worker_process_startup_timeout" });
-        stop();
-        rejectStartup(new WorkerProcessFailure("worker_process_startup_timeout", "retryable", "Worker helper did not become ready", boundedDiagnostic(startupErrors)));
-      }, deadlineMs);
-      try { await startup; }
-      catch (error) {
-        stop();
-        await exited;
-        request.signal.throwIfAborted();
-        throw error;
-      } finally { clearTimeout(timeout); }
-    }
+    request.signal.addEventListener("abort", abort, { once: true });
+    if (request.signal.aborted) abort();
+    const timeout = setTimeout(() => {
+      if (startupSettled) return;
+      const failure = new WorkerProcessFailure(
+        "worker_process_startup_timeout", "retryable", "Worker helper did not become ready",
+        boundedDiagnostic(startupErrors), null,
+        { executableClass: executableClass(request.command), failureScope: "executor" },
+      );
+      diagnose({ operation: "timeout", status: "failed", failureCode: failure.code,
+        disposition: failure.disposition, executableClass: failure.executableClass, failureScope: failure.failureScope });
+      rejectStartup(failure);
+      stop();
+    }, deadlineMs);
+    try {
+      await startup;
+      request.signal.throwIfAborted();
+    } catch (error) {
+      if (child.pid) stop();
+      await exited;
+      request.signal.throwIfAborted();
+      throw error;
+    } finally { clearTimeout(timeout); }
     return { exited, stop };
   }
 
   async inspectMedia(request: WorkerMediaInspectionRequest): Promise<WorkerMediaInspection> {
+    const startedAt = Date.now();
+    const sample = request.sample;
+    if (sample && (!Number.isSafeInteger(sample.streamIndex) || sample.streamIndex < 0 ||
+      !Number.isInteger(sample.maxPackets) || sample.maxPackets < 1 || sample.maxPackets > 4096 ||
+      !Number.isFinite(sample.startSec ?? 0) || (sample.startSec ?? 0) < 0 ||
+      (sample.kind !== "frames" && sample.kind !== "packets"))) {
+      throw new Error("Media sample requires a stream index, nonnegative start and a 1..4096 packet budget");
+    }
     let result: WorkerProcessResult;
     try {
       result = await this.execute({
@@ -729,20 +1009,7 @@ class ProductionWorkerProcessModule implements WorkerProcessModule {
       throw error;
     }
 
-    let data: {
-      streams?: RawProbeStream[];
-      format?: { duration?: string; tags?: Record<string, string> };
-    };
-    try {
-      data = JSON.parse(result.stdout.toString("utf8")) as typeof data;
-    } catch (error) {
-      throw new WorkflowFailure(
-        "source_media_invalid",
-        "permanent",
-        "Media inspection returned malformed output",
-        error instanceof Error ? { cause: error } : undefined,
-      );
-    }
+    const data = parseProbeOutput(result.stdout);
     const streams = data.streams ?? [];
     const hasAudio = streams.some((stream) => stream.codec_type === "audio");
     const hasVisualStream = streams.some((stream) => stream.codec_type === "video");
@@ -764,12 +1031,14 @@ class ProductionWorkerProcessModule implements WorkerProcessModule {
     const duration =
       Number.isFinite(formatDuration) && formatDuration > 0 ? formatDuration : streamDuration;
     const durationSec = Number.isFinite(duration) && duration > 0 ? duration : null;
+    const facts = mediaFacts(data);
     const sourceProbe = buildSourceProbe(
       durationSec,
       streams,
       data.format?.tags,
       videoStream,
       streams.find((stream) => stream.codec_type === "audio"),
+      facts,
     );
     return {
       durationSec,
@@ -780,6 +1049,43 @@ class ProductionWorkerProcessModule implements WorkerProcessModule {
       hasVisualStream,
       fps: parseFrameRate(videoStream?.r_frame_rate),
       ...(sourceProbe ? { sourceProbe } : {}),
+      facts,
+      ...(request.sample ? { samples: await this.inspectSamples(request, startedAt) } : {}),
+    };
+  }
+
+  private async inspectSamples(request: WorkerMediaInspectionRequest, startedAt: number): Promise<WorkerMediaSamples> {
+    const sample = request.sample!;
+    const deadlineMs = request.deadlineMs - (Date.now() - startedAt);
+    if (deadlineMs <= 0) throw new WorkerProcessFailure("worker_command_timeout", "retryable", "Media inspection deadline exceeded", "");
+    const result = await this.execute({
+      command: "ffprobe",
+      args: ["-v", "error", "-print_format", "json", "-select_streams", String(sample.streamIndex),
+        "-read_intervals", `${sample.startSec ?? 0}%+#${sample.maxPackets}`,
+        sample.kind === "frames" ? "-show_frames" : "-show_packets",
+        "-show_entries", sample.kind === "frames"
+          ? "frame=stream_index,pts,pts_time,pkt_dts,pkt_dts_time,duration,duration_time,pkt_duration,pkt_duration_time,best_effort_timestamp_time,nb_samples,key_frame,pkt_size"
+          : "packet=stream_index,pts,pts_time,dts,dts_time,duration,duration_time,size,flags",
+        ...(/^https?:\/\//i.test(request.sourcePath) ? ["-rw_timeout", String(HTTP_SOURCE_RW_TIMEOUT_US)] : []),
+        request.sourcePath],
+      signal: request.signal, deadlineMs, captureStdout: true, maxStdoutBytes: 4 * 1024 * 1024, diagnose: request.diagnose,
+    });
+    const data = parseProbeOutput(result.stdout);
+    const entries = sample.kind === "frames" ? data.frames : data.packets;
+    if (!Array.isArray(entries) || entries.some((entry) => !entry || typeof entry !== "object")) {
+      throw new WorkflowFailure("source_media_invalid", "permanent", "Media inspection returned malformed sample output");
+    }
+    return {
+      ...sample, startSec: sample.startSec ?? 0,
+      items: entries.slice(0, sample.maxPackets).map((entry) => ({
+        streamIndex: integerFact(entry.stream_index, 0) ?? sample.streamIndex,
+        pts: integerFact(entry.pts), ptsSec: numberFact(entry.pts_time),
+        dts: integerFact(entry.dts ?? entry.pkt_dts), dtsSec: numberFact(entry.dts_time ?? entry.pkt_dts_time),
+        duration: integerFact(entry.duration ?? entry.pkt_duration), durationSec: nonnegativeFact(entry.duration_time ?? entry.pkt_duration_time),
+        bestEffortTimestampSec: numberFact(entry.best_effort_timestamp_time), samples: integerFact(entry.nb_samples, 0),
+        keyFrame: entry.key_frame === undefined ? typeof entry.flags === "string" ? entry.flags.includes("K") : null : entry.key_frame === 1,
+        sizeBytes: integerFact(entry.size ?? entry.pkt_size, 0),
+      })),
     };
   }
 

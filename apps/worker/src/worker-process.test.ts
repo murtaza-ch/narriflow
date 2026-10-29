@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { spawn, spawnSync } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
+import { sourceProbeSchema } from "@narriflow/validators";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -80,7 +83,7 @@ test("persistent helper bounds startup readiness and terminates on timeout", asy
   await expect(createWorkerProcessModule({ killGraceMs: 20 }).start?.({
     command: "sh", args: ["-c", "sleep 60"], cwd: process.cwd(), env: { PATH: process.env.PATH },
     signal: new AbortController().signal, startupReadyMarker: "ready", startupDeadlineMs: 20,
-  })).rejects.toMatchObject({ code: "worker_process_startup_timeout" });
+  })).rejects.toMatchObject({ code: "worker_process_startup_timeout", failureScope: "executor", executableClass: "other" });
 });
 
 test("persistent helper reaps a descendant after its parent exits", async () => {
@@ -199,7 +202,7 @@ test("worker process rejects a pre-aborted request without spawning", async () =
   expect(diagnostics.map((event) => event.operation)).toEqual(["cancellation"]);
 });
 
-test("worker process classifies a missing executable as permanent", async () => {
+test("worker process classifies a missing executable as configuration health", async () => {
   const diagnostics: WorkerProcessDiagnostic[] = [];
   await expect(
     createWorkerProcessModule({ killGraceMs: 20 }).execute({
@@ -210,13 +213,15 @@ test("worker process classifies a missing executable as permanent", async () => 
       diagnose: (event) => diagnostics.push(event),
     }),
   ).rejects.toMatchObject({
-    code: "worker_command_missing",
-    disposition: "permanent",
+    code: "worker_command_unavailable",
+    disposition: "retryable",
+    failureScope: "configuration",
+    errno: "ENOENT",
   });
   expect(diagnostics).toContainEqual(
     expect.objectContaining({
       operation: "spawn",
-      failureCode: "worker_command_missing",
+      failureCode: "worker_command_unavailable",
     }),
   );
 });
@@ -236,7 +241,7 @@ test("worker process preserves cancellation when a spawn error races the abort",
 });
 
 test.skipIf(process.platform === "win32")(
-  "worker process classifies a generic spawn error as retryable with its cause",
+  "worker process classifies a forbidden executable as configuration health with its cause",
   async () => {
     const directory = await mkdtemp(join(tmpdir(), "narriflow-spawn-error-contract-"));
     const command = join(directory, "not-executable");
@@ -258,15 +263,17 @@ test.skipIf(process.platform === "win32")(
 
       expect(failure).toBeInstanceOf(WorkerProcessFailure);
       expect(failure).toMatchObject({
-        code: "worker_command_spawn_failed",
+        code: "worker_command_unavailable",
         disposition: "retryable",
+        failureScope: "configuration",
+        errno: "EACCES",
         cause: expect.any(Error),
       });
       expect(diagnostics).toContainEqual(
         expect.objectContaining({
           operation: "spawn",
           status: "failed",
-          failureCode: "worker_command_spawn_failed",
+          failureCode: "worker_command_unavailable",
           disposition: "retryable",
         }),
       );
@@ -513,7 +520,7 @@ test("media inspection normalizes duration, streams, dimensions, fps, and HTTP c
     deadlineMs: 2_000,
   });
 
-  expect(inspection).toEqual({
+  expect(inspection).toMatchObject({
     durationSec: 12.5,
     width: 1920,
     height: 1080,
@@ -565,7 +572,7 @@ test("media inspection does not classify attached cover art as playable video", 
       signal: new AbortController().signal,
       deadlineMs: 1_000,
     }),
-  ).toEqual({
+  ).toMatchObject({
     durationSec: 48,
     width: 0,
     height: 0,
@@ -825,3 +832,221 @@ test.skipIf(!FFPROBE_AVAILABLE)(
     }
   },
 );
+
+
+describe("process-start health", () => {
+  for (const errno of ["EBADF", "EMFILE", "ENFILE", "EAGAIN", "ENOENT", "EACCES", "EPERM"]) {
+    test(`${errno} has the same code and safe diagnostics for sync/async execute/helper starts`, async () => {
+      const failures: WorkerProcessFailure[] = [];
+      const diagnostics: unknown[] = [];
+      for (const mode of ["sync", "async"]) {
+        for (const operation of ["execute", "start"]) {
+          const events: WorkerProcessDiagnostic[] = [];
+          const cause = Object.assign(new Error("posix_spawn private-path https://x.test/a?token=secret"), { code: errno });
+          const fakeSpawn = (() => {
+            if (mode === "sync") throw cause;
+            const child = Object.assign(new EventEmitter(), {
+              stdout: new PassThrough(), stderr: new PassThrough(), kill: () => true,
+            });
+            queueMicrotask(() => { child.emit("error", cause); child.emit("close", null, null); });
+            return child;
+          }) as unknown as typeof spawn;
+          const module = createWorkerProcessModule({ spawn: fakeSpawn });
+          const request = {
+            command: "/private/toolchain/ffprobe", args: ["https://x.test/a?token=secret"],
+            signal: new AbortController().signal, deadlineMs: 1000, startupDeadlineMs: 1000,
+            cwd: process.cwd(), env: {}, diagnose: (event: WorkerProcessDiagnostic) => events.push(event),
+          };
+          let error: unknown;
+          try { await module[operation as "execute"](request); } catch (caught) { error = caught; }
+          expect(error).toBeInstanceOf(WorkerProcessFailure);
+          const failure = error as WorkerProcessFailure;
+          expect(failure.cause).toBe(cause);
+          expect(failure).toMatchObject({ errno, executableClass: "ffprobe", disposition: "retryable" });
+          expect(`${failure.message} ${failure.diagnostic} ${JSON.stringify(events)}`).not.toMatch(/secret|private-path|https:/);
+          failures.push(failure);
+          diagnostics.push(events.filter((event) => event.operation === "spawn").map(({ elapsedMs: _, ...event }) => event));
+        }
+      }
+      expect(new Set(failures.map((failure) => failure.code)).size).toBe(1);
+      expect(failures.every((failure) => failure.diagnostic === failures[0]!.diagnostic)).toBe(true);
+      for (const diagnostic of diagnostics) expect(diagnostic).toEqual(diagnostics[0]);
+      expect(failures[0]!.failureScope).toBe(["ENOENT", "EACCES", "EPERM"].includes(errno) ? "configuration" : "executor");
+    });
+  }
+
+  test("pre-aborted execute, inspection and helper starts never reach spawn or injected execution", async () => {
+    let starts = 0;
+    const module = createWorkerProcessModule({ spawn: (() => { starts++; throw new Error("must not spawn"); }) as typeof spawn });
+    const reason = { shutdown: true };
+    const signal = AbortSignal.abort(reason);
+    await expect(module.execute({ command: "ffprobe", args: [], signal, deadlineMs: 1000 })).rejects.toBe(reason);
+    await expect(module.start!({ command: "ffprobe", args: [], signal, cwd: process.cwd(), env: {} })).rejects.toBe(reason);
+    await expect(module.inspectMedia({ sourcePath: "unused.mp4", signal, deadlineMs: 1000 })).rejects.toBe(reason);
+    const injected = createWorkerProcessModule({ execute: async () => { starts++; throw new Error("must not execute"); } });
+    await expect(injected.execute({ command: "ffprobe", args: [], signal, deadlineMs: 1000 })).rejects.toBe(reason);
+    expect(starts).toBe(0);
+  });
+
+  test("helper without a readiness marker still awaits the spawn result", async () => {
+    await expect(createWorkerProcessModule().start!({
+      command: "narriflow-not-an-executable", args: [], signal: new AbortController().signal, cwd: process.cwd(), env: {},
+    })).rejects.toMatchObject({ code: "worker_command_unavailable", errno: "ENOENT", failureScope: "configuration" });
+  });
+
+  test("inspection propagates executor health instead of blaming source media", async () => {
+    const cause = Object.assign(new Error("posix_spawn"), { code: "EBADF" });
+    const module = createWorkerProcessModule({ spawn: (() => { throw cause; }) as typeof spawn });
+    await expect(module.inspectMedia({ sourcePath: "https://x.test/a?token=secret", signal: new AbortController().signal, deadlineMs: 1000 }))
+      .rejects.toMatchObject({ code: "worker_command_spawn_failed", errno: "EBADF", cause, executableClass: "ffprobe" });
+  });
+});
+
+test("complete probe facts retain geometry, clocks, late audio and HDR without changing old consumer fields", async () => {
+  const matrix = "\n00000000:            0      -65536           0\n00000001:       -65536           0           0\n00000002:            0           0  1073741824\n";
+  const probe = await probeOf([
+    { codec_type: "video", index: 0, codec_name: "mjpeg", disposition: { attached_pic: 1 }, width: 600, height: 600 },
+    videoStream({ r_frame_rate: "90000/1", avg_frame_rate: "15/1" }, {
+      index: 1, codec_name: "hevc", profile: "Main 10", coded_width: 1920, coded_height: 1088,
+      sample_aspect_ratio: "2:1", pix_fmt: "yuv420p10le", time_base: "1/90000", start_pts: -9000, start_time: "-0.1",
+      duration: "30", duration_ts: 2700000, nb_frames: "N/A", color_transfer: "smpte2084", color_primaries: "bt2020", color_space: "bt2020nc", color_range: "tv",
+      side_data_list: [
+        { side_data_type: "Display Matrix", displaymatrix: matrix, rotation: 90 },
+        { side_data_type: "Mastering display metadata", max_luminance: "10000000/10000", min_luminance: "50/10000" },
+        { side_data_type: "Content light level metadata", max_content: 1000, max_average: 400 },
+        { side_data_type: "DOVI configuration record", dv_profile: 8, dv_level: 6, rpu_present_flag: 1, el_present_flag: 0, bl_present_flag: 1, dv_bl_signal_compatibility_id: 1 },
+      ],
+    }),
+    { codec_type: "audio", index: 2, codec_name: "aac", profile: "LC", sample_rate: "44100", channels: 1, channel_layout: "mono", time_base: "1/44100", start_time: "0.4", duration: "20", initial_padding: 1024 },
+  ], { duration: "30", size: "123456", format_name: "mov,mp4", start_time: "-0.1" });
+  expect(sourceProbeSchema.parse(probe)).toEqual(probe);
+  expect(probe?.video).toMatchObject({ width: 1920, height: 1080, frameRate: { numerator: 15, denominator: 1 } });
+  expect(probe?.facts).toMatchObject({
+    attachedPictureCount: 1, format: { sizeBytes: 123456, startTimeSec: -0.1 },
+    videos: [{ index: 1, width: 1920, height: 1080, codedHeight: 1088, displayWidth: 1080, displayHeight: 3840,
+      rotationDeg: 90, reflected: true, sampleAspectRatio: { numerator: 2, denominator: 1 },
+      avgFrameRate: { numerator: 15, denominator: 1 }, rFrameRate: { numerator: 90000, denominator: 1 },
+      timeBase: { numerator: 1, denominator: 90000 }, startTimeSec: -0.1, endTimeSec: 29.9, frameCount: null,
+      pixelFormat: "yuv420p10le", colorTransfer: "smpte2084", colorPrimaries: "bt2020", colorSpace: "bt2020nc",
+      masteringDisplay: { maxLuminance: 1000, minLuminance: 0.005 }, contentLight: { maxContent: 1000, maxAverage: 400 },
+      dolbyVision: { profile: 8, baseLayerPresent: true, enhancementLayerPresent: false } }],
+    audios: [{ startTimeSec: 0.4, durationSec: 20, endTimeSec: 20.4, sampleRate: 44100, channels: 1, initialPadding: 1024 }],
+  });
+});
+
+test.each([
+  ["0 -65536 0", "65536 0 0", 90, false, 1080, 1920],
+  ["-65536 0 0", "0 -65536 0", -180, false, 1920, 1080],
+  ["0 65536 0", "-65536 0 0", -90, false, 1080, 1920],
+  ["-65536 0 0", "0 65536 0", -180, true, 1920, 1080],
+])("display matrix %s / %s is retained", async (row1, row2, rotationDeg, reflected, displayWidth, displayHeight) => {
+  const probe = await probeOf([videoStream({ r_frame_rate: "30/1" }, {
+    sample_aspect_ratio: "1:1", side_data_list: [{ side_data_type: "Display Matrix", displaymatrix: `0: ${row1}\n1: ${row2}\n2: 0 0 1073741824` }],
+  })]);
+  expect(probe?.facts?.videos[0]).toMatchObject({ rotationDeg, reflected, displayWidth, displayHeight });
+});
+
+test("unreported facts stay null, including frame counts and invalid ratios", async () => {
+  const probe = await probeOf([videoStream({ r_frame_rate: "0/0" }, { sample_aspect_ratio: "0:1", nb_frames: "N/A" })]);
+  expect(probe?.facts?.videos[0]).toMatchObject({ sampleAspectRatio: null, rFrameRate: null, avgFrameRate: null, frameCount: null, timeBase: null });
+  expect(sourceProbeSchema.safeParse(probe).success).toBe(true);
+});
+
+test("frame and packet sampling has a bounded input budget, output and shared deadline", async () => {
+  for (const kind of ["frames", "packets"] as const) {
+    const calls: WorkerProcessRequest[] = [];
+    const module = createWorkerProcessModule({ execute: async (request) => {
+      calls.push(request);
+      return { exitCode: 0, stdout: Buffer.from(JSON.stringify(calls.length === 1
+        ? { streams: [videoStream({ r_frame_rate: "30/1" })], format: { duration: "30" } }
+        : { [kind]: [{ stream_index: 0, pts: 9000, pts_time: "0.1", duration: 6000, duration_time: "0.0666667", nb_samples: 1024, key_frame: 1 }] })) };
+    }});
+    const inspection = await module.inspectMedia({ sourcePath: "https://x.test/a?token=secret", signal: new AbortController().signal, deadlineMs: 5000,
+      sample: { kind, streamIndex: 0, startSec: 2, maxPackets: 150 } });
+    expect(calls).toHaveLength(2);
+    expect(calls[1]!.args).toContain("2%+#150");
+    expect(calls[1]!.args).toContain(`-show_${kind}`);
+    expect(calls[1]!.args).toContain("-rw_timeout");
+    expect(calls[1]!.deadlineMs).toBeLessThanOrEqual(5000);
+    expect(calls[1]!.maxStdoutBytes).toBe(4 * 1024 * 1024);
+    expect(inspection.samples?.items).toEqual([expect.objectContaining({ pts: 9000, ptsSec: 0.1, duration: 6000, durationSec: 0.0666667, samples: 1024, keyFrame: true })]);
+  }
+  let calls = 0;
+  const module = createWorkerProcessModule({ execute: async () => { calls++; throw new Error("should not execute"); } });
+  for (const sample of [
+    { kind: "frames" as const, streamIndex: 0, maxPackets: 4097 },
+    { kind: "frames" as const, streamIndex: 0, maxPackets: 0 },
+    { kind: "packets" as const, streamIndex: 0, startSec: -1, maxPackets: 1 },
+    { kind: "packets" as const, streamIndex: -1, maxPackets: 1 },
+  ]) await expect(module.inspectMedia({ sourcePath: "unused.mp4", signal: new AbortController().signal, deadlineMs: 1000, sample })).rejects.toThrow("packet budget");
+  expect(calls).toBe(0);
+});
+
+test.skipIf(!FFMPEG_AVAILABLE || !FFPROBE_AVAILABLE)("real probes expose matrices, SAR, HDR, late audio and bounded timestamps", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "narriflow-probe-facts-"));
+  const source = join(directory, "source.mp4");
+  const module = createWorkerProcessModule();
+  const signal = new AbortController().signal;
+  try {
+    const generated = spawnSync("ffmpeg", ["-v", "error", "-f", "lavfi", "-i", "color=blue:s=320x180:r=15:d=1",
+      "-itsoffset", "0.3", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100:duration=0.5",
+      "-vf", "setsar=2/1", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-x264-params", "colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc", "-color_trc", "smpte2084", "-color_primaries", "bt2020", "-colorspace", "bt2020nc", "-c:a", "aac", source]);
+    expect(generated.status).toBe(0);
+    const inspection = await module.inspectMedia({ sourcePath: source, signal, deadlineMs: 5000,
+      sample: { kind: "frames", streamIndex: 0, maxPackets: 6 } });
+    expect(inspection.facts?.videos[0]).toMatchObject({ width: 320, height: 180, displayWidth: 640, displayHeight: 180,
+      sampleAspectRatio: { numerator: 2, denominator: 1 }, colorTransfer: "smpte2084", colorPrimaries: "bt2020", frameCount: 15 });
+    expect(inspection.facts!.audios[0]!.startTimeSec).toBeGreaterThan(0.25);
+    expect(inspection.facts!.audios[0]!.endTimeSec).toBeLessThan(0.9);
+    expect(inspection.facts!.format.sizeBytes).toBeGreaterThan(0);
+    expect(inspection.samples!.items.length).toBeGreaterThan(0);
+    expect(inspection.samples!.items.length).toBeLessThanOrEqual(6);
+    expect(inspection.samples!.items[0]!.ptsSec).toBe(0);
+    expect(sourceProbeSchema.parse(inspection.sourceProbe)).toEqual(inspection.sourceProbe);
+    for (const angle of [90, 180, 270]) {
+      const rotated = join(directory, `rot${angle}.mp4`);
+      expect(spawnSync("ffmpeg", ["-v", "error", "-display_rotation", String(angle), "-i", source, "-c", "copy", rotated]).status).toBe(0);
+      const rotatedProbe = await module.inspectMedia({ sourcePath: rotated, signal, deadlineMs: 5000 });
+      expect(rotatedProbe.width).toBe(320);
+      expect(rotatedProbe.height).toBe(180);
+      expect(rotatedProbe.facts!.videos[0]!.displayMatrix).toHaveLength(9);
+      expect(rotatedProbe.facts!.videos[0]!.displayWidth).toBe(angle === 180 ? 640 : 180);
+      expect(rotatedProbe.facts!.videos[0]!.displayHeight).toBe(angle === 180 ? 180 : 640);
+    }
+    const hlg = join(directory, "hlg.mp4");
+    expect(spawnSync("ffmpeg", ["-v", "error", "-i", source, "-c", "copy", "-bsf:v", "h264_metadata=transfer_characteristics=18", hlg]).status).toBe(0);
+    expect((await module.inspectMedia({ sourcePath: hlg, signal, deadlineMs: 5000 })).facts!.videos[0]!.colorTransfer).toBe("arib-std-b67");
+    const cover = join(directory, "cover.mp3");
+    const picture = join(directory, "cover.jpg");
+    expect(spawnSync("ffmpeg", ["-v", "error", "-i", source, "-frames:v", "1", picture]).status).toBe(0);
+    expect(spawnSync("ffmpeg", ["-v", "error", "-i", source, "-i", picture, "-map", "0:a", "-map", "1:v", "-c:a", "libmp3lame", "-c:v", "copy", "-disposition:v", "attached_pic", cover]).status).toBe(0);
+    const covered = await module.inspectMedia({ sourcePath: cover, signal, deadlineMs: 5000 });
+    expect(covered).toMatchObject({ hasVideo: false, hasAudio: true, hasVisualStream: true });
+    expect(covered.facts).toMatchObject({ attachedPictureCount: 1, videos: [] });
+    const mirrored = join(directory, "mirrored.mp4");
+    expect(spawnSync("ffmpeg", ["-v", "error", "-display_hflip", "-i", source, "-c", "copy", mirrored]).status).toBe(0);
+    expect((await module.inspectMedia({ sourcePath: mirrored, signal, deadlineMs: 5000 })).facts!.videos[0]!.reflected).toBe(true);
+    const packets = await module.inspectMedia({ sourcePath: source, signal, deadlineMs: 5000, sample: { kind: "packets", streamIndex: 1, maxPackets: 4 } });
+    expect(packets.samples!.items.length).toBeLessThanOrEqual(4);
+    expect(packets.samples!.items[0]!.streamIndex).toBe(1);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+
+test("long signed queries stay redacted across stderr chunks and capture truncation", async () => {
+  for (const operation of ["execute", "start"] as const) {
+    const module = createWorkerProcessModule({ killGraceMs: 20 });
+    const request = {
+      command: process.execPath,
+      args: ["-e", `process.stderr.write('https://media.example/source.mp4?token='); setTimeout(() => { process.stderr.write('PRIVATE'.repeat(20000)); setTimeout(() => { process.stderr.write('TAILSECRET\\n'); process.exit(1); }, 30); }, 30);`],
+      signal: new AbortController().signal, deadlineMs: 1000, startupDeadlineMs: 1000,
+      cwd: process.cwd(), env: process.env, startupReadyMarker: "ready",
+    };
+    let failure: unknown;
+    try { await module[operation](request); } catch (error) { failure = error; }
+    expect(failure).toBeInstanceOf(WorkerProcessFailure);
+    expect((failure as WorkerProcessFailure).diagnostic).not.toMatch(/PRIVATE|TAILSECRET/);
+    expect((failure as WorkerProcessFailure).diagnostic).toContain("?[redacted]");
+    expect((failure as WorkerProcessFailure).diagnostic.length).toBeLessThanOrEqual(8192);
+  }
+});

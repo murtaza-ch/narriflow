@@ -184,6 +184,27 @@ describe("capture, verify and the gate", () => {
     expect(first.targets[0]!.command.argv.join(" ")).not.toContain(work);
   });
 
+  test("inspection compares every baseline field exactly while allowing additive facts", () => {
+    const base = clone(baseline.cases[CASE]!);
+    const candidate = clone(base);
+    delete base.inspection!.facts;
+    delete (base.inspection!.sourceProbe as Record<string, unknown>).facts;
+    expect(candidate.inspection!.facts).toBeDefined();
+    expect(compareCase(base, candidate)).toEqual([]);
+    candidate.inspection!.width = Number(candidate.inspection!.width) + 1;
+    expect(compareCase(base, candidate).map((item) => item.category)).toContain("inspection");
+    candidate.inspection!.width = base.inspection!.width;
+    (candidate.inspection!.sourceProbe as Record<string, unknown>).durationSec = 100;
+    expect(compareCase(base, candidate).map((item) => item.category)).toContain("inspection");
+    delete candidate.inspection!.fps;
+    expect(compareCase(base, candidate).map((item) => item.category)).toContain("inspection");
+    // A newer baseline includes the new facts in its exact comparison too.
+    const current = clone(baseline.cases[CASE]!);
+    const changed = clone(current);
+    (changed.inspection!.facts as { format: { sizeBytes: number } }).format.sizeBytes++;
+    expect(compareCase(current, changed).map((item) => item.category)).toContain("inspection");
+  });
+
   test("verify passes on the same code and writes a report", async () => {
     const out = join(work, "verify-ok");
     const { report, exitCode } = await verifySuite({ suite: "normal", cases: [CASE], out, baseline: baselineDir, cacheDir, fixtureDir });

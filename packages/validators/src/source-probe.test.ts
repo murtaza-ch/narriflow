@@ -70,3 +70,25 @@ describe("sourceProbeSchema", () => {
     expect(sourceProbeSchema.safeParse(null).success).toBe(false);
   });
 });
+
+
+test("complete media facts survive persistence while missing facts cannot masquerade as complete", () => {
+  const minimal = { durationSec: 2, video: null, audio: { sampleRate: 44100, channels: 1 } };
+  const facts = {
+    format: { name: "mov,mp4", startTimeSec: -0.2, durationSec: 2, sizeBytes: 1000, bitRate: null },
+    attachedPictureCount: 1, videos: [], audios: [{
+      index: 1, codec: "aac", profile: "LC", timeBase: { numerator: 1, denominator: 44100 },
+      startPts: 17640, startTimeSec: 0.4, durationTs: 44100, durationSec: 1, endTimeSec: 1.4,
+      frameCount: null, bitRate: null, sampleRate: 44100, channels: 1, channelLayout: "mono", sampleFormat: "fltp",
+      initialPadding: 1024, trailingPadding: null,
+    }],
+  };
+  const complete = { ...minimal, facts };
+  expect(sourceProbeSchema.parse(complete)).toEqual(complete);
+  expect(sourceProbeSchema.parse(minimal).facts).toBeUndefined();
+  expect(sourceProbeSchema.safeParse({ ...minimal, facts: {} }).success).toBe(false);
+  expect(sourceProbeSchema.safeParse({ ...minimal, facts: { ...facts, format: { ...facts.format, sizeBytes: -1 } } }).success).toBe(false);
+  expect(sourceProbeSchema.safeParse({ ...minimal, facts: { ...facts, audios: [{ ...facts.audios[0], startTimeSec: Number.NaN }] } }).success).toBe(false);
+  expect(sourceProbeSchema.safeParse({ ...minimal, facts: { ...facts, audios: [{ ...facts.audios[0], timeBase: { numerator: 1, denominator: 0 } }] } }).success).toBe(false);
+  expect(sourceProbeSchema.safeParse({ ...minimal, facts: { ...facts, extra: "raw probe" } }).success).toBe(false);
+});
