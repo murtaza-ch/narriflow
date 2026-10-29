@@ -1,0 +1,539 @@
+{
+  "lockVersion": 1,
+  "purpose": "Pins the deployed Linux worker toolchain that produced the render-hardening golden baseline. Recovered, not upgraded. See render-golden.ts and the ticket 01 evidence.",
+  "recoveredFrom": {
+    "source": "Railway build log of @narriflow/worker deployment 320ce761-8b4d-4683-91f0-1611c22ecc7e (2026-10-24T17:26Z), the last build that executed the apt and pip layers; every later build (through 39b41650, commit ece879e8, 2026-10-29) hit those cached layers.",
+    "aptUpdateAt": "2026-10-24T17:27:02Z",
+    "gaps": [
+      "The running container was not inspected (railway ssh needs an SSH key registered on the account). Ticket 21 must run check-render-environment.ts --enforce inside the deployed worker and record the result.",
+      "Resolved fallback font files and their SHA-256 were not recoverable offline; fonts.probes[].expectedSha256 stays null until the first in-image capture fills it.",
+      "The FFmpeg configure string is not in the log; the package version plus the dated snapshot identify the build."
+    ]
+  },
+  "images": {
+    "bun": {
+      "ref": "docker.io/oven/bun:1.3.6",
+      "digest": "sha256:f20d9cf365ab35529384f1717687c739c92e6f39157a35a95ef06f4049a10e4a"
+    },
+    "youtubeTokens": {
+      "ref": "docker.io/brainicism/bgutil-ytdlp-pot-provider:2.0.0-deno",
+      "digest": "sha256:a0b8b3a2926016ef15d9ff06b9b3f63b5f2785e63395be987114cee44ae66ac1"
+    }
+  },
+  "platforms": {
+    "linux-x64": {
+      "authoritative": true,
+      "os": {
+        "id": "debian",
+        "versionCodename": "trixie"
+      },
+      "apt": {
+        "snapshotTimestamp": "20261024T172700Z",
+        "archives": [
+          {
+            "uri": "http://snapshot.debian.org/archive/debian/20261024T172700Z/",
+            "suites": [
+              "trixie",
+              "trixie-updates"
+            ]
+          },
+          {
+            "uri": "http://snapshot.debian.org/archive/debian-security/20261024T172700Z/",
+            "suites": [
+              "trixie-security"
+            ]
+          }
+        ],
+        "direct": {
+          "ffmpeg": "7:7.1.5-0+deb13u1",
+          "fontconfig": "2.15.0-2.3",
+          "curl": "8.14.1-2+deb13u7",
+          "ca-certificates": "20250419+deb13u1",
+          "python3": "3.13.5-1",
+          "python3-pip": "25.1.1+dfsg-1",
+          "fonts-dejavu-core": "2.37-8",
+          "fonts-liberation": "1:2.1.5-3",
+          "fonts-noto-core": "20201225-2",
+          "fonts-noto-cjk": "1:20240730+repack1-1",
+          "fonts-noto-extra": "20201225-2",
+          "fonts-noto-color-emoji": "2.051-0+deb13u1"
+        },
+        "installed": {
+          "ca-certificates": "20250419+deb13u1",
+          "curl": "8.14.1-2+deb13u7",
+          "ffmpeg": "7:7.1.5-0+deb13u1",
+          "fontconfig": "2.15.0-2.3",
+          "fontconfig-config": "2.15.0-2.3",
+          "fonts-dejavu-core": "2.37-8",
+          "fonts-dejavu-mono": "2.37-8",
+          "fonts-liberation": "1:2.1.5-3",
+          "fonts-noto-cjk": "1:20240730+repack1-1",
+          "fonts-noto-color-emoji": "2.051-0+deb13u1",
+          "fonts-noto-core": "20201225-2",
+          "fonts-noto-extra": "20201225-2",
+          "fonts-noto-mono": "20201225-2",
+          "libaom3": "3.12.1-1+deb13u1",
+          "libasound2-data": "1.2.14-1+deb13u1",
+          "libasound2t64": "1.2.14-1+deb13u1",
+          "libass9": "1:0.17.3-1+deb13u1",
+          "libasyncns0": "0.8-6+b5",
+          "libatomic1": "14.2.0-19",
+          "libavc1394-0": "0.5.4-5+b2",
+          "libavcodec61": "7:7.1.5-0+deb13u1",
+          "libavdevice61": "7:7.1.5-0+deb13u1",
+          "libavfilter10": "7:7.1.5-0+deb13u1",
+          "libavformat61": "7:7.1.5-0+deb13u1",
+          "libavutil59": "7:7.1.5-0+deb13u1",
+          "libblas3": "3.12.1-6",
+          "libbluray2": "1:1.3.4-1+b2",
+          "libbrotli1": "1.1.0-2+deb13u1",
+          "libbs2b0": "3.1.0+dfsg-8+b1",
+          "libcaca0": "0.99.beta20-5+deb13u1",
+          "libcairo-gobject2": "1.18.4-1+b1",
+          "libcairo2": "1.18.4-1+b1",
+          "libcdio-cdda2t64": "10.2+2.0.2-1+b1",
+          "libcdio-paranoia2t64": "10.2+2.0.2-1+b1",
+          "libcdio19t64": "2.2.0-4.1~deb13u1",
+          "libchromaprint1": "1.5.1-7",
+          "libcjson1": "1.7.18-3.1+deb13u1",
+          "libcodec2-1.2": "1.2.0-3",
+          "libcom-err2": "1.47.2-3+b12",
+          "libcurl4t64": "8.14.1-2+deb13u7",
+          "libdatrie1": "0.2.13-3+b1",
+          "libdav1d7": "1.5.1-1",
+          "libdbus-1-3": "1.16.2-2",
+          "libdc1394-25": "2.2.6-5",
+          "libdecor-0-0": "0.2.2-2",
+          "libdeflate0": "1.23-2",
+          "libdrm-amdgpu1": "2.4.124-2",
+          "libdrm-common": "2.4.124-2",
+          "libdrm-intel1": "2.4.124-2",
+          "libdrm2": "2.4.124-2",
+          "libdvdnav4": "6.1.1-3+b1",
+          "libdvdread8t64": "6.1.3-2",
+          "libedit2": "3.1-20250104-1",
+          "libelf1t64": "0.192-4",
+          "libexpat1": "2.9.0-1~deb13u1",
+          "libffi8": "3.4.8-2",
+          "libfftw3-double3": "3.3.10-2+b1",
+          "libflac14": "1.5.0+ds-2",
+          "libflite1": "2.2-7",
+          "libfontconfig1": "2.15.0-2.3",
+          "libfreetype6": "2.13.3+dfsg-1+deb13u1",
+          "libfribidi0": "1.0.16-1",
+          "libgbm1": "25.0.7-2+deb13u1",
+          "libgdk-pixbuf-2.0-0": "2.42.12+dfsg-4+deb13u1",
+          "libgdk-pixbuf2.0-common": "2.42.12+dfsg-4+deb13u1",
+          "libgfortran5": "14.2.0-19",
+          "libgl1": "1.7.0-1+b2",
+          "libgl1-mesa-dri": "25.0.7-2+deb13u1",
+          "libglib2.0-0t64": "2.84.4-3~deb13u5",
+          "libglvnd0": "1.7.0-1+b2",
+          "libglx-mesa0": "25.0.7-2+deb13u1",
+          "libglx0": "1.7.0-1+b2",
+          "libgme0": "0.6.3-7+b2",
+          "libgnutls30t64": "3.8.9-3+deb13u4",
+          "libgomp1": "14.2.0-19",
+          "libgraphite2-3": "1.3.14-2+deb13u1",
+          "libgsm1": "1.0.22-1+b2",
+          "libgssapi-krb5-2": "1.21.3-5+deb13u1",
+          "libharfbuzz0b": "10.2.0-1+deb13u1",
+          "libhwy1t64": "1.2.0-2+b2",
+          "libidn2-0": "2.3.8-2",
+          "libiec61883-0": "1.2.0-7",
+          "libjack-jackd2-0": "1.9.22~dfsg-4",
+          "libjbig0": "2.1-6.1+b2",
+          "libjpeg62-turbo": "1:2.1.5-4",
+          "libjxl0.11": "0.11.2-0.1~deb13u3",
+          "libk5crypto3": "1.21.3-5+deb13u1",
+          "libkeyutils1": "1.6.3-6",
+          "libkrb5-3": "1.21.3-5+deb13u1",
+          "libkrb5support0": "1.21.3-5+deb13u1",
+          "liblapack3": "3.12.1-6",
+          "liblcms2-2": "2.16-2+deb13u2",
+          "libldap2": "2.6.10+dfsg-1",
+          "liblerc4": "4.0.0+ds-5",
+          "liblilv-0-0": "0.24.26-1",
+          "libllvm19": "1:19.1.7-3+b1",
+          "libmbedcrypto16": "3.6.6-0.1~deb13u1",
+          "libmp3lame0": "3.100-6+b3",
+          "libmpg123-0t64": "1.32.10-1+deb13u1",
+          "libmysofa1": "1.3.3+dfsg-1",
+          "libncursesw6": "6.5+20250216-2",
+          "libnghttp2-14": "1.64.0-1.1+deb13u1",
+          "libnghttp3-9": "1.8.0-1",
+          "libnorm1t64": "1.5.9+dfsg-3.1+b2",
+          "libnuma1": "2.0.19-1",
+          "libogg0": "1.3.5-3+b2",
+          "libopenal-data": "1:1.24.2-1",
+          "libopenal1": "1:1.24.2-1",
+          "libopenjp2-7": "2.5.3-2.1~deb13u2",
+          "libopenmpt0t64": "0.7.13-1+b1",
+          "libopus0": "1.5.2-2",
+          "libp11-kit0": "0.25.5-3",
+          "libpango-1.0-0": "1.56.3-1",
+          "libpangocairo-1.0-0": "1.56.3-1",
+          "libpangoft2-1.0-0": "1.56.3-1",
+          "libpciaccess0": "0.17-3+b3",
+          "libpgm-5.3-0t64": "5.3.128~dfsg-2.1+b1",
+          "libpixman-1-0": "0.44.0-3",
+          "libplacebo349": "7.349.0-3",
+          "libpng16-16t64": "1.6.48-1+deb13u6",
+          "libpocketsphinx3": "0.8+5prealpha+1-15+b4",
+          "libpostproc58": "7:7.1.5-0+deb13u1",
+          "libpsl5t64": "0.21.2-1.1+b1",
+          "libpulse0": "17.0+dfsg1-2+b1",
+          "libpython3-stdlib": "3.13.5-1",
+          "libpython3.13-minimal": "3.13.5-2+deb13u5",
+          "libpython3.13-stdlib": "3.13.5-2+deb13u5",
+          "librabbitmq4": "0.15.0-1+deb13u2",
+          "librav1e0.7": "0.7.1-9+b2",
+          "libraw1394-11": "2.1.2-2+b2",
+          "libreadline8t64": "8.2-6",
+          "librist4": "0.2.11+dfsg-1",
+          "librsvg2-2": "2.60.0+dfsg-1+deb13u1",
+          "librtmp1": "2.4+20151223.gitfa8646d.1-2+b5",
+          "librubberband2": "3.3.0+dfsg-2+b3",
+          "libsamplerate0": "0.2.2-4+b2",
+          "libsasl2-2": "2.1.28+dfsg1-9",
+          "libsasl2-modules-db": "2.1.28+dfsg1-9",
+          "libsdl2-2.0-0": "2.32.4+dfsg-1",
+          "libsensors-config": "1:3.6.2-2",
+          "libsensors5": "1:3.6.2-2",
+          "libserd-0-0": "0.32.4-1",
+          "libsharpyuv0": "1.5.0-0.1",
+          "libshine3": "3.1.1-2+b2",
+          "libslang2": "2.3.3-5+b2",
+          "libsnappy1v5": "1.2.2-1",
+          "libsndfile1": "1.2.2-2+deb13u1",
+          "libsodium23": "1.0.18-1+deb13u1",
+          "libsord-0-0": "0.16.18-1",
+          "libsoxr0": "0.1.3-4+b2",
+          "libspeex1": "1.2.1-3",
+          "libsphinxbase3t64": "0.8+5prealpha+1-21+b1",
+          "libsratom-0-0": "0.6.18-1",
+          "libsrt1.5-gnutls": "1.5.4-1+deb13u1",
+          "libssh-4": "0.11.5-0+deb13u1",
+          "libssh2-1t64": "1.11.1-1+deb13u2",
+          "libssl3t64": "3.5.7-1~deb13u3",
+          "libsvtav1enc2": "2.3.0+dfsg-1",
+          "libswresample5": "7:7.1.5-0+deb13u1",
+          "libswscale8": "7:7.1.5-0+deb13u1",
+          "libtasn1-6": "4.20.0-2+deb13u1",
+          "libthai-data": "0.1.29-2",
+          "libthai0": "0.1.29-2+b1",
+          "libtheoradec1": "1.2.0~alpha1+dfsg-6",
+          "libtheoraenc1": "1.2.0~alpha1+dfsg-6",
+          "libtiff6": "4.7.0-3+deb13u3",
+          "libtwolame0": "0.4.0-2+b2",
+          "libudfread0": "1.1.2-1+b2",
+          "libunibreak6": "6.1-3",
+          "libunistring5": "1.3-2",
+          "libusb-1.0-0": "2:1.0.28-1",
+          "libva-drm2": "2.22.0-3",
+          "libva-x11-2": "2.22.0-3",
+          "libva2": "2.22.0-3",
+          "libvdpau1": "1.5-3+b1",
+          "libvidstab1.1": "1.1.0-2+b2",
+          "libvorbis0a": "1.3.7-3",
+          "libvorbisenc2": "1.3.7-3",
+          "libvorbisfile3": "1.3.7-3",
+          "libvpl2": "1:2.14.0-1+b1",
+          "libvpx9": "1.15.0-2.1+deb13u1",
+          "libvulkan1": "1.4.309.0-1",
+          "libwayland-client0": "1.23.1-3",
+          "libwayland-cursor0": "1.23.1-3",
+          "libwayland-egl1": "1.23.1-3",
+          "libwayland-server0": "1.23.1-3",
+          "libwebp7": "1.5.0-0.1",
+          "libwebpmux3": "1.5.0-0.1",
+          "libx11-6": "2:1.8.12-1",
+          "libx11-data": "2:1.8.12-1",
+          "libx11-xcb1": "2:1.8.12-1",
+          "libx264-164": "2:0.164.3108+git31e19f9-2+b1",
+          "libx265-215": "4.1-2",
+          "libxau6": "1:1.0.11-1",
+          "libxcb-dri3-0": "1.17.0-2+b1",
+          "libxcb-glx0": "1.17.0-2+b1",
+          "libxcb-present0": "1.17.0-2+b1",
+          "libxcb-randr0": "1.17.0-2+b1",
+          "libxcb-render0": "1.17.0-2+b1",
+          "libxcb-shape0": "1.17.0-2+b1",
+          "libxcb-shm0": "1.17.0-2+b1",
+          "libxcb-sync1": "1.17.0-2+b1",
+          "libxcb-xfixes0": "1.17.0-2+b1",
+          "libxcb1": "1.17.0-2+b1",
+          "libxcursor1": "1:1.2.3-1",
+          "libxdmcp6": "1:1.1.5-1",
+          "libxext6": "2:1.3.4-1+b3",
+          "libxfixes3": "1:6.0.0-2+b4",
+          "libxi6": "2:1.8.2-1",
+          "libxkbcommon0": "1.7.0-2",
+          "libxml2": "2.12.7+dfsg+really2.9.14-2.1+deb13u3",
+          "libxrandr2": "2:1.5.4-1+b3",
+          "libxrender1": "1:0.9.12-1",
+          "libxshmfence1": "1.3.3-1",
+          "libxss1": "1:1.2.3-1+b3",
+          "libxv1": "2:1.0.11-1.1+b3",
+          "libxvidcore4": "2:1.3.7-1+b2",
+          "libxxf86vm1": "1:1.1.4-1+b4",
+          "libz3-4": "4.13.3-1",
+          "libzimg2": "3.0.5+ds1-1+b2",
+          "libzix-0-0": "0.6.2-1",
+          "libzmq5": "4.3.5-1+b3",
+          "libzvbi-common": "0.2.44-1",
+          "libzvbi0t64": "0.2.44-1",
+          "media-types": "13.0.0",
+          "mesa-libgallium": "25.0.7-2+deb13u1",
+          "netbase": "6.5",
+          "ocl-icd-libopencl1": "2.3.3-1",
+          "openssl": "3.5.7-1~deb13u3",
+          "openssl-provider-legacy": "3.5.7-1~deb13u3",
+          "python3": "3.13.5-1",
+          "python3-minimal": "3.13.5-1",
+          "python3-packaging": "25.0-1",
+          "python3-pip": "25.1.1+dfsg-1",
+          "python3-wheel": "0.46.1-2",
+          "python3.13": "3.13.5-2+deb13u5",
+          "python3.13-minimal": "3.13.5-2+deb13u5",
+          "readline-common": "8.2-6",
+          "shared-mime-info": "2.4-5+b2",
+          "x11-common": "1:7.7+24+deb13u1",
+          "xkb-data": "2.42-1"
+        }
+      },
+      "ffmpeg": {
+        "versionString": "7.1.5-0+deb13u1",
+        "requiredFilters": [
+          "ass",
+          "subtitles",
+          "drawtext",
+          "zscale",
+          "tonemap",
+          "alimiter",
+          "amix",
+          "atrim",
+          "adelay",
+          "apad",
+          "concat",
+          "crop",
+          "scale",
+          "overlay",
+          "fps",
+          "setsar",
+          "format",
+          "color",
+          "sine",
+          "anullsrc",
+          "volume",
+          "afade",
+          "fade",
+          "ebur128",
+          "astats",
+          "aresample",
+          "pad",
+          "geq",
+          "xfade"
+        ],
+        "requiredEncoders": [
+          "libx264",
+          "aac"
+        ],
+        "libraries": {
+          "libass9": "1:0.17.3-1+deb13u1",
+          "libfontconfig1": "2.15.0-2.3",
+          "libfreetype6": "2.13.3+dfsg-1+deb13u1",
+          "libharfbuzz0b": "10.2.0-1+deb13u1",
+          "libzimg2": "3.0.5+ds1-1+b2",
+          "libx264-164": "2:0.164.3108+git31e19f9-2+b1"
+        }
+      },
+      "python": {
+        "version": "3.13.5",
+        "wheels": [
+          {
+            "name": "yt-dlp",
+            "version": "2026.8.19",
+            "filename": "yt_dlp-2026.8.19-py3-none-any.whl",
+            "sha256": "1d57897e94c6665a0a6f9bc54b34e584284e32c034ffab3a7df25d8f7b24eedf"
+          },
+          {
+            "name": "bgutil-ytdlp-pot-provider",
+            "version": "2.0.0",
+            "filename": "bgutil_ytdlp_pot_provider-2.0.0-py3-none-any.whl",
+            "sha256": "22884c399802771ddfd9275bb05b178d67c89db67a1d5d1e17ed7f681956628e"
+          },
+          {
+            "name": "yt-dlp-ejs",
+            "version": "0.8.0",
+            "filename": "yt_dlp_ejs-0.8.0-py3-none-any.whl",
+            "sha256": "79300e5fca7f937a1eeede11f0456862c1b41107ce1d726871e0207424f4bdb4"
+          },
+          {
+            "name": "requests",
+            "version": "2.34.2",
+            "filename": "requests-2.34.2-py3-none-any.whl",
+            "sha256": "2a0d60c172f83ac6ab31e4554906c0f3b3588d37b5cb939b1c061f4907e278e0"
+          },
+          {
+            "name": "charset-normalizer",
+            "version": "3.5.2",
+            "filename": "charset_normalizer-3.5.2-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+            "sha256": "7218e8f32b0956cfcd048fd42d9d5779809745ca1d86113ca56f66e7ae1549c4"
+          },
+          {
+            "name": "idna",
+            "version": "3.20",
+            "filename": "idna-3.20-py3-none-any.whl",
+            "sha256": "ab7ae7122974553370f0bdb919e1a960b2cd1bc1ef0276416d896db81c14582c"
+          },
+          {
+            "name": "urllib3",
+            "version": "2.8.0",
+            "filename": "urllib3-2.8.0-py3-none-any.whl",
+            "sha256": "0cf3cae568d36aa9576b28dfb35f11328f1cb974ca7647d9475ebb86c75ac6e3"
+          },
+          {
+            "name": "certifi",
+            "version": "2026.10.23",
+            "filename": "certifi-2026.10.23-py3-none-any.whl",
+            "sha256": "e9b54de76e530bb6cf0ccd036787103acb58fd42ba930ea8bf948ddbaa2f61d1"
+          },
+          {
+            "name": "websockets",
+            "version": "17.3",
+            "filename": "websockets-17.3-cp313-cp313-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl",
+            "sha256": "de2c12555bf05546f3ee75733f2c81de70aab7f530e86d0d2162b0ddcb3c39ae"
+          },
+          {
+            "name": "brotli",
+            "version": "1.2.1",
+            "filename": "brotli-1.2.1-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.whl",
+            "sha256": "264fd5b200f6f6170cb551a4b9fcaabf8aa846ddaefe72db4d5f49f9d3743df9"
+          },
+          {
+            "name": "mutagen",
+            "version": "1.48.1",
+            "filename": "mutagen-1.48.1-py3-none-any.whl",
+            "sha256": "4f077fe87d3fc7fba259aa63d8c026b18382ca6a42ef37c61e16f1b1b5b82fe7"
+          },
+          {
+            "name": "pycryptodomex",
+            "version": "3.24.1",
+            "filename": "pycryptodomex-3.24.1-cp37-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl",
+            "sha256": "9b94a8c647c1f80b4c82c7ac9642dda94a71abbb4efa29ad652c410ad7a39879"
+          },
+          {
+            "name": "opencv-python-headless",
+            "version": "5.0.0.93",
+            "filename": "opencv_python_headless-5.0.0.93-cp37-abi3-manylinux_2_28_x86_64.whl",
+            "sha256": "ed709fdf9aa0bd1f2ed8549e71d19449b03a675bb581eb292285f6861953be37"
+          },
+          {
+            "name": "numpy",
+            "version": "2.5.4",
+            "filename": "numpy-2.5.4-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+            "sha256": "6ffa07666f8da0eef81d149934a626d0d95fbd6838432a33e66245423a9062c0"
+          }
+        ]
+      },
+      "model": {
+        "path": "/usr/local/share/narriflow/face_yunet.onnx",
+        "sourceRepo": "opencv/opencv_zoo",
+        "commit": "f12e12798e8314f7c074a6656816c048dcc95b7a",
+        "repoPath": "models/face_detection_yunet/face_detection_yunet_2023mar.onnx",
+        "sha256": "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4",
+        "bytes": 232589
+      },
+      "fonts": {
+        "packages": [
+          "fonts-dejavu-core",
+          "fonts-liberation",
+          "fonts-noto-core",
+          "fonts-noto-cjk",
+          "fonts-noto-extra",
+          "fonts-noto-color-emoji"
+        ],
+        "probes": [
+          {
+            "query": "sans-serif",
+            "expectedSha256": null
+          },
+          {
+            "query": "sans-serif:lang=ar",
+            "expectedSha256": null
+          },
+          {
+            "query": "sans-serif:lang=he",
+            "expectedSha256": null
+          },
+          {
+            "query": "sans-serif:lang=hi",
+            "expectedSha256": null
+          },
+          {
+            "query": "sans-serif:lang=ja",
+            "expectedSha256": null
+          },
+          {
+            "query": "sans-serif:lang=ko",
+            "expectedSha256": null
+          },
+          {
+            "query": "sans-serif:lang=zh-cn",
+            "expectedSha256": null
+          },
+          {
+            "query": "emoji",
+            "expectedSha256": null
+          },
+          {
+            "query": "Noto Color Emoji",
+            "expectedSha256": null
+          },
+          {
+            "query": "DejaVu Sans",
+            "expectedSha256": null
+          },
+          {
+            "query": "Liberation Sans",
+            "expectedSha256": null
+          },
+          {
+            "query": "Arial",
+            "expectedSha256": null
+          },
+          {
+            "query": "Noto Sans Symbols 2",
+            "expectedSha256": null
+          }
+        ]
+      }
+    }
+  },
+  "captionFonts": {
+    "directory": "packages/caption-fonts/fonts",
+    "sha256": {
+      "Anton-Regular.ttf": "a4ba3a92350ebb031da0cb47630ac49eb265082ca1bc0450442f4a83ab947cab",
+      "ArchivoBlack-Regular.ttf": "dd9a89a019b4849f66ab75455fe7bdf931311042cbb0f0f97acc061539703180",
+      "BebasNeue-Regular.ttf": "08e4623805102d819f58601e46e345648846075e363b2ceb23313c2d1c83ec73",
+      "BricolageGrotesque-ExtraBold.ttf": "c5a5b72d9437b915211ee5fb61249f67a15b4eadf70d0062cca1716cd953daed",
+      "ChakraPetch-Bold.ttf": "65fbf76d95651697275e19db4d717c0e95a789ddd3476478b05292104db278a0",
+      "CourierPrime-Bold.ttf": "ff1f38786c849d1c41fa8e447960abdb2bd75fdfb0cfcdeb524fad65a5af3638",
+      "DelaGothicOne-Regular.ttf": "7d511fa6139a12b6d9cc6bb6385605171d7b9db24dc61467cdab93db018ae915",
+      "InstrumentSerif-Italic.ttf": "08939b8bdf534afec24ae0ef5e03f948940cd9a8fe08e7fecbad040e62327385",
+      "Inter-ExtraBold.ttf": "e62dfdf4623aab390e68ce58b19bc8646efbd54ec0542214eabfd7ed45071b4a",
+      "Inter-SemiBold.ttf": "07583ce62b4dbc3ca014d232132291ee9f10e4b8964435980bb80004ea408d2b",
+      "LilitaOne-Regular.ttf": "f5b641c45c69d772ee4eda687bc9fda411d5cad6b0b45371491da4580cbc8d59",
+      "LuckiestGuy-Regular.ttf": "cfbdd68a039f92df51cf3721506af6242e64594c6325fe0bedbeff3fe385d980",
+      "Montserrat-Black.ttf": "7198a926f947a933490eb1e390b39fe94f3cc84544aff0c912615a25c0b4073a",
+      "OpenSans-Bold.ttf": "2a27358ba981b8140a05a3352a110efcc5b759dc49650f2fabb3c1a798cfd9ff",
+      "Oswald-Bold.ttf": "b0f87ed114db3a8b6324eebe2196e37e4b8653af9463613a258d40e021403ab9",
+      "Poppins-ExtraBold.ttf": "f2ab17c1a63a0ecc12c2461848fc8a469395e3cd2d641803e889c643d9f958e1",
+      "Righteous-Regular.ttf": "2ffb3fe5c27d7e6571210b800448c4e234e651b46c6b4426c1bb567e5341348a",
+      "Roboto-Bold.ttf": "6f7791b5ca2088fc1692b629d68b70230465a90c5427edad5920130bd6197188",
+      "TitanOne-Regular.ttf": "563ff6de179bbd44bcd7d2a6c448d6dc3bf935834237cf1250e506e65cd86ff1",
+      "Unbounded-ExtraBold.ttf": "0a10aee8e257df15a500f2db43008f6c0cdfb669d11f15c3fefd61384f79c653"
+    }
+  }
+}

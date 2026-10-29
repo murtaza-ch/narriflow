@@ -1,0 +1,470 @@
+{
+  "version": 1,
+  "cases": {
+    "rot90": {
+      "defect": "display-matrix-geometry",
+      "owner": "03",
+      "predicate": "rot90 carries a non-identity display matrix that swaps width and height",
+      "contract": [
+        {
+          "id": "renders",
+          "metric": "render.ok",
+          "op": "eq",
+          "value": true
+        },
+        {
+          "id": "subject-orientation",
+          "metric": "video.quadrants",
+          "op": "eq",
+          "value": {
+            "ref": "expected.quadrants"
+          }
+        }
+      ]
+    },
+    "rot180": {
+      "defect": "display-matrix-geometry",
+      "owner": "03",
+      "expect": "pass",
+      "predicate": "rot180 carries a non-identity matrix but equal coded and displayed dimensions; FFmpeg autorotation already produces the right picture, which the display-transform change must keep",
+      "contract": [
+        {
+          "id": "renders",
+          "metric": "render.ok",
+          "op": "eq",
+          "value": true
+        },
+        {
+          "id": "subject-orientation",
+          "metric": "video.quadrants",
+          "op": "eq",
+          "value": {
+            "ref": "expected.quadrants"
+          }
+        }
+      ]
+    },
+    "rot270": {
+      "defect": "display-matrix-geometry",
+      "owner": "03",
+      "predicate": "rot270 carries a non-identity display matrix that swaps width and height",
+      "contract": [
+        {
+          "id": "renders",
+          "metric": "render.ok",
+          "op": "eq",
+          "value": true
+        },
+        {
+          "id": "subject-orientation",
+          "metric": "video.quadrants",
+          "op": "eq",
+          "value": {
+            "ref": "expected.quadrants"
+          }
+        }
+      ]
+    },
+    "mirror-h": {
+      "defect": "display-matrix-geometry",
+      "owner": "03",
+      "expect": "pass",
+      "predicate": "mirror-h carries a non-identity matrix but equal coded and displayed dimensions; FFmpeg autorotation already produces the right picture, which the display-transform change must keep",
+      "contract": [
+        {
+          "id": "renders",
+          "metric": "render.ok",
+          "op": "eq",
+          "value": true
+        },
+        {
+          "id": "subject-orientation",
+          "metric": "video.quadrants",
+          "op": "eq",
+          "value": {
+            "ref": "expected.quadrants"
+          }
+        }
+      ]
+    },
+    "rot90-mirror": {
+      "defect": "display-matrix-geometry",
+      "owner": "03",
+      "predicate": "rot90-mirror carries a non-identity display matrix that swaps width and height",
+      "contract": [
+        {
+          "id": "renders",
+          "metric": "render.ok",
+          "op": "eq",
+          "value": true
+        },
+        {
+          "id": "subject-orientation",
+          "metric": "video.quadrants",
+          "op": "eq",
+          "value": {
+            "ref": "expected.quadrants"
+          }
+        }
+      ]
+    },
+    "sar-2x1": {
+      "defect": "sample-aspect-ratio",
+      "owner": "03",
+      "predicate": "source sample aspect ratio is not 1:1",
+      "contract": [
+        {
+          "id": "renders",
+          "metric": "render.ok",
+          "op": "eq",
+          "value": true
+        },
+        {
+          "id": "square-pixels",
+          "metric": "output.sar",
+          "op": "eq",
+          "value": "1:1"
+        },
+        {
+          "id": "round-circle",
+          "metric": "video.circleDisplayAspect",
+          "op": "between",
+          "value": [
+            0.95,
+            1.05
+          ]
+        }
+      ]
+    },
+    "odd-321x181": {
+      "defect": "odd-dimensions",
+      "owner": "03",
+      "predicate": "source coded dimensions are odd",
+      "contract": [
+        {
+          "id": "renders",
+          "metric": "render.ok",
+          "op": "eq",
+          "value": true
+        },
+        {
+          "id": "canvas",
+          "metric": "output.dimensions",
+          "op": "eq",
+          "value": "1080x1920"
+        },
+        {
+          "id": "square-pixels",
+          "metric": "output.sar",
+          "op": "eq",
+          "value": "1:1"
+        }
+      ]
+    },
+    "audio-late-start": {
+      "defect": "dialogue-clock",
+      "owner": "04",
+      "predicate": "audio stream start offset is not zero",
+      "contract": [
+        {
+          "id": "renders",
+          "metric": "render.ok",
+          "op": "eq",
+          "value": true
+        },
+        {
+          "id": "dialogue-onset",
+          "metric": "sync.avOffsetSec",
+          "op": "absLte",
+          "value": 0.034
+        },
+        {
+          "id": "audio-spans-video",
+          "metric": "audio.spanDeficitSec",
+          "op": "lte",
+          "value": 0.055
+        },
+        {
+          "id": "video-frames",
+          "metric": "video.frameCountDelta",
+          "op": "eq",
+          "value": 0
+        }
+      ]
+    },
+    "audio-short": {
+      "defect": "dialogue-clock",
+      "owner": "04",
+      "predicate": "audio stream is shorter than the video",
+      "contract": [
+        {
+          "id": "renders",
+          "metric": "render.ok",
+          "op": "eq",
+          "value": true
+        },
+        {
+          "id": "dialogue-onset",
+          "metric": "sync.avOffsetSec",
+          "op": "absLte",
+          "value": 0.034
+        },
+        {
+          "id": "audio-spans-video",
+          "metric": "audio.spanDeficitSec",
+          "op": "lte",
+          "value": 0.055
+        },
+        {
+          "id": "video-frames",
+          "metric": "video.frameCountDelta",
+          "op": "eq",
+          "value": 0
+        }
+      ]
+    },
+    "audio-late-cut-scene-music": {
+      "defect": "dialogue-clock",
+      "owner": "04",
+      "predicate": "late audio with cuts, scenes and music",
+      "contract": [
+        {
+          "id": "renders",
+          "metric": "render.ok",
+          "op": "eq",
+          "value": true
+        },
+        {
+          "id": "dialogue-onset",
+          "metric": "sync.avOffsetSec",
+          "op": "absLte",
+          "value": 0.034
+        },
+        {
+          "id": "audio-spans-video",
+          "metric": "audio.spanDeficitSec",
+          "op": "lte",
+          "value": 0.055
+        },
+        {
+          "id": "video-frames",
+          "metric": "video.frameCountDelta",
+          "op": "eq",
+          "value": 0
+        }
+      ]
+    },
+    "vfr-irregular": {
+      "defect": "vfr-clock",
+      "owner": "06",
+      "predicate": "source timestamps are irregular (average 15/1, base 30/1)",
+      "contract": [
+        {
+          "id": "renders",
+          "metric": "render.ok",
+          "op": "eq",
+          "value": true
+        },
+        {
+          "id": "measured-average",
+          "metric": "output.avgFrameRate",
+          "op": "eq",
+          "value": "15/1"
+        },
+        {
+          "id": "constant-rate",
+          "metric": "output.rFrameRate",
+          "op": "eq",
+          "value": "15/1"
+        }
+      ]
+    },
+    "hdr-pq": {
+      "defect": "hdr-color",
+      "owner": "07",
+      "predicate": "source color primaries/transfer are BT.2020 with PQ or HLG",
+      "contract": [
+        {
+          "id": "renders",
+          "metric": "render.ok",
+          "op": "eq",
+          "value": true
+        },
+        {
+          "id": "bt709-transfer",
+          "metric": "output.colorTransfer",
+          "op": "eq",
+          "value": "bt709"
+        },
+        {
+          "id": "bt709-primaries",
+          "metric": "output.colorPrimaries",
+          "op": "eq",
+          "value": "bt709"
+        },
+        {
+          "id": "bt709-matrix",
+          "metric": "output.colorSpace",
+          "op": "eq",
+          "value": "bt709"
+        },
+        {
+          "id": "limited-range",
+          "metric": "output.colorRange",
+          "op": "eq",
+          "value": "tv"
+        },
+        {
+          "id": "yuv420p",
+          "metric": "output.pixFmt",
+          "op": "eq",
+          "value": "yuv420p"
+        },
+        {
+          "id": "no-hdr-side-data",
+          "metric": "output.hdrSideData",
+          "op": "eq",
+          "value": false
+        }
+      ]
+    },
+    "hdr-hlg": {
+      "defect": "hdr-color",
+      "owner": "07",
+      "predicate": "source color primaries/transfer are BT.2020 with PQ or HLG",
+      "contract": [
+        {
+          "id": "renders",
+          "metric": "render.ok",
+          "op": "eq",
+          "value": true
+        },
+        {
+          "id": "bt709-transfer",
+          "metric": "output.colorTransfer",
+          "op": "eq",
+          "value": "bt709"
+        },
+        {
+          "id": "bt709-primaries",
+          "metric": "output.colorPrimaries",
+          "op": "eq",
+          "value": "bt709"
+        },
+        {
+          "id": "bt709-matrix",
+          "metric": "output.colorSpace",
+          "op": "eq",
+          "value": "bt709"
+        },
+        {
+          "id": "limited-range",
+          "metric": "output.colorRange",
+          "op": "eq",
+          "value": "tv"
+        },
+        {
+          "id": "yuv420p",
+          "metric": "output.pixFmt",
+          "op": "eq",
+          "value": "yuv420p"
+        },
+        {
+          "id": "no-hdr-side-data",
+          "metric": "output.hdrSideData",
+          "op": "eq",
+          "value": false
+        }
+      ]
+    },
+    "hot-mix": {
+      "defect": "mix-clipping",
+      "owner": "05",
+      "predicate": "music, effects or scene audio sum above 0 dBFS",
+      "contract": [
+        {
+          "id": "renders",
+          "metric": "render.ok",
+          "op": "eq",
+          "value": true
+        },
+        {
+          "id": "sample-peak",
+          "metric": "audio.samplePeak",
+          "op": "lte",
+          "value": 1
+        },
+        {
+          "id": "true-peak",
+          "metric": "audio.truePeakDbtp",
+          "op": "lte",
+          "value": 0
+        }
+      ]
+    },
+    "emoji-sequences": {
+      "defect": "emoji-burn-in",
+      "owner": "08",
+      "predicate": "the plan carries cue emoji or literal emoji sequences",
+      "contract": [
+        {
+          "id": "renders",
+          "metric": "render.ok",
+          "op": "eq",
+          "value": true
+        },
+        {
+          "id": "emoji-pixels",
+          "metric": "video.saturatedPixels",
+          "op": "gte",
+          "value": 500
+        }
+      ]
+    },
+    "missing-glyph": {
+      "defect": "glyph-coverage",
+      "owner": "08",
+      "predicate": "a caption codepoint has no glyph in the resolved fallback chain",
+      "contract": [
+        {
+          "id": "typed-failure",
+          "metric": "typedFailure",
+          "op": "eq",
+          "value": "caption_glyph_unavailable"
+        }
+      ]
+    },
+    "seek-past-source-end": {
+      "defect": "empty-output",
+      "owner": "09",
+      "predicate": "the requested range lies outside the source and FFmpeg exits zero with an empty MP4",
+      "contract": [
+        {
+          "id": "has-video",
+          "metric": "video.frameCount",
+          "op": "gte",
+          "value": 1
+        },
+        {
+          "id": "canvas",
+          "metric": "output.dimensions",
+          "op": "eq",
+          "value": "1080x1920"
+        }
+      ]
+    },
+    "http-interrupted-read": {
+      "defect": "truncated-output",
+      "owner": "09",
+      "predicate": "the HTTP source read ends early while FFmpeg exits zero",
+      "contract": [
+        {
+          "id": "renders-or-fails-typed",
+          "metric": "output.durationDeltaFrames",
+          "op": "lte",
+          "value": 1
+        }
+      ]
+    }
+  }
+}

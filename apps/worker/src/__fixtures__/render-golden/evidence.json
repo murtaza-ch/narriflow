@@ -1,0 +1,158 @@
+{
+  "version": 1,
+  "evidence": {
+    "auto-solo": {
+      "kind": "auto",
+      "segments": [
+        {
+          "startSec": 0,
+          "endSec": 4,
+          "layout": "single",
+          "cxNorm": 0.4,
+          "subjects": [
+            {
+              "id": "a",
+              "cxNorm": 0.4,
+              "cyNorm": 0.5,
+              "zoom": 1
+            }
+          ]
+        }
+      ],
+      "noSplitSegments": [
+        {
+          "startSec": 0,
+          "endSec": 4,
+          "layout": "single",
+          "cxNorm": 0.4,
+          "subjects": [
+            {
+              "id": "a",
+              "cxNorm": 0.4,
+              "cyNorm": 0.5,
+              "zoom": 1
+            }
+          ]
+        }
+      ],
+      "shotCount": 1,
+      "soloShotCount": 1,
+      "multiShotCount": 0,
+      "twoUpSegmentCount": 0,
+      "speakerCount": 1,
+      "mappedSpeakerCount": 1
+    },
+    "auto-two-up": {
+      "kind": "auto",
+      "segments": [
+        {
+          "startSec": 0,
+          "endSec": 2,
+          "layout": "two-up",
+          "topCxNorm": 0.25,
+          "bottomCxNorm": 0.75,
+          "subjects": [
+            {
+              "id": "left",
+              "cxNorm": 0.25,
+              "cyNorm": 0.5,
+              "zoom": 1
+            },
+            {
+              "id": "right",
+              "cxNorm": 0.75,
+              "cyNorm": 0.5,
+              "zoom": 1
+            }
+          ]
+        },
+        {
+          "startSec": 2,
+          "endSec": 4,
+          "layout": "two-up",
+          "topCxNorm": 0.28,
+          "bottomCxNorm": 0.72,
+          "subjects": [
+            {
+              "id": "left",
+              "cxNorm": 0.25,
+              "cyNorm": 0.5,
+              "zoom": 1
+            },
+            {
+              "id": "right",
+              "cxNorm": 0.75,
+              "cyNorm": 0.5,
+              "zoom": 1
+            }
+          ]
+        }
+      ],
+      "noSplitSegments": [
+        {
+          "startSec": 0,
+          "endSec": 4,
+          "layout": "single",
+          "cxNorm": 0.5,
+          "subjects": [
+            {
+              "id": "left",
+              "cxNorm": 0.25,
+              "cyNorm": 0.5,
+              "zoom": 1
+            },
+            {
+              "id": "right",
+              "cxNorm": 0.75,
+              "cyNorm": 0.5,
+              "zoom": 1
+            }
+          ]
+        }
+      ],
+      "shotCount": 2,
+      "soloShotCount": 0,
+      "multiShotCount": 2,
+      "twoUpSegmentCount": 2,
+      "speakerCount": 2,
+      "mappedSpeakerCount": 2
+    },
+    "split-two-up": {
+      "kind": "split",
+      "source": "explicit-detector",
+      "segments": [
+        {
+          "startSec": 0,
+          "endSec": 4,
+          "layout": "two-up",
+          "topCxNorm": 0.25,
+          "bottomCxNorm": 0.75
+        }
+      ],
+      "fallbackSegments": [
+        {
+          "startSec": 0,
+          "endSec": 4,
+          "layout": "single",
+          "cxNorm": 0.5
+        }
+      ]
+    },
+    "screen-pip": {
+      "kind": "screen",
+      "source": "durable-pip",
+      "pictureInPicture": {
+        "state": "confirmed",
+        "rect": {
+          "x": 0.72,
+          "y": 0.68,
+          "width": 0.2,
+          "height": 0.22
+        }
+      },
+      "faceBand": {
+        "state": "unavailable"
+      }
+    }
+  }
+}

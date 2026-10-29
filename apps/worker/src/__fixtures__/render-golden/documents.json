@@ -1,0 +1,4872 @@
+{
+  "version": 1,
+  "cases": {
+    "solo-auto-vertical": {
+      "class": "normal",
+      "targets": [
+        {
+          "id": "vertical",
+          "aspectRatio": "9:16"
+        }
+      ],
+      "description": "Solo speaker, automatic layout, 9:16 1080p",
+      "source": "talk-720p",
+      "document": {
+        "version": 1,
+        "clipStartSec": 0,
+        "clipEndSec": 4,
+        "captionPreset": {
+          "wordsPerCue": 3
+        },
+        "transcriptSlice": [
+          {
+            "index": 0,
+            "speaker": 0,
+            "speakerLabel": "Speaker 1",
+            "startSec": 0.2,
+            "endSec": 3.755,
+            "text": "money talks and fire never stops so watch this amazing growth explode",
+            "confidence": 0.98,
+            "words": [
+              {
+                "word": "money",
+                "startSec": 0.2,
+                "endSec": 0.455,
+                "confidence": 0.98
+              },
+              {
+                "word": "talks",
+                "startSec": 0.5,
+                "endSec": 0.755,
+                "confidence": 0.98
+              },
+              {
+                "word": "and",
+                "startSec": 0.8,
+                "endSec": 1.055,
+                "confidence": 0.98
+              },
+              {
+                "word": "fire",
+                "startSec": 1.1,
+                "endSec": 1.355,
+                "confidence": 0.98
+              },
+              {
+                "word": "never",
+                "startSec": 1.4,
+                "endSec": 1.655,
+                "confidence": 0.98
+              },
+              {
+                "word": "stops",
+                "startSec": 1.7,
+                "endSec": 1.955,
+                "confidence": 0.98
+              },
+              {
+                "word": "so",
+                "startSec": 2,
+                "endSec": 2.255,
+                "confidence": 0.98
+              },
+              {
+                "word": "watch",
+                "startSec": 2.3,
+                "endSec": 2.555,
+                "confidence": 0.98
+              },
+              {
+                "word": "this",
+                "startSec": 2.6,
+                "endSec": 2.855,
+                "confidence": 0.98
+              },
+              {
+                "word": "amazing",
+                "startSec": 2.9,
+                "endSec": 3.155,
+                "confidence": 0.98
+              },
+              {
+                "word": "growth",
+                "startSec": 3.2,
+                "endSec": 3.455,
+                "confidence": 0.98
+              },
+              {
+                "word": "explode",
+                "startSec": 3.5,
+                "endSec": 3.755,
+                "confidence": 0.98
+              }
+            ]
+          }
+        ],
+        "studioEdits": {
+          "framing": {
+            "mode": "auto"
+          }
+        },
+        "brollUrl": null,
+        "deletedRanges": [],
+        "sceneBlocks": [],
+        "censorSegments": [],
+        "mediaMotions": []
+      },
+      "evidence": "auto-solo"
+    },
+    "two-up-speaker-vertical": {
+      "class": "normal",
+      "targets": [
+        {
+          "id": "vertical",
+          "aspectRatio": "9:16"
+        }
+      ],
+      "description": "Two speakers, automatic two-up layout, 9:16",
+      "source": "talk-720p",
+      "document": {
+        "version": 1,
+        "clipStartSec": 0,
+        "clipEndSec": 4,
+        "captionPreset": {
+          "wordsPerCue": 3
+        },
+        "transcriptSlice": [
+          {
+            "index": 0,
+            "speaker": 0,
+            "speakerLabel": "Speaker 1",
+            "startSec": 0.2,
+            "endSec": 3.755,
+            "text": "money talks and fire never stops so watch this amazing growth explode",
+            "confidence": 0.98,
+            "words": [
+              {
+                "word": "money",
+                "startSec": 0.2,
+                "endSec": 0.455,
+                "confidence": 0.98
+              },
+              {
+                "word": "talks",
+                "startSec": 0.5,
+                "endSec": 0.755,
+                "confidence": 0.98
+              },
+              {
+                "word": "and",
+                "startSec": 0.8,
+                "endSec": 1.055,
+                "confidence": 0.98
+              },
+              {
+                "word": "fire",
+                "startSec": 1.1,
+                "endSec": 1.355,
+                "confidence": 0.98
+              },
+              {
+                "word": "never",
+                "startSec": 1.4,
+                "endSec": 1.655,
+                "confidence": 0.98
+              },
+              {
+                "word": "stops",
+                "startSec": 1.7,
+                "endSec": 1.955,
+                "confidence": 0.98
+              },
+              {
+                "word": "so",
+                "startSec": 2,
+                "endSec": 2.255,
+                "confidence": 0.98
+              },
+              {
+                "word": "watch",
+                "startSec": 2.3,
+                "endSec": 2.555,
+                "confidence": 0.98
+              },
+              {
+                "word": "this",
+                "startSec": 2.6,
+                "endSec": 2.855,
+                "confidence": 0.98
+              },
+              {
+                "word": "amazing",
+                "startSec": 2.9,
+                "endSec": 3.155,
+                "confidence": 0.98
+              },
+              {
+                "word": "growth",
+                "startSec": 3.2,
+                "endSec": 3.455,
+                "confidence": 0.98
+              },
+              {
+                "word": "explode",
+                "startSec": 3.5,
+                "endSec": 3.755,
+                "confidence": 0.98
+              }
+            ]
+          }
+        ],
+        "studioEdits": {
+          "framing": {
+            "mode": "auto"
+          }
+        },
+        "brollUrl": null,
+        "deletedRanges": [],
+        "sceneBlocks": [],
+        "censorSegments": [],
+        "mediaMotions": []
+      },
+      "evidence": "auto-two-up"
+    },
+    "screen-pip-portrait": {
+      "class": "normal",
+      "targets": [
+        {
+          "id": "portrait",
+          "aspectRatio": "4:5"
+        }
+      ],
+      "description": "Screen layout with a confirmed picture-in-picture, 4:5",
+      "source": "talk-720p",
+      "document": {
+        "version": 1,
+        "clipStartSec": 0,
+        "clipEndSec": 4,
+        "captionPreset": {
+          "wordsPerCue": 3
+        },
+        "transcriptSlice": [
+          {
+            "index": 0,
+            "speaker": 0,
+            "speakerLabel": "Speaker 1",
+            "startSec": 0.2,
+            "endSec": 3.755,
+            "text": "money talks and fire never stops so watch this amazing growth explode",
+            "confidence": 0.98,
+            "words": [
+              {
+                "word": "money",
+                "startSec": 0.2,
+                "endSec": 0.455,
+                "confidence": 0.98
+              },
+              {
+                "word": "talks",
+                "startSec": 0.5,
+                "endSec": 0.755,
+                "confidence": 0.98
+              },
+              {
+                "word": "and",
+                "startSec": 0.8,
+                "endSec": 1.055,
+                "confidence": 0.98
+              },
+              {
+                "word": "fire",
+                "startSec": 1.1,
+                "endSec": 1.355,
+                "confidence": 0.98
+              },
+              {
+                "word": "never",
+                "startSec": 1.4,
+                "endSec": 1.655,
+                "confidence": 0.98
+              },
+              {
+                "word": "stops",
+                "startSec": 1.7,
+                "endSec": 1.955,
+                "confidence": 0.98
+              },
+              {
+                "word": "so",
+                "startSec": 2,
+                "endSec": 2.255,
+                "confidence": 0.98
+              },
+              {
+                "word": "watch",
+                "startSec": 2.3,
+                "endSec": 2.555,
+                "confidence": 0.98
+              },
+              {
+                "word": "this",
+                "startSec": 2.6,
+                "endSec": 2.855,
+                "confidence": 0.98
+              },
+              {
+                "word": "amazing",
+                "startSec": 2.9,
+                "endSec": 3.155,
+                "confidence": 0.98
+              },
+              {
+                "word": "growth",
+                "startSec": 3.2,
+                "endSec": 3.455,
+                "confidence": 0.98
+              },
+              {
+                "word": "explode",
+                "startSec": 3.5,
+                "endSec": 3.755,
+                "confidence": 0.98
+              }
+            ]
+          }
+        ],
+        "studioEdits": {
+          "framing": {
+            "mode": "screen"
+          }
+        },
+        "brollUrl": null,
+        "deletedRanges": [],
+        "sceneBlocks": [],
+        "censorSegments": [],
+        "mediaMotions": []
+      },
+      "evidence": "screen-pip"
+    },
+    "explicit-split-portrait": {
+      "class": "normal",
+      "targets": [
+        {
+          "id": "portrait",
+          "aspectRatio": "4:5"
+        }
+      ],
+      "description": "Explicit split layout, 4:5",
+      "source": "talk-720p",
+      "document": {
+        "version": 1,
+        "clipStartSec": 0,
+        "clipEndSec": 4,
+        "captionPreset": {
+          "wordsPerCue": 3
+        },
+        "transcriptSlice": [
+          {
+            "index": 0,
+            "speaker": 0,
+            "speakerLabel": "Speaker 1",
+            "startSec": 0.2,
+            "endSec": 3.755,
+            "text": "money talks and fire never stops so watch this amazing growth explode",
+            "confidence": 0.98,
+            "words": [
+              {
+                "word": "money",
+                "startSec": 0.2,
+                "endSec": 0.455,
+                "confidence": 0.98
+              },
+              {
+                "word": "talks",
+                "startSec": 0.5,
+                "endSec": 0.755,
+                "confidence": 0.98
+              },
+              {
+                "word": "and",
+                "startSec": 0.8,
+                "endSec": 1.055,
+                "confidence": 0.98
+              },
+              {
+                "word": "fire",
+                "startSec": 1.1,
+                "endSec": 1.355,
+                "confidence": 0.98
+              },
+              {
+                "word": "never",
+                "startSec": 1.4,
+                "endSec": 1.655,
+                "confidence": 0.98
+              },
+              {
+                "word": "stops",
+                "startSec": 1.7,
+                "endSec": 1.955,
+                "confidence": 0.98
+              },
+              {
+                "word": "so",
+                "startSec": 2,
+                "endSec": 2.255,
+                "confidence": 0.98
+              },
+              {
+                "word": "watch",
+                "startSec": 2.3,
+                "endSec": 2.555,
+                "confidence": 0.98
+              },
+              {
+                "word": "this",
+                "startSec": 2.6,
+                "endSec": 2.855,
+                "confidence": 0.98
+              },
+              {
+                "word": "amazing",
+                "startSec": 2.9,
+                "endSec": 3.155,
+                "confidence": 0.98
+              },
+              {
+                "word": "growth",
+                "startSec": 3.2,
+                "endSec": 3.455,
+                "confidence": 0.98
+              },
+              {
+                "word": "explode",
+                "startSec": 3.5,
+                "endSec": 3.755,
+                "confidence": 0.98
+              }
+            ]
+          }
+        ],
+        "studioEdits": {
+          "framing": {
+            "mode": "split"
+          }
+        },
+        "brollUrl": null,
+        "deletedRanges": [],
+        "sceneBlocks": [],
+        "censorSegments": [],
+        "mediaMotions": []
+      },
+      "evidence": "split-two-up"
+    },
+    "rtl-arabic-captions": {
+      "class": "normal",
+      "targets": [
+        {
+          "id": "vertical",
+          "aspectRatio": "9:16"
+        }
+      ],
+      "description": "Arabic right-to-left captions on a centered crop",
+      "source": "talk-720p",
+      "document": {
+        "version": 1,
+        "clipStartSec": 0,
+        "clipEndSec": 4,
+        "captionPreset": {
+          "wordsPerCue": 3,
+          "textTransform": "none"
+        },
+        "transcriptSlice": [
+          {
+            "index": 0,
+            "speaker": 0,
+            "speakerLabel": "Speaker 1",
+            "startSec": 0.2,
+            "endSec": 3.672,
+            "text": "مرحبا بكم في هذا الفيديو القصير عن الأرقام والنمو السريع اليوم",
+            "confidence": 0.98,
+            "words": [
+              {
+                "word": "مرحبا",
+                "startSec": 0.2,
+                "endSec": 0.472,
+                "confidence": 0.98
+              },
+              {
+                "word": "بكم",
+                "startSec": 0.52,
+                "endSec": 0.792,
+                "confidence": 0.98
+              },
+              {
+                "word": "في",
+                "startSec": 0.84,
+                "endSec": 1.112,
+                "confidence": 0.98
+              },
+              {
+                "word": "هذا",
+                "startSec": 1.16,
+                "endSec": 1.432,
+                "confidence": 0.98
+              },
+              {
+                "word": "الفيديو",
+                "startSec": 1.48,
+                "endSec": 1.752,
+                "confidence": 0.98
+              },
+              {
+                "word": "القصير",
+                "startSec": 1.8,
+                "endSec": 2.072,
+                "confidence": 0.98
+              },
+              {
+                "word": "عن",
+                "startSec": 2.12,
+                "endSec": 2.392,
+                "confidence": 0.98
+              },
+              {
+                "word": "الأرقام",
+                "startSec": 2.44,
+                "endSec": 2.712,
+                "confidence": 0.98
+              },
+              {
+                "word": "والنمو",
+                "startSec": 2.76,
+                "endSec": 3.032,
+                "confidence": 0.98
+              },
+              {
+                "word": "السريع",
+                "startSec": 3.08,
+                "endSec": 3.352,
+                "confidence": 0.98
+              },
+              {
+                "word": "اليوم",
+                "startSec": 3.4,
+                "endSec": 3.672,
+                "confidence": 0.98
+              }
+            ]
+          }
+        ],
+        "studioEdits": {
+          "framing": {
+            "mode": "center"
+          }
+        },
+        "brollUrl": null,
+        "deletedRanges": [],
+        "sceneBlocks": [],
+        "censorSegments": [],
+        "mediaMotions": []
+      }
+    },
+    "cjk-dense-captions": {
+      "class": "normal",
+      "targets": [
+        {
+          "id": "vertical",
+          "aspectRatio": "9:16"
+        }
+      ],
+      "description": "CJK words and 112 one-word caption cues in 3.8 seconds",
+      "source": "talk-720p",
+      "document": {
+        "version": 1,
+        "clipStartSec": 0,
+        "clipEndSec": 4,
+        "captionPreset": {
+          "wordsPerCue": 1,
+          "textTransform": "none"
+        },
+        "transcriptSlice": [
+          {
+            "index": 0,
+            "speaker": 0,
+            "speakerLabel": "Speaker 1",
+            "startSec": 0.1,
+            "endSec": 3.895,
+            "text": "数据 talks and こんにちは never 안녕하세요 so 数据 this amazing こんにちは explode 안녕하세요 with 数据 love and こんにちは power 안녕하세요 talks 数据 fire never こんにちは so 안녕하세요 this 数据 growth explode こんにちは with 안녕하세요 love 数据 real power こんにちは talks 안녕하세요 fire 数据 stops so こんにちは this 안녕하세요 growth 数据 today with こんにちは love 안녕하세요 real 数据 money talks こんにちは fire 안녕하세요 stops 数据 watch this こんにちは growth 안녕하세요 today 数据 strong love こんにちは real 안녕하세요 money 数据 and fire こんにちは stops 안녕하세요 watch 数据 amazing growth こんにちは today 안녕하세요 strong 数据 and real こんにちは money 안녕하세요 and 数据 never stops こんにちは watch 안녕하세요 amazing 数据 explode today こんにちは strong 안녕하세요 and",
+            "confidence": 0.98,
+            "words": [
+              {
+                "word": "数据",
+                "startSec": 0.1,
+                "endSec": 0.129,
+                "confidence": 0.98
+              },
+              {
+                "word": "talks",
+                "startSec": 0.134,
+                "endSec": 0.163,
+                "confidence": 0.98
+              },
+              {
+                "word": "and",
+                "startSec": 0.168,
+                "endSec": 0.197,
+                "confidence": 0.98
+              },
+              {
+                "word": "こんにちは",
+                "startSec": 0.202,
+                "endSec": 0.231,
+                "confidence": 0.98
+              },
+              {
+                "word": "never",
+                "startSec": 0.236,
+                "endSec": 0.265,
+                "confidence": 0.98
+              },
+              {
+                "word": "안녕하세요",
+                "startSec": 0.27,
+                "endSec": 0.298,
+                "confidence": 0.98
+              },
+              {
+                "word": "so",
+                "startSec": 0.304,
+                "endSec": 0.332,
+                "confidence": 0.98
+              },
+              {
+                "word": "数据",
+                "startSec": 0.338,
+                "endSec": 0.366,
+                "confidence": 0.98
+              },
+              {
+                "word": "this",
+                "startSec": 0.371,
+                "endSec": 0.4,
+                "confidence": 0.98
+              },
+              {
+                "word": "amazing",
+                "startSec": 0.405,
+                "endSec": 0.434,
+                "confidence": 0.98
+              },
+              {
+                "word": "こんにちは",
+                "startSec": 0.439,
+                "endSec": 0.468,
+                "confidence": 0.98
+              },
+              {
+                "word": "explode",
+                "startSec": 0.473,
+                "endSec": 0.502,
+                "confidence": 0.98
+              },
+              {
+                "word": "안녕하세요",
+                "startSec": 0.507,
+                "endSec": 0.536,
+                "confidence": 0.98
+              },
+              {
+                "word": "with",
+                "startSec": 0.541,
+                "endSec": 0.57,
+                "confidence": 0.98
+              },
+              {
+                "word": "数据",
+                "startSec": 0.575,
+                "endSec": 0.604,
+                "confidence": 0.98
+              },
+              {
+                "word": "love",
+                "startSec": 0.609,
+                "endSec": 0.638,
+                "confidence": 0.98
+              },
+              {
+                "word": "and",
+                "startSec": 0.643,
+                "endSec": 0.672,
+                "confidence": 0.98
+              },
+              {
+                "word": "こんにちは",
+                "startSec": 0.677,
+                "endSec": 0.706,
+                "confidence": 0.98
+              },
+              {
+                "word": "power",
+                "startSec": 0.711,
+                "endSec": 0.74,
+                "confidence": 0.98
+              },
+              {
+                "word": "안녕하세요",
+                "startSec": 0.745,
+                "endSec": 0.773,
+                "confidence": 0.98
+              },
+              {
+                "word": "talks",
+                "startSec": 0.779,
+                "endSec": 0.807,
+                "confidence": 0.98
+              },
+              {
+                "word": "数据",
+                "startSec": 0.812,
+                "endSec": 0.841,
+                "confidence": 0.98
+              },
+              {
+                "word": "fire",
+                "startSec": 0.846,
+                "endSec": 0.875,
+                "confidence": 0.98
+              },
+              {
+                "word": "never",
+                "startSec": 0.88,
+                "endSec": 0.909,
+                "confidence": 0.98
+              },
+              {
+                "word": "こんにちは",
+                "startSec": 0.914,
+                "endSec": 0.943,
+                "confidence": 0.98
+              },
+              {
+                "word": "so",
+                "startSec": 0.948,
+                "endSec": 0.977,
+                "confidence": 0.98
+              },
+              {
+                "word": "안녕하세요",
+                "startSec": 0.982,
+                "endSec": 1.011,
+                "confidence": 0.98
+              },
+              {
+                "word": "this",
+                "startSec": 1.016,
+                "endSec": 1.045,
+                "confidence": 0.98
+              },
+              {
+                "word": "数据",
+                "startSec": 1.05,
+                "endSec": 1.079,
+                "confidence": 0.98
+              },
+              {
+                "word": "growth",
+                "startSec": 1.084,
+                "endSec": 1.113,
+                "confidence": 0.98
+              },
+              {
+                "word": "explode",
+                "startSec": 1.118,
+                "endSec": 1.147,
+                "confidence": 0.98
+              },
+              {
+                "word": "こんにちは",
+                "startSec": 1.152,
+                "endSec": 1.181,
+                "confidence": 0.98
+              },
+              {
+                "word": "with",
+                "startSec": 1.186,
+                "endSec": 1.215,
+                "confidence": 0.98
+              },
+              {
+                "word": "안녕하세요",
+                "startSec": 1.22,
+                "endSec": 1.248,
+                "confidence": 0.98
+              },
+              {
+                "word": "love",
+                "startSec": 1.254,
+                "endSec": 1.282,
+                "confidence": 0.98
+              },
+              {
+                "word": "数据",
+                "startSec": 1.288,
+                "endSec": 1.316,
+                "confidence": 0.98
+              },
+              {
+                "word": "real",
+                "startSec": 1.321,
+                "endSec": 1.35,
+                "confidence": 0.98
+              },
+              {
+                "word": "power",
+                "startSec": 1.355,
+                "endSec": 1.384,
+                "confidence": 0.98
+              },
+              {
+                "word": "こんにちは",
+                "startSec": 1.389,
+                "endSec": 1.418,
+                "confidence": 0.98
+              },
+              {
+                "word": "talks",
+                "startSec": 1.423,
+                "endSec": 1.452,
+                "confidence": 0.98
+              },
+              {
+                "word": "안녕하세요",
+                "startSec": 1.457,
+                "endSec": 1.486,
+                "confidence": 0.98
+              },
+              {
+                "word": "fire",
+                "startSec": 1.491,
+                "endSec": 1.52,
+                "confidence": 0.98
+              },
+              {
+                "word": "数据",
+                "startSec": 1.525,
+                "endSec": 1.554,
+                "confidence": 0.98
+              },
+              {
+                "word": "stops",
+                "startSec": 1.559,
+                "endSec": 1.588,
+                "confidence": 0.98
+              },
+              {
+                "word": "so",
+                "startSec": 1.593,
+                "endSec": 1.622,
+                "confidence": 0.98
+              },
+              {
+                "word": "こんにちは",
+                "startSec": 1.627,
+                "endSec": 1.656,
+                "confidence": 0.98
+              },
+              {
+                "word": "this",
+                "startSec": 1.661,
+                "endSec": 1.69,
+                "confidence": 0.98
+              },
+              {
+                "word": "안녕하세요",
+                "startSec": 1.695,
+                "endSec": 1.723,
+                "confidence": 0.98
+              },
+              {
+                "word": "growth",
+                "startSec": 1.729,
+                "endSec": 1.757,
+                "confidence": 0.98
+              },
+              {
+                "word": "数据",
+                "startSec": 1.762,
+                "endSec": 1.791,
+                "confidence": 0.98
+              },
+              {
+                "word": "today",
+                "startSec": 1.796,
+                "endSec": 1.825,
+                "confidence": 0.98
+              },
+              {
+                "word": "with",
+                "startSec": 1.83,
+                "endSec": 1.859,
+                "confidence": 0.98
+              },
+              {
+                "word": "こんにちは",
+                "startSec": 1.864,
+                "endSec": 1.893,
+                "confidence": 0.98
+              },
+              {
+                "word": "love",
+                "startSec": 1.898,
+                "endSec": 1.927,
+                "confidence": 0.98
+              },
+              {
+                "word": "안녕하세요",
+                "startSec": 1.932,
+                "endSec": 1.961,
+                "confidence": 0.98
+              },
+              {
+                "word": "real",
+                "startSec": 1.966,
+                "endSec": 1.995,
+                "confidence": 0.98
+              },
+              {
+                "word": "数据",
+                "startSec": 2,
+                "endSec": 2.029,
+                "confidence": 0.98
+              },
+              {
+                "word": "money",
+                "startSec": 2.034,
+                "endSec": 2.063,
+                "confidence": 0.98
+              },
+              {
+                "word": "talks",
+                "startSec": 2.068,
+                "endSec": 2.097,
+                "confidence": 0.98
+              },
+              {
+                "word": "こんにちは",
+                "startSec": 2.102,
+                "endSec": 2.131,
+                "confidence": 0.98
+              },
+              {
+                "word": "fire",
+                "startSec": 2.136,
+                "endSec": 2.165,
+                "confidence": 0.98
+              },
+              {
+                "word": "안녕하세요",
+                "startSec": 2.17,
+                "endSec": 2.198,
+                "confidence": 0.98
+              },
+              {
+                "word": "stops",
+                "startSec": 2.204,
+                "endSec": 2.232,
+                "confidence": 0.98
+              },
+              {
+                "word": "数据",
+                "startSec": 2.237,
+                "endSec": 2.266,
+                "confidence": 0.98
+              },
+              {
+                "word": "watch",
+                "startSec": 2.271,
+                "endSec": 2.3,
+                "confidence": 0.98
+              },
+              {
+                "word": "this",
+                "startSec": 2.305,
+                "endSec": 2.334,
+                "confidence": 0.98
+              },
+              {
+                "word": "こんにちは",
+                "startSec": 2.339,
+                "endSec": 2.368,
+                "confidence": 0.98
+              },
+              {
+                "word": "growth",
+                "startSec": 2.373,
+                "endSec": 2.402,
+                "confidence": 0.98
+              },
+              {
+                "word": "안녕하세요",
+                "startSec": 2.407,
+                "endSec": 2.436,
+                "confidence": 0.98
+              },
+              {
+                "word": "today",
+                "startSec": 2.441,
+                "endSec": 2.47,
+                "confidence": 0.98
+              },
+              {
+                "word": "数据",
+                "startSec": 2.475,
+                "endSec": 2.504,
+                "confidence": 0.98
+              },
+              {
+                "word": "strong",
+                "startSec": 2.509,
+                "endSec": 2.538,
+                "confidence": 0.98
+              },
+              {
+                "word": "love",
+                "startSec": 2.543,
+                "endSec": 2.572,
+                "confidence": 0.98
+              },
+              {
+                "word": "こんにちは",
+                "startSec": 2.577,
+                "endSec": 2.606,
+                "confidence": 0.98
+              },
+              {
+                "word": "real",
+                "startSec": 2.611,
+                "endSec": 2.64,
+                "confidence": 0.98
+              },
+              {
+                "word": "안녕하세요",
+                "startSec": 2.645,
+                "endSec": 2.673,
+                "confidence": 0.98
+              },
+              {
+                "word": "money",
+                "startSec": 2.679,
+                "endSec": 2.707,
+                "confidence": 0.98
+              },
+              {
+                "word": "数据",
+                "startSec": 2.712,
+                "endSec": 2.741,
+                "confidence": 0.98
+              },
+              {
+                "word": "and",
+                "startSec": 2.746,
+                "endSec": 2.775,
+                "confidence": 0.98
+              },
+              {
+                "word": "fire",
+                "startSec": 2.78,
+                "endSec": 2.809,
+                "confidence": 0.98
+              },
+              {
+                "word": "こんにちは",
+                "startSec": 2.814,
+                "endSec": 2.843,
+                "confidence": 0.98
+              },
+              {
+                "word": "stops",
+                "startSec": 2.848,
+                "endSec": 2.877,
+                "confidence": 0.98
+              },
+              {
+                "word": "안녕하세요",
+                "startSec": 2.882,
+                "endSec": 2.911,
+                "confidence": 0.98
+              },
+              {
+                "word": "watch",
+                "startSec": 2.916,
+                "endSec": 2.945,
+                "confidence": 0.98
+              },
+              {
+                "word": "数据",
+                "startSec": 2.95,
+                "endSec": 2.979,
+                "confidence": 0.98
+              },
+              {
+                "word": "amazing",
+                "startSec": 2.984,
+                "endSec": 3.013,
+                "confidence": 0.98
+              },
+              {
+                "word": "growth",
+                "startSec": 3.018,
+                "endSec": 3.047,
+                "confidence": 0.98
+              },
+              {
+                "word": "こんにちは",
+                "startSec": 3.052,
+                "endSec": 3.081,
+                "confidence": 0.98
+              },
+              {
+                "word": "today",
+                "startSec": 3.086,
+                "endSec": 3.115,
+                "confidence": 0.98
+              },
+              {
+                "word": "안녕하세요",
+                "startSec": 3.12,
+                "endSec": 3.148,
+                "confidence": 0.98
+              },
+              {
+                "word": "strong",
+                "startSec": 3.154,
+                "endSec": 3.182,
+                "confidence": 0.98
+              },
+              {
+                "word": "数据",
+                "startSec": 3.188,
+                "endSec": 3.216,
+                "confidence": 0.98
+              },
+              {
+                "word": "and",
+                "startSec": 3.221,
+                "endSec": 3.25,
+                "confidence": 0.98
+              },
+              {
+                "word": "real",
+                "startSec": 3.255,
+                "endSec": 3.284,
+                "confidence": 0.98
+              },
+              {
+                "word": "こんにちは",
+                "startSec": 3.289,
+                "endSec": 3.318,
+                "confidence": 0.98
+              },
+              {
+                "word": "money",
+                "startSec": 3.323,
+                "endSec": 3.352,
+                "confidence": 0.98
+              },
+              {
+                "word": "안녕하세요",
+                "startSec": 3.357,
+                "endSec": 3.386,
+                "confidence": 0.98
+              },
+              {
+                "word": "and",
+                "startSec": 3.391,
+                "endSec": 3.42,
+                "confidence": 0.98
+              },
+              {
+                "word": "数据",
+                "startSec": 3.425,
+                "endSec": 3.454,
+                "confidence": 0.98
+              },
+              {
+                "word": "never",
+                "startSec": 3.459,
+                "endSec": 3.488,
+                "confidence": 0.98
+              },
+              {
+                "word": "stops",
+                "startSec": 3.493,
+                "endSec": 3.522,
+                "confidence": 0.98
+              },
+              {
+                "word": "こんにちは",
+                "startSec": 3.527,
+                "endSec": 3.556,
+                "confidence": 0.98
+              },
+              {
+                "word": "watch",
+                "startSec": 3.561,
+                "endSec": 3.59,
+                "confidence": 0.98
+              },
+              {
+                "word": "안녕하세요",
+                "startSec": 3.595,
+                "endSec": 3.623,
+                "confidence": 0.98
+              },
+              {
+                "word": "amazing",
+                "startSec": 3.629,
+                "endSec": 3.657,
+                "confidence": 0.98
+              },
+              {
+                "word": "数据",
+                "startSec": 3.662,
+                "endSec": 3.691,
+                "confidence": 0.98
+              },
+              {
+                "word": "explode",
+                "startSec": 3.696,
+                "endSec": 3.725,
+                "confidence": 0.98
+              },
+              {
+                "word": "today",
+                "startSec": 3.73,
+                "endSec": 3.759,
+                "confidence": 0.98
+              },
+              {
+                "word": "こんにちは",
+                "startSec": 3.764,
+                "endSec": 3.793,
+                "confidence": 0.98
+              },
+              {
+                "word": "strong",
+                "startSec": 3.798,
+                "endSec": 3.827,
+                "confidence": 0.98
+              },
+              {
+                "word": "안녕하세요",
+                "startSec": 3.832,
+                "endSec": 3.861,
+                "confidence": 0.98
+              },
+              {
+                "word": "and",
+                "startSec": 3.866,
+                "endSec": 3.895,
+                "confidence": 0.98
+              }
+            ]
+          }
+        ],
+        "studioEdits": {
+          "framing": {
+            "mode": "center"
+          }
+        },
+        "brollUrl": null,
+        "deletedRanges": [],
+        "sceneBlocks": [],
+        "censorSegments": [],
+        "mediaMotions": []
+      }
+    },
+    "logo-broll-music-sfx-censor": {
+      "class": "normal",
+      "targets": [
+        {
+          "id": "vertical",
+          "aspectRatio": "9:16"
+        }
+      ],
+      "description": "Brand logo, timed image B-roll, music with ducking, a sound effect and a beep censor",
+      "source": "talk-720p",
+      "document": {
+        "version": 1,
+        "clipStartSec": 0,
+        "clipEndSec": 4,
+        "captionPreset": {
+          "wordsPerCue": 3
+        },
+        "transcriptSlice": [
+          {
+            "index": 0,
+            "speaker": 0,
+            "speakerLabel": "Speaker 1",
+            "startSec": 0.2,
+            "endSec": 3.34,
+            "text": "well this fuck is fire and money talks",
+            "confidence": 0.98,
+            "words": [
+              {
+                "word": "well",
+                "startSec": 0.2,
+                "endSec": 0.54,
+                "confidence": 0.98
+              },
+              {
+                "word": "this",
+                "startSec": 0.6,
+                "endSec": 0.94,
+                "confidence": 0.98
+              },
+              {
+                "word": "fuck",
+                "startSec": 1,
+                "endSec": 1.34,
+                "confidence": 0.98
+              },
+              {
+                "word": "is",
+                "startSec": 1.4,
+                "endSec": 1.74,
+                "confidence": 0.98
+              },
+              {
+                "word": "fire",
+                "startSec": 1.8,
+                "endSec": 2.14,
+                "confidence": 0.98
+              },
+              {
+                "word": "and",
+                "startSec": 2.2,
+                "endSec": 2.54,
+                "confidence": 0.98
+              },
+              {
+                "word": "money",
+                "startSec": 2.6,
+                "endSec": 2.94,
+                "confidence": 0.98
+              },
+              {
+                "word": "talks",
+                "startSec": 3,
+                "endSec": 3.34,
+                "confidence": 0.98
+              }
+            ]
+          }
+        ],
+        "studioEdits": {
+          "framing": {
+            "mode": "center"
+          },
+          "music": {
+            "url": null,
+            "title": "Bed",
+            "volume": 40,
+            "startOffsetSec": 0,
+            "fadeInSec": 0.5,
+            "fadeOutSec": 0.5,
+            "assetId": "6f0a5c9e-3f7e-4f64-8a54-0f4c1a6d9a01",
+            "ducking": true
+          },
+          "sfx": [
+            {
+              "id": "hit",
+              "assetId": "7a1b6d0f-4a8f-4075-9b65-1a5d2b7eab02",
+              "title": "Hit",
+              "startSec": 0.5,
+              "volume": 80
+            }
+          ],
+          "visualBroll": [
+            {
+              "id": "c1d2e3f4-0000-4000-8000-000000000001",
+              "asset": {
+                "kind": "visual_asset",
+                "id": "c1d2e3f4-0000-4000-8000-0000000000a1",
+                "fingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+              },
+              "startSec": 1.2,
+              "endSec": 2.4,
+              "fit": "cover"
+            }
+          ]
+        },
+        "brollUrl": null,
+        "deletedRanges": [],
+        "sceneBlocks": [],
+        "censorSegments": [
+          {
+            "schemaVersion": 1,
+            "id": "10000000-0000-4000-8000-000000000002",
+            "sourceWordIds": [
+              "__censor_word__"
+            ],
+            "sourceStartSec": 0.8,
+            "sourceEndSec": 1.2,
+            "suggestionFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "policyVersion": "auto-censor-v2",
+            "enabled": true,
+            "treatment": "beep",
+            "paddingSec": 0.06,
+            "beepSettings": {
+              "frequencyHz": 1000,
+              "levelDb": -8
+            },
+            "captionMaskPolicy": null
+          }
+        ],
+        "mediaMotions": []
+      },
+      "assets": {
+        "logo": {
+          "fixture": "logo",
+          "position": "top-right",
+          "opacity": 0.9,
+          "scalePct": 18
+        },
+        "music": {
+          "fixture": "music-bed",
+          "assetId": "6f0a5c9e-3f7e-4f64-8a54-0f4c1a6d9a01"
+        },
+        "sfx": {
+          "hit": {
+            "fixture": "sfx-hit",
+            "assetId": "7a1b6d0f-4a8f-4075-9b65-1a5d2b7eab02"
+          }
+        },
+        "visualAssets": {
+          "c1d2e3f4-0000-4000-8000-0000000000a1": {
+            "fixture": "broll-card",
+            "fingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "kind": "image"
+          }
+        }
+      },
+      "censorWord": {
+        "utteranceIndex": 0,
+        "wordIndex": 2
+      }
+    },
+    "cut-and-inserted-scenes": {
+      "class": "normal",
+      "targets": [
+        {
+          "id": "vertical",
+          "aspectRatio": "9:16"
+        },
+        {
+          "id": "square",
+          "aspectRatio": "1:1"
+        }
+      ],
+      "description": "A deleted range plus inserted color, text, image and video scenes, on 9:16 and 1:1",
+      "source": "talk-720p",
+      "document": {
+        "version": 1,
+        "clipStartSec": 0,
+        "clipEndSec": 4,
+        "captionPreset": {
+          "wordsPerCue": 3
+        },
+        "transcriptSlice": [
+          {
+            "index": 0,
+            "speaker": 0,
+            "speakerLabel": "Speaker 1",
+            "startSec": 0.2,
+            "endSec": 3.755,
+            "text": "money talks and fire never stops so watch this amazing growth explode",
+            "confidence": 0.98,
+            "words": [
+              {
+                "word": "money",
+                "startSec": 0.2,
+                "endSec": 0.455,
+                "confidence": 0.98
+              },
+              {
+                "word": "talks",
+                "startSec": 0.5,
+                "endSec": 0.755,
+                "confidence": 0.98
+              },
+              {
+                "word": "and",
+                "startSec": 0.8,
+                "endSec": 1.055,
+                "confidence": 0.98
+              },
+              {
+                "word": "fire",
+                "startSec": 1.1,
+                "endSec": 1.355,
+                "confidence": 0.98
+              },
+              {
+                "word": "never",
+                "startSec": 1.4,
+                "endSec": 1.655,
+                "confidence": 0.98
+              },
+              {
+                "word": "stops",
+                "startSec": 1.7,
+                "endSec": 1.955,
+                "confidence": 0.98
+              },
+              {
+                "word": "so",
+                "startSec": 2,
+                "endSec": 2.255,
+                "confidence": 0.98
+              },
+              {
+                "word": "watch",
+                "startSec": 2.3,
+                "endSec": 2.555,
+                "confidence": 0.98
+              },
+              {
+                "word": "this",
+                "startSec": 2.6,
+                "endSec": 2.855,
+                "confidence": 0.98
+              },
+              {
+                "word": "amazing",
+                "startSec": 2.9,
+                "endSec": 3.155,
+                "confidence": 0.98
+              },
+              {
+                "word": "growth",
+                "startSec": 3.2,
+                "endSec": 3.455,
+                "confidence": 0.98
+              },
+              {
+                "word": "explode",
+                "startSec": 3.5,
+                "endSec": 3.755,
+                "confidence": 0.98
+              }
+            ]
+          }
+        ],
+        "studioEdits": {
+          "framing": {
+            "mode": "center"
+          }
+        },
+        "brollUrl": null,
+        "deletedRanges": [
+          {
+            "startSec": 1.4,
+            "endSec": 1.8
+          }
+        ],
+        "sceneBlocks": [
+          {
+            "id": "8ab9d330-688f-4574-932c-27ac661245c1",
+            "schemaVersion": 1,
+            "anchorSec": 0,
+            "durationSec": 1,
+            "content": {
+              "kind": "color",
+              "color": "#112233"
+            },
+            "motion": {
+              "entrance": "scale-in",
+              "exit": "scale-out",
+              "durationSec": 0.3
+            },
+            "templateSnapshot": null
+          },
+          {
+            "id": "d8ab95f8-fc16-4e60-814e-69762a59a99b",
+            "schemaVersion": 1,
+            "anchorSec": 1,
+            "durationSec": 1,
+            "content": {
+              "kind": "text",
+              "text": "Opening: 100%",
+              "fontFamily": "Arial",
+              "fontAsset": null,
+              "color": "#FFFFFF",
+              "backgroundColor": "#111827"
+            },
+            "motion": {
+              "entrance": "fade",
+              "exit": "fade"
+            },
+            "templateSnapshot": null
+          },
+          {
+            "id": "a3196d76-b71d-4b93-8812-7435b9e17faf",
+            "schemaVersion": 1,
+            "anchorSec": 2,
+            "durationSec": 1,
+            "content": {
+              "kind": "image",
+              "asset": {
+                "kind": "visual_asset",
+                "id": "141b738e-f106-4da1-b670-8b71ff7f0a58",
+                "fingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+              },
+              "fit": "contain",
+              "backgroundColor": "#223344"
+            },
+            "motion": {
+              "entrance": "ken-burns-in",
+              "exit": "ken-burns-out",
+              "durationSec": 0.3
+            },
+            "templateSnapshot": null
+          },
+          {
+            "id": "31ddc1dd-838c-4fed-a940-4cbed7a3974b",
+            "schemaVersion": 1,
+            "anchorSec": 3,
+            "durationSec": 1,
+            "content": {
+              "kind": "video",
+              "asset": {
+                "kind": "visual_asset",
+                "id": "9e2af81d-8a41-4404-af89-b560f9c4eb98",
+                "fingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+              },
+              "sourceStartSec": 0,
+              "sourceEndSec": 1,
+              "fit": "cover",
+              "backgroundColor": "#000000",
+              "muted": false,
+              "volume": 65
+            },
+            "motion": {
+              "entrance": "pan-up",
+              "exit": "pan-down",
+              "durationSec": 0.3
+            },
+            "templateSnapshot": null
+          }
+        ],
+        "censorSegments": [],
+        "mediaMotions": []
+      },
+      "assets": {
+        "visualAssets": {
+          "141b738e-f106-4da1-b670-8b71ff7f0a58": {
+            "fixture": "scene-card",
+            "fingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "kind": "image"
+          },
+          "9e2af81d-8a41-4404-af89-b560f9c4eb98": {
+            "fixture": "scene-clip",
+            "fingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "kind": "video"
+          }
+        }
+      }
+    },
+    "exact-source-end": {
+      "class": "normal",
+      "targets": [
+        {
+          "id": "vertical",
+          "aspectRatio": "9:16"
+        }
+      ],
+      "description": "The clip ends exactly at the end of the 5s source",
+      "source": "talk-720p",
+      "document": {
+        "version": 1,
+        "clipStartSec": 3.2,
+        "clipEndSec": 5,
+        "captionPreset": {
+          "wordsPerCue": 3
+        },
+        "transcriptSlice": [
+          {
+            "index": 0,
+            "speaker": 0,
+            "speakerLabel": "Speaker 1",
+            "startSec": 3.3,
+            "endSec": 4.938,
+            "text": "money talks and fire never stops",
+            "confidence": 0.98,
+            "words": [
+              {
+                "word": "money",
+                "startSec": 3.3,
+                "endSec": 3.538,
+                "confidence": 0.98
+              },
+              {
+                "word": "talks",
+                "startSec": 3.58,
+                "endSec": 3.818,
+                "confidence": 0.98
+              },
+              {
+                "word": "and",
+                "startSec": 3.86,
+                "endSec": 4.098,
+                "confidence": 0.98
+              },
+              {
+                "word": "fire",
+                "startSec": 4.14,
+                "endSec": 4.378,
+                "confidence": 0.98
+              },
+              {
+                "word": "never",
+                "startSec": 4.42,
+                "endSec": 4.658,
+                "confidence": 0.98
+              },
+              {
+                "word": "stops",
+                "startSec": 4.7,
+                "endSec": 4.938,
+                "confidence": 0.98
+              }
+            ]
+          }
+        ],
+        "studioEdits": {
+          "framing": {
+            "mode": "center"
+          }
+        },
+        "brollUrl": null,
+        "deletedRanges": [],
+        "sceneBlocks": [],
+        "censorSegments": [],
+        "mediaMotions": []
+      }
+    },
+    "treatments-720p-watermark-1080p": {
+      "class": "normal",
+      "targets": [
+        {
+          "id": "v720wm",
+          "aspectRatio": "9:16",
+          "resolution": "720p",
+          "watermark": true
+        },
+        {
+          "id": "s1080",
+          "aspectRatio": "1:1",
+          "resolution": "1080p",
+          "watermark": false
+        },
+        {
+          "id": "l1080",
+          "aspectRatio": "16:9",
+          "resolution": "1080p",
+          "watermark": false
+        },
+        {
+          "id": "l720wm",
+          "aspectRatio": "16:9",
+          "resolution": "720p",
+          "watermark": true
+        }
+      ],
+      "description": "720p watermarked 9:16 and 16:9, 1080p 1:1 and 16:9 from one plan",
+      "source": "talk-720p",
+      "document": {
+        "version": 1,
+        "clipStartSec": 0,
+        "clipEndSec": 4,
+        "captionPreset": {
+          "wordsPerCue": 3
+        },
+        "transcriptSlice": [
+          {
+            "index": 0,
+            "speaker": 0,
+            "speakerLabel": "Speaker 1",
+            "startSec": 0.2,
+            "endSec": 3.755,
+            "text": "money talks and fire never stops so watch this amazing growth explode",
+            "confidence": 0.98,
+            "words": [
+              {
+                "word": "money",
+                "startSec": 0.2,
+                "endSec": 0.455,
+                "confidence": 0.98
+              },
+              {
+                "word": "talks",
+                "startSec": 0.5,
+                "endSec": 0.755,
+                "confidence": 0.98
+              },
+              {
+                "word": "and",
+                "startSec": 0.8,
+                "endSec": 1.055,
+                "confidence": 0.98
+              },
+              {
+                "word": "fire",
+                "startSec": 1.1,
+                "endSec": 1.355,
+                "confidence": 0.98
+              },
+              {
+                "word": "never",
+                "startSec": 1.4,
+                "endSec": 1.655,
+                "confidence": 0.98
+              },
+              {
+                "word": "stops",
+                "startSec": 1.7,
+                "endSec": 1.955,
+                "confidence": 0.98
+              },
+              {
+                "word": "so",
+                "startSec": 2,
+                "endSec": 2.255,
+                "confidence": 0.98
+              },
+              {
+                "word": "watch",
+                "startSec": 2.3,
+                "endSec": 2.555,
+                "confidence": 0.98
+              },
+              {
+                "word": "this",
+                "startSec": 2.6,
+                "endSec": 2.855,
+                "confidence": 0.98
+              },
+              {
+                "word": "amazing",
+                "startSec": 2.9,
+                "endSec": 3.155,
+                "confidence": 0.98
+              },
+              {
+                "word": "growth",
+                "startSec": 3.2,
+                "endSec": 3.455,
+                "confidence": 0.98
+              },
+              {
+                "word": "explode",
+                "startSec": 3.5,
+                "endSec": 3.755,
+                "confidence": 0.98
+              }
+            ]
+          }
+        ],
+        "studioEdits": {
+          "framing": {
+            "mode": "center"
+          }
+        },
+        "brollUrl": null,
+        "deletedRanges": [],
+        "sceneBlocks": [],
+        "censorSegments": [],
+        "mediaMotions": []
+      }
+    },
+    "image-background-fit": {
+      "class": "normal",
+      "targets": [
+        {
+          "id": "vertical",
+          "aspectRatio": "9:16"
+        }
+      ],
+      "description": "Fit framing over an image canvas background",
+      "source": "talk-720p",
+      "document": {
+        "version": 1,
+        "clipStartSec": 0,
+        "clipEndSec": 4,
+        "captionPreset": {
+          "wordsPerCue": 3
+        },
+        "transcriptSlice": [
+          {
+            "index": 0,
+            "speaker": 0,
+            "speakerLabel": "Speaker 1",
+            "startSec": 0.2,
+            "endSec": 3.755,
+            "text": "money talks and fire never stops so watch this amazing growth explode",
+            "confidence": 0.98,
+            "words": [
+              {
+                "word": "money",
+                "startSec": 0.2,
+                "endSec": 0.455,
+                "confidence": 0.98
+              },
+              {
+                "word": "talks",
+                "startSec": 0.5,
+                "endSec": 0.755,
+                "confidence": 0.98
+              },
+              {
+                "word": "and",
+                "startSec": 0.8,
+                "endSec": 1.055,
+                "confidence": 0.98
+              },
+              {
+                "word": "fire",
+                "startSec": 1.1,
+                "endSec": 1.355,
+                "confidence": 0.98
+              },
+              {
+                "word": "never",
+                "startSec": 1.4,
+                "endSec": 1.655,
+                "confidence": 0.98
+              },
+              {
+                "word": "stops",
+                "startSec": 1.7,
+                "endSec": 1.955,
+                "confidence": 0.98
+              },
+              {
+                "word": "so",
+                "startSec": 2,
+                "endSec": 2.255,
+                "confidence": 0.98
+              },
+              {
+                "word": "watch",
+                "startSec": 2.3,
+                "endSec": 2.555,
+                "confidence": 0.98
+              },
+              {
+                "word": "this",
+                "startSec": 2.6,
+                "endSec": 2.855,
+                "confidence": 0.98
+              },
+              {
+                "word": "amazing",
+                "startSec": 2.9,
+                "endSec": 3.155,
+                "confidence": 0.98
+              },
+              {
+                "word": "growth",
+                "startSec": 3.2,
+                "endSec": 3.455,
+                "confidence": 0.98
+              },
+              {
+                "word": "explode",
+                "startSec": 3.5,
+                "endSec": 3.755,
+                "confidence": 0.98
+              }
+            ]
+          }
+        ],
+        "studioEdits": {
+          "framing": {
+            "mode": "center"
+          },
+          "background": {
+            "mode": "image",
+            "color": "#102030",
+            "imageUrl": "https://example.com/background.png"
+          }
+        },
+        "brollUrl": null,
+        "deletedRanges": [],
+        "sceneBlocks": [],
+        "censorSegments": [],
+        "mediaMotions": []
+      },
+      "assets": {
+        "background": {
+          "fixture": "background",
+          "color": "#102030"
+        }
+      }
+    },
+    "audio-only-audiogram": {
+      "class": "normal",
+      "targets": [
+        {
+          "id": "vertical",
+          "aspectRatio": "9:16"
+        }
+      ],
+      "description": "Audio-only source rendered as an audiogram",
+      "source": "talk-audio",
+      "document": {
+        "version": 1,
+        "clipStartSec": 0,
+        "clipEndSec": 4,
+        "captionPreset": {
+          "wordsPerCue": 3
+        },
+        "transcriptSlice": [
+          {
+            "index": 0,
+            "speaker": 0,
+            "speakerLabel": "Speaker 1",
+            "startSec": 0.2,
+            "endSec": 3.755,
+            "text": "money talks and fire never stops so watch this amazing growth explode",
+            "confidence": 0.98,
+            "words": [
+              {
+                "word": "money",
+                "startSec": 0.2,
+                "endSec": 0.455,
+                "confidence": 0.98
+              },
+              {
+                "word": "talks",
+                "startSec": 0.5,
+                "endSec": 0.755,
+                "confidence": 0.98
+              },
+              {
+                "word": "and",
+                "startSec": 0.8,
+                "endSec": 1.055,
+                "confidence": 0.98
+              },
+              {
+                "word": "fire",
+                "startSec": 1.1,
+                "endSec": 1.355,
+                "confidence": 0.98
+              },
+              {
+                "word": "never",
+                "startSec": 1.4,
+                "endSec": 1.655,
+                "confidence": 0.98
+              },
+              {
+                "word": "stops",
+                "startSec": 1.7,
+                "endSec": 1.955,
+                "confidence": 0.98
+              },
+              {
+                "word": "so",
+                "startSec": 2,
+                "endSec": 2.255,
+                "confidence": 0.98
+              },
+              {
+                "word": "watch",
+                "startSec": 2.3,
+                "endSec": 2.555,
+                "confidence": 0.98
+              },
+              {
+                "word": "this",
+                "startSec": 2.6,
+                "endSec": 2.855,
+                "confidence": 0.98
+              },
+              {
+                "word": "amazing",
+                "startSec": 2.9,
+                "endSec": 3.155,
+                "confidence": 0.98
+              },
+              {
+                "word": "growth",
+                "startSec": 3.2,
+                "endSec": 3.455,
+                "confidence": 0.98
+              },
+              {
+                "word": "explode",
+                "startSec": 3.5,
+                "endSec": 3.755,
+                "confidence": 0.98
+              }
+            ]
+          }
+        ],
+        "studioEdits": {
+          "framing": {
+            "mode": "center"
+          }
+        },
+        "brollUrl": null,
+        "deletedRanges": [],
+        "sceneBlocks": [],
+        "censorSegments": [],
+        "mediaMotions": []
+      }
+    },
+    "mono-44k": {
+      "class": "normal",
+      "targets": [
+        {
+          "id": "vertical",
+          "aspectRatio": "9:16"
+        }
+      ],
+      "description": "Mono 44.1 kHz source audio",
+      "source": "talk-mono44",
+      "document": {
+        "version": 1,
+        "clipStartSec": 0,
+        "clipEndSec": 4,
+        "captionPreset": {
+          "wordsPerCue": 3
+        },
+        "transcriptSlice": [
+          {
+            "index": 0,
+            "speaker": 0,
+            "speakerLabel": "Speaker 1",
+            "startSec": 0.2,
+            "endSec": 3.755,
+            "text": "money talks and fire never stops so watch this amazing growth explode",
+            "confidence": 0.98,
+            "words": [
+              {
+                "word": "money",
+                "startSec": 0.2,
+                "endSec": 0.455,
+                "confidence": 0.98
+              },
+              {
+                "word": "talks",
+                "startSec": 0.5,
+                "endSec": 0.755,
+                "confidence": 0.98
+              },
+              {
+                "word": "and",
+                "startSec": 0.8,
+                "endSec": 1.055,
+                "confidence": 0.98
+              },
+              {
+                "word": "fire",
+                "startSec": 1.1,
+                "endSec": 1.355,
+                "confidence": 0.98
+              },
+              {
+                "word": "never",
+                "startSec": 1.4,
+                "endSec": 1.655,
+                "confidence": 0.98
+              },
+              {
+                "word": "stops",
+                "startSec": 1.7,
+                "endSec": 1.955,
+                "confidence": 0.98
+              },
+              {
+                "word": "so",
+                "startSec": 2,
+                "endSec": 2.255,
+                "confidence": 0.98
+              },
+              {
+                "word": "watch",
+                "startSec": 2.3,
+                "endSec": 2.555,
+                "confidence": 0.98
+              },
+              {
+                "word": "this",
+                "startSec": 2.6,
+                "endSec": 2.855,
+                "confidence": 0.98
+              },
+              {
+                "word": "amazing",
+                "startSec": 2.9,
+                "endSec": 3.155,
+                "confidence": 0.98
+              },
+              {
+                "word": "growth",
+                "startSec": 3.2,
+                "endSec": 3.455,
+                "confidence": 0.98
+              },
+              {
+                "word": "explode",
+                "startSec": 3.5,
+                "endSec": 3.755,
+                "confidence": 0.98
+              }
+            ]
+          }
+        ],
+        "studioEdits": {
+          "framing": {
+            "mode": "center"
+          }
+        },
+        "brollUrl": null,
+        "deletedRanges": [],
+        "sceneBlocks": [],
+        "censorSegments": [],
+        "mediaMotions": []
+      }
+    },
+    "silent-video": {
+      "class": "normal",
+      "targets": [
+        {
+          "id": "vertical",
+          "aspectRatio": "9:16"
+        }
+      ],
+      "description": "Video with no audio stream",
+      "source": "talk-silent",
+      "document": {
+        "version": 1,
+        "clipStartSec": 0,
+        "clipEndSec": 4,
+        "captionPreset": {
+          "wordsPerCue": 3
+        },
+        "transcriptSlice": [
+          {
+            "index": 0,
+            "speaker": 0,
+            "speakerLabel": "Speaker 1",
+            "startSec": 0.2,
+            "endSec": 3.755,
+            "text": "money talks and fire never stops so watch this amazing growth explode",
+            "confidence": 0.98,
+            "words": [
+              {
+                "word": "money",
+                "startSec": 0.2,
+                "endSec": 0.455,
+                "confidence": 0.98
+              },
+              {
+                "word": "talks",
+                "startSec": 0.5,
+                "endSec": 0.755,
+                "confidence": 0.98
+              },
+              {
+                "word": "and",
+                "startSec": 0.8,
+                "endSec": 1.055,
+                "confidence": 0.98
+              },
+              {
+                "word": "fire",
+                "startSec": 1.1,
+                "endSec": 1.355,
+                "confidence": 0.98
+              },
+              {
+                "word": "never",
+                "startSec": 1.4,
+                "endSec": 1.655,
+                "confidence": 0.98
+              },
+              {
+                "word": "stops",
+                "startSec": 1.7,
+                "endSec": 1.955,
+                "confidence": 0.98
+              },
+              {
+                "word": "so",
+                "startSec": 2,
+                "endSec": 2.255,
+                "confidence": 0.98
+              },
+              {
+                "word": "watch",
+                "startSec": 2.3,
+                "endSec": 2.555,
+                "confidence": 0.98
+              },
+              {
+                "word": "this",
+                "startSec": 2.6,
+                "endSec": 2.855,
+                "confidence": 0.98
+              },
+              {
+                "word": "amazing",
+                "startSec": 2.9,
+                "endSec": 3.155,
+                "confidence": 0.98
+              },
+              {
+                "word": "growth",
+                "startSec": 3.2,
+                "endSec": 3.455,
+                "confidence": 0.98
+              },
+              {
+                "word": "explode",
+                "startSec": 3.5,
+                "endSec": 3.755,
+                "confidence": 0.98
+              }
+            ]
+          }
+        ],
+        "studioEdits": {
+          "framing": {
+            "mode": "center"
+          }
+        },
+        "brollUrl": null,
+        "deletedRanges": [],
+        "sceneBlocks": [],
+        "censorSegments": [],
+        "mediaMotions": []
+      }
+    },
+    "ntsc-24000-1001": {
+      "class": "normal",
+      "targets": [
+        {
+          "id": "vertical",
+          "aspectRatio": "9:16"
+        }
+      ],
+      "description": "24000/1001 source clock",
+      "source": "ntsc-24000-1001",
+      "document": {
+        "version": 1,
+        "clipStartSec": 0,
+        "clipEndSec": 4,
+        "captionPreset": {
+          "wordsPerCue": 3
+        },
+        "transcriptSlice": [
+          {
+            "index": 0,
+            "speaker": 0,
+            "speakerLabel": "Speaker 1",
+            "startSec": 0.2,
+            "endSec": 3.755,
+            "text": "money talks and fire never stops so watch this amazing growth explode",
+            "confidence": 0.98,
+            "words": [
+              {
+                "word": "money",
+                "startSec": 0.2,
+                "endSec": 0.455,
+                "confidence": 0.98
+              },
+              {
+                "word": "talks",
+                "startSec": 0.5,
+                "endSec": 0.755,
+                "confidence": 0.98
+              },
+              {
+                "word": "and",
+                "startSec": 0.8,
+                "endSec": 1.055,
+                "confidence": 0.98
+              },
+              {
+                "word": "fire",
+                "startSec": 1.1,
+                "endSec": 1.355,
+                "confidence": 0.98
+              },
+              {
+                "word": "never",
+                "startSec": 1.4,
+                "endSec": 1.655,
+                "confidence": 0.98
+              },
+              {
+                "word": "stops",
+                "startSec": 1.7,
+                "endSec": 1.955,
+                "confidence": 0.98
+              },
+              {
+                "word": "so",
+                "startSec": 2,
+                "endSec": 2.255,
+                "confidence": 0.98
+              },
+              {
+                "word": "watch",
+                "startSec": 2.3,
+                "endSec": 2.555,
+                "confidence": 0.98
+              },
+              {
+                "word": "this",
+                "startSec": 2.6,
+                "endSec": 2.855,
+                "confidence": 0.98
+              },
+              {
+                "word": "amazing",
+                "startSec": 2.9,
+                "endSec": 3.155,
+                "confidence": 0.98
+              },
+              {
+                "word": "growth",
+                "startSec": 3.2,
+                "endSec": 3.455,
+                "confidence": 0.98
+              },
+              {
+                "word": "explode",
+                "startSec": 3.5,
+                "endSec": 3.755,
+                "confidence": 0.98
+              }
+            ]
+          }
+        ],
+        "studioEdits": {
+          "framing": {
+            "mode": "center"
+          }
+        },
+        "brollUrl": null,
+        "deletedRanges": [],
+        "sceneBlocks": [],
+        "censorSegments": [],
+        "mediaMotions": []
+      }
+    },
+    "ntsc-30000-1001": {
+      "class": "normal",
+      "targets": [
+        {
+          "id": "vertical",
+          "aspectRatio": "9:16"
+        }
+      ],
+      "description": "30000/1001 source clock",
+      "source": "ntsc-30000-1001",
+      "document": {
+        "version": 1,
+        "clipStartSec": 0,
+        "clipEndSec": 4,
+        "captionPreset": {
+          "wordsPerCue": 3
+        },
+        "transcriptSlice": [
+          {
+            "index": 0,
+            "speaker": 0,
+            "speakerLabel": "Speaker 1",
+            "startSec": 0.2,
+            "endSec": 3.755,
+            "text": "money talks and fire never stops so watch this amazing growth explode",
+            "confidence": 0.98,
+            "words": [
+              {
+                "word": "money",
+                "startSec": 0.2,
+                "endSec": 0.455,
+                "confidence": 0.98
+              },
+              {
+                "word": "talks",
+                "startSec": 0.5,
+                "endSec": 0.755,
+                "confidence": 0.98
+              },
+              {
+                "word": "and",
+                "startSec": 0.8,
+                "endSec": 1.055,
+                "confidence": 0.98
+              },
+              {
+                "word": "fire",
+                "startSec": 1.1,
+                "endSec": 1.355,
+                "confidence": 0.98
+              },
+              {
+                "word": "never",
+                "startSec": 1.4,
+                "endSec": 1.655,
+                "confidence": 0.98
+              },
+              {
+                "word": "stops",
+                "startSec": 1.7,
+                "endSec": 1.955,
+                "confidence": 0.98
+              },
+              {
+                "word": "so",
+                "startSec": 2,
+                "endSec": 2.255,
+                "confidence": 0.98
+              },
+              {
+                "word": "watch",
+                "startSec": 2.3,
+                "endSec": 2.555,
+                "confidence": 0.98
+              },
+              {
+                "word": "this",
+                "startSec": 2.6,
+                "endSec": 2.855,
+                "confidence": 0.98
+              },
+              {
+                "word": "amazing",
+                "startSec": 2.9,
+                "endSec": 3.155,
+                "confidence": 0.98
+              },
+              {
+                "word": "growth",
+                "startSec": 3.2,
+                "endSec": 3.455,
+                "confidence": 0.98
+              },
+              {
+                "word": "explode",
+                "startSec": 3.5,
+                "endSec": 3.755,
+                "confidence": 0.98
+              }
+            ]
+          }
+        ],
+        "studioEdits": {
+          "framing": {
+            "mode": "center"
+          }
+        },
+        "brollUrl": null,
+        "deletedRanges": [],
+        "sceneBlocks": [],
+        "censorSegments": [],
+        "mediaMotions": []
+      }
+    },
+    "text-layers-transition": {
+      "class": "normal",
+      "targets": [
+        {
+          "id": "vertical",
+          "aspectRatio": "9:16"
+        }
+      ],
+      "description": "Studio text layers and a fade transition over a centered crop",
+      "source": "talk-720p",
+      "document": {
+        "version": 1,
+        "clipStartSec": 0,
+        "clipEndSec": 4,
+        "captionPreset": {
+          "wordsPerCue": 3
+        },
+        "transcriptSlice": [
+          {
+            "index": 0,
+            "speaker": 0,
+            "speakerLabel": "Speaker 1",
+            "startSec": 0.2,
+            "endSec": 3.755,
+            "text": "money talks and fire never stops so watch this amazing growth explode",
+            "confidence": 0.98,
+            "words": [
+              {
+                "word": "money",
+                "startSec": 0.2,
+                "endSec": 0.455,
+                "confidence": 0.98
+              },
+              {
+                "word": "talks",
+                "startSec": 0.5,
+                "endSec": 0.755,
+                "confidence": 0.98
+              },
+              {
+                "word": "and",
+                "startSec": 0.8,
+                "endSec": 1.055,
+                "confidence": 0.98
+              },
+              {
+                "word": "fire",
+                "startSec": 1.1,
+                "endSec": 1.355,
+                "confidence": 0.98
+              },
+              {
+                "word": "never",
+                "startSec": 1.4,
+                "endSec": 1.655,
+                "confidence": 0.98
+              },
+              {
+                "word": "stops",
+                "startSec": 1.7,
+                "endSec": 1.955,
+                "confidence": 0.98
+              },
+              {
+                "word": "so",
+                "startSec": 2,
+                "endSec": 2.255,
+                "confidence": 0.98
+              },
+              {
+                "word": "watch",
+                "startSec": 2.3,
+                "endSec": 2.555,
+                "confidence": 0.98
+              },
+              {
+                "word": "this",
+                "startSec": 2.6,
+                "endSec": 2.855,
+                "confidence": 0.98
+              },
+              {
+                "word": "amazing",
+                "startSec": 2.9,
+                "endSec": 3.155,
+                "confidence": 0.98
+              },
+              {
+                "word": "growth",
+                "startSec": 3.2,
+                "endSec": 3.455,
+                "confidence": 0.98
+              },
+              {
+                "word": "explode",
+                "startSec": 3.5,
+                "endSec": 3.755,
+                "confidence": 0.98
+              }
+            ]
+          }
+        ],
+        "studioEdits": {
+          "framing": {
+            "mode": "center"
+          },
+          "transition": {
+            "type": "fade",
+            "durationSec": 0.4
+          },
+          "textLayers": [
+            {
+              "id": "title",
+              "text": "Don't miss: 50% off",
+              "startSec": 0.3,
+              "endSec": 3.2,
+              "positionX": 50,
+              "positionY": 22,
+              "fontName": "Montserrat",
+              "fontSize": 64,
+              "color": "#FFFFFF",
+              "backgroundColor": "#000000",
+              "backgroundOpacity": 0.5,
+              "bold": true,
+              "outlineColor": "#000000",
+              "outlineWidth": 3
+            }
+          ]
+        },
+        "brollUrl": null,
+        "deletedRanges": [],
+        "sceneBlocks": [],
+        "censorSegments": [],
+        "mediaMotions": []
+      }
+    },
+    "speed-playback-rate-ui-only": {
+      "class": "normal",
+      "targets": [
+        {
+          "id": "vertical",
+          "aspectRatio": "9:16"
+        }
+      ],
+      "description": "A Studio playback-rate change is view state: the serialized document and the export equal solo-auto-vertical",
+      "source": "talk-720p",
+      "document": {
+        "version": 1,
+        "clipStartSec": 0,
+        "clipEndSec": 4,
+        "captionPreset": {
+          "wordsPerCue": 3
+        },
+        "transcriptSlice": [
+          {
+            "index": 0,
+            "speaker": 0,
+            "speakerLabel": "Speaker 1",
+            "startSec": 0.2,
+            "endSec": 3.755,
+            "text": "money talks and fire never stops so watch this amazing growth explode",
+            "confidence": 0.98,
+            "words": [
+              {
+                "word": "money",
+                "startSec": 0.2,
+                "endSec": 0.455,
+                "confidence": 0.98
+              },
+              {
+                "word": "talks",
+                "startSec": 0.5,
+                "endSec": 0.755,
+                "confidence": 0.98
+              },
+              {
+                "word": "and",
+                "startSec": 0.8,
+                "endSec": 1.055,
+                "confidence": 0.98
+              },
+              {
+                "word": "fire",
+                "startSec": 1.1,
+                "endSec": 1.355,
+                "confidence": 0.98
+              },
+              {
+                "word": "never",
+                "startSec": 1.4,
+                "endSec": 1.655,
+                "confidence": 0.98
+              },
+              {
+                "word": "stops",
+                "startSec": 1.7,
+                "endSec": 1.955,
+                "confidence": 0.98
+              },
+              {
+                "word": "so",
+                "startSec": 2,
+                "endSec": 2.255,
+                "confidence": 0.98
+              },
+              {
+                "word": "watch",
+                "startSec": 2.3,
+                "endSec": 2.555,
+                "confidence": 0.98
+              },
+              {
+                "word": "this",
+                "startSec": 2.6,
+                "endSec": 2.855,
+                "confidence": 0.98
+              },
+              {
+                "word": "amazing",
+                "startSec": 2.9,
+                "endSec": 3.155,
+                "confidence": 0.98
+              },
+              {
+                "word": "growth",
+                "startSec": 3.2,
+                "endSec": 3.455,
+                "confidence": 0.98
+              },
+              {
+                "word": "explode",
+                "startSec": 3.5,
+                "endSec": 3.755,
+                "confidence": 0.98
+              }
+            ]
+          }
+        ],
+        "studioEdits": {
+          "framing": {
+            "mode": "auto"
+          }
+        },
+        "brollUrl": null,
+        "deletedRanges": [],
+        "sceneBlocks": [],
+        "censorSegments": [],
+        "mediaMotions": []
+      },
+      "evidence": "auto-solo",
+      "viewState": {
+        "playbackRate": 2
+      },
+      "twinOf": "solo-auto-vertical"
+    },
+    "rot90": {
+      "class": "known-defect",
+      "targets": [
+        {
+          "id": "vertical",
+          "aspectRatio": "9:16"
+        }
+      ],
+      "description": "Display matrix 90 degrees",
+      "source": "rot90",
+      "document": {
+        "version": 1,
+        "clipStartSec": 0,
+        "clipEndSec": 4,
+        "captionPreset": {
+          "wordsPerCue": 3
+        },
+        "transcriptSlice": [
+          {
+            "index": 0,
+            "speaker": 0,
+            "speakerLabel": "Speaker 1",
+            "startSec": 0.2,
+            "endSec": 3.755,
+            "text": "money talks and fire never stops so watch this amazing growth explode",
+            "confidence": 0.98,
+            "words": [
+              {
+                "word": "money",
+                "startSec": 0.2,
+                "endSec": 0.455,
+                "confidence": 0.98
+              },
+              {
+                "word": "talks",
+                "startSec": 0.5,
+                "endSec": 0.755,
+                "confidence": 0.98
+              },
+              {
+                "word": "and",
+                "startSec": 0.8,
+                "endSec": 1.055,
+                "confidence": 0.98
+              },
+              {
+                "word": "fire",
+                "startSec": 1.1,
+                "endSec": 1.355,
+                "confidence": 0.98
+              },
+              {
+                "word": "never",
+                "startSec": 1.4,
+                "endSec": 1.655,
+                "confidence": 0.98
+              },
+              {
+                "word": "stops",
+                "startSec": 1.7,
+                "endSec": 1.955,
+                "confidence": 0.98
+              },
+              {
+                "word": "so",
+                "startSec": 2,
+                "endSec": 2.255,
+                "confidence": 0.98
+              },
+              {
+                "word": "watch",
+                "startSec": 2.3,
+                "endSec": 2.555,
+                "confidence": 0.98
+              },
+              {
+                "word": "this",
+                "startSec": 2.6,
+                "endSec": 2.855,
+                "confidence": 0.98
+              },
+              {
+                "word": "amazing",
+                "startSec": 2.9,
+                "endSec": 3.155,
+                "confidence": 0.98
+              },
+              {
+                "word": "growth",
+                "startSec": 3.2,
+                "endSec": 3.455,
+                "confidence": 0.98
+              },
+              {
+                "word": "explode",
+                "startSec": 3.5,
+                "endSec": 3.755,
+                "confidence": 0.98
+              }
+            ]
+          }
+        ],
+        "studioEdits": {
+          "framing": {
+            "mode": "center"
+          }
+        },
+        "brollUrl": null,
+        "deletedRanges": [],
+        "sceneBlocks": [],
+        "censorSegments": [],
+        "mediaMotions": []
+      },
+      "probes": [
+        "quadrants"
+      ],
+      "expected": {
+        "quadrantsFrom": "rot90"
+      }
+    },
+    "rot180": {
+      "class": "known-defect",
+      "targets": [
+        {
+          "id": "vertical",
+          "aspectRatio": "9:16"
+        }
+      ],
+      "description": "Display matrix 180 degrees (already correct today)",
+      "source": "rot180",
+      "document": {
+        "version": 1,
+        "clipStartSec": 0,
+        "clipEndSec": 4,
+        "captionPreset": {
+          "wordsPerCue": 3
+        },
+        "transcriptSlice": [
+          {
+            "index": 0,
+            "speaker": 0,
+            "speakerLabel": "Speaker 1",
+            "startSec": 0.2,
+            "endSec": 3.755,
+            "text": "money talks and fire never stops so watch this amazing growth explode",
+            "confidence": 0.98,
+            "words": [
+              {
+                "word": "money",
+                "startSec": 0.2,
+                "endSec": 0.455,
+                "confidence": 0.98
+              },
+              {
+                "word": "talks",
+                "startSec": 0.5,
+                "endSec": 0.755,
+                "confidence": 0.98
+              },
+              {
+                "word": "and",
+                "startSec": 0.8,
+                "endSec": 1.055,
+                "confidence": 0.98
+              },
+              {
+                "word": "fire",
+                "startSec": 1.1,
+                "endSec": 1.355,
+                "confidence": 0.98
+              },
+              {
+                "word": "never",
+                "startSec": 1.4,
+                "endSec": 1.655,
+                "confidence": 0.98
+              },
+              {
+                "word": "stops",
+                "startSec": 1.7,
+                "endSec": 1.955,
+                "confidence": 0.98
+              },
+              {
+                "word": "so",
+                "startSec": 2,
+                "endSec": 2.255,
+                "confidence": 0.98
+              },
+              {
+                "word": "watch",
+                "startSec": 2.3,
+                "endSec": 2.555,
+                "confidence": 0.98
+              },
+              {
+                "word": "this",
+                "startSec": 2.6,
+                "endSec": 2.855,
+                "confidence": 0.98
+              },
+              {
+                "word": "amazing",
+                "startSec": 2.9,
+                "endSec": 3.155,
+                "confidence": 0.98
+              },
+              {
+                "word": "growth",
+                "startSec": 3.2,
+                "endSec": 3.455,
+                "confidence": 0.98
+              },
+              {
+                "word": "explode",
+                "startSec": 3.5,
+                "endSec": 3.755,
+                "confidence": 0.98
+              }
+            ]
+          }
+        ],
+        "studioEdits": {
+          "framing": {
+            "mode": "center"
+          }
+        },
+        "brollUrl": null,
+        "deletedRanges": [],
+        "sceneBlocks": [],
+        "censorSegments": [],
+        "mediaMotions": []
+      },
+      "probes": [
+        "quadrants"
+      ],
+      "expected": {
+        "quadrantsFrom": "rot180"
+      }
+    },
+    "rot270": {
+      "class": "known-defect",
+      "targets": [
+        {
+          "id": "vertical",
+          "aspectRatio": "9:16"
+        }
+      ],
+      "description": "Display matrix 270 degrees",
+      "source": "rot270",
+      "document": {
+        "version": 1,
+        "clipStartSec": 0,
+        "clipEndSec": 4,
+        "captionPreset": {
+          "wordsPerCue": 3
+        },
+        "transcriptSlice": [
+          {
+            "index": 0,
+            "speaker": 0,
+            "speakerLabel": "Speaker 1",
+            "startSec": 0.2,
+            "endSec": 3.755,
+            "text": "money talks and fire never stops so watch this amazing growth explode",
+            "confidence": 0.98,
+            "words": [
+              {
+                "word": "money",
+                "startSec": 0.2,
+                "endSec": 0.455,
+                "confidence": 0.98
+              },
+              {
+                "word": "talks",
+                "startSec": 0.5,
+                "endSec": 0.755,
+                "confidence": 0.98
+              },
+              {
+                "word": "and",
+                "startSec": 0.8,
+                "endSec": 1.055,
+                "confidence": 0.98
+              },
+              {
+                "word": "fire",
+                "startSec": 1.1,
+                "endSec": 1.355,
+                "confidence": 0.98
+              },
+              {
+                "word": "never",
+                "startSec": 1.4,
+                "endSec": 1.655,
+                "confidence": 0.98
+              },
+              {
+                "word": "stops",
+                "startSec": 1.7,
+                "endSec": 1.955,
+                "confidence": 0.98
+              },
+              {
+                "word": "so",
+                "startSec": 2,
+                "endSec": 2.255,
+                "confidence": 0.98
+              },
+              {
+                "word": "watch",
+                "startSec": 2.3,
+                "endSec": 2.555,
+                "confidence": 0.98
+              },
+              {
+                "word": "this",
+                "startSec": 2.6,
+                "endSec": 2.855,
+                "confidence": 0.98
+              },
+              {
+                "word": "amazing",
+                "startSec": 2.9,
+                "endSec": 3.155,
+                "confidence": 0.98
+              },
+              {
+                "word": "growth",
+                "startSec": 3.2,
+                "endSec": 3.455,
+                "confidence": 0.98
+              },
+              {
+                "word": "explode",
+                "startSec": 3.5,
+                "endSec": 3.755,
+                "confidence": 0.98
+              }
+            ]
+          }
+        ],
+        "studioEdits": {
+          "framing": {
+            "mode": "center"
+          }
+        },
+        "brollUrl": null,
+        "deletedRanges": [],
+        "sceneBlocks": [],
+        "censorSegments": [],
+        "mediaMotions": []
+      },
+      "probes": [
+        "quadrants"
+      ],
+      "expected": {
+        "quadrantsFrom": "rot270"
+      }
+    },
+    "mirror-h": {
+      "class": "known-defect",
+      "targets": [
+        {
+          "id": "vertical",
+          "aspectRatio": "9:16"
+        }
+      ],
+      "description": "Horizontal-flip display matrix (already correct today)",
+      "source": "mirror-h",
+      "document": {
+        "version": 1,
+        "clipStartSec": 0,
+        "clipEndSec": 4,
+        "captionPreset": {
+          "wordsPerCue": 3
+        },
+        "transcriptSlice": [
+          {
+            "index": 0,
+            "speaker": 0,
+            "speakerLabel": "Speaker 1",
+            "startSec": 0.2,
+            "endSec": 3.755,
+            "text": "money talks and fire never stops so watch this amazing growth explode",
+            "confidence": 0.98,
+            "words": [
+              {
+                "word": "money",
+                "startSec": 0.2,
+                "endSec": 0.455,
+                "confidence": 0.98
+              },
+              {
+                "word": "talks",
+                "startSec": 0.5,
+                "endSec": 0.755,
+                "confidence": 0.98
+              },
+              {
+                "word": "and",
+                "startSec": 0.8,
+                "endSec": 1.055,
+                "confidence": 0.98
+              },
+              {
+                "word": "fire",
+                "startSec": 1.1,
+                "endSec": 1.355,
+                "confidence": 0.98
+              },
+              {
+                "word": "never",
+                "startSec": 1.4,
+                "endSec": 1.655,
+                "confidence": 0.98
+              },
+              {
+                "word": "stops",
+                "startSec": 1.7,
+                "endSec": 1.955,
+                "confidence": 0.98
+              },
+              {
+                "word": "so",
+                "startSec": 2,
+                "endSec": 2.255,
+                "confidence": 0.98
+              },
+              {
+                "word": "watch",
+                "startSec": 2.3,
+                "endSec": 2.555,
+                "confidence": 0.98
+              },
+              {
+                "word": "this",
+                "startSec": 2.6,
+                "endSec": 2.855,
+                "confidence": 0.98
+              },
+              {
+                "word": "amazing",
+                "startSec": 2.9,
+                "endSec": 3.155,
+                "confidence": 0.98
+              },
+              {
+                "word": "growth",
+                "startSec": 3.2,
+                "endSec": 3.455,
+                "confidence": 0.98
+              },
+              {
+                "word": "explode",
+                "startSec": 3.5,
+                "endSec": 3.755,
+                "confidence": 0.98
+              }
+            ]
+          }
+        ],
+        "studioEdits": {
+          "framing": {
+            "mode": "center"
+          }
+        },
+        "brollUrl": null,
+        "deletedRanges": [],
+        "sceneBlocks": [],
+        "censorSegments": [],
+        "mediaMotions": []
+      },
+      "probes": [
+        "quadrants"
+      ],
+      "expected": {
+        "quadrantsFrom": "mirror-h"
+      }
+    },
+    "rot90-mirror": {
+      "class": "known-defect",
+      "targets": [
+        {
+          "id": "vertical",
+          "aspectRatio": "9:16"
+        }
+      ],
+      "description": "Rotation 90 degrees plus horizontal flip",
+      "source": "rot90-mirror",
+      "document": {
+        "version": 1,
+        "clipStartSec": 0,
+        "clipEndSec": 4,
+        "captionPreset": {
+          "wordsPerCue": 3
+        },
+        "transcriptSlice": [
+          {
+            "index": 0,
+            "speaker": 0,
+            "speakerLabel": "Speaker 1",
+            "startSec": 0.2,
+            "endSec": 3.755,
+            "text": "money talks and fire never stops so watch this amazing growth explode",
+            "confidence": 0.98,
+            "words": [
+              {
+                "word": "money",
+                "startSec": 0.2,
+                "endSec": 0.455,
+                "confidence": 0.98
+              },
+              {
+                "word": "talks",
+                "startSec": 0.5,
+                "endSec": 0.755,
+                "confidence": 0.98
+              },
+              {
+                "word": "and",
+                "startSec": 0.8,
+                "endSec": 1.055,
+                "confidence": 0.98
+              },
+              {
+                "word": "fire",
+                "startSec": 1.1,
+                "endSec": 1.355,
+                "confidence": 0.98
+              },
+              {
+                "word": "never",
+                "startSec": 1.4,
+                "endSec": 1.655,
+                "confidence": 0.98
+              },
+              {
+                "word": "stops",
+                "startSec": 1.7,
+                "endSec": 1.955,
+                "confidence": 0.98
+              },
+              {
+                "word": "so",
+                "startSec": 2,
+                "endSec": 2.255,
+                "confidence": 0.98
+              },
+              {
+                "word": "watch",
+                "startSec": 2.3,
+                "endSec": 2.555,
+                "confidence": 0.98
+              },
+              {
+                "word": "this",
+                "startSec": 2.6,
+                "endSec": 2.855,
+                "confidence": 0.98
+              },
+              {
+                "word": "amazing",
+                "startSec": 2.9,
+                "endSec": 3.155,
+                "confidence": 0.98
+              },
+              {
+                "word": "growth",
+                "startSec": 3.2,
+                "endSec": 3.455,
+                "confidence": 0.98
+              },
+              {
+                "word": "explode",
+                "startSec": 3.5,
+                "endSec": 3.755,
+                "confidence": 0.98
+              }
+            ]
+          }
+        ],
+        "studioEdits": {
+          "framing": {
+            "mode": "center"
+          }
+        },
+        "brollUrl": null,
+        "deletedRanges": [],
+        "sceneBlocks": [],
+        "censorSegments": [],
+        "mediaMotions": []
+      },
+      "probes": [
+        "quadrants"
+      ],
+      "expected": {
+        "quadrantsFrom": "rot90-mirror"
+      }
+    },
+    "sar-2x1": {
+      "class": "known-defect",
+      "targets": [
+        {
+          "id": "vertical",
+          "aspectRatio": "9:16"
+        }
+      ],
+      "description": "Sample aspect ratio 2:1",
+      "source": "sar-2x1",
+      "document": {
+        "version": 1,
+        "clipStartSec": 0,
+        "clipEndSec": 3,
+        "captionPreset": {
+          "wordsPerCue": 3
+        },
+        "transcriptSlice": [
+          {
+            "index": 0,
+            "speaker": 0,
+            "speakerLabel": "Speaker 1",
+            "startSec": 0.2,
+            "endSec": 3.755,
+            "text": "money talks and fire never stops so watch this amazing growth explode",
+            "confidence": 0.98,
+            "words": [
+              {
+                "word": "money",
+                "startSec": 0.2,
+                "endSec": 0.455,
+                "confidence": 0.98
+              },
+              {
+                "word": "talks",
+                "startSec": 0.5,
+                "endSec": 0.755,
+                "confidence": 0.98
+              },
+              {
+                "word": "and",
+                "startSec": 0.8,
+                "endSec": 1.055,
+                "confidence": 0.98
+              },
+              {
+                "word": "fire",
+                "startSec": 1.1,
+                "endSec": 1.355,
+                "confidence": 0.98
+              },
+              {
+                "word": "never",
+                "startSec": 1.4,
+                "endSec": 1.655,
+                "confidence": 0.98
+              },
+              {
+                "word": "stops",
+                "startSec": 1.7,
+                "endSec": 1.955,
+                "confidence": 0.98
+              },
+              {
+                "word": "so",
+                "startSec": 2,
+                "endSec": 2.255,
+                "confidence": 0.98
+              },
+              {
+                "word": "watch",
+                "startSec": 2.3,
+                "endSec": 2.555,
+                "confidence": 0.98
+              },
+              {
+                "word": "this",
+                "startSec": 2.6,
+                "endSec": 2.855,
+                "confidence": 0.98
+              },
+              {
+                "word": "amazing",
+                "startSec": 2.9,
+                "endSec": 3.155,
+                "confidence": 0.98
+              },
+              {
+                "word": "growth",
+                "startSec": 3.2,
+                "endSec": 3.455,
+                "confidence": 0.98
+              },
+              {
+                "word": "explode",
+                "startSec": 3.5,
+                "endSec": 3.755,
+                "confidence": 0.98
+              }
+            ]
+          }
+        ],
+        "studioEdits": {
+          "framing": {
+            "mode": "center"
+          }
+        },
+        "brollUrl": null,
+        "deletedRanges": [],
+        "sceneBlocks": [],
+        "censorSegments": [],
+        "mediaMotions": []
+      },
+      "probes": [
+        "circle"
+      ]
+    },
+    "odd-321x181": {
+      "class": "known-defect",
+      "targets": [
+        {
+          "id": "vertical",
+          "aspectRatio": "9:16"
+        }
+      ],
+      "description": "Odd 321x181 4:4:4 source",
+      "source": "odd-321x181",
+      "document": {
+        "version": 1,
+        "clipStartSec": 0,
+        "clipEndSec": 2.5,
+        "captionPreset": {
+          "wordsPerCue": 3
+        },
+        "transcriptSlice": [
+          {
+            "index": 0,
+            "speaker": 0,
+            "speakerLabel": "Speaker 1",
+            "startSec": 0.2,
+            "endSec": 3.755,
+            "text": "money talks and fire never stops so watch this amazing growth explode",
+            "confidence": 0.98,
+            "words": [
+              {
+                "word": "money",
+                "startSec": 0.2,
+                "endSec": 0.455,
+                "confidence": 0.98
+              },
+              {
+                "word": "talks",
+                "startSec": 0.5,
+                "endSec": 0.755,
+                "confidence": 0.98
+              },
+              {
+                "word": "and",
+                "startSec": 0.8,
+                "endSec": 1.055,
+                "confidence": 0.98
+              },
+              {
+                "word": "fire",
+                "startSec": 1.1,
+                "endSec": 1.355,
+                "confidence": 0.98
+              },
+              {
+                "word": "never",
+                "startSec": 1.4,
+                "endSec": 1.655,
+                "confidence": 0.98
+              },
+              {
+                "word": "stops",
+                "startSec": 1.7,
+                "endSec": 1.955,
+                "confidence": 0.98
+              },
+              {
+                "word": "so",
+                "startSec": 2,
+                "endSec": 2.255,
+                "confidence": 0.98
+              },
+              {
+                "word": "watch",
+                "startSec": 2.3,
+                "endSec": 2.555,
+                "confidence": 0.98
+              },
+              {
+                "word": "this",
+                "startSec": 2.6,
+                "endSec": 2.855,
+                "confidence": 0.98
+              },
+              {
+                "word": "amazing",
+                "startSec": 2.9,
+                "endSec": 3.155,
+                "confidence": 0.98
+              },
+              {
+                "word": "growth",
+                "startSec": 3.2,
+                "endSec": 3.455,
+                "confidence": 0.98
+              },
+              {
+                "word": "explode",
+                "startSec": 3.5,
+                "endSec": 3.755,
+                "confidence": 0.98
+              }
+            ]
+          }
+        ],
+        "studioEdits": {
+          "framing": {
+            "mode": "center"
+          }
+        },
+        "brollUrl": null,
+        "deletedRanges": [],
+        "sceneBlocks": [],
+        "censorSegments": [],
+        "mediaMotions": []
+      }
+    },
+    "audio-late-start": {
+      "class": "known-defect",
+      "targets": [
+        {
+          "id": "vertical",
+          "aspectRatio": "9:16"
+        }
+      ],
+      "description": "Audio stream starts 0.5s late",
+      "source": "audio-late",
+      "document": {
+        "version": 1,
+        "clipStartSec": 0,
+        "clipEndSec": 4,
+        "captionPreset": {
+          "wordsPerCue": 3
+        },
+        "transcriptSlice": [
+          {
+            "index": 0,
+            "speaker": 0,
+            "speakerLabel": "Speaker 1",
+            "startSec": 0.2,
+            "endSec": 3.755,
+            "text": "money talks and fire never stops so watch this amazing growth explode",
+            "confidence": 0.98,
+            "words": [
+              {
+                "word": "money",
+                "startSec": 0.2,
+                "endSec": 0.455,
+                "confidence": 0.98
+              },
+              {
+                "word": "talks",
+                "startSec": 0.5,
+                "endSec": 0.755,
+                "confidence": 0.98
+              },
+              {
+                "word": "and",
+                "startSec": 0.8,
+                "endSec": 1.055,
+                "confidence": 0.98
+              },
+              {
+                "word": "fire",
+                "startSec": 1.1,
+                "endSec": 1.355,
+                "confidence": 0.98
+              },
+              {
+                "word": "never",
+                "startSec": 1.4,
+                "endSec": 1.655,
+                "confidence": 0.98
+              },
+              {
+                "word": "stops",
+                "startSec": 1.7,
+                "endSec": 1.955,
+                "confidence": 0.98
+              },
+              {
+                "word": "so",
+                "startSec": 2,
+                "endSec": 2.255,
+                "confidence": 0.98
+              },
+              {
+                "word": "watch",
+                "startSec": 2.3,
+                "endSec": 2.555,
+                "confidence": 0.98
+              },
+              {
+                "word": "this",
+                "startSec": 2.6,
+                "endSec": 2.855,
+                "confidence": 0.98
+              },
+              {
+                "word": "amazing",
+                "startSec": 2.9,
+                "endSec": 3.155,
+                "confidence": 0.98
+              },
+              {
+                "word": "growth",
+                "startSec": 3.2,
+                "endSec": 3.455,
+                "confidence": 0.98
+              },
+              {
+                "word": "explode",
+                "startSec": 3.5,
+                "endSec": 3.755,
+                "confidence": 0.98
+              }
+            ]
+          }
+        ],
+        "studioEdits": {
+          "framing": {
+            "mode": "center"
+          }
+        },
+        "brollUrl": null,
+        "deletedRanges": [],
+        "sceneBlocks": [],
+        "censorSegments": [],
+        "mediaMotions": []
+      },
+      "probes": [
+        "sync"
+      ]
+    },
+    "audio-short": {
+      "class": "known-defect",
+      "targets": [
+        {
+          "id": "vertical",
+          "aspectRatio": "9:16"
+        }
+      ],
+      "description": "Audio ends at 2.0s of a 4.0s clip",
+      "source": "audio-short",
+      "document": {
+        "version": 1,
+        "clipStartSec": 0,
+        "clipEndSec": 4,
+        "captionPreset": {
+          "wordsPerCue": 3
+        },
+        "transcriptSlice": [
+          {
+            "index": 0,
+            "speaker": 0,
+            "speakerLabel": "Speaker 1",
+            "startSec": 0.2,
+            "endSec": 3.755,
+            "text": "money talks and fire never stops so watch this amazing growth explode",
+            "confidence": 0.98,
+            "words": [
+              {
+                "word": "money",
+                "startSec": 0.2,
+                "endSec": 0.455,
+                "confidence": 0.98
+              },
+              {
+                "word": "talks",
+                "startSec": 0.5,
+                "endSec": 0.755,
+                "confidence": 0.98
+              },
+              {
+                "word": "and",
+                "startSec": 0.8,
+                "endSec": 1.055,
+                "confidence": 0.98
+              },
+              {
+                "word": "fire",
+                "startSec": 1.1,
+                "endSec": 1.355,
+                "confidence": 0.98
+              },
+              {
+                "word": "never",
+                "startSec": 1.4,
+                "endSec": 1.655,
+                "confidence": 0.98
+              },
+              {
+                "word": "stops",
+                "startSec": 1.7,
+                "endSec": 1.955,
+                "confidence": 0.98
+              },
+              {
+                "word": "so",
+                "startSec": 2,
+                "endSec": 2.255,
+                "confidence": 0.98
+              },
+              {
+                "word": "watch",
+                "startSec": 2.3,
+                "endSec": 2.555,
+                "confidence": 0.98
+              },
+              {
+                "word": "this",
+                "startSec": 2.6,
+                "endSec": 2.855,
+                "confidence": 0.98
+              },
+              {
+                "word": "amazing",
+                "startSec": 2.9,
+                "endSec": 3.155,
+                "confidence": 0.98
+              },
+              {
+                "word": "growth",
+                "startSec": 3.2,
+                "endSec": 3.455,
+                "confidence": 0.98
+              },
+              {
+                "word": "explode",
+                "startSec": 3.5,
+                "endSec": 3.755,
+                "confidence": 0.98
+              }
+            ]
+          }
+        ],
+        "studioEdits": {
+          "framing": {
+            "mode": "center"
+          }
+        },
+        "brollUrl": null,
+        "deletedRanges": [],
+        "sceneBlocks": [],
+        "censorSegments": [],
+        "mediaMotions": []
+      },
+      "probes": [
+        "sync"
+      ]
+    },
+    "audio-late-cut-scene-music": {
+      "class": "known-defect",
+      "targets": [
+        {
+          "id": "vertical",
+          "aspectRatio": "9:16"
+        }
+      ],
+      "description": "Late audio with a cut, an inserted color scene and music",
+      "source": "audio-late",
+      "probes": [
+        "sync"
+      ],
+      "document": {
+        "version": 1,
+        "clipStartSec": 0,
+        "clipEndSec": 4,
+        "captionPreset": {
+          "wordsPerCue": 3
+        },
+        "transcriptSlice": [
+          {
+            "index": 0,
+            "speaker": 0,
+            "speakerLabel": "Speaker 1",
+            "startSec": 0.2,
+            "endSec": 3.755,
+            "text": "money talks and fire never stops so watch this amazing growth explode",
+            "confidence": 0.98,
+            "words": [
+              {
+                "word": "money",
+                "startSec": 0.2,
+                "endSec": 0.455,
+                "confidence": 0.98
+              },
+              {
+                "word": "talks",
+                "startSec": 0.5,
+                "endSec": 0.755,
+                "confidence": 0.98
+              },
+              {
+                "word": "and",
+                "startSec": 0.8,
+                "endSec": 1.055,
+                "confidence": 0.98
+              },
+              {
+                "word": "fire",
+                "startSec": 1.1,
+                "endSec": 1.355,
+                "confidence": 0.98
+              },
+              {
+                "word": "never",
+                "startSec": 1.4,
+                "endSec": 1.655,
+                "confidence": 0.98
+              },
+              {
+                "word": "stops",
+                "startSec": 1.7,
+                "endSec": 1.955,
+                "confidence": 0.98
+              },
+              {
+                "word": "so",
+                "startSec": 2,
+                "endSec": 2.255,
+                "confidence": 0.98
+              },
+              {
+                "word": "watch",
+                "startSec": 2.3,
+                "endSec": 2.555,
+                "confidence": 0.98
+              },
+              {
+                "word": "this",
+                "startSec": 2.6,
+                "endSec": 2.855,
+                "confidence": 0.98
+              },
+              {
+                "word": "amazing",
+                "startSec": 2.9,
+                "endSec": 3.155,
+                "confidence": 0.98
+              },
+              {
+                "word": "growth",
+                "startSec": 3.2,
+                "endSec": 3.455,
+                "confidence": 0.98
+              },
+              {
+                "word": "explode",
+                "startSec": 3.5,
+                "endSec": 3.755,
+                "confidence": 0.98
+              }
+            ]
+          }
+        ],
+        "studioEdits": {
+          "framing": {
+            "mode": "center"
+          },
+          "music": {
+            "url": null,
+            "title": "Bed",
+            "volume": 30,
+            "startOffsetSec": 0,
+            "fadeInSec": 0,
+            "fadeOutSec": 0,
+            "assetId": "6f0a5c9e-3f7e-4f64-8a54-0f4c1a6d9a01",
+            "ducking": false
+          }
+        },
+        "brollUrl": null,
+        "deletedRanges": [
+          {
+            "startSec": 1.4,
+            "endSec": 1.8
+          }
+        ],
+        "sceneBlocks": [
+          {
+            "id": "8ab9d330-688f-4574-932c-27ac661245c1",
+            "schemaVersion": 1,
+            "anchorSec": 2.2,
+            "durationSec": 1,
+            "content": {
+              "kind": "color",
+              "color": "#112233"
+            },
+            "motion": {
+              "entrance": "none",
+              "exit": "none"
+            },
+            "templateSnapshot": null
+          }
+        ],
+        "censorSegments": [],
+        "mediaMotions": []
+      },
+      "assets": {
+        "music": {
+          "fixture": "music-bed",
+          "assetId": "6f0a5c9e-3f7e-4f64-8a54-0f4c1a6d9a01"
+        }
+      }
+    },
+    "vfr-irregular": {
+      "class": "known-defect",
+      "targets": [
+        {
+          "id": "vertical",
+          "aspectRatio": "9:16"
+        }
+      ],
+      "description": "Irregular-timestamp source with an inserted scene branch",
+      "source": "vfr-irregular",
+      "document": {
+        "version": 1,
+        "clipStartSec": 0,
+        "clipEndSec": 5,
+        "captionPreset": {
+          "wordsPerCue": 3
+        },
+        "transcriptSlice": [
+          {
+            "index": 0,
+            "speaker": 0,
+            "speakerLabel": "Speaker 1",
+            "startSec": 0.2,
+            "endSec": 3.755,
+            "text": "money talks and fire never stops so watch this amazing growth explode",
+            "confidence": 0.98,
+            "words": [
+              {
+                "word": "money",
+                "startSec": 0.2,
+                "endSec": 0.455,
+                "confidence": 0.98
+              },
+              {
+                "word": "talks",
+                "startSec": 0.5,
+                "endSec": 0.755,
+                "confidence": 0.98
+              },
+              {
+                "word": "and",
+                "startSec": 0.8,
+                "endSec": 1.055,
+                "confidence": 0.98
+              },
+              {
+                "word": "fire",
+                "startSec": 1.1,
+                "endSec": 1.355,
+                "confidence": 0.98
+              },
+              {
+                "word": "never",
+                "startSec": 1.4,
+                "endSec": 1.655,
+                "confidence": 0.98
+              },
+              {
+                "word": "stops",
+                "startSec": 1.7,
+                "endSec": 1.955,
+                "confidence": 0.98
+              },
+              {
+                "word": "so",
+                "startSec": 2,
+                "endSec": 2.255,
+                "confidence": 0.98
+              },
+              {
+                "word": "watch",
+                "startSec": 2.3,
+                "endSec": 2.555,
+                "confidence": 0.98
+              },
+              {
+                "word": "this",
+                "startSec": 2.6,
+                "endSec": 2.855,
+                "confidence": 0.98
+              },
+              {
+                "word": "amazing",
+                "startSec": 2.9,
+                "endSec": 3.155,
+                "confidence": 0.98
+              },
+              {
+                "word": "growth",
+                "startSec": 3.2,
+                "endSec": 3.455,
+                "confidence": 0.98
+              },
+              {
+                "word": "explode",
+                "startSec": 3.5,
+                "endSec": 3.755,
+                "confidence": 0.98
+              }
+            ]
+          }
+        ],
+        "studioEdits": {
+          "framing": {
+            "mode": "center"
+          }
+        },
+        "brollUrl": null,
+        "deletedRanges": [],
+        "sceneBlocks": [
+          {
+            "id": "8ab9d330-688f-4574-932c-27ac661245c1",
+            "schemaVersion": 1,
+            "anchorSec": 2,
+            "durationSec": 1,
+            "content": {
+              "kind": "color",
+              "color": "#112233"
+            },
+            "motion": {
+              "entrance": "none",
+              "exit": "none"
+            },
+            "templateSnapshot": null
+          }
+        ],
+        "censorSegments": [],
+        "mediaMotions": []
+      }
+    },
+    "hdr-pq": {
+      "class": "known-defect",
+      "targets": [
+        {
+          "id": "vertical",
+          "aspectRatio": "9:16"
+        }
+      ],
+      "description": "PQ source with an SDR logo and captions",
+      "source": "hdr-pq",
+      "document": {
+        "version": 1,
+        "clipStartSec": 0,
+        "clipEndSec": 3,
+        "captionPreset": {
+          "wordsPerCue": 3
+        },
+        "transcriptSlice": [
+          {
+            "index": 0,
+            "speaker": 0,
+            "speakerLabel": "Speaker 1",
+            "startSec": 0.2,
+            "endSec": 2.54,
+            "text": "money talks and fire never stops",
+            "confidence": 0.98,
+            "words": [
+              {
+                "word": "money",
+                "startSec": 0.2,
+                "endSec": 0.54,
+                "confidence": 0.98
+              },
+              {
+                "word": "talks",
+                "startSec": 0.6,
+                "endSec": 0.94,
+                "confidence": 0.98
+              },
+              {
+                "word": "and",
+                "startSec": 1,
+                "endSec": 1.34,
+                "confidence": 0.98
+              },
+              {
+                "word": "fire",
+                "startSec": 1.4,
+                "endSec": 1.74,
+                "confidence": 0.98
+              },
+              {
+                "word": "never",
+                "startSec": 1.8,
+                "endSec": 2.14,
+                "confidence": 0.98
+              },
+              {
+                "word": "stops",
+                "startSec": 2.2,
+                "endSec": 2.54,
+                "confidence": 0.98
+              }
+            ]
+          }
+        ],
+        "studioEdits": {
+          "framing": {
+            "mode": "center"
+          }
+        },
+        "brollUrl": null,
+        "deletedRanges": [],
+        "sceneBlocks": [],
+        "censorSegments": [],
+        "mediaMotions": []
+      },
+      "assets": {
+        "logo": {
+          "fixture": "logo",
+          "position": "top-right",
+          "opacity": 0.9,
+          "scalePct": 18
+        }
+      }
+    },
+    "hdr-hlg": {
+      "class": "known-defect",
+      "targets": [
+        {
+          "id": "vertical",
+          "aspectRatio": "9:16"
+        }
+      ],
+      "description": "HLG source with an SDR logo and captions",
+      "source": "hdr-hlg",
+      "document": {
+        "version": 1,
+        "clipStartSec": 0,
+        "clipEndSec": 3,
+        "captionPreset": {
+          "wordsPerCue": 3
+        },
+        "transcriptSlice": [
+          {
+            "index": 0,
+            "speaker": 0,
+            "speakerLabel": "Speaker 1",
+            "startSec": 0.2,
+            "endSec": 2.54,
+            "text": "money talks and fire never stops",
+            "confidence": 0.98,
+            "words": [
+              {
+                "word": "money",
+                "startSec": 0.2,
+                "endSec": 0.54,
+                "confidence": 0.98
+              },
+              {
+                "word": "talks",
+                "startSec": 0.6,
+                "endSec": 0.94,
+                "confidence": 0.98
+              },
+              {
+                "word": "and",
+                "startSec": 1,
+                "endSec": 1.34,
+                "confidence": 0.98
+              },
+              {
+                "word": "fire",
+                "startSec": 1.4,
+                "endSec": 1.74,
+                "confidence": 0.98
+              },
+              {
+                "word": "never",
+                "startSec": 1.8,
+                "endSec": 2.14,
+                "confidence": 0.98
+              },
+              {
+                "word": "stops",
+                "startSec": 2.2,
+                "endSec": 2.54,
+                "confidence": 0.98
+              }
+            ]
+          }
+        ],
+        "studioEdits": {
+          "framing": {
+            "mode": "center"
+          }
+        },
+        "brollUrl": null,
+        "deletedRanges": [],
+        "sceneBlocks": [],
+        "censorSegments": [],
+        "mediaMotions": []
+      },
+      "assets": {
+        "logo": {
+          "fixture": "logo",
+          "position": "top-right",
+          "opacity": 0.9,
+          "scalePct": 18
+        }
+      }
+    },
+    "hot-mix": {
+      "class": "known-defect",
+      "targets": [
+        {
+          "id": "vertical",
+          "aspectRatio": "9:16"
+        }
+      ],
+      "description": "Full-scale music plus a full-scale sound effect over dialogue",
+      "source": "talk-720p",
+      "document": {
+        "version": 1,
+        "clipStartSec": 0,
+        "clipEndSec": 4,
+        "captionPreset": {
+          "wordsPerCue": 3
+        },
+        "transcriptSlice": [
+          {
+            "index": 0,
+            "speaker": 0,
+            "speakerLabel": "Speaker 1",
+            "startSec": 0.2,
+            "endSec": 3.755,
+            "text": "money talks and fire never stops so watch this amazing growth explode",
+            "confidence": 0.98,
+            "words": [
+              {
+                "word": "money",
+                "startSec": 0.2,
+                "endSec": 0.455,
+                "confidence": 0.98
+              },
+              {
+                "word": "talks",
+                "startSec": 0.5,
+                "endSec": 0.755,
+                "confidence": 0.98
+              },
+              {
+                "word": "and",
+                "startSec": 0.8,
+                "endSec": 1.055,
+                "confidence": 0.98
+              },
+              {
+                "word": "fire",
+                "startSec": 1.1,
+                "endSec": 1.355,
+                "confidence": 0.98
+              },
+              {
+                "word": "never",
+                "startSec": 1.4,
+                "endSec": 1.655,
+                "confidence": 0.98
+              },
+              {
+                "word": "stops",
+                "startSec": 1.7,
+                "endSec": 1.955,
+                "confidence": 0.98
+              },
+              {
+                "word": "so",
+                "startSec": 2,
+                "endSec": 2.255,
+                "confidence": 0.98
+              },
+              {
+                "word": "watch",
+                "startSec": 2.3,
+                "endSec": 2.555,
+                "confidence": 0.98
+              },
+              {
+                "word": "this",
+                "startSec": 2.6,
+                "endSec": 2.855,
+                "confidence": 0.98
+              },
+              {
+                "word": "amazing",
+                "startSec": 2.9,
+                "endSec": 3.155,
+                "confidence": 0.98
+              },
+              {
+                "word": "growth",
+                "startSec": 3.2,
+                "endSec": 3.455,
+                "confidence": 0.98
+              },
+              {
+                "word": "explode",
+                "startSec": 3.5,
+                "endSec": 3.755,
+                "confidence": 0.98
+              }
+            ]
+          }
+        ],
+        "studioEdits": {
+          "framing": {
+            "mode": "center"
+          },
+          "music": {
+            "url": null,
+            "title": "Hot",
+            "volume": 100,
+            "startOffsetSec": 0,
+            "fadeInSec": 0,
+            "fadeOutSec": 0,
+            "assetId": "6f0a5c9e-3f7e-4f64-8a54-0f4c1a6d9a01",
+            "ducking": false
+          },
+          "sfx": [
+            {
+              "id": "hit",
+              "assetId": "7a1b6d0f-4a8f-4075-9b65-1a5d2b7eab02",
+              "title": "Hit",
+              "startSec": 0.5,
+              "volume": 100
+            }
+          ]
+        },
+        "brollUrl": null,
+        "deletedRanges": [],
+        "sceneBlocks": [],
+        "censorSegments": [],
+        "mediaMotions": []
+      },
+      "assets": {
+        "music": {
+          "fixture": "music-hot",
+          "assetId": "6f0a5c9e-3f7e-4f64-8a54-0f4c1a6d9a01"
+        },
+        "sfx": {
+          "hit": {
+            "fixture": "sfx-hot",
+            "assetId": "7a1b6d0f-4a8f-4075-9b65-1a5d2b7eab02"
+          }
+        }
+      }
+    },
+    "emoji-sequences": {
+      "class": "known-defect",
+      "targets": [
+        {
+          "id": "vertical",
+          "aspectRatio": "9:16"
+        }
+      ],
+      "description": "Mapped cue emoji plus literal family, flag, skin-tone and variation-selector sequences on a monochrome picture",
+      "source": "talk-gray-720p",
+      "probes": [
+        "saturation"
+      ],
+      "document": {
+        "version": 1,
+        "clipStartSec": 0,
+        "clipEndSec": 4,
+        "captionPreset": {
+          "wordsPerCue": 2,
+          "textTransform": "none",
+          "emojis": true,
+          "primaryColor": "#FFFFFF",
+          "highlightColor": "#FFFFFF",
+          "outlineColor": "#000000",
+          "shadowColor": "#000000"
+        },
+        "transcriptSlice": [
+          {
+            "index": 0,
+            "speaker": 0,
+            "speakerLabel": "Speaker 1",
+            "startSec": 0.2,
+            "endSec": 3.74,
+            "text": "money fire love warning strong 👨‍👩‍👧 🇵🇰 👍🏽 ❤️",
+            "confidence": 0.98,
+            "words": [
+              {
+                "word": "money",
+                "startSec": 0.2,
+                "endSec": 0.54,
+                "confidence": 0.98
+              },
+              {
+                "word": "fire",
+                "startSec": 0.6,
+                "endSec": 0.94,
+                "confidence": 0.98
+              },
+              {
+                "word": "love",
+                "startSec": 1,
+                "endSec": 1.34,
+                "confidence": 0.98
+              },
+              {
+                "word": "warning",
+                "startSec": 1.4,
+                "endSec": 1.74,
+                "confidence": 0.98
+              },
+              {
+                "word": "strong",
+                "startSec": 1.8,
+                "endSec": 2.14,
+                "confidence": 0.98
+              },
+              {
+                "word": "👨‍👩‍👧",
+                "startSec": 2.2,
+                "endSec": 2.54,
+                "confidence": 0.98
+              },
+              {
+                "word": "🇵🇰",
+                "startSec": 2.6,
+                "endSec": 2.94,
+                "confidence": 0.98
+              },
+              {
+                "word": "👍🏽",
+                "startSec": 3,
+                "endSec": 3.34,
+                "confidence": 0.98
+              },
+              {
+                "word": "❤️",
+                "startSec": 3.4,
+                "endSec": 3.74,
+                "confidence": 0.98
+              }
+            ]
+          }
+        ],
+        "studioEdits": {
+          "framing": {
+            "mode": "center"
+          }
+        },
+        "brollUrl": null,
+        "deletedRanges": [],
+        "sceneBlocks": [],
+        "censorSegments": [],
+        "mediaMotions": []
+      }
+    },
+    "missing-glyph": {
+      "class": "known-defect",
+      "targets": [
+        {
+          "id": "vertical",
+          "aspectRatio": "9:16"
+        }
+      ],
+      "description": "A required codepoint no pinned face covers",
+      "source": "talk-720p",
+      "document": {
+        "version": 1,
+        "clipStartSec": 0,
+        "clipEndSec": 4,
+        "captionPreset": {
+          "wordsPerCue": 1,
+          "textTransform": "none"
+        },
+        "transcriptSlice": [
+          {
+            "index": 0,
+            "speaker": 0,
+            "speakerLabel": "Speaker 1",
+            "startSec": 0.3,
+            "endSec": 2.01,
+            "text": "hello 𓀀𓀁 world",
+            "confidence": 0.98,
+            "words": [
+              {
+                "word": "hello",
+                "startSec": 0.3,
+                "endSec": 0.81,
+                "confidence": 0.98
+              },
+              {
+                "word": "𓀀𓀁",
+                "startSec": 0.9,
+                "endSec": 1.41,
+                "confidence": 0.98
+              },
+              {
+                "word": "world",
+                "startSec": 1.5,
+                "endSec": 2.01,
+                "confidence": 0.98
+              }
+            ]
+          }
+        ],
+        "studioEdits": {
+          "framing": {
+            "mode": "center"
+          }
+        },
+        "brollUrl": null,
+        "deletedRanges": [],
+        "sceneBlocks": [],
+        "censorSegments": [],
+        "mediaMotions": []
+      }
+    },
+    "seek-past-source-end": {
+      "class": "known-defect",
+      "targets": [
+        {
+          "id": "vertical",
+          "aspectRatio": "9:16"
+        }
+      ],
+      "description": "Clip window starts after the 5s source ends",
+      "source": "talk-720p",
+      "document": {
+        "version": 1,
+        "clipStartSec": 6,
+        "clipEndSec": 8,
+        "captionPreset": {
+          "wordsPerCue": 3
+        },
+        "transcriptSlice": [
+          {
+            "index": 0,
+            "speaker": 0,
+            "speakerLabel": "Speaker 1",
+            "startSec": 6.2,
+            "endSec": 7.955,
+            "text": "money talks and fire never stops",
+            "confidence": 0.98,
+            "words": [
+              {
+                "word": "money",
+                "startSec": 6.2,
+                "endSec": 6.455,
+                "confidence": 0.98
+              },
+              {
+                "word": "talks",
+                "startSec": 6.5,
+                "endSec": 6.755,
+                "confidence": 0.98
+              },
+              {
+                "word": "and",
+                "startSec": 6.8,
+                "endSec": 7.055,
+                "confidence": 0.98
+              },
+              {
+                "word": "fire",
+                "startSec": 7.1,
+                "endSec": 7.355,
+                "confidence": 0.98
+              },
+              {
+                "word": "never",
+                "startSec": 7.4,
+                "endSec": 7.655,
+                "confidence": 0.98
+              },
+              {
+                "word": "stops",
+                "startSec": 7.7,
+                "endSec": 7.955,
+                "confidence": 0.98
+              }
+            ]
+          }
+        ],
+        "studioEdits": {
+          "framing": {
+            "mode": "center"
+          }
+        },
+        "brollUrl": null,
+        "deletedRanges": [],
+        "sceneBlocks": [],
+        "censorSegments": [],
+        "mediaMotions": []
+      }
+    },
+    "http-interrupted-read": {
+      "class": "known-defect",
+      "targets": [
+        {
+          "id": "vertical",
+          "aspectRatio": "9:16"
+        }
+      ],
+      "description": "Ranged HTTP source whose connection fails 40% into the body",
+      "source": "talk-720p",
+      "document": {
+        "version": 1,
+        "clipStartSec": 0,
+        "clipEndSec": 5,
+        "captionPreset": {
+          "wordsPerCue": 3
+        },
+        "transcriptSlice": [
+          {
+            "index": 0,
+            "speaker": 0,
+            "speakerLabel": "Speaker 1",
+            "startSec": 0.2,
+            "endSec": 3.755,
+            "text": "money talks and fire never stops so watch this amazing growth explode",
+            "confidence": 0.98,
+            "words": [
+              {
+                "word": "money",
+                "startSec": 0.2,
+                "endSec": 0.455,
+                "confidence": 0.98
+              },
+              {
+                "word": "talks",
+                "startSec": 0.5,
+                "endSec": 0.755,
+                "confidence": 0.98
+              },
+              {
+                "word": "and",
+                "startSec": 0.8,
+                "endSec": 1.055,
+                "confidence": 0.98
+              },
+              {
+                "word": "fire",
+                "startSec": 1.1,
+                "endSec": 1.355,
+                "confidence": 0.98
+              },
+              {
+                "word": "never",
+                "startSec": 1.4,
+                "endSec": 1.655,
+                "confidence": 0.98
+              },
+              {
+                "word": "stops",
+                "startSec": 1.7,
+                "endSec": 1.955,
+                "confidence": 0.98
+              },
+              {
+                "word": "so",
+                "startSec": 2,
+                "endSec": 2.255,
+                "confidence": 0.98
+              },
+              {
+                "word": "watch",
+                "startSec": 2.3,
+                "endSec": 2.555,
+                "confidence": 0.98
+              },
+              {
+                "word": "this",
+                "startSec": 2.6,
+                "endSec": 2.855,
+                "confidence": 0.98
+              },
+              {
+                "word": "amazing",
+                "startSec": 2.9,
+                "endSec": 3.155,
+                "confidence": 0.98
+              },
+              {
+                "word": "growth",
+                "startSec": 3.2,
+                "endSec": 3.455,
+                "confidence": 0.98
+              },
+              {
+                "word": "explode",
+                "startSec": 3.5,
+                "endSec": 3.755,
+                "confidence": 0.98
+              }
+            ]
+          }
+        ],
+        "studioEdits": {
+          "framing": {
+            "mode": "center"
+          }
+        },
+        "brollUrl": null,
+        "deletedRanges": [],
+        "sceneBlocks": [],
+        "censorSegments": [],
+        "mediaMotions": []
+      },
+      "transport": {
+        "kind": "http",
+        "failAtFraction": 0.4
+      },
+      "compare": "signature"
+    }
+  }
+}

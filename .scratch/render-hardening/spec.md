@@ -256,3 +256,16 @@ Use the linked [tickets](issues/01-golden-parity-harness.md). Claim and close th
 Files shared across tickets are serialized by blocker ancestry, including test files and docs. The attempt lane is 03 -> 04 -> 05 -> 08 -> 09 -> 10 -> 12 -> 13 -> 14 -> 16 -> 17 -> 20 -> 21. The compiler lane is 03 -> 04 -> 05 -> 06 -> 07 -> 08. These lanes can run beside the service retry lane 11 -> 18 -> 19, and storage 15. Group worker integration 20 waits for all prerequisites. No two unblocked tickets own the same path. New production helpers should represent a needed lifecycle or validation responsibility, not split a file solely to create parallel edits.
 
 Complete only when all tickets meet acceptance, the integrated tree passes verification, no obsolete execution path remains, and the parity/fault reports show truthful completion with bounded recovery. A deploy, PR or real shared-environment retry is not implied by writing or implementing these tickets.
+
+## Parity gate rule: no mirrored glue (orchestrator, 2026-10-29)
+
+Ticket 01's harness calls the real planner (`planClipComposition`) and compilers
+(`compileClipCompositionCommand`, caption/audio compilers, media inspection), but
+mirrors the orchestration in `clip-render-attempt.ts` that assembles their inputs.
+Any ticket that changes how `clip-render-attempt.ts` derives compiler inputs
+(source facts, layout evidence selection, overlays, timing, fallbacks) must FIRST
+extract that derivation into an exported function, switch
+`apps/worker/scripts/render-golden.ts` to call it, re-verify the unchanged
+baseline (exit 0), and only then change behavior. Parity gate command:
+`bun apps/worker/scripts/render-golden.ts verify --baseline /tmp/narriflow-golden/baseline --suite all --out /tmp/narriflow-golden/candidate-NN`
+(durable baseline copy: `~/.cache/narriflow-render-golden/baseline-5680477046-90cf30a3`).
