@@ -15,7 +15,7 @@ and [ADR 0017](../adr/0017-standalone-api.md) for the decision.
 | Origin | Local | Deployed dev |
 | --- | --- | --- |
 | W (web) | `http://localhost:3000` | `https://narriflow-dev.vercel.app` |
-| A (API) | `http://localhost:4000` | the Railway API service's public HTTPS domain, recorded below once generated |
+| A (API) | `http://localhost:4000` | `https://narriflowapi-dev.up.railway.app` |
 | Worker health | `http://localhost:4001/health` | none (no public domain) |
 
 ## Resources
@@ -35,7 +35,7 @@ and [ADR 0017](../adr/0017-standalone-api.md) for the decision.
 | Railway project | `narriflow-dev` (`3dbc2617-db01-4c86-a3f7-2d5b2ae5bc00`) |
 | Railway environment | `dev` (`a7248225-c37b-4054-80a3-045424c006a0`) |
 | Railway worker | `@narriflow/worker` (`194b54c2-54c8-41ff-ac1f-1d496e1611b7`) |
-| Railway API | `@narriflow/api`: Dockerfile `apps/api/Dockerfile`, config `apps/api/railway.json`, region `us-east4` (next to Neon `us-east-2`), health check `/api/ready`, 25 s draining, no migrations (the worker owns them) |
+| Railway API | `@narriflow/api` (`ba6b549f-56b3-4df3-9c24-91f5dfa4ee3b`) at `https://narriflowapi-dev.up.railway.app` (target port 8080, `PORT=8080`). Settings live on the service, not in a file (Railway deprecated config-as-code): variable `RAILWAY_DOCKERFILE_PATH=apps/api/Dockerfile`, region `us-east4` (next to Neon `us-east-2`), health check `/api/ready` (60 s timeout), 25 s draining, restart on failure ×5, watch paths `/apps/api/**`, `/packages/**`, `/bun.lock`, `/package.json`, `/patches/**`, branch `dev`, no pre-deploy migration (the worker owns them) |
 
 ## Local configuration
 

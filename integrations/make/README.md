@@ -197,4 +197,4 @@ demand. Make's current review process (developers.make.com, App review) works li
 
 Decide on OAuth before applying: the REST API accepts Workspace API keys only today.
 
-Narriflow URL is required configuration with no default. Enter the public HTTPS API origin for hosted Make and Zapier connections. The documented placeholder `https://configure-api-origin.invalid` deliberately cannot connect; the cutover ticket assigns the final hostname. For local testing, explicitly enter `http://localhost:4000`. Existing connections using the web origin must update their Narriflow URL at cutover. Human review and queue links remain on the web origin.
+Narriflow URL is required configuration with no default. Enter the public HTTPS API origin for hosted Make and Zapier connections. The documented placeholder `https://configure-api-origin.invalid` deliberately cannot connect. The development API is `https://narriflowapi-dev.up.railway.app`; for local testing enter `http://localhost:4000`. Existing connections using the web origin must update their Narriflow URL at cutover. Human review and queue links remain on the web origin.
