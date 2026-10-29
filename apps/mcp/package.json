@@ -12,7 +12,7 @@
     "upload": "bun run src/upload.ts"
   },
   "dependencies": {
-    "@modelcontextprotocol/server": "2.0.0",
+    "@modelcontextprotocol/server": "2.4.0",
     "@narriflow/mcp-core": "workspace:*",
     "@narriflow/services": "workspace:*",
     "@narriflow/validators": "workspace:*"

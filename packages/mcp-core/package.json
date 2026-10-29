@@ -36,15 +36,15 @@
     "test:integration": "bun test src"
   },
   "dependencies": {
-    "@modelcontextprotocol/ext-apps": "2.0.3",
+    "@modelcontextprotocol/ext-apps": "2.0.4",
     "@modelcontextprotocol/ext-tasks": "0.2.2",
-    "@modelcontextprotocol/server": "2.0.0",
+    "@modelcontextprotocol/server": "2.4.0",
     "@narriflow/services": "workspace:*",
     "@narriflow/validators": "workspace:*",
     "zod": "^4.3.6"
   },
   "devDependencies": {
-    "@modelcontextprotocol/client": "2.0.0",
+    "@modelcontextprotocol/client": "2.4.0",
     "@types/node": "26.2.0"
   }
 }

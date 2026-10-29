@@ -24,7 +24,7 @@
     "@ffprobe-installer/ffprobe": "2.1.2",
     "@hono/zod-openapi": "^1.2.2",
     "@hono/zod-validator": "^0.7.6",
-    "@modelcontextprotocol/server": "2.0.0",
+    "@modelcontextprotocol/server": "2.4.0",
     "@narriflow/auth": "workspace:*",
     "@narriflow/composition-plan": "workspace:*",
     "@narriflow/db": "workspace:*",
@@ -37,7 +37,7 @@
     "fontkit": "2.0.4",
     "hono": "^4.12.28",
     "ioredis": "^5.9.3",
-    "sharp": "^0.35.4",
+    "sharp": "^0.35.5",
     "svix": "^1.86.0",
     "zod": "^4.3.6"
   },
