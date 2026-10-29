@@ -25,3 +25,6 @@ apps/worker/models/
 .scratch/research/*.html
 .scratch/research/*.jpg
 .neon
+
+# Browser verification screenshots (local evidence only)
+.scratch/api-extraction/browser*/

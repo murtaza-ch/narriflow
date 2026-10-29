@@ -6,6 +6,7 @@ import {
   type WorkspaceAccessStatus,
   type WorkspaceCapability,
 } from "../workspace-access";
+import type { WorkspaceUsage } from "./workspace";
 
 // Shared request schemas and response shapes of the session routes: identity
 // bootstrap, Workspace selection and invitation acceptance. Everything here is
@@ -102,6 +103,12 @@ export interface SessionBootstrap {
   };
   /** Capabilities in the effective Workspace. A restricted Workspace still lists what its owner may do. */
   capabilities: WorkspaceCapabilities;
+  /**
+   * Credits of the effective Workspace, read beside the memberships so the app
+   * shell needs no second request. Null when the member cannot view it (a
+   * paused Workspace): the Workspace bootstrap then gives the typed refusal.
+   */
+  usage: WorkspaceUsage | null;
   authContinuation: AuthContinuationConfig;
 }
 
