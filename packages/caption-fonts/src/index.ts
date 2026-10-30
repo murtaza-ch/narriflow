@@ -10,8 +10,10 @@ export {
 } from "./shaping";
 export {
   canonicalCaptionLanguage,
+  captionShapingSensitivity,
   captionRunScript,
   type CaptionRunScript,
+  isShapingSensitiveText,
   LOCALE_LEAD_SCRIPTS,
   orderCaptionFallbackFaces,
 } from "./locale-precedence";

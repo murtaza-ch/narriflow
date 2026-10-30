@@ -113,7 +113,7 @@ import {
 	type BoundCompositionAudioRenderRequest,
 	type HdrColor,
 } from "../composition-ffmpeg-adapter";
-import type { CaptionEmojiOverlay, CaptionTrack } from "../caption-ass";
+import type { CaptionEmojiOverlay, CaptionGeometryUnavailable, CaptionTrack } from "../caption-ass";
 import {
 	CAPTION_RENDER_DIAGNOSTIC_PATTERN,
 	type CaptionGlyphUnavailableError,
@@ -1140,6 +1140,8 @@ interface MixPeakGuardMode {
 interface CaptionWarnings {
 	omitted: Map<string, OmittedGlyph>;
 	emojiSkipped: SkippedEmoji[];
+	/** Cues whose pills, plate and overlays were dropped because HarfBuzz could not shape their font. */
+	geometryUnavailable: CaptionGeometryUnavailable[];
 }
 
 /** The caption script, emoji overlays and glyph notices for one output. A
@@ -1173,6 +1175,15 @@ function compileCaptionTrack(
 			cueIndex: glyph.cueIndex,
 		});
 	}
+	for (const cue of track.geometryUnavailable) {
+		log("error", cue.code, {
+			...context,
+			phase: "caption_geometry",
+			disposition: "degraded",
+			cueIndex: cue.cueIndex,
+			fontPath: cue.fontPath,
+		});
+	}
 	for (const skipped of track.emojiSkipped) {
 		log("error", "caption_emoji_skipped", {
 			...context,
@@ -1186,10 +1197,11 @@ function compileCaptionTrack(
 }
 
 function recordCaptionWarnings(output: PendingRenderOutput, track: CaptionTrack): void {
-	const warnings: CaptionWarnings = output.captionWarnings ?? { omitted: new Map(), emojiSkipped: [] };
+	const warnings: CaptionWarnings = output.captionWarnings ?? { omitted: new Map(), emojiSkipped: [], geometryUnavailable: [] };
 	output.captionWarnings = warnings;
 	for (const glyph of track.omitted) warnings.omitted.set(`${glyph.cueIndex}:${glyph.codePoint}`, glyph);
 	warnings.emojiSkipped = [...track.emojiSkipped];
+	warnings.geometryUnavailable = [...track.geometryUnavailable];
  log("info", "clip_render_glyph_omissions", { clipId: output.clipId, clipRenderId: output.clipRenderId, count: track.omitted.length + track.emojiSkipped.length });
 }
 
@@ -1212,6 +1224,7 @@ function withCaptionWarningCodes(
 	const codes = [
 		...(warnings && warnings.omitted.size > 0 ? ["caption_glyph_omitted"] : []),
 		...(warnings && warnings.emojiSkipped.length > 0 ? ["caption_emoji_skipped"] : []),
+		...(warnings && warnings.geometryUnavailable.length > 0 ? ["caption_geometry_unavailable"] : []),
 	];
 	if (codes.length === 0) return analytics;
 	return { ...analytics, fallbackCode: [...new Set([...analytics.fallbackCode.filter((code) => code !== "none"), ...codes])].sort() };

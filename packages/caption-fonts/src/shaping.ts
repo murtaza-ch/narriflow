@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import bidiFactory from "bidi-js";
 import * as hb from "harfbuzzjs";
+import { isWoff2, woff2ToSfnt } from "./woff2";
 
 /**
  * Caption text measured by HarfBuzz, the shaper libass burns the captions
@@ -42,11 +43,12 @@ const loaded = new Map<string, LoadedFont>();
 function loadFont(path: string): LoadedFont {
   const cached = loaded.get(path);
   if (cached) return cached;
-  const bytes = readFileSync(path);
-  // HarfBuzz reads sfnt only and quietly shapes a WOFF as an empty font; libass (FreeType) opens WOFF2, so
-  // an uploaded WOFF2 brand font cannot be measured here and its cues take the typed degradation.
-  const signature = bytes.toString("latin1", 0, 4);
-  if (signature === "wOF2" || signature === "wOFF") throw new Error("WOFF containers are not shaped by HarfBuzz");
+  const file = readFileSync(path);
+  // HarfBuzz reads sfnt only and quietly shapes a WOFF as an empty font. libass (FreeType) opens the uploaded
+  // WOFF2 itself; here it is decompressed once (the entry below caches the shaped font) so both see the same glyphs.
+  // WOFF 1 is not an accepted brand-font format and stays unshaped (typed degradation).
+  if (file.toString("latin1", 0, 4) === "wOFF") throw new Error("WOFF 1 is not shaped by HarfBuzz");
+  const bytes = isWoff2(file) ? woff2ToSfnt(file) : file;
   const face = new hb.Face(new hb.Blob(bytes), 0);
   const entry = { font: new hb.Font(face), upem: face.upem };
   // HarfBuzz objects free their WASM memory when garbage collected; dropping
@@ -134,7 +136,7 @@ export function shapeCaptionRun(path: string, text: string, rtl: boolean | null 
 
 /**
  * False when `path` shapes `text` with a `.notdef` glyph (conjuncts and joining forms included).
- * A font HarfBuzz cannot open (a WOFF2 upload) is judged by its cmap alone, as the caller has already done.
+ * A font HarfBuzz cannot open is judged by its cmap alone, as the caller has already done.
  */
 export function fontShapesWithoutNotdef(path: string, text: string): boolean {
   try {

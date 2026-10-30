@@ -72,8 +72,10 @@ import {
  * timed base line (colours, reveal, karaoke, typewriter) without pills, plate,
  * active-word overlay or fit-to-width. The Studio applies the same rule.
  *
- * Cursive and complex scripts (a face with `letterSpacing: "disabled"`) take no
- * letter spacing and no mid-word override tag: libass splits the shaping run at
+ * Cursive and complex scripts take no letter spacing and no mid-word override
+ * tag, whichever face draws them: a fallback face marked `letterSpacing:
+ * "disabled"`, or any face (an uploaded brand font included) drawing text of such
+ * a script (`captionShapingSensitivity`, shared with the Studio): libass splits the shaping run at
  * every tag, which unjoins Arabic and breaks Indic conjuncts and Thai marks, so
  * their typewriter reveals word by word. Karaoke is one tag at the word's start
  * and sweeps right to left on RTL words (verified on libass 0.17.4).
@@ -455,37 +457,35 @@ function cueEvents(
 /** One cue word after glyph planning: the faces drawing it and the gap before it. */
 interface WordPlan {
 	readonly clusters: readonly PlannedCluster[];
-	readonly parts: readonly { readonly text: string; readonly face: CaptionFace }[];
+	readonly parts: readonly { readonly text: string; readonly face: CaptionFace; readonly spaced: boolean }[];
 	/** A space precedes the word (`hasSpaceBefore`): no-space scripts abut. */
 	readonly space: boolean;
-	/** The letter spacing applies to that space (neither neighbour is a complex or cursive face). */
+	/** The letter spacing applies to that space (neither neighbour is cursive or complex-script text). */
 	readonly gapSpaced: boolean;
-	/** Part of the word is drawn by a cursive or complex-script face: libass cannot take a mid-word tag there. */
+	/** Part of the word is cursive or complex-script text: libass cannot take a mid-word tag there. */
 	readonly shapingSensitive: boolean;
 }
-
-const spacedFace = (face: CaptionFace) => face.letterSpacing !== "disabled";
 
 function planWords(cue: CompositionCaptionVisualLayer, glyphs: CaptionGlyphPlanner): WordPlan[] {
 	const plans: WordPlan[] = [];
 	cue.words.forEach((word, index) => {
 		const clusters = glyphs.plan(word.text);
-		const parts: { text: string; face: CaptionFace }[] = [];
+		const parts: { text: string; face: CaptionFace; spaced: boolean }[] = [];
 		for (const part of clusters.flatMap((cluster) => cluster.parts)) {
 			const text = escapeAssText(part.text);
 			const last = parts[parts.length - 1];
-			if (last && last.face === part.face) last.text += text;
-			else if (text) parts.push({ text, face: part.face });
+			if (last && last.face === part.face && last.spaced === part.spaced) last.text += text;
+			else if (text) parts.push({ text, face: part.face, spaced: part.spaced });
 		}
 		const previous = plans[index - 1];
 		const space = index > 0 && hasSpaceBefore(cue.words[index - 1]!.text, { word: word.text, spaceBefore: word.spaceBefore });
-		const edges = [previous?.parts[previous.parts.length - 1]?.face, parts[0]?.face].filter((face): face is CaptionFace => face !== undefined);
+		const edges = [previous?.parts[previous.parts.length - 1], parts[0]].filter((edge) => edge !== undefined);
 		plans.push({
 			clusters,
 			parts,
 			space,
-			gapSpaced: spacedFace(glyphs.requested) && edges.every(spacedFace),
-			shapingSensitive: parts.some((part) => !spacedFace(part.face)),
+			gapSpaced: glyphs.requested.letterSpacing !== "disabled" && edges.every((edge) => edge.spaced),
+			shapingSensitive: parts.some((part) => !part.spaced),
 		});
 	});
 	return plans;
@@ -515,7 +515,7 @@ function cueGeometry(
 		? CAPTION_CUE_TILTS_DEG[cue.cueIndex % CAPTION_CUE_TILTS_DEG.length]!
 		: 0;
 	const lineWords: CaptionLineWord[] = plans.map((plan) => ({
-		parts: plan.parts.map((part) => ({ text: part.text, fontPath: part.face.path, spaced: spacedFace(part.face), inked: part.face !== requested })),
+		parts: plan.parts.map((part) => ({ text: part.text, fontPath: part.face.path, spaced: part.spaced, inked: part.face !== requested })),
 		gap: plan.space ? { text: " ", fontPath: requested.path, spaced: plan.gapSpaced, inked: false } : null,
 		gapExtraEm: plan.space && preset.highlightBoxColor ? CAPTION_PILL.extraWordSpacingEm : 0,
 	}));
@@ -760,23 +760,26 @@ function assText(
 	beforeCluster?: (index: number) => string,
 ): string {
 	let current = requested;
+	let spaced = true;
 	let text = "";
 	// libass stops joining and reordering cursive/complex scripts under non-zero `\\fsp`.
-	const switchTo = (face: CaptionFace): string => {
-		const spacing = (face.letterSpacing === "disabled") !== (current.letterSpacing === "disabled") ? `\\fsp${face.letterSpacing === "disabled" ? 0 : num(letterSpacingEm * px)}` : "";
-		return `{\\fn${face.assName}\\fs${num(px * face.lineHeightEm)}${spacing}}`;
+	const switchTo = (face: CaptionFace, faceSpaced: boolean): string => {
+		const font = face !== current ? `\\fn${face.assName}\\fs${num(px * face.lineHeightEm)}` : "";
+		const spacing = faceSpaced !== spaced ? `\\fsp${faceSpaced ? num(letterSpacingEm * px) : 0}` : "";
+		return `{${font}${spacing}}`;
 	};
 	for (const [index, cluster] of clusters.entries()) {
 		text += beforeCluster?.(index) ?? "";
 		for (const part of cluster.parts) {
-			if (part.face !== current) {
-				text += switchTo(part.face);
+			if (part.face !== current || part.spaced !== spaced) {
+				text += switchTo(part.face, part.spaced);
 				current = part.face;
+				spaced = part.spaced;
 			}
 			text += escapeAssText(part.text);
 		}
 	}
-	if (current !== requested) text += switchTo(requested);
+	if (current !== requested || !spaced) text += switchTo(requested, true);
 	return text;
 }
 

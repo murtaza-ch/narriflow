@@ -68,3 +68,32 @@ export function orderCaptionFallbackFaces<T extends { readonly languages?: reado
   const leading = faces.filter((face) => face.languages?.includes(code));
   return [...leading, ...faces.filter((face) => !leading.includes(face))];
 }
+
+/**
+ * Scripts whose letters join, reorder or stack (Arabic and the other cursive scripts, the Indic and
+ * Southeast Asian abugidas, Hebrew, Mongolian...). Letter spacing and a tag placed between two of their
+ * characters unjoin them or break their conjuncts, whatever face draws them.
+ */
+const SHAPING_SENSITIVE =
+  /[\p{Script=Arabic}\p{Script=Hebrew}\p{Script=Syriac}\p{Script=Thaana}\p{Script=Nko}\p{Script=Mandaic}\p{Script=Adlam}\p{Script=Mongolian}\p{Script=Phags_Pa}\p{Script=Devanagari}\p{Script=Bengali}\p{Script=Gurmukhi}\p{Script=Gujarati}\p{Script=Oriya}\p{Script=Tamil}\p{Script=Telugu}\p{Script=Kannada}\p{Script=Malayalam}\p{Script=Sinhala}\p{Script=Thai}\p{Script=Lao}\p{Script=Khmer}\p{Script=Myanmar}\p{Script=Tibetan}\p{Script=Javanese}\p{Script=Balinese}\p{Script=Sundanese}\p{Script=Cham}\p{Script=Tai_Tham}\p{Script=Tai_Viet}]/u;
+
+/**
+ * How `text` takes letter spacing and mid-word tags (the typewriter's per-letter reveal):
+ *  - `sensitive`: some character is in a joining or complex script; spacing is 0 and the text is revealed whole;
+ *  - `plain`: letters of other scripts only;
+ *  - `neutral`: only spaces, punctuation, digits, marks and format characters; the run it sits in decides.
+ * Pure, so the Studio applies the very rule the worker burns the captions with, for built-in and uploaded faces alike.
+ */
+export function captionShapingSensitivity(text: string): "sensitive" | "plain" | "neutral" {
+  let plain = false;
+  for (const character of text) {
+    if (SHAPING_SENSITIVE.test(character)) return "sensitive";
+    if (!NEUTRAL.test(character)) plain = true;
+  }
+  return plain ? "plain" : "neutral";
+}
+
+/** True when `text` holds any character of a joining or complex script (see `captionShapingSensitivity`). */
+export function isShapingSensitiveText(text: string): boolean {
+  return captionShapingSensitivity(text) === "sensitive";
+}
