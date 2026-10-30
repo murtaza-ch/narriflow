@@ -31,6 +31,8 @@ const CASES: readonly FrameCase[] = [
   { id: "ur-nastaliq-bottom", language: "ur", preset: "electric", words: ["پاکستان", "میں", "مُحَبَّتُوں", "کی", "زبان"], yPct: 78 },
   { id: "ur-nastaliq-top", language: "ur", preset: "electric", words: ["پاکستان", "میں", "مُحَبَّتُوں", "کی", "زبان"], yPct: 12 },
   { id: "ur-long-word", language: "ur", preset: "electric", words: ["مُحَبَّتُوں", "اُردُو", "اِنتِہائی", "خُوبصُورَت"], yPct: 60, active: 2 },
+  { id: "ur-short-word", language: "ur", preset: "electric", words: ["پاکستان", "میں", "کی", "زبان"], yPct: 60, active: 2 },
+  { id: "ar-harakat", language: "ar", preset: "electric", words: ["مَرْحَبًا", "بِالْعَالَمِ", "جَمِيلٌ"], yPct: 60 },
   { id: "ur-generic-arabic-face", language: null, preset: "electric", words: ["پاکستان", "میں", "مُحَبَّتُوں", "کی", "زبان"], yPct: 78 },
   { id: "ar-numbers-latin", language: "ar", preset: "electric", words: ["مرحبا", "بالعالم", "2026", "Narriflow", "رائع"], yPct: 70 },
   { id: "ar-karaoke", language: "ar", preset: "karaoke", words: ["مرحبا", "بالعالم", "في", "ناريفلو"], yPct: 70 },

@@ -141,8 +141,10 @@ interface CueGeometry {
 	/** Top of the line box: the highest ascent among the faces on the line. */
 	readonly lineTopY: number;
 	/** Visual word boxes in canvas px; `anchorY` is where an event holding only that word sits so its baseline matches the line's. Null when unmeasurable. */
-	readonly words: readonly { readonly centerX: number; readonly width: number; readonly anchorY: number; readonly inkTopEm: number; readonly inkBottomEm: number }[] | null;
+	readonly words: readonly { readonly centerX: number; readonly width: number; readonly anchorY: number; readonly inkTopEm: number; readonly inkBottomEm: number; readonly eventX: number }[] | null;
 	readonly lineWidth: number | null;
+	/** Middle of the line's advance box on the canvas: `anchorX` unless libass's `\pos` bbox is skewed by offset marks (see `layoutCaptionLine`). */
+	readonly lineCenterX: number;
 	/** Ink of fallback faces (Nastaliq, Indic and Thai marks) above the baseline and below it over the whole line, in em; a pill uses its word's own. */
 	readonly inkTopEm: number;
 	readonly inkBottomEm: number;
@@ -430,7 +432,7 @@ function cueEvents(
 						spans: [activeSpan],
 						startSec: segStart,
 						endSec: segEnd,
-						position: { x: box.centerX, y: box.anchorY },
+						position: { x: box.eventX, y: box.anchorY },
 						common: `${tilt}${fade}`,
 						keyframes: motion.word,
 						layers: {
@@ -541,12 +543,17 @@ function cueGeometry(
 	const baselineY = anchorY + ((line.ascentEm - line.descentEm) / 2) * px;
 	const lineTopY = anchorY - ((line.ascentEm + line.descentEm) / 2) * px;
 	const base = { px, anchorX, anchorY, baselineY, lineTopY, tiltDeg };
-	if (!layout) return { ...base, words: null, lineWidth: null, inkTopEm: 0, inkBottomEm: 0 };
-	const left = anchorX - (layout.widthEm * px) / 2;
+	if (!layout) return { ...base, words: null, lineWidth: null, lineCenterX: anchorX, inkTopEm: 0, inkBottomEm: 0 };
+	// libass puts the middle of its `\pos` bbox, not of the advance box, on the anchor.
+	const left = anchorX - layout.bboxCenterEm * px;
 	const words = layout.words.map((box, index) => {
 		const word = metricsOf(plans[index]!.parts.map((part) => part.face));
+		const centerX = left + (box.leftEm + box.widthEm / 2) * px;
+		// An event holding only this word is anchored by that word's own bbox.
+		const alone = layoutCaptionLine([{ ...lineWords[index]!, gap: null, gapExtraEm: 0 }], preset.letterSpacing, textDirection(cue.words[index]!.text, "ltr"));
 		return {
-			centerX: left + (box.leftEm + box.widthEm / 2) * px,
+			centerX,
+			eventX: centerX + (alone.bboxCenterEm - alone.widthEm / 2) * px,
 			width: box.widthEm * px,
 			inkTopEm: box.inkTopEm,
 			inkBottomEm: box.inkBottomEm,
@@ -554,7 +561,7 @@ function cueGeometry(
 			anchorY: anchorY + (line.ascentEm - line.descentEm - (word.ascentEm - word.descentEm)) * 0.5 * px,
 		};
 	});
-	return { ...base, words, lineWidth: layout.widthEm * px, inkTopEm: layout.inkTopEm, inkBottomEm: layout.inkBottomEm };
+	return { ...base, words, lineWidth: layout.widthEm * px, lineCenterX: left + (layout.widthEm * px) / 2, inkTopEm: layout.inkTopEm, inkBottomEm: layout.inkBottomEm };
 }
 
 /**
@@ -876,7 +883,7 @@ function glitchEvents(input: {
 	glyphs: CaptionGlyphPlanner;
 	preset: CaptionPreset;
 	geometry: CueGeometry;
-	box: { centerX: number; width: number; anchorY: number };
+	box: { centerX: number; eventX: number; width: number; anchorY: number };
 	span: Span;
 	startSec: number;
 	endSec: number;
@@ -911,7 +918,7 @@ function glitchEvents(input: {
 		const fsp = num(preset.letterSpacing * px);
 		CAPTION_GLITCH.ghostColors.forEach((color, ghostIndex) => {
 			const sign = ghostIndex === 0 ? 1 : -1;
-			const x = box.centerX + sign * slice.ghostEm[0] * px;
+			const x = box.eventX + sign * slice.ghostEm[0] * px;
 			const y = box.anchorY + sign * slice.ghostEm[1] * px;
 			events.push({
 				layer: LAYER.ghost,
@@ -928,7 +935,7 @@ function glitchEvents(input: {
 				spans: [span],
 				startSec,
 				endSec,
-				position: { x: box.centerX + slice.textDxEm * px, y: box.anchorY },
+				position: { x: box.eventX + slice.textDxEm * px, y: box.anchorY },
 				common: `${input.tilt}${slice.shear ? `\\fax${num(slice.shear)}` : ""}`,
 				layers: {
 					shadow: LAYER.overlayShadow,
@@ -991,7 +998,7 @@ function plateRect(face: CaptionFontFace, geometry: CueGeometry) {
 	const px = geometry.px;
 	const width = geometry.lineWidth! + 2 * CAPTION_PLATE.padXEm * px;
 	const { top, bottom } = decorationSpan(face, geometry, CAPTION_PLATE, geometry);
-	return { centerX: geometry.anchorX, centerY: (top + bottom) / 2, width, height: bottom - top };
+	return { centerX: geometry.lineCenterX, centerY: (top + bottom) / 2, width, height: bottom - top };
 }
 
 function tiltTags(geometry: CueGeometry): string {
