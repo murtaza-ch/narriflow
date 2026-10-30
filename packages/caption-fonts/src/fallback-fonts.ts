@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { create, type Font } from "fontkit";
 import { captionFontFilePath } from "./paths";
+import { fontShapesWithoutNotdef } from "./shaping";
 
 /**
  * The pinned glyph fallback chain behind every caption face, in lookup order:
@@ -67,17 +68,6 @@ export function captionFallbackFontPath(font: CaptionFallbackFont): string {
 
 const fonts = new Map<string, Font>();
 
-/**
- * fontkit never returns from `layout()` on Noto Nastaliq Urdu for ordinary
- * Urdu text (e.g. "زبان": an endless loop in its contextual-substitution
- * lookups, measured with v4.000 and fontkit 2.0.4). Layout and measurement of
- * these faces belong to HarfBuzz, the shaper libass uses; fontkit only reads
- * their cmap here.
- */
-export function fontkitCannotShape(path: string): boolean {
-  return path.endsWith("NotoNastaliqUrdu-Regular.ttf");
-}
-
 function openFont(path: string): Font {
   const cached = fonts.get(path);
   if (cached) return cached;
@@ -87,50 +77,40 @@ function openFont(path: string): Font {
   return font;
 }
 
-/**
- * fontkit 2.0.4 throws while positioning Gurmukhi and Telugu (a null GPOS
- * anchor), so a failed layout falls back to the cmap check the caller already
- * passed rather than failing the whole caption plan.
- */
-function shapesWithoutNotdef(path: string, font: Font, text: string): boolean {
-  if (fontkitCannotShape(path)) return true;
-  try {
-    return font.layout(text).glyphs.every((glyph) => glyph.id !== 0);
-  } catch {
-    return true;
-  }
-}
-
 const coverage = new Map<string, boolean>();
 
 /**
  * True when the font draws every character of `text` with a real glyph. The
- * check shapes the text (fontkit lays out ligatures and joining forms), so a
- * `.notdef` box that a bare cmap lookup would miss still counts as missing.
+ * check shapes the text with HarfBuzz (ligatures, conjuncts and joining forms),
+ * so a `.notdef` box that a bare cmap lookup would miss still counts as missing.
+ * fontkit only reads the cmap: it cannot lay out Nastaliq, Gurmukhi or Telugu.
  */
 export function fontFileCovers(path: string, text: string): boolean {
   const key = `${path}\0${text}`;
   const cached = coverage.get(key);
   if (cached !== undefined) return cached;
   const font = openFont(path);
-  const covered = [...text].every((character) => font.hasGlyphForCodePoint(character.codePointAt(0)!)) && shapesWithoutNotdef(path, font, text);
+  const covered = [...text].every((character) => font.hasGlyphForCodePoint(character.codePointAt(0)!)) && fontShapesWithoutNotdef(path, text);
   coverage.set(key, covered);
   return covered;
 }
 
-/** Shaped advance of `text` in em of the font that draws it. */
-export function fontFileAdvanceEm(path: string, text: string): number {
-  if (fontkitCannotShape(path)) throw new Error(`fontkit cannot lay out ${path}; measure it with HarfBuzz`);
-  const font = openFont(path);
-  return font.layout(text).advanceWidth / font.unitsPerEm;
-}
-
 /**
- * Win ascent + descent per em, the sum libass divides the ASS font size by.
- * A fallback run uses it to render at the same em size as the requested face.
+ * Win ascent and descent per em: libass sizes a font so their sum equals the
+ * ASS font size, and lays a line out with the largest ascent and descent of
+ * the faces on it (measured on libass 0.17.4: a Nastaliq line's baseline sits
+ * at the Win metrics, not hhea).
  */
-export function fontFileLineHeightEm(path: string): number {
+export function fontFileMetricsEm(path: string): { readonly ascentEm: number; readonly descentEm: number } {
   const font = openFont(path);
   const os2 = (font as unknown as { "OS/2"?: { winAscent: number; winDescent: number } })["OS/2"];
-  return os2 ? (os2.winAscent + os2.winDescent) / font.unitsPerEm : (font.ascent - font.descent) / font.unitsPerEm;
+  return os2
+    ? { ascentEm: os2.winAscent / font.unitsPerEm, descentEm: os2.winDescent / font.unitsPerEm }
+    : { ascentEm: font.ascent / font.unitsPerEm, descentEm: -font.descent / font.unitsPerEm };
+}
+
+/** Win ascent + descent per em: the ASS font size that draws one em. */
+export function fontFileLineHeightEm(path: string): number {
+  const { ascentEm, descentEm } = fontFileMetricsEm(path);
+  return ascentEm + descentEm;
 }

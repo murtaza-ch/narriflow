@@ -29,6 +29,20 @@ function track(id: string, words: Array<{ text: string; emoji: string | null }>)
   return renderCaptionTrack({ layers: [cue], canvas: { width: 1080, height: 1920 } });
 }
 
+function cue(id: string, words: Array<string | { text: string; spaceBefore?: boolean }>, options: { language?: string | null; yPct?: number } = {}) {
+  const preset = getCaptionPresetById(id)!.preset;
+  const layer: CompositionCaptionVisualLayer = {
+    id: "caption:0", kind: "caption", cueIndex: 0,
+    activeRange: { startSec: 0, endSec: words.length * 0.5 },
+    anchor: { xPct: 50, yPct: options.yPct ?? 72 },
+    destination: { x: 0, y: 0, width: 1080, height: 1920 },
+    rotationDeg: 0, opacity: 1, zIndex: 40, preset,
+    words: words.map((word, index) => ({ ...(typeof word === "string" ? { text: word } : word), emoji: null, startSec: index * 0.5, endSec: (index + 1) * 0.5 })),
+    language: options.language ?? null,
+  };
+  return renderCaptionTrack({ layers: [layer], canvas: { width: 1080, height: 1920 } });
+}
+
 function events(ass: string) {
   return ass.split("\n").filter((line) => line.startsWith("Dialogue:")).map((line) => {
     const fields = line.split(",");
@@ -69,11 +83,12 @@ describe("caption ASS paint contract", () => {
       .toBeGreaterThan(1);
   });
 
-  test("unsupported glyphs keep timed base text without measured decorations", () => {
-    const stack = events(render("electric", ["READY💰", "TO", "GO"]));
-    expect(stack.every((event) => event.style === "Caption" && event.layer <= 5)).toBe(true);
+  test("text drawn by a fallback face is measured like any other: pill and overlay stay", () => {
+    const result = track("electric", [{ text: "READY💰", emoji: null }, { text: "TO", emoji: null }, { text: "GO", emoji: null }]);
+    expect(result.geometryUnavailable).toEqual([]);
+    expect(events(result.ass).some((event) => event.style === "Shape")).toBe(true);
     // The money bag is not in Montserrat: it is drawn by the pinned monochrome emoji face, switched in and out explicitly.
-    expect(stack.some((event) => /READY\{\\fnNoto Emoji Regular\\fs[\d.]+\}💰\{\\fnAnton Regular\\fs[\d.]+\}/.test(event.text))).toBe(true);
+    expect(events(result.ass).some((event) => /READY\{\\fnNoto Emoji Regular\\fs[\d.]+\}💰\{\\fnAnton Regular\\fs[\d.]+\}/.test(event.text))).toBe(true);
   });
 
   test("Latin text carries no font overrides and fallback runs name pinned faces", () => {
@@ -187,5 +202,92 @@ describe("burn-in and subtitle parity", () => {
     const cues = deriveCaptionCues(document);
     expect(cues.length).toBe(3 + sceneBlocks.length);
     expect(spans).toEqual(cues.map((cue) => ({ startSec: Math.round(cue.startSec * 100) / 100, endSec: Math.round(cue.endSec * 100) / 100 })));
+  });
+});
+
+describe("multilingual burn-in", () => {
+  const pos = (text: string) => {
+    const match = /\\pos\(([\d.]+),([\d.]+)\)/.exec(text)!;
+    return { x: Number(match[1]), y: Number(match[2]) };
+  };
+  const firstPill = (ass: string) => events(ass).filter((event) => event.style === "Shape").map((event) => ({ ...pos(event.text), event }))
+    .find((candidate) => candidate.event.text.includes("\\p1"));
+
+  test("the Caption style asks libass for automatic base direction", () => {
+    expect(cue("electric", ["READY"]).ass).toMatch(/^Style: Caption,.*,-1$/m);
+  });
+
+  test("the cue's language picks Noto Sans JP, Noto Sans TC and Nastaliq before the generic faces", () => {
+    const faces = (ass: string) => [...new Set([...ass.matchAll(/\\fn(Noto[^\\}]*)/g)].map((match) => match[1]))];
+    expect(faces(cue("electric", ["今日は"], { language: "ja" }).ass)).toEqual(["Noto Sans JP"]);
+    expect(faces(cue("electric", ["今日は"], { language: "zh" }).ass)).toEqual(["Noto Sans SC"]);
+    expect(faces(cue("electric", ["我哋"], { language: "yue" }).ass)).toEqual(["Noto Sans TC"]);
+    expect(faces(cue("electric", ["زبان"], { language: "ur" }).ass)).toEqual(["Noto Nastaliq Urdu Regular"]);
+    expect(faces(cue("electric", ["زبان"], { language: "ar" }).ass)).toEqual(["Noto Sans Arabic Regular"]);
+    expect(faces(cue("electric", ["زبان"]).ass)).toEqual(["Noto Sans Arabic Regular"]);
+  });
+
+  test("an RTL cue puts the first word rightmost and its pill on the word the viewer sees", () => {
+    const first = firstPill(cue("electric", ["مرحبا", "بالعالم", "في"]).ass)!;
+    const second = events(cue("electric", ["مرحبا", "بالعالم", "في"]).ass).filter((event) => event.style === "Shape" && event.text.includes("\\p1"));
+    expect(first.x).toBeGreaterThan(540);
+    const xs = second.map((event) => pos(event.text).x);
+    expect(xs).toHaveLength(3);
+    expect(xs[0]!).toBeGreaterThan(xs[1]!);
+    expect(xs[1]!).toBeGreaterThan(xs[2]!);
+  });
+
+  test("an LTR cue still walks left to right", () => {
+    const xs = events(cue("electric", ["READY", "TO", "GO"]).ass).filter((event) => event.style === "Shape" && event.text.includes("\\p1")).map((event) => pos(event.text).x);
+    expect(xs[0]!).toBeLessThan(xs[1]!);
+    expect(xs[1]!).toBeLessThan(xs[2]!);
+  });
+
+  test("words without a space before them abut; a provider space is kept", () => {
+    const base = events(cue("karaoke", [{ text: "今日" }, { text: "は", spaceBefore: false }, { text: "天気", spaceBefore: false }], { language: "ja" }).ass).find((event) => event.layer === 5)!;
+    expect(base.text).not.toMatch(/[}ぁ-んー今日天気] +[{ぁ-ん今日天気]/);
+    const spaced = events(cue("karaoke", [{ text: "สวัสดี" }, { text: "ครับ", spaceBefore: true }]).ass).find((event) => event.layer === 5)!;
+    expect(spaced.text).toContain("} {");
+  });
+
+  test("cursive and complex scripts reveal typewriter text by word; Latin keeps per-letter reveal", () => {
+    for (const text of ["مرحبا", "क्षत्रिय", "สวัสดี", "বাংলা"]) {
+      expect(cue("typewriter", [text]).ass).not.toContain("\\ko");
+    }
+    expect(cue("typewriter", ["READY"]).ass).toContain("\\ko");
+  });
+
+  test("an RTL karaoke word sweeps with a clip growing from its right edge; an LTR word keeps libass's \\kf", () => {
+    const rtl = cue("karaoke", ["مرحبا", "بالعالم"]).ass;
+    expect(rtl).not.toContain("\\kf");
+    const sweep = events(rtl).filter((event) => event.text.includes("\\clip("));
+    expect(sweep.length).toBeGreaterThan(0);
+    for (const event of sweep) {
+      const [, startRight, , endLeft, endRight] = /\\clip\(([\d.]+),0,([\d.]+),\d+\)\\t\(0,500,\\clip\(([\d.]+),0,([\d.]+),\d+\)\)/.exec(event.text)!.slice(0, 5).map(Number) as [number, number, number, number, number];
+      expect(endLeft).toBeLessThan(startRight);
+      expect(endRight).toBeCloseTo(startRight, 1);
+    }
+    const ltr = cue("karaoke", ["READY", "GO"]).ass;
+    expect(ltr).toContain("\\kf50");
+    expect(ltr).not.toContain("\\clip(");
+  });
+
+  test("a Latin word in an RTL line sweeps with \\kf, an Arabic word in a Latin line with the clip", () => {
+    expect(cue("karaoke", ["مرحبا", "Narriflow"]).ass).toContain("\\kf50");
+    expect(cue("karaoke", ["Hello", "مرحبا"]).ass).toContain("\\clip(");
+  });
+
+  test("complex-script gaps take no letter spacing; Latin gaps keep it", () => {
+    const text = (words: string[]) => events(cue("karaoke", words).ass).find((event) => event.layer === 5)!.text;
+    expect(text(["مرحبا", "بالعالم"])).toContain("{\\fsp0} {");
+    expect(text(["READY", "GO"])).not.toContain("{\\fsp0}");
+  });
+
+  test("an overlay holding one word sits at its own baseline when its faces' metrics differ from the line's", () => {
+    const result = cue("electric", ["زبان", "READY"]);
+    const overlay = events(result.ass).filter((event) => event.layer === 11);
+    const latinOverlay = overlay.find((event) => event.text.endsWith("READY"))!;
+    const line = events(result.ass).find((event) => event.layer === 5)!;
+    expect(pos(latinOverlay.text).y).not.toBeCloseTo(pos(line.text).y, 1);
   });
 });

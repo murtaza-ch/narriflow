@@ -15,6 +15,10 @@
       "default": "./src/emoji.ts"
     },
     "./emoji/atlas.png": "./emoji/atlas.png",
+    "./locale-precedence": {
+      "types": "./src/locale-precedence.ts",
+      "default": "./src/locale-precedence.ts"
+    },
     "./glyph-coverage": {
       "types": "./src/glyph-coverage.ts",
       "default": "./src/glyph-coverage.ts"
@@ -26,7 +30,9 @@
   },
   "dependencies": {
     "@narriflow/validators": "workspace:*",
-    "fontkit": "2.0.4"
+    "bidi-js": "1.1.0",
+    "fontkit": "2.0.4",
+    "harfbuzzjs": "1.6.4"
   },
   "devDependencies": {
     "@types/fontkit": "2.0.8",
