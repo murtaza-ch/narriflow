@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { Box, Button, Flex, Input, Text, Textarea, Checkbox } from "@chakra-ui/react";
 import { Combine, Copy, Plus, PanelsTopLeft, Scissors, ShieldCheck, Trash2, Undo2 } from "lucide-react";
 import { toaster } from "@narriflow/ui/components/toaster";
-import { autoCensorWordId, censoredCaptionWordText, editedToSource, sourceToEdited, userErrorMessage } from "@narriflow/validators";
+import { autoCensorWordId, censoredCaptionWordText, editedToSource, hasSpaceBefore, joinTranscriptWords, sourceToEdited, splitSpacedTokens, userErrorMessage } from "@narriflow/validators";
 import type {
   ClipSnapshot,
   EditedTimeMap,
@@ -113,16 +113,24 @@ function buildDisplayTokens(words: TranscriptWord[]): DisplayToken[] {
   return tokens;
 }
 
+function joiningSpaceAfter(tokens: DisplayToken[], index: number): string {
+  const current = tokens[index]!;
+  if (current.type !== "word") return "";
+  const next = tokens.slice(index + 1).find((token) => token.type === "word");
+  return next && hasSpaceBefore(current.word.word, next.word) ? " " : "";
+}
+
 function getWordsForUtterance(utterance: TranscriptUtterance): TranscriptWord[] {
   if (utterance.words.length > 0) return utterance.words;
 
-  const textWords = utterance.text.split(/\s+/).filter(Boolean);
+  const textWords = splitSpacedTokens(utterance.text);
   const count = Math.max(1, textWords.length);
   const duration = Math.max(0.001, utterance.endSec - utterance.startSec);
   const wordDuration = duration / count;
 
-  return textWords.map((word, i) => ({
+  return textWords.map(({ word, spaceBefore }, i) => ({
     word,
+    ...(spaceBefore ? { spaceBefore } : {}),
     startSec: utterance.startSec + i * wordDuration,
     endSec: utterance.startSec + (i + 1) * wordDuration,
     confidence: null,
@@ -159,8 +167,8 @@ function getActiveTranscriptState(
 // Each per-utterance word container carries `data-word-container` (see
 // EditableUtterance below), scoping a `Range`-based char-offset lookup to
 // exactly that utterance's own rendered word text — which is kept
-// byte-for-byte equal to `words.map(w => w.word).join(" ")` by always
-// emitting a joining space after every word token (pause indicators render
+// byte-for-byte equal to `joinTranscriptWords(words)` by always
+// emitting the joining space (none between Chinese/Japanese characters) after every word token (pause indicators render
 // no text of their own), so the char offsets computed here line up exactly
 // with `wordCharRanges` in transcript-selection.ts.
 
@@ -502,12 +510,12 @@ const EditableUtterance = memo(function EditableUtterance({
                 {shownText}
               </Box>
             )}
-            {/* Always a single joining space after every word (never
-                suppressed around a pause indicator, which renders no text
-                of its own) — keeps this block's rendered text identical to
-                `words.map(w => w.word).join(" ")`, which the selection char-
-                offset math in transcript-selection.ts assumes. */}
-            {i < tokens.length - 1 ? " " : ""}
+            {/* The joining space comes from the next word, never suppressed
+                around a pause indicator, which renders no text of its own —
+                keeps this block's rendered text identical to
+                `joinTranscriptWords(words)`, which the selection char-offset
+                math in transcript-selection.ts assumes. */}
+            {joiningSpaceAfter(tokens, i)}
           </Box>
         );
       })}
@@ -749,7 +757,7 @@ const SubtitleParagraphEditor = memo(function SubtitleParagraphEditor({
   utterances: TranscriptUtterance[];
 }) {
   const { updateParagraphText } = useStudio("updateParagraphText");
-  const sourceText = indices.map((index) => utterances[index]?.text ?? "").join(" ").trim();
+  const sourceText = joinTranscriptWords(indices.map((index) => ({ word: utterances[index]?.text ?? "" })));
   const [draft, setDraft] = useState(sourceText);
   useEffect(() => setDraft(sourceText), [sourceText]);
 
@@ -1187,15 +1195,14 @@ export function TranscriptPanel() {
   const handleCopySelection = useCallback(() => {
     const current = selectionRef.current;
     if (!current) return;
-    const text = current.words
-      .map(
-        (w) =>
-          utteranceWordSources.find((u) => u.utteranceIndex === w.utteranceIndex)?.words[
-            w.wordIndex
-          ]?.word,
-      )
-      .filter((w): w is string => Boolean(w))
-      .join(" ");
+    const text = joinTranscriptWords(
+      current.words.flatMap((w) => {
+        const word = utteranceWordSources.find((u) => u.utteranceIndex === w.utteranceIndex)?.words[
+          w.wordIndex
+        ];
+        return word?.word ? [word] : [];
+      }),
+    );
     if (text && navigator.clipboard?.writeText) {
       navigator.clipboard.writeText(text).catch(() => {});
     }

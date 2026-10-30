@@ -1,12 +1,19 @@
-import type { TranscriptUtterance, TranscriptWord } from "@narriflow/validators";
+import {
+  joinTranscriptWords,
+  splitSpacedTokens,
+  type TranscriptUtterance,
+  type TranscriptWord,
+} from "@narriflow/validators";
 
 function timedWords(text: string, startSec: number, endSec: number): TranscriptWord[] {
-  const tokens = text.trim().split(/\s+/).filter(Boolean);
+  // Text in a no-space script stays one timed span; only real whitespace splits.
+  const tokens = splitSpacedTokens(text);
   if (tokens.length === 0) return [];
   const duration = Math.max(0, endSec - startSec);
   const wordDuration = tokens.length > 0 ? duration / tokens.length : 0;
-  return tokens.map((word, index) => ({
+  return tokens.map(({ word, spaceBefore }, index) => ({
     word,
+    ...(spaceBefore ? { spaceBefore } : {}),
     startSec: startSec + index * wordDuration,
     endSec: index === tokens.length - 1 ? endSec : startSec + (index + 1) * wordDuration,
     confidence: null,
@@ -80,7 +87,7 @@ export function mergeSubtitleLineWithNext(
   const first = lines[lineIndex];
   const second = lines[lineIndex + 1];
   if (!first || !second) return lines;
-  const text = `${first.text.trim()} ${second.text.trim()}`.trim();
+  const text = joinTranscriptWords([{ word: first.text }, { word: second.text }]);
   const merged: TranscriptUtterance = {
     ...first,
     endSec: Math.max(first.endSec, second.endSec),
@@ -161,8 +168,8 @@ export function labelForTimelineSegment(
       const midpoint = (word.startSec + word.endSec) / 2;
       return midpoint >= absoluteStart && midpoint < absoluteEnd;
     })
-    .map((word) => word.word);
-  if (words.length > 0) return words.join(" ");
+    .map(({ word, spaceBefore }) => ({ word, spaceBefore }));
+  if (words.length > 0) return joinTranscriptWords(words);
   if (absoluteEnd - absoluteStart < 0.15) {
     return `${startSec.toFixed(2)}–${endSec.toFixed(2)}s`;
   }

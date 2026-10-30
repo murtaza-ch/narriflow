@@ -26,6 +26,12 @@ export function isNoSpaceScriptChar(char: string): boolean {
   return NO_SPACE_SCRIPT_RE.test(char);
 }
 
+/** True when every character is CJK or fullwidth punctuation (`。`, `、`, `」`). */
+export function isCjkPunctuationOnly(text: string): boolean {
+  const chars = Array.from(text.trim());
+  return chars.length > 0 && chars.every((char) => CJK_PUNCTUATION_RE.test(char));
+}
+
 function isNoSpaceOrCjkPunctuation(char: string): boolean {
   return NO_SPACE_SCRIPT_RE.test(char) || CJK_PUNCTUATION_RE.test(char);
 }
@@ -55,6 +61,18 @@ function needsSpaceBetween(previous: string, next: string): boolean {
 }
 
 /**
+ * Whether `joinTranscriptWords` puts a space between `previous` and `entry`.
+ * For views that lay words out one by one (transcript panel, selection math),
+ * which must agree with the joined text character for character.
+ */
+export function hasSpaceBefore(
+  previous: string,
+  entry: { word: string; spaceBefore?: boolean },
+): boolean {
+  return entry.spaceBefore ?? needsSpaceBetween(previous.trim(), entry.word.trim());
+}
+
+/**
  * Joins timed words into display text. A word's `spaceBefore` (set from the
  * provider's spacing) decides when present; otherwise no space goes between two
  * words whose boundary characters are both in no-space scripts or CJK
@@ -76,6 +94,24 @@ export function joinTranscriptWords(
     text += word;
   }
   return text;
+}
+
+/**
+ * Splits text on whitespace into word tokens for `joinTranscriptWords`. A space
+ * the text really had is kept (`spaceBefore: true`) wherever the script rule
+ * alone would drop it, such as between Thai phrases, so joining the tokens
+ * reproduces the text.
+ */
+export function splitSpacedTokens(
+  text: string,
+): { word: string; spaceBefore?: true }[] {
+  const tokens = text.trim().split(/\s+/).filter(Boolean);
+  return tokens.map((word, index) => {
+    const previous = tokens[index - 1];
+    return previous !== undefined && !needsSpaceBetween(previous, word)
+      ? { word, spaceBefore: true }
+      : { word };
+  });
 }
 
 // Strong right-to-left letters: Hebrew, Arabic and its supplements/forms,

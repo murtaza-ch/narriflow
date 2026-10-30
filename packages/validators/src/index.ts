@@ -8,6 +8,7 @@ export * from "./brand-template";
 export * from "./brand-profile";
 export * from "./broll";
 export * from "./caption-font";
+export * from "./caption-cues";
 export * from "./caption-preset";
 export * from "./caption-style";
 export * from "./captioned-video";

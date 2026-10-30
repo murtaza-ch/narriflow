@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import type { Clip, ClipRender } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
+import { effectiveCaptionLanguage } from "./clip-export-subtitles";
 import { projectService } from "./project.service";
 import {
   BRAND_DEFAULT_CAPTION_PRESET_ID,
@@ -27,6 +28,7 @@ import {
 	EDITOR_DOCUMENT_VERSION,
 	getCaptionPresetById,
   getEffectiveClipTiming,
+  joinTranscriptWords,
   brandProfileSnapshotSchema,
   isBrandDefaultCaptionPresetId,
   parseClipAutoLayoutAnalysis,
@@ -185,10 +187,10 @@ const clipReviewSelect = {
 
 function clipReviewFacts(row: Prisma.ClipGetPayload<{ select: typeof clipReviewSelect }> & { transcriptSlice?: unknown }) {
   const { previewStorageKey, createdAt, transcriptSlice, ...facts } = row;
-  const excerpt = Array.isArray(transcriptSlice) ? transcriptSlice.flatMap((item) => {
+  const excerpt = Array.isArray(transcriptSlice) ? joinTranscriptWords(transcriptSlice.flatMap((item) => {
     if (!item || typeof item !== "object" || !("text" in item) || typeof item.text !== "string") return [];
-    return [item.text];
-  }).join(" ").slice(0, 2_000) : "";
+    return [{ word: item.text }];
+  })).slice(0, 2_000) : "";
   return { ...facts, platformFit: facts.platformFit as ClipPlatformTarget[],
     durationSec: Math.round(Math.max(0, facts.endSec - facts.startSec) * 10) / 10,
     hasPreview: Boolean(previewStorageKey), createdAt: createdAt.toISOString(),
@@ -577,11 +579,9 @@ const CREATE_FROM_SELECTION_TITLE_WORD_COUNT = 8;
 function deriveTitleAndHookFromSlice(
   transcriptSlice: TranscriptUtterance[]): { title: string; hookText: string;
 } {
-  const fullText = transcriptSlice
-    .map((u) => u.text.trim())
-    .filter(Boolean)
-    .join(" ")
-    .trim();
+  const fullText = joinTranscriptWords(
+    transcriptSlice.map((u) => ({ word: u.text })),
+  );
 
   if (!fullText) {
     return {
@@ -1312,10 +1312,9 @@ export class ClipService {
     }).transcriptSlice;
     // Bounded so a long clip can't blow up the prompt — the opening lines carry
     // the hook, which is what a title has to land.
-    const spokenText = utterances
-      .map((utterance) => utterance.text)
-      .join(" ")
-      .slice(0, 4000);
+    const spokenText = joinTranscriptWords(
+      utterances.map((utterance) => ({ word: utterance.text })),
+    ).slice(0, 4000);
 
     const languageCode = clip.project?.transcript?.languageCode ?? null;
 
@@ -2442,6 +2441,8 @@ export class ClipService {
             sourceProbe: true,
             workspaceId: true,
             brandSnapshot: true,
+            languageCode: true,
+            transcript: { select: { languageCode: true } },
             workspace: { select: { ownerUserId: true, pricingTier: true } },
           },
         });
@@ -2473,6 +2474,7 @@ export class ClipService {
           sourceDurationSeconds: clipSourceEdgeSec(project),
           workspaceOwnerUserId: project.workspace.ownerUserId,
           workspaceId: project.workspaceId,
+          captionLanguage: effectiveCaptionLanguage(project),
           pricingTier: resolvePricingTier(project.workspace.pricingTier),
           brandSnapshot: {
             status: "available" as const,

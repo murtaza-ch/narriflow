@@ -36,7 +36,7 @@ import { brandOwnerForWorkspace, brandOwnerWhereFor } from "./brand-ownership";
 import { analyticsService } from "./analytics.service";
 import { accessibleProjectWhere } from "./project-access";
 import { headObject, presignDownloadUrl } from "./r2-storage";
-import { clipExportSubtitleFiles } from "./clip-export-subtitles";
+import { clipExportSubtitleFiles, effectiveCaptionLanguage } from "./clip-export-subtitles";
 import { workspaceService } from "./workspace.service";
 import { WorkflowRunLifecycle, type WorkflowAttemptRef } from "./workflow-run-lifecycle";
 import {
@@ -522,7 +522,7 @@ async function loadDeliverableExport(scope: ActorScope, where: { id: string; pro
     where: { ...where, workspaceId: scope.workspaceId, project: { workspaceId: scope.workspaceId, ...accessibleProjectWhere() } },
     include: {
       clip: { select: { title: true, hookText: true } },
-      project: { select: { sourceDurationSeconds: true, sourceProbe: true } },
+      project: { select: { sourceDurationSeconds: true, sourceProbe: true, languageCode: true, transcript: { select: { languageCode: true } } } },
       variants: { orderBy: { createdAt: "asc" }, include: { render: { select: { clipSnapshot: true } } } },
     },
   });
@@ -536,7 +536,8 @@ function exportSubtitles(row: Awaited<ReturnType<typeof loadDeliverableExport>>)
   const snapshot = row.variants.find((variant) => variant.render?.clipSnapshot)?.render?.clipSnapshot;
   if (!snapshot) throw new ClipExportError("export_snapshot_missing", "Export snapshot is missing");
   return clipExportSubtitleFiles(snapshot, clipSourceEdgeSec(row.project),
-    clipExportSubtitleBaseName(row.clip.title?.trim() || row.clip.hookText, row.editorRevision));
+    clipExportSubtitleBaseName(row.clip.title?.trim() || row.clip.hookText, row.editorRevision),
+    effectiveCaptionLanguage(row.project));
 }
 
 export class ClipExportService {

@@ -6,6 +6,7 @@ import {
   type SourceRange,
 } from "./edit-ranges";
 import { formatCaptionWord } from "./caption-preset";
+import { joinTranscriptWords } from "./text-script";
 import { censorWildcardStem, censorWordCategory, CENSOR_STEM_MIN_LENGTH } from "./censor-words";
 import type { CensorSegment, SceneBlock } from "./timed-edits";
 import { z } from "zod";
@@ -144,7 +145,9 @@ function normalizeToken(value: string, locale: string): string {
   return value
     .normalize("NFKC")
     .toLocaleLowerCase(locale)
-    .replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
+    // Combining marks stay: stripping a trailing vowel sign or virama would
+    // turn a Thai, Indic or Arabic word into a different one.
+    .replace(/^[^\p{L}\p{N}\p{M}]+|[^\p{L}\p{N}\p{M}]+$/gu, "");
 }
 
 /** "shit's" and "fuck'd" are the censored word plus a contraction: match on the word. */
@@ -546,15 +549,17 @@ export function detectAutoCensorSuggestions(
         policyVersion: AUTO_CENSOR_POLICY_VERSION,
         policySource: term.source,
         policyCategory: term.category,
-        matchedText: span.map(({ word }) => word.word).join(" "),
-        contextBefore: words
-          .slice(Math.max(0, flatIndex - 3), flatIndex)
-          .map((entry) => entry.word.word)
-          .join(" "),
-        contextAfter: words
-          .slice(flatIndex + span.length, flatIndex + span.length + 3)
-          .map((entry) => entry.word.word)
-          .join(" "),
+        matchedText: joinTranscriptWords(span.map(({ word }) => word)),
+        contextBefore: joinTranscriptWords(
+          words
+            .slice(Math.max(0, flatIndex - 3), flatIndex)
+            .map((entry) => entry.word),
+        ),
+        contextAfter: joinTranscriptWords(
+          words
+            .slice(flatIndex + span.length, flatIndex + span.length + 3)
+            .map((entry) => entry.word),
+        ),
         sourceWordIds,
         sourceStartSec,
         sourceEndSec,

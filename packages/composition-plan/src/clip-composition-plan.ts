@@ -12,6 +12,9 @@ import {
   emojiForWord,
   extractSpeechWordIntervals,
   formatCaptionWord,
+  groupCaptionTokens,
+  isNoSpaceScriptChar,
+  joinTranscriptWords,
   autoCensorWordId,
   censoredCaptionWordText,
   normalizeCensorAudioSchedule,
@@ -204,6 +207,9 @@ export interface ScreenLayoutEvidence {
 
 export interface ClipCompositionPlanInput {
   readonly document: EditorDocument;
+  /** Effective caption language: the transcript's language, else the project's
+   * requested one. Carried onto every caption layer. */
+  readonly captionLanguage?: string | null;
   readonly source: CompositionSourceFacts;
   readonly evidence: {
     readonly framingDegraded?: {
@@ -438,6 +444,8 @@ export interface CompositionTextVisualLayer {
 
 export interface CompositionCaptionWord {
   readonly text: string;
+  /** The provider's spacing before this word; absent when unknown. */
+  readonly spaceBefore?: boolean;
   readonly emoji: string | null;
   readonly startSec: number;
   readonly endSec: number;
@@ -455,6 +463,9 @@ export interface CompositionCaptionVisualLayer {
   readonly cueIndex: number;
   readonly words: readonly CompositionCaptionWord[];
   readonly preset: CaptionPreset;
+  /** Effective caption language (transcript language, else the requested one):
+   * casing, fonts and direction read it. Null when neither is known. */
+  readonly language: string | null;
 }
 
 export interface CompositionLogoVisualLayer {
@@ -2348,6 +2359,7 @@ export interface CaptionCue {
   readonly startSec: number;
   readonly endSec: number;
   readonly text: string;
+  readonly language: string | null;
 }
 
 const CAPTION_CUE_TARGET: CompositionTarget = { id: "caption-cues", aspectRatio: "9:16", width: 1080, height: 1920 };
@@ -2358,7 +2370,10 @@ const CAPTION_CUE_TARGET: CompositionTarget = { id: "caption-cues", aspectRatio:
  * subtitles for exports whose burned-in captions are turned off. */
 export function deriveCaptionCues(
   document: EditorDocument,
-  options: { readonly ignoreVisibility?: boolean } = {},
+  options: {
+    readonly ignoreVisibility?: boolean;
+    readonly language?: string | null;
+  } = {},
 ): CaptionCue[] {
   const editedTimeMap = buildClipCutPlan(document.deletedRanges, {
     startSec: document.clipStartSec,
@@ -2370,16 +2385,24 @@ export function deriveCaptionCues(
   const totalDurationSec = editedTimeMap.editedDurationSec +
     document.sceneBlocks.reduce((total, block) => total + block.durationSec, 0);
   return retimeVisualLayersForInsertedScenes(
-    captionLayersForTarget({ document: cueDocument, target: CAPTION_CUE_TARGET, editedTimeMap }),
+    captionLayersForTarget({
+      document: cueDocument,
+      target: CAPTION_CUE_TARGET,
+      editedTimeMap,
+      language: options.language ?? null,
+    }),
     document.sceneBlocks,
     totalDurationSec,
   ).flatMap((layer) => layer.kind === "caption" && layer.words.length > 0
-    ? [{ ...captionCueVisibleRange(layer, totalDurationSec), text: captionCueText(layer.words) }]
+    ? [{ ...captionCueVisibleRange(layer, totalDurationSec), text: captionCueText(layer.words), language: layer.language }]
     : []);
 }
 
 export function captionCueText(words: readonly CompositionCaptionWord[]) {
-  return words.map((word) => word.text).join(" ");
+  return joinTranscriptWords(words.map((word) => ({
+    word: word.text,
+    ...(word.spaceBefore === undefined ? {} : { spaceBefore: word.spaceBefore }),
+  })));
 }
 
 /** When a caption word stops being the active word. Burned-in text events
@@ -2399,12 +2422,27 @@ export function captionCueVisibleRange(layer: CompositionCaptionVisualLayer, tot
   };
 }
 
+/** Caption text for an utterance with no word timings. Text in a no-space
+ * script is one token: splitting and re-joining it would only collapse its
+ * own spacing. */
+function fallbackCaptionText(text: string, punctuation: boolean) {
+  if (Array.from(text).some(isNoSpaceScriptChar)) {
+    return formatCaptionWord(text.trim().replace(/\s+/g, " "), { punctuation });
+  }
+  return text
+    .split(/\s+/)
+    .map((word) => formatCaptionWord(word, { punctuation }))
+    .filter(Boolean)
+    .join(" ");
+}
+
 function captionLayersForTarget(input: {
   document: EditorDocument;
   target: CompositionTarget;
   editedTimeMap: EditedTimeMap;
+  language: string | null;
 }): CompositionCaptionVisualLayer[] {
-  const { document, target, editedTimeMap } = input;
+  const { document, target, editedTimeMap, language } = input;
   const preset = document.captionPreset;
   if (preset.visible === false) return [];
   const destination = { x: 0, y: 0, width: target.width, height: target.height };
@@ -2438,22 +2476,19 @@ function captionLayersForTarget(input: {
       const formatted = applyCaptionTextTransform(
         censoredCaptionWordText(word.word, maskSegment?.captionMaskPolicy ?? null, { punctuation }),
         preset.textTransform,
+        language,
       );
       if (!formatted) return [];
       return [{ word, range, formatted }];
     });
 
     if (utterance.words.length > 0) {
-      for (
-        let wordIndex = 0;
-        wordIndex < visibleWords.length;
-        wordIndex += preset.wordsPerCue
-      ) {
-        const group = visibleWords.slice(
-          wordIndex,
-          wordIndex + preset.wordsPerCue,
-        );
-        if (group.length === 0) continue;
+      const groups = groupCaptionTokens(
+        visibleWords.map((entry) => entry.formatted),
+        preset.wordsPerCue,
+      );
+      for (const [groupIndex, range] of groups.entries()) {
+        const group = visibleWords.slice(range.start, range.end);
         const cueIndex = layers.length;
         const startSec = group[0]!.range.startSec;
         const endSec = Math.max(
@@ -2461,7 +2496,7 @@ function captionLayersForTarget(input: {
           group[group.length - 1]!.range.endSec,
         );
         layers.push({
-          id: `layer:caption:${utterance.index}:${Math.floor(wordIndex / preset.wordsPerCue)}:${target.id}`,
+          id: `layer:caption:${utterance.index}:${groupIndex}:${target.id}`,
           kind: "caption",
           activeRange: { startSec, endSec },
           anchor,
@@ -2472,6 +2507,7 @@ function captionLayersForTarget(input: {
           cueIndex,
           words: group.map((entry, index) => ({
             text: entry.formatted,
+            ...(entry.word.spaceBefore === undefined ? {} : { spaceBefore: entry.word.spaceBefore }),
             emoji: preset.emojis ? emojiForWord(entry.word.word) : null,
             startSec: entry.range.startSec,
             endSec:
@@ -2480,6 +2516,7 @@ function captionLayersForTarget(input: {
                 : Math.max(entry.range.startSec + 0.1, entry.range.endSec),
           })),
           preset,
+          language,
         });
       }
       continue;
@@ -2488,12 +2525,9 @@ function captionLayersForTarget(input: {
     const range = sourceRangeToEdited(editedTimeMap, utterance);
     if (!range) continue;
     const text = applyCaptionTextTransform(
-      utterance.text
-        .split(/\s+/)
-        .map((word) => formatCaptionWord(word, { punctuation }))
-        .filter(Boolean)
-        .join(" "),
+      fallbackCaptionText(utterance.text, punctuation),
       preset.textTransform,
+      language,
     );
     if (!text) continue;
     layers.push({
@@ -2515,6 +2549,7 @@ function captionLayersForTarget(input: {
         },
       ],
       preset,
+      language,
     });
   }
 
@@ -2527,8 +2562,9 @@ function visualLayersForTarget(input: {
   scenes: readonly CompositionScene[];
   editedTimeMap: EditedTimeMap;
   logo: CompositionLogoAvailability | undefined;
+  captionLanguage: string | null;
 }): CompositionVisualLayer[] {
-  const { document, target, editedTimeMap, logo } = input;
+  const { document, target, editedTimeMap, logo, captionLanguage } = input;
   const duration = editedTimeMap.editedDurationSec;
   const destination = { x: 0, y: 0, width: target.width, height: target.height };
   const visualLayers: CompositionVisualLayer[] = [];
@@ -2554,7 +2590,12 @@ function visualLayersForTarget(input: {
     });
   }
 
-  const captions = captionLayersForTarget({ document, target, editedTimeMap });
+  const captions = captionLayersForTarget({
+    document,
+    target,
+    editedTimeMap,
+    language: captionLanguage,
+  });
   const useSpeakerSeam = document.studioEdits.framing.mode === "auto" &&
     document.captionPreset.position === "bottom" &&
     document.captionPreset.positionY === undefined;
@@ -3638,6 +3679,7 @@ export function planClipComposition(
           scenes: baseTarget.scenes,
           editedTimeMap,
           logo: input.assets.logo,
+          captionLanguage: input.captionLanguage ?? null,
         }),
         input.document.sceneBlocks,
         totalEditedDurationSec,

@@ -22,6 +22,18 @@ describe("wordCharRanges", () => {
   });
 });
 
+describe("wordCharRanges — no-space scripts", () => {
+  test("adds no joining space between Chinese characters but keeps explicit ones", () => {
+    const ranges = wordCharRanges([{ word: "今" }, { word: "天" }, { word: "OK" }, { word: "好", spaceBefore: false }]);
+    expect(ranges).toEqual([
+      { charStart: 0, charEnd: 1 },
+      { charStart: 1, charEnd: 2 },
+      { charStart: 3, charEnd: 5 },
+      { charStart: 5, charEnd: 6 },
+    ]);
+  });
+});
+
 // ─── collectSelectedWords ───────────────────────────────────────────────────
 
 const utterances: UtteranceWordSource[] = [

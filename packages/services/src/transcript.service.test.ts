@@ -315,3 +315,35 @@ describe("exportTranscript", () => {
     expect(vtt).toContain("00:00:05.100 --> 00:00:09.600");
   });
 });
+
+describe("exportTranscript in no-space scripts", () => {
+  const word = (text: string, startSec: number, spaceBefore?: boolean) => ({
+    word: text, startSec, endSec: startSec + 0.3, confidence: 0.9,
+    ...(spaceBefore === undefined ? {} : { spaceBefore }),
+  });
+  const snapshot = (words: ReturnType<typeof word>[], text: string) => buildTranscriptSnapshot({
+    projectId: "00000000-0000-4000-8000-000000000001", status: "completed", provider: "elevenlabs",
+    providerModel: "scribe_v2", providerJobId: null, languageCode: "zh", languageConfidence: 0.99, text,
+    utterancesJson: [{ index: 0, speaker: null, speakerLabel: "Speaker", startSec: 0, endSec: 3, text, confidence: null, words }],
+    speakerCount: 1, durationSeconds: 3, errorCode: null, completedAt: null, updatedAt: null,
+  });
+
+  test("TXT, SRT and VTT rebuild text from words with the provider's spacing", () => {
+    const zh = snapshot([word("今", 0), word("天", 0.3), word("好", 0.6), word("。", 0.9)], "今 天 好 。");
+    expect(exportTranscript(zh, "txt")).toContain("Speaker: 今天好。");
+    expect(exportTranscript(zh, "srt")).toContain("\nSpeaker: 今天好。");
+    expect(exportTranscript(zh, "vtt")).toContain("\nSpeaker: 今天好。");
+  });
+
+  test("Thai keeps the spaces between phrases", () => {
+    const th = snapshot([word("สวัสดีครับ", 0), word("วันนี้", 0.3, true)], "สวัสดีครับ วันนี้");
+    expect(exportTranscript(th, "txt")).toContain("Speaker: สวัสดีครับ วันนี้");
+  });
+
+  test("Latin text and utterances without words are unchanged", () => {
+    const en = snapshot([word("Hello", 0), word("world.", 0.3)], "Hello world.");
+    expect(exportTranscript(en, "txt")).toContain("Speaker: Hello world.");
+    const bare = snapshot([], "Typed by hand");
+    expect(exportTranscript(bare, "txt")).toContain("Speaker: Typed by hand");
+  });
+});

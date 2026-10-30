@@ -1,4 +1,5 @@
 import type { TranscriptUtterance, TranscriptWord } from "./transcript";
+import { joinTranscriptWords } from "./text-script";
 import { isTerminalWordText, splitUtterancesIntoSentences } from "./utterance-split";
 
 export interface ClipTimingInput {
@@ -51,7 +52,7 @@ function wordText(word: TranscriptWord) {
 }
 
 function rebuildText(words: TranscriptWord[]) {
-  return words.map(wordText).filter(Boolean).join(" ").trim();
+  return joinTranscriptWords(words);
 }
 
 function isTerminalWord(word: TranscriptWord) {
@@ -534,26 +535,29 @@ export function normalizeTranscriptSliceForClip(
   const normalized: TranscriptUtterance[] = [];
 
   for (const utterance of utterances) {
-    if (utterance.endSec <= startSec || utterance.startSec >= endSec) {
-      continue;
-    }
-
-    const clampedStart = normalizeTime(Math.max(utterance.startSec, startSec));
-    const clampedEnd = normalizeTime(Math.min(utterance.endSec, endSec));
-
-    if (clampedEnd <= clampedStart) {
-      continue;
-    }
-
     if (utterance.words.length > 0) {
+      // Half-open window [startSec, endSec): a word belongs to the slice when
+      // it overlaps the window, and a zero-duration word when
+      // startSec <= t < endSec. Words that fit inside the window keep their
+      // timing even when it is zero or tiny (providers emit those for
+      // punctuation and per-character scripts); only edge slivers created by
+      // clamping are dropped.
       const words = utterance.words
-        .filter((word) => word.endSec > startSec && word.startSec < endSec)
-        .map((word) => ({
-          ...word,
-          startSec: normalizeTime(Math.max(word.startSec, startSec)),
-          endSec: normalizeTime(Math.min(word.endSec, endSec)),
-        }))
-        .filter((word) => word.endSec - word.startSec >= MIN_WORD_DURATION_SEC);
+        .filter((word) =>
+          word.endSec > word.startSec
+            ? word.endSec > startSec && word.startSec < endSec
+            : word.startSec >= startSec && word.startSec < endSec,
+        )
+        .flatMap((word) => {
+          const clampedWordStart = normalizeTime(Math.max(word.startSec, startSec));
+          const clampedWordEnd = normalizeTime(Math.min(word.endSec, endSec));
+          const clamped =
+            word.startSec < startSec || word.endSec > endSec;
+          if (clamped && clampedWordEnd - clampedWordStart < MIN_WORD_DURATION_SEC) {
+            return [];
+          }
+          return [{ ...word, startSec: clampedWordStart, endSec: clampedWordEnd }];
+        });
 
       const text = rebuildText(words);
 
@@ -564,11 +568,22 @@ export function normalizeTranscriptSliceForClip(
       normalized.push({
         ...utterance,
         index: normalized.length,
-        startSec: words[0]?.startSec ?? clampedStart,
-        endSec: words[words.length - 1]?.endSec ?? clampedEnd,
+        startSec: words[0]!.startSec,
+        endSec: words[words.length - 1]!.endSec,
         text,
         words,
       });
+      continue;
+    }
+
+    if (utterance.endSec <= startSec || utterance.startSec >= endSec) {
+      continue;
+    }
+
+    const clampedStart = normalizeTime(Math.max(utterance.startSec, startSec));
+    const clampedEnd = normalizeTime(Math.min(utterance.endSec, endSec));
+
+    if (clampedEnd <= clampedStart) {
       continue;
     }
 

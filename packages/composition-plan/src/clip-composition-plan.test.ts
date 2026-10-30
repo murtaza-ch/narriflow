@@ -132,7 +132,7 @@ describe("Clip Composition Plan", () => {
     expect(cutPlan.droppedSliverCount).toBe(1);
     expect(result.plan.editedDurationSec).toBe(cutPlan.editedDurationSec);
     expect(result.plan.targets[0]!.scenes.at(-1)!.endSec).toBe(2.9);
-    expect(deriveCaptionCues(document)).toEqual([{ startSec: 0.1, endSec: 0.3, text: "KEPT" }]);
+    expect(deriveCaptionCues(document)).toEqual([{ startSec: 0.1, endSec: 0.3, text: "KEPT", language: null }]);
     expect(formatSubtitles(deriveCaptionCues(document), "srt")).toBe("1\n00:00:00,100 --> 00:00:00,300\nKEPT\n\n");
     expect(formatSubtitles(deriveCaptionCues(document), "vtt")).toBe("WEBVTT\n\n00:00:00.100 --> 00:00:00.300\nKEPT\n\n");
     expect(result.plan.audioSchedule.censors).toEqual([expect.objectContaining({ startSec: 0.1, endSec: 0.3, treatment: "mute" })]);
