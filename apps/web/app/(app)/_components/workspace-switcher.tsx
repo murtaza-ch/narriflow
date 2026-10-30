@@ -1,6 +1,15 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { useState } from "react";
+import { useMutation } from "@tanstack/react-query";
+import { cancelBusinessWorkspaceCheckout, resumeBusinessWorkspaceCheckout } from "@narriflow/api-client/billing";
+import { invalidateSessionBootstrap } from "@narriflow/api-client/session";
+import { isApiError, invalidateScoped } from "@narriflow/api-client";
+import { Button } from "@narriflow/ui/components/button";
+import { useApiRuntime, useIdentityScope } from "@/app/_components/api-provider";
+import { checkoutReturnWorkspace, rememberCheckoutWorkspace } from "@/lib/pending-workspace-checkout";
 import { Box, Flex, Image, Menu, Portal, Stack, Text } from "@chakra-ui/react";
 import { Building2, Check, ChevronDown, Plus, Settings, Users, Share2, Braces, Gem } from "lucide-react";
 import { Spinner } from "@narriflow/ui/components/spinner";
@@ -21,6 +30,7 @@ export interface WorkspaceSwitcherItem {
   role: "owner" | "admin" | "editor" | "viewer";
   isPersonal: boolean;
   avatarUrl: string | null;
+  status: "active" | "pending_payment" | "restricted";
 }
 
 export function WorkspaceSwitcher({
@@ -32,12 +42,17 @@ export function WorkspaceSwitcher({
   items: WorkspaceSwitcherItem[];
   presentation: WorkspaceMenuPresentation;
 }) {
+  const runtime = useApiRuntime();
   const { switchTo, pending: isPending, pendingId: switchingTo, error } = useWorkspaceSwitch();
   const switchError = error ? apiErrorMessage(error, "The Workspace could not be selected.") : null;
   const active = items.find((item) => item.id === activeWorkspaceId) ?? items[0];
 
   function selectWorkspace(workspaceId: string) {
     if (workspaceId === activeWorkspaceId || isPending) return;
+    if (items.find((item) => item.id === workspaceId)?.status === "pending_payment") {
+      const userId = runtime.scope.snapshot().userId;
+      if (userId) rememberCheckoutWorkspace(userId, workspaceId, activeWorkspaceId);
+    }
     void switchTo(workspaceId);
   }
 
@@ -79,12 +94,13 @@ export function WorkspaceSwitcher({
               <Text fontSize="12px" color="fg.subtle" truncate>
                 <Text as="span" textTransform="capitalize">{active?.role ?? "member"}</Text>
                 {" · "}
-                {PLAN_CATALOG[resolvePricingTier(presentation.tier)].name}
+                {active?.status === "pending_payment" ? "Payment pending" : PLAN_CATALOG[resolvePricingTier(presentation.tier)].name}
               </Text>
             </Stack>
             {isPending ? <Spinner size="xs" /> : <ChevronDown size={14} />}
           </Flex>
         </Menu.Trigger>
+        {active?.status === "pending_payment" ? <PendingWorkspaceControls workspace={active} items={items} activeWorkspaceId={activeWorkspaceId} /> : null}
       </Box>
       <Portal>
         <Menu.Positioner>
@@ -121,6 +137,7 @@ export function WorkspaceSwitcher({
               <Text textStyle="eyebrow" color="fg.muted">Workspaces</Text>
             </Box>
             {items.map((item) => (
+              <Box key={item.id}>
               <Menu.Item
                 key={item.id}
                 value={item.id}
@@ -134,11 +151,13 @@ export function WorkspaceSwitcher({
                 <Stack gap="0" minW="0" flex="1">
                   <Text fontSize="13px" truncate>{item.name}</Text>
                   <Text fontSize="12px" color="fg.subtle" textTransform="capitalize">
-                    {item.isPersonal ? "Personal" : item.role}
+                    {item.status === "pending_payment" ? "Payment pending" : item.isPersonal ? "Personal" : item.role}
                   </Text>
                 </Stack>
                 {item.id === activeWorkspaceId ? <Box color="accent.fg" display="flex"><Check size={14} /></Box> : null}
               </Menu.Item>
+              {item.status === "pending_payment" && item.id !== activeWorkspaceId ? <PendingWorkspaceControls workspace={item} items={items} activeWorkspaceId={activeWorkspaceId} inMenu /> : null}
+              </Box>
             ))}
             <Menu.Separator />
             <Menu.Item value="new-workspace" asChild>
@@ -149,4 +168,65 @@ export function WorkspaceSwitcher({
       </Portal>
     </Menu.Root>
   );
+}
+
+/** Quiet, contextual recovery. No requests run until the owner chooses an action. */
+export function PendingWorkspaceControls({ workspace, items, activeWorkspaceId, inMenu = false }: {
+  workspace: WorkspaceSwitcherItem; items: WorkspaceSwitcherItem[]; activeWorkspaceId: string; inMenu?: boolean;
+}) {
+  const runtime = useApiRuntime();
+  const identity = useIdentityScope();
+  const router = useRouter();
+  const [confirming, setConfirming] = useState(false);
+  const { switchTo } = useWorkspaceSwitch();
+  const action = useMutation({
+    mutationFn: async (kind: "resume" | "cancel") => {
+      if (!identity) return;
+      if (kind === "resume") {
+        const url = await resumeBusinessWorkspaceCheckout(runtime.transport, identity, workspace.id);
+        rememberCheckoutWorkspace(identity.userId, workspace.id, activeWorkspaceId);
+        runtime.selectWorkspace(workspace.id);
+        window.location.assign(url);
+        return;
+      }
+      await cancelBusinessWorkspaceCheckout(runtime.transport, identity, workspace.id);
+      const destination = checkoutReturnWorkspace(identity.userId, workspace.id, items);
+      // Adopt the return selection before refetching memberships, so the gate
+      // never requests a bootstrap under the removed Workspace hint.
+      if (activeWorkspaceId === workspace.id && destination) {
+        if (!await switchTo(destination)) throw new Error("Workspace selection failed");
+      }
+      await Promise.all([
+        invalidateSessionBootstrap(runtime.queryClient, identity),
+        ...items.filter((item) => item.id !== workspace.id).map((item) =>
+          invalidateScoped(runtime.queryClient, { userId: identity.userId, workspaceId: item.id }, "workspace")),
+      ]);
+    },
+  });
+  if (workspace.role !== "owner" || workspace.status !== "pending_payment") return null;
+  const needsBilling = isApiError(action.error) && action.error.code === "workspace_checkout_state_invalid";
+  function control(value: string, label: string, onSelect: () => void) {
+    return inMenu ? (
+      <Menu.Item value={`${workspace.id}-${value}`} closeOnSelect={false} disabled={action.isPending} onSelect={onSelect}>{label}</Menu.Item>
+    ) : (
+      <Button size="xs" variant="ghost" disabled={action.isPending} onClick={onSelect}>{label}</Button>
+    );
+  }
+  async function openBilling() {
+    if (activeWorkspaceId !== workspace.id && !await switchTo(workspace.id)) return;
+    router.push("/settings/billing");
+  }
+  return <Stack gap="1" px="2.5" pb="2">
+    {confirming && !needsBilling ? <Text fontSize="xs" color="fg.muted">Discard {workspace.name} and close its unpaid checkout?</Text> : null}
+    <Flex gap="2" flexWrap="wrap" flexDirection={inMenu ? "column" : "row"}>
+      {needsBilling ? control("billing", "Open billing", () => { void openBilling(); }) : confirming ? <>
+        {control("discard", "Confirm discard", () => action.mutate("cancel"))}
+        {control("keep", "Keep workspace", () => setConfirming(false))}
+      </> : <>
+        {control("resume", "Resume checkout", () => action.mutate("resume"))}
+        {control("discard", "Discard workspace", () => setConfirming(true))}
+      </>}
+    </Flex>
+    {action.error ? <Text role="alert" fontSize="xs" color="fg.muted">{apiErrorMessage(action.error, "Checkout could not be updated. Try again.")}</Text> : null}
+  </Stack>;
 }

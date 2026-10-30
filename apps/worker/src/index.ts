@@ -563,6 +563,18 @@ createPollLoop("webhook_deliveries", completionCallbackPollIntervalMs, async () 
 	return delivered + (await webhooks.notifyDisabled());
 });
 
+// Optional provider cleanup has its own hourly loop. A slow Stripe request must
+// never hold up the stalled-run reaper or current billing reconciliation.
+createPollLoop("pending_business_workspaces", 60 * 60 * 1000, async () => {
+  if (workerShutdown.signal.aborted || !billingService.isConfigured()) return 0;
+  try {
+    return (await billingService.sweepPendingBusinessWorkspaces()).removed;
+  } catch (error) {
+    console.warn(JSON.stringify({ level: "warn", message: "pending_business_workspace_sweep_deferred", errorName: error instanceof Error ? error.name : typeof error }));
+    return 0;
+  }
+});
+
 const workspaceBillingLoop = createPollLoop("workspace_billing", workspaceBillingPollIntervalMs, async () => {
 	if (!billingService.isConfigured()) return 0;
 	const result = await billingService.reconcileDueAccounts();

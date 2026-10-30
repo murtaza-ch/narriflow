@@ -1,5 +1,6 @@
 import {
   businessWorkspaceCheckoutResponseSchema,
+  cancelBusinessWorkspaceCheckoutResponseSchema,
   type BusinessWorkspaceCheckoutRequest,
   type BusinessWorkspaceCheckoutResponse,
   planChangeQuoteSchema,
@@ -130,4 +131,20 @@ export async function startBusinessWorkspaceCheckout(
     { headers: { [IDEMPOTENCY_KEY_HEADER]: idempotencyKey }, init: signal ? { signal } : {} },
   );
   return businessWorkspaceCheckoutResponseSchema.parse(await response.json());
+}
+
+export async function cancelBusinessWorkspaceCheckout(
+  transport: ApiTransport, scope: IdentityScope, workspaceId: string,
+): Promise<void> {
+  const client = createBillingClient(transport.identity(scope));
+  const response = await client.workspaces["business-checkout"].cancel.$post({ json: { workspaceId } });
+  cancelBusinessWorkspaceCheckoutResponseSchema.parse(await response.json());
+}
+
+export async function resumeBusinessWorkspaceCheckout(
+  transport: ApiTransport, scope: IdentityScope, workspaceId: string,
+): Promise<string> {
+  const client = createBillingClient(transport.identity(scope));
+  const response = await client.workspaces["business-checkout"].resume.$post({ json: { workspaceId } });
+  return ((await response.json()) as { checkoutUrl: string }).checkoutUrl;
 }

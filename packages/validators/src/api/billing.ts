@@ -64,3 +64,7 @@ export const businessWorkspaceCheckoutRecoverySchema = z.object({
 export type BusinessWorkspaceCheckoutRecovery = z.infer<
   typeof businessWorkspaceCheckoutRecoverySchema
 >;
+
+/** Identity-only cancellation, so a removed pending selection can be retried safely. */
+export const cancelBusinessWorkspaceCheckoutRequestSchema = z.object({ workspaceId: z.uuid() }).strict();
+export const cancelBusinessWorkspaceCheckoutResponseSchema = z.object({ canceled: z.literal(true) });

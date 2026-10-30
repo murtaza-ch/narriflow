@@ -1,3 +1,5 @@
+import { getPrismaClient } from "@narriflow/db/client";
+import { createPendingBusinessWorkspaceService } from "./pending-business-workspace.service";
 import { randomUUID } from "node:crypto";
 import Stripe from "stripe";
 import { createStripePlanChangeProvider, normalizeStripePlanChange } from "./workspace-plan-change-stripe";
@@ -655,6 +657,39 @@ export class BillingService {
     return this.workspaceBillingModule().reconcileDueAccounts();
   }
 
+  private pendingBusinessWorkspaces() {
+    this.validateConfiguration();
+    const prisma = getPrismaClient();
+    if (!prisma) throw new Error("Database unavailable");
+    return createPendingBusinessWorkspaceService({
+      prisma,
+      provider: this.stripeProviderAdapter(),
+      expireSession: async (sessionId) => { await this.stripe().checkout.sessions.expire(sessionId); },
+    });
+  }
+
+  sweepPendingBusinessWorkspaces() {
+    return this.pendingBusinessWorkspaces().sweep();
+  }
+
+  async resumePendingBusinessWorkspaceCheckout(input: { actorUserId: string; workspaceId: string; returnDestination: string }) {
+    await workspaceService.requireActor(input.actorUserId, input.workspaceId, "billing.manage");
+    const prisma = getPrismaClient();
+    if (!prisma) throw new Error("Database unavailable");
+    const attempt = await prisma.workspaceCheckoutAttempt.findFirst({
+      where: { billingAccount: { workspaceId: input.workspaceId } },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }], select: { interval: true },
+    });
+    return this.startBusinessWorkspaceCheckout({ ...input, interval: attempt?.interval === "monthly" ? "monthly" : "annual" });
+  }
+
+  async cancelPendingBusinessWorkspace(input: { actorUserId: string; workspaceId: string }) {
+    if (!await this.pendingBusinessWorkspaces().cancel(input.workspaceId, input.actorUserId)) {
+      throw new WorkspaceOperationError("workspace_checkout_state_invalid", "This workspace must be kept. Open billing to manage its checkout.");
+    }
+    return { canceled: true as const };
+  }
+
   private async verifyStripeDelivery(
     rawBody: string,
     signature: string,
@@ -793,7 +828,7 @@ export class BillingService {
    * `details.recovery` so the form can resubmit against it.
    */
   async startBusinessWorkspaceCheckout(input: BusinessWorkspaceCheckoutInput): Promise<BusinessWorkspaceCheckout> {
-    const checkoutIdempotencyKey =
+    let checkoutIdempotencyKey =
       input.checkoutIdempotencyKey ??
       (input.creation && !input.workspaceId
         ? uuidV5(BUSINESS_CHECKOUT_KEY_NAMESPACE, JSON.stringify([input.actorUserId, input.creation.clientIdempotencyKey]))
@@ -833,14 +868,23 @@ export class BillingService {
         workspaceId = workspace.workspaceId;
         workspaceName = workspace.name;
       }
-      const checkout = await this.startCheckout({
+      const checkoutWorkspaceId = workspaceId;
+      const start = () => this.startCheckout({
         userId: input.actorUserId,
-        workspaceId,
+        workspaceId: checkoutWorkspaceId,
         clientIdempotencyKey: checkoutIdempotencyKey,
         tier: "business",
         interval: input.interval,
         returnDestination: input.returnDestination,
       });
+      let checkout;
+      try {
+        checkout = await start();
+      } catch (error) {
+        if (!isExpectedDomainFailure(error) || error.code !== "checkout_attempt_terminal") throw error;
+        checkoutIdempotencyKey = randomUUID();
+        checkout = await start();
+      }
       return {
         workspaceId,
         workspaceName: workspaceName ?? "",
@@ -849,6 +893,7 @@ export class BillingService {
         checkoutUrl: checkout.url,
       };
     } catch (error) {
+      if (isExpectedDomainFailure(error) && error.code === "workspace_no_longer_exists") throw error;
       const recovery = {
         ...(workspaceId ? { workspaceId } : {}),
         ...(workspaceName ? { workspaceName } : {}),

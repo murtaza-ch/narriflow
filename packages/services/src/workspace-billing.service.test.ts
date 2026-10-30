@@ -508,7 +508,8 @@ describe("Workspace Billing", () => {
     let checkoutPaymentStatus = "unpaid";
     let deliveryType:
       | "checkout.session.async_payment_failed"
-      | "checkout.session.completed" =
+      | "checkout.session.completed"
+      | "checkout.session.expired" =
       "checkout.session.async_payment_failed";
     const store = createInMemoryWorkspaceBillingStore([
       {
@@ -630,6 +631,9 @@ describe("Workspace Billing", () => {
 
     checkoutStatus = "expired";
     checkoutPaymentStatus = "unpaid";
+    deliveryType = "checkout.session.expired";
+    expect(await billing.acceptStripeDelivery("expired", "sig")).toMatchObject({ kind: "accepted" });
+    expect(await billing.acceptStripeDelivery("expired", "sig")).toMatchObject({ kind: "duplicate" });
     await billing.observeCheckoutReturn({
       workspaceId: "workspace-zero-subscription",
       actorUserId: "owner-zero-subscription",

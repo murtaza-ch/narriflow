@@ -204,6 +204,7 @@ export interface VerifiedBillingDelivery {
 
 export const WORKSPACE_BILLING_WAKE_EVENT_TYPES = [
   "checkout.session.completed",
+  "checkout.session.expired",
   "checkout.session.async_payment_succeeded",
   "checkout.session.async_payment_failed",
   "customer.subscription.created",

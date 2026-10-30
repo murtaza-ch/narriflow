@@ -1,6 +1,7 @@
 import type { billingService } from "@narriflow/services";
 import {
   businessWorkspaceCheckoutRequestSchema,
+  cancelBusinessWorkspaceCheckoutRequestSchema,
   checkoutRequestSchema,
   checkoutReturnRequestSchema,
   planChangeConfirmRequestSchema,
@@ -24,6 +25,8 @@ type BillingService = Pick<
   | "readBillingState"
   | "reconcileCurrentState"
   | "startBusinessWorkspaceCheckout"
+  | "cancelPendingBusinessWorkspace"
+  | "resumePendingBusinessWorkspaceCheckout"
   | "configuredTiers"
   | "isConfigured"
 >;
@@ -85,6 +88,24 @@ export function createBillingRoutes(deps: BillingRouteDeps) {
         );
       },
     )
+
+    .post("/workspaces/business-checkout/resume", validate("json", cancelBusinessWorkspaceCheckoutRequestSchema), async (c) => {
+      const actor = getSignedInActor(c);
+      const result = await billingService.resumePendingBusinessWorkspaceCheckout({
+        actorUserId: actor.actorUserId,
+        workspaceId: c.req.valid("json").workspaceId,
+        returnDestination: billingPage,
+      });
+      return c.json({ checkoutUrl: result.checkoutUrl }, 200);
+    })
+
+    .post("/workspaces/business-checkout/cancel", validate("json", cancelBusinessWorkspaceCheckoutRequestSchema), async (c) => {
+      const actor = getSignedInActor(c);
+      return c.json(await billingService.cancelPendingBusinessWorkspace({
+        actorUserId: actor.actorUserId,
+        workspaceId: c.req.valid("json").workspaceId,
+      }), 200);
+    })
 
     .post("/billing/checkout", validate("json", checkoutRequestSchema), async (c) => {
       const actor = getActor(c);

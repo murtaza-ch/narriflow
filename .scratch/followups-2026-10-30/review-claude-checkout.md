@@ -1,0 +1,36 @@
+# Claude review of the pending business-checkout cleanup (Sol), 2026-10-30
+
+Safety holds: paid/completed checkouts and any Stripe subscription (status "all") protect the workspace; content counts include soft-deleted rows; other members protect; row locks block concurrent work; webhook delivery logs survive deletion; unknown events ignored; sweep skips open sessions; only owners cancel. Targeted tests passed (services 61, API 23, api-client 12, web 4; workspace-billing DB 25/25).
+
+Findings (ranked):
+1. Medium — Cancel often fails first click: `pending-business-workspace.service.ts:89,127` compares the whole row JSON incl. reconciliation-mutated fields (`nextReconcileAt`, lease fields, `attemptCount`, `updatedAt`, attempt `sessionStatus`). Cancel expires the Stripe session at :108 after the snapshot; the resulting `checkout.session.expired` webhook mutates `nextReconcileAt` → final check 409 after the checkout is dead. Fix: compare only billing facts (customer id, canonical subscription, provider status, attempt/session ids, content counts, members); add a DB test mutating the account inside the `expireSession` mock.
+2. Medium — sweep can stall worker maintenance (`apps/worker/src/index.ts:493`): sequential Stripe calls (10 s timeout each), up to 25/60 s on two workers; in a Stripe outage it delays the stalled-run reaper and later cleanups. `findMany`/`finally updateMany` (service :138, :151) uncaught → DB error skips the rest of the tick. Fix: run in the `workspace_billing` loop or its own loop ~hourly; skip rows with recent `updatedAt`; catch per-row and whole-tick errors.
+3. Low-Med — Cancel dead end after a completed-but-failed checkout (async payment failed / `incomplete_expired`): Cancel stays visible but always returns "Refresh its billing state and try again" (`billing.service.ts:686`). Fix: hide Cancel or point to Resume/support in that state.
+4. Low-Med — reuse ignores the new name (`workspace.service.ts:196`): abandon "Acme", create "Beta" → pays for "Acme". Fix: rename the reused empty workspace inside the locked transaction.
+5. Low — Cancel order (:106–119): expires the session before checking Stripe subscription history, so a refused Cancel still kills checkout. Check subscriptions first.
+6. Low — switcher Cancel (`workspace-switcher.tsx:206`): ambiguous label, one-click delete, buttons not reachable as menu items by keyboard. Fix: "Discard workspace" + inline confirm, proper menu items.
+7. Low — Cancel returns `canceled: true` for a non-existent id but 409 for someone else's (id existence oracle, negligible with UUIDs); creation-receipt replay after deletion returns the deleted id (also in `recovery` details).
+Missing tests: reconciliation mutating the row during Cancel; sweep against a workspace made by the real creation path; sweep not blocking maintenance.
+
+
+## Resolution (Sol)
+
+All seven findings accepted and fixed locally. No commits, pushes, migrations, environment edits, or shared-resource writes.
+
+1. Cancel compares only owner/account/customer/subscription identities, provider status, and Checkout Attempt/session IDs. The locked final check still requires zero content/history, the creator-only membership, and unpaid/incomplete sessions. Reconciliation clocks, leases, retry counts, timestamps, and open-to-expired observations no longer cause a false conflict. A DB regression mutates reconciliation fields and the attempt inside `expireSession`; Cancel succeeds on the first call.
+2. Cleanup runs on its own hourly `pending_business_workspaces` loop, outside both maintenance and billing reconciliation. It skips Workspace rows updated within the last hour, including a concurrent update caught by the final locked check. Candidate reads, individual removals, rotation writes, and the whole worker tick catch failures independently. Tests cover failed reads/rotation, a stalled or rejected sweep while later reaper ticks complete, real pending-workspace creation, and the update race.
+3. A refused discard replaces the recovery controls with Open billing. This includes completed-but-failed checkout/subscription history; the UI cannot keep submitting the refused deletion. Open billing selects the target Workspace before navigating. DOM coverage verifies this path.
+4. A distinct creation intent normalizes the new name and renames a reused empty unpaid Workspace inside the creator-locked transaction. Paid/history/content-bearing workspaces keep their name. DB tests cover rename and concurrent reuse. The owner's `workspace-membership.db.test.ts` remains untouched and passes with its one-pending-workspace rule.
+5. Verified Stripe subscription history is checked before any session expiry. Active, canceled, and incomplete-expired subscription tests now use open sessions and assert that expiry was never called.
+6. The label is Discard workspace. The first action reveals a neutral inline question, Confirm discard, and Keep workspace. Actions inside the switcher menu are Chakra Menu.Items with `onSelect` and `closeOnSelect={false}`, so keyboard navigation and activation work.
+7. Missing and foreign IDs both acknowledge `{ canceled: true }` without changing a foreign workspace. A creation receipt replay rechecks membership and raises typed `workspace_no_longer_exists` / HTTP 404 after deletion, without returning the deleted ID or recovery details. The creation form clears the stale intent/selection fields for a fresh submit. Service, real-receipt DB, API, and client regressions cover this.
+
+Verification:
+
+- Before fixes, `.scratch/api-extraction/db-gate.sh bun run test:workspace-billing:db` reproduced seven failing cases, including first-click Cancel, rename, recent-row cleanup, and premature Stripe expiry.
+- Targeted deterministic suites: 133 passed, 0 failed across pending cleanup, business checkout, workspace commands, billing module, billing routes, billing client, new-workspace request, switcher DOM, worker loop, and error-copy suites. Log: `/tmp/narriflow-checkout-targeted-final.log`.
+- `.scratch/api-extraction/db-gate.sh bun run test:workspace-billing:db`: 30 passed. `test:processing-usage:db`: 31 passed. `test:vizard-expansion:db`: 71 passed. All three used only the disposable local PostgreSQL wrapper.
+- `bun run typecheck`: 15/15 packages passed. `bun run lint`: passed with the existing 11 CSS warnings and one info. `git diff --check`: clean.
+- API inventory: 283 routes, zero problems. Public OpenAPI: all 31 REST operations match. Web/API split: passed.
+
+Browser check note: an isolated Chromium session rendered the actual switcher with the existing Chakra theme and mocked identity/API adapters, without live checkout calls. Opened the menu using ArrowDown, reached Discard workspace with End/ArrowUp, and pressed Enter. The inline confirmation appeared, the request list stayed empty, and there were zero dialogs. A second Enter issued exactly one Cancel request. Inspected `/tmp/narriflow-checkout-browser/confirmation.png`; confirmation uses neutral fills and fits the menu. Browser session closed. Full authenticated application navigation was not exercised by this isolated check. The DOM fixture separately verifies previous-Workspace restoration, Resume, and the refused-discard billing action.

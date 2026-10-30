@@ -12,6 +12,8 @@ import type { AdmissionTable } from "../platform/admission-table";
 export const billingAdmission = {
   "POST /webhooks/stripe": { trust: "provider_signature" },
   "POST /workspaces/business-checkout": { kind: "signed_in", deferRateRefusal: true },
+  "POST /workspaces/business-checkout/resume": { kind: "signed_in" },
+  "POST /workspaces/business-checkout/cancel": { kind: "signed_in" },
   "POST /billing/checkout": { kind: "workspace", capability: "billing.manage" },
   "POST /billing/checkout/return": { kind: "workspace", capability: "billing.manage" },
   "POST /billing/portal": { kind: "workspace", capability: "billing.manage" },

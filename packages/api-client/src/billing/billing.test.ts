@@ -18,6 +18,8 @@ import {
   invalidateBillingDependents,
   readBillingState,
   startBusinessWorkspaceCheckout,
+  cancelBusinessWorkspaceCheckout,
+  resumeBusinessWorkspaceCheckout,
 } from ".";
 
 const view: WorkspaceBillingView = {
@@ -199,6 +201,13 @@ describe("New-Workspace checkout", () => {
     expect(calls[0]?.headers.get("authorization")).toBe("Bearer session-token");
   });
 
+  test("a deleted workspace receipt stays a typed failure without a stale selection", async () => {
+    const { runtime } = setup(() => errorResponse(404, "workspace_no_longer_exists"));
+    const error = await startBusinessWorkspaceCheckout(runtime.transport, { userId: USER }, { name: "Acme", interval: "annual" }, "discarded-intent").catch((caught: unknown) => caught);
+    expect(isApiError(error) && error.code).toBe("workspace_no_longer_exists");
+    expect(isApiError(error) && error.details).toBeUndefined();
+  });
+
   test("a failed attempt exposes the recovery facts to resubmit against the pending Workspace", async () => {
     const recovery = {
       workspaceId: "ws-pending",
@@ -235,5 +244,25 @@ describe("invalidation after observed billing state", () => {
     expect(stale(keys.session)).toBe(true);
     expect(stale(keys.otherWorkspace)).toBe(false);
     expect(stale(keys.projects)).toBe(false);
+  });
+});
+
+describe("pending Business workspace controls", () => {
+  test("resume and cancel use identity requests even while a removed workspace is selected", async () => {
+    const { runtime, calls } = setup(
+      () => jsonResponse({ checkoutUrl: "https://checkout.stripe.test/resumed" }),
+      () => jsonResponse({ canceled: true }),
+    );
+    const identity = { userId: USER };
+    expect(await resumeBusinessWorkspaceCheckout(runtime.transport, identity, WORKSPACE_B)).toBe("https://checkout.stripe.test/resumed");
+    await cancelBusinessWorkspaceCheckout(runtime.transport, identity, WORKSPACE_B);
+    expect(calls.map((call) => new URL(call.url).pathname)).toEqual([
+      "/api/workspaces/business-checkout/resume", "/api/workspaces/business-checkout/cancel",
+    ]);
+    for (const call of calls) {
+      expect(call.headers.get("authorization")).toBe("Bearer session-token");
+      expect(call.headers.get("x-workspace-id")).toBeNull();
+      expect(JSON.parse(String(call.init.body))).toEqual({ workspaceId: WORKSPACE_B });
+    }
   });
 });

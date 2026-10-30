@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { BillingError, BillingService } from "./billing.service";
 import { isExpectedDomainFailure, type ExpectedDomainFailure } from "./expected-domain-failure";
-import { workspaceService } from "./workspace.service";
+import { WorkspaceOperationError, workspaceService } from "./workspace.service";
 import { workspaceCommands } from "./workspace-commands-runtime";
 
 const KEY = "018f5f6a-4c31-7c75-9a4f-8f74f977bc20";
@@ -17,6 +17,7 @@ const creation = { clientIdempotencyKey: "intent-1" };
 function stubWorkspaces(actor: { role: string; status: string; workspaceName: string } | null = null) {
   // Stands in for the receipt-backed command: one Workspace per caller key, replays after.
   const byKey = new Map<string, { workspaceId: string; name: string }>();
+  let pending: { workspaceId: string; name: string } | undefined;
   spyOn(workspaceCommands, "createBusinessWorkspace").mockImplementation((async (
     _userId: string,
     input: { name: string },
@@ -24,8 +25,9 @@ function stubWorkspaces(actor: { role: string; status: string; workspaceName: st
   ) => {
     const known = byKey.get(mutation.clientIdempotencyKey);
     if (known) return { ...known, replayed: true };
-    created.push(input.name);
-    const workspace = { workspaceId: `ws-pending-${created.length}`, name: input.name };
+    if (!pending) created.push(input.name);
+    const workspace = pending ?? { workspaceId: `ws-pending-${created.length}`, name: input.name };
+    pending = workspace;
     byKey.set(mutation.clientIdempotencyKey, workspace);
     return { ...workspace, replayed: false };
   }) as never);
@@ -117,7 +119,7 @@ describe("Business Workspace checkout", () => {
     expect(retry.checkoutIdempotencyKey).toBe(first.checkoutIdempotencyKey);
     expect(checkouts.map((checkout) => checkout.workspaceId)).toEqual([first.workspaceId, first.workspaceId]);
     expect(checkouts[1]?.clientIdempotencyKey).toBe(checkouts[0]?.clientIdempotencyKey);
-    // Another intent is another Workspace.
+    // Another creation intent reuses the unfinished purchase.
     const other = await service.startBusinessWorkspaceCheckout({
       actorUserId: "user-1",
       name: "Acme",
@@ -125,8 +127,21 @@ describe("Business Workspace checkout", () => {
       interval: "annual",
       returnDestination: RETURN,
     });
-    expect(other.workspaceId).not.toBe(first.workspaceId);
-    expect(created).toEqual(["Acme", "Acme"]);
+    expect(other.workspaceId).toBe(first.workspaceId);
+    expect(created).toEqual(["Acme"]);
+  });
+
+  test("an expired Checkout key is replaced on the same pending Workspace", async () => {
+    stubWorkspaces();
+    let calls = 0;
+    stubCheckout(async () => {
+      if (++calls === 1) throw new BillingError("checkout_attempt_terminal");
+      return { url: "https://checkout.stripe.test/new" };
+    });
+    const result = await service.startBusinessWorkspaceCheckout({ actorUserId: "user-1", name: "Acme", creation, interval: "annual", checkoutIdempotencyKey: KEY, returnDestination: RETURN });
+    expect(result.workspaceId).toBe("ws-pending-1");
+    expect(result.checkoutIdempotencyKey).not.toBe(KEY);
+    expect(created).toEqual(["Acme"]);
   });
 
   test("mints the Checkout key when the caller sent none, and returns it for the retry", async () => {
@@ -222,6 +237,16 @@ describe("Business Workspace checkout", () => {
     expect(failure.details).toEqual({
       recovery: { workspaceId: "ws-pending-1", workspaceName: "Acme", interval: "annual", checkoutIdempotencyKey: KEY },
     });
+  });
+
+  test("a deleted creation receipt never leaks its old workspace in recovery or starts Checkout", async () => {
+    stubWorkspaces();
+    spyOn(workspaceCommands, "createBusinessWorkspace").mockRejectedValue(new WorkspaceOperationError("workspace_no_longer_exists", "This workspace no longer exists. Start a new workspace checkout."));
+    stubCheckout();
+    const failure = await failureOf(service.startBusinessWorkspaceCheckout({ actorUserId: "user-1", name: "Acme", creation, interval: "annual", returnDestination: RETURN }));
+    expect(failure).toMatchObject({ code: "workspace_no_longer_exists", kind: "missing" });
+    expect(failure.details).toBeUndefined();
+    expect(checkouts).toEqual([]);
   });
 
   test("an unexpected failure is generic, logged without its message, and still recoverable", async () => {

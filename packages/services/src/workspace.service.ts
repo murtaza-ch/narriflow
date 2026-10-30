@@ -10,6 +10,7 @@ import {
   type WorkspaceApiKeyScope,
   type WorkspaceCapability,
 } from "@narriflow/validators";
+import { canRemovePendingBusinessWorkspace, pendingBusinessWorkspaceSelection } from "./pending-business-workspace.service";
 import { requirePlanFeature } from "./plan-features";
 import {
 	ExpectedDomainFailureError,
@@ -71,6 +72,7 @@ export const workspaceOperationFailureCatalog = {
 	workspace_user_not_found: "missing",
 	workspace_limit_reached: "conflict",
 	workspace_checkout_state_invalid: "conflict",
+	workspace_no_longer_exists: "missing",
 } as const satisfies ExpectedDomainFailureCatalog<string>;
 
 export type WorkspaceOperationErrorCode =
@@ -180,10 +182,29 @@ export class WorkspaceService {
   async createPendingBusinessWorkspace(
     userId: string,
     input: { name: string },
-    db: Prisma.TransactionClient = requiredPrisma(),
-  ) {
+    db?: Prisma.TransactionClient,
+  ): Promise<{ id: string; name: string; status: WorkspaceStatus; pricingTier: PricingTier }> {
+    if (!db) {
+      return requiredPrisma().$transaction((tx) => this.createPendingBusinessWorkspace(userId, input, tx));
+    }
     const prisma = db;
     const name = normalizeWorkspaceName(input.name);
+    // Different receipt keys still represent one unfinished purchase per creator.
+    await prisma.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`pending-business-${userId}`}, 0))::text`;
+    const pending = await prisma.workspace.findFirst({
+      where: { ownerUserId: userId, personalOwnerUserId: null, status: "pending_payment" },
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+      select: { id: true, name: true, status: true, pricingTier: true },
+    });
+    if (pending) {
+      await prisma.$queryRaw`SELECT id FROM "Workspace" WHERE id = ${pending.id}::uuid FOR UPDATE`;
+      await prisma.$queryRaw`SELECT id FROM "WorkspaceBillingAccount" WHERE "workspaceId" = ${pending.id}::uuid FOR UPDATE`;
+      const current = await prisma.workspace.findUnique({ where: { id: pending.id }, select: pendingBusinessWorkspaceSelection });
+      if (current && canRemovePendingBusinessWorkspace(current)) {
+        return prisma.workspace.update({ where: { id: pending.id }, data: { name }, select: { id: true, name: true, status: true, pricingTier: true } });
+      }
+      if (current) return { ...pending, status: current.status, pricingTier: current.pricingTier };
+    }
     const [user, ownedCount, personalWorkspace] = await Promise.all([
       prisma.user.findFirst({ where: { id: userId, deletedAt: null }, select: { id: true } }),
       prisma.workspace.count({ where: { ownerUserId: userId } }),

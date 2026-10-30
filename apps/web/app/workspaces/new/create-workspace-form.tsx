@@ -1,5 +1,6 @@
 "use client";
 
+import { rememberCheckoutWorkspace } from "@/lib/pending-workspace-checkout";
 import { useMemo, useState } from "react";
 import { Box, Flex, Stack, Text } from "@chakra-ui/react";
 import { isApiError } from "@narriflow/api-client";
@@ -56,11 +57,18 @@ export function CreateWorkspaceForm() {
       intent.complete();
       // The new Workspace becomes the explicit selection before the person leaves for Stripe.
       // Checkout proves nothing about entitlement: Billing observes the verified state on return.
+      rememberCheckoutWorkspace(identity.userId, started.selection.workspaceId, runtime.scope.snapshot().workspaceId);
       runtime.selectWorkspace(started.selection.workspaceId);
       setRedirecting(true);
       window.location.assign(started.checkoutUrl);
     },
     onError: (error, input) => {
+      if (isApiError(error) && error.code === "workspace_no_longer_exists") {
+        intent.complete();
+        setState({ workspaceName: input.name, interval: input.interval });
+        setFailures((count) => count + 1);
+        return;
+      }
       const recovery = isApiError(error)
         ? businessWorkspaceCheckoutRecoverySchema.safeParse(error.details?.recovery)
         : null;

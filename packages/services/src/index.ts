@@ -640,3 +640,5 @@ export { syncClipExportAggregate, syncClipExportAggregates } from "./clip-export
 
 export * from "./render-group-contract";
 export { RenderGroupLifecycle, RenderGroupAttemptLost, getRenderGroupLifecycle, invalidateRenderGroupMembersWithinTransaction, type RenderGroupAdmission, type RenderGroupLifecycleDependencies } from "./render-group-lifecycle";
+
+export { createPendingBusinessWorkspaceService, type PendingBusinessWorkspaceDependencies } from "./pending-business-workspace.service";

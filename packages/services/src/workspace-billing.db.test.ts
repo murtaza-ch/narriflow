@@ -1,3 +1,6 @@
+import { createPendingBusinessWorkspaceService } from "./pending-business-workspace.service";
+import { workspaceCommands } from "./workspace-commands-runtime";
+import { workspaceService } from "./workspace.service";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
@@ -96,6 +99,184 @@ dbDescribe("Workspace Billing PostgreSQL invariants", () => {
     });
     return { user, workspace };
   }
+
+  async function pendingFixture(label: string, onExpire?: () => Promise<void>) {
+    const { user, workspace } = await createWorkspace(`pending-${label}`, { team: true });
+    const at = new Date("2026-10-30T12:00:00Z");
+    await prisma.workspace.update({ where: { id: workspace.id }, data: { status: "pending_payment", createdAt: new Date(at.getTime() - 3 * 86400_000), updatedAt: new Date(at.getTime() - 86400_000) } });
+    let subscriptions: Array<{ id: string; status: string }> = [];
+    let status: "open" | "expired" | "complete" = "expired";
+    let session: ProviderCheckoutSession | null = null;
+    const service = createPendingBusinessWorkspaceService({ prisma, now: () => at, provider: {
+      retrieveCurrentState: async () => ({ customerId: `cus_${workspace.id}`, ownership: { kind: "verified", workspaceId: workspace.id }, subscriptions: subscriptions as never }),
+      findCustomersByWorkspace: async () => [],
+      findCheckoutSessionsByAttempt: async () => [],
+      retrieveCheckoutSession: async () => ({ ...session!, status }),
+    }, expireSession: async () => { await onExpire?.(); status = "expired"; } });
+    return { user, workspace, service, at,
+      subscription: (value: typeof subscriptions) => { subscriptions = value; },
+      session: async (value: typeof status = "expired") => {
+        status = value;
+        const account = await prisma.workspaceBillingAccount.update({ where: { workspaceId: workspace.id }, data: { providerCustomerId: `cus_${workspace.id}` } });
+        const attempt = await prisma.workspaceCheckoutAttempt.create({ data: {
+          billingAccountId: account.id, actorUserId: user.id, clientIdempotencyKey: randomUUID(),
+          targetTier: "business", interval: "annual", catalogVersion: "test", returnDestination: "https://app.test/settings/billing",
+          customerOperationKey: randomUUID(), checkoutOperationKey: randomUUID(), activeBillingAccountId: account.id,
+          providerSessionId: `cs_${workspace.id}`, sessionStatus: "open", expiresAt: new Date(at.getTime() - 2 * 86400_000),
+        } });
+        session = { sessionId: attempt.providerSessionId!, workspaceId: workspace.id, attemptId: attempt.id, url: null, status, paymentStatus: "unpaid", expiresAt: attempt.expiresAt! };
+      },
+    };
+  }
+
+  test("different and concurrent creation intents reuse one pending workspace per creator", async () => {
+    const { user } = await createWorkspace("pending-reuse");
+    const results = await Promise.all(["First", "Second", "Third"].map((name) => workspaceService.createPendingBusinessWorkspace(user.id, { name })));
+    expect(new Set(results.map((row) => row.id)).size).toBe(1);
+    expect(await prisma.workspace.count({ where: { ownerUserId: user.id, status: "pending_payment" } })).toBe(1);
+  });
+
+  test("a new creation intent renames the reused empty workspace", async () => {
+    const { user } = await createWorkspace("rename");
+    const first = await workspaceService.createPendingBusinessWorkspace(user.id, { name: "Acme" });
+    const second = await workspaceService.createPendingBusinessWorkspace(user.id, { name: " Beta  Studio " });
+    expect(second).toMatchObject({ id: first.id, name: "Beta Studio" });
+    expect((await prisma.workspace.findUniqueOrThrow({ where: { id: first.id } })).name).toBe("Beta Studio");
+  });
+
+  test("Cancel tolerates expiry webhook reconciliation bookkeeping on the first click", async () => {
+    const f = await pendingFixture("expiry-race", async () => {
+      await prisma.workspaceBillingAccount.update({ where: { workspaceId: f.workspace.id }, data: {
+        nextReconcileAt: new Date(), reconcileAttemptId: randomUUID(), leaseExpiresAt: new Date(), attemptCount: { increment: 1 },
+      } });
+      await prisma.workspaceCheckoutAttempt.updateMany({ where: { billingAccount: { workspaceId: f.workspace.id } }, data: { sessionStatus: "expired", activeBillingAccountId: null } });
+    });
+    await f.session("open");
+    expect(await f.service.cancel(f.workspace.id, f.user.id)).toBe(true);
+    expect(await prisma.workspace.findUnique({ where: { id: f.workspace.id } })).toBeNull();
+  });
+
+  test("the sweep handles real pending creation and skips recently updated rows", async () => {
+    const { user } = await createWorkspace("real-sweep");
+    const workspace = await workspaceService.createPendingBusinessWorkspace(user.id, { name: "Abandoned" });
+    const at = new Date();
+    const old = new Date(at.getTime() - 3 * 86400_000);
+    await prisma.workspace.update({ where: { id: workspace.id }, data: { createdAt: old } });
+    const service = createPendingBusinessWorkspaceService({ prisma, now: () => at, provider: {
+      retrieveCurrentState: async () => { throw new Error("No customer should need checking"); },
+    }, expireSession: async () => {} });
+    await service.sweep();
+    expect(await prisma.workspace.findUnique({ where: { id: workspace.id } })).not.toBeNull();
+    await prisma.workspace.update({ where: { id: workspace.id }, data: { updatedAt: old } });
+    await service.sweep();
+    expect(await prisma.workspace.findUnique({ where: { id: workspace.id } })).toBeNull();
+  });
+
+  test("a workspace updated during sweep verification is kept", async () => {
+    const f = await pendingFixture("sweep-recent-race");
+    const account = await prisma.workspaceBillingAccount.update({ where: { workspaceId: f.workspace.id }, data: { providerCustomerId: `cus_${f.workspace.id}` } });
+    const service = createPendingBusinessWorkspaceService({ prisma, now: () => f.at, expireSession: async () => {}, provider: {
+      retrieveCurrentState: async () => {
+        await prisma.workspace.update({ where: { id: f.workspace.id }, data: { name: "Resumed", updatedAt: f.at } });
+        return { customerId: account.providerCustomerId!, ownership: { kind: "verified", workspaceId: f.workspace.id }, subscriptions: [] };
+      },
+    } });
+    await service.sweep();
+    expect(await prisma.workspace.findUnique({ where: { id: f.workspace.id } })).not.toBeNull();
+  });
+
+  test("a real creation receipt cannot replay a workspace deleted by Cancel", async () => {
+    const { user } = await createWorkspace("receipt-delete");
+    const create = () => workspaceCommands.createBusinessWorkspace(user.id, { name: "Discarded" }, { clientIdempotencyKey: randomKey });
+    const randomKey = randomUUID();
+    const first = await create();
+    const service = createPendingBusinessWorkspaceService({ prisma, provider: { retrieveCurrentState: async () => { throw new Error("unused"); } }, expireSession: async () => {} });
+    expect(await service.cancel(first.workspaceId, user.id)).toBe(true);
+    await expect(create()).rejects.toMatchObject({ code: "workspace_no_longer_exists", kind: "missing" });
+    expect(await prisma.operationReceipt.count({ where: { actorUserId: user.id, command: "create_business_workspace" } })).toBe(1);
+  });
+
+  test("sweeps old empty pending workspaces, including a missing Checkout, idempotently", async () => {
+    const f = await pendingFixture("sweep");
+    expect((await f.service.sweep()).removed).toBeGreaterThanOrEqual(1);
+    expect(await prisma.workspace.findUnique({ where: { id: f.workspace.id } })).toBeNull();
+    expect(await f.service.cancel(f.workspace.id, f.user.id)).toBe(true);
+    const fresh = await pendingFixture("fresh");
+    await prisma.workspace.update({ where: { id: fresh.workspace.id }, data: { createdAt: fresh.at } });
+    await fresh.service.sweep();
+    expect(await prisma.workspace.findUnique({ where: { id: fresh.workspace.id } })).not.toBeNull();
+  });
+
+  test("cancel expires an open session, while the sweep keeps it; only the owner can cancel", async () => {
+    const f = await pendingFixture("cancel");
+    await f.session("open");
+    expect(await f.service.cancel(f.workspace.id, randomUUID())).toBe(true);
+    expect(await prisma.workspace.findUnique({ where: { id: f.workspace.id } })).not.toBeNull();
+    await f.service.sweep();
+    expect(await prisma.workspace.findUnique({ where: { id: f.workspace.id } })).not.toBeNull();
+    expect(await f.service.cancel(f.workspace.id, f.user.id)).toBe(true);
+  });
+
+  test("Cancel fences a fresh unfinished checkout preparation immediately", async () => {
+    const f = await pendingFixture("preparing");
+    const account = await prisma.workspaceBillingAccount.findUniqueOrThrow({ where: { workspaceId: f.workspace.id } });
+    const attempt = await prisma.workspaceCheckoutAttempt.create({ data: {
+      billingAccountId: account.id, actorUserId: f.user.id, clientIdempotencyKey: randomUUID(),
+      targetTier: "business", interval: "annual", catalogVersion: "test", returnDestination: "https://app.test",
+      customerOperationKey: randomUUID(), checkoutOperationKey: randomUUID(), activeBillingAccountId: account.id,
+    } });
+    expect(await f.service.cancel(f.workspace.id, f.user.id)).toBe(true);
+    expect(await prisma.workspaceCheckoutAttempt.findUnique({ where: { id: attempt.id } })).toBeNull();
+  });
+
+  test("a project or checkout added during provider verification prevents deletion", async () => {
+    for (const change of ["project", "checkout"] as const) {
+      const f = await pendingFixture(`concurrent-${change}`);
+      const account = await prisma.workspaceBillingAccount.update({ where: { workspaceId: f.workspace.id }, data: { providerCustomerId: `cus_${f.workspace.id}` } });
+      const service = createPendingBusinessWorkspaceService({ prisma, now: () => f.at, expireSession: async () => {}, provider: {
+        retrieveCurrentState: async () => {
+          if (change === "project") await prisma.project.create({ data: { workspaceId: f.workspace.id, title: "Concurrent content", sourceMediaUrl: "https://example.test/keep" } });
+          else await prisma.workspaceCheckoutAttempt.create({ data: {
+            billingAccountId: account.id, actorUserId: f.user.id, clientIdempotencyKey: randomUUID(),
+            targetTier: "business", interval: "annual", catalogVersion: "test", returnDestination: "https://app.test",
+            customerOperationKey: randomUUID(), checkoutOperationKey: randomUUID(), activeBillingAccountId: account.id,
+          } });
+          return { customerId: `cus_${f.workspace.id}`, ownership: { kind: "verified", workspaceId: f.workspace.id }, subscriptions: [] };
+        },
+      } });
+      expect(await service.cancel(f.workspace.id, f.user.id)).toBe(false);
+      expect(await prisma.workspace.findUnique({ where: { id: f.workspace.id } })).not.toBeNull();
+    }
+  });
+
+  test.each(["active", "canceled", "incomplete_expired"])("never removes a workspace with provider subscription history: %s", async (status) => {
+    let expired = false;
+    const f = await pendingFixture(status, async () => { expired = true; });
+    await f.session("open");
+    f.subscription([{ id: "sub_history", status }]);
+    expect(await f.service.cancel(f.workspace.id, f.user.id)).toBe(false);
+    expect(expired).toBe(false);
+  });
+
+  test("protects projects, brand data, other members and local subscription history", async () => {
+    for (const protect of ["project", "brand", "member", "subscription", "transition", "complete"] as const) {
+      const f = await pendingFixture(protect);
+      if (protect === "project") await prisma.project.create({ data: { title: "Keep", sourceMediaUrl: "https://example.test/video", workspaceId: f.workspace.id } });
+      if (protect === "brand") await prisma.brandTemplate.create({ data: { name: "Keep", captionPreset: {}, userId: f.user.id, workspaceId: f.workspace.id } });
+      if (protect === "member") {
+        const other = await createWorkspace("other-member");
+        await prisma.workspaceMember.create({ data: { workspaceId: f.workspace.id, userId: other.user.id, role: "viewer" } });
+      }
+      if (protect === "subscription") await prisma.workspaceBillingAccount.update({ where: { workspaceId: f.workspace.id }, data: { canonicalSubscriptionId: `sub_${f.workspace.id}` } });
+      if (protect === "transition") {
+        const account = await prisma.workspaceBillingAccount.findUniqueOrThrow({ where: { workspaceId: f.workspace.id } });
+        await prisma.workspaceBillingTransition.create({ data: { billingAccountId: account.id, previousTier: "business", nextTier: "free", previousStatus: "active", nextStatus: "pending_payment", reason: "ended", effectiveAt: f.at, observedAt: f.at, sourceSubscriptionId: "sub_old" } });
+      }
+      if (protect === "complete") await f.session("complete");
+      expect(await f.service.cancel(f.workspace.id, f.user.id)).toBe(false);
+      expect(await prisma.workspace.findUnique({ where: { id: f.workspace.id } })).not.toBeNull();
+    }
+  });
 
   test("persists plan-change quotes across module instances and keeps payment pending off entitlements", async () => {
     const { user, workspace } = await createWorkspace("plan-change");

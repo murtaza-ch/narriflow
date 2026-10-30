@@ -48,6 +48,7 @@ Values must be finite integers. Invalid values stop startup.
 Register `${API_ORIGIN}/api/webhooks/stripe` (the API origin, not the web origin; Checkout success/cancel and portal return URLs stay on the web origin's `/settings/billing`) for exactly these event types:
 
 - `checkout.session.completed`
+- `checkout.session.expired`
 - `checkout.session.async_payment_succeeded`
 - `checkout.session.async_payment_failed`
 - `customer.subscription.created`
@@ -211,3 +212,26 @@ For application rollback, preserve `WebhookDeliveryLog`, `WorkspaceBillingAccoun
 Because there are no production users or data, inconsistent local fixtures may instead be reset deliberately: stop the API and worker, export any evidence needed for debugging, delete only the identified local test Workspaces or recreate the local database, delete only sandbox customers carrying the known test fixture metadata, apply the full migration chain, and restart. Never use a broad customer deletion query and never apply this reset procedure to live mode.
 
 Live-mode mutations remain prohibited until the sandbox matrix, exact event registration, portal catalog, secrets, migration deploy, operator command, database drill, repository checks, and browser checks all pass and are recorded.
+
+### Abandoned Business checkout
+
+`checkout.session.expired` wakes the existing provider reconciliation loop. Stripe
+endpoint `we_1UVobgFB4NArILpPk1Kkgqrh` was checked read-only on 2026-10-30 and still has the previous 19-event list;
+add `checkout.session.expired` to its subscriptions when rolling out this change.
+This code change does not update Stripe configuration.
+
+An independent hourly worker loop checks at most 25 pending workspaces per pass,
+skipping rows updated within the last hour. Cleanup failures are caught per row
+and per tick, and cannot delay the stalled-run reaper or billing reconciliation.
+An empty, creator-only workspace is eligible a day after the last session expiry, with a
+48-hour floor from creation and a 48-hour allowance for a lost session response.
+Cleanup verifies there is no Stripe subscription of any status, protects local
+subscription history and all project/brand content, then locks and rechecks the
+workspace and billing facts before deletion. Provider failures defer cleanup.
+Owner Discard workspace asks for inline confirmation, verifies Stripe subscription
+history before expiring an open session, then removes the empty workspace. A
+refusal offers Open billing. Discard fences unfinished provider preparations.
+Checkout creation reuses the owner's existing pending workspace across distinct form intents and renames it to the
+new requested name when it is still empty and unpaid. Creation receipt replays
+after deletion return `workspace_no_longer_exists` without stale recovery IDs.
+Missing and inaccessible Discard targets both acknowledge a no-op. No migration is needed.

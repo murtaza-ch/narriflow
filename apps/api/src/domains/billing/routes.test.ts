@@ -98,6 +98,8 @@ function service(overrides: Record<string, unknown> = {}) {
       checkoutIdempotencyKey: "018f5f6a-4c31-7c75-9a4f-8f74f977bc20",
       checkoutUrl: "https://checkout.test/business",
     })),
+    cancelPendingBusinessWorkspace: mock(async () => ({ canceled: true as const })),
+    resumePendingBusinessWorkspaceCheckout: mock(async () => ({ checkoutUrl: "https://checkout.test/resumed" })),
     configuredTiers: () => ["creator", "pro"] as ("creator" | "pro")[],
     isConfigured: () => true,
     ...overrides,
@@ -135,6 +137,8 @@ describe("billing admission", () => {
         "POST /billing/reconcile",
         "POST /webhooks/stripe",
         "POST /workspaces/business-checkout",
+        "POST /workspaces/business-checkout/cancel",
+        "POST /workspaces/business-checkout/resume",
       ].sort(),
     );
     expect(billingAdmission["POST /webhooks/stripe"]).toEqual({ trust: "provider_signature" });
@@ -151,6 +155,8 @@ describe("billing admission", () => {
       "/billing/reconcile",
       "/billing/plan-change/cancel",
       "/workspaces/business-checkout",
+      "/workspaces/business-checkout/cancel",
+      "/workspaces/business-checkout/resume",
     ]) {
       const response = await app.request(`/api${path}`, {
         method: "POST",
@@ -305,7 +311,9 @@ describe("Workspace checkout, portal and state", () => {
 
     const activating = service({
       readBillingState: mock(async () => ({ ...view, health: "activating" as const })),
-      configuredTiers: () => [],
+      cancelPendingBusinessWorkspace: mock(async () => ({ canceled: true as const })),
+    resumePendingBusinessWorkspaceCheckout: mock(async () => ({ checkoutUrl: "https://checkout.test/resumed" })),
+    configuredTiers: () => [],
       isConfigured: () => false,
     });
     const response = await appFor(activating).request("/api/billing/state", { headers });
@@ -498,6 +506,19 @@ describe("New-Workspace checkout", () => {
     expect(billing.startBusinessWorkspaceCheckout).not.toHaveBeenCalled();
   });
 
+  test("a deleted creation receipt returns a typed missing failure without recovery ids", async () => {
+    const billing = service({ startBusinessWorkspaceCheckout: mock(async () => {
+      throw new ExpectedDomainFailureError({ code: "workspace_no_longer_exists", kind: "missing", message: "This workspace no longer exists. Start a new workspace checkout." });
+    }) });
+    const request = post("/workspaces/business-checkout", body, { "idempotency-key": "discarded-intent" });
+    const response = await appFor(billing).request(request.path, request.init);
+    expect(response.status).toBe(404);
+    const result = await response.json();
+    expect(result).toMatchObject({ error: "workspace_no_longer_exists" });
+    expect(result).not.toHaveProperty("details.recovery");
+    expect(result).not.toHaveProperty("selection");
+  });
+
   test("a failure after the Workspace exists carries the recovery facts for the form", async () => {
     const recovery = {
       workspaceId: "ws-pending",
@@ -522,5 +543,23 @@ describe("New-Workspace checkout", () => {
       error: "checkout_in_progress",
       details: { recovery },
     });
+  });
+});
+
+describe("pending Business checkout controls", () => {
+  test("cancel and resume use the signed-in owner identity and a validated workspace id", async () => {
+    const billing = service();
+    const id = "00000000-0000-4000-8000-000000000123";
+    for (const action of ["cancel", "resume"]) {
+      const response = await appFor(billing).request(`/api/workspaces/business-checkout/${action}`, {
+        method: "POST", headers, body: JSON.stringify({ workspaceId: id }),
+      });
+      expect(response.status).toBe(200);
+      expect((await appFor(billing).request(`/api/workspaces/business-checkout/${action}`, {
+        method: "POST", headers, body: JSON.stringify({ workspaceId: "invalid" }),
+      })).status).toBe(400);
+    }
+    expect(billing.cancelPendingBusinessWorkspace).toHaveBeenCalledWith({ actorUserId: "user-owner", workspaceId: id });
+    expect(billing.resumePendingBusinessWorkspaceCheckout).toHaveBeenCalledWith({ actorUserId: "user-owner", workspaceId: id, returnDestination: `${WEB}/settings/billing` });
   });
 });

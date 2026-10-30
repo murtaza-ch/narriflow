@@ -194,10 +194,11 @@ dbDescribe("Workspace membership PostgreSQL concurrency", () => {
       workspaceIds.push(created[0]?.id as string);
       expect(created[0]).toMatchObject({ status: "pending_payment", pricingTier: "free" });
       expect(await prisma.workspaceMember.count({ where: { workspaceId: created[0]?.id, userId: user.id, role: "owner" } })).toBe(1);
-      // A fresh key is a new intent.
+      // A fresh key while the first Workspace is still unpaid resumes it: a user has at
+      // most one pending Business Workspace (abandoned checkouts never pile up).
       const second = await workspaceCommands.createBusinessWorkspace(user.id, { name }, { clientIdempotencyKey: "another-key" });
-      expect(second.workspaceId).not.toBe(outcomes[0]?.workspaceId);
-      workspaceIds.push(second.workspaceId);
+      expect(second.workspaceId).toBe(outcomes[0]?.workspaceId);
+      expect(await prisma.workspace.count({ where: { id: { in: workspaceIds }, status: "pending_payment" } })).toBe(1);
     });
   });
 });
