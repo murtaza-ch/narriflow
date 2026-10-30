@@ -94,6 +94,16 @@ describe("caption line layout in visual order", () => {
     expect(layout.words[1]!.widthEm).toBeCloseTo(shapeCaptionRun(arabic, "مرحبا", true).advanceEm, 6);
   });
 
+  test("libass anchors a \\pos event by the bbox of its cluster roots, so an offset mark moves it off the advance middle", () => {
+    // Measured on libass 0.17.4 (compute_string_bbox): the Nastaliq word's last cluster starts with a mark at x_offset 351 units.
+    const marked = layoutCaptionLine([word("مُحَبَّتُوں", nastaliq)], 0, "rtl");
+    expect(marked.bboxCenterEm - marked.widthEm / 2).toBeCloseTo(0.351 / 2, 2);
+    // No offset on any cluster root: the bbox is the advance box.
+    for (const plain of [layoutCaptionLine([word("READY", latin, true)], 0.05, "ltr"), layoutCaptionLine([word("مرحبا", arabic), word("بالعالم", arabic)], 0, "rtl")]) {
+      expect(plain.bboxCenterEm).toBeCloseTo(plain.widthEm / 2, 6);
+    }
+  });
+
   test("letter spacing applies after each character of spaced parts only", () => {
     const plain = layoutCaptionLine([word("READY", latin)], 0, "ltr");
     const spaced = layoutCaptionLine([word("READY", latin, true)], 0.05, "ltr");

@@ -35,3 +35,25 @@ Design: HarfBuzz (`harfbuzzjs` 1.6.4, WASM in the package, self-initialising) + 
 - Line box: tallest Win ascent and deepest Win descent of the faces actually on the line (space = requested face); emoji sits 0.8em above that box top. Pill: top = baseline − (max(capHeight, word fallback ink top) + padTop), bottom = baseline + max(padBottom, word fallback ink bottom + 0.06); plate uses the line's ink. Latin-only lines are unchanged.
 - Typed degradation `caption_geometry_unavailable` (`CaptionTrack.geometryUnavailable`): when HarfBuzz cannot open a face (an uploaded **WOFF2** brand font — HarfBuzz reads sfnt only; libass still draws it) the cue keeps its timed base line with colours, reveal, karaoke/typewriter, but no pills, plate, active-word overlay, fit-to-width (a 0.6em/char estimate is used) or word-anchored emoji position.
 - Karaoke on an RTL word: sweep from the right edge; typewriter on complex scripts: per word.
+
+### Follow-up: pill/overlay offset in RTL cues (orchestrator review of evidence/10)
+
+**Defect.** In Nastaliq cues the pill sat up to 3.9% of the frame (42 px) right of the word libass drew (`ur-long-word`: pill over the neighbour's last letter, extra gap on the other side); Arabic with harakat 2.1% off; Hebrew, plain Arabic and English exact.
+
+**Root cause (libass 0.17.4 `ass_render.c`, confirmed by measurement).** For a `\pos` event libass does not centre the line's advance box on the point. `compute_string_bbox` takes `x_min = min(root.pos.x)` and `x_max = max(root.pos.x + cluster_advance)` over the *cluster roots*, where `root.pos.x = cluster_pen + root.offset.x` and the root is the cluster's first HarfBuzz glyph. `get_base_point` then puts the bbox middle on `\pos`. Nastaliq (and Arabic with harakat) clusters start with a mark that has a large positive `x_offset` (351 units on `مُحَبَّتُوں`, 213 on `اُردُو`, 595 on the first mark of `خُوبصُورَت`), so the bbox is stretched and the whole line is drawn left of where HarfBuzz widths say. It is not the `\fsp` spaces or the space face: word widths, gaps and the pen sum all matched HarfBuzz to 1 px. Measured with `BorderStyle 3` boxes (advance boxes) and ink in `\an4`/`\an5`/`\an6`: line offset 39-42 px = (Σ cluster-root offsets)/2 at 88 px/em, and per word solo −(xo_first + xo_last mark)/2.
+
+**Fix.** `layoutCaptionLine` now returns `bboxCenterEm`, computed from per-cluster roots (`ShapedRun.clusters`: pen, first-glyph offset, advance; letter spacing added per cluster as libass does), and the serializer places the line's left edge at `anchorX - bboxCenterEm * px` (was `- widthEm / 2`). An event holding one word (active-word overlay, glitch ghosts) is anchored by that word's own bbox, so its `\pos` is `eventX = centerX + (aloneBboxCenter - aloneWidth/2) * px`; pill, clip sweep, emoji use the true advance box (`centerX`), the plate the true line middle (`lineCenterX`). Latin, Hebrew and plain Arabic have no offset roots: their `.ass` is byte-identical to before.
+
+**Measured, pill centre vs the word's ink centre libass draws (px of 1080; `caption-pill-render.test.ts`).**
+| sample / word | before | after |
+| --- | --- | --- |
+| Urdu `مُحَبَّتُوں` | 39.0 | 3.0 |
+| Urdu `پاکستان` / `میں` | 19.0 / 22.0 | 2.0 / 1.5 |
+| Arabic harakat `مَرْحَبًا` | 23.0 | 1.0 |
+| Arabic numbers/Latin (all five words), Hebrew, English | ≤ 5.5 | ≤ 5.5 (unchanged) |
+Worst case after: `کی` 17.5 px (1.6%): Nastaliq ink overhangs its advance box (the tail of ی), the pill centres on the advance box.
+
+**Tests.** `apps/worker/src/caption-pill-render.test.ts` (real ffmpeg/libass; fails on the old geometry with the 39 px / 22 px / 23 px offsets above; threshold 2% of frame width, every word of Urdu ×2, Arabic+numbers+Latin, Arabic harakat, Hebrew, English); `packages/caption-fonts/src/shaping.test.ts` pins `bboxCenterEm`. `evidence/10/*` regenerated (new `ur-short-word`, `ar-harakat`); only the Urdu and Arabic-numbers frames changed, `he`/`en-pill` and the other scripts are unchanged. `ar-karaoke` sweep still runs from the word's right edge and stays inside it (`caption-rtl-render.test.ts` green).
+
+**Contract for ticket 11.** Studio draws in CSS and centres on the advance box, so it needs none of this; only the libass serializer shifts. Word boxes (`centerX`, `width`) are advance boxes; `eventX`/`lineCenterX` are libass-event placements. Residual: under a word-pop `\fscx` the overlay scales about its bbox middle, so a marked word's advance centre drifts by (1-s)·shift (a few px); a Nastaliq tail can overhang a short word's pill by a few px.
+
