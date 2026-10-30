@@ -5,8 +5,9 @@ import {
   captionCodePointLabel,
   captionGraphemes,
   fontFileCovers,
-  fontFileLineHeightEm,
+  fontFileMetricsEm,
   isCaptionEmojiCluster,
+  orderCaptionFallbackFaces,
 } from "@narriflow/caption-fonts";
 import type { CaptionFontFace } from "@narriflow/validators";
 
@@ -19,6 +20,12 @@ import type { CaptionFontFace } from "@narriflow/validators";
  *
  *   requested face -> saved built-in face -> pinned Noto script face
  *   -> Noto Sans Symbols 2 -> monochrome Noto Emoji
+ *
+ * The script faces are tried in catalog order except that the cue's language
+ * moves its own face first for the runs it leads (ja -> Noto Sans JP for Han
+ * and kana, yue -> Noto Sans TC for Han, ur -> Noto Nastaliq Urdu for Arabic
+ * script; `orderCaptionFallbackFaces`, shared with the Studio). A requested or
+ * saved face that covers the glyphs always wins over them.
  *
  * Emoji-presentation clusters skip straight to the last two. A code point no
  * face covers is left out of the burned text (only that code point, never the
@@ -34,6 +41,9 @@ export interface CaptionFace {
   readonly path: string;
   /** Win ascent + descent per em: the ASS font size that draws one em. */
   readonly lineHeightEm: number;
+  /** Win ascent and descent per em: libass lays a line out with the largest of each among its faces. */
+  readonly ascentEm: number;
+  readonly descentEm: number;
   readonly role: CaptionFaceRole;
   /** `disabled`: draw this face with `\fsp0` (cursive and complex scripts). */
   readonly letterSpacing?: "preserved" | "disabled";
@@ -79,16 +89,28 @@ export class CaptionGlyphUnavailableError extends Error {
 }
 
 export function catalogCaptionFace(face: CaptionFontFace, role: "requested" | "saved"): CaptionFace {
-  return { assName: face.assName, path: captionFontFilePath(face.file), lineHeightEm: face.ascent + face.descent, role };
+  return { assName: face.assName, path: captionFontFilePath(face.file), lineHeightEm: face.ascent + face.descent, ascentEm: face.ascent, descentEm: face.descent, role };
 }
 
-const FALLBACK_FACES: readonly CaptionFace[] = CAPTION_FALLBACK_FONTS.map((font) => ({
-  assName: font.assName,
-  path: captionFallbackFontPath(font),
-  lineHeightEm: fontFileLineHeightEm(captionFallbackFontPath(font)),
-  role: font.role,
-  letterSpacing: font.letterSpacing,
-}));
+/** The face of an uploaded brand font, read from the saved file's metrics. */
+export function brandCaptionFace(face: CaptionFontFace, path: string): CaptionFace {
+  return { assName: face.assName, path, lineHeightEm: face.ascent + face.descent, ascentEm: face.ascent, descentEm: face.descent, role: "requested" };
+}
+
+const FALLBACK_FACES: readonly (CaptionFace & { readonly languages?: readonly string[] })[] = CAPTION_FALLBACK_FONTS.map((font) => {
+  const path = captionFallbackFontPath(font);
+  const { ascentEm, descentEm } = fontFileMetricsEm(path);
+  return {
+    assName: font.assName,
+    path,
+    lineHeightEm: ascentEm + descentEm,
+    ascentEm,
+    descentEm,
+    role: font.role,
+    letterSpacing: font.letterSpacing,
+    ...("languages" in font ? { languages: font.languages } : {}),
+  };
+});
 const SCRIPT_FACES = FALLBACK_FACES.filter((face) => face.role === "script");
 const SYMBOLS_FACE = FALLBACK_FACES.find((face) => face.role === "symbols")!;
 const EMOJI_FACE = FALLBACK_FACES.find((face) => face.role === "monochrome-emoji")!;
@@ -127,7 +149,8 @@ export interface PlannedCluster {
 }
 
 export class CaptionGlyphPlanner {
-  private readonly scripted: readonly CaptionFace[];
+  private readonly leading: readonly CaptionFace[];
+  private readonly plans = new Map<string, PlannedCluster[]>();
 
   constructor(
     readonly requested: CaptionFace,
@@ -136,17 +159,24 @@ export class CaptionGlyphPlanner {
     private readonly cueIndex: number,
     /** Code points to leave out regardless (libass reported them after a render). */
     private readonly forcedOmissions: ReadonlySet<number> = new Set(),
+    /** The cue's effective caption language: picks the language-aware face for a script run. */
+    private readonly language: string | null = null,
   ) {
-    this.scripted = [requested, ...(saved ? [saved] : []), ...SCRIPT_FACES];
+    this.leading = [requested, ...(saved ? [saved] : [])];
   }
 
+  /** Planned clusters of `text`, memoized: every layer of a cue plans the same words. */
   plan(text: string): PlannedCluster[] {
+    const cached = this.plans.get(text);
+    if (cached) return cached;
     let current: CaptionFace = this.requested;
-    return captionGraphemes(text).map((cluster) => {
+    const clusters = captionGraphemes(text).map((cluster) => {
       const parts = this.partsFor(cluster, current);
       current = parts[parts.length - 1]?.face ?? current;
       return { text: cluster, parts };
     });
+    this.plans.set(text, clusters);
+    return clusters;
   }
 
   private partsFor(cluster: string, current: CaptionFace): PlannedPart[] {
@@ -187,7 +217,7 @@ export class CaptionGlyphPlanner {
   private faceCovering(text: string, emoji: boolean, current: CaptionFace): CaptionFace | null {
     const neutral = [...text].every((character) => NEUTRAL.test(character));
     if (neutral && fontFileCovers(current.path, text)) return current;
-    const order = emoji ? [EMOJI_FACE, SYMBOLS_FACE] : [...this.scripted, SYMBOLS_FACE, EMOJI_FACE];
+    const order = emoji ? [EMOJI_FACE, SYMBOLS_FACE] : [...this.leading, ...orderCaptionFallbackFaces(SCRIPT_FACES, this.language, text), SYMBOLS_FACE, EMOJI_FACE];
     return order.find((face) => fontFileCovers(face.path, text)) ?? null;
   }
 

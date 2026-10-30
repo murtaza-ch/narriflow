@@ -4,7 +4,8 @@ import { readFileSync } from "node:fs";
 import { create } from "fontkit";
 import { SCRIBE_LANGUAGES } from "@narriflow/validators";
 import { SCRIPT_SPECIMENS } from "../../../apps/worker/scripts/check-render-environment";
-import { CAPTION_FALLBACK_FONTS, captionFallbackFontPath, fontFileAdvanceEm, fontFileCovers, fontkitCannotShape } from "./fallback-fonts";
+import { CAPTION_FALLBACK_FONTS, captionFallbackFontPath, fontFileCovers } from "./fallback-fonts";
+import { shapeCaptionRun } from "./shaping";
 
 interface ManifestFont {
   file: string;
@@ -84,7 +85,7 @@ describe("script coverage of the Scribe catalog", () => {
   test("specimens that need shaping collapse code points into fewer glyphs", () => {
     for (const specimen of SCRIPT_SPECIMENS.filter((candidate) => candidate.shaped)) {
       const path = captionFallbackFontPath(faceByAssName.get(specimen.face)!);
-      if (fontkitCannotShape(path)) continue;
+      if (path.endsWith("NotoNastaliqUrdu-Regular.ttf")) continue; // fontkit's layout() never returns here; HarfBuzz judges it below.
       const font = create(readFileSync(path)) as unknown as { layout(text: string): { glyphs: unknown[] } };
       const collapsed = specimen.text.split(" ").some((word) => {
         try {
@@ -97,12 +98,13 @@ describe("script coverage of the Scribe catalog", () => {
     }
   });
 
-  test("fontkit never lays out Noto Nastaliq Urdu: it loops forever on ordinary Urdu", () => {
+  test("HarfBuzz shapes the faces fontkit cannot: Nastaliq Urdu returns, joined into fewer glyphs", () => {
     const path = captionFallbackFontPath(faceByAssName.get("Noto Nastaliq Urdu Regular")!);
-    expect(fontkitCannotShape(path)).toBe(true);
     expect(fontFileCovers(path, "اردو زبان")).toBe(true);
-    expect(() => fontFileAdvanceEm(path, "زبان")).toThrow("HarfBuzz");
-    expect(CAPTION_FALLBACK_FONTS.filter((font) => fontkitCannotShape(captionFallbackFontPath(font))).map((font) => font.file)).toEqual(["NotoNastaliqUrdu-Regular.ttf"]);
+    const run = shapeCaptionRun(path, "زبان", true);
+    expect(run.notdef).toBe(false);
+    expect(run.advanceEm).toBeGreaterThan(1);
+    expect(run.inkBottomEm).toBeGreaterThan(0.3);
   });
 
   test("a face fontkit cannot position still reports its cmap coverage instead of throwing", () => {

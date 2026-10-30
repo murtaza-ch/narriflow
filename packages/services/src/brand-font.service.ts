@@ -158,18 +158,13 @@ export function parseBrandFontHeader(bytes: Uint8Array): "ttf" | "otf" | "woff2"
   return parseBrandFont(bytes).format;
 }
 
-/** Shape the exact uploaded bytes for the caption burn-in's word geometry. */
+/** Validate the exact uploaded bytes and read the face metrics the caption burn-in needs; the worker shapes the saved file with HarfBuzz. */
 export function brandFontRenderer(bytes: Uint8Array) {
   const parsed = parseBrandFont(bytes);
   const font = parseFont(Buffer.from(bytes));
   if (!("layout" in font)) throw new BrandFontIntegrityError("brand_font_collection_unsupported");
   return {
     face: parsed.face,
-    measure(text: string, letterSpacingEm: number): number | null {
-      const characters = [...text];
-      if (characters.some((character) => !font.hasGlyphForCodePoint(character.codePointAt(0)!))) return null;
-      return font.layout(text).advanceWidth / font.unitsPerEm + letterSpacingEm * characters.length;
-    },
   };
 }
 

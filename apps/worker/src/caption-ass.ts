@@ -3,13 +3,16 @@ import {
 	CAPTION_EMOJI_FONT_EM,
 	CAPTION_EMOJI_HEIGHT_EM,
 	CAPTION_EMOJI_WIDTH_EM,
+	CaptionShapingError,
 	captionGraphemes,
-	fontFileAdvanceEm,
 	fontFileCovers,
-	measureCaptionTextEm,
+	layoutCaptionLine,
 	resolveCaptionEmoji,
+	type CaptionLineLayout,
+	type CaptionLineWord,
 } from "@narriflow/caption-fonts";
 import {
+	brandCaptionFace,
 	type CaptionFace,
 	type CaptionGlyphNotice,
 	CaptionGlyphPlanner,
@@ -39,6 +42,9 @@ import {
 	captionFontFace,
 	captionKeyframeValue,
 	captionTypewriterLetterDelays,
+	hasSpaceBefore,
+	languageDirection,
+	textDirection,
 } from "@narriflow/validators";
 
 /**
@@ -54,11 +60,23 @@ import {
  *    stroke, glow and text layers with per-word colour and visibility
  *  - overlay: the active word alone, at its measured centre, carrying the
  *    word motion (scale, rise, blur, flip, glitch) through the same layers
- * Word centres come from shaping the vendored font files with fontkit. When a
+ * Word boxes come from shaping the font files with HarfBuzz, the shaper libass
+ * uses, and placing the runs in bidi visual order (`layoutCaptionLine`), so an
+ * RTL or mixed line puts its pill, plate and overlay on the right word. When a
  * cue contains a character the face lacks, caption-glyphs.ts picks the pinned
- * fallback face and the text switches fonts with `\fn` runs; the cue degrades
- * to the base line only: colours, reveal, karaoke and typewriter still work;
- * pills, plates, overlays and fit-to-width do not.
+ * fallback face (by the cue's language first) and the text switches fonts with
+ * `\fn` runs; those runs are measured like any other.
+ *
+ * Typed degradation (`CaptionTrack.geometryUnavailable`): when HarfBuzz cannot
+ * shape one of the cue's faces (an uploaded WOFF2 brand font) the cue keeps its
+ * timed base line (colours, reveal, karaoke, typewriter) without pills, plate,
+ * active-word overlay or fit-to-width. The Studio applies the same rule.
+ *
+ * Cursive and complex scripts (a face with `letterSpacing: "disabled"`) take no
+ * letter spacing and no mid-word override tag: libass splits the shaping run at
+ * every tag, which unjoins Arabic and breaks Indic conjuncts and Thai marks, so
+ * their typewriter reveals word by word. Karaoke is one tag at the word's start
+ * and sweeps right to left on RTL words (verified on libass 0.17.4).
  *
  * ASS cannot draw colour emoji, so the active word's emoji is not in the
  * script: it comes back as an overlay schedule the FFmpeg graph composites from
@@ -82,7 +100,12 @@ const LAYER = {
 	overlayGlow: 10,
 	overlayText: 11,
 	emoji: 12,
+	/** The clipped highlight of a right-to-left karaoke word, above the base line. */
+	sweep: 13,
 } as const;
+
+/** Room left below fallback-face ink that hangs under the baseline. */
+const CAPTION_INK_MARGIN_EM = 0.06;
 
 /** libass `\blur` strength per unit of Gaussian standard deviation. */
 const ASS_BLUR_PER_SIGMA = 1 / 0.849;
@@ -115,10 +138,23 @@ interface CueGeometry {
 	readonly anchorX: number;
 	readonly anchorY: number;
 	readonly baselineY: number;
-	/** Word centres and widths in canvas px; null when unmeasurable. */
-	readonly words: readonly { readonly centerX: number; readonly width: number }[] | null;
+	/** Top of the line box: the highest ascent among the faces on the line. */
+	readonly lineTopY: number;
+	/** Visual word boxes in canvas px; `anchorY` is where an event holding only that word sits so its baseline matches the line's. Null when unmeasurable. */
+	readonly words: readonly { readonly centerX: number; readonly width: number; readonly anchorY: number; readonly inkTopEm: number; readonly inkBottomEm: number }[] | null;
 	readonly lineWidth: number | null;
+	/** Ink of fallback faces (Nastaliq, Indic and Thai marks) above the baseline and below it over the whole line, in em; a pill uses its word's own. */
+	readonly inkTopEm: number;
+	readonly inkBottomEm: number;
 	readonly tiltDeg: number;
+}
+
+/** A cue HarfBuzz could not measure: its base line burns without pills, plate, overlays or fit-to-width. */
+export interface CaptionGeometryUnavailable {
+	readonly code: "caption_geometry_unavailable";
+	readonly cueIndex: number;
+	/** Font file HarfBuzz could not shape. */
+	readonly fontPath: string;
 }
 
 /** One emoji picture the export composites above the active word. Coordinates are canvas px after the cue's tilt. */
@@ -144,6 +180,8 @@ export interface CaptionTrack {
 	readonly omitted: readonly OmittedGlyph[];
 	/** Plan emoji with no atlas cell and no monochrome glyph, whose overlay is skipped (`captionEmojiSkipped`). */
 	readonly emojiSkipped: readonly SkippedEmoji[];
+	/** Cues whose geometry could not be measured; the typed degradation Studio mirrors. */
+	readonly geometryUnavailable: readonly CaptionGeometryUnavailable[];
 }
 
 interface TrackCollector {
@@ -151,6 +189,7 @@ interface TrackCollector {
 	readonly notices: Map<string, CaptionGlyphNotice>;
 	readonly omitted: Map<string, OmittedGlyph>;
 	readonly emojiSkipped: SkippedEmoji[];
+	readonly geometryUnavailable: CaptionGeometryUnavailable[];
 	readonly forcedOmissions: ReadonlySet<number>;
 }
 
@@ -167,9 +206,9 @@ export function renderCaptionTrack(input: {
 	omitCodePoints?: ReadonlySet<number>;
 }): CaptionTrack {
 	const first = input.layers[0];
-	if (!first) return { ass: "", emoji: [], notices: [], omitted: [], emojiSkipped: [] };
+	if (!first) return { ass: "", emoji: [], notices: [], omitted: [], emojiSkipped: [], geometryUnavailable: [] };
 	const face = (first.preset.fontAsset ? input.fonts?.get(brandFontKey(first.preset.fontAsset))?.face : null) ?? captionFontFace(first.preset.fontName);
-	const collector: TrackCollector = { emoji: [], notices: new Map(), omitted: new Map(), emojiSkipped: [], forcedOmissions: input.omitCodePoints ?? new Set() };
+	const collector: TrackCollector = { emoji: [], notices: new Map(), omitted: new Map(), emojiSkipped: [], geometryUnavailable: [], forcedOmissions: input.omitCodePoints ?? new Set() };
 	const events = input.layers.flatMap((cue) => cueEvents(cue, input.canvas, cue.preset.fontAsset ? input.fonts?.get(brandFontKey(cue.preset.fontAsset)) : undefined, collector));
 	const ass = [
 		"[Script Info]",
@@ -181,7 +220,7 @@ export function renderCaptionTrack(input: {
 		"",
 		"[V4+ Styles]",
 		"Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
-		`Style: Caption,${face.assName},${assFontSize(face, first.preset.fontSize)},&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,5,0,0,0,1`,
+		`Style: Caption,${face.assName},${assFontSize(face, first.preset.fontSize)},&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,5,0,0,0,-1`,
 		"Style: Shape,Arial,20,&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,5,0,0,0,1",
 		"",
 		"[Events]",
@@ -192,7 +231,7 @@ export function renderCaptionTrack(input: {
 		),
 		"",
 	].join("\n");
-	return { ass, emoji: collector.emoji, notices: [...collector.notices.values()], omitted: [...collector.omitted.values()], emojiSkipped: collector.emojiSkipped };
+	return { ass, emoji: collector.emoji, notices: [...collector.notices.values()], omitted: [...collector.omitted.values()], emojiSkipped: collector.emojiSkipped, geometryUnavailable: collector.geometryUnavailable };
 }
 
 function cueEvents(
@@ -205,13 +244,15 @@ function cueEvents(
 	const motion: CaptionMotionSpec = CAPTION_MOTIONS[preset.animation];
 	const face = customFont?.face ?? captionFontFace(preset.fontName);
 	const glyphs = new CaptionGlyphPlanner(
-		customFont ? { assName: face.assName, path: customFont.path, lineHeightEm: face.ascent + face.descent, role: "requested" } : catalogCaptionFace(face, "requested"),
+		customFont ? brandCaptionFace(face, customFont.path) : catalogCaptionFace(face, "requested"),
 		customFont ? catalogCaptionFace(captionFontFace(preset.fontName), "saved") : null,
 		collector,
 		cue.cueIndex,
 		collector.forcedOmissions,
+		cue.language,
 	);
-	const geometry = cueGeometry(cue, face, canvas, customFont, glyphs);
+	const plans = planWords(cue, glyphs);
+	const geometry = cueGeometry(cue, canvas, glyphs, plans, collector);
 	const measured = geometry.words !== null;
 	const usesOverlay =
 		measured && (motion.word.length > 0 || motion.effect === "glitch");
@@ -246,6 +287,11 @@ function cueEvents(
 				? `\\fad(${motion.cueFadeMs},0)`
 				: "";
 
+		// libass fills a karaoke syllable from its left edge whatever the text direction: an RTL
+		// word would sweep the wrong way. Its fill comes from a clip that grows from the right edge instead.
+		const rtlSweep = motion.effect === "karaoke" && textDirection(activeWord.text) === "rtl";
+		const activeBox = geometry.words?.[activeIndex];
+		const clipSweep = rtlSweep && activeBox !== undefined && geometry.tiltDeg === 0;
 		const spans: Span[] = cue.words.map((word, index) => {
 			const isActive = index === activeIndex;
 			const upcoming = index > activeIndex;
@@ -260,12 +306,12 @@ function cueEvents(
 				text: word.text,
 				visibility,
 				fill:
-					isActive || sung ? preset.highlightColor : preset.primaryColor,
+					(isActive && !clipSweep) || sung ? preset.highlightColor : preset.primaryColor,
 				glow: isActive
 					? (preset.highlightGlowColor ?? preset.glowColor ?? null)
 					: (preset.glowColor ?? null),
-				...(isActive && motion.effect === "karaoke" ? { sweepMs: segMs } : {}),
-				...(isActive && motion.effect === "typewriter"
+				...(isActive && motion.effect === "karaoke" && !rtlSweep ? { sweepMs: segMs } : {}),
+				...(isActive && motion.effect === "typewriter" && !plans[index]!.shapingSensitive
 					? {
 							letterDelaysMs: captionTypewriterLetterDelays(
 								captionGraphemes(word.text).length,
@@ -282,7 +328,7 @@ function cueEvents(
 					preset, face, glyphs,
 					px: geometry.px,
 					spans,
-					separator: wordSeparator(preset, geometry.px),
+					separators: plans.map((plan) => gapText(plan, preset, geometry.px)),
 					startSec: segStart,
 					endSec: segEnd,
 					position: { x: geometry.anchorX, y: geometry.anchorY },
@@ -297,7 +343,27 @@ function cueEvents(
 			);
 		}
 
-		const box = geometry.words?.[activeIndex];
+		if (clipSweep && activeBox) {
+			const margin = (preset.outlineWidth + (preset.outerOutlineWidth ?? 0)) * (geometry.px / preset.fontSize) + 2;
+			const left = activeBox.centerX - activeBox.width / 2 - margin;
+			const right = activeBox.centerX + activeBox.width / 2 + margin;
+			events.push(
+				...stackEvents({
+					preset, face, glyphs,
+					px: geometry.px,
+					spans: spans.map((span, index) => (index === activeIndex ? { ...span, fill: preset.highlightColor, visibility: 1 } : { ...span, visibility: 0 })),
+					separators: plans.map((plan) => gapText(plan, preset, geometry.px)),
+					startSec: segStart,
+					endSec: segEnd,
+					position: { x: geometry.anchorX, y: geometry.anchorY },
+					common: `${fade}\\clip(${num(right)},0,${num(right)},${canvas.height})\\t(0,${segMs},\\clip(${num(left)},0,${num(right)},${canvas.height}))`,
+					textOnly: true,
+					layers: { shadow: LAYER.sweep, outer: LAYER.sweep, glow: LAYER.sweep, text: LAYER.sweep },
+				}),
+			);
+		}
+
+		const box = activeBox;
 		if (preset.highlightBoxColor && box) {
 			events.push(
 				pillEvent({
@@ -317,7 +383,6 @@ function cueEvents(
 		if (activeWord.emoji) {
 			const placed = placeEmoji({
 				emoji: activeWord.emoji,
-				face,
 				geometry,
 				centerX: box?.centerX ?? geometry.anchorX,
 				startSec: segStart,
@@ -363,10 +428,9 @@ function cueEvents(
 						preset, face, glyphs,
 						px: geometry.px,
 						spans: [activeSpan],
-						separator: "",
 						startSec: segStart,
 						endSec: segEnd,
-						position: { x: box.centerX, y: geometry.anchorY },
+						position: { x: box.centerX, y: box.anchorY },
 						common: `${tilt}${fade}`,
 						keyframes: motion.word,
 						layers: {
@@ -386,49 +450,111 @@ function cueEvents(
 		: events;
 }
 
+/** One cue word after glyph planning: the faces drawing it and the gap before it. */
+interface WordPlan {
+	readonly clusters: readonly PlannedCluster[];
+	readonly parts: readonly { readonly text: string; readonly face: CaptionFace }[];
+	/** A space precedes the word (`hasSpaceBefore`): no-space scripts abut. */
+	readonly space: boolean;
+	/** The letter spacing applies to that space (neither neighbour is a complex or cursive face). */
+	readonly gapSpaced: boolean;
+	/** Part of the word is drawn by a cursive or complex-script face: libass cannot take a mid-word tag there. */
+	readonly shapingSensitive: boolean;
+}
+
+const spacedFace = (face: CaptionFace) => face.letterSpacing !== "disabled";
+
+function planWords(cue: CompositionCaptionVisualLayer, glyphs: CaptionGlyphPlanner): WordPlan[] {
+	const plans: WordPlan[] = [];
+	cue.words.forEach((word, index) => {
+		const clusters = glyphs.plan(word.text);
+		const parts: { text: string; face: CaptionFace }[] = [];
+		for (const part of clusters.flatMap((cluster) => cluster.parts)) {
+			const text = escapeAssText(part.text);
+			const last = parts[parts.length - 1];
+			if (last && last.face === part.face) last.text += text;
+			else if (text) parts.push({ text, face: part.face });
+		}
+		const previous = plans[index - 1];
+		const space = index > 0 && hasSpaceBefore(cue.words[index - 1]!.text, { word: word.text, spaceBefore: word.spaceBefore });
+		const edges = [previous?.parts[previous.parts.length - 1]?.face, parts[0]?.face].filter((face): face is CaptionFace => face !== undefined);
+		plans.push({
+			clusters,
+			parts,
+			space,
+			gapSpaced: spacedFace(glyphs.requested) && edges.every(spacedFace),
+			shapingSensitive: parts.some((part) => !spacedFace(part.face)),
+		});
+	});
+	return plans;
+}
+
+/** Text before a word: the space libass draws in the requested face (widened by a pill's padding), or nothing. */
+function gapText(plan: WordPlan, preset: CaptionPreset, px: number): string {
+	if (!plan.space) return "";
+	const base = preset.letterSpacing * px;
+	const spacing = (plan.gapSpaced ? base : 0) + (preset.highlightBoxColor ? CAPTION_PILL.extraWordSpacingEm * px : 0);
+	return spacing === base ? " " : `{\\fsp${num(spacing)}} {\\fsp${num(base)}}`;
+}
+
 function cueGeometry(
 	cue: CompositionCaptionVisualLayer,
-	face: CaptionFontFace,
 	canvas: { width: number; height: number },
- customFont: RenderBrandFont | undefined,
 	glyphs: CaptionGlyphPlanner,
+	plans: readonly WordPlan[],
+	collector: TrackCollector,
 ): CueGeometry {
 	const preset = cue.preset;
 	const motion = CAPTION_MOTIONS[preset.animation];
+	const requested = glyphs.requested;
 	const anchorX = (cue.anchor.xPct / 100) * canvas.width;
 	const anchorY = (cue.anchor.yPct / 100) * canvas.height;
 	const tiltDeg = motion.tilt
 		? CAPTION_CUE_TILTS_DEG[cue.cueIndex % CAPTION_CUE_TILTS_DEG.length]!
 		: 0;
-	const wordWidthsEm = cue.words.map((word) =>
-		customFont ? customFont.measure(word.text, preset.letterSpacing) : measureCaptionTextEm(preset.fontName, word.text, preset.letterSpacing),
-	);
-	const spaceEm = customFont ? customFont.measure(" ", preset.letterSpacing) : measureCaptionTextEm(preset.fontName, " ", preset.letterSpacing);
-	const baseline = (px: number) => anchorY + ((face.ascent - face.descent) / 2) * px;
-	if (spaceEm === null || wordWidthsEm.some((width) => width === null)) {
-		// Some glyph comes from a fallback face, whose word boxes we do not place.
-		// The line still fits the frame: its width is the sum of each run's own advance.
-		const naturalEm = fallbackLineWidthEm(cue, glyphs, spaceEm ?? 0.25);
-		const strokePx = preset.outlineWidth + (preset.outerOutlineWidth ?? 0);
-		const fit = Math.min(1, (CAPTION_FIT_WIDTH_FRACTION * canvas.width) / (naturalEm * preset.fontSize + 2 * strokePx));
-		const px = preset.fontSize * fit;
-		return { px, anchorX, anchorY, baselineY: baseline(px), words: null, lineWidth: null, tiltDeg };
-	}
-	const gapEm = spaceEm + (preset.highlightBoxColor ? CAPTION_PILL.extraWordSpacingEm : 0);
-	const widthsEm = wordWidthsEm as number[];
-	const lineEm = widthsEm.reduce((sum, width) => sum + width, 0) + gapEm * (widthsEm.length - 1);
+	const lineWords: CaptionLineWord[] = plans.map((plan) => ({
+		parts: plan.parts.map((part) => ({ text: part.text, fontPath: part.face.path, spaced: spacedFace(part.face), inked: part.face !== requested })),
+		gap: plan.space ? { text: " ", fontPath: requested.path, spaced: plan.gapSpaced, inked: false } : null,
+		gapExtraEm: plan.space && preset.highlightBoxColor ? CAPTION_PILL.extraWordSpacingEm : 0,
+	}));
+	// libass lays a line out with the tallest ascent and deepest descent among the faces it draws; a space uses the requested face.
+	const metricsOf = (faces: readonly CaptionFace[]) => {
+		const used = faces.length > 0 ? faces : [requested];
+		return { ascentEm: Math.max(...used.map((used) => used.ascentEm)), descentEm: Math.max(...used.map((used) => used.descentEm)) };
+	};
+	const lineFaces = [...new Set([...plans.flatMap((plan) => plan.parts.map((part) => part.face)), ...(plans.some((plan) => plan.space) ? [requested] : [])])];
+	const line = metricsOf(lineFaces);
 	const strokePx = preset.outlineWidth + (preset.outerOutlineWidth ?? 0);
-	const naturalWidth = lineEm * preset.fontSize + 2 * strokePx;
-	const fit = Math.min(1, (CAPTION_FIT_WIDTH_FRACTION * canvas.width) / naturalWidth);
+	const direction = textDirection(lineWords.map((word) => word.parts.map((part) => part.text).join("")).join(" "), languageDirection(cue.language));
+
+	let layout: CaptionLineLayout | null = null;
+	try {
+		layout = layoutCaptionLine(lineWords, preset.letterSpacing, direction);
+	} catch (error) {
+		if (!(error instanceof CaptionShapingError)) throw error;
+		collector.geometryUnavailable.push({ code: "caption_geometry_unavailable", cueIndex: cue.cueIndex, fontPath: error.fontPath });
+	}
+	// Unmeasurable: assume the average advance so the line still fits the frame.
+	const naturalEm = layout?.widthEm ?? 0.6 * [...cue.words.map((word) => word.text).join(" ")].length;
+	const fit = Math.min(1, (CAPTION_FIT_WIDTH_FRACTION * canvas.width) / (naturalEm * preset.fontSize + 2 * strokePx));
 	const px = preset.fontSize * fit;
-	let cursor = anchorX - (lineEm * px) / 2;
-	const words = widthsEm.map((widthEm) => {
-		const width = widthEm * px;
-		const centerX = cursor + width / 2;
-		cursor += width + gapEm * px;
-		return { centerX, width };
+	const baselineY = anchorY + ((line.ascentEm - line.descentEm) / 2) * px;
+	const lineTopY = anchorY - ((line.ascentEm + line.descentEm) / 2) * px;
+	const base = { px, anchorX, anchorY, baselineY, lineTopY, tiltDeg };
+	if (!layout) return { ...base, words: null, lineWidth: null, inkTopEm: 0, inkBottomEm: 0 };
+	const left = anchorX - (layout.widthEm * px) / 2;
+	const words = layout.words.map((box, index) => {
+		const word = metricsOf(plans[index]!.parts.map((part) => part.face));
+		return {
+			centerX: left + (box.leftEm + box.widthEm / 2) * px,
+			width: box.widthEm * px,
+			inkTopEm: box.inkTopEm,
+			inkBottomEm: box.inkBottomEm,
+			// An event holding only this word is centred on its own line box; shift it so its baseline is the line's.
+			anchorY: anchorY + (line.ascentEm - line.descentEm - (word.ascentEm - word.descentEm)) * 0.5 * px,
+		};
 	});
-	return { px, anchorX, anchorY, baselineY: baseline(px), words, lineWidth: lineEm * px, tiltDeg };
+	return { ...base, words, lineWidth: layout.widthEm * px, inkTopEm: layout.inkTopEm, inkBottomEm: layout.inkBottomEm };
 }
 
 /**
@@ -441,7 +567,6 @@ function cueGeometry(
  */
 function placeEmoji(input: {
 	emoji: string;
-	face: CaptionFontFace;
 	geometry: CueGeometry;
 	centerX: number;
 	startSec: number;
@@ -450,7 +575,7 @@ function placeEmoji(input: {
 	collector: TrackCollector;
 }): { x: number; y: number; face: CaptionFace } | null {
 	const { geometry, collector } = input;
-	const boxTop = geometry.anchorY - ((input.face.ascent + input.face.descent) / 2) * geometry.px;
+	const boxTop = geometry.lineTopY;
 	const heightPx = CAPTION_EMOJI_HEIGHT_EM * geometry.px;
 	const centerY = boxTop - heightPx / 2;
 	const sprite = resolveCaptionEmoji(input.emoji);
@@ -482,41 +607,22 @@ function placeEmoji(input: {
 	return null;
 }
 
-/** Width in em of a cue whose words use fallback faces: shaped advance of every planned run, letter spacing and word gaps. */
-function fallbackLineWidthEm(cue: CompositionCaptionVisualLayer, glyphs: CaptionGlyphPlanner, spaceEm: number): number {
-	const { preset } = cue;
-	const words = cue.words.map((word) =>
-		glyphs.plan(word.text).reduce(
-			(sum, cluster) =>
-				sum + cluster.parts.reduce((width, part) => width + fontFileAdvanceEm(part.face.path, part.text), 0) + preset.letterSpacing,
-			0,
-		),
-	);
-	const gapEm = spaceEm + preset.letterSpacing + (preset.highlightBoxColor ? CAPTION_PILL.extraWordSpacingEm : 0);
-	return words.reduce((sum, width) => sum + width, 0) + gapEm * (words.length - 1);
-}
-
-/** Pills widen every space by their side padding; libass gets it as `\fsp` on the space. */
-function wordSeparator(preset: CaptionPreset, px: number): string {
-	if (!preset.highlightBoxColor) return " ";
-	const base = preset.letterSpacing * px;
-	const wide = base + CAPTION_PILL.extraWordSpacingEm * px;
-	return `{\\fsp${num(wide)}} {\\fsp${num(base)}}`;
-}
-
 function stackEvents(input: {
  face: CaptionFontFace;
 	glyphs: CaptionGlyphPlanner;
 	preset: CaptionPreset;
 	px: number;
 	spans: readonly Span[];
-	separator: string;
+	/** Text before each span after the first: a space (with the pill's extra advance), or nothing between abutting words. */
+	separators?: readonly string[];
 	startSec: number;
 	endSec: number;
 	position: { x: number; y: number };
 	common: string;
 	layers: Record<StackLayer, number>;
 	keyframes?: readonly CaptionKeyframe[];
+	/** Only the fill layer: the shadows, outer stroke and glow are already drawn by another event. */
+	textOnly?: boolean;
 }): AssEvent[] {
 	const { preset, px } = input;
 	const fitScale = px / preset.fontSize;
@@ -533,8 +639,8 @@ function stackEvents(input: {
 		paint: (span: Span) => { fill: string; outline: string; opacity: number } | null,
 	) => {
 		const body = input.spans
-			.map((span) => spanText(span, paint(span), preset.primaryColor, input.glyphs, px, preset.letterSpacing))
-			.join(input.separator);
+			.map((span, index) => (index > 0 ? (input.separators?.[index] ?? "") : "") + spanText(span, paint(span), preset.primaryColor, input.glyphs, px, preset.letterSpacing))
+			.join("");
 		const position = motion.position(input.position.x + offset.x, input.position.y + offset.y);
 		events.push({
 			layer,
@@ -549,7 +655,7 @@ function stackEvents(input: {
 	};
 
 	const silhouette = stroke + outer;
-	if (preset.shadow !== "none") {
+	if (!input.textOnly && preset.shadow !== "none") {
 		const shadowPaint = (opacity: number) => (span: Span) =>
 			span.visibility > 0
 				? { fill: preset.shadowColor, outline: preset.shadowColor, opacity: span.visibility * opacity }
@@ -577,13 +683,13 @@ function stackEvents(input: {
 			}
 		}
 	}
-	if (outer > 0 && preset.outerOutlineColor) {
+	if (!input.textOnly && outer > 0 && preset.outerOutlineColor) {
 		const color = preset.outerOutlineColor;
 		push(input.layers.outer, { x: 0, y: 0 }, 0, silhouette, (span) =>
 			span.visibility > 0 ? { fill: color, outline: color, opacity: span.visibility } : null,
 		);
 	}
-	if (input.spans.some((span) => span.glow && span.visibility > 0)) {
+	if (!input.textOnly && input.spans.some((span) => span.glow && span.visibility > 0)) {
 		const intensity = preset.glowIntensity ?? 8;
 		for (const sigma of CAPTION_GLOW_SIGMAS) {
 			push(input.layers.glow, { x: 0, y: 0 }, sigma * intensity * fitScale, 0, (span) =>
@@ -725,7 +831,7 @@ function pillEvent(input: {
 	preset: CaptionPreset;
 	face: CaptionFontFace;
 	geometry: CueGeometry;
-	box: { centerX: number; width: number };
+	box: { centerX: number; width: number; inkTopEm: number; inkBottomEm: number };
 	motion: CaptionMotionSpec;
 	layer: number;
 	startSec: number;
@@ -735,8 +841,7 @@ function pillEvent(input: {
 	const { preset, face, geometry, box } = input;
 	const px = geometry.px;
 	const width = box.width + 2 * CAPTION_PILL.padXEm * px;
-	const top = geometry.baselineY - (face.capHeight + CAPTION_PILL.padTopEm) * px;
-	const bottom = geometry.baselineY + CAPTION_PILL.padBottomEm * px;
+	const { top, bottom } = decorationSpan(face, geometry, CAPTION_PILL, box);
 	// The pill rides on the word: its scale is the pill entrance times the
 	// word motion, sampled into linear segments (the preview nests the two).
 	const times = [...new Set([...CAPTION_PILL.enter.map((frame) => frame.at), ...input.motion.word.map((frame) => frame.at)])]
@@ -771,7 +876,7 @@ function glitchEvents(input: {
 	glyphs: CaptionGlyphPlanner;
 	preset: CaptionPreset;
 	geometry: CueGeometry;
-	box: { centerX: number; width: number };
+	box: { centerX: number; width: number; anchorY: number };
 	span: Span;
 	startSec: number;
 	endSec: number;
@@ -807,7 +912,7 @@ function glitchEvents(input: {
 		CAPTION_GLITCH.ghostColors.forEach((color, ghostIndex) => {
 			const sign = ghostIndex === 0 ? 1 : -1;
 			const x = box.centerX + sign * slice.ghostEm[0] * px;
-			const y = geometry.anchorY + sign * slice.ghostEm[1] * px;
+			const y = box.anchorY + sign * slice.ghostEm[1] * px;
 			events.push({
 				layer: LAYER.ghost,
 				startSec,
@@ -821,10 +926,9 @@ function glitchEvents(input: {
 				preset, face: input.face, glyphs: input.glyphs,
 				px,
 				spans: [span],
-				separator: "",
 				startSec,
 				endSec,
-				position: { x: box.centerX + slice.textDxEm * px, y: geometry.anchorY },
+				position: { x: box.centerX + slice.textDxEm * px, y: box.anchorY },
 				common: `${input.tilt}${slice.shear ? `\\fax${num(slice.shear)}` : ""}`,
 				layers: {
 					shadow: LAYER.overlayShadow,
@@ -868,11 +972,25 @@ function applyFlicker(
 	);
 }
 
+/**
+ * Vertical extent of a pill or plate: padding above the cap height and below
+ * the baseline, grown to the ink of fallback faces whose glyphs stand taller or
+ * hang lower (Nastaliq swashes, Indic and Thai marks): a pill by its own
+ * word's ink, a plate by the whole line's. Latin lines have no fallback ink and
+ * keep the catalog metrics exactly.
+ */
+function decorationSpan(face: CaptionFontFace, geometry: CueGeometry, pad: { padTopEm: number; padBottomEm: number }, ink: { inkTopEm: number; inkBottomEm: number }) {
+	const px = geometry.px;
+	return {
+		top: geometry.baselineY - (Math.max(face.capHeight, ink.inkTopEm) + pad.padTopEm) * px,
+		bottom: geometry.baselineY + Math.max(pad.padBottomEm, ink.inkBottomEm + CAPTION_INK_MARGIN_EM) * px,
+	};
+}
+
 function plateRect(face: CaptionFontFace, geometry: CueGeometry) {
 	const px = geometry.px;
 	const width = geometry.lineWidth! + 2 * CAPTION_PLATE.padXEm * px;
-	const top = geometry.baselineY - (face.capHeight + CAPTION_PLATE.padTopEm) * px;
-	const bottom = geometry.baselineY + CAPTION_PLATE.padBottomEm * px;
+	const { top, bottom } = decorationSpan(face, geometry, CAPTION_PLATE, geometry);
 	return { centerX: geometry.anchorX, centerY: (top + bottom) / 2, width, height: bottom - top };
 }
 

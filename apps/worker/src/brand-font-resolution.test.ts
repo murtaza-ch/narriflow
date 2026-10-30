@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRequire } from "node:module";
-import { captionFontFilePath } from "@narriflow/caption-fonts";
+import { captionFontFilePath, shapeCaptionRun } from "@narriflow/caption-fonts";
 import {
   planClipComposition,
   compositionAssetRef,
@@ -173,7 +173,7 @@ describe("uploaded font preview/export contract", () => {
     const font = fonts.get(brandFontKey({ id, fingerprint }))!;
     expect(font.face.assName).toBe("Anton Regular");
     expect(font.face.ascent).toBeCloseTo(1.4043, 4);
-    expect(font.measure("Hello", 0)).toBeGreaterThan(0);
+    expect(shapeCaptionRun(font.path, "Hello").advanceEm).toBeGreaterThan(0);
     const { ass } = compileCompositionPlanCaptions(
       plan(fingerprint),
       "test",
@@ -260,10 +260,10 @@ describe("uploaded font preview/export contract", () => {
         document(fingerprint).captionPreset.fontAsset,
       );
       const assPath = join(temp, "captions.ass");
-      await writeFile(
-        assPath,
-        compileCompositionPlanCaptions(plan(fingerprint), "test", fonts).ass,
-      );
+      const captions = compileCompositionPlanCaptions(plan(fingerprint), "test", fonts);
+      await writeFile(assPath, captions.ass);
+      // HarfBuzz reads sfnt only: a WOFF2 upload keeps its base line and reports the typed degradation.
+      expect(captions.geometryUnavailable.length).toBe(file.format === "woff2" ? 1 : 0);
       const result = await productionWorkerProcessModule.execute({
         command: "ffmpeg",
         signal: new AbortController().signal,
