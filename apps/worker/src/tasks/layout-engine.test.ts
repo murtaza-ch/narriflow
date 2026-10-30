@@ -1,10 +1,11 @@
 import { describe, expect, it } from "bun:test";
-import type { TranscriptUtterance } from "@narriflow/validators";
+import { CLIP_AUTO_LAYOUT_ENGINE, CLIP_AUTO_LAYOUT_VERSION, clipAutoLayoutAnalysisSchema, type TranscriptUtterance } from "@narriflow/validators";
 import { buildClipCutPlan } from "./cut-plan";
 import {
   analyzeShot,
   assignSeatsToSpeakers,
   buildAutoLayoutPlan,
+  shotShowsGraphics,
   buildSpeakerTurns,
   deriveFaceDiscontinuityCuts,
   frameFaceInCrop,
@@ -851,6 +852,107 @@ describe("buildAutoLayoutPlan", () => {
       expect(middle.cxNorm).toBe(0.5);
       expect(middle.subjects).toEqual([]);
     }
+  });
+
+  const footage = { edge: 0.06, text: 0.001 };
+  const article = { edge: 0.45, text: 0.15 };
+  const tweetOverPhoto = { edge: 0.19, text: 0.04 };
+  const withContent = (samples: MultiFaceSample[], at: (t: number) => MultiFaceSample["content"]) =>
+    samples.map((sample) => ({ ...sample, content: at(sample.t) }));
+
+  it("fills the frame for faceless footage between person shots, centered and never borrowing a crop", () => {
+    const samples = withContent(
+      samplesOver(24, (t) => (t < 8 ? [face(0.3, 0.4, 0.28)] : t < 16 ? [] : [face(0.72, 0.42, 0.28)])),
+      () => footage,
+    );
+    const plan = buildAutoLayoutPlan({ samples, sceneCuts: [8, 16], words: [], durationSec: 24, allowTwoUp: true });
+    const middle = plan.segments[1]!;
+    expect(middle).toMatchObject({ startSec: 8, endSec: 16, layout: "single", cxNorm: 0.5, cyNorm: 0.5, zoom: 1, subjects: [] });
+    expect("intent" in middle ? middle.intent : undefined).toBeUndefined();
+  });
+
+  it("keeps full-source fit for faceless graphics and text over photos", () => {
+    for (const graphics of [article, tweetOverPhoto]) {
+      const samples = withContent(
+        samplesOver(16, (t) => (t < 8 ? [face(0.3, 0.4, 0.28)] : [])),
+        (t) => (t < 8 ? footage : graphics),
+      );
+      const plan = buildAutoLayoutPlan({ samples, sceneCuts: [8], words: [], durationSec: 16, allowTwoUp: true });
+      expect(plan.segments[1]).toMatchObject({ layout: "single", intent: "fit" });
+    }
+  });
+
+  it("decides each faceless shot by the majority of its samples", () => {
+    // One motion-blurred transition frame reads as footage inside an article shot.
+    const samples = withContent(samplesOver(8, () => []), (t) => (t === 4 ? footage : article));
+    expect(shotShowsGraphics({ startSec: 0, endSec: 8 }, samples)).toBe(true);
+    const footageShot = withContent(samplesOver(8, () => []), (t) => (t === 4 ? article : footage));
+    expect(shotShowsGraphics({ startSec: 0, endSec: 8 }, footageShot)).toBe(false);
+    // Without evidence (an older detector) the shot keeps the safe fit.
+    expect(shotShowsGraphics({ startSec: 0, endSec: 8 }, samplesOver(8, () => []))).toBe(true);
+  });
+
+  it("gives every shot of a faceless clip its own decision", () => {
+    const samples = withContent(samplesOver(20, () => []), (t) => (t < 10 ? footage : article));
+    const plan = buildAutoLayoutPlan({ samples, sceneCuts: [10], words: [], durationSec: 20, allowTwoUp: true });
+    expect(plan.segments.map((segment) => ("intent" in segment ? segment.intent : undefined))).toEqual([undefined, "fit"]);
+  });
+
+  /** Parses the plan exactly as the worker persists it. */
+  const persist = (plan: ReturnType<typeof buildAutoLayoutPlan>, noSplit: ReturnType<typeof buildAutoLayoutPlan>, durationSec: number) =>
+    clipAutoLayoutAnalysisSchema.parse({
+      version: CLIP_AUTO_LAYOUT_VERSION, engine: CLIP_AUTO_LAYOUT_ENGINE, sourceIdentity: "source", analyzedAtISO: new Date(0).toISOString(),
+      clipStartSec: 0, clipEndSec: durationSec, deletedRanges: [], editedDurationSec: durationSec, sourceWidth: 1920, sourceHeight: 1080,
+      segments: plan.segments, noSplitSegments: noSplit.segments, shotCount: plan.shotCount, soloShotCount: plan.soloShotCount,
+      multiShotCount: plan.multiShotCount, twoUpSegmentCount: plan.twoUpSegmentCount, speakerCount: plan.speakerCount, mappedSpeakerCount: plan.mappedSpeakerCount,
+    });
+  const planBoth = (samples: MultiFaceSample[], sceneCuts: number[], durationSec: number) => {
+    const plan = buildAutoLayoutPlan({ samples, sceneCuts, words: [], durationSec, allowTwoUp: true });
+    const noSplit = buildAutoLayoutPlan({ samples, sceneCuts, words: [], durationSec, allowTwoUp: false });
+    return { plan, noSplit, analysis: persist(plan, noSplit, durationSec) };
+  };
+
+  it("gives a source cut a few frames inside either clip edge the neighbor's layout, keeping tracks valid", () => {
+    const samples = withContent(
+      samplesOver(12, (t) => (t < 11.9 ? [face(0.3 + t * 0.01, 0.4, 0.28)] : [])),
+      () => article,
+    );
+    const { analysis } = planBoth(samples, [0.08, 11.92], 12);
+    expect(analysis.segments).toHaveLength(1);
+    const [segment] = analysis.segments;
+    expect(segment).toMatchObject({ startSec: 0, endSec: 12, layout: "single" });
+    expect(segment!.layout === "single" && segment!.intent).toBeFalsy();
+    const track = segment!.layout === "single" ? segment!.cropTrack! : [];
+    expect([track[0]!.timeSec, track.at(-1)!.timeSec]).toEqual([0, 12]);
+  });
+
+  it("keeps absorbing repeated edge cuts and retimes two-up tracks", () => {
+    const pair = () => [face(0.25, 0.4, 0.2), face(0.75, 0.42, 0.2)];
+    const samples = withContent(samplesOver(10, (t) => (t >= 0.12 && t < 9.88 ? pair() : [])), () => article);
+    const { analysis } = planBoth(samples, [0.04, 0.12, 9.88, 9.96], 10);
+    expect(analysis.segments.map((segment) => [segment.startSec, segment.endSec, segment.layout])).toEqual([[0, 10, "two-up"]]);
+    expect(analysis.noSplitSegments).toHaveLength(1);
+    expect(analysis.noSplitSegments[0]).toMatchObject({ startSec: 0, endSec: 10 });
+  });
+
+  it("applies each graphics threshold at its boundary", () => {
+    const shot = { startSec: 0, endSec: 1 };
+    const one = (content: { edge: number; text: number }) => [{ t: 0, faces: [], content }];
+    expect(shotShowsGraphics(shot, one({ edge: 0.24, text: 0 }))).toBe(true);
+    expect(shotShowsGraphics(shot, one({ edge: 0.239, text: 0 }))).toBe(false);
+    expect(shotShowsGraphics(shot, one({ edge: 0.15, text: 0.02 }))).toBe(true);
+    expect(shotShowsGraphics(shot, one({ edge: 0.149, text: 0.02 }))).toBe(false);
+    expect(shotShowsGraphics(shot, one({ edge: 0.2, text: 0.019 }))).toBe(false);
+    // A tie keeps fit: it never loses content.
+    expect(shotShowsGraphics({ startSec: 0, endSec: 1 }, [
+      { t: 0, faces: [], content: article }, { t: 0.5, faces: [], content: footage },
+    ])).toBe(true);
+  });
+
+  it("decides an unsampled shot from the nearest sample", () => {
+    const samples: MultiFaceSample[] = [{ t: 1, faces: [], content: footage }, { t: 3, faces: [], content: article }];
+    expect(shotShowsGraphics({ startSec: 1.6, endSec: 1.8 }, samples)).toBe(false);
+    expect(shotShowsGraphics({ startSec: 2.4, endSec: 2.6 }, samples)).toBe(true);
   });
 
   it("keeps runaway source cuts instead of merging cameras onto the wrong seat", () => {

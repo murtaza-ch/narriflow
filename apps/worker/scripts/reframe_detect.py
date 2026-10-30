@@ -27,6 +27,13 @@ Output (stdout), --multi mode (vizard-parity.md "Split-screen 2-up" spike):
   (raw mouth diff alone misattributes speech to head motion — verified on
   real two-host footage). None on the first sample. Computed on the
   already-decoded downscaled detection frame — two small ROI diffs per face.
+
+  "content" (faceless-shot framing signal): {"edge", "text"} for the whole
+  frame at 480 px wide. "edge" is the share of non-flat pixels that are hard
+  edges (rendered text, UI and graphics are mostly hard edges; camera footage
+  is mostly soft gradients). "text" is the frame area covered by text-line
+  shaped components. The layout engine uses both to keep slides, articles and
+  screen captures in full-source fit while cropping natural B-roll.
 """
 import json
 import sys
@@ -110,6 +117,33 @@ def main() -> int:
             return None
         import numpy as _np
         return float(_np.mean(_np.abs(roi_now.astype(_np.int16) - roi_prev.astype(_np.int16)))) / 255.0
+
+    def frame_content(frame):
+        """Graphics evidence for one frame (see the module docstring). Values
+        are calibrated on 480 px wide frames, so the frame is resized first."""
+        import numpy as np
+        fh, fw = frame.shape[:2]
+        cw = 480
+        ch = max(1, int(round(fh * cw / max(1, fw))))
+        small = cv2.resize(frame, (cw, ch), interpolation=cv2.INTER_AREA)
+        gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
+        gf = gray.astype(np.float32)
+        mag = np.hypot(cv2.Sobel(gf, cv2.CV_32F, 1, 0), cv2.Sobel(gf, cv2.CV_32F, 0, 1))
+        strong = float((mag > 200).mean())
+        soft = float(((mag >= 8) & (mag <= 60)).mean())
+        grad = cv2.morphologyEx(gray, cv2.MORPH_GRADIENT, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)))
+        _, bw = cv2.threshold(grad, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+        bw = cv2.morphologyEx(bw, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (9, 1)))
+        count, _, stats, _ = cv2.connectedComponentsWithStats(bw)
+        text_area = 0
+        for i in range(1, count):
+            _, _, w, h, area = stats[i]
+            if 5 <= h <= 30 and w >= 2.5 * h and area / float(w * h) > 0.4:
+                text_area += int(w) * int(h)
+        return {
+            "edge": round(strong / (strong + soft + 1e-6), 4),
+            "text": round(text_area / float(cw * ch), 4),
+        }
 
     def face_motion_pair(gray_now, gray_prev, x, y, w, h):
         """(mouth, upper_face) motion for one face box. The consumer divides
@@ -205,7 +239,7 @@ def main() -> int:
                             "fm": round(fm, 4) if fm is not None else None,
                         })
                 out_faces.sort(key=lambda ff: ff["cx"])
-                samples.append({"t": round(t, 3), "faces": out_faces})
+                samples.append({"t": round(t, 3), "faces": out_faces, "content": frame_content(frame)})
                 prev_gray = gray
             else:
                 cx = None

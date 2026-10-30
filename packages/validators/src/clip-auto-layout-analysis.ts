@@ -59,7 +59,7 @@ export const clipAutoLayoutSingleSegmentSchema = z.object({
   cxNorm: unitInterval,
   cyNorm: unitInterval.default(0.5),
   zoom: positiveZoom.default(1),
-  /** `fit` is a real no-face shot, never a detector dropout held from another shot. */
+  /** `fit` keeps the full source: a faceless shot of graphics, or a crowd. */
   intent: z.enum(["crop", "fit"]).optional(),
   cropTrack: cropTrackSchema.optional(),
   subjects: clipAutoLayoutSubjectsSchema,

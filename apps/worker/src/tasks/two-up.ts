@@ -30,9 +30,19 @@ export interface DetectedFace {
 }
 
 /** One detector sample in `--multi` mode: zero or more faces, sorted by cx. */
+/** Whole-frame graphics evidence from reframe_detect.py's "content" field. */
+export interface FrameContent {
+  /** Share of non-flat pixels that are hard edges. */
+  edge: number;
+  /** Frame area covered by text-line shaped components. */
+  text: number;
+}
+
 export interface MultiFaceSample {
   t: number;
   faces: DetectedFace[];
+  /** Absent on detector output that predates the signal. */
+  content?: FrameContent;
 }
 
 // ---------------------------------------------------------------------------
@@ -81,7 +91,7 @@ export function remapMultiFaceSamplesForCutPlan(
       (s) => sourceSec >= s.sourceStartSec && sourceSec <= s.sourceEndSec,
     );
     if (!segment) continue; // inside a cut (or outside the window)
-    out.push({ t: sourceToEdited(cutPlan.map, sourceSec), faces: sample.faces });
+    out.push({ ...sample, t: sourceToEdited(cutPlan.map, sourceSec) });
   }
   out.sort((a, b) => a.t - b.t);
   return out;

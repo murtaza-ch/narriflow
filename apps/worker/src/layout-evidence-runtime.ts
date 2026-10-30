@@ -67,7 +67,10 @@ export function createLayoutEvidenceDetectors(input: {
         if (!object(face) || !number(face.cx) || !number(face.cy) || !number(face.w) || !number(face.h) || !number(face.score) || face.m != null && !number(face.m) || face.fm != null && !number(face.fm)) return invalid();
         return { cx: face.cx, cy: face.cy, w: face.w, h: face.h, score: face.score, ...(face.m !== undefined ? { m: face.m as number | null } : {}), ...(face.fm !== undefined ? { fm: face.fm as number | null } : {}) };
       });
-      return { t: sample.t, faces };
+      if (sample.content === undefined) return { t: sample.t, faces };
+      const content = sample.content;
+      if (!object(content) || !number(content.edge) || !number(content.text)) return invalid();
+      return { t: sample.t, faces, content: { edge: content.edge, text: content.text } };
     });
     return { samples };
   };

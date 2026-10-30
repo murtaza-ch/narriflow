@@ -48,7 +48,7 @@ import type {
 } from "@narriflow/validators";
 import { sourceToEdited } from "@narriflow/validators";
 import type { ClipCutPlan } from "./cut-plan";
-import type { DetectedFace, MultiFaceSample } from "./two-up";
+import type { DetectedFace, FrameContent, MultiFaceSample } from "./two-up";
 
 // ---------------------------------------------------------------------------
 // Speech timebase conversion + turns
@@ -817,6 +817,7 @@ export interface BuildAutoLayoutPlanOptions {
   turnsOptions?: BuildSpeakerTurnsOptions;
   frameOptions?: FrameFaceOptions;
   assignOptions?: AssignSeatsOptions;
+  facelessOptions?: FacelessShotOptions;
   /** Optional editorial style that cuts from a stable two-person shot to a
    * mapped active speaker. Disabled by default: observed Vizard output holds
    * a two-up for the whole camera shot, which is calmer and safer. */
@@ -883,11 +884,113 @@ function speechShareInWindow(
   return shares;
 }
 
+export interface FacelessShotOptions {
+  /** A frame whose hard-edge share reaches this is rendered graphics. */
+  graphicsEdgeMin?: number;
+  /** Text-line area that, with `textEdgeMin`, also marks graphics. */
+  textAreaMin?: number;
+  textEdgeMin?: number;
+}
+
+// Calibrated on detector output for 31 faceless shots from real clips:
+// product and stage B-roll (including bright screens in dark rooms) peaked at
+// 0.22, while articles, tables, diagrams and title cards started at 0.25 or
+// carried text lines.
+const FACELESS_DEFAULTS: Required<FacelessShotOptions> = {
+  graphicsEdgeMin: 0.24,
+  textAreaMin: 0.02,
+  textEdgeMin: 0.15,
+};
+
+function isGraphicsFrame(content: FrameContent, options: Required<FacelessShotOptions>): boolean {
+  return content.edge >= options.graphicsEdgeMin
+    || (content.text >= options.textAreaMin && content.edge >= options.textEdgeMin);
+}
+
+/**
+ * Whether a faceless shot shows rendered graphics (slides, articles, screen
+ * captures) that a portrait crop would cut. Decided by the majority of the
+ * shot's samples, and a tie counts as graphics because fit never loses
+ * content; a shot too short to be sampled uses the nearest sample. Without
+ * content evidence the shot keeps full-source fit, the safe choice.
+ */
+export function shotShowsGraphics(
+  shot: Shot,
+  samples: readonly MultiFaceSample[],
+  options: FacelessShotOptions = {},
+): boolean {
+  const settings = { ...FACELESS_DEFAULTS, ...options };
+  const evidence = samples.filter((sample) => sample.content);
+  let inShot = evidence.filter((sample) => sample.t >= shot.startSec && sample.t < shot.endSec);
+  if (inShot.length === 0) {
+    const mid = (shot.startSec + shot.endSec) / 2;
+    const nearest = evidence.reduce<MultiFaceSample | undefined>(
+      (best, sample) => (!best || Math.abs(sample.t - mid) < Math.abs(best.t - mid) ? sample : best),
+      undefined,
+    );
+    if (!nearest) return true;
+    inShot = [nearest];
+  }
+  const graphics = inShot.filter((sample) => isGraphicsFrame(sample.content!, settings)).length;
+  return graphics * 2 >= inShot.length;
+}
+
+/** A shot with no person: graphics keep the full source, natural footage
+ * fills the frame like the shots around it. */
+function facelessSegment(
+  shot: Shot,
+  samples: readonly MultiFaceSample[],
+  options: FacelessShotOptions | undefined,
+): ClipAutoLayoutSegment {
+  const base = { startSec: shot.startSec, endSec: shot.endSec, layout: "single" as const, cxNorm: 0.5, cyNorm: 0.5, zoom: 1, subjects: [] };
+  return shotShowsGraphics(shot, samples, options) ? { ...base, intent: "fit" } : base;
+}
+
+/** A source cut a few frames inside the clip boundary would flash a second
+ * layout on the first or last frames; those frames take the neighbor's. */
+export const EDGE_SLIVER_SEC = 0.25;
+
+type CropTrack = NonNullable<Extract<ClipAutoLayoutSegment, { layout: "single" }>["cropTrack"]>;
+
+/** Tracks span their segment exactly, so moving a boundary holds the camera
+ * at that end's keyframe over the absorbed frames. */
+function retimeTrack(track: CropTrack | undefined, startSec: number, endSec: number): CropTrack | undefined {
+  if (!track || track.length === 0) return track;
+  if (track.length === 1) return [{ ...track[0]!, timeSec: startSec }, { ...track[0]!, timeSec: endSec }];
+  return track.map((keyframe, index) =>
+    index === 0 ? { ...keyframe, timeSec: startSec } : index === track.length - 1 ? { ...keyframe, timeSec: endSec } : keyframe);
+}
+
+function withBounds(segment: ClipAutoLayoutSegment, startSec: number, endSec: number): ClipAutoLayoutSegment {
+  if (segment.layout === "single") {
+    return { ...segment, startSec, endSec, ...(segment.cropTrack ? { cropTrack: retimeTrack(segment.cropTrack, startSec, endSec) } : {}) };
+  }
+  return {
+    ...segment, startSec, endSec,
+    ...(segment.topCropTrack ? { topCropTrack: retimeTrack(segment.topCropTrack, startSec, endSec) } : {}),
+    ...(segment.bottomCropTrack ? { bottomCropTrack: retimeTrack(segment.bottomCropTrack, startSec, endSec) } : {}),
+  };
+}
+
+function absorbEdgeSlivers(segments: ClipAutoLayoutSegment[]): ClipAutoLayoutSegment[] {
+  const out = [...segments];
+  const duration = (segment: ClipAutoLayoutSegment) => segment.endSec - segment.startSec;
+  // Repeat: two quick cuts at the edge must not leave a shorter flash behind.
+  while (out.length > 1 && duration(out[0]!) < EDGE_SLIVER_SEC) {
+    out.splice(0, 2, withBounds(out[1]!, out[0]!.startSec, out[1]!.endSec));
+  }
+  while (out.length > 1 && duration(out[out.length - 1]!) < EDGE_SLIVER_SEC) {
+    const last = out.length - 1;
+    out.splice(last - 1, 2, withBounds(out[last - 1]!, out[last - 1]!.startSec, out[last]!.endSec));
+  }
+  return out;
+}
+
 /**
  * The full engine: shots -> per-shot analysis -> per-shot layout decision.
  *
- * Solo shots frame the face (`frameFaceInCrop`); "none" shots use source
- * fit. Exactly two stable, co-observed subjects may use two-up. Crowded or
+ * Solo shots frame the face (`frameFaceInCrop`); "none" shots fill the
+ * frame unless they show graphics (`shotShowsGraphics`). Exactly two stable, co-observed subjects may use two-up. Crowded or
  * uncertain multi-face shots use source fit; an unsplit two-person shot may
  * use a dominant-seat crop only when that seat has earned it.
  */
@@ -965,21 +1068,13 @@ export function buildAutoLayoutPlan(
 
   const anyFaces = analyses.some((a) => a.kind !== "none");
   if (!anyFaces) {
-    // Detection covered the clip and found no faces. That is still useful
-    // evidence: preserve each source shot with a full-source fit rather than
-    // pretending an earlier crop or generic center fallback applies.
+    // Detection covered the clip and found no faces. Each source shot still
+    // gets its own decision: graphics keep the full source, footage fills.
     return {
       ...empty(analyses),
-      segments: analyses.map(({ shot }) => ({
-        startSec: shot.startSec,
-        endSec: shot.endSec,
-        layout: "single" as const,
-        intent: "fit" as const,
-        cxNorm: 0.5,
-        cyNorm: 0.5,
-        zoom: 1,
-        subjects: [],
-      })),
+      segments: absorbEdgeSlivers(
+        analyses.map(({ shot }) => facelessSegment(shot, params.samples, opts.facelessOptions)),
+      ),
     };
   }
 
@@ -1022,20 +1117,11 @@ export function buildAutoLayoutPlan(
     }
 
     if (kind === "none") {
-      // A real cut with no face is B-roll, graphics, or a slide. It must see
-      // the full source, never inherit a nearby person's crop. Within-shot
-      // detector gaps are covered by the track above, so this branch only
-      // handles a whole shot with no trustworthy face.
-      segments.push({
-        startSec: shot.startSec,
-        endSec: shot.endSec,
-        layout: "single",
-        intent: "fit",
-        cxNorm: 0.5,
-        cyNorm: 0.5,
-        zoom: 1,
-        subjects: [],
-      });
+      // A real cut with no face is B-roll, graphics, or a slide. It never
+      // inherits a nearby person's crop: graphics keep the full source and
+      // footage fills the frame. Within-shot detector gaps are covered by the
+      // track above, so this branch only handles a whole faceless shot.
+      segments.push(facelessSegment(shot, params.samples, opts.facelessOptions));
       continue;
     }
 
@@ -1296,7 +1382,7 @@ export function buildAutoLayoutPlan(
     // Keep real source cuts. A camera change is more important than saving a
     // filter branch, and tracks already avoid turning within-shot movement
     // into a sequence of scenes.
-    segments,
+    segments: absorbEdgeSlivers(segments),
     shotCount: analyses.length,
     soloShotCount: analyses.filter((a) => a.kind === "solo").length,
     multiShotCount: analyses.filter((a) => a.kind === "multi").length,

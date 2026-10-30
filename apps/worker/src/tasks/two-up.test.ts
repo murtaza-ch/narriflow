@@ -271,14 +271,14 @@ describe("remapMultiFaceSamplesForCutPlan (split packet B — multi-face sibling
       [
         { t: 4, faces: [face(0.3)] },
         { t: 12, faces: [face(0.9)] },
-        { t: 20, faces: [face(0.6)] },
+        { t: 20, faces: [face(0.6)], content: { edge: 0.4, text: 0.1 } },
       ],
       cutPlan,
       clipStartSec,
     );
     expect(out).toEqual([
       { t: 4, faces: [face(0.3)] },
-      { t: 15, faces: [face(0.6)] },
+      { t: 15, faces: [face(0.6)], content: { edge: 0.4, text: 0.1 } },
     ]);
   });
 

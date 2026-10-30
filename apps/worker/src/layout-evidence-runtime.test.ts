@@ -32,9 +32,14 @@ describe("layout detector process boundary", () => {
 
   test("unreadable detector input retries and malformed JSON cannot become empty evidence", async () => {
     await expect(detectors(async () => ({ exitCode: 4, stdout: Buffer.from('{"error":"cannot open video"}') })).detectFacePath(detection)).rejects.toMatchObject({ code: "analysis_input_unavailable", disposition: "retryable" });
-    for (const out of ["not json", '{}', '{"samples":[{"t":"bad","faces":[]}]}']) {
+    for (const out of ["not json", '{}', '{"samples":[{"t":"bad","faces":[]}]}', '{"samples":[{"t":0,"faces":[],"content":{"edge":"x","text":0}}]}']) {
       await expect(detectors(async () => ({ exitCode: 0, stdout: Buffer.from(out) })).detectMultiFacePath(detection)).rejects.toMatchObject({ code: "analysis_output_invalid", disposition: "retryable" });
     }
+  });
+
+  test("frame content evidence reaches the layout engine", async () => {
+    const d = detectors(async () => ({ exitCode: 0, stdout: Buffer.from('{"samples":[{"t":0,"faces":[],"content":{"edge":0.41,"text":0.12}},{"t":0.25,"faces":[]}]}') }));
+    expect(await d.detectMultiFacePath(detection)).toEqual({ samples: [{ t: 0, faces: [], content: { edge: 0.41, text: 0.12 } }, { t: 0.25, faces: [] }] });
   });
 
   test("successful empty content remains available, with no camera cuts", async () => {
