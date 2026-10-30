@@ -307,8 +307,8 @@ function EffectRow({
 // shared caption engine — the same renderer the on-video overlay uses.
 
 function LiveCuePreview({ sticky = false }: { sticky?: boolean }) {
-  const { captionPreset, playbackClock, utterances, clipStartSec, editedTimeMap, aspectRatio } =
-    useStudio("captionPreset", "playbackClock", "utterances", "clipStartSec", "editedTimeMap", "aspectRatio");
+  const { captionPreset, playbackClock, utterances, clipStartSec, editedTimeMap, aspectRatio, clipInfo } =
+    useStudio("captionPreset", "playbackClock", "utterances", "clipStartSec", "editedTimeMap", "aspectRatio", "clipInfo");
   const caption = useLiveCaption(playbackClock, utterances, clipStartSec, captionPreset.wordsPerCue, editedTimeMap);
   const reducedMotion = useReducedMotion() ?? false;
 
@@ -376,6 +376,7 @@ function LiveCuePreview({ sticky = false }: { sticky?: boolean }) {
           cueIndex={caption?.cueIndex ?? 0}
           showEmojis={captionPreset.emojis === true}
           reducedMotion={reducedMotion}
+          language={clipInfo.captionLanguage}
         />
       </Flex>
     </Box>

@@ -89,3 +89,73 @@ describe("caption emoji", () => {
     expect(html).toMatch(/MONEY<\/span><\/span><span[^>]*data-caption-emoji=/);
   });
 });
+
+describe("caption cues in other languages", () => {
+  const render = (props: Record<string, unknown>) =>
+    renderToStaticMarkup(
+      createElement(CaptionCue, { preset: captionPresetSchema.parse({ animation: "pop" }), scale: 1, cueKey: 0, ...props } as never),
+    );
+  const text = (html: string) => html.replace(/<[^>]+>/g, "");
+
+  test("a cue carries its language and the direction of its first strong character", () => {
+    const urdu = render({ words: [{ word: "اردو", isActive: true }, { word: "زبان", isActive: false }], language: "ur" });
+    expect(urdu).toContain('lang="ur"');
+    expect(urdu).toContain('dir="rtl"');
+    // The language's direction is only the fallback: an English cue stays left to right.
+    expect(render({ words: [{ word: "Hello", isActive: true }], language: "ur" })).toContain('dir="ltr"');
+    // Numbers alone take the language's direction, each word isolated in its own direction.
+    const numbers = render({ words: [{ word: "2026", isActive: true }], language: "ar" });
+    expect(numbers).toContain('dir="rtl"');
+    expect(render({ words: [{ word: "Hello", isActive: true }], language: null })).not.toContain("lang=");
+  });
+
+  test("Arabic words keep their numbers and Latin names in their own direction", () => {
+    const html = render({ words: [{ word: "عام", isActive: false }, { word: "2026", isActive: true }, { word: "OpenAI", isActive: false }], language: "ar" });
+    expect(html.match(/<span dir="rtl"/g)?.length).toBe(2);
+    expect(html).toContain('<span dir="ltr"');
+    expect(text(html)).toContain("عام 2026");
+  });
+
+  test("Japanese tokens abut, and a provider space is kept where the script would drop it", () => {
+    const tokens = ["日", "本", "語"].map((word, index) => ({ word, isActive: index === 1 }));
+    // Every glyph layer repeats the cue's text; none of them puts a space between characters.
+    expect(text(render({ words: tokens, language: "ja" }))).toMatch(/^[日本語]+$/);
+    expect(text(render({ words: tokens, language: "ja" }))).toContain("日日本本語語");
+    const phrases = [{ word: "สวัสดี", isActive: true }, { word: "ครับ", isActive: false, spaceBefore: true }];
+    expect(text(render({ words: phrases, language: "th", preformatted: true }))).toContain("สวัสดี ครับ");
+  });
+
+  test("complex scripts take no letter spacing; Latin beside them keeps it", () => {
+    const preset = captionPresetSchema.parse({ letterSpacing: 0.04, animation: "pop" });
+    const html = render({ preset, words: [{ word: "नमस्ते", isActive: true }, { word: "world", isActive: false }], language: "hi" });
+    expect(html).toContain("letter-spacing:0.04em");
+    expect(html).toContain('<span style="letter-spacing:0">नमस्ते</span>');
+    expect(html).not.toContain('<span style="letter-spacing:0">WORLD');
+  });
+
+  test("the karaoke sweep reveals a right-to-left word from the right", () => {
+    const preset = captionPresetSchema.parse({ animation: "karaoke" });
+    const sweep = (word: string, language: string) => render({ preset, words: [{ word, isActive: true, durationMs: 500 }], language });
+    expect(sweep("سلام", "ar")).toContain("clip-path:inset(0 0 0 100%)");
+    expect(sweep("hello", "en")).toContain("clip-path:inset(0 100% 0 0)");
+  });
+
+  test("casing follows the cue's language and leaves caseless and Georgian text alone", () => {
+    const upper = (word: string, language: string | null) =>
+      text(render({ preset: captionPresetSchema.parse({ textTransform: "uppercase", animation: "pop" }), words: [{ word, isActive: true }], language }));
+    expect(upper("istanbul", "tr")).toContain("İSTANBUL");
+    expect(upper("istanbul", "en")).toContain("ISTANBUL");
+    expect(upper("ქართული", "ka")).toContain("ქართული");
+    expect(upper("اردو", "ur")).toContain("اردو");
+  });
+
+  test("the font stack is the requested face, the cue language's face, script faces, symbols, emoji", () => {
+    const family = (language: string | null) => String(captionFontStyle("Montserrat", language).fontFamily);
+    expect(family("ur").indexOf('"Noto Nastaliq Urdu"')).toBeGreaterThan(family("ur").indexOf("var(--font-caption-montserrat)"));
+    expect(family("ur").indexOf('"Noto Nastaliq Urdu"')).toBeLessThan(family("ur").indexOf('"Noto Sans Arabic"'));
+    expect(family("ja").indexOf('"Noto Sans JP"')).toBeLessThan(family("ja").indexOf('"Noto Sans SC"'));
+    expect(family("en")).not.toContain("Nastaliq");
+    expect(family("en").endsWith('"Noto Sans Symbols 2", "Noto Emoji", sans-serif')).toBe(true);
+    expect(captionFontStyle("Montserrat").fontSynthesis).toBe("none");
+  });
+});

@@ -9,6 +9,8 @@ export interface CaptionWord {
   isActive: boolean;
   /** How long the word stays active (source seconds → ms). */
   durationMs?: number;
+  /** The provider's spacing before the word; absent when the script decides. */
+  spaceBefore?: boolean;
 }
 
 export interface CaptionState {
@@ -114,6 +116,7 @@ export function getCurrentCaptionState(
           word: w.word,
           isActive: index === activeWordIdx,
           durationMs: Math.max(50, Math.round((endSec - w.startSec) * 1000)),
+          ...(w.spaceBefore === undefined ? {} : { spaceBefore: w.spaceBefore }),
         };
       });
 
@@ -125,7 +128,8 @@ export function getCurrentCaptionState(
     };
   }
 
-  const textWords = splitSpacedTokens(utterance.text).map((token) => token.word);
+  const tokens = splitSpacedTokens(utterance.text);
+  const textWords = tokens.map((token) => token.word);
   if (textWords.length === 0) return null;
 
   const utteranceDuration = Math.max(
@@ -147,6 +151,7 @@ export function getCurrentCaptionState(
     .map((w, i) => ({
       word: w,
       isActive: chunkStart + i === estimatedActiveIdx,
+      ...(tokens[chunkStart + i]?.spaceBefore === undefined ? {} : { spaceBefore: true }),
     }));
 
   return {

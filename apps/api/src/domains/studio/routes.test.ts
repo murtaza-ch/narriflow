@@ -167,6 +167,7 @@ function harness(
       },
       getProjectBrandSnapshot: read("brandSnapshot", null),
       getProjectBrandAudio: read("brandAudio", { music: [], sfx: [] }),
+      getCaptionLanguage: read("captionLanguage", "ur"),
     },
     autoCensorService: {
       getPolicy: read("policy", { locale: "en", canApply: true }),
@@ -361,6 +362,7 @@ describe("Studio bootstrap", () => {
         aspectRatio: "9:16",
         sourceKind: "video",
         can1080pExport: true,
+        captionLanguage: "ur",
       },
       editor: { revision: 7, document: { version: 1 } },
       source: { videoUrl: "https://signed.test/sources/a.mp4", previewId: "sources/a.mp4", purged: false },
@@ -376,6 +378,7 @@ describe("Studio bootstrap", () => {
         "activeFonts",
         "brandAudio",
         "brandSnapshot",
+        "captionLanguage",
         "editor",
         "policy",
         "preview",

@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { Box, Button, Flex, Input, Text, Textarea, Checkbox } from "@chakra-ui/react";
 import { Combine, Copy, Plus, PanelsTopLeft, Scissors, ShieldCheck, Trash2, Undo2 } from "lucide-react";
 import { toaster } from "@narriflow/ui/components/toaster";
-import { autoCensorWordId, censoredCaptionWordText, editedToSource, hasSpaceBefore, joinTranscriptWords, sourceToEdited, splitSpacedTokens, userErrorMessage } from "@narriflow/validators";
+import { autoCensorWordId, censoredCaptionWordText, editedToSource, getSourceLanguageLabel, hasSpaceBefore, joinTranscriptWords, languageDirection, sourceLanguageCodeSchema, sourceToEdited, splitSpacedTokens, textDirection, userErrorMessage } from "@narriflow/validators";
 import type {
   ClipSnapshot,
   EditedTimeMap,
@@ -111,6 +111,11 @@ function buildDisplayTokens(words: TranscriptWord[]): DisplayToken[] {
     }
   }
   return tokens;
+}
+
+/** `lang` and `dir` for transcript text: direction from its first strong character, else the language's. */
+function textAttributes(text: string, language: string | null) {
+  return { lang: language ?? undefined, dir: textDirection(text, languageDirection(language)) };
 }
 
 function joiningSpaceAfter(tokens: DisplayToken[], index: number): string {
@@ -367,7 +372,7 @@ const EditableUtterance = memo(function EditableUtterance({
   censorMarkers: ReadonlyMap<string, CensorWordMarker>;
   onSeek: (editedTime: number) => void;
 }) {
-  const { editedTimeMap, updateWord, deletedRanges } = useStudio("editedTimeMap", "updateWord", "deletedRanges");
+  const { editedTimeMap, updateWord, deletedRanges, clipInfo } = useStudio("editedTimeMap", "updateWord", "deletedRanges", "clipInfo");
   const [editingWordIndex, setEditingWordIndex] = useState<number | null>(null);
 
   // Build words (with fallback for utterances without word-level timing)
@@ -410,6 +415,7 @@ const EditableUtterance = memo(function EditableUtterance({
     // the rounded panel; 8 + 12px keeps the text on the 20px column.
     <Box
       data-word-container={utteranceIndex}
+      {...textAttributes(utterance.text, clipInfo.captionLanguage)}
       mx="8px"
       px="12px"
       py="4px"
@@ -669,7 +675,8 @@ const SubtitleLineEditor = memo(function SubtitleLineEditor({
     mergeSubtitleLineWithNext,
     seekTo,
     editedTimeMap,
-  } = useStudio("updateUtteranceText", "addSubtitleLineAfter", "deleteSubtitleLine", "mergeSubtitleLineWithNext", "seekTo", "editedTimeMap");
+    clipInfo,
+  } = useStudio("updateUtteranceText", "addSubtitleLineAfter", "deleteSubtitleLine", "mergeSubtitleLineWithNext", "seekTo", "editedTimeMap", "clipInfo");
   const [draft, setDraft] = useState(utterance.text);
   useEffect(() => setDraft(utterance.text), [utterance.text]);
   const editedStartSec = sourceToEdited(editedTimeMap, utterance.startSec);
@@ -741,6 +748,7 @@ const SubtitleLineEditor = memo(function SubtitleLineEditor({
           }
         }}
         aria-label={`Subtitle line ${index + 1}`}
+        {...textAttributes(draft, clipInfo.captionLanguage)}
         {...inlineEditorProps}
       />
     </Box>
@@ -756,7 +764,7 @@ const SubtitleParagraphEditor = memo(function SubtitleParagraphEditor({
   indices: number[];
   utterances: TranscriptUtterance[];
 }) {
-  const { updateParagraphText } = useStudio("updateParagraphText");
+  const { updateParagraphText, clipInfo } = useStudio("updateParagraphText", "clipInfo");
   const sourceText = joinTranscriptWords(indices.map((index) => ({ word: utterances[index]?.text ?? "" })));
   const [draft, setDraft] = useState(sourceText);
   useEffect(() => setDraft(sourceText), [sourceText]);
@@ -801,6 +809,7 @@ const SubtitleParagraphEditor = memo(function SubtitleParagraphEditor({
           }
         }}
         aria-label={`${speakerLabel} paragraph subtitles`}
+        {...textAttributes(draft, clipInfo.captionLanguage)}
         {...inlineEditorProps}
         lineHeight="2"
       />
@@ -960,6 +969,9 @@ export function TranscriptPanel() {
     editorDocument,
     setActiveTool,
   } = useStudio("utterances", "transcriptOnly", "setTranscriptOnly", "seekTo", "clipStartSec", "editedTimeMap", "playbackClock", "deletedRanges", "deleteSourceRange", "revertDeletedRange", "clipInfo", "setTranscriptSelectionRange", "insertSceneBlock", "baseEditedToComposite", "sceneWriteCapabilities", "sceneFonts", "upgradePrompts", "captionPreset", "editorDocument", "setActiveTool");
+  // The language the transcript was detected (or chosen) in, when it is one the catalog names.
+  const spokenLanguageCode = sourceLanguageCodeSchema.safeParse(clipInfo.captionLanguage);
+  const spokenLanguageLabel = spokenLanguageCode.success && spokenLanguageCode.data ? getSourceLanguageLabel(spokenLanguageCode.data) : null;
   // The spoken word follows the clip's caption style, so it reads like the captions on the video.
   const highlight = useMemo(() => transcriptHighlight(captionPreset), [captionPreset]);
   const { openUpgrade } = useUpgrade();
@@ -1373,18 +1385,24 @@ export function TranscriptPanel() {
             <ViewModeButton mode="paragraph" current={viewMode} onSelect={handleViewModeChange} />
           </Flex>
         </Flex>
-        <Button
-          size="sm"
-          variant="ghost"
-          color="studio.fg"
-          alignSelf="flex-start"
-          px="2"
-          ms="-2"
-          _hover={{ bg: "studio.subtle" }}
-          onClick={() => setActiveTool("censor")}
-        >
-          <ShieldCheck size={15} /> Auto-censor
-        </Button>
+        <Flex align="center" justify="space-between" gap="3">
+          <Button
+            size="sm"
+            variant="ghost"
+            color="studio.fg"
+            px="2"
+            ms="-2"
+            _hover={{ bg: "studio.subtle" }}
+            onClick={() => setActiveTool("censor")}
+          >
+            <ShieldCheck size={15} /> Auto-censor
+          </Button>
+          {spokenLanguageLabel ? (
+            <Text fontSize="12px" color="studio.fgSubtle" truncate>
+              {spokenLanguageLabel}
+            </Text>
+          ) : null}
+        </Flex>
       </Flex>
 
       {/* Scrollable transcript body */}

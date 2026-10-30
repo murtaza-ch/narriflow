@@ -30,7 +30,7 @@ export interface StudioReadDeps {
   >;
   projectService: Pick<
     typeof projectService,
-    "getProjectSnapshot" | "getProjectBrandSnapshot" | "getProjectBrandAudio"
+    "getProjectSnapshot" | "getProjectBrandSnapshot" | "getProjectBrandAudio" | "getCaptionLanguage"
   >;
   autoCensorService: Pick<typeof autoCensorService, "getPolicy">;
   visualAssetService: Pick<
@@ -269,7 +269,7 @@ export async function loadStudioBootstrap(
 
   // A missing clip fails the whole read as clip_not_found, whichever read
   // settles first.
-  const [snapshot, clip, previewSource, rawBrandSnapshot, brandAudio, autoCensorPolicy, editorDoc] =
+  const [snapshot, clip, previewSource, rawBrandSnapshot, brandAudio, autoCensorPolicy, editorDoc, captionLanguage] =
     await Promise.all([
       deps.projectService.getProjectSnapshot(actor, projectId),
       deps.clipService.getClipSnapshot(actor, projectId, clipId),
@@ -281,6 +281,7 @@ export async function loadStudioBootstrap(
       deps.projectService.getProjectBrandAudio(actor, projectId),
       deps.autoCensorService.getPolicy(actor, projectId),
       deps.clipService.getClipEditorDocument(actor, projectId, clipId),
+      deps.projectService.getCaptionLanguage(actor, projectId),
     ]);
   const project = snapshot.project;
   if (!project) throw new ClipActionError("clip_not_found");
@@ -344,6 +345,8 @@ export async function loadStudioBootstrap(
       aspectRatio: clip.renderVariants[0]?.aspectRatio ?? ("9:16" as const),
       viralityScore: clip.viralityScore,
       category: clip.category,
+      /** What captions are cased, shaped and directed in: the transcript's language, else the project's. */
+      captionLanguage,
       sourceKind:
         project.sourceMimeType?.startsWith("audio/") || project.sourceType === "rss"
           ? ("audio" as const)

@@ -6,6 +6,7 @@ import { autopilotService, clipService, ExpectedDomainFailureError, projectServi
   type WorkspaceActorContext, type ExpectedDomainFailureKind } from "@narriflow/services";
 
 import { INTEGRATION_COMMANDS } from "@narriflow/services";
+import { SCRIBE_LANGUAGE_CODES } from "@narriflow/validators";
 import { buildNarriflowMcpServer, MCP_TOOL_COMMANDS, type NarriflowMcpPrincipal, type NarriflowMcpToolName } from "./index";
 
 const clients: Client[] = [];
@@ -517,5 +518,28 @@ describe("narriflow_propose_social_post", () => {
       expect(readOnly.structuredContent).toMatchObject({ data: { error: "scope_required", details: { scope: "publishing:write" } } });
       expect(propose).not.toHaveBeenCalled();
     } finally { actorSpy.mockRestore(); propose.mockRestore(); }
+  });
+});
+
+describe("language contract", () => {
+  test("generation tools accept exactly the Scribe language registry, or null to detect, and name no provider or accuracy", async () => {
+    const client = await connect({ kind: "oauth", userId: "00000000-0000-4000-8000-000000000001", clientId: "test-oauth-client", scopes: ["projects:read"] });
+    const { tools } = await client.listTools();
+    const languageSchemas: unknown[] = [];
+    const collect = (node: unknown) => {
+      if (Array.isArray(node)) node.forEach(collect);
+      else if (node && typeof node === "object") {
+        for (const [key, value] of Object.entries(node)) {
+          if (key === "languageCode") languageSchemas.push(value);
+          collect(value);
+        }
+      }
+    };
+    collect(tools.map((tool) => tool.inputSchema));
+    expect(languageSchemas.length).toBeGreaterThan(0);
+    for (const schema of languageSchemas) {
+      expect((schema as { anyOf: { enum?: unknown[]; type?: string }[] }).anyOf).toEqual([{ type: "string", enum: [...SCRIBE_LANGUAGE_CODES] }, { type: "null" }]);
+    }
+    expect(JSON.stringify(tools)).not.toMatch(/assembly|universal-?\d|accuracy|\bscribe\b|elevenlabs/i);
   });
 });

@@ -1,5 +1,6 @@
 "use client";
-import { useBrandFont, brandFontStyle } from "@/app/(app)/brand-kit/_components/brand-fonts";
+import { useBrandFont, brandFontStyle, brandFontFamily } from "@/app/(app)/brand-kit/_components/brand-fonts";
+import { captionFontStack, captionLetterSpacingRuns, hasUnspacedScript } from "@/app/caption-script-fonts";
 
 /**
  * The ONE caption renderer for every caption surface in the web app:
@@ -12,7 +13,10 @@ import { useBrandFont, brandFontStyle } from "@/app/(app)/brand-kit/_components/
  * plate, pill, shadow, outer stroke, glow, text, karaoke sweep, typewriter
  * letters, glitch ghosts, and the active word's entrance motion. Fonts are the
  * same files with the same line box (app/caption-fonts.ts), so a cue lays out
- * the same in both renderers.
+ * the same in both renderers. Text in other scripts falls back through the
+ * worker's own chain (app/caption-script-fonts.ts), and a cue carries its
+ * language and direction: right-to-left cues lay words out and sweep karaoke
+ * right to left, and complex scripts take no letter spacing.
  *
  * All colour values here are USER caption colours (they feed the burn-in) and
  * intentionally stay literal — never theme tokens.
@@ -48,6 +52,9 @@ import {
   captionTypewriterLetterDelays,
   emojiForWord,
   formatCaptionWord,
+  hasSpaceBefore,
+  languageDirection,
+  textDirection,
   type CaptionEase,
   type CaptionFontName,
   type CaptionKeyframe,
@@ -73,13 +80,15 @@ function captionFontVariable(fontName: CaptionFontName): string {
   return `--font-caption-${fontName.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
 }
 
-/** Font declarations for a caption face: family, weight and style. */
-export function captionFontStyle(fontName: CaptionFontName): CSSProperties {
+/** Font declarations for a caption face: family (with the script fallbacks for `language`), weight and style. */
+export function captionFontStyle(fontName: CaptionFontName, language?: string | null): CSSProperties {
   const face = captionFontFace(fontName);
   return {
-    fontFamily: `var(${captionFontVariable(fontName)}), sans-serif`,
+    fontFamily: captionFontStack(`var(${captionFontVariable(fontName)})`, language),
     fontWeight: face.weight,
     fontStyle: face.style,
+    // libass never emboldens a fallback face; neither does the browser.
+    fontSynthesis: "none",
   };
 }
 
@@ -197,6 +206,8 @@ export interface CaptionCueWord {
   durationMs?: number;
   /** Where the word's emoji window starts and ends on the edited timeline, as the export schedules it. */
   emojiWindow?: { readonly startSec: number; readonly endSec: number };
+  /** The provider's spacing before the word; without it the script decides (no space between Han/kana). */
+  spaceBefore?: boolean;
 }
 
 export interface CaptionCueProps {
@@ -221,6 +232,26 @@ export interface CaptionCueProps {
    *  (punctuation, censor masks, case). Formatting them again would strip a
    *  mask's asterisks. */
   preformatted?: boolean;
+  /** The cue's effective caption language: casing, direction and the locale face. */
+  language?: string | null;
+}
+
+/** Text with the cue's letter spacing switched off for scripts that take none (`\fsp0` in the burn-in). */
+function CaptionText({ text }: { text: string }) {
+  if (!hasUnspacedScript(text)) return <>{text}</>;
+  return (
+    <>
+      {captionLetterSpacingRuns(text).map((run, index) =>
+        run.spaced ? (
+          <Fragment key={index}>{run.text}</Fragment>
+        ) : (
+          <span key={index} style={{ letterSpacing: 0 }}>
+            {run.text}
+          </span>
+        ),
+      )}
+    </>
+  );
 }
 
 /** One copy of a word's glyphs; every caption layer is one of these. */
@@ -246,7 +277,7 @@ function Glyphs({
         ...style,
       }}
     >
-      {children ?? text}
+      {children ?? (text === undefined ? null : <CaptionText text={text} />)}
     </span>
   );
 }
@@ -267,6 +298,7 @@ export function CaptionCue({
   reducedMotion = false,
   timeSec,
   preformatted = false,
+  language = null,
 }: CaptionCueProps) {
   const [naturalWidth, setNaturalWidth] = useState(0);
   const customFont = useBrandFont(preset.fontAsset);
@@ -280,7 +312,12 @@ export function CaptionCue({
   const display = words.map((item) =>
     preformatted
       ? item.word
-      : applyCaptionTextTransform(formatCaptionWord(item.word, { punctuation: keepPunctuation }), preset.textTransform),
+      : applyCaptionTextTransform(formatCaptionWord(item.word, { punctuation: keepPunctuation }), preset.textTransform, language),
+  );
+  // The cue's base direction is its first strong character, else the language's.
+  const cueDir = textDirection(
+    display.find((text) => text.length > 0) ?? "",
+    languageDirection(language),
   );
 
   // The keyed cue entrance replaces this node on every cue change. Observe
@@ -291,7 +328,15 @@ export function CaptionCue({
     measure();
     const observer = new ResizeObserver(measure);
     observer.observe(line);
-    return () => observer.disconnect();
+    // A fallback face that arrives after first paint changes the line's width;
+    // fit-to-width must measure the text in the face that draws it.
+    const fonts = document.fonts;
+    void fonts?.ready.then(measure);
+    fonts?.addEventListener("loadingdone", measure);
+    return () => {
+      observer.disconnect();
+      fonts?.removeEventListener("loadingdone", measure);
+    };
   }, []);
 
   // When punctuation is off and every word in this cue is pure punctuation,
@@ -379,6 +424,8 @@ export function CaptionCue({
       <div style={{ transform: `rotate(${tilt}deg) scale(${fit})`, transformOrigin: "50% 50%" }}>
         <div
           ref={measureLine}
+          lang={language ?? undefined}
+          dir={cueDir}
           style={{
             position: "relative",
             display: "inline-block",
@@ -387,7 +434,9 @@ export function CaptionCue({
             fontSize: `${emPx}px`,
             letterSpacing: `${preset.letterSpacing}em`,
             wordSpacing: preset.highlightBoxColor ? `${CAPTION_PILL.extraWordSpacingEm}em` : undefined,
-            ...(customFont ? brandFontStyle(customFont) : captionFontStyle(preset.fontName)),
+            ...(customFont
+              ? { ...brandFontStyle(customFont), fontFamily: captionFontStack(`"${brandFontFamily(customFont)}"`, language) }
+              : captionFontStyle(preset.fontName, language)),
           }}
         >
           {preset.backgroundColor && (
@@ -406,11 +455,21 @@ export function CaptionCue({
           )}
           {words.map((item, index) => {
             const text = display[index]!;
+            const wordDir = textDirection(text, cueDir);
+            // Words are inline-blocks in logical order, so a right-to-left cue
+            // runs them right to left; a space goes where the provider (or the
+            // script) puts one, never between Han or kana.
+            const previousText = display.slice(0, index).reverse().find((candidate) => candidate.length > 0);
+            const spaced =
+              previousText !== undefined &&
+              hasSpaceBefore(previousText, { word: text, ...(item.spaceBefore === undefined ? {} : { spaceBefore: item.spaceBefore }) });
             const isActive = index === activeIndex;
             const upcoming = activeIndex >= 0 && index > activeIndex;
             const sung = spec.effect === "karaoke" && activeIndex >= 0 && index < activeIndex;
             const opacity = upcoming ? spec.upcomingOpacity : 1;
-            const fill = isActive || sung ? preset.highlightColor : preset.primaryColor;
+            // The sweep paints the highlight over the word; until it arrives the
+            // word is the primary colour, as `\kf` draws it in the burn-in.
+            const fill = (isActive && spec.effect !== "karaoke") || sung ? preset.highlightColor : preset.primaryColor;
             const glow = isActive ? (preset.highlightGlowColor ?? preset.glowColor ?? null) : (preset.glowColor ?? null);
             const entrance = isActive && animated ? keyframeMotion(spec.word, emPx, perspectivePx) : null;
             const emoji = showEmojis ? (item.emoji ?? emojiForWord(item.word)) : null;
@@ -418,10 +477,11 @@ export function CaptionCue({
             if (text.length === 0) return null;
             return (
               <Fragment key={`${cueKey}-${index}`}>
-                {index > 0 && " "}
+                {spaced && " "}
                 {/* The emoji sits beside the word's entrance, not inside it: the export
                     overlays it on its own clock, so it must not ride the word's motion. */}
                 <span
+                  dir={wordDir}
                   style={{
                     position: "relative",
                     display: "inline-block",
@@ -484,12 +544,12 @@ export function CaptionCue({
                       {isActive && spec.effect === "typewriter" && animated ? (
                         <TypewriterLetters text={text} durationMs={durationMs} />
                       ) : (
-                        text
+                        <CaptionText text={text} />
                       )}
                     </span>
                   </GlitchText>
                   {isActive && spec.effect === "karaoke" && (
-                    <KaraokeSweep text={text} color={preset.highlightColor} durationMs={durationMs} animated={animated} style={silhouetteStroke(stroke, preset.outlineColor)} />
+                    <KaraokeSweep text={text} color={preset.highlightColor} durationMs={durationMs} animated={animated} rtl={wordDir === "rtl"} style={silhouetteStroke(stroke, preset.outlineColor)} />
                   )}
                 </motion.span>
                 {isActive && emoji && (
@@ -583,29 +643,31 @@ export function CaptionEmoji({
   );
 }
 
-/** Karaoke: a highlight-coloured copy wiped in left to right while the word is spoken. */
+/** Karaoke: a highlight-coloured copy wiped in while the word is spoken: left to right, right to left for a right-to-left word. */
 function KaraokeSweep({
   text,
   color,
   durationMs,
   animated,
+  rtl,
   style,
 }: {
   text: string;
   color: string;
   durationMs: number;
   animated: boolean;
+  rtl: boolean;
   style: CSSProperties;
 }) {
   return (
     <motion.span
       aria-hidden
-      initial={animated ? { clipPath: "inset(0 100% 0 0)" } : false}
-      animate={{ clipPath: "inset(0 0% 0 0)" }}
+      initial={animated ? { clipPath: rtl ? "inset(0 0 0 100%)" : "inset(0 100% 0 0)" } : false}
+      animate={{ clipPath: rtl ? "inset(0 0 0 0%)" : "inset(0 0% 0 0)" }}
       transition={{ duration: durationMs / 1000, ease: "linear" }}
       style={{ position: "absolute", left: 0, top: 0, zIndex: 6, color, whiteSpace: "pre", paintOrder: "stroke fill", ...style }}
     >
-      {text}
+      <CaptionText text={text} />
     </motion.span>
   );
 }
@@ -613,7 +675,9 @@ function KaraokeSweep({
 /** Typewriter: the active word's letters appear one at a time. */
 function TypewriterLetters({ text, durationMs }: { text: string; durationMs: number }) {
   // Grapheme clusters, like the burn-in: a ZWJ family or flag appears as one letter.
-  const letters = captionGraphemes(text);
+  // Joined and complex scripts (Arabic, Indic, Thai...) appear whole: separate
+  // letters would not join or reorder.
+  const letters = hasUnspacedScript(text) ? [text] : captionGraphemes(text);
   const delays = captionTypewriterLetterDelays(letters.length, durationMs);
   return letters.map((letter, index) => (
     <motion.span
@@ -622,7 +686,7 @@ function TypewriterLetters({ text, durationMs }: { text: string; durationMs: num
       animate={{ opacity: 1 }}
       transition={{ delay: delays[index]! / 1000, duration: 0 }}
     >
-      {letter}
+      <CaptionText text={letter} />
     </motion.span>
   ));
 }
@@ -660,7 +724,7 @@ function GlitchGhosts({ text }: { text: string }) {
         transition={{ duration: GLITCH_TOTAL_MS / 1000, times, ease: "linear" }}
         style={{ position: "absolute", left: 0, top: 0, zIndex: 4, color, whiteSpace: "pre" }}
       >
-        {text}
+        <CaptionText text={text} />
       </motion.span>
     );
   });

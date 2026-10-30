@@ -776,6 +776,7 @@ export function VideoPreview() {
     if (!target) return null;
     const result = planClipComposition({
       document: previewEditorDocument,
+      captionLanguage: clipInfo.captionLanguage,
       source: {
         identity: compositionSourceIdentity,
         kind: clipInfo.sourceKind,
@@ -956,6 +957,7 @@ export function VideoPreview() {
     brandLogo,
     effectiveLogo,
     clipInfo.can1080pExport,
+    clipInfo.captionLanguage,
     clipInfo.exportHasWatermark,
     clipInfo.sourceKind,
     musicSrc,

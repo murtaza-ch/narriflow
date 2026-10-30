@@ -382,6 +382,9 @@ export interface ClipInfo {
   aspectRatio: AspectRatio;
   viralityScore: number;
   category: string;
+  /** The language captions are cased, shaped and directed in: the transcript's
+   *  language, else the one the project asked for. Null when neither is known. */
+  captionLanguage: string | null;
   sourceKind: "video" | "audio";
   /** The clip is its whole source (a caption-only video), so its trim bounds are
    *  `clipDurationBounds(true)`, not the detected-clip 10 to 120 seconds. */
