@@ -24,22 +24,37 @@ export const BODY_LIMIT_BYTES = {
   webhook: 1024 * KIB,
   /** Studio document and bulk campaign writes. */
   editor: 8 * 1024 * KIB,
+  /**
+   * The signed ElevenLabs speech-to-text result (`POST /api/webhooks/elevenlabs`),
+   * the only route that takes one. Word-level results of multi-hour sources are
+   * tens of MiB. A route reaches this class only by declaring `bodyClass`, and
+   * never also passes through the 1 MiB `webhook` limiter.
+   */
+  providerResult: 128 * 1024 * KIB,
 } as const;
+
+/**
+ * The ceiling of every route that does not declare the `providerResult` class:
+ * twice the largest ordinary route class, so every plausible oversize request (a
+ * client sending the wrong thing to a control route) is refused by the
+ * application in the common envelope, with CORS, after at most the route class
+ * plus one chunk has been read. `ingressCeiling` enforces it on a declared
+ * Content-Length for routes with no limiter of their own (MCP).
+ */
+export const ORDINARY_BODY_CAP_BYTES = BODY_LIMIT_BYTES.editor * 2;
 
 /**
  * Bun's own ceiling, enforced before any application code runs: a body over it
  * gets Bun's bare 413 (no JSON envelope, request ID or CORS headers), and a
- * declared Content-Length over it never reaches `fetch`. Twice the largest route
- * class, so every plausible oversize request (a client sending the wrong thing
- * to a control route) is refused by the application in the common envelope,
- * with CORS, after at most the route class plus one chunk has been read.
- * Only a body beyond this is an intentional native-ingress exception.
+ * declared Content-Length over it never reaches `fetch`. It must admit the
+ * largest route class, so it is that class; every other route is bounded in the
+ * application, by its class limiter or by `ingressCeiling`.
  *
  * Bun 1.3.6 (the image) applies the cap to a declared Content-Length only;
  * a chunked body is bounded by `limitBody`, which counts actual bytes and
  * cancels at the route class. Bun 1.4 also errors a chunked read at the cap.
  */
-export const NATIVE_BODY_CAP_BYTES = BODY_LIMIT_BYTES.editor * 2;
+export const NATIVE_BODY_CAP_BYTES = BODY_LIMIT_BYTES.providerResult;
 export type BodyLimitClass = keyof typeof BODY_LIMIT_BYTES;
 
 export const MAX_REQUEST_URL_BYTES = 8 * KIB;

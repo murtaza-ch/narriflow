@@ -224,6 +224,7 @@ Minimum values for the current clips workflow:
 - `CORS_ALLOWED_ORIGINS` and `CLERK_AUTHORIZED_PARTIES`: the exact web origin (no wildcards, never the API origin).
 - `DATABASE_URL` (pooled; `DIRECT_URL` belongs to the migration job)
 - `CLERK_SECRET_KEY`, `CLERK_PUBLISHABLE_KEY`, `CLERK_WEBHOOK_SECRET`
+- `ELEVENLABS_WEBHOOK_SECRET`: signs the speech-to-text results ElevenLabs posts to `${API_ORIGIN}/api/webhooks/elevenlabs`; the API refuses to start without it.
 - `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET`
 
 Notes:

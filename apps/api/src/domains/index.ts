@@ -58,6 +58,7 @@ export interface ApiWebhookRoutes {
   billing: AnyRoutes;
   publishing: AnyRoutes;
   automation: AnyRoutes;
+  projects: AnyRoutes;
 }
 
 /**

@@ -61,6 +61,7 @@ export function createBillingTestApp(input: {
       billing: input.webhook ?? empty(),
       publishing: empty(),
       automation: empty(),
+      projects: empty(),
     },
     rest: empty(),
     mcp: empty(),

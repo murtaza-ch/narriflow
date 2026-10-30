@@ -47,6 +47,8 @@ import { createReviewsRouteDeps } from "./domains/reviews/runtime";
 import { createReviewsRoutes } from "./domains/reviews/routes";
 import { createSessionRouteDeps } from "./domains/session/runtime";
 import { createSessionRoutes } from "./domains/session/routes";
+import { createProjectsWebhookDeps } from "./domains/projects/runtime";
+import { createProjectsWebhookRoutes } from "./domains/projects/webhooks";
 import { createStudioRouteDeps } from "./domains/studio/runtime";
 import { createStudioRoutes } from "./domains/studio/routes";
 import { createWorkspaceRouteDeps } from "./domains/workspace/runtime";
@@ -123,6 +125,7 @@ export function createExternalRoutes(
       billing: createBillingWebhookRoutes(createBillingWebhookDeps()),
       publishing: createPublishingWebhookRoutes(createPublishingWebhookDeps()),
       automation: createAutomationWebhookRoutes(createAutomationWebhookDeps()),
+      projects: createProjectsWebhookRoutes(createProjectsWebhookDeps()),
     },
     rest: createRestRoutes(createRestRouteDeps(config)),
     mcp: createMcpTransportRoutes(createMcpTransportDeps(config, clerkClient)),
@@ -132,6 +135,7 @@ export function createExternalRoutes(
 /** Wires every production dependency and returns the composed app. Throws on missing core settings. */
 export function createProductionApp(config: ApiConfig, lifecycle: ApiLifecycle): Hono<ApiEnv> {
   requireSetting("DATABASE_URL");
+  requireSetting("ELEVENLABS_WEBHOOK_SECRET");
   billingService.validateConfiguration({ surface: "web" });
 
   const clerkClient = createServerClerkClient({

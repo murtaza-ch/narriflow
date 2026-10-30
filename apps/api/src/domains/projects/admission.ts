@@ -2,6 +2,7 @@ import type { AdmissionTable } from "../platform/admission-table";
 
 /** Admission of the projects routes, keyed by `METHOD /path` under `/api`. */
 export const projectsAdmission = {
+  "POST /webhooks/elevenlabs": { trust: "provider_signature" },
   "GET /home": { kind: "workspace", capability: "content.view" },
   "GET /projects": { kind: "workspace", capability: "content.view" },
   "GET /projects/explorer": { kind: "workspace", capability: "content.view" },

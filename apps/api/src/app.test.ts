@@ -413,6 +413,8 @@ describe("native body ceiling", () => {
     });
 
   test("a body over the route class but under Bun's cap gets the common 413 envelope with CORS; beyond the cap Bun answers natively", async () => {
+    // Bun's cap is sized for the provider-result class; every other route keeps
+    // the 16 MiB ceiling in the application (see webhook-ingress.test.ts).
     const app = createInventoryApp({ policyRuntime: policyRuntime() });
     expect(NATIVE_BODY_CAP_BYTES).toBeGreaterThan(8 * 1024 * 1024);
     const server = Bun.serve({
@@ -432,6 +434,11 @@ describe("native body ceiling", () => {
       // The documented exception: Bun refuses a declared length over its cap
       // before the application runs (413, or a bare 400 on a reused connection
       // in the Bun 1.3.6 image), so there is no envelope or request ID.
+      const ceiling = await request(url, 17 * 1024 * 1024);
+      expect(ceiling.status).toBe(413);
+      expect(ceiling.headers.get("x-request-id")).toBeTruthy();
+      expect(await ceiling.json()).toMatchObject({ error: "payload_too_large" });
+
       const native = await request(url, NATIVE_BODY_CAP_BYTES + 1);
       expect([400, 413]).toContain(native.status);
       expect(native.headers.get("x-request-id")).toBeNull();
