@@ -174,10 +174,92 @@ describe("auto-censor keeps combining marks", () => {
         { word: "笨", startSec: 1, endSec: 1.5 },
         { word: "蛋", startSec: 1.5, endSec: 2 },
       ])],
-      workspaceTerms: [], brandTerms: [], projectTerms: ["笨 蛋"], paddingSec: 0,
+      workspaceTerms: [], brandTerms: [], projectTerms: ["笨蛋"], paddingSec: 0,
     });
     expect(suggestions).toHaveLength(1);
     expect(suggestions[0]!.matchedText).toBe("笨蛋");
     expect(suggestions[0]!.contextBefore).toBe("今天");
+  });
+});
+
+describe("auto-censor terms in no-space scripts", () => {
+  function detect(
+    words: { word: string; startSec: number; endSec: number; spaceBefore?: boolean }[],
+    term: string,
+    extra: { wildcard?: boolean } = {},
+  ) {
+    return detectAutoCensorSuggestions({
+      documentRevision: 0, locale: "und", clipWindow: { startSec: 0, endSec: 10 },
+      transcript: [utterance(words)],
+      workspaceTerms: [extra.wildcard ? `${term}*` : term], brandTerms: [], projectTerms: [], paddingSec: 0,
+    });
+  }
+  const perChar = (text: string, spaceBefore?: boolean) =>
+    Array.from(text).map((word, index) => ({
+      word, startSec: index * 0.2, endSec: index * 0.2 + 0.2,
+      ...(spaceBefore !== undefined && index > 0 ? { spaceBefore } : {}),
+    }));
+
+  test("an unspaced Chinese term matches per-character tokens and keeps their timings", () => {
+    const [match, ...rest] = detect(perChar("你这个笨蛋真是", false), "笨蛋");
+    expect(rest).toHaveLength(0);
+    expect(match!.matchedText).toBe("笨蛋");
+    expect(match!.sourceWordIds).toHaveLength(2);
+    expect(match!.sourceStartSec).toBeCloseTo(0.6);
+    expect(match!.sourceEndSec).toBeCloseTo(1);
+    expect(match!.contextBefore).toBe("你这个");
+    expect(match!.contextAfter).toBe("真是");
+  });
+
+  test("an unspaced Japanese term matches kana and kanji tokens", () => {
+    const [match] = detect(perChar("このばかやろう", false), "ばかやろう");
+    expect(match!.matchedText).toBe("ばかやろう");
+    expect(match!.sourceWordIds).toHaveLength(5);
+    expect(match!.contextBefore).toBe("この");
+  });
+
+  test("an unspaced Thai term matches word tokens; a phrase space the provider kept splits the match", () => {
+    const joined = [
+      { word: "สวัสดี", startSec: 0, endSec: 0.5 },
+      { word: "ครับ", startSec: 0.5, endSec: 0.9, spaceBefore: false },
+      { word: "วันนี้", startSec: 1, endSec: 1.5, spaceBefore: true },
+    ];
+    expect(detect(joined, "สวัสดีครับ")).toHaveLength(1);
+    expect(detect(joined, "สวัสดีครับ วันนี้")).toHaveLength(1);
+    expect(detect(joined, "ครับวันนี้")).toHaveLength(0);
+  });
+
+  test("the explicit spaced form still matches", () => {
+    expect(detect(perChar("你这个笨蛋", false), "笨 蛋")).toHaveLength(1);
+  });
+
+  test("a wildcard stem matches a run of characters and the rest of the last token", () => {
+    const [match] = detect(perChar("你这个笨蛋蛋们", false), "笨蛋蛋", { wildcard: true });
+    expect(match!.matchedText).toBe("笨蛋蛋");
+    expect(detect(perChar("你这个笨蛋们", false), "笨蛋蛋", { wildcard: true })).toHaveLength(0);
+  });
+
+  test("the run does not cross punctuation tokens, partial runs, or utterances", () => {
+    expect(detect([...perChar("笨"), { word: "，", startSec: 0.2, endSec: 0.2 }, { word: "蛋", startSec: 0.4, endSec: 0.6 }], "笨蛋")).toHaveLength(0);
+    expect(detect(perChar("笨笨蛋蛋"), "笨蛋")).toHaveLength(1);
+    expect(detect(perChar("笨"), "笨蛋")).toHaveLength(0);
+    const split = detectAutoCensorSuggestions({
+      documentRevision: 0, locale: "und", clipWindow: { startSec: 0, endSec: 10 },
+      transcript: [
+        { ...utterance([{ word: "笨", startSec: 0, endSec: 0.2 }]), index: 0 },
+        { ...utterance([{ word: "蛋", startSec: 0.2, endSec: 0.4 }]), index: 1 },
+      ],
+      workspaceTerms: ["笨蛋"], brandTerms: [], projectTerms: [], paddingSec: 0,
+    });
+    expect(split).toHaveLength(0);
+  });
+
+  test("a zero-duration token inside the term does not make the word look removed", () => {
+    const words = [
+      { word: "笨", startSec: 0, endSec: 0.2 },
+      { word: "蛋", startSec: 0.2, endSec: 0.2 },
+      { word: "啊", startSec: 0.2, endSec: 0.4 },
+    ];
+    expect(detect(words, "笨蛋")).toHaveLength(1);
   });
 });

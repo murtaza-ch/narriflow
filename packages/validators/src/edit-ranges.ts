@@ -239,6 +239,37 @@ export function sourceRangeToEdited(
   return { startSec, endSec };
 }
 
+/**
+ * Map an instant (a zero-duration provider token such as `。`) onto the edited
+ * timeline. Kept segments are half-open, `startSec <= t < endSec`, the same
+ * rule `normalizeTranscriptSliceForClip` applies to the clip window: a point
+ * exactly where a cut begins is cut, one exactly where a cut ends is kept.
+ * Returns null when the point is inside a cut.
+ */
+export function sourcePointToEdited(map: EditedTimeMap, sourceSec: number): number | null {
+  for (const segment of map.segments) {
+    if (sourceSec >= segment.sourceStartSec && sourceSec < segment.sourceEndSec) {
+      return roundMs(segment.editedStartSec + (sourceSec - segment.sourceStartSec));
+    }
+  }
+  return null;
+}
+
+/**
+ * Map a timed word onto the edited timeline. A word with duration follows
+ * `sourceRangeToEdited`; a zero-duration word keeps its point (start === end)
+ * through `sourcePointToEdited`, so punctuation and zero-length tokens are
+ * retained exactly when their instant is kept.
+ */
+export function sourceWordToEdited(
+  map: EditedTimeMap,
+  word: SourceRange,
+): SourceRange | null {
+  if (word.endSec > word.startSec) return sourceRangeToEdited(map, word);
+  const point = sourcePointToEdited(map, word.startSec);
+  return point === null ? null : { startSec: point, endSec: point };
+}
+
 export interface ClipCutPlan {
   /** Kept source segments, source-order, each >= MIN_KEPT_SEGMENT_SEC, with
    *  edited-timeline offsets recomputed after any sliver was dropped. Empty
