@@ -25,11 +25,12 @@ import { HTTP_SOURCE_RW_TIMEOUT_US, type WorkerProcessModule } from "./worker-pr
  * mean something (music or silence at 20/50/80% can yield a confident guess
  * from two words), and a language the product can caption.
  *
- * Hindi and Urdu are one spoken language written in two scripts, and Scribe
- * detects spoken Urdu as Hindi with high confidence (live check: an Urdu
- * podcast came back `hin` at 0.97 with a Devanagari transcript). Pinning either
- * would force the wrong script, so that pair is never pinned from audio alone
- * and falls back to Auto.
+ * Some languages share one spoken form and differ only in script (Hindi and
+ * Urdu: an Urdu podcast probed as `hin` at 0.97). Audio cannot decide the
+ * script, so the probe pins what it hears like any other language: one
+ * consistent script for the whole transcript, which Auto mode does not give.
+ * Users who need the other script choose it in the language picker; there is
+ * deliberately no per-language exception here (owner: not region-specific).
  *
  * A probe failure never fails the run: every problem returns `pinned: null`
  * and the caller transcribes in Auto. Only cancellation propagates.
@@ -39,8 +40,6 @@ export const PROBE_WINDOW_SEC = 20;
 export const PROBE_WINDOW_CENTERS = [0.2, 0.5, 0.8] as const;
 export const PROBE_MIN_LANGUAGE_PROBABILITY = 0.8;
 export const PROBE_MIN_WORDS = 15;
-/** Indistinguishable by sound; see the module comment. */
-const SPOKEN_AMBIGUOUS_LANGUAGES: ReadonlySet<SourceLanguageCodeValue> = new Set(["hi", "ur"]);
 
 const FFMPEG_DEADLINE_MS = 90_000;
 const SCRIBE_TIMEOUT_MS = 60_000;
@@ -116,7 +115,6 @@ export function decideProbePin(response: {
   if (wordCount < PROBE_MIN_WORDS) return { pinned: null, reason: "too_few_words" };
   const canonical = normalizeProviderLanguageCode(languageCode);
   if (!canonical) return { pinned: null, reason: "language_not_in_catalog" };
-  if (SPOKEN_AMBIGUOUS_LANGUAGES.has(canonical)) return { pinned: null, reason: "hindi_urdu_ambiguous" };
   return { pinned: canonical, reason: "pinned" };
 }
 

@@ -53,10 +53,9 @@ describe("decideProbePin", () => {
     expect(decideProbePin({ ...confident, languageCode: "eng", probability: 0.8, wordCount: 15 }).pinned).toBe("en");
   });
 
-  test("never pins Hindi or Urdu: Scribe hears Urdu speech as Hindi", () => {
-    for (const languageCode of ["hin", "urd", "hi", "ur"]) {
-      expect(decideProbePin({ ...confident, languageCode })).toEqual({ pinned: null, reason: "hindi_urdu_ambiguous" });
-    }
+  test("pins script-variant languages like any other, so the transcript keeps one script", () => {
+    expect(decideProbePin({ ...confident, languageCode: "hin" })).toEqual({ pinned: "hi", reason: "pinned" });
+    expect(decideProbePin({ ...confident, languageCode: "urd" })).toEqual({ pinned: "ur", reason: "pinned" });
   });
 
   test("declines each way it can be unsure", () => {
