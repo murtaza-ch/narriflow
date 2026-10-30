@@ -159,6 +159,15 @@ describe("normalizeElevenLabsTranscript", () => {
     expect(normalized.utterances.map((u) => u.confidence)).toEqual([0.5, 1, null]);
   });
 
+  test("a danda in a transcript whose script does not use it becomes that language's full stop", () => {
+    const urdu = normalizeElevenLabsTranscript(payloadOf([word("رہے", 0, 0.4), word("।", 0.4, 0.4)], { language_code: "urd" }), options);
+    expect(wordsOf(urdu).map((w) => w.word)).toEqual(["رہے", "۔"]);
+    const hindi = normalizeElevenLabsTranscript(payloadOf([word("रहे", 0, 0.4), word("।", 0.4, 0.4)], { language_code: "hin" }), options);
+    expect(wordsOf(hindi).map((w) => w.word)).toEqual(["रहे", "।"]);
+    const english = normalizeElevenLabsTranscript(payloadOf([word("stayed।", 0, 0.4)], { language_code: "eng" }), options);
+    expect(wordsOf(english).map((w) => w.word)).toEqual(["stayed."]);
+  });
+
   test("whitespace inside a token spaces the word", () => {
     const normalized = normalizeElevenLabsTranscript(payloadOf([word("Hi", 0, 0.2), word(" there", 0.2, 0.5), word("again ", 0.5, 0.8), word("now", 0.8, 1)]), options);
     expect(wordsOf(normalized).map((w) => w.spaceBefore)).toEqual([undefined, true, false, true]);

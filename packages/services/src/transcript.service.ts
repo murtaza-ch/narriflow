@@ -1,4 +1,5 @@
 import type {
+  SourceLanguageCodeValue,
   TranscriptExportFormat,
   TranscriptSnapshot,
   TranscriptUtterance,
@@ -6,6 +7,7 @@ import type {
 } from "@narriflow/validators";
 import {
   joinTranscriptWords,
+  languageScript,
   normalizeProviderLanguageCode,
   SCRIBE_MODEL_ID,
   splitUtterancesIntoSentences,
@@ -173,7 +175,20 @@ interface ScribeWord {
 /** Scribe's word tokens, with `spaceBefore` read from its spacing tokens
  * (zh/ja arrive per character with none) and speakers numbered densely in
  * first-seen order. Spacing and audio events are not words. */
-function scribeWords(tokens: unknown[]): ScribeWord[] {
+// Scripts that end sentences with the danda (।, ॥). Scribe occasionally emits a
+// danda inside a transcript in another script (seen in Urdu); there it becomes
+// that language's own full stop so captions stay in one script.
+const DANDA_SCRIPTS: ReadonlySet<string> = new Set(["Devanagari", "Bengali", "Gurmukhi", "Oriya", "Gujarati"]);
+
+function foreignDandaReplacement(language: SourceLanguageCodeValue | null): string | null {
+  if (!language) return null;
+  const script = languageScript(language);
+  if (!script || DANDA_SCRIPTS.has(script)) return null;
+  return language === "ur" ? "۔" : ".";
+}
+
+function scribeWords(tokens: unknown[], language: SourceLanguageCodeValue | null = null): ScribeWord[] {
+  const danda = foreignDandaReplacement(language);
   const speakers = new Map<string | typeof UNKNOWN_SPEAKER, number>();
   const words: ScribeWord[] = [];
   let spaceSeen = false;
@@ -186,7 +201,8 @@ function scribeWords(tokens: unknown[]): ScribeWord[] {
     }
     if (token.type !== "word") continue;
     if (typeof token.text !== "string") invalid("Scribe returned a word without text");
-    const text = token.text.trim();
+    const trimmed = token.text.trim();
+    const text = danda ? trimmed.replace(/[।॥]/gu, danda) : trimmed;
     if (!text) continue;
     const { start, end } = token;
     if (
@@ -235,7 +251,7 @@ export function normalizeElevenLabsTranscript(
   if (payload.words !== undefined && !Array.isArray(payload.words)) {
     invalid("Scribe returned words that are not a list");
   }
-  const words = scribeWords(payload.words ?? []);
+  const words = scribeWords(payload.words ?? [], scribeLanguageCode(payload));
 
   if (words.length === 0) {
     if (options.allowEmpty) return emptyScribeTranscript(payload, options, rawPayload);
