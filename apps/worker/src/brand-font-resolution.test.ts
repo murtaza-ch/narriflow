@@ -262,8 +262,8 @@ describe("uploaded font preview/export contract", () => {
       const assPath = join(temp, "captions.ass");
       const captions = compileCompositionPlanCaptions(plan(fingerprint), "test", fonts);
       await writeFile(assPath, captions.ass);
-      // HarfBuzz reads sfnt only: a WOFF2 upload keeps its base line and reports the typed degradation.
-      expect(captions.geometryUnavailable.length).toBe(file.format === "woff2" ? 1 : 0);
+      // A WOFF2 upload is decompressed for HarfBuzz, so its pills, plate and overlays are measured like a TTF's.
+      expect(captions.geometryUnavailable).toEqual([]);
       const result = await productionWorkerProcessModule.execute({
         command: "ffmpeg",
         signal: new AbortController().signal,

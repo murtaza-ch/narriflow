@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { CAPTION_FALLBACK_FONTS } from "./fallback-fonts";
-import { canonicalCaptionLanguage, captionRunScript, LOCALE_LEAD_SCRIPTS, orderCaptionFallbackFaces } from "./locale-precedence";
+import { canonicalCaptionLanguage, captionRunScript, captionShapingSensitivity, isShapingSensitiveText, LOCALE_LEAD_SCRIPTS, orderCaptionFallbackFaces } from "./locale-precedence";
 
 const scriptFaces = CAPTION_FALLBACK_FONTS.filter((font) => font.role === "script");
 const order = (language: string | null, text: string) => orderCaptionFallbackFaces(scriptFaces, language, text).map((font) => font.assName);
@@ -64,5 +64,22 @@ describe("locale font precedence", () => {
     expect(canonicalCaptionLanguage(" JA_jp ")).toBe("ja");
     expect(canonicalCaptionLanguage(null)).toBeNull();
     expect(canonicalCaptionLanguage("")).toBeNull();
+  });
+});
+
+describe("shaping sensitivity by script", () => {
+  test("joining and complex scripts are sensitive whichever face draws them", () => {
+    for (const text of ["مرحبا", "زبان", "שלום", "ܐܠܗܐ", "ދިވެހި", "हिन्दी", "বাংলা", "ਪੰਜਾਬੀ", "தமிழ்", "తెలుగు", "ไทย", "ខ្មែរ", "မြန်မာ", "සිංහල", "བོད་སྐད", "abc مرحبا"]) {
+      expect(captionShapingSensitivity(text)).toBe("sensitive");
+      expect(isShapingSensitiveText(text)).toBe(true);
+    }
+  });
+
+  test("Latin, Greek, Cyrillic, Han, kana and Hangul take letter spacing and per-letter reveals", () => {
+    for (const text of ["Hello", "Γειά", "Привет", "漢字", "ひらがな", "한국어", "Ա", "ა"]) expect(captionShapingSensitivity(text)).toBe("plain");
+  });
+
+  test("punctuation, digits and bare marks are neutral: the text before them decides", () => {
+    for (const text of ["", "2026", "!?", ".", "\u064b", "\u200c"]) expect(captionShapingSensitivity(text)).toBe("neutral");
   });
 });

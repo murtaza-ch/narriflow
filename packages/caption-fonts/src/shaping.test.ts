@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { create } from "fontkit";
@@ -155,5 +156,18 @@ describe("caption line layout in visual order", () => {
     } finally {
       rmSync(woff2);
     }
+  });
+
+  test("a WOFF2 upload is decompressed for HarfBuzz and measures like the same face as sfnt", () => {
+    const nextRoot = join(createRequire(import.meta.url).resolve("next/package.json", { paths: [join(import.meta.dir, "../../../apps/web")] }), "..");
+    const woff2 = join(nextRoot, "dist/next-devtools/server/font/geist-latin.woff2");
+    const run = shapeCaptionRun(woff2, "Hello world");
+    expect(run.notdef).toBe(false);
+    expect(run.glyphCount).toBe(11);
+    expect(run.advanceEm).toBeGreaterThan(4);
+    expect(run.inkTopEm).toBeGreaterThan(0.5);
+    // Geist as TTF is a different file with the same design: its advance for the same text is within a hair.
+    const ttf = shapeCaptionRun(join(import.meta.dir, "../../../apps/web/assets/fonts/geist/Geist-Regular.ttf"), "Hello world");
+    expect(Math.abs(run.advanceEm - ttf.advanceEm)).toBeLessThan(0.15);
   });
 });

@@ -4,6 +4,7 @@ import {
   captionFontFilePath,
   captionCodePointLabel,
   captionGraphemes,
+  captionShapingSensitivity,
   fontFileCovers,
   fontFileMetricsEm,
   isCaptionEmojiCluster,
@@ -140,6 +141,13 @@ const emojiPresentation = (cluster: string): boolean =>
 export interface PlannedPart {
   readonly text: string;
   readonly face: CaptionFace;
+  /**
+   * The caption's letter spacing applies to this text. False for a cursive or complex script, whichever
+   * face draws it (a disabled-spacing fallback face, or an uploaded brand font covering Arabic or Indic):
+   * libass unjoins and breaks conjuncts under non-zero `\fsp`, or at a tag between two of their letters.
+   * Neutral text (punctuation, digits, marks) follows the text before it.
+   */
+  readonly spaced: boolean;
 }
 
 /** One user-perceived character and the face(s) that draw it. */
@@ -170,8 +178,13 @@ export class CaptionGlyphPlanner {
     const cached = this.plans.get(text);
     if (cached) return cached;
     let current: CaptionFace = this.requested;
+    let spaced = true;
     const clusters = captionGraphemes(text).map((cluster) => {
-      const parts = this.partsFor(cluster, current);
+      const parts = this.partsFor(cluster, current).map((part) => {
+        const sensitivity = captionShapingSensitivity(part.text);
+        spaced = part.face.letterSpacing !== "disabled" && (sensitivity === "neutral" ? spaced : sensitivity === "plain");
+        return { ...part, spaced };
+      });
       current = parts[parts.length - 1]?.face ?? current;
       return { text: cluster, parts };
     });
@@ -179,7 +192,7 @@ export class CaptionGlyphPlanner {
     return clusters;
   }
 
-  private partsFor(cluster: string, current: CaptionFace): PlannedPart[] {
+  private partsFor(cluster: string, current: CaptionFace): Omit<PlannedPart, "spaced">[] {
     const mandatory = [...cluster].filter((character) => !isIgnorable(character));
     if (mandatory.length === 0) return [{ text: cluster, face: current }];
     const emoji = emojiPresentation(cluster);
@@ -188,7 +201,7 @@ export class CaptionGlyphPlanner {
     if (whole) return [this.note(cluster, whole)];
     // No face draws the cluster in one piece: draw it code point by code point,
     // leaving out only the code points nothing draws.
-    const parts: PlannedPart[] = [];
+    const parts: Omit<PlannedPart, "spaced">[] = [];
     let previous = current;
     let pending = "";
     for (const character of cluster) {
@@ -221,7 +234,7 @@ export class CaptionGlyphPlanner {
     return order.find((face) => fontFileCovers(face.path, text)) ?? null;
   }
 
-  private note(text: string, face: CaptionFace, whole = text): PlannedPart {
+  private note(text: string, face: CaptionFace, whole = text): Omit<PlannedPart, "spaced"> {
     if (face.role === "symbols" || face.role === "monochrome-emoji") {
       const sequenceSplit = isCaptionEmojiCluster(whole) && [...whole].filter((character) => !isIgnorable(character)).length > 1;
       this.report.notices.set(`${face.assName}\0${whole}`, {
