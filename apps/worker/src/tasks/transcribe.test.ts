@@ -17,8 +17,7 @@ import {
   fetchScribeTranscript,
   processSubmittedTranscriptResults,
   processTranscriptRun,
-  scribeErrorDetail,
-  scribeHttpFailure,
+  ScribeSubmissionUnconfirmed,
   submitScribeTranscription,
   type TranscriptResultAdapters,
   type TranscriptSubmitAdapters,
@@ -83,41 +82,6 @@ describe("chooseSubmitInputKind", () => {
   });
 });
 
-describe("Scribe error classification (D13)", () => {
-  test("reads only the machine-readable tokens of nested, array and string details", () => {
-    expect(scribeErrorDetail(detail("Transcript_Not_Found"))).toEqual({ type: "x", code: "transcript_not_found", status: "error" });
-    expect(scribeErrorDetail({ detail: [{ loc: ["body"], msg: "bad" }] })).toEqual({ type: null, code: null, status: null });
-    expect(scribeErrorDetail({ detail: "Not found" })).toEqual({ type: null, code: null, status: null });
-    expect(scribeErrorDetail(null)).toEqual({ type: null, code: null, status: null });
-  });
-
-  test.each([
-    ["submit", 400, detail("no_webhooks_configured"), "elevenlabs_webhook_not_configured", "permanent"],
-    ["submit", 401, detail("invalid_api_key"), "elevenlabs_auth_failed", "permanent"],
-    ["submit", 403, detail("forbidden"), "elevenlabs_auth_failed", "permanent"],
-    ["submit", 401, detail("quota_exceeded"), "elevenlabs_quota_exhausted", "permanent"],
-    ["submit", 400, detail("unsupported_language"), "elevenlabs_invalid_language", "permanent"],
-    ["submit", 400, detail("invalid_file"), "elevenlabs_invalid_media", "permanent"],
-    ["submit", 422, { detail: [{ msg: "field required" }] }, "elevenlabs_invalid_media", "permanent"],
-    ["submit", 429, detail("too_many_concurrent_requests"), "elevenlabs_transcription_submit_failed", "retryable"],
-    ["submit", 429, null, "elevenlabs_transcription_submit_failed", "retryable"],
-    ["submit", 408, null, "elevenlabs_transcription_submit_failed", "retryable"],
-    ["submit", 503, null, "elevenlabs_transcription_submit_failed", "retryable"],
-    ["result", 429, detail("system_busy"), "elevenlabs_transcript_fetch_failed", "retryable"],
-    ["result", 502, null, "elevenlabs_transcript_fetch_failed", "retryable"],
-    ["result", 401, detail("invalid_api_key"), "elevenlabs_auth_failed", "permanent"],
-    ["result", 404, detail("some_other_not_found"), "elevenlabs_auth_failed", "permanent"],
-  ] as const)("%s %i %j → %s (%s)", (stage, status, body, code, disposition) => {
-    const failure = scribeHttpFailure(stage, status, body);
-    expect(failure.code).toBe(code);
-    expect(failure.disposition).toBe(disposition);
-  });
-
-  test("failure messages never echo the provider's prose", () => {
-    expect(scribeHttpFailure("submit", 400, detail("invalid_file")).message).not.toContain("provider prose");
-  });
-});
-
 describe("submitScribeTranscription", () => {
   const request = {
     apiKey: "key",
@@ -141,9 +105,10 @@ describe("submitScribeTranscription", () => {
     expect(init?.body).toBeInstanceOf(FormData);
   });
 
-  test("an unparseable acceptance is a retryable failure", async () => {
-    await expect(submitScribeTranscription({ ...request, fetchImpl: (async () => json({ message: "ok" }, 202)) as unknown as typeof fetch }))
-      .rejects.toMatchObject({ code: "elevenlabs_transcription_submit_failed", disposition: "retryable" });
+  test("an unparseable acceptance is retryable and unconfirmed: the request may have started work", async () => {
+    const rejection = submitScribeTranscription({ ...request, fetchImpl: (async () => json({ message: "ok" }, 202)) as unknown as typeof fetch });
+    await expect(rejection).rejects.toMatchObject({ code: "elevenlabs_transcription_submit_failed", disposition: "retryable" });
+    await expect(rejection).rejects.toBeInstanceOf(ScribeSubmissionUnconfirmed);
   });
 
   test.each([
@@ -158,11 +123,24 @@ describe("submitScribeTranscription", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
-  test("a network error is retryable and is not retried", async () => {
+  test("a network error or timeout is retryable, unconfirmed and not retried", async () => {
     const fetchImpl = mock(async () => { throw new TypeError("fetch failed"); });
-    await expect(submitScribeTranscription({ ...request, fetchImpl: fetchImpl as unknown as typeof fetch }))
-      .rejects.toMatchObject({ code: "elevenlabs_transcription_submit_failed", disposition: "retryable" });
+    const rejection = submitScribeTranscription({ ...request, fetchImpl: fetchImpl as unknown as typeof fetch });
+    await expect(rejection).rejects.toMatchObject({ code: "elevenlabs_transcription_submit_failed", disposition: "retryable" });
+    await expect(rejection).rejects.toBeInstanceOf(ScribeSubmissionUnconfirmed);
     expect(fetchImpl).toHaveBeenCalledTimes(1);
+
+    const timeout = submitScribeTranscription({
+      ...request,
+      fetchImpl: (async () => { throw Object.assign(new Error("timed out"), { name: "TimeoutError" }); }) as unknown as typeof fetch,
+    });
+    await expect(timeout).rejects.toBeInstanceOf(ScribeSubmissionUnconfirmed);
+  });
+
+  test("a definite HTTP rejection is not unconfirmed", async () => {
+    const rejection = submitScribeTranscription({ ...request, fetchImpl: (async () => json(null, 503)) as unknown as typeof fetch });
+    await expect(rejection).rejects.toMatchObject({ disposition: "retryable" });
+    await expect(rejection).rejects.not.toBeInstanceOf(ScribeSubmissionUnconfirmed);
   });
 });
 
@@ -374,6 +352,28 @@ describe("transcription submit", () => {
     expect(h.notifyFailure).toHaveBeenCalledTimes(1);
   });
 
+  test("an unconfirmed POST leaves the run waiting on its attempt, without failing or notifying", async () => {
+    const h = harness({ language: "en", submit: async () => { throw new ScribeSubmissionUnconfirmed("elevenlabs_transcription_submit_failed", "timed out", "retryable"); } });
+    await processTranscriptRun(baseAttempt(), context, undefined, speechToText, h.adapters);
+    expect(h.calls).toEqual(["begin", "post"]);
+    expect(h.lifecycle.failProviderAttempt).not.toHaveBeenCalled();
+    expect(h.lifecycle.failAttempt).not.toHaveBeenCalled();
+    expect(h.notifyFailure).not.toHaveBeenCalled();
+  });
+
+  test("a definite rejection fails the begun attempt at once", async () => {
+    const h = harness({ language: "en", submit: async () => { throw new WorkflowFailure("elevenlabs_auth_failed", "permanent", "401"); } });
+    await processTranscriptRun(baseAttempt(), context, undefined, speechToText, h.adapters);
+    expect(h.calls).toEqual(["begin", "post", "failProvider"]);
+    expect(h.notifyFailure).toHaveBeenCalledTimes(1);
+  });
+
+  test("an unconfirmed error before the submission begins is an ordinary failure", async () => {
+    const h = harness({ language: "en", begin: async () => { throw new ScribeSubmissionUnconfirmed("x", "y", "retryable"); } });
+    await processTranscriptRun(baseAttempt(), context, undefined, speechToText, h.adapters);
+    expect(h.lifecycle.failAttempt).toHaveBeenCalledTimes(1);
+  });
+
   test("a stale attempt's failure is not notified", async () => {
     const h = harness({ language: "en", submit: async () => { throw new WorkflowFailure("elevenlabs_transcription_submit_failed", "retryable", "x"); } });
     h.lifecycle.failProviderAttempt.mockImplementation(async () => ({ kind: "stale", reason: "attempt_superseded" }) as never);
@@ -452,6 +452,35 @@ describe("transcription results", () => {
     expect(h.lifecycle.failProviderAttempt).not.toHaveBeenCalled();
   });
 
+  test("a finalization failure keeps the run waiting, and the rest of the batch still settles", async () => {
+    const second = waiting({ workflowRunId: "stt-run-2", attemptId: "attempt-2", providerJobId: "tr_2" });
+    const h = harness([waiting(), second], { kind: "ready", payload: {} });
+    h.finalize.mockImplementationOnce(async () => { throw new Error("R2 write denied"); });
+    expect(await processSubmittedTranscriptResults(h.adapters)).toBe(1);
+    expect(h.finalize).toHaveBeenCalledTimes(2);
+    expect(h.finalize.mock.calls[1]![0]).toMatchObject({ key: { workflowRunId: "stt-run-2" } });
+    expect(h.lifecycle.failProviderAttempt).not.toHaveBeenCalled();
+    expect(h.notifyFailure).not.toHaveBeenCalled();
+  });
+
+  test("a finalization that keeps failing settles through the fenced failure path at the result deadline", async () => {
+    const h = harness([waiting({ submittedAt: new Date(NOW - 10 * 60 * 60_000) })], { kind: "ready", payload: {} });
+    h.finalize.mockImplementation(async () => { throw new Error("R2 write denied"); });
+    expect(await processSubmittedTranscriptResults(h.adapters)).toBe(1);
+    const [key, failure, ids] = h.lifecycle.failProviderAttempt.mock.calls[0]!;
+    expect(key).toEqual({ workflowRunId: "stt-run", attemptId: "attempt" });
+    expect(failure).toMatchObject({ code: "elevenlabs_transcript_fetch_failed", disposition: "retryable" });
+    expect(ids).toEqual({ transcriptionId: "tr_1" });
+    expect(h.notifyFailure).toHaveBeenCalledTimes(1);
+  });
+
+  test("an unexpected error on one run does not stop the others", async () => {
+    const h = harness([waiting(), waiting({ workflowRunId: "stt-run-2", attemptId: "attempt-2", providerJobId: "tr_2" })], { kind: "ready", payload: {} });
+    h.fetchTranscript.mockImplementationOnce(async () => { throw new Error("socket hang up"); });
+    expect(await processSubmittedTranscriptResults(h.adapters)).toBe(1);
+    expect(h.finalize).toHaveBeenCalledTimes(1);
+  });
+
   test("a duplicate delivery settles nothing", async () => {
     const h = harness([waiting()], { kind: "ready", payload: {} });
     h.finalize.mockImplementation(async () => ({ kind: "duplicate" }) as never);
@@ -512,5 +541,110 @@ describe("transcription results", () => {
     const h = harness([waiting({ providerJobId: null })], { kind: "pending" });
     h.lifecycle.expireUnconfirmedProviderSubmission.mockImplementation(async () => ({ kind: "stale", reason: "submission_pending" }) as never);
     expect(await processSubmittedTranscriptResults(h.adapters)).toBe(0);
+  });
+});
+
+describe("an unconfirmed POST settles through the durable submission (D1)", () => {
+  const DEADLINE_MS = 10 * 60_000;
+  const T0 = 20_000_000_000;
+
+  /** A stand-in for the lifecycle rows: one run, one attempt, the transcript's provider id. */
+  function rows() {
+    const state = {
+      status: "running" as "running" | "waiting" | "queued" | "completed",
+      attemptId: "attempt-1" as string | null,
+      providerJobId: null as string | null,
+      deadline: null as number | null,
+    };
+    let clock = T0;
+    const matches = (key: { attemptId: string }) => state.status === "waiting" && state.attemptId === key.attemptId;
+    const lifecycle = {
+      beginProviderSubmission: async (_attempt: unknown, input: { deadline: Date }) => {
+        state.status = "waiting";
+        state.deadline = input.deadline.getTime();
+      },
+      recordProviderAcceptance: async () => ({ kind: "applied" as const }),
+      failProviderAttempt: async (key: { attemptId: string }) => {
+        if (!matches(key)) return { kind: "stale" as const, reason: "attempt_superseded" as const };
+        state.status = "queued";
+        state.attemptId = null;
+        return { kind: "applied" as const };
+      },
+      failAttempt: async () => {},
+      claimDueWaitingTranscripts: async () =>
+        state.status === "waiting" && state.attemptId
+          ? [{
+              workflowRunId: "stt-run", projectId: "project", stage: "stt", attemptId: state.attemptId, attemptCount: 1, progress: 40,
+              providerJobId: state.providerJobId, submissionDeadlineAt: state.deadline ? new Date(state.deadline) : null,
+              submittedAt: new Date(T0),
+            }] as unknown as WaitingWorkflowAttempt[]
+          : [],
+      expireUnconfirmedProviderSubmission: async (key: { attemptId: string }) => {
+        if (!matches(key)) return { kind: "stale" as const, reason: "attempt_superseded" as const };
+        if (state.deadline && state.deadline > clock) return { kind: "stale" as const, reason: "submission_pending" as const };
+        state.status = "queued";
+        state.attemptId = null;
+        return { kind: "applied" as const };
+      },
+      reportProgress: async () => {},
+    };
+    /** The webhook: finalizes the waiting attempt it names, whatever ids it carries. */
+    const callback = (key: { attemptId: string }) => {
+      if (!matches(key)) return { kind: "stale" as const };
+      state.status = "completed";
+      return { kind: "applied" as const };
+    };
+    return { state, lifecycle, callback, advance: (ms: number) => { clock += ms; }, now: () => clock };
+  }
+
+  async function timedOutSubmission() {
+    process.env.ELEVENLABS_API_KEY = "key";
+    process.env.ELEVENLABS_WEBHOOK_ID = "wh_dev";
+    const r = rows();
+    const notifyFailure = mock(async () => {});
+    await processTranscriptRun(baseAttempt(), context, undefined, {
+      transcriptPlan: async () => ({ plan: { kind: "speech_to_text" as const }, durationSeconds: 600, languageCode: null }),
+      completeTranscript: async () => {},
+    } as unknown as Parameters<typeof processTranscriptRun>[3], {
+      lifecycle: r.lifecycle,
+      languageCode: async () => "en",
+      presign: async () => "https://r2.example/source?sig=1",
+      probe: async () => { throw new Error("not reached"); },
+      submit: async () => { throw new ScribeSubmissionUnconfirmed("elevenlabs_transcription_submit_failed", "Scribe submit request timed out", "retryable"); },
+      withExtractedAudio: async () => { throw new Error("not reached"); },
+      notifyFailure,
+      now: r.now,
+    } as unknown as TranscriptSubmitAdapters);
+    return { ...r, notifyFailure };
+  }
+
+  const resultAdapters = (r: ReturnType<typeof rows>, notifyFailure: () => Promise<void>) => ({
+    lifecycle: r.lifecycle,
+    finalize: async () => ({ kind: "applied" as const }),
+    fetchTranscript: async () => ({ kind: "pending" as const }),
+    notifyFailure,
+    now: r.now,
+  }) as unknown as TranscriptResultAdapters;
+
+  test("timeout, then a callback inside the deadline: the same attempt completes", async () => {
+    const t = await timedOutSubmission();
+    expect(t.state).toMatchObject({ status: "waiting", attemptId: "attempt-1", providerJobId: null });
+
+    t.advance(2 * 60_000);
+    expect(await processSubmittedTranscriptResults(resultAdapters(t, t.notifyFailure))).toBe(0);
+    expect(t.state.status).toBe("waiting");
+
+    expect(t.callback({ attemptId: "attempt-1" })).toEqual({ kind: "applied" });
+    expect(t.state.status).toBe("completed");
+    expect(t.notifyFailure).not.toHaveBeenCalled();
+  });
+
+  test("timeout, no callback: the deadline expires the attempt and the run retries", async () => {
+    const t = await timedOutSubmission();
+    t.advance(DEADLINE_MS + 1_000);
+    expect(await processSubmittedTranscriptResults(resultAdapters(t, t.notifyFailure))).toBe(1);
+    expect(t.state).toMatchObject({ status: "queued", attemptId: null });
+    // A callback for the expired attempt is stale.
+    expect(t.callback({ attemptId: "attempt-1" })).toEqual({ kind: "stale" });
   });
 });

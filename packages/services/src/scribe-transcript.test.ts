@@ -100,8 +100,23 @@ describe("finalizeScribeTranscript", () => {
     expect((h.completed[0]!.utterances as unknown[]).length).toBeGreaterThan(0);
   });
 
-  test("falls back to the payload's transcription id when the caller has none", async () => {
+  test("a webhook without a nested transcription id keeps the accepted one", async () => {
+    // The documented success webhook has data.request_id but no transcription.transcription_id.
+    const { transcription_id: _omitted, ...documentedShape } = payload;
     const h = harness();
+    await h.finalize({ key, payload: documentedShape, providerIds: { requestId: "req_1", transcriptionId: null } });
+    expect(h.completed[0]).toMatchObject({ providerJobId: "tx_1", providerRequestId: "req_1" });
+    expect(h.stored[0]!.metadata).toMatchObject({ provider_job_id: "tx_1", provider_request_id: "req_1" });
+  });
+
+  test("a GET recovery without a request id keeps the accepted one", async () => {
+    const h = harness();
+    await h.finalize({ key, payload, providerIds: { transcriptionId: "tx_1" } });
+    expect(h.completed[0]).toMatchObject({ providerJobId: "tx_1", providerRequestId: "req_1" });
+  });
+
+  test("falls back to the payload's transcription id when neither the caller nor the attempt has one", async () => {
+    const h = harness({ lookup: { ...waiting, providerJobId: null, providerRequestId: null } as ProviderAttemptLookup });
     await h.finalize({ key, payload, providerIds: {} });
     expect(h.completed[0]).toMatchObject({ providerJobId: payload.transcription_id, providerRequestId: null });
   });

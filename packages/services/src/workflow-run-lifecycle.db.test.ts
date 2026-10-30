@@ -3395,6 +3395,34 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
         .toEqual({ kind: "stale", reason: "submission_confirmed" });
     });
 
+    test("a completion that omits provider ids keeps the accepted ones", async () => {
+      const omitting = { ...transcriptInput("x", "y"), providerJobId: null, providerRequestId: null };
+      const { project, api, attempt } = await begun();
+      await api.recordProviderAcceptance(attempt, { requestId: "req-1", transcriptionId: "tr-1", nextPollAt: new Date() });
+      expect(await api.completeProviderTranscript(attempt, omitting)).toEqual({ kind: "applied" });
+      expect(await prisma.transcript.findUniqueOrThrow({ where: { projectId: project.id } })).toMatchObject({
+        status: "completed", providerJobId: "tr-1", providerRequestId: "req-1",
+      });
+
+      // Only the request id supplied (the documented webhook): the transcription id survives.
+      const partial = await begun();
+      await partial.api.recordProviderAcceptance(partial.attempt, { requestId: "req-2", transcriptionId: "tr-2", nextPollAt: new Date() });
+      expect(await partial.api.completeProviderTranscript(partial.attempt, { ...omitting, providerRequestId: "req-2" }))
+        .toEqual({ kind: "applied" });
+      expect(await prisma.transcript.findUniqueOrThrow({ where: { projectId: partial.project.id } })).toMatchObject({
+        providerJobId: "tr-2", providerRequestId: "req-2",
+      });
+    });
+
+    test("a callback while the submission is unconfirmed completes the same attempt", async () => {
+      const { run, project, api, attempt } = await begun();
+      expect(await api.completeProviderTranscript(attempt, { ...transcriptInput("tr-1", "req-1") })).toEqual({ kind: "applied" });
+      expect(await prisma.workflowRun.findUniqueOrThrow({ where: { id: run.id } })).toMatchObject({ status: "completed", attemptId: attempt.attemptId });
+      expect(await prisma.transcript.findUniqueOrThrow({ where: { projectId: project.id } })).toMatchObject({
+        status: "completed", providerJobId: "tr-1", providerRequestId: "req-1", workflowAttemptId: attempt.attemptId,
+      });
+    });
+
     test("an exhausted attempt budget fails the run at the deadline with the retry-exhausted code", async () => {
       const { run, worker, attempt } = await begun(new Date(Date.now() - 1_000));
       await prisma.workflowRun.update({ where: { id: run.id }, data: { attemptCount: WORKFLOW_MAX_ATTEMPTS } });

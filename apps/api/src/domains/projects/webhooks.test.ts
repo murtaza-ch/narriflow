@@ -178,9 +178,9 @@ describe("ElevenLabs error envelope", () => {
       ...extra,
     });
 
-  test("fails the matching attempt with a retryable generic failure", async () => {
+  test("an unrecognised error fails the matching attempt with a retryable generic failure", async () => {
     const t = harness();
-    const response = await t.post(errorBody());
+    const response = await t.post(errorBody({ error_message: "something odd happened for user@example.com" }));
     expect(response.status).toBe(200);
     expect(t.failed).toEqual([
       {
@@ -194,6 +194,40 @@ describe("ElevenLabs error envelope", () => {
       },
     ]);
     expect(JSON.stringify(t.failed)).not.toContain("user@example.com");
+  });
+
+  test.each([
+    ["audio could not be decoded for user@example.com", "elevenlabs_invalid_media"],
+    ["Unsupported file format", "elevenlabs_invalid_media"],
+    ["The requested language is not supported", "elevenlabs_invalid_language"],
+    ["Invalid API key", "elevenlabs_auth_failed"],
+    ["You have exceeded your quota", "elevenlabs_quota_exhausted"],
+    ["Transcription not found", "elevenlabs_auth_failed"],
+  ])("a permanent cause (%s) fails the attempt as %s, without the provider's prose", async (error_message, code) => {
+    const t = harness();
+    expect((await t.post(errorBody({ error_message }))).status).toBe(200);
+    expect(t.failed).toHaveLength(1);
+    expect(t.failed[0]!.failure).toMatchObject({ code, retryable: false });
+    expect(JSON.stringify(t.failed)).not.toContain("user@example.com");
+    expect(JSON.stringify(t.failed)).not.toContain(error_message);
+  });
+
+  test.each([
+    "Failed to fetch the file from the remote URL: connection timed out",
+    "Could not download audio from the source URL (404 not found)",
+    "Service temporarily unavailable, please try again",
+    "Too many concurrent requests",
+    "",
+  ])("a transient or remote-fetch cause (%j) stays retryable", async (error_message) => {
+    const t = harness();
+    expect((await t.post(errorBody({ error_message }))).status).toBe(200);
+    expect(t.failed[0]!.failure).toMatchObject({ code: "elevenlabs_transcription_failed", retryable: true });
+  });
+
+  test("a missing error_message stays retryable", async () => {
+    const t = harness();
+    await t.post(errorBody({ error_message: undefined }));
+    expect(t.failed[0]!.failure).toMatchObject({ code: "elevenlabs_transcription_failed", retryable: true });
   });
 
   test("missing metadata is a 200 no-op; a persistence failure is a 500", async () => {

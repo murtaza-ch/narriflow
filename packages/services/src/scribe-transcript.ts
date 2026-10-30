@@ -57,8 +57,10 @@ export function createScribeFinalizer(deps: ScribeFinalizerDependencies) {
 
     const { projectId } = lookup.attempt;
     const rawStorageKey = scribeRawStorageKey(projectId, key);
-    const providerJobId = providerIds.transcriptionId ?? providerJobIdOf(payload);
-    const providerRequestId = providerIds.requestId ?? null;
+    // An id this delivery omits (the documented webhook has no nested
+    // transcription id; a GET has no request id) is the one acceptance recorded.
+    const providerJobId = providerIds.transcriptionId ?? providerJobIdOf(payload) ?? lookup.providerJobId;
+    const providerRequestId = providerIds.requestId ?? lookup.providerRequestId;
 
     // The raw result is kept even when it turns out unusable: it is the evidence.
     await deps.storeRawJson({

@@ -23,3 +23,11 @@
 - Migration `20261030170000_transcript_provider_submission` adds `Transcript.providerRequestId` and `Transcript.providerSubmissionDeadlineAt` (additive, nullable). Not applied to the shared database.
 - `waitForProvider` is kept only because the AssemblyAI worker still calls it; ticket 06 deletes it. `transcribe.ts` has one interim guard line (skips claimed runs with a null provider id).
 - `error-messages.ts` (validators) still carries `assemblyai_*` copy keys; the retry policy now lists the `elevenlabs_*` permanent codes. Ticket 06/12 owns the copy rename.
+
+### Sol branch review fixes (findings 1, 2, 4, 5)
+
+- 1: an indeterminate POST (timeout, network error, unreadable 2xx) throws `ScribeSubmissionUnconfirmed`; `processTranscriptRun` leaves the run `waiting` on its attempt. Callback finalizes it; `expireUnconfirmedProviderSubmission` settles it after the deadline. Definite HTTP rejections still fail at once.
+- 2: finalization persistence errors keep the run waiting until the result deadline, then fail through `failProviderAttempt` (retryable `elevenlabs_transcript_fetch_failed`); the results batch logs and continues past any per-run error.
+- 4: `completeProviderTranscript` merges recorded ids under the row lock; the finalizer defaults omitted ids to the looked-up ones.
+- 5: classifier moved to `packages/services/src/scribe-errors.ts` (`scribeHttpFailure`, `scribeErrorDetail`, new `scribeCallbackFailure`); the webhook route classifies `error_message`. Added user copy for `elevenlabs_transcription_failed`.
+- Evidence: worker transcribe tests 58 pass; services scribe tests 56 pass; api webhooks 25 pass; `test:workflow:db` 222 pass on local Postgres 17 (port 55441); typecheck green; lint has only pre-existing web CSS warnings.
