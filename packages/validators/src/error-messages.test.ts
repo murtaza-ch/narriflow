@@ -22,11 +22,30 @@ describe("userErrorMessage", () => {
     expect(detection).toBe(USER_ERROR_MESSAGES.openai_quota_exhausted);
     expect(detection).toContain("on our side");
     expect(detection).toContain("Retry detection");
-    const transcription = userErrorMessage("assemblyai_quota_exhausted");
+    const transcription = userErrorMessage("elevenlabs_quota_exhausted");
     expect(transcription).toContain("on our side");
     expect(transcription).toContain("Retry transcription");
     // The customer can't top up our provider accounts.
-    expect(`${detection} ${transcription}`).not.toMatch(/OpenAI|AssemblyAI|add credits/i);
+    expect(`${detection} ${transcription}`).not.toMatch(/OpenAI|ElevenLabs|Scribe|add credits/i);
+  });
+
+  test("every Scribe failure code has safe copy that never names the provider", () => {
+    for (const code of [
+      "elevenlabs_api_key_missing",
+      "elevenlabs_webhook_not_configured",
+      "elevenlabs_auth_failed",
+      "elevenlabs_quota_exhausted",
+      "elevenlabs_invalid_media",
+      "elevenlabs_invalid_language",
+      "elevenlabs_result_invalid",
+      "elevenlabs_submission_unconfirmed",
+      "elevenlabs_transcription_submit_failed",
+      "elevenlabs_transcript_fetch_failed",
+      "elevenlabs_transcription_timeout",
+    ]) {
+      expect(hasUserErrorMessage(code)).toBe(true);
+      expect(userErrorMessage(code)).not.toMatch(/OpenAI|ElevenLabs|Scribe|AssemblyAI/i);
+    }
   });
 
   test("explains recovery from missing or invalid generation settings", () => {

@@ -188,10 +188,11 @@ const previewPollIntervalMs = Number(
 const autoLayoutPollIntervalMs = Number(
 	process.env.AUTO_LAYOUT_POLL_INTERVAL_MS ?? String(10_000),
 );
-// Submit-and-release STT: the stt loop only submits; this loop polls
-// AssemblyAI for submitted transcripts. Its cadence can stay coarser than the
-// claim loops — waiting STT polling additionally gates each run by
-// ASSEMBLYAI_POLL_INTERVAL_MS via its next-poll timestamp.
+// Submit-and-release STT: the stt loop only submits; this loop fetches
+// Scribe results for submitted transcripts (the webhook is the fast path).
+// Its cadence can stay coarser than the claim loops — waiting STT polling
+// additionally gates each run by ELEVENLABS_RESULT_POLL_INTERVAL_MS via its
+// next-poll timestamp.
 const sttResultPollIntervalMs = Number(
 	process.env.STT_RESULT_POLL_INTERVAL_MS ?? "5000",
 );
@@ -610,7 +611,7 @@ function processNextWorkflowAttempt<
 	});
 }
 
-// Submit-and-release: this claim only covers the AssemblyAI submission round
+// Submit-and-release: this claim only covers the Scribe submission round
 // trip (seconds), not the transcription itself — see sttResultsLoop.
 const sttLoop = createPollLoop("stt", pollIntervalMs, async ({ holdingLease }) => {
 	return processNextWorkflowAttempt({
