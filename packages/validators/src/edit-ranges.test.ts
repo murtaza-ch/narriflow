@@ -7,8 +7,10 @@ import {
   isSourceTimeDeleted,
   MIN_KEPT_SEGMENT_SEC,
   normalizeDeletedRanges,
+  sourcePointToEdited,
   sourceRangeToEdited,
   sourceToEdited,
+  sourceWordToEdited,
 } from "./edit-ranges";
 
 const WINDOW = { startSec: 10, endSec: 40 };
@@ -229,5 +231,33 @@ describe("sourceRangeToEdited", () => {
       startSec: 1,
       endSec: 4,
     });
+  });
+});
+
+describe("zero-duration words", () => {
+  // Kept source segments: [10, 20) and [25, 40).
+  const map = buildEditedTimeMap([{ startSec: 20, endSec: 25 }], WINDOW);
+
+  test("a point inside a kept segment maps onto the edited timeline", () => {
+    expect(sourcePointToEdited(map, 14)).toBe(4);
+    expect(sourcePointToEdited(map, 30)).toBe(15);
+  });
+
+  test("segments are half-open: a cut start is cut, a cut end is kept", () => {
+    expect(sourcePointToEdited(map, 20)).toBeNull();
+    expect(sourcePointToEdited(map, 25)).toBe(10);
+    expect(sourcePointToEdited(map, 10)).toBe(0);
+    expect(sourcePointToEdited(map, 40)).toBeNull();
+  });
+
+  test("a point inside a cut or outside the clip is dropped", () => {
+    expect(sourcePointToEdited(map, 22)).toBeNull();
+    expect(sourcePointToEdited(map, 9)).toBeNull();
+  });
+
+  test("sourceWordToEdited keeps a point as start === end and defers ranges", () => {
+    expect(sourceWordToEdited(map, { startSec: 14, endSec: 14 })).toEqual({ startSec: 4, endSec: 4 });
+    expect(sourceWordToEdited(map, { startSec: 22, endSec: 22 })).toBeNull();
+    expect(sourceWordToEdited(map, { startSec: 18, endSec: 27 })).toEqual({ startSec: 8, endSec: 12 });
   });
 });

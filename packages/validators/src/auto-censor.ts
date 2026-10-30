@@ -1,12 +1,12 @@
 import {
   buildClipCutPlan,
-  sourceRangeToEdited,
+  sourceWordToEdited,
   type ClipWindow,
   type EditedTimeMap,
   type SourceRange,
 } from "./edit-ranges";
 import { formatCaptionWord } from "./caption-preset";
-import { joinTranscriptWords } from "./text-script";
+import { isNoSpaceScriptChar, joinTranscriptWords } from "./text-script";
 import { censorWildcardStem, censorWordCategory, CENSOR_STEM_MIN_LENGTH } from "./censor-words";
 import type { CensorSegment, SceneBlock } from "./timed-edits";
 import { z } from "zod";
@@ -43,6 +43,7 @@ export interface AutoCensorTranscriptWord {
   readonly startSec: number | null;
   readonly endSec: number | null;
   readonly confidence: number | null;
+  readonly spaceBefore?: boolean;
   readonly id?: string;
 }
 
@@ -193,6 +194,74 @@ function sourceRangeToEditedForAudio(
   const startSec = mapPoint(range.startSec);
   const endSec = mapPoint(range.endSec);
   return endSec > startSec ? { startSec, endSec } : null;
+}
+
+interface CensorMatchWord {
+  readonly utterance: AutoCensorTranscriptUtterance;
+  readonly word: AutoCensorTranscriptUtterance["words"][number];
+  readonly normalized: string;
+  readonly base: string;
+}
+
+function tokenMatchesWord(token: CompiledTermToken, candidate: CensorMatchWord): boolean {
+  return token.wildcard
+    ? candidate.normalized.startsWith(token.text)
+    : candidate.normalized === token.text || candidate.base === token.text;
+}
+
+/**
+ * How many adjacent transcript words one term token spans when it is written
+ * in a no-space script. Scribe returns Chinese and Japanese as one token per
+ * character, so the user's `笨蛋` must match `笨`,`蛋`. The words must sit in
+ * one utterance, each carry text in a no-space script, and touch: a word the
+ * provider marked `spaceBefore: true` starts a new phrase.
+ */
+function joinedRunLength(
+  words: readonly CensorMatchWord[],
+  start: number,
+  token: CompiledTermToken,
+): number | null {
+  if (!Array.from(token.text).some(isNoSpaceScriptChar)) return null;
+  const first = words[start]!;
+  let joined = "";
+  for (let index = start; index < words.length; index += 1) {
+    const candidate = words[index]!;
+    if (
+      candidate.utterance.index !== first.utterance.index ||
+      (index > start && candidate.word.spaceBefore === true) ||
+      !Array.from(candidate.normalized).some(isNoSpaceScriptChar)
+    ) {
+      return null;
+    }
+    joined += candidate.normalized;
+    if (token.wildcard ? joined.startsWith(token.text) : joined === token.text) {
+      return index - start + 1;
+    }
+    if (!token.text.startsWith(joined)) return null;
+  }
+  return null;
+}
+
+/** Words a term covers from `start`, or null. Each token matches one word, or a
+ * run of touching no-space-script words that spell it. */
+function matchTermLength(
+  words: readonly CensorMatchWord[],
+  start: number,
+  tokens: readonly CompiledTermToken[],
+): number | null {
+  let cursor = start;
+  for (const token of tokens) {
+    const candidate = words[cursor];
+    if (!candidate) return null;
+    if (tokenMatchesWord(token, candidate)) {
+      cursor += 1;
+      continue;
+    }
+    const run = joinedRunLength(words, cursor, token);
+    if (run === null) return null;
+    cursor += run;
+  }
+  return cursor - start;
 }
 
 function segmentGraphemes(value: string): string[] {
@@ -417,7 +486,7 @@ export function detectAutoCensorSuggestions(
   const words = input.transcript.flatMap((utterance) =>
     utterance.words.flatMap((word, wordIndex) => {
       const removed = word.startSec !== null && word.endSec !== null &&
-        sourceRangeToEdited(editedTimeMap, {
+        sourceWordToEdited(editedTimeMap, {
           startSec: word.startSec,
           endSec: word.endSec,
         }) === null;
@@ -464,17 +533,10 @@ export function detectAutoCensorSuggestions(
   });
   const candidates = words.flatMap((entry, flatIndex) =>
     compiledTerms.flatMap((term) => {
-      const span = words.slice(flatIndex, flatIndex + term.tokens.length);
-      if (
-        span.length !== term.tokens.length ||
-        span.some((candidate, index) => {
-          const token = term.tokens[index]!;
-          return token.wildcard
-            ? !candidate.normalized.startsWith(token.text)
-            : candidate.normalized !== token.text && candidate.base !== token.text;
-        }) ||
-        span.some((candidate) => candidate.utterance.index !== entry.utterance.index)
-      ) {
+      const length = matchTermLength(words, flatIndex, term.tokens);
+      if (length === null) return [];
+      const span = words.slice(flatIndex, flatIndex + length);
+      if (span.some((candidate) => candidate.utterance.index !== entry.utterance.index)) {
         return [];
       }
       return [{ flatIndex, span, term }];

@@ -26,6 +26,7 @@ import {
   SCENE_LAYOUT_MIN_DURATION_SEC,
   SCREEN_LAYOUT_ENGINE_VERSION,
   sourceRangeToEdited,
+  sourceWordToEdited,
   type CaptionPreset,
   type ClipAspectRatio,
   type ClipAutoLayoutAnalysis,
@@ -2457,7 +2458,7 @@ function captionLayersForTarget(input: {
 
   for (const utterance of document.transcriptSlice) {
     const visibleWords = utterance.words.flatMap((word, wordIndex) => {
-      const range = sourceRangeToEdited(editedTimeMap, word);
+      const range = sourceWordToEdited(editedTimeMap, word);
       if (!range) return [];
       const wordId = autoCensorWordId({
         utteranceIndex: utterance.index,
