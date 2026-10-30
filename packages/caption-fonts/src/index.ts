@@ -1,5 +1,14 @@
 export { CAPTION_EMOJI_ATLAS_PATH, CAPTION_FONTS_DIRECTORY, captionFontFilePath } from "./paths";
 export {
+  type CaptionDirection,
+  type CaptionOrderWord,
+  type CaptionVisualItem,
+  type CaptionWordOrder,
+  captionWordVisualOrder,
+  reorderByLevels,
+  resolveBidiLevels,
+} from "./bidi-order";
+export {
   type CaptionLineLayout,
   type CaptionLinePart,
   type CaptionLineWord,

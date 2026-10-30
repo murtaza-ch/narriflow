@@ -96,24 +96,26 @@ describe("caption cues in other languages", () => {
       createElement(CaptionCue, { preset: captionPresetSchema.parse({ animation: "pop" }), scale: 1, cueKey: 0, ...props } as never),
     );
   const text = (html: string) => html.replace(/<[^>]+>/g, "");
+  // One copy of every word's text (no shadow layers) and no case change, so the markup reads as the line.
+  const plainPreset = captionPresetSchema.parse({ animation: "pop", shadow: "none", textTransform: "none" });
+  const renderPlain = (props: Record<string, unknown>) =>
+    renderToStaticMarkup(createElement(CaptionCue, { preset: plainPreset, scale: 1, cueKey: 0, ...props } as never));
 
   test("a cue carries its language and the direction of its first strong character", () => {
     const urdu = render({ words: [{ word: "اردو", isActive: true }, { word: "زبان", isActive: false }], language: "ur" });
     expect(urdu).toContain('lang="ur"');
-    expect(urdu).toContain('dir="rtl"');
+    expect(urdu).toContain('data-caption-direction="rtl"');
     // The language's direction is only the fallback: an English cue stays left to right.
-    expect(render({ words: [{ word: "Hello", isActive: true }], language: "ur" })).toContain('dir="ltr"');
+    expect(render({ words: [{ word: "Hello", isActive: true }], language: "ur" })).toContain('data-caption-direction="ltr"');
     // Numbers alone take the language's direction, each word isolated in its own direction.
     const numbers = render({ words: [{ word: "2026", isActive: true }], language: "ar" });
-    expect(numbers).toContain('dir="rtl"');
+    expect(numbers).toContain('data-caption-direction="rtl"');
     expect(render({ words: [{ word: "Hello", isActive: true }], language: null })).not.toContain("lang=");
   });
 
   test("the cue's direction is the first strong character of the whole line, as the burn-in scans it", () => {
     const lineDir = (words: string[], language: string | null) =>
-      /<div lang="[^"]*" dir="(ltr|rtl)"|<div dir="(ltr|rtl)"/.exec(render({ words: words.map((word) => ({ word, isActive: false })), language }))!
-        .slice(1)
-        .find(Boolean);
+      /data-caption-direction="(ltr|rtl)"/.exec(render({ words: words.map((word) => ({ word, isActive: false })), language }))![1];
     // A number or mark ahead of the text has no direction of its own: the Arabic after it leads an English cue...
     expect(lineDir(["2026", "مرحبا"], "en")).toBe("rtl");
     expect(lineDir(["—", "2026", "مرحبا"], "en")).toBe("rtl");
@@ -126,10 +128,47 @@ describe("caption cues in other languages", () => {
   });
 
   test("Arabic words keep their numbers and Latin names in their own direction", () => {
-    const html = render({ words: [{ word: "عام", isActive: false }, { word: "2026", isActive: true }, { word: "OpenAI", isActive: false }], language: "ar" });
+    const html = renderPlain({ words: [{ word: "عام", isActive: false }, { word: "2026", isActive: true }, { word: "OpenAI", isActive: false }], language: "ar" });
     expect(html.match(/<span dir="rtl"/g)?.length).toBe(2);
     expect(html).toContain('<span dir="ltr"');
-    expect(text(html)).toContain("عام 2026");
+    // Drawn in the burn-in's visual order: the name, the number, then the Arabic word at the right.
+    expect(text(html)).toContain("OpenAI 2026 عام");
+  });
+
+  test("words stand in the burn-in's visual order inside a left-to-right line, so the browser does not order them again", () => {
+    const html = renderPlain({
+      words: [{ word: "لیے", isActive: false }, { word: "Extended", isActive: true }, { word: "Family", isActive: false }],
+      language: "ur",
+    });
+    // The cue's base direction is Urdu's, but the words are laid out in a line that does not reorder them.
+    expect(html).toMatch(/<div lang="ur" dir="ltr" data-caption-direction="rtl"/);
+    // Logical لیے Extended Family reads "Extended Family لیے" from the left, as libass draws it.
+    expect(text(html)).toBe("Extended Family لیے");
+    expect(html.indexOf("Extended")).toBeLessThan(html.indexOf("Family"));
+    expect(html.indexOf("Family")).toBeLessThan(html.indexOf("لیے"));
+    // Each word keeps its own direction for shaping inside its box.
+    expect(html.match(/<span dir="(ltr|rtl)"/g)).toEqual(['<span dir="ltr"', '<span dir="ltr"', '<span dir="rtl"']);
+    // Baseline anchors stay keyed by the logical word, for the ink measurement.
+    expect(html.match(/data-caption-baseline="(\d)"/g)).toEqual(['data-caption-baseline="1"', 'data-caption-baseline="2"', 'data-caption-baseline="0"']);
+  });
+
+  test("a pure right-to-left cue runs its words right to left", () => {
+    const html = renderPlain({ words: [{ word: "آپ", isActive: false }, { word: "کو", isActive: false }, { word: "بتایا", isActive: false }], language: "ur" });
+    expect(text(html)).toBe("بتایا کو آپ");
+  });
+
+  test("typewriter letters reveal in the word's logical order", () => {
+    const html = renderToStaticMarkup(
+      createElement(CaptionCue, {
+        preset: captionPresetSchema.parse({ animation: "typewriter", shadow: "none", textTransform: "none" }),
+        words: [{ word: "لیے", isActive: false }, { word: "Extended", isActive: true, durationMs: 800 }],
+        scale: 1,
+        cueKey: 0,
+        language: "ur",
+      } as never),
+    );
+    const letters = (html.match(/>([A-Za-z])<\/span>/g) ?? []).map((match) => match[1]).join("");
+    expect(letters.startsWith("Extended")).toBe(true);
   });
 
   test("Japanese tokens abut, and a provider space is kept where the script would drop it", () => {

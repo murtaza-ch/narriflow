@@ -34,6 +34,7 @@ import {
 
 import { Fragment, useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { motion, type Transition } from "framer-motion";
+import { captionWordVisualOrder } from "@narriflow/caption-fonts/bidi-order";
 import atlasImage from "@narriflow/caption-fonts/emoji/atlas.png";
 import {
   CAPTION_EMOJI_HEIGHT_EM,
@@ -448,6 +449,23 @@ export function CaptionCue({
   // the composition plan emits no cue at all — so render nothing either.
   if (display.every((text) => text.length === 0)) return null;
 
+  // Where each word stands on screen: the burn-in's bidi order (UAX #9 over the
+  // whole line), not the container's direction. A space goes where the provider
+  // (or the script) puts one, never between Han or kana. Empty words draw nothing.
+  const drawn = display.flatMap((text, index) => (text.length > 0 ? [index] : []));
+  const visual = captionWordVisualOrder(
+    drawn.map((index, position) => ({
+      text: display[index]!,
+      space:
+        position > 0 &&
+        hasSpaceBefore(display[drawn[position - 1]!]!, {
+          word: display[index]!,
+          ...(words[index]!.spaceBefore === undefined ? {} : { spaceBefore: words[index]!.spaceBefore }),
+        }),
+    })),
+    cueDir,
+  );
+
   const activeIndex = words.findIndex((item) => item.isActive);
   const fit =
     frameWidth && naturalWidth > 0
@@ -530,7 +548,9 @@ export function CaptionCue({
         <div
           ref={measureLine}
           lang={language ?? undefined}
-          dir={cueDir}
+          // The words below are already in the burn-in's visual order; left-to-right keeps the browser from ordering them again.
+          dir="ltr"
+          data-caption-direction={cueDir}
           style={{
             position: "relative",
             display: "inline-block",
@@ -559,16 +579,12 @@ export function CaptionCue({
               }}
             />
           )}
-          {words.map((item, index) => {
+          {visual.items.map((entry, position) => {
+            if ("space" in entry) return <Fragment key={`${cueKey}-space-${position}`}>{" "}</Fragment>;
+            const index = drawn[entry.word]!;
+            const item = words[index]!;
             const text = display[index]!;
-            const wordDir = textDirection(text, cueDir);
-            // Words are inline-blocks in logical order, so a right-to-left cue
-            // runs them right to left; a space goes where the provider (or the
-            // script) puts one, never between Han or kana.
-            const previousText = display.slice(0, index).reverse().find((candidate) => candidate.length > 0);
-            const spaced =
-              previousText !== undefined &&
-              hasSpaceBefore(previousText, { word: text, ...(item.spaceBefore === undefined ? {} : { spaceBefore: item.spaceBefore }) });
+            const wordDir = visual.wordDirections[entry.word]!;
             const isActive = index === activeIndex;
             const upcoming = activeIndex >= 0 && index > activeIndex;
             const sung = spec.effect === "karaoke" && activeIndex >= 0 && index < activeIndex;
@@ -580,12 +596,10 @@ export function CaptionCue({
             const entrance = isActive && animated ? keyframeMotion(spec.word, emPx, perspectivePx) : null;
             const emoji = showEmojis ? (item.emoji ?? emojiForWord(item.word)) : null;
             const durationMs = item.durationMs ?? 400;
-            if (text.length === 0) return null;
             const wordInk = cueInk?.words[index];
             const pillExtent = captionDecorationExtentEm(face.capHeight, CAPTION_PILL, wordInk?.ink ?? NO_CAPTION_INK);
             return (
               <Fragment key={`${cueKey}-${index}`}>
-                {spaced && " "}
                 {/* The emoji sits beside the word's entrance, not inside it: the export
                     overlays it on its own clock, so it must not ride the word's motion. */}
                 <span
