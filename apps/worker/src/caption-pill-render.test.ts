@@ -122,6 +122,9 @@ function isolatedWord(ass: string, index: number, windowStart: string): string {
   return `${header}[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\nDialogue: 1,0:00:00.00,0:00:04.00,Caption,,0,0,0,,${flat}${body}\n`;
 }
 
+// Two real ffmpeg renders per word; a loaded machine can exceed the 5 s default.
+const RENDER_TEST_TIMEOUT_MS = 30_000;
+
 describe.skipIf(!Bun.which("ffmpeg"))("active-word pill over the real libass", () => {
   for (const sample of SAMPLES) {
     test(`${sample.name}: the pill centres on the word libass draws`, () => {
@@ -138,6 +141,6 @@ describe.skipIf(!Bun.which("ffmpeg"))("active-word pill over the real libass", (
         if (process.env.CAPTION_PILL_DEBUG) console.warn(`${sample.name} ${word}: pill ${pill} ink ${ink} off ${offset.toFixed(1)}px`);
         expect(offset, `${word}: pill ${pill} vs ink ${ink}`).toBeLessThan(TOLERANCE);
       });
-    });
+    }, RENDER_TEST_TIMEOUT_MS);
   }
 });

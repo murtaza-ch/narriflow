@@ -72,7 +72,7 @@ describe.skipIf(!Bun.which("ffmpeg"))("right-to-left karaoke on the real libass"
     expect(late.left).toBeLessThan(early.left - 15);
     expect(late.right).toBeGreaterThan(WIDTH / 2);
     expect(Math.abs(late.right - early.right)).toBeLessThan(6);
-  });
+  }, 30_000);
 
   test("a Latin word still fills left to right", () => {
     const words = ["READY", "TO", "GO"];
@@ -80,5 +80,5 @@ describe.skipIf(!Bun.which("ffmpeg"))("right-to-left karaoke on the real libass"
     const late = highlight(frame(words, 0.95));
     expect(late.right).toBeGreaterThan(early.right + 10);
     expect(Math.abs(late.left - early.left)).toBeLessThan(6);
-  });
+  }, 30_000);
 });
