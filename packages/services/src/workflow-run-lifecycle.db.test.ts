@@ -2996,7 +2996,8 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     const lifecycle = new RenderFixtureLifecycle({ prisma, leaseOwner: randomUUID() });
     const attempt = await lifecycle.claim("stt");
     if (!attempt) throw new Error("claim missing");
-    await lifecycle.waitForProvider(attempt, { providerJobId: "accepted-before-shutdown", nextPollAt: new Date(Date.now() + 60_000) });
+    await lifecycle.beginProviderSubmission(attempt, { deadline: new Date(Date.now() + 600_000) });
+    await lifecycle.recordProviderAcceptance(attempt, { requestId: "request-before-shutdown", transcriptionId: "accepted-before-shutdown", nextPollAt: new Date(Date.now() + 60_000) });
     expect(await lifecycle.releaseAttempt(attempt)).toBe(false);
     expect(await prisma.workflowRun.findUniqueOrThrow({ where: { id: run.id } })).toMatchObject({ status: "waiting", attemptId: attempt.attemptId, attemptCount: 1 });
     expect((await prisma.transcript.findUniqueOrThrow({ where: { projectId: project.id } })).providerJobId).toBe("accepted-before-shutdown");
@@ -3245,8 +3246,10 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     const claimed = await lifecycle.claim("stt");
     if (!claimed) throw new Error("claim missing");
     const attempt = claimed;
-    await lifecycle.waitForProvider(attempt, {
-      providerJobId: "provider-job-1",
+    await lifecycle.beginProviderSubmission(attempt, { deadline: new Date(Date.now() + 600_000) });
+    await lifecycle.recordProviderAcceptance(attempt, {
+      requestId: "provider-request-1",
+      transcriptionId: "provider-job-1",
       nextPollAt: new Date(Date.now() - 1_000),
     });
     expect(await lifecycle.reapExpiredAttempts()).toBe(0);

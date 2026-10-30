@@ -1,51 +1,215 @@
-import { afterEach, describe, expect, mock, spyOn, test } from "bun:test";
-import { projectService, type ClaimedWorkflowAttempt, type CompleteTranscriptInput } from "@narriflow/services";
+import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  projectService,
+  WorkflowFailure,
+  type ClaimedWorkflowAttempt,
+  type CompleteTranscriptInput,
+  type WaitingWorkflowAttempt,
+} from "@narriflow/services";
 import { parseSuppliedCaptions } from "@narriflow/validators";
-import { assemblyAiFailure, getAssemblyAiTranscript, processTranscriptRun } from "./transcribe";
+import type { LanguageProbeResult } from "../language-probe";
+import {
+  buildScribeSubmitForm,
+  chooseSubmitInputKind,
+  fetchScribeTranscript,
+  processSubmittedTranscriptResults,
+  processTranscriptRun,
+  scribeErrorDetail,
+  scribeHttpFailure,
+  submitScribeTranscription,
+  type TranscriptResultAdapters,
+  type TranscriptSubmitAdapters,
+} from "./transcribe";
 
 const mocks: Array<{ mockRestore(): void }> = [];
-afterEach(() => { for (const mock of mocks.splice(0)) mock.mockRestore(); });
+const originalEnv = { ...process.env };
+afterEach(() => {
+  for (const mock of mocks.splice(0)) mock.mockRestore();
+  process.env = { ...originalEnv };
+});
 
-describe("AssemblyAI result polling failure disposition", () => {
-  test("classifies an authentication response as permanent at the poll seam", async () => {
-    await expect(
-      getAssemblyAiTranscript("transcript-1", "bad-key", {
-        maxRetries: 0,
-        fetchImpl: async () =>
-          new Response(JSON.stringify({ error: "unauthorized" }), {
-            status: 401,
-          }),
-      }),
-    ).rejects.toMatchObject({
-      code: "assemblyai_transcription_poll_failed",
-      disposition: "permanent",
+const detail = (code: string, status = "error") => ({ detail: { type: "x", code, message: "provider prose", status } });
+const json = (body: unknown, status: number) => new Response(JSON.stringify(body), { status });
+
+describe("Scribe submit form", () => {
+  const base = { webhookId: "wh_1", workflowRunId: "run-1", attemptId: "attempt-1" };
+
+  test("sends the full webhook-delivered field set with the source by URL", async () => {
+    const form = await buildScribeSubmitForm({ ...base, languageCode: "urd", input: { kind: "url", sourceUrl: "https://r2.example/source.mp4?sig=1" } });
+    expect(Object.fromEntries([...form.entries()])).toEqual({
+      model_id: "scribe_v2",
+      diarize: "true",
+      timestamps_granularity: "word",
+      tag_audio_events: "false",
+      webhook: "true",
+      webhook_id: "wh_1",
+      webhook_metadata: JSON.stringify({ workflowRunId: "run-1", attemptId: "attempt-1" }),
+      language_code: "urd",
+      source_url: "https://r2.example/source.mp4?sig=1",
     });
   });
 
-  test("keeps a provider outage retryable at the poll seam", async () => {
-    await expect(
-      getAssemblyAiTranscript("transcript-1", "key", {
-        maxRetries: 0,
-        fetchImpl: async () =>
-          new Response(JSON.stringify({ error: "unavailable" }), {
-            status: 503,
-          }),
-      }),
-    ).rejects.toMatchObject({
-      code: "assemblyai_transcription_poll_failed",
-      disposition: "retryable",
-    });
+  test("omits language_code for Auto and uploads extracted audio as a file part", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scribe-form-"));
+    try {
+      const path = join(dir, "audio.mp3");
+      writeFileSync(path, "not really mp3");
+      const form = await buildScribeSubmitForm({ ...base, languageCode: null, input: { kind: "file", path } });
+      expect(form.has("language_code")).toBe(false);
+      expect(form.has("source_url")).toBe(false);
+      const file = form.get("file") as File;
+      expect(file.size).toBe("not really mp3".length);
+      expect(file.type).toBe("audio/mpeg");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
+describe("chooseSubmitInputKind", () => {
+  const url = "https://r2.example/source";
+  test("first attempt within 2 GiB goes by URL", () => {
+    expect(chooseSubmitInputKind({ attemptCount: 1, sourceSizeBytes: 1_000_000n, presignedUrl: url })).toBe("url");
+    expect(chooseSubmitInputKind({ attemptCount: 1, sourceSizeBytes: 2n * 1024n ** 3n, presignedUrl: url })).toBe("url");
+  });
+  test("retries, larger or unsized sources and a failed presign send audio", () => {
+    expect(chooseSubmitInputKind({ attemptCount: 2, sourceSizeBytes: 1_000_000n, presignedUrl: url })).toBe("file");
+    expect(chooseSubmitInputKind({ attemptCount: 1, sourceSizeBytes: 2n * 1024n ** 3n + 1n, presignedUrl: url })).toBe("file");
+    expect(chooseSubmitInputKind({ attemptCount: 1, sourceSizeBytes: null, presignedUrl: url })).toBe("file");
+    expect(chooseSubmitInputKind({ attemptCount: 1, sourceSizeBytes: 10n, presignedUrl: null })).toBe("file");
+  });
+});
+
+describe("Scribe error classification (D13)", () => {
+  test("reads only the machine-readable tokens of nested, array and string details", () => {
+    expect(scribeErrorDetail(detail("Transcript_Not_Found"))).toEqual({ type: "x", code: "transcript_not_found", status: "error" });
+    expect(scribeErrorDetail({ detail: [{ loc: ["body"], msg: "bad" }] })).toEqual({ type: null, code: null, status: null });
+    expect(scribeErrorDetail({ detail: "Not found" })).toEqual({ type: null, code: null, status: null });
+    expect(scribeErrorDetail(null)).toEqual({ type: null, code: null, status: null });
+  });
+
+  test.each([
+    ["submit", 400, detail("no_webhooks_configured"), "elevenlabs_webhook_not_configured", "permanent"],
+    ["submit", 401, detail("invalid_api_key"), "elevenlabs_auth_failed", "permanent"],
+    ["submit", 403, detail("forbidden"), "elevenlabs_auth_failed", "permanent"],
+    ["submit", 401, detail("quota_exceeded"), "elevenlabs_quota_exhausted", "permanent"],
+    ["submit", 400, detail("unsupported_language"), "elevenlabs_invalid_language", "permanent"],
+    ["submit", 400, detail("invalid_file"), "elevenlabs_invalid_media", "permanent"],
+    ["submit", 422, { detail: [{ msg: "field required" }] }, "elevenlabs_invalid_media", "permanent"],
+    ["submit", 429, detail("too_many_concurrent_requests"), "elevenlabs_transcription_submit_failed", "retryable"],
+    ["submit", 429, null, "elevenlabs_transcription_submit_failed", "retryable"],
+    ["submit", 408, null, "elevenlabs_transcription_submit_failed", "retryable"],
+    ["submit", 503, null, "elevenlabs_transcription_submit_failed", "retryable"],
+    ["result", 429, detail("system_busy"), "elevenlabs_transcript_fetch_failed", "retryable"],
+    ["result", 502, null, "elevenlabs_transcript_fetch_failed", "retryable"],
+    ["result", 401, detail("invalid_api_key"), "elevenlabs_auth_failed", "permanent"],
+    ["result", 404, detail("some_other_not_found"), "elevenlabs_auth_failed", "permanent"],
+  ] as const)("%s %i %j → %s (%s)", (stage, status, body, code, disposition) => {
+    const failure = scribeHttpFailure(stage, status, body);
+    expect(failure.code).toBe(code);
+    expect(failure.disposition).toBe(disposition);
+  });
+
+  test("failure messages never echo the provider's prose", () => {
+    expect(scribeHttpFailure("submit", 400, detail("invalid_file")).message).not.toContain("provider prose");
+  });
+});
+
+describe("submitScribeTranscription", () => {
+  const request = {
+    apiKey: "key",
+    webhookId: "wh",
+    workflowRunId: "run",
+    attemptId: "attempt",
+    languageCode: null,
+    input: { kind: "url", sourceUrl: "https://r2.example/s" } as const,
+  };
+
+  test("POSTs once with the key and parses request_id and transcription_id from the 202", async () => {
+    const fetchImpl = mock(async (_url: unknown, _init?: RequestInit) =>
+      json({ message: "ok", request_id: "req_1", transcription_id: "tr_1" }, 202));
+    const accepted = await submitScribeTranscription({ ...request, fetchImpl: fetchImpl as unknown as typeof fetch });
+    expect(accepted).toEqual({ requestId: "req_1", transcriptionId: "tr_1" });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchImpl.mock.calls[0]!;
+    expect(url).toBe("https://api.elevenlabs.io/v1/speech-to-text");
+    expect(init?.method).toBe("POST");
+    expect((init?.headers as Record<string, string>)["xi-api-key"]).toBe("key");
+    expect(init?.body).toBeInstanceOf(FormData);
+  });
+
+  test("an unparseable acceptance is a retryable failure", async () => {
+    await expect(submitScribeTranscription({ ...request, fetchImpl: (async () => json({ message: "ok" }, 202)) as unknown as typeof fetch }))
+      .rejects.toMatchObject({ code: "elevenlabs_transcription_submit_failed", disposition: "retryable" });
+  });
+
+  test.each([
+    [500, null, "retryable"],
+    [429, detail("too_many_concurrent_requests"), "retryable"],
+    [401, detail("invalid_api_key"), "permanent"],
+    [400, detail("no_webhooks_configured"), "permanent"],
+  ] as const)("a %i response fails once, without a retry", async (status, body, disposition) => {
+    const fetchImpl = mock(async () => json(body, status));
+    await expect(submitScribeTranscription({ ...request, fetchImpl: fetchImpl as unknown as typeof fetch }))
+      .rejects.toMatchObject({ disposition });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  test("a network error is retryable and is not retried", async () => {
+    const fetchImpl = mock(async () => { throw new TypeError("fetch failed"); });
+    await expect(submitScribeTranscription({ ...request, fetchImpl: fetchImpl as unknown as typeof fetch }))
+      .rejects.toMatchObject({ code: "elevenlabs_transcription_submit_failed", disposition: "retryable" });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("fetchScribeTranscript", () => {
+  const fetchWith = (response: () => Response | Promise<Response>) => (async () => response()) as unknown as typeof fetch;
+
+  test("200 is ready, with the id URL-encoded into the path", async () => {
+    const fetchImpl = mock(async (_url: unknown) => json({ text: "hi", words: [] }, 200));
+    expect(await fetchScribeTranscript("tr/1", "key", fetchImpl as unknown as typeof fetch)).toEqual({ kind: "ready", payload: { text: "hi", words: [] } });
+    expect(fetchImpl.mock.calls[0]![0]).toBe("https://api.elevenlabs.io/v1/speech-to-text/transcripts/tr%2F1");
+  });
+
+  test("404 transcript_not_found is pending", async () => {
+    expect(await fetchScribeTranscript("tr", "key", fetchWith(() => json(detail("transcript_not_found"), 404)))).toEqual({ kind: "pending" });
+  });
+
+  test.each([401, 403])("%i is a permanent failure", async (status) => {
+    const result = await fetchScribeTranscript("tr", "key", fetchWith(() => json(detail("invalid_api_key"), status)));
+    expect(result).toMatchObject({ kind: "failed", failure: { code: "elevenlabs_auth_failed", disposition: "permanent" } });
+  });
+
+  test("any other 404 is a permanent failure, not pending", async () => {
+    const result = await fetchScribeTranscript("tr", "key", fetchWith(() => json({ detail: "Not Found" }, 404)));
+    expect(result).toMatchObject({ kind: "failed", failure: { disposition: "permanent" } });
+  });
+
+  test.each([429, 500, 503])("%i waits for the next tick", async (status) => {
+    expect(await fetchScribeTranscript("tr", "key", fetchWith(() => json(null, status)))).toMatchObject({ kind: "transient" });
+  });
+
+  test("a network error waits for the next tick", async () => {
+    expect(await fetchScribeTranscript("tr", "key", (async () => { throw new TypeError("fetch failed"); }) as unknown as typeof fetch))
+      .toMatchObject({ kind: "transient" });
+  });
+});
+
+const baseAttempt = (overrides: { attemptCount?: number; sourceSizeBytes?: bigint | null; sourceDurationSeconds?: number | null } = {}) => ({
+  workflowRunId: "stt-run", projectId: "project", stage: "stt", attemptId: "attempt", attemptCount: overrides.attemptCount ?? 1, status: "running", progress: 10,
+  contentPackId: "pack", leaseExpiresAt: new Date(Date.now() + 60_000),
+  project: { id: "project", title: "AI short", sourceMediaUrl: "r2://bucket/source.mp4", sourceType: "upload", sourceInput: null, sourceStorageKey: "source.mp4",
+    sourceMimeType: "video/mp4", sourceDurationSeconds: overrides.sourceDurationSeconds === undefined ? 600 : overrides.sourceDurationSeconds,
+    sourceSizeBytes: overrides.sourceSizeBytes === undefined ? 500_000_000n : overrides.sourceSizeBytes, createdByUserId: "actor", workspaceId: "workspace" },
+}) as unknown as ClaimedWorkflowAttempt;
+const context = { signal: new AbortController().signal, reportProgress: async () => {} };
+
 describe("transcription without speech-to-text", () => {
-  const attempt = {
-    workflowRunId: "stt-run", projectId: "project", stage: "stt", attemptId: "attempt", attemptCount: 1, status: "running", progress: 10,
-    contentPackId: "pack", leaseExpiresAt: new Date(Date.now() + 60_000),
-    project: { id: "project", title: "AI short", sourceMediaUrl: "r2://bucket/source.mp4", sourceType: "upload", sourceInput: null, sourceStorageKey: "source.mp4",
-      sourceMimeType: "video/mp4", sourceDurationSeconds: 8, createdByUserId: "actor", workspaceId: "workspace" },
-  } as unknown as ClaimedWorkflowAttempt;
-  const context = { signal: new AbortController().signal, reportProgress: async () => {} };
+  const attempt = baseAttempt();
 
   function harness(plan: Awaited<ReturnType<typeof projectService.getTranscriptPlanForWorker>>["plan"]) {
     const complete = mock(async (_attempt: unknown, _input: CompleteTranscriptInput) => {});
@@ -61,7 +225,7 @@ describe("transcription without speech-to-text", () => {
   test("supplied captions complete the transcript at once, cut to the source, without calling the provider", async () => {
     const utterances = parseSuppliedCaptions("1\n00:00:00,000 --> 00:00:02,000\nHello there\n\n2\n00:00:07,000 --> 00:00:12,000\nrunning past the end\n\n3\n00:00:20,000 --> 00:00:21,000\ngone");
     const h = harness({ kind: "supplied", utterances });
-    delete process.env.ASSEMBLYAI_API_KEY;
+    delete process.env.ELEVENLABS_API_KEY;
     await processTranscriptRun(attempt, context, undefined, h.skip);
     expect(h.fetched).not.toHaveBeenCalled();
     expect(h.complete).toHaveBeenCalledTimes(1);
@@ -73,7 +237,7 @@ describe("transcription without speech-to-text", () => {
 
   test.each(["captions_none", "no_audio_stream"] as const)("%s completes with an empty transcript and no provider call", async (reason) => {
     const h = harness({ kind: "empty", reason });
-    delete process.env.ASSEMBLYAI_API_KEY;
+    delete process.env.ELEVENLABS_API_KEY;
     await processTranscriptRun(attempt, context, undefined, h.skip);
     expect(h.fetched).not.toHaveBeenCalled();
     expect(h.complete).toHaveBeenCalledTimes(1);
@@ -81,32 +245,272 @@ describe("transcription without speech-to-text", () => {
   });
 });
 
-describe("assemblyAiFailure", () => {
-  test("an out-of-credits account fails at once with its own code", () => {
-    const negative = { error: "Your current account balance is negative. Please top up to continue using the API." };
-    for (const [code, status] of [
-      ["assemblyai_transcription_submit_failed", 400],
-      ["assemblyai_upload_failed", 429],
-      ["assemblyai_transcription_failed", null],
-    ] as const) {
-      const failure = assemblyAiFailure(code, status, negative, "fallback");
-      expect(failure.code).toBe("assemblyai_quota_exhausted");
-      expect(failure.disposition).toBe("permanent");
+describe("transcription submit", () => {
+  beforeEach(() => {
+    process.env.ELEVENLABS_API_KEY = "key";
+    process.env.ELEVENLABS_WEBHOOK_ID = "wh_dev";
+  });
+
+  const speechToText = {
+    transcriptPlan: async () => ({ plan: { kind: "speech_to_text" as const }, durationSeconds: 600, languageCode: null }),
+    completeTranscript: async () => {},
+  } as unknown as Parameters<typeof processTranscriptRun>[3];
+
+  const PINNED_PROBE: LanguageProbeResult = { pinned: "ur", detected: "urd", probability: 0.97, wordCount: 40, reason: "pinned" };
+  const UNPINNED_PROBE: LanguageProbeResult = { pinned: null, detected: "und", probability: 0.4, wordCount: 3, reason: "low_language_probability" };
+
+  function harness(options: {
+    language?: string | null;
+    presigned?: string | null;
+    probe?: LanguageProbeResult;
+    submit?: () => Promise<{ requestId: string; transcriptionId: string }>;
+    begin?: () => Promise<void>;
+  } = {}) {
+    const calls: string[] = [];
+    const lifecycle = {
+      beginProviderSubmission: mock(async (_attempt: unknown, _input: { deadline: Date }) => { calls.push("begin"); await options.begin?.(); }),
+      recordProviderAcceptance: mock(async (_key: unknown, _input: { requestId: string; transcriptionId: string; nextPollAt: Date }) => { calls.push("accept"); return { kind: "applied" as const }; }),
+      failProviderAttempt: mock(async (_key: unknown, _failure: WorkflowFailure) => { calls.push("failProvider"); return { kind: "applied" as const }; }),
+      failAttempt: mock(async (_attempt: unknown, _failure: WorkflowFailure) => { calls.push("failAttempt"); }),
+    };
+    const probe = mock(async (_options: { sourceUrl: string; durationSeconds: number }) => { calls.push("probe"); return options.probe ?? UNPINNED_PROBE; });
+    const submit = mock(async (_request: { languageCode: string | null; input: { kind: string }; webhookId: string; attemptId: string; workflowRunId: string }) => {
+      calls.push("post");
+      return (options.submit ?? (async () => ({ requestId: "req_1", transcriptionId: "tr_1" })))();
+    });
+    const extracted: string[] = [];
+    const notifyFailure = mock(async () => {});
+    const adapters = {
+      lifecycle,
+      languageCode: async () => options.language ?? null,
+      presign: async () => (options.presigned === undefined ? "https://r2.example/source?sig=1" : options.presigned),
+      probe,
+      submit,
+      withExtractedAudio: async (_request: unknown, use: (path: string) => Promise<unknown>) => { calls.push("extract"); extracted.push("/tmp/audio.mp3"); return use("/tmp/audio.mp3"); },
+      notifyFailure,
+      now: () => 1_000_000,
+    } as unknown as TranscriptSubmitAdapters;
+    return { adapters, calls, lifecycle, probe, submit, notifyFailure, extracted };
+  }
+
+  test("begins the submission before the POST and records acceptance after the 202", async () => {
+    const h = harness({ language: "ur" });
+    await processTranscriptRun(baseAttempt(), context, undefined, speechToText, h.adapters);
+    expect(h.calls).toEqual(["begin", "post", "accept"]);
+    expect(h.lifecycle.beginProviderSubmission.mock.calls[0]![1].deadline.getTime()).toBe(1_000_000 + 10 * 60_000);
+    expect(h.lifecycle.recordProviderAcceptance.mock.calls[0]![0]).toEqual({ workflowRunId: "stt-run", attemptId: "attempt" });
+    expect(h.lifecycle.recordProviderAcceptance.mock.calls[0]![1]).toEqual({ requestId: "req_1", transcriptionId: "tr_1", nextPollAt: new Date(1_000_000 + 30_000) });
+    expect(h.submit.mock.calls[0]![0]).toMatchObject({ webhookId: "wh_dev", attemptId: "attempt", workflowRunId: "stt-run" });
+  });
+
+  test("a chosen language is sent as its provider code and skips the probe", async () => {
+    const h = harness({ language: "ur" });
+    await processTranscriptRun(baseAttempt(), context, undefined, speechToText, h.adapters);
+    expect(h.probe).not.toHaveBeenCalled();
+    expect(h.submit.mock.calls[0]![0].languageCode).toBe("urd");
+  });
+
+  test("Auto probes the presigned source and pins a trusted detection", async () => {
+    const h = harness({ probe: PINNED_PROBE });
+    await processTranscriptRun(baseAttempt(), context, undefined, speechToText, h.adapters);
+    expect(h.probe).toHaveBeenCalledTimes(1);
+    expect(h.probe.mock.calls[0]![0]).toMatchObject({ sourceUrl: "https://r2.example/source?sig=1", durationSeconds: 600 });
+    expect(h.calls).toEqual(["probe", "begin", "post", "accept"]);
+    expect(h.submit.mock.calls[0]![0].languageCode).toBe("urd");
+  });
+
+  test("Auto with an untrusted probe submits unpinned", async () => {
+    const h = harness({ probe: UNPINNED_PROBE });
+    await processTranscriptRun(baseAttempt(), context, undefined, speechToText, h.adapters);
+    expect(h.submit.mock.calls[0]![0].languageCode).toBeNull();
+  });
+
+  test("Auto without a known duration or presigned URL skips the probe and submits unpinned", async () => {
+    const noDuration = harness();
+    await processTranscriptRun(baseAttempt({ sourceDurationSeconds: null }), context, undefined, {
+      transcriptPlan: async () => ({ plan: { kind: "speech_to_text" as const }, durationSeconds: null, languageCode: null }),
+      completeTranscript: async () => {},
+    } as unknown as Parameters<typeof processTranscriptRun>[3], noDuration.adapters);
+    expect(noDuration.probe).not.toHaveBeenCalled();
+    expect(noDuration.submit.mock.calls[0]![0].languageCode).toBeNull();
+
+    const noUrl = harness({ presigned: null });
+    await processTranscriptRun(baseAttempt(), context, undefined, speechToText, noUrl.adapters);
+    expect(noUrl.probe).not.toHaveBeenCalled();
+  });
+
+  test("first attempt sends the presigned source by URL", async () => {
+    const h = harness({ language: "en" });
+    await processTranscriptRun(baseAttempt(), context, undefined, speechToText, h.adapters);
+    expect(h.submit.mock.calls[0]![0].input).toEqual({ kind: "url", sourceUrl: "https://r2.example/source?sig=1" });
+    expect(h.calls).not.toContain("extract");
+  });
+
+  test("a retry, an oversized source or a failed presign uploads extracted audio, begun after the extraction", async () => {
+    for (const h of [
+      { attempt: baseAttempt({ attemptCount: 2 }), options: { language: "en" } },
+      { attempt: baseAttempt({ sourceSizeBytes: 3n * 1024n ** 3n }), options: { language: "en" } },
+      { attempt: baseAttempt(), options: { language: "en", presigned: null } },
+    ]) {
+      const run = harness(h.options);
+      await processTranscriptRun(h.attempt, context, undefined, speechToText, run.adapters);
+      expect(run.submit.mock.calls[0]![0].input).toEqual({ kind: "file", path: "/tmp/audio.mp3" });
+      expect(run.calls).toEqual(["extract", "begin", "post", "accept"]);
     }
   });
 
-  test("other provider errors keep their code and HTTP-based disposition", () => {
-    expect(assemblyAiFailure("assemblyai_transcription_submit_failed", 503, { error: "Service unavailable" }, "x")).toMatchObject({
-      code: "assemblyai_transcription_submit_failed",
-      disposition: "retryable",
+  test.each([
+    ["a 5xx", new WorkflowFailure("elevenlabs_transcription_submit_failed", "retryable", "x")],
+    ["a 429", new WorkflowFailure("elevenlabs_transcription_submit_failed", "retryable", "x")],
+    ["an auth error", new WorkflowFailure("elevenlabs_auth_failed", "permanent", "x")],
+    ["no_webhooks_configured", new WorkflowFailure("elevenlabs_webhook_not_configured", "permanent", "x")],
+  ])("%s after begin fails the waiting attempt through the provider path, once", async (_name, failure) => {
+    const h = harness({ language: "en", submit: async () => { throw failure; } });
+    await processTranscriptRun(baseAttempt(), context, undefined, speechToText, h.adapters);
+    expect(h.calls).toEqual(["begin", "post", "failProvider"]);
+    expect(h.lifecycle.failProviderAttempt.mock.calls[0]![1]).toBe(failure);
+    expect(h.lifecycle.failAttempt).not.toHaveBeenCalled();
+    expect(h.lifecycle.recordProviderAcceptance).not.toHaveBeenCalled();
+    expect(h.notifyFailure).toHaveBeenCalledTimes(1);
+  });
+
+  test("a stale attempt's failure is not notified", async () => {
+    const h = harness({ language: "en", submit: async () => { throw new WorkflowFailure("elevenlabs_transcription_submit_failed", "retryable", "x"); } });
+    h.lifecycle.failProviderAttempt.mockImplementation(async () => ({ kind: "stale", reason: "attempt_superseded" }) as never);
+    await processTranscriptRun(baseAttempt(), context, undefined, speechToText, h.adapters);
+    expect(h.notifyFailure).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ["ELEVENLABS_API_KEY", "elevenlabs_api_key_missing"],
+    ["ELEVENLABS_WEBHOOK_ID", "elevenlabs_webhook_not_configured"],
+  ])("a missing %s is a permanent failure before anything is submitted", async (name, code) => {
+    delete process.env[name];
+    const h = harness({ language: "en" });
+    await processTranscriptRun(baseAttempt(), context, undefined, speechToText, h.adapters);
+    expect(h.calls).toEqual(["failAttempt"]);
+    expect(h.lifecycle.failAttempt.mock.calls[0]![1]).toMatchObject({ code, disposition: "permanent" });
+  });
+});
+
+describe("transcription results", () => {
+  beforeEach(() => {
+    process.env.ELEVENLABS_API_KEY = "key";
+    delete process.env.ELEVENLABS_RESULT_TIMEOUT_MS;
+  });
+
+  const NOW = 10_000_000_000;
+  const waiting = (overrides: Partial<WaitingWorkflowAttempt> = {}): WaitingWorkflowAttempt => ({
+    workflowRunId: "stt-run", projectId: "project", stage: "stt", attemptId: "attempt", attemptCount: 1, progress: 40,
+    providerJobId: "tr_1", submissionDeadlineAt: null, submittedAt: new Date(NOW - 60_000), ...overrides,
+  });
+
+  function harness(attempts: WaitingWorkflowAttempt[], fetchResult: Awaited<ReturnType<TranscriptResultAdapters["fetchTranscript"]>>) {
+    const lifecycle = {
+      claimDueWaitingTranscripts: mock(async (_batch: number, _interval: number) => attempts),
+      expireUnconfirmedProviderSubmission: mock(async (_key: unknown) => ({ kind: "applied" as const })),
+      failProviderAttempt: mock(async (_key: unknown, _failure: WorkflowFailure, _ids?: unknown) => ({ kind: "applied" as const })),
+      reportProgress: mock(async (_attempt: unknown, _progress: number) => {}),
+    };
+    const finalize = mock(async (_input: unknown) => ({ kind: "applied" as const }));
+    const fetchTranscript = mock(async (_id: string, _key: string) => fetchResult);
+    const notifyFailure = mock(async () => {});
+    const adapters = { lifecycle, finalize, fetchTranscript, notifyFailure, now: () => NOW } as unknown as TranscriptResultAdapters;
+    return { adapters, lifecycle, finalize, fetchTranscript, notifyFailure };
+  }
+
+  test("does nothing without an API key", async () => {
+    delete process.env.ELEVENLABS_API_KEY;
+    const h = harness([waiting()], { kind: "pending" });
+    expect(await processSubmittedTranscriptResults(h.adapters)).toBe(0);
+    expect(h.lifecycle.claimDueWaitingTranscripts).not.toHaveBeenCalled();
+  });
+
+  test("claims with the poll interval from the environment", async () => {
+    process.env.ELEVENLABS_RESULT_POLL_INTERVAL_MS = "12345";
+    const h = harness([], { kind: "pending" });
+    await processSubmittedTranscriptResults(h.adapters);
+    expect(h.lifecycle.claimDueWaitingTranscripts.mock.calls[0]![1]).toBe(12345);
+  });
+
+  test("a 200 finalizes with the payload and transcription id", async () => {
+    const payload = { language_code: "urd", words: [] };
+    const h = harness([waiting()], { kind: "ready", payload });
+    expect(await processSubmittedTranscriptResults(h.adapters)).toBe(1);
+    expect(h.fetchTranscript.mock.calls[0]).toEqual(["tr_1", "key"]);
+    expect(h.finalize.mock.calls[0]![0]).toEqual({
+      key: { workflowRunId: "stt-run", attemptId: "attempt" },
+      payload,
+      providerIds: { transcriptionId: "tr_1" },
     });
-    expect(assemblyAiFailure("assemblyai_transcription_submit_failed", 400, { error: "Invalid audio_url" }, "x")).toMatchObject({
-      code: "assemblyai_transcription_submit_failed",
-      disposition: "permanent",
-    });
-    expect(assemblyAiFailure("assemblyai_transcription_failed", null, { error: "File does not appear to contain audio." }, "x")).toMatchObject({
-      code: "assemblyai_transcription_failed",
-      disposition: "retryable",
-    });
+  });
+
+  test("a ready transcript is finalized even after the result deadline", async () => {
+    const h = harness([waiting({ submittedAt: new Date(NOW - 3 * 60 * 60_000) })], { kind: "ready", payload: {} });
+    expect(await processSubmittedTranscriptResults(h.adapters)).toBe(1);
+    expect(h.finalize).toHaveBeenCalledTimes(1);
+    expect(h.lifecycle.failProviderAttempt).not.toHaveBeenCalled();
+  });
+
+  test("a duplicate delivery settles nothing", async () => {
+    const h = harness([waiting()], { kind: "ready", payload: {} });
+    h.finalize.mockImplementation(async () => ({ kind: "duplicate" }) as never);
+    expect(await processSubmittedTranscriptResults(h.adapters)).toBe(0);
+  });
+
+  test("404 transcript_not_found stays pending and reports progress", async () => {
+    const h = harness([waiting()], { kind: "pending" });
+    expect(await processSubmittedTranscriptResults(h.adapters)).toBe(0);
+    expect(h.finalize).not.toHaveBeenCalled();
+    expect(h.lifecycle.failProviderAttempt).not.toHaveBeenCalled();
+    expect(h.lifecycle.reportProgress).toHaveBeenCalledTimes(1);
+  });
+
+  test("pending past the result deadline fails the attempt as a retryable timeout", async () => {
+    const h = harness([waiting({ submittedAt: new Date(NOW - 2 * 60 * 60_000 - 1) })], { kind: "pending" });
+    expect(await processSubmittedTranscriptResults(h.adapters)).toBe(1);
+    const [key, failure, ids] = h.lifecycle.failProviderAttempt.mock.calls[0]!;
+    expect(key).toEqual({ workflowRunId: "stt-run", attemptId: "attempt" });
+    expect(failure).toMatchObject({ code: "elevenlabs_transcription_timeout", disposition: "retryable" });
+    expect(ids).toEqual({ transcriptionId: "tr_1" });
+    expect(h.notifyFailure).toHaveBeenCalledTimes(1);
+  });
+
+  test("ELEVENLABS_RESULT_TIMEOUT_MS moves the deadline", async () => {
+    process.env.ELEVENLABS_RESULT_TIMEOUT_MS = "30000";
+    const h = harness([waiting()], { kind: "pending" });
+    expect(await processSubmittedTranscriptResults(h.adapters)).toBe(1);
+    expect(h.lifecycle.failProviderAttempt.mock.calls[0]![1]).toMatchObject({ code: "elevenlabs_transcription_timeout" });
+  });
+
+  test("a transient provider error waits for the next tick, bounded by the deadline", async () => {
+    const failure = new WorkflowFailure("elevenlabs_transcript_fetch_failed", "retryable", "x");
+    const young = harness([waiting()], { kind: "transient", failure });
+    expect(await processSubmittedTranscriptResults(young.adapters)).toBe(0);
+    expect(young.lifecycle.failProviderAttempt).not.toHaveBeenCalled();
+
+    const old = harness([waiting({ submittedAt: new Date(NOW - 3 * 60 * 60_000) })], { kind: "transient", failure });
+    expect(await processSubmittedTranscriptResults(old.adapters)).toBe(1);
+    expect(old.lifecycle.failProviderAttempt.mock.calls[0]![1]).toMatchObject({ code: "elevenlabs_transcription_timeout" });
+  });
+
+  test("a 401 fails the attempt permanently", async () => {
+    const failure = new WorkflowFailure("elevenlabs_auth_failed", "permanent", "x");
+    const h = harness([waiting()], { kind: "failed", failure });
+    expect(await processSubmittedTranscriptResults(h.adapters)).toBe(1);
+    expect(h.lifecycle.failProviderAttempt.mock.calls[0]![1]).toBe(failure);
+  });
+
+  test("a run with no recorded id is expired through the lifecycle, without a GET", async () => {
+    const h = harness([waiting({ providerJobId: null, submissionDeadlineAt: new Date(NOW - 1) })], { kind: "pending" });
+    expect(await processSubmittedTranscriptResults(h.adapters)).toBe(1);
+    expect(h.lifecycle.expireUnconfirmedProviderSubmission.mock.calls[0]![0]).toEqual({ workflowRunId: "stt-run", attemptId: "attempt" });
+    expect(h.fetchTranscript).not.toHaveBeenCalled();
+  });
+
+  test("a submission that is not yet due is left alone", async () => {
+    const h = harness([waiting({ providerJobId: null })], { kind: "pending" });
+    h.lifecycle.expireUnconfirmedProviderSubmission.mockImplementation(async () => ({ kind: "stale", reason: "submission_pending" }) as never);
+    expect(await processSubmittedTranscriptResults(h.adapters)).toBe(0);
   });
 });

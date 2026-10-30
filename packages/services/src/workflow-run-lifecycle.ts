@@ -76,6 +76,7 @@ export interface ClaimedWorkflowAttempt extends WorkflowAttemptRef {
     sourceStorageKey: string | null;
     sourceMimeType: string | null;
     sourceDurationSeconds: number | null;
+    sourceSizeBytes: bigint | null;
     createdByUserId: string | null;
     workspaceId: string;
   };
@@ -951,6 +952,7 @@ export class WorkflowRunLifecycle {
               sourceStorageKey: true,
               sourceMimeType: true,
               sourceDurationSeconds: true,
+              sourceSizeBytes: true,
               createdByUserId: true,
               workspaceId: true,
             },
@@ -1821,49 +1823,6 @@ export class WorkflowRunLifecycle {
         progress: normalizedProgress,
         errorCode: null,
         transition: `progress:${normalizedProgress}`,
-      });
-    });
-  }
-
-  async waitForProvider(
-    attempt: WorkflowAttemptRef,
-    input: { providerJobId: string; nextPollAt: Date },
-  ) {
-    await this.settlementTransaction(attempt, async (tx) => {
-      const databaseNow = await this.databaseNow(tx);
-      const won = await tx.workflowRun.updateMany({
-        where: {
-          ...this.ownedAttemptWhere(attempt, databaseNow),
-          status: "running",
-        },
-        data: {
-          status: "waiting",
-          progress: 40,
-          leaseOwner: null,
-          leaseExpiresAt: null,
-          heartbeatAt: null,
-          waitingSince: new Date(),
-          nextPollAt: input.nextPollAt,
-        },
-      });
-      if (won.count === 0) throw new WorkflowAttemptLost(attempt);
-      await tx.transcript.updateMany({
-        where: { projectId: attempt.projectId },
-        data: {
-          providerJobId: input.providerJobId,
-          workflowAttemptId: attempt.attemptId,
-          status: "processing",
-        },
-      });
-      await this.appendEvent(tx, {
-        projectId: attempt.projectId,
-        workflowRunId: attempt.workflowRunId,
-        attemptId: attempt.attemptId,
-        stage: attempt.stage,
-        status: "waiting",
-        progress: 40,
-        errorCode: null,
-        transition: "provider-waiting",
       });
     });
   }

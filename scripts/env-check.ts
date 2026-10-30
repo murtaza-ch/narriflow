@@ -65,7 +65,7 @@ export interface EnvironmentFiles {
 
 /** Variable name prefixes that belong to the API or worker: a web file should not carry them. */
 const BACKEND_NAME_PREFIXES = [
-  "DATABASE_", "DIRECT_URL", "R2_", "UPSTASH_", "STRIPE_", "NEXT_PUBLIC_STRIPE_", "OPENAI_", "ASSEMBLYAI_", "RESEND_",
+  "DATABASE_", "DIRECT_URL", "R2_", "UPSTASH_", "STRIPE_", "NEXT_PUBLIC_STRIPE_", "OPENAI_", "ELEVENLABS_", "RESEND_",
   "SOCIAL_", "TIKTOK_", "GOOGLE_CLIENT_", "META_", "LINKEDIN_", "X_CLIENT_", "ZOOM_", "REVIEW_", "CLERK_WEBHOOK_",
   "CLERK_OAUTH_", "MCP_", "PEXELS_", "GENERATED_", "NARRIFLOW_EMAIL_", "PLATFORM_STAFF_",
 ] as const;

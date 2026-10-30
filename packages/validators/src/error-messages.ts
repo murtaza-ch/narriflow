@@ -122,10 +122,28 @@ export const USER_ERROR_MESSAGES: Record<string, string> = {
 		"Transcription didn't complete. Please retry — if it keeps failing, contact support.",
 	transcription_run_failed:
 		"Transcription didn't complete. Please retry — if it keeps failing, contact support.",
-	assemblyai_transcription_failed:
+	elevenlabs_transcription_submit_failed:
 		"Transcription didn't complete. Please retry — if it keeps failing, contact support.",
-	assemblyai_quota_exhausted:
+	elevenlabs_transcript_fetch_failed:
+		"Transcription didn't complete. Please retry — if it keeps failing, contact support.",
+	elevenlabs_transcription_timeout:
+		"Transcription didn't complete. Please retry — if it keeps failing, contact support.",
+	elevenlabs_submission_unconfirmed:
+		"Transcription didn't complete. Please retry — if it keeps failing, contact support.",
+	elevenlabs_result_invalid:
+		"Transcription didn't complete. Please retry — if it keeps failing, contact support.",
+	elevenlabs_api_key_missing:
 		"Transcription is temporarily unavailable on our side. Retry transcription in a little while.",
+	elevenlabs_webhook_not_configured:
+		"Transcription is temporarily unavailable on our side. Retry transcription in a little while.",
+	elevenlabs_auth_failed:
+		"Transcription is temporarily unavailable on our side. Retry transcription in a little while.",
+	elevenlabs_quota_exhausted:
+		"Transcription is temporarily unavailable on our side. Retry transcription in a little while.",
+	elevenlabs_invalid_media:
+		"We couldn't read the audio in this video. Check that the file plays, then upload it again.",
+	elevenlabs_invalid_language:
+		"The chosen language isn't supported for transcription. Pick another language or use Auto-detect, then retry.",
 	moment_detection_failed:
 		"Clip detection didn't complete. Please retry generation.",
 	clip_detection_run_failed:
