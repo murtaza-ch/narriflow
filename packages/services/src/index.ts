@@ -427,7 +427,8 @@ export {
 export {
 	buildTranscriptSnapshot,
 	exportTranscript,
-	normalizeAssemblyAiTranscript,
+	normalizeElevenLabsTranscript,
+	type NormalizedTranscript,
 	TranscriptNormalizationError,
 } from "./transcript.service";
 export {
@@ -502,6 +503,8 @@ export {
 	type AdmitWorkflowRunInput,
 	workerShutdownDrainMs,
 } from "./workflow-run-lifecycle";
+export { finalizeScribeTranscript } from "./scribe-transcript-runtime";
+export { scribeRawStorageKey, type FinalizeScribeTranscriptInput } from "./scribe-transcript";
 export { purgeOldWebhookDeliveryLogs } from "./webhook-log.service";
 export * from "./url-guard";
 export * from "./rate-limit";

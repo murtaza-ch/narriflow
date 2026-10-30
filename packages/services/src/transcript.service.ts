@@ -2,45 +2,39 @@ import type {
   TranscriptExportFormat,
   TranscriptSnapshot,
   TranscriptUtterance,
+  TranscriptWord,
 } from "@narriflow/validators";
 import {
+  joinTranscriptWords,
+  normalizeProviderLanguageCode,
+  SCRIBE_MODEL_ID,
   splitUtterancesIntoSentences,
   transcriptSnapshotSchema,
 } from "@narriflow/validators";
 
-interface AssemblyAiWord {
-  start?: number;
-  end?: number;
-  text?: string;
-  confidence?: number;
-  speaker?: string | null;
+interface ScribeToken {
+  text?: unknown;
+  start?: unknown;
+  end?: unknown;
+  type?: unknown;
+  speaker_id?: unknown;
 }
 
-interface AssemblyAiUtterance {
-  confidence?: number;
-  end?: number;
-  speaker?: string | null;
-  start?: number;
-  text?: string;
-  words?: AssemblyAiWord[];
-}
-
-interface AssemblyAiPayload {
-  id?: string;
-  text?: string;
-  language_code?: string;
-  speech_model?: string;
-  speech_model_used?: string;
-  speech_models?: string[];
-  audio_duration?: number;
-  language_confidence?: number;
-  utterances?: AssemblyAiUtterance[];
+/** The `speech-to-text` transcript object, as the GET returns it and as the
+ * webhook carries it under `data.transcription`. */
+interface ScribePayload {
+  language_code?: unknown;
+  language_probability?: unknown;
+  text?: unknown;
+  words?: unknown;
+  transcription_id?: unknown;
 }
 
 export interface NormalizedTranscript {
-  provider: "assemblyai";
-  providerModel: string | null;
+  provider: "elevenlabs";
+  providerModel: string;
   providerJobId: string | null;
+  providerRequestId: string | null;
   languageCode: string | null;
   languageConfidence: number | null;
   text: string;
@@ -50,14 +44,29 @@ export interface NormalizedTranscript {
   rawPayload: unknown;
 }
 
+export interface NormalizeScribeOptions {
+  /** A caption-only generation can finish with no speech. */
+  allowEmpty: boolean;
+  providerJobId: string | null;
+  providerRequestId: string | null;
+  /** The source's probed duration; the last word only stands in when unknown. */
+  durationSeconds: number | null;
+}
+
+/** A malformed provider result. Never retried: polling again returns the same bytes. */
 export class TranscriptNormalizationError extends Error {
   code: string;
+  readonly retryable = false;
 
   constructor(code: string, message: string) {
     super(message);
     this.name = "TranscriptNormalizationError";
     this.code = code;
   }
+}
+
+function invalid(message: string): never {
+  throw new TranscriptNormalizationError("elevenlabs_result_invalid", message);
 }
 
 function asObject(value: unknown): Record<string, unknown> | null {
@@ -74,54 +83,6 @@ function formatSpeakerLabel(speaker: number | null) {
   }
 
   return `Speaker ${speaker + 1}`;
-}
-
-function coerceUtteranceText(utterance: AssemblyAiUtterance) {
-  const direct = utterance.text?.trim();
-
-  if (direct) {
-    return direct;
-  }
-
-  const fromWords = (utterance.words ?? [])
-    .map((word) => word.text ?? "")
-    .join(" ")
-    .trim();
-
-  return fromWords;
-}
-
-function millisecondsToSeconds(value: number) {
-  return Math.round((value / 1000) * 1000) / 1000;
-}
-
-function getAssemblyAiProviderModel(payload: AssemblyAiPayload) {
-  return payload.speech_model_used ?? payload.speech_model ?? null;
-}
-
-function getAssemblyAiLanguageConfidence(payload: AssemblyAiPayload) {
-  const confidence = payload.language_confidence;
-  return typeof confidence === "number" &&
-    Number.isFinite(confidence) &&
-    confidence >= 0 &&
-    confidence <= 1
-    ? confidence
-    : null;
-}
-
-function getSpeakerIndex(
-  speakerLabel: string,
-  speakerMap: Map<string, number>,
-) {
-  const existing = speakerMap.get(speakerLabel);
-
-  if (existing !== undefined) {
-    return existing;
-  }
-
-  const next = speakerMap.size;
-  speakerMap.set(speakerLabel, next);
-  return next;
 }
 
 function formatCueTimestamp(totalSeconds: number, decimalSeparator: "." | ",") {
@@ -155,164 +116,158 @@ function formatReadableTimestamp(totalSeconds: number) {
   return `${minutes}:${String(seconds).padStart(2, "0")}`;
 }
 
-/** A source with no speech, such as music over video, is a finished transcript
- * with no utterances. */
-function emptyAssemblyAiTranscript(payload: AssemblyAiPayload, rawPayload: unknown): NormalizedTranscript {
+const UNKNOWN_SPEAKER = null;
+
+function emptyScribeTranscript(
+  payload: ScribePayload,
+  options: NormalizeScribeOptions,
+  rawPayload: unknown,
+): NormalizedTranscript {
   return {
-    provider: "assemblyai",
-    providerModel: getAssemblyAiProviderModel(payload),
-    providerJobId: payload.id ?? null,
-    languageCode: payload.language_code ?? null,
-    languageConfidence: getAssemblyAiLanguageConfidence(payload),
+    provider: "elevenlabs",
+    providerModel: SCRIBE_MODEL_ID,
+    providerJobId: options.providerJobId,
+    providerRequestId: options.providerRequestId,
+    languageCode: scribeLanguageCode(payload),
+    languageConfidence: scribeLanguageConfidence(payload),
     text: "",
     utterances: [],
     speakerCount: 0,
-    durationSeconds: typeof payload.audio_duration === "number" ? Math.round(payload.audio_duration) : null,
+    durationSeconds: options.durationSeconds === null ? null : Math.round(options.durationSeconds),
     rawPayload,
   };
 }
 
-/** `allowEmpty` accepts a transcript with no speech instead of refusing it:
- * a caption-only generation needs none. */
-export function normalizeAssemblyAiTranscript(
+function scribeLanguageCode(payload: ScribePayload) {
+  return typeof payload.language_code === "string"
+    ? normalizeProviderLanguageCode(payload.language_code)
+    : null;
+}
+
+function scribeLanguageConfidence(payload: ScribePayload) {
+  const probability = payload.language_probability;
+  return typeof probability === "number" && Number.isFinite(probability)
+    ? Math.min(1, Math.max(0, probability))
+    : null;
+}
+
+interface ScribeWord {
+  speaker: number;
+  word: TranscriptWord;
+}
+
+/** Scribe's word tokens, with `spaceBefore` read from its spacing tokens
+ * (zh/ja arrive per character with none) and speakers numbered densely in
+ * first-seen order. Spacing and audio events are not words. */
+function scribeWords(tokens: unknown[]): ScribeWord[] {
+  const speakers = new Map<string | typeof UNKNOWN_SPEAKER, number>();
+  const words: ScribeWord[] = [];
+  let spaceSeen = false;
+  for (const entry of tokens) {
+    const token = asObject(entry) as ScribeToken | null;
+    if (!token) invalid("Scribe returned a malformed word token");
+    if (token.type === "spacing") {
+      spaceSeen = true;
+      continue;
+    }
+    if (token.type !== "word") continue;
+    if (typeof token.text !== "string") invalid("Scribe returned a word without text");
+    const text = token.text.trim();
+    if (!text) continue;
+    const { start, end } = token;
+    if (
+      typeof start !== "number" ||
+      typeof end !== "number" ||
+      !Number.isFinite(start) ||
+      !Number.isFinite(end) ||
+      start < 0 ||
+      end < start
+    ) {
+      invalid("Scribe returned a word with invalid timestamps");
+    }
+    const rawSpeaker = typeof token.speaker_id === "string" ? token.speaker_id.trim() : "";
+    const speakerKey = rawSpeaker || UNKNOWN_SPEAKER;
+    let speaker = speakers.get(speakerKey);
+    if (speaker === undefined) {
+      speaker = speakers.size;
+      speakers.set(speakerKey, speaker);
+    }
+    const previous = words.at(-1);
+    const spaced = spaceSeen || /^\s/.test(token.text);
+    words.push({
+      speaker,
+      word: {
+        word: text,
+        startSec: start,
+        endSec: end,
+        confidence: null,
+        ...(previous ? { spaceBefore: spaced } : {}),
+      },
+    });
+    // A trailing space inside the token spaces the next word.
+    spaceSeen = /\s$/.test(token.text);
+  }
+  return words;
+}
+
+/** Normalizes a Scribe transcript into speaker turns split at sentence ends.
+ * Any malformed content throws a permanent `TranscriptNormalizationError`. */
+export function normalizeElevenLabsTranscript(
   rawPayload: unknown,
-  options: { allowEmpty?: boolean } = {},
+  options: NormalizeScribeOptions,
 ): NormalizedTranscript {
-  const payload = rawPayload as AssemblyAiPayload;
-  const utterances = payload.utterances ?? [];
+  const payload = asObject(rawPayload) as ScribePayload | null;
+  if (!payload) invalid("Scribe returned a result that is not an object");
+  if (payload.words !== undefined && !Array.isArray(payload.words)) {
+    invalid("Scribe returned words that are not a list");
+  }
+  const words = scribeWords(payload.words ?? []);
 
-  if (utterances.length === 0) {
-    if (options.allowEmpty) return emptyAssemblyAiTranscript(payload, rawPayload);
-    throw new TranscriptNormalizationError(
-      "assemblyai_utterances_missing",
-      "AssemblyAI transcript did not include diarized utterances",
-    );
+  if (words.length === 0) {
+    if (options.allowEmpty) return emptyScribeTranscript(payload, options, rawPayload);
+    invalid("Scribe transcript did not include any words");
   }
 
-  const speakerMap = new Map<string, number>();
-  const turnUtterances = utterances
-    .map((utterance, index): TranscriptUtterance | null => {
-      const text = coerceUtteranceText(utterance);
-      const startSec = millisecondsToSeconds(
-        typeof utterance.start === "number" ? utterance.start : 0,
-      );
-      const endSec = millisecondsToSeconds(
-        typeof utterance.end === "number" ? utterance.end : utterance.start ?? 0,
-      );
-      const rawSpeaker =
-        typeof utterance.speaker === "string" ? utterance.speaker.trim() : "";
-
-      if (!text) {
-        return null;
-      }
-
-      if (!rawSpeaker) {
-        throw new TranscriptNormalizationError(
-          "assemblyai_speaker_labels_missing",
-          "AssemblyAI utterance was missing a speaker label",
-        );
-      }
-
-      const speaker = getSpeakerIndex(rawSpeaker, speakerMap);
-      const words = (utterance.words ?? []).map((word) => {
-        const wordText = word.text?.trim() ?? "";
-
-        if (!wordText) {
-          return null;
-        }
-
-        if (typeof word.start !== "number" || typeof word.end !== "number") {
-          throw new TranscriptNormalizationError(
-            "assemblyai_word_timestamps_missing",
-            "AssemblyAI word was missing start or end timestamp",
-          );
-        }
-
-        return {
-          word: wordText,
-          startSec: millisecondsToSeconds(word.start),
-          endSec: Math.max(
-            millisecondsToSeconds(word.end),
-            millisecondsToSeconds(word.start),
-          ),
-          confidence:
-            typeof word.confidence === "number" ? word.confidence : null,
-        };
-      });
-
-      const normalizedWords = words.filter(
-        (word): word is TranscriptUtterance["words"][number] => word !== null,
-      );
-
-      if (normalizedWords.length === 0) {
-        throw new TranscriptNormalizationError(
-          "assemblyai_word_timestamps_missing",
-          "AssemblyAI utterance did not include timed words",
-        );
-      }
-
-      return {
-        index,
-        speaker,
-        speakerLabel: formatSpeakerLabel(speaker),
-        startSec,
-        endSec: Math.max(endSec, startSec),
-        text,
-        confidence:
-          typeof utterance.confidence === "number"
-            ? utterance.confidence
-            : null,
-        words: normalizedWords,
-      } satisfies TranscriptUtterance;
-    })
-    .filter(
-      (utterance): utterance is TranscriptUtterance => utterance !== null,
-    );
-
-  // AssemblyAI utterances are speaker TURNS — a single-speaker monologue
-  // arrives as one utterance spanning the whole video. Split to sentence-level
-  // so downstream consumers (the clip-detection LLM prompt's per-line
-  // timestamps, SRT/VTT cues, transcript views) get usable timing anchors.
-  const normalizedUtterances = splitUtterancesIntoSentences(turnUtterances);
-
-  if (normalizedUtterances.length === 0) {
-    if (options.allowEmpty) return emptyAssemblyAiTranscript(payload, rawPayload);
-    throw new TranscriptNormalizationError(
-      "assemblyai_utterances_missing",
-      "AssemblyAI transcript did not include usable utterances",
-    );
+  const turns: TranscriptUtterance[] = [];
+  let run: ScribeWord[] = [];
+  const flush = () => {
+    const first = run[0];
+    if (!first) return;
+    const turnWords = run.map((entry) => entry.word);
+    turns.push({
+      index: turns.length,
+      speaker: first.speaker,
+      speakerLabel: formatSpeakerLabel(first.speaker),
+      startSec: turnWords[0]!.startSec,
+      endSec: turnWords.reduce((end, word) => Math.max(end, word.endSec), 0),
+      text: joinTranscriptWords(turnWords),
+      confidence: null,
+      words: turnWords,
+    });
+    run = [];
+  };
+  for (const entry of words) {
+    if (run.length > 0 && run[0]!.speaker !== entry.speaker) flush();
+    run.push(entry);
   }
+  flush();
 
-  const directText = payload.text?.trim();
-  const text =
-    directText ||
-    normalizedUtterances.map((utterance) => utterance.text).join("\n\n");
-
-  const speakers = new Set(
-    normalizedUtterances.map((utterance) => utterance.speaker),
-  );
-
+  const utterances = splitUtterancesIntoSentences(turns);
   const durationSeconds =
-    typeof payload.audio_duration === "number"
-      ? Math.round(payload.audio_duration)
-      : normalizedUtterances.length > 0
-        ? Math.round(
-            Math.max(
-              ...normalizedUtterances.map((utterance) => utterance.endSec),
-            ),
-          )
-        : null;
+    options.durationSeconds ??
+    utterances.reduce((end, utterance) => Math.max(end, utterance.endSec), 0);
 
   return {
-    provider: "assemblyai",
-    providerModel: getAssemblyAiProviderModel(payload),
-    providerJobId: payload.id ?? null,
-    languageCode: payload.language_code ?? null,
-    languageConfidence: getAssemblyAiLanguageConfidence(payload),
-    text,
-    utterances: normalizedUtterances,
-    speakerCount: speakers.size,
-    durationSeconds,
+    provider: "elevenlabs",
+    providerModel: SCRIBE_MODEL_ID,
+    providerJobId: options.providerJobId,
+    providerRequestId: options.providerRequestId,
+    languageCode: scribeLanguageCode(payload),
+    languageConfidence: scribeLanguageConfidence(payload),
+    text: utterances.map((utterance) => utterance.text).join("\n\n"),
+    utterances,
+    speakerCount: new Set(utterances.map((utterance) => utterance.speaker)).size,
+    durationSeconds: Math.round(durationSeconds),
     rawPayload,
   };
 }
