@@ -10,8 +10,10 @@ import {
 import { WorkflowFailure } from "@narriflow/services";
 import {
 	clipAspectRatioOptions,
+	standardFrameRate,
 	type ClipAspectRatio,
 	type BrandTemplateSnapshot,
+	type FrameRate,
 	type MediaFacts,
 } from "@narriflow/validators";
 import type { CompositionCaptionVisualLayer } from "@narriflow/composition-plan";
@@ -1310,6 +1312,17 @@ function generatedFrameRateOf(probe: WorkerMediaInspection): GeneratedFrameRate 
 	return constant ? rationalText(constant) : probe.fps;
 }
 
+/** The rate a video render is delivered at: the source's own clock, or the
+ *  constant rate a variable-rate source was normalized to. The encoder is told
+ *  this rate and the output validator expects it, so they cannot drift apart. */
+export function renderOutputFrameRate(probe: WorkerMediaInspection): FrameRate {
+	return (
+		probe.videoClock?.constantRate ??
+		probe.facts?.videos[0]?.rFrameRate ??
+		standardFrameRate(probe.fps) ?? { numerator: 30, denominator: 1 }
+	);
+}
+
 type MediaVideoFacts = MediaFacts["videos"][number];
 
 /** How one HDR video is read: the zscale names of its signal and the peak the
@@ -1416,7 +1429,10 @@ export const SDR_OUTPUT_COLOR = {
  *  is converted rather than encoded as High 4:4:4 Predictive. */
 export const OUTPUT_PIXEL_FORMAT = "yuv420p";
 
-function x264VideoArgs(encoder: { preset: string; crf: string }): string[] {
+/** `-r` gives every delivered frame a duration. FFmpeg 7's `setpts` clears them
+ *  and the mp4 muxer then writes the last sample with duration 0, which an
+ *  edit list hides: the header counts one frame more than any player decodes. */
+function x264VideoArgs(encoder: { preset: string; crf: string }, frameRate?: FrameRate): string[] {
 	return [
 		"-c:v",
 		"libx264",
@@ -1426,6 +1442,7 @@ function x264VideoArgs(encoder: { preset: string; crf: string }): string[] {
 		encoder.crf,
 		"-pix_fmt",
 		OUTPUT_PIXEL_FORMAT,
+		...(frameRate ? ["-r", rationalText(frameRate)] : []),
 	];
 }
 
@@ -3040,7 +3057,7 @@ function buildSingleVideoArgs(params: {
 		filterParts.join(";"),
 		"-map",
 		finalLabel,
-		...x264VideoArgs(params.encoder),
+		...x264VideoArgs(params.encoder, renderOutputFrameRate(params.probe)),
 	);
 
 	if (hasMixedAudio) {
@@ -3351,7 +3368,7 @@ function buildBrollVideoArgs(params: {
 	// even with every B-roll input now trimmed, this guarantees the encoded
 	// output can never exceed the clip's own planned duration.
 	args.push(
-		...x264VideoArgs(params.encoder),
+		...x264VideoArgs(params.encoder, renderOutputFrameRate(params.probe)),
 		"-t",
 		clipDurationSec.toFixed(3),
 		"-movflags",

@@ -6,7 +6,9 @@ import {
   bindCompositionPlanAudioInputs,
   compileClipCompositionCommand,
   compileCompositionPlanAudioSchedule,
+  renderOutputFrameRate,
 } from "./composition-ffmpeg-adapter";
+import { passthroughColor, validateRenderOutput } from "./render-output-validation";
 import { buildClipCutPlan } from "./tasks/cut-plan";
 import {
   chooseConstantFrameRate,
@@ -173,7 +175,7 @@ describe("inspection of a variable-rate stream", () => {
   });
 });
 
-function command(options: { source: WorkerMediaInspection; startSec?: number; endSec?: number; deletedRanges?: Array<{ startSec: number; endSec: number }>; insertScene?: boolean; sourcePath?: string; outputPath?: string }) {
+function command(options: { source: WorkerMediaInspection; startSec?: number; endSec?: number; deletedRanges?: Array<{ startSec: number; endSec: number }>; insertScene?: boolean; sourcePath?: string; outputPath?: string; preset?: string }) {
   const startSec = options.startSec ?? 0;
   const endSec = options.endSec ?? 4;
   const result = planClipComposition({
@@ -202,7 +204,7 @@ function command(options: { source: WorkerMediaInspection; startSec?: number; en
     sourcePath: options.sourcePath ?? "/source.mp4", outputPath: options.outputPath ?? "/out.mp4",
     startSec, endSec, source: options.source, plan: result.plan, targetId: "vertical", cutPlan,
     audio: bindCompositionPlanAudioInputs(compileCompositionPlanAudioSchedule(result.plan), {}),
-    encoder: { preset: "ultrafast", crf: "24" },
+    encoder: { preset: options.preset ?? "ultrafast", crf: "24" },
     assets: { subtitlePath: null },
   });
 }
@@ -313,3 +315,55 @@ describe("real variable-rate media", () => {
     }, 60_000);
   }
 });
+
+describe("delivered frame rate", () => {
+  const rate = (numerator: number, denominator: number) => ({ numerator, denominator });
+  const factsWith = (rFrameRate: ReturnType<typeof rate>) => ({ videos: [{ rFrameRate }], audios: [] }) as unknown as WorkerMediaInspection["facts"];
+  const encodedRate = (args: string[]) => args[args.indexOf("-r") + 1];
+
+  test("the rate is the normalized constant rate, then the stream's own, then a standard rate, then 30", () => {
+    expect(renderOutputFrameRate(fakeInspection({ fps: 15, videoClock: clockOf(90000, rate(15, 1)), facts: factsWith(rate(90000, 1)) }))).toEqual(rate(15, 1));
+    expect(renderOutputFrameRate(fakeInspection({ facts: factsWith(rate(30000, 1001)) }))).toEqual(rate(30000, 1001));
+    expect(renderOutputFrameRate(fakeInspection({ fps: 30000 / 1001 }))).toEqual(rate(30000, 1001));
+    expect(renderOutputFrameRate(fakeInspection({ fps: 0 }))).toEqual(rate(30, 1));
+  });
+
+  test("a video encode declares it, so every frame leaves the encoder with a duration", () => {
+    expect(encodedRate(command({ source: fakeInspection() }))).toBe("30");
+    expect(encodedRate(command({ source: fakeInspection({ facts: factsWith(rate(30000, 1001)) }) }))).toBe("30000/1001");
+    expect(encodedRate(command({ source: fakeInspection({ fps: 15, videoClock: clockOf(90000, rate(15, 1)) }), insertScene: true }))).toBe("15");
+  });
+});
+
+describe("a window that ends inside a frame", () => {
+  const signal = new AbortController().signal;
+
+  // FFmpeg 7 clears frame durations in setpts (the source clock stage of a scene
+  // render); the mp4 muxer then wrote the last sample with duration 0, the edit
+  // list hid that frame from every decoder, and the header counted one frame more
+  // than was playable (781 vs 780 at 26.02 s). FFmpeg 8 and later keep them.
+  test("keeps its last frame playable: header and decoded frame counts agree", async () => {
+    await productionWorkerProcessModule.withScratchDirectory("narriflow-last-frame-", async (directory) => {
+      const input = join(directory, "source.mp4");
+      await productionWorkerProcessModule.execute({
+        command: "ffmpeg", signal, deadlineMs: 60_000,
+        args: ["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=320x180:r=30:d=32", "-f", "lavfi", "-i", "sine=r=44100:d=32",
+          "-c:v", "libx264", "-preset", "veryfast", "-video_track_timescale", "15360", "-pix_fmt", "yuv420p", "-c:a", "aac", input],
+      });
+      const source = await productionWorkerProcessModule.inspectMedia({ sourcePath: input, signal, deadlineMs: 30_000 });
+      const output = join(directory, "out.mp4");
+      const args = command({ source, startSec: 3, endSec: 28.02, insertScene: true, sourcePath: input, outputPath: output, preset: "veryfast" });
+      await productionWorkerProcessModule.execute({ command: "ffmpeg", args: ["-hide_banner", "-loglevel", "error", ...args], signal, deadlineMs: 60_000 });
+      const result = await validateRenderOutput({
+        path: output, workerProcess: productionWorkerProcessModule, signal,
+        expected: {
+          durationSec: 26.02, width: 90, height: 160, frameRate: rate30, sampleAspectRatio: { numerator: 1, denominator: 1 },
+          audio: {}, color: passthroughColor(undefined),
+        },
+      });
+      expect(result.decoded.video.frames).toBe(781);
+    });
+  }, 90_000);
+});
+
+const rate30 = { numerator: 30, denominator: 1 };

@@ -2,13 +2,13 @@ import { stat } from "node:fs/promises";
 import type { ClipCompositionPlan } from "@narriflow/composition-plan";
 import { WorkflowFailure } from "@narriflow/services";
 import {
-	standardFrameRate,
 	type FrameRate,
 	type MediaFacts,
 } from "@narriflow/validators";
 import type { OmittedGlyph, SkippedEmoji } from "./caption-glyphs";
 import {
 	OUTPUT_PIXEL_FORMAT,
+	renderOutputFrameRate,
 	rendersConvertedSdr,
 	SDR_OUTPUT_COLOR,
 	type BoundCompositionAudioRenderRequest,
@@ -170,12 +170,7 @@ export function compositionOutputExpectation(input: {
 		frameRate:
 			target.effectiveMode === "audiogram"
 				? { numerator: 25, denominator: 1 }
-				: (input.source.videoClock?.constantRate ??
-					sourceVideo?.rFrameRate ??
-					standardFrameRate(input.source.fps) ?? {
-						numerator: 30,
-						denominator: 1,
-					}),
+				: renderOutputFrameRate(input.source),
 		sampleAspectRatio: { numerator: 1, denominator: 1 },
 		variableFrameSpacing: sceneAudio,
 		audio: hasAudio
