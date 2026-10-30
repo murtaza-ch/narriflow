@@ -46,10 +46,10 @@ describe("caption omission note", () => {
   });
 
   test("text removed by cuts is not warned about, and the labels are the export's", () => {
-    const words = [["fine", 0, 1], ["\u{13000}", 4, 5], ["\u0985", 7, 8]] as const;
+    const words = [["fine", 0, 1], ["\u{13000}", 4, 5], ["\u13A0", 7, 8]] as const;
     const cut = studioDocument(words, { deletedRanges: [{ startSec: 3, endSec: 6 }] });
     expect(deriveCaptionCues(cut).map((cue) => cue.text).join(" ")).not.toContain("\u{13000}");
-    expect(studioCaptionOmissionNote(cut)?.omissions.map((omission) => omission.label)).toEqual(["U+0985"]);
+    expect(studioCaptionOmissionNote(cut)?.omissions.map((omission) => omission.label)).toEqual(["U+13A0"]);
     expect(studioCaptionOmissionNote(studioDocument(words, { deletedRanges: [{ startSec: 3, endSec: 9 }] }))).toBeNull();
   });
 

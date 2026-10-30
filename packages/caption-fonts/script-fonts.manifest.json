@@ -1,0 +1,424 @@
+{
+  "note": "Pinned Noto script faces added for the Scribe v2 language catalog (spec D11). Every file is SHA-256 pinned here and in apps/worker/runtime-lock.json; src/script-fonts.test.ts checks both. License text: licenses/noto-fallbacks-OFL.txt. `languages` marks a language-aware face (ticket 10); the rest are the single face for their script.",
+  "fonts": [
+    {
+      "file": "NotoSansArmenian-Regular.ttf",
+      "script": "Armenian",
+      "family": "Noto Sans Armenian",
+      "assName": "Noto Sans Armenian Regular",
+      "version": "2.008",
+      "sha256": "720df88c332417a235b4d6209d14ec2e2bf4bfe2a954b7453d869ea593bfce1e",
+      "bytes": 30752,
+      "unicodeRanges": [
+        "U+530-58F",
+        "U+FB13-FB17"
+      ],
+      "source": {
+        "repository": "https://github.com/notofonts/armenian",
+        "release": "NotoSansArmenian-v2.008",
+        "archive": "https://github.com/notofonts/armenian/releases/download/NotoSansArmenian-v2.008/NotoSansArmenian-v2.008.zip",
+        "archiveSha256": "eab89b99e134177ca6a3f9f0412a7cb812aafceb13175d686b4c45cb237f64ac",
+        "path": "NotoSansArmenian/hinted/ttf/NotoSansArmenian-Regular.ttf"
+      },
+      "license": "OFL-1.1",
+      "copyright": "Copyright 2022 The Noto Project Authors (https://github.com/notofonts/armenian)"
+    },
+    {
+      "file": "NotoSansBengali-Regular.ttf",
+      "script": "Bengali",
+      "family": "Noto Sans Bengali",
+      "assName": "Noto Sans Bengali Regular",
+      "version": "3.011",
+      "sha256": "b55c62ee531e3214da6c0701daecea89a52ba42db7d8206b92e6b51f397a3193",
+      "bytes": 143072,
+      "unicodeRanges": [
+        "U+980-9FF",
+        "U+200C-200D"
+      ],
+      "source": {
+        "repository": "https://github.com/notofonts/bengali",
+        "release": "NotoSansBengali-v3.011",
+        "archive": "https://github.com/notofonts/bengali/releases/download/NotoSansBengali-v3.011/NotoSansBengali-v3.011.zip",
+        "archiveSha256": "2aca24bf71665e66c32e14862ee58857dd8b8b07b6321ec7c96f3121ad6683b1",
+        "path": "NotoSansBengali/hinted/ttf/NotoSansBengali-Regular.ttf"
+      },
+      "license": "OFL-1.1",
+      "copyright": "Copyright 2025 The Noto Project Authors (https://github.com/notofonts/bengali)"
+    },
+    {
+      "file": "NotoSansGurmukhi-Regular.ttf",
+      "script": "Gurmukhi",
+      "family": "Noto Sans Gurmukhi",
+      "assName": "Noto Sans Gurmukhi Regular",
+      "version": "2.004",
+      "sha256": "658d0207da305a1411c539a8b0bbeda64d4146e54fb4827facddb890b6b90d74",
+      "bytes": 55172,
+      "unicodeRanges": [
+        "U+A00-A7F",
+        "U+200C-200D"
+      ],
+      "source": {
+        "repository": "https://github.com/notofonts/gurmukhi",
+        "release": "NotoSansGurmukhi-v2.004",
+        "archive": "https://github.com/notofonts/gurmukhi/releases/download/NotoSansGurmukhi-v2.004/NotoSansGurmukhi-v2.004.zip",
+        "archiveSha256": "a55ee5ee831ce3a4bb73bdc46bd0a02db6eb9445c370a0afbc529379ed8cea52",
+        "path": "NotoSansGurmukhi/hinted/ttf/NotoSansGurmukhi-Regular.ttf"
+      },
+      "license": "OFL-1.1",
+      "copyright": "Copyright 2022 The Noto Project Authors (https://github.com/notofonts/gurmukhi)"
+    },
+    {
+      "file": "NotoSansGujarati-Regular.ttf",
+      "script": "Gujarati",
+      "family": "Noto Sans Gujarati",
+      "assName": "Noto Sans Gujarati Regular",
+      "version": "2.106",
+      "sha256": "9b5a7aaeeb649a2e75a49d8b006a1f87db1b61c0df3b001609f4e0725d88dbf6",
+      "bytes": 200704,
+      "unicodeRanges": [
+        "U+A80-AFF",
+        "U+200C-200D"
+      ],
+      "source": {
+        "repository": "https://github.com/notofonts/gujarati",
+        "release": "NotoSansGujarati-v2.106",
+        "archive": "https://github.com/notofonts/gujarati/releases/download/NotoSansGujarati-v2.106/NotoSansGujarati-v2.106.zip",
+        "archiveSha256": "a4ff1dd03a4998ba08ee7ee43be2aca7594a884982049e48c25ccc48991474ed",
+        "path": "NotoSansGujarati/hinted/ttf/NotoSansGujarati-Regular.ttf"
+      },
+      "license": "OFL-1.1",
+      "copyright": "Copyright 2022 The Noto Project Authors (https://github.com/notofonts/gujarati)"
+    },
+    {
+      "file": "NotoSansOriya-Regular.ttf",
+      "script": "Oriya",
+      "family": "Noto Sans Oriya",
+      "assName": "Noto Sans Oriya Regular",
+      "version": "2.007",
+      "sha256": "a16645d056017927406546aa78e4ce15e782fd8783467267b75450453d007415",
+      "bytes": 131216,
+      "unicodeRanges": [
+        "U+B00-B7F",
+        "U+200C-200D"
+      ],
+      "source": {
+        "repository": "https://github.com/notofonts/oriya",
+        "release": "NotoSansOriya-v2.007",
+        "archive": "https://github.com/notofonts/oriya/releases/download/NotoSansOriya-v2.007/NotoSansOriya-v2.007.zip",
+        "archiveSha256": "025b637e2d391f422ae12f4eb365876ce3b195283025ababb74ecf6baae35442",
+        "path": "NotoSansOriya/hinted/ttf/NotoSansOriya-Regular.ttf"
+      },
+      "license": "OFL-1.1",
+      "copyright": "Copyright 2022 The Noto Project Authors (https://github.com/notofonts/oriya)"
+    },
+    {
+      "file": "NotoSansTamil-Regular.ttf",
+      "script": "Tamil",
+      "family": "Noto Sans Tamil",
+      "assName": "Noto Sans Tamil Regular",
+      "version": "2.004",
+      "sha256": "3c0a186feb3c63c7f6d63e1511dcdc144e745ae09b98e217c83f3e317974f6f9",
+      "bytes": 73992,
+      "unicodeRanges": [
+        "U+B80-BFF",
+        "U+200C-200D"
+      ],
+      "source": {
+        "repository": "https://github.com/notofonts/tamil",
+        "release": "NotoSansTamil-v2.004",
+        "archive": "https://github.com/notofonts/tamil/releases/download/NotoSansTamil-v2.004/NotoSansTamil-v2.004.zip",
+        "archiveSha256": "f8284e0f200a7f29a439b4ec88280d864b2b31f8479111c5b658ba6da38b3005",
+        "path": "NotoSansTamil/hinted/ttf/NotoSansTamil-Regular.ttf"
+      },
+      "license": "OFL-1.1",
+      "copyright": "Copyright 2022 The Noto Project Authors (https://github.com/notofonts/tamil)"
+    },
+    {
+      "file": "NotoSansTelugu-Regular.ttf",
+      "script": "Telugu",
+      "family": "Noto Sans Telugu",
+      "assName": "Noto Sans Telugu Regular",
+      "version": "2.005",
+      "sha256": "b274780b69d1d23fe84b55e809a152cb2ac5306d33864b1f87622f6971871aae",
+      "bytes": 235176,
+      "unicodeRanges": [
+        "U+C00-C7F",
+        "U+200C-200D"
+      ],
+      "source": {
+        "repository": "https://github.com/notofonts/telugu",
+        "release": "NotoSansTelugu-v2.005",
+        "archive": "https://github.com/notofonts/telugu/releases/download/NotoSansTelugu-v2.005/NotoSansTelugu-v2.005.zip",
+        "archiveSha256": "3553e00ca341dc06f4a143c604dd93a1342553169b5a06dc8b0ff50ab6eba0a2",
+        "path": "NotoSansTelugu/hinted/ttf/NotoSansTelugu-Regular.ttf"
+      },
+      "license": "OFL-1.1",
+      "copyright": "Copyright 2022 The Noto Project Authors (https://github.com/notofonts/telugu)"
+    },
+    {
+      "file": "NotoSansKannada-Regular.ttf",
+      "script": "Kannada",
+      "family": "Noto Sans Kannada",
+      "assName": "Noto Sans Kannada Regular",
+      "version": "2.006",
+      "sha256": "9ad74dc64838c6855b96f671fc08e425a58921b9d0c71712ea79c328a27e6e38",
+      "bytes": 182416,
+      "unicodeRanges": [
+        "U+C80-CFF",
+        "U+200C-200D"
+      ],
+      "source": {
+        "repository": "https://github.com/notofonts/kannada",
+        "release": "NotoSansKannada-v2.006",
+        "archive": "https://github.com/notofonts/kannada/releases/download/NotoSansKannada-v2.006/NotoSansKannada-v2.006.zip",
+        "archiveSha256": "902b1b92018f7c96862d68d0a39ef03b978203cd4c3f55d6760f597657b51c44",
+        "path": "NotoSansKannada/hinted/ttf/NotoSansKannada-Regular.ttf"
+      },
+      "license": "OFL-1.1",
+      "copyright": "Copyright 2022 The Noto Project Authors (https://github.com/notofonts/kannada)"
+    },
+    {
+      "file": "NotoSansMalayalam-Regular.ttf",
+      "script": "Malayalam",
+      "family": "Noto Sans Malayalam",
+      "assName": "Noto Sans Malayalam Regular",
+      "version": "2.104",
+      "sha256": "c08de7fa8d032a5d6a4d120fb82c78cec60b362a4e73fa26360d89759ff2a7f9",
+      "bytes": 112936,
+      "unicodeRanges": [
+        "U+D00-D7F",
+        "U+200C-200D"
+      ],
+      "source": {
+        "repository": "https://github.com/notofonts/malayalam",
+        "release": "NotoSansMalayalam-v2.104",
+        "archive": "https://github.com/notofonts/malayalam/releases/download/NotoSansMalayalam-v2.104/NotoSansMalayalam-v2.104.zip",
+        "archiveSha256": "2ebd31e79f2893025d659def7784e0ec3557e7ff9ac105adcc82d35782913bf2",
+        "path": "NotoSansMalayalam/hinted/ttf/NotoSansMalayalam-Regular.ttf"
+      },
+      "license": "OFL-1.1",
+      "copyright": "Copyright 2022 The Noto Project Authors (https://github.com/notofonts/malayalam)"
+    },
+    {
+      "file": "NotoSansSinhala-Regular.ttf",
+      "script": "Sinhala",
+      "family": "Noto Sans Sinhala",
+      "assName": "Noto Sans Sinhala Regular",
+      "version": "3.000",
+      "sha256": "9e32612d47004552f3125e78648a9e2e7899a216ccd3cefbb93a9b5f4c809feb",
+      "bytes": 154912,
+      "unicodeRanges": [
+        "U+D80-DFF",
+        "U+200C-200D"
+      ],
+      "source": {
+        "repository": "https://github.com/notofonts/sinhala",
+        "release": "NotoSansSinhala-v3.000",
+        "archive": "https://github.com/notofonts/sinhala/releases/download/NotoSansSinhala-v3.000/NotoSansSinhala-v3.000.zip",
+        "archiveSha256": "25b2c787e0b34b82ccedce026e6519cc535394a6bd8520d5a1df45c233807d8a",
+        "path": "NotoSansSinhala/hinted/ttf/NotoSansSinhala-Regular.ttf"
+      },
+      "license": "OFL-1.1",
+      "copyright": "Copyright 2022 The Noto Project Authors (https://github.com/notofonts/sinhala)"
+    },
+    {
+      "file": "NotoSansLao-Regular.ttf",
+      "script": "Lao",
+      "family": "Noto Sans Lao",
+      "assName": "Noto Sans Lao Regular",
+      "version": "2.003",
+      "sha256": "0a86e5e1ccfe34ca78c43fac6829dc751b42bcc469272a9a55325aae587bfbe7",
+      "bytes": 35884,
+      "unicodeRanges": [
+        "U+E80-EFF"
+      ],
+      "source": {
+        "repository": "https://github.com/notofonts/lao",
+        "release": "NotoSansLao-v2.003",
+        "archive": "https://github.com/notofonts/lao/releases/download/NotoSansLao-v2.003/NotoSansLao-v2.003.zip",
+        "archiveSha256": "5a87c31b1a40ef8147c1e84437e5f0ceba2d4dbbfc0b56a65821ad29870da8c0",
+        "path": "NotoSansLao/hinted/ttf/NotoSansLao-Regular.ttf"
+      },
+      "license": "OFL-1.1",
+      "copyright": "Copyright 2022 The Noto Project Authors (https://github.com/notofonts/lao)"
+    },
+    {
+      "file": "NotoSansKhmer-Regular.ttf",
+      "script": "Khmer",
+      "family": "Noto Sans Khmer",
+      "assName": "Noto Sans Khmer Regular",
+      "version": "2.004",
+      "sha256": "e66675f2082788f0511a714bef5a1748928294b38c8e286a96ea73a864b5e605",
+      "bytes": 114576,
+      "unicodeRanges": [
+        "U+1780-17FF",
+        "U+19E0-19FF",
+        "U+200C-200D"
+      ],
+      "source": {
+        "repository": "https://github.com/notofonts/khmer",
+        "release": "NotoSansKhmer-v2.004",
+        "archive": "https://github.com/notofonts/khmer/releases/download/NotoSansKhmer-v2.004/NotoSansKhmer-v2.004.zip",
+        "archiveSha256": "19382ca97d62febea1c735ebee35a5aa4f03beca9b6ea6f6d86b7a7a0025a688",
+        "path": "NotoSansKhmer/hinted/ttf/NotoSansKhmer-Regular.ttf"
+      },
+      "license": "OFL-1.1",
+      "copyright": "Copyright 2022 The Noto Project Authors (https://github.com/notofonts/khmer)"
+    },
+    {
+      "file": "NotoSansMyanmar-Regular.ttf",
+      "script": "Myanmar",
+      "family": "Noto Sans Myanmar",
+      "assName": "Noto Sans Myanmar Regular",
+      "version": "2.107",
+      "sha256": "fafce4db400bc0b214907ccdbfb0ad2f18a57bfefd08c8a571830b84088cf2fc",
+      "bytes": 195088,
+      "unicodeRanges": [
+        "U+1000-109F",
+        "U+A9E0-A9FF",
+        "U+AA60-AA7F"
+      ],
+      "source": {
+        "repository": "https://github.com/notofonts/myanmar",
+        "release": "NotoSansMyanmar-v2.107",
+        "archive": "https://github.com/notofonts/myanmar/releases/download/NotoSansMyanmar-v2.107/NotoSansMyanmar-v2.107.zip",
+        "archiveSha256": "c4995ee97f1f267b46cf83734dbf18a3cfd431e387b6fe38e90279546f260c4b",
+        "path": "NotoSansMyanmar/hinted/ttf/NotoSansMyanmar-Regular.ttf"
+      },
+      "license": "OFL-1.1",
+      "copyright": "Copyright 2022 The Noto Project Authors (https://github.com/notofonts/myanmar)"
+    },
+    {
+      "file": "NotoSansGeorgian-Regular.ttf",
+      "script": "Georgian",
+      "family": "Noto Sans Georgian",
+      "assName": "Noto Sans Georgian Regular",
+      "version": "2.005",
+      "sha256": "d3e33254b09e7bb2c5cf0f17e554b80462056c5a107097f258d495168c3a9346",
+      "bytes": 52888,
+      "unicodeRanges": [
+        "U+10A0-10FF",
+        "U+1C90-1CBF",
+        "U+2D00-2D2F"
+      ],
+      "source": {
+        "repository": "https://github.com/notofonts/georgian",
+        "release": "NotoSansGeorgian-v2.005",
+        "archive": "https://github.com/notofonts/georgian/releases/download/NotoSansGeorgian-v2.005/NotoSansGeorgian-v2.005.zip",
+        "archiveSha256": "10e85011008108308e6feab0408242acb07804da61ede3d3ff236461ae07ab1b",
+        "path": "NotoSansGeorgian/hinted/ttf/NotoSansGeorgian-Regular.ttf"
+      },
+      "license": "OFL-1.1",
+      "copyright": "Copyright 2022 The Noto Project Authors (https://github.com/notofonts/georgian)"
+    },
+    {
+      "file": "NotoSansEthiopic-Regular.ttf",
+      "script": "Ethiopic",
+      "family": "Noto Sans Ethiopic",
+      "assName": "Noto Sans Ethiopic Regular",
+      "version": "2.102",
+      "sha256": "f6f7fc379db9438959a2b0527e7a2cf36ea9c84626d56ec444fff37fc24c3c10",
+      "bytes": 376804,
+      "unicodeRanges": [
+        "U+1200-139F",
+        "U+2D80-2DDF",
+        "U+AB00-AB2F"
+      ],
+      "source": {
+        "repository": "https://github.com/notofonts/ethiopic",
+        "release": "NotoSansEthiopic-v2.102",
+        "archive": "https://github.com/notofonts/ethiopic/releases/download/NotoSansEthiopic-v2.102/NotoSansEthiopic-v2.102.zip",
+        "archiveSha256": "4e3e53aa1586344ba842f310ab35c65281fa11e8cc2d259613ad06a9ae994d52",
+        "path": "NotoSansEthiopic/hinted/ttf/NotoSansEthiopic-Regular.ttf"
+      },
+      "license": "OFL-1.1",
+      "copyright": "Copyright 2022 The Noto Project Authors (https://github.com/notofonts/ethiopic)"
+    },
+    {
+      "file": "NotoNastaliqUrdu-Regular.ttf",
+      "script": "Arabic (Nastaliq)",
+      "family": "Noto Nastaliq Urdu",
+      "assName": "Noto Nastaliq Urdu Regular",
+      "version": "4.000",
+      "sha256": "4d05b6821862ca1f3c80c47c80a352b47dd349ab73814f60e377eea311e0e42c",
+      "bytes": 253396,
+      "languages": [
+        "ur"
+      ],
+      "unicodeRanges": [
+        "U+600-6FF",
+        "U+750-77F",
+        "U+8A0-8FF",
+        "U+FB50-FDFF",
+        "U+FE70-FEFF"
+      ],
+      "source": {
+        "repository": "https://github.com/notofonts/nastaliq",
+        "release": "NotoNastaliqUrdu-v4.000",
+        "archive": "https://github.com/notofonts/nastaliq/releases/download/NotoNastaliqUrdu-v4.000/NotoNastaliqUrdu-v4.000.zip",
+        "archiveSha256": "0725a7a9dfd450961b18227445cc9a5d21624d68b1f88fa52e4c6a0fe7576728",
+        "path": "NotoNastaliqUrdu/hinted/ttf/NotoNastaliqUrdu-Regular.ttf"
+      },
+      "license": "OFL-1.1",
+      "copyright": "Copyright 2022 The Noto Project Authors (https://github.com/notofonts/nastaliq)"
+    },
+    {
+      "file": "NotoSansJP-Regular.otf",
+      "script": "Japanese",
+      "family": "Noto Sans JP",
+      "assName": "Noto Sans JP",
+      "version": "2.004",
+      "sha256": "dff723ba59d57d136764a04b9b2d03205544f7cd785a711442d6d2d085ac5073",
+      "bytes": 4533028,
+      "languages": [
+        "ja"
+      ],
+      "unicodeRanges": [
+        "U+3000-30FF",
+        "U+3000-303F",
+        "U+3400-4DBF",
+        "U+4E00-9FFF",
+        "U+FF00-FFEF"
+      ],
+      "source": {
+        "repository": "https://github.com/notofonts/noto-cjk",
+        "release": "Sans2.004",
+        "commit": "f8d157532fbfaeda587e826d4cd5b21a49186f7c",
+        "archive": "https://raw.githubusercontent.com/notofonts/noto-cjk/f8d157532fbfaeda587e826d4cd5b21a49186f7c/Sans/SubsetOTF/JP/NotoSansJP-Regular.otf",
+        "archiveSha256": "dff723ba59d57d136764a04b9b2d03205544f7cd785a711442d6d2d085ac5073",
+        "path": "Sans/SubsetOTF/JP/NotoSansJP-Regular.otf"
+      },
+      "license": "OFL-1.1",
+      "copyright": "© 2014-2021 Adobe (http://www.adobe.com/), with Reserved Font Name 'Source'."
+    },
+    {
+      "file": "NotoSansTC-Regular.otf",
+      "script": "Han (Traditional)",
+      "family": "Noto Sans TC",
+      "assName": "Noto Sans TC",
+      "version": "2.004",
+      "sha256": "5bab0cb3c1cf89dde07c4a95a4054b195afbcfe784d69d75c340780712237537",
+      "bytes": 5683368,
+      "languages": [
+        "yue"
+      ],
+      "unicodeRanges": [
+        "U+3000-30FF",
+        "U+3000-303F",
+        "U+3400-4DBF",
+        "U+4E00-9FFF",
+        "U+FF00-FFEF"
+      ],
+      "source": {
+        "repository": "https://github.com/notofonts/noto-cjk",
+        "release": "Sans2.004",
+        "commit": "f8d157532fbfaeda587e826d4cd5b21a49186f7c",
+        "archive": "https://raw.githubusercontent.com/notofonts/noto-cjk/f8d157532fbfaeda587e826d4cd5b21a49186f7c/Sans/SubsetOTF/TC/NotoSansTC-Regular.otf",
+        "archiveSha256": "5bab0cb3c1cf89dde07c4a95a4054b195afbcfe784d69d75c340780712237537",
+        "path": "Sans/SubsetOTF/TC/NotoSansTC-Regular.otf"
+      },
+      "license": "OFL-1.1",
+      "copyright": "© 2014-2021 Adobe (http://www.adobe.com/), with Reserved Font Name 'Source'."
+    }
+  ]
+}

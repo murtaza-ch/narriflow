@@ -12,11 +12,31 @@ coverage checks; none is a selectable caption style.
   NotoSansSymbols2-Regular.ttf     Copyright 2022 The Noto Project Authors (https://github.com/notofonts/symbols)
   NotoSansSC-Regular.otf           Copyright 2014-2021 Adobe (http://www.adobe.com/), Noto Sans CJK SC subset OTF
   NotoSansKR-Regular.otf           Copyright 2014-2021 Adobe (http://www.adobe.com/), Noto Sans CJK KR subset OTF (Hangul; Hanzi come from SC)
+  NotoSansArmenian-Regular.ttf     Copyright 2022 The Noto Project Authors (https://github.com/notofonts/armenian)
+  NotoSansBengali-Regular.ttf      Copyright 2025 The Noto Project Authors (https://github.com/notofonts/bengali)
+  NotoSansGurmukhi-Regular.ttf     Copyright 2022 The Noto Project Authors (https://github.com/notofonts/gurmukhi)
+  NotoSansGujarati-Regular.ttf     Copyright 2022 The Noto Project Authors (https://github.com/notofonts/gujarati)
+  NotoSansOriya-Regular.ttf        Copyright 2022 The Noto Project Authors (https://github.com/notofonts/oriya)
+  NotoSansTamil-Regular.ttf        Copyright 2022 The Noto Project Authors (https://github.com/notofonts/tamil)
+  NotoSansTelugu-Regular.ttf       Copyright 2022 The Noto Project Authors (https://github.com/notofonts/telugu)
+  NotoSansKannada-Regular.ttf      Copyright 2022 The Noto Project Authors (https://github.com/notofonts/kannada)
+  NotoSansMalayalam-Regular.ttf    Copyright 2022 The Noto Project Authors (https://github.com/notofonts/malayalam)
+  NotoSansSinhala-Regular.ttf      Copyright 2022 The Noto Project Authors (https://github.com/notofonts/sinhala)
+  NotoSansLao-Regular.ttf          Copyright 2022 The Noto Project Authors (https://github.com/notofonts/lao)
+  NotoSansKhmer-Regular.ttf        Copyright 2022 The Noto Project Authors (https://github.com/notofonts/khmer)
+  NotoSansMyanmar-Regular.ttf      Copyright 2022 The Noto Project Authors (https://github.com/notofonts/myanmar)
+  NotoSansGeorgian-Regular.ttf     Copyright 2022 The Noto Project Authors (https://github.com/notofonts/georgian)
+  NotoSansEthiopic-Regular.ttf     Copyright 2022 The Noto Project Authors (https://github.com/notofonts/ethiopic)
+  NotoNastaliqUrdu-Regular.ttf     Copyright 2022 The Noto Project Authors (https://github.com/notofonts/nastaliq)
+  NotoSansJP-Regular.otf           Copyright 2014-2021 Adobe (http://www.adobe.com/), Noto Sans CJK JP subset OTF
+  NotoSansTC-Regular.otf           Copyright 2014-2021 Adobe (http://www.adobe.com/), Noto Sans CJK TC subset OTF
   NotoEmoji-Regular.ttf            Copyright 2013 Google LLC (monochrome Noto Emoji, static wght=400 instance)
 
-Sources (pinned):
+Sources (pinned). The 18 script faces added for the Scribe language catalog are pinned one by one
+with release tag, archive URL and SHA-256 in script-fonts.manifest.json (hinted/ttf from each
+notofonts/<script> release; Noto Sans JP and TC from the same noto-cjk commit as SC and KR):
   notofonts/notofonts.github.io@c1d3718e2a0eb25c2567a694ee017061fdaa5f51  fonts/<Family>/hinted/ttf/<Family>-Regular.ttf
-  notofonts/noto-cjk@f8d157532fbfaeda587e826d4cd5b21a49186f7c             Sans/SubsetOTF/{SC,KR}/NotoSans{SC,KR}-Regular.otf
+  notofonts/noto-cjk@f8d157532fbfaeda587e826d4cd5b21a49186f7c             Sans/SubsetOTF/{SC,KR,JP,TC}/NotoSans<Region>-Regular.otf
   google/fonts@8b0a1d0f5983c89bc2b93f1b5fb55f9e252744b5 ofl/notoemoji/NotoEmoji[wght].ttf, instanced at wght=400 with fontTools varLib.instancer
 
 SHA-256 of each file is checked by src/fallback-fonts.test.ts.
