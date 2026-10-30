@@ -26,6 +26,7 @@ import {
   acceptedRecipeSchema,
   buildRecipeGenerationContext,
   recipeColumn,
+  sourceLanguageInputSchema,
   type FinishingSettings,
   type OpenUploadSessionInput as ValidatedOpenUploadSessionInput,
   type ReadUploadSessionInput as ValidatedReadUploadSessionInput,
@@ -3609,7 +3610,9 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
       finishing?: FinishingSettings | null;
       recipe?: { id: string; revision: number } | null;
     };
-    const languageCode = String(generation.languageCode ?? "auto");
+    // Auto (or a code outside the current catalog) is stored as no requested
+    // language, never the literal "auto".
+    const languageCode = sourceLanguageInputSchema.safeParse(generation.languageCode).data ?? null;
     const contentPack = contentPackSchema.parse(generation.contentPack);
     const [retention, workspace] = await Promise.all([
       projectRetentionService.assignmentForWorkspace(
