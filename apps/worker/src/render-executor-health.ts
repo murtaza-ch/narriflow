@@ -20,7 +20,7 @@ export async function verifySharedRenderEnvironment(): Promise<string> {
   if (!loadLock().platforms[fingerprint.platform] || !fingerprint.glyphRender.sha256 ||
     Object.values(fingerprint.filters).some((present) => !present) ||
     Object.values(fingerprint.encoders).some((present) => !present)) {
-    throw new Error("shared_render_runtime_unverified");
+    throw new Error(`shared_render_runtime_unverified: ${fingerprint.platform} needs a runtime-lock.json entry and every required filter, encoder and glyph render`);
   }
   return fingerprintId(fingerprint);
 }
@@ -82,8 +82,10 @@ export class RenderExecutorHealth {
       this.state = "healthy";
       this.failure = null;
       this.failedChecks = 0;
-    } catch {
-      if (!this.failure) this.dependencies.diagnose?.({ message: "render_environment_invalid", failureScope: "configuration" });
+    } catch (error) {
+      // The reason names the mismatched tool or the unlocked platform; it carries no secrets.
+      if (!this.failure) this.dependencies.diagnose?.({ message: "render_environment_invalid", failureScope: "configuration",
+        reason: error instanceof Error ? error.message.slice(0, 1000) : String(error) });
       this.failure ??= new WorkerProcessFailure("render_environment_invalid", "retryable",
         "Render runtime verification failed", "", null, { failureScope: "configuration" });
       this.state = "quarantined";

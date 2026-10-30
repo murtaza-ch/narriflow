@@ -1,5 +1,9 @@
 import { expect, test } from "bun:test";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { platformKey } from "../scripts/check-render-environment";
 import { RenderExecutorHealth, reserveWorkerHealthPort, verifySharedRenderEnvironment } from "./render-executor-health";
 import { executorProcessFailure, WorkerProcessFailure } from "./worker-process";
 
@@ -67,8 +71,18 @@ test("health failures remain recognizable through asset/analysis causes; Dolby V
   expect(executorProcessFailure(new Error("hdr_dolby_vision_unsupported"))).toBeNull();
 });
 
-if (process.platform !== "linux") {
-  test("the report-only native golden host cannot bypass shared-queue runtime admission", async () => {
-    await expect(verifySharedRenderEnvironment()).rejects.toThrow();
-  }, 30_000);
-}
+// linux-x64 is the authoritative image every lock check falls back to.
+test.skipIf(platformKey() === "linux-x64")("a host without a runtime-lock entry cannot join the shared render queue", async () => {
+  const lock = JSON.parse(readFileSync(join(import.meta.dir, "..", "runtime-lock.json"), "utf8"));
+  delete lock.platforms[platformKey()];
+  const path = join(mkdtempSync(join(tmpdir(), "narriflow-lock-")), "runtime-lock.json");
+  writeFileSync(path, JSON.stringify(lock));
+  const previous = process.env.RENDER_RUNTIME_LOCK;
+  process.env.RENDER_RUNTIME_LOCK = path;
+  try {
+    await expect(verifySharedRenderEnvironment()).rejects.toThrow(/runtime-lock\.json/);
+  } finally {
+    if (previous === undefined) delete process.env.RENDER_RUNTIME_LOCK;
+    else process.env.RENDER_RUNTIME_LOCK = previous;
+  }
+}, 30_000);

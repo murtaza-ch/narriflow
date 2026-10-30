@@ -101,6 +101,14 @@ workers compete for the same durable queues through PostgreSQL claims and
 leases. Either can process jobs created by either web app. Maintenance,
 publishing, and data deletion affect that same shared data set.
 
+A worker joins the shared queue only on a platform listed in
+`apps/worker/runtime-lock.json`. `linux-x64` is the authoritative Railway image;
+`darwin-arm64` is a non-authoritative entry pinned to the Homebrew FFmpeg on
+the development Mac (8.0.1). Check a local toolchain with
+`bun apps/worker/scripts/check-render-environment.ts --enforce`. After
+`brew upgrade ffmpeg`, update that entry's `ffmpeg.versionString`; otherwise the
+worker logs `render_environment_invalid` with the mismatch and restarts.
+
 For web and API development using the Railway worker:
 
 ```sh
