@@ -12,6 +12,8 @@
  * this table to the worker's.
  */
 
+import { captionGraphemes } from "@narriflow/caption-fonts/emoji";
+
 export interface CaptionScriptFace {
   /** The @font-face family: `family` in packages/caption-fonts/script-fonts.manifest.json. */
   readonly family: string;
@@ -99,4 +101,158 @@ export function captionLetterSpacingRuns(text: string): { text: string; spaced: 
     else runs.push({ text: char, spaced });
   }
   return runs;
+}
+
+// ─── Pill and plate extent ──────────────────────────────────────────────────
+
+/**
+ * Room left below fallback-face ink that hangs under the baseline. The same
+ * number as CAPTION_INK_MARGIN_EM in apps/worker/src/caption-ass.ts, which
+ * caption-script-fonts.test.ts holds this to.
+ */
+export const CAPTION_INK_MARGIN_EM = 0.06;
+
+/** Highest ink above and deepest ink below the baseline, in em; both 0 for no ink. */
+export interface CaptionInkEm {
+  readonly topEm: number;
+  readonly bottomEm: number;
+}
+
+export const NO_CAPTION_INK: CaptionInkEm = { topEm: 0, bottomEm: 0 };
+
+/**
+ * Vertical extent of a pill or plate around the baseline, as the burn-in
+ * draws it (decorationSpan in apps/worker/src/caption-ass.ts): padding above
+ * the cap height and below the baseline, grown to the ink of fallback-face
+ * glyphs that stand taller or hang lower. A pill takes its word's ink, a plate
+ * the whole line's. Without fallback ink this is the catalog metrics exactly.
+ */
+export function captionDecorationExtentEm(
+  capHeightEm: number,
+  pad: { readonly padTopEm: number; readonly padBottomEm: number },
+  ink: CaptionInkEm,
+): { aboveBaselineEm: number; belowBaselineEm: number } {
+  return {
+    aboveBaselineEm: Math.max(capHeightEm, ink.topEm) + pad.padTopEm,
+    belowBaselineEm: Math.max(pad.padBottomEm, ink.bottomEm + CAPTION_INK_MARGIN_EM),
+  };
+}
+
+/**
+ * The runs of `text` the requested face does not draw (the burn-in's `inked`
+ * parts: a different face draws them): neighbouring clusters stay together so
+ * marks shape with their base.
+ */
+export function captionFallbackRuns(text: string, drawnByRequested: (cluster: string) => boolean): string[] {
+  const runs: string[] = [];
+  let open = false;
+  for (const cluster of captionGraphemes(text)) {
+    if (drawnByRequested(cluster)) {
+      open = false;
+    } else if (open) {
+      runs[runs.length - 1] += cluster;
+    } else {
+      runs.push(cluster);
+      open = true;
+    }
+  }
+  return runs;
+}
+
+/** Ink of the fallback-drawn runs of `text`: the highest and the deepest among them. */
+export function captionFallbackInkEm(
+  text: string,
+  drawnByRequested: (cluster: string) => boolean,
+  measureRun: (run: string) => CaptionInkEm,
+): CaptionInkEm {
+  let topEm = 0;
+  let bottomEm = 0;
+  for (const run of captionFallbackRuns(text, drawnByRequested)) {
+    const ink = measureRun(run);
+    topEm = Math.max(topEm, ink.topEm);
+    bottomEm = Math.max(bottomEm, ink.bottomEm);
+  }
+  return topEm === 0 && bottomEm === 0 ? NO_CAPTION_INK : { topEm, bottomEm };
+}
+
+const MEASURE_PX = 100;
+let measureContext: CanvasRenderingContext2D | null | undefined;
+const inkCache = new Map<string, CaptionInkEm>();
+
+function canvasContext(): CanvasRenderingContext2D | null {
+  if (measureContext === undefined) {
+    measureContext = typeof document === "undefined" ? null : document.createElement("canvas").getContext("2d");
+  }
+  return measureContext;
+}
+
+/** Scripts beyond Latin that a catalog face draws itself, as `fontFileCovers` reports them (caption-script-fonts.test.ts holds the table to the files). */
+export type CaptionOwnScript = "Cyrillic" | "Greek";
+
+export const CAPTION_FACE_OWN_SCRIPTS: Readonly<Record<string, readonly CaptionOwnScript[]>> = {
+  Inter: ["Cyrillic", "Greek"],
+  "Inter SemiBold": ["Cyrillic", "Greek"],
+  "Open Sans": ["Cyrillic", "Greek"],
+  Roboto: ["Cyrillic", "Greek"],
+  Montserrat: ["Cyrillic"],
+  Oswald: ["Cyrillic"],
+  Unbounded: ["Cyrillic"],
+};
+
+const LATIN_RE = /^[\p{Script=Latin}\p{Script=Common}\p{Script=Inherited}]*$/u;
+const OWN_SCRIPT_RE: Record<CaptionOwnScript, RegExp> = {
+  Cyrillic: /\p{Script=Cyrillic}/u,
+  Greek: /\p{Script=Greek}/u,
+};
+
+/**
+ * Whether the requested face draws a cluster: Latin, digits and punctuation
+ * always, and the extra scripts the face covers. Any other script goes to the
+ * fallback chain, as in the burn-in's glyph planner. A brand font is taken for
+ * a Latin face, since its coverage is not known here.
+ */
+export function captionFaceDraws(cluster: string, ownScripts: readonly CaptionOwnScript[] = []): boolean {
+  if (LATIN_RE.test(cluster)) return true;
+  const stripped = ownScripts.reduce((rest, script) => rest.replace(new RegExp(OWN_SCRIPT_RE[script].source, "gu"), ""), cluster);
+  return LATIN_RE.test(stripped);
+}
+
+/**
+ * Measures, in the browser, the ink of a word's fallback-drawn runs: what the
+ * worker reads from the shaped glyphs of the faces other than the requested
+ * one. `requestedFamily` is the face's resolved CSS family; until it has
+ * loaded the stack cannot be measured, so the catalog metrics stand and the
+ * caller measures again when fonts arrive.
+ */
+export function measureCaptionFallbackInkEm(
+  text: string,
+  face: {
+    readonly requestedFamily: string;
+    readonly weight: number;
+    readonly style: string;
+    readonly language?: string | null;
+    readonly ownScripts?: readonly CaptionOwnScript[];
+  },
+): CaptionInkEm {
+  const context = canvasContext();
+  if (!context || text.length === 0) return NO_CAPTION_INK;
+  const prefix = `${face.style} ${face.weight} ${MEASURE_PX}px`;
+  if (!document.fonts?.check(`${prefix} ${face.requestedFamily}`)) return NO_CAPTION_INK;
+  const stack = captionFontStack(face.requestedFamily, face.language);
+  const measureRun = (run: string): CaptionInkEm => {
+    const key = `${prefix} ${stack}\0${run}`;
+    let ink = inkCache.get(key);
+    if (!ink) {
+      context.font = `${prefix} ${stack}`;
+      const metrics = context.measureText(run);
+      ink = {
+        topEm: Math.max(0, metrics.actualBoundingBoxAscent) / MEASURE_PX,
+        bottomEm: Math.max(0, metrics.actualBoundingBoxDescent) / MEASURE_PX,
+      };
+      if (inkCache.size > 5000) inkCache.clear();
+      inkCache.set(key, ink);
+    }
+    return ink;
+  };
+  return captionFallbackInkEm(text, (cluster) => captionFaceDraws(cluster, face.ownScripts), measureRun);
 }
