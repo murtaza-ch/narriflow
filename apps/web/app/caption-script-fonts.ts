@@ -12,6 +12,7 @@
  * this table to the worker's.
  */
 
+import { captionShapingSensitivity, isShapingSensitiveText } from "@narriflow/caption-fonts/locale-precedence";
 import { captionGraphemes } from "@narriflow/caption-fonts/emoji";
 
 export interface CaptionScriptFace {
@@ -72,16 +73,12 @@ export function captionFontStack(face: string, language?: string | null): string
   return [face, ...captionFallbackFamilies(language).map((family) => `"${family}"`), "sans-serif"].join(", ");
 }
 
-// Scripts whose faces disable letter spacing (CAPTION_SCRIPT_FACES, Arabic-script
-// languages included): Hebrew, Arabic, and the Indic and Southeast Asian scripts.
-const NO_LETTER_SPACING_RE =
-  /[\p{Script=Arabic}\p{Script=Hebrew}\p{Script=Devanagari}\p{Script=Thai}\p{Script=Bengali}\p{Script=Gurmukhi}\p{Script=Gujarati}\p{Script=Oriya}\p{Script=Tamil}\p{Script=Telugu}\p{Script=Kannada}\p{Script=Malayalam}\p{Script=Sinhala}\p{Script=Lao}\p{Script=Khmer}\p{Script=Myanmar}]/u;
-// Digits, punctuation, spaces, joiners and combining marks take the run they sit in.
-const RIDES_WITH_NEIGHBOUR_RE = /[\p{Script=Common}\p{Script=Inherited}]/u;
+// Joining and complex scripts take no letter spacing and reveal word by word:
+// the worker's own rule (captionShapingSensitivity), so preview and burn-in agree.
 
 /** True when any character of `text` is in a script that takes no letter spacing. */
 export function hasUnspacedScript(text: string): boolean {
-  return NO_LETTER_SPACING_RE.test(text);
+  return isShapingSensitiveText(text);
 }
 
 /**
@@ -91,11 +88,14 @@ export function hasUnspacedScript(text: string): boolean {
 export function captionLetterSpacingRuns(text: string): { text: string; spaced: boolean }[] {
   const runs: { text: string; spaced: boolean }[] = [];
   for (const char of text) {
-    const spaced = NO_LETTER_SPACING_RE.test(char)
-      ? false
-      : RIDES_WITH_NEIGHBOUR_RE.test(char) && runs.length > 0
-        ? runs[runs.length - 1]!.spaced
-        : true;
+    // Digits, punctuation, spaces and marks take the run they sit in.
+    const sensitivity = captionShapingSensitivity(char);
+    const spaced =
+      sensitivity === "sensitive"
+        ? false
+        : sensitivity === "neutral" && runs.length > 0
+          ? runs[runs.length - 1]!.spaced
+          : true;
     const last = runs[runs.length - 1];
     if (last && last.spaced === spaced) last.text += char;
     else runs.push({ text: char, spaced });
