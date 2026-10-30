@@ -1,3 +1,4 @@
+import { joinTranscriptWords, splitSpacedTokens } from "./text-script";
 import type { TranscriptUtterance, TranscriptWord } from "./transcript";
 
 /** Caller-supplied captions (SRT or WebVTT) normalized into the one utterance
@@ -39,14 +40,19 @@ function seconds(hours: string | undefined, minutes: string, secs: string, fract
  * between angle brackets is the speaker's text, such as "<3" or "a < b > c". */
 const KNOWN_VTT_TAGS = /<\/?(?:b|i|u|c|v|lang|ruby|rt|font)(?:[.\s][^<>]*)?>|<\d{1,3}:\d{2}(?::\d{2})?[.,]\d{1,3}>/gi;
 
-function cueText(lines: string[]) {
-  return lines
-    .join(" ")
+function cleanCueLine(line: string) {
+  return line
     .replace(KNOWN_VTT_TAGS, "")
     .replace(/\{\\[^}]*\}/g, "")
     .replace(/&(?:amp|lt|gt|quot|apos|nbsp|lrm|rlm|#39);/g, (entity) => ENTITIES[entity] ?? entity)
     .replace(/\s+/g, " ")
     .trim();
+}
+
+/** A cue's lines read as one text; a line break between two Chinese or Japanese
+ * lines is not a space. */
+function cueText(lines: string[]) {
+  return joinTranscriptWords(lines.map((line) => ({ word: cleanCueLine(line) })));
 }
 
 interface Cue { startSec: number; endSec: number; text: string }
@@ -91,7 +97,7 @@ function settleCues(cues: Cue[]): Cue[] {
     const previous = settled[settled.length - 1];
     if (previous && cue.startSec < previous.endSec) {
       if (cue.startSec - previous.startSec < MERGE_WINDOW_SEC) {
-        previous.text = `${previous.text} ${cue.text}`;
+        previous.text = joinTranscriptWords([{ word: previous.text }, { word: cue.text }]);
         previous.endSec = Math.max(previous.endSec, cue.endSec);
         continue;
       }
@@ -107,18 +113,20 @@ const round = (value: number) => Math.round(value * 1_000) / 1_000;
 /** Spreads a cue's time over its words by length: SRT and WebVTT time cues,
  * not words, and the cue model needs word times. */
 function timedWords(cue: Cue): TranscriptWord[] {
-  const tokens = cue.text.split(" ").filter(Boolean);
-  const weights = tokens.map((token) => token.length + 1);
+  // The cue's own spaces are explicit: Thai phrases and Latin words inside a
+  // Japanese line stay apart even where the script rule would join them.
+  const tokens = splitSpacedTokens(cue.text);
+  const weights = tokens.map((token) => token.word.length + 1);
   const total = weights.reduce((sum, weight) => sum + weight, 0);
   const duration = cue.endSec - cue.startSec;
   let elapsed = 0;
   const cueEndSec = round(cue.endSec);
-  return tokens.map((word, index) => {
+  return tokens.map(({ word, spaceBefore }, index) => {
     // A cue shorter than its words' minimum lengths packs them at its end, never past it.
     const startSec = Math.min(round(cue.startSec + (duration * elapsed) / total), round(cueEndSec - MIN_WORD_SEC));
     elapsed += weights[index]!;
     const endSec = index === tokens.length - 1 ? cueEndSec : round(cue.startSec + (duration * elapsed) / total);
-    return { word, startSec, endSec: Math.min(Math.max(endSec, round(startSec + MIN_WORD_SEC)), cueEndSec), confidence: null };
+    return { word, startSec, endSec: Math.min(Math.max(endSec, round(startSec + MIN_WORD_SEC)), cueEndSec), confidence: null, ...(spaceBefore ? { spaceBefore } : {}) };
   });
 }
 
@@ -153,7 +161,7 @@ export function fitSuppliedUtterances(utterances: readonly TranscriptUtterance[]
     .map((utterance, index) => {
       if (utterance.endSec <= durationSec) return { ...utterance, index };
       const words = utterance.words.filter((word) => word.startSec < durationSec).map((word) => ({ ...word, endSec: Math.min(word.endSec, durationSec) }));
-      return { ...utterance, index, endSec: durationSec, words, text: words.map((word) => word.word).join(" ") };
+      return { ...utterance, index, endSec: durationSec, words, text: joinTranscriptWords(words) };
     })
     .filter((utterance) => utterance.words.length > 0);
 }

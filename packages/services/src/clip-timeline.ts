@@ -1,7 +1,7 @@
 import { extname } from "node:path";
 import { deriveCaptionCues, formatSubtitles } from "@narriflow/composition-plan";
 import { buildClipCutPlan, clipSourceEdgeSec, isStandardFrameRate, sourceProbeSchema, type ClipCutPlan, type SourceRange, type TimelineFormat } from "@narriflow/validators";
-import { resolveRenderedClipDocument } from "./clip-export-subtitles";
+import { effectiveCaptionLanguage, resolveRenderedClipDocument } from "./clip-export-subtitles";
 import { clipExportSubtitleBaseName, clipTitleSlug } from "./clip-export.service";
 import { ClipTimelineError, renderTimeline, TIMELINE_CONTENT_TYPES, TIMELINE_FILE_EXTENSIONS, type TimelineCut } from "./timeline-export";
 
@@ -57,7 +57,14 @@ function planDeletions(plan: ClipCutPlan): SourceRange[] {
 export function clipTimelineFiles(input: {
   /** The stored clip, with every field its Clip Editor Document is read from. */
   clip: { title: string | null; hookText: string; editorRevision: number };
-  project: { title: string; sourceStorageKey: string | null; sourceProbe: unknown; sourceDurationSeconds: number | null };
+  project: {
+    title: string;
+    sourceStorageKey: string | null;
+    sourceProbe: unknown;
+    sourceDurationSeconds: number | null;
+    languageCode?: string | null;
+    transcript?: { languageCode: string | null } | null;
+  };
   format: TimelineFormat;
 }) {
   const { clip, project } = input;
@@ -82,7 +89,7 @@ export function clipTimelineFiles(input: {
 
   const clipTitle = clip.title?.trim() || clip.hookText;
   const baseName = clipExportSubtitleBaseName(clipTitle, clip.editorRevision);
-  const cues = deriveCaptionCues({ ...document, deletedRanges: planDeletions(plan), sceneBlocks: [] }, { ignoreVisibility: true });
+  const cues = deriveCaptionCues({ ...document, deletedRanges: planDeletions(plan), sceneBlocks: [] }, { ignoreVisibility: true, language: effectiveCaptionLanguage(project) });
 
   return {
     editorRevision: clip.editorRevision,

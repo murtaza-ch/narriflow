@@ -164,7 +164,7 @@ describe("subtitle cues share burn-in's derivation", () => {
   });
 
   test("non-ASCII text survives grouping, casing, and both formats", () => {
-    const cues = deriveCaptionCues(document({ transcriptSlice: [utterance(0, [["Café", 0.5, 0.9], ["日本語", 1, 1.4], ["🎬", 1.5, 2]])] }, { textTransform: "uppercase" }));
+    const cues = deriveCaptionCues(document({ transcriptSlice: [utterance(0, [["Café", 0.5, 0.9], ["日本語", 1, 1.4], ["🎬", 1.5, 2]])] }, { textTransform: "uppercase", wordsPerCue: 4 }));
     expect(cues.map((cue) => cue.text)).toEqual(["CAFÉ 日本語 🎬"]);
     expect(formatSubtitles(cues, "srt")).toContain("CAFÉ 日本語 🎬");
     expect(formatSubtitles(cues, "vtt")).toContain("CAFÉ 日本語 🎬");
@@ -192,7 +192,7 @@ describe("subtitle cues share burn-in's derivation", () => {
     expect(subtitles.length).toBeGreaterThan(0);
     for (const target of result.plan.targets) {
       const burned = target.visualLayers.flatMap((layer) => layer.kind === "caption"
-        ? [{ ...captionCueVisibleRange(layer, result.plan.editedDurationSec), text: captionCueText(layer.words) }] : []);
+        ? [{ ...captionCueVisibleRange(layer, result.plan.editedDurationSec), text: captionCueText(layer.words), language: layer.language }] : []);
       expect(burned).toEqual(subtitles);
     }
   });

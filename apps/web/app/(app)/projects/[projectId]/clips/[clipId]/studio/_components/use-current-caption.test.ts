@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { buildEditedTimeMap, sourceToEdited } from "@narriflow/validators";
+import { deriveCaptionCues } from "@narriflow/composition-plan";
+import { buildEditedTimeMap, captionPresetSchema, editorDocumentSchema, joinTranscriptWords, sourceToEdited, studioEditsSchema } from "@narriflow/validators";
 import type { TranscriptUtterance } from "@narriflow/validators";
 import { getCurrentCaptionState } from "./use-current-caption";
 
@@ -101,4 +102,33 @@ describe("getCurrentCaptionState — chunk-boundary drift across a mid-utterance
     expect(state!.visibleWords.map((w) => w.word)).toEqual(["five"]);
     expect(state!.visibleWords[0]!.isActive).toBe(true);
   });
+});
+
+describe("getCurrentCaptionState — cue grouping matches the composition plan", () => {
+  // Studio's resolver and the export's subtitle cues must group no-space
+  // scripts identically: both use `groupCaptionTokens`.
+  const fixtures: Record<string, Array<[string, number, number]>> = {
+    zh: Array.from("今天天气很好，我们去公园玩。").map((char, index): [string, number, number] => [char, index * 0.3, (index + 1) * 0.3]),
+    ja: [["私", 0, 0.3], ["は", 0.3, 0.6], ["Google", 0.6, 1], ["を", 1, 1.3], ["使", 1.3, 1.6], ["う", 1.6, 1.9]],
+    th: [["สวัสดี", 0, 0.5], ["ครับ", 0.5, 0.9], ["วันนี้", 0.9, 1.4], ["อากาศดี", 1.4, 2]],
+  };
+
+  for (const [name, words] of Object.entries(fixtures)) {
+    test(`${name}: the visible chunk at every word is the exported cue`, () => {
+      const utterance = makeUtterance(words);
+      const doc = editorDocumentSchema.parse({
+        version: 1, clipStartSec: 0, clipEndSec: Math.ceil(words.at(-1)![2] + 1),
+        captionPreset: captionPresetSchema.parse({ textTransform: "none", wordsPerCue: 3 }),
+        transcriptSlice: [utterance], studioEdits: studioEditsSchema.parse({ framing: { mode: "center" } }),
+        brollUrl: null, deletedRanges: [],
+      });
+      const cues = deriveCaptionCues(doc);
+      for (const [, startSec] of words) {
+        const state = getCurrentCaptionState(startSec + 0.01, [utterance], 0, 3);
+        const cue = cues.find((candidate) => candidate.startSec <= startSec + 0.01 && startSec + 0.01 < candidate.endSec + 0.001);
+        expect(cue).toBeDefined();
+        expect(joinTranscriptWords(state!.visibleWords)).toBe(cue!.text);
+      }
+    });
+  }
 });

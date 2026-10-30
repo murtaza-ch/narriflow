@@ -3652,6 +3652,7 @@ async function renderClipGroup(input: {
 	const layoutEvidenceProbe = probe.hasVideo
 		? planClipComposition({
 				document: compositionDocument,
+				captionLanguage: frozenState.captionLanguage,
 				source: {
 					identity: compositionSourceIdentity,
 					kind: "video",
@@ -3854,6 +3855,7 @@ async function renderClipGroup(input: {
 		const planningStartedAtMs = currentTimeMs();
 		const planned = planClipComposition({
 			document: compositionDocument,
+			captionLanguage: frozenState.captionLanguage,
 			source: plannerSource,
 			evidence: compositionEvidence,
 			assets: deriveRenderCompositionAssets({

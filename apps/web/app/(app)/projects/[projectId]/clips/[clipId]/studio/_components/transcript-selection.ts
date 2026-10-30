@@ -1,4 +1,4 @@
-import type { SourceRange } from "@narriflow/validators";
+import { hasSpaceBefore, type SourceRange } from "@narriflow/validators";
 
 // Pure selection/classification logic for transcript-panel.tsx's Vizard-parity
 // word-Correct + selection-Delete/Revert UX (docs/plans/vizard-parity.md
@@ -21,23 +21,27 @@ interface CharRange {
 
 /**
  * Per-word character ranges for a SINGLE utterance's word list, assuming the
- * exact rendering convention transcript-panel.tsx uses: every word is joined
- * by a single space, with zero characters contributed by pause indicators
- * (they render no text) — identical to how the reducer rebuilds
- * `utterance.text` in `updateWordText` (`words.join(" ")`). The panel's own
+ * exact rendering convention transcript-panel.tsx uses: words are joined as
+ * `joinTranscriptWords` joins them (a single space, or none between
+ * Chinese/Japanese characters), with zero characters contributed by pause
+ * indicators (they render no text) — identical to how the reducer rebuilds
+ * `utterance.text` in `updateWordText`. The panel's own
  * DOM text must stay byte-for-byte consistent with this, which is why pause
  * indicators are rendered as separate non-text nodes rather than eating the
  * joining space around them.
  */
-export function wordCharRanges(words: { word: string }[]): CharRange[] {
+export function wordCharRanges(
+  words: { word: string; spaceBefore?: boolean }[],
+): CharRange[] {
   const ranges: CharRange[] = [];
   let cursor = 0;
-  for (const w of words) {
-    const charStart = cursor;
+  words.forEach((w, index) => {
+    const previous = words[index - 1];
+    const charStart = cursor + (previous && hasSpaceBefore(previous.word, w) ? 1 : 0);
     const charEnd = charStart + w.word.length;
     ranges.push({ charStart, charEnd });
-    cursor = charEnd + 1; // single joining space
-  }
+    cursor = charEnd;
+  });
   return ranges;
 }
 
@@ -50,7 +54,7 @@ export interface SelectionEndpoint {
 
 export interface UtteranceWordSource {
   utteranceIndex: number;
-  words: { word: string; startSec: number; endSec: number }[];
+  words: { word: string; spaceBefore?: boolean; startSec: number; endSec: number }[];
 }
 
 /** Selection endpoints (anchor/focus) can arrive in either document order —

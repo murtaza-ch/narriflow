@@ -26,6 +26,15 @@ export function resolveRenderedClipDocument(clip: unknown, sourceDurationSec: nu
   return { ...document, clipStartSec: timing.startSec, clipEndSec: timing.endSec, transcriptSlice: timing.transcriptSlice };
 }
 
+/** The language captions are cased and laid out in: what the transcript
+ * detected, else the language the project asked for. */
+export function effectiveCaptionLanguage(project: {
+  languageCode?: string | null;
+  transcript?: { languageCode: string | null } | null;
+}): string | null {
+  return project.transcript?.languageCode ?? project.languageCode ?? null;
+}
+
 /** Subtitles for one export, generated on demand from its frozen render
  * snapshot with the same timing and cue derivation as burned-in captions.
  * Captions turned off for burn-in still yield subtitles. Nothing is stored. */
@@ -33,7 +42,8 @@ export function clipExportSubtitleFiles(
   frozenSnapshot: unknown,
   sourceDurationSec: number | null,
   baseFileName: string,
+  language: string | null = null,
 ): ClipExportSubtitleFile[] {
-  const cues = deriveCaptionCues(resolveRenderedClipDocument(frozenSnapshot, sourceDurationSec), { ignoreVisibility: true });
+  const cues = deriveCaptionCues(resolveRenderedClipDocument(frozenSnapshot, sourceDurationSec), { ignoreVisibility: true, language });
   return (["srt", "vtt"] as const).map((format) => ({ format, fileName: `${baseFileName}.${format}`, content: formatSubtitles(cues, format) }));
 }

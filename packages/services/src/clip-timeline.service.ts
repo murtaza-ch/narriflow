@@ -24,7 +24,7 @@ async function loadClip(scope: ActorScope, projectId: string, clipId: string) {
   requirePlanFeature(actor.pricingTier, "export.timelines");
   const clip = await requirePrisma().clip.findFirst({
     where: { id: clipId, projectId, project: { workspaceId: scope.workspaceId, ...accessibleProjectWhere() } },
-    include: { project: { select: { title: true, sourceStorageKey: true, sourceSizeBytes: true, sourceDurationSeconds: true, sourceProbe: true } } },
+    include: { project: { select: { title: true, sourceStorageKey: true, sourceSizeBytes: true, sourceDurationSeconds: true, sourceProbe: true, languageCode: true, transcript: { select: { languageCode: true } } } } },
   });
   if (!clip) throw new ClipTimelineError("clip_not_found", "Clip not found");
   return clip;

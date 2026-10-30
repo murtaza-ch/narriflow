@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { captionPresetsEqual, captionPresetSchema } from "./caption-preset";
+import { joinTranscriptWords } from "./text-script";
 import {
   buildClipCutPlan,
   deletedRangesSchema,
@@ -722,7 +723,7 @@ export function applyEditorAction(
       const updated = {
         ...utterance,
         words,
-        text: words.map((w) => w.word.trim()).filter(Boolean).join(" "),
+        text: joinTranscriptWords(words),
       };
       return {
         ...doc,

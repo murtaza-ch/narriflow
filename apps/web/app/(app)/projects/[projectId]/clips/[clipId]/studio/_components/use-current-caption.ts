@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo } from "react";
-import { editedToSource, sourceRangeToEdited } from "@narriflow/validators";
+import { editedToSource, groupCaptionTokens, sourceRangeToEdited, splitSpacedTokens } from "@narriflow/validators";
 import type { EditedTimeMap, TranscriptUtterance } from "@narriflow/validators";
 
 export interface CaptionWord {
@@ -98,8 +98,11 @@ export function getCurrentCaptionState(
       }
     }
 
-    const chunkStart = Math.floor(activeWordIdx / wordsPerCue) * wordsPerCue;
-    const chunkEnd = Math.min(words.length, chunkStart + wordsPerCue);
+    // The composition plan's cue grouping, so every cue boundary matches
+    // the burn-in and the subtitle files.
+    const groups = groupCaptionTokens(words.map((w) => w.word), wordsPerCue);
+    const cueIndex = groups.findIndex((group) => activeWordIdx < group.end);
+    const { start: chunkStart, end: chunkEnd } = groups[cueIndex]!;
 
     const visibleWords: CaptionWord[] = words
       .slice(chunkStart, chunkEnd)
@@ -117,12 +120,12 @@ export function getCurrentCaptionState(
     return {
       visibleWords,
       utteranceIndex: utteranceIdx,
-      cueIndex: chunkStart / wordsPerCue,
+      cueIndex,
       activeWordIndex: activeWordIdx,
     };
   }
 
-  const textWords = utterance.text.split(/\s+/).filter(Boolean);
+  const textWords = splitSpacedTokens(utterance.text).map((token) => token.word);
   if (textWords.length === 0) return null;
 
   const utteranceDuration = Math.max(
@@ -135,8 +138,9 @@ export function getCurrentCaptionState(
     Math.floor(progress * textWords.length),
   );
 
-  const chunkStart = Math.floor(estimatedActiveIdx / wordsPerCue) * wordsPerCue;
-  const chunkEnd = Math.min(textWords.length, chunkStart + wordsPerCue);
+  const groups = groupCaptionTokens(textWords, wordsPerCue);
+  const cueIndex = groups.findIndex((group) => estimatedActiveIdx < group.end);
+  const { start: chunkStart, end: chunkEnd } = groups[cueIndex]!;
 
   const visibleWords: CaptionWord[] = textWords
     .slice(chunkStart, chunkEnd)
@@ -148,7 +152,7 @@ export function getCurrentCaptionState(
   return {
     visibleWords,
     utteranceIndex: utteranceIdx,
-    cueIndex: chunkStart / wordsPerCue,
+    cueIndex,
     activeWordIndex: estimatedActiveIdx,
   };
 }

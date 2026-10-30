@@ -4,6 +4,7 @@ import type {
   TranscriptUtterance,
 } from "@narriflow/validators";
 import {
+  joinTranscriptWords,
   splitUtterancesIntoSentences,
   transcriptSnapshotSchema,
 } from "@narriflow/validators";
@@ -355,6 +356,15 @@ export function buildTranscriptSnapshot(input: {
   });
 }
 
+/** Words give the exact spacing the provider reported (none between Chinese
+ * or Japanese characters); the stored text is the fallback for hand-built
+ * utterances without words. */
+function utteranceExportText(utterance: TranscriptSnapshot["utterances"][number]) {
+  return utterance.words.length > 0
+    ? joinTranscriptWords(utterance.words) || utterance.text
+    : utterance.text;
+}
+
 export function exportTranscript(
   snapshot: TranscriptSnapshot,
   format: TranscriptExportFormat,
@@ -367,7 +377,7 @@ export function exportTranscript(
     return snapshot.utterances
       .map(
         (utterance) =>
-          `[${formatReadableTimestamp(utterance.startSec)}] ${utterance.speakerLabel}: ${utterance.text}`,
+          `[${formatReadableTimestamp(utterance.startSec)}] ${utterance.speakerLabel}: ${utteranceExportText(utterance)}`,
       )
       .join("\n");
   }
@@ -381,7 +391,7 @@ export function exportTranscript(
       utterance.endSec,
       format === "srt" ? "," : ".",
     );
-    const body = `${utterance.speakerLabel}: ${utterance.text}`;
+    const body = `${utterance.speakerLabel}: ${utteranceExportText(utterance)}`;
 
     if (format === "srt") {
       return `${index + 1}\n${start} --> ${end}\n${body}`;
