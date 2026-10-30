@@ -29,7 +29,7 @@ describeDb("Recipes migration", () => {
     client = await pool.connect();
     await client.query(`CREATE SCHEMA "${schema}"`);
     await client.query(`SET search_path TO "${schema}"`);
-    const folders = readdirSync(MIGRATIONS).filter((entry) => entry !== RECIPES_MIGRATION && entry.match(/^\d+_/)).sort();
+    const folders = readdirSync(MIGRATIONS).filter((entry) => entry < RECIPES_MIGRATION && entry.match(/^\d+_/)).sort();
     for (const folder of folders) await client.query(readFileSync(resolve(MIGRATIONS, folder, "migration.sql"), "utf8"));
   });
   afterAll(async () => {

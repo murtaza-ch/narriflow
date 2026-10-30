@@ -83,6 +83,7 @@ try {
 		"packages/services/src/generation-finishing.db.test.ts",
 		"packages/services/src/recipe.db.test.ts",
 		"packages/services/src/recipe-migration.db.test.ts",
+		"packages/services/src/scribe-language-migration.db.test.ts",
 		"apps/api/src/domains/rest/events.db.test.ts",
 	]) {
 		await run(["bun", "test", suite], {
