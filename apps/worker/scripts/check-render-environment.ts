@@ -53,6 +53,56 @@ const GLYPH_PROBE_TEXT = [
   "\u2605\u2713\u2192",
 ];
 
+/**
+ * One shaping specimen per script the Scribe catalog writes (packages/validators
+ * language.ts). `face` is the pinned fallback face the export draws it with
+ * (packages/caption-fonts), `script` the registry script it covers, and
+ * `shaped` marks specimens whose conjuncts or ligatures must collapse
+ * code points into fewer glyphs when fontkit lays them out (joining scripts, marks
+ * and Lao/Myanmar/Thai keep one glyph per character, and fontkit 2.0.4 throws on
+ * Gurmukhi and one Telugu word, so those are judged by the libass render only). This file imports nothing, so
+ * the table is exported for caption-fonts' tests rather than shared from there.
+ */
+export interface ScriptSpecimen {
+  readonly id: string;
+  readonly script: string;
+  /** Canonical language code when the face is language-aware (ticket 10); null for the script's default face. */
+  readonly language: string | null;
+  readonly face: string;
+  readonly text: string;
+  readonly shaped: boolean;
+}
+
+export const SCRIPT_SPECIMENS: readonly ScriptSpecimen[] = [
+  { id: "latin", script: "Latin", language: null, face: "Noto Sans Regular", text: "Tiếng Việt Ọ̀yọ́ Māori Ŋ Əə Çğş", shaped: false },
+  { id: "cyrillic", script: "Cyrillic", language: null, face: "Noto Sans Regular", text: "Әә Ққ Ңң Өө Үү Ҷҷ Ӯӯ Ўў Ђђ Љљ", shaped: false },
+  { id: "greek", script: "Greek", language: null, face: "Noto Sans Regular", text: "Ελληνικά ϊΐ", shaped: false },
+  { id: "arabic", script: "Arabic", language: null, face: "Noto Sans Arabic Regular", text: "پښتو ټ ډ ړ ږ ګ ڼ سنڌي ڄ ڇ ڙ ٺ ڀ ڳ ڱ لا", shaped: false },
+  { id: "nastaliq", script: "Arabic", language: "ur", face: "Noto Nastaliq Urdu Regular", text: "اُردو زبان لا پاکستان", shaped: false },
+  { id: "hebrew", script: "Hebrew", language: null, face: "Noto Sans Hebrew Regular", text: "שָׁלוֹם עולם", shaped: false },
+  { id: "han", script: "Han", language: null, face: "Noto Sans SC", text: "你好世界 汉字", shaped: false },
+  { id: "han-tc", script: "Han", language: "yue", face: "Noto Sans TC", text: "廣東話 體 國語", shaped: false },
+  { id: "japanese", script: "Japanese", language: "ja", face: "Noto Sans JP", text: "日本語のテキスト 直 骨", shaped: false },
+  { id: "hangul", script: "Hangul", language: null, face: "Noto Sans KR", text: "한국어 안녕하세요", shaped: false },
+  { id: "devanagari", script: "Devanagari", language: null, face: "Noto Sans Devanagari Regular", text: "क्षत्रिय श्री हिन्दी", shaped: true },
+  { id: "bengali", script: "Bengali", language: null, face: "Noto Sans Bengali Regular", text: "ক্ষত্রিয় শ্রী বাংলা অসমীয়া ৰ", shaped: true },
+  { id: "gurmukhi", script: "Gurmukhi", language: null, face: "Noto Sans Gurmukhi Regular", text: "ਪ੍ਰੀਤ ਪੰਜਾਬੀ ਸ੍ਰੀ", shaped: false },
+  { id: "gujarati", script: "Gujarati", language: null, face: "Noto Sans Gujarati Regular", text: "ક્ષત્રિય જ્ઞાન ગુજરાતી", shaped: true },
+  { id: "oriya", script: "Oriya", language: null, face: "Noto Sans Oriya Regular", text: "କ୍ଷତ୍ରିୟ ଜ୍ଞାନ ଓଡ଼ିଆ", shaped: true },
+  { id: "tamil", script: "Tamil", language: null, face: "Noto Sans Tamil Regular", text: "ஸ்ரீ க்ஷ கூட்டம் தமிழ்", shaped: true },
+  { id: "telugu", script: "Telugu", language: null, face: "Noto Sans Telugu Regular", text: "క్షత్రియ స్త్రీ తెలుగు", shaped: true },
+  { id: "kannada", script: "Kannada", language: null, face: "Noto Sans Kannada Regular", text: "ಕ್ಷತ್ರಿಯ ಸ್ತ್ರೀ ಕನ್ನಡ", shaped: true },
+  { id: "malayalam", script: "Malayalam", language: null, face: "Noto Sans Malayalam Regular", text: "ക്ഷത്രിയ ന്റെ മലയാളം ൻ ൺ ൽ", shaped: true },
+  { id: "sinhala", script: "Sinhala", language: null, face: "Noto Sans Sinhala Regular", text: "ශ්\u200dරී ක්\u200dර සිංහල", shaped: true },
+  { id: "thai", script: "Thai", language: null, face: "Noto Sans Thai Regular", text: "ภาษาไทย น้ำ ปฏิบัติ", shaped: false },
+  { id: "lao", script: "Lao", language: null, face: "Noto Sans Lao Regular", text: "ພາສາລາວ ຫຼາຍ ຫມາ", shaped: false },
+  { id: "khmer", script: "Khmer", language: null, face: "Noto Sans Khmer Regular", text: "ភាសាខ្មែរ ស្រ្តី ក្រុម", shaped: true },
+  { id: "myanmar", script: "Myanmar", language: null, face: "Noto Sans Myanmar Regular", text: "မြန်မာဘာသာ ကျွန်ုပ်", shaped: false },
+  { id: "armenian", script: "Armenian", language: null, face: "Noto Sans Armenian Regular", text: "Հայաստան և ԵՎ", shaped: false },
+  { id: "georgian", script: "Georgian", language: null, face: "Noto Sans Georgian Regular", text: "ქართული ენა", shaped: false },
+  { id: "ethiopic", script: "Ethiopic", language: null, face: "Noto Sans Ethiopic Regular", text: "አማርኛ ቋንቋ ፲፪", shaped: false },
+];
+
 export type Stage = "build" | "image" | "start";
 
 export interface FontProbeResult {
@@ -82,6 +132,8 @@ export interface RuntimeFingerprint {
   fontconfig: string | null;
   fontProbes: FontProbeResult[];
   glyphRender: { sha256: string | null; error: string | null };
+  /** libass frame hash of each script specimen drawn with its pinned face, by specimen id; null when the render failed or drew nothing. */
+  scriptRender: Record<string, string | null>;
   captionFonts: Record<string, string>;
   /** Pinned glyph fallback faces (Noto scripts, symbols, monochrome emoji). */
   fallbackFonts: Record<string, string>;
@@ -243,6 +295,8 @@ async function captionFontHashes(repoRoot: string, directory: string, filter: { 
   return entries;
 }
 
+const escaped = (value: string) => value.replace(/\\/g, "\\\\").replace(/:/g, "\\:").replace(/'/g, "\\'");
+
 /** Render a fixed multi-script line through libass exactly as captions are burned and hash the pixels. */
 async function glyphRenderFingerprint(ffmpegPath: string | null, fontsDirectory: string | null): Promise<{ sha256: string | null; error: string | null }> {
   if (!ffmpegPath) return { sha256: null, error: "ffmpeg missing" };
@@ -252,7 +306,6 @@ async function glyphRenderFingerprint(ffmpegPath: string | null, fontsDirectory:
     const ass = ["[Script Info]", "ScriptType: v4.00+", "PlayResX: 960", "PlayResY: 360", "", "[V4+ Styles]", "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding", "Style: Default,Inter,40,&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,0,7,10,10,10,1", "", "[Events]", "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text", ...lines, ""].join("\n");
     const assPath = join(directory, "probe.ass");
     await writeFile(assPath, ass, "utf8");
-    const escaped = (value: string) => value.replace(/\\/g, "\\\\").replace(/:/g, "\\:").replace(/'/g, "\\'");
     const filter = `ass='${escaped(assPath)}'` + (fontsDirectory ? `:fontsdir='${escaped(fontsDirectory)}'` : "");
     const result = await run(ffmpegPath, ["-nostdin", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=black:s=960x360:r=1:d=1", "-vf", filter, "-frames:v", "1", "-f", "md5", "-"]);
     const match = /MD5=([0-9a-f]{32})/.exec(result.stdout);
@@ -260,6 +313,31 @@ async function glyphRenderFingerprint(ffmpegPath: string | null, fontsDirectory:
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+}
+
+/** Draw every specimen alone through libass with its pinned face (`\\fn`, as the export does) and hash each frame. A frame equal to an empty render means nothing was drawn. */
+async function scriptSpecimenFingerprint(ffmpegPath: string | null, fontsDirectory: string | null): Promise<Record<string, string | null>> {
+  const result: Record<string, string | null> = {};
+  if (!ffmpegPath || !fontsDirectory) return Object.fromEntries(SCRIPT_SPECIMENS.map((specimen) => [specimen.id, null]));
+  const directory = await mkdtemp(join(tmpdir(), "narriflow-specimen-"));
+  try {
+    const render = async (name: string, text: string, face: string): Promise<string | null> => {
+      const ass = ["[Script Info]", "ScriptType: v4.00+", "PlayResX: 960", "PlayResY: 160", "", "[V4+ Styles]", "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding", "Style: Default,Inter,56,&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,7,10,10,10,1", "", "[Events]", "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text", `Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,{\\pos(40,30)\\fn${face}}${text}`, ""].join("\n");
+      const assPath = join(directory, `${name}.ass`);
+      await writeFile(assPath, ass, "utf8");
+      const filter = `ass='${escaped(assPath)}':fontsdir='${escaped(fontsDirectory)}'`;
+      const output = await run(ffmpegPath, ["-nostdin", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=black:s=960x160:r=1:d=1", "-vf", filter, "-frames:v", "1", "-f", "md5", "-"]);
+      return /MD5=([0-9a-f]{32})/.exec(output.stdout)?.[1] ?? null;
+    };
+    const empty = await render("empty", "", "Noto Sans Regular");
+    for (const specimen of SCRIPT_SPECIMENS) {
+      const hash = await render(specimen.id, specimen.text, specimen.face);
+      result[specimen.id] = hash && hash !== empty ? hash : null;
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+  return result;
 }
 
 async function pythonFacts(): Promise<RuntimeFingerprint["python"]> {
@@ -330,6 +408,7 @@ export async function collectRuntimeFingerprint(options: CollectOptions = {}): P
     fontconfig: fontconfig.stdout.trim() || fontconfig.stderr.trim() || null,
     fontProbes: await Promise.all(queries.map(probeFont)),
     glyphRender: await glyphRenderFingerprint(ffmpegPath, existsSync(fontsDirectory) ? fontsDirectory : null),
+    scriptRender: await scriptSpecimenFingerprint(ffmpegPath, existsSync(fontsDirectory) ? fontsDirectory : null),
     captionFonts: await captionFontHashes(repoRoot, lock.captionFonts.directory, { exclude: new Set(Object.keys(lock.fallbackFonts.sha256)) }),
     fallbackFonts: await captionFontHashes(repoRoot, lock.fallbackFonts.directory, { only: new Set(Object.keys(lock.fallbackFonts.sha256)) }),
     model: { path: modelPath, sha256: modelPath && existsSync(modelPath) ? await sha256File(modelPath) : null },
@@ -351,8 +430,9 @@ export function fingerprintIdentity(fingerprint: RuntimeFingerprint): unknown {
     fontProbes: fingerprint.fontProbes.map(({ query, family, style, sha256 }) => ({ query, family, style, sha256 })),
     glyphRender: fingerprint.glyphRender.sha256,
     captionFonts: fingerprint.captionFonts,
-    // fallbackFonts is deliberately outside the identity: ticket 08 added them after the golden baseline was
-    // captured, and lockFindings pins their hashes instead (a differing consumer fails --enforce).
+    // fallbackFonts and scriptRender are deliberately outside the identity: ticket 08 added the fallback faces after
+    // the golden baseline was captured, and lockFindings pins their hashes instead (a differing consumer fails
+    // --enforce). scriptRender only has to be non-empty, which lockFindings checks.
     model: fingerprint.model.sha256,
     python: fingerprint.python.packages,
   };
@@ -407,6 +487,9 @@ export async function lockFindings(fingerprint: RuntimeFingerprint, lock: Runtim
   for (const [name, present] of Object.entries(fingerprint.filters)) if (!present) findings.push({ level: "mismatch", check: "filter", detail: `FFmpeg filter ${name} is missing` });
   for (const [name, present] of Object.entries(fingerprint.encoders)) if (!present) findings.push({ level: "mismatch", check: "encoder", detail: `FFmpeg encoder ${name} is missing` });
   if (!fingerprint.glyphRender.sha256) findings.push({ level: "mismatch", check: "glyphRender", detail: fingerprint.glyphRender.error ?? "libass probe produced no frame" });
+  // The build stage runs before the vendored faces are copied into the image.
+  const blankSpecimens = stage === "build" ? [] : Object.entries(fingerprint.scriptRender).filter(([, hash]) => !hash).map(([id]) => id);
+  if (blankSpecimens.length > 0) findings.push({ level: "mismatch", check: "scriptRender", detail: `libass drew nothing for the shaping specimens: ${blankSpecimens.join(", ")}` });
 
   if (fingerprint.platform === "linux-x64") {
     const installed = await dpkgVersions(Object.keys(expected.apt.installed));

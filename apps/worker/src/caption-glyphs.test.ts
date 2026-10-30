@@ -56,13 +56,15 @@ describe("caption glyph planner", () => {
     expect([...report.omitted.values()]).toEqual([{ codePoint: "U+13000", cueIndex: 3 }]);
   });
 
-  test("Bengali, Tamil and Telugu fall outside the pinned chain and every label survives the persisted schema", () => {
-    // None of the vendored faces draws these scripts (only Devanagari, Thai, Arabic, Hebrew, CJK, Latin, Greek, Cyrillic),
-    // so the plan must leave them out and say so with labels the diagnostics schema accepts.
+  test("scripts outside the pinned chain are left out and every label survives the persisted schema", () => {
+    // The chain draws every script the Scribe catalog writes (Bengali, Tamil, Telugu, ... included); Cherokee, Runic,
+    // Tifinagh and hieroglyphs are not in it, so the plan must leave them out and say so with labels the diagnostics schema accepts.
     const { planner: chain, report } = planner();
-    chain.plan("\u0985 \u0B85 \u0C05 \u{13000}");
+    chain.plan("\u0985 \u0B85 \u0C05");
+    expect([...report.omitted.values()]).toEqual([]);
+    chain.plan("\u13A0 \u16A0 \u2D30 \u{13000}");
     const labels = [...report.omitted.values()].map((glyph) => glyph.codePoint);
-    expect(labels).toEqual(["U+0985", "U+0B85", "U+0C05", "U+13000"]);
+    expect(labels).toEqual(["U+13A0", "U+16A0", "U+2D30", "U+13000"]);
     const parsed = clipRenderCaptionDiagnosticsSchema.safeParse({ omittedCodePoints: labels, skippedEmoji: [] });
     expect(parsed.success).toBe(true);
   });

@@ -4,9 +4,31 @@
 
 **Blocked by:** 01
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Acceptance:**
-- [ ] Coverage table shows every script in the Scribe catalog's supported written forms covered (Mongolian = Cyrillic).
-- [ ] Repo size impact recorded; CJK files ≤ what's needed (subset only if shaping tables preserved).
-- [ ] `bun run --cwd packages/caption-fonts test` + typecheck green.
+- [x] Coverage table shows every script in the Scribe catalog's supported written forms covered (Mongolian = Cyrillic).
+- [x] Repo size impact recorded; CJK files ≤ what's needed (subset only if shaping tables preserved).
+- [x] `bun run --cwd packages/caption-fonts test` + typecheck green.
+
+
+## Comments
+
+**Landed (implementation sub-agent, Sonnet 5.5).**
+
+- 18 faces added to `packages/caption-fonts/fonts`, all Regular, hinted/ttf from the official notofonts GitHub releases (the same layout the existing script faces use): Armenian 2.008, Bengali 3.011 (also Assamese), Gurmukhi 2.004, Gujarati 2.106, Oriya 2.007, Tamil 2.004, Telugu 2.005, Kannada 2.006, Malayalam 2.104, Sinhala 3.000, Lao 2.003, Khmer 2.004, Myanmar 2.107, Georgian 2.005, Ethiopic 2.102, Nastaliq Urdu 4.000 (latest `notofonts/nastaliq` release). JP and TC are `Sans/SubsetOTF/{JP,TC}` from the noto-cjk commit `f8d1575…` that SC and KR already came from (the SC file from that commit is byte-identical to the vendored one: sha256 `faa6c9df…`).
+- `packages/caption-fonts/script-fonts.manifest.json`: per face the version, sha256, bytes, ASS name, browser family name, unicode ranges, source release/archive URL/archive sha256 and OFL-1.1. `licenses/noto-fallbacks-OFL.txt` lists the copyrights. `apps/worker/runtime-lock.json` pins all 18 hashes; `src/script-fonts.test.ts` checks manifest = files = lock = `CAPTION_FALLBACK_FONTS`.
+- `CAPTION_FALLBACK_FONTS`: new optional `languages` (`ja` → JP, `yue` → TC, `ur` → Nastaliq). Language-aware faces sit after every default script face, so the chain order for every other language is unchanged (a test pins this); precedence is ticket 10's. `letterSpacing: "disabled"` on Bengali, Gurmukhi, Gujarati, Oriya, Tamil, Telugu, Kannada, Malayalam, Sinhala, Lao, Khmer, Myanmar and Nastaliq. Armenian, Georgian, Ethiopic and the CJK faces stay `preserved` (not joining/complex).
+- `glyph-coverage-data.ts` regenerated with `scripts/build-glyph-coverage.ts` (54,597 code points, 2,282 ranges).
+- `check-render-environment.ts`: exported `SCRIPT_SPECIMENS` (one specimen per catalog script plus the three language-aware faces), drawn through libass one at a time with `\fn<face>` as the export does. Result is `fingerprint.scriptRender`; `lockFindings` fails `--enforce` (not at stage `build`, which runs before the fonts are copied) when libass drew nothing for a specimen. `scriptRender` stays outside `fingerprintIdentity`, like `fallbackFonts`, so the golden baseline stays comparable. Ran locally (macOS, ffmpeg 8.0.1): 27/27 specimens drawn; the frame, rendered to PNG, shows conjuncts, matras, Malayalam chillus, Sinhala ZWJ conjuncts, Khmer coeng, Lao ຫຼ, Nastaliq and Arabic joining correctly.
+- Coverage check (`script-fonts.test.ts`): every `script` used by `SCRIBE_LANGUAGES` has a specimen that the named face draws with a real glyph; Mongolian = Cyrillic (Noto Sans covers Ө/Ү). Sindhi/Pashto/Persian letters are in the Arabic specimen and covered by Noto Sans Arabic.
+- **Size:** `fonts/` 18 MB → 30 MB, +12,565,380 bytes (+12.0 MiB). Script faces +2.9 MB (smallest Lao 36 KB, largest Ethiopic 377 KB); JP 4,533,028 + TC 5,683,368 = +10.2 MB. CJK kept whole (the SubsetOTF files are already the upstream region subsets, and cutting glyphs from OTF/CFF would cost the GSUB/GPOS `locl`/`vert` tables). The Docker image copies `packages` whole, so the worker image grows by the same amount. Studio delivery size is ticket 11's decision (see below).
+
+**Findings others need.**
+
+1. **fontkit 2.0.4 hangs on Noto Nastaliq Urdu.** `font.layout("زبان")` never returns (endless loop in the contextual lookups; reproduced with "بان", "زبا", "اردو زبان"; short strings like "اب" work). `fontFileCovers` now skips the layout step for that face (cmap-only, via `fontkitCannotShape`) and `fontFileAdvanceEm` throws `…measure it with HarfBuzz` instead of hanging. Tickets 10/12 must not call fontkit `layout`/`measureCaptionTextEm` on Nastaliq; D12's HarfBuzz measurement is the only route.
+2. **fontkit 2.0.4 throws on Gurmukhi and Telugu** (`Cannot destructure property 'xCoordinate'`, null GPOS anchor) for ordinary words. `fontFileCovers` falls back to its cmap result on a throw. `measure.ts` / `fontFileAdvanceEm` will throw for these faces, another reason D12 measures with HarfBuzz.
+3. fontkit's glyph count cannot judge Arabic, Thai, Lao or Myanmar shaping (no collapse); the libass specimen render is the judge for those.
+4. Hunks outside ownership: `apps/web/lib/caption-omissions.test.ts` (U+0985 Bengali was the "undrawable" example; now U+13A0 Cherokee) and `apps/worker/src/caption-glyphs.test.ts` — the test "Bengali, Tamil and Telugu fall outside the pinned chain" asserted the old gap; it now asserts those three are drawn and uses Cherokee, Runic, Tifinagh and hieroglyphs as the "outside the chain" examples.
+
+**For ticket 11 (Studio, `apps/web/app/caption-fonts.ts`).** Today the file declares only the catalog caption faces via `next/font/local`; the glyph fallback faces are not loaded at all (the browser falls back to whatever the OS has). Loading these 18 needs, per face: a `localFont` entry (or a plain `@font-face`) with `preload: false`, `display: "swap"`, `adjustFontFallback: false`, and `src` pointing at `packages/caption-fonts/fonts/<file>`; the `family` and `unicodeRanges` for the `unicode-range` descriptor are already in the manifest (`script-fonts.manifest.json`). Use a distinct CSS family per face (`family` in the manifest) and put them after the requested caption face in `font-family`, in the chain order of `CAPTION_FALLBACK_FONTS`, with the language-aware faces first only when ticket 10's rule picks them. `ascent-override`/`descent-override` should be the OS/2 win metrics (`fontFileLineHeightEm` shows the sum libass uses) so the line box matches. Sizes: JP 4.5 MB, TC 5.7 MB, Nastaliq 253 KB, Ethiopic 377 KB, the rest under 240 KB; with `unicode-range` and `preload: false` only the faces a caption uses download. JP/TC are the ones worth a WOFF2 (roughly 40-50% smaller); OTF/CFF subsetting would have to keep `locl`, `vert`/`vrt2` and the kana tables. next/font accepts `.woff2` through `src`, so no other change is needed. `glyph-coverage` already works in the browser (the regenerated table).
