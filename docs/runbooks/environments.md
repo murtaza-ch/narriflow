@@ -190,6 +190,34 @@ and apply it before deploying the new revision.
 Disposable-schema database tests still create their own schemas and must clean
 them up after the run.
 
+## ElevenLabs Scribe webhook
+
+Transcription is asynchronous ([ADR 0018](../adr/0018-elevenlabs-scribe-transcription.md)): the worker submits to Scribe v2 with `webhook=true` and the API's signed webhook makes the waiting run due. The worker's GET recovery loop completes the run if the webhook never arrives.
+
+ElevenLabs workspace webhook (dashboard, Speech-to-text webhooks), shared by local and deployed development:
+
+| Setting | Value |
+| --- | --- |
+| Name | `narriflow-dev` |
+| URL | `https://narriflowapi-dev.up.railway.app/api/webhooks/elevenlabs` |
+| Authentication | HMAC; the signing secret is `ELEVENLABS_WEBHOOK_SECRET` |
+| Event | "Transcription completed" |
+| Retries | On |
+| Id | `ELEVENLABS_WEBHOOK_ID` |
+
+Variables by Railway service:
+
+| Service | Variables |
+| --- | --- |
+| `@narriflow/worker` | `ELEVENLABS_API_KEY`, `ELEVENLABS_WEBHOOK_ID`, `ELEVENLABS_RESULT_POLL_INTERVAL_MS` (default 30000), `ELEVENLABS_RESULT_TIMEOUT_MS` (default 7200000) |
+| `@narriflow/api` | `ELEVENLABS_WEBHOOK_SECRET` |
+
+A missing key or webhook id fails transcription with a visible error; there is no synchronous fallback. A local API is not reachable by ElevenLabs, so a locally submitted job completes through the worker's GET recovery; the webhook path is exercised on the deployed dev API. Because local and Railway workers share the queue, whichever worker submits the job, the webhook is delivered to the Railway API and finalizes it.
+
+The route accepts bodies up to 128 MiB (Scribe posts the full transcript) and verifies `elevenlabs-signature` (`t=<seconds>,v0=<hex>`, HMAC-SHA256 over `<t>.<raw body>`, 30-minute window) before reading the payload. Duplicate, stale or cancelled deliveries are acknowledged and ignored.
+
+Vercel Preview now carries the Clerk and app variables (`NEXT_PUBLIC_*` and the Clerk keys the proxy needs), so Preview deployments render signed-in pages. Vercel holds no ElevenLabs variables.
+
 ## Fresh data and current contracts
 
 Upload resume, Clip Editor Document, local Studio drafts, layout evidence,

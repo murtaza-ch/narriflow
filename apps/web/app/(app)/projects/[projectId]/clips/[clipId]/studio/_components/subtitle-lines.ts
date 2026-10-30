@@ -1,4 +1,5 @@
 import {
+  isNoSpaceScriptChar,
   joinTranscriptWords,
   splitSpacedTokens,
   type TranscriptUtterance,
@@ -18,6 +19,42 @@ function timedWords(text: string, startSec: number, endSec: number): TranscriptW
     endSec: index === tokens.length - 1 ? endSec : startSec + (index + 1) * wordDuration,
     confidence: null,
   }));
+}
+
+type ParagraphUnit = { word: string; spaceBefore?: boolean };
+
+/**
+ * Smallest units a paragraph can be cut at when it is spread over several
+ * lines: a spaced word, or one character of a no-space script (zh/ja/Thai have
+ * no whitespace to split on). Joining any slice with `joinTranscriptWords`
+ * reproduces the text, because a unit cut inside a token never gets a space.
+ */
+function paragraphUnits(text: string): ParagraphUnit[] {
+  const units: ParagraphUnit[] = [];
+  for (const token of splitSpacedTokens(text)) {
+    let first = true;
+    for (const part of tokenParts(token.word)) {
+      units.push({ word: part, spaceBefore: first ? token.spaceBefore : false });
+      first = false;
+    }
+  }
+  return units;
+}
+
+function tokenParts(token: string): string[] {
+  const parts: string[] = [];
+  let run = "";
+  for (const char of Array.from(token)) {
+    if (isNoSpaceScriptChar(char)) {
+      if (run) parts.push(run);
+      run = "";
+      parts.push(char);
+    } else {
+      run += char;
+    }
+  }
+  if (run) parts.push(run);
+  return parts;
 }
 
 function reindex(lines: TranscriptUtterance[]): TranscriptUtterance[] {
@@ -104,7 +141,7 @@ export function replaceSubtitleParagraphText(
   lineIndices: number[],
   text: string,
 ): TranscriptUtterance[] {
-  const tokens = text.trim().split(/\s+/).filter(Boolean);
+  const tokens = paragraphUnits(text);
   const validIndices = lineIndices.filter((index) => lines[index]);
   if (
     tokens.length === 0 ||
@@ -126,7 +163,7 @@ export function replaceSubtitleParagraphText(
     const take = isLast
       ? remainingTokens
       : Math.max(1, Math.min(proportional, remainingTokens - (remainingLines - 1)));
-    const nextText = tokens.slice(cursor, cursor + take).join(" ");
+    const nextText = joinTranscriptWords(tokens.slice(cursor, cursor + take));
     cursor += take;
     return {
       ...line,

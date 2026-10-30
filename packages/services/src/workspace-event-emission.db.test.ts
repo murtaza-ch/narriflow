@@ -79,7 +79,7 @@ dbDescribe("Workspace Events written by operation settlement", () => {
     return id;
   }
   const admitStt = (lifecycle: RenderFixtureLifecycle, projectId: string) => lifecycle.admitTranscript({ projectId, idempotencyKey: `stt:${randomUUID()}`,
-    languageCode: "en", transcriptProvider: "assemblyai", transcriptProviderModel: "test", contentPack: PACK as never });
+    languageCode: "en", transcriptProvider: "elevenlabs", transcriptProviderModel: "test", contentPack: PACK as never });
   /** An Ingest Job that completed and handed off to this generation run. */
   const handedOffJob = (projectId: string, generationRunId: string, uploadSessionId?: string) => prisma.ingestJob.create({ data: { projectId,
     jobType: uploadSessionId ? "upload_finalize" : "link_import", payload: {}, status: "completed", completedAt: new Date(), generationHandoffAt: new Date(),
@@ -93,7 +93,7 @@ dbDescribe("Workspace Events written by operation settlement", () => {
     const job = await handedOffJob(f.project.id, stt.id);
     const attempt = await lifecycle.claim("stt");
     if (!attempt) throw new Error("stt claim missing");
-    await lifecycle.completeTranscript(attempt, { provider: "assemblyai", providerModel: "test", providerJobId: null, languageCode: "en",
+    await lifecycle.completeTranscript(attempt, { provider: "elevenlabs", providerModel: "test", providerJobId: null, languageCode: "en",
       languageConfidence: 1, text: "transcript", utterances: [] as Prisma.InputJsonValue, speakerCount: 1, durationSeconds: 10, rawStorageKey: null });
     return { stt, job };
   }
@@ -557,11 +557,11 @@ dbDescribe("Workspace Events written by operation settlement", () => {
     async function detecting(f: Awaited<ReturnType<typeof fixture>>, lifecycle = workflow()) {
       await prisma.project.update({ where: { id: f.project.id }, data: { sourceDurationSeconds: 10 } });
       const stt = await lifecycle.admitTranscript({ projectId: f.project.id, idempotencyKey: `stt:${randomUUID()}`, languageCode: "en",
-        transcriptProvider: "assemblyai", transcriptProviderModel: "test", contentPack: buildCaptionedVideoContentPack(settings) as never });
+        transcriptProvider: "elevenlabs", transcriptProviderModel: "test", contentPack: buildCaptionedVideoContentPack(settings) as never });
       const job = await handedOffJob(f.project.id, stt.id);
       const sttAttempt = await lifecycle.claim("stt");
       if (!sttAttempt) throw new Error("stt claim missing");
-      await lifecycle.completeTranscript(sttAttempt, { provider: "assemblyai", providerModel: "test", providerJobId: null, languageCode: "en",
+      await lifecycle.completeTranscript(sttAttempt, { provider: "elevenlabs", providerModel: "test", providerJobId: null, languageCode: "en",
         languageConfidence: 1, text: "transcript", utterances: [] as Prisma.InputJsonValue, speakerCount: 1, durationSeconds: 10, rawStorageKey: null });
       const detection = await lifecycle.claim("moment_detection");
       if (!detection) throw new Error("detection claim missing");

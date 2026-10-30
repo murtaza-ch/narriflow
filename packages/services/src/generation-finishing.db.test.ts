@@ -78,7 +78,7 @@ describeDb("Finishing runner on PostgreSQL", () => {
     const pack = await prisma.contentPack.create({ data: { projectId: project.id, outputTypes: ["short_clip"], clipGenerationMode: "best", clipCountTarget: 5, clipDurationSecTarget: 30,
       platformTargets: ["tiktok"], toneConstraints: [], captionPreset: "brand_default", platformPlaybookVersion: "test", defaultAspectRatio: "1:1" } });
     const stt = await prisma.workflowRun.create({ data: { projectId: project.id, stage: "stt", status: "completed", idempotencyKey: `stt:${randomUUID()}`, contentPackId: pack.id } });
-    await prisma.transcript.create({ data: { projectId: project.id, status: "completed", provider: "assemblyai", providerModel: "test" } });
+    await prisma.transcript.create({ data: { projectId: project.id, status: "completed", provider: "elevenlabs", providerModel: "test" } });
     const detection = await prisma.workflowRun.create({ data: { projectId: project.id, stage: "moment_detection", status: "completed", idempotencyKey: `${stt.idempotencyKey}__moment_detection`, contentPackId: pack.id } });
     const clips = [];
     for (const [index, score] of scores.entries()) {

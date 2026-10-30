@@ -36,7 +36,7 @@ Current architecture and vocabulary live in [GLOSSARY.md](GLOSSARY.md) and the [
 - Media storage: Cloudflare R2
 - Live workflow events: Upstash Redis pub/sub
 - Auth: Clerk
-- Speech-to-text: AssemblyAI Universal-3.5 Pro with Universal-2 fallback
+- Speech-to-text: ElevenLabs Scribe v2 (`scribe_v2`), async with a signed webhook
 - Clip detection: OpenAI Responses API, default `gpt-5.4-mini`
 - Voiceover dubbing: OpenAI audio speech + FFmpeg audio replacement
 - Rendering: FFmpeg/ffprobe
@@ -56,7 +56,7 @@ You need these accounts and credentials before the ingest, transcription, clip d
 | PostgreSQL / Neon / Supabase Postgres | Yes | Stores projects, ingest jobs, workflow runs, and transcripts |
 | Clerk | Yes | Required for sign-in and project ownership |
 | Cloudflare R2 | Yes | Stores uploaded files, normalized source media, raw transcription payloads, and rendered clips |
-| AssemblyAI | Yes | Required for the transcription stage |
+| ElevenLabs | Yes | Scribe v2 speech-to-text; the worker needs an API key and a dashboard webhook id, the API needs the webhook secret |
 | Upstash Redis | Recommended for real testing | Required for live workflow updates between the separate API and worker processes |
 | Resend | Optional for this workflow | Only needed for email/webhook flows |
 | Stripe | Optional for Free-plan local testing | Required for paid checkout, entitlements, and billing reconciliation |
@@ -70,7 +70,7 @@ You need these accounts and credentials before the ingest, transcription, clip d
 Narriflow turns a source media input into rendered short clips through the background stages below:
 
 1. Ingest: accepts an uploaded file, YouTube URL, direct media link, or RSS episode and stores the normalized source media in Cloudflare R2.
-2. Transcription: extracts audio with FFmpeg and submits it to AssemblyAI with Universal-3.5 Pro and Universal-2 fallback. A separate loop polls results. Completed transcripts preserve speaker labels, word timings, the selected model, and automatic language-detection confidence. Source-language options come from the shared validators.
+2. Transcription: extracts audio with FFmpeg and submits it to ElevenLabs Scribe v2 as an async job with `webhook=true`. When no language was chosen and the source is at least 60 s, the worker first probes three 20 s windows (one synchronous Scribe call) and pins the language only on a confident, mapped result. The run then waits: the API's signed `POST /api/webhooks/elevenlabs` makes it due when the transcript is ready, and a worker loop fetches the result by `transcription_id` as a recovery path (`ELEVENLABS_RESULT_POLL_INTERVAL_MS`). Completed transcripts preserve speaker labels, word timings with provider spacing, and the detected language and its confidence. The language catalog comes from the shared validators (`packages/validators/src/language.ts`); see [ADR 0018](docs/adr/0018-elevenlabs-scribe-transcription.md).
 3. Moment detection: sends the completed transcript to OpenAI through the Responses API. The default model is `gpt-5.4-mini`, and the worker requests strict JSON output for clip candidates.
 4. Clip rendering: creates subtitle files, crops/scales video for the requested aspect ratios, burns captions with FFmpeg, uploads MP4 renders to R2, and exposes downloads through presigned URLs.
 5. Optional voiceover dubbing: translates the clip transcript when needed, synthesizes narration with OpenAI audio speech, swaps the rendered clip audio track with FFmpeg, and uploads MP3/MP4 dub assets to R2.
@@ -107,7 +107,7 @@ flowchart TD
   O --> P["WorkflowRun: stt"]
   P --> Q["Worker downloads media from R2"]
   Q --> R["FFmpeg extracts mono 16 kHz audio"]
-  R --> S["AssemblyAI transcription"]
+  R --> S["ElevenLabs Scribe v2 transcription"]
   S --> T["Transcript saved in Postgres; raw payload saved in R2"]
 
   T --> U["Auto-queue WorkflowRun: moment_detection"]
@@ -137,7 +137,7 @@ flowchart TD
 | Cloudflare R2 | Stores source media, raw transcription JSON, and rendered MP4 clips. |
 | PostgreSQL + Prisma | Stores projects, ingest jobs, workflow runs, transcripts, clips, render variants, and workflow events. |
 | Upstash Redis | Broadcasts workflow events to the API's progress stream for live updates. Events are also persisted in Postgres. |
-| AssemblyAI Universal-3.5 Pro + Universal-2 | Converts extracted audio into transcript text, speaker-separated utterances, punctuation, and word timings. |
+| ElevenLabs Scribe v2 | Converts extracted audio into transcript text, speaker-separated utterances, and word timings; completes asynchronously through a signed webhook. |
 | OpenAI `gpt-5.4-mini` | Analyzes transcripts and returns structured clip candidates with timestamps, hook text, category, reasoning, and scores. |
 | OpenAI audio speech | Generates voiceover audio for dubbed clips. |
 | FFmpeg | Extracts audio for transcription and renders final MP4 clips with cropped video and burned captions. |
@@ -267,7 +267,8 @@ Minimum values for the current clips workflow:
 - `R2_ACCESS_KEY_ID`
 - `R2_SECRET_ACCESS_KEY`
 - `R2_BUCKET`
-- `ASSEMBLYAI_API_KEY`
+- `ELEVENLABS_API_KEY`
+- `ELEVENLABS_WEBHOOK_ID`, the id of the dashboard speech-to-text webhook (a missing id fails transcription visibly; there is no synchronous fallback). The API needs the matching `ELEVENLABS_WEBHOOK_SECRET`.
 - `OPENAI_API_KEY`
 - `SOCIAL_PUBLICATION_CHECKPOINT_KEY`, at least 32 characters, for the worker's publication loop. Generate with `openssl rand -base64 32`. Provider credentials are only needed when publishing.
 
@@ -275,8 +276,7 @@ Useful runtime settings:
 
 - `PORT=4001`
 - `INGEST_POLL_INTERVAL_MS=2500`
-- `ASSEMBLYAI_POLL_INTERVAL_MS=5000`
-- `ASSEMBLYAI_POLL_TIMEOUT_MS=7200000`
+- `ELEVENLABS_RESULT_POLL_INTERVAL_MS=30000` for the GET recovery of waiting transcriptions, and `ELEVENLABS_RESULT_TIMEOUT_MS=7200000` as the wait ceiling.
 - `OPENAI_CLIP_MODEL=gpt-5.4-mini`
 - `OPENAI_IMAGE_MODEL=gpt-image-2` and `OPENAI_IMAGE_QUALITY=medium` for Studio still generation.
 - The four `GENERATED_MEDIA_PROMPT_*` values must match the API values. Rotate encryption by moving the old version and key into `GENERATED_MEDIA_PROMPT_DECRYPTION_KEYS_JSON`, assigning a new active version, and generating a new encryption key. Do not rotate the fingerprint key unless prompt idempotency records have been cleared intentionally.
@@ -285,7 +285,6 @@ Useful runtime settings:
 - Library search embeds finished transcripts with `text-embedding-3-small` using `OPENAI_API_KEY` in both the worker (indexing) and the API (queries). The database needs the `vector` extension; see [the environment runbook](docs/runbooks/environments.md). `LIBRARY_INDEX_POLL_INTERVAL_MS=10000` and `LIBRARY_INDEX_BATCH_SIZE=5` tune the indexing loop.
 - Finishing (exporting the best clips and writing copy once a generation completes) runs in the worker's `finishing` loop. It uses `OPENAI_API_KEY` for assisted copy; `FINISHING_POLL_INTERVAL_MS=15000` and `FINISHING_BATCH_SIZE=3` tune it. Apply the `generation_finishing` migration before deploying.
 - `OPENAI_TTS_MODEL=gpt-4o-mini-tts` and `OPENAI_DUB_TRANSLATION_MODEL=gpt-5.4-mini` for voiceover dubbing.
-- `ASSEMBLYAI_KEYTERMS_PROMPT=comma,separated,terms` to opt into deployment-specific names or brands. Terms are trimmed, deduplicated, limited to six words each, and capped at the Universal-2-safe 200-term limit; Narriflow sends no built-in demo vocabulary.
 - `WORKER_REAP_INTERVAL_MS=300000` to recover Ingest Jobs whose fenced claim lease expired. Graceful shutdown releases claims without consuming automatic retries.
 - `WORKFLOW_LEASE_REAP_INTERVAL_MS=30000` and `WORKFLOW_EVENT_DISPATCH_INTERVAL_MS=1000` for protocol-v2 Workflow Attempt recovery and durable event delivery.
 - `PEXELS_API_KEY=...` to enable stock B-roll search and automatic B-roll cutaways.
@@ -375,14 +374,14 @@ The worker asks OpenAI for a larger candidate pool than the final clip count, re
 4. Configure bucket CORS for each deployed web origin (the browser uploads directly): allow `PUT`, allow the `Content-Type` request header, and expose the `ETag` response header. Multipart finalization cannot safely continue if browser JavaScript cannot read each part ETag.
 5. Add an R2 lifecycle rule that aborts incomplete multipart uploads after seven days. Set `R2_INCOMPLETE_MULTIPART_LIFECYCLE_DAYS=7` in the worker after verifying the deployed bucket rule. Production workers refuse to start without this confirmation; Narriflow's six-day hard session lifetime and autonomous compensation remain the primary cleanup path.
 
-### AssemblyAI
+### ElevenLabs Scribe
 
-1. Create an AssemblyAI account.
-2. Generate an API key.
-3. Set `ASSEMBLYAI_API_KEY` in the worker env.
-4. The worker uses `speech_models: ["universal-3-5-pro", "universal-2"]`, `speaker_labels: true`, and `language_detection: true` for Auto mode. Manual mode sends one exact provider `language_code` from the documented enum.
+1. Create an ElevenLabs account and generate an API key with speech-to-text access. Set it as `ELEVENLABS_API_KEY` in the worker env.
+2. In the ElevenLabs dashboard create a workspace webhook for the "Transcription completed" event: URL `{API_ORIGIN}/api/webhooks/elevenlabs`, HMAC auth, retries on. Copy the webhook id to `ELEVENLABS_WEBHOOK_ID` (worker) and the signing secret to `ELEVENLABS_WEBHOOK_SECRET` (API). The development webhook is described in [the environment runbook](docs/runbooks/environments.md#elevenlabs-scribe-webhook).
+3. The worker sends `model_id=scribe_v2`, `diarize=true`, `timestamps_granularity=word`, `webhook=true` and `webhook_id`. A chosen language is sent as the provider's ISO 639-3 code; on Auto the language probe pins it when confident (see [ADR 0018](docs/adr/0018-elevenlabs-scribe-transcription.md)).
+4. The webhook endpoint accepts bodies up to 128 MiB because Scribe posts the whole transcript. It verifies `elevenlabs-signature` (HMAC-SHA256 over `<t>.<raw body>`, 30-minute window) before it reads anything.
 
-Current multilingual limits are explicit: language-detection confidence is preserved and shown, but no eval-backed threshold blocks downstream work yet; there is no reusable project glossary/language profile, dubbing does not yet perform segment-level duration alignment, and RTL/CJK/Indic caption cue behavior still needs a rendered evaluation matrix. The worker image includes broad Noto core, extra, CJK, and emoji glyph coverage, but fonts alone do not guarantee script-aware cue segmentation.
+Current multilingual limits are explicit: language-detection confidence is preserved and shown, but no eval-backed threshold blocks downstream work yet; there is no reusable project glossary/language profile and dubbing does not yet perform segment-level duration alignment. Captions are script-aware (CJK/Thai joining, HarfBuzz word geometry, RTL direction, locale fonts); the worker image carries broad Noto core, extra, CJK, and emoji glyph coverage. Roman-script captions (Roman Urdu, Hinglish) and re-transcribing in another language are not supported.
 
 ### OpenAI
 
@@ -410,7 +409,7 @@ Install these on the machine that runs the worker:
 
 Why:
 
-- `ffmpeg` is required to extract transcription-ready audio before uploading it to AssemblyAI.
+- `ffmpeg` is required to extract transcription-ready audio before uploading it to ElevenLabs.
 - YouTube imports require `yt-dlp[default]==2026.8.19`, Deno 2.9.5, and the
   bgutil PO-token plugin/server 2.0.0. The worker starts the private token server
   before claiming jobs. Use the worker image locally for matching dependencies;
@@ -484,9 +483,9 @@ Runtime ports:
 
 ## Transcription validation
 
-For a local AssemblyAI transcription test, configure the worker env with `ASSEMBLYAI_API_KEY`, start the API, web app and worker, ingest a source, and start transcription from the project page. The completed transcript row should show provider `assemblyai`, the raw AssemblyAI JSON should be stored under `projects/{projectId}/transcripts/` in R2, and clip detection should auto-queue without provider-specific changes.
+For a local transcription test, configure the worker env with `ELEVENLABS_API_KEY` and `ELEVENLABS_WEBHOOK_ID` and the API env with `ELEVENLABS_WEBHOOK_SECRET`, start the API, web app and worker, ingest a source, and start transcription from the project page. A local API is not reachable by ElevenLabs, so the webhook cannot arrive; the worker's GET recovery loop completes the run after `ELEVENLABS_RESULT_POLL_INTERVAL_MS`. To exercise the webhook itself, use the deployed dev API. The completed transcript row should show provider `elevenlabs` and model `scribe_v2`, the raw Scribe JSON should be stored under `projects/{projectId}/transcripts/` in R2, and clip detection should auto-queue without provider-specific changes.
 
-For a quality bakeoff against older archived outputs, run the same source media through the AssemblyAI pipeline and compare:
+For a quality bakeoff against other outputs, run the same source media through the pipeline and compare:
 
 - full transcript quality
 - speaker consistency
@@ -502,7 +501,7 @@ For a quality bakeoff against older archived outputs, run the same source media 
 - All committed Prisma migrations have been applied.
 - The API, web and worker env files all exist and `bun run env:check` passes.
 - R2 credentials work from the API and the worker.
-- `ASSEMBLYAI_API_KEY` is present in the worker.
+- `ELEVENLABS_API_KEY` and `ELEVENLABS_WEBHOOK_ID` are present in the worker, and `ELEVENLABS_WEBHOOK_SECRET` in the API.
 - `OPENAI_API_KEY` is present in the worker for clip detection.
 - Upstash is configured in the API and the worker if you want live progress updates.
 - `ffmpeg` and `yt-dlp` are installed on the worker host, or you are using the worker container.

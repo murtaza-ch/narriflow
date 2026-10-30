@@ -258,9 +258,9 @@ describe("exportTranscript", () => {
   const snapshot = buildTranscriptSnapshot({
     projectId: "72e62077-cfc8-446b-9dd1-29bd72020858",
     status: "completed",
-    provider: "assemblyai",
-    providerModel: "universal-3-5-pro",
-    providerJobId: "aai-transcript-123",
+    provider: "elevenlabs",
+    providerModel: "scribe_v2",
+    providerJobId: "scribe-transcript-123",
     languageCode: "en",
     languageConfidence: 0.97,
     text: "Welcome back to Narriflow.\n\nToday we are talking about transcription quality.",

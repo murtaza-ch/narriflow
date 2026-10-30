@@ -1965,8 +1965,8 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
       projectId: project.id,
       idempotencyKey: `stt-admission:${randomUUID()}`,
       languageCode: "en",
-      transcriptProvider: "assemblyai",
-      transcriptProviderModel: "universal-3-pro",
+      transcriptProvider: "elevenlabs",
+      transcriptProviderModel: "scribe_v2",
       contentPack: {
         outputTypes: ["short_clip"],
         clipGenerationMode: "best",
@@ -2004,7 +2004,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     ]);
     expect(run.contentPack?.clipCountTarget).toBe(3);
     expect(transcript.status).toBe("queued");
-    expect(transcript.provider).toBe("assemblyai");
+    expect(transcript.provider).toBe("elevenlabs");
     expect(events).toHaveLength(1);
     expect(events[0]?.status).toBe("queued");
   });
@@ -3258,7 +3258,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     expect(due[0]?.attemptId).toBe(attempt.attemptId);
 
     await lifecycle.completeTranscript(attempt, {
-        provider: "assemblyai",
+        provider: "elevenlabs",
         providerModel: "test",
         providerJobId: "provider-job-1",
         languageCode: "en",

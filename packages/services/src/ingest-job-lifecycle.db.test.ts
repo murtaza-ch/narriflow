@@ -661,7 +661,7 @@ dbDescribe("Ingest Job lifecycle PostgreSQL interface", () => {
       projectId: project.id,
       idempotencyKey: `manual:${randomUUID()}`,
       contentPackId: pack.id,
-      transcriptProvider: "assemblyai",
+      transcriptProvider: "elevenlabs",
       transcriptProviderModel: "test",
     });
     await prisma.workflowRun.update({
@@ -701,7 +701,7 @@ dbDescribe("Ingest Job lifecycle PostgreSQL interface", () => {
             projectId: project.id,
             idempotencyKey: `manual:${randomUUID()}`,
             contentPackId: pack.id,
-            transcriptProvider: "assemblyai",
+            transcriptProvider: "elevenlabs",
             transcriptProviderModel: "test",
           });
           throw new ExpectedDomainFailureError({
@@ -739,7 +739,7 @@ dbDescribe("Ingest Job lifecycle PostgreSQL interface", () => {
             projectId: project.id,
             idempotencyKey: `manual:${randomUUID()}`,
             contentPackId: pack.id,
-            transcriptProvider: "assemblyai",
+            transcriptProvider: "elevenlabs",
             transcriptProviderModel: "test",
           });
           await prisma.workflowRun.update({

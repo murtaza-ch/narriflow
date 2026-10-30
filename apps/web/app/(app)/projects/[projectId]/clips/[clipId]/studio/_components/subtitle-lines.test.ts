@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { TranscriptUtterance } from "@narriflow/validators";
+import { joinTranscriptWords, type TranscriptUtterance } from "@narriflow/validators";
 import {
   addSubtitleLineAfter,
   deleteSubtitleLine,
@@ -73,6 +73,28 @@ describe("subtitle line operations", () => {
     expect(next.map((line) => line.text).join(" ")).toBe("One polished paragraph here");
     expect(next[0]!.startSec).toBe(10);
     expect(next[1]!.endSec).toBe(12);
+  });
+
+  test("splits and rejoins a Chinese paragraph edit without whitespace", () => {
+    const zh = lines.map((line, index) => ({
+      ...line,
+      text: index === 0 ? "你好世界" : "今天天气",
+      words: line.words.map((word) => ({ ...word, word: "字" })),
+    }));
+    const next = replaceSubtitleParagraphText(zh, [0, 1], "我们今天去公园玩");
+    expect(next).toHaveLength(2);
+    expect(next.map((line) => line.text).join("")).toBe("我们今天去公园玩");
+    expect(next.every((line) => !/\s/.test(line.text))).toBe(true);
+    expect(next[0]!.startSec).toBe(10);
+    expect(next[1]!.endSec).toBe(12);
+    expect(replaceSubtitleParagraphText(zh, [0, 1], "好")).toBe(zh);
+  });
+
+  test("keeps Japanese runs together with an embedded Latin word and spaces", () => {
+    const next = replaceSubtitleParagraphText(lines, [0, 1], "今日は AI を使う");
+    const joined = joinTranscriptWords(next.flatMap((line) => line.words.map(({ word, spaceBefore }) => ({ word, spaceBefore }))));
+    expect(next.map((line) => line.text).join(" ")).toContain("AI");
+    expect(joined.replace(/\s/g, "")).toBe("今日はAIを使う");
   });
 
   test("rejects paragraph rewrites that cannot leave one word per timed line", () => {

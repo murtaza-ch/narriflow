@@ -534,7 +534,7 @@ export interface SpeakerClusterAssignment {
 
 /**
  * Diarization-assisted speaker -> cluster assignment. Signal used: for each
- * AssemblyAI utterance (a speaker's talking turn), count how often each
+ * diarized utterance (a speaker's talking turn), count how often each
  * cluster is the ONE visible face in SINGLE-shot samples (`single:<idx>`)
  * whose timestamp falls inside that turn — i.e. "when this speaker is
  * talking, whose close-up is on screen?" — then aggregate those counts
