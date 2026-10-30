@@ -286,10 +286,12 @@ describe("downloaded-asset disk cache", () => {
     await writeFile(sourcePath, "fake mp4 bytes");
 
     const url = `https://cdn.pexels.com/roundtrip-${Date.now()}-${Math.random()}.mp4`;
-    expect(await getCachedBrollAssetPath(url)).toBeNull();
+    // Tests never write into the worker's real cache directory.
+    const directory = join(tempDir, "cache");
+    expect(await getCachedBrollAssetPath(url, undefined, directory)).toBeNull();
 
-    await saveBrollAssetToCache(url, sourcePath);
-    const cachedPath = await getCachedBrollAssetPath(url);
+    await saveBrollAssetToCache(url, sourcePath, { directory });
+    const cachedPath = await getCachedBrollAssetPath(url, undefined, directory);
     expect(cachedPath).not.toBeNull();
     expect(cachedPath).not.toBe(sourcePath);
   });
@@ -299,14 +301,15 @@ describe("downloaded-asset disk cache", () => {
     const sourcePath = join(tempDir, "source.mp4");
     await writeFile(sourcePath, "fake mp4 bytes");
     const url = `https://cdn.pexels.com/ttl-${Date.now()}-${Math.random()}.mp4`;
-    await saveBrollAssetToCache(url, sourcePath);
-    const cachedPath = await getCachedBrollAssetPath(url);
+    const directory = join(tempDir, "cache");
+    await saveBrollAssetToCache(url, sourcePath, { directory });
+    const cachedPath = await getCachedBrollAssetPath(url, undefined, directory);
     if (!cachedPath) throw new Error("expected cached fixture path");
     const staleAt = new Date(Date.now() - 60_000);
     await utimes(cachedPath, staleAt, staleAt);
 
-    expect(await getCachedBrollAssetPath(url, 1_000)).toBeNull();
-    expect(await getCachedBrollAssetPath(url, 120_000)).toBe(cachedPath);
+    expect(await getCachedBrollAssetPath(url, 1_000, directory)).toBeNull();
+    expect(await getCachedBrollAssetPath(url, 120_000, directory)).toBe(cachedPath);
   });
 
   test("a cache-write failure (bad source path) never throws", async () => {

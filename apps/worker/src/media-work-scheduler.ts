@@ -1,3 +1,5 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+
 /** One CPU lane. Waiting renders get the next slot; one waiting background job
  * runs between groups, with FIFO fairness among preview/layout/thumbnail work. */
 export class MediaWorkScheduler {
@@ -11,12 +13,15 @@ export class MediaWorkScheduler {
 
   run<T>(kind: "render" | "background", name: string, signal: AbortSignal, work: () => Promise<T>): Promise<T> {
     signal.throwIfAborted();
+    // A queued job starts from whichever job finished before it. Run it in the
+    // async context it was queued from, or a render reads a preview's context.
+    const inQueuedContext = AsyncLocalStorage.snapshot();
     return new Promise<T>((resolve, reject) => {
       const entry = { kind, name, at: Date.now(), signal,
         start: () => {
           signal.removeEventListener("abort", entry.cancel);
           this.active = kind;
-          void Promise.resolve().then(() => { signal.throwIfAborted(); return work(); }).then(resolve, reject).finally(() => {
+          void inQueuedContext(() => Promise.resolve().then(() => { signal.throwIfAborted(); return work(); })).then(resolve, reject).finally(() => {
             this.active = null;
             this.last = kind;
             // Give the render loop resuming after this group a chance to enqueue.

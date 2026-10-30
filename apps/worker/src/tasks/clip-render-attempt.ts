@@ -4658,6 +4658,7 @@ async function executeClipRenderAttemptInScratch(params: {
 					clipId: renderGroup[0]!.clipId,
 					failureCode: failure.code,
 					disposition: failure.disposition,
+					...unexpectedFailureFacts(error),
 				});
 			}
 		}
@@ -4750,4 +4751,15 @@ async function executeClipRenderAttemptInScratch(params: {
 		// holds is returned before its scratch directory is removed.
 		releaseRunScratch(scratch);
 	}
+}
+
+/** An uncoded failure is a defect; its class, code-level detail and top stack
+ * frames identify it. The diagnostic logger still redacts URLs. */
+function unexpectedFailureFacts(error: unknown): Record<string, unknown> {
+	if (error instanceof WorkflowFailure || !(error instanceof Error)) return {};
+	return {
+		errorClass: error.name,
+		errorDetail: error.message.slice(0, 300),
+		stackTop: (error.stack ?? "").split("\n").slice(1, 4).map((frame) => frame.trim()),
+	};
 }

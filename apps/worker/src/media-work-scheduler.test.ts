@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { expect, test } from "bun:test";
 import { MediaWorkScheduler } from "./media-work-scheduler";
 
@@ -36,4 +37,20 @@ test("queued shutdown work never starts and failure releases the CPU lane", asyn
   await expect(scheduler.run("render", "failed", signal, async () => { throw new Error("encode failed"); })).rejects.toThrow("encode failed");
   await scheduler.run("background", "next", signal, async () => { starts += 1; });
   expect(starts).toBe(1);
+});
+
+test("a queued job runs in the async context it was queued from", async () => {
+  // Renders read their execution context from AsyncLocalStorage. A render that
+  // waited behind a preview used to start inside the preview's context.
+  const context = new AsyncLocalStorage<string>();
+  const scheduler = new MediaWorkScheduler();
+  const signal = new AbortController().signal;
+  const preview = gate();
+  const started = gate();
+  const background = context.run("preview", () => scheduler.run("background", "preview", signal, async () => { started.release(); await preview.promise; return context.getStore(); }));
+  await started.promise;
+  const render = context.run("render", () => scheduler.run("render", "clip", signal, async () => context.getStore()));
+  const layout = context.run("layout", () => scheduler.run("background", "layout", signal, async () => context.getStore()));
+  preview.release();
+  expect(await Promise.all([background, render, layout])).toEqual(["preview", "render", "layout"]);
 });
