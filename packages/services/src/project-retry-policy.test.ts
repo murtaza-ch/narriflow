@@ -21,10 +21,19 @@ describe("isAutoRetryableFailureCode", () => {
     expect(isAutoRetryableFailureCode("remote_media_invalid_content_type")).toBe(
       false,
     ); // unsupported format
-    expect(isAutoRetryableFailureCode("assemblyai_api_key_missing")).toBe(false); // auth failure
+    expect(isAutoRetryableFailureCode("elevenlabs_api_key_missing")).toBe(false); // auth failure
     expect(isAutoRetryableFailureCode("openai_api_key_missing")).toBe(false); // auth failure
     expect(isAutoRetryableFailureCode("openai_quota_exhausted")).toBe(false); // provider billing
-    expect(isAutoRetryableFailureCode("assemblyai_quota_exhausted")).toBe(false); // provider billing
+    expect(isAutoRetryableFailureCode("elevenlabs_quota_exhausted")).toBe(false); // provider billing
+    for (const code of [
+      "elevenlabs_auth_failed",
+      "elevenlabs_webhook_not_configured",
+      "elevenlabs_invalid_media",
+      "elevenlabs_invalid_language",
+      "elevenlabs_result_invalid",
+    ]) expect(isAutoRetryableFailureCode(code)).toBe(false);
+    // An unconfirmed submission resubmits on the next attempt.
+    expect(isAutoRetryableFailureCode("elevenlabs_submission_unconfirmed")).toBe(true);
     expect(isAutoRetryableFailureCode("credits_exhausted")).toBe(false);
     expect(isAutoRetryableFailureCode("credits_reservation_released")).toBe(false);
     expect(isAutoRetryableFailureCode("link_download_missing_file")).toBe(false); // file not found
@@ -77,7 +86,7 @@ describe("decideAutoRetry", () => {
     // generic exhausted code) — a permanent failure should keep the message
     // that actually explains what's wrong.
     expect(
-      decideAutoRetry(0, "assemblyai_api_key_missing", cap, exhaustedCode)
+      decideAutoRetry(0, "elevenlabs_api_key_missing", cap, exhaustedCode)
         .outcome,
     ).toBe("permanent");
   });

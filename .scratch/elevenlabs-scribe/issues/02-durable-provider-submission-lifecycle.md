@@ -10,9 +10,16 @@
 
 **Blocked by:** 01
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Acceptance:**
-- [ ] DB tests (`bun run test:workflow:db`): callback-before-acceptance, crash-before-ID-save → deadline fail → new attempt, duplicate success, stale attempt, cancelled run, error event, acceptance after terminal.
-- [ ] `bun run test:processing-usage:db` green; no new debit on retry/recovery.
-- [ ] Migration created with `prisma migrate dev --create-only` style SQL, not applied to shared DB.
+- [x] DB tests (`bun run test:workflow:db`): callback-before-acceptance, crash-before-ID-save → deadline fail → new attempt, duplicate success, stale attempt, cancelled run, error event, acceptance after terminal.
+- [x] `bun run test:processing-usage:db` green; no new debit on retry/recovery.
+- [x] Migration created with `prisma migrate dev --create-only` style SQL, not applied to shared DB.
+
+## Comments
+
+- Local Postgres 17 (port 55432, throwaway). `bun run test:workflow:db`: 220 pass, 0 fail (13 new in "durable provider submission": begin, acceptance idempotent/mismatch, callback-before-acceptance, duplicate success, crash-before-ID-save → deadline fail → attempt 2, not-due/accepted-meanwhile, exhausted budget, stale attempt, cancelled run, error event, acceptance after terminal, lookup/not_waiting). `bun run test:processing-usage:db`: 31 pass. Typecheck, biome, `bun test packages/services` green. Nothing run against Neon.
+- Migration `20261030170000_transcript_provider_submission` adds `Transcript.providerRequestId` and `Transcript.providerSubmissionDeadlineAt` (additive, nullable). Not applied to the shared database.
+- `waitForProvider` is kept only because the AssemblyAI worker still calls it; ticket 06 deletes it. `transcribe.ts` has one interim guard line (skips claimed runs with a null provider id).
+- `error-messages.ts` (validators) still carries `assemblyai_*` copy keys; the retry policy now lists the `elevenlabs_*` permanent codes. Ticket 06/12 owns the copy rename.

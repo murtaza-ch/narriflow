@@ -70,6 +70,7 @@ import {
 	type LinkIngestInput,
 	type LinkProviderId,
 	type RssImportInput,
+	SCRIBE_MODEL_ID,
 	userErrorMessage,
 	type TranscriptExportFormat,
 	type TranscriptSnapshot,
@@ -137,9 +138,8 @@ interface LinkIntakeSource {
 	};
 }
 
-const STT_PROVIDER = "assemblyai";
-// Placeholder until the Scribe worker adapter lands (ticket 06).
-const STT_PROVIDER_MODEL = "universal-3-5-pro,universal-2";
+const STT_PROVIDER = "elevenlabs";
+const STT_PROVIDER_MODEL = SCRIBE_MODEL_ID;
 // Defensive upper bound on how many persisted WorkflowEvent rows a single
 // project page fetch will ever pull for the Activity tab; the client applies
 // its own tighter display cap (PROJECT_EVENT_ROW_LIMIT) on top of this.

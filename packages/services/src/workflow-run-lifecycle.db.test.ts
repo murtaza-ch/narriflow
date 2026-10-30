@@ -26,9 +26,12 @@ import { Pool } from "pg";
 import {
   type WorkflowAttemptRef,
   getWorkflowRunLifecycle,
+  WORKFLOW_MAX_ATTEMPTS,
   WORKFLOW_RELEASE_GRACE_MS,
+  WORKFLOW_RETRIES_EXHAUSTED_CODE,
   WorkflowAttemptLost,
   WorkflowFailure,
+  WorkflowRunLifecycle,
 } from "./workflow-run-lifecycle";
 import { decodeFrozenClipEditorDocument } from "./clip-editor-document-persistence";
 import { clipExportService } from "./clip-export.service";
@@ -3274,6 +3277,197 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     expect(settled.status).toBe("completed");
     expect(transcript.workflowAttemptId).toBe(attempt.attemptId);
     expect(child.status).toBe("queued");
+  });
+
+  describe("durable provider submission", () => {
+    const transcriptInput = (providerJobId: string, providerRequestId: string) => ({
+      provider: "elevenlabs",
+      providerModel: "scribe_v2",
+      providerJobId,
+      providerRequestId,
+      languageCode: "en",
+      languageConfidence: 1,
+      text: "test transcript",
+      utterances: [] as Prisma.InputJsonValue,
+      speakerCount: 1,
+      durationSeconds: 10,
+      rawStorageKey: null,
+    });
+    const farFuture = () => new Date(Date.now() + 3_600_000);
+
+    async function begun(deadline = farFuture()) {
+      const { run, project } = await fixture("stt");
+      const worker = new RenderFixtureLifecycle({ prisma, leaseOwner: randomUUID() });
+      // The API process holds no lease; it is a different lifecycle instance.
+      const api = new WorkflowRunLifecycle({ prisma, leaseOwner: randomUUID() });
+      const attempt = await worker.claim("stt");
+      if (!attempt) throw new Error("claim missing");
+      await worker.beginProviderSubmission(attempt, { deadline });
+      return { run, project, worker, api, attempt };
+    }
+
+    test("begin parks the run waiting with no provider id and stamps Scribe", async () => {
+      const deadline = farFuture();
+      const { run, project, attempt } = await begun(deadline);
+      expect(await prisma.workflowRun.findUniqueOrThrow({ where: { id: run.id } })).toMatchObject({
+        status: "waiting", leaseOwner: null, leaseExpiresAt: null, attemptId: attempt.attemptId, nextPollAt: deadline,
+      });
+      expect(await prisma.transcript.findUniqueOrThrow({ where: { projectId: project.id } })).toMatchObject({
+        provider: "elevenlabs", providerModel: "scribe_v2", providerJobId: null, providerRequestId: null,
+        providerSubmissionDeadlineAt: deadline, workflowAttemptId: attempt.attemptId, status: "processing",
+      });
+    });
+
+    test("acceptance stores both ids, is idempotent, and rejects a different transcription", async () => {
+      const { project, api, attempt } = await begun();
+      const accepted = { requestId: "req-1", transcriptionId: "tr-1", nextPollAt: new Date(Date.now() + 60_000) };
+      expect(await api.recordProviderAcceptance(attempt, accepted)).toEqual({ kind: "applied" });
+      expect(await api.recordProviderAcceptance(attempt, accepted)).toEqual({ kind: "duplicate" });
+      expect(await api.recordProviderAcceptance(attempt, { ...accepted, transcriptionId: "tr-other" }))
+        .toEqual({ kind: "stale", reason: "provider_job_mismatch" });
+      expect(await prisma.transcript.findUniqueOrThrow({ where: { projectId: project.id } })).toMatchObject({
+        providerJobId: "tr-1", providerRequestId: "req-1", providerSubmissionDeadlineAt: null,
+      });
+    });
+
+    test("a callback before acceptance completes the run and the late acceptance never resurrects it", async () => {
+      const { run, project, api, attempt } = await begun();
+      expect(await api.completeProviderTranscript(attempt, transcriptInput("tr-1", "req-1"))).toEqual({ kind: "applied" });
+      expect(await api.recordProviderAcceptance(attempt, { requestId: "req-1", transcriptionId: "tr-1", nextPollAt: new Date() }))
+        .toEqual({ kind: "duplicate" });
+      expect(await prisma.workflowRun.findUniqueOrThrow({ where: { id: run.id } })).toMatchObject({ status: "completed", nextPollAt: null });
+      expect(await prisma.transcript.findUniqueOrThrow({ where: { projectId: project.id } })).toMatchObject({
+        status: "completed", providerJobId: "tr-1", providerRequestId: "req-1", providerSubmissionDeadlineAt: null,
+      });
+    });
+
+    test("a duplicate success delivery changes nothing", async () => {
+      const { project, run, api, attempt } = await begun();
+      await api.recordProviderAcceptance(attempt, { requestId: "req-1", transcriptionId: "tr-1", nextPollAt: new Date() });
+      expect(await api.completeProviderTranscript(attempt, transcriptInput("tr-1", "req-1"))).toEqual({ kind: "applied" });
+      expect(await api.completeProviderTranscript(attempt, transcriptInput("tr-1", "req-1"))).toEqual({ kind: "duplicate" });
+      expect(await prisma.workflowRun.count({ where: { projectId: project.id, stage: "moment_detection" } })).toBe(1);
+      expect(await prisma.workflowEvent.count({ where: { workflowRunId: run.id, stage: "stt", status: "completed" } })).toBe(1);
+    });
+
+    test("a completion for another transcription of the same attempt is stale", async () => {
+      const { api, attempt, run } = await begun();
+      await api.recordProviderAcceptance(attempt, { requestId: "req-1", transcriptionId: "tr-1", nextPollAt: new Date() });
+      expect(await api.completeProviderTranscript(attempt, transcriptInput("tr-other", "req-1")))
+        .toEqual({ kind: "stale", reason: "provider_job_mismatch" });
+      expect((await prisma.workflowRun.findUniqueOrThrow({ where: { id: run.id } })).status).toBe("waiting");
+    });
+
+    test("a crash before the id is saved fails at the deadline and the next attempt resubmits", async () => {
+      const { run, project, worker, api, attempt } = await begun(new Date(Date.now() - 1_000));
+      const due = await worker.claimDueWaitingTranscripts(10, 5_000);
+      expect(due).toHaveLength(1);
+      expect(due[0]).toMatchObject({ attemptId: attempt.attemptId, providerJobId: null });
+      expect(due[0]?.submissionDeadlineAt).toBeInstanceOf(Date);
+
+      expect(await worker.expireUnconfirmedProviderSubmission(due[0]!)).toEqual({ kind: "applied" });
+      expect(await prisma.workflowRun.findUniqueOrThrow({ where: { id: run.id } })).toMatchObject({
+        status: "queued", attemptId: null, attemptCount: 1,
+      });
+      expect(await prisma.transcript.findUniqueOrThrow({ where: { projectId: project.id } })).toMatchObject({
+        providerJobId: null, providerRequestId: null, providerSubmissionDeadlineAt: null, workflowAttemptId: null,
+      });
+      // The first attempt's late acceptance cannot resurrect anything.
+      expect(await api.recordProviderAcceptance(attempt, { requestId: "late", transcriptionId: "late", nextPollAt: new Date() }))
+        .toEqual({ kind: "stale", reason: "attempt_superseded" });
+
+      await prisma.workflowRun.update({ where: { id: run.id }, data: { nextAttemptAt: new Date(Date.now() - 1_000) } });
+      const next = await worker.claim("stt");
+      expect(next).toMatchObject({ workflowRunId: run.id, attemptCount: 2 });
+      expect(next?.attemptId).not.toBe(attempt.attemptId);
+    });
+
+    test("an unconfirmed submission before its deadline, or one accepted meanwhile, is left alone", async () => {
+      const early = await begun();
+      expect(await early.worker.expireUnconfirmedProviderSubmission(early.attempt))
+        .toEqual({ kind: "stale", reason: "submission_pending" });
+      const accepted = await begun(new Date(Date.now() - 1_000));
+      await accepted.api.recordProviderAcceptance(accepted.attempt, { requestId: "r", transcriptionId: "t", nextPollAt: new Date() });
+      expect(await accepted.worker.expireUnconfirmedProviderSubmission(accepted.attempt))
+        .toEqual({ kind: "stale", reason: "submission_confirmed" });
+    });
+
+    test("an exhausted attempt budget fails the run at the deadline with the retry-exhausted code", async () => {
+      const { run, worker, attempt } = await begun(new Date(Date.now() - 1_000));
+      await prisma.workflowRun.update({ where: { id: run.id }, data: { attemptCount: WORKFLOW_MAX_ATTEMPTS } });
+      expect(await worker.expireUnconfirmedProviderSubmission(attempt)).toEqual({ kind: "applied" });
+      expect(await prisma.workflowRun.findUniqueOrThrow({ where: { id: run.id } })).toMatchObject({
+        status: "failed", errorCode: WORKFLOW_RETRIES_EXHAUSTED_CODE,
+      });
+    });
+
+    test("a stale attempt's completion and failure are no-ops", async () => {
+      const { run, worker, api, attempt } = await begun(new Date(Date.now() - 1_000));
+      await worker.expireUnconfirmedProviderSubmission(attempt);
+      expect(await api.completeProviderTranscript(attempt, transcriptInput("tr-1", "req-1")))
+        .toEqual({ kind: "stale", reason: "attempt_superseded" });
+      expect(await api.failProviderAttempt(attempt, new WorkflowFailure("elevenlabs_quota_exhausted", "permanent", "x")))
+        .toEqual({ kind: "stale", reason: "attempt_superseded" });
+      expect((await prisma.workflowRun.findUniqueOrThrow({ where: { id: run.id } })).status).toBe("queued");
+      expect(await api.completeProviderTranscript({ workflowRunId: randomUUID(), attemptId: randomUUID() }, transcriptInput("a", "b")))
+        .toEqual({ kind: "stale", reason: "run_missing" });
+    });
+
+    test("a cancelled run acknowledges callbacks without changing", async () => {
+      const { run, project, api, attempt } = await begun();
+      await prisma.workflowRun.update({ where: { id: run.id }, data: { status: "failed", errorCode: "MCP_CANCELLED", nextPollAt: null } });
+      expect(await api.completeProviderTranscript(attempt, transcriptInput("tr-1", "req-1"))).toEqual({ kind: "terminal", status: "failed" });
+      expect(await api.recordProviderAcceptance(attempt, { requestId: "req-1", transcriptionId: "tr-1", nextPollAt: new Date() }))
+        .toEqual({ kind: "terminal", status: "failed" });
+      expect(await api.failProviderAttempt(attempt, new WorkflowFailure("elevenlabs_quota_exhausted", "permanent", "x")))
+        .toEqual({ kind: "terminal", status: "failed" });
+      expect(await prisma.workflowRun.findUniqueOrThrow({ where: { id: run.id } })).toMatchObject({ status: "failed", errorCode: "MCP_CANCELLED" });
+      expect((await prisma.transcript.findUniqueOrThrow({ where: { projectId: project.id } })).providerJobId).toBeNull();
+    });
+
+    test("an error event fails the attempt with the normal retry policy, once", async () => {
+      const retryable = await begun();
+      expect(await retryable.api.failProviderAttempt(
+        retryable.attempt,
+        new WorkflowFailure("elevenlabs_transcription_failed", "retryable", "x"),
+        { requestId: "req-1" },
+      )).toEqual({ kind: "applied" });
+      expect(await prisma.workflowRun.findUniqueOrThrow({ where: { id: retryable.run.id } })).toMatchObject({ status: "queued", attemptId: null });
+      expect(await retryable.api.failProviderAttempt(retryable.attempt, new WorkflowFailure("x", "retryable", "x")))
+        .toEqual({ kind: "stale", reason: "attempt_superseded" });
+
+      const permanent = await begun();
+      expect(await permanent.api.failProviderAttempt(
+        permanent.attempt,
+        new WorkflowFailure("elevenlabs_quota_exhausted", "permanent", "x"),
+      )).toEqual({ kind: "applied" });
+      expect(await prisma.workflowRun.findUniqueOrThrow({ where: { id: permanent.run.id } })).toMatchObject({ status: "failed", errorCode: "elevenlabs_quota_exhausted" });
+      expect(await prisma.transcript.findUniqueOrThrow({ where: { projectId: permanent.project.id } })).toMatchObject({ status: "failed", errorCode: "elevenlabs_quota_exhausted" });
+      expect(await permanent.api.failProviderAttempt(permanent.attempt, new WorkflowFailure("x", "permanent", "x")))
+        .toEqual({ kind: "terminal", status: "failed" });
+    });
+
+    test("an acceptance after the attempt failed is acknowledged and records nothing", async () => {
+      const { project, api, attempt } = await begun();
+      await api.failProviderAttempt(attempt, new WorkflowFailure("elevenlabs_quota_exhausted", "permanent", "x"));
+      expect(await api.recordProviderAcceptance(attempt, { requestId: "req-1", transcriptionId: "tr-1", nextPollAt: new Date() }))
+        .toEqual({ kind: "terminal", status: "failed" });
+      expect((await prisma.transcript.findUniqueOrThrow({ where: { projectId: project.id } })).providerJobId).toBeNull();
+    });
+
+    test("lookup resolves the project for the finalizer and leaves ownedAttemptWhere strict", async () => {
+      const { project, run, api, attempt } = await begun();
+      expect(await api.lookupProviderAttempt({ workflowRunId: run.id, attemptId: attempt.attemptId })).toMatchObject({
+        kind: "waiting", attempt: { projectId: project.id, stage: "stt" }, providerJobId: null,
+      });
+      // The generic completion still needs a lease or a waiting run; a running
+      // run owned by another process is untouched by the provider entry points.
+      const other = await fixture("stt");
+      const claimed = await new RenderFixtureLifecycle({ prisma, leaseOwner: randomUUID() }).claim("stt");
+      if (!claimed) throw new Error("claim missing");
+      expect(claimed.workflowRunId).toBe(other.run.id);
+      expect(await api.completeProviderTranscript(claimed, transcriptInput("tr", "req"))).toEqual({ kind: "stale", reason: "not_waiting" });
+    });
   });
 
   describe("transcription for a captioned video", () => {
