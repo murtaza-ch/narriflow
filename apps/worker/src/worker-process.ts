@@ -260,7 +260,9 @@ export interface WorkerPersistentProcess {
 /** Longest window the audio packet scan reads, and the most gaps it reports. */
 const AUDIO_GAP_SCAN_MAX_WINDOW_SEC = 900;
 const AUDIO_GAP_SCAN_MAX_GAPS = 64;
-const AUDIO_GAP_SCAN_MAX_STDOUT_BYTES = 2 * 1024 * 1024;
+// Compact CSV fits 900 s even at 2.5 ms per packet with ample timestamp headroom.
+const AUDIO_GAP_SCAN_MAX_STDOUT_BYTES = 16 * 1024 * 1024;
+export const AUDIO_GAP_SCAN_TIMEOUT_MS = 15_000;
 const AUDIO_GAP_SCAN_MIN_PACKETS = 4;
 
 /**
@@ -311,7 +313,7 @@ export async function inspectAudioTimestampGaps(
 ): Promise<AudioTimestampGaps | null> {
   const audio = request.inspection.facts?.audios[0];
   const windowSec = request.endSec - request.startSec;
-  if (!request.inspection.hasAudio || !audio || !(windowSec > 0) || windowSec > AUDIO_GAP_SCAN_MAX_WINDOW_SEC) return null;
+  if (!request.inspection.hasAudio || !audio || !(windowSec > 0) || windowSec > AUDIO_GAP_SCAN_MAX_WINDOW_SEC || ["vorbis", "opus"].includes(audio.codec ?? "")) return null;
   const facts = request.inspection.facts!;
   const origin = facts.format.startTimeSec ?? audio.startTimeSec ?? 0;
   const from = Math.max(0, origin + request.startSec);
@@ -319,17 +321,16 @@ export async function inspectAudioTimestampGaps(
   try {
     const result = await processModule.execute({
       command: "ffprobe",
-      args: ["-v", "error", "-print_format", "json", "-select_streams", Number.isInteger(audio.index) ? String(audio.index) : "a:0",
+      args: ["-v", "error", "-of", "csv=p=0", "-select_streams", Number.isInteger(audio.index) ? String(audio.index) : "a:0",
         "-read_intervals", `${from.toFixed(3)}%${to.toFixed(3)}`, "-show_packets", "-show_entries", "packet=pts_time",
         ...(/^https?:\/\//i.test(request.sourcePath) ? ["-rw_timeout", String(HTTP_SOURCE_RW_TIMEOUT_US)] : []),
         request.sourcePath],
-      signal: request.signal, deadlineMs: request.deadlineMs, captureStdout: true,
+      signal: request.signal, deadlineMs: Math.min(request.deadlineMs, AUDIO_GAP_SCAN_TIMEOUT_MS), captureStdout: true,
       maxStdoutBytes: AUDIO_GAP_SCAN_MAX_STDOUT_BYTES, diagnose: request.diagnose,
     });
-    const packets = parseProbeOutput(result.stdout).packets;
-    if (!Array.isArray(packets)) return null;
-    const found = findAudioTimestampGaps(packets.flatMap((packet) => {
-      const time = numberFact(packet?.pts_time);
+    // Side-data columns can follow pts_time; only the first CSV field is evidence.
+    const found = findAudioTimestampGaps(result.stdout.toString("utf8").split("\n").flatMap((line) => {
+      const time = numberFact(line.split(",", 1)[0]?.trim());
       return time === null ? [] : [time];
     }));
     if (!found) return null;
@@ -343,7 +344,10 @@ export async function inspectAudioTimestampGaps(
     return gaps.length === 0 ? null : { frameSec: found.frameSec, gaps };
   } catch (error) {
     request.signal.throwIfAborted();
-    if (executorProcessFailure(error)) throw error;
+    // The render continues without realignment. The error text can carry a
+    // signed source URL, so only its class is logged.
+    console.warn(JSON.stringify({ level: "warn", message: "worker_audio_gap_scan_skipped",
+      reason: error instanceof Error ? error.name : "unknown", windowSec }));
     return null;
   }
 }

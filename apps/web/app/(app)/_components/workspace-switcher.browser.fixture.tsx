@@ -21,7 +21,7 @@ async function fakeApi(input: string | URL | Request): Promise<Response> {
   paths.push(url.pathname);
   if (refuseDiscard && url.pathname.endsWith("/cancel")) return new Response(JSON.stringify({ error: "workspace_checkout_state_invalid", message: "This workspace must be kept. Open billing to manage its checkout.", requestId: "req_test" }), { status: 409, headers: { "Content-Type": "application/json" } });
   const body = url.pathname.endsWith("/cancel") ? { canceled: true } :
-    url.pathname.endsWith("/resume") ? { checkoutUrl: "https://checkout.stripe.test/resumed" } : { workspace: { id: PREVIOUS } };
+    url.pathname.endsWith("/resume") ? { checkoutUrl: "https://checkout.stripe.com/resumed" } : { workspace: { id: PREVIOUS } };
   return new Response(JSON.stringify(body), { headers: { "Content-Type": "application/json" } });
 }
 beforeAll(() => {
@@ -111,7 +111,7 @@ test("Resume checkout reuses the pending Workspace and opens its hosted checkout
   await settle();
   expect(paths).toEqual(["/api/workspaces/business-checkout/resume"]);
   expect(runtime.scope.snapshot().workspaceId).toBe(WORKSPACE);
-  expect(browser.location.href).toBe("https://checkout.stripe.test/resumed");
+  expect(browser.location.href).toBe("https://checkout.stripe.com/resumed");
 });
 
 test("paid workspaces have no pending hint or cancellation controls", async () => {

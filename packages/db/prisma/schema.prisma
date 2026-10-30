@@ -1038,6 +1038,15 @@ model User {
   @@index([clerkId])
 }
 
+/// A Clerk identity that Clerk has deleted. Clerk ids are never reused, so the
+/// tombstone is terminal: no later user.created/user.updated delivery (delayed,
+/// retried, or arriving before the first provisioning) may create or revive an
+/// App User for it. Written by `markUserDeletedByClerkId` under a per-identity lock.
+model ClerkDeletedIdentity {
+  clerkId   String   @id
+  deletedAt DateTime @default(now())
+}
+
 model Workspace {
   id                     String          @id @default(uuid()) @db.Uuid
   name                   String

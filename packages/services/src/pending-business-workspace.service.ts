@@ -15,6 +15,11 @@ const contentCounts = {
   trackedVideos: true, standingGrants: true, reviewRounds: true,
   campaignOperations: true, assistedCopyGenerations: true,
   processingUsage: true, generatedMediaUsage: true,
+  webhookSubscriptions: true, callbackSigningSecrets: true, completionCallbacks: true,
+  invites: true, workspaceEvents: true, workspaceEventKeys: true,
+  thumbnailFrameOperations: true, audioAssetFavorites: true, socialOAuthStates: true,
+  zoomOAuthStates: true, reviewApprovalOverrides: true, publicationManualDecisions: true,
+  generationFinishings: true, reviewerOptOuts: true,
 } as const;
 
 export const pendingBusinessWorkspaceSelection = {
@@ -23,6 +28,8 @@ export const pendingBusinessWorkspaceSelection = {
   defaultBrandProfileId: true, defaultBrandTemplateId: true,
   members: { select: { userId: true, role: true }, take: 2 },
   _count: { select: contentCounts },
+  performanceGuidance: { select: { workspaceId: true } },
+  workspaceEventCounter: { select: { workspaceId: true } },
   billingAccount: { include: {
     checkoutAttempts: { orderBy: { id: "asc" }, take: ATTEMPT_LIMIT + 1 },
     _count: { select: { transitions: { where: { OR: [
@@ -39,6 +46,7 @@ export function canRemovePendingBusinessWorkspace(row: PendingWorkspace): boolea
   return row.status === "pending_payment" && row.pricingTier === "free" &&
     row.personalOwnerUserId === null && row.avatarStorageKey === null &&
     row.defaultBrandProfileId === null && row.defaultBrandTemplateId === null &&
+    row.performanceGuidance === null && row.workspaceEventCounter === null &&
     row.members.length === 1 && row.members[0]?.userId === row.ownerUserId &&
     row.members[0]?.role === "owner" && Object.values(row._count).every((count) => count === 0) &&
     account !== null && account.canonicalSubscriptionId === null && account.providerStatus === null &&

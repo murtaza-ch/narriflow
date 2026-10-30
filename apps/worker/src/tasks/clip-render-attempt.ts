@@ -2788,14 +2788,14 @@ async function renderClipGroup(input: {
 	// Holes in the source audio's own timestamps inside this clip's window are
 	// invisible to the header facts; a bounded packet scan attaches them so the
 	// compiler realigns the dialogue (the golden harness calls the same function).
-	const probe = await withAudioTimestampGaps(currentRenderAdapters().workerProcess, sourceProbe, {
+	const probe = await requireExecutionContext().telemetry.measure("probe", "audio_gap_scan", () => withAudioTimestampGaps(currentRenderAdapters().workerProcess, sourceProbe, {
 		sourcePath,
 		startSec: clipStartSec,
 		endSec: clipEndSec,
 		signal: currentRenderSignal() ?? new AbortController().signal,
 		deadlineMs: currentRenderConfig().probeCommandTimeoutMs,
 		diagnose: diagnoseRenderProcessOperation,
-	});
+	}));
 
 	const deletedRanges = editorDocument.deletedRanges;
 	const cutPlan = buildClipCutPlan(deletedRanges, {

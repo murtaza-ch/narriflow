@@ -4,7 +4,7 @@ Names, never values. Written for ticket 31, 2026-10-29. Sources: `apps/api/src/c
 
 ## 1. Railway: new service `@narriflow/api` (environment `dev`)
 
-Service settings (also in `apps/api/railway.json`): builder Dockerfile `apps/api/Dockerfile`, build context the repository root, region `us-east4` (next to Neon `us-east-2`; same as the worker), **no pre-deploy migration** (the worker owns `prisma:migrate:deploy`), health check `/api/ready`, draining 25 s, 1 replica, restart ON_FAILURE x5, watch patterns `/apps/api/**`, `/packages/**`, `/bun.lock`, `/package.json`, branch `dev` of `murtaza-ch/narriflow`. Generate a public domain (this is `A`). Pool budget: `DATABASE_POOL_MAX` (default 10) x replicas must stay within the Neon pooler's limit shared with the worker.
+Service-managed settings, as recorded in `docs/runbooks/environments.md` (there is no `apps/api/railway.json`): builder Dockerfile `apps/api/Dockerfile`, build context the repository root, region `us-east4` (next to Neon `us-east-2`; same as the worker), **no pre-deploy migration** (the worker owns `prisma:migrate:deploy`), health check `/api/ready` (timeout 300 s, above the 180 s readiness deadline), draining 25 s, 1 replica, restart ON_FAILURE x5, watch patterns `/apps/api/**`, `/packages/**`, `/patches/**`, `/bun.lock`, `/package.json`, branch `dev` of `murtaza-ch/narriflow`. Generate a public domain (this is `A`). Pool budget: `DATABASE_POOL_MAX` (default 10) x replicas must stay within the Neon pooler's limit shared with the worker.
 
 ### Required (the process refuses to start without them)
 
@@ -114,7 +114,7 @@ No variable is added or renamed and no code path calls the API. Check only:
 
 - `WORKER_APP_BASE_URL` stays `W` (human links in notification emails), never `A`.
 - Values that must equal the API's: `DATABASE_URL`, `R2_ACCOUNT_ID`, `R2_BUCKET`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `UPSTASH_REDIS_URL`, `SOCIAL_TOKEN_ENCRYPTION_KEY`, `REVIEW_ACCESS_SECRET`, `GENERATED_MEDIA_PROMPT_*` (four), `OPENAI_IMAGE_MODEL`, and the Stripe, Google and TikTok credentials it already holds.
-- The worker remains the only service that runs `prisma:migrate:deploy` (pre-deploy). Deploy order for a revision that adds a migration: migrate (worker deploy or by hand), then API, then web.
+- The worker remains the only service that runs `prisma:migrate:deploy` (pre-deploy). On concurrent deploys, the API holds `/api/ready` at 503 until its image's migrations are applied, with a five-second probe cache and a 180-second startup deadline from the first probe. See `docs/runbooks/environments.md` for failure logs and recovery. Migrations that require stopping prior writers still run before the new applications deploy.
 - `apps/worker/Dockerfile` already copies `apps/api/package.json` for the frozen install; no change.
 
 ## 4. Provider re-registration (exact paths, `A` = API origin, `W` = web origin)

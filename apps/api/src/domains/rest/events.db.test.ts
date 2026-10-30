@@ -54,7 +54,7 @@ db("REST and MCP Workspace Event feeds", () => {
     await pool?.end();
   });
 
-  const rest = new Hono().route("/api/v1", createRestRoutes({ checkRateLimit: async () => ({ allowed: true, availability: "available", remaining: 299, limit: 300 }), apiOrigin: () => "https://api.narriflow.test", webOrigin: () => "https://narriflow.test", corsAllowedOrigins: ["https://narriflow.test"], log: () => {} }));
+  const rest = new Hono().route("/api/v1", createRestRoutes({ checkRateLimit: async () => ({ allowed: true, availability: "available", remaining: 299, limit: 300 }), readRateLimit: async () => ({ allowed: true, availability: "available", remaining: 600, limit: 600 }), apiOrigin: () => "https://api.narriflow.test", webOrigin: () => "https://narriflow.test", corsAllowedOrigins: ["https://narriflow.test"], log: () => {} }));
   const restEvents = async (granted: string[], query = "") => {
     scopes = granted;
     const response = await rest.request(`/api/v1/events${query}`, { headers: { authorization: `Bearer ${SECRET}` } });

@@ -7,6 +7,7 @@ export const PUBLIC_API_ORIGIN = "http://localhost:4000";
 export function publicOpenApiDocument(origin = PUBLIC_API_ORIGIN) {
   const app = createRestOpenApiRoutes({
     checkRateLimit: async () => { throw new Error("OpenAPI generation must not call the limiter"); },
+    readRateLimit: async () => { throw new Error("OpenAPI generation must not call the limiter"); },
     apiOrigin: () => origin,
     webOrigin: () => "http://localhost:3000",
     corsAllowedOrigins: [],

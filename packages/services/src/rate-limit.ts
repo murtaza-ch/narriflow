@@ -84,6 +84,26 @@ export async function checkRateLimit(
   }
 }
 
+/** Reads a fixed-window bucket without counting. Pair with checkRateLimit when
+ * only some outcomes should count, such as failed authentications. */
+export async function readRateLimit(
+  key: string,
+  limit: number,
+  windowSeconds: number,
+): Promise<RateLimitResult> {
+  let redis: Redis | null = null;
+  try {
+    redis = getClient();
+    if (!redis) return { allowed: true, remaining: limit, limit, availability: "unavailable" };
+    await connection;
+    const count = Number(await redis.get(`ratelimit:${key}:${Math.floor(Date.now() / 1000 / windowSeconds)}`) ?? 0);
+    return { allowed: count < limit, remaining: Math.max(0, limit - count), limit, availability: "available" };
+  } catch {
+    if (redis) resetClient(redis);
+    return { allowed: true, remaining: limit, limit, availability: "unavailable" };
+  }
+}
+
 /** Integration admission for a new mutation. Invoke only after the owning
  * domain has checked its immutable replay identity, so accepted work still
  * replays while the limiter is unavailable. */

@@ -663,13 +663,27 @@ export class WorkspaceService {
         hashedSecret: true,
         revokedAt: true,
         lastUsedAt: true,
+        user: { select: { deletedAt: true } },
       },
     });
-    if (!key || key.revokedAt || !key.workspaceId) return null;
+    if (!key || key.revokedAt || !key.workspaceId || key.user.deletedAt) return null;
 
     const suppliedHash = Buffer.from(createHash("sha256").update(secret).digest("hex"), "hex");
     const storedHash = Buffer.from(key.hashedSecret, "hex");
     if (suppliedHash.length !== storedHash.length || !timingSafeEqual(suppliedHash, storedHash)) {
+      return null;
+    }
+
+    // The principal is the key's creator when it has one. Deleting either user
+    // revokes the key; this refuses a key that somehow survived.
+    const principalUserId = key.createdByUserId ?? key.userId;
+    if (
+      principalUserId !== key.userId &&
+      !(await requiredPrisma().user.findFirst({
+        where: { id: principalUserId, deletedAt: null },
+        select: { id: true },
+      }))
+    ) {
       return null;
     }
 
@@ -687,7 +701,7 @@ export class WorkspaceService {
 
     return {
       apiKeyId: key.id,
-      userId: key.createdByUserId ?? key.userId,
+      userId: principalUserId,
       workspaceId: key.workspaceId,
       name: key.name,
       scopes: key.scopes,

@@ -12,9 +12,10 @@ export {
   type VerifiedClerkIdentity,
 } from "./clerk";
 export {
+  claimWebhookDelivery,
+  ClerkIdentityDeletedError,
   getAppUserByClerkId,
   getAppUserForClerkIdentity,
-  getWebhookDeliveryLog,
   markUserDeletedByClerkId,
   readWorkspaceRequestActor,
   recordWebhookDeliveryLog,
@@ -22,6 +23,7 @@ export {
   type AppUser,
   type ClerkUserDirectory,
   type ClerkUserSource,
+  type WebhookDeliveryClaim,
   type WorkspaceRequestActor,
 } from "./identity";
 export {

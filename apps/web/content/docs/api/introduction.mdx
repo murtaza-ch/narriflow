@@ -105,7 +105,7 @@ Errors share one shape.
 
 ## Rate limits
 
-Each key can send 300 requests a minute. Responses carry `RateLimit-Limit` and `RateLimit-Remaining`. If the limiter is briefly unavailable, reads and retries of accepted requests still succeed, and new work returns `503 mutations_unavailable`.
+Each key can send 300 requests a minute. Responses carry `RateLimit-Limit` and `RateLimit-Remaining`. Requests with a missing, invalid or revoked key count separately, by client address: after 600 failures in a minute, that address gets `429 rate_limited` until the minute ends, even with a valid key. If the limiter is briefly unavailable, reads and retries of accepted requests still succeed, and new work returns `503 mutations_unavailable`.
 
 <CardGroup cols={2}>
   <Card title="API quickstart" icon="rocket" href="/docs/api/quickstart">

@@ -13,7 +13,7 @@ import {
   compileCompositionPlanAudioSchedule,
 } from "./composition-ffmpeg-adapter";
 import { buildClipCutPlan } from "./tasks/cut-plan";
-import { findAudioTimestampGaps, inspectAudioTimestampGaps, productionWorkerProcessModule, withAudioTimestampGaps, type WorkerMediaInspection } from "./worker-process";
+import { findAudioTimestampGaps, inspectAudioTimestampGaps, productionWorkerProcessModule, withAudioTimestampGaps, type WorkerMediaInspection, WorkerProcessFailure, type WorkerProcessRequest } from "./worker-process";
 
 const ALIGN = "aresample=async=1:first_pts=0";
 const RATE = 48_000;
@@ -219,6 +219,49 @@ describe("audio timestamp gap detection", () => {
   });
 });
 
+describe("optional audio scan cost", () => {
+  const base = { sourcePath: "/s.mp4", startSec: 0, endSec: 900, signal: new AbortController().signal, deadlineMs: 120_000 };
+
+  test("Opus and Vorbis packet sizes cannot be mistaken for missing audio", async () => {
+    for (const codec of ["opus", "vorbis"]) {
+      const inspection = fakeInspection();
+      inspection.facts!.audios[0]!.codec = codec;
+      let scans = 0;
+      expect(await withAudioTimestampGaps({ execute: async () => { scans++; throw new Error("must not scan"); } }, inspection, base)).toBe(inspection);
+      expect(scans).toBe(0);
+    }
+  });
+
+  test("compact audio-only output fits a full 15 minute window at 400 packets/sec", async () => {
+    const csv = Buffer.from(Array.from({ length: 360_000 }, (_, i) => (i * 0.0025).toFixed(6)).join("\n"));
+    expect(csv.length).toBeGreaterThan(2 * 1024 * 1024);
+    const inspection = fakeInspection();
+    const execute = async (request: WorkerProcessRequest) => {
+      expect(request.deadlineMs).toBe(15_000);
+      expect(request.maxStdoutBytes!).toBeGreaterThan(csv.length);
+      expect(request.args).toContain("csv=p=0");
+      expect(request.args).toContain("-select_streams");
+      expect(request.args).toContain("packet=pts_time");
+      return { exitCode: 0, stdout: csv };
+    };
+    expect(await withAudioTimestampGaps({ execute }, inspection, base)).toBe(inspection);
+  });
+
+  test("timeout, output-limit and executor failures degrade to no scan", async () => {
+    for (const code of ["process_timeout", "process_output_limit", "process_spawn_failed"]) {
+      const inspection = fakeInspection();
+      const execute = async () => { throw new WorkerProcessFailure(code, "retryable", "optional probe failed", "probe failure", null, { failureScope: "executor" }); };
+      expect(await withAudioTimestampGaps({ execute }, inspection, base)).toBe(inspection);
+    }
+  });
+
+  test("render cancellation still interrupts the scan", async () => {
+    const controller = new AbortController();
+    controller.abort(new Error("render aborted"));
+    await expect(withAudioTimestampGaps({ execute: async () => { throw new Error("aborted probe"); } }, fakeInspection(), { ...base, signal: controller.signal })).rejects.toThrow("render aborted");
+  });
+});
+
 describe("audio gap scan clamps to the clip window", () => {
   const step = 0.021333;
   const run = (count: number, start: number) => Array.from({ length: count }, (_, index) => start + index * step);
@@ -229,7 +272,7 @@ describe("audio gap scan clamps to the clip window", () => {
     return [...before, ...run(Math.floor((untilSec - resume) / step) + 1, resume)];
   };
   const probeReturning = (times: number[]) => ({
-    execute: async () => ({ stdout: Buffer.from(JSON.stringify({ packets: times.map((time) => ({ pts_time: time.toFixed(6) })) })) }),
+    execute: async () => ({ stdout: Buffer.from(times.map((time) => time.toFixed(6)).join("\n")) }),
   });
   const base = { sourcePath: "/s.mp4", signal: new AbortController().signal, deadlineMs: 1000 };
 

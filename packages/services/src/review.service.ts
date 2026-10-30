@@ -354,6 +354,13 @@ export function validateReviewHandoffSelection(
   };
 }
 
+/** A reviewed clip has newer work only when its editor revision moved past the
+ * revision the round pinned. Other exports of the same revision (a download at
+ * another size or format set) are not newer work. */
+export function hasNewerReviewedWork(items: ReadonlyArray<{ editorRevision: number; clip: { editorRevision: number } }>): boolean {
+  return items.some((item) => item.clip.editorRevision > item.editorRevision);
+}
+
 type ReviewRoundSummaryRow = {
   id: string; projectId: string; revision: number; title: string; status: string; decision: string | null;
   sentAt: Date | null; expiresAt: Date | null; revokedAt: Date | null;
@@ -994,11 +1001,7 @@ export class ReviewService {
     const rounds = await requirePrisma().reviewRound.findMany({
       where: { workspaceId, projectId },
       include: { items: { include: {
-        export: { select: { fingerprint: true } },
-        clip: { select: {
-          editorRevision: true,
-          exports: { where: { status: "ready" }, orderBy: { createdAt: "desc" }, take: 1, select: { fingerprint: true } },
-        } },
+        clip: { select: { editorRevision: true } },
       } } },
       orderBy: { revision: "desc" },
     });
@@ -1006,9 +1009,7 @@ export class ReviewService {
     return rounds.map((round) => ({
       ...round,
       status: deriveReviewRoundStatus(round, now),
-      newerWorkAvailable: round.items.some((item) =>
-        item.clip.editorRevision > item.editorRevision ||
-        (item.clip.exports[0] !== undefined && item.clip.exports[0].fingerprint !== item.export.fingerprint)),
+      newerWorkAvailable: hasNewerReviewedWork(round.items),
     }));
   }
 
@@ -1054,8 +1055,8 @@ export class ReviewService {
         orderBy: { revision: "desc" },
         include: {
           items: { orderBy: { position: "asc" }, include: {
-            clip: { select: { id: true, title: true, editorRevision: true, exports: { where: { status: "ready" }, orderBy: { createdAt: "desc" }, take: 1, select: { fingerprint: true } } } },
-            export: { select: { id: true, fingerprint: true, editorRevision: true, variants: { where: { status: "completed" }, select: { id: true, aspectRatio: true, durationSec: true } } } },
+            clip: { select: { id: true, title: true, editorRevision: true } },
+            export: { select: { id: true, editorRevision: true, variants: { where: { status: "completed" }, select: { id: true, aspectRatio: true, durationSec: true } } } },
           } },
           comments: { orderBy: { createdAt: "asc" }, select: { id: true, itemId: true, parentId: true, authorKind: true, authorName: true, body: true, timestampSec: true, resolvedAt: true, editedAt: true, createdAt: true } },
           guests: { orderBy: { firstSeenAt: "asc" }, select: { id: true, displayName: true, emailEncrypted: true, firstSeenAt: true, lastSeenAt: true } },
@@ -1128,9 +1129,7 @@ export class ReviewService {
           expiresAt: round.expiresAt,
           revokedAt: round.revokedAt,
           decision: round.decision,
-          newerWorkAvailable: round.items.some((item) =>
-            item.clip.editorRevision > item.editorRevision ||
-            (item.clip.exports[0] !== undefined && item.clip.exports[0].fingerprint !== item.export.fingerprint)),
+          newerWorkAvailable: hasNewerReviewedWork(round.items),
           items: round.items.map((item) => ({
             id: item.id,
             clipId: item.clipId,

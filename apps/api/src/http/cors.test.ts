@@ -5,7 +5,6 @@ import {
   CORS_ALLOWED_HEADERS,
   CORS_EXPOSED_HEADERS,
   firstPartyCors,
-  publicReadCors,
 } from "./cors";
 import type { ApiEnv } from "./env";
 import { apiErrorHandler } from "./errors";
@@ -24,8 +23,6 @@ function app() {
     c.header("Cache-Control", "no-cache, no-transform");
     return c.text("data");
   });
-  instance.use("/.well-known/*", publicReadCors());
-  instance.get("/.well-known/oauth-protected-resource", (c) => c.json({}));
   return instance;
 }
 
@@ -97,10 +94,5 @@ describe("secure headers and caching", () => {
     expect(response.headers.get("cache-control")).toBe("no-cache, no-transform");
   });
 
-  test("allows public discovery GET from any origin", async () => {
-    const response = await app().request("/.well-known/oauth-protected-resource", {
-      headers: { origin: "https://claude.ai" },
-    });
-    expect(response.headers.get("access-control-allow-origin")).toBe("*");
-  });
+
 });

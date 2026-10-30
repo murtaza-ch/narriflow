@@ -22,7 +22,7 @@ import {
 } from "@narriflow/services";
 import { buildGenerationContentPack } from "@narriflow/validators";
 import { Hono } from "hono";
-import { createRestRoutes } from "./routes";
+import { createRestRoutes, REST_AUTH_FAILURE_RATE_LIMIT } from "./routes";
 
 const USER_ID = "00000000-0000-4000-8000-000000000001";
 const WORKSPACE_ID = "00000000-0000-4000-8000-000000000002";
@@ -48,15 +48,27 @@ function actor(overrides: Partial<WorkspaceActorContext> = {}): WorkspaceActorCo
     role: "editor", status: "active", pricingTier: "business", ...overrides };
 }
 
-function harness(options: { scopes?: string[]; limiter?: RateLimitResult; actor?: WorkspaceActorContext | Error } = {}) {
+function harness(options: { scopes?: string[]; limiter?: RateLimitResult; authFailures?: Map<string, number>; rateKeys?: string[]; actor?: WorkspaceActorContext | Error } = {}) {
   const logs: Array<Record<string, unknown>> = [];
+  const failures = options.authFailures ?? new Map<string, number>();
   spy(workspaceService, "authenticateApiKey").mockImplementation(async (secret: string) =>
     secret === SECRET ? { apiKeyId: KEY_ID, userId: USER_ID, workspaceId: WORKSPACE_ID, name: "Automation", scopes: options.scopes ?? ALL_SCOPES } : null);
   const requireActor = spy(workspaceService, "requireActor").mockImplementation(async () => {
     if (options.actor instanceof Error) throw options.actor;
     return options.actor ?? actor();
   });
-  const app = new Hono().route("/api/v1", createRestRoutes({ checkRateLimit: async () => options.limiter ?? available, apiOrigin: () => "https://api.narriflow.test", webOrigin: () => "https://narriflow.test", corsAllowedOrigins: ["https://narriflow.test"],
+  const app = new Hono().route("/api/v1", createRestRoutes({
+    checkRateLimit: async (key, limit) => {
+      options.rateKeys?.push(key);
+      if (!key.startsWith("rest:authfail:")) return options.limiter ?? available;
+      const count = (failures.get(key) ?? 0) + 1;
+      failures.set(key, count);
+      return { allowed: count <= limit, availability: "available", remaining: Math.max(0, limit - count), limit };
+    },
+    readRateLimit: async (key, limit) => {
+      const count = failures.get(key) ?? 0;
+      return { allowed: count < limit, availability: "available", remaining: Math.max(0, limit - count), limit };
+    }, trustedClientIpHeader: "x-real-ip", apiOrigin: () => "https://api.narriflow.test", webOrigin: () => "https://narriflow.test", corsAllowedOrigins: ["https://narriflow.test"],
     callbackResolver: async () => [{ address: "93.184.216.34", family: 4 }], log: (entry) => logs.push(entry) }));
   const call = (path: string, init: RequestInit & { key?: string | null; idempotencyKey?: string; json?: unknown } = {}) => {
     const headers = new Headers(init.headers);
@@ -95,6 +107,35 @@ describe("REST v1 OpenAPI document", () => {
 });
 
 describe("REST v1 authentication and admission", () => {
+  test("an IP over the failed-authentication limit is refused before any DB lookup", async () => {
+    const rateKeys: string[] = [];
+    const authFailures = new Map([["rest:authfail:192.0.2.1", REST_AUTH_FAILURE_RATE_LIMIT.limit]]);
+    const { call } = harness({ rateKeys, authFailures });
+    for (const key of ["nf_unknown1", "nf_unknown2", "malformed", SECRET]) {
+      const response = await call("/workspace", { key, headers: { "x-real-ip": "192.0.2.1", "x-forwarded-for": "203.0.113.10" } });
+      expect(response.status).toBe(429);
+      expect(response.headers.get("retry-after")).toBe("60");
+    }
+    expect(workspaceService.authenticateApiKey).not.toHaveBeenCalled();
+    expect(rateKeys).toEqual([]);
+    expect((await call("/workspace", { key: "nf_another", headers: { "x-real-ip": "192.0.2.2" } })).status).toBe(401);
+    expect(rateKeys).toEqual(["rest:authfail:192.0.2.2"]);
+  });
+
+  test("only failed authentications count toward the per-IP limit", async () => {
+    spy(projectService, "getUsageSummary").mockResolvedValue({ tier: "business", usedCredits: 0, reservedCredits: 0, limitCredits: 1800, remainingCredits: 1800, periodStart: new Date("2026-10-01T00:00:00.000Z"), renewsAt: new Date("2026-11-01T00:00:00.000Z"), inFlight: 0, inFlightLimit: 20, maxUploadSeconds: 10_800 } as never);
+    const rateKeys: string[] = [];
+    const authFailures = new Map<string, number>();
+    const { call } = harness({ rateKeys, authFailures });
+    const headers = { "x-real-ip": "192.0.2.9" };
+    for (let i = 0; i < REST_AUTH_FAILURE_RATE_LIMIT.limit + 5; i++) expect((await call("/workspace", { headers })).status).toBe(200);
+    expect(authFailures.size).toBe(0);
+    expect((await call("/workspace", { key: null, headers })).status).toBe(401);
+    expect((await call("/workspace", { key: "nf_wrong", headers })).status).toBe(401);
+    expect(authFailures.get("rest:authfail:192.0.2.9")).toBe(2);
+    expect((await call("/workspace", { headers })).status).toBe(200);
+  });
+
   test("an OpenAPI suffix on another route still requires API-key authentication", async () => {
     const { call } = harness();
     for (const path of ["/projects/openapi.json", "/recipes/openapi.json"]) {

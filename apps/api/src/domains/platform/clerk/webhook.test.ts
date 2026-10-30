@@ -11,11 +11,15 @@ const headers = { "svix-id": "msg_1", "svix-timestamp": "1700000000", "svix-sign
 let event: ClerkWebhookEvent;
 let verifyCalls: Array<{ rawBody: string; svixId: string; secret: string }>;
 let verifyFails: boolean;
-let existingLog: { status: string } | null;
+/** Delivery log with the claim semantics of `claimWebhookDelivery`. */
+let deliveryStatus: Map<string, string>;
+let recordFailures: string[];
 let applied: string[];
 let logs: Array<Record<string, unknown>>;
 let relay: { sent: boolean; error?: string; reason?: string };
 let syncFails: boolean;
+let relayDeliveryIds: string[];
+let relayGate: Promise<void>;
 
 const deps: ClerkWebhookDependencies = {
   webhookSecret: SECRET,
@@ -24,8 +28,19 @@ const deps: ClerkWebhookDependencies = {
     if (verifyFails) throw new Error("No matching signature found for sk_internal_detail");
     return event;
   },
-  getDeliveryLog: async () => existingLog,
+  claimDelivery: async ({ eventId }) => {
+    const status = deliveryStatus.get(eventId);
+    if (status === "success") return "replay";
+    if (status === "processing") return "in_progress";
+    deliveryStatus.set(eventId, "processing");
+    return "claimed";
+  },
   recordDeliveryLog: async (input) => {
+    if (recordFailures.includes(input.status)) {
+      recordFailures.splice(recordFailures.indexOf(input.status), 1);
+      throw new Error("db: log write failed");
+    }
+    deliveryStatus.set(input.eventId, input.status);
     logs.push(input);
   },
   syncUser: async (payload) => {
@@ -35,11 +50,15 @@ const deps: ClerkWebhookDependencies = {
   markUserDeleted: async (clerkId) => {
     applied.push(`delete:${clerkId}`);
   },
-  relayEmail: async () => {
+  relayEmail: async (_payload, deliveryId) => {
     applied.push("relay");
+    relayDeliveryIds.push(deliveryId);
+    await relayGate;
     return relay;
   },
 };
+
+const withId = (id: string) => ({ ...headers, "svix-id": id });
 
 function post(body = '{"raw":  "bytes"}', extra: Record<string, string> = headers): Request {
   return new Request("http://localhost:4000/api/webhooks/clerk", {
@@ -53,7 +72,10 @@ beforeEach(() => {
   event = { type: "user.created", data: { id: "user_1" } };
   verifyCalls = [];
   verifyFails = false;
-  existingLog = null;
+  deliveryStatus = new Map();
+  recordFailures = [];
+  relayDeliveryIds = [];
+  relayGate = Promise.resolve();
   applied = [];
   logs = [];
   relay = { sent: true };
@@ -94,7 +116,7 @@ describe("Clerk webhook adapter", () => {
   });
 
   test("an already successful delivery is acknowledged without being applied again", async () => {
-    existingLog = { status: "success" };
+    deliveryStatus.set("msg_1", "success");
     const response = await handleClerkWebhook(post(), deps);
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ received: true, replay: true });
@@ -102,8 +124,15 @@ describe("Clerk webhook adapter", () => {
     expect(logs).toEqual([]);
   });
 
+  test("a delivery being processed by another handler is refused so Clerk redelivers it", async () => {
+    deliveryStatus.set("msg_1", "processing");
+    const response = await handleClerkWebhook(post(), deps);
+    expect(response.status).toBe(409);
+    expect(applied).toEqual([]);
+  });
+
   test("a previously failed delivery is retried", async () => {
-    existingLog = { status: "failed" };
+    deliveryStatus.set("msg_1", "failed");
     const response = await handleClerkWebhook(post(), deps);
     expect(response.status).toBe(200);
     expect(applied).toEqual(["sync:user_1"]);
@@ -112,23 +141,23 @@ describe("Clerk webhook adapter", () => {
   test("user.created and user.updated sync the user and record success", async () => {
     for (const type of ["user.created", "user.updated"]) {
       event = { type, data: { id: "user_9" } };
-      expect((await handleClerkWebhook(post(), deps)).status).toBe(200);
+      expect((await handleClerkWebhook(post("{}", withId(`msg_${type}`)), deps)).status).toBe(200);
     }
     expect(applied).toEqual(["sync:user_9", "sync:user_9"]);
     expect(logs.at(-1)).toEqual({
       provider: "clerk",
-      eventId: "msg_1",
+      eventId: "msg_user.updated",
       eventType: "user.updated",
       status: "success",
-      payload: { type: "user.updated", eventId: "msg_1", subjectId: "user_9" },
+      payload: { type: "user.updated", eventId: "msg_user.updated", subjectId: "user_9" },
     });
   });
 
   test("user.deleted marks the user deleted; a payload without an id is a no-op success", async () => {
     event = { type: "user.deleted", data: { id: "user_9" } };
-    await handleClerkWebhook(post(), deps);
+    await handleClerkWebhook(post("{}", withId("msg_a")), deps);
     event = { type: "user.deleted", data: {} };
-    expect((await handleClerkWebhook(post(), deps)).status).toBe(200);
+    expect((await handleClerkWebhook(post("{}", withId("msg_b")), deps)).status).toBe(200);
     expect(applied).toEqual(["delete:user_9"]);
   });
 
@@ -136,7 +165,7 @@ describe("Clerk webhook adapter", () => {
     event = { type: "email.created", data: { to_email_address: "a@example.test", subject: "Code" } };
     expect((await handleClerkWebhook(post(), deps)).status).toBe(200);
     relay = { sent: false, reason: "Resend rejected" };
-    const response = await handleClerkWebhook(post(), deps);
+    const response = await handleClerkWebhook(post("{}", withId("msg_2")), deps);
     expect(response.status).toBe(500);
     expect(applied).toEqual(["relay", "relay"]);
     expect(logs.at(-1)).toMatchObject({
@@ -176,5 +205,37 @@ describe("Clerk webhook adapter", () => {
         },
       },
     ]);
+  });
+});
+
+describe("Clerk email relay is retry-safe", () => {
+  const emailEvent = (): ClerkWebhookEvent => ({
+    type: "email.created",
+    data: { to_email_address: "person@example.test", subject: "Sign-in code", body: "123456" },
+  });
+
+  test("overlapping deliveries of one event relay one email", async () => {
+    event = emailEvent();
+    let release!: () => void;
+    relayGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const first = handleClerkWebhook(post(), deps);
+    const second = await handleClerkWebhook(post(), deps);
+    expect(second.status).toBe(409);
+    release();
+    expect((await first).status).toBe(200);
+    expect(applied).toEqual(["relay"]);
+  });
+
+  test("a send that succeeded before the log write failed is retried under the same delivery id", async () => {
+    event = emailEvent();
+    recordFailures = ["success", "failed"];
+    expect((await handleClerkWebhook(post(), deps).catch(() => null))).toBeNull();
+    // The lost log leaves the claim; Clerk redelivers once the lease has run out.
+    deliveryStatus.set("msg_1", "failed");
+    expect((await handleClerkWebhook(post(), deps)).status).toBe(200);
+    // Both attempts carry the Svix id the Resend idempotency key is derived from.
+    expect(relayDeliveryIds).toEqual(["msg_1", "msg_1"]);
   });
 });

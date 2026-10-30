@@ -133,7 +133,10 @@ function getHtml(payload: ClerkEmailPayload): string {
   return "";
 }
 
-export async function relayClerkEmail(payload: ClerkEmailPayload): Promise<SendEmailResult> {
+export async function relayClerkEmail(
+  payload: ClerkEmailPayload,
+  options: { idempotencyKey?: string } = {},
+): Promise<SendEmailResult> {
   const to = getRecipient(payload);
 
   if (!to) {
@@ -158,5 +161,6 @@ export async function relayClerkEmail(payload: ClerkEmailPayload): Promise<SendE
     subject: payload.subject,
     html,
     text: payload.text,
+    idempotencyKey: options.idempotencyKey,
   });
 }

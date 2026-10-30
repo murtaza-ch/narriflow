@@ -30,6 +30,7 @@ import { createIntegrationsRoutes } from "./domains/integrations/routes";
 import { createLibraryRouteDeps } from "./domains/library/runtime";
 import { createLibraryRoutes } from "./domains/library/routes";
 import { createClerkWebhookDependencies } from "./domains/platform/clerk/runtime";
+import { createDatabaseReadiness, expectedDatabaseMigrations } from "./domains/platform/database-readiness";
 import type { HealthDependencies } from "./domains/platform/health";
 import { createProgressRouteDeps } from "./domains/progress/runtime";
 import { createProgressRoutes } from "./domains/progress/routes";
@@ -72,11 +73,20 @@ function createHealthDependencies(lifecycle: ApiLifecycle): HealthDependencies {
   return {
     version: process.env.RAILWAY_GIT_COMMIT_SHA?.slice(0, 12) ?? "dev",
     isDraining: () => lifecycle.draining,
-    async checkDatabase() {
-      const prisma = getPrismaClient();
-      if (!prisma) throw new Error("DATABASE_URL is not configured");
-      await prisma.$queryRaw`SELECT 1`;
-    },
+    checkDatabase: createDatabaseReadiness({
+      expectedMigrations: expectedDatabaseMigrations(),
+      async appliedMigrations() {
+        const prisma = getPrismaClient();
+        if (!prisma) throw new Error("DATABASE_URL is not configured");
+        const rows = await prisma.$queryRaw<Array<{ migration_name: string }>>`
+          SELECT migration_name FROM "_prisma_migrations"
+          WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL
+        `;
+        return rows.map((row) => row.migration_name);
+      },
+      onStartupTimeout: () => process.exit(1),
+      log: (entry) => console.warn(JSON.stringify(entry)),
+    }),
   };
 }
 

@@ -73,7 +73,7 @@ export function createDomainTestApp(
       verify: () => {
         throw new Error("signature rejected");
       },
-      getDeliveryLog: async () => null,
+      claimDelivery: async () => "claimed",
       recordDeliveryLog: async () => undefined,
       syncUser: async () => undefined,
       markUserDeleted: async () => undefined,

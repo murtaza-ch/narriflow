@@ -75,6 +75,7 @@ describe("integration and browser capability parity", () => {
   test("every REST endpoint admits one integration command with a browser peer", async () => {
     const app = new Hono().route("/api/v1", createRestRoutes({
       checkRateLimit: async () => ({ allowed: true, availability: "available", remaining: 1, limit: 1 }),
+      readRateLimit: async () => ({ allowed: true, availability: "available", remaining: 1, limit: 1 }),
       apiOrigin: () => "https://api.narriflow.test",
       webOrigin: () => "https://narriflow.test",
       corsAllowedOrigins: ["https://narriflow.test"],

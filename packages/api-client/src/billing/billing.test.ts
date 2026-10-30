@@ -184,7 +184,7 @@ describe("billing commands", () => {
 describe("New-Workspace checkout", () => {
   test("is identity-only: no Workspace header, and the selection comes back explicitly", async () => {
     const response = {
-      checkoutUrl: "https://checkout.stripe.test/b/1",
+      checkoutUrl: "https://checkout.stripe.com/c/pay/cs_test_1",
       checkoutIdempotencyKey: "018f5f6a-4c31-7c75-9a4f-8f74f977bc20",
       interval: "annual",
       selection: { workspaceId: "ws-new", workspaceName: "Acme" },
@@ -199,6 +199,26 @@ describe("New-Workspace checkout", () => {
     expect(calls[0]?.url).toBe("https://api.example.test/api/workspaces/business-checkout");
     expect(calls[0]?.headers.get("x-workspace-id")).toBeNull();
     expect(calls[0]?.headers.get("authorization")).toBe("Bearer session-token");
+  });
+
+  test("refuses any address that is not Stripe's hosted Checkout, without navigating", async () => {
+    for (const checkoutUrl of [
+      "https://evil.example/pay",
+      "http://checkout.stripe.com/c/1",
+      "https://checkout.stripe.com.evil.example/c/1",
+      "javascript:alert(1)",
+    ]) {
+      const { runtime } = setup(() => jsonResponse({
+        checkoutUrl,
+        checkoutIdempotencyKey: "018f5f6a-4c31-7c75-9a4f-8f74f977bc20",
+        interval: "annual",
+        selection: { workspaceId: "ws-new", workspaceName: "Acme" },
+      }));
+      const error = await startBusinessWorkspaceCheckout(runtime.transport, { userId: USER }, { name: "Acme", interval: "annual" }, "intent-2").catch(
+        (caught: unknown) => caught,
+      );
+      expect(isApiError(error) && error.code).toBe("unexpected_response");
+    }
   });
 
   test("a deleted workspace receipt stays a typed failure without a stale selection", async () => {
@@ -248,13 +268,30 @@ describe("invalidation after observed billing state", () => {
 });
 
 describe("pending Business workspace controls", () => {
+  test("resume refuses any address that is not Stripe's hosted Checkout", async () => {
+    for (const checkoutUrl of [
+      "https://evil.example/pay",
+      "http://checkout.stripe.com/c/1",
+      "https://checkout.stripe.com.evil.example/c/1",
+      "javascript:alert(1)",
+      "",
+    ]) {
+      const { runtime } = setup(() => jsonResponse({ checkoutUrl }));
+      const error = await resumeBusinessWorkspaceCheckout(runtime.transport, { userId: USER }, WORKSPACE_B).catch(
+        (caught: unknown) => caught,
+      );
+      expect(isApiError(error)).toBe(true);
+      expect((error as { code: string }).code).toBe("unexpected_response");
+    }
+  });
+
   test("resume and cancel use identity requests even while a removed workspace is selected", async () => {
     const { runtime, calls } = setup(
-      () => jsonResponse({ checkoutUrl: "https://checkout.stripe.test/resumed" }),
+      () => jsonResponse({ checkoutUrl: "https://checkout.stripe.com/resumed" }),
       () => jsonResponse({ canceled: true }),
     );
     const identity = { userId: USER };
-    expect(await resumeBusinessWorkspaceCheckout(runtime.transport, identity, WORKSPACE_B)).toBe("https://checkout.stripe.test/resumed");
+    expect(await resumeBusinessWorkspaceCheckout(runtime.transport, identity, WORKSPACE_B)).toBe("https://checkout.stripe.com/resumed");
     await cancelBusinessWorkspaceCheckout(runtime.transport, identity, WORKSPACE_B);
     expect(calls.map((call) => new URL(call.url).pathname)).toEqual([
       "/api/workspaces/business-checkout/resume", "/api/workspaces/business-checkout/cancel",

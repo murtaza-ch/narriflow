@@ -45,10 +45,30 @@ function toJsonPayload(value: unknown): Prisma.InputJsonValue | undefined {
   return value as Prisma.InputJsonValue;
 }
 
-async function upsertIdentity(userId: string, identity: ClerkIdentityShape) {
-  const prisma = getRequiredPrisma();
+type Tx = Prisma.TransactionClient;
+type UserProfileData = Pick<
+  User,
+  "primaryEmail" | "emailVerifiedAt" | "firstName" | "lastName" | "imageUrl" | "lastSignInAt"
+>;
 
-  return prisma.authIdentity.upsert({
+/** Clerk refused to describe an identity it has deleted; no App User may be created or revived for it. */
+export class ClerkIdentityDeletedError extends Error {
+  constructor(readonly clerkId: string) {
+    super("This Clerk identity was deleted");
+    this.name = "ClerkIdentityDeletedError";
+  }
+}
+
+/**
+ * Serializes every write that creates, updates or deletes the App User of one
+ * Clerk identity, so a deletion and a concurrent create/update cannot interleave.
+ */
+async function lockClerkIdentity(tx: Tx, clerkId: string): Promise<void> {
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`clerk-identity:${clerkId}`}, 0))`;
+}
+
+function upsertIdentity(tx: Tx, userId: string, identity: ClerkIdentityShape) {
+  return tx.authIdentity.upsert({
     where: {
       provider_providerUserId: {
         provider: identity.provider,
@@ -70,17 +90,49 @@ async function upsertIdentity(userId: string, identity: ClerkIdentityShape) {
   });
 }
 
-export async function getWebhookDeliveryLog(provider: WebhookProvider, eventId: string) {
-  const prisma = getRequiredPrisma();
+/** A delivery whose claim is older than this is presumed abandoned by a crashed handler. */
+const WEBHOOK_DELIVERY_LEASE_MS = 2 * 60_000;
 
-  return prisma.webhookDeliveryLog.findUnique({
+export type WebhookDeliveryClaim = "claimed" | "replay" | "in_progress";
+
+/**
+ * Atomically takes the right to process one provider delivery. Exactly one of
+ * several overlapping deliveries of the same event is `claimed`; a recorded
+ * `success` is a `replay`; a live claim held by another handler is
+ * `in_progress`. A `failed` delivery, or a claim whose lease ran out, is taken
+ * over; the side effects it may have already performed must be idempotent.
+ */
+export async function claimWebhookDelivery(input: {
+  provider: WebhookProvider;
+  eventId: string;
+  eventType: string;
+}): Promise<WebhookDeliveryClaim> {
+  const prisma = getRequiredPrisma();
+  try {
+    await prisma.webhookDeliveryLog.create({ data: { ...input, status: "processing" } });
+    return "claimed";
+  } catch (error) {
+    if (!isUniqueViolation(error)) throw error;
+  }
+
+  const taken = await prisma.webhookDeliveryLog.updateMany({
     where: {
-      provider_eventId: {
-        provider,
-        eventId,
-      },
+      provider: input.provider,
+      eventId: input.eventId,
+      OR: [
+        { status: "failed" },
+        { status: "processing", processedAt: { lt: new Date(Date.now() - WEBHOOK_DELIVERY_LEASE_MS) } },
+      ],
     },
+    data: { status: "processing", eventType: input.eventType, processedAt: new Date() },
   });
+  if (taken.count === 1) return "claimed";
+
+  const row = await prisma.webhookDeliveryLog.findUnique({
+    where: { provider_eventId: { provider: input.provider, eventId: input.eventId } },
+    select: { status: true },
+  });
+  return row?.status === "success" ? "replay" : "in_progress";
 }
 
 export async function recordWebhookDeliveryLog(input: WebhookDeliveryRecordInput) {
@@ -110,6 +162,36 @@ export async function recordWebhookDeliveryLog(input: WebhookDeliveryRecordInput
 }
 
 /**
+ * Creates or updates the live App User and its identities under the identity
+ * lock. A deleted Clerk identity is terminal: a tombstone (or a soft-deleted
+ * row) refuses every create and update, whatever order the events arrive in.
+ */
+function writeLiveUser(
+  clerkId: string,
+  userData: UserProfileData,
+  identities: ClerkIdentityShape[],
+): Promise<User> {
+  return getRequiredPrisma().$transaction(async (tx) => {
+    await lockClerkIdentity(tx, clerkId);
+    const tombstone = await tx.clerkDeletedIdentity.findUnique({
+      where: { clerkId },
+      select: { clerkId: true },
+    });
+    if (tombstone) throw new ClerkIdentityDeletedError(clerkId);
+
+    const appUser = await tx.user.upsert({
+      where: { clerkId },
+      create: { clerkId, ...userData },
+      update: userData,
+    });
+    if (appUser.deletedAt) throw new ClerkIdentityDeletedError(clerkId);
+
+    for (const identity of identities) await upsertIdentity(tx, appUser.id, identity);
+    return appUser;
+  });
+}
+
+/**
  * Upserts the App User for a Clerk payload and keeps the first-use invariants
  * (brand template default, personal Workspace). `directory` confirms a Clerk
  * deletion when an email uniqueness conflict must be resolved.
@@ -125,7 +207,6 @@ export async function syncClerkUserPayload(
     throw new Error("Missing Clerk user id in payload");
   }
 
-  const prisma = getRequiredPrisma();
   const primaryEmail = extractPrimaryEmail(payload);
   const emailVerifiedAt = extractPrimaryEmailVerifiedAt(payload);
   const firstName = getString(payload, ["first_name", "firstName"]);
@@ -140,53 +221,27 @@ export async function syncClerkUserPayload(
     lastName,
     imageUrl,
     lastSignInAt,
-    deletedAt: null,
   };
+
+  const identities = extractIdentities(payload);
 
   let appUser: User;
   try {
-    appUser = await prisma.user.upsert({
-      where: { clerkId },
-      create: { clerkId, ...userData },
-      update: userData,
-    });
+    appUser = await writeLiveUser(clerkId, userData, identities);
   } catch (error) {
-    // Two requests can try to provision the same first-login user at once.
-    // Prisma may surface the losing upsert as P2002 on primaryEmail even
-    // though the winning request has already created the same Clerk user.
-    // Recover the exact Clerk row, or release an email only after its previous
-    // identity's deletion is confirmed. Never transfer an existing workspace
-    // to another Clerk identity based on an email match.
-    if (!isUniqueViolation(error)) {
+    // The only unique conflict left after the per-identity lock is the email.
+    // Release it only after its previous identity's deletion is confirmed;
+    // never transfer an existing workspace to another Clerk identity based on
+    // an email match.
+    if (
+      !isUniqueViolation(error) ||
+      !primaryEmail ||
+      !(await releaseDeletedEmailOwner(primaryEmail, clerkId, directory))
+    ) {
       throw error;
     }
-
-    const concurrentUser = await prisma.user.findUnique({ where: { clerkId } });
-    if (concurrentUser) {
-      appUser = await prisma.user.update({
-        where: { id: concurrentUser.id },
-        data: userData,
-      });
-      console.warn(
-        JSON.stringify({
-          level: "warn",
-          message: "auth_user_sync_race_recovered",
-          clerkId,
-        }),
-      );
-    } else if (primaryEmail && (await releaseDeletedEmailOwner(primaryEmail, clerkId, directory))) {
-      appUser = await prisma.user.upsert({
-        where: { clerkId },
-        create: { clerkId, ...userData },
-        update: userData,
-      });
-    } else {
-      throw error;
-    }
+    appUser = await writeLiveUser(clerkId, userData, identities);
   }
-
-  const identities = extractIdentities(payload);
-  await Promise.all(identities.map((identity) => upsertIdentity(appUser.id, identity)));
 
   await ensureFirstUseBrandTemplate(appUser.id);
   await ensurePersonalWorkspace(appUser.id);
@@ -224,17 +279,52 @@ async function ensureFirstUseBrandTemplate(userId: string): Promise<void> {
   });
 }
 
+/**
+ * Records Clerk's deletion of an identity and closes everything it could still
+ * reach: the tombstone (terminal, see `ClerkDeletedIdentity`), identities, API
+ * keys and standing grants the user made. MCP task handles are immutable and
+ * only readable through admission, which now refuses their owner. Runs under the
+ * identity lock, so a concurrent create/update either finishes first (and is
+ * then deleted here) or sees the tombstone and writes nothing.
+ */
 export async function markUserDeletedByClerkId(clerkId: string) {
-  const prisma = getRequiredPrisma();
+  return getRequiredPrisma().$transaction(async (tx) => {
+    await lockClerkIdentity(tx, clerkId);
+    await tx.clerkDeletedIdentity.upsert({ where: { clerkId }, create: { clerkId }, update: {} });
 
-  const [, result] = await prisma.$transaction([
-    prisma.authIdentity.deleteMany({ where: { user: { clerkId } } }),
-    prisma.user.updateMany({
+    const user = await tx.user.findUnique({ where: { clerkId }, select: { id: true, deletedAt: true } });
+    if (!user) return { count: 0 };
+
+    const now = new Date();
+    await tx.authIdentity.deleteMany({ where: { userId: user.id } });
+    await tx.apiKey.updateMany({
+      where: { revokedAt: null, OR: [{ userId: user.id }, { createdByUserId: user.id }] },
+      data: { revokedAt: now },
+    });
+    const grants = await tx.standingGrant.findMany({
+      where: { grantedByUserId: user.id, status: { in: ["active", "paused", "expired"] } },
+      select: { id: true, revision: true },
+    });
+    if (grants.length > 0) {
+      await tx.standingGrant.updateMany({
+        where: { id: { in: grants.map((grant) => grant.id) } },
+        data: { status: "revoked", pauseNoticePending: false, pauseNoticeLeaseUntil: null },
+      });
+      await tx.standingGrantEvent.createMany({
+        data: grants.map((grant) => ({
+          grantId: grant.id,
+          kind: "revoked",
+          revision: grant.revision,
+          actorUserId: null,
+          reason: "granter_deleted",
+        })),
+      });
+    }
+    return tx.user.updateMany({
       where: { clerkId },
-      data: { deletedAt: new Date(), primaryEmail: null, emailVerifiedAt: null },
-    }),
-  ]);
-  return result;
+      data: { deletedAt: user.deletedAt ?? now, primaryEmail: null, emailVerifiedAt: null },
+    });
+  });
 }
 
 /** Backend API lookup that reports an unreachable directory as `ClerkDirectoryUnavailableError`. */

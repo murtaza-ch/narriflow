@@ -1947,6 +1947,65 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 		}
 	});
 
+	test("a review round is not stale because of another export of the same revision, only because of later edits", async () => {
+		const current = await fixture("review-newer-work");
+		const scope = {
+			actorUserId: current.user.id,
+			workspaceId: current.workspace.id,
+			projectId: current.project.id,
+			pricingTier: "business" as const,
+		};
+		// A download made just before the round: same revision, different output
+		// (and therefore a different fingerprint), created after the pinned export.
+		await prisma.clipExport.create({
+			data: {
+				projectId: current.project.id,
+				workspaceId: current.workspace.id,
+				createdByUserId: current.user.id,
+				clipId: current.clip.id,
+				editorRevision: 3,
+				fingerprint: `download-${randomUUID()}`,
+				resolution: "720p",
+				watermark: true,
+				status: "ready",
+				progress: 100,
+				completedAt: new Date(),
+			},
+		});
+		const created = await reviewService.createRound(scope, {
+			title: "Fresh round",
+			message: null,
+			passcode: null,
+			expiresAt: null,
+			allowDownloads: false,
+			approvalRequired: false,
+			recipientEmails: [],
+			items: [
+				{
+					clipId: current.clip.id,
+					exportId: current.clipExport.id,
+					expectedEditorRevision: 3,
+					variantIds: [current.clipExport.variants[0]!.id],
+					required: true,
+				},
+			],
+		});
+		const newerWork = async () => ({
+			projection: (
+				await reviewService.internalProjection(current.workspace.id, current.project.id)
+			).find((round) => round.id === created.id)?.newerWorkAvailable,
+			room: (
+				await reviewService.internalRoom(current.workspace.id, current.project.id, "manage")
+			).rounds.find((round) => round.id === created.id)?.newerWorkAvailable,
+		});
+		expect(await newerWork()).toEqual({ projection: false, room: false });
+		await prisma.clip.update({
+			where: { id: current.clip.id },
+			data: { editorRevision: 4 },
+		});
+		expect(await newerWork()).toEqual({ projection: true, room: true });
+	});
+
 	test("revokes replayed guest sessions, isolates media IDs, and serializes opposite decisions", async () => {
 		const current = await fixture("review-security");
 		const foreign = await fixture("review-foreign");

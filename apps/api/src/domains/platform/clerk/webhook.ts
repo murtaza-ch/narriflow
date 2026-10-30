@@ -19,7 +19,12 @@ export interface ClerkWebhookDependencies {
     headers: { id: string; timestamp: string; signature: string },
     secret: string,
   ): ClerkWebhookEvent;
-  getDeliveryLog(provider: "clerk", eventId: string): Promise<{ status: string } | null>;
+  /** Atomically takes the right to process this delivery; see `claimWebhookDelivery`. */
+  claimDelivery(input: {
+    provider: "clerk";
+    eventId: string;
+    eventType: string;
+  }): Promise<"claimed" | "replay" | "in_progress">;
   recordDeliveryLog(input: {
     provider: "clerk";
     eventId: string;
@@ -29,7 +34,8 @@ export interface ClerkWebhookDependencies {
   }): Promise<unknown>;
   syncUser(payload: Record<string, unknown>): Promise<unknown>;
   markUserDeleted(clerkId: string): Promise<unknown>;
-  relayEmail(payload: Record<string, unknown>): Promise<EmailRelayResult>;
+  /** `deliveryId` is the verified Svix message id: the same email event always carries the same id. */
+  relayEmail(payload: Record<string, unknown>, deliveryId: string): Promise<EmailRelayResult>;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -61,7 +67,11 @@ function subjectId(event: ClerkWebhookEvent): string | null {
   return typeof event.data.id === "string" ? event.data.id : null;
 }
 
-async function applyEvent(event: ClerkWebhookEvent, deps: ClerkWebhookDependencies): Promise<void> {
+async function applyEvent(
+  event: ClerkWebhookEvent,
+  deliveryId: string,
+  deps: ClerkWebhookDependencies,
+): Promise<void> {
   if (event.type === "user.created" || event.type === "user.updated") {
     if (typeof event.data.id === "string") {
       await deps.syncUser(event.data);
@@ -72,7 +82,7 @@ async function applyEvent(event: ClerkWebhookEvent, deps: ClerkWebhookDependenci
       await deps.markUserDeleted(clerkId);
     }
   } else if (event.type.startsWith("email.") && isEmailRelayPayload(event.data)) {
-    const relayResult = await deps.relayEmail(event.data);
+    const relayResult = await deps.relayEmail(event.data, deliveryId);
 
     if (!relayResult.sent) {
       throw new Error(relayResult.error ?? relayResult.reason ?? "Failed to relay Clerk email with Resend");
@@ -84,7 +94,8 @@ async function applyEvent(event: ClerkWebhookEvent, deps: ClerkWebhookDependenci
  * Handles one Clerk delivery. The caller must pass a request whose body was
  * read under the webhook byte limit and not parsed or reserialized: the
  * signature covers the exact bytes. A delivery already recorded as `success`
- * is acknowledged without re-applying it.
+ * is acknowledged without re-applying it; one being processed by another
+ * handler is refused (409) so Clerk redelivers it.
  */
 export async function handleClerkWebhook(
   request: Request,
@@ -118,13 +129,17 @@ export async function handleClerkWebhook(
     );
   }
 
-  const existing = await deps.getDeliveryLog("clerk", svixId);
-  if (existing?.status === "success") {
+  // Overlapping deliveries of one event must not both run its side effects.
+  const claim = await deps.claimDelivery({ provider: "clerk", eventId: svixId, eventType: event.type });
+  if (claim === "replay") {
     return jsonResponse({ received: true, replay: true }, 200);
+  }
+  if (claim === "in_progress") {
+    return jsonResponse({ error: "Delivery is already being processed" }, 409);
   }
 
   try {
-    await applyEvent(event, deps);
+    await applyEvent(event, svixId, deps);
 
     await deps.recordDeliveryLog({
       provider: "clerk",

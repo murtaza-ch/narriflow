@@ -35,7 +35,7 @@ and [ADR 0017](../adr/0017-standalone-api.md) for the decision.
 | Railway project | `narriflow-dev` (`3dbc2617-db01-4c86-a3f7-2d5b2ae5bc00`) |
 | Railway environment | `dev` (`a7248225-c37b-4054-80a3-045424c006a0`) |
 | Railway worker | `@narriflow/worker` (`194b54c2-54c8-41ff-ac1f-1d496e1611b7`) |
-| Railway API | `@narriflow/api` (`ba6b549f-56b3-4df3-9c24-91f5dfa4ee3b`) at `https://narriflowapi-dev.up.railway.app` (target port 8080, `PORT=8080`). Settings live on the service, not in a file (Railway deprecated config-as-code): variable `RAILWAY_DOCKERFILE_PATH=apps/api/Dockerfile`, region `us-east4` (next to Neon `us-east-2`), health check `/api/ready` (60 s timeout), 25 s draining, restart on failure ×5, watch paths `/apps/api/**`, `/packages/**`, `/bun.lock`, `/package.json`, `/patches/**`, branch `dev`, no pre-deploy migration (the worker owns them) |
+| Railway API | `@narriflow/api` (`ba6b549f-56b3-4df3-9c24-91f5dfa4ee3b`) at `https://narriflowapi-dev.up.railway.app` (target port 8080, `PORT=8080`). Settings live on the service, not in a file (Railway deprecated config-as-code): variable `RAILWAY_DOCKERFILE_PATH=apps/api/Dockerfile`, region `us-east4` (next to Neon `us-east-2`), health check `/api/ready` (300 s timeout, longer than the API's 180 s readiness deadline), 25 s draining, restart on failure ×5, watch paths `/apps/api/**`, `/packages/**`, `/bun.lock`, `/package.json`, `/patches/**`, branch `dev`, no pre-deploy migration (the worker owns them) |
 
 ## Local configuration
 
@@ -160,9 +160,25 @@ fails those settlements.
 
 The GitHub `dev` integration deploys the Vercel app and the Railway API and
 worker. Railway runs the migration deployment command before starting the
-worker only; the API never migrates. A change that needs a migration deploys
-the worker (and so the migration) first, or the migration is applied by hand
-before pushing.
+worker only; the API never migrates. `/api/ready` compares the migration names
+shipped in its image with finished, non-rolled-back `_prisma_migrations` rows.
+Pending or failed migrations return 503 until the worker pre-deploy command
+finishes. Both successes and failures are cached for five seconds, concurrent
+health requests share one probe, and each response waits at most two seconds.
+The check only reads the database and requires neither Redis nor providers.
+
+The API exits with status 1 if it cannot become ready within 180 seconds of
+the first readiness probe, so a failed worker migration cannot leave it waiting indefinitely.
+Railway keeps the prior healthy API deployment and applies its configured
+health-check timeout and restart policy. Logs name pending migrations with
+`api_database_migrations_pending`, query failures with
+`api_database_readiness_unavailable`, and the startup deadline with
+`api_database_startup_deadline_exceeded`. Fix the worker's migration failure
+and redeploy the API; never mark missing migrations applied to bypass readiness.
+If the API deployment fails with migrations pending because the worker's build
+finished late, redeploy the API once the worker deployment is live.
+For a migration that cannot run safely with the prior revision, stop writers
+and apply it before deploying the new revision.
 Disposable-schema database tests still create their own schemas and must clean
 them up after the run.
 

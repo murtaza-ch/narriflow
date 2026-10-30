@@ -125,6 +125,7 @@ let userByClerkId: User | null;
 let emailOwner: User | null;
 const userWrites: string[] = [];
 let userUpsertFailures: unknown[];
+let tombstoned: boolean;
 let defaultTemplateExists: boolean;
 let builtInTemplateId: string | null;
 let identityUpserts: Array<{ provider: string; providerUserId: string }>;
@@ -177,7 +178,30 @@ const prisma = {
       return builtInTemplateId ? { id: builtInTemplateId } : null;
     }),
   },
-  $transaction: mock(async (operations: Array<Promise<unknown>>) => Promise.all(operations)),
+  $transaction: mock(async (operations: Array<Promise<unknown>> | ((tx: unknown) => Promise<unknown>)) =>
+    typeof operations === "function" ? operations(prisma) : Promise.all(operations)),
+  $executeRaw: mock(async () => {
+    calls.push("identity-lock");
+    return 0;
+  }),
+  clerkDeletedIdentity: {
+    findUnique: mock(async () => (tombstoned ? { clerkId: user.clerkId } : null)),
+    upsert: mock(async (input: { where: { clerkId: string } }) => {
+      calls.push(`tombstone:${input.where.clerkId}`);
+      return input.where;
+    }),
+  },
+  apiKey: {
+    updateMany: mock(async () => {
+      calls.push("api-keys-revoked");
+      return { count: 1 };
+    }),
+  },
+  standingGrant: {
+    findMany: mock(async () => []),
+    updateMany: mock(async () => ({ count: 0 })),
+  },
+  standingGrantEvent: { createMany: mock(async () => ({ count: 0 })) },
   workspace: {
     upsert: workspaceUpsert,
     findUnique: mock(async (input: { where: { id?: string; personalOwnerUserId?: string } }) => {
@@ -199,6 +223,7 @@ mock.module("@narriflow/db/client", () => ({ getPrismaClient: () => prisma }));
 const auth = await import("../src");
 const {
   ClerkDirectoryUnavailableError,
+  ClerkIdentityDeletedError,
   ensurePersonalWorkspace,
   getAppUserForClerkIdentity,
   markUserDeletedByClerkId,
@@ -264,6 +289,7 @@ beforeEach(() => {
   emailOwner = null;
   userWrites.length = 0;
   userUpsertFailures = [];
+  tombstoned = false;
   defaultTemplateExists = true;
   builtInTemplateId = "karaoke-template";
   identityUpserts = [];
@@ -428,15 +454,6 @@ describe("App User for a verified Clerk identity", () => {
 describe("Clerk user sync uniqueness races", () => {
   const p2002 = () => ({ code: "P2002" });
 
-  test("a lost first-login race recovers the exact Clerk row", async () => {
-    userUpsertFailures = [p2002()];
-    userByClerkId = { ...user } as User;
-    const synced = await syncClerkUserPayload(clerkPayload, directory);
-    expect(synced.clerkId).toBe(user.clerkId);
-    expect(calls).toContain("user-update");
-    expect(calls).not.toContain("email-owner-read");
-  });
-
   test("an unrelated uniqueness failure propagates", async () => {
     userUpsertFailures = [new Error("boom")];
     await expect(syncClerkUserPayload(clerkPayload, directory)).rejects.toThrow("boom");
@@ -452,6 +469,7 @@ describe("Clerk user sync uniqueness races", () => {
   });
 
   test("only a confirmed Clerk 404 releases the email", async () => {
+    userByClerkId = { ...user, id: "other-user", clerkId: "clerk-other" } as User;
     userUpsertFailures = [p2002()];
     emailOwner = { ...user, id: "other-user", clerkId: "clerk-other", deletedAt: null } as User;
     directoryOutcome = { error: new FakeClerkApiError(404) };
@@ -472,6 +490,7 @@ describe("Clerk user sync uniqueness races", () => {
   });
 
   test("an already deleted email owner is released without asking Clerk", async () => {
+    userByClerkId = { ...user, id: "other-user", clerkId: "clerk-other" } as User;
     userUpsertFailures = [p2002()];
     emailOwner = { ...user, id: "other-user", clerkId: "clerk-other", deletedAt: new Date() } as User;
     await syncClerkUserPayload(clerkPayload, directory);
@@ -486,10 +505,31 @@ describe("Clerk user sync uniqueness races", () => {
     expect(calls).toEqual([]);
   });
 
-  test("user.deleted removes identities and soft-deletes in one transaction", async () => {
+  test("user.deleted tombstones the identity and closes its credentials in one locked transaction", async () => {
+    userByClerkId = { ...user } as User;
     await markUserDeletedByClerkId(user.clerkId);
     expect(prisma.$transaction).toHaveBeenCalledTimes(1);
-    expect(calls).toContain(`user-soft-delete:${user.clerkId}`);
+    expect(calls.filter((call) => call !== "user-clerk-read")).toEqual([
+      "identity-lock",
+      `tombstone:${user.clerkId}`,
+      "api-keys-revoked",
+      `user-soft-delete:${user.clerkId}`,
+    ]);
+  });
+
+  test("a tombstoned Clerk identity is never created or updated again", async () => {
+    tombstoned = true;
+    const failure = await syncClerkUserPayload(clerkPayload, directory).catch((e: unknown) => e);
+    expect(failure).toBeInstanceOf(ClerkIdentityDeletedError);
+    expect(userWrites).toEqual([]);
+    expect(identityUpserts).toEqual([]);
+  });
+
+  test("a soft-deleted row is never revived by a sync", async () => {
+    userByClerkId = { ...user, deletedAt: new Date() } as User;
+    prisma.user.upsert.mockImplementationOnce(async () => ({ ...user, deletedAt: new Date() }) as never);
+    await expect(syncClerkUserPayload(clerkPayload, directory)).rejects.toBeInstanceOf(ClerkIdentityDeletedError);
+    expect(identityUpserts).toEqual([]);
   });
 });
 

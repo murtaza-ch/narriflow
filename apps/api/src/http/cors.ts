@@ -107,16 +107,6 @@ export function firstPartyRefusalHeaders(allowedOrigins: readonly string[]) {
   };
 }
 
-/** Public discovery documents may be read from anywhere, read-only. */
-export function publicReadCors(): MiddlewareHandler<ApiEnv> {
-  return cors({
-    origin: "*",
-    allowMethods: ["GET", "OPTIONS"],
-    maxAge: 600,
-    credentials: false,
-  }) as MiddlewareHandler<ApiEnv>;
-}
-
 /**
  * Secure response headers for a JSON API, plus the default
  * `Cache-Control: private, no-store`. A handler that sets its own policy

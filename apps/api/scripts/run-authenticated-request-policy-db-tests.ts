@@ -87,6 +87,7 @@ try {
       "test",
       "apps/api/src/http/request-policy.db.test.ts",
       "apps/api/src/http/workspace-entry.db.test.ts",
+      "apps/api/src/domains/platform/clerk/clerk-deletion.db.test.ts",
     ],
     {
       ALLOW_AUTHENTICATED_REQUEST_POLICY_DB_TESTS: "1",

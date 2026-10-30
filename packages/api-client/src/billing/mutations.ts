@@ -5,6 +5,7 @@ import {
   type BusinessWorkspaceCheckoutResponse,
   planChangeQuoteSchema,
   planChangeResultSchema,
+  resumeBusinessWorkspaceCheckoutResponseSchema,
 } from "@narriflow/validators/api/billing";
 import { workspaceBillingViewSchema } from "@narriflow/validators";
 import type {
@@ -14,7 +15,7 @@ import type {
   PlanChangeResult,
   WorkspaceBillingView,
 } from "@narriflow/validators";
-import { IDEMPOTENCY_KEY_HEADER, type ApiTransport, type IdentityScope, type WorkspaceScope } from "../core";
+import { ApiError, CLIENT_ERROR_CODES, IDEMPOTENCY_KEY_HEADER, type ApiTransport, type IdentityScope, type WorkspaceScope } from "../core";
 import { createBillingClient } from "./client";
 
 export type CheckoutReturnOutcome =
@@ -108,6 +109,16 @@ export function createBillingActions(
   };
 }
 
+/** Never navigate to an address that is not Stripe's hosted Checkout. */
+function unopenableCheckout(cause: unknown): ApiError {
+  return new ApiError({
+    code: CLIENT_ERROR_CODES.unexpectedResponse,
+    message: "We couldn’t open checkout. Try again in a moment.",
+    status: 0,
+    cause,
+  });
+}
+
 /**
  * Creates the pending Business Workspace (or resumes one awaiting payment) and
  * returns the Stripe URL plus the Workspace to select before navigating. It is
@@ -130,7 +141,9 @@ export async function startBusinessWorkspaceCheckout(
     { json: input },
     { headers: { [IDEMPOTENCY_KEY_HEADER]: idempotencyKey }, init: signal ? { signal } : {} },
   );
-  return businessWorkspaceCheckoutResponseSchema.parse(await response.json());
+  const parsed = businessWorkspaceCheckoutResponseSchema.safeParse(await response.json());
+  if (!parsed.success) throw unopenableCheckout(parsed.error);
+  return parsed.data;
 }
 
 export async function cancelBusinessWorkspaceCheckout(
@@ -146,5 +159,7 @@ export async function resumeBusinessWorkspaceCheckout(
 ): Promise<string> {
   const client = createBillingClient(transport.identity(scope));
   const response = await client.workspaces["business-checkout"].resume.$post({ json: { workspaceId } });
-  return ((await response.json()) as { checkoutUrl: string }).checkoutUrl;
+  const parsed = resumeBusinessWorkspaceCheckoutResponseSchema.safeParse(await response.json());
+  if (!parsed.success) throw unopenableCheckout(parsed.error);
+  return parsed.data.checkoutUrl;
 }

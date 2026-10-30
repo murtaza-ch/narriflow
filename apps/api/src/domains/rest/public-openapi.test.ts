@@ -11,6 +11,7 @@ describe("public OpenAPI document", () => {
     const origin = "https://configured-api.example.com";
     const app = new Hono().route("/api/v1", createRestRoutes({
       checkRateLimit: async () => { throw new Error("The document must not authenticate"); },
+      readRateLimit: async () => { throw new Error("The document must not authenticate"); },
       apiOrigin: () => origin,
       webOrigin: () => "https://web.example.com",
       corsAllowedOrigins: [],

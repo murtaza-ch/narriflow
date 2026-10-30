@@ -35,7 +35,7 @@
     "@node-rs/argon2": "^2.2.0",
     "@prisma/client": "^7.4.2",
     "fontkit": "2.0.4",
-    "hono": "^4.12.28",
+    "hono": "^4.13.11",
     "ioredis": "^5.9.3",
     "sharp": "^0.35.5",
     "svix": "^1.86.0",

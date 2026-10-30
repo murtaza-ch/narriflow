@@ -32,13 +32,24 @@ export const billingStateResponseSchema = z.object({
 });
 export type BillingStateResponse = z.infer<typeof billingStateResponseSchema>;
 
+/** Stripe's hosted Checkout origin: the only place the browser navigates to pay. */
+export const STRIPE_CHECKOUT_ORIGIN = "https://checkout.stripe.com";
+
+export const stripeCheckoutUrlSchema = z.url().refine((value) => {
+  try {
+    return new URL(value).origin === STRIPE_CHECKOUT_ORIGIN;
+  } catch {
+    return false;
+  }
+}, "Not a Stripe Checkout address.");
+
 /**
  * `POST /api/workspaces/business-checkout` success. `selection` is the new (or
  * recovered) pending Workspace: the browser makes it the explicit selection
  * before navigating to `checkoutUrl`. Nothing here grants an entitlement.
  */
 export const businessWorkspaceCheckoutResponseSchema = z.object({
-  checkoutUrl: z.url(),
+  checkoutUrl: stripeCheckoutUrlSchema,
   checkoutIdempotencyKey: z.uuid(),
   interval: billingIntervalSchema,
   selection: z.object({
@@ -49,6 +60,11 @@ export const businessWorkspaceCheckoutResponseSchema = z.object({
 export type BusinessWorkspaceCheckoutResponse = z.infer<
   typeof businessWorkspaceCheckoutResponseSchema
 >;
+
+/** `POST /api/workspaces/business-checkout/resume` success. */
+export const resumeBusinessWorkspaceCheckoutResponseSchema = z.object({
+  checkoutUrl: stripeCheckoutUrlSchema,
+});
 
 /**
  * `details.recovery` of a failed New-Workspace checkout, so

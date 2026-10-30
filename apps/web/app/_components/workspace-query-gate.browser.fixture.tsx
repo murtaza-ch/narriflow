@@ -36,6 +36,7 @@ let calls: Call[];
 let memberships: Member[];
 let restrictedContent = false;
 let ownerCanResolve = false;
+let failBootstrap = false;
 const replaced: string[] = [];
 
 const router = { replace: (href: string) => replaced.push(href), push: (href: string) => replaced.push(href) };
@@ -65,6 +66,9 @@ async function fakeApi(input: string | URL | Request, init?: RequestInit): Promi
   const user = { id: "u1", email: "a@example.test", firstName: "Ada", lastName: null, imageUrl: null };
 
   if (call.path === "/api/session/bootstrap") {
+    if (failBootstrap) {
+      return json({ error: "authentication_unavailable", message: "Sign-in is briefly unavailable.", requestId: "r-outage" }, 503);
+    }
     const effective = memberships.find((member) => member.id === call.hint) ?? memberships.find((member) => member.isPersonal);
     if (!effective) throw new Error("fixture needs a personal Workspace");
     const body: SessionBootstrap = {
@@ -224,6 +228,7 @@ beforeEach(() => {
   memberships = [personal, team];
   restrictedContent = false;
   ownerCanResolve = false;
+  failBootstrap = false;
   browser.localStorage.clear();
 });
 
@@ -343,5 +348,37 @@ describe("session and Workspace gates", () => {
     expect(posts[0]?.workspaceHeader).toBe(TEAM);
     expect(text(container, "changed")).toBe("true");
     expect(calls.filter((call) => call.path === "/api/session/bootstrap").length).toBeGreaterThanOrEqual(2);
+  });
+
+  test("a failed re-bootstrap after a refusal keeps the shell closed, shows a retry, and adopts only a fresh bootstrap", async () => {
+    browser.localStorage.setItem(HINT_KEY, TEAM);
+    const container = await mount((modules) => <Gates modules={modules} />);
+    await until(() => text(container, "workspace") === TEAM, "the team Workspace");
+    runtimeRef?.queryClient.setDefaultOptions({ queries: { retry: false } });
+
+    memberships = [personal];
+    failBootstrap = true;
+    const command = container.querySelector("[data-testid=command]") as unknown as HTMLButtonElement;
+    await act(async () => {
+      command.click();
+    });
+    // The transport retries a 503 before giving up, so allow the failure to settle.
+    for (let attempt = 0; attempt < 400 && !container.textContent?.includes("Try again"); attempt++) {
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      });
+    }
+    expect(container.textContent).toContain("Try again");
+    expect(text(container, "workspace")).toBeNull();
+    expect(container.textContent).not.toContain(TEAM);
+
+    failBootstrap = false;
+    const retry = Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Try again");
+    await act(async () => {
+      (retry as unknown as HTMLButtonElement).click();
+    });
+    await until(() => text(container, "workspace") === PERSONAL, "the fallback Workspace after retry");
+    expect(text(container, "changed")).toBe("true");
+    expect(container.textContent).not.toContain("Try again");
   });
 });

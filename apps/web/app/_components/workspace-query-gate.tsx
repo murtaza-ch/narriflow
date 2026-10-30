@@ -155,11 +155,19 @@ export function SessionGate({
   const needsAdoption = useRef(true);
   const [adopted, setAdopted] = useState(false);
   const [selectionChanged, setSelectionChanged] = useState(false);
+  // After a refused selection only a bootstrap read after the refusal may be adopted:
+  // React Query keeps the last successful data through a failed refresh, and that data
+  // still names the Workspace the API just rejected. `refusal` is the time of the last
+  // successful read when the refusal arrived; a read that moved it is a fresh one.
+  const [refusal, setRefusal] = useState<number | null>(null);
+  const lastRead = useRef(0);
+  lastRead.current = query.dataUpdatedAt;
 
   const data = query.data;
   const settled = !query.isFetching;
+  const fresh = refusal === null || query.dataUpdatedAt > refusal;
   useEffect(() => {
-    if (!data || !settled || !needsAdoption.current) return;
+    if (!data || !settled || !fresh || !needsAdoption.current) return;
     needsAdoption.current = false;
     // The identity bootstrap carries the Workspace bootstrap's data for the
     // effective Workspace: seed it so the shell opens without a second request.
@@ -174,12 +182,13 @@ export function SessionGate({
     runtime.selectWorkspace(data.selection.workspaceId);
     setSelectionChanged(data.selection.workspaceSelectionChanged);
     setAdopted(true);
-  }, [data, settled, runtime, identity]);
+  }, [data, settled, fresh, runtime, identity]);
 
   const userId = identity?.userId ?? null;
   const revalidate = useCallback(() => {
     if (userId === null || needsAdoption.current) return;
     needsAdoption.current = true;
+    setRefusal(lastRead.current);
     void runtime.queryClient.invalidateQueries({
       queryKey: sessionKey({ userId }, "bootstrap"),
       exact: true,
@@ -204,12 +213,16 @@ export function SessionGate({
   );
 
   if (identity === null) return <>{fallback}</>;
-  if (!data && query.isError) {
+  if (query.isError && settled && (!data || !fresh)) {
     return (
       <GateFailure
         title={title}
         error={query.error}
-        fallback="You’re signed in. Try opening your workspace again."
+        fallback={
+          refusal !== null
+            ? "Your access to that workspace changed. Try again to open the right one."
+            : "You’re signed in. Try opening your workspace again."
+        }
         onRetry={() => void query.refetch()}
       />
     );

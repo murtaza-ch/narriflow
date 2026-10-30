@@ -4,7 +4,8 @@ import { Hono, type Context, type MiddlewareHandler } from "hono";
 import { cors } from "hono/cors";
 import { HTTPException } from "hono/http-exception";
 import type { ApiEnv } from "../../http/env";
-import { limitBody } from "../../http/limits";
+import { limitBody, trustedIngressIp } from "../../http/limits";
+import { socketAddress } from "../../server-hooks";
 import { REST_ENDPOINT_COMMANDS, type RestEndpoint } from "./admission";
 import {
   assertCompletionCallbackUrl,
@@ -69,13 +70,19 @@ const REPLAYABLE_ENDPOINTS = new Set([
   "POST /clips/{id}/exports", "POST /social-posts/proposals", "POST /operations/{id}/callback/redeliver",
 ]);
 
+/** Failed authentications per trusted client IP. Valid keys never count, so
+ * integrations sharing an egress IP (n8n Cloud, Zapier) do not share a budget. */
+export const REST_AUTH_FAILURE_RATE_LIMIT = { limit: 600, windowSeconds: 60 } as const;
+
 export const REST_API_RATE_LIMIT = { limit: 300, windowSeconds: 60 } as const;
 
 export interface RestRouteDeps {
   checkRateLimit(key: string, limit: number, windowSeconds: number): Promise<RateLimitResult>;
+  readRateLimit(key: string, limit: number, windowSeconds: number): Promise<RateLimitResult>;
   apiOrigin(): string;
   webOrigin(): string;
   corsAllowedOrigins: readonly string[];
+  trustedClientIpHeader?: string | null;
   /** Test seam for callback URL DNS checks. */
   callbackResolver?: HostResolver;
   log?: (entry: Record<string, unknown>) => void;
@@ -179,12 +186,28 @@ export function createRestOpenApiRoutes(dependencies: RestRouteDeps) {
   // Authentication: the key is the Workspace. Membership, role, and plan are
   // rechecked by admission on every request.
   app.use("*", async (c, next) => {
+    // An IP that keeps failing is refused before parsing or looking up another
+    // attacker-chosen key, so key rotation cannot multiply DB lookups. Only
+    // failures count; authenticated traffic has its own per-key limit below.
+    const ip = trustedIngressIp(c.req.raw.headers, {
+      trustedHeader: dependencies.trustedClientIpHeader ?? null,
+      socketAddress: socketAddress(c as unknown as Context<ApiEnv>),
+    });
+    const failureBucket = `rest:authfail:${ip}`;
+    const { limit, windowSeconds } = REST_AUTH_FAILURE_RATE_LIMIT;
+    const failures = await dependencies.readRateLimit(failureBucket, limit, windowSeconds);
+    if (!failures.allowed) throw new RestFailure(429, "rate_limited", "Too many failed authentication attempts from this address", {
+      retryAfterSeconds: windowSeconds,
+    });
+    const refuse = async (error: string, message: string, headers: Record<string, string>) => {
+      await dependencies.checkRateLimit(failureBucket, limit, windowSeconds);
+      return new RestFailure(401, error, message, { headers });
+    };
     const header = c.req.header("authorization") ?? "";
     const match = /^Bearer (nf_[A-Za-z0-9_-]+)$/.exec(header);
-    const challenge = { "WWW-Authenticate": 'Bearer realm="narriflow"' };
-    if (!match) throw new RestFailure(401, "authentication_required", "Send a Workspace API key as a Bearer token", { headers: challenge });
+    if (!match) throw await refuse("authentication_required", "Send a Workspace API key as a Bearer token", { "WWW-Authenticate": 'Bearer realm="narriflow"' });
     const key = await workspaceService.authenticateApiKey(match[1]!);
-    if (!key) throw new RestFailure(401, "invalid_api_key", "This API key is invalid or revoked", { headers: { "WWW-Authenticate": 'Bearer realm="narriflow", error="invalid_token"' } });
+    if (!key) throw await refuse("invalid_api_key", "This API key is invalid or revoked", { "WWW-Authenticate": 'Bearer realm="narriflow", error="invalid_token"' });
     c.set("restPrincipal", { kind: "api_key", userId: key.userId, clientId: `api_key:${key.apiKeyId}`, apiKeyId: key.apiKeyId, workspaceId: key.workspaceId, scopes: key.scopes });
     const limiter = await dependencies.checkRateLimit(`rest:${key.apiKeyId}`, REST_API_RATE_LIMIT.limit, REST_API_RATE_LIMIT.windowSeconds);
     c.set("restLimiter", limiter);
