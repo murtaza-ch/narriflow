@@ -211,6 +211,22 @@ describe("auto-censor terms in no-space scripts", () => {
     expect(match!.contextAfter).toBe("真是");
   });
 
+  test("a zero-duration character inside a match keeps the match timed (bleepable)", () => {
+    const words = perChar("你这个笨蛋真是", false);
+    words[4] = { ...words[4]!, endSec: words[4]!.startSec };
+    const [match] = detect(words, "笨蛋");
+    expect(match!.timingLimitation).toBeNull();
+    expect(match!.sourceStartSec).toBeCloseTo(0.6);
+    expect(match!.sourceEndSec).toBeCloseTo(0.8);
+  });
+
+  test("a match that is a single zero-duration token stays caption-only", () => {
+    const words = perChar("你这个笨蛋", false);
+    words[3] = { ...words[3]!, endSec: words[3]!.startSec };
+    const [match] = detect(words, "笨");
+    expect(match!.timingLimitation).toBe("caption_only");
+  });
+
   test("an unspaced Japanese term matches kana and kanji tokens", () => {
     const [match] = detect(perChar("このばかやろう", false), "ばかやろう");
     expect(match!.matchedText).toBe("ばかやろう");

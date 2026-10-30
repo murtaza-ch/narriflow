@@ -567,12 +567,12 @@ export function detectAutoCensorSuggestions(
   return selected.map(({ flatIndex, span, term }) => {
     const first = span[0]!;
     const last = span[span.length - 1]!;
-    const timed = span.every(
-      ({ word }) =>
-        word.startSec !== null &&
-        word.endSec !== null &&
-        word.endSec > word.startSec,
-    );
+    // Every word must carry times, but only the span as a whole needs length:
+    // providers time some CJK characters and punctuation at zero duration, and
+    // one such token must not leave a whole match unbleepable.
+    const timed =
+      span.every(({ word }) => word.startSec !== null && word.endSec !== null) &&
+      last.word.endSec! > first.word.startSec!;
     const sourceWordIds = span.map(({ utterance, wordIndex, word }) =>
       autoCensorWordId({
         utteranceIndex: utterance.index,
