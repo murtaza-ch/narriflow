@@ -1,6 +1,16 @@
 "use client";
 import { useBrandFont, brandFontStyle, brandFontFamily } from "@/app/(app)/brand-kit/_components/brand-fonts";
-import { captionFontStack, captionLetterSpacingRuns, hasUnspacedScript } from "@/app/caption-script-fonts";
+import {
+  CAPTION_FACE_OWN_SCRIPTS,
+  captionDecorationExtentEm,
+  captionFontStack,
+  captionLetterSpacingRuns,
+  hasUnspacedScript,
+  measureCaptionFallbackInkEm,
+  NO_CAPTION_INK,
+  type CaptionInkEm,
+  type CaptionOwnScript,
+} from "@/app/caption-script-fonts";
 
 /**
  * The ONE caption renderer for every caption surface in the web app:
@@ -53,9 +63,11 @@ import {
   emojiForWord,
   formatCaptionWord,
   hasSpaceBefore,
+  joinTranscriptWords,
   languageDirection,
   textDirection,
   type CaptionEase,
+  type CaptionFontFace,
   type CaptionFontName,
   type CaptionKeyframe,
   type CaptionMotionSpec,
@@ -236,6 +248,67 @@ export interface CaptionCueProps {
   language?: string | null;
 }
 
+// ─── Pill and plate geometry ──────────────────────────────────────────────────
+
+/** A zero-size box on the text baseline: where the baseline sits is read from it. */
+const BASELINE_ANCHOR: CSSProperties = { display: "inline-block", width: 0, height: 0, pointerEvents: "none" };
+
+interface BaselineInk {
+  /** Em from the top of the box the decoration is positioned in. */
+  readonly baselineEm: number;
+  readonly ink: CaptionInkEm;
+}
+
+/** What the browser drew for one cue: each word's baseline and the fallback-face ink, as the burn-in measures them. */
+interface CueInkMeasure {
+  readonly key: string;
+  readonly line: BaselineInk;
+  readonly words: readonly BaselineInk[];
+}
+
+const sameBaselineInk = (a: BaselineInk, b: BaselineInk) =>
+  a.baselineEm === b.baselineEm && a.ink.topEm === b.ink.topEm && a.ink.bottomEm === b.ink.bottomEm;
+
+const sameMeasure = (a: CueInkMeasure | null, b: CueInkMeasure | null) =>
+  a === b ||
+  (a !== null &&
+    b !== null &&
+    a.key === b.key &&
+    sameBaselineInk(a.line, b.line) &&
+    a.words.length === b.words.length &&
+    a.words.every((word, index) => sameBaselineInk(word, b.words[index]!)));
+
+/**
+ * Reads the cue as the browser laid it out. The burn-in puts a pill or plate
+ * around the line's tallest ascent and grows it to fallback-face ink (Nastaliq
+ * swashes, Indic marks); the face's catalog metrics only hold for text it draws
+ * itself. The baseline is read from the anchors in the DOM, because a taller
+ * fallback face pushes it down inside the word's box. A reading within a pixel
+ * of the catalog's ascent is the catalog's (offsets are whole pixels).
+ */
+function measureCueInk(
+  line: HTMLElement,
+  input: { key: string; display: readonly string[]; emPx: number; face: CaptionFontFace; requestedFamily: string; language: string | null; ownScripts: readonly CaptionOwnScript[] },
+): CueInkMeasure | null {
+  if (!input.requestedFamily || input.emPx <= 0) return null;
+  const baselineEm = (anchor: HTMLElement | null) => {
+    if (!anchor) return input.face.ascent;
+    const px = anchor.offsetTop;
+    return Math.abs(px - input.face.ascent * input.emPx) <= 1 ? input.face.ascent : px / input.emPx;
+  };
+  const anchors = new Map<string, HTMLElement>();
+  for (const anchor of line.querySelectorAll<HTMLElement>("[data-caption-baseline]")) anchors.set(anchor.dataset.captionBaseline!, anchor);
+  const words = input.display.map((text, index): BaselineInk => ({
+    baselineEm: baselineEm(anchors.get(String(index)) ?? null),
+    ink: measureCaptionFallbackInkEm(text, { ...input.face, requestedFamily: input.requestedFamily, language: input.language, ownScripts: input.ownScripts }),
+  }));
+  const ink = words.reduce<CaptionInkEm>(
+    (all, word) => ({ topEm: Math.max(all.topEm, word.ink.topEm), bottomEm: Math.max(all.bottomEm, word.ink.bottomEm) }),
+    NO_CAPTION_INK,
+  );
+  return { key: input.key, line: { baselineEm: baselineEm(anchors.get("line") ?? null), ink }, words };
+}
+
 /** Text with the cue's letter spacing switched off for scripts that take none (`\fsp0` in the burn-in). */
 function CaptionText({ text }: { text: string }) {
   if (!hasUnspacedScript(text)) return <>{text}</>;
@@ -301,6 +374,8 @@ export function CaptionCue({
   language = null,
 }: CaptionCueProps) {
   const [naturalWidth, setNaturalWidth] = useState(0);
+  const lineRef = useRef<HTMLDivElement | null>(null);
+  const [measured, setMeasured] = useState<CueInkMeasure | null>(null);
   const customFont = useBrandFont(preset.fontAsset);
   const face = customFont?.face ?? captionFontFace(preset.fontName);
   const spec: CaptionMotionSpec = CAPTION_MOTIONS[preset.animation];
@@ -314,15 +389,17 @@ export function CaptionCue({
       ? item.word
       : applyCaptionTextTransform(formatCaptionWord(item.word, { punctuation: keepPunctuation }), preset.textTransform, language),
   );
-  // The cue's base direction is its first strong character, else the language's.
+  // The cue's base direction is the first strong character of the whole line
+  // (a leading number or mark has none), else the language's: the burn-in's rule.
   const cueDir = textDirection(
-    display.find((text) => text.length > 0) ?? "",
+    joinTranscriptWords(display.map((text) => ({ word: text }))),
     languageDirection(language),
   );
 
   // The keyed cue entrance replaces this node on every cue change. Observe
   // the new line so longer captions keep fitting after playback or seeking.
   const measureLine = useCallback((line: HTMLDivElement | null) => {
+    lineRef.current = line;
     if (!line) return;
     const measure = () => setNaturalWidth(line.offsetWidth);
     measure();
@@ -338,6 +415,33 @@ export function CaptionCue({
       fonts?.removeEventListener("loadingdone", measure);
     };
   }, []);
+
+  // Pills and plates follow the baseline and fallback ink the browser drew. Until
+  // that is read, and whenever the text or face changes, the catalog metrics stand.
+  const requestedFamilyName = customFont ? brandFontFamily(customFont) : null;
+  const inkKey = `${customFont ? requestedFamilyName : preset.fontName}\0${language ?? ""}\0${emPx}\0${display.join("\u0001")}`;
+  // `inkKey` stands for the display text, face, language and size the effect reads.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: keyed by inkKey
+  useEffect(() => {
+    const measure = () => {
+      const line = lineRef.current;
+      if (!line) return;
+      const requestedFamily = requestedFamilyName
+        ? `"${requestedFamilyName}"`
+        : getComputedStyle(line).getPropertyValue(captionFontVariable(preset.fontName)).trim();
+      const ownScripts = customFont ? [] : (CAPTION_FACE_OWN_SCRIPTS[preset.fontName] ?? []);
+      const next = measureCueInk(line, { key: inkKey, display, emPx, face, requestedFamily, language, ownScripts });
+      setMeasured((previous) => (sameMeasure(previous, next) ? previous : next));
+    };
+    measure();
+    const fonts = document.fonts;
+    void fonts?.ready.then(measure);
+    fonts?.addEventListener("loadingdone", measure);
+    return () => fonts?.removeEventListener("loadingdone", measure);
+  }, [inkKey]);
+  const cueInk = measured?.key === inkKey ? measured : null;
+  const plateExtent = captionDecorationExtentEm(face.capHeight, CAPTION_PLATE, cueInk?.line.ink ?? NO_CAPTION_INK);
+  const plateBaselineEm = cueInk?.line.baselineEm ?? face.ascent;
 
   // When punctuation is off and every word in this cue is pure punctuation,
   // the composition plan emits no cue at all — so render nothing either.
@@ -439,6 +543,7 @@ export function CaptionCue({
               : captionFontStyle(preset.fontName, language)),
           }}
         >
+          <span aria-hidden data-caption-baseline="line" style={BASELINE_ANCHOR} />
           {preset.backgroundColor && (
             <span
               aria-hidden
@@ -446,8 +551,8 @@ export function CaptionCue({
                 position: "absolute",
                 left: `${-CAPTION_PLATE.padXEm}em`,
                 right: `${-CAPTION_PLATE.padXEm}em`,
-                top: `${face.ascent - face.capHeight - CAPTION_PLATE.padTopEm}em`,
-                height: `${face.capHeight + CAPTION_PLATE.padTopEm + CAPTION_PLATE.padBottomEm}em`,
+                top: `${plateBaselineEm - plateExtent.aboveBaselineEm}em`,
+                height: `${plateExtent.aboveBaselineEm + plateExtent.belowBaselineEm}em`,
                 borderRadius: `${CAPTION_PLATE.radiusEm}em`,
                 background: hexToRgba(preset.backgroundColor, preset.backgroundOpacity ?? 1),
               }}
@@ -475,6 +580,8 @@ export function CaptionCue({
             const emoji = showEmojis ? (item.emoji ?? emojiForWord(item.word)) : null;
             const durationMs = item.durationMs ?? 400;
             if (text.length === 0) return null;
+            const wordInk = cueInk?.words[index];
+            const pillExtent = captionDecorationExtentEm(face.capHeight, CAPTION_PILL, wordInk?.ink ?? NO_CAPTION_INK);
             return (
               <Fragment key={`${cueKey}-${index}`}>
                 {spaced && " "}
@@ -502,6 +609,7 @@ export function CaptionCue({
                     opacity: entrance ? undefined : opacity,
                   }}
                 >
+                  <span aria-hidden data-caption-baseline={index} style={BASELINE_ANCHOR} />
                   {isActive && preset.highlightBoxColor && (
                     <motion.span
                       aria-hidden
@@ -515,8 +623,8 @@ export function CaptionCue({
                         position: "absolute",
                         left: `${-CAPTION_PILL.padXEm}em`,
                         right: `${-CAPTION_PILL.padXEm}em`,
-                        top: `${face.ascent - face.capHeight - CAPTION_PILL.padTopEm}em`,
-                        height: `${face.capHeight + CAPTION_PILL.padTopEm + CAPTION_PILL.padBottomEm}em`,
+                        top: `${(wordInk?.baselineEm ?? face.ascent) - pillExtent.aboveBaselineEm}em`,
+                        height: `${pillExtent.aboveBaselineEm + pillExtent.belowBaselineEm}em`,
                         borderRadius: `${CAPTION_PILL.radiusEm}em`,
                         background: hexToRgba(preset.highlightBoxColor, preset.highlightBoxOpacity ?? 1),
                         zIndex: 2,

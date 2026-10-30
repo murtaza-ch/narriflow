@@ -1,6 +1,15 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { CAPTION_FONT_FACES, CAPTION_PILL, CAPTION_PLATE } from "@narriflow/validators";
 import {
+  CAPTION_FACE_OWN_SCRIPTS,
+  CAPTION_INK_MARGIN_EM,
   CAPTION_SCRIPT_FACES,
+  NO_CAPTION_INK,
+  captionDecorationExtentEm,
+  captionFaceDraws,
+  captionFallbackInkEm,
+  captionFallbackRuns,
   captionFallbackFamilies,
   captionFontStack,
   captionLetterSpacingRuns,
@@ -52,5 +61,84 @@ describe("letter spacing runs", () => {
       { text: "نظام", spaced: false },
     ]);
     expect(captionLetterSpacingRuns("क्षत्रिय‍")).toEqual([{ text: "क्षत्रिय‍", spaced: false }]);
+  });
+});
+
+describe("pill and plate extent", () => {
+  const ANTON_CAP = 0.8594;
+
+  test("keeps the margin under fallback ink the burn-in leaves", () => {
+    const worker = readFileSync(new URL("../../worker/src/caption-ass.ts", import.meta.url), "utf8");
+    expect(worker).toContain(`const CAPTION_INK_MARGIN_EM = ${CAPTION_INK_MARGIN_EM};`);
+  });
+
+  test("without fallback ink it is the catalog metrics exactly", () => {
+    for (const pad of [CAPTION_PILL, CAPTION_PLATE]) {
+      const extent = captionDecorationExtentEm(ANTON_CAP, pad, NO_CAPTION_INK);
+      expect(extent.aboveBaselineEm).toBe(ANTON_CAP + pad.padTopEm);
+      expect(extent.belowBaselineEm).toBe(pad.padBottomEm);
+    }
+  });
+
+  test("grows to the fallback ink that stands above the cap height or hangs below the pad", () => {
+    // Anton + Urdu مُحَبَّتُوں: the export's shaped ink is about 1.46 em above and 0.5 em below the baseline.
+    const extent = captionDecorationExtentEm(ANTON_CAP, CAPTION_PILL, { topEm: 1.46, bottomEm: 0.5 });
+    expect(extent.aboveBaselineEm).toBeCloseTo(1.46 + CAPTION_PILL.padTopEm, 6);
+    expect(extent.belowBaselineEm).toBeCloseTo(0.5 + CAPTION_INK_MARGIN_EM, 6);
+    // Ink inside the pad changes nothing.
+    expect(captionDecorationExtentEm(ANTON_CAP, CAPTION_PILL, { topEm: 0.5, bottomEm: 0.1 })).toEqual(
+      captionDecorationExtentEm(ANTON_CAP, CAPTION_PILL, NO_CAPTION_INK),
+    );
+  });
+});
+
+describe("fallback-drawn runs", () => {
+  const latinOnly = (cluster: string) => /^[A-Za-z0-9 ]+$/.test(cluster);
+
+  test("keeps neighbouring clusters and their marks together, and skips what the requested face draws", () => {
+    expect(captionFallbackRuns("Hello", latinOnly)).toEqual([]);
+    expect(captionFallbackRuns("مُحَبَّتُوں", latinOnly)).toEqual(["مُحَبَّتُوں"]);
+    expect(captionFallbackRuns("Anton مُحَبَّت 2026 नमस्ते", latinOnly)).toEqual(["مُحَبَّت", "नमस्ते"]);
+  });
+
+  test("takes the highest and deepest ink among the runs, and none for Latin-only text", () => {
+    const heights: Record<string, { topEm: number; bottomEm: number }> = {
+      "مُحَبَّت": { topEm: 1.4, bottomEm: 0.2 },
+      "नमस्ते": { topEm: 0.9, bottomEm: 0.6 },
+    };
+    const measure = (run: string) => heights[run]!;
+    expect(captionFallbackInkEm("Anton مُحَبَّت x नमस्ते", latinOnly, measure)).toEqual({ topEm: 1.4, bottomEm: 0.6 });
+    expect(captionFallbackInkEm("Anton", latinOnly, measure)).toBe(NO_CAPTION_INK);
+  });
+});
+
+describe("which script the requested face draws", () => {
+  test("Latin, digits and punctuation always; other scripts only where the face covers them", () => {
+    expect(captionFaceDraws("é")).toBe(true);
+    expect(captionFaceDraws("2026")).toBe(true);
+    expect(captionFaceDraws("!")).toBe(true);
+    expect(captionFaceDraws("م")).toBe(false);
+    expect(captionFaceDraws("مُ")).toBe(false);
+    expect(captionFaceDraws("क्ष")).toBe(false);
+    expect(captionFaceDraws("Ж")).toBe(false);
+    expect(captionFaceDraws("Ж", ["Cyrillic"])).toBe(true);
+    expect(captionFaceDraws("Ω", ["Cyrillic"])).toBe(false);
+    expect(captionFaceDraws("Ω", ["Cyrillic", "Greek"])).toBe(true);
+  });
+
+  test("the own-script table is what the catalog's font files cover", () => {
+    // fontkit lives with the worker; ask it from there so the web graph stays free of it.
+    const script = `
+      import { captionFontFilePath, fontFileCovers } from "@narriflow/caption-fonts";
+      import { CAPTION_FONT_FACES } from "@narriflow/validators";
+      const probes = { Cyrillic: "Жщцуф", Greek: "ΩαβγΣ" };
+      console.log(JSON.stringify(Object.fromEntries(CAPTION_FONT_FACES.map((face) => [face.name,
+        Object.keys(probes).filter((script) => fontFileCovers(captionFontFilePath(face.file), probes[script])).sort()]))));`;
+    const run = Bun.spawnSync([process.execPath, "-e", script], { cwd: new URL("../../worker/", import.meta.url).pathname });
+    expect(run.exitCode).toBe(0);
+    const covered = JSON.parse(run.stdout.toString()) as Record<string, string[]>;
+    for (const face of CAPTION_FONT_FACES) {
+      expect([...(CAPTION_FACE_OWN_SCRIPTS[face.name] ?? [])].sort()).toEqual(covered[face.name]!);
+    }
   });
 });

@@ -109,6 +109,22 @@ describe("caption cues in other languages", () => {
     expect(render({ words: [{ word: "Hello", isActive: true }], language: null })).not.toContain("lang=");
   });
 
+  test("the cue's direction is the first strong character of the whole line, as the burn-in scans it", () => {
+    const lineDir = (words: string[], language: string | null) =>
+      /<div lang="[^"]*" dir="(ltr|rtl)"|<div dir="(ltr|rtl)"/.exec(render({ words: words.map((word) => ({ word, isActive: false })), language }))!
+        .slice(1)
+        .find(Boolean);
+    // A number or mark ahead of the text has no direction of its own: the Arabic after it leads an English cue...
+    expect(lineDir(["2026", "مرحبا"], "en")).toBe("rtl");
+    expect(lineDir(["—", "2026", "مرحبا"], "en")).toBe("rtl");
+    // ...and the Latin after a number leads an Arabic one.
+    expect(lineDir(["2026", "OpenAI", "نظام"], "ar")).toBe("ltr");
+    // A line with no strong character anywhere takes the language's direction.
+    expect(lineDir(["2026", "!?"], "ar")).toBe("rtl");
+    expect(lineDir(["...", "—"], "en")).toBe("ltr");
+    expect(lineDir(["2026"], null)).toBe("ltr");
+  });
+
   test("Arabic words keep their numbers and Latin names in their own direction", () => {
     const html = render({ words: [{ word: "عام", isActive: false }, { word: "2026", isActive: true }, { word: "OpenAI", isActive: false }], language: "ar" });
     expect(html.match(/<span dir="rtl"/g)?.length).toBe(2);
