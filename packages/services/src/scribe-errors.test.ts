@@ -51,6 +51,10 @@ describe("scribeCallbackFailure (webhook_error)", () => {
     ["Transcript not found", "elevenlabs_auth_failed"],
     ["You have exceeded your character quota", "elevenlabs_quota_exhausted"],
     ["Insufficient credits to run this request", "elevenlabs_quota_exhausted"],
+    ["The language 'xx' is not supported", "elevenlabs_invalid_language"],
+    ["Invalid language code", "elevenlabs_invalid_language"],
+    ["The file has no audio stream: no audio", "elevenlabs_invalid_media"],
+    ["Corrupt file", "elevenlabs_invalid_media"],
   ])("%j is permanent: %s", (message, code) => {
     const failure = scribeCallbackFailure(message);
     expect(failure.code).toBe(code);
@@ -58,11 +62,13 @@ describe("scribeCallbackFailure (webhook_error)", () => {
   });
 
   test.each([
-    "Failed to fetch the file from the remote URL: connection timed out",
-    "Could not download audio from the source URL (404 not found)",
     "Service temporarily unavailable, please try again",
     "Too many concurrent requests",
     "Internal server error",
+    "HTTP 503 Service Unavailable",
+    "Rate limit hit (429)",
+    "The service is overloaded",
+    "Connection reset by peer",
     "Something odd happened",
     "",
     null,
@@ -72,6 +78,42 @@ describe("scribeCallbackFailure (webhook_error)", () => {
     const failure = scribeCallbackFailure(message);
     expect(failure.code).toBe("elevenlabs_transcription_failed");
     expect(failure.disposition).toBe("retryable");
+  });
+
+  test.each([
+    "Could not download audio from the source URL (404 not found)",
+    "Failed to download source URL: HTTP 403 Forbidden (signed URL expired)",
+    "Failed to fetch the file from the remote URL",
+    "The signed URL expired before the file could be read",
+    "Unable to read audio from source URL: 404",
+  ])("source-fetch trouble (%j) retries under its own code", (message) => {
+    const failure = scribeCallbackFailure(message);
+    expect(failure.code).toBe("elevenlabs_source_fetch_failed");
+    expect(failure.disposition).toBe("retryable");
+  });
+
+  // Mixed causes: explicit service trouble outranks the permanent-looking word,
+  // and source-fetch trouble outranks the auth/media words (Sol finding 11).
+  test.each([
+    ["Unable to read audio from source URL: connection timed out", "elevenlabs_transcription_failed"],
+    ["Failed to fetch the file from the remote URL: connection timed out", "elevenlabs_transcription_failed"],
+    ["Language detection failed: internal server error, please try again", "elevenlabs_transcription_failed"],
+    ["Language detection temporarily unavailable", "elevenlabs_transcription_failed"],
+    ["Invalid API key lookup failed: 503 service unavailable", "elevenlabs_transcription_failed"],
+    ["Quota service is unavailable right now", "elevenlabs_transcription_failed"],
+    ["Invalid audio at source URL: HTTP 403 forbidden", "elevenlabs_source_fetch_failed"],
+    ["Could not download the file: unauthorized (expired signed URL)", "elevenlabs_source_fetch_failed"],
+  ])("mixed cause %j is retryable as %s", (message, code) => {
+    const failure = scribeCallbackFailure(message);
+    expect(failure.code).toBe(code);
+    expect(failure.disposition).toBe("retryable");
+  });
+
+  test.each([
+    ["Language detection failed", "elevenlabs_transcription_failed"],
+    ["File exceeds the maximum of 500 MB", "elevenlabs_invalid_media"],
+  ])("narrow patterns: %j → %s", (message, code) => {
+    expect(scribeCallbackFailure(message).code).toBe(code);
   });
 
   test("the failure carries fixed text, never the provider's prose", () => {

@@ -70,48 +70,53 @@ export function scribeHttpFailure(
   return permanent("elevenlabs_invalid_media");
 }
 
-/** Transport-level or remote-fetch trouble: another attempt (which uploads the
- * audio itself) can succeed. */
-const TRANSIENT_CALLBACK = /(?:fetch|download|retriev|reach|connect)\w*\b.*\b(?:url|source|remote|server|host)|\b(?:remote|url|source)\b.*\b(?:fetch|download|unreachable|unavailable|timed? ?out)|time(?:d)? ?out|temporar|try again|unavailable|too many|rate.?limit|concurren|overload|busy|internal (?:server )?error|\b5\d\d\b/;
+// Ordered classes, first match wins (D13). Explicit service trouble outranks
+// every cause named in the same sentence ("source URL: connection timed out"
+// is a timeout, not bad media), then source-fetch trouble, then the narrow
+// permanent causes; anything unrecognised retries within the attempt budget.
 
-// Ordered: the first class that matches wins. The permanent classes name the
-// cause explicitly; anything unrecognised retries within the attempt budget.
+/** Transport or service trouble that another attempt can outlive. */
+const TRANSIENT_CALLBACK = /time(?:d)? ?out|temporar|try again|unavailable|too many|\b429\b|rate.?limit|concurren|overload|busy|internal (?:server )?error|bad gateway|gateway time|connection (?:was )?(?:reset|refused|closed)|\b(?:http|status|code|error)\W{0,3}5\d\d\b|\b5\d\d (?:internal|server|service)/;
+
+/** Scribe could not fetch the source URL we handed it. The next attempt uploads
+ * the extracted audio instead, so this is retryable under its own code. */
+const SOURCE_FETCH_CALLBACK = /(?:download|fetch|retriev|reach)\w*\b.*\b(?:url|source|remote|host)|\b(?:source|signed|presigned|remote|expired) (?:url|file|server|host)|\burl\b.*\b(?:expired|forbidden|not found|unreachable|40[34])\b/;
+
 const PERMANENT_CALLBACK: readonly (readonly [RegExp, string])[] = [
-  [/quota|insufficient (?:credits?|balance)|out of credits|billing|payment/, "elevenlabs_quota_exhausted"],
+  [/quota|insufficient (?:credits?|balance)|out of credits|credits? (?:exhausted|exceeded)|(?:account|usage|plan|character|subscription) limit|billing|payment/, "elevenlabs_quota_exhausted"],
   [/api[ _-]?key|unauthori[sz]ed|forbidden|permission|authenticat|invalid (?:token|credentials)/, "elevenlabs_auth_failed"],
-  [/\blanguage\b/, "elevenlabs_invalid_language"],
+  [
+    /(?:unsupported|invalid|unknown|unrecogni[sz]ed)\b.{0,30}\blanguage|\blanguage\b.{0,30}(?:not (?:supported|recogni[sz]ed|available)|unsupported|invalid|unknown)/,
+    "elevenlabs_invalid_language",
+  ],
   [
     /invalid (?:media|file|audio|video|format|input)|unsupported (?:media|file|audio|video|format|codec|container)|corrupt|malformed|no audio|contains no (?:audio|speech)|(?:could not|couldn't|cannot|can't|unable to|failed to) (?:be )?(?:decode|decoded|parse|read|open|process) (?:the )?(?:media|file|audio|video|input)|(?:could not|couldn't|cannot|can't|unable to) (?:be )?(?:decode|decoded|decoding)|not a valid (?:media|file|audio|video)|file (?:is )?(?:too (?:large|big|long)|empty)|exceeds? (?:the )?(?:maximum|max|limit)/,
     "elevenlabs_invalid_media",
   ],
 ];
 
-/** `not found` with no sign of a remote fetch: the id is not ours to read. */
+/** `not found` with no sign of trouble on our side: the id is not ours to read. */
 const NOT_FOUND_CALLBACK = /\bnot[ _]found\b|\b404\b/;
+
+const RETRYABLE_COPY = "ElevenLabs could not complete the transcription.";
 
 /**
  * Classifies a `webhook_error` from the fields the envelope carries
  * (`error_message`). Permanent causes name the actionable code; unknown,
- * transient and remote-fetch errors stay retryable. The returned message is
+ * transient and source-fetch errors stay retryable. The returned message is
  * fixed text: raw provider prose never leaves this function.
  */
 export function scribeCallbackFailure(errorMessage: unknown): WorkflowFailure {
   const text = typeof errorMessage === "string" ? errorMessage.toLowerCase() : "";
+  const retryable = (code: string) => new WorkflowFailure(code, "retryable", RETRYABLE_COPY);
+  const permanent = (code: string) =>
+    new WorkflowFailure(code, "permanent", `Scribe reported a permanent error (${code})`);
+
+  if (TRANSIENT_CALLBACK.test(text)) return retryable("elevenlabs_transcription_failed");
+  if (SOURCE_FETCH_CALLBACK.test(text)) return retryable("elevenlabs_source_fetch_failed");
   for (const [pattern, code] of PERMANENT_CALLBACK) {
-    if (pattern.test(text)) {
-      return new WorkflowFailure(code, "permanent", `Scribe reported a permanent error (${code})`);
-    }
+    if (pattern.test(text)) return permanent(code);
   }
-  if (!TRANSIENT_CALLBACK.test(text) && NOT_FOUND_CALLBACK.test(text)) {
-    return new WorkflowFailure(
-      "elevenlabs_auth_failed",
-      "permanent",
-      "Scribe reported a permanent error (elevenlabs_auth_failed)",
-    );
-  }
-  return new WorkflowFailure(
-    "elevenlabs_transcription_failed",
-    "retryable",
-    "ElevenLabs could not complete the transcription.",
-  );
+  if (NOT_FOUND_CALLBACK.test(text)) return permanent("elevenlabs_auth_failed");
+  return retryable("elevenlabs_transcription_failed");
 }
