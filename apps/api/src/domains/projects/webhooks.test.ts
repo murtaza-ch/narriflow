@@ -213,15 +213,19 @@ describe("ElevenLabs error envelope", () => {
   });
 
   test.each([
-    "Failed to fetch the file from the remote URL: connection timed out",
-    "Could not download audio from the source URL (404 not found)",
-    "Service temporarily unavailable, please try again",
-    "Too many concurrent requests",
-    "",
-  ])("a transient or remote-fetch cause (%j) stays retryable", async (error_message) => {
+    ["Service temporarily unavailable, please try again", "elevenlabs_transcription_failed"],
+    ["Too many concurrent requests", "elevenlabs_transcription_failed"],
+    ["Unable to read audio from source URL: connection timed out", "elevenlabs_transcription_failed"],
+    ["Language detection failed: internal server error, please try again", "elevenlabs_transcription_failed"],
+    ["Failed to fetch the file from the remote URL: connection timed out", "elevenlabs_transcription_failed"],
+    ["Could not download audio from the source URL (404 not found)", "elevenlabs_source_fetch_failed"],
+    ["Failed to download source URL: HTTP 403 Forbidden (signed URL expired)", "elevenlabs_source_fetch_failed"],
+    ["", "elevenlabs_transcription_failed"],
+  ])("a transient or source-fetch cause (%j) stays retryable as %s", async (error_message, code) => {
     const t = harness();
     expect((await t.post(errorBody({ error_message }))).status).toBe(200);
-    expect(t.failed[0]!.failure).toMatchObject({ code: "elevenlabs_transcription_failed", retryable: true });
+    expect(t.failed[0]!.failure).toMatchObject({ code, retryable: true });
+    expect(JSON.stringify(t.failed)).not.toContain(error_message || "\u0000");
   });
 
   test("a missing error_message stays retryable", async () => {

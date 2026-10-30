@@ -128,6 +128,8 @@ export const USER_ERROR_MESSAGES: Record<string, string> = {
 		"Transcription didn't complete. Please retry — if it keeps failing, contact support.",
 	elevenlabs_transcription_failed:
 		"Transcription didn't complete. Please retry — if it keeps failing, contact support.",
+	elevenlabs_source_fetch_failed:
+		"Transcription didn't complete. Please retry — if it keeps failing, contact support.",
 	elevenlabs_transcription_timeout:
 		"Transcription didn't complete. Please retry — if it keeps failing, contact support.",
 	elevenlabs_submission_unconfirmed:

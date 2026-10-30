@@ -43,6 +43,7 @@ describe("userErrorMessage", () => {
       "elevenlabs_transcript_fetch_failed",
       "elevenlabs_transcription_timeout",
       "elevenlabs_transcription_failed",
+      "elevenlabs_source_fetch_failed",
     ]) {
       expect(hasUserErrorMessage(code)).toBe(true);
       expect(userErrorMessage(code)).not.toMatch(/OpenAI|ElevenLabs|Scribe/i);
