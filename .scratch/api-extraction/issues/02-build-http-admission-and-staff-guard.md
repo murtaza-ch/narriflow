@@ -4,7 +4,7 @@
 
 **Blocked by:** [01 - Rewrite backend auth and Clerk delivery](01-rewrite-backend-auth-and-clerk-delivery.md)
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Suggested implementer:** Claude. The other pairing side reviews and returns findings to this owner.
 
@@ -117,3 +117,5 @@ Claimed and implemented by Claude (Sonnet 5.5), 2026-10-29. Paired review not ru
 - `bun apps/api/scripts/run-authenticated-request-policy-db-tests.ts` via `.scratch/api-extraction/db-gate.sh` (local Postgres): 4 pass, 0 skipped.
 - `bunx biome check` on apps/api, packages/validators/src/api, the 11 receipt-command modules, operation-receipt(.test).ts: clean. `bun run typecheck` clean in apps/api, packages/services, packages/validators.
 - `.scratch/api-extraction/db-gate.sh bun run test:integration-api:db`: all services suites pass (including `operation-receipt.db.test.ts`); fails only at the transitional web suite above.
+
+- Orchestrator 2026-10-30: closed. Implementation committed and deployed from GitHub `dev`; review findings resolved (review-*.md); live verification recorded in cutover-log.md and the browser-verification reports.

@@ -4,7 +4,7 @@
 
 **Blocked by:** [04 - Wire API runtime and partition the catch-all](04-wire-api-runtime-and-partition-the-catch-all.md), [11 - Move clip and campaign controls](11-move-clip-and-campaign-controls.md), [07 - Move billing API and convert billing UI](07-move-billing-api-and-convert-billing-ui.md)
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Suggested implementer:** Claude. The other pairing side reviews and returns findings to this owner.
 
@@ -230,3 +230,5 @@ Claimed and implemented by Claude (Sonnet 5.5), 2026-10-29. Paired review not ru
 - Typecheck (apps/api, packages/api-client, packages/services, packages/validators, apps/web via `tsc -p`): no error in any file of this ticket; remaining errors belong to others (rest/routes.ts, studio-shell.tsx, mcp pages, lib/authenticated-request-*).
 - `bunx biome check` on all my paths: clean.
 - NOT done: signed-in run against Next + API (list filters/cursor, grid preview playback from `previewUrl`, Download navigation, Retry, delivery page for ready/rendering/failed/foreign export, timeline ZIP/subtitle downloads once 29 adopts the helpers). Origin pair for ticket 32: web `http://localhost:3000` / API local `apps/api`.
+
+- Orchestrator 2026-10-30: closed. Implementation committed and deployed from GitHub `dev`; review findings resolved (review-*.md); live verification recorded in cutover-log.md and the browser-verification reports.

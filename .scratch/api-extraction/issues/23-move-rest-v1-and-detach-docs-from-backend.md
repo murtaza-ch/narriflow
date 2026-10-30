@@ -4,7 +4,7 @@
 
 **Blocked by:** [04 - Wire API runtime and partition the catch-all](04-wire-api-runtime-and-partition-the-catch-all.md)
 
-**Status:** blocked
+**Status:** done
 
 **Suggested implementer:** Sol. The other pairing side reviews and returns findings to this owner.
 
@@ -525,3 +525,5 @@ Requests remain exactly as listed above: 31 updates the integration DB runner/pa
 - All DB commands used `db-gate.sh` against local disposable PostgreSQL only. Policy gate 4 pass; review replay gate 6 pass; moved REST/MCP parity gate 7 pass. The top-level integration gate passed 148 service tests then failed solely on its deleted web REST suite path. Ticket 31 must replace `apps/web/lib/rest-api/events.db.test.ts` with `apps/api/src/domains/rest/events.db.test.ts` in `packages/services/scripts/run-integration-api-db-tests.ts` and rerun the command. No unowned runner edited.
 - This review pass fixes REST fallthrough, OpenAPI-suffix auth, malformed-operation validation and vendor JSON. Zapier/Make require an explicit API origin with no default; saved incomplete Make connections fail against the documented `https://configure-api-origin.invalid` placeholder. Ticket 31/32 must assign the public hostname and reconnect old web-origin connections. M4 docs-page hard-coding remains with 31.
 - Status remains blocked only on the previously outstanding required web build and the central integration runner correction/integrated cutover checks. This scoped review work and its requested typechecks/tests are complete. No web source/build touched in this pass.
+
+- Orchestrator 2026-10-30: closed. Implementation committed and deployed from GitHub `dev`; review findings resolved (review-*.md); live verification recorded in cutover-log.md and the browser-verification reports.

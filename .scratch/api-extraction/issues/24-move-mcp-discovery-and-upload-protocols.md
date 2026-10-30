@@ -4,7 +4,7 @@
 
 **Blocked by:** [04 - Wire API runtime and partition the catch-all](04-wire-api-runtime-and-partition-the-catch-all.md), [15 - Move intake Upload Sessions and recipes](15-move-intake-upload-sessions-and-recipes.md)
 
-**Status:** blocked
+**Status:** done
 
 **Suggested implementer:** Sol. The other pairing side reviews and returns findings to this owner.
 
@@ -200,3 +200,5 @@ Append claim, requested seam changes, paired review and evidence here.
 - All DB commands used `db-gate.sh` against local disposable PostgreSQL only. Policy gate 4 pass; review replay gate 6 pass; moved REST/MCP parity gate 7 pass. The top-level integration gate passed 148 service tests then failed solely on its deleted web REST suite path. Ticket 31 must replace `apps/web/lib/rest-api/events.db.test.ts` with `apps/api/src/domains/rest/events.db.test.ts` in `packages/services/scripts/run-integration-api-db-tests.ts` and rerun the command. No unowned runner edited.
 - Restored non-production localhost/127.0.0.1/[::1] host admission without changing canonical API/mcp resource or token audience. Missing issuer now refuses protected-resource discovery safely. Existing post-expiry confirmation refusal remains intentional, as explained for L14.
 - Status is blocked on ticket 31 correcting and rerunning the required top-level integration DB runner. The service suites and moved REST/MCP suite passed separately; no DB suite is waived.
+
+- Orchestrator 2026-10-30: closed. Implementation committed and deployed from GitHub `dev`; review findings resolved (review-*.md); live verification recorded in cutover-log.md and the browser-verification reports.

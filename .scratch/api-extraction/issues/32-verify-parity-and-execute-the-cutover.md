@@ -4,7 +4,7 @@
 
 **Blocked by:** [31 - Clean dependencies and prepare coordinated deployment](31-clean-dependencies-and-prepare-coordinated-deployment.md)
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Suggested implementer:** Claude. The other pairing side reviews and returns findings to this owner.
 
@@ -74,3 +74,5 @@ Browser scenarios and adversarial cases are enumerated in spec.md and the criter
 ## Comments
 
 Append claim, requested seam changes, paired review and evidence here.
+
+- Orchestrator 2026-10-30: closed. Implementation committed and deployed from GitHub `dev`; review findings resolved (review-*.md); live verification recorded in cutover-log.md and the browser-verification reports.

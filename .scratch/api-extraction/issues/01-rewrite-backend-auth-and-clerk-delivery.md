@@ -4,7 +4,7 @@
 
 **Blocked by:** None
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Suggested implementer:** Claude. The other pairing side reviews and returns findings to this owner.
 
@@ -91,3 +91,5 @@ Claimed and implemented by Claude (Sonnet 5.5), 2026-10-29.
 - `bunx biome check packages/auth apps/api packages/email` clean. `packages/auth` and `packages/email` `bun run typecheck` clean; `packages/auth` build clean. `apps/api/.../clerk/*.ts` typechecked with a temporary path-mapped tsconfig (no manifest yet): clean.
 - Web typecheck (transitional, owners above): `app/(app)/_actions/workspace.ts`, `app/invite/[token]/actions.ts`, `app/workspaces/new/actions.ts` (missing `setActiveWorkspaceForActor`); `app/mcp/integrations/[workspaceId]/[...upload]/route.ts` (missing `getCurrentAppUser`); `lib/authenticated-request-policy.server.ts` (missing `getCurrentAppUser`, `getWorkspaceContextForUser`).
 - Paired review: not run by this implementer; requested from the orchestrator.
+
+- Orchestrator 2026-10-30: closed. Implementation committed and deployed from GitHub `dev`; review findings resolved (review-*.md); live verification recorded in cutover-log.md and the browser-verification reports.
