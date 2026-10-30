@@ -19,6 +19,10 @@
       "types": "./src/locale-precedence.ts",
       "default": "./src/locale-precedence.ts"
     },
+    "./bidi-order": {
+      "types": "./src/bidi-order.ts",
+      "default": "./src/bidi-order.ts"
+    },
     "./glyph-coverage": {
       "types": "./src/glyph-coverage.ts",
       "default": "./src/glyph-coverage.ts"

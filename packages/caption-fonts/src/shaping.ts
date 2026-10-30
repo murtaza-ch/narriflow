@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
-import bidiFactory from "bidi-js";
 import * as hb from "harfbuzzjs";
+import { reorderByLevels, resolveBidiLevels } from "./bidi-order";
 import { isWoff2, woff2ToSfnt } from "./woff2";
 
 /**
@@ -30,8 +30,6 @@ import { isWoff2, woff2ToSfnt } from "./woff2";
  * can be placed on what libass really draws (measured: Urdu words 8 to 37 px
  * left of centre at 88 px per em, Latin, Hebrew and plain Arabic exact).
  */
-
-const bidi = bidiFactory();
 
 interface LoadedFont {
   readonly font: hb.Font;
@@ -221,7 +219,7 @@ export function layoutCaptionLine(
     for (const part of word.parts) segments.push({ owner: index, part, extraEm: 0 });
   });
   const text = segments.map((segment) => segment.part.text).join("");
-  const levels = bidi.getEmbeddingLevels(text, direction).levels;
+  const levels = resolveBidiLevels(text, direction);
 
   const runs: VisualRun[] = [];
   let offset = 0;
@@ -260,24 +258,8 @@ export function layoutCaptionLine(
     offset += part.text.length;
   }
 
-  // UAX #9 L2: from the highest level down to the lowest odd level, reverse every maximal sequence at that level or above.
-  const order = runs.map((_, index) => index);
-  const maxLevel = Math.max(0, ...runs.map((run) => run.level));
-  const minOdd = Math.min(Number.POSITIVE_INFINITY, ...runs.map((run) => run.level).filter((level) => level % 2 === 1));
-  for (let level = maxLevel; level >= minOdd; level--) {
-    let index = 0;
-    while (index < order.length) {
-      if (runs[order[index]!]!.level < level) {
-        index++;
-        continue;
-      }
-      let last = index;
-      while (last + 1 < order.length && runs[order[last + 1]!]!.level >= level) last++;
-      const reversed = order.slice(index, last + 1).reverse();
-      order.splice(index, reversed.length, ...reversed);
-      index = last + 1;
-    }
-  }
+  // UAX #9 L2 (bidi-order.ts, the same steps the Studio orders a cue's words by).
+  const order = reorderByLevels(runs.map((run) => run.level));
 
   const boxes = words.map(() => ({ left: Number.POSITIVE_INFINITY, right: Number.NEGATIVE_INFINITY, inkTop: 0, inkBottom: 0 }));
   let cursor = 0;
