@@ -176,13 +176,11 @@ export function captionFallbackInkEm(
 }
 
 const MEASURE_PX = 100;
-let measureContext: CanvasRenderingContext2D | null | undefined;
+let measureContext: CanvasRenderingContext2D | null = null;
 const inkCache = new Map<string, CaptionInkEm>();
 
 function canvasContext(): CanvasRenderingContext2D | null {
-  if (measureContext === undefined) {
-    measureContext = typeof document === "undefined" ? null : document.createElement("canvas").getContext("2d");
-  }
+  if (!measureContext && typeof document !== "undefined") measureContext = document.createElement("canvas").getContext("2d");
   return measureContext;
 }
 
@@ -218,11 +216,33 @@ export function captionFaceDraws(cluster: string, ownScripts: readonly CaptionOw
 }
 
 /**
- * Measures, in the browser, the ink of a word's fallback-drawn runs: what the
- * worker reads from the shaped glyphs of the faces other than the requested
- * one. `requestedFamily` is the face's resolved CSS family; until it has
- * loaded the stack cannot be measured, so the catalog metrics stand and the
- * caller measures again when fonts arrive.
+ * True when `cluster` adds no ink to the extent: the requested face draws it
+ * and it is not shaping-sensitive. Everything else counts, as the burn-in's
+ * `inked` parts do: text a fallback face draws, and Arabic, Indic and the like
+ * in any face, an uploaded one included. A brand font's coverage is not known
+ * here, so its other non-Latin clusters count as fallback text.
+ */
+function addsNoInk(cluster: string, ownScripts: readonly CaptionOwnScript[]): boolean {
+  return captionFaceDraws(cluster, ownScripts) && captionShapingSensitivity(cluster) !== "sensitive";
+}
+
+/**
+ * Whether every face of the stack that may draw `run` has loaded. A lazy script
+ * face (Noto Nastaliq Urdu) starts out missing, and Canvas then measures the
+ * glyphs in whatever stands in for it; such a reading must not be kept.
+ */
+function stackLoaded(prefix: string, families: readonly string[], run: string): boolean {
+  return families.every((family) => document.fonts.check(`${prefix} ${family}`, run));
+}
+
+/**
+ * Measures, in the browser, the ink the burn-in counts for a word: the shaped
+ * glyphs of the faces other than the requested one, and of shaping-sensitive
+ * scripts in any face. `requestedFamily` is the face's resolved CSS family;
+ * until it has loaded the stack cannot be measured, so the catalog metrics
+ * stand. A run is cached only once every face of the stack that covers it has
+ * loaded; before that it is measured again on each call, and the caller calls
+ * again when fonts arrive (`loadingdone`).
  */
 export function measureCaptionFallbackInkEm(
   text: string,
@@ -239,20 +259,22 @@ export function measureCaptionFallbackInkEm(
   const prefix = `${face.style} ${face.weight} ${MEASURE_PX}px`;
   if (!document.fonts?.check(`${prefix} ${face.requestedFamily}`)) return NO_CAPTION_INK;
   const stack = captionFontStack(face.requestedFamily, face.language);
+  const families = [face.requestedFamily, ...captionFallbackFamilies(face.language).map((family) => `"${family}"`)];
   const measureRun = (run: string): CaptionInkEm => {
     const key = `${prefix} ${stack}\0${run}`;
-    let ink = inkCache.get(key);
-    if (!ink) {
-      context.font = `${prefix} ${stack}`;
-      const metrics = context.measureText(run);
-      ink = {
-        topEm: Math.max(0, metrics.actualBoundingBoxAscent) / MEASURE_PX,
-        bottomEm: Math.max(0, metrics.actualBoundingBoxDescent) / MEASURE_PX,
-      };
+    const cached = inkCache.get(key);
+    if (cached) return cached;
+    context.font = `${prefix} ${stack}`;
+    const metrics = context.measureText(run);
+    const ink = {
+      topEm: Math.max(0, metrics.actualBoundingBoxAscent) / MEASURE_PX,
+      bottomEm: Math.max(0, metrics.actualBoundingBoxDescent) / MEASURE_PX,
+    };
+    if (stackLoaded(prefix, families, run)) {
       if (inkCache.size > 5000) inkCache.clear();
       inkCache.set(key, ink);
     }
     return ink;
   };
-  return captionFallbackInkEm(text, (cluster) => captionFaceDraws(cluster, face.ownScripts), measureRun);
+  return captionFallbackInkEm(text, (cluster) => addsNoInk(cluster, face.ownScripts ?? []), measureRun);
 }

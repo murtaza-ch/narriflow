@@ -429,6 +429,7 @@ export function CaptionCue({
       const requestedFamily = requestedFamilyName
         ? `"${requestedFamilyName}"`
         : getComputedStyle(line).getPropertyValue(captionFontVariable(preset.fontName)).trim();
+      // A brand font's coverage is unknown: only its Latin counts as drawn without ink (complex scripts count in any face).
       const ownScripts = customFont ? [] : (CAPTION_FACE_OWN_SCRIPTS[preset.fontName] ?? []);
       const next = measureCueInk(line, { key: inkKey, display, emPx, face, requestedFamily, language, ownScripts });
       setMeasured((previous) => (sameMeasure(previous, next) ? previous : next));
