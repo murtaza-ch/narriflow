@@ -304,10 +304,13 @@ function averageRateMatches(
 		(actual.numerator * expected.denominator) /
 		(actual.denominator * expected.numerator);
 	// The omitted final frame can only make the reported average higher, by at
-	// most N/(N-1); a lower average is a real clock error.
+	// most N/(N-1); a lower average is a real clock error. The slack covers the
+	// container rounding the pts span to its timebase (a 1/1000000 timebase
+	// overshoots by ~4e-8 on a 16 s clip); real clock errors are >= 1e-3.
 	const ceiling =
 		frameCount !== null && frameCount > 1 ? frameCount / (frameCount - 1) : 1;
-	return ratio >= 1 - 1e-9 && ratio <= ceiling + 1e-9;
+	const slack = 1e-6;
+	return ratio >= 1 - slack && ratio <= ceiling * (1 + slack);
 }
 
 function healthOrControl(error: unknown, signal: AbortSignal): void {

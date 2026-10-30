@@ -279,6 +279,18 @@ describe("render output admission", () => {
 		await validate(injected(facts), expected);
 	});
 
+	test("accepts the timebase-rounded average rate seen in production (482 frames, 1/1000000 timebase)", async () => {
+		const facts = structuredClone(media);
+		const video = facts.videos[0]!;
+		const frames = video.frameCount!;
+		// Production: 241000000/8024683 for 482 frames at 30000/1001 overshoots
+		// N/(N-1) by 4.2e-8 because the pts span is rounded to microseconds.
+		const exact = (expected.frameRate.numerator * frames) / (expected.frameRate.denominator * (frames - 1));
+		const rounded = exact * (1 + 4.2e-8);
+		video.avgFrameRate = { numerator: Math.round(rounded * 1_000_000), denominator: 1_000_000 };
+		await validate(injected(facts), expected);
+	});
+
 	test("one frame tolerance passes exactly one frame, rejects two and 20.38/30s", async () => {
 		await validate(processes, { ...expected, durationSec: 1 + 1 / 30 });
 		await rejectsWith(processes, "output_video_duration_mismatch", {
