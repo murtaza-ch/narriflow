@@ -1,0 +1,409 @@
+{
+ "language_code": "jpn",
+ "language_probability": 1,
+ "text": "カと名付けられました。北マリアナ諸島の危機管理室 EMOによると、全国的に被害を報告されていないとのこと",
+ "words": [
+  {
+   "text": "カ",
+   "start": 0.0,
+   "end": 0.14,
+   "type": "word",
+   "speaker_id": "speaker_0",
+   "logprob": -0.0
+  },
+  {
+   "text": "と",
+   "start": 0.14,
+   "end": 0.28,
+   "type": "word",
+   "speaker_id": "speaker_0",
+   "logprob": -0.0002
+  },
+  {
+   "text": "名",
+   "start": 0.28,
+   "end": 0.36,
+   "type": "word",
+   "speaker_id": "speaker_0",
+   "logprob": -0.03
+  },
+  {
+   "text": "付",
+   "start": 0.36,
+   "end": 0.5,
+   "type": "word",
+   "speaker_id": "speaker_0",
+   "logprob": -0.0004
+  },
+  {
+   "text": "け",
+   "start": 0.5,
+   "end": 0.56,
+   "type": "word",
+   "speaker_id": "speaker_0",
+   "logprob": -0.0004
+  },
+  {
+   "text": "ら",
+   "start": 0.6,
+   "end": 0.66,
+   "type": "word",
+   "speaker_id": "speaker_0",
+   "logprob": -0.0043
+  },
+  {
+   "text": "れ",
+   "start": 0.66,
+   "end": 0.78,
+   "type": "word",
+   "speaker_id": "speaker_0",
+   "logprob": -0.0043
+  },
+  {
+   "text": "ま",
+   "start": 0.78,
+   "end": 0.94,
+   "type": "word",
+   "speaker_id": "speaker_0",
+   "logprob": -0.0043
+  },
+  {
+   "text": "し",
+   "start": 0.94,
+   "end": 1.08,
+   "type": "word",
+   "speaker_id": "speaker_0",
+   "logprob": -0.0043
+  },
+  {
+   "text": "た",
+   "start": 1.08,
+   "end": 1.22,
+   "type": "word",
+   "speaker_id": "speaker_0",
+   "logprob": -0.0043
+  },
+  {
+   "text": "。",
+   "start": 1.22,
+   "end": 1.22,
+   "type": "word",
+   "speaker_id": "speaker_0",
+   "logprob": -0.42
+  },
+  {
+   "text": "北",
+   "start": 5.36,
+   "end": 5.62,
+   "type": "word",
+   "speaker_id": "speaker_0",
+   "logprob": -0.0007
+  },
+  {
+   "text": "マ",
+   "start": 5.62,
+   "end": 5.72,
+   "type": "word",
+   "speaker_id": "speaker_0",
+   "logprob": -0.0
+  },
+  {
+   "text": "リ",
+   "start": 5.72,
+   "end": 5.84,
+   "type": "word",
+   "speaker_id": "speaker_0",
+   "logprob": -0.0004
+  },
+  {
+   "text": "ア",
+   "start": 5.84,
+   "end": 5.96,
+   "type": "word",
+   "speaker_id": "speaker_0",
+   "logprob": -0.0004
+  },
+  {
+   "text": "ナ",
+   "start": 5.96,
+   "end": 6.04,
+   "type": "word",
+   "speaker_id": "speaker_0",
+   "logprob": -0.0
+  },
+  {
+   "text": "諸",
+   "start": 6.14,
+   "end": 6.3,
+   "type": "word",
+   "speaker_id": "speaker_0",
+   "logprob": -0.0007
+  },
+  {
+   "text": "島",
+   "start": 6.3,
+   "end": 6.48,
+   "type": "word",
+   "speaker_id": "speaker_0",
+   "logprob": -0.0001
+  },
+  {
+   "text": "の",
+   "start": 6.52,
+   "end": 6.6,
+   "type": "word",
+   "speaker_id": "speaker_0",
+   "logprob": -0.0001
+  },
+  {
+   "text": "危",
+   "start": 6.6,
+   "end": 6.72,
+   "type": "word",
+   "speaker_id": "speaker_0",
+   "logprob": -0.0006
+  },
+  {
+   "text": "機",
+   "start": 6.72,
+   "end": 6.92,
+   "type": "word",
+   "speaker_id": "speaker_0",
+   "logprob": -0.0006
+  },
+  {
+   "text": "管",
+   "start": 6.92,
+   "end": 7.1,
+   "type": "word",
+   "speaker_id": "speaker_0",
+   "logprob": -0.0
+  },
+  {
+   "text": "理",
+   "start": 7.1,
+   "end": 7.2,
+   "type": "word",
+   "speaker_id": "speaker_0",
+   "logprob": -0.0
+  },
+  {
+   "text": "室",
+   "start": 7.2,
+   "end": 7.4,
+   "type": "word",
+   "speaker_id": "speaker_0",
+   "logprob": -0.2001
+  },
+  {
+   "text": " ",
+   "start": 7.4,
+   "end": 7.76,
+   "type": "spacing",
+   "speaker_id": "speaker_0",
+   "logprob": -0.0001
+  },
+  {
+   "text": "EMO",
+   "start": 7.76,
+   "end": 8.5,
+   "type": "word",
+   "speaker_id": "speaker_0",
+   "logprob": -0.7601
+  },
+  {
+   "text": "に",
+   "start": 8.5,
+   "end": 8.56,
+   "type": "word",
+   "speaker_id": "speaker_0",
+   "logprob": -0.0
+  },
+  {
+   "text": "よ",
+   "start": 8.56,
+   "end": 8.7,
+   "type": "word",
+   "speaker_id": "speaker_0",
+   "logprob": -0.0
+  },
+  {
+   "text": "る",
+   "start": 8.7,
+   "end": 8.86,
+   "type": "word",
+   "speaker_id": "speaker_0",
+   "logprob": -0.0
+  },
+  {
+   "text": "と",
+   "start": 8.86,
+   "end": 8.98,
+   "type": "word",
+   "speaker_id": "speaker_0",
+   "logprob": -0.0
+  },
+  {
+   "text": "、",
+   "start": 8.98,
+   "end": 8.98,
+   "type": "word",
+   "speaker_id": "speaker_0",
+   "logprob": -0.0049
+  },
+  {
+   "text": "全",
+   "start": 9.56,
+   "end": 9.76,
+   "type": "word",
+   "speaker_id": "speaker_0",
+   "logprob": -0.0
+  },
+  {
+   "text": "国",
+   "start": 9.76,
+   "end": 9.9,
+   "type": "word",
+   "speaker_id": "speaker_0",
+   "logprob": -0.0
+  },
+  {
+   "text": "的",
+   "start": 9.9,
+   "end": 10.14,
+   "type": "word",
+   "speaker_id": "speaker_0",
+   "logprob": -0.0
+  },
+  {
+   "text": "に",
+   "start": 10.16,
+   "end": 10.26,
+   "type": "word",
+   "speaker_id": "speaker_0",
+   "logprob": -0.0
+  },
+  {
+   "text": "被",
+   "start": 10.26,
+   "end": 10.32,
+   "type": "word",
+   "speaker_id": "speaker_0",
+   "logprob": -0.2812
+  },
+  {
+   "text": "害",
+   "start": 10.42,
+   "end": 10.62,
+   "type": "word",
+   "speaker_id": "speaker_0",
+   "logprob": -0.2812
+  },
+  {
+   "text": "を",
+   "start": 10.62,
+   "end": 10.8,
+   "type": "word",
+   "speaker_id": "speaker_0",
+   "logprob": -0.0
+  },
+  {
+   "text": "報",
+   "start": 10.8,
+   "end": 10.94,
+   "type": "word",
+   "speaker_id": "speaker_0",
+   "logprob": -0.006
+  },
+  {
+   "text": "告",
+   "start": 10.94,
+   "end": 11.16,
+   "type": "word",
+   "speaker_id": "speaker_0",
+   "logprob": -0.006
+  },
+  {
+   "text": "さ",
+   "start": 11.16,
+   "end": 11.24,
+   "type": "word",
+   "speaker_id": "speaker_0",
+   "logprob": -0.0002
+  },
+  {
+   "text": "れ",
+   "start": 11.24,
+   "end": 11.34,
+   "type": "word",
+   "speaker_id": "speaker_0",
+   "logprob": -0.0002
+  },
+  {
+   "text": "て",
+   "start": 11.34,
+   "end": 11.44,
+   "type": "word",
+   "speaker_id": "speaker_0",
+   "logprob": -0.0002
+  },
+  {
+   "text": "い",
+   "start": 11.44,
+   "end": 11.6,
+   "type": "word",
+   "speaker_id": "speaker_0",
+   "logprob": -0.0002
+  },
+  {
+   "text": "な",
+   "start": 11.6,
+   "end": 11.66,
+   "type": "word",
+   "speaker_id": "speaker_0",
+   "logprob": -0.0002
+  },
+  {
+   "text": "い",
+   "start": 11.66,
+   "end": 11.76,
+   "type": "word",
+   "speaker_id": "speaker_0",
+   "logprob": -0.0002
+  },
+  {
+   "text": "と",
+   "start": 11.76,
+   "end": 11.88,
+   "type": "word",
+   "speaker_id": "speaker_0",
+   "logprob": -0.0
+  },
+  {
+   "text": "の",
+   "start": 11.88,
+   "end": 11.98,
+   "type": "word",
+   "speaker_id": "speaker_0",
+   "logprob": -0.0
+  },
+  {
+   "text": "こ",
+   "start": 11.98,
+   "end": 12.06,
+   "type": "word",
+   "speaker_id": "speaker_0",
+   "logprob": -0.0
+  },
+  {
+   "text": "と",
+   "start": 12.06,
+   "end": 12.26,
+   "type": "word",
+   "speaker_id": "speaker_0",
+   "logprob": -0.0
+  }
+ ],
+ "transcription_id": "uVKniucpZulgpfB9zAIg",
+ "audio_duration_secs": 269.96
+}

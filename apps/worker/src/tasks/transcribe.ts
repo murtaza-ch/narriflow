@@ -3,9 +3,8 @@ import { extname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import {
   downloadObjectToFile,
-  normalizeAssemblyAiTranscript,
+  finalizeScribeTranscript,
   presignDownloadUrl,
-  putJson,
   getWorkflowRunLifecycle,
   projectService,
   rethrowWorkflowAttemptLost,
@@ -139,14 +138,6 @@ async function fetchWithRetry(
     }
     await sleep(jitter(baseDelayMs * 2 ** attempt));
   }
-}
-
-function sanitizeFileName(name: string) {
-  return name
-    .replace(/[^a-zA-Z0-9._-]/g, "-")
-    .replace(/-+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 120);
 }
 
 function log(
@@ -708,53 +699,18 @@ async function settleTranscriptRunFailure(
   });
 }
 
+// Interim until the Scribe adapter (ticket 06) replaces this file.
 async function finalizeCompletedTranscript(
   run: { id: string; projectId: string; providerJobId: string },
   attempt: WorkflowAttemptRef,
-  assemblyAiPayload: Record<string, unknown>,
+  providerPayload: Record<string, unknown>,
 ) {
-  const normalized = normalizeAssemblyAiTranscript(assemblyAiPayload, {
-    allowEmpty: await projectService.runAllowsEmptyTranscript(run.id),
+  await finalizeScribeTranscript({
+    key: { workflowRunId: run.id, attemptId: attempt.attemptId },
+    payload: providerPayload,
+    providerIds: { transcriptionId: run.providerJobId },
   });
-  const rawStorageKey = `projects/${run.projectId}/transcripts/${run.id}-assemblyai-${sanitizeFileName(
-    normalized.providerModel ?? "unknown-model",
-  )}.json`;
-
-  await putJson({
-    key: rawStorageKey,
-    value: assemblyAiPayload,
-    metadata: {
-      project_id: run.projectId,
-      workflow_run_id: run.id,
-      provider: "assemblyai",
-      ...(normalized.providerModel ? { model: normalized.providerModel } : {}),
-      ...(normalized.providerJobId
-        ? { provider_job_id: normalized.providerJobId }
-        : {}),
-    },
-  });
-
-  await getWorkflowRunLifecycle().completeTranscript(attempt, {
-      provider: normalized.provider,
-      providerModel: normalized.providerModel,
-      providerJobId: normalized.providerJobId,
-      languageCode: normalized.languageCode,
-      languageConfidence: normalized.languageConfidence,
-      text: normalized.text,
-      utterances: normalized.utterances,
-      speakerCount: normalized.speakerCount,
-      durationSeconds: normalized.durationSeconds,
-      rawStorageKey,
-    });
-
-  log("info", "transcription_run_completed", {
-    workflowRunId: run.id,
-    projectId: run.projectId,
-    utteranceCount: normalized.utterances.length,
-    providerModel: normalized.providerModel,
-    languageCode: normalized.languageCode,
-    languageConfidence: normalized.languageConfidence,
-  });
+  log("info", "transcription_run_completed", { workflowRunId: run.id, projectId: run.projectId });
 }
 
 /**
