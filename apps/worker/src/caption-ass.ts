@@ -6,6 +6,7 @@ import {
 	CaptionShapingError,
 	captionGraphemes,
 	fontFileCovers,
+	isShapingSensitiveText,
 	layoutCaptionLine,
 	resolveCaptionEmoji,
 	type CaptionLineLayout,
@@ -515,7 +516,7 @@ function cueGeometry(
 		? CAPTION_CUE_TILTS_DEG[cue.cueIndex % CAPTION_CUE_TILTS_DEG.length]!
 		: 0;
 	const lineWords: CaptionLineWord[] = plans.map((plan) => ({
-		parts: plan.parts.map((part) => ({ text: part.text, fontPath: part.face.path, spaced: part.spaced, inked: part.face !== requested })),
+		parts: plan.parts.map((part) => ({ text: part.text, fontPath: part.face.path, spaced: part.spaced, inked: part.face !== requested || isShapingSensitiveText(part.text) })),
 		gap: plan.space ? { text: " ", fontPath: requested.path, spaced: plan.gapSpaced, inked: false } : null,
 		gapExtraEm: plan.space && preset.highlightBoxColor ? CAPTION_PILL.extraWordSpacingEm : 0,
 	}));
@@ -984,10 +985,12 @@ function applyFlicker(
 
 /**
  * Vertical extent of a pill or plate: padding above the cap height and below
- * the baseline, grown to the ink of fallback faces whose glyphs stand taller or
+ * the baseline, grown to the shaped ink of text whose glyphs stand taller or
  * hang lower (Nastaliq swashes, Indic and Thai marks): a pill by its own
- * word's ink, a plate by the whole line's. Latin lines have no fallback ink and
- * keep the catalog metrics exactly.
+ * word's ink, a plate by the whole line's. Ink counts for text a fallback face
+ * draws and for shaping-sensitive scripts whichever face draws them (an
+ * uploaded font covering Arabic included); the Studio follows the same rule.
+ * Latin lines have no such ink and keep the catalog metrics exactly.
  */
 function decorationSpan(face: CaptionFontFace, geometry: CueGeometry, pad: { padTopEm: number; padBottomEm: number }, ink: { inkTopEm: number; inkBottomEm: number }) {
 	const px = geometry.px;
