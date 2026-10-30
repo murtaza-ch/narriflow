@@ -47,7 +47,8 @@ describe("normalizeElevenLabsTranscript", () => {
     expect(normalized.utterances.map((u) => u.index)).toEqual(normalized.utterances.map((_, i) => i));
     for (const utterance of normalized.utterances) {
       expect(utterance.speakerLabel).toBe(`Speaker ${utterance.speaker! + 1}`);
-      expect(utterance.confidence).toBeNull();
+      expect(utterance.confidence).toBeGreaterThan(0);
+      expect(utterance.confidence).toBeLessThanOrEqual(1);
       expect(utterance.text).toBe(utterance.words.map((w) => w.word).join(" "));
       expect(utterance.startSec).toBe(utterance.words[0]!.startSec);
     }
@@ -82,11 +83,11 @@ describe("normalizeElevenLabsTranscript", () => {
     expect(turns.some((speaker, i) => i > 0 && speaker !== turns[i - 1])).toBe(true);
   });
 
-  test("keeps provider seconds as they are and leaves confidence null", () => {
+  test("keeps provider seconds as they are", () => {
     const normalized = normalizeElevenLabsTranscript(payloadOf([word("Hello", 1.14, 2.14), space(2.14, 2.28), word("world.", 2.28, 2.7)]), options);
     expect(normalized.utterances[0]!.words).toEqual([
-      { word: "Hello", startSec: 1.14, endSec: 2.14, confidence: null },
-      { word: "world.", startSec: 2.28, endSec: 2.7, confidence: null, spaceBefore: true },
+      { word: "Hello", startSec: 1.14, endSec: 2.14, confidence: 0.99 },
+      { word: "world.", startSec: 2.28, endSec: 2.7, confidence: 0.99, spaceBefore: true },
     ]);
   });
 
@@ -143,10 +144,19 @@ describe("normalizeElevenLabsTranscript", () => {
       options,
     );
     expect(wordsOf(normalized)).toEqual([
-      { word: "Hi", startSec: 0.5, endSec: 0.7, confidence: null },
-      { word: "there.", startSec: 1.1, endSec: 1.4, confidence: null, spaceBefore: true },
+      { word: "Hi", startSec: 0.5, endSec: 0.7, confidence: 0.99 },
+      { word: "there.", startSec: 1.1, endSec: 1.4, confidence: 0.99, spaceBefore: true },
     ]);
     expect(normalized.text).toBe("Hi there.");
+  });
+
+  test("word confidence is the exponent of Scribe's logprob; utterance confidence is the mean", () => {
+    const normalized = normalizeElevenLabsTranscript(
+      payloadOf([{ ...word("Sure.", 0, 0.4), logprob: Math.log(0.5) }, { ...word("Yes.", 0.5, 0.9), logprob: 0 }, { ...word("No.", 1, 1.3), logprob: 0.3 }]),
+      options,
+    );
+    expect(wordsOf(normalized).map((w) => w.confidence)).toEqual([0.5, 1, null]);
+    expect(normalized.utterances.map((u) => u.confidence)).toEqual([0.5, 1, null]);
   });
 
   test("whitespace inside a token spaces the word", () => {

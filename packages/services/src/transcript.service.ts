@@ -18,6 +18,7 @@ interface ScribeToken {
   end?: unknown;
   type?: unknown;
   speaker_id?: unknown;
+  logprob?: unknown;
 }
 
 /** The `speech-to-text` transcript object, as the GET returns it and as the
@@ -151,6 +152,19 @@ function scribeLanguageConfidence(payload: ScribePayload) {
     : null;
 }
 
+/** Scribe's per-word `logprob` is the log of the word's probability, so its
+ * exponent is a genuine 0–1 confidence; anything else is no confidence. */
+function wordConfidence(logprob: unknown): number | null {
+  if (typeof logprob !== "number" || !Number.isFinite(logprob) || logprob > 0) return null;
+  return Math.round(Math.exp(logprob) * 10_000) / 10_000;
+}
+
+function meanConfidence(words: readonly TranscriptWord[]): number | null {
+  const known = words.flatMap((word) => (word.confidence === null ? [] : [word.confidence]));
+  if (known.length === 0) return null;
+  return Math.round((known.reduce((sum, value) => sum + value, 0) / known.length) * 10_000) / 10_000;
+}
+
 interface ScribeWord {
   speaker: number;
   word: TranscriptWord;
@@ -200,7 +214,7 @@ function scribeWords(tokens: unknown[]): ScribeWord[] {
         word: text,
         startSec: start,
         endSec: end,
-        confidence: null,
+        confidence: wordConfidence(token.logprob),
         ...(previous ? { spaceBefore: spaced } : {}),
       },
     });
@@ -241,7 +255,7 @@ export function normalizeElevenLabsTranscript(
       startSec: turnWords[0]!.startSec,
       endSec: turnWords.reduce((end, word) => Math.max(end, word.endSec), 0),
       text: joinTranscriptWords(turnWords),
-      confidence: null,
+      confidence: meanConfidence(turnWords),
       words: turnWords,
     });
     run = [];
@@ -252,7 +266,12 @@ export function normalizeElevenLabsTranscript(
   }
   flush();
 
-  const utterances = splitUtterancesIntoSentences(turns);
+  // Sentence splitting copies the turn's fields; each sentence's confidence is
+  // the mean of its own words.
+  const utterances = splitUtterancesIntoSentences(turns).map((utterance) => ({
+    ...utterance,
+    confidence: meanConfidence(utterance.words),
+  }));
   const durationSeconds =
     options.durationSeconds ??
     utterances.reduce((end, utterance) => Math.max(end, utterance.endSec), 0);
