@@ -76,14 +76,17 @@ function createRender(input: {
 	const renderOutput = createRenderOutputFixture();
 	const forbidden = input.detectors === "forbidden";
 	const clipRenderAttempt = createClipRenderAttempt({
+		group: { workflowRunId: "", workSetGeneration: "", groupId: "", token: "", owner: "" },
+		groups: {} as never,
 		run: { id: attempt.workflowRunId, projectId: PROJECT_ID, project: {
 			title: "Evidence reuse", sourceStorageKey: "projects/test/source/input.mp4", sourceDurationSeconds: 20,
 			workspaceId: "workspace",
 		} },
 		config: parseRenderConfig({ WORKER_RENDER_SOURCE_MODE: input.sourceMode ?? "download" }),
 		lifecycle: {
-			beginRenderWorkSet: async () => ({ variantIds: [renderId] }),
-			settleRenderWorkSet: async () => ({ status: "completed", requested: 1, succeeded: 1, failed: 0, superseded: 0, followUpWorkflowRunId: null }),
+			startExecution: async () => {},
+			beginRenderGroup: async () => ({ variantIds: [renderId] }),
+			finishRenderGroup: async () => ({ status: "completed", requested: 1, succeeded: 1, failed: 0, superseded: 0 }),
 		},
 		adapters: {
 			composition: { compileCommand: renderOutput.compileCommand },
@@ -145,7 +148,6 @@ function createRender(input: {
 				failClipRenderVariant: async () => {},
 				completeClipAutoLayoutAnalysis: async (_attempt, _clipId, analysis) => { persisted.push(analysis); return true; },
 			},
-			project: { reportProgress: async () => {} },
 			workspace: { stat: async () => ({ size: 4096, isFile: () => true }) as never, writeFile: async () => {} },
 			resource: { measure: () => ({ rssBytes: 1_024, scope: "worker_only" }) },
 			diagnose: (event) => diagnostics.push(event),

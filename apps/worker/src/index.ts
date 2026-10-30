@@ -17,6 +17,8 @@ import {
 } from "./poll-loop";
 import {
 	billingService,
+	clipService,
+	RenderGroupLifecycle,
 	mediaCleanupWorker,
 	assertUploadProviderLifecyclePrerequisite,
 	getWorkflowRunLifecycle,
@@ -58,6 +60,7 @@ import { processDubbingRun } from "./tasks/dubbing";
 import { processIngestJob } from "./tasks/ingest";
 import { expireExportBundles, processExportBundleRun } from "./tasks/export-bundle";
 import { createClipRenderAttempt } from "./tasks/clip-render-attempt-runtime";
+import { coordinateRenderWorkSet, executeNextRenderGroup } from "./render-group-executor";
 import { parseWorkerRenderConfig } from "./render-config";
 import { processDueSocialPosts } from "./tasks/social-publisher";
 import { parseWorkspaceBillingPollInterval } from "./workspace-billing-config";
@@ -122,8 +125,15 @@ const maxConsecutivePollFailures = Number(
 );
 const renderConfig = parseWorkerRenderConfig();
 const renderResources = renderResourceBudgetFor(renderConfig);
+// Render groups are leased independently of the parent run; a released group
+// waits the shutdown drain before a peer may claim it.
+const renderGroups = new RenderGroupLifecycle({ releaseGraceMs: workerShutdownDrainMs() });
+const renderGroupSettlePollMs = Number(process.env.RENDER_GROUP_SETTLE_POLL_MS ?? "2000");
+const renderGroupHeartbeatMs = Number(process.env.RENDER_GROUP_HEARTBEAT_MS ?? "30000");
+// Recorded with every group execution start: the verified runtime this replica renders with.
+let renderToolchainFingerprint = "unverified";
 const executorHealth = new RenderExecutorHealth({
-  check: verifySharedRenderEnvironment,
+  check: async () => { renderToolchainFingerprint = await verifySharedRenderEnvironment(); },
   recycle: () => beginGracefulShutdown(1),
   diagnose: (event) => console.warn(JSON.stringify({ level: "error", ...event })),
 });
@@ -513,7 +523,9 @@ const uploadSessionMaintenanceLoop = createPollLoop(
 );
 
 createPollLoop("workflow_lease", workflowLeaseReapIntervalMs, async () => {
-	const reaped = await getWorkflowRunLifecycle().reapExpiredAttempts();
+	const reaped =
+		(await getWorkflowRunLifecycle().reapExpiredAttempts()) +
+		(await renderGroups.reapExpired());
 	if (reaped > 0) {
 		console.warn(
 			JSON.stringify({
@@ -579,10 +591,6 @@ function processNextWorkflowAttempt<
 		...input,
 		signal: workerShutdown.signal,
 		lifecycle: getWorkflowRunLifecycle(),
-        ...(input.stage === "clip_rendering" ? {
-          canStart: () => executorHealth.snapshot().ready && scratchReady,
-          onExecutorFailure: executorHealth.failed,
-        } : {}),
 		onAttemptLost: (attempt, error, startedAtMs) =>
 			diagnoseWorkflowAttemptLost({ run: attempt, error, startedAtMs }),
 	});
@@ -678,23 +686,45 @@ createPollLoop("finishing", finishingPollIntervalMs, async () => {
 	return processDueGenerationFinishing();
 });
 
-/** CPU-bound stage: clip rendering only. */
+/** Clip rendering coordinator: admits the run's render groups and keeps the
+ * parent lease while replicas render them. It does no media work. */
 const renderLoop = createPollLoop("render", renderPollIntervalMs, async ({ holdingLease }) => {
-	if (!executorHealth.snapshot().ready || !scratchReady) return 0;
 	const lifecycle = getWorkflowRunLifecycle();
 	await lifecycle.rescuePendingClipRenderingRun();
 	return processNextWorkflowAttempt({
 		holdingLease,
 		stage: "clip_rendering",
-		process: async (attempt, context) => {
-			const run = { ...attempt, id: attempt.workflowRunId };
-			const clipRenderAttempt = createClipRenderAttempt({
-				run,
+		process: (attempt, context) =>
+			coordinateRenderWorkSet({
+				attempt,
+				context,
+				lifecycle,
+				state: clipService,
+				pollIntervalMs: renderGroupSettlePollMs,
+			}).then(() => undefined),
+	});
+});
+
+/** CPU-bound stage: renders one leased group at a time. Every replica runs
+ * this loop, so different groups of one project render on different replicas. */
+const renderGroupLoop = createPollLoop("render_group", renderPollIntervalMs, async ({ holdingLease }) => {
+	if (!executorHealth.snapshot().ready || !scratchReady) return 0;
+	return executeNextRenderGroup({
+		groups: renderGroups,
+		toolchainFingerprint: renderToolchainFingerprint,
+		signal: workerShutdown.signal,
+		canStart: () => executorHealth.snapshot().ready && scratchReady,
+		onExecutorFailure: executorHealth.failed,
+		holdingLease,
+		heartbeatIntervalMs: renderGroupHeartbeatMs,
+		render: ({ group, attempt, lifecycle, context }) =>
+			createClipRenderAttempt({
+				run: { id: group.workflowRunId, projectId: group.projectId },
 				config: renderConfig,
 				lifecycle,
-			});
-			await clipRenderAttempt.execute(attempt, context);
-		},
+				group,
+				groups: renderGroups,
+			}).execute(attempt, context),
 	});
 });
 
@@ -882,6 +912,7 @@ void workspaceBillingLoop.tick();
 void ingestLoop.tick();
 void sttLoop.tick();
 void renderLoop.tick();
+void renderGroupLoop.tick();
 void exportBundleLoop.tick();
 void notificationRetryLoop.tick();
 void mediaCleanupLoop.tick();

@@ -86,6 +86,8 @@ function fixture(input: {
   let cleanups = 0;
   const renderOutput = createRenderOutputFixture();
   const clipRenderAttempt = createClipRenderAttempt({
+		group: { workflowRunId: "", workSetGeneration: "", groupId: "", token: "", owner: "" },
+		groups: {} as never,
     run: { id: attempt.workflowRunId, projectId: attempt.projectId, project: {
       title: "Scene assets", sourceStorageKey: "source/input.mp4", sourceDurationSeconds: 10,
       workspaceId: WORKSPACE_ID,
@@ -93,13 +95,14 @@ function fixture(input: {
     config: parseRenderConfig({ WORKER_RENDER_SOURCE_MODE: "download",
       }),
     lifecycle: {
-      beginRenderWorkSet: async (owned) => { expect(owned).toEqual(attempt); return { variantIds: [pendingRender.id] }; },
-      settleRenderWorkSet: async (owned) => {
+      startExecution: async () => {},
+      beginRenderGroup: async (owned) => { expect(owned).toEqual(attempt); return { variantIds: [pendingRender.id] }; },
+      finishRenderGroup: async (owned) => {
         expect(owned).toEqual(attempt);
         settlements += 1;
-        return { status: state === "retryable" ? "requeued" : state === "failed" ? "failed" : "completed",
+        return { status: state === "retryable" ? "queued" : state === "failed" ? "failed" : "completed",
           requested: 1, succeeded: state === "completed" ? 1 : 0, failed: state === "failed" ? 1 : 0,
-          superseded: state === "superseded" ? 1 : 0, followUpWorkflowRunId: null };
+          superseded: state === "superseded" ? 1 : 0 };
       },
     },
     adapters: {
@@ -152,7 +155,6 @@ function fixture(input: {
           failures.push({ code, disposition }); state = disposition === "retryable" ? "retryable" : "failed";
         },
       },
-      project: { reportProgress: async () => {} },
       optionalAssets: input.runtimeValidation ? {} : { validateOptionalMedia: async (path, kind) => {
         validations.push({ path, kind }); return input.imageDecodable !== false;
       } },
@@ -241,7 +243,7 @@ describe("Clip Render Attempt Scene assets", () => {
   for (const code of ["scene_asset_workspace_unavailable", "scene_asset_database_unavailable"]) {
     test(`${code} requeues through ordinary variant settlement`, async () => {
       const tracer = fixture({ loadFailure: new WorkflowFailure(code, "retryable", "Scene persistence unavailable") });
-      expect((await tracer.execute()).status).toBe("requeued");
+      expect((await tracer.execute()).status).toBe("queued");
       expect(tracer.loaded).toHaveLength(1);
       expect(tracer.failures).toEqual([{ code, disposition: "retryable" }]);
       expect(tracer.commands).toEqual([]);
@@ -304,7 +306,7 @@ for (const phase of ["probe", "decode"] as const) {
         expect(tracer.failures).toEqual([]);
         expect(tracer.settlements()).toBe(0);
       } else {
-        expect((await tracer.execute()).status).toBe("requeued");
+        expect((await tracer.execute()).status).toBe("queued");
         expect(tracer.failures).toEqual([{ code, disposition: "retryable" }]);
       }
       expect(tracer.uploads).toEqual([]);

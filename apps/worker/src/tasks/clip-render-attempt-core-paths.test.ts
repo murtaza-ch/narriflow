@@ -1,3 +1,4 @@
+import type { RenderGroupOutcome } from "./clip-render-attempt";
 import { RenderFactCache } from "../render-fact-cache";
 import {
 	createClipRenderAttempt,
@@ -23,7 +24,6 @@ import { join } from "node:path";
 import {
 	AudioAssetAccessError,
 	clipService,
-	type RenderWorkSetOutcome,
 	type WorkflowAttemptContext,
 	WorkflowAttemptLost,
 	WorkflowFailure,
@@ -321,7 +321,7 @@ function createCoreRenderPathTracer(input: {
 		return ids;
 	};
 
-	const settle = (): RenderWorkSetOutcome => {
+	const settle = (): RenderGroupOutcome => {
 		settlementCalls += 1;
 		const requested = variantFixtures.length;
 		const succeeded = [...states.values()].filter(
@@ -349,12 +349,11 @@ function createCoreRenderPathTracer(input: {
 		) {
 			for (const variantId of retryableIds) states.set(variantId, "pending");
 			return {
-				status: "requeued",
+				status: "queued",
 				requested,
 				succeeded,
 				failed: permanentFailed,
 				superseded,
-				followUpWorkflowRunId: null,
 			};
 		}
 
@@ -370,7 +369,6 @@ function createCoreRenderPathTracer(input: {
 			succeeded,
 			failed,
 			superseded,
-			followUpWorkflowRunId: null,
 		};
 	};
 
@@ -381,6 +379,8 @@ function createCoreRenderPathTracer(input: {
 		...input.configOverrides,
 	});
 	const clipRenderAttempt = createClipRenderAttempt({
+		group: { workflowRunId: "", workSetGeneration: "", groupId: "", token: "", owner: "" },
+		groups: {} as never,
 		run: {
 			id: attempt.workflowRunId,
 			projectId: attempt.projectId,
@@ -396,10 +396,11 @@ function createCoreRenderPathTracer(input: {
 		},
 		config,
 		lifecycle: {
-			beginRenderWorkSet: async () => ({
+			startExecution: async () => {},
+			beginRenderGroup: async () => ({
 				variantIds: variantFixtures.map((variant) => variant.id),
 			}),
-			settleRenderWorkSet: async () => settle(),
+			finishRenderGroup: async () => settle(),
 		},
 		adapters: {
 			...(input.remoteMedia ? { remoteMedia: input.remoteMedia } : {}),
@@ -601,9 +602,6 @@ function createCoreRenderPathTracer(input: {
           return compileClipCompositionCommand(request);
         },
       },
-			project: {
-				reportProgress: async () => {},
-			},
 			optionalAssets: {
 				validateOptionalMedia: async (_path, kind) => {
      if (input.optionalValidationFailure) throw input.optionalValidationFailure;
@@ -1231,7 +1229,6 @@ for (const fixture of topologyFixtures) {
 			succeeded: fixture.topology === "single-video" ? 1 : 2,
 			failed: 0,
 			superseded: 0,
-			followUpWorkflowRunId: null,
 		});
 		expect(harness.commands).toHaveLength(fixture.commandCount);
 		expect(harness.commands.map((command) => command.outputVariantIds)).toEqual(
@@ -2300,7 +2297,7 @@ test("ClipRenderAttempt does not report degradation when the required fallback c
 			harness.attempt,
 			attemptContext(new AbortController().signal),
 		),
-	).resolves.toMatchObject({ status: "requeued", succeeded: 0 });
+	).resolves.toMatchObject({ status: "queued", succeeded: 0 });
 	expect(harness.diagnostics).not.toContainEqual({
 		message: "clip_render_optional_asset_fallback",
 		context: expect.objectContaining({ phase: "command" }),
@@ -3243,7 +3240,6 @@ test("ClipRenderAttempt contains a per-output command failure to its variant", a
 		succeeded: 2,
 		failed: 1,
 		superseded: 0,
-		followUpWorkflowRunId: null,
 	});
 	expect(harness.commands.map((command) => command.outputVariantIds)).toEqual([
 		["group-a-9x16"],
@@ -3294,7 +3290,6 @@ test("ClipRenderAttempt settles a per-output failure as terminal partial", async
 		succeeded: 1,
 		failed: 1,
 		superseded: 0,
-		followUpWorkflowRunId: null,
 	});
 	expect(harness.commands.map((command) => command.outputVariantIds)).toEqual([
 		["variant-9x16"],
@@ -3324,7 +3319,6 @@ test("ClipRenderAttempt contains an audiogram command failure to one output", as
 		succeeded: 1,
 		failed: 1,
 		superseded: 0,
-		followUpWorkflowRunId: null,
 	});
 	expect(harness.states.get("variant-9x16")).toBe("retryable-failure");
 	expect(harness.states.get("variant-1x1")).toBe("completed");
@@ -3394,7 +3388,6 @@ for (const resumedDeliveryFailure of [
 			succeeded: 1,
 			failed: 1,
 			superseded: 0,
-			followUpWorkflowRunId: null,
 		});
 		expect(harness.commands.map((command) => command.outputVariantIds)).toEqual(
 			[["variant-resumed"]],
@@ -3441,7 +3434,6 @@ test("ClipRenderAttempt resumes only pending work and counts the whole Render Wo
 		succeeded: 2,
 		failed: 1,
 		superseded: 0,
-		followUpWorkflowRunId: null,
 	});
 	expect(harness.commands.map((command) => command.outputVariantIds)).toEqual([
 		["variant-resumed"],
@@ -3459,7 +3451,7 @@ for (const retryCase of [
 	{
 		label: "requeues a causal retryable failure",
 		attemptCount: 1,
-		expectedStatus: "requeued",
+		expectedStatus: "queued",
 		expectedState: "pending",
 	},
 	{
@@ -3485,7 +3477,7 @@ for (const retryCase of [
 			status: retryCase.expectedStatus,
 			requested: 1,
 			succeeded: 0,
-			failed: retryCase.expectedStatus === "requeued" ? 0 : 1,
+			failed: retryCase.expectedStatus === "queued" ? 0 : 1,
 		});
 		expect(harness.states.get("variant-9x16")).toBe(retryCase.expectedState);
 	});
@@ -3509,7 +3501,6 @@ test("ClipRenderAttempt fails a zero-success permanent command without requeuein
 		succeeded: 0,
 		failed: 1,
 		superseded: 0,
-		followUpWorkflowRunId: null,
 	});
 	expect(harness.states.get("variant-9x16")).toBe("permanent-failure");
 	expect(harness.failureDispositions.get("variant-9x16")).toBe("permanent");
@@ -3532,7 +3523,6 @@ test("ClipRenderAttempt completes a Render Work Set whose variants are all super
 		succeeded: 0,
 		failed: 0,
 		superseded: 2,
-		followUpWorkflowRunId: null,
 	});
 	expect([...harness.states.values()]).toEqual(["superseded", "superseded"]);
 	expect(harness.persistedVariantIds).toEqual([]);
@@ -3666,7 +3656,7 @@ for (const invalidOutput of ["no-stream", "short"] as const) {
   test(`exit-zero ${invalidOutput} output fails retryably before upload or completion`, async () => {
     const harness = createCoreRenderPathTracer({ topology: "single-video", invalidOutput });
     await expect(harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal)))
-      .resolves.toMatchObject({ status: "requeued", succeeded: 0 });
+      .resolves.toMatchObject({ status: "queued", succeeded: 0 });
     expect(harness.uploadedVariantIds).toEqual([]);
     expect(harness.persistedVariantIds).toEqual([]);
     expect([...harness.failureCodes.values()]).toEqual(["render_output_invalid"]);
@@ -4720,7 +4710,7 @@ for (const topology of ["single-video", "audiogram"] as const) {
     const harness = createCoreRenderPathTracer({ topology, clipOverrides: fallbackMusicEdits, projectBrandSnapshot: fallbackBrandSnapshot,
       renderFailure: new WorkerProcessFailure("worker_command_timeout", "retryable", "Source read timed out", "") });
     const result = await harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal));
-    expect(result.status).toBe("requeued");
+    expect(result.status).toBe("queued");
     expect(harness.commands).toHaveLength(topology === "audiogram" ? 2 : 1);
     for (const command of harness.commands) {
       expect(command.args.some((arg) => arg.includes("brand-logo"))).toBe(true);
@@ -4760,7 +4750,7 @@ test("a proven invalid music binding removes only music, retains logo and record
 test("validation timeout retries the requested composition instead of dropping a valid binding", async () => {
   const harness = createCoreRenderPathTracer({ topology: "single-video", clipOverrides: fallbackMusicEdits,
     optionalValidationFailure: new WorkerProcessFailure("worker_command_timeout", "retryable", "Validation deadline", "") });
-  expect((await harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal))).status).toBe("requeued");
+  expect((await harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal))).status).toBe("queued");
   expect(harness.commands).toHaveLength(0);
   expect(harness.diagnostics.some((event) => event.message === "clip_render_optional_asset_fallback")).toBe(false);
 });
@@ -4786,7 +4776,7 @@ test("eligible source recovery defers under disk pressure without downloading or
 test("eligible source larger than the scratch limit is rejected before any download or wait", async () => {
   const harness = createCoreRenderPathTracer({ topology: "single-video", sourceAccess: { presignedUrl: "https://source.example/input.mp4", sourceSizeBytes: 9 * 1024 ** 3,
     probeFailure: new WorkerProcessFailure("worker_command_failed", "retryable", "Read reset", "Connection reset by peer"), diskFreeBytes: 19 * 1024 ** 3 } });
-  expect((await harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal))).status).toBe("requeued");
+  expect((await harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal))).status).toBe("queued");
   expect(harness.sourceDownloads).toEqual([]);
   expect([...harness.failureCodes.values()]).toEqual(["render_scratch_limit_exceeded"]);
 });
@@ -4896,7 +4886,7 @@ describe("resource bounds", () => {
 			topology: "single-video",
 			renderFailure: new WorkerProcessFailure("worker_command_timeout", "retryable", "Encode deadline", ""),
 		});
-		expect((await harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal))).status).toBe("requeued");
+		expect((await harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal))).status).toBe("queued");
 		expect([...harness.failureCodes.values()]).toEqual(["worker_command_timeout"]);
 		expect(renderResourceBudgetFor(harness.config).snapshot()).toMatchObject({ reservations: 0, encoding: false });
 	});

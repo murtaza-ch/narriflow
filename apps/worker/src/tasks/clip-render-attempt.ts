@@ -1,5 +1,4 @@
 import { mediaWorkScheduler } from "../media-work-scheduler";
-import { recordRenderInterruption } from "../render-executor-health";
 import { executorProcessFailure } from "../worker-process";
 import { statfs } from "node:fs/promises";
 import { transportRenderCommand } from "../render-command-transport";
@@ -33,7 +32,6 @@ import {
 	workflowFailureFromUnknown,
 	type LayoutEvidenceLifecycle,
 	type MotionRenderAnalyticsMetadata,
-	type RenderWorkSetOutcome,
 	type WorkflowAttemptContext,
 	type WorkflowAttemptRef,
 } from "@narriflow/services";
@@ -217,28 +215,42 @@ function resolveClipLogoOverlay(
 	};
 }
 
+/** The parent run a group belongs to. */
 interface WorkflowRunJob {
 	id: string;
 	projectId: string;
-	project: {
-		title: string;
-		sourceStorageKey: string | null;
-		sourceDurationSeconds: number | null;
-		workspaceId: string;
-	};
 }
 
 export type ClipRenderingWorkflowAttempt = Omit<WorkflowAttemptRef, "stage"> & {
 	stage: "clip_rendering";
 };
 
-interface ClipRenderAttemptLifecycle {
-	beginRenderWorkSet(attempt: WorkflowAttemptRef): Promise<{
+/** The group's durable settlement as the engine reports it. */
+export interface RenderGroupOutcome {
+	status: "queued" | "completed" | "partial" | "failed" | "superseded";
+	requested: number;
+	succeeded: number;
+	failed: number;
+	superseded: number;
+}
+
+/**
+ * The engine renders one leased Render Group. `attemptId` is the group's
+ * fencing token. Retries are decided by `finishRenderGroup` (the group
+ * protocol), never by the engine.
+ */
+export interface ClipRenderAttemptLifecycle {
+	/** The group's members that still need rendering. */
+	beginRenderGroup(attempt: WorkflowAttemptRef): Promise<{
 		variantIds: readonly string[];
 	}>;
-	settleRenderWorkSet(
+	/** Durable execution start, once a media process has been spawned. A crash
+	 *  after it charges the group once; a graceful release does not. */
+	startExecution(
 		attempt: WorkflowAttemptRef,
-	): Promise<RenderWorkSetOutcome>;
+		facts: { sourceFingerprint: string },
+	): Promise<void>;
+	finishRenderGroup(attempt: WorkflowAttemptRef): Promise<RenderGroupOutcome>;
 }
 
 type CompositionPeakRssScope =
@@ -261,12 +273,6 @@ export interface ClipRenderAttemptAdapters {
 	layoutEvidence: Pick<LayoutEvidenceLifecycle, "readCompatibleDurable">;
 	/** Immutable facts shared by every render in this worker process. */
 	facts: RenderFactCache;
-	project: {
-		reportProgress(
-			attempt: WorkflowAttemptRef,
-			progress: number,
-		): Promise<void>;
-	};
 	clip: {
 		markClipRenderVariantRendering(
 			attempt: WorkflowAttemptRef,
@@ -669,10 +675,14 @@ interface PendingRenderOutput {
 }
 
 interface RenderExecutionContext {
-	mediaStarted: boolean;
 	config: Readonly<RenderConfig>;
 	signal: AbortSignal;
 	adapters: ClipRenderAttemptAdapters;
+	attempt: ClipRenderingWorkflowAttempt;
+	lifecycle: ClipRenderAttemptLifecycle;
+	/** Identity of the frozen source object; set once the snapshot is loaded. */
+	sourceFingerprint: string;
+	executionStarted: Promise<void> | null;
 }
 
 const renderExecutionStorage = new AsyncLocalStorage<RenderExecutionContext>();
@@ -680,6 +690,20 @@ function requireExecutionContext(): RenderExecutionContext {
 	const context = renderExecutionStorage.getStore();
 	if (!context) throw new Error("clip_render_execution_context_missing");
 	return context;
+}
+
+/** Records the durable execution start once; later calls share its promise. */
+function ensureExecutionStarted(): Promise<void> {
+	const context = requireExecutionContext();
+	if (!context.executionStarted) {
+		const started = context.lifecycle.startExecution(context.attempt, {
+			sourceFingerprint: context.sourceFingerprint,
+		});
+		// A rejection surfaces where the start is awaited, not as an unhandled one.
+		started.catch(() => undefined);
+		context.executionStarted = started;
+	}
+	return context.executionStarted;
 }
 
 function currentRenderConfig(): Readonly<RenderConfig> {
@@ -1232,7 +1256,6 @@ async function executeRenderCommand(input: {
 		const stopSampling = startCompositionResourceSampling(
 			safeRecordResourceSample,
 		);
-        const mediaStartedBeforeCommand = requireExecutionContext().mediaStarted;
 		try {
 			const transportedArgs = await transportRenderCommand({
 				args,
@@ -1258,17 +1281,16 @@ async function executeRenderCommand(input: {
 			await execCommand("ffmpeg", transportedArgs, {
 				timeoutMs: input.deadlineMs,
 				recordResourceSample: safeRecordResourceSample,
-				onSpawn: () => { requireExecutionContext().mediaStarted = true; },
+				onSpawn: () => {
+					void ensureExecutionStarted();
+				},
 				onStderrLines: (lines) => {
 					captionDiagnostics = lines;
 				},
 			});
+			// The encode only counts once its start is durable.
+			await ensureExecutionStarted();
 			input.recordSourceDecodeCompleted?.();
-        } catch (error) {
-            // A spawned command can reject its filter graph before decoding.
-            // Preserve earlier completed/started encodes, not this failed start.
-            if (executorProcessFailure(error)) requireExecutionContext().mediaStarted = mediaStartedBeforeCommand;
-            throw error;
 		} finally {
 			stopSampling();
 		}
@@ -2172,7 +2194,7 @@ export class ClipRenderAttempt {
 	async execute(
 		attempt: ClipRenderingWorkflowAttempt,
 		context: WorkflowAttemptContext,
-	): Promise<RenderWorkSetOutcome> {
+	): Promise<RenderGroupOutcome> {
 		if (
 			attempt.workflowRunId !== this.#run.id ||
 			attempt.projectId !== this.#run.projectId
@@ -2210,20 +2232,23 @@ export class ClipRenderAttempt {
 		};
 		return renderExecutionStorage.run(
 			{
-				mediaStarted: false,
 				config: this.#config,
 				signal,
 				adapters,
+				attempt,
+				lifecycle: this.#lifecycle,
+				sourceFingerprint: "unresolved",
+				executionStarted: null,
 			},
 			async () => {
 				const attemptStartedAtMs = currentTimeMs();
 				try {
 					signal.throwIfAborted();
-					const workSet = await this.#lifecycle.beginRenderWorkSet(attempt);
+					const workSet = await this.#lifecycle.beginRenderGroup(attempt);
 					signal.throwIfAborted();
 					const outcome =
 						workSet.variantIds.length === 0
-							? await this.#lifecycle.settleRenderWorkSet(attempt)
+							? await settleRenderGroup(this.#lifecycle, attempt)
 							: await executeClipRenderAttempt(
 									this.#run,
 									signal,
@@ -2234,15 +2259,14 @@ export class ClipRenderAttempt {
 								);
 					log("info", "clip_render_attempt_settled", {
 						phase: "settlement",
-						operation: "settle_render_work_set",
+						operation: "finish_render_group",
 						disposition: outcome.status,
 						retryState:
-							outcome.status === "requeued" ? "retry_scheduled" : "terminal",
+							outcome.status === "queued" ? "retry_scheduled" : "terminal",
 						requested: outcome.requested,
 						succeeded: outcome.succeeded,
 						failed: outcome.failed,
 						superseded: outcome.superseded,
-						followUpWorkflowRunId: outcome.followUpWorkflowRunId,
 						elapsedMs: currentTimeMs() - attemptStartedAtMs,
 					});
 					return outcome;
@@ -2256,9 +2280,6 @@ export class ClipRenderAttempt {
 							retryState: "reaper_owned",
 							elapsedMs: currentTimeMs() - attemptStartedAtMs,
 						});
-					}
-					if (executorProcessFailure(error) || error instanceof RenderResourceDeferral) {
-						recordRenderInterruption(error, requireExecutionContext().mediaStarted);
 					}
 					throw error;
 				}
@@ -2275,6 +2296,16 @@ type FrozenRenderingState = NonNullable<
 	>
 >;
 
+/** Records the group's durable start (every settlement is a charged
+ *  execution, so retries stay bounded), then its settlement. */
+async function settleRenderGroup(
+	lifecycle: ClipRenderAttemptLifecycle,
+	attempt: ClipRenderingWorkflowAttempt,
+): Promise<RenderGroupOutcome> {
+	await ensureExecutionStarted();
+	return lifecycle.finishRenderGroup(attempt);
+}
+
 async function executeClipRenderAttempt(
 	run: WorkflowRunJob,
 	signal: AbortSignal,
@@ -2282,20 +2313,24 @@ async function executeClipRenderAttempt(
 	lifecycle: ClipRenderAttemptLifecycle,
 	workSetVariantIds: readonly string[],
 	abortAttempt: (error: WorkflowAttemptLost) => void,
-): Promise<RenderWorkSetOutcome> {
+): Promise<RenderGroupOutcome> {
 	signal.throwIfAborted();
 	const frozenState =
 		await currentRenderAdapters().state.getFrozenRenderingStateForWorkSet(
 			run.projectId,
 			run.id,
+			workSetVariantIds,
 		);
 	signal.throwIfAborted();
+	if (frozenState) {
+		requireExecutionContext().sourceFingerprint = `${frozenState.sourceStorageKey ?? "none"}#${frozenState.sourceSizeBytes ?? "unknown"}`;
+	}
 
 	const pendingRenders = (frozenState?.pendingRenders ?? []).filter((render) =>
 		workSetVariantIds.includes(render.id),
 	);
 	if (!frozenState || pendingRenders.length === 0) {
-		return lifecycle.settleRenderWorkSet(attempt);
+		return settleRenderGroup(lifecycle, attempt);
 	}
 
 	// Watermark presence is a run-level entitlement (vizard-parity Phase C
@@ -4258,7 +4293,7 @@ async function executeClipRenderAttemptInScratch(params: {
 	runStartedAtMs: number;
 	tempDir: string;
 	touchedOptionalAssetClasses: Set<OptionalAssetClass>;
-}): Promise<RenderWorkSetOutcome> {
+}): Promise<RenderGroupOutcome> {
 	const {
 		run,
 		signal,
@@ -4422,8 +4457,6 @@ async function executeClipRenderAttemptInScratch(params: {
 			(left, right) => left[0]!.clip.index - right[0]!.clip.index,
 		);
 
-		await currentRenderAdapters().project.reportProgress(attempt, 10);
-
 		let renderedVariantCount = 0;
 
 		// Uploads run in a bounded background queue so the next clip's
@@ -4564,10 +4597,6 @@ async function executeClipRenderAttemptInScratch(params: {
 					disposition: failure.disposition,
 				});
 			}
-
-			const progress =
-				10 + Math.round(((clipGroupIndex + 1) / clipGroups.length) * 80);
-			await currentRenderAdapters().project.reportProgress(attempt, progress);
 		}
 
 		// Settle every in-flight upload before reading `renderedVariantCount` —
@@ -4586,7 +4615,7 @@ async function executeClipRenderAttemptInScratch(params: {
 		});
 
 		settlementStarted = true;
-		const outcome = await lifecycle.settleRenderWorkSet(attempt);
+		const outcome = await settleRenderGroup(lifecycle, attempt);
 
 		log("info", "clip_rendering_run_completed", {
 			workflowRunId: run.id,
@@ -4601,7 +4630,6 @@ async function executeClipRenderAttemptInScratch(params: {
 			preset: x264Preset(),
 			status: outcome.status,
 			supersededVariantCount: outcome.superseded,
-			followUpWorkflowRunId: outcome.followUpWorkflowRunId,
 		});
 		return outcome;
 	} catch (error) {
@@ -4647,8 +4675,7 @@ async function executeClipRenderAttemptInScratch(params: {
 			code,
 			message,
 		});
-		const outcome = await lifecycle.settleRenderWorkSet(attempt);
-		return outcome;
+		return settleRenderGroup(lifecycle, attempt);
 	} finally {
 		// A failure path can reach here with uploads still in flight (their
 		// output files live in tempDir) — settle them before deleting it, so a

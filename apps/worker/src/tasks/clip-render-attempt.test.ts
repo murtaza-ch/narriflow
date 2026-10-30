@@ -4,7 +4,6 @@ import { createRenderOutputFixture } from "../render-output-validation.test-fixt
 import { createClipRenderAttempt } from "./clip-render-attempt-runtime";
 import { expect, mock, spyOn, test } from "bun:test";
 import * as database from "@narriflow/db/client";
-import * as services from "@narriflow/services";
 import { spawnSync } from "node:child_process";
 import { copyFile, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -13,7 +12,6 @@ import {
 	clipService,
 	analyticsService,
 	type MotionRenderAnalyticsMetadata,
-	type RenderWorkSetOutcome,
 	type WorkflowAttemptContext,
 	WorkflowAttemptLost,
 	WorkflowFailure,
@@ -26,6 +24,7 @@ import {
 } from "../worker-process";
 import {
 	ClipRenderAttempt,
+	type RenderGroupOutcome,
 	type ClipRenderAttemptAdapters,
 	type ClipRenderingWorkflowAttempt,
 } from "./clip-render-attempt";
@@ -95,7 +94,7 @@ function createOrdinaryTracer(input: {
 	failureMessage?: string;
 	commandDiagnosticContext?: Record<string, unknown>;
 	initialVariantState?: "pending" | "completed";
-	outcome: RenderWorkSetOutcome;
+	outcome: RenderGroupOutcome;
 	failureWriteRejects?: boolean;
 	productionCompletion?: boolean;
 	commitAcknowledgementLost?: boolean;
@@ -120,6 +119,7 @@ function createOrdinaryTracer(input: {
 	workspaceDirectory?: string;
 	downloadFixturePath?: string;
 	motionTransition?: boolean;
+	groups?: unknown;
 }) {
 	const attempt: ClipRenderingWorkflowAttempt = {
 		workflowRunId: "10000000-0000-0000-0000-000000000051",
@@ -222,6 +222,8 @@ function createOrdinaryTracer(input: {
 
 	const renderOutput = createRenderOutputFixture();
 	const clipRenderAttempt = createClipRenderAttempt({
+		group: { workflowRunId: "", workSetGeneration: "", groupId: "", token: "", owner: "" },
+		groups: (input.groups ?? {}) as never,
 		run: {
 			id: attempt.workflowRunId,
 			projectId: attempt.projectId,
@@ -239,17 +241,18 @@ function createOrdinaryTracer(input: {
 			...(input.presignNeverResolves ? { WORKER_STORAGE_TIMEOUT_MS: "5" } : {}),
 			}),
 		lifecycle: {
-			beginRenderWorkSet: async () => {
+			startExecution: async () => {},
+			beginRenderGroup: async () => {
 				beginCalls += 1;
 				actions.push("begin");
 				if (input.failure === "begin") throw injectedError;
 				return { variantIds: [pendingRender.id] };
 			},
-			settleRenderWorkSet: async () => {
+			finishRenderGroup: async () => {
 				settlementCalls += 1;
 				actions.push("settle");
 				if (input.failure === "settlement") throw injectedError;
-				if (input.outcome.status === "requeued" && variantState === "failed") {
+				if (input.outcome.status === "queued" && variantState === "failed") {
 					variantState = "pending";
 				}
 				return input.outcome;
@@ -417,9 +420,6 @@ function createOrdinaryTracer(input: {
 						}
 					}
 				},
-			},
-			project: {
-				reportProgress: async () => {},
 			},
 			clip: {
 				completeClipAutoLayoutAnalysis: async () => false,
@@ -632,6 +632,8 @@ function createUploadQueueTracer(input: {
 
 	const renderOutput = createRenderOutputFixture();
 	const clipRenderAttempt = createClipRenderAttempt({
+		group: { workflowRunId: "", workSetGeneration: "", groupId: "", token: "", owner: "" },
+		groups: {} as never,
 		run: {
 			id: attempt.workflowRunId,
 			projectId: attempt.projectId,
@@ -651,10 +653,11 @@ function createUploadQueueTracer(input: {
 				: { WORKER_UPLOAD_CONCURRENCY: String(input.configuredConcurrency) }),
 			}),
 		lifecycle: {
-			beginRenderWorkSet: async () => ({
+			startExecution: async () => {},
+			beginRenderGroup: async () => ({
 				variantIds: pendingRenders.map((render) => render.id),
 			}),
-			settleRenderWorkSet: async () => {
+			finishRenderGroup: async () => {
 				settlementCalls += 1;
 				actions.push("settle");
 				return {
@@ -663,7 +666,6 @@ function createUploadQueueTracer(input: {
 					succeeded: input.variantCount,
 					failed: 0,
 					superseded: 0,
-					followUpWorkflowRunId: null,
 				};
 			},
 		},
@@ -698,9 +700,6 @@ function createUploadQueueTracer(input: {
 						actions.push("workspace_cleanup");
 					}
 				},
-			},
-			project: {
-				reportProgress: async () => {},
 			},
 			clip: {
 				completeClipAutoLayoutAnalysis: async () => false,
@@ -797,6 +796,8 @@ function createInterfaceGuardTracer(input: {
 	};
 	let beginCalls = 0;
 	const clipRenderAttempt = createClipRenderAttempt({
+		group: { workflowRunId: "", workSetGeneration: "", groupId: "", token: "", owner: "" },
+		groups: {} as never,
 		run: {
 			id: input.runId ?? attempt.workflowRunId,
 			projectId: attempt.projectId,
@@ -810,17 +811,17 @@ function createInterfaceGuardTracer(input: {
 		},
 		config: parseRenderConfig({}),
 		lifecycle: {
-			beginRenderWorkSet: async () => {
+			startExecution: async () => {},
+			beginRenderGroup: async () => {
 				beginCalls += 1;
 				return { variantIds: [] };
 			},
-			settleRenderWorkSet: async () => ({
+			finishRenderGroup: async () => ({
 				status: "completed",
 				requested: 0,
 				succeeded: 0,
 				failed: 0,
 				superseded: 0,
-				followUpWorkflowRunId: null,
 			}),
 		},
 	});
@@ -868,6 +869,8 @@ test("ClipRenderAttempt discards an uploaded object when cancellation wins befor
 	} as unknown as PendingClipRender;
 	const renderOutput = createRenderOutputFixture();
 	const clipRenderAttempt = createClipRenderAttempt({
+		group: { workflowRunId: "", workSetGeneration: "", groupId: "", token: "", owner: "" },
+		groups: {} as never,
 		run: {
 			id: attempt.workflowRunId,
 			projectId: attempt.projectId,
@@ -884,8 +887,9 @@ test("ClipRenderAttempt discards an uploaded object when cancellation wins befor
 			WORKER_RENDER_SOURCE_MODE: "download",
 			}),
 		lifecycle: {
-			beginRenderWorkSet: async () => ({ variantIds: [pendingRender.id] }),
-			settleRenderWorkSet: async () => {
+			startExecution: async () => {},
+			beginRenderGroup: async () => ({ variantIds: [pendingRender.id] }),
+			finishRenderGroup: async () => {
 				actions.push("settle");
 				throw new Error("settlement must not run after cancellation");
 			},
@@ -919,9 +923,6 @@ test("ClipRenderAttempt discards an uploaded object when cancellation wins befor
 						actions.push("cleanup");
 					}
 				},
-			},
-			project: {
-				reportProgress: async () => {},
 			},
 			clip: {
 				completeClipAutoLayoutAnalysis: async () => false,
@@ -974,19 +975,21 @@ test("ClipRenderAttempt settles an empty frozen work set through execute", async
 		attemptId: "30000000-0000-0000-0000-000000000003",
 		attemptCount: 1,
 	};
-	const expected: RenderWorkSetOutcome = {
+	const expected: RenderGroupOutcome = {
 		status: "completed",
 		requested: 0,
 		succeeded: 0,
 		failed: 0,
 		superseded: 0,
-		followUpWorkflowRunId: null,
 	};
 	const lifecycle = {
-		beginRenderWorkSet: async () => ({ variantIds: [] }),
-		settleRenderWorkSet: async () => expected,
+		startExecution: async () => {},
+		beginRenderGroup: async () => ({ variantIds: [] }),
+		finishRenderGroup: async () => expected,
 	};
 	const clipRenderAttempt = createClipRenderAttempt({
+		group: { workflowRunId: "", workSetGeneration: "", groupId: "", token: "", owner: "" },
+		groups: {} as never,
 		run: {
 			id: attempt.workflowRunId,
 			projectId: attempt.projectId,
@@ -1027,7 +1030,6 @@ test("ClipRenderAttempt can reuse frozen injected adapters without retaining ano
 			withScratchDirectory: unexpectedOperation,
 		},
 		state: { getProjectRenderStorageReferences: async () => new Set<string>(), getFrozenRenderingStateForWorkSet: unexpectedOperation },
-		project: { reportProgress: unexpectedOperation },
 		clip: {
 			markClipRenderVariantRendering: unexpectedOperation,
 			completeClipRenderVariant: unexpectedOperation,
@@ -1077,13 +1079,12 @@ test("ClipRenderAttempt can reuse frozen injected adapters without retaining ano
 		},
 		diagnose,
 	});
-	const expected: RenderWorkSetOutcome = {
+	const expected: RenderGroupOutcome = {
 		status: "completed",
 		requested: 0,
 		succeeded: 0,
 		failed: 0,
 		superseded: 0,
-		followUpWorkflowRunId: null,
 	};
 	for (const id of ["run-a", "run-b"]) {
 		const attempt: ClipRenderingWorkflowAttempt = {
@@ -1105,8 +1106,9 @@ test("ClipRenderAttempt can reuse frozen injected adapters without retaining ano
 			},
 			config: parseRenderConfig({}),
 			lifecycle: {
-				beginRenderWorkSet: async () => ({ variantIds: [] }),
-				settleRenderWorkSet: async () => expected,
+				startExecution: async () => {},
+				beginRenderGroup: async () => ({ variantIds: [] }),
+				finishRenderGroup: async () => expected,
 			},
 			adapters: () => sharedAdapters,
 		});
@@ -1143,6 +1145,8 @@ test("ClipRenderAttempt rechecks cancellation after freezing an empty work set",
 	};
 	let settlementCalls = 0;
 	const clipRenderAttempt = createClipRenderAttempt({
+		group: { workflowRunId: "", workSetGeneration: "", groupId: "", token: "", owner: "" },
+		groups: {} as never,
 		run: {
 			id: attempt.workflowRunId,
 			projectId: attempt.projectId,
@@ -1156,11 +1160,12 @@ test("ClipRenderAttempt rechecks cancellation after freezing an empty work set",
 		},
 		config: parseRenderConfig({}),
 		lifecycle: {
-			beginRenderWorkSet: async () => {
+			startExecution: async () => {},
+			beginRenderGroup: async () => {
 				controller.abort(new DOMException("cancelled", "AbortError"));
 				return { variantIds: [] };
 			},
-			settleRenderWorkSet: async () => {
+			finishRenderGroup: async () => {
 				settlementCalls += 1;
 				throw new Error("settlement must not run after cancellation");
 			},
@@ -1181,17 +1186,18 @@ test("ClipRenderAttempt drives failure and cleanup through construction adapters
 		attemptId: "30000000-0000-0000-0000-000000000003",
 		attemptCount: 1,
 	};
-	const expected: RenderWorkSetOutcome = {
+	const expected: RenderGroupOutcome = {
 		status: "failed",
 		requested: 1,
 		succeeded: 0,
 		failed: 1,
 		superseded: 0,
-		followUpWorkflowRunId: null,
 	};
 	const mutations: string[] = [];
 	const diagnostics: string[] = [];
 	const clipRenderAttempt = createClipRenderAttempt({
+		group: { workflowRunId: "", workSetGeneration: "", groupId: "", token: "", owner: "" },
+		groups: {} as never,
 		run: {
 			id: attempt.workflowRunId,
 			projectId: attempt.projectId,
@@ -1205,8 +1211,9 @@ test("ClipRenderAttempt drives failure and cleanup through construction adapters
 		},
 		config: parseRenderConfig({}),
 		lifecycle: {
-			beginRenderWorkSet: async () => ({ variantIds: ["variant-1"] }),
-			settleRenderWorkSet: async () => {
+			startExecution: async () => {},
+			beginRenderGroup: async () => ({ variantIds: ["variant-1"] }),
+			finishRenderGroup: async () => {
 				mutations.push("settle:start");
 				await Promise.resolve();
 				mutations.push("settle:complete");
@@ -1221,9 +1228,6 @@ test("ClipRenderAttempt drives failure and cleanup through construction adapters
 						sourceStorageKey: null,
 						pricingTier: "free",
 					}),
-			},
-			project: {
-				reportProgress: async () => {},
 			},
 			clip: {
 				completeClipAutoLayoutAnalysis: async () => false,
@@ -1278,6 +1282,8 @@ test("ClipRenderAttempt cancellation drains to cleanup without persisting outcom
 	const mutations: string[] = [];
 	let settlementCalls = 0;
 	const clipRenderAttempt = createClipRenderAttempt({
+		group: { workflowRunId: "", workSetGeneration: "", groupId: "", token: "", owner: "" },
+		groups: {} as never,
 		run: {
 			id: attempt.workflowRunId,
 			projectId: attempt.projectId,
@@ -1294,8 +1300,9 @@ test("ClipRenderAttempt cancellation drains to cleanup without persisting outcom
 			WORKER_RENDER_SOURCE_MODE: "download",
 		}),
 		lifecycle: {
-			beginRenderWorkSet: async () => ({ variantIds: ["variant-1"] }),
-			settleRenderWorkSet: async () => {
+			startExecution: async () => {},
+			beginRenderGroup: async () => ({ variantIds: ["variant-1"] }),
+			finishRenderGroup: async () => {
 				settlementCalls += 1;
 				throw new Error("settlement must not run after cancellation");
 			},
@@ -1308,9 +1315,6 @@ test("ClipRenderAttempt cancellation drains to cleanup without persisting outcom
 						sourceStorageKey: `projects/${attempt.projectId}/source/input.mp4`,
 						pricingTier: "free",
 					}),
-			},
-			project: {
-				reportProgress: async () => {},
 			},
 			clip: {
 				completeClipAutoLayoutAnalysis: async () => false,
@@ -1386,15 +1390,16 @@ test("ClipRenderAttempt permanently rejects a stored document with an empty time
 		},
 	} as unknown as PendingClipRender;
 	const mutations: string[] = [];
-	const expected: RenderWorkSetOutcome = {
+	const expected: RenderGroupOutcome = {
 		status: "failed",
 		requested: 1,
 		succeeded: 0,
 		failed: 1,
 		superseded: 0,
-		followUpWorkflowRunId: null,
 	};
 	const clipRenderAttempt = createClipRenderAttempt({
+		group: { workflowRunId: "", workSetGeneration: "", groupId: "", token: "", owner: "" },
+		groups: {} as never,
 		run: {
 			id: attempt.workflowRunId,
 			projectId: attempt.projectId,
@@ -1411,8 +1416,9 @@ test("ClipRenderAttempt permanently rejects a stored document with an empty time
 			WORKER_RENDER_SOURCE_MODE: "download",
 			}),
 		lifecycle: {
-			beginRenderWorkSet: async () => ({ variantIds: [pendingRender.id] }),
-			settleRenderWorkSet: async () => {
+			startExecution: async () => {},
+			beginRenderGroup: async () => ({ variantIds: [pendingRender.id] }),
+			finishRenderGroup: async () => {
 				mutations.push("settle");
 				return expected;
 			},
@@ -1441,9 +1447,6 @@ test("ClipRenderAttempt permanently rejects a stored document with an empty time
 						mutations.push("cleanup");
 					}
 				},
-			},
-			project: {
-				reportProgress: async () => {},
 			},
 			clip: {
 				completeClipAutoLayoutAnalysis: async () => false,
@@ -1487,7 +1490,6 @@ test("ClipRenderAttempt leaves an unpersistable settlement for reaper recovery",
 			succeeded: 1,
 			failed: 0,
 			superseded: 0,
-			followUpWorkflowRunId: null,
 		},
 	});
 
@@ -1516,7 +1518,6 @@ test("ClipRenderAttempt leaves replay settlement failure for reaper recovery", a
 			succeeded: 1,
 			failed: 0,
 			superseded: 0,
-			followUpWorkflowRunId: null,
 		},
 	});
 
@@ -1545,13 +1546,12 @@ test("ClipRenderAttempt rejects a stale attempt through its asynchronous interfa
 });
 
 test("ClipRenderAttempt renders and settles one ordinary variant through execute", async () => {
-	const expected: RenderWorkSetOutcome = {
+	const expected: RenderGroupOutcome = {
 		status: "completed",
 		requested: 1,
 		succeeded: 1,
 		failed: 0,
 		superseded: 0,
-		followUpWorkflowRunId: null,
 	};
 	const harness = createOrdinaryTracer({
 		attemptId: "30000000-0000-4000-8000-000000000053",
@@ -1599,7 +1599,7 @@ test("ClipRenderAttempt renders and settles one ordinary variant through execute
 			stage: "clip_rendering",
 			attemptCount: harness.attempt.attemptCount,
 			phase: "settlement",
-			operation: "settle_render_work_set",
+			operation: "finish_render_group",
 			disposition: "completed",
 			requested: 1,
 			succeeded: 1,
@@ -1611,13 +1611,12 @@ test("ClipRenderAttempt renders and settles one ordinary variant through execute
 });
 
 test("ClipRenderAttempt persists an attempt-unique export key with unchanged delivery metadata", async () => {
-	const expected: RenderWorkSetOutcome = {
+	const expected: RenderGroupOutcome = {
 		status: "completed",
 		requested: 1,
 		succeeded: 1,
 		failed: 0,
 		superseded: 0,
-		followUpWorkflowRunId: null,
 	};
 	const harness = createOrdinaryTracer({
 		attemptId: "30000000-0000-4000-8000-000000000064",
@@ -1710,13 +1709,12 @@ test("ClipRenderAttempt aborts active uploads and leaves queued uploads unstarte
 });
 
 test("ClipRenderAttempt resolves a ranged source through its media adapter", async () => {
-	const expected: RenderWorkSetOutcome = {
+	const expected: RenderGroupOutcome = {
 		status: "completed",
 		requested: 1,
 		succeeded: 1,
 		failed: 0,
 		superseded: 0,
-		followUpWorkflowRunId: null,
 	};
 	const harness = createOrdinaryTracer({
 		attemptId: "30000000-0000-4000-8000-000000000062",
@@ -1736,13 +1734,12 @@ test("ClipRenderAttempt resolves a ranged source through its media adapter", asy
 });
 
 test("ClipRenderAttempt falls back from a ranged probe to a downloaded local probe", async () => {
-	const expected: RenderWorkSetOutcome = {
+	const expected: RenderGroupOutcome = {
 		status: "completed",
 		requested: 1,
 		succeeded: 1,
 		failed: 0,
 		superseded: 0,
-		followUpWorkflowRunId: null,
 	};
 	const harness = createOrdinaryTracer({
 		attemptId: "30000000-0000-4000-8000-000000000063",
@@ -1818,7 +1815,6 @@ test.skipIf(!FFMPEG_AVAILABLE || !FFPROBE_AVAILABLE)(
 					succeeded: 1,
 					failed: 0,
 					superseded: 0,
-					followUpWorkflowRunId: null,
 				},
 				presignedUrl: `http://127.0.0.1:${server.port}/unavailable.mp3`,
 				productionMedia: productionWorkerProcessModule,
@@ -1855,13 +1851,12 @@ test.skipIf(!FFMPEG_AVAILABLE || !FFPROBE_AVAILABLE)(
 );
 
 test("ClipRenderAttempt retries presigning failures without a full download", async () => {
-	const expected: RenderWorkSetOutcome = {
-		status: "requeued",
+	const expected: RenderGroupOutcome = {
+		status: "queued",
 		requested: 1,
 		succeeded: 0,
 		failed: 0,
 		superseded: 0,
-		followUpWorkflowRunId: null,
 	};
 	const harness = createOrdinaryTracer({
 		attemptId: "30000000-0000-4000-8000-000000000064",
@@ -1893,12 +1888,11 @@ test("ClipRenderAttempt bounds presigning without selecting an unproven source f
 	const harness = createOrdinaryTracer({
 		attemptId: "30000000-0000-4000-8000-000000000067",
 		outcome: {
-			status: "requeued",
+			status: "queued",
 			requested: 1,
 			succeeded: 0,
 			failed: 0,
 			superseded: 0,
-			followUpWorkflowRunId: null,
 		},
 		presignNeverResolves: true,
 		sourceMode: "ranged",
@@ -1910,7 +1904,7 @@ test("ClipRenderAttempt bounds presigning without selecting an unproven source f
 	);
 	while (!harness.actions.includes("presign")) await Promise.resolve();
 	harness.advanceClock(5);
-	await expect(executing).resolves.toMatchObject({ status: "requeued" });
+	await expect(executing).resolves.toMatchObject({ status: "queued" });
 	expect(harness.actions).not.toContain("download");
 	expect(harness.actions).not.toContain("probe:local");
 	expect(harness.actions).not.toContain("probe:ranged");
@@ -1940,7 +1934,6 @@ for (const reason of ["cancellation", "ownership_loss"] as const) {
 					succeeded: 0,
 					failed: 1,
 					superseded: 0,
-					followUpWorkflowRunId: null,
 				},
 				sourceInterruption: { operation, reason },
 				...(operation === "download"
@@ -1989,12 +1982,11 @@ test("ClipRenderAttempt records a retryable failure when ranged probing and down
 	const harness = createOrdinaryTracer({
 		attemptId: "30000000-0000-4000-8000-000000000065",
 		outcome: {
-			status: "requeued",
+			status: "queued",
 			requested: 1,
 			succeeded: 0,
 			failed: 1,
 			superseded: 0,
-			followUpWorkflowRunId: null,
 		},
 		sourceFailures: ["ranged_probe", "download"],
 		sourceMode: "ranged",
@@ -2006,7 +1998,7 @@ test("ClipRenderAttempt records a retryable failure when ranged probing and down
 			harness.attempt,
 			attemptContext(new AbortController().signal),
 		),
-	).resolves.toMatchObject({ status: "requeued" });
+	).resolves.toMatchObject({ status: "queued" });
 	expect(harness.actions).toContain(
 		"variant_failure:source_download_failed:retryable",
 	);
@@ -2039,7 +2031,6 @@ test("ClipRenderAttempt classifies corrupt downloaded source media as permanent"
 			succeeded: 0,
 			failed: 1,
 			superseded: 0,
-			followUpWorkflowRunId: null,
 		},
 		sourceMode: "download",
 	});
@@ -2070,21 +2061,21 @@ for (const failure of [
 		injected: "command_timeout_before_output",
 		code: "worker_command_timeout",
 		disposition: "retryable",
-		status: "requeued",
+		status: "queued",
 	},
 	{
 		name: "timeout after output creation",
 		injected: "command_timeout_after_output",
 		code: "worker_command_timeout",
 		disposition: "retryable",
-		status: "requeued",
+		status: "queued",
 	},
 	{
 		name: "nonzero exit",
 		injected: "command_nonzero_exit",
 		code: "worker_command_failed",
 		disposition: "retryable",
-		status: "requeued",
+		status: "queued",
 	},
 ] as const) {
 	test(`ClipRenderAttempt classifies a ${failure.name} and skips dependent operations`, async () => {
@@ -2097,7 +2088,6 @@ for (const failure of [
 				succeeded: 0,
 				failed: 1,
 				superseded: 0,
-				followUpWorkflowRunId: null,
 			},
 		});
 
@@ -2132,7 +2122,6 @@ for (const interruption of ["cancellation", "ownership loss"] as const) {
 				succeeded: 0,
 				failed: 1,
 				superseded: 0,
-				followUpWorkflowRunId: null,
 			},
 			waitForCommandAbort: true,
 		});
@@ -2163,13 +2152,12 @@ for (const interruption of ["cancellation", "ownership loss"] as const) {
 
 for (const failure of ["command", "upload"] as const) {
 	test(`ClipRenderAttempt requeues a retryable ${failure} failure`, async () => {
-		const expected: RenderWorkSetOutcome = {
-			status: "requeued",
+		const expected: RenderGroupOutcome = {
+			status: "queued",
 			requested: 1,
 			succeeded: 0,
 			failed: 1,
 			superseded: 0,
-			followUpWorkflowRunId: null,
 		};
 		const harness = createOrdinaryTracer({
 			attemptId: `30000000-0000-4000-8000-00000000005${
@@ -2201,15 +2189,14 @@ for (const failure of ["command", "upload"] as const) {
 				workflowAttemptId: harness.attempt.attemptId,
 				projectId: harness.attempt.projectId,
 				phase: "settlement",
-				operation: "settle_render_work_set",
+				operation: "finish_render_group",
 				disposition: expected.status,
 				retryState:
-					expected.status === "requeued" ? "retry_scheduled" : "terminal",
+					expected.status === "queued" ? "retry_scheduled" : "terminal",
 				requested: expected.requested,
 				succeeded: expected.succeeded,
 				failed: expected.failed,
 				superseded: expected.superseded,
-				followUpWorkflowRunId: null,
 			}),
 		});
 		if (failure === "command") {
@@ -2235,12 +2222,11 @@ test("ClipRenderAttempt redacts signed access queries from diagnostics", async (
 		failureMessage:
 			"Encoder rejected https://media.example/source.mp4?X-Amz-Signature=top-secret&token=private",
 		outcome: {
-			status: "requeued",
+			status: "queued",
 			requested: 1,
 			succeeded: 0,
 			failed: 1,
 			superseded: 0,
-			followUpWorkflowRunId: null,
 		},
 	});
 
@@ -2249,7 +2235,7 @@ test("ClipRenderAttempt redacts signed access queries from diagnostics", async (
 			harness.attempt,
 			attemptContext(new AbortController().signal),
 		),
-	).resolves.toMatchObject({ status: "requeued" });
+	).resolves.toMatchObject({ status: "queued" });
 
 	const diagnostics = JSON.stringify(harness.diagnostics);
 	expect(diagnostics).toContain("https://media.example/source.mp4?[redacted]");
@@ -2258,13 +2244,12 @@ test("ClipRenderAttempt redacts signed access queries from diagnostics", async (
 });
 
 test("ClipRenderAttempt does not let a diagnostic sink failure reverse settlement", async () => {
-	const expected: RenderWorkSetOutcome = {
+	const expected: RenderGroupOutcome = {
 		status: "completed",
 		requested: 1,
 		succeeded: 1,
 		failed: 0,
 		superseded: 0,
-		followUpWorkflowRunId: null,
 	};
 	const harness = createOrdinaryTracer({
 		attemptId: "30000000-0000-4000-8000-000000000084",
@@ -2289,12 +2274,11 @@ test("ClipRenderAttempt observes a rejected background upload task before settle
 		failure: "upload",
 		failureWriteRejects: true,
 		outcome: {
-			status: "requeued",
+			status: "queued",
 			requested: 1,
 			succeeded: 0,
 			failed: 1,
 			superseded: 0,
-			followUpWorkflowRunId: null,
 		},
 	});
 
@@ -2311,13 +2295,12 @@ test("ClipRenderAttempt observes a rejected background upload task before settle
 });
 
 test("ClipRenderAttempt reports an owned deletion as superseded", async () => {
-	const expected: RenderWorkSetOutcome = {
+	const expected: RenderGroupOutcome = {
 		status: "completed",
 		requested: 1,
 		succeeded: 0,
 		failed: 0,
 		superseded: 1,
-		followUpWorkflowRunId: null,
 	};
 	const harness = createOrdinaryTracer({
 		attemptId: "30000000-0000-4000-8000-000000000056",
@@ -2361,12 +2344,11 @@ test("ClipRenderAttempt diagnostics keep the owned attempt identity authoritativ
 			attemptCount: 99,
 		},
 		outcome: {
-			status: "requeued",
+			status: "queued",
 			requested: 1,
 			succeeded: 0,
 			failed: 1,
 			superseded: 0,
-			followUpWorkflowRunId: null,
 		},
 	});
 
@@ -2375,7 +2357,7 @@ test("ClipRenderAttempt diagnostics keep the owned attempt identity authoritativ
 			harness.attempt,
 			attemptContext(new AbortController().signal),
 		),
-	).resolves.toMatchObject({ status: "requeued", failed: 1 });
+	).resolves.toMatchObject({ status: "queued", failed: 1 });
 	expect(harness.diagnostics).toContainEqual({
 		message: "clip_render_command_operation",
 		context: expect.objectContaining({
@@ -2389,13 +2371,12 @@ test("ClipRenderAttempt diagnostics keep the owned attempt identity authoritativ
 });
 
 test("ClipRenderAttempt diagnoses provisional deletion failure without reversing supersession", async () => {
-	const expected: RenderWorkSetOutcome = {
+	const expected: RenderGroupOutcome = {
 		status: "completed",
 		requested: 1,
 		succeeded: 0,
 		failed: 0,
 		superseded: 1,
-		followUpWorkflowRunId: null,
 	};
 	const harness = createOrdinaryTracer({
 		attemptId: "30000000-0000-4000-8000-000000000068",
@@ -2427,13 +2408,12 @@ test("ClipRenderAttempt diagnoses provisional deletion failure without reversing
 });
 
 test("ClipRenderAttempt replays the same frozen work set idempotently", async () => {
-	const expected: RenderWorkSetOutcome = {
+	const expected: RenderGroupOutcome = {
 		status: "completed",
 		requested: 1,
 		succeeded: 1,
 		failed: 0,
 		superseded: 0,
-		followUpWorkflowRunId: null,
 	};
 	const harness = createOrdinaryTracer({
 		attemptId: "30000000-0000-4000-8000-000000000057",
@@ -2466,7 +2446,6 @@ for (const failure of ["begin", "state_load"] as const) {
 				succeeded: 0,
 				failed: 1,
 				superseded: 0,
-				followUpWorkflowRunId: null,
 			},
 		});
 
@@ -2491,7 +2470,6 @@ test("ClipRenderAttempt retains a provisional object when completion loses owner
 			succeeded: 0,
 			failed: 1,
 			superseded: 0,
-			followUpWorkflowRunId: null,
 		},
 	});
 
@@ -2523,13 +2501,12 @@ test("ClipRenderAttempt retains a provisional object when completion loses owner
 });
 
 test("ClipRenderAttempt retains a provisional object when guarded completion is uncertain", async () => {
-	const expected: RenderWorkSetOutcome = {
-		status: "requeued",
+	const expected: RenderGroupOutcome = {
+		status: "queued",
 		requested: 1,
 		succeeded: 0,
 		failed: 1,
 		superseded: 0,
-		followUpWorkflowRunId: null,
 	};
 	const harness = createOrdinaryTracer({
 		attemptId: "30000000-0000-4000-8000-000000000062",
@@ -2562,13 +2539,12 @@ test("ClipRenderAttempt retains a provisional object when guarded completion is 
 });
 
 test("ClipRenderAttempt diagnoses cleanup failure without reversing settlement", async () => {
-	const expected: RenderWorkSetOutcome = {
+	const expected: RenderGroupOutcome = {
 		status: "completed",
 		requested: 1,
 		succeeded: 1,
 		failed: 0,
 		superseded: 0,
-		followUpWorkflowRunId: null,
 	};
 	const harness = createOrdinaryTracer({
 		attemptId: "30000000-0000-4000-8000-000000000061",
@@ -2594,21 +2570,31 @@ test("ClipRenderAttempt diagnoses cleanup failure without reversing settlement",
 
 for (const phase of ["lookup", "enqueue", "synchronous_enqueue"] as const) {
 	test(`ClipRenderAttempt keeps committed bytes when analytics ${phase} fails`, async () => {
-		const outcome: RenderWorkSetOutcome = {
+		const outcome: RenderGroupOutcome = {
 			status: "completed",
 			requested: 1,
 			succeeded: 1,
 			failed: 0,
 			superseded: 0,
-			followUpWorkflowRunId: null,
 		};
+		const references = new Set<string>();
+		const completion = mock<
+			ClipRenderAttemptAdapters["clip"]["completeClipRenderVariant"]
+		>(async (_attempt, _id, result) => {
+			references.add(result.storageKey);
+			return { persisted: true };
+		});
 		const harness = createOrdinaryTracer({
 			attemptId: "30000000-0000-4000-8000-000000000070",
 			outcome,
 			productionCompletion: true,
 			diagnoseThrows: true,
+			groups: {
+				completeClipRenderVariant: async (
+					...args: Parameters<typeof completion>
+				) => (await completion(...args)).persisted,
+			},
 		});
-		const references = new Set<string>();
 		const lookup = async () => {
 			if (phase === "lookup") throw new Error("analytics read unavailable");
 			return {
@@ -2619,20 +2605,6 @@ for (const phase of ["lookup", "enqueue", "synchronous_enqueue"] as const) {
 		};
 		const prisma = spyOn(database, "getPrismaClient").mockReturnValue({
 			clipRender: { findUnique: lookup },
-		} as never);
-		const completion = mock<
-			ClipRenderAttemptAdapters["clip"]["completeClipRenderVariant"]
-		>(async (_attempt, _id, result) => {
-			references.add(result.storageKey);
-			return { persisted: true };
-		});
-		const lifecycle = spyOn(
-			services,
-			"getWorkflowRunLifecycle",
-		).mockReturnValue({
-			completeClipRenderVariant: async (
-				...args: Parameters<typeof completion>
-			) => (await completion(...args)).persisted,
 		} as never);
 		const analytics = spyOn(
 			analyticsService,
@@ -2659,19 +2631,17 @@ for (const phase of ["lookup", "enqueue", "synchronous_enqueue"] as const) {
 		} finally {
 			analytics.mockRestore();
 			prisma.mockRestore();
-			lifecycle.mockRestore();
 		}
 	});
 }
 
 test("ClipRenderAttempt preserves a completed object's bytes after lost commit acknowledgement", async () => {
-	const outcome: RenderWorkSetOutcome = {
+	const outcome: RenderGroupOutcome = {
 		status: "completed",
 		requested: 1,
 		succeeded: 1,
 		failed: 0,
 		superseded: 0,
-		followUpWorkflowRunId: null,
 	};
 	const harness = createOrdinaryTracer({
 		attemptId: "30000000-0000-4000-8000-000000000071",
@@ -2729,13 +2699,12 @@ test("ClipRenderAttempt preserves a completed object's bytes after lost commit a
 
 for (const referenceRead of ["rejected", "stalled", "referenced"] as const) {
 	test(`ClipRenderAttempt retains a stale upload when its reference read is ${referenceRead}`, async () => {
-		const outcome: RenderWorkSetOutcome = {
+		const outcome: RenderGroupOutcome = {
 			status: "completed",
 			requested: 1,
 			succeeded: 0,
 			failed: 0,
 			superseded: 1,
-			followUpWorkflowRunId: null,
 		};
 		const harness = createOrdinaryTracer({
 			attemptId: "30000000-0000-4000-8000-000000000072",
@@ -2766,13 +2735,12 @@ for (const referenceRead of ["rejected", "stalled", "referenced"] as const) {
 
 for (const cancelAfterUpload of [false, true]) {
 	test(`ClipRenderAttempt bounds a stalled cleanup ${cancelAfterUpload ? "after cancellation" : "after supersession"}`, async () => {
-		const outcome: RenderWorkSetOutcome = {
+		const outcome: RenderGroupOutcome = {
 			status: "completed",
 			requested: 1,
 			succeeded: 0,
 			failed: 0,
 			superseded: 1,
-			followUpWorkflowRunId: null,
 		};
 		const harness = createOrdinaryTracer({
 			attemptId: "30000000-0000-4000-8000-000000000073",
@@ -2809,13 +2777,12 @@ for (const completionControlFlow of [
 	"ownership_loss",
 ] as const) {
 	test(`ClipRenderAttempt preserves committed bytes and original ${completionControlFlow} during completion`, async () => {
-		const outcome: RenderWorkSetOutcome = {
+		const outcome: RenderGroupOutcome = {
 			status: "completed",
 			requested: 1,
 			succeeded: 1,
 			failed: 0,
 			superseded: 0,
-			followUpWorkflowRunId: null,
 		};
 		const harness = createOrdinaryTracer({
 			attemptId: "30000000-0000-4000-8000-000000000074",
@@ -2846,12 +2813,10 @@ for (const phase of ["source", "encode"] as const) {
       { failureScope: "executor", errno: "EBADF", executableClass: phase === "source" ? "ffprobe" : "ffmpeg" });
     const harness = createOrdinaryTracer({ attemptId: "30000000-0000-4000-8000-000000000099",
       ...(phase === "source" ? { sourceHealthFailure: failure } : { commandHealthFailure: failure }),
-      outcome: { status: "failed", requested: 1, succeeded: 0, failed: 1, superseded: 0, followUpWorkflowRunId: null } });
+      outcome: { status: "failed", requested: 1, succeeded: 0, failed: 1, superseded: 0 } });
     await expect(harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal))).rejects.toBe(failure);
     expect(harness.settlementCalls()).toBe(0);
     expect(harness.uploadedKeys).toEqual([]);
     expect(harness.actions.some((action) => action.startsWith("variant_failure:"))).toBe(false);
-    const { renderInterruptionMediaStarted } = await import("../render-executor-health");
-    expect(renderInterruptionMediaStarted(failure)).toBe(false);
   });
 }

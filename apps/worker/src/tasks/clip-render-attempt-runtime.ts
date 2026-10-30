@@ -17,7 +17,6 @@ import {
 	listObjectPageByPrefix,
 	guardedFetch as productionGuardedFetch,
 	getLayoutEvidenceLifecycle,
-	getWorkflowRunLifecycle,
 	presignDownloadUrl as productionPresignDownloadUrl,
 	putFileFromPath as productionPutFileFromPath,
 	rethrowWorkflowAttemptLost,
@@ -26,7 +25,11 @@ import {
 	WorkflowFailure,
 	workflowHttpFailureDisposition,
 	type MotionRenderAnalyticsMetadata,
+	type RenderGroupAttemptRef,
+	type WorkflowAttemptRef,
+	type RenderGroupLifecycle,
 } from "@narriflow/services";
+import { asAttemptLost } from "../render-group-executor";
 import type { RenderConfig } from "../render-config";
 import {
 	productionWorkerProcessModule,
@@ -62,6 +65,15 @@ import {
 
 export interface ClipRenderAttemptRuntimeOptions
 	extends Omit<ClipRenderAttemptDependencies, "adapters"> {
+	/** The leased group this attempt renders; every durable write carries it. */
+	group: RenderGroupAttemptRef;
+	groups: Pick<
+		RenderGroupLifecycle,
+		| "markClipRenderVariantRendering"
+		| "completeClipRenderVariant"
+		| "failClipRenderVariant"
+		| "writeLayoutEvidence"
+	>;
 	adapters?: ClipRenderAttemptAdapterOverrides & {
 		remoteMedia?: Partial<RemoteMediaAdapter>;
 	};
@@ -77,6 +89,8 @@ export function createClipRenderAttempt(
 				input.config,
 				signal,
 				withAttemptDiagnosticContext,
+				input.group,
+				input.groups,
 				input.adapters,
 			),
 	});
@@ -88,6 +102,8 @@ function createRuntimeAdapters(
 	withAttemptDiagnosticContext: Parameters<
 		ClipRenderAttemptDependencies["adapters"]
 	>[1],
+	group: RenderGroupAttemptRef,
+	groups: ClipRenderAttemptRuntimeOptions["groups"],
 	overrides?: ClipRenderAttemptRuntimeOptions["adapters"],
 ): ClipRenderAttemptAdapters {
 	const baseDiagnose =
@@ -161,20 +177,19 @@ function createRuntimeAdapters(
 			diagnose: diagnoseRenderProcessOperation,
 		});
 	}
-	// Bind service prototype methods before merging runtime adapter overrides.
+	// The engine's attempt id is the group token; every write below is fenced by
+	// the group, and a lost group surfaces as the engine's ownership loss.
+	const owned = <T,>(attempt: WorkflowAttemptRef, write: () => Promise<T>) =>
+		asAttemptLost(attempt, write);
 	const productionClipMutationAdapter: ClipRenderAttemptAdapters["clip"] = {
 		markClipRenderVariantRendering: (attempt, clipRenderId) =>
-			getWorkflowRunLifecycle().markClipRenderVariantRendering(
-				attempt,
-				clipRenderId,
+			owned(attempt, () =>
+				groups.markClipRenderVariantRendering(group, clipRenderId),
 			),
 		completeClipRenderVariant: async (attempt, clipRenderId, input) => {
-			const persisted =
-				await getWorkflowRunLifecycle().completeClipRenderVariant(
-					attempt,
-					clipRenderId,
-					input,
-				);
+			const persisted = await owned(attempt, () =>
+				groups.completeClipRenderVariant(group, clipRenderId, input),
+			);
 			if (persisted) {
 				await recordRenderAnalytics(
 					clipRenderId,
@@ -191,40 +206,49 @@ function createRuntimeAdapters(
 			disposition = "retryable",
 			motionAnalytics,
 		) => {
-			const persisted = await getWorkflowRunLifecycle().failClipRenderVariant(
-				attempt,
-				clipRenderId,
-				errorCode,
-				disposition,
+			const persisted = await owned(attempt, () =>
+				groups.failClipRenderVariant(group, clipRenderId, errorCode, disposition),
 			);
 			if (persisted) {
 				await recordRenderAnalytics(clipRenderId, "failed", motionAnalytics);
 			}
 		},
 		completeClipAutoLayoutAnalysis: (attempt, clipId, analysis, expected) =>
-			getWorkflowRunLifecycle().completeClipAutoLayoutAnalysis(attempt, {
-				clipId,
-				analysis: analysis as never,
-				...expected,
-			}),
+			owned(attempt, () =>
+				groups.writeLayoutEvidence(group, {
+					clipId,
+					field: "automatic",
+					evidence: analysis as never,
+					...expected,
+				}),
+			),
 		completeClipSplitLayoutAnalysis: (attempt, clipId, analysis, expected) =>
-			getWorkflowRunLifecycle().completeClipSplitLayoutAnalysis(attempt, {
-				clipId,
-				analysis: analysis as never,
-				...expected,
-			}),
+			owned(attempt, () =>
+				groups.writeLayoutEvidence(group, {
+					clipId,
+					field: "split",
+					evidence: analysis as never,
+					...expected,
+				}),
+			),
 		completeClipSplitLayoutFailure: (attempt, clipId, failure, expected) =>
-			getWorkflowRunLifecycle().completeClipSplitLayoutFailure(attempt, {
-				clipId,
-				failure: failure as never,
-				...expected,
-			}),
+			owned(attempt, () =>
+				groups.writeLayoutEvidence(group, {
+					clipId,
+					field: "split",
+					evidence: failure as never,
+					...expected,
+				}),
+			),
 		setClipLayoutAnalysis: async (attempt, clipId, analysis, expected) => {
-			await getWorkflowRunLifecycle().setClipLayoutAnalysis(attempt, {
-				clipId,
-				analysis: analysis as never,
-				...expected,
-			});
+			await owned(attempt, () =>
+				groups.writeLayoutEvidence(group, {
+					clipId,
+					field: "screen",
+					evidence: analysis as never,
+					...expected,
+				}),
+			);
 		},
 		setClipLayoutAnalysisFailure: async (
 			attempt,
@@ -232,11 +256,14 @@ function createRuntimeAdapters(
 			failure,
 			expected,
 		) => {
-			await getWorkflowRunLifecycle().setClipLayoutAnalysisFailure(attempt, {
-				clipId,
-				failure: failure as never,
-				...expected,
-			});
+			await owned(attempt, () =>
+				groups.writeLayoutEvidence(group, {
+					clipId,
+					field: "screen",
+					evidence: failure as never,
+					...expected,
+				}),
+			);
 		},
 	};
 
@@ -304,10 +331,6 @@ function createRuntimeAdapters(
 				getLayoutEvidenceLifecycle().readCompatibleDurable(clipId, frozen),
 		},
 		facts: processRenderFactCache,
-		project: {
-			reportProgress: (attempt, progress) =>
-				getWorkflowRunLifecycle().reportProgress(attempt, progress),
-		},
 		clip: productionClipMutationAdapter,
 		audioAsset: productionAudioAssetService,
 		assets: { loadSceneSources },

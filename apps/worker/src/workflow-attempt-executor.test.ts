@@ -1,6 +1,3 @@
-import { WorkerProcessFailure, executorProcessFailure } from "./worker-process";
-import { RenderResourceDeferral } from "./render-resource-budget";
-import { recordRenderInterruption } from "./render-executor-health";
 import { expect, test } from "bun:test";
 import type {
   ClaimedWorkflowAttempt,
@@ -257,42 +254,4 @@ test("only the claimed attempt's execution runs under the held lease, not the cl
 
   expect(processed).toBe(1);
   expect(events).toEqual(["claim", "lease:start", "process", "lease:end"]);
-});
-
-for (const cause of [
-  new WorkerProcessFailure("worker_command_spawn_failed", "retryable", "spawn EBADF", "", null, { failureScope: "executor", errno: "EBADF", executableClass: "ffprobe" }),
-  new RenderResourceDeferral("render_scratch_disk_low", "disk pressure", 30),
-]) {
-  test(`repeated ${cause.code} claims are refunded and unhealthy executors cannot reclaim`, async () => {
-    let attempts = 0;
-    let claims = 0;
-    let ready = true;
-    let releases = 0;
-    const attempt = { workflowRunId: "run", projectId: "project", stage: "clip_rendering", attemptId: "attempt", attemptCount: 1 } as ClaimedWorkflowAttempt & { stage: "clip_rendering" };
-    for (let index = 0; index < 8; index += 1) {
-      await executeNextWorkflowAttempt({ stage: "clip_rendering", canStart: () => ready,
-        onExecutorFailure: () => { ready = false; },
-        lifecycle: {
-          claim: async () => { attempts += 1; claims += 1; return attempt; },
-          runAttempt: async (_attempt, handler) => handler({ signal: new AbortController().signal, reportProgress: async () => {} }),
-          releaseAttempt: async (_attempt, options) => { if (options?.refundAttempt) attempts -= 1; releases += 1; return true; },
-        }, process: async () => { throw cause; },
-      });
-    }
-    expect(attempts).toBe(0);
-    expect(claims).toBe(executorProcessFailure(cause) ? 1 : 8);
-    expect(releases).toBe(claims);
-  });
-}
-
-test("a partially executed parent keeps its charge when released; completed siblings are service-owned", async () => {
-  const failure = new WorkerProcessFailure("worker_command_spawn_failed", "retryable", "EMFILE", "", null, { failureScope: "executor" });
-  recordRenderInterruption(failure, true);
-  let refund: boolean | undefined;
-  await executeNextWorkflowAttempt({ stage: "clip_rendering", lifecycle: {
-    claim: async () => ({ stage: "clip_rendering" }) as ClaimedWorkflowAttempt & { stage: "clip_rendering" },
-    runAttempt: async () => { throw failure; },
-    releaseAttempt: async (_attempt, options) => { refund = options?.refundAttempt; return true; },
-  }, process: async () => {} });
-  expect(refund).toBe(false);
 });

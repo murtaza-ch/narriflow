@@ -102,6 +102,7 @@ try {
     "bun",
     "test",
     "packages/services/src/render-group-lifecycle.db.test.ts",
+    "packages/services/src/render-group-replicas.db.test.ts",
     "packages/services/src/workflow-render-rescue.db.test.ts",
     "packages/services/src/clip-export-retry.db.test.ts",
     "packages/services/src/workflow-run-lifecycle.db.test.ts",

@@ -1,5 +1,5 @@
 import type { Server } from "node:http";
-import { assertRenderEnvironment, loadLock } from "../scripts/check-render-environment";
+import { assertRenderEnvironment, fingerprintId, loadLock } from "../scripts/check-render-environment";
 import { executorProcessFailure, WorkerProcessFailure } from "./worker-process";
 
 /** Port ownership is established before any polling, including startup sweeps. */
@@ -13,7 +13,8 @@ export async function reserveWorkerHealthPort(server: Server, port: number): Pro
   });
 }
 
-export async function verifySharedRenderEnvironment(): Promise<void> {
+/** Verifies the runtime and returns its fingerprint id for execution records. */
+export async function verifySharedRenderEnvironment(): Promise<string> {
   const fingerprint = await assertRenderEnvironment();
   // The golden CLI allows report-only hosts. Shared queues never do.
   if (!loadLock().platforms[fingerprint.platform] || !fingerprint.glyphRender.sha256 ||
@@ -21,14 +22,7 @@ export async function verifySharedRenderEnvironment(): Promise<void> {
     Object.values(fingerprint.encoders).some((present) => !present)) {
     throw new Error("shared_render_runtime_unverified");
   }
-}
-
-const mediaStartedByFailure = new WeakMap<Error, boolean>();
-export function recordRenderInterruption(error: unknown, mediaStarted: boolean): void {
-  if (error instanceof Error) mediaStartedByFailure.set(error, mediaStarted);
-}
-export function renderInterruptionMediaStarted(error: unknown): boolean {
-  return error instanceof Error && mediaStartedByFailure.get(error) === true;
+  return fingerprintId(fingerprint);
 }
 
 /** Health recovery is independent of the existing poll stall watchdog. */

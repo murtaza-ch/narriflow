@@ -83,6 +83,11 @@ import {
 } from "./clip-preview-storage";
 import { analyticsService } from "./analytics.service";
 import { hasFeature } from "./plan-features";
+import {
+  renderGroupExportIdentity,
+  type RenderGroupConfiguration,
+} from "./render-group-contract";
+import type { RenderGroupAdmission } from "./render-group-lifecycle";
 import { assertClipExportDocumentAllowed } from "./clip-export.service";
 import { accessibleProjectWhere } from "./project-access";
 import { workspaceService } from "./workspace.service";
@@ -2410,6 +2415,8 @@ export class ClipService {
   async getFrozenRenderingStateForWorkSet(
     projectId: string,
     workflowRunId: string,
+    /** A render group reads only its own members. */
+    variantIds?: readonly string[],
   ) {
     const prisma = requirePrisma();
     const snapshotAt = new Date();
@@ -2433,6 +2440,7 @@ export class ClipService {
           where: {
             workflowRunId,
             status: "pending",
+            ...(variantIds ? { id: { in: [...variantIds] } } : {}),
             clip: {
               projectId,
               project: accessibleProjectWhere(snapshotAt),
@@ -2464,6 +2472,63 @@ export class ClipService {
       },
       { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
     );
+  }
+
+  /**
+   * The complete Render Group partition of a frozen Render Work Set: one group
+   * per clip and frozen export configuration, so aspect variants that share an
+   * export share their analysis and one encode. Returns null once the work set
+   * has been admitted; a reclaiming coordinator then continues from the stored
+   * membership instead of recomputing it from rows that have since settled.
+   */
+  async planRenderGroups(
+    projectId: string,
+    workflowRunId: string,
+  ): Promise<readonly RenderGroupAdmission[] | null> {
+    const prisma = requirePrisma();
+    const run = await prisma.workflowRun.findFirst({
+      where: { id: workflowRunId, projectId },
+      select: {
+        renderWorkSetGeneration: true,
+        project: { select: { workspace: { select: { pricingTier: true } } } },
+      },
+    });
+    if (!run) throw new Error("Render work set run not found");
+    if (run.renderWorkSetGeneration) return null;
+    const noWatermark = hasFeature(
+      resolvePricingTier(run.project.workspace.pricingTier),
+      "export.noWatermark",
+    );
+    const variants = await prisma.clipRender.findMany({
+      where: { workflowRunId, clip: { projectId } },
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+      select: {
+        id: true,
+        clipId: true,
+        resolution: true,
+        editorRevision: true,
+        clip: { select: { editorRevision: true } },
+        exportVariant: { select: { exportId: true, watermark: true } },
+      },
+    });
+    const groups = new Map<
+      string,
+      { configuration: RenderGroupConfiguration; variantIds: string[] }
+    >();
+    for (const variant of variants) {
+      const configuration: RenderGroupConfiguration = {
+        clipId: variant.clipId,
+        exportId: variant.exportVariant?.exportId ?? null,
+        editorRevision: variant.editorRevision ?? variant.clip.editorRevision,
+        resolution: variant.resolution,
+        watermark: variant.exportVariant?.watermark ?? !noWatermark,
+      };
+      const key = `${configuration.clipId}:${renderGroupExportIdentity(configuration)}`;
+      const group = groups.get(key) ?? { configuration, variantIds: [] };
+      group.variantIds.push(variant.id);
+      groups.set(key, group);
+    }
+    return [...groups.values()];
   }
 
   /** Queues a fresh clip_rendering run for variants that were added while a
