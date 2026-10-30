@@ -9,6 +9,7 @@ import { Provider } from "@narriflow/ui/provider";
 import { Toaster } from "@narriflow/ui/components/toaster";
 import { AuthModal } from "./_components/auth/auth-modal";
 import { captionFontVariables } from "./caption-fonts";
+import "./caption-script-fonts.css";
 
 const metadataDescription =
   "Turn long videos into short, captioned, virality-scored clips — plus repurposing, dubbing, and social publishing.";

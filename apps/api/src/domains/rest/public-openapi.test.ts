@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { Hono } from "hono";
+import { SCRIBE_LANGUAGE_CODES } from "@narriflow/validators";
 import { publicV1Document } from "../../../../../packages/api-client/src/openapi";
 import { PUBLIC_API_ORIGIN, publicOpenApiDocument } from "./public-openapi";
 import { createRestRoutes } from "./routes";
@@ -37,5 +38,11 @@ describe("public OpenAPI document", () => {
     const output = await result.outputs[0]!.text();
     expect(output).not.toMatch(/IntegrationAdmission|authenticateApiKey|PrismaClient|DATABASE_URL|OPENAI_API_KEY|CLERK_SECRET_KEY/);
     expect(output).toContain("Narriflow API");
+  });
+
+  test("every language field is the Scribe registry, and the document names no provider, model or accuracy", () => {
+    const schemas = publicV1Document.components.schemas as Record<string, { properties?: Record<string, { enum?: unknown[] }> }>;
+    expect(schemas.GenerationSettings?.properties?.languageCode?.enum).toEqual([...SCRIBE_LANGUAGE_CODES, null]);
+    expect(JSON.stringify(publicV1Document)).not.toMatch(/assembly|universal-?\d|accuracy|\bscribe\b|elevenlabs/i);
   });
 });

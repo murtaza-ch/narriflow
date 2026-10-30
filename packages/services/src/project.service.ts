@@ -2231,6 +2231,17 @@ export class ProjectService {
 		return probe.success ? probe.data.durationSec : null;
 	}
 
+	/** The language captions are cased, shaped and directed in: what the
+	 * transcript detected, else the language the project asked for. */
+	async getCaptionLanguage(scope: ActorScope, projectId: string): Promise<string | null> {
+		await this.requireActor(scope, "content.view");
+		const row = await this.requirePrisma().project.findFirst({
+			where: { id: projectId, workspaceId: scope.workspaceId, ...accessibleProjectWhere() },
+			select: { languageCode: true, transcript: { select: { languageCode: true } } },
+		});
+		return row ? (row.transcript?.languageCode ?? row.languageCode ?? null) : null;
+	}
+
 	async getProjectLanguageCodeForWorker(
 		projectId: string,
 	): Promise<string | null> {

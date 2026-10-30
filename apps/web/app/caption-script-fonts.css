@@ -1,0 +1,178 @@
+/*
+ * Fallback caption faces for the browser: the SAME vendored Noto files the
+ * worker hands to libass (packages/caption-fonts/fonts, pinned in
+ * script-fonts.manifest.json), in the family names that manifest records.
+ *
+ * Nothing here downloads until text needs it: a browser fetches an @font-face
+ * only when a character inside its unicode-range reaches that face in the
+ * font stack (caption-script-fonts.ts), so an English cue loads none of them.
+ * Ranges for the 18 faces in the manifest are copied from it; the other faces'
+ * ranges are the blocks their cmap covers (shared Latin punctuation left to
+ * Noto Sans). Faces are served as vendored: converting the CJK files to WOFF2
+ * measured about 25% smaller (Noto Sans JP 4.5 -> 3.4 MB), not worth a second
+ * copy of each binary. Ascent/descent stay each face's own, so a fallback line
+ * is as tall as libass draws it.
+ */
+
+@font-face {
+  font-family: "Noto Sans";
+  src: url("../../../packages/caption-fonts/fonts/NotoSans-Regular.ttf") format("truetype");
+  font-display: swap;
+  unicode-range: U+20-52F, U+1C80-1C88, U+1D00-1DBF, U+1E00-1FFF, U+2000-206F, U+20A0-20CF, U+2100-2189, U+2212, U+25CC, U+2C60-2C7F, U+A640-A69F, U+A720-A7FF, U+FB00-FB06, U+FEFF;
+}
+@font-face {
+  font-family: "Noto Sans Arabic";
+  src: url("../../../packages/caption-fonts/fonts/NotoSansArabic-Regular.ttf") format("truetype");
+  font-display: swap;
+  unicode-range: U+600-6FF, U+750-77F, U+870-8FF, U+FB50-FDFF, U+FE70-FEFF;
+}
+@font-face {
+  font-family: "Noto Sans Hebrew";
+  src: url("../../../packages/caption-fonts/fonts/NotoSansHebrew-Regular.ttf") format("truetype");
+  font-display: swap;
+  unicode-range: U+591-5F4, U+20AA, U+FB1D-FB4F;
+}
+@font-face {
+  font-family: "Noto Sans Devanagari";
+  src: url("../../../packages/caption-fonts/fonts/NotoSansDevanagari-Regular.ttf") format("truetype");
+  font-display: swap;
+  unicode-range: U+900-97F, U+1CD0-1CF9, U+200C-200D, U+20B9, U+A8E0-A8FF;
+}
+@font-face {
+  font-family: "Noto Sans Thai";
+  src: url("../../../packages/caption-fonts/fonts/NotoSansThai-Regular.ttf") format("truetype");
+  font-display: swap;
+  unicode-range: U+E01-E5B;
+}
+@font-face {
+  font-family: "Noto Sans Armenian";
+  src: url("../../../packages/caption-fonts/fonts/NotoSansArmenian-Regular.ttf") format("truetype");
+  font-display: swap;
+  unicode-range: U+530-58F, U+FB13-FB17;
+}
+@font-face {
+  font-family: "Noto Sans Bengali";
+  src: url("../../../packages/caption-fonts/fonts/NotoSansBengali-Regular.ttf") format("truetype");
+  font-display: swap;
+  unicode-range: U+980-9FF, U+200C-200D;
+}
+@font-face {
+  font-family: "Noto Sans Gurmukhi";
+  src: url("../../../packages/caption-fonts/fonts/NotoSansGurmukhi-Regular.ttf") format("truetype");
+  font-display: swap;
+  unicode-range: U+A00-A7F, U+200C-200D;
+}
+@font-face {
+  font-family: "Noto Sans Gujarati";
+  src: url("../../../packages/caption-fonts/fonts/NotoSansGujarati-Regular.ttf") format("truetype");
+  font-display: swap;
+  unicode-range: U+A80-AFF, U+200C-200D;
+}
+@font-face {
+  font-family: "Noto Sans Oriya";
+  src: url("../../../packages/caption-fonts/fonts/NotoSansOriya-Regular.ttf") format("truetype");
+  font-display: swap;
+  unicode-range: U+B00-B7F, U+200C-200D;
+}
+@font-face {
+  font-family: "Noto Sans Tamil";
+  src: url("../../../packages/caption-fonts/fonts/NotoSansTamil-Regular.ttf") format("truetype");
+  font-display: swap;
+  unicode-range: U+B80-BFF, U+200C-200D;
+}
+@font-face {
+  font-family: "Noto Sans Telugu";
+  src: url("../../../packages/caption-fonts/fonts/NotoSansTelugu-Regular.ttf") format("truetype");
+  font-display: swap;
+  unicode-range: U+C00-C7F, U+200C-200D;
+}
+@font-face {
+  font-family: "Noto Sans Kannada";
+  src: url("../../../packages/caption-fonts/fonts/NotoSansKannada-Regular.ttf") format("truetype");
+  font-display: swap;
+  unicode-range: U+C80-CFF, U+200C-200D;
+}
+@font-face {
+  font-family: "Noto Sans Malayalam";
+  src: url("../../../packages/caption-fonts/fonts/NotoSansMalayalam-Regular.ttf") format("truetype");
+  font-display: swap;
+  unicode-range: U+D00-D7F, U+200C-200D;
+}
+@font-face {
+  font-family: "Noto Sans Sinhala";
+  src: url("../../../packages/caption-fonts/fonts/NotoSansSinhala-Regular.ttf") format("truetype");
+  font-display: swap;
+  unicode-range: U+D80-DFF, U+200C-200D;
+}
+@font-face {
+  font-family: "Noto Sans Lao";
+  src: url("../../../packages/caption-fonts/fonts/NotoSansLao-Regular.ttf") format("truetype");
+  font-display: swap;
+  unicode-range: U+E80-EFF;
+}
+@font-face {
+  font-family: "Noto Sans Khmer";
+  src: url("../../../packages/caption-fonts/fonts/NotoSansKhmer-Regular.ttf") format("truetype");
+  font-display: swap;
+  unicode-range: U+1780-17FF, U+19E0-19FF, U+200C-200D;
+}
+@font-face {
+  font-family: "Noto Sans Myanmar";
+  src: url("../../../packages/caption-fonts/fonts/NotoSansMyanmar-Regular.ttf") format("truetype");
+  font-display: swap;
+  unicode-range: U+1000-109F, U+A9E0-A9FF, U+AA60-AA7F;
+}
+@font-face {
+  font-family: "Noto Sans Georgian";
+  src: url("../../../packages/caption-fonts/fonts/NotoSansGeorgian-Regular.ttf") format("truetype");
+  font-display: swap;
+  unicode-range: U+10A0-10FF, U+1C90-1CBF, U+2D00-2D2F;
+}
+@font-face {
+  font-family: "Noto Sans Ethiopic";
+  src: url("../../../packages/caption-fonts/fonts/NotoSansEthiopic-Regular.ttf") format("truetype");
+  font-display: swap;
+  unicode-range: U+1200-139F, U+2D80-2DDF, U+AB00-AB2F;
+}
+@font-face {
+  font-family: "Noto Sans SC";
+  src: url("../../../packages/caption-fonts/fonts/NotoSansSC-Regular.otf") format("opentype");
+  font-display: swap;
+  unicode-range: U+2E80-2FDF, U+3000-33FF, U+3400-4DBF, U+4E00-9FFF, U+F900-FAFF, U+FE30-FE4F, U+FF00-FFEF, U+20000-2FA1F, U+30000-3134F;
+}
+@font-face {
+  font-family: "Noto Sans KR";
+  src: url("../../../packages/caption-fonts/fonts/NotoSansKR-Regular.otf") format("opentype");
+  font-display: swap;
+  unicode-range: U+1100-11FF, U+3130-318F, U+A960-A97F, U+AC00-D7FF;
+}
+@font-face {
+  font-family: "Noto Sans JP";
+  src: url("../../../packages/caption-fonts/fonts/NotoSansJP-Regular.otf") format("opentype");
+  font-display: swap;
+  unicode-range: U+3000-30FF, U+3000-303F, U+3400-4DBF, U+4E00-9FFF, U+FF00-FFEF;
+}
+@font-face {
+  font-family: "Noto Sans TC";
+  src: url("../../../packages/caption-fonts/fonts/NotoSansTC-Regular.otf") format("opentype");
+  font-display: swap;
+  unicode-range: U+3000-30FF, U+3000-303F, U+3400-4DBF, U+4E00-9FFF, U+FF00-FFEF;
+}
+@font-face {
+  font-family: "Noto Nastaliq Urdu";
+  src: url("../../../packages/caption-fonts/fonts/NotoNastaliqUrdu-Regular.ttf") format("truetype");
+  font-display: swap;
+  unicode-range: U+600-6FF, U+750-77F, U+8A0-8FF, U+FB50-FDFF, U+FE70-FEFF;
+}
+@font-face {
+  font-family: "Noto Sans Symbols 2";
+  src: url("../../../packages/caption-fonts/fonts/NotoSansSymbols2-Regular.ttf") format("truetype");
+  font-display: swap;
+  unicode-range: U+2022-244A, U+25A0-29EB, U+2B00-2BFF, U+4DC0-4DFF, U+FFF9-FFFB, U+10140-102FB, U+1D2C0-1D378, U+1F000-1F1AD, U+1F30D-1FBF9;
+}
+@font-face {
+  font-family: "Noto Emoji";
+  src: url("../../../packages/caption-fonts/fonts/NotoEmoji-Regular.ttf") format("truetype");
+  font-display: swap;
+  unicode-range: U+200D, U+203C, U+2049, U+2122, U+2139, U+2194-2199, U+21A9-21AA, U+231A-27BF, U+2934-2935, U+2B05-2B55, U+3030-303D, U+3297-3299, U+FE0E-FE0F, U+1F004-1F7F0, U+1F90C-1FAF8, U+E0030-E007F;
+}

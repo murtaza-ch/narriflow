@@ -193,6 +193,7 @@ export function InteractiveCaptionOverlay({
     visibleWords: layer.words.map((word, index) => ({
       word: word.text,
       emoji: word.emoji,
+      ...(word.spaceBefore === undefined ? {} : { spaceBefore: word.spaceBefore }),
       durationMs: Math.max(50, Math.round((word.endSec - word.startSec) * 1000)),
       // The export's own window for this word's emoji: through the next word's start.
       emojiWindow: { startSec: word.startSec, endSec: captionWordSegmentEnd(layer.words, index) },
@@ -395,6 +396,7 @@ export function InteractiveCaptionOverlay({
             reducedMotion={reducedMotion}
             timeSec={currentTime}
             preformatted
+            language={layer.language}
           />
         </motion.div>
       </div>

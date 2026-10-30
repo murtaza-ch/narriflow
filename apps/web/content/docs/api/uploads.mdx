@@ -208,7 +208,7 @@ The same `generation` object works on `POST /uploads`, `POST /projects` and `POS
 | `autoHook` | `true` | Add a generated hook to each clip. |
 | `specificMoments` | `""` | Up to 500 characters describing moments to find. |
 | `processingStartSec`, `processingEndSec` | `null` | Process only this part of the video, in seconds. |
-| `languageCode` | `null` | The spoken language, or `null` to detect it. |
+| `languageCode` | `null` | The spoken language, or `null` to detect it. One of over 100 codes: ISO 639-1 where the language has one (`en`, `ur`, `ja`), otherwise ISO 639-3 (`yue`, `fil`, `ast`). The [OpenAPI document](https://api.narriflow.example/api/v1/openapi.json) lists every code. |
 
 ## Finishing
 
