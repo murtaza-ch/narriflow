@@ -28,3 +28,5 @@ apps/worker/models/
 
 # Browser verification screenshots (local evidence only)
 .scratch/api-extraction/browser*/
+
+.scratch/final-review-2026-10-30/live/
