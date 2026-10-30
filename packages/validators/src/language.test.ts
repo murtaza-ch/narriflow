@@ -1,123 +1,110 @@
 import { describe, expect, test } from "bun:test";
 import {
-  ASSEMBLYAI_LANGUAGES,
-  ASSEMBLYAI_TRANSCRIPT_LANGUAGE_CODES,
-  ASSEMBLYAI_U35_LANGUAGE_CODES,
-  assemblyAiTranscriptLanguageCodeSchema,
-  getAssemblyAiLanguage,
+  CANONICAL_TO_PROVIDER_LANGUAGE_CODE,
+  PROVIDER_TO_CANONICAL_LANGUAGE_CODE,
+  SCRIBE_LANGUAGES,
+  SCRIBE_LANGUAGE_CODES,
+  SCRIBE_MODEL_ID,
+  getSourceLanguageLabel,
+  languageDirection,
+  languageScript,
+  normalizeProviderLanguageCode,
   sourceLanguageCodeFromFormValue,
   sourceLanguageCodeSchema,
+  sourceLanguageInputSchema,
+  toProviderLanguageCode,
 } from "./language";
 
-describe("AssemblyAI language registry", () => {
-  test("contains every unique current TranscriptLanguageCode enum value", () => {
-    expect(ASSEMBLYAI_TRANSCRIPT_LANGUAGE_CODES).toHaveLength(102);
-    expect(new Set(ASSEMBLYAI_TRANSCRIPT_LANGUAGE_CODES).size).toBe(102);
-    expect(ASSEMBLYAI_LANGUAGES).toHaveLength(102);
-    expect(new Set(ASSEMBLYAI_LANGUAGES.map(({ code }) => code)).size).toBe(102);
+describe("Scribe v2 language registry", () => {
+  test("enumerates the documented 100 languages plus Yoruba", () => {
+    expect(SCRIBE_MODEL_ID).toBe("scribe_v2");
+    expect(SCRIBE_LANGUAGES).toHaveLength(101);
+    expect(new Set(SCRIBE_LANGUAGE_CODES).size).toBe(101);
+    expect(new Set(SCRIBE_LANGUAGES.map((l) => l.providerCode)).size).toBe(101);
+    expect(new Set(SCRIBE_LANGUAGES.map((l) => l.label)).size).toBe(101);
   });
 
-  test("maps the exact U3.5 codes to all 18 documented core languages", () => {
-    expect(ASSEMBLYAI_U35_LANGUAGE_CODES).toHaveLength(21);
-    const coreLanguages = new Set(
-      ASSEMBLYAI_LANGUAGES.filter(
-        ({ modelSupport }) => modelSupport === "u35-direct",
-      ).map(({ code, label }) => {
-        if (code.startsWith("en")) return "English";
-        if (code === "zh") return "Chinese (Mandarin)";
-        return label;
-      }),
-    );
-
-    expect([...coreLanguages].sort()).toEqual(
-      [
-        "Arabic",
-        "Chinese (Mandarin)",
-        "Danish",
-        "Dutch",
-        "English",
-        "Finnish",
-        "French",
-        "German",
-        "Hebrew",
-        "Hindi",
-        "Italian",
-        "Japanese",
-        "Norwegian",
-        "Portuguese",
-        "Spanish",
-        "Swedish",
-        "Turkish",
-        "Vietnamese",
-      ].sort(),
-    );
+  test("canonical code is ISO 639-1 when one exists, else ISO 639-3", () => {
+    for (const { code, providerCode } of SCRIBE_LANGUAGES) {
+      expect(providerCode).toMatch(/^[a-z]{3}$/);
+      expect(code).toMatch(/^[a-z]{2,3}$/);
+      if (code.length === 3) expect(code).toBe(providerCode);
+    }
+    for (const code of ["yue", "fil", "ceb", "ast", "kea", "luo", "nso", "umb"]) {
+      expect(SCRIBE_LANGUAGE_CODES).toContain(code);
+    }
+    expect(SCRIBE_LANGUAGE_CODES).not.toContain("tl");
   });
 
-  test("marks representative extended languages and official U2 bands", () => {
-    expect(getAssemblyAiLanguage("ur")).toEqual(
-      expect.objectContaining({
-        label: "Urdu",
-        modelSupport: "u2-fallback",
-        accuracyBand: "good",
-      }),
-    );
-    expect(getAssemblyAiLanguage("ko")).toEqual(
-      expect.objectContaining({
-        label: "Korean",
-        modelSupport: "u2-fallback",
-        accuracyBand: "good",
-      }),
-    );
-    expect(getAssemblyAiLanguage("ru")).toEqual(
-      expect.objectContaining({
-        label: "Russian",
-        modelSupport: "u2-fallback",
-        accuracyBand: "high",
-      }),
-    );
+  test("forward and reverse maps round-trip", () => {
+    for (const { code, providerCode } of SCRIBE_LANGUAGES) {
+      expect(CANONICAL_TO_PROVIDER_LANGUAGE_CODE[code]).toBe(providerCode);
+      expect(PROVIDER_TO_CANONICAL_LANGUAGE_CODE[providerCode]).toBe(code);
+      expect(toProviderLanguageCode(code)).toBe(providerCode);
+      expect(normalizeProviderLanguageCode(providerCode)).toBe(code);
+      expect(normalizeProviderLanguageCode(code)).toBe(code);
+    }
+    expect(toProviderLanguageCode("ur")).toBe("urd");
+    expect(toProviderLanguageCode("jv")).toBe("jav");
+    expect(toProviderLanguageCode("yo")).toBe("yor");
+    expect(toProviderLanguageCode("fil")).toBe("fil");
+    expect(toProviderLanguageCode("auto")).toBeNull();
+    expect(toProviderLanguageCode(null)).toBeNull();
   });
 
-  test("preserves every previously offered manual source code", () => {
-    for (const code of [
-      "en",
-      "es",
-      "pt",
-      "fr",
-      "de",
-      "it",
-      "nl",
-      "ru",
-      "tr",
-      "id",
-      "hi",
-      "ar",
-      "zh",
-      "ja",
-      "ko",
-    ]) {
-      expect(assemblyAiTranscriptLanguageCodeSchema.safeParse(code).success).toBe(
-        true,
-      );
+  test("normalizes provider results, aliases and regional tags", () => {
+    expect(normalizeProviderLanguageCode("tl")).toBe("fil");
+    expect(normalizeProviderLanguageCode("jw")).toBe("jv");
+    expect(normalizeProviderLanguageCode("en_us")).toBe("en");
+    expect(normalizeProviderLanguageCode("EN-AU")).toBe("en");
+    expect(normalizeProviderLanguageCode("pt-BR")).toBe("pt");
+    expect(normalizeProviderLanguageCode("eng")).toBe("en");
+    expect(normalizeProviderLanguageCode("urd")).toBe("ur");
+    expect(normalizeProviderLanguageCode("zho")).toBe("zh");
+    expect(normalizeProviderLanguageCode("cmn")).toBe("zh");
+    expect(normalizeProviderLanguageCode("yue")).toBe("yue");
+    expect(normalizeProviderLanguageCode(" HIN ")).toBe("hi");
+  });
+
+  test("returns null for anything outside the registry", () => {
+    for (const value of ["", "auto", "xx", "bre", "yi", "la", "hawaiian", null, undefined]) {
+      expect(normalizeProviderLanguageCode(value)).toBeNull();
     }
   });
 
-  test("normalizes official manual codes but rejects UI and invented codes", () => {
-    expect(sourceLanguageCodeSchema.parse(" EN_US ")).toBe("en_us");
-    expect(assemblyAiTranscriptLanguageCodeSchema.safeParse("auto").success).toBe(
-      false,
-    );
-    expect(assemblyAiTranscriptLanguageCodeSchema.safeParse("en-US").success).toBe(
-      false,
-    );
-    expect(assemblyAiTranscriptLanguageCodeSchema.safeParse("xx").success).toBe(
-      false,
-    );
+  test("script and direction", () => {
+    expect(languageScript("ur")).toBe("Arabic");
+    expect(languageScript("hi")).toBe("Devanagari");
+    expect(languageScript("ja")).toBe("Japanese");
+    expect(languageScript("zh")).toBe("Han");
+    expect(languageScript(null)).toBeNull();
+    expect(languageScript("xx")).toBeNull();
+    const rtl = SCRIBE_LANGUAGES.filter((l) => l.direction === "rtl").map((l) => l.code);
+    expect(rtl.sort()).toEqual(["ar", "fa", "he", "ps", "sd", "ur"]);
+    expect(languageDirection("he")).toBe("rtl");
+    expect(languageDirection("en")).toBe("ltr");
+    expect(languageDirection(null)).toBe("ltr");
   });
 
-  test("converts Auto form mode to null", () => {
+  test("manual source codes are canonical only; Auto is null", () => {
+    expect(sourceLanguageCodeSchema.parse(" UR ")).toBe("ur");
+    expect(sourceLanguageCodeSchema.parse(null)).toBeNull();
+    for (const bad of ["auto", "en-US", "en_us", "tl", "jw", "urd", "xx"]) {
+      expect(sourceLanguageCodeSchema.safeParse(bad).success).toBe(false);
+    }
+    expect(sourceLanguageInputSchema.parse("auto")).toBeNull();
+    expect(sourceLanguageInputSchema.parse("")).toBeNull();
+    expect(sourceLanguageInputSchema.parse("Fil")).toBe("fil");
+    expect(sourceLanguageInputSchema.safeParse("klingon").success).toBe(false);
+  });
+
+  test("converts Auto form mode to null and labels codes", () => {
     expect(sourceLanguageCodeFromFormValue("auto")).toBeNull();
     expect(sourceLanguageCodeFromFormValue("")).toBeNull();
     expect(sourceLanguageCodeFromFormValue(null)).toBeNull();
     expect(sourceLanguageCodeFromFormValue(" UR ")).toBe("ur");
+    expect(getSourceLanguageLabel(null)).toBe("Auto-detect");
+    expect(getSourceLanguageLabel("ur")).toBe("Urdu");
+    expect(getSourceLanguageLabel("yue")).toBe("Cantonese");
   });
 });

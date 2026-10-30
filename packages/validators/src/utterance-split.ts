@@ -1,8 +1,21 @@
+import { joinTranscriptWords } from "./text-script";
 import type { TranscriptUtterance, TranscriptWord } from "./transcript";
 
-/** Matches a word that ends a sentence, allowing a trailing close-quote or
- *  bracket after the terminal punctuation (e.g. `done."`, `right?)`). */
-export const TERMINAL_PUNCTUATION_RE = /[.!?]["')\]]?$/;
+// Sentence terminals: Latin `.!?`, CJK `。！？．`, Arabic `؟`, Urdu `۔`, Indic
+// `।` `॥`, Ethiopic `።`, Myanmar `။`, Armenian `։`, Greek question mark U+037E.
+// ASCII `;` is deliberately not one: it is a clause mark in English.
+const SENTENCE_TERMINALS = ".!?。！？．؟۔।॥።။։\u037E";
+// Closing quotes and brackets that may trail a terminal.
+const CLOSING_MARKS = "\"')\\]’”」』）】〉》»";
+const OPENING_MARKS = "\"'(\\[‘“「『（【〈《«¿¡";
+
+/** Matches a word that ends a sentence, allowing trailing close-quotes or
+ *  brackets after the terminal punctuation (e.g. `done."`, `right?)`, `。」`). */
+export const TERMINAL_PUNCTUATION_RE = new RegExp(
+  `[${SENTENCE_TERMINALS}][${CLOSING_MARKS}]*$`,
+  "u",
+);
+const LEADING_OPENING_MARKS_RE = new RegExp(`^[${OPENING_MARKS}]+`, "u");
 
 // Dotted tokens that end in "." without ending a sentence. Treating these as
 // terminal fragments the transcript ("Dr." became its own utterance) and lets
@@ -26,7 +39,7 @@ export function isTerminalWordText(text: string) {
     return false;
   }
 
-  const bare = trimmed.replace(/^["'([]+/, "");
+  const bare = trimmed.replace(LEADING_OPENING_MARKS_RE, "");
 
   if (NON_TERMINAL_ABBREVIATIONS.has(bare.toLowerCase())) {
     return false;
@@ -57,11 +70,7 @@ function buildSentenceUtterance(
   source: TranscriptUtterance,
   words: TranscriptWord[],
 ): TranscriptUtterance | null {
-  const text = words
-    .map((word) => word.word.trim())
-    .filter(Boolean)
-    .join(" ")
-    .trim();
+  const text = joinTranscriptWords(words);
 
   if (!text) {
     return null;

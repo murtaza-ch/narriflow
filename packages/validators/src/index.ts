@@ -58,6 +58,7 @@ export * from "./supplied-captions";
 export * from "./timed-edits";
 export * from "./timeline-export";
 export * from "./speaker-layout-overrides";
+export * from "./text-script";
 export * from "./transcript";
 export * from "./upload";
 export * from "./utterance-split";

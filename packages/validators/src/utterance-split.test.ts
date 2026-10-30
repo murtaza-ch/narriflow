@@ -141,4 +141,60 @@ describe("abbreviation-aware terminal detection", () => {
     }
     expect(result.map((u) => u.text)).toEqual(["Hello there.", "Great stuff."]);
   });
+
+  test("sentence terminals of other scripts close a sentence", () => {
+    const cases: Array<[string, string, string]> = [
+      ["ideographic stop", "今天天气很好。", "。"],
+      ["fullwidth exclamation", "太好了！", "！"],
+      ["fullwidth question", "你好吗？", "？"],
+      ["fullwidth full stop", "ありがとう．", "．"],
+      ["Arabic question mark", "كيف حالك؟", "؟"],
+      ["Urdu full stop", "یہ اچھا ہے۔", "۔"],
+      ["danda", "यह अच्छा है।", "।"],
+      ["double danda", "ॐ शान्तिः॥", "॥"],
+      ["Ethiopic full stop", "ሰላም ነው።", "።"],
+      ["Myanmar sentence mark", "ကောင်းပါတယ်။", "။"],
+      ["Armenian full stop", "լավ է։", "։"],
+      ["Greek question mark", "τι κάνεις\u037E", "\u037E"],
+    ];
+    for (const [name, text, terminal] of cases) {
+      expect(text.endsWith(terminal), name).toBe(true);
+      const words = makeWords([[text], ["next"]]);
+      const result = splitUtterancesIntoSentences([makeTurn(words)]);
+      expect(result.map((u) => u.text), name).toEqual([text, "next"]);
+    }
+  });
+
+  test("closing quotes and brackets after a script terminal stay with the sentence", () => {
+    for (const text of ["他说「好。」", "(یہ ہے۔)", "«सही है।»", "他说（好！）"]) {
+      const words = makeWords([[text], ["next"]]);
+      const result = splitUtterancesIntoSentences([makeTurn(words)]);
+      expect(result.map((u) => u.text), text).toEqual([text, "next"]);
+    }
+  });
+
+  test("ASCII semicolon is not a terminal", () => {
+    const words = makeWords([["First", "clause;", "second", "clause."]]);
+    const result = splitUtterancesIntoSentences([makeTurn(words)]);
+    expect(result.map((u) => u.text)).toEqual(["First clause; second clause."]);
+  });
+
+  test("decimals and abbreviations stay unchanged", () => {
+    const words = makeWords([["Pi", "is", "3.14", "roughly", "said", "Dr.", "Smith", "of", "the", "U.S.", "today."]]);
+    const result = splitUtterancesIntoSentences([makeTurn(words)]);
+    expect(result).toHaveLength(1);
+  });
+
+  test("CJK tokens rebuild text without spaces and keep spaceBefore", () => {
+    const tokens = [..."今天天气很好。明天会下雨。"];
+    const words = tokens.map((word, i) => ({
+      word,
+      startSec: i * 0.2,
+      endSec: i * 0.2 + 0.2,
+      confidence: 0.9,
+    }));
+    const result = splitUtterancesIntoSentences([makeTurn(words)]);
+    expect(result.map((u) => u.text)).toEqual(["今天天气很好。", "明天会下雨。"]);
+    expect(result[0]!.words).toHaveLength(7);
+  });
 });

@@ -23,3 +23,4 @@ Add an ADR when a decision is costly to reverse, would surprise a reader without
 - [0015: The Publishing Queue holds proposals as draft posts and takes slots under an account lock](0015-publishing-queue.md)
 - [0016: Standing Grants let a person authorize one Autopilot rule's output to go out unattended, and count their caps under the delivery's own lock](0016-standing-grants.md)
 - [0017: One standalone API serves every client; the web app only presents](0017-standalone-api.md)
+- [0018: ElevenLabs Scribe v2 transcribes every Project; the language is pinned from the user's choice or a probe](0018-elevenlabs-scribe-transcription.md)

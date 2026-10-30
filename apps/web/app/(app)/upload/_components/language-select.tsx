@@ -2,20 +2,11 @@
 
 import { Box, Text } from "@chakra-ui/react";
 import { Select } from "@narriflow/ui/components/select";
-import { getAssemblyAiLanguage } from "@narriflow/validators";
 import { Globe, Sparkles } from "lucide-react";
 import { LANGUAGE_OPTIONS } from "../../_shared/languages";
 
-/** Only a language that transcribes below "high" says so in the list. */
-const ACCURACY_NOTE = {
-  good: "Good accuracy",
-  moderate: "Moderate accuracy",
-  fair: "Fair accuracy",
-} as const;
-
-/** The language's own code in a small tile (the region for a variant: US, UK, AU), so a long list scans quickly. */
+/** The language's own code in a small tile, so a long list scans quickly. */
 function LanguageMark({ code }: { code: string }) {
-  const [language = code, region] = code.split("_");
   return (
     <Box w="32px" display="flex" justifyContent="center">
       <Text
@@ -31,7 +22,7 @@ function LanguageMark({ code }: { code: string }) {
         textAlign="center"
         textTransform="uppercase"
       >
-        {region ?? language}
+        {code}
       </Text>
     </Box>
   );
@@ -51,11 +42,9 @@ const languageItems = LANGUAGE_OPTIONS.map((option) => {
       ),
     };
   }
-  const band = getAssemblyAiLanguage(option.code).accuracyBand;
   return {
     label,
     value: option.code,
-    description: band && band !== "high" ? ACCURACY_NOTE[band] : undefined,
     icon: <LanguageMark code={option.code} />,
   };
 });

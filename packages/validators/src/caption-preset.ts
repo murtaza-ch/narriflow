@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { CAPTION_FONT_NAMES } from "./caption-font";
 import { CAPTION_ANIMATION_NAMES } from "./caption-style";
+import { stripCaptionEdgePunctuation } from "./text-script";
 import { brandFontReferenceSchema } from "./timed-edits";
 
 export const BRAND_DEFAULT_CAPTION_PRESET_ID = "brand_default";
@@ -72,23 +73,6 @@ export function emojiForWord(word: string): string | null {
   return CAPTION_EMOJI_MAP[key] ?? null;
 }
 
-// Punctuation/quote/bracket/dash characters stripped from a caption word's
-// EDGES only (never the middle) when punctuation display is off — so
-// "don't," -> "don't" (trailing comma stripped, intra-word apostrophe kept)
-// and "state-of-the-art." -> "state-of-the-art" (trailing period stripped,
-// intra-word hyphens kept). Includes ASCII + common Unicode quote/dash forms
-// (curly quotes, em/en dash, ellipsis) since AssemblyAI tokens carry real
-// punctuation, not just ASCII.
-const CAPTION_EDGE_PUNCT_CHARS = ".,!?;:…\"'“”‘’()[\\]{}<>—–_~`*-";
-const LEADING_CAPTION_PUNCT_RE = new RegExp(
-  `^[${CAPTION_EDGE_PUNCT_CHARS}]+`,
-  "u",
-);
-const TRAILING_CAPTION_PUNCT_RE = new RegExp(
-  `[${CAPTION_EDGE_PUNCT_CHARS}]+$`,
-  "u",
-);
-
 /**
  * Shared pure helper — the ONE place caption cue text is formatted for
  * punctuation display, consumed by Clip Composition Plan caption cues and the
@@ -105,9 +89,7 @@ export function formatCaptionWord(
   opts: { punctuation: boolean },
 ): string {
   if (opts.punctuation) return word;
-  return word
-    .replace(LEADING_CAPTION_PUNCT_RE, "")
-    .replace(TRAILING_CAPTION_PUNCT_RE, "");
+  return stripCaptionEdgePunctuation(word);
 }
 
 /**

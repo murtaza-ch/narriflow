@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient, type IngestJob } from "@prisma/client";
 import {
-  ASSEMBLYAI_SPEECH_MODEL_CHAIN,
   defaultAspectRatioSchema,
   finishingSettingsSchema,
   sourceLanguageCodeSchema,
@@ -32,6 +31,9 @@ import {
 import { admitMediaCleanupObligations } from "./media-cleanup";
 import { emitIntakeFinished, queueIntakeFinishedByGeneration } from "./operation-finished";
 import { flushWorkspaceEvents } from "./workspace-event";
+
+// Placeholder until the Scribe worker adapter lands (ticket 06).
+const PENDING_STT_PROVIDER_MODEL = "universal-3-5-pro,universal-2";
 
 function intakeKindFor(jobType: IngestJob["jobType"]) {
   return jobType === "upload_finalize"
@@ -797,7 +799,7 @@ export class IngestJobLifecycle {
                   projectId: project.id,
                   status: "queued",
                   provider: "assemblyai",
-                  providerModel: ASSEMBLYAI_SPEECH_MODEL_CHAIN.join(","),
+                  providerModel: PENDING_STT_PROVIDER_MODEL,
                 },
                 update: {
                   status: "queued",
@@ -806,7 +808,7 @@ export class IngestJobLifecycle {
                   errorCode: null,
                   completedAt: null,
                   provider: "assemblyai",
-                  providerModel: ASSEMBLYAI_SPEECH_MODEL_CHAIN.join(","),
+                  providerModel: PENDING_STT_PROVIDER_MODEL,
                 },
               });
             if (language.success)

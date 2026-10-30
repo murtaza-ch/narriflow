@@ -1,401 +1,280 @@
 import { z } from "zod";
 
+/** ElevenLabs speech-to-text model every transcript is produced with. */
+export const SCRIBE_MODEL_ID = "scribe_v2";
+
+export type LanguageScript =
+  | "Latin"
+  | "Cyrillic"
+  | "Greek"
+  | "Arabic"
+  | "Hebrew"
+  | "Han"
+  | "Japanese"
+  | "Hangul"
+  | "Devanagari"
+  | "Bengali"
+  | "Gurmukhi"
+  | "Gujarati"
+  | "Oriya"
+  | "Tamil"
+  | "Telugu"
+  | "Kannada"
+  | "Malayalam"
+  | "Sinhala"
+  | "Thai"
+  | "Lao"
+  | "Khmer"
+  | "Myanmar"
+  | "Armenian"
+  | "Georgian"
+  | "Ethiopic";
+
+export type LanguageDirection = "ltr" | "rtl";
+
 /**
- * AssemblyAI's current submit-transcript language enum. It contains 102 codes
- * for 99 languages because English exposes global, Australian, British and US
- * variants. Keep this list aligned with TranscriptLanguageCode; `auto` is a UI
- * mode and must never be sent as `language_code`.
+ * Scribe v2's catalog (https://elevenlabs.io/docs/overview/capabilities/speech-to-text,
+ * 100 listed languages) plus Yoruba, which the API accepts and the page lists
+ * only in its accuracy breakdown. Rows: canonical code, label, the ISO 639-3
+ * code Scribe sends and returns, and the language's primary script (a script
+ * variant such as Serbian Latin or Sorani Kurdish cannot be told apart by
+ * language alone; cue direction and fonts follow the text itself).
+ *
+ * Canonical code = ISO 639-1 where one exists, else ISO 639-3. Ordered by label.
  */
-export const ASSEMBLYAI_TRANSCRIPT_LANGUAGE_CODES = Object.freeze([
-  "en",
-  "en_au",
-  "en_uk",
-  "en_us",
-  "es",
-  "fr",
-  "de",
-  "it",
-  "pt",
-  "nl",
-  "af",
-  "sq",
-  "am",
-  "ar",
-  "hy",
-  "as",
-  "az",
-  "ba",
-  "eu",
-  "be",
-  "bn",
-  "bs",
-  "br",
-  "bg",
-  "my",
-  "ca",
-  "zh",
-  "hr",
-  "cs",
-  "da",
-  "et",
-  "fo",
-  "fi",
-  "gl",
-  "ka",
-  "el",
-  "gu",
-  "ht",
-  "ha",
-  "haw",
-  "he",
-  "hi",
-  "hu",
-  "is",
-  "id",
-  "ja",
-  "jw",
-  "kn",
-  "kk",
-  "km",
-  "ko",
-  "lo",
-  "la",
-  "lv",
-  "ln",
-  "lt",
-  "lb",
-  "mk",
-  "mg",
-  "ms",
-  "ml",
-  "mt",
-  "mi",
-  "mr",
-  "mn",
-  "ne",
-  "no",
-  "nn",
-  "oc",
-  "pa",
-  "ps",
-  "fa",
-  "pl",
-  "ro",
-  "ru",
-  "sa",
-  "sr",
-  "sn",
-  "sd",
-  "si",
-  "sk",
-  "sl",
-  "so",
-  "su",
-  "sw",
-  "sv",
-  "tl",
-  "tg",
-  "ta",
-  "tt",
-  "te",
-  "th",
-  "bo",
-  "tr",
-  "tk",
-  "uk",
-  "ur",
-  "uz",
-  "vi",
-  "cy",
-  "yi",
-  "yo",
-] as const);
+const SCRIBE_LANGUAGE_ROWS = [
+  ["af", "Afrikaans", "afr", "Latin"],
+  ["am", "Amharic", "amh", "Ethiopic"],
+  ["ar", "Arabic", "ara", "Arabic"],
+  ["hy", "Armenian", "hye", "Armenian"],
+  ["as", "Assamese", "asm", "Bengali"],
+  ["ast", "Asturian", "ast", "Latin"],
+  ["az", "Azerbaijani", "aze", "Latin"],
+  ["be", "Belarusian", "bel", "Cyrillic"],
+  ["bn", "Bengali", "ben", "Bengali"],
+  ["bs", "Bosnian", "bos", "Latin"],
+  ["bg", "Bulgarian", "bul", "Cyrillic"],
+  ["my", "Burmese", "mya", "Myanmar"],
+  ["yue", "Cantonese", "yue", "Han"],
+  ["ca", "Catalan", "cat", "Latin"],
+  ["ceb", "Cebuano", "ceb", "Latin"],
+  ["ny", "Chichewa", "nya", "Latin"],
+  ["zh", "Chinese", "zho", "Han"],
+  ["hr", "Croatian", "hrv", "Latin"],
+  ["cs", "Czech", "ces", "Latin"],
+  ["da", "Danish", "dan", "Latin"],
+  ["nl", "Dutch", "nld", "Latin"],
+  ["en", "English", "eng", "Latin"],
+  ["et", "Estonian", "est", "Latin"],
+  ["fil", "Filipino", "fil", "Latin"],
+  ["fi", "Finnish", "fin", "Latin"],
+  ["fr", "French", "fra", "Latin"],
+  ["ff", "Fulah", "ful", "Latin"],
+  ["gl", "Galician", "glg", "Latin"],
+  ["lg", "Ganda", "lug", "Latin"],
+  ["ka", "Georgian", "kat", "Georgian"],
+  ["de", "German", "deu", "Latin"],
+  ["el", "Greek", "ell", "Greek"],
+  ["gu", "Gujarati", "guj", "Gujarati"],
+  ["ha", "Hausa", "hau", "Latin"],
+  ["he", "Hebrew", "heb", "Hebrew"],
+  ["hi", "Hindi", "hin", "Devanagari"],
+  ["hu", "Hungarian", "hun", "Latin"],
+  ["is", "Icelandic", "isl", "Latin"],
+  ["ig", "Igbo", "ibo", "Latin"],
+  ["id", "Indonesian", "ind", "Latin"],
+  ["ga", "Irish", "gle", "Latin"],
+  ["it", "Italian", "ita", "Latin"],
+  ["ja", "Japanese", "jpn", "Japanese"],
+  ["jv", "Javanese", "jav", "Latin"],
+  ["kea", "Kabuverdianu", "kea", "Latin"],
+  ["kn", "Kannada", "kan", "Kannada"],
+  ["kk", "Kazakh", "kaz", "Cyrillic"],
+  ["km", "Khmer", "khm", "Khmer"],
+  ["ko", "Korean", "kor", "Hangul"],
+  ["ku", "Kurdish", "kur", "Latin"],
+  ["ky", "Kyrgyz", "kir", "Cyrillic"],
+  ["lo", "Lao", "lao", "Lao"],
+  ["lv", "Latvian", "lav", "Latin"],
+  ["ln", "Lingala", "lin", "Latin"],
+  ["lt", "Lithuanian", "lit", "Latin"],
+  ["luo", "Luo", "luo", "Latin"],
+  ["lb", "Luxembourgish", "ltz", "Latin"],
+  ["mk", "Macedonian", "mkd", "Cyrillic"],
+  ["ms", "Malay", "msa", "Latin"],
+  ["ml", "Malayalam", "mal", "Malayalam"],
+  ["mt", "Maltese", "mlt", "Latin"],
+  ["mi", "Māori", "mri", "Latin"],
+  ["mr", "Marathi", "mar", "Devanagari"],
+  ["mn", "Mongolian", "mon", "Cyrillic"],
+  ["ne", "Nepali", "nep", "Devanagari"],
+  ["nso", "Northern Sotho", "nso", "Latin"],
+  ["no", "Norwegian", "nor", "Latin"],
+  ["oc", "Occitan", "oci", "Latin"],
+  ["or", "Odia", "ori", "Oriya"],
+  ["ps", "Pashto", "pus", "Arabic"],
+  ["fa", "Persian", "fas", "Arabic"],
+  ["pl", "Polish", "pol", "Latin"],
+  ["pt", "Portuguese", "por", "Latin"],
+  ["pa", "Punjabi", "pan", "Gurmukhi"],
+  ["ro", "Romanian", "ron", "Latin"],
+  ["ru", "Russian", "rus", "Cyrillic"],
+  ["sr", "Serbian", "srp", "Cyrillic"],
+  ["sn", "Shona", "sna", "Latin"],
+  ["sd", "Sindhi", "snd", "Arabic"],
+  ["si", "Sinhala", "sin", "Sinhala"],
+  ["sk", "Slovak", "slk", "Latin"],
+  ["sl", "Slovenian", "slv", "Latin"],
+  ["so", "Somali", "som", "Latin"],
+  ["es", "Spanish", "spa", "Latin"],
+  ["sw", "Swahili", "swa", "Latin"],
+  ["sv", "Swedish", "swe", "Latin"],
+  ["tg", "Tajik", "tgk", "Cyrillic"],
+  ["ta", "Tamil", "tam", "Tamil"],
+  ["te", "Telugu", "tel", "Telugu"],
+  ["th", "Thai", "tha", "Thai"],
+  ["tr", "Turkish", "tur", "Latin"],
+  ["uk", "Ukrainian", "ukr", "Cyrillic"],
+  ["umb", "Umbundu", "umb", "Latin"],
+  ["ur", "Urdu", "urd", "Arabic"],
+  ["uz", "Uzbek", "uzb", "Latin"],
+  ["vi", "Vietnamese", "vie", "Latin"],
+  ["cy", "Welsh", "cym", "Latin"],
+  ["wo", "Wolof", "wol", "Latin"],
+  ["xh", "Xhosa", "xho", "Latin"],
+  ["yo", "Yoruba", "yor", "Latin"],
+  ["zu", "Zulu", "zul", "Latin"],
+] as const;
 
-export type AssemblyAiTranscriptLanguageCode =
-  (typeof ASSEMBLYAI_TRANSCRIPT_LANGUAGE_CODES)[number];
+export type SourceLanguageCodeValue =
+  (typeof SCRIBE_LANGUAGE_ROWS)[number][0];
 
-export const ASSEMBLYAI_SPEECH_MODEL_CHAIN = Object.freeze([
-  "universal-3-5-pro",
-  "universal-2",
-] as const);
-
-/** 21 exact provider codes representing AssemblyAI's 18 U3.5 core languages. */
-export const ASSEMBLYAI_U35_LANGUAGE_CODES = Object.freeze([
-  "ar",
-  "zh",
-  "da",
-  "nl",
-  "en",
-  "en_au",
-  "en_uk",
-  "en_us",
-  "fi",
-  "fr",
-  "de",
-  "he",
-  "hi",
-  "it",
-  "ja",
-  "no",
-  "pt",
-  "es",
-  "sv",
-  "tr",
-  "vi",
-] as const satisfies readonly AssemblyAiTranscriptLanguageCode[]);
-
-const LANGUAGE_LABELS = Object.freeze({
-  en: "English (global)",
-  en_au: "English (Australian)",
-  en_uk: "English (British)",
-  en_us: "English (US)",
-  es: "Spanish",
-  fr: "French",
-  de: "German",
-  it: "Italian",
-  pt: "Portuguese",
-  nl: "Dutch",
-  af: "Afrikaans",
-  sq: "Albanian",
-  am: "Amharic",
-  ar: "Arabic",
-  hy: "Armenian",
-  as: "Assamese",
-  az: "Azerbaijani",
-  ba: "Bashkir",
-  eu: "Basque",
-  be: "Belarusian",
-  bn: "Bengali",
-  bs: "Bosnian",
-  br: "Breton",
-  bg: "Bulgarian",
-  my: "Burmese",
-  ca: "Catalan",
-  zh: "Chinese",
-  hr: "Croatian",
-  cs: "Czech",
-  da: "Danish",
-  et: "Estonian",
-  fo: "Faroese",
-  fi: "Finnish",
-  gl: "Galician",
-  ka: "Georgian",
-  el: "Greek",
-  gu: "Gujarati",
-  ht: "Haitian",
-  ha: "Hausa",
-  haw: "Hawaiian",
-  he: "Hebrew",
-  hi: "Hindi",
-  hu: "Hungarian",
-  is: "Icelandic",
-  id: "Indonesian",
-  ja: "Japanese",
-  jw: "Javanese",
-  kn: "Kannada",
-  kk: "Kazakh",
-  km: "Khmer",
-  ko: "Korean",
-  lo: "Lao",
-  la: "Latin",
-  lv: "Latvian",
-  ln: "Lingala",
-  lt: "Lithuanian",
-  lb: "Luxembourgish",
-  mk: "Macedonian",
-  mg: "Malagasy",
-  ms: "Malay",
-  ml: "Malayalam",
-  mt: "Maltese",
-  mi: "Maori",
-  mr: "Marathi",
-  mn: "Mongolian",
-  ne: "Nepali",
-  no: "Norwegian",
-  nn: "Norwegian Nynorsk",
-  oc: "Occitan",
-  pa: "Panjabi",
-  ps: "Pashto",
-  fa: "Persian",
-  pl: "Polish",
-  ro: "Romanian",
-  ru: "Russian",
-  sa: "Sanskrit",
-  sr: "Serbian",
-  sn: "Shona",
-  sd: "Sindhi",
-  si: "Sinhala",
-  sk: "Slovak",
-  sl: "Slovenian",
-  so: "Somali",
-  su: "Sundanese",
-  sw: "Swahili",
-  sv: "Swedish",
-  tl: "Tagalog",
-  tg: "Tajik",
-  ta: "Tamil",
-  tt: "Tatar",
-  te: "Telugu",
-  th: "Thai",
-  bo: "Tibetan",
-  tr: "Turkish",
-  tk: "Turkmen",
-  uk: "Ukrainian",
-  ur: "Urdu",
-  uz: "Uzbek",
-  vi: "Vietnamese",
-  cy: "Welsh",
-  yi: "Yiddish",
-  yo: "Yoruba",
-} satisfies Record<AssemblyAiTranscriptLanguageCode, string>);
-
-export type AssemblyAiAccuracyBand = "high" | "good" | "moderate" | "fair";
-export type AssemblyAiModelSupport = "u35-direct" | "u2-fallback";
-
-export type AssemblyAiLanguage = Readonly<{
-  code: AssemblyAiTranscriptLanguageCode;
+export type ScribeLanguage = Readonly<{
+  /** Canonical stored code: ISO 639-1 when it exists, else ISO 639-3. */
+  code: SourceLanguageCodeValue;
   label: string;
-  modelSupport: AssemblyAiModelSupport;
-  /** Universal-2 WER band from the official supported-languages table. */
-  accuracyBand: AssemblyAiAccuracyBand | null;
+  /** ISO 639-3 code sent to and returned by Scribe. */
+  providerCode: string;
+  script: LanguageScript;
+  direction: LanguageDirection;
 }>;
 
-const U35_LANGUAGE_CODE_SET = new Set<string>(ASSEMBLYAI_U35_LANGUAGE_CODES);
+export const SCRIBE_LANGUAGES: readonly ScribeLanguage[] = Object.freeze(
+  SCRIBE_LANGUAGE_ROWS.map(([code, label, providerCode, script]) =>
+    Object.freeze({
+      code,
+      label,
+      providerCode,
+      script,
+      direction: (script === "Arabic" || script === "Hebrew"
+        ? "rtl"
+        : "ltr") as LanguageDirection,
+    }),
+  ),
+);
 
-const HIGH_ACCURACY_CODES = new Set<AssemblyAiTranscriptLanguageCode>([
-  "en",
-  "en_au",
-  "en_uk",
-  "en_us",
-  "es",
-  "fr",
-  "de",
-  "id",
-  "it",
-  "ja",
-  "nl",
-  "pl",
-  "pt",
-  "ru",
-  "sv",
-  "tr",
-  "uk",
-  "ca",
-]);
+export const SCRIBE_LANGUAGE_CODES = Object.freeze(
+  SCRIBE_LANGUAGES.map(({ code }) => code),
+);
 
-const GOOD_ACCURACY_CODES = new Set<AssemblyAiTranscriptLanguageCode>([
-  "ar",
-  "az",
-  "bg",
-  "bs",
-  "zh",
-  "cs",
-  "da",
-  "el",
-  "et",
-  "fi",
-  "gl",
-  "he",
-  "hi",
-  "hr",
-  "hu",
-  "ko",
-  "mk",
-  "ms",
-  "no",
-  "ro",
-  "sk",
-  "tl",
-  "th",
-  "ur",
-  "vi",
-]);
+const LANGUAGE_BY_CODE: ReadonlyMap<string, ScribeLanguage> = new Map(
+  SCRIBE_LANGUAGES.map((language) => [language.code, language]),
+);
 
-const MODERATE_ACCURACY_CODES = new Set<AssemblyAiTranscriptLanguageCode>([
-  "af",
-  "be",
-  "cy",
-  "fa",
-  "hy",
-  "is",
-  "kk",
-  "lt",
-  "lv",
-  "mi",
-  "mr",
-  "sl",
-  "sw",
-  "ta",
-]);
+/** Canonical code -> the ISO 639-3 code Scribe expects as `language_code`. */
+export const CANONICAL_TO_PROVIDER_LANGUAGE_CODE: Readonly<
+  Record<SourceLanguageCodeValue, string>
+> = Object.freeze(
+  Object.fromEntries(
+    SCRIBE_LANGUAGES.map(({ code, providerCode }) => [code, providerCode]),
+  ) as Record<SourceLanguageCodeValue, string>,
+);
 
-const FAIR_ACCURACY_CODES = new Set<AssemblyAiTranscriptLanguageCode>([
-  "am",
-  "as",
-  "bn",
-  "gu",
-  "ha",
-  "jw",
-  "ka",
-  "km",
-  "kn",
-  "lb",
-  "ln",
-  "lo",
-  "ml",
-  "mn",
-  "mt",
-  "my",
-  "ne",
-  "oc",
-  "pa",
-  "ps",
-  "sd",
-  "sn",
-  "so",
-  "sr",
-  "te",
-  "tg",
-  "uz",
-  "yo",
-]);
+/**
+ * ISO 639-3 code Scribe returns -> canonical code. `cmn` is not documented as
+ * a request code but the page and the API use it for Mandarin, so detection
+ * results accept it.
+ */
+export const PROVIDER_TO_CANONICAL_LANGUAGE_CODE: Readonly<
+  Record<string, SourceLanguageCodeValue>
+> = Object.freeze({
+  ...Object.fromEntries(
+    SCRIBE_LANGUAGES.map(({ code, providerCode }) => [providerCode, code]),
+  ),
+  cmn: "zh",
+});
 
-function accuracyBandForCode(
-  code: AssemblyAiTranscriptLanguageCode,
-): AssemblyAiAccuracyBand | null {
-  if (HIGH_ACCURACY_CODES.has(code)) return "high";
-  if (GOOD_ACCURACY_CODES.has(code)) return "good";
-  if (MODERATE_ACCURACY_CODES.has(code)) return "moderate";
-  if (FAIR_ACCURACY_CODES.has(code)) return "fair";
-  return null;
+/** Retired or alternate codes that map onto a registry language (`tl` is what Scribe calls `fil`). */
+const LANGUAGE_CODE_ALIASES: Readonly<Record<string, SourceLanguageCodeValue>> =
+  Object.freeze({ tl: "fil", jw: "jv" });
+
+const SOURCE_LANGUAGE_CODE_ENUM = SCRIBE_LANGUAGE_CODES as unknown as readonly [
+  SourceLanguageCodeValue,
+  ...SourceLanguageCodeValue[],
+];
+
+/**
+ * Maps any language tag a provider or older record may carry to a registry
+ * code, or null when the language is not in the registry: ISO 639-3 (`urd`,
+ * `eng`, `zho`, `cmn`), canonical codes, aliases (`tl`, `jw`) and regional
+ * tags (`en_us`, `pt-BR`, `zh-TW`), which keep only the language.
+ */
+export function normalizeProviderLanguageCode(
+  code: string | null | undefined,
+): SourceLanguageCodeValue | null {
+  if (typeof code !== "string") return null;
+  const normalized = code.trim().toLowerCase().replaceAll("_", "-");
+  if (!normalized) return null;
+  const direct = lookupLanguageCode(normalized);
+  if (direct) return direct;
+  const [language = ""] = normalized.split("-");
+  return language === normalized ? null : lookupLanguageCode(language);
 }
 
-export const ASSEMBLYAI_LANGUAGES: readonly AssemblyAiLanguage[] =
-  Object.freeze(
-    ASSEMBLYAI_TRANSCRIPT_LANGUAGE_CODES.map((code) =>
-      Object.freeze({
-        code,
-        label: LANGUAGE_LABELS[code],
-        modelSupport: U35_LANGUAGE_CODE_SET.has(code)
-          ? "u35-direct"
-          : "u2-fallback",
-        accuracyBand: accuracyBandForCode(code),
-      }),
-    ),
+function lookupLanguageCode(code: string): SourceLanguageCodeValue | null {
+  if (LANGUAGE_BY_CODE.has(code)) return code as SourceLanguageCodeValue;
+  return (
+    PROVIDER_TO_CANONICAL_LANGUAGE_CODE[code] ??
+    LANGUAGE_CODE_ALIASES[code] ??
+    null
   );
+}
 
-const LANGUAGE_BY_CODE = new Map(
-  ASSEMBLYAI_LANGUAGES.map((language) => [language.code, language]),
-);
+/** ISO 639-3 code to send Scribe for a canonical code, or null when unsupported. */
+export function toProviderLanguageCode(
+  code: string | null | undefined,
+): string | null {
+  return typeof code === "string"
+    ? (LANGUAGE_BY_CODE.get(code)?.providerCode ?? null)
+    : null;
+}
 
-export const assemblyAiTranscriptLanguageCodeSchema = z.enum(
-  ASSEMBLYAI_TRANSCRIPT_LANGUAGE_CODES,
-);
+export function getScribeLanguage(
+  code: string | null | undefined,
+): ScribeLanguage | null {
+  return typeof code === "string" ? (LANGUAGE_BY_CODE.get(code) ?? null) : null;
+}
 
-/** A manual provider language code, or null when automatic detection is used. */
+/** Primary script of a registry language; null for Auto or an unknown code. */
+export function languageScript(
+  code: string | null | undefined,
+): LanguageScript | null {
+  return getScribeLanguage(code)?.script ?? null;
+}
+
+/** Default text direction of a registry language; `ltr` for Auto or an unknown code. */
+export function languageDirection(
+  code: string | null | undefined,
+): LanguageDirection {
+  return getScribeLanguage(code)?.direction ?? "ltr";
+}
+
+export const scribeLanguageCodeSchema = z.enum(SOURCE_LANGUAGE_CODE_ENUM);
+
+/** A manual canonical language code, or null when automatic detection is used. */
 export const sourceLanguageCodeSchema = z.preprocess(
-  (value) =>
-    typeof value === "string" ? value.trim().toLowerCase() : value,
-  assemblyAiTranscriptLanguageCodeSchema.nullable(),
+  (value) => (typeof value === "string" ? value.trim().toLowerCase() : value),
+  scribeLanguageCodeSchema.nullable(),
 );
 
 export type SourceLanguageCode = z.infer<typeof sourceLanguageCodeSchema>;
@@ -403,16 +282,13 @@ export type SourceLanguageCode = z.infer<typeof sourceLanguageCodeSchema>;
 /**
  * Browser input for a source language: the picker's `auto` (or an empty value)
  * means automatic detection and is stored as null; anything else must be a
- * provider code. Use at HTTP boundaries so `auto` never reaches the worker.
+ * canonical code. Use at HTTP boundaries so `auto` never reaches the worker.
  */
-export const sourceLanguageInputSchema = z.preprocess(
-  (value) => {
-    if (typeof value !== "string") return value;
-    const normalized = value.trim().toLowerCase();
-    return normalized === "" || normalized === "auto" ? null : normalized;
-  },
-  assemblyAiTranscriptLanguageCodeSchema.nullable(),
-);
+export const sourceLanguageInputSchema = z.preprocess((value) => {
+  if (typeof value !== "string") return value;
+  const normalized = value.trim().toLowerCase();
+  return normalized === "" || normalized === "auto" ? null : normalized;
+}, scribeLanguageCodeSchema.nullable());
 
 export function sourceLanguageCodeFromFormValue(
   value: unknown,
@@ -426,27 +302,6 @@ export function sourceLanguageCodeFromFormValue(
   return sourceLanguageCodeSchema.parse(value);
 }
 
-export function getAssemblyAiLanguage(
-  code: AssemblyAiTranscriptLanguageCode,
-): AssemblyAiLanguage {
-  return LANGUAGE_BY_CODE.get(code)!;
-}
-
 export function getSourceLanguageLabel(code: SourceLanguageCode): string {
-  return code === null ? "Auto-detect" : getAssemblyAiLanguage(code).label;
-}
-
-export function getAssemblyAiAccuracyLabel(
-  band: AssemblyAiAccuracyBand,
-): string {
-  switch (band) {
-    case "high":
-      return "high accuracy (≤10% WER)";
-    case "good":
-      return "good accuracy (>10–25% WER)";
-    case "moderate":
-      return "moderate accuracy (>25–50% WER)";
-    case "fair":
-      return "fair accuracy (>50% WER)";
-  }
+  return code === null ? "Auto-detect" : LANGUAGE_BY_CODE.get(code)!.label;
 }

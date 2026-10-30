@@ -14,6 +14,13 @@ export const transcriptWordSchema = z.object({
   startSec: z.number().nonnegative(),
   endSec: z.number().nonnegative(),
   confidence: z.number().min(0).max(1).nullable(),
+  /**
+   * Whether the provider put a space before this word. Absent when unknown
+   * (older transcripts, hand-edited words); `joinTranscriptWords` then falls
+   * back to the script rule. Scribe sends zh/ja per character and Thai with
+   * spaces only between phrases, so joining cannot be inferred from the token.
+   */
+  spaceBefore: z.boolean().optional(),
 });
 
 export const transcriptUtteranceSchema = z.object({
@@ -61,7 +68,8 @@ function transcriptWordsEqual(
     (left.word === right.word &&
       left.startSec === right.startSec &&
       left.endSec === right.endSec &&
-      left.confidence === right.confidence)
+      left.confidence === right.confidence &&
+      left.spaceBefore === right.spaceBefore)
   );
 }
 

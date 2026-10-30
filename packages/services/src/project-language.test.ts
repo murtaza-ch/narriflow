@@ -9,8 +9,11 @@ describe("storedLanguageCode", () => {
   });
 
   test("provider codes are normalised and unknown codes never reach the worker", () => {
-    expect(storedLanguageCode("EN_US")).toBe("en_us");
+    expect(storedLanguageCode("EN_US")).toBe("en");
+    expect(storedLanguageCode("jw")).toBe("jv");
+    expect(storedLanguageCode("tl")).toBe("fil");
     expect(storedLanguageCode("es")).toBe("es");
+    expect(storedLanguageCode("yi")).toBeNull();
     expect(storedLanguageCode("klingon")).toBeNull();
     expect(storedLanguageCode(42)).toBeNull();
   });

@@ -20,7 +20,6 @@ import {
 } from "@narriflow/services";
 import { isR2Configured } from "@narriflow/services/r2-storage";
 import {
-  ASSEMBLYAI_SPEECH_MODEL_CHAIN,
   fitSuppliedUtterances,
   sourceLanguageCodeSchema,
   type TranscriptPlan,
@@ -47,6 +46,8 @@ class WorkflowWorkerError extends WorkflowFailure {
   }
 }
 
+// Placeholder until the Scribe adapter replaces this file (ticket 06).
+const ASSEMBLYAI_SPEECH_MODEL_CHAIN = ["universal-3-5-pro", "universal-2"] as const;
 const ASSEMBLYAI_BASE_URL = "https://api.assemblyai.com";
 // Per-request timeouts so a hung connection doesn't stall a workflow run until
 // the overall polling deadline (assemblyai_transcription_timeout) fires.

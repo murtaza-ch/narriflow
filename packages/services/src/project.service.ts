@@ -6,7 +6,10 @@ import { type ZoomRecordingNotification } from "@narriflow/validators";
  * transcription stage never receives a value it can't submit.
  */
 export function storedLanguageCode(value: unknown): string | null {
-	return sourceLanguageInputSchema.safeParse(value).data ?? null;
+	const parsed = sourceLanguageInputSchema.safeParse(value).data;
+	if (parsed) return parsed;
+	// Retired codes with a registry equivalent (`en_us` -> `en`, `jw` -> `jv`, `tl` -> `fil`).
+	return typeof value === "string" ? normalizeProviderLanguageCode(value) : null;
 }
 import { ZoomError, zoomRecordingIdentity } from "./zoom";
 import type { ActorScope } from "./actor-scope";
@@ -33,7 +36,6 @@ import type {
 import { getPrismaClient } from "@narriflow/db/client";
 import {
 	acceptedRecipe,
-	ASSEMBLYAI_SPEECH_MODEL_CHAIN,
 	recipeColumn,
 	type AcceptedRecipe,
 	buildRecipeGenerationContext,
@@ -46,6 +48,7 @@ import {
 	rssImportSchema,
 	rssPreviewSchema,
 	sourceLanguageCodeSchema,
+	normalizeProviderLanguageCode,
 	sourceLanguageInputSchema,
 	workflowStageUpdatedEventSchema,
 	type WorkflowStageUpdatedEvent,
@@ -135,7 +138,8 @@ interface LinkIntakeSource {
 }
 
 const STT_PROVIDER = "assemblyai";
-const STT_PROVIDER_MODEL = ASSEMBLYAI_SPEECH_MODEL_CHAIN.join(",");
+// Placeholder until the Scribe worker adapter lands (ticket 06).
+const STT_PROVIDER_MODEL = "universal-3-5-pro,universal-2";
 // Defensive upper bound on how many persisted WorkflowEvent rows a single
 // project page fetch will ever pull for the Activity tab; the client applies
 // its own tighter display cap (PROJECT_EVENT_ROW_LIMIT) on top of this.

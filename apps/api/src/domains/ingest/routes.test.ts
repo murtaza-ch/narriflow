@@ -163,7 +163,7 @@ describe("Configure step", () => {
     const finalizeGenerationSetup = mock(async () => ({ started: true, ingestStatus: "ready", workflowRunId: "run-1" }));
     const routes = app({ projectService: { finalizeGenerationSetup } as never });
 
-    for (const [languageCode, stored] of [["auto", null], ["", null], ["EN_US", "en_us"]] as const) {
+    for (const [languageCode, stored] of [["auto", null], ["", null], ["UR", "ur"]] as const) {
       const finalize = post(`/api/projects/${PROJECT_ID}/generation/finalize`, { contentPack, languageCode });
       expect((await routes.request(finalize.path, finalize.init)).status).toBe(200);
       expect(finalizeGenerationSetup.mock.calls.at(-1)?.[3]).toBe(stored);
