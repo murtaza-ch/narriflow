@@ -4,6 +4,7 @@ import type { RenderGroupRef } from "./render-group-contract";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
 import {
+  SCRIBE_MODEL_ID,
   workflowStageUpdatedEventSchema,
 } from "@narriflow/validators";
 import type {
@@ -118,9 +119,58 @@ export interface WorkflowAttemptContext {
 
 export interface WaitingWorkflowAttempt extends WorkflowAttemptRef {
   progress: number;
-  providerJobId: string;
+  /** Null while the submission is unconfirmed: the worker can only expire it. */
+  providerJobId: string | null;
+  /** Set with a null `providerJobId`; the instant the unconfirmed submission fails. */
+  submissionDeadlineAt: Date | null;
   submittedAt: Date;
 }
+
+/** Identifies the attempt a provider callback belongs to. The webhook carries
+ * only `webhook_metadata`, so the project is resolved from the run. */
+export interface ProviderAttemptKey {
+  workflowRunId: string;
+  attemptId: string;
+}
+
+/** Provider ids a callback or recovery read supplies, to fence against a
+ * different submission recorded for the same attempt. */
+export interface ProviderIds {
+  requestId?: string | null;
+  transcriptionId?: string | null;
+}
+
+/** Outcome of a provider-driven settlement. Everything but `applied` is an
+ * acknowledged no-op: nothing was written and nothing was resurrected. */
+export type ProviderSettlementResult =
+  | { kind: "applied" }
+  /** The same completion or acceptance was already recorded. */
+  | { kind: "duplicate" }
+  /** A newer attempt owns the run, the provider ids disagree, or the run is not waiting yet. */
+  | {
+      kind: "stale";
+      reason:
+        | "run_missing"
+        | "attempt_superseded"
+        | "provider_job_mismatch"
+        | "not_waiting"
+        | "submission_pending"
+        | "submission_confirmed";
+    }
+  /** The run already reached a terminal status (completed, failed, partial). */
+  | { kind: "terminal"; status: WorkflowStatus };
+
+type ProviderSettlementIntent = "accept" | "complete" | "fail";
+
+export type ProviderAttemptLookup =
+  | {
+      kind: "waiting";
+      attempt: WorkflowAttemptRef;
+      providerJobId: string | null;
+      providerRequestId: string | null;
+      submissionDeadlineAt: Date | null;
+    }
+  | Exclude<ProviderSettlementResult, { kind: "applied" }>;
 
 export interface WorkflowAggregateResult {
   requestedCount: number;
@@ -165,6 +215,8 @@ export interface CompleteTranscriptInput {
   provider: string;
   providerModel: string | null;
   providerJobId: string | null;
+  /** The provider's request id; left unchanged on the row when omitted. */
+  providerRequestId?: string | null;
   languageCode: string | null;
   languageConfidence: number | null;
   text: string;
@@ -913,13 +965,20 @@ export class WorkflowRunLifecycle {
           create: {
             projectId: run.projectId,
             status: "processing",
-            provider: "assemblyai",
+            provider: "elevenlabs",
+            providerModel: SCRIBE_MODEL_ID,
             providerJobId: null,
+            providerRequestId: null,
+            providerSubmissionDeadlineAt: null,
             workflowAttemptId: run.attemptId,
           },
           update: {
             status: "processing",
+            provider: "elevenlabs",
+            providerModel: SCRIBE_MODEL_ID,
             providerJobId: null,
+            providerRequestId: null,
+            providerSubmissionDeadlineAt: null,
             workflowAttemptId: run.attemptId,
             errorCode: null,
           },
@@ -1667,9 +1726,10 @@ export class WorkflowRunLifecycle {
         status: "waiting",
         nextPollAt: { lte: now },
         attemptId: { not: null },
+        // A submission with no provider id yet is claimed too, so the worker can
+        // fail it once its deadline passes.
         project: {
           transcript: {
-            providerJobId: { not: null },
             workflowAttemptId: { not: null },
             status: "processing",
           },
@@ -1690,6 +1750,7 @@ export class WorkflowRunLifecycle {
             transcript: {
               select: {
                 providerJobId: true,
+                providerSubmissionDeadlineAt: true,
                 workflowAttemptId: true,
                 updatedAt: true,
               },
@@ -1701,11 +1762,7 @@ export class WorkflowRunLifecycle {
     const claimed: WaitingWorkflowAttempt[] = [];
     for (const run of candidates) {
       const transcript = run.project.transcript;
-      if (
-        !run.attemptId ||
-        !transcript?.providerJobId ||
-        transcript.workflowAttemptId !== run.attemptId
-      ) {
+      if (!run.attemptId || transcript?.workflowAttemptId !== run.attemptId) {
         continue;
       }
       const won = await this.prisma.workflowRun.updateMany({
@@ -1726,6 +1783,9 @@ export class WorkflowRunLifecycle {
         attemptCount: run.attemptCount,
         progress: run.progress,
         providerJobId: transcript.providerJobId,
+        submissionDeadlineAt: transcript.providerJobId
+          ? null
+          : transcript.providerSubmissionDeadlineAt,
         submittedAt: run.waitingSince ?? transcript.updatedAt,
       });
     }
@@ -1808,6 +1868,287 @@ export class WorkflowRunLifecycle {
     });
   }
 
+  /**
+   * Durable intent for an asynchronous provider submission: the run is
+   * `waiting` with no provider id and a deadline, before the POST leaves. A
+   * crash between the POST and `recordProviderAcceptance` is then recovered by
+   * the deadline (`expireUnconfirmedProviderSubmission`) instead of stalling.
+   * No lease is held afterwards; callbacks and the worker act lease-free.
+   */
+  async beginProviderSubmission(
+    attempt: WorkflowAttemptRef,
+    input: { deadline: Date },
+  ) {
+    if (attempt.stage !== "stt") throw new WorkflowAttemptLost(attempt);
+    await this.settlementTransaction(attempt, async (tx) => {
+      const databaseNow = await this.databaseNow(tx);
+      const won = await tx.workflowRun.updateMany({
+        where: {
+          ...this.ownedAttemptWhere(attempt, databaseNow),
+          status: "running",
+        },
+        data: {
+          status: "waiting",
+          progress: 40,
+          leaseOwner: null,
+          leaseExpiresAt: null,
+          heartbeatAt: null,
+          waitingSince: new Date(),
+          nextPollAt: input.deadline,
+        },
+      });
+      if (won.count === 0) throw new WorkflowAttemptLost(attempt);
+      await tx.transcript.updateMany({
+        where: { projectId: attempt.projectId },
+        data: {
+          providerJobId: null,
+          providerRequestId: null,
+          providerSubmissionDeadlineAt: input.deadline,
+          workflowAttemptId: attempt.attemptId,
+          status: "processing",
+        },
+      });
+      await this.appendEvent(tx, {
+        projectId: attempt.projectId,
+        workflowRunId: attempt.workflowRunId,
+        attemptId: attempt.attemptId,
+        stage: attempt.stage,
+        status: "waiting",
+        progress: 40,
+        errorCode: null,
+        transition: "provider-submission-begun",
+      });
+    });
+  }
+
+  /**
+   * Records the provider's 202 (`providerJobId` = transcription id, never the
+   * request id) and moves the poll to `nextPollAt`. Idempotent, and a no-op for
+   * an attempt that is already terminal, superseded, or completed by a
+   * callback that beat this write: it never resurrects a run.
+   */
+  async recordProviderAcceptance(
+    key: ProviderAttemptKey,
+    input: { requestId: string; transcriptionId: string; nextPollAt: Date },
+  ): Promise<ProviderSettlementResult> {
+    return this.transaction(async (tx) => {
+      const lookup = await this.lockProviderAttempt(tx, key, "accept", {
+        requestId: input.requestId,
+        transcriptionId: input.transcriptionId,
+      });
+      if (lookup.kind !== "waiting") return lookup;
+      const { attempt } = lookup;
+      await tx.transcript.updateMany({
+        where: { projectId: attempt.projectId, workflowAttemptId: attempt.attemptId },
+        data: {
+          providerJobId: input.transcriptionId,
+          providerRequestId: input.requestId,
+          providerSubmissionDeadlineAt: null,
+          status: "processing",
+        },
+      });
+      await tx.workflowRun.updateMany({
+        where: { id: attempt.workflowRunId, attemptId: attempt.attemptId, status: "waiting" },
+        data: { nextPollAt: input.nextPollAt },
+      });
+      await this.appendEvent(tx, {
+        projectId: attempt.projectId,
+        workflowRunId: attempt.workflowRunId,
+        attemptId: attempt.attemptId,
+        stage: attempt.stage,
+        status: "waiting",
+        progress: 40,
+        errorCode: null,
+        transition: "provider-waiting",
+      });
+      return { kind: "applied" } as const;
+    });
+  }
+
+  /** Reads where a provider callback stands, without writing. The finalizer
+   * uses it to learn the project before it stores anything. */
+  async lookupProviderAttempt(
+    key: ProviderAttemptKey,
+    ids: ProviderIds = {},
+  ): Promise<ProviderAttemptLookup> {
+    return this.classifyProviderAttempt(this.prisma, key, "complete", ids);
+  }
+
+  /**
+   * Completes a waiting transcript by `(workflowRunId, attemptId)` from a
+   * process that holds no lease (the webhook, or the worker's GET recovery).
+   * Fenced by the run, the attempt, and the provider ids in `input`.
+   */
+  async completeProviderTranscript(
+    key: ProviderAttemptKey,
+    input: CompleteTranscriptInput,
+  ): Promise<ProviderSettlementResult> {
+    return this.transaction(async (tx) => {
+      const lookup = await this.lockProviderAttempt(tx, key, "complete", {
+        requestId: input.providerRequestId,
+        transcriptionId: input.providerJobId,
+      });
+      if (lookup.kind !== "waiting") return lookup;
+      await this.completeTranscriptWithin(
+        tx,
+        lookup.attempt,
+        input,
+        this.waitingAttemptWhere(lookup.attempt),
+      );
+      return { kind: "applied" } as const;
+    });
+  }
+
+  /** Fails a waiting provider attempt (a `webhook_error`, a permanent provider
+   * result) with the normal retry policy: retryable failures requeue. */
+  async failProviderAttempt(
+    key: ProviderAttemptKey,
+    failure: WorkflowFailure,
+    ids: ProviderIds = {},
+  ): Promise<ProviderSettlementResult> {
+    return this.transaction(async (tx) => {
+      const lookup = await this.lockProviderAttempt(tx, key, "fail", ids);
+      if (lookup.kind !== "waiting") return lookup;
+      await this.failAttemptWithin(tx, lookup.attempt, failure, {});
+      return { kind: "applied" } as const;
+    });
+  }
+
+  /**
+   * Fails a submission whose acceptance was never recorded once its deadline
+   * has passed (`elevenlabs_submission_unconfirmed`, retryable). Not due, or
+   * accepted in the meantime, is a no-op.
+   */
+  async expireUnconfirmedProviderSubmission(
+    key: ProviderAttemptKey,
+  ): Promise<ProviderSettlementResult> {
+    return this.transaction(async (tx) => {
+      const lookup = await this.lockProviderAttempt(tx, key, "fail", {});
+      if (lookup.kind !== "waiting") return lookup;
+      if (lookup.providerJobId) {
+        return { kind: "stale", reason: "submission_confirmed" } as const;
+      }
+      const databaseNow = await this.databaseNow(tx);
+      if (
+        !lookup.submissionDeadlineAt ||
+        lookup.submissionDeadlineAt.getTime() > databaseNow.getTime()
+      ) {
+        return { kind: "stale", reason: "submission_pending" } as const;
+      }
+      await this.failAttemptWithin(
+        tx,
+        lookup.attempt,
+        new WorkflowFailure(
+          "elevenlabs_submission_unconfirmed",
+          "retryable",
+          "The transcription request was not confirmed before its deadline",
+        ),
+        {},
+      );
+      return { kind: "applied" } as const;
+    });
+  }
+
+  /** A waiting run needs no lease: this is `ownedAttemptWhere`'s waiting arm,
+   * without widening that predicate for running work. */
+  private waitingAttemptWhere(
+    attempt: WorkflowAttemptRef,
+  ): Prisma.WorkflowRunWhereInput {
+    return {
+      id: attempt.workflowRunId,
+      projectId: attempt.projectId,
+      stage: attempt.stage,
+      attemptId: attempt.attemptId,
+      status: "waiting",
+    };
+  }
+
+  private async lockProviderAttempt(
+    tx: TransactionClient,
+    key: ProviderAttemptKey,
+    intent: ProviderSettlementIntent,
+    ids: ProviderIds,
+  ): Promise<ProviderAttemptLookup> {
+    await tx.$queryRaw`SELECT "id" FROM "WorkflowRun" WHERE "id" = ${key.workflowRunId}::uuid FOR UPDATE`;
+    return this.classifyProviderAttempt(tx, key, intent, ids);
+  }
+
+  private async classifyProviderAttempt(
+    db: PrismaClient | TransactionClient,
+    key: ProviderAttemptKey,
+    intent: ProviderSettlementIntent,
+    ids: ProviderIds,
+  ): Promise<ProviderAttemptLookup> {
+    const run = await db.workflowRun.findUnique({
+      where: { id: key.workflowRunId },
+      select: {
+        id: true,
+        projectId: true,
+        stage: true,
+        status: true,
+        attemptId: true,
+        attemptCount: true,
+      },
+    });
+    if (!run || run.stage !== "stt") {
+      return { kind: "stale", reason: "run_missing" };
+    }
+    if (run.attemptId !== key.attemptId) {
+      return { kind: "stale", reason: "attempt_superseded" };
+    }
+    const status = run.status as WorkflowStatus;
+    const transcript = await db.transcript.findUnique({
+      where: { projectId: run.projectId },
+      select: {
+        workflowAttemptId: true,
+        providerJobId: true,
+        providerRequestId: true,
+        providerSubmissionDeadlineAt: true,
+      },
+    });
+    if (status === "queued" || status === "running") {
+      return { kind: "stale", reason: "not_waiting" };
+    }
+    if (status !== "waiting") {
+      // A completion that lands twice, or an acceptance recorded after the
+      // callback completed the run, is a duplicate; anything else is terminal.
+      return status === "completed" && intent !== "fail"
+        ? { kind: "duplicate" }
+        : { kind: "terminal", status };
+    }
+    if (transcript?.workflowAttemptId !== run.attemptId) {
+      return { kind: "stale", reason: "attempt_superseded" };
+    }
+    const differs = (recorded: string | null, supplied: string | null | undefined) =>
+      Boolean(recorded && supplied && recorded !== supplied);
+    if (
+      differs(transcript.providerJobId, ids.transcriptionId) ||
+      differs(transcript.providerRequestId, ids.requestId)
+    ) {
+      return { kind: "stale", reason: "provider_job_mismatch" };
+    }
+    if (
+      intent === "accept" &&
+      transcript.providerJobId &&
+      transcript.providerJobId === ids.transcriptionId
+    ) {
+      return { kind: "duplicate" };
+    }
+    return {
+      kind: "waiting",
+      attempt: {
+        workflowRunId: run.id,
+        projectId: run.projectId,
+        stage: "stt",
+        attemptId: run.attemptId,
+        attemptCount: run.attemptCount,
+      },
+      providerJobId: transcript.providerJobId,
+      providerRequestId: transcript.providerRequestId,
+      submissionDeadlineAt: transcript.providerSubmissionDeadlineAt,
+    };
+  }
+
   async completeStage(attempt: WorkflowAttemptRef) {
     await this.settleSuccess(attempt, "completed", null);
   }
@@ -1818,129 +2159,126 @@ export class WorkflowRunLifecycle {
   ) {
     await this.settlementTransaction(attempt, async (tx) => {
       const databaseNow = await this.databaseNow(tx);
-      const run = await tx.workflowRun.findFirst({
-        where: {
-          ...this.ownedAttemptWhere(attempt, databaseNow),
-          stage: "stt",
-        },
-      });
-      if (!run) throw new WorkflowAttemptLost(attempt);
+      await this.completeTranscriptWithin(
+        tx,
+        attempt,
+        input,
+        this.ownedAttemptWhere(attempt, databaseNow),
+      );
+    });
+  }
 
-      const currentTranscript = await tx.transcript.findUnique({
-        where: { projectId: attempt.projectId },
-        select: { workflowAttemptId: true, providerJobId: true },
-      });
-      if (
-        currentTranscript?.workflowAttemptId !== attempt.attemptId ||
-        (input.providerJobId &&
-          currentTranscript.providerJobId &&
-          currentTranscript.providerJobId !== input.providerJobId)
-      ) {
-        throw new WorkflowAttemptLost(attempt);
-      }
+  private async completeTranscriptWithin(
+    tx: TransactionClient,
+    attempt: WorkflowAttemptRef,
+    input: CompleteTranscriptInput,
+    owned: Prisma.WorkflowRunWhereInput,
+  ) {
+    const run = await tx.workflowRun.findFirst({
+      where: { ...owned, stage: "stt" },
+    });
+    if (!run) throw new WorkflowAttemptLost(attempt);
 
-      const completedAt = new Date();
-      await tx.transcript.upsert({
-        where: { projectId: attempt.projectId },
-        create: {
-          projectId: attempt.projectId,
-          status: "completed",
-          workflowAttemptId: attempt.attemptId,
-          provider: input.provider,
-          providerModel: input.providerModel,
-          providerJobId: input.providerJobId,
-          languageCode: input.languageCode,
-          languageConfidence: input.languageConfidence,
-          text: input.text,
-          utterancesJson: input.utterances as Prisma.InputJsonValue,
-          speakerCount: input.speakerCount,
-          durationSeconds: input.durationSeconds,
-          rawStorageKey: input.rawStorageKey,
-          errorCode: null,
-          completedAt,
-        },
-        update: {
-          status: "completed",
-          workflowAttemptId: attempt.attemptId,
-          provider: input.provider,
-          providerModel: input.providerModel,
-          providerJobId: input.providerJobId,
-          languageCode: input.languageCode,
-          languageConfidence: input.languageConfidence,
-          text: input.text,
-          utterancesJson: input.utterances as Prisma.InputJsonValue,
-          speakerCount: input.speakerCount,
-          durationSeconds: input.durationSeconds,
-          rawStorageKey: input.rawStorageKey,
-          errorCode: null,
-          completedAt,
-        },
-      });
-      if (input.durationSeconds && input.durationSeconds > 0) {
-        await tx.project.updateMany({
-          where: { id: attempt.projectId, sourceDurationSeconds: null },
-          data: { sourceDurationSeconds: input.durationSeconds },
-        });
-      }
+    const currentTranscript = await tx.transcript.findUnique({
+      where: { projectId: attempt.projectId },
+      select: { workflowAttemptId: true, providerJobId: true },
+    });
+    if (
+      currentTranscript?.workflowAttemptId !== attempt.attemptId ||
+      (input.providerJobId &&
+        currentTranscript.providerJobId &&
+        currentTranscript.providerJobId !== input.providerJobId)
+    ) {
+      throw new WorkflowAttemptLost(attempt);
+    }
 
-      const childIdempotencyKey = `${run.idempotencyKey}__moment_detection`;
-      const child = await tx.workflowRun.upsert({
-        where: {
-          projectId_idempotencyKey: {
-            projectId: attempt.projectId,
-            idempotencyKey: childIdempotencyKey,
-          },
-        },
-        create: {
+    const completedAt = new Date();
+    const completedFields = {
+      status: "completed" as const,
+      workflowAttemptId: attempt.attemptId,
+      provider: input.provider,
+      providerModel: input.providerModel,
+      providerJobId: input.providerJobId,
+      ...(input.providerRequestId !== undefined
+        ? { providerRequestId: input.providerRequestId }
+        : {}),
+      providerSubmissionDeadlineAt: null,
+      languageCode: input.languageCode,
+      languageConfidence: input.languageConfidence,
+      text: input.text,
+      utterancesJson: input.utterances as Prisma.InputJsonValue,
+      speakerCount: input.speakerCount,
+      durationSeconds: input.durationSeconds,
+      rawStorageKey: input.rawStorageKey,
+      errorCode: null,
+      completedAt,
+    };
+    await tx.transcript.upsert({
+      where: { projectId: attempt.projectId },
+      create: { projectId: attempt.projectId, ...completedFields },
+      update: completedFields,
+    });
+    if (input.durationSeconds && input.durationSeconds > 0) {
+      await tx.project.updateMany({
+        where: { id: attempt.projectId, sourceDurationSeconds: null },
+        data: { sourceDurationSeconds: input.durationSeconds },
+      });
+    }
+
+    const childIdempotencyKey = `${run.idempotencyKey}__moment_detection`;
+    const child = await tx.workflowRun.upsert({
+      where: {
+        projectId_idempotencyKey: {
           projectId: attempt.projectId,
           idempotencyKey: childIdempotencyKey,
-          stage: "moment_detection",
-          status: "queued",
-          progress: 0,
-          contentPackId: run.contentPackId,
         },
-        update: {},
-        select: { id: true, attemptId: true },
-      });
-
-      const won = await tx.workflowRun.updateMany({
-        where: {
-          ...this.ownedAttemptWhere(attempt, databaseNow),
-          id: run.id,
-        },
-        data: {
-          status: "completed",
-          progress: 100,
-          errorCode: null,
-          leaseOwner: null,
-          leaseExpiresAt: null,
-          heartbeatAt: null,
-          nextPollAt: null,
-        },
-      });
-      if (won.count === 0) throw new WorkflowAttemptLost(attempt);
-
-      await this.appendEvent(tx, {
+      },
+      create: {
         projectId: attempt.projectId,
-        workflowRunId: attempt.workflowRunId,
-        attemptId: attempt.attemptId,
-        stage: "stt",
-        status: "completed",
-        progress: 100,
-        errorCode: null,
-        transition: "terminal:completed",
-        analyticsRequired: true,
-      });
-      await this.appendEvent(tx, {
-        projectId: attempt.projectId,
-        workflowRunId: child.id,
-        attemptId: attempt.attemptId,
+        idempotencyKey: childIdempotencyKey,
         stage: "moment_detection",
         status: "queued",
         progress: 0,
+        contentPackId: run.contentPackId,
+      },
+      update: {},
+      select: { id: true, attemptId: true },
+    });
+
+    const won = await tx.workflowRun.updateMany({
+      where: { ...owned, id: run.id },
+      data: {
+        status: "completed",
+        progress: 100,
         errorCode: null,
-        transition: `child:${child.id}:queued`,
-      });
+        leaseOwner: null,
+        leaseExpiresAt: null,
+        heartbeatAt: null,
+        nextPollAt: null,
+      },
+    });
+    if (won.count === 0) throw new WorkflowAttemptLost(attempt);
+
+    await this.appendEvent(tx, {
+      projectId: attempt.projectId,
+      workflowRunId: attempt.workflowRunId,
+      attemptId: attempt.attemptId,
+      stage: "stt",
+      status: "completed",
+      progress: 100,
+      errorCode: null,
+      transition: "terminal:completed",
+      analyticsRequired: true,
+    });
+    await this.appendEvent(tx, {
+      projectId: attempt.projectId,
+      workflowRunId: child.id,
+      attemptId: attempt.attemptId,
+      stage: "moment_detection",
+      status: "queued",
+      progress: 0,
+      errorCode: null,
+      transition: `child:${child.id}:queued`,
     });
   }
 
@@ -2142,105 +2480,114 @@ export class WorkflowRunLifecycle {
     failure: WorkflowFailure,
     options: { expiredLeaseOnly?: boolean } = {},
   ) {
-    await this.settlementTransaction(attempt, async (tx) => {
-      const databaseNow = await this.databaseNow(tx);
-      if (attempt.stage === "clip_rendering") {
-        await this.lockAdmissionProject(tx, attempt.projectId);
-      }
-      const run = await tx.workflowRun.findFirst({
-        where: {
-          id: attempt.workflowRunId,
-          projectId: attempt.projectId,
-          stage: attempt.stage,
-          status: { in: ["running", "waiting"] },
-          attemptId: attempt.attemptId,
-        },
-      });
-      if (!run) throw new WorkflowAttemptLost(attempt);
+    await this.settlementTransaction(attempt, (tx) =>
+      this.failAttemptWithin(tx, attempt, failure, options),
+    );
+  }
 
-      if (attempt.stage === "clip_rendering") {
-        await tx.$queryRaw`SELECT "id" FROM "WorkflowRun" WHERE "id" = ${run.id}::uuid FOR UPDATE`;
-        const now = await this.databaseNow(tx);
-        const changed = await tx.workflowRun.updateMany({ where: options.expiredLeaseOnly
-          ? { id: run.id, attemptId: attempt.attemptId, status: "running", leaseExpiresAt: { lte: now } }
-          : this.ownedAttemptWhere(attempt, now),
-          data: { status: "queued", attemptId: null, leaseOwner: null, leaseExpiresAt: null, heartbeatAt: null,
-            nextAttemptAt: now, errorCode: null } });
-        if (!changed.count) throw new WorkflowAttemptLost(attempt);
-        await this.appendEvent(tx, { ...attempt, status: "queued", progress: run.progress, errorCode: null, transition: `coordinator_requeued:${attempt.attemptId}` });
-        return;
-      }
-      const requeue =
-        failure.disposition === "retryable" && run.attemptCount < WORKFLOW_MAX_ATTEMPTS;
-      const status: WorkflowStatus = requeue ? "queued" : "failed";
-      const errorCode = requeue
-        ? null
-        : failure.disposition === "retryable"
-          ? WORKFLOW_RETRIES_EXHAUSTED_CODE
-          : failure.code;
-      const nextAttemptAt = requeue
-        ? new Date(databaseNow.getTime() + retryBackoffMs(run.attemptCount))
-        : null;
-
-      const won = await tx.workflowRun.updateMany({
-        where: options.expiredLeaseOnly
-          ? {
-              id: run.id,
-              projectId: attempt.projectId,
-              stage: attempt.stage,
-              attemptId: attempt.attemptId,
-              status: "running",
-              leaseExpiresAt: { lte: databaseNow },
-            }
-          : {
-              ...this.ownedAttemptWhere(attempt, databaseNow),
-              id: run.id,
-            },
-        data: {
-          status,
-          progress: requeue ? 0 : 100,
-          errorCode,
-          attemptId: requeue ? null : attempt.attemptId,
-          leaseOwner: null,
-          leaseExpiresAt: null,
-          heartbeatAt: null,
-          nextAttemptAt,
-          nextPollAt: null,
-          waitingSince: null,
-        },
-      });
-      if (won.count === 0) throw new WorkflowAttemptLost(attempt);
-        await this.settleAttemptChildren(tx, attempt, {
-          requeue,
-          errorCode: errorCode ?? failure.code,
-        });
-      let settledStatus: WorkflowStatus = status;
-      let settledErrorCode = errorCode;
-      if (attempt.stage === "dubbing") {
-        const aggregate = await this.dubbingAggregate(tx, attempt);
-        if (requeue) {
-          await tx.workflowRun.update({ where: { id: run.id }, data: { succeededCount: aggregate.succeededCount } });
-        } else {
-          settledStatus = aggregate.requestedCount > 0 ? terminalStatusForAggregate(aggregate) : "failed";
-          settledErrorCode = settledStatus === "failed" ? errorCode : null;
-          await tx.workflowRun.update({ where: { id: run.id }, data: { ...aggregate, status: settledStatus, errorCode: settledErrorCode } });
-        }
-      }
-      await this.appendEvent(tx, {
+  private async failAttemptWithin(
+    tx: TransactionClient,
+    attempt: WorkflowAttemptRef,
+    failure: WorkflowFailure,
+    options: { expiredLeaseOnly?: boolean },
+  ) {
+    const databaseNow = await this.databaseNow(tx);
+    if (attempt.stage === "clip_rendering") {
+      await this.lockAdmissionProject(tx, attempt.projectId);
+    }
+    const run = await tx.workflowRun.findFirst({
+      where: {
+        id: attempt.workflowRunId,
         projectId: attempt.projectId,
-        workflowRunId: attempt.workflowRunId,
-        attemptId: attempt.attemptId,
         stage: attempt.stage,
-        status: settledStatus,
-        progress: requeue ? 0 : 100,
-        errorCode: settledErrorCode,
-        transition: requeue
-          ? `requeued:${run.attemptCount}`
-          : `terminal:${settledStatus}`,
-        analyticsRequired: !requeue,
-      });
-      if (!requeue) await this.emitFinishedOperations(tx, attempt);
+        status: { in: ["running", "waiting"] },
+        attemptId: attempt.attemptId,
+      },
     });
+    if (!run) throw new WorkflowAttemptLost(attempt);
+
+    if (attempt.stage === "clip_rendering") {
+      await tx.$queryRaw`SELECT "id" FROM "WorkflowRun" WHERE "id" = ${run.id}::uuid FOR UPDATE`;
+      const now = await this.databaseNow(tx);
+      const changed = await tx.workflowRun.updateMany({ where: options.expiredLeaseOnly
+        ? { id: run.id, attemptId: attempt.attemptId, status: "running", leaseExpiresAt: { lte: now } }
+        : this.ownedAttemptWhere(attempt, now),
+        data: { status: "queued", attemptId: null, leaseOwner: null, leaseExpiresAt: null, heartbeatAt: null,
+          nextAttemptAt: now, errorCode: null } });
+      if (!changed.count) throw new WorkflowAttemptLost(attempt);
+      await this.appendEvent(tx, { ...attempt, status: "queued", progress: run.progress, errorCode: null, transition: `coordinator_requeued:${attempt.attemptId}` });
+      return;
+    }
+    const requeue =
+      failure.disposition === "retryable" && run.attemptCount < WORKFLOW_MAX_ATTEMPTS;
+    const status: WorkflowStatus = requeue ? "queued" : "failed";
+    const errorCode = requeue
+      ? null
+      : failure.disposition === "retryable"
+        ? WORKFLOW_RETRIES_EXHAUSTED_CODE
+        : failure.code;
+    const nextAttemptAt = requeue
+      ? new Date(databaseNow.getTime() + retryBackoffMs(run.attemptCount))
+      : null;
+
+    const won = await tx.workflowRun.updateMany({
+      where: options.expiredLeaseOnly
+        ? {
+            id: run.id,
+            projectId: attempt.projectId,
+            stage: attempt.stage,
+            attemptId: attempt.attemptId,
+            status: "running",
+            leaseExpiresAt: { lte: databaseNow },
+          }
+        : {
+            ...this.ownedAttemptWhere(attempt, databaseNow),
+            id: run.id,
+          },
+      data: {
+        status,
+        progress: requeue ? 0 : 100,
+        errorCode,
+        attemptId: requeue ? null : attempt.attemptId,
+        leaseOwner: null,
+        leaseExpiresAt: null,
+        heartbeatAt: null,
+        nextAttemptAt,
+        nextPollAt: null,
+        waitingSince: null,
+      },
+    });
+    if (won.count === 0) throw new WorkflowAttemptLost(attempt);
+      await this.settleAttemptChildren(tx, attempt, {
+        requeue,
+        errorCode: errorCode ?? failure.code,
+      });
+    let settledStatus: WorkflowStatus = status;
+    let settledErrorCode = errorCode;
+    if (attempt.stage === "dubbing") {
+      const aggregate = await this.dubbingAggregate(tx, attempt);
+      if (requeue) {
+        await tx.workflowRun.update({ where: { id: run.id }, data: { succeededCount: aggregate.succeededCount } });
+      } else {
+        settledStatus = aggregate.requestedCount > 0 ? terminalStatusForAggregate(aggregate) : "failed";
+        settledErrorCode = settledStatus === "failed" ? errorCode : null;
+        await tx.workflowRun.update({ where: { id: run.id }, data: { ...aggregate, status: settledStatus, errorCode: settledErrorCode } });
+      }
+    }
+    await this.appendEvent(tx, {
+      projectId: attempt.projectId,
+      workflowRunId: attempt.workflowRunId,
+      attemptId: attempt.attemptId,
+      stage: attempt.stage,
+      status: settledStatus,
+      progress: requeue ? 0 : 100,
+      errorCode: settledErrorCode,
+      transition: requeue
+        ? `requeued:${run.attemptCount}`
+        : `terminal:${settledStatus}`,
+      analyticsRequired: !requeue,
+    });
+    if (!requeue) await this.emitFinishedOperations(tx, attempt);
   }
 
   private async settleTerminalRenderLineage(
@@ -2429,11 +2776,14 @@ export class WorkflowRunLifecycle {
               status: "processing",
               workflowAttemptId: null,
               providerJobId: null,
+              providerRequestId: null,
+              providerSubmissionDeadlineAt: null,
               errorCode: null,
             }
           : {
               status: "failed",
               errorCode: outcome.errorCode,
+              providerSubmissionDeadlineAt: null,
             },
       });
     }

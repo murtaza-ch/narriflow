@@ -795,34 +795,40 @@ model NotificationLedger {
 /// (a backfill or new mid-flight write would silently disable the overall
 /// transcription timeout in processSubmittedTranscriptResults).
 model Transcript {
-  id                 String              @id @default(uuid()) @db.Uuid
-  projectId          String              @unique @db.Uuid
-  status             TranscriptStatus    @default(queued)
-  provider           String?
-  providerModel      String?
-  providerJobId      String?
-  workflowAttemptId  String?             @db.Uuid
-  languageCode       String?
-  languageConfidence Float?
-  text               String?
-  utterancesJson     Json?
-  speakerCount       Int?
-  durationSeconds    Int?
-  errorCode          String?
-  rawStorageKey      String?
-  completedAt        DateTime?
+  id                           String              @id @default(uuid()) @db.Uuid
+  projectId                    String              @unique @db.Uuid
+  status                       TranscriptStatus    @default(queued)
+  provider                     String?
+  providerModel                String?
+  providerJobId                String?
+  /// The provider's request id from the 202 acceptance, kept apart from
+  /// `providerJobId` (the transcription id) so a webhook can be correlated by either.
+  providerRequestId            String?
+  /// While the run is `waiting` with no `providerJobId`, the instant after which
+  /// the unconfirmed submission fails the attempt. Cleared on acceptance.
+  providerSubmissionDeadlineAt DateTime?
+  workflowAttemptId            String?             @db.Uuid
+  languageCode                 String?
+  languageConfidence           Float?
+  text                         String?
+  utterancesJson               Json?
+  speakerCount                 Int?
+  durationSeconds              Int?
+  errorCode                    String?
+  rawStorageKey                String?
+  completedAt                  DateTime?
   /// Library search indexing. `passagesIndexedFor` is the `completedAt` the
   /// passages were built from; a newer `completedAt` means the transcript changed.
   /// `passagesRetryAt` is both the claim lease and the retry backoff. After
   /// 8 attempts the transcript is left alone and `passagesIndexError` names why.
-  passagesIndexedFor DateTime?
-  passagesAttempts   Int                 @default(0)
-  passagesRetryAt    DateTime?
-  passagesIndexError String?
-  createdAt          DateTime            @default(now())
-  updatedAt          DateTime            @updatedAt
-  project            Project             @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  passages           TranscriptPassage[]
+  passagesIndexedFor           DateTime?
+  passagesAttempts             Int                 @default(0)
+  passagesRetryAt              DateTime?
+  passagesIndexError           String?
+  createdAt                    DateTime            @default(now())
+  updatedAt                    DateTime            @updatedAt
+  project                      Project             @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  passages                     TranscriptPassage[]
 
   @@index([status, updatedAt])
 }

@@ -785,7 +785,9 @@ export async function processSubmittedTranscriptResults(): Promise<number> {
   let settled = 0;
 
   for (const attempt of attempts) {
-    const run = { ...attempt, id: attempt.workflowRunId };
+    // Interim until the Scribe adapter (ticket 06): AssemblyAI always records its id with the wait.
+    if (!attempt.providerJobId) continue;
+    const run = { ...attempt, providerJobId: attempt.providerJobId, id: attempt.workflowRunId };
     const pollOne = async () => {
       try {
       // Timeout is checked BEFORE the provider GET so that persistently

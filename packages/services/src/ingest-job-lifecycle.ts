@@ -5,6 +5,7 @@ import {
   finishingSettingsSchema,
   sourceLanguageCodeSchema,
   MAX_INGEST_RETRY_ATTEMPTS,
+  SCRIBE_MODEL_ID,
   sourceProbeSchema,
   USER_ERROR_MESSAGES,
   wholeSourceWindow,
@@ -33,7 +34,7 @@ import { emitIntakeFinished, queueIntakeFinishedByGeneration } from "./operation
 import { flushWorkspaceEvents } from "./workspace-event";
 
 // Placeholder until the Scribe worker adapter lands (ticket 06).
-const PENDING_STT_PROVIDER_MODEL = "universal-3-5-pro,universal-2";
+const PENDING_STT_PROVIDER_MODEL = SCRIBE_MODEL_ID;
 
 function intakeKindFor(jobType: IngestJob["jobType"]) {
   return jobType === "upload_finalize"
@@ -798,7 +799,7 @@ export class IngestJobLifecycle {
                 create: {
                   projectId: project.id,
                   status: "queued",
-                  provider: "assemblyai",
+                  provider: "elevenlabs",
                   providerModel: PENDING_STT_PROVIDER_MODEL,
                 },
                 update: {
@@ -807,7 +808,7 @@ export class IngestJobLifecycle {
                   workflowAttemptId: null,
                   errorCode: null,
                   completedAt: null,
-                  provider: "assemblyai",
+                  provider: "elevenlabs",
                   providerModel: PENDING_STT_PROVIDER_MODEL,
                 },
               });
