@@ -505,6 +505,7 @@ export {
 } from "./workflow-run-lifecycle";
 export { finalizeScribeTranscript } from "./scribe-transcript-runtime";
 export { scribeRawStorageKey, type FinalizeScribeTranscriptInput } from "./scribe-transcript";
+export { scribeCallbackFailure, scribeErrorDetail, scribeHttpFailure, type ScribeCallStage } from "./scribe-errors";
 export { purgeOldWebhookDeliveryLogs } from "./webhook-log.service";
 export * from "./url-guard";
 export * from "./rate-limit";

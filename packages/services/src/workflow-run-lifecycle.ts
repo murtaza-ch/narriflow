@@ -1936,7 +1936,8 @@ export class WorkflowRunLifecycle {
   /**
    * Completes a waiting transcript by `(workflowRunId, attemptId)` from a
    * process that holds no lease (the webhook, or the worker's GET recovery).
-   * Fenced by the run, the attempt, and the provider ids in `input`.
+   * Fenced by the run, the attempt, and the provider ids in `input`; an id the
+   * delivery omits keeps its recorded value.
    */
   async completeProviderTranscript(
     key: ProviderAttemptKey,
@@ -1948,10 +1949,16 @@ export class WorkflowRunLifecycle {
         transcriptionId: input.providerJobId,
       });
       if (lookup.kind !== "waiting") return lookup;
+      // The row is locked: ids recorded by an acceptance that raced this
+      // completion survive a delivery that does not carry them.
       await this.completeTranscriptWithin(
         tx,
         lookup.attempt,
-        input,
+        {
+          ...input,
+          providerJobId: input.providerJobId ?? lookup.providerJobId,
+          providerRequestId: input.providerRequestId ?? lookup.providerRequestId,
+        },
         this.waitingAttemptWhere(lookup.attempt),
       );
       return { kind: "applied" } as const;

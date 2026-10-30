@@ -7,6 +7,8 @@ import {
   presignDownloadUrl,
   projectService,
   rethrowWorkflowAttemptLost,
+  scribeErrorDetail,
+  scribeHttpFailure,
   WorkflowAttemptLost,
   WorkflowFailure,
   workflowFailureFromUnknown,
@@ -14,6 +16,7 @@ import {
   type CompleteTranscriptInput,
   type ProviderAttemptKey,
   type ProviderSettlementResult,
+  type ScribeCallStage,
   type WaitingWorkflowAttempt,
   type WorkflowAttemptContext,
   type WorkflowAttemptRef,
@@ -127,73 +130,8 @@ function getScribeSubmitConfig() {
 }
 
 // ---------------------------------------------------------------------------
-// Provider error classification (D13)
+// Provider errors (classification lives in @narriflow/services, D13)
 // ---------------------------------------------------------------------------
-
-interface ScribeErrorDetail {
-  type: string | null;
-  code: string | null;
-  status: string | null;
-}
-
-/** Scribe errors arrive as `{detail: {type, code, message, status}}`; validation
- * failures (422) carry a `detail` array and some gateways a bare string. Only
- * the machine-readable tokens are read: the provider's prose is never reused. */
-export function scribeErrorDetail(payload: unknown): ScribeErrorDetail {
-  const detail = (payload as { detail?: unknown } | null)?.detail;
-  const record = detail && typeof detail === "object" && !Array.isArray(detail)
-    ? (detail as Record<string, unknown>)
-    : {};
-  const token = (value: unknown) =>
-    typeof value === "string" && value.trim() ? value.trim().toLowerCase() : null;
-  return { type: token(record.type), code: token(record.code), status: token(record.status) };
-}
-
-export type ScribeCallStage = "submit" | "result";
-
-/**
- * Maps a failed HTTP response to a workflow failure. Permanent: missing
- * webhook configuration, authentication, exhausted quota, unsupported language,
- * and rejected media/requests. Retryable (bounded by the attempt policy): 408,
- * 429, concurrency/busy codes and 5xx.
- */
-export function scribeHttpFailure(
-  stage: ScribeCallStage,
-  status: number,
-  payload: unknown,
-): WorkflowFailure {
-  const detail = scribeErrorDetail(payload);
-  const tokens = [detail.code, detail.status, detail.type].filter(Boolean).join(" ");
-  const label = `Scribe ${stage} failed with status ${status}${detail.code ? ` (${detail.code})` : ""}`;
-  const permanent = (code: string) => new WorkflowWorkerError(code, label, "permanent");
-
-  if (/no_webhooks_configured|webhook/.test(tokens) && status >= 400 && status < 500) {
-    return permanent("elevenlabs_webhook_not_configured");
-  }
-  if (/quota|insufficient|credits|billing|payment/.test(tokens)) {
-    return permanent("elevenlabs_quota_exhausted");
-  }
-  if (
-    status === 429 ||
-    status === 408 ||
-    /too_many|concurrent|system_busy|rate_limit|overload/.test(tokens)
-  ) {
-    return new WorkflowWorkerError(retryableCode(stage), label, "retryable");
-  }
-  if (status === 401 || status === 403 || /api_key|unauthorized|forbidden|permission/.test(tokens)) {
-    return permanent("elevenlabs_auth_failed");
-  }
-  if (status >= 500) {
-    return new WorkflowWorkerError(retryableCode(stage), label, "retryable");
-  }
-  if (/language/.test(tokens)) {
-    return permanent("elevenlabs_invalid_language");
-  }
-  // A result GET answering 404 with any other code means the id is not ours to
-  // read (wrong account or key), which is configuration, not media.
-  if (stage === "result" && status === 404) return permanent("elevenlabs_auth_failed");
-  return permanent("elevenlabs_invalid_media");
-}
 
 function retryableCode(stage: ScribeCallStage) {
   return stage === "submit" ? "elevenlabs_transcription_submit_failed" : "elevenlabs_transcript_fetch_failed";
@@ -208,6 +146,15 @@ function scribeTransportFailure(stage: ScribeCallStage, error: unknown): Workflo
   const reason = isAbortOrTimeoutError(error) ? "timed out" : "failed";
   return new WorkflowWorkerError(retryableCode(stage), `Scribe ${stage} request ${reason}`, "retryable");
 }
+
+/**
+ * The POST may have reached Scribe and started paid work: it timed out, the
+ * connection dropped, or the 2xx could not be read. Nothing says it failed, so
+ * the attempt stays `waiting` on its durable intent (D1): a callback can still
+ * finalize it, and the submission deadline settles it if none arrives. Only a
+ * definite HTTP rejection fails the attempt at once.
+ */
+export class ScribeSubmissionUnconfirmed extends WorkflowWorkerError {}
 
 // ---------------------------------------------------------------------------
 // Submit
@@ -260,17 +207,19 @@ export async function buildScribeSubmitForm(request: Omit<ScribeSubmitRequest, "
 
 /**
  * One POST, never retried here: a timed-out request may already have started
- * paid work, so the attempt fails and the next attempt resubmits (D1).
- * Throws a classified WorkflowFailure.
+ * paid work (D1). Throws a classified WorkflowFailure; an outcome the request
+ * may have survived is a `ScribeSubmissionUnconfirmed`.
  */
 export async function submitScribeTranscription(request: ScribeSubmitRequest): Promise<ScribeAcceptance> {
   const timeoutMs = request.input.kind === "url" ? URL_SUBMIT_TIMEOUT_MS : FILE_SUBMIT_TIMEOUT_MS;
+  // Built before the request leaves: a local failure here is a definite failure.
+  const body = await buildScribeSubmitForm(request);
   let response: Response;
   try {
     response = await (request.fetchImpl ?? fetch)(SCRIBE_BASE_URL, {
       method: "POST",
       headers: { "xi-api-key": request.apiKey },
-      body: await buildScribeSubmitForm(request),
+      body,
       signal: AbortSignal.any([
         ...(request.signal ? [request.signal] : []),
         AbortSignal.timeout(timeoutMs),
@@ -278,7 +227,8 @@ export async function submitScribeTranscription(request: ScribeSubmitRequest): P
     });
   } catch (error) {
     request.signal?.throwIfAborted();
-    throw scribeTransportFailure("submit", error);
+    const failure = scribeTransportFailure("submit", error);
+    throw new ScribeSubmissionUnconfirmed(failure.code, failure.message, "retryable");
   }
 
   const payload = (await response.json().catch(() => null)) as Record<string, unknown> | null;
@@ -287,9 +237,10 @@ export async function submitScribeTranscription(request: ScribeSubmitRequest): P
   const requestId = payload?.request_id;
   const transcriptionId = payload?.transcription_id;
   if (typeof requestId !== "string" || !requestId || typeof transcriptionId !== "string" || !transcriptionId) {
-    throw new WorkflowWorkerError(
+    throw new ScribeSubmissionUnconfirmed(
       "elevenlabs_transcription_submit_failed",
       "Scribe accepted the request but returned no transcription id",
+      "retryable",
     );
   }
   return { requestId, transcriptionId };
@@ -556,6 +507,17 @@ export async function processTranscriptRun(
     });
   } catch (error) {
     signal.throwIfAborted();
+    if (submissionBegun && error instanceof ScribeSubmissionUnconfirmed) {
+      // Leave the run waiting on its existing attempt (D1): a callback can still
+      // finalize it, and the submission deadline settles it otherwise.
+      log("error", "transcription_submission_indeterminate", {
+        workflowRunId: run.id,
+        projectId: run.projectId,
+        code: error.code,
+        message: error.message,
+      });
+      return;
+    }
     await settleTranscriptRunFailure(run, attempt, error, adapters, submissionBegun);
   }
 }
@@ -695,11 +657,21 @@ export async function processSubmittedTranscriptResults(
     try {
       if (await settleWaitingTranscript(attempt, apiKey, timeoutMs, adapters)) settled += 1;
     } catch (error) {
-      if (!(error instanceof WorkflowAttemptLost)) throw error;
-      log("info", "transcription_stale_poll_discarded", {
+      // One run's problem never stops the rest of the claimed batch; a run left
+      // waiting is claimed again on its next poll.
+      if (error instanceof WorkflowAttemptLost) {
+        log("info", "transcription_stale_poll_discarded", {
+          workflowRunId: attempt.workflowRunId,
+          projectId: attempt.projectId,
+          attemptId: attempt.attemptId,
+        });
+        continue;
+      }
+      log("error", "transcription_result_poll_failed", {
         workflowRunId: attempt.workflowRunId,
         projectId: attempt.projectId,
         attemptId: attempt.attemptId,
+        message: error instanceof Error ? error.message : "Unknown error",
       });
     }
   }
@@ -729,11 +701,34 @@ async function settleWaitingTranscript(
   const result = await adapters.fetchTranscript(transcriptionId, apiKey);
 
   if (result.kind === "ready") {
-    const settlement = await adapters.finalize({
-      key,
-      payload: result.payload,
-      providerIds: { transcriptionId },
-    });
+    let settlement: ProviderSettlementResult;
+    try {
+      settlement = await adapters.finalize({
+        key,
+        payload: result.payload,
+        providerIds: { transcriptionId },
+      });
+    } catch (error) {
+      if (error instanceof WorkflowAttemptLost) throw error;
+      // Persistence trouble (raw JSON storage, database): keep the run waiting
+      // and finalize on a later tick, until the result deadline settles it.
+      log("error", "transcription_finalize_failed", {
+        workflowRunId: run.id,
+        projectId: run.projectId,
+        message: error instanceof Error ? error.message : "Unknown error",
+        pastDeadline: elapsedMs > timeoutMs,
+      });
+      return elapsedMs > timeoutMs
+        ? failWaitingTranscript(
+            attempt,
+            new WorkflowWorkerError(
+              "elevenlabs_transcript_fetch_failed",
+              "Scribe transcript was ready but could not be saved before the result deadline",
+            ),
+            adapters,
+          )
+        : false;
+    }
     log("info", "transcription_run_completed", {
       workflowRunId: run.id,
       projectId: run.projectId,

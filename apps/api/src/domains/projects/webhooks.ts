@@ -1,8 +1,9 @@
-import type {
-  FinalizeScribeTranscriptInput,
-  ProviderAttemptKey,
-  ProviderIds,
-  ProviderSettlementResult,
+import {
+  scribeCallbackFailure,
+  type FinalizeScribeTranscriptInput,
+  type ProviderAttemptKey,
+  type ProviderIds,
+  type ProviderSettlementResult,
 } from "@narriflow/services";
 import { bodyClass } from "../../body-limits";
 import { createRouteApp } from "../../http/admission";
@@ -120,12 +121,20 @@ export function createProjectsWebhookRoutes(deps: ProjectsWebhookDeps) {
       if (type === "webhook_error") {
         const key = attemptKeyOf(envelope.webhook_metadata);
         if (!key) return ignored("missing_or_invalid_metadata", { type });
+        // The provider's message picks the code and is logged truncated; it is
+        // never stored or shown (the classified failure carries fixed text).
+        const failure = scribeCallbackFailure(envelope.error_message);
+        log("warn", "elevenlabs_webhook_error_received", {
+          ...key,
+          code: failure.code,
+          providerMessage: typeof envelope.error_message === "string" ? envelope.error_message.slice(0, 200) : null,
+        });
         const result = await deps.failProviderAttempt(
           key,
           {
-            code: "elevenlabs_transcription_failed",
-            retryable: true,
-            message: "ElevenLabs could not complete the transcription.",
+            code: failure.code,
+            retryable: failure.disposition === "retryable",
+            message: failure.message,
           },
           { requestId: nonEmptyString(envelope.request_id) },
         );
