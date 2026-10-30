@@ -286,6 +286,30 @@ function equalRate(actual: FrameRate | null, expected: FrameRate): boolean {
 	);
 }
 
+/**
+ * ffprobe reports avg_frame_rate as frames / (last pts - first pts). That span
+ * omits the final frame's duration, so a constant-rate file of N frames reads
+ * N/(N-1) times its real rate (958 frames at 30000/1001 report 30.0016). Accept
+ * exactly that structural error; the decoded frame count, duration and spacing
+ * checks below prove the clock is constant.
+ */
+function averageRateMatches(
+	actual: FrameRate | null,
+	expected: FrameRate,
+	frameCount: number | null,
+): boolean {
+	if (actual === null || actual.denominator === 0) return false;
+	if (equalRate(actual, expected)) return true;
+	const ratio =
+		(actual.numerator * expected.denominator) /
+		(actual.denominator * expected.numerator);
+	// The omitted final frame can only make the reported average higher, by at
+	// most N/(N-1); a lower average is a real clock error.
+	const ceiling =
+		frameCount !== null && frameCount > 1 ? frameCount / (frameCount - 1) : 1;
+	return ratio >= 1 - 1e-9 && ratio <= ceiling + 1e-9;
+}
+
 function healthOrControl(error: unknown, signal: AbortSignal): void {
 	signal.throwIfAborted();
 	if (
@@ -382,7 +406,11 @@ export async function validateRenderOutput(input: {
 		codes.push("output_sar_mismatch");
 	if (
 		(!expected.variableFrameSpacing &&
-			!equalRate(video.avgFrameRate, expected.frameRate)) ||
+			!averageRateMatches(
+				video.avgFrameRate,
+				expected.frameRate,
+				video.frameCount,
+			)) ||
 		!equalRate(video.rFrameRate, expected.frameRate) ||
 		!video.avgFrameRate
 	)

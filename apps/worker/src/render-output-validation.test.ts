@@ -225,6 +225,14 @@ describe("render output admission", () => {
 			"output_frame_rate_mismatch",
 		],
 		[
+			"clock off by more than one frame over the clip",
+			(facts: MediaFacts) => {
+				facts.videos[0]!.frameCount = 958;
+				facts.videos[0]!.avgFrameRate = { numerator: 30100, denominator: 1000 };
+			},
+			"output_frame_rate_mismatch",
+		],
+		[
 			"audio rate",
 			(facts: MediaFacts) => {
 				facts.audios[0]!.sampleRate = 44100;
@@ -259,6 +267,18 @@ describe("render output admission", () => {
 			await rejectsWith(injected(facts), code);
 		});
 	}
+	test("accepts ffprobe's N/(N-1) average rate on a constant-rate output (production 29.97 case)", async () => {
+		const facts = structuredClone(media);
+		const video = facts.videos[0]!;
+		const frames = video.frameCount!;
+		// ffprobe divides N frames by the pts span, which omits the last frame.
+		video.avgFrameRate = {
+			numerator: expected.frameRate.numerator * frames,
+			denominator: expected.frameRate.denominator * (frames - 1),
+		};
+		await validate(injected(facts), expected);
+	});
+
 	test("one frame tolerance passes exactly one frame, rejects two and 20.38/30s", async () => {
 		await validate(processes, { ...expected, durationSec: 1 + 1 / 30 });
 		await rejectsWith(processes, "output_video_duration_mismatch", {
