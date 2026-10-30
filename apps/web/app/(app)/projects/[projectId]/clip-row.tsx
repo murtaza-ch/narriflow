@@ -25,7 +25,6 @@ import { Checkbox } from "@narriflow/ui/components/checkbox";
 import { useConfirm } from "@narriflow/ui/components/confirm-dialog";
 import {
 	clipAspectRatioOptions,
-	userErrorMessage,
 	type ClipAspectRatio,
 	type ClipSnapshot,
 } from "@narriflow/validators";
@@ -52,6 +51,7 @@ import {
 import { ClipActionsMenu } from "./clip-actions-menu";
 import { ClipVideo } from "./clip-video";
 import { clipActionErrorCopy, failureNeedsStateRefetch } from "./clip-action-error-copy";
+import { renderFailureMessage } from "./render-status";
 import { LockedButton } from "../../_components/upgrade";
 
 /** Width/height of the tallest preview format — the media stage's shape. */
@@ -960,7 +960,7 @@ export function ClipRow({
 						<Flex align="center" gap="1.5" color="danger.fg">
 							<AlertTriangle size={12} aria-hidden />
 							<Text fontSize="12px">
-								Render failed: {userErrorMessage(selectedVariant.errorCode)}
+								{renderFailureMessage(selectedVariant.errorCode)}
 							</Text>
 						</Flex>
 					) : null}

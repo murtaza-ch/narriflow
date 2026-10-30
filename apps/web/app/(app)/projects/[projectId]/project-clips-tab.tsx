@@ -15,6 +15,7 @@ import type { deriveCampaignActionPlan } from "./campaign-command-state";
 import { ClipsPanel } from "./clips-panel";
 import { ProcessingPanel } from "./processing-panel";
 import type { ProjectDetailData, ProjectRecord, ProjectView } from "./project-view-model";
+import { RenderStatusNotice } from "./render-status-notice";
 import { SourceHoverPreview } from "./source-hover-preview";
 import { SourceThumb } from "./source-thumb";
 import { useProjectGeneration } from "./use-project-generation";
@@ -178,6 +179,7 @@ export function ProjectClipsTab({
 					canManageBilling={canManageBilling}
 				/>
 			)}
+			<RenderStatusNotice projectId={projectId} status={view.renderStatus} canEdit={view.canEdit} />
 			{/* Ranked-row results. The view's single solid button — "Render selected" —
 			    lives in this panel's toolbar. */}
 			<ClipsPanel

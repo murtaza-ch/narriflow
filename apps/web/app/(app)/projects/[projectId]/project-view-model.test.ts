@@ -18,6 +18,7 @@ function detail(overrides: {
 	pack?: unknown;
 	transcriptStatus?: string | null;
 	run?: unknown;
+	progress?: unknown;
 	creditUsage?: unknown;
 	ingestAttemptCount?: number;
 	usage?: Record<string, unknown>;
@@ -47,7 +48,7 @@ function detail(overrides: {
 		},
 		snapshot: {
 			project,
-			progress: { active: false, status: "completed", label: "Done" },
+			progress: overrides.progress ?? { active: false, status: "completed", label: "Done" },
 			activeRun: overrides.run ?? null,
 			lastSeq: 0,
 			ingestAttemptCount: overrides.ingestAttemptCount ?? 0,
@@ -140,6 +141,104 @@ describe("Project view model", () => {
 
 	test("the pipeline lists the five steps in order", () => {
 		expect(view({}).steps.map((step) => step.label)).toEqual(["Ingest", "Transcribe", "Detect", "Render", "Publish"]);
+	});
+});
+
+function clipWith(id: string, ...variants: Array<[status: string, errorCode?: string]>) {
+	return {
+		id,
+		renderVariants: variants.map(([status, errorCode], index) => ({
+			aspectRatio: index === 0 ? "9:16" : "1:1",
+			resolution: "1080p",
+			status,
+			errorCode: errorCode ?? null,
+			hasAsset: status === "completed",
+		})),
+	};
+}
+
+const failedRenderRun = {
+	workflowRunId: "r1",
+	stage: "clip_rendering",
+	status: "failed",
+	progress: 0,
+	errorCode: "clip_render_group_failed",
+};
+const failedRenderProgress = { active: false, status: "failed", label: "Rendering failed" };
+
+describe("A failed render never hides the clips", () => {
+	test("first run: every render failed, the clips stay with Retry targets and the badge counts renders", () => {
+		const first = view({
+			run: failedRenderRun,
+			progress: failedRenderProgress,
+			clips: [clipWith("a", ["failed", "x_unmapped"]), clipWith("b", ["failed"])],
+		});
+		expect(first.showProcessingPanel).toBe(false);
+		expect(first.renderStatus.failedCount).toBe(2);
+		expect(first.renderStatus.groups).toEqual([{ aspectRatio: "9:16", resolution: "1080p", clipIds: ["a", "b"] }]);
+		expect(first.headerBadge).toEqual({ status: "failed", label: "2 renders failed" });
+	});
+
+	test("a re-render of one clip failed: nine rendered clips stay, one retry target, badge says 1 render failed", () => {
+		const rendered = Array.from({ length: 9 }, (_, index) => clipWith(`ok${index}`, ["completed"]));
+		const failed = view({
+			run: failedRenderRun,
+			progress: failedRenderProgress,
+			clips: [...rendered, clipWith("bad", ["failed", "clip_render_group_failed"])],
+		});
+		expect(failed.showProcessingPanel).toBe(false);
+		expect(failed.renderStatus.failedCount).toBe(1);
+		expect(failed.renderStatus.groups[0]?.clipIds).toEqual(["bad"]);
+		expect(failed.headerBadge).toEqual({ status: "failed", label: "1 render failed" });
+	});
+
+	test("partial: failed and rendered variants of different clips both stay, one group per format", () => {
+		const partial = view({
+			run: failedRenderRun,
+			progress: failedRenderProgress,
+			clips: [clipWith("a", ["completed"], ["failed"]), clipWith("b", ["failed"]), clipWith("c", ["completed"])],
+		});
+		expect(partial.showProcessingPanel).toBe(false);
+		expect(partial.renderStatus.groups.map((group) => [group.aspectRatio, group.clipIds])).toEqual([
+			["1:1", ["a"]],
+			["9:16", ["b"]],
+		]);
+		expect(partial.headerBadge?.label).toBe("2 renders failed");
+	});
+
+	test("once the failed renders are retried the badge clears and a running retry keeps the list", () => {
+		const retrying = view({
+			run: { ...failedRenderRun, status: "running" },
+			progress: { active: true, status: "processing", label: "Rendering" },
+			clips: [clipWith("a", ["completed"]), clipWith("b", ["rendering"])],
+		});
+		expect(retrying.showProcessingPanel).toBe(false);
+		expect(retrying.renderStatus.inFlightCount).toBe(1);
+		expect(retrying.headerBadge?.label).toBe("Rendering");
+		const settled = view({
+			run: failedRenderRun,
+			progress: failedRenderProgress,
+			clips: [clipWith("a", ["completed"])],
+		});
+		expect(settled.headerBadge).toBeNull();
+	});
+
+	test("a first render that is still running shows the progress card until a video exists", () => {
+		const running = view({
+			run: { ...failedRenderRun, status: "running" },
+			progress: { active: true, status: "processing", label: "Rendering" },
+			clips: [clipWith("a", ["rendering"])],
+		});
+		expect(running.showProcessingPanel).toBe(true);
+	});
+
+	test("a failed earlier stage still shows the panel, which has its own retry", () => {
+		const failedDetect = view({
+			run: { workflowRunId: "r1", stage: "moment_detection", status: "failed", progress: 0, errorCode: "x" },
+			progress: { active: false, status: "failed", label: "Detecting failed" },
+			clips: [clipWith("a", ["completed"])],
+		});
+		expect(failedDetect.showProcessingPanel).toBe(true);
 	});
 });
 

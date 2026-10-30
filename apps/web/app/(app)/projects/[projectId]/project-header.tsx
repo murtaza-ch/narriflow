@@ -50,8 +50,7 @@ export function ProjectHeader({
 	actor: ProjectActor;
 	processingPanelVisible: boolean;
 }) {
-	const { snapshot, finishing, clips } = detail;
-	const progress = snapshot.progress;
+	const { finishing, clips } = detail;
 	const durationSec = project.sourceDurationSeconds;
 	const hasDuration = typeof durationSec === "number" && durationSec > 0;
 	const brandChoices = detail.tab === "clips" ? detail.tabData.brandChoices : [];
@@ -92,9 +91,7 @@ export function ProjectHeader({
 							{formatDate(project.createdAt)}
 						</Text>
 						{project.expiresAt ? <ProjectExpiration expiresAt={project.expiresAt} /> : null}
-						{(progress.active || progress.status === "failed") && (
-							<StatusBadge status={progress.status} label={progress.label} />
-						)}
+						{view.headerBadge && <StatusBadge status={view.headerBadge.status} label={view.headerBadge.label} />}
 					</Flex>
 				</Stack>
 				<Flex gap="2" align="center" flexShrink={0} wrap="wrap">

@@ -18,6 +18,7 @@ mock.module("@/app/_components/api-provider", () => ({
 const { DubbingPanel } = await import("./dubbing-panel");
 const { ContentSuitePanel } = await import("./content-suite-panel");
 const { ReviewPanel } = await import("./review-panel");
+const { RenderStatusNotice } = await import("./render-status-notice");
 const { UpgradeProvider } = await import("../../_components/upgrade");
 
 const queryClient = new QueryClient();
@@ -167,5 +168,33 @@ describe("Review panel", () => {
 		);
 		expect(html).not.toContain("needs Business");
 		expect(html).toContain("Export a clip first");
+	});
+});
+
+describe("Render status notice", () => {
+	const failed = {
+		failedCount: 2,
+		errorCode: "ffmpeg_render_failed",
+		groups: [{ aspectRatio: "9:16" as const, resolution: "1080p" as const, clipIds: ["a", "b"] }],
+		inFlightCount: 0,
+	};
+	const notice = (status: typeof failed, canEdit = true) =>
+		renderToStaticMarkup(
+			<Providers>
+				<RenderStatusNotice projectId={projectId} status={status} canEdit={canEdit} />
+			</Providers>,
+		);
+
+	test("names the failed renders in product words and offers Retry to an editor", () => {
+		const html = notice(failed);
+		expect(html).toContain("2 renders failed");
+		expect(html).toContain("A clip failed to render. Try rendering it again.");
+		expect(html).toContain("Retry renders");
+	});
+
+	test("a viewer sees the failure without a Retry, and nothing shows when nothing failed or runs", () => {
+		expect(notice(failed, false)).not.toContain("Retry");
+		expect(notice({ ...failed, failedCount: 0, groups: [] })).not.toContain("role=\"status\"");
+		expect(notice({ ...failed, failedCount: 0, groups: [], inFlightCount: 1 })).toContain("Rendering 1 video");
 	});
 });

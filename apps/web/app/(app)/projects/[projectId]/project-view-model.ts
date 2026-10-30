@@ -23,6 +23,7 @@ import type { PipelineStepView } from "@/lib/project-state";
 import { extractYoutubeId, youtubeFrameUrls } from "../_lib/youtube";
 import { deriveCampaignActionPlan } from "./campaign-command-state";
 import { projectViewOnlyNote } from "./project-access";
+import { deriveRenderStatus, renderFailureHeadline } from "./render-status";
 
 /**
  * Everything the Project screen decides from one detail aggregate: access,
@@ -214,11 +215,37 @@ export function deriveProjectView(detail: ProjectDetail, project: ProjectRecord)
 	// run is in flight, or ingest is still running/failed with a committed pack,
 	// or quota was crossed mid-flight. Processing stays visible until rendering succeeds.
 	const renderStageSucceeded = render.status === "completed" || render.status === "partial";
+	// Clips that exist are never hidden by their renders: once detection is done, a
+	// failed render (retried from the notice and rows) or a render over clips that
+	// already have a video leaves the ranked list on screen.
+	const renderStatus = deriveRenderStatus(clips);
+	const earlierStageUnfinished = [transcribe, detect].some(
+		(stage) => stage.status !== null && ["queued", "running", "waiting", "failed"].includes(stage.status),
+	);
+	const renderRunning = render.status === "queued" || render.status === "running" || render.status === "waiting";
+	const clipsHaveVideo = clips.some((clip) => clip.renderVariants.some((variant) => variant.hasAsset));
+	const clipsStayVisible =
+		clips.length > 0 &&
+		!earlierStageUnfinished &&
+		(render.status === "failed" || (renderRunning && clipsHaveVideo));
 	const showProcessingPanel =
 		hasCommittedPack &&
 		(clips.length === 0
 			? ingestInProgress || isIngestFailed || runInFlight || runFailed || quotaBlockedMidFlight
-			: pipeline.hasUnfinishedProcessing || !renderStageSucceeded);
+			: !clipsStayVisible && (pipeline.hasUnfinishedProcessing || !renderStageSucceeded));
+
+	// The header badge speaks for the clips: a failed render run says how many
+	// renders failed (and nothing once they were retried or none remain).
+	const progress = snapshot.progress;
+	const renderRunFailedWithClips =
+		progress.status === "failed" && activeRun?.stage === "clip_rendering" && clips.length > 0;
+	const headerBadge: { status: typeof progress.status; label: string } | null = renderRunFailedWithClips
+		? renderStatus.failedCount > 0
+			? { status: "failed", label: renderFailureHeadline(renderStatus.failedCount) }
+			: null
+		: progress.active || progress.status === "failed"
+			? progress
+			: null;
 
 	const steps: PipelineStepView[] = [
 		{ label: "Ingest", state: pipeline.ingest, status: project.ingestStatus },
@@ -261,6 +288,8 @@ export function deriveProjectView(detail: ProjectDetail, project: ProjectRecord)
 		detect,
 		render,
 		showProcessingPanel,
+		renderStatus,
+		headerBadge,
 		steps,
 	};
 }
