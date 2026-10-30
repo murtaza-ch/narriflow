@@ -9,6 +9,8 @@ export function projectProgressWorkflowOrderSql() {
 export function projectProgressStatusSql(input: {
 	ingestStatus: Prisma.Sql;
 	workflowStatus: Prisma.Sql;
+	/** True when the current run failed at clip_rendering and the project has a completed render. */
+	partlyRendered: Prisma.Sql;
 }) {
 	return Prisma.sql`
 		CASE
@@ -17,6 +19,7 @@ export function projectProgressStatusSql(input: {
 			WHEN ${input.ingestStatus} <> 'ready' THEN 'processing'
 			WHEN ${input.workflowStatus} = 'queued' THEN 'queued'
 			WHEN ${input.workflowStatus} IN ('running', 'waiting') THEN 'processing'
+			WHEN ${input.workflowStatus} = 'failed' AND ${input.partlyRendered} THEN 'ready'
 			WHEN ${input.workflowStatus} = 'failed' THEN 'failed'
 			ELSE 'ready'
 		END

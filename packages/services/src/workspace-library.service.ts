@@ -241,6 +241,7 @@ export class WorkspaceLibraryService {
 		const progressStatus = projectProgressStatusSql({
 			ingestStatus: Prisma.sql`p."ingestStatus"`,
 			workflowStatus: Prisma.sql`current_run.status`,
+			partlyRendered: Prisma.sql`current_run."hasRenderedVideo"`,
 		});
 		const workflowOrder = projectProgressWorkflowOrderSql();
 		const progressCte = Prisma.sql`
@@ -252,12 +253,20 @@ export class WorkspaceLibraryService {
 					current_run."updatedAt" AS "workflowUpdatedAt",
 					current_run.stage AS "workflowStage",
 					current_run.status AS "workflowStatus",
+					current_run."hasRenderedVideo" AS "hasRenderedVideo",
 					p."createdAt",
 					p.title,
 					${progressStatus} AS "progressStatus"
 				FROM "Project" p
 				LEFT JOIN LATERAL (
-					SELECT id, "updatedAt", stage, status
+					SELECT id, "updatedAt", stage, status,
+						(
+							status = 'failed' AND stage = 'clip_rendering' AND EXISTS (
+								SELECT 1 FROM "ClipRender" cr
+								JOIN "Clip" c ON c.id = cr."clipId"
+								WHERE c."projectId" = p.id AND cr.status = 'completed'
+							)
+						) AS "hasRenderedVideo"
 					FROM "WorkflowRun"
 					WHERE "projectId" = p.id
 					ORDER BY ${workflowOrder}
@@ -281,6 +290,7 @@ export class WorkspaceLibraryService {
 			workflowUpdatedAt: Date | null;
 			workflowStage: string | null;
 			workflowStatus: string | null;
+			hasRenderedVideo: boolean | null;
 			progressStatus: Exclude<ProjectListStatusFilter, "all">;
 		};
 		const statusFilter =
@@ -290,7 +300,7 @@ export class WorkspaceLibraryService {
 		const [pageWithLookahead, countRows] = await Promise.all([
 			prisma.$queryRaw<ProgressRow[]>(Prisma.sql`
 				${progressCte}
-				SELECT id, "ingestStatus", "workflowRunId", "workflowUpdatedAt", "workflowStage", "workflowStatus", "progressStatus"
+				SELECT id, "ingestStatus", "workflowRunId", "workflowUpdatedAt", "workflowStage", "workflowStatus", "hasRenderedVideo", "progressStatus"
 				FROM listed
 				${statusFilter}
 				ORDER BY ${orderBy}
@@ -372,6 +382,7 @@ export class WorkspaceLibraryService {
 					avgViralityScore: clip?._avg.viralityScore ?? null,
 					progress: deriveProjectListProgress({
 						ingestStatus: progressRow.ingestStatus,
+						hasRenderedVideo: progressRow.hasRenderedVideo === true,
 						workflowRuns:
 							progressRow.workflowRunId &&
 							progressRow.workflowUpdatedAt &&

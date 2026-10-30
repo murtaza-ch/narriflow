@@ -697,4 +697,66 @@ dbDescribe("Project Actor Scope PostgreSQL interface", () => {
 		expect(page.items[0]?.progress).toEqual(detail.progress);
 		expect(ingest?.progress).toEqual(detail.progress);
 	});
+	test("a failed render run reads as partly ready once any clip has rendered, in list, counts, detail and ingest", async () => {
+		const { editor, scope } = await fixture();
+		const actor = scope(editor.id);
+		const rendered = await project(actor, "Has a render");
+		const bare = await project(actor, "No render");
+		const runs = await Promise.all(
+			[rendered, bare].map((row) =>
+				prisma.workflowRun.create({
+					data: {
+						projectId: row.id,
+						stage: "clip_rendering",
+						status: "failed",
+						idempotencyKey: randomUUID(),
+					},
+				}),
+			),
+		);
+		const clip = await prisma.clip.create({
+			data: {
+				projectId: rendered.id,
+				workflowRunId: runs[0]!.id,
+				index: 0,
+				startSec: 0,
+				endSec: 10,
+				hookText: "Hook",
+				reasoning: "Test fixture",
+				category: "hook",
+				transcriptSlice: [],
+				viralityScore: 50,
+				hookStrengthScore: 50,
+				emotionalIntensityScore: 50,
+				pacingScore: 50,
+				durationOptimalityScore: 50,
+				tiktokScore: 50,
+				youtubeScore: 50,
+				instagramScore: 50,
+				llmProvider: "test",
+				llmModel: "test",
+			},
+		});
+		await prisma.clipRender.create({
+			data: { clipId: clip.id, aspectRatio: "ratio_9_16", status: "completed" },
+		});
+		const partial = { status: "ready", label: "Partially ready", active: false };
+		const failed = { status: "failed", label: "Rendering failed", active: false };
+
+		const page = await workspaceLibraryService.listProjects(actor);
+		const progress = (id: string) =>
+			page.items.find((item) => item.id === id)?.progress;
+		expect(progress(rendered.id)).toEqual(partial);
+		expect(progress(bare.id)).toEqual(failed);
+		expect(page.statusCounts).toMatchObject({ ready: 1, failed: 1 });
+		const failedPage = await workspaceLibraryService.listProjects(actor, {
+			status: "failed",
+		});
+		expect(failedPage.items.map((item) => item.id)).toEqual([bare.id]);
+		expect(
+			(await projectService.getProjectSnapshot(actor, rendered.id)).progress,
+		).toEqual(partial);
+		expect((await projectService.getIngestSnapshot(actor, rendered.id))?.progress).toEqual(partial);
+		expect((await projectService.getProjectSnapshot(actor, bare.id)).progress).toEqual(failed);
+	});
 });

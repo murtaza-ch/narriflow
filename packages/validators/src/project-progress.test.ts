@@ -6,6 +6,7 @@ describe("Project list progress", () => {
 		expect(
 			deriveProjectListProgress({
 				ingestStatus: "ready",
+				hasRenderedVideo: false,
 				workflowRuns: [
 					{
 						id: "run-1",
@@ -28,6 +29,7 @@ describe("Project list progress", () => {
 		expect(
 			deriveProjectListProgress({
 				ingestStatus: "ready",
+				hasRenderedVideo: false,
 				workflowRuns: [
 					{
 						id: "run-3",
@@ -41,6 +43,7 @@ describe("Project list progress", () => {
 		expect(
 			deriveProjectListProgress({
 				ingestStatus: "ready",
+				hasRenderedVideo: false,
 				workflowRuns: [
 					{
 						id: "run-4",
@@ -53,10 +56,31 @@ describe("Project list progress", () => {
 		).toEqual({ status: "ready", label: "Partially ready", active: false });
 	});
 
+	test("a failed render run never hides clips that already rendered", () => {
+		const failed = (stage: string) => [
+			{ id: "run-f", stage, status: "failed", updatedAt: "2026-09-13T10:01:00.000Z" },
+		];
+		expect(
+			deriveProjectListProgress({ ingestStatus: "ready", workflowRuns: failed("clip_rendering"), hasRenderedVideo: true }),
+		).toEqual({ status: "ready", label: "Partially ready", active: false });
+		expect(
+			deriveProjectListProgress({ ingestStatus: "ready", workflowRuns: failed("clip_rendering"), hasRenderedVideo: false }),
+		).toEqual({ status: "failed", label: "Rendering failed", active: false });
+		for (const stage of ["stt", "moment_detection", "dubbing"]) {
+			expect(
+				deriveProjectListProgress({ ingestStatus: "ready", workflowRuns: failed(stage), hasRenderedVideo: true }).status,
+			).toBe("failed");
+		}
+		expect(
+			deriveProjectListProgress({ ingestStatus: "failed", workflowRuns: [], hasRenderedVideo: true }),
+		).toEqual({ status: "failed", label: "Import failed", active: false });
+	});
+
 	test("does not let a superseded workflow failure hide a newer completed stage", () => {
 		expect(
 			deriveProjectListProgress({
 				ingestStatus: "ready",
+				hasRenderedVideo: false,
 				workflowRuns: [
 					{
 						id: "run-5",
@@ -213,7 +237,7 @@ describe("canonical Project progress", () => {
     ];
     for (const order of [runs, [...runs].reverse(), [runs[2]!, runs[0]!, runs[3]!, runs[1]!]]) {
       expect(resolveProjectProgressRun(order)?.id).toBe(runs[3]!.id);
-      expect(deriveProjectListProgress({ ingestStatus: "ready", workflowRuns: order })).toEqual({ status: "queued", label: "Render queued", active: true });
+      expect(deriveProjectListProgress({ ingestStatus: "ready", workflowRuns: order, hasRenderedVideo: false })).toEqual({ status: "queued", label: "Render queued", active: true });
     }
     const terminal = [
       { ...runs[2]!, status: "failed" },

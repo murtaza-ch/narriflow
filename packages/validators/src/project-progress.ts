@@ -59,6 +59,8 @@ export function resolveProjectProgressRun(
 export function deriveProjectListProgress(input: {
 	ingestStatus: IngestStatus;
 	workflowRuns: readonly ProjectListWorkflowRun[];
+	/** The project already has at least one completed render. */
+	hasRenderedVideo: boolean;
 }): ProjectListProgress {
 	if (input.ingestStatus === "failed") {
 		return { status: "failed", label: "Import failed", active: false };
@@ -79,6 +81,11 @@ export function deriveProjectListProgress(input: {
 		};
 	}
 	if (workflowRun?.status === "failed") {
+		// A failed render run (a manual re-render of one clip, say) never hides
+		// clips that already rendered: the project reads as partly ready.
+		if (workflowRun.stage === "clip_rendering" && input.hasRenderedVideo) {
+			return { status: "ready", label: "Partially ready", active: false };
+		}
 		return { status: "failed", label: `${workflowProgressLabel(workflowRun.stage, "running")} failed`, active: false };
 	}
 	if (workflowRun?.status === "partial") {

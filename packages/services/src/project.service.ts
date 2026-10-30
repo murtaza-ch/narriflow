@@ -810,6 +810,15 @@ export class ProjectService {
 		}
 	}
 
+	/** Whether any clip of the project has a completed render. */
+	private async hasRenderedVideo(projectId: string): Promise<boolean> {
+		const render = await this.requirePrisma().clipRender.findFirst({
+			where: { status: "completed", clip: { projectId } },
+			select: { id: true },
+		});
+		return render !== null;
+	}
+
 	async getProjectSnapshot(scope: ActorScope, projectId: string) {
 		const prisma = this.requirePrisma();
 
@@ -832,6 +841,7 @@ export class ProjectService {
 			lastSeq,
 			ingestAttemptCount,
 			latestIngestJob,
+			hasRenderedVideo,
 		] = await Promise.all([
 				prisma.workflowRun.findFirst({
 					where: {
@@ -855,6 +865,7 @@ export class ProjectService {
 					orderBy: [{ createdAt: "desc" }, { id: "desc" }],
 					select: { jobType: true },
 				}),
+				this.hasRenderedVideo(projectId),
 			]);
 		const project = toProjectSnapshot(row);
 		const relevantRun = activeWorkflowRun ?? latestRun;
@@ -864,6 +875,7 @@ export class ProjectService {
 			progress: deriveProjectListProgress({
 				ingestStatus: row.ingestStatus,
 				workflowRuns: relevantRun ? [relevantRun] : [],
+				hasRenderedVideo,
 			}),
 			activeRun: relevantRun ? toWorkflowRunSnapshot(relevantRun) : null,
 			lastSeq,
@@ -903,7 +915,7 @@ export class ProjectService {
 	async getIngestSnapshot(scope: ActorScope, projectId: string) {
 		await this.requireActor(scope, "content.view");
 		const prisma = this.requirePrisma();
-		const [row, activeWorkflowRun, latestRun, lastSeq] = await Promise.all([
+		const [row, activeWorkflowRun, latestRun, lastSeq, hasRenderedVideo] = await Promise.all([
 			prisma.project.findFirst({
 				where: {
 					id: projectId,
@@ -920,6 +932,7 @@ export class ProjectService {
 				orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
 			}),
 			getLastWorkflowSeq(projectId),
+			this.hasRenderedVideo(projectId),
 		]);
 
 		if (!row) {
@@ -932,6 +945,7 @@ export class ProjectService {
 			progress: deriveProjectListProgress({
 				ingestStatus: row.ingestStatus,
 				workflowRuns: relevantRun ? [relevantRun] : [],
+				hasRenderedVideo,
 			}),
 			activeRun: relevantRun ? toWorkflowRunSnapshot(relevantRun) : null,
 			lastSeq,
