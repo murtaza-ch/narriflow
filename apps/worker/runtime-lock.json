@@ -457,55 +457,55 @@
         "probes": [
           {
             "query": "sans-serif",
-            "expectedSha256": null
+            "expectedSha256": "89c3c497f618fdaa0b2d1e98fef93582f28c71debd2c4a8cdf41f190ced2909d"
           },
           {
             "query": "sans-serif:lang=ar",
-            "expectedSha256": null
+            "expectedSha256": "57f73e11f51999432bf7ab22ce55b6f945d5eca1bf824404cfa9ec2e3718c84e"
           },
           {
             "query": "sans-serif:lang=he",
-            "expectedSha256": null
+            "expectedSha256": "57f73e11f51999432bf7ab22ce55b6f945d5eca1bf824404cfa9ec2e3718c84e"
           },
           {
             "query": "sans-serif:lang=hi",
-            "expectedSha256": null
+            "expectedSha256": "79a470365ccb210fa3c7d8d8ff2e005ef9d983cfd067f735a0caf7e15070ca9f"
           },
           {
             "query": "sans-serif:lang=ja",
-            "expectedSha256": null
+            "expectedSha256": "b76b0433203017ca80401b2ee0dd69350349871c4b19d504c34dbdd80541690a"
           },
           {
             "query": "sans-serif:lang=ko",
-            "expectedSha256": null
+            "expectedSha256": "b76b0433203017ca80401b2ee0dd69350349871c4b19d504c34dbdd80541690a"
           },
           {
             "query": "sans-serif:lang=zh-cn",
-            "expectedSha256": null
+            "expectedSha256": "b76b0433203017ca80401b2ee0dd69350349871c4b19d504c34dbdd80541690a"
           },
           {
             "query": "emoji",
-            "expectedSha256": null
+            "expectedSha256": "dac5c27651082d6c53dab5081f50d2022ddf6877d730fa919cf6a4fc2af22de0"
           },
           {
             "query": "Noto Color Emoji",
-            "expectedSha256": null
+            "expectedSha256": "dac5c27651082d6c53dab5081f50d2022ddf6877d730fa919cf6a4fc2af22de0"
           },
           {
             "query": "DejaVu Sans",
-            "expectedSha256": null
+            "expectedSha256": "57f73e11f51999432bf7ab22ce55b6f945d5eca1bf824404cfa9ec2e3718c84e"
           },
           {
             "query": "Liberation Sans",
-            "expectedSha256": null
+            "expectedSha256": "bade59d822652f76e6941aa87b40a87c13d1cc70db98ededb5011127efafd1d3"
           },
           {
             "query": "Arial",
-            "expectedSha256": null
+            "expectedSha256": "bade59d822652f76e6941aa87b40a87c13d1cc70db98ededb5011127efafd1d3"
           },
           {
             "query": "Noto Sans Symbols 2",
-            "expectedSha256": null
+            "expectedSha256": "876598db5f1e3bef2bc77c4d94c5b0d5d2c1620be4878a06f18fb5434e331688"
           }
         ]
       }

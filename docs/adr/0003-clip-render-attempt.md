@@ -35,3 +35,29 @@ A claim atomically inserts a `RenderGroupExecution` ledger row with a new token 
 All success and permanent-failure members stay settled. Retryable, pending or interrupted members alone requeue. Three charged starts exhaust the group; the first and second charges schedule 30s and 60s backoff using DB time. Pre-start release uses no exponential delay, but may have a drain deadline. Final group outcomes distinguish completed, partial, failed and entirely superseded membership. Reaping records interruption once and applies this same policy, with no parent retry counter charging child work. Ledger records retain identifiers, causal error code/disposition and source, analysis and toolchain fingerprints, never signed URLs, commands or a duplicate render manifest.
 
 Every ClipExportVariant change still calls `syncClipExportAggregates` inside its transaction. Child completion and its ledger outcome commit together and remain queryable by token after acknowledgement loss. Neither rejection of a DB call nor an analytics read failure proves an object is unreferenced. Parent settlement aggregates all groups only after every retry and live lease has ended; it alone commits the terminal outbox and notification intent. Execution settlement markers suppress late heartbeat-loss reports only after commit, preserving genuine loss before settlement.
+
+## Group-only persistence and attempt telemetry, 2026-10-30
+
+The parent lifecycle has no render-variant or render-analysis writers and no
+parent-only render retry, child reset or render-completion path. Generic parent
+completion rejects clip rendering. Coordinator failure returns coordination to
+the queue without rewriting live groups. Only group settlement makes media
+retry decisions; the coordinator waits for that settlement before closing the
+Render Work Set. Test fixtures use a test-only helper built on the same group
+admission, start, variant outcome and finish operations.
+
+A group's execution ledger records claims, charged starts, releases, crashes
+and terminal outcomes. Each variant start also has an idempotent Workflow Event
+keyed by group token and variant ID. Completion and permanent failure publish
+child results transactionally, so Task history survives a later Studio reset
+while other groups still run. Retryable failure never publishes terminal child
+failure. Per-token variant outcomes remain the completion acknowledgement
+source, including after a lost response. Mutable ClipRender counts are not an
+attempt failure-rate denominator.
+
+Structured logs carry operation durations and one summary per execution.
+Phase durations include retries and may overlap. Resource measurements separate
+worker RSS, cgroup current/peak/page-cache bytes and CPU quota. Log-derived
+counts omit processes that crash before flushing; use the durable ledger when
+reporting attempt rates. No external telemetry service is required. The
+[render runbook](../runbooks/render-hardening.md) defines the read-only checks.

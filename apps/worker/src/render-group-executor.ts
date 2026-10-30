@@ -20,6 +20,7 @@ import {
 	type clipService,
 	type getWorkflowRunLifecycle,
 } from "@narriflow/services";
+import { productionRenderDiagnosticAdapter } from "./render-diagnostic-adapter";
 import { RenderResourceDeferral } from "./render-resource-budget";
 import { executorProcessFailure, type WorkerProcessFailure } from "./worker-process";
 import type {
@@ -34,7 +35,7 @@ type GroupLifecycle = Pick<
 >;
 
 function log(level: "info" | "warn" | "error", message: string, context: Record<string, unknown>): void {
-	console.warn(JSON.stringify({ level, message, ts: new Date().toISOString(), ...context }));
+	productionRenderDiagnosticAdapter.diagnose({ level: level === "info" ? "info" : "error", message, context });
 }
 
 function groupLogContext(group: ClaimedRenderGroupAttempt): Record<string, unknown> {
@@ -42,7 +43,7 @@ function groupLogContext(group: ClaimedRenderGroupAttempt): Record<string, unkno
 		workflowRunId: group.workflowRunId,
 		projectId: group.projectId,
 		groupId: group.groupId,
-		token: group.token,
+		groupToken: group.token,
 		owner: group.owner,
 		clipId: group.clipId,
 	};
@@ -275,7 +276,7 @@ export async function executeNextRenderGroup(input: {
 		});
 	try {
 		await (input.holdingLease ? input.holdingLease(execute) : execute());
-		log("info", "render_group_settled", { ...groupLogContext(group), elapsedMs: Date.now() - startedAtMs });
+		log("info", "render_group_settled", { ...groupLogContext(group), elapsedMs: Date.now() - startedAtMs, replicaBusyMs: Date.now() - startedAtMs, memberCount: group.memberIds.length });
 		return 1;
 	} catch (error) {
 		if (error instanceof WorkflowAttemptLost || error instanceof RenderGroupAttemptLost) {
@@ -294,6 +295,8 @@ export async function executeNextRenderGroup(input: {
 				...groupLogContext(group),
 				reason: healthFailure?.code ?? (deferral ? error.code : "worker_shutdown"),
 				started: ledger.started,
+ counts: { executor: healthFailure ? 1 : 0, deferral: deferral ? 1 : 0 },
+ disposition: healthFailure ? "executor" : deferral ? "deferral" : "control",
 				elapsedMs: Date.now() - startedAtMs,
 			});
 			return 0;

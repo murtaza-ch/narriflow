@@ -1,3 +1,5 @@
+import { RenderFixtureLifecycle } from "./render-group-test-fixture";
+import type { WorkflowAttemptRef } from "./workflow-run-lifecycle";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
@@ -128,9 +130,29 @@ describeDb("Finishing runner on PostgreSQL", () => {
   const finishingEvents = async (workspaceId: string) => (await listWorkspaceEvents(prisma, { workspaceId }, { limit: 200 })).data.filter((event) => event.type === "finishing.finished");
   const lookAgain = (id: string) => prisma.generationFinishing.update({ where: { id }, data: { nextAttemptAt: new Date(Date.now() - 1_000) } });
   type Pick = { clipId: string; editorRevision: number; exportId?: string; exportError?: string; copyAttempt?: number; copyError?: string; copyGenerationId?: string };
+  const renderFixtures = new Map<string, { lifecycle: RenderFixtureLifecycle; attempt: WorkflowAttemptRef }>();
   async function settleExport(exportId: string, outcome: "completed" | "failed") {
-    await prisma.clipExportVariant.updateMany({ where: { exportId }, data: outcome === "completed" ? { status: "completed", storageKey: `exports/${exportId}.mp4`, sizeBytes: 1024, durationSec: 30 } : { status: "failed", errorCode: "encode_failed" } });
-    await clipExportService.syncAggregate(exportId);
+    const exported = await prisma.clipExport.findUniqueOrThrow({ where: { id: exportId }, include: { variants: { include: { render: true } } } });
+    let fixture = renderFixtures.get(exported.projectId);
+    if (fixture && (await prisma.workflowRun.findUniqueOrThrow({ where: { id: fixture.attempt.workflowRunId } })).status !== "running") fixture = undefined;
+    if (!fixture) {
+      const attemptId = randomUUID();
+      const leaseOwner = randomUUID();
+      const queued = await prisma.workflowRun.findFirst({ where: { projectId: exported.projectId, stage: "clip_rendering", status: "queued" } });
+      const data = { status: "running", attemptId, attemptCount: 1, leaseOwner, leaseExpiresAt: new Date(Date.now() + 120_000) };
+      const run = queued ? await prisma.workflowRun.update({ where: { id: queued.id }, data }) : await prisma.workflowRun.create({ data: { projectId: exported.projectId, stage: "clip_rendering", idempotencyKey: randomUUID(), ...data } });
+      fixture = { lifecycle: new RenderFixtureLifecycle({ prisma, leaseOwner }), attempt: { workflowRunId: run.id, projectId: exported.projectId, stage: "clip_rendering", attemptId, attemptCount: 1 } };
+      renderFixtures.set(exported.projectId, fixture);
+      await fixture.lifecycle.beginRenderWorkSet(fixture.attempt);
+    }
+    for (const variant of exported.variants) {
+      const render = variant.render;
+      if (!render || variant.status === outcome) continue;
+      await fixture.lifecycle.markClipRenderVariantRendering(fixture.attempt, render.id);
+      if (outcome === "completed") await fixture.lifecycle.completeClipRenderVariant(fixture.attempt, render.id, { storageKey: `exports/${exportId}/${render.id}.mp4`, sizeBytes: 1024, durationSec: 30 });
+      else await fixture.lifecycle.failClipRenderVariant(fixture.attempt, render.id, "encode_failed", "permanent");
+    }
+    await fixture.lifecycle.settleRenderWorkSet(fixture.attempt);
   }
   const exportsOf = async (finishingId: string) => ((await row(finishingId)).picks as Pick[] | null) ?? [];
 

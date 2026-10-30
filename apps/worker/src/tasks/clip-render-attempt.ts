@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import { RenderAttemptTelemetry, renderReplicaResources } from "../render-diagnostic-adapter";
 import { mediaWorkScheduler } from "../media-work-scheduler";
 import { executorProcessFailure } from "../worker-process";
 import { statfs } from "node:fs/promises";
@@ -675,6 +677,10 @@ interface PendingRenderOutput {
 }
 
 interface RenderExecutionContext {
+ clipId?: string;
+ exportId?: string | null;
+ editorRevision?: number;
+ telemetry: RenderAttemptTelemetry;
 	config: Readonly<RenderConfig>;
 	signal: AbortSignal;
 	adapters: ClipRenderAttemptAdapters;
@@ -945,6 +951,7 @@ function log(
 	context?: Record<string, unknown>,
 ) {
 	try {
+		renderExecutionStorage.getStore()?.telemetry.record({ level, message, context });
 		currentRenderAdapters().diagnose({
 			level,
 			message,
@@ -1179,6 +1186,7 @@ function recordCaptionWarnings(output: PendingRenderOutput, track: CaptionTrack)
 	output.captionWarnings = warnings;
 	for (const glyph of track.omitted) warnings.omitted.set(`${glyph.cueIndex}:${glyph.codePoint}`, glyph);
 	warnings.emojiSkipped = [...track.emojiSkipped];
+ log("info", "clip_render_glyph_omissions", { clipId: output.clipId, clipRenderId: output.clipRenderId, count: track.omitted.length + track.emojiSkipped.length });
 }
 
 /** Analytics for an output, with its caption warnings added as fallback codes. */
@@ -1220,7 +1228,11 @@ function inspectCaptionRenderDiagnostics(
 	return { missing, failure };
 }
 
-async function executeRenderCommand(input: {
+async function executeRenderCommand(input: Parameters<typeof executeRenderCommandInternal>[0]): Promise<void> {
+ return requireExecutionContext().telemetry.measure("encode", "ffmpeg", () => executeRenderCommandInternal(input), input.context);
+}
+
+async function executeRenderCommandInternal(input: {
 	directory: string;
 	/** Work-size deadline for each ffmpeg invocation of this output (encode, caption retry, limiter). */
 	deadlineMs: number;
@@ -2178,6 +2190,8 @@ async function uploadRenderedOutput(params: {
 	return true;
 }
 
+function currentTimeMsForTelemetry(): number { return performance.now(); }
+
 export class ClipRenderAttempt {
 	readonly #run: WorkflowRunJob;
 	readonly #config: Readonly<RenderConfig>;
@@ -2219,6 +2233,11 @@ export class ClipRenderAttempt {
 						workflowAttemptId: attempt.attemptId,
 						projectId: attempt.projectId,
 						stage: attempt.stage,
+ clipId: renderExecutionStorage.getStore()?.clipId,
+ exportId: renderExecutionStorage.getStore()?.exportId,
+ editorRevision: renderExecutionStorage.getStore()?.editorRevision,
+ sourceFingerprint: renderExecutionStorage.getStore()?.sourceFingerprint,
+ retryLimit: 3,
 						attemptCount: attempt.attemptCount,
 					}) as Record<string, unknown>,
 				});
@@ -2226,13 +2245,23 @@ export class ClipRenderAttempt {
 			signal,
 			withAttemptDiagnosticContext,
 		);
+		const emitTelemetry = withAttemptDiagnosticContext(providedAdapters.diagnose);
+    const telemetry = new RenderAttemptTelemetry((event) => emitTelemetry({ ...event, context: { ...event.context, resources: resourceBudget().snapshot(), ...renderReplicaResources() } }), currentTimeMsForTelemetry);
 		const adapters = {
 			...providedAdapters,
+ workerProcess: telemetry.wrap(providedAdapters.workerProcess, { inspectMedia: "probe" }),
+ storage: telemetry.wrap(providedAdapters.storage, { presignDownloadUrl: "presign", downloadObjectToFile: "download", putFileFromPath: "upload", deleteObject: "cleanup" }),
+ analysis: telemetry.wrap(providedAdapters.analysis, { extractFaceDetectionSegment: "download", detectFacePath: "analysis", detectMultiFacePath: "analysis", detectSceneCuts: "analysis", detectPipPath: "analysis" }),
+ optionalAssets: telemetry.wrap(providedAdapters.optionalAssets, { downloadUrlToFile: "download", validateOptionalMedia: "asset_validation" }),
+ clip: telemetry.wrap(providedAdapters.clip, { markClipRenderVariantRendering: "persistence", completeClipRenderVariant: "persistence", failClipRenderVariant: "persistence" }),
+ composition: telemetry.wrap(providedAdapters.composition, { compileCommand: "compose" }),
+ ...(providedAdapters.layoutEvidence ? { layoutEvidence: telemetry.wrap(providedAdapters.layoutEvidence, { readCompatibleDurable: "evidence_read" }) } : {}),
 			diagnose: withAttemptDiagnosticContext(providedAdapters.diagnose),
 		};
 		return renderExecutionStorage.run(
 			{
 				config: this.#config,
+ telemetry,
 				signal,
 				adapters,
 				attempt,
@@ -2282,7 +2311,9 @@ export class ClipRenderAttempt {
 						});
 					}
 					throw error;
-				}
+				} finally {
+ telemetry.finish({ elapsedMs: currentTimeMs() - attemptStartedAtMs, resources: resourceBudget().snapshot(), ...renderReplicaResources() });
+}
 			},
 		);
 	}
@@ -2323,7 +2354,7 @@ async function executeClipRenderAttempt(
 		);
 	signal.throwIfAborted();
 	if (frozenState) {
-		requireExecutionContext().sourceFingerprint = `${frozenState.sourceStorageKey ?? "none"}#${frozenState.sourceSizeBytes ?? "unknown"}`;
+		requireExecutionContext().sourceFingerprint = createHash("sha256").update(`${frozenState.sourceStorageKey ?? "none"}#${frozenState.sourceSizeBytes ?? "unknown"}`).digest("hex");
 	}
 
 	const pendingRenders = (frozenState?.pendingRenders ?? []).filter((render) =>
@@ -2342,6 +2373,10 @@ async function executeClipRenderAttempt(
 	// row was created by clip.service's triggerClipRendering/
 	// autoQueueDefaultRenders) — a single run can, in principle, cover rows at
 	// different resolutions.
+ const executionContext = requireExecutionContext();
+ executionContext.clipId = pendingRenders[0]?.clipId;
+ executionContext.exportId = pendingRenders[0]?.exportVariant?.exportId ?? null;
+ executionContext.editorRevision = pendingRenders[0]?.clip?.editorRevision;
 	const pricingTier = frozenState.pricingTier;
 	const applyWatermark = !hasFeature(pricingTier, "export.noWatermark");
 
@@ -3968,7 +4003,7 @@ async function renderClipGroup(input: {
 		}
 	}
 
-  const validateOutput = (output: PendingRenderOutput, plan: ClipCompositionPlan, audio: BoundCompositionAudioRenderRequest, mixPeak: MixPeakResult | null) => validateRenderOutput({
+  const validateOutput = (output: PendingRenderOutput, plan: ClipCompositionPlan, audio: BoundCompositionAudioRenderRequest, mixPeak: MixPeakResult | null) => requireExecutionContext().telemetry.measure("validate", "output", () => validateRenderOutput({
     path: output.outputPath,
     expected: compositionOutputExpectation({ plan, targetId: output.clipRenderId, source: probe, audio, hdrAssets: Object.keys(hdrAssets).length > 0 }),
     workerProcess: currentRenderAdapters().workerProcess,
@@ -3980,7 +4015,7 @@ async function renderClipGroup(input: {
     diagnose: (event) => log(event.accepted ? "info" : "error", "clip_render_output_validation", {
       workflowRunId: run.id, clipId: output.clipId, clipRenderId: output.clipRenderId, ...event,
     }),
-  });
+  }), { clipId: output.clipId, clipRenderId: output.clipRenderId });
 
 	if (!probe.hasVideo) {
 		if (!compositionPlan || !plannedAudio) {
@@ -4090,6 +4125,7 @@ async function renderClipGroup(input: {
 					clipIndex: output.clipIndex,
 					aspectRatio: output.aspectRatio,
 					code: errorCode,
+ disposition: error instanceof WorkflowFailure ? error.disposition : "retryable",
 					message:
 						error instanceof Error ? error.message : "Unknown render error",
 				});
@@ -4232,6 +4268,7 @@ async function renderClipGroup(input: {
 					clipIndex: output.clipIndex,
 					aspectRatio: output.aspectRatio,
 					code: errorCode,
+ disposition: error instanceof WorkflowFailure ? error.disposition : "retryable",
 					message:
 						error instanceof Error ? error.message : "Unknown render error",
 				});
@@ -4570,7 +4607,7 @@ async function executeClipRenderAttemptInScratch(params: {
 			} catch (error) {
 				rethrowRenderControlFlow(error);
 				// Any delivery already scheduled must settle before failure writes.
-				await uploadQueue.drain();
+				await requireExecutionContext().telemetry.measure("drain", "uploads", () => uploadQueue.drain());
 				signal.throwIfAborted();
 				if (executorProcessFailure(error)) throw error;
 				const failure = workflowFailureFromUnknown(error);
@@ -4604,7 +4641,7 @@ async function executeClipRenderAttemptInScratch(params: {
 		// truth, and render settlement must never race a
 		// completeClipRenderVariant write.
 		const drainStartedAtMs = currentTimeMs();
-		await uploadQueue.drain();
+		await requireExecutionContext().telemetry.measure("drain", "uploads", () => uploadQueue.drain());
 		signal.throwIfAborted();
 		log("info", "clip_render_upload_drain", {
 			workflowRunId: run.id,

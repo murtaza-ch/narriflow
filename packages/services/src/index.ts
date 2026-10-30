@@ -493,7 +493,6 @@ export {
 	type RenderWorkSet,
 	type RenderWorkSetOutcome,
 	type RenderTerminalNotificationPayload,
-	type RenderVariantFailureDisposition,
 	type WorkflowFailureDisposition,
 	type CompleteTranscriptInput,
 	type AdmitWorkflowRunInput,

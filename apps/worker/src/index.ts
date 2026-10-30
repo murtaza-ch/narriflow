@@ -1,3 +1,4 @@
+import { renderReplicaResources, productionRenderDiagnosticAdapter } from "./render-diagnostic-adapter";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { getPrismaClient } from "@narriflow/db/client";
@@ -144,6 +145,7 @@ async function refreshScratchReadiness(): Promise<void> {
   try {
     const disk = await readDiskFacts(tmpdir());
     scratchReady = judgeAdmission(renderConfig, disk, renderResources.snapshot().reservedBytes, 0) === "admit";
+    console.warn(JSON.stringify({ level: "info", message: "render_replica_capacity", owner: renderGroups.leaseOwner, disk, resources: renderResources.snapshot(), ready: scratchReady, ...renderReplicaResources() }));
   } catch { scratchReady = false; }
 }
 
@@ -724,6 +726,7 @@ const renderGroupLoop = createPollLoop("render_group", renderPollIntervalMs, asy
 				lifecycle,
 				group,
 				groups: renderGroups,
+ adapters: { diagnose: (event) => productionRenderDiagnosticAdapter.diagnose({ ...event, context: { ...event.context, toolchainFingerprint: renderToolchainFingerprint } }) },
 			}).execute(attempt, context),
 	});
 });

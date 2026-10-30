@@ -1,3 +1,5 @@
+import { WorkflowAttemptLost } from "./workflow-run-lifecycle";
+import { RenderFixtureLifecycle } from "./render-group-test-fixture";
 import { randomUUID } from "node:crypto";
 import {
 	afterAll,
@@ -29,7 +31,6 @@ import {
 	clipExportService,
 	ClipExportRevisionConflictError,
 } from "./clip-export.service";
-import { WorkflowRunLifecycle } from "./workflow-run-lifecycle";
 
 const databaseUrl = process.env.INTEGRATION_TEST_DATABASE_URL;
 const schema = process.env.INTEGRATION_TEST_DATABASE_SCHEMA;
@@ -131,21 +132,10 @@ describeDb("Operation Receipt PostgreSQL acceptance invariants", () => {
 			where: { id: { in: exportIds } },
 			data: { workflowRunId: run.id },
 		});
-		await prisma.clipRender.updateMany({
-			where: { exportVariant: { exportId: { in: exportIds } } },
-			data: { workflowRunId: run.id },
-		});
-		return {
-			run,
-			attempt: {
-				workflowRunId: run.id,
-				projectId,
-				stage: "clip_rendering" as const,
-				attemptId,
-				attemptCount: 1,
-			},
-			lifecycle: new WorkflowRunLifecycle({ prisma, leaseOwner }),
-		};
+    const attempt = { workflowRunId: run.id, projectId, stage: "clip_rendering" as const, attemptId, attemptCount: 1 };
+    const lifecycle = new RenderFixtureLifecycle({ prisma, leaseOwner });
+    await lifecycle.beginRenderWorkSet(attempt);
+    return { run, attempt, lifecycle };
 	}
 
 	beforeAll(async () => {
@@ -886,7 +876,7 @@ describeDb("Operation Receipt PostgreSQL acceptance invariants", () => {
 				where: { exportVariant: { exportId: accepted.export.id } },
 			});
 			const [claimed, cancelled] = await Promise.all([
-				lifecycle.markClipRenderVariantRendering(attempt, render.id),
+				lifecycle.markClipRenderVariantRendering(attempt, render.id).catch((error: unknown) => { if (error instanceof WorkflowAttemptLost) return false; throw error; }),
 				clipExportService.cancelQueuedOperation(scope, accepted.export.id),
 			]);
 			expect(cancelled).toBe(!claimed);

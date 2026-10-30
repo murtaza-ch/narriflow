@@ -1,6 +1,6 @@
 # Render pipeline hardening
 
-Status: proposed implementation contract, 2026-10-29. All implementation tickets are unclaimed. This document incorporates the owner's final decisions; it does not request those decisions again.
+Status: implemented and verified, 2026-10-30. Tickets 01–21 are complete. The integrated evidence and measurement limits are recorded in [ticket 21](issues/21-integrated-verification.md). The original accepted contract dates to 2026-10-29.
 
 ## Purpose and boundaries
 
@@ -271,3 +271,40 @@ baseline (exit 0), and only then change behavior. Parity gate command:
 (durable baseline copy: `~/.cache/narriflow-render-golden/baseline-5680477046-90cf30a3`).
 
 Ticket 17 ownership amendment, 2026-10-30: adds workflow-run-lifecycle.ts and its DB test, worker-process/clip-preview/clip-render-attempt tests and clip-preview.ts, and render-object-reconciler.ts/test.ts to support fenced charged/unstarted release, health propagation and bounded reconciliation. Prior owners 02/10/11/15/16 are closed; downstream 20 depends on 17.
+
+
+## Integrated close-out, 2026-10-30
+
+Ticket 21 removes the remaining parent-only render persistence/recovery path.
+Render Groups alone own media starts, variant/analysis writes, retries, charges
+and reaping. The parent admits membership and settles only after its groups.
+Durable variant starts/outcomes preserve denominators; structured operation and
+capacity logs supply timing, failure, fallback, glyph and resource observations.
+ADR 0003 and the [operator runbook](../../docs/runbooks/render-hardening.md)
+describe that final model and the read-only deployed-render telemetry check.
+
+Both the frozen macOS baseline comparison and a separate baseline/candidate run
+inside the deployed Railway Linux worker pass: 18/18 normal exact, 16/16 activated
+defects and two unchanged guards. The Linux gate uses its own pinned fixture
+manifest and environment fingerprint; it does not compare Linux frame bytes to
+macOS. Every normal plan matches across host/image. Raw argv differs only in
+the resolved caption-font directory prefix, with no semantic argument change.
+Golden measurement now derives presentation duration/rate from decoded PTS,
+including the last frame interval, instead of FFmpeg 7's truncated MP4 average
+rate tag. The raw tag remains recorded; no expected contract or accepted
+baseline was relaxed or refreshed.
+
+The final direct worker suite has 1132 passes; workflow PostgreSQL has 206,
+including a real SIGKILL lease-owner recovery. Services, all five required DB
+gates, full repository tests, typecheck, lint, inventory, OpenAPI and web split
+pass. Commands, artifact hashes, transient failures and final reports are in
+ticket 21. No implementation commit, deployment, env edit or shared DB write
+was performed by its implementer. The worker remains healthy, and the temporary
+SSH key was removed.
+
+The paired reuse and one/two-replica workloads prove detector avoidance, exact
+compiled arguments and independent group scheduling using injected expensive
+operations. They do not establish a 30–45% native throughput gain, production
+network performance or per-encode memory peaks. These limits are explicit in
+ticket 21. The orchestrator owns the separately authorized real deployed render;
+it is not required to complete ticket 21.

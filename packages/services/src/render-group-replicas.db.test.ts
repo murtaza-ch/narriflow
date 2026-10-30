@@ -224,6 +224,31 @@ dbDescribe("Render group replicas (PostgreSQL)", () => {
 		expect(new Set(outcomes.map((o) => o.clipRenderId)).size).toBe(variantIds.length);
 	}
 
+	test("controlled four-group throughput with one and two replicas", async () => {
+    for (const count of [1, 2]) {
+      const samples: number[] = [];
+      for (let sample = 0; sample < 3; sample++) {
+        const { variantIds } = await project(4);
+        const workers = Array.from({length: count}, (_, i) => replica(`benchmark-${sample}-${i}`));
+        const { settled } = await coordinate(coordinatorLifecycle());
+        const start = performance.now();
+        const loops = workers.map((w) => w.run());
+        const outcome = await settled;
+        const elapsedMs = performance.now() - start;
+        for (const w of workers) w.stop.abort();
+        await Promise.all(loops);
+        expect(outcome).toMatchObject({status: "completed", succeeded: 8});
+        await expectEachVariantCompletedOnce(variantIds);
+        samples.push(elapsedMs);
+        console.warn(JSON.stringify({ level: "info", message: "render_throughput_sample", replicas: count, sample, groups: 4, variants: 8, elapsedMs,
+          busyMs: workers.map((w) => w.spans.reduce((sum, span) => sum + span.endMs - span.startMs, 0)),
+          uploadBytes: 8000, repeatedVariants: 0, workload: "real PostgreSQL leases; injected 120ms encode and 1000-byte upload per variant" }));
+      }
+      const sorted = [...samples].sort((a,b) => a-b);
+      console.warn(JSON.stringify({ level: "info", message: "render_throughput_summary", replicas: count, samples: 3, p50Ms: sorted[1], p95Ms: sorted[2] }));
+    }
+  }, 60_000);
+
 	test("three replicas render the groups of one project concurrently, each exactly once", async () => {
 		const { run, variantIds } = await project(6);
 		const replicas = [replica("a"), replica("b"), replica("c")];

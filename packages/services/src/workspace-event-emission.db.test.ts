@@ -1,3 +1,4 @@
+import { RenderFixtureLifecycle } from "./render-group-test-fixture";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
@@ -9,7 +10,7 @@ import { ExpectedDomainFailureError } from "./expected-domain-failure";
 import { IngestJobLifecycle } from "./ingest-job-lifecycle";
 import { queueExportsFinishedByRun, queueFinishedGenerations, queueProjectExpiryFinished } from "./operation-finished";
 import { createOperationStatusReader, encodeOperationId } from "./operation-status";
-import { WorkflowFailure, WorkflowRunLifecycle } from "./workflow-run-lifecycle";
+import { WorkflowFailure } from "./workflow-run-lifecycle";
 import { deleteExpiredWorkspaceEvents, flushWorkspaceEvents, listWorkspaceEvents } from "./workspace-event";
 
 const url = process.env.WORKFLOW_TEST_DATABASE_URL;
@@ -57,7 +58,7 @@ dbDescribe("Workspace Events written by operation settlement", () => {
       periodStart: new Date(Date.UTC(2026, 0, 1)), reservedSeconds: 60, settledSeconds: 60, state: "settled" } });
     return { user, workspace, project };
   }
-  const workflow = () => new WorkflowRunLifecycle({ prisma, leaseOwner: randomUUID() });
+  const workflow = () => new RenderFixtureLifecycle({ prisma, leaseOwner: randomUUID() });
   const feed = async (workspaceId: string) => (await listWorkspaceEvents(prisma, { workspaceId }, { limit: 200 })).data;
   const subjects = async (workspaceId: string) => (await feed(workspaceId)).map((event) => event.subject);
   const finishedSubject = (kind: "intake" | "generation" | "export", id: string, projectId: string, state: string) =>
@@ -77,7 +78,7 @@ dbDescribe("Workspace Events written by operation settlement", () => {
       status: "queued_for_ingest", expiresAt: new Date(Date.now() + 3_600_000), hardExpiresAt: new Date(Date.now() + 7_200_000) } });
     return id;
   }
-  const admitStt = (lifecycle: WorkflowRunLifecycle, projectId: string) => lifecycle.admitTranscript({ projectId, idempotencyKey: `stt:${randomUUID()}`,
+  const admitStt = (lifecycle: RenderFixtureLifecycle, projectId: string) => lifecycle.admitTranscript({ projectId, idempotencyKey: `stt:${randomUUID()}`,
     languageCode: "en", transcriptProvider: "assemblyai", transcriptProviderModel: "test", contentPack: PACK as never });
   /** An Ingest Job that completed and handed off to this generation run. */
   const handedOffJob = (projectId: string, generationRunId: string, uploadSessionId?: string) => prisma.ingestJob.create({ data: { projectId,
@@ -236,7 +237,7 @@ dbDescribe("Workspace Events written by operation settlement", () => {
   test("an export with a failed format and a completed one finishes partial once the format's retries are exhausted", async () => {
     const f = await fixture();
     const x = await exportFixture(f, 2);
-    let current = await claimRender();
+    const current = await claimRender();
     await current.lifecycle.markClipRenderVariantRendering(current.attempt, x.renders[0]!.id);
     await current.lifecycle.completeClipRenderVariant(current.attempt, x.renders[0]!.id, done);
     // A retryable failure beside a completed sibling is retried automatically (ADR 0003),
@@ -246,10 +247,10 @@ dbDescribe("Workspace Events written by operation settlement", () => {
       await current.lifecycle.failClipRenderVariant(current.attempt, x.renders[1]!.id, "encode_failed", "retryable");
       expect(await feed(f.workspace.id)).toEqual([]);
       const settled = await current.lifecycle.settleRenderWorkSet(current.attempt);
-      if (settled.status !== "requeued") break;
+      if (settled.status !== "pending") break;
       expect(await feed(f.workspace.id)).toEqual([]);
       await prisma.workflowRun.update({ where: { id: x.run.id }, data: { nextAttemptAt: new Date(Date.now() - 1_000) } });
-      current = await claimRender();
+      await current.lifecycle.retryGroups(x.run.id);
     }
     expect(await subjects(f.workspace.id)).toEqual([exportSubject(x, "partial")]);
   });
@@ -262,11 +263,12 @@ dbDescribe("Workspace Events written by operation settlement", () => {
     await first.lifecycle.failClipRenderVariant(first.attempt, x.renders[0]!.id, "transient_render_failure", "retryable");
     expect((await prisma.clipExport.findUniqueOrThrow({ where: { id: x.exported.id } })).status).toBe("rendering");
     expect(await feed(f.workspace.id)).toEqual([]);
-    expect((await first.lifecycle.settleRenderWorkSet(first.attempt)).status).toBe("requeued");
+    expect((await first.lifecycle.settleRenderWorkSet(first.attempt)).status).toBe("pending");
     expect(await feed(f.workspace.id)).toEqual([]);
 
     await prisma.workflowRun.update({ where: { id: x.run.id }, data: { nextAttemptAt: new Date(Date.now() - 1_000) } });
-    const second = await claimRender();
+    await first.lifecycle.retryGroups(x.run.id);
+    const second = first;
     await second.lifecycle.markClipRenderVariantRendering(second.attempt, x.renders[0]!.id);
     await second.lifecycle.completeClipRenderVariant(second.attempt, x.renders[0]!.id, done);
     await second.lifecycle.settleRenderWorkSet(second.attempt);
@@ -283,6 +285,7 @@ dbDescribe("Workspace Events written by operation settlement", () => {
       current = await claimRender();
     }
     await current.lifecycle.markClipRenderVariantRendering(current.attempt, x.renders[0]!.id);
+    await prisma.renderGroup.updateMany({ where: { workflowRunId: x.run.id }, data: { chargedAttemptCount: 3 } });
     await current.lifecycle.failClipRenderVariant(current.attempt, x.renders[0]!.id, "transient_render_failure", "retryable");
     expect(await feed(f.workspace.id)).toEqual([]);
     expect((await current.lifecycle.settleRenderWorkSet(current.attempt)).status).toBe("failed");
@@ -376,7 +379,7 @@ dbDescribe("Workspace Events written by operation settlement", () => {
     const stt = await admitStt(workflow(), f.project.id);
     const job = await handedOffJob(f.project.id, stt.id);
     const { wrapped, state } = countingPrisma(1);
-    const flaky = new WorkflowRunLifecycle({ prisma: wrapped, leaseOwner: randomUUID() });
+    const flaky = new RenderFixtureLifecycle({ prisma: wrapped, leaseOwner: randomUUID() });
     expect(await flaky.cancelQueuedGenerationOperation({ workspaceId: f.workspace.id, projectId: f.project.id, workflowRunId: stt.id })).toBe(true);
     // The first attempt flushed its events and then rolled back; the retry wrote them again, once.
     expect(state.transactions).toBe(2);
@@ -395,7 +398,7 @@ dbDescribe("Workspace Events written by operation settlement", () => {
       await handedOffJob(f.project.id, stt.id);
       const x = await exportFixture(f);
       const { wrapped, state } = countingPrisma();
-      const lifecycle = new WorkflowRunLifecycle({ prisma: wrapped, leaseOwner: randomUUID() });
+      const lifecycle = new RenderFixtureLifecycle({ prisma: wrapped, leaseOwner: randomUUID() });
       const attempt = await lifecycle.claim("clip_rendering");
       if (!attempt) throw new Error("render claim missing");
       await lifecycle.beginRenderWorkSet(attempt);
@@ -522,7 +525,7 @@ dbDescribe("Workspace Events written by operation settlement", () => {
           }, options as never);
         },
       }) as PrismaClient;
-      const lifecycle = new WorkflowRunLifecycle({ prisma: held, leaseOwner });
+      const lifecycle = new RenderFixtureLifecycle({ prisma: held, leaseOwner });
       const stt = await admitStt(lifecycle, f.project.id);
       const attempt = await lifecycle.claim("stt");
       if (!attempt) throw new Error("stt claim missing");
@@ -655,7 +658,7 @@ dbDescribe("Workspace Events written by operation settlement", () => {
           }, options as never);
         },
       }) as PrismaClient;
-      const x = await detecting(f, new WorkflowRunLifecycle({ prisma: held, leaseOwner: randomUUID() }));
+      const x = await detecting(f, new RenderFixtureLifecycle({ prisma: held, leaseOwner: randomUUID() }));
 
       armed = true;
       const completion = complete(x);

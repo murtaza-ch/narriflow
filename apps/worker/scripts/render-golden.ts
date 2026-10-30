@@ -691,7 +691,7 @@ function summarizePlan(plan: ClipCompositionPlan, target: ClipCompositionPlan["t
 // Output measurement
 // ---------------------------------------------------------------------------
 
-function parseRate(value: string | undefined): number {
+function _parseRate(value: string | undefined): number {
   const [n, d = "1"] = (value ?? "0/1").split("/");
   const result = Number(n) / Number(d);
   return Number.isFinite(result) ? result : 0;
@@ -849,6 +849,21 @@ function snapshotTimes(target: ClipCompositionPlan["targets"][number], durationS
   return result.slice(0, 8);
 }
 
+/** Measure the presentation span, including the final frame. FFmpeg 7 can
+ * write MP4 avg_frame_rate using only N-1 packet durations. Keep its raw tag
+ * separately; neither the tag nor a rounded decimal is the presentation clock. */
+export function decodedPresentationClock(pts: readonly number[], timeBase: string, nominalRate: string): { durationSec: number; averageRate: string; averageFps: number } {
+  const [tbN, tbD] = timeBase.split("/").map(Number);
+  const [rateN, rateD] = nominalRate.split("/").map(Number);
+  if (!pts.length || !tbN || !tbD || !rateN || !rateD) throw new Error("Invalid decoded presentation clock");
+  const span = BigInt(pts[pts.length - 1]! - pts[0]!);
+  const numerator = BigInt(pts.length) * BigInt(tbD) * BigInt(rateN);
+  const denominator = span * BigInt(tbN) * BigInt(rateN) + BigInt(rateD) * BigInt(tbD);
+  let a = numerator, b = denominator;
+  while (b) { const r = a % b; a = b; b = r; }
+  return { durationSec: Number(denominator) / (tbD * rateN), averageRate: `${numerator / a}/${denominator / a}`, averageFps: Number(numerator) / Number(denominator) };
+}
+
 async function measureOutput(input: {
   outputPath: string;
   snapshotDir: string;
@@ -871,11 +886,10 @@ async function measureOutput(input: {
     frames = decoded.frames;
     timeBase = decoded.timeBase;
     videoFacts = { frameCount: frames.length, timeBase: decoded.timeBaseText, frames, framesSha256: sha256(canonicalJson({ timeBase: decoded.timeBaseText, frames })) };
-    const fps = parseRate(video.avg_frame_rate) || parseRate(video.r_frame_rate) || 30;
+    const clock = decodedPresentationClock(frames.map(([pts]) => pts), decoded.timeBaseText, video.r_frame_rate || "30/1");
+    const fps = clock.averageFps;
     const planned = input.plan.editedDurationSec;
-    const first = frames[0]?.[0] ?? 0;
-    const last = frames[frames.length - 1]?.[0] ?? 0;
-    const videoDuration = (last - first) * timeBase + 1 / fps;
+    const videoDuration = clock.durationSec;
     const sarParts = String(video.sample_aspect_ratio ?? "0:1").split(":");
     measurements["output.sar"] = video.sample_aspect_ratio && video.sample_aspect_ratio !== "N/A" ? `${sarParts[0]}:${sarParts[1]}` : "0:1";
     measurements["output.dimensions"] = `${video.width}x${video.height}`;
@@ -886,7 +900,8 @@ async function measureOutput(input: {
     measurements["output.colorRange"] = video.color_range ?? "unknown";
     measurements["output.hdrSideData"] = JSON.stringify(video.side_data_list ?? []).match(/mastering|content light/i) !== null;
     measurements["output.rFrameRate"] = video.r_frame_rate ?? null;
-    measurements["output.avgFrameRate"] = video.avg_frame_rate ?? null;
+    measurements["output.avgFrameRate"] = clock.averageRate;
+    measurements["output.containerAvgFrameRate"] = video.avg_frame_rate ?? null;
     measurements["output.durationDeltaFrames"] = Math.round(Math.abs(videoDuration - planned) * fps * 100) / 100;
     measurements["video.frameCount"] = frames.length;
     measurements["video.frameCountDelta"] = frames.length - Math.round(planned * fps);
@@ -902,8 +917,7 @@ async function measureOutput(input: {
       audioFacts = { sampleRate, channels, sampleCount: pcm.sampleCount, pcmSha256: pcm.sha256, chunks: pcm.chunks, samplePeak: Math.round(pcm.samplePeak * 1e6) / 1e6 };
       measurements["audio.samplePeak"] = audioFacts.samplePeak;
       if (videoFacts) {
-        const fps = parseRate(video.avg_frame_rate) || 30;
-        const videoDuration = frames.length / fps;
+        const videoDuration = decodedPresentationClock(frames.map(([pts]) => pts), videoFacts.timeBase, video.r_frame_rate || "30/1").durationSec;
         measurements["audio.spanDeficitSec"] = Math.round(Math.max(0, videoDuration - pcm.sampleCount / sampleRate) * 1000) / 1000;
       }
     }

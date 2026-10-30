@@ -436,3 +436,16 @@ describe("the committed suites", () => {
     expect(inputs.manifest.suites["known-defects"]).toEqual(expect.arrayContaining(["rot90", "rot270", "rot90-mirror", "sar-2x1", "hdr-pq", "hdr-hlg", "seek-past-source-end", "http-interrupted-read"]));
   });
 });
+
+
+test("presentation-clock measurements include the last frame instead of MP4 N-1 duration tags", async () => {
+  const { decodedPresentationClock } = await import("./render-golden");
+  expect(decodedPresentationClock(Array.from({ length: 90 }, (_, i) => i), "1/15", "15/1")).toEqual({ durationSec: 6, averageRate: "15/1", averageFps: 15 });
+  // The concat fixture has 137 presented frames spanning 138 clock positions,
+  // identically on FFmpeg 7 and 8. A raw container average is not its duration.
+  const pts = Array.from({ length: 138 }, (_, i) => i).filter((i) => i !== 60);
+  expect(decodedPresentationClock(pts, "1/30", "30/1")).toEqual({ durationSec: 4.6, averageRate: "685/23", averageFps: 137 / 4.6 });
+  const truncated = decodedPresentationClock(Array.from({ length: 59 }, (_, i) => i), "1/25", "25/1");
+  expect(truncated.durationSec).toBe(2.36);
+  expect(59 - Math.round(6 * truncated.averageFps)).toBe(-91);
+});

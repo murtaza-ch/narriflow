@@ -550,7 +550,7 @@ export class RenderGroupLifecycle {
     id: string,
   ): Promise<boolean> {
     return this.transaction(async (tx) => {
-      const { variant, now } = await this.member(tx, attempt, id);
+      const { variant, parent, now } = await this.member(tx, attempt, id);
       if (variant.status !== "pending") return variant.status === "rendering";
       await tx.clipRender.update({
         where: { id },
@@ -567,6 +567,11 @@ export class RenderGroupLifecycle {
         startedAt: now,
         errorCode: null,
       });
+      await appendWorkflowEvent(tx, {
+        projectId: parent.projectId, workflowRunId: parent.id, attemptId: attempt.token,
+        stage: "clip_rendering", status: parent.status as "queued" | "running", progress: parent.progress,
+        errorCode: null, transition: `variant_started:${id}`,
+      }, { redisRequired: false, analyticsEnabled: false });
       return true;
     });
   }
@@ -601,7 +606,7 @@ export class RenderGroupLifecycle {
           render.durationSec === input.durationSec
         );
       }
-      const { variant, now } = await this.member(tx, attempt, id);
+      const { variant, parent, now } = await this.member(tx, attempt, id);
       const execution = await tx.renderGroupExecution.findUniqueOrThrow({
         where: { token: attempt.token },
       });
@@ -627,6 +632,12 @@ export class RenderGroupLifecycle {
           recordedAt: now,
         },
       });
+      if (!variant.exportVariantId) await appendWorkflowEvent(tx, {
+        projectId: parent.projectId, workflowRunId: parent.id, attemptId: attempt.token,
+        stage: "clip_rendering", status: parent.status as "queued" | "running", progress: parent.progress,
+        errorCode: null, transition: `child_completed:${id}`,
+        generationRenderResults: [{ renderId: id, status: "completed", errorCode: null }],
+      }, { redisRequired: isWorkflowRedisDeliveryEnabled(), analyticsEnabled: false });
       return true;
     });
   }
@@ -649,7 +660,7 @@ export class RenderGroupLifecycle {
     disposition: "retryable" | "permanent",
   ): Promise<boolean> {
     return this.transaction(async (tx) => {
-      const { variant, now } = await this.member(tx, attempt, id);
+      const { variant, parent, now } = await this.member(tx, attempt, id);
       const result = disposition === "retryable" ? "retryable" : "permanent";
       const existing = await tx.renderGroupVariantOutcome.findUnique({
         where: { token_clipRenderId: { token: attempt.token, clipRenderId: id } },
@@ -675,6 +686,12 @@ export class RenderGroupLifecycle {
           recordedAt: now,
         },
       });
+      if (!variant.exportVariantId && disposition === "permanent") await appendWorkflowEvent(tx, {
+        projectId: parent.projectId, workflowRunId: parent.id, attemptId: attempt.token,
+        stage: "clip_rendering", status: parent.status as "queued" | "running", progress: parent.progress,
+        errorCode: null, transition: `child_failed:${id}`,
+        generationRenderResults: [{ renderId: id, status: "failed", errorCode }],
+      }, { redisRequired: isWorkflowRedisDeliveryEnabled(), analyticsEnabled: false });
       return true;
     });
   }

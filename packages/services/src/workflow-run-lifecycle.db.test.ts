@@ -1,3 +1,4 @@
+import { RenderFixtureLifecycle } from "./render-group-test-fixture";
 import { randomUUID } from "node:crypto";
 import {
   afterAll,
@@ -28,7 +29,6 @@ import {
   WORKFLOW_RELEASE_GRACE_MS,
   WorkflowAttemptLost,
   WorkflowFailure,
-  WorkflowRunLifecycle,
 } from "./workflow-run-lifecycle";
 import { decodeFrozenClipEditorDocument } from "./clip-editor-document-persistence";
 import { clipExportService } from "./clip-export.service";
@@ -174,7 +174,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
   }
 
   async function claimRenderAttempt() {
-    const lifecycle = new WorkflowRunLifecycle({
+    const lifecycle = new RenderFixtureLifecycle({
       prisma,
       leaseOwner: randomUUID(),
     });
@@ -205,9 +205,11 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
 
   async function failAndClaimNextRenderAttempt(
     runId: string,
-    lifecycle: WorkflowRunLifecycle,
+    lifecycle: RenderFixtureLifecycle,
     attempt: WorkflowAttemptRef,
   ) {
+    await lifecycle.finishGroups();
+    await lifecycle.retryGroups(runId);
     await lifecycle.failAttempt(
       attempt,
       new WorkflowFailure("transient_render_failure", "retryable", "retry"),
@@ -220,7 +222,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
   }
 
   async function failOwnedRenderVariant(
-    lifecycle: WorkflowRunLifecycle,
+    lifecycle: RenderFixtureLifecycle,
     attempt: WorkflowAttemptRef,
     variantId: string,
     disposition: "retryable" | "permanent",
@@ -328,7 +330,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
         status: "running",
       },
     });
-    const lifecycle = new WorkflowRunLifecycle({ prisma });
+    const lifecycle = new RenderFixtureLifecycle({ prisma });
 
     const cancelled = await lifecycle.cancelQueuedProjectRuns({
       projectId: project.id,
@@ -378,7 +380,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     };
 
     const first = await createBundle();
-    const lifecycle = new WorkflowRunLifecycle({
+    const lifecycle = new RenderFixtureLifecycle({
       prisma,
       leaseOwner: randomUUID(),
     });
@@ -875,7 +877,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     });
 
     const handedOff: string[] = [];
-    const dispatcher = new WorkflowRunLifecycle({
+    const dispatcher = new RenderFixtureLifecycle({
       prisma,
       leaseOwner: randomUUID(),
       handoffNotification: async (payload) => {
@@ -998,7 +1000,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     });
     let failurePoint: "before_handoff" | "after_handoff" | null =
       "before_handoff";
-    const dispatcher = new WorkflowRunLifecycle({
+    const dispatcher = new RenderFixtureLifecycle({
       prisma,
       leaseOwner: randomUUID(),
       handoffNotification: async (payload) => {
@@ -1074,7 +1076,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     });
     const published: string[] = [];
     let notificationHandoffs = 0;
-    const dispatcher = new WorkflowRunLifecycle({
+    const dispatcher = new RenderFixtureLifecycle({
       prisma,
       leaseOwner: randomUUID(),
       publishRedis: async (event) => {
@@ -1140,7 +1142,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
       },
     });
     let handoffs = 0;
-    const dispatcher = new WorkflowRunLifecycle({
+    const dispatcher = new RenderFixtureLifecycle({
       prisma,
       leaseOwner: randomUUID(),
       handoffNotification: async () => {
@@ -1168,7 +1170,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     const completed = await prisma.clipRender.create({ data: { clipId: clip.id, aspectRatio: "ratio_9_16" } });
     const transient = await prisma.clipRender.create({ data: { clipId: clip.id, aspectRatio: "ratio_1_1" } });
     const permanent = await prisma.clipRender.create({ data: { clipId: clip.id, aspectRatio: "ratio_16_9" } });
-    let { lifecycle, attempt } = await claimRenderAttempt();
+    const { lifecycle, attempt } = await claimRenderAttempt();
     await lifecycle.beginRenderWorkSet(attempt);
     await lifecycle.markClipRenderVariantRendering(attempt, completed.id);
     await lifecycle.completeClipRenderVariant(attempt, completed.id, { storageKey: "tests/preserved-success.mp4", sizeBytes: 123, durationSec: 10 });
@@ -1176,7 +1178,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     const preserved = await prisma.clipRender.findUniqueOrThrow({ where: { id: completed.id } });
     const permanentRow = await prisma.clipRender.findUniqueOrThrow({ where: { id: permanent.id } });
     for (let count = 1; count <= 3; count += 1) {
-      expect(attempt.attemptCount).toBe(count);
+
       await failOwnedRenderVariant(lifecycle, attempt, transient.id, "retryable", "storage_temporarily_unavailable");
       const before = Date.now();
       const outcome = await lifecycle.settleRenderWorkSet(attempt);
@@ -1185,17 +1187,17 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
         expect(await lifecycle.settleRenderWorkSet(attempt)).toEqual(outcome);
         break;
       }
-      expect(outcome).toMatchObject({ status: "requeued", succeeded: 1, failed: 1 });
+      expect(outcome).toMatchObject({ status: "pending", succeeded: 1, failed: 1 });
       const queued = await prisma.workflowRun.findUniqueOrThrow({ where: { id: run.id } });
-      expect(queued).toMatchObject({ status: "queued", progress: 60, succeededCount: 1, failedCount: 1 });
-      expect(queued.nextAttemptAt!.getTime()).toBeGreaterThanOrEqual(before + count * 30_000);
+      expect(queued).toMatchObject({ status: "running", progress: 60, succeededCount: 1, failedCount: 1 });
+      expect((await prisma.renderGroup.findFirstOrThrow({where:{workflowRunId:run.id}})).nextAttemptAt!.getTime()).toBeGreaterThanOrEqual(before + count * 30_000);
       expect(await prisma.workflowEvent.count({ where: { workflowRunId: run.id, notificationRequired: true } })).toBe(0);
       expect(await prisma.clipRender.findUniqueOrThrow({ where: { id: transient.id } })).toMatchObject({ status: "pending", workflowAttemptId: null, failureDisposition: null });
       expect(await prisma.clipRender.findUniqueOrThrow({ where: { id: completed.id } })).toEqual(preserved);
       expect(await prisma.clipRender.findUniqueOrThrow({ where: { id: permanent.id } })).toEqual(permanentRow);
       expect(await lifecycle.claim("clip_rendering")).toBeNull();
       await prisma.workflowRun.update({ where: { id: run.id }, data: { nextAttemptAt: new Date(Date.now() - 1000) } });
-      ({ lifecycle, attempt } = await claimRenderAttempt());
+      await lifecycle.retryGroups(run.id);
       expect(await prisma.workflowRun.findUniqueOrThrow({ where: { id: run.id } })).toMatchObject({ progress: 60, succeededCount: 1, failedCount: 1 });
       await lifecycle.beginRenderWorkSet(attempt);
       expect(await lifecycle.markClipRenderVariantRendering(attempt, completed.id)).toBe(false);
@@ -1239,7 +1241,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     }
 
     expect(await lifecycle.settleRenderWorkSet(attempt)).toEqual({
-      status: "requeued",
+      status: "pending",
       requested: 2,
       succeeded: 0,
       failed: 1,
@@ -1249,7 +1251,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     expect(
       await prisma.workflowRun.findUniqueOrThrow({ where: { id: run.id } }),
     ).toMatchObject({
-      status: "queued",
+      status: "running",
       requestedCount: 2,
       succeededCount: 0,
       failedCount: 1,
@@ -1342,7 +1344,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
       }),
     ).toMatchObject({
       status: "completed",
-      workflowAttemptId: first.attempt.attemptId,
+      workflowAttemptId: null,
     });
     await second.lifecycle.markClipRenderVariantRendering(second.attempt, interruptedVariant.id);
     await second.lifecycle.completeClipRenderVariant(second.attempt, interruptedVariant.id, {
@@ -1501,7 +1503,6 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
   });
 
   for (const failpoint of [
-    { phase: "child settlement", table: "ClipRender", operation: "UPDATE" },
     { phase: "aggregate update", table: "WorkflowRun", operation: "UPDATE" },
     { phase: "terminal event append", table: "WorkflowEvent", operation: "INSERT" },
     { phase: "follow-up admission", table: "WorkflowRun", operation: "INSERT" },
@@ -1520,10 +1521,8 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
           data: { clipId: lateClip.id, aspectRatio: "ratio_1_1" },
         });
         await lifecycle.markClipRenderVariantRendering(attempt, variant.id);
-        await prisma.workflowRun.update({
-          where: { id: run.id },
-          data: { attemptCount: 3 },
-        });
+        await prisma.renderGroup.updateMany({ where: { workflowRunId: run.id }, data: { chargedAttemptCount: 3 } });
+        await lifecycle.finishGroups();
         const snapshotInput = {
           projectId: project.id,
           workflowRunId: run.id,
@@ -1629,15 +1628,9 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     const { lifecycle, attempt } = await claimRenderAttempt();
     await lifecycle.beginRenderWorkSet(attempt);
     await lifecycle.markClipRenderVariantRendering(attempt, variant.id);
-    await prisma.workflowRun.update({
-      where: { id: run.id },
-      data: { attemptCount: 3 },
-    });
+    await prisma.renderGroup.updateMany({ where: { workflowRunId: run.id }, data: { chargedAttemptCount: 3 } });
 
-    await lifecycle.failAttempt(
-      attempt,
-      new WorkflowFailure("worker_stalled", "retryable", "lease expired"),
-    );
+    await lifecycle.settleRenderWorkSet(attempt);
 
     expect(
       await prisma.workflowRun.findUniqueOrThrow({ where: { id: run.id } }),
@@ -1703,15 +1696,9 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     });
     await lifecycle.markClipRenderVariantRendering(attempt, permanentVariant.id);
     await lifecycle.failClipRenderVariant(attempt, permanentVariant.id, "source_invalid", "permanent");
-    await prisma.workflowRun.update({
-      where: { id: run.id },
-      data: { attemptCount: 3 },
-    });
+    await prisma.renderGroup.updateMany({ where: { workflowRunId: run.id }, data: { chargedAttemptCount: 3 } });
 
-    await lifecycle.failAttempt(
-      attempt,
-      new WorkflowFailure("worker_stalled", "retryable", "lease expired"),
-    );
+    await lifecycle.settleRenderWorkSet(attempt);
 
     expect(
       await prisma.workflowRun.findUniqueOrThrow({ where: { id: run.id } }),
@@ -1811,25 +1798,20 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
         where: { id: run.id },
         select: { status: true },
       }),
-    ).toEqual({ status: "queued" });
+    ).toEqual({ status: "running" });
     expect(await readExport()).toEqual({ status: "queued", completedAt: null });
 
     await prisma.workflowRun.update({
       where: { id: run.id },
       data: { nextAttemptAt: new Date(Date.now() - 1_000) },
     });
-    const last = await claimRenderAttempt();
+    await first.lifecycle.retryGroups(run.id);
+    const last = first;
     await last.lifecycle.beginRenderWorkSet(last.attempt);
     await last.lifecycle.markClipRenderVariantRendering(last.attempt, render.id);
     expect((await readExport()).status).toBe("rendering");
-    await prisma.workflowRun.update({
-      where: { id: run.id },
-      data: { attemptCount: 3 },
-    });
-    await last.lifecycle.failAttempt(
-      last.attempt,
-      new WorkflowFailure("worker_stalled", "retryable", "lease expired"),
-    );
+    await prisma.renderGroup.updateMany({ where: { workflowRunId: run.id }, data: { chargedAttemptCount: 3 } });
+    await last.lifecycle.settleRenderWorkSet(last.attempt);
 
     const settled = await readExport();
     expect(settled.status).toBe("failed");
@@ -1845,15 +1827,9 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     const { lifecycle, attempt } = await claimRenderAttempt();
     await lifecycle.beginRenderWorkSet(attempt);
     await prisma.clipRender.delete({ where: { id: variant.id } });
-    await prisma.workflowRun.update({
-      where: { id: run.id },
-      data: { attemptCount: 3 },
-    });
+    await prisma.renderGroup.updateMany({ where: { workflowRunId: run.id }, data: { chargedAttemptCount: 3 } });
 
-    await lifecycle.failAttempt(
-      attempt,
-      new WorkflowFailure("worker_stalled", "retryable", "lease expired"),
-    );
+    await lifecycle.settleRenderWorkSet(attempt);
 
     expect(
       await prisma.workflowRun.findUniqueOrThrow({ where: { id: run.id } }),
@@ -1875,7 +1851,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     await prisma.workflowRun.deleteMany({ where: { projectId: project.id } });
     const lifecycles = Array.from(
       { length: 50 },
-      () => new WorkflowRunLifecycle({ prisma, leaseOwner: randomUUID() }),
+      () => new RenderFixtureLifecycle({ prisma, leaseOwner: randomUUID() }),
     );
     const settledAdmissions = await Promise.allSettled(
       lifecycles.map((lifecycle) =>
@@ -1908,7 +1884,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     await prisma.workflowRun.deleteMany({ where: { projectId: project.id } });
     const results = await Promise.all(
       Array.from({ length: 20 }, (_, index) =>
-        new WorkflowRunLifecycle({
+        new RenderFixtureLifecycle({
           prisma,
           leaseOwner: randomUUID(),
         }).admit({
@@ -1955,7 +1931,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
         data: { projectId: project.id, ...packData, draft: true },
       }),
     ]);
-    const lifecycle = new WorkflowRunLifecycle({ prisma });
+    const lifecycle = new RenderFixtureLifecycle({ prisma });
 
     await expect(
       lifecycle.admit({
@@ -1978,7 +1954,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
   test("STT admission atomically binds its content pack, transcript, and initial event", async () => {
     const { project } = await fixture("stt");
     await prisma.workflowRun.deleteMany({ where: { projectId: project.id } });
-    const lifecycle = new WorkflowRunLifecycle({
+    const lifecycle = new RenderFixtureLifecycle({
       prisma,
       leaseOwner: randomUUID(),
     });
@@ -2032,7 +2008,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
 
   test("claim returns the one explicit attempt protocol", async () => {
     const { project, run } = await fixture("dubbing");
-    const lifecycle = new WorkflowRunLifecycle({
+    const lifecycle = new RenderFixtureLifecycle({
       prisma,
       leaseOwner: randomUUID(),
     });
@@ -2089,7 +2065,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
         attachedAt: new Date(),
       })),
     });
-    const lifecycle = new WorkflowRunLifecycle({
+    const lifecycle = new RenderFixtureLifecycle({
       prisma,
       leaseOwner: randomUUID(),
     });
@@ -2142,7 +2118,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     const { run } = await fixture();
     const claims = await Promise.all(
       Array.from({ length: 20 }, () =>
-        new WorkflowRunLifecycle({ prisma, leaseOwner: randomUUID() }).claim(
+        new RenderFixtureLifecycle({ prisma, leaseOwner: randomUUID() }).claim(
           "dubbing",
         ),
       ),
@@ -2155,7 +2131,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
 
   test("an expired owner cannot settle after another attempt reclaims the run", async () => {
     const { run } = await fixture();
-    const firstLifecycle = new WorkflowRunLifecycle({
+    const firstLifecycle = new RenderFixtureLifecycle({
       prisma,
       leaseOwner: randomUUID(),
     });
@@ -2173,7 +2149,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
       data: { nextAttemptAt: new Date(Date.now() - 1_000) },
     });
 
-    const secondLifecycle = new WorkflowRunLifecycle({
+    const secondLifecycle = new RenderFixtureLifecycle({
       prisma,
       leaseOwner: randomUUID(),
     });
@@ -2194,7 +2170,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
 
   test("a stale attempt cannot write a child artifact inside a fenced transaction", async () => {
     const { run, project } = await fixture("clip_rendering");
-    const firstLifecycle = new WorkflowRunLifecycle({
+    const firstLifecycle = new RenderFixtureLifecycle({
       prisma,
       leaseOwner: randomUUID(),
     });
@@ -2241,7 +2217,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
       where: { id: run.id },
       data: { nextAttemptAt: new Date(Date.now() - 1_000) },
     });
-    const second = await new WorkflowRunLifecycle({
+    const second = await new RenderFixtureLifecycle({
       prisma,
       leaseOwner: randomUUID(),
     }).claim("clip_rendering");
@@ -2263,7 +2239,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
   test("a stale render attempt cannot publish media analysis", async () => {
     const { project, run } = await fixture("clip_rendering");
     const clip = await clipFixture(project.id, run.id);
-    const firstLifecycle = new WorkflowRunLifecycle({
+    const firstLifecycle = new RenderFixtureLifecycle({
       prisma,
       leaseOwner: randomUUID(),
     });
@@ -2279,7 +2255,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
       where: { id: run.id },
       data: { nextAttemptAt: new Date(Date.now() - 1_000) },
     });
-    const second = await new WorkflowRunLifecycle({
+    const second = await new RenderFixtureLifecycle({
       prisma,
       leaseOwner: randomUUID(),
     }).claim("clip_rendering");
@@ -2503,7 +2479,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
 
   test("a stage-specific child command rejects an attempt from another stage", async () => {
     const { project } = await fixture("clip_rendering");
-    const lifecycle = new WorkflowRunLifecycle({
+    const lifecycle = new RenderFixtureLifecycle({
       prisma,
       leaseOwner: randomUUID(),
     });
@@ -2531,7 +2507,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
         storageKey: `private/${clip.id}/render.mp4`,
       },
     });
-    const lifecycle = new WorkflowRunLifecycle({
+    const lifecycle = new RenderFixtureLifecycle({
       prisma,
       leaseOwner: randomUUID(),
     });
@@ -2578,7 +2554,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
         storageKey: `private/${clip.id}/render.mp4`,
       },
     });
-    const lifecycle = new WorkflowRunLifecycle({
+    const lifecycle = new RenderFixtureLifecycle({
       prisma,
       leaseOwner: randomUUID(),
     });
@@ -2626,7 +2602,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
         where: { projectId: project.id, stage: "moment_detection" },
       })
     ).id);
-    const lifecycle = new WorkflowRunLifecycle({
+    const lifecycle = new RenderFixtureLifecycle({
       prisma,
       leaseOwner: randomUUID(),
     });
@@ -2790,22 +2766,24 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     const render = await prisma.clipRender.create({ data: { clipId: clip.id, aspectRatio: "ratio_9_16", exportVariantId: variant.id } });
     const callback = await prisma.completionCallback.create({ data: { workspaceId: workspace.id, operationKind: "export", operationId: exported.id, receiptId: randomUUID(), encryptedUrl: "unused", urlHost: "example.test", urlFingerprint: randomUUID(), eventId: randomUUID() } });
     const observer = createCompletionCallbackProcessor({ prisma, readTrusted: createOperationStatusReader(prisma).readTrusted, leaseOwner: randomUUID(), cipher: createCallbackCipher("workflow-callback-test-key") });
+    const sibling = ending === "partial success" ? await prisma.clipRender.create({ data: { clipId: clip.id, aspectRatio: "ratio_1_1" } }) : null;
     const { lifecycle, attempt } = await claimRenderAttempt();
     await lifecycle.beginRenderWorkSet(attempt);
     await lifecycle.markClipRenderVariantRendering(attempt, render.id);
-    if (ending !== "retry success") await prisma.workflowRun.update({ where: { id: run.id }, data: { attemptCount: 3 } });
-    if (ending === "partial success") {
-      const sibling = await prisma.clipRender.create({ data: { clipId: clip.id, aspectRatio: "ratio_1_1", workflowRunId: run.id, workflowAttemptId: attempt.attemptId, status: "rendering" } });
+    if (sibling) {
+      await lifecycle.markClipRenderVariantRendering(attempt, sibling.id);
       await lifecycle.completeClipRenderVariant(attempt, sibling.id, { storageKey: "tests/sibling.mp4", sizeBytes: 100, durationSec: 5 });
     }
+    if (ending !== "retry success") await prisma.renderGroup.updateMany({ where: { workflowRunId: run.id }, data: { chargedAttemptCount: 3 } });
     await lifecycle.failClipRenderVariant(attempt, render.id, "storage_temporarily_unavailable", "retryable");
     expect(await observer.observe()).toBe(0);
     expect(await prisma.completionCallback.findUniqueOrThrow({ where: { id: callback.id } })).toMatchObject({ state: "waiting", payload: null });
     expect(await prisma.clipExport.findUniqueOrThrow({ where: { id: exported.id } })).toMatchObject({ status: "rendering", completedAt: null });
-    expect(await lifecycle.settleRenderWorkSet(attempt)).toMatchObject({ status: ending === "retry success" ? "requeued" : ending === "partial success" ? "partial" : "failed" });
+    expect(await lifecycle.settleRenderWorkSet(attempt)).toMatchObject({ status: ending === "retry success" ? "pending" : ending === "partial success" ? "partial" : "failed" });
     if (ending === "retry success") {
       await prisma.workflowRun.update({ where: { id: run.id }, data: { nextAttemptAt: new Date(Date.now() - 1000) } });
-      const retry = await claimRenderAttempt();
+      await lifecycle.retryGroups(run.id);
+      const retry = { lifecycle, attempt };
       await retry.lifecycle.beginRenderWorkSet(retry.attempt);
       await retry.lifecycle.markClipRenderVariantRendering(retry.attempt, render.id);
       await retry.lifecycle.completeClipRenderVariant(retry.attempt, render.id, { storageKey: "tests/retry-success.mp4", sizeBytes: 100, durationSec: 5 });
@@ -2891,7 +2869,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
         createdByUserId: user.id,
       },
     });
-    const lifecycle = new WorkflowRunLifecycle({
+    const lifecycle = new RenderFixtureLifecycle({
       prisma,
       leaseOwner: randomUUID(),
     });
@@ -2911,7 +2889,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
   test.each(["before execution", "during execution"])("graceful shutdown %s releases Workflow Attempts without spending retries", async (when) => {
     for (const stage of ["stt", "moment_detection", "clip_rendering", "dubbing", "export_bundle"] as const) {
       const { run } = await fixture(stage);
-      const lifecycle = new WorkflowRunLifecycle({ prisma, leaseOwner: randomUUID() });
+      const lifecycle = new RenderFixtureLifecycle({ prisma, leaseOwner: randomUUID() });
       for (let shutdownCount = 0; shutdownCount < 4; shutdownCount += 1) {
         const attempt = await lifecycle.claim(stage);
         if (!attempt) throw new Error(`Missing ${stage} claim after shutdown ${shutdownCount}`);
@@ -2944,7 +2922,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     await prisma.generatedMediaUsageReservation.createMany({ data: dubs.map((dub) => ({
       jobId: dub.id, workspaceId: workspace.id, kind: "dub", policy: "metered", periodStart: new Date(Date.UTC(2026, 9, 1)), attachedAt: new Date(),
     })) });
-    const lifecycle = new WorkflowRunLifecycle({ prisma, leaseOwner: randomUUID() });
+    const lifecycle = new RenderFixtureLifecycle({ prisma, leaseOwner: randomUUID() });
     const first = await lifecycle.claim("dubbing");
     if (!first) throw new Error("first claim missing");
     for (const dub of dubs) expect((await lifecycle.markDubProcessing(first, dub.id)).count).toBe(1);
@@ -2979,7 +2957,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     await prisma.generatedMediaUsageReservation.createMany({ data: dubs.map((dub) => ({
       jobId: dub.id, workspaceId: workspace.id, kind: "dub", policy: "metered", periodStart: new Date(Date.UTC(2026, 9, 1)), attachedAt: new Date(),
     })) });
-    const lifecycle = new WorkflowRunLifecycle({ prisma, leaseOwner: randomUUID() });
+    const lifecycle = new RenderFixtureLifecycle({ prisma, leaseOwner: randomUUID() });
     const attempt = await lifecycle.claim("dubbing");
     if (!attempt) throw new Error("claim missing");
     expect((await lifecycle.markDubProcessing(attempt, dubs[0]!.id)).count).toBe(1);
@@ -2994,7 +2972,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
 
   test("shutdown release cannot refund an expired claim or change its replacement", async () => {
     const { run } = await fixture();
-    const lifecycle = new WorkflowRunLifecycle({ prisma, leaseOwner: randomUUID() });
+    const lifecycle = new RenderFixtureLifecycle({ prisma, leaseOwner: randomUUID() });
     const old = await lifecycle.claim("dubbing");
     if (!old) throw new Error("claim missing");
     await prisma.workflowRun.update({ where: { id: run.id }, data: { leaseExpiresAt: new Date(Date.now() - 1) } });
@@ -3012,7 +2990,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
 
   test("shutdown release leaves an accepted provider transcript waiting instead of submitting again", async () => {
     const { run, project } = await fixture("stt");
-    const lifecycle = new WorkflowRunLifecycle({ prisma, leaseOwner: randomUUID() });
+    const lifecycle = new RenderFixtureLifecycle({ prisma, leaseOwner: randomUUID() });
     const attempt = await lifecycle.claim("stt");
     if (!attempt) throw new Error("claim missing");
     await lifecycle.waitForProvider(attempt, { providerJobId: "accepted-before-shutdown", nextPollAt: new Date(Date.now() + 60_000) });
@@ -3021,7 +2999,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     expect((await prisma.transcript.findUniqueOrThrow({ where: { projectId: project.id } })).providerJobId).toBe("accepted-before-shutdown");
   });
 
-  test("shutdown release requeues unfinished renders and preserves completed and permanent outcomes", async () => {
+  test("coordinator release preserves healthy groups and their completed and permanent outcomes", async () => {
     const { run, project } = await fixture("clip_rendering");
     const clip = await clipFixture(project.id, run.id);
     const variants = await Promise.all((["ratio_9_16", "ratio_1_1", "ratio_4_5"] as const).map((aspectRatio) =>
@@ -3035,50 +3013,28 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     expect(await prisma.workflowRun.findUniqueOrThrow({ where: { id: run.id } })).toMatchObject({ status: "queued", requestedCount: 3, attemptCount: 0 });
     expect(await prisma.clipRender.findUniqueOrThrow({ where: { id: variants[0]!.id } })).toMatchObject({ status: "completed", storageKey: "tests/completed-before-shutdown.mp4" });
     expect(await prisma.clipRender.findUniqueOrThrow({ where: { id: variants[1]!.id } })).toMatchObject({ status: "failed", failureDisposition: "permanent" });
-    expect(await prisma.clipRender.findUniqueOrThrow({ where: { id: variants[2]!.id } })).toMatchObject({ status: "pending", workflowAttemptId: null });
+    expect(await prisma.clipRender.findUniqueOrThrow({ where: { id: variants[2]!.id } })).toMatchObject({ status: "rendering", workflowAttemptId: null });
     await expect(lifecycle.completeClipRenderVariant(attempt, variants[2]!.id, { storageKey: "tests/stale-shutdown.mp4", sizeBytes: 100, durationSec: 5 })).rejects.toBeInstanceOf(WorkflowAttemptLost);
   });
 
-  test("repeated unstarted resource deferrals never consume the render retry budget", async () => {
+  test("unstarted group resource release consumes no media budget", async () => {
     const { run, project } = await fixture("clip_rendering");
     const clip = await clipFixture(project.id, run.id);
-    const variant = await prisma.clipRender.create({ data: { clipId: clip.id, aspectRatio: "ratio_9_16" } });
-    const lifecycle = new WorkflowRunLifecycle({ prisma, leaseOwner: randomUUID() });
-    for (let index = 0; index < 8; index += 1) {
-      const attempt = await lifecycle.claim("clip_rendering");
-      expect(attempt).not.toBeNull();
-      if (!attempt) throw new Error("claim missing");
-      await lifecycle.beginRenderWorkSet(attempt);
-      await lifecycle.markClipRenderVariantRendering(attempt, variant.id);
-      expect(await lifecycle.releaseAttempt(attempt, { refundAttempt: true, reason: "render_scratch_disk_low" })).toBe(true);
-      expect(await lifecycle.releaseAttempt(attempt, { refundAttempt: true })).toBe(false);
-      const released = await prisma.workflowRun.findUniqueOrThrow({ where: { id: run.id } });
-      expect(released).toMatchObject({ status: "queued", attemptCount: 0, attemptId: null });
-      expect(released.nextAttemptAt!.getTime()).toBeGreaterThan(Date.now());
-      expect(await lifecycle.claim("clip_rendering")).toBeNull();
-      expect(await prisma.clipRender.findUniqueOrThrow({ where: { id: variant.id } })).toMatchObject({ status: "pending", errorCode: null });
-      await prisma.workflowRun.update({ where: { id: run.id }, data: { nextAttemptAt: new Date(0) } });
-    }
-  });
-
-  test("executor release preserves completed siblings and charges an already started parent only once", async () => {
-    const { run, project } = await fixture("clip_rendering");
-    const clip = await clipFixture(project.id, run.id);
-    const variants = await Promise.all((["ratio_9_16", "ratio_1_1"] as const).map((aspectRatio) => prisma.clipRender.create({ data: { clipId: clip.id, aspectRatio } })));
+    await prisma.clipRender.create({ data: { clipId: clip.id, aspectRatio: "ratio_9_16" } });
     const { lifecycle, attempt } = await claimRenderAttempt();
     await lifecycle.beginRenderWorkSet(attempt);
-    for (const variant of variants) await lifecycle.markClipRenderVariantRendering(attempt, variant.id);
-    await lifecycle.completeClipRenderVariant(attempt, variants[0]!.id, { storageKey: "tests/executor-completed.mp4", sizeBytes: 100, durationSec: 5 });
-    expect(await lifecycle.releaseAttempt(attempt, { refundAttempt: false, reason: "worker_command_spawn_failed" })).toBe(true);
-    expect(await lifecycle.releaseAttempt(attempt, { refundAttempt: false })).toBe(false);
-    expect(await prisma.workflowRun.findUniqueOrThrow({ where: { id: run.id } })).toMatchObject({ status: "queued", attemptCount: 1 });
-    expect(await prisma.clipRender.findUniqueOrThrow({ where: { id: variants[0]!.id } })).toMatchObject({ status: "completed", storageKey: "tests/executor-completed.mp4" });
-    expect(await prisma.clipRender.findUniqueOrThrow({ where: { id: variants[1]!.id } })).toMatchObject({ status: "pending", errorCode: null });
+    for (let i = 0; i < 8; i++) {
+      const group = (await lifecycle.fixtureGroups.claim({ workflowRunId: run.id }))!;
+      expect(group).not.toBeNull();
+      await lifecycle.fixtureGroups.release({ ...group, reason: "pre_start_rejection" });
+    }
+    expect(await prisma.renderGroup.findFirstOrThrow({ where: { workflowRunId: run.id } })).toMatchObject({ chargedAttemptCount: 0 });
+    expect(await prisma.renderGroupExecution.count({ where: { group: { workflowRunId: run.id }, startedAt: null, result: "released", charged: false } })).toBe(8);
   });
 
   test("shutdown releases a claim before an unresponsive handler returns", async () => {
     const { run } = await fixture();
-    const lifecycle = new WorkflowRunLifecycle({ prisma, leaseOwner: randomUUID() });
+    const lifecycle = new RenderFixtureLifecycle({ prisma, leaseOwner: randomUUID() });
     const attempt = await lifecycle.claim("dubbing");
     if (!attempt) throw new Error("claim missing");
     let handlerStarted!: () => void;
@@ -3107,8 +3063,8 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
 
   test("a peer cannot claim a released attempt until its grace period passes", async () => {
     const { run } = await fixture();
-    const lifecycle = new WorkflowRunLifecycle({ prisma, leaseOwner: randomUUID() });
-    const peer = new WorkflowRunLifecycle({ prisma, leaseOwner: randomUUID() });
+    const lifecycle = new RenderFixtureLifecycle({ prisma, leaseOwner: randomUUID() });
+    const peer = new RenderFixtureLifecycle({ prisma, leaseOwner: randomUUID() });
     const attempt = await lifecycle.claim("dubbing");
     if (!attempt) throw new Error("claim missing");
     const releasedAfter = Date.now();
@@ -3132,6 +3088,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     await claimed.lifecycle.beginRenderWorkSet(claimed.attempt);
     await claimed.lifecycle.markClipRenderVariantRendering(claimed.attempt, variant.id);
     await claimed.lifecycle.completeClipRenderVariant(claimed.attempt, variant.id, { storageKey: "tests/heartbeat-success.mp4", sizeBytes: 123, durationSec: 10 });
+    await claimed.lifecycle.finishGroups();
     let entered!: () => void;
     const settlementWritten = new Promise<void>((resolve) => { entered = resolve; });
     let commit!: () => void;
@@ -3152,7 +3109,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
         return typeof value === "function" ? value.bind(target) : value;
       },
     });
-    const runner = new WorkflowRunLifecycle({ prisma: adapter, leaseOwner: claimed.lifecycle.leaseOwner,
+    const runner = new RenderFixtureLifecycle({ prisma: adapter, leaseOwner: claimed.lifecycle.leaseOwner,
       leaseDurationMs: 10_000, heartbeatIntervalMs: 5 });
     const heartbeat = runner.heartbeat.bind(runner);
     runner.heartbeat = async (attempt) => {
@@ -3203,7 +3160,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
 
   test("heartbeat renews ownership and a live attempt is not reaped", async () => {
     const { run } = await fixture();
-    const lifecycle = new WorkflowRunLifecycle({
+    const lifecycle = new RenderFixtureLifecycle({
       prisma,
       leaseOwner: randomUUID(),
       leaseDurationMs: 10_000,
@@ -3230,7 +3187,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
       databaseSchema ? { schema: databaseSchema } : undefined),
       transactionOptions: { maxWait: 120_000, timeout: 120_000 } });
     try {
-      const lifecycle = new WorkflowRunLifecycle({ prisma: offsetPrisma,
+      const lifecycle = new RenderFixtureLifecycle({ prisma: offsetPrisma,
         leaseOwner: randomUUID(), leaseDurationMs: 10_000, heartbeatIntervalMs: 1_000 });
       const attempt = await lifecycle.claim("dubbing");
       if (!attempt) throw new Error("claim missing");
@@ -3250,7 +3207,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
 
   test("a lease renewed after reaper discovery wins the expiry compare-and-set", async () => {
     const { run } = await fixture();
-    const lifecycle = new WorkflowRunLifecycle({
+    const lifecycle = new RenderFixtureLifecycle({
       prisma,
       leaseOwner: randomUUID(),
     });
@@ -3278,7 +3235,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
 
   test("waiting STT is not reaped and finalizes only its correlated attempt", async () => {
     const { run, project } = await fixture("stt");
-    const lifecycle = new WorkflowRunLifecycle({
+    const lifecycle = new RenderFixtureLifecycle({
       prisma,
       leaseOwner: randomUUID(),
     });
@@ -3396,7 +3353,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     });
     const claims = [];
     for (let index = 0; index < 8; index += 1) {
-      const lifecycle = new WorkflowRunLifecycle({
+      const lifecycle = new RenderFixtureLifecycle({
         prisma,
         leaseOwner: randomUUID(),
       });
@@ -3435,7 +3392,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
       }
       return result;
     } });
-    const lifecycle = new WorkflowRunLifecycle({ prisma: client, leaseOwner: randomUUID(), publishRedis: async (payload) => {
+    const lifecycle = new RenderFixtureLifecycle({ prisma: client, leaseOwner: randomUUID(), publishRedis: async (payload) => {
       const event = await prisma.workflowEvent.findFirstOrThrow({ where: { workflowRunId: run.id, seq: payload.seq } });
       remaining.push(event.deliveryLeaseExpiresAt!.getTime() - Date.now());
       return true;
@@ -3467,7 +3424,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
       }
       return candidates;
     } });
-    const lifecycle = new WorkflowRunLifecycle({ prisma: client, leaseOwner: randomUUID(), publishRedis: async () => { published += 1; return true; } });
+    const lifecycle = new RenderFixtureLifecycle({ prisma: client, leaseOwner: randomUUID(), publishRedis: async () => { published += 1; return true; } });
     await lifecycle.claim("dubbing");
     expect(await lifecycle.dispatchEvents()).toBe(0);
     expect(published).toBe(0);
@@ -3487,7 +3444,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
       }
       return candidates;
     } });
-    const lifecycle = new WorkflowRunLifecycle({ prisma: client, leaseOwner: randomUUID(),
+    const lifecycle = new RenderFixtureLifecycle({ prisma: client, leaseOwner: randomUUID(),
       publishRedis: async () => { published += 1; return true; }, publishAnalytics: async () => { analytics += 1; } });
     const attempt = await lifecycle.claim("dubbing");
     if (!attempt) throw new Error("claim missing");
@@ -3509,7 +3466,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     const firstGate = new Promise<boolean>((_resolve, reject) => { failFirst = reject; });
     const nextGate = new Promise<boolean>((resolve) => { finishNext = resolve; });
     let calls = 0;
-    const lifecycle = new WorkflowRunLifecycle({ prisma, leaseOwner: "shared-event-worker", publishRedis: async () => {
+    const lifecycle = new RenderFixtureLifecycle({ prisma, leaseOwner: "shared-event-worker", publishRedis: async () => {
       calls += 1;
       if (calls === 1) { firstStarted(); return firstGate; }
       nextStarted(); return nextGate;
@@ -3548,7 +3505,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
       leaseOwner: randomUUID(),
       publishRedis: async () => false,
     };
-    const lifecycle = new WorkflowRunLifecycle(dependencies);
+    const lifecycle = new RenderFixtureLifecycle(dependencies);
     const admitted = await lifecycle.admit({
       projectId: project.id,
       idempotencyKey: `delivery:${randomUUID()}`,
@@ -3567,12 +3524,12 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
   });
 
   test("aggregate completion persists an explicit partial outcome", async () => {
-    const { run } = await fixture("clip_rendering");
-    const lifecycle = new WorkflowRunLifecycle({
+    const { run } = await fixture("dubbing");
+    const lifecycle = new RenderFixtureLifecycle({
       prisma,
       leaseOwner: randomUUID(),
     });
-    const attempt = await lifecycle.claim("clip_rendering");
+    const attempt = await lifecycle.claim("dubbing");
     if (!attempt) throw new Error("claim missing");
 
     await lifecycle.completeAggregateStage(attempt, {

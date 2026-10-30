@@ -195,6 +195,8 @@ dbDescribe("Render Group PostgreSQL invariants", () => {
     await start(worker, attempt);
     for (const id of attempt.memberIds) {
       expect(await worker.markClipRenderVariantRendering(attempt, id)).toBe(true);
+      expect(await worker.markClipRenderVariantRendering(attempt, id)).toBe(true);
+      expect(await prisma.workflowEvent.count({ where: { workflowRunId: attempt.workflowRunId, dedupeKey: `${attempt.workflowRunId}:${attempt.token}:variant_started:${id}` } })).toBe(1);
       expect(
         await worker.completeClipRenderVariant(attempt, id, {
           storageKey: `render/${attempt.token}/${id}`,
@@ -235,9 +237,9 @@ dbDescribe("Render Group PostgreSQL invariants", () => {
         })),
       ),
     ).rejects.toThrow("immutable");
-    await expect(
-      f.coordinator.markClipRenderVariantRendering(f.attempt, f.admissions[0]!.variantIds[0]!),
-    ).rejects.toBeInstanceOf(WorkflowAttemptLost);
+    expect("markClipRenderVariantRendering" in f.coordinator).toBe(false);
+    expect("completeClipRenderVariant" in f.coordinator).toBe(false);
+    expect("failClipRenderVariant" in f.coordinator).toBe(false);
   });
 
   test("generic parent completion cannot bypass live group settlement", async () => {
@@ -246,15 +248,59 @@ dbDescribe("Render Group PostgreSQL invariants", () => {
     await expect(f.coordinator.completeStage(f.attempt)).rejects.toBeInstanceOf(
       WorkflowAttemptLost,
     );
-    await expect(f.coordinator.completeRendering(f.attempt)).rejects.toBeInstanceOf(
-      WorkflowAttemptLost,
-    );
     await f.worker.heartbeat(child);
     expect(await f.coordinator.settleRenderWorkSet(f.attempt)).toMatchObject({ status: "pending" });
     expect((await prisma.workflowRun.findUniqueOrThrow({ where: { id: f.run.id } })).status).toBe(
       "running",
     );
   });
+
+  test("SIGKILL of a real lease-owning process preserves completion and charges only its interrupted group", async () => {
+    const f = await fixture(1, ["ratio_9_16", "ratio_1_1"]);
+    const child = Bun.spawn(["bun", "-e", `
+      import { PrismaPg } from "@prisma/adapter-pg";
+      import { PrismaClient } from "@prisma/client";
+      import { Pool } from "pg";
+      import { RenderGroupLifecycle } from "./src/render-group-lifecycle.ts";
+      const pool = new Pool({ connectionString: process.env.WORKFLOW_TEST_DATABASE_URL, max: 2 });
+      const prisma = new PrismaClient({ adapter: new PrismaPg(pool, { schema: process.env.WORKFLOW_TEST_DATABASE_SCHEMA }) });
+      const lifecycle = new RenderGroupLifecycle({ prisma, leaseOwner: "sigkill-test-child" });
+      const group = await lifecycle.claim({ groupId: process.env.NARRIFLOW_CRASH_GROUP_ID });
+      if (!group) throw new Error("Crash fixture could not claim");
+      await lifecycle.start({ ...group, sourceFingerprint: "crash-fixture", analysisFingerprint: null, toolchainFingerprint: "fixture" });
+      await lifecycle.markClipRenderVariantRendering(group, group.memberIds[0]);
+      await lifecycle.completeClipRenderVariant(group, group.memberIds[0], { storageKey: "test/sigkill-kept.mp4", sizeBytes: 100, durationSec: 10 });
+      await lifecycle.markClipRenderVariantRendering(group, group.memberIds[1]);
+      console.log("started");
+      setInterval(() => {}, 1000);
+    `], { cwd: new URL("..", import.meta.url).pathname, env: { ...process.env, NARRIFLOW_CRASH_GROUP_ID: f.refs[0]!.groupId }, stdout: "pipe", stderr: "pipe" });
+    let readinessTimer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const reader = child.stdout.getReader();
+      const first = await Promise.race([reader.read(), new Promise<never>((_, reject) => { readinessTimer = setTimeout(() => reject(new Error("Crash child readiness timed out")), 10_000); })]);
+      if (first.done) throw new Error(`Crash child exited before start: ${await new Response(child.stderr).text()}`);
+      expect(new TextDecoder().decode(first.value)).toContain("started");
+      reader.releaseLock();
+      child.kill("SIGKILL");
+      expect(await child.exited).not.toBe(0);
+      await expire(f.refs[0]!.groupId);
+      expect(await f.worker.reapExpired()).toBe(1);
+      const group = await prisma.renderGroup.findUniqueOrThrow({ where: { id: f.refs[0]!.groupId }, include: { executions: true } });
+      expect(group).toMatchObject({ status: "queued", chargedAttemptCount: 1 });
+      expect(group.executions).toHaveLength(1);
+      expect(group.executions[0]).toMatchObject({ startedAt: expect.any(Date), result: "interrupted", charged: true });
+      expect(await prisma.clipRender.findMany({ where: { workflowRunId: f.run.id }, select: { status: true, storageKey: true }, orderBy: { aspectRatio: "asc" } })).toEqual(expect.arrayContaining([{ status: "completed", storageKey: "test/sigkill-kept.mp4" }, { status: "pending", storageKey: null }]));
+      await due(group.id);
+      const successor = (await f.worker.claim({ groupId: group.id }))!;
+      expect(successor.memberIds).toHaveLength(1);
+      await success(f.worker, successor);
+      expect(await f.coordinator.settleRenderWorkSet(f.attempt)).toMatchObject({ status: "completed", succeeded: 2 });
+    } finally {
+      clearTimeout(readinessTimer);
+      if (child.exitCode === null) child.kill("SIGKILL");
+      await child.exited;
+    }
+  }, 20_000);
 
   test("two simultaneous replicas claim distinct groups and duplicate claim has one winner", async () => {
     const f = await fixture(4);

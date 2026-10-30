@@ -1,3 +1,4 @@
+import { RenderFixtureLifecycle } from "./render-group-test-fixture";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, setDefaultTimeout, spyOn, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
@@ -8,7 +9,7 @@ import { IngestJobLifecycle } from "./ingest-job-lifecycle";
 import { queueFinishedGenerations } from "./operation-finished";
 import { encodeOperationId } from "./operation-status";
 import { ProcessingUsage } from "./processing-usage";
-import { WorkflowFailure, WorkflowRunLifecycle } from "./workflow-run-lifecycle";
+import { WorkflowFailure } from "./workflow-run-lifecycle";
 import { flushWorkspaceEvents, listWorkspaceEvents } from "./workspace-event";
 
 /** Finishing's two hooks on the generation lifecycle, through the workflow
@@ -63,7 +64,7 @@ dbDescribe("Finishing hooks on the generation lifecycle", () => {
   type Fixture = Awaited<ReturnType<typeof fixture>>;
   const settledUsage = (f: Fixture) => prisma.processingUsageReservation.create({ data: { projectId: f.project.id, workspaceId: f.workspace.id, intakeKind: "link",
     periodStart: new Date(Date.UTC(2026, 0, 1)), reservedSeconds: 60, settledSeconds: 60, state: "settled" } });
-  const workflow = () => new WorkflowRunLifecycle({ prisma, leaseOwner: randomUUID() });
+  const workflow = () => new RenderFixtureLifecycle({ prisma, leaseOwner: randomUUID() });
   const feed = async (workspaceId: string) => (await listWorkspaceEvents(prisma, { workspaceId }, { limit: 200 })).data;
   const finishingRow = (originRunId: string) => prisma.generationFinishing.findUniqueOrThrow({ where: { originRunId } });
   const freeze = (f: Fixture, originRunId: string, settings: Parameters<typeof freezeGenerationFinishing>[1]["settings"] = FINISHING) =>
@@ -74,7 +75,7 @@ dbDescribe("Finishing hooks on the generation lifecycle", () => {
       transcriptSlice: [], viralityScore: 50, hookStrengthScore: 50, emotionalIntensityScore: 50, pacingScore: 50, durationOptimalityScore: 50,
       tiktokScore: 50, youtubeScore: 50, instagramScore: 50, llmProvider: "test", llmModel: "test" } });
   }
-  const admitStt = (lifecycle: WorkflowRunLifecycle, projectId: string) => lifecycle.admitTranscript({ projectId, idempotencyKey: `stt:${randomUUID()}`,
+  const admitStt = (lifecycle: RenderFixtureLifecycle, projectId: string) => lifecycle.admitTranscript({ projectId, idempotencyKey: `stt:${randomUUID()}`,
     languageCode: "en", transcriptProvider: "assemblyai", transcriptProviderModel: "test", contentPack: PACK as never });
   const done = { storageKey: "projects/test/render.mp4", sizeBytes: 1024, durationSec: 10 };
 

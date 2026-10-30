@@ -1,3 +1,4 @@
+import { RenderFixtureLifecycle } from "./render-group-test-fixture";
 import { randomUUID } from "node:crypto";
 import { beforeAll, beforeEach, afterAll, describe, expect, test, setDefaultTimeout } from "bun:test";
 import { PrismaClient } from "@prisma/client";
@@ -8,7 +9,6 @@ import { prismaMcpTaskPersistence, cancelMcpTaskDomainWork } from "./mcp-task-ru
 import { createOperationStatusReader } from "./operation-status";
 import { workspaceService } from "./workspace.service";
 import { buildGenerationContentPack } from "@narriflow/validators";
-import { WorkflowRunLifecycle } from "./workflow-run-lifecycle";
 
 const url = process.env.INTEGRATION_TEST_DATABASE_URL;
 const schema = process.env.INTEGRATION_TEST_DATABASE_SCHEMA;
@@ -140,7 +140,7 @@ db("durable MCP Task lifecycle", () => {
     const work = await renderRun(child.id, "queued");
     const first = await clip(child.id); const second = await clip(child.id, 1);
     const completed = await prisma.clipRender.create({ data: { clipId: first.id, aspectRatio: "ratio_9_16", status: "completed", workflowRunId: work.id } });
-    const rendering = await prisma.clipRender.create({ data: { clipId: second.id, aspectRatio: "ratio_9_16", status: "pending", workflowRunId: work.id } });
+    const rendering = await prisma.clipRender.create({ data: { clipId: second.id, aspectRatio: "ratio_9_16", status: "pending" } });
     await handoff(child.id, work.id, [completed.id, rendering.id]);
     expect(await operationState(row)).toBe("working");
     await prisma.clipRender.update({ where: { id: rendering.id }, data: { status: "failed", errorCode: "render_failed" } });
@@ -195,7 +195,7 @@ db("durable MCP Task lifecycle", () => {
     await prisma.workflowRun.update({ where: { id: child.id }, data: { attemptId, attemptCount: 1, leaseOwner: "mcp-generation-history",
       leaseExpiresAt: new Date(Date.now() + 60_000) } });
     const generated = await clip(child.id);
-    const lifecycle = new WorkflowRunLifecycle({ prisma, leaseOwner: "mcp-generation-history", publishRedis: async () => {} });
+    const lifecycle = new RenderFixtureLifecycle({ prisma, leaseOwner: "mcp-generation-history", publishRedis: async () => {} });
     const attempt = { projectId, workflowRunId: child.id, stage: "moment_detection" as const, attemptId, attemptCount: 1 };
     const admitted = await lifecycle.admitAutoRenderWork(attempt, { idempotencyKey: `auto-render-${child.id}`,
       renders: [{ clipId: generated.id, aspectRatio: "ratio_9_16", resolution: "1080p" }] });
@@ -223,9 +223,9 @@ db("durable MCP Task lifecycle", () => {
   test("retryable child failure does not settle a Task before the later attempt succeeds", async () => {
     const input = await taskInput(); const row = await registry().register(input); const child = await detection(input, "completed");
     const work = await renderRun(child.id, "queued"); const generated = await clip(child.id);
-    const render = await prisma.clipRender.create({ data: { clipId: generated.id, aspectRatio: "ratio_9_16", status: "pending", workflowRunId: work.id } });
+    const render = await prisma.clipRender.create({ data: { clipId: generated.id, aspectRatio: "ratio_9_16", status: "pending" } });
     await handoff(child.id, work.id, [render.id]);
-    const lifecycle = new WorkflowRunLifecycle({ prisma, leaseOwner: "mcp-generation-retry", publishRedis: async () => {} });
+    const lifecycle = new RenderFixtureLifecycle({ prisma, leaseOwner: "mcp-generation-retry", publishRedis: async () => {} });
     const first = await lifecycle.claim("clip_rendering");
     if (!first) throw new Error("Expected queued render claim");
     await lifecycle.beginRenderWorkSet(first);
@@ -233,10 +233,11 @@ db("durable MCP Task lifecycle", () => {
     expect(await lifecycle.failClipRenderVariant(first, render.id, "temporary_provider_error", "retryable")).toBe(true);
     expect(await operationState(row)).toBe("working");
     expect((await registry().get(row.id, { ownerUserId: userId, callerId: input.callerId })).status).toBe("working");
-    expect((await lifecycle.settleRenderWorkSet(first)).status).toBe("requeued");
+    expect((await lifecycle.settleRenderWorkSet(first)).status).toBe("pending");
     expect(await operationState(row)).toBe("working");
     await prisma.workflowRun.update({ where: { id: work.id }, data: { nextAttemptAt: null } });
-    const second = await lifecycle.claim("clip_rendering");
+    await lifecycle.retryGroups(work.id);
+    const second = first;
     if (!second) throw new Error("Expected retry claim");
     await lifecycle.beginRenderWorkSet(second);
     expect(await lifecycle.markClipRenderVariantRendering(second, render.id)).toBe(true);
@@ -247,13 +248,14 @@ db("durable MCP Task lifecycle", () => {
     const input = await taskInput(); const row = await registry().register(input); const child = await detection(input, "completed");
     const work = await renderRun(child.id, "running");
     const generated = await clip(child.id);
-    const render = await prisma.clipRender.create({ data: { clipId: generated.id, aspectRatio: "ratio_9_16", status: "pending", workflowRunId: work.id } });
+    const render = await prisma.clipRender.create({ data: { clipId: generated.id, aspectRatio: "ratio_9_16", status: "pending" } });
     await handoff(child.id, work.id, [render.id]);
     const attemptId = randomUUID();
     await prisma.workflowRun.update({ where: { id: work.id }, data: { attemptId, attemptCount: 1, leaseOwner: "mcp-generation-failure",
       leaseExpiresAt: new Date(Date.now() + 60_000) } });
-    const lifecycle = new WorkflowRunLifecycle({ prisma, leaseOwner: "mcp-generation-failure", publishRedis: async () => {} });
+    const lifecycle = new RenderFixtureLifecycle({ prisma, leaseOwner: "mcp-generation-failure", publishRedis: async () => {} });
     const attempt = { projectId, workflowRunId: work.id, stage: "clip_rendering" as const, attemptId, attemptCount: 1 };
+    await lifecycle.beginRenderWorkSet(attempt);
     expect(await lifecycle.markClipRenderVariantRendering(attempt, render.id)).toBe(true);
     expect(await lifecycle.failClipRenderVariant(attempt, render.id, "render_failed", "permanent")).toBe(true);
     await prisma.clip.deleteMany({ where: { workflowRunId: child.id } });

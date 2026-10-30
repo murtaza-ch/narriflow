@@ -1,10 +1,10 @@
+import { RenderFixtureLifecycle } from "./render-group-test-fixture";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@prisma/client";
 import { Pool } from "pg";
 import { clipExportService } from "./clip-export.service";
-import { WorkflowRunLifecycle } from "./workflow-run-lifecycle";
 
 const databaseUrl = process.env.WORKFLOW_TEST_DATABASE_URL;
 const databaseSchema = process.env.WORKFLOW_TEST_DATABASE_SCHEMA;
@@ -101,7 +101,7 @@ dbDescribe("Manual Clip Export retry PostgreSQL invariants", () => {
       status: "pending", storageKey: null, sizeBytes: null, durationSec: null, startedAt: null, completedAt: null,
     });
     expect(await prisma.clipExportVariant.findUniqueOrThrow({ where: { id: f.success.id }, include: { render: true } })).toEqual(f.success);
-    const lifecycle = new WorkflowRunLifecycle({ prisma, leaseOwner: randomUUID() });
+    const lifecycle = new RenderFixtureLifecycle({ prisma, leaseOwner: randomUUID() });
     expect(await lifecycle.rescuePendingClipRenderingRun()).toBeNull();
     const attempt = await lifecycle.claim("clip_rendering");
     if (!attempt) throw new Error("Manual retry must be claimable");
@@ -126,7 +126,7 @@ dbDescribe("Manual Clip Export retry PostgreSQL invariants", () => {
     await clipExportService.syncAggregate(f.exported.id);
     expect(await prisma.clipExport.findUniqueOrThrow({ where: { id: f.exported.id } })).toMatchObject({ status: "failed" });
     expect(await f.retry()).toMatchObject({ status: "queued", progress: 0 });
-    const lifecycle = new WorkflowRunLifecycle({ prisma, leaseOwner: randomUUID() });
+    const lifecycle = new RenderFixtureLifecycle({ prisma, leaseOwner: randomUUID() });
     const attempt = await lifecycle.claim("clip_rendering");
     if (!attempt) throw new Error("All-failed manual retry missing");
     const workSet = await lifecycle.beginRenderWorkSet(attempt);
@@ -153,7 +153,7 @@ dbDescribe("Manual Clip Export retry PostgreSQL invariants", () => {
 
   test("a retry shares an active frozen run's normal drain follow-up without expanding its work set", async () => {
     const f = await fixture();
-    const lifecycle = new WorkflowRunLifecycle({ prisma, leaseOwner: randomUUID() });
+    const lifecycle = new RenderFixtureLifecycle({ prisma, leaseOwner: randomUUID() });
     await lifecycle.admit({ projectId: f.project.id, stage: "clip_rendering", idempotencyKey: "active-before-retry" });
     const attempt = await lifecycle.claim("clip_rendering");
     if (!attempt) throw new Error("Active run missing");

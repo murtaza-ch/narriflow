@@ -106,8 +106,8 @@ function createRuntimeAdapters(
 	groups: ClipRenderAttemptRuntimeOptions["groups"],
 	overrides?: ClipRenderAttemptRuntimeOptions["adapters"],
 ): ClipRenderAttemptAdapters {
-	const baseDiagnose =
-		overrides?.diagnose ?? productionRenderDiagnosticAdapter.diagnose;
+	const writeDiagnostic = overrides?.diagnose ?? productionRenderDiagnosticAdapter.diagnose;
+  const baseDiagnose: ClipRenderAttemptAdapters["diagnose"] = (event) => writeDiagnostic({ ...event, context: { ...event.context, groupId: group.groupId, groupToken: group.token, groupOwner: group.owner, workSetGeneration: group.workSetGeneration } });
 	const diagnose = withAttemptDiagnosticContext(baseDiagnose);
 	const workerProcess = {
 		execute:
@@ -279,11 +279,15 @@ function createRuntimeAdapters(
 				where: { id: clipRenderId },
 				select: {
 					aspectRatio: true,
+ createdAt: true,
+ startedAt: true,
+ completedAt: true,
 					clipId: true,
 					clip: { select: { projectId: true } },
 				},
 			});
 			if (!render) return;
+      if (outcome === "completed" && render.completedAt) diagnose({ level: "info", message: "clip_render_delivery_latency", context: { clipRenderId, clipId: render.clipId, projectId: render.clip.projectId, requestToReadyMs: render.completedAt.getTime() - render.createdAt.getTime(), queueAgeMs: render.startedAt ? render.startedAt.getTime() - render.createdAt.getTime() : null } });
 			const events: Array<() => Promise<unknown>> = [];
 			if (outcome === "completed") {
 				events.push(() =>
