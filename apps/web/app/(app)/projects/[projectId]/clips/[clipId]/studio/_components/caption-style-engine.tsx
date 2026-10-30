@@ -18,12 +18,15 @@ import { useBrandFont, brandFontStyle } from "@/app/(app)/brand-kit/_components/
  * intentionally stay literal — never theme tokens.
  */
 
-import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { motion, type Transition } from "framer-motion";
 import atlasImage from "@narriflow/caption-fonts/emoji/atlas.png";
 import {
   CAPTION_EMOJI_HEIGHT_EM,
+  CAPTION_EMOJI_MOTION,
   CAPTION_EMOJI_WIDTH_EM,
+  captionEmojiMotionTiming,
+  captionEmojiPose,
   captionEmojiSpriteCss,
   captionGraphemes,
   resolveCaptionEmoji,
@@ -192,6 +195,8 @@ export interface CaptionCueWord {
   emoji?: string | null;
   /** How long the word stays active, for the karaoke sweep and typewriter. */
   durationMs?: number;
+  /** Where the word's emoji window starts and ends on the edited timeline, as the export schedules it. */
+  emojiWindow?: { readonly startSec: number; readonly endSec: number };
 }
 
 export interface CaptionCueProps {
@@ -208,6 +213,10 @@ export interface CaptionCueProps {
   showEmojis?: boolean;
   /** From the consumer's useReducedMotion() — renders static final frames. */
   reducedMotion?: boolean;
+  /** The edited-timeline time being shown. With it a word's emoji is drawn at the
+   *  export's pose for that instant (so it follows play, pause and seek);
+   *  without it the emoji plays its own entrance. */
+  timeSec?: number;
   /** The words already went through the composition plan's cue formatting
    *  (punctuation, censor masks, case). Formatting them again would strip a
    *  mask's asterisks. */
@@ -256,6 +265,7 @@ export function CaptionCue({
   cueIndex = 0,
   showEmojis = false,
   reducedMotion = false,
+  timeSec,
   preformatted = false,
 }: CaptionCueProps) {
   const [naturalWidth, setNaturalWidth] = useState(0);
@@ -407,20 +417,29 @@ export function CaptionCue({
             const durationMs = item.durationMs ?? 400;
             if (text.length === 0) return null;
             return (
-              <span key={`${cueKey}-${index}`}>
+              <Fragment key={`${cueKey}-${index}`}>
                 {index > 0 && " "}
+                {/* The emoji sits beside the word's entrance, not inside it: the export
+                    overlays it on its own clock, so it must not ride the word's motion. */}
+                <span
+                  style={{
+                    position: "relative",
+                    display: "inline-block",
+                    whiteSpace: "pre",
+                    // The active word draws above its neighbours, as the
+                    // burn-in overlay does.
+                    zIndex: isActive ? 10 : undefined,
+                  }}
+                >
                 <motion.span
                   key={`${cueKey}-${index}-${isActive ? "on" : "off"}`}
                   {...(entrance ?? {})}
                   style={{
                     position: "relative",
-                    display: "inline-block",
+                    display: "block",
                     whiteSpace: "pre",
                     transformOrigin: "50% 50%",
                     opacity: entrance ? undefined : opacity,
-                    // The active word draws above its neighbours, as the
-                    // burn-in overlay does.
-                    zIndex: isActive ? 10 : undefined,
                   }}
                 >
                   {isActive && preset.highlightBoxColor && (
@@ -472,9 +491,17 @@ export function CaptionCue({
                   {isActive && spec.effect === "karaoke" && (
                     <KaraokeSweep text={text} color={preset.highlightColor} durationMs={durationMs} animated={animated} style={silhouetteStroke(stroke, preset.outlineColor)} />
                   )}
-                  {isActive && emoji && <CaptionEmoji emoji={emoji} />}
                 </motion.span>
-              </span>
+                {isActive && emoji && (
+                  <CaptionEmoji
+                    emoji={emoji}
+                    windowSec={item.emojiWindow ? item.emojiWindow.endSec - item.emojiWindow.startSec : durationMs / 1000}
+                    animated={animated}
+                    elapsedSec={timeSec !== undefined && item.emojiWindow ? timeSec - item.emojiWindow.startSec : undefined}
+                  />
+                )}
+                </span>
+              </Fragment>
             );
           })}
         </div>
@@ -487,12 +514,56 @@ export function CaptionCue({
  * The active word's emoji: the same Noto artwork the export composites from
  * the shared atlas, 0.8em above the word and centred on it. A sequence the
  * atlas lacks shows nothing here; the export draws a monochrome glyph for it
- * or fails the render with `caption_glyph_unavailable`.
+ * or skips it.
+ *
+ * It follows `captionEmojiPose`, the curve the export evaluates in FFmpeg, over
+ * the window the export schedules (`emojiWindow`: the word's segment, which
+ * runs to the next word's start). Given `elapsedSec` it draws that instant's
+ * pose, entrance and the 80 ms exit included, so play, pause and seek show what
+ * the export shows. Without a clock (preset thumbnails) it plays the entrance
+ * once. `animated` false shows the settled picture, like every other caption
+ * motion.
  */
-export function CaptionEmoji({ emoji }: { emoji: string }) {
+export function CaptionEmoji({
+  emoji,
+  windowSec = 0.4,
+  animated = false,
+  elapsedSec,
+}: {
+  emoji: string;
+  windowSec?: number;
+  animated?: boolean;
+  elapsedSec?: number;
+}) {
   const sprite = resolveCaptionEmoji(emoji);
   if (!sprite) return null;
   const url = typeof atlasImage === "string" ? atlasImage : atlasImage.src;
+  const picture: CSSProperties = {
+    display: "block",
+    width: "100%",
+    height: "100%",
+    transformOrigin: "50% 50%",
+    backgroundImage: `url(${url})`,
+    backgroundRepeat: "no-repeat",
+    ...captionEmojiSpriteCss(sprite),
+  };
+  let inner: ReactNode;
+  if (elapsedSec !== undefined) {
+    const pose = animated ? captionEmojiPose(Math.min(Math.max(elapsedSec, 0), windowSec), windowSec) : { scale: 1, alpha: 1 };
+    inner = <span style={{ ...picture, transform: `scale(${pose.scale})`, opacity: pose.alpha }} />;
+  } else {
+    const { enterSec } = captionEmojiMotionTiming(windowSec);
+    const steps = Math.max(2, Math.ceil(enterSec * CAPTION_EMOJI_MOTION.exportRate));
+    const poses = Array.from({ length: steps + 1 }, (_, step) => captionEmojiPose((enterSec * step) / steps, windowSec));
+    inner = (
+      <motion.span
+        initial={animated ? { scale: poses[0]!.scale, opacity: poses[0]!.alpha } : false}
+        animate={animated ? { scale: poses.map((pose) => pose.scale), opacity: poses.map((pose) => pose.alpha) } : undefined}
+        transition={{ duration: enterSec, ease: "linear", times: poses.map((_, step) => step / steps) }}
+        style={picture}
+      />
+    );
+  }
   return (
     <span
       aria-hidden
@@ -504,11 +575,11 @@ export function CaptionEmoji({ emoji }: { emoji: string }) {
         transform: "translateX(-50%)",
         width: `${CAPTION_EMOJI_WIDTH_EM}em`,
         height: `${CAPTION_EMOJI_HEIGHT_EM}em`,
-        backgroundImage: `url(${url})`,
-        backgroundRepeat: "no-repeat",
-        ...captionEmojiSpriteCss(sprite),
+        zIndex: 6,
       }}
-    />
+    >
+      {inner}
+    </span>
   );
 }
 

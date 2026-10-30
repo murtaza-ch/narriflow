@@ -14,6 +14,7 @@ import { BrandApiProvider, useBrandScope } from "../../_components/brand-api-pro
 import { BrandFontsProvider } from "../../_components/brand-fonts";
 import { TemplateForm } from "../../_components/template-form";
 import NewStyleLoading from "./loading";
+import { capabilityDeniedHref } from "@/lib/request-failure-notice";
 
 /** New caption style: the editor, or the plan boundary that stops it, from the Brand kit aggregate. */
 export function NewStyleScreen() {
@@ -37,7 +38,7 @@ function NewStyleContent() {
   if (data && decided.current === null) decided.current = data.plan.styleCreate === null;
 
   useEffect(() => {
-    if (forbidden) router.replace("/home?requestFailure=capability_denied");
+    if (forbidden) router.replace(capabilityDeniedHref("brand-kit"));
   }, [forbidden, router]);
 
   if (kitQuery.isError && !data) {

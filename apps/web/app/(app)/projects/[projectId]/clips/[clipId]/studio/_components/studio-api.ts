@@ -76,7 +76,7 @@ export type StudioBootstrapFailure =
  * Project or clip is the app's not-found page; anything else is an error.
  */
 export function studioBootstrapFailure(error: unknown, projectId: string): StudioBootstrapFailure {
-  const to = projectGateDestination(error, projectId);
+  const to = projectGateDestination(error, projectId, "studio");
   if (to) return { kind: "redirect", to };
   const body = apiFailureBody(error);
   if (apiFailureStatus(error) === 404 || (body.error && MISSING_CODES.has(body.error))) return { kind: "missing" };

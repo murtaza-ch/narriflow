@@ -29,7 +29,8 @@
         "crop",
         "cue",
         "layer"
-      ]
+      ],
+      "expectedChange": "emoji-motion (follow-up 2026-10-30): the active-word emoji overlay now pops in (scale 0.6 to 1.0 with a slight overshoot, fading in over 150 ms) and fades out over the last 80 ms of its word window, on the curve shared with Studio (captionEmojiPose in @narriflow/caption-fonts). The case's filter graph and frames differ from the earlier static overlay by design; plan, crop, cue and layer stay retained. The saturation probe therefore samples the middle of each emoji word's window instead of the cue midpoint, which falls on the fade between a cue's two words. No normal case burns an emoji, so every normal case stays bit-identical."
     },
     "missing-glyph": {
       "contract": [

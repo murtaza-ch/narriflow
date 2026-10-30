@@ -5,6 +5,7 @@ import {
 	deriveRenderStatus,
 	renderFailureHeadline,
 	renderFailureMessage,
+	renderFailureNeedsNewSource,
 	retryFailedRenders,
 } from "./render-status";
 
@@ -28,6 +29,12 @@ describe("render failure copy", () => {
 		expect(renderFailureMessage("ffmpeg_render_failed")).toBe("A clip failed to render. Try rendering it again.");
 		expect(renderFailureMessage("scratch_unlink_failed")).toBe("A clip failed to render. Try rendering it again.");
 		expect(renderFailureMessage("source_unavailable")).not.toContain("Something went wrong");
+		expect(renderFailureMessage("hdr_dolby_vision_unsupported")).toBe(
+			"This video uses a Dolby Vision format we can't convert yet. Export it from your camera or editor as standard HDR or SDR and upload again.",
+		);
+		expect(renderFailureNeedsNewSource("hdr_dolby_vision_unsupported")).toBe(true);
+		expect(renderFailureNeedsNewSource("ffmpeg_render_failed")).toBe(false);
+		expect(renderFailureNeedsNewSource(null)).toBe(false);
 		expect(renderFailureHeadline(1)).toBe("1 render failed");
 		expect(renderFailureHeadline(3)).toBe("3 renders failed");
 	});

@@ -18,6 +18,9 @@ function harness() {
 	const tx = {
 		workspaceFolder: {
 			create: async ({ data }: { data: { name: string; normalizedName: string } }) => {
+				if (folders.some((folder) => folder.normalizedName === data.normalizedName)) {
+					throw Object.assign(new Error("Unique constraint failed"), { code: "P2002" });
+				}
 				const folder = {
 					id: `folder-${folders.length + 1}`,
 					name: data.name,
@@ -131,5 +134,19 @@ describe("receipt-backed folder creation", () => {
 			h.commands.createFolder(scope, "   ", { clientIdempotencyKey: "key-1" }),
 		).rejects.toBeInstanceOf(WorkspaceLibraryError);
 		expect(h.receipts.size).toBe(0);
+	});
+
+	test("a taken name is a typed conflict that records nothing, while the original key still replays", async () => {
+		const h = harness();
+		const first = await h.commands.createFolder(scope, "Launch", { clientIdempotencyKey: "key-1" });
+		const clash = await h.commands
+			.createFolder(scope, " launch ", { clientIdempotencyKey: "key-2" })
+			.catch((error) => error);
+		expect(clash).toBeInstanceOf(WorkspaceLibraryError);
+		expect(clash).toMatchObject({ code: "workspace_folder_name_taken", kind: "conflict" });
+		expect(h.folders).toHaveLength(1);
+		expect(h.receipts.size).toBe(1);
+		const replay = await h.commands.createFolder(scope, "Launch", { clientIdempotencyKey: "key-1" });
+		expect(replay).toEqual({ folder: first.folder, replayed: true });
 	});
 });

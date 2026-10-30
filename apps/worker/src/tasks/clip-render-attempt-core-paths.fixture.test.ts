@@ -262,6 +262,7 @@ export function createCoreRenderPathTracer(input: {
 	const uploadedVariantIds: string[] = [];
 	const persistedVariantIds: string[] = [];
   const persistedFacts = new Map<string, { sizeBytes: number; durationSec: number }>();
+  const persistedCaptionDiagnostics = new Map<string, unknown>();
 	const mutationVariantIds: string[] = [];
 	const diagnostics: Array<{
 		message: string;
@@ -731,6 +732,7 @@ export function createCoreRenderPathTracer(input: {
 				},
 				completeClipRenderVariant: async (_attempt, variantId, result) => {
           persistedFacts.set(variantId, { sizeBytes: result.sizeBytes, durationSec: result.durationSec });
+          persistedCaptionDiagnostics.set(variantId, result.captionDiagnostics ?? null);
 					mutationVariantIds.push(variantId);
 					if (input.rejectPersistenceForVariantIds?.includes(variantId)) {
 						throw new Error("Injected guarded persistence rejection");
@@ -845,6 +847,7 @@ export function createCoreRenderPathTracer(input: {
 		mutationVariantIds,
 		persistedVariantIds,
     persistedFacts,
+    persistedCaptionDiagnostics,
 		persistedAutoLayouts,
 		persistedSplitLayouts,
 		persistedScreenLayouts,

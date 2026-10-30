@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { CAPTION_FONT_FACES } from "@narriflow/validators";
+import { CAPTION_FONT_FACES, clipRenderCaptionDiagnosticsSchema } from "@narriflow/validators";
 import {
   CAPTION_RENDER_DIAGNOSTIC_PATTERN,
   CaptionGlyphPlanner,
@@ -38,6 +38,17 @@ describe("caption glyph planner", () => {
     expect([...report.notices.values()]).toEqual([expect.objectContaining({ code: "glyph_fallback_used", font: "Noto Emoji Regular", sequenceSplit: true })]);
   });
 
+  // Flags are not in the 2D emoji atlas and never come from the plan (CAPTION_EMOJI_MAP has none), so a literal
+  // flag in transcript text is the only way to meet one: it stays one cluster and draws as the monochrome
+  // regional-indicator letters, reported as a fallback and never omitted.
+  test("a literal flag cluster draws monochrome through the chain and is reported", () => {
+    const { planner: chain, report } = planner();
+    const [flag] = chain.plan("🇵🇰");
+    expect(flag!.parts.map((part) => [part.text, part.face.assName])).toEqual([["🇵🇰", "Noto Emoji Regular"]]);
+    expect([...report.notices.values()]).toEqual([expect.objectContaining({ code: "glyph_fallback_used", cluster: "🇵🇰", sequenceSplit: true })]);
+    expect([...report.omitted.values()]).toEqual([]);
+  });
+
   test("a code point outside every pinned face is left out, and only that code point", () => {
     const { planner: chain, report } = planner();
     const clusters = chain.plan("a\u{13000}b");
@@ -45,12 +56,23 @@ describe("caption glyph planner", () => {
     expect([...report.omitted.values()]).toEqual([{ codePoint: "U+13000", cueIndex: 3 }]);
   });
 
+  test("Bengali, Tamil and Telugu fall outside the pinned chain and every label survives the persisted schema", () => {
+    // None of the vendored faces draws these scripts (only Devanagari, Thai, Arabic, Hebrew, CJK, Latin, Greek, Cyrillic),
+    // so the plan must leave them out and say so with labels the diagnostics schema accepts.
+    const { planner: chain, report } = planner();
+    chain.plan("\u0985 \u0B85 \u0C05 \u{13000}");
+    const labels = [...report.omitted.values()].map((glyph) => glyph.codePoint);
+    expect(labels).toEqual(["U+0985", "U+0B85", "U+0C05", "U+13000"]);
+    const parsed = clipRenderCaptionDiagnosticsSchema.safeParse({ omittedCodePoints: labels, skippedEmoji: [] });
+    expect(parsed.success).toBe(true);
+  });
+
   test("forced omissions drop a code point that libass reported, keeping the rest of its cluster", () => {
     const report = { notices: new Map<string, CaptionGlyphNotice>(), omitted: new Map<string, OmittedGlyph>() };
     const face = CAPTION_FONT_FACES.find((candidate) => candidate.name === "Montserrat")!;
     const chain = new CaptionGlyphPlanner(catalogCaptionFace(face, "requested"), null, report, 0, new Set([0x645]));
     expect(chain.plan("مرحبا").map((cluster) => cluster.parts.map((part) => part.text).join("")).join("")).toBe("رحبا");
-    expect([...report.omitted.values()]).toEqual([{ codePoint: "U+645", cueIndex: 0 }]);
+    expect([...report.omitted.values()]).toEqual([{ codePoint: "U+0645", cueIndex: 0 }]);
   });
 });
 
@@ -73,6 +95,8 @@ describe("render diagnostics on a zero exit", () => {
     expect(failure?.code).toBe("caption_glyph_unavailable");
     expect(failure?.disposition).toBe("permanent");
     expect(failure?.glyphs[0]?.codePoints).toEqual(["U+13000"]);
+    const short = "[Parsed_ass_4 @ 0x1] fontselect: failed to find any fallback with glyph 0x985 for font: (Montserrat Black, 400, 0)";
+    expect(captionRenderDiagnosticsFailure(classifyCaptionRenderDiagnostics([short]))?.glyphs[0]?.codePoints).toEqual(["U+0985"]);
     expect(captionRenderDiagnosticsFailure(classifyCaptionRenderDiagnostics([host, drawtext]))).toBeNull();
   });
 });

@@ -14,10 +14,12 @@ import {
   buildTranscriptSliceForWindow,
   captionedVideoFramingEdits,
   captionPresetSchema,
+  type ClipRenderCaptionDiagnostics,
   clipAspectRatioDbSchema,
   clipAspectRatioFromDb,
   clipAspectRatioOptions,
   clipAspectRatioToDb,
+  clipRenderCaptionDiagnosticsSchema,
   clipRenderResolutionSchema,
   clipTitleSuggestionsLlmResponseSchema,
 	contentPackSchema,
@@ -281,7 +283,7 @@ async function resolveRequestedResolution(
   return hasFeature(tier, "export.1080p") ? "1080p" : "720p";
 }
 
-function toClipRenderVariantSnapshot(render: ClipRender): ClipRenderVariant {
+export function toClipRenderVariantSnapshot(render: ClipRender): ClipRenderVariant {
   const aspectRatioDb = clipAspectRatioDbSchema.parse(render.aspectRatio);
   const aspectRatio = clipAspectRatioFromDb[aspectRatioDb];
   const resolution = clipRenderResolutionSchema.parse(render.resolution);
@@ -295,7 +297,15 @@ function toClipRenderVariantSnapshot(render: ClipRender): ClipRenderVariant {
     completedAt: render.completedAt?.toISOString() ?? null,
     hasAsset: render.status === "completed" && Boolean(render.storageKey),
     resolution,
+    captionDiagnostics: parseCaptionDiagnostics(render.captionDiagnostics),
   };
+}
+
+/** Tolerant read: a malformed column degrades to "nothing to show", never a failed clip. */
+function parseCaptionDiagnostics(value: Prisma.JsonValue | undefined): ClipRenderCaptionDiagnostics | null {
+  const parsed = clipRenderCaptionDiagnosticsSchema.safeParse(value);
+  if (!parsed.success) return null;
+  return parsed.data.omittedCodePoints.length + parsed.data.skippedEmoji.length > 0 ? parsed.data : null;
 }
 
 export function motionRenderAnalyticsMetadata(
@@ -439,6 +449,7 @@ function getClipRenderResetData(
     durationSec: null,
     errorCode: null,
     failureDisposition: null,
+    captionDiagnostics: Prisma.DbNull,
     workflowAttemptId: null,
     workflowRun: { disconnect: true },
     startedAt: null,

@@ -45,7 +45,10 @@ export const USER_ERROR_MESSAGES: Record<string, string> = {
 	workspace_user_not_found: "Your account is no longer available.",
 	workspace_limit_reached: "This account has reached the Workspace limit.",
 	workspace_checkout_state_invalid:
-		"This Workspace is not awaiting Business checkout.",
+		"This Workspace must be kept. Open billing to manage its checkout.",
+	workspace_no_longer_exists:
+		"This Workspace no longer exists. Start a new workspace checkout.",
+	workspace_folder_name_taken: "A folder with this name already exists.",
 	upload_session_idempotency_conflict:
 		"This upload was already started with different settings. Start a new upload.",
 	upload_session_not_found:
@@ -133,6 +136,8 @@ export const USER_ERROR_MESSAGES: Record<string, string> = {
 	clip_render_variant_failed:
 		"A clip failed to render. Try rendering it again.",
 	ffmpeg_render_failed: "A clip failed to render. Try rendering it again.",
+	hdr_dolby_vision_unsupported:
+		"This video uses a Dolby Vision format we can't convert yet. Export it from your camera or editor as standard HDR or SDR and upload again.",
 	auto_render_queue_failed:
 		"We couldn't queue your clips for rendering. Please try again.",
 	dubbing_failed: "Voiceover dubbing didn't complete. Please try again.",

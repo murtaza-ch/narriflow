@@ -75,6 +75,7 @@ function ApiSettingsContent({ scope }: { scope: WorkspaceScope }) {
         title={TITLE}
         description={DESCRIPTION}
         what="Developer access"
+        from="api-settings"
         onRetry={() => {
           void bootstrap.refetch();
           void settings.refetch();

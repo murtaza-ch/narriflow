@@ -191,7 +191,11 @@ dbDescribe("Render Group PostgreSQL invariants", () => {
       failureDisposition: null,
     });
   }
-  async function success(worker: RenderGroupLifecycle, attempt: ClaimedRenderGroupAttempt) {
+  async function success(
+    worker: RenderGroupLifecycle,
+    attempt: ClaimedRenderGroupAttempt,
+    captionDiagnostics?: { omittedCodePoints: string[]; skippedEmoji: string[] },
+  ) {
     await start(worker, attempt);
     for (const id of attempt.memberIds) {
       expect(await worker.markClipRenderVariantRendering(attempt, id)).toBe(true);
@@ -202,6 +206,7 @@ dbDescribe("Render Group PostgreSQL invariants", () => {
           storageKey: `render/${attempt.token}/${id}`,
           sizeBytes: 100,
           durationSec: 10,
+          captionDiagnostics,
         }),
       ).toBe(true);
     }
@@ -240,6 +245,20 @@ dbDescribe("Render Group PostgreSQL invariants", () => {
     expect("markClipRenderVariantRendering" in f.coordinator).toBe(false);
     expect("completeClipRenderVariant" in f.coordinator).toBe(false);
     expect("failClipRenderVariant" in f.coordinator).toBe(false);
+  });
+
+  test("a committed render keeps the caption characters it left out, and nothing when none", async () => {
+    const f = await fixture(2, ["ratio_9_16", "ratio_1_1"]);
+    await f.coordinator.admitRenderGroups(f.attempt, f.admissions);
+    const diagnostics = { omittedCodePoints: ["U+2605"], skippedEmoji: [] as string[] };
+    const withOmission = (await f.worker.claim())!;
+    await success(f.worker, withOmission, diagnostics);
+    const clean = (await f.worker.claim())!;
+    await success(f.worker, clean);
+    const rows = await prisma.clipRender.findMany({ where: { id: { in: [...withOmission.memberIds, ...clean.memberIds] } } });
+    const byId = new Map(rows.map((row) => [row.id, row.captionDiagnostics]));
+    for (const id of withOmission.memberIds) expect(byId.get(id)).toEqual(diagnostics);
+    for (const id of clean.memberIds) expect(byId.get(id)).toBeNull();
   });
 
   test("generic parent completion cannot bypass live group settlement", async () => {

@@ -5,6 +5,7 @@
     "paths": {
       "@/*": ["./*"],
       "@narriflow/caption-fonts/emoji": ["../../packages/caption-fonts/src/emoji.ts"],
+      "@narriflow/caption-fonts/glyph-coverage": ["../../packages/caption-fonts/src/glyph-coverage.ts"],
       "@narriflow/caption-fonts/emoji/atlas.png": ["../../packages/caption-fonts/emoji/atlas.png"],
       "@narriflow/api-client": ["../../packages/api-client/src/index.ts"],
       "@narriflow/api-client/*": ["../../packages/api-client/src/*"],

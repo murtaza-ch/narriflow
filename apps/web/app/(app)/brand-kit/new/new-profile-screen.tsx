@@ -13,6 +13,7 @@ import { BrandLoadFailure, useBrandApi } from "../_components/brand-api";
 import { BrandApiProvider, useBrandScope } from "../_components/brand-api-provider";
 import { BrandProfileCreateForm } from "../_components/brand-profile-create-form";
 import NewBrandProfileLoading from "./loading";
+import { capabilityDeniedHref } from "@/lib/request-failure-notice";
 
 /** Build a Brand Profile: the form, or the plan boundary that stops it, from the Brand kit aggregate. */
 export function NewBrandProfileScreen() {
@@ -36,7 +37,7 @@ function NewBrandProfileContent() {
   if (data && decided.current === null) decided.current = (data.plan.profiles ?? data.plan.profileCount) === null;
 
   useEffect(() => {
-    if (forbidden) router.replace("/home?requestFailure=capability_denied");
+    if (forbidden) router.replace(capabilityDeniedHref("brand-kit"));
   }, [forbidden, router]);
 
   if (kitQuery.isError && !data) {

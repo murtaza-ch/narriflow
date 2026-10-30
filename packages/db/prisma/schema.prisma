@@ -1701,6 +1701,10 @@ model ClipRender {
   /// Resolution this render was produced at ("720p" | "1080p"), validated by
   /// clipRenderResolutionSchema.
   resolution         String                        @default("1080p")
+  /// Caption characters this render could not draw ({ omittedCodePoints,
+  /// skippedEmoji }, clipRenderCaptionDiagnosticsSchema). Written when the
+  /// worker commits a successful render; null when nothing was left out.
+  captionDiagnostics Json?
 
   // Export-bound rows are immutable render jobs. They carry a frozen clip
   // snapshot and survive later editor saves; ordinary rows keep acting as the

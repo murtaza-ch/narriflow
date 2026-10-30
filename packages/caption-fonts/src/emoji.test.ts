@@ -5,7 +5,11 @@ import { CAPTION_EMOJI_MAP } from "@narriflow/validators";
 import {
   CAPTION_EMOJI_ATLAS,
   CAPTION_EMOJI_HEIGHT_EM,
+  CAPTION_EMOJI_MOTION,
   captionEmojiKey,
+  captionEmojiMotionTiming,
+  captionEmojiPose,
+  captionEmojiScaleExpression,
   captionEmojiSpriteCss,
   captionGraphemes,
   isCaptionEmojiCluster,
@@ -33,6 +37,15 @@ describe("shared emoji atlas", () => {
       expect(sprite).not.toBeNull();
       expect(resolveCaptionEmoji(emoji.replace(/️/g, ""))).toEqual(sprite);
       expect(resolveCaptionEmoji(`${emoji.replace(/️/g, "")}️`)).toEqual(sprite);
+    }
+  });
+
+  // Noto's 2D PNG set has no flags (the font builds them from region-flags), so flags are not vendored.
+  // That is safe only while no plan emoji is a flag; this fails the day the map gains one.
+  test("the keyword map holds no flag, so no plan emoji needs flag artwork", () => {
+    for (const emoji of Object.values(CAPTION_EMOJI_MAP)) {
+      expect(emoji).not.toMatch(/\p{Regional_Indicator}/u);
+      expect(emoji).not.toContain("\u{1F3F4}");
     }
   });
 
@@ -74,6 +87,42 @@ describe("shared emoji atlas", () => {
       expect(cell.column).toBeLessThan(CAPTION_EMOJI_ATLAS.columns);
       expect(cell.row).toBeLessThan(CAPTION_EMOJI_ATLAS.rows);
       expect(key).toMatch(/^[0-9a-f]+(_[0-9a-f]+)*$/);
+    }
+  });
+});
+
+describe("emoji motion", () => {
+  test("pops in from 0.6 with a slight overshoot, settles at 1 and fades out at the end", () => {
+    expect(captionEmojiPose(0, 0.6).scale).toBeCloseTo(CAPTION_EMOJI_MOTION.fromScale, 9);
+    expect(captionEmojiPose(0, 0.6).alpha).toBe(0);
+    const peak = Math.max(...Array.from({ length: 151 }, (_, i) => captionEmojiPose(i / 1000, 0.6).scale));
+    expect(peak).toBeGreaterThan(1.02);
+    expect(peak).toBeLessThan(1.06);
+    expect(captionEmojiPose(0.15, 0.6).scale).toBeCloseTo(1, 9);
+    expect(captionEmojiPose(0.3, 0.6)).toEqual({ scale: 1, alpha: 1 });
+    expect(captionEmojiPose(0.56, 0.6).alpha).toBeCloseTo(0.5, 6);
+    expect(captionEmojiPose(0.6, 0.6).alpha).toBe(0);
+  });
+
+  test("short windows shrink both ramps so they never overlap", () => {
+    for (const windowSec of [0.05, 0.12, 0.3, 0.6, 2]) {
+      const { enterSec, exitSec } = captionEmojiMotionTiming(windowSec);
+      expect(enterSec + exitSec).toBeLessThanOrEqual(windowSec * 0.75 + 1e-9);
+      expect(enterSec).toBeLessThanOrEqual(CAPTION_EMOJI_MOTION.enterSec);
+      expect(exitSec).toBeLessThanOrEqual(CAPTION_EMOJI_MOTION.exitSec);
+    }
+  });
+
+  // The export evaluates this string inside FFmpeg; it must be the same curve Studio plays.
+  test("the FFmpeg scale expression is the pose curve", () => {
+    for (const windowSec of [0.12, 0.6, 1.4]) {
+      const startSec = 3.25;
+      const expression = captionEmojiScaleExpression({ time: "t", startSec, windowSec });
+      const evaluate = new Function("t", "clip", `return ${expression};`) as (t: number, clip: (x: number, lo: number, hi: number) => number) => number;
+      const clip = (x: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, x));
+      for (let elapsed = 0; elapsed <= windowSec; elapsed += windowSec / 40) {
+        expect(evaluate(startSec + elapsed, clip)).toBeCloseTo(captionEmojiPose(elapsed, windowSec).scale, 4);
+      }
     }
   });
 });

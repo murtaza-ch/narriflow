@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import Link from "next/link";
 import { Flex, Grid, Input, Menu, Portal, Stack, Text, Tooltip } from "@chakra-ui/react";
 import { Folder, FolderInput, Info, MoreHorizontal, Pencil, Trash2 } from "lucide-react";
@@ -11,6 +11,7 @@ import { folderCommands, libraryMutationOptions } from "@narriflow/api-client/li
 import { invalidateAfterProjectMoved, projectCommands, projectMutationOptions } from "@narriflow/api-client/projects";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { failureMessage, invalidateAfterFolderChanged, type LibraryApi, usePrefetchExplorer } from "../_lib/api";
+import { FOLDER_NAME_TAKEN_MESSAGE, isFolderNameTaken } from "../_lib/folder-names";
 
 /** The drag payload a project card or row carries: its id. */
 export const PROJECT_DRAG_TYPE = "application/x-narriflow-project";
@@ -29,6 +30,9 @@ export function FoldersPanel({
   const [error, setError] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState("");
+  // The rename field's own problem (a taken name), shown under the field rather than below the grid.
+  const [renameError, setRenameError] = useState<string | null>(null);
+  const renameInput = useRef<HTMLInputElement>(null);
   const [dropTargetId, setDropTargetId] = useState<string | null>(null);
   const { confirm, dialog } = useConfirm();
 
@@ -40,9 +44,19 @@ export function FoldersPanel({
       setEditingId(null);
       setEditingName("");
       setError(null);
+      setRenameError(null);
       void invalidateAfterFolderChanged(queryClient, api.scope);
     },
-    onError: (failure) => setError(failureMessage(failure, "The folder could not be renamed.")),
+    onError: (failure) => {
+      const message = failureMessage(failure, "The folder could not be renamed.");
+      if (message === FOLDER_NAME_TAKEN_MESSAGE) {
+        // Stay in the field so the name can be fixed right away.
+        setRenameError(message);
+        requestAnimationFrame(() => renameInput.current?.focus());
+      } else {
+        setError(message);
+      }
+    },
   });
   const remove = useMutation({
     ...libraryMutationOptions,
@@ -72,6 +86,11 @@ export function FoldersPanel({
       return;
     }
     if (rename.isPending) return;
+    if (isFolderNameTaken(editingName, folders, folderId)) {
+      setRenameError(FOLDER_NAME_TAKEN_MESSAGE);
+      renameInput.current?.focus();
+      return;
+    }
     rename.mutate({ folderId, name: editingName });
   }
 
@@ -96,6 +115,8 @@ export function FoldersPanel({
   }
 
   if (folders.length === 0) return null;
+  const liveRenameError =
+    editingId && isFolderNameTaken(editingName, folders, editingId) ? FOLDER_NAME_TAKEN_MESSAGE : renameError;
 
   return (
     <Stack gap="3">
@@ -170,30 +191,43 @@ export function FoldersPanel({
             onDrop={(event) => dropProject(event, folder.id)}
           >
             {editingId === folder.id ? (
-              <Input
-                autoFocus
-                size="sm"
-                mx="3"
-                value={editingName}
-                maxLength={80}
-                onChange={(event) => setEditingName(event.currentTarget.value)}
-                onBlur={() => {
-                  if (editingName.trim()) saveRename(folder.id);
-                }}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") {
-                    event.preventDefault();
-                    saveRename(folder.id);
-                  }
-                  if (event.key === "Escape") {
-                    setEditingId(null);
-                    setEditingName("");
-                    setError(null);
-                  }
-                }}
-                disabled={pending}
-                aria-label={`Rename ${folder.name}`}
-              />
+              <Stack gap="1" flex="1" minW="0" mx="3">
+                <Input
+                  ref={renameInput}
+                  autoFocus
+                  size="sm"
+                  value={editingName}
+                  maxLength={80}
+                  onChange={(event) => {
+                    setEditingName(event.currentTarget.value);
+                    setRenameError(null);
+                  }}
+                  onBlur={() => {
+                    if (editingName.trim() && !renameError) saveRename(folder.id);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      saveRename(folder.id);
+                    }
+                    if (event.key === "Escape") {
+                      setEditingId(null);
+                      setEditingName("");
+                      setError(null);
+                      setRenameError(null);
+                    }
+                  }}
+                  readOnly={pending}
+                  aria-label={`Rename ${folder.name}`}
+                  aria-invalid={liveRenameError ? true : undefined}
+                  aria-describedby={liveRenameError ? `rename-hint-${folder.id}` : undefined}
+                />
+                {liveRenameError ? (
+                  <Text id={`rename-hint-${folder.id}`} role="alert" fontSize="12px" color="danger.fg">
+                    {liveRenameError}
+                  </Text>
+                ) : null}
+              </Stack>
             ) : (
               <Flex
                 asChild
@@ -255,6 +289,7 @@ export function FoldersPanel({
                         onClick={() => {
                           setEditingId(folder.id);
                           setEditingName(folder.name);
+                          setRenameError(null);
                         }}
                       >
                         <Pencil size={13} />

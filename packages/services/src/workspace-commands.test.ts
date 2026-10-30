@@ -50,7 +50,9 @@ function receiptHarness(options: { loseCommitResponse?: boolean } = {}) {
 function fixture(options: { loseCommitResponse?: boolean } = {}) {
   const harness = receiptHarness(options);
   const calls = { issued: 0, created: 0, entitlement: 0 };
+  let removed = false;
   const workspaces = {
+    findActor: async () => removed ? null : { role: "owner" },
     requireActor: async (userId: string, workspaceId: string) => {
       calls.entitlement += 1;
       return {
@@ -76,7 +78,7 @@ function fixture(options: { loseCommitResponse?: boolean } = {}) {
     receipts: () => harness.executor,
     workspaces,
   } as unknown as WorkspaceCommandDependencies);
-  return { commands, calls, receipts: harness.receipts };
+  return { commands, calls, receipts: harness.receipts, removeWorkspace: () => { removed = true; } };
 }
 
 const actor = { actorUserId: "owner", workspaceId: "workspace-a" };
@@ -163,7 +165,15 @@ describe("business workspace creation command", () => {
     expect(first.name).toBe("Acme Studio");
   });
 
-  test("a new key creates a second Workspace", async () => {
+  test("a receipt replay after deletion returns a typed missing-workspace failure without its id", async () => {
+    const { commands, removeWorkspace, calls } = fixture();
+    await commands.createBusinessWorkspace("owner", { name: "One" }, mutation("w1"));
+    removeWorkspace();
+    await expect(commands.createBusinessWorkspace("owner", { name: "One" }, mutation("w1"))).rejects.toMatchObject({ code: "workspace_no_longer_exists", kind: "missing" });
+    expect(calls.created).toBe(1);
+  });
+
+  test("a fresh key invokes creation again so pending-workspace reuse can apply", async () => {
     const { commands, calls } = fixture();
     await commands.createBusinessWorkspace("owner", { name: "One" }, mutation("w1"));
     await commands.createBusinessWorkspace("owner", { name: "One" }, mutation("w2"));

@@ -120,6 +120,39 @@ describe("folder creation", () => {
   });
 });
 
+describe("a taken folder name", () => {
+  const taken = () =>
+    new ExpectedDomainFailureError({
+      code: "workspace_folder_name_taken",
+      kind: "conflict",
+      message: "A folder with this name already exists.",
+    });
+
+  test("create and rename answer 409 workspace_folder_name_taken", async () => {
+    const app = libraryApp({
+      projectsCommands: { createFolder: mock(async () => Promise.reject(taken())) },
+      workspaceLibraryService: { renameFolder: mock(async () => Promise.reject(taken())) },
+    });
+    const create = await app.request("/api/library/folders", {
+      method: "POST",
+      headers: { ...json, "idempotency-key": "k-1" },
+      body: JSON.stringify({ name: "Launch" }),
+    });
+    expect(create.status).toBe(409);
+    expect(await create.json()).toMatchObject({
+      error: "workspace_folder_name_taken",
+      message: "A folder with this name already exists.",
+    });
+    const rename = await app.request(`/api/library/folders/${FOLDER_ID}`, {
+      method: "PATCH",
+      headers: json,
+      body: JSON.stringify({ name: "Launch" }),
+    });
+    expect(rename.status).toBe(409);
+    expect(await rename.json()).toMatchObject({ error: "workspace_folder_name_taken" });
+  });
+});
+
 describe("folder reads and edits", () => {
   test("lists folders with ISO dates and Project counts", async () => {
     const app = libraryApp({

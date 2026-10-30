@@ -9,7 +9,7 @@ import {
   clipAspectRatioOptions,
 } from "@narriflow/validators";
 import { CaptionCue } from "./caption-style-engine";
-import type { CompositionCaptionVisualLayer } from "@narriflow/composition-plan";
+import { captionWordSegmentEnd, type CompositionCaptionVisualLayer } from "@narriflow/composition-plan";
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -194,6 +194,8 @@ export function InteractiveCaptionOverlay({
       word: word.text,
       emoji: word.emoji,
       durationMs: Math.max(50, Math.round((word.endSec - word.startSec) * 1000)),
+      // The export's own window for this word's emoji: through the next word's start.
+      emojiWindow: { startSec: word.startSec, endSec: captionWordSegmentEnd(layer.words, index) },
       isActive:
         currentTime >= word.startSec &&
         (currentTime < word.endSec ||
@@ -391,6 +393,7 @@ export function InteractiveCaptionOverlay({
             cueIndex={layer.cueIndex}
             showEmojis={captionPreset.emojis === true}
             reducedMotion={reducedMotion}
+            timeSec={currentTime}
             preformatted
           />
         </motion.div>

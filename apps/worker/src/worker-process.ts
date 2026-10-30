@@ -112,6 +112,23 @@ export interface WorkerMediaInspection {
   /** Always present on real inspections, including files without a duration. */
   facts?: MediaFacts;
   samples?: WorkerMediaSamples;
+  /** Timestamp discontinuities of the first audio stream inside one clip's
+   *  window (see `withAudioTimestampGaps`). Absent unless a gap was found, so
+   *  an inspection of a continuous track is unchanged. */
+  audioGaps?: AudioTimestampGaps;
+}
+
+/** A hole in the audio stream's own timestamps: packets resume `missingSec`
+ *  later than the previous packet's end, at `atSec` into the clip window. */
+export interface AudioTimestampGap {
+  atSec: number;
+  missingSec: number;
+}
+
+export interface AudioTimestampGaps {
+  /** One audio packet's length, the unit a gap is measured against. */
+  frameSec: number;
+  gaps: readonly AudioTimestampGap[];
 }
 
 /** The constant rate an affected variable-frame-rate source is normalized to,
@@ -238,6 +255,107 @@ export interface WorkerPersistentProcessRequest {
 export interface WorkerPersistentProcess {
   exited: Promise<{ exitCode: number | null; signalCode: NodeJS.Signals | null }>;
   stop(): void;
+}
+
+/** Longest window the audio packet scan reads, and the most gaps it reports. */
+const AUDIO_GAP_SCAN_MAX_WINDOW_SEC = 900;
+const AUDIO_GAP_SCAN_MAX_GAPS = 64;
+const AUDIO_GAP_SCAN_MAX_STDOUT_BYTES = 2 * 1024 * 1024;
+const AUDIO_GAP_SCAN_MIN_PACKETS = 4;
+
+/**
+ * Finds holes in an audio stream's packet timestamps (seconds, any order). A
+ * packet's own duration cannot tell: MP4 folds a hole into the previous
+ * sample's duration. So one frame is the median step between packets, and a
+ * hole is any step that leaves more than one whole frame unaccounted for.
+ * Fewer than a handful of packets say nothing.
+ */
+export function findAudioTimestampGaps(
+  packetTimesSec: readonly number[],
+): { frameSec: number; gaps: Array<{ atSec: number; missingSec: number }> } | null {
+  const times = packetTimesSec.filter(Number.isFinite).sort((a, b) => a - b);
+  if (times.length < AUDIO_GAP_SCAN_MIN_PACKETS) return null;
+  const steps = times.slice(1).map((time, index) => time - times[index]!);
+  const frameSec = [...steps].sort((a, b) => a - b)[Math.floor(steps.length / 2)]!;
+  if (!(frameSec > 0)) return null;
+  const gaps: Array<{ atSec: number; missingSec: number }> = [];
+  steps.forEach((step, index) => {
+    const missingSec = step - frameSec;
+    if (missingSec > frameSec) gaps.push({ atSec: times[index + 1]!, missingSec });
+  });
+  return { frameSec, gaps };
+}
+
+/**
+ * Scans the first audio stream's packets over one clip window (a bounded
+ * `-read_intervals` read: no decode) and reports the holes in its timestamps.
+ * Header facts cannot show these, and a stream with holes plays early after
+ * every `atrim` + `asetpts=PTS-STARTPTS` stage unless it is realigned.
+ *
+ * Returns null when there is nothing to report or nothing could be read: a
+ * failed scan never fails the render, the source simply keeps the clock its
+ * headers prove.
+ */
+export async function inspectAudioTimestampGaps(
+  processModule: Pick<WorkerProcessModule, "execute">,
+  request: {
+    sourcePath: string;
+    inspection: Pick<WorkerMediaInspection, "hasAudio" | "facts">;
+    /** The clip window on the source clock, as the render seeks it. */
+    startSec: number;
+    endSec: number;
+    signal: AbortSignal;
+    deadlineMs: number;
+    diagnose?(event: WorkerProcessDiagnostic): void;
+  },
+): Promise<AudioTimestampGaps | null> {
+  const audio = request.inspection.facts?.audios[0];
+  const windowSec = request.endSec - request.startSec;
+  if (!request.inspection.hasAudio || !audio || !(windowSec > 0) || windowSec > AUDIO_GAP_SCAN_MAX_WINDOW_SEC) return null;
+  const facts = request.inspection.facts!;
+  const origin = facts.format.startTimeSec ?? audio.startTimeSec ?? 0;
+  const from = Math.max(0, origin + request.startSec);
+  const to = origin + request.endSec;
+  try {
+    const result = await processModule.execute({
+      command: "ffprobe",
+      args: ["-v", "error", "-print_format", "json", "-select_streams", Number.isInteger(audio.index) ? String(audio.index) : "a:0",
+        "-read_intervals", `${from.toFixed(3)}%${to.toFixed(3)}`, "-show_packets", "-show_entries", "packet=pts_time",
+        ...(/^https?:\/\//i.test(request.sourcePath) ? ["-rw_timeout", String(HTTP_SOURCE_RW_TIMEOUT_US)] : []),
+        request.sourcePath],
+      signal: request.signal, deadlineMs: request.deadlineMs, captureStdout: true,
+      maxStdoutBytes: AUDIO_GAP_SCAN_MAX_STDOUT_BYTES, diagnose: request.diagnose,
+    });
+    const packets = parseProbeOutput(result.stdout).packets;
+    if (!Array.isArray(packets)) return null;
+    const found = findAudioTimestampGaps(packets.flatMap((packet) => {
+      const time = numberFact(packet?.pts_time);
+      return time === null ? [] : [time];
+    }));
+    if (!found) return null;
+    // The probe seeks to a keyframe before the interval, so its packets can start well
+    // ahead of the clip. A hole counts only if the silence [atSec - missingSec, atSec]
+    // overlaps the window; preroll or trailing holes are not this clip's defect.
+    const gaps = found.gaps
+      .map((gap) => ({ atSec: gap.atSec - origin - request.startSec, missingSec: gap.missingSec }))
+      .filter((gap) => gap.atSec > 0 && gap.atSec - gap.missingSec < windowSec)
+      .slice(0, AUDIO_GAP_SCAN_MAX_GAPS);
+    return gaps.length === 0 ? null : { frameSec: found.frameSec, gaps };
+  } catch (error) {
+    request.signal.throwIfAborted();
+    if (executorProcessFailure(error)) throw error;
+    return null;
+  }
+}
+
+/** The inspection with the clip window's audio timestamp gaps attached, or the same object when there are none. */
+export async function withAudioTimestampGaps<T extends WorkerMediaInspection>(
+  processModule: Pick<WorkerProcessModule, "execute">,
+  inspection: T,
+  request: Omit<Parameters<typeof inspectAudioTimestampGaps>[1], "inspection">,
+): Promise<T> {
+  const audioGaps = await inspectAudioTimestampGaps(processModule, { ...request, inspection });
+  return audioGaps ? { ...inspection, audioGaps } : inspection;
 }
 
 export class WorkerProcessFailure extends WorkflowFailure implements WorkerProcessHealth {

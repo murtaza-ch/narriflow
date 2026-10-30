@@ -9,3 +9,4 @@ export {
   fontFileLineHeightEm,
 } from "./fallback-fonts";
 export * from "./emoji";
+export { captionCodePointLabel, captionUndrawableCodePoints } from "./glyph-coverage";

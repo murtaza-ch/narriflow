@@ -82,3 +82,61 @@ export function captionEmojiSpriteCss(sprite: CaptionEmojiSprite): {
     backgroundPosition: `${columns > 1 ? (sprite.column / (columns - 1)) * 100 : 0}% ${rows > 1 ? (sprite.row / (rows - 1)) * 100 : 0}%`,
   };
 }
+
+/**
+ * Entrance and exit of a caption emoji, shared by the Studio preview and the
+ * FFmpeg export so both play one curve.
+ *
+ * The emoji pops in (scale 0.6 to 1 with a slight overshoot, fading in) over
+ * the first 150 ms of its word's window and fades out over the last 80 ms.
+ * Short windows shrink both ramps so they never overlap.
+ */
+export const CAPTION_EMOJI_MOTION = {
+  enterSec: 0.15,
+  exitSec: 0.08,
+  fromScale: 0.6,
+  /** easeOutBack overshoot constant (the standard 1.70158 peaks 10% past the end value). */
+  overshoot: 1.70158,
+  /** Frames per second of the export's emoji stream; the overlay shows the latest one at or before each video frame. */
+  exportRate: 120,
+} as const;
+
+export interface CaptionEmojiPose {
+  readonly scale: number;
+  readonly alpha: number;
+}
+
+/** The ramp lengths for a word window of `windowSec` seconds. */
+export function captionEmojiMotionTiming(windowSec: number): { enterSec: number; exitSec: number } {
+  return {
+    enterSec: Math.min(CAPTION_EMOJI_MOTION.enterSec, windowSec / 2),
+    exitSec: Math.min(CAPTION_EMOJI_MOTION.exitSec, windowSec / 4),
+  };
+}
+
+const clamp01 = (value: number) => Math.min(1, Math.max(0, value));
+
+/** Scale and opacity `elapsedSec` seconds into a word window of `windowSec` seconds. */
+export function captionEmojiPose(elapsedSec: number, windowSec: number): CaptionEmojiPose {
+  const { enterSec, exitSec } = captionEmojiMotionTiming(windowSec);
+  const { fromScale, overshoot } = CAPTION_EMOJI_MOTION;
+  const progress = enterSec > 0 ? clamp01(elapsedSec / enterSec) : 1;
+  const behind = progress - 1;
+  const back = 1 + (overshoot + 1) * behind ** 3 + overshoot * behind ** 2;
+  const remaining = exitSec > 0 ? clamp01((windowSec - elapsedSec) / exitSec) : 1;
+  return { scale: fromScale + (1 - fromScale) * back, alpha: Math.min(progress, remaining) };
+}
+
+/**
+ * FFmpeg expression for the scale factor, the same curve as `captionEmojiPose`.
+ * `time` is the overlay stream's timestamp variable (seconds, `t` in the scale
+ * filter) and `startSec` where the word's window begins. The expression has
+ * commas; the caller escapes them for the filtergraph.
+ */
+export function captionEmojiScaleExpression(input: { time: string; startSec: number; windowSec: number }): string {
+  const { enterSec } = captionEmojiMotionTiming(input.windowSec);
+  const { fromScale, overshoot } = CAPTION_EMOJI_MOTION;
+  const behind = `(clip((${input.time}-${input.startSec.toFixed(6)})/${enterSec.toFixed(6)},0,1)-1)`;
+  const gain = (1 - fromScale).toFixed(6);
+  return `${fromScale.toFixed(6)}+${gain}*(1+${(overshoot + 1).toFixed(6)}*${behind}*${behind}*${behind}+${overshoot.toFixed(6)}*${behind}*${behind})`;
+}

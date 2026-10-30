@@ -19,6 +19,7 @@ import {
 } from "../worker-process";
 import {
 	ClipRenderAttempt,
+	captionDiagnosticsOf,
 	type RenderGroupOutcome,
 	type ClipRenderAttemptAdapters,
 	type ClipRenderingWorkflowAttempt,
@@ -2279,3 +2280,17 @@ for (const phase of ["source", "encode"] as const) {
     expect(harness.actions.some((action) => action.startsWith("variant_failure:"))).toBe(false);
   });
 }
+
+test("caption diagnostics keep each omitted character and skipped emoji once and stay empty for a clean render", () => {
+  expect(captionDiagnosticsOf({ captionGlyphsOmitted: [], captionEmojiSkipped: [] })).toBeNull();
+  expect(
+    captionDiagnosticsOf({
+      captionGlyphsOmitted: [
+        { codePoint: "U+2605", cueIndex: 0 },
+        { codePoint: "U+2605", cueIndex: 3 },
+        { codePoint: "U+1F1FA", cueIndex: 1 },
+      ],
+      captionEmojiSkipped: [{ emoji: "\u{1FAE8}", cueIndex: 2 }],
+    }),
+  ).toEqual({ omittedCodePoints: ["U+1F1FA", "U+2605"], skippedEmoji: ["\u{1FAE8}"] });
+});

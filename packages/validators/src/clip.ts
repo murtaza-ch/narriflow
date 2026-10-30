@@ -158,6 +158,20 @@ export const brollSearchQuerySchema = z.object({
   orientation: z.enum(["portrait", "landscape", "square"]).default("portrait"),
 });
 
+export const CLIP_RENDER_CAPTION_DIAGNOSTICS_LIMIT = 50;
+
+/**
+ * Caption characters a finished render could not draw. The worker records them
+ * when it commits a successful render; the clip row shows them as a quiet note.
+ * Code points are `U+XXXX` labels; skipped emoji are the plan emoji strings.
+ */
+export const clipRenderCaptionDiagnosticsSchema = z.object({
+  omittedCodePoints: z.array(z.string().regex(/^U\+[0-9A-F]{4,6}$/)).max(CLIP_RENDER_CAPTION_DIAGNOSTICS_LIMIT),
+  skippedEmoji: z.array(z.string().min(1).max(64)).max(CLIP_RENDER_CAPTION_DIAGNOSTICS_LIMIT),
+});
+
+export type ClipRenderCaptionDiagnostics = z.infer<typeof clipRenderCaptionDiagnosticsSchema>;
+
 export const clipRenderVariantSchema = z.object({
   aspectRatio: clipAspectRatioSchema,
   status: clipRenderStatusSchema,
@@ -167,6 +181,8 @@ export const clipRenderVariantSchema = z.object({
   completedAt: z.string().datetime().nullable(),
   hasAsset: z.boolean(),
   resolution: clipRenderResolutionSchema,
+  /** Present only when characters were left out of this render's captions. */
+  captionDiagnostics: clipRenderCaptionDiagnosticsSchema.nullable().optional(),
 });
 
 export const clipSnapshotSchema = z.object({

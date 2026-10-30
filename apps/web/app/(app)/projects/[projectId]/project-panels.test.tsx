@@ -192,6 +192,15 @@ describe("Render status notice", () => {
 		expect(html).toContain("Retry renders");
 	});
 
+	test("a Dolby Vision source asks for a new file instead of offering a Retry that cannot work", () => {
+		const html = notice({ ...failed, errorCode: "hdr_dolby_vision_unsupported" });
+		expect(html).toContain("This video uses a Dolby Vision format we can&#x27;t convert yet.");
+		expect(html).toContain("standard HDR or SDR and upload again");
+		expect(html).toContain("Upload again");
+		expect(html).toContain('href="/upload"');
+		expect(html).not.toContain("Retry renders");
+	});
+
 	test("a viewer sees the failure without a Retry, and nothing shows when nothing failed or runs", () => {
 		expect(notice(failed, false)).not.toContain("Retry");
 		expect(notice({ ...failed, failedCount: 0, groups: [] })).not.toContain("role=\"status\"");

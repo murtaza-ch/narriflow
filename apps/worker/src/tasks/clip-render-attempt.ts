@@ -40,6 +40,7 @@ import {
 import {
 	AUDIO_UPLOAD_MAX_BYTES,
 	CLIP_AUTO_LAYOUT_ENGINE,
+	CLIP_RENDER_CAPTION_DIAGNOSTICS_LIMIT,
 	brandTemplateSnapshotSchema,
 	brollCuesArraySchema,
 	CATEGORY_BROLL_FALLBACK_QUERY,
@@ -56,6 +57,7 @@ import type {
 	BrandTemplateSnapshot,
 	ClipAspectRatio,
 	ClipCategory,
+	ClipRenderCaptionDiagnostics,
 	ClipRenderResolution,
 	EditorDocument,
 	StudioEdits,
@@ -97,6 +99,7 @@ import {
 import {
 	resolveDisplayGeometry,
 	WorkerProcessFailure,
+	withAudioTimestampGaps,
 	type WorkerMediaInspection,
 	type WorkerProcessDiagnostic,
 	type WorkerProcessModule,
@@ -288,6 +291,7 @@ export interface ClipRenderAttemptAdapters {
 				sizeBytes: number;
 				durationSec: number;
 				motionAnalytics?: MotionRenderAnalyticsMetadata;
+				captionDiagnostics?: ClipRenderCaptionDiagnostics | null;
 			},
 		): Promise<{ persisted: boolean }>;
 		failClipRenderVariant(
@@ -1187,6 +1191,16 @@ function recordCaptionWarnings(output: PendingRenderOutput, track: CaptionTrack)
 	for (const glyph of track.omitted) warnings.omitted.set(`${glyph.cueIndex}:${glyph.codePoint}`, glyph);
 	warnings.emojiSkipped = [...track.emojiSkipped];
  log("info", "clip_render_glyph_omissions", { clipId: output.clipId, clipRenderId: output.clipRenderId, count: track.omitted.length + track.emojiSkipped.length });
+}
+
+/** What the render left out of its captions, for the clip row; null when nothing. */
+export function captionDiagnosticsOf(
+  validated: Pick<ValidatedRenderResult, "captionGlyphsOmitted" | "captionEmojiSkipped">,
+): ClipRenderCaptionDiagnostics | null {
+  const unique = (values: readonly string[]) => [...new Set(values)].sort().slice(0, CLIP_RENDER_CAPTION_DIAGNOSTICS_LIMIT);
+  const omittedCodePoints = unique(validated.captionGlyphsOmitted.map((glyph) => glyph.codePoint));
+  const skippedEmoji = unique(validated.captionEmojiSkipped.map((emoji) => emoji.emoji));
+  return omittedCodePoints.length + skippedEmoji.length > 0 ? { omittedCodePoints, skippedEmoji } : null;
 }
 
 /** Analytics for an output, with its caption warnings added as fallback codes. */
@@ -2151,6 +2165,7 @@ async function uploadRenderedOutput(params: {
 					sizeBytes: params.validated.sizeBytes,
 					durationSec: params.validated.durationSec,
 					motionAnalytics: params.motionAnalytics,
+					captionDiagnostics: captionDiagnosticsOf(params.validated),
 				},
 			),
 		discard: deleteProvisionalObject,
@@ -2734,7 +2749,7 @@ async function renderClipGroup(input: {
 		attempt,
 		renderGroup,
 		frozenState,
-		probe,
+		probe: sourceProbe,
 		sourcePath,
 		tempDir,
 		brandLogo,
@@ -2770,6 +2785,17 @@ async function renderClipGroup(input: {
 	const clipStartSec = effective.startSec;
 	const clipEndSec = effective.endSec;
 	const utterances = effective.transcriptSlice;
+	// Holes in the source audio's own timestamps inside this clip's window are
+	// invisible to the header facts; a bounded packet scan attaches them so the
+	// compiler realigns the dialogue (the golden harness calls the same function).
+	const probe = await withAudioTimestampGaps(currentRenderAdapters().workerProcess, sourceProbe, {
+		sourcePath,
+		startSec: clipStartSec,
+		endSec: clipEndSec,
+		signal: currentRenderSignal() ?? new AbortController().signal,
+		deadlineMs: currentRenderConfig().probeCommandTimeoutMs,
+		diagnose: diagnoseRenderProcessOperation,
+	});
 
 	const deletedRanges = editorDocument.deletedRanges;
 	const cutPlan = buildClipCutPlan(deletedRanges, {

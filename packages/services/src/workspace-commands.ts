@@ -3,6 +3,7 @@ import type { ActorScope } from "./actor-scope";
 import type { getOperationReceiptExecutor } from "./operation-receipt-runtime";
 import type { IntegrationMutation } from "./operation-receipt";
 import {
+  WorkspaceOperationError,
   assertWorkspaceInviteEntitlement,
   normalizeWorkspaceName,
   type WorkspaceService,
@@ -16,6 +17,7 @@ export interface WorkspaceCommandDependencies {
   receipts: () => ReturnType<typeof getOperationReceiptExecutor>;
   workspaces: Pick<
     WorkspaceService,
+    | "findActor"
     | "requireActor"
     | "getPersonalWorkspaceId"
     | "createPendingBusinessWorkspace"
@@ -143,6 +145,9 @@ export function createWorkspaceCommands(deps: WorkspaceCommandDependencies) {
           };
         },
       });
+      if (accepted.replayed && !await workspaces.findActor(actorUserId, accepted.value.workspaceId)) {
+        throw new WorkspaceOperationError("workspace_no_longer_exists", "This workspace no longer exists. Start a new workspace checkout.");
+      }
       return { ...accepted.value, replayed: accepted.replayed };
     },
 

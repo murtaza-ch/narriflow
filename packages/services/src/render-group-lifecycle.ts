@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
+import type { ClipRenderCaptionDiagnostics } from "@narriflow/validators";
 import { accessibleProjectWhere } from "./project-access";
 import { syncClipExportAggregates } from "./clip-export-aggregates";
 import { flushWorkspaceEvents } from "./workspace-event";
@@ -21,6 +22,14 @@ import {
 } from "./render-group-contract";
 
 type Tx = Prisma.TransactionClient;
+
+/** The column value for a render's caption diagnostics: null when nothing was left out. */
+function captionDiagnosticsColumn(
+  diagnostics: ClipRenderCaptionDiagnostics | null | undefined,
+): Prisma.InputJsonValue | typeof Prisma.DbNull {
+  if (!diagnostics || diagnostics.omittedCodePoints.length + diagnostics.skippedEmoji.length === 0) return Prisma.DbNull;
+  return { omittedCodePoints: [...diagnostics.omittedCodePoints], skippedEmoji: [...diagnostics.skippedEmoji] };
+}
 export interface RenderGroupAdmission {
   readonly configuration: RenderGroupConfiguration;
   readonly variantIds: readonly string[];
@@ -578,7 +587,13 @@ export class RenderGroupLifecycle {
   async completeClipRenderVariant(
     attempt: RenderGroupAttemptRef,
     id: string,
-    input: { storageKey: string; sizeBytes: number; durationSec: number },
+    input: {
+      storageKey: string;
+      sizeBytes: number;
+      durationSec: number;
+      /** Caption characters the render left out; absent or empty clears it. */
+      captionDiagnostics?: ClipRenderCaptionDiagnostics | null;
+    },
   ): Promise<boolean> {
     return this.transaction(async (tx) => {
       // Read the durable outcome under the parent lock before testing expiry.
@@ -621,7 +636,10 @@ export class RenderGroupLifecycle {
         errorCode: null,
         completedAt: now,
       };
-      await tx.clipRender.update({ where: { id }, data: { ...data, failureDisposition: null } });
+      await tx.clipRender.update({
+        where: { id },
+        data: { ...data, failureDisposition: null, captionDiagnostics: captionDiagnosticsColumn(input.captionDiagnostics) },
+      });
       await this.exportMutation(tx, variant.exportVariantId, data);
       await tx.renderGroupVariantOutcome.create({
         data: {

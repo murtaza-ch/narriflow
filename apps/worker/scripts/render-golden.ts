@@ -64,7 +64,7 @@ import {
 import { compositionOutputExpectation, validateRenderOutput } from "../src/render-output-validation";
 import { guardMixPeak, MixPeakError, mixPeakMeasureDeadlineMs } from "../src/render-mix-peak";
 import { compositionSourceFor, deriveRenderCompositionEvidence, deriveRenderCompositionAssets } from "../src/tasks/clip-render-attempt";
-import { productionWorkerProcessModule, type WorkerMediaInspection } from "../src/worker-process";
+import { productionWorkerProcessModule, type WorkerMediaInspection, withAudioTimestampGaps } from "../src/worker-process";
 import {
   collectRuntimeFingerprint,
   fingerprintDifferences,
@@ -510,8 +510,10 @@ interface Planned {
 
 async function planCase(context: CaseContext, id: string, definition: CaseDefinition, sourcePath: string): Promise<Planned> {
   const signal = context.signal;
-  const inspection = await productionWorkerProcessModule.inspectMedia({ sourcePath, signal, deadlineMs: 120_000 });
+  const probed = await productionWorkerProcessModule.inspectMedia({ sourcePath, signal, deadlineMs: 120_000 });
   const document = editorDocumentSchema.parse(structuredClone(definition.document));
+  // The same derivation the render attempt applies: the clip window's audio timestamp gaps ride on the inspection.
+  const inspection = await withAudioTimestampGaps(productionWorkerProcessModule, probed, { sourcePath, startSec: document.clipStartSec, endSec: document.clipEndSec, signal, deadlineMs: 120_000 });
   if (definition.censorWord) {
     const { utteranceIndex, wordIndex } = definition.censorWord;
     const word = document.transcriptSlice[utteranceIndex]!.words[wordIndex]!;
@@ -948,7 +950,11 @@ async function measureOutput(input: {
     measurements["video.circleDisplayAspect"] = await circleDisplayAspect(input.outputPath, Math.min(1, planned / 2), sn || 1, sd || 1);
   }
   if (videoFacts && input.probes.includes("saturation")) {
-    const cueTimes = (input.target.visualLayers as any[]).filter((layer) => layer.kind === "caption").map((cue) => (cue.activeRange.startSec + cue.activeRange.endSec) / 2);
+    const captionCues = (input.target.visualLayers as any[]).filter((layer) => layer.kind === "caption");
+    // The middle of each emoji word's window: the emoji has settled there (it pops in over the first
+    // 150 ms and fades over the last 80 ms), where a cue midpoint can fall on the fade between two words.
+    const emojiTimes = captionCues.flatMap((cue) => cue.words.filter((word: any) => word.emoji).map((word: any) => (word.startSec + word.endSec) / 2));
+    const cueTimes = emojiTimes.length > 0 ? emojiTimes : captionCues.map((cue) => (cue.activeRange.startSec + cue.activeRange.endSec) / 2);
     measurements["video.saturatedPixels"] = await saturatedPixels(input.outputPath, cueTimes.length > 0 ? cueTimes : [planned / 2]);
   }
   if (videoFacts && pcm && input.probes.includes("sync")) {

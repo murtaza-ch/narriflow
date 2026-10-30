@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import Link from "next/link";
 import { Flex, Input, Popover, Portal, Stack, Text } from "@chakra-ui/react";
 import { FolderPlus, Plus } from "lucide-react";
@@ -8,20 +8,25 @@ import { Button } from "@narriflow/ui/components/button";
 import { folderCommands, libraryMutationOptions } from "@narriflow/api-client/library";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { failureMessage, invalidateAfterFolderChanged, type LibraryApi } from "../_lib/api";
+import { FOLDER_NAME_TAKEN_MESSAGE, isFolderNameTaken } from "../_lib/folder-names";
 
 export function ProjectsHeaderActions({
   api,
   canCreate,
   canEdit,
+  folders,
 }: {
   api: LibraryApi;
   canCreate: boolean;
   canEdit: boolean;
+  /** The folders already loaded, for catching a duplicate name as the user types. */
+  folders: ReadonlyArray<{ id: string; name: string }>;
 }) {
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const input = useRef<HTMLInputElement>(null);
   // One intent per form: a retry after a timeout replays the same folder instead of making a second.
   const [intent] = useState(() => api.runtime.createIntent<{ name: string }>());
 
@@ -36,15 +41,22 @@ export function ProjectsHeaderActions({
       setOpen(false);
       void invalidateAfterFolderChanged(queryClient, api.scope);
     },
-    onError: (failure) => setError(failureMessage(failure, "The folder could not be created.")),
+    onError: (failure) => {
+      setError(failureMessage(failure, "The folder could not be created."));
+      // Keep the cursor in the field so the name can be fixed right away.
+      requestAnimationFrame(() => input.current?.focus());
+    },
   });
   const pending = create.isPending;
+  const duplicate = isFolderNameTaken(name, folders);
+  const hint = duplicate ? FOLDER_NAME_TAKEN_MESSAGE : error;
 
   function save() {
     if (!name.trim()) {
       setError("Enter a folder name");
       return;
     }
+    if (duplicate) return;
     create.mutate(name);
   }
 
@@ -85,18 +97,24 @@ export function ProjectsHeaderActions({
                     </Popover.Description>
                   </Stack>
                   <Input
+                    ref={input}
                     autoFocus
                     value={name}
-                    onChange={(event) => setName(event.currentTarget.value)}
+                    onChange={(event) => {
+                      setName(event.currentTarget.value);
+                      setError(null);
+                    }}
                     maxLength={80}
                     placeholder="e.g. Season 2"
                     aria-label="Folder name"
                     size="sm"
-                    disabled={pending}
+                    readOnly={pending}
+                    aria-invalid={hint ? true : undefined}
+                    aria-describedby={hint ? "new-folder-hint" : undefined}
                   />
-                  {error ? (
-                    <Text role="alert" fontSize="12px" color="danger.fg">
-                      {error}
+                  {hint ? (
+                    <Text id="new-folder-hint" role="alert" fontSize="12px" color="danger.fg">
+                      {hint}
                     </Text>
                   ) : null}
                   <Flex justify="flex-end" gap="2">
@@ -105,7 +123,7 @@ export function ProjectsHeaderActions({
                         Cancel
                       </Button>
                     </Popover.CloseTrigger>
-                    <Button type="submit" size="sm" loading={pending}>
+                    <Button type="submit" size="sm" loading={pending} disabled={duplicate}>
                       Create folder
                     </Button>
                   </Flex>

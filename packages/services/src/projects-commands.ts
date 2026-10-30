@@ -9,6 +9,7 @@ import { PROJECTS_RECEIPT_COMMANDS } from "./projects-receipt-commands";
 import {
 	folderCreateData,
 	folderCreateSelect,
+	folderNameTakenFromDatabase,
 	validFolderName,
 } from "./workspace-library.service";
 
@@ -63,10 +64,12 @@ export function createProjectsCommands(dependencies: ProjectsCommandDependencies
 				},
 				beforeAccept: mutation.beforeAccept,
 				mutate: async (tx) => {
-					const folder = await tx.workspaceFolder.create({
-						data: folderCreateData(scope, safeName),
-						select: folderCreateSelect,
-					});
+					const folder = await tx.workspaceFolder
+						.create({
+							data: folderCreateData(scope, safeName),
+							select: folderCreateSelect,
+						})
+						.catch(folderNameTakenFromDatabase);
 					return {
 						resourceType: "workspace_folder",
 						resourceId: folder.id,

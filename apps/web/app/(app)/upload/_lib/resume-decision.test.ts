@@ -27,7 +27,7 @@ describe("upload resume decisions", () => {
 
 describe("import access", () => {
   test("a role that cannot import leaves for Home with the access notice, as the old page did", () => {
-    expect(deniedImportDestination(failure("capability_denied", 403))).toBe("/home?requestFailure=capability_denied");
+    expect(deniedImportDestination(failure("capability_denied", 403))).toBe("/home?requestFailure=capability_denied&from=upload");
   });
 
   test("failures that can recover stay on the page", () => {

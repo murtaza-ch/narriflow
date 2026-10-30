@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { planClipComposition } from "@narriflow/composition-plan";
-import { CAPTION_FONTS_DIRECTORY } from "@narriflow/caption-fonts";
+import { CAPTION_FONTS_DIRECTORY, captionEmojiPose } from "@narriflow/caption-fonts";
 import { captionPresetSchema, editorDocumentSchema, studioEditsSchema } from "@narriflow/validators";
 import { CAPTION_RENDER_DIAGNOSTIC_PATTERN, classifyCaptionRenderDiagnostics } from "./caption-glyphs";
 import { compileCompositionPlanCaptions, compileCompositionPlanVisualLayers } from "./composition-ffmpeg-adapter";
@@ -209,4 +209,55 @@ describe("exported emoji and glyph fallback (real FFmpeg)", () => {
     expect(track.emojiSkipped).toEqual([{ emoji: "🇵🇰", cueIndex: 0 }]);
     expect(saturated(frames[0]!)).toBe(0);
   }, 60_000);
+
+  test("the emoji pops in and fades out on the shared curve", async () => {
+    const plan = planFor(["money", "fire", "plain", "words"]);
+    // Video frames are every 40 ms; the money window is 0.2 to 0.8 s.
+    const times = [0.2, 0.24, 0.28, 0.32, 0.4, 0.6, 0.72, 0.76, 0.8];
+    const { track, frames } = await burn(plan, times);
+    const [money] = track.emoji;
+    const windowSec = money!.endSec - money!.startSec;
+    // Ink of the emoji (the box above the caption line): proportional to alpha times area.
+    const ink = frames.map((frame) => {
+      let sum = 0;
+      for (let y = Math.floor(money!.centerY - 45); y < money!.centerY + 45; y++) {
+        for (let x = Math.floor(money!.centerX - 45); x < money!.centerX + 45; x++) {
+          const offset = (y * WIDTH + x) * 3;
+          sum += frame[offset]! + frame[offset + 1]! + frame[offset + 2]!;
+        }
+      }
+      return sum;
+    });
+    const steady = ink[4]!;
+    expect(steady).toBeGreaterThan(0);
+    expect(ink[5]).toBe(steady);
+    times.forEach((time, index) => {
+      const pose = captionEmojiPose(time - money!.startSec, windowSec);
+      // The export samples the curve every 1/120 s (the latest sample at or before a video frame), hence the tolerance.
+      expect(Math.abs(ink[index]! / steady - pose.alpha * pose.scale ** 2)).toBeLessThan(0.1);
+    });
+    // Nothing before the window starts its first step, the overshoot exceeds the final size, and the end is gone.
+    expect(ink[0]).toBe(0);
+    expect(ink[2]!).toBeGreaterThan(ink[1]!);
+    expect(ink[7]!).toBeLessThan(steady);
+    expect(ink[8]).toBe(0);
+  }, 120_000);
+
+  test("the emoji motion adds no input slot and escapes its expressions for the filtergraph", () => {
+    const plan = planFor(["money", "plain"]);
+    const track = compileCompositionPlanCaptions(plan, "vertical");
+    const visual = compileCompositionPlanVisualLayers({
+      plan,
+      targetId: "vertical",
+      inputLabel: "[composition_base]",
+      outputLabel: "[outv]",
+      subtitlePath: "/tmp/captions.ass",
+      captionEmoji: track.emoji,
+    });
+    const graph = visual.filterParts.join(";");
+    expect(graph).toContain("eval=frame");
+    expect(graph).toContain("fade=t=in:");
+    expect(graph).toContain("fade=t=out:");
+    expect(graph).not.toMatch(/\[0-9]+:v\]/);
+  });
 });

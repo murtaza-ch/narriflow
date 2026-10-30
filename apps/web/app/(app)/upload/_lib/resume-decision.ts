@@ -1,4 +1,5 @@
 import { describeApiFailure } from "@narriflow/api-client/core";
+import { capabilityDeniedHref } from "@/lib/request-failure-notice";
 import type { LinkResumeData, LinkResumeResult } from "@narriflow/validators/api/ingest";
 
 /** What the upload page does with `?project=<id>` once the resume read answers. */
@@ -43,5 +44,5 @@ export function decideResumeFailure(error: unknown): ResumeDecision {
  */
 export function deniedImportDestination(error: unknown): string | null {
   if (!error) return null;
-  return describeApiFailure(error).kind === "forbidden" ? "/home?requestFailure=capability_denied" : null;
+  return describeApiFailure(error).kind === "forbidden" ? capabilityDeniedHref("upload") : null;
 }

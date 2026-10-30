@@ -1,5 +1,12 @@
 import type { RenderBrandFonts } from "./brand-font-resolution";
-import { CAPTION_EMOJI_ATLAS, CAPTION_EMOJI_ATLAS_PATH, CAPTION_FONTS_DIRECTORY } from "@narriflow/caption-fonts";
+import {
+	CAPTION_EMOJI_ATLAS,
+	CAPTION_EMOJI_ATLAS_PATH,
+	CAPTION_EMOJI_MOTION,
+	CAPTION_FONTS_DIRECTORY,
+	captionEmojiMotionTiming,
+	captionEmojiScaleExpression,
+} from "@narriflow/caption-fonts";
 import { WorkflowFailure } from "@narriflow/services";
 import {
 	clipAspectRatioOptions,
@@ -605,9 +612,14 @@ function textLayerFilter(
 
 /**
  * The caption stage with emoji: libass burns the text, then each emoji picture
- * is cropped out of the shared atlas, scaled (and turned with the cue's tilt)
- * and overlaid for exactly its word's window. `movie` reads the atlas by path
- * so the stage needs no extra input slot.
+ * is cropped out of the shared atlas, turned with the cue's tilt, given the
+ * shared pop-in / fade-out motion and overlaid for exactly its word's window.
+ * `movie` reads the atlas by path so the stage needs no extra input slot.
+ *
+ * The one picture is repeated into a short stream stamped on the video clock
+ * (`CAPTION_EMOJI_MOTION.exportRate`), so the scale filter's per-frame `t` and
+ * the alpha fades follow `captionEmojiPose` from `@narriflow/caption-fonts`,
+ * the curve Studio plays. Everything is a pure function of the overlay schedule.
  */
 function captionEmojiFilters(input: {
 	source: string;
@@ -619,15 +631,25 @@ function captionEmojiFilters(input: {
 	const { cell } = CAPTION_EMOJI_ATLAS;
 	const parts = [`${input.source}${input.filter}[composition_caption_${input.stageIndex}_text]`];
 	let base = `[composition_caption_${input.stageIndex}_text]`;
+	const filterComma = (expression: string) => expression.replaceAll(",", "\\,");
 	input.overlays.forEach((emoji, index) => {
 		const label = `[composition_emoji_${input.stageIndex}_${index}]`;
-		const width = Math.max(2, Math.round(emoji.widthPx));
-		const height = Math.max(2, Math.round(emoji.heightPx));
-		const turn = emoji.rotationDeg === 0 ? "" : `,rotate=${((emoji.rotationDeg * Math.PI) / 180).toFixed(5)}:c=none:ow=rotw(${((emoji.rotationDeg * Math.PI) / 180).toFixed(5)}):oh=roth(${((emoji.rotationDeg * Math.PI) / 180).toFixed(5)})`;
+		const windowSec = emoji.endSec - emoji.startSec;
+		const { enterSec, exitSec } = captionEmojiMotionTiming(windowSec);
+		const frames = Math.ceil(windowSec * CAPTION_EMOJI_MOTION.exportRate) + 1;
+		const angle = (emoji.rotationDeg * Math.PI) / 180;
+		const turn = emoji.rotationDeg === 0 ? "" : `,rotate=${angle.toFixed(5)}:c=none:ow=rotw(${angle.toFixed(5)}):oh=roth(${angle.toFixed(5)})`;
+		const scale = filterComma(captionEmojiScaleExpression({ time: "t", startSec: emoji.startSec, windowSec }));
+		// The picture's size is set against the unturned cell, so the turned box scales by the same ratio.
+		const ratioW = Math.max(2, emoji.widthPx) / cell.width;
+		const ratioH = Math.max(2, emoji.heightPx) / cell.height;
 		parts.push(
 			`movie=filename='${escapeSubtitlePath(CAPTION_EMOJI_ATLAS_PATH)}',format=rgba,` +
-				`crop=${cell.width}:${cell.height}:${emoji.column * cell.width}:${emoji.row * cell.height},` +
-				`scale=${width}:${height}:flags=lanczos${turn}${label}`,
+				`crop=${cell.width}:${cell.height}:${emoji.column * cell.width}:${emoji.row * cell.height}${turn},` +
+				`loop=loop=${frames - 1}:size=1,settb=AVTB,setpts='(N/${CAPTION_EMOJI_MOTION.exportRate}+${emoji.startSec.toFixed(6)})/TB',` +
+				`fade=t=in:st=${emoji.startSec.toFixed(6)}:d=${enterSec.toFixed(6)}:alpha=1,` +
+				`fade=t=out:st=${(emoji.endSec - exitSec).toFixed(6)}:d=${exitSec.toFixed(6)}:alpha=1,` +
+				`scale=w='max(2\\,round(iw*${ratioW.toFixed(6)}*(${scale})))':h='max(2\\,round(ih*${ratioH.toFixed(6)}*(${scale})))':eval=frame:flags=lanczos${label}`,
 		);
 		const next = index === input.overlays.length - 1 ? input.output : `[composition_caption_${input.stageIndex}_${index}]`;
 		parts.push(
@@ -2368,9 +2390,12 @@ const AAC_FRAME_SAMPLES = 1024;
  * `aresample=async=1:first_pts=0` fills the missing lead with silence (the
  * first sample keeps its time), `apad` fills the missing tail up to the window
  * and async compensation fills larger timestamp gaps, so the planned video
- * length stays authoritative. A track that covers the window within one video
- * frame at the start and one video frame plus one AAC packet at the end (the
- * tolerance of output validation) is untouched: same args, same samples.
+ * length stays authoritative. A hole in the stream's own timestamps inside the
+ * window (`probe.audioGaps`, from a bounded packet scan) takes the same branch
+ * with a lower hard-compensation threshold. A track that covers the window
+ * within one video frame at the start and one video frame plus one AAC packet
+ * at the end (the tolerance of output validation), with no such hole, is
+ * untouched: same args, same samples.
  * Without header facts, or where the picture itself ends before the window,
  * nothing is claimed, so nothing changes.
  */
@@ -2414,11 +2439,15 @@ function alignSourceAudioClock(params: {
 	const packetSec = AAC_FRAME_SAMPLES / (audio.sampleRate ?? 48000);
 	const tailSec =
 		endAbsolute == null ? 0 : params.endSec - (endAbsolute - origin);
-	if (leadSec <= frameSec && tailSec <= frameSec + packetSec) return null;
+	const gaps = probe.audioGaps;
+	if (leadSec <= frameSec && tailSec <= frameSec + packetSec && !gaps) return null;
+	// `async=1` alone fills a hole only past aresample's 0.1 s hard-compensation
+	// threshold; a hole of more than one audio frame is already out of sync.
+	const holes = gaps ? `:min_hard_comp=${gaps.frameSec.toFixed(6)}` : "";
 	return {
 		label: ALIGNED_SOURCE_AUDIO_LABEL,
 		filterParts: [
-			`[0:a:0]aresample=async=1:first_pts=0,apad=whole_dur=${windowSec.toFixed(3)}${ALIGNED_SOURCE_AUDIO_LABEL}`,
+			`[0:a:0]aresample=async=1${holes}:first_pts=0,apad=whole_dur=${windowSec.toFixed(3)}${ALIGNED_SOURCE_AUDIO_LABEL}`,
 		],
 	};
 }

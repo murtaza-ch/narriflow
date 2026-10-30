@@ -48,6 +48,7 @@ import {
 	requireClipApi,
 	useClipApi,
 } from "@/lib/clip-media";
+import { CaptionOmissionNoteButton } from "./caption-omission-note";
 import { ClipActionsMenu } from "./clip-actions-menu";
 import { ClipVideo } from "./clip-video";
 import { clipActionErrorCopy, failureNeedsStateRefetch } from "./clip-action-error-copy";
@@ -737,6 +738,10 @@ export function ClipRow({
 							);
 						})}
 					</Flex>
+					<CaptionOmissionNoteButton
+						diagnostics={selectedVariant?.hasAsset ? selectedVariant.captionDiagnostics : null}
+						studioHref={studioHref}
+					/>
 				</Box>
 
 				{/* Right — content */}

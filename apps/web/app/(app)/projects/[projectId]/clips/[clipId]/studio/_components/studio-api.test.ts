@@ -205,7 +205,7 @@ describe("studio bootstrap failures", () => {
   test("a viewer without edit access goes home with the safe failure parameters, not to an error screen", () => {
     expect(studioBootstrapFailure(failure(403, "capability_denied"), PROJECT)).toEqual({
       kind: "redirect",
-      to: "/home?requestFailure=capability_denied&requestId=req-1",
+      to: "/home?requestFailure=capability_denied&requestId=req-1&from=studio",
     });
   });
 

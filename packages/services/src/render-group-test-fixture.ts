@@ -58,7 +58,7 @@ export class RenderFixtureLifecycle extends WorkflowRunLifecycle {
   async markClipRenderVariantRendering(attempt: WorkflowAttemptRef, id: string) {
     return this.fixtureGroups.markClipRenderVariantRendering(await this.groupFor(attempt, id), id);
   }
-  async completeClipRenderVariant(attempt: WorkflowAttemptRef, id: string, input: { storageKey: string; sizeBytes: number; durationSec: number }) {
+  async completeClipRenderVariant(attempt: WorkflowAttemptRef, id: string, input: Parameters<RenderGroupLifecycle["completeClipRenderVariant"]>[2]) {
     return this.fixtureGroups.completeClipRenderVariant(await this.groupFor(attempt, id), id, input);
   }
   async failClipRenderVariant(attempt: WorkflowAttemptRef, id: string, code: string, disposition: "retryable" | "permanent") {

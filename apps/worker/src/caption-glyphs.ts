@@ -2,6 +2,7 @@ import {
   CAPTION_FALLBACK_FONTS,
   captionFallbackFontPath,
   captionFontFilePath,
+  captionCodePointLabel,
   captionGraphemes,
   fontFileCovers,
   fontFileLineHeightEm,
@@ -168,7 +169,7 @@ export class CaptionGlyphPlanner {
       const codePoint = character.codePointAt(0)!;
       const face = this.forcedOmissions.has(codePoint) ? null : this.faceCovering(character, emoji, previous);
       if (!face) {
-        const label = `U+${codePoint.toString(16).toUpperCase()}`;
+        const label = captionCodePointLabel(codePoint);
         this.report.omitted.set(`${this.cueIndex}:${label}`, { codePoint: label, cueIndex: this.cueIndex });
       } else {
         parts.push(this.note(pending + character, face, cluster));
@@ -244,7 +245,7 @@ export function captionRenderDiagnosticsFailure(diagnostics: CaptionRenderDiagno
   const codePoints = new Set<string>();
   for (const line of [...diagnostics.missingGlyphs, ...diagnostics.parseErrors]) {
     const match = /glyph (0x[0-9a-f]+)/i.exec(line);
-    if (match) codePoints.add(`U+${match[1]!.slice(2).toUpperCase()}`);
+    if (match) codePoints.add(captionCodePointLabel(Number.parseInt(match[1]!, 16)));
   }
   if (diagnostics.missingGlyphs.length === 0) return null;
   return new CaptionGlyphUnavailableError(

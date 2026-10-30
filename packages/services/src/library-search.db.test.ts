@@ -10,6 +10,8 @@ import { encodeClipEditorDocumentForStorage } from "./clip-editor-document-persi
 import { isExpectedDomainFailure } from "./expected-domain-failure";
 import { LibrarySearch, MAX_INDEX_ATTEMPTS } from "./library-search";
 import { librarySearchService } from "./library-search-runtime";
+import { projectsCommands } from "./projects-commands-runtime";
+import { workspaceLibraryService } from "./workspace-library.service";
 import {
   EmbeddingProviderError,
   LIBRARY_EMBEDDING_DIMENSIONS,
@@ -546,6 +548,37 @@ dbDescribe("Library search PostgreSQL contracts", () => {
       const forbidden = await clipService.createClipFromRange({ actorUserId: viewer.id, workspaceId: theirs.workspaceId }, project.id, range).catch((error) => error);
       expect(isExpectedDomainFailure(forbidden)).toBe(true);
       expect(await prisma.clip.count({ where: { projectId: project.id } })).toBe(1);
+    });
+  });
+  describe("Folder names", () => {
+    test("a name is unique per Workspace regardless of case or spacing, on create, rename and the receipt-backed create", async () => {
+      const mine = await workspaceFixture("folders-mine");
+      const other = await workspaceFixture("folders-other");
+      const taken = { code: "workspace_folder_name_taken", kind: "conflict" };
+
+      const launch = await workspaceLibraryService.createFolder(mine.scope, "Launch");
+      expect(await workspaceLibraryService.createFolder(mine.scope, " launch ").catch((error) => error)).toMatchObject(taken);
+      expect(await workspaceLibraryService.createFolder(mine.scope, "LAUNCH").catch((error) => error)).toMatchObject(taken);
+      expect(await projectsCommands.createFolder(mine.scope, "launch", { clientIdempotencyKey: randomUUID() }).catch((error) => error)).toMatchObject(taken);
+      // Another Workspace may reuse the name.
+      await workspaceLibraryService.createFolder(other.scope, "Launch");
+
+      const second = await workspaceLibraryService.createFolder(mine.scope, "Teasers");
+      expect(await workspaceLibraryService.renameFolder(mine.scope, second.id, "launch").catch((error) => error)).toMatchObject(taken);
+      // Renaming a folder to its own name in another case is not a conflict.
+      await workspaceLibraryService.renameFolder(mine.scope, launch.id, "LAUNCH");
+      expect((await prisma.workspaceFolder.findUniqueOrThrow({ where: { id: launch.id } })).name).toBe("LAUNCH");
+      expect(await prisma.workspaceFolder.count({ where: { workspaceId: mine.workspaceId } })).toBe(2);
+    });
+
+    test("replaying a successful create still replays, and the same key keeps its original folder", async () => {
+      const mine = await workspaceFixture("folders-replay");
+      const key = randomUUID();
+      const first = await projectsCommands.createFolder(mine.scope, "Replay", { clientIdempotencyKey: key });
+      const replay = await projectsCommands.createFolder(mine.scope, "Replay", { clientIdempotencyKey: key });
+      expect(replay).toEqual({ folder: first.folder, replayed: true });
+      const clash = await projectsCommands.createFolder(mine.scope, "replay", { clientIdempotencyKey: randomUUID() }).catch((error) => error);
+      expect(clash).toMatchObject({ code: "workspace_folder_name_taken" });
     });
   });
 });

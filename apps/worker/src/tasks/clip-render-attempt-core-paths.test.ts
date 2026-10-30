@@ -1477,7 +1477,23 @@ describe("ClipRenderAttempt music mix peak guard", () => {
 	const quiet = { samplePeak: 0.6, truePeak: 0.62 };
 
 	test("libass reporting a missing glyph on a zero exit re-renders once without it and uploads", async () => {
-		const harness = createCoreRenderPathTracer({ topology: "single-video", captionGlyphReports: 1 });
+		const harness = createCoreRenderPathTracer({
+			topology: "single-video",
+			captionGlyphReports: 1,
+			clipWindow: { startSec: 0, endSec: 10 },
+			transcriptSlice: [
+				{
+					...captionRegressionTranscript[0]!,
+					text: "Before \u2605 after",
+					words: [
+						{ word: "Before", startSec: 0.2, endSec: 0.6, confidence: 1 },
+						{ word: "\u2605", startSec: 2.2, endSec: 2.6, confidence: 1 },
+						{ word: "after", startSec: 4.2, endSec: 4.6, confidence: 1 },
+					],
+				},
+			],
+			clipOverrides: { llmModel: "caption-only", captionPreset: { visible: true, textTransform: "none" } },
+		});
 		await expect(
 			harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal)),
 		).resolves.toMatchObject({ status: "completed", succeeded: 1 });
@@ -1488,6 +1504,16 @@ describe("ClipRenderAttempt music mix peak guard", () => {
 			context: expect.objectContaining({ disposition: "degraded" }),
 		});
 		expect(harness.uploadedVariantIds).toEqual(["variant-9x16"]);
+		expect(harness.persistedCaptionDiagnostics.get("variant-9x16")).toEqual({
+			omittedCodePoints: ["U+2605"],
+			skippedEmoji: [],
+		});
+	});
+
+	test("a render with every glyph drawn commits no caption diagnostics", async () => {
+		const harness = createCoreRenderPathTracer({ topology: "single-video" });
+		await harness.clipRenderAttempt.execute(harness.attempt, attemptContext(new AbortController().signal));
+		expect(harness.persistedCaptionDiagnostics.get("variant-9x16")).toBeNull();
 	});
 
 	test("a glyph error that survives the re-render fails the variant typed", async () => {

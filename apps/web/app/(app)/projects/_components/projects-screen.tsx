@@ -125,7 +125,12 @@ function ProjectsContent({ api }: { api: LibraryApi }) {
         }
         actions={
           access.canCreate || access.canEdit ? (
-            <ProjectsHeaderActions api={api} canCreate={access.canCreate} canEdit={access.canEdit} />
+            <ProjectsHeaderActions
+              api={api}
+              canCreate={access.canCreate}
+              canEdit={access.canEdit}
+              folders={folders}
+            />
           ) : undefined
         }
       />

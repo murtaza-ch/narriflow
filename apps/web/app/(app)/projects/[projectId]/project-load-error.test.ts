@@ -28,7 +28,7 @@ describe("Project gate destinations", () => {
 
 	test("a missing capability goes home; a missing Project and outages stay on the page", () => {
 		expect(projectGateDestination(failure(403, "capability_denied"), projectId)).toBe(
-			"/home?requestFailure=capability_denied&requestId=req-1",
+			"/home?requestFailure=capability_denied&requestId=req-1&from=project",
 		);
 		expect(projectGateDestination(failure(404, "project_not_found"), projectId)).toBeNull();
 		expect(projectGateDestination(failure(503, "authentication_unavailable"), projectId)).toBeNull();

@@ -27,6 +27,8 @@ import { PresetCard } from "./preset-card";
 import { createClipsClient, invalidateAfterClipChange } from "@narriflow/api-client/clips";
 import { requireStudioApi } from "../studio-api";
 import { useStudioApi } from "../use-studio-api";
+import { studioCaptionOmissionNote } from "@/lib/caption-omissions";
+import { StudioCaptionOmissionNote } from "./caption-omission-note";
 
 const ANIMATIONS = Object.entries(CAPTION_MOTIONS).map(([id, spec]) => ({
   id: id as CaptionAnimation,
@@ -712,7 +714,8 @@ function CustomizeControls() {
 
 export function CaptionsPanel() {
   const [activeTab, setActiveTab] = useState<"presets" | "customize">("presets");
-  const { captionPreset, clipInfo } = useStudio("captionPreset", "clipInfo");
+  const { captionPreset, clipInfo, editorDocument } = useStudio("captionPreset", "clipInfo", "editorDocument");
+  const omissionNote = useMemo(() => studioCaptionOmissionNote(editorDocument), [editorDocument]);
   const [applyState, setApplyState] = useState<
     "idle" | "applying" | "applied" | "error"
   >("idle");
@@ -771,6 +774,7 @@ export function CaptionsPanel() {
 
       {/* Live caption preview — the actual current cue, fully styled */}
       <LiveCuePreview sticky={activeTab === "customize"} />
+      <StudioCaptionOmissionNote note={omissionNote} />
 
       {activeTab === "presets" && <PresetsGrid />}
       {activeTab === "customize" && <CustomizeControls />}

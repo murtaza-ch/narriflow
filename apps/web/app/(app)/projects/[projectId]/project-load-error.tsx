@@ -5,6 +5,7 @@ import { Flex, Stack, Text } from "@chakra-ui/react";
 import { describeApiFailure } from "@narriflow/api-client";
 import { AlertTriangle } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
+import { type DeniedFrom, deniedFromParam } from "@/lib/request-failure-notice";
 import { EmptyState } from "@narriflow/ui/components/empty-state";
 
 /**
@@ -14,7 +15,11 @@ import { EmptyState } from "@narriflow/ui/components/empty-state";
  * the page outside the shell; a missing capability goes home. `null` means
  * the failure is not a redirect (missing Project, outage, unknown).
  */
-export function projectGateDestination(error: unknown, projectId: string): string | null {
+export function projectGateDestination(
+	error: unknown,
+	projectId: string,
+	from: Extract<DeniedFrom, "project" | "studio"> = "project",
+): string | null {
 	const { kind, error: apiError } = describeApiFailure(error);
 	if (kind === "workspace_mismatch") {
 		const workspaceId = String(apiError.details?.workspaceId ?? "");
@@ -27,7 +32,7 @@ export function projectGateDestination(error: unknown, projectId: string): strin
 		// outside the app shell, because /home would refuse them again (a loop).
 		return `${apiError.details?.ownerCanResolve === true ? "/settings/billing" : "/workspace-unavailable"}${suffix}`;
 	}
-	if (kind === "forbidden") return `/home${suffix}`;
+	if (kind === "forbidden") return `/home${suffix}${deniedFromParam(from)}`;
 	return null;
 }
 

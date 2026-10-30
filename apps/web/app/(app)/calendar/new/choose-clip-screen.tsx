@@ -39,6 +39,7 @@ function ChooseClipContent({ scope }: { scope: WorkspaceScope }) {
 				error={options.error}
 				title="Choose a clip"
 				what="Your clips"
+				from="calendar"
 				onRetry={() => void options.refetch()}
 			/>
 		);

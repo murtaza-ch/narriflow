@@ -13,7 +13,7 @@ import {
   compileCompositionPlanAudioSchedule,
 } from "./composition-ffmpeg-adapter";
 import { buildClipCutPlan } from "./tasks/cut-plan";
-import { productionWorkerProcessModule, type WorkerMediaInspection } from "./worker-process";
+import { findAudioTimestampGaps, inspectAudioTimestampGaps, productionWorkerProcessModule, withAudioTimestampGaps, type WorkerMediaInspection } from "./worker-process";
 
 const ALIGN = "aresample=async=1:first_pts=0";
 const RATE = 48_000;
@@ -154,6 +154,15 @@ describe("source audio clock predicate", () => {
     expect(graphOf(silent)).not.toContain("0:a");
   });
 
+  test("a hole in the audio timestamps takes the aligned branch with a lower hard-compensation threshold", () => {
+    const gapped = { ...fakeInspection({ audio: { start: 0, end: 10 } }), audioGaps: { frameSec: 0.021333, gaps: [{ atSec: 1, missingSec: 0.4 }] } };
+    const graph = graphOf(plannedCommand({ startSec: 0, endSec: 4, source: gapped }).args);
+    expect(graph).toContain("[0:a:0]aresample=async=1:min_hard_comp=0.021333:first_pts=0,apad=whole_dur=4.000[composition_source_audio_clock]");
+    expect(graph).toContain("[composition_source_audio_clock]afade=t=in");
+    // A continuous track (no gaps field) keeps the exact args.
+    expect(graphOf(plannedCommand({ startSec: 0, endSec: 4, source: fakeInspection({ audio: { start: 0, end: 10 } }) }).args)).toBe(baseline);
+  });
+
   test("cuts, mixes and scenes read the aligned track", () => {
     const late = fakeInspection({ audio: { start: 0.976, end: 10 } });
     const cut = graphOf(plannedCommand({ startSec: 0, endSec: 4, source: late, deletedRanges: [{ startSec: 1.4, endSec: 1.8 }] }).args);
@@ -164,6 +173,83 @@ describe("source audio clock predicate", () => {
     expect(mixed).toContain("[composition_source_audio_clock]atrim=duration=4.000");
     const scene = graphOf(plannedCommand({ startSec: 0, endSec: 4, source: late, scene: { path: "/scene.mp4", anchorSec: 1, durationSec: 1 } }).args);
     expect(scene).toContain("[composition_source_audio_clock]asplit=2");
+  });
+});
+
+describe("audio timestamp gap detection", () => {
+  const steady = (count: number, step = 0.021333, from = 0) => Array.from({ length: count }, (_, index) => from + index * step);
+
+  test("a continuous track, rounding jitter and too few packets report nothing", () => {
+    expect(findAudioTimestampGaps(steady(200))?.gaps).toEqual([]);
+    // Millisecond timestamps alternate 21 and 22 ms.
+    expect(findAudioTimestampGaps(Array.from({ length: 200 }, (_, index) => Math.round(index * 21.333) / 1000))?.gaps).toEqual([]);
+    expect(findAudioTimestampGaps(steady(3))).toBeNull();
+    expect(findAudioTimestampGaps([])).toBeNull();
+  });
+
+  test("a hole of more than one frame is reported where packets resume, and a hole of less is not", () => {
+    const withHole = (missingSec: number) => [...steady(50), ...steady(50, 0.021333, 49 * 0.021333 + 0.021333 + missingSec)];
+    const found = findAudioTimestampGaps(withHole(0.4))!;
+    expect(found.frameSec).toBeCloseTo(0.021333, 5);
+    expect(found.gaps).toHaveLength(1);
+    expect(found.gaps[0]!.missingSec).toBeCloseTo(0.4, 4);
+    expect(found.gaps[0]!.atSec).toBeCloseTo(50 * 0.021333 + 0.4, 4);
+    expect(findAudioTimestampGaps(withHole(0.05))!.gaps).toHaveLength(1);
+    expect(findAudioTimestampGaps(withHole(0.015))!.gaps).toEqual([]);
+  });
+
+  test("packets arrive in any order", () => {
+    expect(findAudioTimestampGaps([...steady(30), ...steady(30, 0.021333, 1.2)].reverse())!.gaps).toHaveLength(1);
+  });
+
+  test("only a source with an audio stream and a valid window is scanned", async () => {
+    const calls: string[][] = [];
+    const processModule = { execute: async (request: { args: readonly string[] }) => { calls.push([...request.args]); throw new Error("must not be called"); } };
+    const signal = new AbortController().signal;
+    const base = { sourcePath: "/s.mp4", startSec: 0, endSec: 4, signal, deadlineMs: 1000 };
+    expect(await inspectAudioTimestampGaps(processModule as never, { ...base, inspection: fakeInspection({ audio: null }) })).toBeNull();
+    expect(await inspectAudioTimestampGaps(processModule as never, { ...base, inspection: fakeInspection({ noFacts: true }) })).toBeNull();
+    expect(await inspectAudioTimestampGaps(processModule as never, { ...base, endSec: 0, inspection: fakeInspection() })).toBeNull();
+    expect(calls).toEqual([]);
+    // A scan that cannot run is not a render failure.
+    const inspection = fakeInspection();
+    expect(await withAudioTimestampGaps(processModule as never, inspection, base)).toBe(inspection);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toContain("-read_intervals");
+  });
+});
+
+describe("audio gap scan clamps to the clip window", () => {
+  const step = 0.021333;
+  const run = (count: number, start: number) => Array.from({ length: count }, (_, index) => start + index * step);
+  /** Packets with one hole: continuous to `holeFromSec`, silent for `holeSec`, continuous again until `untilSec`. */
+  const packetsWithHole = (startSec: number, holeFromSec: number, holeSec: number, untilSec: number) => {
+    const before = run(Math.floor((holeFromSec - startSec) / step), startSec);
+    const resume = before.at(-1)! + step + holeSec;
+    return [...before, ...run(Math.floor((untilSec - resume) / step) + 1, resume)];
+  };
+  const probeReturning = (times: number[]) => ({
+    execute: async () => ({ stdout: Buffer.from(JSON.stringify({ packets: times.map((time) => ({ pts_time: time.toFixed(6) })) })) }),
+  });
+  const base = { sourcePath: "/s.mp4", signal: new AbortController().signal, deadlineMs: 1000 };
+
+  test("a hole in the preroll before the clip leaves the inspection, and so the render args, untouched", async () => {
+    // The probe seeks to a keyframe before 2 s: packets from 0 s, a 0.4 s hole ending at 0.6 s, then continuous.
+    const inspection = fakeInspection();
+    const processModule = probeReturning(packetsWithHole(0, 0.2, 0.4, 3.2));
+    expect(await withAudioTimestampGaps(processModule as never, inspection, { ...base, startSec: 2, endSec: 3 })).toBe(inspection);
+  });
+
+  test("a hole that spans the clip start is still found, and one after the clip end is not", async () => {
+    const inspection = fakeInspection();
+    const spanning = await withAudioTimestampGaps(probeReturning(packetsWithHole(1, 1.8, 0.4, 3.2)) as never, inspection, { ...base, startSec: 2, endSec: 3 });
+    expect(spanning.audioGaps?.gaps).toHaveLength(1);
+    expect(spanning.audioGaps!.gaps[0]!.atSec).toBeGreaterThan(0);
+    expect(spanning.audioGaps!.gaps[0]!.atSec).toBeLessThan(0.7);
+    const after = await withAudioTimestampGaps(probeReturning(packetsWithHole(1, 3.1, 0.4, 3.9)) as never, inspection, { ...base, startSec: 2, endSec: 3 });
+    expect(after).toBe(inspection);
+    const inside = await withAudioTimestampGaps(probeReturning(packetsWithHole(1.5, 2.4, 0.4, 3.2)) as never, inspection, { ...base, startSec: 2, endSec: 3 });
+    expect(inside.audioGaps?.gaps).toHaveLength(1);
   });
 });
 
@@ -277,6 +363,80 @@ describe("source audio clock render", () => {
       expect(result.level(2.1, 2.9)).toBeGreaterThan(0.01);
     });
   }, 30_000);
+
+  /** A video whose audio timestamps jump forward by `gapSec` after `gapAtSec` of sound: the camera dropped audio, not video. */
+  async function gappedSource(directory: string, name: string, options: { videoSec: number; audioSec: number; gapAtSec: number; gapSec: number; ext?: string }) {
+    const path = join(directory, `${name}.${options.ext ?? "mp4"}`);
+    await execute("ffmpeg", [
+      "-f", "lavfi", "-i", `color=blue:s=90x160:r=${FPS}:d=${options.videoSec}`,
+      "-f", "lavfi", "-i", `sine=frequency=440:sample_rate=${RATE}:duration=${options.audioSec}`,
+      "-af", `asetpts='if(gte(N,${Math.round(options.gapAtSec * RATE)}),PTS+${options.gapSec}/TB,PTS)'`,
+      "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac", path,
+    ]);
+    return path;
+  }
+
+  async function renderGapped(directory: string, name: string, sourcePath: string, window: { startSec: number; endSec: number }, detect: boolean) {
+    const probed = await productionWorkerProcessModule.inspectMedia({ sourcePath, signal, deadlineMs: 10_000 });
+    const inspection = detect
+      ? await withAudioTimestampGaps(productionWorkerProcessModule, probed, { sourcePath, ...window, signal, deadlineMs: 10_000 })
+      : probed;
+    const outputPath = join(directory, `${name}-out.mp4`);
+    const { args } = plannedCommand({ ...window, source: inspection, sourcePath, outputPath });
+    await execute("ffmpeg", args);
+    return { inspection, graph: graphOf(args), ...await measure(outputPath) };
+  }
+
+  for (const [label, gapSec] of [["a long", 0.4], ["a short", 0.06]] as const) {
+    test(`${label} hole in the audio timestamps is found by the packet scan and keeps later dialogue on its video`, async () => {
+      await productionWorkerProcessModule.withScratchDirectory("narriflow-audio-clock-", async (directory) => {
+        const path = await gappedSource(directory, "gap", { videoSec: 3 + gapSec, audioSec: 3, gapAtSec: 1, gapSec });
+        const window = { startSec: 0, endSec: 3 + gapSec };
+        // Without the scan the headers look whole: the picture and the sound drift apart after the hole.
+        const blind = await renderGapped(directory, "blind", path, window, false);
+        expect(blind.graph).not.toContain(ALIGN);
+        const found = await renderGapped(directory, "found", path, window, true);
+        expect(found.inspection.audioGaps?.gaps).toHaveLength(1);
+        expect(found.inspection.audioGaps!.gaps[0]!.missingSec).toBeGreaterThan(gapSec - 0.03);
+        expect(found.graph).toContain("aresample=async=1:min_hard_comp=");
+        expect(found.frames).toBe(Math.round((3 + gapSec) * FPS));
+        // Silence over the hole, then sound again on the video clock, and the full length.
+        expect(found.level(0.2, 0.9)).toBeGreaterThan(0.02);
+        expect(found.level(1.012, 1 + gapSec - 0.012)).toBeLessThan(0.002);
+        expect(found.level(1 + gapSec + 0.05, 2.8)).toBeGreaterThan(0.02);
+        expect(found.audioStart + found.audioSec).toBeGreaterThan(3 + gapSec - 0.1);
+        // The unaligned render plays the same sound through the hole.
+        expect(blind.level(1.012, 1 + gapSec - 0.012)).toBeGreaterThan(0.02);
+      });
+    }, 60_000);
+  }
+
+  test("the scan honours the clip window: a hole outside it changes nothing", async () => {
+    await productionWorkerProcessModule.withScratchDirectory("narriflow-audio-clock-", async (directory) => {
+      const path = await gappedSource(directory, "outside", { videoSec: 6.4, audioSec: 6, gapAtSec: 5, gapSec: 0.4 });
+      const window = { startSec: 0, endSec: 3 };
+      const probed = await productionWorkerProcessModule.inspectMedia({ sourcePath: path, signal, deadlineMs: 10_000 });
+      const scanned = await withAudioTimestampGaps(productionWorkerProcessModule, probed, { sourcePath: path, ...window, signal, deadlineMs: 10_000 });
+      expect(scanned).toBe(probed);
+      const clean = plannedCommand({ ...window, source: probed, sourcePath: path, outputPath: "/out.mp4" }).args;
+      const later = await withAudioTimestampGaps(productionWorkerProcessModule, probed, { sourcePath: path, startSec: 4, endSec: 6.4, signal, deadlineMs: 10_000 });
+      expect(later.audioGaps?.gaps).toHaveLength(1);
+      expect(clean).toEqual(plannedCommand({ ...window, source: scanned, sourcePath: path, outputPath: "/out.mp4" }).args);
+    });
+  }, 60_000);
+
+  test("a continuous source keeps bit-identical args and samples after the scan", async () => {
+    await productionWorkerProcessModule.withScratchDirectory("narriflow-audio-clock-", async (directory) => {
+      const path = await source(directory, "clean", { videoSec: 3, audioSec: 3 });
+      const window = { startSec: 0, endSec: 3 };
+      const blind = await renderGapped(directory, "clean-blind", path, window, false);
+      const scanned = await renderGapped(directory, "clean-scan", path, window, true);
+      expect(scanned.inspection.audioGaps).toBeUndefined();
+      expect(scanned.graph).toBe(blind.graph);
+      expect(scanned.audioSec).toBe(blind.audioSec);
+      expect(scanned.level(0, 3)).toBe(blind.level(0, 3));
+    });
+  }, 60_000);
 
   test("a source with no audio stays silent video", async () => {
     await productionWorkerProcessModule.withScratchDirectory("narriflow-audio-clock-", async (directory) => {

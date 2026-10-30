@@ -29,6 +29,7 @@ import { workspaceService } from "./workspace.service";
 
 const workspaceLibraryFailureCatalog = {
 	workspace_folder_name_invalid: "invalid",
+	workspace_folder_name_taken: "conflict",
 	workspace_folder_not_found: "missing",
 	workspace_library_project_not_found: "missing",
 } as const satisfies ExpectedDomainFailureCatalog<string>;
@@ -58,6 +59,22 @@ function normalizedFolderName(name: string) {
 		.trim()
 		.replace(/\s+/g, " ")
 		.toLocaleLowerCase("en-US");
+}
+
+/**
+ * Converts the (workspace, normalized name) unique violation into the typed
+ * conflict. The constraint is the authority, so concurrent creates and renames
+ * to one name resolve the same way as sequential ones.
+ */
+export function folderNameTakenFromDatabase(error: unknown): never {
+	const failure = error as { code?: unknown };
+	if (failure?.code === "P2002") {
+		throw new WorkspaceLibraryError(
+			"workspace_folder_name_taken",
+			"A folder with this name already exists.",
+		);
+	}
+	throw error;
 }
 
 /** Validates and trims a folder name; the receipt-backed create fingerprints this form. */
@@ -508,10 +525,12 @@ export class WorkspaceLibraryService {
 
 	async createFolder(scope: ActorScope, name: string) {
 		await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.edit");
-		return requiredPrisma().workspaceFolder.create({
-			data: folderCreateData(scope, validFolderName(name)),
-			select: folderCreateSelect,
-		});
+		return requiredPrisma()
+			.workspaceFolder.create({
+				data: folderCreateData(scope, validFolderName(name)),
+				select: folderCreateSelect,
+			})
+			.catch(folderNameTakenFromDatabase);
 	}
 
 	async renameFolder(
@@ -521,10 +540,12 @@ export class WorkspaceLibraryService {
 	) {
 		await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.edit");
 		const safeName = validFolderName(name);
-		const updated = await requiredPrisma().workspaceFolder.updateMany({
-			where: { id: folderId, workspaceId: scope.workspaceId },
-			data: { name: safeName, normalizedName: normalizedFolderName(safeName) },
-		});
+		const updated = await requiredPrisma()
+			.workspaceFolder.updateMany({
+				where: { id: folderId, workspaceId: scope.workspaceId },
+				data: { name: safeName, normalizedName: normalizedFolderName(safeName) },
+			})
+			.catch(folderNameTakenFromDatabase);
 		if (updated.count === 0) {
 			throw new WorkspaceLibraryError(
 				"workspace_folder_not_found",

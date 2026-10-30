@@ -68,6 +68,13 @@ export function renderFailureMessage(code: string | null | undefined): string {
 	return RENDER_FAILED_FALLBACK;
 }
 
+/** Render failures that rendering again cannot fix: the file itself has to be replaced. */
+const NEW_SOURCE_RENDER_CODES: ReadonlySet<string> = new Set(["hdr_dolby_vision_unsupported"]);
+
+export function renderFailureNeedsNewSource(code: string | null | undefined): boolean {
+	return code != null && NEW_SOURCE_RENDER_CODES.has(code);
+}
+
 const RENDER_FAILED_FALLBACK = "A clip failed to render. Try rendering it again.";
 
 export function renderFailureHeadline(failedCount: number): string {

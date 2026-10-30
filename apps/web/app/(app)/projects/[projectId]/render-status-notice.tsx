@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useRef, useState } from "react";
 import { Flex, Stack, Text } from "@chakra-ui/react";
 import type { Intent } from "@narriflow/api-client";
@@ -14,6 +15,7 @@ import {
 	type RenderStatus,
 	renderFailureHeadline,
 	renderFailureMessage,
+	renderFailureNeedsNewSource,
 	retryFailedRenders,
 } from "./render-status";
 
@@ -86,7 +88,12 @@ export function RenderStatusNotice({
 							</Text>
 						</Stack>
 					</Flex>
-					{canEdit ? (
+					{canEdit && renderFailureNeedsNewSource(status.errorCode) ? (
+						// Rendering this file again fails the same way: the next step is a new file.
+						<Button size="sm" variant="subtle" flexShrink={0} asChild>
+							<Link href="/upload">Upload again</Link>
+						</Button>
+					) : canEdit ? (
 						<Button
 							type="button"
 							size="sm"
