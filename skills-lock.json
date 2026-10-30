@@ -183,6 +183,12 @@
       "skillPath": "skills/next-dev-loop/SKILL.md",
       "computedHash": "c305c83b726212e0284930c65cded2c4a4ab85f9bfccfa83b62274247fe3580e"
     },
+    "onboarding": {
+      "source": "elevenlabs/skills",
+      "sourceType": "github",
+      "skillPath": "onboarding/SKILL.md",
+      "computedHash": "34977da0a983e5f6414e10de6b6635a5d2e1e1d9f2b531a85524902ed234a99f"
+    },
     "pr": {
       "source": "mattpocock/skills",
       "ref": "main",
@@ -218,6 +224,12 @@
       "skillPath": "skills/engineering/retro/SKILL.md",
       "computedHash": "b8d55851a2909e26c2dbb2e8563719c87b3b700559f604e4df344f8c27e21047"
     },
+    "setup-api-key": {
+      "source": "elevenlabs/skills",
+      "sourceType": "github",
+      "skillPath": "setup-api-key/SKILL.md",
+      "computedHash": "cdfe132b922554fd7c2afe1ad22c0a96d95e5ed65af609a225131c6c7bd199cc"
+    },
     "setup-matt-pocock-skills": {
       "source": "mattpocock/skills",
       "ref": "main",
@@ -225,12 +237,24 @@
       "skillPath": "skills/engineering/setup-matt-pocock-skills/SKILL.md",
       "computedHash": "09f2ffc146213ba0d02f385f20e8d340ef04858ba7d90e71963fbd96fdba78d8"
     },
+    "speech-to-text": {
+      "source": "elevenlabs/skills",
+      "sourceType": "github",
+      "skillPath": "speech-to-text/SKILL.md",
+      "computedHash": "d4134f0f36d89adb026bb186bab48e4812a3ee04a2d4e940c2d257ce5f9d5678"
+    },
     "tdd": {
       "source": "mattpocock/skills",
       "ref": "main",
       "sourceType": "github",
       "skillPath": "skills/engineering/tdd/SKILL.md",
       "computedHash": "9ce12c4a1e209e557fcf9d02086ade3d7ffdb976186018fc1b063b4164246004"
+    },
+    "text-to-speech": {
+      "source": "elevenlabs/skills",
+      "sourceType": "github",
+      "skillPath": "text-to-speech/SKILL.md",
+      "computedHash": "21391cae9c77ac1f843c2001e489f84091bfc8bd2e1199e7f63786a5609d5904"
     },
     "to-spec": {
       "source": "mattpocock/skills",
@@ -245,6 +269,12 @@
       "sourceType": "github",
       "skillPath": "skills/engineering/to-tickets/SKILL.md",
       "computedHash": "bf5e6ebcb4f1272de0c188d5b3901f265a03d1fa9935a21a7a56938e21e2e761"
+    },
+    "update-skills-from-changelog": {
+      "source": "elevenlabs/skills",
+      "sourceType": "github",
+      "skillPath": ".agents/skills/update-skills-from-changelog/SKILL.md",
+      "computedHash": "efbefcf2263b3615281a790bf4b862ac8fea2fe6f22b642afb00a3e4980e5448"
     },
     "wayfinder": {
       "source": "mattpocock/skills",
