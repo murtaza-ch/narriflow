@@ -50,8 +50,12 @@ describeDb("Webhook Subscription PostgreSQL invariants", () => {
 
   /** A real HTTP server on loopback, reached through the injected pinned
    * transport so the guard's address checks still run on a public resolver.
-   * Each request takes the next scripted status; once the script is empty it answers 200. */
+   * Each request takes the next scripted status; once the script is empty it answers 200.
+   * Only requests the injected transport forwarded are recorded: the port is an
+   * ephemeral loopback one, and unrelated local software (dev-server port
+   * scanners) probes new listeners with bare GETs that carry no webhook headers. */
   let server: ReturnType<typeof Bun.serve>;
+  const FORWARDED = "x-test-forwarded";
   const received: Array<{ path: string; headers: Headers; body: string }> = [];
   const script: number[] = [];
   let onRequest: (() => Promise<void>) | null = null;
@@ -61,7 +65,7 @@ describeDb("Webhook Subscription PostgreSQL invariants", () => {
   const transport: PinnedTransport = async (url, request) => {
     if (stall?.path === url.pathname) await stall.gate;
     if (delayMs) await sleep(delayMs);
-    const answer = await fetch(`http://127.0.0.1:${server.port}${url.pathname}`, { method: request.method, headers: request.headers, body: request.body, signal: request.signal });
+    const answer = await fetch(`http://127.0.0.1:${server.port}${url.pathname}`, { method: request.method, headers: new Headers([...request.headers, [FORWARDED, "1"]]), body: request.body, signal: request.signal });
     await answer.body?.cancel();
     if (onRequest) await onRequest();
     return new Response(null, { status: answer.status });
@@ -101,6 +105,7 @@ describeDb("Webhook Subscription PostgreSQL invariants", () => {
       hostname: "127.0.0.1",
       port: 0,
       async fetch(request) {
+        if (request.headers.get(FORWARDED) !== "1") return new Response(null, { status: 404 });
         received.push({ path: new URL(request.url).pathname, headers: request.headers, body: await request.text() });
         return new Response(null, { status: script.shift() ?? 200 });
       },
