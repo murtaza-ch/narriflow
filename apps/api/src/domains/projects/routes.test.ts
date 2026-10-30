@@ -9,6 +9,7 @@ import { createLibraryRoutes, type LibraryRouteDeps } from "../library/routes";
 import type { AdmissionEntry } from "../platform/admission-table";
 import { projectsAdmission } from "./admission";
 import { createProjectsRoutes, type ProjectsRouteDeps } from "./routes";
+import { createProjectsWebhookRoutes, type ProjectsWebhookDeps } from "./webhooks";
 import { mountDomain, PROJECT_ID, policyRuntime, signedInHeaders, workspaceContext } from "./test-support";
 
 function projectsApp(deps: Record<string, unknown>, runtimeOptions: Parameters<typeof policyRuntime>[0] = {}) {
@@ -213,6 +214,7 @@ describe("route registration", () => {
   test("the projects and library domains register exactly their declarations, with no literal swallowed by :id", () => {
     const app = new Hono<ApiEnv>();
     app.route("/api", createProjectsRoutes({} as unknown as ProjectsRouteDeps));
+    app.route("/api", createProjectsWebhookRoutes({} as unknown as ProjectsWebhookDeps));
     app.route("/api", createLibraryRoutes({} as unknown as LibraryRouteDeps));
     const declared = new Map<string, AdmissionEntry>();
     for (const table of [projectsAdmission, libraryAdmission]) {

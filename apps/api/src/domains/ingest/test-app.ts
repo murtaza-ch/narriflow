@@ -80,7 +80,7 @@ export function createDomainTestApp(
       relayEmail: async () => ({ sent: false }),
     },
     domains,
-    webhooks: { billing: new Hono<ApiEnv>(), publishing: new Hono<ApiEnv>(), automation: new Hono<ApiEnv>() },
+    webhooks: { billing: new Hono<ApiEnv>(), publishing: new Hono<ApiEnv>(), automation: new Hono<ApiEnv>(), projects: new Hono<ApiEnv>() },
     rest: new Hono<ApiEnv>(),
     mcp: new Hono<ApiEnv>(),
     admin: { rateLimit: async () => ({ allowed: true }) as never },

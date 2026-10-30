@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { routeBodyLimit } from "./body-limits";
+import { ingressCeiling, routeBodyLimit } from "./body-limits";
 import type { ApiConfig } from "./config";
 import { handleClerkWebhook } from "./domains/platform/clerk/webhook";
 import type { ClerkWebhookDependencies } from "./domains/platform/clerk/webhook";
@@ -21,7 +21,7 @@ import {
   apiNotFoundHandler,
   errorEnvelopeMiddleware,
 } from "./http/errors";
-import { limitBody, limitRequestEnvelope } from "./http/limits";
+import { limitRequestEnvelope } from "./http/limits";
 import { apiRequestId, requestLogger } from "./http/logging";
 import { requireJsonContentType } from "./http/route";
 import type { RequestPolicyRuntime } from "./http/request-policy-runtime";
@@ -49,7 +49,8 @@ export interface ApiAppDependencies {
  * 1. request ID, bounded request log, secure headers, the drain gate (503
  *    once draining begins) and URL/header size limits, both readable by an
  *    allowed first-party origin;
- * 2. liveness/readiness, webhooks (1 MiB, raw bytes), REST v1 and MCP, each
+ * 2. liveness/readiness, webhooks (1 MiB, raw bytes; the ElevenLabs result
+ *    declares its own `providerResult` class), REST v1 and MCP, each
  *    with its own credential model and error envelope;
  * 3. the first-party chain (CORS, error envelope, per-route body limit, JSON
  *    content type, Authenticated Request Policy, fail-closed admission) around
@@ -68,12 +69,13 @@ export function createApiApp(deps: ApiAppDependencies): Hono<ApiEnv> {
   const refusalHeaders = firstPartyRefusalHeaders(config.corsAllowedOrigins);
   app.use("*", drainGate({ isDraining: deps.health.isDraining, refusalHeaders }));
   app.use("*", limitRequestEnvelope(refusalHeaders));
+  app.use("*", ingressCeiling());
   app.onError(apiErrorHandler);
   app.notFound(apiNotFoundHandler);
 
   app.route("/api", createHealthRoutes(deps.health));
 
-  app.use("/api/webhooks/*", limitBody("webhook"));
+  app.use("/api/webhooks/*", routeBodyLimit("webhook"));
   const webhooks = createRouteApp(platformAdmission).post("/webhooks/clerk", (c) =>
     handleClerkWebhook(c.req.raw, deps.clerkWebhook),
   );
@@ -81,6 +83,7 @@ export function createApiApp(deps: ApiAppDependencies): Hono<ApiEnv> {
   app.route("/api", deps.webhooks.billing);
   app.route("/api", deps.webhooks.publishing);
   app.route("/api", deps.webhooks.automation);
+  app.route("/api", deps.webhooks.projects);
 
   app.route("/api/v1", deps.rest);
   app.route("/", deps.mcp);
