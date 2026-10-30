@@ -523,7 +523,7 @@
         "installed": {}
       },
       "ffmpeg": {
-        "versionString": "8.0.1",
+        "versionString": "7.1.5",
         "requiredFilters": [
           "ass",
           "subtitles",

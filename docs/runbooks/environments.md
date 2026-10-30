@@ -103,11 +103,14 @@ publishing, and data deletion affect that same shared data set.
 
 A worker joins the shared queue only on a platform listed in
 `apps/worker/runtime-lock.json`. `linux-x64` is the authoritative Railway image;
-`darwin-arm64` is a non-authoritative entry pinned to the Homebrew FFmpeg on
-the development Mac (8.0.1). Check a local toolchain with
-`bun apps/worker/scripts/check-render-environment.ts --enforce`. After
-`brew upgrade ffmpeg`, update that entry's `ffmpeg.versionString`; otherwise the
-worker logs `render_environment_invalid` with the mismatch and restarts.
+`darwin-arm64` is a non-authoritative entry pinned to Homebrew `ffmpeg@7`
+(7.1.5, the same FFmpeg release as the Railway image) on the development Mac.
+Link it with `brew unlink ffmpeg ffmpeg-full; brew link --force ffmpeg@7`: FFmpeg 8+
+keeps frame durations that 7.x drops (a muxer last-frame bug only reproduces on 7.x),
+and FFmpeg 9 removed `filter_complex_script`. Check a local toolchain with
+`bun apps/worker/scripts/check-render-environment.ts --enforce`. If the version
+changes, update that entry's `ffmpeg.versionString`; otherwise the worker logs
+`render_environment_invalid` with the mismatch and restarts.
 
 For web and API development using the Railway worker:
 
