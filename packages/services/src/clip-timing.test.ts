@@ -108,7 +108,7 @@ describe("clip timing normalization", () => {
     expect(effective.endSec).toBe(28.45);
   });
 
-  test("market-window timing repairs tiny AssemblyAI-style ranges into a usable clip", () => {
+  test("market-window timing repairs tiny provider-style ranges into a usable clip", () => {
     const effective = getEffectiveClipTiming({
       utterances: makeMarketWindowUtterances(70),
       startSec: 8.2,

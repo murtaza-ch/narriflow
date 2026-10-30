@@ -10,7 +10,7 @@
  *     the edited timeline by the caller via `remapMultiFaceSamplesForCutPlan`)
  *   - scene cuts (ffmpeg scene-change detection on the same low-res segment,
  *     remapped the same way)
- *   - diarized speech words (AssemblyAI utterances -> `speechWordsFromUtterances`,
+ *   - diarized speech words (provider utterances -> `speechWordsFromUtterances`,
  *     which owns the source-absolute -> edited-clip-relative conversion that
  *     `assignSpeakersToClusters` famously got wrong)
  *

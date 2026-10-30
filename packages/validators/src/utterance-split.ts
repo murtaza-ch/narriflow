@@ -52,7 +52,7 @@ export function isTerminalWordText(text: string) {
   );
 }
 
-// Providers that diarize by speaker turn (AssemblyAI) return one utterance per
+// Providers that diarize by speaker turn (Scribe) return one utterance per
 // continuous turn — for a single-speaker monologue that is the ENTIRE video as
 // one utterance. Everything downstream that treats an utterance as a usable
 // unit (the clip-detection LLM prompt's per-line timestamps, SRT/VTT cues,

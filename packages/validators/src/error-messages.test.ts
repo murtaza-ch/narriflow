@@ -44,7 +44,7 @@ describe("userErrorMessage", () => {
       "elevenlabs_transcription_timeout",
     ]) {
       expect(hasUserErrorMessage(code)).toBe(true);
-      expect(userErrorMessage(code)).not.toMatch(/OpenAI|ElevenLabs|Scribe|AssemblyAI/i);
+      expect(userErrorMessage(code)).not.toMatch(/OpenAI|ElevenLabs|Scribe/i);
     }
   });
 

@@ -739,7 +739,7 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
         projectId: project.id,
         idempotencyKey: randomUUID(),
         contentPack: STORED_PACK,
-        transcriptProvider: "assemblyai",
+        transcriptProvider: "elevenlabs",
         transcriptProviderModel: "test",
       });
     await expect(admit()).rejects.toThrow("processing_usage_not_settled");

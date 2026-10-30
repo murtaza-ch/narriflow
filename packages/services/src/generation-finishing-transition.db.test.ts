@@ -76,7 +76,7 @@ dbDescribe("Finishing hooks on the generation lifecycle", () => {
       tiktokScore: 50, youtubeScore: 50, instagramScore: 50, llmProvider: "test", llmModel: "test" } });
   }
   const admitStt = (lifecycle: RenderFixtureLifecycle, projectId: string) => lifecycle.admitTranscript({ projectId, idempotencyKey: `stt:${randomUUID()}`,
-    languageCode: "en", transcriptProvider: "assemblyai", transcriptProviderModel: "test", contentPack: PACK as never });
+    languageCode: "en", transcriptProvider: "elevenlabs", transcriptProviderModel: "test", contentPack: PACK as never });
   const done = { storageKey: "projects/test/render.mp4", sizeBytes: 1024, durationSec: 10 };
 
   /** A finishing-bearing generation, transcribed and detected, with its renders claimed. */
@@ -86,7 +86,7 @@ dbDescribe("Finishing hooks on the generation lifecycle", () => {
     const stt = await admitStt(lifecycle, f.project.id);
     await freeze(f, stt.id);
     const attempt = await lifecycle.claim("stt");
-    await lifecycle.completeTranscript(attempt!, { provider: "assemblyai", providerModel: "test", providerJobId: null, languageCode: "en", languageConfidence: 1,
+    await lifecycle.completeTranscript(attempt!, { provider: "elevenlabs", providerModel: "test", providerJobId: null, languageCode: "en", languageConfidence: 1,
       text: "transcript", utterances: [] as Prisma.InputJsonValue, speakerCount: 1, durationSeconds: 10, rawStorageKey: null });
     const detection = (await lifecycle.claim("moment_detection"))!;
     const clips = await Promise.all(Array.from({ length: clipCount }, (_, index) => clip(f.project.id, detection.workflowRunId, index)));
