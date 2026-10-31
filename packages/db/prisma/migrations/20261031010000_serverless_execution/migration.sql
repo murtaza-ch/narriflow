@@ -889,7 +889,10 @@ ALTER TABLE "PublicationClaim" ADD CONSTRAINT "PublicationClaim_execution_shape"
 );
 CREATE FUNCTION social_post_schedule_revision() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
- IF NEW."generation" < OLD."generation" OR NEW."scheduleRevision" < OLD."scheduleRevision" OR NEW."deploymentEpoch" <> OLD."deploymentEpoch" THEN
+ IF NEW."generation" < OLD."generation" OR NEW."scheduleRevision" < OLD."scheduleRevision" OR (NEW."deploymentEpoch" <> OLD."deploymentEpoch" AND NOT (
+  OLD."status"='draft' AND NEW."deploymentEpoch">OLD."deploymentEpoch" AND NEW."deploymentEpoch"=(SELECT "epoch" FROM "ExecutionEpoch" WHERE "id"=1)
+  AND NOT EXISTS(SELECT 1 FROM "SocialPublicationAttempt" WHERE "socialPostId"=OLD."id")
+ )) THEN
   RAISE EXCEPTION 'publication execution identity cannot regress' USING ERRCODE='23514';
  END IF;
  IF (NEW."scheduledFor",NEW."caption",NEW."socialAccountId",NEW."immutableRequestHash",NEW."standingGrantId",NEW."standingGrantRevision") IS DISTINCT FROM
