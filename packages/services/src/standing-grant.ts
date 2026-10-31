@@ -1,3 +1,4 @@
+import {appendGrantPauseNotificationIntent,appendNotificationDelivery} from "./notification-execution";
 import {appendPublicationGrantWake,appendPublicationGrantExpiry} from "./publication-producers";
 import {readExecutionAdmission} from "./execution-admission";
 import { createHash } from "node:crypto";
@@ -226,14 +227,25 @@ async function pauseInTransaction(
     // A pause the system made is emailed to the granter once; a person already knows.
     data: { status: "paused", pausedReason: input.reason, pauseNoticePending: input.actorUserId === null, pauseNoticeLeaseUntil: null },
   });
-  if (paused.count !== 1) return false;
+  if (paused.count !== 1) {
+    if(input.actorUserId===null){
+      const current=await tx.standingGrant.findUnique({where:{id:input.grantId},select:{revision:true,status:true,pausedReason:true}});
+      if(current?.status==='paused'&&current.pausedReason===input.reason&&(input.revision===undefined||current.revision===input.revision)){
+        const notice=await tx.grantPauseNotificationLedger.findUnique({where:{grantId_grantRevision:{grantId:input.grantId,grantRevision:current.revision}}});
+        if(notice)await appendNotificationDelivery(tx,{kind:'grant',id:notice.id});
+        await appendPublicationGrantWake(tx,input.grantId);
+      }
+    }
+    return false;
+  }
   const grant = await tx.standingGrant.findUniqueOrThrow({
     where: { id: input.grantId },
     select: { workspaceId: true, kind: true, autopilotRuleId: true, revision: true },
   });
-  await tx.standingGrantEvent.create({
+  const pauseEvent=await tx.standingGrantEvent.create({
     data: { grantId: input.grantId, kind: "paused", revision: grant.revision, actorUserId: input.actorUserId, reason: input.reason },
   });
+  if(input.actorUserId===null)await appendGrantPauseNotificationIntent(tx,{workspaceId:grant.workspaceId,grantId:input.grantId,pauseEventId:pauseEvent.id,grantRevision:grant.revision,reason:input.reason});
   await appendPublicationGrantWake(tx,input.grantId);
   // One pause per revision: only an active grant pauses, and renewing starts a new revision.
   queueWorkspaceEvent(tx, {
