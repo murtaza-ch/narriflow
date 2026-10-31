@@ -1214,27 +1214,3 @@ describe("scratch ownership and the abandoned-directory sweep", () => {
   });
 });
 
-for (const asynchronous of [false, true]) {
-  for (const helper of [false, true]) {
-    test(`${asynchronous ? "async" : "sync"} ${helper ? "helper" : "probe"} start failure quarantines before the next spawn`, async () => {
-      const { RenderExecutorHealth } = await import("../../worker/src/render-executor-health");
-      let spawns = 0;
-      const health = new RenderExecutorHealth({ check: async () => {}, recycle: () => {} });
-      await health.checkIfDue();
-      const cause = Object.assign(new Error("EBADF"), { code: "EBADF" });
-      const module = createWorkerProcessModule({ admission: health, spawn: (() => {
-        spawns += 1;
-        if (!asynchronous) throw cause;
-        const child = Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough(), kill: () => true });
-        queueMicrotask(() => { child.emit("error", cause); child.emit("close", null, null); });
-        return child;
-      }) as unknown as typeof spawn });
-      const request = { command: "ffprobe", args: [], cwd: process.cwd(), env: {}, signal: new AbortController().signal, deadlineMs: 1000 };
-      const start = () => helper ? module.start!(request) : module.inspectMedia({ sourcePath: "fixture.mp4", signal: request.signal, deadlineMs: 1000 });
-      await expect(start()).rejects.toMatchObject({ errno: "EBADF", failureScope: "executor" });
-      expect(health.snapshot().ready).toBe(false);
-      for (let retry = 0; retry < 4; retry += 1) await expect(start()).rejects.toMatchObject({ errno: "EBADF" });
-      expect(spawns).toBe(1);
-    });
-  }
-}

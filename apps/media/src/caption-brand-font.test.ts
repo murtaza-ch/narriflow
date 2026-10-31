@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import { join } from "node:path";
 import { captionFallbackFontPath, CAPTION_FALLBACK_FONTS } from "@narriflow/caption-fonts";
 import type { CompositionCaptionVisualLayer } from "@narriflow/composition-plan";
-import { brandFontRenderer } from "@narriflow/services";
+import { brandFontRenderer } from "./brand-font-parser";
 import { captionPresetSchema, getCaptionPresetById } from "@narriflow/validators";
 import { renderCaptionTrack } from "./caption-ass";
 import { type RenderBrandFonts, brandFontKey } from "./brand-font-resolution";
