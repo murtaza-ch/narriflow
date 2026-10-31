@@ -40,3 +40,12 @@ test("an event acknowledgement cannot hide unconfirmed continuation registration
   const bindings = { OPERATION_DRIVER: { get: async () => ({ sendEvent: async () => {} }) }, MAINTENANCE: { create: async () => { throw new Error("Unavailable"); }, get: async () => { throw new Error("Absent"); } } } as unknown as ApiWorkerBindings;
   await expect(createWorkerExecutionScheduler(bindings).deliver(await delivery())).rejects.toThrow("Unavailable");
 });
+
+test("local development confirms the canonical cloud scheduler instead of creating local instances", async () => {
+  let called = 0;
+  const bindings = { DEV_CLOUD: { dispatch: async (input: ExecutionDispatchReference) => {
+    called++; expect(input).toEqual(reference); return { status: "confirmed_notified" as const, destinationId: dispatchContinuationInstanceId(input) };
+  } }, OPERATION_DRIVER: { get() { throw new Error("Local workflow must not be used"); } } } as unknown as ApiWorkerBindings;
+  expect((await createWorkerExecutionScheduler(bindings).deliver(await delivery())).destinationId).toBe(dispatchContinuationInstanceId(reference));
+  expect(called).toBe(1);
+});

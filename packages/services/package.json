@@ -6,6 +6,8 @@
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "exports": {
+    "./clip-preparation": "./src/clip-preparation.ts",
+    "./clip-preparation-execution": "./src/clip-preparation-execution.ts",
     "./ingest-source-execution": {
       "types": "./src/ingest-source-execution.ts",
       "default": "./src/ingest-source-execution.ts"
@@ -590,6 +592,7 @@
       "types": "./src/clip-preparation-policy.ts",
       "default": "./src/clip-preparation-policy.ts"
     },
+    "./publication-checkpoint-blob": "./src/publication-checkpoint-blob.ts",
     "./render-artifact": {
       "types": "./src/render-artifact.ts",
       "default": "./src/render-artifact.ts"

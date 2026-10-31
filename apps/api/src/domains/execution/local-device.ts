@@ -16,6 +16,7 @@ import { CommandTooLarge, readCommandBody, executionCommandHandler, type Executi
 import { createWorkerExecutor } from "./runtime";
 import { readExecutionDispatch } from "@narriflow/services/execution-dispatch";
 import { deliverLocalFetchReference } from "../../workflows/scheduler";
+import { localDeviceMailbox } from "../../resource-ports";
 
 export const localDeviceAdmission = {
   "POST /dev-device/connect-ticket": { trust: "dev_device_signature" },
@@ -33,22 +34,22 @@ export async function issueLocalFetchDevice(actor: ActorScope, bindings: ApiWork
   requireLocalFetchDevelopment(environment, actor.workspaceId);
   await workspaceService.requireActor(actor.actorUserId, actor.workspaceId, "processing.consume");
   const database = getPrismaClient();
-  if (!database || !environment.DEV_DEVICE_KEY_ID || !environment.API_ORIGIN || !bindings.LOCAL_FETCH_MAILBOX || !/^[a-f0-9]{64}$/.test(environment.MEDIA_LOCAL_FETCH_TOOLCHAIN_FINGERPRINT ?? "")) throw new LocalFetchDeviceError("local_fetch_unavailable");
+  if (!database || !environment.DEV_DEVICE_KEY_ID || !environment.API_ORIGIN || !(bindings.LOCAL_FETCH_MAILBOX || bindings.DEV_CLOUD) || !/^[a-f0-9]{64}$/.test(environment.MEDIA_LOCAL_FETCH_TOOLCHAIN_FINGERPRINT ?? "")) throw new LocalFetchDeviceError("local_fetch_unavailable");
   const epoch = await database.executionEpoch.findUniqueOrThrow({ where: { id: 1 } });
   const issued = await codec().issue({ ...actor, deploymentEpoch: epoch.epoch, apiOrigin: environment.API_ORIGIN }, environment.DEV_DEVICE_KEY_ID);
-  await bindings.LOCAL_FETCH_MAILBOX.getByName(actor.workspaceId).register(issued.claims);
+  await localDeviceMailbox(bindings, actor.workspaceId).register(issued.claims);
   return { version: 1 as const, apiOrigin: environment.API_ORIGIN, sessionToken: issued.token, keyId: issued.claims.sessionId,
     key: Buffer.from(issued.key).toString("base64url"), workspaceId: actor.workspaceId, expiresAt: issued.claims.expiresAt, toolchainFingerprint: environment.MEDIA_LOCAL_FETCH_TOOLCHAIN_FINGERPRINT! };
 }
 
 async function authenticate(request: Request | undefined, bindings: ApiWorkerBindings | undefined) {
   try {
-    if (!request || !bindings?.LOCAL_FETCH_MAILBOX) throw new Error();
+    if (!request || !(bindings?.LOCAL_FETCH_MAILBOX || bindings?.DEV_CLOUD)) throw new Error();
     const token = request.headers.get("X-Local-Fetch-Session") ?? "";
     const verified = await codec().verify(token);
     requireLocalFetchDevelopment(readServiceEnvironment(), verified.claims.workspaceId);
     if (verified.claims.apiOrigin !== readServiceEnvironment().API_ORIGIN) throw new Error();
-    const current = await bindings.LOCAL_FETCH_MAILBOX.getByName(verified.claims.workspaceId).authorize(verified.claims.sessionId);
+    const current = await localDeviceMailbox(bindings, verified.claims.workspaceId).authorize(verified.claims.sessionId);
     if (JSON.stringify(current) !== JSON.stringify(verified.claims)) throw new Error();
     return verified;
   } catch { throw new ExecutionSignatureError("invalid_metadata"); }
@@ -102,7 +103,7 @@ export function createLocalDeviceRoutes() {
       await verifyExecutionRequest({ signature, keyRing: new Map([[auth.claims.sessionId, auth.key]]), audience: "dev-device", method: "POST",
         target: new URL(c.req.url).pathname + new URL(c.req.url).search, body, nowSeconds: Math.floor(Date.now() / 1000) });
       c.header("Cache-Control", "no-store");
-      if (action === "connect-ticket") return c.json(await (c.env as ApiWorkerBindings).LOCAL_FETCH_MAILBOX.getByName(auth.claims.workspaceId).connectTicket(auth.claims.sessionId));
+      if (action === "connect-ticket") return c.json(await localDeviceMailbox(c.env as ApiWorkerBindings, auth.claims.workspaceId).connectTicket(auth.claims.sessionId));
       const input = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body)) as { after?: unknown };
       if (!input || typeof input !== "object" || Object.keys(input).some(key => key !== "after") || input.after !== undefined && (typeof input.after !== "string" || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(input.after))) return c.body(null, 400);
       await workspaceService.requireActor(auth.claims.actorUserId, auth.claims.workspaceId, "processing.consume");
@@ -137,6 +138,8 @@ export function createLocalDeviceRoutes() {
     .get("/dev-device/:workspaceId/socket", c => {
       try { requireLocalFetchDevelopment(readServiceEnvironment(), c.req.param("workspaceId")); }
       catch { return c.body(null, 403); }
+      const remote = (c.env as ApiWorkerBindings).DEV_CLOUD;
+      if (remote) return remote.fetch(c.req.raw);
       return (c.env as ApiWorkerBindings).LOCAL_FETCH_MAILBOX.getByName(c.req.param("workspaceId")).fetch(c.req.raw);
     });
 }

@@ -478,6 +478,7 @@ model Project {
   sourceAudio              SourceAudio[]
   transcriptPassages       TranscriptPassage[]
   clips                    Clip[]
+  clipPreparations         ClipPreparation[]
   createdBy                User?                     @relation("ProjectCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
   workspace                Workspace                 @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   folder                   WorkspaceFolder?          @relation(fields: [folderId], references: [id], onDelete: SetNull)
@@ -1694,6 +1695,8 @@ model Clip {
   assistedCopyGenerations  AssistedCopyGeneration[]
   thumbnailFrameOperations ThumbnailFrameOperation[]
 
+  preparations             ClipPreparation[]
+  @@unique([id, projectId])
   @@unique([projectId, workflowRunId, index])
   @@index([projectId, viralityScore(sort: Desc)])
   @@index([autoLayoutStatus, autoLayoutLeaseExpiresAt])
@@ -2802,6 +2805,7 @@ model SocialPostProposal {
 }
 
 model SocialPublicationAttempt {
+  nativeStartRound       Int                            @default(1)
   nativeStartCount       Int                            @default(0)
   nativeStartCeiling     Int                            @default(104)
   id                     String                         @id @default(uuid()) @db.Uuid
@@ -2844,6 +2848,7 @@ model SocialPublicationAttempt {
 }
 
 model PublicationManualDecision {
+  executionBudgetAudit Json?
   id                 String                        @id @default(uuid()) @db.Uuid
   socialPostId       String                        @db.Uuid
   attemptId          String                        @db.Uuid
@@ -2868,6 +2873,7 @@ model PublicationManualDecision {
 }
 
 model PublicationClaim {
+  workState Json?
   executionMode String @default("publish") @db.VarChar(16)
   deploymentEpoch Int       @default(1)
   generation      Int       @default(1)
@@ -3724,6 +3730,8 @@ model ClipPreparation {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   completedAt DateTime?
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  clip Clip @relation(fields: [clipId, projectId], references: [id, projectId], onDelete: Cascade)
 
   @@unique([clipId, bindingHash, deploymentEpoch])
   @@index([projectId, status])

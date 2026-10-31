@@ -1,9 +1,11 @@
 import type { ProjectProgress } from "./durable-objects/project-progress";
 import type { RateLimiter } from "./durable-objects/rate-limiter";
 import type { LocalFetchMailbox } from "./durable-objects/local-fetch-mailbox";
+import type { DevelopmentCloudPort } from "./development-cloud-port";
 /** Bindings are supplied to an invocation. They are never copied into process.env. */
 export interface ApiWorkerBindings {
   [name: string]: unknown;
+  DEV_CLOUD?: DevelopmentCloudPort;
   HYPERDRIVE: { readonly connectionString: string };
   MEDIA_BUCKET: R2Bucket;
   IMPORT_PIPELINE: Workflow;

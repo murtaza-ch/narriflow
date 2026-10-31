@@ -14,6 +14,7 @@ from narriflow_media.entrypoint import invoke_native
 from narriflow_media.artifacts import ArtifactCommitUnconfirmed
 from narriflow_media.multipart import CompletedObject
 from narriflow_media.fetch import SourceFetchFailure
+from narriflow_media.native_runtime import NativeOperationFailure
 from narriflow_media.process import run_owned_process_async
 
 
@@ -110,3 +111,10 @@ class NativeEntrypointTests(unittest.IsolatedAsyncioTestCase):
         await invoke_native(invocation, "asset_validation", client=client, operation=operation, max_operation_seconds=600)
         failure = next(call for call in calls if call["action"] == "fail")
         self.assertEqual((failure["failureCode"],failure["retryable"]),("source_provider_access_denied",False))
+
+    async def test_native_source_mismatch_keeps_its_typed_permanent_failure(self):
+        invocation, client, state, calls = self.fixture()
+        async def operation(*args): raise NativeOperationFailure("source_identity_mismatch", False)
+        await invoke_native(invocation, "asset_validation", client=client, operation=operation, max_operation_seconds=600)
+        failure = next(call for call in calls if call["action"] == "fail")
+        self.assertEqual((failure["failureCode"], failure["retryable"]), ("source_identity_mismatch", False))

@@ -689,6 +689,21 @@ describe("Media Cleanup", () => {
     expect(store.inspect("cleanup-1")?.completedAt).toEqual(now);
   });
 
+  test("a retained execution input stays due for a later check instead of being deleted or forgotten", async () => {
+    let current = new Date("2026-08-29T00:00:01.000Z");
+    const until = new Date("2026-08-30T00:00:00.000Z");
+    const store = createInMemoryMediaCleanupStore([seed()]);
+    const deleted: string[] = [];
+    const worker = createMediaCleanupWorker({ store, storage: { deleteExact: async key => { deleted.push(key); } },
+      retainUntil: async () => until > current ? until : null, now: () => current, createId: () => "claim-1", random: () => 0.5, config: defaultMediaCleanupConfig() });
+    expect(await worker.processDue()).toEqual({ claimed: 1, completed: 0, retried: 1 });
+    expect(deleted).toEqual([]);
+    expect(store.inspect("cleanup-1")).toMatchObject({ completedAt: null, nextAttemptAt: until, failureCode: "object_retained" });
+    current = until;
+    expect(await worker.processDue()).toEqual({ claimed: 1, completed: 1, retried: 0 });
+    expect(deleted).toEqual(["projects/project-1/renders/obsolete.mp4"]);
+  });
+
   test("provider not-found is idempotent success", async () => {
     const now = new Date("2026-08-29T00:00:01.000Z");
     const store = createInMemoryMediaCleanupStore([seed()]);

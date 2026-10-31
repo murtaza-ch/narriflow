@@ -9,6 +9,7 @@ import type { ApiWorkerBindings } from "./worker-bindings";
 import { withExecutionDispatchScheduler } from "@narriflow/services/execution-dispatch-runtime";
 import { createWorkerExecutionScheduler } from "./workflows/scheduler";
 import { withLocalFetchPresence } from "@narriflow/services/source-fetch-capability";
+import { localDeviceMailbox, projectProgressPort, rateLimiterNamespace } from "./resource-ports";
 
 /** Copy only this invocation's text settings. Resource bindings stay on c.env. */
 export function workerServiceEnvironment(bindings: ApiWorkerBindings): ServiceEnvironment {
@@ -20,10 +21,10 @@ export function workerServiceEnvironment(bindings: ApiWorkerBindings): ServiceEn
 
 /** Enter once per request or Workflow step, never around a durable sleep. */
 export function withWorkerServices<Result>(bindings: ApiWorkerBindings, environment: ServiceEnvironment, operation: () => Result): Result {
-  return withExecutionDispatchScheduler(createWorkerExecutionScheduler(bindings), () => withServiceEnvironment(environment, () => withLocalFetchPresence(workspaceId => bindings.LOCAL_FETCH_MAILBOX.getByName(workspaceId).presence(), () => withRateLimiter(createRateLimiterClient(bindings.RATE_LIMITER), () =>
+  return withExecutionDispatchScheduler(createWorkerExecutionScheduler(bindings), () => withServiceEnvironment(environment, () => withLocalFetchPresence(workspaceId => localDeviceMailbox(bindings, workspaceId).presence(), () => withRateLimiter(createRateLimiterClient(rateLimiterNamespace(bindings)), () =>
     withPexelsSearchCache(typeof caches === "undefined" ? null : createPexelsSearchCache((caches as CacheStorage & { default: Cache }).default), () => withProgressDelivery({
-      publish: (scope, event) => bindings.PROJECT_PROGRESS.getByName(scope.projectId).publish(scope, event),
+      publish: (scope, event) => projectProgressPort(bindings, scope.projectId).publish(scope, event),
       registerContinuations: (ids) => registerProgressContinuations(bindings, ids),
-      revoke: async (input) => { await bindings.PROJECT_PROGRESS.getByName(input.projectId).revoke(input); await bindings.LOCAL_FETCH_MAILBOX?.getByName(input.workspaceId).revoke(input); },
+      revoke: async (input) => { await projectProgressPort(bindings, input.projectId).revoke(input); if (bindings.DEV_CLOUD || bindings.LOCAL_FETCH_MAILBOX) await localDeviceMailbox(bindings, input.workspaceId).revoke(input); },
     }, operation))))));
 }

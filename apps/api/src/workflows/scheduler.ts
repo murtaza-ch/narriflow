@@ -52,6 +52,7 @@ export function createWorkerExecutionScheduler(bindings: ApiWorkerBindings): Exe
     async deliver(delivery) {
       const reference = executionDispatchReferenceSchema.parse(delivery.reference);
       assertMetadataBound(delivery.reference);
+      if (bindings.DEV_CLOUD) return bindings.DEV_CLOUD.dispatch(reference);
       if (reference.kind === "project_progress") {
         const database = getPrismaClient();
         if (!database) throw new Error("Progress dispatch requires a database scope");
@@ -103,6 +104,7 @@ export function createWorkerExecutionScheduler(bindings: ApiWorkerBindings): Exe
  * page acknowledges only after all continuation instances are confirmed. */
 export async function registerProgressContinuations(bindings: ApiWorkerBindings, ids: readonly string[]): Promise<void> {
   if (ids.length > 100) throw new Error("Progress continuation limit exceeded");
+  if (bindings.DEV_CLOUD) return bindings.DEV_CLOUD.progressContinuations(ids);
   const dispatch = getExecutionDispatch(createWorkerExecutionScheduler(bindings));
   for (const id of new Set(ids)) {
     const record = await dispatch.read(id);
