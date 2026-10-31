@@ -1,3 +1,4 @@
+import { appendProjectPurgeWake } from "./project-retention-execution";
 import type { ExecutionDispatch, MediaCleanupObligation, Prisma, PrismaClient } from "@prisma/client";
 import { executionDispatchReferenceSchema, type ExecutionDispatchReference } from "@narriflow/validators/execution";
 import { appendExecutionDispatch, appendExecutionDispatches, readExecutionDispatch } from "./execution-dispatch";
@@ -105,7 +106,7 @@ export function createMediaCleanupControl(options: { database: PrismaClient; reg
       if (!row) return { result: { kind: "complete" as const, dispatchIds: [] } };
       const base = await latest(tx, epoch, row.id);
       if (!base || reference.inputHash !== await inputHash(row)) return { result: { kind: "superseded" as const, dispatchIds: [] } };
-      if (row.completedAt) return { result: { kind: "complete" as const, dispatchIds: [] } };
+      if (row.completedAt) return { result: { kind: "complete" as const, dispatchIds:row.projectId?await appendProjectPurgeWake(tx,row.projectId,row.id,row.completedAt):[] } };
       if (base.generation !== reference.generation) {
         // The retry committed even if its registration response was lost.
         // Old-reference replay repairs that existing obligation only.
@@ -163,7 +164,7 @@ export function createMediaCleanupControl(options: { database: PrismaClient; reg
       if (!row || row.claimId !== claim.claimId || row.completedAt || !row.claimExpiresAt || row.claimExpiresAt <= now) return { kind: "superseded" as const, dispatchIds: [] };
       if (acknowledged) {
         await tx.mediaCleanupObligation.update({ where: { id: row.id }, data: { completedAt: now, claimId: null, claimExpiresAt: null, failureCode: null } });
-        return { kind: "complete" as const, dispatchIds: [] };
+        return { kind: "complete" as const, dispatchIds:row.projectId?await appendProjectPurgeWake(tx,row.projectId,row.id,now):[] };
       }
       const until = new Date(now.getTime() + Math.min(5_000 * 2 ** Math.min(claim.attemptCount - 1, 20), 21_600_000));
       const retry = await tx.mediaCleanupObligation.update({ where: { id: row.id }, data: { nextAttemptAt: until, claimId: null, claimExpiresAt: null, failureCode: "storage_delete_unconfirmed" } });

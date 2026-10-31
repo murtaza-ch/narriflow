@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { PrismaClient } from "@prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { executionSnapshotQuiescenceSchema } from "@narriflow/validators/execution-snapshot";
-import { attestQuiescedExecutionSnapshot, fenceExecutionSnapshot, readFencedWorker, validateExecutionSnapshotEvidence, ExecutionSnapshotError } from "../src/execution-snapshot";
+import { attestQuiescedExecutionSnapshot, fenceExecutionSnapshot, readFencedWorker, readRestoreResumeWorker, validateExecutionSnapshotEvidence, ExecutionSnapshotError } from "../src/execution-snapshot";
 import { hashSnapshotFile, hashSnapshotMigrations, readSnapshotJson, writeSnapshotProof } from "./execution-snapshot-files";
 import { createExecutionDispatch, ExecutionDispatchError } from "../src/execution-dispatch";
 import { ExecutionRestoreService, ExecutionRestoreError } from "../src/execution-restore";
@@ -23,7 +23,7 @@ execution:restore attest --snapshot PATH --quiescence PATH --quiescence-evidence
 execution:restore begin --expected-epoch N --fence-above-epoch N --proof PATH --snapshot PATH
 execution:restore resume --dispatch-id UUID
 All commands accept --config PATH and --env NAME. Requires explicit DIRECT_URL;
-fence/attest/begin/resume also require API_ORIGIN reporting the fenced Worker.
+fence/attest/begin require API_ORIGIN reporting the fenced Worker; resume requires fenced metadata or closed redispatch.
 Only a continuously quiesced, fenced snapshot is supported. No command reopens admission.
 Uses the repository's pinned Wrangler and existing authentication.`;
 const apiDirectory = fileURLToPath(new URL("../../../apps/api/", import.meta.url));
@@ -75,6 +75,7 @@ try {
       if (!origin) throw new ExecutionRestoreOperatorError("restore_operator_configuration_invalid");
       return readFencedWorker(origin);
     };
+    const observeResumeWorker=(metadataReady:boolean)=>{const origin=process.env.API_ORIGIN;if(!origin)throw new ExecutionRestoreOperatorError("restore_operator_configuration_invalid");return readRestoreResumeWorker(origin,metadataReady);};
     const localMigrations = () => hashSnapshotMigrations(fileURLToPath(new URL("../../db/prisma/migrations/", import.meta.url)));
     if (input.command === "inspect") {
       const state = input.dispatchId ? await restore.inspect(input.dispatchId) : await restore.inspectCurrent();
@@ -96,14 +97,14 @@ try {
       const begun = await restore.begin({ expectedEpoch: input.expectedEpoch, fenceAboveEpoch: input.fenceAboveEpoch, evidence });
       write({ mode: "registered", resource, ...begun, admissionOpen: false });
     } else {
-      await observeWorker();
       const before = await restore.inspect(input.dispatchId);
+      await observeResumeWorker(before.metadataReady);
       if (before.admissionOpen) throw new ExecutionRestoreError("restore_epoch_changed");
       const ledger = await dispatch.read(input.dispatchId);
       if (!ledger || JSON.stringify(ledger.reference) !== JSON.stringify(before.reference)) throw new ExecutionRestoreError("restore_reference_invalid");
       const result = await commands.resume(ledger.instanceId, { hasCommittedPage: before.receipt !== null, beforeRestart: async () => {
-        await observeWorker();
         const fresh = await restore.inspect(input.dispatchId);
+        await observeResumeWorker(fresh.metadataReady);
         if (fresh.admissionOpen || JSON.stringify(fresh.reference) !== JSON.stringify(before.reference)) throw new ExecutionRestoreError("restore_epoch_changed");
       } });
       write({ mode: "resume", resource, sourcePair: { snapshotEpoch: before.snapshotEpoch, fenceAboveEpoch: before.fenceAboveEpoch, deploymentEpoch: before.deploymentEpoch }, dispatchId: input.dispatchId, ...result, admissionOpen: false });

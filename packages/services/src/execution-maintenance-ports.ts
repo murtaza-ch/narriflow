@@ -1,3 +1,5 @@
+import type { ProjectRetentionExecutionDependencies } from "./project-retention-execution";
+import type { UploadSessionRecord } from "./upload-session.service";
 import type { PrismaClient } from "@prisma/client";
 import type { MaintenancePhaseHandler } from "./execution-maintenance";
 import type { ExecutionRestorePhaseHandler } from "./execution-restore";
@@ -18,4 +20,7 @@ export interface ExecutionMaintenanceRuntimeOptions {
   /** Shared bounded If-Match JSON object reader and immutable writer. */
   storage: { selection: ClipSelectionStorage; privateJson: PrivateJsonStorage };
   toolchainFingerprint: string;
+  upload: {reconcile(id:string,epoch:number,beforeProvider:(session:UploadSessionRecord)=>Promise<void>,beforeHttp:()=>Promise<void>):Promise<unknown>};
+  pendingWorkspace: {expire(id:string,epoch:number):Promise<boolean>};
+  retention: Pick<ProjectRetentionExecutionDependencies,"writeDeletionReceipt"|"releaseUsage">;
 }

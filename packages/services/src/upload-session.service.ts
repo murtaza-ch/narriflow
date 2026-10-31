@@ -1,3 +1,4 @@
+import { appendUploadSessionDispatch } from "./upload-session-dispatch";
 import { readServiceEnvironment, type ServiceEnvironment } from "./runtime-environment";
 import { readExecutionAdmission, assertExecutionAdmissionOpen } from "./execution-admission";
 import type { ActorScope } from "./actor-scope";
@@ -245,12 +246,14 @@ export interface UploadSessionPersistence {
     session: UploadSessionRecord;
   }>;
   claimAdmission(input: {
+    executionEpoch?:number;
     sessionId: string;
     admissionAttemptId: string;
     claimExpiresAt: Date;
     updatedAt: Date;
   }): Promise<{ claimed: boolean; session: UploadSessionRecord }>;
   prepareAdmission(input: {
+    executionEpoch?:number;
     sessionId: string;
     admissionAttemptId: string;
     brandTemplateId: string | null;
@@ -261,17 +264,20 @@ export interface UploadSessionPersistence {
   }): Promise<UploadSessionRecord>;
   waitForAdmission(sessionId: string): Promise<UploadSessionRecord>;
   bindMultipartProvider(input: {
+    executionEpoch?:number;
     sessionId: string;
     admissionAttemptId: string;
     providerUploadId: string;
     updatedAt: Date;
   }): Promise<UploadSessionRecord>;
   markSingleReady(input: {
+    executionEpoch?:number;
     sessionId: string;
     admissionAttemptId: string;
     updatedAt: Date;
   }): Promise<UploadSessionRecord>;
   releaseAdmissionClaim(input: {
+    executionEpoch?:number;
     sessionId: string;
     admissionAttemptId: string;
     updatedAt: Date;
@@ -286,12 +292,14 @@ export interface UploadSessionPersistence {
     updatedAt: Date;
   }): Promise<UploadSessionRecord>;
   expireTransfer(input: {
+    executionEpoch?:number;
     sessionId: string;
     expiredAt: Date;
   }): Promise<UploadSessionRecord>;
   /** Stores the durable finalization intent. A Completion Callback, when
    * given, is registered in the same transaction as a successful claim. */
   beginFinalization(input: {
+    executionEpoch?:number;
     sessionId: string;
     parts: Array<{ partNumber: number; etag: string }>;
     reconcileAt: Date;
@@ -306,6 +314,7 @@ export interface UploadSessionPersistence {
     callback: CallbackRegistration;
   }): Promise<void>;
   handoff(input: {
+    executionEpoch?:number;
     sessionId: string;
     queuedJobId: string;
     verifiedSizeBytes: number;
@@ -315,6 +324,7 @@ export interface UploadSessionPersistence {
     updatedAt: Date;
   }): Promise<UploadSessionRecord>;
   recordFailure(input: {
+    executionEpoch?:number;
     sessionId: string;
     admissionAttemptId?: string;
     status: "compensating" | "failed";
@@ -323,6 +333,7 @@ export interface UploadSessionPersistence {
     updatedAt: Date;
   }): Promise<UploadSessionRecord>;
   recordCleanupRetry(input: {
+    executionEpoch?:number;
     sessionId: string;
     failureCode: string | null;
     cleanupRetryAt: Date | null;
@@ -330,6 +341,7 @@ export interface UploadSessionPersistence {
     updatedAt: Date;
   }): Promise<UploadSessionRecord>;
   markReconciling(input: {
+    executionEpoch?:number;
     sessionId: string;
     failureCode: string;
     reconcileAt: Date;
@@ -342,35 +354,41 @@ export interface UploadSessionPersistence {
     limit: number;
   }): Promise<UploadSessionRecord[]>;
   claimReconciliation(input: {
+    executionEpoch?:number;
     sessionId: string;
     reconciliationAttemptId: string;
     leaseExpiresAt: Date;
     updatedAt: Date;
   }): Promise<{ claimed: boolean; session: UploadSessionRecord }>;
   renewReconciliationClaim(input: {
+    executionEpoch?:number;
     sessionId: string;
     reconciliationAttemptId: string;
     leaseExpiresAt: Date;
     updatedAt: Date;
   }): Promise<UploadSessionRecord>;
   beginDiscard(input: {
+    executionEpoch?:number;
     sessionId: string;
     reconciliationAttemptId: string;
     leaseExpiresAt: Date;
     updatedAt: Date;
   }): Promise<{ claimed: boolean; session: UploadSessionRecord }>;
   releaseReconciliation(input: {
+    executionEpoch?:number;
     sessionId: string;
     reconciliationAttemptId: string;
     updatedAt: Date;
   }): Promise<UploadSessionRecord>;
   beginCompensation(input: {
+    executionEpoch?:number;
     sessionId: string;
     reconciliationAttemptId: string;
     failureCode: string;
     updatedAt: Date;
   }): Promise<UploadSessionRecord>;
   settleTerminal(input: {
+    executionEpoch?:number;
     sessionId: string;
     reconciliationAttemptId: string;
     status: "expired" | "aborted" | "failed";
@@ -379,6 +397,7 @@ export interface UploadSessionPersistence {
   }): Promise<UploadSessionRecord>;
   /** A compensating session keeps the failure code it is compensating for. */
   deferReconciliation(input: {
+    executionEpoch?:number;
     sessionId: string;
     reconciliationAttemptId: string;
     failureCode: string;
@@ -2501,7 +2520,7 @@ export function createUploadSessionModule(
       return handoffInline(finalizing, object);
     },
 
-    async reconcileDueSessions(target?: {sessionId:string;beforeProvider?(session:UploadSessionRecord):Promise<void>}) {
+    async reconcileDueSessions(target?: {sessionId:string;beforeProvider?(session:UploadSessionRecord):Promise<void>;beforeHttp?():Promise<void>}) {
       const selectionNow = dependencies.now();
       const due = await dependencies.persistence.findDueReconciliation({
         now: selectionNow,
@@ -2555,6 +2574,7 @@ export function createUploadSessionModule(
           operation: (signal?: AbortSignal) => Promise<Result>,
           operationChargesProviderCalls = false,
         ) => {
+          await target?.beforeHttp?.();
           if (!operationChargesProviderCalls) chargeProviderCall();
           let remainingAttemptMs = attemptWallDeadlineMs - Date.now();
           if (remainingAttemptMs <= 0) {
@@ -3296,9 +3316,32 @@ async function waitForSessionState(
   return fromPrismaUploadSession(row);
 }
 
+
+async function guardUploadEpoch(tx:Prisma.TransactionClient,expected?:number){const current=await readExecutionAdmission(tx);if(expected!==undefined&&expected!==current.epoch)throw new Error("upload_execution_epoch_changed");}
+function fencedUploadPersistence(executionEpoch:number):UploadSessionPersistence {return {...prismaUploadSessionPersistence,
+ claimAdmission:(input)=>prismaUploadSessionPersistence.claimAdmission({...input,executionEpoch}),
+ prepareAdmission:(input)=>prismaUploadSessionPersistence.prepareAdmission({...input,executionEpoch}),
+ bindMultipartProvider:(input)=>prismaUploadSessionPersistence.bindMultipartProvider({...input,executionEpoch}),
+ markSingleReady:(input)=>prismaUploadSessionPersistence.markSingleReady({...input,executionEpoch}),
+ releaseAdmissionClaim:(input)=>prismaUploadSessionPersistence.releaseAdmissionClaim({...input,executionEpoch}),
+ handoff:(input)=>prismaUploadSessionPersistence.handoff({...input,executionEpoch}),
+ recordFailure:(input)=>prismaUploadSessionPersistence.recordFailure({...input,executionEpoch}),
+ recordCleanupRetry:(input)=>prismaUploadSessionPersistence.recordCleanupRetry({...input,executionEpoch}),
+ markReconciling:(input)=>prismaUploadSessionPersistence.markReconciling({...input,executionEpoch}),
+ claimReconciliation:(input)=>prismaUploadSessionPersistence.claimReconciliation({...input,executionEpoch}),
+ renewReconciliationClaim:(input)=>prismaUploadSessionPersistence.renewReconciliationClaim({...input,executionEpoch}),
+ beginDiscard:(input)=>prismaUploadSessionPersistence.beginDiscard({...input,executionEpoch}),
+ releaseReconciliation:(input)=>prismaUploadSessionPersistence.releaseReconciliation({...input,executionEpoch}),
+ beginCompensation:(input)=>prismaUploadSessionPersistence.beginCompensation({...input,executionEpoch}),
+ settleTerminal:(input)=>prismaUploadSessionPersistence.settleTerminal({...input,executionEpoch}),
+ deferReconciliation:(input)=>prismaUploadSessionPersistence.deferReconciliation({...input,executionEpoch}),
+};}
+
 export const prismaUploadSessionPersistence: UploadSessionPersistence = {
   async findByClientKey({ workspaceId, clientIdempotencyKey }) {
-    const row = await requiredPrisma().uploadSession.findUnique({
+    return requiredPrisma().$transaction(async tx=>{
+      await readExecutionAdmission(tx);
+    const row = await tx.uploadSession.findUnique({
       where: {
         workspaceId_clientIdempotencyKey: {
           workspaceId,
@@ -3306,7 +3349,9 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
         },
       },
     });
+    if(row)await appendUploadSessionDispatch(tx,row);
     return row ? fromPrismaUploadSession(row) : null;
+    });
   },
   async reserve(record, usage) {
     try {
@@ -3329,7 +3374,7 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
             intakeKind: "upload",
             declaredSeconds: usage.declaredSeconds,
           });
-        return tx.uploadSession.create({
+        const created=await tx.uploadSession.create({
         data: {
           id: record.id,
           workspaceId: record.workspaceId,
@@ -3365,6 +3410,7 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
           createdAt: record.createdAt,
         },
         });
+        await appendUploadSessionDispatch(tx,created);return created;
       }, PROCESSING_USAGE_TRANSACTION);
       return { created: row.id === record.id, session: fromPrismaUploadSession(row) };
     } catch (error) {
@@ -3386,13 +3432,15 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
       return { created: false, session: fromPrismaUploadSession(row) };
     }
   },
-  async claimAdmission({
+  async claimAdmission({executionEpoch,
     sessionId,
     admissionAttemptId,
     claimExpiresAt,
     updatedAt,
   }) {
-    const updated = await requiredPrisma().uploadSession.updateMany({
+    return requiredPrisma().$transaction(async tx=>{
+      await guardUploadEpoch(tx,executionEpoch);
+    const updated = await tx.uploadSession.updateMany({
       where: {
         id: sessionId,
         status: "initiating",
@@ -3408,16 +3456,18 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
         updatedAt,
       },
     });
-    const row = await requiredPrisma().uploadSession.findUnique({
+    const row = await tx.uploadSession.findUnique({
       where: { id: sessionId },
     });
     if (!row) throw new Error("Upload Session not found");
+    await appendUploadSessionDispatch(tx,row);
     return {
       claimed: updated.count === 1,
       session: fromPrismaUploadSession(row),
     };
+    });
   },
-  async prepareAdmission({
+  async prepareAdmission({executionEpoch,
     sessionId,
     admissionAttemptId,
     brandTemplateId,
@@ -3426,7 +3476,9 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
     brandProfileSnapshot,
     updatedAt,
   }) {
-    const updated = await requiredPrisma().uploadSession.updateMany({
+    return requiredPrisma().$transaction(async tx=>{
+      await guardUploadEpoch(tx,executionEpoch);
+    const updated = await tx.uploadSession.updateMany({
       where: { id: sessionId, status: "initiating", admissionAttemptId },
       data: {
         brandTemplateId,
@@ -3443,12 +3495,14 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
         updatedAt,
       },
     });
-    const row = await requiredPrisma().uploadSession.findUnique({
+    const row = await tx.uploadSession.findUnique({
       where: { id: sessionId },
     });
     if (!row) throw new Error("Upload Session not found");
     if (updated.count !== 1) throw new UploadSessionAdmissionClaimLostError();
+    await appendUploadSessionDispatch(tx,row);
     return fromPrismaUploadSession(row);
+    });
   },
   async waitForAdmission(sessionId) {
     return waitForSessionState(
@@ -3456,13 +3510,15 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
       (session) => session.status !== "initiating" || !!session.providerUploadId,
     );
   },
-  async bindMultipartProvider({
+  async bindMultipartProvider({executionEpoch,
     sessionId,
     admissionAttemptId,
     providerUploadId,
     updatedAt,
   }) {
-    const updated = await requiredPrisma().uploadSession.updateMany({
+    return requiredPrisma().$transaction(async tx=>{
+      await guardUploadEpoch(tx,executionEpoch);
+    const updated = await tx.uploadSession.updateMany({
       where: {
         id: sessionId,
         status: "initiating",
@@ -3478,17 +3534,21 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
         updatedAt,
       },
     });
-    const row = await requiredPrisma().uploadSession.findUnique({
+    const row = await tx.uploadSession.findUnique({
       where: { id: sessionId },
     });
     if (!row) throw new Error("Upload Session not found");
     if (updated.count === 0 && !row.providerUploadId) {
       throw new UploadSessionAdmissionClaimLostError();
     }
+    await appendUploadSessionDispatch(tx,row);
     return fromPrismaUploadSession(row);
+    });
   },
-  async markSingleReady({ sessionId, admissionAttemptId, updatedAt }) {
-    const updated = await requiredPrisma().uploadSession.updateMany({
+  async markSingleReady({executionEpoch, sessionId, admissionAttemptId, updatedAt }) {
+    return requiredPrisma().$transaction(async tx=>{
+      await guardUploadEpoch(tx,executionEpoch);
+    const updated = await tx.uploadSession.updateMany({
       where: { id: sessionId, status: "initiating", admissionAttemptId },
       data: {
         status: "uploading",
@@ -3497,15 +3557,19 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
         updatedAt,
       },
     });
-    const row = await requiredPrisma().uploadSession.findUnique({
+    const row = await tx.uploadSession.findUnique({
       where: { id: sessionId },
     });
     if (!row) throw new Error("Upload Session not found");
     if (updated.count !== 1) throw new UploadSessionAdmissionClaimLostError();
+    await appendUploadSessionDispatch(tx,row);
     return fromPrismaUploadSession(row);
+    });
   },
-  async releaseAdmissionClaim({ sessionId, admissionAttemptId, updatedAt }) {
-    await requiredPrisma().uploadSession.updateMany({
+  async releaseAdmissionClaim({executionEpoch, sessionId, admissionAttemptId, updatedAt }) {
+    return requiredPrisma().$transaction(async tx=>{
+      await guardUploadEpoch(tx,executionEpoch);
+    await tx.uploadSession.updateMany({
       where: {
         id: sessionId,
         status: "initiating",
@@ -3516,6 +3580,8 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
         admissionClaimExpiresAt: updatedAt,
         updatedAt,
       },
+    });
+      const row=await tx.uploadSession.findUnique({where:{id:sessionId}});if(row)await appendUploadSessionDispatch(tx,row);
     });
   },
   async findByIdForWorkspace({ sessionId, workspaceId }) {
@@ -3542,8 +3608,10 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
     if (updated.count !== 1) throw new UploadSessionInvalidStateError();
     return fromPrismaUploadSession(row);
   },
-  async expireTransfer({ sessionId, expiredAt }) {
-    await requiredPrisma().uploadSession.updateMany({
+  async expireTransfer({ executionEpoch,sessionId, expiredAt }) {
+    return requiredPrisma().$transaction(async tx=>{
+      await guardUploadEpoch(tx,executionEpoch);
+    await tx.uploadSession.updateMany({
       where: {
         id: sessionId,
         status: "uploading",
@@ -3560,14 +3628,17 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
         updatedAt: expiredAt,
       },
     });
-    const row = await requiredPrisma().uploadSession.findUnique({
+    const row = await tx.uploadSession.findUnique({
       where: { id: sessionId },
     });
     if (!row) throw new Error("Upload Session not found");
+    await appendUploadSessionDispatch(tx,row);
     return fromPrismaUploadSession(row);
+    });
   },
-  async beginFinalization({ sessionId, parts, reconcileAt, updatedAt, callback }) {
+  async beginFinalization({ executionEpoch,sessionId, parts, reconcileAt, updatedAt, callback }) {
     return requiredPrisma().$transaction(async (tx) => {
+      await guardUploadEpoch(tx,executionEpoch);
       const updated = await tx.uploadSession.updateMany({
         where: {
           id: sessionId,
@@ -3598,6 +3669,7 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
       if (updated.count === 1 && callback) {
         await registerUploadCallback(tx, { workspaceId: row.workspaceId, sessionId, registration: callback });
       }
+      await appendUploadSessionDispatch(tx,row);
       return {
         claimed: updated.count === 1,
         session: fromPrismaUploadSession(row),
@@ -3607,7 +3679,7 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
   async registerUploadCallback({ sessionId, workspaceId, callback }) {
     await ensureUploadCallback({ workspaceId, sessionId, registration: callback });
   },
-  async handoff({
+  async handoff({executionEpoch,
     sessionId,
     queuedJobId,
     verifiedSizeBytes,
@@ -3646,6 +3718,7 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
 
     try {
       const settled = await requiredPrisma().$transaction(async (tx) => {
+      await guardUploadEpoch(tx,executionEpoch);
         const current = await tx.uploadSession.findUnique({
           where: { id: sessionId },
         });
@@ -3781,7 +3854,7 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
       throw error;
     }
   },
-  async recordFailure({
+  async recordFailure({executionEpoch,
     sessionId,
     admissionAttemptId,
     status,
@@ -3790,6 +3863,7 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
     updatedAt,
   }) {
     return requiredPrisma().$transaction(async (tx) => {
+      await guardUploadEpoch(tx,executionEpoch);
     const updated = await tx.uploadSession.updateMany({
       where: {
         id: sessionId,
@@ -3825,40 +3899,47 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
       });
       await emitUploadIntakeFinished(tx, { workspaceId: row.workspaceId, sessionId, status });
     }
+    await appendUploadSessionDispatch(tx,row);
     return fromPrismaUploadSession(row);
     });
   },
-  async recordCleanupRetry({
+  async recordCleanupRetry({executionEpoch,
     sessionId,
     failureCode,
     cleanupRetryAt,
     reconciliationAttemptId,
     updatedAt,
   }) {
-    const updated = await requiredPrisma().uploadSession.updateMany({
+    return requiredPrisma().$transaction(async tx=>{
+      await guardUploadEpoch(tx,executionEpoch);
+    const updated = await tx.uploadSession.updateMany({
       where: {
         id: sessionId,
         reconciliationAttemptId: reconciliationAttemptId ?? null,
       },
       data: { failureCode, cleanupRetryAt, updatedAt },
     });
-    const row = await requiredPrisma().uploadSession.findUnique({
+    const row = await tx.uploadSession.findUnique({
       where: { id: sessionId },
     });
     if (!row) throw new Error("Upload Session not found");
     if (updated.count !== 1) {
       throw new UploadSessionReconciliationClaimLostError();
     }
+    await appendUploadSessionDispatch(tx,row);
     return fromPrismaUploadSession(row);
+    });
   },
-  async markReconciling({
+  async markReconciling({executionEpoch,
     sessionId,
     failureCode,
     reconcileAt,
     reconciliationAttemptId,
     updatedAt,
   }) {
-    const updated = await requiredPrisma().uploadSession.updateMany({
+    return requiredPrisma().$transaction(async tx=>{
+      await guardUploadEpoch(tx,executionEpoch);
+    const updated = await tx.uploadSession.updateMany({
       where: {
         id: sessionId,
         status: { in: ["finalizing", "reconciling"] },
@@ -3873,14 +3954,16 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
         updatedAt,
       },
     });
-    const row = await requiredPrisma().uploadSession.findUnique({
+    const row = await tx.uploadSession.findUnique({
       where: { id: sessionId },
     });
     if (!row) throw new Error("Upload Session not found");
     if (updated.count !== 1) {
       throw new UploadSessionReconciliationClaimLostError();
     }
+    await appendUploadSessionDispatch(tx,row);
     return fromPrismaUploadSession(row);
+    });
   },
   async findDueReconciliation({ now, limit,sessionId }) {
     const rows = await requiredPrisma().uploadSession.findMany({
@@ -3918,13 +4001,15 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
     });
     return rows.map(fromPrismaUploadSession);
   },
-  async claimReconciliation({
+  async claimReconciliation({executionEpoch,
     sessionId,
     reconciliationAttemptId,
     leaseExpiresAt,
     updatedAt,
   }) {
-    const updated = await requiredPrisma().uploadSession.updateMany({
+    return requiredPrisma().$transaction(async tx=>{
+      await guardUploadEpoch(tx,executionEpoch);
+    const updated = await tx.uploadSession.updateMany({
       where: {
         id: sessionId,
         OR: [
@@ -3964,29 +4049,33 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
         updatedAt,
       },
     });
-    const row = await requiredPrisma().uploadSession.findUnique({
+    const row = await tx.uploadSession.findUnique({
       where: { id: sessionId },
     });
     if (!row) throw new Error("Upload Session not found");
+    await appendUploadSessionDispatch(tx,row);
     return {
       claimed: updated.count === 1,
       session: fromPrismaUploadSession(row),
     };
+    });
   },
-  async renewReconciliationClaim({
+  async renewReconciliationClaim({executionEpoch,
     sessionId,
     reconciliationAttemptId,
     leaseExpiresAt,
     updatedAt,
   }) {
-    const updated = await requiredPrisma().uploadSession.updateMany({
+    return requiredPrisma().$transaction(async tx=>{
+      await guardUploadEpoch(tx,executionEpoch);
+    const updated = await tx.uploadSession.updateMany({
       where: { id: sessionId, reconciliationAttemptId },
       data: {
         reconciliationLeaseExpiresAt: leaseExpiresAt,
         updatedAt,
       },
     });
-    const row = await requiredPrisma().uploadSession.findUnique({
+    const row = await tx.uploadSession.findUnique({
       where: { id: sessionId },
     });
     if (!row) throw new Error("Upload Session not found");
@@ -3994,14 +4083,17 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
       throw new UploadSessionReconciliationClaimLostError();
     }
     return fromPrismaUploadSession(row);
+    });
   },
-  async beginDiscard({
+  async beginDiscard({executionEpoch,
     sessionId,
     reconciliationAttemptId,
     leaseExpiresAt,
     updatedAt,
   }) {
-    const updated = await requiredPrisma().uploadSession.updateMany({
+    return requiredPrisma().$transaction(async tx=>{
+      await guardUploadEpoch(tx,executionEpoch);
+    const updated = await tx.uploadSession.updateMany({
       where: {
         id: sessionId,
         status: "uploading",
@@ -4020,21 +4112,25 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
         updatedAt,
       },
     });
-    const row = await requiredPrisma().uploadSession.findUnique({
+    const row = await tx.uploadSession.findUnique({
       where: { id: sessionId },
     });
     if (!row) throw new Error("Upload Session not found");
+    await appendUploadSessionDispatch(tx,row);
     return {
       claimed: updated.count === 1,
       session: fromPrismaUploadSession(row),
     };
+    });
   },
-  async releaseReconciliation({
+  async releaseReconciliation({executionEpoch,
     sessionId,
     reconciliationAttemptId,
     updatedAt,
   }) {
-    const updated = await requiredPrisma().uploadSession.updateMany({
+    return requiredPrisma().$transaction(async tx=>{
+      await guardUploadEpoch(tx,executionEpoch);
+    const updated = await tx.uploadSession.updateMany({
       where: { id: sessionId, reconciliationAttemptId },
       data: {
         reconcileAt: null,
@@ -4043,22 +4139,26 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
         updatedAt,
       },
     });
-    const row = await requiredPrisma().uploadSession.findUnique({
+    const row = await tx.uploadSession.findUnique({
       where: { id: sessionId },
     });
     if (!row) throw new Error("Upload Session not found");
     if (updated.count !== 1) {
       throw new UploadSessionReconciliationClaimLostError();
     }
+    await appendUploadSessionDispatch(tx,row);
     return fromPrismaUploadSession(row);
+    });
   },
-  async beginCompensation({
+  async beginCompensation({executionEpoch,
     sessionId,
     reconciliationAttemptId,
     failureCode,
     updatedAt,
   }) {
-    const updated = await requiredPrisma().uploadSession.updateMany({
+    return requiredPrisma().$transaction(async tx=>{
+      await guardUploadEpoch(tx,executionEpoch);
+    const updated = await tx.uploadSession.updateMany({
       where: {
         id: sessionId,
         status: {
@@ -4068,16 +4168,18 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
       },
       data: { status: "compensating", failureCode, updatedAt },
     });
-    const row = await requiredPrisma().uploadSession.findUnique({
+    const row = await tx.uploadSession.findUnique({
       where: { id: sessionId },
     });
     if (!row) throw new Error("Upload Session not found");
     if (updated.count !== 1) {
       throw new UploadSessionReconciliationClaimLostError();
     }
+    await appendUploadSessionDispatch(tx,row);
     return fromPrismaUploadSession(row);
+    });
   },
-  async settleTerminal({
+  async settleTerminal({executionEpoch,
     sessionId,
     reconciliationAttemptId,
     status,
@@ -4085,6 +4187,7 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
     updatedAt,
   }) {
     return requiredPrisma().$transaction(async (tx) => {
+      await guardUploadEpoch(tx,executionEpoch);
     const updated = await tx.uploadSession.updateMany({
       where: { id: sessionId, status: "compensating", reconciliationAttemptId },
       data: {
@@ -4111,16 +4214,19 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
       reason: failureCode,
     });
     await emitUploadIntakeFinished(tx, { workspaceId: row.workspaceId, sessionId, status });
+    await appendUploadSessionDispatch(tx,row);
     return fromPrismaUploadSession(row);
     });
   },
-  async deferReconciliation({
+  async deferReconciliation({executionEpoch,
     sessionId,
     reconciliationAttemptId,
     failureCode,
     reconcileAt,
     updatedAt,
   }) {
+    return requiredPrisma().$transaction(async tx=>{
+      await guardUploadEpoch(tx,executionEpoch);
     const release = {
       reconcileAt,
       reconciliationAttemptId: null,
@@ -4130,7 +4236,7 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
     // The claim fence holds the status still, so at most one update matches.
     const updated =
       (
-        await requiredPrisma().uploadSession.updateMany({
+        await tx.uploadSession.updateMany({
           where: {
             id: sessionId,
             reconciliationAttemptId,
@@ -4140,19 +4246,21 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
         })
       ).count ||
       (
-        await requiredPrisma().uploadSession.updateMany({
+        await tx.uploadSession.updateMany({
           where: { id: sessionId, reconciliationAttemptId, status: "compensating" },
           data: release,
         })
       ).count;
-    const row = await requiredPrisma().uploadSession.findUnique({
+    const row = await tx.uploadSession.findUnique({
       where: { id: sessionId },
     });
     if (!row) throw new Error("Upload Session not found");
     if (updated !== 1) {
       throw new UploadSessionReconciliationClaimLostError();
     }
+    await appendUploadSessionDispatch(tx,row);
     return fromPrismaUploadSession(row);
+    });
   },
 };
 
@@ -4338,9 +4446,9 @@ const r2UploadSessionStorage: UploadSessionStorage = {
   },
 };
 
-const productionUploadSessionModule = () => createUploadSessionModule({
+const productionUploadSessionModule = (executionEpoch?:number) => createUploadSessionModule({
   config: uploadSessionConfigFromEnv(),
-  persistence: prismaUploadSessionPersistence,
+  persistence: executionEpoch===undefined?prismaUploadSessionPersistence:fencedUploadPersistence(executionEpoch),
   storage: r2UploadSessionStorage,
   admission: {
     async resolveBrand(input) {
@@ -4622,8 +4730,8 @@ export class UploadSessionService {
     return result;
   }
 
-  async reconcileSession(sessionId:string,beforeProvider:(session:UploadSessionRecord)=>Promise<void>) {
-    return productionUploadSessionModule().reconcileDueSessions({sessionId,beforeProvider});
+  async reconcileSession(sessionId:string,executionEpoch:number,beforeProvider:(session:UploadSessionRecord)=>Promise<void>,beforeHttp:()=>Promise<void>) {
+    return productionUploadSessionModule(executionEpoch).reconcileDueSessions({sessionId,beforeProvider,beforeHttp});
   }
   async reconcileDueSessions() {
     return productionUploadSessionModule().reconcileDueSessions();

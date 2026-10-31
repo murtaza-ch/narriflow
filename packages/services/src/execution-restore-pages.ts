@@ -25,3 +25,6 @@ export const revokeRestoredAttemptsPage: ExecutionRestorePhaseHandler = async (t
   }
   return { processed: selected.length, next: rows.length > page.limit ? selected.at(-1)! : null };
 };
+
+export async function lockRestoreMetadataPlans(tx:Prisma.TransactionClient,epoch:number){await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`restore-metadata-plan:${epoch}`},0)) IS NULL AS locked`;}
+export async function readRestoreMetadataBarrier(tx:Prisma.TransactionClient,epoch:number,cutoff:Date){return tx.executionDispatch.findFirst({where:{deploymentEpoch:epoch,generation:1,kind:"maintenance",subjectKind:"maintenance",subjectId:`rs2.${epoch-1}.${epoch-1}.${epoch}.${cutoff.getTime()}.redispatch`,wakeKind:null,deadlineKind:null},select:{createdAt:true,id:true}});}

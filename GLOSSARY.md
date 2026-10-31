@@ -323,3 +323,12 @@ _Avoid_: Studio Editing Session, Social Publication Attempt
 **TikTok Inbox Delivery**:
 Delivery of a frozen clip video to a connected creator’s TikTok inbox, where the creator completes publication. Delivery settles the Social Publication Attempt as Sent to TikTok without a published event. Later verified evidence may report zero, one, or multiple public posts from that upload.
 _Avoid_: Published, automatic publication, failed delivery while awaiting the creator
+
+
+**Restore Metadata Barrier**:
+The committed `rs2` boundary after execution authority and immutable object bindings
+have been rebound, before product redispatch. It seals new deferred cleanup plans
+and gives their final recovery page an actual insertion-time horizon. An operator
+inspects this boundary before changing the Worker from fenced to closed; database
+intake remains closed.
+_Avoid_: Restore complete, new execution permission, automatic reopen

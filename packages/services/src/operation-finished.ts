@@ -40,7 +40,7 @@ export async function emitIntakeFinished(tx: Tx, ingestJobId: string, state: "fa
   await flushWorkspaceEvents(tx);
 }
 
-async function queueIngestJobFinished(tx: Tx, ingestJobId: string, state: FinishedState) {
+export async function queueIngestJobFinished(tx: Tx, ingestJobId: string, state: FinishedState) {
   const job = await tx.ingestJob.findUnique({ where: { id: ingestJobId }, select: { id: true, projectId: true, uploadSessionId: true, project: { select: { workspaceId: true } } } });
   if (!job) return;
   queueOperationFinished(tx, { workspaceId: job.project.workspaceId, projectId: job.projectId, operation: { kind: "intake", id: intakeOperationId(job) }, state });

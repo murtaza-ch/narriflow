@@ -1,10 +1,10 @@
-# Narriflow API (apps/api). Copy to apps/api/.env for local development; never a root .env.
+# Narriflow API (apps/api). Copy to apps/api/.dev.vars for local development; never a root .env.
 # Blank values are secrets or per-environment settings. Shared development resources
-# (Neon, Upstash, R2) must match apps/worker/.env; run `bun run env:check` before startup.
+# Neon must match packages/db/.env; R2 must match wrangler.jsonc. Run `bun run env:check`.
 
 # --- Core ---
 NODE_ENV=development
-PORT=4000
+APP_ENV=development
 # A: where providers, machine clients and MCP reach this API. WEB_ORIGIN: where people are sent.
 API_ORIGIN=http://localhost:4000
 WEB_ORIGIN=http://localhost:3000
@@ -12,18 +12,19 @@ WEB_ORIGIN=http://localhost:3000
 CORS_ALLOWED_ORIGINS=http://localhost:3000
 # Full frontend origins accepted in the Clerk session token's azp claim (no wildcard previews).
 CLERK_AUTHORIZED_PARTIES=http://localhost:3000
-# Pooled connection for runtime. DIRECT_URL belongs to the migration job, not this process.
+# CLI-only URLs for Wrangler local Hyperdrive. The dev launcher removes both
+# before creating Worker bindings. Deployed Workers use the HYPERDRIVE binding.
 DATABASE_URL=
-DATABASE_POOL_MAX=10
+DIRECT_URL=
+DATABASE_POOL_MAX=2
 DATABASE_POOL_IDLE_TIMEOUT_MS=30000
 DATABASE_POOL_CONNECTION_TIMEOUT_MS=10000
 API_STREAM_MAX_CONNECTIONS=100
 API_STREAM_MAX_CONNECTIONS_PER_ACTOR=5
 # Exact Clerk user IDs of platform staff, comma separated. Empty by default.
 PLATFORM_STAFF_CLERK_USER_IDS=
-# The one header the ingress overwrites with the client address (Railway: x-real-ip). Leave
-# unset until verified; unset trusts no forwarded header.
-TRUSTED_CLIENT_IP_HEADER=
+# Cloudflare overwrites this header. The local launcher does not trust client forwarding.
+TRUSTED_CLIENT_IP_HEADER=cf-connecting-ip
 
 # --- Clerk ---
 CLERK_SECRET_KEY=
@@ -40,7 +41,6 @@ R2_ACCOUNT_ID=
 R2_BUCKET=
 R2_ACCESS_KEY_ID=
 R2_SECRET_ACCESS_KEY=
-UPSTASH_REDIS_URL=
 
 # --- ElevenLabs Scribe ---
 # Signing secret of the workspace webhook that delivers speech-to-text results to
@@ -61,7 +61,7 @@ STRIPE_PRICE_BUSINESS_SEAT_MONTHLY=
 STRIPE_PRICE_BUSINESS_SEAT_ANNUAL=
 
 # --- Social and Zoom (optional; a missing provider degrades to its typed refusal) ---
-# Same encryption key as the worker.
+# Persist this key across API deployments and local development.
 SOCIAL_TOKEN_ENCRYPTION_KEY=
 GOOGLE_CLIENT_ID=
 GOOGLE_CLIENT_SECRET=
@@ -111,7 +111,9 @@ GENERATED_MEDIA_PROMPT_FINGERPRINT_KEY=
 PEXELS_API_KEY=
 # PEXELS_SEARCH_CACHE_TTL_SEC=
 # EXPORT_BUNDLE_RETENTION_DAYS=
-# ELEVENLABS_API_KEY and ELEVENLABS_WEBHOOK_ID are worker-only and not read here.
+ELEVENLABS_API_KEY=
+ELEVENLABS_WEBHOOK_ID=
+# SCRIBE_MAX_CONCURRENT_UNITS=
 
 # --- Upload tuning (optional; validated defaults apply) ---
 # UPLOAD_SINGLE_PUT_THRESHOLD_BYTES=
@@ -122,3 +124,22 @@ PEXELS_API_KEY=
 # UPLOAD_GRANT_TTL_SECONDS=
 # UPLOAD_SESSION_IDLE_MS=
 # UPLOAD_SESSION_HARD_LIFETIME_MS=
+
+# --- Durable scheduling and native executors ---
+# Key rings are JSON objects of key IDs to base64url secrets. Use separate keys
+# for each audience; copy only purpose-specific keys to Modal Secret objects.
+EXECUTOR_CONTROL_KEYS_JSON=
+MODAL_BRIDGE_ORIGIN=
+MODAL_BRIDGE_KEY_ID=
+MODAL_BRIDGE_KEYS_JSON=
+PROGRESS_CONNECT_KEY_ID=
+PROGRESS_CONNECT_KEYS_JSON=
+DEV_DEVICE_KEY_ID=
+DEV_DEVICE_KEYS_JSON=
+MEDIA_FETCH_TOOLCHAIN_FINGERPRINT=
+MEDIA_RENDER_TOOLCHAIN_FINGERPRINT=
+MEDIA_LOCAL_FETCH_TOOLCHAIN_FINGERPRINT=
+YOUTUBE_FETCH_MODE=local
+LOCAL_FETCH_WORKSPACE_IDS_JSON=[]
+# YOUTUBE_PROXY_ACCEPTED=true only after the configured Modal proxy passes gates.
+# Proxy credentials belong only to the fetch_source Modal Secret at launch.

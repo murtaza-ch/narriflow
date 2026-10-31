@@ -33,6 +33,7 @@ async function assignedReferenceHeld(tx: Tx, artifact: ExecutionArtifact, now: D
     }
     case "workflow_run": {
       const job = await tx.workflowRun.findUnique({ where: { id }, select: { projectId: true, stage: true, status: true } });
+      if(job&&!await projectHeld(tx,job.projectId,now))return false;
       if (job?.stage === "export_bundle" && artifact.role === "export_bundle") {
         const bundle = await tx.exportBundle.findUnique({ where: { workflowRunId: id }, select: { status: true, storageKey: true, expiresAt: true } });
         if (!bundle) return false;
@@ -53,17 +54,18 @@ async function assignedReferenceHeld(tx: Tx, artifact: ExecutionArtifact, now: D
     case "outbound_probe": return Boolean(await tx.outboundProbe.findFirst({ where: { id, resultStorageKey: artifact.storageKey }, select: { id: true } }));
     case "outbound_delivery": return Boolean(await tx.outboundDelivery.findFirst({ where: { id, lastReceiptArtifactId: artifact.id, expiresAt: { gt: now } }, select: { id: true } }));
     case "social_publication": return publicationObjectIsHeld(tx, artifact.storageKey, now);
-    case "clip_selection_window": return Boolean(await tx.clipSelectionWindow.findFirst({ where: { id, resultStorageKey: artifact.storageKey }, select: { id: true } }));
+    case "clip_selection_window": {const row=await tx.clipSelectionWindow.findFirst({where:{id,resultStorageKey:artifact.storageKey},select:{projectId:true}});return Boolean(row&&await projectHeld(tx,row.projectId,now));}
     case "dubbing": {
-      const row = await tx.clipDub.findUnique({ where: { id }, select: { audioStorageKey: true, renderStorageKey: true } });
-      return Boolean(row && [row.audioStorageKey, row.renderStorageKey].includes(artifact.storageKey));
+      const row = await tx.clipDub.findUnique({ where: { id }, select: { audioStorageKey: true, renderStorageKey: true,projectId:true } });
+      return Boolean(row && await projectHeld(tx,row.projectId,now) && [row.audioStorageKey, row.renderStorageKey].includes(artifact.storageKey));
     }
-    case "export_bundle": return Boolean(await tx.exportBundle.findFirst({ where: { id, OR: [{ storageKey: artifact.storageKey }, { attemptStorageKey: artifact.storageKey }] }, select: { id: true } }));
+    case "export_bundle": {const row=await tx.exportBundle.findFirst({where:{id,OR:[{storageKey:artifact.storageKey},{attemptStorageKey:artifact.storageKey}]},select:{operation:{select:{projectId:true}}}});return Boolean(row&&await projectHeld(tx,row.operation.projectId,now));}
     default: throw new MediaCleanupControlError("cleanup_intent_invalid");
   }
 }
 async function retiredReferenceHeld(tx: Tx, intent: Readonly<MediaCleanupObligation>) {
   const key = intent.objectKey;
+  if(intent.projectId){const project=await tx.project.findUnique({where:{id:intent.projectId},select:{purgeStartedAt:true}});if(project?.purgeStartedAt)return false;}
   if (intent.cleanupClass === "generated_asset" || intent.cleanupClass === "thumbnail_asset") {
     if (await tx.visualAsset.findUnique({ where: { storageKey: key }, select: { deletedAt: true } }).then(row => row?.deletedAt === null)) return true;
     if (intent.cleanupClass === "generated_asset" && await generatedMediaObjectIsHeld(tx, key)) return true;
@@ -85,6 +87,7 @@ async function retiredReferenceHeld(tx: Tx, intent: Readonly<MediaCleanupObligat
  * Project-backed committed evidence is retained through its Project lifetime.
  * Private validation/probe evidence remains held until its owning row is purged. */
 export const mediaCleanupObjectRetainUntil: MediaCleanupHold = async (tx, intent, now) => {
+  if(await tx.visualAsset.findUnique({where:{storageKey:intent.objectKey},select:{deletedAt:true}}).then(row=>row?.deletedAt===null)||await tx.brandFont.findUnique({where:{storageKey:intent.objectKey},select:{id:true}}))return revisit(now);
   const artifact = await tx.executionArtifact.findUnique({ where: { storageKey: intent.objectKey }, include: { attempt: { select: { operationDeadlineAt: true } } } });
   if (artifact) {
     const until = new Date(Math.max(artifact.grantExpiresAt.getTime(), artifact.attempt.operationDeadlineAt.getTime()) + 120_000);
@@ -96,6 +99,7 @@ export const mediaCleanupObjectRetainUntil: MediaCleanupHold = async (tx, intent
     // Missing ownership evidence is not an orphan proof.
     throw new MediaCleanupControlError("cleanup_intent_invalid");
   }
+  if(intent.cleanupClass==="retention_receipt"){const match=/^retention-receipts\/v1\/([a-f0-9]{64})\.json$/.exec(intent.objectKey);if(!match)throw new MediaCleanupControlError("cleanup_intent_invalid");const row=await tx.projectDeletionReceipt.findUnique({where:{projectIdHash:match[1]!},select:{tombstoneStorageKey:true,deleteAfter:true}});if(row&&row.tombstoneStorageKey!==intent.objectKey)throw new MediaCleanupControlError("cleanup_intent_invalid");return row&&row.deleteAfter>now?row.deleteAfter:null;}
   if (intent.cleanupClass === "notification_body") {
     const delivery = await tx.outboundDelivery.findFirst({ where: { bodyStorageKey: intent.objectKey }, select: { expiresAt: true } });
     return delivery && delivery.expiresAt > now ? new Date(delivery.expiresAt.getTime() + 120_000) : null;

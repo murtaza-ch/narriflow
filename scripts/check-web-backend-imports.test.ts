@@ -83,10 +83,9 @@ describe("web/API split guard", () => {
     ]);
   });
 
-  test("reads server variable names from the API and worker examples, not values", () => {
+  test("reads server variable names from the API and migration examples, not values", () => {
     const root = repository({
-      "apps/api/.env.example": `PORT=4000\nCLERK_SECRET_KEY=\n# OPENAI_CLIP_MODEL=\nNEXT_PUBLIC_GOOGLE_CLIENT_ID=\nNODE_ENV=development\n`,
-      "apps/worker/.env.example": `R2_SECRET_ACCESS_KEY=abc\n`,
+      "apps/api/.dev.vars.example": `PORT=4000\nR2_SECRET_ACCESS_KEY=abc\nCLERK_SECRET_KEY=\n# OPENAI_CLIP_MODEL=\nNEXT_PUBLIC_GOOGLE_CLIENT_ID=\nNODE_ENV=development\n`,
     });
     // Clerk's SDK names its own secret setting in browser code, so that name is allowed.
     expect(serverVariableNames(root)).toEqual(["OPENAI_CLIP_MODEL", "R2_SECRET_ACCESS_KEY"]);

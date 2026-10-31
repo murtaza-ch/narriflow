@@ -10,7 +10,7 @@ import { decodeClipSelectionInput, decodeClipSelectionResult, encodeClipSelectio
 import { SYSTEM_PROMPT, CLIP_DETECTION_JSON_SCHEMA } from "./clip-selection-policy";
 import { writeClipSelectionObject, type ClipSelectionStorage } from "./clip-selection-preparation";
 import { admitMediaCleanupObligations } from "./media-cleanup-admission";
-import { lockPlannedExecutionObject } from "./execution-object-cleanup";
+import { lockPlannedExecutionObject,fenceRestoreObjectPut } from "./execution-object-cleanup";
 import { uuidV5 } from "./uuid-v5";
 
 type Tx=Prisma.TransactionClient;
@@ -89,8 +89,10 @@ export function createSelectionRestorePreparation(options:{database:PrismaClient
       const notBefore=new Date(Math.max(clock.now.getTime()+120_000,...state.old.map(row=>row.operationDeadlineAt.getTime()+120_000)));
       await admitMediaCleanupObligations(tx,keys.map(objectKey=>({origin:"selection_execution",cleanupClass:"execution_input",projectId:state.parent.projectId,objectKey,notBefore})),{deferDispatch:true});
     });
+    await options.database.$transaction(tx=>fenceRestoreObjectPut(tx,page,{origin:"selection_execution",storageKey:inputKey}));
     const adoptedInput=await writeClipSelectionObject(options.storage,inputKey,encoded),rows:Prisma.ClipSelectionWindowCreateManyInput[]=[];
     for(const item of results){
+      if(item.bytes)await options.database.$transaction(tx=>fenceRestoreObjectPut(tx,page,{origin:"selection_execution",storageKey:item.key!}));
       const row=item.row,result=item.bytes?await writeClipSelectionObject(options.storage,item.key!,item.bytes):null;
       rows.push({id:item.id,projectId:row.projectId,workflowRunId:row.workflowRunId,workflowGeneration:state.parent.generation,deploymentEpoch:page.deploymentEpoch,generation:row.generation+1,
         transcriptId:row.transcriptId,transcriptGeneration:row.transcriptGeneration,transcriptAttemptId:row.transcriptAttemptId,transcriptContentHash:row.transcriptContentHash,sourceRevision:row.sourceRevision,sourceAudioId:row.sourceAudioId,sourceAudioBindingHash:row.sourceAudioBindingHash,

@@ -7,7 +7,7 @@ import { ClipPreparationService,clipPreparationExecutionInputHash,validateClipPr
 import { decodeClipPreparationInput,encodeClipPreparationInput,encodeClipPreparationResult } from "./clip-preparation-input";
 import { derivePeaksStorageKey } from "./clip-preview-storage";
 import { admitMediaCleanupObligations } from "./media-cleanup-admission";
-import { lockPlannedExecutionObject } from "./execution-object-cleanup";
+import { lockPlannedExecutionObject,fenceRestoreObjectPut } from "./execution-object-cleanup";
 import type { PrivateJsonStorage } from "./private-json-storage";
 import { clipSelectionBytesHash } from "./clip-selection-input";
 
@@ -87,9 +87,10 @@ export function createPreparationRestorePreparation(options:{database:PrismaClie
       const [clock]=await tx.$queryRaw<Array<{now:Date}>>`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS now`;if(!clock)throw invalid();
       await admitMediaCleanupObligations(tx,keys.map(objectKey=>({origin:"clip_preparation_input",cleanupClass:"execution_input",projectId:job.projectId,clipId:job.clipId,objectKey,notBefore:new Date(Math.max(clock.now.getTime()+120000,job.operationDeadlineAt.getTime()+120000))})),{deferDispatch:true});
     });
+    await options.database.$transaction(tx=>fenceRestoreObjectPut(tx,page,{origin:"clip_preparation_input",storageKey:inputKey}));
     const measured=await options.storage.write(inputKey,encoded.bytes);if(measured.byteLength!==encoded.byteLength || measured.sha256!==encoded.sha256)throw invalid();
     const inputObject=clipPreparationObjectSchema.parse({storageKey:inputKey,...measured});let objects:Prisma.InputJsonValue|null=null;
-    if(rewritten){const manifest=await options.storage.write(manifestKey!,rewritten.bytes);if(manifest.byteLength!==rewritten.byteLength || manifest.sha256!==rewritten.sha256)throw invalid();objects=clipPreparationReadyObjectsSchema.parse({...oldObjects!,manifest:{storageKey:manifestKey!,...manifest}}) as Prisma.InputJsonValue;}
+    if(rewritten){await options.database.$transaction(tx=>fenceRestoreObjectPut(tx,page,{origin:"clip_preparation_input",storageKey:manifestKey!}));const manifest=await options.storage.write(manifestKey!,rewritten.bytes);if(manifest.byteLength!==rewritten.byteLength || manifest.sha256!==rewritten.sha256)throw invalid();objects=clipPreparationReadyObjectsSchema.parse({...oldObjects!,manifest:{storageKey:manifestKey!,...manifest}}) as Prisma.InputJsonValue;}
     return transition(options,{target:state.target,next:state.next,oldHash,input,inputObject,result:rewritten?.result??null,objects,keys,failed:job.status==="failed"});
   };
 }

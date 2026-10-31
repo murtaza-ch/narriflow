@@ -1,3 +1,5 @@
+import { assertExecutionRestorePage,lockRestoreMetadataPlans,readRestoreMetadataBarrier } from "./execution-restore-pages";
+import type { ExecutionRestorePage } from "./execution-restore";
 import type { Prisma, PrismaClient } from "@prisma/client";
 import type { MediaCleanupOrigin, MediaCleanupClass } from "./media-cleanup-contract";
 import { WorkflowFailure } from "./workflow-attempt-contract";
@@ -35,4 +37,13 @@ export async function selectionExecutionObjectRetainUntil(database: Pick<PrismaC
   const project=await database.project.findUnique({where:{id:row.projectId},select:{purgeStartedAt:true,expiresAt:true}});
   if(!project || project.purgeStartedAt || (project.expiresAt && project.expiresAt<=clock.now))return row.operationDeadlineAt.getTime()+120000>clock.now.getTime()?new Date(row.operationDeadlineAt.getTime()+120000):null;
   return new Date(Math.max(clock.now.getTime() + 86_400_000, row.operationDeadlineAt.getTime() + 120_000));
+}
+
+/** Each restore PUT gets a fresh bounded physical-write drain. Planning all
+ * keys once cannot cover a later key after several slow writes. The barrier
+ * seals new starts; poisoned/deleting destinations never get another PUT. */
+export async function fenceRestoreObjectPut(tx:Prisma.TransactionClient,page:ExecutionRestorePage,input:{origin:MediaCleanupOrigin;storageKey:string}){
+ await assertExecutionRestorePage(tx,page);await lockRestoreMetadataPlans(tx,page.deploymentEpoch);if(await readRestoreMetadataBarrier(tx,page.deploymentEpoch,page.cutoff))throw Error("cleanup_restore_metadata_sealed");
+ const id=await lockPlannedExecutionObject(tx,input);
+ await tx.$executeRaw`UPDATE "MediaCleanupObligation" SET "nextAttemptAt"=GREATEST("nextAttemptAt",(clock_timestamp() AT TIME ZONE 'UTC')+INTERVAL '120 seconds'),"updatedAt"=clock_timestamp() AT TIME ZONE 'UTC' WHERE id=${id}::uuid`;
 }
