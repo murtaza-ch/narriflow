@@ -3487,7 +3487,7 @@ model SourceRefundNeed {
   sourceRevision Int
   sourceAudioId  String    @db.Uuid
   sourceAudioBindingHash String @db.Char(64)
-  videoBindingHash String @db.Char(64)
+  videoBindingHash String? @db.Char(64)
   failureCode    String    @default("source_audio_video_mismatch") @db.VarChar(100)
   resolvedAt     DateTime?
   createdAt      DateTime  @default(now())

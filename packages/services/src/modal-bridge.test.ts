@@ -9,10 +9,10 @@ const command = { action: "spawn" as const, function: "fetch_source" as const, a
     subject: { kind: "ingest_job" as const, id: "dfdc23c0-d8bf-4384-a635-6785275dc839" }, inputHash: "a".repeat(64) } };
 
 describe("Modal reference bridge transport", () => {
-  test("signs reference bytes and refreshes authentication without changing delivery content", async () => {
+  test.each(["https://murtazach275--narriflow-media-bridge.modal.run", "https://murtazach275--narriflow-media-bridge.us-east.modal.run"])("signs reference bytes and refreshes authentication without changing delivery content at %s", async origin => {
     let now = new Date("2026-10-31T00:00:00Z");
     const bodies: string[] = [], hashes: string[] = [], signatures: string[] = [];
-    const client = createModalBridgeClient({ origin: "https://murtazach275--narriflow-media-bridge.modal.run", keyId: "public", key }, {
+    const client = createModalBridgeClient({ origin, keyId: "public", key }, {
       now: () => now,
       fetch: async (input, init) => {
         const url = new URL(String(input));
