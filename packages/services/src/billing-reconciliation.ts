@@ -79,7 +79,23 @@ export function createBillingReconciliation(options: {
       const claim: BillingReconciliationClaim = { workspaceId: row.workspaceId, attemptId: row.reconcileAttemptId!, attemptCount: row.attemptCount, dueAt: row.nextReconcileAt };
       return { kind: held ? "held" as const : "claimed" as const, dueAt: deadline, claim, watchdogId };
     });
-    if (prepared.kind === "superseded" || prepared.kind === "sleep") return prepared;
+    if (prepared.kind === "superseded") {
+      const current = await db.$transaction(async tx => {
+        const { epoch } = await readExecutionAdmission(tx), record = await readExecutionDispatch(tx,reference.dispatchId);
+        if (reference.kind !== "operation_driver" || reference.subject.kind !== "workspace_billing" || epoch !== reference.deploymentEpoch ||
+          !record || JSON.stringify(record.reference) !== JSON.stringify(reference)) return null;
+        await lockWorkspaceUsage(tx,reference.subject.id);
+        await tx.$queryRaw`SELECT id FROM "WorkspaceBillingAccount" WHERE "workspaceId"=${reference.subject.id}::uuid FOR UPDATE`;
+        const row = await tx.workspaceBillingAccount.findUnique({ where: { workspaceId: reference.subject.id } });
+        if (!row || row.reconciliationEpoch !== epoch || row.reconciliationGeneration < reference.generation) return null;
+        return recoverBillingReconciliation(tx,reference.subject.id);
+      });
+      // A late receipt may repair the current accepted due fact, but cannot
+      // grant another provider claim or change its immutable registration.
+      if (current) await options.register([current.dispatchId]);
+      return prepared;
+    }
+    if (prepared.kind === "sleep") return prepared;
     try { await options.register([prepared.watchdogId]); }
     catch (error) {
       if (prepared.kind === "claimed") await db.$transaction(async tx => {

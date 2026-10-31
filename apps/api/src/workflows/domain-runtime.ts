@@ -1,6 +1,7 @@
 import { deliverExecutionDispatches, getExecutionDispatch } from "@narriflow/services/execution-dispatch-runtime";
 import { getPrismaClient } from "@narriflow/db/client";
-import { readExecutionDispatch } from "@narriflow/services/execution-dispatch";
+import { readExecutionDispatch, type ExecutionDispatchRecord } from "@narriflow/services/execution-dispatch";
+import type { ExecutorExpiryResult } from "@narriflow/services/executor-domain-control";
 import { getNativeValidationService } from "@narriflow/services/native-validation-runtime";
 import { getThumbnailFrameExecution } from "@narriflow/services/thumbnail-frame-preparation-runtime";
 import { getOutboundProbeService } from "@narriflow/services/outbound-probe-runtime";
@@ -9,6 +10,7 @@ import { getClipSelectionControl } from "@narriflow/services/clip-selection-runt
 import { getGeneratedMediaExecution } from "@narriflow/services/generated-media-runtime";
 import { getClipPreparationService } from "@narriflow/services/clip-preparation-runtime";
 import { getBillingReconciliation } from "@narriflow/services/billing-reconciliation-runtime";
+import { getLibraryIndex } from "@narriflow/services/library-index-runtime";
 import { createWorkspaceNotificationDispatcher, isCurrentNotificationTarget } from "@narriflow/services/notification-dispatch";
 import { prepareIngestSourceExecution } from "@narriflow/services/ingest-source-execution";
 import { getIngestJobLifecycle } from "@narriflow/services/ingest-job-lifecycle-runtime";
@@ -19,24 +21,56 @@ import { continueScribeCapacityRelease } from "@narriflow/services/transcription
 import { executionDeadlineSchema, type ExecutionDispatchReference } from "@narriflow/validators/execution";
 import { NonRetryableError } from "cloudflare:workflows";
 import type { ApiWorkerBindings } from "../worker-bindings";
-import { createWorkerExecutor } from "../domains/execution/runtime";
+import { createWorkerExecutor, getWorkerRenderGroupService } from "../domains/execution/runtime";
 import { createWorkerExecutionScheduler } from "./scheduler";
 import type { WorkflowCommandHandler, WorkflowHandlerRegistry } from "./protocol";
 import { createNativeOperationDriver } from "./native-operation-driver";
+import { createRenderRunDriver } from "./render-run-driver";
 
-async function nativeDomain(reference: ExecutionDispatchReference) {
+async function nativeDomain(reference: ExecutionDispatchReference, bindings: ApiWorkerBindings) {
   if (reference.subject.kind === "native_validation") return getNativeValidationService();
   if (reference.subject.kind === "thumbnail_frame") return getThumbnailFrameExecution();
   if (reference.subject.kind === "outbound_probe") return getOutboundProbeService();
   if (reference.subject.kind === "outbound_delivery") return getOutboundDeliveryService();
   if (reference.subject.kind === "generated_media") return getGeneratedMediaExecution();
   if (reference.subject.kind === "clip_preparation") return getClipPreparationService();
+  if (reference.subject.kind === "render_group") return getWorkerRenderGroupService(bindings.MEDIA_BUCKET);
   throw new NonRetryableError("unsupported_native_subject");
 }
 
 /** Domain owners install their targeted command handlers here. Missing kinds
  * fail explicitly in the entrypoint; there is no successful default handler. */
 export function workflowDomainRegistry(bindings: ApiWorkerBindings): WorkflowHandlerRegistry {
+  const expireNativeDeadline = async (record: ExecutionDispatchRecord): Promise<ExecutorExpiryResult> => {
+    const database = getPrismaClient();
+    if (!database) throw new Error("Native deadline requires a database scope");
+    if (record.deadlineKind !== "lease" && record.deadlineKind !== "operation") throw new NonRetryableError("unsupported_native_deadline");
+    if (!record.observedDeadlineAt) throw new NonRetryableError("missing_native_deadline");
+    if (record.observedDeadlineAt.getTime() > Date.now()) return { kind: "sleep", dueAt: record.observedDeadlineAt };
+    let attemptToken: string | undefined;
+    let unownedExpiry: ExecutorExpiryResult | undefined;
+    if (record.reference.subject.kind === "render_group" && record.deadlineKind === "operation") {
+      const service = await getWorkerRenderGroupService(bindings.MEDIA_BUCKET);
+      const expiry = await service.domain.expirePreparationDeadline(record.reference, { kind: "operation", observedDeadlineAt: record.observedDeadlineAt });
+      if (expiry.kind === "native") attemptToken = expiry.attemptToken;
+      else {
+        if (expiry.kind === "sleep") return expiry;
+        unownedExpiry = expiry;
+        if ("dispatchIds" in expiry) await deliverExecutionDispatches(expiry.dispatchIds ?? []);
+      }
+    }
+    const attempts = await database.executionAttempt.findMany({ where: { ...(attemptToken ? { attemptToken } : {}), deploymentEpoch: record.reference.deploymentEpoch,
+      generation: record.reference.generation, inputHash: record.reference.inputHash,
+      dispatch: { subjectKind: record.reference.subject.kind, subjectId: record.reference.subject.id, kind: { in: ["modal_execution", "local_fetch"] } } }, take: 2 });
+    if (!attempts.length) return unownedExpiry ?? { kind: "superseded" };
+    if (attempts.length !== 1) throw new NonRetryableError("ambiguous_native_admission");
+    const attempt = attempts[0]!;
+    const target = await readExecutionDispatch(database, attempt.dispatchId);
+    if (!target) return { kind: "superseded" };
+    const deadline = executionDeadlineSchema.parse({ reference: target.reference, attemptToken: attempt.attemptToken,
+      kind: record.deadlineKind, observedDeadlineAt: record.observedDeadlineAt.toISOString() });
+    return (await createWorkerExecutor(target.reference, bindings)).control.expireDeadline({ deadline, deliveryId: record.reference.dispatchId });
+  };
   const native: WorkflowCommandHandler = async command => {
     const database = getPrismaClient();
     if (!database) throw new Error("Native driver requires a database scope");
@@ -51,26 +85,13 @@ export function workflowDomainRegistry(bindings: ApiWorkerBindings): WorkflowHan
       }
     }
     if (record.deadlineKind) {
-      if (record.deadlineKind !== "lease" && record.deadlineKind !== "operation") throw new NonRetryableError("unsupported_native_deadline");
-      if (!record.observedDeadlineAt) throw new NonRetryableError("missing_native_deadline");
-      if (record.observedDeadlineAt.getTime() > Date.now()) return { type: "sleep", until: record.observedDeadlineAt.toISOString() };
-      const attempts = await database.executionAttempt.findMany({ where: { deploymentEpoch: record.reference.deploymentEpoch,
-        generation: record.reference.generation, inputHash: record.reference.inputHash,
-        dispatch: { subjectKind: record.reference.subject.kind, subjectId: record.reference.subject.id, kind: { in: ["modal_execution", "local_fetch"] } } }, take: 2 });
-      if (!attempts.length) return { type: "complete", disposition: "superseded" };
-      if (attempts.length !== 1) throw new NonRetryableError("ambiguous_native_admission");
-      const attempt = attempts[0]!;
-      const target = await readExecutionDispatch(database, attempt.dispatchId);
-      if (!target) return { type: "complete", disposition: "superseded" };
-      const deadline = executionDeadlineSchema.parse({ reference: target.reference, attemptToken: attempt.attemptToken,
-        kind: record.deadlineKind, observedDeadlineAt: record.observedDeadlineAt.toISOString() });
-      const { control } = await createWorkerExecutor(target.reference, bindings);
-      const outcome = await control.expireDeadline({ deadline, deliveryId: record.reference.dispatchId });
+      const outcome = await expireNativeDeadline(record);
+      if ("dispatchIds" in outcome) await deliverExecutionDispatches(outcome.dispatchIds ?? []);
       return outcome.kind === "sleep" ? { type: "sleep", until: outcome.dueAt.toISOString() }
         : { type: "complete", disposition: outcome.kind === "superseded" ? "superseded" : "terminal" };
     }
     return createNativeOperationDriver({ now: Date.now, prepare: async reference => {
-      if (reference.subject.kind !== "ingest_job") return (await nativeDomain(reference)).prepareExecution(reference);
+      if (reference.subject.kind !== "ingest_job") return (await nativeDomain(reference, bindings)).prepareExecution(reference);
       const job = await database.ingestJob.findUnique({ where: { id: reference.subject.id }, select: { jobType: true, payload: true } });
       if (!job) return { kind: "superseded" };
       const environment = readServiceEnvironment();
@@ -82,6 +103,19 @@ export function workflowDomainRegistry(bindings: ApiWorkerBindings): WorkflowHan
       deliver: ids => Promise.all(ids.map(id => getExecutionDispatch().deliver(id))),
     })(command);
   };
+  const render: WorkflowCommandHandler = command => createRenderRunDriver({ now: Date.now,
+    prepare: reference => getWorkflowRunLifecycle().prepareRenderRun(reference),
+    settle: reference => getWorkflowRunLifecycle().settleRenderRun(reference),
+    deliver: deliverExecutionDispatches,
+    expire: async observation => {
+      const database = getPrismaClient();
+      if (!database) throw new Error("Render deadline requires a database scope");
+      const record = await readExecutionDispatch(database, observation.reference.dispatchId);
+      if (!record || JSON.stringify(record.reference) !== JSON.stringify(observation.reference) || record.deadlineKind !== "operation" ||
+        record.observedDeadlineAt?.getTime() !== observation.observedDeadlineAt.getTime()) return { kind: "superseded" };
+      return expireNativeDeadline(record);
+    },
+  })(command);
   const workflow: WorkflowCommandHandler = async ({ reference }) => {
     const database = getPrismaClient();
     if (!database) throw new Error("Operation driver requires a database scope");
@@ -104,6 +138,10 @@ export function workflowDomainRegistry(bindings: ApiWorkerBindings): WorkflowHan
       return result.kind === "wait" ? { type: "wait", until: result.dueAt.toISOString(), deliveryId: reference.dispatchId }
         : { type: "complete", disposition: result.outcome === "superseded" ? "superseded" : "terminal" };
     }
+    if (run.stage === "stt" && run.status === "completed") {
+      await deliverExecutionDispatches(await database.$transaction(tx => getWorkflowRunLifecycle().readCompletedTranscriptionWakesWithinTransaction(tx, reference)));
+      return { type: "complete", disposition: "terminal" };
+    }
     if (["completed", "cancelled", "failed"].includes(run.status)) return { type: "complete", disposition: "terminal" };
     if (run.stage !== "stt") throw new NonRetryableError(`unsupported_operation_stage:${run.stage}`);
     const result = await getTranscriptionControl().run(reference);
@@ -121,6 +159,12 @@ export function workflowDomainRegistry(bindings: ApiWorkerBindings): WorkflowHan
   };
   const billing: WorkflowCommandHandler = async ({ reference }) => {
     const result = await getBillingReconciliation().run(reference);
+    if (result.kind === "sleep") return { type: "sleep", until: result.dueAt.toISOString() };
+    if (result.kind === "wait") return { type: "wait", until: result.dueAt.toISOString(), deliveryId: reference.dispatchId };
+    return { type: "complete", disposition: result.kind === "superseded" ? "superseded" : "terminal" };
+  };
+  const library: WorkflowCommandHandler = async ({ reference }) => {
+    const result = await getLibraryIndex().run(reference);
     if (result.kind === "sleep") return { type: "sleep", until: result.dueAt.toISOString() };
     if (result.kind === "wait") return { type: "wait", until: result.dueAt.toISOString(), deliveryId: reference.dispatchId };
     return { type: "complete", disposition: result.kind === "superseded" ? "superseded" : "terminal" };
@@ -155,8 +199,8 @@ export function workflowDomainRegistry(bindings: ApiWorkerBindings): WorkflowHan
     throw new Error(`Progress continuation ${outcome.status}`);
   };
   return { project_progress: { maintenance: progress, workflow_event: progress },
-    import_pipeline: { ingest_job: native },
-    operation_driver: { native_validation: native, thumbnail_frame: native, outbound_probe: native, outbound_delivery: native, generated_media: native, clip_preparation: native, ingest_job: native,
-      workflow_run: workflow, clip_selection_window: selectionWindow, workspace_billing: billing, completion_callback: notification, webhook_subscription: notification,
+    import_pipeline: { ingest_job: native }, render_run: { workflow_run: render, render_group: render },
+    operation_driver: { native_validation: native, thumbnail_frame: native, outbound_probe: native, outbound_delivery: native, generated_media: native, clip_preparation: native, render_group: native, ingest_job: native,
+      workflow_run: workflow, clip_selection_window: selectionWindow, workspace_billing: billing, library_index: library, completion_callback: notification, webhook_subscription: notification,
       workspace_event: notificationEvents, maintenance: notificationEvents } };
 }

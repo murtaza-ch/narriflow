@@ -31,6 +31,7 @@ import { lockPlannedExecutionObject } from "./execution-object-cleanup";
 import type { NativeValidationPreparation } from "./native-validation";
 import { appendExecutionDispatch, readExecutionDispatch, executionDispatchIdentity } from "./execution-dispatch";
 import { lockWorkspaceUsage } from "./processing-usage";
+import { appendWorkflowRunDispatch } from "./workflow-dispatch";
 import type { ExecutorArtifactCommit, ExecutorDomainLock, ExecutorMutationResult, ExecutorFailureInput, ExecutorMutationContext, ExecutorProgressInput, ExecutorReleaseInput, ExecutorExpiryObservation, ExecutorExpiryResult } from "./executor-domain-control";
 
 type Tx = Prisma.TransactionClient;
@@ -497,7 +498,7 @@ export class RenderGroupLifecycle {
 
   async lockExecution(tx: Tx, reference: ExecutionDispatchReference, attemptToken: string): Promise<ExecutorDomainLock<RenderGroupExecutionReference>> {
     const state = await this.executionState(tx, reference, attemptToken);
-    if (state.kind === "terminal") return state;
+    if (state.kind === "terminal") return { ...state, dispatchIds: await this.recordedExecutionWakes(tx, reference) };
     const project = await tx.project.findFirst({ where: { id: state.ref.projectId, ...accessibleProjectWhere(state.now), workspace: { status: "active" } }, select: { id: true, sourceRevision: true } });
     const preparation = state.group.preparationId ? await tx.clipPreparation.findUnique({ where: { id: state.group.preparationId }, select: { sourceRevision: true, projectId: true, clipId: true, deploymentEpoch: true } }) : null;
     if (project && preparation && (preparation.sourceRevision !== project.sourceRevision || preparation.projectId !== project.id || preparation.clipId !== state.group.clipId || preparation.deploymentEpoch !== state.group.deploymentEpoch)) {
@@ -572,12 +573,27 @@ export class RenderGroupLifecycle {
     const finished = await appendExecutionDispatch(tx, { deploymentEpoch: ref.deploymentEpoch, kind: "operation_driver", subject: { kind: "render_group", id: ref.groupId },
       generation: ref.generation, inputHash: inputHash, dueAt: now, wakeKind: "execution_finished" });
     const ids = [wake.reference.dispatchId, finished.reference.dispatchId];
+    const parent = await appendWorkflowRunDispatch(tx, ref.workflowRunId);
+    const parentWake = await appendExecutionDispatch(tx, { ...parent.reference, dueAt: now, wakeKind: `group_${wake.reference.dispatchId.replaceAll("-", "")}` });
+    ids.push(parentWake.reference.dispatchId);
     if (retry) {
       const queued = await appendExecutionDispatch(tx, { deploymentEpoch: current.deploymentEpoch, kind: "operation_driver", subject: { kind: "render_group", id: current.id },
         generation: current.generation, inputHash: inputHash, dueAt: current.nextAttemptAt ?? now });
       ids.push(queued.reference.dispatchId);
     }
     return { dispatchIds: ids };
+  }
+
+  private async recordedExecutionWakes(tx: Tx, reference: ExecutionDispatchReference): Promise<string[]> {
+    const rows = await tx.executionDispatch.findMany({ where: { deploymentEpoch: reference.deploymentEpoch, generation: reference.generation,
+      inputHash: reference.inputHash, subjectKind: "render_group", subjectId: reference.subject.id,
+      OR: [{ kind: "operation_driver", wakeKind: "execution_finished" }, { kind: "render_run", wakeKind: "group_outcome" }] },
+      orderBy: { id: "asc" }, take: 2 });
+    const outcome = rows.find(row => row.kind === "render_run");
+    const group = outcome ? await tx.renderGroup.findUnique({ where: { id: reference.subject.id }, select: { workflowRunId: true } }) : null;
+    const parent = outcome && group ? await tx.executionDispatch.findFirst({ where: { deploymentEpoch: reference.deploymentEpoch, kind: "render_run", subjectKind: "workflow_run", subjectId: group.workflowRunId,
+      wakeKind: `group_${outcome.id.replaceAll("-", "")}` }, select: { id: true } }) : null;
+    return [...rows.map(row => row.id), ...(parent ? [parent.id] : [])];
   }
 
   private async prepareInputWithinTransaction(tx: Tx, reference: ExecutionDispatchReference): Promise<RenderGroupInputPreparation> {
@@ -587,7 +603,7 @@ export class RenderGroupLifecycle {
       !registered || JSON.stringify(registered.reference) !== JSON.stringify(reference)) return { kind: "superseded", dispatchIds: [] };
     const initial = await tx.renderGroup.findUnique({ where: { id: reference.subject.id } });
     const state = await this.executionState(tx, reference, initial?.attemptToken ?? reference.dispatchId);
-    if (state.kind === "terminal") return { kind: state.disposition.disposition === "superseded" ? "superseded" : "terminal", dispatchIds: [] };
+    if (state.kind === "terminal") return { kind: state.disposition.disposition === "superseded" ? "superseded" : "terminal", dispatchIds: await this.recordedExecutionWakes(tx, reference) };
     const { group, parent, now, ref } = state;
     const project = await tx.project.findFirst({ where: { id: parent.projectId, ...accessibleProjectWhere(now), workspace: { status: "active" } }, select: { id: true } });
     if (!project) return { kind: "superseded", dispatchIds: [] };
@@ -621,7 +637,7 @@ export class RenderGroupLifecycle {
       const state = await this.prepareInputWithinTransaction(tx, reference);
       if (state.kind !== "ready" || state.group.status !== "queued" || state.group.attemptToken || state.group.preparationId !== preparationId) throw new Error("render_input_unavailable");
       const key = `projects/${state.parent.projectId}/render-groups/${state.group.id}/${randomUUID()}.json`;
-      await admitMediaCleanupObligations(tx.mediaCleanupObligation, [{ origin: "clip_preparation_input", cleanupClass: "execution_input", projectId: state.parent.projectId,
+      await admitMediaCleanupObligations(tx, [{ origin: "clip_preparation_input", cleanupClass: "execution_input", projectId: state.parent.projectId,
         clipId: state.group.clipId, objectKey: key, notBefore: new Date(state.deadlineAt.getTime()+120_000) }]);
       return key;
     });
@@ -760,7 +776,7 @@ export class RenderGroupLifecycle {
         dispatch.observedDeadlineAt?.getTime() !== observation.observedDeadlineAt.getTime()) return { kind: "superseded" };
       const initial = await tx.renderGroup.findUnique({ where: { id: reference.subject.id } });
       const state = await this.executionState(tx, reference, initial?.attemptToken ?? reference.dispatchId);
-      if (state.kind === "terminal") return { kind: state.disposition.disposition === "superseded" ? "superseded" : "terminal" };
+      if (state.kind === "terminal") return { kind: state.disposition.disposition === "superseded" ? "superseded" : "terminal", dispatchIds: await this.recordedExecutionWakes(tx, reference) };
       if (!state.group.operationDeadlineAt || state.group.operationDeadlineAt.getTime() !== observation.observedDeadlineAt.getTime()) return { kind: "superseded" };
       if (state.group.status === "running") return state.group.attemptToken && state.group.leaseOwner && state.group.leaseExpiresAt
         ? { kind: "native", attemptToken: state.group.attemptToken } : { kind: "superseded" };

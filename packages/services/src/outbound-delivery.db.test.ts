@@ -61,6 +61,7 @@ suite("Fenced notification deliveries", () => {
 		let puts = 0;
 		let loseAck = false;
 		let losePutAck = false;
+    let storageUnavailable = false;
 		const registered: string[] = [];
 		const service = new OutboundDeliveryService(db, {
 			cipher,
@@ -70,12 +71,14 @@ suite("Fenced notification deliveries", () => {
 			},
 			body: {
 				put: async (plan, bytes) => {
+          if (storageUnavailable) throw new Error("Storage unavailable before PUT");
 					puts++;
 					if (!bodies.has(plan.storageKey))
 						bodies.set(plan.storageKey, { bytes, etag: '"frozen"' });
 					if (losePutAck) throw new Error("lost PUT ACK");
 				},
 				head: async (plan) => {
+          if (storageUnavailable) throw new Error("Storage unavailable before HEAD");
 					const o = bodies.get(plan.storageKey);
 					return o
 						? {
@@ -86,6 +89,7 @@ suite("Fenced notification deliveries", () => {
 						: null;
 				},
 				read: async (plan) => {
+          if (storageUnavailable) throw new Error("Storage unavailable before HEAD");
 					const o = bodies.get(plan.storageKey);
 					if (!o || o.etag !== plan.etag) throw new Error("changed");
 					return new ReadableStream({
@@ -116,6 +120,7 @@ suite("Fenced notification deliveries", () => {
 			bodies,
 			registered,
 			puts: () => puts,
+      unavailable: (value: boolean) => { storageUnavailable = value; },
 			loseAck: (v: boolean) => {
 				loseAck = v;
 			},
@@ -227,6 +232,17 @@ suite("Fenced notification deliveries", () => {
 		expect(await db.outboundDelivery.count({ where: { targetId: callback.id } })).toBe(0);
 		expect((await db.completionCallback.findUniqueOrThrow({ where: { id: callback.id } })).payload).toBeNull();
 	});
+  test("a preparing notification cannot recreate a body destination already granted to cleanup", async () => {
+    const f = await fixture(); f.unavailable(true);
+    await expect(f.service.admitTest(f.scope, f.sub.id, "cleanup-fence")).rejects.toMatchObject({ code: "outbound_delivery_unavailable" });
+    const row = await db.outboundDelivery.findFirstOrThrow({ where: { targetId: f.sub.id } });
+    expect(row.status).toBe("preparing");
+    await db.mediaCleanupObligation.update({ where: { origin_cleanupClass_objectKey: { origin: "outbound_delivery", cleanupClass: "notification_body", objectKey: row.bodyStorageKey } }, data: { claimId: crypto.randomUUID(), claimExpiresAt: new Date(Date.now() + 120_000) } });
+    f.unavailable(false);
+    await expect(f.service.admitTest(f.scope, f.sub.id, "cleanup-fence")).rejects.toMatchObject({ code: "execution_object_deletion_admitted" });
+    expect(f.puts()).toBe(0);
+    expect((await db.outboundDelivery.findUniqueOrThrow({ where: { id: row.id } })).status).toBe("preparing");
+  });
 	test("test admission freezes before PUT, reconciles both lost ACKs, and replays the same event without another POST", async () => {
 		const f = await fixture();
 		f.losePutAck(true);

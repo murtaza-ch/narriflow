@@ -128,3 +128,11 @@ Internal watchdog commands use the same bounded inbox table under an internal-on
 Multipart transport stores a compact immutable plan of up to640part tuples in the existing assigned artifact row. A native command grants at most16parts and identifies outputs by their assigned ID. Completion sends the full measured SHA256 and byte length; server-side ListParts supplies the provider receipts. Abort and completion have exclusive persisted intent. An uncertain completion checks HEAD and never aborts the same upload. A replay returns the original grant expiry, while a new delivery requires fresh lease and absolute-deadline authority. Provider I/O happens outside SQL transactions and publication still requires the domain artifact commit.
 
 Object work packages bind a separate raw-byte SHA256 alongside their exact storage key, ETag and byte length. This digest is independent of the semantic execution inputHash. The tuple is bounded to16MiB and becomes immutable before acquisition; native loading verifies the raw bytes before JSON parsing. Generic attempt identity and its absolute deadline cannot be rewritten. Small validated command inputs remain inline.
+
+Internal maintenance and restore pages use separate `maintenance-page` and
+`restore-page` inbox audiences. The exact dispatch ID, epoch and frozen cursor
+bind their request hash. Page mutations, the outcome and all wake IDs commit
+in the same transaction; a lost acknowledgement replays those IDs rather than
+consuming another page. These receipts retain seven days. After that window an
+operator starts a fresh bounded pass or an explicit restore heal. Signed executor
+audiences cannot write these internal receipts.

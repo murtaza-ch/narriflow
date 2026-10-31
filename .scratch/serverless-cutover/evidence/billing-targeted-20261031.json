@@ -1,10 +1,10 @@
 {
   "status": "targeted driver and store integration verified; ticket19 remains open",
   "databaseTests": {
-    "passed": 6,
-    "assertions": 48,
+    "passed": 7,
+    "assertions": 54,
     "database": "disposable PostgreSQL17 schema",
-    "migrations": 138
+    "rawLog": "/tmp/narriflow-serverless-gates/billing-next-ack-db.log"
   },
   "unitTests": {
     "passed": 50,
@@ -21,7 +21,8 @@
     "interactive and plan-change claims register watchdog before provider authority",
     "unconfirmed interactive registration releases unstarted claim",
     "Checkout slot and initial due obligation commit together and exact lost-ack retry repairs same reference",
-    "browser Checkout observation preserves concurrent authoritative payment reconciliation"
+    "browser Checkout observation preserves concurrent authoritative payment reconciliation",
+    "lost next-due registration is repaired by an exact old-reference replay without another provider reconciliation"
   ],
   "workerBundleAudit": {
     "forbiddenPackages": [],

@@ -528,7 +528,7 @@ dbDescribe("Targeted Ingest execution", () => {
       waitingRenderRunId = run.id;
       subjects.push(run.id);
       const registered = await db.$transaction(tx => f.workflow.dispatchRunWithinTransaction(tx, run.id));
-      expect((await withServiceEnvironment({}, () => f.workflow.prepareRenderRun(registered.reference, []))).kind).toBe("waiting_for_video");
+      expect((await withServiceEnvironment({}, () => f.workflow.prepareRenderRun(registered.reference))).kind).toBe("waiting_for_video");
     }
     if (first === "source_video") {
       expect((await db.executionArtifact.findUniqueOrThrow({ where: { id: video.id } })).sourceVideoBinding).toEqual(bindings.video);

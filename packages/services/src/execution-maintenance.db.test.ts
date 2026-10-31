@@ -51,6 +51,25 @@ suite("Durable bounded execution maintenance", () => {
     expect(await database.mcpTask.count({ where: { ownerUserId: marker } })).toBe(1);
     expect(await service.run(reference)).toMatchObject({ kind: "complete", processed: 0 });
   });
+  test("a committed page replays its exact continuation after ACK loss without consuming another task page", async () => {
+    const marker = crypto.randomUUID();
+    await database.mcpTask.createMany({ data: Array.from({ length: 5 }, () => ({ ownerUserId: marker, callerId: marker, workspaceId: marker, toolName: "maintenance-receipt", domainKind: "generation", domainId: crypto.randomUUID(), projectId: marker, originatingOperationId: marker, resultContract: {}, initialResult: {}, expiresAt: new Date("2026-10-27T00:00:00.000Z") })) });
+    let loseAcknowledgement = false;
+    const registered: string[][] = [];
+    const service = new ExecutionMaintenanceService({ database, limit: 2, register: async ids => { registered.push([...ids]); if (loseAcknowledgement) throw new Error("Page ACK lost"); },
+      phases: { ...Object.fromEntries(DAILY_MAINTENANCE_PHASES.map(phase => [phase, async () => ({ processed: 0, next: null })])), tasks: expireMcpTaskPage } });
+    const reference = await service.start({ cadence: "daily", scheduledAt: new Date("2026-10-28T10:00:00.000Z") });
+    loseAcknowledgement = true;
+    await expect(service.run(reference)).rejects.toThrow("Page ACK lost");
+    expect(await database.mcpTask.count({ where: { ownerUserId: marker } })).toBe(3);
+    loseAcknowledgement = false;
+    const replay = await service.run(reference);
+    expect(replay.dispatchIds).toEqual(registered[1]!);
+    expect(registered[2]).toEqual(registered[1]);
+    expect(await database.mcpTask.count({ where: { ownerUserId: marker } })).toBe(3);
+    expect(await database.executionInboxReceipt.findUnique({ where: { audience_deliveryId: { audience: "maintenance-page", deliveryId: reference.dispatchId } } })).toMatchObject({ wakeDispatchIds: replay.dispatchIds, disposition: { kind: "continue", processed: 2 } });
+    await database.mcpTask.deleteMany({ where: { ownerUserId: marker } });
+  });
   test("a cursor-registration SQL failure rolls the task page back with its continuation", async () => {
     const marker = crypto.randomUUID();
     await database.mcpTask.createMany({ data: Array.from({ length: 3 }, () => ({ ownerUserId: marker, callerId: marker, workspaceId: marker,

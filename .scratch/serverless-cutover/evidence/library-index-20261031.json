@@ -1,0 +1,40 @@
+{
+  "date": "2026-10-31",
+  "status": "Targeted service and database gates passed; ticket19 remains open",
+  "migration": "202610310008_execution_library",
+  "database": {
+    "target": "Disposable local PostgreSQL17 schema with pgvector",
+    "passed": 9,
+    "assertions": 44,
+    "rawLog": "/tmp/narriflow-serverless-gates/library-index-db.log"
+  },
+  "searchRegression": {
+    "passed": 17,
+    "assertions": 52
+  },
+  "sourceCompletionIntegration": {
+    "passed": 20,
+    "assertions": 124,
+    "scope": "Eight indexing cases plus twelve Workflow source/lifecycle cases before the final acknowledgement case"
+  },
+  "unit": {
+    "passed": 14,
+    "assertions": 45,
+    "scope": "Ten search/batch tests plus four native driver tests"
+  },
+  "behavior": [
+    "Transcript completion commits the exact indexing obligation atomically",
+    "Each step grants one owned bounded provider batch after confirmed expiry registration",
+    "No SQL transaction crosses provider I/O or a Workflow wait",
+    "Changed transcript/epoch/owner prevents stale batch publication",
+    "Successful paid batches survive later failures and unchanged passages are reused",
+    "Failure retries and continuations commit before registration; old reference replays repair current committed continuation without another provider request",
+    "Legacy global claim and worker polling loop removed; query ranking and access behavior retained"
+  ],
+  "remaining": [
+    "Registry composition merges with RenderRun integration",
+    "Deployed Hyperdrive/Workflow/OpenAI embedding gate",
+    "Restore and safety-page integration",
+    "Embedding provider can bill an accepted request whose response is lost; no external idempotency guarantee is claimed"
+  ]
+}

@@ -1,3 +1,5 @@
+import { admitMediaCleanupObligations } from "./media-cleanup-admission";
+import { lockPlannedMediaCleanupObject } from "./execution-object-cleanup";
 import { createHash, createHmac, randomUUID } from "node:crypto";
 import {
 	Prisma,
@@ -162,7 +164,9 @@ export class OutboundDeliveryService
 		private readonly dependencies: OutboundDeliveryDependencies,
 	) {}
 	private async epoch(tx: Tx) {
-		await tx.$queryRaw`SELECT "epoch" FROM "ExecutionEpoch" WHERE "id"=1 FOR SHARE`;
+    const [row] = await tx.$queryRaw<Array<{ epoch: number }>>`SELECT "epoch" FROM "ExecutionEpoch" WHERE "id"=1 FOR SHARE`;
+    if (!row) throw new OutboundDeliveryError("outbound_delivery_unavailable");
+    return row.epoch;
 	}
 	private cipher() {
 		return this.dependencies.cipher ?? createCallbackCipher();
@@ -302,14 +306,8 @@ export class OutboundDeliveryService
 				createdAt: input.at,
 			},
 		});
-		await tx.mediaCleanupObligation.create({
-			data: {
-				origin: "outbound_delivery",
-				cleanupClass: "notification_body",
-				objectKey: bodyStorageKey,
-				nextAttemptAt: new Date(expiresAt.getTime() + 86400_000),
-			},
-		});
+    await admitMediaCleanupObligations(tx, [{ origin: "outbound_delivery", cleanupClass: "notification_body", objectKey: bodyStorageKey,
+      notBefore: new Date(expiresAt.getTime() + 86400_000) }]);
 		return { row, bytes };
 	}
 	/** Planned key exists in SQL before PUT. A lost write acknowledgment is
@@ -322,6 +320,14 @@ export class OutboundDeliveryService
 			);
 			return publicJob(row);
 		}
+    await this.database.$transaction(async tx => {
+      const epoch = await this.epoch(tx);
+      await this.lockParent(tx, row);
+      await tx.$queryRaw`SELECT id FROM "OutboundDelivery" WHERE id = ${row.id}::uuid FOR UPDATE`;
+      const current = await tx.outboundDelivery.findUniqueOrThrow({ where: { id: row.id } });
+      if (current.deploymentEpoch !== epoch || current.generation !== row.generation || current.status !== "preparing" || current.bodyStorageKey !== row.bodyStorageKey || current.expiresAt <= await clock(tx)) throw new OutboundDeliveryError("outbound_delivery_conflict", row.id);
+      await lockPlannedMediaCleanupObject(tx, { origin: "outbound_delivery", cleanupClass: "notification_body", storageKey: current.bodyStorageKey });
+    });
 		const headBody = async () => {
 			try {
 				return await this.dependencies.body.head(plan(row));
@@ -357,6 +363,8 @@ export class OutboundDeliveryService
 			let current = await tx.outboundDelivery.findUniqueOrThrow({
 				where: { id: row.id },
 			});
+      if (current.deploymentEpoch !== row.deploymentEpoch || current.generation !== row.generation || current.expiresAt <= await clock(tx)) throw new OutboundDeliveryError("outbound_delivery_conflict", row.id);
+      await lockPlannedMediaCleanupObject(tx, { origin: "outbound_delivery", cleanupClass: "notification_body", storageKey: current.bodyStorageKey });
 			if (current.status === "preparing")
 				current = await tx.outboundDelivery.update({
 					where: { id: row.id },

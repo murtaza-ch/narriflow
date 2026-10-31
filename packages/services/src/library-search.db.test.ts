@@ -10,12 +10,12 @@ import { clipService } from "./clip.service";
 import { clipPersistenceEditorDocument } from "./clip-persistence-db-test-support";
 import { encodeClipEditorDocumentForStorage } from "./clip-editor-document-persistence";
 import { isExpectedDomainFailure } from "./expected-domain-failure";
-import { LibrarySearch, MAX_INDEX_ATTEMPTS } from "./library-search";
+import { LibrarySearch } from "./library-search";
+import { createLibraryIndex, queueLibraryIndex } from "./library-index";
 import { librarySearchService } from "./library-search-runtime";
 import { projectsCommands } from "./projects-commands-runtime";
 import { workspaceLibraryService } from "./workspace-library.service";
 import {
-  EmbeddingProviderError,
   LIBRARY_EMBEDDING_DIMENSIONS,
   LIBRARY_EMBEDDING_MODEL,
   type EmbeddingProvider,
@@ -124,12 +124,20 @@ dbDescribe("Library search PostgreSQL contracts", () => {
     const transcript = await prisma.transcript.create({ data: {
       projectId: created.id, status: "completed", completedAt: new Date(), utterancesJson: utterancesFor(texts),
     } });
-    await indexAll();
+    await indexTranscript(transcript.id);
     return { projectId: created.id, transcriptId: transcript.id };
   }
 
-  async function indexAll() {
-    while ((await library.indexNext()) > 0);
+  async function indexTranscript(id: string) {
+    const driver = createLibraryIndex({ database: prisma, embeddings: embeddings.provider,
+      register: async () => {}, log: entry => logs.push(entry) });
+    let reference = await prisma.$transaction(tx => queueLibraryIndex(tx, id));
+    for (let step = 0; reference; step++) {
+      if (step >= 100) throw Error("Fixture indexing did not finish");
+      const result = await driver.run(reference);
+      if (result.kind !== "complete") throw Error(`Fixture indexing failed: ${result.kind}`);
+      reference = await prisma.$transaction(tx => queueLibraryIndex(tx, id));
+    }
   }
 
   async function passageCount(transcriptId: string) {
@@ -235,166 +243,6 @@ dbDescribe("Library search PostgreSQL contracts", () => {
       const { scope, workspaceId } = await workspaceFixture("stopwords");
       await indexedProject(workspaceId, "Quiet", ["subscription price talk"]);
       expect((await library.search(scope, { query: "the of and" })).length).toBe(1);
-    })));
-  });
-
-  describe("indexing", () => {
-    test("indexes a finished transcript once, with usage logged", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
-      const { workspaceId } = await workspaceFixture("index-once");
-      logs.length = 0;
-      const created = await prisma.project.create({ data: { title: "Once", sourceMediaUrl: "https://example.test/once.mp4", workspaceId } });
-      const transcript = await prisma.transcript.create({ data: {
-        projectId: created.id, status: "completed", completedAt: new Date(), utterancesJson: utterancesFor(["First point", "Second point", "Third point"]),
-      } });
-
-      expect(await library.indexNext()).toBe(1);
-      expect(await passageCount(transcript.id)).toBe(3);
-      const row = (await prisma.$queryRaw<Array<{ workspaceId: string; embeddingModel: string; startMs: number; endMs: number }>>`
-        SELECT "workspaceId", "embeddingModel", "startMs", "endMs" FROM "TranscriptPassage" WHERE "transcriptId" = ${transcript.id}::uuid ORDER BY "startMs" LIMIT 1`)[0];
-      expect(row).toEqual({ workspaceId, embeddingModel: LIBRARY_EMBEDDING_MODEL, startMs: 0, endMs: 35_000 });
-      const indexed = logs.find((entry) => entry.message === "library_passages_indexed");
-      expect(indexed).toMatchObject({ transcriptId: transcript.id, passages: 3, embedded: 3, removed: 0, tokens: 30, model: LIBRARY_EMBEDDING_MODEL });
-
-      expect(await library.indexNext()).toBe(0);
-    })));
-
-    test("re-embeds only what changed when a transcript is replaced", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
-      const { workspaceId } = await workspaceFixture("reindex");
-      const { projectId, transcriptId } = await indexedProject(workspaceId, "Changing", ["Alpha point", "Beta point", "Gamma point"]);
-      embeddings.embedded.length = 0;
-
-      await prisma.transcript.update({ where: { projectId }, data: {
-        utterancesJson: utterancesFor(["Alpha point", "Beta point revised", "Gamma point", "Delta point"]),
-        completedAt: new Date(Date.now() + 1_000),
-      } });
-      await indexAll();
-
-      expect(embeddings.embedded.sort()).toEqual(["Beta point revised", "Delta point"]);
-      const texts = (await prisma.$queryRaw<Array<{ text: string }>>`SELECT "text" FROM "TranscriptPassage" WHERE "transcriptId" = ${transcriptId}::uuid ORDER BY "startMs"`).map((row) => row.text);
-      expect(texts).toEqual(["Alpha point", "Beta point revised", "Gamma point", "Delta point"]);
-    })));
-
-    test("a provider failure backs off, keeps old passages, and never throws", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
-      const { scope, workspaceId } = await workspaceFixture("failure");
-      const { projectId, transcriptId } = await indexedProject(workspaceId, "Flaky", ["Subscription price before"]);
-      await prisma.transcript.update({ where: { projectId }, data: { utterancesJson: utterancesFor(["Subscription price after"]), completedAt: new Date(Date.now() + 1_000) } });
-
-      logs.length = 0;
-      embeddings.failNext(new EmbeddingProviderError("embedding_request_failed", { status: 503 }));
-      expect(await library.indexNext()).toBe(0);
-      embeddings.failNext(null);
-
-      const state = (await prisma.transcript.findUniqueOrThrow({ where: { projectId } }));
-      expect(state.passagesAttempts).toBe(1);
-      expect(state.passagesIndexError).toBe("embedding_request_failed");
-      expect(state.passagesRetryAt!.getTime()).toBeGreaterThan(Date.now() - 5_000 + 20_000);
-      expect(logs.find((entry) => entry.message === "library_passages_index_failed")).toMatchObject({ transcriptId, attempts: 1, retryInSeconds: 30 });
-      // Search keeps working from the passages it already had.
-      expect((await library.search(scope, { query: "subscription price" })).map((result) => result.text)).toEqual(["Subscription price before"]);
-
-      // Not due yet: another tick leaves it alone.
-      expect(await library.indexNext()).toBe(0);
-      expect(embeddings.embedded.includes("Subscription price after")).toBe(false);
-
-      await prisma.$executeRaw`UPDATE "Transcript" SET "passagesRetryAt" = (now() AT TIME ZONE 'UTC') - interval '1 second' WHERE "projectId" = ${projectId}::uuid`;
-      expect(await library.indexNext()).toBe(1);
-      expect((await library.search(scope, { query: "subscription price" })).map((result) => result.text)).toEqual(["Subscription price after"]);
-      const recovered = await prisma.transcript.findUniqueOrThrow({ where: { projectId } });
-      expect([recovered.passagesAttempts, recovered.passagesRetryAt, recovered.passagesIndexError]).toEqual([0, null, null]);
-    })));
-
-    test("a failure part way keeps the batches already paid for and a retry embeds only the rest", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
-      const { scope, workspaceId } = await workspaceFixture("partial");
-      const { projectId, transcriptId } = await indexedProject(workspaceId, "Partial", ["Old point"]);
-      await indexAll();
-      const batched = new LibrarySearch({
-        prisma, embeddings: embeddings.provider, batch: { maxInputs: 2, maxEstimatedTokens: 1_000_000 }, log: (entry) => logs.push(entry),
-      });
-      await prisma.transcript.update({ where: { projectId }, data: {
-        utterancesJson: utterancesFor(["Point one", "Point two", "Point three", "Point four", "Point five"]), completedAt: new Date(Date.now() + 1_000),
-      } });
-
-      logs.length = 0;
-      embeddings.embedded.length = 0;
-      embeddings.script(null, new EmbeddingProviderError("embedding_request_failed", { status: 429 }));
-      expect(await batched.indexNext()).toBe(0);
-
-      // Two requests: the first batch of two is stored, the second failed. The
-      // old passage stays until the new transcript is complete.
-      expect(embeddings.embedded).toEqual(["Point one", "Point two"]);
-      const texts = async () => (await prisma.$queryRaw<Array<{ text: string }>>`SELECT "text" FROM "TranscriptPassage" WHERE "transcriptId" = ${transcriptId}::uuid ORDER BY "startMs"`).map((row) => row.text);
-      expect((await texts()).sort()).toEqual(["Old point", "Point one", "Point two"].sort());
-      const failed = await prisma.transcript.findUniqueOrThrow({ where: { projectId } });
-      expect([failed.passagesIndexedFor!.getTime() < failed.completedAt!.getTime(), failed.passagesAttempts]).toEqual([true, 1]);
-      expect(logs.find((entry) => entry.message === "library_passages_index_failed")).toMatchObject({ embeddedBeforeFailure: 2, tokens: 20, code: "embedding_request_failed" });
-
-      await prisma.$executeRaw`UPDATE "Transcript" SET "passagesRetryAt" = (now() AT TIME ZONE 'UTC') - interval '1 second' WHERE "projectId" = ${projectId}::uuid`;
-      embeddings.embedded.length = 0;
-      expect(await batched.indexNext()).toBe(1);
-      expect(embeddings.embedded.sort()).toEqual(["Point five", "Point four", "Point three"]);
-      expect(await texts()).toEqual(["Point one", "Point two", "Point three", "Point four", "Point five"]);
-      expect((await library.search(scope, { query: "point" })).length).toBe(5);
-    })));
-
-    test("a transcript that keeps failing is left alone after the attempt cap, with its error recorded", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
-      const { workspaceId } = await workspaceFixture("cap");
-      await indexAll();
-      const project = await prisma.project.create({ data: { title: "Never works", sourceMediaUrl: "https://example.test/n.mp4", workspaceId } });
-      await prisma.transcript.create({ data: { projectId: project.id, status: "completed", completedAt: new Date(), utterancesJson: utterancesFor(["Hopeless"]) } });
-
-      logs.length = 0;
-      embeddings.failNext(new EmbeddingProviderError("embedding_bad_response"));
-      for (let attempt = 1; attempt <= MAX_INDEX_ATTEMPTS; attempt++) {
-        expect(await library.indexNext()).toBe(0);
-        await prisma.$executeRaw`UPDATE "Transcript" SET "passagesRetryAt" = (now() AT TIME ZONE 'UTC') - interval '1 second' WHERE "projectId" = ${project.id}::uuid`;
-      }
-      const abandoned = await prisma.transcript.findUniqueOrThrow({ where: { projectId: project.id } });
-      expect([abandoned.passagesAttempts, abandoned.passagesIndexError, abandoned.passagesIndexedFor]).toEqual([MAX_INDEX_ATTEMPTS, "embedding_bad_response", null]);
-      expect(logs.filter((entry) => entry.message === "library_passages_index_failed")).toHaveLength(MAX_INDEX_ATTEMPTS - 1);
-      expect(logs.filter((entry) => entry.message === "library_passages_index_abandoned")).toEqual([
-        expect.objectContaining({ level: "error", transcriptId: abandoned.id, attempts: MAX_INDEX_ATTEMPTS, code: "embedding_bad_response" }),
-      ]);
-
-      // Even when due, it is no longer claimed and costs no more requests.
-      const calls = embeddings.state.calls;
-      embeddings.failNext(null);
-      expect(await library.indexNext()).toBe(0);
-      expect(embeddings.state.calls).toBe(calls);
-
-      // An operator reset puts it back in the queue.
-      await prisma.$executeRaw`UPDATE "Transcript" SET "passagesAttempts" = 0 WHERE "projectId" = ${project.id}::uuid`;
-      expect(await library.indexNext()).toBe(1);
-      expect((await prisma.transcript.findUniqueOrThrow({ where: { projectId: project.id } })).passagesIndexError).toBeNull();
-    })));
-
-    test("two workers never claim the same transcript", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
-      const { workspaceId } = await workspaceFixture("claim");
-      const created = await prisma.project.create({ data: { title: "Contended", sourceMediaUrl: "https://example.test/c.mp4", workspaceId } });
-      await prisma.transcript.create({ data: { projectId: created.id, status: "completed", completedAt: new Date(), utterancesJson: utterancesFor(["Only one worker"]) } });
-      // Drain everything else so this is the only candidate.
-      await indexAll();
-      await prisma.transcript.update({ where: { projectId: created.id }, data: { completedAt: new Date(Date.now() + 1_000) } });
-
-      const results = await Promise.all([library.indexNext(), library.indexNext(), library.indexNext()]);
-      expect(results.reduce((total, count) => total + count, 0)).toBe(1);
-    })));
-
-    test("skips transcripts that are unfinished or whose Project is purging", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
-      const { workspaceId } = await workspaceFixture("skip");
-      await indexAll();
-      const processing = await prisma.project.create({ data: { title: "Processing", sourceMediaUrl: "https://example.test/p.mp4", workspaceId } });
-      await prisma.transcript.create({ data: { projectId: processing.id, status: "processing", utterancesJson: utterancesFor(["Not done"]) } });
-      const purging = await prisma.project.create({ data: { title: "Purging", sourceMediaUrl: "https://example.test/g.mp4", workspaceId, purgeStartedAt: new Date() } });
-      await prisma.transcript.create({ data: { projectId: purging.id, status: "completed", completedAt: new Date(), utterancesJson: utterancesFor(["Going away"]) } });
-      expect(await library.indexNext()).toBe(0);
-    })));
-
-    test("a transcript with no speech is marked indexed and not retried", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
-      const { workspaceId } = await workspaceFixture("silent");
-      const project = await prisma.project.create({ data: { title: "Silent", sourceMediaUrl: "https://example.test/s.mp4", workspaceId } });
-      await prisma.transcript.create({ data: { projectId: project.id, status: "completed", completedAt: new Date(), utterancesJson: [] } });
-      expect(await library.indexNext()).toBe(1);
-      expect(await library.indexNext()).toBe(0);
     })));
   });
 

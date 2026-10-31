@@ -48,6 +48,25 @@ suite("Targeted billing reconciliation", () => {
     expect(await db.executionDispatch.count({ where: { subjectId: workspace.id } })).toBe(1);
     expect(delivered).toHaveLength(1);
   });
+  test("a lost next-due registration is repaired by replay without another provider reconciliation", async () => {
+    const workspace = await fixture();
+    const reference = await db.$transaction(tx => queueBillingReconciliation(tx,workspace.id));
+    const registrations: string[][] = []; let calls = 0;
+    const driver = createBillingReconciliation({ database: db, leaseMs: 60_000,
+      register: async ids => { registrations.push([...ids]); if (registrations.length === 2) throw Error("lost_billing_next_ack"); },
+      reconcile: async () => {
+        calls++;
+        await db.$transaction(async tx => {
+          await tx.workspaceBillingAccount.update({ where: { workspaceId: workspace.id }, data: { nextReconcileAt: new Date(Date.now()+86_400_000) } });
+          await queueBillingReconciliation(tx,workspace.id);
+        });
+      },
+    });
+    await expect(driver.run(reference)).rejects.toThrow("lost_billing_next_ack");
+    const current = await db.executionDispatch.findFirstOrThrow({ where: { subjectKind: "workspace_billing", subjectId: workspace.id, wakeKind: null, deadlineKind: null }, orderBy: { generation: "desc" } });
+    expect((await driver.run(reference)).kind).toBe("superseded");
+    expect(calls).toBe(1); expect(registrations).toHaveLength(3); expect(registrations.at(-1)).toEqual([current.id]);
+  });
   test("one exact due account owns provider work and registers expiry before calling it", async () => {
     const workspace = await fixture(new Date(Date.now() + 60_000));
     let reference = await db.$transaction(tx => queueBillingReconciliation(tx, workspace.id));

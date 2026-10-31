@@ -109,6 +109,11 @@ suite("Scoped executor transfer authority", () => {
     expect(peaks.storageKey).toBe(preview.storageKey.slice(0,-4)+".peaks.json");
     expect(preview.storageKey).toStartWith(`execution/${f.fence.reference.deploymentEpoch}/${f.fence.attemptToken}/${f.fence.owner}/`);
     expect(f.work.outputs[0]).not.toHaveProperty("storageKey");
+    const cleanup = await db.mediaCleanupObligation.findMany({ where: { objectKey: { in: [preview.storageKey, peaks.storageKey] }, origin: "assigned_execution_artifact" } });
+    expect(cleanup).toHaveLength(2);
+    const attempt = await db.executionAttempt.findUniqueOrThrow({ where: { attemptToken: f.fence.attemptToken } });
+    expect(cleanup.every(row => row.nextAttemptAt.getTime() === attempt.operationDeadlineAt.getTime() + 120_000)).toBe(true);
+    expect(f.provider.creates).toBe(0);
     const replay = await f.call({ action: "work-package", fence: f.fence });
     expect(replay).toMatchObject({ outputs: f.work.outputs });
     expect(await db.executionArtifact.count({ where: { attemptToken: f.fence.attemptToken } })).toBe(2);

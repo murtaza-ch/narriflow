@@ -1,74 +1,18 @@
+import { mediaCleanupObjectRetainUntil } from "./media-cleanup-holds";
 import { publicationObjectIsHeld } from "./publication-cleanup";
-import { isSelectionExecutionObjectKey, selectionExecutionObjectRetainUntil } from "./execution-object-cleanup";
 import { generatedMediaObjectIsHeld } from "./generated-media-execution";
 import { readServiceEnvironment, type ServiceEnvironment } from "./runtime-environment";
 import { randomUUID } from "node:crypto";
 import { getPrismaClient } from "@narriflow/db/client";
-import type { MediaCleanupObligation, PrismaClient } from "@prisma/client";
+import type { MediaCleanupObligation } from "@prisma/client";
 import { tryDerivePeaksStorageKey } from "./clip-preview-storage";
 import { classifyR2StorageError, deleteObject } from "./r2-storage";
 
-// Stored obligations are parsed against these lists, so every producer's
-// origin and class must appear here before it admits work.
-export const MEDIA_CLEANUP_ORIGINS = [
-  "clip_editor_document_persistence",
-  "detected_clip_replacement",
-  "clip_duplicate_compensation",
-  "generated_media_publication",
-  "thumbnail_frame_preparation",
-  "upload_source_pinning",
-  "upload_session_termination",
-  "clip_preparation_input",
-  "selection_execution",
-  "publication_execution",
-] as const;
-export type MediaCleanupOrigin = (typeof MEDIA_CLEANUP_ORIGINS)[number];
-
-export const MEDIA_CLEANUP_CLASSES = [
-  "mutable_render",
-  "preview_proxy",
-  "preview_peaks",
-  "dub_media",
-  "generated_asset",
-  "thumbnail_asset",
-  "upload_source",
-  "execution_input",
-  "publication_private",
-] as const;
-export type MediaCleanupClass = (typeof MEDIA_CLEANUP_CLASSES)[number];
-
-export interface MediaCleanupObligationInput {
-  origin: MediaCleanupOrigin;
-  cleanupClass: MediaCleanupClass;
-  projectId?: string | null;
-  clipId?: string | null;
-  objectKey: string;
-  /** Earliest deletion time, for keys an outstanding grant could still write. */
-  notBefore?: Date;
-}
-
-export interface MediaCleanupAdmissionStore {
-  createMany(input: {
-    data: Array<{
-      origin: MediaCleanupOrigin;
-      cleanupClass: MediaCleanupClass;
-      projectId: string | null;
-      clipId: string | null;
-      objectKey: string;
-      nextAttemptAt?: Date;
-      claimId?: string;
-      claimExpiresAt?: Date;
-    }>;
-    skipDuplicates: true;
-  }): Promise<{ count: number }>;
-}
-
-export interface MediaCleanupAdmissionOptions {
-  heldClaim?: {
-    claimId: string;
-    claimExpiresAt: Date;
-  };
-}
+import type { Prisma } from "@prisma/client";
+import { admitMediaCleanupObligations } from "./media-cleanup-admission";
+import { MEDIA_CLEANUP_ORIGINS, MEDIA_CLEANUP_CLASSES, type MediaCleanupOrigin, type MediaCleanupClass, type MediaCleanupObligationInput, type MediaCleanupAdmissionStore } from "./media-cleanup-contract";
+export { admitMediaCleanupObligations } from "./media-cleanup-admission";
+export * from "./media-cleanup-contract";
 
 export interface RetiredClipMedia {
   clipId: string;
@@ -161,11 +105,12 @@ export interface RetiredClipMediaCleanupStore {
 
 /** Inventories and admits every media object owned by Clips being replaced. */
 export async function admitRetiredClipMediaCleanup(
-  store: RetiredClipMediaCleanupStore,
+  store: RetiredClipMediaCleanupStore | Prisma.TransactionClient,
   origin: MediaCleanupOrigin,
   projectId: string,
 ): Promise<number> {
-  const clips = await store.clip.findMany({
+  const clipStore: RetiredClipMediaCleanupStore["clip"] = store.clip;
+  const clips = await clipStore.findMany({
     where: { projectId },
     select: {
       id: true,
@@ -175,7 +120,7 @@ export async function admitRetiredClipMediaCleanup(
     },
   });
   return admitMediaCleanupObligations(
-    store.mediaCleanupObligation,
+    "$queryRaw" in store ? store : store.mediaCleanupObligation,
     planRetiredClipMediaCleanup(
       origin,
       projectId,
@@ -190,35 +135,6 @@ export async function admitRetiredClipMediaCleanup(
       })),
     ),
   );
-}
-
-export async function admitMediaCleanupObligations(
-  store: MediaCleanupAdmissionStore,
-  obligations: readonly MediaCleanupObligationInput[],
-  options: MediaCleanupAdmissionOptions = {},
-): Promise<number> {
-  const unique = [
-    ...new Map(
-      obligations.map((obligation) => [
-        `${obligation.origin}\u0000${obligation.cleanupClass}\u0000${obligation.objectKey}`,
-        obligation,
-      ]),
-    ).values(),
-  ];
-  if (unique.length === 0) return 0;
-  const result = await store.createMany({
-    data: unique.map((obligation) => ({
-      origin: obligation.origin,
-      cleanupClass: obligation.cleanupClass,
-      projectId: obligation.projectId ?? null,
-      clipId: obligation.clipId ?? null,
-      objectKey: obligation.objectKey,
-      ...(obligation.notBefore ? { nextAttemptAt: obligation.notBefore } : {}),
-      ...(options.heldClaim ?? {}),
-    })),
-    skipDuplicates: true,
-  });
-  return result.count;
 }
 
 export interface DurableMediaCopyPlan<T> extends MediaCleanupObligationInput {
@@ -1119,10 +1035,12 @@ function productionMediaCleanupWorker() {
     },
   },
   config: mediaCleanupConfigFromEnv(),
-  retainUntil: claim => {
-    if (claim.cleanupClass !== "execution_input") return Promise.resolve(null);
-    return isSelectionExecutionObjectKey(claim.objectKey) ? selectionExecutionObjectRetainUntil(requirePrisma(), claim.objectKey) : executionInputRetainUntil(requirePrisma(), claim.objectKey);
-  },
+  retainUntil: claim => requirePrisma().$transaction(async tx => {
+    const row = await tx.mediaCleanupObligation.findUnique({ where: { id: claim.id } });
+    const [clock] = await tx.$queryRaw<Array<{ now: Date }>>`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS now`;
+    if (!row || !clock) throw new MediaCleanupClaimLost();
+    return mediaCleanupObjectRetainUntil(tx, row, clock.now);
+  }),
   async isProtected(claim) {
     if(claim.cleanupClass === "publication_private")return publicationObjectIsHeld(requirePrisma(),claim.objectKey);
     if (claim.cleanupClass !== "generated_asset" && claim.cleanupClass !== "thumbnail_asset") return false;
@@ -1140,24 +1058,4 @@ export const mediaCleanupWorker = {
   processDue: (options?: Parameters<ReturnType<typeof createMediaCleanupWorker>["processDue"]>[0]) => productionMediaCleanupWorker().processDue(options),
 };
 
-/** Only producer-planned keys can enter this class. A referenced capsule stays
- * retained even after completion; deleting its Project/Clip removes the row.
- * A future check remains durable, so deletion cannot strand a forgotten key. */
-export async function executionInputRetainUntil(database: Pick<PrismaClient, "clipPreparation" | "renderGroup" | "$queryRaw">, objectKey: string): Promise<Date | null> {
-  const groupMatch = /^projects\/([a-f0-9-]{36})\/render-groups\/([a-f0-9-]{36})\/[a-f0-9-]{36}\.json$/.exec(objectKey);
-  let deadlineAt: Date;
-  if (groupMatch) {
-    const row = await database.renderGroup.findUnique({ where: { id: groupMatch[2]! }, include: { workflowRun: { select: { projectId: true } } } });
-    if (!row || row.workflowRun.projectId !== groupMatch[1] || row.inputStorageKey !== objectKey || !row.operationDeadlineAt) return null;
-    deadlineAt = row.operationDeadlineAt;
-  } else {
-    const match = /^projects\/([a-f0-9-]{36})\/preparations\/([a-f0-9-]{36})\/([a-f0-9-]{36})\.json$/.exec(objectKey);
-    if (!match) throw new Error("Invalid execution input cleanup key");
-    const row = await database.clipPreparation.findUnique({ where: { id: match[2]! }, select: { projectId: true, inputStorageKey: true, operationDeadlineAt: true } });
-    if (!row || row.projectId !== match[1] || row.inputStorageKey !== objectKey) return null;
-    deadlineAt = row.operationDeadlineAt;
-  }
-  const [clock] = await database.$queryRaw<Array<{ now: Date }>>`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS now`;
-  if (!clock) throw new Error("Cleanup clock unavailable");
-  return new Date(Math.max(clock.now.getTime() + 24 * 60 * 60_000, deadlineAt.getTime() + 120_000));
-}
+export { executionInputRetainUntil } from "./execution-input-retention";

@@ -68,6 +68,33 @@ export function renderGroupExportIdentity(config: RenderGroupConfiguration): str
   ]);
 }
 
+/** Replays use the group's sealed configuration, not mutable entitlement rows. */
+export function renderGroupConfigurationFromIdentity(clipId: string, identity: string): RenderGroupConfiguration {
+  const value: unknown = JSON.parse(identity);
+  if (!Array.isArray(value) || value.length !== 5 || !["automatic", "export"].includes(value[0]) ||
+    !(value[1] === null || typeof value[1] === "string") || !Number.isInteger(value[2]) || value[2] < 0 ||
+    typeof value[3] !== "string" || !value[3] || typeof value[4] !== "boolean" || (value[0] === "automatic") !== (value[1] === null)) throw new Error("render_group_configuration_invalid");
+  const configuration = { clipId, exportId: value[1], editorRevision: value[2], resolution: value[3], watermark: value[4] };
+  if (renderGroupExportIdentity(configuration) !== identity) throw new Error("render_group_configuration_invalid");
+  return configuration;
+}
+
+export function partitionRenderGroups(variants: readonly {
+  id: string; clipId: string; resolution: string; editorRevision: number | null;
+  clip: { editorRevision: number }; exportVariant: { exportId: string; watermark: boolean } | null;
+}[], watermark: boolean): { configuration: RenderGroupConfiguration; variantIds: string[] }[] {
+  const groups = new Map<string, { configuration: RenderGroupConfiguration; variantIds: string[] }>();
+  for (const variant of variants) {
+    const configuration = { clipId: variant.clipId, exportId: variant.exportVariant?.exportId ?? null,
+      editorRevision: variant.editorRevision ?? variant.clip.editorRevision, resolution: variant.resolution,
+      watermark: variant.exportVariant?.watermark ?? watermark };
+    const key = `${configuration.clipId}:${renderGroupExportIdentity(configuration)}`;
+    const group = groups.get(key) ?? { configuration, variantIds: [] };
+    group.variantIds.push(variant.id); groups.set(key, group);
+  }
+  return [...groups.values()];
+}
+
 /** Semantic provenance is stable across invocation retries; the dispatch fences generation. */
 export async function renderGroupExecutionInputHash(input: RenderGroupRef & {
   parentInputHash: string;

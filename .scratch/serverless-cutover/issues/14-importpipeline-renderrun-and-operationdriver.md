@@ -120,3 +120,38 @@ registered absolute watchdog ID, without a Generic Attempt or native token.
 The two affected PostgreSQL suites pass25 cases/217 assertions; five actual
 native operation cases,43 layout cases/281 assertions and media/services
 typechecks pass. Parent Workflow integration remains in progress.
+
+Render Run preparation now plans groups and freezes watermark under the existing
+Workspace usage, Project and parent locks. Replays rebuild configuration from
+stored group identity and membership. No parent lease or charged attempt is
+created. Missing video has a watchdog anchored to the accepted run's45-minute
+limit; admitted groups retain their separate45-minute budgets. Child outcomes
+append an exact parent wake in the same transaction. Late variants enter one
+follow-up run, preserving the original denominator.
+
+The Render Run driver settles an outcome already committed before its wait. When
+its group deadline passes, it executes each exact overdue child expiry and rereads
+settlement before returning metadata. It cannot return a past-due wait in a busy
+loop. The registry handles unowned preparation expiry before Generic Attempt
+lookup, so failed input preparation needs no fabricated native owner. The affected
+preparation, ingest and targeted execution gate passes58 PostgreSQL cases/450
+assertions before the final late-variant assertions; the targeted parent suite
+then passes15 cases/95 assertions. Two finite-driver cases pass, and services
+typechecking passes. API typechecking awaits the coordinated generic dependency
+wait adapter already being integrated by the parent agent. Full deployed pipeline
+acceptance remains open.
+
+The integrated parent checkpoint passes67 PostgreSQL cases/498 assertions across
+preparation, ingest, targeted render execution and library indexing after client
+generation. The existing Render Group invariant suite passes18 cases/181
+assertions. Seven finite parent/native driver tests pass, including divergent
+renewals choosing the nearest fresh deadline. API and services typechecks pass.
+Unowned deadline replay preserves all three committed wake IDs; if an unacquired
+Generic Attempt already exists, Core reconciles it without inventing process
+history or a charge. Completed STT commands repair their exact library wakes, and
+the registry runs the targeted library index command. The actual pinned Modal
+Function rendering gate is recorded separately in
+[Function evidence](../evidence/modal-render-function-20261031.json).
+
+Full live source-to-render publication, long-source transfer and batch throughput
+gates remain required. Ticket14 is still claimed.

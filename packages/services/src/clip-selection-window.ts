@@ -320,7 +320,7 @@ export function createClipSelectionLifecycle(config: { database: PrismaClient; m
         const now = await clock(tx);
         if (!execution || execution.owner !== attempt.owner || execution.status !== "running" || execution.revokedAt || !execution.processStartedAt ||
           !execution.leaseExpiresAt || execution.leaseExpiresAt <= now || execution.operationDeadlineAt <= now || state.row.leaseExpiresAt! <= now || state.row.operationDeadlineAt <= now) throw new Error("Selection owner lost");
-        await admitMediaCleanupObligations(tx.mediaCleanupObligation, [{ origin: "selection_execution", cleanupClass: "execution_input", projectId: state.row.projectId,
+        await admitMediaCleanupObligations(tx, [{ origin: "selection_execution", cleanupClass: "execution_input", projectId: state.row.projectId,
           objectKey: storageKey, notBefore: new Date(state.row.operationDeadlineAt.getTime() + 120_000) }]);
         return { storageKey };
       });

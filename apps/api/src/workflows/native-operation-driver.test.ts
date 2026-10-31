@@ -39,3 +39,14 @@ test("an unconfirmed watchdog never dispatches the heavy operation", async () =>
   expect(await run({ reference, wake: { type: "start" } })).toMatchObject({ type: "sleep" });
   expect(batches).toEqual([[deliveryId]]);
 });
+
+test("a preparation dependency confirms its own watchdog and waits without a native attempt", async () => {
+  const batches: string[][] = [], preparation = crypto.randomUUID();
+  const run = createNativeOperationDriver({ now: () => now,
+    prepare: async () => ({ kind: "dependency_wait", dueAt: new Date(now + 600_000), deadlineDispatchId: deliveryId, dispatchIds: [deliveryId, preparation] }),
+    expire: async () => { throw new Error("No native attempt exists"); },
+    deliver: async ids => { batches.push([...ids]); return ids.map(dispatchId => ({ status: "acknowledged", dispatchId, destinationId: "fixture" })); },
+  });
+  expect(await run({ reference, wake: { type: "start" } })).toEqual({ type: "wait", until: new Date(now + 600_000).toISOString(), deliveryId });
+  expect(batches).toEqual([[deliveryId], [preparation]]);
+});

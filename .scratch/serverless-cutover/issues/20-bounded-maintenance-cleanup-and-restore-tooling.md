@@ -13,7 +13,7 @@
 
 ## Evidence
 
-Pending implementation and verification.
+Partial implementation; platform mounting and the remaining phase/recovery map are still required.
 
 Maintenance now has a tested reference-only page controller. Hour/day starts
 coalesce on a fixed UTC cutoff, each page commits its bounded domain work and
@@ -65,3 +65,37 @@ at most 8 exact-key multipart uploads per call before DELETE; a truncated invent
 or unknown acknowledgement never completes cleanup. Two storage cases pass15
 assertions. Production hold resolution, assignment/retirement producers, maintenance
 phase mounting, daily adapters and full restore recovery remain open.
+
+Cleanup production ports now include one frozen known-row range drain per admission
+batch. Pages schedule at most 100 exact cleanup IDs plus one continuation; expiry
+or adoption moving a tentative hold repairs the exact due generation. Producer
+transactions for input capsules, retired Clip media, duplicate-copy compensation,
+assigned executor outputs, generated/private publication inputs and notification
+bodies retain their drain obligations. The pre-existing notification body origin
+and class are now in the whitelist, with a fresh pre-I/O and adoption fence that
+prevents a replay from recreating a destination granted to cleanup.
+
+Assigned outputs are retained through the immutable absolute deadline or aggregate
+grant expiry, plus 120s to drain bounded native HTTP. Native publication cannot
+adopt after that authority expires. Exact-key MPU inventory is then aborted before
+DELETE. Committed Project-backed evidence remains held through its Project
+lifetime, live Visual Assets/fonts are held by exact key, and publication checkpoints
+stay held through Needs Attention. Private validation/probe evidence is conservatively
+held until its owner row is purged; the corresponding daily row-retention adapter
+remains open. Migration 009 indexes cleanup ranges, due pages, assigned inputs and
+notification body holds, and makes cleanup destination/scope immutable.
+
+Internal `maintenance-page` receipts now atomically persist each page outcome and
+all wake IDs, including its cursor. Lost registration replay confirms those exact
+IDs without consuming another domain page. Cleanup retry replay likewise confirms
+the current committed obligation without another DELETE. These audiences are
+separate from executor signatures. Receipts last 7 days; after retention an operator
+uses a fresh bounded pass or explicit restore heal, not automatic replay of an
+old page without its receipt.
+
+The full disposable PostgreSQL gate passes 226 tests and 1,504 assertions across
+all fresh migrations through 009, including the epoch bump between cleanup timer
+confirmation and DELETE with zero HTTP. Services/API typechecks pass; 34 changed
+TypeScript/JSON files pass Biome. Deterministic cleanup/storage cases pass 33/118.
+These results do not establish deployed R2 deletion or complete the still-open
+hourly/daily phase adapters and restore domain transformation.

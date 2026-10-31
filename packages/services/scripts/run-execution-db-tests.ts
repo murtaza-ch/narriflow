@@ -22,7 +22,7 @@ const requestedTests = Bun.argv.slice(2);
 const tests = requestedTests.length ? requestedTests : [
   "execution-ledger", "execution-admission", "execution-maintenance", "media-cleanup-control", "execution-restore", "execution-dispatch", "executor-control", "execution-transfer", "source-audio-admission",
   "targeted-execution", "targeted-ingest-execution", "targeted-workflow-execution", "clip-preparation", "clip-preparation-ledger", "clip-selection", "clip-selection-window", "clip-selection-preparation", "clip-selection-hyperdrive-gate", "native-validation", "thumbnail-frame-execution", "generated-media-execution",
-  "outbound-probe", "outbound-delivery", "webhook-subscription", "notification-dispatch", "publication-execution", "modal-dispatch", "progress-outbox", "billing-reconciliation",
+  "outbound-probe", "outbound-delivery", "webhook-subscription", "notification-dispatch", "publication-execution", "modal-dispatch", "progress-outbox", "billing-reconciliation", "library-index",
 ].map(name => `packages/services/src/${name}.db.test.ts`);
 if (tests.some(path => !/^packages\/services\/src\/[a-z0-9-]+\.db\.test\.ts$/.test(path))) throw new Error("Only named execution database test files are allowed");
 
@@ -72,7 +72,11 @@ try {
     // Epoch-fencing tests deliberately invalidate every old reference. Run
     // them after suites whose fixtures freeze the initial deployment epoch.
     const fences = remaining.filter(path => path === "packages/services/src/billing-reconciliation.db.test.ts");
-    const ordinary = remaining.filter(path => !fences.includes(path));
+    // This suite deliberately reconciles the whole disposable outbox. Run it
+    // before domain fixtures create their own pending durable obligations.
+    const dispatch = "packages/services/src/execution-dispatch.db.test.ts";
+    if (remaining.includes(dispatch)) await run(["bun", "test", dispatch], testEnvironment);
+    const ordinary = remaining.filter(path => !fences.includes(path) && path !== dispatch);
     if (ordinary.length) await run(["bun", "test", ...ordinary], testEnvironment);
     for (const path of fences) await run(["bun", "test", path], testEnvironment);
     // Restore advances authority and leaves intake closed. Keep it last.

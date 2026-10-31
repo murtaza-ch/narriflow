@@ -1,3 +1,4 @@
+import { createScheduledMediaCleanupAdmissionStore } from "./media-cleanup-admission";
 import { buildDetectedClipRows, prepareDetectedClipSeed, seedBrandMusic, runDefaultCaptionPreset, type DetectedClip, type LlmMeta } from "./clip-detection-persistence";
 export { seedBrandMusic, resolveClipCaptionPresetForContentPack } from "./clip-detection-persistence";
 import { readServiceEnvironment } from "./runtime-environment";
@@ -85,8 +86,7 @@ import {
 import { analyticsService } from "./analytics.service";
 import { hasFeature } from "./plan-features";
 import {
-  renderGroupExportIdentity,
-  type RenderGroupConfiguration,
+  partitionRenderGroups,
 } from "./render-group-contract";
 import type { RenderGroupAdmission } from "./render-group-lifecycle";
 import { assertClipExportDocumentAllowed } from "./clip-export.service";
@@ -1330,7 +1330,7 @@ export class ClipService {
 
     try {
       return await runDurableMediaCopies({
-        store: prisma.mediaCleanupObligation,
+        store: createScheduledMediaCleanupAdmissionStore(prisma),
         plans: copyPlans,
         claimId: compensationClaimId,
         claimExpiresAt: new Date(Date.now() + 15 * 60 * 1000),
@@ -2240,24 +2240,7 @@ export class ClipService {
         exportVariant: { select: { exportId: true, watermark: true } },
       },
     });
-    const groups = new Map<
-      string,
-      { configuration: RenderGroupConfiguration; variantIds: string[] }
-    >();
-    for (const variant of variants) {
-      const configuration: RenderGroupConfiguration = {
-        clipId: variant.clipId,
-        exportId: variant.exportVariant?.exportId ?? null,
-        editorRevision: variant.editorRevision ?? variant.clip.editorRevision,
-        resolution: variant.resolution,
-        watermark: variant.exportVariant?.watermark ?? !noWatermark,
-      };
-      const key = `${configuration.clipId}:${renderGroupExportIdentity(configuration)}`;
-      const group = groups.get(key) ?? { configuration, variantIds: [] };
-      group.variantIds.push(variant.id);
-      groups.set(key, group);
-    }
-    return [...groups.values()];
+    return partitionRenderGroups(variants, !noWatermark);
   }
 
   /** Queues a fresh clip_rendering run for variants that were added while a
