@@ -1,0 +1,14 @@
+import { createHash } from "node:crypto";
+import { writeFile } from "node:fs/promises";
+import { sealPublicationPayload,derivePublicationPurposeKey,publicationCheckpointBindingHash } from "@narriflow/services/publication-checkpoint-blob";
+import { PUBLICATION_MEMORY_FIXTURE } from "./publication-memory-probe";
+const fixture=PUBLICATION_MEMORY_FIXTURE,count=2200,partBytes=4*1024**2;
+const blob={version:1,kind:"linkedin_upload_instructions",owner:"urn:li:person:fixture",videoUrn:"urn:li:video:fixture",uploadToken:"fixture",totalBytes:count*partBytes,uploadInstructions:Array.from({length:count},(_,index)=>({uploadUrl:`https://video.licdn.com/upload/${index}?fixture=`,firstByte:index*partBytes,lastByte:(index+1)*partBytes-1}))};
+const target=16*1024**2-29,base=Buffer.byteLength(JSON.stringify(blob));if(base>=target)throw Error("fixture_invalid");
+const perPart=Math.floor((target-base)/count),remainder=(target-base)%count;
+for(let i=0;i<count;i++)blob.uploadInstructions[i]!.uploadUrl+="x".repeat(perPart+(i<remainder?1:0));
+if(blob.uploadInstructions.some(part=>part.uploadUrl.length>8192)||Buffer.byteLength(JSON.stringify(blob))!==target)throw Error("fixture_invalid");
+const bytes=await sealPublicationPayload(blob,await derivePublicationPurposeKey(fixture.master,fixture.scope,"linkedin_instructions"),fixture.scope,"linkedin_instructions"),path=process.argv[2];
+if(!path||!path.startsWith("/tmp/narriflow-serverless-gates/"))throw Error("Explicit isolated fixture path required");
+await writeFile(path,bytes,{mode:0o600});
+process.stdout.write(JSON.stringify({path,key:fixture.key,byteLength:bytes.byteLength,contentType:"application/octet-stream",metadata:{"execution-artifact-id":fixture.artifactId,"execution-binding-hash":publicationCheckpointBindingHash(fixture.scope),"fixture-sha256":createHash("sha256").update(bytes).digest("hex")},instructions:count,totalBytes:blob.totalBytes})+"\n");

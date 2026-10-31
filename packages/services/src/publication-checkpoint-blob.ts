@@ -116,6 +116,7 @@ export async function openPublicationPayload(
 			false,
 			["decrypt"],
 		);
+    if(!(bytes.buffer instanceof ArrayBuffer))throw Error("publication_checkpoint_invalid");
 		const plaintext = await crypto.subtle.decrypt(
 			{
 				name: "AES-GCM",
@@ -123,7 +124,7 @@ export async function openPublicationPayload(
 				additionalData: info(scope, purpose),
 			},
 			material,
-			new Uint8Array(bytes.subarray(13)),
+			new Uint8Array(bytes.buffer,bytes.byteOffset+13,bytes.byteLength-13),
 		);
 		return JSON.parse(
 			new TextDecoder("utf-8", { fatal: true }).decode(plaintext),
