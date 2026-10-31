@@ -98,5 +98,21 @@
     "apps/media/src/asset-validation.ts": "d93b87bcb2118b48652bbd73017ddfa52f197d330a6ba5e1ccf715cda4bde45f",
     "apps/media/src/asset-validation-cli.ts": "9da35d8e1a921e2ed12bb9a5178b47d7b341662024bd66bd8266dfdb6d7d9754",
     "apps/web/app/(app)/brand-kit/_components/font-manager.tsx": "f9c99876750dd77253889ba93554d55aa338a80bd851f8c63065841dfb455298"
+  },
+  "fontPendingScopeGate": {
+    "runtime": "Actual FontUploadButton, Next16.4.3/Turbopack, real API-client and isolated HTTP fixture",
+    "flow": "Upload AntonTTF in WorkspaceA; pending disables upload; switchtoWorkspaceB restores upload and makeszero requestsforA job; switchbacktoA resumes samejob and reachesready",
+    "requestsByWorkspace": {
+      "A": 11,
+      "B": 0
+    },
+    "react": "pending id retained with originaluser/workspace identity; no query enabledunderB",
+    "nextErrors": {
+      "configErrors": [],
+      "sessionErrors": []
+    },
+    "compilationIssues": [],
+    "temporaryFixtures": "removed and processesstopped",
+    "runtimeNote": "initial stale Nextdevcache externalmodule error cleared after clean devserverrestart; final Nextsession clear"
   }
 }
