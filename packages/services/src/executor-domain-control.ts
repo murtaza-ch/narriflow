@@ -41,6 +41,15 @@ export type ExecutorReleaseInput = Pick<Extract<ExecutionCommand, { action: "rel
 export type ExecutorProgressInput = Pick<Extract<ExecutionCommand, { action: "progress" }>, "phase" | "progress">;
 export type ExecutorMutationResult = undefined | { dispatchIds: readonly string[] };
 
+export interface ExecutorExpiryObservation {
+  kind: "lease" | "operation";
+  observedDeadlineAt: Date;
+}
+export type ExecutorExpiryResult =
+  | { kind: "terminal" | "superseded" | "expired"; dispatchIds?: readonly string[] }
+  | { kind: "sleep"; dueAt: Date };
+
+
 /** Trusted TypeScript service ports. None is exposed as a generic remote command. */
 export interface ExecutorDomainControl<TRef = unknown, TArtifact extends ExecutorArtifactCommit = ExecutorArtifactCommit> {
   /** Epoch is already locked. Take owner-defined domain locks before the attempt lock. */

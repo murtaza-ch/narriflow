@@ -1,3 +1,4 @@
+import type { WorkerInvocation } from "../../worker";
 import { readServiceEnvironment } from "@narriflow/services/runtime-environment";
 import { OAuthError, OAuthErrorCode } from "@modelcontextprotocol/server";
 import { createBearerAuthenticator, createServerClerkClient, getAppUserForClerkIdentity } from "@narriflow/auth";
@@ -94,7 +95,7 @@ export function createIntegrationsRouteDeps(config: ApiConfig): IntegrationsRout
   };
 }
 
-export function createMcpTransportDeps(config: ApiConfig, clerk = createServerClerkClient(config.clerk)): McpTransportDeps {
+export function createMcpTransportDeps(config: ApiConfig, clerk = createServerClerkClient(config.clerk), runInRequestScope?: WorkerInvocation): McpTransportDeps {
   const auth = createMcpAuth(config);
   const admission = new McpToolAdmission(workspaceService);
   const admitContinuation = continuationAdmission(auth);
@@ -102,7 +103,7 @@ export function createMcpTransportDeps(config: ApiConfig, clerk = createServerCl
   return {
     allowedHosts: auth.allowedHosts, allowedOrigins: auth.allowedOrigins, issuerUrl: auth.issuerUrl, protectedResourceMetadata: auth.protectedResourceMetadata,
     handleMcp: createNarriflowMcpHttpHandler({ verifier: auth.verifier, allowedHosts: () => auth.allowedHosts, allowedOrigins: () => auth.allowedOrigins, resourceMetadataUrl: () => auth.metadataUrl, checkRateLimit,
-      buildServer: (principal, options) => buildNarriflowMcpServer(principal, { ...options, appOrigin: config.webOrigin, apiOrigin: config.apiOrigin }),
+      buildServer: (principal, options) => buildNarriflowMcpServer(principal, { ...options, runInRequestScope, appOrigin: config.webOrigin, apiOrigin: config.apiOrigin }),
     }),
     handleUpload: createMcpUploadHttpHandler({
       async admit(request, workspaceId) {

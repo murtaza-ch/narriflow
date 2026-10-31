@@ -4,6 +4,7 @@ import {
   pickPexelsFile,
   searchBrollVideos,
   searchPexelsVideos,
+  withPexelsSearchCache,
   selectBestPexelsVideo,
   type PexelsVideo,
 } from "./pexels.service";
@@ -246,8 +247,14 @@ describe("searchPexelsVideos (resilient search)", () => {
       }) as unknown as typeof fetch;
 
       const uniqueQuery = `cache probe ${Date.now()}-${Math.random()}`;
-      const first = await searchPexelsVideos(uniqueQuery, "landscape", { fetchImpl });
-      const second = await searchPexelsVideos(uniqueQuery, "landscape", { fetchImpl });
+      const stored = new Map<string, PexelsVideo[]>();
+      const [first, second] = await withPexelsSearchCache({
+        get: async (key) => stored.get(key) ?? null,
+        set: async (key, value) => { stored.set(key, value); },
+      }, async () => [
+        await searchPexelsVideos(uniqueQuery, "landscape", { fetchImpl }),
+        await searchPexelsVideos(uniqueQuery, "landscape", { fetchImpl }),
+      ]);
 
       expect(first).toHaveLength(1);
       expect(second).toHaveLength(1);

@@ -1,5 +1,7 @@
 import { createDatabaseScope, type DatabaseScope, withDatabaseScope } from "@narriflow/db/client";
-import { type ServiceEnvironment, withServiceEnvironment } from "@narriflow/services/runtime-environment";
+import { type ServiceEnvironment } from "@narriflow/services/runtime-environment";
+import { withWorkerServices, workerServiceEnvironment } from "./worker-services";
+export { workerServiceEnvironment } from "./worker-services";
 import { healthResponse } from "./domains/platform/health";
 import type { ApiWorkerBindings } from "./worker-bindings";
 
@@ -7,19 +9,11 @@ interface WorkerApiApp {
   fetch(request: Request, bindings: ApiWorkerBindings, context: ExecutionContext): Response | Promise<Response>;
 }
 
-export interface ApiWorkerDependencies {
-  createApp(environment: ServiceEnvironment): WorkerApiApp;
-  createScope?(connectionString: string): DatabaseScope;
-}
+export type WorkerInvocation = <T>(operation: () => Promise<T>) => Promise<T>;
 
-/** Copy only this invocation's text settings. Resource bindings stay on c.env. */
-export function workerServiceEnvironment(bindings: ApiWorkerBindings): ServiceEnvironment {
-  const settings: Record<string, string> = {};
-  for (const [name, value] of Object.entries(bindings)) {
-    if (typeof value === "string") settings[name] = value;
-  }
-  settings.DEPLOYMENT_VERSION ??= bindings.CF_VERSION_METADATA?.id ?? "dev";
-  return Object.freeze(settings);
+export interface ApiWorkerDependencies {
+  createApp(environment: ServiceEnvironment, runInvocation: WorkerInvocation): WorkerApiApp;
+  createScope?(connectionString: string): DatabaseScope;
 }
 
 export function createApiWorker(dependencies: ApiWorkerDependencies) {
@@ -29,10 +23,12 @@ export function createApiWorker(dependencies: ApiWorkerDependencies) {
         return healthResponse(bindings.CF_VERSION_METADATA?.id ?? "dev");
       }
       const environment = workerServiceEnvironment(bindings);
-      return withServiceEnvironment(environment, () => withDatabaseScope(
-        (dependencies.createScope ?? ((connectionString) => createDatabaseScope({ connectionString })))(bindings.HYPERDRIVE.connectionString),
-        () => dependencies.createApp(environment).fetch(request, bindings, context),
+      // MCP callbacks can continue after fetch returns an SSE Response. Capture
+      // settings and a factory, never a Prisma client or an open socket.
+      const runInvocation: WorkerInvocation = (operation) => withWorkerServices(bindings, environment, () => withDatabaseScope(
+        (dependencies.createScope ?? ((connectionString) => createDatabaseScope({ connectionString })))(bindings.HYPERDRIVE.connectionString), operation,
       ));
+      return runInvocation(async () => dependencies.createApp(environment, runInvocation).fetch(request, bindings, context));
     },
   };
 }

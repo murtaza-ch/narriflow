@@ -1,113 +1,25 @@
-import { bindServiceTestEnvironment } from "./runtime-test-support";
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { checkRateLimit } from "./rate-limit";
+import { expect, test } from "bun:test";
+import { checkRateLimit, readRateLimit, requireNewMutationAllowed, withRateLimiter } from "./rate-limit";
 
-describe("checkRateLimit (fail-open safety)", () => {
-  let savedUrl: string | undefined;
-
-  beforeAll(bindServiceTestEnvironment(() => {
-    savedUrl = process.env.UPSTASH_REDIS_URL;
-    delete process.env.UPSTASH_REDIS_URL;
-  }));
-
-  afterAll(bindServiceTestEnvironment(() => {
-    if (savedUrl === undefined) {
-      delete process.env.UPSTASH_REDIS_URL;
-    } else {
-      process.env.UPSTASH_REDIS_URL = savedUrl;
-    }
-  }));
-
-  test("fails open (allowed=true) when Redis URL is unset", bindServiceTestEnvironment(async () => {
-    const result = await checkRateLimit("gen:user-1", 20, 60);
-    expect(result.allowed).toBe(true);
-    expect(result.limit).toBe(20);
-    expect(result.remaining).toBe(20);
-  }));
-
-  test("stays open across repeated calls beyond the limit", bindServiceTestEnvironment(async () => {
-    for (let i = 0; i < 50; i += 1) {
-      const result = await checkRateLimit("gen:user-2", 5, 60);
-      expect(result.allowed).toBe(true);
-    }
-  }));
-
-  test("returns the configured limit shape", bindServiceTestEnvironment(async () => {
-    const result = await checkRateLimit("presign:user-3", 60, 60);
-    expect(result).toEqual({ allowed: true, remaining: 60, limit: 60, availability: "unavailable" });
-  }));
-
-  test("fails open for a malformed Redis credential URL", bindServiceTestEnvironment(async () => {
-    process.env.UPSTASH_REDIS_URL = "redis://user:secret@[invalid";
-    try {
-      await expect(checkRateLimit("gen:user-4", 20, 60)).resolves.toEqual({
-        allowed: true,
-        remaining: 20,
-        limit: 20,
-        availability: "unavailable",
-      });
-    } finally {
-      delete process.env.UPSTASH_REDIS_URL;
-    }
-  }));
-
-  test("concurrent cold-start requests await Redis readiness and enforce the limit", bindServiceTestEnvironment(async () => {
-    let count = 0;
-    const server = Bun.listen<{ buffer: string }>({
-      hostname: "127.0.0.1",
-      port: 0,
-      socket: {
-        open(socket) { socket.data = { buffer: "" }; },
-        data(socket, bytes) {
-          socket.data.buffer += new TextDecoder().decode(bytes);
-          while (true) {
-            const request = readRedisCommand(socket.data.buffer);
-            if (!request) return;
-            socket.data.buffer = socket.data.buffer.slice(request.length);
-            const command = request.arguments[0]?.toLowerCase();
-            if (command === "info") {
-              const info = "redis_version:7.2.0\r\nloading:0\r\nrole:master\r\n";
-              socket.write(`$${info.length}\r\n${info}\r\n`);
-            } else if (command === "incr") {
-              socket.write(`:${++count}\r\n`);
-            } else if (command === "expire") {
-              socket.write(":1\r\n");
-            } else {
-              socket.write("+OK\r\n");
-            }
-          }
-        },
-      },
-    });
-    process.env.UPSTASH_REDIS_URL = `redis://127.0.0.1:${server.port}`;
-    try {
-      const results = await Promise.all(Array.from({ length: 4 }, () => checkRateLimit("cold-start", 2, 60)));
-      expect(results.map(result => result.availability)).toEqual(Array(4).fill("available"));
-      expect(results.filter(result => result.allowed)).toHaveLength(2);
-      expect(results.map(result => result.remaining)).toEqual([1, 0, 0, 0]);
-      expect(count).toBe(4);
-    } finally {
-      delete process.env.UPSTASH_REDIS_URL;
-      server.stop(true);
-    }
-  }));
+test("an unavailable limiter pauses new mutations without treating an outage as exhaustion", async () => {
+  const result = await checkRateLimit("gen:user", 20, 60);
+  expect(result.availability).toBe("unavailable");
+  expect(() => requireNewMutationAllowed(result)).toThrow("New mutations are paused");
 });
 
-/** A minimal RESP server exercises the real ioredis connection handshake. */
-function readRedisCommand(input: string): { arguments: string[]; length: number } | null {
-  const headerEnd = input.indexOf("\r\n");
-  if (headerEnd < 0) return null;
-  const count = Number(input.slice(1, headerEnd));
-  let offset = headerEnd + 2;
-  const arguments_: string[] = [];
-  for (let index = 0; index < count; index++) {
-    const lengthEnd = input.indexOf("\r\n", offset);
-    if (lengthEnd < 0) return null;
-    const length = Number(input.slice(offset + 1, lengthEnd));
-    const start = lengthEnd + 2;
-    if (input.length < start + length + 2) return null;
-    arguments_.push(input.slice(start, start + length));
-    offset = start + length + 2;
-  }
-  return { arguments: arguments_, length: offset };
-}
+test("a request can read its bucket without consuming another admission", async () => {
+  let count = 0;
+  await withRateLimiter({
+    async check(_key, limit, _windowSeconds, consume) {
+      if (consume) count += 1;
+      return { allowed: consume ? count <= limit : count < limit, remaining: Math.max(0, limit - count), limit, availability: "available" };
+    },
+  }, async () => {
+    expect((await checkRateLimit("review:source", 2, 60)).remaining).toBe(1);
+    expect((await readRateLimit("review:source", 2, 60)).remaining).toBe(1);
+    expect((await checkRateLimit("review:source", 2, 60)).allowed).toBe(true);
+    expect((await readRateLimit("review:source", 2, 60)).allowed).toBe(false);
+    expect((await checkRateLimit("review:source", 2, 60)).allowed).toBe(false);
+  });
+  expect((await readRateLimit("review:source", 2, 60)).availability).toBe("unavailable");
+});

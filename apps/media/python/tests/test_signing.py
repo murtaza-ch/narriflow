@@ -83,6 +83,24 @@ class ExecutionSigningTest(unittest.TestCase):
             with self.subTest(changes=list(changes), code=code):
                 self.assert_code(code, verify_execution_request, **{**base, **changes})
 
+    def test_semantic_delivery_hash_survives_fresh_authentication(self):
+        vector = VECTORS[0]
+        request = vector["request"]
+        next_key = bytes([23]) * 64
+        body = bytes.fromhex(request["bodyHex"])
+        refreshed = sign_execution_request(
+            key_id="worker-next", key=next_key, audience=request["audience"],
+            method=request["method"], target=request["target"], body=body,
+            timestamp=request["timestamp"] + 600, delivery_id=request["deliveryId"],
+        )
+        result = verify_execution_request(
+            signature=refreshed, key_ring={"worker-next": next_key}, audience=request["audience"],
+            method=request["method"], target=request["target"], body=body,
+            now_seconds=request["timestamp"] + 600,
+        )
+        self.assertEqual(result["requestHash"], vector["expected"]["requestHash"])
+        self.assertNotEqual(refreshed["signature"], vector["expected"]["metadata"]["signature"])
+
     def test_target_aliases_and_malformed_utf8(self):
         for target in [
             "https://api.example/api/execution/command", "//api/execution", "/api//execution",

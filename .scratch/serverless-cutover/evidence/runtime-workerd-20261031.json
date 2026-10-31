@@ -1,0 +1,26 @@
+{
+  "command": "bun run --cwd apps/api test:runtime:workerd",
+  "testedAt": "2026-10-31",
+  "node": "v24.8.0",
+  "wrangler": "4.156.0",
+  "compatibilityDate": "2026-10-30",
+  "scope": "Local workerd transport gate with real Clerk RSA verification and ElevenLabs HMAC verification; persistence is an injected fixture. Full API bundle and deployed domain gates remain pending.",
+  "result": {
+    "runtime": "workerd",
+    "checks": [
+      "static_liveness",
+      "cookie_is_not_a_bearer",
+      "clerk_rs256_bearer",
+      "clerk_authorized_party",
+      "invocation_settings",
+      "scribe_exact_signed_bytes",
+      "scribe_rejects_reserialized_bytes"
+    ],
+    "passed": 7
+  },
+  "sha256": {
+    "apps/api/src/worker.ts": "b9430675d8a0b15f39b8d76ff81d327e8830e530d91efeb197f823e86504e083",
+    "apps/api/scripts/gates/runtime-probe.ts": "c925f17c6f57373126946e313eb0304318490ecbbf60ac086f35255590452806",
+    "apps/api/scripts/gates/wrangler.runtime-probe.jsonc": "41716a7fbcc7bdff290ebb726cf2c568841616770bb8c0b9c6c00595820ebe4a"
+  }
+}

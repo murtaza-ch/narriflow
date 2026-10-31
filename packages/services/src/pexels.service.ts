@@ -1,34 +1,10 @@
 import { readServiceEnvironment } from "./runtime-environment";
 import { pickPexelsFile, type PexelsVideo, type BrollSearchResult } from "./pexels-contract";
 export { pickPexelsFile, selectBestPexelsVideo, type PexelsUser, type PexelsVideoFile, type PexelsVideo, type BrollAttribution, type BrollClip, type BrollSearchResult } from "./pexels-contract";
-/**
- * Pexels video search — the single client used by both the studio B-roll
- * picker (web `/broll/search` route) and the worker's render-time auto
- * B-roll (`apps/worker/src/tasks/broll.ts`), so retry/backoff, caching, and
- * attribution extraction exist in exactly one place.
- *
- * Everything here is gated on PEXELS_API_KEY — with no key configured, every
- * export degrades gracefully to "no B-roll" (empty results), never a thrown
- * error, since a stock-footage hiccup must never fail a clip render or a
- * studio search.
- *
- * Caching: search results are cached (in-process, plus Redis when
- * UPSTASH_REDIS_URL is configured — same optional/fail-open pattern as
- * `rate-limit.ts`) keyed by query+orientation, so the same query isn't
- * re-fetched from Pexels per clip/run/user. Downloaded-asset (byte-level)
- * caching lives in the worker (`apps/worker/src/tasks/broll.ts`), which is
- * the only place that writes files to disk.
- */
-import Redis from "ioredis";
+/** Pexels metadata search. Cache and provider failures preserve the optional
+ * no-B-roll result. Native byte transfer belongs to the media executor. */
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { PexelsOrientation } from "@narriflow/validators";
-import {
-  boundedRedisRetryDelay,
-  installOptionalRedisErrorHandler,
-  OPTIONAL_REDIS_COMMAND_TIMEOUT_MS,
-  OPTIONAL_REDIS_CONNECT_TIMEOUT_MS,
-  OPTIONAL_REDIS_RECOVERY_COOLDOWN_MS,
-  optionalRedisUrl,
-} from "./optional-redis";
 
 const PEXELS_VIDEO_SEARCH_URL = "https://api.pexels.com/videos/search";
 
@@ -44,108 +20,28 @@ export function isPexelsConfigured(): boolean {
   return Boolean(readServiceEnvironment().PEXELS_API_KEY);
 }
 
-// --- Optional Redis cache (fail-open, same pattern as rate-limit.ts) --------
-
-let redisClient: Redis | null = null;
-let redisRetryAfter = 0;
-
-function resetRedisClient(failedClient: Redis) {
-  if (redisClient === failedClient) {
-    redisClient = null;
-    redisRetryAfter = Date.now() + OPTIONAL_REDIS_RECOVERY_COOLDOWN_MS;
-  }
-  failedClient.disconnect();
+export interface PexelsSearchCachePort {
+  get(key: string): Promise<PexelsVideo[] | null>;
+  set(key: string, videos: PexelsVideo[], ttlSeconds: number): Promise<void>;
+}
+const searchCache = new AsyncLocalStorage<PexelsSearchCachePort | null>();
+export function withPexelsSearchCache<Result>(cache: PexelsSearchCachePort | null, operation: () => Result): Result {
+  return searchCache.run(cache, operation);
 }
 
-function getRedisClient(): Redis | null {
-  const url = optionalRedisUrl(readServiceEnvironment().UPSTASH_REDIS_URL);
-  if (!url) return null;
-  if (Date.now() < redisRetryAfter) return null;
-  if (!redisClient) {
-    let nextClient: Redis;
-    try {
-      nextClient = new Redis(url, {
-        lazyConnect: true,
-        maxRetriesPerRequest: 1,
-        enableOfflineQueue: false,
-        connectTimeout: OPTIONAL_REDIS_CONNECT_TIMEOUT_MS,
-        commandTimeout: OPTIONAL_REDIS_COMMAND_TIMEOUT_MS,
-        retryStrategy: (attempt) => boundedRedisRetryDelay(attempt, 2),
-      });
-    } catch {
-      redisRetryAfter = Date.now() + OPTIONAL_REDIS_RECOVERY_COOLDOWN_MS;
-      return null;
-    }
-    installOptionalRedisErrorHandler(nextClient);
-    nextClient.on("end", () => {
-      if (redisClient === nextClient) {
-        redisClient = null;
-        redisRetryAfter = Date.now() + OPTIONAL_REDIS_RECOVERY_COOLDOWN_MS;
-      }
-    });
-    redisClient = nextClient;
-  }
-  return redisClient;
-}
-
-const DEFAULT_CACHE_TTL_SEC = 21_600; // 6h — Pexels' catalog doesn't churn minute to minute
-const MEMORY_CACHE_MAX_ENTRIES = 500;
-
+const DEFAULT_CACHE_TTL_SEC = 21_600;
 function cacheTtlSec(): number {
   const raw = Number(readServiceEnvironment().PEXELS_SEARCH_CACHE_TTL_SEC);
-  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_CACHE_TTL_SEC;
+  return Number.isFinite(raw) && raw > 0 ? Math.min(86_400, Math.ceil(raw)) : DEFAULT_CACHE_TTL_SEC;
 }
-
-interface MemoryCacheEntry {
-  videos: PexelsVideo[];
-  expiresAt: number;
-}
-
-const memoryCache = new Map<string, MemoryCacheEntry>();
-
-function memoryCacheSet(key: string, videos: PexelsVideo[], ttlSec: number) {
-  if (memoryCache.size >= MEMORY_CACHE_MAX_ENTRIES) {
-    const oldestKey = memoryCache.keys().next().value;
-    if (oldestKey !== undefined) memoryCache.delete(oldestKey);
-  }
-  memoryCache.set(key, { videos, expiresAt: Date.now() + ttlSec * 1000 });
-}
-
 function cacheKeyFor(query: string, orientation: string, perPage: number): string {
   return `broll:search:v1:${orientation}:${perPage}:${query.trim().toLowerCase()}`;
 }
-
 async function getCachedSearch(key: string): Promise<PexelsVideo[] | null> {
-  const mem = memoryCache.get(key);
-  if (mem) {
-    if (mem.expiresAt > Date.now()) return mem.videos;
-    memoryCache.delete(key);
-  }
-
-  const redis = getRedisClient();
-  if (!redis) return null;
-  try {
-    const raw = await redis.get(key);
-    if (!raw) return null;
-    const videos = JSON.parse(raw) as PexelsVideo[];
-    memoryCacheSet(key, videos, cacheTtlSec());
-    return videos;
-  } catch {
-    return null;
-  }
+  try { return await searchCache.getStore()?.get(key) ?? null; } catch { return null; }
 }
-
 async function setCachedSearch(key: string, videos: PexelsVideo[]): Promise<void> {
-  const ttlSec = cacheTtlSec();
-  memoryCacheSet(key, videos, ttlSec);
-
-  const redis = getRedisClient();
-  if (!redis) return;
-  try {
-    await redis.set(key, JSON.stringify(videos), "EX", ttlSec);
-  } catch {
-    resetRedisClient(redis);
-  }
+  try { await searchCache.getStore()?.set(key, videos, cacheTtlSec()); } catch { /* Optional metadata cache. */ }
 }
 
 // --- Resilient search: retry + backoff, distinct logging per failure mode ---

@@ -1,127 +1,28 @@
+import type { ProgressTicketPayload } from "@narriflow/validators/api/progress";
+import { PROGRESS_CONNECT_TICKET_MS, PROGRESS_SUBSCRIPTION_MAX_MS } from "@narriflow/validators/api/progress";
 import { getActor, createRouteApp } from "../../http/admission";
-import { failureResponse, requestIdOf } from "../../http/errors";
-import { AuthenticatedRequestUnexpectedError } from "../../http/request-policy";
-import { disableIdleTimeout, getLifecycle } from "../../server-hooks";
-import { parseSinceSeq } from "@narriflow/validators/api/progress";
+import { jsonError, requestIdOf } from "../../http/errors";
 import { uuidParams } from "../platform/params";
-import { progressAdmission as access } from "./admission";
-import { type ConnectionLimits, createConnectionRegistry } from "./connections";
-import {
-  type ReauthorizationResult,
-  reauthorizationResult,
-} from "./reauthorization";
-import { type ProgressStreamOptions, type SubscribeLive, openProgressStream } from "./stream";
-
-export const PROGRESS_HEARTBEAT_MS = 15_000;
-export const PROGRESS_FALLBACK_POLL_MS = 15_000;
-const MAX_BUFFERED_LIVE_EVENTS = 1_000;
-const MAX_QUEUED_FRAMES = 256;
-/** A Clerk outage is not a sign-out: tolerate this many consecutive unavailable checks before closing. */
-const MAX_CONSECUTIVE_UNAVAILABLE = 3;
-const REFUSAL_RETRY_AFTER_SECONDS = 5;
+import { progressAdmission } from "./admission";
 
 export interface ProgressRouteDeps {
-  getEventsSince: ProgressStreamOptions["getEventsSince"];
-  /** Live delivery over Redis, or null when Redis is not configured. */
-  subscribeLive: SubscribeLive | null;
-  limits: ConnectionLimits;
-  /** Overrides for tests; production uses the 15-second defaults. */
-  timing?: { heartbeatMs?: number; fallbackPollMs?: number };
+  allowedOrigins: readonly string[];
+  audience: string;
+  issue(scope: Pick<ProgressTicketPayload, "actorUserId" | "workspaceId" | "projectId" | "origin" | "audience">, authorizedAt: number): Promise<string>;
 }
 
-/** The project progress stream (`/api/stream/:projectId`). */
 export function createProgressRoutes(deps: ProgressRouteDeps) {
-  const registry = createConnectionRegistry(deps.limits);
-
-  return createRouteApp(access).get("/stream/:projectId", uuidParams("projectId"), async (c) => {
+  return createRouteApp(progressAdmission).post("/projects/:projectId/progress-ticket", uuidParams("projectId"), async (c) => {
     const actor = getActor(c);
-    const { projectId } = c.req.valid("param");
-    const requestId = requestIdOf(c);
-
-    const admitted = registry.admit(actor.actorUserId);
-    if ("refused" in admitted) {
-      return failureResponse(
-        admitted.refused === "capacity"
-          ? {
-              code: "stream_capacity_reached",
-              category: "unavailable",
-              status: 503,
-              message: "Live progress is busy. Reconnecting shortly.",
-              requestId,
-              retryAfterSeconds: REFUSAL_RETRY_AFTER_SECONDS,
-            }
-          : {
-              code: "too_many_streams",
-              category: "rate_limit",
-              status: 429,
-              message: "Too many open progress connections.",
-              requestId,
-              retryAfterSeconds: REFUSAL_RETRY_AFTER_SECONDS,
-            },
-      );
-    }
-
-    // Admitted: lift Bun's idle timeout for this request only.
-    disableIdleTimeout(c);
-
-    const runtime = c.get("policyRuntime");
-    if (!runtime) throw new Error("installRequestPolicy must precede admitted routes");
-    const request = c.req.raw;
-    let unavailableStreak = 0;
-    // Each beat re-verifies the Bearer token and re-resolves membership,
-    // Workspace status and Project from scratch: nothing is memoized across beats.
-    const authorize = async (): Promise<ReauthorizationResult> => {
-      const result = await runtime.policy.execute(
-        {
-          adapter: "stream",
-          operationName: "reauthorize-workflow-progress-stream",
-          admission: { kind: "project", capability: "content.view", projectId },
-          operation: async () => true,
-        },
-        { requestId, resolveActor: runtime.actorsFor(request).workspace },
-      );
-      if (result.ok) {
-        unavailableStreak = 0;
-      } else if (result.failure.category === "unavailable") {
-        unavailableStreak += 1;
-        if (unavailableStreak < MAX_CONSECUTIVE_UNAVAILABLE) return { ok: true };
-      }
-      return reauthorizationResult(result);
-    };
-
-    let unregisterDrain: (() => void) | undefined;
-    const stream = openProgressStream({
-      projectId,
-      sinceSeq: parseSinceSeq(c.req.query("sinceSeq")),
-      signal: request.signal,
-      getEventsSince: deps.getEventsSince,
-      subscribeLive: deps.subscribeLive,
-      authorize,
-      unexpectedControl: (error) => ({
-        error: "internal_error",
-        ...(error instanceof AuthenticatedRequestUnexpectedError ? { requestId: error.requestId } : {}),
-      }),
-      heartbeatMs: deps.timing?.heartbeatMs ?? PROGRESS_HEARTBEAT_MS,
-      fallbackPollMs: deps.timing?.fallbackPollMs ?? PROGRESS_FALLBACK_POLL_MS,
-      maxBufferedEvents: MAX_BUFFERED_LIVE_EVENTS,
-      maxQueuedFrames: MAX_QUEUED_FRAMES,
-      onClose: () => {
-        admitted.release();
-        unregisterDrain?.();
-      },
-    });
-    // SIGTERM closes every open stream; one registered during a drain closes at once.
-    unregisterDrain = getLifecycle(c)?.onDrain(() => stream.close());
-
-    return new Response(stream.body, {
-      headers: {
-        "Content-Type": "text/event-stream; charset=utf-8",
-        "Cache-Control": "no-cache, no-transform",
-        "X-Accel-Buffering": "no",
-        "X-Request-ID": requestId,
-      },
-    });
+    const origin = c.req.header("Origin");
+    if (!origin || !deps.allowedOrigins.includes(origin)) return jsonError(403, "progress_origin_not_allowed", "Progress requires an allowed browser origin.", requestIdOf(c));
+    // Authorization began before any actor lookup. A delayed lookup cannot mint
+    // a ticket that extends a removed member's 60-second access bound.
+    const authorizedAt = c.get("requestStartedAt") ?? Date.now();
+    if (Date.now() >= authorizedAt + PROGRESS_CONNECT_TICKET_MS) return jsonError(503, "progress_authorization_expired", "Retry progress authorization.", requestIdOf(c));
+    const ticket = await deps.issue({ actorUserId: actor.actorUserId, workspaceId: actor.workspaceId, projectId: c.req.valid("param").projectId, origin, audience: deps.audience }, authorizedAt);
+    c.header("Cache-Control", "no-store");
+    return c.json({ ticket, ticketExpiresAt: authorizedAt + PROGRESS_CONNECT_TICKET_MS, subscriptionExpiresAt: authorizedAt + PROGRESS_SUBSCRIPTION_MAX_MS });
   });
 }
-
 export type ProgressRoutes = ReturnType<typeof createProgressRoutes>;

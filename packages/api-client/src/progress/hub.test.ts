@@ -1,8 +1,9 @@
+import type { ProgressSocketOptions, StreamEnd } from "./socket";
 import { describe, expect, test } from "bun:test";
 import { QueryClient, QueryObserver } from "@tanstack/query-core";
 import type { WorkflowStageUpdatedEvent } from "@narriflow/validators/api/progress";
 import { fakeTransport } from "./test-support";
-import { ApiError, type EventStreamOptions, type StreamEnd, scopedKey } from "../core";
+import { ApiError, scopedKey } from "../core";
 import { type ProgressMessage, decodeProgressMessage } from "./events";
 import { createProgressHub } from "./hub";
 
@@ -26,7 +27,7 @@ function event(seq: number, over: Partial<WorkflowStageUpdatedEvent> = {}): Work
 }
 
 interface FakeRun {
-  options: EventStreamOptions<ProgressMessage>;
+  options: ProgressSocketOptions;
   end(end: StreamEnd): void;
   push(message: ProgressMessage): Promise<void>;
   open(): void;
@@ -44,7 +45,7 @@ function harness(over: { now?: () => number; lingerMs?: number; throttleMs?: num
   const hub = createProgressHub({
     transport: fakeTransport(),
     queryClient,
-    runStream: (async (options: EventStreamOptions<ProgressMessage>) => {
+    runStream: (async (options: ProgressSocketOptions) => {
       return new Promise<StreamEnd>((resolve) => {
         runs.push({
           options,
@@ -79,9 +80,8 @@ describe("progress hub", () => {
       hub.subscribe(SCOPE, PROJECT, { sinceSeq: 5, onEvent: (e) => seen[i]?.push(e.seq) }),
     );
     expect(runs).toHaveLength(1);
-    expect(runs[0]?.options.path).toBe(`/api/stream/${PROJECT}`);
-    expect(runs[0]?.options.query?.(null)).toEqual({ sinceSeq: 5 });
-    expect(runs[0]?.options.query?.(9)).toEqual({ sinceSeq: 9 }); // reconnects resume from the last applied event
+    expect(runs[0]?.options.projectId).toBe(PROJECT);
+    expect(runs[0]?.options.initialCursor).toBe(5);
     await runs[0]?.push(live(6));
     expect(seen).toEqual([[6], [6], [6]]);
 
@@ -132,7 +132,7 @@ describe("progress hub", () => {
     hub.subscribe(SCOPE, PROJECT, { sinceSeq: 0, onEvent: (e) => second.push(e.seq) });
     expect(runs).toHaveLength(2);
     expect(runs[0]?.options.signal.aborted).toBe(true);
-    expect(runs[1]?.options.query?.(null)).toEqual({ sinceSeq: 0 });
+    expect(runs[1]?.options.initialCursor).toBe(0);
     for (const seq of [1, 2, 11, 12]) await runs[1]?.push(live(seq));
     expect(second).toEqual([1, 2, 11, 12]);
     expect(first).toEqual([11, 12]); // the replay of 11 is not repeated to the first consumer
@@ -253,36 +253,26 @@ describe("progress hub", () => {
     const got: number[] = [];
     hub.subscribe(SCOPE, PROJECT, { sinceSeq: 10, onEvent: (e) => got.push(e.seq) });
     expect(runs).toHaveLength(2); // seq 10 is below the buffer floor
-    expect(runs[1]?.options.query?.(null)).toEqual({ sinceSeq: 10 });
+    expect(runs[1]?.options.initialCursor).toBe(10);
   });
 });
 
+test("a healthy shared connection reports status to late subscribers and reset refreshes snapshots", async () => {
+  const { hub, runs, invalidated } = harness();
+  hub.subscribe(SCOPE, PROJECT, {}); runs[0]?.open();
+  const statuses: string[] = [];
+  hub.subscribe(SCOPE, PROJECT, { onStatus: (status) => statuses.push(status.state) });
+  expect(statuses).toEqual(["open"]);
+  await runs[0]?.push({ kind: "reset", cursor: 99 });
+  expect(invalidated.length).toBeGreaterThan(0);
+});
+
 describe("decodeProgressMessage", () => {
-  const frame = (event: string, data: unknown) => ({ event, data: typeof data === "string" ? data : JSON.stringify(data) });
-
-  test("validates events, skips malformed ones and ignores heartbeats and unknown frames", () => {
-    expect(decodeProgressMessage(frame("workflow.stage.updated", event(3)))).toMatchObject({
-      kind: "event",
-      event: { seq: 3 },
-    });
-    expect(decodeProgressMessage(frame("workflow.stage.updated", { seq: "x" }))).toBeNull();
-    expect(decodeProgressMessage(frame("workflow.stage.updated", "{not json"))).toBeNull();
-    expect(decodeProgressMessage(frame("ping", { ts: 1 }))).toBeNull();
-    expect(decodeProgressMessage(frame("connected", { projectId: PROJECT }))).toBeNull();
-    expect(decodeProgressMessage(frame("something.else", {}))).toBeNull();
-  });
-
-  test("keeps only the bounded control fields of a revoke, and treats an unreadable one as revoked", () => {
-    expect(
-      decodeProgressMessage(frame("authorization.revoked", { error: "project_not_found", requestId: "r1", private: "x" })),
-    ).toEqual({ kind: "revoked", control: { error: "project_not_found", requestId: "r1" } });
-    expect(decodeProgressMessage(frame("authorization.revoked", { error: { private: true } }))).toEqual({
-      kind: "revoked",
-      control: { error: "authorization_revoked" },
-    });
-    expect(decodeProgressMessage(frame("authorization.revoked", "garbage"))).toEqual({
-      kind: "revoked",
-      control: { error: "authorization_revoked" },
-    });
+  test("validates scoped event frames and reset controls", () => {
+    expect(decodeProgressMessage({ type: "event", event: event(3) })).toMatchObject({ kind: "event", event: { seq: 3 } });
+    expect(decodeProgressMessage({ type: "reset", cursor: 99 })).toEqual({ kind: "reset", cursor: 99 });
+    expect(decodeProgressMessage({ type: "connected", projectId: PROJECT, cursor: 0 })).toBeNull();
+    expect(() => decodeProgressMessage({ type: "event", event: { seq: "x" } })).toThrow();
+    expect(decodeProgressMessage({ type: "revoked", control: { error: "project_inaccessible", private: "redacted" } })).toEqual({ kind: "revoked", control: { error: "project_inaccessible" } });
   });
 });

@@ -728,3 +728,14 @@ describe("Authenticated Request Policy", () => {
     });
   });
 });
+
+test("an unavailable limiter refuses a new mutation before its operation", async () => {
+  const policy = createPolicy({ rateLimit: async () => ({ allowed: true, availability: "unavailable" }) });
+  const result = await policy.execute({
+    adapter: "hono", operationName: "new-write", mutation: true,
+    admission: { kind: "workspace", capability: "content.edit" },
+    rateLimit: { key: () => "workspace", limit: 60, windowSeconds: 60 },
+    operation: async () => { throw new Error("New mutations must not run during a limiter outage"); },
+  });
+  expect(result).toMatchObject({ ok: false, failure: { code: "mutations_unavailable", status: 503 } });
+});

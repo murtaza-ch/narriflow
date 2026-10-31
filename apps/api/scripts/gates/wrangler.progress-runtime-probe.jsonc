@@ -1,0 +1,12 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "narriflow-local-progress-runtime-probe",
+  "main": "progress-runtime-probe.ts",
+  "compatibility_date": "2026-10-30",
+  "compatibility_flags": ["nodejs_compat", "disallow_importable_env", "web_socket_auto_reply_to_close"],
+  "durable_objects": { "bindings": [{ "name": "PROJECT_PROGRESS", "class_name": "ProjectProgress" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ProjectProgress"] }],
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": []
+}

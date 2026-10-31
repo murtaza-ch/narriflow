@@ -1,0 +1,39 @@
+{
+  "date": "2026-10-31",
+  "Next": "16.4.3 Turbopack",
+  "browser": "agent-browser0.33.1 Chrome with React DevTools",
+  "fixture": "Temporary uncommitted Next page mounted actual ImportProgress with injected ApiRuntime/Intake contexts and isolated HTTP+WebSocket provider. Removed after verification. No user data used.",
+  "observations": {
+    "healthy": {
+      "detailReads": 1,
+      "openSockets": 1,
+      "display": "Rendering your clips;1of2clipsready;results open only after all clipsfinish"
+    },
+    "afterForcedSocketOutage": {
+      "detailReads": 4,
+      "openSockets": 0,
+      "reactImportProgressState": false,
+      "displayRemainsPartialBatch": true
+    },
+    "compilationIssuesAfterEdit": [],
+    "NextConfigErrors": [],
+    "NextSessionErrors": []
+  },
+  "deterministicClientSuites": {
+    "passed": 224,
+    "failed": 0
+  },
+  "unchangedImportCompletionSuite": {
+    "passed": 5,
+    "failed": 0
+  },
+  "limitations": [
+    "The UI provider fixture isolates polling behavior. Full candidate Clerk/Hyperdrive/provider smoke remains a separate cutover gate."
+  ],
+  "sha256": {
+    "packages/api-client/src/progress/socket.ts": "d1d9f3a741c8eccf1c17a11b19146d8a4fe7d778ee4ea14ad72e37e83a71f3e1",
+    "packages/api-client/src/progress/hub.ts": "1db387cff52dbc6ff1c11be9480ab1234c669579487b62fec66a0bd50768f738",
+    "apps/web/app/(app)/upload/_components/import-progress.tsx": "49259c0561dfe3122619a27e3f8aa030324992e79a5c15c76ed75013d8aba6a4",
+    "apps/web/next.config.ts": "0c35d8401d9222e59c6b288fc17095a1692726e8455c830cd38c60e86ed6fc75"
+  }
+}

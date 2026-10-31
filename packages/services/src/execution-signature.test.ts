@@ -35,7 +35,7 @@ const verification = { signature: signed, keyRing: new Map([[request.keyId, key]
 describe("Execution request verification", () => {
   test("returns a stable inbox request digest while accepting the exact clock-window edges", async () => {
     const result = await verifyExecutionRequest(verification);
-    expect(result).toEqual({ metadata: signed, requestHash: "ce414e4c29fa0e2aa3f637c9a4441ac2de5c3dce6784eac6b7c87a00cf8227c4" });
+    expect(result).toEqual({ metadata: signed, requestHash: "620c035f1d8232605abd107d240d9029ece1a51841dc194c9e727797a59dbb11" });
     for (const offset of [-300, 300]) {
       expect((await verifyExecutionRequest({ ...verification, nowSeconds: request.timestamp + offset })).metadata).toEqual(signed);
     }
@@ -105,6 +105,18 @@ describe("Cross-language known-answer protocol vectors", () => {
       expect(signature).toEqual(metadata);
       expect(await verifyExecutionRequest({ signature, keyRing: new Map([[signature.keyId, key]]), audience: signature.audience, method: signature.method, target: vector.request.target, body, nowSeconds: signature.timestamp })).toEqual(vector.expected);
     }
+  });
+
+  test("keeps delivery identity stable after authenticated clock and key refresh", async () => {
+    const original = await verifyExecutionRequest(verification);
+    const renewed = { ...request, timestamp: request.timestamp + 600, keyId: "worker-next", key: new Uint8Array(64).fill(23) };
+    const signature = await signExecutionRequest(renewed);
+    const next = await verifyExecutionRequest({ ...verification, signature, nowSeconds: renewed.timestamp, keyRing: new Map([[renewed.keyId, renewed.key]]) });
+    expect(next.requestHash).toBe(original.requestHash);
+    await expect(verifyExecutionRequest({ ...verification, nowSeconds: renewed.timestamp })).rejects.toMatchObject({ code: "expired" });
+    const changedBody = new TextEncoder().encode('{"action":"release"}');
+    const changed = await signExecutionRequest({ ...renewed, body: changedBody });
+    expect((await verifyExecutionRequest({ ...verification, signature: changed, body: changedBody, nowSeconds: renewed.timestamp, keyRing: new Map([[renewed.keyId, renewed.key]]) })).requestHash).not.toBe(original.requestHash);
   });
 
   test("honors active rotation keys without accepting retired keys", async () => {

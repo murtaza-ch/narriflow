@@ -65,6 +65,7 @@ export function createBillingTestApp(input: {
     },
     rest: empty(),
     mcp: empty(),
+    progressSocket: empty(),
     admin: { rateLimit: async () => ({ allowed: true }) as never },
   });
 }

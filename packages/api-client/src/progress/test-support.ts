@@ -10,7 +10,7 @@ export function fakeTransport(): ApiTransport {
     json: async () => {
       throw new Error("not used");
     },
-    open: async () => {
+    track: () => {
       throw new Error("not used");
     },
   };

@@ -1,4 +1,4 @@
-import { readServiceEnvironment } from "./runtime-environment";
+import { readServiceEnvironment, type ServiceEnvironment } from "./runtime-environment";
 import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
@@ -211,14 +211,14 @@ export const prismaAssistedCopyStore: AssistedCopyStore = {
 	},
 };
 
-function timeoutMs(environment: NodeJS.ProcessEnv) {
+function timeoutMs(environment: ServiceEnvironment) {
 	const parsed = Number(environment.ASSISTED_COPY_TIMEOUT_MS);
 	return Number.isSafeInteger(parsed) && parsed >= 1_000 && parsed <= 120_000
 		? parsed
 		: 30_000;
 }
 
-function productionModule(environment: NodeJS.ProcessEnv = readServiceEnvironment()) {
+function productionModule(environment: ServiceEnvironment = readServiceEnvironment()) {
 	const apiKey = environment.OPENAI_API_KEY ?? "";
 	const model =
 		environment.OPENAI_ASSISTED_COPY_MODEL ??

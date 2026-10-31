@@ -157,4 +157,7 @@ def verify_execution_request(
     expected = hmac.new(key, message, hashlib.sha256).hexdigest()
     if not hmac.compare_digest(expected, metadata["signature"]):
         raise ExecutionSignatureError("signature_mismatch")
-    return {"metadata": metadata, "requestHash": hashlib.sha256(message).hexdigest()}
+    delivery = "\n".join(str(metadata[field]) for field in (
+        "version", "audience", "method", "canonicalTarget", "bodySha256", "deliveryId",
+    )).encode("utf-8")
+    return {"metadata": metadata, "requestHash": hashlib.sha256(delivery).hexdigest()}

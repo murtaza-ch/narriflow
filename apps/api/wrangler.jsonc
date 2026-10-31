@@ -3,11 +3,13 @@
   "name": "narriflow-api-candidate",
   "account_id": "5359f28d385b8632c3abee12d1f5b011",
   "main": "src/index.ts",
-  "compatibility_date": "2026-10-31",
+  "compatibility_date": "2026-10-30",
   "compatibility_flags": ["nodejs_compat", "disallow_importable_env"],
   "workers_dev": false,
   "preview_urls": false,
   "routes": [],
+  "durable_objects": { "bindings": [{ "name": "RATE_LIMITER", "class_name": "RateLimiter" }, { "name": "PROJECT_PROGRESS", "class_name": "ProjectProgress" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RateLimiter", "ProjectProgress"] }],
   "version_metadata": { "binding": "CF_VERSION_METADATA" },
   "dev": { "port": 4000 },
   "hyperdrive": [
@@ -16,7 +18,7 @@
   "r2_buckets": [
     { "binding": "MEDIA_BUCKET", "bucket_name": "narriflow-cutover-gates" }
   ],
-  // This candidate intentionally has no public route, cron, Workflow or DO
+  // This candidate intentionally has no public route, cron or Workflow
   // bindings until their implementations and acceptance gates integrate.
   "vars": { "ADMISSION_STATE": "closed", "APP_ENV": "staging" }
 }

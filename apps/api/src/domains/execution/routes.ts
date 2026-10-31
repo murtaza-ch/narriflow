@@ -37,7 +37,10 @@ async function readCommandBody(request: Request) {
 
 export function createExecutionRoutes(deps: ExecutionRouteDependencies) {
   return createRouteApp(executionAdmission).post("/execution/command", async c => {
-    const refuse = (status: number, code: string, message: string) => markEnvelope(c, jsonError(status, code, message, requestIdOf(c)));
+    const serverTime = () => new Date(deps.nowSeconds() * 1_000).toISOString();
+    const refuse = (status: number, code: string, message: string) => markEnvelope(c, jsonError(status, code, message, requestIdOf(c), {
+      "X-Execution-Server-Time": serverTime(),
+    }));
     try {
       if (!/^application\/json(?:\s*;|$)/i.test(c.req.header("Content-Type") ?? "")) return refuse(415, "unsupported_media_type", "Execution commands require JSON");
       const encoded = c.req.header("X-Execution-Signature");
@@ -52,6 +55,7 @@ export function createExecutionRoutes(deps: ExecutionRouteDependencies) {
       try { command = executionCommandSchema.parse(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body))); }
       catch { return refuse(400, "execution_command_invalid", "Execution command is invalid"); }
       const disposition = executionDispositionSchema.parse(await deps.execute(command, verified));
+      c.header("X-Execution-Server-Time", serverTime());
       return c.json(disposition);
     } catch (error) {
       if (error instanceof CommandTooLarge) return refuse(413, "execution_command_too_large", "Execution command exceeds 64 KiB");
