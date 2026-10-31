@@ -17,7 +17,7 @@ import stat
 import tempfile
 from typing import Any, Mapping, Protocol
 
-from .manifest import MAX_SOURCE_BYTES, SourceManifestError, YouTubeSource, build_audio_manifest, normalize_youtube_source
+from .manifest import MAX_SOURCE_BYTES, SourceManifestError, MediaSource,YouTubeSource, build_audio_manifest, normalize_youtube_source
 from .proxy import BoundProxySession, ProxySessionSequence
 
 
@@ -55,9 +55,9 @@ class ExistingSourceAudio:
             if type(value["sourceRevision"]) is not int or not 0 < value["sourceRevision"] <= 2 ** 53 - 1 or value["wholeSource"] is not True:
                 raise ValueError()
             identity, track, storage = value["mediaIdentity"], value["audioTrack"], value["object"]
-            if set(identity) != {"provider", "mediaId"} or identity["provider"] != "youtube":
+            if set(identity) != {"provider", "mediaId"}:
                 raise ValueError()
-            YouTubeSource(identity["mediaId"])
+            MediaSource(identity["provider"],identity["mediaId"])
             if (set(track) != {"id", "language", "codec", "sampleRate", "channels"} or not re.fullmatch(identifier, track["id"])
                     or track["language"] is not None and not re.fullmatch(r"[A-Za-z0-9-]{1,32}", track["language"])
                     or not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", track["codec"])
@@ -135,6 +135,7 @@ class VerifiedSourceFile:
     manifest: Mapping[str, Any]
     probe: Mapping[str, Any] = field(repr=False)
     snapshot: FileSnapshot
+    content_type: str | None = None
 
     def assert_unchanged(self):
         if FileSnapshot.read(self.path) != self.snapshot:
