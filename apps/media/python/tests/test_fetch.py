@@ -155,6 +155,7 @@ class SharedFetchTests(unittest.IsolatedAsyncioTestCase):
             "probeVersion": "probe-fixture-v1", "toolchainFingerprint": "b" * 64,
         }
         seed, calls = ExistingSourceAudio(binding), []
+        video_available = True
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             video_file = root / "video.mp4"
@@ -169,7 +170,7 @@ class SharedFetchTests(unittest.IsolatedAsyncioTestCase):
                     calls.append("video")
                     return DownloadedSource(video_file, selected.media_id, selected.audio_format_id)
                 async def probe(self, path):
-                    return probe(True)
+                    return probe(video_available)
                 async def end_session(self, work):
                     calls.append("closed")
             class Sink:
@@ -194,6 +195,13 @@ class SharedFetchTests(unittest.IsolatedAsyncioTestCase):
                                        runtime=Runtime(), sink=Sink(), toolchain_fingerprint="b" * 64)
                 self.assertEqual(changed.exception.code, "source_audio_video_mismatch")
             self.assertEqual(calls, ["resolve", "video", "video_commit", "closed"])
+            video_available = False
+            with self.assertRaises(SourceFetchFailure) as missing_video:
+                await fetch_source("_123456789-", source_revision=2, project_id=binding["projectId"],
+                                   existing_audio=seed, mode="local", development=True, work_directory=root,
+                                   runtime=Runtime(), sink=Sink(), toolchain_fingerprint="b" * 64)
+            self.assertEqual(missing_video.exception.code, "source_audio_video_mismatch")
+            self.assertEqual(calls[-3:], ["resolve", "video", "closed"])
             binding["wholeSource"] = False
             with self.assertRaisesRegex(ValueError, "source_audio_seed_invalid"):
                 ExistingSourceAudio(binding)
