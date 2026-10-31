@@ -15,7 +15,7 @@ from uuid import UUID
 
 from .artifacts import AssignedArtifacts
 from .control import ExecutionControlError, ExecutorSession
-from .process import run_owned_process_async
+from .process import MediaProcessError, run_owned_process_async
 from .transfer import WorkPackage
 
 
@@ -184,6 +184,8 @@ async def run_publication(session: ExecutorSession, package: WorkPackage, work: 
             input_bytes=json.dumps({'work':str(root), 'invocationPath':str(path)}, separators=(',', ':')).encode(),
             timeout_seconds=min(300, session.remaining_seconds), kill_grace_seconds=5, env=_environment(),
             on_start=session.on_process_start, cancel_event=session.cancel_event)
+        if session.cancel_event.is_set():
+            raise MediaProcessError('media_execution_cancelled')
         if result.returncode or json.loads(result.stdout) != {'completed': True} or len(settled) != 1:
             raise PublicationFailure('publication_execution_unconfirmed')
         return settled[0]
