@@ -1,3 +1,4 @@
+import { readAutopilotImportSource } from "./autopilot-finishing-authority";
 import { randomBytes, randomUUID } from "node:crypto";
 import { getPrismaClient } from "@narriflow/db/client";
 import { workspaceAllowsCapability, zoomNotificationSchema, type ZoomConnectionSnapshot, type ZoomRecordingNotification } from "@narriflow/validators";
@@ -210,8 +211,9 @@ export class ZoomService {
         if (!rule.createdByUserId) { await pause("acting_member", "The rule's acting member is unavailable. A Workspace Owner or Admin can take over."); deferred ??= new ZoomError("zoom_rule_changed"); continue; }
         await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "processing.consume");
         await this.requireConnection(scope, rule.zoomConnectionId!);
+        const source = await readAutopilotImportSource(prisma, rule);
         const recipe = await recipeService.resolve(scope, rule.recipeId);
-        await projectService.importZoomRecording(scope, { ruleId: rule.id, ruleUpdatedAt: rule.updatedAt, connectionId: rule.zoomConnectionId!, notification, titlePrefix: rule.titlePrefix, recipe });
+        await projectService.importZoomRecording(scope, { source, ruleUpdatedAt: rule.updatedAt, connectionId: rule.zoomConnectionId!, notification, titlePrefix: rule.titlePrefix, recipe });
         await prisma.autopilotRule.updateMany({ where: { id: rule.id, status: "active", updatedAt: rule.updatedAt }, data: { lastCheckedAt: this.now(), lastSuccessAt: this.now(), lastError: null, consecutiveFailures: 0 } });
       } catch (error) {
         if (error instanceof WorkspaceOperationError && error.code === "workspace_access_denied") {

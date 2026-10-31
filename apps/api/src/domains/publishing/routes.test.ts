@@ -439,23 +439,21 @@ describe("queue proposals", () => {
   test("accepting passes the TikTok choices through and keeps the single-accept response shape", async () => {
     const { request, calls } = harness();
     const tiktok = { deliveryMode: "direct", privacyLevel: "SELF_ONLY", disableComment: true, disableDuet: false, disableStitch: false, isAigc: false };
-    const response = await request(`/api/social/proposals/${PROPOSAL_ID}/accept`, { method: "POST", json: { tiktok } });
+    const response = await request(`/api/social/proposals/${PROPOSAL_ID}/accept`, { method: "POST", json: { expectedScheduleRevision:3,tiktok } });
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ accepted: [{ socialPostId: POST_ID }], skippedTikTok: 0, failed: [] });
-    expect(calls[0]!.args.slice(1)).toEqual([PROPOSAL_ID, { tiktok }]);
+    expect(calls[0]!.args.slice(1)).toEqual([PROPOSAL_ID, { expectedScheduleRevision:3,tiktok }]);
     const bare = await request(`/api/social/proposals/${PROPOSAL_ID}/accept`, { method: "POST" });
-    expect(bare.status).toBe(200);
-    expect(calls[1]!.args.slice(1)).toEqual([PROPOSAL_ID, {}]);
+    expect(bare.status).toBe(400);
+    expect(calls).toHaveLength(1);
   });
 
-  test("accept-all continues from a cursor and reports skipped TikTok proposals", async () => {
-    const { request, calls } = harness();
-    const response = await request("/api/social/proposals/accept-all", { method: "POST", json: { after: PROPOSAL_ID } });
-    expect(await response.json()).toMatchObject({ skippedTikTok: 1, nextCursor: null });
-    expect(calls[0]!.args[1]).toEqual({ after: PROPOSAL_ID });
-    await request("/api/social/proposals/accept-all", { method: "POST", json: {} });
-    expect(calls[1]!.args[1]).toEqual({ after: null });
-    expect((await request("/api/social/proposals/accept-all", { method: "POST", json: { after: "x" } })).status).toBe(400);
+  test("accept-all carries only a bounded frozen observation list",async()=>{
+   const {request,calls}=harness();const proposals=[{proposalId:PROPOSAL_ID,expectedScheduleRevision:3}];
+   const response=await request("/api/social/proposals/accept-all",{method:"POST",json:{proposals}});expect(response.status).toBe(200);expect((await response.json()).skippedTikTok).toBe(1);expect(calls[0]!.args[1]).toEqual({proposals});
+   expect((await request("/api/social/proposals/accept-all",{method:"POST",json:{}})).status).toBe(400);
+   expect((await request("/api/social/proposals/accept-all",{method:"POST",json:{proposals:[...proposals,...proposals]}})).status).toBe(400);
+   expect((await request("/api/social/proposals/accept-all",{method:"POST",json:{after:PROPOSAL_ID}})).status).toBe(400);expect(calls).toHaveLength(1);
   });
 
   test("edits and rejects a proposal; a viewer can do neither", async () => {
@@ -479,7 +477,7 @@ describe("queue proposals", () => {
         },
       } as unknown as Partial<PublishingRouteDeps>,
     });
-    const response = await request(`/api/social/proposals/${PROPOSAL_ID}/accept`, { method: "POST" });
+    const response = await request(`/api/social/proposals/${PROPOSAL_ID}/accept`, { method: "POST",json:{expectedScheduleRevision:1} });
     expect(response.status).toBe(422);
     expect((await response.json()).error).toBe("posting_schedule_missing");
   });

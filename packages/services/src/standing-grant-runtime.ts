@@ -1,3 +1,5 @@
+import {readExecutionAdmission} from "./execution-admission";
+import {recoverPublicationDispatches} from "./publication-dispatch";
 import { getPrismaClient } from "@narriflow/db/client";
 import { resolvePricingTier, type FinishingReason } from "@narriflow/validators";
 import type { ActorScope } from "./actor-scope";
@@ -8,7 +10,6 @@ import { PlanRequirementError } from "./plan-features";
 import { createReviewerOptOut, optedOutReviewers } from "./review-opt-out";
 import {
   createStandingGrants,
-  findCoveringGrant,
   grantAdmission,
   planCoversGrant,
   StandingGrantError,
@@ -84,20 +85,32 @@ export type GrantAcceptOutcome = "accepted" | "no_grant" | "tiktok_excluded" | "
  * brand without an approved round keeps its proposal. The cap check and the slot
  * are taken in one transaction under the account's lock. A refusal is an
  * outcome, not an error. */
-export async function acceptProposalUnderGrant(input: { finishingId: string; workspaceId: string; projectId: string; proposalId: string }): Promise<GrantAcceptOutcome> {
+export type FrozenStandingGrant={id:string;revision:number;ruleFingerprint:string};
+async function readFrozenFinishingGrant(input:{finishingId:string;workspaceId:string;projectId:string;expectedGrant:FrozenStandingGrant|null},kind:"publish"|"review_send",socialAccountId?:string){
+ const expected=input.expectedGrant;if(!expected)return null;const prisma=requiredPrisma();
+ const finishing=await prisma.generationFinishing.findFirst({where:{id:input.finishingId,workspaceId:input.workspaceId,projectId:input.projectId},select:{autopilotRuleId:true}});
+ if(!finishing?.autopilotRuleId)return null;
+ return prisma.standingGrant.findFirst({where:{id:expected.id,revision:expected.revision,ruleFingerprint:expected.ruleFingerprint,workspaceId:input.workspaceId,autopilotRuleId:finishing.autopilotRuleId,kind,...(socialAccountId?{socialAccountId}:{}),status:"active",expiresAt:{gt:new Date()}},select:{id:true,revision:true,grantedByUserId:true,reviewerEmails:true}});
+}
+
+export async function acceptProposalUnderGrant(input: { finishingId: string; workspaceId: string; projectId: string; proposalId: string;expectedScheduleRevision:number;expectedGrant:{id:string;revision:number;ruleFingerprint:string}|null }): Promise<GrantAcceptOutcome> {
   const prisma = requiredPrisma();
   const post = await prisma.socialPost.findFirst({
     where: { id: input.proposalId, workspaceId: input.workspaceId, projectId: input.projectId, proposal: { isNot: null } },
-    select: { status: true, platform: true, socialAccountId: true, standingGrantId: true },
+    select: { status: true, platform: true, socialAccountId: true, standingGrantId: true,standingGrantRevision:true,scheduleRevision:true,frozenState:{select:{confirmedScheduleRevision:true}} },
   });
   if (!post?.socialAccountId) return "not_a_proposal";
   // A repeat after a crash finds the post the first run accepted.
-  if (post.standingGrantId) return "accepted";
-  if (post.status !== "draft") return "not_a_proposal";
+  if(post.standingGrantId){
+   if(post.frozenState?.confirmedScheduleRevision!==input.expectedScheduleRevision||post.standingGrantId!==input.expectedGrant?.id||post.standingGrantRevision!==input.expectedGrant.revision)return "social_proposal_changed";
+   await prisma.$transaction(async tx=>{await readExecutionAdmission(tx);await recoverPublicationDispatches(tx,input.proposalId,input.workspaceId);});return "accepted";
+  }
+  if(post.status!=="draft")return "not_a_proposal";
+  if(post.scheduleRevision!==input.expectedScheduleRevision)return "social_proposal_changed";
   // TikTok needs the creator's choices on every post, so a person always accepts its proposals.
   if (post.platform === "tiktok") return "tiktok_excluded";
 
-  const grant = await findCoveringGrant(prisma, { workspaceId: input.workspaceId, finishingId: input.finishingId, kind: "publish", socialAccountId: post.socialAccountId });
+  const grant=await readFrozenFinishingGrant(input,"publish",post.socialAccountId);
   if (!grant) return "no_grant";
   // The grant acts for its granter, who must still be an Owner or Admin.
   const granter = grant.grantedByUserId;
@@ -114,7 +127,7 @@ export async function acceptProposalUnderGrant(input: { finishingId: string; wor
     return "plan_lost";
   }
   try {
-    await publishingQueue.accept({ actorUserId: granter, workspaceId: input.workspaceId }, input.proposalId, {}, { grant: grantAdmission(grant.id, "publish") });
+    await publishingQueue.accept({ actorUserId: granter, workspaceId: input.workspaceId }, input.proposalId, {expectedScheduleRevision:input.expectedScheduleRevision}, { grant: grantAdmission(grant.id, "publish",grant.revision) });
     return "accepted";
   } catch (error) {
     // The delivery's transaction rolled back with this error, so the pause is its own.
@@ -133,12 +146,12 @@ export async function acceptProposalUnderGrant(input: { finishingId: string; wor
  * One round per finishing: the round carries the finishing's ID, which is unique,
  * so a re-claim or a second worker finds it. A refusal says why, and finishing
  * ends with the reason instead of failing. */
-export async function sendReviewRoundUnderGrant(input: { finishingId: string; workspaceId: string; projectId: string; exportIds: string[] }): Promise<{ sent: true } | { sent: false; reason: FinishingReason }> {
+export async function sendReviewRoundUnderGrant(input: { finishingId: string; workspaceId: string; projectId: string; exportIds: string[];expectedGrant:FrozenStandingGrant|null }): Promise<{ sent: true } | { sent: false; reason: FinishingReason }> {
   const prisma = requiredPrisma();
-  const sent = await prisma.reviewRound.findUnique({ where: { finishingId: input.finishingId }, select: { id: true } });
+  const sent = await prisma.reviewRound.findFirst({ where: { finishingId: input.finishingId,workspaceId:input.workspaceId,projectId:input.projectId }, select: { id: true } });
   if (sent) return { sent: true };
 
-  const grant = await findCoveringGrant(prisma, { workspaceId: input.workspaceId, finishingId: input.finishingId, kind: "review_send" });
+  const grant=await readFrozenFinishingGrant(input,"review_send");
   if (!grant) return { sent: false, reason: "review_not_sent_no_grant" };
   const granter = grant.grantedByUserId;
   const actor = granter ? await requireActor(granter, input.workspaceId, "workspace.manage").catch((error) => {
@@ -187,13 +200,13 @@ export async function sendReviewRoundUnderGrant(input: { finishingId: string; wo
         recipientEmails: recipients,
         items,
       },
-      { grant: grantAdmission(grant.id, "review_send"), finishingId: input.finishingId },
+      { grant: grantAdmission(grant.id, "review_send",grant.revision), finishingId: input.finishingId },
     );
     return { sent: true };
   } catch (error) {
     // Another worker may have sent this finishing's round between our check and our insert.
     // Whatever stopped us then, the round exists, which is what finishing wants.
-    if (await prisma.reviewRound.findUnique({ where: { finishingId: input.finishingId }, select: { id: true } })) return { sent: true };
+    if (await prisma.reviewRound.findFirst({ where: { finishingId: input.finishingId,workspaceId:input.workspaceId,projectId:input.projectId }, select: { id: true } })) return { sent: true };
     if (error instanceof StandingGrantError) {
       if (error.code === "standing_grant_rule_changed") {
         await service().pauseBySystem(grant.id, "rule_changed", grant.revision);

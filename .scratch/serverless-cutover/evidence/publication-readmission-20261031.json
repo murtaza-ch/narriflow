@@ -1,0 +1,14 @@
+{
+ "status":"validated integration checkpoint; publication ticket remains open for remaining old scan deletion and deployed provider failure matrix",
+ "model":"017_frozen_publication_readmission: nullable current snapshot owner, immutable retired owner with Post purge cascade, typed confirmedScheduleRevision",
+ "authorization":["startup alone is not provider acceptance","any recorded provider permission/checkpoint/receipt prevents retirement","all physical owners revoked before one-way detach","native charges and original deadlines survive retirement","fresh explicit observed approval creates a new snapshot and numbered prior-linked attempt","stale individual and bulk requests cannot authorize a fresh approval","autonomous publication and review require the originally frozen exact grant tuple or explicit null"],
+ "tests":{
+  "freshPostgres17":{"tests":94,"assertions":534,"log":"/tmp/narriflow-publication-readmission-all-green-db.log"},
+  "routesMcpValidatorsUi":{"tests":84,"assertions":426,"log":"/tmp/narriflow-publication-readmission-fast.log"},
+  "typecheck":["services","api","api-client","web"],
+  "webSplit":"passed",
+  "browser":{"next":"16.4.3","agentBrowser":"0.33.1","compilationIssues":0,"runtimeErrors":0,"singleObservedRevision":1,"bulkSizes":[25,1],"lastSubmittedRevision":26,"lastPropRevisionAfterChange":126,"reactComponent":"ProposalsInbox","rawTrace":"/tmp/narriflow-publication-browser-bulk.json"}
+ },
+ "concurrencyFix":"The account queue mutex is acquired directly as NO KEY UPDATE in canonical owner order. Mutual SHARE-to-NO-KEY-UPDATE upgrades previously deadlocked distinct concurrent accepts.",
+ "remaining":"Root Finishing012/authority018 must supply frozen proposal revision and exact grant tuples to the strict boundary. No latest/current revision fallback is provided. Temporary browser fixture was removed. No live social POST was made."
+}

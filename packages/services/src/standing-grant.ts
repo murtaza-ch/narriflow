@@ -185,13 +185,13 @@ export async function grantUsage(
  * A rule that changed throws `standing_grant_rule_changed`. The delivery's
  * transaction rolls back with it, so the caller pauses the grant afterwards
  * (`pauseBySystem(..., "rule_changed")`); the next delivery then finds it paused. */
-export function grantAdmission(grantId: string, kind: StandingGrantKind, now: () => Date = () => new Date()) {
+export function grantAdmission(grantId: string, kind: StandingGrantKind, expectedRevision:number, now: () => Date = () => new Date()) {
   return {
     id: grantId,
     async admit(tx: Tx): Promise<{ revision: number }> {
       const at = now();
       const live = await tx.standingGrant.updateMany({
-        where: { id: grantId, kind, status: "active", expiresAt: { gt: at } },
+        where: { id: grantId, kind,revision:expectedRevision, status: "active", expiresAt: { gt: at } },
         data: { updatedAt: at },
       });
       if (live.count !== 1) throw new StandingGrantError("standing_grant_unavailable", "The standing grant is no longer active.");
@@ -388,7 +388,7 @@ export async function findCoveringGrant(
       expiresAt: { gt: input.now ?? new Date() },
       ...(input.socialAccountId ? { socialAccountId: input.socialAccountId } : {}),
     },
-    select: { id: true, kind: true, revision: true, grantedByUserId: true, reviewerEmails: true },
+    select: { id: true, kind: true, revision: true,ruleFingerprint:true, grantedByUserId: true, reviewerEmails: true },
   });
 }
 

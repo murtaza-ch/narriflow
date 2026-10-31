@@ -1,3 +1,4 @@
+import { freezeAutopilotFinishingAuthority, type AutopilotImportSource } from "./autopilot-finishing-authority";
 import { appendProgressRevocation, deliverProgressAfterCommit } from "./progress-outbox";
 import { readExecutionAdmission, assertExecutionAdmissionOpen, requireExecutionAdmissionOpen } from "./execution-admission";
 import type { ExecutionDispatchRecord } from "./execution-dispatch";
@@ -1829,7 +1830,7 @@ export class ProjectService {
 	}
 
 	async importZoomRecording(scope: ActorScope, input: {
-		ruleId: string; ruleUpdatedAt: Date; connectionId: string;
+		source: AutopilotImportSource; ruleUpdatedAt: Date; connectionId: string;
 		notification: ZoomRecordingNotification; titlePrefix: string | null;
 		recipe: ResolvedRecipe;
 	}) {
@@ -1840,7 +1841,7 @@ export class ProjectService {
 			titlePrefix: input.titlePrefix ?? undefined,
 			brandProfileId: input.recipe.brandProfileId,
 		}, {
-			autopilotRuleId: input.ruleId,
+			autopilotSource: input.source,
 			generationContext: { contentPack: input.recipe.contentPack, languageCode: input.recipe.languageCode, finishing: input.recipe.finishing, recipe: acceptedRecipe(input.recipe) },
 			zoom: { connectionId: input.connectionId, meetingUuid: item.meetingUuid, recordingId: item.recordingId, ruleUpdatedAt: input.ruleUpdatedAt },
 		});
@@ -1869,7 +1870,7 @@ export class ProjectService {
 		},
 		options: {
 			generationContext?: IntakeGenerationContext;
-			autopilotRuleId?: string;
+			autopilotSource?: AutopilotImportSource;
 		} = {},
 	) {
 		const { rssUrl, ...media } = input;
@@ -1894,7 +1895,7 @@ export class ProjectService {
 		},
 		options: {
 			generationContext?: IntakeGenerationContext;
-			autopilotRuleId?: string;
+			autopilotSource?: AutopilotImportSource;
 			zoom?: { connectionId: string; meetingUuid: string; recordingId: string; ruleUpdatedAt: Date };
 		} = {},
 	) {
@@ -1914,11 +1915,11 @@ export class ProjectService {
 		const prisma = this.requirePrisma();
 		const actor = await this.requireActor(scope, "processing.consume");
 
-		if (options.autopilotRuleId && input.episodes.length === 1) {
+		if (options.autopilotSource?.ruleId && input.episodes.length === 1) {
 			const existing = await prisma.autopilotEpisode.findUnique({
 				where: {
 					ruleId_episodeId: {
-						ruleId: options.autopilotRuleId,
+						ruleId: options.autopilotSource?.ruleId,
 						episodeId: input.episodes[0]!.id,
 					},
 				},
@@ -1976,10 +1977,10 @@ export class ProjectService {
 			try {
 				const created = await prisma.$transaction(async (tx) => {
 					await requireExecutionAdmissionOpen(tx);
+					const authority = options.autopilotSource ? await freezeAutopilotFinishingAuthority(tx, { workspaceId: actor.workspaceId, actorUserId: actor.actorUserId, source: options.autopilotSource, recipe: options.generationContext?.recipe, finishing: options.generationContext?.finishing, contentPack: options.generationContext?.contentPack, languageCode: options.generationContext?.languageCode, brandProfileId: input.brandProfileId ?? null }) : null;
 					if (options.zoom) {
-						await tx.$queryRaw`SELECT "id" FROM "AutopilotRule" WHERE "id" = ${options.autopilotRuleId!}::uuid FOR UPDATE`;
 						await tx.$queryRaw`SELECT "id" FROM "ZoomConnection" WHERE "id" = ${options.zoom.connectionId}::uuid FOR UPDATE`;
-						const live = await tx.autopilotRule.findFirst({ where: { id: options.autopilotRuleId, workspaceId: actor.workspaceId, sourceKind: "zoom", status: "active", updatedAt: options.zoom.ruleUpdatedAt, zoomConnectionId: options.zoom.connectionId, zoomConnection: { revokedAt: null } } });
+						const live = await tx.autopilotRule.findFirst({ where: { id: options.autopilotSource?.ruleId, workspaceId: actor.workspaceId, sourceKind: "zoom", status: "active", updatedAt: options.zoom.ruleUpdatedAt, zoomConnectionId: options.zoom.connectionId, zoomConnection: { revokedAt: null } } });
 						if (!live) throw new ZoomError("zoom_rule_changed");
 					}
 					const projectId = randomUUID();
@@ -1990,12 +1991,12 @@ export class ProjectService {
 						intakeKind: options.zoom ? "link" : "rss",
 						declaredSeconds: episode.durationSeconds ?? null,
 					});
-					if (options.autopilotRuleId) {
+					if (options.autopilotSource?.ruleId) {
 						// This unique insert is the admission fence. Project, ingest job,
 						// generation context, and dedup row commit or roll back together.
 						await tx.autopilotEpisode.create({
 							data: {
-								ruleId: options.autopilotRuleId,
+								ruleId: options.autopilotSource?.ruleId,
 								episodeId: episode.id,
 							},
 						});
@@ -2038,7 +2039,8 @@ export class ProjectService {
 								...recipeColumn(options.generationContext),
 								// Only this import names a rule: a generation's finishing copies it,
 								// and Standing Grants cover finishing by it.
-								autopilotRuleId: options.autopilotRuleId ?? null,
+								autopilotRuleId: options.autopilotSource?.ruleId ?? null,
+								autopilotAuthority: authority ?? Prisma.DbNull,
 							},
 						});
 						acquisition = freezeIngestAcquisition({ id: createdPack.id, draft: createdPack.draft, captionedVideo: parseStoredContentPack(createdPack).captionedVideo ?? null });
@@ -2050,11 +2052,11 @@ export class ProjectService {
 						acquisition,
 					});
 
-					if (options.autopilotRuleId) {
+					if (options.autopilotSource?.ruleId) {
 						await tx.autopilotEpisode.update({
 							where: {
 								ruleId_episodeId: {
-									ruleId: options.autopilotRuleId,
+									ruleId: options.autopilotSource?.ruleId,
 									episodeId: episode.id,
 								},
 							},
@@ -2065,7 +2067,7 @@ export class ProjectService {
 							projectId: createdProject.id,
 							type: "autopilot.episode_imported",
 							subject: {
-								ruleId: options.autopilotRuleId,
+								ruleId: options.autopilotSource?.ruleId,
 								projectId: createdProject.id,
 								episodeId: episode.id,
 							},
@@ -2084,11 +2086,11 @@ export class ProjectService {
 					continue;
 				}
 				if (isUniqueConstraintError(error)) {
-					if (options.autopilotRuleId) {
+					if (options.autopilotSource?.ruleId) {
 						const winner = await prisma.autopilotEpisode.findUnique({
 							where: {
 								ruleId_episodeId: {
-									ruleId: options.autopilotRuleId,
+									ruleId: options.autopilotSource?.ruleId,
 									episodeId: episode.id,
 								},
 							},

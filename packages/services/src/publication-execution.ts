@@ -1,4 +1,4 @@
-import {refreshPublicationExport,returnPublicationGrantPost} from "./publication-producers";
+import {refreshPublicationExport,returnPublicationGrantPost,publicationHasProviderPermission} from "./publication-producers";
 import { admitMediaCleanupObligations } from "./media-cleanup-admission";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
@@ -498,6 +498,9 @@ export class PublicationExecution
 				where: { socialPostId: post.id },
 				orderBy: { attemptNumber: "desc" },
 			});
+   const priorAttempt=attempt&&attempt.frozenStateId!==post.frozenState.id?attempt:null;
+   if(priorAttempt)attempt=null;
+
 			const sent = attempt ? submitted(attempt) : false;
 			const settings = post.frozenState
 				.providerSettings as Prisma.JsonObject | null;
@@ -514,10 +517,11 @@ export class PublicationExecution
 					error instanceof PublicationExecutionError
 						? error.code
 						: "publication_authority_revoked";
-    if(code==="publication_grant_changed"&&!attempt&&post.standingGrantId){
+    if(code==="publication_grant_changed"&&post.standingGrantId){
      const grant=await tx.standingGrant.findUnique({where:{id:post.standingGrantId}});
      if(grant&&await returnPublicationGrantPost(tx,post,grant))return {kind:"terminal" as const,dispatchIds:await this.wake(tx,post.id,new Date(0),"publication_grant_returned")};
     }
+    const mayHaveProvider=sent||Boolean(attempt&&await publicationHasProviderPermission(tx,post.frozenState!.id));
 				if (attempt?.currentClaimId) {
 					const result = await this.stop(
 						tx,
@@ -527,7 +531,7 @@ export class PublicationExecution
 							claimId: attempt.currentClaimId,
 						},
 						code,
-						sent,
+						mayHaveProvider,
 					);
 					return { kind: "terminal" as const, dispatchIds: result.dispatchIds };
 				}
@@ -535,17 +539,17 @@ export class PublicationExecution
 					await tx.socialPublicationAttempt.update({
 						where: { id: attempt.id },
 						data: {
-							phase: sent ? "needs_attention" : "failed",
-							outcome: sent ? "unknown" : "failed",
+							phase: mayHaveProvider ? "needs_attention" : "failed",
+							outcome: mayHaveProvider ? "unknown" : "failed",
 							failureCode: code,
-							failureDisposition: sent ? "attention" : "permanent",
+							failureDisposition: mayHaveProvider ? "attention" : "permanent",
 							terminalAt: now,
 						},
 					});
 				await tx.socialPost.update({
 					where: { id: post.id },
 					data: {
-						status: sent ? "needs_attention" : "failed",
+						status: mayHaveProvider ? "needs_attention" : "failed",
 						errorCode: code,
 						nextAttemptAt: null,
 					},
@@ -567,9 +571,10 @@ export class PublicationExecution
 					data: {
 						socialPostId: post.id,
 						frozenStateId: post.frozenState.id,
-						attemptNumber: 1,
+      attemptNumber: (priorAttempt?.attemptNumber??0)+1,
+      priorAttemptId:priorAttempt?.id??null,
 						executionActorUserId: actorUserId,
-						idempotencyKey: `publication:${post.id}:1`,
+      idempotencyKey:`publication:${post.id}:${(priorAttempt?.attemptNumber??0)+1}`,
 						phase: "retry_scheduled",
 						nextActionAt: now,
 						processingDeadline: new Date(
