@@ -151,6 +151,17 @@ suite("Clip Preparation authority and publication", () => {
     expect(await f.service.admitForGroup(f.references[0]!)).toEqual(a);
     expect(f.writes()).toBe(writes);
   });
+  test("a preparation capsule already claimed for deletion cannot be adopted and a retry uses a new key", async () => {
+    const f = await fixture();
+    f.afterWrite(async () => { await db.mediaCleanupObligation.updateMany({ where: { projectId: f.project.id, origin: "clip_preparation_input" }, data: { claimId: crypto.randomUUID(), claimExpiresAt: new Date(Date.now() + 60000) } }); });
+    await expect(f.service.admitForGroup(f.references[0]!)).rejects.toMatchObject({ code: "execution_object_deletion_admitted" });
+    expect(await db.clipPreparation.count({ where: { clipId: f.clip.id } })).toBe(0);
+    f.afterWrite(async () => {});
+    const admitted = await f.service.admitForGroup(f.references[0]!);
+    expect(f.objects.size).toBe(2);
+    const row = await db.clipPreparation.findUniqueOrThrow({ where: { id: admitted.preparationId } });
+    expect(row.inputStorageKey).not.toBe([...f.objects.keys()][0]);
+  });
 
   test("preparation provenance cannot pair another Project with this Clip", async () => {
     const f = await fixture();

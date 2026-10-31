@@ -6,7 +6,7 @@ import { clipSelectionBytesHash } from "./clip-selection-input";
 const config = { accountId: "a".repeat(32), bucket: "private", accessKeyId: "fixture", secretAccessKey: "fixture" };
 test("selection objects use conditional writes, measured HEAD and exact bounded If-Match reads", async () => {
   const bytes = new TextEncoder().encode('{"frozen":true}'), sha256 = await clipSelectionBytesHash(bytes);
-  const key = `projects/${crypto.randomUUID()}/selection/${crypto.randomUUID()}/${sha256}.json`;
+  const key = `projects/${crypto.randomUUID()}/selection/${crypto.randomUUID()}/${crypto.randomUUID()}/${sha256}.json`;
   let stored = false, puts = 0, reads = 0;
   const client = { async send(command: unknown) {
     if (command instanceof PutObjectCommand) {
@@ -27,11 +27,12 @@ test("selection objects use conditional writes, measured HEAD and exact bounded 
   expect(puts).toBe(2); expect(reads).toBe(1);
   expect(await storage.read({ storageKey: key, etag: '"sealed"', byteLength: bytes.length, sha256 })).toEqual(bytes);
   await expect(storage.read({ storageKey: "outside/input.json", etag: '"sealed"', byteLength: bytes.length, sha256 })).rejects.toThrow("reference");
+  await expect(storage.write(key.replace(/\/[a-f0-9-]{36}\/([a-f0-9]{64}\.json)$/, "/$1"), bytes)).rejects.toThrow("reference");
   expect(reads).toBe(2);
 });
 test("a changed body or overlong stream cannot be accepted even when its reported HEAD length and checksum match", async () => {
   const bytes = new TextEncoder().encode('{"frozen":true}'), sha256 = await clipSelectionBytesHash(bytes);
-  const key = `execution/1/clip_selection_window/${crypto.randomUUID()}/1/${crypto.randomUUID()}/${crypto.randomUUID()}/selection_window/${sha256}.json`;
+  const key = `execution/1/clip_selection_window/${crypto.randomUUID()}/1/${crypto.randomUUID()}/${crypto.randomUUID()}/selection_window/${crypto.randomUUID()}/${sha256}.json`;
   for (const oversized of [false, true]) {
     let cancelled = false;
     const client = { async send() { return { ETag: '"sealed"', ContentLength: bytes.length, ContentType: "application/json", Metadata: { "selection-sha256": sha256 },

@@ -13,6 +13,7 @@
     "./execution-admission": "./src/execution-admission.ts",
     "./execution-maintenance": "./src/execution-maintenance.ts",
     "./execution-maintenance-pages": "./src/execution-maintenance-pages.ts",
+    "./execution-object-cleanup": "./src/execution-object-cleanup.ts",
     "./execution-restore": "./src/execution-restore.ts",
     "./ingest-source-execution": {
       "types": "./src/ingest-source-execution.ts",

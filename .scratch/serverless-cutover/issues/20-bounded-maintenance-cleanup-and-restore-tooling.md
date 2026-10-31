@@ -38,9 +38,19 @@ completing and forgetting its obligation. Tentative writes use unique keys to av
 reviving a destination already granted to a deleting owner. Those persisted rows
 do not yet have ticket20's confirmed maintenance scheduling or native deletion.
 
-Selection input and result PUTs still need planned exact-key cleanup admission.
-Its content-addressed input keys also need an explicit rule against reviving a key
-whose cleanup owner already received delete authority. Completed Window input/result
-references must remain held, including successful siblings retained for reuse.
-Use bounded explicit identifiers and existing row references; do not scan storage,
-delete unknown completed objects, or infer that a lost commit left an orphan.
+Selection input and result PUTs now have exact-key cleanup intent before storage
+I/O and use unique nonce paths. The obsolete content-only paths are rejected by
+the storage boundary. A fresh owner plans each result write, and adoption locks
+the exact cleanup row so a deleting or completed cleanup owner cannot race a
+later reference into existence. Input and result holds use exact Window references,
+including successful siblings retained for reuse; the input-key lookup has a
+composite index. Preparation adoption uses the same row fence.
+
+The cleanup worker now reschedules all referenced/held objects rather than marking
+their obligation complete and forgetting it. Thirty deterministic storage/cleanup
+cases pass102 assertions; selection preparation/ownership cases pass22/175 and
+preparation passes14/108. Workers-safe fixed-origin R2 DeleteObject is the agreed
+destination for this small HTTP-only work, replacing lean Modal cleanup in ADR0019
+and the loop inventory. Production exact-ID scheduling/deletion and remaining
+maintenance/restore adapters are still required. Do not scan storage, delete unknown
+completed objects, or infer that a lost commit left an orphan.

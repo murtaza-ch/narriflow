@@ -1,7 +1,7 @@
 import { createClipSelectionControl } from "@narriflow/services/clip-selection-control";
 import { createClipSelectionProvider } from "@narriflow/services/clip-selection-provider";
 import type { ClipSelectionStorage, createClipSelectionPreparation } from "@narriflow/services/clip-selection-preparation";
-import type { createClipSelectionLifecycle } from "@narriflow/services/clip-selection-window";
+import { clipSelectionWindowResultKey, type createClipSelectionLifecycle, type ClipSelectionWindowAttempt } from "@narriflow/services/clip-selection-window";
 import type { ExecutionDispatchReference } from "@narriflow/validators/execution";
 
 export interface SelectionMemoryMetadata { sourceSeconds: number; words: number; utterances: number; inputBytes: number; windows: Array<{ reference: ExecutionDispatchReference; metadata: NonNullable<Awaited<ReturnType<ReturnType<typeof createClipSelectionPreparation>["readWindow"]>>> }> }
@@ -15,6 +15,7 @@ export function createSelectionMemoryControl(fixture: SelectionMemoryMetadata, s
       return { kind: "acquired", attempt: { reference, token: crypto.randomUUID(), owner: invocation.owner }, input: metadata.input, windowIndex: metadata.windowIndex,
         operationDeadlineAt: new Date(Date.now() + 600000), leaseExpiresAt: new Date(Date.now() + 120000), dispatchIds: [] }; },
     async start() { const now = new Date(); return { kind: "started", now, leaseExpiresAt: new Date(now.getTime() + 120000), operationDeadlineAt: new Date(now.getTime() + 600000) }; },
+    async planResultWrite(attempt: ClipSelectionWindowAttempt, sha256: string) { return { storageKey: clipSelectionWindowResultKey(attempt, sha256, crypto.randomUUID()) }; },
     async complete() { return { kind: "completed", dispatchIds: [] }; },
     async retry() { return { kind: "failed", dispatchIds: [] }; }, async rejectInput() { return { kind: "failed", dispatchIds: [] }; },
   } as unknown as ReturnType<typeof createClipSelectionLifecycle>;

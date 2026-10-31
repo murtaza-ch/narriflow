@@ -715,6 +715,7 @@ export * from "./clip-preparation-execution";
 export * from "./execution-admission";
 export * from "./execution-maintenance";
 export * from "./execution-maintenance-pages";
+export * from "./execution-object-cleanup";
 export * from "./execution-restore";
 export { getClipPreparationService, getPrivateJsonStorage } from "./clip-preparation-runtime";
 export { createPrivateJsonStorage, type PrivateJsonStorage, type PrivateJsonObject } from "./private-json-storage";
