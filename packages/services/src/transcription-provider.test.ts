@@ -44,3 +44,32 @@ test("GET recovery distinguishes pending, transient failure and completed payloa
   } });
   expect(await ready.result("a/b?c")).toEqual({ kind: "ready", payload: { text: "hello", words: [] } });
 });
+
+test("the optional language probe posts only bounded native WAV bytes and pins with the existing confidence policy", async () => {
+  let requests = 0;
+  const wav = new Uint8Array(48); wav.set(new TextEncoder().encode("RIFF")); wav.set(new TextEncoder().encode("WAVE"), 8);
+  const provider = createScribeProvider({ apiKey: "secret", webhookId: "webhook", fetch: async (_url, init) => {
+    requests++;
+    const form = init!.body as FormData;
+    expect(form.has("cloud_storage_url")).toBe(false);
+    expect(form.has("source_url")).toBe(false);
+    expect(form.has("webhook")).toBe(false);
+    expect(form.has("diarize")).toBe(false);
+    const file = form.get("file") as Blob;
+    expect(file.size).toBe(48);
+    expect(file.type).toBe("audio/wav");
+    return Response.json({ language_code: "urd", language_probability: 0.94, words: Array.from({ length: 16 }, () => ({ type: "word" })) });
+  } });
+  expect(await provider.probe({ wav })).toEqual({ pinned: "ur", detected: "urd", probability: 0.94, wordCount: 16, reason: "pinned" });
+  expect(requests).toBe(1);
+  expect(await provider.probe({ wav: new Uint8Array(2_000_001) })).toMatchObject({ pinned: null, reason: "probe_invalid" });
+  expect(requests).toBe(1);
+});
+
+test("provider probe throttling keeps Auto without retrying or failing the full transcription", async () => {
+  let requests = 0;
+  const wav = new Uint8Array(48); wav.set(new TextEncoder().encode("RIFF")); wav.set(new TextEncoder().encode("WAVE"), 8);
+  const provider = createScribeProvider({ apiKey: "secret", webhookId: "webhook", fetch: async () => { requests++; return Response.json({}, { status: 429 }); } });
+  expect(await provider.probe({ wav })).toMatchObject({ pinned: null, reason: "provider_http_429" });
+  expect(requests).toBe(1);
+});

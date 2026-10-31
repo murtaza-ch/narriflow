@@ -4,7 +4,7 @@
 
 **Blocked by:** 03, 05
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 **Spec:** [Serverless cutover](../spec.md)
 
@@ -14,3 +14,7 @@
 ## Evidence
 
 Pending implementation and verification.
+
+Preparation is owned by the contracts worktree on the integration branch. Dependency acceptance remains open; this ticket is not complete. Existing detector prompt, scoring, transcript slicing, cue, guidance and caption-only policies will move as one implementation before durable window orchestration is added.
+
+Primary comparison before unfamiliar permit work: [Bottleneck](https://github.com/SGrondin/bottleneck) separates weighted reservoir accounting from concurrency bounds; its distributed implementation depends on Redis. [Graphile Worker](https://github.com/graphile/worker) demonstrates PostgreSQL ownership and async job delivery, but provider token/request permits are a separate concern. This cutover reuses PostgreSQL with explicit in-flight request/estimated-token limits, a persisted fair queue, and provider Retry-After; no Redis limiter or speculative RPM/TPM bucket is added. Launch limits remain explicit configuration.

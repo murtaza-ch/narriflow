@@ -2,6 +2,10 @@ export { workflowRunExecutionInputHash, type WorkflowRunExecutionInput } from ".
 export { createScribeProvider, ScribeSubmissionUnconfirmed, type ScribeAcceptance, type ScribeFetchResult, type ScribeSubmissionReference } from "./transcription-provider";
 export { createTranscriptionAdmission, scribeConcurrencyUnits, continueScribeCapacityRelease, type TranscriptionAdmissionResult } from "./transcription-admission";
 export { createTranscriptionControl, type TranscriptionControlPorts, type TranscriptionControlResult } from "./transcription-control";
+export { createTranscriptionProbe, type SourceLanguageProbeDescriptor, type TranscriptionProbePreparation } from "./transcription-probe";
+export { buildCaptionOnlyTranscriptSlice, buildMarketCompliantClipCandidates, buildUserPrompt, CLIP_DURATION_POLICY, formatTimestamp, formatTranscriptForLlm,
+  normalizeLlmClip, resolveCandidateCountTarget, resolveClipCountTarget, resolveDefaultClipCountTarget } from "./clip-selection-policy";
+export { createClipSelectionProvider, classifyOpenAiHttpFailure, type ClipSelectionProviderResult } from "./clip-selection-provider";
 export {
 	boundedExpectedDomainFailureDetails,
 	ExpectedDomainFailureError,

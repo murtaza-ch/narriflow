@@ -3,29 +3,16 @@ export { buildProbeFfmpegArgs, type LanguageProbeWindow, selectProbeWindows, PRO
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
-  normalizeProviderLanguageCode,
   SCRIBE_MODEL_ID,
-  type SourceLanguageCodeValue,
 } from "@narriflow/validators";
+import { decideProbePin, type LanguageProbeResult } from "@narriflow/services/language-probe-contract";
+export { decideProbePin, type LanguageProbeResult, PROBE_MIN_LANGUAGE_PROBABILITY, PROBE_MIN_WORDS } from "@narriflow/services/language-probe-contract";
 import { type WorkerProcessModule } from "../../media/src/worker-process";
-export const PROBE_MIN_LANGUAGE_PROBABILITY = 0.8;
-export const PROBE_MIN_WORDS = 15;
 
 const FFMPEG_DEADLINE_MS = 90_000;
 const SCRIBE_TIMEOUT_MS = 60_000;
 const SCRIBE_ENDPOINT = "https://api.elevenlabs.io/v1/speech-to-text";
 
-export interface LanguageProbeResult {
-  /** Canonical registry code to pin, or null to transcribe in Auto. */
-  pinned: SourceLanguageCodeValue | null;
-  /** The provider's language code as returned, when the call got that far. */
-  detected: string | null;
-  probability: number | null;
-  /** Count of `type: "word"` tokens in the probe transcript. */
-  wordCount: number;
-  /** Why the probe pinned or did not (log-safe, never raw provider text). */
-  reason: string;
-}
 
 export interface LanguageProbeOptions {
   /** Presigned HTTPS URL of the source; ffmpeg range-reads it, nothing is downloaded whole. */
@@ -37,23 +24,6 @@ export interface LanguageProbeOptions {
   apiKey?: string;
   /** Test seam; defaults to the global `fetch`. */
   fetch?: typeof fetch;
-}
-
-/** The pin decision for a Scribe response; `reason` is "pinned" on success. */
-export function decideProbePin(response: {
-  languageCode: string | null;
-  probability: number | null;
-  wordCount: number;
-}): { pinned: SourceLanguageCodeValue | null; reason: string } {
-  const { languageCode, probability, wordCount } = response;
-  if (!languageCode) return { pinned: null, reason: "no_language_detected" };
-  if (probability === null || probability < PROBE_MIN_LANGUAGE_PROBABILITY) {
-    return { pinned: null, reason: "low_language_probability" };
-  }
-  if (wordCount < PROBE_MIN_WORDS) return { pinned: null, reason: "too_few_words" };
-  const canonical = normalizeProviderLanguageCode(languageCode);
-  if (!canonical) return { pinned: null, reason: "language_not_in_catalog" };
-  return { pinned: canonical, reason: "pinned" };
 }
 
 const unpinned = (

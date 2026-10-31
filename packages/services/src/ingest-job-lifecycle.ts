@@ -38,6 +38,7 @@ import { flushWorkspaceEvents } from "./workspace-event";
 
 import { sourceAudioBindingSchema, sourceVideoBindingSchema, type SourceAudioBinding, type SourceVideoBinding, type ExecutionDispatchReference, type ExecutionDisposition, executionDispatchReferenceSchema } from "@narriflow/validators/execution";
 import { sourceAudioBindingHash } from "./source-audio-binding";
+import { commitSourceLanguageProbeWithinTransaction } from "./transcription-probe";
 import { appendExecutionDispatch, readExecutionDispatch } from "./execution-dispatch";
 import type { ExecutorArtifactCommit, ExecutorDomainLock, ExecutorFailureInput, ExecutorMutationContext, ExecutorMutationResult, ExecutorProgressInput, ExecutorReleaseInput, ExecutorExpiryObservation, ExecutorExpiryResult } from "./executor-domain-control";
 
@@ -50,7 +51,7 @@ export interface IngestExecutionReference {
   attemptToken: string;
 }
 export type IngestArtifactCommit = ExecutorArtifactCommit & (
-  { role: "source_audio"; binding: SourceAudioBinding } | { role: "source_video"; binding: SourceVideoBinding }
+  { role: "source_audio"; binding: SourceAudioBinding } | { role: "source_video"; binding: SourceVideoBinding } | { role: "probe" }
 );
 export type IngestVideoValidator = (tx: Prisma.TransactionClient, input: {
   ref: IngestExecutionReference;
@@ -382,6 +383,7 @@ export class IngestJobLifecycle {
 
   async commitArtifactExecution(tx: Tx, ref: IngestExecutionReference, context: ExecutorMutationContext, artifact: IngestArtifactCommit): Promise<ExecutorMutationResult> {
     await this.ownedExecution(tx, ref, context);
+    if (artifact.role === "probe") return commitSourceLanguageProbeWithinTransaction(tx, { reference: context.reference, attemptToken: context.attemptToken, owner: context.owner }, artifact);
     if (artifact.role === "source_audio") {
       const binding = sourceAudioBindingSchema.parse(artifact.binding);
       if (binding.projectId !== ref.projectId || binding.sourceRevision !== ref.sourceRevision || binding.object.key !== artifact.storageKey ||
