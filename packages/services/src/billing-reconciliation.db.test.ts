@@ -2,9 +2,9 @@ import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@prisma/client";
 import { assertExecutionDatabaseTestTarget } from "./execution-db-test-support";
-import { createBillingReconciliation, queueBillingReconciliation } from "./billing-reconciliation";
+import { createBillingReconciliation, queueBillingReconciliation, recoverBillingReconciliation } from "./billing-reconciliation";
 import { readExecutionDispatch } from "./execution-dispatch";
-import { withExecutionDispatches } from "./execution-dispatch-runtime";
+import { withExecutionDispatches, takeExecutionDispatchIds } from "./execution-dispatch-runtime";
 import { createDatabaseTestContext } from "@narriflow/db/testing";
 import { createBillingCatalog, createPrismaWorkspaceBillingStore, createWorkspaceBillingModule } from "./workspace-billing.service";
 
@@ -204,5 +204,22 @@ suite("Targeted billing reconciliation", () => {
     expect(registrations[1]).toEqual(registrations[0]);
     expect(await db.workspaceCheckoutAttempt.count({ where: { billingAccount: { workspaceId: workspace.id } } })).toBe(1);
     expect((await db.workspaceBillingAccount.findUniqueOrThrow({ where: { workspaceId: workspace.id } })).reconciliationGeneration).toBe(1);
+  });
+  test("restore revokes the old billing claim without product dispatch or a fresh provider budget",async()=>{
+    const workspace=await fixture(new Date(Date.now()+60_000));
+    await db.$transaction(tx=>queueBillingReconciliation(tx,workspace.id));
+    await db.workspaceBillingAccount.update({where:{workspaceId:workspace.id},data:{attemptCount:3,reconcileAttemptId:crypto.randomUUID(),leaseExpiresAt:new Date(Date.now()+30_000),providerCustomerId:"cus_preserved",canonicalSubscriptionId:"sub_preserved"}});
+    const before=await db.workspaceBillingAccount.findUniqueOrThrow({where:{workspaceId:workspace.id}}),count=await db.executionDispatch.count({where:{subjectId:workspace.id}});
+    await expect(db.$transaction(tx=>recoverBillingReconciliation(tx,workspace.id,{deferDispatch:true}))).rejects.toThrow("billing_restore_requires_closed_admission");
+    await expect(db.$transaction(async tx=>{
+      const epoch=await tx.executionEpoch.update({where:{id:1},data:{epoch:{increment:1},admissionOpen:false}});
+      expect(await recoverBillingReconciliation(tx,workspace.id,{deferDispatch:true})).toBeNull();
+      expect(takeExecutionDispatchIds(tx)).toEqual([]);
+      expect(await tx.executionDispatch.count({where:{subjectId:workspace.id}})).toBe(count);
+      expect(await tx.workspaceBillingAccount.findUniqueOrThrow({where:{workspaceId:workspace.id}})).toMatchObject({reconciliationEpoch:epoch.epoch,reconciliationGeneration:before.reconciliationGeneration+1,
+        attemptCount:3,reconcileAttemptId:null,leaseExpiresAt:null,providerCustomerId:"cus_preserved",canonicalSubscriptionId:"sub_preserved",nextReconcileAt:before.nextReconcileAt});
+      throw Error("restore_test_rollback");
+    })).rejects.toThrow("restore_test_rollback");
+    expect(await db.workspaceBillingAccount.findUniqueOrThrow({where:{workspaceId:workspace.id}})).toEqual(before);
   });
 });

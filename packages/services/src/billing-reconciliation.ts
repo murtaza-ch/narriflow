@@ -23,20 +23,24 @@ async function append(tx: Tx, row: WorkspaceBillingAccount) {
 
 /** Caller owns the billing mutation transaction and takes epoch before usage
  * locks. A changed due fact revokes the preceding provider claim. */
-export async function queueBillingReconciliation(tx: Tx, workspaceId: string): Promise<ExecutionDispatchReference> {
+async function bindBillingReconciliation(tx: Tx, workspaceId: string) {
   const { epoch } = await tx.executionEpoch.findUniqueOrThrow({ where: { id: 1 } });
-  const row = await tx.workspaceBillingAccount.update({ where: { workspaceId }, data: {
+  return tx.workspaceBillingAccount.update({ where: { workspaceId }, data: {
     reconciliationEpoch: epoch, reconciliationGeneration: { increment: 1 }, reconcileAttemptId: null, leaseExpiresAt: null,
   } });
-  return append(tx, row);
+}
+export async function queueBillingReconciliation(tx: Tx, workspaceId: string): Promise<ExecutionDispatchReference> {
+  return append(tx, await bindBillingReconciliation(tx,workspaceId));
 }
 /** A receipt retry repairs registration without admitting a new generation. */
-export async function recoverBillingReconciliation(tx: Tx, workspaceId: string): Promise<ExecutionDispatchReference | null> {
+export async function recoverBillingReconciliation(tx: Tx, workspaceId: string, options?: { deferDispatch: true }): Promise<ExecutionDispatchReference | null> {
+  if (options?.deferDispatch && (await readExecutionAdmission(tx)).admissionOpen) throw Error("billing_restore_requires_closed_admission");
   await tx.$queryRaw`SELECT "id" FROM "WorkspaceBillingAccount" WHERE "workspaceId"=${workspaceId}::uuid FOR UPDATE`;
-  const row = await tx.workspaceBillingAccount.findUnique({ where: { workspaceId } });
+  let row = await tx.workspaceBillingAccount.findUnique({ where: { workspaceId } });
   if (!row) return null;
   const { epoch } = await tx.executionEpoch.findUniqueOrThrow({ where: { id: 1 } });
-  return row.reconciliationGeneration === 0 || row.reconciliationEpoch !== epoch ? queueBillingReconciliation(tx, workspaceId) : append(tx, row);
+  if (row.reconciliationGeneration === 0 || row.reconciliationEpoch !== epoch) row = await bindBillingReconciliation(tx,workspaceId);
+  return options?.deferDispatch ? null : append(tx,row);
 }
 
 export async function appendBillingLeaseWatchdog(tx: Tx, reference: ExecutionDispatchReference, deadline: Date) {
