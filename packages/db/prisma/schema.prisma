@@ -2805,6 +2805,8 @@ model SocialPostProposal {
 }
 
 model SocialPublicationAttempt {
+  executionActorUserId   String?                        @db.Uuid
+  providerCallCeiling    Int                            @default(100)
   nativeStartRound       Int                            @default(1)
   nativeStartCount       Int                            @default(0)
   nativeStartCeiling     Int                            @default(104)

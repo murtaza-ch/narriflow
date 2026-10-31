@@ -48,3 +48,14 @@ test("a capsule with changed bytes or an oversized stream is rejected and the st
     expect(cancelled).toBe(extra === 1);
   }
 });
+
+test("publication capsules admit only a server planned exact key and inspect its frozen SHA tuple",async()=>{
+ const key=`execution-inputs/1/publication/${crypto.randomUUID()}/2/${crypto.randomUUID()}.json`;
+ let calls=0,missing=false;
+ const client={async send(command:unknown){calls++;if(!(command instanceof HeadObjectCommand))throw Error("Unexpected command");if(missing)throw {$metadata:{httpStatusCode:404}};return {ETag:'"sealed"',ContentLength:2,ContentType:"application/json",Metadata:{"execution-input-sha256":sha256}};}} as unknown as S3Client;
+ const storage=createPrivateJsonStorage(config,{client});
+ expect(await storage.inspect({storageKey:key,byteLength:2,sha256})).toEqual({etag:'"sealed"',byteLength:2,sha256});
+ await expect(storage.inspect({storageKey:key,byteLength:3,sha256})).rejects.toMatchObject({code:"execution_input_changed"});
+ const prior=calls;await expect(storage.inspect({storageKey:key.replace("/2/","/../"),byteLength:2,sha256})).rejects.toMatchObject({code:"execution_input_reference_invalid"});expect(calls).toBe(prior);
+ missing=true;expect(await storage.inspect({storageKey:key,byteLength:2,sha256})).toBeNull();
+});

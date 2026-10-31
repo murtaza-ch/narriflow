@@ -601,7 +601,11 @@
       "default": "./src/render-artifact.ts"
     },
     "./broll-plan": "./src/broll-plan.ts",
-    "./render-execution-input": "./src/render-execution-input.ts"
+    "./render-execution-input": "./src/render-execution-input.ts",
+    "./publication-execution": "./src/publication-execution.ts",
+    "./publication-cleanup": "./src/publication-cleanup.ts",
+    "./social-publication-platform": "./src/social-publication-platform.ts",
+    "./social-publication-config": "./src/social-publication-config.ts"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
