@@ -215,19 +215,21 @@ export function deriveProjectView(detail: ProjectDetail, project: ProjectRecord)
 	// run is in flight, or ingest is still running/failed with a committed pack,
 	// or quota was crossed mid-flight. Processing stays visible until rendering succeeds.
 	const renderStageSucceeded = render.status === "completed" || render.status === "partial";
-	// Clips that exist are never hidden by their renders: once detection is done, a
-	// failed render (retried from the notice and rows) or a render over clips that
-	// already have a video leaves the ranked list on screen.
+	// Initial generation stays on progress until the batch settles. Later retries
+	// keep existing clips available, and terminal failures expose their retry rows.
 	const renderStatus = deriveRenderStatus(clips);
 	const earlierStageUnfinished = [transcribe, detect].some(
 		(stage) => stage.status !== null && ["queued", "running", "waiting", "failed"].includes(stage.status),
 	);
 	const renderRunning = render.status === "queued" || render.status === "running" || render.status === "waiting";
 	const clipsHaveVideo = clips.some((clip) => clip.renderVariants.some((variant) => variant.hasAsset));
+	const hasSettledRenderBatch = detail.workflowHistory.some(
+		(event) => event.stage === "clip_rendering" && ["completed", "partial", "failed"].includes(event.status),
+	);
 	const clipsStayVisible =
 		clips.length > 0 &&
 		!earlierStageUnfinished &&
-		(render.status === "failed" || (renderRunning && clipsHaveVideo));
+		(render.status === "failed" || (renderRunning && clipsHaveVideo && hasSettledRenderBatch));
 	const showProcessingPanel =
 		hasCommittedPack &&
 		(clips.length === 0

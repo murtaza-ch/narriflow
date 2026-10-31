@@ -970,13 +970,16 @@ export class ProjectService {
 		const snapshot = await this.getProjectSnapshot(scope, projectId);
 		if (!snapshot.project) return { outcome: "restart" };
 		if (snapshot.activeRun) return { outcome: "open_project" };
+		const draftPack = await this.getLatestContentPack(scope, projectId);
+		// Finalize can commit settings while ingest is still queued. Refreshing
+		// then must resume processing, including file/RSS imports with no run yet.
+		if (draftPack?.draft === false) return { outcome: "open_project" };
 		if (
 			snapshot.project.sourceType !== "youtube" &&
 			snapshot.project.sourceType !== "link"
 		) {
 			return { outcome: "restart" };
 		}
-		const draftPack = await this.getLatestContentPack(scope, projectId);
 		// queueLinkIngest writes the draft pack atomically with the Project, so a
 		// missing one leaves nothing sane to rehydrate.
 		if (!draftPack) return { outcome: "restart" };

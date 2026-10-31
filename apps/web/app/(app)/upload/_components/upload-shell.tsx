@@ -163,6 +163,7 @@ interface UploadShellProps {
   usageSummary: UploadUsageSummary;
   /** Cloud file pickers the deployment has configured. */
   sourcePickers: SourcePickerConfig;
+  onGenerating: (projectId: string) => void;
 }
 
 export function UploadShell({
@@ -175,6 +176,7 @@ export function UploadShell({
   resumeData,
   usageSummary,
   sourcePickers,
+  onGenerating,
 }: UploadShellProps) {
   const router = useRouter();
   const intake = useIntake();
@@ -186,10 +188,11 @@ export function UploadShell({
         controls: intake.actions.uploadSessions,
         navigate(projectId) {
           void intake.accepted();
-          router.push(`/projects/${projectId}`);
+          router.replace(`/upload?project=${projectId}`, { scroll: false });
+          onGenerating(projectId);
         },
       }),
-    [router, intake],
+    [router, intake, onGenerating],
   );
   // A disposed adapter ignores every later call, so the effect that disposes
   // an adapter must also be the one that created it. A memoized adapter
@@ -686,7 +689,10 @@ export function UploadShell({
       });
       void intake.accepted();
       const projectId = imported.projects?.[0]?.project.id;
-      router.push(projectId ? `/projects/${projectId}` : "/projects");
+      if (projectId) {
+        router.replace(`/upload?project=${projectId}`, { scroll: false });
+        onGenerating(projectId);
+      } else router.push("/projects");
     } catch (error) {
       if (isApiError(error)) {
         const failure = failureFromApiError(error);
@@ -999,6 +1005,7 @@ export function UploadShell({
           brandProfiles={brandProfiles}
           usageSummary={usageSummary}
           resumeData={resumeData}
+          onGenerating={onGenerating}
           driveFile={driveFile}
           onCommitted={() => setDriveFile(null)}
         />

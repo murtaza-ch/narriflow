@@ -59,6 +59,7 @@ interface LinkImportFlowProps {
   driveFile?: DrivePick | null;
   /** Called once Step 1 has handed the source to the server. */
   onCommitted?: () => void;
+  onGenerating: (projectId: string) => void;
 }
 
 function step2StateFromContentPack(contentPack: ContentPack): LinkConfigureState {
@@ -92,6 +93,7 @@ export function LinkImportFlow({
   resumeData,
   driveFile = null,
   onCommitted,
+  onGenerating,
 }: LinkImportFlowProps) {
   const router = useRouter();
   const [step, setStep] = useState<"commit" | "configure">(
@@ -182,6 +184,7 @@ export function LinkImportFlow({
       mode={mode}
       languageCode={languageCode}
       initialStep2={step2State}
+      onGenerating={onGenerating}
     />
   );
 }

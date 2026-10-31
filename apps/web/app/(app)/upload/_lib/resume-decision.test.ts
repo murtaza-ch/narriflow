@@ -5,8 +5,8 @@ import { decideResume, decideResumeFailure, deniedImportDestination } from "./re
 const failure = (code: string, status: number) => new ApiError({ code, message: code, status });
 
 describe("upload resume decisions", () => {
-  test("a finished Configure opens the Project, an empty draft restarts", () => {
-    expect(decideResume("p1", { outcome: "open_project" })).toEqual({ kind: "open_project", projectId: "p1" });
+  test("a finished Configure waits for rendered clips before opening the Project, an empty draft restarts", () => {
+    expect(decideResume("p1", { outcome: "open_project" })).toEqual({ kind: "processing", projectId: "p1" });
     expect(decideResume("p1", { outcome: "restart" })).toEqual({ kind: "restart" });
   });
 

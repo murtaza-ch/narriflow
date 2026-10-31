@@ -42,6 +42,7 @@ interface ConfigureStepProps {
   mode: GenerationMode;
   languageCode: string;
   initialStep2: LinkConfigureState;
+  onGenerating: (projectId: string) => void;
 }
 
 export function ConfigureStep({
@@ -55,6 +56,7 @@ export function ConfigureStep({
   mode,
   languageCode,
   initialStep2,
+  onGenerating,
 }: ConfigureStepProps) {
   const router = useRouter();
   const intake = useIntake();
@@ -183,7 +185,7 @@ export function ConfigureStep({
     }
     if (result.started) {
       void intake.accepted();
-      router.push(`/projects/${projectId}`);
+      onGenerating(projectId);
       return;
     }
     // started:false — either still running (wait for the SSE effect below to

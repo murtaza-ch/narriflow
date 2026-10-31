@@ -22,6 +22,7 @@ function detail(overrides: {
 	creditUsage?: unknown;
 	ingestAttemptCount?: number;
 	usage?: Record<string, unknown>;
+	history?: unknown[];
 }): { data: ProjectDetailData; project: ProjectRecord } {
 	const project = {
 		id: "p1",
@@ -61,7 +62,7 @@ function detail(overrides: {
 		clips: overrides.clips ?? [],
 		contentPack: overrides.pack === undefined ? { mode: "clip", draft: false } : overrides.pack,
 		socialPosts: { items: [], nextCursor: null },
-		workflowHistory: [],
+		workflowHistory: overrides.history ?? [],
 		usage: {
 			tier: overrides.tier ?? "pro",
 			remainingCredits: 40,
@@ -211,6 +212,7 @@ describe("A failed render never hides the clips", () => {
 			run: { ...failedRenderRun, status: "running" },
 			progress: { active: true, status: "processing", label: "Rendering" },
 			clips: [clipWith("a", ["completed"]), clipWith("b", ["rendering"])],
+			history: [failedRenderRun],
 		});
 		expect(retrying.showProcessingPanel).toBe(false);
 		expect(retrying.renderStatus.inFlightCount).toBe(1);
@@ -223,11 +225,11 @@ describe("A failed render never hides the clips", () => {
 		expect(settled.headerBadge).toBeNull();
 	});
 
-	test("a first render that is still running shows the progress card until a video exists", () => {
+	test("the initial render keeps the progress card until the whole batch settles", () => {
 		const running = view({
 			run: { ...failedRenderRun, status: "running" },
 			progress: { active: true, status: "processing", label: "Rendering" },
-			clips: [clipWith("a", ["rendering"])],
+			clips: [clipWith("a", ["completed"]), clipWith("b", ["rendering"])],
 		});
 		expect(running.showProcessingPanel).toBe(true);
 	});
