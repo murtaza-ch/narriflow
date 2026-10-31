@@ -2029,9 +2029,16 @@ export function compileCompositionPlanVideo(input: {
 				`${sceneOutputs[0]}format=yuv420p${baseSuffix}${baseOutputLabel}`,
 			);
 		} else {
+			// Camera scenes partition one continuous, constant-rate source. Concat
+			// can give a one-frame segment zero duration, so output frame syncing
+			// drops frames at repeated timestamps. Restore that source clock from
+			// frame ordinals. Cuts retain their authored edited-time spacing.
+			const sourceClock = input.videoClockIsEdited
+				? ""
+				: `setpts=N/(${generatedFrameRate(input.fps)})/TB,`;
 			parts.push(
 				`${sceneOutputs.join("")}concat=n=${sceneOutputs.length}:v=1:a=0,` +
-					`format=yuv420p${baseSuffix}${baseOutputLabel}`,
+					`${sourceClock}format=yuv420p${baseSuffix}${baseOutputLabel}`,
 			);
 		}
 		return finalize({

@@ -36,6 +36,7 @@ import {
 import { renderCaptionTrack } from "./caption-ass";
 import { drawtextLiteralText } from "./ffmpeg-text";
 import { productionWorkerProcessModule } from "./worker-process";
+import { compositionOutputExpectation, validateRenderOutput } from "./render-output-validation";
 
 function planCenter() {
 	const result = planClipComposition({
@@ -144,6 +145,58 @@ afterEach(async () =>
 			.map((path) => rm(path, { recursive: true, force: true })),
 	),
 );
+
+test("one-frame camera scenes preserve the continuous source clock", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "narriflow-camera-clock-"));
+	realMediaDirectories.push(directory);
+	const sourcePath = join(directory, "source.mp4");
+	const outputPath = join(directory, "output.mp4");
+	const signal = new AbortController().signal;
+	const execute = (args: string[]) => productionWorkerProcessModule.execute({
+		command: "ffmpeg", args: ["-v", "error", "-y", ...args], signal, deadlineMs: 10_000,
+	});
+	await execute([
+		"-f", "lavfi", "-i", "testsrc2=s=160x90:r=30:d=1",
+		"-f", "lavfi", "-i", "sine=r=48000:d=1",
+		"-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", sourcePath,
+	]);
+	const result = planClipComposition({
+		document: editorDocumentSchema.parse({
+			version: 1, clipStartSec: 0, clipEndSec: 1,
+			captionPreset: captionPresetSchema.parse({ visible: false }), transcriptSlice: [],
+			studioEdits: studioEditsSchema.parse({ framing: { mode: "center" } }),
+			brollUrl: null, deletedRanges: [],
+		}),
+		source: { identity: "camera-clock", kind: "video", width: 160, height: 90 },
+		evidence: { automaticLayout: { state: "missing" } },
+		assets: { backgroundImage: { state: "missing" } },
+		capabilities: { automaticSpeakerLayout: true, automaticSpeakerEngineVersion: "shot-layout-v1" },
+		targets: [{ id: "vertical", aspectRatio: "9:16", width: 90, height: 160 }],
+	});
+	if (result.status === "invalid") throw new Error(result.error.code);
+	const target = result.plan.targets[0]!;
+	const original = target.scenes[0]!;
+	const bounds = [0, 0.033333, 0.066667, 0.1, 1];
+	const plan = { ...result.plan, targets: [{ ...target, effectiveMode: "auto" as const,
+		scenes: bounds.slice(1).map((endSec, index) => ({
+			...original, id: `camera-${index}`, startSec: bounds[index]!, endSec,
+			layers: original.layers.map((layer) => ({ ...layer, id: `${layer.id}-${index}` })),
+		})),
+	}] };
+	const source = await productionWorkerProcessModule.inspectMedia({ sourcePath, signal, deadlineMs: 5_000 });
+	const audio = bindCompositionPlanAudioInputs(compileCompositionPlanAudioSchedule(plan), {});
+	await execute(compileClipCompositionCommand({
+		sourcePath, outputPath, startSec: 0, endSec: 1, source, plan, targetId: "vertical", audio,
+		encoder: { preset: "veryfast", crf: "23" }, assets: { subtitlePath: null },
+	}));
+	const output = await validateRenderOutput({
+		path: outputPath,
+		expected: compositionOutputExpectation({ plan, targetId: "vertical", source, audio, hdrAssets: false }),
+		workerProcess: productionWorkerProcessModule, signal,
+	});
+	expect(output.decoded.video.frames).toBe(30);
+	expect(output.decoded.video.durationSec).toBeCloseTo(1, 6);
+}, 30_000);
 
 test("analysis segment commands seek and decode a bounded low-resolution video without audio", async () => {
 	const directory = await mkdtemp(
