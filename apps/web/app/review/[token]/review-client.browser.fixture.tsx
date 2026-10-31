@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, describe, expect, mock, setSystemTime, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, mock, setSystemTime, spyOn, test } from "bun:test";
 import { Window } from "happy-dom";
 import { act, type ReactNode } from "react";
 import type { Root } from "react-dom/client";
@@ -614,16 +614,28 @@ for (const kind of ["create", "invite"] as const) test(`internal review ${kind} 
 
 
 test("mounted guest access expires without silently exchanging a fresh credential", async () => {
+  const now = Date.UTC(2026, 10, 1);
+  setSystemTime(now);
   const key = await seedSession(250);
+  // Drive the actual scheduled expiry after mount, independent of render time.
+  const expiry: Array<() => void> = [];
+  const schedule = browser.setTimeout.bind(browser);
+  const timeout = spyOn(browser, "setTimeout").mockImplementation((callback, delay, ...args) => {
+    if (delay === 250) { expiry.push(() => callback(...args)); return -1; }
+    return schedule(callback, delay, ...args);
+  });
   const methods: string[] = [];
   globalThis.fetch = mock(async (input, init) => {
     methods.push(init?.method ?? "GET");
     return Response.json(new URL(input.toString()).pathname.includes("/media/") ? grant() : snapshot);
   }) as typeof fetch;
-  const container = await renderReview();
-  expect(container.querySelector("video")).not.toBeNull();
-  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)); }); await settle();
-  expect(container.querySelector("h1")?.textContent).toBe("Enter the review room");
-  expect(browser.sessionStorage.getItem(key)).toBeNull();
-  expect(methods.every((method) => method === "GET")).toBe(true);
+  try {
+    const container = await renderReview();
+    expect(container.querySelector("video")).not.toBeNull();
+    expect(expiry).toHaveLength(1);
+    await act(async () => { setSystemTime(now + 250); expiry[0]!(); }); await settle();
+    expect(container.querySelector("h1")?.textContent).toBe("Enter the review room");
+    expect(browser.sessionStorage.getItem(key)).toBeNull();
+    expect(methods.every((method) => method === "GET")).toBe(true);
+  } finally { timeout.mockRestore(); }
 });
