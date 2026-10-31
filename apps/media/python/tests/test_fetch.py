@@ -184,6 +184,8 @@ class SharedFetchTests(unittest.IsolatedAsyncioTestCase):
                                         existing_audio=seed, mode="local", development=True, work_directory=root,
                                         runtime=Runtime(), sink=Sink(), toolchain_fingerprint="b" * 64)
             self.assertIs(result.audio, seed)
+            self.assertEqual(seed.manifest["byteLength"], 1)
+            self.assertEqual(seed.manifest["sha256"], "a" * 64)
             self.assertEqual(calls, ["resolve", "video", "video_commit", "closed"])
             view = seed.binding
             view["audioTrack"]["id"] = "different"

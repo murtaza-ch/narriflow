@@ -87,7 +87,10 @@ class ExistingSourceAudio:
 
     @property
     def manifest(self) -> Mapping[str, Any]:
-        return self.binding
+        binding = self.binding
+        return {**{name: binding[name] for name in ("sourceRevision", "mediaIdentity", "audioTrack", "durationSeconds",
+                "wholeSource", "audioStartTimeSec", "probeVersion", "toolchainFingerprint")},
+                "byteLength": binding["object"]["byteLength"], "sha256": binding["object"]["sha256"]}
 
 
 class SourceAudioEvidence(Protocol):
