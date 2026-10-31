@@ -18,17 +18,24 @@ export function createMediaCleanupStorage(config: ExecutionStorageConfig, option
     const abortSignal = AbortSignal.any([options.signal, AbortSignal.timeout(MEDIA_CLEANUP_HTTP_TIMEOUT_MS)]), Bucket = config.bucket;
     try {
       const uploads = await client.send(new ListMultipartUploadsCommand({ Bucket, Prefix: storageKey, MaxUploads: 9 }), { abortSignal });
+      if (uploads.$metadata.httpStatusCode !== 200 || uploads.IsTruncated === undefined) throw new MediaCleanupStorageError("cleanup_storage_unconfirmed");
       const exact = (uploads.Uploads ?? []).filter(upload => upload.Key === storageKey);
       for (let offset = 0; offset < Math.min(exact.length, 8); offset += 4) await Promise.all(exact.slice(offset, offset + 4).map(async upload => {
         if (!upload.UploadId) throw new MediaCleanupStorageError("cleanup_storage_unconfirmed");
-        try { await client.send(new AbortMultipartUploadCommand({ Bucket, Key: storageKey, UploadId: upload.UploadId }), { abortSignal }); }
+        try {
+          const aborted = await client.send(new AbortMultipartUploadCommand({ Bucket, Key: storageKey, UploadId: upload.UploadId }), { abortSignal });
+          if (![200, 204].includes(aborted.$metadata.httpStatusCode ?? 0)) throw new MediaCleanupStorageError("cleanup_storage_unconfirmed");
+        }
         catch (error) { if ((error as { name?: string } | null)?.name !== "NoSuchUpload") throw error; }
       }));
       if (uploads.IsTruncated || exact.length > 8) throw new MediaCleanupStorageError("cleanup_storage_unconfirmed");
-      const deleted = await client.send(new DeleteObjectCommand({ Bucket, Key: storageKey }), { abortSignal });
-      if (![200, 204].includes(deleted.$metadata.httpStatusCode ?? 0)) throw new MediaCleanupStorageError("cleanup_storage_unconfirmed");
+      try {
+        const deleted = await client.send(new DeleteObjectCommand({ Bucket, Key: storageKey }), { abortSignal });
+        if (![200, 204].includes(deleted.$metadata.httpStatusCode ?? 0)) throw new MediaCleanupStorageError("cleanup_storage_unconfirmed");
+      } catch (error) {
+        if ((error as { name?: string } | null)?.name !== "NoSuchKey") throw error;
+      }
     } catch (error) {
-      if ((error as { name?: string } | null)?.name === "NoSuchKey") return;
       if (error instanceof MediaCleanupStorageError) throw error;
       throw new MediaCleanupStorageError("cleanup_storage_unconfirmed");
     }

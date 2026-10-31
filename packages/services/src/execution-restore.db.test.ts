@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaClient } from "@prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { assertExecutionDatabaseTestTarget } from "./execution-db-test-support";
+import { createMediaCleanupControl, queueMediaCleanupWithinTransaction } from "./media-cleanup-control";
 import { ExecutionRestoreService } from "./execution-restore";
 import { ExecutionMaintenanceService, HOURLY_MAINTENANCE_PHASES } from "./execution-maintenance";
 
@@ -54,4 +55,16 @@ suite("Execution restore authority", () => {
     }
     expect(await restore.begin({ expectedEpoch: before.epoch, fenceAboveEpoch: before.epoch })).toMatchObject({ deploymentEpoch: before.epoch + 1 });
   });
+  test("an epoch fence after cleanup timer confirmation prevents new DELETE HTTP", async () => {
+    const before = await database.executionEpoch.findUniqueOrThrow({ where: { id: 1 } });
+    const restore = new ExecutionRestoreService({ database, register: async () => {} });
+    const intent = await database.mediaCleanupObligation.create({ data: { origin: "clip_editor_document_persistence", cleanupClass: "mutable_render", objectKey: `projects/${crypto.randomUUID()}/renders/${crypto.randomUUID()}.mp4`, nextAttemptAt: new Date(0) } });
+    const reference = (await database.$transaction(tx => queueMediaCleanupWithinTransaction(tx, intent.id)))!;
+    let deletes = 0;
+    const control = createMediaCleanupControl({ database, hold: async () => null, register: async () => { await restore.begin({ expectedEpoch: before.epoch, fenceAboveEpoch: before.epoch }); }, storage: { async deleteExact() { deletes++; } } });
+    expect(await control.run(reference)).toMatchObject({ kind: "superseded" });
+    expect(deletes).toBe(0);
+    expect((await database.mediaCleanupObligation.findUniqueOrThrow({ where: { id: intent.id } })).completedAt).toBeNull();
+  });
+
 });

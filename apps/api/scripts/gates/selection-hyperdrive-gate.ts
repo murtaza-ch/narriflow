@@ -53,7 +53,7 @@ export async function runSelectionFinalizationFixture(database: PrismaClient) {
         const clips = Array.from({ length: 8 }, (_, index) => ({ title: `Synthetic complete story ${window.windowIndex}-${index}`, start_time: window.startSec + index * 180, end_time: window.startSec + index * 180 + 45,
           hook_text: "A synthetic hook", payoff_text: "A synthetic payoff", reasoning: "A complete synthetic story", category: "story", platform_fit: ["tiktok"], hook_strength: 80, emotional_intensity: 80, story_completeness_score: 95, broll_cues: [] }));
         const result = await encodeClipSelectionResult({ parentId: run.id, parentGeneration: run.generation, selectionHash: window.selectionHash, windowIndex: window.windowIndex }, JSON.stringify({ clips }), { tokensUsed: 1000, providerRequestId: `synthetic-${window.windowIndex}` });
-        const storageKey = `execution/${epoch}/clip_selection_window/${window.id}/1/server/selection_window/${result.sha256}.json`;
+        const storageKey = `execution/${epoch}/clip_selection_window/${window.id}/1/server/selection_window/${crypto.randomUUID()}/${result.sha256}.json`;
         const sealed = await storage.write(storageKey, result.bytes);
         await database.clipSelectionWindow.update({ where: { id: window.id }, data: { status: "completed", completedAt: new Date(), resultStorageKey: storageKey, resultEtag: sealed.etag,
           resultHash: result.sha256, resultByteLength: BigInt(result.byteLength), tokensUsed: 1000, providerRequestId: `synthetic-${window.windowIndex}` } });
@@ -81,7 +81,10 @@ export async function runSelectionFinalizationFixture(database: PrismaClient) {
           database.workflowRun.findMany({ where: { projectId }, select: { id: true } }), database.clipSelectionWindow.findMany({ where: { projectId }, select: { id: true } }),
           database.workflowEvent.findMany({ where: { projectId }, select: { id: true } }), database.workspaceEvent.findMany({ where: { workspace: { ownerUserId: user.id } }, select: { id: true } }),
         ]);
-        await database.executionDispatch.deleteMany({ where: { OR: [{ subjectId: { in: [...runs, ...windows, ...events, ...workspaceEvents].map(row => row.id) } }, { subjectId: { startsWith: `pe1.${compactProject}.` } }] } });
+        const cleanup = await database.mediaCleanupObligation.findMany({ where: { projectId }, select: { id: true, createdAt: true } });
+        await database.executionDispatch.deleteMany({ where: { OR: [{ subjectId: { in: [...runs, ...windows, ...events, ...workspaceEvents].map(row => row.id) } }, { subjectId: { startsWith: `pe1.${compactProject}.` } },
+          ...cleanup.map(row => ({ subjectId: { startsWith: `mc1.${row.createdAt.getTime()}.${row.id.replaceAll("-", "")}.` } }))] } });
+        await database.mediaCleanupObligation.deleteMany({ where: { projectId } });
       }
       await database.workspace.deleteMany({ where: { ownerUserId: user.id } }); await database.user.delete({ where: { id: user.id } });
     }

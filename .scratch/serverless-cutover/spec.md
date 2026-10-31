@@ -318,7 +318,7 @@ All 24 ship together. "Blocked by" is a dependency, not a release phase. Shared 
 - **Accept:** old consumers can't run against the migrated DB. Candidate and migration match the tested hashes. Smokes and idle check pass. Railway and Upstash are removed. Admission reopens once.
 
 ## 6. Deletion list (all in the same candidate)
-- `apps/worker` as an app: `index.ts`, `poll-loop.ts`, health/poll-once server, loop drivers, the `coordinateRenderWorkSet` wait loop, the `workflow-attempt-executor` polling adapter, the host-global media scheduler and fleet restart machinery. Process safety, resource checks, exact-key cleanup and expiry transitions move to `apps/media`.
+- `apps/worker` as an app: `index.ts`, `poll-loop.ts`, health/poll-once server, loop drivers, the `coordinateRenderWorkSet` wait loop, the `workflow-attempt-executor` polling adapter, the host-global media scheduler and fleet restart machinery. Process safety and resource checks move to `apps/media`. Exact-key cleanup uses Workers-safe fixed-origin R2 metadata HTTP, and expiry transitions remain PostgreSQL service commands invoked by durable drivers.
 - Railway Docker/service config and CI deploy hooks; `Bun.serve`/SIGTERM lifecycle; filesystem readiness.
 - Redis everywhere: `progress/redis.ts`, the SSE progress route/stream and SSE-only client transport (remote MCP keeps its HTTP streaming), `optional-redis.ts`, ioredis rate limiter/Pexels code, the `ioredis` dependency, Upstash and worker-health env vars.
 - The old TS yt-dlp downloader (after the Python owner lands).

@@ -1,9 +1,9 @@
-import type { MediaCleanupObligation, Prisma, PrismaClient } from "@prisma/client";
+import type { ExecutionDispatch, MediaCleanupObligation, Prisma, PrismaClient } from "@prisma/client";
 import { executionDispatchReferenceSchema, type ExecutionDispatchReference } from "@narriflow/validators/execution";
 import { appendExecutionDispatch, readExecutionDispatch } from "./execution-dispatch";
 import { readExecutionAdmission } from "./execution-admission";
 import { collectExecutionDispatch } from "./execution-dispatch-runtime";
-import { MEDIA_CLEANUP_CLASSES, MEDIA_CLEANUP_ORIGINS } from "./media-cleanup";
+import { MEDIA_CLEANUP_CLASSES, MEDIA_CLEANUP_ORIGINS } from "./media-cleanup-contract";
 
 const LEASE_MS = 120_000;
 export const MEDIA_CLEANUP_HTTP_TIMEOUT_MS = 30_000;
@@ -33,11 +33,13 @@ async function lockIntent(tx: Tx, id: string) {
   return row;
 }
 async function inputHash(row: MediaCleanupObligation) {
-  const fields = ["media-cleanup-v1", row.id, row.origin, row.cleanupClass, row.objectKey, row.projectId, row.clipId, row.createdAt.toISOString(), row.nextAttemptAt.toISOString()];
+  const fields = ["media-cleanup-v1", row.id, row.origin, row.cleanupClass, row.objectKey, row.projectId, row.clipId, row.createdAt.toISOString()];
   return Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(fields)))), byte => byte.toString(16).padStart(2, "0")).join("");
 }
 async function latest(tx: Tx, epoch: number, id: string) {
-  return tx.executionDispatch.findFirst({ where: { deploymentEpoch: epoch, kind: "operation_driver", subjectKind: "media_cleanup", subjectId: id, wakeKind: null, deadlineKind: null }, orderBy: { generation: "desc" } });
+  const [row] = await tx.$queryRaw<ExecutionDispatch[]>`SELECT * FROM "ExecutionDispatch" WHERE "deploymentEpoch" = ${epoch}
+    AND kind = 'operation_driver' AND "subjectKind" = 'media_cleanup' AND "subjectId" = ${id} AND "wakeKind" IS NULL AND "deadlineKind" IS NULL ORDER BY generation DESC LIMIT 1`;
+  return row ?? null;
 }
 async function append(tx: Tx, epoch: number, row: MediaCleanupObligation): Promise<ExecutionDispatchReference> {
   const previous = await latest(tx, epoch, row.id), hash = await inputHash(row);
@@ -73,8 +75,18 @@ export function createMediaCleanupControl(options: { database: PrismaClient; reg
       const row = await lockIntent(tx, reference.subject.id);
       if (!row) return { result: { kind: "complete" as const, dispatchIds: [] } };
       const base = await latest(tx, epoch, row.id);
-      if (!base || base.generation !== reference.generation || reference.inputHash !== await inputHash(row)) return { result: { kind: "superseded" as const, dispatchIds: [] } };
+      if (!base || reference.inputHash !== await inputHash(row)) return { result: { kind: "superseded" as const, dispatchIds: [] } };
       if (row.completedAt) return { result: { kind: "complete" as const, dispatchIds: [] } };
+      if (base.generation !== reference.generation) {
+        // The retry committed even if its registration response was lost.
+        // Old-reference replay repairs that existing obligation only.
+        collectExecutionDispatch(tx, base.id);
+        return { result: { kind: "superseded" as const, dispatchIds: [base.id] } };
+      }
+      if (base.dueAt.getTime() !== row.nextAttemptAt.getTime()) {
+        const next = await append(tx, epoch, row);
+        return { result: { kind: "retry" as const, until: row.nextAttemptAt, dispatchIds: [next.dispatchId] } };
+      }
       const now = await clock(tx);
       if (row.claimId && row.claimExpiresAt && row.claimExpiresAt > now) {
         const timer = await appendExecutionDispatch(tx, { ...reference, dueAt: row.claimExpiresAt, wakeKind: "cleanup_claimed", deadlineKind: "lease", observedDeadlineAt: row.claimExpiresAt });

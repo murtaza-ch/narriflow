@@ -1120,7 +1120,7 @@ export const prismaClipEditorDocumentStore: ClipEditorDocumentStore = {
       });
       if (input.cleanupIntents.length > 0) {
         await admitMediaCleanupObligations(
-          tx.mediaCleanupObligation,
+          tx,
           input.cleanupIntents,
         );
       }
@@ -1219,7 +1219,7 @@ export const prismaClipEditorDocumentStore: ClipEditorDocumentStore = {
           }
           const cleanup = documents.flatMap((document) => document.cleanupIntents);
           if (cleanup.length > 0) {
-            await admitMediaCleanupObligations(tx.mediaCleanupObligation, cleanup);
+            await admitMediaCleanupObligations(tx, cleanup);
           }
         },
         { isolationLevel: "Serializable", timeout: 30_000, maxWait: 10_000 },

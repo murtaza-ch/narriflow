@@ -1,7 +1,7 @@
 {
   "date": "2026-10-31",
   "status": "Targeted service and database gates passed; ticket19 remains open",
-  "migration": "202610310008_execution_library",
+  "migration": "20261031080000_execution_library",
   "database": {
     "target": "Disposable local PostgreSQL17 schema with pgvector",
     "passed": 9,

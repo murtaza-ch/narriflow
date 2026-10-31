@@ -743,7 +743,7 @@ export class IngestJobLifecycle {
       data: { sourceStorageKey: input.sourceStorageKey },
     });
     if (input.releasedStorageKey !== input.sourceStorageKey)
-      await admitMediaCleanupObligations(tx.mediaCleanupObligation, [
+      await admitMediaCleanupObligations(tx, [
         {
           origin: "upload_source_pinning",
           cleanupClass: "upload_source",
