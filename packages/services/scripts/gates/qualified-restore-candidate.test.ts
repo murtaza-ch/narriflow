@@ -30,10 +30,10 @@ test("the operator journal freezes exact IDs and distinct absolute files without
  expect(candidateRestoreJournal(j)).toEqual(j);
  for(const value of [{...j,snapshotPath:"./snapshot"},{...j,proofPath:j.snapshotPath},{...j,attemptToken:"latest"},{...j,key:"secret"},{...j,operationDeadlineAt:"invalid"}])expect(()=>candidateRestoreJournal(value)).toThrow();
 });
-test("the qualified gate accepts only source5 to restored7 and refuses the failed source3 snapshot",()=>{
+test("the qualified gate accepts only source6 to restored8 and refuses both earlier failed sequences",()=>{
  const j=candidateRestoreJournal(journal());
- const report={event:"restore_fault_refused",runId:j.runId,sourceEpoch:5,targetEpoch:7,dispatchId:j.dispatchId,attemptToken:j.attemptToken,artifactId:j.artifactId,commandSha256:j.commandSha256,refusal:"superseded"};
+ const report={event:"restore_fault_refused",runId:j.runId,sourceEpoch:6,targetEpoch:8,dispatchId:j.dispatchId,attemptToken:j.attemptToken,artifactId:j.artifactId,commandSha256:j.commandSha256,refusal:"superseded"};
  expect(candidateRestoreRefusal(report,j)).toEqual(report);
- for(const epochs of [{sourceEpoch:3,targetEpoch:5},{sourceEpoch:4,targetEpoch:5},{sourceEpoch:5,targetEpoch:6},{sourceEpoch:6,targetEpoch:7},{sourceEpoch:4,targetEpoch:7}])expect(()=>candidateRestoreRefusal({...report,...epochs},j)).toThrow();
+ for(const epochs of [{sourceEpoch:3,targetEpoch:5},{sourceEpoch:5,targetEpoch:7},{sourceEpoch:6,targetEpoch:7},{sourceEpoch:7,targetEpoch:8},{sourceEpoch:5,targetEpoch:8}])expect(()=>candidateRestoreRefusal({...report,...epochs},j)).toThrow();
  expect(()=>candidateRestoreRefusal({...report,artifactId:crypto.randomUUID()},j)).toThrow();
 });

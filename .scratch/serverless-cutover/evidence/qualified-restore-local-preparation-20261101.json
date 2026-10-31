@@ -73,11 +73,11 @@
   "operatorPlan": "qualified-restore-plan-20261101.md",
   "operatorHelper": "packages/services/scripts/gates/qualified-restore-candidate.ts",
   "plannedEpochs": {
-    "oldInvocation": 5,
-    "snapshotFence": 6,
-    "restored": 7
+    "oldInvocation": 6,
+    "snapshotFence": 7,
+    "restored": 8
   },
-  "expectedCloudSequence": "fresh old epoch5 actual start -> fenced source6 actual dump/attest/restore -> begin7 metadata -> explicit closed redispatch -> fresh signed old probe refusal + current ordinary completion",
+  "expectedCloudSequence": "fresh old epoch6 actual start -> immediately stop consumers while HTTP closed -> deploy fenced -> source7 actual dump/attest/restore -> begin8 metadata -> explicit closed redispatch -> fresh signed old probe refusal + current ordinary completion",
   "requiredCloudAssertions": {
     "chargedStarts": 2,
     "staleCallbackAdditionalCharge": 0,
@@ -86,7 +86,7 @@
     "deadlineExtensionAllowed": false
   },
   "notEstablishedLocally": [
-    "fresh5/6/7 candidate dump/restore",
+    "fresh6/7/8 candidate dump/restore",
     "fresh Cloudflare metadata and closed redispatch receipts",
     "actual Modal hold and stale signed refusal",
     "actual current native completion before original deadline",
@@ -107,11 +107,11 @@
     "evidenceSource": "parent operator report; existing private run directory unchanged"
   },
   "freshSequenceLocalChecks": {
-    "plannedEpochs": "5/6/7",
+    "plannedEpochs": "6/7/8",
     "qualifiedGuardTestsPassed": 6,
     "qualifiedGuardAssertions": 45,
     "combinedQualifiedAndPendingLargeGuardTestsPassed": 9,
-    "combinedAssertions": 71,
+    "combinedAssertions": 73,
     "servicesTypecheck": "passed",
     "focusedBiome": "passed",
     "databaseActionsPerformed": false,
@@ -119,5 +119,27 @@
     "privateFailedRunDirectoryModified": false,
     "largeGateLaunchTemplateFilled": false,
     "largeGateRequiresPassedFreshRestore": true
+  },
+  "secondOperatorAttempt": {
+    "epochs": {
+      "oldInvocation": 5,
+      "snapshotFence": 6,
+      "restoredTargetNotReached": 7
+    },
+    "snapshotCaptured": false,
+    "qualifiedGatePassed": false,
+    "failure": "watchdog expired old held attempt during42second fenced deployment before consumers stopped; source guard correctly refused",
+    "capturedSourceFacts": {
+      "jobStatus": "queued",
+      "deploymentEpoch": 5,
+      "chargedAttempts": 1,
+      "domainAttemptToken": null,
+      "oldGenericStatus": "expired",
+      "committedBinaryCount": 1,
+      "heldProbeCommitted": false,
+      "publishedAssetCount": 0
+    },
+    "reusePermitted": false,
+    "evidenceSource": "parent operator report; existing private run directory unchanged"
   }
 }
