@@ -687,10 +687,11 @@ export class WorkflowRunLifecycle {
   }
 
   private async runInputHash(tx: TransactionClient, run: WorkflowRun, sourceRevision: number): Promise<string> {
-    const transcript = await tx.transcript.findUnique({ where: { projectId: run.projectId }, select: { sourceAudioId: true, sourceRevision: true } });
+    const transcript = await tx.transcript.findUnique({ where: { projectId: run.projectId }, select: { id: true, selectionGeneration: true, workflowAttemptId: true, sourceAudioId: true, sourceRevision: true } });
     if (transcript && transcript.sourceRevision !== sourceRevision) throw new Error("workflow_source_revision_superseded");
     return workflowRunExecutionInputHash({ id: run.id, projectId: run.projectId, stage: run.stage, contentPackId: run.contentPackId,
-      generation: run.generation, deploymentEpoch: run.deploymentEpoch, sourceAudioId: transcript?.sourceAudioId ?? null, sourceRevision: transcript?.sourceRevision ?? sourceRevision });
+      generation: run.generation, deploymentEpoch: run.deploymentEpoch, sourceAudioId: transcript?.sourceAudioId ?? null, sourceRevision: transcript?.sourceRevision ?? sourceRevision,
+      sourceTranscript: transcript ? { id: transcript.id, generation: transcript.selectionGeneration, attemptId: transcript.workflowAttemptId } : null });
   }
 
   private async admitWithinTransaction(
@@ -2734,7 +2735,7 @@ export class WorkflowRunLifecycle {
     await tx.transcript.upsert({
       where: { projectId: attempt.projectId },
       create: { projectId: attempt.projectId, ...completedFields },
-      update: completedFields,
+      update: { ...completedFields, selectionGeneration: { increment: 1 } },
     });
     if (input.durationSeconds && input.durationSeconds > 0) {
       await tx.project.updateMany({

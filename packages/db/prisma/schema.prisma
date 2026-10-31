@@ -640,12 +640,14 @@ model WorkflowRun {
   renderGroups   RenderGroup[]
   exportBundle   ExportBundle?
   ingestHandoffs IngestJob[]          @relation("IngestJobGenerationRun")
+  selectionWindows ClipSelectionWindow[]
   finishing      GenerationFinishing?
 
   // Raw partial unique index (not expressible in Prisma schema — see the
   // 20260729000000_one_live_clip_rendering_run migration): at most one
   // clip_rendering run per project may be queued/running at a time. Creation
   // paths must catch the unique violation and reuse the existing live run.
+  @@unique([id, projectId])
   @@unique([id, renderWorkSetGeneration])
   @@unique([projectId, idempotencyKey])
   @@index([stage, status, nextAttemptAt, createdAt])
@@ -844,6 +846,7 @@ model Transcript {
   selectionWindows             ClipSelectionWindow[]
   passages                     TranscriptPassage[]
 
+  @@unique([id, projectId])
   @@index([status, updatedAt])
   @@index([status, providerSubmissionDeadlineAt])
   @@index([status, providerResultDeadlineAt])
@@ -3493,23 +3496,60 @@ model SourceRefundNeed {
 
 /// Window results are stored by private-object reference, then globally finalized once.
 model ClipSelectionWindow {
-  id                   String     @id @default(uuid()) @db.Uuid
-  transcriptId         String     @db.Uuid
-  generation           Int
-  windowIndex          Int
-  startSec             Float
-  endSec               Float
-  inputHash            String     @db.Char(64)
-  resultStorageKey     String?    @db.VarChar(1024)
-  resultHash           String?    @db.Char(64)
-  status               String     @default("queued") @db.VarChar(24)
-  retryAt              DateTime?
-  completedAt          DateTime?
-  createdAt            DateTime   @default(now())
-  transcript           Transcript @relation(fields: [transcriptId], references: [id], onDelete: Cascade)
+  id                       String   @id @default(uuid()) @db.Uuid
+  projectId                String   @db.Uuid
+  workflowRunId            String   @db.Uuid
+  /// Frozen parent lineage, distinct from the child's retry generation.
+  workflowGeneration       Int
+  deploymentEpoch          Int
+  generation               Int      @default(1)
+  transcriptId             String   @db.Uuid
+  transcriptGeneration     Int
+  transcriptAttemptId      String?  @db.Uuid
+  transcriptContentHash    String   @db.Char(64)
+  sourceRevision           Int
+  sourceAudioId            String?  @db.Uuid
+  sourceAudioBindingHash   String?  @db.Char(64)
+  selectionHash            String   @db.Char(64)
+  windowCount              Int
+  windowIndex              Int
+  startSec                 Float
+  endSec                   Float
+  inputHash                String   @db.Char(64)
+  inputStorageKey          String   @db.VarChar(1024)
+  inputEtag                String   @db.VarChar(160)
+  inputChecksumSha256      String   @db.Char(64)
+  inputByteLength          BigInt
+  estimatedTokens          Int
+  status                   String   @default("queued") @db.VarChar(24)
+  attemptToken             String?  @unique @db.Uuid
+  executorOwner            String?  @db.Uuid
+  leaseExpiresAt           DateTime?
+  operationDeadlineAt      DateTime
+  attemptCount             Int      @default(0)
+  maxAttempts              Int      @default(3)
+  providerQueuedAt         DateTime @default(now())
+  lastProviderStartedAt    DateTime?
+  providerRequestId        String?  @db.VarChar(160)
+  retryAt                  DateTime?
+  errorCode                String?  @db.VarChar(100)
+  resultStorageKey         String?  @db.VarChar(1024)
+  resultEtag               String?  @db.VarChar(160)
+  resultHash               String?  @db.Char(64)
+  resultByteLength         BigInt?
+  tokensUsed               Int?
+  completedAt              DateTime?
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
+  workflowRun              WorkflowRun @relation(fields: [workflowRunId, projectId], references: [id, projectId], onDelete: Cascade, onUpdate: Restrict)
+  transcript               Transcript @relation(fields: [transcriptId, projectId], references: [id, projectId], onDelete: Cascade, onUpdate: Restrict)
 
-  @@unique([transcriptId, generation, windowIndex])
+  @@unique([workflowRunId, workflowGeneration, windowIndex], map: "ClipSelectionWindow_identity_key")
+  @@index([deploymentEpoch, status, providerQueuedAt, id], map: "ClipSelectionWindow_provider_queue_idx")
   @@index([status, retryAt])
+  @@index([status, leaseExpiresAt])
+  @@index([status, operationDeadlineAt])
+  @@index([projectId, deploymentEpoch, status, id])
 }
 
 
