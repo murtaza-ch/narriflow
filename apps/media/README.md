@@ -36,3 +36,7 @@ uv run --project apps/media --extra deploy modal run apps/media/modal_app.py::ve
 ```
 
 These commands require authenticated Modal access. Image verification and Linux golden/crash gates must pass before the cutover; local macOS parity does not establish Linux parity.
+
+The reference-only Modal bridge is split into `narriflow_media.bridge` and the SDK adapters in `bridge_runtime`. Raw-body HMAC verification precedes any durable lookup. Immutable transport intent rejects changed content for a delivery ID before spawn. A durable receipt replays the recorded call ID; a bounded 30-second transport slot permits recovery when a bridge crashes or loses the spawn acknowledgement. Duplicate heavy calls still have to acquire one executor owner through the API before starting native work. Status reads platform call metadata, and cancellation only targets a call bound to the recorded invocation. These facts never settle a domain operation.
+
+The implementation follows Modal's [web spawn example](https://github.com/modal-labs/modal-examples/blob/main/09_job_queues/doc_ocr_webapp.py) and its [durable Dict API](https://modal.com/docs/sdk/py/latest/Dict), using the installed 1.2.6 SDK's atomic `put(skip_if_exists=True)`. Transport records are content-free primitive dictionaries. They expire after seven days of inactivity. Native handlers and the deployed ASGI endpoint remain integration gates; the pure bridge tests are not a live Modal deployment.
