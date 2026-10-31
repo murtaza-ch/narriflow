@@ -40,7 +40,7 @@ class ControlResponse:
 
 @dataclass(frozen=True)
 class CommandResult:
-    disposition: Mapping[str, Any]
+    disposition: Mapping[str, Any] = field(repr=False)
     server_time_upper: float
     received_monotonic: float
     received_wall: float
