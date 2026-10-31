@@ -40,7 +40,7 @@ async function main(){
  const target=candidateRestoreTarget(process.env.DIRECT_URL??""),origin=process.env.API_ORIGIN;
  if(!origin||!process.env.RESTORE_GATE_JOURNAL)throw invalid();
  const j=candidateRestoreJournal(await readSnapshotJson(process.env.RESTORE_GATE_JOURNAL));
- const makeDatabase=()=>new PrismaClient({adapter:new PrismaPg({connectionString:target.toString(),max:1},{schema:"public"}),log:[],transactionOptions:{maxWait:10000,timeout:15000}});
+ const makeDatabase=()=>new PrismaClient({adapter:new PrismaPg({connectionString:target.toString(),max:1,connectionTimeoutMillis:10000,query_timeout:10000},{schema:"public"}),log:[],transactionOptions:{maxWait:10000,timeout:15000}});
  let db=makeDatabase();
  const deadline=Date.parse(j.operationDeadlineAt);
  async function identity(epoch:number){
@@ -55,13 +55,13 @@ async function main(){
   const input=nativeValidationInputSchema.parse(job.input);
   if(job.kind!=="visual_asset"||input.kind!=="visual"||input.contentType!=="image/png"||input.sizeBytes>1024*1024||job.operationDeadlineAt.toISOString()!==j.operationDeadlineAt||job.maxAttempts!==3||attempt.deploymentEpoch!==2||attempt.functionName!=="asset_validation"||!attempt.processStartedAt||attempt.operationDeadlineAt.toISOString()!==j.operationDeadlineAt||dispatch.id!==j.dispatchId||dispatch.subjectKind!=="native_validation"||dispatch.subjectId!==j.jobId||artifact.attemptToken!==j.attemptToken||artifact.owner!==attempt.owner||artifact.role!=="probe"||artifact.committedAt)throw invalid();
   if(await db.executionArtifact.count({where:{attemptToken:j.attemptToken,role:"validated_asset",committedAt:{not:null}}})!==1)throw invalid();
-  return {job,attempt,artifact};
+  return {job,attempt,artifact,input};
  }
  async function source(){
   const state=await identity(3),worker=await readFencedWorker(origin!);
   if(worker.version!==j.fencedVersion||await db.executionDispatch.findFirst({where:{deploymentEpoch:{gte:3}},select:{id:true}}))throw invalid();
   const facts=await original();
-  if(facts.job.deploymentEpoch!==2||facts.job.status!=="processing"||facts.job.attemptToken!==j.attemptToken||facts.job.chargedAttempts!==1||deadline-Date.now()<30000)throw invalid();
+  if(facts.job.deploymentEpoch!==2||facts.job.status!=="processing"||facts.job.attemptToken!==j.attemptToken||facts.job.chargedAttempts!==1||deadline-Date.now()<30000||await db.visualAsset.count({where:{userId:facts.job.ownerUserId,workspaceId:facts.job.ownerWorkspaceId,fingerprint:facts.input.fingerprint}})!==0)throw invalid();
   return {state,worker};
  }
  const runFile=promisify(execFile);

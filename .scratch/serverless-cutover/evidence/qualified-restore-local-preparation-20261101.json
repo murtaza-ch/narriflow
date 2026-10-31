@@ -1,0 +1,24 @@
+{
+  "status": "local_preparation_only_cloud_acceptance_pending",
+  "target": {"host": "ep-wispy-field-b5wyn9o3.c-7.us-east-2.aws.neon.tech", "database": "serverless_pipeline_gates", "schema": "public"},
+  "cloudActionsPerformed": false,
+  "sharedActionsPerformed": false,
+  "localDatabase": "guarded disposable schemas on localhost PostgreSQL 17",
+  "fixes": [
+    "Qualified NativeValidation restore clears unpublished old-owner result pointers; historical committed artifacts, starts, charged count and deadline remain unchanged.",
+    "Fenced scheduler and Workflow entry admit only exact rs2 metadata phases; every redispatch phase waits for explicit closed-mode resume.",
+    "Closed-mode CLI resume confirms the exact pending boundary registration without changing the preceding committed page receipt.",
+    "The new source-admission restore regression selects its owned cursor range rather than consuming another suite's superseded source fixtures."
+  ],
+  "postgresql": {"testsPassed": 38, "assertions": 326, "suites": ["targeted-ingest-execution", "execution-snapshot", "execution-native-restore", "execution-restore"], "freshMigrations": true, "includes030NativeRestoreGuard": true},
+  "fast": {"testsPassed": 16, "assertions": 163, "suites": ["scheduler", "execution-restore-operator", "qualified-restore-candidate"]},
+  "servicesTypecheck": "passed",
+  "apiTypecheck": "passed",
+  "workerDryRunAndImportAudit": "passed",
+  "focusedBiome": "passed",
+  "operatorPlan": "qualified-restore-plan-20261101.md",
+  "operatorHelper": "packages/services/scripts/gates/qualified-restore-candidate.ts",
+  "expectedCloudSequence": "old epoch2 actual start -> fenced source3 actual dump/attest/restore -> begin4 metadata -> explicit closed redispatch -> fresh signed old probe refusal + current ordinary completion",
+  "requiredCloudAssertions": {"chargedStarts": 2, "staleCallbackAdditionalCharge": 0, "publishedCurrentAssets": 1, "originalOperationBudgetMinutes": 10, "deadlineExtensionAllowed": false},
+  "notEstablishedLocally": ["actual candidate dump/restore", "actual Cloudflare metadata and closed redispatch receipts", "actual Modal hold and stale signed refusal", "actual current native completion before original deadline", "exact owned cloud fixture cleanup"]
+}
