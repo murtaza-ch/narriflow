@@ -1,4 +1,5 @@
 import { lockPublicationPost, lockPublicationScope } from "./publication-locks";
+import { readExecutionAdmission, assertExecutionAdmissionOpen } from "./execution-admission";
 import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
@@ -152,6 +153,7 @@ export const prismaPublicationSchedulingStore: PublicationSchedulingStore = {
 			const candidate = await input.create();
 			const created = await requirePrisma().$transaction(
 				async (tx) => {
+                    const admission = await readExecutionAdmission(tx);
                     await lockPublicationScope(tx,{workspaceId:candidate.workspaceId,projectId:candidate.projectId,socialAccountId:candidate.frozen.socialAccountId});
 					const replay = await tx.socialPost.findUnique({
 						where: {
@@ -171,6 +173,7 @@ export const prismaPublicationSchedulingStore: PublicationSchedulingStore = {
 					if (replay && replay.id !== input.proposalId) {
 						throw new PublicationIntentConflictError();
 					}
+					assertExecutionAdmissionOpen(admission);
 
 					let granted: { revision: number } | null = null;
 					if (input.slotQueue) {

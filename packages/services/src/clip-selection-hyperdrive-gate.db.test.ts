@@ -19,7 +19,10 @@ dbDescribe("Fixed deployed selection finalization fixture", () => {
     const dispatchesBefore = await database.executionDispatch.count();
     await expect(runSelectionFinalizationFixture(database)).rejects.toThrow("closed_isolated_platform_branch");
     await database.$executeRawUnsafe('CREATE TABLE "_narriflow_platform_lock_gate" (id UUID PRIMARY KEY, value INTEGER NOT NULL)');
-    const result = await runSelectionFinalizationFixture(database);
+    await database.executionEpoch.update({ where: { id: 1 }, data: { admissionOpen: false } });
+    let result;
+    try { result = await runSelectionFinalizationFixture(database); }
+    finally { await database.executionEpoch.update({ where: { id: 1 }, data: { admissionOpen: true } }); }
     expect(result).toMatchObject({ passed: true, sourceSeconds: 10800, words: 28800, windowCount: 6, clips: 30, renders: 30, renderRuns: 1, terminalEvents: 1, parentUnleased: true, providerRequests: 0 });
     expect(result.finalizeMs).toBeLessThan(120000);
     expect(result.authorityTransactionMs).toHaveLength(2);

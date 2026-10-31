@@ -73,6 +73,7 @@ try {
 		DATABASE_URL: migrationUrl.toString(),
 		DIRECT_URL: migrationUrl.toString(),
 	});
+	await pool.query(`UPDATE "${schema}"."ExecutionEpoch" SET "admissionOpen" = true WHERE id = 1`);
 	await run(
 		[
 			"bun",

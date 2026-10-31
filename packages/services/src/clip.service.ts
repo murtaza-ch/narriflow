@@ -1,6 +1,7 @@
 import { buildDetectedClipRows, prepareDetectedClipSeed, seedBrandMusic, runDefaultCaptionPreset, type DetectedClip, type LlmMeta } from "./clip-detection-persistence";
 export { seedBrandMusic, resolveClipCaptionPresetForContentPack } from "./clip-detection-persistence";
 import { readServiceEnvironment } from "./runtime-environment";
+import { requireExecutionAdmissionOpen } from "./execution-admission";
 
 export { motionRenderAnalyticsMetadata, type MotionRenderAnalyticsMetadata } from "./motion-render-analytics";
 import { randomUUID } from "node:crypto";
@@ -322,25 +323,6 @@ function toClipSnapshot(clip: ClipWithRenders): ClipSnapshot {
     // doc comment in packages/validators/src/clip.ts for why this exists.
     hasPreview: Boolean(clip.previewStorageKey),
     createdAt: clip.createdAt.toISOString(),
-  };
-}
-
-function getClipRenderResetData(
-  resolution: ClipRenderResolution,
-): Prisma.ClipRenderUpdateInput {
-  return {
-    status: "pending",
-    storageKey: null,
-    sizeBytes: null,
-    durationSec: null,
-    errorCode: null,
-    failureDisposition: null,
-    captionDiagnostics: Prisma.DbNull,
-    workflowAttemptId: null,
-    workflowRun: { disconnect: true },
-    startedAt: null,
-    completedAt: null,
-    resolution,
   };
 }
 
@@ -1121,6 +1103,7 @@ export class ClipService {
       readServiceEnvironment().OPENAI_CLIP_MODEL ??
       "gpt-5.4-mini";
 
+    await prisma.$transaction(requireExecutionAdmissionOpen);
     let response: Response;
     try {
       response = await fetch("https://api.openai.com/v1/responses", {
@@ -2048,74 +2031,9 @@ export class ClipService {
     }
 
     const clipIdsToRender = clipsToRender.map((clip) => clip.id);
-    const existingRenderVariants = await prisma.clipRender.findMany({
-      where: {
-        clipId: { in: clipIdsToRender },
-        aspectRatio: { in: requestedAspectRatioDbValues },
-        exportVariantId: null,
-      },
-      select: {
-        id: true,
-        clipId: true,
-        aspectRatio: true,
-        status: true,
-      },
-    });
-
-    const existingRenderMap = new Map(
-      existingRenderVariants.map((render) => [
-        `${render.clipId}:${render.aspectRatio}`,
-        render,
-      ]),
-    );
-
-    const createOperations: Prisma.PrismaPromise<unknown>[] = [];
-    const updateOperations: Prisma.PrismaPromise<unknown>[] = [];
-
-    for (const clip of clipsToRender) {
-      for (const aspectRatio of requestedAspectRatios) {
-        const aspectRatioDb = clipAspectRatioToDb[aspectRatio];
-        const key = `${clip.id}:${aspectRatioDb}`;
-        const existingRender = existingRenderMap.get(key);
-
-        if (!existingRender) {
-          createOperations.push(
-            prisma.clipRender.create({
-              data: {
-                clipId: clip.id,
-                aspectRatio: aspectRatioDb,
-                status: "pending",
-                resolution: resolvedResolution,
-              },
-            }),
-          );
-          continue;
-        }
-
-        if (
-          existingRender.status === "pending" ||
-          existingRender.status === "rendering"
-        ) {
-          continue;
-        }
-
-        updateOperations.push(
-          prisma.clipRender.update({
-            where: { id: existingRender.id },
-            data: getClipRenderResetData(resolvedResolution),
-          }),
-        );
-      }
-    }
-
-    if (createOperations.length > 0 || updateOperations.length > 0) {
-      await prisma.$transaction([...createOperations, ...updateOperations]);
-    }
-
-    const admitted = await getWorkflowRunLifecycle().admit({
-      projectId,
-      idempotencyKey,
-      stage: "clip_rendering",
+    const admitted = await getWorkflowRunLifecycle().admitClipRendering({
+      projectId, idempotencyKey,
+      variants: clipIdsToRender.flatMap(clipId => requestedAspectRatioDbValues.map(aspectRatio => ({ clipId, aspectRatio, resolution: resolvedResolution }))),
     });
 
     return {

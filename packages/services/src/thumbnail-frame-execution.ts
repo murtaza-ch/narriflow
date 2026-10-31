@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { readExecutionAdmission, assertExecutionAdmissionOpen } from "./execution-admission";
 import { Prisma, type PrismaClient, type ThumbnailFrameOperation } from "@prisma/client";
 import { requestThumbnailFrameSchema, workspaceAllowsCapability, type RequestThumbnailFrameInput } from "@narriflow/validators";
 import { appendExecutionDispatch } from "./execution-dispatch";
@@ -70,8 +71,7 @@ export class ThumbnailFrameExecution implements ExecutorDomainControl<ThumbnailF
     if (!object || object.etag !== source.etag || object.sizeBytes !== Number(source.byteLength) || object.contentType !== "video/mp4") throw new ThumbnailPreparationError("thumbnail_source_missing");
     const requestFingerprint = fingerprint([input.workspaceId, input.projectId, input.clipId, input.exportVariantId, input.sourceTimeMs]);
     const opened = await this.database.$transaction(async tx => {
-      const [epoch] = await tx.$queryRaw<Array<{ epoch: number }>>`SELECT "epoch" FROM "ExecutionEpoch" WHERE "id"=1 FOR SHARE`;
-      if (!epoch) throw new ThumbnailPreparationError("thumbnail_extraction_failed");
+      const epoch = await readExecutionAdmission(tx);
       await tx.$queryRaw`SELECT "id" FROM "Workspace" WHERE "id"=${input.workspaceId}::uuid FOR SHARE`;
       await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`thumbnail-idempotency:${input.workspaceId}:${input.idempotencyKey}`},0)) IS NULL AS "locked"`;
       await tx.$queryRaw`SELECT "id" FROM "Project" WHERE "id"=${input.projectId}::uuid FOR UPDATE`;
@@ -84,6 +84,7 @@ export class ThumbnailFrameExecution implements ExecutorDomainControl<ThumbnailF
       const byKey = await tx.thumbnailFrameOperation.findUnique({ where: { workspaceId_idempotencyKey: { workspaceId: input.workspaceId, idempotencyKey: input.idempotencyKey } }, include });
       if (byKey && byKey.requestFingerprint !== requestFingerprint) throw new ThumbnailPreparationError("thumbnail_idempotency_conflict");
       const existing = byKey ?? await tx.thumbnailFrameOperation.findUnique({ where: { exportVariantId_sourceTimeMs: { exportVariantId: input.exportVariantId, sourceTimeMs: input.sourceTimeMs } }, include });
+      if (!existing) assertExecutionAdmissionOpen(epoch);
       const row = existing ?? await tx.thumbnailFrameOperation.create({ data: { id: randomUUID(), ...body, workspaceId: input.workspaceId, projectId: input.projectId, createdByUserId: input.actorUserId,
         requestFingerprint, exportFingerprint: source.exportFingerprint, deploymentEpoch: epoch.epoch, createdAt: now, operationDeadlineAt: new Date(now.getTime() + 10 * 60_000) }, include });
       return { row, replayed: existing !== null, dispatchIds: await this.dispatch(tx, row) };

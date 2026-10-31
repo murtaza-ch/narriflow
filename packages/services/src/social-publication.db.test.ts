@@ -32,6 +32,8 @@ import { acceptTikTokPublicationWebhook } from "./social-publication-tiktok-webh
 import { createProductionReviewApprovalGate } from "./review-approval-gate.prisma";
 import { listWorkspaceEvents } from "./workspace-event";
 import { createProductionSocialPublicationRuntime } from "./social-publication-runtime";
+import { WorkflowRunLifecycle } from "./workflow-run-lifecycle";
+import { prismaAssistedCopyStore } from "./assisted-social-copy-runtime";
 
 const databaseUrl = process.env.SOCIAL_PUBLICATION_TEST_DATABASE_URL;
 const databaseSchema = process.env.SOCIAL_PUBLICATION_TEST_DATABASE_SCHEMA;
@@ -426,6 +428,60 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 		release();
 		expect(await rejected).toEqual(committed);
 		expect(await prisma.socialPost.count({ where: { workspaceId: f.workspace.id, clientIdempotencyKey: candidate.clientIdempotencyKey } })).toBe(1);
+	})));
+
+	test("closed execution admission rejects a new publication while an exact committed publication still replays", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
+		const f = await fixture();
+		const candidate = frozenCandidate(f, { id: randomUUID(), key: randomUUID(), hash: "admission-closed", accountId: f.firstAccount.id, scheduledFor: new Date(Date.now() + 3_600_000) });
+		const request = { workspaceId: f.workspace.id, clientIdempotencyKey: candidate.clientIdempotencyKey, immutableRequestHash: candidate.immutableRequestHash, create: async () => candidate };
+		const first = await prismaPublicationSchedulingStore.open(request);
+		await prisma.executionEpoch.update({ where: { id: 1 }, data: { admissionOpen: false } });
+		try {
+			const next = { ...candidate, id: randomUUID(), clientIdempotencyKey: randomUUID() };
+			await expect(prismaPublicationSchedulingStore.open({ ...request, clientIdempotencyKey: next.clientIdempotencyKey, create: async () => next })).rejects.toMatchObject({ code: "execution_admission_closed" });
+			expect(await prisma.socialPost.count({ where: { workspaceId: f.workspace.id } })).toBe(1);
+			expect(await prismaPublicationSchedulingStore.open({ ...request, create: async () => { throw new Error("Replay must not refreeze"); } })).toEqual(first);
+		} finally { await prisma.executionEpoch.update({ where: { id: 1 }, data: { admissionOpen: true } }); }
+	})));
+
+	test("ordinary render variant changes roll back with run admission and closed replay cannot reset finished variants", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
+		const f = await fixture(), workflow = new WorkflowRunLifecycle({ prisma });
+		const input = { projectId: f.project.id, idempotencyKey: randomUUID(), variants: [{ clipId: f.clip.id, aspectRatio: "ratio_16_9" as const, resolution: "1080p" as const }] };
+		const suffix = randomUUID().replaceAll("-", ""), trigger = `render_admission_${suffix}`;
+		await prisma.$executeRawUnsafe(`CREATE FUNCTION "${trigger}"() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW."projectId"='${f.project.id}'::uuid THEN RAISE EXCEPTION 'injected_render_admission_failure'; END IF; RETURN NEW; END $$`);
+		await prisma.$executeRawUnsafe(`CREATE TRIGGER "${trigger}" BEFORE INSERT ON "WorkflowRun" FOR EACH ROW EXECUTE FUNCTION "${trigger}"()`);
+		try {
+			await expect(workflow.admitClipRendering(input)).rejects.toThrow();
+			expect(await prisma.clipRender.count({ where: { clipId: f.clip.id, exportVariantId: null } })).toBe(0);
+		} finally {
+			await prisma.$executeRawUnsafe(`DROP TRIGGER "${trigger}" ON "WorkflowRun"`);
+			await prisma.$executeRawUnsafe(`DROP FUNCTION "${trigger}"()`);
+		}
+		const accepted = await workflow.admitClipRendering(input);
+		const variant = await prisma.clipRender.findFirstOrThrow({ where: { clipId: f.clip.id, exportVariantId: null } });
+		expect(await prisma.executionDispatch.count({ where: { subjectKind: "workflow_run", subjectId: accepted.id, kind: "render_run" } })).toBe(1);
+		await prisma.clipRender.update({ where: { id: variant.id }, data: { status: "completed" } });
+		await prisma.executionEpoch.update({ where: { id: 1 }, data: { admissionOpen: false } });
+		try {
+			expect(await workflow.admitClipRendering(input)).toEqual({ id: accepted.id, created: false });
+			expect((await prisma.clipRender.findUniqueOrThrow({ where: { id: variant.id } })).status).toBe("completed");
+		} finally { await prisma.executionEpoch.update({ where: { id: 1 }, data: { admissionOpen: true } }); }
+	})));
+
+	test("assisted-copy admission is closed before a new provider generation while exact durable replay remains available", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
+		const f = await fixture();
+		const candidate = { id: randomUUID(), actorUserId: f.user.id, workspaceId: f.workspace.id, projectId: f.project.id, clipId: f.clip.id, idempotencyKey: randomUUID(),
+			requestFingerprint: "assisted-admission", status: "generating" as const, provider: "fixture", model: "fixture", promptVersion: "fixture", skippedGuidance: [], inputTokens: null, outputTokens: null,
+			errorCode: null, variants: [], createdAt: new Date(), completedAt: null };
+		const input = { workspaceId: candidate.workspaceId, idempotencyKey: candidate.idempotencyKey, requestFingerprint: candidate.requestFingerprint, create: () => candidate };
+		await prismaAssistedCopyStore.open(input);
+		await prisma.executionEpoch.update({ where: { id: 1 }, data: { admissionOpen: false } });
+		try {
+			const next = { ...candidate, id: randomUUID(), idempotencyKey: randomUUID() };
+			await expect(prismaAssistedCopyStore.open({ ...input, idempotencyKey: next.idempotencyKey, create: () => next })).rejects.toMatchObject({ code: "execution_admission_closed" });
+			expect(await prisma.assistedCopyGeneration.count({ where: { clipId: f.clip.id } })).toBe(1);
+			expect(await prismaAssistedCopyStore.open(input)).toMatchObject({ replayed: true, record: { id: candidate.id } });
+		} finally { await prisma.executionEpoch.update({ where: { id: 1 }, data: { admissionOpen: true } }); }
 	})));
 
 	test("replays every advanced post state without refreezing or reopening eligibility", bindServiceTestEnvironment(prismaGlobal.bind(async () => {

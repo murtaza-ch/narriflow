@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { readExecutionAdmission, assertExecutionAdmissionOpen } from "./execution-admission";
 import { Prisma, type OutboundProbe, type PrismaClient } from "@prisma/client";
 import { MAX_RSS_RESULT_BYTES, outboundRssInputSchema, rssFeedSnapshotSchema, type OutboundRssInput } from "@narriflow/validators/outbound-probe";
 import type { ExecutionDeadline, ExecutionDispatchReference } from "@narriflow/validators/execution";
@@ -58,7 +59,7 @@ export class OutboundProbeService implements ExecutorDomainControl<OutboundProbe
     // share one immutable result for fifteen minutes; SQL remains authoritative.
     if (requestKey && requestKey.length > 256) throw new OutboundProbeError("outbound_probe_conflict");
     const admitted = await this.database.$transaction(async tx => {
-      const [epoch] = await tx.$queryRaw<Array<{ epoch: number }>>`SELECT "epoch" FROM "ExecutionEpoch" WHERE "id"=1 FOR SHARE`;
+      const epoch = await readExecutionAdmission(tx);
       await tx.$queryRaw`SELECT "id" FROM "Workspace" WHERE "id"=${scope.workspaceId}::uuid FOR SHARE`;
       await this.actor(tx, scope);
       if (!epoch) throw new OutboundProbeError("outbound_probe_unavailable");
@@ -68,6 +69,7 @@ export class OutboundProbeService implements ExecutorDomainControl<OutboundProbe
       await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`outbound-probe:${scope.workspaceId}:${scope.actorUserId}:${requestFingerprint}`},0)) IS NULL AS "locked"`;
       const known = await tx.outboundProbe.findUnique({ where: { workspaceId_createdByUserId_requestFingerprint: { workspaceId: scope.workspaceId, createdByUserId: scope.actorUserId, requestFingerprint } } });
       if (known) return { row: known, ids: await this.registerJob(tx, known) };
+      assertExecutionAdmissionOpen(epoch);
       const id = randomUUID();
       const row = await tx.outboundProbe.create({ data: { id, workspaceId: scope.workspaceId, createdByUserId: scope.actorUserId, kind: "rss_feed",
         requestFingerprint, input: input as Prisma.InputJsonValue, inputHash: digest(["outbound-probe-v1", id, epoch.epoch, requestFingerprint]),

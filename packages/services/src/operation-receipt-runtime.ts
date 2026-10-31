@@ -6,6 +6,7 @@ import {
 	type OperationReceiptPersistence,
 } from "./operation-receipt";
 import { recoverReceiptNotificationDispatches } from "./notification-dispatch";
+import { readExecutionAdmission } from "./execution-admission";
 
 function unique(identity: OperationReceiptIdentity) {
 	return { workspaceId_actorUserId_command_clientIdempotencyKey: identity };
@@ -20,6 +21,9 @@ export function prismaOperationReceiptPersistence(
 			prisma.operationReceipt.findUnique({ where: unique(identity) }),
 		transaction: (run) => prisma.$transaction(run),
 		async lock(tx, identity) {
+			// Domain admission checks run after this receipt lock. Take the epoch
+			// first without refusing completion or exact replay while closed.
+			await readExecutionAdmission(tx);
 			// PostgreSQL releases the transaction lock on commit or rollback. Hash
 			// collisions merely serialize unrelated requests; they cannot replay them.
 			const name = JSON.stringify([
