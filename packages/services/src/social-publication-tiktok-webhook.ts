@@ -1,3 +1,4 @@
+import { lockPublicationAttempt } from "./publication-locks";
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
@@ -199,7 +200,7 @@ export async function recordTikTokPublicationEvent(
 				take: 1,
 			});
 			if (!candidates[0]) return { kind: "unknown_operation" as const };
-			await tx.$queryRaw`SELECT "id" FROM "SocialPublicationAttempt" WHERE "id" = ${candidates[0].id}::uuid FOR UPDATE`;
+			await lockPublicationAttempt(tx,candidates[0].id);
 			const attempt = await tx.socialPublicationAttempt.findUnique({
 				where: { id: candidates[0].id },
 				include: { receipt: true, socialPost: true, frozenState: true },

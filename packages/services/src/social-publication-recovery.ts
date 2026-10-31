@@ -1,3 +1,4 @@
+import { lockPublicationPost } from "./publication-locks";
 import { readServiceEnvironment } from "./runtime-environment";
 import { workspaceService } from "./workspace.service";
 import { accessibleProjectWhere } from "./project-access";
@@ -98,6 +99,7 @@ export function allowedSocialPublicationActions(
 
 const SOCIAL_PUBLICATION_RECOVERY_FAILURES = {
   social_publication_not_found: "missing",
+  social_publication_forbidden: "forbidden",
   social_publication_transition_conflict: "conflict",
   social_publication_recheck_unavailable: "unavailable",
   social_publication_republish_blocked: "conflict",
@@ -336,8 +338,14 @@ export async function validateSocialPublicationEvidence(input: {
 
 async function loadRecoveryTarget(
   tx: Prisma.TransactionClient,
-  input: { workspaceId: string; projectId?: string; socialPostId: string },
+  input: { workspaceId: string; projectId?: string; socialPostId: string; actorUserId: string },
 ) {
+  await lockPublicationPost(tx,input.socialPostId);
+  const workspace=await tx.workspace.findUnique({where:{id:input.workspaceId},select:{ownerUserId:true,status:true}});
+  const actor=await tx.user.findUnique({where:{id:input.actorUserId},select:{deletedAt:true}});
+  const member=await tx.workspaceMember.findUnique({where:{workspaceId_userId:{workspaceId:input.workspaceId,userId:input.actorUserId}},select:{role:true}});
+  const role=workspace?.ownerUserId===input.actorUserId?"owner":member?.role;
+  if(!workspace||!actor||actor.deletedAt||!member||!role||!workspaceAllowsCapability({role,status:workspace.status},"publishing.manage"))throw new SocialPublicationRecoveryError("social_publication_forbidden","Publishing access changed before recovery committed");
   const post = await tx.socialPost.findFirst({
     where: {
       id: input.socialPostId,
@@ -482,9 +490,10 @@ export const socialPublicationRecovery = {
       const renewWindow = attempt.reconciliationDeadline <= now ||
         attempt.providerCallCount >= budget.providerCallBudget ||
         attempt.failureCode === "publication_provider_call_budget_exhausted";
+      const renewNative=renewWindow||attempt.nativeStartCount>=attempt.nativeStartCeiling;
       const updatedPost = await tx.socialPost.updateMany({
         where: { id: post.id, status: "needs_attention" },
-        data: { status: "reconciling", nextAttemptAt: now },
+        data: { status: "reconciling", nextAttemptAt: now, generation:{increment:1} },
       });
       const updatedAttempt = await tx.socialPublicationAttempt.updateMany({
         where: { id: attempt.id, phase: "needs_attention" },
@@ -494,6 +503,7 @@ export const socialPublicationRecovery = {
           outcome: "unknown",
           nextActionAt: now,
           terminalAt: null,
+          ...(renewNative ? {nativeStartRound:{increment:1},nativeStartCount:0} : {}),
           ...(renewWindow ? {
             reconciliationDeadline: new Date(now.getTime() + budget.reconciliationDeadlineMs),
             providerCallCount: 0,
@@ -514,6 +524,7 @@ export const socialPublicationRecovery = {
           actorUserId: input.actorUserId,
           kind: "recheck_requested",
           reason: parsed.reason,
+          ...(renewNative ? {executionBudgetAudit:{kind:"native_round_renewal",previousRound:attempt.nativeStartRound,round:attempt.nativeStartRound+1,previousNativeStartCount:attempt.nativeStartCount,ceiling:attempt.nativeStartCeiling}} : {}),
         },
       });
       return {
@@ -842,6 +853,7 @@ export const socialPublicationRecovery = {
         where: { id: post.id, status: "needs_attention" },
         data: {
           status: "scheduled",
+          generation:{increment:1},
           errorCode: null,
           errorDisposition: null,
           nextAttemptAt: now,

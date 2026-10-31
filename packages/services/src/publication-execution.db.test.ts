@@ -1,3 +1,6 @@
+import { createDatabaseTestContext } from "@narriflow/db/testing";
+import { withServiceEnvironment } from "./runtime-environment";
+import { socialPublicationRecovery } from "./social-publication-recovery";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@prisma/client";
@@ -21,6 +24,7 @@ suite("Revision-bound publication execution",()=>{
  async function fixture(ready=true){
   const suffix=crypto.randomUUID(),user=await db.user.create({data:{clerkId:`publication-execution:${suffix}`}});
   const workspace=await db.workspace.create({data:{name:"Native publication",ownerUserId:user.id,personalOwnerUserId:user.id,pricingTier:"business"}});
+  await db.workspaceMember.create({data:{workspaceId:workspace.id,userId:user.id,role:"owner"}});
   const project=await db.project.create({data:{workspaceId:workspace.id,createdByUserId:user.id,title:"Publication",sourceMediaUrl:"r2://test/source"}});
   const run=await db.workflowRun.create({data:{projectId:project.id,idempotencyKey:`publication:${suffix}`,stage:"clip_rendering",status:"completed"}});
   const clip=await db.clip.create({data:{projectId:project.id,workflowRunId:run.id,index:0,startSec:0,endSec:30,hookText:"Fixture",reasoning:"Fixture",category:"hook",transcriptSlice:[],viralityScore:80,hookStrengthScore:80,emotionalIntensityScore:80,pacingScore:80,durationOptimalityScore:80,tiktokScore:80,youtubeScore:80,instagramScore:80,llmProvider:"test",llmModel:"test"}});
@@ -142,6 +146,32 @@ suite("Revision-bound publication execution",()=>{
   await expect(transfer.execute({command,verifiedRequest:request})).rejects.toMatchObject({code:"authority_lost"});
   expect(resolves).toBe(1);
   await db.executionDispatch.update({where:{id:dispatch.reference.dispatchId},data:{acknowledgedAt:new Date()}});
+ });
+
+ test("only an audited explicit Recheck renews a native start round on the same uncertain attempt",async()=>{
+  const f=await fixture();
+  await db.socialPost.update({where:{id:f.post.id},data:{status:"needs_attention"}});
+  const deadline=new Date(Date.now()+3600000),key=`publication:${f.post.id}:1`;
+  const attempt=await db.socialPublicationAttempt.create({data:{socialPostId:f.post.id,frozenStateId:f.post.frozenState!.id,attemptNumber:1,idempotencyKey:key,phase:"needs_attention",outcome:"unknown",nativeStartCeiling:2,nativeStartCount:2,providerCallCount:1,operationKind:"submission_started",checkpointEncrypted:"opaque-existing-provider-checkpoint",nextActionAt:new Date(),processingDeadline:deadline,reconciliationDeadline:deadline}});
+  await expect(db.$transaction(tx=>tx.socialPublicationAttempt.update({where:{id:attempt.id},data:{phase:"reconciling",nativeStartRound:2,nativeStartCount:0}}))).rejects.toBeDefined();
+  expect((await db.socialPublicationAttempt.findUniqueOrThrow({where:{id:attempt.id}})).nativeStartCount).toBe(2);
+  const context=createDatabaseTestContext();context.client=db;
+  await withServiceEnvironment({SOCIAL_PUBLISH_PROVIDER_CALL_BUDGET:"1"},context.bind(()=>socialPublicationRecovery.recheck({workspaceId:f.post.workspaceId!,actorUserId:f.post.createdByUserId!,socialPostId:f.post.id,reason:"Read the original provider operation again"})));
+  const updated=await db.socialPublicationAttempt.findUniqueOrThrow({where:{id:attempt.id}});
+  expect(updated.nativeStartRound).toBe(2);expect(updated.nativeStartCount).toBe(0);expect(updated.nativeStartCeiling).toBe(2);
+  expect(updated.idempotencyKey).toBe(key);expect(updated.checkpointEncrypted).toBe(attempt.checkpointEncrypted);expect(updated.processingDeadline).toEqual(deadline);
+  const audit=await db.publicationManualDecision.findFirstOrThrow({where:{attemptId:attempt.id,kind:"recheck_requested"}});
+  expect(audit.executionBudgetAudit).toEqual({kind:"native_round_renewal",previousRound:1,round:2,previousNativeStartCount:2,ceiling:2});
+  expect((await db.socialPost.findUniqueOrThrow({where:{id:f.post.id}})).generation).toBe(f.post.generation+1);
+ });
+ test("actor removal after initial authorization rolls back Recheck before resetting any budget",async()=>{
+  const f=await fixture();await db.socialPost.update({where:{id:f.post.id},data:{status:"needs_attention"}});
+  const attempt=await db.socialPublicationAttempt.create({data:{socialPostId:f.post.id,frozenStateId:f.post.frozenState!.id,attemptNumber:1,idempotencyKey:`publication:${f.post.id}:1`,phase:"needs_attention",outcome:"unknown",nativeStartCeiling:2,nativeStartCount:2,providerCallCount:1,nextActionAt:new Date(),processingDeadline:new Date(Date.now()+3600000),reconciliationDeadline:new Date(Date.now()+3600000)}});
+  const context=createDatabaseTestContext();
+  context.client=new Proxy(db,{get(target,property){if(property==="$transaction")return async(work:(tx:unknown)=>Promise<unknown>)=>{await db.user.update({where:{id:f.post.createdByUserId!},data:{deletedAt:new Date()}});return db.$transaction(work as never);};return Reflect.get(target,property,target);}});
+  await expect(withServiceEnvironment({SOCIAL_PUBLISH_PROVIDER_CALL_BUDGET:"1"},context.bind(()=>socialPublicationRecovery.recheck({workspaceId:f.post.workspaceId!,actorUserId:f.post.createdByUserId!,socialPostId:f.post.id,reason:"Recheck denied"})))).rejects.toMatchObject({code:"social_publication_forbidden"});
+  expect((await db.socialPublicationAttempt.findUniqueOrThrow({where:{id:attempt.id}})).nativeStartCount).toBe(2);
+  expect(await db.publicationManualDecision.count({where:{attemptId:attempt.id}})).toBe(0);
  });
 
 });

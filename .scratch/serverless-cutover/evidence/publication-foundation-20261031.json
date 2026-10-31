@@ -80,7 +80,18 @@
     "typechecks": [
       "services",
       "api"
-    ]
+    ],
+    "existingPublicationContractsAndNewPostgres": {
+      "tests": 44,
+      "assertions": 237,
+      "includes": [
+        "duplicate and out-of-order TikTok events",
+        "receipt uniqueness",
+        "manual confirmation",
+        "audited same-attempt Recheck round",
+        "actor revocation before commit"
+      ]
+    }
   },
   "research": {
     "primaryExamples": [
@@ -96,5 +107,7 @@
     "atomic checkpoint/settlement and continuation dispatch",
     "finite receipt enrichment/performance capture timers",
     "deployed provider sandbox failure matrix and zero-duplicate gate"
-  ]
+  ],
+  "locking": "Workspace SHARE, Project SHARE, Account SHARE, Post UPDATE, Attempt UPDATE, Claim UPDATE, generic ExecutionAttempt last",
+  "nativeRoundRenewal": "Only explicit Needs attention to Reconciling Recheck; fixed ceiling, original attempt/idempotency/checkpoint retained, prior count and round in durable manual audit; unaudited SQL reset rolls back."
 }
