@@ -53,6 +53,63 @@ suite("Native Dubbing execution", () => {
       } } });
     return { user, workspace, project, run, clip, render, dub, request, reference, domain, objects, registrations };
   }
+  test("a native Dub failure, release, or expiry cannot settle another accepted Dub in the same Project", async () => {
+    for (const [ending, paid] of [["failure", false], ["release", false], ["lease", false], ["failure", true], ["release", true], ["lease", true]] as const) {
+      const f = await fixture(), receipts: string[] = [], evidence = new Map<string, unknown>();
+      let siblingRunId: string | undefined;
+      try {
+        const run = await db.workflowRun.create({ data: { projectId: f.project.id, stage: "dubbing", status: "queued", idempotencyKey: randomUUID(), deploymentEpoch: f.run.deploymentEpoch } });
+        siblingRunId = run.id;
+        const id = randomUUID(), request = frozenDubbingRequestSchema.parse({ ...f.request, dubId: id, workflowRunId: run.id, targetLanguageCode: "fr" });
+        const sibling = await db.$transaction(async tx => {
+          const row = await tx.clipDub.create({ data: { id, projectId: f.project.id, clipId: f.clip.id, workflowRunId: run.id, targetLanguageCode: "fr", voice: "marin", model: request.model,
+            frozenRequest: request, requestHash: await frozenDubbingRequestHash(request), operationDeadlineAt: f.dub.operationDeadlineAt, deploymentEpoch: f.run.deploymentEpoch } });
+          await reserveGenerationUsage(tx, { kind: "dub", jobId: id, workspaceId: f.workspace.id, actorUserId: f.user.id, pricingTier: "business", now: new Date(), attached: true });
+          return row;
+        });
+        const reservation = await db.generatedMediaUsageReservation.findUniqueOrThrow({ where: { jobId: id } });
+        const prepared = await withServiceEnvironment({}, () => f.domain.prepareExecution(f.reference));
+        if (prepared.kind !== "waiting") throw Error("Expected prepared Dub");
+        const fence = { reference: prepared.deadline.reference, attemptToken: prepared.deadline.attemptToken, owner: randomUUID() };
+        const execution = createDubbingExecution({ database: db, domain: f.domain, storage: createExecutionStorage({ accountId: "a".repeat(32), bucket: "dub-gate", accessKeyId: "not-a-real-key", secretAccessKey: "not-a-real-secret" }),
+          deliverWakes: async () => {}, artifacts: { head: async assignment => ({ etag: '"proof"', contentType: assignment.contentType, byteLength: BigInt(JSON.stringify(evidence.get(assignment.id)).length) }), readJson: async artifact => evidence.get(artifact.artifactId) } });
+        const verified = (target = "/api/execution/command") => { const deliveryId = randomUUID();receipts.push(deliveryId);return { requestHash: randomUUID().replaceAll("-", "").repeat(2), metadata: { version: 1 as const, keyId: "dub-gate", audience: "executor-control" as const, method: "POST" as const, canonicalTarget: target, bodySha256: "0".repeat(64), timestamp: Math.floor(Date.now() / 1000), deliveryId, signature: "0".repeat(64) } }; };
+        const send = (command: unknown) => withServiceEnvironment({}, () => execution.control.execute({ command, verifiedRequest: verified() }));
+        expect((await send({ action: "acquire", ...fence, leaseSeconds: ending === "lease" ? 3 : 120 })).disposition).toBe("acquired");
+        await send({ action: "process-start", fence });
+        let intentId: string | null = null;
+        if (paid) {
+          await withServiceEnvironment({}, () => execution.transfer.execute({ command: { action: "work-package", fence }, verifiedRequest: verified("/api/execution/transfer") }));
+          const intent = await db.executionArtifact.findFirstOrThrow({ where: { attemptToken: fence.attemptToken, role: "probe", bindingHash: await dubbingArtifactBindingHash(f.dub.requestHash!, "translation_intent") } });
+          intentId = intent.id;
+          const value = { version: 1, kind: "dubbing_checkpoint", stage: "translation_intent", dubId: f.dub.id, requestHash: f.dub.requestHash,
+            bodySha256: createHash("sha256").update(JSON.stringify(dubTranslationRequestBody(f.request))).digest("hex") };
+          evidence.set(intent.id, value);const raw = JSON.stringify(value);
+          await send({ action: "commit-artifact", fence, artifact: { artifactId: intent.id, role: "probe", bindingHash: intent.bindingHash, contentType: "application/json", byteLength: raw.length, etag: '"proof"', sha256: createHash("sha256").update(raw).digest("hex") } });
+        }
+        if (ending === "failure") await send({ action: "fail", fence, failureCode: "native_failure", retryable: false });
+        else if (ending === "release") await send({ action: "release", fence, reason: "shutdown" });
+        else {
+          const attempt = await db.executionAttempt.findUniqueOrThrow({ where: { attemptToken: fence.attemptToken } });
+          await Bun.sleep(3100);const deliveryId = randomUUID();receipts.push(deliveryId);
+          await withServiceEnvironment({}, () => execution.control.expireDeadline({ deadline: { reference: fence.reference, attemptToken: fence.attemptToken, kind: "lease", observedDeadlineAt: attempt.leaseExpiresAt!.toISOString() }, deliveryId }));
+        }
+        expect(await db.clipDub.findUniqueOrThrow({ where: { id } })).toEqual(sibling);
+        expect(await db.workflowRun.findUniqueOrThrow({ where: { id: run.id } })).toEqual(run);
+        expect(await db.generatedMediaUsageReservation.findUniqueOrThrow({ where: { jobId: id } })).toEqual(reservation);
+        expect(await db.executionAttempt.count({ where: { dispatch: { subjectId: run.id } } })).toBe(0);
+        expect(await db.workflowRun.findUniqueOrThrow({ where: { id: f.run.id } })).toMatchObject({ attemptCount: 1, status: paid || ending === "failure" ? "failed" : "queued" });
+        expect(await db.clipDub.findUniqueOrThrow({ where: { id: f.dub.id } })).toMatchObject({ status: paid ? "unknown" : ending === "failure" ? "failed" : "queued", translationIntentArtifactId: intentId });
+        expect(await db.generatedMediaUsageReservation.findUniqueOrThrow({ where: { jobId: f.dub.id } })).toMatchObject({ status: !paid && ending === "failure" ? "released" : "reserved" });
+      } finally {
+        await db.executionInboxReceipt.deleteMany({ where: { deliveryId: { in: receipts } } });
+        await db.executionArtifact.deleteMany({ where: { attempt: { dispatch: { subjectId: f.run.id } } } });
+        await db.executionAttempt.deleteMany({ where: { dispatch: { subjectId: f.run.id } } });
+        await db.executionDispatch.deleteMany({ where: { subjectId: { in: [f.run.id, ...(siblingRunId ? [siblingRunId] : [])] } } });
+        await db.workspace.delete({ where: { id: f.workspace.id } });await db.user.delete({ where: { id: f.user.id } });
+      }
+    }
+  }, 15_000);
   test("quiesced Dub restore changes metadata only, preserves paid evidence and accepted budget, and dispatches only in the final phase", async () => {
     const f = await fixture(), others = [await fixture(), await fixture()], rollback = Error("rollback_dub_restore");
     try {
