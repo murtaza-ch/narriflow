@@ -33,6 +33,9 @@ CREATE TABLE "ClipPreparation" (
   CONSTRAINT "ClipPreparation_clipId_bindingHash_deploymentEpoch_key" UNIQUE ("clipId","bindingHash","deploymentEpoch")
 );
 CREATE INDEX "ClipPreparation_projectId_status_idx" ON "ClipPreparation"("projectId","status");
+ALTER TABLE "Clip" ADD CONSTRAINT "Clip_id_projectId_key" UNIQUE ("id","projectId");
+ALTER TABLE "ClipPreparation" ADD CONSTRAINT "ClipPreparation_projectId_fkey" FOREIGN KEY ("projectId") REFERENCES "Project"("id") ON DELETE CASCADE;
+ALTER TABLE "ClipPreparation" ADD CONSTRAINT "ClipPreparation_clipId_projectId_fkey" FOREIGN KEY ("clipId","projectId") REFERENCES "Clip"("id","projectId") ON DELETE CASCADE;
 CREATE FUNCTION protect_clip_preparation_input() RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN
   IF ROW(NEW."projectId",NEW."clipId",NEW."sourceRevision",NEW."editorRevision",NEW."bindingHash",NEW."engineHash",NEW."inputHash",NEW."inputStorageKey",NEW."inputEtag",NEW."inputByteLength",NEW."inputChecksumSha256",NEW."deploymentEpoch",NEW."operationDeadlineAt",NEW."createdAt") IS DISTINCT FROM

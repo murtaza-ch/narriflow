@@ -6,6 +6,7 @@
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "exports": {
+    "./clip-preparation": "./src/clip-preparation.ts",
     "./ingest-source-execution": {
       "types": "./src/ingest-source-execution.ts",
       "default": "./src/ingest-source-execution.ts"
