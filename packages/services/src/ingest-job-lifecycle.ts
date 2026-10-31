@@ -1,4 +1,4 @@
-import { appendProgressEventDispatch } from "./progress-outbox";
+import { appendProgressEventDispatch, flushProjectProgressDrains } from "./progress-outbox";
 import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient, type IngestJob, type SourceAudio, type Project } from "@prisma/client";
 import {
@@ -1100,7 +1100,7 @@ export class IngestJobLifecycle {
       return await this.deps.prisma.$transaction(async tx => {
         const result = await this.handoffForJobWithinTransaction(tx, id, reference);
         await flushWorkspaceEvents(tx);
-        return result;
+        return { ...result, dispatchIds: [...new Set([...result.dispatchIds, ...await flushProjectProgressDrains(tx)])] };
       }, PROCESSING_USAGE_TRANSACTION);
     } catch (error) {
       if (error instanceof IngestJobClaimLost) return { kind: "superseded", dispatchIds: [] };
@@ -1111,7 +1111,7 @@ export class IngestJobLifecycle {
         if (error instanceof ExpectedDomainFailureError && (!isAutoRetryableFailureCode(code) || ["invalid", "unprocessable", "missing", "forbidden", "payment_required"].includes(error.kind))) {
           await this.failHandoff(tx, state.job, code, error.message);
           await flushWorkspaceEvents(tx);
-          return { kind: "refused", dispatchIds: [] };
+          return { kind: "refused", dispatchIds: await flushProjectProgressDrains(tx) };
         }
         console.warn(JSON.stringify({ level: "warn", message: "ingest_generation_handoff_deferred", jobId: id, projectId: state.project.id, errorCode: code }));
         const retryAt = new Date(state.now.getTime() + 60_000);

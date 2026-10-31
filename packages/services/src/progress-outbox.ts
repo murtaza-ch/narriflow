@@ -7,6 +7,7 @@ import { progressEvent, type ProgressRevocation } from "./progress-feed";
 type Tx = Prisma.TransactionClient;
 type Revocation = Omit<ProgressRevocation, "projectId" | "authorizedBefore"> & { projectId?: string; authorizedBefore: number; afterProjectId?: string };
 const reasons = { workspace_membership_required: "m", workspace_restricted: "w", project_inaccessible: "p" } as const;
+const pendingEventRanges = new WeakMap<Tx, Map<string, { after: number; through: number; dueAt: Date }>>();
 function compact(id: string): string {
   if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(id)) throw new Error("Invalid progress revocation identity");
   return btoa(String.fromCharCode(...id.replaceAll("-", "").match(/../g)!.map((value) => Number.parseInt(value, 16)))).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
@@ -39,8 +40,35 @@ async function append(tx: Tx, subject: ExecutionDispatchReference["subject"], du
 }
 
 /** Called in the same transaction as the event. No delivery can precede commit. */
-export function appendProgressEventDispatch(tx: Tx, event: { id: string; emittedAt: Date }): Promise<ExecutionDispatchRecord> {
-  return append(tx, { kind: "workflow_event", id: event.id }, event.emittedAt);
+export async function appendProgressEventDispatch(tx: Tx, event: { id: string; projectId: string; seq: number; emittedAt: Date }): Promise<ExecutionDispatchRecord> {
+  const record = await append(tx, { kind: "workflow_event", id: event.id }, event.emittedAt);
+  let ranges = pendingEventRanges.get(tx);
+  if (!ranges) { ranges = new Map(); pendingEventRanges.set(tx, ranges); }
+  const previous = ranges.get(event.projectId);
+  ranges.set(event.projectId, { after: Math.min(previous?.after ?? event.seq - 1, event.seq - 1), through: Math.max(previous?.through ?? event.seq, event.seq), dueAt: previous?.dueAt ?? event.emittedAt });
+  return record;
+}
+
+function eventRangeId(projectId: string, after: number, through: number) { return `pe1.${compact(projectId)}.${after}.${through}`; }
+function eventRange(id: string) {
+  const [version, project, lower, upper, extra] = id.split(".");
+  const after = Number(lower), through = Number(upper);
+  if (version !== "pe1" || !project || extra !== undefined || !Number.isSafeInteger(after) || after < 0 || !Number.isSafeInteger(through) || through <= after || through > 2147483647) throw new Error("Invalid progress event range");
+  const projectId = expanded(project);
+  if (eventRangeId(projectId, after, through) !== id) throw new Error("Noncanonical progress event range");
+  return { projectId, after, through };
+}
+
+/** One receipt identifier per Project and transaction, even for cancellation
+ * pages that emit more than a hundred events. Rollback discards both ledgers. */
+export async function flushProjectProgressDrains(tx: Tx): Promise<string[]> {
+  const ranges = pendingEventRanges.get(tx);
+  pendingEventRanges.delete(tx);
+  if (!ranges) return [];
+  if (ranges.size > 128) throw new Error("Progress transaction exceeds its Project limit");
+  const ids: string[] = [];
+  for (const [projectId, range] of ranges) ids.push((await append(tx, { kind: "maintenance", id: eventRangeId(projectId, range.after, range.through) }, range.dueAt)).reference.dispatchId);
+  return ids;
 }
 
 /** Cutoff is read from PostgreSQL after the owning mutation/lock, never from a
@@ -63,6 +91,25 @@ export async function deliverProgressDispatch(database: PrismaClient, reference:
     if (event && !event.progressPublishedAt) {
       await port.publish({ projectId: event.projectId, workspaceId: event.project.workspaceId }, progressEvent(event));
       await database.workflowEvent.updateMany({ where: { id: event.id, progressPublishedAt: null }, data: { progressPublishedAt: new Date() } });
+    }
+  } else if (reference.subject.kind === "maintenance" && reference.subject.id.startsWith("pe1.")) {
+    const range = eventRange(reference.subject.id);
+    const events = await database.workflowEvent.findMany({ where: { projectId: range.projectId, seq: { gt: range.after, lte: range.through }, progressPublishedAt: null }, orderBy: { seq: "asc" }, take: 101, select: { id: true, seq: true, emittedAt: true } });
+    const page = events.slice(0, 100);
+    const obligations = await database.executionDispatch.findMany({ where: { deploymentEpoch: reference.deploymentEpoch, kind: "project_progress", subjectKind: "workflow_event", subjectId: { in: page.map(event => event.id) } }, select: { id: true, subjectId: true } });
+    const byEvent = new Map(obligations.map(row => [row.subjectId, row.id]));
+    const dispatch = createExecutionDispatch({ database, scheduler: { deliver: delivery => deliverProgressDispatch(database, delivery.reference) } });
+    for (let offset = 0; offset < page.length; offset += 4) {
+      const outcomes = await Promise.all(page.slice(offset, offset + 4).map(async event => {
+        const id = byEvent.get(event.id);
+        if (!id) throw new Error("Progress event obligation unavailable");
+        return dispatch.deliver(id);
+      }));
+      if (outcomes.some(outcome => outcome.status !== "acknowledged" && outcome.status !== "superseded")) throw new Error("Progress event page unconfirmed");
+    }
+    if (events.length > 100) {
+      const next = await database.$transaction(tx => append(tx, { kind: "maintenance", id: eventRangeId(range.projectId, page.at(-1)!.seq, range.through) }, page.at(-1)!.emittedAt, reference.deploymentEpoch));
+      continuationDispatchIds.push(next.reference.dispatchId);
     }
   } else if (reference.subject.kind === "maintenance") {
     const scope = decode(reference.subject.id);

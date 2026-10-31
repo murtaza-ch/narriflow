@@ -31,6 +31,9 @@ import { queueExportsFinishedByRun, queueFinishedGenerations } from "./operation
 import { flushWorkspaceEvents } from "./workspace-event";
 import { finalizeGenerationUsage, releaseFailedDubUsage } from "./generated-media-usage-ledger";
 import { appendWorkflowEvent, type WorkflowEventInput } from "./workflow-event-append";
+import { flushProjectProgressDrains } from "./progress-outbox";
+import { progressDeliveryPort } from "./progress-delivery";
+import { deliverExecutionDispatches } from "./execution-dispatch-runtime";
 import { appendExecutionDispatch, readExecutionDispatch, executionDispatchIdentity, type ExecutionDispatchRecord } from "./execution-dispatch";
 import { workflowRunExecutionInputHash } from "./workflow-execution-input";
 import { executionDispatchReferenceSchema, type ExecutionDispatchReference, type ExecutionDisposition, providerAttemptReferenceSchema, type ProviderAttemptReference } from "@narriflow/validators/execution";
@@ -436,11 +439,17 @@ export class WorkflowRunLifecycle {
       try {
         // Workspace Events queued by the operation are written last, after every
         // lock the operation takes, and are dropped with a retried attempt.
-        return await this.prisma.$transaction(async (tx) => {
+        const committed = await this.prisma.$transaction(async (tx) => {
           const result = await operation(tx);
           await flushWorkspaceEvents(tx);
-          return result;
+          return { result, progressDispatchIds: await flushProjectProgressDrains(tx) };
         });
+        const result = committed.result;
+        if (progressDeliveryPort()) await deliverExecutionDispatches(committed.progressDispatchIds);
+        if (result !== null && typeof result === "object" && "dispatchIds" in result && Array.isArray(result.dispatchIds)) {
+          return { ...result, dispatchIds: [...new Set([...result.dispatchIds, ...committed.progressDispatchIds])] };
+        }
+        return result;
       } catch (error) {
         if (
           attempt === TRANSACTION_RETRY_LIMIT ||
