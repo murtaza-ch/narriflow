@@ -664,3 +664,15 @@ CREATE TRIGGER "GeneratedMediaJob_validation_binding_immutable" BEFORE UPDATE ON
 -- Pending progress catchup reads two indexed endpoints, never Project history.
 CREATE INDEX "WorkflowEvent_unpublished_progress_project_seq_idx" ON "WorkflowEvent"("projectId", "seq")
  WHERE "progressRequired" = true AND "progressPublishedAt" IS NULL;
+
+-- An Ingest Job always names the same source. A new source needs a new job.
+CREATE FUNCTION ingest_source_identity_immutable() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+ IF (NEW.id,NEW."projectId",NEW."jobType",NEW.payload,NEW."sourceRevision",NEW."createdAt") IS DISTINCT FROM
+    (OLD.id,OLD."projectId",OLD."jobType",OLD.payload,OLD."sourceRevision",OLD."createdAt") THEN
+  RAISE EXCEPTION 'ingest source identity is immutable' USING ERRCODE='23514';
+ END IF;
+ RETURN NEW;
+END; $$;
+CREATE TRIGGER "IngestJob_source_identity_immutable" BEFORE UPDATE ON "IngestJob"
+ FOR EACH ROW EXECUTE FUNCTION ingest_source_identity_immutable();

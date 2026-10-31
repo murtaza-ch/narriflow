@@ -24,10 +24,14 @@ export function createNativeOperationDriver(ports: Ports): WorkflowCommandHandle
       if (expiry.kind !== "sleep") return { type: "complete", disposition: expiry.kind === "superseded" ? "superseded" : "terminal" };
       deadline = { ...deadline, observedDeadlineAt: expiry.dueAt.toISOString() };
     }
-    const results = await ports.deliver(prepared.dispatchIds);
-    const pending = results.filter((result): result is Extract<ExecutionDispatchDeliveryResult, { status: "pending" }> => result.status === "pending");
-    if (results.some(result => !["acknowledged", "superseded", "pending"].includes(result.status))) throw new Error("native_dispatch_unavailable");
-    if (pending.length) return { type: "sleep", until: new Date(Math.min(Date.parse(deadline.observedDeadlineAt), ...pending.map(result => result.retryAt.getTime()))).toISOString() };
+    // Confirm the independent watchdog before sending any heavy invocation.
+    // A known failed registration parks on its own persisted retry time.
+    for (const ids of [[prepared.deliveryId], prepared.dispatchIds.filter(id => id !== prepared.deliveryId)]) {
+      const results = await ports.deliver(ids);
+      const pending = results.filter((result): result is Extract<ExecutionDispatchDeliveryResult, { status: "pending" }> => result.status === "pending");
+      if (results.some(result => !["acknowledged", "superseded", "pending"].includes(result.status))) throw new Error("native_dispatch_unavailable");
+      if (pending.length) return { type: "sleep", until: new Date(Math.min(Date.parse(deadline.observedDeadlineAt), ...pending.map(result => result.retryAt.getTime()))).toISOString() };
+    }
     return { type: "wait", until: deadline.observedDeadlineAt, deliveryId: prepared.deliveryId, deadline };
   };
 }

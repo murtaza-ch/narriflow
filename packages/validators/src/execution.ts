@@ -222,6 +222,15 @@ export const sourceAudioBindingSchema = z.strictObject({
 export type ExecutionObjectIdentity = z.infer<typeof executionObjectIdentitySchema>;
 export type SourceAudioBinding = z.infer<typeof sourceAudioBindingSchema>;
 
+/** Worker-produced source input. Scoped grants stay in the package descriptors. */
+export const ingestFetchSourceCommandSchema = z.strictObject({
+  kind: z.literal("youtube_source"), projectId: z.string().uuid(), sourceRevision: generation,
+  mediaId: z.string().regex(/^[A-Za-z0-9_-]{11}$/), sourceAudioId: z.string().uuid(),
+  toolchainFingerprint: sha256, probeVersion: z.literal("normalized-probe-v1"),
+  existingSourceAudio: sourceAudioBindingSchema.nullable(), languageProbe: sourceLanguageProbeInputSchema.nullable(),
+});
+export type IngestFetchSourceCommand = z.infer<typeof ingestFetchSourceCommandSchema>;
+
 /** Complete probe facts plus the extraction identity, before any full-video publication. */
 export const sourceVideoBindingSchema = z.strictObject({
   projectId: z.string().uuid(),

@@ -26,5 +26,16 @@ test("a fresh renewal observation controls the next wait and terminal domains ne
   const terminal = createNativeOperationDriver({ now: () => now, prepare: async () => ({ kind: "terminal" }),
     expire: async () => { throw new Error("Unexpected expiry"); }, deliver: async () => { throw new Error("Unexpected storage/provider work"); } });
   expect(await terminal({ reference, wake: { type: "start" } })).toEqual({ type: "complete", disposition: "terminal" });
-  expect(delivered).toBe(1);
+  expect(delivered).toBe(2);
+});
+
+test("an unconfirmed watchdog never dispatches the heavy operation", async () => {
+  const batches: string[][] = [];
+  const run = createNativeOperationDriver({ now: () => now,
+    prepare: async () => ({ kind: "waiting", deadline, deliveryId, dispatchIds: [deadline.reference.dispatchId, deliveryId] }),
+    expire: async () => { throw new Error("Not due"); },
+    deliver: async ids => { batches.push([...ids]); return [{ status: "pending", dispatchId: deliveryId, reason: "delivery_failed", retryAt: new Date(now + 1_000) }]; },
+  });
+  expect(await run({ reference, wake: { type: "start" } })).toMatchObject({ type: "sleep" });
+  expect(batches).toEqual([[deliveryId]]);
 });
