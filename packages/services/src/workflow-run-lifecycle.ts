@@ -664,9 +664,10 @@ export class WorkflowRunLifecycle {
   }
 
   async releaseExecution(tx: TransactionClient, ref: WorkflowExecutionReference, context: ExecutorMutationContext, release: ExecutorReleaseInput): Promise<ExecutorMutationResult> {
-    const { run, attempt } = await this.ownedExecution(tx, ref, context);
-    const execution = await tx.executionAttempt.findUniqueOrThrow({ where: { attemptToken: ref.attemptToken }, select: { processStartedAt: true } });
-    if (!await this.executionOwner(context.owner).releaseAttemptWithinTransaction(tx, attempt, { refundAttempt: execution.processStartedAt !== null && run.attemptCount > 0, reason: release.reason })) throw new WorkflowAttemptLost(attempt);
+    const { attempt } = await this.ownedExecution(tx, ref, context);
+    // Acquisition is uncharged; actual process-start records the charge.
+    // Releasing or shutting down cannot undo a process that already ran.
+    if (!await this.executionOwner(context.owner).releaseAttemptWithinTransaction(tx, attempt, { refundAttempt: false, reason: release.reason })) throw new WorkflowAttemptLost(attempt);
     return this.executionWakes(tx, ref, context.reference.inputHash, true);
   }
 
