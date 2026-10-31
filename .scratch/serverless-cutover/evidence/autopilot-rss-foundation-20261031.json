@@ -1,0 +1,28 @@
+{
+  "status": "partial",
+  "scope": "Ticket19 RSS targeted coordinator foundation. Zoom driver, legacy loop removal, semantic suite ports, maintenance/restore and deployed gates remain.",
+  "database": "Disposable schema on dedicated local PG17.11 database; all migrations applied, no shared data touched.",
+  "checks": {
+    "postgres": {
+      "files": 4,
+      "passed": 41,
+      "assertions": 292,
+      "log": "/tmp/narriflow-autopilot-foundation-db.log"
+    },
+    "services_typecheck": true,
+    "biome_files": 11
+  },
+  "behavior": [
+    "Cycle and native probe are admitted atomically with one fixed due+1h deadline. Rule holds no lease during native wait.",
+    "Native probe terminal mutation and Core Inbox contain the exact Rule wake; ACK loss replays that same obligation.",
+    "One selected episode per command uses the original Recipe and grant tuples. Real Project intake rechecks short coordinator authority before credit reservation.",
+    "Lost cycle registration repairs child probe, next-generation base and deadline watches.",
+    "Database guards freeze cycle input, source tuple, selection and deadline. Explicit source edits revoke the old cycle.",
+    "Transient source read releases its short claim, failures preserve original backoff and eight-failure ceiling, actor/plan pauses preserve counters."
+  ],
+  "limitations": [
+    "RSS native parser permanent-failure classification and remaining original semantic cases need the upcoming suite port.",
+    "Old processDueRules/processDueNotifications are not removed in this foundation checkpoint.",
+    "Not deployed and not ticket completion."
+  ]
+}

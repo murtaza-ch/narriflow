@@ -657,7 +657,10 @@
     "./execution-source-recovery-pages": "./src/execution-source-recovery-pages.ts",
     "./execution-selection-restore": "./src/execution-selection-restore.ts",
     "./execution-preparation-restore": "./src/execution-preparation-restore.ts",
-    "./execution-recovery-locks": "./src/execution-recovery-locks.ts"
+    "./execution-recovery-locks": "./src/execution-recovery-locks.ts",
+    "./autopilot-execution": "./src/autopilot-execution.ts",
+    "./autopilot-execution-runtime": "./src/autopilot-execution-runtime.ts",
+    "./autopilot-episode-policy": "./src/autopilot-episode-policy.ts"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",

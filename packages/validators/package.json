@@ -64,7 +64,8 @@
     },
     "./dubbing-execution": "./src/dubbing-execution.ts",
     "./publication-input": "./src/publication-input.ts",
-    "./autopilot-finishing-authority": "./src/autopilot-finishing-authority.ts"
+    "./autopilot-finishing-authority": "./src/autopilot-finishing-authority.ts",
+    "./autopilot-execution": "./src/autopilot-execution.ts"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
