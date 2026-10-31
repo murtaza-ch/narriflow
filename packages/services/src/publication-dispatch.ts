@@ -106,8 +106,13 @@ export async function recoverPublicationDispatches(tx:Tx,postId:string,workspace
  if(!post)return [];
  const rows=await tx.executionDispatch.findMany({where:{deploymentEpoch:epoch.epoch,subjectKind:"social_publication",subjectId:post.id,generation:post.generation,inputHash:publicationExecutionInputHash(post),kind:{in:["operation_driver","modal_execution"]},acknowledgedAt:null,deadLetteredAt:null},orderBy:{id:"asc"},take:129,select:{id:true}});
  if(rows.length>128)throw Error("publication_dispatch_repair_bound");
- for(const row of rows)collectExecutionDispatch(tx,row.id);
- return rows.map(row=>row.id);
+ const prior=await tx.publicationClaim.findFirst({where:{deploymentEpoch:epoch.epoch,attempt:{socialPostId:post.id}},orderBy:{createdAt:"desc"},select:{workState:true}});
+ const saved=(prior?.workState as {transitionDispatchIds?:unknown}|null)?.transitionDispatchIds;
+ const ids=rows.map(row=>row.id);
+ if(saved!==undefined){if(!Array.isArray(saved)||saved.length>128||saved.some(id=>typeof id!=="string"||!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(id)))throw Error("publication_dispatch_repair_bound");ids.push(...saved);}
+ const unique=[...new Set(ids)];if(unique.length>128)throw Error("publication_dispatch_repair_bound");
+ for(const id of unique)collectExecutionDispatch(tx,id);
+ return unique;
 }
 export function samePublicationDispatch(a:ExecutionDispatchReference,b:ExecutionDispatchReference){
  return a.dispatchId===b.dispatchId&&a.kind===b.kind&&a.subject.kind===b.subject.kind&&a.subject.id===b.subject.id&&a.deploymentEpoch===b.deploymentEpoch&&a.generation===b.generation&&a.inputHash===b.inputHash;

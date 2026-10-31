@@ -31,7 +31,8 @@
     "test:storage:workerd": "node --experimental-strip-types scripts/run-storage-runtime-gates.ts",
     "test:artifacts:workerd": "node --experimental-strip-types scripts/run-artifact-storage-gates.ts",
     "probe:image-provider:workerd": "node --experimental-strip-types scripts/run-image-provider-memory-probe.ts",
-    "test:development-bindings:workerd": "bun run build:worker && node --experimental-strip-types scripts/run-development-binding-gates.ts"
+    "test:development-bindings:workerd": "bun run build:worker && node --experimental-strip-types scripts/run-development-binding-gates.ts",
+    "test:social-provider:workerd": "node --experimental-strip-types scripts/run-social-provider-http-gate.ts"
   },
   "dependencies": {
     "@ffprobe-installer/ffprobe": "2.1.2",

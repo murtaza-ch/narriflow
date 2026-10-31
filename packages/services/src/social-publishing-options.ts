@@ -1,3 +1,4 @@
+import {fetchSocialProvider} from "./social-provider-http";
 import type { ActorScope } from "./actor-scope";
 import { workspaceService } from "./workspace.service";
 import { accessibleProjectWhere } from "./project-access";
@@ -15,7 +16,7 @@ function unavailable(message: string) {
 	});
 }
 async function tiktokRead(token: string, path: string, body: object = {}) {
-	const response = await fetch(
+	const response = await fetchSocialProvider(
 		`https://open.tiktokapis.com/v2/post/publish/${path}/`,
 		{
 			method: "POST",

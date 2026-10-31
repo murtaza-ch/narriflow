@@ -389,10 +389,6 @@ export {
 	type SocialServiceFailureCode,
 } from "./social.service";
 export {
-	createProductionSocialPublicationRuntime,
-	getSocialPublicationRuntime,
-} from "./social-publication-runtime";
-export {
 	PublicationIntentConflictError,
 	PublicationIntentStateError,
 	createSocialPublicationScheduling,
