@@ -44,7 +44,6 @@ import {
 	type WorkflowAttemptRef,
 } from "@narriflow/services";
 import { processDueAutopilotRules } from "./tasks/autopilot";
-import { processDueGenerationFinishing } from "./tasks/generation-finishing";
 import { processClipDetectionRun } from "./tasks/detect-clips";
 import { processPendingClipPreviews } from "./tasks/clip-preview";
 import { processPendingAutoLayoutAnalyses } from "./tasks/auto-layout-analysis";
@@ -184,11 +183,6 @@ const workspaceBillingPollIntervalMs = parseWorkspaceBillingPollInterval(
 );
 const autopilotPollIntervalMs = Number(
 	process.env.AUTOPILOT_POLL_INTERVAL_MS ?? "30000",
-);
-// Finishing: export the best clips and write copy once a generation completes.
-// It claims durable rows with a lease, so a restarted or second worker resumes.
-const finishingPollIntervalMs = Number(
-	process.env.FINISHING_POLL_INTERVAL_MS ?? "15000",
 );
 const notificationRetryBatchSize = Number(
 	process.env.NOTIFICATION_RETRY_BATCH_SIZE ?? "25",
@@ -597,9 +591,6 @@ createPollLoop("autopilot", autopilotPollIntervalMs, async () => {
 	return processDueAutopilotRules();
 });
 
-createPollLoop("finishing", finishingPollIntervalMs, async () => {
-	return processDueGenerationFinishing();
-});
 
 /** Clip rendering coordinator: admits the run's render groups and keeps the
  * parent lease while replicas render them. It does no media work. */
