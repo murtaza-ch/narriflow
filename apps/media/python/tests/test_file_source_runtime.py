@@ -55,8 +55,9 @@ class FileSourceOperationTests(unittest.IsolatedAsyncioTestCase):
                     output.setnchannels(1);output.setsampwidth(2);output.setframerate(16000);output.writeframes(bytes(40000))
             child=work/'source-child'
             child.write_text('#!'+os.sys.executable+'\nimport json,os,sys,shutil\nfrom pathlib import Path\n'+
+                'command=json.load(sys.stdin)\n'+
                 f'assert Path({str(marker)!r}).read_text()=="started"\n'+
-                'assert "DATABASE_URL" not in os.environ\ncommand=json.load(sys.stdin)\n'+
+                'assert "DATABASE_URL" not in os.environ\n'+
                 f'shutil.copyfile({str(original)!r},command["outputPath"])\n'+
                 'print(json.dumps({"byteLength":Path(command["outputPath"]).stat().st_size,"contentType":'+repr('video/mp4' if silent else 'audio/wav')+'}))\n')
             child.chmod(0o700);starts=[];trace=[];state={}
