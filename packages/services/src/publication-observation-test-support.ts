@@ -10,7 +10,7 @@ export function withObservationTestClock(database:PrismaClient,now:Date):PrismaC
    const first=args[0] as {sql?:string;strings?:readonly string[]}|readonly string[];
    const sql=(Array.isArray(first)?first.join('?'):(first as {sql?:string;strings?:readonly string[]}).sql??(first as {strings?:readonly string[]}).strings?.join('?')??'').replace(/\s+/g,' ').trim();
    const result=await Reflect.apply(target.$queryRaw,target,args);
-   if(sql!=="SELECT clock_timestamp() AT TIME ZONE 'UTC' AS now")return result;
+   if(!["SELECT clock_timestamp() AT TIME ZONE 'UTC' AS now",`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS "now"`].includes(sql))return result;
    if(!Array.isArray(result)||result.length!==1||!(result[0].now instanceof Date))throw Error('Expected actual SQL clock observation');
    return [{...result[0],now:new Date(now)}];
   };

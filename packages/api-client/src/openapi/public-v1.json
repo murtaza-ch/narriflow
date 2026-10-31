@@ -2884,6 +2884,11 @@
                 "type": "string",
                 "format": "uuid"
               },
+              "scheduleRevision": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 2147483646
+              },
               "projectId": {
                 "type": "string",
                 "format": "uuid"
@@ -2942,6 +2947,7 @@
             },
             "required": [
               "proposalId",
+              "scheduleRevision",
               "projectId",
               "clipId",
               "socialAccountId",

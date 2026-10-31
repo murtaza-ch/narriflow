@@ -5,11 +5,11 @@ import { executorProcessFailure } from "../worker-process";
 /** Native preview encoding and waveform extraction. Admission, retries and publication belong to the service. */
 
 import { passthroughColor, validateRenderOutput, type RenderOutputExpectation } from "../render-output-validation";
-import { standardFrameRate } from "@narriflow/validators";
+import { standardFrameRate, type FrameRate } from "@narriflow/validators";
 import type { ClipPreviewPeaks } from "@narriflow/services";
 import { DEFAULT_CAPTION_PRESET } from "@narriflow/validators";
 import type { CaptionPreset } from "@narriflow/validators";
-import { resolveDisplayGeometry, type WorkerProcessModule } from "../worker-process";
+import { resolveDisplayGeometry, type WorkerProcessModule, type VideoClockDecision } from "../worker-process";
 
 
 // CRF 30 at 540p measured ~1-2MB for a 30s talking-head clip in verification
@@ -220,6 +220,8 @@ export function buildClipPreviewArgs(params: {
   windowStartSec: number;
   windowDurationSec: number;
   hasAudio: boolean;
+  /** The frozen preparation output clock; frames repeat/drop without moving audio. */
+  frameRate?: FrameRate;
   maxHeight?: number;
   /** Displayed width / height of an anamorphic source. Its proxy is scaled to
    *  square pixels so the proxy's frame size is its displayed size. */
@@ -244,7 +246,7 @@ export function buildClipPreviewArgs(params: {
     "-i",
     params.sourcePath,
     "-vf",
-    scaleFilter,
+    params.frameRate ? `${scaleFilter},fps=${params.frameRate.numerator}/${params.frameRate.denominator}:start_time=0` : scaleFilter,
     "-map",
     "0:v:0",
     "-c:v",
@@ -589,7 +591,7 @@ export async function persistOptionalClipPreviewPeaks(params: {
 /** Expected facts for the existing proxy command; source display geometry
  * drives its scale, and the waveform path has its own fixed 25 fps canvas. */
 export function clipPreviewOutputExpectation(
-  probe: Parameters<typeof resolveDisplayGeometry>[0] & { hasVideo: boolean; hasAudio: boolean; fps: number },
+  probe: Parameters<typeof resolveDisplayGeometry>[0] & { hasVideo: boolean; hasAudio: boolean; fps: number; videoClock?: VideoClockDecision },
   durationSec: number,
   maxHeight: number = previewMaxHeight(),
 ): RenderOutputExpectation {
@@ -606,7 +608,7 @@ export function clipPreviewOutputExpectation(
   };
   return {
     durationSec, ...dimensions,
-    frameRate: probe.hasVideo ? video?.rFrameRate ?? standardFrameRate(probe.fps) ?? { numerator: 30, denominator: 1 } : { numerator: 25, denominator: 1 },
+    frameRate: probe.hasVideo ? probe.videoClock?.constantRate ?? video?.rFrameRate ?? standardFrameRate(probe.fps) ?? { numerator: 30, denominator: 1 } : { numerator: 25, denominator: 1 },
     sampleAspectRatio: sar,
     audio: probe.hasAudio ? { channels: 1, ...(audio?.sampleRate ? { sampleRate: audio.sampleRate } : {}) } : null,
     color: passthroughColor(video),

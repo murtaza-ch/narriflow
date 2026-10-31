@@ -441,6 +441,10 @@ suite("Fenced notification deliveries", () => {
 		expect(sub.lastDeliveredSeq).toBe(1n);
 		expect(sub.status).toBe("disabled");
 		expect(sub.disabledReason).toBe("endpoint_gone");
+		const notice=await db.webhookDisabledNotificationLedger.findUniqueOrThrow({where:{webhookId_disableRevision:{webhookId:sub.id,disableRevision:1}}});
+		expect(notice.reason).toBe("endpoint_gone");
+		const noticeWake=await db.executionDispatch.findFirstOrThrow({where:{subjectId:`em1.w.${notice.id}`,deadlineKind:null}});
+		expect(f.registered).toContain(noticeWake.id);
 		expect((await f.service.prepareSubscription(sub.id)).kind).toBe("terminal");
 	});
 	test("missing secrets retain the existing 20-failure policy without charging native starts or advancing cursor", async () => {

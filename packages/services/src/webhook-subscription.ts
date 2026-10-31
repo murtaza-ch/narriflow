@@ -186,7 +186,6 @@ export function createWebhookSubscriptions(dependencies: WebhookSubscriptionDepe
           status: "active",
           disabledReason: null,
           disabledAt: null,
-          disabledNotifiedAt: null,
           skipExpiredOnResume: true,
           consecutiveFailures: 0,
           nextAttemptAt: now(),
@@ -217,38 +216,3 @@ export function createWebhookSubscriptions(dependencies: WebhookSubscriptionDepe
 }
 
 export type WebhookSubscriptions = ReturnType<typeof createWebhookSubscriptions>;
-
-
-/** Who to tell when a subscription is disabled. */
-export interface WebhookDisabledNotice {
-  to: string;
-  webhookId: string;
-  urlHost: string;
-  reason: WebhookDisabledReason;
-}
-
-/** `sent: false` means nothing went out and the notice stays due, such as when
- * emails are switched off or the app URL is unknown. A throw means the send
- * failed and is not retried. */
-export type WebhookNoticeResult = { sent: true } | { sent: false; reason: string };
-
-
-/** A durable maintenance wake names one disabled subscription. No table scan,
- * global pause or idle polling is needed; a skipped send returns its next timer. */
-export function createWebhookDisabledNotifier(options:{prisma:PrismaClient;send(notice:WebhookDisabledNotice):Promise<WebhookNoticeResult>;now?:()=>Date}){
- return{async notify(id:string):Promise<{kind:"terminal"|"sent"}|{kind:"sleep";dueAt:Date}>{
-  const at=options.now?.()??new Date();
-  const won=await options.prisma.webhookSubscription.updateMany({where:{id,status:"disabled",disabledNotifiedAt:null},data:{disabledNotifiedAt:at}});
-  if(won.count!==1)return{kind:"terminal"};
-  const row=await options.prisma.webhookSubscription.findUnique({where:{id},select:{workspaceId:true,createdByUserId:true,urlHost:true,disabledReason:true,disabledAt:true,createdBy:{select:{primaryEmail:true,emailVerifiedAt:true}},workspace:{select:{owner:{select:{primaryEmail:true,emailVerifiedAt:true}}}}}});
-  const stillMember=row?.createdByUserId?Boolean(await options.prisma.workspaceMember.findFirst({where:{workspaceId:row.workspaceId,userId:row.createdByUserId},select:{id:true}})):false;
-  const recipient=[stillMember?row?.createdBy:null,row?.workspace.owner].find(user=>user?.primaryEmail&&user.emailVerifiedAt);
-  if(!row||!row.disabledReason||!recipient?.primaryEmail)return{kind:"terminal"};
-  let sent=false;
-  try{sent=(await options.send({to:recipient.primaryEmail,webhookId:id,urlHost:row.urlHost,reason:row.disabledReason as WebhookDisabledReason})).sent;}
-  catch{/* A provider refusal stays due without recording arbitrary error text. */}
-  if(sent)return{kind:"sent"};
-  const restored=await options.prisma.webhookSubscription.updateMany({where:{id,status:"disabled",disabledAt:row.disabledAt,disabledReason:row.disabledReason,disabledNotifiedAt:at},data:{disabledNotifiedAt:null}});
-  return restored.count?{kind:"sleep",dueAt:new Date(at.getTime()+5*60000)}:{kind:"terminal"};
- }};
-}

@@ -1,0 +1,44 @@
+{
+  "scope": "Retire publication, performance, guidance and YouTube receipt scanners while preserving semantic tests",
+  "database": "PostgreSQL 17.11, fresh disposable schemas in the dedicated local gate database",
+  "shared_resource_changes": false,
+  "gates": [
+    {
+      "suite": "existing social PostgreSQL runner, seven files",
+      "passed": 127,
+      "assertions": 727,
+      "log": "/tmp/narriflow-publication-scanner-final-social-pg.log"
+    },
+    {
+      "suite": "publication execution and grant notifications",
+      "passed": 52,
+      "assertions": 336,
+      "log": "/tmp/narriflow-publication-scanner-final-execution-pg2.log"
+    },
+    {
+      "suite": "publication attempt, scheduling, recovery and TikTok webhook deterministic tests",
+      "passed": 86,
+      "assertions": 221,
+      "log": "/tmp/narriflow-publication-scanner-final-fast.log"
+    }
+  ],
+  "static": {
+    "services_typecheck": true,
+    "biome_changed_files": true,
+    "removed_scanner_symbol_search": "zero matches in apps/packages TypeScript"
+  },
+  "behavior": [
+    "Publication claim, account-slot exclusion, takeover, interruption and retry tests use the actual PublicationExecution and ExecutorControl boundaries for known fixture IDs",
+    "Performance capture history and nightly guidance tests use exact po1 dispatches; the test-only clock adapter executes real SQL before changing only the exact clock SELECT observation",
+    "Existing attempt store receipt uniqueness, immutable provider identity, history and manual unknown-outcome recovery coverage remains",
+    "Unstarted posts whose Grant has expired return for fresh approval even before its expiry timer updates Grant status",
+    "Any recorded provider permission, checkpoint or receipt prevents automatic retirement of the existing attempt lineage"
+  ],
+  "expiry_race_red_green": {
+    "red": "/tmp/narriflow-grant-expiry-real-clock-red.log",
+    "red_result": "39 pass, one expected failure: expired unstarted Post was failed instead of returned to draft",
+    "green": "/tmp/narriflow-publication-scanner-final-execution-pg2.log",
+    "clock": "actual PostgreSQL clock; no test clock adapter in the regression"
+  },
+  "provider_requests": "none; storage, provider and mail boundaries injected"
+}

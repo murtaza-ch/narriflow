@@ -10,7 +10,7 @@ import { getProcessingUsage } from "@narriflow/services/processing-usage-runtime
 import { uploadSessionService } from "@narriflow/services/upload-session.service";
 import { billingService } from "@narriflow/services/billing.service";
 import { planFinishingRecoveryPage, planFinishingRestorePage } from "@narriflow/services/generation-finishing-maintenance";
-import { planProjectNotificationRecoveryPage, planProjectNotificationRestorePage,planGrantNotificationRecoveryPage,planGrantNotificationRestorePage, planReviewNotificationRecoveryPage, planReviewNotificationRestorePage } from "@narriflow/services/notification-maintenance";
+import { planProjectNotificationRecoveryPage, planProjectNotificationRestorePage,planGrantNotificationRecoveryPage,planGrantNotificationRestorePage,planWebhookNotificationRecoveryPage,planWebhookNotificationRestorePage, planReviewNotificationRecoveryPage, planReviewNotificationRestorePage } from "@narriflow/services/notification-maintenance";
 import { planPublicationRecoveryPage, planPublicationRestorePage, planPublicationReceiptRecoveryPage, planPublicationReceiptRedispatchPage, planPerformanceCaptureRecoveryPage, planPerformanceCaptureRedispatchPage, planStandingGrantExpiryPage,planStandingGrantAuthorityPage, planStandingGrantRedispatchPage, planPublicationGuidanceRedispatchPage } from "@narriflow/services/publication-maintenance";
 import { recoverExportBundleWakesPage, expireExportBundlesPage, restoreExportBundlesPage } from "@narriflow/services/export-bundle-recovery";
 import { recoverDubbingWakesPage, restoreDubbingPage } from "@narriflow/services/dubbing-recovery";
@@ -32,6 +32,7 @@ const ports = {
     notification_wakes: planProjectNotificationRecoveryPage,
     review_notification_wakes: planReviewNotificationRecoveryPage,
     grant_notification_wakes:planGrantNotificationRecoveryPage,
+    webhook_notification_wakes:planWebhookNotificationRecoveryPage,
   },
   restore: {
     finishing: planFinishingRestorePage,
@@ -43,6 +44,7 @@ const ports = {
     notifications: planProjectNotificationRestorePage,
     review_notifications: planReviewNotificationRestorePage,
     grant_notifications:planGrantNotificationRestorePage,
+    webhook_notifications:planWebhookNotificationRestorePage,
   },
   redispatch: {
     publication_receipts: planPublicationReceiptRedispatchPage,

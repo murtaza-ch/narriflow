@@ -1,3 +1,4 @@
+import {createPublicationTestRuntime} from "./publication-execution-test-support";
 import {withExecutionDispatches} from "./execution-dispatch-runtime";
 import { bindServiceTestEnvironment } from "./runtime-test-support";
 import { createDatabaseTestContext } from "@narriflow/db/testing";
@@ -5,6 +6,7 @@ import { createHmac, randomUUID } from "node:crypto";
 import {
 	afterAll,
 	beforeAll,
+  beforeEach,
 	describe,
 	expect,
 	setDefaultTimeout,
@@ -14,13 +16,10 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@prisma/client";
 import { Pool } from "pg";
 import {
-	claimDueSocialPublicationAttempts,
-	heartbeatSocialPublicationClaim,
 	prismaSocialPublicationAttemptStore,
 	PublicationClaimLostError,
 	ProviderReceiptConflictError,
 	publicationOperationLookupHash,
-	synchronizePreparedSocialPosts,
 } from "./social-publication-attempt";
 import { PublicationIntentConflictError, PublicationIntentStateError } from "./social-publication-scheduling";
 import { createProductionSocialPublicationScheduling, prismaPublicationSchedulingStore } from "./social-publication-scheduling-runtime";
@@ -69,6 +68,9 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 	let pool: Pool;
 	let previousGlobalPrisma: PrismaClient | undefined;
 	const prismaGlobal = createDatabaseTestContext();
+  const knownPosts=new Set<string>();
+  beforeEach(()=>{knownPosts.clear();});
+  const executor=()=>createPublicationTestRuntime(prisma,knownPosts,claimConfig);
 
 	beforeAll(bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		if (!databaseUrl)
@@ -235,6 +237,7 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 			scheduledFor: Date;
 		},
 	) {
+    knownPosts.add(input.id);
 		return {
 			id: input.id,
 			createdByUserId: fixture.user.id,
@@ -262,7 +265,7 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 				durationSec: fixture.variant.durationSec,
 				aspectRatio: "9:16" as const,
 				caption: "Frozen caption",
-				providerSettings: {},
+				providerSettings: {confirmedBy:fixture.user.id},
 				capabilityVersion: "youtube-v1",
 				scheduledFor: input.scheduledFor,
 			},
@@ -290,8 +293,7 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 			immutableRequestHash: candidate.immutableRequestHash,
 			create: async () => candidate,
 		});
-		const claims = await claimDueSocialPublicationAttempts({
-			claimantId: `attention-${label}`,
+		const claims = await executor().claimKnown({
 			now,
 			config: claimConfig,
 		});
@@ -733,13 +735,11 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 		}
 
 		const claimedBatches = await Promise.all([
-			claimDueSocialPublicationAttempts({
-				claimantId: "worker-a",
+			executor().claimKnown({
 				now,
 				config: claimConfig,
 			}),
-			claimDueSocialPublicationAttempts({
-				claimantId: "worker-b",
+			executor().claimKnown({
 				now,
 				config: claimConfig,
 			}),
@@ -747,7 +747,7 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 		const claims = claimedBatches.flat();
 		expect(new Set(claims.map((claim) => claim.attemptId)).size).toBe(2);
 		const activeClaims = await prisma.publicationClaim.findMany({
-			where: { releasedAt: null },
+			where: { releasedAt: null,attempt:{socialPostId:{in:[...knownPosts]}} },
 			select: { accountSlotKey: true },
 		});
 		expect(activeClaims).toHaveLength(2);
@@ -788,8 +788,7 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 				immutableRequestHash: candidate.immutableRequestHash,
 				create: async () => candidate,
 			});
-			const claims = await claimDueSocialPublicationAttempts({
-				claimantId: `verified-${id}`,
+			const claims = await executor().claimKnown({
 				now,
 				config: claimConfig,
 			});
@@ -847,8 +846,7 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 			immutableRequestHash: candidate.immutableRequestHash,
 			create: async () => candidate,
 		});
-		const [owned] = await claimDueSocialPublicationAttempts({
-			claimantId: "receipt-worker",
+		const [owned] = await executor().claimKnown({
 			now,
 			config: claimConfig,
 		});
@@ -951,8 +949,7 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 				create: async () => candidate,
 			});
 		}
-		const claims = await claimDueSocialPublicationAttempts({
-			claimantId: "shared-receipt-worker",
+		const claims = await executor().claimKnown({
 			now,
 			config: claimConfig,
 		});
@@ -1034,8 +1031,8 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 			immutableRequestHash: candidate.immutableRequestHash,
 			create: async () => candidate,
 		});
-		const claims = await claimDueSocialPublicationAttempts({
-			claimantId: "retry-worker",
+    const driver=createPublicationTestRuntime(prisma,knownPosts,{...claimConfig,retry:{maxAttempts:3,maxElapsedMs:1500,baseDelayMs:1000,maxDelayMs:10000,jitterRatio:0,random:()=>0.5}});
+		const claims = await driver.claimKnown({
 			now,
 			config: { ...claimConfig, batchSize: 100 },
 		});
@@ -1046,27 +1043,11 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 		const owned = claims.find((claim) => claim.attemptId === attempt.id);
 		if (!owned) throw new Error("expected claim");
 
-		const result = await prismaSocialPublicationAttemptStore.settleFailed({
-			owned,
-			code: "provider_rate_limited",
-			phase: "preparation",
-			disposition: "safe_retry",
-			retryAfterMs: null,
-			submissionMayHaveStarted: false,
-			now,
-			retry: {
-				maxAttempts: 3,
-				maxElapsedMs: 3_600_000,
-				baseDelayMs: 1_000,
-				maxDelayMs: 10_000,
-				jitterRatio: 0,
-				random: () => 0.5,
-			},
-			processingDeadlineMs: claimConfig.processingDeadlineMs,
-			reconciliationDeadlineMs: claimConfig.reconciliationDeadlineMs,
-		});
-		expect(result.kind).toBe("retry_scheduled");
-		if (result.kind !== "retry_scheduled") throw new Error("expected retry");
+    const response=await driver.commandKnown({owned,now,command:{kind:'failed',failure:{code:'provider_rate_limited',phase:'preparation',disposition:'safe_retry',retryAfterMs:null}}});
+    expect(response).toMatchObject({disposition:'publication_recorded',result:{kind:'settled',outcome:'retry_scheduled'}});
+    if(response.disposition!=='publication_recorded'||response.result.kind!=='settled'||!response.result.nextAttemptId||!response.result.nextActionAt)throw Error('Expected exact retry metadata');
+    const result={nextAttemptId:response.result.nextAttemptId,nextActionAt:new Date(response.result.nextActionAt)};
+
 		// A scheduled retry is not an outcome.
 		expect(await postEvents(f.workspace.id)).toEqual([]);
 		const retry = await prisma.socialPublicationAttempt.findUniqueOrThrow({
@@ -1089,8 +1070,7 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 			(await prisma.socialPost.findUniqueOrThrow({ where: { id } })).status,
 		).toBe("scheduled");
 
-		const secondClaims = await claimDueSocialPublicationAttempts({
-			claimantId: "retry-worker-second-attempt",
+		const secondClaims = await driver.claimKnown({
 			now: result.nextActionAt,
 			config: { ...claimConfig, batchSize: 100 },
 		});
@@ -1098,27 +1078,8 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 			(claim) => claim.attemptId === result.nextAttemptId,
 		);
 		if (!secondOwned) throw new Error("expected linked retry claim");
-		await expect(
-			prismaSocialPublicationAttemptStore.settleFailed({
-				owned: secondOwned,
-				code: "provider_rate_limited_again",
-				phase: "preparation",
-				disposition: "safe_retry",
-				retryAfterMs: 10_000,
-				submissionMayHaveStarted: false,
-				now: result.nextActionAt,
-				retry: {
-					maxAttempts: 3,
-					maxElapsedMs: 1_500,
-					baseDelayMs: 1_000,
-					maxDelayMs: 10_000,
-					jitterRatio: 0,
-					random: () => 0.5,
-				},
-				processingDeadlineMs: claimConfig.processingDeadlineMs,
-				reconciliationDeadlineMs: claimConfig.reconciliationDeadlineMs,
-			}),
-		).resolves.toMatchObject({ kind: "failed" });
+    await expect(driver.commandKnown({owned:secondOwned,now:result.nextActionAt,command:{kind:'failed',failure:{code:'provider_rate_limited_again',phase:'preparation',disposition:'safe_retry',retryAfterMs:10000}}})).resolves.toMatchObject({disposition:'publication_recorded',result:{outcome:'failed'}});
+
 		expect(
 			await prisma.socialPublicationAttempt.count({
 				where: { socialPostId: id },
@@ -1129,7 +1090,7 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 
 	test("heartbeat extension fences takeover until expiry and stale owners stay fenced", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const f = await fixture();
-		const now = new Date("2026-08-28T10:00:00.000Z");
+		const now = new Date();
 		const id = randomUUID();
 		const candidate = frozenCandidate(f, {
 			id,
@@ -1144,8 +1105,7 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 			immutableRequestHash: candidate.immutableRequestHash,
 			create: async () => candidate,
 		});
-		const firstClaims = await claimDueSocialPublicationAttempts({
-			claimantId: "heartbeat-worker-a",
+		const firstClaims = await executor().claimKnown({
 			now,
 			config: claimConfig,
 		});
@@ -1156,21 +1116,20 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 		if (!first) throw new Error("expected first claim");
 		const heartbeatAt = new Date(now.getTime() + 30_000);
 		await prismaSocialPublicationAttemptStore.loadOwned(first, now);
-		await heartbeatSocialPublicationClaim({
+		await executor().renewKnown({
 			owned: first,
 			now: heartbeatAt,
 			leaseMs: 60_000,
 		});
 
-		const early = await claimDueSocialPublicationAttempts({
-			claimantId: "heartbeat-worker-b",
+		const early = await executor().claimKnown({
 			now: new Date(now.getTime() + 61_000),
 			config: claimConfig,
 		});
 		expect(early.some((claim) => claim.attemptId === attempt.id)).toBe(false);
-		const takeoverAt = new Date(now.getTime() + 91_000);
-		const replacementClaims = await claimDueSocialPublicationAttempts({
-			claimantId: "heartbeat-worker-b",
+		await executor().claimKnown({now:new Date(now.getTime()+91_000),config:claimConfig});
+    const takeoverAt = new Date(now.getTime() + 96_000);
+		const replacementClaims = await executor().claimKnown({
 			now: takeoverAt,
 			config: claimConfig,
 		});
@@ -1180,24 +1139,24 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 		if (!replacement) throw new Error("expected replacement claim");
 		expect(replacement.claimId).not.toBe(first.claimId);
 		await expect(
-			heartbeatSocialPublicationClaim({
+			executor().renewKnown({
 				owned: first,
 				now: takeoverAt,
 				leaseMs: 60_000,
 			}),
-		).rejects.toBeInstanceOf(PublicationClaimLostError);
+		).resolves.toMatchObject({disposition:"superseded"});
 		await expect(
-			heartbeatSocialPublicationClaim({
+			executor().renewKnown({
 				owned: replacement,
 				now: takeoverAt,
 				leaseMs: 60_000,
 			}),
-		).resolves.toBeUndefined();
+		).resolves.toMatchObject({disposition:"renewed"});
 	})));
 
-	test("an attempt interrupted before submission is claimed again on the next poll", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
+	test("an interrupted startup resumes its exact bounded continuation without a new provider identity", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const f = await fixture();
-		const now = new Date("2026-08-28T10:00:00.000Z");
+		const now = new Date();
 		const id = randomUUID();
 		const candidate = frozenCandidate(f, {
 			id,
@@ -1216,8 +1175,7 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 			prisma.socialPublicationAttempt.findFirstOrThrow({
 				where: { socialPostId: id },
 			});
-		const firstClaims = await claimDueSocialPublicationAttempts({
-			claimantId: "interrupted-worker-a",
+		const firstClaims = await executor().claimKnown({
 			now,
 			config: claimConfig,
 		});
@@ -1226,16 +1184,10 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 		if (!first) throw new Error("expected first claim");
 
 		const releasedAt = new Date(now.getTime() + 1_000);
-		await expect(
-			prismaSocialPublicationAttemptStore.releaseInterrupted({
-				owned: first,
-				now: releasedAt,
-			}),
-		).resolves.toMatchObject({ kind: "interrupted" });
+    await expect(executor().commandKnown({owned:first,now:releasedAt,command:{kind:'interrupted'}})).resolves.toMatchObject({disposition:'publication_recorded',result:{outcome:'interrupted'}});
 
-		const resumed = await claimDueSocialPublicationAttempts({
-			claimantId: "interrupted-worker-b",
-			now: new Date(now.getTime() + 2_000),
+		const resumed = await executor().claimKnown({
+			now: new Date(now.getTime() + 6_000),
 			config: claimConfig,
 		});
 		const attempt = await attemptFor();
@@ -1273,8 +1225,7 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 				postId: id,
 				now,
 			}),
-			claimDueSocialPublicationAttempts({
-				claimantId: "cancel-race-worker",
+			executor().claimKnown({
 				now,
 				config: claimConfig,
 			}),
@@ -1295,150 +1246,17 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 		}
 	})));
 
-	test("keyset scanning reaches an unrelated account beyond several blocked pages", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
-		const f = await fixture();
-		const now = new Date("2026-08-28T10:00:00.000Z");
-		const base = new Date("2020-01-01T00:00:00.000Z");
-		const blocked = Array.from({ length: 45 }, (_, index) => ({
-			postId: randomUUID(),
-			frozenId: randomUUID(),
-			attemptId: randomUUID(),
-			index,
-		}));
-		const unrelated = {
-			postId: randomUUID(),
-			frozenId: randomUUID(),
-			attemptId: randomUUID(),
-		};
-		await prisma.$transaction(async (tx) => {
-			await tx.socialPost.createMany({
-				data: [
-					...blocked.map((row, index) => ({
-						id: row.postId,
-						projectId: f.project.id,
-						workspaceId: f.workspace.id,
-						createdByUserId: f.user.id,
-						clipId: f.clip.id,
-						socialAccountId: f.firstAccount.id,
-						platform: "youtube_shorts" as const,
-						status: "publishing" as const,
-						clientIdempotencyKey: randomUUID(),
-						immutableRequestHash: `fairness-blocked-${index}`,
-						caption: `Fairness blocked ${index}`,
-						aspectRatio: "ratio_9_16" as const,
-						scheduledFor: base,
-					})),
-					{
-						id: unrelated.postId,
-						projectId: f.project.id,
-						workspaceId: f.workspace.id,
-						createdByUserId: f.user.id,
-						clipId: f.clip.id,
-						socialAccountId: f.secondAccount.id,
-						platform: "youtube_shorts" as const,
-						status: "publishing" as const,
-						clientIdempotencyKey: randomUUID(),
-						immutableRequestHash: "fairness-unrelated",
-						caption: "Fairness unrelated",
-						aspectRatio: "ratio_9_16" as const,
-						scheduledFor: base,
-					},
-				],
-			});
-			await tx.frozenPublicationState.createMany({
-				data: [
-					...blocked.map((row) => ({
-						id: row.frozenId,
-						socialPostId: row.postId,
-						clipExportId: f.clipExport.id,
-						clipExportVariantId: f.variant.id,
-						socialAccountId: f.firstAccount.id,
-						platform: "youtube_shorts" as const,
-						editorRevision: f.clip.editorRevision,
-						exportFingerprint: f.clipExport.fingerprint,
-						storageKey: f.variant.storageKey,
-						sizeBytes: f.variant.sizeBytes,
-						durationSec: f.variant.durationSec,
-						aspectRatio: "ratio_9_16" as const,
-						caption: "Frozen fairness fixture",
-						providerSettings: {},
-						capabilityVersion: "youtube-v1",
-						scheduledFor: base,
-						mediaReadyAt: base,
-					})),
-					{
-						id: unrelated.frozenId,
-						socialPostId: unrelated.postId,
-						clipExportId: f.clipExport.id,
-						clipExportVariantId: f.variant.id,
-						socialAccountId: f.secondAccount.id,
-						platform: "youtube_shorts" as const,
-						editorRevision: f.clip.editorRevision,
-						exportFingerprint: f.clipExport.fingerprint,
-						storageKey: f.variant.storageKey,
-						sizeBytes: f.variant.sizeBytes,
-						durationSec: f.variant.durationSec,
-						aspectRatio: "ratio_9_16" as const,
-						caption: "Frozen unrelated fixture",
-						providerSettings: {},
-						capabilityVersion: "youtube-v1",
-						scheduledFor: base,
-						mediaReadyAt: base,
-					},
-				],
-			});
-			await tx.socialPublicationAttempt.createMany({
-				data: [
-					...blocked.map((row, index) => ({
-						id: row.attemptId,
-						socialPostId: row.postId,
-						frozenStateId: row.frozenId,
-						attemptNumber: 1,
-						idempotencyKey: `fairness-blocked-${row.attemptId}`,
-						phase: "claimed" as const,
-						nextActionAt: new Date(base.getTime() + index),
-						processingDeadline: new Date(now.getTime() + 3_600_000),
-						reconciliationDeadline: new Date(now.getTime() + 7_200_000),
-					})),
-					{
-						id: unrelated.attemptId,
-						socialPostId: unrelated.postId,
-						frozenStateId: unrelated.frozenId,
-						attemptNumber: 1,
-						idempotencyKey: `fairness-unrelated-${unrelated.attemptId}`,
-						phase: "claimed" as const,
-						nextActionAt: new Date(base.getTime() + blocked.length + 1),
-						processingDeadline: new Date(now.getTime() + 3_600_000),
-						reconciliationDeadline: new Date(now.getTime() + 7_200_000),
-					},
-				],
-			});
-			const claimId = randomUUID();
-			await tx.publicationClaim.create({
-				data: {
-					id: claimId,
-					attemptId: blocked[0]!.attemptId,
-					claimantId: "fairness-blocker",
-					accountSlotKey: f.firstAccount.id,
-					heartbeatAt: now,
-					leaseExpiresAt: new Date(now.getTime() + 60_000),
-				},
-			});
-			await tx.socialPublicationAttempt.update({
-				where: { id: blocked[0]!.attemptId },
-				data: { currentClaimId: claimId },
-			});
-		});
-
-		const claims = await claimDueSocialPublicationAttempts({
-			claimantId: "fairness-worker",
-			now,
-			config: { ...claimConfig, batchSize: 2 },
-		});
-		expect(
-			claims.some((claim) => claim.attemptId === unrelated.attemptId),
-		).toBe(true);
-	})));
+  test('an unrelated exact target progresses while another account holds a native owner',bindServiceTestEnvironment(prismaGlobal.bind(async()=>{
+    const f=await fixture(),now=new Date(),posts=[];
+    for(const [index,accountId] of [f.firstAccount.id,f.firstAccount.id,f.secondAccount.id].entries()){
+      const id=randomUUID(),candidate=frozenCandidate(f,{id,key:randomUUID(),hash:`account-scope-${id}`,accountId,scheduledFor:new Date(now.getTime()-3000+index*1000)});
+      await prismaPublicationSchedulingStore.open({workspaceId:f.workspace.id,clientIdempotencyKey:candidate.clientIdempotencyKey,immutableRequestHash:candidate.immutableRequestHash,create:async()=>candidate});posts.push(id);
+    }
+    const first=await executor().claimKnown({now,config:{...claimConfig,batchSize:1}});expect(first).toHaveLength(1);
+    const other=createPublicationTestRuntime(prisma,new Set([posts[1]!,posts[2]!]),claimConfig),claims=await other.claimKnown({now});
+    expect(claims).toHaveLength(1);expect((await prisma.socialPublicationAttempt.findUniqueOrThrow({where:{id:claims[0]!.attemptId}})).socialPostId).toBe(posts[2]);
+    expect(await prisma.publicationClaim.count({where:{accountSlotKey:f.firstAccount.id,releasedAt:null}})).toBe(1);
+  })));
 
 	test("recovery authorizes the actual member and conceals inactive Projects", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const f = await fixture();
@@ -1522,7 +1340,7 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 			expect(after).toMatchObject({ phase: "reconciling", providerCallCount: window === "active" ? 3 : 0,
 				reconciliationDeadline: window === "active" ? deadline : new Date(target.now.getTime() + 7_200_000),
 				processingDeadline: before.processingDeadline, idempotencyKey: before.idempotencyKey, operationLookupHash: before.operationLookupHash });
-			const claims = await claimDueSocialPublicationAttempts({ claimantId: "manual-window", now: target.now, config: claimConfig });
+			const claims = await executor().claimKnown({ now: target.now, config: claimConfig });
 			expect(claims.some((claim) => claim.attemptId === target.attemptId)).toBe(true);
 			const claim = claims.find((claim) => claim.attemptId === target.attemptId)!;
 			expect((await prismaSocialPublicationAttemptStore.loadOwned(claim, target.now)).attempt.reconciliationOnly).toBe(true);
@@ -1643,7 +1461,7 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 		"tiktok_inbox",
 	] as const)("verified duplicate and out-of-order TikTok %s events settle delivery and retain publication evidence", bindServiceTestEnvironment(prismaGlobal.bind(async (deliveryMode) => {
 		const f = await fixture();
-		const now = new Date("2026-08-28T10:00:00.000Z");
+		const now = new Date();
 		const publishId = `publish-${randomUUID()}`;
 		const account = await prisma.socialAccount.create({
 			data: {
@@ -1681,8 +1499,7 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 			immutableRequestHash: candidate.immutableRequestHash,
 			create: async () => candidate,
 		});
-		const claims = await claimDueSocialPublicationAttempts({
-			claimantId: "tiktok-webhook-worker",
+		const claims = await executor().claimKnown({
 			now,
 			config: claimConfig,
 		});
@@ -1821,7 +1638,7 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 
 	test("a redelivered TikTok failure, or one after the post already failed, finishes it failed once", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const f = await fixture();
-		const now = new Date("2026-08-28T10:00:00.000Z");
+		const now = new Date();
 		const publishId = `publish-${randomUUID()}`;
 		const account = await prisma.socialAccount.create({
 			data: {
@@ -1853,7 +1670,7 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 			immutableRequestHash: candidate.immutableRequestHash,
 			create: async () => candidate,
 		});
-		const claims = await claimDueSocialPublicationAttempts({ claimantId: "tiktok-failed-worker", now, config: claimConfig });
+		const claims = await executor().claimKnown({ now, config: claimConfig });
 		const attempt = await prisma.socialPublicationAttempt.findFirstOrThrow({ where: { socialPostId } });
 		const claim = claims.find((row) => row.attemptId === attempt.id);
 		if (!claim) throw new Error("expected TikTok claim");
@@ -1913,7 +1730,7 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 			immutableRequestHash: candidate.immutableRequestHash,
 			create: async () => candidate,
 		});
-		const claims = await claimDueSocialPublicationAttempts({ claimantId: "unknown-worker", now, config: claimConfig });
+		const claims = await executor().claimKnown({ now, config: claimConfig });
 		const attempt = await prisma.socialPublicationAttempt.findFirstOrThrow({ where: { socialPostId: id } });
 		const owned = claims.find((claim) => claim.attemptId === attempt.id);
 		if (!owned) throw new Error("expected claim");
@@ -1941,8 +1758,8 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 			create: async () => candidate,
 		});
 		await prisma.socialAccount.update({ where: { id: f.secondAccount.id }, data: { status: "revoked" } });
-		await claimDueSocialPublicationAttempts({ claimantId: "revoked-worker", now, config: claimConfig });
-		await claimDueSocialPublicationAttempts({ claimantId: "revoked-worker-again", now, config: claimConfig });
+		await executor().claimKnown({ now, config: claimConfig });
+		await executor().claimKnown({ now, config: claimConfig });
 		expect(await prisma.socialPost.findUniqueOrThrow({ where: { id } })).toMatchObject({ status: "failed", errorCode: "social_account_reconnect_required" });
 		expect(await postEvents(f.workspace.id)).toEqual([finishedPost(f, id, "youtube_shorts", "failed")]);
 	})));
@@ -1958,7 +1775,7 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 			immutableRequestHash: candidate.immutableRequestHash,
 			create: async () => candidate,
 		});
-		const firstClaims = await claimDueSocialPublicationAttempts({ claimantId: "again-worker", now, config: claimConfig });
+		const firstClaims = await executor().claimKnown({ now, config: claimConfig });
 		const attempt = await prisma.socialPublicationAttempt.findFirstOrThrow({ where: { socialPostId: id } });
 		const first = firstClaims.find((claim) => claim.attemptId === attempt.id);
 		if (!first) throw new Error("expected claim");
@@ -1966,7 +1783,7 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 		await prisma.socialPublicationAttempt.update({ where: { id: first.attemptId }, data: { operationLookupHash: publicationOperationLookupHash(`again:${id}`) } });
 		await socialPublicationRecovery.recheck({ workspaceId: f.workspace.id, projectId: f.project.id, actorUserId: f.user.id, socialPostId: id, reason: "Check the provider again", now });
 		const later = new Date(now.getTime() + 60_000);
-		const secondClaims = await claimDueSocialPublicationAttempts({ claimantId: "again-worker-2", now: later, config: claimConfig });
+		const secondClaims = await executor().claimKnown({ now: later, config: claimConfig });
 		const second = secondClaims.find((claim) => claim.attemptId === attempt.id);
 		if (!second) throw new Error("expected the recheck to be claimed");
 		await prismaSocialPublicationAttemptStore.settleUnknown({ owned: second, code: "publication_outcome_unknown", operation: null, sealedState: null, canReconcile: false, nextActionAt: null, now: later });
@@ -1987,10 +1804,10 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 			immutableRequestHash: candidate.immutableRequestHash,
 			create: async () => ({ ...candidate, status: "preparing_video" as never, frozen: { ...candidate.frozen, storageKey: null } }),
 		});
-		await prisma.clipExportVariant.update({ where: { id: f.variant.id }, data: { status: "failed", errorCode: "render_failed" } });
-		await synchronizePreparedSocialPosts(now);
-		await synchronizePreparedSocialPosts(now);
-		expect(await prisma.socialPost.findUniqueOrThrow({ where: { id } })).toMatchObject({ status: "failed", errorCode: "render_failed" });
+		await prisma.clipExportVariant.update({ where: { id: f.variant.id }, data: { status: "failed", errorCode: "social_export_failed" } });
+		await executor().observeKnown(now);
+		await executor().observeKnown(now);
+		expect(await prisma.socialPost.findUniqueOrThrow({ where: { id } })).toMatchObject({ status: "failed", errorCode: "social_export_failed" });
 		expect(await postEvents(f.workspace.id)).toEqual([finishedPost(f, id, "youtube_shorts", "failed")]);
 	})));
 });

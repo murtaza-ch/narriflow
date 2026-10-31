@@ -1,0 +1,31 @@
+{
+  "date": "2026-11-01",
+  "removed": [
+    "Unused Media Cleanup global worker, memory/Prisma global claim stores, batch scanning and worker heartbeat/config/diagnostic model"
+  ],
+  "retained": [
+    "Exact admission and retired media planning",
+    "Fenced user-requested durable-copy adoption, compensation and its active-only finite hold renewal",
+    "Current exact-ID cleanup control and bounded producer drain; live reference/grant/MPU holds"
+  ],
+  "verification": {
+    "runtime": "Bun1.3.6",
+    "fastTests": 22,
+    "fastAssertions": 68,
+    "postgresTests": 20,
+    "postgresAssertions": 143,
+    "failures": 0,
+    "servicesTypecheck": "passed"
+  },
+  "semanticMap": {
+    "globalBatchCancellation": "No current batch preclaims. Known-row drain registers independent exact obligations; each DELETE first confirms its watchdog.",
+    "claimHeartbeat": "Current control bounds HTTP to30s within a confirmed finite lease; exact watchdog rechecks authority and no idle renewal timer exists.",
+    "unknownDeleteNotFoundAndProviderErrors": "Current storage adapter requires actual DELETE acknowledgement. Lost response/unknown or truncated MPU inventory retain the intent; committed replay emits no HTTP.",
+    "backoffLostOwnerAndHolds": "Current PostgreSQL control tests cover retry registration ACK loss, retained references/grants, concurrent owner, ambiguous tentative destination and adoption due replacement."
+  },
+  "logHashes": {
+    "cleanup-retirement-fast.log": "112d11bac2d59403a9eb3cf651de9ac4b0ec387bdee55894dc6740ce55e0e18e",
+    "cleanup-retirement-db.log": "7f889f57b3d2059baf02a99a581b2593d5fbc031b94d13a91c9c56c97e16e259",
+    "cleanup-retirement-typecheck.log": "38ac890c60e7f38d59ddfb410325cdfb5fca83c9411765c5481754e01c021630"
+  }
+}

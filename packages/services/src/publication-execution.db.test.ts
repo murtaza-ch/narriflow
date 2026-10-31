@@ -969,6 +969,19 @@ suite("Revision-bound publication execution", () => {
   const grant=await db.standingGrant.create({data:{workspaceId:f.post.workspaceId!,kind:"publish",socialAccountId:f.post.socialAccountId,dailyCap:10,weeklyCap:20,expiresAt,ruleFingerprint:"fixture",grantedByUserId:f.post.createdByUserId}});
   await db.socialPost.update({where:{id:f.post.id},data:{standingGrantId:grant.id,standingGrantRevision:1}});return grant;
  }
+ test("a grant past the database clock returns an unstarted post before its expiry timer runs",async()=>{
+  const f=await active(),grant=await publicationGrant(f,new Date(Date.now()-60000));
+  expect((await db.standingGrant.findUniqueOrThrow({where:{id:grant.id}})).status).toBe("active");
+  const id=await db.$transaction(tx=>appendPublicationDispatch(tx,f.post.id));
+  expect((await f.domain.prepareExecution((await readExecutionDispatch(db,id))!.reference)).kind).toBe("terminal");
+  const post=await db.socialPost.findUniqueOrThrow({where:{id:f.post.id},include:{frozenState:true,retiredPublicationStates:true}});
+  expect(post).toMatchObject({status:"draft",standingGrantId:null,scheduledFor:null,errorCode:null,frozenState:null});
+  expect(post.retiredPublicationStates.map(row=>row.id)).toEqual([f.post.frozenState!.id]);
+  expect(await db.socialPublicationAttempt.count({where:{socialPostId:f.post.id}})).toBe(0);
+  expect(await db.executionAttempt.count({where:{dispatch:{subjectKind:"social_publication",subjectId:f.post.id}}})).toBe(0);
+  expect(await db.standingGrantEvent.count({where:{grantId:grant.id,kind:"returned"}})).toBe(1);
+  expect((await db.standingGrant.findUniqueOrThrow({where:{id:grant.id}})).status).toBe("active");
+ });
  test("pause and revoke at one grant revision have distinct pages; expiry first delivery remains valid after a long sleep",async()=>{
   const f=await fixture(),grant=await publicationGrant(f,new Date(Date.now()-1000));
   const expiredId=await db.$transaction(tx=>appendPublicationGrantExpiry(tx,grant));

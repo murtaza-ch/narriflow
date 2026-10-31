@@ -68,11 +68,12 @@ export async function publicationHasProviderPermission(tx:Tx,snapshotId:string){
 /** Returning a startup to the inbox is safe only before any recorded provider
  * permission, checkpoint or receipt. Charged native history remains attached to
  * the retired immutable snapshot; a new approval creates a distinct attempt. */
-export async function returnPublicationGrantPost(tx:Tx,post:PublicationSchedule,grant:{id:string;revision:number;status:string}){
- if(!post.frozenState||(!["revoked","expired"].includes(grant.status)&&grant.revision===post.standingGrantRevision)||!["scheduled","preparing_video","publishing","processing","reconciling"].includes(post.status))return false;
+export async function returnPublicationGrantPost(tx:Tx,post:PublicationSchedule,grant:{id:string;revision:number;status:string;expiresAt:Date}){
+ const at=await now(tx);
+ if(!post.frozenState||(!["revoked","expired"].includes(grant.status)&&grant.revision===post.standingGrantRevision&&grant.expiresAt>at)||!["scheduled","preparing_video","publishing","processing","reconciling"].includes(post.status))return false;
  const snapshot=post.frozenState;
  if(await publicationHasProviderPermission(tx,snapshot.id))return false;
- const at=await now(tx),attempts=await tx.socialPublicationAttempt.findMany({where:{frozenStateId:snapshot.id},orderBy:{id:"asc"},select:{id:true}});
+ const attempts=await tx.socialPublicationAttempt.findMany({where:{frozenStateId:snapshot.id},orderBy:{id:"asc"},select:{id:true}});
  for(const attempt of attempts)await tx.$queryRaw`SELECT "id" FROM "SocialPublicationAttempt" WHERE "id"=${attempt.id}::uuid FOR UPDATE`;
  const ids=attempts.map(row=>row.id),claims=await tx.publicationClaim.findMany({where:{attemptId:{in:ids}},orderBy:{id:"asc"},select:{id:true}});
  await tx.socialPublicationAttempt.updateMany({where:{id:{in:ids},phase:{notIn:["failed","succeeded","needs_attention"]}},data:{phase:"failed",outcome:"failed",failureCode:"publication_grant_changed",failureDisposition:"permanent",terminalAt:at,currentClaimId:null}});

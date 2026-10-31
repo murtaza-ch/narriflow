@@ -9,15 +9,13 @@ import {
 } from "./completion-callback";
 import {
 	createWebhookSubscriptions,
-	createWebhookDisabledNotifier,
-	type WebhookDisabledNotice,
 } from "./webhook-subscription";
 const url = process.env.SERVERLESS_TEST_DATABASE_URL;
 const suite =
 	process.env.ALLOW_SERVERLESS_DB_TESTS === "1" && url
 		? describe
 		: describe.skip;
-suite("Webhook management and targeted disabled notices", () => {
+suite("Webhook management", () => {
 	let db: PrismaClient;
 	const cipher = createCallbackCipher("webhook-management-gate");
 	beforeAll(() => {
@@ -151,64 +149,5 @@ suite("Webhook management and targeted disabled notices", () => {
 				})
 			).lastDeliveredSeq,
 		).toBe(2n);
-	});
-	test("a targeted disabled notice uses verified membership, retries a skipped provider and never scans unrelated subscriptions", async () => {
-		const f = await fixture();
-		const creator = await db.user.create({
-			data: {
-				clerkId: `creator:${crypto.randomUUID()}`,
-				primaryEmail: "creator@example.test",
-				emailVerifiedAt: new Date(),
-			},
-		});
-		await db.workspaceMember.create({
-			data: { workspaceId: f.workspace.id, userId: creator.id, role: "admin" },
-		});
-		const sub = await db.webhookSubscription.create({
-			data: {
-				workspaceId: f.workspace.id,
-				createdByUserId: creator.id,
-				...prepareCallbackRegistration(
-					new URL("https://receiver.example/disabled"),
-					cipher,
-				),
-				types: ["operation.finished"],
-				lastDeliveredSeq: 0n,
-				status: "disabled",
-				disabledReason: "delivery_attempts_exhausted",
-				disabledAt: new Date(),
-			},
-		});
-		const calls: WebhookDisabledNotice[] = [];
-		let skip = true;
-		const notifier = createWebhookDisabledNotifier({
-			prisma: db,
-			send: async (n) => {
-				calls.push(n);
-				return skip
-					? { sent: false, reason: "configured_off" }
-					: { sent: true };
-			},
-		});
-		expect((await notifier.notify(sub.id)).kind).toBe("sleep");
-		expect(calls[0]?.to).toBe("creator@example.test");
-		expect(
-			(
-				await db.webhookSubscription.findUniqueOrThrow({
-					where: { id: sub.id },
-				})
-			).disabledNotifiedAt,
-		).toBeNull();
-		await db.workspaceMember.delete({
-			where: {
-				workspaceId_userId: { workspaceId: f.workspace.id, userId: creator.id },
-			},
-		});
-		skip = false;
-		expect((await notifier.notify(sub.id)).kind).toBe("sent");
-		expect(calls[1]?.to).toBe(f.owner.primaryEmail!);
-		expect(calls[1]?.reason).toBe("delivery_attempts_exhausted");
-		expect((await notifier.notify(sub.id)).kind).toBe("terminal");
-		expect(calls).toHaveLength(2);
 	});
 });

@@ -173,30 +173,16 @@ export {
 	adoptDurableMediaCopies,
 	admitMediaCleanupObligations,
 	admitRetiredClipMediaCleanup,
-	mediaCleanupWorker,
 	planRetiredClipMediaCleanup,
 	runDurableMediaCopies,
-	createMediaCleanupWorker,
-	createInMemoryMediaCleanupStore,
-	defaultMediaCleanupConfig,
-	mediaCleanupConfigFromEnv,
-	validateMediaCleanupConfig,
-	prismaMediaCleanupStore,
-	MediaCleanupClaimLost,
 	DurableMediaCopyClaimLost,
-	type ClaimedMediaCleanup,
 	type DurableMediaCopyAdoptionStore,
 	type DurableMediaCopyPlan,
 	type MediaCleanupAdmissionStore,
 	type MediaCleanupAdmissionOptions,
 	type MediaCleanupClass,
-	type MediaCleanupConfig,
-	type MediaCleanupDiagnostics,
-	type MediaCleanupHeartbeatScheduler,
 	type MediaCleanupObligationInput,
 	type MediaCleanupOrigin,
-	type MediaCleanupStorageOutcome,
-	type MediaCleanupStore,
 	type RetiredClipMedia,
 	type RetiredClipMediaCleanupStore,
 } from "./media-cleanup";
@@ -607,8 +593,8 @@ export { appendWorkspaceEvent, deleteExpiredWorkspaceEvents, listWorkspaceEvents
 export { purgeExpiredWorkspaceEvents } from "./workspace-event-runtime";
 export { assertCompletionCallbackUrl, buildCallbackPayload, CALLBACK_RETRY_DELAYS_MS, callbackEventId, CallbackSecretRequiredError, generateCallbackSigningSecret, signCallback, type CallbackPayload } from "./completion-callback";
 export { callbackSigningSecrets } from "./completion-callback-runtime";
-export { createWebhookDisabledNotifier, requireWebhookTypeScopes, webhookView, type WebhookCredential, type WebhookDisabledNotice, type WebhookNoticeResult } from "./webhook-subscription";
-export { webhookSubscriptions, notifyDisabledWebhook } from "./webhook-subscription-runtime";
+export { requireWebhookTypeScopes, webhookView, type WebhookCredential } from "./webhook-subscription";
+export { webhookSubscriptions } from "./webhook-subscription-runtime";
 export { StandingGrantError, normalizeReviewerEmails } from "./standing-grant";
 export { acceptProposalUnderGrant, reviewerOptOut, sendReviewRoundUnderGrant, standingGrants } from "./standing-grant-runtime";
 
