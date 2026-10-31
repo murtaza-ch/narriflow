@@ -4,10 +4,14 @@ import { RenderFixtureLifecycle } from "./render-group-test-fixture";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, setDefaultTimeout, spyOn, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
-import { type Prisma, PrismaClient } from "@prisma/client";
+import { PrismaClient } from "@prisma/client";
 import { Pool } from "pg";
 import { freezeGenerationFinishing } from "./generation-finishing";
 import { IngestJobLifecycle } from "./ingest-job-lifecycle";
+import { ensureTranscriptionTestSource, beginTranscriptionTestExecution } from "./transcription-execution-test-support";
+import { prepareSelectionTestExecution } from "./selection-execution-test-support";
+import { ingestExecutionInputHash } from "./ingest-source-execution";
+import { appendExecutionDispatch } from "./execution-dispatch";
 import { queueFinishedGenerations } from "./operation-finished";
 import { encodeOperationId } from "./operation-status";
 import { ProcessingUsage } from "./processing-usage";
@@ -60,7 +64,7 @@ dbDescribe("Finishing hooks on the generation lifecycle", () => {
     const suffix = randomUUID();
     const user = await prisma.user.create({ data: { clerkId: `finishing-transition:${suffix}` } });
     const workspace = await prisma.workspace.create({ data: { name: "Finishing", ownerUserId: user.id, pricingTier: "business", members: { create: { userId: user.id, role: "owner" } } } });
-    const project = await prisma.project.create({ data: { title: "Finishing", sourceMediaUrl: "r2://test/source.mp4", workspaceId: workspace.id, createdByUserId: user.id, ingestStatus: "ready", sourceDurationSeconds: 60 } });
+    const project = await prisma.project.create({ data: { title: "Finishing", sourceMediaUrl: "r2://test/source.mp4", workspaceId: workspace.id, createdByUserId: user.id, ingestStatus: "ready", sourceDurationSeconds: 60, sourceProbe: { durationSec: 60, video: null, audio: null } } });
     return { user, workspace, project };
   }
   type Fixture = Awaited<ReturnType<typeof fixture>>;
@@ -72,13 +76,17 @@ dbDescribe("Finishing hooks on the generation lifecycle", () => {
   const freeze = (f: Fixture, originRunId: string, settings: Parameters<typeof freezeGenerationFinishing>[1]["settings"] = FINISHING) =>
     prisma.$transaction((tx) => freezeGenerationFinishing(tx, { workspaceId: f.workspace.id, projectId: f.project.id, originRunId, actorUserId: f.user.id, settings, defaultAspectRatio: "9:16" }));
 
-  async function clip(projectId: string, workflowRunId: string, index: number) {
-    return prisma.clip.create({ data: { projectId, workflowRunId, index, startSec: 0, endSec: 10, hookText: `Clip ${index}`, reasoning: "Fixture", category: "hook",
-      transcriptSlice: [], viralityScore: 50, hookStrengthScore: 50, emotionalIntensityScore: 50, pacingScore: 50, durationOptimalityScore: 50,
-      tiktokScore: 50, youtubeScore: 50, instagramScore: 50, llmProvider: "test", llmModel: "test" } });
+  const admitStt = async (lifecycle: RenderFixtureLifecycle, projectId: string) => {
+    await ensureTranscriptionTestSource(prisma, projectId);
+    return lifecycle.admitTranscript({ projectId, idempotencyKey: `stt:${randomUUID()}`, languageCode: "en", transcriptProvider: "elevenlabs", transcriptProviderModel: "test", contentPack: PACK as never });
+  };
+  async function targetedHandoff(lifecycle: IngestJobLifecycle, jobId: string) {
+    const job = await prisma.ingestJob.findUniqueOrThrow({ where: { id: jobId } });
+    const inputHash = await ingestExecutionInputHash(job, "f".repeat(64));
+    const record = await prisma.$transaction(tx => appendExecutionDispatch(tx, { deploymentEpoch: job.deploymentEpoch, generation: job.generation,
+      kind: "import_pipeline", subject: { kind: "ingest_job", id: job.id }, inputHash, dueAt: job.createdAt }));
+    return lifecycle.handoffGeneration(record.reference);
   }
-  const admitStt = (lifecycle: RenderFixtureLifecycle, projectId: string) => lifecycle.admitTranscript({ projectId, idempotencyKey: `stt:${randomUUID()}`,
-    languageCode: "en", transcriptProvider: "elevenlabs", transcriptProviderModel: "test", contentPack: PACK as never });
   const done = { storageKey: "projects/test/render.mp4", sizeBytes: 1024, durationSec: 10 };
 
   /** A finishing-bearing generation, transcribed and detected, with its renders claimed. */
@@ -87,14 +95,13 @@ dbDescribe("Finishing hooks on the generation lifecycle", () => {
     const lifecycle = workflow();
     const stt = await admitStt(lifecycle, f.project.id);
     await freeze(f, stt.id);
-    const attempt = await lifecycle.claim("stt");
-    await lifecycle.completeTranscript(attempt!, { provider: "elevenlabs", providerModel: "test", providerJobId: null, languageCode: "en", languageConfidence: 1,
-      text: "transcript", utterances: [] as Prisma.InputJsonValue, speakerCount: 1, durationSeconds: 10, rawStorageKey: null });
-    const detection = (await lifecycle.claim("moment_detection"))!;
-    const clips = await Promise.all(Array.from({ length: clipCount }, (_, index) => clip(f.project.id, detection.workflowRunId, index)));
-    await lifecycle.admitAutoRenderWork(detection, { idempotencyKey: `auto-render-${detection.workflowRunId}`,
-      renders: clips.map((row) => ({ clipId: row.id, aspectRatio: "ratio_9_16", status: "pending", resolution: "1080p" })) as never });
-    await lifecycle.completeMomentDetection(detection);
+    await (await beginTranscriptionTestExecution(prisma, stt.id, lifecycle)).complete();
+    const detection = await prisma.workflowRun.findFirstOrThrow({ where: { projectId: f.project.id, stage: "moment_detection", status: "queued" } });
+    const selection = await prepareSelectionTestExecution(prisma, detection.id, Array.from({ length: clipCount }, (_, index) => ({ title: `Clip ${index}`,
+      start_time: index * 20, end_time: index * 20 + 15, hook_text: "Hook", payoff_text: "Payoff", reasoning: "Fixture", category: "hook", platform_fit: ["tiktok"], hook_strength: 70,
+      emotional_intensity: 70, story_completeness_score: 70, broll_cues: [] })));
+    await selection.control.runParent(selection.reference);
+    const clips = await prisma.clip.findMany({ where: { projectId: f.project.id } });
     const renderer = workflow();
     const render = (await renderer.claim("clip_rendering"))!;
     await renderer.beginRenderWorkSet(render);
@@ -104,7 +111,7 @@ dbDescribe("Finishing hooks on the generation lifecycle", () => {
 
   test("the handoff freezes finishing once for the generation it admits, and replays find the same row", bindServiceTestEnvironment(globals.bind(async () => {
     const f = await fixture();
-    await prisma.ingestJob.create({ data: { projectId: f.project.id, jobType: "link_import", payload: {}, status: "completed", completedAt: new Date() } });
+    await prisma.ingestJob.create({ data: { projectId: f.project.id, jobType: "link_import", payload: { acquisition: { audioPolicy: "none" } }, status: "completed", completedAt: new Date() } });
     const job = await prisma.ingestJob.findFirstOrThrow({ where: { projectId: f.project.id } });
     await prisma.processingUsageReservation.create({ data: { projectId: f.project.id, workspaceId: f.workspace.id, intakeKind: "link",
       periodStart: new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1)), reservedSeconds: 60, state: "reserved" } });
@@ -114,7 +121,7 @@ dbDescribe("Finishing hooks on the generation lifecycle", () => {
     const lifecycle = new IngestJobLifecycle({ prisma, workflow: workflow(), usage: new ProcessingUsage({ prisma, log: () => {} }),
       requireRetryActor: async () => {}, sourceBucket: "finishing-test" });
 
-    expect(await lifecycle.processGenerationHandoffs(1, job.id)).toBe(1);
+    expect((await targetedHandoff(lifecycle, job.id)).kind).toMatch(/^(admitted|acknowledged)$/);
     const run = await prisma.workflowRun.findFirstOrThrow({ where: { projectId: f.project.id, stage: "stt" } });
     const row = await finishingRow(run.id);
     expect(row).toMatchObject({ workspaceId: f.workspace.id, projectId: f.project.id, actorUserId: f.user.id, state: "waiting", reason: null, picks: null });
@@ -122,7 +129,7 @@ dbDescribe("Finishing hooks on the generation lifecycle", () => {
     expect(row.settings).toEqual({ topClips: 2, minScore: 40, copyPlatforms: ["tiktok"], resolution: "1080p", delivery: "ready_to_review", queueAccountIds: [], aspectRatios: ["1:1"] });
 
     // A replay of the handoff, and a second freeze for the same generation, change nothing.
-    expect(await lifecycle.processGenerationHandoffs(1, job.id)).toBe(0);
+    expect((await targetedHandoff(lifecycle, job.id)).kind).toBe("acknowledged");
     await freeze(f, run.id, { topClips: 9, minScore: 0, copyPlatforms: [], resolution: "720p", delivery: "ready_to_review" });
     expect(await prisma.generationFinishing.count({ where: { projectId: f.project.id } })).toBe(1);
     expect((await finishingRow(run.id)).settings).toEqual(row.settings);
@@ -131,7 +138,7 @@ dbDescribe("Finishing hooks on the generation lifecycle", () => {
   test("the finishing row records the Autopilot rule only when the pack's import named one", bindServiceTestEnvironment(globals.bind(async () => {
     const handoff = async (autopilotRuleId: string | null) => {
       const f = await fixture();
-      const job = await prisma.ingestJob.create({ data: { projectId: f.project.id, jobType: "link_import", payload: {}, status: "completed", completedAt: new Date() } });
+      const job = await prisma.ingestJob.create({ data: { projectId: f.project.id, jobType: "link_import", payload: { acquisition: { audioPolicy: "none" } }, status: "completed", completedAt: new Date() } });
       await prisma.processingUsageReservation.create({ data: { projectId: f.project.id, workspaceId: f.workspace.id, intakeKind: "link",
         periodStart: new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1)), reservedSeconds: 60, state: "reserved" } });
       await prisma.contentPack.create({ data: { projectId: f.project.id, outputTypes: ["short_clip"], clipGenerationMode: "best", clipCountTarget: 3, clipDurationSecTarget: 45,
@@ -139,7 +146,7 @@ dbDescribe("Finishing hooks on the generation lifecycle", () => {
         finishing: { topClips: 2, minScore: 40, copyPlatforms: [], resolution: "1080p", delivery: "ready_to_review" } } });
       const lifecycle = new IngestJobLifecycle({ prisma, workflow: workflow(), usage: new ProcessingUsage({ prisma, log: () => {} }),
         requireRetryActor: async () => {}, sourceBucket: "finishing-test" });
-      expect(await lifecycle.processGenerationHandoffs(1, job.id)).toBe(1);
+      expect((await targetedHandoff(lifecycle, job.id)).kind).toMatch(/^(admitted|acknowledged)$/);
       const run = await prisma.workflowRun.findFirstOrThrow({ where: { projectId: f.project.id, stage: "stt" } });
       return finishingRow(run.id);
     };
@@ -165,7 +172,7 @@ dbDescribe("Finishing hooks on the generation lifecycle", () => {
   /** A ready Project whose committed pack asks for finishing, with a handoff waiting and a generation for that pack already admitted by another path. */
   async function preAdmitted(runStatus: "queued" | "failed", existingFinishing?: Parameters<typeof freeze>[2]) {
     const f = await fixture();
-    const job = await prisma.ingestJob.create({ data: { projectId: f.project.id, jobType: "link_import", payload: {}, status: "completed", completedAt: new Date() } });
+    const job = await prisma.ingestJob.create({ data: { projectId: f.project.id, jobType: "link_import", payload: { acquisition: { audioPolicy: "none" } }, status: "completed", completedAt: new Date() } });
     const pack = await prisma.contentPack.create({ data: { projectId: f.project.id, outputTypes: ["short_clip"], clipGenerationMode: "best", clipCountTarget: 3, clipDurationSecTarget: 45,
       platformTargets: ["tiktok"], toneConstraints: [], captionPreset: "brand_default", platformPlaybookVersion: "test", defaultAspectRatio: "16:9",
       finishing: { topClips: 2, minScore: 40, copyPlatforms: [], resolution: "1080p", delivery: "ready_to_review" } } });
@@ -179,7 +186,7 @@ dbDescribe("Finishing hooks on the generation lifecycle", () => {
 
   test("a handoff that finds its generation already admitted still freezes the intake's finishing", bindServiceTestEnvironment(globals.bind(async () => {
     const { f, job, run, lifecycle } = await preAdmitted("queued");
-    expect(await lifecycle.processGenerationHandoffs(1, job.id)).toBe(1);
+    expect((await targetedHandoff(lifecycle, job.id)).kind).toMatch(/^(admitted|acknowledged)$/);
     expect((await prisma.ingestJob.findUniqueOrThrow({ where: { id: job.id } })).generationRunId).toBe(run.id);
     const row = await finishingRow(run.id);
     expect(row).toMatchObject({ state: "waiting", actorUserId: f.user.id });
@@ -188,7 +195,7 @@ dbDescribe("Finishing hooks on the generation lifecycle", () => {
 
   test("and when that generation has already failed, the frozen row is skipped at once with its event", bindServiceTestEnvironment(globals.bind(async () => {
     const { f, job, run, lifecycle } = await preAdmitted("failed");
-    expect(await lifecycle.processGenerationHandoffs(1, job.id)).toBe(1);
+    expect((await targetedHandoff(lifecycle, job.id)).kind).toMatch(/^(admitted|acknowledged)$/);
     expect(await finishingRow(run.id)).toMatchObject({ state: "skipped", reason: "generation_failed" });
     const events = await feed(f.workspace.id);
     expect(events.filter((event) => event.type === "finishing.finished").map((event) => event.subject)).toMatchObject([{ state: "skipped", reason: "generation_failed", exportIds: [] }]);
@@ -198,7 +205,7 @@ dbDescribe("Finishing hooks on the generation lifecycle", () => {
     const { job, run, lifecycle } = await preAdmitted("queued", { topClips: 9, minScore: 0, copyPlatforms: ["x"], resolution: "720p", delivery: "ready_to_review" });
     const warn = spyOn(console, "warn").mockImplementation(() => {});
     try {
-      expect(await lifecycle.processGenerationHandoffs(1, job.id)).toBe(1);
+      expect((await targetedHandoff(lifecycle, job.id)).kind).toMatch(/^(admitted|acknowledged)$/);
       expect(warn.mock.calls.some(([line]) => String(line).includes("ingest_finishing_conflict_ignored"))).toBe(true);
     } finally {
       warn.mockRestore();
@@ -211,14 +218,14 @@ dbDescribe("Finishing hooks on the generation lifecycle", () => {
 
   test("a handoff without finishing creates no row", bindServiceTestEnvironment(globals.bind(async () => {
     const f = await fixture();
-    const job = await prisma.ingestJob.create({ data: { projectId: f.project.id, jobType: "link_import", payload: {}, status: "completed", completedAt: new Date() } });
+    const job = await prisma.ingestJob.create({ data: { projectId: f.project.id, jobType: "link_import", payload: { acquisition: { audioPolicy: "none" } }, status: "completed", completedAt: new Date() } });
     await prisma.processingUsageReservation.create({ data: { projectId: f.project.id, workspaceId: f.workspace.id, intakeKind: "link",
       periodStart: new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1)), reservedSeconds: 60, state: "reserved" } });
     await prisma.contentPack.create({ data: { projectId: f.project.id, outputTypes: ["short_clip"], clipGenerationMode: "best", clipCountTarget: 3, clipDurationSecTarget: 45,
       platformTargets: ["tiktok"], toneConstraints: [], captionPreset: "brand_default", platformPlaybookVersion: "test" } });
     const lifecycle = new IngestJobLifecycle({ prisma, workflow: workflow(), usage: new ProcessingUsage({ prisma, log: () => {} }),
       requireRetryActor: async () => {}, sourceBucket: "finishing-test" });
-    expect(await lifecycle.processGenerationHandoffs(1, job.id)).toBe(1);
+    expect((await targetedHandoff(lifecycle, job.id)).kind).toMatch(/^(admitted|acknowledged)$/);
     expect(await prisma.generationFinishing.count({ where: { projectId: f.project.id } })).toBe(0);
   })));
 
@@ -265,8 +272,7 @@ dbDescribe("Finishing hooks on the generation lifecycle", () => {
     const lifecycle = workflow();
     const stt = await admitStt(lifecycle, f.project.id);
     await freeze(f, stt.id);
-    const attempt = await lifecycle.claim("stt");
-    await lifecycle.failAttempt(attempt!, new WorkflowFailure("transcription_failed", "permanent", "no audio"));
+    await (await beginTranscriptionTestExecution(prisma, stt.id, lifecycle)).fail(new WorkflowFailure("transcription_failed", "permanent", "no audio"));
 
     const skipped = await finishingRow(stt.id);
     expect(skipped).toMatchObject({ state: "skipped", reason: "generation_failed" });
@@ -303,9 +309,8 @@ dbDescribe("Finishing hooks on the generation lifecycle", () => {
     const f = await fixture();
     await settledUsage(f);
     const lifecycle = workflow();
-    await admitStt(lifecycle, f.project.id);
-    const attempt = await lifecycle.claim("stt");
-    await lifecycle.failAttempt(attempt!, new WorkflowFailure("transcription_failed", "permanent", "no audio"));
+    const stt = await admitStt(lifecycle, f.project.id);
+    await (await beginTranscriptionTestExecution(prisma, stt.id, lifecycle)).fail(new WorkflowFailure("transcription_failed", "permanent", "no audio"));
     expect(await prisma.generationFinishing.count({ where: { projectId: f.project.id } })).toBe(0);
     expect((await feed(f.workspace.id)).map((event) => event.type)).toEqual(["operation.finished"]);
   })));

@@ -7,9 +7,12 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { type Prisma, PrismaClient } from "@prisma/client";
 import { buildCaptionedVideoContentPack, buildCaptionedVideoSettings } from "@narriflow/validators";
 import { Pool } from "pg";
+import { encodeClipEditorDocumentForStorage, decodeClipEditorDocumentFromStorage } from "./clip-editor-document-persistence";
 import { clipExportService } from "./clip-export.service";
 import { ExpectedDomainFailureError } from "./expected-domain-failure";
 import { IngestJobLifecycle } from "./ingest-job-lifecycle";
+import { ensureTranscriptionTestSource, beginTranscriptionTestExecution } from "./transcription-execution-test-support";
+import { prepareSelectionTestExecution } from "./selection-execution-test-support";
 import { startIngestTestExecution } from "./ingest-execution-test-support";
 import { ingestExecutionInputHash } from "./ingest-source-execution";
 import { appendExecutionDispatch } from "./execution-dispatch";
@@ -85,8 +88,10 @@ dbDescribe("Workspace Events written by operation settlement", () => {
       status: "queued_for_ingest", expiresAt: new Date(Date.now() + 3_600_000), hardExpiresAt: new Date(Date.now() + 7_200_000) } });
     return id;
   }
-  const admitStt = (lifecycle: RenderFixtureLifecycle, projectId: string) => lifecycle.admitTranscript({ projectId, idempotencyKey: `stt:${randomUUID()}`,
-    languageCode: "en", transcriptProvider: "elevenlabs", transcriptProviderModel: "test", contentPack: PACK as never });
+  const admitStt = async (lifecycle: RenderFixtureLifecycle, projectId: string) => {
+    await ensureTranscriptionTestSource(prisma, projectId);
+    return lifecycle.admitTranscript({ projectId, idempotencyKey: `stt:${randomUUID()}`, languageCode: "en", transcriptProvider: "elevenlabs", transcriptProviderModel: "test", contentPack: PACK as never });
+  };
   /** An Ingest Job that completed and handed off to this generation run. */
   const handedOffJob = (projectId: string, generationRunId: string, uploadSessionId?: string) => prisma.ingestJob.create({ data: { projectId,
     jobType: uploadSessionId ? "upload_finalize" : "link_import", payload: {}, status: "completed", completedAt: new Date(), generationHandoffAt: new Date(),
@@ -98,22 +103,18 @@ dbDescribe("Workspace Events written by operation settlement", () => {
     const lifecycle = workflow();
     const stt = await admitStt(lifecycle, f.project.id);
     const job = await handedOffJob(f.project.id, stt.id);
-    const attempt = await lifecycle.claim("stt");
-    if (!attempt) throw new Error("stt claim missing");
-    await lifecycle.completeTranscript(attempt, { provider: "elevenlabs", providerModel: "test", providerJobId: null, languageCode: "en",
-      languageConfidence: 1, text: "transcript", utterances: [] as Prisma.InputJsonValue, speakerCount: 1, durationSeconds: 10, rawStorageKey: null });
+    await (await beginTranscriptionTestExecution(prisma, stt.id, lifecycle)).complete();
     return { stt, job };
   }
 
   /** Runs detection with `count` clips, each admitted for one pending render. */
   async function detected(f: Awaited<ReturnType<typeof fixture>>, count: number) {
-    const lifecycle = workflow();
-    const detection = await lifecycle.claim("moment_detection");
-    if (!detection) throw new Error("detection claim missing");
-    const clips = await Promise.all(Array.from({ length: count }, (_, index) => clip(f.project.id, detection.workflowRunId, index)));
-    await lifecycle.admitAutoRenderWork(detection, { idempotencyKey: `auto-render-${detection.workflowRunId}`,
-      renders: clips.map((row) => ({ clipId: row.id, aspectRatio: "ratio_9_16", status: "pending", resolution: "1080p" })) as never });
-    await lifecycle.completeMomentDetection(detection);
+    const detection = await prisma.workflowRun.findFirstOrThrow({ where: { projectId: f.project.id, stage: "moment_detection", status: "queued" } });
+    const selection = await prepareSelectionTestExecution(prisma, detection.id, Array.from({ length: count }, (_, index) => ({ title: `Clip ${index}`,
+      start_time: index * 20, end_time: index * 20 + 15, hook_text: "Hook", payoff_text: "Payoff", reasoning: "Fixture", category: "hook", platform_fit: ["tiktok"], hook_strength: 70,
+      emotional_intensity: 70, story_completeness_score: 70, broll_cues: [] })));
+    await selection.control.runParent(selection.reference);
+    const clips = await prisma.clip.findMany({ where: { projectId: f.project.id } });
     const renderer = workflow();
     const attempt = await renderer.claim("clip_rendering");
     if (!attempt) throw new Error("render claim missing");
@@ -174,9 +175,7 @@ dbDescribe("Workspace Events written by operation settlement", () => {
     const stt = await admitStt(lifecycle, f.project.id);
     const sessionId = await uploadSession(f);
     await handedOffJob(f.project.id, stt.id, sessionId);
-    const attempt = await lifecycle.claim("stt");
-    if (!attempt) throw new Error("stt claim missing");
-    await lifecycle.failAttempt(attempt, new WorkflowFailure("transcription_failed", "permanent", "no audio"));
+    await (await beginTranscriptionTestExecution(prisma, stt.id, lifecycle)).fail(new WorkflowFailure("transcription_failed", "permanent", "no audio"));
     expect(await subjects(f.workspace.id)).toEqual([
       finishedSubject("generation", stt.id, f.project.id, "failed"),
       finishedSubject("intake", sessionId, f.project.id, "failed"),
@@ -186,9 +185,8 @@ dbDescribe("Workspace Events written by operation settlement", () => {
   test("cancelling a queued generation finishes it cancelled; a retryable failure that requeues finishes nothing", bindServiceTestEnvironment(globals.bind(async () => {
     const requeued = await fixture();
     const retrying = workflow();
-    await admitStt(retrying, requeued.project.id);
-    const first = await retrying.claim("stt");
-    await retrying.failAttempt(first!, new WorkflowFailure("provider_down", "retryable", "try again"));
+    const retryStt = await admitStt(retrying, requeued.project.id);
+    await (await beginTranscriptionTestExecution(prisma, retryStt.id, retrying)).fail(new WorkflowFailure("provider_down", "retryable", "try again"));
     expect(await feed(requeued.workspace.id)).toEqual([]);
 
     const f = await fixture();
@@ -211,7 +209,7 @@ dbDescribe("Workspace Events written by operation settlement", () => {
     const renders = [];
     for (const ratio of ratios.slice(0, variants)) {
       const variant = await prisma.clipExportVariant.create({ data: { exportId: exported.id, aspectRatio: ratio, resolution: "1080p", watermark: false } });
-      renders.push(await prisma.clipRender.create({ data: { clipId: owner.id, aspectRatio: ratio, exportVariantId: variant.id } }));
+      renders.push(await prisma.clipRender.create({ data: { clipId: owner.id, aspectRatio: ratio, exportVariantId: variant.id, clipSnapshot: JSON.parse(JSON.stringify({ ...owner, ...encodeClipEditorDocumentForStorage(decodeClipEditorDocumentFromStorage(owner, { durationSec: null, wholeSource: owner.wholeSource }), { durationSec: null, wholeSource: owner.wholeSource }) })), editorRevision: owner.editorRevision } }));
     }
     return { run, exported, renders, project: f.project, workspace: f.workspace, user: f.user };
   }
@@ -268,7 +266,7 @@ dbDescribe("Workspace Events written by operation settlement", () => {
     const first = await claimRender();
     await first.lifecycle.markClipRenderVariantRendering(first.attempt, x.renders[0]!.id);
     await first.lifecycle.failClipRenderVariant(first.attempt, x.renders[0]!.id, "transient_render_failure", "retryable");
-    expect((await prisma.clipExport.findUniqueOrThrow({ where: { id: x.exported.id } })).status).toBe("rendering");
+    expect((await prisma.clipExport.findUniqueOrThrow({ where: { id: x.exported.id } })).status).toBe("queued");
     expect(await feed(f.workspace.id)).toEqual([]);
     expect((await first.lifecycle.settleRenderWorkSet(first.attempt)).status).toBe("pending");
     expect(await feed(f.workspace.id)).toEqual([]);
@@ -285,17 +283,17 @@ dbDescribe("Workspace Events written by operation settlement", () => {
   test("an export whose retries are exhausted finishes failed when its run settles", bindServiceTestEnvironment(globals.bind(async () => {
     const f = await fixture();
     const x = await exportFixture(f);
-    let current = await claimRender();
-    for (let retry = 0; retry < 2; retry += 1) {
-      await current.lifecycle.failAttempt(current.attempt, new WorkflowFailure("transient_render_failure", "retryable", "retry"));
-      await prisma.workflowRun.update({ where: { id: x.run.id }, data: { nextAttemptAt: new Date(Date.now() - 1_000) } });
-      current = await claimRender();
+    const current = await claimRender();
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      await current.lifecycle.markClipRenderVariantRendering(current.attempt, x.renders[0]!.id);
+      await current.lifecycle.failClipRenderVariant(current.attempt, x.renders[0]!.id, "transient_render_failure", "retryable");
+      const settled = await current.lifecycle.settleRenderWorkSet(current.attempt);
+      if (attempt < 3) {
+        expect(settled.status).toBe("pending");
+        expect(await feed(f.workspace.id)).toEqual([]);
+        await current.lifecycle.retryGroups(x.run.id);
+      } else expect(settled.status).toBe("failed");
     }
-    await current.lifecycle.markClipRenderVariantRendering(current.attempt, x.renders[0]!.id);
-    await prisma.renderGroup.updateMany({ where: { workflowRunId: x.run.id }, data: { chargedAttemptCount: 3 } });
-    await current.lifecycle.failClipRenderVariant(current.attempt, x.renders[0]!.id, "transient_render_failure", "retryable");
-    expect(await feed(f.workspace.id)).toEqual([]);
-    expect((await current.lifecycle.settleRenderWorkSet(current.attempt)).status).toBe("failed");
     expect(await subjects(f.workspace.id)).toEqual([exportSubject(x, "failed")]);
   })));
 
@@ -342,13 +340,8 @@ dbDescribe("Workspace Events written by operation settlement", () => {
     await first.lifecycle.settleRenderWorkSet(first.attempt);
     expect(await subjects(f.workspace.id)).toEqual([exportSubject(x, "failed")]);
 
-    // The writes of ClipExportService.retryFailed, which queues the export again.
-    await prisma.$transaction(async (tx) => {
-      await tx.clipExportVariant.update({ where: { id: x.renders[0]!.exportVariantId! }, data: { status: "pending", errorCode: null, startedAt: null, completedAt: null } });
-      await tx.clipRender.update({ where: { id: x.renders[0]!.id }, data: { status: "pending", errorCode: null, startedAt: null, completedAt: null, workflowRunId: null, workflowAttemptId: null } });
-      await tx.clipExport.update({ where: { id: x.exported.id }, data: { status: "queued", progress: 0, errorCode: null, completedAt: null, retryCount: { increment: 1 } } });
-    });
-    expect(await workflow().rescuePendingClipRenderingRun()).not.toBeNull();
+    expect(await workflow().retryFailedClipExport({ projectId: f.project.id, exportId: x.exported.id, expectedRetryCount: 0,
+      variantIds: [x.renders[0]!.exportVariantId!] })).toBe(true);
     const second = await claimRender();
     await second.lifecycle.markClipRenderVariantRendering(second.attempt, x.renders[0]!.id);
     await second.lifecycle.completeClipRenderVariant(second.attempt, x.renders[0]!.id, done);
@@ -398,7 +391,7 @@ dbDescribe("Workspace Events written by operation settlement", () => {
     expect(await prisma.workspaceEventKey.count({ where: { workspaceId: f.workspace.id } })).toBe(2);
   })));
 
-  test("an export finishing while a generation is cancelled in the same Project takes locks in one order, with no retry", bindServiceTestEnvironment(globals.bind(async () => {
+  test("an export finishing while a generation is cancelled in the same Project settles both current commands with one outcome each", bindServiceTestEnvironment(globals.bind(async () => {
     for (let round = 0; round < 6; round += 1) {
       const f = await fixture();
       const stt = await admitStt(workflow(), f.project.id);
@@ -406,8 +399,7 @@ dbDescribe("Workspace Events written by operation settlement", () => {
       const x = await exportFixture(f);
       const { wrapped, state } = countingPrisma();
       const lifecycle = new RenderFixtureLifecycle({ prisma: wrapped, leaseOwner: randomUUID() });
-      const attempt = await lifecycle.claim("clip_rendering");
-      if (!attempt) throw new Error("render claim missing");
+      const attempt = await lifecycle.renderParent(x.run.id);
       await lifecycle.beginRenderWorkSet(attempt);
       await lifecycle.markClipRenderVariantRendering(attempt, x.renders[0]!.id);
       state.transactions = 0;
@@ -417,8 +409,9 @@ dbDescribe("Workspace Events written by operation settlement", () => {
       ]);
       expect(completed).toBe(true);
       expect(cancelled).toBe(true);
-      // One transaction each: a deadlock or serialization failure would have retried one of them.
-      expect(state.transactions).toBe(2);
+      // Core includes artifact/grant transactions as well as domain settlement.
+      // Both commands must resolve; their deduplicated terminal events are checked below.
+      expect(state.transactions).toBeGreaterThanOrEqual(2);
       const outcomes = (await subjects(f.workspace.id)).map((subject) => {
         const { operation, state } = subject as { operation: { kind: string }; state: string };
         return `${operation.kind}:${state}`;
@@ -509,8 +502,7 @@ dbDescribe("Workspace Events written by operation settlement", () => {
       const f = await fixture();
       const lifecycle = workflow();
       const stt = await admitStt(lifecycle, f.project.id);
-      const attempt = await lifecycle.claim("stt");
-      await lifecycle.failAttempt(attempt!, new WorkflowFailure("transcription_failed", "permanent", "no audio"));
+      await (await beginTranscriptionTestExecution(prisma, stt.id, lifecycle)).fail(new WorkflowFailure("transcription_failed", "permanent", "no audio"));
       expect(await subjects(f.workspace.id)).toEqual([finishedSubject("generation", stt.id, f.project.id, "failed")]);
 
       const job = await prisma.ingestJob.create({ data: { projectId: f.project.id, jobType: "link_import", payload: { acquisition: { audioPolicy: "none" }, provider: "dropbox", url: "https://www.dropbox.com/s/event-source/video.mp4" }, status: "completed", completedAt: new Date() } });
@@ -542,12 +534,11 @@ dbDescribe("Workspace Events written by operation settlement", () => {
       }) as PrismaClient;
       const lifecycle = new RenderFixtureLifecycle({ prisma: held, leaseOwner });
       const stt = await admitStt(lifecycle, f.project.id);
-      const attempt = await lifecycle.claim("stt");
-      if (!attempt) throw new Error("stt claim missing");
+      const transcription = await beginTranscriptionTestExecution(prisma, stt.id, lifecycle);
       const job = await prisma.ingestJob.create({ data: { projectId: f.project.id, jobType: "link_import", payload: { acquisition: { audioPolicy: "none" }, provider: "dropbox", url: "https://www.dropbox.com/s/event-source/video.mp4" }, status: "completed", completedAt: new Date() } });
 
       armed = true;
-      const failing = lifecycle.failAttempt(attempt, new WorkflowFailure("transcription_failed", "permanent", "no audio"));
+      const failing = transcription.fail(new WorkflowFailure("transcription_failed", "permanent", "no audio"));
       await reached;
       armed = false;
       // The failure has not committed, so the acknowledgement sees a running run and no intake yet.
@@ -571,32 +562,19 @@ dbDescribe("Workspace Events written by operation settlement", () => {
      * and its whole-source clip written, detection not yet completed. */
     async function detecting(f: Awaited<ReturnType<typeof fixture>>, lifecycle = workflow()) {
       await prisma.project.update({ where: { id: f.project.id }, data: { sourceDurationSeconds: 10 } });
+      await ensureTranscriptionTestSource(prisma, f.project.id);
       const stt = await lifecycle.admitTranscript({ projectId: f.project.id, idempotencyKey: `stt:${randomUUID()}`, languageCode: "en",
         transcriptProvider: "elevenlabs", transcriptProviderModel: "test", contentPack: buildCaptionedVideoContentPack(settings) as never });
       const job = await handedOffJob(f.project.id, stt.id);
-      const sttAttempt = await lifecycle.claim("stt");
-      if (!sttAttempt) throw new Error("stt claim missing");
-      await lifecycle.completeTranscript(sttAttempt, { provider: "elevenlabs", providerModel: "test", providerJobId: null, languageCode: "en",
-        languageConfidence: 1, text: "transcript", utterances: [] as Prisma.InputJsonValue, speakerCount: 1, durationSeconds: 10, rawStorageKey: null });
-      const detection = await lifecycle.claim("moment_detection");
-      if (!detection) throw new Error("detection claim missing");
-      await writeClip(f.project.id, detection.workflowRunId);
-      return { lifecycle, stt, job, detection };
+      await (await beginTranscriptionTestExecution(prisma, stt.id, lifecycle)).complete();
+      const detection = await prisma.workflowRun.findFirstOrThrow({ where: { projectId: f.project.id, stage: "moment_detection", status: "queued" } });
+      const selection = await prepareSelectionTestExecution(lifecycle.fixturePrisma, detection.id, []);
+      return { lifecycle, stt, job, detection: { workflowRunId: detection.id }, selection };
     }
-    async function writeClip(projectId: string, detectionRunId: string) {
-      const whole = await clip(projectId, detectionRunId);
-      await prisma.clip.update({ where: { id: whole.id }, data: { wholeSource: true } });
-    }
-    /** Completes detection the way the worker does: the export is admitted in the same transaction. */
-    const complete = (x: Awaited<ReturnType<typeof detecting>>) =>
-      x.lifecycle.completeMomentDetection(x.detection, { admit: clipExportService.captionedExportWrite(x.detection, settings) });
+    const complete = (x: Awaited<ReturnType<typeof detecting>>) => x.selection.control.runParent(x.selection.reference);
     const theExport = (f: Awaited<ReturnType<typeof fixture>>) =>
       prisma.clipExport.findFirstOrThrow({ where: { projectId: f.project.id }, include: { variants: { include: { render: true }, orderBy: { createdAt: "asc" } } } });
-    /** Export renders are picked up by any render run of the Project. */
-    const queueRenderRun = (f: Awaited<ReturnType<typeof fixture>>) =>
-      prisma.workflowRun.create({ data: { projectId: f.project.id, idempotencyKey: `export-render:${randomUUID()}`, stage: "clip_rendering", status: "queued" } });
     async function finishVariants(f: Awaited<ReturnType<typeof fixture>>, how: "complete" | "fail") {
-      await queueRenderRun(f);
       const exported = await theExport(f);
       const { lifecycle, attempt } = await claimRender();
       for (const variant of exported.variants) {
@@ -615,7 +593,6 @@ dbDescribe("Workspace Events written by operation settlement", () => {
       expect(await feed(f.workspace.id)).toEqual([]);
       const exported = await theExport(f);
 
-      await queueRenderRun(f);
       const { lifecycle: renderer, attempt } = await claimRender();
       const [first, second] = exported.variants;
       await renderer.markClipRenderVariantRendering(attempt, first!.render!.id);
@@ -655,7 +632,7 @@ dbDescribe("Workspace Events written by operation settlement", () => {
       ]);
     })));
 
-    test("the export exists only with the completed run: a render rescue running beside detection's completion can't lose the generation's event", bindServiceTestEnvironment(globals.bind(async () => {
+    test("the export and targeted render obligation become visible only with completed detection", bindServiceTestEnvironment(globals.bind(async () => {
       const f = await fixture();
       let armed = false;
       let release!: () => void;
@@ -679,14 +656,13 @@ dbDescribe("Workspace Events written by operation settlement", () => {
       const completion = complete(x);
       await reached;
       armed = false;
-      // The rescue finds nothing: the export's renders are not visible before the run is completed.
-      expect(await workflow().rescuePendingClipRenderingRun()).toBeNull();
+      expect(await prisma.workflowRun.count({ where: { projectId: f.project.id, stage: "clip_rendering" } })).toBe(0);
       expect(await prisma.clipExport.count({ where: { projectId: f.project.id } })).toBe(0);
       release();
       await completion;
 
-      // Now both are visible together. The rescue admits the render run and the export settles into the generation's event.
-      expect(await workflow().rescuePendingClipRenderingRun()).not.toBeNull();
+      const registered = await prisma.workflowRun.findFirstOrThrow({ where: { projectId: f.project.id, stage: "clip_rendering" } });
+      expect(await prisma.executionDispatch.count({ where: { subjectId: registered.id, kind: "render_run" } })).toBeGreaterThan(0);
       const exported = await theExport(f);
       const { lifecycle, attempt } = await claimRender();
       for (const variant of exported.variants) {
@@ -701,22 +677,12 @@ dbDescribe("Workspace Events written by operation settlement", () => {
       ]);
     })));
 
-    test("a detection retry leaves no first export behind and renders one: nothing is lost or doubled", bindServiceTestEnvironment(globals.bind(async () => {
+    test("a replayed caption-only finalization creates one export and one set of terminal events", bindServiceTestEnvironment(globals.bind(async () => {
       const f = await fixture();
       const first = await detecting(f);
-      // The first attempt wrote its clip and then lost its worker before completing: no export exists for the retry to cascade away.
       expect(await prisma.clipExport.count({ where: { projectId: f.project.id } })).toBe(0);
-      await first.lifecycle.failAttempt(first.detection, new WorkflowFailure("worker_lost", "retryable", "worker restarted"));
-      await prisma.workflowRun.update({ where: { id: first.detection.workflowRunId }, data: { nextAttemptAt: new Date(Date.now() - 1_000) } });
-      const lifecycle = workflow();
-      const retry = await lifecycle.claim("moment_detection");
-      if (!retry) throw new Error("detection retry claim missing");
-      expect(retry.workflowRunId).toBe(first.detection.workflowRunId);
-      // Detection replaces the project's clips, as `persistDetectedClips` does.
-      await prisma.clip.deleteMany({ where: { projectId: f.project.id } });
-      await writeClip(f.project.id, retry.workflowRunId);
-      await lifecycle.completeMomentDetection(retry, { admit: clipExportService.captionedExportWrite(retry, settings) });
-
+      await complete(first);
+      await complete(first);
       expect(await prisma.clipExport.count({ where: { projectId: f.project.id } })).toBe(1);
       expect(await feed(f.workspace.id)).toEqual([]);
       const { lifecycle: renderer, attempt, exported } = await finishVariants(f, "complete");
@@ -736,11 +702,8 @@ dbDescribe("Workspace Events written by operation settlement", () => {
       await lifecycle.settleRenderWorkSet(attempt);
       expect(await createOperationStatusReader(prisma).readTrusted({ workspaceId: f.workspace.id }, { kind: "generation", id: x.stt.id })).toMatchObject({ state: "failed" });
 
-      // The person retries the failed export (as `retryFailed` does): both formats render again and succeed.
-      await prisma.clipExport.update({ where: { id: exported.id }, data: { retryCount: 1, status: "queued", progress: 0, errorCode: null, completedAt: null } });
-      await prisma.clipExportVariant.updateMany({ where: { exportId: exported.id }, data: { status: "pending", errorCode: null, completedAt: null } });
-      await prisma.clipRender.updateMany({ where: { exportVariantId: { in: exported.variants.map((variant) => variant.id) } }, data: { status: "pending", errorCode: null, failureDisposition: null, workflowRunId: null, workflowAttemptId: null, completedAt: null } });
-      await queueRenderRun(f);
+      expect(await workflow().retryFailedClipExport({ projectId: f.project.id, exportId: exported.id, expectedRetryCount: 0,
+        variantIds: exported.variants.map(variant => variant.id) })).toBe(true);
       const retry = await claimRender();
       for (const variant of exported.variants) {
         await retry.lifecycle.markClipRenderVariantRendering(retry.attempt, variant.render!.id);

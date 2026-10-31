@@ -1,0 +1,35 @@
+{
+  "date": "2026-10-31",
+  "runtime": "Bun1.3.6",
+  "database": "isolated local PostgreSQL17.11 with disposable workflow_lifecycle_test_* schema",
+  "result": {
+    "passed": 37,
+    "failed": 0,
+    "assertions": 156,
+    "seconds": 19.39
+  },
+  "suites": [
+    "generation-finishing-transition.db.test.ts",
+    "workspace-event-emission.db.test.ts"
+  ],
+  "protocols": [
+    "Actual SourceAudio-bound TranscriptionAdmission and correlated provider finalizer; external provider calls0",
+    "Actual selection preparation, window admission/result and one global finalizer",
+    "Actual Render Core artifacts and charged starts; unleased exact render parent",
+    "Actual targeted Ingest handoff and exact export retry admission"
+  ],
+  "preservedAssertions": [
+    "Finishing freezes once on initial and already-admitted handoff, and retains the first settings/rule binding",
+    "Completed/partial generation makes Finishing due; failed/cancelled generation records one skipped outcome",
+    "Generation/intake/export event keys deduplicate normal/replayed/concurrent/retained/deleted lineages",
+    "Caption-only finalization atomically exposes export, completed detection and targeted render obligation",
+    "Three render retry attempts spend real native starts and emit one terminal export event",
+    "Concurrent export completion and generation cancellation both settle with one outcome each"
+  ],
+  "fixtureChanges": [
+    "Removed old global claim, provider completion, render rescue and SQL charged-counter manipulation",
+    "Retrying exports now assert current queued projection after retryable group failure",
+    "Pre-created source byte facts are controlled fixtures; no source acquisition or provider HTTP is claimed here"
+  ],
+  "logSha256": "f90e43f4c53a6fe27ba26a4f8cbbf6a9203fa1d716262b8215be7f5f0c432fe8"
+}
