@@ -187,6 +187,7 @@ class NativeMultipartTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_out_of_order_part_finishes_preserve_ascending_receipts_and_original_byte_hash(self):
         part_size=5*1024*1024;finished=[];completed=[]
+        arrived=set();release={number:asyncio.Event() for number in range(1,4)}
         payload=b'a'*part_size+b'b'*part_size+b'c'
         class Control:
             async def authorize_part(self, number, *args):
@@ -199,8 +200,13 @@ class NativeMultipartTests(unittest.IsolatedAsyncioTestCase):
         class Transport:
             async def request(self, grant, method, body, headers, *args):
                 number=int(grant.url.rsplit('/',1)[1])
-                await asyncio.sleep((4-number)*.04)
+                arrived.add(number)
+                if len(arrived)==3:
+                    release[3].set()
+                await release[number].wait()
                 finished.append(number)
+                if number>1:
+                    release[number-1].set()
                 return TransferResponse(200,{'ETag':base64.b64decode(headers['Content-MD5']).hex()},b'')
         with tempfile.TemporaryDirectory() as directory:
             path=Path(directory)/'source.mp4';path.write_bytes(payload)

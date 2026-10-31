@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import json
@@ -37,6 +38,28 @@ class ScopedTransferTests(unittest.IsolatedAsyncioTestCase):
             return ControlResponse(200, {'X-Execution-Server-Time': instant(now)}, json.dumps(result).encode())
         client = ExecutionControlClient(origin='https://api.example', key_id='dev', key=b'k'*32, transport=transport, retry_delay_seconds=0)
         return ExecutorSession.acquire(client, reference={'dispatchId':'fixture','inputHash':'0'*64}, attempt_token='fixture'), calls
+
+    async def test_batched_part_transport_retry_preserves_exact_inbox_bytes_and_delivery_signature(self):
+        artifact = str(uuid4())
+        def reply(command, calls):
+            if len([call for call in calls if call[1]['action']=='upload-parts']) == 1:
+                raise TimeoutError('controlled lost acknowledgement')
+            return {'disposition':'upload_parts','artifactId':artifact,'grants':[
+                {'partNumber':part['partNumber'],'url':f"https://r2.example/part-{part['partNumber']}",
+                 'headers':{'Content-MD5':part['checksumMd5']},'expiresAt':instant(time.time()+60)} for part in command['parts']]}
+        session, calls = self.make_session(reply)
+        with session:
+            from narriflow_media.multipart import MultipartDestination
+            control = ScopedMultipartControl(session,MultipartDestination(artifact,'private-upload',4*16777216),content_type='video/mp4')
+            sha=base64.b64encode(hashlib.sha256(b'fixture').digest()).decode()
+            md5=base64.b64encode(hashlib.md5(b'fixture',usedforsecurity=False).digest()).decode()
+            grants=await asyncio.wait_for(asyncio.gather(*(control.authorize_part(number,16777216,sha,md5) for number in range(1,5))),0.5)
+            self.assertEqual(len(grants),4)
+        retries=[call for call in calls if call[1]['action']=='upload-parts']
+        self.assertEqual(len(retries),2)
+        self.assertEqual(len(retries[0][1]['parts']),4)
+        self.assertEqual(retries[0][2],retries[1][2])
+        self.assertEqual(retries[0][3]['X-Execution-Signature'],retries[1][3]['X-Execution-Signature'])
 
     async def test_native_upload_uses_signed_assigned_ids_and_completes_without_part_inventory(self):
         artifact = str(uuid4())
