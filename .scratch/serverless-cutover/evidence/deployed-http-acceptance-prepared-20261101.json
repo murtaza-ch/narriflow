@@ -1,0 +1,33 @@
+{
+  "date": "2026-11-01",
+  "status": "prepared_not_executed",
+  "entrypoint": "apps/api/scripts/run-deployed-http-acceptance.ts",
+  "runbook": "apps/api/scripts/gates/deployed-http-acceptance.md",
+  "actualDeployedRequests": 0,
+  "accountOrProviderMutations": 0,
+  "requiredPendingFixture": "Root supplies an existing positive MCP Task from actual source acceptance, owned by the exact API-key caller; --task-id cannot be omitted",
+  "preparedCoverage": [
+    "Real existing Clerk session and exact owned first-party Project",
+    "Known inaccessible selected-Workspace refusal",
+    "Scoped API-key REST Project read and missing publishing:read refusal",
+    "REST key stays in its bound Workspace despite a foreign selection hint",
+    "First-party and REST credential models reject the other credential type",
+    "Node ws progress connected Project, one-use nonce refusal and foreign-Origin refusal",
+    "Modern and legacy remote MCP catalog, owned Project tool and four static Apps resources/CSP",
+    "Modern private zero-TTL tool result, missing publishing scope and Tasks isolation/positive existing Task",
+    "Controlled unknown ElevenLabs/Stripe/Clerk exact raw signature and reserialization-tamper refusal",
+    "Controlled Stripe/Clerk delivery receipt replay with exact private cleanup identities",
+    "Unconfigured Zoom exact 503/zoom_not_configured, or configured unknown-event signature/tamper"
+  ],
+  "bounds": { "httpRequests": 64, "overallSeconds": 180, "requestSeconds": 15, "responseBytes": 2097152, "progressSeconds": 12, "progressFrameBytes": 65536, "progressFrames": 512 },
+  "localVerification": {
+    "runtime": "Node 24.8.0 with --experimental-strip-types; Node ws 8.21.3",
+    "fixtureOnlyTestsPassed": 6,
+    "testsFailed": 0,
+    "scope": "Injected fetch responses with real local HMAC calculations plus a loopback Node WebSocket server. No deployed authentication, Task, SQL or product-flow proof is claimed.",
+    "narrowTypecheck": "passed",
+    "focusedBiomeAndDiffWhitespace": "passed"
+  },
+  "privacy": "Private input files require mode0600 and journal directory0700. Output contains check names/counts or stable failure code/phase/request index only, without response bodies, credentials, tickets or URLs.",
+  "logs": ["/tmp/narriflow-deployed-http-caller-tests.log", "/tmp/narriflow-deployed-http-caller-types.log"]
+}

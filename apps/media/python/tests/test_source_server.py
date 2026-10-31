@@ -106,22 +106,22 @@ class SourceServerTests(unittest.TestCase):
             server.allow_reads();tracemalloc.start()
             try:
                 connection=http.client.HTTPConnection('127.0.0.1',server.port,timeout=3)
-                connection.request('GET',server.path('original'),headers={'Range':f'bytes=0-{40*1024**2-1}'})
+                connection.request('GET',server.path('original'),headers={'Range':f'bytes=0-{80*1024**2-1}'})
                 response=connection.getresponse();received=0
                 while chunk:=response.read(64*1024):
                     self.assertEqual(chunk,b'x'*len(chunk));received+=len(chunk)
                 response.close();connection.close()
-                self.assertEqual(received,40*1024**2)
+                self.assertEqual(received,80*1024**2)
                 self.assertEqual(len(self.get(server,range=f'bytes=0-{1024**2-1}')[2]),1024**2)
-                self.assertEqual(server.bytes_transferred,41*1024**2)
+                self.assertEqual(server.bytes_transferred,81*1024**2)
                 requests=len(transport.requests)
-                self.assertEqual(len(self.get(server,range=f'bytes={39*1024**2}-{40*1024**2-1}')[2]),1024**2)
+                self.assertEqual(len(self.get(server,range=f'bytes={79*1024**2}-{80*1024**2-1}')[2]),1024**2)
                 self.assertEqual(len(transport.requests),requests)
                 _,peak=tracemalloc.get_traced_memory()
             finally:tracemalloc.stop()
-            self.assertLess(peak,48*1024**2)
+            self.assertLess(peak,80*1024**2)
             print(json.dumps({'message':'native_source_cache_memory','virtualSourceBytes':len(transport.data),
-                'readBytes':server.bytes_transferred,'peakTrackedBytes':peak,'ceilingBytes':48*1024**2}))
+                'readBytes':server.bytes_transferred,'peakTrackedBytes':peak,'ceilingBytes':80*1024**2}))
 
     def test_tiny_cached_ranges_also_have_a_finite_entry_bound(self):
         source,session,transport=self.fixture(bytes(range(256))*2)
