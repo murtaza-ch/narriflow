@@ -17,9 +17,11 @@ async function assignedReferenceHeld(tx: Tx, artifact: ExecutionArtifact, now: D
   const { subjectKind: kind, subjectId: id } = attempt.dispatch;
   switch (kind) {
     case "ingest_job": {
-      if (artifact.role === "source_audio" && await tx.sourceAudio.findUnique({ where: { storageKey: artifact.storageKey }, select: { id: true } })) return true;
+      
       const job = await tx.ingestJob.findUnique({ where: { id }, select: { projectId: true } });
-      return Boolean(job && await projectHeld(tx, job.projectId, now));
+      if (!job || !await projectHeld(tx,job.projectId,now)) return false;
+      if(artifact.role==="source_video")return Boolean(await tx.project.findFirst({where:{id:job.projectId,sourceStorageKey:artifact.storageKey},select:{id:true}}));
+      return true;
     }
     case "clip_preparation": {
       const job = await tx.clipPreparation.findUnique({ where: { id }, select: { projectId: true } });

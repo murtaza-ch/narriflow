@@ -22,15 +22,17 @@ export function isSelectionExecutionObjectKey(key: string) { return inputKey.tes
 
 /** Both shared inputs and successful sibling results stay held by exact
  * immutable row references, including after the parent has settled. */
-export async function selectionExecutionObjectRetainUntil(database: Pick<PrismaClient, "clipSelectionWindow" | "$queryRaw">, objectKey: string): Promise<Date | null> {
+export async function selectionExecutionObjectRetainUntil(database: Pick<PrismaClient, "clipSelectionWindow" | "project" | "$queryRaw">, objectKey: string): Promise<Date | null> {
   const input = inputKey.exec(objectKey), result = resultKey.exec(objectKey);
   if (!input && !result) throw new Error("Invalid selection cleanup key");
   const row = input ? await database.clipSelectionWindow.findFirst({ where: { projectId: input[1], workflowRunId: input[2], inputStorageKey: objectKey, inputChecksumSha256: input[3] },
-    orderBy: { operationDeadlineAt: "desc" }, select: { operationDeadlineAt: true } })
+    orderBy: { operationDeadlineAt: "desc" }, select: { operationDeadlineAt: true,projectId:true } })
     : await database.clipSelectionWindow.findFirst({ where: { id: result![2], deploymentEpoch: Number(result![1]), generation: Number(result![3]), resultStorageKey: objectKey, resultHash: result![4] },
-      select: { operationDeadlineAt: true } });
+      select: { operationDeadlineAt: true,projectId:true } });
   if (!row) return null;
   const [clock] = await database.$queryRaw<Array<{ now: Date }>>`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS now`;
   if (!clock) throw new Error("Cleanup clock unavailable");
+  const project=await database.project.findUnique({where:{id:row.projectId},select:{purgeStartedAt:true,expiresAt:true}});
+  if(!project || project.purgeStartedAt || (project.expiresAt && project.expiresAt<=clock.now))return row.operationDeadlineAt.getTime()+120000>clock.now.getTime()?new Date(row.operationDeadlineAt.getTime()+120000):null;
   return new Date(Math.max(clock.now.getTime() + 86_400_000, row.operationDeadlineAt.getTime() + 120_000));
 }

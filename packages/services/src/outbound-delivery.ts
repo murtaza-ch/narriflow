@@ -57,6 +57,8 @@ const expiryMs = 30 * 86400_000;
 const attemptMs = 120_000;
 const hash = (value: unknown) =>
 	createHash("sha256").update(JSON.stringify(value)).digest("hex");
+export function outboundDeliveryExecutionInputHash(row:Pick<OutboundDelivery,"id"|"workspaceId"|"targetKind"|"targetId"|"eventId"|"eventSeq"|"urlFingerprint"|"actorCapability"|"apiKeyId"|"bodyStorageKey"|"bodySha256"|"bodyByteLength"|"deploymentEpoch">) { return hash(["signed-notification-v1",row.id,row.workspaceId,row.targetKind,row.targetId,row.eventId,row.eventSeq?.toString()??null,row.urlFingerprint,row.actorCapability??null,row.apiKeyId??null,row.bodyStorageKey,row.bodySha256,Number(row.bodyByteLength),row.deploymentEpoch]); }
+
 const namespace = "c22d9ae5-2920-5c0b-9bfe-72cdf2d8a0b9";
 import { webhookSubscriptionExecutionInputHash } from "./notification-identity";
 import { isCurrentNotificationTarget } from "./notification-dispatch";
@@ -265,22 +267,7 @@ export class OutboundDeliveryService
 		if (expiresAt <= input.at)
 			throw new OutboundDeliveryError("outbound_delivery_conflict");
 		const bodyStorageKey = `notifications/${input.workspaceId}/${id}/body.json`;
-		const inputHash = hash([
-			"signed-notification-v1",
-			id,
-			input.workspaceId,
-			input.targetKind,
-			input.targetId,
-			input.eventId,
-			input.eventSeq?.toString() ?? null,
-			input.registration.urlFingerprint,
-			input.actorCapability ?? null,
-			input.apiKeyId ?? null,
-			bodyStorageKey,
-			bodySha256,
-			bytes.byteLength,
-			epoch.epoch,
-		]);
+		const inputHash = outboundDeliveryExecutionInputHash({id,workspaceId:input.workspaceId,targetKind:input.targetKind,targetId:input.targetId,eventId:input.eventId,eventSeq:input.eventSeq??null,urlFingerprint:input.registration.urlFingerprint,actorCapability:input.actorCapability??null,apiKeyId:input.apiKeyId??null,bodyStorageKey,bodySha256,bodyByteLength:BigInt(bytes.byteLength),deploymentEpoch:epoch.epoch});
 		const row = await tx.outboundDelivery.create({
 			data: {
 				id,

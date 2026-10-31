@@ -661,7 +661,10 @@
     "./dubbing-input": "./src/dubbing-input.ts",
     "./dubbing-execution": "./src/dubbing-execution.ts",
     "./dubbing-execution-runtime": "./src/dubbing-execution-runtime.ts",
-    "./dubbing-recovery": "./src/dubbing-recovery.ts"
+    "./dubbing-recovery": "./src/dubbing-recovery.ts",
+    "./execution-native-restore": "./src/execution-native-restore.ts",
+    "./execution-notification-recovery": "./src/execution-notification-recovery.ts",
+    "./execution-redispatch-pages": "./src/execution-redispatch-pages.ts"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",

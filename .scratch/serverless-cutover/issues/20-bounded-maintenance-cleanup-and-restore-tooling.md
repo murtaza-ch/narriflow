@@ -178,3 +178,29 @@ The focused fresh-schema gate passes 38 tests / 321 assertions (normal preparati
 retention, object transformation and restore). Services/API typechecks and focused
 Biome pass. Remaining native/upload/retention adapters, final redispatch and full
 production factory/platform acceptance are still in progress.
+
+Migration021 narrows native epoch-forward transitions to a closed current rs2
+restore with revoked Generic permissions. Native validation, thumbnail, RSS,
+notification delivery and generated-media adapters retain original budgets and
+deadlines. Started paid image generation remains unknown with historical artifact
+lineage; no restore path repeats its POST. Callback/subscription restore clears
+physical leases while preserving frozen payloads, retry dates and delivery cursors.
+Their separate current-epoch wake repair includes future accepted rows.
+Source retention now retires only a verified committed current source-video key
+and queues exact cleanup after grant/deadline drain; SourceAudio remains separate.
+Project-purging capsule references release after that same drain. The focused fresh
+schema gate passes20tests/119assertions. Exact Upload Session recovery reuses its
+existing transition body, filters one session and confirms the claimed watchdog
+before provider HTTP; all83module tests/311assertions pass. Services/API typechecks
+and focused Biome pass. Upload producer timers, remaining privacy retention,
+redispatch and factory/platform mounting are not yet complete.
+
+Final redispatch now has real separate current-model planners for source, Workflow,
+Render Group, Selection, Preparation, native validation, thumbnail, image generation,
+RSS, notification delivery, billing and library. These include accepted future due
+rows and recreate current canonical registration; unknown paid outcomes stay parked.
+The restored Group path is tested through the actual preparation readiness reader.
+The broader native/source regression slice passes49PGtests/389assertions; focused
+redispatch/object transformation passes3PGtests/78assertions. Empty final-model
+selectors execute valid SQL and stop immediately. Phase orchestration and external
+future timers still need the production factory; these planners alone do not close20.

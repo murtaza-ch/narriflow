@@ -420,11 +420,11 @@ export function createInMemoryUploadSessionHarness() {
       session.updatedAt = updatedAt;
       return session;
     },
-    async findDueReconciliation({ now, limit }) {
+    async findDueReconciliation({ now, limit,sessionId }) {
       return sessions
         .filter(
           (session) =>
-            ((session.status === "initiating" &&
+            (!sessionId||session.id===sessionId) && ((session.status === "initiating" &&
               !!session.admissionClaimExpiresAt &&
               session.admissionClaimExpiresAt.getTime() <= now.getTime()) ||
               (session.status === "uploading" &&

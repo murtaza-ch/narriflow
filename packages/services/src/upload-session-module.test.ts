@@ -3452,3 +3452,17 @@ describe("Upload Session", () => {
     });
   });
 });
+
+describe("exact Upload Session recovery",()=>{
+ test("confirms its claimed lease timer before HTTP and never claims a different due session",async()=>{
+  const harness=createInMemoryUploadSessionHarness();let now=new Date("2026-08-27T00:00:00.000Z");
+  const module=createUploadSessionModule({...harness.adapters,config:defaultUploadSessionConfig(),now:()=>now});
+  const opened=[];
+  for(let i=0;i<2;i++)opened.push(await module.open({...ACTOR,clientIdempotencyKey:`50000000-0000-4000-8000-00000000009${i}`,title:"Exact recovery",source:{fileName:"expired.mp4",sizeBytes:1000,contentType:"video/mp4",browserFingerprint:`expired-${i}`},brandTemplateId:null,generation:{languageCode:"en",contentPack:CONTENT_PACK}}));
+  now=new Date("2026-08-30T00:00:00.000Z");const id=opened[0]!.sessionId;let timers=0;
+  await expect(module.reconcileDueSessions({sessionId:id,beforeProvider:async(session)=>{timers++;expect(session.id).toBe(id);expect(session.reconciliationLeaseExpiresAt!.getTime()).toBeGreaterThan(now.getTime());throw Error("timer registration lost");}})).rejects.toThrow("timer registration lost");
+  expect(timers).toBe(1);expect(harness.facts.objectProbes).toBe(0);expect(harness.facts.providerAborts).toHaveLength(0);expect(harness.facts.sessions[1]!.reconciliationAttemptCount).toBe(0);
+  now=new Date("2026-08-30T01:00:00.000Z");expect(await module.reconcileDueSessions({sessionId:id,beforeProvider:async()=>{timers++;}})).toMatchObject({claimed:1,settled:1});
+  expect(timers).toBe(2);expect(harness.facts.sessions[1]!.status).toBe("uploading");
+ });
+});
