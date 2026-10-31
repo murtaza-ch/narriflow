@@ -1831,7 +1831,7 @@ export class ProjectService {
 	}
 
 	async importZoomRecording(scope: ActorScope, input: {
-		source: AutopilotImportSource; ruleUpdatedAt: Date; connectionId: string;
+		source: AutopilotImportSource; connectionId: string;
 		beforeAutopilotAdmit?: (tx: Prisma.TransactionClient) => Promise<void>;
     confirmIngest?: (ids: readonly string[]) => Promise<void>;
 		notification: ZoomRecordingNotification; titlePrefix: string | null;
@@ -1848,7 +1848,7 @@ export class ProjectService {
 			beforeAutopilotAdmit: input.beforeAutopilotAdmit,
       confirmIngest: input.confirmIngest,
 			generationContext: { contentPack: input.recipe.contentPack, languageCode: input.recipe.languageCode, finishing: input.recipe.finishing, recipe: acceptedRecipe(input.recipe) },
-			zoom: { connectionId: input.connectionId, meetingUuid: item.meetingUuid, recordingId: item.recordingId, ruleUpdatedAt: input.ruleUpdatedAt },
+			zoom: { connectionId: input.connectionId, meetingUuid: item.meetingUuid, recordingId: item.recordingId },
 		});
 	}
 
@@ -1905,7 +1905,7 @@ export class ProjectService {
 			autopilotSource?: AutopilotImportSource;
 			beforeAutopilotAdmit?: (tx: Prisma.TransactionClient) => Promise<void>;
     confirmIngest?: (ids: readonly string[]) => Promise<void>;
-			zoom?: { connectionId: string; meetingUuid: string; recordingId: string; ruleUpdatedAt: Date };
+			zoom?: { connectionId: string; meetingUuid: string; recordingId: string };
 		} = {},
 	) {
 		if (input.episodes.length < 1 || input.episodes.length > 10) {
@@ -1972,6 +1972,7 @@ export class ProjectService {
 			}
 		}
 
+    const sourceOwner = options.zoom ? await prisma.zoomConnection.findUnique({where:{id:options.zoom.connectionId},select:{userId:true}}) : null;
 		const brand = await resolveIntakeBrand(actor, {
 			profileId: input.brandProfileId ?? null,
 		});
@@ -2000,14 +2001,15 @@ export class ProjectService {
 			try {
 				const created = await prisma.$transaction(async (tx) => {
 					await requireExecutionAdmissionOpen(tx);
-          await tx.$queryRaw`SELECT id FROM "User" WHERE id=${actor.actorUserId}::uuid FOR SHARE`;
-          await tx.$queryRaw`SELECT id FROM "WorkspaceMember" WHERE "workspaceId"=${actor.workspaceId}::uuid AND "userId"=${actor.actorUserId}::uuid FOR SHARE`;
+          const intakeActors=[...new Set([actor.actorUserId,...(sourceOwner?[sourceOwner.userId]:[])])].sort();
+          for(const user of intakeActors)await tx.$queryRaw`SELECT id FROM "User" WHERE id=${user}::uuid FOR SHARE`;
+          for(const user of intakeActors)await tx.$queryRaw`SELECT id FROM "WorkspaceMember" WHERE "workspaceId"=${actor.workspaceId}::uuid AND "userId"=${user}::uuid FOR SHARE`;
           await lockWorkspaceUsage(tx, actor.workspaceId);
           await tx.$queryRaw`SELECT id FROM "Workspace" WHERE id=${actor.workspaceId}::uuid FOR SHARE`;
 					const authority = options.autopilotSource ? await freezeAutopilotFinishingAuthority(tx, { workspaceId: actor.workspaceId, actorUserId: actor.actorUserId, source: options.autopilotSource, recipe: options.generationContext?.recipe, finishing: options.generationContext?.finishing, contentPack: options.generationContext?.contentPack, languageCode: options.generationContext?.languageCode, brandProfileId: input.brandProfileId ?? null }) : null;
 					if (options.zoom) {
 						await tx.$queryRaw`SELECT "id" FROM "ZoomConnection" WHERE "id" = ${options.zoom.connectionId}::uuid FOR UPDATE`;
-						const live = await tx.autopilotRule.findFirst({ where: { id: options.autopilotSource?.ruleId, workspaceId: actor.workspaceId, sourceKind: "zoom", status: "active", updatedAt: options.zoom.ruleUpdatedAt, zoomConnectionId: options.zoom.connectionId, zoomConnection: { revokedAt: null } } });
+						const live = await tx.autopilotRule.findFirst({ where: { id: options.autopilotSource?.ruleId, workspaceId: actor.workspaceId, sourceKind: "zoom", status: "active", zoomConnectionId: options.zoom.connectionId, zoomConnection: { revokedAt: null, refreshOutcomeUnknown: false, accessTokenEncrypted: { not: null }, refreshTokenEncrypted: { not: null }, workspaceId: actor.workspaceId, userId: sourceOwner?.userId ?? "00000000-0000-0000-0000-000000000000" } } });
 						if (!live) throw new ZoomError("zoom_rule_changed");
 					}
 					await options.beforeAutopilotAdmit?.(tx);

@@ -14,12 +14,12 @@ export class AutopilotSourceChanged extends ExpectedDomainFailureError<"autopilo
   constructor() { super({ code: "autopilot_source_changed", kind: "conflict", message: "The Autopilot source settings changed before this import was accepted. Retry with the current settings." }); }
 }
 
-async function lockedRule(tx: Tx, workspaceId: string, recipeId: string, ruleId: string, forUpdate = false) {
+async function lockedRule(tx: Tx, workspaceId: string, recipeId: string, ruleId: string, forUpdate = false, allowPaused = false) {
   // Recipe edits take Recipe then Rule. Never invert that order during intake.
   await tx.$queryRaw`SELECT "id" FROM "Recipe" WHERE "id" = ${recipeId}::uuid AND "workspaceId" = ${workspaceId}::uuid FOR SHARE`;
   if (forUpdate) await tx.$queryRaw`SELECT "id" FROM "AutopilotRule" WHERE "id" = ${ruleId}::uuid AND "workspaceId" = ${workspaceId}::uuid FOR NO KEY UPDATE`;
   else await tx.$queryRaw`SELECT "id" FROM "AutopilotRule" WHERE "id" = ${ruleId}::uuid AND "workspaceId" = ${workspaceId}::uuid FOR SHARE`;
-  const rule = await tx.autopilotRule.findFirst({ where: { id: ruleId, workspaceId, recipeId, status: { in: ["active", "running"] }, recipe: { deletedAt: null } }, include: { recipe: true } });
+  const rule = await tx.autopilotRule.findFirst({ where: { id: ruleId, workspaceId, recipeId, status: { in: ["active", "running", ...(allowPaused ? ["paused" as const] : [])] }, recipe: { deletedAt: null } }, include: { recipe: true } });
   if (!rule) throw new AutopilotSourceChanged();
   return rule;
 }
@@ -43,11 +43,11 @@ export function readAutopilotImportPlan(database: PrismaClient, expected: RuleSn
 }
 /** Admit a cycle and its child probe under the same transaction. Recipe is
  * locked before Rule UPDATE, with no SHARE-to-UPDATE lock upgrade. */
-export function lockAutopilotImportPlan(tx: Tx, expected: RuleSnapshot): Promise<AutopilotImportPlan> {
-  return capturePlan(tx, expected, true);
+export function lockAutopilotImportPlan(tx: Tx, expected: RuleSnapshot, options?: {allowPaused: boolean}): Promise<AutopilotImportPlan> {
+  return capturePlan(tx, expected, true, options?.allowPaused);
 }
-async function capturePlan(tx: Tx, expected: RuleSnapshot, forUpdate: boolean): Promise<AutopilotImportPlan> {
-    const live = await lockedRule(tx, expected.workspaceId, expected.recipeId, expected.id, forUpdate);
+async function capturePlan(tx: Tx, expected: RuleSnapshot, forUpdate: boolean, allowPaused = false): Promise<AutopilotImportPlan> {
+    const live = await lockedRule(tx, expected.workspaceId, expected.recipeId, expected.id, forUpdate,allowPaused);
     for (const key of ["createdByUserId", "sourceKind", "rssUrl", "titlePrefix", "zoomConnectionId", "zoomTopicFilter"] as const)
       if (live[key] !== expected[key]) throw new AutopilotSourceChanged();
     const fingerprint = await ruleFingerprint(tx, live.id);

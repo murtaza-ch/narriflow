@@ -658,6 +658,9 @@
     "./execution-selection-restore": "./src/execution-selection-restore.ts",
     "./execution-preparation-restore": "./src/execution-preparation-restore.ts",
     "./execution-recovery-locks": "./src/execution-recovery-locks.ts",
+    "./autopilot-execution": "./src/autopilot-execution.ts",
+    "./autopilot-execution-runtime": "./src/autopilot-execution-runtime.ts",
+    "./autopilot-episode-policy": "./src/autopilot-episode-policy.ts",
     "./dubbing-input": "./src/dubbing-input.ts",
     "./dubbing-execution": "./src/dubbing-execution.ts",
     "./dubbing-execution-runtime": "./src/dubbing-execution-runtime.ts",
@@ -665,9 +668,6 @@
     "./execution-native-restore": "./src/execution-native-restore.ts",
     "./execution-notification-recovery": "./src/execution-notification-recovery.ts",
     "./execution-redispatch-pages": "./src/execution-redispatch-pages.ts",
-    "./autopilot-execution": "./src/autopilot-execution.ts",
-    "./autopilot-execution-runtime": "./src/autopilot-execution-runtime.ts",
-    "./autopilot-episode-policy": "./src/autopilot-episode-policy.ts",
     "./execution-maintenance-runtime": "./src/execution-maintenance-runtime.ts",
     "./execution-private-retention": "./src/execution-private-retention.ts",
     "./execution-restore-verification": "./src/execution-restore-verification.ts",
@@ -675,7 +675,10 @@
     "./upload-session-execution": "./src/upload-session-execution.ts",
     "./pending-workspace-execution": "./src/pending-workspace-execution.ts",
     "./project-retention-execution": "./src/project-retention-execution.ts",
-    "./project-retention-storage": "./src/project-retention-storage.ts"
+    "./project-retention-storage": "./src/project-retention-storage.ts",
+    "./zoom-execution": "./src/zoom-execution.ts",
+    "./zoom-execution-runtime": "./src/zoom-execution-runtime.ts",
+    "./zoom-token-refresh": "./src/zoom-token-refresh.ts"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",

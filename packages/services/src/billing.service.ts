@@ -678,6 +678,10 @@ export class BillingService {
     return this.pendingBusinessWorkspaces().sweep();
   }
 
+  expirePendingBusinessWorkspace(workspaceId: string, executionEpoch: number) {
+    return this.pendingBusinessWorkspaces().expire(workspaceId, executionEpoch);
+  }
+
   async resumePendingBusinessWorkspaceCheckout(input: { actorUserId: string; workspaceId: string; returnDestination: string }) {
     await workspaceService.requireActor(input.actorUserId, input.workspaceId, "billing.manage");
     const prisma = getPrismaClient();
