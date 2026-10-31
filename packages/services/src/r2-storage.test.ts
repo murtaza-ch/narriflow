@@ -11,6 +11,7 @@ import {
   CompleteMultipartUploadCommand,
   CreateMultipartUploadCommand,
   S3Client,
+  PutObjectCommand,
   UploadPartCommand,
 } from "@aws-sdk/client-s3";
 import {
@@ -32,6 +33,7 @@ import {
   presignMultipartPartUrls,
   presignSingleUploadUrl,
   putJson,
+  putObjectBytes,
   sanitizeObjectMetadata,
 } from "./r2-storage";
 
@@ -782,3 +784,16 @@ r2ContractTest(
     }
   },
 );
+
+
+test("byte staging forwards write-once provider precondition", bindServiceTestEnvironment(async () => {
+ const previous = { ...process.env };
+ Object.assign(process.env, {R2_ACCOUNT_ID:"test-account",R2_ACCESS_KEY_ID:"test",R2_SECRET_ACCESS_KEY:"test",R2_BUCKET:"test-bucket"});
+ let writes=0;
+ const send=spyOn(S3Client.prototype,"send").mockImplementation((async (command:unknown)=>{
+  if(!(command instanceof PutObjectCommand))throw new Error("Unexpected request");
+  expect(command.input.IfNoneMatch).toBe("*"); writes++; return {};
+ }) as never);
+ try { await putObjectBytes({key:"notifications/test/body.json",bytes:new Uint8Array([1]),contentType:"application/json",ifNoneMatch:"*"});expect(writes).toBe(1); }
+ finally {send.mockRestore();for(const key of ["R2_ACCOUNT_ID","R2_ACCESS_KEY_ID","R2_SECRET_ACCESS_KEY","R2_BUCKET"]){if(previous[key]===undefined)delete process.env[key];else process.env[key]=previous[key];}}
+}));

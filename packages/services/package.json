@@ -537,7 +537,10 @@
     "./generated-media-validation": {
       "types": "./src/generated-media-validation.ts",
       "default": "./src/generated-media-validation.ts"
-    }
+    },
+    "./outbound-delivery": "./src/outbound-delivery.ts",
+    "./outbound-delivery-execution": "./src/outbound-delivery-execution.ts",
+    "./notification-body-storage": "./src/notification-body-storage.ts"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",

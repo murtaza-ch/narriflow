@@ -3623,3 +3623,46 @@ model OutboundProbe {
   @@unique([workspaceId, createdByUserId, requestFingerprint])
   @@index([status, retryAt, createdAt])
 }
+
+/// One immutable notification round. Native execution owns only this delivery,
+/// never the parent operation or subscription coordinator.
+model OutboundDelivery {
+  id String @id @default(uuid()) @db.Uuid
+  workspaceId String @db.Uuid
+  targetKind String @db.VarChar(24)
+  targetId String @db.Uuid
+  eventId String @db.Uuid
+  eventSeq BigInt?
+  createdByUserId String? @db.Uuid
+  requestFingerprint String? @unique @db.Char(64)
+  encryptedUrl String
+  urlHost String @db.VarChar(255)
+  urlFingerprint String @db.Char(64)
+  bodyStorageKey String @db.VarChar(1024)
+  bodySha256 String @db.Char(64)
+  bodyByteLength BigInt
+  bodyEtag String? @db.VarChar(160)
+  inputHash String @db.Char(64)
+  status String @default("preparing") @db.VarChar(24)
+  generation Int @default(1)
+  deploymentEpoch Int
+  attemptToken String? @db.Uuid
+  executorOwner String? @db.Uuid
+  leaseExpiresAt DateTime?
+  operationDeadlineAt DateTime?
+  expiresAt DateTime
+  chargedAttempts Int @default(0)
+  policyFailures Int @default(0)
+  maxAttempts Int
+  retryAt DateTime?
+  lastResponseStatus Int?
+  durationMs Int?
+  errorCode String? @db.VarChar(100)
+  lastReceiptArtifactId String? @db.Uuid
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  completedAt DateTime?
+
+  @@index([targetKind, targetId, createdAt])
+  @@index([status, retryAt])
+}
