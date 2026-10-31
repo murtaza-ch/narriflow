@@ -3,7 +3,6 @@ import { executionDispatchReferenceSchema, providerAttemptReferenceSchema, type 
 import { appendExecutionDispatch, readExecutionDispatch, executionDispatchIdentity } from "./execution-dispatch";
 import type { ProviderSubmissionIntent, WorkflowRunLifecycle } from "./workflow-run-lifecycle";
 import { flushWorkspaceEvents } from "./workspace-event";
-import { workflowRunExecutionInputHash } from "./workflow-execution-input";
 
 type Tx = Prisma.TransactionClient;
 const CAPACITY_LOCK = "provider_capacity:elevenlabs:scribe_v2";
@@ -59,17 +58,15 @@ export async function appendScribeCapacityWakesWithinTransaction(tx: Tx, input: 
   if (input.afterRunId && !cursor) throw new Error("Capacity continuation cursor missing");
   const waiting = await tx.workflowRun.findMany({ where: { deploymentEpoch: input.deploymentEpoch, stage: "stt", status: "queued", errorCode: SCRIBE_CAPACITY_WAIT,
     project: { ingestStatus: { not: "failed" } }, ...(cursor ? { OR: [{ createdAt: { gt: cursor.createdAt } }, { createdAt: cursor.createdAt, id: { gt: cursor.id } }] } : {}) },
-    include: { project: { select: { sourceRevision: true, transcript: { select: { sourceAudioId: true, sourceRevision: true } } } } }, orderBy: [{ createdAt: "asc" }, { id: "asc" }], take: 101 });
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }], take: 101 });
   const now = await clock(tx), dispatchIds: string[] = [];
   for (const run of waiting.slice(0, 100)) {
-    const audio = run.project.transcript;
-    if (!audio?.sourceAudioId || audio.sourceRevision !== run.project.sourceRevision) continue;
+    const registered = await tx.executionDispatch.findFirstOrThrow({ where: { deploymentEpoch: run.deploymentEpoch, subjectKind: "workflow_run", subjectId: run.id,
+      generation: run.generation, kind: "operation_driver", wakeKind: null, deadlineKind: null }, orderBy: { createdAt: "asc" } });
     const identity = { deploymentEpoch: run.deploymentEpoch, kind: "operation_driver" as const, subject: { kind: "workflow_run" as const, id: run.id }, generation: run.generation,
       wakeKind: `cap_${input.attemptId.replaceAll("-", "")}` };
     const existing = await tx.executionDispatch.findUnique({ where: { deliveryKey: (await executionDispatchIdentity(identity)).deliveryKey }, select: { dueAt: true } });
-    const wake = await appendExecutionDispatch(tx, { ...identity, dueAt: existing?.dueAt ?? now,
-      inputHash: await workflowRunExecutionInputHash({ id: run.id, projectId: run.projectId, stage: run.stage, contentPackId: run.contentPackId, generation: run.generation,
-        deploymentEpoch: run.deploymentEpoch, sourceAudioId: audio.sourceAudioId, sourceRevision: audio.sourceRevision }) });
+    const wake = await appendExecutionDispatch(tx, { ...identity, dueAt: existing?.dueAt ?? now, inputHash: registered.inputHash });
     dispatchIds.push(wake.reference.dispatchId);
   }
   if (waiting.length > 100) {
