@@ -4,7 +4,8 @@ import { randomUUID } from "node:crypto";
 import { readExecutionAdmission, assertExecutionAdmissionOpen } from "./execution-admission";
 import { queueLibraryIndex, recoverLibraryIndex } from "./library-index";
 import { cancelRenderGroupsWithinTransaction, admitRenderGroupsWithinTransaction, renderGroupParentSettlement, type RenderGroupAdmission } from "./render-group-lifecycle";
-import { renderGroupExecutionInputHash, renderGroupExportIdentity, type RenderGroupRef } from "./render-group-contract";
+import { renderGroupExecutionInputHash, renderGroupExportIdentity, renderGroupConfigurationFromIdentity, partitionRenderGroups, type RenderGroupRef } from "./render-group-contract";
+import { hasFeature } from "./plan-features";
 import { Prisma, type PrismaClient, type WorkflowRun, type Project } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
 import {
@@ -39,6 +40,7 @@ import { flushProjectProgressDrains, queueProjectProgressCatchup } from "./progr
 import { progressDeliveryPort } from "./progress-delivery";
 import { deliverExecutionDispatches } from "./execution-dispatch-runtime";
 import { appendExecutionDispatch, readExecutionDispatch, executionDispatchIdentity, type ExecutionDispatchRecord } from "./execution-dispatch";
+import { appendWorkflowRunDispatch, readWorkflowRunInputHash } from "./workflow-dispatch";
 import { workflowRunExecutionInputHash } from "./workflow-execution-input";
 import { executionDispatchReferenceSchema, type ExecutionDispatchReference, type ExecutionDisposition, providerAttemptReferenceSchema, type ProviderAttemptReference } from "@narriflow/validators/execution";
 export type { ProviderAttemptReference } from "@narriflow/validators/execution";
@@ -201,9 +203,14 @@ export interface RenderWorkSetOutcome {
 
 export type RenderRunPreparation =
   | { kind: "prepared"; workSet: RenderWorkSet; groups: RenderGroupRef[]; dispatchIds: string[] }
-  | { kind: "superseded" | "terminal" | "waiting_for_video"; dispatchIds: string[] };
+  | { kind: "waiting_for_video"; dueAt: Date; deadlineDispatchId: string; dispatchIds: string[] }
+  | { kind: "superseded" | "terminal"; dispatchIds: string[] };
 export type RenderRunSettlement =
-  | { kind: "settled"; outcome: RenderWorkSetOutcome; dispatchIds: string[] }
+  | { kind: "settled"; outcome: RenderWorkSetOutcome; dispatchIds: string[]; wait?: {
+    dueAt: Date; deliveryId: string;
+    /** Ephemeral command scope only. Workflow directives retain one reference. */
+    deadlines: { reference: ExecutionDispatchReference; observedDeadlineAt: Date }[];
+  } }
   | { kind: "superseded" | "not_prepared"; dispatchIds: string[] };
 
 export type { RenderTerminalNotificationPayload } from "@narriflow/validators";
@@ -545,7 +552,7 @@ export class WorkflowRunLifecycle {
     if (!project || run.deploymentEpoch !== reference.deploymentEpoch || run.generation !== reference.generation) return { kind: "terminal", disposition: { disposition: "superseded" } };
     if (project.ingestStatus === "failed") return { kind: "terminal", disposition: { disposition: "cancelled" } };
     try {
-      if (await this.runInputHash(tx, run, project.sourceRevision) !== reference.inputHash) return { kind: "terminal", disposition: { disposition: "superseded" } };
+      if (await readWorkflowRunInputHash(tx, run, project.sourceRevision) !== reference.inputHash) return { kind: "terminal", disposition: { disposition: "superseded" } };
     } catch (error) {
       if (!(error instanceof Error) || error.message !== "workflow_source_revision_superseded") throw error;
       return { kind: "terminal", disposition: { disposition: "superseded" } };
@@ -692,23 +699,7 @@ export class WorkflowRunLifecycle {
 
   /** Registers the frozen run in the caller's domain transaction. Safe to replay. */
   async dispatchRunWithinTransaction(tx: TransactionClient, runId: string): Promise<ExecutionDispatchRecord> {
-    const run = await tx.workflowRun.findUniqueOrThrow({ where: { id: runId }, include: { project: { select: { sourceRevision: true } } } });
-
-    const identity = { deploymentEpoch: run.deploymentEpoch, kind: run.stage === "clip_rendering" ? "render_run" as const : "operation_driver" as const,
-      subject: { kind: "workflow_run" as const, id: run.id }, generation: run.generation };
-    const key = await executionDispatchIdentity(identity);
-    const existing = await tx.executionDispatch.findUnique({ where: { deliveryKey: key.deliveryKey }, select: { dueAt: true } });
-    return appendExecutionDispatch(tx, { ...identity,
-      inputHash: await this.runInputHash(tx, run, run.project.sourceRevision),
-      dueAt: existing?.dueAt ?? run.nextAttemptAt ?? run.createdAt });
-  }
-
-  private async runInputHash(tx: TransactionClient, run: WorkflowRun, sourceRevision: number): Promise<string> {
-    const transcript = await tx.transcript.findUnique({ where: { projectId: run.projectId }, select: { id: true, selectionGeneration: true, workflowAttemptId: true, sourceAudioId: true, sourceRevision: true } });
-    if (transcript && transcript.sourceRevision !== sourceRevision) throw new Error("workflow_source_revision_superseded");
-    return workflowRunExecutionInputHash({ id: run.id, projectId: run.projectId, stage: run.stage, contentPackId: run.contentPackId,
-      generation: run.generation, deploymentEpoch: run.deploymentEpoch, sourceAudioId: transcript?.sourceAudioId ?? null, sourceRevision: transcript?.sourceRevision ?? sourceRevision,
-      sourceTranscript: transcript ? { id: transcript.id, generation: transcript.selectionGeneration, attemptId: transcript.workflowAttemptId } : null });
+    return appendWorkflowRunDispatch(tx, runId);
   }
 
   private async admitWithinTransaction(
@@ -1701,11 +1692,12 @@ export class WorkflowRunLifecycle {
           });
         }
         frozenAt = await this.databaseNow(tx);
+        const assignedCount = await tx.clipRender.count({ where: { workflowRunId: attempt.workflowRunId } });
         await tx.workflowRun.update({
           where: { id: attempt.workflowRunId },
           data: {
             renderWorkSetFrozenAt: frozenAt,
-            requestedCount: candidateIds.length,
+            requestedCount: assignedCount,
           },
         });
       }
@@ -3020,19 +3012,40 @@ export class WorkflowRunLifecycle {
   }
 
   /** Short parent command: frozen membership and all child obligations commit together. */
-  async prepareRenderRun(reference: ExecutionDispatchReference, configurations: readonly RenderGroupAdmission[]): Promise<RenderRunPreparation> {
+  async prepareRenderRun(reference: ExecutionDispatchReference): Promise<RenderRunPreparation> {
     return this.transaction(async (tx) => {
       const state = await this.lockRenderRun(tx, reference);
       if (!state) return { kind: "superseded", dispatchIds: [] };
       queueProjectProgressCatchup(tx, state.run.projectId);
-      const { run, project } = state;
+      const { run, project, now } = state;
       if (["completed", "partial", "failed", "cancelled"].includes(run.status)) return { kind: "terminal", dispatchIds: [] };
-      if (project.ingestStatus !== "ready" || !project.sourceStorageKey) return { kind: "waiting_for_video", dispatchIds: [] };
       const workSet = await this.beginRenderWorkSetWithinTransaction(tx, { workflowRunId: run.id, projectId: run.projectId });
+      const existingGroups = run.renderWorkSetGeneration ? await tx.renderGroup.findMany({ where: { workflowRunId: run.id }, orderBy: { id: "asc" }, include: { members: true } }) : null;
+      const workspace = await tx.workspace.findUniqueOrThrow({ where: { id: project.workspaceId }, select: { pricingTier: true } });
+      const configurations: RenderGroupAdmission[] = existingGroups
+        ? existingGroups.map(group => ({ configuration: renderGroupConfigurationFromIdentity(group.clipId, group.exportIdentity), variantIds: group.members.map(member => member.clipRenderId) }))
+        : partitionRenderGroups(await tx.clipRender.findMany({ where: { workflowRunId: run.id }, orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+          select: { id: true, clipId: true, resolution: true, editorRevision: true, clip: { select: { editorRevision: true } }, exportVariant: { select: { exportId: true, watermark: true } } } }),
+          !hasFeature(resolvePricingTier(workspace.pricingTier), "export.noWatermark"));
       const groups = await admitRenderGroupsWithinTransaction(tx, { workflowRunId: run.id, projectId: run.projectId, groups: configurations });
       await tx.workflowRun.update({ where: { id: run.id }, data: { status: "waiting", attemptId: null, leaseOwner: null, leaseExpiresAt: null, heartbeatAt: null, nextAttemptAt: null } });
       const parent = await this.dispatchRunWithinTransaction(tx, run.id);
       const dispatchIds: string[] = [];
+      if (project.ingestStatus !== "ready" || !project.sourceStorageKey) {
+        const dueAt = run.operationDeadlineAt ?? new Date(run.createdAt.getTime() + 45 * 60_000);
+        if (!run.operationDeadlineAt) await tx.workflowRun.update({ where: { id: run.id }, data: { operationDeadlineAt: dueAt } });
+        const watchdog = await appendExecutionDispatch(tx, { ...parent.reference, dueAt, deadlineKind: "operation", observedDeadlineAt: dueAt });
+        dispatchIds.push(watchdog.reference.dispatchId);
+        if (dueAt <= now) {
+          await tx.clipRender.updateMany({ where: { workflowRunId: run.id, status: { in: ["pending", "rendering"] } },
+            data: { status: "failed", errorCode: "source_video_unavailable", failureDisposition: "permanent", completedAt: now } });
+          await tx.renderGroup.updateMany({ where: { workflowRunId: run.id, status: "queued" }, data: { status: "failed", settledAt: now, nextAttemptAt: null } });
+          const outcome = await this.settleRenderWorkSetWithinTransaction(tx, { workflowRunId: run.id, projectId: run.projectId, eventId: workSet.workflowRunId });
+          if (outcome.followUpWorkflowRunId) dispatchIds.push((await this.dispatchRunWithinTransaction(tx, outcome.followUpWorkflowRunId)).reference.dispatchId);
+          return { kind: "terminal", dispatchIds };
+        }
+        return { kind: "waiting_for_video", dueAt, deadlineDispatchId: watchdog.reference.dispatchId, dispatchIds };
+      }
       for (const ref of groups) {
         const group = await tx.renderGroup.findUniqueOrThrow({ where: { id: ref.groupId }, include: { members: { select: { clipRenderId: true } } } });
         const configuration = configurations.find(candidate => candidate.configuration.clipId === group.clipId && renderGroupExportIdentity(candidate.configuration) === group.exportIdentity)?.configuration;
@@ -3045,7 +3058,10 @@ export class WorkflowRunLifecycle {
           inputHash: await renderGroupExecutionInputHash({ ...ref, parentInputHash: parent.reference.inputHash, exportIdentity: group.exportIdentity,
             memberIds: group.members.map(member => member.clipRenderId), configuration }),
           dueAt: existing?.dueAt ?? group.nextAttemptAt ?? group.createdAt });
-        dispatchIds.push(dispatch.reference.dispatchId);
+        const dueAt = group.operationDeadlineAt ?? new Date(now.getTime() + 45 * 60_000);
+        if (!group.operationDeadlineAt) await tx.renderGroup.update({ where: { id: group.id }, data: { operationDeadlineAt: dueAt } });
+        const watchdog = await appendExecutionDispatch(tx, { ...identity, inputHash: dispatch.reference.inputHash, dueAt, deadlineKind: "operation", observedDeadlineAt: dueAt });
+        dispatchIds.push(watchdog.reference.dispatchId, dispatch.reference.dispatchId);
       }
       return { kind: "prepared", workSet, groups, dispatchIds };
     });
@@ -3063,6 +3079,22 @@ export class WorkflowRunLifecycle {
         // Correlation for event dedupe only. It is never persisted as an execution attempt.
         eventId: state.run.renderWorkSetGeneration });
       const dispatchIds = outcome.followUpWorkflowRunId ? [(await this.dispatchRunWithinTransaction(tx, outcome.followUpWorkflowRunId)).reference.dispatchId] : [];
+      if (outcome.status === "pending") {
+        const groups = await tx.renderGroup.findMany({ where: { workflowRunId: state.run.id, status: { in: ["queued", "running"] } }, orderBy: { id: "asc" } });
+        const deadlines: { reference: ExecutionDispatchReference; observedDeadlineAt: Date }[] = [];
+        for (const group of groups) {
+          if (!group.operationDeadlineAt) throw new Error("render_group_deadline_missing");
+          const identity = { deploymentEpoch: group.deploymentEpoch, generation: group.generation, kind: "operation_driver" as const, subject: { kind: "render_group" as const, id: group.id } };
+          const key = await executionDispatchIdentity(identity);
+          const driver = await tx.executionDispatch.findUniqueOrThrow({ where: { deliveryKey: key.deliveryKey } });
+          const watchdog = await appendExecutionDispatch(tx, { ...identity, inputHash: driver.inputHash, dueAt: group.operationDeadlineAt, deadlineKind: "operation", observedDeadlineAt: group.operationDeadlineAt });
+          dispatchIds.push(watchdog.reference.dispatchId);
+          deadlines.push({ reference: watchdog.reference, observedDeadlineAt: group.operationDeadlineAt });
+        }
+        const last = deadlines.reduce<typeof deadlines[number] | null>((latest, value) => !latest || value.observedDeadlineAt > latest.observedDeadlineAt ? value : latest, null);
+        if (!last) throw new Error("render_parent_obligation_missing");
+        return { kind: "settled", outcome, dispatchIds, wait: { dueAt: last.observedDeadlineAt, deliveryId: last.reference.dispatchId, deadlines } };
+      }
       return { kind: "settled", outcome, dispatchIds };
     });
   }
