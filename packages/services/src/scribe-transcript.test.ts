@@ -13,7 +13,8 @@ import type {
   WorkflowFailure,
 } from "./workflow-run-lifecycle";
 
-const key = { workflowRunId: "run-1", attemptId: "attempt-1" };
+const key = { workflowRunId: "run-1", attemptId: "attempt-1", deploymentEpoch: 1, sourceRevision: 1,
+  sourceAudioId: "d5ab39a2-80e7-45d1-8da8-5bc90097075e" };
 const providerIds = { requestId: "req_1", transcriptionId: "tx_1" };
 const attempt = { workflowRunId: "run-1", attemptId: "attempt-1", projectId: "project-1", stage: "transcription" } as never;
 const waiting: ProviderAttemptLookup = {
@@ -63,14 +64,24 @@ function harness(options: {
 }
 
 describe("scribeRawStorageKey", () => {
-  test("is keyed by project, run, attempt and provider model", () => {
-    expect(scribeRawStorageKey("project-1", key)).toBe(
-      "projects/project-1/transcripts/run-1-attempt-1-elevenlabs-scribe_v2.json",
+  test("binds exact source lineage, provider identity and raw payload bytes", async () => {
+    // SHA-256 literals independently calculated with Python hashlib over compact JSON.
+    expect(await scribeRawStorageKey("project-1", key, providerIds, { text: "hello" })).toBe(
+      "projects/project-1/transcripts/1/1/run-1-attempt-1/3f00bb5588c22c53680b69a6dc2c7886ff9bdb1651f0a8ee7897341883f11766-cbbbdcd27692344de5dbab3abcaba413fb0f45307267de7081401576df1cb176.json",
     );
   });
 });
 
 describe("finalizeScribeTranscript", () => {
+  test("a stale concurrent payload cannot replace the winner's raw evidence object", async () => {
+    const winner = harness(), stale = harness({ settle: { kind: "stale", reason: "attempt_superseded" } });
+    await Promise.all([
+      winner.finalize({ key, payload: { ...payload, deliveryMarker: "winner" }, providerIds }),
+      stale.finalize({ key, payload: { ...payload, deliveryMarker: "stale" }, providerIds }),
+    ]);
+    expect(winner.stored[0]!.key).not.toBe(stale.stored[0]!.key);
+    expect(winner.completed[0]!.rawStorageKey).toBe(winner.stored[0]!.key);
+  });
   test("stores the raw result, normalizes it and completes the waiting attempt", async () => {
     const h = harness();
     const result = await h.finalize({ key, payload, providerIds });
@@ -79,10 +90,10 @@ describe("finalizeScribeTranscript", () => {
     expect(h.calls).toEqual(["lookup", "store", "complete"]);
     expect(h.lookups).toEqual([providerIds]);
     expect(h.stored).toEqual([{
-      key: "projects/project-1/transcripts/run-1-attempt-1-elevenlabs-scribe_v2.json",
+      key: expect.stringMatching(/^projects\/project-1\/transcripts\/1\/1\/run-1-attempt-1\/[a-f0-9]{64}-[a-f0-9]{64}\.json$/),
       value: payload,
       metadata: {
-        project_id: "project-1", workflow_run_id: "run-1", attempt_id: "attempt-1",
+        project_id: "project-1", workflow_run_id: "run-1", attempt_id: "attempt-1", deployment_epoch: "1", source_revision: "1", source_audio_id: key.sourceAudioId,
         provider: "elevenlabs", provider_job_id: "tx_1", provider_request_id: "req_1",
       },
     }]);
@@ -94,7 +105,7 @@ describe("finalizeScribeTranscript", () => {
       providerRequestId: "req_1",
       languageCode: "en",
       durationSeconds: 188,
-      rawStorageKey: "projects/project-1/transcripts/run-1-attempt-1-elevenlabs-scribe_v2.json",
+      rawStorageKey: h.stored[0]!.key,
     });
     expect(h.completed[0]!.speakerCount).toBeGreaterThan(1);
     expect((h.completed[0]!.utterances as unknown[]).length).toBeGreaterThan(0);

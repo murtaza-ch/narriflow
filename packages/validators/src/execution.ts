@@ -53,6 +53,16 @@ export const executionDispatchReferenceSchema = z.strictObject({
 export type ExecutionDispatchKind = z.infer<typeof executionDispatchKindSchema>;
 export type ExecutionSubjectKind = z.infer<typeof executionSubjectKindSchema>;
 export type ExecutionSubject = z.infer<typeof executionSubjectSchema>;
+
+/** A provider lineage survives its TS execution lease, but never a source or epoch change. */
+export const providerAttemptReferenceSchema = z.strictObject({
+  workflowRunId: z.string().uuid(),
+  attemptId: z.string().uuid(),
+  deploymentEpoch: generation,
+  sourceRevision: generation,
+  sourceAudioId: z.string().uuid().nullable(),
+});
+export type ProviderAttemptReference = z.infer<typeof providerAttemptReferenceSchema>;
 export type ExecutionDispatchReference = z.infer<typeof executionDispatchReferenceSchema>;
 
 /** Parsing a fence never grants authority. Services must compare it under locks. */

@@ -7,7 +7,8 @@ import { createProjectsWebhookRoutes, type ProjectsWebhookDeps } from "./webhook
 const SECRET = "wsec_test_secret";
 const NOW_S = 1_800_000_000;
 const encoder = new TextEncoder();
-const metadata = { workflowRunId: "run-1", attemptId: "attempt-1" };
+const metadata = { workflowRunId: "ce4d7e7e-caae-4d85-80f8-17f55e2eaf79", attemptId: "05bfd4bb-8ce2-455c-a598-1328f676a288",
+  deploymentEpoch: 3, sourceRevision: 2, sourceAudioId: "d5ab39a2-80e7-45d1-8da8-5bc90097075e" };
 
 function signedHeader(body: string, t = NOW_S, secret = SECRET): string {
   return `t=${t},v0=${createHmac("sha256", secret).update(`${t}.`).update(encoder.encode(body)).digest("hex")}`;
@@ -135,7 +136,9 @@ describe("ElevenLabs success envelope", () => {
     const warn = console.warn;
     console.warn = (line: string) => void logs.push(line);
     try {
-      for (const bad of [null, "not json", "[]", JSON.stringify({ workflowRunId: "run-1" }), { attemptId: "a" }, { workflowRunId: 1, attemptId: "a" }]) {
+      for (const bad of [null, "not json", "[]", JSON.stringify({ workflowRunId: "run-1" }), { attemptId: "a" }, { workflowRunId: 1, attemptId: "a" },
+        { workflowRunId: metadata.workflowRunId, attemptId: metadata.attemptId }, { ...metadata, deploymentEpoch: 0 }, { ...metadata, sourceRevision: 0 },
+        { ...metadata, signedUrl: "https://private.example/source?credential=secret" }]) {
         const response = await t.post(success({}, bad));
         expect(response.status).toBe(200);
         expect(await response.json()).toEqual({ received: true, disposition: "ignored" });

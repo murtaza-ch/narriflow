@@ -15,7 +15,7 @@ import {
   workflowFailureFromUnknown,
   type ClaimedWorkflowAttempt,
   type CompleteTranscriptInput,
-  type ProviderAttemptKey,
+  type ProviderAttemptReference,
   type ProviderSettlementResult,
   type ScribeCallStage,
   type WaitingWorkflowAttempt,
@@ -165,11 +165,9 @@ export type ScribeSubmitInput =
   | { kind: "url"; sourceUrl: string }
   | { kind: "file"; path: string };
 
-export interface ScribeSubmitRequest {
+export interface ScribeSubmitRequest extends ProviderAttemptReference {
   apiKey: string;
   webhookId: string;
-  workflowRunId: string;
-  attemptId: string;
   /** Provider (ISO 639-3) code; absent means Scribe auto-detects. */
   languageCode: string | null;
   input: ScribeSubmitInput;
@@ -193,7 +191,8 @@ export async function buildScribeSubmitForm(request: Omit<ScribeSubmitRequest, "
   form.set("webhook_id", request.webhookId);
   form.set(
     "webhook_metadata",
-    JSON.stringify({ workflowRunId: request.workflowRunId, attemptId: request.attemptId }),
+    JSON.stringify({ workflowRunId: request.workflowRunId, attemptId: request.attemptId, deploymentEpoch: request.deploymentEpoch,
+      sourceRevision: request.sourceRevision, sourceAudioId: request.sourceAudioId }),
   );
   if (request.languageCode) form.set("language_code", request.languageCode);
   if (request.input.kind === "url") {
@@ -425,7 +424,8 @@ export async function processTranscriptRun(
     }
 
     const { apiKey, webhookId } = getScribeSubmitConfig();
-    const key: ProviderAttemptKey = { workflowRunId: run.id, attemptId: attempt.attemptId };
+    const key: ProviderAttemptReference = { workflowRunId: run.id, attemptId: attempt.attemptId,
+      deploymentEpoch: attempt.deploymentEpoch, sourceRevision: attempt.sourceRevision, sourceAudioId: attempt.sourceAudioId };
     const presignedUrl = await adapters.presign(run, sourceStorageKey);
     signal?.throwIfAborted();
 
@@ -470,8 +470,7 @@ export async function processTranscriptRun(
       const accepted = await adapters.submit({
         apiKey,
         webhookId,
-        workflowRunId: run.id,
-        attemptId: attempt.attemptId,
+        ...key,
         languageCode,
         input,
         signal,
@@ -554,7 +553,7 @@ async function completeWithoutSpeechToText(
  * or already-settled attempt as a no-op instead of an error. */
 async function settleTranscriptRunFailure(
   run: { id: string; projectId: string },
-  attempt: WorkflowAttemptRef,
+  attempt: ClaimedWorkflowAttempt,
   error: unknown,
   adapters: Pick<TranscriptSubmitAdapters, "lifecycle" | "notifyFailure">,
   submissionBegun: boolean,
@@ -563,7 +562,8 @@ async function settleTranscriptRunFailure(
   const failure = workflowFailureFromUnknown(error);
   if (submissionBegun) {
     const settlement = await adapters.lifecycle.failProviderAttempt(
-      { workflowRunId: run.id, attemptId: attempt.attemptId },
+      { workflowRunId: run.id, attemptId: attempt.attemptId, deploymentEpoch: attempt.deploymentEpoch,
+        sourceRevision: attempt.sourceRevision, sourceAudioId: attempt.sourceAudioId },
       failure,
     );
     if (settlement.kind !== "applied") {
@@ -605,7 +605,7 @@ export interface TranscriptResultAdapters {
     | "reportProgress"
   >;
   finalize: (input: {
-    key: ProviderAttemptKey;
+    key: ProviderAttemptReference;
     payload: Record<string, unknown>;
     providerIds: { transcriptionId: string };
   }) => Promise<ProviderSettlementResult>;
@@ -681,7 +681,8 @@ async function settleWaitingTranscript(
   timeoutMs: number,
   adapters: TranscriptResultAdapters,
 ): Promise<boolean> {
-  const key: ProviderAttemptKey = { workflowRunId: attempt.workflowRunId, attemptId: attempt.attemptId };
+  const key: ProviderAttemptReference = { workflowRunId: attempt.workflowRunId, attemptId: attempt.attemptId,
+    deploymentEpoch: attempt.deploymentEpoch, sourceRevision: attempt.sourceRevision, sourceAudioId: attempt.sourceAudioId };
   const run = { id: attempt.workflowRunId, projectId: attempt.projectId };
 
   if (!attempt.providerJobId) {
@@ -768,7 +769,8 @@ async function failWaitingTranscript(
   adapters: TranscriptResultAdapters,
 ): Promise<boolean> {
   const settlement = await adapters.lifecycle.failProviderAttempt(
-    { workflowRunId: attempt.workflowRunId, attemptId: attempt.attemptId },
+    { workflowRunId: attempt.workflowRunId, attemptId: attempt.attemptId, deploymentEpoch: attempt.deploymentEpoch,
+      sourceRevision: attempt.sourceRevision, sourceAudioId: attempt.sourceAudioId },
     failure,
     { transcriptionId: attempt.providerJobId },
   );

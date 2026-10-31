@@ -1,4 +1,4 @@
-import { WorkflowFailure } from "./workflow-run-lifecycle";
+import { WorkflowFailure } from "./workflow-attempt-contract";
 
 // Provider error classification (D13). One classifier for the worker's HTTP
 // answers and the webhook's `webhook_error`; the provider's prose is read to
