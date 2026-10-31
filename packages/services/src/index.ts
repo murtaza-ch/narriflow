@@ -697,3 +697,5 @@ export * from "./notification-body-storage";
 export * from "./outbound-delivery-runtime";
 export * from "./notification-dispatch";
 export { completionCallbackExecutionInputHash, workspaceEventExecutionInputHash } from "./notification-identity";
+
+export { clipPreparationBinding, encodeClipPreparationInput, decodeClipPreparationInput } from "./clip-preparation-input";
