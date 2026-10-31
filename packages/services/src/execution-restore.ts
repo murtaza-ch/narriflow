@@ -1,5 +1,6 @@
+import { assertExecutionSnapshotDatabase, validateExecutionSnapshotEvidence, ExecutionSnapshotError, type ExecutionSnapshotEvidence } from "./execution-snapshot";
 import { executionDispatchReferenceSchema, type ExecutionDispatchReference } from "@narriflow/validators/execution";
-import { executeExecutionPage } from "./execution-page-receipt";
+import { executeExecutionPage, readExecutionPageReceipt } from "./execution-page-receipt";
 import { readExecutionAdmission } from "./execution-admission";
 import type { Prisma, PrismaClient } from "@prisma/client";
 import { appendExecutionDispatch, executionDispatchIdentity, readExecutionDispatch } from "./execution-dispatch";
@@ -24,10 +25,10 @@ function point(value: ExecutionRestorePosition) {
 function identity(facts: Facts, phase: ExecutionRestorePhase, after: ExecutionRestorePosition | null) {
   if (!EXECUTION_RESTORE_PHASES.includes(phase) || facts.deploymentEpoch !== Math.max(facts.snapshotEpoch, facts.fenceAboveEpoch) + 1 ||
     ![facts.snapshotEpoch, facts.fenceAboveEpoch, facts.deploymentEpoch].every(value => Number.isSafeInteger(value) && value >= 1 && value <= 2_147_483_647) || !Number.isSafeInteger(facts.cutoff.getTime()) || facts.cutoff.getTime() < 0) throw invalid();
-  return `rs1.${facts.snapshotEpoch}.${facts.fenceAboveEpoch}.${facts.deploymentEpoch}.${facts.cutoff.getTime()}.${phase}${after ? `.${point(after)}` : ""}`;
+  return `rs2.${facts.snapshotEpoch}.${facts.fenceAboveEpoch}.${facts.deploymentEpoch}.${facts.cutoff.getTime()}.${phase}${after ? `.${point(after)}` : ""}`;
 }
 function parse(id: string) {
-  const match = /^rs1\.([1-9][0-9]{0,9})\.([1-9][0-9]{0,9})\.([1-9][0-9]{0,9})\.(0|[1-9][0-9]{0,12})\.([a-z_]+)(?:\.(0|[1-9][0-9]{0,12})\.([a-f0-9]{32}))?$/.exec(id);
+  const match = /^rs2\.([1-9][0-9]{0,9})\.([1-9][0-9]{0,9})\.([1-9][0-9]{0,9})\.(0|[1-9][0-9]{0,12})\.([a-z_]+)(?:\.(0|[1-9][0-9]{0,12})\.([a-f0-9]{32}))?$/.exec(id);
   if (!match) throw invalid();
   const facts = { snapshotEpoch: Number(match[1]), fenceAboveEpoch: Number(match[2]), deploymentEpoch: Number(match[3]), cutoff: new Date(Number(match[4])) };
   const phase = match[5] as ExecutionRestorePhase, compact = match[7];
@@ -35,8 +36,8 @@ function parse(id: string) {
   if (identity(facts, phase, after) !== id) throw invalid();
   return { facts, phase, after };
 }
-async function hash(epoch: number, subjectId: string) {
-  return Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(["restore-page-v1", epoch, subjectId])))), byte => byte.toString(16).padStart(2, "0")).join("");
+async function hash(epoch: number, subjectId: string, attestation: string) {
+  return Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(["restore-page-v2", epoch, subjectId, attestation])))), byte => byte.toString(16).padStart(2, "0")).join("");
 }
 
 /** Operator authority only. The fence commits in its own transaction before
@@ -47,51 +48,91 @@ export class ExecutionRestoreService {
     this.limit = options.limit ?? 100;
     if (!Number.isSafeInteger(this.limit) || this.limit < 1 || this.limit > 100) throw new ExecutionRestoreError("restore_page_invalid");
   }
-  private async append(tx: Prisma.TransactionClient, facts: Facts, phase: ExecutionRestorePhase, after: ExecutionRestorePosition | null) {
+  private async append(tx: Prisma.TransactionClient, facts: Facts, phase: ExecutionRestorePhase, after: ExecutionRestorePosition | null, attestation: string) {
     const subjectId = identity(facts, phase, after);
-    return (await appendExecutionDispatch(tx, { deploymentEpoch: facts.deploymentEpoch, generation: 1, kind: "maintenance", subject: { kind: "maintenance", id: subjectId }, inputHash: await hash(facts.deploymentEpoch, subjectId), dueAt: facts.cutoff })).reference;
+    return (await appendExecutionDispatch(tx, { deploymentEpoch: facts.deploymentEpoch, generation: 1, kind: "maintenance", subject: { kind: "maintenance", id: subjectId }, inputHash: await hash(facts.deploymentEpoch, subjectId, attestation), dueAt: facts.cutoff })).reference;
   }
-  async begin(input: { expectedEpoch: number; fenceAboveEpoch: number }) {
+  async begin(input: { expectedEpoch: number; fenceAboveEpoch: number; evidence: ExecutionSnapshotEvidence }) {
+    if (!input.evidence?.proof || !input.evidence.proofHash) throw new ExecutionSnapshotError("restore_snapshot_proof_required");
     if (![input.expectedEpoch, input.fenceAboveEpoch].every(value => Number.isSafeInteger(value) && value >= 1 && value < 2_147_483_647)) throw new ExecutionRestoreError("restore_epoch_changed");
-    const deploymentEpoch = Math.max(input.expectedEpoch, input.fenceAboveEpoch) + 1;
+    const evidence = await validateExecutionSnapshotEvidence({ proof: input.evidence.proof, snapshotSha256: input.evidence.proof.snapshotSha256,
+      localMigrationSha256: input.evidence.localMigrationSha256, worker: input.evidence.worker });
+    if (evidence.proofHash !== input.evidence.proofHash) throw new ExecutionSnapshotError("restore_snapshot_proof_invalid");
+    if (input.fenceAboveEpoch > evidence.proof.sourceEpoch) throw new ExecutionSnapshotError("restore_snapshot_history_unknown");
+    if (input.expectedEpoch !== evidence.proof.sourceEpoch || input.fenceAboveEpoch !== evidence.proof.sourceEpoch) throw new ExecutionSnapshotError("restore_snapshot_proof_invalid");
+    const deploymentEpoch = evidence.proof.sourceEpoch + 1;
     const reference = await this.options.database.$transaction(async tx => {
-      const [changed] = await tx.$queryRaw<Array<{ epoch: number; changedAt: Date }>>`UPDATE "ExecutionEpoch"
-        SET epoch = ${deploymentEpoch}, "admissionOpen" = false, "changedAt" = clock_timestamp() AT TIME ZONE 'UTC'
-        WHERE id = 1 AND epoch = ${input.expectedEpoch} RETURNING epoch, "changedAt"`;
-      const current = changed ?? await tx.executionEpoch.findUnique({ where: { id: 1 } });
-      if (!current || current.epoch !== deploymentEpoch || ("admissionOpen" in current && current.admissionOpen)) throw new ExecutionRestoreError("restore_epoch_changed");
+      // Control-plane lock only, before any domain lock. Validation and the
+      // epoch bump cannot race a source-epoch permission transaction.
+      const [source] = await tx.$queryRaw<Array<{ epoch: number; admissionOpen: boolean; changedAt: Date }>>`SELECT epoch, "admissionOpen", "changedAt" FROM "ExecutionEpoch" WHERE id = 1 FOR UPDATE`;
+      if (!source) throw new ExecutionRestoreError("restore_epoch_changed");
+      let current = source;
+      const replay = current.epoch === deploymentEpoch;
+      if (!replay) {
+        await assertExecutionSnapshotDatabase(tx, evidence, { ...source, expectedEpoch: input.expectedEpoch, fenceAboveEpoch: input.fenceAboveEpoch });
+        current = await tx.executionEpoch.update({ where: { id: 1 }, data: { epoch: deploymentEpoch, admissionOpen: false,
+          changedAt: (await tx.$queryRaw<Array<{ now: Date }>>`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS now`)[0]!.now } });
+      }
+      if (current.epoch !== deploymentEpoch || current.admissionOpen) throw new ExecutionRestoreError("restore_epoch_changed");
       const facts = { snapshotEpoch: input.expectedEpoch, fenceAboveEpoch: input.fenceAboveEpoch, deploymentEpoch, cutoff: current.changedAt };
       const subjectId = identity(facts, EXECUTION_RESTORE_PHASES[0], null);
       const dispatchIdentity = { deploymentEpoch, generation: 1, kind: "maintenance" as const, subject: { kind: "maintenance" as const, id: subjectId } };
-      const inputHash = await hash(deploymentEpoch, subjectId);
-      if (!changed) {
-        // The persisted begin obligation is the source-pair receipt. A
-        // different pair yielding the same max epoch cannot resume it.
+      const inputHash = await hash(deploymentEpoch, subjectId, evidence.proofHash);
+      if (replay) {
         const existing = await tx.executionDispatch.findUnique({ where: { deliveryKey: (await executionDispatchIdentity(dispatchIdentity)).deliveryKey } });
         const recorded = existing ? await readExecutionDispatch(tx, existing.id) : null;
         if (!recorded || recorded.reference.inputHash !== inputHash) throw new ExecutionRestoreError("restore_epoch_changed");
         return recorded.reference;
       }
-      // The fence and its initial obligation commit atomically, with no
-      // domain-row reset locks and no SQL transaction spanning HTTP.
       return (await appendExecutionDispatch(tx, { ...dispatchIdentity, inputHash, dueAt: current.changedAt })).reference;
     });
     await this.options.register([reference.dispatchId]);
     return { previousEpoch: input.expectedEpoch, deploymentEpoch, reference };
+  }
+  private async currentPage(tx: Prisma.TransactionClient, reference: ExecutionDispatchReference) {
+      const state = await readExecutionAdmission(tx), record = await readExecutionDispatch(tx, reference.dispatchId);
+      if (!record || JSON.stringify(record.reference) !== JSON.stringify(reference) || reference.kind !== "maintenance" || reference.subject.kind !== "maintenance" || reference.generation !== 1) throw invalid();
+      if (state.epoch !== reference.deploymentEpoch) return null;
+      const { facts, phase, after } = parse(reference.subject.id);
+      if (facts.deploymentEpoch !== state.epoch || record.dueAt.getTime() !== facts.cutoff.getTime()) throw invalid();
+      const begin = { deploymentEpoch: state.epoch, generation: 1, kind: "maintenance" as const, subject: { kind: "maintenance" as const, id: identity(facts, EXECUTION_RESTORE_PHASES[0], null) } };
+      const first = await tx.executionDispatch.findUnique({ where: { deliveryKey: (await executionDispatchIdentity(begin)).deliveryKey }, select: { id: true, inputHash: true } });
+      if (!first || (reference.dispatchId !== first.id && reference.inputHash !== await hash(state.epoch, reference.subject.id, first.inputHash))) throw invalid();
+      return { state, facts, phase, after, attestation: first.inputHash };
+  }
+  private async inspectPage(tx: Prisma.TransactionClient, dispatchId: string) {
+    const record = await readExecutionDispatch(tx, dispatchId);
+    if (!record) throw invalid();
+    const page = await this.currentPage(tx, record.reference);
+    if (!page) throw new ExecutionRestoreError("restore_epoch_changed");
+    return { ...page.facts, reference: record.reference, phase: page.phase, after: page.after, admissionOpen: page.state.admissionOpen,
+      receipt: await readExecutionPageReceipt(tx, record.reference, "restore-page") };
+  }
+  async inspect(dispatchId: string) {
+    return this.options.database.$transaction(tx => this.inspectPage(tx, dispatchId));
+  }
+  /** Exact unique-key lookup recovers an uncertain begin's dispatch ID. It
+   * neither infers a new source pair nor creates a replacement obligation. */
+  async inspectCurrent() {
+    return this.options.database.$transaction(async tx => {
+      const state = await readExecutionAdmission(tx);
+      const row = await tx.executionEpoch.findUniqueOrThrow({ where: { id: 1 } });
+      if (state.epoch < 2 || state.admissionOpen) return { state: row, restore: null };
+      const facts = { snapshotEpoch: state.epoch - 1, fenceAboveEpoch: state.epoch - 1, deploymentEpoch: state.epoch, cutoff: row.changedAt };
+      const subject = { kind: "maintenance" as const, id: identity(facts, EXECUTION_RESTORE_PHASES[0], null) };
+      const key = await executionDispatchIdentity({ deploymentEpoch: state.epoch, generation: 1, kind: "maintenance", subject });
+      const record = await tx.executionDispatch.findUnique({ where: { deliveryKey: key.deliveryKey }, select: { id: true } });
+      return { state: row, restore: record ? await this.inspectPage(tx, record.id) : null };
+    });
   }
   async run(value: ExecutionDispatchReference): Promise<ExecutionRestoreResult> {
     const validation = executionDispatchReferenceSchema.safeParse(value);
     if (!validation.success) throw invalid();
     const reference = validation.data;
     const result = await this.options.database.$transaction(async tx => {
-      const state = await readExecutionAdmission(tx), record = await readExecutionDispatch(tx, reference.dispatchId);
-      if (!record || JSON.stringify(record.reference) !== JSON.stringify(reference) || reference.kind !== "maintenance" || reference.subject.kind !== "maintenance" || reference.generation !== 1) throw invalid();
-      if (state.epoch !== reference.deploymentEpoch) return { kind: "superseded" as const, processed: 0, dispatchIds: [] };
-      const { facts, phase, after } = parse(reference.subject.id);
-      if (facts.deploymentEpoch !== state.epoch || record.dueAt.getTime() !== facts.cutoff.getTime() || reference.inputHash !== await hash(state.epoch, reference.subject.id)) throw invalid();
-      const begin = { deploymentEpoch: state.epoch, generation: 1, kind: "maintenance" as const, subject: { kind: "maintenance" as const, id: identity(facts, EXECUTION_RESTORE_PHASES[0], null) } };
-      const first = await tx.executionDispatch.findUnique({ where: { deliveryKey: (await executionDispatchIdentity(begin)).deliveryKey }, select: { inputHash: true } });
-      if (!first || first.inputHash !== await hash(state.epoch, begin.subject.id)) throw invalid();
+      const page = await this.currentPage(tx, reference);
+      if (!page) return { kind: "superseded" as const, processed: 0, dispatchIds: [] };
+      const { state, facts, phase, after, attestation } = page;
       return executeExecutionPage(tx, reference, "restore-page", async () => {
         if (state.admissionOpen) throw new ExecutionRestoreError("restore_epoch_changed");
         for (let index = EXECUTION_RESTORE_PHASES.indexOf(phase); index < EXECUTION_RESTORE_PHASES.length; index++) {
@@ -107,7 +148,7 @@ export class ExecutionRestoreService {
           }
           if (outcome.processed > 0) {
             const nextPhase = outcome.next ? current : EXECUTION_RESTORE_PHASES[index + 1];
-            if (nextPhase) ids.push((await this.append(tx, facts, nextPhase, outcome.next)).dispatchId);
+            if (nextPhase) ids.push((await this.append(tx, facts, nextPhase, outcome.next, attestation)).dispatchId);
             return { kind: nextPhase ? "continue" as const : "complete" as const, processed: outcome.processed, dispatchIds: ids };
           }
         }

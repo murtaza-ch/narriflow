@@ -4,6 +4,12 @@
     "baseUrl": ".",
     "types": ["node"]
   },
-  "include": ["src"],
-  "exclude": ["src/**/*.test.ts"]
+  "include": [
+    "src",
+    "scripts/execution-restore.ts",
+    "scripts/execution-snapshot-files.ts"
+  ],
+  "exclude": [
+    "src/**/*.test.ts"
+  ]
 }

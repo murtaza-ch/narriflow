@@ -20,7 +20,7 @@ testUrl.searchParams.delete("schema");
 testUrl.searchParams.set("options", `-csearch_path=${schema},public`);
 const requestedTests = Bun.argv.slice(2);
 const tests = requestedTests.length ? requestedTests : [
-  "execution-ledger", "execution-admission", "execution-maintenance", "media-cleanup-control", "execution-restore", "execution-dispatch", "executor-control", "execution-transfer", "source-audio-admission",
+  "execution-ledger", "execution-admission", "execution-maintenance", "media-cleanup-control", "execution-snapshot", "execution-restore", "execution-dispatch", "executor-control", "execution-transfer", "source-audio-admission",
   "targeted-execution", "targeted-ingest-execution", "targeted-workflow-execution", "clip-preparation", "clip-preparation-ledger", "clip-selection", "clip-selection-window", "clip-selection-preparation", "clip-selection-hyperdrive-gate", "native-validation", "thumbnail-frame-execution", "generated-media-execution",
   "outbound-probe", "outbound-delivery", "webhook-subscription", "notification-dispatch", "publication-execution", "modal-dispatch", "progress-outbox", "billing-reconciliation", "library-index", "social-token-refresh",
 ].map(name => `packages/services/src/${name}.db.test.ts`);
@@ -71,7 +71,7 @@ try {
     await pool.query(`UPDATE "${schema}"."ExecutionEpoch" SET "admissionOpen" = true WHERE id = 1`);
     // Epoch-fencing tests deliberately invalidate every old reference. Run
     // them after suites whose fixtures freeze the initial deployment epoch.
-    const fences = remaining.filter(path => path === "packages/services/src/billing-reconciliation.db.test.ts");
+    const fences = remaining.filter(path => ["billing-reconciliation", "execution-snapshot"].some(name => path === `packages/services/src/${name}.db.test.ts`));
     // This suite deliberately reconciles the whole disposable outbox. Run it
     // before domain fixtures create their own pending durable obligations.
     const dispatch = "packages/services/src/execution-dispatch.db.test.ts";

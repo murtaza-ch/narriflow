@@ -25,7 +25,7 @@ an injected continuation insert failure that rolls the task deletion back.
 
 Restore's first fence is implemented separately: one standalone transaction
 closes and advances the expected epoch before domain reset work. A response loss
-resumes the same expected-epoch restore and registration identity instead of
+resumes the same validated snapshot proof and registration identity instead of
 advancing twice. The PostgreSQL tracer passes10 assertions and proves an old
 Maintenance command is superseded before recovery is registered. Domain reset,
 validated selection transformation, redispatch, the operator CLI, daily phase
@@ -116,3 +116,34 @@ passes 261 tests and 1,741 assertions. Services/API typechecks and focused Biome
 The injected empty adapters in controller tests are test fixtures, not production
 fallbacks. Remaining domain transforms, the complete phase factory, operator CLI
 and deployed maintenance acceptance are still required.
+
+
+The operator checkpoint replaces the unproven epoch-only restore interface with
+mandatory quiesced snapshot evidence and `rs2` pages. Fence creates no dispatch;
+attestation reads actual closed-epoch/migration facts before overwriting live DB.
+The CLI hashes regular snapshot and stop/drain evidence files, creates a private
+proof exclusively, checks fresh static fenced Worker health and the exact selected
+schema, then begins only from that proof. Higher live epochs are refused. Inspect
+can recover an uncertain begin's exact dispatch ID; resume describes/rechecks/
+restarts only the known current instance, without a new epoch or intake reopen.
+The [runbook](../../../docs/runbooks/execution-restore.md) gives the operational
+preconditions. No shared snapshot, restore, Workflow restart or deletion was run.
+
+Remaining acceptance map: production hourly factory has real outbox/deadline
+adapters but provider-wait and domain-wake repair adapters are not complete; daily
+has real task/inbox expiry but event retention, grants, source/project retention,
+pending-workspace cleanup and complete cleanup-phase mounting remain open. Restore
+has generic old-authority revocation and tested page receipts, but complete domain
+adapters (including validated successful-window reuse and preparation rebind),
+restore redispatch factory, scheduling/fenced-Cron hookup and deployed restore/
+maintenance/actual R2-delete acceptance remain required. Available billing/library/
+publication restore ports and bundle-expiry ports still need integration into
+those factories. Missing phases deliberately fail; test empty adapters are not
+production fallbacks. Ticket 20 remains claimed.
+
+
+The proof/CLI checkpoint passes the complete fresh disposable-schema gate:
+266 tests / 1,761 assertions, including snapshot fencing and restore suites in
+separate epoch-fencing processes. Nine deterministic proof/file/transport tests
+pass 52 assertions. Services/API and the operator script typecheck; focused Biome
+passes. These are local gates; no full deployed restore or maintenance claim is made.
