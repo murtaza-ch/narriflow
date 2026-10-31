@@ -13,6 +13,8 @@ import unittest
 from narriflow_media.publication_runtime import run_publication, PublicationFailure
 from narriflow_media.process import MediaProcessError
 from narriflow_media.transfer import WorkPackage, _wire
+from narriflow_media.native_runtime import run_publication as run_native_publication
+from unittest.mock import AsyncMock,patch
 
 ROOT=Path(__file__).resolve().parents[4]
 FIXTURE="""import {derivePublicationPurposeKey,sealPublicationPayload} from './packages/services/src/publication-checkpoint-blob.ts';import {parseSocialPublicationConfig} from './packages/services/src/social-publication-config.ts';import {SOCIAL_PROVIDER_CAPABILITIES} from './packages/validators/src/index.ts';const id=()=>crypto.randomUUID(),now=new Date(),future=new Date(+now+3600000).toISOString(),scope={deploymentEpoch:1,socialPostId:id(),attemptId:id(),claimId:id(),bindingHash:'a'.repeat(64)},accountId=id(),projectId=id(),workspaceId=id(),master='test-publication-checkpoint-master-only',all=parseSocialPublicationConfig({SOCIAL_PUBLICATION_CHECKPOINT_KEY:master}),{linkedInVersionSunsetAt,...config}=all.providers;const loaded={socialPost:{id:scope.socialPostId,workspaceId,projectId,status:'publishing',scheduledFor:now.toISOString()},frozen:{clipExportId:id(),clipExportVariantId:id(),editorRevision:0,exportFingerprint:'fixture',storageKey:'execution/frozen/media.mp4',sizeBytes:8,durationSec:1,aspectRatio:'9:16',caption:'Approved fixture',providerSettings:{youtubePrivacyStatus:'unlisted'},socialAccountId:accountId,platform:'youtube_shorts',capabilityVersion:SOCIAL_PROVIDER_CAPABILITIES.youtube_shorts.version,scheduledFor:now.toISOString()},attempt:{id:scope.attemptId,attemptNumber:1,priorAttemptId:null,idempotencyKey:'publication:'+scope.socialPostId+':1',phase:'claimed',outcome:null,nextActionAt:now.toISOString(),providerCallCount:0,startedAt:now.toISOString(),processingDeadline:future,reconciliationDeadline:future},claim:{id:scope.claimId,claimantId:'fixture',leaseExpiresAt:future,heartbeatAt:now.toISOString()},checkpointKind:null,sealedCheckpoint:null,terminalResult:null};const context={version:1,inputKey:{scope,key:await derivePublicationPurposeKey(master,scope,'input_state')},checkpointKey:{scope,key:await derivePublicationPurposeKey(master,scope,'linkedin_instructions')},account:{id:accountId,userId:id(),platform:'youtube_shorts',providerAccountId:'fixture-owner',displayName:'Fixture',handle:null,accessToken:'fixture-provider-token',scopes:['https://www.googleapis.com/auth/youtube.upload'],metadata:null}};const payload={mode:'publish',loaded,operation:null,config:{...config,facebookReelsPublishingEnabled:false},retry:all.retry,providerCallCeiling:100};const encrypted=await sealPublicationPayload(payload,context.inputKey.key,scope,'input_state');console.log(JSON.stringify({envelope:{version:1,kind:'publication',scope,payload:Buffer.from(encrypted).toString('base64url')},context}));"""
@@ -79,3 +81,15 @@ class PublicationRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_real_bun_child_has_no_database_or_redis_and_every_provider_call_is_freshly_admitted(self):await self.actual()
     async def test_unconfirmed_process_start_releases_no_stdio_or_provider_request(self):await self.actual('lost_start')
     async def test_revocation_between_initialize_and_upload_prevents_the_next_http_request(self):await self.actual('revoked')
+
+    async def test_mismatched_private_input_binding_is_rejected_before_any_named_download(self):
+        made=subprocess.run(['bun','-e',FIXTURE],cwd=ROOT,capture_output=True,timeout=15,check=True)
+        prepared=json.loads(made.stdout);scope=prepared['envelope']['scope']
+        class Session:
+            fence={'reference':{'deploymentEpoch':1,'subject':{'kind':'social_publication','id':scope['socialPostId']},'inputHash':scope['bindingHash']},'attemptToken':scope['claimId'],'owner':'fixture'}
+        session=Session();prepared['envelope']['scope']['bindingHash']='f'*64
+        package=WorkPackage('publication',session.fence['reference']['inputHash'],_wire(prepared['envelope']),_wire([]),_wire([]),_wire(session.fence),_wire(prepared['context']))
+        with tempfile.TemporaryDirectory() as directory,patch('narriflow_media.native_runtime.download_assigned_source',new_callable=AsyncMock) as download:
+            with self.assertRaises(PublicationFailure) as failure:
+                await run_native_publication(session,package,Path(directory))
+            self.assertEqual(failure.exception.code,'publication_work_package_mismatch');download.assert_not_awaited()
