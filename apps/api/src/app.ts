@@ -72,7 +72,7 @@ export function createApiApp(deps: ApiAppDependencies): Hono<ApiEnv> {
   const refusalHeaders = firstPartyRefusalHeaders(config.corsAllowedOrigins);
   app.use("*", drainGate({ isDraining: deps.health.isDraining, isFenced: () => deps.health.admissionState?.() === "fenced", refusalHeaders }));
   app.use("*", limitRequestEnvelope(refusalHeaders));
-  app.use("*", ingressCeiling());
+  app.use("*", ingressCeiling(refusalHeaders));
   app.onError(apiErrorHandler);
   app.notFound(apiNotFoundHandler);
 

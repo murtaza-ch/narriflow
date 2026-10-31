@@ -31,7 +31,8 @@
     "test:artifacts:workerd": "node --experimental-strip-types scripts/run-artifact-storage-gates.ts",
     "probe:image-provider:workerd": "node --experimental-strip-types scripts/run-image-provider-memory-probe.ts",
     "test:development-bindings:workerd": "bun run build:worker && node --experimental-strip-types scripts/run-development-binding-gates.ts",
-    "test:social-provider:workerd": "node --experimental-strip-types scripts/run-social-provider-http-gate.ts"
+    "test:social-provider:workerd": "node --experimental-strip-types scripts/run-social-provider-http-gate.ts",
+    "test:ingress:workerd": "node --experimental-strip-types scripts/run-ingress-runtime-gates.ts"
   },
   "dependencies": {
     "@hono/zod-openapi": "^1.2.2",

@@ -2869,6 +2869,11 @@ exports[`REST v1 OpenAPI document the whole public document is snapshotted for r
                 "format": "uuid",
                 "type": "string",
               },
+              "scheduleRevision": {
+                "maximum": 2147483646,
+                "minimum": 1,
+                "type": "integer",
+              },
               "socialAccountId": {
                 "format": "uuid",
                 "type": "string",
@@ -2884,6 +2889,7 @@ exports[`REST v1 OpenAPI document the whole public document is snapshotted for r
             },
             "required": [
               "proposalId",
+              "scheduleRevision",
               "projectId",
               "clipId",
               "socialAccountId",
