@@ -10,7 +10,7 @@ import { autopilotService } from "./autopilot.service";
 import { recipeService } from "./recipe.service";
 import { publishingQueue } from "./publishing-queue.service";
 import { ReviewNotificationService, createReviewNotificationStore, type ReviewNotificationMailInput } from "./review-notification.service";
-import { claimDueSocialPublicationAttempts } from "./social-publication-attempt";
+import {createPublicationTestRuntime} from "./publication-execution-test-support";
 import { PublicationExecution } from "./publication-execution";
 import { createPublicationCheckpointCipher } from "./social-publication-checkpoint-cipher";
 import { appendPublicationDispatch } from "./publication-dispatch";
@@ -642,7 +642,7 @@ dbDescribe("Standing Grant PostgreSQL invariants", () => {
 		expect(await grantEvents(f.workspace.id, "grant.paused")).toHaveLength(2);
 	})));
 
-	test("a paused grant holds its scheduled posts, and renewing lets them go", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
+	test("a paused grant holds its scheduled post and renewed terms require fresh human approval", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const f = await fixture();
 		const { id } = await publishGrant(f);
 		const proposalId = await propose(f);
@@ -650,13 +650,17 @@ dbDescribe("Standing Grant PostgreSQL invariants", () => {
 		const attempts = () => prisma.socialPublicationAttempt.count({ where: { socialPostId: proposalId } });
 
 		await standingGrants.pause(scope(f), id);
-		await claimDueSocialPublicationAttempts({ claimantId: "held", now: later(), config: claimConfig });
+		await createPublicationTestRuntime(prisma,new Set([proposalId]),claimConfig).claimKnown({now:later()});
 		expect(await attempts()).toBe(0);
 		// Held, not failed: it is still the scheduled post it was.
 		expect(await post(proposalId)).toMatchObject({ status: "scheduled", standingGrantId: id });
 
 		await renewFixtureGrant(f, { grantId: id, ...renewTerms });
-		await claimDueSocialPublicationAttempts({ claimantId: "released", now: later(), config: claimConfig });
+		await grantWakes(id);
+    expect(await post(proposalId)).toMatchObject({status:"draft",standingGrantId:null});
+    expect(await attempts()).toBe(0);
+    await acceptByPerson(f,proposalId);
+    await createPublicationTestRuntime(prisma,new Set([proposalId]),claimConfig).claimKnown({now:later()});
 		expect(await attempts()).toBe(1);
 	})));
 
@@ -676,7 +680,7 @@ dbDescribe("Standing Grant PostgreSQL invariants", () => {
 		// An attempt that has begun can't be taken back; it finishes.
 		expect(await post(started)).toMatchObject({ standingGrantId: id });
 		expect(await prisma.standingGrantEvent.findMany({ where: { grantId: id, kind: "returned" } })).toMatchObject([{ reason: expect.stringContaining("returned for fresh approval") }]);
-		await claimDueSocialPublicationAttempts({ claimantId: "after-revoke", now: later(), config: claimConfig });
+		await createPublicationTestRuntime(prisma,new Set([waiting]),claimConfig).claimKnown({now:later()});
 		expect(await prisma.socialPublicationAttempt.count({ where: { socialPostId: waiting } })).toBe(0);
 		expect((await publishingQueue.listProposals(scope(f))).map((proposal) => proposal.proposalId)).toContain(waiting);
 		const again = await acceptByPerson(f,waiting);
@@ -689,9 +693,9 @@ dbDescribe("Standing Grant PostgreSQL invariants", () => {
 		const inFlight = await propose(g);
 		expect(await accept(g, inFlight)).toBe("accepted");
 		await prisma.standingGrant.update({ where: { id: expiring.id }, data: { expiresAt: new Date(Date.now() - 1_000) } });
-		await claimDueSocialPublicationAttempts({ claimantId: "expired-held", now: later(), config: claimConfig });
+		await createPublicationTestRuntime(prisma,new Set([inFlight]),claimConfig).claimKnown({now:later()});
 		expect(await prisma.socialPublicationAttempt.count({ where: { socialPostId: inFlight } })).toBe(0);
-		expect(await post(inFlight)).toMatchObject({ status: "scheduled" });
+		expect(await post(inFlight)).toMatchObject({ status: "draft",standingGrantId:null });
 		await expireGrant(expiring.id);
 		expect(await post(inFlight)).toMatchObject({ status: "draft", standingGrantId: null, scheduledFor: null });
 	})));
