@@ -100,14 +100,56 @@ def _output(package, phase, size, source):
     return output
 
 
+class _Timings:
+    """Gate-only fixed-size aggregate. Never retain grants, IDs or body bytes."""
+    _limits = (0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 4, 8, 16, 32, 64, 128)
+    _labels = frozenset({'work_package', 'fixture_generation', 'source_prefix', 'upload_initialize',
+                         'authorize_part', 'authorize_range', 'storage_get', 'storage_put', 'complete', 'abort'})
+
+    def __init__(self, clock=time.monotonic):
+        self._clock, self._values = clock, {}
+
+    async def measure(self, label, operation):
+        if label not in self._labels:
+            raise ValueError('gate_timing_label_invalid')
+        value = self._values.setdefault(label, {'calls': 0, 'failures': 0, 'busy': 0.0, 'max': 0.0,
+                                                'active': 0, 'peak': 0, 'buckets': [0]*(len(self._limits)+1)})
+        value['active'] += 1
+        value['peak'] = max(value['peak'], value['active'])
+        started = self._clock()
+        try:
+            return await operation
+        except BaseException:
+            value['failures'] += 1
+            raise
+        finally:
+            elapsed = max(0.0, self._clock()-started)
+            value['active'] -= 1
+            value['calls'] += 1
+            value['busy'] += elapsed
+            value['max'] = max(value['max'], elapsed)
+            bucket = next((index for index, limit in enumerate(self._limits) if elapsed <= limit), len(self._limits))
+            value['buckets'][bucket] += 1
+
+    def snapshot(self):
+        return {label: {'calls': value['calls'], 'failures': value['failures'],
+                        'sumSeconds': round(value['busy'], 6), 'maxSeconds': round(value['max'], 6),
+                        'meanSeconds': round(value['busy']/value['calls'], 6) if value['calls'] else None,
+                        'maxConcurrentCalls': value['peak'], 'unfinishedCalls': value['active'],
+                        'histogramUpperSeconds': [*self._limits, None], 'histogramCounts': list(value['buckets'])}
+                for label, value in self._values.items()}
+
+
 class _MeasuredTransport:
-    def __init__(self):
+    def __init__(self, timings=None):
+        self.timings = timings or _Timings()
         self.native = SignedHttpTransport(timeout_seconds=60)
         self.uploaded = self.downloaded = self.puts = self.gets = 0
         self.peak_rss = _rss_bytes()
 
     async def request(self, grant, method, body, headers, maximum, cancelled):
-        response = await self.native.request(grant, method, body, headers, maximum, cancelled)
+        response = await self.timings.measure('storage_get' if method == 'GET' else 'storage_put',
+            self.native.request(grant, method, body, headers, maximum, cancelled))
         if method == 'PUT' and response.status == 200:
             self.uploaded += len(body)
             self.puts += 1
@@ -119,23 +161,24 @@ class _MeasuredTransport:
 
 
 class _RecordedControl:
-    def __init__(self, actual):
+    def __init__(self, actual, timings=None):
         self.actual = actual
+        self.timings = timings or _Timings()
         self.last = None
 
     async def authorize_part(self, number, size, sha, md5):
-        grant = await self.actual.authorize_part(number, size, sha, md5)
+        grant = await self.timings.measure('authorize_part', self.actual.authorize_part(number, size, sha, md5))
         self.last = (number, size, sha, md5, grant)
         return grant
 
     async def authorize_source_range(self, start, end, etag):
-        return await self.actual.authorize_source_range(start, end, etag)
+        return await self.timings.measure('authorize_range', self.actual.authorize_source_range(start, end, etag))
 
     async def complete(self, parts, sha):
-        return await self.actual.complete(parts, sha)
+        return await self.timings.measure('complete', self.actual.complete(parts, sha))
 
     async def abort(self, reason):
-        return await self.actual.abort(reason)
+        return await self.timings.measure('abort', self.actual.abort(reason))
 
 
 async def run_executor_r2_transfer(invocation, *, phase, client, source=None, byte_length=MAX_BYTES):
@@ -167,33 +210,34 @@ async def run_executor_r2_transfer(invocation, *, phase, client, source=None, by
               'qualifies10GiBUpload':phase == 'upload' and byte_length == MAX_BYTES,
               'qualifiesGreaterThan5GiBPin':phase == 'pin' and byte_length > 5*1024**3, 'stage':'work_package'}
     control = None
+    timings = _Timings()
     tracing = not tracemalloc.is_tracing()
     if tracing:
         tracemalloc.start()
     try:
         # Keep time for the terminal command and its fresh authority checks.
         async with asyncio.timeout((cutoff-int(time.time()*1000))/1000-60):
-            package = await load_work_package(session)
+            package = await timings.measure('work_package', load_work_package(session))
             output = _output(package, phase, byte_length, source)
             report['artifactId'] = output['artifactId']
-            transport = _MeasuredTransport()
+            transport = _MeasuredTransport(timings)
             with tempfile.TemporaryDirectory(prefix='narriflow-executor-r2-gate-') as directory:
                 work = Path(directory)
                 if phase == 'upload':
                     report['stage'] = 'synthetic_file'
                     path = work/'synthetic-source.bin'
-                    result = await run_owned_process_async([sys.executable, '-c', _GENERATE],
+                    result = await timings.measure('fixture_generation', run_owned_process_async([sys.executable, '-c', _GENERATE],
                         input_bytes=json.dumps({'path':str(path), 'byteLength':byte_length}).encode(),
                         timeout_seconds=min(300, session.remaining_seconds), env={},
-                        on_start=session.on_process_start, cancel_event=session.cancel_event, max_file_bytes=byte_length)
+                        on_start=session.on_process_start, cancel_event=session.cancel_event, max_file_bytes=byte_length))
                     measured = json.loads(result.stdout)
                     if result.returncode or measured['byteLength'] != byte_length or not _SHA.fullmatch(measured['sha256']):
                         raise ValueError('gate_fixture_generation_failed')
                     expected_sha = measured['sha256']
                     report['allocatedFixtureBytes'] = path.stat().st_blocks*512
-                    actual = await ScopedMultipartControl.initialize(session, artifact_id=output['artifactId'],
-                        byte_length=byte_length, content_type='application/octet-stream')
-                    control = _RecordedControl(actual)
+                    actual = await timings.measure('upload_initialize', ScopedMultipartControl.initialize(session, artifact_id=output['artifactId'],
+                        byte_length=byte_length, content_type='application/octet-stream'))
+                    control = _RecordedControl(actual, timings)
                     report['stage'] = 'upload'
                     completed = await upload_file(path, actual.destination, control=control, transport=transport,
                         assert_owned=session.assert_live, cancel_event=session.cancel_event, expected_sha256=expected_sha)
@@ -201,12 +245,12 @@ async def run_executor_r2_transfer(invocation, *, phase, client, source=None, by
                     report['stage'] = 'conditional_prefix'
                     # The real signed prefix GET starts the real curl process
                     # and renewal before the long conditional range transfer.
-                    await download_assigned_source(session, package, work, source_name='upload_source',
-                        maximum_bytes=PART_SIZE_BYTES, range_end=PART_SIZE_BYTES)
+                    await timings.measure('source_prefix', download_assigned_source(session, package, work, source_name='upload_source',
+                        maximum_bytes=PART_SIZE_BYTES, range_end=PART_SIZE_BYTES))
                     expected_sha = source['object']['sha256']
-                    actual = await ScopedMultipartControl.initialize(session, artifact_id=output['artifactId'],
-                        byte_length=byte_length, content_type='application/octet-stream', source_etag=source['object']['etag'])
-                    control = _RecordedControl(actual)
+                    actual = await timings.measure('upload_initialize', ScopedMultipartControl.initialize(session, artifact_id=output['artifactId'],
+                        byte_length=byte_length, content_type='application/octet-stream', source_etag=source['object']['etag']))
+                    control = _RecordedControl(actual, timings)
                     report['stage'] = 'conditional_pin'
                     completed = await pin_source(actual.destination, source_etag=source['object']['etag'], control=control,
                         transport=transport, assert_owned=session.assert_live, cancel_event=session.cancel_event, expected_sha256=expected_sha)
@@ -262,6 +306,8 @@ async def run_executor_r2_transfer(invocation, *, phase, client, source=None, by
         except BaseException:
             report['terminalAcknowledgementUnconfirmed'] = True
     finally:
+        report['timings'] = timings.snapshot()
+        report['timingScope'] = 'Outer native calls including control retries; stage sums overlap under concurrency. No per-SQL, per-retry, renewal, DNS or TLS phase measurement.'
         report['elapsedSeconds'] = round(time.monotonic()-mono,3)
         report['combinedElapsedSeconds'] = round((int(time.time()*1000)-report['startedAtUnixMs'])/1000,3)
         report['peakRssBytes'] = max(report.get('peakRssBytes',0), _rss_bytes())

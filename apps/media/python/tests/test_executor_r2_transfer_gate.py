@@ -12,10 +12,44 @@ import unittest
 from unittest.mock import patch
 from uuid import uuid4
 
-from gates.executor_r2_transfer import _GENERATE, run_executor_r2_transfer
+from gates.executor_r2_transfer import _GENERATE, _Timings, run_executor_r2_transfer
 
 
 class ExecutorTransferGateTests(unittest.IsolatedAsyncioTestCase):
+    async def test_timings_are_fixed_size_numeric_aggregates_including_failure(self):
+        clock = [0.0]
+        timings = _Timings(lambda: clock[0])
+        async def succeed():
+            clock[0] += 2.5
+            return 'private-grant-not-retained'
+        async def fail():
+            clock[0] += 0.25
+            raise ValueError('private-url-not-retained')
+        self.assertEqual(await timings.measure('authorize_part', succeed()), 'private-grant-not-retained')
+        with self.assertRaises(ValueError):
+            await timings.measure('authorize_part', fail())
+        report = timings.snapshot()['authorize_part']
+        self.assertEqual(report['calls'], 2)
+        self.assertEqual(report['failures'], 1)
+        self.assertEqual(report['sumSeconds'], 2.75)
+        self.assertEqual(report['maxConcurrentCalls'], 1)
+        self.assertEqual(report['unfinishedCalls'], 0)
+        self.assertEqual(sum(report['histogramCounts']), 2)
+        self.assertEqual(len(report['histogramCounts']), 15)
+        self.assertNotIn('private', json.dumps(report))
+
+    async def test_timings_observe_concurrent_calls_without_retaining_samples(self):
+        timings, release = _Timings(), asyncio.Event()
+        async def operation():
+            await release.wait()
+        tasks = [asyncio.create_task(timings.measure('storage_put', operation())) for _ in range(4)]
+        await asyncio.sleep(0)
+        self.assertEqual(timings.snapshot()['storage_put']['maxConcurrentCalls'], 4)
+        release.set()
+        await asyncio.gather(*tasks)
+        self.assertEqual(timings.snapshot()['storage_put']['unfinishedCalls'], 0)
+        self.assertEqual(timings.snapshot()['storage_put']['calls'], 4)
+
     async def test_long_lived_credentials_are_rejected_before_any_control_request(self):
         class UnusedClient:
             def command(self, *_args, **_kwargs):
