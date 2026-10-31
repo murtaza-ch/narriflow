@@ -4,10 +4,10 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@prisma/client";
 import { WorkflowRunLifecycle, WorkflowFailure } from "./workflow-run-lifecycle";
 import { createExecutorControl } from "./executor-control";
-import { appendExecutionDispatch } from "./execution-dispatch";
+import { appendExecutionDispatch, readExecutionDispatch } from "./execution-dispatch";
 import { withServiceEnvironment } from "./runtime-environment";
 import type { ExecutorMutationContext } from "./executor-domain-control";
-import { createTranscriptionAdmission } from "./transcription-admission";
+import { createTranscriptionAdmission, continueScribeCapacityRelease } from "./transcription-admission";
 
 const url = process.env.SERVERLESS_TEST_DATABASE_URL;
 const dbDescribe = process.env.ALLOW_SERVERLESS_DB_TESTS === "1" && url ? describe : describe.skip;
@@ -192,6 +192,11 @@ dbDescribe("Exact Workflow execution commands", () => {
     const replay = await f.lifecycle.readProviderControl(begun.intent.reference);
     expect(replay).toMatchObject({ kind: "stale", reason: "attempt_superseded" });
     expect(replay.dispatchIds?.slice().sort()).toEqual(expired.dispatchIds?.slice().sort());
+    await db.project.update({ where: { id: f.run.projectId }, data: { sourceRevision: 2 } });
+    await db.transcript.update({ where: { projectId: f.run.projectId }, data: { sourceRevision: 2, sourceAudioId: null } });
+    const historical = await f.lifecycle.readProviderControl(begun.intent.reference);
+    expect(historical).toMatchObject({ kind: "stale", reason: "source_superseded" });
+    expect(historical.dispatchIds?.slice().sort()).toEqual(expired.dispatchIds?.slice().sort());
   }, 60_000);
 
   test("source cancellation revokes running TS ownership and provider lineage atomically without changing historical charges", async () => {
@@ -223,6 +228,61 @@ dbDescribe("Exact Workflow execution commands", () => {
     expect(await db.transcript.findUniqueOrThrow({ where: { projectId: f.run.projectId } })).toMatchObject({ status: "failed", errorCode: "source_audio_video_mismatch", providerSubmissionDeadlineAt: null, providerResultDeadlineAt: null });
     expect(await f.lifecycle.recordProviderAcceptance(begun.intent.reference, { requestId: "cancelled-request", transcriptionId: "cancelled-provider", nextPollAt: new Date() })).toMatchObject({ kind: "terminal", status: "cancelled" });
   }, 180_000);
+
+  test("source cancellation revokes all authority immediately and creates bounded resumable terminal event and wake pages", async () => {
+    const f = await fixture("moment_detection", false);
+    const ids = Array.from({ length: 130 }, () => crypto.randomUUID()); subjects.push(...ids);
+    await db.workflowRun.createMany({ data: ids.map(id => ({ id, projectId: f.run.projectId, deploymentEpoch: f.reference.deploymentEpoch,
+      stage: "moment_detection", status: "queued", idempotencyKey: id })) });
+    await db.$transaction(async tx => { for (const id of ids) await f.lifecycle.dispatchRunWithinTransaction(tx, id); });
+    const cancelledAt = new Date();
+    const first = await withServiceEnvironment({}, () => db.$transaction(async tx => {
+      await tx.$queryRaw`SELECT "epoch" FROM "ExecutionEpoch" WHERE "id" = 1 FOR SHARE`;
+      await tx.$queryRaw`SELECT "id" FROM "Project" WHERE "id" = ${f.run.projectId}::uuid FOR UPDATE`;
+      return f.lifecycle.cancelSourceExecutionsWithinTransaction(tx, { projectId: f.run.projectId, deploymentEpoch: f.reference.deploymentEpoch,
+        errorCode: "source_audio_video_mismatch", now: cancelledAt });
+    }));
+    expect(await db.workflowRun.count({ where: { projectId: f.run.projectId, status: "cancelled" } })).toBe(131);
+    expect(first.dispatchIds.length).toBeLessThanOrEqual(124);
+    expect(await db.executionDispatch.count({ where: { subjectId: { in: [f.run.id, ...ids] }, wakeKind: "source_cancelled" } })).toBe(123);
+    expect(await db.workflowEvent.count({ where: { projectId: f.run.projectId } })).toBe(123);
+    const continuation = (await Promise.all(first.dispatchIds.map(id => readExecutionDispatch(db, id)))).find(row => row?.wakeKind?.startsWith("cancel_"));
+    if (!continuation) throw new Error("Expected a persisted cancellation continuation");
+    const second = await withServiceEnvironment({}, () => f.lifecycle.continueSourceCancellation(continuation.reference));
+    expect(second.dispatchIds.length).toBe(8);
+    expect(await db.executionDispatch.count({ where: { subjectId: { in: [f.run.id, ...ids] }, wakeKind: "source_cancelled" } })).toBe(131);
+    expect(await db.workflowEvent.count({ where: { projectId: f.run.projectId } })).toBe(131);
+    expect((await withServiceEnvironment({}, () => f.lifecycle.continueSourceCancellation(continuation.reference))).dispatchIds).toEqual(second.dispatchIds);
+  }, 60_000);
+
+  test("capacity release pages immutable waiter references even if another source revision superseded a waiter", async () => {
+    const winner = await fixture("stt", false), waiter = await fixture("stt", false);
+    const admission = createTranscriptionAdmission({ database: db, workflow: winner.lifecycle, maxUnits: 12 });
+    const begun = await withServiceEnvironment({}, () => admission.admit(winner.reference, { owner: winner.owner }));
+    if (begun.kind !== "begun") throw new Error("Expected active provider");
+    const ids = Array.from({ length: 101 }, () => crypto.randomUUID()); subjects.push(...ids);
+    await db.workflowRun.createMany({ data: ids.map(id => ({ id, projectId: waiter.run.projectId, deploymentEpoch: waiter.reference.deploymentEpoch,
+      stage: "stt", status: "queued", idempotencyKey: id, errorCode: "provider_capacity_wait", nextAttemptAt: begun.intent.submissionDeadlineAt })) });
+    await db.workflowRun.update({ where: { id: waiter.run.id }, data: { errorCode: "provider_capacity_wait", nextAttemptAt: begun.intent.submissionDeadlineAt } });
+    await db.$transaction(async tx => { for (const id of ids) await waiter.lifecycle.dispatchRunWithinTransaction(tx, id); });
+    await db.project.update({ where: { id: waiter.run.projectId }, data: { sourceRevision: 2 } });
+    await db.transcript.update({ where: { projectId: waiter.run.projectId }, data: { sourceRevision: 2, sourceAudioId: null } });
+    const released = await withServiceEnvironment({}, () => winner.lifecycle.failProviderAttempt(begun.intent.reference, new WorkflowFailure("elevenlabs_result_timeout", "retryable", "Test release")));
+    expect(released.kind).toBe("applied");
+    expect(released.dispatchIds!.length).toBeLessThanOrEqual(103);
+    const records = await Promise.all(released.dispatchIds!.map(id => readExecutionDispatch(db, id)));
+    const continuation = records.find(row => row?.wakeKind?.startsWith("stt_"));
+    if (!continuation) throw new Error("Expected capacity continuation");
+    expect(records.filter(row => row?.wakeKind?.startsWith("cap_")).length).toBe(100);
+    const second = await continueScribeCapacityRelease(db, continuation.reference);
+    expect(second.dispatchIds.length).toBe(2);
+    expect((await continueScribeCapacityRelease(db, continuation.reference)).dispatchIds).toEqual(second.dispatchIds);
+    const original = await readExecutionDispatch(db, second.dispatchIds[0]!);
+    expect(original!.reference.inputHash).toBe((await db.executionDispatch.findFirstOrThrow({ where: { subjectId: original!.reference.subject.id,
+      kind: "operation_driver", wakeKind: null, deadlineKind: null } })).inputHash);
+    expect((await withServiceEnvironment({}, () => admission.admit(original!.reference, { owner: crypto.randomUUID() }))).kind).toBe("terminal");
+    expect(await db.executionAttempt.count({ where: { dispatch: { subjectId: { in: [waiter.run.id, ...ids] } } } })).toBe(0);
+  }, 60_000);
 
   test("startup rejection is uncharged and revokes the exact Workflow generation", async () => {
     const f = await fixture();

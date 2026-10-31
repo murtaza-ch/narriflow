@@ -70,3 +70,22 @@ test("a completed supplied or empty plan never needs provider configuration or s
   expect(await h.control.run(reference)).toEqual({ kind: "complete", disposition: "terminal" });
   expect(h.calls()).toEqual({ submissions: 0, grants: 0, probes: 0 });
 });
+
+test("a GET that crosses the provider deadline expires the domain instead of completing its driver with live waiting work", async () => {
+  let expired = 0, observed = now;
+  const resultDeadline = new Date("2026-10-31T00:00:10Z"), ids = ["6d6aa630-d89d-40c8-a7fe-8af8d1f726ae"];
+  const delivered: string[][] = [];
+  const control = createTranscriptionControl({ admission: { admit: async () => ({ kind: "already_waiting", intent: { ...intent, kind: "already_waiting" }, dispatchIds: [] }) },
+    workflow: { readProviderControl: async () => ({ kind: "waiting", attempt: { workflowRunId: key.workflowRunId, projectId: crypto.randomUUID(), attemptId: key.attemptId, attemptCount: 1, stage: "stt" },
+      providerJobId: "transcription", providerRequestId: "request", submissionDeadlineAt: null, resultDeadlineAt: resultDeadline, submittedAt: now, serverTime: observed, nextCheckAt: now }),
+      recordProviderAcceptance: async () => { throw new Error("No POST expected"); }, failProviderAttempt: async () => { throw new Error("Use exact watchdog"); },
+      expireProviderDeadline: async (_key, deadline) => { expired++; expect(deadline).toEqual({ kind: "result", observedDeadlineAt: resultDeadline }); return { kind: "applied", dispatchIds: ids }; },
+      observeProviderPending: async () => { throw new Error("No pending result expected"); } },
+    provider: () => ({ submit: async () => { throw new Error("No POST expected"); }, result: async () => { observed = new Date("2026-10-31T00:00:11Z"); return { kind: "ready", payload: { text: "late" } }; } }),
+    sourceAudioGrant: async () => { throw new Error("No grant expected"); },
+    finalize: async () => ({ kind: "stale", reason: "provider_deadline_expired" }), deliverWakes: async value => { delivered.push([...value]); },
+  });
+  expect(await control.run(reference)).toEqual({ kind: "complete", disposition: "terminal" });
+  expect(expired).toBe(1);
+  expect(delivered).toEqual([ids]);
+});

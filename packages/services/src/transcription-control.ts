@@ -54,8 +54,13 @@ export function createTranscriptionControl(ports: TranscriptionControlPorts) {
       signal?.throwIfAborted();
       return settled(await ports.workflow.failProviderAttempt(key, workflowFailureFromUnknown(error), { transcriptionId: state.providerJobId }));
     }
-    if (result.kind === "ready") return settled(await ports.finalize({ key, payload: result.payload,
-      providerIds: { requestId: state.providerRequestId, transcriptionId: state.providerJobId } }));
+    if (result.kind === "ready") {
+      const finalized = await ports.finalize({ key, payload: result.payload,
+        providerIds: { requestId: state.providerRequestId, transcriptionId: state.providerJobId } });
+      if (finalized.kind === "stale" && finalized.reason === "provider_deadline_expired") return settled(await ports.workflow.expireProviderDeadline(key,
+        { kind: "result", observedDeadlineAt: deadline }));
+      return settled(finalized);
+    }
     if (result.kind === "failed") return settled(await ports.workflow.failProviderAttempt(key, result.failure,
       { requestId: state.providerRequestId, transcriptionId: state.providerJobId }));
     return settled(await ports.workflow.observeProviderPending(key, { observedCheckAt: check, intervalMs: 30_000 }));
@@ -68,7 +73,8 @@ export function createTranscriptionControl(ports: TranscriptionControlPorts) {
       if (admitted.kind === "completed") return { kind: "complete", disposition: "terminal" };
       if (admitted.kind === "capacity_wait" || admitted.kind === "retry_wait") return { kind: "wait", dueAt: admitted.dueAt };
       if (admitted.kind === "audio_pending") return { kind: "blocked", reason: "audio_pending" };
-      if (admitted.kind === "superseded" || admitted.kind === "terminal") return { kind: "complete", disposition: "superseded" };
+      if (admitted.kind === "superseded") return { kind: "complete", disposition: "superseded" };
+      if (admitted.kind === "terminal") return { kind: "complete", disposition: admitted.disposition.disposition === "superseded" ? "superseded" : "terminal" };
       if (admitted.kind === "already_waiting") return waitOrRecover(admitted.intent.reference, options.signal);
       if (admitted.kind !== "begun") throw new Error("transcription_admission_invalid");
       const key = admitted.intent.reference;
