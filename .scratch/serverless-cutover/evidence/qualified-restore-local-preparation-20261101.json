@@ -5,6 +5,7 @@
   "sharedActionsPerformed": false,
   "localDatabase": "guarded disposable schemas on localhost PostgreSQL 17.11",
   "cloudArchiveTooling": {"requiredUtilities": "libpq 18.6", "directory": "/opt/homebrew/opt/libpq/bin", "requiredObservedServerMajor": 18, "operatorPreflightServerVersion": "18.6", "localVersionCommands": "pg_dump and pg_restore both report PostgreSQL 18.6; no database connection performed"},
+  "archiveRuntime": {"maximumUtilityMs": 180000, "originalDeadlineReserveMs": 30000, "tlsMode": "verify-full", "tlsRootCertificate": "system", "recordsUtilityElapsedMs": true, "operatorReportedPreclockBackup": {"byteLength": 1196912, "approximatelySeconds": 83}, "sameBranchDisposableRestoreTiming": "operator preflight pending before native clock"},
   "fixes": [
     "Qualified NativeValidation restore clears unpublished old-owner result pointers; historical committed artifacts, starts, charged count and deadline remain unchanged.",
     "Fenced scheduler and Workflow entry admit only exact rs2 metadata phases; every redispatch phase waits for explicit closed-mode resume.",
@@ -12,7 +13,7 @@
     "The new source-admission restore regression selects its owned cursor range rather than consuming another suite's superseded source fixtures."
   ],
   "postgresql": {"testsPassed": 38, "assertions": 326, "suites": ["targeted-ingest-execution", "execution-snapshot", "execution-native-restore", "execution-restore"], "freshMigrations": true, "includes030NativeRestoreGuard": true},
-  "fast": {"testsPassed": 18, "assertions": 178, "suites": ["scheduler", "execution-restore-operator", "qualified-restore-candidate"]},
+  "fast": {"testsPassed": 19, "assertions": 187, "suites": ["scheduler", "execution-restore-operator", "qualified-restore-candidate"]},
   "servicesTypecheck": "passed",
   "apiTypecheck": "passed",
   "workerDryRunAndImportAudit": "passed",
