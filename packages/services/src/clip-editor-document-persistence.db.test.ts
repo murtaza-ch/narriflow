@@ -31,7 +31,8 @@ import {
   createClipPersistenceFixture,
   openClipPersistenceTestDatabase,
 } from "./clip-persistence-db-test-support";
-import { prismaMediaCleanupStore } from "./media-cleanup";
+import { createMediaCleanupControl, queueMediaCleanupWithinTransaction } from "./media-cleanup-control";
+import { mediaCleanupObjectRetainUntil } from "./media-cleanup-holds";
 import { clipService } from "./clip.service";
 
 const dbDescribe = clipPersistenceDbTestEnabled ? describe : describe.skip;
@@ -848,42 +849,22 @@ dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
     }
   }));
 
-  test("expired cleanup claims recover and stale settlement cannot win", scopedDatabase.bind(async () => {
+  test("expired exact cleanup ownership recovers and a late HTTP acknowledgement cannot settle twice", scopedDatabase.bind(async () => {
     const f = await fixture();
-    const obligation = await prisma.mediaCleanupObligation.create({
-      data: {
-        origin: "clip_editor_document_persistence",
-        projectId: f.project.id,
-        clipId: f.clip.id,
-        cleanupClass: "mutable_render",
-        objectKey: `projects/${f.project.id}/renders/expired.mp4`,
-        nextAttemptAt: new Date("2000-01-01T00:00:00.000Z"),
-        claimId: randomUUID(),
-        claimExpiresAt: new Date("2026-08-29T00:00:00.000Z"),
-      },
-    });
-    const now = new Date("2026-08-29T00:01:00.000Z");
-    const [claim] = await prismaMediaCleanupStore.claimDue({
-      now,
-      limit: 1,
-      leaseMs: 30_000,
-      createId: () => randomUUID(),
-    });
-    expect(claim?.id).toBe(obligation.id);
-    expect(
-      await prismaMediaCleanupStore.complete({
-        id: obligation.id,
-        claimId: obligation.claimId!,
-        now,
-      }),
-    ).toBe(false);
-    expect(
-      await prismaMediaCleanupStore.complete({
-        id: obligation.id,
-        claimId: claim!.claimId,
-        now,
-      }),
-    ).toBe(true);
+    const row = await prisma.mediaCleanupObligation.create({data:{origin:"clip_editor_document_persistence",projectId:f.project.id,clipId:f.clip.id,cleanupClass:"mutable_render",objectKey:`projects/${f.project.id}/renders/expired.mp4`,nextAttemptAt:new Date(0)}});
+    const reference=(await prisma.$transaction(tx=>queueMediaCleanupWithinTransaction(tx,row.id)))!;
+    let started!:()=>void,release!:()=>void,deletes=0;
+    const ready=new Promise<void>(resolve=>{started=resolve;}),gate=new Promise<void>(resolve=>{release=resolve;});
+    const control=createMediaCleanupControl({database:prisma,hold:mediaCleanupObjectRetainUntil,register:async ids=>{expect(await prisma.executionDispatch.count({where:{id:{in:[...ids]}}})).toBe(ids.length);},storage:{async deleteExact(key){expect(key).toBe(row.objectKey);if(++deletes===1){started();await gate;}}}});
+    const stale=control.run(reference);await ready;
+    const owner=await prisma.mediaCleanupObligation.findUniqueOrThrow({where:{id:row.id}});
+    expect(await prisma.mediaCleanupObligation.updateMany({where:{id:row.id,claimId:owner.claimId},data:{claimExpiresAt:new Date(0)}})).toEqual({count:1});
+    expect(await control.run(reference)).toMatchObject({kind:"complete"});
+    const completed=await prisma.mediaCleanupObligation.findUniqueOrThrow({where:{id:row.id}});
+    release();expect(await stale).toMatchObject({kind:"superseded"});
+    expect(await prisma.mediaCleanupObligation.findUniqueOrThrow({where:{id:row.id}})).toEqual(completed);
+    expect(completed).toMatchObject({attemptCount:2,claimId:null,completedAt:expect.any(Date)});expect(deletes).toBe(2);
+    await control.run(reference);expect(deletes).toBe(2);
   }));
 
   test("cleanup meaning and exact object key are unique", scopedDatabase.bind(async () => {
@@ -903,36 +884,16 @@ dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
     ).rejects.toMatchObject({ code: "P2002" });
   }));
 
-  test("concurrent claimers cannot own the same obligation", scopedDatabase.bind(async () => {
-    await prisma.mediaCleanupObligation.updateMany({
-      where: { completedAt: null },
-      data: { nextAttemptAt: new Date("2100-01-01T00:00:00.000Z") },
-    });
-    const obligation = await prisma.mediaCleanupObligation.create({
-      data: {
-        origin: "clip_editor_document_persistence",
-        cleanupClass: "preview_proxy",
-        objectKey: `private/${randomUUID()}/claim.mp4`,
-        nextAttemptAt: new Date("2000-01-01T00:00:00.000Z"),
-      },
-    });
-    const now = new Date("2026-08-29T00:01:00.000Z");
-    const claims = await Promise.all([
-      prismaMediaCleanupStore.claimDue({
-        now,
-        limit: 1,
-        leaseMs: 30_000,
-        createId: () => randomUUID(),
-      }),
-      prismaMediaCleanupStore.claimDue({
-        now,
-        limit: 1,
-        leaseMs: 30_000,
-        createId: () => randomUUID(),
-      }),
-    ]);
-
-    expect(claims.flat().map((claim) => claim.id)).toEqual([obligation.id]);
+  test("concurrent exact cleanup commands cannot own the same obligation", scopedDatabase.bind(async () => {
+    const row=await prisma.mediaCleanupObligation.create({data:{origin:"clip_editor_document_persistence",cleanupClass:"preview_proxy",objectKey:`private/${randomUUID()}/claim.mp4`,nextAttemptAt:new Date(0)}});
+    const reference=(await prisma.$transaction(tx=>queueMediaCleanupWithinTransaction(tx,row.id)))!;
+    let started!:()=>void,release!:()=>void,deletes=0;
+    const ready=new Promise<void>(resolve=>{started=resolve;}),gate=new Promise<void>(resolve=>{release=resolve;});
+    const control=createMediaCleanupControl({database:prisma,register:async()=>{},hold:mediaCleanupObjectRetainUntil,storage:{async deleteExact(){deletes++;started();await gate;}}});
+    const first=control.run(reference);await ready;
+    expect(await control.run(reference)).toMatchObject({kind:"wait"});release();
+    expect(await first).toMatchObject({kind:"complete"});expect(deletes).toBe(1);
+    expect(await prisma.mediaCleanupObligation.findUniqueOrThrow({where:{id:row.id}})).toMatchObject({attemptCount:1,claimId:null,completedAt:expect.any(Date)});
   }));
 
   test("cleanup obligations survive deletion of their source Clip", scopedDatabase.bind(async () => {
