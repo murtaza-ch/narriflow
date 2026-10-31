@@ -147,3 +147,8 @@ The proof/CLI checkpoint passes the complete fresh disposable-schema gate:
 separate epoch-fencing processes. Nine deterministic proof/file/transport tests
 pass 52 assertions. Services/API and the operator script typecheck; focused Biome
 passes. These are local gates; no full deployed restore or maintenance claim is made.
+
+
+After merging integration (including Finishing, publication observation and the
+fenced Worker health endpoint), the complete fresh gate passes 276 tests / 1,810
+assertions. Services including the operator and API typechecks remain green.

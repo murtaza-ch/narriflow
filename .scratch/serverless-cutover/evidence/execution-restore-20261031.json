@@ -11,11 +11,22 @@
     "proofArtifact": "exclusive_create_mode_0600"
   },
   "verification": {
-    "freshDisposablePostgres": { "tests": 266, "assertions": 1761, "passed": true },
-    "deterministicProofFilesAndWranglerProtocol": { "tests": 9, "assertions": 52, "passed": true },
+    "freshDisposablePostgres": {
+      "tests": 266,
+      "assertions": 1761,
+      "passed": true
+    },
+    "deterministicProofFilesAndWranglerProtocol": {
+      "tests": 9,
+      "assertions": 52,
+      "passed": true
+    },
     "servicesTypecheckIncludingOperator": true,
     "apiTypecheck": true,
-    "focusedBiome": { "files": 18, "passed": true },
+    "focusedBiome": {
+      "files": 18,
+      "passed": true
+    },
     "operatorHelp": true
   },
   "coveredFailures": [
@@ -41,5 +52,15 @@
     "deployed_quiesced_snapshot_restore_and_old_executor_fencing",
     "deployed_maintenance_empty_and_continuation_acceptance",
     "deployed_actual_exact_key_r2_delete_ack"
-  ]
+  ],
+  "integrationVerification": {
+    "branchTip": "126ee690",
+    "freshDisposablePostgres": {
+      "tests": 276,
+      "assertions": 1810,
+      "passed": true
+    },
+    "servicesTypecheckIncludingOperator": true,
+    "apiTypecheck": true
+  }
 }
