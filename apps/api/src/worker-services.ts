@@ -1,3 +1,4 @@
+import { withProgressDelivery } from "@narriflow/services/progress-delivery";
 import { withRateLimiter } from "@narriflow/services/rate-limit";
 import { withPexelsSearchCache } from "@narriflow/services/pexels.service";
 import { type ServiceEnvironment, withServiceEnvironment } from "@narriflow/services/runtime-environment";
@@ -16,5 +17,8 @@ export function workerServiceEnvironment(bindings: ApiWorkerBindings): ServiceEn
 /** Enter once per request or Workflow step, never around a durable sleep. */
 export function withWorkerServices<Result>(bindings: ApiWorkerBindings, environment: ServiceEnvironment, operation: () => Result): Result {
   return withServiceEnvironment(environment, () => withRateLimiter(createRateLimiterClient(bindings.RATE_LIMITER), () =>
-    withPexelsSearchCache(typeof caches === "undefined" ? null : createPexelsSearchCache((caches as CacheStorage & { default: Cache }).default), operation)));
+    withPexelsSearchCache(typeof caches === "undefined" ? null : createPexelsSearchCache((caches as CacheStorage & { default: Cache }).default), () => withProgressDelivery({
+      publish: (scope, event) => bindings.PROJECT_PROGRESS.getByName(scope.projectId).publish(scope, event),
+      revoke: (input) => bindings.PROJECT_PROGRESS.getByName(input.projectId).revoke(input),
+    }, operation))));
 }

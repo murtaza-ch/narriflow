@@ -79,6 +79,12 @@ describe("progress socket transport", () => {
     await runProgressSocket({ transport: h.bound, projectId, signal: abort.signal, createSocket: h.createSocket, sleep: noSleep, onEvent: (message) => { if (message.kind === "event") { applied.push(message.event.seq); if (message.event.seq === 257) abort.abort(); } } });
     expect(applied).toHaveLength(257); expect(h.urls.map((url) => new URL(url).searchParams.get("sinceSeq"))).toEqual(["0", "256"]);
   });
+  test("the client renews at subscription expiry even if the idle server never closes", async () => {
+    const h = harness([[]], () => Response.json({ ticket: "short-ticket", ticketExpiresAt: Date.now() + 10, subscriptionExpiresAt: Date.now() + 20 }));
+    const abort = new AbortController(); let retries = 0;
+    await runProgressSocket({ transport: h.bound, projectId, signal: abort.signal, createSocket: h.createSocket, onEvent: () => {}, sleep: async () => { retries += 1; abort.abort(); } });
+    expect(retries).toBe(1); expect(h.sockets[0]?.readyState).toBe(3);
+  });
   test("a consumer failure rejects instead of silently losing its event", async () => {
     const h = harness([[event(1)]]); const failure = new ApiError({ code: "consumer", message: "consumer", status: 0 });
     await expect(runProgressSocket({ transport: h.bound, projectId, signal: new AbortController().signal, createSocket: h.createSocket, onEvent: () => { throw failure; } })).rejects.toBe(failure);

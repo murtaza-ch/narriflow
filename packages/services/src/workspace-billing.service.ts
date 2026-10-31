@@ -1,3 +1,5 @@
+import { appendProgressRevocation, deliverProgressAfterCommit } from "./progress-outbox";
+import type { ExecutionDispatchRecord } from "./execution-dispatch";
 import {
   billingHealthSchema,
   billingPlanChangeSchema,
@@ -1798,7 +1800,8 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
       });
     },
     async commitNoSubscriptionState(input) {
-      return prisma.$transaction(async (tx) => {
+      const revocations: ExecutionDispatchRecord[] = [];
+      const result = await prisma.$transaction<WorkspaceBillingProjection>(async (tx) => {
         // Access projection changes share the Workspace usage lock so a
         // concurrent intake reservation observes either the old or new status.
         // Lock order: usage lock, then Project rows, then billing rows.
@@ -1858,6 +1861,9 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
           },
         });
         if (fenced.count !== 1) throw new WorkspaceBillingAttemptLost();
+        if (workspaceStatus !== "active" && row.status !== workspaceStatus) {
+          revocations.push(await appendProgressRevocation(tx, { workspaceId: row.id, error: "workspace_restricted" }));
+        }
         await tx.workspace.update({
           where: { id: input.workspaceId },
           data: { pricingTier: "free", status: workspaceStatus },
@@ -1912,9 +1918,12 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
           latestCheckout: latestCheckoutState,
         };
       });
+      await deliverProgressAfterCommit(prisma, revocations);
+      return result;
     },
     async commitVerifiedState(input) {
-      return prisma.$transaction(async (tx) => {
+      const revocations: ExecutionDispatchRecord[] = [];
+      const result = await prisma.$transaction<WorkspaceBillingProjection>(async (tx) => {
         // Same lock order as commitNoSubscriptionState: usage lock first.
         await lockWorkspaceUsage(tx, input.workspaceId);
         const row = await tx.workspace.findUnique({
@@ -2000,6 +2009,9 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
           });
         }
 
+        if (workspaceStatus !== "active" && row.status !== workspaceStatus) {
+          revocations.push(await appendProgressRevocation(tx, { workspaceId: row.id, error: "workspace_restricted" }));
+        }
         await tx.workspace.update({
           where: { id: row.id },
           data: { pricingTier: input.tier, status: workspaceStatus },
@@ -2098,6 +2110,8 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
           latestCheckout: null,
         };
       });
+      await deliverProgressAfterCommit(prisma, revocations);
+      return result;
     },
   };
 }

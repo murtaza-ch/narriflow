@@ -471,7 +471,6 @@ export {
 } from "./clip-preview-storage";
 export {
 	getLastWorkflowSeq,
-	getWorkflowChannel,
 	getWorkflowEventsSince,
 	publishPersistedWorkflowEvent,
 } from "./workflow.service";

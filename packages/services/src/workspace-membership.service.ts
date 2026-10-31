@@ -1,3 +1,5 @@
+import { appendProgressRevocation, deliverProgressAfterCommit } from "./progress-outbox";
+import type { ExecutionDispatchRecord } from "./execution-dispatch";
 import { createHash } from "node:crypto";
 import type { Prisma, WorkspaceRole } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
@@ -259,6 +261,7 @@ export class WorkspaceMembershipService {
   async removeMember(actorUserId: string, workspaceId: string, memberId: string) {
     const actor = await workspaceService.requireActor(actorUserId, workspaceId, "members.invite");
     const prisma = requiredPrisma();
+    const revocations: ExecutionDispatchRecord[] = [];
     await prisma.$transaction(async (tx) => {
       await lockWorkspaceMember(tx, workspaceId, memberId);
       const member = await tx.workspaceMember.findFirst({
@@ -278,10 +281,12 @@ export class WorkspaceMembershipService {
         );
       }
       await tx.workspaceMember.delete({ where: { id: member.id } });
+      revocations.push(await appendProgressRevocation(tx, { workspaceId, actorUserId: member.userId, error: "workspace_membership_required" }));
       await markMembershipChanged(tx, workspaceId, isBillable(member.role) ? -1 : 0);
       await pauseGrantsOfGranter(tx, { workspaceId, userId: member.userId });
       await flushWorkspaceEvents(tx);
     });
+    await deliverProgressAfterCommit(prisma, revocations);
   }
 }
 

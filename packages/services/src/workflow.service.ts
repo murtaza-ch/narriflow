@@ -1,106 +1,19 @@
-import { readServiceEnvironment } from "./runtime-environment";
-import Redis from "ioredis";
 import { getPrismaClient } from "@narriflow/db/client";
 import { workflowStageUpdatedEventSchema, type WorkflowStageUpdatedEvent } from "@narriflow/validators";
-import {
-  boundedRedisRetryDelay,
-  installOptionalRedisErrorHandler,
-  OPTIONAL_REDIS_COMMAND_TIMEOUT_MS,
-  OPTIONAL_REDIS_CONNECT_TIMEOUT_MS,
-  OPTIONAL_REDIS_RECOVERY_COOLDOWN_MS,
-  optionalRedisFailureCode,
-  optionalRedisUrl,
-} from "./optional-redis";
+import { progressDeliveryPort } from "./progress-delivery";
+import { progressEvent } from "./progress-feed";
 
-const redisUrl = () => optionalRedisUrl(readServiceEnvironment().UPSTASH_REDIS_URL);
-
-export function isWorkflowRedisDeliveryEnabled() {
-  return Boolean(redisUrl());
-}
-
-let publisher: Redis | null = null;
-let publisherReady: Promise<void> | null = null;
-let publisherRetryAfter = 0;
-
-function resetPublisher(client: Redis): boolean {
-  const wasCurrentPublisher = publisher === client;
-  if (wasCurrentPublisher) {
-    publisher = null;
-    publisherReady = null;
-    publisherRetryAfter = Date.now() + OPTIONAL_REDIS_RECOVERY_COOLDOWN_MS;
-  }
-  client.disconnect();
-  return wasCurrentPublisher;
-}
-
-function getPublisher() {
-  const url = redisUrl();
-  if (!url || Date.now() < publisherRetryAfter) {
-    return null;
-  }
-
-  if (!publisher) {
-    let nextPublisher: Redis;
-    try {
-      nextPublisher = new Redis(url, {
-        maxRetriesPerRequest: 1,
-        enableOfflineQueue: false,
-        lazyConnect: true,
-        connectTimeout: OPTIONAL_REDIS_CONNECT_TIMEOUT_MS,
-        commandTimeout: OPTIONAL_REDIS_COMMAND_TIMEOUT_MS,
-        retryStrategy: (attempt) => boundedRedisRetryDelay(attempt, 2),
-      });
-    } catch {
-      publisherRetryAfter = Date.now() + OPTIONAL_REDIS_RECOVERY_COOLDOWN_MS;
-      return null;
-    }
-    installOptionalRedisErrorHandler(nextPublisher);
-    nextPublisher.on("end", () => {
-      if (publisher === nextPublisher) {
-        publisher = null;
-        publisherReady = null;
-        publisherRetryAfter = Date.now() + OPTIONAL_REDIS_RECOVERY_COOLDOWN_MS;
-      }
-    });
-    publisher = nextPublisher;
-    publisherReady = nextPublisher.connect();
-  }
-
-  return { client: publisher, ready: publisherReady! };
-}
-
-/** Publishes an already-persisted outbox event. Persistence and domain
- * transitions are intentionally owned by WorkflowRunLifecycle. */
-export async function publishPersistedWorkflowEvent(
-  event: WorkflowStageUpdatedEvent,
-): Promise<boolean> {
+/** Confirms delivery only after the destination Durable Object accepts it. */
+export async function publishPersistedWorkflowEvent(event: WorkflowStageUpdatedEvent): Promise<boolean> {
+  const port = progressDeliveryPort();
+  if (!port) return false;
+  const prisma = getPrismaClient();
+  if (!prisma) throw new Error("Progress delivery requires a database scope");
   const parsed = workflowStageUpdatedEventSchema.parse(event);
-  const pub = getPublisher();
-  if (!pub) return false;
-  try {
-    await pub.ready;
-    await pub.client.publish(
-      getWorkflowChannel(parsed.projectId),
-      JSON.stringify(parsed),
-    );
-  } catch (error) {
-    if (resetPublisher(pub.client)) {
-      console.warn(
-        JSON.stringify({
-          level: "warn",
-          message: "workflow_event_publish_failed",
-          projectId: parsed.projectId,
-          errorCode: optionalRedisFailureCode(error),
-        }),
-      );
-    }
-    throw error;
-  }
+  const project = await prisma.project.findUnique({ where: { id: parsed.projectId }, select: { workspaceId: true } });
+  if (!project) return true;
+  await port.publish({ projectId: parsed.projectId, workspaceId: project.workspaceId }, progressEvent({ ...parsed, ingestJobId: parsed.ingestJobId ?? null, emittedAt: new Date(parsed.emittedAt) }));
   return true;
-}
-
-export function getWorkflowChannel(projectId: string) {
-  return `workflow:${projectId}`;
 }
 
 export async function getLastWorkflowSeq(projectId: string) {

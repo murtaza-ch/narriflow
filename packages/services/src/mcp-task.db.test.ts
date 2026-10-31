@@ -197,7 +197,7 @@ db("durable MCP Task lifecycle", () => {
     await prisma.workflowRun.update({ where: { id: child.id }, data: { attemptId, attemptCount: 1, leaseOwner: "mcp-generation-history",
       leaseExpiresAt: new Date(Date.now() + 60_000) } });
     const generated = await clip(child.id);
-    const lifecycle = new RenderFixtureLifecycle({ prisma, leaseOwner: "mcp-generation-history", publishRedis: async () => {} });
+    const lifecycle = new RenderFixtureLifecycle({ prisma, leaseOwner: "mcp-generation-history", publishProgress: async () => {} });
     const attempt = { projectId, workflowRunId: child.id, stage: "moment_detection" as const, attemptId, attemptCount: 1 };
     const admitted = await lifecycle.admitAutoRenderWork(attempt, { idempotencyKey: `auto-render-${child.id}`,
       renders: [{ clipId: generated.id, aspectRatio: "ratio_9_16", resolution: "1080p" }] });
@@ -227,7 +227,7 @@ db("durable MCP Task lifecycle", () => {
     const work = await renderRun(child.id, "queued"); const generated = await clip(child.id);
     const render = await prisma.clipRender.create({ data: { clipId: generated.id, aspectRatio: "ratio_9_16", status: "pending" } });
     await handoff(child.id, work.id, [render.id]);
-    const lifecycle = new RenderFixtureLifecycle({ prisma, leaseOwner: "mcp-generation-retry", publishRedis: async () => {} });
+    const lifecycle = new RenderFixtureLifecycle({ prisma, leaseOwner: "mcp-generation-retry", publishProgress: async () => {} });
     const first = await lifecycle.claim("clip_rendering");
     if (!first) throw new Error("Expected queued render claim");
     await lifecycle.beginRenderWorkSet(first);
@@ -255,7 +255,7 @@ db("durable MCP Task lifecycle", () => {
     const attemptId = randomUUID();
     await prisma.workflowRun.update({ where: { id: work.id }, data: { attemptId, attemptCount: 1, leaseOwner: "mcp-generation-failure",
       leaseExpiresAt: new Date(Date.now() + 60_000) } });
-    const lifecycle = new RenderFixtureLifecycle({ prisma, leaseOwner: "mcp-generation-failure", publishRedis: async () => {} });
+    const lifecycle = new RenderFixtureLifecycle({ prisma, leaseOwner: "mcp-generation-failure", publishProgress: async () => {} });
     const attempt = { projectId, workflowRunId: work.id, stage: "clip_rendering" as const, attemptId, attemptCount: 1 };
     await lifecycle.beginRenderWorkSet(attempt);
     expect(await lifecycle.markClipRenderVariantRendering(attempt, render.id)).toBe(true);
