@@ -21,7 +21,7 @@ The generated-only validation child and old queue processor/publisher are remove
 The targeted Workspace Billing driver now validates an exact epoch, generation, due time and frozen billing input before acquiring one provider claim. Claim and expiry obligation commit before provider I/O, and the watchdog is confirmed before that call. Stripe delivery, Checkout observations, seat/membership changes, provider projections and retry decisions append next wakes in their mutation transactions. Projection and renewal authority use current epoch and database lease time. See [billing evidence](../evidence/billing-targeted-20261031.json) for tests and explicit remaining paths. This is a tested integration checkpoint; the ticket remains open.
 
 Export Bundle and Dubbing now execute through the accepted Workflow Run,
-with one native owner and an original45-minute absolute deadline. Preparation
+with one native owner and an original 45-minute absolute deadline. Preparation
 records the watchdog before private input I/O. Native code receives only scoped
 source and multipart grants; actual Popen acknowledgement precedes work.
 Bundle ZIP publication settles campaign items and the Workflow together, and
@@ -38,19 +38,24 @@ after known failure use a new Clip Dub and preserve prior accounting.
 Bundle and Dub restore ports require the exact closed epoch/cutoff and revoked
 historical owner. Metadata restoration changes no accepted budget, paid evidence
 or quota, and appends no product dispatch. Final redispatch alone repairs the
-original driver/watchdog obligations. Indexed pages process at most32 rows with
-sorted parent locks. Migration019 contains their recovery indexes and the Bundle
+original driver/watchdog obligations. Indexed pages process at most 32 rows with
+sorted parent locks. Migration 019 contains their recovery indexes and the Bundle
 accepted-deadline guard.
 
 The [Bundle/Dub evidence](../evidence/dubbing-bundle-native-20261031.json) records
 local PostgreSQL, actual child/control/storage fixtures and pinned Linux gates.
-The Linux x86_64 source overlay passes13cases under4CPU/8GiB/network-none using
-Bun1.3.6, Python3.13.5 and FFmpeg7.1.5. It reproduces and fixes a pinned-reader
+The Linux x86_64 source overlay passes 13 cases under 4 CPU/8 GiB/network-none using
+Bun 1.3.6, Python 3.13.5 and FFmpeg 7.1.5. It reproduces and fixes a pinned-reader
 cleanup error without changing budgets or goldens. Worker stage routing and
 Modal `dub_mix` plus a credential-free verifier are registered in source; no
-paid provider call or deployment was made by this checkpoint. Actual Modal/live
-Bundle/Dub acceptance and the large-archive memory gate remain open. Root is also
-correcting the shared Workflow release path to retain actual charged starts.
+paid provider call or deployment was made by this checkpoint. A maximum 4 GiB
+single source now streams into a valid ZIP64 archive under 2 CPU/4 GiB, with
+135,233,536 bytes peak process RSS and an independent full-entry CRC check. See
+[maximum archive evidence](../evidence/export-bundle-maximum-input-20261031.json).
+The compressible fixture establishes size/format/memory behavior; actual
+Modal/live Bundle/Dub transport acceptance remains open. Shutdown release retains
+actual charged starts, including sealed-result Dub recovery; startup rejection
+stays uncharged.
 
 Targeted Finishing and email runtime checkpoint, 2026-10-31: each Finishing child
 admission/result transaction rechecks current claim authority. Copy generation

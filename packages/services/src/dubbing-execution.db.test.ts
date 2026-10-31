@@ -67,15 +67,18 @@ suite("Native Dubbing execution", () => {
         await expect(restoreDubWithinTransaction(tx, f.dub.id, proof)).rejects.toThrow("dubbing_restore_owner_not_revoked");
         await tx.executionAttempt.updateMany({ where: { dispatch: { subjectId: f.run.id } }, data: { status: "superseded", revokedAt: fence.changedAt, finishedAt: fence.changedAt } });
         const count = await tx.executionDispatch.count({ where: { deploymentEpoch: fence.epoch } });
+        // Other suites retain accepted jobs in this disposable schema. This
+        // page starts at our fixture range; their parent phase is separate.
+        const after = { at: f.dub.createdAt, id: "00000000-0000-0000-0000-000000000000" };
         expect(await restoreDubWithinTransaction(tx, f.dub.id, proof)).toEqual({ dispatchIds: [] });
-        const first = await restoreDubbingPage(tx, { ...proof, after: null, limit: 1 });expect(first.processed).toBe(1);expect(first.next).not.toBeNull();expect(first.dispatchIds).toEqual([]);
+        const first = await restoreDubbingPage(tx, { ...proof, after, limit: 1 });expect(first.processed).toBe(1);expect(first.next).not.toBeNull();expect(first.dispatchIds).toEqual([]);
         const last = await restoreDubbingPage(tx, { ...proof, after: first.next, limit: 1 });expect(last.processed).toBe(1);expect(last.next).toBeNull();expect(last.dispatchIds).toEqual([]);
         expect(await tx.executionDispatch.count({ where: { deploymentEpoch: fence.epoch } })).toBe(count);expect(takeExecutionDispatchIds(tx)).toEqual([]);
         expect(await tx.clipDub.findUniqueOrThrow({ where: { id: f.dub.id } })).toMatchObject({ status: "queued", deploymentEpoch: fence.epoch, translationIntentArtifactId: paidIntentId, translationResultArtifactId: null,
           requestHash: f.dub.requestHash, frozenRequest: f.request, inputStorageKey: null, inputBindingHash: null, operationDeadlineAt: f.dub.operationDeadlineAt });
         expect(await tx.workflowRun.findUniqueOrThrow({ where: { id: f.run.id } })).toMatchObject({ attemptCount: 2, attemptId: null, operationDeadlineAt: f.dub.operationDeadlineAt });
         expect(await tx.generatedMediaUsageReservation.findUniqueOrThrow({ where: { jobId: f.dub.id } })).toEqual(reservation);
-        const final = await recoverDubbingWakesPage(tx, { deploymentEpoch: fence.epoch, cutoff: proof.cutoff, after: null, limit: 3 });expect(final.processed).toBe(3);expect(final.dispatchIds).toHaveLength(6);
+        const final = await recoverDubbingWakesPage(tx, { deploymentEpoch: fence.epoch, cutoff: proof.cutoff, after, limit: 3 });expect(final.processed).toBe(3);expect(final.dispatchIds).toHaveLength(6);
         expect(await tx.executionAttempt.count({ where: { dispatch: { subjectId: f.run.id } } })).toBe(1);
         await expect(restoreDubWithinTransaction(tx, f.dub.id, { ...proof, cutoff: new Date(proof.cutoff.getTime() + 1) })).rejects.toThrow("dubbing_restore_fence_invalid");
         throw rollback;
@@ -206,7 +209,7 @@ suite("Native Dubbing execution", () => {
     }
   });
   test("speech intent requires the sealed translated script and sealed audio survives retry as a scoped source", async () => {
-    for (const mode of ["unknown", "reported_unknown", "rejected", "retry", "complete"] as const) {
+    for (const mode of ["unknown", "reported_unknown", "rejected", "retry", "release", "complete"] as const) {
     const f = await fixture(), receipts: string[] = [], evidence = new Map<string, unknown>();let loseWakeAck = false;
     try {
       const prepared = await withServiceEnvironment({}, () => f.domain.prepareExecution(f.reference));if (prepared.kind !== "waiting") throw Error("Expected prepared Dub");
@@ -274,7 +277,8 @@ suite("Native Dubbing execution", () => {
         expect(await db.workflowEvent.count({ where: { workflowRunId: f.run.id, status: "completed" } })).toBe(1);
         continue;
       }
-      await send({ action: "fail", fence, failureCode: "native_mux_unavailable", retryable: true });
+      if (mode === "release") await send({ action: "release", fence, reason: "shutdown" });
+      else await send({ action: "fail", fence, failureCode: "native_mux_unavailable", retryable: true });
       expect(await db.clipDub.findUniqueOrThrow({ where: { id: f.dub.id } })).toMatchObject({ status: "queued", speechIntentArtifactId: speechId, audioArtifactId: audio.artifactId, audioStorageKey: null, renderStorageKey: null });
       expect(await db.workflowRun.findUniqueOrThrow({ where: { id: f.run.id } })).toMatchObject({ status: "queued", generation: 2, attemptCount: 1 });
       expect(await db.generatedMediaUsageReservation.findUniqueOrThrow({ where: { jobId: f.dub.id } })).toMatchObject({ status: "reserved" });
