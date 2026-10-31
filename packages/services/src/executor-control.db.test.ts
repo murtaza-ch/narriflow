@@ -191,4 +191,48 @@ dbDescribe("Executor control authority and replay", () => {
     expect(acquisitions).toBe(1);
     expect(deliveries).toBe(2);
   }, 30_000);
+  test("terminal policy wakes commit with the inbox, roll back during denied grants and replay after a lost scheduler ACK",async()=>{
+    const f=await fixture(),owner=randomUUID(),fence={reference:f.reference,attemptToken:f.token,owner};
+    await createExecutorControl({database:prisma,subjectKind:"ingest_job",domain}).execute({command:{action:"acquire",reference:f.reference,attemptToken:f.token,owner,leaseSeconds:120},verifiedRequest:verified()});
+    let transitions=0,deliveries=0;
+    const request=verified(),wakeKind=`hold_${randomUUID().replaceAll("-","")}`;
+    const held:ExecutorDomainControl<{id:string}>={...domain,async lockExecution(tx,reference){
+      await tx.$queryRaw`SELECT "id" FROM "IngestJob" WHERE "id"=${reference.subject.id}::uuid FOR UPDATE`;
+      transitions++;
+      await tx.ingestJob.update({where:{id:reference.subject.id},data:{status:"cancelled",claimId:null,executorOwner:null,claimExpiresAt:null}});
+      const wake=await appendExecutionDispatch(tx,{...reference,kind:"operation_driver",dueAt:new Date(Date.now()+900000),wakeKind});dispatches.push(wake.reference.dispatchId);
+      return {kind:"terminal",disposition:{disposition:"superseded"},dispatchIds:[wake.reference.dispatchId]};
+    }};
+    const control=createExecutorControl({database:prisma,subjectKind:"ingest_job",domain:held,deliverWakes:async ids=>{
+      deliveries++;
+      const receipt=await prisma.executionInboxReceipt.findUniqueOrThrow({where:{audience_deliveryId:{audience:"executor-control",deliveryId:request.metadata.deliveryId}}});
+      expect(receipt.wakeDispatchIds).toEqual([...ids]);expect((await prisma.ingestJob.findUniqueOrThrow({where:{id:f.job.id}})).status).toBe("cancelled");
+      if(deliveries===1)throw new Error("lost_terminal_wake_ack");
+    }});
+    await expect(control.authorize(fence,false)).rejects.toMatchObject({code:"authority_lost"});
+    expect((await prisma.ingestJob.findUniqueOrThrow({where:{id:f.job.id}})).status).toBe("running");
+    expect(await prisma.executionDispatch.count({where:{wakeKind}})).toBe(0);expect(deliveries).toBe(0);
+    const input={command:{action:"read-disposition",fence},verifiedRequest:request};
+    await expect(control.execute(input)).rejects.toThrow("lost_terminal_wake_ack");
+    expect((await control.execute(input)).disposition).toBe("superseded");expect(deliveries).toBe(2);expect(transitions).toBe(2);
+    expect(await prisma.executionDispatch.count({where:{wakeKind}})).toBe(1);
+  });
+
+  test("watchdog terminal wakes are persisted and confirmed again on exact observation replay",async()=>{
+    const f=await fixture(),wakeKind=`hold_${randomUUID().replaceAll("-","")}`;
+    let calls=0,deliveries=0;
+    const held:ExecutorDomainControl<{id:string}>={...domain,async lockExecution(tx,reference){
+      calls++;
+      await tx.$queryRaw`SELECT "id" FROM "IngestJob" WHERE "id"=${reference.subject.id}::uuid FOR UPDATE`;
+      const wake=await appendExecutionDispatch(tx,{...reference,kind:"operation_driver",dueAt:new Date(Date.now()+900000),wakeKind});dispatches.push(wake.reference.dispatchId);
+      return {kind:"terminal",disposition:{disposition:"superseded"},dispatchIds:[wake.reference.dispatchId]};
+    }};
+    const control=createExecutorControl({database:prisma,subjectKind:"ingest_job",domain:held,deliverWakes:async()=>{deliveries++;if(deliveries===1)throw new Error("lost_watchdog_wake_ack");}});
+    const deliveryId=randomUUID();receipts.push(deliveryId);
+    const input={deliveryId,deadline:{reference:f.reference,attemptToken:f.token,kind:"operation",observedDeadlineAt:new Date(Date.now()+60000).toISOString()}};
+    await expect(control.expireDeadline(input)).rejects.toThrow("lost_watchdog_wake_ack");
+    expect((await control.expireDeadline(input)).kind).toBe("superseded");expect(calls).toBe(1);expect(deliveries).toBe(2);
+    expect((await prisma.executionAttempt.findUniqueOrThrow({where:{attemptToken:f.token}})).status).toBe("superseded");
+  });
+
 });
