@@ -16,6 +16,12 @@ const host="ep-wispy-field-b5wyn9o3.c-7.us-east-2.aws.neon.tech",databaseName="s
 const invocationEpoch=3,snapshotEpoch=4,restoredEpoch=5;
 const pgDirectory="/opt/homebrew/opt/libpq/bin",pgVersion="18.6",pgMajor=18;
 const invalid=()=>Error("qualified_restore_gate_refused");
+export function candidateRestoreUtilityTimeout(deadline:number,now:number){
+ if(!Number.isFinite(deadline)||!Number.isFinite(now))throw invalid();
+ const timeout=Math.min(180000,deadline-now-30000);if(!Number.isFinite(timeout)||timeout<1000)throw invalid();return timeout;
+}
+interface UtilityEvidence{tool:"pg_dump"|"pg_restore";utilityVersion:string;serverMajor:number;serverVersion:string;serverVersionNumber:number;timeoutMs:number;elapsedMs:number}
+class CandidateRestoreUtilityError extends Error{constructor(readonly proof:UtilityEvidence){super("qualified_restore_utility_failed");}}
 export function candidateRestorePostgresVersion(tool:"pg_dump"|"pg_restore",output:string,serverVersionNumber:number){
  if(!Number.isInteger(serverVersionNumber)||Math.floor(serverVersionNumber/10000)!==pgMajor||output.trim()!==`${tool} (PostgreSQL) ${pgVersion}`)throw invalid();
  return {utilityVersion:pgVersion,serverMajor:pgMajor};
@@ -79,13 +85,14 @@ async function main(){
  }
  const runFile=promisify(execFile);
  async function postgres(tool:"pg_dump"|"pg_restore",args:string[]){
-  const env:NodeJS.ProcessEnv={PATH:process.env.PATH,HOME:process.env.HOME,PGHOST:host,PGPORT:"5432",PGDATABASE:databaseName,PGUSER:decodeURIComponent(target.username),PGPASSWORD:decodeURIComponent(target.password),PGSSLMODE:"verify-full",PGCONNECT_TIMEOUT:"10",PGOPTIONS:"-c statement_timeout=60000 -c lock_timeout=5000"};
-  const timeout=Math.min(60000,deadline-Date.now()-10000);if(timeout<1000)throw invalid();
+  const env:NodeJS.ProcessEnv={PATH:process.env.PATH,HOME:process.env.HOME,PGHOST:host,PGPORT:"5432",PGDATABASE:databaseName,PGUSER:decodeURIComponent(target.username),PGPASSWORD:decodeURIComponent(target.password),PGSSLMODE:"verify-full",PGSSLROOTCERT:"system",PGCONNECT_TIMEOUT:"10",PGOPTIONS:"-c statement_timeout=60000 -c lock_timeout=5000"};
   if(!serverVersion)throw invalid();
   const binary=`${pgDirectory}/${tool}`,version=await runFile(binary,["--version"],{env,timeout:5000,maxBuffer:4096});
   const checked=candidateRestorePostgresVersion(tool,version.stdout,serverVersion.number);
-  await runFile(binary,args,{env,timeout,maxBuffer:4*1024*1024});
-  return {tool,...checked,serverVersion:serverVersion.version,serverVersionNumber:serverVersion.number};
+  const timeout=candidateRestoreUtilityTimeout(deadline,Date.now()),began=performance.now();
+  const evidence=():UtilityEvidence=>({tool,...checked,serverVersion:serverVersion!.version,serverVersionNumber:serverVersion!.number,timeoutMs:timeout,elapsedMs:Math.ceil(performance.now()-began)});
+  try{await runFile(binary,args,{env,timeout,maxBuffer:4*1024*1024});}catch{throw new CandidateRestoreUtilityError(evidence());}
+  return evidence();
  }
  try{
   if(stage==="dump"){
@@ -119,4 +126,4 @@ async function main(){
   }
  }finally{await db.$disconnect();}
 }
-if((import.meta as ImportMeta&{main?:boolean}).main)main().catch(()=>{console.error(JSON.stringify({mode:"failed",code:"qualified_restore_gate_refused"}));process.exitCode=1;});
+if((import.meta as ImportMeta&{main?:boolean}).main)main().catch(error=>{console.error(JSON.stringify({mode:"failed",code:"qualified_restore_gate_refused",...(error instanceof CandidateRestoreUtilityError?{postgres:error.proof}:{})}));process.exitCode=1;});
