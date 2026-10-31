@@ -179,7 +179,13 @@ class OwnedProcessTests(unittest.TestCase):
     def assert_pid_stopped(self, pid: int):
         until = time.monotonic() + 3
         while time.monotonic() < until:
-            state = subprocess.run(["ps", "-p", str(pid), "-o", "stat="], capture_output=True).stdout.strip()
+            if sys.platform == 'linux':
+                try:
+                    state = Path(f'/proc/{pid}/stat').read_bytes().rsplit(b')', 1)[1].split()[0]
+                except FileNotFoundError:
+                    return
+            else:
+                state = subprocess.run(["ps", "-p", str(pid), "-o", "stat="], capture_output=True).stdout.strip()
             if not state or state.startswith(b"Z"):
                 return
             time.sleep(0.025)
