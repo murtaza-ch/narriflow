@@ -4,10 +4,10 @@
   "database": "Dedicated PostgreSQL17 disposable schema, all migrations fresh; no shared database changed",
   "verification": {
     "postgresql": {
-      "tests": 37,
-      "assertions": 239,
+      "tests": 39,
+      "assertions": 261,
       "file": "packages/services/src/publication-execution.db.test.ts",
-      "log": "/tmp/narriflow-publication-maintenance-db.log"
+      "log": "/tmp/narriflow-publication-redispatch-db.log"
     },
     "red": "Expired receipt/capture recovery originally recreated due references instead of exact owner watchdogs; behavioral test failed before fix",
     "typecheck": "services passed"
@@ -17,7 +17,11 @@
     "planStandingGrantExpiryPage",
     "planPublicationReceiptRecoveryPage",
     "planPerformanceCaptureRecoveryPage",
-    "planPublicationRestorePage"
+    "planPublicationRestorePage",
+    "planPublicationReceiptRedispatchPage",
+    "planPerformanceCaptureRedispatchPage",
+    "planStandingGrantRedispatchPage",
+    "planPublicationGuidanceRedispatchPage"
   ],
   "guarantees": [
     "Five fixed model cursors, limit32, frozen cutoff, lexicographic timestamp/UUID cursor",
@@ -25,8 +29,11 @@
     "Hourly pages only restore targeted accepted obligations; no provider I/O or claim budget mutation",
     "Expired receipt/capture owner recovered by exact token/deadline timer",
     "Restore preserves provider IDs, opaque checkpoints, uncertainty, charged native/provider counts and original deadlines",
-    "At most64 dispatch IDs per restore page; shared page receipt reserves room for continuation"
+    "Metadata Post restore appends and collects ZERO product wake IDs; only clears bounded old physical owner and rebinds epoch/generation",
+    "Final redispatch has separate createdAt/id planners for future receipt/capture/grant obligations preserving exact due and owner watch",
+    "Guidance redispatch reads explicit snapshot epoch accepted po1.g ledger, validates identity/night/hash, and retains latest accepted night per active Workspace",
+    "Old observed receipt/capture epochs fence every stale renewal or settlement; final wake preserves existing bounded lease"
   ],
-  "migration": "020 publication recovery indexes",
-  "integration": "Contracts20 owns central factory phase mounting; root owns API/Workflow composition"
+  "migration": "020 refined with5 future/known-guidance cursor indexes, all migrations applied fresh in isolated schema",
+  "integration": "Contracts20 mounts redispatch ports after metadata-ready and Worker fenced-to-closed transition; guidance port requires full ExecutionRestorePage including snapshotEpoch"
 }

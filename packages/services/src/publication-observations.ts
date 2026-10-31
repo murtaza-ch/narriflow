@@ -69,6 +69,7 @@ const receiptId = (r: Receipt) =>
 	`po1.y.${r.id}.${hash([r.id, r.attemptId, r.platformPostId, r.enrichmentCheckCount, r.enrichmentNextCheckAt?.toISOString() ?? null, r.attempt.processingDeadline.toISOString()]).slice(0, 32)}`;
 const captureId = (r: Capture) =>
 	`po1.c.${r.id}.${hash([r.id, r.trackedVideoId, r.slot, r.dueAt.toISOString(), r.attempts, r.trackedVideo.platform, r.trackedVideo.platformPostId, r.trackedVideo.socialAccountId]).slice(0, 32)}`;
+export const publicationObservationInputHash = (id: string) => hash(["publication-observation-v1", id]);
 async function append(tx: Tx, id: string, dueAt: Date) {
 	const { epoch } = await readExecutionAdmission(tx);
 	const record = await appendExecutionDispatch(tx, {
@@ -76,7 +77,7 @@ async function append(tx: Tx, id: string, dueAt: Date) {
 		generation: 1,
 		kind: "maintenance",
 		subject: { kind: "maintenance", id },
-		inputHash: hash(["publication-observation-v1", id]),
+		inputHash: publicationObservationInputHash(id),
 		dueAt,
 	});
 	collectExecutionDispatch(tx, record.reference.dispatchId);
