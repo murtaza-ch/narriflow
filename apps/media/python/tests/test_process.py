@@ -163,6 +163,19 @@ class OwnedProcessTests(unittest.TestCase):
         self.assertEqual(len(children), 1)
         self.assert_pid_stopped(children[0])
 
+    def test_native_file_limit_stops_unknown_length_output_at_the_exact_cap(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "bounded.bin"
+            code = "import signal,sys;signal.signal(signal.SIGXFSZ,signal.SIG_DFL);open(sys.argv[1],'wb').write(b'x'*8192)"
+            result = run_owned_process([sys.executable, "-c", code, str(path)], timeout_seconds=2,
+                                       kill_grace_seconds=0.1, max_file_bytes=4096)
+            self.assertEqual(result.returncode, 73)
+            self.assertLessEqual(path.stat().st_size, 4096)
+            exact = run_owned_process([sys.executable, "-c", "import sys;open(sys.argv[1],'wb').write(b'x'*4096)", str(path)],
+                                      timeout_seconds=2, kill_grace_seconds=0.1, max_file_bytes=4096)
+            self.assertEqual(exact.returncode, 0)
+            self.assertEqual(path.stat().st_size, 4096)
+
     def assert_pid_stopped(self, pid: int):
         until = time.monotonic() + 3
         while time.monotonic() < until:

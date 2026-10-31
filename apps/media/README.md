@@ -6,7 +6,7 @@ The TypeScript renderer, FFmpeg compiler, caption code, normalized probe, proces
 
 Both Modal images use `runtime-lock.json` and the same Dockerfile. The render profile includes detector wheels, the pinned model and caption fonts. The lean profile omits those payloads. Python stays at 3.13.5; Modal must not inject a different interpreter. The tested deployment SDK is `modal==1.2.6`.
 
-The Python process supervisor bounds input and output, propagates cancellation, kills detached native descendants, and strips PostgreSQL credentials from child environments. Its lifetime pipe also stops media if the calling Python wrapper is killed. Linux subreaping handles descendants whose Bun parent has already exited.
+The Python process supervisor bounds input and output, propagates cancellation, kills detached native descendants, and strips PostgreSQL credentials from child environments. Its lifetime pipe also stops media if the calling Python wrapper is killed. Fetch commands also inherit an OS file-size limit of 10 GiB, so unknown-length HTTP and fragment writers cannot exceed the product cap before the final file check. Linux subreaping handles descendants whose Bun parent has already exited.
 
 ## Local verification
 

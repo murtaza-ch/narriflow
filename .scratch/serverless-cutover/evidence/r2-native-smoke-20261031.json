@@ -1,0 +1,58 @@
+{
+  "runtime": "CPython 3.13.5",
+  "scope": "native multipart plus local injected TS grant service, real R2; no live domain fence claim",
+  "checks": [
+    "native file uploaded with measured SHA256 and provider MD5 verification",
+    "still-live UploadPart grant returns404 after completion and cannot overwrite",
+    "conditional pin preserved independently reread whole-object SHA256",
+    "actual source overwrite during pin caused failed condition and aborted unpublished MPU"
+  ],
+  "phases": [
+    {
+      "name": "file_upload",
+      "uploadedBytes": 17825792,
+      "downloadedBytes": 0,
+      "startedAt": 1793416567.498154,
+      "elapsedSeconds": 46.89,
+      "peakRssMiB": 55.12
+    },
+    {
+      "name": "conditional_pin",
+      "uploadedBytes": 17825792,
+      "downloadedBytes": 17825792,
+      "startedAt": 1793416622.4327621,
+      "elapsedSeconds": 32.91,
+      "peakRssMiB": 55.17
+    },
+    {
+      "name": "source_mutation_fault",
+      "uploadedBytes": 16777216,
+      "downloadedBytes": 16777216,
+      "startedAt": 1793416655.612409,
+      "elapsedSeconds": 39.27,
+      "peakRssMiB": 55.17
+    }
+  ],
+  "status": "passed",
+  "gateDeadlineSeconds": 14400,
+  "logicalSourceBytes": 17825792,
+  "allocatedSourceBytes": 32768,
+  "tracedPeakBytes": 18260024,
+  "peakRssMiB": 55.17,
+  "cleanup": {
+    "deleted": 2,
+    "aborted": 1,
+    "uncertain": 0
+  },
+  "date": "2026-10-31",
+  "accountId": "5359f28d385b8632c3abee12d1f5b011",
+  "bucket": "narriflow-dev",
+  "providerCredentialsInPython": false,
+  "grantService": "packages/services/scripts/r2-native-grant-gate.ts",
+  "nativeDriver": "apps/media/python/gates/r2_large_transfer.py",
+  "openGates": [
+    "real 10 GiB run is still in progress",
+    "live domain and signed HTTP fence integration",
+    "Modal execution and Linux image parity"
+  ]
+}
