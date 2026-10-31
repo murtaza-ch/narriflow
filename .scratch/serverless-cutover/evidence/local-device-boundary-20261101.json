@@ -1,0 +1,50 @@
+{
+  "date": "2026-11-01",
+  "change": "Move local fetch job eligibility and explicit reconnect reconciliation from the HTTP module into local-fetch-device-execution with lazy database and injected delivery ports",
+  "preserved": [
+    "Signature and cursor validation precede database client resolution",
+    "Device Workspace and epoch match; exact current job generation, link_import and YouTube eligibility; current actor processing.consume authorization",
+    "Executor Control remains authoritative for current epoch, owner, attempt token, lease and immutable input fences",
+    "Known-Workspace reconciliation selects at most 25 UUID-cursor rows, matching job generation and deployment epoch",
+    "Acknowledged records replay their exact reference; unacknowledged records use normal durable dispatch delivery",
+    "Selection finishes before delivery; no SQL transaction spans mailbox IO",
+    "No background timer or idle SQL scanner",
+    "Watchdog wait-state implementation unchanged"
+  ],
+  "proofs": {
+    "pinnedBun": "1.3.6",
+    "focusedFast": { "passed": 18, "failed": 0, "assertions": 115 },
+    "fullApiFast": { "passed": 922, "skippedPostgresql": 39, "failed": 0, "assertions": 5003 },
+    "workerd": {
+      "wrangler": "4.156.0",
+      "compatibilityDate": "2026-10-30",
+      "passed": 8,
+      "postgresConnections": 0,
+      "fakeSqlClientScopes": 1,
+      "checks": [
+        "workspace_allowlist_and_mailbox_identity",
+        "one_use_ticket_and_connected_presence",
+        "hibernating_ping_without_postgres",
+        "reference_only_delivery_and_epoch_fencing",
+        "membership_revocation_and_wrong_actor_isolation",
+        "http_signature_and_cursor_before_database",
+        "http_service_foreign_workspace_refusal_and_scope_disposal",
+        "signed_connect_ticket_uses_real_mailbox_without_sql"
+      ],
+      "scope": "Actual local workerd HTTP signature verification and real Durable Object mailbox; foreign-job SQL is one fixed injected result, not a real PostgreSQL proof"
+    },
+    "apiTypecheck": "passed",
+    "servicesTypecheck": "passed",
+    "workerDryBuildAndImportAudit": "passed",
+    "focusedBiomeAndDiffWhitespace": "passed"
+  },
+  "logs": [
+    "/tmp/narriflow-local-device-boundary-fast.log",
+    "/tmp/narriflow-local-device-api-fast.log",
+    "/tmp/narriflow-local-device-boundary-workerd.log",
+    "/tmp/narriflow-local-device-api-types.log",
+    "/tmp/narriflow-local-device-services-types.log",
+    "/tmp/narriflow-local-device-worker-build.log"
+  ],
+  "externalMutations": "None. No cloud/account, real database or provider actions. Wrangler build used --dry-run."
+}

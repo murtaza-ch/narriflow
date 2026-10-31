@@ -4,7 +4,7 @@ import {fileURLToPath} from 'node:url';
 import {WebSocket} from 'ws';
 import {unstable_dev} from 'wrangler';
 const workspaceId=randomUUID(),actorUserId=randomUUID(),sessionId=randomUUID(),origin='https://api.narriflow.test';
-const worker=await unstable_dev(fileURLToPath(new URL('./gates/local-fetch-runtime-probe.ts',import.meta.url)),{config:fileURLToPath(new URL('./gates/wrangler.local-fetch-runtime-probe.jsonc',import.meta.url)),local:true,ip:'127.0.0.1',port:0,inspectorPort:0,persist:false,logLevel:'error',vars:{APP_ENV:'development',YOUTUBE_FETCH_MODE:'local',API_ORIGIN:origin,LOCAL_FETCH_WORKSPACE_IDS_JSON:JSON.stringify([workspaceId])},experimental:{disableExperimentalWarning:true,disableDevRegistry:true,watch:false}});
+const worker=await unstable_dev(fileURLToPath(new URL('./gates/local-fetch-runtime-probe.ts',import.meta.url)),{config:fileURLToPath(new URL('./gates/wrangler.local-fetch-runtime-probe.jsonc',import.meta.url)),local:true,ip:'127.0.0.1',port:0,inspectorPort:0,persist:false,logLevel:'error',vars:{HYPERDRIVE:{connectionString:'postgresql://unused.invalid/no_sql'},DEV_DEVICE_KEYS_JSON:JSON.stringify({gate:Buffer.from(new Uint8Array(32).fill(6)).toString('base64')}),APP_ENV:'development',YOUTUBE_FETCH_MODE:'local',API_ORIGIN:origin,LOCAL_FETCH_WORKSPACE_IDS_JSON:JSON.stringify([workspaceId])},experimental:{disableExperimentalWarning:true,disableDevRegistry:true,watch:false}});
 const sockets:WebSocket[]=[],checks:string[]=[];
 async function post(action:string,body:unknown,space=workspaceId){return worker.fetch(`/control/${space}/${action}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});}
 async function json(action:string,body:unknown={}){const r=await post(action,body);assert.equal(r.status,200);return r.json() as Promise<any>;}
@@ -22,5 +22,19 @@ try{
  assert.equal((await post('deliver',{...invocation,reference:{...reference,deploymentEpoch:2}})).status,409);checks.push('reference_only_delivery_and_epoch_fencing');
  await json('revoke',{workspaceId,actorUserId:randomUUID(),authorizedBefore:Date.now()});assert.equal((await json('authorize',{sessionId})).sessionId,sessionId);
  await json('revoke',{workspaceId,actorUserId,authorizedBefore:Date.now()});assert.equal((await post('authorize',{sessionId})).status,409);assert.equal((await json('presence')).available,false);checks.push('membership_revocation_and_wrong_actor_isolation');
- console.log(JSON.stringify({runtime:'workerd',checks,passed:checks.length,postgresConnections:0}));
+ async function signed(action:string,wrongAudience=false){
+  const descriptor=await json('signed-request',{action,wrongAudience,actorUserId}) as {target:string;body:string;headers:Record<string,string>};
+  return worker.fetch(descriptor.target,{method:'POST',headers:descriptor.headers,body:descriptor.body});
+ }
+ assert.equal((await signed('command',true)).status,401);
+ assert.equal((await signed('reconcile')).status,400);
+ assert.deepEqual(await (await worker.fetch('/__gates/database')).json(),{databaseClients:0,databaseReads:0,databaseDisposals:0});
+ checks.push('http_signature_and_cursor_before_database');
+ const foreign=await signed('command');assert.equal(foreign.status,409);assert.equal((await foreign.json() as {error:string}).error,'invalid_reference');
+ assert.deepEqual(await (await worker.fetch('/__gates/database')).json(),{databaseClients:1,databaseReads:1,databaseDisposals:1});
+ checks.push('http_service_foreign_workspace_refusal_and_scope_disposal');
+ assert.equal((await signed('connect-ticket')).status,200);
+ assert.deepEqual(await (await worker.fetch('/__gates/database')).json(),{databaseClients:1,databaseReads:1,databaseDisposals:1});
+ checks.push('signed_connect_ticket_uses_real_mailbox_without_sql');
+ console.log(JSON.stringify({runtime:'workerd',checks,passed:checks.length,postgresConnections:0,fakeSqlClientScopes:1}));
 }finally{for(const s of sockets)s.terminate();await worker.stop();}
