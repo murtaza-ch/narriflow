@@ -361,7 +361,7 @@ exports[`REST v1 OpenAPI document changes only additively: the whole document is
                       },
                       "sizeBytes": {
                         "exclusiveMinimum": 0,
-                        "maximum": 5363466240,
+                        "maximum": 10737418240,
                         "type": "integer",
                       },
                     },
@@ -380,7 +380,7 @@ exports[`REST v1 OpenAPI document changes only additively: the whole document is
                   },
                   "transfer": {
                     "default": "auto",
-                    "description": "single returns one signed PUT at any supported size; auto uses multipart above 100 MiB",
+                    "description": "single returns one signed PUT up to 5 GiB and otherwise returns multipart_required; auto uses multipart above 100 MiB, up to 10 GiB",
                     "enum": [
                       "auto",
                       "single",
@@ -2275,7 +2275,7 @@ exports[`REST v1 OpenAPI document changes only additively: the whole document is
               },
               "sizeBytes": {
                 "exclusiveMinimum": 0,
-                "maximum": 5363466240,
+                "maximum": 10737418240,
                 "type": "integer",
               },
             },
@@ -2305,7 +2305,7 @@ exports[`REST v1 OpenAPI document changes only additively: the whole document is
           },
           "transfer": {
             "default": "auto",
-            "description": "single returns one signed PUT at any supported size; auto uses multipart above 100 MiB",
+            "description": "single returns one signed PUT up to 5 GiB and otherwise returns multipart_required; auto uses multipart above 100 MiB, up to 10 GiB",
             "enum": [
               "auto",
               "single",
@@ -6653,7 +6653,7 @@ exports[`REST v1 OpenAPI document changes only additively: the whole document is
     },
     "/api/v1/uploads": {
       "post": {
-        "description": "Returns signed transfer URLs. Use transfer "single" to upload any supported size with one PUT. Retrying with the same Idempotency-Key returns the same Upload Session.",
+        "description": "Returns signed transfer URLs. Use transfer "single" for one PUT up to 5 GiB. Larger sources up to 10 GiB require the auto multipart plan and otherwise return multipart_required. Retrying with the same Idempotency-Key returns the same Upload Session.",
         "parameters": [
           {
             "description": "1–200 URL-safe characters. Retrying with the same key and input returns the original result; different input under the same key is a conflict.",

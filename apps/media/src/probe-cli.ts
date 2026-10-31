@@ -3,6 +3,8 @@ import { stat } from "node:fs/promises";
 import { createWorkerProcessModule } from "./worker-process";
 import { WorkflowFailure } from "@narriflow/services/workflow-attempt-contract";
 
+export const NORMALIZED_PROBE_VERSION = "normalized-probe-v1";
+
 /** Shared normalized probe used by both Python acquisition locations. Local files only. */
 async function main() {
  const chunks: Buffer[] = [];
@@ -27,7 +29,7 @@ async function main() {
  process.once("SIGINT", cancel);
  try {
   const facts = await createWorkerProcessModule().inspectMedia({ sourcePath, signal: controller.signal, deadlineMs: 30_000 });
-  process.stdout.write(`${JSON.stringify(facts)}\n`);
+  process.stdout.write(`${JSON.stringify({ ...facts, probeVersion: NORMALIZED_PROBE_VERSION })}\n`);
  } finally {
   process.removeListener("SIGTERM", cancel);
   process.removeListener("SIGINT", cancel);

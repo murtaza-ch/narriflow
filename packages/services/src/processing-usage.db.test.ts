@@ -158,7 +158,8 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
         workspaceId,
         sourceMediaUrl: "r2://test/source.mp4",
         sourceType: "link",
-        sourceDurationSeconds: input.ingestStatus === "queued" ? null : seconds,
+        sourceDurationSeconds: input.ingestStatus === "queued" ? null : Math.ceil(seconds),
+        sourceProbe: input.ingestStatus === "queued" ? undefined : { durationSec: seconds, video: null, audio: null },
         ingestStatus: input.ingestStatus ?? "ready",
       },
     });
@@ -599,7 +600,7 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
     expect((await refusal(reserve(module, ws.id))).code).toBe("workspace_processing_capacity_reached");
     await prisma.project.update({
       where: { id: awaiting.id },
-      data: { ingestStatus: "ready", sourceDurationSeconds: 600 },
+      data: { ingestStatus: "ready", sourceDurationSeconds: 600, sourceProbe: { durationSec: 600, video: null, audio: null } },
     });
     expect(await module.summarize(ws.id)).toMatchObject({ inFlight: 1, reservedCredits: 11 });
     expect((await reserve(module, ws.id, { declaredSeconds: 60 })).state).toBe("reserved");

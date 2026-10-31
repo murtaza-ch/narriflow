@@ -13,12 +13,16 @@ The Python process supervisor bounds input and output, propagates cancellation, 
 ```sh
 bun run --cwd apps/media typecheck
 bun test apps/media/src apps/media/scripts
-PYTHONPATH=apps/media/python uv run --python 3.13.5 --no-project python -m unittest discover -s apps/media/python/tests -v
+PYTHONPATH=apps/media/python uv run --project apps/media --frozen python -m unittest discover -s apps/media/python/tests -v
 ```
 
 Native tests require FFmpeg, fontconfig and the model at `apps/media/models/face_yunet.onnx`. Download only the immutable source recorded in `runtime-lock.json` and verify its SHA-256. Model bytes are ignored locally and are baked into the render image from that same pin. Golden fixture documents, evidence, expectations and source pins are unchanged by the move.
 
 `probe-cli.ts` reads one bounded JSON object from stdin with an absolute local `sourcePath`, then emits the existing normalized probe. Python acquisition uses this CLI instead of parsing ffprobe independently.
+
+`fetch_source` resolves one immutable upstream identity and starts audio and full-video downloads concurrently. Its injected sink receives verified audio first. A later provider block can rotate the pending video through at most three fresh sticky sessions; committed audio is retained. The native adapter uses pinned yt-dlp plugins, Deno, isolated configuration and an explicitly supplied owned token-helper URL. Scoped upload/control wiring and the owned helper lifecycle are still being integrated.
+
+`ExecutionControlClient` accepts an explicit HTTPS API origin and signing key, then sends bounded signed commands. Transport retries retain the exact body, timestamp and delivery ID. `ExecutorSession.acquire` requires an acquired disposition for a new random owner and rejects an expired receipt against the fresh TLS server-time header. Pass its `on_process_start` and `cancel_event` to the native process owner. It acknowledges one actual native start, renews only running work every 30 seconds, and cancels native work on authority loss or the absolute deadline. This client does not yet supply the Modal bridge, immutable work-package reads or multipart grants.
 
 ## Image verification
 

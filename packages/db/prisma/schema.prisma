@@ -3426,6 +3426,7 @@ model ExecutionArtifact {
   multipartUploadId   String?   @db.VarChar(1024)
   sourceEtag          String?   @db.VarChar(160)
   sourceByteLength    BigInt?
+  sourceVideoBinding  Json?
   grantExpiresAt      DateTime
   committedAt         DateTime?
   createdAt           DateTime  @default(now())

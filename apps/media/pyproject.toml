@@ -6,7 +6,11 @@ build-backend = "hatchling.build"
 name = "narriflow-media"
 version = "0.0.0"
 requires-python = "==3.13.5"
-dependencies = []
+dependencies = [
+  "yt-dlp==2026.8.19",
+  "bgutil-ytdlp-pot-provider==2.0.0",
+  "yt-dlp-ejs==0.8.0",
+]
 
 [project.optional-dependencies]
 deploy = ["modal==1.2.6"]

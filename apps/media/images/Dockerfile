@@ -75,17 +75,16 @@ RUN if [ "$MEDIA_PROFILE" = render ]; then bun /opt/narriflow-runtime/check-rend
 WORKDIR /app
 
 COPY package.json bun.lock turbo.json ./
-COPY apps/api/package.json apps/api/package.json
-COPY apps/media/package.json apps/media/package.json
-COPY apps/web/package.json apps/web/package.json
-COPY apps/mcp/package.json apps/mcp/package.json
+# Context filters retain only workspace manifests outside apps/media.
+COPY apps apps
 COPY packages packages
 # bun install applies the patchedDependencies listed in package.json.
 COPY patches patches
 
-RUN bun install --frozen-lockfile --production --ignore-scripts --filter @narriflow/media
-
-COPY apps/media apps/media
+RUN bun install --frozen-lockfile --production --ignore-scripts --filter @narriflow/media \
+  && for media_build_app in /app/apps/*; do \
+       if [ "$media_build_app" != /app/apps/media ]; then rm -rf "$media_build_app"; fi; \
+     done
 
 # Verify only the components declared by this image profile.
 RUN bun apps/media/scripts/check-render-environment.ts --enforce --stage image --profile "$MEDIA_PROFILE"

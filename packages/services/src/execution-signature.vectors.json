@@ -1,5 +1,5 @@
 {
-  "provenance": "Canonical targets manually specified from ADR 0019. Expected digest/signature values independently computed with CPython stdlib hashlib.sha256 and hmac.new, not Narriflow signing code. Frozen 2026-10-31. Keys and bodies are public test fixtures only.",
+  "provenance": "Canonical targets manually specified from ADR 0019. Expected digest/signature values independently computed with CPython stdlib hashlib.sha256 and hmac.new, not Narriflow signing code. Frozen 2026-10-31. Keys and bodies are public test fixtures only. Inbox digest covers version, audience, method, canonical target, body digest and delivery UUID, excluding key ID and timestamp.",
   "vectors": [
     {
       "name": "unicode-query",
@@ -25,7 +25,7 @@
           "deliveryId": "5b3fb350-6604-4886-80d8-78fc5d17608f",
           "signature": "6480ae33147144162fc48a67b462435c963bdcf9305101dd7d091ce73e4d5905"
         },
-        "requestHash": "ce414e4c29fa0e2aa3f637c9a4441ac2de5c3dce6784eac6b7c87a00cf8227c4"
+        "requestHash": "620c035f1d8232605abd107d240d9029ece1a51841dc194c9e727797a59dbb11"
       }
     },
     {
@@ -52,7 +52,7 @@
           "deliveryId": "5b3fb350-6604-4886-80d8-78fc5d17608f",
           "signature": "1c0527195666cf30d0051b6a40c3451a18f1b21e0153c56c9b18957e5dd1ed67"
         },
-        "requestHash": "5e13d7fbca8d3125e2c43c7d4a7b7aa4fa7ec4570d0b4314a6a09d14371f0efc"
+        "requestHash": "5381bf90e08caa2b4a0ddfe7b08e0edd9cb5fb0e2d3cffccbc7fb80224402928"
       }
     },
     {
@@ -79,7 +79,7 @@
           "deliveryId": "5b3fb350-6604-4886-80d8-78fc5d17608f",
           "signature": "16ccf23f2332f5215918ed5bb7b68bc72ef9a0dfb404cef8c581a79124f7c20f"
         },
-        "requestHash": "b35328af1cdcf1aa8f0b08a95234dd03307320e60c340268b8698e510f260006"
+        "requestHash": "2da3f009fed8d7ffceb8ff6455f0aa746d5ece7a2989ddce3d048725529c252f"
       }
     }
   ]

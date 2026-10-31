@@ -1,7 +1,7 @@
 import { RenderGroupAttemptLost } from "./render-group-contract";
 export { RenderGroupAttemptLost } from "./render-group-contract";
 import { randomUUID } from "node:crypto";
-import { Prisma, type PrismaClient, type ClipRender } from "@prisma/client";
+import { Prisma, type PrismaClient, type ClipRender, type RenderGroup, type WorkflowRun } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
 import type { ClipRenderCaptionDiagnostics } from "@narriflow/validators";
 import { accessibleProjectWhere } from "./project-access";
@@ -22,7 +22,25 @@ import {
   renderGroupExportIdentity,
 } from "./render-group-contract";
 
+import type { ExecutionDispatchReference, ExecutionDisposition } from "@narriflow/validators/execution";
+import { appendExecutionDispatch } from "./execution-dispatch";
+import { lockWorkspaceUsage } from "./processing-usage";
+import type { ExecutorArtifactCommit, ExecutorDomainLock, ExecutorMutationResult, ExecutorFailureInput, ExecutorMutationContext, ExecutorProgressInput, ExecutorReleaseInput, ExecutorExpiryObservation, ExecutorExpiryResult } from "./executor-domain-control";
+
 type Tx = Prisma.TransactionClient;
+
+export interface RenderGroupExecutionReference extends RenderGroupRef {
+  projectId: string;
+  generation: number;
+  deploymentEpoch: number;
+  attemptToken: string;
+}
+export interface RenderGroupArtifactCommit extends ExecutorArtifactCommit {
+  role: "render_variant";
+  renderId: string;
+  durationSec: number;
+  captionDiagnostics?: ClipRenderCaptionDiagnostics | null;
+}
 
 /** The column value for a render's caption diagnostics: null when nothing was left out. */
 function captionDiagnosticsColumn(
@@ -417,11 +435,181 @@ export class RenderGroupLifecycle {
       group.attemptToken !== attempt.token ||
       group.leaseOwner !== attempt.owner ||
       !group.leaseExpiresAt ||
+      (!expired && group.operationDeadlineAt !== null && group.operationDeadlineAt <= now) ||
       (expired ? group.leaseExpiresAt > now : group.leaseExpiresAt <= now)
     )
       throw new RenderGroupAttemptLost(attempt);
     return { parent, group, now };
   }
+  /** Root executor control holds the epoch lock before entering this domain. */
+  private async executionState(tx: Tx, reference: ExecutionDispatchReference, attemptToken: string): Promise<
+    { kind: "current"; ref: RenderGroupExecutionReference; group: RenderGroup; parent: WorkflowRun; now: Date } |
+    { kind: "terminal"; disposition: ExecutionDisposition }
+  > {
+    if (reference.subject.kind !== "render_group") return { kind: "terminal", disposition: { disposition: "superseded" } };
+    const initial = await tx.renderGroup.findUnique({ where: { id: reference.subject.id }, include: { workflowRun: { include: { project: { select: { workspaceId: true } } } } } });
+    if (!initial) return { kind: "terminal", disposition: { disposition: "superseded" } };
+    await lockWorkspaceUsage(tx, initial.workflowRun.project.workspaceId);
+    await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${initial.workflowRun.projectId}, 0)) IS NULL AS "locked"`;
+    const groupRef = { groupId: initial.id, workflowRunId: initial.workflowRunId, workSetGeneration: initial.workSetGeneration };
+    const parent = await this.lockParent(tx, groupRef);
+    await tx.$queryRaw`SELECT "id" FROM "RenderGroup" WHERE "id" = ${initial.id}::uuid FOR UPDATE`;
+    const group = await tx.renderGroup.findUnique({ where: { id: initial.id } });
+    if (!parent || !group || group.deploymentEpoch !== reference.deploymentEpoch || parent.deploymentEpoch !== reference.deploymentEpoch ||
+      group.generation !== reference.generation || group.workSetGeneration !== groupRef.workSetGeneration || group.workflowRunId !== parent.id) {
+      return { kind: "terminal", disposition: { disposition: "superseded" } };
+    }
+    if (["completed", "partial"].includes(group.status)) return { kind: "terminal", disposition: { disposition: "completed" } };
+    if (group.status === "superseded") return { kind: "terminal", disposition: { disposition: "superseded" } };
+    if (group.status === "failed") return { kind: "terminal", disposition: { disposition: "failed", failureCode: "render_group_failed" } };
+    if (group.status === "running" && group.attemptToken !== attemptToken) return { kind: "terminal", disposition: { disposition: "superseded" } };
+    await memberSnapshot(tx, groupRef);
+    const now = await renderGroupDatabaseNow(tx);
+    return { kind: "current", ref: { ...groupRef, projectId: parent.projectId, generation: group.generation, deploymentEpoch: group.deploymentEpoch, attemptToken }, group, parent, now };
+  }
+
+  async lockExecution(tx: Tx, reference: ExecutionDispatchReference, attemptToken: string): Promise<ExecutorDomainLock<RenderGroupExecutionReference>> {
+    const state = await this.executionState(tx, reference, attemptToken);
+    if (state.kind === "terminal") return state;
+    const project = await tx.project.findFirst({ where: { id: state.ref.projectId, ...accessibleProjectWhere(state.now), workspace: { status: "active" } }, select: { id: true } });
+    return project ? { kind: "current", ref: state.ref } : { kind: "terminal", disposition: { disposition: "cancelled" } };
+  }
+
+  private executionAttempt(ref: RenderGroupExecutionReference, context: ExecutorMutationContext): RenderGroupAttemptRef {
+    if (ref.groupId !== context.reference.subject.id || context.reference.subject.kind !== "render_group" ||
+      ref.generation !== context.reference.generation || ref.deploymentEpoch !== context.reference.deploymentEpoch ||
+      ref.attemptToken !== context.attemptToken || context.functionName !== "render_group") {
+      throw new RenderGroupAttemptLost({ ...ref, token: context.attemptToken, owner: context.owner });
+    }
+    return { workflowRunId: ref.workflowRunId, workSetGeneration: ref.workSetGeneration, groupId: ref.groupId, token: context.attemptToken, owner: context.owner };
+  }
+
+  async acquireExecution(tx: Tx, ref: RenderGroupExecutionReference, context: ExecutorMutationContext): Promise<ExecutorMutationResult> {
+    const attempt = this.executionAttempt(ref, context);
+    const parent = await this.lockParent(tx, ref);
+    await tx.$queryRaw`SELECT "id" FROM "RenderGroup" WHERE "id" = ${ref.groupId}::uuid FOR UPDATE`;
+    const group = await tx.renderGroup.findUniqueOrThrow({ where: { id: ref.groupId } });
+    const now = await renderGroupDatabaseNow(tx);
+    if (!parent || group.generation !== ref.generation || group.deploymentEpoch !== ref.deploymentEpoch ||
+      group.status !== "queued" || (group.nextAttemptAt && group.nextAttemptAt > now) ||
+      context.leaseExpiresAt <= now || context.leaseExpiresAt > context.operationDeadlineAt || context.operationDeadlineAt <= now ||
+      (group.operationDeadlineAt && group.operationDeadlineAt.getTime() !== context.operationDeadlineAt.getTime())) throw new RenderGroupAttemptLost(attempt);
+    const members = await memberSnapshot(tx, ref);
+    const decision = deriveRenderGroupSettlement({ members, chargedAttemptCount: group.chargedAttemptCount, databaseNow: await renderGroupDatabaseNow(tx) });
+    if (decision.status !== "queued" || !decision.retryVariantIds.length) throw new RenderGroupAttemptLost(attempt);
+    await tx.renderGroupExecution.create({ data: { token: attempt.token, groupId: group.id, owner: attempt.owner, claimedAt: now } });
+    await tx.renderGroup.update({ where: { id: group.id }, data: { status: "running", attemptToken: attempt.token, leaseOwner: attempt.owner,
+      leaseExpiresAt: context.leaseExpiresAt, heartbeatAt: now, nextAttemptAt: null, operationDeadlineAt: context.operationDeadlineAt } });
+    const watchdog = await appendExecutionDispatch(tx, { deploymentEpoch: ref.deploymentEpoch, kind: "operation_driver", subject: { kind: "render_group", id: ref.groupId },
+      generation: ref.generation, inputHash: context.reference.inputHash, dueAt: context.operationDeadlineAt, deadlineKind: "operation", observedDeadlineAt: context.operationDeadlineAt });
+    const acquired = await appendExecutionDispatch(tx, { deploymentEpoch: ref.deploymentEpoch, kind: "operation_driver", subject: { kind: "render_group", id: ref.groupId },
+      generation: ref.generation, inputHash: context.reference.inputHash, dueAt: now, wakeKind: "execution_acquired", deadlineKind: "lease", observedDeadlineAt: context.leaseExpiresAt });
+    return { dispatchIds: [watchdog.reference.dispatchId, acquired.reference.dispatchId] };
+  }
+
+  async renewExecution(tx: Tx, ref: RenderGroupExecutionReference, context: ExecutorMutationContext): Promise<ExecutorMutationResult> {
+    const attempt = this.executionAttempt(ref, context);
+    const { group, now } = await this.owned(tx, attempt);
+    if (!group.operationDeadlineAt || group.operationDeadlineAt.getTime() !== context.operationDeadlineAt.getTime() ||
+      context.leaseExpiresAt <= now || context.leaseExpiresAt > group.operationDeadlineAt) throw new RenderGroupAttemptLost(attempt);
+    await tx.renderGroup.update({ where: { id: group.id }, data: { heartbeatAt: now, leaseExpiresAt: context.leaseExpiresAt } });
+  }
+
+  async startExecution(tx: Tx, ref: RenderGroupExecutionReference, context: ExecutorMutationContext): Promise<ExecutorMutationResult> {
+    const attempt = this.executionAttempt(ref, context);
+    if (!context.fingerprints) throw new Error("Expected frozen render provenance is unavailable");
+    await this.startWithinTransaction(tx, { ...attempt, sourceFingerprint: context.fingerprints.source,
+      analysisFingerprint: context.fingerprints.analysis, toolchainFingerprint: context.fingerprints.toolchain });
+    const members = await memberSnapshot(tx, ref);
+    for (const member of members) if (member.status === "pending") await this.markClipRenderVariantRenderingWithinTransaction(tx, attempt, member.clipRenderId);
+  }
+
+  private async executionWakes(tx: Tx, ref: RenderGroupExecutionReference, inputHash: string, retry: boolean): Promise<{ dispatchIds: string[] }> {
+    const current = await tx.renderGroup.update({ where: { id: ref.groupId }, data: retry ? { generation: { increment: 1 } } : {} });
+    const now = await renderGroupDatabaseNow(tx);
+    const wake = await appendExecutionDispatch(tx, { deploymentEpoch: current.deploymentEpoch, kind: "render_run", subject: { kind: "render_group", id: current.id },
+      generation: current.generation, inputHash: inputHash, dueAt: now, wakeKind: "group_outcome" });
+    const finished = await appendExecutionDispatch(tx, { deploymentEpoch: ref.deploymentEpoch, kind: "operation_driver", subject: { kind: "render_group", id: ref.groupId },
+      generation: ref.generation, inputHash: inputHash, dueAt: now, wakeKind: "execution_finished" });
+    const ids = [wake.reference.dispatchId, finished.reference.dispatchId];
+    if (retry) {
+      const queued = await appendExecutionDispatch(tx, { deploymentEpoch: current.deploymentEpoch, kind: "operation_driver", subject: { kind: "render_group", id: current.id },
+        generation: current.generation, inputHash: inputHash, dueAt: current.nextAttemptAt ?? now });
+      ids.push(queued.reference.dispatchId);
+    }
+    return { dispatchIds: ids };
+  }
+
+  async commitArtifactExecution(tx: Tx, ref: RenderGroupExecutionReference, context: ExecutorMutationContext, artifact: RenderGroupArtifactCommit): Promise<ExecutorMutationResult> {
+    const attempt = this.executionAttempt(ref, context);
+    if (artifact.role !== "render_variant" || !Number.isSafeInteger(Number(artifact.byteLength)) || !Number.isFinite(artifact.durationSec) || artifact.durationSec <= 0) throw new Error("Invalid prepared render artifact");
+    if (!await this.completeClipRenderVariantWithinTransaction(tx, attempt, artifact.renderId, { storageKey: artifact.storageKey, sizeBytes: Number(artifact.byteLength), durationSec: artifact.durationSec, captionDiagnostics: artifact.captionDiagnostics })) {
+      throw new RenderGroupAttemptLost(attempt);
+    }
+    const members = await memberSnapshot(tx, ref);
+    if (members.some((member) => member.status === "pending" || member.status === "rendering" || (member.status === "failed" && member.failureDisposition === "retryable"))) return;
+    await this.finishCommandWithinTransaction(tx, { ...attempt, result: "completed", errorCode: null, failureDisposition: null });
+    return this.executionWakes(tx, ref, context.reference.inputHash, false);
+  }
+
+  async failExecution(tx: Tx, ref: RenderGroupExecutionReference, context: ExecutorMutationContext, failure: ExecutorFailureInput): Promise<ExecutorMutationResult> {
+    const attempt = this.executionAttempt(ref, context);
+    const decision = await this.finishWithinTransaction(tx, { ...attempt, result: "failed", errorCode: failure.failureCode, failureDisposition: failure.retryable ? "retryable" : "permanent" }, false);
+    return this.executionWakes(tx, ref, context.reference.inputHash, decision.status === "queued");
+  }
+
+  async releaseExecution(tx: Tx, ref: RenderGroupExecutionReference, context: ExecutorMutationContext, release: ExecutorReleaseInput): Promise<ExecutorMutationResult> {
+    const attempt = this.executionAttempt(ref, context);
+    await this.releaseWithinTransaction(tx, { ...attempt, reason: release.reason === "startup_rejected" ? "pre_start_rejection" : "shutdown" });
+    const group = await tx.renderGroup.findUniqueOrThrow({ where: { id: ref.groupId } });
+    return this.executionWakes(tx, ref, context.reference.inputHash, group.status === "queued");
+  }
+
+  async progressExecution(tx: Tx, ref: RenderGroupExecutionReference, context: ExecutorMutationContext, _progress: ExecutorProgressInput): Promise<ExecutorMutationResult> {
+    // Public render progress is derived from committed member outcomes.
+    await this.owned(tx, this.executionAttempt(ref, context));
+  }
+
+  async expireExecution(tx: Tx, reference: ExecutionDispatchReference, attemptToken: string, observation: ExecutorExpiryObservation): Promise<ExecutorExpiryResult> {
+    if (!["lease", "operation"].includes(observation.kind) || !Number.isFinite(observation.observedDeadlineAt.getTime())) throw new Error("Invalid execution deadline observation");
+    const state = await this.executionState(tx, reference, attemptToken);
+    if (state.kind === "terminal") return { kind: state.disposition.disposition === "superseded" ? "superseded" : "terminal" };
+    const { group, ref, now, parent } = state;
+    const admitted = await tx.executionAttempt.findFirst({ where: { attemptToken, deploymentEpoch: reference.deploymentEpoch, generation: reference.generation, inputHash: reference.inputHash,
+      dispatch: { id: reference.dispatchId, kind: reference.kind, subjectKind: "render_group", subjectId: ref.groupId } } });
+    if (!admitted || (group.operationDeadlineAt && group.operationDeadlineAt.getTime() !== admitted.operationDeadlineAt.getTime())) return { kind: "superseded" };
+    if (observation.kind === "operation" && observation.observedDeadlineAt.getTime() !== admitted.operationDeadlineAt.getTime()) return { kind: "superseded" };
+    const absolute = admitted.operationDeadlineAt;
+    if (group.status === "queued") {
+      if (absolute > now) return { kind: "sleep", dueAt: absolute };
+      const members = await memberSnapshot(tx, ref);
+      const clock = await renderGroupDatabaseNow(tx);
+      const failures: Array<{ renderId: string; status: "failed"; errorCode: string }> = [];
+      for (const member of members) {
+        if (!member.variant || member.status === "completed" || member.status === "superseded" ||
+          (member.status === "failed" && member.failureDisposition === "permanent")) continue;
+        await tx.clipRender.update({ where: { id: member.clipRenderId }, data: { status: "failed", failureDisposition: "permanent", errorCode: "operation_deadline_exceeded", completedAt: clock } });
+        await this.exportMutation(tx, member.variant.exportVariantId, { status: "failed", errorCode: "operation_deadline_exceeded", completedAt: clock });
+        member.status = "failed"; member.failureDisposition = "permanent";
+        if (!member.variant.exportVariantId) failures.push({ renderId: member.clipRenderId, status: "failed", errorCode: "operation_deadline_exceeded" });
+      }
+      const decision = deriveRenderGroupSettlement({ members, chargedAttemptCount: group.chargedAttemptCount, databaseNow: clock });
+      if (decision.status === "queued") throw new Error("Expired render group still has unsettled members");
+      await tx.renderGroup.update({ where: { id: group.id }, data: { status: decision.status, nextAttemptAt: null, settledAt: clock, errorCode: "operation_deadline_exceeded", failureDisposition: "permanent" } });
+      await appendWorkflowEvent(tx, { projectId: ref.projectId, workflowRunId: parent.id, attemptId: attemptToken, stage: "clip_rendering", status: parent.status as "queued" | "running",
+        progress: parent.progress, errorCode: null, transition: `unstarted_group_expired:${attemptToken}`, ...(failures.length ? { generationRenderResults: failures } : {}) },
+      { progressRequired: true, analyticsEnabled: false });
+      return { kind: "expired", ...await this.executionWakes(tx, ref, reference.inputHash, false) };
+    }
+    if (group.attemptToken !== attemptToken || !group.leaseOwner || !group.leaseExpiresAt) return { kind: "terminal" };
+    const deadline = new Date(Math.min(group.leaseExpiresAt.getTime(), absolute.getTime()));
+    if (deadline > now) return { kind: "sleep", dueAt: deadline };
+    const expiredOperation = absolute <= now;
+    const attempt = { ...ref, token: attemptToken, owner: group.leaseOwner };
+    const decision = await this.finishWithinTransaction(tx, { ...attempt, result: "interrupted", errorCode: expiredOperation ? "operation_deadline_exceeded" : "worker_stalled", failureDisposition: expiredOperation ? "permanent" : "retryable" }, true);
+    return { kind: "expired", ...await this.executionWakes(tx, ref, reference.inputHash, decision.status === "queued") };
+  }
+
   async claim(
     filter: { workflowRunId?: string; groupId?: string } = {},
   ): Promise<ClaimedRenderGroupAttempt | null> {
@@ -516,46 +704,53 @@ export class RenderGroupLifecycle {
     });
   }
   async heartbeat(attempt: RenderGroupAttemptRef): Promise<void> {
-    await this.transaction(async (tx) => {
-      const { now } = await this.owned(tx, attempt);
-      await tx.renderGroup.update({
-        where: { id: attempt.groupId },
-        data: { heartbeatAt: now, leaseExpiresAt: new Date(now.getTime() + this.leaseDurationMs) },
-      });
+    return this.transaction((tx) => this.heartbeatWithinTransaction(tx, attempt));
+  }
+  /** Caller owns the transaction and flushes Workspace Events after all domain locks. */
+  async heartbeatWithinTransaction(tx: Tx, attempt: RenderGroupAttemptRef): Promise<void> {
+
+
+    const { now } = await this.owned(tx, attempt);
+    await tx.renderGroup.update({
+      where: { id: attempt.groupId },
+      data: { heartbeatAt: now, leaseExpiresAt: new Date(now.getTime() + this.leaseDurationMs) },
     });
   }
   async start(input: StartRenderGroupExecution): Promise<void> {
+    return this.transaction((tx) => this.startWithinTransaction(tx, input));
+  }
+  /** Caller owns the transaction and flushes Workspace Events after all domain locks. */
+  async startWithinTransaction(tx: Tx, input: StartRenderGroupExecution): Promise<void> {
     if (!input.sourceFingerprint || !input.toolchainFingerprint)
       throw new Error("Missing render execution fingerprints");
-    await this.transaction(async (tx) => {
-      const { group, now } = await this.owned(tx, input);
-      const execution = await tx.renderGroupExecution.findUniqueOrThrow({
-        where: { token: input.token },
-      });
-      if (execution.startedAt) {
-        if (
-          execution.sourceFingerprint !== input.sourceFingerprint ||
-          execution.analysisFingerprint !== input.analysisFingerprint ||
-          execution.toolchainFingerprint !== input.toolchainFingerprint
-        )
-          throw new Error("Render execution fingerprints are immutable");
-        return;
-      }
-      const charge = renderGroupChargeTransition(group.chargedAttemptCount, execution, "start");
-      await tx.renderGroupExecution.update({
-        where: { token: input.token },
-        data: {
-          startedAt: now,
-          charged: charge.charged,
-          sourceFingerprint: input.sourceFingerprint,
-          analysisFingerprint: input.analysisFingerprint,
-          toolchainFingerprint: input.toolchainFingerprint,
-        },
-      });
-      await tx.renderGroup.update({
-        where: { id: group.id },
-        data: { chargedAttemptCount: charge.chargedAttemptCount },
-      });
+
+    const { group, now } = await this.owned(tx, input);
+    const execution = await tx.renderGroupExecution.findUniqueOrThrow({
+      where: { token: input.token },
+    });
+    if (execution.startedAt) {
+      if (
+        execution.sourceFingerprint !== input.sourceFingerprint ||
+        execution.analysisFingerprint !== input.analysisFingerprint ||
+        execution.toolchainFingerprint !== input.toolchainFingerprint
+      )
+        throw new Error("Render execution fingerprints are immutable");
+      return;
+    }
+    const charge = renderGroupChargeTransition(group.chargedAttemptCount, execution, "start");
+    await tx.renderGroupExecution.update({
+      where: { token: input.token },
+      data: {
+        startedAt: now,
+        charged: charge.charged,
+        sourceFingerprint: input.sourceFingerprint,
+        analysisFingerprint: input.analysisFingerprint,
+        toolchainFingerprint: input.toolchainFingerprint,
+      },
+    });
+    await tx.renderGroup.update({
+      where: { id: group.id },
+      data: { chargedAttemptCount: charge.chargedAttemptCount },
     });
   }
   private async member(tx: Tx, attempt: RenderGroupAttemptRef, id: string) {
@@ -581,31 +776,38 @@ export class RenderGroupLifecycle {
     attempt: RenderGroupAttemptRef,
     id: string,
   ): Promise<boolean> {
-    return this.transaction(async (tx) => {
-      const { variant, parent, now } = await this.member(tx, attempt, id);
-      if (variant.status !== "pending") return variant.status === "rendering";
-      await tx.clipRender.update({
-        where: { id },
-        data: {
-          status: "rendering",
-          workflowAttemptId: null,
-          startedAt: now,
-          errorCode: null,
-          failureDisposition: null,
-        },
-      });
-      await this.exportMutation(tx, variant.exportVariantId, {
+    return this.transaction((tx) => this.markClipRenderVariantRenderingWithinTransaction(tx, attempt, id));
+  }
+  /** Caller owns the transaction and flushes Workspace Events after all domain locks. */
+  async markClipRenderVariantRenderingWithinTransaction(tx: Tx, 
+    attempt: RenderGroupAttemptRef,
+    id: string,
+  ): Promise<boolean> {
+
+
+    const { variant, parent, now } = await this.member(tx, attempt, id);
+    if (variant.status !== "pending") return variant.status === "rendering";
+    await tx.clipRender.update({
+      where: { id },
+      data: {
         status: "rendering",
+        workflowAttemptId: null,
         startedAt: now,
         errorCode: null,
-      });
-      await appendWorkflowEvent(tx, {
-        projectId: parent.projectId, workflowRunId: parent.id, attemptId: attempt.token,
-        stage: "clip_rendering", status: parent.status as "queued" | "running", progress: parent.progress,
-        errorCode: null, transition: `variant_started:${id}`,
-      }, { progressRequired: false, analyticsEnabled: false });
-      return true;
+        failureDisposition: null,
+      },
     });
+    await this.exportMutation(tx, variant.exportVariantId, {
+      status: "rendering",
+      startedAt: now,
+      errorCode: null,
+    });
+    await appendWorkflowEvent(tx, {
+      projectId: parent.projectId, workflowRunId: parent.id, attemptId: attempt.token,
+      stage: "clip_rendering", status: parent.status as "queued" | "running", progress: parent.progress,
+      errorCode: null, transition: `variant_started:${id}`,
+    }, { progressRequired: false, analyticsEnabled: false });
+    return true;
   }
   async completeClipRenderVariant(
     attempt: RenderGroupAttemptRef,
@@ -618,69 +820,83 @@ export class RenderGroupLifecycle {
       captionDiagnostics?: ClipRenderCaptionDiagnostics | null;
     },
   ): Promise<boolean> {
-    return this.transaction(async (tx) => {
-      // Read the durable outcome under the parent lock before testing expiry.
-      // A lost commit acknowledgement must be distinguishable from rejection.
-      await this.lockParent(tx, attempt);
-      const existing = await tx.renderGroupVariantOutcome.findFirst({
-        where: {
-          token: attempt.token,
-          clipRenderId: id,
-          groupId: attempt.groupId,
-          execution: { owner: attempt.owner },
-          member: {
-            workflowRunId: attempt.workflowRunId,
-            workSetGeneration: attempt.workSetGeneration,
-          },
+    return this.transaction((tx) => this.completeClipRenderVariantWithinTransaction(tx, attempt, id, input));
+  }
+  /** Caller owns the transaction and flushes Workspace Events after all domain locks. */
+  async completeClipRenderVariantWithinTransaction(tx: Tx, 
+    attempt: RenderGroupAttemptRef,
+    id: string,
+    input: {
+      storageKey: string;
+      sizeBytes: number;
+      durationSec: number;
+      /** Caption characters the render left out; absent or empty clears it. */
+      captionDiagnostics?: ClipRenderCaptionDiagnostics | null;
+    },
+  ): Promise<boolean> {
+
+
+    // Read the durable outcome under the parent lock before testing expiry.
+    // A lost commit acknowledgement must be distinguishable from rejection.
+    await this.lockParent(tx, attempt);
+    const existing = await tx.renderGroupVariantOutcome.findFirst({
+      where: {
+        token: attempt.token,
+        clipRenderId: id,
+        groupId: attempt.groupId,
+        execution: { owner: attempt.owner },
+        member: {
+          workflowRunId: attempt.workflowRunId,
+          workSetGeneration: attempt.workSetGeneration,
         },
-      });
-      if (existing) {
-        const render = await tx.clipRender.findUnique({ where: { id } });
-        return (
-          existing.groupId === attempt.groupId &&
-          existing.result === "completed" &&
-          render?.storageKey === input.storageKey &&
-          render.sizeBytes === BigInt(input.sizeBytes) &&
-          render.durationSec === input.durationSec
-        );
-      }
-      const { variant, parent, now } = await this.member(tx, attempt, id);
-      const execution = await tx.renderGroupExecution.findUniqueOrThrow({
-        where: { token: attempt.token },
-      });
-      if (!execution.startedAt || !execution.charged)
-        throw new Error("Render completion requires a durable execution start");
-      if (variant.status !== "rendering") return false;
-      const data = {
-        status: "completed" as const,
-        storageKey: input.storageKey,
-        sizeBytes: BigInt(input.sizeBytes),
-        durationSec: input.durationSec,
-        errorCode: null,
-        completedAt: now,
-      };
-      await tx.clipRender.update({
-        where: { id },
-        data: { ...data, failureDisposition: null, captionDiagnostics: captionDiagnosticsColumn(input.captionDiagnostics) },
-      });
-      await this.exportMutation(tx, variant.exportVariantId, data);
-      await tx.renderGroupVariantOutcome.create({
-        data: {
-          token: attempt.token,
-          groupId: attempt.groupId,
-          clipRenderId: id,
-          result: "completed",
-          recordedAt: now,
-        },
-      });
-      if (!variant.exportVariantId) await appendWorkflowEvent(tx, {
-        projectId: parent.projectId, workflowRunId: parent.id, attemptId: attempt.token,
-        stage: "clip_rendering", status: parent.status as "queued" | "running", progress: parent.progress,
-        errorCode: null, transition: `child_completed:${id}`,
-        generationRenderResults: [{ renderId: id, status: "completed", errorCode: null }],
-      }, { progressRequired: true, analyticsEnabled: false });
-      return true;
+      },
     });
+    if (existing) {
+      const render = await tx.clipRender.findUnique({ where: { id } });
+      return (
+        existing.groupId === attempt.groupId &&
+        existing.result === "completed" &&
+        render?.storageKey === input.storageKey &&
+        render.sizeBytes === BigInt(input.sizeBytes) &&
+        render.durationSec === input.durationSec
+      );
+    }
+    const { variant, parent, now } = await this.member(tx, attempt, id);
+    const execution = await tx.renderGroupExecution.findUniqueOrThrow({
+      where: { token: attempt.token },
+    });
+    if (!execution.startedAt || !execution.charged)
+      throw new Error("Render completion requires a durable execution start");
+    if (variant.status !== "rendering") return false;
+    const data = {
+      status: "completed" as const,
+      storageKey: input.storageKey,
+      sizeBytes: BigInt(input.sizeBytes),
+      durationSec: input.durationSec,
+      errorCode: null,
+      completedAt: now,
+    };
+    await tx.clipRender.update({
+      where: { id },
+      data: { ...data, failureDisposition: null, captionDiagnostics: captionDiagnosticsColumn(input.captionDiagnostics) },
+    });
+    await this.exportMutation(tx, variant.exportVariantId, data);
+    await tx.renderGroupVariantOutcome.create({
+      data: {
+        token: attempt.token,
+        groupId: attempt.groupId,
+        clipRenderId: id,
+        result: "completed",
+        recordedAt: now,
+      },
+    });
+    if (!variant.exportVariantId) await appendWorkflowEvent(tx, {
+      projectId: parent.projectId, workflowRunId: parent.id, attemptId: attempt.token,
+      stage: "clip_rendering", status: parent.status as "queued" | "running", progress: parent.progress,
+      errorCode: null, transition: `child_completed:${id}`,
+      generationRenderResults: [{ renderId: id, status: "completed", errorCode: null }],
+    }, { progressRequired: true, analyticsEnabled: false });
+    return true;
   }
   /** Available after lease loss, for safe reconciliation of ambiguous commits.
    * Absence is not proof an object is unreferenced; callers retain uncertainty. */
@@ -700,41 +916,50 @@ export class RenderGroupLifecycle {
     errorCode: string,
     disposition: "retryable" | "permanent",
   ): Promise<boolean> {
-    return this.transaction(async (tx) => {
-      const { variant, parent, now } = await this.member(tx, attempt, id);
-      const result = disposition === "retryable" ? "retryable" : "permanent";
-      const existing = await tx.renderGroupVariantOutcome.findUnique({
-        where: { token_clipRenderId: { token: attempt.token, clipRenderId: id } },
-      });
-      if (existing) return existing.result === result && existing.errorCode === errorCode;
-      if (variant.status !== "rendering" && variant.status !== "pending") return false;
-      await tx.clipRender.update({
-        where: { id },
-        data: { status: "failed", failureDisposition: disposition, errorCode, completedAt: now },
-      });
-      await this.exportMutation(tx, variant.exportVariantId, {
-        status: disposition === "retryable" ? "rendering" : "failed",
-        errorCode,
-        completedAt: disposition === "permanent" ? now : null,
-      });
-      await tx.renderGroupVariantOutcome.create({
-        data: {
-          token: attempt.token,
-          groupId: attempt.groupId,
-          clipRenderId: id,
-          result,
-          errorCode,
-          recordedAt: now,
-        },
-      });
-      if (!variant.exportVariantId && disposition === "permanent") await appendWorkflowEvent(tx, {
-        projectId: parent.projectId, workflowRunId: parent.id, attemptId: attempt.token,
-        stage: "clip_rendering", status: parent.status as "queued" | "running", progress: parent.progress,
-        errorCode: null, transition: `child_failed:${id}`,
-        generationRenderResults: [{ renderId: id, status: "failed", errorCode }],
-      }, { progressRequired: true, analyticsEnabled: false });
-      return true;
+    return this.transaction((tx) => this.failClipRenderVariantWithinTransaction(tx, attempt, id, errorCode, disposition));
+  }
+  /** Caller owns the transaction and flushes Workspace Events after all domain locks. */
+  async failClipRenderVariantWithinTransaction(tx: Tx, 
+    attempt: RenderGroupAttemptRef,
+    id: string,
+    errorCode: string,
+    disposition: "retryable" | "permanent",
+  ): Promise<boolean> {
+
+
+    const { variant, parent, now } = await this.member(tx, attempt, id);
+    const result = disposition === "retryable" ? "retryable" : "permanent";
+    const existing = await tx.renderGroupVariantOutcome.findUnique({
+      where: { token_clipRenderId: { token: attempt.token, clipRenderId: id } },
     });
+    if (existing) return existing.result === result && existing.errorCode === errorCode;
+    if (variant.status !== "rendering" && variant.status !== "pending") return false;
+    await tx.clipRender.update({
+      where: { id },
+      data: { status: "failed", failureDisposition: disposition, errorCode, completedAt: now },
+    });
+    await this.exportMutation(tx, variant.exportVariantId, {
+      status: disposition === "retryable" ? "rendering" : "failed",
+      errorCode,
+      completedAt: disposition === "permanent" ? now : null,
+    });
+    await tx.renderGroupVariantOutcome.create({
+      data: {
+        token: attempt.token,
+        groupId: attempt.groupId,
+        clipRenderId: id,
+        result,
+        errorCode,
+        recordedAt: now,
+      },
+    });
+    if (!variant.exportVariantId && disposition === "permanent") await appendWorkflowEvent(tx, {
+      projectId: parent.projectId, workflowRunId: parent.id, attemptId: attempt.token,
+      stage: "clip_rendering", status: parent.status as "queued" | "running", progress: parent.progress,
+      errorCode: null, transition: `child_failed:${id}`,
+      generationRenderResults: [{ renderId: id, status: "failed", errorCode }],
+    }, { progressRequired: true, analyticsEnabled: false });
+    return true;
   }
   private async finishWithinTransaction(
     tx: Tx,
@@ -933,35 +1158,43 @@ export class RenderGroupLifecycle {
     });
   }
   async finish(input: FinishRenderGroupExecution) {
-    return this.transaction(async (tx) => {
-      await this.lockParent(tx, input);
-      const prior = await tx.renderGroupExecution.findFirst({
-        where: { token: input.token, groupId: input.groupId, owner: input.owner },
-      });
-      if (prior?.finishedAt) return null;
-      return this.finishWithinTransaction(tx, input, false);
+    return this.transaction((tx) => this.finishCommandWithinTransaction(tx, input));
+  }
+  /** Caller owns the transaction and flushes Workspace Events after all domain locks. */
+  async finishCommandWithinTransaction(tx: Tx, input: FinishRenderGroupExecution) {
+
+
+    await this.lockParent(tx, input);
+    const prior = await tx.renderGroupExecution.findFirst({
+      where: { token: input.token, groupId: input.groupId, owner: input.owner },
     });
+    if (prior?.finishedAt) return null;
+    return this.finishWithinTransaction(tx, input, false);
   }
   async release(input: ReleaseRenderGroupExecution): Promise<boolean> {
-    return this.transaction(async (tx) => {
-      await this.lockParent(tx, input);
-      const prior = await tx.renderGroupExecution.findFirst({
-        where: { token: input.token, groupId: input.groupId, owner: input.owner },
-      });
-      if (prior?.finishedAt) return prior.result === "released";
-      await this.finishWithinTransaction(
-        tx,
-        {
-          ...input,
-          result: "released",
-          errorCode: input.reason === "shutdown" ? "worker_shutdown" : "executor_start_rejected",
-          failureDisposition: "retryable",
-        },
-        false,
-        input.reason,
-      );
-      return true;
+    return this.transaction((tx) => this.releaseWithinTransaction(tx, input));
+  }
+  /** Caller owns the transaction and flushes Workspace Events after all domain locks. */
+  async releaseWithinTransaction(tx: Tx, input: ReleaseRenderGroupExecution): Promise<boolean> {
+
+
+    await this.lockParent(tx, input);
+    const prior = await tx.renderGroupExecution.findFirst({
+      where: { token: input.token, groupId: input.groupId, owner: input.owner },
     });
+    if (prior?.finishedAt) return prior.result === "released";
+    await this.finishWithinTransaction(
+      tx,
+      {
+        ...input,
+        result: "released",
+        errorCode: input.reason === "shutdown" ? "worker_shutdown" : "executor_start_rejected",
+        failureDisposition: "retryable",
+      },
+      false,
+      input.reason,
+    );
+    return true;
   }
   async reapExpired(): Promise<number> {
     const groups = await this.prisma.renderGroup.findMany({
@@ -1017,37 +1250,50 @@ export class RenderGroupLifecycle {
       evidence: Prisma.InputJsonValue;
     },
   ): Promise<boolean> {
-    return this.transaction(async (tx) => {
-      const { group } = await this.owned(tx, attempt);
-      const members = await memberSnapshot(tx, attempt);
-      if (
-        group.clipId !== input.clipId ||
-        !members.some((m) => m.variant && ["pending", "rendering"].includes(m.status))
-      )
-        throw new RenderGroupAttemptLost(attempt);
-      if (group.leaseExpiresAt! <= (await renderGroupDatabaseNow(tx)))
-        throw new RenderGroupAttemptLost(attempt);
-      const written = await tx.clip.updateMany({
-        where: {
-          id: input.clipId,
-          editorRevision: input.editorRevision,
-          previewStorageKey: input.previewStorageKey,
-          ...(input.field === "automatic" ? { autoLayoutAnalysis: { equals: Prisma.DbNull } } : {}),
-        },
-        data:
-          input.field === "automatic"
-            ? {
-                autoLayoutAnalysis: input.evidence,
-                autoLayoutStatus: "completed",
-                autoLayoutClaimToken: null,
-                autoLayoutLeaseExpiresAt: null,
-              }
-            : input.field === "screen"
-              ? { layoutAnalysis: input.evidence }
-              : { splitLayoutAnalysis: input.evidence },
-      });
-      return written.count === 1;
+    return this.transaction((tx) => this.writeLayoutEvidenceWithinTransaction(tx, attempt, input));
+  }
+  /** Caller owns the transaction and flushes Workspace Events after all domain locks. */
+  async writeLayoutEvidenceWithinTransaction(tx: Tx, 
+    attempt: RenderGroupAttemptRef,
+    input: {
+      clipId: string;
+      editorRevision: number;
+      previewStorageKey: string;
+      field: "automatic" | "screen" | "split";
+      evidence: Prisma.InputJsonValue;
+    },
+  ): Promise<boolean> {
+
+
+    const { group } = await this.owned(tx, attempt);
+    const members = await memberSnapshot(tx, attempt);
+    if (
+      group.clipId !== input.clipId ||
+      !members.some((m) => m.variant && ["pending", "rendering"].includes(m.status))
+    )
+      throw new RenderGroupAttemptLost(attempt);
+    if (group.leaseExpiresAt! <= (await renderGroupDatabaseNow(tx)))
+      throw new RenderGroupAttemptLost(attempt);
+    const written = await tx.clip.updateMany({
+      where: {
+        id: input.clipId,
+        editorRevision: input.editorRevision,
+        previewStorageKey: input.previewStorageKey,
+        ...(input.field === "automatic" ? { autoLayoutAnalysis: { equals: Prisma.DbNull } } : {}),
+      },
+      data:
+        input.field === "automatic"
+          ? {
+              autoLayoutAnalysis: input.evidence,
+              autoLayoutStatus: "completed",
+              autoLayoutClaimToken: null,
+              autoLayoutLeaseExpiresAt: null,
+            }
+          : input.field === "screen"
+            ? { layoutAnalysis: input.evidence }
+            : { splitLayoutAnalysis: input.evidence },
     });
+    return written.count === 1;
   }
 }
 export function getRenderGroupLifecycle(): RenderGroupLifecycle {

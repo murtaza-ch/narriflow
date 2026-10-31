@@ -14,7 +14,7 @@ Your API key needs the `processing:write` scope.
 
     The body takes the file's `name`, `sizeBytes` and `contentType`. It also takes an optional `title`, a `brandProfileId` from `GET /brand-profiles`, and [generation settings](#generation-settings). To use a saved [Recipe](/docs/recipes) instead, send its `recipeId` from `GET /recipes` and leave out `brandProfileId`, `generation` and `finishing`; sending both is refused. Omit `brandProfileId` to use the Workspace's default Brand Profile.
 
-    Set `"transfer": "single"` to get one signed PUT URL at any supported size. With the default `auto`, files over 100 MiB use resumable multipart parts.
+    Set `"transfer": "single"` to get one signed PUT URL up to 5 GiB. Larger files return `multipart_required`. With the default `auto`, files over 100 MiB use resumable multipart parts, up to 10 GiB.
   </Step>
   <Step title="Send the bytes">
     Look at `upload.transfer.kind` in the response.
@@ -229,6 +229,6 @@ Narriflow freezes the settings when it admits the generation, and the first requ
 
 ## Limits
 
-- Files are MP4, MOV, WebM, MKV, MP3, WAV, M4A or AAC, and just under 5 GiB at most.
+- Files are MP4, MOV, WebM, MKV, MP3, WAV, M4A or AAC, and 10 GiB at most.
 - Each plan limits the length of one video. `GET /workspace` returns it as `usage.maxUploadSeconds`.
 - Uploads use credits, one per started minute of the video. A video over the length limit is refused with `upload_too_long`, and one that needs more credits than are left with `credits_exhausted`.

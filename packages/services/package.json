@@ -50,6 +50,14 @@
       "types": "./src/motion-render-analytics.ts",
       "default": "./src/motion-render-analytics.ts"
     },
+    "./source-audio-binding": {
+      "types": "./src/source-audio-binding.ts",
+      "default": "./src/source-audio-binding.ts"
+    },
+    "./render-group-lifecycle": {
+      "types": "./src/render-group-lifecycle.ts",
+      "default": "./src/render-group-lifecycle.ts"
+    },
     "./render-group-contract": {
       "types": "./src/render-group-contract.ts",
       "default": "./src/render-group-contract.ts"
@@ -406,6 +414,10 @@
       "types": "./src/webhook-subscription.ts",
       "default": "./src/webhook-subscription.ts"
     },
+    "./executor-control": {
+      "types": "./src/executor-control.ts",
+      "default": "./src/executor-control.ts"
+    },
     "./progress-ticket": {
       "types": "./src/progress-ticket.ts",
       "default": "./src/progress-ticket.ts"
@@ -413,10 +425,6 @@
     "./progress-feed": {
       "types": "./src/progress-feed.ts",
       "default": "./src/progress-feed.ts"
-    },
-    "./executor-control": {
-      "types": "./src/executor-control.ts",
-      "default": "./src/executor-control.ts"
     },
     "./progress-delivery": {
       "types": "./src/progress-delivery.ts",
