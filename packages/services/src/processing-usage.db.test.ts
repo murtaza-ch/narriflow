@@ -848,7 +848,7 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
     });
     const project = await measuredProject(ws.id, 1200, { ingestStatus: "queued" });
     await prisma.project.update({ where: { id: project.id }, data: { ingestStatus: "failed", sourceDurationSeconds: 1200 } });
-    await prisma.ingestJob.create({ data: { projectId: project.id, jobType: "rss_import", payload: {}, status: "failed" } });
+    await prisma.ingestJob.create({ data: { projectId: project.id, jobType: "rss_import", payload: { acquisition: { audioPolicy: "pending_pack" } }, status: "failed" } });
     await reserve(module, ws.id, { projectId: project.id, declaredSeconds: 1200 });
     await prisma.$transaction((tx) => module.release(tx, { projectId: project.id, reason: "ingest_failed" }));
     await prisma.processingUsageReservation.update({

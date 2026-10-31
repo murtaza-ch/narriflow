@@ -1,0 +1,19 @@
+{
+  "date": "2026-10-31",
+  "servicesRevision": "74af5365",
+  "command": "bun --env-file=<private-local-database-env> run test:execution:db",
+  "database": "local PostgreSQL17.11 with pgvector0.8.7; fresh disposable schemas",
+  "migrationCount": 158,
+  "passed": 404,
+  "failed": 0,
+  "assertions": 2833,
+  "slices": {
+    "productionFactory": 4,
+    "migrationSeed": 10,
+    "dispatch": 14,
+    "ordinaryDomains": 353,
+    "independentFenceAndRestore": 23
+  },
+  "logSha256": "614a44abe9811ea61fffe96a7ed7037d1f982dce9e20bccd4f5ea7c105ee3a58",
+  "sharedDatabaseTouched": false
+}

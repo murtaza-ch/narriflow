@@ -1,6 +1,6 @@
 # Execution restore
 
-Ticket 20 remains incomplete. Production factory composition and deployed maintenance/restore
+Ticket 20 remains incomplete. Deployed maintenance, exact cleanup and restore
 acceptance must pass before using this procedure against shared development.
 The operator CLI is implemented and tested; no restore command reopens admission.
 
@@ -72,6 +72,14 @@ intent. This procedure captures those facts before replacing the database.
     gates before resuming Cron and separately reopening intake. Keep uncertain provider outcomes parked with
     their recorded checkpoint. Do not reset budgets or deadlines to pass a gate.
 
+The production API configuration schedules hourly safety at `0 * * * *` and daily
+retention at `0 0 * * *`, both UTC. Set `triggers.crons` to `[]` in the explicit
+restore deployment configuration to stop them. Removing or commenting out that
+property does not disable existing Cloudflare schedules. Keep the empty array
+through the closed-mode redispatch step, then restore both schedules after its
+receipts and platform checks pass. Fenced scheduled invocations also stop before
+reading settings or constructing a database scope.
+
 Use a private operator env file with explicit `DIRECT_URL` and `API_ORIGIN`.
 Pooled PostgreSQL URLs and noncanonical HTTPS origins are refused. The selected
 schema must contain its own epoch and migration tables; missing tables cannot
@@ -134,3 +142,10 @@ Privacy deletion proofs describe distinct exact keys acknowledged by DELETE and
 bytes known from committed metadata. They do not claim an R2 object inventory.
 Unknown paid/provider outcomes remain parked; counters, provider identifiers and
 settled usage are never reset to make recovery or purge pass.
+
+Project privacy purge is asynchronous. It waits for each exact cleanup intent's
+actual DELETE acknowledgement and preserves an already accepted future hold
+revisit. Clearing a reference can therefore leave the purge waiting until that
+revisit, including an earlier 24-hour retained-object retry. A purge request does
+not promise immediate physical deletion. Transport failure backoffs and charged
+budgets are unchanged.

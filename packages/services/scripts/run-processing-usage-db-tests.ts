@@ -74,6 +74,7 @@ try {
   });
   await pool.query(`UPDATE "${schema}"."ExecutionEpoch" SET "admissionOpen" = true WHERE id = 1`);
   await run(["bun", "test", "packages/services/src/processing-usage.db.test.ts"], {
+    MEDIA_FETCH_TOOLCHAIN_FINGERPRINT: "f".repeat(64),
     ALLOW_PROCESSING_USAGE_DB_TESTS: "1",
     DATABASE_URL: testUrl.toString(),
     DIRECT_URL: testUrl.toString(),

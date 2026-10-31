@@ -1,3 +1,4 @@
+import { appendZoomRuleWake,appendZoomRuleDeletionWake } from "./zoom-rule-wakes";
 import { queueAutopilotRule } from "./autopilot-execution";
 import { AUTOPILOT_LEASE_MS, AUTOPILOT_MAX_CONSECUTIVE_FAILURES, autopilotRetryDelayMs, selectAutopilotEpisodes } from "./autopilot-episode-policy";
 export { AUTOPILOT_LEASE_MS, AUTOPILOT_MAX_CONSECUTIVE_FAILURES, autopilotRetryDelayMs, selectAutopilotEpisodes } from "./autopilot-episode-policy";
@@ -66,6 +67,11 @@ function requirePrisma() {
   const prisma = getPrismaClient();
   if (!prisma) throw new Error("Database client unavailable");
   return prisma;
+}
+
+async function queueRuleExecution(tx:Prisma.TransactionClient,id:string,repairOnly=false){
+  await queueAutopilotRule(tx,id);
+  await appendZoomRuleWake(tx,id,{repairOnly});
 }
 
 function nextRunFrom(intervalMinutes: number, now = Date.now()) {
@@ -266,7 +272,7 @@ export class AutopilotService {
         },
         include: ruleInclude,
       });
-      await queueAutopilotRule(tx,row.id);
+      await queueRuleExecution(tx,row.id);
       return toSnapshot(row);
     };
     if (mutation) {
@@ -360,6 +366,7 @@ export class AutopilotService {
       const updated = await tx.autopilotRule.update({
         where: { id: ruleId },
         data: {
+          generation: { increment: 1 },
           ...(current.status === "running" && { status: "active", nextRunAt: now }),
           ...(parsed.name !== undefined && { name: parsed.name }),
           ...(parsed.zoomConnectionId !== undefined && { zoomConnectionId: parsed.zoomConnectionId }),
@@ -418,7 +425,7 @@ export class AutopilotService {
       // applies or does pauses its grants until a person renews them.
       await pauseGrantsWhoseRuleChanged(tx, ruleId);
       await flushWorkspaceEvents(tx);
-      await queueAutopilotRule(tx,updated.id);
+      await queueRuleExecution(tx,updated.id);
       return updated;
     });
     return toSnapshot(row);
@@ -431,11 +438,14 @@ export class AutopilotService {
     await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.edit");
     const prisma = requirePrisma();
     await prisma.$transaction(async (tx) => {
+      await readExecutionAdmission(tx);
       // The rule's row first, as every path that touches a rule and its grants does. The grants a
       // rule had are revoked, not deleted: they and their audit trail outlive the rule.
       const [locked] = await tx.$queryRaw<Array<{ id: string }>>`
         SELECT "id" FROM "AutopilotRule" WHERE "id" = ${ruleId}::uuid AND "workspaceId" = ${scope.workspaceId}::uuid FOR UPDATE`;
-      if (!locked) return;
+      if (!locked) { await appendZoomRuleDeletionWake(tx,scope.workspaceId,ruleId,true);return; }
+      const source=await tx.autopilotRule.findUniqueOrThrow({where:{id:ruleId}});
+      if(source.sourceKind==="zoom")await appendZoomRuleDeletionWake(tx,scope.workspaceId,ruleId);
       await revokeGrantsInTransaction(tx, { autopilotRuleId: ruleId }, "rule_deleted");
       await tx.autopilotRule.delete({ where: { id: ruleId } });
     });
@@ -485,7 +495,7 @@ export class AutopilotService {
       if (
         existing.status === "running" && existing.executionCycleId
       ) {
-        await queueAutopilotRule(tx,existing.id);
+        await queueRuleExecution(tx,existing.id);
         return toSnapshot(existing);
       }
       if (!holdsAutopilotSlot(existing.status)) {
@@ -497,6 +507,7 @@ export class AutopilotService {
       const row = await tx.autopilotRule.update({
         where: { id: ruleId },
         data: {
+          generation: { increment: 1 },
           status: "active",
           nextRunAt: new Date(),
           claimToken: null,
@@ -508,7 +519,7 @@ export class AutopilotService {
         },
         include: ruleInclude,
       });
-      await queueAutopilotRule(tx,row.id);
+      await queueRuleExecution(tx,row.id);
       return toSnapshot(row);
     };
     if (mutation) {
@@ -569,6 +580,7 @@ export class AutopilotService {
       const row = await tx.autopilotRule.update({
         where: { id: ruleId },
         data: {
+          generation: { increment: 1 },
           createdByUserId: scope.actorUserId,
           updatedByUserId: scope.actorUserId,
           status: "active",
@@ -581,7 +593,7 @@ export class AutopilotService {
         },
         include: ruleInclude,
       });
-      await queueAutopilotRule(tx,row.id);
+      await queueRuleExecution(tx,row.id);
       return toSnapshot(row);
     });
   }

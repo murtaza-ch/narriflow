@@ -1,0 +1,32 @@
+{
+  "date": "2026-10-31",
+  "problem": "A manual generation can commit after the failed automatic handoff transaction rolls back and before its fresh failure transition locks the Project. The stale error must not fail the accepted manual generation.",
+  "change": "The fresh locked failure transition first recovers a same-pack accepted generation, commits its intake acknowledgement and exact scheduler obligations, and preserves the accepted root.",
+  "regressions": [
+    "Permanent stale error after rollback preserves the concurrent manual generation and its wake",
+    "A manual generation completed before failure handling is acknowledged without a second automatic root",
+    "Handoff replay recovers the same accepted scheduler obligation",
+    "Lost handoff compare-and-swap rolls back generation, transcript, event and usage together"
+  ],
+  "verification": {
+    "red": {
+      "passed": 0,
+      "failed": 2,
+      "logSha256": "e0651e75b1d202bf6478f70672a409689783940d07c74155eef36fd4e01b78c2"
+    },
+    "green": {
+      "passed": 27,
+      "failed": 0,
+      "assertions": 153,
+      "command": "WORKFLOW_TEST_NAME=Ingest Job lifecycle bun --env-file=<isolated-local-env> run test:workflow:db",
+      "logSha256": "43bfe13756a696a219e1e126867f14416cee7571dca5d5324d3aff4636632c26"
+    }
+  },
+  "scope": "Fresh disposable PostgreSQL schema; no shared database, provider request or deployment",
+  "testPorts": [
+    "Explicit source probe and immutable acquisition fixtures",
+    "Exact ImportPipeline references replace generation queue scans",
+    "Atomic notification intent and its exact delivery obligation replace event polling",
+    "Drive credential fixtures admit their immutable source type at creation"
+  ]
+}

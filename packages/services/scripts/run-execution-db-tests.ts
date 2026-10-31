@@ -22,9 +22,10 @@ const requestedTests = Bun.argv.slice(2);
 let tests = requestedTests.length ? requestedTests : [
   "execution-ledger", "execution-admission", "execution-maintenance", "execution-retention-pages", "project-retention-execution", "media-cleanup-control", "execution-snapshot", "execution-object-restore", "execution-native-restore", "upload-session-execution", "execution-maintenance-runtime", "execution-restore", "execution-dispatch", "executor-control", "execution-transfer", "source-audio-admission",
   "targeted-execution", "targeted-ingest-execution", "targeted-workflow-execution", "clip-preparation", "clip-preparation-ledger", "clip-selection", "clip-selection-window", "clip-selection-preparation", "clip-selection-hyperdrive-gate", "native-validation", "thumbnail-frame-execution", "generated-media-execution",
-  "outbound-probe", "outbound-delivery", "webhook-subscription", "notification-dispatch", "notification-execution", "publication-execution", "modal-dispatch", "progress-outbox", "billing-reconciliation", "library-index", "generation-finishing-execution", "generation-finishing", "social-token-refresh", "export-bundle-execution", "dubbing-execution", "autopilot-finishing-authority", "autopilot-execution",
-].map(name => `packages/services/src/${name}.db.test.ts`);
-if (tests.some(path => !/^packages\/services\/src\/[a-z0-9-]+\.db\.test\.ts$/.test(path))) throw new Error("Only named execution database test files are allowed");
+  "outbound-probe", "outbound-delivery", "webhook-subscription", "notification-dispatch", "notification-execution", "publication-execution", "modal-dispatch", "progress-outbox", "billing-reconciliation", "library-index", "generation-finishing-execution", "generation-finishing", "social-token-refresh", "export-bundle-execution", "dubbing-execution", "autopilot-finishing-authority", "autopilot-execution", "zoom-execution", "zoom-refresh", "autopilot-maintenance",
+].map(name => `packages/services/src/${name}.db.test.ts`).concat("apps/api/src/workflows/maintenance-runtime.db.test.ts");
+const apiFactory="apps/api/src/workflows/maintenance-runtime.db.test.ts";
+if (tests.some(path => !/^packages\/services\/src\/[a-z0-9-]+\.db\.test\.ts$/.test(path)&&path!==apiFactory)) throw new Error("Only named execution database test files are allowed");
 for (const path of tests) if (!await Bun.file(new URL(`../../../${path}`, import.meta.url)).exists()) throw new Error(`Execution database test file does not exist: ${path}`);
 
 async function run(args: string[], env: Record<string, string>) {
@@ -40,10 +41,11 @@ async function run(args: string[], env: Record<string, string>) {
 // The empty production-factory pass observes the entire schema. Its epoch
 // changes and global empty assertion require a separate disposable schema,
 // not deletion of other suites' accepted fixture obligations.
-const emptyFactory="packages/services/src/execution-maintenance-runtime.db.test.ts";
-if(tests.length>1&&tests.includes(emptyFactory)){
- await run(["bun","packages/services/scripts/run-execution-db-tests.ts",emptyFactory],{});
- tests=tests.filter(path=>path!==emptyFactory);
+for(const emptyFactory of ["packages/services/src/execution-maintenance-runtime.db.test.ts",apiFactory]){
+ if(tests.length>1&&tests.includes(emptyFactory)){
+  await run(["bun","packages/services/scripts/run-execution-db-tests.ts",emptyFactory],{});
+  tests=tests.filter(path=>path!==emptyFactory);
+ }
 }
 
 try {

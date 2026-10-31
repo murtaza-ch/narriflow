@@ -1092,6 +1092,13 @@ export class IngestJobLifecycle {
     return [dispatch.reference.dispatchId];
   }
 
+  private async acknowledgeGenerationForPack(tx: Tx, job: { id: string; projectId: string }, contentPackId: string, epoch: number): Promise<IngestGenerationHandoffResult | null> {
+    if (await this.acknowledgeExistingGeneration(tx, job, contentPackId) === null) return null;
+    const current = await tx.ingestJob.findUniqueOrThrow({ where: { id: job.id }, select: { generationRunId: true } });
+    return { kind: "acknowledged", workflowRunId: current.generationRunId ?? undefined,
+      dispatchIds: current.generationRunId ? await this.appendGenerationDispatch(tx, current.generationRunId, epoch) : [] };
+  }
+
   /** Caller owns the transaction and confirms the returned scheduling receipts after commit. */
   async handoffGenerationWithinTransaction(tx: Tx, reference: ExecutionDispatchReference): Promise<IngestGenerationHandoffResult> {
     const parsed = executionDispatchReferenceSchema.safeParse(reference);
@@ -1111,12 +1118,8 @@ export class IngestJobLifecycle {
         // Re-read the latest pack under the admission lock. Drafts never authorize STT.
         const pack = await tx.contentPack.findFirst({ where: { projectId: project.id }, orderBy: [{ createdAt: "desc" }, { id: "desc" }] });
         if (!pack || pack.draft) return { kind: "waiting_for_pack", dispatchIds: [] };
-        const existing = await this.acknowledgeExistingGeneration(tx, job, pack.id);
-        if (existing !== null) {
-          const acknowledged = await tx.ingestJob.findUniqueOrThrow({ where: { id: job.id }, select: { generationRunId: true } });
-          return { kind: "acknowledged", workflowRunId: acknowledged.generationRunId ?? undefined,
-            dispatchIds: acknowledged.generationRunId ? await this.appendGenerationDispatch(tx, acknowledged.generationRunId, epoch) : [] };
-        }
+        const existing = await this.acknowledgeGenerationForPack(tx, job, pack.id, epoch);
+        if (existing) return existing;
         const probe = sourceProbeSchema.safeParse(project.sourceProbe).data;
         const measuredDuration = audio?.durationSeconds ?? probe?.durationSec ?? null;
         const fault = pack.mode === "caption_only" && pack.captionedVideo !== null && measuredDuration !== null
@@ -1162,6 +1165,15 @@ export class IngestJobLifecycle {
       return this.deps.prisma.$transaction(async (tx) => {
         const state = await this.lockHandoff(tx, id, reference);
         if (state.kind !== "ready") return { kind: state.kind, dispatchIds: [] };
+        // The failed transaction released its locks. A manual admission may
+        // have committed before this fresh failure transition acquires them.
+        const pack = await tx.contentPack.findFirst({ where: { projectId: state.project.id }, orderBy: [{ createdAt: "desc" }, { id: "desc" }] });
+        const accepted = pack && !pack.draft ? await this.acknowledgeGenerationForPack(tx, state.job, pack.id, state.epoch) : null;
+        if (accepted) {
+          queueProjectProgressCatchup(tx, state.project.id);
+          await flushWorkspaceEvents(tx);
+          return { ...accepted, dispatchIds: [...new Set([...accepted.dispatchIds, ...await flushProjectProgressDrains(tx), ...takeExecutionDispatchIds(tx)])] };
+        }
         if (error instanceof ExpectedDomainFailureError && (!isAutoRetryableFailureCode(code) || ["invalid", "unprocessable", "missing", "forbidden", "payment_required"].includes(error.kind))) {
           await this.failHandoff(tx, state.job, code, error.message);
           await flushWorkspaceEvents(tx);
