@@ -31,7 +31,7 @@ import { queueExportsFinishedByRun, queueFinishedGenerations } from "./operation
 import { flushWorkspaceEvents } from "./workspace-event";
 import { finalizeGenerationUsage, releaseFailedDubUsage } from "./generated-media-usage-ledger";
 import { appendWorkflowEvent, type WorkflowEventInput } from "./workflow-event-append";
-import { flushProjectProgressDrains } from "./progress-outbox";
+import { flushProjectProgressDrains, queueProjectProgressCatchup } from "./progress-outbox";
 import { progressDeliveryPort } from "./progress-delivery";
 import { deliverExecutionDispatches } from "./execution-dispatch-runtime";
 import { appendExecutionDispatch, readExecutionDispatch, executionDispatchIdentity, type ExecutionDispatchRecord } from "./execution-dispatch";
@@ -1348,6 +1348,7 @@ export class WorkflowRunLifecycle {
       await lockWorkspaceUsage(tx, workspaceId);
       await this.lockAdmissionProject(tx, projectId);
       await tx.$queryRaw`SELECT "id" FROM "Project" WHERE "id" = ${projectId}::uuid FOR UPDATE`;
+      queueProjectProgressCatchup(tx, projectId);
       return this.sourceCancellationPage(tx, { projectId, deploymentEpoch: reference.deploymentEpoch, errorCode: subject.errorCode, cancelledAt: cursor.dueAt }, [],
         { kind: run ? "workflow_run" : "render_group", id: reference.subject.id });
     });
@@ -2476,6 +2477,7 @@ export class WorkflowRunLifecycle {
     const expectedHash = await workflowRunExecutionInputHash({ id: run.id, projectId: run.projectId, stage: run.stage, contentPackId: run.contentPackId,
       deploymentEpoch: history.deploymentEpoch, generation: history.generation, sourceAudioId: key.sourceAudioId, sourceRevision: key.sourceRevision });
     if (expectedHash !== history.inputHash) return [];
+    queueProjectProgressCatchup(tx, run.projectId);
     const own = await tx.executionDispatch.findMany({ where: { deploymentEpoch: key.deploymentEpoch, subjectKind: "workflow_run", subjectId: run.id,
       generation: history.generation, ...(intent === "accept" ? { OR: [{ deadlineKind: "provider_result" }, { wakeKind: "provider_accepted" }] } : { wakeKind: "execution_finished" }) },
       orderBy: { id: "asc" }, take: 3 });
@@ -2862,6 +2864,7 @@ export class WorkflowRunLifecycle {
     return this.transaction(async (tx) => {
       const state = await this.lockRenderRun(tx, reference);
       if (!state) return { kind: "superseded", dispatchIds: [] };
+      queueProjectProgressCatchup(tx, state.run.projectId);
       const { run, project } = state;
       if (["completed", "partial", "failed", "cancelled"].includes(run.status)) return { kind: "terminal", dispatchIds: [] };
       if (project.ingestStatus !== "ready" || !project.sourceStorageKey) return { kind: "waiting_for_video", dispatchIds: [] };
@@ -2893,6 +2896,7 @@ export class WorkflowRunLifecycle {
     return this.transaction(async (tx) => {
       const state = await this.lockRenderRun(tx, reference);
       if (!state) return { kind: "superseded", dispatchIds: [] };
+      queueProjectProgressCatchup(tx, state.run.projectId);
       if (state.run.status === "cancelled") return { kind: "superseded", dispatchIds: [] };
       if (!state.run.renderWorkSetGeneration || !state.run.renderWorkSetFrozenAt) return { kind: "not_prepared", dispatchIds: [] };
       const outcome = await this.settleRenderWorkSetWithinTransaction(tx, { workflowRunId: state.run.id, projectId: state.run.projectId,

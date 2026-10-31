@@ -660,3 +660,7 @@ BEGIN
 END; $$;
 CREATE TRIGGER "GeneratedMediaJob_validation_binding_immutable" BEFORE UPDATE ON "GeneratedMediaJob"
  FOR EACH ROW EXECUTE FUNCTION generated_media_validation_binding_immutable();
+
+-- Pending progress catchup reads two indexed endpoints, never Project history.
+CREATE INDEX "WorkflowEvent_unpublished_progress_project_seq_idx" ON "WorkflowEvent"("projectId", "seq")
+ WHERE "progressRequired" = true AND "progressPublishedAt" IS NULL;

@@ -7,7 +7,7 @@ import { progressEvent, type ProgressRevocation } from "./progress-feed";
 type Tx = Prisma.TransactionClient;
 type Revocation = Omit<ProgressRevocation, "projectId" | "authorizedBefore"> & { projectId?: string; authorizedBefore: number; afterProjectId?: string };
 const reasons = { workspace_membership_required: "m", workspace_restricted: "w", project_inaccessible: "p" } as const;
-const pendingEventRanges = new WeakMap<Tx, Map<string, { after: number; through: number; dueAt: Date }>>();
+const pendingEventRanges = new WeakMap<Tx, Set<string>>();
 function compact(id: string): string {
   if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(id)) throw new Error("Invalid progress revocation identity");
   return btoa(String.fromCharCode(...id.replaceAll("-", "").match(/../g)!.map((value) => Number.parseInt(value, 16)))).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
@@ -42,11 +42,17 @@ async function append(tx: Tx, subject: ExecutionDispatchReference["subject"], du
 /** Called in the same transaction as the event. No delivery can precede commit. */
 export async function appendProgressEventDispatch(tx: Tx, event: { id: string; projectId: string; seq: number; emittedAt: Date }): Promise<ExecutionDispatchRecord> {
   const record = await append(tx, { kind: "workflow_event", id: event.id }, event.emittedAt);
-  let ranges = pendingEventRanges.get(tx);
-  if (!ranges) { ranges = new Map(); pendingEventRanges.set(tx, ranges); }
-  const previous = ranges.get(event.projectId);
-  ranges.set(event.projectId, { after: Math.min(previous?.after ?? event.seq - 1, event.seq - 1), through: Math.max(previous?.through ?? event.seq, event.seq), dueAt: previous?.dueAt ?? event.emittedAt });
+  queueProjectProgressCatchup(tx, event.projectId);
   return record;
+}
+
+/** A replay must recover committed, unconfirmed event obligations even when it
+ * changes no domain row. This queues identities only until all locks are held. */
+export function queueProjectProgressCatchup(tx: Tx, projectId: string): void {
+  compact(projectId);
+  let projects = pendingEventRanges.get(tx);
+  if (!projects) { projects = new Set(); pendingEventRanges.set(tx, projects); }
+  projects.add(projectId);
 }
 
 function eventRangeId(projectId: string, after: number, through: number) { return `pe1.${compact(projectId)}.${after}.${through}`; }
@@ -67,7 +73,20 @@ export async function flushProjectProgressDrains(tx: Tx): Promise<string[]> {
   if (!ranges) return [];
   if (ranges.size > 128) throw new Error("Progress transaction exceeds its Project limit");
   const ids: string[] = [];
-  for (const [projectId, range] of ranges) ids.push((await append(tx, { kind: "maintenance", id: eventRangeId(projectId, range.after, range.through) }, range.dueAt)).reference.dispatchId);
+  for (const projectId of ranges) {
+    const [first] = await tx.$queryRaw<Array<{ seq: number }>>`SELECT event.seq FROM "WorkflowEvent" event WHERE event."projectId" = ${projectId}::uuid
+      AND event."progressRequired" = true AND event."progressPublishedAt" IS NULL AND EXISTS (
+        SELECT 1 FROM "ExecutionDispatch" dispatch JOIN "ExecutionEpoch" epoch ON epoch.id = 1 AND epoch.epoch = dispatch."deploymentEpoch"
+        WHERE dispatch.kind = 'project_progress' AND dispatch."subjectKind" = 'workflow_event' AND dispatch."subjectId" = event.id::text)
+      ORDER BY event.seq ASC LIMIT 1`;
+    if (!first) continue;
+    const [last] = await tx.$queryRaw<Array<{ seq: number }>>`SELECT event.seq FROM "WorkflowEvent" event WHERE event."projectId" = ${projectId}::uuid
+      AND event."progressRequired" = true AND event."progressPublishedAt" IS NULL AND EXISTS (
+        SELECT 1 FROM "ExecutionDispatch" dispatch JOIN "ExecutionEpoch" epoch ON epoch.id = 1 AND epoch.epoch = dispatch."deploymentEpoch"
+        WHERE dispatch.kind = 'project_progress' AND dispatch."subjectKind" = 'workflow_event' AND dispatch."subjectId" = event.id::text)
+      ORDER BY event.seq DESC LIMIT 1`;
+    if (last) ids.push((await append(tx, { kind: "maintenance", id: eventRangeId(projectId, first.seq - 1, last.seq) }, new Date(0))).reference.dispatchId);
+  }
   return ids;
 }
 
@@ -108,7 +127,7 @@ export async function deliverProgressDispatch(database: PrismaClient, reference:
       if (outcomes.some(outcome => outcome.status !== "acknowledged" && outcome.status !== "superseded")) throw new Error("Progress event page unconfirmed");
     }
     if (events.length > 100) {
-      const next = await database.$transaction(tx => append(tx, { kind: "maintenance", id: eventRangeId(range.projectId, page.at(-1)!.seq, range.through) }, page.at(-1)!.emittedAt, reference.deploymentEpoch));
+      const next = await database.$transaction(tx => append(tx, { kind: "maintenance", id: eventRangeId(range.projectId, page.at(-1)!.seq, range.through) }, new Date(0), reference.deploymentEpoch));
       continuationDispatchIds.push(next.reference.dispatchId);
     }
   } else if (reference.subject.kind === "maintenance") {

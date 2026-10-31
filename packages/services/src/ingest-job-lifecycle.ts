@@ -1,4 +1,4 @@
-import { appendProgressEventDispatch, flushProjectProgressDrains } from "./progress-outbox";
+import { appendProgressEventDispatch, flushProjectProgressDrains, queueProjectProgressCatchup } from "./progress-outbox";
 import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient, type IngestJob, type SourceAudio, type Project } from "@prisma/client";
 import {
@@ -1050,6 +1050,7 @@ export class IngestJobLifecycle {
         const state = await this.lockHandoff(tx, id, reference);
         if (state.kind !== "ready") return { kind: state.kind, dispatchIds: [] };
         const { job, project, audio, now, epoch } = state;
+        queueProjectProgressCatchup(tx, project.id);
         if (job.generationHandoffAt && job.generationRunId) return { kind: "acknowledged", workflowRunId: job.generationRunId,
           dispatchIds: await this.appendGenerationDispatch(tx, job.generationRunId, epoch) };
         if (job.generationHandoffAt) return { kind: "refused", dispatchIds: [] };

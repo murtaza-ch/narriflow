@@ -249,7 +249,8 @@ dbDescribe("Exact Workflow execution commands", () => {
     const continuation = (await Promise.all(first.dispatchIds.map(id => readExecutionDispatch(db, id)))).find(row => row?.wakeKind?.startsWith("cancel_"));
     if (!continuation) throw new Error("Expected a persisted cancellation continuation");
     const second = await withServiceEnvironment({}, () => f.lifecycle.continueSourceCancellation(continuation.reference));
-    expect(second.dispatchIds.length).toBe(8);
+    expect(second.dispatchIds.length).toBe(9);
+    expect((await Promise.all(second.dispatchIds.map(id => readExecutionDispatch(db, id)))).filter(row => row?.reference.kind === "project_progress")).toHaveLength(1);
     expect(await db.executionDispatch.count({ where: { subjectId: { in: [f.run.id, ...ids] }, wakeKind: "source_cancelled" } })).toBe(131);
     expect(await db.workflowEvent.count({ where: { projectId: f.run.projectId } })).toBe(131);
     expect((await withServiceEnvironment({}, () => f.lifecycle.continueSourceCancellation(continuation.reference))).dispatchIds).toEqual(second.dispatchIds);
@@ -269,7 +270,7 @@ dbDescribe("Exact Workflow execution commands", () => {
     await db.transcript.update({ where: { projectId: waiter.run.projectId }, data: { sourceRevision: 2, sourceAudioId: null } });
     const released = await withServiceEnvironment({}, () => winner.lifecycle.failProviderAttempt(begun.intent.reference, new WorkflowFailure("elevenlabs_result_timeout", "retryable", "Test release")));
     expect(released.kind).toBe("applied");
-    expect(released.dispatchIds!.length).toBeLessThanOrEqual(103);
+    expect(released.dispatchIds!.length).toBeLessThanOrEqual(104);
     const records = await Promise.all(released.dispatchIds!.map(id => readExecutionDispatch(db, id)));
     const continuation = records.find(row => row?.wakeKind?.startsWith("stt_"));
     if (!continuation) throw new Error("Expected capacity continuation");
