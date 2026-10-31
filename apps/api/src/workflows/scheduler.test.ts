@@ -50,12 +50,19 @@ test("local development confirms the canonical cloud scheduler instead of creati
   expect(called).toBe(1);
 });
 
-test("restore fencing defers native delivery before local RPC, storage or database work", async () => {
+test("restore fencing defers every product consumer before local RPC, storage or database work", async () => {
   let remoteCalls = 0;
   const bindings = { ADMISSION_STATE: "fenced", DEV_CLOUD: { dispatch: async () => { remoteCalls++; throw Error("Forbidden delivery"); } } } as unknown as ApiWorkerBindings;
-  for (const kind of ["modal_execution", "local_fetch"] as const) {
+  for (const kind of ["modal_execution", "local_fetch", "operation_driver", "import_pipeline", "render_run", "project_progress"] as const) {
     const input = { ...await delivery(), reference: { ...reference, kind } };
     await expect(createWorkerExecutionScheduler(bindings).deliver(input)).rejects.toMatchObject({ code: "scheduler_unavailable" });
   }
   expect(remoteCalls).toBe(0);
+});
+
+test("restore metadata registration remains available while product consumers are fenced", async () => {
+  let commands=0;
+  const bindings={ADMISSION_STATE:"fenced",MAINTENANCE:{create:async({id}:{id:string})=>{commands++;return{id};}}} as unknown as ApiWorkerBindings;
+  const input={...await delivery(),mode:"registration" as const,wakeKind:null,reference:{...reference,kind:"maintenance" as const,subject:{kind:"maintenance" as const,id:`rs2.${crypto.randomUUID()}.0`}}};
+  expect((await createWorkerExecutionScheduler(bindings).deliver(input)).status).toBe("confirmed_created");expect(commands).toBe(1);
 });
