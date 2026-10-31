@@ -24,6 +24,8 @@ Native tests require FFmpeg, fontconfig and the model at `apps/media/models/face
 
 `ExecutionControlClient` accepts an explicit HTTPS API origin and signing key, then sends bounded signed commands. Transport retries retain the exact body, timestamp and delivery ID. `ExecutorSession.acquire` requires an acquired disposition for a new random owner and rejects an expired receipt against the fresh TLS server-time header. Pass its `on_process_start` and `cancel_event` to the native process owner. It acknowledges one actual native start, renews only running work every 30 seconds, and cancels native work on authority loss or the absolute deadline. This client does not yet supply the Modal bridge, immutable work-package reads or multipart grants.
 
+`multipart.py` uploads every executor file through UploadPart grants, including small files. It also pins large objects using conditional ranged GETs with the original ETag on every request. The API creates/completes the upload and verifies target HEAD. Native transfer keeps at most four 16 MiB part buffers, signs a measured SHA-256 per part, hashes the ordered whole object, checks file immutability and cancels siblings on failure. A lost completion acknowledgement never triggers abort or deletion. Its injected control ports still need live API wiring and real R2 acceptance gates.
+
 ## Image verification
 
 `modal_app.py` registers `verify_render_runtime` and `verify_lean_runtime`. They verify the actual image and return its fingerprint. They carry no domain/provider secrets. Both scale to zero and have one verification container as their cap. Production functions must also use atomic executor acquisition, because Modal can reschedule crashed containers even when function retries are zero.
