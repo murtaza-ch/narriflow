@@ -25,4 +25,6 @@ RSS preview/import now use a frozen OutboundProbe and private sealed result. The
 
 Generated image publication now stages an immutable private source and parks its parent on native validation. Validated asset adoption, the parent terminal result and generation usage finalization commit together. Lost upload acknowledgments recover the exact source, and cancellation prevents late publication. The dry bundle has no forbidden packages; URL-guard native transport is its remaining service import blocker. [Generated-image evidence](../evidence/generated-image-validation-20261031.json).
 
-Remaining: connect the signed HTTP/Workflow/Modal runtime and durable provider/maintenance commands, move fixed Google calls and callback delivery off native URL-guard, clear the final import audit, and run deployed/resource gates. This ticket remains claimed.
+Drive token and metadata calls now use fixed-origin Worker fetch, refuse redirects and keep bounded responses. Actual Drive downloads retain the native pinned transport. [Drive boundary evidence](../evidence/drive-worker-boundary-20261031.json).
+
+Remaining: connect signed HTTP/Workflow/Modal runtime and durable provider/maintenance commands, move callback delivery off service-native URL-guard, clear the final import audit, and run deployed/resource gates. This ticket remains claimed.
