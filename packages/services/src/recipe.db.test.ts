@@ -1,3 +1,4 @@
+import { createDatabaseTestContext } from "@narriflow/db/testing";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
@@ -24,20 +25,20 @@ describeDb("Recipes on PostgreSQL", () => {
   let prisma: PrismaClient;
   let pool: Pool;
   let priorPrisma: PrismaClient | undefined;
-  const globalPrisma = globalThis as unknown as { narriflowPrismaClient?: PrismaClient };
+  const globalPrisma = createDatabaseTestContext();
 
-  beforeAll(() => {
+  beforeAll(globalPrisma.bind(() => {
     if (!databaseUrl || !schema || !/^integration_test_[a-z0-9_]+$/.test(schema)) throw new Error("Integration DB tests require a disposable integration_test_ schema");
     pool = new Pool({ connectionString: databaseUrl, max: 10 });
     prisma = new PrismaClient({ adapter: new PrismaPg(pool, { schema }), transactionOptions: { maxWait: 120_000, timeout: 120_000 } });
-    priorPrisma = globalPrisma.narriflowPrismaClient;
-    globalPrisma.narriflowPrismaClient = prisma;
-  });
-  afterAll(async () => {
-    globalPrisma.narriflowPrismaClient = priorPrisma;
+    priorPrisma = globalPrisma.client;
+    globalPrisma.client = prisma;
+  }));
+  afterAll(globalPrisma.bind(async () => {
+    globalPrisma.client = priorPrisma;
     await prisma?.$disconnect();
     await pool?.end();
-  });
+  }));
 
   async function workspace(pricingTier: "business" | "pro" | "creator" = "business") {
     const user = await prisma.user.create({ data: { clerkId: `recipe:${randomUUID()}` } });
@@ -49,7 +50,7 @@ describeDb("Recipes on PostgreSQL", () => {
     ({ name, brandProfileId: null, contentPack: buildGenerationContentPack({ clipCountTarget }), finishing });
 
   describe("saving", () => {
-    test("a Recipe starts at revision 1, every edit bumps it, and an edit made on a stale revision is refused", async () => {
+    test("a Recipe starts at revision 1, every edit bumps it, and an edit made on a stale revision is refused", globalPrisma.bind(async () => {
       const owner = await workspace();
       const created = await recipeService.create(owner.scope, input("Weekly show"));
       expect(created).toMatchObject({ name: "Weekly show", revision: 1, brandProfileId: null, languageCode: null, finishing: null, ruleCount: 0 });
@@ -69,9 +70,9 @@ describeDb("Recipes on PostgreSQL", () => {
       ]);
       expect(race.filter((result) => result.status === "fulfilled")).toHaveLength(1);
       expect((await recipeService.get(owner.scope, created.id)).revision).toBe(3);
-    });
+    }));
 
-    test("duplicating keeps the settings under a new name and ID; deleting hides the Recipe but a rule's Recipe can't be deleted", async () => {
+    test("duplicating keeps the settings under a new name and ID; deleting hides the Recipe but a rule's Recipe can't be deleted", globalPrisma.bind(async () => {
       const owner = await workspace();
       const original = await recipeService.create(owner.scope, input("Shorts", 7, FINISHING));
       const copy = await recipeService.duplicate(owner.scope, original.id);
@@ -90,9 +91,9 @@ describeDb("Recipes on PostgreSQL", () => {
       await expect(recipeService.delete(owner.scope, original.id)).rejects.toMatchObject({ code: "recipe_not_found" });
       // The row stays for the receipts and Projects that named it.
       expect((await prisma.recipe.findUniqueOrThrow({ where: { id: original.id } })).deletedAt).not.toBeNull();
-    });
+    }));
 
-    test("a Recipe is the Workspace's own: another Workspace and a viewer can't read or write it", async () => {
+    test("a Recipe is the Workspace's own: another Workspace and a viewer can't read or write it", globalPrisma.bind(async () => {
       const owner = await workspace();
       const other = await workspace();
       const recipe = await recipeService.create(owner.scope, input("Private"));
@@ -107,9 +108,9 @@ describeDb("Recipes on PostgreSQL", () => {
       expect((await recipeService.list(viewerScope)).map((entry) => entry.id)).toEqual([recipe.id]);
       await expect(recipeService.create(viewerScope, input("Nope"))).rejects.toThrow();
       await expect(recipeService.delete(viewerScope, recipe.id)).rejects.toThrow();
-    });
+    }));
 
-    test("review-round delivery needs Review Rooms at save; a Recipe saved before a downgrade still renames", async () => {
+    test("review-round delivery needs Review Rooms at save; a Recipe saved before a downgrade still renames", globalPrisma.bind(async () => {
       const review = { ...FINISHING, delivery: "send_review_round" } as const satisfies FinishingSettingsInput;
       const refusal = { code: "plan_feature_required", kind: "payment_required", details: { feature: "review.rooms", currentTier: "pro", requiredTier: "business" } };
       const pro = await workspace("pro");
@@ -122,9 +123,9 @@ describeDb("Recipes on PostgreSQL", () => {
       const saved = await recipeService.create(business.scope, input("Client review", 10, review));
       await prisma.workspace.update({ where: { id: business.workspaceId }, data: { pricingTier: "pro" } });
       expect(await recipeService.update(business.scope, saved.id, { expectedRevision: 1, name: "Client review (renamed)" })).toMatchObject({ revision: 2, finishing: expect.objectContaining({ delivery: "send_review_round" }) });
-    });
+    }));
 
-    test("finishing needs the plan that runs it, at Recipe save as at rule save; a Workspace holds a bounded number", async () => {
+    test("finishing needs the plan that runs it, at Recipe save as at rule save; a Workspace holds a bounded number", globalPrisma.bind(async () => {
       const creator = await workspace("creator");
       const finishingRefusal = { code: "plan_feature_required", kind: "payment_required", details: { feature: "campaign.operations", currentTier: "creator", requiredTier: "pro" } };
       await expect(recipeService.create(creator.scope, input("Finished", 10, FINISHING))).rejects.toMatchObject(finishingRefusal);
@@ -135,11 +136,11 @@ describeDb("Recipes on PostgreSQL", () => {
       const owner = await workspace();
       await prisma.recipe.createMany({ data: Array.from({ length: MAX_RECIPES_PER_WORKSPACE }, (_, index) => ({ workspaceId: owner.workspaceId, name: `Recipe ${index}`, contentPack: buildGenerationContentPack() })) });
       await expect(recipeService.create(owner.scope, input("One too many"))).rejects.toMatchObject({ code: "recipe_limit_reached" });
-    });
+    }));
   });
 
   describe("a save that changes what rules do", () => {
-    test("lists the rules whose member can't manage publishing when the Recipe starts proposing to a queue, and never blocks the save", async () => {
+    test("lists the rules whose member can't manage publishing when the Recipe starts proposing to a queue, and never blocks the save", globalPrisma.bind(async () => {
       const owner = await workspace();
       const demoted = await prisma.user.create({ data: { clerkId: `recipe-demoted:${randomUUID()}` } });
       await prisma.workspaceMember.create({ data: { workspaceId: owner.workspaceId, userId: demoted.id, role: "editor" } });
@@ -160,14 +161,14 @@ describeDb("Recipes on PostgreSQL", () => {
       expect(saved.warnings).toEqual([{ code: "rules_cannot_propose", ruleIds: [theirs.id], ruleNames: ["Member's rule"] }]);
       expect(saved.warnings[0]!.ruleIds).not.toContain(mine.id);
       expect(typeof onRecipeContentChanged).toBe("function");
-    });
+    }));
   });
 
   describe("a request that names a Recipe", () => {
     const submit = (owner: Owner, key: string, recipeId: string, credential = CREDENTIAL) =>
       submitVideo(owner.scope, { url: URL, title: "From a Recipe", recipeId }, { clientIdempotencyKey: key }, credential);
 
-    test("a retry after the Recipe is edited replays the original receipt; a new key uses the edit", async () => {
+    test("a retry after the Recipe is edited replays the original receipt; a new key uses the edit", globalPrisma.bind(async () => {
       const owner = await workspace();
       const recipe = await recipeService.create(owner.scope, input("Weekly show", 10));
       const key = `rest-${randomUUID()}`;
@@ -191,9 +192,9 @@ describeDb("Recipes on PostgreSQL", () => {
       const next = await submit(owner, `rest-${randomUUID()}`, recipe.id);
       expect(next).toMatchObject({ replayed: false, recipe: { id: recipe.id, revision: 2 } });
       expect((await prisma.contentPack.findFirstOrThrow({ where: { projectId: next.projectId } })).clipCountTarget).toBe(4);
-    });
+    }));
 
-    test("a retry after the Recipe is deleted still replays; a new key is told the Recipe is gone", async () => {
+    test("a retry after the Recipe is deleted still replays; a new key is told the Recipe is gone", globalPrisma.bind(async () => {
       const owner = await workspace();
       const recipe = await recipeService.create(owner.scope, input("Short lived"));
       const key = `rest-${randomUUID()}`;
@@ -202,9 +203,9 @@ describeDb("Recipes on PostgreSQL", () => {
       expect(await submit(owner, key, recipe.id)).toMatchObject({ replayed: true, projectId: first.projectId });
       await expect(submit(owner, `rest-${randomUUID()}`, recipe.id)).rejects.toMatchObject({ code: "recipe_not_found" });
       expect(await prisma.project.count({ where: { workspaceId: owner.workspaceId } })).toBe(1);
-    });
+    }));
 
-    test("the same key with another Recipe, or with inline settings, is a conflict; a Recipe beside inline settings is refused", async () => {
+    test("the same key with another Recipe, or with inline settings, is a conflict; a Recipe beside inline settings is refused", globalPrisma.bind(async () => {
       const owner = await workspace();
       const [one, two] = [await recipeService.create(owner.scope, input("One")), await recipeService.create(owner.scope, input("Two"))];
       const key = `rest-${randomUUID()}`;
@@ -216,9 +217,9 @@ describeDb("Recipes on PostgreSQL", () => {
         await expect(submitVideo(owner.scope, { url: URL, recipeId: one.id, ...inline }, { clientIdempotencyKey: `rest-${randomUUID()}` }, CREDENTIAL)).rejects.toMatchObject({ code: "recipe_with_inline_settings" });
       }
       expect(await prisma.project.count({ where: { workspaceId: owner.workspaceId } })).toBe(1);
-    });
+    }));
 
-    test("the Recipe's language and finishing commit with the intake", async () => {
+    test("the Recipe's language and finishing commit with the intake", globalPrisma.bind(async () => {
       const owner = await workspace();
       const recipe = await recipeService.create(owner.scope, { ...input("Spanish", 8, FINISHING), languageCode: "es" });
       const accepted = await submit(owner, `rest-${randomUUID()}`, recipe.id);
@@ -226,16 +227,16 @@ describeDb("Recipes on PostgreSQL", () => {
       expect(project.languageCode).toBe("es");
       expect(project.brandProfileId).toBeNull();
       expect(project.contentPacks[0]).toMatchObject({ clipCountTarget: 8, finishing: expect.objectContaining({ topClips: 2, minScore: 40 }) });
-    });
+    }));
 
-    test("finishing that proposes to the queue needs the publishing scope, checked as the Recipe is read", async () => {
+    test("finishing that proposes to the queue needs the publishing scope, checked as the Recipe is read", globalPrisma.bind(async () => {
       const owner = await workspace();
       const queued = await prisma.recipe.create({ data: { workspaceId: owner.workspaceId, name: "Queue", contentPack: buildGenerationContentPack(), finishing: { ...FINISHING, delivery: "propose_to_queue", queueAccountIds: [randomUUID()] } } });
       await expect(submit(owner, `rest-${randomUUID()}`, queued.id)).rejects.toMatchObject({ code: "scope_required", details: { scope: "publishing:write" } });
       expect(await prisma.project.count({ where: { workspaceId: owner.workspaceId } })).toBe(0);
-    });
+    }));
 
-    test("saving an Autopilot rule on a queue-proposing Recipe needs the credential's publishing scope, before anything else is checked", async () => {
+    test("saving an Autopilot rule on a queue-proposing Recipe needs the credential's publishing scope, before anything else is checked", globalPrisma.bind(async () => {
       const owner = await workspace();
       const queued = await prisma.recipe.create({ data: { workspaceId: owner.workspaceId, name: "Queue", contentPack: buildGenerationContentPack(), finishing: { ...FINISHING, delivery: "propose_to_queue", queueAccountIds: [randomUUID()] } } });
       const plain = await recipeService.create(owner.scope, input("Plain"));
@@ -251,9 +252,9 @@ describeDb("Recipes on PostgreSQL", () => {
       const existing = await service.createRule(owner.scope, { ...rule, recipeId: plain.id }, { clientIdempotencyKey: randomUUID() }, autopilotOnly);
       await expect(service.updateRule(owner.scope, existing.id, { recipeId: queued.id }, autopilotOnly)).rejects.toMatchObject({ code: "scope_required" });
       expect((await prisma.autopilotRule.findUniqueOrThrow({ where: { id: existing.id } })).recipeId).toBe(plain.id);
-    });
+    }));
 
-    test("a Recipe holding settings Narriflow no longer accepts is a typed refusal, not a failure", async () => {
+    test("a Recipe holding settings Narriflow no longer accepts is a typed refusal, not a failure", globalPrisma.bind(async () => {
       const owner = await workspace();
       const badLanguage = await prisma.recipe.create({ data: { workspaceId: owner.workspaceId, name: "Odd language", languageCode: "klingon", contentPack: buildGenerationContentPack() } });
       const captioned = await prisma.recipe.create({ data: { workspaceId: owner.workspaceId, name: "Captioned", contentPack: { ...buildGenerationContentPack({ mode: "caption_only" }), captionedVideo: { framing: "fit", aspectRatios: ["9:16"], resolution: "1080p", captions: { source: "auto" } } } } });
@@ -262,9 +263,9 @@ describeDb("Recipes on PostgreSQL", () => {
         await expect(submit(owner, `rest-${randomUUID()}`, recipe.id)).rejects.toMatchObject({ code: "recipe_settings_invalid" });
       }
       expect(await prisma.project.count({ where: { workspaceId: owner.workspaceId } })).toBe(0);
-    });
+    }));
 
-    test("a generation freezes the Recipe's finishing, and a retry after an edit replays that run", async () => {
+    test("a generation freezes the Recipe's finishing, and a retry after an edit replays that run", globalPrisma.bind(async () => {
       const owner = await workspace();
       const recipe = await recipeService.create(owner.scope, input("Generate", 6, FINISHING));
       const project = await prisma.project.create({ data: { workspaceId: owner.workspaceId, createdByUserId: owner.user.id, title: "Ready", sourceMediaUrl: "https://example.test/ready.mp4", sourceDurationSeconds: 60, ingestStatus: "ready" } });
@@ -283,13 +284,13 @@ describeDb("Recipes on PostgreSQL", () => {
       const retry = await generate();
       expect(retry).toMatchObject({ replayed: true, operation: first.operation, recipe: { id: recipe.id, revision: 1 } });
       expect(await prisma.generationFinishing.count({ where: { projectId: project.id } })).toBe(1);
-    });
+    }));
 
-    test("only Recipes of the caller's Workspace resolve", async () => {
+    test("only Recipes of the caller's Workspace resolve", globalPrisma.bind(async () => {
       const owner = await workspace();
       const other = await workspace();
       const foreign = await recipeService.create(other.scope, input("Elsewhere"));
       await expect(submit(owner, `rest-${randomUUID()}`, foreign.id)).rejects.toMatchObject({ code: "recipe_not_found" });
-    });
+    }));
   });
 });

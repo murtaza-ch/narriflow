@@ -1,3 +1,4 @@
+import { createDatabaseTestContext } from "@narriflow/db/testing";
 import { createHmac, randomUUID } from "node:crypto";
 import {
 	afterAll,
@@ -64,11 +65,9 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 	let prisma: PrismaClient;
 	let pool: Pool;
 	let previousGlobalPrisma: PrismaClient | undefined;
-	const prismaGlobal = globalThis as unknown as {
-		narriflowPrismaClient?: PrismaClient;
-	};
+	const prismaGlobal = createDatabaseTestContext();
 
-	beforeAll(async () => {
+	beforeAll(prismaGlobal.bind(async () => {
 		if (!databaseUrl)
 			throw new Error("SOCIAL_PUBLICATION_TEST_DATABASE_URL is required");
 		assertSafeDatabase(databaseUrl);
@@ -80,15 +79,15 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 			),
 			transactionOptions: { maxWait: 120_000, timeout: 120_000 },
 		});
-		previousGlobalPrisma = prismaGlobal.narriflowPrismaClient;
-		prismaGlobal.narriflowPrismaClient = prisma;
-	});
+		previousGlobalPrisma = prismaGlobal.client;
+		prismaGlobal.client = prisma;
+	}));
 
-	afterAll(async () => {
-		prismaGlobal.narriflowPrismaClient = previousGlobalPrisma;
+	afterAll(prismaGlobal.bind(async () => {
+		prismaGlobal.client = previousGlobalPrisma;
 		await prisma?.$disconnect();
 		await pool?.end();
-	});
+	}));
 
 	async function fixture() {
 		const suffix = randomUUID();
@@ -270,7 +269,7 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 	test.each([
 		[20, 1],
 		[1, 4],
-	])("publication batch %i with concurrency %i claims only work it can start", async (batchSize, concurrency) => {
+	])("publication batch %i with concurrency %i claims only work it can start", prismaGlobal.bind(async (batchSize, concurrency) => {
 		const f = await fixture();
 		const now = new Date("2026-08-01T00:00:00Z");
 		try {
@@ -301,7 +300,7 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 			await prisma.workspace.delete({ where: { id: f.workspace.id } });
 			await prisma.user.delete({ where: { id: f.user.id } });
 		}
-	});
+	}));
 
 	async function attentionPublication(
 		f: Awaited<ReturnType<typeof fixture>>,
@@ -361,7 +360,7 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 		return { socialPostId, attemptId: attempt.id, now };
 	}
 
-	test("concurrent scheduling replays one frozen intent and rejects key drift", async () => {
+	test("concurrent scheduling replays one frozen intent and rejects key drift", prismaGlobal.bind(async () => {
 		const f = await fixture();
 		const id = randomUUID();
 		const key = randomUUID();
@@ -406,9 +405,9 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 				}),
 			}),
 		).rejects.toBeInstanceOf(PublicationIntentConflictError);
-	});
+	}));
 
-	test("replays a concurrent committed intent after mutable admission rejects", async () => {
+	test("replays a concurrent committed intent after mutable admission rejects", prismaGlobal.bind(async () => {
 		const f = await fixture();
 		const candidate = frozenCandidate(f, { id: randomUUID(), key: randomUUID(), hash: "mutable-race", accountId: f.firstAccount.id, scheduledFor: new Date(Date.now() + 3_600_000) });
 		let entered!: () => void;
@@ -426,9 +425,9 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 		release();
 		expect(await rejected).toEqual(committed);
 		expect(await prisma.socialPost.count({ where: { workspaceId: f.workspace.id, clientIdempotencyKey: candidate.clientIdempotencyKey } })).toBe(1);
-	});
+	}));
 
-	test("replays every advanced post state without refreezing or reopening eligibility", async () => {
+	test("replays every advanced post state without refreezing or reopening eligibility", prismaGlobal.bind(async () => {
 		const f = await fixture();
 		const candidate = frozenCandidate(f, { id: randomUUID(), key: randomUUID(), hash: "advanced-replay", accountId: f.firstAccount.id, scheduledFor: new Date(Date.now() + 3_600_000) });
 		const request = { workspaceId: f.workspace.id, clientIdempotencyKey: candidate.clientIdempotencyKey, immutableRequestHash: candidate.immutableRequestHash };
@@ -440,9 +439,9 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 			expect(await prisma.socialPost.findUniqueOrThrow({ where: { id: first.id }, select: { status: true } })).toEqual({ status });
 		}
 		expect(await prisma.frozenPublicationState.count({ where: { socialPostId: first.id } })).toBe(1);
-	});
+	}));
 
-	test("production admission replays before changed project, revision, account and elapsed schedule", async () => {
+	test("production admission replays before changed project, revision, account and elapsed schedule", prismaGlobal.bind(async () => {
 		const f = await fixture();
 		const admission = createProductionSocialPublicationScheduling();
 		const input = {
@@ -462,9 +461,9 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 		const replay = await admission.schedule(input);
 		expect(replay).toMatchObject({ id: first.id, status: "posted", submissionEligible: false, frozen: first.frozen });
 		await expect(admission.schedule({ ...input, deliveryMode: "tiktok_inbox" })).rejects.toBeInstanceOf(PublicationIntentConflictError);
-	});
+	}));
 
-	test("production admission records the editor and preserves that creator across another editor and owner changes", async () => {
+	test("production admission records the editor and preserves that creator across another editor and owner changes", prismaGlobal.bind(async () => {
 		const f = await fixture();
 		const editor = await prisma.user.create({ data: { clerkId: `publication-editor:${randomUUID()}` } });
 		const otherEditor = await prisma.user.create({ data: { clerkId: `publication-editor:${randomUUID()}` } });
@@ -486,9 +485,9 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 		expect((await prisma.socialPost.findUniqueOrThrow({ where: { id: first.id } })).createdByUserId).toBe(editor.id);
 		await prisma.workspaceMember.update({ where: { workspaceId_userId: { workspaceId: f.workspace.id, userId: editor.id } }, data: { role: "viewer" } });
 		await expect(admission.schedule({ ...input, clientIdempotencyKey: randomUUID() })).rejects.toMatchObject({ code: "workspace_access_denied" });
-	});
+	}));
 
-	test("production admission needs publishing on the plan and an account the plan publishes to; cancelling stays open", async () => {
+	test("production admission needs publishing on the plan and an account the plan publishes to; cancelling stays open", prismaGlobal.bind(async () => {
 		const f = await fixture();
 		const admission = createProductionSocialPublicationScheduling();
 		const input = (accountId: string) => ({
@@ -516,9 +515,9 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 		await prisma.workspace.update({ where: { id: f.workspace.id }, data: { pricingTier: "creator" } });
 		await expect(admission.schedule(input(newer[1]!.id))).rejects.toMatchObject({ code: "plan_limit_reached", details: { limit: "socialDestinations", used: 4, max: 3 } });
 		await expect(admission.schedule(input(newer[0]!.id))).resolves.toMatchObject({ status: "scheduled" });
-	});
+	}));
 
-	test("expired credential rejection does not mutate the account", async () => {
+	test("expired credential rejection does not mutate the account", prismaGlobal.bind(async () => {
 		const f = await fixture();
 		await prisma.socialAccount.update({ where: { id: f.firstAccount.id }, data: { expiresAt: new Date(Date.now() - 60_000), refreshTokenEncrypted: null } });
 		await expect(createProductionSocialPublicationScheduling().schedule({
@@ -529,9 +528,9 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 			scheduledFor: new Date(Date.now() + 3_600_000), providerSettings: {},
 		})).rejects.toMatchObject({ code: "social_account_expired" });
 		expect(await prisma.socialAccount.findUniqueOrThrow({ where: { id: f.firstAccount.id }, select: { status: true } })).toEqual({ status: "active" });
-	});
+	}));
 
-	test("cancel and list snapshots preserve the latest provider receipt fields", async () => {
+	test("cancel and list snapshots preserve the latest provider receipt fields", prismaGlobal.bind(async () => {
 		const f = await fixture();
 		const candidate = frozenCandidate(f, { id: randomUUID(), key: randomUUID(), hash: "cancel-receipt", accountId: f.firstAccount.id, scheduledFor: new Date(Date.now() + 3_600_000) });
 		const post = await prismaPublicationSchedulingStore.open({ workspaceId: f.workspace.id, clientIdempotencyKey: candidate.clientIdempotencyKey, immutableRequestHash: candidate.immutableRequestHash, create: async () => candidate });
@@ -545,9 +544,9 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 		const list = await socialService.listProjectPosts({ actorUserId: f.user.id, workspaceId: f.workspace.id }, f.project.id);
 		expect(list.items.find((item) => item.id === post.id)).toMatchObject(expectedReceipt);
 		expect(await socialService.cancelPost({ workspaceId: f.workspace.id, actorUserId: f.user.id }, f.project.id, post.id)).toMatchObject({ status: "cancelled", ...expectedReceipt });
-	});
+	}));
 
-	test("admits distinct publications to one account at the same time", async () => {
+	test("admits distinct publications to one account at the same time", prismaGlobal.bind(async () => {
 		const f = await fixture();
 		const scheduledFor = new Date(Date.now() + 3_600_000);
 		const ids: string[] = [];
@@ -574,9 +573,9 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 				where: { id: { in: ids }, status: "scheduled" },
 			}),
 		).toBe(2);
-	});
+	}));
 
-	test("persists one idempotent override audit and links it to the Social Post", async () => {
+	test("persists one idempotent override audit and links it to the Social Post", prismaGlobal.bind(async () => {
 		const f = await fixture();
 		await prisma.project.update({
 			where: { id: f.project.id },
@@ -662,9 +661,9 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 				select: { reviewApprovalOverrideId: true },
 			}),
 		).toEqual({ reviewApprovalOverrideId: overrideId });
-	});
+	}));
 
-	test("claims one pre-submission slot per account while unrelated accounts progress", async () => {
+	test("claims one pre-submission slot per account while unrelated accounts progress", prismaGlobal.bind(async () => {
 		const f = await fixture();
 		const now = new Date();
 		const dueOffsetsMs = [-300_000, -160_000, -20_000];
@@ -722,9 +721,9 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 		expect(createdAttempt.reconciliationDeadline).toEqual(
 			new Date(now.getTime() + claimConfig.reconciliationDeadlineMs),
 		);
-	});
+	}));
 
-	test("a native receipt's verified post IDs become Published Social Videos, and none otherwise", async () => {
+	test("a native receipt's verified post IDs become Published Social Videos, and none otherwise", prismaGlobal.bind(async () => {
 		async function settle(receipt: {
 			platformPostId: string | null;
 			platformPostIds?: string[];
@@ -785,9 +784,9 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 		// A video YouTube failed to process, and a webhook receiver's own ID.
 		expect(await settle({ platformPostId: "native-2", platformPostIds: [] })).toEqual([]);
 		expect(await settle({ platformPostId: "receiver-claimed-3" })).toEqual([]);
-	});
+	}));
 
-	test("receipt settlement is atomic, replayable, conflict-safe, and fences stale claims", async () => {
+	test("receipt settlement is atomic, replayable, conflict-safe, and fences stale claims", prismaGlobal.bind(async () => {
 		const f = await fixture();
 		const now = new Date();
 		const id = randomUUID();
@@ -877,9 +876,9 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 				now,
 			}),
 		).rejects.toBeInstanceOf(PublicationClaimLostError);
-	});
+	}));
 
-	test("a provider receipt cannot settle two attempts and the losing transaction rolls back", async () => {
+	test("a provider receipt cannot settle two attempts and the losing transaction rolls back", prismaGlobal.bind(async () => {
 		const f = await fixture();
 		const now = new Date();
 		const firstPostId = randomUUID();
@@ -972,9 +971,9 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 				where: { attemptId: losingClaim.attemptId },
 			}),
 		).toBe(0);
-	});
+	}));
 
-	test("a safe pre-submission failure creates bounded linked retry lineage", async () => {
+	test("a safe pre-submission failure creates bounded linked retry lineage", prismaGlobal.bind(async () => {
 		const f = await fixture();
 		const now = new Date();
 		const id = randomUUID();
@@ -1082,9 +1081,9 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 			}),
 		).toBe(2);
 		expect(await postEvents(f.workspace.id)).toEqual([finishedPost(f, id, "youtube_shorts", "failed")]);
-	});
+	}));
 
-	test("heartbeat extension fences takeover until expiry and stale owners stay fenced", async () => {
+	test("heartbeat extension fences takeover until expiry and stale owners stay fenced", prismaGlobal.bind(async () => {
 		const f = await fixture();
 		const now = new Date("2026-08-28T10:00:00.000Z");
 		const id = randomUUID();
@@ -1150,9 +1149,9 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 				leaseMs: 60_000,
 			}),
 		).resolves.toBeUndefined();
-	});
+	}));
 
-	test("an attempt interrupted before submission is claimed again on the next poll", async () => {
+	test("an attempt interrupted before submission is claimed again on the next poll", prismaGlobal.bind(async () => {
 		const f = await fixture();
 		const now = new Date("2026-08-28T10:00:00.000Z");
 		const id = randomUUID();
@@ -1204,9 +1203,9 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 				select: { status: true },
 			}),
 		).toEqual({ status: "publishing" });
-	});
+	}));
 
-	test("cancellation and claim admission cannot resurrect a cancelled Social Post", async () => {
+	test("cancellation and claim admission cannot resurrect a cancelled Social Post", prismaGlobal.bind(async () => {
 		const f = await fixture();
 		const now = new Date();
 		const id = randomUUID();
@@ -1250,9 +1249,9 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 				}),
 			).toBe(0);
 		}
-	});
+	}));
 
-	test("keyset scanning reaches an unrelated account beyond several blocked pages", async () => {
+	test("keyset scanning reaches an unrelated account beyond several blocked pages", prismaGlobal.bind(async () => {
 		const f = await fixture();
 		const now = new Date("2026-08-28T10:00:00.000Z");
 		const base = new Date("2020-01-01T00:00:00.000Z");
@@ -1395,9 +1394,9 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 		expect(
 			claims.some((claim) => claim.attemptId === unrelated.attemptId),
 		).toBe(true);
-	});
+	}));
 
-	test("recovery authorizes the actual member and conceals inactive Projects", async () => {
+	test("recovery authorizes the actual member and conceals inactive Projects", prismaGlobal.bind(async () => {
 		const f = await fixture();
 		const target = await attentionPublication(f, "actor-scope");
 		const editor = await prisma.user.create({ data: { clerkId: `recovery-editor:${randomUUID()}` } });
@@ -1426,9 +1425,9 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 		await prisma.project.update({ where: { id: f.project.id }, data: { expiresAt: null, purgeStartedAt: null } });
 		expect(await operations[0]!()).toMatchObject({ status: "reconciling" });
 		expect(await prisma.publicationManualDecision.findFirst({ where: { socialPostId: target.socialPostId } })).toMatchObject({ actorUserId: editor.id });
-	});
+	}));
 
-	test("manual recheck reuses the uncertain attempt and records an audit decision", async () => {
+	test("manual recheck reuses the uncertain attempt and records an audit decision", prismaGlobal.bind(async () => {
 		const f = await fixture();
 		const target = await attentionPublication(f, "recheck");
 		const result = await socialPublicationRecovery.recheck({
@@ -1458,9 +1457,9 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 			actorUserId: f.user.id,
 			ownershipValidated: false,
 		});
-	});
+	}));
 
-	test.each(["expired", "exhausted", "active"] as const)("manual recheck grants one standard window only when the current window is %s", async (window) => {
+	test.each(["expired", "exhausted", "active"] as const)("manual recheck grants one standard window only when the current window is %s", prismaGlobal.bind(async (window) => {
 		const previousDeadline = process.env.SOCIAL_PUBLISH_RECONCILIATION_DEADLINE_MS;
 		const previousBudget = process.env.SOCIAL_PUBLISH_PROVIDER_CALL_BUDGET;
 		process.env.SOCIAL_PUBLISH_RECONCILIATION_DEADLINE_MS = "7200000";
@@ -1497,9 +1496,9 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 			if (previousDeadline === undefined) delete process.env.SOCIAL_PUBLISH_RECONCILIATION_DEADLINE_MS; else process.env.SOCIAL_PUBLISH_RECONCILIATION_DEADLINE_MS = previousDeadline;
 			if (previousBudget === undefined) delete process.env.SOCIAL_PUBLISH_PROVIDER_CALL_BUDGET; else process.env.SOCIAL_PUBLISH_PROVIDER_CALL_BUDGET = previousBudget;
 		}
-	});
+	}));
 
-	test("manual confirmation records labeled evidence without a verified published video", async () => {
+	test("manual confirmation records labeled evidence without a verified published video", prismaGlobal.bind(async () => {
 		const f = await fixture();
 		const target = await attentionPublication(f, "confirm");
 		const result = await socialPublicationRecovery.confirmPublished({
@@ -1528,9 +1527,9 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 			evidenceKind: "manual_unvalidated",
 			ownershipValidated: false,
 		});
-	});
+	}));
 
-	test("concurrent manual decisions create one truth and preserve uncertain lineage", async () => {
+	test("concurrent manual decisions create one truth and preserve uncertain lineage", prismaGlobal.bind(async () => {
 		const f = await fixture();
 		const target = await attentionPublication(f, "race");
 		const outcomes = await Promise.allSettled([
@@ -1580,9 +1579,9 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 			expect(attempts).toHaveLength(1);
 			expect(attempts[0]!.phase).toBe("succeeded");
 		}
-	});
+	}));
 
-	test("recovery lookup is isolated by workspace and project", async () => {
+	test("recovery lookup is isolated by workspace and project", prismaGlobal.bind(async () => {
 		const f = await fixture();
 		const target = await attentionPublication(f, "scope");
 		await expect(
@@ -1593,12 +1592,12 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 				socialPostId: target.socialPostId,
 			}),
 		).rejects.toBeInstanceOf(SocialPublicationRecoveryError);
-	});
+	}));
 
 	test.each([
 		"direct",
 		"tiktok_inbox",
-	] as const)("verified duplicate and out-of-order TikTok %s events settle delivery and retain publication evidence", async (deliveryMode) => {
+	] as const)("verified duplicate and out-of-order TikTok %s events settle delivery and retain publication evidence", prismaGlobal.bind(async (deliveryMode) => {
 		const f = await fixture();
 		const now = new Date("2026-08-28T10:00:00.000Z");
 		const publishId = `publish-${randomUUID()}`;
@@ -1774,9 +1773,9 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 		expect((await postEvents(f.workspace.id)).map((event) => (event as { state: string }).state)).toEqual(
 			deliveryMode === "tiktok_inbox" ? ["sent_to_inbox", "posted"] : ["posted"],
 		);
-	});
+	}));
 
-	test("a redelivered TikTok failure, or one after the post already failed, finishes it failed once", async () => {
+	test("a redelivered TikTok failure, or one after the post already failed, finishes it failed once", prismaGlobal.bind(async () => {
 		const f = await fixture();
 		const now = new Date("2026-08-28T10:00:00.000Z");
 		const publishId = `publish-${randomUUID()}`;
@@ -1852,9 +1851,9 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 		expect(await failed(new Date(now.getTime() + 5_000))).toMatchObject({ kind: "already_settled", attemptId: attempt.id });
 		expect(await prisma.socialPost.findUniqueOrThrow({ where: { id: socialPostId } })).toMatchObject({ status: "failed", errorCode: "tiktok_spam_risk" });
 		expect(await postEvents(f.workspace.id)).toEqual([finishedPost(f, socialPostId, "tiktok", "failed")]);
-	});
+	}));
 
-	test("an uncertain publication finishes needs_attention once, and manual confirmation is a second, distinct outcome", async () => {
+	test("an uncertain publication finishes needs_attention once, and manual confirmation is a second, distinct outcome", prismaGlobal.bind(async () => {
 		const f = await fixture();
 		const now = new Date();
 		const id = randomUUID();
@@ -1879,9 +1878,9 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 			externalUrl: "https://youtube.com/shorts/manual-proof", now,
 		});
 		expect((await postEvents(f.workspace.id)).map((event) => (event as { state: string }).state)).toEqual(["needs_attention", "posted"]);
-	});
+	}));
 
-	test("a claim that finds the account revoked finishes the post failed once", async () => {
+	test("a claim that finds the account revoked finishes the post failed once", prismaGlobal.bind(async () => {
 		const f = await fixture();
 		const now = new Date();
 		const id = randomUUID();
@@ -1897,9 +1896,9 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 		await claimDueSocialPublicationAttempts({ claimantId: "revoked-worker-again", now, config: claimConfig });
 		expect(await prisma.socialPost.findUniqueOrThrow({ where: { id } })).toMatchObject({ status: "failed", errorCode: "social_account_reconnect_required" });
 		expect(await postEvents(f.workspace.id)).toEqual([finishedPost(f, id, "youtube_shorts", "failed")]);
-	});
+	}));
 
-	test("an uncertain publication that is rechecked and settles needs_attention again emits again", async () => {
+	test("an uncertain publication that is rechecked and settles needs_attention again emits again", prismaGlobal.bind(async () => {
 		const f = await fixture();
 		const now = new Date();
 		const id = randomUUID();
@@ -1926,9 +1925,9 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 		// The same settlement replayed is still one transition.
 		await prismaSocialPublicationAttemptStore.settleUnknown({ owned: second, code: "publication_outcome_unknown", operation: null, sealedState: null, canReconcile: false, nextActionAt: null, now: later }).catch(() => undefined);
 		expect(await postEvents(f.workspace.id)).toHaveLength(2);
-	});
+	}));
 
-	test("a Social Post whose export failed finishes failed without an attempt", async () => {
+	test("a Social Post whose export failed finishes failed without an attempt", prismaGlobal.bind(async () => {
 		const f = await fixture();
 		const now = new Date();
 		const id = randomUUID();
@@ -1944,5 +1943,5 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 		await synchronizePreparedSocialPosts(now);
 		expect(await prisma.socialPost.findUniqueOrThrow({ where: { id } })).toMatchObject({ status: "failed", errorCode: "render_failed" });
 		expect(await postEvents(f.workspace.id)).toEqual([finishedPost(f, id, "youtube_shorts", "failed")]);
-	});
+	}));
 });

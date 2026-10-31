@@ -122,14 +122,12 @@ export class BillingError extends ExpectedDomainFailureError<
 
 export const WORKSPACE_BILLING_STRIPE_API_VERSION = "2026-07-29.dahlia" as const;
 
-let stripeClient: Stripe | null = null;
 function getStripe(): Stripe {
-  if (stripeClient) return stripeClient;
   const key = process.env.STRIPE_SECRET_KEY;
   if (!key) {
     throw new BillingError("stripe_not_configured");
   }
-  stripeClient = new Stripe(key, {
+  return new Stripe(key, {
     apiVersion: WORKSPACE_BILLING_STRIPE_API_VERSION,
     timeout: Number(
       process.env.WORKSPACE_BILLING_PROVIDER_DEADLINE_MS ?? 10_000,
@@ -138,7 +136,6 @@ function getStripe(): Stripe {
     // the per-attempt provider call budget exact and observable.
     maxNetworkRetries: 0,
   });
-  return stripeClient;
 }
 
 const stripeContractAccess = Symbol("workspace-billing-stripe-contract-access");

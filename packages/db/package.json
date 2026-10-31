@@ -13,6 +13,10 @@
     "./client": {
       "types": "./src/client.ts",
       "default": "./src/client.ts"
+    },
+    "./testing": {
+      "types": "./src/testing.ts",
+      "default": "./src/testing.ts"
     }
   },
   "scripts": {
@@ -23,14 +27,17 @@
     "prisma:validate": "DATABASE_URL=${DATABASE_URL:-postgresql://user:password@localhost:5432/narriflow?schema=public} prisma validate",
     "build": "bun run prisma:generate && tsc -p tsconfig.build.json",
     "typecheck": "bun run prisma:generate && tsc -p tsconfig.json --noEmit",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "test": "bun test src"
   },
   "dependencies": {
-    "@prisma/adapter-neon": "^7.4.2",
-    "@prisma/client": "^7.4.2"
+    "@prisma/adapter-pg": "7.7.0",
+    "@prisma/client": "7.7.0",
+    "pg": "8.17.2"
   },
   "devDependencies": {
     "@types/node": "26.2.0",
-    "prisma": "^7.4.2"
+    "prisma": "7.7.0",
+    "@types/pg": "8.15.5"
   }
 }

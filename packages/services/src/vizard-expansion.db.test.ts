@@ -1,3 +1,4 @@
+import { createDatabaseTestContext } from "@narriflow/db/testing";
 import { randomUUID } from "node:crypto";
 import {
 	afterAll,
@@ -56,11 +57,9 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 	let prisma: PrismaClient;
 	let pool: Pool;
 	let priorPrisma: PrismaClient | undefined;
-	const prismaGlobal = globalThis as unknown as {
-		narriflowPrismaClient?: PrismaClient;
-	};
+	const prismaGlobal = createDatabaseTestContext();
 
-	beforeAll(() => {
+	beforeAll(prismaGlobal.bind(() => {
 		if (!databaseUrl)
 			throw new Error("Vizard expansion test database is required");
 		pool = new Pool({
@@ -74,15 +73,15 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 				databaseSchema ? { schema: databaseSchema } : undefined,
 			),
 		});
-		priorPrisma = prismaGlobal.narriflowPrismaClient;
-		prismaGlobal.narriflowPrismaClient = prisma;
-	});
+		priorPrisma = prismaGlobal.client;
+		prismaGlobal.client = prisma;
+	}));
 
-	afterAll(async () => {
-		prismaGlobal.narriflowPrismaClient = priorPrisma;
+	afterAll(prismaGlobal.bind(async () => {
+		prismaGlobal.client = priorPrisma;
 		await prisma?.$disconnect();
 		await pool?.end();
-	});
+	}));
 
 	/** The settings an Autopilot rule imports with. */
 	const recipeFor = async (workspaceId: string) =>
@@ -203,7 +202,7 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 		return { user, workspace, project, clip, clipExport };
 	}
 
-	test("dubbing admission enforces render readiness and reuses an idempotent queue request", async () => {
+	test("dubbing admission enforces render readiness and reuses an idempotent queue request", prismaGlobal.bind(async () => {
 		const current = await fixture("dubbing-admission");
 		const input = {
 			clipId: current.clip.id,
@@ -272,10 +271,10 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 				where: { projectId: current.project.id, stage: "dubbing" },
 			}),
 		).toBe(1);
-	});
+	}));
 
 	for (const outcome of ["success", "not_modified", "failure"] as const) {
-		test(`Autopilot fences a replaced claim after feed ${outcome}`, async () => {
+		test(`Autopilot fences a replaced claim after feed ${outcome}`, prismaGlobal.bind(async () => {
 			const current = await fixture(`autopilot-${outcome}`);
 			const rule = await prisma.autopilotRule.create({
 				data: {
@@ -328,12 +327,12 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 				warnings.mockRestore();
 				await prisma.autopilotRule.delete({ where: { id: rule.id } });
 			}
-		});
+		}));
 	}
 
 	for (const outcome of ["success", "failure"] as const) {
 		for (const loss of ["replaced", "expired"] as const) {
-			test(`Campaign Render selected after a ${loss} claim on ${outcome} reports ${outcome === "success" ? "the lost claim" : "the admission refusal"}`, async () => {
+			test(`Campaign Render selected after a ${loss} claim on ${outcome} reports ${outcome === "success" ? "the lost claim" : "the admission refusal"}`, prismaGlobal.bind(async () => {
 				const current = await fixture(`render-${loss}-${outcome}`);
 				const request = {
 					actorUserId: current.user.id,
@@ -395,12 +394,12 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 					succeededCount: 0,
 				});
 				expect(operation.items[0]?.status).toBe("pending");
-			});
+			}));
 		}
 	}
 
 	for (const action of ["motion", "style", "scene"] as const) {
-		test(`Campaign ${action} reports a lost item settlement`, async () => {
+		test(`Campaign ${action} reports a lost item settlement`, prismaGlobal.bind(async () => {
 			const current = await fixture(`${action}-claim-lost`);
 			const scope = {
 				actorUserId: current.user.id,
@@ -476,7 +475,7 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 					},
 				},
 			});
-			prismaGlobal.narriflowPrismaClient = extended as unknown as PrismaClient;
+			prismaGlobal.client = extended as unknown as PrismaClient;
 			try {
 				const clips = [{ clipId: current.clip.id, expectedEditorRevision: 2 }];
 				const request =
@@ -516,14 +515,14 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 					}),
 				);
 			} finally {
-				prismaGlobal.narriflowPrismaClient = prisma;
+				prismaGlobal.client = prisma;
 				warnings.mockRestore();
 			}
-		});
+		}));
 	}
 
 	for (const outcome of ["success", "failure"] as const) {
-		test(`Campaign export bundle preserves the replacement owner's items after admission ${outcome}`, async () => {
+		test(`Campaign export bundle preserves the replacement owner's items after admission ${outcome}`, prismaGlobal.bind(async () => {
 			const current = await fixture(`bundle-claim-${outcome}`);
 			const bundles = new CampaignOperationService(
 				async ({ projectId, idempotencyKey, stage }) => {
@@ -570,11 +569,11 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 				bundle: null,
 			});
 			expect(operation.items[0]?.status).toBe("pending");
-		});
+		}));
 	}
 
 	for (const action of ["render", "export"] as const) {
-		test(`Campaign ${action} reports claim loss when settling an empty selection`, async () => {
+		test(`Campaign ${action} reports claim loss when settling an empty selection`, prismaGlobal.bind(async () => {
 			const current = await fixture(`empty-${action}`);
 			const replacement = randomUUID();
 			const extended = prisma.$extends({
@@ -591,7 +590,7 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 					},
 				},
 			});
-			prismaGlobal.narriflowPrismaClient = extended as unknown as PrismaClient;
+			prismaGlobal.client = extended as unknown as PrismaClient;
 			const scope = {
 				actorUserId: current.user.id,
 				workspaceId: current.workspace.id,
@@ -624,12 +623,12 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 					(await campaignOperationService.listOperations(scope))[0],
 				).toMatchObject({ status: "running", claimToken: replacement });
 			} finally {
-				prismaGlobal.narriflowPrismaClient = prisma;
+				prismaGlobal.client = prisma;
 			}
-		});
+		}));
 	}
 
-	test("Autopilot's immutable token fences a late worker even when replacement lease dates match", async () => {
+	test("Autopilot's immutable token fences a late worker even when replacement lease dates match", prismaGlobal.bind(async () => {
 		const current = await fixture("autopilot-immutable-token");
 		const now = new Date();
 		const rule = await prisma.autopilotRule.create({
@@ -726,10 +725,10 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 			await replacementRun;
 			await prisma.autopilotRule.delete({ where: { id: rule.id } });
 		}
-	});
+	}));
 
 	for (const expired of [false, true]) {
-		test(`Autopilot ${expired ? "rejects an expired claim before" : "renews the same token before"} episode import`, async () => {
+		test(`Autopilot ${expired ? "rejects an expired claim before" : "renews the same token before"} episode import`, prismaGlobal.bind(async () => {
 			const current = await fixture(`autopilot-renew-${expired}`);
 			let now = new Date();
 			const rule = await prisma.autopilotRule.create({
@@ -796,7 +795,7 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 					},
 				},
 			});
-			prismaGlobal.narriflowPrismaClient = extended as unknown as PrismaClient;
+			prismaGlobal.client = extended as unknown as PrismaClient;
 			try {
 				const result = await sender.processDueRules(1);
 				expect(result.claimLost).toBe(expired ? 1 : 0);
@@ -809,13 +808,13 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 					(await sender.listRules({ actorUserId: current.user.id, workspaceId: current.workspace.id }))[0]?.importedEpisodeCount,
 				).toBe(expired ? 0 : 1);
 			} finally {
-				prismaGlobal.narriflowPrismaClient = prisma;
+				prismaGlobal.client = prisma;
 				await prisma.autopilotRule.delete({ where: { id: rule.id } });
 			}
-		});
+		}));
 	}
 
-	test("an Autopilot edit revokes a claim acquired after the edit's initial read without stranding the rule", async () => {
+	test("an Autopilot edit revokes a claim acquired after the edit's initial read without stranding the rule", prismaGlobal.bind(async () => {
 		const current = await fixture("autopilot-edit-race");
 		const rule = await prisma.autopilotRule.create({
 			data: {
@@ -860,7 +859,7 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 				},
 			},
 		});
-		prismaGlobal.narriflowPrismaClient = extended as unknown as PrismaClient;
+		prismaGlobal.client = extended as unknown as PrismaClient;
 		try {
 			const edited = await worker.updateRule({ actorUserId: current.user.id, workspaceId: current.workspace.id }, rule.id, {
 				name: "After edit",
@@ -868,7 +867,7 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 			expect(edited.status).toBe("active");
 			release.resolve();
 			expect(await processing).toMatchObject({ claimLost: 1 });
-			prismaGlobal.narriflowPrismaClient = prisma;
+			prismaGlobal.client = prisma;
 			workerNow = new Date(edited.nextRunAt);
 			expect(await worker.processDueRules(1)).toMatchObject({
 				checked: 1,
@@ -880,12 +879,12 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 		} finally {
 			release.resolve();
 			await processing;
-			prismaGlobal.narriflowPrismaClient = prisma;
+			prismaGlobal.client = prisma;
 			await prisma.autopilotRule.delete({ where: { id: rule.id } });
 		}
-	});
+	}));
 
-	test("a late atomic export handoff reports claim loss after a replacement has created the bundle", async () => {
+	test("a late atomic export handoff reports claim loss after a replacement has created the bundle", prismaGlobal.bind(async () => {
 		const current = await fixture("atomic-bundle-late");
 		const scope = {
 			actorUserId: current.user.id,
@@ -922,7 +921,7 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 				},
 			},
 		});
-		prismaGlobal.narriflowPrismaClient = extended as unknown as PrismaClient;
+		prismaGlobal.client = extended as unknown as PrismaClient;
 		try {
 			await expect(
 				campaignOperationService.createExportBundle(scope, input),
@@ -935,11 +934,11 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 					?.status,
 			).toBe("pending");
 		} finally {
-			prismaGlobal.narriflowPrismaClient = prisma;
+			prismaGlobal.client = prisma;
 		}
-	});
+	}));
 
-	test("keeps assisted-copy prompts and content out of analytics metadata", async () => {
+	test("keeps assisted-copy prompts and content out of analytics metadata", prismaGlobal.bind(async () => {
 		const current = await fixture("assisted-copy-privacy");
 		const promptSecret = "PROMPT_SECRET https://private.example.test/campaign";
 		const generatedSecret = "GENERATED_COPY_SECRET";
@@ -1021,9 +1020,9 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 		]) {
 			expect(serializedMetadata).not.toContain(secret);
 		}
-	});
+	}));
 
-	test("lists every usable current-revision export so publishing can choose a compatible older render", async () => {
+	test("lists every usable current-revision export so publishing can choose a compatible older render", prismaGlobal.bind(async () => {
 		const current = await fixture("publishing-current-exports");
 		const newer = await prisma.clipExport.create({
 			data: {
@@ -1067,9 +1066,9 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 				(variant) => variant.aspectRatio === "9:16" && variant.hasAsset,
 			),
 		).toBe(true);
-	});
+	}));
 
-	test("library pagination stays newest-first beyond old caps and survives a deleted boundary", async () => {
+	test("library pagination stays newest-first beyond old caps and survives a deleted boundary", prismaGlobal.bind(async () => {
 		const current = await fixture("library-pages");
 		const origin = Date.parse("2026-01-01T00:00:00Z");
 		await prisma.clipExport.createMany({ data: Array.from({ length: 205 }, (_, i) => ({
@@ -1113,9 +1112,9 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 		expect(search.clips.map((clip) => clip.title)).toEqual(["Library clip 504"]);
 		const malformed = await workspaceLibraryService.listExports({ actorUserId: current.user.id, workspaceId: current.workspace.id }, { cursor: "invalid-cursor" });
 		expect(malformed.items[0]!.id).toBe(current.clipExport.id);
-	});
+	}));
 
-	test("Campaign recovery retains a committed post across lost responses, expired claims, and changed eligibility", async () => {
+	test("Campaign recovery retains a committed post across lost responses, expired claims, and changed eligibility", prismaGlobal.bind(async () => {
 		const current = await fixture("campaign-recovery");
 		const account = await prisma.socialAccount.create({ data: {
 			userId: current.user.id, workspaceId: current.workspace.id, createdByUserId: current.user.id,
@@ -1180,9 +1179,9 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 			expect(deliberate.status).toBe("completed");
 			expect(await prisma.socialPost.count({ where: { projectId: current.project.id } })).toBe(2);
 		} finally { settlement.mockRestore(); lostResponse.mockRestore(); }
-	});
+	}));
 
-	test("rejects cross-project bulk clip identifiers before persisting an operation", async () => {
+	test("rejects cross-project bulk clip identifiers before persisting an operation", prismaGlobal.bind(async () => {
 		const current = await fixture("bulk-boundary-current");
 		const foreign = await fixture("bulk-boundary-foreign");
 		const idempotencyKey = randomUUID();
@@ -1226,9 +1225,9 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 				where: { workspaceId: current.workspace.id, idempotencyKey },
 			}),
 		).toBe(0);
-	});
+	}));
 
-	test("settles duplicate and partial Render selected admission with stable item counts", async () => {
+	test("settles duplicate and partial Render selected admission with stable item counts", prismaGlobal.bind(async () => {
 		const current = await fixture("render-selected");
 		const missingClipId = randomUUID();
 		let executions = 0;
@@ -1279,9 +1278,9 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 				[missingClipId, "ineligible", "campaign_clip_not_found"],
 			].sort(),
 		);
-	});
+	}));
 
-	test("persists revision-fenced motion with partial truth and idempotent replay", async () => {
+	test("persists revision-fenced motion with partial truth and idempotent replay", prismaGlobal.bind(async () => {
 		const current = await fixture("campaign-motion");
 		const missingClipId = randomUUID();
 		const preflightScope = {
@@ -1466,9 +1465,9 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 		).rejects.toMatchObject({
 			code: "campaign_operation_idempotency_conflict",
 		});
-	});
+	}));
 
-	test("freezes bundle revisions and variants while excluding stale and missing clips", async () => {
+	test("freezes bundle revisions and variants while excluding stale and missing clips", prismaGlobal.bind(async () => {
 		const current = await fixture("bundle-freeze");
 		const missingClipId = randomUUID();
 		const bundleService = new CampaignOperationService(
@@ -1662,9 +1661,9 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 				},
 			),
 		).rejects.toMatchObject({ code: "export_bundle_empty" });
-	});
+	}));
 
-	test("refuses export bundles on Creator with the typed plan requirement", async () => {
+	test("refuses export bundles on Creator with the typed plan requirement", prismaGlobal.bind(async () => {
 		const current = await fixture("bundle-creator-denied");
 		await prisma.workspace.update({ where: { id: current.workspace.id }, data: { pricingTier: "creator" } });
 		const bundleService = new CampaignOperationService(async () => {
@@ -1692,9 +1691,9 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 		await expect(
 			bundleService.createExportBundle({ ...scope, idempotencyKey: randomUUID() }, input),
 		).rejects.toMatchObject(expected);
-	});
+	}));
 
-	test("retries an export bundle admission failure by source operation", async () => {
+	test("retries an export bundle admission failure by source operation", prismaGlobal.bind(async () => {
 		const current = await fixture("bundle-admission-retry");
 		const sourceKey = randomUUID();
 		const failing = new CampaignOperationService(async () => {
@@ -1761,9 +1760,9 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 		expect(retried.manifest.included.map((item) => item.clipId)).toEqual([
 			current.clip.id,
 		]);
-	});
+	}));
 
-	test("allows only one concurrent retry and selects failed admission items", async () => {
+	test("allows only one concurrent retry and selects failed admission items", prismaGlobal.bind(async () => {
 		const current = await fixture("campaign-retry");
 		const source = await prisma.campaignOperation.create({
 			data: {
@@ -1822,9 +1821,9 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 		expect(
 			await prisma.campaignOperation.count({ where: { retryOfId: source.id } }),
 		).toBe(1);
-	});
+	}));
 
-	test("persists only the selected Facebook Page and consumes the selection once", async () => {
+	test("persists only the selected Facebook Page and consumes the selection once", prismaGlobal.bind(async () => {
 		const current = await fixture("facebook-page-selection");
 		const state = randomUUID().replaceAll("-", "");
 		await prisma.socialOAuthState.create({
@@ -1945,9 +1944,9 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 		} finally {
 			globalThis.fetch = originalFetch;
 		}
-	});
+	}));
 
-	test("a review round is not stale because of another export of the same revision, only because of later edits", async () => {
+	test("a review round is not stale because of another export of the same revision, only because of later edits", prismaGlobal.bind(async () => {
 		const current = await fixture("review-newer-work");
 		const scope = {
 			actorUserId: current.user.id,
@@ -2004,9 +2003,9 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 			data: { editorRevision: 4 },
 		});
 		expect(await newerWork()).toEqual({ projection: true, room: true });
-	});
+	}));
 
-	test("revokes replayed guest sessions, isolates media IDs, and serializes opposite decisions", async () => {
+	test("revokes replayed guest sessions, isolates media IDs, and serializes opposite decisions", prismaGlobal.bind(async () => {
 		const current = await fixture("review-security");
 		const foreign = await fixture("review-foreign");
 		const variant = current.clipExport.variants[0]!;
@@ -2513,9 +2512,9 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 		await expect(
 			reviewService.readRound(secondSession, sessionSecret),
 		).rejects.toBeInstanceOf(ReviewServiceError);
-	});
+	}));
 
-	test("allocates concurrent review revisions and freezes scene-template insertion", async () => {
+	test("allocates concurrent review revisions and freezes scene-template insertion", prismaGlobal.bind(async () => {
 		const current = await fixture("review-revisions-scenes");
 		const variant = current.clipExport.variants[0]!;
 		const input = (title: string) => ({
@@ -2992,5 +2991,5 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 		expect(
 			Reflect.get(render.clipSnapshot as object, "sceneBlocks"),
 		).toHaveLength(2);
-	});
+	}));
 });

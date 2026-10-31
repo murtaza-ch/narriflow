@@ -1,5 +1,7 @@
 # Workspace Events are a pull feed written in the transaction that makes the change
 
+**Serverless amendment:** [ADR 0019](0019-serverless-execution.md) revises runtime ownership and scheduling below at the single integrated cutover. See the dated amendment at the end; contract acceptance does not mean deployment is complete.
+
 [ADR 0013](0013-integration-surfaces.md) gave integrations per-request Completion Callbacks and rejected Workspace-level subscriptions. That leaves a gap: Autopilot creates work with no request, so an n8n flow, a Zapier trigger or a script can learn about an imported episode only by polling the project list. `WorkflowEvent` can't carry it, because its delivery targets are fixed and its rows cascade-delete with the Project. A Workspace Event is a durable, Workspace-scoped record that outside tools poll with a cursor. It is a pull feed; [push delivery](#amendment-push-delivery-with-webhook-subscriptions) reads the same log.
 
 - **One append-only log per Workspace.** `WorkspaceEvent` holds an `id` consumers deduplicate by, a `seq` cursor unique within the Workspace, a `type`, a `version`, a `subject` of IDs only, and a unique `dedupeKey`. It has no foreign key to Project, so events survive Project deletion. A maintenance loop deletes rows older than 30 days.
@@ -34,3 +36,7 @@ A Workspace can also subscribe HTTPS endpoints to event types. This is a subscri
 - **Commands.** `list_webhooks` needs `content.view` and `projects:read`. `manage_webhooks` (create, delete, enable, test) needs `processing.consume` and `processing:write`, and creating with `social_post.finished` also needs `publishing:read`. A Workspace may have 10 subscriptions, one per URL. There is no update: delete and create again.
 
 We rejected a relay that pushes after commit, because the log already is the durable outbox. We rejected delivering several events at once or a retry queue per event, because one cursor per subscription gives ordering with no second state to reconcile. We rejected a delivery log table for the first version; `lastAttemptAt`, `lastResponseStatus` and `lastDeliveredAt` on the row answer "is it working".
+
+## Amendment 2026-10-31: serverless execution
+
+Workspace Event remains the ordered integration feed and Workflow Event the separate Project progress log. Their committing transactions also register destination-specific reference-only Execution Dispatch obligations. This changes the delivery driver, not event identity, commit ordering, counter lock order, durable dedupe keys or retention. OperationDriver claims one subscription cursor and dispatches guarded lean Modal delivery, advances only after 2xx and commits its next due wake; response loss redelivers the same event. A slow subscription blocks only itself. Caught-up subscriptions sleep until a new event obligation; they do not poll. Daily bounded maintenance retains the 30-day event policy. Completion Callbacks derive the same terminal Operation Status and receive their own dispatches.

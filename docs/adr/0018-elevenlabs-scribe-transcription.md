@@ -1,5 +1,7 @@
 # ElevenLabs Scribe v2 transcribes every Project; the language is pinned from the user's choice or a probe
 
+**Serverless amendment:** [ADR 0019](0019-serverless-execution.md) revises runtime ownership and scheduling below at the single integrated cutover. See the dated amendment at the end; contract acceptance does not mean deployment is complete.
+
 Narriflow transcribes with ElevenLabs Scribe v2 (`scribe_v2`). AssemblyAI is removed in the same change (pre-production policy: no dual provider, no fallback to the old path). Stored transcripts stay readable because the normalized transcript model is provider-neutral; historical `provider="assemblyai"` rows and raw JSON are left as they are.
 
 ## Why
@@ -22,3 +24,7 @@ Measured 2026-10-29/30 (evidence: [spec](../../.scratch/elevenlabs-scribe/spec.m
 ## Consequences
 
 Every later piece (worker adapter, webhook route, migration of stored codes, fonts, RTL rendering, picker) builds on these contracts. Thresholds in the probe may need tuning once real traffic exists. Free-form Roman-script captions and a re-transcribe action are out of scope.
+
+## Amendment 2026-10-31: serverless execution
+
+Scribe control moves into TypeScript service commands invoked by ImportPipeline steps. Native language-probe extraction runs in Modal only after Processing Usage admission against immutable whole-source Source Audio. Explicit language, supplied captions, no-STT and audio-only paths remain. Record provider intent before POST; accepted request ID stays distinct from transcription ID. Explicit provider-submission and result deadlines replace updatedAt timeout inference. Signed callback and targeted GET recovery use one fenced finalizer, and result plus wake commit together. No container or database connection waits for transcription, and no full-video STT fallback is retained. Admission weights duration at min(4, ceil(durationSeconds / 480)) concurrency units. Unknown acceptance retains the accepted duplicate-provider-bill risk from this decision; it never duplicates Processing Usage settlement.
