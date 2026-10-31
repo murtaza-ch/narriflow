@@ -14,7 +14,7 @@ import { sourceAudioBindingHash } from "./source-audio-binding";
 import { workflowRunExecutionInputHash } from "./workflow-execution-input";
 import { createTranscriptionAdmission } from "./transcription-admission";
 import { createTranscriptionProbe } from "./transcription-probe";
-import { createIngestSourceExecution, ingestExecutionInputHash } from "./ingest-source-execution";
+import { createIngestSourceExecution, ingestExecutionInputHash, prepareIngestSourceExecution } from "./ingest-source-execution";
 import { createExecutionStorage } from "./execution-storage";
 
 const url = process.env.SERVERLESS_TEST_DATABASE_URL;
@@ -79,6 +79,27 @@ dbDescribe("Targeted Ingest execution", () => {
     }
     return { job, project, owner, token, reference: dispatch.reference, control, verified, lifecycle, epoch, workflow, usage };
   }
+
+  test("source preparation admits one unowned generic attempt and retains one absolute deadline on replay", async () => {
+    const f = await fixture(undefined, true);
+    await db.executionAttempt.delete({ where: { attemptToken: f.token } });
+    await db.executionDispatch.delete({ where: { id: f.reference.dispatchId } });
+    const driver = await db.$transaction(tx => appendExecutionDispatch(tx, { deploymentEpoch: f.epoch, generation: 1,
+      kind: "operation_driver", subject: { kind: "ingest_job", id: f.job.id }, inputHash: f.reference.inputHash, dueAt: f.job.createdAt }));
+    const prepare = () => prepareIngestSourceExecution({ database: db, domain: f.lifecycle, reference: driver.reference,
+      toolchainFingerprint: "d".repeat(64), executionKind: "modal_execution" });
+    const [first, replay] = await Promise.all([prepare(), prepare()]);
+    expect(first.kind).toBe("waiting"); expect(replay.kind).toBe("waiting");
+    if (first.kind !== "waiting" || replay.kind !== "waiting") throw new Error("Preparation missing");
+    expect(first.deadline).toEqual(replay.deadline);
+    const attempts = await db.executionAttempt.findMany({ where: { dispatch: { subjectId: f.job.id, kind: "modal_execution" } } });
+    expect(attempts).toHaveLength(1);expect(attempts[0]!.owner).toBeNull();expect(attempts[0]!.status).toBe("admitted");
+    const job=await db.ingestJob.findUniqueOrThrow({where:{id:f.job.id}});
+    expect(job).toMatchObject({status:"queued",claimId:null,executorOwner:null,attemptCount:0,operationDeadlineAt:attempts[0]!.operationDeadlineAt});
+    expect(attempts[0]!.operationDeadlineAt.getTime()-attempts[0]!.createdAt.getTime()).toBeGreaterThan(44*60_000);
+    expect(attempts[0]!.operationDeadlineAt.getTime()-attempts[0]!.createdAt.getTime()).toBeLessThanOrEqual(45*60_000);
+    expect(await prepareIngestSourceExecution({database:db,domain:f.lifecycle,reference:{...driver.reference,inputHash:"f".repeat(64)},toolchainFingerprint:"d".repeat(64),executionKind:"modal_execution"})).toEqual({kind:"superseded"});
+  });
 
   function measuredBindings(f: Awaited<ReturnType<typeof fixture>>, audioKey: string): { audio: SourceAudioBinding; video: SourceVideoBinding } {
     const audio: SourceAudioBinding = { sourceAudioId: crypto.randomUUID(), projectId: f.project.id, sourceRevision: 1,
