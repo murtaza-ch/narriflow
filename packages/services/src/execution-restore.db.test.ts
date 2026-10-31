@@ -8,7 +8,8 @@ import { PrismaClient } from "@prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { assertExecutionDatabaseTestTarget } from "./execution-db-test-support";
 import { createMediaCleanupControl, queueMediaCleanupWithinTransaction } from "./media-cleanup-control";
-import { appendExecutionDispatch, readExecutionDispatch } from "./execution-dispatch";
+import { appendExecutionDispatch, readExecutionDispatch, createExecutionDispatch } from "./execution-dispatch";
+import { resumeExecutionRestoreDispatch, createWranglerRestoreCommands } from "./execution-restore-operator";
 import { revokeRestoredAttemptsPage } from "./execution-restore-pages";
 import { ExecutionRestoreService, EXECUTION_RESTORE_PHASES } from "./execution-restore";
 import { ExecutionMaintenanceService, HOURLY_MAINTENANCE_PHASES } from "./execution-maintenance";
@@ -123,6 +124,28 @@ suite("Execution restore authority", () => {
     await database.$transaction(tx => appendExecutionDispatch(tx, { deploymentEpoch: before.epoch, generation: 1, kind: "operation_driver", subject: { kind: "maintenance", id: `unknown-tail-${crypto.randomUUID()}` }, inputHash: "a".repeat(64), dueAt: new Date() }));
     await expect(restore.begin(input)).rejects.toMatchObject({ code: "restore_snapshot_history_unknown" });
     expect(await database.executionEpoch.findUniqueOrThrow({ where: { id: 1 } })).toEqual(before);
+  });
+  test("closed-mode resume registers the exact unregistered metadata boundary without rewriting its committed receipt",async()=>{
+    const input=await capturedExecutionSnapshotFixture(database),instances=new Map<string,string>();let closed=false,creates=0;
+    const commands=createWranglerRestoreCommands({workflowName:"restore-boundary-test",configPath:"/private/restore-boundary.jsonc",run:async args=>{
+      if(args[1]==="trigger"){const ref=JSON.parse(args[3]!);if(!closed&&ref.subject.id.includes(".redispatch"))throw Error("fenced_boundary");creates++;const id=args[5]!;instances.set(id,"queued");return{id};}
+      const id=args[4]!,status=instances.get(id);if(!status)throw Error("not_registered");return{id,status};
+    }});
+    const dispatch=createExecutionDispatch({database,scheduler:commands.scheduler,options:{retryBaseMs:1,retryMaxMs:1}});
+    const restore=new ExecutionRestoreService({database,register:async ids=>{for(const id of ids)if((await dispatch.deliver(id)).status!=="acknowledged")throw Error("boundary_registration_pending");},phases:Object.fromEntries(EXECUTION_RESTORE_PHASES.map(phase=>[phase,async()=>({processed:0,next:null})]))});
+    const begun=await restore.begin(input);
+    await expect(restore.run(begun.reference)).rejects.toThrow("boundary_registration_pending");
+    const metadata=await restore.inspect(begun.reference.dispatchId),boundaryId=metadata.receipt!.dispatchIds[0]!;
+    expect(await restore.inspect(boundaryId)).toMatchObject({metadataReady:true,receipt:null});
+    const resume=()=>resumeExecutionRestoreDispatch({dispatchId:boundaryId,restore,dispatch,commands,observeWorker:async ready=>{if(ready&&!closed)throw Error("restore_worker_mode_invalid");}});
+    const before=await dispatch.read(boundaryId);expect(before!.acknowledgedAt).toBeNull();expect(creates).toBe(1);
+    await expect(resume()).rejects.toThrow("restore_worker_mode_invalid");expect(creates).toBe(1);
+    closed=true;
+    expect(await resume()).toMatchObject({kind:"already_running",before:{status:"queued"},after:{status:"queued"}});
+    expect(creates).toBe(2);expect((await dispatch.read(boundaryId))!.acknowledgedAt).not.toBeNull();
+    expect(await restore.inspect(begun.reference.dispatchId)).toEqual(metadata);
+    expect((await dispatch.read(boundaryId))!.reference).toEqual(before!.reference);
+    expect((await database.executionEpoch.findUniqueOrThrow({where:{id:1}})).admissionOpen).toBe(false);
   });
   test("bounded account recovery reuses billing identity and paid library progress without extending budgets", async () => {
     const [floor] = await database.$queryRaw<Array<{ at: Date }>>`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS at`;
