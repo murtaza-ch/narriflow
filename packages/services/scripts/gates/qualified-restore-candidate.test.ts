@@ -1,7 +1,12 @@
 import {expect,test} from "bun:test";
-import {candidateRestoreJournal,candidateRestoreTarget,candidateRestoreRefusal} from "./qualified-restore-candidate";
+import {candidateRestoreJournal,candidateRestoreTarget,candidateRestoreRefusal,candidateRestorePostgresVersion} from "./qualified-restore-candidate";
 const connection="postgresql://operator:example@ep-wispy-field-b5wyn9o3.c-7.us-east-2.aws.neon.tech/serverless_pipeline_gates?sslmode=verify-full";
 const journal=()=>({version:1,runId:crypto.randomUUID(),jobId:crypto.randomUUID(),dispatchId:crypto.randomUUID(),attemptToken:crypto.randomUUID(),artifactId:crypto.randomUUID(),commandSha256:"a".repeat(64),operationDeadlineAt:"2026-11-01T01:10:00.000Z",fencedVersion:"fenced-version",snapshotPath:"/private/run/snapshot.dump",proofPath:"/private/run/proof.json",refusalPath:"/private/run/refusal.json"});
+test("candidate archive utilities require pinned18.6 and the observed PostgreSQL18 server major",()=>{
+ expect(candidateRestorePostgresVersion("pg_dump","pg_dump (PostgreSQL) 18.6\n",180006)).toEqual({utilityVersion:"18.6",serverMajor:18});
+ expect(candidateRestorePostgresVersion("pg_restore","pg_restore (PostgreSQL) 18.6\n",180006)).toEqual({utilityVersion:"18.6",serverMajor:18});
+ for(const [tool,output,server] of [["pg_dump","pg_dump (PostgreSQL) 17.11",180006],["pg_restore","pg_restore (PostgreSQL) 17.11",180006],["pg_dump","pg_dump (PostgreSQL) 18.6",170011],["pg_restore","pg_restore (PostgreSQL) 18.6",190000],["pg_dump","pg_restore (PostgreSQL) 18.6",180006],["pg_dump","unrelated version 18.6",180006],["pg_dump","pg_dump (PostgreSQL) 18.5",180006]] as const)expect(()=>candidateRestorePostgresVersion(tool,output,server)).toThrow();
+});
 test("candidate snapshot tooling refuses another database, pooled/shared host or TLS downgrade before any connection",()=>{
  expect(candidateRestoreTarget(`${connection}&schema=public`).hostname).toBe("ep-wispy-field-b5wyn9o3.c-7.us-east-2.aws.neon.tech");
  for(const value of [connection.replace("serverless_pipeline_gates","neondb"),connection.replace("ep-wispy-field-b5wyn9o3","ep-rough-hill-b57kvyah"),connection.replace(".c-7.","-pooler.c-7."),connection.replace("verify-full","require"),`${connection}&schema=another`,`${connection}&options=-csearch_path%3Dpublic`])expect(()=>candidateRestoreTarget(value)).toThrow();
