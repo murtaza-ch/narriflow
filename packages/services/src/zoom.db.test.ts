@@ -1,3 +1,4 @@
+import { createDatabaseTestContext } from "@narriflow/db/testing";
 import { afterAll, beforeAll, beforeEach, describe, expect, setDefaultTimeout, spyOn, test } from "bun:test";
 import { createHmac, randomUUID } from "node:crypto";
 import { PrismaPg } from "@prisma/adapter-pg";
@@ -20,7 +21,7 @@ const tokens = { access_token: "private-access", refresh_token: "private-refresh
 
 describeDb("Zoom recording admission and authorization", () => {
   let prisma: PrismaClient, pool: Pool, prior: PrismaClient | undefined;
-  const global = globalThis as unknown as { narriflowPrismaClient?: PrismaClient };
+  const global = createDatabaseTestContext();
   const workspaceIds: string[] = [], userIds: string[] = [];
   let refreshes = 0;
   const api: ZoomApi = {
@@ -32,29 +33,29 @@ describeDb("Zoom recording admission and authorization", () => {
   };
   const service = () => new ZoomService({ config: () => config, api });
 
-  beforeAll(async () => {
+  beforeAll(global.bind(async () => {
     const url = process.env.VIZARD_EXPANSION_TEST_DATABASE_URL, schema = process.env.VIZARD_EXPANSION_TEST_DATABASE_SCHEMA;
     if (!url || !schema) throw new Error("Disposable Zoom test schema is required");
     pool = new Pool({ connectionString: url, max: 6, options: `-csearch_path=${schema}` });
     prisma = new PrismaClient({ adapter: new PrismaPg(pool, { schema }) });
-    prior = global.narriflowPrismaClient;
-    global.narriflowPrismaClient = prisma;
-  });
-  beforeEach(async () => {
+    prior = global.client;
+    global.client = prisma;
+  }));
+  beforeEach(global.bind(async () => {
     refreshes = 0;
     await prisma.zoomWebhookJob.deleteMany();
     await prisma.autopilotRule.updateMany({ data: { status: "paused" } });
-  });
-  afterAll(async () => {
+  }));
+  afterAll(global.bind(async () => {
     if (prisma) {
       await prisma.zoomWebhookJob.deleteMany();
       await prisma.workspace.deleteMany({ where: { id: { in: workspaceIds } } });
       await prisma.user.deleteMany({ where: { id: { in: userIds } } });
       await prisma.$disconnect();
     }
-    global.narriflowPrismaClient = prior;
+    global.client = prior;
     await pool?.end();
-  });
+  }));
 
   async function fixture(topicFilter: string | null = null) {
     const user = await prisma.user.create({ data: { clerkId: `zoom-${randomUUID()}` } });
@@ -75,7 +76,7 @@ describeDb("Zoom recording admission and authorization", () => {
     return { rawBody, timestamp, signature: `v0=${createHmac("sha256", config.webhookSecret).update(`v0:${timestamp}:${rawBody}`).digest("hex")}` };
   }
 
-  test("retries and concurrent claims import a recording once per rule with frozen Recipe settings", async () => {
+  test("retries and concurrent claims import a recording once per rule with frozen Recipe settings", global.bind(async () => {
     const f = await fixture("webinar"), zoom = service(), notification = event();
     await Promise.all(Array.from({ length: 5 }, () => zoom.acceptWebhook(signed(notification))));
     expect(await prisma.zoomWebhookJob.count()).toBe(1);
@@ -94,9 +95,9 @@ describeDb("Zoom recording admission and authorization", () => {
     await zoom.processDueNotifications();
     expect(await prisma.project.count({ where: { workspaceId: f.workspace.id } })).toBe(0);
     expect(await prisma.autopilotEpisode.count({ where: { ruleId: f.rule.id } })).toBe(1);
-  });
+  }));
 
-  test("host, account and topic restrict matching; other rules can import the same recording", async () => {
+  test("host, account and topic restrict matching; other rules can import the same recording", global.bind(async () => {
     const match = await fixture("webinar"), noMatch = await fixture("podcast"), zoom = service();
     const second = await new AutopilotService().createRule(match.scope, { sourceKind: "zoom", name: "All recordings", zoomConnectionId: match.connection.id, recipeId: match.recipe.id });
     await zoom.acceptWebhook(signed(event()));
@@ -106,9 +107,9 @@ describeDb("Zoom recording admission and authorization", () => {
     const body = event(); body.payload.object.host_id = "other-host";
     await zoom.acceptWebhook(signed(body)); await zoom.processDueNotifications();
     expect(await prisma.project.count({ where: { workspaceId: match.workspace.id } })).toBe(2);
-  });
+  }));
 
-  test("a recording for a rule the plan no longer runs pauses the rule once, imports nothing, and completes the job", async () => {
+  test("a recording for a rule the plan no longer runs pauses the rule once, imports nothing, and completes the job", global.bind(async () => {
     const f = await fixture(), zoom = service();
     await prisma.workspace.update({ where: { id: f.workspace.id }, data: { pricingTier: "creator" } });
     const imported = spyOn(projectService, "importZoomRecording");
@@ -121,9 +122,9 @@ describeDb("Zoom recording admission and authorization", () => {
     expect(await prisma.project.count({ where: { workspaceId: f.workspace.id } })).toBe(0);
     expect(await prisma.zoomWebhookJob.findFirstOrThrow({ orderBy: { createdAt: "desc" } })).toMatchObject({ status: "completed" });
     await expect(new AutopilotService().updateRule(f.scope, f.rule.id, { status: "active" })).rejects.toMatchObject({ code: "plan_feature_required" });
-  });
+  }));
 
-  test("a capacity refusal retries durably without consuming the recording", async () => {
+  test("a capacity refusal retries durably without consuming the recording", global.bind(async () => {
     const f = await fixture(), zoom = service();
     await zoom.acceptWebhook(signed(event()));
     const refusal = spyOn(projectService, "importZoomRecording").mockRejectedValue(new ProcessingUsageError({ code: "workspace_processing_capacity_reached", message: "Capacity is full", details: { tier: "business", inFlight: 10, inFlightLimit: 10 } }));
@@ -134,9 +135,9 @@ describeDb("Zoom recording admission and authorization", () => {
     await prisma.zoomWebhookJob.updateMany({ data: { availableAt: new Date(0) } });
     await zoom.processDueNotifications();
     expect(await prisma.project.count({ where: { workspaceId: f.workspace.id } })).toBe(1);
-  });
+  }));
 
-  test("disconnection erases tokens, pauses rules, and refuses new admission and cross-workspace access", async () => {
+  test("disconnection erases tokens, pauses rules, and refuses new admission and cross-workspace access", global.bind(async () => {
     const f = await fixture(), other = await fixture(), zoom = service();
     await expect(zoom.disconnect(other.scope, f.connection.id)).rejects.toMatchObject({ code: "zoom_connection_unavailable" });
     await zoom.disconnect(f.scope, f.connection.id);
@@ -144,9 +145,9 @@ describeDb("Zoom recording admission and authorization", () => {
     expect(await prisma.autopilotRule.findUniqueOrThrow({ where: { id: f.rule.id } })).toMatchObject({ status: "paused", pauseKind: "zoom_connection", lastError: expect.stringContaining("Reconnect") });
     await expect(new AutopilotService().updateRule(f.scope, f.rule.id, { status: "active" })).rejects.toMatchObject({ code: "zoom_connection_unavailable" });
     await expect(zoom.recordingDownload({ connectionId: f.connection.id, projectId: randomUUID(), meetingUuid: "meeting", recordingId: "recording" })).rejects.toMatchObject({ code: "zoom_recording_unavailable" });
-  });
+  }));
 
-  test("OAuth state is hashed, names its member and Workspace, binds the redirect URI and is redeemed once", async () => {
+  test("OAuth state is hashed, names its member and Workspace, binds the redirect URI and is redeemed once", global.bind(async () => {
     const f = await fixture(), zoom = service();
     const url = new URL(await zoom.createAuthorizationUrl(f.scope, "https://api.narriflow.test"));
     const state = url.searchParams.get("state")!;
@@ -167,16 +168,16 @@ describeDb("Zoom recording admission and authorization", () => {
     expect(JSON.stringify(await zoom.listConnections(f.scope))).not.toContain("Token");
     expect(await prisma.zoomOAuthState.count({ where: { workspaceId: f.workspace.id } })).toBe(0);
     await expect(zoom.handleCallback(input)).rejects.toMatchObject({ code: "zoom_oauth_state_invalid" });
-  });
+  }));
 
-  test("an expired OAuth state is refused and the callback leaves no connection behind", async () => {
+  test("an expired OAuth state is refused and the callback leaves no connection behind", global.bind(async () => {
     const f = await fixture(), zoom = service();
     const state = new URL(await zoom.createAuthorizationUrl(f.scope, "https://api.narriflow.test")).searchParams.get("state")!;
     await prisma.zoomOAuthState.updateMany({ where: { workspaceId: f.workspace.id }, data: { expiresAt: new Date(Date.now() - 1000) } });
     await expect(zoom.handleCallback({ state, code: "code", origin: "https://api.narriflow.test" })).rejects.toMatchObject({ code: "zoom_oauth_state_invalid" });
-  });
+  }));
 
-  test("the callback rechecks the stored member's access before and after the provider exchange", async () => {
+  test("the callback rechecks the stored member's access before and after the provider exchange", global.bind(async () => {
     const f = await fixture();
     const before = await prisma.zoomConnection.findUniqueOrThrow({ where: { id: f.connection.id } });
     const origin = "https://api.narriflow.test";
@@ -201,9 +202,9 @@ describeDb("Zoom recording admission and authorization", () => {
     const after = await prisma.zoomConnection.findUniqueOrThrow({ where: { id: f.connection.id } });
     expect(after.updatedAt).toEqual(before.updatedAt);
     expect(await prisma.zoomOAuthState.count({ where: { workspaceId: f.workspace.id } })).toBe(0);
-  });
+  }));
 
-  test("connecting Zoom needs the plan that runs Autopilot; existing connections stay readable and disconnectable", async () => {
+  test("connecting Zoom needs the plan that runs Autopilot; existing connections stay readable and disconnectable", global.bind(async () => {
     const f = await fixture(), zoom = service();
     await prisma.workspace.update({ where: { id: f.workspace.id }, data: { pricingTier: "creator" } });
     await expect(zoom.createAuthorizationUrl(f.scope, "https://narriflow.test")).rejects.toMatchObject({
@@ -215,9 +216,9 @@ describeDb("Zoom recording admission and authorization", () => {
     expect(await zoom.listConnections(f.scope)).toMatchObject([{ id: f.connection.id, revoked: false, canDisconnect: true }]);
     await zoom.disconnect(f.scope, f.connection.id);
     expect((await prisma.zoomConnection.findUniqueOrThrow({ where: { id: f.connection.id } })).revokedAt).not.toBeNull();
-  });
+  }));
 
-  test("two workers rotate one expired refresh token under the connection lock", async () => {
+  test("two workers rotate one expired refresh token under the connection lock", global.bind(async () => {
     const f = await fixture(), zoom = service();
     const project = await prisma.project.create({ data: { workspaceId: f.workspace.id, createdByUserId: f.user.id, title: "Download", sourceMediaUrl: "zoom:recording", sourceType: "zoom" } });
     await prisma.zoomConnection.update({ where: { id: f.connection.id }, data: { expiresAt: new Date(0) } });
@@ -225,9 +226,9 @@ describeDb("Zoom recording admission and authorization", () => {
     const results = await Promise.all([zoom.recordingDownload(input), zoom.recordingDownload(input)]);
     expect(refreshes).toBe(1);
     expect(results.map((result) => result.accessToken)).toEqual(["private-access-1", "private-access-1"]);
-  });
+  }));
 
-  test("a provider-revoked refresh token pauses the connection's rules", async () => {
+  test("a provider-revoked refresh token pauses the connection's rules", global.bind(async () => {
     const f = await fixture();
     const zoom = new ZoomService({ config: () => config, api: { ...api, refresh: async () => { throw new ZoomError("zoom_connection_unavailable"); } } });
     const project = await prisma.project.create({ data: { workspaceId: f.workspace.id, createdByUserId: f.user.id, title: "Download", sourceMediaUrl: "zoom:recording", sourceType: "zoom" } });
@@ -235,9 +236,9 @@ describeDb("Zoom recording admission and authorization", () => {
     await expect(zoom.recordingDownload({ connectionId: f.connection.id, projectId: project.id, meetingUuid: "meeting", recordingId: "file" })).rejects.toMatchObject({ code: "zoom_connection_unavailable" });
     expect(await prisma.autopilotRule.findUniqueOrThrow({ where: { id: f.rule.id } })).toMatchObject({ status: "paused", pauseKind: "zoom_connection" });
     expect((await prisma.zoomConnection.findUniqueOrThrow({ where: { id: f.connection.id } })).refreshTokenEncrypted).toBeNull();
-  });
+  }));
 
-  test("source edits and disconnection pause grants, while a rule rename does not", async () => {
+  test("source edits and disconnection pause grants, while a rule rename does not", global.bind(async () => {
     const f = await fixture(), zoom = service(), autopilot = new AutopilotService();
     const createGrant = async () => prisma.standingGrant.create({ data: { workspaceId: f.workspace.id, autopilotRuleId: f.rule.id, kind: "review_send", reviewerEmails: ["reviewer@example.test"], dailyCap: 1, weeklyCap: 2, expiresAt: new Date(Date.now() + 86_400_000), grantedByUserId: f.user.id, ruleFingerprint: (await ruleFingerprint(prisma, f.rule.id))! } });
     const grant = await createGrant();
@@ -250,16 +251,16 @@ describeDb("Zoom recording admission and authorization", () => {
     expect(await prisma.standingGrant.findUniqueOrThrow({ where: { id: second.id } })).toMatchObject({ status: "paused", pausedReason: "rule_changed" });
     await autopilot.updateRule(f.scope, f.rule.id, { recipeId: f.recipe.id });
     expect(await prisma.autopilotRule.findUniqueOrThrow({ where: { id: f.rule.id } })).toMatchObject({ status: "paused", pauseKind: "zoom_connection" });
-  });
+  }));
 
-  test("delayed events from before rule creation do not backfill recordings", async () => {
+  test("delayed events from before rule creation do not backfill recordings", global.bind(async () => {
     const f = await fixture(), zoom = service();
     await zoom.acceptWebhook(signed(event({ event_ts: Date.parse(f.rule.createdAt) - 1000 })));
     await zoom.processDueNotifications();
     expect(await prisma.project.count({ where: { workspaceId: f.workspace.id } })).toBe(0);
-  });
+  }));
 
-  test("a deauthorization pauses connected rules and stale deauthorization cannot undo a reconnect", async () => {
+  test("a deauthorization pauses connected rules and stale deauthorization cannot undo a reconnect", global.bind(async () => {
     const f = await fixture(), zoom = service();
     await zoom.acceptWebhook(signed({ event: "app_deauthorized", event_ts: Date.now() + 50, payload: { account_id: "zoom-account", user_id: "zoom-host" } }));
     await zoom.processDueNotifications();
@@ -270,5 +271,5 @@ describeDb("Zoom recording admission and authorization", () => {
     await zoom.processDueNotifications();
     expect((await prisma.zoomConnection.findUniqueOrThrow({ where: { id: f.connection.id } })).revokedAt).toBeNull();
     expect(await prisma.autopilotRule.findUniqueOrThrow({ where: { id: f.rule.id } })).toMatchObject({ status: "paused" });
-  });
+  }));
 });

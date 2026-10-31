@@ -37,17 +37,15 @@ export function prepareUploadCallback(mutation: Pick<IntegrationMutation, "callb
 /** Signing secrets: one current secret per Workspace. Rotation keeps the
  * previous one signing for the overlap window and retires any older one. */
 
-let processor: ReturnType<typeof createCompletionCallbackProcessor> | null = null;
 
 /** The worker's production processor, reading Operation Status through the
  * trusted service read. */
 export function getCompletionCallbackProcessor() {
-  processor ??= createCompletionCallbackProcessor({
+  return createCompletionCallbackProcessor({
     prisma: requiredPrisma(),
     readTrusted: (scope, operation) => operationStatusService.readTrusted(scope, operation),
     leaseOwner: `callbacks:${randomUUID()}`,
   });
-  return processor;
 }
 
 /** Production signing-secret operations on the shared database. Rotation happens only inside the receipt-backed developer command (`issue`), never on its own. */

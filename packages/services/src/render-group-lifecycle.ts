@@ -1056,8 +1056,6 @@ export class RenderGroupLifecycle {
     });
   }
 }
-let singleton: RenderGroupLifecycle | undefined;
 export function getRenderGroupLifecycle(): RenderGroupLifecycle {
-  if (!singleton) singleton = new RenderGroupLifecycle();
-  return singleton;
+  return new RenderGroupLifecycle();
 }

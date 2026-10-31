@@ -16,8 +16,7 @@ function requiredPrisma() {
   return prisma;
 }
 
-let subscriptions: WebhookSubscriptions | null = null;
-const service = () => (subscriptions ??= createWebhookSubscriptions({ prisma: requiredPrisma() }));
+const service = () => createWebhookSubscriptions({ prisma: requiredPrisma() });
 
 /** Production management of Webhook Subscriptions on the shared database. */
 export const webhookSubscriptions = {
@@ -53,14 +52,12 @@ async function emailDisabledNotice(appBaseUrl: string | null, notice: WebhookDis
   return { sent: false, reason: result.reason ?? "email_not_sent" };
 }
 
-let processor: ReturnType<typeof createWebhookDeliveryProcessor> | null = null;
 
 /** The worker's production processor. `appBaseUrl` is where Settings lives. */
 export function getWebhookDeliveryProcessor(appBaseUrl: () => string | null) {
-  processor ??= createWebhookDeliveryProcessor({
+  return createWebhookDeliveryProcessor({
     prisma: requiredPrisma(),
     leaseOwner: `webhooks:${randomUUID()}`,
     notifyDisabled: (notice) => emailDisabledNotice(appBaseUrl(), notice),
   });
-  return processor;
 }

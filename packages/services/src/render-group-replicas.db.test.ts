@@ -1,3 +1,4 @@
+import { createDatabaseTestContext } from "@narriflow/db/testing";
 /**
  * Several worker replicas against one project on a disposable PostgreSQL
  * schema: real fenced group leases (`RenderGroupLifecycle`), the real parent
@@ -40,7 +41,8 @@ dbDescribe("Render group replicas (PostgreSQL)", () => {
 	let prisma: PrismaClient;
 	let pool: Pool;
 
-	beforeAll(() => {
+	const testDatabase = createDatabaseTestContext();
+	beforeAll(testDatabase.bind(() => {
 		if (!url || !schema?.startsWith("workflow_lifecycle_test_") || new URL(url).hostname !== "localhost")
 			throw new Error("Use db-gate.sh with a disposable workflow schema");
 		pool = new Pool({ connectionString: url, max: 20 });
@@ -49,15 +51,15 @@ dbDescribe("Render group replicas (PostgreSQL)", () => {
 			transactionOptions: { maxWait: 30_000, timeout: 30_000 },
 		});
 		// clipService reads through the process-wide client; point it at this schema.
-		(globalThis as { narriflowPrismaClient?: PrismaClient }).narriflowPrismaClient = prisma;
-	});
-	afterAll(async () => {
+		testDatabase.client = prisma;
+	}));
+	afterAll(testDatabase.bind(async () => {
 		await prisma?.workspace.deleteMany({ where: { owner: { clerkId: { startsWith: "replica-db-test:" } } } });
 		await prisma?.user.deleteMany({ where: { clerkId: { startsWith: "replica-db-test:" } } });
-		(globalThis as { narriflowPrismaClient?: PrismaClient }).narriflowPrismaClient = undefined;
+		testDatabase.client = undefined;
 		await prisma?.$disconnect();
 		await pool?.end();
-	});
+	}));
 
 	async function project(clipCount: number, aspects = 2) {
 		const user = await prisma.user.create({
@@ -224,7 +226,7 @@ dbDescribe("Render group replicas (PostgreSQL)", () => {
 		expect(new Set(outcomes.map((o) => o.clipRenderId)).size).toBe(variantIds.length);
 	}
 
-	test("controlled four-group throughput with one and two replicas", async () => {
+	test("controlled four-group throughput with one and two replicas", testDatabase.bind(async () => {
     for (const count of [1, 2]) {
       const samples: number[] = [];
       for (let sample = 0; sample < 3; sample++) {
@@ -247,9 +249,9 @@ dbDescribe("Render group replicas (PostgreSQL)", () => {
       const sorted = [...samples].sort((a,b) => a-b);
       console.warn(JSON.stringify({ level: "info", message: "render_throughput_summary", replicas: count, samples: 3, p50Ms: sorted[1], p95Ms: sorted[2] }));
     }
-  }, 60_000);
+  }), 60_000);
 
-	test("three replicas render the groups of one project concurrently, each exactly once", async () => {
+	test("three replicas render the groups of one project concurrently, each exactly once", testDatabase.bind(async () => {
 		const { run, variantIds } = await project(6);
 		const replicas = [replica("a"), replica("b"), replica("c")];
 		const { settled } = await coordinate(coordinatorLifecycle());
@@ -287,9 +289,9 @@ dbDescribe("Render group replicas (PostgreSQL)", () => {
 		expect(parent).toMatchObject({ status: "completed", requestedCount: 12, succeededCount: 12, failedCount: 0 });
 		expect(await prisma.workflowEvent.count({ where: { workflowRunId: run.id, notificationRequired: true } })).toBe(1);
 		console.warn(JSON.stringify({ message: "replica_run_elapsed", elapsedMs, perReplica: replicas.map((r) => r.rendered.length) }));
-	}, 60_000);
+	}), 60_000);
 
-	test("mixed outcomes: a retryable sibling is retried alone; a permanent failure ends the parent partial", async () => {
+	test("mixed outcomes: a retryable sibling is retried alone; a permanent failure ends the parent partial", testDatabase.bind(async () => {
 		const { run, variantIds } = await project(3);
 		const [retryVariant, , , permanentVariant] = variantIds;
 		const replicas = [replica("a"), replica("b")];
@@ -329,9 +331,9 @@ dbDescribe("Render group replicas (PostgreSQL)", () => {
 		const group = await retryGroup();
 		expect(group).toMatchObject({ status: "completed", chargedAttemptCount: 2 });
 		expect(await prisma.workflowEvent.count({ where: { workflowRunId: run.id, notificationRequired: true } })).toBe(1);
-	}, 60_000);
+	}), 60_000);
 
-	test("a replica that dies mid-group is reclaimed by another; only the unfinished member renders again", async () => {
+	test("a replica that dies mid-group is reclaimed by another; only the unfinished member renders again", testDatabase.bind(async () => {
 		const { run, variantIds } = await project(2);
 		const dead = replica("dead", { leaseDurationMs: 400 });
 		dead.heartbeatIntervalMs = 3_600_000;
@@ -389,9 +391,9 @@ dbDescribe("Render group replicas (PostgreSQL)", () => {
 		).resolves.toBe(false);
 		dead.stop.abort();
 		expect(run.id).toBeTruthy();
-	}, 60_000);
+	}), 60_000);
 
-	test("shutdown drain releases the group without charging it; completed members stay", async () => {
+	test("shutdown drain releases the group without charging it; completed members stay", testDatabase.bind(async () => {
 		const { variantIds } = await project(1);
 		const draining = replica("draining", { renderMs: 400 });
 		const successor = replica("successor", { releaseGraceMs: 50 });
@@ -423,9 +425,9 @@ dbDescribe("Render group replicas (PostgreSQL)", () => {
 		expect(outcome).toMatchObject({ status: "completed", requested: 2, succeeded: 2 });
 		expect(successor.rendered).toEqual(variantIds.filter((id) => id !== draining.rendered[0]));
 		await expectEachVariantCompletedOnce(variantIds);
-	}, 60_000);
+	}), 60_000);
 
-	test("a dead coordinator is replaced while healthy replicas keep their group leases", async () => {
+	test("a dead coordinator is replaced while healthy replicas keep their group leases", testDatabase.bind(async () => {
 		const { run, variantIds } = await project(4);
 		const first = coordinatorLifecycle({ leaseDurationMs: 300 });
 		const attempt = (await first.claim("clip_rendering")) as ClaimedWorkflowAttempt & { stage: "clip_rendering" };
@@ -447,5 +449,5 @@ dbDescribe("Render group replicas (PostgreSQL)", () => {
 		// The group partition was admitted once; the replacement only waited.
 		expect(await prisma.renderGroup.count({ where: { workflowRunId: run.id } })).toBe(4);
 		expect(await prisma.workflowEvent.count({ where: { workflowRunId: run.id, notificationRequired: true } })).toBe(1);
-	}, 60_000);
+	}), 60_000);
 });

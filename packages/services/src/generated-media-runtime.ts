@@ -19,8 +19,6 @@ import { openAiImageProviderFromEnv } from "./openai-image-provider";
 import { analyticsService } from "./analytics.service";
 import { visualAssetService } from "./visual-asset.service";
 
-type GeneratedMediaModule = ReturnType<typeof createGeneratedMediaModule>;
-
 function boundedInteger(value: string | undefined, fallback: number, minimum: number, maximum: number) {
   const parsed = Number(value);
   return Number.isSafeInteger(parsed) && parsed >= minimum && parsed <= maximum ? parsed : fallback;
@@ -122,13 +120,10 @@ export function createProductionModule(environment: NodeJS.ProcessEnv = process.
 }
 
 export class GeneratedMediaService {
-  private module: GeneratedMediaModule | null = null;
-
   constructor(private readonly factory = createProductionModule) {}
 
   private runtime() {
-    this.module ??= this.factory();
-    return this.module;
+    return this.factory();
   }
 
   create(scope: BrandActorScope, input: CreateGeneratedImageInput) {

@@ -1,3 +1,4 @@
+import { createDatabaseTestContext } from "@narriflow/db/testing";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
@@ -25,21 +26,21 @@ dbDescribe("Brand Kit create receipts (PostgreSQL)", () => {
   let prisma: PrismaClient;
   let pool: Pool;
   let priorPrisma: PrismaClient | undefined;
-  const prismaGlobal = globalThis as unknown as { narriflowPrismaClient?: PrismaClient };
+  const prismaGlobal = createDatabaseTestContext();
 
-  beforeAll(() => {
+  beforeAll(prismaGlobal.bind(() => {
     if (!databaseUrl) throw new Error("Brand Profile test database is required");
     pool = new Pool({ connectionString: databaseUrl, max: 8 });
     prisma = new PrismaClient({ adapter: new PrismaPg(pool, databaseSchema ? { schema: databaseSchema } : undefined) });
-    priorPrisma = prismaGlobal.narriflowPrismaClient;
-    prismaGlobal.narriflowPrismaClient = prisma;
-  });
+    priorPrisma = prismaGlobal.client;
+    prismaGlobal.client = prisma;
+  }));
 
-  afterAll(async () => {
-    prismaGlobal.narriflowPrismaClient = priorPrisma;
+  afterAll(prismaGlobal.bind(async () => {
+    prismaGlobal.client = priorPrisma;
     await prisma?.$disconnect();
     await pool?.end();
-  });
+  }));
 
   async function fixture(label: string, tier = "business", personal = false) {
     const suffix = randomUUID();
@@ -70,7 +71,7 @@ dbDescribe("Brand Kit create receipts (PostgreSQL)", () => {
 
   const mutation = (key: string, beforeAccept?: () => Promise<void>) => ({ clientIdempotencyKey: key, beforeAccept });
 
-  test("a profile create replays under its key and never makes a second profile", async () => {
+  test("a profile create replays under its key and never makes a second profile", prismaGlobal.bind(async () => {
     const f = await fixture("profile-replay");
     const input = { name: "Acme", slug: "acme" };
     const first = await brandProfileService.create(f.scope, input, mutation("profile-key-1"));
@@ -83,9 +84,9 @@ dbDescribe("Brand Kit create receipts (PostgreSQL)", () => {
     expect(JSON.stringify(receipt.result)).not.toContain("X-Amz");
     expect(receipt.resourceType).toBe("brand_profile");
     expect(receipt.actorUserId).toBe(f.user.id);
-  });
+  }));
 
-  test("the same key with other input conflicts; a new key is new work", async () => {
+  test("the same key with other input conflicts; a new key is new work", prismaGlobal.bind(async () => {
     const f = await fixture("profile-conflict");
     await brandProfileService.create(f.scope, { name: "One", slug: "one" }, mutation("key-a"));
     await expect(brandProfileService.create(f.scope, { name: "Other", slug: "other" }, mutation("key-a")))
@@ -93,9 +94,9 @@ dbDescribe("Brand Kit create receipts (PostgreSQL)", () => {
     const second = await brandProfileService.create(f.scope, { name: "Two", slug: "two" }, mutation("key-b"));
     expect(second.name).toBe("Two");
     expect(await prisma.brandProfile.count({ where: { workspaceId: f.workspace.id } })).toBe(2);
-  });
+  }));
 
-  test("simultaneous requests with one key accept once", async () => {
+  test("simultaneous requests with one key accept once", prismaGlobal.bind(async () => {
     const f = await fixture("profile-race");
     const results = await Promise.all(
       Array.from({ length: 5 }, () => brandProfileService.create(f.scope, { name: "Race", slug: "race" }, mutation("race-key"))),
@@ -103,9 +104,9 @@ dbDescribe("Brand Kit create receipts (PostgreSQL)", () => {
     expect(new Set(results.map((profile) => profile.id)).size).toBe(1);
     expect(await prisma.brandProfile.count({ where: { workspaceId: f.workspace.id } })).toBe(1);
     expect(await prisma.operationReceipt.count({ where: { workspaceId: f.workspace.id, command: "create_brand_profile" } })).toBe(1);
-  });
+  }));
 
-  test("the limiter outcome is enforced for new work and skipped on replay", async () => {
+  test("the limiter outcome is enforced for new work and skipped on replay", prismaGlobal.bind(async () => {
     const f = await fixture("profile-limiter");
     const refuse = mock429();
     await expect(brandProfileService.create(f.scope, { name: "Held", slug: "held" }, mutation("limited", refuse)))
@@ -115,17 +116,17 @@ dbDescribe("Brand Kit create receipts (PostgreSQL)", () => {
     const accepted = await brandProfileService.create(f.scope, { name: "Held", slug: "held" }, mutation("limited"));
     const replay = await brandProfileService.create(f.scope, { name: "Held", slug: "held" }, mutation("limited", refuse));
     expect(replay.id).toBe(accepted.id);
-  });
+  }));
 
-  test("a replay is authorized against current membership", async () => {
+  test("a replay is authorized against current membership", prismaGlobal.bind(async () => {
     const f = await fixture("profile-removed");
     await brandProfileService.create(f.scope, { name: "Mine", slug: "mine" }, mutation("removed-key"));
     await prisma.workspaceMember.deleteMany({ where: { workspaceId: f.workspace.id, userId: f.user.id } });
     await expect(brandProfileService.create(f.scope, { name: "Mine", slug: "mine" }, mutation("removed-key")))
       .rejects.toMatchObject({ code: "workspace_access_denied" });
-  });
+  }));
 
-  test("a plan limit refusal leaves no receipt, so the key can be used once there is room", async () => {
+  test("a plan limit refusal leaves no receipt, so the key can be used once there is room", prismaGlobal.bind(async () => {
     const f = await fixture("profile-limit", "pro", true);
     for (let index = 0; index < 4; index += 1) {
       await prisma.brandProfile.create({ data: { userId: f.user.id, createdByUserId: f.user.id, updatedByUserId: f.user.id, name: `P${index}`, slug: `p${index}`, visualIdentity: {}, voiceGuidance: {} } });
@@ -133,9 +134,9 @@ dbDescribe("Brand Kit create receipts (PostgreSQL)", () => {
     await expect(brandProfileService.create(f.scope, { name: "Fifth", slug: "fifth" }, mutation("full")))
       .rejects.toMatchObject({ code: "plan_limit_reached" });
     expect(await prisma.operationReceipt.count({ where: { workspaceId: f.workspace.id, command: "create_brand_profile" } })).toBe(0);
-  });
+  }));
 
-  test("a style create and a duplicate replay with the style itself", async () => {
+  test("a style create and a duplicate replay with the style itself", prismaGlobal.bind(async () => {
     const f = await fixture("styles");
     const scope = { actorUserId: f.user.id, workspaceId: f.workspace.id };
     const input = { name: "Mine", captionPreset: DEFAULT_CAPTION_PRESET };
@@ -152,9 +153,9 @@ dbDescribe("Brand Kit create receipts (PostgreSQL)", () => {
     // Create and duplicate keep separate receipts even for the same caller key.
     const sameKey = await brandTemplateService.duplicate(scope, first.id, "Third", mutation("style-1"));
     expect(sameKey.id).not.toBe(first.id);
-  });
+  }));
 
-  test("simultaneous style creates under one key accept once", async () => {
+  test("simultaneous style creates under one key accept once", prismaGlobal.bind(async () => {
     const f = await fixture("style-race");
     const scope = { actorUserId: f.user.id, workspaceId: f.workspace.id };
     const input = { name: "Raced", captionPreset: DEFAULT_CAPTION_PRESET };
@@ -163,9 +164,9 @@ dbDescribe("Brand Kit create receipts (PostgreSQL)", () => {
     );
     expect(new Set(results.map((style) => style.id)).size).toBe(1);
     expect(await prisma.brandTemplate.count({ where: { workspaceId: f.workspace.id, isBuiltIn: false } })).toBe(1);
-  });
+  }));
 
-  test("a scene create replays and its default pointer moves once", async () => {
+  test("a scene create replays and its default pointer moves once", prismaGlobal.bind(async () => {
     const f = await fixture("scenes");
     const profile = await brandProfileService.create(f.scope, { name: "Scenes", slug: "scenes" }, mutation("scene-profile"));
     const input = {
@@ -187,9 +188,9 @@ dbDescribe("Brand Kit create receipts (PostgreSQL)", () => {
     expect((await prisma.brandProfile.findUniqueOrThrow({ where: { id: profile.id } })).revision).toBe(profile.revision + 1);
     await expect(sceneTemplateService.create(f.scope, profile.id, { ...input, name: "Other" }, mutation("scene-1")))
       .rejects.toMatchObject({ code: "operation_idempotency_conflict" });
-  });
+  }));
 
-  test("simultaneous scene creates under one key accept once", async () => {
+  test("simultaneous scene creates under one key accept once", prismaGlobal.bind(async () => {
     const f = await fixture("scene-race");
     const profile = await brandProfileService.create(f.scope, { name: "Raced", slug: "raced" }, mutation("race-profile"));
     const input = {
@@ -207,7 +208,7 @@ dbDescribe("Brand Kit create receipts (PostgreSQL)", () => {
     );
     expect(new Set(results.map((scene) => scene.id)).size).toBe(1);
     expect(await prisma.sceneTemplate.count({ where: { profileId: profile.id } })).toBe(1);
-  });
+  }));
 
   // Sol wave-B B02: a replay answers from the receipt, never from mutable state.
   describe("replays ignore later changes to the source, the plan and the profile", () => {
@@ -225,7 +226,7 @@ dbDescribe("Brand Kit create receipts (PostgreSQL)", () => {
     const downgrade = (f: Awaited<ReturnType<typeof fixture>>) =>
       prisma.workspace.update({ where: { id: f.workspace.id }, data: { pricingTier: "free" } });
 
-    test("a duplicate replays after its source was deleted", async () => {
+    test("a duplicate replays after its source was deleted", prismaGlobal.bind(async () => {
       const f = await fixture("dup-deleted");
       const scope = { actorUserId: f.user.id, workspaceId: f.workspace.id };
       const source = await brandTemplateService.create(scope, { name: "Source", captionPreset: DEFAULT_CAPTION_PRESET } as never, mutation("src"));
@@ -234,9 +235,9 @@ dbDescribe("Brand Kit create receipts (PostgreSQL)", () => {
       expect(await brandTemplateService.duplicate(scope, source.id, "Copy", mutation("dup-del"))).toEqual(copy);
       await expect(brandTemplateService.duplicate(scope, source.id, "Other", mutation("dup-del")))
         .rejects.toMatchObject({ code: "operation_idempotency_conflict" });
-    });
+    }));
 
-    test("style create and duplicate replay after a downgrade; a changed body still conflicts", async () => {
+    test("style create and duplicate replay after a downgrade; a changed body still conflicts", prismaGlobal.bind(async () => {
       const f = await fixture("style-downgrade");
       const scope = { actorUserId: f.user.id, workspaceId: f.workspace.id };
       const input = { name: "Mine", captionPreset: DEFAULT_CAPTION_PRESET };
@@ -250,9 +251,9 @@ dbDescribe("Brand Kit create receipts (PostgreSQL)", () => {
       // New work is still refused on the downgraded plan.
       await expect(brandTemplateService.create(scope, input as never, mutation("style-new")))
         .rejects.toMatchObject({ code: "plan_feature_required" });
-    });
+    }));
 
-    test("a profile create replays as created after a downgrade, a later edit and a deletion", async () => {
+    test("a profile create replays as created after a downgrade, a later edit and a deletion", prismaGlobal.bind(async () => {
       const f = await fixture("profile-downgrade");
       const input = { name: "Acme", slug: "acme" };
       const first = await brandProfileService.create(f.scope, input, mutation("profile-dg"));
@@ -267,9 +268,9 @@ dbDescribe("Brand Kit create receipts (PostgreSQL)", () => {
       expect(await brandProfileService.create(downgraded, input, mutation("profile-dg"))).toEqual(first);
       await expect(brandProfileService.create(downgraded, { name: "New", slug: "new" }, mutation("profile-new")))
         .rejects.toMatchObject({ code: "plan_feature_required" });
-    });
+    }));
 
-    test("a scene create replays after a downgrade", async () => {
+    test("a scene create replays after a downgrade", prismaGlobal.bind(async () => {
       const f = await fixture("scene-downgrade");
       const profile = await brandProfileService.create(f.scope, { name: "Scenes", slug: "scenes" }, mutation("scene-dg-profile"));
       const first = await sceneTemplateService.create(f.scope, profile.id, sceneInput, mutation("scene-dg"));
@@ -279,10 +280,10 @@ dbDescribe("Brand Kit create receipts (PostgreSQL)", () => {
       expect(replay.id).toBe(first.id);
       await expect(sceneTemplateService.create(downgraded, profile.id, { ...sceneInput, name: "Other" }, mutation("scene-dg")))
         .rejects.toMatchObject({ code: "operation_idempotency_conflict" });
-    });
+    }));
   });
 
-  test("listAll returns every live profile past the ordinary 24-row page", async () => {
+  test("listAll returns every live profile past the ordinary 24-row page", prismaGlobal.bind(async () => {
     const f = await fixture("list-all");
     await prisma.brandProfile.createMany({
       data: Array.from({ length: 30 }, (_, index) => ({
@@ -299,7 +300,7 @@ dbDescribe("Brand Kit create receipts (PostgreSQL)", () => {
     const all = await brandProfileService.listAll(f.scope);
     expect(all).toHaveLength(30);
     expect(new Set(all.map((profile) => profile.id)).size).toBe(30);
-  });
+  }));
 });
 
 function mock429() {
