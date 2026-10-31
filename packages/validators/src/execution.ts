@@ -65,6 +65,15 @@ export const providerAttemptReferenceSchema = z.strictObject({
 export type ProviderAttemptReference = z.infer<typeof providerAttemptReferenceSchema>;
 export type ExecutionDispatchReference = z.infer<typeof executionDispatchReferenceSchema>;
 
+/** Optional native language-probe input. No source URL or captions enter it. */
+export const sourceLanguageProbeInputSchema = z.strictObject({
+  sourceAudioId: z.string().uuid(), sourceBindingHash: sha256,
+  workflowRunId: z.string().uuid(), generation,
+  windows: z.array(z.strictObject({ startSec: z.number().finite().nonnegative(), durationSec: z.literal(20) })).length(3),
+  toolchainFingerprint: sha256, deadlineAt: z.iso.datetime(),
+});
+export type SourceLanguageProbeInput = z.infer<typeof sourceLanguageProbeInputSchema>;
+
 /** Parsing a fence never grants authority. Services must compare it under locks. */
 export const executorFenceSchema = z.strictObject({
   reference: executionDispatchReferenceSchema,

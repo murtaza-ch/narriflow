@@ -9,7 +9,7 @@ const key = { workflowRunId: reference.subject.id, attemptId: "05bfd4bb-8ce2-455
 const now = new Date("2026-10-31T00:00:00Z"), deadline = new Date("2026-10-31T00:10:00Z"), hold = new Date("2026-10-31T04:00:00Z");
 const intent = { kind: "begun" as const, reference: key, serverTime: now, submissionDeadlineAt: deadline, providerAudioGrantExpiresAt: hold, dispatchIds: [reference.dispatchId] };
 
-function harness(input: { unknown?: boolean; deliveryFailure?: boolean; explicitLanguage?: string; skip?: boolean } = {}) {
+function harness(input: { unknown?: boolean; deliveryFailure?: boolean; explicitLanguage?: string; skip?: boolean; nativeWait?: boolean } = {}) {
   let admissions = 0, submissions = 0, grants = 0, probes = 0;
   const deliveries: string[][] = [], failures: unknown[] = [];
   const waiting = { kind: "waiting" as const, attempt: { workflowRunId: key.workflowRunId, projectId: crypto.randomUUID(), attemptId: key.attemptId, attemptCount: 1, stage: "stt" as const },
@@ -33,10 +33,11 @@ function harness(input: { unknown?: boolean; deliveryFailure?: boolean; explicit
       result: async () => { throw new Error("No GET expected"); } }),
     sourceAudioGrant: async (_key, expiresAt) => { grants++; expect(expiresAt).toEqual(hold); return { sourceAudioId: key.sourceAudioId!, url: "https://private.example/audio", expiresAt: hold }; },
     probeLanguage: async () => { probes++; return { pinned: "ur", reason: "pinned" }; },
+    prepareProbe: input.nativeWait ? async () => ({ kind: "wait", dueAt: deadline, dispatchIds: intent.dispatchIds }) : undefined,
     finalize: async () => { throw new Error("No finalization expected"); },
     deliverWakes: async ids => { deliveries.push([...ids]); if (input.deliveryFailure) throw new Error("scheduler_unavailable"); },
   });
-  return { control, deliveries, failures, calls: () => ({ submissions, grants, probes }) };
+  return { control, deliveries, failures, admissions: () => admissions, calls: () => ({ submissions, grants, probes }) };
 }
 
 test("fresh STT command confirms intent before one POST and a repeated invocation cannot POST again", async () => {
@@ -69,6 +70,14 @@ test("a completed supplied or empty plan never needs provider configuration or s
   const h = harness({ skip: true });
   expect(await h.control.run(reference)).toEqual({ kind: "complete", disposition: "terminal" });
   expect(h.calls()).toEqual({ submissions: 0, grants: 0, probes: 0 });
+});
+
+test("native probe preparation parks before creating a provider intent or using provider capacity", async () => {
+  const h = harness({ nativeWait: true });
+  expect(await h.control.run(reference)).toEqual({ kind: "wait", dueAt: deadline });
+  expect(h.admissions()).toBe(0);
+  expect(h.calls()).toEqual({ submissions: 0, grants: 0, probes: 0 });
+  expect(h.deliveries).toEqual([intent.dispatchIds]);
 });
 
 test("a GET that crosses the provider deadline expires the domain instead of completing its driver with live waiting work", async () => {

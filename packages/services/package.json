@@ -358,6 +358,10 @@
       "types": "./src/transcription-control-runtime.ts",
       "default": "./src/transcription-control-runtime.ts"
     },
+    "./transcription-probe": {
+      "types": "./src/transcription-probe.ts",
+      "default": "./src/transcription-probe.ts"
+    },
     "./transcription-provider": {
       "types": "./src/transcription-provider.ts",
       "default": "./src/transcription-provider.ts"

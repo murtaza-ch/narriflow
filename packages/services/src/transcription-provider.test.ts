@@ -65,3 +65,11 @@ test("the optional language probe posts only bounded native WAV bytes and pins w
   expect(await provider.probe({ wav: new Uint8Array(2_000_001) })).toMatchObject({ pinned: null, reason: "probe_invalid" });
   expect(requests).toBe(1);
 });
+
+test("provider probe throttling keeps Auto without retrying or failing the full transcription", async () => {
+  let requests = 0;
+  const wav = new Uint8Array(48); wav.set(new TextEncoder().encode("RIFF")); wav.set(new TextEncoder().encode("WAVE"), 8);
+  const provider = createScribeProvider({ apiKey: "secret", webhookId: "webhook", fetch: async () => { requests++; return Response.json({}, { status: 429 }); } });
+  expect(await provider.probe({ wav })).toMatchObject({ pinned: null, reason: "provider_http_429" });
+  expect(requests).toBe(1);
+});

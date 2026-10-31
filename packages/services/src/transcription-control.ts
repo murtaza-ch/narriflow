@@ -5,6 +5,7 @@ import type { createScribeFinalizer } from "./scribe-transcript";
 import { ScribeSubmissionUnconfirmed, type createScribeProvider } from "./transcription-provider";
 import { workflowFailureFromUnknown } from "./workflow-attempt-contract";
 import type { ProviderControlState, ProviderDeadlineResult, WorkflowRunLifecycle } from "./workflow-run-lifecycle";
+import type { TranscriptionProbePreparation } from "./transcription-probe";
 
 export type TranscriptionControlResult =
   | { kind: "complete"; disposition: "terminal" | "superseded" }
@@ -19,6 +20,7 @@ export interface TranscriptionControlPorts {
   sourceAudioGrant(reference: ProviderAttemptReference, expiresAt: Date): Promise<{ sourceAudioId: string; url: string; expiresAt: Date }>;
   /** Only a verified same-owner optional native probe may reach this port. */
   probeLanguage?(reference: ProviderAttemptReference, signal?: AbortSignal): Promise<{ pinned: SourceLanguageCodeValue | null; reason: string }>;
+  prepareProbe?(reference: ExecutionDispatchReference): Promise<TranscriptionProbePreparation>;
   finalize: ReturnType<typeof createScribeFinalizer>;
   deliverWakes(ids: readonly string[]): Promise<void>;
 }
@@ -68,6 +70,11 @@ export function createTranscriptionControl(ports: TranscriptionControlPorts) {
   return {
     async run(reference: ExecutionDispatchReference, options: { signal?: AbortSignal } = {}): Promise<TranscriptionControlResult> {
       options.signal?.throwIfAborted();
+      const probe = await ports.prepareProbe?.(reference);
+      if (probe) {
+        await confirm(probe);
+        if (probe.kind === "wait") return { kind: "wait", dueAt: probe.dueAt };
+      }
       const admitted = await ports.admission.admit(reference, { owner: crypto.randomUUID() });
       await confirm(admitted);
       if (admitted.kind === "completed") return { kind: "complete", disposition: "terminal" };
