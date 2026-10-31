@@ -1,3 +1,4 @@
+import {appendPublicationObservationRestore} from "./publication-observations";
 import {createHash} from "node:crypto";
 import type {Prisma,PrismaClient} from "@prisma/client";
 import type {ExecutionDispatchReference} from "@narriflow/validators/execution";
@@ -108,6 +109,7 @@ export async function restorePublication(tx:Tx,postId:string,epoch:number){
  const clock=await now(tx);
  for(const attempt of post.publicationAttempts){if(!attempt.currentClaimId)continue;await tx.publicationClaim.updateMany({where:{id:attempt.currentClaimId},data:{releasedAt:clock,accountSlotKey:null}});await tx.socialPublicationAttempt.update({where:{id:attempt.id},data:{currentClaimId:null}});}
  await tx.socialPost.update({where:{id:post.id},data:{deploymentEpoch:epoch,generation:{increment:1}}});
- if(!["preparing_video","scheduled","publishing","processing","reconciling"].includes(post.status))return [];
- return [await appendPublicationDispatch(tx,post.id,{wakeKind:"publication_restored"})];
+ const observation=await appendPublicationObservationRestore(tx,post.id);
+ if(!["preparing_video","scheduled","publishing","processing","reconciling"].includes(post.status))return [observation];
+ return [observation,await appendPublicationDispatch(tx,post.id,{wakeKind:"publication_restored"})];
 }

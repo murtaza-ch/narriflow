@@ -1,0 +1,14 @@
+{
+  "status": "integration checkpoint; ticket17 remains open for deletion and deployed provider failure matrix",
+  "runtime": "Cloudflare Maintenance commands with exact ledger and current epoch; provider HTTP outside SQL transactions",
+  "protocols": ["po1.y receipt due", "po1.yw receipt lease deadline", "po1.c capture due", "po1.cw capture lease deadline", "po1.t five-capture registration page", "po1.g exact Workspace nightly guidance", "po1.r bounded Post observation restore cursor"],
+  "authority": ["fresh account and live DB lease after OAuth, before provider GET", "expired owner cannot settle", "fixed known provider origins with redirect:error", "response body limited to64KiB", "watchdog registration before any provider request", "same durable rows and budgets; no replacement job table"],
+  "gates": {
+    "freshPostgres17": {"tests":70,"assertions":393,"log":"/tmp/narriflow-publication-observations-restore-db.log"},
+    "pureProviderAndGuidance": {"tests":56,"assertions":2265,"log":"/tmp/narriflow-publication-observations-pure.log"},
+    "servicesTypecheck":"passed",
+    "scopedBiome":"passed"
+  },
+  "verified": ["lost retry ACK followed by old-reference replay registers committed next due without another GET", "disconnect during OAuth lookup causes zero provider status HTTP", "late response cannot overwrite newer owner/public status", "verified publication atomically freezes facts and five captures", "one durable page registers five wakes and replays its exact wake list", "known daily quota preserves failure budget and waits to reset", "capture terminal replay makes no second provider request", "nightly guidance and its next wake commit once after ACK loss"],
+  "limits": ["targeted reads use one video per provider request; existing provider parser and failure matrix preserved", "old scan implementations still await deletion before the single cutover release", "no live social account POST was used for these fixtures"]
+}

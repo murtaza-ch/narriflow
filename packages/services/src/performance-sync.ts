@@ -14,15 +14,8 @@ import {
 	type PlatformCounts,
 } from "./performance-providers";
 
-/** Minutes after publication: about 1 hour, 24 hours, 3 days, 7 days, 28 days. Then it stops. */
-export const CAPTURE_OFFSETS_MINUTES = [60, 1_440, 4_320, 10_080, 40_320] as const;
-
-/**
- * "What worked" compares every video at the same age: the 7-day capture. A
- * younger video is waiting for it, so a day-old hit never sits beside a
- * month-old one.
- */
-export const COMPARISON_SLOT = CAPTURE_OFFSETS_MINUTES.indexOf(10_080);
+import {CAPTURE_OFFSETS_MINUTES} from "./performance-capture-contract";
+export {CAPTURE_OFFSETS_MINUTES,COMPARISON_SLOT} from "./performance-capture-contract";
 
 const SYNCED_PLATFORMS = (Object.keys(PERFORMANCE_BATCH_LIMITS) as PerformancePlatform[]).filter(
 	performanceSyncAvailable,

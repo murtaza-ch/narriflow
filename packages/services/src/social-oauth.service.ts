@@ -1,3 +1,4 @@
+import {fetchSocialProvider} from "./social-provider-http";
 import {readExecutionAdmission} from "./execution-admission";
 import { refreshSocialAccountToken,SocialTokenRefreshError } from "./social-token-refresh";
 import { readServiceEnvironment } from "./runtime-environment";
@@ -263,7 +264,7 @@ async function postForm(
 	headers?: Record<string, string>,
 ) {
 	return readSocialProviderJson(
-		await fetch(url, {
+		await fetchSocialProvider(url, {
 			signal: AbortSignal.timeout(15_000),
 			method: "POST",
 			headers: {
@@ -879,7 +880,7 @@ export class SocialOAuthService {
 		}
 
 		const userInfo = (await readSocialProviderJson(
-			await fetch(
+			await fetchSocialProvider(
 				"https://open.tiktokapis.com/v2/user/info/?fields=open_id,display_name,avatar_url",
 				{
 					headers: { Authorization: `Bearer ${accessToken}` },
@@ -955,7 +956,7 @@ export class SocialOAuthService {
 		}
 
 		const channelResponse = (await readSocialProviderJson(
-			await fetch(
+			await fetchSocialProvider(
 				"https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true",
 				{
 					headers: { Authorization: `Bearer ${accessToken}` },
@@ -1008,7 +1009,7 @@ export class SocialOAuthService {
 		redirectUri: string,
 	) {
 		const shortToken = (await readSocialProviderJson(
-			await fetch(
+			await fetchSocialProvider(
 				`https://graph.facebook.com/${META_GRAPH_VERSION}/oauth/access_token?` +
 					new URLSearchParams({
 						client_id: requireEnv("META_CLIENT_ID"),
@@ -1028,7 +1029,7 @@ export class SocialOAuthService {
 		}
 
 		const longToken = (await readSocialProviderJson(
-			await fetch(
+			await fetchSocialProvider(
 				`https://graph.facebook.com/${META_GRAPH_VERSION}/oauth/access_token?` +
 					new URLSearchParams({
 						grant_type: "fb_exchange_token",
@@ -1041,7 +1042,7 @@ export class SocialOAuthService {
 
 		const userAccessToken = String(longToken.access_token ?? shortAccessToken);
 		const pages = (await readSocialProviderJson(
-			await fetch(
+			await fetchSocialProvider(
 				`https://graph.facebook.com/${META_GRAPH_VERSION}/me/accounts?` +
 					new URLSearchParams({
 						fields:
@@ -1103,7 +1104,7 @@ export class SocialOAuthService {
 		selection: FacebookSelectionPayload | null;
 	}> {
 		const shortToken = (await readSocialProviderJson(
-			await fetch(
+			await fetchSocialProvider(
 				`https://graph.facebook.com/${META_GRAPH_VERSION}/oauth/access_token?${new URLSearchParams(
 					{
 						client_id: requireEnv("META_CLIENT_ID"),
@@ -1122,7 +1123,7 @@ export class SocialOAuthService {
 			);
 		}
 		const longToken = (await readSocialProviderJson(
-			await fetch(
+			await fetchSocialProvider(
 				`https://graph.facebook.com/${META_GRAPH_VERSION}/oauth/access_token?${new URLSearchParams(
 					{
 						grant_type: "fb_exchange_token",
@@ -1141,7 +1142,7 @@ export class SocialOAuthService {
 			);
 		}
 		const permissions = (await readSocialProviderJson(
-			await fetch(
+			await fetchSocialProvider(
 				`https://graph.facebook.com/${META_GRAPH_VERSION}/me/permissions?${new URLSearchParams({ access_token: userAccessToken })}`,
 			),
 		)) as { data?: Array<{ permission?: unknown; status?: unknown }> };
@@ -1157,7 +1158,7 @@ export class SocialOAuthService {
 			);
 		}
 		const pages = await readSocialProviderJson(
-			await fetch(
+			await fetchSocialProvider(
 				`https://graph.facebook.com/${META_GRAPH_VERSION}/me/accounts?${new URLSearchParams(
 					{
 						fields: "id,name,access_token,picture{url},tasks",
@@ -1232,7 +1233,7 @@ export class SocialOAuthService {
 		}
 
 		const profile = (await readSocialProviderJson(
-			await fetch("https://api.linkedin.com/v2/userinfo", {
+			await fetchSocialProvider("https://api.linkedin.com/v2/userinfo", {
 				headers: { Authorization: `Bearer ${accessToken}` },
 			}),
 		)) as {
@@ -1318,7 +1319,7 @@ export class SocialOAuthService {
 		}
 
 		const profile = (await readSocialProviderJson(
-			await fetch(
+			await fetchSocialProvider(
 				"https://api.x.com/2/users/me?user.fields=profile_image_url",
 				{
 					headers: { Authorization: `Bearer ${accessToken}` },

@@ -3,7 +3,9 @@ import { PrismaClient } from "@prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { assertExecutionDatabaseTestTarget } from "./execution-db-test-support";
 import { createMediaCleanupControl, queueMediaCleanupWithinTransaction } from "./media-cleanup-control";
-import { ExecutionRestoreService } from "./execution-restore";
+import { appendExecutionDispatch, readExecutionDispatch } from "./execution-dispatch";
+import { revokeRestoredAttemptsPage } from "./execution-restore-pages";
+import { ExecutionRestoreService, EXECUTION_RESTORE_PHASES } from "./execution-restore";
 import { ExecutionMaintenanceService, HOURLY_MAINTENANCE_PHASES } from "./execution-maintenance";
 
 const url = process.env.SERVERLESS_TEST_DATABASE_URL;
@@ -66,5 +68,42 @@ suite("Execution restore authority", () => {
     expect(deletes).toBe(0);
     expect((await database.mediaCleanupObligation.findUniqueOrThrow({ where: { id: intent.id } })).completedAt).toBeNull();
   });
+
+  test("bounded restore pages revoke old execution authority once and replay their committed cursor after ACK loss", async () => {
+    const before = await database.executionEpoch.findUniqueOrThrow({ where: { id: 1 } }), tokens: string[] = [];
+    for (const status of ["admitted", "running", "completed"]) {
+      const record = await database.$transaction(tx => appendExecutionDispatch(tx, { deploymentEpoch: before.epoch, generation: 1, kind: "modal_execution", subject: { kind: "ingest_job", id: crypto.randomUUID() }, inputHash: "a".repeat(64), dueAt: new Date(0) }));
+      const token = crypto.randomUUID(); tokens.push(token);
+      await database.executionAttempt.create({ data: { attemptToken: token, dispatchId: record.reference.dispatchId, deploymentEpoch: before.epoch, generation: 1, inputHash: record.reference.inputHash, functionName: "fetch_source", status,
+        createdAt: new Date(0), operationDeadlineAt: new Date(3), ...(status !== "admitted" ? { owner: crypto.randomUUID(), leaseExpiresAt: new Date(2), processStartedAt: new Date(1) } : {}), ...(status === "completed" ? { finishedAt: new Date(2) } : {}) } });
+    }
+    const activeBefore = await database.executionAttempt.count({ where: { deploymentEpoch: { lte: before.epoch }, status: { in: ["admitted", "running"] } } });
+    let loseAcknowledgement = false;
+    const registered: string[][] = [];
+    const restore = new ExecutionRestoreService({ database, limit: 1, register: async ids => { registered.push([...ids]); if (loseAcknowledgement) throw new Error("Restore page ACK lost"); },
+      phases: { ...Object.fromEntries(EXECUTION_RESTORE_PHASES.map(phase => [phase, async () => ({ processed: 0, next: null })])), attempts: revokeRestoredAttemptsPage } });
+    const begun = await restore.begin({ expectedEpoch: before.epoch, fenceAboveEpoch: before.epoch });
+    loseAcknowledgement = true;
+    await expect(restore.run(begun.reference)).rejects.toThrow("Restore page ACK lost");
+    expect(await database.executionAttempt.count({ where: { deploymentEpoch: { lte: before.epoch }, status: { in: ["admitted", "running"] } } })).toBe(activeBefore - 1);
+    loseAcknowledgement = false;
+    const replay = await restore.run(begun.reference);
+    expect(replay.dispatchIds).toEqual(registered[1]!);
+    expect(await database.executionAttempt.count({ where: { deploymentEpoch: { lte: before.epoch }, status: { in: ["admitted", "running"] } } })).toBe(activeBefore - 1);
+    expect(await database.executionInboxReceipt.findUnique({ where: { audience_deliveryId: { audience: "restore-page", deliveryId: begun.reference.dispatchId } } })).toMatchObject({ wakeDispatchIds: replay.dispatchIds });
+    let reference = (await readExecutionDispatch(database, replay.dispatchIds.at(-1)!))!.reference;
+    let completed = false;
+    for (let index = 0; index < activeBefore + 2; index++) {
+      const next = await restore.run(reference);
+      expect(next.processed).toBeLessThanOrEqual(1);
+      if (next.kind === "complete") { completed = true; break; }
+      reference = (await readExecutionDispatch(database, next.dispatchIds.at(-1)!))!.reference;
+    }
+    expect(completed).toBe(true);
+    expect(await database.executionAttempt.count({ where: { attemptToken: { in: tokens }, status: "superseded", revokedAt: { not: null } } })).toBe(2);
+    expect((await database.executionAttempt.findUniqueOrThrow({ where: { attemptToken: tokens[2]! } })).status).toBe("completed");
+    expect((await database.executionEpoch.findUniqueOrThrow({ where: { id: 1 } })).admissionOpen).toBe(false);
+    await expect(restore.run({ ...reference, inputHash: "0".repeat(64) })).rejects.toMatchObject({ code: "restore_reference_invalid" });
+  }, 60_000);
 
 });

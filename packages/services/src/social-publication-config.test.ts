@@ -8,10 +8,6 @@ import {
 } from "./social-publication-config";
 
 const valid = {
-  SOCIAL_PUBLISH_BATCH_SIZE: "20",
-  SOCIAL_PUBLISH_CONCURRENCY: "4",
-  SOCIAL_PUBLISH_LEASE_MS: "60000",
-  SOCIAL_PUBLISH_HEARTBEAT_MS: "15000",
   SOCIAL_PUBLISH_PROVIDER_DEADLINE_MS: "30000",
   SOCIAL_PUBLISH_PROVIDER_CALL_BUDGET: "12",
   SOCIAL_PUBLISH_MAX_ATTEMPTS: "4",
@@ -46,11 +42,7 @@ describe("Social Publication configuration", () => {
 
   test("parses finite bounded worker and receiver policy once", () => {
     expect(parseSocialPublicationConfig(valid)).toMatchObject({
-      worker: {
-        batchSize: 20,
-        concurrency: 4,
-        leaseMs: 60_000,
-        heartbeatMs: 15_000,
+      execution: {
         providerCallBudget: 12,
       },
       webhook: {
@@ -75,9 +67,6 @@ describe("Social Publication configuration", () => {
   });
 
   test.each([
-    ["non-finite concurrency", { SOCIAL_PUBLISH_CONCURRENCY: "Infinity" }],
-    ["zero batch", { SOCIAL_PUBLISH_BATCH_SIZE: "0" }],
-    ["heartbeat not below half the lease", { SOCIAL_PUBLISH_HEARTBEAT_MS: "30000" }],
     ["unbounded retry attempts", { SOCIAL_PUBLISH_MAX_ATTEMPTS: "1000" }],
     ["missing provider version", { META_GRAPH_VERSION: "" }],
     ["unsupported Meta provider version", { META_GRAPH_VERSION: "v25.0" }],

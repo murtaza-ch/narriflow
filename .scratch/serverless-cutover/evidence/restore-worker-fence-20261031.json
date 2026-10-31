@@ -1,0 +1,26 @@
+{
+  "status": "passed_targeted_tests_deployed_health_only",
+  "date": "2026-10-31",
+  "tests": 37,
+  "assertions": 146,
+  "contract": {
+    "health": "GET /api/health is static, no-store, and exposes the deployed version and open/closed/fenced admission state without configuration or SQL work.",
+    "closed": "Previously accepted signed continuations and provider callbacks retain their ordinary authentication.",
+    "fenced": "All HTTP except GET /api/health returns 503 before runtime/SQL construction; native Modal and local-fetch deliveries stay pending. Metadata Workflows remain available for restore."
+  },
+  "deployedObservation": {
+    "workerVersion": "5317e3c6-2bd8-4bea-bf5b-09dd610b2f36",
+    "admissionState": "closed",
+    "cacheControl": "no-store",
+    "placement": "remote-ORD"
+  },
+  "remaining": [
+    "Actual fenced restore/snapshot proof and all domain restore transformations.",
+    "Any scheduled handler must refuse new periodic work while fenced.",
+    "Placement affects fetch handlers only, not Workflow execution or RPC entrypoints."
+  ],
+  "sources": [
+    "https://developers.cloudflare.com/workers/configuration/placement/",
+    "https://developers.cloudflare.com/hyperdrive/concepts/how-hyperdrive-works/"
+  ]
+}

@@ -263,10 +263,10 @@ export function getPublicationExecution() {
 		});
 	return new PublicationExecution(database, {
 		config: {
-			operationDeadlineMs: config.worker.providerDeadlineMs,
-			providerCallBudget: config.worker.providerCallBudget,
-			processingDeadlineMs: config.worker.processingDeadlineMs,
-			reconciliationDeadlineMs: config.worker.reconciliationDeadlineMs,
+			operationDeadlineMs: config.execution.providerDeadlineMs,
+			providerCallBudget: config.execution.providerCallBudget,
+			processingDeadlineMs: config.execution.processingDeadlineMs,
+			reconciliationDeadlineMs: config.execution.reconciliationDeadlineMs,
 			retry: { ...config.retry, random: Math.random },
 		},
 		checkpointCipher: createPublicationCheckpointCipher(config.checkpointKey),
