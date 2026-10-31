@@ -1,0 +1,11 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "narriflow-local-restore-boundary-probe",
+  "main": "restore-boundary-probe.ts",
+  "compatibility_date": "2026-10-30",
+  "compatibility_flags": ["nodejs_compat", "disallow_importable_env"],
+  "workflows": [{ "name": "narriflow-local-restore-boundary", "binding": "MAINTENANCE", "class_name": "RestoreBoundaryGate" }],
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": []
+}

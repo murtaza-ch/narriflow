@@ -144,11 +144,11 @@ export class ExecutionRestoreService {
       return prepare ? { prepare, page: { ...page.facts, after: page.after, limit: this.limit } } : null;
     });
     const prepared = preparation ? await preparation.prepare(reference, preparation.page) : null;
-    const result = await this.options.database.$transaction(async tx => {
+    const completed = await this.options.database.$transaction(async tx => {
       const page = await this.currentPage(tx, reference);
-      if (!page) return { kind: "superseded" as const, processed: 0, dispatchIds: [] };
+      if (!page) return { result: { kind: "superseded" as const, processed: 0, dispatchIds: [] }, registerIds: [] };
       const { state, facts, phase, after, attestation } = page;
-      return executeExecutionPage(tx, reference, "restore-page", async () => {
+      const result = await executeExecutionPage(tx, reference, "restore-page", async () => {
         if (state.admissionOpen) throw new ExecutionRestoreError("restore_epoch_changed");
         for (let index = EXECUTION_RESTORE_PHASES.indexOf(phase); index < EXECUTION_RESTORE_PHASES.length; index++) {
           const current = EXECUTION_RESTORE_PHASES[index]!, handler = this.options.phases?.[current];
@@ -180,9 +180,22 @@ export class ExecutionRestoreService {
         }
         return { kind: "complete" as const, processed: 0, dispatchIds: [] };
       });
+      const registerIds:string[]=[];
+      for(const id of result.dispatchIds){
+        if(phase.startsWith("redispatch")){registerIds.push(id);continue;}
+        // The committed receipt must expose the deferred boundary to the
+        // operator. A metadata Workflow never owns its registration, including
+        // receipt replay after a closed Worker has been deployed.
+        const target=await readExecutionDispatch(tx,id);
+        if(!target)throw invalid();
+        const next=await this.currentPage(tx,target.reference);
+        if(!next)throw invalid();
+        if(!next.phase.startsWith("redispatch"))registerIds.push(id);
+      }
+      return {result,registerIds};
     });
-    if (result.dispatchIds.length) await this.options.register(result.dispatchIds);
-    return result;
+    if (completed.registerIds.length) await this.options.register(completed.registerIds);
+    return completed.result;
   }
 
 }

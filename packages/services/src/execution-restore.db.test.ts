@@ -4,12 +4,14 @@ import { restoreBillingPage, restoreLibraryPage } from "./execution-account-reco
 import { queueLibraryIndex } from "./library-index";
 import { queueBillingReconciliation } from "./billing-reconciliation";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { fileURLToPath } from "node:url";
 import { PrismaClient } from "@prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { assertExecutionDatabaseTestTarget } from "./execution-db-test-support";
 import { createMediaCleanupControl, queueMediaCleanupWithinTransaction } from "./media-cleanup-control";
 import { appendExecutionDispatch, readExecutionDispatch, createExecutionDispatch } from "./execution-dispatch";
 import { resumeExecutionRestoreDispatch, createWranglerRestoreCommands } from "./execution-restore-operator";
+import { withExecutionDispatches } from "./execution-dispatch-runtime";
 import { revokeRestoredAttemptsPage } from "./execution-restore-pages";
 import { ExecutionRestoreService, EXECUTION_RESTORE_PHASES } from "./execution-restore";
 import { ExecutionMaintenanceService, HOURLY_MAINTENANCE_PHASES } from "./execution-maintenance";
@@ -134,19 +136,43 @@ suite("Execution restore authority", () => {
     const dispatch=createExecutionDispatch({database,scheduler:commands.scheduler,options:{retryBaseMs:1,retryMaxMs:1}});
     const restore=new ExecutionRestoreService({database,register:async ids=>{for(const id of ids)if((await dispatch.deliver(id)).status!=="acknowledged")throw Error("boundary_registration_pending");},phases:Object.fromEntries(EXECUTION_RESTORE_PHASES.map(phase=>[phase,async()=>({processed:0,next:null})]))});
     const begun=await restore.begin(input);
-    await expect(restore.run(begun.reference)).rejects.toThrow("boundary_registration_pending");
+    const flushes:string[][]=[];
+    const boundary=await withExecutionDispatches(()=>restore.run(begun.reference),{database,deliver:async ids=>{flushes.push([...ids]);throw Error("fenced_metadata_must_not_flush_boundary");}});
+    expect(boundary.kind).toBe("continue");expect(flushes).toEqual([]);
     const metadata=await restore.inspect(begun.reference.dispatchId),boundaryId=metadata.receipt!.dispatchIds[0]!;
     expect(await restore.inspect(boundaryId)).toMatchObject({metadataReady:true,receipt:null});
     const resume=()=>resumeExecutionRestoreDispatch({dispatchId:boundaryId,restore,dispatch,commands,observeWorker:async ready=>{if(ready&&!closed)throw Error("restore_worker_mode_invalid");}});
-    const before=await dispatch.read(boundaryId);expect(before!.acknowledgedAt).toBeNull();expect(creates).toBe(1);
+    const before=await dispatch.read(boundaryId);expect(before!.acknowledgedAt).toBeNull();expect(before!.deliveryAttempts).toBe(0);expect(creates).toBe(1);
+    for(let replay=0;replay<3;replay++)expect(await restore.run(begun.reference)).toEqual(boundary);
+    expect(await dispatch.read(boundaryId)).toEqual(before);
     await expect(resume()).rejects.toThrow("restore_worker_mode_invalid");expect(creates).toBe(1);
     closed=true;
+    // An old metadata Workflow must remain harmless even after a closed
+    // operator becomes eligible to register the exact deferred reference.
+    expect(await restore.run(begun.reference)).toEqual(boundary);expect(await dispatch.read(boundaryId)).toEqual(before);
     expect(await resume()).toMatchObject({kind:"already_running",before:{status:"queued"},after:{status:"queued"}});
     expect(creates).toBe(2);expect((await dispatch.read(boundaryId))!.acknowledgedAt).not.toBeNull();
     expect(await restore.inspect(begun.reference.dispatchId)).toEqual(metadata);
     expect((await dispatch.read(boundaryId))!.reference).toEqual(before!.reference);
     expect((await database.executionEpoch.findUniqueOrThrow({where:{id:1}})).admissionOpen).toBe(false);
   });
+  test("a real fenced workerd metadata Workflow completes with an untouched redispatch boundary",async()=>{
+    const input=await capturedExecutionSnapshotFixture(database);
+    const restore=new ExecutionRestoreService({database,register:async()=>{}}),begun=await restore.begin(input);
+    const dispatch=createExecutionDispatch({database,scheduler:{async deliver(delivery){
+      const child=Bun.spawn(["node","--experimental-strip-types",fileURLToPath(new URL("../../../apps/api/scripts/run-restore-boundary-gates.ts",import.meta.url))],{
+        env:{...process.env,RESTORE_BOUNDARY_GATE_DELIVERY:JSON.stringify(delivery),WRANGLER_SEND_METRICS:"false"},stdin:"ignore",stdout:"pipe",stderr:"pipe",
+      });
+      const [out,error,exit]=await Promise.all([new Response(child.stdout).text(),new Response(child.stderr).text(),child.exited]);
+      if(exit!==0)throw Error(`Local restore workerd gate failed: ${error}`);
+      const proof=JSON.parse(out.trim().split("\n").at(-1)!);expect(proof.metadataWorkflowCompleted).toBe(true);return proof;
+    }}});
+    expect((await dispatch.deliver(begun.reference.dispatchId)).status).toBe("acknowledged");
+    const page=await restore.inspect(begun.reference.dispatchId),boundary=(await dispatch.read(page.receipt!.dispatchIds.at(-1)!))!;
+    expect(await restore.inspect(boundary.reference.dispatchId)).toMatchObject({metadataReady:true,receipt:null});
+    expect(boundary).toMatchObject({deliveryAttempts:0,acknowledgedAt:null,errorCode:null});
+    await new Promise(resolve=>setTimeout(resolve,1200));expect(await dispatch.read(boundary.reference.dispatchId)).toEqual(boundary);
+  },60000);
   test("bounded account recovery reuses billing identity and paid library progress without extending budgets", async () => {
     const [floor] = await database.$queryRaw<Array<{ at: Date }>>`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS at`;
     const user=await database.user.create({data:{clerkId:`restore-accounts-${crypto.randomUUID()}`}});
