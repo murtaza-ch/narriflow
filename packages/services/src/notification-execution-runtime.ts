@@ -1,3 +1,5 @@
+import {readGrantNotificationContext} from "./grant-notification-context";
+import {standingGrantPauseMessage} from "@narriflow/validators";
 import {createHash} from "node:crypto";
 import {getPrismaClient} from "@narriflow/db/client";
 import {notificationDeliveryPayloadSchema,notificationDeliveryFactsSchema,notificationDeliveryEnvelopeSchema} from "@narriflow/validators/notification-delivery";
@@ -18,6 +20,11 @@ async function currentMail(target:NotificationTarget){
  const environment=readServiceEnvironment();if(!environment.RESEND_API_KEY?.trim())return null;
  const origin=environment.WEB_ORIGIN;if(!origin)throw Error('notification_web_origin_unavailable');
  const from=environment.NARRIFLOW_EMAIL_FROM??'Narriflow <no-reply@narriflow.app>';
+ if(target.kind==='grant'){
+  const current=await database().$transaction(async tx=>{const at=(await tx.$queryRaw<Array<{now:Date}>>`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS now`)[0]!.now;return readGrantNotificationContext(tx,target.id,at);});if(!current)return null;
+  const email=await import('@narriflow/email/worker');const template=email.standingGrantPaused({ruleName:current.ruleName,destination:current.destination,reason:standingGrantPauseMessage(current.reason)??'The grant paused.',settingsLink:new URL('/settings/automation-grants',origin).toString()});
+  return{input:{...template,to:current.to,from,idempotencyKey:''},contextFingerprint:current.contextFingerprint};
+ }
  if(target.kind==='review'){
   const context=await createReviewNotificationStore().getContext(target.id);if(!context)return null;
   const payload=await buildReviewNotificationMail({to:context.recipient,kind:context.kind,projectTitle:context.projectTitle,roundTitle:context.roundTitle,
@@ -42,11 +49,11 @@ async function currentMail(target:NotificationTarget){
  * Encrypted bodies keep review tokens out of reference-only dispatch ledgers. */
 export async function prepareNotificationDelivery(target:NotificationTarget,previous:SealedNotification|null){
  const current=await currentMail(target);if(!current)return null;
- if(previous){const envelope=open(previous);if(envelope.contextFingerprint!==current.contextFingerprint)return null;return previous;}
+ if(previous){const envelope=open(previous);if(envelope.contextFingerprint!==current.contextFingerprint)return null;return {...previous,contextFingerprint:envelope.contextFingerprint};}
  const {idempotencyKey:_key,...input}=current.input;
  const envelope=notificationDeliveryEnvelopeSchema.parse({request:notificationDeliveryPayloadSchema.parse(input),contextFingerprint:current.contextFingerprint}),json=JSON.stringify(envelope);
  if(json.length>65536)throw Error('notification_payload_too_large');
- return{encrypted:encryptReviewValue(json,reviewDeliverySecret()),hash:digest(json)};
+ return{encrypted:encryptReviewValue(json,reviewDeliverySecret()),hash:digest(json),contextFingerprint:current.contextFingerprint};
 }
 export function getNotificationExecution(){
  return createNotificationExecution({database:database(),register:deliverExecutionDispatches,prepare:prepareNotificationDelivery,
