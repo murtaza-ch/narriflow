@@ -43,6 +43,7 @@
       "default": "./src/outbound-delivery.ts"
     },
     "./generated-image-execution": "./src/generated-image-execution.ts",
+    "./publication-execution": "./src/publication-execution.ts",
     "./clip-preparation": {
       "types": "./src/clip-preparation.ts",
       "default": "./src/clip-preparation.ts"

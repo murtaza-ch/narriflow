@@ -17,7 +17,7 @@ from threading import Event, Lock, Thread
 import time
 from typing import Any, Callable, Mapping, Protocol
 from urllib.parse import urlsplit
-from uuid import uuid4
+from uuid import uuid4, UUID
 
 from .signing import COMMAND_MAX_BYTES, sign_execution_request
 
@@ -123,13 +123,35 @@ def _disposition(value: object):
         'already_owned': {'leaseExpiresAt'}, 'busy': {'leaseExpiresAt'}, 'renewed': {'leaseExpiresAt'},
         'started': set(), 'committed': {'artifactId'}, 'progress_recorded': set(), 'released': {'dueAt'},
         'retry_due': {'dueAt'}, 'completed': set(), 'failed': {'failureCode'}, 'cancelled': set(),
-        'expired': set(), 'superseded': set(),
+        'expired': set(), 'superseded': set(), 'publication_recorded': {'result'},
     }
     if not isinstance(kind, str) or kind not in fields or set(value) != fields[kind] | {'disposition'}:
         raise ExecutionControlError('execution_response_invalid')
     for name in ('serverTime', 'leaseExpiresAt', 'operationDeadlineAt', 'dueAt'):
         if name in value and value[name] is not None:
             _instant(value[name])
+    if kind == 'publication_recorded':
+        result = value['result']
+        if not isinstance(result,dict):
+            raise ExecutionControlError('execution_response_invalid')
+        if result.get('kind') == 'recorded':
+            if set(result) != {'kind'}:
+                raise ExecutionControlError('execution_response_invalid')
+        elif result.get('kind') == 'settled':
+            required={'kind','outcome','attemptId','socialPostId'}
+            if (not required <= set(result) <= required | {'nextActionAt','nextAttemptId','code'} or
+                    result['outcome'] not in {'posted','inbox_delivered','failed','needs_attention','processing','reconciling','retry_scheduled','interrupted'}):
+                raise ExecutionControlError('execution_response_invalid')
+            try:
+                for name in ('attemptId','socialPostId','nextAttemptId'):
+                    if name in result and (not isinstance(result[name],str) or str(UUID(result[name])) != result[name]):raise ValueError()
+            except ValueError:
+                raise ExecutionControlError('execution_response_invalid') from None
+            if 'nextActionAt' in result:_instant(result['nextActionAt'])
+            if 'code' in result and (not isinstance(result['code'],str) or not re.fullmatch(r'[a-z][a-z0-9_]{0,99}',result['code'])):
+                raise ExecutionControlError('execution_response_invalid')
+        else:
+            raise ExecutionControlError('execution_response_invalid')
     if kind == 'acquired':
         if (not isinstance(value['fence'], dict) or _instant(value['leaseExpiresAt']) <= _instant(value['serverTime'])
                 or _instant(value['leaseExpiresAt']) > _instant(value['operationDeadlineAt'])):
@@ -283,7 +305,7 @@ class ExecutorSession:
             raise ExecutionControlError('execution_authority_lost')
 
     def command(self, action: str, **fields: Any) -> CommandResult:
-        if action not in {'read-disposition', 'commit-artifact', 'fail', 'release', 'progress'} or {'fence', 'action'} & fields.keys():
+        if action not in {'read-disposition', 'commit-artifact', 'fail', 'release', 'progress', 'publication-command'} or {'fence', 'action'} & fields.keys():
             raise ExecutionControlError('execution_command_invalid')
         # Auditing never restores permission and remains possible after local
         # cancellation or an uncertain acknowledgement. Mutations require it.

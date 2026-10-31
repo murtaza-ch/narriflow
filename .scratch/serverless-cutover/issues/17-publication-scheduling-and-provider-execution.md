@@ -4,7 +4,7 @@
 
 **Blocked by:** 05, 06, 09
 
-**Status:** ready-for-agent
+**Status:** in-progress
 
 **Spec:** [Serverless cutover](../spec.md)
 
@@ -13,4 +13,6 @@
 
 ## Evidence
 
-Pending implementation and verification.
+Revision-bound dispatch foundation is implemented on `codex/serverless-runtime`. SocialPost keeps a schedule revision separately from its physical execution generation. Cancellation, changed schedule/caption/account/grant identity and return to draft fence the prior revision. A targeted Workflow observation rereads the ledger, epoch, generation, due time and exact frozen export after sleep. It stops for terminal rows and honestly waits for export readiness. Fresh134-migration PostgreSQL tests cover future registration, cancellation while asleep, changed schedules and targeted export readiness (4 tests/15 assertions).
+
+Native publication commands, claim execution, checkpoint transport, receipt enrichment/performance schedules and deployed provider failure matrix are still being implemented. This ticket remains open.

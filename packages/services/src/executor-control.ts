@@ -225,6 +225,13 @@ export function createExecutorControl<TRef, TArtifact extends ExecutorArtifactCo
         }
         return record({ disposition: "committed", artifactId: prepared.artifactId }, now);
       }
+      if (command.action === "publication-command") {
+        if (reference.subject.kind !== "social_publication" || attempt.functionName !== "publication" || !attempt.processStartedAt || !options.domain.publicationCommandExecution) throw new ExecutorControlError("authority_lost");
+        const result = await options.domain.publicationCommandExecution(tx, locked.ref, context, command.command);
+        if (result.dispatchIds) track({dispatchIds:result.dispatchIds});
+        if (result.complete) await tx.executionAttempt.update({where:{attemptToken},data:{status:"completed",finishedAt:now}});
+        return record({disposition:"publication_recorded",result:result.reply},now);
+      }
       if (command.action === "progress") {
         if (!attempt.processStartedAt) throw new ExecutorControlError("authority_lost");
         track(await options.domain.progressExecution(tx, locked.ref, context, command));
