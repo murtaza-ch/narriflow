@@ -13,6 +13,7 @@ from narriflow_media.control import ControlResponse, ExecutionControlClient, Exe
 from narriflow_media.entrypoint import invoke_native
 from narriflow_media.artifacts import ArtifactCommitUnconfirmed
 from narriflow_media.multipart import CompletedObject
+from narriflow_media.fetch import SourceFetchFailure
 from narriflow_media.process import run_owned_process_async
 
 
@@ -102,3 +103,10 @@ class NativeEntrypointTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(ExecutionControlError, "execution_invocation_invalid"):
             await invoke_native(invocation, "asset_validation", client=client, operation=lambda *args: None, max_operation_seconds=600)
         self.assertEqual(calls, [])
+
+    async def test_provider_access_denial_keeps_its_typed_permanent_failure(self):
+        invocation, client, state, calls = self.fixture()
+        async def operation(*args): raise SourceFetchFailure("source_provider_access_denied", False)
+        await invoke_native(invocation, "asset_validation", client=client, operation=operation, max_operation_seconds=600)
+        failure = next(call for call in calls if call["action"] == "fail")
+        self.assertEqual((failure["failureCode"],failure["retryable"]),("source_provider_access_denied",False))

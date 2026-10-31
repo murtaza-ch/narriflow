@@ -82,6 +82,9 @@ class ScopedSourceSink:
         await self.artifacts.upload(output["artifactId"], artifact.path, content_type=_content_type(artifact.path, False),
             byte_length=manifest["byteLength"], sha256=manifest["sha256"], facts_builder=facts)
         self._published.add("source_audio")
+        await self.refresh_optional_probe()
+
+    async def refresh_optional_probe(self):
         self._replace(await self._loader(self.session))
         await self.prepare_optional_probe()
 
