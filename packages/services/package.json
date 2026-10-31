@@ -11,6 +11,8 @@
     "./clip-preparation-runtime": "./src/clip-preparation-runtime.ts",
     "./private-json-storage": "./src/private-json-storage.ts",
     "./execution-admission": "./src/execution-admission.ts",
+    "./media-cleanup-control": "./src/media-cleanup-control.ts",
+    "./media-cleanup-storage": "./src/media-cleanup-storage.ts",
     "./execution-maintenance": "./src/execution-maintenance.ts",
     "./execution-maintenance-pages": "./src/execution-maintenance-pages.ts",
     "./execution-object-cleanup": "./src/execution-object-cleanup.ts",

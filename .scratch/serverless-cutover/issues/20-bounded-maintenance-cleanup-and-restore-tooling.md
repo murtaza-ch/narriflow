@@ -54,3 +54,14 @@ destination for this small HTTP-only work, replacing lean Modal cleanup in ADR00
 and the loop inventory. Production exact-ID scheduling/deletion and remaining
 maintenance/restore adapters are still required. Do not scan storage, delete unknown
 completed objects, or infer that a lost commit left an orphan.
+
+The exact-ID cleanup controller now validates the current ledger tuple before
+choosing a trusted key, takes one 120s claim, and confirms a durable lease timer
+before HTTP. Live-owner replay confirms that same timer; stale delivery cannot
+reuse a rescheduled intent. A held object commits a future obligation. DELETE
+response loss retains the exact intent and key for bounded backoff. Six real
+PostgreSQL cases pass34 assertions. The Workers-safe fixed-origin adapter drains
+at most 8 exact-key multipart uploads per call before DELETE; a truncated inventory
+or unknown acknowledgement never completes cleanup. Two storage cases pass15
+assertions. Production hold resolution, assignment/retirement producers, maintenance
+phase mounting, daily adapters and full restore recovery remain open.
