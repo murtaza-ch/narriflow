@@ -30,7 +30,7 @@ import {
 } from "./media-cleanup";
 import { queueExportsFinishedByRun, queueFinishedGenerations } from "./operation-finished";
 import { flushWorkspaceEvents } from "./workspace-event";
-import { takeNotificationDispatchIds } from "./notification-dispatch";
+import { takeExecutionDispatchIds } from "./execution-dispatch-runtime";
 import { finalizeGenerationUsage, releaseFailedDubUsage } from "./generated-media-usage-ledger";
 import { appendWorkflowEvent, type WorkflowEventInput } from "./workflow-event-append";
 import { flushProjectProgressDrains, queueProjectProgressCatchup } from "./progress-outbox";
@@ -448,7 +448,7 @@ export class WorkflowRunLifecycle {
         const result = await this.prisma.$transaction(async (tx) => {
           const result = await operation(tx);
           await flushWorkspaceEvents(tx);
-          progressDispatchIds = [...await flushProjectProgressDrains(tx), ...takeNotificationDispatchIds(tx)];
+          progressDispatchIds = [...await flushProjectProgressDrains(tx), ...takeExecutionDispatchIds(tx)];
           return result;
         });
         if (progressDeliveryPort()) await deliverExecutionDispatches(progressDispatchIds);

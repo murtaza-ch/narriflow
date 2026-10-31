@@ -5,7 +5,7 @@ import {
 } from "@narriflow/validators/execution";
 import type { VerifiedExecutionRequest } from "./execution-signature";
 import { flushProjectProgressDrains } from "./progress-outbox";
-import { takeNotificationDispatchIds } from "./notification-dispatch";
+import { takeExecutionDispatchIds } from "./execution-dispatch-runtime";
 import { flushWorkspaceEvents } from "./workspace-event";
 import type { ExecutorArtifactCommit, ExecutorDomainControl, ExecutorMutationContext, ExecutorMutationResult, ExecutorExpiryResult } from "./executor-domain-control";
 
@@ -147,7 +147,7 @@ export function createExecutorControl<TRef, TArtifact extends ExecutorArtifactCo
         const disposition = executionDispositionSchema.parse(value);
         await flushWorkspaceEvents(tx);
         wakeDispatchIds.push(...await flushProjectProgressDrains(tx));
-        wakeDispatchIds.push(...takeNotificationDispatchIds(tx));
+        wakeDispatchIds.push(...takeExecutionDispatchIds(tx));
         const uniqueWakes = [...new Set(wakeDispatchIds)];
         if (uniqueWakes.length > 128) throw new ExecutorControlError("invalid_reference");
         await tx.executionInboxReceipt.create({ data: { audience: verified.metadata.audience, deliveryId: verified.metadata.deliveryId,
@@ -301,7 +301,7 @@ export function createExecutorControl<TRef, TArtifact extends ExecutorArtifactCo
       const record = async (outcome: ExecutorExpiryResult, now: Date) => {
         if (outcome.kind === "sleep") return { outcome, dispatchIds: [] };
         await flushWorkspaceEvents(tx);
-        const dispatchIds = [...new Set([...(outcome.dispatchIds ?? []), ...await flushProjectProgressDrains(tx), ...takeNotificationDispatchIds(tx)])];
+        const dispatchIds = [...new Set([...(outcome.dispatchIds ?? []), ...await flushProjectProgressDrains(tx), ...takeExecutionDispatchIds(tx)])];
         if (dispatchIds.length > 128) throw new ExecutorControlError("invalid_reference");
         await tx.executionInboxReceipt.create({ data: { ...receiptKey, requestHash, keyId: "internal-watchdog",
           disposition: { kind: outcome.kind }, wakeDispatchIds: dispatchIds, committedAt: now, expiresAt: new Date(now.getTime() + 7 * 24 * 60 * 60_000) } });

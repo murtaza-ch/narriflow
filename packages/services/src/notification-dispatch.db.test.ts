@@ -3,7 +3,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@prisma/client";
 import { assertExecutionDatabaseTestTarget } from "./execution-db-test-support";
 import { createCallbackCipher, prepareCallbackRegistration, receiptCallback, registerUploadCallback, resetCompletionCallbacks } from "./completion-callback";
-import { withNotificationDispatches } from "./notification-dispatch";
+import { withExecutionDispatches } from "./execution-dispatch-runtime";
 import { createWorkspaceNotificationDispatcher, isCurrentNotificationTarget } from "./notification-dispatch";
 import { flushWorkspaceEvents, queueWorkspaceEvent } from "./workspace-event";
 import { encodeOperationId } from "./operation-status";
@@ -42,10 +42,10 @@ suite("Notification producer registration", () => {
       delivered.push(...ids);
     } };
     const input = { workspaceId: f.workspace.id, sessionId: crypto.randomUUID(), registration: f.registration };
-    await withNotificationDispatches(() => db.$transaction(tx => registerUploadCallback(tx, input)), options);
+    await withExecutionDispatches(() => db.$transaction(tx => registerUploadCallback(tx, input)), options);
     expect(delivered).toHaveLength(1);
     expect((await db.executionDispatch.findUniqueOrThrow({ where: { id: delivered[0] } })).subjectKind).toBe("completion_callback");
-    await expect(withNotificationDispatches(() => db.$transaction(async tx => {
+    await expect(withExecutionDispatches(() => db.$transaction(async tx => {
       await registerUploadCallback(tx, { ...input, sessionId: crypto.randomUUID() });
       throw new Error("rollback");
     }), options)).rejects.toThrow("rollback");
@@ -64,7 +64,7 @@ suite("Notification producer registration", () => {
     await db.webhookSubscription.createMany({ data: Array.from({ length: 10 }, (_, index) => ({ workspaceId: f.workspace.id, ...f.registration, urlFingerprint: `subscription-${index}`, types: ["operation.finished"], lastDeliveredSeq: 0n })) });
     const confirmed: string[] = [];
     const options = { database: db, deliver: async (ids: readonly string[]) => { confirmed.push(...ids); } };
-    await withNotificationDispatches(() => db.$transaction(async tx => {
+    await withExecutionDispatches(() => db.$transaction(async tx => {
       for (let index = 0; index < 205; index++) queueWorkspaceEvent(tx, {
         workspaceId: f.workspace.id, projectId: null, type: "operation.finished", dedupeKey: `notification:${f.workspace.id}:${index}`,
         subject: { operation: { kind: "generation", id: encodeOperationId({ kind: "generation", id: operationId }) }, projectId: null, state: "completed" },
@@ -104,13 +104,13 @@ suite("Notification producer registration", () => {
     }, () => operation));
     const request = { identity: { ...actor, command: "submit_video" as const, clientIdempotencyKey: "initial" }, input: { video: "fixed" },
       authorize: async () => {}, callback, mutate: async () => { mutations++; return { resourceType: "workflow_run", resourceId: operation.id, value: { operationId: operation.id } }; } };
-    await expect(withNotificationDispatches(() => executor.execute(request), options)).rejects.toThrow("lost scheduler acknowledgement");
+    await expect(withExecutionDispatches(() => executor.execute(request), options)).rejects.toThrow("lost scheduler acknowledgement");
     loseAck = false;
-    expect((await withNotificationDispatches(() => executor.execute(request), options)).replayed).toBe(true);
+    expect((await withExecutionDispatches(() => executor.execute(request), options)).replayed).toBe(true);
     expect(attempted[1]).toEqual(attempted[0]);
     expect(mutations).toBe(1);
     const beforeConflict = attempted.length;
-    await expect(withNotificationDispatches(() => executor.execute({ ...request, input: { video: "changed" } }), options)).rejects.toMatchObject({ code: "operation_idempotency_conflict" });
+    await expect(withExecutionDispatches(() => executor.execute({ ...request, input: { video: "changed" } }), options)).rejects.toMatchObject({ code: "operation_idempotency_conflict" });
     expect(attempted).toHaveLength(beforeConflict);
     await db.completionCallback.updateMany({ where: { workspaceId: f.workspace.id }, data: { state: "delivered", attempts: 3, deliveredAt: new Date() } });
     const resetRequest = { identity: { ...actor, command: "redeliver_callback" as const, clientIdempotencyKey: "reset" }, input: { operation }, authorize: async () => {},
@@ -119,9 +119,9 @@ suite("Notification producer registration", () => {
         return { resourceType: "completion_callback", resourceId: operation.id, value: { callbacks: await resetCompletionCallbacks(tx, actor, operation, new Date(), context.receiptId) } };
       } };
     loseAck = true;
-    await expect(withNotificationDispatches(() => executor.execute(resetRequest), options)).rejects.toThrow("lost scheduler acknowledgement");
+    await expect(withExecutionDispatches(() => executor.execute(resetRequest), options)).rejects.toThrow("lost scheduler acknowledgement");
     loseAck = false;
-    expect((await withNotificationDispatches(() => executor.execute(resetRequest), options)).replayed).toBe(true);
+    expect((await withExecutionDispatches(() => executor.execute(resetRequest), options)).replayed).toBe(true);
     expect(attempted[3]).toEqual(attempted[2]);
     expect(attempted[2]).not.toEqual(attempted[0]);
     expect(mutations).toBe(2);
@@ -137,13 +137,13 @@ suite("Notification producer registration", () => {
     const actor = { workspaceId: f.workspace.id, actorUserId: f.workspace.ownerUserId };
     const confirmed: string[] = [];
     const options = { database: db, deliver: async (ids: readonly string[]) => { confirmed.push(...ids); } };
-    const sub = await withNotificationDispatches(() => service.create(actor, { url: new URL("https://receiver.example/webhook"), types: ["operation.finished"] }), options);
+    const sub = await withExecutionDispatches(() => service.create(actor, { url: new URL("https://receiver.example/webhook"), types: ["operation.finished"] }), options);
     expect(confirmed).toHaveLength(1);
     const original = (await readExecutionDispatch(db, confirmed[0]!))!;
     expect(await isCurrentNotificationTarget(db, original.reference)).toBe(true);
     expect(await isCurrentNotificationTarget(db, { ...original.reference, inputHash: "0".repeat(64) })).toBe(false);
     await db.webhookSubscription.update({ where: { id: sub.webhookId }, data: { status: "disabled", disabledReason: "delivery_failed", disabledAt: new Date() } });
-    const enabled = await withNotificationDispatches(() => service.enable(actor, sub.webhookId), options);
+    const enabled = await withExecutionDispatches(() => service.enable(actor, sub.webhookId), options);
     expect(enabled.status).toBe("active");
     expect(confirmed).toHaveLength(2);
     expect(confirmed[1]).not.toBe(confirmed[0]);
