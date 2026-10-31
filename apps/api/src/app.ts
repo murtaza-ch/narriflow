@@ -70,7 +70,7 @@ export function createApiApp(deps: ApiAppDependencies): Hono<ApiEnv> {
   app.use("*", requestLogger({ skipRoutes: ["/api/health", "/api/ready"] }));
   app.use("*", apiSecurityHeaders({ production: config.nodeEnv === "production" }));
   const refusalHeaders = firstPartyRefusalHeaders(config.corsAllowedOrigins);
-  app.use("*", drainGate({ isDraining: deps.health.isDraining, refusalHeaders }));
+  app.use("*", drainGate({ isDraining: deps.health.isDraining, isFenced: () => deps.health.admissionState?.() === "fenced", refusalHeaders }));
   app.use("*", limitRequestEnvelope(refusalHeaders));
   app.use("*", ingressCeiling());
   app.onError(apiErrorHandler);

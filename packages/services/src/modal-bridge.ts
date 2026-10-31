@@ -28,7 +28,7 @@ export function createModalBridgeClient(config: { origin: string; keyId: string;
       let response: Response;
       try {
         response = await transport(new URL(TARGET, origin), { method: "POST", headers: { "Content-Type": "application/json", "X-Execution-Signature": JSON.stringify(metadata) },
-          body, signal: AbortSignal.timeout(15_000), redirect: "error" });
+          body, signal: AbortSignal.timeout(15_000), redirect: "manual" });
       } catch { throw new ModalBridgeError("modal_bridge_unconfirmed"); }
       if (!response.ok) {
         await response.body?.cancel();

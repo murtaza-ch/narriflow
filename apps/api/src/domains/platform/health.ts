@@ -7,14 +7,15 @@ export interface HealthDependencies {
   /** Resolves when the database answers and all image migrations are applied. Rejection or timeout is "not ready". */
   checkDatabase(): Promise<void>;
   isDraining(): boolean;
+  admissionState?(): "open" | "closed" | "fenced";
   /** Upper bound for the database probe. */
   databaseTimeoutMs?: number;
   cacheMs?: number;
   now?: () => number;
 }
 
-export function healthResponse(version: string, requestId: string = crypto.randomUUID()): Response {
-  return Response.json({ ok: true, service: "narriflow-api", version }, { headers: { "X-Request-ID": requestId } });
+export function healthResponse(version: string, requestId: string = crypto.randomUUID(), admissionState: "open" | "closed" | "fenced" = "open"): Response {
+  return Response.json({ ok: true, service: "narriflow-api", version, admissionState }, { headers: { "X-Request-ID": requestId, "Cache-Control": "no-store" } });
 }
 
 const DEFAULT_DATABASE_TIMEOUT_MS = 2_000;
@@ -56,7 +57,7 @@ export function createHealthRoutes(dependencies: HealthDependencies) {
     return inFlight;
   };
   return createRouteApp(platformAdmission)
-    .get("/health", (c) => healthResponse(dependencies.version, c.get("requestId")))
+    .get("/health", (c) => healthResponse(dependencies.version, c.get("requestId"), dependencies.admissionState?.()))
     .get("/ready", async (c) => {
       if (dependencies.isDraining()) {
         return c.json({ ok: false, status: "draining" as const }, 503);

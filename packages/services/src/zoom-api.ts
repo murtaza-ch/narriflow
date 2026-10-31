@@ -14,7 +14,7 @@ export function createZoomApi(config: { clientId: string; clientSecret: string }
   const basic = `Basic ${Buffer.from(`${config.clientId}:${config.clientSecret}`).toString("base64")}`;
   async function request(url: string, init: RequestInit, oauth = false): Promise<unknown> {
     let response: Response;
-    try { response = await transport(url, { ...init, redirect: "error", signal: AbortSignal.timeout(15_000) }); }
+    try { response = await transport(url, { ...init, redirect: "manual", signal: AbortSignal.timeout(15_000) }); }
     catch { throw new ZoomError("zoom_api_unavailable"); }
     if (!response.ok) {
       await response.body?.cancel().catch(() => undefined);

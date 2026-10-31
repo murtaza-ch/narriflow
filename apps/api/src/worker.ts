@@ -24,9 +24,9 @@ export function createApiWorker(dependencies: ApiWorkerDependencies) {
     async fetch(request: Request, bindings: ApiWorkerBindings, context: ExecutionContext): Promise<Response> {
       const path = new URL(request.url).pathname;
       if (request.method === "GET" && path === "/api/health") {
-        return healthResponse(bindings.CF_VERSION_METADATA?.id ?? "dev");
+        return healthResponse(bindings.CF_VERSION_METADATA?.id ?? "dev", crypto.randomUUID(), bindings.ADMISSION_STATE);
       }
-      if (bindings.ADMISSION_STATE === "closed" && !continuesAcceptedWork(request.method,path)) return failureResponse({ code: "server_draining", category: "unavailable", status: 503,
+      if (bindings.ADMISSION_STATE === "fenced" || bindings.ADMISSION_STATE === "closed" && !continuesAcceptedWork(request.method,path)) return failureResponse({ code: "server_draining", category: "unavailable", status: 503,
         message: "The service is restarting. Try again shortly.", requestId: crypto.randomUUID(), retryAfterSeconds: 5 });
       const environment = workerServiceEnvironment(bindings);
       // MCP callbacks can continue after fetch returns an SSE Response. Capture

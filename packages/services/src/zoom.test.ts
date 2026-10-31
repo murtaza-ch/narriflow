@@ -3,6 +3,13 @@ import { createHmac } from "node:crypto";
 import { assertZoomDownloadUrl, createZoomTokenCipher, parseZoomNotification, selectZoomRecording, verifyZoomSignature, zoomRecordingIdentity, zoomRecordingPath, zoomValidationChallenge, ZOOM_SCOPES } from "./zoom";
 import { createZoomApi } from "./zoom-api";
 
+test("Zoom never follows a redirect carrying its provider credential",async()=>{
+  const modes:unknown[]=[];
+  const api=createZoomApi({clientId:"client",clientSecret:"secret"},async(_input,init)=>{modes.push(init?.redirect);return new Response(null,{status:302,headers:{Location:"https://other.example/"}});});
+  await expect(api.me("private-fixture-token")).rejects.toMatchObject({code:"zoom_recording_unavailable"});
+  expect(modes).toEqual(["manual"]);
+});
+
 describe("Zoom webhook contract", () => {
   // Message and plainToken follow https://developers.zoom.us/docs/api/webhooks/.
   // Fixed hashes were calculated independently with Python's hmac/sha256.

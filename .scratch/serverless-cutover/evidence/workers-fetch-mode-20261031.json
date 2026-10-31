@@ -1,0 +1,27 @@
+{
+  "date": "2026-10-31",
+  "scope": "Actual deployed Cloudflare Worker invokes the production Modal bridge client with a deliberately unknown public test key. Endpoint401 refusal must be reached; no real job may be authorized.",
+  "red": {
+    "passed": false,
+    "error": "modal_fetch_runtime_gate:modal_bridge_unconfirmed"
+  },
+  "green": {
+    "passed": true,
+    "endpointRefusedUnknownKey": true,
+    "nativeWorkStarted": false,
+    "ms": 7171
+  },
+  "minimalFailure": {
+    "variant": "get",
+    "error": "TypeError",
+    "message": "Invalid redirect value, must be one of \"follow\" or \"manual\" (\"error\" won't be implemented since it does not make sense at the edge; use \"manual\" and check the response status code).",
+    "ms": 0
+  },
+  "fix": "Workers supports redirect:manual, not redirect:error. Non2xx including3xx is rejected and response body cancelled before accepting a bridge result. The same Worker-only setting is fixed for Google Drive metadata and Zoom APIs.",
+  "unit": {
+    "passed": 35,
+    "assertions": 156
+  },
+  "primarySource": "https://developers.cloudflare.com/workers/runtime-apis/request/",
+  "remaining": "Original full Worker/Workflow/Modal/R2 render scenario must pass after deployment; this bounded probe proves the transport fix only."
+}

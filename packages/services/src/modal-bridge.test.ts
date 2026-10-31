@@ -39,6 +39,15 @@ describe("Modal reference bridge transport", () => {
     const client = createModalBridgeClient({ origin: "https://test.modal.run", keyId: "public", key }, { fetch: async () => { throw new Error("connection lost"); } });
     await expect(client.command(command, deliveryId)).rejects.toMatchObject({ code: "modal_bridge_unconfirmed" });
   });
+  test("redirects use the Workers-supported manual mode and never acknowledge or follow a signed request", async () => {
+    const modes:unknown[]=[];
+    const client=createModalBridgeClient({origin:"https://test.modal.run",keyId:"public",key},{fetch:async(_input,init)=>{
+      modes.push(init?.redirect);
+      return new Response(JSON.stringify({disposition:"spawned",callId:"fc-must-not-acknowledge"}),{status:302,headers:{Location:"https://untrusted.example/","Content-Type":"application/json"}});
+    }});
+    await expect(client.command(command,deliveryId)).rejects.toMatchObject({code:"modal_bridge_unconfirmed"});
+    expect(modes).toEqual(["manual"]);
+  });
   test("only the configured known Modal origin is allowed", () => {
     for (const origin of ["http://test.modal.run", "https://test.modal.run.evil.example", "https://test.modal.run/path", "https://secret@test.modal.run", "not a URL"]) {
       expect(() => createModalBridgeClient({ origin, keyId: "public", key })).toThrow("modal_bridge_configuration_invalid");

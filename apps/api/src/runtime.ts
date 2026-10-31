@@ -73,7 +73,8 @@ function requireSetting(name: string): string {
 function createHealthDependencies(environment: ServiceEnvironment): HealthDependencies {
   return {
     version: environment.DEPLOYMENT_VERSION?.slice(0, 64) ?? "dev",
-    isDraining: () => environment.ADMISSION_STATE === "closed",
+    isDraining: () => environment.ADMISSION_STATE === "closed" || environment.ADMISSION_STATE === "fenced",
+    admissionState: () => environment.ADMISSION_STATE === "fenced" ? "fenced" : environment.ADMISSION_STATE === "closed" ? "closed" : "open",
     checkDatabase: createDatabaseReadiness({
       expectedMigrations: expectedDatabaseMigrations(),
       async appliedMigrations() {

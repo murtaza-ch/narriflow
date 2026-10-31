@@ -5,6 +5,7 @@ import type { DevelopmentCloudPort } from "./development-cloud-port";
 /** Bindings are supplied to an invocation. They are never copied into process.env. */
 export interface ApiWorkerBindings {
   [name: string]: unknown;
+  ADMISSION_STATE?: "open" | "closed" | "fenced";
   DEV_CLOUD?: DevelopmentCloudPort;
   HYPERDRIVE: { readonly connectionString: string };
   MEDIA_BUCKET: R2Bucket;
