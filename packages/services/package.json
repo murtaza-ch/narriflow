@@ -597,7 +597,8 @@
       "types": "./src/render-artifact.ts",
       "default": "./src/render-artifact.ts"
     },
-    "./broll-plan": "./src/broll-plan.ts"
+    "./broll-plan": "./src/broll-plan.ts",
+    "./render-execution-input": "./src/render-execution-input.ts"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
