@@ -2745,7 +2745,8 @@ model SocialPost {
   clip                   Clip?                       @relation(fields: [clipId], references: [id], onDelete: SetNull)
   socialAccount          SocialAccount?              @relation(fields: [socialAccountId], references: [id], onDelete: SetNull)
   trackedVideos          TrackedVideo[]
-  frozenState            FrozenPublicationState?
+  frozenState            FrozenPublicationState? @relation("CurrentPublicationState")
+  retiredPublicationStates FrozenPublicationState[] @relation("RetiredPublicationStates")
   publicationAttempts    SocialPublicationAttempt[]
   manualDecisions        PublicationManualDecision[]
   reviewApprovalOverride ReviewApprovalOverride?     @relation(fields: [reviewApprovalOverrideId], references: [id], onDelete: SetNull)
@@ -2767,7 +2768,9 @@ model SocialPost {
 model FrozenPublicationState {
   deliveryMode        SocialDeliveryMode @default(direct)
   id                  String             @id @default(uuid()) @db.Uuid
-  socialPostId        String             @unique @db.Uuid
+  socialPostId        String?            @unique @db.Uuid
+  retiredForPostId    String?            @db.Uuid
+  confirmedScheduleRevision Int?
   clipExportId        String             @db.Uuid
   clipExportVariantId String             @db.Uuid
   socialAccountId     String?            @db.Uuid
@@ -2785,12 +2788,14 @@ model FrozenPublicationState {
   createdAt           DateTime           @default(now())
   mediaReadyAt        DateTime?
 
-  socialPost        SocialPost                 @relation(fields: [socialPostId], references: [id], onDelete: Cascade)
+  socialPost        SocialPost?                @relation("CurrentPublicationState", fields: [socialPostId], references: [id], onDelete: Cascade)
+  retiredForPost    SocialPost?                @relation("RetiredPublicationStates", fields: [retiredForPostId], references: [id], onDelete: Cascade)
   clipExport        ClipExport                 @relation(fields: [clipExportId], references: [id], onDelete: Restrict)
   clipExportVariant ClipExportVariant          @relation(fields: [clipExportVariantId], references: [id], onDelete: Restrict)
   socialAccount     SocialAccount?             @relation(fields: [socialAccountId], references: [id], onDelete: Restrict)
   attempts          SocialPublicationAttempt[]
 
+  @@index([retiredForPostId,confirmedScheduleRevision], map: "FrozenPublicationState_retiredForPostId_confirmedScheduleRev_idx")
   @@index([clipExportId])
   @@index([clipExportVariantId])
   @@index([clipExportVariantId,socialPostId])

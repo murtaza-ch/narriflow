@@ -42,8 +42,9 @@ describe("queue proposals", () => {
   });
 
   test("accepting takes TikTok's per-post choices and nothing else", () => {
-    expect(acceptSocialPostProposalSchema.parse({})).toEqual({});
-    expect(acceptSocialPostProposalSchema.parse({ tiktok: { deliveryMode: "direct", privacyLevel: "SELF_ONLY" } }).tiktok).toMatchObject({
+    expect(acceptSocialPostProposalSchema.safeParse({}).success).toBe(false);
+    expect(acceptSocialPostProposalSchema.parse({expectedScheduleRevision:3})).toEqual({expectedScheduleRevision:3});
+    expect(acceptSocialPostProposalSchema.parse({ expectedScheduleRevision:3,tiktok: { deliveryMode: "direct", privacyLevel: "SELF_ONLY" } }).tiktok).toMatchObject({
       deliveryMode: "direct", privacyLevel: "SELF_ONLY", disableComment: false, disableDuet: false, disableStitch: false, isAigc: false,
     });
     expect(acceptSocialPostProposalSchema.safeParse({ tiktok: { deliveryMode: "later" } }).success).toBe(false);

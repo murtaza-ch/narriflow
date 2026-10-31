@@ -282,7 +282,7 @@ export function createPublishingRoutes(deps: PublishingRouteDeps) {
     )
 
     .post("/social/proposals/accept-all", validate("json", acceptAllProposalsRequestSchema), async (c) => {
-      const result = await deps.publishingQueue.acceptAll(getActor(c), { after: c.req.valid("json").after });
+      const result = await deps.publishingQueue.acceptAll(getActor(c), c.req.valid("json"));
       return c.json(result, 200);
     })
 

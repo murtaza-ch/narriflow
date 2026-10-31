@@ -1,3 +1,4 @@
+import {proposalScheduleRevisionSchema,ACCEPT_SOCIAL_PROPOSAL_BATCH_LIMIT} from "../publishing-queue";
 import { z } from "zod";
 import { postingScheduleSchema } from "../posting-schedule";
 import { socialPlatformSchema, socialPostStatusSchema } from "../social";
@@ -92,9 +93,9 @@ export const savePostingScheduleRequestSchema = z.strictObject({
   schedule: postingScheduleSchema.nullable(),
 });
 
-/** `POST /api/social/proposals/accept-all`: continue from the last proposal tried until `nextCursor` is null. */
-export const acceptAllProposalsRequestSchema = z.strictObject({
-  after: uuid.nullable().default(null),
+/** `POST /api/social/proposals/accept-all`: one frozen list of observed proposal identities and revisions. */
+export const acceptAllProposalsRequestSchema=z.strictObject({
+ proposals:z.array(z.strictObject({proposalId:uuid,expectedScheduleRevision:proposalScheduleRevisionSchema})).min(1).max(ACCEPT_SOCIAL_PROPOSAL_BATCH_LIMIT).refine(rows=>new Set(rows.map(row=>row.proposalId)).size===rows.length,{message:"Choose each proposal once"}),
 });
 
 /** What the Performance page can offer when nothing has been measured yet. */

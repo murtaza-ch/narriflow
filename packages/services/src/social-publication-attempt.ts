@@ -1048,6 +1048,7 @@ export async function synchronizePreparedSocialPosts(now = new Date()) {
 		include: { clipExportVariant: true },
 	});
 	for (const state of states) {
+  const socialPostId=state.socialPostId;if(!socialPostId)throw Error("Detached publication snapshot selected as current");
 		if (
 			state.clipExportVariant.status === "completed" &&
 			state.clipExportVariant.storageKey &&
@@ -1065,7 +1066,7 @@ export async function synchronizePreparedSocialPosts(now = new Date()) {
 					},
 				});
 				await tx.socialPost.updateMany({
-					where: { id: state.socialPostId, status: "preparing_video" },
+					where: { id: socialPostId, status: "preparing_video" },
 					data: { status: "scheduled" },
 				});
 			});
@@ -1075,7 +1076,7 @@ export async function synchronizePreparedSocialPosts(now = new Date()) {
 		) {
 			await prisma.$transaction(async (tx) => {
 				const failed = await tx.socialPost.updateMany({
-					where: { id: state.socialPostId, status: "preparing_video" },
+					where: { id: socialPostId, status: "preparing_video" },
 					data: {
 						status: "failed",
 						errorCode:
@@ -1086,7 +1087,7 @@ export async function synchronizePreparedSocialPosts(now = new Date()) {
 						errorDisposition: "permanent",
 					},
 				});
-				if (failed.count === 1) await emitSocialPostFinished(tx, { socialPostId: state.socialPostId });
+				if (failed.count === 1) await emitSocialPostFinished(tx, { socialPostId });
 			});
 		}
 	}

@@ -110,8 +110,9 @@ async function recoverAcceptedIntent(row:PublicationIntentRow){
 }
 
 /** The rows the Social Post store writes when it freezes an intent. */
-function frozenStateData(candidate: PublicationIntent) {
+function frozenStateData(candidate: PublicationIntent,confirmedScheduleRevision:number|null=null) {
 	return {
+  confirmedScheduleRevision,
 		clipExportId: candidate.frozen.clipExportId,
 		clipExportVariantId: candidate.frozen.clipExportVariantId,
 		socialAccountId: candidate.frozen.socialAccountId,
@@ -152,6 +153,7 @@ export const prismaPublicationSchedulingStore: PublicationSchedulingStore = {
 			}
 			return recoverAcceptedIntent(existing);
 		}
+  if(input.proposalId&&(!Number.isSafeInteger(input.expectedProposalRevision)||input.expectedProposalRevision!<1))throw new PublicationIntentStateError("social_proposal_changed","Reload this proposal and review it before accepting.");
 		if (existing && existing.id !== input.proposalId) {
 			throw new PublicationIntentConflictError();
 		}
@@ -161,7 +163,10 @@ export const prismaPublicationSchedulingStore: PublicationSchedulingStore = {
 			const created = await requirePrisma().$transaction(
 				async (tx) => {
                     const admission = await readExecutionAdmission(tx);
-                    await lockPublicationScope(tx,{workspaceId:candidate.workspaceId,projectId:candidate.projectId,socialAccountId:candidate.frozen.socialAccountId});
+                    await lockPublicationScope(tx,{workspaceId:candidate.workspaceId,projectId:candidate.projectId,socialAccountId:input.slotQueue?null:candidate.frozen.socialAccountId});
+     // Take the account's queue mutex directly. Parallel SHARE→NO KEY UPDATE
+     // upgrades deadlock even when the publications themselves are distinct.
+     if(input.slotQueue)await tx.$queryRaw`SELECT "id" FROM "SocialAccount" WHERE "id"=${input.slotQueue.accountId}::uuid FOR NO KEY UPDATE`;
 					const replay = await tx.socialPost.findUnique({
 						where: {
 							workspaceId_clientIdempotencyKey: {
@@ -189,7 +194,7 @@ export const prismaPublicationSchedulingStore: PublicationSchedulingStore = {
 						// a second admission waits here and sees this post once it commits.
 						// NO KEY UPDATE still lets this transaction's own foreign keys to the
 						// account row (KEY SHARE) through.
-						await tx.$queryRaw`SELECT "id" FROM "SocialAccount" WHERE "id" = ${input.slotQueue.accountId}::uuid FOR NO KEY UPDATE`;
+
 						// A grant's caps are counted under this same lock, so two admissions can't both take the last place.
 						if (input.slotQueue.grant) granted = await input.slotQueue.grant.admit(tx);
 						const taken = await tx.socialPost.findMany({
@@ -219,10 +224,11 @@ export const prismaPublicationSchedulingStore: PublicationSchedulingStore = {
 						// identity everyone was given. The caption read before the lock must still
 						// be the draft's, or a person's edit made meanwhile would be lost.
 						const converted = await tx.socialPost.updateMany({
-							where: { id: input.proposalId, workspaceId: input.workspaceId, status: "draft", caption: candidate.frozen.caption },
+							where: { id: input.proposalId, workspaceId: input.workspaceId, status: "draft", caption: candidate.frozen.caption,scheduleRevision:input.expectedProposalRevision },
 							data: {
 								deploymentEpoch:admission.epoch,
 								status: candidate.status,
+        errorCode:null,errorDisposition:null,nextAttemptAt:null,
 								clientIdempotencyKey: candidate.clientIdempotencyKey,
 								immutableRequestHash: candidate.immutableRequestHash,
 								deliveryMode: candidate.frozen.deliveryMode ?? "direct",
@@ -242,7 +248,7 @@ export const prismaPublicationSchedulingStore: PublicationSchedulingStore = {
 								? new PublicationIntentStateError("social_proposal_changed", "The caption changed while it was being accepted. Review it and accept again")
 								: new PublicationIntentStateError("social_proposal_unavailable", "This proposal was already accepted or rejected");
 						}
-						await tx.frozenPublicationState.create({ data: { socialPostId: input.proposalId, ...frozenStateData(candidate) } });
+						await tx.frozenPublicationState.create({ data: { socialPostId: input.proposalId, ...frozenStateData(candidate,input.expectedProposalRevision!) } });
 						await tx.socialPostProposal.update({
 							where: { socialPostId: input.proposalId },
 							data: { acceptedAt: new Date(), acceptedByUserId: candidate.createdByUserId },
