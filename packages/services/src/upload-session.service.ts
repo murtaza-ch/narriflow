@@ -94,8 +94,6 @@ export interface UploadSessionConfig {
   readonly uploadGrantTtlSeconds: number;
   readonly sessionIdleMs: number;
   readonly sessionHardLifetimeMs: number;
-  readonly reconciliationBatchSize: number;
-  readonly reconciliationConcurrency: number;
   readonly reconciliationLeaseMs: number;
   readonly reconciliationOperationDeadlineMs: number;
   readonly reconciliationMaximumAttempts: number;
@@ -117,8 +115,6 @@ export function defaultUploadSessionConfig(
     uploadGrantTtlSeconds: 15 * 60,
     sessionIdleMs: 24 * 60 * 60 * 1000,
     sessionHardLifetimeMs: 6 * 24 * 60 * 60 * 1000,
-    reconciliationBatchSize: 25,
-    reconciliationConcurrency: 4,
     reconciliationLeaseMs: 60_000,
     reconciliationOperationDeadlineMs: 10_000,
     reconciliationMaximumAttempts: 8,
@@ -154,7 +150,6 @@ export function defaultUploadSessionConfig(
     throw new Error("Invalid Upload Session configuration: sessionHardLifetimeMs");
   }
   if (
-    config.reconciliationConcurrency > config.reconciliationBatchSize ||
     config.reconciliationMaximumAttempts > 32 ||
     config.reconciliationProviderCallBudget > 64 ||
     config.reconciliationBackoffBaseMs > config.reconciliationBackoffCeilingMs ||
@@ -348,11 +343,7 @@ export interface UploadSessionPersistence {
     reconciliationAttemptId?: string;
     updatedAt: Date;
   }): Promise<UploadSessionRecord>;
-  findDueReconciliation(input: {
-    sessionId?: string;
-    now: Date;
-    limit: number;
-  }): Promise<UploadSessionRecord[]>;
+  readDueReconciliation(input: { sessionId: string; now: Date }): Promise<UploadSessionRecord | null>;
   claimReconciliation(input: {
     executionEpoch?:number;
     sessionId: string;
@@ -2520,13 +2511,10 @@ export function createUploadSessionModule(
       return handoffInline(finalizing, object);
     },
 
-    async reconcileDueSessions(target?: {sessionId:string;beforeProvider?(session:UploadSessionRecord):Promise<void>;beforeHttp?():Promise<void>}) {
-      const selectionNow = dependencies.now();
-      const due = await dependencies.persistence.findDueReconciliation({
-        now: selectionNow,
-        limit: target?1:dependencies.config.reconciliationBatchSize,
-        ...(target?{sessionId:target.sessionId}:{}),
-      });
+    async reconcileSession(target: {sessionId:string;beforeProvider?(session:UploadSessionRecord):Promise<void>;beforeHttp?():Promise<void>}) {
+      const sessionId = discardUploadSessionSchema.shape.sessionId.parse(target?.sessionId);
+      const candidate = await dependencies.persistence.readDueReconciliation({ sessionId, now: dependencies.now() });
+      if (!candidate) return { claimed: 0, settled: 0, deferred: 0 };
       let claimed = 0;
       let settled = 0;
       let deferred = 0;
@@ -2545,7 +2533,7 @@ export function createUploadSessionModule(
         if (!claim.claimed) return;
         claimed += 1;
         const session = claim.session;
-        await target?.beforeProvider?.(session);
+        await target.beforeProvider?.(session);
         const attemptStartedAtMs = dependencies.now().getTime();
         let providerOperation:
           | "head"
@@ -2574,7 +2562,7 @@ export function createUploadSessionModule(
           operation: (signal?: AbortSignal) => Promise<Result>,
           operationChargesProviderCalls = false,
         ) => {
-          await target?.beforeHttp?.();
+          await target.beforeHttp?.();
           if (!operationChargesProviderCalls) chargeProviderCall();
           let remainingAttemptMs = attemptWallDeadlineMs - Date.now();
           if (remainingAttemptMs <= 0) {
@@ -3071,26 +3059,7 @@ export function createUploadSessionModule(
           });
         }
       };
-      let cursor = 0;
-      const worker = async () => {
-        for (;;) {
-          const candidate = due[cursor];
-          cursor += 1;
-          if (!candidate) return;
-          await processCandidate(candidate);
-        }
-      };
-      await Promise.all(
-        Array.from(
-          {
-            length: Math.min(
-              dependencies.config.reconciliationConcurrency,
-              due.length,
-            ),
-          },
-          () => worker(),
-        ),
-      );
+      await processCandidate(candidate);
       return { claimed, settled, deferred };
     },
   };
@@ -3169,18 +3138,6 @@ export function uploadSessionConfigFromEnv(
       "UPLOAD_SESSION_HARD_LIFETIME_MS",
       6 * 24 * 60 * 60 * 1_000,
       { minimum: 60 * 60 * 1_000, maximum: 6 * 24 * 60 * 60 * 1_000 },
-    ),
-    reconciliationBatchSize: configuredInteger(
-      env,
-      "UPLOAD_RECONCILIATION_BATCH_SIZE",
-      25,
-      { minimum: 1, maximum: 100 },
-    ),
-    reconciliationConcurrency: configuredInteger(
-      env,
-      "UPLOAD_RECONCILIATION_CONCURRENCY",
-      4,
-      { minimum: 1, maximum: 16 },
     ),
     reconciliationLeaseMs: configuredInteger(
       env,
@@ -3965,10 +3922,10 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
     return fromPrismaUploadSession(row);
     });
   },
-  async findDueReconciliation({ now, limit,sessionId }) {
-    const rows = await requiredPrisma().uploadSession.findMany({
+  async readDueReconciliation({ now, sessionId }) {
+    const row = await requiredPrisma().uploadSession.findFirst({
       where: {
-        ...(sessionId?{id:sessionId}:{}),
+        id: discardUploadSessionSchema.shape.sessionId.parse(sessionId),
         OR: [
           {
             status: "uploading",
@@ -3996,10 +3953,8 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
           },
         ],
       },
-      orderBy: [{ reconcileAt: "asc" }, { updatedAt: "asc" }, { id: "asc" }],
-      take: limit,
     });
-    return rows.map(fromPrismaUploadSession);
+    return row ? fromPrismaUploadSession(row) : null;
   },
   async claimReconciliation({executionEpoch,
     sessionId,
@@ -4731,11 +4686,9 @@ export class UploadSessionService {
   }
 
   async reconcileSession(sessionId:string,executionEpoch:number,beforeProvider:(session:UploadSessionRecord)=>Promise<void>,beforeHttp:()=>Promise<void>) {
-    return productionUploadSessionModule(executionEpoch).reconcileDueSessions({sessionId,beforeProvider,beforeHttp});
+    return productionUploadSessionModule(executionEpoch).reconcileSession({sessionId,beforeProvider,beforeHttp});
   }
-  async reconcileDueSessions() {
-    return productionUploadSessionModule().reconcileDueSessions();
-  }
+
 }
 
 export const uploadSessionService = new UploadSessionService();
