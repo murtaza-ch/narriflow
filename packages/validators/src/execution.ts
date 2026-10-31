@@ -29,7 +29,7 @@ export const executionDispatchKindSchema = z.enum([
 ]);
 
 export const executionSubjectKindSchema = z.enum([
-  "ingest_job", "workflow_run", "render_group", "clip_preparation", "upload_session",
+  "ingest_job", "workflow_run", "render_group", "clip_selection_window", "clip_preparation", "upload_session",
   "social_publication", "completion_callback", "webhook_subscription", "workspace_billing",
   "autopilot_rule", "generation_finishing", "dubbing", "export_bundle", "generated_media",
   "thumbnail_frame", "native_validation", "outbound_probe", "library_index", "notification", "media_cleanup", "workflow_event",
@@ -83,7 +83,7 @@ export const executorFenceSchema = z.strictObject({
 
 export const executionArtifactRoleSchema = z.enum([
   "source_audio", "source_video", "layout_evidence", "render_variant", "probe",
-  "thumbnail", "export_bundle", "dub_mix", "validated_font", "validated_asset", "outbound_receipt",
+  "thumbnail", "export_bundle", "dub_mix", "validated_font", "validated_asset", "selection_window", "outbound_receipt",
 ]);
 
 /** artifactId identifies a server-assigned key. Executors cannot choose publication keys. */

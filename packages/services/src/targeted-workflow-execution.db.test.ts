@@ -93,6 +93,11 @@ dbDescribe("Exact Workflow execution commands", () => {
     const child = await db.workflowRun.findFirstOrThrow({ where: { projectId: f.run.projectId, stage: "moment_detection" } }); subjects.push(child.id);
     expect(result.dispatchIds).toContain((await db.executionDispatch.findFirstOrThrow({ where: { subjectId: child.id, wakeKind: null } })).id);
     expect(await db.executionAttempt.count({ where: { dispatch: { subjectId: f.run.id } } })).toBe(0);
+    const progress = await db.executionDispatch.findMany({ where: { id: { in: result.dispatchIds }, kind: "project_progress", subjectKind: "maintenance" } });
+    expect(progress.length).toBe(1);
+    const replay = await withServiceEnvironment({}, () => admission.admit(f.reference, { owner: crypto.randomUUID() }));
+    expect(replay.kind).toBe("terminal");
+    expect(replay.dispatchIds.slice().sort()).toEqual(result.dispatchIds.slice().sort());
   }, 60_000);
 
   test("concurrent weighted admission admits one provider and parks an uncharged waiter without a generic attempt", async () => {
@@ -192,6 +197,7 @@ dbDescribe("Exact Workflow execution commands", () => {
     const replay = await f.lifecycle.readProviderControl(begun.intent.reference);
     expect(replay).toMatchObject({ kind: "stale", reason: "attempt_superseded" });
     expect(replay.dispatchIds?.slice().sort()).toEqual(expired.dispatchIds?.slice().sort());
+    expect((await f.lifecycle.lookupProviderAttempt(begun.intent.reference)).dispatchIds?.slice().sort()).toEqual(expired.dispatchIds?.slice().sort());
     await db.project.update({ where: { id: f.run.projectId }, data: { sourceRevision: 2 } });
     await db.transcript.update({ where: { projectId: f.run.projectId }, data: { sourceRevision: 2, sourceAudioId: null } });
     const historical = await f.lifecycle.readProviderControl(begun.intent.reference);

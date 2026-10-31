@@ -3,6 +3,7 @@ import { executionDispatchReferenceSchema, providerAttemptReferenceSchema, type 
 import { appendExecutionDispatch, readExecutionDispatch, executionDispatchIdentity } from "./execution-dispatch";
 import type { ProviderSubmissionIntent, WorkflowRunLifecycle } from "./workflow-run-lifecycle";
 import { flushWorkspaceEvents } from "./workspace-event";
+import { flushProjectProgressDrains, queueProjectProgressCatchup } from "./progress-outbox";
 
 type Tx = Prisma.TransactionClient;
 const CAPACITY_LOCK = "provider_capacity:elevenlabs:scribe_v2";
@@ -105,57 +106,62 @@ export function createTranscriptionAdmission(input: { database: PrismaClient; wo
       if (!providerAttemptReferenceSchema.shape.attemptId.safeParse(invocation.owner).success) throw new Error("Invalid TS invocation owner");
       const reference = parsed.data;
       return input.database.$transaction(async tx => {
-        const [epoch] = await tx.$queryRaw<Array<{ epoch: number }>>`SELECT "epoch" FROM "ExecutionEpoch" WHERE "id" = 1 FOR SHARE`;
-        if (epoch?.epoch !== reference.deploymentEpoch) return { kind: "superseded", dispatchIds: [] };
-        const ledger = (await readExecutionDispatch(tx, reference.dispatchId))?.reference;
-        if (!ledger || ledger.kind !== reference.kind || ledger.subject.kind !== reference.subject.kind || ledger.subject.id !== reference.subject.id ||
-          ledger.deploymentEpoch !== reference.deploymentEpoch || ledger.generation !== reference.generation || ledger.inputHash !== reference.inputHash) return { kind: "superseded", dispatchIds: [] };
-        const initial = await tx.workflowRun.findUnique({ where: { id: reference.subject.id }, select: { stage: true, attemptId: true } });
-        if (!initial || initial.stage !== "stt") return { kind: "superseded", dispatchIds: [] };
-        const prospectiveToken = crypto.randomUUID();
-        let locked = await input.workflow.lockExecution(tx, reference, initial.attemptId ?? prospectiveToken);
-        // Another invocation may have committed intent while this one waited for
-        // the Project lock. It can read that lineage, never start another POST.
-        const run = await tx.workflowRun.findUniqueOrThrow({ where: { id: reference.subject.id } });
-        if (locked.kind === "terminal" && locked.disposition.disposition === "superseded" && run.status === "waiting" && run.attemptId &&
-          run.deploymentEpoch === reference.deploymentEpoch && run.generation === reference.generation) locked = await input.workflow.lockExecution(tx, reference, run.attemptId);
-        if (locked.kind === "terminal") return { kind: "terminal", disposition: locked.disposition, dispatchIds: [] };
-        const now = await clock(tx);
-        if (run.status === "waiting") {
-          const history = await tx.executionAttempt.findUniqueOrThrow({ where: { attemptToken: run.attemptId! } });
-          const intent = await input.workflow.beginProviderSubmissionExecution(tx, locked.ref, { reference, attemptToken: run.attemptId!, owner: invocation.owner, now,
-            leaseExpiresAt: history.leaseExpiresAt!, operationDeadlineAt: history.operationDeadlineAt, functionName: "stt" });
-          return { kind: "already_waiting", intent, dispatchIds: intent.dispatchIds };
-        }
-        if (run.status !== "queued" || run.attemptId || run.leaseOwner) {
-          if (!run.leaseExpiresAt) return { kind: "superseded", dispatchIds: [] };
-          return { kind: "retry_wait", dueAt: run.leaseExpiresAt, dispatchIds: [] };
-        }
-        if (run.nextAttemptAt && run.nextAttemptAt > now && run.errorCode !== SCRIBE_CAPACITY_WAIT) return { kind: "retry_wait", dueAt: run.nextAttemptAt, dispatchIds: [] };
-        const plan = await input.workflow.completeTranscriptionPlanWithinTransaction(tx, locked.ref);
-        if (plan.kind === "completed") { await flushWorkspaceEvents(tx); return plan; }
-        const transcript = await tx.transcript.findUnique({ where: { projectId: run.projectId }, include: { sourceAudio: true } });
-        const audio = transcript?.sourceAudio;
-        if (!audio) return { kind: "audio_pending", dispatchIds: [] };
-        const units = scribeConcurrencyUnits(audio.durationSeconds);
-        if (units > input.maxUnits) throw new RangeError("Scribe concurrency cap cannot admit this source's weight");
-        const capacity = await readScribeCapacityWithinTransaction(tx, run.id);
-        if (capacity.usedUnits + units > input.maxUnits) {
-          if (!capacity.dueAt) throw new Error("Provider capacity deadline missing");
-          await tx.workflowRun.update({ where: { id: run.id }, data: { errorCode: SCRIBE_CAPACITY_WAIT, nextAttemptAt: capacity.dueAt } });
-          const wake = await appendExecutionDispatch(tx, { deploymentEpoch: reference.deploymentEpoch, kind: "operation_driver", subject: reference.subject,
-            generation: reference.generation, inputHash: reference.inputHash, dueAt: capacity.dueAt, wakeKind: "capacity_retry", deadlineKind: "retry", observedDeadlineAt: capacity.dueAt });
-          return { kind: "capacity_wait", dueAt: capacity.dueAt, dispatchIds: [wake.reference.dispatchId] };
-        }
-        if (run.errorCode === SCRIBE_CAPACITY_WAIT) await tx.workflowRun.update({ where: { id: run.id }, data: { errorCode: null, nextAttemptAt: null } });
-        const activeNow = await clock(tx);
-        const operationDeadlineAt = new Date(activeNow.getTime() + 10 * 60_000), leaseExpiresAt = new Date(activeNow.getTime() + 120_000);
-        await tx.executionAttempt.create({ data: { attemptToken: prospectiveToken, dispatchId: reference.dispatchId, deploymentEpoch: reference.deploymentEpoch,
-          generation: reference.generation, inputHash: reference.inputHash, functionName: "stt", operationDeadlineAt } });
-        const intent = await input.workflow.beginProviderControlWithinTransaction(tx, locked.ref, { reference, attemptToken: prospectiveToken, owner: invocation.owner,
-          now: activeNow, leaseExpiresAt, operationDeadlineAt, functionName: "stt" });
+        const result = await (async (): Promise<TranscriptionAdmissionResult> => {
+          const [epoch] = await tx.$queryRaw<Array<{ epoch: number }>>`SELECT "epoch" FROM "ExecutionEpoch" WHERE "id" = 1 FOR SHARE`;
+          if (epoch?.epoch !== reference.deploymentEpoch) return { kind: "superseded", dispatchIds: [] };
+          const ledger = (await readExecutionDispatch(tx, reference.dispatchId))?.reference;
+          if (!ledger || ledger.kind !== reference.kind || ledger.subject.kind !== reference.subject.kind || ledger.subject.id !== reference.subject.id ||
+            ledger.deploymentEpoch !== reference.deploymentEpoch || ledger.generation !== reference.generation || ledger.inputHash !== reference.inputHash) return { kind: "superseded", dispatchIds: [] };
+          const initial = await tx.workflowRun.findUnique({ where: { id: reference.subject.id }, select: { stage: true, attemptId: true } });
+          if (!initial || initial.stage !== "stt") return { kind: "superseded", dispatchIds: [] };
+          const prospectiveToken = crypto.randomUUID();
+          let locked = await input.workflow.lockExecution(tx, reference, initial.attemptId ?? prospectiveToken);
+          // Another invocation may have committed intent while this one waited for
+          // the Project lock. It can read that lineage, never start another POST.
+          const run = await tx.workflowRun.findUniqueOrThrow({ where: { id: reference.subject.id } });
+          queueProjectProgressCatchup(tx, run.projectId);
+          if (locked.kind === "terminal" && locked.disposition.disposition === "superseded" && run.status === "waiting" && run.attemptId &&
+            run.deploymentEpoch === reference.deploymentEpoch && run.generation === reference.generation) locked = await input.workflow.lockExecution(tx, reference, run.attemptId);
+          if (locked.kind === "terminal") return { kind: "terminal", disposition: locked.disposition,
+            dispatchIds: locked.disposition.disposition === "completed" ? await input.workflow.readCompletedTranscriptionWakesWithinTransaction(tx, reference) : [] };
+          const now = await clock(tx);
+          if (run.status === "waiting") {
+            const history = await tx.executionAttempt.findUniqueOrThrow({ where: { attemptToken: run.attemptId! } });
+            const intent = await input.workflow.beginProviderSubmissionExecution(tx, locked.ref, { reference, attemptToken: run.attemptId!, owner: invocation.owner, now,
+              leaseExpiresAt: history.leaseExpiresAt!, operationDeadlineAt: history.operationDeadlineAt, functionName: "stt" });
+            return { kind: "already_waiting", intent, dispatchIds: intent.dispatchIds };
+          }
+          if (run.status !== "queued" || run.attemptId || run.leaseOwner) {
+            if (!run.leaseExpiresAt) return { kind: "superseded", dispatchIds: [] };
+            return { kind: "retry_wait", dueAt: run.leaseExpiresAt, dispatchIds: [] };
+          }
+          if (run.nextAttemptAt && run.nextAttemptAt > now && run.errorCode !== SCRIBE_CAPACITY_WAIT) return { kind: "retry_wait", dueAt: run.nextAttemptAt, dispatchIds: [] };
+          const plan = await input.workflow.completeTranscriptionPlanWithinTransaction(tx, locked.ref);
+          if (plan.kind === "completed") return plan;
+          const transcript = await tx.transcript.findUnique({ where: { projectId: run.projectId }, include: { sourceAudio: true } });
+          const audio = transcript?.sourceAudio;
+          if (!audio) return { kind: "audio_pending", dispatchIds: [] };
+          const units = scribeConcurrencyUnits(audio.durationSeconds);
+          if (units > input.maxUnits) throw new RangeError("Scribe concurrency cap cannot admit this source's weight");
+          const capacity = await readScribeCapacityWithinTransaction(tx, run.id);
+          if (capacity.usedUnits + units > input.maxUnits) {
+            if (!capacity.dueAt) throw new Error("Provider capacity deadline missing");
+            await tx.workflowRun.update({ where: { id: run.id }, data: { errorCode: SCRIBE_CAPACITY_WAIT, nextAttemptAt: capacity.dueAt } });
+            const wake = await appendExecutionDispatch(tx, { deploymentEpoch: reference.deploymentEpoch, kind: "operation_driver", subject: reference.subject,
+              generation: reference.generation, inputHash: reference.inputHash, dueAt: capacity.dueAt, wakeKind: "capacity_retry", deadlineKind: "retry", observedDeadlineAt: capacity.dueAt });
+            return { kind: "capacity_wait", dueAt: capacity.dueAt, dispatchIds: [wake.reference.dispatchId] };
+          }
+          if (run.errorCode === SCRIBE_CAPACITY_WAIT) await tx.workflowRun.update({ where: { id: run.id }, data: { errorCode: null, nextAttemptAt: null } });
+          const activeNow = await clock(tx);
+          const operationDeadlineAt = new Date(activeNow.getTime() + 10 * 60_000), leaseExpiresAt = new Date(activeNow.getTime() + 120_000);
+          await tx.executionAttempt.create({ data: { attemptToken: prospectiveToken, dispatchId: reference.dispatchId, deploymentEpoch: reference.deploymentEpoch,
+            generation: reference.generation, inputHash: reference.inputHash, functionName: "stt", operationDeadlineAt } });
+          const intent = await input.workflow.beginProviderControlWithinTransaction(tx, locked.ref, { reference, attemptToken: prospectiveToken, owner: invocation.owner,
+            now: activeNow, leaseExpiresAt, operationDeadlineAt, functionName: "stt" });
+          return { kind: "begun", intent, languageCode: plan.languageCode, dispatchIds: intent.dispatchIds };
+        })();
         await flushWorkspaceEvents(tx);
-        return { kind: "begun", intent, languageCode: plan.languageCode, dispatchIds: intent.dispatchIds };
+        return { ...result, dispatchIds: [...new Set([...result.dispatchIds, ...await flushProjectProgressDrains(tx)])] };
       }, { maxWait: 10_000, timeout: 30_000 });
     },
   };

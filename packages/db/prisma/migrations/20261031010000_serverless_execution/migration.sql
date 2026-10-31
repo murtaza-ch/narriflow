@@ -169,19 +169,49 @@ CREATE TABLE "SourceRefundNeed" (
 -- CreateTable
 CREATE TABLE "ClipSelectionWindow" (
     "id" UUID NOT NULL,
+    "projectId" UUID NOT NULL,
+    "workflowRunId" UUID NOT NULL,
+    "workflowGeneration" INTEGER NOT NULL,
+    "deploymentEpoch" INTEGER NOT NULL,
+    "generation" INTEGER NOT NULL DEFAULT 1,
     "transcriptId" UUID NOT NULL,
-    "generation" INTEGER NOT NULL,
+    "transcriptGeneration" INTEGER NOT NULL,
+    "transcriptAttemptId" UUID,
+    "transcriptContentHash" CHAR(64) NOT NULL,
+    "sourceRevision" INTEGER NOT NULL,
+    "sourceAudioId" UUID,
+    "sourceAudioBindingHash" CHAR(64),
+    "selectionHash" CHAR(64) NOT NULL,
+    "windowCount" INTEGER NOT NULL,
     "windowIndex" INTEGER NOT NULL,
     "startSec" DOUBLE PRECISION NOT NULL,
     "endSec" DOUBLE PRECISION NOT NULL,
     "inputHash" CHAR(64) NOT NULL,
-    "resultStorageKey" VARCHAR(1024),
-    "resultHash" CHAR(64),
+    "inputStorageKey" VARCHAR(1024) NOT NULL,
+    "inputEtag" VARCHAR(160) NOT NULL,
+    "inputChecksumSha256" CHAR(64) NOT NULL,
+    "inputByteLength" BIGINT NOT NULL,
+    "estimatedTokens" INTEGER NOT NULL,
     "status" VARCHAR(24) NOT NULL DEFAULT 'queued',
+    "attemptToken" UUID,
+    "executorOwner" UUID,
+    "leaseExpiresAt" TIMESTAMP(3),
+    "operationDeadlineAt" TIMESTAMP(3) NOT NULL,
+    "attemptCount" INTEGER NOT NULL DEFAULT 0,
+    "maxAttempts" INTEGER NOT NULL DEFAULT 3,
+    "providerQueuedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "lastProviderStartedAt" TIMESTAMP(3),
+    "providerRequestId" VARCHAR(160),
     "retryAt" TIMESTAMP(3),
+    "errorCode" VARCHAR(100),
+    "resultStorageKey" VARCHAR(1024),
+    "resultEtag" VARCHAR(160),
+    "resultHash" CHAR(64),
+    "resultByteLength" BIGINT,
+    "tokensUsed" INTEGER,
     "completedAt" TIMESTAMP(3),
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
+    "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT "ClipSelectionWindow_pkey" PRIMARY KEY ("id")
 );
 
@@ -234,7 +264,14 @@ CREATE UNIQUE INDEX "SourceRefundNeed_projectId_sourceRevision_key" ON "SourceRe
 CREATE INDEX "ClipSelectionWindow_status_retryAt_idx" ON "ClipSelectionWindow"("status", "retryAt");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "ClipSelectionWindow_transcriptId_generation_windowIndex_key" ON "ClipSelectionWindow"("transcriptId", "generation", "windowIndex");
+CREATE UNIQUE INDEX "WorkflowRun_id_projectId_key" ON "WorkflowRun"("id", "projectId");
+CREATE UNIQUE INDEX "Transcript_id_projectId_key" ON "Transcript"("id", "projectId");
+CREATE UNIQUE INDEX "ClipSelectionWindow_identity_key" ON "ClipSelectionWindow"("workflowRunId", "workflowGeneration", "windowIndex");
+CREATE UNIQUE INDEX "ClipSelectionWindow_attemptToken_key" ON "ClipSelectionWindow"("attemptToken");
+CREATE INDEX "ClipSelectionWindow_provider_queue_idx" ON "ClipSelectionWindow"("deploymentEpoch", "status", "providerQueuedAt", "id");
+CREATE INDEX "ClipSelectionWindow_status_leaseExpiresAt_idx" ON "ClipSelectionWindow"("status", "leaseExpiresAt");
+CREATE INDEX "ClipSelectionWindow_status_operationDeadlineAt_idx" ON "ClipSelectionWindow"("status", "operationDeadlineAt");
+CREATE INDEX "ClipSelectionWindow_projectId_deploymentEpoch_status_id_idx" ON "ClipSelectionWindow"("projectId", "deploymentEpoch", "status", "id");
 
 -- CreateIndex
 CREATE INDEX "Transcript_status_providerSubmissionDeadlineAt_idx" ON "Transcript"("status", "providerSubmissionDeadlineAt");
@@ -255,7 +292,8 @@ ALTER TABLE "ExecutionArtifact" ADD CONSTRAINT "ExecutionArtifact_attemptToken_f
 ALTER TABLE "SourceAudio" ADD CONSTRAINT "SourceAudio_projectId_fkey" FOREIGN KEY ("projectId") REFERENCES "Project"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "ClipSelectionWindow" ADD CONSTRAINT "ClipSelectionWindow_transcriptId_fkey" FOREIGN KEY ("transcriptId") REFERENCES "Transcript"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "ClipSelectionWindow" ADD CONSTRAINT "ClipSelectionWindow_transcriptId_projectId_fkey" FOREIGN KEY ("transcriptId", "projectId") REFERENCES "Transcript"("id", "projectId") ON DELETE CASCADE ON UPDATE RESTRICT;
+ALTER TABLE "ClipSelectionWindow" ADD CONSTRAINT "ClipSelectionWindow_workflowRunId_projectId_fkey" FOREIGN KEY ("workflowRunId", "projectId") REFERENCES "WorkflowRun"("id", "projectId") ON DELETE CASCADE ON UPDATE RESTRICT;
 
 -- Domain invariants that Prisma cannot express. Delivery retries never allocate domain attempts.
 ALTER TABLE "ExecutionEpoch" ADD CONSTRAINT "ExecutionEpoch_singleton_check"
@@ -266,7 +304,7 @@ ALTER TABLE "ExecutionDispatch" ADD CONSTRAINT "ExecutionDispatch_reference_chec
   "generation" > 0 AND "deploymentEpoch" > 0 AND "inputHash" ~ '^[a-f0-9]{64}$'
   AND "subjectId" ~ '^[A-Za-z0-9][A-Za-z0-9._:-]*$'
   AND "kind" IN ('import_pipeline','render_run','operation_driver','maintenance','project_progress','local_fetch','modal_execution')
-  AND "subjectKind" IN ('ingest_job','workflow_run','render_group','clip_preparation','upload_session','social_publication','completion_callback','webhook_subscription','workspace_billing','autopilot_rule','generation_finishing','dubbing','export_bundle','generated_media','thumbnail_frame','native_validation','outbound_probe','library_index','notification','media_cleanup','workflow_event','workspace_event','standing_grant','pending_workspace','retention','maintenance')
+  AND "subjectKind" IN ('ingest_job','workflow_run','render_group','clip_selection_window','clip_preparation','upload_session','social_publication','completion_callback','webhook_subscription','workspace_billing','autopilot_rule','generation_finishing','dubbing','export_bundle','generated_media','thumbnail_frame','native_validation','outbound_probe','library_index','notification','media_cleanup','workflow_event','workspace_event','standing_grant','pending_workspace','retention','maintenance')
   AND "deliveryAttempts" >= 0
   AND (("deliveryToken" IS NULL) = ("deliveryLeaseExpiresAt" IS NULL))
   AND NOT ("acknowledgedAt" IS NOT NULL AND "deadLetteredAt" IS NOT NULL)
@@ -310,11 +348,63 @@ ALTER TABLE "SourceRefundNeed" ADD CONSTRAINT "SourceRefundNeed_binding_check" C
   "sourceRevision" > 0 AND "sourceAudioBindingHash" ~ '^[a-f0-9]{64}$' AND "videoBindingHash" ~ '^[a-f0-9]{64}$'
 );
 ALTER TABLE "ClipSelectionWindow" ADD CONSTRAINT "ClipSelectionWindow_bounds_check" CHECK (
-  "generation" > 0 AND "windowIndex" >= 0 AND "startSec" >= 0 AND "endSec" > "startSec"
-  AND "endSec" < 'Infinity'::float8 AND "inputHash" ~ '^[a-f0-9]{64}$'
-  AND "status" IN ('queued','running','completed','failed')
-  AND ("status" <> 'completed' OR ("resultStorageKey" IS NOT NULL AND "resultHash" IS NOT NULL AND "resultHash" ~ '^[a-f0-9]{64}$' AND "completedAt" IS NOT NULL))
+  "generation" > 0 AND "workflowGeneration" > 0 AND "deploymentEpoch" > 0 AND "transcriptGeneration" > 0 AND "sourceRevision" > 0
+  AND "windowCount" BETWEEN 1 AND 6 AND "windowIndex" >= 0 AND "windowIndex" < "windowCount"
+  AND "startSec" >= 0 AND "endSec" > "startSec" AND "endSec" < 'Infinity'::float8
+  AND "inputHash" ~ '^[a-f0-9]{64}$' AND "selectionHash" ~ '^[a-f0-9]{64}$' AND "transcriptContentHash" ~ '^[a-f0-9]{64}$'
+  AND "inputChecksumSha256" ~ '^[a-f0-9]{64}$' AND "inputByteLength" BETWEEN 1 AND 16777216 AND "estimatedTokens" > 0
+  AND "inputStorageKey" LIKE ('projects/' || "projectId"::text || '/selection/%') AND "inputEtag" LIKE '"%"'
+  AND (("sourceAudioId" IS NULL AND "sourceAudioBindingHash" IS NULL) OR ("sourceAudioId" IS NOT NULL AND "sourceAudioBindingHash" IS NOT NULL AND "sourceAudioBindingHash" ~ '^[a-f0-9]{64}$'))
+  AND "maxAttempts" BETWEEN 1 AND 3 AND "attemptCount" BETWEEN 0 AND "maxAttempts"
+  AND "operationDeadlineAt" >= "createdAt" AND ("retryAt" IS NULL OR "retryAt" <= "operationDeadlineAt")
+  AND "status" IN ('queued','running','completed','failed','cancelled')
+  AND ("status" <> 'queued' OR ("attemptToken" IS NULL AND "executorOwner" IS NULL AND "leaseExpiresAt" IS NULL))
+  AND ("status" <> 'running' OR ("attemptToken" IS NOT NULL AND "executorOwner" IS NOT NULL AND "leaseExpiresAt" IS NOT NULL AND "leaseExpiresAt" <= "operationDeadlineAt"))
+  AND ("status" <> 'completed' OR ("resultStorageKey" IS NOT NULL AND "resultStorageKey" LIKE 'execution/%' AND "resultEtag" IS NOT NULL AND "resultEtag" LIKE '"%"'
+    AND "resultHash" IS NOT NULL AND "resultHash" ~ '^[a-f0-9]{64}$' AND "resultByteLength" IS NOT NULL AND "resultByteLength" BETWEEN 1 AND 1048576
+    AND "tokensUsed" IS NOT NULL AND "tokensUsed" >= 0 AND "completedAt" IS NOT NULL))
 );
+
+CREATE FUNCTION protect_clip_selection_window() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE current_epoch integer; parent_epoch integer; parent_generation integer;
+BEGIN
+  IF ROW(NEW."projectId", NEW."workflowRunId", NEW."transcriptId", NEW."transcriptGeneration", NEW."transcriptAttemptId", NEW."transcriptContentHash",
+    NEW."sourceRevision", NEW."sourceAudioId", NEW."sourceAudioBindingHash", NEW."selectionHash", NEW."windowCount", NEW."windowIndex", NEW."startSec", NEW."endSec",
+    NEW."inputHash", NEW."inputStorageKey", NEW."inputEtag", NEW."inputChecksumSha256", NEW."inputByteLength", NEW."estimatedTokens", NEW."maxAttempts", NEW."createdAt")
+    IS DISTINCT FROM ROW(OLD."projectId", OLD."workflowRunId", OLD."transcriptId", OLD."transcriptGeneration", OLD."transcriptAttemptId", OLD."transcriptContentHash",
+    OLD."sourceRevision", OLD."sourceAudioId", OLD."sourceAudioBindingHash", OLD."selectionHash", OLD."windowCount", OLD."windowIndex", OLD."startSec", OLD."endSec",
+    OLD."inputHash", OLD."inputStorageKey", OLD."inputEtag", OLD."inputChecksumSha256", OLD."inputByteLength", OLD."estimatedTokens", OLD."maxAttempts", OLD."createdAt") THEN
+    RAISE EXCEPTION 'Selection input is immutable' USING ERRCODE = '23514';
+  END IF;
+  IF OLD.status = 'completed' AND (to_jsonb(NEW) - 'updatedAt') IS DISTINCT FROM (to_jsonb(OLD) - 'updatedAt') THEN
+    RAISE EXCEPTION 'Selection result is immutable' USING ERRCODE = '23514';
+  END IF;
+  IF OLD.status IN ('failed','cancelled') AND NEW.status <> OLD.status THEN RAISE EXCEPTION 'Terminal selection cannot restart' USING ERRCODE = '23514'; END IF;
+  IF NEW."attemptCount" < OLD."attemptCount" OR NEW."attemptCount" > OLD."attemptCount" + 1 THEN
+    RAISE EXCEPTION 'Selection charge budget cannot reset' USING ERRCODE = '23514';
+  END IF;
+  IF NEW."deploymentEpoch" <> OLD."deploymentEpoch" OR NEW."workflowGeneration" <> OLD."workflowGeneration" THEN
+    SELECT epoch INTO current_epoch FROM "ExecutionEpoch" WHERE id = 1;
+    SELECT "deploymentEpoch", generation INTO parent_epoch, parent_generation FROM "WorkflowRun" WHERE id = NEW."workflowRunId";
+    IF NEW."deploymentEpoch" <= OLD."deploymentEpoch" OR NEW."deploymentEpoch" <> current_epoch OR parent_epoch <> current_epoch
+      OR NEW."workflowGeneration" <> parent_generation OR NEW.generation <> OLD.generation + 1 OR NEW.status <> 'queued'
+      OR NEW."attemptToken" IS NOT NULL OR NEW."executorOwner" IS NOT NULL OR NEW."leaseExpiresAt" IS NOT NULL THEN
+      RAISE EXCEPTION 'Selection restore requires the fenced current epoch' USING ERRCODE = '23514';
+    END IF;
+  ELSE
+    IF NEW."operationDeadlineAt" <> OLD."operationDeadlineAt" THEN RAISE EXCEPTION 'Selection deadline is immutable' USING ERRCODE = '23514'; END IF;
+    IF NEW.generation <> OLD.generation AND NOT (NEW.generation = OLD.generation + 1 AND OLD.status = 'running' AND NEW.status = 'queued'
+      AND NEW."attemptToken" IS NULL AND NEW."executorOwner" IS NULL AND NEW."leaseExpiresAt" IS NULL) THEN
+      RAISE EXCEPTION 'Selection retry requires the prior owner to be revoked' USING ERRCODE = '23514';
+    END IF;
+  END IF;
+  IF OLD.status = 'running' AND NEW.status = 'running' AND ROW(NEW."attemptToken", NEW."executorOwner") IS DISTINCT FROM ROW(OLD."attemptToken", OLD."executorOwner") THEN
+    RAISE EXCEPTION 'Selection executor ownership is immutable' USING ERRCODE = '23514';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+CREATE TRIGGER "ClipSelectionWindow_frozen" BEFORE UPDATE ON "ClipSelectionWindow" FOR EACH ROW EXECUTE FUNCTION protect_clip_selection_window();
 
 -- Evidence is append-only. A source replacement allocates a new Project source revision.
 CREATE FUNCTION reject_source_audio_update() RETURNS trigger LANGUAGE plpgsql AS $$
