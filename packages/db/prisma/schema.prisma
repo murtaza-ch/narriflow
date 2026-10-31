@@ -2431,6 +2431,7 @@ model ThumbnailFrameOperation {
   generation         Int                  @default(1)
   deploymentEpoch    Int                  @default(1)
   operationDeadlineAt DateTime?
+  validationState    Json?
   resultAssetId      String?              @db.Uuid
   errorCode          String?
   createdAt          DateTime             @default(now())
@@ -3435,6 +3436,7 @@ model ExecutionArtifact {
   uploadByteLength    BigInt?
   multipartPartChecksums Json?
   multipartCompleteIntentAt DateTime?
+  multipartAbortIntentAt DateTime?
   grantExpiresAt      DateTime
   committedAt         DateTime?
   createdAt           DateTime  @default(now())

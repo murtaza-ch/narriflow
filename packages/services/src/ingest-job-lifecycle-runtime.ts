@@ -1,5 +1,6 @@
 import { readServiceEnvironment } from "./runtime-environment";
 import { getPrismaClient } from "@narriflow/db/client";
+import { createSourceVideoValidator } from "./source-readiness";
 import { IngestJobLifecycle } from "./ingest-job-lifecycle";
 import { getWorkflowRunLifecycle } from "./workflow-run-lifecycle";
 import { getProcessingUsage } from "./processing-usage-runtime";
@@ -10,6 +11,7 @@ export function getIngestJobLifecycle(): IngestJobLifecycle {
     return new IngestJobLifecycle({
       prisma,
       workflow: getWorkflowRunLifecycle(),
+      validateVideo: createSourceVideoValidator(getProcessingUsage()),
       progressRequired: true,
       sourceBucket: readServiceEnvironment().R2_BUCKET ?? "unknown-bucket",
       requireRetryActor: (actor, workspace) =>

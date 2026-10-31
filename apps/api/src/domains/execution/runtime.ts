@@ -20,6 +20,6 @@ export function executorControlKeyRing(environment: Readonly<Record<string, stri
   return ring;
 }
 
-export function createExecutionDependencies(environment: Readonly<Record<string, string | undefined>>, execute: ExecutionRouteDependencies["execute"]): ExecutionRouteDependencies {
-  return { keyRing: () => executorControlKeyRing(environment), nowSeconds: () => Math.floor(Date.now() / 1000), execute };
+export function createExecutionDependencies(environment: Readonly<Record<string, string | undefined>>, execute: ExecutionRouteDependencies["execute"], transfer: ExecutionRouteDependencies["transfer"]): ExecutionRouteDependencies {
+  return { keyRing: () => executorControlKeyRing(environment), nowSeconds: () => Math.floor(Date.now() / 1000), execute, transfer };
 }

@@ -34,8 +34,8 @@ import { planLimits, resolvePricingTier } from "@narriflow/validators";
 import type { ProcessingUsage } from "./processing-usage";
 
 type VideoValidationInput = {
-  ref: { projectId: string; sourceRevision: number };
-  artifact: { binding: SourceVideoBinding };
+  ref: { projectId: string; sourceRevision: number; attemptToken: string };
+  artifact: { artifactId: string; binding: SourceVideoBinding };
   sourceAudio: SourceAudio | null;
 };
 
@@ -47,9 +47,17 @@ export function createSourceVideoValidator(usage: Pick<ProcessingUsage, "release
     const video = sourceVideoBindingSchema.parse(input.artifact.binding);
     if (video.projectId !== input.ref.projectId || video.sourceRevision !== input.ref.sourceRevision) throw new Error("source_revision_superseded");
     if (!input.sourceAudio) {
-      // Uploaded, RSS and direct-media originals can supply their own whole-source
-      // probe. A separately downloaded YouTube video needs the bound audio first.
-      return { kind: video.mediaIdentity.provider === "youtube" ? "waiting_for_audio" : "accepted" };
+      if (Boolean(video.probe.audio) !== Boolean(video.probe.facts.audios.length) || Boolean(video.probe.video) !== Boolean(video.probe.facts.videos.length)) {
+        return { kind: "rejected", failureCode: "source_audio_video_mismatch" };
+      }
+      const assigned = await tx.executionArtifact.findUniqueOrThrow({ where: { id: input.artifact.artifactId }, select: { attemptToken: true, owner: true } });
+      if (assigned.attemptToken !== input.ref.attemptToken) throw new Error("source_revision_superseded");
+      const required = video.probe.audio !== null && await tx.executionArtifact.findFirst({ where: {
+        attemptToken: input.ref.attemptToken, owner: assigned.owner, role: "source_audio",
+      }, select: { id: true } });
+      // The frozen speech plan decides whether audio is required. Supplied,
+      // declined and no-audio plans retain their whole-source video path.
+      return { kind: required ? "waiting_for_audio" : "accepted" };
     }
     const row = input.sourceAudio;
     const audio = sourceAudioBindingSchema.parse({ sourceAudioId: row.id, projectId: row.projectId, sourceRevision: row.sourceRevision,

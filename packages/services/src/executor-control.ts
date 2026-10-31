@@ -72,7 +72,7 @@ function ended(attempt: AttemptRow): ExecutionDisposition | null {
 function assertAssigned(assignment: ArtifactRow | null, attempt: Attempt, command: Extract<ExecutionCommand, { action: "commit-artifact" }>): asserts assignment is ArtifactRow {
   const a = command.artifact;
   const prefix = `execution/${attempt.deploymentEpoch}/${attempt.attemptToken}/${command.fence.owner}/`;
-  if (!assignment || assignment.attemptToken !== attempt.attemptToken || assignment.owner !== command.fence.owner ||
+  if (!assignment || assignment.multipartAbortIntentAt || assignment.attemptToken !== attempt.attemptToken || assignment.owner !== command.fence.owner ||
     assignment.role !== a.role || assignment.bindingHash !== a.bindingHash || !assignment.storageKey.startsWith(prefix) ||
     assignment.contentType !== a.contentType || BigInt(a.byteLength) > assignment.maxBytes) throw new ExecutorControlError("artifact_invalid");
 }
@@ -233,7 +233,7 @@ export function createExecutorControl<TRef, TArtifact extends ExecutorArtifactCo
   }
   /** Read fresh ownership before preparing a work package or scoped storage
    * grant. The caller rechecks after external I/O and never caches this result. */
-  async function authorize(fenceInput: unknown, requireStarted = true): Promise<ExecutorLiveAuthority> {
+  async function withAuthority<T>(fenceInput: unknown, requireStarted: boolean, operation: (tx: Tx, authority: ExecutorLiveAuthority) => Promise<T>): Promise<T> {
     const fence = executorFenceSchema.parse(fenceInput);
     return db.$transaction(async tx => {
       const [epoch] = await tx.$queryRaw<Array<{ epoch: number }>>`SELECT "epoch" FROM "ExecutionEpoch" WHERE "id"=1 FOR SHARE`;
@@ -246,10 +246,14 @@ export function createExecutorControl<TRef, TArtifact extends ExecutorArtifactCo
       if (locked.kind === "terminal" || ended(attempt) || attempt.revokedAt || attempt.owner !== fence.owner ||
         !attempt.leaseExpiresAt || attempt.leaseExpiresAt <= now || attempt.operationDeadlineAt <= now ||
         (requireStarted && (!attempt.processStartedAt || attempt.status !== "running"))) throw new ExecutorControlError("authority_lost");
-      return { fence, functionName: attempt.functionName, leaseExpiresAt: attempt.leaseExpiresAt, operationDeadlineAt: attempt.operationDeadlineAt,
+      return operation(tx, { fence, functionName: attempt.functionName, leaseExpiresAt: attempt.leaseExpiresAt, operationDeadlineAt: attempt.operationDeadlineAt,
         input: attempt.inputStorageKey && attempt.inputEtag && attempt.inputByteLength !== null
-          ? { storageKey: attempt.inputStorageKey, etag: attempt.inputEtag, byteLength: attempt.inputByteLength } : null };
+          ? { storageKey: attempt.inputStorageKey, etag: attempt.inputEtag, byteLength: attempt.inputByteLength } : null });
     });
+  }
+
+  async function authorize(fenceInput: unknown, requireStarted = true): Promise<ExecutorLiveAuthority> {
+    return withAuthority(fenceInput, requireStarted, async (_tx, authority) => authority);
   }
 
   /** A scheduler observation can revoke authority, never grant or extend it.
@@ -312,7 +316,7 @@ export function createExecutorControl<TRef, TArtifact extends ExecutorArtifactCo
     }
     return result.outcome.kind === "sleep" ? result.outcome : { kind: result.outcome.kind };
   }
-  return { execute, expireDeadline, authorize };
+  return { execute, expireDeadline, authorize, withAuthority };
 }
 
 async function clock(tx: Tx) {
