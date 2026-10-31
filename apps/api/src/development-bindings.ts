@@ -18,6 +18,7 @@ import { createProductionApp } from "./runtime";
  * The deployed development Worker owns every durable cloud resource. */
 export class DevelopmentBindings extends WorkerEntrypoint<ApiWorkerBindings> implements DevelopmentCloudPort {
   #bindings() {
+    if (this.env.ADMISSION_STATE === "fenced") throw new Error("execution_fenced");
     if (this.env.APP_ENV !== "development" || this.env.DEV_CLOUD) throw new Error("development_binding_unavailable");
     return this.env;
   }

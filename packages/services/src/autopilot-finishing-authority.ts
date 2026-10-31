@@ -14,11 +14,12 @@ export class AutopilotSourceChanged extends ExpectedDomainFailureError<"autopilo
   constructor() { super({ code: "autopilot_source_changed", kind: "conflict", message: "The Autopilot source settings changed before this import was accepted. Retry with the current settings." }); }
 }
 
-async function lockedRule(tx: Tx, workspaceId: string, recipeId: string, ruleId: string) {
+async function lockedRule(tx: Tx, workspaceId: string, recipeId: string, ruleId: string, forUpdate = false, allowPaused = false) {
   // Recipe edits take Recipe then Rule. Never invert that order during intake.
   await tx.$queryRaw`SELECT "id" FROM "Recipe" WHERE "id" = ${recipeId}::uuid AND "workspaceId" = ${workspaceId}::uuid FOR SHARE`;
-  await tx.$queryRaw`SELECT "id" FROM "AutopilotRule" WHERE "id" = ${ruleId}::uuid AND "workspaceId" = ${workspaceId}::uuid FOR SHARE`;
-  const rule = await tx.autopilotRule.findFirst({ where: { id: ruleId, workspaceId, recipeId, status: { in: ["active", "running"] }, recipe: { deletedAt: null } }, include: { recipe: true } });
+  if (forUpdate) await tx.$queryRaw`SELECT "id" FROM "AutopilotRule" WHERE "id" = ${ruleId}::uuid AND "workspaceId" = ${workspaceId}::uuid FOR NO KEY UPDATE`;
+  else await tx.$queryRaw`SELECT "id" FROM "AutopilotRule" WHERE "id" = ${ruleId}::uuid AND "workspaceId" = ${workspaceId}::uuid FOR SHARE`;
+  const rule = await tx.autopilotRule.findFirst({ where: { id: ruleId, workspaceId, recipeId, status: { in: ["active", "running", ...(allowPaused ? ["paused" as const] : [])] }, recipe: { deletedAt: null } }, include: { recipe: true } });
   if (!rule) throw new AutopilotSourceChanged();
   return rule;
 }
@@ -38,8 +39,15 @@ async function intendedAuthority(tx: Tx, rule: Awaited<ReturnType<typeof lockedR
 /** Freeze source settings and grant intent together before any source I/O.
  * Neither a lease heartbeat nor a later grant renewal replaces this intent. */
 export function readAutopilotImportPlan(database: PrismaClient, expected: RuleSnapshot): Promise<AutopilotImportPlan> {
-  return database.$transaction(async tx => {
-    const live = await lockedRule(tx, expected.workspaceId, expected.recipeId, expected.id);
+  return database.$transaction(tx => capturePlan(tx, expected, false));
+}
+/** Admit a cycle and its child probe under the same transaction. Recipe is
+ * locked before Rule UPDATE, with no SHARE-to-UPDATE lock upgrade. */
+export function lockAutopilotImportPlan(tx: Tx, expected: RuleSnapshot, options?: {allowPaused: boolean}): Promise<AutopilotImportPlan> {
+  return capturePlan(tx, expected, true, options?.allowPaused);
+}
+async function capturePlan(tx: Tx, expected: RuleSnapshot, forUpdate: boolean, allowPaused = false): Promise<AutopilotImportPlan> {
+    const live = await lockedRule(tx, expected.workspaceId, expected.recipeId, expected.id, forUpdate,allowPaused);
     for (const key of ["createdByUserId", "sourceKind", "rssUrl", "titlePrefix", "zoomConnectionId", "zoomTopicFilter"] as const)
       if (live[key] !== expected[key]) throw new AutopilotSourceChanged();
     const fingerprint = await ruleFingerprint(tx, live.id);
@@ -49,7 +57,6 @@ export function readAutopilotImportPlan(database: PrismaClient, expected: RuleSn
       finishing: live.recipe.finishing === null ? null : finishingSettingsSchema.parse(live.recipe.finishing) };
     const authority = await intendedAuthority(tx, live, fingerprint, recipe.finishing);
     return { source: { ruleId: live.id, recipeId: live.recipeId, recipeRevision: recipe.revision, recipeContentRevision: live.recipe.contentRevision, sourceRuleFingerprint: fingerprint, authority }, recipe };
-  });
 }
 export async function readAutopilotImportSource(database: PrismaClient, expected: RuleSnapshot): Promise<AutopilotImportSource> {
   return (await readAutopilotImportPlan(database, expected)).source;

@@ -165,3 +165,12 @@ export async function retryNotificationDeliveryWithinTransaction(tx:Tx,target:No
  await update(tx,target,{status:'pending',generation:value.row.generation+1,attemptCount:0,claimToken:null,leaseExpiresAt:null,submissionStartedAt:null,nextAttemptAt:now,failureCode:null});
  await append(tx,target,(await view(tx,target))!);return true;
 }
+
+/** Terminal parent replay repairs only the mail intents its accepted source
+ * already owns. It cannot create a new notification or extend a child budget. */
+export async function recoverProjectNotificationDeliveries(tx:Tx,input:{projectId:string;sourceId:string;outcomes:readonly string[]}){
+ if(!input.outcomes.length||input.outcomes.length>6||input.outcomes.some(value=>!['clips_ready','no_clips','generation_failed','import_failed','project_expiring','finishing_ready'].includes(value)))throw Error("notification_recovery_invalid");
+ const {epoch}=await readExecutionAdmission(tx);
+ const rows=await tx.notificationLedger.findMany({where:{projectId:input.projectId,sourceId:input.sourceId,outcome:{in:[...input.outcomes]},deploymentEpoch:epoch},orderBy:{id:"asc"},take:6});
+ const ids:string[]=[];for(const row of rows)ids.push((await appendNotificationDelivery(tx,{kind:"project",id:row.id})).dispatchId);return ids;
+}

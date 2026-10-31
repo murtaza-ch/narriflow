@@ -1,3 +1,4 @@
+import {clipPreparationReadyObjectsSchema} from "@narriflow/validators/clip-preparation";
 import { assertExecutionDatabaseTestTarget } from "./execution-db-test-support";
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
@@ -70,6 +71,7 @@ dbDescribe("Targeted serverless domain execution", () => {
       deploymentEpoch: epoch, operationDeadlineAt: deadline, bindingHash: "a".repeat(64), engineHash: "b".repeat(64), inputHash: "c".repeat(64),
       inputStorageKey: `projects/${projectId}/preparations/${crypto.randomUUID()}/${crypto.randomUUID()}.json`, inputEtag: '"preparation"', inputByteLength: 1000n, inputChecksumSha256: "d".repeat(64),
       createdAt: new Date(Math.min(Date.now(), deadline.getTime()-60000)),
+      readyObjects:clipPreparationReadyObjectsSchema.parse({preview:{storageKey:`projects/${projectId}/preparations/${group.clipId}/fixture-preview.mp4`,etag:'"preview"',byteLength:1024,sha256:"f".repeat(64)},peaks:null,manifest:{storageKey:`projects/${projectId}/preparations/${group.clipId}/fixture-manifest.json`,etag:'"manifest"',byteLength:1024,sha256:"f".repeat(64)}}),
       status: "completed", chargedAttempts: 1, completedAt: new Date(), result: { version: 1, fixture: "verified preparation fixture" } } });
     const input = { inputStorageKey: `projects/${projectId}/render-groups/${group.id}/${crypto.randomUUID()}.json`, inputEtag: '"render"', inputByteLength: 2000n, inputChecksumSha256: "e".repeat(64) };
     await db.renderGroup.update({ where: { id: group.id }, data: { ...input, preparationId: preparation.id } });

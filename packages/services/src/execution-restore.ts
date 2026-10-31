@@ -1,3 +1,4 @@
+import { lockRestoreMetadataPlans,readRestoreMetadataBarrier } from "./execution-restore-pages";
 import { assertExecutionSnapshotDatabase, validateExecutionSnapshotEvidence, ExecutionSnapshotError, type ExecutionSnapshotEvidence } from "./execution-snapshot";
 import { executionDispatchReferenceSchema, type ExecutionDispatchReference } from "@narriflow/validators/execution";
 import { executeExecutionPage, readExecutionPageReceipt } from "./execution-page-receipt";
@@ -8,7 +9,7 @@ import { appendExecutionDispatch, executionDispatchIdentity, readExecutionDispat
 export class ExecutionRestoreError extends Error {
   constructor(readonly code: "restore_epoch_changed" | "restore_reference_invalid" | "restore_phase_unavailable" | "restore_page_invalid") { super(code); }
 }
-export const EXECUTION_RESTORE_PHASES = ["attempts", "ingest", "workflows", "render_groups", "selection", "preparation", "preparation_links", "native_validation", "thumbnail", "generated_media", "outbound_probes", "outbound_deliveries", "callbacks", "subscriptions", "publication", "bundle", "dubbing", "uploads", "billing", "library", "finishing", "autopilot", "zoom_notifications", "notifications", "review_notifications", "devices", "redispatch"] as const;
+export const EXECUTION_RESTORE_PHASES = ["attempts", "ingest", "workflows", "render_groups", "selection", "preparation", "preparation_links", "native_validation", "thumbnail", "generated_media", "outbound_probes", "outbound_deliveries", "callbacks", "subscriptions", "publication", "bundle", "dubbing", "uploads", "billing", "library", "finishing", "autopilot", "zoom_notifications", "notifications", "review_notifications", "devices", "redispatch", "redispatch_ingest", "redispatch_workflows", "redispatch_groups", "redispatch_selection", "redispatch_preparation", "redispatch_validation", "redispatch_thumbnail", "redispatch_generated", "redispatch_probes", "redispatch_delivery", "redispatch_callbacks", "redispatch_subscriptions", "redispatch_uploads", "redispatch_billing", "redispatch_library", "redispatch_finishing", "redispatch_publication", "redispatch_pub_receipts", "redispatch_pub_captures", "redispatch_grants", "redispatch_guidance", "redispatch_bundle", "redispatch_dubbing", "redispatch_autopilot", "redispatch_zoom", "redispatch_notifications", "redispatch_review_mail", "redispatch_retention", "redispatch_cleanup", "redispatch_restore_cleanup"] as const;
 
 export type ExecutionRestorePhase = typeof EXECUTION_RESTORE_PHASES[number];
 export interface ExecutionRestorePosition { at: Date; id: string }
@@ -112,7 +113,7 @@ export class ExecutionRestoreService {
     const page = await this.currentPage(tx, record.reference);
     if (!page) throw new ExecutionRestoreError("restore_epoch_changed");
     return { ...page.facts, reference: record.reference, phase: page.phase, after: page.after, admissionOpen: page.state.admissionOpen,
-      receipt: await readExecutionPageReceipt(tx, record.reference, "restore-page") };
+      metadataReady: page.phase.startsWith("redispatch"), receipt: await readExecutionPageReceipt(tx, record.reference, "restore-page") };
   }
   async inspect(dispatchId: string) {
     return this.options.database.$transaction(tx => this.inspectPage(tx, dispatchId));
@@ -151,6 +152,11 @@ export class ExecutionRestoreService {
         if (state.admissionOpen) throw new ExecutionRestoreError("restore_epoch_changed");
         for (let index = EXECUTION_RESTORE_PHASES.indexOf(phase); index < EXECUTION_RESTORE_PHASES.length; index++) {
           const current = EXECUTION_RESTORE_PHASES[index]!, handler = this.options.phases?.[current];
+          if(current==="redispatch" && !phase.startsWith("redispatch")){
+            await lockRestoreMetadataPlans(tx,facts.deploymentEpoch);
+            const continuation=await this.append(tx,facts,current,null,attestation);
+            return {kind:"continue" as const,processed:0,dispatchIds:[continuation.dispatchId]};
+          }
           const needsPreparation = (current === "selection" || current === "preparation") && this.options.prepare?.[current];
           if (needsPreparation && current !== phase) {
             const continuation = await this.append(tx, facts, current, null, attestation);
@@ -164,7 +170,7 @@ export class ExecutionRestoreService {
           if (!Number.isSafeInteger(outcome.processed) || outcome.processed < 0 || outcome.processed > this.limit || ids.length > 127 || (outcome.processed === 0 && (outcome.next || ids.length))) throw new ExecutionRestoreError("restore_page_invalid");
           if (outcome.next) {
             point(outcome.next);
-            if (outcome.next.at > facts.cutoff || (cursor && (outcome.next.at < cursor.at || (outcome.next.at.getTime() === cursor.at.getTime() && outcome.next.id <= cursor.id)))) throw new ExecutionRestoreError("restore_page_invalid");
+            if (outcome.next.at > (current==="redispatch_restore_cleanup" ? (await readRestoreMetadataBarrier(tx,facts.deploymentEpoch,facts.cutoff))?.createdAt ?? facts.cutoff : facts.cutoff) || (cursor && (outcome.next.at < cursor.at || (outcome.next.at.getTime() === cursor.at.getTime() && outcome.next.id <= cursor.id)))) throw new ExecutionRestoreError("restore_page_invalid");
           }
           if (outcome.processed > 0) {
             const nextPhase = outcome.next ? current : EXECUTION_RESTORE_PHASES[index + 1];

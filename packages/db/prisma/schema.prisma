@@ -1330,6 +1330,16 @@ model WorkspaceFolder {
 }
 
 model AutopilotRule {
+  deploymentEpoch     Int                        @default(1)
+  generation          Int                        @default(1)
+  executionCycleId    String?                    @db.Uuid
+  executionDueAt      DateTime?
+  operationDeadlineAt DateTime?
+  executionInput      Json?
+  executionInputHash  String?                    @db.Char(64)
+  executionProbeId    String?                    @unique @db.Uuid
+  executionSelection  Json?
+  executionCursor     Int                        @default(0)
   id                  String                     @id @default(uuid()) @db.Uuid
   workspaceId         String                     @db.Uuid
   createdByUserId     String?                    @db.Uuid
@@ -1381,6 +1391,11 @@ model AutopilotRule {
 /// One member's user-managed Zoom authorization in a Workspace. Disconnection
 /// erases credentials but retains the identity referenced by paused rules.
 model ZoomConnection {
+  authorizedAt          DateTime @default(now())
+  refreshClaimId        String? @db.Uuid
+  refreshLeaseExpiresAt DateTime?
+  refreshStartedAt      DateTime?
+  refreshOutcomeUnknown Boolean @default(false)
   id                    String   @id @default(uuid()) @db.Uuid
   workspaceId           String   @db.Uuid
   userId                String   @db.Uuid
@@ -1420,6 +1435,12 @@ model ZoomOAuthState {
 /// A verified notification, reduced to recording IDs and public metadata.
 /// Leases fence acknowledgements; admission deduplicates each recording per rule.
 model ZoomWebhookJob {
+  deploymentEpoch     Int      @default(1)
+  generation          Int      @default(1)
+  operationDeadlineAt DateTime @default(dbgenerated("(CURRENT_TIMESTAMP + '30 days'::interval)"))
+  ruleCursor          String?  @db.Uuid
+  executionTarget     Json?
+  skippedTargets      Int      @default(0)
   id             String   @id @default(uuid()) @db.Uuid
   eventKey       String   @unique
   payload        Json
@@ -3484,7 +3505,7 @@ model ExecutionDispatch {
   observedDeadlineAt     DateTime?
   deadLetteredAt         DateTime?
   errorCode              String?   @db.VarChar(100)
-  createdAt              DateTime  @default(now())
+  createdAt              DateTime  @default(dbgenerated("(clock_timestamp() AT TIME ZONE 'UTC')"))
   updatedAt              DateTime  @updatedAt
   attempts               ExecutionAttempt[]
 

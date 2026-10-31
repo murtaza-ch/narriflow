@@ -1,9 +1,9 @@
 import type { Prisma, PrismaClient } from "@prisma/client";
-import { executionSnapshotOriginSchema, executionSnapshotQuiescenceSchema, fencedWorkerEvidenceSchema, quiescedExecutionSnapshotSchema,
-  type FencedWorkerEvidence, type ExecutionSnapshotQuiescence, type QuiescedExecutionSnapshot } from "@narriflow/validators/execution-snapshot";
+import { executionSnapshotOriginSchema, executionSnapshotQuiescenceSchema, fencedWorkerEvidenceSchema, restoreWorkerEvidenceSchema, quiescedExecutionSnapshotSchema,
+  type RestoreWorkerEvidence,type FencedWorkerEvidence, type ExecutionSnapshotQuiescence, type QuiescedExecutionSnapshot } from "@narriflow/validators/execution-snapshot";
 
 export class ExecutionSnapshotError extends Error {
-  constructor(readonly code: "restore_snapshot_proof_invalid" | "restore_snapshot_proof_required" | "restore_snapshot_history_unknown" | "restore_worker_not_fenced") { super(code); }
+  constructor(readonly code: "restore_snapshot_proof_invalid" | "restore_snapshot_proof_required" | "restore_snapshot_history_unknown" | "restore_worker_not_fenced" | "restore_worker_mode_invalid") { super(code); }
 }
 const invalid = () => new ExecutionSnapshotError("restore_snapshot_proof_invalid");
 async function hash(value: unknown) { return Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(value)))), byte => byte.toString(16).padStart(2, "0")).join(""); }
@@ -22,20 +22,24 @@ export async function validateExecutionSnapshotEvidence(input: { proof: unknown;
     proof.identitySha256 !== await executionSnapshotIdentityHash(proof) || proof.quiescenceSha256 !== await executionSnapshotQuiescenceHash(proof.quiescence)) throw invalid();
   return { proof, proofHash: await hash(proof), worker: observed.data, localMigrationSha256: input.localMigrationSha256 };
 }
-export async function readFencedWorker(origin: string, options: { fetch?(input: string, init: RequestInit): Promise<Response> } = {}): Promise<FencedWorkerEvidence> {
+type WorkerReadOptions={fetch?(input:string,init:RequestInit):Promise<Response>};
+export async function readFencedWorker(origin:string,options:WorkerReadOptions={}):Promise<FencedWorkerEvidence>{return fencedWorkerEvidenceSchema.parse(await readRestoreWorker(origin,"fenced",options));}
+export function readRestoreResumeWorker(origin:string,metadataReady:boolean,options:WorkerReadOptions={}):Promise<RestoreWorkerEvidence>{return readRestoreWorker(origin,metadataReady?"closed":"fenced",options);}
+async function readRestoreWorker(origin:string,expected:"fenced"|"closed",options:WorkerReadOptions):Promise<RestoreWorkerEvidence>{
+ const badMode=()=>new ExecutionSnapshotError(expected==="fenced"?"restore_worker_not_fenced":"restore_worker_mode_invalid");
   if (!executionSnapshotOriginSchema.safeParse(origin).success) throw invalid();
   let response: Response;
   try { response = await (options.fetch ?? fetch)(`${origin}/api/health`, { redirect: "error", cache: "no-store", signal: AbortSignal.timeout(10_000) }); }
-  catch { throw new ExecutionSnapshotError("restore_worker_not_fenced"); }
-  if (!response.ok || !response.headers.get("cache-control")?.split(",").some(value => value.trim().toLowerCase() === "no-store") || !response.body) throw new ExecutionSnapshotError("restore_worker_not_fenced");
+  catch { throw badMode(); }
+  if (!response.ok || !response.headers.get("cache-control")?.split(",").some(value => value.trim().toLowerCase() === "no-store") || !response.body) throw badMode();
   const reader = response.body.getReader(), chunks: Uint8Array[] = []; let length = 0;
   try {
     for (;;) { const chunk = await reader.read(); if (chunk.done) break; length += chunk.value.byteLength; if (length > 4096) throw invalid(); chunks.push(chunk.value); }
     const bytes = new Uint8Array(length); let offset = 0; for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
     const value: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
     if (!value || typeof value !== "object" || !("ok" in value) || value.ok !== true || !("service" in value) || value.service !== "narriflow-api" || !("version" in value) || !("admissionState" in value)) throw invalid();
-    const parsed = fencedWorkerEvidenceSchema.safeParse({ origin, version: value.version, admissionState: value.admissionState });
-    if (!parsed.success) throw new ExecutionSnapshotError("restore_worker_not_fenced");
+    const parsed = restoreWorkerEvidenceSchema.safeParse({ origin, version: value.version, admissionState: value.admissionState });
+    if (!parsed.success||parsed.data.admissionState!==expected) throw badMode();
     return parsed.data;
   } catch (error) { await reader.cancel().catch(() => {}); if (error instanceof ExecutionSnapshotError) throw error; throw invalid(); }
   finally { reader.releaseLock(); }

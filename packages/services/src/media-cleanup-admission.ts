@@ -1,3 +1,4 @@
+import { lockRestoreMetadataPlans,readRestoreMetadataBarrier } from "./execution-restore-pages";
 import { readExecutionAdmission } from "./execution-admission";
 import type { Prisma, PrismaClient } from "@prisma/client";
 import type { MediaCleanupAdmissionStore, MediaCleanupObligationInput, MediaCleanupAdmissionOptions } from "./media-cleanup-contract";
@@ -9,6 +10,7 @@ export async function admitMediaCleanupObligations(
   options: MediaCleanupAdmissionOptions = {},
 ): Promise<number> {
   if (options.deferDispatch && (!("mediaCleanupObligation" in store) || (await readExecutionAdmission(store)).admissionOpen)) throw new Error("cleanup_restore_requires_closed_admission");
+  if(options.deferDispatch && "mediaCleanupObligation" in store){const state=await store.executionEpoch.findUniqueOrThrow({where:{id:1},select:{epoch:true,changedAt:true}});await lockRestoreMetadataPlans(store,state.epoch);if(await readRestoreMetadataBarrier(store,state.epoch,state.changedAt))throw Error("cleanup_restore_metadata_sealed");}
   const unique = [
     ...new Map(
       obligations.map((obligation) => [

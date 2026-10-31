@@ -4,6 +4,7 @@ import { Prisma, type OutboundProbe, type PrismaClient } from "@prisma/client";
 import { MAX_RSS_RESULT_BYTES, outboundRssInputSchema, rssFeedSnapshotSchema, type OutboundRssInput } from "@narriflow/validators/outbound-probe";
 import type { ExecutionDeadline, ExecutionDispatchReference } from "@narriflow/validators/execution";
 import { appendExecutionDispatch, readExecutionDispatch } from "./execution-dispatch";
+import { wakeAutopilotProbe } from "./autopilot-execution";
 import type { ActorScope } from "./actor-scope";
 import { roleHasWorkspaceCapability, workspaceAllowsCapability } from "@narriflow/validators";
 import { assertPublicHttpUrl } from "./url-policy";
@@ -54,12 +55,18 @@ export class OutboundProbeService implements ExecutorDomainControl<OutboundProbe
   }
 
   async admit(scope: ActorScope, raw: OutboundRssInput, requestKey?: string) {
+    const admitted = await this.database.$transaction(tx => this.admitWithinTransaction(tx, scope, raw, requestKey));
+    await this.confirm(admitted.row.id, admitted.ids);
+    return publicJob(admitted.row);
+  }
+
+  /** An accepted source cycle freezes this child in the same admission commit. */
+  async admitWithinTransaction(tx: Tx, scope: ActorScope, raw: OutboundRssInput, requestKey?: string) {
     const input = outboundRssInputSchema.parse(raw);
     input.url = assertPublicHttpUrl(input.url).href;
     // Explicit callers may bind a maintenance occurrence. Interactive previews
     // share one immutable result for fifteen minutes; SQL remains authoritative.
     if (requestKey && requestKey.length > 256) throw new OutboundProbeError("outbound_probe_conflict");
-    const admitted = await this.database.$transaction(async tx => {
       const epoch = await readExecutionAdmission(tx);
       await tx.$queryRaw`SELECT "id" FROM "Workspace" WHERE "id"=${scope.workspaceId}::uuid FOR SHARE`;
       await this.actor(tx, scope);
@@ -76,9 +83,6 @@ export class OutboundProbeService implements ExecutorDomainControl<OutboundProbe
         requestFingerprint, input: input as Prisma.InputJsonValue, inputHash: outboundProbeExecutionInputHash({id,deploymentEpoch:epoch.epoch,requestFingerprint}),
         deploymentEpoch: epoch.epoch, createdAt: clock, operationDeadlineAt: new Date(clock.getTime() + deadlineMs) } });
       return { row, ids: await this.registerJob(tx, row) };
-    });
-    await this.confirm(admitted.row.id, admitted.ids);
-    return publicJob(admitted.row);
   }
 
   async get(scope: ActorScope, id: string) {
@@ -200,7 +204,7 @@ export class OutboundProbeService implements ExecutorDomainControl<OutboundProbe
   private async wake(tx: Tx, job: OutboundProbe, clock: Date, wakeKind: string, lease?: Date) {
     const dispatch = await appendExecutionDispatch(tx, { deploymentEpoch: job.deploymentEpoch, generation: job.generation, kind: "operation_driver", subject: { kind: "outbound_probe", id: job.id },
       inputHash: job.inputHash, dueAt: clock, wakeKind, ...(lease ? { deadlineKind: "lease" as const, observedDeadlineAt: lease } : {}) });
-    return { dispatchIds: [dispatch.reference.dispatchId] };
+    return { dispatchIds: [dispatch.reference.dispatchId, ...await wakeAutopilotProbe(tx, job.id)] };
   }
 
   private async finishFailure(tx: Tx, job: OutboundProbe, clock: Date, errorCode: string, retryable: boolean) {
@@ -231,6 +235,11 @@ export class OutboundProbeService implements ExecutorDomainControl<OutboundProbe
     if (due > clock) return { kind: "sleep", dueAt: due };
     const wakes = await this.finishFailure(tx, job, clock, "outbound_delivery_deadline", observation.kind === "lease");
     return { kind: "expired", dispatchIds: wakes.dispatchIds };
+  }
+
+  async queueExecutionWithinTransaction(tx: Tx, id: string): Promise<string[]> {
+    const { epoch } = await readExecutionAdmission(tx), row = await tx.outboundProbe.findUnique({ where: { id } });
+    return row?.deploymentEpoch === epoch ? this.registerJob(tx,row) : [];
   }
 
   private async registerJob(tx: Tx, row: OutboundProbe) {

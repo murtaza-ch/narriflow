@@ -107,8 +107,10 @@ suite("Execution restore authority", () => {
     const begun = await restore.begin(input);
     expect((await restore.inspectCurrent()).restore?.reference).toEqual(begun.reference);
     expect(await restore.inspect(begun.reference.dispatchId)).toMatchObject({ reference: begun.reference, snapshotEpoch: input.expectedEpoch, fenceAboveEpoch: input.expectedEpoch, deploymentEpoch: input.expectedEpoch + 1, admissionOpen: false, receipt: null });
-    await restore.run(begun.reference);
-    expect(await restore.inspect(begun.reference.dispatchId)).toMatchObject({ receipt: { kind: "complete", processed: 0, dispatchIds: [] } });
+    const boundary=await restore.run(begun.reference);
+    expect(await restore.inspect(begun.reference.dispatchId)).toMatchObject({metadataReady:false,receipt:{kind:"continue",processed:0,dispatchIds:boundary.dispatchIds}});
+    const next=(await readExecutionDispatch(database,boundary.dispatchIds[0]!))!.reference;expect((await restore.inspect(next.dispatchId)).metadataReady).toBe(true);
+    expect(await restore.run(next)).toMatchObject({kind:"complete",processed:0,dispatchIds:[]});
     expect((await database.executionEpoch.findUniqueOrThrow({ where: { id: 1 } })).epoch).toBe(input.expectedEpoch + 1);
   });
   test("higher live epochs, changed migration facts and any source-epoch permission reject before a new restore bump", async () => {

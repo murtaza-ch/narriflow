@@ -1,6 +1,6 @@
 # Execution restore
 
-Ticket 20 remains incomplete. Domain recovery adapters and deployed maintenance
+Ticket 20 remains incomplete. Production factory composition and deployed maintenance/restore
 acceptance must pass before using this procedure against shared development.
 The operator CLI is implemented and tested; no restore command reopens admission.
 
@@ -47,19 +47,29 @@ intent. This procedure captures those facts before replacing the database.
    `rs2` restore obligation in a standalone transaction. Registration follows commit.
    Retry the same proof after response loss; never invent another source pair.
    `inspect` discovers the exact initial dispatch if begin's response was uncertain.
-8. Follow exact page receipts using `inspect --dispatch-id`. Domain recovery must
+8. Follow exact page receipts using `inspect --dispatch-id` while the Worker remains
+   fenced. Stop at an exact page reporting `metadataReady: true` (`redispatch`).
+   This committed boundary seals deferred object plans before any product
+   registration. Successful object transforms remain metadata work; every PUT
+   fences its planned key and refreshes a bounded physical-write drain. Domain recovery must
    preserve charged counts, deadlines, usage settlements, provider IDs and audit
    history. Successful selection results require validation and re-encoding under
    the new binding; old results never authorize a repeated provider request.
-9. After a repaired deployment, explicit `resume --dispatch-id` may restart a known
+9. At that boundary, deploy the Worker in `closed` mode, keeping database admission
+   closed and Cron/legacy consumers stopped. This allows current callbacks and
+   normal registration without admitting new intake. Resume only the exact
+   metadata-ready page. The CLI requires `fenced` health for earlier metadata
+   pages and `closed` health for redispatch; `open` health is refused. No command
+   changes either mode or reopens intake.
+10. After a repaired deployment, explicit `resume --dispatch-id` may restart a known
    errored or terminated instance. The CLI proves the current registered source
-   pair, describes the deterministic instance, rechecks the fenced Worker and
+   pair, describes the deterministic instance, rechecks the phase-appropriate Worker mode and
    database authority, then records the after-description. An already-completed
    instance requires its exact committed page receipt. An unconfirmed restart
    returns a typed failure instead of creating another restore or epoch. A new
    fenced deployment version is allowed for this already-admitted repair.
-10. Verify the complete recovery map and platform gates before separately allowing
-    callbacks and reopening intake. Keep uncertain provider outcomes parked with
+11. Verify every redispatch cursor/receipt, the complete recovery map and platform
+    gates before resuming Cron and separately reopening intake. Keep uncertain provider outcomes parked with
     their recorded checkpoint. Do not reset budgets or deadlines to pass a gate.
 
 Use a private operator env file with explicit `DIRECT_URL` and `API_ORIGIN`.
@@ -113,3 +123,14 @@ trigger/describe/restart output. Metadata is passed as raw argv. The installed
 source and [Cloudflare Workflow command reference](https://developers.cloudflare.com/workers/wrangler/commands/workflows/)
 were checked; no restore command has been run against shared resources as part
 of the local acceptance tests.
+
+The post-cutoff cleanup-plan page uses the exact metadata barrier insertion time
+as its fixed horizon. Planning and barrier insertion serialize on a short advisory
+lock; no new deferred plan can start after sealing. Dispatch audit timestamps use
+the actual database insertion clock, not transaction start time. This makes the
+interval include every admitted restore PUT plan without backdating rows.
+
+Privacy deletion proofs describe distinct exact keys acknowledged by DELETE and
+bytes known from committed metadata. They do not claim an R2 object inventory.
+Unknown paid/provider outcomes remain parked; counters, provider identifiers and
+settled usage are never reset to make recovery or purge pass.

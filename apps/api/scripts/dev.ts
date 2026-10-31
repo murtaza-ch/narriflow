@@ -17,7 +17,7 @@ if (!["postgres:", "postgresql:"].includes(direct.protocol) || direct.hostname.i
   direct.hostname !== database.hostname.replace("-pooler.", ".") || direct.pathname !== database.pathname) throw new Error("Development database URLs must select the same direct database");
 if (!["localhost", "127.0.0.1", "::1"].includes(direct.hostname)) direct.searchParams.set("sslmode", "verify-full");
 
-const names = [...(await readFile(join(api, ".env"), "utf8")).matchAll(/^\s*(?:export\s+)?([A-Z][A-Z0-9_]*)\s*=/gm)].map(match => match[1]!);
+const names = [...(await readFile(join(api, ".dev.vars"), "utf8")).matchAll(/^\s*(?:export\s+)?([A-Z][A-Z0-9_]*)\s*=/gm)].map(match => match[1]!);
 const settings: Record<string, string> = {};
 for (const name of names) if (!["DATABASE_URL", "DIRECT_URL"].includes(name) && process.env[name] !== undefined) settings[name] = process.env[name]!;
 settings.APP_ENV = "development";

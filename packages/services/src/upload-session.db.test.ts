@@ -16,7 +16,8 @@ import { buildGenerationContentPack } from "@narriflow/validators";
 import { encodeOperationId } from "./operation-status";
 import { recipeService } from "./recipe.service";
 import { listWorkspaceEvents } from "./workspace-event";
-import { createMediaCleanupWorker, defaultMediaCleanupConfig, prismaMediaCleanupStore } from "./media-cleanup";
+import { createMediaCleanupControl,queueMediaCleanupWithinTransaction } from "./media-cleanup-control";
+import { mediaCleanupObjectRetainUntil } from "./media-cleanup-holds";
 import {
   createUploadSessionModule,
   defaultUploadSessionConfig,
@@ -1157,7 +1158,6 @@ dbDescribe("Upload Session PostgreSQL invariants", () => {
     const user = await prisma.user.create({ data: { clerkId: `upload-late-put:${randomUUID()}` } });
     const workspace = await prisma.workspace.create({ data: { name: "Late PUT", ownerUserId: user.id } });
     const at = new Date();
-    let clock = at;
     const key = `late-put/${randomUUID()}.mp4`;
     const reconciliationAttemptId = randomUUID();
     const session = await prisma.uploadSession.create({ data: {
@@ -1182,52 +1182,38 @@ dbDescribe("Upload Session PostgreSQL invariants", () => {
       // recreates it. The durable obligation survives deleting its session.
       const stored = new Set([key]);
       await prisma.uploadSession.delete({ where: { id: session.id } });
-      const worker = createMediaCleanupWorker({
-        store: prismaMediaCleanupStore,
-        storage: { async deleteExact(objectKey) { stored.delete(objectKey); } },
-        config: defaultMediaCleanupConfig(),
-        now: () => clock,
-      });
-      await worker.processDue();
-      expect(stored.has(key)).toBe(true);
-      clock = obligation.nextAttemptAt;
-      await worker.processDue();
-      expect(stored.has(key)).toBe(false);
-      expect((await prisma.mediaCleanupObligation.findUniqueOrThrow({ where: { id: obligation.id } })).completedAt).not.toBeNull();
+      let deletes=0;const controller=createMediaCleanupControl({database:prisma,register:async()=>{},hold:mediaCleanupObjectRetainUntil,storage:{async deleteExact(objectKey){deletes++;stored.delete(objectKey);}}});
+      const reference=(await prisma.$transaction(tx=>queueMediaCleanupWithinTransaction(tx,obligation.id)))!;
+      expect(await controller.run(reference)).toMatchObject({kind:"wait",until:obligation.nextAttemptAt});
+      expect(stored.has(key)).toBe(true);expect(deletes).toBe(0);expect((await prisma.mediaCleanupObligation.findUniqueOrThrow({where:{id:obligation.id}})).completedAt).toBeNull();
+
     } finally {
       await prisma.workspace.delete({ where: { id: workspace.id } });
       await prisma.user.delete({ where: { id: user.id } });
     }
   })));
 
-  test("single-PUT cleanup retains its exact key when transfer finishes after the old 70-minute window", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
+  test("exact cleanup deletes only its historically drained single-PUT key after a late transfer", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const user = await prisma.user.create({ data: { clerkId: `upload-very-late:${randomUUID()}` } });
     const workspace = await prisma.workspace.create({ data: { name: "In-flight PUT", ownerUserId: user.id } });
-    const at = new Date();
-    let clock = at;
+    const at = new Date(Date.now()-48*60*60_000);
     const key = `late-single-put/${randomUUID()}.mp4`;
     const session = await prisma.uploadSession.create({ data: {
       workspaceId: workspace.id, actorUserId: user.id, clientIdempotencyKey: randomUUID(), immutableInputFingerprint: "very-late-put",
       preallocatedProjectId: randomUUID(), title: "In-flight PUT", fileName: "large.mp4", fileSizeBytes: 5_363_466_240n, contentType: "video/mp4",
-      browserFingerprint: "very-late-put", generationSettings: {}, transferKind: "single", storageKey: key, status: "finalizing",
+      browserFingerprint: "very-late-put", generationSettings: {}, transferKind: "single", storageKey: key, status: "finalizing",createdAt:at,
       expiresAt: new Date(at.getTime() + 60_000), hardExpiresAt: new Date(at.getTime() + 120_000),
     } });
     try {
       await prismaUploadSessionPersistence.recordFailure({ sessionId: session.id, status: "failed", failureCode: "upload_size_mismatch", updatedAt: at });
       await prisma.uploadSession.delete({ where: { id: session.id } });
-      const stored = new Set<string>();
-      const worker = createMediaCleanupWorker({ store: prismaMediaCleanupStore, storage: { async deleteExact(objectKey) { stored.delete(objectKey); } }, config: defaultMediaCleanupConfig(), now: () => clock });
-      // The former one-shot cleanup succeeds on a missing object here.
-      clock = new Date(at.getTime() + 70 * 60_000);
-      await worker.processDue();
-      // A request accepted before grant expiry finishes two hours later.
-      clock = new Date(at.getTime() + 2 * 60 * 60_000);
-      stored.add(key);
-      await worker.processDue();
-      clock = new Date(at.getTime() + 24 * 60 * 60_000);
-      await worker.processDue();
-      expect(stored.has(key)).toBe(false);
-      expect(await prisma.mediaCleanupObligation.findFirstOrThrow({ where: { objectKey: key } })).toMatchObject({ completedAt: expect.any(Date) });
+      // The grant and its bounded late-write drain ended a day ago. This
+      // stored key represents a transfer that finished after the old70min.
+      const stored=new Set([key]);const obligation=await prisma.mediaCleanupObligation.findFirstOrThrow({where:{objectKey:key}});
+      expect(obligation.nextAttemptAt.getTime()).toBeLessThan(Date.now());
+      const controller=createMediaCleanupControl({database:prisma,register:async()=>{},hold:mediaCleanupObjectRetainUntil,storage:{async deleteExact(objectKey){expect(objectKey).toBe(key);stored.delete(objectKey);}}});
+      const reference=(await prisma.$transaction(tx=>queueMediaCleanupWithinTransaction(tx,obligation.id)))!;expect(await controller.run(reference)).toMatchObject({kind:"complete"});expect(stored.has(key)).toBe(false);expect(await prisma.mediaCleanupObligation.findUniqueOrThrow({where:{id:obligation.id}})).toMatchObject({completedAt:expect.any(Date)});
+
     } finally {
       await prisma.workspace.delete({ where: { id: workspace.id } });
       await prisma.user.delete({ where: { id: user.id } });

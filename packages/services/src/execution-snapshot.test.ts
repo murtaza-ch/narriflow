@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { executionSnapshotIdentityHash, executionSnapshotQuiescenceHash, validateExecutionSnapshotEvidence, readFencedWorker } from "./execution-snapshot";
+import { executionSnapshotIdentityHash, executionSnapshotQuiescenceHash, validateExecutionSnapshotEvidence, readFencedWorker,readRestoreResumeWorker } from "./execution-snapshot";
 
 const worker = { origin: "https://api.narriflow.test", version: "fenced-version-1", admissionState: "fenced" as const };
 async function proof() {
@@ -27,4 +27,10 @@ test("the fresh Worker proof uses explicit origin, no redirects, bounded metadat
   expect(observed).toEqual(worker);
   for (const state of ["open", "closed"]) await expect(readFencedWorker(worker.origin, { fetch: async () => Response.json({ ok: true, service: "narriflow-api", version: worker.version, admissionState: state }, { headers: { "cache-control": "no-store" } }) })).rejects.toMatchObject({ code: "restore_worker_not_fenced" });
   await expect(readFencedWorker(`${worker.origin}/wrong`, { fetch: async () => { throw new Error("Must not fetch"); } })).rejects.toMatchObject({ code: "restore_snapshot_proof_invalid" });
+});
+
+test("restore resume requires fenced metadata work and closed redispatch; closed mode never attests a snapshot",async()=>{
+ const origin="https://api.narriflow.test",health=(admissionState:string)=>({fetch:async()=>Response.json({ok:true,service:"narriflow-api",version:"version-2",admissionState},{headers:{"cache-control":"no-store"}})});
+ expect((await readRestoreResumeWorker(origin,false,health("fenced"))).admissionState).toBe("fenced");expect((await readRestoreResumeWorker(origin,true,health("closed"))).admissionState).toBe("closed");
+ await expect(readRestoreResumeWorker(origin,true,health("fenced"))).rejects.toMatchObject({code:"restore_worker_mode_invalid"});await expect(readRestoreResumeWorker(origin,true,health("open"))).rejects.toMatchObject({code:"restore_worker_mode_invalid"});await expect(readFencedWorker(origin,health("closed"))).rejects.toMatchObject({code:"restore_worker_not_fenced"});
 });

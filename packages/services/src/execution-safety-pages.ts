@@ -39,6 +39,6 @@ export const recoverSelectionWakePage = recovery("ClipSelectionWindow", "clip_se
 export const recoverPreparationWakePage = recovery("ClipPreparation", "clip_preparation", Prisma.sql`status IN ('queued','running')`);
 export const recoverNativeValidationWakePage = recovery("NativeValidationJob", "native_validation", Prisma.sql`status IN ('queued','processing')`);
 export const recoverThumbnailWakePage = recovery("ThumbnailFrameOperation", "thumbnail_frame", Prisma.sql`status IN ('queued','processing')`);
-export const recoverGeneratedMediaWakePage = recovery("GeneratedMediaJob", "generated_media", Prisma.sql`status IN ('queued','running','waiting')`);
+export const recoverGeneratedMediaWakePage = recovery("GeneratedMediaJob", "generated_media", Prisma.sql`status IN ('queued','running','waiting') AND NOT "outcomeUnknown"`);
 export const recoverOutboundProbeWakePage = recovery("OutboundProbe", "outbound_probe", Prisma.sql`status IN ('queued','processing')`);
 export const recoverOutboundDeliveryWakePage = recovery("OutboundDelivery", "outbound_delivery", Prisma.sql`status IN ('queued','processing')`);
