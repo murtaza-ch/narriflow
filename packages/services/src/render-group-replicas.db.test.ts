@@ -45,6 +45,15 @@ suite("Render Group independent native invocations", () => {
     expect(await db.workflowRun.findUniqueOrThrow({ where: { id: runId } })).toMatchObject({ attemptId: null, attemptCount: 0, leaseOwner: null, leaseExpiresAt: null });
   }
   const completed = { sizeBytes: 1024, durationSec: 10 };
+  async function actualStart(owner: Awaited<ReturnType<typeof acquireFixtureRenderGroup>>) {
+    const child = Bun.spawn([process.execPath, "--no-env-file", "-e", 'const input=await Bun.stdin.text();if(input!=="acknowledged"||process.env.DATABASE_URL||process.env.DIRECT_URL)process.exit(23);'],
+      { stdin: "pipe", stdout: "ignore", stderr: "ignore", env: { PATH: process.env.PATH ?? "" } });
+    try {
+      process.kill(child.pid, 0);
+      expect((await owner.send({ action: "process-start", fence: owner.fence })).disposition).toBe("started");
+      child.stdin.write("acknowledged");child.stdin.end();expect(await child.exited).toBe(0);
+    } finally { if (child.exitCode === null) { child.kill("SIGKILL");await child.exited; } }
+  }
 
   test("four registered groups finish independently with one committed output per member and no parent owner", bindServiceTestEnvironment(async () => {
     const f = await fixture(4);
@@ -101,15 +110,44 @@ suite("Render Group independent native invocations", () => {
     await assertUnleased(f.run.id);
   }));
 
-  test("a native release before process start consumes no media attempt and a successor starts exactly once", bindServiceTestEnvironment(async () => {
+  test.each(["shutdown", "startup_rejected"] as const)("a native %s release before process start consumes no media attempt and a successor starts exactly once", reason => bindServiceTestEnvironment(async () => {
     const f = await fixture(), unstarted = await acquireFixtureRenderGroup(db, f.refs[0]!, { start: false });
-    await unstarted.send({ action: "release", fence: unstarted.fence, reason: "shutdown" });
+    await unstarted.send({ action: "release", fence: unstarted.fence, reason });
     expect(await db.renderGroup.findUniqueOrThrow({ where: { id: f.groups[0]!.id } })).toMatchObject({ status: "queued", chargedAttemptCount: 0 });
     expect(await db.renderGroupExecution.findFirstOrThrow({ where: { groupId: f.groups[0]!.id } })).toMatchObject({ charged: false, result: "released" });
     await db.renderGroup.update({ where: { id: f.groups[0]!.id }, data: { nextAttemptAt: new Date(0) } });
     const next = await acquireFixtureRenderGroup(db, await groupReference(f.groups[0]!.id));for (const id of next.attempt.memberIds) await next.complete(id, completed);
     expect(await f.workflow.settleRenderRun(f.reference)).toMatchObject({ kind: "settled", outcome: { status: "completed", succeeded: 2 } });
     expect(await db.renderGroup.findUniqueOrThrow({ where: { id: f.groups[0]!.id } })).toMatchObject({ chargedAttemptCount: 1 });
+  })());
+  test("shutdown after an actual child start retains its charge and completed sibling through exact release replay", bindServiceTestEnvironment(async () => {
+    const f = await fixture(), first = await acquireFixtureRenderGroup(db, f.refs[0]!, { start: false });
+    await actualStart(first);
+    const [success, pending] = first.attempt.memberIds;
+    await first.complete(success!, completed);
+    const preserved = await db.clipRender.findUniqueOrThrow({ where: { id: success! } });
+    const release = { action: "release" as const, fence: first.fence, reason: "shutdown" as const }, receipt = fixtureExecutionRequest();
+    first.loseNextWakeAcknowledgement();await expect(first.send(release, receipt)).rejects.toThrow("fixture_render_wake_ack_lost");
+    expect(await db.renderGroup.findUniqueOrThrow({ where: { id: f.groups[0]!.id } })).toMatchObject({ status: "queued", chargedAttemptCount: 1 });
+    const history = await db.renderGroupExecution.findUniqueOrThrow({ where: { token: first.fence.attemptToken } });
+    expect(history).toMatchObject({ charged: true, result: "released" });expect(history.startedAt).not.toBeNull();
+    const generic = await db.executionAttempt.findUniqueOrThrow({ where: { attemptToken: first.fence.attemptToken } });
+    expect(generic.processStartedAt).not.toBeNull();
+    expect((await first.send(release, receipt)).disposition).toBe("released");
+    expect(await db.renderGroupExecution.findUniqueOrThrow({ where: { token: first.fence.attemptToken } })).toEqual(history);
+    expect(await db.executionAttempt.findUniqueOrThrow({ where: { attemptToken: first.fence.attemptToken } })).toEqual(generic);
+    expect(await db.clipRender.findUniqueOrThrow({ where: { id: success! } })).toEqual(preserved);
+    await db.renderGroup.update({ where: { id: f.groups[0]!.id }, data: { nextAttemptAt: new Date(0) } });
+    const next = await acquireFixtureRenderGroup(db, await groupReference(f.groups[0]!.id), { start: false });
+    await actualStart(next);
+    expect(await db.renderGroup.findUniqueOrThrow({ where: { id: f.groups[0]!.id } })).toMatchObject({ chargedAttemptCount: 2 });
+    await expect(Promise.resolve(db.renderGroupExecution.update({ where: { token: next.fence.attemptToken }, data: { charged: false } }))).rejects.toThrow();
+    await expect(Promise.resolve(db.renderGroup.update({ where: { id: f.groups[0]!.id }, data: { chargedAttemptCount: 1 } }))).rejects.toThrow();
+    await next.complete(pending!, completed);
+    expect(await f.workflow.settleRenderRun(f.reference)).toMatchObject({ kind: "settled", outcome: { status: "completed", succeeded: 2 } });
+    expect(await db.clipRender.findUniqueOrThrow({ where: { id: success! } })).toEqual(preserved);
+    expect(await db.renderGroup.findUniqueOrThrow({ where: { id: f.groups[0]!.id } })).toMatchObject({ chargedAttemptCount: 2 });
+    await assertUnleased(f.run.id);
   }));
   test("replaying parent preparation preserves frozen groups and a changed ledger tuple cannot repartition them", bindServiceTestEnvironment(async () => {
     const f = await fixture(2), before = await db.renderGroupMember.findMany({ where: { workflowRunId: f.run.id }, orderBy: { clipRenderId: "asc" } });
