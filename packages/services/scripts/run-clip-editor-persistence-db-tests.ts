@@ -66,6 +66,7 @@ try {
     DATABASE_URL: migrationUrl.toString(),
     DIRECT_URL: migrationUrl.toString(),
   });
+  await pool.query(`UPDATE "${schema}"."ExecutionEpoch" SET "admissionOpen" = true WHERE id = 1`);
   const testEnv = {
       ALLOW_CLIP_EDITOR_PERSISTENCE_DB_TESTS: "1",
       DATABASE_URL: testUrl.toString(),

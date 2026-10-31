@@ -98,6 +98,7 @@ try {
       DIRECT_URL: migrationUrl.toString(),
     });
   }
+  await pool.query(`UPDATE "${schema}"."ExecutionEpoch" SET "admissionOpen" = true WHERE id = 1`);
   const testCommand = [
     "bun",
     "test",

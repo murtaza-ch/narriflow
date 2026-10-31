@@ -1,4 +1,5 @@
 import { readServiceEnvironment } from "./runtime-environment";
+import { requireExecutionAdmissionOpen } from "./execution-admission";
 import { accessibleProjectWhere } from "./project-access";
 import type { ActorScope } from "./actor-scope";
 import { getPrismaClient } from "@narriflow/db/client";
@@ -257,6 +258,7 @@ export class ContentSuiteService {
 
     const model = readServiceEnvironment().OPENAI_CONTENT_MODEL ?? readServiceEnvironment().OPENAI_CLIP_MODEL ?? "gpt-5.4-mini";
 
+    await prisma.$transaction(requireExecutionAdmissionOpen);
     const response = await fetch("https://api.openai.com/v1/responses", {
       method: "POST",
       headers: {

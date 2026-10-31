@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { readExecutionAdmission, assertExecutionAdmissionOpen } from "./execution-admission";
 import {
 	Prisma,
 	type ExecutionArtifact,
@@ -406,7 +407,8 @@ export class GeneratedMediaExecution
 			}),
 		);
 		const admitted = await this.database.$transaction(async (tx) => {
-			const epoch = await this.epoch(tx);
+			const admission = await readExecutionAdmission(tx);
+			const epoch = admission.epoch;
 			await tx.$queryRaw`SELECT "id" FROM "Workspace" WHERE "id"=${scope.workspaceId}::uuid FOR SHARE`;
 			const current = await this.actor(
 				tx,
@@ -468,6 +470,7 @@ export class GeneratedMediaExecution
 					ids: await this.register(tx, known),
 				};
 			}
+			assertExecutionAdmissionOpen(admission);
 			const id = randomUUID(),
 				clock = await now(tx);
 			const reservation = await reserveGenerationUsage(tx, {

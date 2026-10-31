@@ -20,7 +20,7 @@ testUrl.searchParams.delete("schema");
 testUrl.searchParams.set("options", `-csearch_path=${schema},public`);
 const requestedTests = Bun.argv.slice(2);
 const tests = requestedTests.length ? requestedTests : [
-  "execution-ledger", "execution-dispatch", "executor-control", "execution-transfer", "source-audio-admission",
+  "execution-ledger", "execution-admission", "execution-dispatch", "executor-control", "execution-transfer", "source-audio-admission",
   "targeted-execution", "targeted-ingest-execution", "targeted-workflow-execution", "clip-preparation", "clip-preparation-ledger", "clip-selection", "clip-selection-window", "clip-selection-preparation", "clip-selection-hyperdrive-gate", "native-validation", "thumbnail-frame-execution", "generated-media-execution",
   "outbound-probe", "outbound-delivery", "webhook-subscription", "notification-dispatch", "publication-execution", "modal-dispatch", "progress-outbox",
 ].map(name => `packages/services/src/${name}.db.test.ts`);
@@ -41,7 +41,7 @@ try {
   await run(["bun", "run", "--cwd", "packages/db", "prisma:migrate:deploy"], {
     DATABASE_URL: migrationUrl.toString(), DIRECT_URL: migrationUrl.toString(),
   });
-  await run(["bun", "test", ...tests], {
+  const testEnvironment = {
     ALLOW_SERVERLESS_DB_TESTS: "1", ALLOW_EXECUTION_CONTROL_DB_TESTS: "1", ALLOW_EXECUTION_TRANSFER_DB_TESTS: "1", ALLOW_SOURCE_AUDIO_DB_TESTS: "1",
     SERVERLESS_TEST_DATABASE_URL: testUrl.toString(),
     SERVERLESS_TEST_DATABASE_SCHEMA: schema,
@@ -55,7 +55,16 @@ try {
       VIZARD_EXPANSION_TEST_DATABASE_URL: testUrl.toString(),
       VIZARD_EXPANSION_TEST_DATABASE_SCHEMA: schema,
     } : {}),
-  });
+  };
+  // Verify the actual migration's closed seed before operational fixture
+  // setup. Service gates exercise an explicitly opened deployment.
+  const ledger = "packages/services/src/execution-ledger.db.test.ts";
+  if (tests.includes(ledger)) await run(["bun", "test", ledger], testEnvironment);
+  const remaining = tests.filter(path => path !== ledger);
+  if (remaining.length) {
+    await pool.query(`UPDATE "${schema}"."ExecutionEpoch" SET "admissionOpen" = true WHERE id = 1`);
+    await run(["bun", "test", ...remaining], testEnvironment);
+  }
 } finally {
   await pool.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
   await pool.end();

@@ -15,4 +15,10 @@
 
 Pending implementation and verification.
 
-Remaining admission gate: `ExecutionEpoch.admissionOpen` exists but is not yet enforced by request-path admissions. Cutover must wire the authoritative close/open check across admission paths before relying on this switch, verify old consumers cannot admit while closed, and reopen once only after migration and runtime gates pass. The lifecycle preparation does not introduce a test-only bypass for this flag.
+The shared transaction fence now enforces `ExecutionEpoch.admissionOpen` across
+the mapped new-work service seams, while exact replay and already-admitted
+completion remain available. See the [entrypoint map and PostgreSQL evidence](../evidence/admission-fence-20261031.md).
+Cutover still requires the deployed close/open smokes, merged manual Publish again
+guard, finishing-driver parking and removal of obsolete scanner admissions before
+relying on this switch. Verify old consumers cannot admit while closed, and reopen
+once only after migration and runtime gates pass. Product code has no test bypass.
