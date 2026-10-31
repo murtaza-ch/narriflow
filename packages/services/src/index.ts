@@ -695,3 +695,5 @@ export * from "./outbound-delivery-execution";
 export * from "./notification-body-storage";
 
 export * from "./outbound-delivery-runtime";
+
+export { clipPreparationBinding, encodeClipPreparationInput, decodeClipPreparationInput } from "./clip-preparation-input";

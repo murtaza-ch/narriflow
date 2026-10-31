@@ -41,6 +41,10 @@
     "./outbound-delivery": {
       "types": "./src/outbound-delivery.ts",
       "default": "./src/outbound-delivery.ts"
+    },
+    "./clip-preparation": {
+      "types": "./src/clip-preparation.ts",
+      "default": "./src/clip-preparation.ts"
     }
   },
   "scripts": {

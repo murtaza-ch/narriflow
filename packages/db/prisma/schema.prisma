@@ -3668,3 +3668,37 @@ model OutboundDelivery {
   @@index([targetKind, targetId, createdAt])
   @@index([status, retryAt])
 }
+
+/// One immutable preview/layout preparation per source/editor/engine binding.
+/// Generic ExecutionAttempt owns invocation authority; this row owns its domain budget.
+model ClipPreparation {
+  id String @id @default(uuid()) @db.Uuid
+  projectId String @db.Uuid
+  clipId String @db.Uuid
+  sourceRevision Int
+  editorRevision Int
+  bindingHash String @db.Char(64)
+  engineHash String @db.Char(64)
+  inputHash String @db.Char(64)
+  inputStorageKey String @db.VarChar(1024)
+  inputEtag String @db.VarChar(160)
+  inputByteLength BigInt
+  inputChecksumSha256 String @db.Char(64)
+  status String @default("queued") @db.VarChar(24)
+  generation Int @default(1)
+  deploymentEpoch Int
+  attemptToken String? @db.Uuid
+  executorOwner String? @db.Uuid
+  leaseExpiresAt DateTime?
+  operationDeadlineAt DateTime
+  chargedAttempts Int @default(0)
+  retryAt DateTime?
+  result Json?
+  errorCode String? @db.VarChar(100)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  completedAt DateTime?
+
+  @@unique([clipId, bindingHash, deploymentEpoch])
+  @@index([projectId, status])
+}

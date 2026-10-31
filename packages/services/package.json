@@ -580,7 +580,11 @@
       "types": "./src/url-guard.ts",
       "default": "./src/url-guard.ts"
     },
-    "./ingest-source-definition": "./src/ingest-source-definition.ts"
+    "./ingest-source-definition": "./src/ingest-source-definition.ts",
+    "./clip-preparation-input": {
+      "types": "./src/clip-preparation-input.ts",
+      "default": "./src/clip-preparation-input.ts"
+    }
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
