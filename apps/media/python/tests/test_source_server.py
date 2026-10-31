@@ -1,5 +1,8 @@
 import http.client
+import json
 import threading
+import time
+import tracemalloc
 import unittest
 
 from narriflow_media.multipart import TransferResponse
@@ -58,3 +61,77 @@ class SourceServerTests(unittest.TestCase):
             before=len(transport.requests)
             self.assertEqual(self.get(server,range='bytes=4-7')[0],503)
             self.assertEqual(len(transport.requests),before)
+
+    def test_overlapping_reads_reuse_only_verified_immutable_bytes_and_still_require_a_live_owner(self):
+        data=bytes(range(64));source,session,transport=self.fixture(data)
+        with ScopedSourceServer(session,[source],transport=transport) as server:
+            server.allow_reads()
+            self.assertEqual(self.get(server,range='bytes=7-26')[2],data[7:27])
+            self.assertEqual(self.get(server,range='bytes=10-15')[2],data[10:16])
+            self.assertEqual(len(transport.requests),1)
+            self.assertEqual(self.get(server,range='bytes=0-30')[2],data[:31])
+            self.assertEqual([row[2]['range'] for row in transport.requests],['bytes=7-26','bytes=0-6','bytes=27-30'])
+            self.assertEqual(server.bytes_transferred,31)
+            self.assertEqual(server.upstream_requests,3)
+            session.cancel_event.set()
+            self.assertEqual(self.get(server,range='bytes=10-15')[0],503)
+            self.assertEqual(len(transport.requests),3)
+
+    def test_an_open_ended_reader_that_stops_after_32_bytes_does_not_prefetch_a_megabyte(self):
+        source,session,_=self.fixture(b'x')
+        source['byteLength']=10*1024**3
+        class VirtualTransport:
+            async def request(self,grant,method,body,headers,maximum,cancelled):
+                time.sleep(.002)
+                start,end=map(int,headers['range'][6:].split('-'));length=end-start+1
+                return TransferResponse(206,{'etag':'"source"','content-length':str(length),
+                    'content-range':f'bytes {start}-{end}/{source["byteLength"]}'},b'x'*length)
+        with ScopedSourceServer(session,[source],transport=VirtualTransport()) as server:
+            server.allow_reads()
+            connection=http.client.HTTPConnection('127.0.0.1',server.port,timeout=3)
+            connection.request('GET',server.path('original'),headers={'Range':'bytes=0-'})
+            response=connection.getresponse();self.assertEqual(response.read(32),b'x'*32)
+            response.close();connection.close()
+            time.sleep(.1)
+            self.assertLessEqual(server.bytes_transferred,512*1024)
+            before=server.bytes_transferred;time.sleep(.1)
+            self.assertEqual(server.bytes_transferred,before)
+
+    def test_a_ten_gib_source_has_a_bounded_cache_that_evicts_bytes_without_changing_output(self):
+        class VirtualData:
+            def __len__(self):return 10*1024**3
+            def __getitem__(self,span):return b'x'*(span.stop-span.start)
+        source,session,transport=self.fixture(VirtualData())
+        with ScopedSourceServer(session,[source],transport=transport) as server:
+            server.allow_reads();tracemalloc.start()
+            try:
+                connection=http.client.HTTPConnection('127.0.0.1',server.port,timeout=3)
+                connection.request('GET',server.path('original'),headers={'Range':f'bytes=0-{40*1024**2-1}'})
+                response=connection.getresponse();received=0
+                while chunk:=response.read(64*1024):
+                    self.assertEqual(chunk,b'x'*len(chunk));received+=len(chunk)
+                response.close();connection.close()
+                self.assertEqual(received,40*1024**2)
+                self.assertEqual(len(self.get(server,range=f'bytes=0-{1024**2-1}')[2]),1024**2)
+                self.assertEqual(server.bytes_transferred,41*1024**2)
+                requests=len(transport.requests)
+                self.assertEqual(len(self.get(server,range=f'bytes={39*1024**2}-{40*1024**2-1}')[2]),1024**2)
+                self.assertEqual(len(transport.requests),requests)
+                _,peak=tracemalloc.get_traced_memory()
+            finally:tracemalloc.stop()
+            self.assertLess(peak,48*1024**2)
+            print(json.dumps({'message':'native_source_cache_memory','virtualSourceBytes':len(transport.data),
+                'readBytes':server.bytes_transferred,'peakTrackedBytes':peak,'ceilingBytes':48*1024**2}))
+
+    def test_tiny_cached_ranges_also_have_a_finite_entry_bound(self):
+        source,session,transport=self.fixture(bytes(range(256))*2)
+        with ScopedSourceServer(session,[source],transport=transport) as server:
+            server.allow_reads()
+            for index in range(129):
+                offset=index*2
+                self.assertEqual(self.get(server,range=f'bytes={offset}-{offset}')[2],transport.data[offset:offset+1])
+            self.assertEqual(len(transport.requests),129)
+            self.assertEqual(self.get(server,range='bytes=0-0')[2],b'\0')
+            self.assertEqual(len(transport.requests),130)
+            self.assertEqual(self.get(server,range='bytes=256-256')[2],b'\0')
+            self.assertEqual(len(transport.requests),130)
