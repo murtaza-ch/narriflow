@@ -484,7 +484,7 @@ export class WorkflowRunLifecycle {
 
   private appendEvent(tx: TransactionClient, input: WorkflowEventInput) {
     return appendWorkflowEvent(tx, input, {
-      redisRequired: this.redisDeliveryRequired,
+      progressRequired: this.redisDeliveryRequired,
       analyticsEnabled: Boolean(this.publishAnalytics),
     });
   }
@@ -2802,7 +2802,7 @@ export class WorkflowRunLifecycle {
   async dispatchEvents(batchSize = 100): Promise<number> {
     const now = new Date();
     const pendingChannels: Prisma.WorkflowEventWhereInput[] = [
-      { redisRequired: true, redisPublishedAt: null },
+      { progressRequired: true, progressPublishedAt: null },
       { analyticsRequired: true, analyticsPublishedAt: null },
       { notificationRequired: true, notificationDeliveredAt: null },
     ];
@@ -2864,7 +2864,7 @@ export class WorkflowRunLifecycle {
 
       try {
         const parsed = workflowStageUpdatedEventSchema.parse(event.payload);
-        if (event.redisRequired && !event.redisPublishedAt) {
+        if (event.progressRequired && !event.progressPublishedAt) {
           if (!(await renew())) continue;
           const published = await this.publishRedis(parsed);
           if (!published) {
@@ -2872,7 +2872,7 @@ export class WorkflowRunLifecycle {
           }
           const acknowledged = await this.prisma.workflowEvent.updateMany({
             where: held(),
-            data: { redisPublishedAt: new Date() },
+            data: { progressPublishedAt: new Date() },
           });
           if (acknowledged.count === 0) continue;
         }

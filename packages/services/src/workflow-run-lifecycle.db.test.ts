@@ -1103,7 +1103,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
         where: { workflowRunId: admitted.id },
       }),
     ).toMatchObject({
-      redisPublishedAt: expect.any(Date),
+      progressPublishedAt: expect.any(Date),
       notificationRequired: false,
       notificationDeliveredAt: null,
       lastDeliveryError: null,
@@ -3664,7 +3664,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
       const candidates = await prisma.workflowEvent.findMany(args);
       if (!checkpointed && candidates.length) {
         checkpointed = true;
-        await prisma.workflowEvent.updateMany({ where: { id: { in: candidates.map((event) => event.id) } }, data: { redisPublishedAt: new Date() } });
+        await prisma.workflowEvent.updateMany({ where: { id: { in: candidates.map((event) => event.id) } }, data: { progressPublishedAt: new Date() } });
       }
       return candidates;
     } });
@@ -3711,7 +3711,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
       });
       finishNext(true);
       expect(await next).toBe(1);
-      expect((await prisma.workflowEvent.findUniqueOrThrow({ where: { id: event.id } })).redisPublishedAt).not.toBeNull();
+      expect((await prisma.workflowEvent.findUniqueOrThrow({ where: { id: event.id } })).progressPublishedAt).not.toBeNull();
     } finally {
       failFirst(new Error("cleanup")); finishNext(true);
       await Promise.allSettled([first, next]);
@@ -3740,7 +3740,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     const event = await prisma.workflowEvent.findFirstOrThrow({
       where: { workflowRunId: admitted.id },
     });
-    expect(event.redisPublishedAt).toBeNull();
+    expect(event.progressPublishedAt).toBeNull();
     expect(event.deliveryAttempts).toBe(1);
     expect(event.nextDeliveryAt.getTime()).toBeGreaterThan(
       event.createdAt.getTime(),

@@ -991,8 +991,8 @@ model WorkflowEvent {
   deliveryLeaseExpiresAt  DateTime?
   deliveryAttempts        Int       @default(0)
   nextDeliveryAt          DateTime  @default(now())
-  redisRequired           Boolean   @default(false)
-  redisPublishedAt        DateTime?
+  progressRequired           Boolean   @default(false)
+  progressPublishedAt        DateTime?
   analyticsRequired       Boolean   @default(false)
   analyticsPublishedAt    DateTime?
   /// Terminal render and ingest events use this event as their durable notification

@@ -10,7 +10,7 @@ export function getIngestJobLifecycle(): IngestJobLifecycle {
     return new IngestJobLifecycle({
       prisma,
       workflow: getWorkflowRunLifecycle(),
-      redisRequired: isWorkflowRedisDeliveryEnabled(),
+      progressRequired: isWorkflowRedisDeliveryEnabled(),
       sourceBucket: process.env.R2_BUCKET ?? "unknown-bucket",
       requireRetryActor: (actor, workspace) =>
         workspaceService.requireActor(actor, workspace, "processing.consume"),
