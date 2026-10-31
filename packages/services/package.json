@@ -517,6 +517,10 @@
     "./outbound-probe-execution": {
       "types": "./src/outbound-probe-execution.ts",
       "default": "./src/outbound-probe-execution.ts"
+    },
+    "./generated-media-validation": {
+      "types": "./src/generated-media-validation.ts",
+      "default": "./src/generated-media-validation.ts"
     }
   },
   "scripts": {

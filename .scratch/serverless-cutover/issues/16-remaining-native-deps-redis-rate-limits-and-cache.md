@@ -23,4 +23,6 @@ Thumbnail requests now use a targeted fenced domain and the same owned media CLI
 
 RSS preview/import now use a frozen OutboundProbe and private sealed result. The native owner performs pinned DNS/HTTP and bounded parsing; browser commands await pending status without holding SQL. Fresh-schema publication/member-revocation gates, native transport tests and the actual Next upload screen pass. [Outbound RSS evidence](../evidence/outbound-rss-20261031.json).
 
-Remaining: connect the signed HTTP/Workflow/Modal runtime and durable maintenance waits, move generated-image validation and callback delivery, clear the final native audit, and run deployed/resource gates. This ticket remains claimed.
+Generated image publication now stages an immutable private source and parks its parent on native validation. Validated asset adoption, the parent terminal result and generation usage finalization commit together. Lost upload acknowledgments recover the exact source, and cancellation prevents late publication. The dry bundle has no forbidden packages; URL-guard native transport is its remaining service import blocker. [Generated-image evidence](../evidence/generated-image-validation-20261031.json).
+
+Remaining: connect the signed HTTP/Workflow/Modal runtime and durable provider/maintenance commands, move fixed Google calls and callback delivery off native URL-guard, clear the final import audit, and run deployed/resource gates. This ticket remains claimed.

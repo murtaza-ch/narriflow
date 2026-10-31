@@ -1,5 +1,5 @@
 import { zoomTokenResponseSchema, zoomUserResponseSchema, zoomMeetingRecordingsSchema, type ZoomTokens } from "@narriflow/validators";
-import { readResponseTextBounded } from "./url-guard";
+import { readResponseTextBounded } from "./url-policy";
 import { assertZoomDownloadUrl, ZOOM_SCOPES, ZoomError, zoomRecordingPath } from "./zoom";
 
 export interface ZoomApi {

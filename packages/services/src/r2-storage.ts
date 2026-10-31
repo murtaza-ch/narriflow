@@ -817,6 +817,7 @@ export async function putObjectBytes(params: {
   contentType: string;
   metadata?: Record<string, string>;
   signal?: AbortSignal;
+  ifNoneMatch?: "*";
 }) {
   params.signal?.throwIfAborted();
   await projectStorageDeadline(params.key);

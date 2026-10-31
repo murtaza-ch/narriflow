@@ -1,119 +1,50 @@
 import { createHash } from "node:crypto";
-import { brandOwnerStoragePrefix, type BrandActorScope } from "./brand-ownership";
-import type { GeneratedMediaAsset, GeneratedMediaPublisher } from "./generated-media";
-
-type GeneratedImageContentType = "image/png" | "image/jpeg" | "image/webp";
-
-export interface GeneratedMediaPublicationStorage {
-  download(url: string, maxBytes: number): Promise<Uint8Array>;
-  readAttempt?(key: string, maxBytes: number): Promise<Uint8Array>;
-  putAttempt(key: string, bytes: Uint8Array, contentType: GeneratedImageContentType): Promise<void>;
-  publishAttempt(attemptKey: string, finalKey: string): Promise<void>;
-  delete(key: string): Promise<void>;
-}
-
-export interface GeneratedMediaAssetRepository {
-  findByFingerprint(scope: BrandActorScope, fingerprint: string): Promise<GeneratedMediaAsset | null>;
-  create(input: {
-    scope: BrandActorScope;
-    title: string;
-    storageKey: string;
-    contentType: GeneratedImageContentType;
-    sizeBytes: number;
-    width: number;
-    height: number;
-    fingerprint: string;
-    cleanupClaimId: string;
-  }): Promise<GeneratedMediaAsset>;
-  admitOrphan(storageKey: string): Promise<string>;
-}
+import { GeneratedMediaValidationPending, type GeneratedMediaPublisher } from "./generated-media";
+import type { BrandActorScope } from "./brand-ownership";
+import type { GeneratedValidationPlan, NativeValidationInput } from "@narriflow/validators/native-validation";
 
 export class GeneratedMediaPublicationError extends Error {
-  constructor(readonly code: string) {
-    super(code);
-    this.name = "GeneratedMediaPublicationError";
+ constructor(readonly code:string){super(code);this.name="GeneratedMediaPublicationError";}
+}
+export function createGeneratedMediaPublisher(dependencies:{
+ current(jobId:string):Promise<{validationJobId:string|null;validationInput:GeneratedValidationPlan|null}|null>;
+ plan(jobId:string,claimId:string,source:GeneratedValidationPlan):Promise<GeneratedValidationPlan>;
+ exists(source:GeneratedValidationPlan):Promise<boolean>;
+ stage(input:{key:string;bytes:Uint8Array;contentType:string}):Promise<void>;
+ admit(scope:BrandActorScope,request:{jobId:string;claimId:string;input:Extract<NativeValidationInput,{kind:"visual"}>}):Promise<{jobId:string}>;
+ maxBytes?:number;
+}):GeneratedMediaPublisher {
+ const maxBytes=dependencies.maxBytes??20*1024*1024;
+ return {async publish(input){
+  if(!input.claimId)throw new GeneratedMediaPublicationError("generated_media_claim_lost");
+  const current=await dependencies.current(input.jobId);
+  if(!current)throw new GeneratedMediaPublicationError("generated_media_claim_lost");
+  if(current.validationJobId)throw new GeneratedMediaValidationPending(current.validationJobId);
+  let source=current.validationInput;
+  const bytes=input.result?.bytes;
+  if(input.result?.url)throw new GeneratedMediaPublicationError("generated_media_output_invalid");
+  if(!source){
+   if(!bytes)throw new GeneratedMediaPublicationError("generated_media_attempt_unavailable");
+   if(input.result?.contentType!==input.resultContentType||bytes.length<1||bytes.length>maxBytes)throw new GeneratedMediaPublicationError("generated_media_output_invalid");
+   const fingerprint=createHash("sha256").update(bytes).digest("hex");
+   const extension=input.resultContentType==="image/png"?"png":input.resultContentType==="image/jpeg"?"jpg":"webp";
+   const key=`workspaces/${input.scope.workspaceId}/generated-media-attempts/${input.jobId}/${input.claimId}/${fingerprint}.${extension}`;
+   source=await dependencies.plan(input.jobId,input.claimId,{key,fingerprint,contentType:input.resultContentType,sizeBytes:bytes.length,sourceClaimLineage:input.claimId,parentAttempt:input.attempt,providerRef:input.providerRef});
   }
-}
-
-function extension(contentType: GeneratedImageContentType) {
-  if (contentType === "image/jpeg") return "jpg";
-  if (contentType === "image/webp") return "webp";
-  return "png";
-}
-
-export function createGeneratedMediaPublisher(dependencies: {
-  storage: GeneratedMediaPublicationStorage;
-  repository: GeneratedMediaAssetRepository;
-  inspect(bytes: Uint8Array): Promise<{
-    contentType: GeneratedImageContentType;
-    width: number;
-    height: number;
-  }>;
-  maxBytes?: number;
-}): GeneratedMediaPublisher {
-  const maxBytes = dependencies.maxBytes ?? 20 * 1024 * 1024;
-
-  return {
-    async publish({ jobId, attempt, scope, title, result, resultContentType }) {
-      const fileExtension = extension(resultContentType);
-      const attemptKey = `workspaces/${scope.workspaceId}/generated-media-attempts/${jobId}/${attempt}.${fileExtension}`;
-      if (result && result.contentType !== resultContentType) {
-        throw new GeneratedMediaPublicationError("generated_media_output_mime_mismatch");
-      }
-      if (result && (result.bytes ? 1 : 0) + (result.url ? 1 : 0) !== 1) {
-        throw new GeneratedMediaPublicationError("generated_media_output_malformed");
-      }
-      const bytes = result
-        ? result.bytes ?? await dependencies.storage.download(result.url!, maxBytes)
-        : await dependencies.storage.readAttempt?.(attemptKey, maxBytes).catch(() => undefined);
-      if (!bytes) {
-        throw new GeneratedMediaPublicationError("generated_media_attempt_unavailable");
-      }
-      if (bytes.byteLength === 0) {
-        throw new GeneratedMediaPublicationError("generated_media_output_empty");
-      }
-      if (bytes.byteLength > maxBytes) {
-        throw new GeneratedMediaPublicationError("generated_media_output_too_large");
-      }
-      const inspection = await dependencies.inspect(bytes).catch(() => null);
-      if (!inspection || inspection.width <= 0 || inspection.height <= 0) {
-        throw new GeneratedMediaPublicationError("generated_media_output_invalid");
-      }
-      if (inspection.contentType !== resultContentType) {
-        throw new GeneratedMediaPublicationError("generated_media_output_mime_mismatch");
-      }
-
-      const fingerprint = createHash("sha256").update(bytes).digest("hex");
-      const existing = await dependencies.repository.findByFingerprint(scope, fingerprint);
-      if (existing) {
-        await dependencies.storage.delete(attemptKey).catch(() => {});
-        return { ...existing, replayed: true };
-      }
-
-      const finalKey = `${brandOwnerStoragePrefix(scope, "visual-assets")}generated/${fingerprint}.${fileExtension}`;
-      if (result) await dependencies.storage.putAttempt(attemptKey, bytes, resultContentType);
-      let completed = false;
-      try {
-        // Cleanup intent must be durable before the remote side effect. The
-        // asset transaction adopts this obligation on success.
-        const cleanupClaimId = await dependencies.repository.admitOrphan(finalKey);
-        await dependencies.storage.publishAttempt(attemptKey, finalKey);
-        const asset = await dependencies.repository.create({
-          scope,
-          title,
-          storageKey: finalKey,
-          contentType: resultContentType,
-          sizeBytes: bytes.byteLength,
-          width: inspection.width,
-          height: inspection.height,
-          fingerprint,
-          cleanupClaimId,
-        });
-        completed = true;
-        return asset;
-      } finally {
-        if (completed) await dependencies.storage.delete(attemptKey).catch(() => {});
-      }
-    },
-  };
+  if(source.parentAttempt!==input.attempt||source.providerRef!==input.providerRef||source.contentType!==input.resultContentType)throw new GeneratedMediaPublicationError("generated_media_claim_lost");
+  if(bytes&&(bytes.length!==source.sizeBytes||createHash("sha256").update(bytes).digest("hex")!==source.fingerprint))throw new GeneratedMediaPublicationError("generated_media_output_invalid");
+  if(!await dependencies.exists(source)){
+   if(!bytes)throw new GeneratedMediaPublicationError("generated_media_attempt_unavailable");
+   try{await dependencies.stage({key:source.key,bytes,contentType:source.contentType});}
+   catch(error){if(!await dependencies.exists(source))throw error;}
+  }
+  try {
+   const job=await dependencies.admit(input.scope,{jobId:input.jobId,claimId:input.claimId,input:{kind:"visual",key:source.key,contentType:source.contentType,sizeBytes:source.sizeBytes,fingerprint:source.fingerprint,title:input.title,provenance:"generated"}});
+   throw new GeneratedMediaValidationPending(job.jobId);
+  } catch(error){
+   const parked=await dependencies.current(input.jobId);
+   if(parked?.validationJobId)throw new GeneratedMediaValidationPending(parked.validationJobId);
+   throw error;
+  }
+ }};
 }
