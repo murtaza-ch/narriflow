@@ -1,6 +1,6 @@
 import { appendProgressEventDispatch } from "./progress-outbox";
 import { randomUUID } from "node:crypto";
-import { Prisma, type PrismaClient, type IngestJob } from "@prisma/client";
+import { Prisma, type PrismaClient, type IngestJob, type SourceAudio } from "@prisma/client";
 import {
   defaultAspectRatioSchema,
   finishingSettingsSchema,
@@ -20,6 +20,7 @@ import { accessibleProjectWhere } from "./project-access";
 import { autoTriggerIdempotencyKey } from "./generation-sequencing";
 import {
   decideAutoRetry,
+  autoRetryBackoffMs,
   claimBackoffWhereClauses,
   INGEST_AUTO_RETRY_MAX_ATTEMPTS,
   INGEST_RETRIES_EXHAUSTED_CODE,
@@ -28,11 +29,34 @@ import {
 import type { WorkflowRunLifecycle } from "./workflow-run-lifecycle";
 import {
   PROCESSING_USAGE_TRANSACTION,
+  lockWorkspaceUsage,
   type ProcessingUsage,
 } from "./processing-usage";
 import { admitMediaCleanupObligations } from "./media-cleanup";
 import { emitIntakeFinished, queueIntakeFinishedByGeneration } from "./operation-finished";
 import { flushWorkspaceEvents } from "./workspace-event";
+
+import { sourceAudioBindingSchema, sourceVideoBindingSchema, type SourceAudioBinding, type SourceVideoBinding, type ExecutionDispatchReference, type ExecutionDisposition } from "@narriflow/validators/execution";
+import { sourceAudioBindingHash } from "./source-audio-binding";
+import { appendExecutionDispatch } from "./execution-dispatch";
+import type { ExecutorArtifactCommit, ExecutorDomainLock, ExecutorFailureInput, ExecutorMutationContext, ExecutorMutationResult, ExecutorProgressInput, ExecutorReleaseInput, ExecutorExpiryObservation, ExecutorExpiryResult } from "./executor-domain-control";
+
+export interface IngestExecutionReference {
+  id: string;
+  projectId: string;
+  generation: number;
+  deploymentEpoch: number;
+  sourceRevision: number;
+  attemptToken: string;
+}
+export type IngestArtifactCommit = ExecutorArtifactCommit & (
+  { role: "source_audio"; binding: SourceAudioBinding } | { role: "source_video"; binding: SourceVideoBinding }
+);
+export type IngestVideoValidator = (tx: Prisma.TransactionClient, input: {
+  ref: IngestExecutionReference;
+  artifact: ExecutorArtifactCommit & { role: "source_video"; binding: SourceVideoBinding };
+  sourceAudio: SourceAudio | null;
+}) => Promise<{ kind: "accepted" | "waiting_for_audio" } | { kind: "rejected"; failureCode: "source_audio_video_mismatch" }>;
 
 // Placeholder until the Scribe worker adapter lands (ticket 06).
 const PENDING_STT_PROVIDER_MODEL = SCRIBE_MODEL_ID;
@@ -111,6 +135,8 @@ export interface IngestJobLifecycleDependencies {
   requireRetryActor(actorUserId: string, workspaceId: string): Promise<unknown>;
   progressRequired?: boolean;
   sourceBucket?: string;
+  /** Required for video publication. Performs only typed validation/DB facts, never R2 I/O under locks. */
+  validateVideo?: IngestVideoValidator;
   now?: () => Date;
   leaseMs?: number;
   heartbeatMs?: number;
@@ -243,6 +269,192 @@ export class IngestJobLifecycle {
     );
     return { id: job.id };
   }
+  private async executionState(tx: Tx, reference: ExecutionDispatchReference, attemptToken: string): Promise<
+    { kind: "current"; ref: IngestExecutionReference; job: IngestJob; now: Date } | { kind: "terminal"; disposition: ExecutionDisposition }
+  > {
+    if (reference.subject.kind !== "ingest_job") return { kind: "terminal", disposition: { disposition: "superseded" } };
+    const initial = await tx.ingestJob.findUnique({ where: { id: reference.subject.id }, include: { project: { select: { workspaceId: true } } } });
+    if (!initial) return { kind: "terminal", disposition: { disposition: "superseded" } };
+    await lockWorkspaceUsage(tx, initial.project.workspaceId);
+    await this.lockGeneration(tx, initial.projectId);
+    await tx.$queryRaw`SELECT "id" FROM "IngestJob" WHERE "id" = ${initial.id}::uuid FOR UPDATE`;
+    const job = await tx.ingestJob.findUnique({ where: { id: initial.id } });
+    const project = await tx.project.findUnique({ where: { id: initial.projectId }, select: { sourceRevision: true } });
+    const now = await this.now(tx);
+    if (!job || !project || job.deploymentEpoch !== reference.deploymentEpoch || job.generation !== reference.generation || job.sourceRevision !== project.sourceRevision) {
+      return { kind: "terminal", disposition: { disposition: "superseded" } };
+    }
+    if (job.status === "completed") return { kind: "terminal", disposition: { disposition: "completed" } };
+    if (job.status === "cancelled") return { kind: "terminal", disposition: { disposition: "cancelled" } };
+    if (job.status === "failed") return { kind: "terminal", disposition: { disposition: "failed", failureCode: "source_ingest_failed" } };
+    if (job.status === "running" && job.claimId !== attemptToken) return { kind: "terminal", disposition: { disposition: "superseded" } };
+    return { kind: "current", ref: { id: job.id, projectId: job.projectId, generation: job.generation, deploymentEpoch: job.deploymentEpoch, sourceRevision: job.sourceRevision, attemptToken }, job, now };
+  }
+
+  async lockExecution(tx: Tx, reference: ExecutionDispatchReference, attemptToken: string): Promise<ExecutorDomainLock<IngestExecutionReference>> {
+    const state = await this.executionState(tx, reference, attemptToken);
+    if (state.kind === "terminal") return state;
+    const project = await tx.project.findFirst({ where: { id: state.ref.projectId, ...accessibleProjectWhere(state.now), workspace: { status: "active" } }, select: { id: true } });
+    return project ? { kind: "current", ref: state.ref } : { kind: "terminal", disposition: { disposition: "cancelled" } };
+  }
+
+  private executionClaim(ref: IngestExecutionReference, context: ExecutorMutationContext): IngestClaimRef {
+    if (context.reference.subject.kind !== "ingest_job" || context.reference.subject.id !== ref.id || context.reference.generation !== ref.generation ||
+      context.reference.deploymentEpoch !== ref.deploymentEpoch || context.attemptToken !== ref.attemptToken) throw new IngestJobClaimLost(ref.id);
+    return { id: ref.id, projectId: ref.projectId, claimId: ref.attemptToken };
+  }
+
+  private async ownedExecution(tx: Tx, ref: IngestExecutionReference, context: ExecutorMutationContext) {
+    const claim = this.executionClaim(ref, context);
+    const now = await this.now(tx);
+    const job = await tx.ingestJob.findFirst({ where: { ...this.owned(claim, now), generation: ref.generation, deploymentEpoch: ref.deploymentEpoch,
+      executorOwner: context.owner, sourceRevision: ref.sourceRevision, operationDeadlineAt: { gt: now }, project: { sourceRevision: ref.sourceRevision } } });
+    if (!job) throw new IngestJobClaimLost(ref.id);
+    return { claim, job, now };
+  }
+
+  async acquireExecution(tx: Tx, ref: IngestExecutionReference, context: ExecutorMutationContext): Promise<ExecutorMutationResult> {
+    const claim = this.executionClaim(ref, context);
+    const job = await tx.ingestJob.findUniqueOrThrow({ where: { id: ref.id } });
+    const now = await this.now(tx);
+    const retryAt = job.attemptCount === 0 ? job.createdAt : new Date(job.updatedAt.getTime() + autoRetryBackoffMs(job.attemptCount));
+    if (job.status !== "queued" || job.claimId || job.executorOwner || job.generation !== ref.generation || job.deploymentEpoch !== ref.deploymentEpoch ||
+      job.sourceRevision !== ref.sourceRevision || job.attemptCount >= INGEST_AUTO_RETRY_MAX_ATTEMPTS || retryAt > now || context.leaseExpiresAt <= now || context.leaseExpiresAt > context.operationDeadlineAt ||
+      context.operationDeadlineAt <= now || (job.operationDeadlineAt && job.operationDeadlineAt.getTime() !== context.operationDeadlineAt.getTime())) throw new IngestJobClaimLost(claim.id);
+    await tx.ingestJob.update({ where: { id: job.id }, data: { status: "running", claimId: claim.claimId, executorOwner: context.owner,
+      claimExpiresAt: context.leaseExpiresAt, operationDeadlineAt: context.operationDeadlineAt, startedAt: null, completedAt: null } });
+    const absolute = await appendExecutionDispatch(tx, { deploymentEpoch: ref.deploymentEpoch, kind: "operation_driver", subject: { kind: "ingest_job", id: ref.id },
+      generation: ref.generation, inputHash: context.reference.inputHash, dueAt: context.operationDeadlineAt, deadlineKind: "operation", observedDeadlineAt: context.operationDeadlineAt });
+    const acquired = await appendExecutionDispatch(tx, { deploymentEpoch: ref.deploymentEpoch, kind: "operation_driver", subject: { kind: "ingest_job", id: ref.id },
+      generation: ref.generation, inputHash: context.reference.inputHash, dueAt: now, wakeKind: "execution_acquired", deadlineKind: "lease", observedDeadlineAt: context.leaseExpiresAt });
+    return { dispatchIds: [absolute.reference.dispatchId, acquired.reference.dispatchId] };
+  }
+
+  async renewExecution(tx: Tx, ref: IngestExecutionReference, context: ExecutorMutationContext): Promise<ExecutorMutationResult> {
+    const { job, now } = await this.ownedExecution(tx, ref, context);
+    if (!job.operationDeadlineAt || job.operationDeadlineAt.getTime() !== context.operationDeadlineAt.getTime() || context.leaseExpiresAt <= now ||
+      context.leaseExpiresAt > job.operationDeadlineAt) throw new IngestJobClaimLost(ref.id);
+    await tx.ingestJob.update({ where: { id: ref.id }, data: { claimExpiresAt: context.leaseExpiresAt } });
+    return undefined;
+  }
+
+  async startExecution(tx: Tx, ref: IngestExecutionReference, context: ExecutorMutationContext): Promise<ExecutorMutationResult> {
+    const { job, now } = await this.ownedExecution(tx, ref, context);
+    if (job.startedAt) return undefined;
+    await tx.ingestJob.update({ where: { id: ref.id }, data: { startedAt: now, attemptCount: { increment: 1 } } });
+    return undefined;
+  }
+
+  private async executionWakes(tx: Tx, ref: IngestExecutionReference, inputHash: string, wakeKind: string, retryAt?: Date): Promise<{ dispatchIds: string[] }> {
+    const current = retryAt ? await tx.ingestJob.update({ where: { id: ref.id }, data: { generation: { increment: 1 } } })
+      : await tx.ingestJob.findUniqueOrThrow({ where: { id: ref.id } });
+    const now = await this.now(tx);
+    const parent = await appendExecutionDispatch(tx, { deploymentEpoch: ref.deploymentEpoch, kind: "import_pipeline", subject: { kind: "ingest_job", id: ref.id },
+      generation: current.generation, inputHash, dueAt: now, wakeKind });
+    const ids = [parent.reference.dispatchId];
+    if (wakeKind !== "audio_ready" && wakeKind !== "video_evidence_ready") {
+      const finished = await appendExecutionDispatch(tx, { deploymentEpoch: ref.deploymentEpoch, kind: "operation_driver", subject: { kind: "ingest_job", id: ref.id },
+        generation: ref.generation, inputHash, dueAt: now, wakeKind: "execution_finished" });
+      ids.push(finished.reference.dispatchId);
+    }
+    if (retryAt) {
+      const retry = await appendExecutionDispatch(tx, { deploymentEpoch: ref.deploymentEpoch, kind: "operation_driver", subject: { kind: "ingest_job", id: ref.id },
+        generation: current.generation, inputHash, dueAt: retryAt });
+      ids.push(retry.reference.dispatchId);
+    }
+    return { dispatchIds: ids };
+  }
+
+  async commitArtifactExecution(tx: Tx, ref: IngestExecutionReference, context: ExecutorMutationContext, artifact: IngestArtifactCommit): Promise<ExecutorMutationResult> {
+    await this.ownedExecution(tx, ref, context);
+    if (artifact.role === "source_audio") {
+      const binding = sourceAudioBindingSchema.parse(artifact.binding);
+      if (binding.projectId !== ref.projectId || binding.sourceRevision !== ref.sourceRevision || binding.object.key !== artifact.storageKey ||
+        BigInt(binding.object.byteLength) !== artifact.byteLength || binding.object.etag !== artifact.etag || binding.object.sha256 !== artifact.sha256) throw new IngestJobClaimLost(ref.id);
+      const bindingHash = await sourceAudioBindingHash(binding);
+      const existing = await tx.sourceAudio.findUnique({ where: { projectId_sourceRevision: { projectId: ref.projectId, sourceRevision: ref.sourceRevision } } });
+      if (existing && (existing.id !== binding.sourceAudioId || existing.bindingHash !== bindingHash)) throw new IngestJobClaimLost(ref.id);
+      if (!existing) await tx.sourceAudio.create({ data: { id: binding.sourceAudioId, projectId: ref.projectId, sourceRevision: ref.sourceRevision,
+        mediaProvider: binding.mediaIdentity.provider, mediaId: binding.mediaIdentity.mediaId, audioTrack: binding.audioTrack, bindingHash,
+        storageKey: binding.object.key, etag: binding.object.etag, byteLength: BigInt(binding.object.byteLength), checksumSha256: binding.object.sha256,
+        durationSeconds: binding.durationSeconds, audioStartTimeSec: binding.audioStartTimeSec, probeVersion: binding.probeVersion, toolchainFingerprint: binding.toolchainFingerprint } });
+      const wakes = await this.executionWakes(tx, ref, context.reference.inputHash, "audio_ready");
+      // Video can commit first. Only this invocation's sealed evidence is eligible.
+      const pending = await tx.executionArtifact.findMany({ where: { attemptToken: context.attemptToken, owner: context.owner, role: "source_video",
+        committedAt: { not: null }, sourceVideoBinding: { not: Prisma.DbNull } }, take: 2 });
+      if (pending.length > 1) throw new Error("source_video_evidence_ambiguous");
+      const video = pending[0];
+      if (!video) return wakes;
+      if (video.byteLength === null || video.checksumSha256 === null || video.etag === null) throw new Error("source_video_evidence_incomplete");
+      const finalized = await this.finalizeVideoExecution(tx, ref, context, { artifactId: video.id, role: "source_video", storageKey: video.storageKey,
+        contentType: video.contentType, byteLength: video.byteLength, sha256: video.checksumSha256, etag: video.etag, bindingHash: video.bindingHash,
+        binding: sourceVideoBindingSchema.parse(video.sourceVideoBinding) });
+      return { dispatchIds: [...wakes.dispatchIds, ...(finalized?.dispatchIds ?? [])] };
+    }
+    if (artifact.role !== "source_video") throw new Error("source_artifact_role_invalid");
+    const binding = sourceVideoBindingSchema.parse(artifact.binding);
+    if (binding.projectId !== ref.projectId || binding.sourceRevision !== ref.sourceRevision) throw new IngestJobClaimLost(ref.id);
+    await tx.executionArtifact.update({ where: { id: artifact.artifactId }, data: { sourceVideoBinding: binding as unknown as Prisma.InputJsonValue } });
+    return this.finalizeVideoExecution(tx, ref, context, { ...artifact, binding });
+  }
+
+  private async finalizeVideoExecution(tx: Tx, ref: IngestExecutionReference, context: ExecutorMutationContext,
+    artifact: ExecutorArtifactCommit & { role: "source_video"; binding: SourceVideoBinding }): Promise<ExecutorMutationResult> {
+    if (!this.deps.validateVideo) throw new Error("source_video_validation_unavailable");
+    const { claim, job, now } = await this.ownedExecution(tx, ref, context);
+    const audio = await tx.sourceAudio.findUnique({ where: { projectId_sourceRevision: { projectId: ref.projectId, sourceRevision: ref.sourceRevision } } });
+    const decision = await this.deps.validateVideo(tx, { ref, artifact, sourceAudio: audio });
+    if (decision.kind === "waiting_for_audio") return this.executionWakes(tx, ref, context.reference.inputHash, "video_evidence_ready");
+    if (decision.kind === "rejected") {
+      const result = await this.settleFailure(tx, job, this.owned(claim, now), decision.failureCode, decision.failureCode, `${claim.claimId}:source_mismatch`, now, "permanent");
+      if (!result) throw new IngestJobClaimLost(ref.id);
+      return this.executionWakes(tx, ref, context.reference.inputHash, "ingest_failed");
+    }
+    await this.completeWithinTransaction(tx, claim, { sourceStorageKey: artifact.storageKey, sourceMimeType: artifact.contentType,
+      sourceSizeBytes: Number(artifact.byteLength), sourceDurationSeconds: Math.ceil(artifact.binding.probe.durationSec), sourceProbe: artifact.binding.probe });
+    return this.executionWakes(tx, ref, context.reference.inputHash, "video_ready");
+  }
+
+  async failExecution(tx: Tx, ref: IngestExecutionReference, context: ExecutorMutationContext, failure: ExecutorFailureInput): Promise<ExecutorMutationResult> {
+    const { claim, job, now } = await this.ownedExecution(tx, ref, context);
+    const decision = await this.settleFailure(tx, job, this.owned(claim, now), failure.failureCode, failure.failureCode,
+      `${claim.claimId}:failed`, now, failure.retryable ? undefined : "permanent");
+    if (!decision) throw new IngestJobClaimLost(ref.id);
+    return this.executionWakes(tx, ref, context.reference.inputHash, "ingest_outcome", decision.outcome === "requeue" ? new Date(now.getTime() + autoRetryBackoffMs(job.attemptCount)) : undefined);
+  }
+
+  async releaseExecution(tx: Tx, ref: IngestExecutionReference, context: ExecutorMutationContext, release: ExecutorReleaseInput): Promise<ExecutorMutationResult> {
+    const { claim, now } = await this.ownedExecution(tx, ref, context);
+    await this.releaseWithinTransaction(tx, claim);
+    return this.executionWakes(tx, ref, context.reference.inputHash, "ingest_released", new Date(now.getTime() + (release.reason === "startup_rejected" ? 0 : 30_000)));
+  }
+
+  async progressExecution(tx: Tx, ref: IngestExecutionReference, context: ExecutorMutationContext, progress: ExecutorProgressInput): Promise<ExecutorMutationResult> {
+    const { claim } = await this.ownedExecution(tx, ref, context);
+    await this.progressWithinTransaction(tx, claim, progress.phase === "downloading" ? "downloading" : "normalizing");
+    return undefined;
+  }
+
+  async expireExecution(tx: Tx, reference: ExecutionDispatchReference, attemptToken: string, observation: ExecutorExpiryObservation): Promise<ExecutorExpiryResult> {
+    if (!["lease", "operation"].includes(observation.kind) || !Number.isFinite(observation.observedDeadlineAt.getTime())) throw new Error("Invalid execution deadline observation");
+    const state = await this.executionState(tx, reference, attemptToken);
+    if (state.kind === "terminal") return { kind: state.disposition.disposition === "superseded" ? "superseded" : "terminal" };
+    const { job, ref, now } = state;
+    const admitted = await tx.executionAttempt.findFirst({ where: { attemptToken, deploymentEpoch: reference.deploymentEpoch, generation: reference.generation, inputHash: reference.inputHash,
+      dispatch: { id: reference.dispatchId, kind: reference.kind, subjectKind: "ingest_job", subjectId: ref.id } } });
+    if (!admitted || (job.operationDeadlineAt && job.operationDeadlineAt.getTime() !== admitted.operationDeadlineAt.getTime()) ||
+      (observation.kind === "operation" && observation.observedDeadlineAt.getTime() !== admitted.operationDeadlineAt.getTime())) return { kind: "superseded" };
+    const absolute = admitted.operationDeadlineAt;
+    const deadline = job.status === "running" && job.claimExpiresAt ? new Date(Math.min(job.claimExpiresAt.getTime(), absolute.getTime())) : absolute;
+    if (deadline > now) return { kind: "sleep", dueAt: deadline };
+    const permanent = absolute <= now;
+    const decision = await this.settleFailure(tx, job, { id: job.id, generation: ref.generation, deploymentEpoch: ref.deploymentEpoch,
+      status: job.status, claimId: job.claimId, ...(job.status === "running" ? { claimExpiresAt: { lte: now } } : {}) }, permanent ? "operation_deadline_exceeded" : "worker_stalled",
+      permanent ? "Source acquisition deadline expired" : "Ingest execution lease expired", `${attemptToken}:expired`, now, permanent ? "permanent" : undefined);
+    if (!decision) return { kind: "superseded" };
+    return { kind: "expired", ...await this.executionWakes(tx, ref, reference.inputHash, "ingest_expired", decision.outcome === "requeue" ? new Date(now.getTime() + autoRetryBackoffMs(job.attemptCount)) : undefined) };
+  }
+
   async claim(
     options: { youtubeAvailable?: boolean } = {},
   ): Promise<ClaimedIngestJob | null> {
@@ -314,49 +526,59 @@ export class IngestJobLifecycle {
     });
   }
   async renew(claim: IngestClaimRef): Promise<void> {
-    await this.deps.prisma.$transaction(async (tx) => {
-      const now = await this.now(tx);
-      const updated = await tx.ingestJob.updateMany({
-        where: this.owned(claim, now),
-        data: { claimExpiresAt: new Date(now.getTime() + this.leaseMs) },
-      });
-      if (!updated.count) throw new IngestJobClaimLost(claim.id);
+    return this.deps.prisma.$transaction((tx) => this.renewWithinTransaction(tx, claim));
+  }
+  /** Caller owns the transaction and flushes Workspace Events after all domain locks. */
+  async renewWithinTransaction(tx: Tx, claim: IngestClaimRef): Promise<void> {
+
+
+    const now = await this.now(tx);
+    const updated = await tx.ingestJob.updateMany({
+      where: this.owned(claim, now),
+      data: { claimExpiresAt: new Date(now.getTime() + this.leaseMs) },
     });
+    if (!updated.count) throw new IngestJobClaimLost(claim.id);
   }
   async progress(
     claim: IngestClaimRef,
     status: "downloading" | "normalizing",
   ): Promise<void> {
-    await this.deps.prisma.$transaction(async (tx) => {
-      const now = await this.now(tx);
-      const updated = await tx.ingestJob.updateMany({
-        where: this.owned(claim, now),
-        data: {
-          lastError: null,
-          claimExpiresAt: new Date(now.getTime() + this.leaseMs),
-        },
-      });
-      if (!updated.count) throw new IngestJobClaimLost(claim.id);
-      const project = await tx.project.updateMany({
-        where: { id: claim.projectId, ...accessibleProjectWhere(now) },
-        data: { ingestStatus: status, ingestErrorCode: null },
-      });
-      if (!project.count) throw new IngestJobClaimLost(claim.id);
-      await this.event(
-        tx,
-        {
-          ...claim,
-          transition: `${claim.claimId}:${status}`,
-          stage:
-            status === "downloading"
-              ? "ingest_downloading"
-              : "ingest_normalizing",
-          status: "running",
-          progress: status === "downloading" ? 40 : 75,
-        },
-        now,
-      );
+    return this.deps.prisma.$transaction((tx) => this.progressWithinTransaction(tx, claim, status));
+  }
+  /** Caller owns the transaction and flushes Workspace Events after all domain locks. */
+  async progressWithinTransaction(tx: Tx, 
+    claim: IngestClaimRef,
+    status: "downloading" | "normalizing",
+  ): Promise<void> {
+
+
+    const now = await this.now(tx);
+    const updated = await tx.ingestJob.updateMany({
+      where: this.owned(claim, now),
+      data: {
+        lastError: null,
+      },
     });
+    if (!updated.count) throw new IngestJobClaimLost(claim.id);
+    const project = await tx.project.updateMany({
+      where: { id: claim.projectId, ...accessibleProjectWhere(now) },
+      data: { ingestStatus: status, ingestErrorCode: null },
+    });
+    if (!project.count) throw new IngestJobClaimLost(claim.id);
+    await this.event(
+      tx,
+      {
+        ...claim,
+        transition: `${claim.claimId}:${status}`,
+        stage:
+          status === "downloading"
+            ? "ingest_downloading"
+            : "ingest_normalizing",
+        status: "running",
+        progress: status === "downloading" ? 40 : 75,
+      },
+      now,
+    );
   }
   async complete(
     claim: IngestClaimRef,
@@ -370,52 +592,67 @@ export class IngestJobLifecycle {
       sourceProbe?: SourceProbe | null;
     },
   ): Promise<void> {
+    return this.deps.prisma.$transaction((tx) => this.completeWithinTransaction(tx, claim, source));
+  }
+  /** Caller owns the transaction and flushes Workspace Events after all domain locks. */
+  async completeWithinTransaction(tx: Tx, 
+    claim: IngestClaimRef,
+    source: {
+      sourceStorageKey: string;
+      sourceMediaUrl?: string;
+      sourceInput?: string | null;
+      sourceMimeType?: string | null;
+      sourceSizeBytes?: number | null;
+      sourceDurationSeconds?: number | null;
+      sourceProbe?: SourceProbe | null;
+    },
+  ): Promise<void> {
     const { sourceProbe, ...sourceFacts } = source;
-    await this.deps.prisma.$transaction(async (tx) => {
-      const now = await this.now(tx);
-      const updated = await tx.ingestJob.updateMany({
-        where: this.owned(claim, now),
-        data: {
-          status: "completed",
-          claimId: null,
-          claimExpiresAt: null,
-          completedAt: now,
-          lastError: null,
-          sourceCredential: null,
-          generationHandoffAt: null,
-          generationHandoffRetryAt: null,
-        },
-      });
-      if (!updated.count) throw new IngestJobClaimLost(claim.id);
-      await tx.project.update({
-        where: { id: claim.projectId },
-        data: {
-          ...sourceFacts,
-          sourceMediaUrl:
-            source.sourceMediaUrl ??
-            `r2://${this.deps.sourceBucket ?? "unknown-bucket"}/${source.sourceStorageKey}`,
-          sourceSizeBytes:
-            typeof source.sourceSizeBytes === "number"
-              ? BigInt(source.sourceSizeBytes)
-              : undefined,
-          sourceProbe: sourceProbe ?? Prisma.DbNull,
-          ingestStatus: "ready",
-          ingestErrorCode: null,
-          ingestCompletedAt: now,
-        },
-      });
-      await this.event(
-        tx,
-        {
-          ...claim,
-          transition: `${claim.claimId}:completed`,
-          stage: "ingest_ready",
-          status: "completed",
-          progress: 100,
-        },
-        now,
-      );
+
+    const now = await this.now(tx);
+    const updated = await tx.ingestJob.updateMany({
+      where: this.owned(claim, now),
+      data: {
+        status: "completed",
+        claimId: null,
+        claimExpiresAt: null,
+        executorOwner: null,
+        completedAt: now,
+        lastError: null,
+        sourceCredential: null,
+        generationHandoffAt: null,
+        generationHandoffRetryAt: null,
+      },
     });
+    if (!updated.count) throw new IngestJobClaimLost(claim.id);
+    await tx.project.update({
+      where: { id: claim.projectId },
+      data: {
+        ...sourceFacts,
+        sourceMediaUrl:
+          source.sourceMediaUrl ??
+          `r2://${this.deps.sourceBucket ?? "unknown-bucket"}/${source.sourceStorageKey}`,
+        sourceSizeBytes:
+          typeof source.sourceSizeBytes === "number"
+            ? BigInt(source.sourceSizeBytes)
+            : undefined,
+        sourceProbe: sourceProbe ?? Prisma.DbNull,
+        ingestStatus: "ready",
+        ingestErrorCode: null,
+        ingestCompletedAt: now,
+      },
+    });
+    await this.event(
+      tx,
+      {
+        ...claim,
+        transition: `${claim.claimId}:completed`,
+        stage: "ingest_ready",
+        status: "completed",
+        progress: 100,
+      },
+      now,
+    );
   }
   /** Records an ingest-owned pinned copy of a verified upload as the Project
    * source and schedules the grantable upload key for Media Cleanup after any
@@ -428,28 +665,39 @@ export class IngestJobLifecycle {
       releaseNotBefore: Date;
     },
   ): Promise<void> {
-    await this.deps.prisma.$transaction(async (tx) => {
-      const now = await this.now(tx);
-      const owned = await tx.ingestJob.updateMany({
-        where: this.owned(claim, now),
-        data: { claimExpiresAt: new Date(now.getTime() + this.leaseMs) },
-      });
-      if (!owned.count) throw new IngestJobClaimLost(claim.id);
-      await tx.project.update({
-        where: { id: claim.projectId },
-        data: { sourceStorageKey: input.sourceStorageKey },
-      });
-      if (input.releasedStorageKey !== input.sourceStorageKey)
-        await admitMediaCleanupObligations(tx.mediaCleanupObligation, [
-          {
-            origin: "upload_source_pinning",
-            cleanupClass: "upload_source",
-            projectId: claim.projectId,
-            objectKey: input.releasedStorageKey,
-            notBefore: input.releaseNotBefore,
-          },
-        ]);
+    return this.deps.prisma.$transaction((tx) => this.pinSourceWithinTransaction(tx, claim, input));
+  }
+  /** Caller owns the transaction and flushes Workspace Events after all domain locks. */
+  async pinSourceWithinTransaction(tx: Tx, 
+    claim: IngestClaimRef,
+    input: {
+      sourceStorageKey: string;
+      releasedStorageKey: string;
+      releaseNotBefore: Date;
+    },
+  ): Promise<void> {
+
+
+    const now = await this.now(tx);
+    const owned = await tx.ingestJob.updateMany({
+      where: this.owned(claim, now),
+      data: { lastError: null },
     });
+    if (!owned.count) throw new IngestJobClaimLost(claim.id);
+    await tx.project.update({
+      where: { id: claim.projectId },
+      data: { sourceStorageKey: input.sourceStorageKey },
+    });
+    if (input.releasedStorageKey !== input.sourceStorageKey)
+      await admitMediaCleanupObligations(tx.mediaCleanupObligation, [
+        {
+          origin: "upload_source_pinning",
+          cleanupClass: "upload_source",
+          projectId: claim.projectId,
+          objectKey: input.releasedStorageKey,
+          notBefore: input.releaseNotBefore,
+        },
+      ]);
   }
   private async settleFailure(
     tx: Tx,
@@ -459,8 +707,9 @@ export class IngestJobLifecycle {
     message: string,
     transition: string,
     now: Date,
+    disposition?: "permanent",
   ): Promise<IngestFailureDecision | null> {
-    const decision = decideAutoRetry(
+    const decision = disposition === "permanent" ? { outcome: "permanent" as const, terminalErrorCode: code } : decideAutoRetry(
       job.attemptCount,
       code,
       INGEST_AUTO_RETRY_MAX_ATTEMPTS,
@@ -473,6 +722,7 @@ export class IngestJobLifecycle {
         status: terminal ? "failed" : "queued",
         claimId: null,
         claimExpiresAt: null,
+        executorOwner: null,
         startedAt: null,
         lastError: `${code}: ${message}`,
         completedAt: terminal ? now : null,
@@ -516,58 +766,73 @@ export class IngestJobLifecycle {
     code: string,
     message: string,
   ): Promise<IngestFailureDecision> {
-    return this.deps.prisma.$transaction(async (tx) => {
-      const now = await this.now(tx);
-      const job = await tx.ingestJob.findFirst({
-        where: this.owned(claim, now),
-      });
-      if (!job) throw new IngestJobClaimLost(claim.id);
-      const result = await this.settleFailure(
-        tx,
-        job,
-        this.owned(claim, now),
-        code,
-        message,
-        `${claim.claimId}:failed`,
-        now,
-      );
-      if (!result) throw new IngestJobClaimLost(claim.id);
-      return result;
+    return this.deps.prisma.$transaction((tx) => this.failWithinTransaction(tx, claim, code, message));
+  }
+  /** Caller owns the transaction and flushes Workspace Events after all domain locks. */
+  async failWithinTransaction(tx: Tx, 
+    claim: IngestClaimRef,
+    code: string,
+    message: string,
+  ): Promise<IngestFailureDecision> {
+
+
+    const now = await this.now(tx);
+    const job = await tx.ingestJob.findFirst({
+      where: this.owned(claim, now),
     });
+    if (!job) throw new IngestJobClaimLost(claim.id);
+    const result = await this.settleFailure(
+      tx,
+      job,
+      this.owned(claim, now),
+      code,
+      message,
+      `${claim.claimId}:failed`,
+      now,
+    );
+    if (!result) throw new IngestJobClaimLost(claim.id);
+    return result;
   }
   /** Graceful process shutdown is not a failed source attempt. Release its
    * claim immediately and refund the claim's automatic retry budget. */
   async release(claim: IngestClaimRef): Promise<void> {
-    await this.deps.prisma.$transaction(async (tx) => {
-      const now = await this.now(tx);
-      const updated = await tx.ingestJob.updateMany({
-        where: this.owned(claim, now),
-        data: {
-          status: "queued",
-          claimId: null,
-          claimExpiresAt: null,
-          startedAt: null,
-          attemptCount: { decrement: 1 },
-          updatedAt: now,
-        },
-      });
-      if (!updated.count) return;
-      await tx.project.update({
-        where: { id: claim.projectId },
-        data: { ingestStatus: "queued", ingestErrorCode: null },
-      });
-      await this.event(
-        tx,
-        {
-          ...claim,
-          transition: `${claim.claimId}:released`,
-          stage: "ingest_queued",
-          status: "queued",
-          progress: 5,
-        },
-        now,
-      );
+    return this.deps.prisma.$transaction((tx) => this.releaseWithinTransaction(tx, claim));
+  }
+  /** Caller owns the transaction and flushes Workspace Events after all domain locks. */
+  async releaseWithinTransaction(tx: Tx, claim: IngestClaimRef): Promise<void> {
+
+
+    const now = await this.now(tx);
+    const prior = await tx.ingestJob.findFirst({ where: this.owned(claim, now) });
+    if (!prior) return;
+    const updated = await tx.ingestJob.updateMany({
+      where: this.owned(claim, now),
+      data: {
+        status: "queued",
+        claimId: null,
+        claimExpiresAt: null,
+        executorOwner: null,
+        startedAt: null,
+        ...(prior.startedAt && prior.attemptCount > 0 ? { attemptCount: { decrement: 1 } } : {}),
+        updatedAt: now,
+      },
     });
+    if (!updated.count) return;
+    await tx.project.update({
+      where: { id: claim.projectId },
+      data: { ingestStatus: "queued", ingestErrorCode: null },
+    });
+    await this.event(
+      tx,
+      {
+        ...claim,
+        transition: `${claim.claimId}:released`,
+        stage: "ingest_queued",
+        status: "queued",
+        progress: 5,
+      },
+      now,
+    );
   }
   async reapExpired(limit = 100): Promise<number> {
     const now = await this.deps.prisma.$transaction((tx) => this.now(tx));
