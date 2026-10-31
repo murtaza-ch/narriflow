@@ -46,6 +46,12 @@ dbDescribe("Executor control authority and replay", () => {
     async failExecution(tx, ref) { await tx.ingestJob.update({ where: { id: ref.id }, data: { status: "failed" } }); },
     async releaseExecution(tx, ref) { await tx.ingestJob.update({ where: { id: ref.id }, data: { status: "queued" } }); },
     async progressExecution() {},
+    async expireExecution(tx, reference) {
+      await tx.ingestJob.update({ where: { id: reference.subject.id }, data: { status: "failed" } });
+      const wake = await appendExecutionDispatch(tx, { ...reference, subject: reference.subject, kind: "operation_driver", dueAt: new Date(), wakeKind: "execution_finished" });
+      dispatches.push(wake.reference.dispatchId);
+      return { kind: "expired", dispatchIds: [wake.reference.dispatchId] };
+    },
   };
 
   async function fixture() {
@@ -95,6 +101,31 @@ dbDescribe("Executor control authority and replay", () => {
     await expect(control.execute({ command: { ...command, reference: { ...f.reference, inputHash: "c".repeat(64) } }, verifiedRequest: verified() })).rejects.toMatchObject({ code: "invalid_reference" });
     expect((await prisma.ingestJob.findUniqueOrThrow({ where: { id: f.job.id } })).attemptCount).toBe(0);
   }, 30_000);
+
+
+  test("a watchdog re-reads renewed leases and replays expiry wakes after a lost acknowledgement", async () => {
+    const f = await fixture();
+    let reject = true;
+    const delivered: string[][] = [];
+    const control = createExecutorControl({ database: prisma, subjectKind: "ingest_job", domain, deliverWakes: async ids => {
+      delivered.push([...ids]);
+      if (reject) throw new Error("scheduler_unavailable");
+    } });
+    const owner = randomUUID();
+    await control.execute({ command: { action: "acquire", reference: f.reference, attemptToken: f.token, owner, leaseSeconds: 120 }, verifiedRequest: verified() });
+    const deliveryId = randomUUID(); receipts.push(deliveryId);
+    const deadline = { reference: f.reference, attemptToken: f.token, kind: "lease", observedDeadlineAt: new Date(Date.now() - 1000).toISOString() };
+    const before = await control.expireDeadline({ deadline, deliveryId });
+    expect(before.kind).toBe("sleep");
+    expect((await prisma.ingestJob.findUniqueOrThrow({ where: { id: f.job.id } })).status).toBe("running");
+    await prisma.executionAttempt.update({ where: { attemptToken: f.token }, data: { leaseExpiresAt: new Date(Date.now() - 1000) } });
+    await expect(control.expireDeadline({ deadline, deliveryId })).rejects.toThrow("scheduler_unavailable");
+    expect((await prisma.executionAttempt.findUniqueOrThrow({ where: { attemptToken: f.token } })).status).toBe("expired");
+    reject = false;
+    expect((await control.expireDeadline({ deadline, deliveryId })).kind).toBe("expired");
+    expect(delivered[1]).toEqual(delivered[0]);
+    expect((await prisma.ingestJob.findUniqueOrThrow({ where: { id: f.job.id } })).attemptCount).toBe(0);
+  }, 45_000);
 
   test("an expired owner cannot renew or record a process start", async () => {
     const f = await fixture();

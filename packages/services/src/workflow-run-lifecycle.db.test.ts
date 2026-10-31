@@ -1082,7 +1082,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     const dispatcher = new RenderFixtureLifecycle({
       prisma,
       leaseOwner: randomUUID(),
-      publishRedis: async (event) => {
+      publishProgress: async (event) => {
         published.push(event.workflowRunId);
         return true;
       },
@@ -3617,7 +3617,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
       }
       return result;
     } });
-    const lifecycle = new RenderFixtureLifecycle({ prisma: client, leaseOwner: randomUUID(), publishRedis: async (payload) => {
+    const lifecycle = new RenderFixtureLifecycle({ prisma: client, leaseOwner: randomUUID(), publishProgress: async (payload) => {
       const event = await prisma.workflowEvent.findFirstOrThrow({ where: { workflowRunId: run.id, seq: payload.seq } });
       remaining.push(event.deliveryLeaseExpiresAt!.getTime() - Date.now());
       return true;
@@ -3649,7 +3649,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
       }
       return candidates;
     } });
-    const lifecycle = new RenderFixtureLifecycle({ prisma: client, leaseOwner: randomUUID(), publishRedis: async () => { published += 1; return true; } });
+    const lifecycle = new RenderFixtureLifecycle({ prisma: client, leaseOwner: randomUUID(), publishProgress: async () => { published += 1; return true; } });
     await lifecycle.claim("dubbing");
     expect(await lifecycle.dispatchEvents()).toBe(0);
     expect(published).toBe(0);
@@ -3670,7 +3670,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
       return candidates;
     } });
     const lifecycle = new RenderFixtureLifecycle({ prisma: client, leaseOwner: randomUUID(),
-      publishRedis: async () => { published += 1; return true; }, publishAnalytics: async () => { analytics += 1; } });
+      publishProgress: async () => { published += 1; return true; }, publishAnalytics: async () => { analytics += 1; } });
     const attempt = await lifecycle.claim("dubbing");
     if (!attempt) throw new Error("claim missing");
     await lifecycle.completeStage(attempt);
@@ -3691,7 +3691,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     const firstGate = new Promise<boolean>((_resolve, reject) => { failFirst = reject; });
     const nextGate = new Promise<boolean>((resolve) => { finishNext = resolve; });
     let calls = 0;
-    const lifecycle = new RenderFixtureLifecycle({ prisma, leaseOwner: "shared-event-worker", publishRedis: async () => {
+    const lifecycle = new RenderFixtureLifecycle({ prisma, leaseOwner: "shared-event-worker", publishProgress: async () => {
       calls += 1;
       if (calls === 1) { firstStarted(); return firstGate; }
       nextStarted(); return nextGate;
@@ -3728,7 +3728,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     const dependencies = {
       prisma,
       leaseOwner: randomUUID(),
-      publishRedis: async () => false,
+      publishProgress: async () => false,
     };
     const lifecycle = new RenderFixtureLifecycle(dependencies);
     const admitted = await lifecycle.admit({

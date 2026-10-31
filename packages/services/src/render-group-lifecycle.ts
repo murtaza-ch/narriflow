@@ -8,7 +8,6 @@ import { accessibleProjectWhere } from "./project-access";
 import { syncClipExportAggregates } from "./clip-export-aggregates";
 import { flushWorkspaceEvents } from "./workspace-event";
 import { appendWorkflowEvent } from "./workflow-event-append";
-import { isWorkflowRedisDeliveryEnabled } from "./workflow.service";
 import {
   type ClaimedRenderGroupAttempt,
   type FinishRenderGroupExecution,
@@ -514,6 +513,7 @@ export class RenderGroupLifecycle {
     if (!group.operationDeadlineAt || group.operationDeadlineAt.getTime() !== context.operationDeadlineAt.getTime() ||
       context.leaseExpiresAt <= now || context.leaseExpiresAt > group.operationDeadlineAt) throw new RenderGroupAttemptLost(attempt);
     await tx.renderGroup.update({ where: { id: group.id }, data: { heartbeatAt: now, leaseExpiresAt: context.leaseExpiresAt } });
+    return undefined;
   }
 
   async startExecution(tx: Tx, ref: RenderGroupExecutionReference, context: ExecutorMutationContext): Promise<ExecutorMutationResult> {
@@ -523,6 +523,7 @@ export class RenderGroupLifecycle {
       analysisFingerprint: context.fingerprints.analysis, toolchainFingerprint: context.fingerprints.toolchain });
     const members = await memberSnapshot(tx, ref);
     for (const member of members) if (member.status === "pending") await this.markClipRenderVariantRenderingWithinTransaction(tx, attempt, member.clipRenderId);
+    return undefined;
   }
 
   private async executionWakes(tx: Tx, ref: RenderGroupExecutionReference, inputHash: string, retry: boolean): Promise<{ dispatchIds: string[] }> {
@@ -569,6 +570,7 @@ export class RenderGroupLifecycle {
   async progressExecution(tx: Tx, ref: RenderGroupExecutionReference, context: ExecutorMutationContext, _progress: ExecutorProgressInput): Promise<ExecutorMutationResult> {
     // Public render progress is derived from committed member outcomes.
     await this.owned(tx, this.executionAttempt(ref, context));
+    return undefined;
   }
 
   async expireExecution(tx: Tx, reference: ExecutionDispatchReference, attemptToken: string, observation: ExecutorExpiryObservation): Promise<ExecutorExpiryResult> {
@@ -599,7 +601,7 @@ export class RenderGroupLifecycle {
       await tx.renderGroup.update({ where: { id: group.id }, data: { status: decision.status, nextAttemptAt: null, settledAt: clock, errorCode: "operation_deadline_exceeded", failureDisposition: "permanent" } });
       await appendWorkflowEvent(tx, { projectId: ref.projectId, workflowRunId: parent.id, attemptId: attemptToken, stage: "clip_rendering", status: parent.status as "queued" | "running",
         progress: parent.progress, errorCode: null, transition: `unstarted_group_expired:${attemptToken}`, ...(failures.length ? { generationRenderResults: failures } : {}) },
-      { progressRequired: isWorkflowRedisDeliveryEnabled(), analyticsEnabled: false });
+      { progressRequired: true, analyticsEnabled: false });
       return { kind: "expired", ...await this.executionWakes(tx, ref, reference.inputHash, false) };
     }
     if (group.attemptToken !== attemptToken || !group.leaseOwner || !group.leaseExpiresAt) return { kind: "terminal" };
@@ -896,7 +898,7 @@ export class RenderGroupLifecycle {
       stage: "clip_rendering", status: parent.status as "queued" | "running", progress: parent.progress,
       errorCode: null, transition: `child_completed:${id}`,
       generationRenderResults: [{ renderId: id, status: "completed", errorCode: null }],
-    }, { progressRequired: isWorkflowRedisDeliveryEnabled(), analyticsEnabled: false });
+    }, { progressRequired: true, analyticsEnabled: false });
     return true;
   }
   /** Available after lease loss, for safe reconciliation of ambiguous commits.
@@ -959,7 +961,7 @@ export class RenderGroupLifecycle {
       stage: "clip_rendering", status: parent.status as "queued" | "running", progress: parent.progress,
       errorCode: null, transition: `child_failed:${id}`,
       generationRenderResults: [{ renderId: id, status: "failed", errorCode }],
-    }, { progressRequired: isWorkflowRedisDeliveryEnabled(), analyticsEnabled: false });
+    }, { progressRequired: true, analyticsEnabled: false });
     return true;
   }
   private async finishWithinTransaction(
@@ -1141,7 +1143,7 @@ export class RenderGroupLifecycle {
         transition: `group_finished:${input.token}`,
         ...(publicResults.length ? { generationRenderResults: publicResults } : {}),
       },
-      { progressRequired: isWorkflowRedisDeliveryEnabled(), analyticsEnabled: false },
+      { progressRequired: true, analyticsEnabled: false },
     );
     return decision;
   }

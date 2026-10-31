@@ -48,7 +48,19 @@ function harness() {
       },
     },
     project: { update: async () => ({ workflowEventSeq: ++seq }) },
-    workflowEvent: { create: async () => ({ id: "event" }) },
+    workflowEvent: { create: async () => ({ id: "50000000-0000-4000-8000-000000000001", emittedAt: new Date(clock) }) },
+    executionEpoch: { findUniqueOrThrow: async () => ({ epoch: 1 }) },
+    // This claim-lifetime fixture borrows the transaction boundary. Durable
+    // event/dispatch semantics themselves run against PostgreSQL in the gate.
+    $queryRaw: async (query: TemplateStringsArray, ...values: unknown[]) => {
+      const sql = query.join("?");
+      if (sql.includes('SELECT "epoch"')) return [{ epoch: 1 }];
+      if (sql.includes('INSERT INTO "ExecutionDispatch"')) return [{
+        id: values[0], kind: values[1], subjectKind: values[2], subjectId: values[3], generation: values[4], deploymentEpoch: values[5], inputHash: values[6], deliveryKey: values[7], dueAt: values[8], nextDeliveryAt: new Date(clock), wakeKind: values[9], deadlineKind: values[10], observedDeadlineAt: values[11],
+        deliveryAttempts: 0, acknowledgedAt: null, destinationId: null, deadLetteredAt: null, errorCode: null,
+      }];
+      throw new Error("Unexpected claim fixture SQL");
+    },
   };
   const dependencies = {
     prisma: {

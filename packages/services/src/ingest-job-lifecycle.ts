@@ -1,3 +1,4 @@
+import { appendProgressEventDispatch } from "./progress-outbox";
 import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient, type IngestJob } from "@prisma/client";
 import {
@@ -195,7 +196,7 @@ export class IngestJobLifecycle {
           }
         : {}),
     };
-    await tx.workflowEvent.create({
+    const event = await tx.workflowEvent.create({
       data: {
         projectId: input.projectId,
         workflowRunId: null,
@@ -208,12 +209,13 @@ export class IngestJobLifecycle {
         emittedAt: now,
         dedupeKey: `ingest:${input.id}:${input.transition}`,
         payload: payload as unknown as Prisma.InputJsonValue,
-        progressRequired: this.deps.progressRequired ?? false,
+        progressRequired: true,
         notificationRequired: input.notify ?? false,
         availableAt: now,
         nextDeliveryAt: now,
       },
     });
+    await appendProgressEventDispatch(tx, event);
   }
   async enqueue(
     tx: Tx,

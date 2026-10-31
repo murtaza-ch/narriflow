@@ -38,6 +38,10 @@
       "types": "./src/workflow-attempt-contract.ts",
       "default": "./src/workflow-attempt-contract.ts"
     },
+    "./workflow-execution-input": {
+      "types": "./src/workflow-execution-input.ts",
+      "default": "./src/workflow-execution-input.ts"
+    },
     "./brand-font-parser": {
       "types": "./src/brand-font-parser.ts",
       "default": "./src/brand-font-parser.ts"
@@ -425,6 +429,14 @@
     "./progress-feed": {
       "types": "./src/progress-feed.ts",
       "default": "./src/progress-feed.ts"
+    },
+    "./progress-delivery": {
+      "types": "./src/progress-delivery.ts",
+      "default": "./src/progress-delivery.ts"
+    },
+    "./progress-outbox": {
+      "types": "./src/progress-outbox.ts",
+      "default": "./src/progress-outbox.ts"
     },
     "./execution-storage": {
       "types": "./src/execution-storage.ts",

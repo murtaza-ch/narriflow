@@ -30,7 +30,7 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
 class ApplicationFailure extends Error { constructor(readonly original: unknown) { super("Progress consumer failed"); } }
 
 /** One bounded queue, rather than one Promise per received message. */
-async function* messages(socket: WebSocket, signal: AbortSignal, idleTimeoutMs: number): AsyncGenerator<string> {
+async function* messages(socket: WebSocket, signal: AbortSignal, idleTimeoutMs: number, expiresAt: number): AsyncGenerator<string> {
   const queue: string[] = [];
   let finished = false;
   let failure: ApiError | undefined;
@@ -51,6 +51,7 @@ async function* messages(socket: WebSocket, signal: AbortSignal, idleTimeoutMs: 
   socket.addEventListener("close", end);
   socket.addEventListener("error", onError);
   signal.addEventListener("abort", end, { once: true });
+  const expiry = setTimeout(() => { end(); socket.close(1000, "Renew progress authorization"); }, Math.max(1, Math.min(60_000, expiresAt - Date.now())));
   const timer = setInterval(() => {
     if (Date.now() - lastReceived >= idleTimeoutMs) fail(error(CLIENT_ERROR_CODES.streamIdle, "The progress connection went silent."));
     else if (socket.readyState === 1) socket.send("ping");
@@ -62,7 +63,7 @@ async function* messages(socket: WebSocket, signal: AbortSignal, idleTimeoutMs: 
       await new Promise<void>((resolve) => { wake = resolve; });
     }
   } finally {
-    clearInterval(timer); socket.removeEventListener("message", onMessage); socket.removeEventListener("close", end); socket.removeEventListener("error", onError); signal.removeEventListener("abort", end); socket.close();
+    clearTimeout(expiry); clearInterval(timer); socket.removeEventListener("message", onMessage); socket.removeEventListener("close", end); socket.removeEventListener("error", onError); signal.removeEventListener("abort", end); socket.close();
   }
 }
 
@@ -86,7 +87,7 @@ export async function runProgressSocket(options: ProgressSocketOptions): Promise
         url.searchParams.set("ticket", ticket.ticket);
         url.searchParams.set("sinceSeq", String(cursor));
         const socket = (options.createSocket ?? ((address) => new WebSocket(address)))(url.href);
-        for await (const raw of messages(socket, signal, options.idleTimeoutMs ?? 45_000)) {
+        for await (const raw of messages(socket, signal, options.idleTimeoutMs ?? 45_000, ticket.subscriptionExpiresAt)) {
           let frame;
           try { frame = progressSocketFrameSchema.parse(JSON.parse(raw)); }
           catch { throw error("stream_protocol", "Progress sent an invalid frame."); }

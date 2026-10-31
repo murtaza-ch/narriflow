@@ -1,3 +1,4 @@
+export { workflowRunExecutionInputHash, type WorkflowRunExecutionInput } from "./workflow-execution-input";
 export {
 	boundedExpectedDomainFailureDetails,
 	ExpectedDomainFailureError,
@@ -471,7 +472,6 @@ export {
 } from "./clip-preview-storage";
 export {
 	getLastWorkflowSeq,
-	getWorkflowChannel,
 	getWorkflowEventsSince,
 	publishPersistedWorkflowEvent,
 } from "./workflow.service";

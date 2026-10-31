@@ -29,3 +29,9 @@ Verification, 2026-10-31:
 - Biome check of TypeScript protocol/tests, shared vectors and services manifest: passed.
 
 Still required after ticket 05: durable replay inbox, domain-owner fencing, scoped grants, route trust/admission/inventory, actual Modal spawn/status/cancel bridge, rescheduling and acknowledgement-loss integration gates.
+
+### Watchdog authority and replay
+
+Root added `expireDeadline` to executor control. It locks epoch, domain, then attempt; checks the exact attempt reference; re-reads DB time and the current nearest lease/absolute deadline. Renewed work returns sleep without caching that observation. A mutating expiry and wake IDs commit with an internal `watchdog` inbox receipt. Lost postcommit scheduler acknowledgement replays those wake IDs without charging or expiring twice. The internal audience is not accepted by the external signature schema.
+
+Verification: isolated PostgreSQL control suite now 6 passed, 30 assertions, including real lease renewal observation and lost expiry-wake acknowledgement. Full production adapters and Modal bridge are still open.
