@@ -20,9 +20,9 @@ testUrl.searchParams.delete("schema");
 testUrl.searchParams.set("options", `-csearch_path=${schema},public`);
 const requestedTests = Bun.argv.slice(2);
 const tests = requestedTests.length ? requestedTests : [
-  "execution-ledger", "execution-admission", "execution-maintenance", "execution-retention-pages", "media-cleanup-control", "execution-snapshot", "execution-object-restore", "execution-native-restore", "execution-native-restore", "execution-restore", "execution-dispatch", "executor-control", "execution-transfer", "source-audio-admission",
+  "execution-ledger", "execution-admission", "execution-maintenance", "execution-retention-pages", "media-cleanup-control", "execution-snapshot", "execution-object-restore", "execution-native-restore", "execution-restore", "execution-dispatch", "executor-control", "execution-transfer", "source-audio-admission",
   "targeted-execution", "targeted-ingest-execution", "targeted-workflow-execution", "clip-preparation", "clip-preparation-ledger", "clip-selection", "clip-selection-window", "clip-selection-preparation", "clip-selection-hyperdrive-gate", "native-validation", "thumbnail-frame-execution", "generated-media-execution",
-  "outbound-probe", "outbound-delivery", "webhook-subscription", "notification-dispatch", "notification-execution", "publication-execution", "modal-dispatch", "progress-outbox", "billing-reconciliation", "library-index", "generation-finishing-execution", "generation-finishing", "social-token-refresh",
+  "outbound-probe", "outbound-delivery", "webhook-subscription", "notification-dispatch", "notification-execution", "publication-execution", "modal-dispatch", "progress-outbox", "billing-reconciliation", "library-index", "generation-finishing-execution", "generation-finishing", "social-token-refresh", "export-bundle-execution", "dubbing-execution", "autopilot-finishing-authority", "autopilot-execution",
 ].map(name => `packages/services/src/${name}.db.test.ts`);
 if (tests.some(path => !/^packages\/services\/src\/[a-z0-9-]+\.db\.test\.ts$/.test(path))) throw new Error("Only named execution database test files are allowed");
 for (const path of tests) if (!await Bun.file(new URL(`../../../${path}`, import.meta.url)).exists()) throw new Error(`Execution database test file does not exist: ${path}`);
@@ -43,6 +43,7 @@ try {
     DATABASE_URL: migrationUrl.toString(), DIRECT_URL: migrationUrl.toString(),
   });
   const testEnvironment = {
+    MEDIA_FETCH_TOOLCHAIN_FINGERPRINT: "f".repeat(64),
     ALLOW_SERVERLESS_DB_TESTS: "1", ALLOW_EXECUTION_CONTROL_DB_TESTS: "1", ALLOW_EXECUTION_TRANSFER_DB_TESTS: "1", ALLOW_SOURCE_AUDIO_DB_TESTS: "1",
     SERVERLESS_TEST_DATABASE_URL: testUrl.toString(),
     SERVERLESS_TEST_DATABASE_SCHEMA: schema,
@@ -80,7 +81,13 @@ try {
     if (remaining.includes(dispatch)) await run(["bun", "test", dispatch], testEnvironment);
     const ordinary = remaining.filter(path => !fences.includes(path) && path !== dispatch);
     if (ordinary.length) await run(["bun", "test", ...ordinary], testEnvironment);
-    for (const path of fences) await run(["bun", "test", path], testEnvironment);
+    for (const path of fences) {
+      // Each independent fence suite starts from the operational test mode.
+      // It may advance the epoch and close admission; neither mode change is
+      // an input to the next suite's fixtures. This schema is disposable.
+      await pool.query(`UPDATE "${schema}"."ExecutionEpoch" SET "admissionOpen" = true WHERE id = 1`);
+      await run(["bun", "test", path], testEnvironment);
+    }
     // Restore advances authority and leaves intake closed. Keep it last.
     if (tests.includes(restore)) await run(["bun", "test", restore], testEnvironment);
   }

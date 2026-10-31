@@ -1,3 +1,4 @@
+import {recoverProjectNotificationDeliveries} from "./notification-execution";
 import { createHash, randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient, type GenerationFinishing } from "@prisma/client";
 import {
@@ -358,7 +359,7 @@ export function createGenerationFinishing(deps: GenerationFinishingDependencies)
       const state = await lockFinishingCommand(tx,reference);
       if (!state) return { kind: "superseded" as const };
       const { row, clock, record } = state;
-      if (["ready", "partial", "skipped"].includes(row.state)) return { kind: "complete" as const };
+      if (["ready", "partial", "skipped"].includes(row.state)) return { kind: "complete" as const, dispatchIds:await recoverProjectNotificationDeliveries(tx,{projectId:row.projectId,sourceId:row.id,outcomes:["finishing_ready"]}) };
       if (record.observedDeadlineAt && record.observedDeadlineAt > clock) return { kind: "sleep" as const, dueAt: record.observedDeadlineAt };
       if (!row.operationDeadlineAt || row.operationDeadlineAt <= clock || row.attempts >= FINISHING_MAX_ATTEMPTS) {
         const picks = finishingPicksSchema.catch([]).parse(row.picks ?? []);
@@ -382,6 +383,7 @@ export function createGenerationFinishing(deps: GenerationFinishingDependencies)
       return { kind: "claimed" as const, row: { ...claimed, claimToken, reference }, watchdogId: watchdog.dispatchId };
     });
     if (prepared.kind === "advanced") { await register([prepared.dispatchId]); return { kind: "complete" }; }
+    if(prepared.kind==="complete"&&"dispatchIds" in prepared){await register(prepared.dispatchIds??[]);return{kind:"complete"};}
     if (prepared.kind !== "claimed") {
       if (prepared.kind === "superseded" && reference.kind === "operation_driver" && reference.subject.kind === "generation_finishing") {
         const repaired = await prisma.$transaction(async tx => {
