@@ -51,6 +51,10 @@
     "./source-display-geometry": {
       "types": "./src/source-display-geometry.ts",
       "default": "./src/source-display-geometry.ts"
+    },
+    "./render-execution": {
+      "types": "./src/render-execution.ts",
+      "default": "./src/render-execution.ts"
     }
   },
   "scripts": {

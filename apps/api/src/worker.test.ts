@@ -15,6 +15,15 @@ test("static liveness needs neither configuration nor a database", async () => {
   expect(getPrismaClient()).toBeNull();
 });
 
+test("closed cutover admission refuses requests before runtime or database construction", async () => {
+  const worker = createApiWorker({ createApp: () => { throw new Error("Closed admission must not construct the runtime"); } });
+  const closed = { ADMISSION_STATE: "closed" } as ApiWorkerBindings;
+  const response = await worker.fetch(new Request("https://api.test/api/ingest/link", { method: "POST" }), closed, context);
+  expect(response.status).toBe(503);
+  expect(response.headers.get("Retry-After")).toBe("5");
+  expect((await worker.fetch(new Request("https://api.test/api/health"), closed, context)).status).toBe(200);
+});
+
 test("a DO-only invocation with no committed notification keeps the database resource lazy", async () => {
   let clients = 0;
   const worker = createApiWorker({

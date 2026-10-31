@@ -35,6 +35,7 @@ class PublishedArtifact:
     binding_hash: str
     content_type: str
     object: CompletedObject
+    render_group: dict[str, Any] | None = None
 
 
 def _facts(role, builder, completed):
@@ -154,11 +155,15 @@ class AssignedArtifacts:
         # when the domain commit acknowledgement cannot be recovered.
         try:
             result = await asyncio.to_thread(self._session.command,'commit-artifact',artifact=artifact)
-            if result.disposition != {'disposition':'committed','artifactId':assigned['artifactId']}:
+            acknowledgement=result.disposition
+            if (acknowledgement.get('disposition')!='committed' or acknowledgement.get('artifactId')!=assigned['artifactId']
+                    or set(acknowledgement)-{'disposition','artifactId','renderGroup'}
+                    or 'renderGroup' in acknowledgement and assigned['role'] not in {'render_variant','render_outcome'}):
                 raise ExecutionControlError('execution_response_invalid')
         except ExecutionControlError:
             raise ArtifactCommitUnconfirmed(assigned['artifactId'],completed) from None
-        return PublishedArtifact(assigned['artifactId'],assigned['role'],assigned['bindingHash'],content_type,completed)
+        return PublishedArtifact(assigned['artifactId'],assigned['role'],assigned['bindingHash'],content_type,completed,
+            acknowledgement.get('renderGroup'))
 
 
     async def commit_completed(self,artifact_id:str,completed:CompletedObject,*,content_type:str,

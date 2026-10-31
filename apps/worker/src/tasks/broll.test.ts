@@ -3,6 +3,7 @@ import { mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PexelsVideo } from "@narriflow/services";
+import { withServiceEnvironment } from "@narriflow/services/runtime-environment";
 import {
   getCachedBrollAssetPath,
   remapBrollCuesForCutPlan,
@@ -41,14 +42,8 @@ function fakeVideo(overrides: Partial<PexelsVideo> = {}): PexelsVideo {
 }
 
 describe("resolveBrollCutaways", () => {
-  const prevKey = process.env.PEXELS_API_KEY;
-
   function withKey<T>(fn: () => Promise<T>): Promise<T> {
-    process.env.PEXELS_API_KEY = "test-key";
-    return fn().finally(() => {
-      if (prevKey !== undefined) process.env.PEXELS_API_KEY = prevKey;
-      else delete process.env.PEXELS_API_KEY;
-    });
+    return withServiceEnvironment({ PEXELS_API_KEY: "test-key" }, fn);
   }
 
   test("resolves each cue into its own cutaway with its own query", () =>

@@ -12,6 +12,7 @@ from .bridge import BridgeError, _parse
 from .bridge_runtime import parse_bridge_keys
 from .control import ExecutionControlClient, ExecutionControlError, ExecutorSession
 from .fetch import SourceFetchFailure
+from .native_runtime import NativeOperationFailure
 from .transfer import WorkPackage, load_work_package
 
 NativeOperation = Callable[[ExecutorSession, WorkPackage, Path], Awaitable[None]]
@@ -83,10 +84,10 @@ async def invoke_native(value: object, function_name: str, *, client: ExecutionC
         # A transport failure may follow a successful publication. Never turn
         # its missing acknowledgement into a failed domain result or delete it.
         return await _observe(session)
-    except SourceFetchFailure as error:
+    except (SourceFetchFailure, NativeOperationFailure) as error:
         try:
-            # This type is constructed by the shared downloader from fixed
-            # failure codes. Its exception text and provider diagnostics stay local.
+            # Native adapters construct these from fixed failure codes.
+            # Exception text and provider diagnostics stay local.
             await asyncio.to_thread(session.command, "fail", failureCode=error.code, retryable=error.retryable)
         except ExecutionControlError:
             pass

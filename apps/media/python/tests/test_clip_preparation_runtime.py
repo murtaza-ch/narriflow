@@ -16,14 +16,17 @@ from narriflow_media.transfer import load_work_package
 
 class ClipPreparationRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_actual_bun_child_starts_before_conditional_source_reads_and_commits_real_outputs_in_order(self):
+        await self.actual_operation()
+
+    async def actual_operation(self, *, video=False, fingerprint='a'*64, enforce_runtime=False):
         root=Path(__file__).resolve().parents[4]
         with tempfile.TemporaryDirectory() as directory:
-            base=Path(directory);original=base/'original.wav';work=base/'work';work.mkdir()
-            subprocess.run(['ffmpeg','-nostdin','-hide_banner','-loglevel','error','-y','-f','lavfi','-i','sine=f=330:sample_rate=16000:d=4','-c:a','pcm_s16le',str(original)],check=True,timeout=10)
+            base=Path(directory);original=base/('original.mp4' if video else 'original.wav');work=base/'work';work.mkdir()
+            subprocess.run(['ffmpeg','-nostdin','-hide_banner','-loglevel','error','-y',*(['-f','lavfi','-i','testsrc2=s=320x180:r=30:d=4','-f','lavfi','-i','sine=f=330:sample_rate=48000:d=4','-c:v','libx264','-threads','1','-pix_fmt','yuv420p','-c:a','aac','-movflags','+faststart','-shortest'] if video else ['-f','lavfi','-i','sine=f=330:sample_rate=16000:d=4','-c:a','pcm_s16le']),str(original)],check=True,timeout=10)
             payload=original.read_bytes()
             script="""import {readFileSync} from 'node:fs';import {productionWorkerProcessModule as worker} from './apps/media/src/worker-process.ts';import {clipPreparationBinding} from './packages/services/src/clip-preparation-input.ts';import {clipPreparationEngineHash} from './packages/services/src/clip-preparation-policy.ts';import {clipPreparationInputSchema} from './packages/validators/src/clip-preparation.ts';const raw=JSON.parse(readFileSync(0,'utf8'));raw.sourceProbe=(await worker.inspectMedia({sourcePath:raw.sourcePath,signal:new AbortController().signal,deadlineMs:10000})).sourceProbe;delete raw.sourcePath;raw.engineHash=await clipPreparationEngineHash(raw.toolchainFingerprint);raw.document=JSON.parse(readFileSync('./apps/media/src/__fixtures__/render-golden/documents.json','utf8')).cases['solo-auto-vertical'].document;const value=clipPreparationInputSchema.omit({bindingHash:true}).parse(raw);console.log(JSON.stringify({...value,bindingHash:await clipPreparationBinding(value)}));"""
             raw={'version':1,'kind':'prepare_clip','preparationId':str(uuid4()),'projectId':str(uuid4()),'clipId':str(uuid4()),'sourceRevision':1,'editorRevision':0,
-                'toolchainFingerprint':'a'*64,'engineHash':'b'*64,'wholeSource':True,'llmModel':'fixture','sourcePath':str(original),
+                'toolchainFingerprint':fingerprint,'engineHash':'b'*64,'wholeSource':True,'llmModel':'fixture','sourcePath':str(original),
                 'source':{'storageKey':'execution/frozen/original','etag':'"source"','byteLength':len(payload),'sha256':hashlib.sha256(payload).hexdigest()}}
             prepared=subprocess.run(['bun','-e',script],input=json.dumps(raw).encode(),capture_output=True,cwd=root,timeout=20,check=True)
             command=json.loads(prepared.stdout);uploads={};calls=[];starts=[]
@@ -62,9 +65,9 @@ class ClipPreparationRuntimeTests(unittest.IsolatedAsyncioTestCase):
                         return TransferResponse(206,{'etag':'"source"','content-length':str(end-start+1),'content-range':f'bytes {start}-{end}/{len(payload)}'},payload[start:end+1])
                     uploads[grant.url.rsplit('/',1)[-1]]=bytes(body)
                     return TransferResponse(200,{'ETag':hashlib.md5(body,usedforsecurity=False).hexdigest()},b'')
-            async def verified_runtime(*_,**__):return 'a'*64
+            async def verified_runtime(*_,**__):return fingerprint
             session=Session();package=await load_work_package(session)
-            measurements=await run_prepare_clip(session,package,work,transport=Storage(),source_transport=Storage(),verify_runtime=verified_runtime)
+            measurements=await run_prepare_clip(session,package,work,transport=Storage(),source_transport=Storage(),**({} if enforce_runtime else {'verify_runtime':verified_runtime}))
             self.assertEqual(len(starts),1)
             commits=[fields['artifact'] for action,fields in calls if action=='commit-artifact']
             self.assertEqual([value['role'] for value in commits],['clip_preview','preview_peaks','layout_evidence'])
@@ -73,3 +76,6 @@ class ClipPreparationRuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(result['preview']['artifactId'],outputs[0]['artifactId'])
             self.assertEqual(result['layout']['automatic']['engine'],'shot-layout-v1')
             self.assertGreater(measurements['bytesTransferred'],0)
+            return {'kind':'video' if video else 'audio','enforcedRuntime':enforce_runtime,'starts':len(starts),'roles':[value['role'] for value in commits],
+                'outputs':[{'role':value['role'],'byteLength':value['byteLength'],'sha256':value['sha256']} for value in commits],
+                'measurements':measurements,'automaticEngine':result['layout']['automatic']['engine'],'screenObserved':result['layout']['screen'] is not None,'splitObserved':result['layout']['split'] is not None}

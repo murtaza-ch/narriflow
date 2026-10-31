@@ -132,5 +132,7 @@
   "20261030150000_clerk_deleted_identity",
   "20261030160000_scribe_language_codes",
   "20261030170000_transcript_provider_submission",
-  "20261031010000_serverless_execution"
+  "20261031010000_serverless_execution",
+  "20261031020000_clip_preparation",
+  "20261031030000_render_preparation_input"
 ]

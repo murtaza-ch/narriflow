@@ -872,17 +872,19 @@ CREATE TRIGGER "GeneratedMediaJob_native_identity_immutable" BEFORE UPDATE ON "G
 -- Publication scheduling and native ownership extend the existing domain ledger.
 ALTER TABLE "SocialPost" ADD COLUMN "generation" INTEGER NOT NULL DEFAULT 1,
  ADD COLUMN "deploymentEpoch" INTEGER NOT NULL DEFAULT 1;
-ALTER TABLE "SocialPublicationAttempt" ADD COLUMN "nativeStartCount" INTEGER NOT NULL DEFAULT 0,
+ALTER TABLE "SocialPublicationAttempt" ADD COLUMN "nativeStartRound" INTEGER NOT NULL DEFAULT 1, ADD COLUMN "nativeStartCount" INTEGER NOT NULL DEFAULT 0,
  ADD COLUMN "nativeStartCeiling" INTEGER NOT NULL DEFAULT 104;
-ALTER TABLE "PublicationClaim" ADD COLUMN "executionMode" VARCHAR(16) NOT NULL DEFAULT 'publish', ADD COLUMN "deploymentEpoch" INTEGER NOT NULL DEFAULT 1,
+ALTER TABLE "PublicationManualDecision" ADD COLUMN "executionBudgetAudit" JSONB;
+ALTER TABLE "PublicationClaim" ADD COLUMN "workState" JSONB, ADD COLUMN "executionMode" VARCHAR(16) NOT NULL DEFAULT 'publish', ADD COLUMN "deploymentEpoch" INTEGER NOT NULL DEFAULT 1,
  ADD COLUMN "generation" INTEGER NOT NULL DEFAULT 1, ADD COLUMN "executorOwner" UUID,
  ADD COLUMN "operationDeadlineAt" TIMESTAMP(3);
 ALTER TABLE "SocialPost" ADD CONSTRAINT "SocialPost_execution_shape" CHECK ("generation">0 AND "deploymentEpoch">0 AND "scheduleRevision">0);
 ALTER TABLE "SocialPublicationAttempt" ADD CONSTRAINT "SocialPublicationAttempt_native_budget" CHECK (
- "nativeStartCount">=0 AND "nativeStartCeiling" BETWEEN 2 AND 110 AND "nativeStartCount"<="nativeStartCeiling"
+ "nativeStartRound">0 AND "nativeStartCount">=0 AND "nativeStartCeiling" BETWEEN 2 AND 110 AND "nativeStartCount"<="nativeStartCeiling"
 );
 ALTER TABLE "PublicationClaim" ADD CONSTRAINT "PublicationClaim_execution_shape" CHECK (
- "executionMode" IN ('publish','resume','reconcile') AND "deploymentEpoch">0 AND "generation">0 AND ("executorOwner" IS NULL OR "operationDeadlineAt" IS NOT NULL)
+ ("workState" IS NULL OR (jsonb_typeof("workState")='object' AND octet_length("workState"::text)<=65536))
+ AND "executionMode" IN ('publish','resume','reconcile') AND "deploymentEpoch">0 AND "generation">0 AND ("executorOwner" IS NULL OR "operationDeadlineAt" IS NOT NULL)
  AND ("operationDeadlineAt" IS NULL OR "leaseExpiresAt"<="operationDeadlineAt")
 );
 CREATE FUNCTION social_post_schedule_revision() RETURNS trigger LANGUAGE plpgsql AS $$
@@ -900,12 +902,35 @@ BEGIN
 END; $$;
 CREATE TRIGGER "SocialPost_schedule_revision" BEFORE UPDATE ON "SocialPost"
  FOR EACH ROW EXECUTE FUNCTION social_post_schedule_revision();
+ALTER TABLE "PublicationManualDecision" ADD CONSTRAINT "PublicationManualDecision_execution_audit" CHECK (
+ "executionBudgetAudit" IS NULL OR (jsonb_typeof("executionBudgetAudit")='object' AND octet_length("executionBudgetAudit"::text)<=1024)
+);
 CREATE FUNCTION publication_native_budget_immutable() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE round_reset boolean;
 BEGIN
- IF NEW."nativeStartCeiling" IS DISTINCT FROM OLD."nativeStartCeiling" OR NEW."nativeStartCount"<OLD."nativeStartCount" OR NEW."nativeStartCount">OLD."nativeStartCount"+1 THEN
-  RAISE EXCEPTION 'publication native start budget is immutable' USING ERRCODE='23514';
+ round_reset := NEW."nativeStartRound"=OLD."nativeStartRound"+1 AND OLD."phase"='needs_attention'
+  AND NEW."phase"='reconciling' AND NEW."nativeStartCount"=0 AND NEW."currentClaimId" IS NULL;
+ IF NEW."nativeStartCeiling" IS DISTINCT FROM OLD."nativeStartCeiling" OR
+  (NEW."nativeStartRound" IS DISTINCT FROM OLD."nativeStartRound" AND NOT round_reset) OR
+  (NEW."nativeStartCount"<OLD."nativeStartCount" AND NOT round_reset) OR NEW."nativeStartCount">OLD."nativeStartCount"+1 THEN
+  RAISE EXCEPTION 'publication native start budget needs an explicit recheck round' USING ERRCODE='23514';
  END IF;
  RETURN NEW;
 END; $$;
 CREATE TRIGGER "SocialPublicationAttempt_native_budget_immutable" BEFORE UPDATE ON "SocialPublicationAttempt"
  FOR EACH ROW EXECUTE FUNCTION publication_native_budget_immutable();
+
+CREATE FUNCTION publication_native_round_audit() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+ IF NEW."nativeStartRound" IS DISTINCT FROM OLD."nativeStartRound" AND NOT EXISTS (
+  SELECT 1 FROM "PublicationManualDecision" d WHERE d."attemptId"=NEW."id" AND d."kind"='recheck_requested'
+  AND d."executionBudgetAudit"->>'kind'='native_round_renewal'
+  AND (d."executionBudgetAudit"->>'previousRound')::integer=OLD."nativeStartRound"
+  AND (d."executionBudgetAudit"->>'round')::integer=NEW."nativeStartRound"
+  AND (d."executionBudgetAudit"->>'previousNativeStartCount')::integer=OLD."nativeStartCount"
+  AND (d."executionBudgetAudit"->>'ceiling')::integer=NEW."nativeStartCeiling"
+ ) THEN RAISE EXCEPTION 'publication native round has no durable recheck audit' USING ERRCODE='23514'; END IF;
+ RETURN NULL;
+END; $$;
+CREATE CONSTRAINT TRIGGER "SocialPublicationAttempt_native_round_audit" AFTER UPDATE ON "SocialPublicationAttempt"
+ DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION publication_native_round_audit();

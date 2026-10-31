@@ -5,6 +5,7 @@ import { createRouteApp } from "../../http/admission";
 import { jsonError, requestIdOf } from "../../http/errors";
 import { uuidParams } from "../platform/params";
 import { progressSocketAdmission } from "./admission";
+import type { ApiWorkerBindings } from "../../worker-bindings";
 
 export interface ProgressSocketDeps {
   allowedOrigins: readonly string[];
@@ -19,6 +20,8 @@ export function createProgressSocketRoutes(deps: ProgressSocketDeps) {
     const origin = c.req.header("Origin");
     if (!origin || !deps.allowedOrigins.includes(origin)) return jsonError(403, "progress_origin_not_allowed", "Progress requires an allowed browser origin.", requestIdOf(c));
     if (c.req.header("Upgrade")?.toLowerCase() !== "websocket") return new Response(null, { status: 426 });
+    const remote = (c.env as ApiWorkerBindings).DEV_CLOUD;
+    if (remote) return remote.fetch(c.req.raw);
     let ticket: ProgressTicketPayload;
     try { ticket = await deps.verify(c.req.query("ticket") ?? "", { origin, audience: deps.audience, nowMs: Date.now() }); }
     catch { return jsonError(401, "invalid_progress_ticket", "Request a fresh progress connection ticket.", requestIdOf(c)); }

@@ -1,3 +1,4 @@
+import { lockPublicationPost, lockPublicationScope } from "./publication-locks";
 import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
@@ -151,6 +152,7 @@ export const prismaPublicationSchedulingStore: PublicationSchedulingStore = {
 			const candidate = await input.create();
 			const created = await requirePrisma().$transaction(
 				async (tx) => {
+                    await lockPublicationScope(tx,{workspaceId:candidate.workspaceId,projectId:candidate.projectId,socialAccountId:candidate.frozen.socialAccountId});
 					const replay = await tx.socialPost.findUnique({
 						where: {
 							workspaceId_clientIdempotencyKey: {
@@ -319,6 +321,7 @@ export const prismaPublicationSchedulingStore: PublicationSchedulingStore = {
 
 	async cancel(input) {
 		return requirePrisma().$transaction(async (tx) => {
+            await lockPublicationPost(tx,input.postId);
 			const cancelled = await tx.socialPost.updateMany({
 				where: {
 					id: input.postId,
