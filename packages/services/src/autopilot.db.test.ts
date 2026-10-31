@@ -6,7 +6,9 @@ import { afterAll, beforeAll, describe, expect, setDefaultTimeout, spyOn, test }
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@prisma/client";
 import { Pool } from "pg";
-import { AutopilotService } from "./autopilot.service";
+import { AutopilotTestRuntime } from "./autopilot-execution-test-support";
+import { queueAutopilotRule } from "./autopilot-execution";
+import { RssFeedError } from "./rss-parser";
 import { ProcessingUsageError } from "./processing-usage";
 import { projectService } from "./project.service";
 import { analyticsService } from "./analytics.service";
@@ -17,7 +19,6 @@ import { campaignOperationService } from "./campaign-operation.service";
 import { brandTemplateService } from "./brand-template.service";
 import { brandProfileService, BrandProfileNotFoundError } from "./brand-profile.service";
 import { recipeService } from "./recipe.service";
-import { workspaceService } from "./workspace.service";
 import { socialOAuthService } from "./social-oauth.service";
 import { brandTemplateInputSchema, contentPackSchema, DEFAULT_CAPTION_PRESET, type RecipeInput } from "@narriflow/validators";
 import { listWorkspaceEvents } from "./workspace-event";
@@ -148,49 +149,35 @@ describeDb("Autopilot database concurrency and recovery", () => {
     expect(admitted?.projectId).toBeTruthy();
   })));
 
-  test("reclaims an expired running lease without touching a live lease", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
-    if (!prisma) throw new Error("DATABASE_URL is required");
-    const expired = await prisma.autopilotRule.create({
-      data: {
-        workspaceId,
-        createdByUserId: userId,
-        name: "Expired lease",
-        rssUrl: "https://feeds.example.test/expired.xml",
-        recipeId,
-        status: "running",
-        claimToken: randomUUID(),
-        leaseExpiresAt: new Date(Date.now() - 60_000),
-      },
-    });
-    const live = await prisma.autopilotRule.create({
-      data: {
-        workspaceId,
-        createdByUserId: userId,
-        name: "Live lease",
-        rssUrl: "https://feeds.example.test/live.xml",
-        recipeId,
-        status: "running",
-        claimToken: randomUUID(),
-        leaseExpiresAt: new Date(Date.now() + 60_000),
-      },
-    });
+  test("an exact lease watchdog releases only its expired owner, leaving another live cycle alone", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
+    const worker = new AutopilotTestRuntime(prisma, { fetchFeed: async () => ({ title: "Lease feed", finalUrl: "https://feeds.example.test/lease.xml", episodes: [], etag: null, lastModified: null, notModified: true }) });
+    const make = async (name: string, leaseOffset: number) => {
+      const rule = await prisma.autopilotRule.create({ data: { workspaceId, createdByUserId: userId, name, rssUrl: "https://feeds.example.test/lease.xml", recipeId, nextRunAt: new Date(Date.now()-120_000) } });
+      await worker.driver.run((await prisma.$transaction(tx => queueAutopilotRule(tx,rule.id)))!);
+      const accepted = await prisma.autopilotRule.findUniqueOrThrow({where:{id:rule.id}});
+      await worker.completeNativeProbe(accepted.executionProbeId!);
+      return prisma.autopilotRule.update({where:{id:rule.id},data:{claimToken:randomUUID(),leaseExpiresAt:new Date(Date.now()+leaseOffset)}});
+    };
+    const expired = await make("Expired lease",-60_000), live = await make("Live lease",60_000);
+    const expiredRef=(await prisma.$transaction(tx=>queueAutopilotRule(tx,expired.id)))!;
+    expect(await worker.driver.run(expiredRef)).toEqual({kind:"complete"});
+    expect(await prisma.autopilotRule.findUniqueOrThrow({where:{id:expired.id}})).toMatchObject({claimToken:null,leaseExpiresAt:null,generation:expired.generation+1,executionCycleId:expired.executionCycleId});
+    expect(await prisma.autopilotRule.findUniqueOrThrow({where:{id:live.id}})).toMatchObject({claimToken:live.claimToken,leaseExpiresAt:live.leaseExpiresAt,generation:live.generation});
+    expect(await worker.driver.run(expiredRef)).toEqual({kind:"superseded"});
+  })));
 
-    expect(await new AutopilotService().reapStalledRules()).toBe(1);
-    const [expiredAfter, liveAfter] = await Promise.all([
-      prisma.autopilotRule.findUniqueOrThrow({ where: { id: expired.id } }),
-      prisma.autopilotRule.findUniqueOrThrow({ where: { id: live.id } }),
-    ]);
-    expect(expiredAfter.status).toBe("active");
-    expect(expiredAfter.leaseExpiresAt).toBeNull();
-    expect(expiredAfter.claimToken).toBeNull();
-    expect(liveAfter.status).toBe("running");
-    expect(liveAfter.claimToken).toBe(live.claimToken);
+  test("permanent invalid RSS input fails once instead of scheduling endless native retries", bindServiceTestEnvironment(prismaGlobal.bind(async()=>{
+    const rule=await prisma.autopilotRule.create({data:{workspaceId,createdByUserId:userId,name:"Invalid feed",rssUrl:"https://feeds.example.test/invalid.xml",recipeId,nextRunAt:new Date(Date.now()-1000)}});
+    const worker=new AutopilotTestRuntime(prisma,{fetchFeed:async()=>{throw new RssFeedError("rss_invalid_xml");}});
+    expect(await worker.drive(rule.id)).toMatchObject({kind:"complete",imported:0});
+    expect(await prisma.autopilotRule.findUniqueOrThrow({where:{id:rule.id}})).toMatchObject({status:"failed",consecutiveFailures:1,lastError:"rss_invalid_xml",claimToken:null,executionCycleId:null});
+    expect(await worker.drive(rule.id)).toMatchObject({kind:"superseded",imported:0});
   })));
 
   test("shared service reads and mutations use the current non-owner actor", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const scope = { actorUserId: editorId, workspaceId };
-    expect((await new AutopilotService().listRules(scope)).some((rule) => rule.id === ruleId)).toBe(true);
-    await new AutopilotService().updateRule(scope, ruleId, { name: "Edited by member" });
+    expect((await new AutopilotTestRuntime(prisma).listRules(scope)).some((rule) => rule.id === ruleId)).toBe(true);
+    await new AutopilotTestRuntime(prisma).updateRule(scope, ruleId, { name: "Edited by member" });
     expect((await prisma.autopilotRule.findUniqueOrThrow({ where: { id: ruleId } })).updatedByUserId).toBe(editorId);
     expect(await contentSuiteService.list(scope, projectId)).toEqual([]);
     expect(await dubbingService.listProjectDubs(scope, projectId)).toEqual([]);
@@ -216,7 +203,7 @@ describeDb("Autopilot database concurrency and recovery", () => {
     await prisma.workspaceMember.update({ where: { workspaceId_userId: { workspaceId, userId: editorId } }, data: { role: "viewer" } });
     expect(await contentSuiteService.list(scope, projectId)).toEqual([]);
     for (const mutation of [
-      () => new AutopilotService().updateRule(scope, ruleId, { name: "Forbidden" }),
+      () => new AutopilotTestRuntime(prisma).updateRule(scope, ruleId, { name: "Forbidden" }),
       () => contentSuiteService.generate(scope, projectId),
       () => dubbingService.requestClipDub(scope, projectId, randomUUID(), { clipId: randomUUID(), aspectRatio: "9:16", targetLanguageCode: "es", voice: "marin" }),
       () => clipExportService.create(scope, projectId, randomUUID(), { expectedRevision: 0, aspectRatios: ["9:16"], resolution: "720p" }, randomUUID()),
@@ -225,7 +212,7 @@ describeDb("Autopilot database concurrency and recovery", () => {
     ]) await expect(mutation()).rejects.toMatchObject({ code: "workspace_access_denied" });
     await prisma.workspaceMember.delete({ where: { workspaceId_userId: { workspaceId, userId: editorId } } });
     for (const read of [
-      () => new AutopilotService().listRules(scope),
+      () => new AutopilotTestRuntime(prisma).listRules(scope),
       () => contentSuiteService.list(scope, projectId),
       () => dubbingService.listProjectDubs(scope, projectId),
       () => clipExportService.listCurrentProjectExports(scope, projectId),
@@ -278,7 +265,7 @@ describeDb("Autopilot database concurrency and recovery", () => {
     }
   })));
 
-  test("an episode deferred for capacity is retried on the next poll", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
+  test("an episode deferred for capacity is retried by its next accepted cycle", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const rule = await prisma.autopilotRule.create({
       data: {
         workspaceId,
@@ -292,12 +279,11 @@ describeDb("Autopilot database concurrency and recovery", () => {
       },
     });
     const dueOnlyThisRule = async () => {
-      await prisma.autopilotRule.updateMany({ where: { workspaceId }, data: { nextRunAt: new Date(Date.now() + 86_400_000) } });
-      await prisma.autopilotRule.update({ where: { id: rule.id }, data: { nextRunAt: new Date(Date.now() - 60_000) } });
+            await prisma.autopilotRule.update({ where: { id: rule.id }, data: { nextRunAt: new Date(Date.now() - 60_000), generation: { increment: 1 } } });
     };
     const episodeInput = (id: string, publishedAt: string) => ({ id, title: id, enclosureUrl: `https://cdn.example.test/${id}.mp3`, publishedAt, durationSeconds: 60, mimeType: "audio/mpeg" });
     const requestedEtags: Array<string | null | undefined> = [];
-    const worker = new AutopilotService({
+    const worker = new AutopilotTestRuntime(prisma, {
       fetchFeed: async (_url, validators) => {
         requestedEtags.push(validators?.etag);
         if (validators?.etag === "feed-v1") return { title: "Deferred feed", finalUrl: "https://feeds.example.test/deferred.xml", episodes: [], etag: "feed-v1", lastModified: null, notModified: true };
@@ -309,11 +295,11 @@ describeDb("Autopilot database concurrency and recovery", () => {
     });
     try {
       await dueOnlyThisRule();
-      await worker.processDueRules();
+      await worker.drive(rule.id);
       expect(await prisma.autopilotRule.findUniqueOrThrow({ where: { id: rule.id } })).toMatchObject({ etag: null, lastSeenEpisodeId: "seen-episode" });
 
       await dueOnlyThisRule();
-      await worker.processDueRules();
+      await worker.drive(rule.id);
       expect(requestedEtags).toEqual([null, null]);
       expect(importEpisodes).toHaveBeenCalledTimes(2);
     } finally {
@@ -324,17 +310,16 @@ describeDb("Autopilot database concurrency and recovery", () => {
   test("removing an automation creator keeps Workspace rules and history while stopping new imports", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const creator = await prisma.user.create({ data: { clerkId: `rss-removable-${suffix}` } });
     await prisma.workspaceMember.create({ data: { workspaceId, userId: creator.id, role: "editor" } });
-    const service = new AutopilotService({ fetchFeed: async () => ({ title: "Scoped feed", finalUrl: "https://feeds.example.test/scoped.xml", episodes: [], etag: null, lastModified: null, notModified: false }) });
+    const service = new AutopilotTestRuntime(prisma, { fetchFeed: async () => ({ title: "Scoped feed", finalUrl: "https://feeds.example.test/scoped.xml", episodes: [], etag: null, lastModified: null, notModified: false }) });
     const rule = await service.createRule({ actorUserId: creator.id, workspaceId }, { name: "Preserved automation", rssUrl: "https://feeds.example.test/scoped.xml", recipeId });
     const episode = await prisma.autopilotEpisode.create({ data: { ruleId: rule.id, episodeId: "kept-history", projectId } });
     await prisma.user.delete({ where: { id: creator.id } });
     expect(await prisma.autopilotRule.findUniqueOrThrow({ where: { id: rule.id } })).toMatchObject({ workspaceId, createdByUserId: null });
     expect((await prisma.autopilotEpisode.findUniqueOrThrow({ where: { id: episode.id } })).projectId).toBe(projectId);
-    await prisma.autopilotRule.updateMany({ where: { workspaceId }, data: { nextRunAt: new Date(Date.now() + 86_400_000) } });
-    await prisma.autopilotRule.update({ where: { id: rule.id }, data: { nextRunAt: new Date(Date.now() - 60_000) } });
+        await prisma.autopilotRule.update({ where: { id: rule.id }, data: { nextRunAt: new Date(Date.now() - 60_000), generation: { increment: 1 } } });
     let feedsRead = 0;
-    const worker = new AutopilotService({ fetchFeed: async () => { feedsRead++; throw new Error("Creatorless automation must not run"); } });
-    expect(await worker.processDueRules()).toEqual({ checked: 1, imported: 0, claimLost: 0 });
+    const worker = new AutopilotTestRuntime(prisma, { fetchFeed: async () => { feedsRead++; throw new Error("Creatorless automation must not run"); } });
+    expect(await worker.drive(rule.id)).toEqual({ kind: "complete", imported: 0 });
     expect(feedsRead).toBe(0);
     // The rule stops with a reason for an Owner or Admin instead of being skipped silently.
     expect(await prisma.autopilotRule.findUniqueOrThrow({ where: { id: rule.id } })).toMatchObject({
@@ -392,10 +377,9 @@ describeDb("Autopilot database concurrency and recovery", () => {
     const saveRecipe = (f: Awaited<ReturnType<typeof businessFixture>>, extra: Partial<RecipeInput> = {}, name = "Settings") =>
       recipeService.create({ actorUserId: f.creator.id, workspaceId: f.workspace.id }, { name, contentPack: CONTENT_PACK, ...extra });
 
-    /** Only this rule is due, so processDueRules cannot touch other tests' rules. */
+    /** A new due fact for this known fixture, before accepting its next cycle. */
     async function onlyDue(ruleId: string) {
-      await prisma.autopilotRule.updateMany({ where: { id: { not: ruleId } }, data: { nextRunAt: new Date(Date.now() + 86_400_000) } });
-      await prisma.autopilotRule.update({ where: { id: ruleId }, data: { nextRunAt: new Date(Date.now() - 60_000) } });
+      await prisma.autopilotRule.update({ where: { id: ruleId }, data: { nextRunAt: new Date(Date.now() - 60_000), generation: { increment: 1 } } });
     }
 
     test("a Recipe stores the Workspace default Brand Profile at save time and an explicit null stores none; rules follow the Recipe", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
@@ -405,7 +389,7 @@ describeDb("Autopilot database concurrency and recovery", () => {
       await brandProfileService.setDefault(f.brandScope(f.owner.id, "owner"), first.id);
       const foreign = await businessFixture("foreign");
       const foreignProfile = await brandProfileService.create(foreign.brandScope(foreign.owner.id, "owner"), { name: "Foreign", slug: "foreign" });
-      const service = new AutopilotService({ fetchFeed: feedWith() });
+      const service = new AutopilotTestRuntime(prisma, { fetchFeed: feedWith() });
       const scope = { actorUserId: f.creator.id, workspaceId: f.workspace.id };
 
       const omitted = await saveRecipe(f, {}, "Omitted");
@@ -431,11 +415,11 @@ describeDb("Autopilot database concurrency and recovery", () => {
     test("Autopilot imports carry the Recipe's Brand Profile snapshot, including an approval rule", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
       const f = await businessFixture("import");
       const profile = await brandProfileService.create(f.brandScope(f.owner.id, "owner"), { name: "Client", slug: "client", approvalRule: "approval_required" });
-      const service = new AutopilotService({ fetchFeed: feedWith("brand-episode") });
+      const service = new AutopilotTestRuntime(prisma, { fetchFeed: feedWith("brand-episode") });
       const recipe = await saveRecipe(f, { brandProfileId: profile.id });
       const rule = await service.createRule({ actorUserId: f.creator.id, workspaceId: f.workspace.id }, { name: "Branded", rssUrl: "https://feeds.example.test/brand.xml", recipeId: recipe.id, initialImportMode: "latest", initialImportCount: 1 });
       await onlyDue(rule.id);
-      expect(await service.processDueRules()).toMatchObject({ checked: 1, imported: 1 });
+      expect(await service.drive(rule.id)).toMatchObject({ kind: "complete", imported: 1 });
       const episode = await prisma.autopilotEpisode.findUniqueOrThrow({ where: { ruleId_episodeId: { ruleId: rule.id, episodeId: "brand-episode" } } });
       const project = await prisma.project.findUniqueOrThrow({ where: { id: episode.projectId! } });
       expect(project).toMatchObject({ sourceType: "rss", brandProfileId: profile.id });
@@ -449,7 +433,7 @@ describeDb("Autopilot database concurrency and recovery", () => {
       const recipe = await saveRecipe(f, { brandProfileId: null, languageCode: "en", contentPack: contentPackSchema.parse({ ...CONTENT_PACK, clipCountTarget: 10 }), finishing });
       // The feed gains a newer episode between the two runs.
       let episodes = ["episode-one"];
-      const service = new AutopilotService({ fetchFeed: async () => feedWith(...episodes)() });
+      const service = new AutopilotTestRuntime(prisma, { fetchFeed: async () => feedWith(...episodes)() });
       const rule = await service.createRule(scope, { name: "Shared", rssUrl: "https://feeds.example.test/brand.xml", recipeId: recipe.id, initialImportMode: "latest", initialImportCount: 1, maxEpisodesPerRun: 1 });
       const importedPack = async (episodeId: string) => {
         const episode = await prisma.autopilotEpisode.findUniqueOrThrow({ where: { ruleId_episodeId: { ruleId: rule.id, episodeId } } });
@@ -458,7 +442,7 @@ describeDb("Autopilot database concurrency and recovery", () => {
       };
 
       await onlyDue(rule.id);
-      expect(await service.processDueRules()).toMatchObject({ checked: 1, imported: 1 });
+      expect(await service.drive(rule.id)).toMatchObject({ kind: "complete", imported: 1 });
       const before = await importedPack("episode-one");
       // The Project records which Recipe revision its settings came from.
       expect(before).toMatchObject({ languageCode: "en", pack: { clipCountTarget: 10, finishing, recipe: { id: recipe.id, revision: recipe.revision } } });
@@ -468,7 +452,7 @@ describeDb("Autopilot database concurrency and recovery", () => {
       expect(edited.revision).toBe(recipe.revision + 1);
       episodes = ["episode-two", "episode-one"];
       await onlyDue(rule.id);
-      expect(await service.processDueRules()).toMatchObject({ checked: 1, imported: 1 });
+      expect(await service.drive(rule.id)).toMatchObject({ kind: "complete", imported: 1 });
       const after = await importedPack("episode-two");
       expect(after).toMatchObject({ languageCode: "es", pack: { clipCountTarget: 4, finishing: null, recipe: { id: recipe.id, revision: edited.revision } } });
 
@@ -478,7 +462,7 @@ describeDb("Autopilot database concurrency and recovery", () => {
 
     test("a Recipe saves finishing and validates it; a rule's imports carry it to the committed Content Pack", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
       const f = await businessFixture("finishing");
-      const service = new AutopilotService({ fetchFeed: feedWith("finishing-episode") });
+      const service = new AutopilotTestRuntime(prisma, { fetchFeed: feedWith("finishing-episode") });
       const scope = { actorUserId: f.creator.id, workspaceId: f.workspace.id };
       const finishing = { topClips: 3, minScore: 60, aspectRatios: ["9:16" as const, "1:1" as const], copyPlatforms: ["tiktok" as const], resolution: "1080p" as const, delivery: "ready_to_review" as const, queueAccountIds: [] };
       const recipe = await saveRecipe(f, { brandProfileId: null, finishing }, "Finishing");
@@ -490,7 +474,7 @@ describeDb("Autopilot database concurrency and recovery", () => {
       expect((await recipeService.get(scope, recipe.id)).finishing).toEqual(finishing);
 
       await onlyDue(rule.id);
-      expect(await service.processDueRules()).toMatchObject({ checked: 1, imported: 1 });
+      expect(await service.drive(rule.id)).toMatchObject({ kind: "complete", imported: 1 });
       const episode = await prisma.autopilotEpisode.findUniqueOrThrow({ where: { ruleId_episodeId: { ruleId: rule.id, episodeId: "finishing-episode" } } });
       const pack = await prisma.contentPack.findFirstOrThrow({ where: { projectId: episode.projectId! } });
       expect(pack.finishing).toEqual(finishing);
@@ -503,7 +487,7 @@ describeDb("Autopilot database concurrency and recovery", () => {
     test("finishing and Autopilot need the Pro plan; a downgraded rule pauses before reading its feed and stays editable", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
       const f = await businessFixture("finishing-plan");
       let feedsRead = 0;
-      const service = new AutopilotService({ fetchFeed: async () => { feedsRead++; return feedWith("downgraded-episode")(); } });
+      const service = new AutopilotTestRuntime(prisma, { fetchFeed: async () => { feedsRead++; return feedWith("downgraded-episode")(); } });
       const scope = { actorUserId: f.creator.id, workspaceId: f.workspace.id };
       const finishing = { topClips: 2 };
       const recipe = await saveRecipe(f, { brandProfileId: null, finishing }, "Finished");
@@ -524,7 +508,7 @@ describeDb("Autopilot database concurrency and recovery", () => {
 
       feedsRead = 0;
       await onlyDue(rule.id);
-      expect(await service.processDueRules()).toMatchObject({ checked: 1, imported: 0 });
+      expect(await service.drive(rule.id)).toMatchObject({ kind: "complete", imported: 0 });
       expect(feedsRead).toBe(0);
       expect(await prisma.autopilotRule.findUniqueOrThrow({ where: { id: rule.id } })).toMatchObject({ status: "paused", pauseKind: "plan", consecutiveFailures: 0, lastError: expect.stringContaining("Autopilot needs the Pro plan") });
       expect(await prisma.autopilotEpisode.count({ where: { ruleId: rule.id } })).toBe(0);
@@ -537,14 +521,14 @@ describeDb("Autopilot database concurrency and recovery", () => {
     test("a rule whose Recipe's Brand Profile can't be applied pauses with a reason and imports nothing", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
       const f = await businessFixture("refused");
       const deleted = await brandProfileService.create(f.brandScope(f.owner.id, "owner"), { name: "Retired brand", slug: "retired" });
-      const service = new AutopilotService({ fetchFeed: feedWith("refused-episode") });
+      const service = new AutopilotTestRuntime(prisma, { fetchFeed: feedWith("refused-episode") });
       const create = async (name: string, brandProfileId: string) =>
         service.createRule({ actorUserId: f.creator.id, workspaceId: f.workspace.id }, { name, rssUrl: "https://feeds.example.test/brand.xml", recipeId: (await saveRecipe(f, { brandProfileId }, name)).id, initialImportMode: "latest", initialImportCount: 1 });
       const deletedRule = await create("Deleted profile", deleted.id);
       await prisma.brandProfile.update({ where: { id: deleted.id }, data: { deletedAt: new Date() } });
 
       await onlyDue(deletedRule.id);
-      expect(await service.processDueRules()).toMatchObject({ checked: 1, imported: 0 });
+      expect(await service.drive(deletedRule.id)).toMatchObject({ kind: "complete", imported: 0 });
       const paused = await prisma.autopilotRule.findUniqueOrThrow({ where: { id: deletedRule.id } });
       expect(paused).toMatchObject({ status: "paused", pauseKind: "brand_profile", consecutiveFailures: 0, claimToken: null, initializedAt: null, lastSeenEpisodeId: null });
       expect(paused.lastError).toContain('Brand Profile "Retired brand"');
@@ -552,14 +536,14 @@ describeDb("Autopilot database concurrency and recovery", () => {
       expect(await prisma.autopilotEpisode.count({ where: { ruleId: deletedRule.id } })).toBe(0);
       expect(await prisma.project.count({ where: { workspaceId: f.workspace.id } })).toBe(0);
       await onlyDue(deletedRule.id);
-      expect(await service.processDueRules()).toMatchObject({ checked: 0 });
+      expect(await service.drive(deletedRule.id)).toMatchObject({ kind: "superseded", imported: 0 });
 
       // A plan that no longer includes Brand Profiles is refused the same way, never imported unbranded.
       const live = await brandProfileService.create(f.brandScope(f.owner.id, "owner"), { name: "Live brand", slug: "live" });
       const downgradedRule = await create("Downgraded", live.id);
       await prisma.workspace.update({ where: { id: f.workspace.id }, data: { pricingTier: "free" } });
       await onlyDue(downgradedRule.id);
-      expect(await service.processDueRules()).toMatchObject({ checked: 1, imported: 0 });
+      expect(await service.drive(downgradedRule.id)).toMatchObject({ kind: "complete", imported: 0 });
       // Free has no Autopilot, so the plan pause comes first; nothing imports unbranded either way.
       expect(await prisma.autopilotRule.findUniqueOrThrow({ where: { id: downgradedRule.id } })).toMatchObject({ status: "paused", pauseKind: "plan", consecutiveFailures: 0 });
       expect(await prisma.project.count({ where: { workspaceId: f.workspace.id } })).toBe(0);
@@ -568,13 +552,13 @@ describeDb("Autopilot database concurrency and recovery", () => {
     test("a rule whose acting member was removed pauses without burning failures until an Admin takes it over", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
       const f = await businessFixture("ownership");
       let feedsRead = 0;
-      const worker = new AutopilotService({ fetchFeed: async () => { feedsRead++; return { title: "Quiet feed", finalUrl: "https://feeds.example.test/quiet.xml", episodes: [], etag: null, lastModified: null, notModified: true }; } });
+      const worker = new AutopilotTestRuntime(prisma, { fetchFeed: async () => { feedsRead++; return { title: "Quiet feed", finalUrl: "https://feeds.example.test/quiet.xml", episodes: [], etag: null, lastModified: null, notModified: true }; } });
       const rule = await worker.createRule({ actorUserId: f.creator.id, workspaceId: f.workspace.id }, { name: "Dana's rule", rssUrl: "https://feeds.example.test/quiet.xml", recipeId: (await saveRecipe(f, { brandProfileId: null })).id });
       feedsRead = 0;
       await prisma.workspaceMember.delete({ where: { workspaceId_userId: { workspaceId: f.workspace.id, userId: f.creator.id } } });
 
       await onlyDue(rule.id);
-      expect(await worker.processDueRules()).toEqual({ checked: 1, imported: 0, claimLost: 0 });
+      expect(await worker.drive(rule.id)).toEqual({ kind: "complete", imported: 0 });
       expect(feedsRead).toBe(0);
       const paused = await prisma.autopilotRule.findUniqueOrThrow({ where: { id: rule.id } });
       expect(paused).toMatchObject({ status: "paused", pauseKind: "acting_member", consecutiveFailures: 0, claimToken: null, leaseExpiresAt: null });
@@ -582,7 +566,7 @@ describeDb("Autopilot database concurrency and recovery", () => {
       expect(paused.lastError).toContain("Owner or Admin can take it over");
       // Nothing retries until someone acts.
       await onlyDue(rule.id);
-      expect(await worker.processDueRules()).toMatchObject({ checked: 0 });
+      expect(await worker.drive(rule.id)).toMatchObject({ kind: "superseded", imported: 0 });
 
       // A Member without the Workspace management capability cannot take it over.
       await expect(worker.takeOver({ actorUserId: f.editor.id, workspaceId: f.workspace.id }, rule.id)).rejects.toMatchObject({ code: "workspace_access_denied" });
@@ -595,33 +579,33 @@ describeDb("Autopilot database concurrency and recovery", () => {
       expect(resumed).toMatchObject({ createdByUserId: f.admin.id, status: "active", pauseKind: null, lastError: null, consecutiveFailures: 0 });
       expect(await prisma.autopilotRule.findUniqueOrThrow({ where: { id: rule.id } })).toMatchObject({ createdByUserId: f.admin.id, updatedByUserId: f.admin.id, status: "active" });
       await onlyDue(rule.id);
-      expect(await worker.processDueRules()).toMatchObject({ checked: 1, claimLost: 0 });
+      expect(await worker.drive(rule.id)).toMatchObject({ kind: "complete" });
       expect(feedsRead).toBe(1);
       expect(await prisma.autopilotRule.findUniqueOrThrow({ where: { id: rule.id } })).toMatchObject({ status: "active", lastError: null });
     })));
 
     test("a soft-deleted acting member or one who lost processing permission pauses the rule", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
       const f = await businessFixture("lost-access");
-      const worker = new AutopilotService({ fetchFeed: async () => { throw new Error("A paused rule must not read its feed"); } });
+      const worker = new AutopilotTestRuntime(prisma, { fetchFeed: async () => { throw new Error("A paused rule must not read its feed"); } });
       const make = async (name: string) => prisma.autopilotRule.create({ data: { workspaceId: f.workspace.id, createdByUserId: f.creator.id, name, rssUrl: "https://feeds.example.test/quiet.xml", recipeId: (await saveRecipe(f, { brandProfileId: null })).id, initializedAt: new Date() } });
       const deletedUserRule = await make("Deleted user");
       await prisma.user.update({ where: { id: f.creator.id }, data: { deletedAt: new Date() } });
       await onlyDue(deletedUserRule.id);
-      expect(await worker.processDueRules()).toMatchObject({ checked: 1 });
+      expect(await worker.drive(deletedUserRule.id)).toMatchObject({ kind: "complete" });
       expect(await prisma.autopilotRule.findUniqueOrThrow({ where: { id: deletedUserRule.id } })).toMatchObject({ status: "paused", consecutiveFailures: 0 });
 
       await prisma.user.update({ where: { id: f.creator.id }, data: { deletedAt: null } });
       const viewerRule = await make("Viewer");
       await prisma.workspaceMember.update({ where: { workspaceId_userId: { workspaceId: f.workspace.id, userId: f.creator.id } }, data: { role: "viewer" } });
       await onlyDue(viewerRule.id);
-      expect(await worker.processDueRules()).toMatchObject({ checked: 1 });
+      expect(await worker.drive(viewerRule.id)).toMatchObject({ kind: "complete" });
       expect(await prisma.autopilotRule.findUniqueOrThrow({ where: { id: viewerRule.id } })).toMatchObject({ status: "paused", consecutiveFailures: 0, lastError: expect.stringContaining("Dana Lee can no longer run this rule") });
     })));
 
     test("the plan's active-rule count bounds create, re-enable, run-now and takeover; a downgrade pauses the newest rules", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
       const f = await businessFixture("rule-count");
       let feedsRead = 0;
-      const service = new AutopilotService({ fetchFeed: async () => { feedsRead++; return feedWith()(); } });
+      const service = new AutopilotTestRuntime(prisma, { fetchFeed: async () => { feedsRead++; return feedWith()(); } });
       const scope = { actorUserId: f.creator.id, workspaceId: f.workspace.id };
       const recipe = await saveRecipe(f, { brandProfileId: null });
       const rule = (name: string) => service.createRule(scope, { name, rssUrl: "https://feeds.example.test/brand.xml", recipeId: recipe.id });
@@ -631,11 +615,11 @@ describeDb("Autopilot database concurrency and recovery", () => {
 
       await prisma.workspace.update({ where: { id: f.workspace.id }, data: { pricingTier: "pro" } });
       await expect(rule("six")).rejects.toMatchObject({ code: "plan_limit_reached", details: { limit: "autopilotRules", used: 5, max: 3, requiredTier: "business" } });
-      // The poller keeps the three oldest and pauses the rest before reading their feeds.
+      // Each exact command keeps the three oldest and pauses the rest before reading their feeds.
       feedsRead = 0;
       for (const created of rules) {
         await onlyDue(created.id);
-        await service.processDueRules();
+        await service.drive(created.id);
       }
       const states = await prisma.autopilotRule.findMany({ where: { id: { in: rules.map((created) => created.id) } }, orderBy: { createdAt: "asc" }, select: { status: true, pauseKind: true } });
       expect(states).toEqual([
@@ -658,7 +642,7 @@ describeDb("Autopilot database concurrency and recovery", () => {
 
     test("a partial update keeps the schedule the rule already had", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
       const f = await businessFixture("partial-update");
-      const service = new AutopilotService({ fetchFeed: feedWith() });
+      const service = new AutopilotTestRuntime(prisma, { fetchFeed: feedWith() });
       const scope = { actorUserId: f.creator.id, workspaceId: f.workspace.id };
       const rule = await service.createRule(scope, { name: "Weekly", rssUrl: "https://feeds.example.test/brand.xml", recipeId: (await saveRecipe(f, { brandProfileId: null })).id, intervalMinutes: 10080, maxEpisodesPerRun: 10, initialImportMode: "latest", initialImportCount: 7 });
       const schedule = { intervalMinutes: 10080, maxEpisodesPerRun: 10, initialImportMode: "latest", initialImportCount: 7 };
@@ -680,7 +664,7 @@ describeDb("Autopilot database concurrency and recovery", () => {
       const owner = f.brandScope(f.owner.id, "owner");
       const profile = await brandProfileService.create(owner, { name: "Plan bound", slug: "plan-bound" });
       await brandProfileService.setDefault(owner, profile.id);
-      const service = new AutopilotService({ fetchFeed: feedWith() });
+      const service = new AutopilotTestRuntime(prisma, { fetchFeed: feedWith() });
       const scope = { actorUserId: f.creator.id, workspaceId: f.workspace.id };
       const bound = await saveRecipe(f, {}, "Before downgrade");
       expect(bound.brandProfileId).toBe(profile.id);
@@ -711,7 +695,7 @@ describeDb("Autopilot database concurrency and recovery", () => {
     test("a replayed rule create keeps the Recipe it was accepted with, even after that Recipe is edited", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
       const f = await businessFixture("replay");
       let feeds = 0;
-      const service = new AutopilotService({ fetchFeed: async () => { feeds++; return feedWith()(); } });
+      const service = new AutopilotTestRuntime(prisma, { fetchFeed: async () => { feeds++; return feedWith()(); } });
       const scope = { actorUserId: f.creator.id, workspaceId: f.workspace.id };
       const recipe = await saveRecipe(f, { brandProfileId: null });
       const input = { name: "Assistant rule", rssUrl: "https://feeds.example.test/brand.xml", recipeId: recipe.id };
@@ -734,7 +718,7 @@ describeDb("Autopilot database concurrency and recovery", () => {
     test("a Recipe an Autopilot rule uses can't be deleted until the rule moves or goes", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
       const f = await businessFixture("in-use");
       const scope = { actorUserId: f.creator.id, workspaceId: f.workspace.id };
-      const service = new AutopilotService({ fetchFeed: feedWith() });
+      const service = new AutopilotTestRuntime(prisma, { fetchFeed: feedWith() });
       const used = await saveRecipe(f, { brandProfileId: null }, "Used");
       const spare = await saveRecipe(f, { brandProfileId: null }, "Spare");
       const rule = await service.createRule(scope, { name: "Rule", rssUrl: "https://feeds.example.test/brand.xml", recipeId: used.id });
@@ -751,7 +735,7 @@ describeDb("Autopilot database concurrency and recovery", () => {
       const owner = f.brandScope(f.owner.id, "owner");
       const retired = await brandProfileService.create(owner, { name: "Retired", slug: "retired" });
       const live = await brandProfileService.create(owner, { name: "Live", slug: "live" });
-      const service = new AutopilotService({ fetchFeed: feedWith("resume-episode") });
+      const service = new AutopilotTestRuntime(prisma, { fetchFeed: feedWith("resume-episode") });
       const scope = { actorUserId: f.creator.id, workspaceId: f.workspace.id };
       const retiredRecipe = await saveRecipe(f, { brandProfileId: retired.id }, "Retired recipe");
       const liveRecipe = await saveRecipe(f, { brandProfileId: live.id }, "Live recipe");
@@ -759,7 +743,7 @@ describeDb("Autopilot database concurrency and recovery", () => {
       const rule = await service.createRule(scope, { name: "Branded", rssUrl: "https://feeds.example.test/brand.xml", recipeId: retiredRecipe.id, initialImportMode: "latest", initialImportCount: 1 });
       await prisma.brandProfile.update({ where: { id: retired.id }, data: { deletedAt: new Date() } });
       await onlyDue(rule.id);
-      await service.processDueRules();
+      await service.drive(rule.id);
       expect(await prisma.autopilotRule.findUniqueOrThrow({ where: { id: rule.id } })).toMatchObject({ status: "paused", pauseKind: "brand_profile" });
 
       // Unrelated edits leave the pause and its reason in place.
@@ -770,7 +754,7 @@ describeDb("Autopilot database concurrency and recovery", () => {
       expect(resumed).toMatchObject({ status: "active", pauseKind: null, lastError: null, recipeId: liveRecipe.id });
       expect(new Date(resumed.nextRunAt).getTime()).toBeLessThanOrEqual(Date.now());
       await onlyDue(rule.id);
-      expect(await service.processDueRules()).toMatchObject({ checked: 1, imported: 1 });
+      expect(await service.drive(rule.id)).toMatchObject({ kind: "complete", imported: 1 });
       const imported = await prisma.project.findFirstOrThrow({ where: { workspaceId: f.workspace.id } });
       expect(imported.brandProfileId).toBe(live.id);
 
@@ -782,36 +766,28 @@ describeDb("Autopilot database concurrency and recovery", () => {
 
     test("an Admin taking over while a run holds the claim is not overwritten by that run's pause", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
       const f = await businessFixture("live-claim");
-      const service = new AutopilotService({ fetchFeed: async () => { throw new Error("The run was revoked before it read the feed"); } });
-      const rule = await prisma.autopilotRule.create({ data: { workspaceId: f.workspace.id, createdByUserId: f.creator.id, name: "Contested", rssUrl: "https://feeds.example.test/quiet.xml", recipeId: (await saveRecipe(f, { brandProfileId: null })).id, initializedAt: new Date() } });
-      await prisma.workspaceMember.delete({ where: { workspaceId_userId: { workspaceId: f.workspace.id, userId: f.creator.id } } });
-      await onlyDue(rule.id);
-
-      // The Admin acts after the run claimed the rule and found the member
-      // unavailable, but before the run records its pause.
-      const original = workspaceService.requireActor.bind(workspaceService);
-      let takenOver = false;
-      const spy = spyOn(workspaceService, "requireActor").mockImplementation(async (userId, workspaceId, capability) => {
-        if (userId === f.creator.id && !takenOver) {
-          takenOver = true;
-          const claimed = await prisma.autopilotRule.findUniqueOrThrow({ where: { id: rule.id } });
-          expect(claimed).toMatchObject({ status: "running", claimToken: expect.any(String) });
-          await service.takeOver({ actorUserId: f.admin.id, workspaceId: f.workspace.id }, rule.id);
-        }
-        return original(userId, workspaceId, capability);
+      let takenOver=false, ruleId="";
+      const service=new AutopilotTestRuntime(prisma,{
+        fetchFeed:feedWith("contested-episode"),
+        beforeSnapshotRead:async()=>{
+          if(takenOver)return;
+          takenOver=true;
+          expect(await prisma.autopilotRule.findUniqueOrThrow({where:{id:ruleId}})).toMatchObject({status:"running",claimToken:expect.any(String)});
+          await prisma.workspaceMember.delete({where:{workspaceId_userId:{workspaceId:f.workspace.id,userId:f.creator.id}}});
+          await service.takeOver({actorUserId:f.admin.id,workspaceId:f.workspace.id},ruleId);
+        },
       });
-      try {
-        expect(await service.processDueRules()).toEqual({ checked: 1, imported: 0, claimLost: 1 });
-      } finally {
-        spy.mockRestore();
-      }
+      const rule = await service.createRule({actorUserId:f.creator.id,workspaceId:f.workspace.id},{name:"Contested",rssUrl:"https://feeds.example.test/quiet.xml",recipeId:(await saveRecipe(f,{brandProfileId:null})).id,initialImportMode:"latest",initialImportCount:1});
+      ruleId=rule.id;
+      await onlyDue(rule.id);
+      expect(await service.drive(rule.id)).toEqual({kind:"superseded",imported:0});
       expect(takenOver).toBe(true);
       expect(await prisma.autopilotRule.findUniqueOrThrow({ where: { id: rule.id } })).toMatchObject({ status: "active", createdByUserId: f.admin.id, pauseKind: null, lastError: null, claimToken: null, leaseExpiresAt: null });
     })));
 
     test("taking over a rule that does not exist or is not a UUID is a not-found, not a database error", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
       const f = await businessFixture("takeover-missing");
-      const service = new AutopilotService();
+      const service = new AutopilotTestRuntime(prisma);
       const scope = { actorUserId: f.admin.id, workspaceId: f.workspace.id };
       await expect(service.takeOver(scope, "not-a-uuid")).rejects.toMatchObject({ code: "autopilot_rule_not_found" });
       await expect(service.takeOver(scope, randomUUID())).rejects.toMatchObject({ code: "autopilot_rule_not_found" });

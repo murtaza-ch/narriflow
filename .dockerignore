@@ -4,6 +4,7 @@
 **/.turbo
 **/.env
 **/.env.*
+**/.dev.vars*
 **/.venv
 .vercel
 **/dist

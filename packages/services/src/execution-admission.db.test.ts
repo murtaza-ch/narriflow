@@ -1,3 +1,5 @@
+import { AutopilotExecution,queueAutopilotRule } from "./autopilot-execution";
+import { OutboundProbeService } from "./outbound-probe";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaClient } from "@prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
@@ -119,7 +121,10 @@ suite("Execution admission authority", () => {
       await context.bind(async () => {
         await expect(service.triggerRuleNow(scope, rule.id)).rejects.toMatchObject({ code: "execution_admission_closed" });
         await expect(service.takeOver(scope, rule.id)).rejects.toMatchObject({ code: "execution_admission_closed" });
-        expect(await service.processDueRules()).toMatchObject({ checked: 0, imported: 0 });
+        const probe=new OutboundProbeService(db,{register:async()=>{},readResult:async()=>{throw Error("Closed cycle cannot read source");}});
+        const driver=new AutopilotExecution({database:db,probe,register:async()=>{},importEpisode:async()=>{throw Error("Closed cycle cannot admit intake");}});
+        const reference=(await db.$transaction(tx=>queueAutopilotRule(tx,rule.id)))!;
+        await expect(driver.run(reference)).rejects.toMatchObject({code:"execution_admission_closed"});
         expect(fetches).toBe(0);
         expect((await service.updateRule(scope, rule.id, { status: "paused" })).status).toBe("paused");
         expect((await db.autopilotRule.findUniqueOrThrow({ where: { id: rule.id } })).claimToken).toBeNull();

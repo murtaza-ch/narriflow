@@ -13,7 +13,6 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient, type Prisma } from "@prisma/client";
 import { Pool } from "pg";
 import {
-  IngestJobClaimLost,
   IngestJobLifecycle,
   IngestNotFailedError,
   IngestReselectRequiredError,
@@ -25,6 +24,10 @@ import { autoTriggerIdempotencyKey } from "./generation-sequencing";
 import { WorkflowRunLifecycle } from "./workflow-run-lifecycle";
 import { ProcessingUsage } from "./processing-usage";
 import { creditDebitSeconds } from "@narriflow/validators";
+import { startIngestTestExecution } from "./ingest-execution-test-support";
+import { createSourceVideoValidator } from "./source-readiness";
+import { ingestExecutionInputHash } from "./ingest-source-execution";
+import { appendExecutionDispatch } from "./execution-dispatch";
 
 const url = process.env.WORKFLOW_TEST_DATABASE_URL;
 const schema = process.env.WORKFLOW_TEST_DATABASE_SCHEMA;
@@ -76,10 +79,12 @@ dbDescribe("Ingest Job lifecycle PostgreSQL interface", () => {
     return new IngestJobLifecycle({
       prisma,
       workflow: new WorkflowRunLifecycle({ prisma }),
-      now: () => new Date(clock),
+      now: () => new Date(Math.max(clock, Date.now())),
       requireRetryActor: async () => {},
+      executionInputHash: job => ingestExecutionInputHash(job, "f".repeat(64)),
       usage: usage(),
       sourceBucket: "ingest-test",
+      validateVideo: createSourceVideoValidator(usage()),
       ...overrides,
     });
   }
@@ -106,6 +111,7 @@ dbDescribe("Ingest Job lifecycle PostgreSQL interface", () => {
   async function fixture(
     status: "queued" | "ready" | "failed" = "queued",
     payload = {},
+    source: { jobType?: "link_import" | "drive_import"; sourceCredential?: string } = {},
   ) {
     clock = Date.now();
     const suffix = randomUUID();
@@ -131,13 +137,15 @@ dbDescribe("Ingest Job lifecycle PostgreSQL interface", () => {
         createdByUserId: user.id,
         ingestStatus: status,
         sourceDurationSeconds: status === "ready" ? 60 : null,
+        sourceProbe: status === "ready" ? { durationSec: 60, video: null, audio: null } : undefined,
       },
     });
     const job = await prisma.ingestJob.create({
       data: {
         projectId: project.id,
-        jobType: "link_import",
-        payload,
+        jobType: source.jobType ?? "link_import",
+        sourceCredential: source.sourceCredential,
+        payload: { acquisition: { audioPolicy: "none" }, provider: "dropbox", url: "https://www.dropbox.com/s/ingest-source/video.mp4", ...payload },
         status:
           status === "ready"
             ? "completed"
@@ -168,6 +176,7 @@ dbDescribe("Ingest Job lifecycle PostgreSQL interface", () => {
     method: "create" | "updateMany",
     table: "ingestJob" | "workflowEvent",
     condition?: (args: unknown) => boolean,
+    lost = false,
   ): PrismaClient {
     return new Proxy(prisma, {
       get(target, property) {
@@ -182,8 +191,10 @@ dbDescribe("Ingest Job lifecycle PostgreSQL interface", () => {
                     get(model, name) {
                       if (name !== method) return Reflect.get(model, name);
                       return (args: unknown) => {
-                        if (!condition || condition(args))
+                        if (!condition || condition(args)) {
+                          if (lost) return Promise.resolve({ count: 0 });
                           throw new Error("injected persistence failure");
+                        }
                         return Reflect.get(model, name).call(model, args);
                       };
                     },
@@ -196,165 +207,103 @@ dbDescribe("Ingest Job lifecycle PostgreSQL interface", () => {
     }) as PrismaClient;
   }
 
-  test("every stale claim command rejects without changing Project or events", bindServiceTestEnvironment(async () => {
-    const { project, job } = await fixture();
-    const module = lifecycle();
-    const claim = (await module.claim())!;
-    expect(claim.id).toBe(job.id);
-    await prisma.ingestJob.update({
-      where: { id: claim.id },
-      data: { claimId: randomUUID() },
-    });
-    await expect(module.renew(claim)).rejects.toBeInstanceOf(
-      IngestJobClaimLost,
-    );
-    await expect(module.progress(claim, "downloading")).rejects.toBeInstanceOf(
-      IngestJobClaimLost,
-    );
-    await expect(
-      module.fail(claim, "worker_unhandled_error", "stale"),
-    ).rejects.toBeInstanceOf(IngestJobClaimLost);
-    await expect(
-      module.complete(claim, { sourceStorageKey: "new.mp4" }),
-    ).rejects.toBeInstanceOf(IngestJobClaimLost);
-    expect(
-      (await prisma.project.findUniqueOrThrow({ where: { id: project.id } }))
-        .ingestStatus,
-    ).toBe("queued");
-    expect(
-      await prisma.workflowEvent.count({ where: { projectId: project.id } }),
-    ).toBe(0);
-  }));
-  test("expired unreaped claims cannot report progress or settle", bindServiceTestEnvironment(async () => {
-    await fixture();
-    const module = lifecycle();
-    const claim = (await module.claim())!;
-    clock += 10 * 60_000;
-    await expect(module.renew(claim)).rejects.toBeInstanceOf(
-      IngestJobClaimLost,
-    );
-    await expect(module.progress(claim, "normalizing")).rejects.toBeInstanceOf(
-      IngestJobClaimLost,
-    );
-    await expect(
-      module.fail(claim, "remote_url_unsafe", "expired"),
-    ).rejects.toBeInstanceOf(IngestJobClaimLost);
-    await expect(
-      module.complete(claim, { sourceStorageKey: "new.mp4" }),
-    ).rejects.toBeInstanceOf(IngestJobClaimLost);
-  }));
-  test("transient failure requeues with backoff; permanent failure stores notification intent", bindServiceTestEnvironment(async () => {
-    const { project, job } = await fixture();
-    const module = lifecycle();
-    const first = (await module.claim())!;
-    expect(await module.fail(first, "remote_fetch_timeout", "timeout")).toEqual(
-      { outcome: "requeue" },
-    );
-    expect(await module.claim()).toBeNull();
-    clock += 30_001;
-    const second = (await module.claim())!;
-    expect(second.id).toBe(job.id);
-    expect(second.attemptCount).toBe(2);
-    expect(await module.fail(second, "remote_url_unsafe", "unsafe")).toEqual({
-      outcome: "permanent",
-      terminalErrorCode: "remote_url_unsafe",
-    });
-    const event = await prisma.workflowEvent.findFirstOrThrow({
-      where: { projectId: project.id, status: "failed" },
-    });
-    expect(event.notificationRequired).toBe(true);
-    expect(event.workflowRunId).toBeNull();
-    expect(event.ingestJobId).toBe(job.id);
-    expect(event.payload).toMatchObject({
-      ingestJobId: job.id,
-      notification: { kind: "ingest.failed", ingestJobId: job.id },
-    });
-    const notifications: unknown[] = [];
-    const dispatcher = new WorkflowRunLifecycle({
-      prisma,
-      handoffNotification: async (payload) => {
-        notifications.push(payload);
+  async function targetedHandoff(module: IngestJobLifecycle, jobId: string) {
+    const job = await prisma.ingestJob.findUniqueOrThrow({ where: { id: jobId } });
+    const inputHash = await ingestExecutionInputHash(job, "f".repeat(64));
+    const record = await prisma.$transaction(tx => appendExecutionDispatch(tx, {
+      deploymentEpoch: job.deploymentEpoch, generation: job.generation,
+      kind: "import_pipeline", subject: { kind: "ingest_job", id: job.id }, inputHash, dueAt: job.createdAt,
+    }));
+    return module.handoffGeneration(record.reference);
+  }
+
+  function afterRollback(error: Error, action: () => Promise<void>): PrismaClient {
+    let pending = true;
+    return new Proxy(prisma, {
+      get(target, property) {
+        if (property !== "$transaction") return Reflect.get(target, property);
+        return async (work: (tx: Prisma.TransactionClient) => Promise<unknown>, options?: { maxWait?: number; timeout?: number }) => {
+          try { return await target.$transaction(work, options); }
+          catch (failure) {
+            if (pending && failure === error) { pending = false; await action(); }
+            throw failure;
+          }
+        };
       },
-    });
-    await prisma.workflowEvent.update({
-      where: { id: event.id },
-      data: { nextDeliveryAt: new Date(Date.now() - 1) },
-    });
-    await dispatcher.dispatchEvents();
-    await dispatcher.dispatchEvents();
-    expect(notifications).toEqual([
-      { kind: "ingest.failed", projectId: project.id, ingestJobId: job.id },
-    ]);
-    expect(
-      (
-        await prisma.workflowEvent.findUniqueOrThrow({
-          where: { id: event.id },
-        })
-      ).notificationDeliveredAt,
-    ).not.toBeNull();
-  }));
-  test("outbox insertion failure rolls back source acceptance and progress", bindServiceTestEnvironment(async () => {
+    }) as PrismaClient;
+  }
+
+  const start = async (module: IngestJobLifecycle, jobId: string, database = prisma) => {
+    const job = await prisma.ingestJob.findUniqueOrThrow({ where: { id: jobId } });
+    // Advance only this disposable fixture's retry eligibility, preserving its
+    // original operation deadline, generation and charged attempt count.
+    if (job.attemptCount) await prisma.ingestJob.update({ where: { id: jobId }, data: { updatedAt: new Date(Date.now() - 10 * 60_000) } });
+    return startIngestTestExecution(database, module, new WorkflowRunLifecycle({ prisma: database }), jobId);
+  };
+
+  test("an executor's stale generation cannot progress, fail or publish its assigned source", bindServiceTestEnvironment(async () => {
     const { project, job } = await fixture();
-    const normal = lifecycle();
-    const claim = (await normal.claim())!;
-    const broken = lifecycle({
-      prisma: transactionFault("create", "workflowEvent"),
-    });
-    await expect(broken.progress(claim, "normalizing")).rejects.toThrow(
-      "injected",
-    );
-    await expect(
-      broken.complete(claim, { sourceStorageKey: "new.mp4" }),
-    ).rejects.toThrow("injected");
-    await expect(
-      broken.fail(claim, "remote_url_unsafe", "unsafe"),
-    ).rejects.toThrow("injected");
-    clock += 10 * 60_000;
-    await expect(broken.reapExpired()).rejects.toThrow("injected");
-    expect(
-      (await prisma.ingestJob.findUniqueOrThrow({ where: { id: job.id } }))
-        .status,
-    ).toBe("running");
-    expect(
-      (await prisma.project.findUniqueOrThrow({ where: { id: project.id } }))
-        .sourceStorageKey,
-    ).toBeNull();
+    const execution = await start(lifecycle(), job.id);
+    await prisma.ingestJob.update({ where: { id: job.id }, data: { claimId: randomUUID() } });
+    const before = await prisma.project.findUniqueOrThrow({ where: { id: project.id } });
+    for (const command of [() => execution.command("renew", { leaseSeconds: 120 }),
+      () => execution.command("progress", { phase: "downloading", progress: 40 }),
+      () => execution.command("fail", { failureCode: "remote_url_unsafe", retryable: false }),
+      () => execution.complete()]) expect(await command()).toMatchObject({ disposition: "superseded" });
+    expect(await prisma.project.findUniqueOrThrow({ where: { id: project.id } })).toEqual(before);
+    expect(await prisma.executionArtifact.findUniqueOrThrow({ where: { id: execution.assignment.id } })).toMatchObject({ committedAt: null });
+    expect(await prisma.workflowEvent.count({ where: { projectId: project.id } })).toBe(0);
   }));
-  test("source acceptance keeps the storage URI and pending handoff durable", bindServiceTestEnvironment(async () => {
+
+  test("transient failure rotates the exact source generation and permanent failure records one notification", bindServiceTestEnvironment(async () => {
     const { project, job } = await fixture();
     const module = lifecycle();
-    const claim = (await module.claim())!;
-    const sourceProbe = {
-      durationSec: 12.5,
-      video: { width: 1920, height: 1080, frameRate: { numerator: 30000, denominator: 1001 }, startTimecode: null },
-      audio: { sampleRate: 48000, channels: 2 },
-    };
-    await module.complete(claim, {
-      sourceStorageKey: "projects/source.mp4",
-      sourceSizeBytes: 42,
-      sourceProbe,
-    });
-    const accepted = await prisma.project.findUniqueOrThrow({
-      where: { id: project.id },
-    });
-    expect(accepted.sourceMediaUrl).toBe(
-      "r2://ingest-test/projects/source.mp4",
-    );
-    expect(accepted.sourceSizeBytes).toBe(42n);
-    expect(accepted.sourceProbe).toEqual(sourceProbe);
-    expect(accepted.ingestStatus).toBe("ready");
-    expect(
-      (await prisma.ingestJob.findUniqueOrThrow({ where: { id: job.id } }))
-        .generationHandoffAt,
-    ).toBeNull();
-    expect(
-      (
-        await prisma.workflowEvent.findFirstOrThrow({
-          where: { ingestJobId: job.id },
-        })
-      ).stage,
-    ).toBe("ingest_ready");
+    const first = await start(module, job.id);
+    expect(await first.command("fail", { failureCode: "remote_download_failed", retryable: true })).toMatchObject({ disposition: "failed" });
+    const retry = await prisma.ingestJob.findUniqueOrThrow({ where: { id: job.id } });
+    expect(retry).toMatchObject({ status: "queued", generation: 2, attemptCount: 1 });
+    expect(await prisma.executionDispatch.findFirstOrThrow({ where: { subjectId: job.id, kind: "import_pipeline", generation: 1, wakeKind: "ingest_outcome" } }))
+      .toMatchObject({ inputHash: first.fence.reference.inputHash });
+    expect(await prisma.executionDispatch.findFirstOrThrow({ where: { subjectId: job.id, kind: "operation_driver", generation: 1, wakeKind: "execution_finished" } }))
+      .toMatchObject({ inputHash: first.fence.reference.inputHash });
+    const due = await prisma.executionDispatch.findFirstOrThrow({ where: { subjectId: job.id, generation: 2, kind: "operation_driver", wakeKind: null } });
+    expect(due.dueAt.getTime()).toBeGreaterThan(clock);
+    const second = await start(module, job.id);
+    expect(second.fence.attemptToken).not.toBe(first.fence.attemptToken);
+    await second.command("fail", { failureCode: "remote_url_unsafe", retryable: false });
+    expect(await prisma.ingestJob.findUniqueOrThrow({ where: { id: job.id } })).toMatchObject({ status: "failed", attemptCount: 2 });
+    const event = await prisma.workflowEvent.findFirstOrThrow({ where: { projectId: project.id, status: "failed" } });
+    expect(event).toMatchObject({ notificationRequired: true, ingestJobId: job.id, workflowRunId: null });
+    const ledger = await prisma.notificationLedger.findFirstOrThrow({ where: { projectId: project.id, sourceId: job.id, outcome: "import_failed" } });
+    expect(ledger.status).toBe("pending");
+    expect(await prisma.notificationLedger.count({ where: { projectId: project.id, sourceId: job.id } })).toBe(1);
+    expect(await prisma.executionDispatch.count({ where: { kind: "operation_driver", subjectKind: "notification", subjectId: `em1.p.${ledger.id}`, deadlineKind: null } })).toBe(1);
   }));
+
+  test("outbox insertion failure rolls back actual Core progress, source acceptance, failure and expiry", bindServiceTestEnvironment(async () => {
+    const { project, job } = await fixture();
+    const database = transactionFault("create", "workflowEvent");
+    const execution = await start(lifecycle({ prisma: database }), job.id, database);
+    await expect(execution.command("progress", { phase: "preparing", progress: 75 })).rejects.toThrow("injected");
+    await expect(execution.complete()).rejects.toThrow("injected");
+    await expect(execution.command("fail", { failureCode: "remote_url_unsafe", retryable: false })).rejects.toThrow("injected");
+    await expect(execution.expire()).rejects.toThrow("injected");
+    expect(await prisma.ingestJob.findUniqueOrThrow({ where: { id: job.id } })).toMatchObject({ status: "running" });
+    expect(await prisma.project.findUniqueOrThrow({ where: { id: project.id } })).toMatchObject({ sourceStorageKey: null });
+    expect(await prisma.executionArtifact.findUniqueOrThrow({ where: { id: execution.assignment.id } })).toMatchObject({ committedAt: null });
+  }));
+
+  test("actual assigned source acceptance keeps probe, storage URI and pending handoff durable", bindServiceTestEnvironment(async () => {
+    const { project, job } = await fixture();
+    const execution = await start(lifecycle(), job.id);
+    expect(await execution.complete()).toMatchObject({ disposition: "committed" });
+    const accepted = await prisma.project.findUniqueOrThrow({ where: { id: project.id } });
+    expect(accepted).toMatchObject({ sourceMediaUrl: `r2://ingest-test/${execution.assignment.storageKey}`, sourceSizeBytes: 42n,
+      ingestStatus: "ready", sourceProbe: { durationSec: 12.5, facts: { format: { name: "fixture" } } } });
+    expect(await prisma.ingestJob.findUniqueOrThrow({ where: { id: job.id } })).toMatchObject({ generationHandoffAt: null, status: "completed" });
+    expect(await prisma.workflowEvent.findFirstOrThrow({ where: { ingestJobId: job.id } })).toMatchObject({ stage: "ingest_ready" });
+  }));
+
   test("manual retry rolls back queued Project if job insertion fails", bindServiceTestEnvironment(async () => {
     const { project, workspace, user } = await fixture("failed");
     const module = lifecycle({
@@ -422,53 +371,31 @@ dbDescribe("Ingest Job lifecycle PostgreSQL interface", () => {
       IngestRetryLimitExceededError,
     );
   }));
-  test("reaper preserves renewed leases, retries expired claims, then fails with durable intent at cap", bindServiceTestEnvironment(async () => {
+  test("targeted expiry respects a renewed deadline, retries each charged start, and ends at the original cap", bindServiceTestEnvironment(async () => {
     const { project, job } = await fixture();
     const module = lifecycle();
-    const first = (await module.claim())!;
-    clock += 9 * 60_000;
-    await module.renew(first);
-    clock += 2 * 60_000;
-    expect(await module.reapExpired()).toBe(0);
-    clock += 9 * 60_000;
-    expect(await module.reapExpired()).toBe(1);
-    await expect(
-      module.fail(first, "worker_unhandled_error", "late"),
-    ).rejects.toBeInstanceOf(IngestJobClaimLost);
-    clock += 30_001;
-    const second = (await module.claim())!;
-    clock += 10 * 60_000;
-    expect(await module.reapExpired()).toBe(1);
-    clock += 60_001;
-    const third = (await module.claim())!;
-    expect(second.attemptCount).toBe(2);
-    expect(third.attemptCount).toBe(3);
-    clock += 10 * 60_000;
-    expect(await module.reapExpired()).toBe(1);
-    expect(
-      (await prisma.project.findUniqueOrThrow({ where: { id: project.id } }))
-        .ingestErrorCode,
-    ).toBe("ingest_retries_exhausted");
-    expect(
-      await prisma.workflowEvent.count({
-        where: { ingestJobId: job.id, notificationRequired: true },
-      }),
-    ).toBe(1);
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const execution = await start(module, job.id);
+      expect(await execution.command("renew", { leaseSeconds: 120 })).toMatchObject({ disposition: "renewed" });
+      const result = await execution.control.expireDeadline({ deadline: { reference: execution.fence.reference, attemptToken: execution.fence.attemptToken,
+        kind: "lease", observedDeadlineAt: new Date(clock - 1_000).toISOString() }, deliveryId: randomUUID() });
+      expect(result.kind).toBe("sleep");
+      expect(await execution.expire()).toEqual({ kind: "expired" });
+      expect(await prisma.ingestJob.findUniqueOrThrow({ where: { id: job.id } })).toMatchObject({ attemptCount: attempt, status: attempt === 3 ? "failed" : "queued" });
+    }
+    expect(await prisma.project.findUniqueOrThrow({ where: { id: project.id } })).toMatchObject({ ingestStatus: "failed", ingestErrorCode: "ingest_retries_exhausted" });
+    expect(await prisma.workflowEvent.count({ where: { projectId: project.id, notificationRequired: true } })).toBe(1);
   }));
-  test("repeated graceful deploy releases do not consume automatic retries", bindServiceTestEnvironment(async () => {
+  test("six graceful executor releases preserve automatic retry budget while retaining their execution history", bindServiceTestEnvironment(async () => {
     const { job } = await fixture();
     const module = lifecycle();
     for (let deploy = 0; deploy < 6; deploy++) {
-      const claim = (await module.claim())!;
-      expect(claim.attemptCount).toBe(1);
-      await module.progress(claim, "downloading");
-      await module.release(claim);
+      const execution = await start(module, job.id);
+      await execution.command("progress", { phase: "downloading", progress: 40 });
+      expect(await execution.command("release", { reason: "shutdown" })).toMatchObject({ disposition: "released" });
     }
-    const row = await prisma.ingestJob.findUniqueOrThrow({
-      where: { id: job.id },
-    });
-    expect(row.status).toBe("queued");
-    expect(row.attemptCount).toBe(0);
+    expect(await prisma.ingestJob.findUniqueOrThrow({ where: { id: job.id } })).toMatchObject({ status: "queued", attemptCount: 0, generation: 7 });
+    expect(await prisma.executionAttempt.count({ where: { dispatch: { subjectId: job.id }, status: "released", processStartedAt: { not: null } } })).toBe(6);
   }));
   test("an admitted ingest handoff survives creator removal without impersonating the Workspace owner", bindServiceTestEnvironment(async () => {
     const { project, job, workspace } = await fixture("ready");
@@ -479,7 +406,7 @@ dbDescribe("Ingest Job lifecycle PostgreSQL interface", () => {
     await prisma.user.delete({ where: { id: creator.id } });
     await reservation(project.id, workspace.id);
     const module = lifecycle();
-    expect(await module.processGenerationHandoffs(1, job.id)).toBe(1);
+    expect(await targetedHandoff(module, job.id)).toMatchObject({ kind: "admitted" });
     expect(
       (await prisma.processingUsageReservation.findUniqueOrThrow({ where: { projectId: project.id } })).state,
     ).toBe("settled");
@@ -491,9 +418,9 @@ dbDescribe("Ingest Job lifecycle PostgreSQL interface", () => {
     await committedPack(project.id);
     await reservation(project.id, workspace.id);
     // The probed source exceeds the Free per-video cap.
-    await prisma.project.update({ where: { id: project.id }, data: { sourceDurationSeconds: 61 * 60 } });
+    await prisma.project.update({ where: { id: project.id }, data: { sourceDurationSeconds: 61 * 60, sourceProbe: { durationSec: 61 * 60, video: null, audio: null } } });
     const module = lifecycle();
-    expect(await module.processGenerationHandoffs(1, job.id)).toBe(0);
+    expect(await targetedHandoff(module, job.id)).toMatchObject({ kind: "refused" });
     expect(
       (await prisma.processingUsageReservation.findUniqueOrThrow({ where: { projectId: project.id } })).state,
     ).toBe("released");
@@ -513,7 +440,7 @@ dbDescribe("Ingest Job lifecycle PostgreSQL interface", () => {
         where: { ingestJobId: job.id, notificationRequired: true },
       }),
     ).toBe(1);
-    expect(await module.processGenerationHandoffs(1, job.id)).toBe(0);
+    expect(await targetedHandoff(module, job.id)).toMatchObject({ kind: "not_ready" });
   }));
   describe("whole-source windows at the generation handoff", () => {
     const captionedVideo = { framing: "fit", aspectRatios: ["9:16"], resolution: "1080p", captions: { source: "none" } };
@@ -532,11 +459,11 @@ dbDescribe("Ingest Job lifecycle PostgreSQL interface", () => {
         where: { id: project.id },
         data: {
           sourceDurationSeconds,
-          ...(options.probe === undefined ? {} : { sourceProbe: { durationSec: options.probe, video: null, audio: null } }),
+          sourceProbe: { durationSec: options.probe ?? sourceDurationSeconds, video: null, audio: null },
         },
       });
       const module = lifecycle();
-      return { project, job, handed: await module.processGenerationHandoffs(1, job.id) };
+      return { project, job, handed: (await targetedHandoff(module, job.id)).kind === "admitted" ? 1 : 0 };
     }
     const reservationState = async (projectId: string) =>
       (await prisma.processingUsageReservation.findUniqueOrThrow({ where: { projectId } })).state;
@@ -593,10 +520,10 @@ dbDescribe("Ingest Job lifecycle PostgreSQL interface", () => {
       await committedPack(project.id);
       await reservation(project.id, workspace.id, "reserved", 600);
       await prisma.project.update({ where: { id: project.id }, data: { sourceDurationSeconds: 600 } });
-      expect(await lifecycle().processGenerationHandoffs(1, job.id)).toBe(1);
+      expect(await targetedHandoff(lifecycle(), job.id)).toMatchObject({ kind: "admitted" });
     }));
   });
-  test("handoff retry is durable, fair to due retries and exactly-once at admission", bindServiceTestEnvironment(async () => {
+  test("handoff retry is durable and exact replay cannot admit a second generation or touch another intake", bindServiceTestEnvironment(async () => {
     const { project, job, workspace } = await fixture("ready");
     const pack = await committedPack(project.id);
     await reservation(project.id, workspace.id);
@@ -608,12 +535,12 @@ dbDescribe("Ingest Job lifecycle PostgreSQL interface", () => {
         },
       }),
     });
-    await module.processGenerationHandoffs(1, job.id);
+    expect(await targetedHandoff(module, job.id)).toMatchObject({ kind: "deferred" });
     expect(
       (await prisma.ingestJob.findUniqueOrThrow({ where: { id: job.id } }))
         .generationHandoffRetryAt,
     ).not.toBeNull();
-    clock += 60_001;
+    clock += 61_000;
     const newProject = await prisma.project.create({
       data: {
         title: "New draft",
@@ -631,7 +558,7 @@ dbDescribe("Ingest Job lifecycle PostgreSQL interface", () => {
         completedAt: new Date(clock),
       },
     });
-    expect(await module.processGenerationHandoffs(1)).toBe(1);
+    expect(await targetedHandoff(module, job.id)).toMatchObject({ kind: "admitted" });
     const handedOff = await prisma.ingestJob.findUniqueOrThrow({ where: { id: job.id } });
     expect(handedOff.generationHandoffAt).not.toBeNull();
     const admitted = await prisma.workflowRun.findMany({
@@ -651,7 +578,7 @@ dbDescribe("Ingest Job lifecycle PostgreSQL interface", () => {
         })
       ).status,
     ).toBe("queued");
-    expect(await module.processGenerationHandoffs(1, job.id)).toBe(0);
+    expect(await targetedHandoff(module, job.id)).toMatchObject({ kind: "acknowledged" });
   }));
   test("a manually admitted same-pack run acknowledges handoff after its stage advances", bindServiceTestEnvironment(async () => {
     const { project, job, workspace } = await fixture("ready");
@@ -676,7 +603,7 @@ dbDescribe("Ingest Job lifecycle PostgreSQL interface", () => {
         },
       }),
     });
-    expect(await module.processGenerationHandoffs(1, job.id)).toBe(1);
+    expect(await targetedHandoff(module, job.id)).toMatchObject({ kind: "acknowledged" });
     expect(
       await prisma.workflowRun.count({
         where: { projectId: project.id, stage: "stt" },
@@ -690,30 +617,31 @@ dbDescribe("Ingest Job lifecycle PostgreSQL interface", () => {
         .ingestStatus,
     ).toBe("ready");
   }));
-  test("a same-pack admission during settlement wins over a stale permanent error", bindServiceTestEnvironment(async () => {
+  test("a same-pack admission after rollback wins over a stale permanent error", bindServiceTestEnvironment(async () => {
     const { project, job, workspace } = await fixture("ready");
     const pack = await committedPack(project.id);
     await reservation(project.id, workspace.id, "settled");
     const workflow = new WorkflowRunLifecycle({ prisma });
+    let manualId = "";
+    const failure = new ExpectedDomainFailureError({ code: "project_access_denied", kind: "forbidden", message: "access changed after admission" });
     const module = lifecycle({
+      prisma: afterRollback(failure, async () => {
+        const manual = await workflow.admitTranscript({ projectId: project.id, idempotencyKey: `manual:${randomUUID()}`, contentPackId: pack.id,
+          transcriptProvider: "elevenlabs", transcriptProviderModel: "test" });
+        manualId = manual.id;
+      }),
       usage: usage({
-        beforeSettle: async () => {
-          await workflow.admitTranscript({
-            projectId: project.id,
-            idempotencyKey: `manual:${randomUUID()}`,
-            contentPackId: pack.id,
-            transcriptProvider: "elevenlabs",
-            transcriptProviderModel: "test",
-          });
-          throw new ExpectedDomainFailureError({
-            code: "project_access_denied",
-            kind: "forbidden",
-            message: "access changed after admission",
-          });
-        },
+        beforeSettle: async () => { throw failure; },
       }),
     });
-    expect(await module.processGenerationHandoffs(1, job.id)).toBe(1);
+    const recovered = await targetedHandoff(module, job.id);
+    expect(recovered).toMatchObject({ kind: "acknowledged", workflowRunId: manualId });
+    const wake = await prisma.executionDispatch.findFirstOrThrow({ where: {
+      kind: "operation_driver", subjectKind: "workflow_run", subjectId: manualId, wakeKind: null, deadlineKind: null,
+    } });
+    expect(recovered.dispatchIds).toContain(wake.id);
+    expect((await targetedHandoff(module, job.id)).dispatchIds).toContain(wake.id);
+    expect(await prisma.ingestJob.findUniqueOrThrow({ where: { id: job.id } })).toMatchObject({ generationRunId: manualId });
     expect(
       (await prisma.project.findUniqueOrThrow({ where: { id: project.id } }))
         .ingestStatus,
@@ -728,29 +656,32 @@ dbDescribe("Ingest Job lifecycle PostgreSQL interface", () => {
       }),
     ).toBe(0);
   }));
-  test("a manual stage completing during admission rolls back the extra automatic run", bindServiceTestEnvironment(async () => {
+  test("a manual stage completing after rollback is acknowledged without an extra automatic run", bindServiceTestEnvironment(async () => {
     const { project, job, workspace } = await fixture("ready");
     const pack = await committedPack(project.id);
     await reservation(project.id, workspace.id, "settled");
     const workflow = new WorkflowRunLifecycle({ prisma });
+    let manualId = "";
+    const failure = new Error("admission interrupted");
     const module = lifecycle({
+      prisma: afterRollback(failure, async () => {
+        const run = await workflow.admitTranscript({ projectId: project.id, idempotencyKey: `manual:${randomUUID()}`, contentPackId: pack.id,
+          transcriptProvider: "elevenlabs", transcriptProviderModel: "test" });
+        manualId = run.id;
+        await prisma.workflowRun.update({ where: { id: run.id }, data: { status: "completed" } });
+      }),
       usage: usage({
-        beforeSettle: async () => {
-          const run = await workflow.admitTranscript({
-            projectId: project.id,
-            idempotencyKey: `manual:${randomUUID()}`,
-            contentPackId: pack.id,
-            transcriptProvider: "elevenlabs",
-            transcriptProviderModel: "test",
-          });
-          await prisma.workflowRun.update({
-            where: { id: run.id },
-            data: { status: "completed" },
-          });
-        },
+        beforeSettle: async () => { throw failure; },
       }),
     });
-    expect(await module.processGenerationHandoffs(1, job.id)).toBe(1);
+    const recovered = await targetedHandoff(module, job.id);
+    expect(recovered).toMatchObject({ kind: "acknowledged", workflowRunId: manualId });
+    const wake = await prisma.executionDispatch.findFirstOrThrow({ where: {
+      kind: "operation_driver", subjectKind: "workflow_run", subjectId: manualId, wakeKind: null, deadlineKind: null,
+    } });
+    expect(recovered.dispatchIds).toContain(wake.id);
+    expect((await targetedHandoff(module, job.id)).dispatchIds).toContain(wake.id);
+    expect(await prisma.ingestJob.findUniqueOrThrow({ where: { id: job.id } })).toMatchObject({ generationRunId: manualId });
     expect(
       await prisma.workflowRun.count({
         where: { projectId: project.id, stage: "stt" },
@@ -768,17 +699,9 @@ dbDescribe("Ingest Job lifecycle PostgreSQL interface", () => {
     const { project, job, workspace } = await fixture("ready");
     await committedPack(project.id);
     await reservation(project.id, workspace.id);
-    const module = lifecycle({
-      usage: usage({
-        beforeSettle: async () => {
-          await prisma.ingestJob.update({
-            where: { id: job.id },
-            data: { generationHandoffAt: new Date(clock) },
-          });
-        },
-      }),
-    });
-    expect(await module.processGenerationHandoffs(1, job.id)).toBe(0);
+    const module = lifecycle({ prisma: transactionFault("updateMany", "ingestJob",
+      args => Boolean((args as { data?: { generationRunId?: string } }).data?.generationRunId), true) });
+    expect(await targetedHandoff(module, job.id)).toMatchObject({ kind: "superseded" });
     expect(
       (await prisma.processingUsageReservation.findUniqueOrThrow({ where: { projectId: project.id } })).state,
     ).toBe("reserved");
@@ -795,41 +718,32 @@ dbDescribe("Ingest Job lifecycle PostgreSQL interface", () => {
   describe("Drive Picker intake credential", () => {
     const SEALED = "v1:sealed-test-credential";
     async function driveFixture() {
-      const made = await fixture("queued", { fileId: "drive-file-id-0001", fileName: "a.mp4" });
-      await prisma.ingestJob.update({
-        where: { id: made.job.id },
-        data: { jobType: "drive_import", sourceCredential: SEALED },
-      });
-      return made;
+      return fixture("queued", { fileId: "drive-file-id-0001", fileName: "a.mp4" }, { jobType: "drive_import", sourceCredential: SEALED });
     }
     const credential = async (id: string) =>
       (await prisma.ingestJob.findUniqueOrThrow({ where: { id } })).sourceCredential;
 
-    test("a claim carries the sealed credential, and a requeued job keeps it while it can still download", bindServiceTestEnvironment(async () => {
+    test("a requeued native download retains the sealed credential", bindServiceTestEnvironment(async () => {
       const { job } = await driveFixture();
-      const module = lifecycle();
-      const first = (await module.claim({ youtubeAvailable: false }))!;
-      expect(first).toMatchObject({ id: job.id, jobType: "drive_import", sourceCredential: SEALED });
-      expect(await module.fail(first, "source_download_failed", "socket closed")).toEqual({ outcome: "requeue" });
+      const execution = await start(lifecycle(), job.id);
+      await execution.command("fail", { failureCode: "source_download_failed", retryable: true });
       expect(await credential(job.id)).toBe(SEALED);
+      expect(await prisma.ingestJob.findUniqueOrThrow({ where: { id: job.id } })).toMatchObject({ status: "queued", attemptCount: 1 });
     }));
 
     test("completing the download discards the credential", bindServiceTestEnvironment(async () => {
       const { job } = await driveFixture();
       const module = lifecycle();
-      const claim = (await module.claim())!;
-      await module.complete(claim, { sourceStorageKey: "projects/p/link/a.mp4" });
+      const execution = await start(module, job.id);
+      await execution.complete();
       expect(await credential(job.id)).toBeNull();
     }));
 
-    test("a permanent failure, the reaper's last attempt, and a cancellation all discard it", bindServiceTestEnvironment(async () => {
+    test("a permanent failure, targeted final expiry, and cancellation discard it", bindServiceTestEnvironment(async () => {
       const expired = await driveFixture();
       const module = lifecycle();
-      const claim = (await module.claim())!;
-      expect(await module.fail(claim, "drive_token_expired", "expired")).toEqual({
-        outcome: "permanent",
-        terminalErrorCode: "drive_token_expired",
-      });
+      const execution = await start(module, expired.job.id);
+      await execution.command("fail", { failureCode: "drive_token_expired", retryable: false });
       expect(await credential(expired.job.id)).toBeNull();
       expect(
         await prisma.project.findUniqueOrThrow({ where: { id: expired.project.id } }),
@@ -838,13 +752,11 @@ dbDescribe("Ingest Job lifecycle PostgreSQL interface", () => {
       const stalled = await driveFixture();
       await prisma.ingestJob.update({
         where: { id: stalled.job.id },
-        data: { attemptCount: 2, updatedAt: new Date(clock - 60 * 60_000) },
+        data: { attemptCount: 2, operationDeadlineAt: new Date(Date.now() + 45 * 60_000), updatedAt: new Date(clock - 60 * 60_000) },
       });
-      const last = (await module.claim())!;
-      expect(last.id).toBe(stalled.job.id);
+      const last = await start(module, stalled.job.id);
       expect(await credential(stalled.job.id)).toBe(SEALED);
-      clock += 11 * 60_000;
-      expect(await module.reapExpired()).toBe(1);
+      expect(await last.expire()).toEqual({ kind: "expired" });
       expect(await credential(stalled.job.id)).toBeNull();
 
       const cancelled = await driveFixture();
@@ -863,7 +775,8 @@ dbDescribe("Ingest Job lifecycle PostgreSQL interface", () => {
       const { project, job, user, workspace } = await driveFixture();
       const module = lifecycle();
       await reservation(project.id, workspace.id);
-      await module.fail((await module.claim())!, "drive_file_unavailable", "gone");
+      const execution = await start(module, job.id);
+      await execution.command("fail", { failureCode: "drive_file_unavailable", retryable: false });
       await expect(
         module.retry({ projectId: project.id, workspaceId: workspace.id, actorUserId: user.id }),
       ).rejects.toBeInstanceOf(IngestReselectRequiredError);
@@ -871,25 +784,4 @@ dbDescribe("Ingest Job lifecycle PostgreSQL interface", () => {
       expect(await credential(job.id)).toBeNull();
     }));
   });
-  test("unavailable YouTube skips its current link payload while other intake claims", bindServiceTestEnvironment(async () => {
-    const { project, job } = await fixture("queued", {
-      provider: "youtube",
-      url: "https://youtube.test/a",
-    });
-    const direct = await prisma.ingestJob.create({
-      data: {
-        projectId: project.id,
-        jobType: "link_import",
-        payload: { provider: "dropbox", url: "https://dropbox.test/b" },
-      },
-    });
-    expect((await lifecycle().claim({ youtubeAvailable: false }))?.id).toBe(
-      direct.id,
-    );
-    const youtube = await prisma.ingestJob.findUniqueOrThrow({
-      where: { id: job.id },
-    });
-    expect(youtube.status).toBe("queued");
-    expect(youtube.attemptCount).toBe(0);
-  }));
 });

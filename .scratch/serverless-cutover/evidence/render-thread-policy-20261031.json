@@ -1,0 +1,470 @@
+{
+  "date": "2026-10-31",
+  "status": "independent Linux gates passed; final deployed candidate image refresh remains separate",
+  "scope": "One shared production execution policy, without changes to the composition compiler, fixture recipes, baselines or tolerances. Effective execution adds the declared thread options after existing graph transport; compiler argv stays exact.",
+  "policy": {
+    "id": "render-4cpu-v1",
+    "physicalCpus": 4,
+    "memoryMiB": 8192,
+    "decoderThreads": 4,
+    "filterThreads": 4,
+    "x264FrameThreads": 6,
+    "existingStricterLimits": "preserved",
+    "perPool": "FFmpeg can have additional demux, mux and lookahead threads. These values bound codec/filter pools, not total OS threads.",
+    "sharedImplementation": "apps/media/src/ffmpeg-thread-policy.ts",
+    "sha256": "cefc6267393108d1a71c754d0122da0b891e4bdef9221901101fdc86be7e0555",
+    "consumers": [
+      "native render_group process execute port",
+      "golden harness final render execution"
+    ],
+    "compilerChanged": false
+  },
+  "diagnostic": {
+    "defaultAndCappedComparison": {
+      "scope": "diagnostic decoder/filter4 encoder6 flags; compiler and frozen inputs unchanged",
+      "controlMismatches": [],
+      "capMismatches": [],
+      "priorFrames": "362de86245cc86ec33e8ce34d40613afb8c1ff8e97985651a1138ff1bc7e2123",
+      "defaultFrames": "362de86245cc86ec33e8ce34d40613afb8c1ff8e97985651a1138ff1bc7e2123",
+      "cappedFrames": "362de86245cc86ec33e8ce34d40613afb8c1ff8e97985651a1138ff1bc7e2123",
+      "priorPcm": "9f33d61922032cb15c73c3588e511969002105ec507cdc076d9d8857ac2d4c1f",
+      "defaultPcm": "9f33d61922032cb15c73c3588e511969002105ec507cdc076d9d8857ac2d4c1f",
+      "cappedPcm": "9f33d61922032cb15c73c3588e511969002105ec507cdc076d9d8857ac2d4c1f"
+    },
+    "default": {
+      "original": [
+        "-y",
+        "-ss",
+        "0",
+        "-t",
+        "4",
+        "-i",
+        "/work/thread-fixtures/e00c091bc5a81bee/talk-720p.mp4",
+        "-filter_complex",
+        "[0:v]setpts=PTS-STARTPTS,settb=AVTB[composition_source_clock];[composition_source_clock]trim=start=0.000000:end=4.000000,setpts=PTS-STARTPTS[composition_scene_0_trim];[composition_scene_0_trim]crop=405:720:310:0,scale=1080:1920,setsar=1,format=yuv420p[composition_scene_0];[composition_scene_0]format=yuv420p[composition_base];[composition_base]ass='/work/thread-default/cases/solo-auto-vertical/work/captions-vertical.ass':fontsdir='/app/packages/caption-fonts/fonts/'[outv];[0:a:0]afade=t=in:st=0:d=0.040,afade=t=out:st=3.880:d=0.120[outa]",
+        "-map",
+        "[outv]",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "21",
+        "-pix_fmt",
+        "yuv420p",
+        "-r",
+        "30",
+        "-map",
+        "[outa]",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "128k",
+        "-t",
+        "4.000",
+        "-movflags",
+        "+faststart",
+        "-max_muxing_queue_size",
+        "1024",
+        "/work/thread-default/cases/solo-auto-vertical/vertical.mp4"
+      ],
+      "physical": [
+        "-y",
+        "-ss",
+        "0",
+        "-t",
+        "4",
+        "-i",
+        "/work/thread-fixtures/e00c091bc5a81bee/talk-720p.mp4",
+        "-filter_complex",
+        "[0:v]setpts=PTS-STARTPTS,settb=AVTB[composition_source_clock];[composition_source_clock]trim=start=0.000000:end=4.000000,setpts=PTS-STARTPTS[composition_scene_0_trim];[composition_scene_0_trim]crop=405:720:310:0,scale=1080:1920,setsar=1,format=yuv420p[composition_scene_0];[composition_scene_0]format=yuv420p[composition_base];[composition_base]ass='/work/thread-default/cases/solo-auto-vertical/work/captions-vertical.ass':fontsdir='/app/packages/caption-fonts/fonts/'[outv];[0:a:0]afade=t=in:st=0:d=0.040,afade=t=out:st=3.880:d=0.120[outa]",
+        "-map",
+        "[outv]",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "21",
+        "-pix_fmt",
+        "yuv420p",
+        "-r",
+        "30",
+        "-map",
+        "[outa]",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "128k",
+        "-t",
+        "4.000",
+        "-movflags",
+        "+faststart",
+        "-max_muxing_queue_size",
+        "1024",
+        "/work/thread-default/cases/solo-auto-vertical/vertical.mp4"
+      ],
+      "peakOsThreads": 30,
+      "exitCode": 0,
+      "encoderThreadOptions": [
+        "6"
+      ]
+    },
+    "bounded": {
+      "original": [
+        "-y",
+        "-ss",
+        "0",
+        "-t",
+        "4",
+        "-i",
+        "/work/thread-fixtures/e00c091bc5a81bee/talk-720p.mp4",
+        "-filter_complex",
+        "[0:v]setpts=PTS-STARTPTS,settb=AVTB[composition_source_clock];[composition_source_clock]trim=start=0.000000:end=4.000000,setpts=PTS-STARTPTS[composition_scene_0_trim];[composition_scene_0_trim]crop=405:720:310:0,scale=1080:1920,setsar=1,format=yuv420p[composition_scene_0];[composition_scene_0]format=yuv420p[composition_base];[composition_base]ass='/work/thread-capped/cases/solo-auto-vertical/work/captions-vertical.ass':fontsdir='/app/packages/caption-fonts/fonts/'[outv];[0:a:0]afade=t=in:st=0:d=0.040,afade=t=out:st=3.880:d=0.120[outa]",
+        "-map",
+        "[outv]",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "21",
+        "-pix_fmt",
+        "yuv420p",
+        "-r",
+        "30",
+        "-map",
+        "[outa]",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "128k",
+        "-t",
+        "4.000",
+        "-movflags",
+        "+faststart",
+        "-max_muxing_queue_size",
+        "1024",
+        "/work/thread-capped/cases/solo-auto-vertical/vertical.mp4"
+      ],
+      "physical": [
+        "-filter_threads",
+        "4",
+        "-filter_complex_threads",
+        "4",
+        "-y",
+        "-ss",
+        "0",
+        "-t",
+        "4",
+        "-threads",
+        "4",
+        "-i",
+        "/work/thread-fixtures/e00c091bc5a81bee/talk-720p.mp4",
+        "-filter_complex",
+        "[0:v]setpts=PTS-STARTPTS,settb=AVTB[composition_source_clock];[composition_source_clock]trim=start=0.000000:end=4.000000,setpts=PTS-STARTPTS[composition_scene_0_trim];[composition_scene_0_trim]crop=405:720:310:0,scale=1080:1920,setsar=1,format=yuv420p[composition_scene_0];[composition_scene_0]format=yuv420p[composition_base];[composition_base]ass='/work/thread-capped/cases/solo-auto-vertical/work/captions-vertical.ass':fontsdir='/app/packages/caption-fonts/fonts/'[outv];[0:a:0]afade=t=in:st=0:d=0.040,afade=t=out:st=3.880:d=0.120[outa]",
+        "-map",
+        "[outv]",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "21",
+        "-pix_fmt",
+        "yuv420p",
+        "-r",
+        "30",
+        "-map",
+        "[outa]",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "128k",
+        "-t",
+        "4.000",
+        "-movflags",
+        "+faststart",
+        "-max_muxing_queue_size",
+        "1024",
+        "-threads:v",
+        "6",
+        "/work/thread-capped/cases/solo-auto-vertical/vertical.mp4"
+      ],
+      "peakOsThreads": 27,
+      "exitCode": 0,
+      "encoderThreadOptions": [
+        "6"
+      ]
+    },
+    "rejectedFourThreadEncoder": {
+      "scope": "diagnostic extra decoder/filter/encoder4 flags; compiler and frozen inputs unchanged",
+      "controlMismatches": [],
+      "capMismatches": [
+        {
+          "case": "solo-auto-vertical",
+          "target": "vertical",
+          "category": "frames",
+          "detail": "frame 0 (pts 0) hash 0078a6bfd0ecb2f1 -> 350e1df5181068d9"
+        }
+      ],
+      "priorFrames": "362de86245cc86ec33e8ce34d40613afb8c1ff8e97985651a1138ff1bc7e2123",
+      "defaultFrames": "362de86245cc86ec33e8ce34d40613afb8c1ff8e97985651a1138ff1bc7e2123",
+      "cappedFrames": "ed3dad32d3e55c9fb424485a13657490ad4dc0e99e295aa1aa15dd5e1432f3f7",
+      "priorPcm": "9f33d61922032cb15c73c3588e511969002105ec507cdc076d9d8857ac2d4c1f",
+      "defaultPcm": "9f33d61922032cb15c73c3588e511969002105ec507cdc076d9d8857ac2d4c1f",
+      "cappedPcm": "9f33d61922032cb15c73c3588e511969002105ec507cdc076d9d8857ac2d4c1f"
+    },
+    "reason": "The original four-CPU image encodes with six x264 frame threads, confirmed by its H.264 SEI options. Explicit encoder4 changes decoded frames and was rejected. Encoder6 with decoder/filter4 retains every frozen comparison fact.",
+    "osThreadControlAlternative": {
+      "observedEffectiveUid": 0,
+      "affinityCount": 4,
+      "nprocRlimit": [
+        -1,
+        -1
+      ],
+      "pidsMaxExposed": false,
+      "decision": "Use explicit codec/filter limits. Affinity already bounds four CPUs; RLIMIT_NPROC is a real-UID limit and does not enforce it for UID0."
+    }
+  },
+  "fullMatrix": {
+    "candidate": {
+      "candidateCommit": "bb8fe37071e1832640a94c491c7859cf4a89adf8",
+      "sandboxId": "sb-01M69H8PSHH87Q0J0SSRHXHEB7",
+      "imageId": "im-j5MoQbsu3wN6vhLRebZmYY",
+      "cpu": 4,
+      "memoryMiB": 8192,
+      "networkBlocked": true,
+      "secrets": [],
+      "files": {
+        "/tmp/candidate.tar.gz": "6913a2f303b9608f7cbb354f1215a8f50e1fb40aa660a0491a9b73824a208b25",
+        "/tmp/frozen-manifest.json": "e87ca72642998347dbe6ffdffb9c16617ac7002e1b5604c928ca59399179b42f",
+        "/tmp/frozen-capture.gz": "51c3ec62bdff13ecb31e2d31e2323cffd0ab3a4278eefc05050f8a8f567a31fc",
+        "/tmp/run.py": "293434cec1a511a43a760d0a2f8021bbf183d950b6362c576a131db27b8f2b71"
+      }
+    },
+    "terminated": true,
+    "runtimeId": "06a988fcee94757ba07d1d1cc410ca4fbf0f36ee4d8f4aab8c84711897a569b9",
+    "fixtureToolchainId": "e00c091bc5a81bee",
+    "baselineCaptureSha256": "d114c6f0030b0fad75d487f34cdae0e83dc25dbf536954aac40e274f1981883f",
+    "baselineProvenance": "canonical-modal-media-parity-20261031.json",
+    "ok": true,
+    "summary": {
+      "normal": {
+        "total": 18,
+        "pass": 18,
+        "fail": 0
+      },
+      "knownDefects": {
+        "total": 18,
+        "xfail": 2,
+        "xpass": 0,
+        "changed": 0,
+        "activatedPass": 16,
+        "activatedFail": 0
+      }
+    },
+    "mismatches": [],
+    "cameraAndPolicyTests": {
+      "passed": 9,
+      "assertions": 47,
+      "seconds": 8.31
+    },
+    "nativeTestsBeforeAutoloadFix": {
+      "passed": 86,
+      "seconds": 91.789
+    }
+  },
+  "longSourceAfterPolicy": {
+    "scope": "One10s render_group window over a3h source, using preconstructed completed preparation with unavailable layout. No actual prepare_clip runs in this resource fixture.",
+    "fingerprint": "06a988fcee94757ba07d1d1cc410ca4fbf0f36ee4d8f4aab8c84711897a569b9",
+    "seconds": 15.554,
+    "operation": {
+      "outcome": {
+        "status": "completed",
+        "requested": 1,
+        "succeeded": 1,
+        "failed": 0,
+        "superseded": 0
+      },
+      "bytesTransferred": 66060288,
+      "upstreamRequests": 63,
+      "detectorExecutions": 0,
+      "starts": 1,
+      "artifacts": [
+        {
+          "role": "render_variant",
+          "byteLength": 1624941,
+          "sha256": "7f3771d5ce5fbc6c2e02d3360ac8053ad69848a2def8a3b51f2a86a705464c33"
+        }
+      ],
+      "sourceByteLength": 438557967,
+      "sourceDurationSec": 10800.069271,
+      "requestedWindow": {
+        "startSec": 5400,
+        "endSec": 5410
+      },
+      "previewWindow": {
+        "startSec": 5396,
+        "endSec": 5414,
+        "durationSec": 18
+      }
+    },
+    "resources": {
+      "samples": 595,
+      "sampleIntervalMs": 25,
+      "sampledPeakTreeRssBytes": 968404992,
+      "byCommand": {
+        "python": {
+          "rssBytes": 51056640,
+          "threads": 6
+        },
+        "ffmpeg": {
+          "rssBytes": 527106048,
+          "threads": 30
+        },
+        "bun": {
+          "rssBytes": 373923840,
+          "threads": 17
+        },
+        "ffprobe": {
+          "rssBytes": 251355136,
+          "threads": 1
+        },
+        "ldd": {
+          "rssBytes": 5857280,
+          "threads": 1
+        },
+        "ld-linux-x86-64": {
+          "rssBytes": 49504256,
+          "threads": 1
+        },
+        "sh": {
+          "rssBytes": 4595712,
+          "threads": 1
+        },
+        "dirname": {
+          "rssBytes": 4321280,
+          "threads": 1
+        },
+        "basename": {
+          "rssBytes": 0,
+          "threads": 1
+        },
+        "fc-match": {
+          "rssBytes": 10670080,
+          "threads": 1
+        },
+        "dpkg-query": {
+          "rssBytes": 10432512,
+          "threads": 1
+        },
+        "dpkg": {
+          "rssBytes": 8241152,
+          "threads": 1
+        },
+        "python3": {
+          "rssBytes": 22437888,
+          "threads": 1
+        }
+      }
+    },
+    "readFraction": 0.15063068732257234,
+    "maximumReadFraction": 0.2,
+    "outputSha256MatchesUncappedRun": true,
+    "accounting": "Execution scoped reads exclude initial fixture construction/hash and initial acquisition. Memory is a25ms sampled sum over the test process tree, including fixture generation and shared-page double counting; it is not a cgroup peak.",
+    "singleWindowBelow20Percent": true,
+    "aggregateTwelveClipPrepareAndRenderMeasured": false
+  },
+  "autoloadIsolation": {
+    "commit": "71dafcde",
+    "candidate": {
+      "candidateCommit": "71dafcde",
+      "sandboxId": "sb-01M69J3S1JZJ9WAQK4395Q07W9",
+      "imageId": "im-j5MoQbsu3wN6vhLRebZmYY",
+      "cpu": 4,
+      "memoryMiB": 8192,
+      "networkBlocked": true,
+      "secrets": [],
+      "files": {
+        "/tmp/candidate.tar.gz": "46e004572dff4e2db895f57590235f817d41ce5d36bf86f32b191b35cfa17d2c",
+        "/tmp/run.py": "1d96b6d22ac61328923e1f459397b3741522116ffe1eec4249b9b089cd1e2728"
+      }
+    },
+    "terminated": true,
+    "runtimeId": "06a988fcee94757ba07d1d1cc410ca4fbf0f36ee4d8f4aab8c84711897a569b9",
+    "pinnedBun": "1.3.6",
+    "pinnedPython": "3.13.5",
+    "cause": "An explicit child env does not stop Bun from loading DATABASE_URL out of cwd/.env.local. Shared supervision now adds --no-env-file for trusted Bun invocations; both SIGKILL test children do too.",
+    "regression": "Temporary cwd contains only a dummy DATABASE_URL. Ordinary real Bun must read it for calibration; supervised real Bun must not. Native credential guard remains intact.",
+    "redSeconds": 0.361,
+    "hostProcessTestsPassed": 14,
+    "allPinnedPythonTestsPassed": 143,
+    "allPinnedPythonSeconds": 120.93,
+    "postgresSiblingTestsPassed": 22,
+    "postgresAssertions": 214,
+    "failureDiagnostics": "At most8192 stderr bytes inspected; only fixed stage, HTTP status, bounded control error code and exit code can appear in an error. No raw stderr, URLs or environment values are logged."
+  },
+  "sources": [
+    {
+      "title": "FFmpeg7.1.5 option definitions",
+      "url": "https://github.com/FFmpeg/FFmpeg/blob/n7.1.5/doc/ffmpeg.texi"
+    },
+    {
+      "title": "Linux getrlimit RLIMIT_NPROC real-UID and root semantics",
+      "url": "https://www.man7.org/linux/man-pages/man2/getrlimit.2.html"
+    }
+  ],
+  "rawEvidence": {
+    "/tmp/narriflow-serverless-gates/final-media-21/policy-full": {
+      "provenance.json": "a606027ca572706c5f1642f9895481e6d5e21f456bada3e7f61e71ff7d0110b2",
+      "remote.py": "293434cec1a511a43a760d0a2f8021bbf183d950b6362c576a131db27b8f2b71",
+      "run.py": "7a7c32eec8b224a5db07dcfb8f84e01362166cf088f030f434ea02c04b22c014",
+      "runtime.log": "509d4f76a79b7bdaabf44ae54d7b01a38f8bc4f2df63c614835c1db1a0024f05",
+      "candidate-capture-report.json": "415cd6637b67d40f383139441bc562408d286548dd63fda47a36c9a8305c4172",
+      "candidate-capture-report.md": "ef5584fcb4a831a8f757bfb2b4c77ddfaccc96076b958bc3ae1e9cfcd29c89fa",
+      "candidate-capture-capture.json": "0719746b62a2cc0dbe5117b951a5adddb22f8d138f14eeb57c9ae87fc8dfad03",
+      "camera-thread-tests.log": "288b566ad47dd3666b9bc89f7bb940f0f910ed600afea8933aa5cfc4fa89980c",
+      "native-tests.log": "7acd2e92de6f99ee7fde029295eeddd99fd2e651b9bffa4e5a60de7f06c0ca3f",
+      "long-source-resources.log": "29ed44715ceac9c1af7b7861e8163aec54e3e62d4d59d952fa9c91a664197c36",
+      "status.json": "c00c076347fea63235aca729dfab7a9b257e1cccff78f8fb28f1bd588a8f7f45"
+    },
+    "/tmp/narriflow-serverless-gates/final-media-21/autoload-final": {
+      "provenance.json": "10a9dd9a0d71e6114b8eb48660cf4edef3f60c93e76432057ae8daf3ae6699db",
+      "remote.py": "1d96b6d22ac61328923e1f459397b3741522116ffe1eec4249b9b089cd1e2728",
+      "run.py": "212d5509b601a2a8b133f28804cb34531aab8ae3fe9e96399561c220259aff8b",
+      "all-native-tests.log": "ed36d49101a905252965a886b8245a2b9d659e71ec6d0fd234546f596eeaa4e7",
+      "status.json": "2c23c1dc17a9f9a8d804ac9a055b65249b6a50669be4bf95068f955de6523e2a"
+    },
+    "/tmp/narriflow-serverless-gates/final-media-21/thread-six": {
+      "remote.py": "4fa941dc4b8c51f04b7eb61d2e18f37aeaf86106a2a61aff2f80744b4473443e",
+      "thread-default-physical.json": "ad3fc55420e70ef53b4981caf0f2de1149bb0449feec7bcdae75168b4aaeb2fa",
+      "thread-capped-physical.json": "e2e6ed5cacdb3a3db328e993bbed5f8f500e7b5d530eb072cbd240cffca05a2a",
+      "thread-comparison.json": "edbbd7ad76844feb3ea8130473df32484d093b2dc8b6be4baf66665c00598f60"
+    },
+    "/tmp/narriflow-serverless-gates/final-media-21": {
+      "bun-autoload-red.log": "fe0bfc7df05c1b19759e826ac1d0a736c9572c04632b54db3e1aacc97be4160b",
+      "bun-autoload-green.log": "ce083d94143ce09e19dc8fc03fbf56cf1a7dd8827f27ef8197e8bb3f692fcea9",
+      "sibling-no-autoload.log": "44480ff83dc70aeae30e9b15a45cb3540dfe6e06195b0a2c06dec68e5bc96ddd"
+    }
+  },
+  "open": [
+    "Root-owned final candidate image rebuild/deployment and actual Function verifiers must include71dafcde and thread policybb8fe370. No deployment is claimed by these source-overlay Sandbox gates.",
+    "Live domain fault combinations, paid provider/proxy egress and performance cohorts remain ticket22 work.",
+    "Spec7.6 aggregate original-source reads across12 actual prepare_clip\u2192render_group jobs and latency cohorts are NOT established by the single-window diagnostic; Root22 owns that gate."
+  ],
+  "portableCiCommands": "apps/media/scripts/gates/native-ci.md",
+  "combinedDatabaseVerification": {
+    "commit": "38bc1ca5",
+    "includesIngestRollbackFix": "afd28d8f",
+    "passed": 423,
+    "failed": 0,
+    "assertions": 2966,
+    "ordinaryTests": 371,
+    "ordinaryFiles": 39,
+    "ordinarySeconds": 66.12,
+    "actualSigkillSiblingPassed": true,
+    "log": "/tmp/narriflow-serverless-gates/final-media-21/combined-execution-db-root-merged.log",
+    "logSha256": "cd691b207d0908cd6a6d21c5aeaf0fef8d68b6ae9b681237941f274879964ad1"
+  }
+}

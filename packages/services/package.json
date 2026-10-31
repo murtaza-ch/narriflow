@@ -679,7 +679,8 @@
     "./zoom-execution": "./src/zoom-execution.ts",
     "./zoom-execution-runtime": "./src/zoom-execution-runtime.ts",
     "./zoom-token-refresh": "./src/zoom-token-refresh.ts",
-    "./autopilot-maintenance": "./src/autopilot-maintenance.ts"
+    "./autopilot-maintenance": "./src/autopilot-maintenance.ts",
+    "./zoom-rule-wakes": "./src/zoom-rule-wakes.ts"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",

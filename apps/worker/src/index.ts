@@ -43,7 +43,6 @@ import {
 	type WorkflowAttemptContext,
 	type WorkflowAttemptRef,
 } from "@narriflow/services";
-import { processDueAutopilotRules } from "./tasks/autopilot";
 import { processClipDetectionRun } from "./tasks/detect-clips";
 import { processPendingClipPreviews } from "./tasks/clip-preview";
 import { processPendingAutoLayoutAnalyses } from "./tasks/auto-layout-analysis";
@@ -180,9 +179,6 @@ const mediaCleanupPollIntervalMs = Number(
 
 const workspaceBillingPollIntervalMs = parseWorkspaceBillingPollInterval(
 	process.env.WORKSPACE_BILLING_POLL_INTERVAL_MS,
-);
-const autopilotPollIntervalMs = Number(
-	process.env.AUTOPILOT_POLL_INTERVAL_MS ?? "30000",
 );
 const notificationRetryBatchSize = Number(
 	process.env.NOTIFICATION_RETRY_BATCH_SIZE ?? "25",
@@ -587,9 +583,6 @@ const exportBundleLoop = createPollLoop("export_bundle", pollIntervalMs, async (
 	});
 });
 
-createPollLoop("autopilot", autopilotPollIntervalMs, async () => {
-	return processDueAutopilotRules();
-});
 
 
 /** Clip rendering coordinator: admits the run's render groups and keeps the

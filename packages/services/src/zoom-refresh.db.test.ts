@@ -70,6 +70,14 @@ suite("Bounded Zoom rotating credential ownership",()=>{
     expect(current).toMatchObject({revokedAt:null,refreshOutcomeUnknown:false});
     expect(f.cipher.open(current.refreshTokenEncrypted!)).toBe("reconnected-rotation");expect(calls).toBe(1);
   }));
+  test("a later token refresh does not hide an earlier deauthorization for the same OAuth grant",scoped(async()=>{
+    const f=await fixture(),service=new ZoomService({config:()=>config,api:api(async()=>tokens)});
+    const eventAt=new Date(f.connection.authorizedAt.getTime()+1);
+    await service.recordingDownload(f.input);
+    expect((await db.zoomConnection.findUniqueOrThrow({where:{id:f.connection.id}})).updatedAt.getTime()).toBeGreaterThan(eventAt.getTime());
+    await service.revokeNotifiedConnection(f.connection.id,eventAt);
+    expect((await db.zoomConnection.findUniqueOrThrow({where:{id:f.connection.id}})).revokedAt).not.toBeNull();
+  }));
   test("the provider refresh runs after the SQL connection lock has been released",scoped(async()=>{
     const f=await fixture();let calls=0;
     const service=new ZoomService({config:()=>config,api:api(async()=>{

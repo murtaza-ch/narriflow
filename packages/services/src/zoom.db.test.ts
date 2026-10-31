@@ -12,6 +12,9 @@ import { projectService } from "./project.service";
 import { ZoomService } from "./zoom.service";
 import { createZoomTokenCipher, ZOOM_SCOPES, ZoomError, zoomStateHash } from "./zoom";
 import type { ZoomApi } from "./zoom-api";
+import { queueZoomNotification } from "./zoom-execution";
+import { createZoomNotificationExecutionRuntime } from "./zoom-execution-runtime";
+import { parseZoomNotification } from "./zoom";
 import { ruleFingerprint } from "./standing-grant";
 
 setDefaultTimeout(180_000);
@@ -24,6 +27,7 @@ describeDb("Zoom recording admission and authorization", () => {
   let prisma: PrismaClient, pool: Pool, prior: PrismaClient | undefined;
   const global = createDatabaseTestContext();
   const workspaceIds: string[] = [], userIds: string[] = [];
+  const ownedJobs:string[]=[];
   let refreshes = 0;
   const api: ZoomApi = {
     exchange: async () => tokens,
@@ -32,7 +36,7 @@ describeDb("Zoom recording admission and authorization", () => {
     recording: async () => "https://us02web.zoom.us/rec/download/private",
     revoke: async () => {},
   };
-  const service = () => new ZoomService({ config: () => config, api });
+  const service = () => new ZoomService({ config: () => config, api, register:async()=>{} });
 
   beforeAll(bindServiceTestEnvironment(global.bind(async () => {
     const url = process.env.VIZARD_EXPANSION_TEST_DATABASE_URL, schema = process.env.VIZARD_EXPANSION_TEST_DATABASE_SCHEMA;
@@ -44,12 +48,12 @@ describeDb("Zoom recording admission and authorization", () => {
   })));
   beforeEach(bindServiceTestEnvironment(global.bind(async () => {
     refreshes = 0;
-    await prisma.zoomWebhookJob.deleteMany();
-    await prisma.autopilotRule.updateMany({ data: { status: "paused" } });
+    await prisma.zoomWebhookJob.deleteMany({where:{id:{in:ownedJobs}}});
+    await prisma.autopilotRule.updateMany({ where:{workspaceId:{in:workspaceIds}},data: { status: "paused" } });
   })));
   afterAll(bindServiceTestEnvironment(global.bind(async () => {
     if (prisma) {
-      await prisma.zoomWebhookJob.deleteMany();
+      await prisma.zoomWebhookJob.deleteMany({where:{id:{in:ownedJobs}}});
       await prisma.workspace.deleteMany({ where: { id: { in: workspaceIds } } });
       await prisma.user.deleteMany({ where: { id: { in: userIds } } });
       await prisma.$disconnect();
@@ -77,12 +81,28 @@ describeDb("Zoom recording admission and authorization", () => {
     return { rawBody, timestamp, signature: `v0=${createHmac("sha256", config.webhookSecret).update(`v0:${timestamp}:${rawBody}`).digest("hex")}` };
   }
 
+  async function accept(zoom:ZoomService,notification:unknown){
+    await zoom.acceptWebhook(signed(notification));
+    const parsed=parseZoomNotification(notification);if(!parsed)throw Error("Fixture notification is unsupported");
+    const row=await prisma.zoomWebhookJob.findUniqueOrThrow({where:{eventKey:parsed.eventKey}});if(!ownedJobs.includes(row.id))ownedJobs.push(row.id);return row.id;
+  }
+  async function driveNotification(id:string,zoom:ZoomService){
+    const driver=createZoomNotificationExecutionRuntime({database:prisma,register:async()=>{},revokeConnection:(id,before)=>zoom.revokeNotifiedConnection(id,before)});
+    for(let command=0;command<64;command++){
+      const reference=await prisma.$transaction(tx=>queueZoomNotification(tx,id));if(!reference)return {kind:"complete" as const};
+      const result=await driver.run(reference);if(result.kind==="sleep"||result.kind==="wait")return result;
+    }
+    throw Error("Known notification exceeded finite fixture target bound");
+  }
+
   test("retries and concurrent claims import a recording once per rule with frozen Recipe settings", bindServiceTestEnvironment(global.bind(async () => {
     const f = await fixture("webinar"), zoom = service(), notification = event();
-    await Promise.all(Array.from({ length: 5 }, () => zoom.acceptWebhook(signed(notification))));
-    expect(await prisma.zoomWebhookJob.count()).toBe(1);
-    expect(JSON.stringify((await prisma.zoomWebhookJob.findFirstOrThrow()).payload)).not.toContain("private");
-    await Promise.all([zoom.processDueNotifications(), zoom.processDueNotifications()]);
+    const ids=await Promise.all(Array.from({ length: 5 }, () => accept(zoom,notification)));
+    const jobId=ids[0]!;
+    expect(new Set(ids).size).toBe(1);
+    expect(await prisma.zoomWebhookJob.count({where:{id:jobId}})).toBe(1);
+    expect(JSON.stringify((await prisma.zoomWebhookJob.findUniqueOrThrow({where:{id:jobId}})).payload)).not.toContain("private");
+    await Promise.all([driveNotification(jobId,zoom),driveNotification(jobId,zoom)]);
     const rows = await prisma.project.findMany({ where: { workspaceId: f.workspace.id }, include: { ingestJobs: true, contentPacks: true } });
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ sourceType: "zoom", sourceMimeType: "video/mp4", sourceDurationSeconds: 300 });
@@ -92,8 +112,7 @@ describeDb("Zoom recording admission and authorization", () => {
     expect(await prisma.autopilotEpisode.count({ where: { ruleId: f.rule.id } })).toBe(1);
     // A new delivery ID for the same recording is harmless, including after retention.
     await prisma.project.delete({ where: { id: rows[0]!.id } });
-    await zoom.acceptWebhook(signed(event()));
-    await zoom.processDueNotifications();
+    await driveNotification(await accept(zoom,event()),zoom);
     expect(await prisma.project.count({ where: { workspaceId: f.workspace.id } })).toBe(0);
     expect(await prisma.autopilotEpisode.count({ where: { ruleId: f.rule.id } })).toBe(1);
   })));
@@ -101,12 +120,11 @@ describeDb("Zoom recording admission and authorization", () => {
   test("host, account and topic restrict matching; other rules can import the same recording", bindServiceTestEnvironment(global.bind(async () => {
     const match = await fixture("webinar"), noMatch = await fixture("podcast"), zoom = service();
     const second = await new AutopilotService().createRule(match.scope, { sourceKind: "zoom", name: "All recordings", zoomConnectionId: match.connection.id, recipeId: match.recipe.id });
-    await zoom.acceptWebhook(signed(event()));
-    await zoom.processDueNotifications();
+    await driveNotification(await accept(zoom,event()),zoom);
     expect(await prisma.autopilotEpisode.count({ where: { ruleId: { in: [match.rule.id, second.id] } } })).toBe(2);
     expect(await prisma.autopilotEpisode.count({ where: { ruleId: noMatch.rule.id } })).toBe(0);
     const body = event(); body.payload.object.host_id = "other-host";
-    await zoom.acceptWebhook(signed(body)); await zoom.processDueNotifications();
+    await driveNotification(await accept(zoom,body),zoom);
     expect(await prisma.project.count({ where: { workspaceId: match.workspace.id } })).toBe(2);
   })));
 
@@ -115,26 +133,25 @@ describeDb("Zoom recording admission and authorization", () => {
     await prisma.workspace.update({ where: { id: f.workspace.id }, data: { pricingTier: "creator" } });
     const imported = spyOn(projectService, "importZoomRecording");
     try {
-      await zoom.acceptWebhook(signed(event()));
-      await zoom.processDueNotifications();
+      await driveNotification(await accept(zoom,event()),zoom);
       expect(imported).not.toHaveBeenCalled();
     } finally { imported.mockRestore(); }
     expect(await prisma.autopilotRule.findUniqueOrThrow({ where: { id: f.rule.id } })).toMatchObject({ status: "paused", pauseKind: "plan", lastError: expect.stringContaining("Autopilot needs the Pro plan") });
     expect(await prisma.project.count({ where: { workspaceId: f.workspace.id } })).toBe(0);
-    expect(await prisma.zoomWebhookJob.findFirstOrThrow({ orderBy: { createdAt: "desc" } })).toMatchObject({ status: "completed" });
+    expect(await prisma.zoomWebhookJob.findFirstOrThrow({where:{id:{in:ownedJobs}}, orderBy: { createdAt: "desc" } })).toMatchObject({ status: "completed" });
     await expect(new AutopilotService().updateRule(f.scope, f.rule.id, { status: "active" })).rejects.toMatchObject({ code: "plan_feature_required" });
   })));
 
   test("a capacity refusal retries durably without consuming the recording", bindServiceTestEnvironment(global.bind(async () => {
     const f = await fixture(), zoom = service();
-    await zoom.acceptWebhook(signed(event()));
+    const jobId=await accept(zoom,event());
     const refusal = spyOn(projectService, "importZoomRecording").mockRejectedValue(new ProcessingUsageError({ code: "workspace_processing_capacity_reached", message: "Capacity is full", details: { tier: "business", inFlight: 10, inFlightLimit: 10 } }));
-    try { await zoom.processDueNotifications(); } finally { refusal.mockRestore(); }
+    try { await driveNotification(jobId,zoom); } finally { refusal.mockRestore(); }
     expect(await prisma.project.count({ where: { workspaceId: f.workspace.id } })).toBe(0);
     expect(await prisma.autopilotEpisode.count({ where: { ruleId: f.rule.id } })).toBe(0);
-    expect(await prisma.zoomWebhookJob.findFirstOrThrow()).toMatchObject({ status: "queued", lastError: "workspace_processing_capacity_reached" });
-    await prisma.zoomWebhookJob.updateMany({ data: { availableAt: new Date(0) } });
-    await zoom.processDueNotifications();
+    expect(await prisma.zoomWebhookJob.findUniqueOrThrow({where:{id:jobId}})).toMatchObject({ status: "queued", lastError: "zoom_intake_deferred" });
+    await prisma.zoomWebhookJob.update({where:{id:jobId}, data: { availableAt: new Date(0),generation:{increment:1} } });
+    await driveNotification(jobId,zoom);
     expect(await prisma.project.count({ where: { workspaceId: f.workspace.id } })).toBe(1);
   })));
 
@@ -219,14 +236,20 @@ describeDb("Zoom recording admission and authorization", () => {
     expect((await prisma.zoomConnection.findUniqueOrThrow({ where: { id: f.connection.id } })).revokedAt).not.toBeNull();
   })));
 
-  test("two workers rotate one expired refresh token under the connection lock", bindServiceTestEnvironment(global.bind(async () => {
+  test("concurrent requests rotate an expired token once and busy requests retry against the adopted token", bindServiceTestEnvironment(global.bind(async () => {
     const f = await fixture(), zoom = service();
     const project = await prisma.project.create({ data: { workspaceId: f.workspace.id, createdByUserId: f.user.id, title: "Download", sourceMediaUrl: "zoom:recording", sourceType: "zoom" } });
     await prisma.zoomConnection.update({ where: { id: f.connection.id }, data: { expiresAt: new Date(0) } });
     const input = { connectionId: f.connection.id, projectId: project.id, meetingUuid: "meeting", recordingId: "recording" };
-    const results = await Promise.all([zoom.recordingDownload(input), zoom.recordingDownload(input)]);
+    const results = await Promise.allSettled([zoom.recordingDownload(input), zoom.recordingDownload(input)]);
     expect(refreshes).toBe(1);
-    expect(results.map((result) => result.accessToken)).toEqual(["private-access-1", "private-access-1"]);
+    expect(results.some(result=>result.status==="fulfilled")).toBe(true);
+    for(const result of results){
+      if(result.status==="fulfilled")expect(result.value.accessToken).toBe("private-access-1");
+      else expect(result.reason).toMatchObject({code:"zoom_api_unavailable"});
+    }
+    expect((await zoom.recordingDownload(input)).accessToken).toBe("private-access-1");
+    expect(refreshes).toBe(1);
   })));
 
   test("a provider-revoked refresh token pauses the connection's rules", bindServiceTestEnvironment(global.bind(async () => {
@@ -256,20 +279,17 @@ describeDb("Zoom recording admission and authorization", () => {
 
   test("delayed events from before rule creation do not backfill recordings", bindServiceTestEnvironment(global.bind(async () => {
     const f = await fixture(), zoom = service();
-    await zoom.acceptWebhook(signed(event({ event_ts: Date.parse(f.rule.createdAt) - 1000 })));
-    await zoom.processDueNotifications();
+    await driveNotification(await accept(zoom,event({event_ts:Date.parse(f.rule.createdAt)-1000})),zoom);
     expect(await prisma.project.count({ where: { workspaceId: f.workspace.id } })).toBe(0);
   })));
 
   test("a deauthorization pauses connected rules and stale deauthorization cannot undo a reconnect", bindServiceTestEnvironment(global.bind(async () => {
     const f = await fixture(), zoom = service();
-    await zoom.acceptWebhook(signed({ event: "app_deauthorized", event_ts: Date.now() + 50, payload: { account_id: "zoom-account", user_id: "zoom-host" } }));
-    await zoom.processDueNotifications();
+    await driveNotification(await accept(zoom,{event:"app_deauthorized",event_ts:Date.now()+50,payload:{account_id:"zoom-account",user_id:"zoom-host"}}),zoom);
     expect(await prisma.autopilotRule.findUniqueOrThrow({ where: { id: f.rule.id } })).toMatchObject({ pauseKind: "zoom_connection", status: "paused" });
     const url = new URL(await zoom.createAuthorizationUrl(f.scope, "https://narriflow.test"));
     await zoom.handleCallback({ state: url.searchParams.get("state")!, code: "code", origin: "https://narriflow.test" });
-    await zoom.acceptWebhook(signed({ event: "app_deauthorized", event_ts: 1, payload: { account_id: "zoom-account", user_id: "zoom-host" } }));
-    await zoom.processDueNotifications();
+    await driveNotification(await accept(zoom,{event:"app_deauthorized",event_ts:1,payload:{account_id:"zoom-account",user_id:"zoom-host"}}),zoom);
     expect((await prisma.zoomConnection.findUniqueOrThrow({ where: { id: f.connection.id } })).revokedAt).toBeNull();
     expect(await prisma.autopilotRule.findUniqueOrThrow({ where: { id: f.rule.id } })).toMatchObject({ status: "paused" });
   })));

@@ -99,9 +99,12 @@ try {
     });
   }
   await pool.query(`UPDATE "${schema}"."ExecutionEpoch" SET "admissionOpen" = true WHERE id = 1`);
+  const requestedSuites = process.argv.slice(2);
+  if (requestedSuites.some(suite => !/^packages\/services\/src\/[a-z0-9-]+\.db\.test\.ts$/.test(suite))) throw Error("Invalid Workflow database suite");
   const testCommand = [
     "bun",
     "test",
+    ...(requestedSuites.length ? requestedSuites : [
     "packages/services/src/render-group-lifecycle.db.test.ts",
     "packages/services/src/render-group-replicas.db.test.ts",
     "packages/services/src/workflow-render-rescue.db.test.ts",
@@ -111,6 +114,7 @@ try {
     "packages/services/src/project-actor-scope.db.test.ts",
     "packages/services/src/workspace-event-emission.db.test.ts",
     "packages/services/src/generation-finishing-transition.db.test.ts",
+    ]),
   ];
   if (process.env.WORKFLOW_TEST_NAME) {
     testCommand.push("--test-name-pattern", process.env.WORKFLOW_TEST_NAME);

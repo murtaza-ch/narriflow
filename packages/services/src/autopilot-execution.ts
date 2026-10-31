@@ -222,6 +222,15 @@ export class AutopilotExecution {
   }
 
   private async pauseCycle(tx: Tx, row: AutopilotRule, kind: AutopilotPauseKind, reason: string): Promise<string[]> {
+    if(kind==="acting_member"){
+      const user=row.createdByUserId?await tx.user.findUnique({where:{id:row.createdByUserId},select:{firstName:true,lastName:true}}):null;
+      const name=[user?.firstName,user?.lastName].filter(Boolean).join(" ")||"Its acting member";
+      reason=`${name} can no longer run this rule (account deleted, removed from the Workspace, or not allowed to process videos). A Workspace Owner or Admin can take it over to resume it.`;
+    }else if(kind==="brand_profile"){
+      const parsed=autopilotCycleInputSchema.safeParse(row.executionInput),id=parsed.success?parsed.data.recipe.brandProfileId:null;
+      const profile=id?await tx.brandProfile.findUnique({where:{id},select:{name:true}}):null;
+      reason=`Brand Profile "${profile?.name??"removed profile"}" could not be applied. Fix it in Brand Kit or in the rule's Recipe, then turn the rule back on. Moving the rule to another Recipe also resumes it.`;
+    }
     await tx.autopilotRule.update({ where: { id: row.id }, data: {
       generation: { increment: 1 }, status: "paused", pauseKind: kind, claimToken: null, leaseExpiresAt: null,
       executionCycleId: null, executionDueAt: null, operationDeadlineAt: null, executionInput: Prisma.DbNull, executionInputHash: null, executionProbeId: null, executionSelection: Prisma.DbNull, executionCursor: 0,
@@ -233,7 +242,7 @@ export class AutopilotExecution {
   private async failCycle(tx: Tx, row: AutopilotRule, code: string) {
     const now = await clock(tx), failures = row.consecutiveFailures + 1;
     const next = await tx.autopilotRule.update({ where: { id: row.id }, data: {
-      generation: { increment: 1 }, status: failures >= AUTOPILOT_MAX_CONSECUTIVE_FAILURES ? "failed" : "active", claimToken: null, leaseExpiresAt: null,
+      generation: { increment: 1 }, status: failures >= AUTOPILOT_MAX_CONSECUTIVE_FAILURES || ["rss_invalid_xml","rss_no_media_episodes","rss_unsupported_document","remote_url_unsafe"].includes(code) ? "failed" : "active", claimToken: null, leaseExpiresAt: null,
       executionCycleId: null, executionDueAt: null, operationDeadlineAt: null, executionInput: Prisma.DbNull, executionInputHash: null, executionProbeId: null, executionSelection: Prisma.DbNull, executionCursor: 0,
       consecutiveFailures: failures, lastError: code, lastCheckedAt: now, nextRunAt: new Date(now.getTime()+autopilotRetryDelayMs(failures,row.intervalMinutes)),
     } });

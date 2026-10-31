@@ -1,4 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
+import { basename } from "node:path";
+import { renderFfmpegArgs } from "./ffmpeg-thread-policy";
 import { clipAspectRatioFromDb, clipAspectRatioOptions, sourceProbeSchema } from "@narriflow/validators";
 import { renderExecutionInputSchema, renderGroupOutcomeSchema, type RenderExecutionInput } from "@narriflow/validators/render-execution";
 import { encodeRenderExecutionInput } from "@narriflow/services/render-execution-input";
@@ -110,7 +112,7 @@ export async function renderGroup(options: { input: RenderExecutionInput; attemp
       const code = (value: unknown) => typeof value === "string" && /^[a-z][a-z0-9_]{0,99}$/.test(value) ? value : undefined;
       if (event.level === "error" && errorLines++ < 16) console.error(JSON.stringify({ level: "error", message: code(event.message), failureCode: code(event.context?.failureCode ?? event.context?.errorCode), operation: code(event.context?.operation) }));
       if (event.message === "clip_render_attempt_metrics") console.error(JSON.stringify({ level: "info", message: event.message, counts: event.context?.counts, phaseMs: event.context?.phaseMs }));
-    }, workerProcess: { ...worker, execute: worker.execute.bind(worker), withScratchDirectory: worker.withScratchDirectory.bind(worker),
+    }, workerProcess: { ...worker, execute: request => worker.execute({ ...request, args: basename(request.command) === "ffmpeg" ? renderFfmpegArgs(request.args) : request.args }), withScratchDirectory: worker.withScratchDirectory.bind(worker),
       inspectMedia: async query => { const inspected = await worker.inspectMedia(query); if (query.sourcePath === originalUrl &&
         !isDeepStrictEqual(sourceProbeSchema.parse(inspected.sourceProbe), sourceProbeSchema.parse(input.preparation.sourceProbe))) throw new WorkflowFailure("source_identity_mismatch", "permanent", "Frozen source probe changed"); return inspected; } },
       optionalAssets: { assertUrlAllowed: url => { if (!urlSources.has(url)) assertPublicHttpUrl(url); }, downloadUrlToFile: async (url, path, _code, settings) => {

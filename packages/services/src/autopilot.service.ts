@@ -1,21 +1,16 @@
+import { appendZoomRuleWake,appendZoomRuleDeletionWake } from "./zoom-rule-wakes";
 import { queueAutopilotRule } from "./autopilot-execution";
-import { AUTOPILOT_LEASE_MS, AUTOPILOT_MAX_CONSECUTIVE_FAILURES, autopilotRetryDelayMs, selectAutopilotEpisodes } from "./autopilot-episode-policy";
 export { AUTOPILOT_LEASE_MS, AUTOPILOT_MAX_CONSECUTIVE_FAILURES, autopilotRetryDelayMs, selectAutopilotEpisodes } from "./autopilot-episode-policy";
-import { readAutopilotImportSource } from "./autopilot-finishing-authority";
 import { zoomService } from "./zoom.service";
 import { readExecutionAdmission, assertExecutionAdmissionOpen, requireExecutionAdmissionOpen } from "./execution-admission";
 import { ZoomError } from "./zoom";
-import { workspaceService, WorkspaceOperationError } from "./workspace.service";
-import { BrandProfileMembershipError, BrandProfileMissingAssetError, BrandProfileNotFoundError } from "./brand-profile.service";
-import { isBrandAccessRefusal } from "./brand-ownership";
+import { workspaceService } from "./workspace.service";
 import { getOperationReceiptExecutor } from "./operation-receipt-runtime";
 import type { IntegrationMutation } from "./operation-receipt";
 import type { ActorScope } from "./actor-scope";
-import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
 import {
-  acceptedRecipe,
   autopilotRuleInputSchema,
   autopilotRuleUpdateSchema,
   type AutopilotRuleInput,
@@ -23,15 +18,12 @@ import {
   type AutopilotPauseKind,
   type AutopilotRuleUpdate,
 } from "@narriflow/validators";
-import { fetchRssFeed, redactUrlForDisplay, RssFeedError, RssProbePending } from "./rss";
-import { RemoteFetchError, UnsafeUrlError } from "./url-policy";
-import { ProcessingUsageError } from "./processing-usage";
-import { projectService } from "./project.service";
-import { lockLiveRecipe, recipeService, type ResolvedRecipe } from "./recipe.service";
+import { fetchRssFeed, redactUrlForDisplay } from "./rss";
+import { lockLiveRecipe, recipeService } from "./recipe.service";
 import { pauseGrantsWhoseRuleChanged, revokeGrantsInTransaction } from "./standing-grant";
 import { flushWorkspaceEvents } from "./workspace-event";
 import { requirePlanFeature } from "./plan-features";
-import { autopilotPlanPauseReason, holdsAutopilotSlot, lockWorkspaceAutopilotRules, requireAutopilotRuleSlot } from "./autopilot-plan";
+import { holdsAutopilotSlot, lockWorkspaceAutopilotRules, requireAutopilotRuleSlot } from "./autopilot-plan";
 import {
   ExpectedDomainFailureError,
   type ExpectedDomainFailureCatalog,
@@ -68,19 +60,13 @@ function requirePrisma() {
   return prisma;
 }
 
-function nextRunFrom(intervalMinutes: number, now = Date.now()) {
-  return new Date(now + intervalMinutes * 60 * 1000);
+async function queueRuleExecution(tx:Prisma.TransactionClient,id:string,repairOnly=false){
+  await queueAutopilotRule(tx,id);
+  await appendZoomRuleWake(tx,id,{repairOnly});
 }
 
-/** The ways applying a Brand Profile can be refused: deleted, missing logo
- * file or plan. */
-function isBrandProfileRefusal(error: unknown) {
-  return (
-    error instanceof BrandProfileNotFoundError ||
-    error instanceof BrandProfileMissingAssetError ||
-    error instanceof BrandProfileMembershipError ||
-    isBrandAccessRefusal(error)
-  );
+function nextRunFrom(intervalMinutes: number, now = Date.now()) {
+  return new Date(now + intervalMinutes * 60 * 1000);
 }
 
 const ruleInclude = {
@@ -88,9 +74,6 @@ const ruleInclude = {
   recipe: { select: { name: true } },
 } as const;
 
-function isPermanentFeedError(error: unknown) {
-  return error instanceof RssFeedError || error instanceof UnsafeUrlError;
-}
 
 function toSnapshot(row: {
   id: string;
@@ -148,22 +131,10 @@ function toSnapshot(row: {
   };
 }
 
-class AutopilotClaimLost extends Error {
-  constructor(readonly ruleId: string, readonly phase: string) {
-    super("Autopilot rule ownership was lost");
-    this.name = "AutopilotClaimLost";
-  }
-}
-
-type AutopilotClaim = Readonly<{ ruleId: string; token: string }>;
-
 export class AutopilotService {
   constructor(private readonly dependencies: {
     fetchFeed?: typeof fetchRssFeed;
-    now?: () => Date;
   } = {}) {}
-
-  private now() { return this.dependencies.now?.() ?? new Date(); }
 
   async listRules(
     scope: ActorScope,
@@ -266,7 +237,7 @@ export class AutopilotService {
         },
         include: ruleInclude,
       });
-      await queueAutopilotRule(tx,row.id);
+      await queueRuleExecution(tx,row.id);
       return toSnapshot(row);
     };
     if (mutation) {
@@ -360,6 +331,7 @@ export class AutopilotService {
       const updated = await tx.autopilotRule.update({
         where: { id: ruleId },
         data: {
+          generation: { increment: 1 },
           ...(current.status === "running" && { status: "active", nextRunAt: now }),
           ...(parsed.name !== undefined && { name: parsed.name }),
           ...(parsed.zoomConnectionId !== undefined && { zoomConnectionId: parsed.zoomConnectionId }),
@@ -418,7 +390,7 @@ export class AutopilotService {
       // applies or does pauses its grants until a person renews them.
       await pauseGrantsWhoseRuleChanged(tx, ruleId);
       await flushWorkspaceEvents(tx);
-      await queueAutopilotRule(tx,updated.id);
+      await queueRuleExecution(tx,updated.id);
       return updated;
     });
     return toSnapshot(row);
@@ -431,11 +403,14 @@ export class AutopilotService {
     await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.edit");
     const prisma = requirePrisma();
     await prisma.$transaction(async (tx) => {
+      await readExecutionAdmission(tx);
       // The rule's row first, as every path that touches a rule and its grants does. The grants a
       // rule had are revoked, not deleted: they and their audit trail outlive the rule.
       const [locked] = await tx.$queryRaw<Array<{ id: string }>>`
         SELECT "id" FROM "AutopilotRule" WHERE "id" = ${ruleId}::uuid AND "workspaceId" = ${scope.workspaceId}::uuid FOR UPDATE`;
-      if (!locked) return;
+      if (!locked) { await appendZoomRuleDeletionWake(tx,scope.workspaceId,ruleId,true);return; }
+      const source=await tx.autopilotRule.findUniqueOrThrow({where:{id:ruleId}});
+      if(source.sourceKind==="zoom")await appendZoomRuleDeletionWake(tx,scope.workspaceId,ruleId);
       await revokeGrantsInTransaction(tx, { autopilotRuleId: ruleId }, "rule_deleted");
       await tx.autopilotRule.delete({ where: { id: ruleId } });
     });
@@ -485,7 +460,7 @@ export class AutopilotService {
       if (
         existing.status === "running" && existing.executionCycleId
       ) {
-        await queueAutopilotRule(tx,existing.id);
+        await queueRuleExecution(tx,existing.id);
         return toSnapshot(existing);
       }
       if (!holdsAutopilotSlot(existing.status)) {
@@ -497,6 +472,7 @@ export class AutopilotService {
       const row = await tx.autopilotRule.update({
         where: { id: ruleId },
         data: {
+          generation: { increment: 1 },
           status: "active",
           nextRunAt: new Date(),
           claimToken: null,
@@ -508,7 +484,7 @@ export class AutopilotService {
         },
         include: ruleInclude,
       });
-      await queueAutopilotRule(tx,row.id);
+      await queueRuleExecution(tx,row.id);
       return toSnapshot(row);
     };
     if (mutation) {
@@ -569,6 +545,7 @@ export class AutopilotService {
       const row = await tx.autopilotRule.update({
         where: { id: ruleId },
         data: {
+          generation: { increment: 1 },
           createdByUserId: scope.actorUserId,
           updatedByUserId: scope.actorUserId,
           status: "active",
@@ -581,305 +558,11 @@ export class AutopilotService {
         },
         include: ruleInclude,
       });
-      await queueAutopilotRule(tx,row.id);
+      await queueRuleExecution(tx,row.id);
       return toSnapshot(row);
     });
   }
 
-  async reapStalledRules(now = new Date()): Promise<number> {
-    const prisma = requirePrisma();
-    const result = await prisma.autopilotRule.updateMany({
-      where: { status: "running", leaseExpiresAt: { lte: now } },
-      data: {
-        status: "active",
-        claimToken: null,
-        leaseExpiresAt: null,
-        nextRunAt: now,
-        lastError: "Previous Autopilot worker stopped before completing the run; retrying.",
-      },
-    });
-    return result.count;
-  }
-
-  async processDueRules(limit = 3): Promise<{ checked: number; imported: number; claimLost: number }> {
-    const prisma = requirePrisma();
-    const now = this.now();
-    await this.reapStalledRules(now);
-    const due = await prisma.autopilotRule.findMany({
-      where: {
-        status: "active",
-        sourceKind: "rss",
-        nextRunAt: { lte: now },
-        workspace: { status: "active" },
-      },
-      orderBy: { nextRunAt: "asc" },
-      take: Math.max(1, Math.min(10, limit)),
-    });
-
-    let checked = 0;
-    let imported = 0;
-    let claimLost = 0;
-    for (const rule of due) {
-      const claim = Object.freeze({ ruleId: rule.id, token: randomUUID() });
-      const claimed = await prisma.$transaction(async tx => {
-        const admission = await readExecutionAdmission(tx);
-        if (!admission.admissionOpen) return { count: 0 };
-        return tx.autopilotRule.updateMany({
-        where: {
-          id: rule.id,
-          status: "active",
-          nextRunAt: { lte: now },
-        },
-        data: {
-          status: "running",
-          claimToken: claim.token,
-          leaseExpiresAt: new Date(this.now().getTime() + AUTOPILOT_LEASE_MS),
-          lastError: null,
-        },
-        });
-      });
-      if (claimed.count === 0) continue;
-
-      checked += 1;
-      try {
-        const result = await this.processRule(claim);
-        imported += result.imported;
-      } catch (error) {
-        if (error instanceof AutopilotClaimLost) {
-          this.reportClaimLost(error);
-          claimLost += 1;
-          continue;
-        }
-        if (error instanceof RssProbePending) {
-          try { await this.updateClaim(claim, "rss_probe_wait", { status: "active", claimToken: null, leaseExpiresAt: null, nextRunAt: new Date(this.now().getTime() + 3000) }); }
-          catch (settlementError) { if (!(settlementError instanceof AutopilotClaimLost)) throw settlementError; this.reportClaimLost(settlementError); claimLost += 1; }
-          continue;
-        }
-        const failures = rule.consecutiveFailures + 1;
-        const permanent = isPermanentFeedError(error);
-        const terminal = permanent || failures >= AUTOPILOT_MAX_CONSECUTIVE_FAILURES;
-        const retryAt = new Date(
-          this.now().getTime() + autopilotRetryDelayMs(failures, rule.intervalMinutes),
-        );
-        try {
-          await this.updateClaim(claim, "failure", {
-            status: terminal ? "failed" : "active",
-            claimToken: null,
-            leaseExpiresAt: null,
-            consecutiveFailures: failures,
-            lastError: error instanceof Error ? error.message : "Autopilot failed",
-            lastCheckedAt: this.now(),
-            nextRunAt: retryAt,
-          });
-        } catch (settlementError) {
-          if (!(settlementError instanceof AutopilotClaimLost)) throw settlementError;
-          this.reportClaimLost(settlementError);
-          claimLost += 1;
-          continue;
-        }
-        console.warn(
-          JSON.stringify({
-            level: terminal ? "error" : "warn",
-            message: "autopilot_rule_failed",
-            ruleId: rule.id,
-            failures,
-            terminal,
-            retryAt: terminal ? null : retryAt.toISOString(),
-            error:
-              error instanceof RemoteFetchError || error instanceof Error
-                ? error.message
-                : "unknown",
-          }),
-        );
-      }
-    }
-    return { checked, imported, claimLost };
-  }
-
-  private claimWhere(claim: AutopilotClaim) {
-    return { id: claim.ruleId, status: "running" as const, claimToken: claim.token, leaseExpiresAt: { gt: this.now() } };
-  }
-
-  private async updateClaim(claim: AutopilotClaim, phase: string, data: Prisma.AutopilotRuleUpdateManyMutationInput) {
-    const updated = await requirePrisma().autopilotRule.updateMany({ where: this.claimWhere(claim), data });
-    if (updated.count !== 1) throw new AutopilotClaimLost(claim.ruleId, phase);
-  }
-
-  private renewClaim(claim: AutopilotClaim) {
-    return this.updateClaim(claim, "renewal", { leaseExpiresAt: new Date(this.now().getTime() + AUTOPILOT_LEASE_MS) });
-  }
-
-  private reportClaimLost(error: AutopilotClaimLost) {
-    console.warn(JSON.stringify({ level: "warn", message: "autopilot_claim_lost", ruleId: error.ruleId, phase: error.phase }));
-  }
-
-  /** The rule's acting member, or null once they can no longer act for it. */
-  private async actingScope(rule: { createdByUserId: string | null; workspaceId: string }): Promise<ActorScope | null> {
-    if (!rule.createdByUserId) return null;
-    try {
-      await workspaceService.requireActor(rule.createdByUserId, rule.workspaceId, "processing.consume");
-    } catch (error) {
-      if (error instanceof WorkspaceOperationError && error.code === "workspace_access_denied") return null;
-      throw error;
-    }
-    return { actorUserId: rule.createdByUserId, workspaceId: rule.workspaceId };
-  }
-
-  private async actingMemberLostReason(rule: { createdByUserId: string | null }) {
-    const user = rule.createdByUserId
-      ? await requirePrisma().user.findUnique({
-          where: { id: rule.createdByUserId },
-          select: { firstName: true, lastName: true },
-        })
-      : null;
-    const name = [user?.firstName, user?.lastName].filter(Boolean).join(" ") || "Its creator";
-    return `${name} can no longer run this rule (account deleted, removed from the Workspace, or not allowed to process videos). A Workspace Owner or Admin can take it over to resume it.`;
-  }
-
-  private async brandProfileRefusedReason(profileId: string, error: unknown) {
-    const profile = await requirePrisma().brandProfile.findUnique({
-      where: { id: profileId },
-      select: { name: true },
-    });
-    const why = error instanceof Error ? error.message : "unknown reason";
-    return `Brand Profile "${profile?.name ?? "removed profile"}" could not be applied: ${why}. Fix it in Brand Kit or in the rule's Recipe, then turn the rule back on. Moving the rule to another Recipe also resumes it.`;
-  }
-
-  /** Stops the rule until someone acts. A pause is not a failure: it leaves
-   * consecutiveFailures and the feed cursor alone. */
-  private async pauseClaim(claim: AutopilotClaim, kind: AutopilotPauseKind, reason: string) {
-    await this.updateClaim(claim, kind, {
-      status: "paused",
-      pauseKind: kind,
-      claimToken: null,
-      leaseExpiresAt: null,
-      lastCheckedAt: this.now(),
-      lastError: reason,
-    });
-    console.warn(JSON.stringify({ level: "warn", message: "autopilot_rule_paused", ruleId: claim.ruleId, kind, reason }));
-  }
-
-  private async processRule(claim: AutopilotClaim): Promise<{ imported: number }> {
-    const prisma = requirePrisma();
-    const rule = await prisma.autopilotRule.findFirst({ where: this.claimWhere(claim), include: { recipe: true } });
-    if (!rule) throw new AutopilotClaimLost(claim.ruleId, "read");
-
-    // Before any fetch or import: a rule the plan no longer runs pauses once, and spends nothing.
-    const planReason = await autopilotPlanPauseReason(prisma, rule);
-    if (planReason) {
-      await this.pauseClaim(claim, "plan", planReason);
-      return { imported: 0 };
-    }
-    const scope = await this.actingScope(rule);
-    if (!scope) {
-      await this.pauseClaim(claim, "acting_member", await this.actingMemberLostReason(rule));
-      return { imported: 0 };
-    }
-    const autopilotSource = await readAutopilotImportSource(prisma, rule);
-    const feed = await (this.dependencies.fetchFeed ?? fetchRssFeed)(rule.rssUrl!, {
-      scope, requestKey: `autopilot:${rule.id}:${rule.lastCheckedAt?.toISOString() ?? "initial"}`,
-      etag: rule.initializedAt ? rule.etag : null,
-      lastModified: rule.initializedAt ? rule.lastModified : null,
-    });
-    const now = this.now();
-    if (feed.notModified) {
-      await this.updateClaim(claim, "not_modified", {
-        status: "active",
-        claimToken: null,
-        leaseExpiresAt: null,
-        lastCheckedAt: now,
-        lastSuccessAt: now,
-        nextRunAt: nextRunFrom(rule.intervalMinutes, now.getTime()),
-        lastError: null,
-        consecutiveFailures: 0,
-      });
-      return { imported: 0 };
-    }
-
-    const currentEpisodeIds = feed.episodes.map((episode) => episode.id);
-    const existingEpisodes = currentEpisodeIds.length
-      ? await prisma.autopilotEpisode.findMany({
-          where: { ruleId: rule.id, episodeId: { in: currentEpisodeIds } },
-          select: { episodeId: true },
-        })
-      : [];
-    const existingIds = new Set(existingEpisodes.map((episode) => episode.episodeId));
-    const selection = selectAutopilotEpisodes(feed.episodes, existingIds, rule);
-    // The Recipe is read now, so an edit shapes the next import and never one
-    // already accepted: every Project froze its own settings when it was created.
-    const recipe: ResolvedRecipe = await recipeService.resolve(scope, rule.recipeId);
-
-    let imported = 0;
-    // Episodes refused for minutes or capacity stay ahead of the cursor so the
-    // next poll retries them.
-    let deferred = false;
-    let brandRefusal: unknown = null;
-    for (const episode of selection.episodes) {
-      await this.renewClaim(claim);
-      try {
-        const result = await projectService.importResolvedRssEpisodes(
-          scope,
-          {
-            rssUrl: feed.finalUrl,
-            episodes: [episode],
-            titlePrefix: rule.titlePrefix ?? undefined,
-            brandProfileId: recipe.brandProfileId,
-          },
-          {
-            // The Recipe and revision are kept with the Project's settings for audit.
-            generationContext: { contentPack: recipe.contentPack, languageCode: recipe.languageCode, finishing: recipe.finishing, recipe: acceptedRecipe(recipe) },
-            autopilotSource,
-          },
-        );
-        imported += result.count;
-      } catch (error) {
-        if (recipe.brandProfileId && isBrandProfileRefusal(error)) {
-          brandRefusal = error;
-          break;
-        }
-        if (!(error instanceof ProcessingUsageError)) throw error;
-        // Over the per-video limit can't succeed on a later poll; move on.
-        if (error.code === "upload_too_long") continue;
-        deferred = true;
-        break;
-      }
-    }
-
-    if (brandRefusal) {
-      // The cursor stays put, so every refused episode imports after the fix.
-      await this.pauseClaim(claim, "brand_profile", await this.brandProfileRefusedReason(recipe.brandProfileId!, brandRefusal));
-      return { imported };
-    }
-
-    const head = feed.episodes[0] ?? null;
-    const initialize =
-      !deferred && (!rule.initializedAt || selection.shouldAdvanceCursor);
-    await this.updateClaim(claim, "success", {
-      status: "active",
-      claimToken: null,
-      leaseExpiresAt: null,
-      initializedAt: rule.initializedAt ?? (deferred ? null : now),
-      ...(initialize && {
-        lastSeenEpisodeId: head?.id ?? rule.lastSeenEpisodeId,
-        lastSeenPublishedAt: head?.publishedAt
-          ? new Date(head.publishedAt)
-          : rule.lastSeenPublishedAt,
-      }),
-      // A backlog larger than maxEpisodesPerRun, or a deferred episode, must
-      // force another full response. Saving the new validators early would
-      // yield 304 and strand those episodes behind the old cursor.
-      etag: selection.shouldAdvanceCursor && !deferred ? feed.etag : null,
-      lastModified:
-        selection.shouldAdvanceCursor && !deferred ? feed.lastModified : null,
-      feedTitle: feed.title,
-      lastCheckedAt: now,
-      lastSuccessAt: now,
-      nextRunAt: nextRunFrom(rule.intervalMinutes, now.getTime()),
-      lastError: null,
-      consecutiveFailures: 0,
-    });
-    return { imported };
-  }
 }
 
 export const autopilotService = new AutopilotService();
