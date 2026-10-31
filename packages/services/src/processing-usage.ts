@@ -21,6 +21,7 @@ import {
   ExpectedDomainFailureError,
   type ExpectedDomainFailureCatalog,
 } from "./expected-domain-failure";
+import { readExecutionAdmission, assertExecutionAdmissionOpen } from "./execution-admission";
 
 type Tx = Prisma.TransactionClient;
 
@@ -384,6 +385,7 @@ export class ProcessingUsage {
       declaredSeconds?: number | null;
     },
   ): Promise<ProcessingUsageReservationView & { replayed: boolean }> {
+    const admission = await readExecutionAdmission(tx);
     await this.lockWorkspace(tx, input.workspaceId);
     const existing = await tx.processingUsageReservation.findUnique({
       where: { projectId: input.projectId },
@@ -392,6 +394,7 @@ export class ProcessingUsage {
       throw new Error("processing_usage_workspace_mismatch");
     if (existing && existing.state !== "released")
       return { ...view(existing), replayed: true };
+    assertExecutionAdmissionOpen(admission);
 
     const { tier, status } = await this.workspaceTier(tx, input.workspaceId);
     // Billing restrictions commit under this same lock, so an admission
