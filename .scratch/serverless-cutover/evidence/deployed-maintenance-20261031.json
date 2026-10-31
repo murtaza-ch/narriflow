@@ -1,0 +1,44 @@
+{
+  "checkedAt": "2026-10-31T17:46:51.172Z",
+  "candidateVersion": "a139bdab-9486-405a-bd04-871bf180bfd4",
+  "source": "Actual Cloudflare Workflows/Hyperdrive, original production API factory for both cadence starts",
+  "database": "isolated-serverless_pipeline_gates",
+  "results": [
+    {
+      "cadence": "hourly",
+      "pages": 2,
+      "receipts": 2,
+      "terminalReceipts": 1,
+      "allPagesCommitted": true,
+      "allWakesAcknowledged": true,
+      "deadLetters": 0,
+      "wakeCount": 8,
+      "phases": [
+        "dispatches",
+        "deadlines"
+      ],
+      "processed": 7
+    },
+    {
+      "cadence": "daily",
+      "pages": 1,
+      "receipts": 1,
+      "terminalReceipts": 1,
+      "allPagesCommitted": true,
+      "allWakesAcknowledged": true,
+      "deadLetters": 0,
+      "wakeCount": 0,
+      "phases": [
+        "tasks"
+      ],
+      "processed": 0
+    }
+  ],
+  "sharedDatabaseTouched": false,
+  "workerRevision": "d95c76b3",
+  "cronExpressions": [
+    "0 * * * *",
+    "0 0 * * *"
+  ],
+  "scope": "Production API factory starts confirmed through actual Cloudflare Workflows and Hyperdrive. Full source/provider/restore integration gates remain separate."
+}
