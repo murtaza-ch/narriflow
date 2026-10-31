@@ -82,6 +82,8 @@ export interface LayoutEvidenceInput {
   hasBroll: boolean;
   /** A verified completed preparation owns these observations, including unavailability. */
   completedPreparation?: boolean;
+  /** Preparation stages observations for this assigned preview before upload. */
+  preparationPreviewArtifactId?: string;
   pipMotionThreshold: number;
   signal: AbortSignal;
   /** Background work uses the durable claim backoff instead of local retries. */
@@ -291,7 +293,7 @@ export class LayoutEvidence {
     return this.multiPromise;
   }
   private async persist(write: LayoutEvidenceWrite): Promise<void> {
-    if (!this.input.clip.previewStorageKey) return;
+    if (!this.input.clip.previewStorageKey && !this.input.preparationPreviewArtifactId) return;
     this.checkpoint();
     try {
       const stored = await this.deps.persist(write, this.input.clip);

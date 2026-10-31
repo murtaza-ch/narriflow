@@ -86,10 +86,18 @@ class AssignedArtifacts:
         self._session = session
         self._outputs = {value['artifactId']:value for value in package.outputs}
         self._in_flight, self._completed = set(), set()
+        self._uploaded, self._commit_attempted = {}, set()
         self._lock = Lock()
 
     async def upload(self, artifact_id: str, path: Path, *, content_type: str, byte_length: int, sha256: str,
                      facts_builder: Callable[[CompletedObject], ArtifactRoleFacts] | None = None, transport=None) -> PublishedArtifact:
+        await self.upload_only(artifact_id,path,content_type=content_type,byte_length=byte_length,sha256=sha256,
+            facts_builder=facts_builder,transport=transport)
+        return await self.commit_uploaded(artifact_id,facts_builder=facts_builder)
+
+    async def upload_only(self, artifact_id: str, path: Path, *, content_type: str, byte_length: int, sha256: str,
+                          facts_builder: Callable[[CompletedObject], ArtifactRoleFacts] | None = None, transport=None) -> CompletedObject:
+        """Complete immutable assigned bytes without claiming domain publication."""
         self._session.assert_live()
         assigned = self._outputs.get(artifact_id)
         try:
@@ -121,10 +129,21 @@ class AssignedArtifacts:
                 raise
             with self._lock:
                 self._completed.add(artifact_id)
-            return await self._commit(assigned,completed,content_type,facts_builder)
+                self._uploaded[artifact_id]=(completed,content_type)
+            return completed
         finally:
             with self._lock:
                 self._in_flight.discard(artifact_id)
+
+    async def commit_uploaded(self,artifact_id:str,*,facts_builder:Callable[[CompletedObject],ArtifactRoleFacts]|None=None)->PublishedArtifact:
+        """Publish a completed upload once its measured role facts are available."""
+        self._session.assert_live()
+        with self._lock:
+            if artifact_id not in self._uploaded or artifact_id in self._commit_attempted:
+                raise ExecutionControlError('execution_artifact_not_pending')
+            self._commit_attempted.add(artifact_id)
+            completed,content_type=self._uploaded[artifact_id]
+        return await self._commit(self._outputs[artifact_id],completed,content_type,facts_builder)
 
     async def _commit(self,assigned,completed,content_type,facts_builder):
         artifact = {'artifactId':assigned['artifactId'],'role':assigned['role'],'bindingHash':assigned['bindingHash'],

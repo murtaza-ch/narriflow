@@ -47,7 +47,7 @@ suite("Scoped executor transfer authority", () => {
     const signature = await signExecutionRequest({ keyId: "public", key, audience: "executor-control", method: "POST", target, body, timestamp, deliveryId });
     return verifyExecutionRequest({ signature, keyRing: new Map([["public", key]]), audience: "executor-control", method: "POST", target, body, nowSeconds: timestamp });
   }
-  async function fixture() {
+  async function fixture(outputs: import("@narriflow/validators/execution-transfer").ExecutionOutputDescriptor[] = [{ role: "source_audio", contentType: "audio/webm", maxBytes: 10 * 1024 ** 3, bindingHash: "b".repeat(64) }]) {
     const user = await db.user.create({ data: { clerkId: `transfer-gate:${crypto.randomUUID()}` } }); users.push(user.id);
     const workspace = await db.workspace.create({ data: { ownerUserId: user.id, name: "Transfer gate" } });
     const project = await db.project.create({ data: { workspaceId: workspace.id, title: "Transfer gate", sourceMediaUrl: "r2://gate/source" } });
@@ -79,12 +79,25 @@ suite("Scoped executor transfer authority", () => {
       async signSourceRange(): Promise<never> { throw new Error("No source pin in this fixture"); },
     };
     const transfer = createExecutionTransfer({ database: db, authority: control, storage, resolvePackage: async () => ({ input: { kind: "inline", command: { kind: "source", mediaId: "public" } }, sources: [],
-      outputs: [{ role: "source_audio", contentType: "audio/webm", maxBytes: 10 * 1024 ** 3, bindingHash: "b".repeat(64) }] }) });
+      outputs }) });
     const call = async (command: unknown, deliveryId?: string) => transfer.execute({ command, verifiedRequest: await verified(command, "/api/execution/transfer", deliveryId) });
     const work = await call({ action: "work-package", fence });
     if (work.disposition !== "work_package" || !work.outputs[0]) throw new Error("Expected assigned work package");
-    return { fence, call, provider, artifactId: work.outputs[0].artifactId, job };
+    return { fence, call, provider, artifactId: work.outputs[0].artifactId, job, work };
   }
+  test("server-assigned previews and peaks preserve the one sibling-key storage contract", async () => {
+    const f = await fixture([{ role: "clip_preview", contentType: "video/mp4", maxBytes: 512*1024**2, bindingHash: "b".repeat(64) },
+      { role: "preview_peaks", contentType: "application/json", maxBytes: 256*1024, bindingHash: "b".repeat(64) }]);
+    const preview = await db.executionArtifact.findUniqueOrThrow({ where: { id: f.work.outputs[0]!.artifactId } });
+    const peaks = await db.executionArtifact.findUniqueOrThrow({ where: { id: f.work.outputs[1]!.artifactId } });
+    expect(preview.storageKey).toEndWith(".mp4");
+    expect(peaks.storageKey).toBe(preview.storageKey.slice(0,-4)+".peaks.json");
+    expect(preview.storageKey).toStartWith(`execution/${f.fence.reference.deploymentEpoch}/${f.fence.attemptToken}/${f.fence.owner}/`);
+    expect(f.work.outputs[0]).not.toHaveProperty("storageKey");
+    const replay = await f.call({ action: "work-package", fence: f.fence });
+    expect(replay).toMatchObject({ outputs: f.work.outputs });
+    expect(await db.executionArtifact.count({ where: { attemptToken: f.fence.attemptToken } })).toBe(2);
+  });
   test("reissues grants only with fresh authority and stores no scoped URL in the inbox", async () => {
     const f = await fixture(), base = { fence: f.fence, artifactId: f.artifactId };
     await f.call({ action: "upload-initialize", ...base, byteLength: 128, contentType: "audio/webm" });

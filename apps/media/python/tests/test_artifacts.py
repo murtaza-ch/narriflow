@@ -75,6 +75,25 @@ class AssignedArtifactTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(commits[0][1]['artifact'],{'artifactId':output['artifactId'],'role':'thumbnail','bindingHash':'1'*64,
             'contentType':'image/png','byteLength':5,'sha256':hashlib.sha256(b'hello').hexdigest(),'etag':'"sealed"'})
 
+    async def test_uploaded_render_bytes_can_wait_for_measured_facts_before_the_real_domain_commit(self):
+        output={'artifactId':str(uuid4()),'role':'render_variant','bindingHash':'1'*64,'maxBytes':10,
+            'contentType':'video/mp4','contentTypes':['video/mp4']}
+        session,calls,stored,storage=self.session(output)
+        with session,tempfile.TemporaryDirectory() as directory:
+            artifacts=AssignedArtifacts(session,await load_work_package(session))
+            path=Path(directory)/'render.mp4';path.write_bytes(b'hello')
+            completed=await artifacts.upload_only(output['artifactId'],path,content_type='video/mp4',byte_length=5,
+                sha256=hashlib.sha256(b'hello').hexdigest(),transport=storage)
+            self.assertEqual(completed.key,'execution/server-assigned')
+            self.assertNotIn('commit-artifact',[call[1]['action'] for call in calls])
+            render_id=str(uuid4())
+            result=await artifacts.commit_uploaded(output['artifactId'],facts_builder=lambda completed:{'renderVariant':{'renderId':render_id,'durationSec':4.25}})
+            self.assertEqual(result.object,completed)
+            self.assertEqual(calls[-1][1]['artifact']['renderVariant'],{'renderId':render_id,'durationSec':4.25})
+            with self.assertRaises(ExecutionControlError):
+                await artifacts.commit_uploaded(output['artifactId'])
+        self.assertEqual(stored,[b'hello'])
+
     async def test_a_completed_pin_is_committed_without_reuploading_or_deleting_it(self):
         output={'artifactId':str(uuid4()),'role':'thumbnail','bindingHash':'1'*64,'maxBytes':10,
             'contentType':'image/png','contentTypes':['image/png'],'sourceByteLength':5,'sourceEtag':'"frozen"'}
