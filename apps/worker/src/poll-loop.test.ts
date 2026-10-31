@@ -231,6 +231,7 @@ describe("poll loop stall watchdog", () => {
 describe("worker health", () => {
   const base = {
     polling: false,
+    lastFinishedAt: null,
     consecutiveStalls: 0,
     totalStalls: 0,
     stallAfterMs: 1_000,
@@ -245,8 +246,8 @@ describe("worker health", () => {
 
   test("a loop that keeps being abandoned makes the worker unhealthy", () => {
     const loops = [
-      { name: "ingest", status: { ...base, lastPollAt: at(0), consecutiveStalls: UNHEALTHY_CONSECUTIVE_STALLS } },
-      { name: "stt", status: { ...base, lastPollAt: at(0), consecutiveStalls: 1 } },
+      { name: "ingest", intervalMs: 2_500, status: { ...base, lastPollAt: at(0), consecutiveStalls: UNHEALTHY_CONSECUTIVE_STALLS } },
+      { name: "stt", intervalMs: 2_500, status: { ...base, lastPollAt: at(0), consecutiveStalls: 1 } },
     ];
     expect(unhealthyLoops(loops, new Date(0))).toEqual(["ingest"]);
   });
@@ -254,11 +255,24 @@ describe("worker health", () => {
   test("a loop that has not polled for two budgets is unhealthy unless it holds a lease", () => {
     const stale = at(0);
     const loops = [
-      { name: "wedged", status: { ...base, lastPollAt: stale } },
-      { name: "rendering", status: { ...base, lastPollAt: stale, holdingLease: true } },
-      { name: "recent", status: { ...base, lastPollAt: at(1_500) } },
-      { name: "not_yet", status: { ...base, lastPollAt: null } },
+      { name: "wedged", intervalMs: 2_500, status: { ...base, polling: true, lastPollAt: stale } },
+      { name: "rendering", intervalMs: 2_500, status: { ...base, lastPollAt: stale, holdingLease: true } },
+      { name: "recent", intervalMs: 2_500, status: { ...base, lastPollAt: at(1_500) } },
+      { name: "not_yet", intervalMs: 60_000, status: { ...base, lastPollAt: null } },
     ];
     expect(unhealthyLoops(loops, new Date(2_001))).toEqual(["wedged"]);
+  });
+
+  test("an idle import loop that missed polling is unhealthy before a five-minute queue delay", () => {
+    expect(unhealthyLoops([
+      { name: "ingest", intervalMs: 2_500, status: { ...base, stallAfterMs: 900_000, lastPollAt: at(0), lastFinishedAt: at(1_000) } },
+      { name: "hourly", intervalMs: 3_600_000, status: { ...base, lastPollAt: at(0), lastFinishedAt: at(1_000) } },
+    ], new Date(5 * 60_000))).toEqual(["ingest"]);
+  });
+
+  test("finishing long leased work does not look like missed idle polling", () => {
+    expect(unhealthyLoops([
+      { name: "render", intervalMs: 2_500, status: { ...base, lastPollAt: at(0), lastFinishedAt: at(3_600_000) } },
+    ], new Date(3_600_001))).toEqual([]);
   });
 });

@@ -818,7 +818,7 @@ createPollLoop("library_index", libraryIndexPollIntervalMs, async () => {
 
 async function handleWorkerRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
 	if (req.url === "/health") {
-		const loops = allLoops.map(({ loop }) => ({ name: loop.name, status: loop.status() }));
+		const loops = allLoops.map(({ loop, intervalMs }) => ({ name: loop.name, intervalMs, status: loop.status() }));
 		const stalledLoops = unhealthyLoops(loops);
         const ready = startupComplete && !workerShutdown.signal.aborted && executorHealth.snapshot().ready && scratchReady && stalledLoops.length === 0;
 		res.writeHead(ready ? 200 : 503, { "content-type": "application/json" });

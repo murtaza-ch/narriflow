@@ -13,6 +13,8 @@ export interface PollRunContext {
 export interface PollLoopStatus {
   polling: boolean;
   lastPollAt: string | null;
+  /** Last tick settlement, including work that held a lease for a long time. */
+  lastFinishedAt: string | null;
   /** Ticks abandoned since the last tick that settled on its own. */
   consecutiveStalls: number;
   /** Ticks abandoned over the loop's lifetime. */
@@ -57,6 +59,7 @@ export function createIsolatedPollLoop(input: {
   let polling = false;
   let holdingLease = false;
   let lastPollAt: string | null = null;
+  let lastFinishedAt: string | null = null;
   let consecutiveFailures = 0;
   let consecutiveStalls = 0;
   let totalStalls = 0;
@@ -66,6 +69,7 @@ export function createIsolatedPollLoop(input: {
     status: () => ({
       polling,
       lastPollAt,
+      lastFinishedAt,
       consecutiveStalls,
       totalStalls,
       stallAfterMs: input.stallAfterMs,
@@ -134,6 +138,7 @@ export function createIsolatedPollLoop(input: {
         if (outcome.processed > 0) input.onProcessed?.(outcome.processed);
       } finally {
         clearTimeout(timer);
+        lastFinishedAt = (input.now?.() ?? new Date()).toISOString();
         polling = false;
       }
     },
@@ -141,19 +146,23 @@ export function createIsolatedPollLoop(input: {
 }
 
 /**
- * A worker is unhealthy when a loop keeps being abandoned, or has not started
- * a tick for twice its stall budget although it is not running leased work —
- * the symptom of a wedge the watchdog itself did not clear. Railway's health
- * check then restarts the process; leased work is re-claimed after expiry.
+ * Busy, unleased ticks retain their stall budget. Idle loops must poll within
+ * twice their configured interval, allowing at least 30s for scheduling delays.
+ * A finished long render starts a fresh idle window. Railway can restart a
+ * worker whose scheduler stopped even though its HTTP server still answers.
  */
 export function unhealthyLoops(
-  loops: readonly { name: string; status: PollLoopStatus }[],
+  loops: readonly { name: string; intervalMs: number; status: PollLoopStatus }[],
   now: Date = new Date(),
 ): string[] {
   return loops
-    .filter(({ status }) => {
+    .filter(({ status, intervalMs }) => {
       if (status.consecutiveStalls >= UNHEALTHY_CONSECUTIVE_STALLS) return true;
       if (status.holdingLease || status.lastPollAt === null) return false;
+      if (!status.polling) {
+        const lastFinished = Date.parse(status.lastFinishedAt ?? status.lastPollAt);
+        return now.getTime() - lastFinished > Math.max(30_000, 2 * intervalMs);
+      }
       return now.getTime() - Date.parse(status.lastPollAt) > 2 * status.stallAfterMs;
     })
     .map(({ name }) => name);
