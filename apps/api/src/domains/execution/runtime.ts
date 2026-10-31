@@ -16,6 +16,8 @@ import { getOutboundDeliveryService } from "@narriflow/services/outbound-deliver
 import { getGeneratedMediaExecution } from "@narriflow/services/generated-media-runtime";
 import { getClipPreparationService } from "@narriflow/services/clip-preparation-runtime";
 import { createClipPreparationExecution } from "@narriflow/services/clip-preparation-execution";
+import { createRenderGroupExecution } from "@narriflow/services/render-group-execution";
+import { getRenderGroupExecutionService } from "@narriflow/services/render-group-runtime";
 import { createGeneratedMediaExecution } from "@narriflow/services/generated-media-control";
 import { getIngestJobLifecycle } from "@narriflow/services/ingest-job-lifecycle-runtime";
 import { getWorkflowRunLifecycle } from "@narriflow/services/workflow-run-lifecycle";
@@ -38,7 +40,7 @@ export function createExecutionDependencies(environment: Readonly<Record<string,
  * command step's fresh database scope. No clients survive this invocation. */
 export async function createWorkerExecutor(reference: ExecutionDispatchReference, bindings?: ApiWorkerBindings) {
   if (!bindings?.MEDIA_BUCKET) throw new ExecutorControlError("storage_unavailable");
-  if (!["native_validation", "thumbnail_frame", "outbound_probe", "outbound_delivery", "generated_media", "clip_preparation", "ingest_job"].includes(reference.subject.kind)) throw new ExecutorControlError("scheduler_unavailable");
+  if (!["native_validation", "thumbnail_frame", "outbound_probe", "outbound_delivery", "generated_media", "clip_preparation", "render_group", "ingest_job"].includes(reference.subject.kind)) throw new ExecutorControlError("scheduler_unavailable");
   const database = getPrismaClient();
   if (!database) throw new ExecutorControlError("epoch_unavailable");
   const environment = readServiceEnvironment();
@@ -46,6 +48,8 @@ export async function createWorkerExecutor(reference: ExecutionDispatchReference
   const storage = createExecutionStorage({ accountId: required("R2_ACCOUNT_ID"), bucket: required("R2_BUCKET"),
     accessKeyId: required("R2_ACCESS_KEY_ID"), secretAccessKey: required("R2_SECRET_ACCESS_KEY") });
   const common = { database, storage, artifacts: createAssignedArtifactStorage(bindings.MEDIA_BUCKET), deliverWakes: deliverExecutionDispatches };
+  if (reference.subject.kind === "render_group") return createRenderGroupExecution({ ...common,
+    service: await getWorkerRenderGroupService(bindings.MEDIA_BUCKET) });
   if (reference.subject.kind === "clip_preparation") return createClipPreparationExecution({ ...common, domain: await getClipPreparationService() });
   if (reference.subject.kind === "ingest_job") return createIngestSourceExecution({ ...common, domain: getIngestJobLifecycle(), workflow: getWorkflowRunLifecycle(), toolchainFingerprint: required(reference.kind === "local_fetch" ? "MEDIA_LOCAL_FETCH_TOOLCHAIN_FINGERPRINT" : "MEDIA_FETCH_TOOLCHAIN_FINGERPRINT"),
     sourceReads: { openDriveCredential: sealed => createDriveTokenCipher().open(sealed), zoomRecordingDownload: input => zoomService.recordingDownload(input) } });
@@ -55,6 +59,16 @@ export async function createWorkerExecutor(reference: ExecutionDispatchReference
   const domain = reference.subject.kind === "thumbnail_frame" ? { subjectKind: "thumbnail_frame" as const, domain: getThumbnailFrameExecution() }
     : { subjectKind: "native_validation" as const, domain: getNativeValidationService() };
   return createNativeValidationExecution({ ...domain, ...common });
+}
+
+export function getWorkerRenderGroupService(bucket: R2Bucket) {
+  return getRenderGroupExecutionService(async storageKey => {
+    const object = await bucket.head(storageKey);
+    if (!object) return null;
+    if (object.key !== storageKey) throw new ExecutorControlError("artifact_invalid");
+    return { storageKey, etag: object.httpEtag, byteLength: object.size,
+      ...(object.checksums.sha256 ? { sha256: Array.from(new Uint8Array(object.checksums.sha256), byte => byte.toString(16).padStart(2, "0")).join("") } : {}) };
+  });
 }
 
 export function createWorkerExecutionDependencies(): ExecutionRouteDependencies {
