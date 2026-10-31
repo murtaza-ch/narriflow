@@ -11,12 +11,14 @@ import {
   encodeReviewSelection,
   reviewRoundSummary,
   reviewService,
+  ReviewService,
   validateReviewHandoffSelection,
   type ReviewHandoffExport,
 } from "./review.service";
 import { workspaceService } from "./workspace.service";
 import * as db from "@narriflow/db/client";
 import * as storage from "./r2-storage";
+import * as passcodes from "./review-passcode";
 
 describe("review guest security primitives", () => {
   const secret = "s".repeat(64);
@@ -41,6 +43,23 @@ describe("review guest security primitives", () => {
     expect(hash).toMatch(/^pbkdf2-sha256\$600000\$[a-f0-9]{32}\$[a-f0-9]{64}$/);
     expect(await verifyReviewPasscode("correct horse battery staple", hash)).toBe(true);
     expect(await verifyReviewPasscode("wrong", hash)).toBe(false);
+  });
+
+  test("refuses blocked or unavailable passcode admission before running the KDF", async () => {
+    const token = "test-review-access-token";
+    try {
+      spyOn(db, "getPrismaClient").mockReturnValue({ reviewRound: { findUnique: async () => ({
+        id: crypto.randomUUID(), projectId: crypto.randomUUID(), accessTokenHash: hashReviewAccessToken(token),
+        passcodeHash: "pbkdf2-sha256$600000$07070707070707070707070707070707$0a039aa11ff5f0a0aef526fb013167915820bf7154750855c05fab53d04c407d",
+        status: "open", expiresAt: null, revokedAt: null,
+      }) } } as never);
+      const verify = spyOn(passcodes, "verifyReviewPasscode");
+      for (const [availability, allowed, code] of [["available", false, "review_access_rate_limited"], ["unavailable", true, "mutations_unavailable"]] as const) {
+        const service = new ReviewService(undefined, async (_key, limit) => ({ availability, allowed, remaining: 0, limit }));
+        await expect(service.authenticate(token, { identity: "Reviewer", email: "reviewer@example.test", passcode: "test-passcode" }, "source", secret)).rejects.toMatchObject({ code });
+      }
+      expect(verify).not.toHaveBeenCalled();
+    } finally { mock.restore(); }
   });
 
   test("derives terminal and decision states without mutating the stored round", () => {

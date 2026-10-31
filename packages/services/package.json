@@ -10,6 +10,18 @@
       "types": "./src/index.ts",
       "default": "./src/index.ts"
     },
+    "./executor-domain-control": {
+      "types": "./src/executor-domain-control.ts",
+      "default": "./src/executor-domain-control.ts"
+    },
+    "./execution-dispatch": {
+      "types": "./src/execution-dispatch.ts",
+      "default": "./src/execution-dispatch.ts"
+    },
+    "./execution-dispatch-runtime": {
+      "types": "./src/execution-dispatch-runtime.ts",
+      "default": "./src/execution-dispatch-runtime.ts"
+    },
     "./execution-signature": {
       "types": "./src/execution-signature.ts",
       "default": "./src/execution-signature.ts"
@@ -393,6 +405,10 @@
     "./webhook-subscription": {
       "types": "./src/webhook-subscription.ts",
       "default": "./src/webhook-subscription.ts"
+    },
+    "./executor-control": {
+      "types": "./src/executor-control.ts",
+      "default": "./src/executor-control.ts"
     }
   },
   "scripts": {
@@ -414,7 +430,7 @@
     "@narriflow/email": "workspace:*",
     "@narriflow/validators": "workspace:*",
     "@node-rs/argon2": "^2.2.0",
-    "@prisma/client": "^7.4.2",
+    "@prisma/client": "7.7.0",
     "fast-xml-parser": "^5.11.2",
     "fontkit": "2.0.4",
     "ioredis": "^5.9.3",
@@ -427,7 +443,7 @@
     "@types/fontkit": "2.0.8",
     "@types/node": "26.2.0",
     "@types/pg": "8.15.5",
-    "pg": "8.16.3",
+    "pg": "8.17.2",
     "standardwebhooks": "^1.1.1"
   }
 }
