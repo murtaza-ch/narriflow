@@ -119,7 +119,7 @@ export async function publicationSources(
 		throw new PublicationExecutionError("publication_frozen_media_unsealed");
 	const sources = [source(media, "publication_media")];
 	const settings = frozen.providerSettings as Prisma.JsonObject;
-	if (typeof settings.thumbnailAssetId === "string") {
+	if (settings.thumbnailType==="custom_image"&&typeof settings.thumbnailAssetId === "string") {
 		const workspace = await database.workspace.findUniqueOrThrow({
 			where: { id: snapshot.post.workspaceId! },
 			select: { personalOwnerUserId: true },

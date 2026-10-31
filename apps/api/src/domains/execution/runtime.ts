@@ -18,6 +18,8 @@ import { getClipPreparationService } from "@narriflow/services/clip-preparation-
 import { createClipPreparationExecution } from "@narriflow/services/clip-preparation-execution";
 import { createRenderGroupExecution } from "@narriflow/services/render-group-execution";
 import { getRenderGroupExecutionService } from "@narriflow/services/render-group-runtime";
+import { createPublicationExecutionControl } from "@narriflow/services/publication-execution-control";
+import { getPublicationExecution } from "@narriflow/services/publication-execution-runtime";
 import { createGeneratedMediaExecution } from "@narriflow/services/generated-media-control";
 import { getIngestJobLifecycle } from "@narriflow/services/ingest-job-lifecycle-runtime";
 import { getWorkflowRunLifecycle } from "@narriflow/services/workflow-run-lifecycle";
@@ -40,7 +42,7 @@ export function createExecutionDependencies(environment: Readonly<Record<string,
  * command step's fresh database scope. No clients survive this invocation. */
 export async function createWorkerExecutor(reference: ExecutionDispatchReference, bindings?: ApiWorkerBindings) {
   if (!bindings?.MEDIA_BUCKET) throw new ExecutorControlError("storage_unavailable");
-  if (!["native_validation", "thumbnail_frame", "outbound_probe", "outbound_delivery", "generated_media", "clip_preparation", "render_group", "ingest_job"].includes(reference.subject.kind)) throw new ExecutorControlError("scheduler_unavailable");
+  if (!["native_validation", "thumbnail_frame", "outbound_probe", "outbound_delivery", "generated_media", "clip_preparation", "render_group", "social_publication", "ingest_job"].includes(reference.subject.kind)) throw new ExecutorControlError("scheduler_unavailable");
   const database = getPrismaClient();
   if (!database) throw new ExecutorControlError("epoch_unavailable");
   const environment = readServiceEnvironment();
@@ -48,6 +50,8 @@ export async function createWorkerExecutor(reference: ExecutionDispatchReference
   const storage = createExecutionStorage({ accountId: required("R2_ACCOUNT_ID"), bucket: required("R2_BUCKET"),
     accessKeyId: required("R2_ACCESS_KEY_ID"), secretAccessKey: required("R2_SECRET_ACCESS_KEY") });
   const common = { database, storage, artifacts: createAssignedArtifactStorage(bindings.MEDIA_BUCKET), deliverWakes: deliverExecutionDispatches };
+  if (reference.subject.kind === "social_publication") return createPublicationExecutionControl({ ...common, environment,
+    domain: getPublicationExecution() });
   if (reference.subject.kind === "render_group") return createRenderGroupExecution({ ...common,
     service: await getWorkerRenderGroupService(bindings.MEDIA_BUCKET) });
   if (reference.subject.kind === "clip_preparation") return createClipPreparationExecution({ ...common, domain: await getClipPreparationService() });

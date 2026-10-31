@@ -20,9 +20,9 @@ testUrl.searchParams.delete("schema");
 testUrl.searchParams.set("options", `-csearch_path=${schema},public`);
 const requestedTests = Bun.argv.slice(2);
 const tests = requestedTests.length ? requestedTests : [
-  "execution-ledger", "execution-admission", "execution-maintenance", "execution-restore", "execution-dispatch", "executor-control", "execution-transfer", "source-audio-admission",
+  "execution-ledger", "execution-admission", "execution-maintenance", "media-cleanup-control", "execution-restore", "execution-dispatch", "executor-control", "execution-transfer", "source-audio-admission",
   "targeted-execution", "targeted-ingest-execution", "targeted-workflow-execution", "clip-preparation", "clip-preparation-ledger", "clip-selection", "clip-selection-window", "clip-selection-preparation", "clip-selection-hyperdrive-gate", "native-validation", "thumbnail-frame-execution", "generated-media-execution",
-  "outbound-probe", "outbound-delivery", "webhook-subscription", "notification-dispatch", "publication-execution", "modal-dispatch", "progress-outbox", "billing-reconciliation",
+  "outbound-probe", "outbound-delivery", "webhook-subscription", "notification-dispatch", "publication-execution", "modal-dispatch", "progress-outbox", "billing-reconciliation", "library-index",
 ].map(name => `packages/services/src/${name}.db.test.ts`);
 if (tests.some(path => !/^packages\/services\/src\/[a-z0-9-]+\.db\.test\.ts$/.test(path))) throw new Error("Only named execution database test files are allowed");
 
