@@ -234,11 +234,12 @@ export class IngestJobLifecycle {
       uploadSessionId?: string;
     },
   ): Promise<{ id: string }> {
+    const { epoch } = await readExecutionAdmission(tx);
     const project = await tx.project.findUniqueOrThrow({ where: { id: input.projectId }, select: { sourceRevision: true } });
     const {acquisition,...data}=input;
     if (!data.payload || typeof data.payload!=="object" || Array.isArray(data.payload)) throw new Error("ingest_source_payload_invalid");
     const frozen={...data.payload,acquisition:ingestAcquisitionSchema.parse(acquisition)} as Prisma.InputJsonObject;
-    const job = await tx.ingestJob.create({ data: { ...data,payload:frozen, sourceRevision: project.sourceRevision } });
+    const job = await tx.ingestJob.create({ data: { ...data,payload:frozen, sourceRevision: project.sourceRevision, deploymentEpoch: epoch } });
     await this.event(
       tx,
       {
@@ -790,6 +791,8 @@ export class IngestJobLifecycle {
         payload: last.payload as Prisma.InputJsonValue,
         acquisition: ingestAcquisitionSchema.parse(last.payload && typeof last.payload==="object" && !Array.isArray(last.payload)?last.payload.acquisition:null),
       });
+      await this.queueExecutionWithinTransaction(tx, job.id);
+      await flushProjectProgressDrains(tx);
       return {
         queuedJobId: job.id,
         attemptsUsed: count + 1,

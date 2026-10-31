@@ -1,0 +1,49 @@
+{
+  "status": "focused_red_green_passed",
+  "reported_failure": "Isolated candidate epoch2 fresh Ingest enqueue used schema default1, so canonical Import dispatch registration returned null. No candidate fixture was changed by this agent.",
+  "fix": [
+    "IngestJobLifecycle.enqueue reads the authoritative ExecutionEpoch FOR SHARE before Project lookup and explicitly stores that epoch. No new closed-admission bypass or legacy lookup.",
+    "Manual Ingest retry commits its canonical initial Import dispatch and progress drain in the same reservation/job transaction. Previously API retry could return an accepted row without an immediate work wake."
+  ],
+  "red_evidence": [
+    "ingest-epoch-red.log: newly enqueued job epoch1 while locked current epoch>1",
+    "ingest-epoch-retry-red.log: after epoch correction, actual permanent native failure followed by manual retry had no Import dispatch"
+  ],
+  "verification": {
+    "bun": "1.3.6",
+    "fresh_schema_migrations": "all including028",
+    "snapshot_and_fresh_source_admission_postgresql": {
+      "tests": 3,
+      "assertions": 22
+    },
+    "actual_source_regression": [
+      "Fresh epoch>1 reservation plus enqueue plus aftercommit registration",
+      "Real unowned native preparation/Core acquire/work-package/process-start and permanent failure",
+      "Manual retry creates current-epoch row and commits its Import/progress wakes",
+      "Real started automatic retry retains current epoch, increments source generation and keeps its original absolute deadline/charged count",
+      "Validated snapshot fence/begin with actual source metadata rebind, then fresh new-epoch admission/registration"
+    ],
+    "services_typecheck": true,
+    "biome": true
+  },
+  "fresh_execution_admission_audit": {
+    "explicit_current_or_parent_epoch": [
+      "WorkflowRun SQL admission and STT child",
+      "RenderGroup from its accepted parent",
+      "ClipPreparation/ClipSelectionWindow frozen current parent lineage",
+      "NativeValidation/ThumbnailFrame/OutboundProbe/OutboundDelivery",
+      "GeneratedMedia/ClipDub/ExportBundle accepted rows",
+      "AutopilotRule/ZoomWebhookJob",
+      "Project/Review/Grant/Webhook notification intents",
+      "GenerationFinishing"
+    ],
+    "rebinding_before_first_execution": [
+      "WorkspaceBillingAccount reconciliation generation0 binds current epoch in queueBillingReconciliation",
+      "Transcript Library index queue binds passagesEpoch before dispatch"
+    ],
+    "intentional_nonexecuting_default": [
+      "Draft SocialPost proposals have no execution admission; openPublication/proposal acceptance writes current locked epoch before scheduling. No additional job-stranding default omission found in this audit."
+    ]
+  },
+  "limitations": "No candidate/shared database mutation, cloud deploy, provider request or storage operation. Parent owns the exact unstarted failed fixture and redeployment."
+}
