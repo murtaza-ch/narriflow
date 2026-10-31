@@ -1,5 +1,6 @@
 import { audioAssetService } from "@narriflow/services/audio-asset.service";
 import { brandFontService } from "@narriflow/services/brand-font.service";
+import { getNativeValidationService } from "@narriflow/services/native-validation-runtime";
 import { brandProfileService } from "@narriflow/services/brand-profile.service";
 import { brandTemplateService } from "@narriflow/services/brand-template.service";
 import { campaignOperationService } from "@narriflow/services/campaign-operation.service";
@@ -70,6 +71,7 @@ export interface BrandRouteDeps extends BrandAggregateServices {
   visualAssets: typeof visualAssetService;
   generatedMedia: typeof generatedMediaService;
   campaignOperations: typeof campaignOperationService;
+  validationStatus?: (scope: BrandActorScope, id: string) => ReturnType<ReturnType<typeof getNativeValidationService>["get"]>;
 }
 
 const INVALID_AUDIO_ASSET_ID = {
@@ -125,6 +127,10 @@ export function createBrandRoutes(deps: BrandRouteDeps) {
     createRouteApp(access)
       // --- Aggregates -------------------------------------------------------
       .get("/brand-kit", async (c) => c.json(await readBrandKit(deps, brandScope(c)), 200))
+      .get("/asset-validations/:id", uuidParams("id"), async c => {
+        c.header("Cache-Control", "no-store");
+        return c.json(await (deps.validationStatus ?? ((scope, id) => getNativeValidationService().get(scope, id)))(brandScope(c), c.req.valid("param").id), 200);
+      })
 
       // --- Brand Profiles ---------------------------------------------------
       .get("/brand-profiles", validate("query", brandProfilesPageQuerySchema), async (c) => {
@@ -373,9 +379,10 @@ export function createBrandRoutes(deps: BrandRouteDeps) {
           c.json(await deps.visualAssets.presignUpload(brandScope(c), c.req.valid("json")), 200),
       )
 
-      .post("/visual-assets", validate("json", visualAssetFinalizeSchema), async (c) =>
-        c.json(await deps.visualAssets.finalizeUpload(brandScope(c), c.req.valid("json")), 201),
-      )
+      .post("/visual-assets", validate("json", visualAssetFinalizeSchema), async (c) => {
+        const job = await deps.visualAssets.finalizeUpload(brandScope(c), c.req.valid("json"));
+        return c.json(job, job.status === "pending" ? 202 : 200);
+      })
 
       .delete(
         "/visual-assets/:id",
@@ -394,9 +401,10 @@ export function createBrandRoutes(deps: BrandRouteDeps) {
         c.json(await deps.fonts.presignUpload(brandScope(c), c.req.valid("json")), 200),
       )
 
-      .post("/brand-fonts", validate("json", brandFontFinalizeSchema), async (c) =>
-        c.json(await deps.fonts.finalizeUpload(brandScope(c), c.req.valid("json")), 201),
-      )
+      .post("/brand-fonts", validate("json", brandFontFinalizeSchema), async (c) => {
+        const job = await deps.fonts.finalizeUpload(brandScope(c), c.req.valid("json"));
+        return c.json(job, job.status === "pending" ? 202 : 200);
+      })
 
       .delete(
         "/brand-fonts/:id",

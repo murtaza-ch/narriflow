@@ -29,6 +29,10 @@
     "./execution-transfer": {
       "types": "./src/execution-transfer.ts",
       "default": "./src/execution-transfer.ts"
+    },
+    "./native-validation": {
+      "types": "./src/native-validation.ts",
+      "default": "./src/native-validation.ts"
     }
   },
   "scripts": {

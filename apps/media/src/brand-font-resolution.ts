@@ -1,4 +1,4 @@
-import { brandFontRenderer } from "@narriflow/services/brand-font-parser";
+import { brandFontRenderer } from "./brand-font-parser";
 import { createHash } from "node:crypto";
 import { readFile, mkdir, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";

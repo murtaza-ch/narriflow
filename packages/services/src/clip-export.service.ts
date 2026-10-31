@@ -1,3 +1,4 @@
+import { validatedFontFaceSchema } from "@narriflow/validators/native-validation";
 import type { ActorScope } from "./actor-scope";
 import { getOperationReceiptExecutor } from "./operation-receipt-runtime";
 import { receiptCallback } from "./completion-callback";
@@ -469,11 +470,11 @@ async function assertSceneExportAvailability(
     fontReferences.length > 0
       ? prisma.brandFont.findMany({
           where: { id: { in: fontReferences.map((reference) => reference.id) }, ...owner },
-          select: { id: true, fingerprint: true, family: true, storageKey: true },
+          select: { id: true, fingerprint: true, family: true, storageKey: true, face: true },
         })
       : [],
   ]);
-  assertSceneExportReferenceRows(document, visuals, fonts);
+  assertSceneExportReferenceRows(document, visuals, fonts.filter(font => validatedFontFaceSchema.safeParse(font.face).success));
   const objects = await Promise.all(
     [...visuals, ...fonts].map((asset) => headObject(asset.storageKey).catch(() => null)),
   );

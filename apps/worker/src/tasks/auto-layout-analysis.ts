@@ -1,7 +1,8 @@
+import { downloadObjectToFile } from "../r2-file-transfer";
 import { analyzeClipAutoLayout, log } from "../../../media/src/tasks/auto-layout-analysis";
 export { analyzeClipAutoLayout } from "../../../media/src/tasks/auto-layout-analysis";
 import { join } from "node:path";
-import { getLayoutEvidenceLifecycle, LayoutEvidenceClaimLost, WorkflowFailure, downloadObjectToFile, presignDownloadUrl, type LayoutEvidenceLifecycle, } from "@narriflow/services";
+import { getLayoutEvidenceLifecycle, LayoutEvidenceClaimLost, WorkflowFailure, presignDownloadUrl, type LayoutEvidenceLifecycle, } from "@narriflow/services";
 import { parseWorkerRenderConfig, type RenderConfig } from "../../../media/src/render-config";
 import { productionWorkerProcessModule, WorkerProcessFailure, type WorkerProcessModule } from "../../../media/src/worker-process";
 

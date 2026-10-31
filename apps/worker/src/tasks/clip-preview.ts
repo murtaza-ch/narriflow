@@ -1,3 +1,4 @@
+import { putFileFromPath } from "../r2-file-transfer";
 import { computeClipPreviewWindow, type ClipPreviewWindow, clipPreviewAttemptStorageKey, buildClipPreviewArgs, buildAudiogramPreviewArgs, persistOptionalClipPreviewPeaks, clipPreviewOutputExpectation, encodeAndValidateClipPreview } from "../../../media/src/tasks/clip-preview";
 export { computeClipPreviewWindow, type ClipPreviewWindow, sourceTimeToPreviewTime, previewTimeToSourceTime, clipPreviewAttemptStorageKey, buildClipPreviewArgs, audiogramPreviewDimensions, type AudiogramPreviewDimensions, buildAudiogramPreviewArgs, buildPeaksExtractionArgs, computeAmplitudePeaks, quantizePeaks, generateClipPreviewPeaks, persistOptionalClipPreviewPeaks, clipPreviewOutputExpectation, encodeAndValidateClipPreview } from "../../../media/src/tasks/clip-preview";
 import { executorProcessFailure } from "../../../media/src/worker-process";
@@ -40,7 +41,6 @@ import {
   deleteObject,
   derivePeaksStorageKey,
   presignDownloadUrl,
-  putFileFromPath,
   putJson,
 } from "@narriflow/services";
 import { productionWorkerProcessModule, resolveDisplayGeometry, type WorkerProcessModule } from "../../../media/src/worker-process";

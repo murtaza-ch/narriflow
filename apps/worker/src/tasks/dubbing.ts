@@ -1,3 +1,4 @@
+import { downloadObjectToFile, putFileFromPath } from "../r2-file-transfer";
 import { probeDubbedMediaDuration, muxDubbedVideo, } from "../../../media/src/tasks/dub-mix";
 export { probeDubbedMediaDuration, muxDubbedVideo } from "../../../media/src/tasks/dub-mix";
 import { stat, writeFile } from "node:fs/promises";
@@ -6,10 +7,8 @@ import {
   analyticsService,
   type ClaimedWorkflowAttempt,
   deleteObject,
-  downloadObjectToFile,
   dubbingService,
   getWorkflowRunLifecycle,
-  putFileFromPath,
   rethrowWorkflowAttemptLost,
   WorkflowAttemptLost,
   type WorkflowAttemptContext,

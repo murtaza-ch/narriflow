@@ -54,6 +54,12 @@ export function brandQueries(api: BrandApi) {
   const configuration = { staleTime: CONFIGURATION_STALE_MS } as const;
 
   return {
+    validationJob: (jobId: string) => queryOptions({
+      queryKey: key("validation", jobId),
+      queryFn: ({ signal }) => parseResponse(client()["asset-validations"][":id"].$get({ param: { id: jobId } }, { init: { signal } })),
+      staleTime: 0,
+      refetchInterval: query => query.state.data?.status === "pending" ? ACTIVE_JOB_POLL_MS : false,
+    }),
     /** Profiles (all of them), default, caption styles, fonts and the plan facts the Brand Kit page shows. */
     kit: () =>
       queryOptions({

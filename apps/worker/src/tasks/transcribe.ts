@@ -1,8 +1,8 @@
+import { downloadObjectToFile } from "../r2-file-transfer";
 import { extractTranscriptionAudio } from "../../../media/src/tasks/extract-audio";
 import { openAsBlob } from "node:fs";
 import { extname, join } from "node:path";
 import {
-  downloadObjectToFile,
   finalizeScribeTranscript,
   getWorkflowRunLifecycle,
   presignDownloadUrl,

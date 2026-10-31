@@ -19,7 +19,6 @@ import {
 } from "./visual-asset.service";
 import {
   assertSceneBrandFontReferences,
-  parseBrandFontHeader,
 } from "./brand-font.service";
 
 const personalScope = {
@@ -185,13 +184,7 @@ describe("font parsing", () => {
     expect(() => assertSceneBrandFontReferences([scene], [{ ...font, fingerprint: "b".repeat(64) }])).toThrow();
   });
 
-  test("rejects collections, unknown signatures, and truncated files with valid signatures", () => {
-    expect(() => parseBrandFontHeader(Buffer.from("ttcf"))).toThrow();
-    expect(() => parseBrandFontHeader(Buffer.from("nope"))).toThrow();
-    expect(() => parseBrandFontHeader(Buffer.from([0x00, 0x01, 0x00, 0x00]))).toThrow();
-    expect(() => parseBrandFontHeader(Buffer.from("OTTO"))).toThrow();
-    expect(() => parseBrandFontHeader(Buffer.from("wOF2"))).toThrow();
-  });
+
 });
 
 describe("visual asset usage description", () => {
