@@ -3,14 +3,15 @@ import type { MediaCleanupOrigin, MediaCleanupClass } from "./media-cleanup-cont
 import { WorkflowFailure } from "./workflow-attempt-contract";
 
 /** Adoption and a cleanup claim serialize on the planned exact-key row. A
- * destination already granted to a deleting owner can never be made visible. */
+ * destination previously claimed by cleanup can never acquire a new reference,
+ * including after an unknown DELETE is rescheduled and its live claim clears. */
 export async function lockPlannedExecutionObject(tx: Prisma.TransactionClient, input: { origin: MediaCleanupOrigin; storageKey: string }) {
   return lockPlannedMediaCleanupObject(tx, { ...input, cleanupClass: "execution_input" });
 }
 export async function lockPlannedMediaCleanupObject(tx: Prisma.TransactionClient, input: { origin: MediaCleanupOrigin; cleanupClass: MediaCleanupClass; storageKey: string }) {
-  const [row] = await tx.$queryRaw<Array<{ id: string; claimId: string | null; completedAt: Date | null }>>`SELECT id, "claimId", "completedAt"
+  const [row] = await tx.$queryRaw<Array<{ id: string; claimId: string | null; completedAt: Date | null; attemptCount: number }>>`SELECT id, "claimId", "completedAt", "attemptCount"
     FROM "MediaCleanupObligation" WHERE origin = ${input.origin} AND "cleanupClass" = ${input.cleanupClass} AND "objectKey" = ${input.storageKey} FOR UPDATE`;
-  if (!row || row.claimId || row.completedAt) throw new WorkflowFailure("execution_object_deletion_admitted", "retryable", "The tentative object is no longer available for adoption");
+  if (!row || row.claimId || row.completedAt || row.attemptCount > 0) throw new WorkflowFailure("execution_object_deletion_admitted", "retryable", "The tentative object is no longer available for adoption");
   return row.id;
 }
 

@@ -4,6 +4,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { assertExecutionDatabaseTestTarget } from "./execution-db-test-support";
 import { createMediaCleanupControl, queueMediaCleanupWithinTransaction, queueMediaCleanupBatchWithinTransaction } from "./media-cleanup-control";
 import { createMediaCleanupDrain, queueMediaCleanupRangeWithinTransaction } from "./media-cleanup-drain";
+import { lockPlannedExecutionObject } from "./execution-object-cleanup";
 import { mediaCleanupObjectRetainUntil } from "./media-cleanup-holds";
 import { appendExecutionDispatch, readExecutionDispatch } from "./execution-dispatch";
 
@@ -99,6 +100,15 @@ suite("Exact media cleanup authority", () => {
     expect(await control.run(reference)).toEqual({ kind: "superseded", dispatchIds: [next.id] });
     expect(registrations).toBe(3);
     expect(deletes).toBe(1);
+  });
+  test("unknown DELETE rescheduling cannot make a previously claimed tentative destination adoptable again", async () => {
+    const key = `projects/${crypto.randomUUID()}/selection/${crypto.randomUUID()}/${crypto.randomUUID()}/${"a".repeat(64)}.json`;
+    const row = await database.mediaCleanupObligation.create({ data: { origin: "selection_execution", cleanupClass: "execution_input", objectKey: key, nextAttemptAt: new Date(0) } });
+    const reference = (await database.$transaction(tx => queueMediaCleanupWithinTransaction(tx, row.id)))!;
+    const control = createMediaCleanupControl({ database, register: async () => {}, hold: async () => null, storage: { async deleteExact() { throw new Error("DELETE response lost"); } } });
+    expect(await control.run(reference)).toMatchObject({ kind: "retry" });
+    expect(await database.mediaCleanupObligation.findUniqueOrThrow({ where: { id: row.id } })).toMatchObject({ claimId: null, completedAt: null, attemptCount: 1 });
+    await expect(database.$transaction(tx => lockPlannedExecutionObject(tx, { origin: "selection_execution", storageKey: key }))).rejects.toMatchObject({ code: "execution_object_deletion_admitted" });
   });
   test("a referenced or grant-held object is rescheduled and never forgotten", async () => {
     const { row, reference } = await fixture(); let deletes = 0;
