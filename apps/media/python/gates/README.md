@@ -1,3 +1,5 @@
+For the final deployed Executor authority and 45-minute regional transfer gate, use [the regional runbook](executor-r2-transfer.md). The local storage probe below records the earlier injected-authority evidence.
+
 The native R2 transfer gate uses the requested development account and only fresh `execution/platform-gates` objects. Its local TypeScript service holds R2 credentials and supplies scoped grants. Python runs with a stripped environment. It measures memory and confirmed transfer bytes, verifies a still-live UploadPart grant cannot overwrite a completed object, pins the full source with conditional ranges, then overwrites only its own source to prove a failed condition aborts an unpublished pin.
 
 Start the grant service in one terminal with a new private directory:
