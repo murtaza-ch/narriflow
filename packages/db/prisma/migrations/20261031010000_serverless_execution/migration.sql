@@ -865,3 +865,45 @@ BEGIN
 END; $$;
 CREATE TRIGGER "GeneratedMediaJob_native_identity_immutable" BEFORE UPDATE ON "GeneratedMediaJob"
  FOR EACH ROW EXECUTE FUNCTION generated_media_native_identity_immutable();
+
+
+-- Publication scheduling and native ownership extend the existing domain ledger.
+ALTER TABLE "SocialPost" ADD COLUMN "generation" INTEGER NOT NULL DEFAULT 1,
+ ADD COLUMN "deploymentEpoch" INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE "SocialPublicationAttempt" ADD COLUMN "nativeStartCount" INTEGER NOT NULL DEFAULT 0,
+ ADD COLUMN "nativeStartCeiling" INTEGER NOT NULL DEFAULT 104;
+ALTER TABLE "PublicationClaim" ADD COLUMN "deploymentEpoch" INTEGER NOT NULL DEFAULT 1,
+ ADD COLUMN "generation" INTEGER NOT NULL DEFAULT 1, ADD COLUMN "executorOwner" UUID,
+ ADD COLUMN "operationDeadlineAt" TIMESTAMP(3);
+ALTER TABLE "SocialPost" ADD CONSTRAINT "SocialPost_execution_shape" CHECK ("generation">0 AND "deploymentEpoch">0 AND "scheduleRevision">0);
+ALTER TABLE "SocialPublicationAttempt" ADD CONSTRAINT "SocialPublicationAttempt_native_budget" CHECK (
+ "nativeStartCount">=0 AND "nativeStartCeiling" BETWEEN 2 AND 110 AND "nativeStartCount"<="nativeStartCeiling"
+);
+ALTER TABLE "PublicationClaim" ADD CONSTRAINT "PublicationClaim_execution_shape" CHECK (
+ "deploymentEpoch">0 AND "generation">0 AND ("executorOwner" IS NULL OR "operationDeadlineAt" IS NOT NULL)
+ AND ("operationDeadlineAt" IS NULL OR "leaseExpiresAt"<="operationDeadlineAt")
+);
+CREATE FUNCTION social_post_schedule_revision() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+ IF NEW."generation" < OLD."generation" OR NEW."scheduleRevision" < OLD."scheduleRevision" OR NEW."deploymentEpoch" <> OLD."deploymentEpoch" THEN
+  RAISE EXCEPTION 'publication execution identity cannot regress' USING ERRCODE='23514';
+ END IF;
+ IF (NEW."scheduledFor",NEW."caption",NEW."socialAccountId",NEW."immutableRequestHash",NEW."standingGrantId",NEW."standingGrantRevision") IS DISTINCT FROM
+    (OLD."scheduledFor",OLD."caption",OLD."socialAccountId",OLD."immutableRequestHash",OLD."standingGrantId",OLD."standingGrantRevision")
+    OR (NEW."status" IN ('cancelled','draft') AND NEW."status" IS DISTINCT FROM OLD."status") THEN
+  NEW."scheduleRevision" := GREATEST(NEW."scheduleRevision",OLD."scheduleRevision"+1);
+  NEW."generation" := GREATEST(NEW."generation",OLD."generation"+1);
+ END IF;
+ RETURN NEW;
+END; $$;
+CREATE TRIGGER "SocialPost_schedule_revision" BEFORE UPDATE ON "SocialPost"
+ FOR EACH ROW EXECUTE FUNCTION social_post_schedule_revision();
+CREATE FUNCTION publication_native_budget_immutable() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+ IF NEW."nativeStartCeiling" IS DISTINCT FROM OLD."nativeStartCeiling" OR NEW."nativeStartCount"<OLD."nativeStartCount" OR NEW."nativeStartCount">OLD."nativeStartCount"+1 THEN
+  RAISE EXCEPTION 'publication native start budget is immutable' USING ERRCODE='23514';
+ END IF;
+ RETURN NEW;
+END; $$;
+CREATE TRIGGER "SocialPublicationAttempt_native_budget_immutable" BEFORE UPDATE ON "SocialPublicationAttempt"
+ FOR EACH ROW EXECUTE FUNCTION publication_native_budget_immutable();

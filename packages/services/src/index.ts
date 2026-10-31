@@ -698,3 +698,5 @@ export * from "./outbound-delivery-runtime";
 
 export * from "./generated-media-execution";
 export * from "./generated-media-control";
+
+export * from "./publication-dispatch";

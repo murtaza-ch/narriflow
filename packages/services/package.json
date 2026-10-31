@@ -575,7 +575,8 @@
       "types": "./src/clip-selection-finalization.ts",
       "default": "./src/clip-selection-finalization.ts"
     },
-    "./ingest-source-definition": "./src/ingest-source-definition.ts"
+    "./ingest-source-definition": "./src/ingest-source-definition.ts",
+    "./publication-dispatch": "./src/publication-dispatch.ts"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
