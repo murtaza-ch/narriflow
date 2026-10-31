@@ -487,6 +487,7 @@ export {
 	WORKFLOW_MAX_ATTEMPTS,
 	WORKFLOW_RETRIES_EXHAUSTED_CODE,
 	type WorkflowAttemptRef,
+	type WorkflowExecutionReference,
 	type ClaimedWorkflowAttempt,
 	type WorkflowAttemptContext,
 	type WaitingWorkflowAttempt,

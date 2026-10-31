@@ -14,7 +14,7 @@
 
 ## Evidence
 
-Render Group and Ingest transaction-aware control plus exact audio-ready generation handoff are implemented; Workflow and other background domains remain in progress. This ticket is not complete.
+Render Group, Ingest and Workflow transaction-aware control plus exact audio-ready generation handoff and unleased render-parent orchestration are implemented; typed provider/stage settlements, hourly integration and other background domains remain in progress. This ticket is not complete.
 
 - Shared `ExecutorDomainControl` ports and wake-result/observed-deadline contracts are available through a narrow services export.
 - Render Group exact-id lock/acquire/renew/start/artifact/fail/release/progress methods share the caller transaction. Existing charge, member and variant bodies were lifted rather than duplicated.
@@ -53,3 +53,9 @@ Settlement reuses one aggregate/lineage body with the interim worker wrapper. Cu
 - Full real Executor Control/Render Group/Render Run chain passed 1 case with 14 assertions: changed-generation rejection; frozen-watermark mismatch rejection; prepare/replay; pending queued/live child; child acquire/start/verified commit while the parent remains unleased; actual child wake resolution; terminal/replay and one notification. Log: `/tmp/narriflow-serverless-gates/targeted-render-parent-fences.log` (119 seconds across setup and multiple remote transactions; no product lease was lengthened).
 - Audio-first callback with an already waiting Render Run passed 1 case/11 assertions, including durable video-ready wake: `targeted-ingest-video-parent-wake.log`.
 - Pure hash/fencing, Ingest lifetime and Workflow input suites: 35 tests/84 assertions passed. The new group hash includes an independently calculated Python literal vector. Services typecheck/scoped Biome pass. Project admission locking now precedes run locks in child fencing and queued-generation cancellation.
+
+Non-render-parent Workflow Runs now expose the exact generic control ports. The current frozen transcript source binding is compared with the dispatch input hash under Workspace/Project/run locks. Acquisition is uncharged; durable start increments the domain attempt count once using the generic start ledger. Progress never renews. Release/failure/expiry reuse lifted transaction-aware business bodies; retries revoke the old generation and append the canonical new-generation obligation plus old-driver completion wake. Generic artifact commits are rejected: TS/provider stages require typed settlement methods, while native child artifacts belong to their own subjects.
+
+- Four real Executor Control/Workflow cases passed across a main and focused run: pre-start release/no charge; start receipt replay plus progress/no renewal and retry; expired-owner renewal refusal plus once-only deadline retry; never-acquired operation expiry/no invented attempt. Fifteen assertions total. The initial start test used an invalid phase fixture (`analyzing`); changing it to the existing `preparing` protocol value passed without a product change. Logs: `/tmp/narriflow-serverless-gates/targeted-workflow-commands.log` and `targeted-workflow-start.log`.
+- Services typecheck, scoped Biome and the existing 35-test/84-assertion unit set pass. Targeted fixture cleanup now also removes progress obligations for the fixture's Workflow/Workspace Events before cascading those events.
+- Provider-wait transition must close/revoke the generic TS execution atomically while preserving only the Workflow Run token as provider lineage. Provider submission/result deadline commands and source-revision/ID-fenced typed callbacks follow in ticket 12; the generic native lease watchdog must not own provider wait lifetime.

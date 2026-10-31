@@ -27,6 +27,8 @@ dbDescribe("Targeted serverless domain execution", () => {
     epoch = (await db.executionEpoch.findUniqueOrThrow({ where: { id: 1 } })).epoch;
   }, 60_000);
   afterEach(async () => {
+    subjects.push(...(await db.workflowEvent.findMany({ where: { project: { workspace: { ownerUserId: { in: users } } } }, select: { id: true } })).map(row => row.id));
+    subjects.push(...(await db.workspaceEvent.findMany({ where: { workspace: { ownerUserId: { in: users } } }, select: { id: true } })).map(row => row.id));
     await db.executionInboxReceipt.deleteMany({ where: { deliveryId: { in: receipts } } });
     await db.executionArtifact.deleteMany({ where: { attempt: { dispatchId: { in: dispatches } } } });
     await db.executionAttempt.deleteMany({ where: { dispatchId: { in: dispatches } } });

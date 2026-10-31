@@ -1,0 +1,106 @@
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { PrismaPg } from "@prisma/adapter-pg";
+import { PrismaClient } from "@prisma/client";
+import { WorkflowRunLifecycle } from "./workflow-run-lifecycle";
+import { createExecutorControl } from "./executor-control";
+import { withServiceEnvironment } from "./runtime-environment";
+
+const url = process.env.SERVERLESS_TEST_DATABASE_URL;
+const dbDescribe = process.env.ALLOW_SERVERLESS_DB_TESTS === "1" && url ? describe : describe.skip;
+
+dbDescribe("Exact Workflow execution commands", () => {
+  let db: PrismaClient;
+  const users: string[] = [], subjects: string[] = [], receipts: string[] = [];
+  beforeAll(async () => {
+    if (!url || new URL(url).hostname !== "ep-wispy-field-b5wyn9o3.c-7.us-east-2.aws.neon.tech") throw new Error("Only the isolated serverless gate branch is allowed");
+    const schema = process.env.SERVERLESS_TEST_DATABASE_SCHEMA ?? "public";
+    if (schema !== "public" && !/^serverless_execution_test_[a-z0-9]+$/.test(schema)) throw new Error("Only disposable execution schemas are allowed");
+    db = new PrismaClient({ adapter: new PrismaPg({ connectionString: url, max: 4 }, { schema }), transactionOptions: { timeout: 60_000, maxWait: 30_000 } });
+    const [actual] = await db.$queryRaw<Array<{ schema: string }>>`SELECT current_schema() AS "schema"`;
+    if (actual?.schema !== schema) throw new Error("Wrong execution schema");
+  }, 60_000);
+  afterAll(async () => {
+    subjects.push(...(await db.workflowEvent.findMany({ where: { project: { workspace: { ownerUserId: { in: users } } } }, select: { id: true } })).map(row => row.id));
+    subjects.push(...(await db.workspaceEvent.findMany({ where: { workspace: { ownerUserId: { in: users } } }, select: { id: true } })).map(row => row.id));
+    const ids = (await db.executionDispatch.findMany({ where: { subjectId: { in: subjects } }, select: { id: true } })).map(row => row.id);
+    await db.executionInboxReceipt.deleteMany({ where: { deliveryId: { in: receipts } } });
+    await db.executionAttempt.deleteMany({ where: { dispatchId: { in: ids } } });
+    await db.executionDispatch.deleteMany({ where: { id: { in: ids } } });
+    await db.workspace.deleteMany({ where: { ownerUserId: { in: users } } });
+    await db.user.deleteMany({ where: { id: { in: users } } });
+    await db.$disconnect();
+  }, 60_000);
+
+  async function fixture() {
+    const user = await db.user.create({ data: { clerkId: `exact-workflow-gate:${crypto.randomUUID()}` } }); users.push(user.id);
+    const workspace = await db.workspace.create({ data: { ownerUserId: user.id, name: "Exact workflow gate" } });
+    const project = await db.project.create({ data: { workspaceId: workspace.id, title: "Exact workflow gate", sourceMediaUrl: "r2://gate/video.mp4", sourceStorageKey: "gate/video.mp4", ingestStatus: "ready" } });
+    const epoch = (await db.executionEpoch.findUniqueOrThrow({ where: { id: 1 } })).epoch;
+    const run = await db.workflowRun.create({ data: { projectId: project.id, deploymentEpoch: epoch, stage: "moment_detection", status: "queued", idempotencyKey: crypto.randomUUID() } }); subjects.push(run.id);
+    const lifecycle = withServiceEnvironment({}, () => new WorkflowRunLifecycle({ prisma: db }));
+    const reference = (await db.$transaction(tx => lifecycle.dispatchRunWithinTransaction(tx, run.id))).reference;
+    const token = crypto.randomUUID(), owner = crypto.randomUUID();
+    await db.executionAttempt.create({ data: { attemptToken: token, dispatchId: reference.dispatchId, deploymentEpoch: epoch, generation: run.generation,
+      inputHash: reference.inputHash, functionName: "moment_detection", operationDeadlineAt: new Date(Date.now() + 10 * 60_000) } });
+    const control = createExecutorControl({ database: db, subjectKind: "workflow_run", domain: lifecycle, deliverWakes: async () => {} });
+    function verified() {
+      const deliveryId = crypto.randomUUID(); receipts.push(deliveryId);
+      return { requestHash: crypto.randomUUID().replaceAll("-", "").repeat(2), metadata: { version: 1 as const, keyId: "workflow-gate", audience: "executor-control" as const,
+        method: "POST" as const, canonicalTarget: "/api/execution/command", bodySha256: "0".repeat(64), timestamp: Math.floor(Date.now() / 1000), deliveryId, signature: "0".repeat(64) } };
+    }
+    const fence = { reference, attemptToken: token, owner };
+    const acquire = () => withServiceEnvironment({}, () => control.execute({ command: { action: "acquire", reference, attemptToken: token, owner, leaseSeconds: 120 }, verifiedRequest: verified() }));
+    return { run, reference, token, owner, fence, control, verified, acquire };
+  }
+
+  test("startup rejection is uncharged and revokes the exact Workflow generation", async () => {
+    const f = await fixture();
+    expect((await f.acquire()).disposition).toBe("acquired");
+    expect(await db.workflowRun.findUniqueOrThrow({ where: { id: f.run.id } })).toMatchObject({ status: "running", attemptCount: 0, attemptId: f.token, leaseOwner: f.owner });
+    await withServiceEnvironment({}, () => f.control.execute({ command: { action: "release", fence: f.fence, reason: "startup_rejected" }, verifiedRequest: f.verified() }));
+    expect(await db.workflowRun.findUniqueOrThrow({ where: { id: f.run.id } })).toMatchObject({ status: "queued", generation: 2, attemptCount: 0, attemptId: null, leaseOwner: null });
+    const retry = await db.executionDispatch.findFirstOrThrow({ where: { subjectId: f.run.id, kind: "operation_driver", generation: 2, wakeKind: null } });
+    expect(retry.inputHash).not.toBe(f.reference.inputHash);
+    expect(await db.executionAttempt.findUniqueOrThrow({ where: { attemptToken: f.token } })).toMatchObject({ status: "released" });
+  }, 90_000);
+
+  test("start replay charges once and progress never extends the TS execution lease", async () => {
+    const f = await fixture();
+    await f.acquire();
+    const command = { action: "process-start" as const, fence: f.fence }, verifiedRequest = f.verified();
+    await withServiceEnvironment({}, () => f.control.execute({ command, verifiedRequest }));
+    await withServiceEnvironment({}, () => f.control.execute({ command, verifiedRequest }));
+    const before = await db.workflowRun.findUniqueOrThrow({ where: { id: f.run.id } });
+    expect(before.attemptCount).toBe(1);
+    await withServiceEnvironment({}, () => f.control.execute({ command: { action: "progress", fence: f.fence, phase: "preparing", progress: 30 }, verifiedRequest: f.verified() }));
+    expect(await db.workflowRun.findUniqueOrThrow({ where: { id: f.run.id } })).toMatchObject({ progress: 30, leaseExpiresAt: before.leaseExpiresAt });
+    await withServiceEnvironment({}, () => f.control.execute({ command: { action: "fail", fence: f.fence, failureCode: "llm_rate_limited", retryable: true }, verifiedRequest: f.verified() }));
+    expect(await db.workflowRun.findUniqueOrThrow({ where: { id: f.run.id } })).toMatchObject({ status: "queued", generation: 2, attemptCount: 1, attemptId: null });
+  }, 120_000);
+
+  test("expired lease cannot renew and the exact deadline commits one retry transition", async () => {
+    const f = await fixture();
+    await f.acquire();
+    await withServiceEnvironment({}, () => f.control.execute({ command: { action: "process-start", fence: f.fence }, verifiedRequest: f.verified() }));
+    const expired = new Date(0);
+    await db.workflowRun.update({ where: { id: f.run.id }, data: { leaseExpiresAt: expired } });
+    await db.executionAttempt.update({ where: { attemptToken: f.token }, data: { leaseExpiresAt: expired } });
+    expect((await withServiceEnvironment({}, () => f.control.execute({ command: { action: "renew", fence: f.fence, leaseSeconds: 120 }, verifiedRequest: f.verified() }))).disposition).toBe("expired");
+    const deliveryId = crypto.randomUUID(); receipts.push(deliveryId);
+    const deadline = { reference: f.reference, attemptToken: f.token, kind: "lease", observedDeadlineAt: expired.toISOString() };
+    const first = await withServiceEnvironment({}, () => f.control.expireDeadline({ deadline, deliveryId }));
+    expect(first.kind).toBe("expired");
+    expect(await withServiceEnvironment({}, () => f.control.expireDeadline({ deadline, deliveryId }))).toEqual(first);
+    expect(await db.workflowRun.findUniqueOrThrow({ where: { id: f.run.id } })).toMatchObject({ status: "queued", generation: 2, attemptCount: 1, attemptId: null, leaseOwner: null });
+    expect(await db.executionAttempt.findUniqueOrThrow({ where: { attemptToken: f.token } })).toMatchObject({ status: "expired" });
+  }, 120_000);
+
+  test("unacquired operation deadline fails without inventing a charged Workflow attempt", async () => {
+    const f = await fixture();
+    const expired = new Date(0);
+    await db.executionAttempt.update({ where: { attemptToken: f.token }, data: { createdAt: new Date(-60_000), operationDeadlineAt: expired } });
+    const deliveryId = crypto.randomUUID(); receipts.push(deliveryId);
+    expect((await withServiceEnvironment({}, () => f.control.expireDeadline({ deadline: { reference: f.reference, attemptToken: f.token, kind: "operation", observedDeadlineAt: expired.toISOString() }, deliveryId }))).kind).toBe("expired");
+    expect(await db.workflowRun.findUniqueOrThrow({ where: { id: f.run.id } })).toMatchObject({ status: "failed", attemptCount: 0, attemptId: null, leaseOwner: null });
+  }, 90_000);
+});

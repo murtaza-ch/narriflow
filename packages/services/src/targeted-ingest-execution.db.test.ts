@@ -27,6 +27,8 @@ dbDescribe("Targeted Ingest execution", () => {
     if (actual?.schema !== schema) throw new Error("Wrong execution schema");
   }, 60_000);
   afterAll(async () => {
+    subjects.push(...(await db.workflowEvent.findMany({ where: { project: { workspace: { ownerUserId: { in: users } } } }, select: { id: true } })).map(row => row.id));
+    subjects.push(...(await db.workspaceEvent.findMany({ where: { workspace: { ownerUserId: { in: users } } }, select: { id: true } })).map(row => row.id));
     const workflows = await db.workflowRun.findMany({ where: { project: { workspace: { ownerUserId: { in: users } } } }, select: { id: true } });
     subjects.push(...workflows.map((run) => run.id));
     const ids = (await db.executionDispatch.findMany({ where: { subjectId: { in: subjects } }, select: { id: true } })).map((row) => row.id);
