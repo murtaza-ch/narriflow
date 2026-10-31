@@ -41,18 +41,6 @@ export const BODY_LIMIT_BYTES = {
  */
 export const ORDINARY_BODY_CAP_BYTES = BODY_LIMIT_BYTES.editor * 2;
 
-/**
- * Bun's own ceiling, enforced before any application code runs: a body over it
- * gets Bun's bare 413 (no JSON envelope, request ID or CORS headers), and a
- * declared Content-Length over it never reaches `fetch`. It must admit the
- * largest route class, so it is that class; every other route is bounded in the
- * application, by its class limiter or by `ingressCeiling`.
- *
- * Bun 1.3.6 (the image) applies the cap to a declared Content-Length only;
- * a chunked body is bounded by `limitBody`, which counts actual bytes and
- * cancels at the route class. Bun 1.4 also errors a chunked read at the cap.
- */
-export const NATIVE_BODY_CAP_BYTES = BODY_LIMIT_BYTES.providerResult;
 export type BodyLimitClass = keyof typeof BODY_LIMIT_BYTES;
 
 export const MAX_REQUEST_URL_BYTES = 8 * KIB;

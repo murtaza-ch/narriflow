@@ -2,7 +2,6 @@ import { describe, expect, mock, test } from "bun:test";
 import type { AppUser, WorkspaceActorContext } from "@narriflow/auth";
 import { Hono } from "hono";
 import { createLifecycle, disableIdleTimeout, getLifecycle } from "./server-hooks";
-import { NATIVE_BODY_CAP_BYTES } from "./http/limits";
 import { bodyClass } from "./body-limits";
 import { createRouteApp, getActor } from "./http/admission";
 import type { ApiEnv } from "./http/env";
@@ -415,47 +414,33 @@ describe("ingress refusals stay readable by first-party browsers", () => {
   });
 });
 
-describe("native body ceiling", () => {
-  const request = (url: string, bytes: number) =>
-    fetch(url, {
-      method: "POST",
-      headers: { origin: WEB, "content-type": "application/json", authorization: "Bearer good", "x-workspace-id": "workspace-a" },
-      body: new Uint8Array(bytes),
-    });
-
-  test("a body over the route class but under Bun's cap gets the common 413 envelope with CORS; beyond the cap Bun answers natively", async () => {
-    // Bun's cap is sized for the provider-result class; every other route keeps
-    // the 16 MiB ceiling in the application (see webhook-ingress.test.ts).
+describe("application body refusals", () => {
+  test("route and ordinary ceiling refusals have the common envelope, CORS and request ID", async () => {
     const app = createInventoryApp({ policyRuntime: policyRuntime() });
-    expect(NATIVE_BODY_CAP_BYTES).toBeGreaterThan(8 * 1024 * 1024);
-    const server = Bun.serve({
-      port: 0,
-      hostname: "127.0.0.1",
-      maxRequestBodySize: NATIVE_BODY_CAP_BYTES,
-      fetch: (req, bunServer) => app.fetch(req, { server: bunServer }),
-    });
-    try {
-      const url = `http://127.0.0.1:${server.port}/api/recipes`;
-      const enveloped = await request(url, 9 * 1024 * 1024);
-      expect(enveloped.status).toBe(413);
-      expect(enveloped.headers.get("access-control-allow-origin")).toBe(WEB);
-      expect(enveloped.headers.get("x-request-id")).toBeTruthy();
-      expect(await enveloped.json()).toMatchObject({ error: "payload_too_large" });
-
-      // The documented exception: Bun refuses a declared length over its cap
-      // before the application runs (413, or a bare 400 on a reused connection
-      // in the Bun 1.3.6 image), so there is no envelope or request ID.
-      const ceiling = await request(url, 17 * 1024 * 1024);
-      expect(ceiling.status).toBe(413);
-      expect(ceiling.headers.get("x-request-id")).toBeTruthy();
-      expect(await ceiling.json()).toMatchObject({ error: "payload_too_large" });
-
-      const native = await request(url, NATIVE_BODY_CAP_BYTES + 1);
-      expect([400, 413]).toContain(native.status);
-      expect(native.headers.get("x-request-id")).toBeNull();
-      expect(await native.text()).toBe("");
-    } finally {
-      await server.stop(true);
+    for (const bytes of [9 * 1024 * 1024, 17 * 1024 * 1024]) {
+      const response = await app.request("/api/recipes", {
+        method: "POST",
+        headers: { origin: WEB, "content-type": "application/json", "content-length": String(bytes), ...signedIn },
+        body: new Uint8Array(bytes),
+      });
+      expect(response.status).toBe(413);
+      expect(response.headers.get("access-control-allow-origin")).toBe(WEB);
+      expect(response.headers.get("x-request-id")).toBeTruthy();
+      expect(await response.json()).toMatchObject({ error: "payload_too_large" });
+    }
+    for (const [path, origin] of [
+      ["/api/recipes", "https://foreign.test"],
+      ["/api/webhooks/clerk", WEB],
+      ["/api/v1/projects", WEB],
+      ["/mcp", WEB],
+    ]) {
+      const response = await app.request(path, {
+        method: "POST",
+        headers: { origin, "content-length": String(17 * 1024 * 1024) },
+        body: new Uint8Array(1),
+      });
+      expect(response.status).toBe(413);
+      expect(response.headers.get("access-control-allow-origin")).toBeNull();
     }
   });
 });

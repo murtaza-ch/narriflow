@@ -50,15 +50,18 @@ export function routeBodyLimit(fallback: BodyLimitClass = "control"): Middleware
 /**
  * Refuses a declared Content-Length above the ordinary ceiling before anything
  * reads the body, for every route except one that declared `providerResult`.
- * Bun's native cap is sized for that class, so this keeps every other route's
- * effective ceiling where it was, including routes (MCP) with no limiter of
- * their own.
+ * This also bounds routes (MCP) with no limiter of their own. Allowed first-party
+ * origins can read the refusal even though this runs before their CORS chain.
  */
-export function ingressCeiling(): MiddlewareHandler<ApiEnv> {
+export function ingressCeiling(
+  refusalHeaders: (request: Request) => Record<string, string> = () => ({}),
+): MiddlewareHandler<ApiEnv> {
   return async (c, next) => {
     const declared = Number(c.req.raw.headers.get("content-length"));
     if (declared > ORDINARY_BODY_CAP_BYTES && declaredClass(matchedRoutes(c)) !== "providerResult") {
-      return payloadTooLargeResponse(requestIdOf(c));
+      const response = payloadTooLargeResponse(requestIdOf(c));
+      for (const [name, value] of Object.entries(refusalHeaders(c.req.raw))) response.headers.set(name, value);
+      return response;
     }
     await next();
   };

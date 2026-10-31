@@ -86,7 +86,7 @@ function isFirstPartyPath(pathname: string): boolean {
 }
 
 /**
- * Headers that make an ingress refusal (414/431 before routing, 503 while
+ * Headers that make an ingress refusal (413/414/431 before routing, 503 while
  * draining) readable by an allowed first-party browser origin, so the typed
  * error and request ID reach the app instead of an opaque network failure.
  * Never added for other origins, other credential models (REST, MCP,
