@@ -52,6 +52,9 @@ export function createWorkerExecutionScheduler(bindings: ApiWorkerBindings): Exe
     async deliver(delivery) {
       const reference = executionDispatchReferenceSchema.parse(delivery.reference);
       assertMetadataBound(delivery.reference);
+      // Restore metadata can advance while every physical consumer remains
+      // stopped. A refused dispatch stays pending; it is never acknowledged.
+      if (bindings.ADMISSION_STATE === "fenced" && (reference.kind === "modal_execution" || reference.kind === "local_fetch")) throw new ExecutionDispatchError("scheduler_unavailable");
       if (bindings.DEV_CLOUD) return bindings.DEV_CLOUD.dispatch(reference);
       if (reference.kind === "project_progress") {
         const database = getPrismaClient();

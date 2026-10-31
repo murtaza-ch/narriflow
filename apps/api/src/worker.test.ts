@@ -16,6 +16,22 @@ test("static liveness needs neither configuration nor a database", async () => {
   expect(getPrismaClient()).toBeNull();
 });
 
+test("fenced restore reports its deployed version without runtime work and blocks every callback", async () => {
+  let constructed = 0;
+  const worker = createApiWorker({ createApp: () => { constructed++; throw Error("Fenced runtime must stay closed"); },
+    createScope: () => { constructed++; throw Error("Fenced database must stay closed"); } });
+  const fenced = { ADMISSION_STATE: "fenced", CF_VERSION_METADATA: { id: "fenced-version" } } as ApiWorkerBindings;
+  const response = await worker.fetch(new Request("https://api.test/api/health"), fenced, context);
+  expect(await response.json()).toEqual({ ok: true, service: "narriflow-api", version: "fenced-version", admissionState: "fenced" });
+  expect(response.headers.get("Cache-Control")).toBe("no-store");
+  for (const [method, path] of [["GET", "/api/ready"], ["POST", "/api/execution/command"], ["POST", "/api/execution/transfer"],
+    ["POST", "/api/webhooks/stripe"], ["POST", "/api/webhooks/elevenlabs"], ["POST", "/api/dev-device/reconcile"],
+    ["GET", "/api/progress/00000000-0000-4000-8000-000000000000"], ["POST", "/api/ingest/link"]]) {
+    expect((await worker.fetch(new Request(`https://api.test${path}`, { method }), fenced, context)).status).toBe(503);
+  }
+  expect(constructed).toBe(0);
+});
+
 test("closed cutover admission refuses requests before runtime or database construction", async () => {
   const worker = createApiWorker({ createApp: () => { throw new Error("Closed admission must not construct the runtime"); } });
   const closed = { ADMISSION_STATE: "closed" } as ApiWorkerBindings;
