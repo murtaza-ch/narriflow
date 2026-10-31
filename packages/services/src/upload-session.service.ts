@@ -337,6 +337,7 @@ export interface UploadSessionPersistence {
     updatedAt: Date;
   }): Promise<UploadSessionRecord>;
   findDueReconciliation(input: {
+    sessionId?: string;
     now: Date;
     limit: number;
   }): Promise<UploadSessionRecord[]>;
@@ -2500,11 +2501,12 @@ export function createUploadSessionModule(
       return handoffInline(finalizing, object);
     },
 
-    async reconcileDueSessions() {
+    async reconcileDueSessions(target?: {sessionId:string;beforeProvider?(session:UploadSessionRecord):Promise<void>}) {
       const selectionNow = dependencies.now();
       const due = await dependencies.persistence.findDueReconciliation({
         now: selectionNow,
-        limit: dependencies.config.reconciliationBatchSize,
+        limit: target?1:dependencies.config.reconciliationBatchSize,
+        ...(target?{sessionId:target.sessionId}:{}),
       });
       let claimed = 0;
       let settled = 0;
@@ -2524,6 +2526,7 @@ export function createUploadSessionModule(
         if (!claim.claimed) return;
         claimed += 1;
         const session = claim.session;
+        await target?.beforeProvider?.(session);
         const attemptStartedAtMs = dependencies.now().getTime();
         let providerOperation:
           | "head"
@@ -3879,9 +3882,10 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
     }
     return fromPrismaUploadSession(row);
   },
-  async findDueReconciliation({ now, limit }) {
+  async findDueReconciliation({ now, limit,sessionId }) {
     const rows = await requiredPrisma().uploadSession.findMany({
       where: {
+        ...(sessionId?{id:sessionId}:{}),
         OR: [
           {
             status: "uploading",
@@ -4618,6 +4622,9 @@ export class UploadSessionService {
     return result;
   }
 
+  async reconcileSession(sessionId:string,beforeProvider:(session:UploadSessionRecord)=>Promise<void>) {
+    return productionUploadSessionModule().reconcileDueSessions({sessionId,beforeProvider});
+  }
   async reconcileDueSessions() {
     return productionUploadSessionModule().reconcileDueSessions();
   }
