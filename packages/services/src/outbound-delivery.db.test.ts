@@ -689,4 +689,84 @@ suite("Fenced notification deliveries", () => {
 			).status,
 		).toBe("cancelled");
 	});
+	test("a sealed active body does not depend on retained event bytes during replay; expiry cancels before any native start", async () => {
+		const f = await fixture();
+		await events(f, 1);
+		const first = await f.service.prepareSubscription(f.sub.id);
+		if (first.kind !== "accepted") throw new Error("Missing delivery");
+		await db.workspaceEvent.deleteMany({
+			where: { workspaceId: f.scope.workspaceId },
+		});
+		expect(await f.service.prepareSubscription(f.sub.id)).toEqual(first);
+		const row = await db.outboundDelivery.findUniqueOrThrow({
+			where: { id: first.deliveryId },
+		});
+		const dispatch = await db.executionDispatch.findFirstOrThrow({
+			where: {
+				kind: "operation_driver",
+				subjectKind: "outbound_delivery",
+				subjectId: row.id,
+				generation: row.generation,
+				wakeKind: null,
+				deadlineKind: null,
+			},
+		});
+		expect(
+			(
+				await f.service.prepareExecution(
+					(await readExecutionDispatch(db, dispatch.id))!.reference,
+				)
+			).kind,
+		).toBe("terminal");
+		const current = await db.outboundDelivery.findUniqueOrThrow({
+			where: { id: row.id },
+		});
+		expect(current.status).toBe("cancelled");
+		expect(current.chargedAttempts).toBe(0);
+		const sub = await db.webhookSubscription.findUniqueOrThrow({
+			where: { id: f.sub.id },
+		});
+		expect(sub.disabledReason).toBe("cursor_expired");
+		expect(sub.lastDeliveredSeq).toBe(0n);
+	});
+	test.each([
+		"social_post.proposed",
+		"social_post.finished",
+	])("a current key that loses publishing:read cannot authorize a %s test", async (type) => {
+		const f = await fixture();
+		await db.webhookSubscription.update({
+			where: { id: f.sub.id },
+			data: { types: [type] },
+		});
+		const key = await db.apiKey.create({
+			data: {
+				workspaceId: f.scope.workspaceId,
+				userId: f.scope.actorUserId,
+				createdByUserId: f.scope.actorUserId,
+				name: "Publishing test",
+				prefix: `gate_${crypto.randomUUID()}`,
+				hashedSecret: "gate",
+				scopes: ["processing:write", "publishing:read"],
+			},
+		});
+		const accepted = await f.service.admitTest(
+			f.scope,
+			f.sub.id,
+			"publishing-scope",
+			{ capability: "processing.consume", apiKeyId: key.id },
+		);
+		const x = await executeFixture(f, accepted.deliveryId);
+		await x.command({ action: "process-start", fence: x.fence });
+		await db.apiKey.update({
+			where: { id: key.id },
+			data: { scopes: ["processing:write"] },
+		});
+		await expect(x.control.authorize(x.fence)).rejects.toMatchObject({
+			code: "authority_lost",
+		});
+		expect(
+			(await x.command({ action: "read-disposition", fence: x.fence }))
+				.disposition,
+		).toBe("cancelled");
+	});
 });

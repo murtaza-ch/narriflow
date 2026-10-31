@@ -7,6 +7,7 @@ import {
 } from "@prisma/client";
 import {
 	hasFeature,
+	WORKSPACE_EVENT_PUBLISHING_TYPES,
 	roleHasWorkspaceCapability,
 	workspaceAllowsCapability,
 } from "@narriflow/validators";
@@ -451,7 +452,14 @@ export class OutboundDeliveryService
 			const known = await tx.outboundDelivery.findUnique({
 				where: { requestFingerprint: fingerprint },
 			});
-			if (known) return { row: known, bytes: await this.bytes(tx, known) };
+			if (known)
+				return {
+					row: known,
+					bytes:
+						known.status === "preparing"
+							? await this.bytes(tx, known)
+							: new Uint8Array(),
+				};
 			const at = await clock(tx);
 			if (sub.lastTestedAt && sub.lastTestedAt.getTime() > at.getTime() - 5000)
 				throw new OutboundDeliveryError("webhook_test_throttled");
@@ -547,7 +555,14 @@ export class OutboundDeliveryService
 					status: { in: active },
 				},
 			});
-			if (known) return { row: known, bytes: await this.bytes(tx, known) };
+			if (known)
+				return {
+					row: known,
+					bytes:
+						known.status === "preparing"
+							? await this.bytes(tx, known)
+							: new Uint8Array(),
+				};
 			const at = await clock(tx);
 			if (!callback.payload) {
 				if (!status)
@@ -627,7 +642,10 @@ export class OutboundDeliveryService
 				return {
 					kind: "body" as const,
 					row: known,
-					bytes: await this.bytes(tx, known),
+					bytes:
+						known.status === "preparing"
+							? await this.bytes(tx, known)
+							: new Uint8Array(),
 				};
 			if (!(await this.entitled(tx, sub.workspaceId))) {
 				const dueAt = new Date(at.getTime() + holdMs);
@@ -799,7 +817,9 @@ export class OutboundDeliveryService
 						key.workspaceId !== row.workspaceId ||
 						(key.createdByUserId ?? key.userId) !== row.createdByUserId ||
 						!key.scopes.includes("processing:write") ||
-						(sub.types.includes("social_post.finished") &&
+						(WORKSPACE_EVENT_PUBLISHING_TYPES.some((type) =>
+							sub.types.includes(type),
+						) &&
 							!key.scopes.includes("publishing:read"))
 					)
 						return "cancel";

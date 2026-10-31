@@ -14,8 +14,8 @@
   "gates": {
     "postgres": {
       "freshMigrations": 134,
-      "tests": 11,
-      "assertions": 150,
+      "tests": 14,
+      "assertions": 160,
       "target": "guarded dedicated local PG17 disposable schema"
     },
     "workerBundle": {
@@ -49,8 +49,8 @@
     },
     "combinedPostIntegrationPostgres": {
       "freshMigrations": 134,
-      "tests": 118,
-      "assertions": 765,
+      "tests": 121,
+      "assertions": 775,
       "files": 18,
       "target": "guarded dedicated local PG17 disposable schema"
     },
@@ -83,7 +83,8 @@
     "inactive plan holds with durable timer and no renewable coordinator lease",
     "missing signing secrets count as policy failures with zero native charges",
     "REST test admits processing.consume and freezes API key ID; browser admits api.manage; key revocation withdraws native authority",
-    "guarded native DNS resolves/pins every attempt with no redirects or environment proxies"
+    "guarded native DNS resolves/pins every attempt with no redirects or environment proxies",
+    "Sealed body replay survives feed-byte purge; retention disables authority before any native start. Both publishing event types recheck current API-key scopes."
   ],
   "remaining": [
     "Root Workflow/HTTP executor composition and all terminal/event producer wakes",
