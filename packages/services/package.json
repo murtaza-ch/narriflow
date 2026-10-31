@@ -631,7 +631,8 @@
     "./publication-producers": "./src/publication-producers.ts",
     "./publication-observations": "./src/publication-observations.ts",
     "./publication-observations-runtime": "./src/publication-observations-runtime.ts",
-    "./performance-capture-contract": "./src/performance-capture-contract.ts"
+    "./performance-capture-contract": "./src/performance-capture-contract.ts",
+    "./social-provider-http": "./src/social-provider-http.ts"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",

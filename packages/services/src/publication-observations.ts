@@ -1,3 +1,4 @@
+import {fetchSocialProvider} from "./social-provider-http";
 import { createHash, randomUUID } from "node:crypto";
 import {
 	Prisma,
@@ -310,7 +311,7 @@ export function createPublicationObservations(options: {
 	const db = options.database;
 	const safeFetch = (async (input, init) =>
 		bounded(
-			await options.fetch(input, { ...init, redirect: "error" }),
+			await fetchSocialProvider(input,init,options.fetch),
 		)) as typeof fetch;
 	async function ownedReceipt(
 		tx: Tx,
