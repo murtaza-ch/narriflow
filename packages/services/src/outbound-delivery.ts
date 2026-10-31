@@ -1,3 +1,4 @@
+import {appendWebhookDisabledNotificationIntent} from "./notification-execution";
 import { admitMediaCleanupObligations } from "./media-cleanup-admission";
 import { lockPlannedMediaCleanupObject } from "./execution-object-cleanup";
 import { createHash, createHmac, randomUUID } from "node:crypto";
@@ -620,7 +621,7 @@ export class OutboundDeliveryService
 				where: { id },
 			});
 			const at = await clock(tx);
-			if (sub.status !== "active") return { kind: "terminal" as const };
+			if (sub.status !== "active") {if(sub.status==="disabled")await appendWebhookDisabledNotificationIntent(tx,sub);return { kind: "terminal" as const };}
 			const known = await tx.outboundDelivery.findFirst({
 				where: {
 					targetKind: "webhook_event",
@@ -734,17 +735,19 @@ export class OutboundDeliveryService
 		reason: string,
 		at: Date,
 	) {
-		await tx.webhookSubscription.update({
+		if(sub.status==="disabled"){await appendWebhookDisabledNotificationIntent(tx,sub);return;}
+		const disabled=await tx.webhookSubscription.update({
 			where: { id: sub.id },
 			data: {
 				status: "disabled",
+        disableRevision:{increment:1},
 				disabledReason: reason,
 				disabledAt: at,
-				disabledNotifiedAt: null,
 				leaseOwner: null,
 				leaseExpiresAt: null,
 			},
 		});
+    await appendWebhookDisabledNotificationIntent(tx,disabled);
 	}
 	private async policy(
 		tx: Tx,

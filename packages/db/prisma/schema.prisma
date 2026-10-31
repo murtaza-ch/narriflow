@@ -1169,6 +1169,7 @@ model Workspace {
   generationFinishings       GenerationFinishing[]
   standingGrants             StandingGrant[]
   grantPauseNotifications    GrantPauseNotificationLedger[]
+  webhookDisabledNotifications WebhookDisabledNotificationLedger[]
   reviewerOptOuts            ReviewerOptOut[]
   billingAccount             WorkspaceBillingAccount?
 
@@ -3306,8 +3307,9 @@ model WebhookSubscription {
   /// consecutive_failures | cursor_expired | endpoint_gone
   disabledReason      String?
   disabledAt          DateTime?
-  /// Set when the creator's email was attempted; a skipped send clears it.
-  disabledNotifiedAt  DateTime?
+  /// Immutable disable-cycle identity; re-enabling never resets it.
+  disableRevision Int @default(0)
+  disabledNotifications WebhookDisabledNotificationLedger[]
   /// Set by re-enabling: the next drain moves the cursor past events that
   /// expired while the subscription was disabled, then clears it.
   skipExpiredOnResume Boolean   @default(false)
@@ -3871,5 +3873,37 @@ model GrantPauseNotificationLedger {
  grant StandingGrant @relation(fields:[grantId],references:[id],onDelete:Cascade)
  pauseEvent StandingGrantEvent @relation(fields:[pauseEventId],references:[id],onDelete:Cascade)
  @@unique([grantId,grantRevision])
+ @@index([deploymentEpoch,createdAt,id])
+}
+
+/// One notice per accepted disabled-subscription cycle. The shared mail executor
+/// owns its sealed body, fixed deadline and bounded provider submissions.
+model WebhookDisabledNotificationLedger {
+ id String @id @default(uuid()) @db.Uuid
+ workspaceId String @db.Uuid
+ webhookId String @db.Uuid
+ disableRevision Int
+ reason String
+ urlHost String
+ status String @default("pending")
+ deploymentEpoch Int @default(1)
+ generation Int @default(1)
+ claimToken String? @db.Uuid
+ operationDeadlineAt DateTime @default(dbgenerated("(CURRENT_TIMESTAMP + '23 hours'::interval)"))
+ deliveryInputEncrypted String?
+ deliveryInputHash String?
+ deliveryContextFingerprint String?
+ submissionStartedAt DateTime?
+ leaseExpiresAt DateTime?
+ attemptCount Int @default(0)
+ nextAttemptAt DateTime @default(now())
+ failureCode String?
+ providerMessageId String?
+ sentAt DateTime?
+ createdAt DateTime @default(now())
+ updatedAt DateTime @updatedAt
+ workspace Workspace @relation(fields:[workspaceId],references:[id],onDelete:Cascade)
+ webhook WebhookSubscription @relation(fields:[webhookId],references:[id],onDelete:Cascade)
+ @@unique([webhookId,disableRevision])
  @@index([deploymentEpoch,createdAt,id])
 }

@@ -2,11 +2,8 @@ import { getPrismaClient } from "@narriflow/db/client";
 import { getOutboundDeliveryService } from "./outbound-delivery-runtime";
 import type { ActorScope } from "./actor-scope";
 import {
-  createWebhookDisabledNotifier,
   createWebhookSubscriptions,
   type WebhookCredential,
-  type WebhookDisabledNotice,
-  type WebhookNoticeResult,
   type WebhookSubscriptions,
 } from "./webhook-subscription";
 
@@ -30,32 +27,3 @@ export const webhookSubscriptions = {
   test: (...args: Parameters<WebhookSubscriptions["test"]>) => service().test(...args),
   testStatus: (...args: Parameters<WebhookSubscriptions["testStatus"]>) => service().testStatus(...args),
 };
-
-const REASON_TEXT = {
-  consecutive_failures: "Narriflow could not deliver 20 events in a row",
-  cursor_expired: "Delivery fell more than 30 days behind, so events expired before they were sent",
-  endpoint_gone: "The endpoint answered 410 Gone",
-  delivery_attempts_exhausted: "The delivery used its 20 native attempts before acknowledgment; re-enable it to retry",
-} as const;
-
-/** Emails the person who should hear about a disabled subscription. Nothing sent for a reason that
- * configuration can fix is `sent: false`, so the notice stays due. */
-async function emailDisabledNotice(appBaseUrl: string | null, notice: WebhookDisabledNotice): Promise<WebhookNoticeResult> {
-  if (!appBaseUrl) return { sent: false, reason: "app_base_url_missing" };
-  const email = await import("@narriflow/email/worker");
-  const template = email.webhookDisabled({
-    urlHost: notice.urlHost,
-    reason: REASON_TEXT[notice.reason],
-    settingsLink: new URL("/settings/api#webhooks", appBaseUrl).toString(),
-  });
-  const result = await email.sendEmail({ to: notice.to, ...template });
-  if (result.sent) return { sent: true };
-  if (result.error) throw new Error("Email provider refused the webhook notice");
-  return { sent: false, reason: result.reason ?? "email_not_sent" };
-}
-
-
-/** The Workflow invokes one identifier and persists a returned sleep. */
-export function notifyDisabledWebhook(id:string,appBaseUrl:string|null){
- return createWebhookDisabledNotifier({prisma:requiredPrisma(),send:notice=>emailDisabledNotice(appBaseUrl,notice)}).notify(id);
-}
