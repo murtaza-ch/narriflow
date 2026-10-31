@@ -643,6 +643,7 @@ model WorkflowRun {
   renderVariants ClipRender[]
   renderGroups   RenderGroup[]
   exportBundle   ExportBundle?
+  dub            ClipDub?
   ingestHandoffs IngestJob[]          @relation("IngestJobGenerationRun")
   selectionWindows ClipSelectionWindow[]
   finishing      GenerationFinishing?
@@ -2208,11 +2209,19 @@ model ClipDub {
   completedAt        DateTime?
   createdAt          DateTime        @default(now())
   updatedAt          DateTime        @updatedAt
+  /// Accepted request provenance. The Workflow Run owns all execution authority.
+  workflowRunId      String?         @unique @db.Uuid
+  frozenRequest      Json?
+  requestHash        String?
+  operationDeadlineAt DateTime?
 
   project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  clip    Clip    @relation(fields: [clipId], references: [id], onDelete: Cascade)
+  clip    Clip    @relation(fields: [clipId, projectId], references: [id, projectId], onDelete: Cascade)
+  workflowRun WorkflowRun? @relation(fields: [workflowRunId, projectId], references: [id, projectId], onDelete: Cascade)
 
-  @@unique([clipId, targetLanguageCode, voice, aspectRatio])
+  // A raw partial unique index permits immutable known-failed request history.
+  @@unique([workflowRunId, projectId])
+  @@index([clipId, targetLanguageCode, voice, aspectRatio, createdAt, id], map: "ClipDub_tuple_history_idx")
   @@index([projectId, status, createdAt])
   @@index([clipId, status])
 }

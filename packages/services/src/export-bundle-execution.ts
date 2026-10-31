@@ -60,7 +60,7 @@ export class ExportBundleExecution extends WorkflowRunLifecycle {
     if(!initial||initial.stage!=="export_bundle")return null;
     const locked=await super.lockExecution(tx,reference,initial.attemptId??reference.dispatchId);
     if(locked.kind!=="current"){
-      if(['failed','cancelled'].includes(locked.disposition.disposition)){
+      if(['failed','cancelled','superseded'].includes(locked.disposition.disposition)){
         const run=await tx.workflowRun.findUniqueOrThrow({where:{id:initial.id}});
         await tx.$queryRaw`SELECT id FROM "ExportBundle" WHERE "workflowRunId"=${run.id}::uuid FOR UPDATE`;
         const bundle=await tx.exportBundle.findUnique({where:{workflowRunId:run.id},include:{operation:{select:{projectId:true,workflowRunId:true}}}});
@@ -69,7 +69,7 @@ export class ExportBundleExecution extends WorkflowRunLifecycle {
           const [clock]=await tx.$queryRaw<Array<{now:Date}>>`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS now`;
           if(!clock)return invalid();
           const state={run,bundle,now:clock.now,manifest:exportBundleManifestSchema.parse(bundle.manifest),variants:[]};
-          const errorCode=run.errorCode??(run.status==='cancelled'?'export_bundle_cancelled':run.status==='failed'?'export_bundle_parent_failed':'export_bundle_source_failed');
+          const errorCode=run.errorCode??(run.status==='cancelled'?'export_bundle_cancelled':run.status==='failed'?'export_bundle_parent_failed':locked.disposition.disposition==='superseded'?'export_bundle_source_superseded':'export_bundle_source_failed');
           if(['queued','running','waiting'].includes(run.status))await this.finishFailure(tx,state,reference,errorCode);
           else{
             await this.projectFailure(tx,state,errorCode,false);
@@ -82,12 +82,9 @@ export class ExportBundleExecution extends WorkflowRunLifecycle {
     }
     await tx.$queryRaw`SELECT id FROM "ExportBundle" WHERE "workflowRunId"=${initial.id}::uuid FOR UPDATE`;
     const run=await tx.workflowRun.findUniqueOrThrow({where:{id:initial.id}});
-    let bundle=await tx.exportBundle.findUnique({where:{workflowRunId:run.id},include:{operation:{select:{projectId:true,workspaceId:true,workflowRunId:true,actorUserId:true}}}});
+    const bundle=await tx.exportBundle.findUnique({where:{workflowRunId:run.id},include:{operation:{select:{projectId:true,workspaceId:true,workflowRunId:true,actorUserId:true}}}});
     const [clock]=await tx.$queryRaw<Array<{now:Date}>>`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS now`;
     if(!bundle||!clock||bundle.operation.projectId!==run.projectId||bundle.operation.workflowRunId!==run.id)return null;
-    if(bundle.deploymentEpoch<run.deploymentEpoch&&run.status==='queued'&&!run.attemptId&&!run.leaseOwner&&!run.leaseExpiresAt){
-      bundle=await tx.exportBundle.update({where:{id:bundle.id},data:{deploymentEpoch:run.deploymentEpoch,status:'queued',attemptStorageKey:null,inputBindingHash:null,inputStorageKey:null,inputEtag:null,inputByteLength:null,inputChecksumSha256:null,operationDeadlineAt:new Date(clock.now.getTime()+45*60_000)},include:{operation:{select:{projectId:true,workspaceId:true,workflowRunId:true,actorUserId:true}}}});
-    }
     if(bundle.deploymentEpoch!==run.deploymentEpoch||['completed','failed','expired'].includes(bundle.status))return null;
     const manifest=exportBundleManifestSchema.parse(bundle.manifest);
     if(manifest.operationId!==bundle.operationId||manifest.projectId!==run.projectId)return invalid();

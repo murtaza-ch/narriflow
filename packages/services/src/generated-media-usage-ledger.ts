@@ -19,7 +19,7 @@ import { hasFeature, PlanRequirementError } from "./plan-features";
  * per UTC month on paid plans, or for the Workspace's lifetime under Free's
  * `trial_metered` sample; dubs count per UTC month. Each kind has its own
  * allowance. A reservation keeps its admission period; only a deliberate
- * dub re-admission moves it to the current period.
+ * every deliberately repeated dub has its own reservation and period.
  */
 
 type Tx = Prisma.TransactionClient;
@@ -131,9 +131,8 @@ async function requireAllowance(
 /**
  * Reserves one count for `jobId` inside the caller's transaction, after taking
  * the Workspace generation lock. A replay of a live or finalized reservation
- * returns it unchanged. `readmit` is the deliberate re-request of a dub whose
- * earlier attempt failed: its reservation (released, or still reserved while
- * the failure settles) moves to the current period after a fresh allowance check.
+ * returns it unchanged. A deliberately repeated known failed request receives
+ * a new subject ID, preserving the prior reservation's period and outcome.
  */
 export async function reserveGenerationUsage(
   tx: Tx,
@@ -145,7 +144,6 @@ export async function reserveGenerationUsage(
     pricingTier: string;
     now: Date;
     attached: boolean;
-    readmit?: boolean;
   },
 ): Promise<{ reservationId: string }> {
   await lockGenerationUsage(tx, input.workspaceId);
@@ -159,14 +157,11 @@ export async function reserveGenerationUsage(
   if (existing && (existing.kind !== input.kind || existing.workspaceId !== input.workspaceId)) {
     throw new GeneratedMediaJobError("generated_media_usage_reconciliation_required");
   }
-  if (existing && !input.readmit) {
+  if (existing) {
     if (existing.status === "released") {
       throw new GeneratedMediaJobError("generated_media_usage_reconciliation_required");
     }
     return { reservationId: existing.id };
-  }
-  if (existing?.status === "finalized") {
-    throw new GeneratedMediaJobError("generated_media_usage_reconciliation_required");
   }
   await requireAllowance(tx, {
     kind: input.kind,
@@ -174,7 +169,6 @@ export async function reserveGenerationUsage(
     tier,
     policy,
     periodStart,
-    excludeJobId: existing?.id ? input.jobId : undefined,
   });
   const data = {
     actorUserId: input.actorUserId,
@@ -186,9 +180,7 @@ export async function reserveGenerationUsage(
     settledAt: null,
     attachedAt: input.attached ? input.now : null,
   };
-  const reservation = existing
-    ? await tx.generatedMediaUsageReservation.update({ where: { id: existing.id }, data, select: { id: true } })
-    : await tx.generatedMediaUsageReservation.create({
+  const reservation = await tx.generatedMediaUsageReservation.create({
         data: { ...data, jobId: input.jobId, kind: input.kind, workspaceId: input.workspaceId },
         select: { id: true },
       });
@@ -394,7 +386,7 @@ async function settleCandidate(
   }
   const dub = await tx.clipDub.findUnique({
     where: { id: candidate.jobId },
-    select: { status: true, projectId: true, errorCode: true },
+    select: { status: true, workflowRunId: true, errorCode: true },
   });
   // The dub was deleted with its Clip or Project while counted. Provider work
   // may have run, so the count is kept rather than refunded.
@@ -402,10 +394,10 @@ async function settleCandidate(
   if (dub.status === "completed") return { action: "finalized", reason: "dub_completed_reconciled" };
   if (dub.status !== "failed") return null;
   // A failed dub under a live run may still be requeued by its retry.
-  const liveRun = await tx.workflowRun.findFirst({
-    where: { projectId: dub.projectId, stage: "dubbing", status: { in: [...LIVE_RUN] } },
+  const liveRun = dub.workflowRunId ? await tx.workflowRun.findFirst({
+    where: { id: dub.workflowRunId, stage: "dubbing", status: { in: [...LIVE_RUN] } },
     select: { id: true },
-  });
+  }) : null;
   if (liveRun) return null;
   return { action: "released", reason: dub.errorCode ?? "dub_failed" };
 }

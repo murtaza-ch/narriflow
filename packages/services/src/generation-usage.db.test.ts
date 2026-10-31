@@ -88,6 +88,7 @@ dbDescribe("Generation usage PostgreSQL contracts", () => {
         workspaceId,
         createdByUserId,
         ingestStatus: "ready",
+        sourceDurationSeconds: 10,
       },
     });
     const detection = await prisma.workflowRun.create({
@@ -131,6 +132,7 @@ dbDescribe("Generation usage PostgreSQL contracts", () => {
         status: "completed",
         storageKey: `fixtures/${randomUUID()}/base.mp4`,
         durationSec: renderSeconds,
+        sizeBytes: 3n,
       },
     });
     return { project, clip };
@@ -183,7 +185,7 @@ dbDescribe("Generation usage PostgreSQL contracts", () => {
     audioSizeBytes: 10n,
     renderSizeBytes: 20n,
     durationSec: 10,
-    model: "test",
+    model: "gpt-4o-mini-tts",
     errorCode: null,
     completedAt: new Date(),
   });
@@ -463,21 +465,23 @@ dbDescribe("Generation usage PostgreSQL contracts", () => {
       await prisma.generatedMediaUsageReservation.findUniqueOrThrow({ where: { jobId: first.dub.id } }),
     ).toMatchObject({ status: "released", periodStart: previousPeriod });
 
-    // With room this month, the same dub is re-admitted on its one reservation row.
+    // With room this month, a new accepted row preserves the old reservation history.
     await prisma.generatedMediaUsageReservation.deleteMany({ where: { workspaceId: ws.id, jobId: { not: first.dub.id } } });
     await prefill({ workspaceId: ws.id, kind: "dub", count: 9 });
     const again = await dubbingService.requestClipDub(scope, project.id, randomUUID(), dubInput(clip.id));
-    expect(again.dub).toMatchObject({ id: first.dub.id, status: "queued" });
+    expect(again.dub.status).toBe("queued");
+    expect(again.dub.id).not.toBe(first.dub.id);
     expect(again.workflowRunId).not.toBe(first.workflowRunId);
     expect(
-      await prisma.generatedMediaUsageReservation.findUniqueOrThrow({ where: { jobId: first.dub.id } }),
+      await prisma.generatedMediaUsageReservation.findUniqueOrThrow({ where: { jobId: again.dub.id } }),
     ).toMatchObject({ status: "reserved", periodStart: currentPeriod, reason: null });
+    expect(await prisma.generatedMediaUsageReservation.findUniqueOrThrow({ where: { jobId: first.dub.id } })).toMatchObject({ status: "released", periodStart: previousPeriod });
     expect((await summarizeGenerationUsage(ws.id)).dubs).toMatchObject({ used: 10, remaining: 0 });
 
     // A failure still settling (reserved from last month) is not a free pass either.
     await prisma.workflowRun.update({ where: { id: again.workflowRunId! }, data: { status: "failed" } });
-    await prisma.clipDub.update({ where: { id: first.dub.id }, data: { status: "failed" } });
-    await prisma.generatedMediaUsageReservation.update({ where: { jobId: first.dub.id }, data: { periodStart: previousPeriod } });
+    await prisma.clipDub.update({ where: { id: again.dub.id }, data: { status: "failed" } });
+    await prisma.generatedMediaUsageReservation.update({ where: { jobId: again.dub.id }, data: { periodStart: previousPeriod } });
     await prefill({ workspaceId: ws.id, kind: "dub", count: 1 });
     await expect(
       dubbingService.requestClipDub(scope, project.id, randomUUID(), dubInput(clip.id)),
@@ -546,32 +550,24 @@ dbDescribe("Generation usage PostgreSQL contracts", () => {
 
     // A permanent failure of the run releases the count in the same transaction.
     const retried = await dubbingService.requestClipDub(scope, project.id, randomUUID(), dubInput(clip.id));
-    expect(retried.dub.id).toBe(admitted.dub.id);
+    expect(retried.dub.id).not.toBe(admitted.dub.id);
     ({ lifecycle, attempt } = await claimOnly(retried.workflowRunId!));
-    expect((await lifecycle.markDubProcessing(attempt, admitted.dub.id)).count).toBe(1);
-    await lifecycle.failDub(attempt, admitted.dub.id, "openai_tts_failed");
+    expect((await lifecycle.markDubProcessing(attempt, retried.dub.id)).count).toBe(1);
+    await lifecycle.failDub(attempt, retried.dub.id, "openai_tts_failed");
     await lifecycle.failAttempt(attempt, new WorkflowFailure("dubbing_failed", "permanent", "failed"));
     expect(
-      await prisma.generatedMediaUsageReservation.findUniqueOrThrow({ where: { jobId: admitted.dub.id } }),
+      await prisma.generatedMediaUsageReservation.findUniqueOrThrow({ where: { jobId: retried.dub.id } }),
     ).toMatchObject({ status: "released", reason: "dubbing_failed" });
   })));
 
   test("a partial run releases its failed dub, but not one re-admitted before the release", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const { owner, workspace: ws } = await workspace("pro", "dub-partial");
-    const { project, clip } = await dubbableProject(ws.id, owner.id);
+    let { project, clip } = await dubbableProject(ws.id, owner.id);
     const scope = { actorUserId: owner.id, workspaceId: ws.id };
     const runPartial = async () => {
       const admitted = await dubbingService.requestClipDub(scope, project.id, randomUUID(), dubInput(clip.id));
       // A second tuple accepted into the same run.
-      const sibling = await prisma.clipDub.upsert({
-        where: {
-          clipId_targetLanguageCode_voice_aspectRatio: {
-            clipId: clip.id, targetLanguageCode: "fr", voice: "marin", aspectRatio: "ratio_9_16",
-          },
-        },
-        create: { projectId: project.id, clipId: clip.id, aspectRatio: "ratio_9_16", targetLanguageCode: "fr", voice: "marin", model: "test" },
-        update: { status: "queued", workflowAttemptId: null },
-      });
+      const sibling = await prisma.clipDub.create({ data: { projectId: project.id, clipId: clip.id, aspectRatio: "ratio_9_16", targetLanguageCode: "fr", voice: "marin", model: "test" } });
       await prisma.generatedMediaUsageReservation.upsert({
         where: { jobId: sibling.id },
         create: { jobId: sibling.id, kind: "dub", workspaceId: ws.id, policy: "metered", periodStart: currentPeriod, attachedAt: new Date() },
@@ -594,20 +590,21 @@ dbDescribe("Generation usage PostgreSQL contracts", () => {
     ).toMatchObject({ status: "released", reason: "dub_failed" });
 
     // Interleaved: the run settles, the user re-requests the failed dub, then the release step runs.
-    await prisma.clipDub.updateMany({ where: { projectId: project.id }, data: { status: "failed" } });
+    ({ project, clip } = await dubbableProject(ws.id, owner.id));
     const second = await runPartial();
     await second.lifecycle.completeAggregateStage(second.attempt, { requestedCount: 2, succeededCount: 1, failedCount: 1 });
     const readmitted = await dubbingService.requestClipDub(scope, project.id, randomUUID(), dubInput(clip.id));
-    expect(readmitted.dub).toMatchObject({ id: second.admitted.dub.id, status: "queued" });
+    expect(readmitted.dub.status).toBe("queued");
+    expect(readmitted.dub.id).not.toBe(second.admitted.dub.id);
     await prisma.$transaction((tx) =>
       releaseFailedDubUsage(tx, { projectId: project.id, attemptId: second.attempt.attemptId, reason: "dub_failed" }),
     );
     expect(
-      await prisma.generatedMediaUsageReservation.findUniqueOrThrow({ where: { jobId: second.admitted.dub.id } }),
+      await prisma.generatedMediaUsageReservation.findUniqueOrThrow({ where: { jobId: readmitted.dub.id } }),
     ).toMatchObject({ status: "reserved", reason: null });
     // The accepted retry still runs on its count.
     const { lifecycle, attempt } = await claimOnly(readmitted.workflowRunId!);
-    expect((await lifecycle.markDubProcessing(attempt, second.admitted.dub.id)).count).toBe(1);
+    expect((await lifecycle.markDubProcessing(attempt, readmitted.dub.id)).count).toBe(1);
   })));
 
   test("an ambiguous paid dub keeps its reservation and refuses a fresh request for the same tuple", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
@@ -627,6 +624,32 @@ dbDescribe("Generation usage PostgreSQL contracts", () => {
     await expect(Promise.resolve(prisma.clipDub.update({ where: { id: admitted.dub.id }, data: { status: "queued", errorCode: null } }))).rejects.toThrow("Unknown paid dubbing outcome is immutable");
     expect(await prisma.workflowRun.findUniqueOrThrow({ where: { id: admitted.workflowRunId! } })).toMatchObject({ status: "failed", requestedCount: 1, failedCount: 1 });
     expect(await prisma.workflowRun.count({ where: { projectId: project.id, stage: "dubbing" } })).toBe(1);
+  })));
+
+  test("a deliberate known-failed dub creates a new frozen request and retains both reservation histories before an unknown outcome blocks the tuple", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
+    const { owner, workspace: ws } = await workspace("pro", "dub-history");
+    const { project, clip } = await dubbableProject(ws.id, owner.id);
+    const scope = { actorUserId: owner.id, workspaceId: ws.id };
+    const first = await dubbingService.requestClipDub(scope, project.id, randomUUID(), dubInput(clip.id));
+    let current = await claimOnly(first.workflowRunId!);
+    await current.lifecycle.markDubProcessing(current.attempt, first.dub.id);
+    await current.lifecycle.failDub(current.attempt, first.dub.id, "openai_request_rejected");
+    await current.lifecycle.failAttempt(current.attempt, new WorkflowFailure("openai_request_rejected", "permanent", "Rejected"));
+    await prisma.clip.update({ where: { id: clip.id }, data: { hookText: "A deliberately revised script" } });
+    const second = await dubbingService.requestClipDub(scope, project.id, randomUUID(), dubInput(clip.id));
+    expect(second.dub.id).not.toBe(first.dub.id);
+    expect(await prisma.clipDub.findUniqueOrThrow({ where: { id: first.dub.id } })).toMatchObject({ status: "failed", workflowRunId: first.workflowRunId, frozenRequest: { script: "A strong hook", targetLanguageCode: "es", voice: "marin" } });
+    expect(await prisma.clipDub.findUniqueOrThrow({ where: { id: second.dub.id } })).toMatchObject({ status: "queued", workflowRunId: second.workflowRunId, frozenRequest: { script: "A deliberately revised script", targetLanguageCode: "es", voice: "marin" } });
+    await expect(Promise.resolve(prisma.clipDub.update({ where: { id: first.dub.id }, data: { voice: "coral" } }))).rejects.toThrow("Accepted dubbing request is immutable");
+    await expect(Promise.resolve(prisma.clipDub.update({ where: { id: first.dub.id }, data: { status: "queued", errorCode: null } }))).rejects.toThrow("Terminal dubbing request history is immutable");
+    expect(await prisma.generatedMediaUsageReservation.findUniqueOrThrow({ where: { jobId: first.dub.id } })).toMatchObject({ status: "released", reason: "openai_request_rejected" });
+    expect(await prisma.generatedMediaUsageReservation.findUniqueOrThrow({ where: { jobId: second.dub.id } })).toMatchObject({ status: "reserved", reason: null });
+    current = await claimOnly(second.workflowRunId!);await current.lifecycle.markDubProcessing(current.attempt, second.dub.id);
+    await prisma.$executeRaw`UPDATE "ClipDub" SET status='unknown', "errorCode"='dub_provider_outcome_unknown' WHERE id=${second.dub.id}::uuid`;
+    await current.lifecycle.failAttempt(current.attempt, new WorkflowFailure("dub_provider_outcome_unknown", "permanent", "Needs review"));
+    await expect(dubbingService.requestClipDub(scope, project.id, randomUUID(), dubInput(clip.id))).rejects.toMatchObject({ code: "dubbing_outcome_unknown" });
+    expect(await prisma.clipDub.count({ where: { clipId: clip.id } })).toBe(2);
+    expect((await summarizeGenerationUsage(ws.id)).dubs).toMatchObject({ used: 1, reserved: 1, finalized: 0 });
   })));
 
   test("the sweep never releases a queued dub and settles terminal or deleted ones", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
