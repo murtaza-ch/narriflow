@@ -20,6 +20,8 @@ Native tests require FFmpeg, fontconfig and the model at `apps/media/models/face
 
 `probe-cli.ts` reads one bounded JSON object from stdin with an absolute local `sourcePath`, then emits the existing normalized probe. Python acquisition uses this CLI instead of parsing ffprobe independently.
 
+`fetch_source` resolves one immutable upstream identity and starts audio and full-video downloads concurrently. Its injected sink receives verified audio first. A later provider block can rotate the pending video through at most three fresh sticky sessions; committed audio is retained. The native adapter uses pinned yt-dlp plugins, Deno, isolated configuration and an explicitly supplied owned token-helper URL. Scoped upload/control wiring and the owned helper lifecycle are still being integrated.
+
 ## Image verification
 
 `modal_app.py` registers `verify_render_runtime` and `verify_lean_runtime`. They verify the actual image and return its fingerprint. They carry no domain/provider secrets. Both scale to zero and have one verification container as their cap. Production functions must also use atomic executor acquisition, because Modal can reschedule crashed containers even when function retries are zero.

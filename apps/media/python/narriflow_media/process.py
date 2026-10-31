@@ -8,6 +8,7 @@ commands still use the TypeScript process module for their own deadlines.
 from __future__ import annotations
 
 import ctypes
+import asyncio
 import json
 import os
 import selectors
@@ -114,10 +115,13 @@ def run_owned_process(
             os.close(write_fd)
             write_fd = -1
             try:
-                supervisor.wait(timeout=kill_grace_seconds + 3)
+                # Keep draining bounded output while the owner pipe makes the
+                # supervisor stop its children. A full output pipe must not
+                # prevent the supervisor from observing cancellation.
+                supervisor.communicate(timeout=kill_grace_seconds + 3)
             except subprocess.TimeoutExpired:
                 supervisor.kill()
-                supervisor.wait()
+                supervisor.communicate()
             raise
         return ProcessResult(supervisor.returncode, stdout, stderr)
     finally:
@@ -128,6 +132,37 @@ def run_owned_process(
         os.close(start_read_fd)
         if start_write_fd >= 0:
             os.close(start_write_fd)
+        if supervisor is not None:
+            for stream in (supervisor.stdin, supervisor.stdout, supervisor.stderr):
+                if stream is not None:
+                    stream.close()
+
+
+async def run_owned_process_async(argv: Sequence[str], *, input_bytes: bytes = b"", timeout_seconds: float,
+                                  kill_grace_seconds: float = 5, env: Mapping[str, str] | None = None,
+                                  on_start: Callable[[int], None] | None = None) -> ProcessResult:
+    """Cancellation is not complete until the native process group is reaped."""
+    cancelled = Event()
+    task = asyncio.create_task(asyncio.to_thread(
+        run_owned_process, argv, input_bytes=input_bytes, timeout_seconds=timeout_seconds,
+        kill_grace_seconds=kill_grace_seconds, env=env, on_start=on_start, cancel_event=cancelled,
+    ))
+    try:
+        return await asyncio.shield(task)
+    except BaseException:
+        cancelled.set()
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                continue
+            except Exception:
+                break
+        try:
+            task.result()
+        except BaseException:
+            pass
+        raise
 
 
 def _direct_children(pid: int) -> set[int]:
@@ -312,6 +347,9 @@ def _supervise(read_fd: int, argv: list[str], timeout: float, grace: float, star
         except subprocess.TimeoutExpired:
             pass
         selector.close()
+        for stream in (child.stdin, child.stdout, child.stderr):
+            if stream is not None:
+                stream.close()
 
 
 if __name__ == "__main__":
