@@ -239,10 +239,12 @@ function productionModule(environment: ServiceEnvironment = readServiceEnvironme
 		environment.OPENAI_CONTENT_MODEL ??
 		environment.OPENAI_CLIP_MODEL ??
 		"gpt-5.4-mini";
+	const provider=createOpenAiAssistedCopyProvider({apiKey,model}),moderate=createOpenAiAssistedCopyModerator({apiKey});
+	const beforeExternal=async()=>{if(beforeWrite)await requirePrisma().$transaction(beforeWrite);};
 	return createAssistedSocialCopy({
 		store: beforeWrite ? { ...prismaAssistedCopyStore, open: input => prismaAssistedCopyStore.open(input,beforeWrite), settle: (id,patch) => prismaAssistedCopyStore.settle(id,patch,beforeWrite) } : prismaAssistedCopyStore,
-		provider: createOpenAiAssistedCopyProvider({ apiKey, model }),
-		moderate: createOpenAiAssistedCopyModerator({ apiKey }),
+		provider: beforeWrite ? {...provider,generate:async input=>{await beforeExternal();return provider.generate(input);}} : provider,
+		moderate: beforeWrite ? async input=>{await beforeExternal();return moderate(input);} : moderate,
 		authorize: async ({ actorUserId, workspaceId, permission }) => {
 			const actor = await workspaceService.requireActor(
 				actorUserId,

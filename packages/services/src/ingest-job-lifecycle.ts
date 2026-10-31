@@ -1,3 +1,4 @@
+import {appendProjectNotificationIntent} from "./notification-execution";
 import { autopilotFinishingAuthoritySchema } from "@narriflow/validators/autopilot-finishing-authority";
 import { appendProgressEventDispatch, flushProjectProgressDrains, queueProjectProgressCatchup } from "./progress-outbox";
 import { randomUUID } from "node:crypto";
@@ -233,6 +234,7 @@ export class IngestJobLifecycle {
           }
         : {}),
     };
+    if(input.notify)await appendProjectNotificationIntent(tx,{projectId:input.projectId,sourceId:input.id,outcome:"import_failed"});
     const event = await tx.workflowEvent.create({
       data: {
         projectId: input.projectId,
@@ -248,6 +250,7 @@ export class IngestJobLifecycle {
         payload: payload as unknown as Prisma.InputJsonValue,
         progressRequired: true,
         notificationRequired: input.notify ?? false,
+        notificationDeliveredAt: input.notify ? now : null,
         availableAt: now,
         nextDeliveryAt: now,
       },

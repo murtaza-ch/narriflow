@@ -152,5 +152,6 @@
   "20261031180000_autopilot_finishing_authority",
   "20261031190000_execution_product_restore",
   "20261031200000_publication_recovery_indexes",
-  "20261031220000_finishing_recovery_indexes"
+  "20261031220000_finishing_recovery_indexes",
+  "20261101000000_execution_notifications"
 ]

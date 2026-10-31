@@ -1,8 +1,9 @@
-import { buildDubTranscriptText as buildTranscriptText, shouldTranslateDub as shouldTranslate, dubLanguageLabel as targetLanguageLabel } from "@narriflow/services/dubbing-policy";
+import { buildDubTranscriptText as buildTranscriptText, shouldTranslateDub as shouldTranslate, dubTranslationRequestBody, dubSpeechRequestBody } from "@narriflow/services/dubbing-policy";
 import { downloadObjectToFile, putFileFromPath } from "../r2-file-transfer";
 import { probeDubbedMediaDuration, muxDubbedVideo, } from "../../../media/src/tasks/dub-mix";
 export { probeDubbedMediaDuration, muxDubbedVideo } from "../../../media/src/tasks/dub-mix";
-import { stat, writeFile } from "node:fs/promises";
+import { submitDubTranslation, submitDubSpeech } from "../../../media/src/dubbing-provider";
+import { stat } from "node:fs/promises";
 import { join } from "node:path";
 import {
   analyticsService,
@@ -15,7 +16,6 @@ import {
   type WorkflowAttemptContext,
   WorkflowFailure,
   workflowFailureFromUnknown,
-  workflowHttpFailureDisposition,
 } from "@narriflow/services";
 import {
   clipAspectRatioDbSchema,
@@ -60,78 +60,12 @@ function getRequiredOpenAIApiKey() {
   return apiKey;
 }
 
-function extractResponseText(response: unknown): string | null {
-  const payload = response as {
-    output_text?: unknown;
-    output?: Array<{
-      content?: Array<{
-        text?: unknown;
-      }>;
-    }>;
-  };
-
-  if (typeof payload.output_text === "string") {
-    return payload.output_text;
-  }
-
-  const textParts =
-    payload.output
-      ?.flatMap((item) => item.content ?? [])
-      .map((content) => content.text)
-      .filter((text): text is string => typeof text === "string") ?? [];
-
-  return textParts.length > 0 ? textParts.join("") : null;
-}
-
-async function callOpenAIText(params: {
-  apiKey: string;
-  model: string;
-  systemPrompt: string;
-  userPrompt: string;
-}) {
-  const response = await fetch("https://api.openai.com/v1/responses", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${params.apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: params.model,
-      input: [
-        { role: "system", content: params.systemPrompt },
-        { role: "user", content: params.userPrompt },
-      ],
-    }),
-  });
-
-  const payload = (await response.json().catch(() => null)) as
-    | { error?: { message?: string } }
-    | null;
-  if (!response.ok || !payload) {
-    throw new WorkflowWorkerError(
-      "openai_request_failed",
-      payload?.error?.message ??
-        `OpenAI request failed with status ${response.status}`,
-      workflowHttpFailureDisposition(response.status),
-    );
-  }
-
-  const text = extractResponseText(payload)?.trim();
-  if (!text) {
-    throw new WorkflowWorkerError(
-      "openai_request_failed",
-      "OpenAI returned an empty translation",
-    );
-  }
-
-  return text;
-}
-
 async function translateForDub(params: {
   apiKey: string;
   sourceLanguageCode: string | null;
   targetLanguageCode: string;
   script: string;
+  signal: AbortSignal;
 }) {
   if (!shouldTranslate(params.sourceLanguageCode, params.targetLanguageCode)) {
     return params.script;
@@ -142,56 +76,14 @@ async function translateForDub(params: {
     process.env.OPENAI_CONTENT_MODEL ??
     process.env.OPENAI_CLIP_MODEL ??
     "gpt-5.4-mini";
-  const target = targetLanguageLabel(params.targetLanguageCode);
-  return callOpenAIText({
-    apiKey: params.apiKey,
-    model,
-    systemPrompt:
-      "Translate creator video transcripts for natural voiceover dubbing. Preserve meaning, names, numbers, and tone. Return only the translated script with no markdown or commentary.",
-    userPrompt: `Source language: ${params.sourceLanguageCode ?? "auto"}
-Target language: ${target} (${params.targetLanguageCode})
-
-SCRIPT:
-${params.script}`,
-  });
+  const result = await submitDubTranslation(dubTranslationRequestBody({ ...params, translationModel: model }), { apiKey: params.apiKey, signal: params.signal });
+  if (result.outcome !== "completed") throw new WorkflowWorkerError(result.outcome === "unknown" ? "dub_provider_outcome_unknown" : "dub_provider_rejected", "Dubbing provider did not confirm a result", "permanent");
+  return result.text;
 }
 
-async function synthesizeSpeech(params: {
-  apiKey: string;
-  model: string;
-  voice: string;
-  input: string;
-  outputPath: string;
-}) {
-  const response = await fetch("https://api.openai.com/v1/audio/speech", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${params.apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: params.model,
-      voice: params.voice,
-      input: params.input,
-      response_format: "mp3",
-    }),
-  });
-
-  if (!response.ok) {
-    const body = await response.text().catch(() => "");
-    throw new WorkflowWorkerError(
-      "openai_tts_failed",
-      `OpenAI speech request failed with status ${response.status}: ${body.slice(0, 300)}`,
-      workflowHttpFailureDisposition(response.status),
-    );
-  }
-
-  const buffer = Buffer.from(await response.arrayBuffer());
-  if (buffer.length === 0) {
-    throw new WorkflowWorkerError("openai_tts_failed", "OpenAI returned empty audio");
-  }
-
-  await writeFile(params.outputPath, buffer);
+async function synthesizeSpeech(params: { apiKey: string; model: string; voice: string; input: string; outputPath: string; signal: AbortSignal }) {
+  const result = await submitDubSpeech(dubSpeechRequestBody(params, params.input), params.outputPath, { apiKey: params.apiKey, signal: params.signal });
+  if (result.outcome !== "completed") throw new WorkflowWorkerError(result.outcome === "unknown" ? "dub_provider_outcome_unknown" : "dub_provider_rejected", "Dubbing provider did not confirm a result", "permanent");
 }
 
 interface DubbingPersistence {
@@ -289,6 +181,7 @@ async function processDubbingRunInScratch(
           sourceLanguageCode,
           targetLanguageCode: dub.targetLanguageCode,
           script: transcriptText,
+          signal,
         });
 
         const baseVideoPath = join(tempDir, `${dub.id}-base.mp4`);
@@ -308,6 +201,7 @@ async function processDubbingRunInScratch(
           voice: dub.voice,
           input: translatedText,
           outputPath: audioPath,
+          signal,
         });
 
         await context.reportProgress(70);

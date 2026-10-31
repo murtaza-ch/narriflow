@@ -1,3 +1,5 @@
+import {getNotificationExecution} from "@narriflow/services/notification-execution-runtime";
+import {getGenerationFinishing} from "@narriflow/services/generation-finishing-runtime";
 import { deliverExecutionDispatches, getExecutionDispatch } from "@narriflow/services/execution-dispatch-runtime";
 import { getPrismaClient } from "@narriflow/db/client";
 import { readExecutionDispatch, type ExecutionDispatchRecord } from "@narriflow/services/execution-dispatch";
@@ -211,6 +213,18 @@ export function workflowDomainRegistry(bindings: ApiWorkerBindings): WorkflowHan
     await createWorkspaceNotificationDispatcher({ database, deliver: deliverExecutionDispatches }).dispatch(reference);
     return { type: "complete", disposition: "terminal" };
   };
+  const finishing:WorkflowCommandHandler=async({reference})=>{
+    const result=await getGenerationFinishing().run(reference);
+    if(result.kind==="wait")return{type:"wait",until:result.dueAt.toISOString(),deliveryId:reference.dispatchId};
+    if(result.kind==="sleep")return{type:"sleep",until:result.dueAt.toISOString()};
+    return{type:"complete",disposition:result.kind==="superseded"?"superseded":"terminal"};
+  };
+  const emailNotification:WorkflowCommandHandler=async({reference})=>{
+    const result=await getNotificationExecution().run(reference);
+    if(result.kind==="wait")return{type:"wait",until:result.dueAt.toISOString(),deliveryId:reference.dispatchId};
+    if(result.kind==="sleep")return{type:"sleep",until:result.dueAt.toISOString()};
+    return{type:"complete",disposition:result.kind==="superseded"?"superseded":"terminal"};
+  };
   const cleanup: WorkflowCommandHandler = async ({ reference }) => {
     const result = await getMediaCleanupControl().run(reference);
     return result.kind === "wait" ? { type: "wait", until: result.until.toISOString(), deliveryId: reference.dispatchId }
@@ -272,6 +286,6 @@ export function workflowDomainRegistry(bindings: ApiWorkerBindings): WorkflowHan
   return { maintenance: { maintenance, export_bundle: bundleExpiry }, project_progress: { maintenance: progress, workflow_event: progress },
     import_pipeline: { ingest_job: native }, render_run: { workflow_run: render, render_group: render },
     operation_driver: { native_validation: native, thumbnail_frame: native, outbound_probe: native, outbound_delivery: native, generated_media: native, clip_preparation: native, render_group: native, ingest_job: native,
-      workflow_run: workflow, clip_selection_window: selectionWindow, workspace_billing: billing, library_index: library, media_cleanup: cleanup, social_publication: publication, completion_callback: notification, webhook_subscription: notification,
+      workflow_run: workflow, clip_selection_window: selectionWindow, workspace_billing: billing, library_index: library, generation_finishing: finishing, notification: emailNotification, media_cleanup: cleanup, social_publication: publication, completion_callback: notification, webhook_subscription: notification,
       workspace_event: notificationEvents, maintenance: notificationEvents } };
 }
