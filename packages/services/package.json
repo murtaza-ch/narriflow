@@ -10,6 +10,10 @@
       "types": "./src/index.ts",
       "default": "./src/index.ts"
     },
+    "./execution-signature": {
+      "types": "./src/execution-signature.ts",
+      "default": "./src/execution-signature.ts"
+    },
     "./project": {
       "types": "./src/project.service.ts",
       "default": "./src/project.service.ts"
