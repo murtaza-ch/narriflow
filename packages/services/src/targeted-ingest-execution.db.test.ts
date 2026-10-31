@@ -106,7 +106,7 @@ dbDescribe("Targeted Ingest execution", () => {
       bindingHash: await sourceAudioBindingHash(binding), storageKey: binding.object.key, etag: binding.object.etag, byteLength: BigInt(binding.object.byteLength),
       checksumSha256: binding.object.sha256, durationSeconds: binding.durationSeconds, audioStartTimeSec: binding.audioStartTimeSec,
       probeVersion: binding.probeVersion, toolchainFingerprint: binding.toolchainFingerprint } });
-    const pack = await db.contentPack.create({ data: { projectId: f.project.id, draft, outputTypes: ["short_clip"], clipGenerationMode: "viral_moments", clipCountTarget: 10,
+    const pack = await db.contentPack.create({ data: { projectId: f.project.id, draft, outputTypes: ["short_clip"], clipGenerationMode: "best", clipCountTarget: 10,
       clipDurationSecTarget: 45, platformTargets: ["tiktok"], toneConstraints: [], captionPreset: "brand_default", platformPlaybookVersion: "2026-07-01" } });
     const record = await db.$transaction(tx => appendExecutionDispatch(tx, { deploymentEpoch: f.epoch, kind: "import_pipeline", subject: { kind: "ingest_job", id: f.job.id },
       generation: 1, inputHash: f.reference.inputHash, dueAt: f.job.createdAt, wakeKind: "audio_ready" }));
@@ -246,7 +246,7 @@ dbDescribe("Targeted Ingest execution", () => {
 
   test("audio publication atomically admits an already committed pack without another pipeline read", async () => {
     const f = await fixture();
-    await db.contentPack.create({ data: { projectId: f.project.id, outputTypes: ["short_clip"], clipGenerationMode: "viral_moments", clipCountTarget: 10,
+    await db.contentPack.create({ data: { projectId: f.project.id, outputTypes: ["short_clip"], clipGenerationMode: "best", clipCountTarget: 10,
       clipDurationSecTarget: 45, platformTargets: ["tiktok"], toneConstraints: [], captionPreset: "brand_default", platformPlaybookVersion: "2026-07-01" } });
     const fence = { reference: f.reference, attemptToken: f.token, owner: f.owner };
     await withServiceEnvironment({}, () => f.control.execute({ command: { action: "acquire", reference: f.reference, attemptToken: f.token, owner: f.owner, leaseSeconds: 120 }, verifiedRequest: f.verified() }));
@@ -267,7 +267,7 @@ dbDescribe("Targeted Ingest execution", () => {
 
   test("already sealed mismatching video refuses audio admission before a debit or STT run exists", async () => {
     const f = await fixture();
-    await db.contentPack.create({ data: { projectId: f.project.id, outputTypes: ["short_clip"], clipGenerationMode: "viral_moments", clipCountTarget: 10,
+    await db.contentPack.create({ data: { projectId: f.project.id, outputTypes: ["short_clip"], clipGenerationMode: "best", clipCountTarget: 10,
       clipDurationSecTarget: 45, platformTargets: ["tiktok"], toneConstraints: [], captionPreset: "brand_default", platformPlaybookVersion: "2026-07-01" } });
     const fence = { reference: f.reference, attemptToken: f.token, owner: f.owner };
     await withServiceEnvironment({}, () => f.control.execute({ command: { action: "acquire", reference: f.reference, attemptToken: f.token, owner: f.owner, leaseSeconds: 120 }, verifiedRequest: f.verified() }));
@@ -298,7 +298,7 @@ dbDescribe("Targeted Ingest execution", () => {
 
   test("late video mismatch cancels admitted provider work without erasing charged usage", async () => {
     const f = await fixture();
-    await db.contentPack.create({ data: { projectId: f.project.id, outputTypes: ["short_clip"], clipGenerationMode: "viral_moments", clipCountTarget: 10,
+    await db.contentPack.create({ data: { projectId: f.project.id, outputTypes: ["short_clip"], clipGenerationMode: "best", clipCountTarget: 10,
       clipDurationSecTarget: 45, platformTargets: ["tiktok"], toneConstraints: [], captionPreset: "brand_default", platformPlaybookVersion: "2026-07-01" } });
     const fence = { reference: f.reference, attemptToken: f.token, owner: f.owner };
     await withServiceEnvironment({}, () => f.control.execute({ command: { action: "acquire", reference: f.reference, attemptToken: f.token, owner: f.owner, leaseSeconds: 120 }, verifiedRequest: f.verified() }));

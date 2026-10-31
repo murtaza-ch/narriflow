@@ -1255,7 +1255,7 @@ export class WorkflowRunLifecycle {
       dispatch: { OR: [{ subjectKind: "workflow_run", subjectId: { in: runIds } }, { subjectKind: "render_group", subjectId: { in: groupIds } }] } },
       data: { status: "failed", revokedAt: input.now, finishedAt: input.now, failureCode: input.errorCode } });
     await tx.workflowRun.updateMany({ where: { id: { in: runIds } }, data: { status: "cancelled", errorCode: input.errorCode, leaseOwner: null, leaseExpiresAt: null,
-      heartbeatAt: null, nextAttemptAt: null, nextPollAt: null, waitingSince: null } });
+      heartbeatAt: null, nextAttemptAt: null, nextPollAt: null, waitingSince: null, updatedAt: input.now } });
     await tx.transcript.updateMany({ where: { projectId: input.projectId }, data: { status: "failed", errorCode: input.errorCode,
       providerSubmissionDeadlineAt: null, providerResultDeadlineAt: null } });
     if (groupIds.length) {
@@ -1265,30 +1265,16 @@ export class WorkflowRunLifecycle {
         data: { status: "failed", errorCode: input.errorCode, failureDisposition: "permanent", completedAt: input.now } });
       await tx.renderGroupExecution.updateMany({ where: { groupId: { in: groupIds }, finishedAt: null }, data: { finishedAt: input.now, result: "superseded", errorCode: input.errorCode } });
       await tx.renderGroup.updateMany({ where: { id: { in: groupIds } }, data: { status: "superseded", errorCode: input.errorCode, attemptToken: null,
-        leaseOwner: null, leaseExpiresAt: null, heartbeatAt: null, nextAttemptAt: null, settledAt: input.now } });
+        leaseOwner: null, leaseExpiresAt: null, heartbeatAt: null, nextAttemptAt: null, settledAt: input.now, updatedAt: input.now } });
     }
     const capacityDispatchIds: string[] = [];
-    for (const run of runs) {
-      await this.appendEvent(tx, { workflowRunId: run.id, projectId: run.projectId, stage: run.stage as WorkflowStage, attemptId: run.attemptId ?? run.id,
-        status: "failed", progress: run.progress, errorCode: input.errorCode, transition: "source_cancelled", analyticsRequired: true });
-      await this.emitFinishedOperations(tx, { workflowRunId: run.id, projectId: run.projectId, stage: run.stage });
-      const registration = await this.dispatchRunWithinTransaction(tx, run.id);
-      await this.appendStableExecutionWake(tx, registration.reference, "source_cancelled", input.now);
-    }
-    for (const group of groups) {
-      const registration = await tx.executionDispatch.findFirst({ where: { deploymentEpoch: input.deploymentEpoch, subjectKind: "render_group", subjectId: group.id,
-        generation: group.generation }, orderBy: { createdAt: "asc" } });
-      if (!registration) continue;
-      await this.appendStableExecutionWake(tx, { dispatchId: registration.id, kind: "operation_driver", deploymentEpoch: group.deploymentEpoch,
-        subject: { kind: "render_group", id: group.id }, generation: group.generation, inputHash: registration.inputHash }, "source_cancelled", input.now);
-    }
     if (runs.some(run => run.stage === "stt")) {
       const event = runs.find(run => run.stage === "stt")!;
       capacityDispatchIds.push(...(await appendScribeCapacityWakesWithinTransaction(tx, { deploymentEpoch: input.deploymentEpoch, attemptId: event.attemptId ?? event.id })).dispatchIds);
     }
-    // All obligations are durable. A bounded response carries the first page
-    // plus a persisted full-UUID cursor, which the driver continues explicitly.
-    return this.sourceCancellationPage(tx, input.projectId, input.deploymentEpoch, capacityDispatchIds);
+    // Authority is revoked in bulk above. Terminal events and delivery intent
+    // are created in bounded pages behind a persisted full-UUID cursor.
+    return this.sourceCancellationPage(tx, { projectId: input.projectId, deploymentEpoch: input.deploymentEpoch, errorCode: input.errorCode, cancelledAt: input.now }, capacityDispatchIds);
   }
 
   private async appendStableExecutionWake(tx: TransactionClient, reference: ExecutionDispatchReference, wakeKind: string, dueAt: Date): Promise<ExecutionDispatchRecord> {
@@ -1297,18 +1283,35 @@ export class WorkflowRunLifecycle {
     return appendExecutionDispatch(tx, { ...identity, inputHash: reference.inputHash, dueAt: existing?.dueAt ?? dueAt });
   }
 
-  private async sourceCancellationPage(tx: TransactionClient, projectId: string, deploymentEpoch: number, extraIds: string[] = [], afterId?: string): Promise<{ dispatchIds: string[] }> {
-    const rows = await tx.$queryRaw<Array<{ id: string }>>`SELECT d.id FROM "ExecutionDispatch" d
-      LEFT JOIN "WorkflowRun" r ON d."subjectKind" = 'workflow_run' AND d."subjectId" = r.id::text
-      LEFT JOIN "RenderGroup" g ON d."subjectKind" = 'render_group' AND d."subjectId" = g.id::text
-      LEFT JOIN "WorkflowRun" parent ON parent.id = g."workflowRunId"
-      WHERE d."deploymentEpoch" = ${deploymentEpoch} AND d."wakeKind" = 'source_cancelled' AND d."acknowledgedAt" IS NULL
-        AND (r."projectId" = ${projectId}::uuid OR parent."projectId" = ${projectId}::uuid)
-        AND (${afterId ?? null}::uuid IS NULL OR d.id > ${afterId ?? null}::uuid) ORDER BY d.id LIMIT 129`;
+  private async sourceCancellationPage(tx: TransactionClient, input: { projectId: string; deploymentEpoch: number; errorCode: string; cancelledAt: Date }, extraIds: string[] = [],
+    after?: { kind: "workflow_run" | "render_group"; id: string }): Promise<{ dispatchIds: string[] }> {
     const available = 124 - extraIds.length;
     if (available < 2) throw new Error("Source cancellation wake budget exceeded");
+    const rows = await tx.$queryRaw<Array<{ kind: "workflow_run" | "render_group"; id: string }>>`SELECT kind, id FROM (
+      SELECT 'workflow_run'::text AS kind, r.id FROM "WorkflowRun" r WHERE r."projectId" = ${input.projectId}::uuid
+        AND r."deploymentEpoch" = ${input.deploymentEpoch} AND r.status = 'cancelled' AND r."errorCode" = ${input.errorCode}
+        AND r."updatedAt" = (${input.cancelledAt}::timestamptz AT TIME ZONE 'UTC')
+      UNION ALL SELECT 'render_group'::text AS kind, g.id FROM "RenderGroup" g JOIN "WorkflowRun" r ON r.id = g."workflowRunId"
+        WHERE r."projectId" = ${input.projectId}::uuid AND g."deploymentEpoch" = ${input.deploymentEpoch} AND g.status = 'superseded' AND g."errorCode" = ${input.errorCode}
+        AND g."updatedAt" = (${input.cancelledAt}::timestamptz AT TIME ZONE 'UTC')
+        AND EXISTS (SELECT 1 FROM "ExecutionDispatch" d WHERE d."subjectKind" = 'render_group' AND d."subjectId" = g.id::text AND d."deploymentEpoch" = g."deploymentEpoch" AND d.generation = g.generation)
+      ) cancelled WHERE (${after?.kind ?? null}::text IS NULL OR kind > ${after?.kind ?? null} OR (kind = ${after?.kind ?? null} AND id > ${after?.id ?? null}::uuid))
+      ORDER BY kind, id LIMIT ${available + 1}`;
     const hasMore = rows.length > available;
-    const page = rows.slice(0, hasMore ? available - 1 : available).map(row => row.id);
+    const page: string[] = [];
+    for (const row of rows.slice(0, hasMore ? available - 1 : available)) {
+      const subject = row.kind === "workflow_run" ? await tx.workflowRun.findUniqueOrThrow({ where: { id: row.id } }) : await tx.renderGroup.findUniqueOrThrow({ where: { id: row.id } });
+      if (row.kind === "workflow_run") {
+        const run = subject as WorkflowRun;
+        await this.appendEvent(tx, { workflowRunId: run.id, projectId: run.projectId, stage: run.stage as WorkflowStage, attemptId: run.attemptId ?? run.id,
+          status: "failed", progress: run.progress, errorCode: input.errorCode, transition: "source_cancelled", analyticsRequired: true });
+        await this.emitFinishedOperations(tx, { workflowRunId: run.id, projectId: run.projectId, stage: run.stage });
+      }
+      const registered = await tx.executionDispatch.findFirstOrThrow({ where: { deploymentEpoch: input.deploymentEpoch, subjectKind: row.kind, subjectId: row.id,
+        generation: subject.generation, wakeKind: null, deadlineKind: null }, orderBy: { createdAt: "asc" } });
+      const registration = (await readExecutionDispatch(tx, registered.id))!;
+      page.push((await this.appendStableExecutionWake(tx, registration.reference, "source_cancelled", input.cancelledAt)).reference.dispatchId);
+    }
     if (hasMore) {
       const cursor = (await readExecutionDispatch(tx, page.at(-1)!))!;
       const continuation = await this.appendStableExecutionWake(tx, cursor.reference, `cancel_${cursor.reference.dispatchId.replaceAll("-", "")}`, cursor.dueAt);
@@ -1327,10 +1330,17 @@ export class WorkflowRunLifecycle {
       const cursor = await readExecutionDispatch(tx, cursorId);
       if (!cursor || cursor.wakeKind !== "source_cancelled" || cursor.reference.deploymentEpoch !== reference.deploymentEpoch || cursor.reference.subject.kind !== reference.subject.kind || cursor.reference.subject.id !== reference.subject.id ||
         cursor.reference.generation !== reference.generation || cursor.reference.inputHash !== reference.inputHash) return { dispatchIds: [] };
-      const projectId = reference.subject.kind === "workflow_run" ? (await tx.workflowRun.findUnique({ where: { id: reference.subject.id }, select: { projectId: true } }))?.projectId :
-        reference.subject.kind === "render_group" ? (await tx.renderGroup.findUnique({ where: { id: reference.subject.id }, select: { workflowRun: { select: { projectId: true } } } }))?.workflowRun.projectId : null;
-      if (!projectId) return { dispatchIds: [] };
-      return this.sourceCancellationPage(tx, projectId, reference.deploymentEpoch, [], cursorId);
+      const run = reference.subject.kind === "workflow_run" ? await tx.workflowRun.findUnique({ where: { id: reference.subject.id }, include: { project: { select: { workspaceId: true } } } }) : null;
+      const group = reference.subject.kind === "render_group" ? await tx.renderGroup.findUnique({ where: { id: reference.subject.id }, include: { workflowRun: { include: { project: { select: { workspaceId: true } } } } } }) : null;
+      const projectId = run?.projectId ?? group?.workflowRun.projectId, workspaceId = run?.project.workspaceId ?? group?.workflowRun.project.workspaceId;
+      const subject = run ?? group;
+      if (!projectId || !workspaceId || !subject || !subject.errorCode || subject.updatedAt.getTime() !== cursor.dueAt.getTime() ||
+        (run && run.status !== "cancelled") || (group && group.status !== "superseded")) return { dispatchIds: [] };
+      await lockWorkspaceUsage(tx, workspaceId);
+      await this.lockAdmissionProject(tx, projectId);
+      await tx.$queryRaw`SELECT "id" FROM "Project" WHERE "id" = ${projectId}::uuid FOR UPDATE`;
+      return this.sourceCancellationPage(tx, { projectId, deploymentEpoch: reference.deploymentEpoch, errorCode: subject.errorCode, cancelledAt: cursor.dueAt }, [],
+        { kind: run ? "workflow_run" : "render_group", id: reference.subject.id });
     });
   }
 
@@ -2448,11 +2458,15 @@ export class WorkflowRunLifecycle {
   private async providerRecordedWakes(tx: TransactionClient, key: ProviderAttemptReference, intent: ProviderSettlementIntent): Promise<string[]> {
     if (!validProviderReference(key)) return [];
     const history = await tx.executionAttempt.findUnique({ where: { attemptToken: key.attemptId }, include: { dispatch: true } });
-    const run = await tx.workflowRun.findUnique({ where: { id: key.workflowRunId }, include: { project: { select: { sourceRevision: true, transcript: { select: { sourceAudioId: true, sourceRevision: true } } } } } });
+    const run = await tx.workflowRun.findUnique({ where: { id: key.workflowRunId } });
     const epoch = await tx.executionEpoch.findUnique({ where: { id: 1 } });
     if (!history || !run || epoch?.epoch !== key.deploymentEpoch || history.deploymentEpoch !== key.deploymentEpoch || run.deploymentEpoch !== key.deploymentEpoch ||
-      history.dispatch.subjectKind !== "workflow_run" || history.dispatch.subjectId !== run.id || run.project.sourceRevision !== key.sourceRevision ||
-      run.project.transcript?.sourceAudioId !== key.sourceAudioId || run.project.transcript.sourceRevision !== key.sourceRevision) return [];
+      history.functionName !== "stt" || history.dispatch.subjectKind !== "workflow_run" || history.dispatch.subjectId !== run.id) return [];
+    // Historical receipt replay compares the frozen tuple itself. A newer
+    // Transcript cannot erase delivery obligations already committed by it.
+    const expectedHash = await workflowRunExecutionInputHash({ id: run.id, projectId: run.projectId, stage: run.stage, contentPackId: run.contentPackId,
+      deploymentEpoch: history.deploymentEpoch, generation: history.generation, sourceAudioId: key.sourceAudioId, sourceRevision: key.sourceRevision });
+    if (expectedHash !== history.inputHash) return [];
     const own = await tx.executionDispatch.findMany({ where: { deploymentEpoch: key.deploymentEpoch, subjectKind: "workflow_run", subjectId: run.id,
       generation: history.generation, ...(intent === "accept" ? { OR: [{ deadlineKind: "provider_result" }, { wakeKind: "provider_accepted" }] } : { wakeKind: "execution_finished" }) },
       orderBy: { id: "asc" }, take: 3 });
