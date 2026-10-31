@@ -1,6 +1,7 @@
 export { workflowRunExecutionInputHash, type WorkflowRunExecutionInput } from "./workflow-execution-input";
 export { createScribeProvider, ScribeSubmissionUnconfirmed, type ScribeAcceptance, type ScribeFetchResult, type ScribeSubmissionReference } from "./transcription-provider";
 export { createTranscriptionAdmission, scribeConcurrencyUnits, continueScribeCapacityRelease, type TranscriptionAdmissionResult } from "./transcription-admission";
+export { createTranscriptionControl, type TranscriptionControlPorts, type TranscriptionControlResult } from "./transcription-control";
 export {
 	boundedExpectedDomainFailureDetails,
 	ExpectedDomainFailureError,

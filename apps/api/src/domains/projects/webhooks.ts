@@ -11,6 +11,7 @@ export interface ProjectsWebhookDeps {
   /** The workspace webhook secret, read per request; null while unconfigured. */
   webhookSecret(): string | null;
   now?(): number;
+  deliverWakes(ids: readonly string[]): Promise<void>;
   /** Settles the waiting transcript attempt from a Scribe result (shared with the worker's GET recovery). */
   finalizeScribeTranscript(input: FinalizeScribeTranscriptInput): Promise<ProviderSettlementResult>;
   /** Fails the waiting attempt with the normal retry policy. */
@@ -112,6 +113,7 @@ export function createProjectsWebhookRoutes(deps: ProjectsWebhookDeps) {
             transcriptionId,
           },
         });
+        if (result.dispatchIds?.length) await deps.deliverWakes(result.dispatchIds);
         return c.json({ received: true, disposition: result.kind }, 200);
       }
 
@@ -135,6 +137,7 @@ export function createProjectsWebhookRoutes(deps: ProjectsWebhookDeps) {
           },
           { requestId },
         );
+        if (result.dispatchIds?.length) await deps.deliverWakes(result.dispatchIds);
         return c.json({ received: true, disposition: result.kind }, 200);
       }
     } catch (error) {
