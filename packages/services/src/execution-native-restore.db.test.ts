@@ -12,7 +12,8 @@ import { ExecutionRestoreService,EXECUTION_RESTORE_PHASES } from "./execution-re
 import { revokeRestoredAttemptsPage } from "./execution-restore-pages";
 import { restoreNativeValidationPage,restoreOutboundProbePage,restoreGeneratedMediaPage,restoreOutboundDeliveryPage } from "./execution-native-restore";
 import { appendExecutionDispatch } from "./execution-dispatch";
-import { nativeValidationExecutionInputHash } from "./native-validation";
+import { NativeValidationService, nativeValidationExecutionInputHash } from "./native-validation";
+import { createExecutorControl } from "./executor-control";
 import { outboundProbeExecutionInputHash } from "./outbound-probe";
 const url=process.env.SERVERLESS_TEST_DATABASE_URL;
 const suite=process.env.ALLOW_SERVERLESS_DB_TESTS==="1"&&url?describe:describe.skip;
@@ -58,5 +59,54 @@ suite("Native domain metadata restore",()=>{
   for(const [name,handler] of Object.entries(redispatch)){if(name.startsWith("create")||name==="redispatchRestoredCleanupPage")continue;expect(await db.$transaction(tx=>(handler as typeof redispatchNativeValidationPage)(tx,{...page,after:{at:page.cutoff,id:"ffffffff-ffff-ffff-ffff-ffffffffffff"}}))).toEqual({processed:0,next:null,dispatchIds:[]});}
   const callbacks=await db.$transaction(tx=>recoverCallbacksPage(tx,page)),subscriptions=await db.$transaction(tx=>recoverWebhookSubscriptionsPage(tx,page));expect(callbacks.dispatchIds).toHaveLength(1);expect(subscriptions.dispatchIds).toHaveLength(1);
   await db.outboundProbe.delete({where:{id:probe.id}});await db.nativeValidationJob.delete({where:{id:native.id}});await db.workspace.delete({where:{id:workspace.id}});
+ });
+ test("a restored partially committed visual validation completes with a new owner without erasing either actual start",async()=>{
+  await db.executionEpoch.update({where:{id:1},data:{admissionOpen:true}});
+  const user=await db.user.create({data:{clerkId:`partial-native-restore-${crypto.randomUUID()}`}});
+  const workspace=await db.workspace.create({data:{name:"Partial native restore",ownerUserId:user.id,personalOwnerUserId:user.id,pricingTier:"business"}});
+  const scope={actorUserId:user.id,workspaceId:workspace.id,workspaceOwnerUserId:user.id,isPersonalWorkspace:true,role:"owner" as const,status:"active" as const,pricingTier:"business"};
+  const registered:string[]=[];
+  const input={kind:"visual" as const,key:`visual-assets/${user.id}/restore.png`,contentType:"image/png" as const,sizeBytes:72,fingerprint:"a".repeat(64),title:"Restore gate",provenance:"uploaded" as const};
+  const evidence={kind:"visual" as const,sha256:input.fingerprint,byteLength:72,contentType:"image/png" as const,mediaKind:"image" as const,width:2,height:2,durationSec:null};
+  const service=new NativeValidationService(db,{head:async()=>({contentType:input.contentType,sizeBytes:72,etag:'"source"'}),register:async ids=>{registered.push(...ids);}});
+  const opened=await service.admit(scope,input),initial=await db.nativeValidationJob.findUniqueOrThrow({where:{id:opened.jobId}});
+  const control=createExecutorControl({database:db,subjectKind:"native_validation",domain:service,deliverWakes:async()=>{},artifacts:{
+   head:async assignment=>({etag:'"sealed"',contentType:assignment.contentType,byteLength:assignment.role==="probe"?512n:72n,sha256:assignment.role==="probe"?"b".repeat(64):input.fingerprint}),
+   prepare:async(_assignment,artifact)=>({...artifact,...(artifact.role==="probe"?{evidence}:{})}),
+  }});
+  const execute=(command:unknown)=>control.execute({command,verifiedRequest:{requestHash:crypto.randomUUID().replaceAll("-","").repeat(2),metadata:{version:1,keyId:"restore-gate",audience:"executor-control",method:"POST",canonicalTarget:"/api/execution/command",bodySha256:"0".repeat(64),timestamp:Math.floor(Date.now()/1000),deliveryId:crypto.randomUUID(),signature:"0".repeat(64)}}});
+  async function start(dispatchId:string){
+   const plan=await service.prepareExecution((await readExecutionDispatch(db,dispatchId))!.reference);
+   if(plan.kind!=="waiting")throw Error("Expected prepared restored validation");
+   const {reference,attemptToken}=plan.deadline,owner=crypto.randomUUID(),fence={reference,attemptToken,owner};
+   expect((await execute({action:"acquire",reference,attemptToken,owner,leaseSeconds:120})).disposition).toBe("acquired");
+   expect((await execute({action:"process-start",fence})).disposition).toBe("started");
+   const artifacts=await Promise.all((["validated_asset","probe"] as const).map(role=>db.executionArtifact.create({data:{attemptToken,owner,role,bindingHash:reference.inputHash,storageKey:`execution/${reference.deploymentEpoch}/${attemptToken}/${owner}/${role}`,contentType:role==="probe"?"application/json":"image/png",maxBytes:role==="probe"?65536n:72n,grantExpiresAt:new Date(Date.now()+60000)}})));
+   const commit=(index:0|1)=>({action:"commit-artifact",fence,artifact:{artifactId:artifacts[index]!.id,role:artifacts[index]!.role,bindingHash:reference.inputHash,contentType:artifacts[index]!.contentType,byteLength:index===0?72:512,sha256:index===0?input.fingerprint:"b".repeat(64),etag:'"sealed"'}});
+   return {fence,artifacts,commit};
+  }
+  const old=await start(registered[0]!);
+  expect((await execute(old.commit(0))).disposition).toBe("committed");
+  expect((await service.get(scope,opened.jobId)).status).toBe("pending");
+  const snapshot=await capturedExecutionSnapshotFixture(db),restore=new ExecutionRestoreService({database:db,register:async()=>{}});
+  await restore.begin(snapshot);
+  const page={snapshotEpoch:snapshot.expectedEpoch,fenceAboveEpoch:snapshot.expectedEpoch,deploymentEpoch:snapshot.expectedEpoch+1,cutoff:(await db.executionEpoch.findUniqueOrThrow({where:{id:1}})).changedAt,after:{at:initial.createdAt,id:"00000000-0000-0000-0000-000000000000"},limit:8};
+  await db.$transaction(tx=>revokeRestoredAttemptsPage(tx,page));
+  await db.$transaction(tx=>restoreNativeValidationPage(tx,page));
+  const rebound=await db.nativeValidationJob.findUniqueOrThrow({where:{id:opened.jobId}});
+  expect(rebound).toMatchObject({result:null,chargedAttempts:1,operationDeadlineAt:initial.operationDeadlineAt});
+  const wakes=await db.$transaction(tx=>redispatchNativeValidationPage(tx,page));
+  const current=await start(wakes.dispatchIds![0]!);
+  expect((await execute(old.commit(1))).disposition).toBe("superseded");
+  expect((await execute(current.commit(0))).disposition).toBe("committed");
+  expect((await execute(current.commit(1))).disposition).toBe("committed");
+  expect((await execute(current.commit(1))).disposition).toBe("completed");
+  expect((await service.get(scope,opened.jobId)).status).toBe("ready");
+  expect(await db.nativeValidationJob.findUniqueOrThrow({where:{id:opened.jobId}})).toMatchObject({chargedAttempts:2,operationDeadlineAt:initial.operationDeadlineAt});
+  expect(await db.visualAsset.findMany({where:{createdByUserId:user.id},select:{storageKey:true}})).toEqual([{storageKey:current.artifacts[0]!.storageKey}]);
+  expect(await db.executionAttempt.findUniqueOrThrow({where:{attemptToken:old.fence.attemptToken}})).toMatchObject({status:"superseded",owner:old.fence.owner,processStartedAt:expect.any(Date)});
+  expect(await db.executionAttempt.count({where:{dispatch:{subjectId:opened.jobId},processStartedAt:{not:null}}})).toBe(2);
+  expect(await db.executionArtifact.findUniqueOrThrow({where:{id:old.artifacts[0]!.id}})).toMatchObject({committedAt:expect.any(Date),attemptToken:old.fence.attemptToken});
+  expect((await db.executionArtifact.findUniqueOrThrow({where:{id:old.artifacts[1]!.id}})).committedAt).toBeNull();
  });
 });
