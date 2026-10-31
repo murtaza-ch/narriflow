@@ -18,7 +18,7 @@ dbDescribe("Executor control authority and replay", () => {
   beforeAll(() => {
     if (!url || new URL(url).hostname !== "ep-wispy-field-b5wyn9o3.c-7.us-east-2.aws.neon.tech") throw new Error("Executor gates require the isolated branch");
     pool = new Pool({ connectionString: url, max: 5 });
-    prisma = new PrismaClient({ adapter: new PrismaPg(pool), transactionOptions: { timeout: 30_000 } });
+    prisma = new PrismaClient({ adapter: new PrismaPg(pool), transactionOptions: { maxWait: 10_000, timeout: 30_000 } });
   });
   afterAll(async () => {
     await prisma.executionInboxReceipt.deleteMany({ where: { deliveryId: { in: receipts } } });
@@ -83,5 +83,74 @@ dbDescribe("Executor control authority and replay", () => {
     expect(await control.execute({ command, verifiedRequest: request })).toEqual({ disposition: "started" });
     expect(await control.execute({ command, verifiedRequest: request })).toEqual({ disposition: "started" });
     expect((await prisma.ingestJob.findUniqueOrThrow({ where: { id: f.job.id } })).attemptCount).toBe(1);
+  }, 30_000);
+
+  test("a conflicting delivery ID and a changed input hash cannot gain authority", async () => {
+    const f = await fixture();
+    const control = createExecutorControl({ database: prisma, subjectKind: "ingest_job", domain });
+    const command = { action: "acquire" as const, reference: f.reference, attemptToken: f.token, owner: randomUUID(), leaseSeconds: 120 };
+    const request = verified();
+    await control.execute({ command, verifiedRequest: request });
+    await expect(control.execute({ command, verifiedRequest: verified("c".repeat(64), request.metadata.deliveryId) })).rejects.toMatchObject({ code: "replay_conflict" });
+    await expect(control.execute({ command: { ...command, reference: { ...f.reference, inputHash: "c".repeat(64) } }, verifiedRequest: verified() })).rejects.toMatchObject({ code: "invalid_reference" });
+    expect((await prisma.ingestJob.findUniqueOrThrow({ where: { id: f.job.id } })).attemptCount).toBe(0);
+  }, 30_000);
+
+  test("an expired owner cannot renew or record a process start", async () => {
+    const f = await fixture();
+    const control = createExecutorControl({ database: prisma, subjectKind: "ingest_job", domain });
+    const owner = randomUUID(), fence = { reference: f.reference, attemptToken: f.token, owner };
+    await control.execute({ command: { action: "acquire", reference: f.reference, attemptToken: f.token, owner, leaseSeconds: 120 }, verifiedRequest: verified() });
+    await prisma.executionAttempt.update({ where: { attemptToken: f.token }, data: { leaseExpiresAt: new Date(Date.now() - 1_000) } });
+    expect(await control.execute({ command: { action: "renew", fence, leaseSeconds: 120 }, verifiedRequest: verified() })).toEqual({ disposition: "expired" });
+    expect(await control.execute({ command: { action: "process-start", fence }, verifiedRequest: verified() })).toEqual({ disposition: "expired" });
+    expect((await prisma.ingestJob.findUniqueOrThrow({ where: { id: f.job.id } })).attemptCount).toBe(0);
+  }, 30_000);
+
+  test("a failed transaction rolls back both process charging and the inbox receipt", async () => {
+    const f = await fixture();
+    const owner = randomUUID(), fence = { reference: f.reference, attemptToken: f.token, owner };
+    const control = createExecutorControl({ database: prisma, subjectKind: "ingest_job", domain });
+    await control.execute({ command: { action: "acquire", reference: f.reference, attemptToken: f.token, owner, leaseSeconds: 120 }, verifiedRequest: verified() });
+    const failing = createExecutorControl({ database: prisma, subjectKind: "ingest_job", domain: { ...domain,
+      async startExecution(tx, ref, c) { await domain.startExecution(tx, ref, c); throw new Error("injected_before_commit"); },
+    } });
+    const request = verified(), command = { action: "process-start" as const, fence };
+    await expect(failing.execute({ command, verifiedRequest: request })).rejects.toThrow("injected_before_commit");
+    expect((await prisma.ingestJob.findUniqueOrThrow({ where: { id: f.job.id } })).attemptCount).toBe(0);
+    expect(await prisma.executionInboxReceipt.findUnique({ where: { audience_deliveryId: { audience: "executor-control", deliveryId: request.metadata.deliveryId } } })).toBeNull();
+    expect(await control.execute({ command, verifiedRequest: request })).toEqual({ disposition: "started" });
+    expect((await prisma.ingestJob.findUniqueOrThrow({ where: { id: f.job.id } })).attemptCount).toBe(1);
+  }, 30_000);
+
+  test("a lost wake acknowledgement replays committed ownership and the same wake", async () => {
+    const f = await fixture();
+    const request = verified(), owner = randomUUID();
+    let acquisitions = 0, deliveries = 0;
+    const control = createExecutorControl({ database: prisma, subjectKind: "ingest_job", domain: { ...domain,
+      async acquireExecution(tx, ref, c) {
+        acquisitions++;
+        await domain.acquireExecution(tx, ref, c);
+        const wake = await appendExecutionDispatch(tx, { deploymentEpoch: c.reference.deploymentEpoch,
+          generation: c.reference.generation, kind: "operation_driver", subject: c.reference.subject,
+          inputHash: c.reference.inputHash, dueAt: c.now, wakeKind: "execution_acquired",
+          deadlineKind: "lease", observedDeadlineAt: c.leaseExpiresAt });
+        dispatches.push(wake.reference.dispatchId);
+        return { dispatchIds: [wake.reference.dispatchId] };
+      },
+    }, async deliverWakes(ids) {
+      deliveries++;
+      const receipt = await prisma.executionInboxReceipt.findUniqueOrThrow({ where: { audience_deliveryId: {
+        audience: "executor-control", deliveryId: request.metadata.deliveryId,
+      } } });
+      expect(receipt.wakeDispatchIds).toEqual([...ids]);
+      expect((await prisma.executionAttempt.findUniqueOrThrow({ where: { attemptToken: f.token } })).owner).toBe(owner);
+      if (deliveries === 1) throw new Error("injected_lost_scheduler_ack");
+    } });
+    const input = { command: { action: "acquire", reference: f.reference, attemptToken: f.token, owner, leaseSeconds: 120 }, verifiedRequest: request };
+    await expect(control.execute(input)).rejects.toThrow("injected_lost_scheduler_ack");
+    expect((await control.execute(input)).disposition).toBe("acquired");
+    expect(acquisitions).toBe(1);
+    expect(deliveries).toBe(2);
   }, 30_000);
 });

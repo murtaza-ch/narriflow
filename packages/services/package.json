@@ -413,6 +413,10 @@
     "./webhook-subscription": {
       "types": "./src/webhook-subscription.ts",
       "default": "./src/webhook-subscription.ts"
+    },
+    "./executor-control": {
+      "types": "./src/executor-control.ts",
+      "default": "./src/executor-control.ts"
     }
   },
   "scripts": {
