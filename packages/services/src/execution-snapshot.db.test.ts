@@ -98,8 +98,11 @@ suite("Fenced snapshot source proof", () => {
       const proof = await capturedExecutionSnapshotFixture(database);
       const begun = await new ExecutionRestoreService({ database, register: async () => {} }).begin(proof);
       const state = await database.executionEpoch.findUniqueOrThrow({ where: { id: 1 } });
-      await database.$transaction(tx => restoreIngestJobsPage(tx, { deploymentEpoch: begun.deploymentEpoch, snapshotEpoch: proof.expectedEpoch, fenceAboveEpoch: proof.fenceAboveEpoch,
-        cutoff: state.changedAt, after: null, limit: 32 }));
+      // Other suites retain deliberately superseded source fixtures. This
+      // exact admission regression owns only the new retry's cursor range.
+      expect(await database.$transaction(tx => restoreIngestJobsPage(tx, { deploymentEpoch: begun.deploymentEpoch, snapshotEpoch: proof.expectedEpoch, fenceAboveEpoch: proof.fenceAboveEpoch,
+        cutoff: state.changedAt, after: {at:manual.createdAt,id:"00000000-0000-0000-0000-000000000000"}, limit: 32 }))).toMatchObject({processed:1});
+      expect(await database.ingestJob.findUniqueOrThrow({where:{id:manual.id}})).toMatchObject({deploymentEpoch:begun.deploymentEpoch,generation:3,attemptCount:1,operationDeadlineAt:before.operationDeadlineAt});
       await database.executionEpoch.update({ where: { id: 1 }, data: { admissionOpen: true } });
       const afterRestore = await admit();
       expect(await database.ingestJob.findUniqueOrThrow({ where: { id: afterRestore.job.id } })).toMatchObject({ deploymentEpoch: begun.deploymentEpoch, generation: 1, attemptCount: 0 });
