@@ -437,6 +437,10 @@
     "./progress-outbox": {
       "types": "./src/progress-outbox.ts",
       "default": "./src/progress-outbox.ts"
+    },
+    "./execution-storage": {
+      "types": "./src/execution-storage.ts",
+      "default": "./src/execution-storage.ts"
     }
   },
   "scripts": {
@@ -464,7 +468,8 @@
     "ioredis": "^5.9.3",
     "sharp": "^0.35.5",
     "stripe": "^22.5.0",
-    "@noble/hashes": "2.4.0"
+    "@noble/hashes": "2.4.0",
+    "@smithy/fetch-http-handler": "5.3.16"
   },
   "devDependencies": {
     "@prisma/adapter-pg": "7.7.0",
