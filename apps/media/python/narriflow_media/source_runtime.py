@@ -70,3 +70,14 @@ async def run_fetch_source(session: ExecutorSession, package: WorkPackage, work:
         development=development, work_directory=work, runtime=runtime, sink=sink,
         toolchain_fingerprint=fingerprint, proxy_template=proxy_template,
         deadline_seconds=min(2700, session.remaining_seconds), existing_audio=existing, project_id=command["projectId"], acquire_audio=command["audioPolicy"]!="none")
+
+
+async def run_pin_source(session: ExecutorSession,package:WorkPackage,work:Path,*,bun_executable='bun',
+                         verify_runtime=verify_source_runtime,pin_operation=None):
+    from .pin_source_runtime import run_upload_pin
+    session.assert_live();package.assert_session(session);command=package.command
+    if package.function_name!='pin_source' or command.get('kind')!='upload_source':
+        raise SourceFetchFailure('source_runtime_invalid')
+    fingerprint=await verify_runtime(session,bun_executable=bun_executable)
+    if fingerprint!=command.get('toolchainFingerprint'):raise SourceFetchFailure('source_runtime_invalid',True)
+    await (pin_operation if pin_operation is not None else run_upload_pin)(session,package,work,bun_executable=bun_executable)

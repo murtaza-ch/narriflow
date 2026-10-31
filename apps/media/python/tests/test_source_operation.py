@@ -8,7 +8,7 @@ import unittest
 from uuid import uuid4
 
 from narriflow_media.fetch import SourceFetchFailure
-from narriflow_media.source_runtime import run_fetch_source
+from narriflow_media.source_runtime import run_fetch_source,run_pin_source
 from narriflow_media.transfer import WorkPackage, _wire
 
 
@@ -62,6 +62,15 @@ class SourceOperationTests(unittest.IsolatedAsyncioTestCase):
             await run_fetch_source(session,package,Path(directory),mode='proxy',development=False,proxy_template=None,
                 token_server_home=Path('/trusted/token-helper'),verify_runtime=verify,direct_operation=direct)
         self.assertEqual(trace,['verify','direct'])
+
+    async def test_pin_source_verifies_the_image_before_starting_its_conditional_copy(self):
+        session,package,trace,_runtime,_sink,verify,_fetch=self.fixture()
+        command=package.command;command.pop('mediaId');command.update(kind='upload_source',mediaIdentity={'provider':'upload','mediaId':str(uuid4())},source={'storageKey':'uploads/frozen','etag':'"frozen"','byteLength':5,'contentType':'video/mp4'})
+        package=WorkPackage('pin_source',package.input_hash,_wire(command),_wire([]),_wire([]),_wire(session.fence))
+        async def pin(session,package,work,**options):trace.append('pin')
+        with tempfile.TemporaryDirectory() as directory:
+            await run_pin_source(session,package,Path(directory),verify_runtime=verify,pin_operation=pin)
+        self.assertEqual(trace,['verify','pin'])
 
     async def test_wrong_image_fingerprint_starts_no_metadata_or_media_process(self):
         session,package,trace,runtime,sink,verify,fetch = self.fixture(fingerprint="e"*64)

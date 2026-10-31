@@ -112,7 +112,7 @@ def source_manifest(command,probe,snapshot,sha):
 
 async def publish_original(session,package,work,path,content_type,*,runtime,sink,completed=None):
     command=package.command;before=FileSnapshot.read(path);probe=await runtime.probe(path);snapshot,sha=await runtime.hash(path)
-    if before!=snapshot:raise SourceFetchFailure('source_audio_video_mismatch')
+    if before!=snapshot or completed is not None and (completed.sha256!=sha or completed.byte_length!=snapshot.size):raise SourceFetchFailure('source_audio_video_mismatch')
     manifest=source_manifest(command,probe,snapshot,sha)
     output=next(value for value in package.outputs if value['role']=='source_video')
     if content_type not in output['contentTypes']:content_type='application/octet-stream'
