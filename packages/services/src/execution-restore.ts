@@ -8,7 +8,7 @@ import { appendExecutionDispatch, executionDispatchIdentity, readExecutionDispat
 export class ExecutionRestoreError extends Error {
   constructor(readonly code: "restore_epoch_changed" | "restore_reference_invalid" | "restore_phase_unavailable" | "restore_page_invalid") { super(code); }
 }
-export const EXECUTION_RESTORE_PHASES = ["attempts", "ingest", "workflows", "render_groups", "selection", "preparation", "native_validation", "thumbnail", "generated_media", "outbound", "publication", "uploads", "billing", "devices", "redispatch"] as const;
+export const EXECUTION_RESTORE_PHASES = ["attempts", "ingest", "workflows", "render_groups", "selection", "preparation", "native_validation", "thumbnail", "generated_media", "outbound", "publication", "bundle", "dubbing", "uploads", "billing", "library", "finishing", "devices", "redispatch"] as const;
 
 export type ExecutionRestorePhase = typeof EXECUTION_RESTORE_PHASES[number];
 export interface ExecutionRestorePosition { at: Date; id: string }

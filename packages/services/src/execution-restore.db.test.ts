@@ -1,3 +1,6 @@
+import { restoreBillingPage, restoreLibraryPage } from "./execution-account-recovery-pages";
+import { queueLibraryIndex } from "./library-index";
+import { queueBillingReconciliation } from "./billing-reconciliation";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaClient } from "@prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
@@ -117,4 +120,25 @@ suite("Execution restore authority", () => {
     await expect(restore.begin(input)).rejects.toMatchObject({ code: "restore_snapshot_history_unknown" });
     expect(await database.executionEpoch.findUniqueOrThrow({ where: { id: 1 } })).toEqual(before);
   });
+  test("bounded account recovery reuses billing identity and paid library progress without extending budgets", async () => {
+    const user=await database.user.create({data:{clerkId:`restore-accounts-${crypto.randomUUID()}`}});
+    const workspace=await database.workspace.create({data:{name:"Restored account",ownerUserId:user.id}});
+    const project=await database.project.create({data:{workspaceId:workspace.id,title:"Restored library",sourceMediaUrl:"https://example.test/source",ingestStatus:"ready"}});
+    const transcript=await database.transcript.create({data:{projectId:project.id,status:"completed",completedAt:new Date(),utterancesJson:[],durationSeconds:60}});
+    const billing=await database.workspaceBillingAccount.create({data:{workspaceId:workspace.id,providerCustomerId:`cus_${crypto.randomUUID()}`,nextReconcileAt:new Date("2026-01-01T00:00:00.000Z"),attemptCount:7}});
+    await database.$transaction(async tx=>{await queueBillingReconciliation(tx,workspace.id);await queueLibraryIndex(tx,transcript.id);});
+    await database.transcript.update({where:{id:transcript.id},data:{passagesAttempts:2,passagesIndexedFor:null}});
+    const original=await database.transcript.findUniqueOrThrow({where:{id:transcript.id}});
+    const source=await capturedExecutionSnapshotFixture(database);
+    const restore=new ExecutionRestoreService({database,limit:1,register:async()=>{},phases:{...Object.fromEntries(EXECUTION_RESTORE_PHASES.map(phase=>[phase,async()=>({processed:0,next:null})])),billing:restoreBillingPage,library:restoreLibraryPage}});
+    const begun=await restore.begin(source);let reference=begun.reference;
+    for(let i=0;i<250;i++){const outcome=await restore.run(reference);if(outcome.kind==="complete")break;reference=(await readExecutionDispatch(database,outcome.dispatchIds.at(-1)!))!.reference;}
+    const afterBilling=await database.workspaceBillingAccount.findUniqueOrThrow({where:{id:billing.id}}),afterLibrary=await database.transcript.findUniqueOrThrow({where:{id:transcript.id}});
+    expect(afterBilling).toMatchObject({providerCustomerId:billing.providerCustomerId,attemptCount:7,nextReconcileAt:billing.nextReconcileAt,reconcileAttemptId:null,leaseExpiresAt:null,reconciliationEpoch:begun.deploymentEpoch});
+    expect(afterLibrary).toMatchObject({passagesAttempts:2,passagesRetryAt:original.passagesRetryAt,passagesSourceHash:original.passagesSourceHash,passagesDeadlineAt:original.passagesDeadlineAt,passagesClaimId:null,passagesLeaseUntil:null,passagesEpoch:begun.deploymentEpoch});
+    expect(afterLibrary.passagesGeneration).toBe(original.passagesGeneration+1);
+    expect(await database.executionDispatch.count({where:{deploymentEpoch:begun.deploymentEpoch,subjectKind:{in:["workspace_billing","library_index"]}}})).toBe(0);
+    await database.workspace.delete({where:{id:workspace.id}});
+  });
+
 });

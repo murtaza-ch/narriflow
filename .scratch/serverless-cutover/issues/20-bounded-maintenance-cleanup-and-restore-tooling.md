@@ -152,3 +152,15 @@ passes. These are local gates; no full deployed restore or maintenance claim is 
 After merging integration (including Finishing, publication observation and the
 fenced Worker health endpoint), the complete fresh gate passes 276 tests / 1,810
 assertions. Services including the operator and API typechecks remain green.
+
+Production adapter work continues: fixed hourly model phases now repair current
+acknowledged drivers with fresh observations and no owner/charge mutation. Real
+bounded retention pages cover Workflow Events (pending delivery retained),
+Workspace Events (permanent dedupe keys retained), webhook logs, terminal prompt
+scrubbing, deletion receipt expiry and known cleanup intent repair. Billing/library
+page bodies reuse their existing domain helpers and preserve paid work/deadlines.
+Migration016 adds strict page indexes and the current completed Preparation output
+shape (`readyObjects`), which normal completion always writes. No legacy completed
+reader is retained; old isolated fixtures must be reset before applying the CHECK.
+The focused fresh-schema gate passes33tests/270assertions; module typechecks and
+Biome pass. Full factories/transforms are still being implemented, not mounted.

@@ -172,7 +172,7 @@ suite("Clip Preparation authority and publication", () => {
     const accepted = await f.service.admitForGroup(f.references[0]!);
     const row = await db.clipPreparation.findUniqueOrThrow({ where: { id: accepted.preparationId } });
     const other = await db.project.create({ data: { workspaceId: f.workspace.id, title: "Another Project", sourceMediaUrl: "r2://another" } });
-    const { result: _result, ...data } = row;
+    const { result: _result, readyObjects: _readyObjects, ...data } = row;
     expect((await db.clipPreparation.create({ data: { ...data, id: crypto.randomUUID(), bindingHash: "0".repeat(64) } })).projectId).toBe(f.project.id);
     await expect(Promise.resolve(db.clipPreparation.create({ data: { ...data, id: crypto.randomUUID(), bindingHash: "1".repeat(64), projectId: other.id } }))).rejects.toMatchObject({ code: "P2003" });
   });
@@ -239,6 +239,9 @@ suite("Clip Preparation authority and publication", () => {
     expect(await execution.send(command, request)).toMatchObject({ disposition: "committed" });
     expect(execution.wakes.at(-1)).toEqual(execution.wakes.at(-2));
     expect(execution.wakes.at(-1)).toHaveLength(2);
+    expect((await db.clipPreparation.findUniqueOrThrow({ where: { id: execution.admitted.preparationId } })).readyObjects).toMatchObject({
+      preview: { storageKey: execution.preview.storageKey }, peaks: { storageKey: execution.peaks.storageKey }, manifest: { storageKey: execution.manifest.storageKey },
+    });
     const ready = await f.service.readReadyForGroup(f.references[1]!);
     expect(ready).toMatchObject({ preparationId: execution.admitted.preparationId, preview: { storageKey: execution.preview.storageKey }, peaks: { storageKey: execution.peaks.storageKey }, result: execution.result });
     expect(await db.workflowRun.findUnique({ where: { id: f.run.id } })).toMatchObject({ attemptId: null, leaseOwner: null, attemptCount: 0 });
