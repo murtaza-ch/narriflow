@@ -638,6 +638,7 @@ export * from "./notification-body-storage";
 
 export * from "./outbound-delivery-runtime";
 export * from "./local-fetch-device";
+export * from "./local-fetch-device-execution";
 
 export * from "./source-fetch-capability";
 export * from "./generated-media-execution";

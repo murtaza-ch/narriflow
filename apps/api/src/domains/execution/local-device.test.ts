@@ -32,4 +32,17 @@ describe('Scoped device HTTP execution',()=>{
    expect(result.status).toBe(409);expect((await result.json()).error).toBe('invalid_reference');
   }));expect(reads).toBe(1);expect(disposed).toBe(1);
  });
+ test('reconciliation verifies audience and cursor before opening the service database',async()=>{
+  const issued=await createLocalFetchDeviceCodec(new Map([['gate',rootKey]])).issue({workspaceId,actorUserId,apiOrigin:origin,deploymentEpoch:1},'gate');let clients=0;
+  const bindings={LOCAL_FETCH_MAILBOX:{getByName:()=>({authorize:async()=>issued.claims})}};
+  const target='/api/dev-device/reconcile',app=new Hono().route('/api',createLocalDeviceRoutes());
+  await withServiceEnvironment(environment,()=>withDatabaseScope(createDatabaseScope({createClient(){clients++;throw new Error('database must not open');}}),async()=>{
+   for(const input of [{audience:'executor-control' as const,body:{},status:401},{audience:'dev-device' as const,body:{after:'bad-cursor'},status:400},{audience:'dev-device' as const,body:{unexpected:true},status:400}]){
+    const body=new TextEncoder().encode(JSON.stringify(input.body));
+    const signature=await signExecutionRequest({keyId:issued.claims.sessionId,key:issued.key,audience:input.audience,method:'POST',target,body,timestamp:Math.floor(Date.now()/1000),deliveryId:crypto.randomUUID()});
+    const response=await app.fetch(new Request(origin+target,{method:'POST',body,headers:{'Content-Type':'application/json','X-Local-Fetch-Session':issued.token,'X-Execution-Signature':JSON.stringify(signature)}}),bindings);
+    expect(response.status).toBe(input.status);
+   }
+  }));expect(clients).toBe(0);
+ });
 });
