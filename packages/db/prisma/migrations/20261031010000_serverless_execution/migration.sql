@@ -351,7 +351,7 @@ UPDATE "ReviewRound" SET "revokedAt" = COALESCE("revokedAt", now()), "passcodeHa
 ALTER TABLE "ExecutionAttempt" ADD COLUMN "inputStorageKey" VARCHAR(1024), ADD COLUMN "inputEtag" VARCHAR(160), ADD COLUMN "inputByteLength" BIGINT;
 ALTER TABLE "ExecutionAttempt" ADD CONSTRAINT "ExecutionAttempt_input_binding_check" CHECK (
   ("inputStorageKey" IS NULL AND "inputEtag" IS NULL AND "inputByteLength" IS NULL)
-  OR ("inputStorageKey" IS NOT NULL AND "inputEtag" IS NOT NULL AND "inputByteLength" IS NOT NULL AND "inputByteLength" > 0 AND "inputByteLength" <= 2147483648)
+  OR ("inputStorageKey" IS NOT NULL AND "inputEtag" IS NOT NULL AND "inputByteLength" IS NOT NULL AND "inputByteLength" > 0 AND "inputByteLength" <= 16777216)
 );
 ALTER TABLE "ExecutionInboxReceipt" ADD COLUMN "wakeDispatchIds" UUID[] NOT NULL DEFAULT ARRAY[]::UUID[];
 ALTER TABLE "ExecutionInboxReceipt" ADD CONSTRAINT "ExecutionInboxReceipt_wake_bound_check" CHECK (cardinality("wakeDispatchIds") <= 128);
