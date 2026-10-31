@@ -2995,18 +2995,6 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     expect((await prisma.workflowRun.findUniqueOrThrow({ where: { id: run.id } })).attemptCount).toBe(1);
   })));
 
-  test("shutdown release leaves an accepted provider transcript waiting instead of submitting again", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
-    const { run, project } = await fixture("stt");
-    const lifecycle = new RenderFixtureLifecycle({ prisma, leaseOwner: randomUUID() });
-    const attempt = await lifecycle.claim("stt");
-    if (!attempt) throw new Error("claim missing");
-    await lifecycle.beginProviderSubmission(attempt, { deadline: new Date(Date.now() + 600_000) });
-    await lifecycle.recordProviderAcceptance(attempt, { requestId: "request-before-shutdown", transcriptionId: "accepted-before-shutdown", nextPollAt: new Date(Date.now() + 60_000) });
-    expect(await lifecycle.releaseAttempt(attempt)).toBe(false);
-    expect(await prisma.workflowRun.findUniqueOrThrow({ where: { id: run.id } })).toMatchObject({ status: "waiting", attemptId: attempt.attemptId, attemptCount: 1 });
-    expect((await prisma.transcript.findUniqueOrThrow({ where: { projectId: project.id } })).providerJobId).toBe("accepted-before-shutdown");
-  })));
-
   test("coordinator release preserves healthy groups and their completed and permanent outcomes", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const { run, project } = await fixture("clip_rendering");
     const clip = await clipFixture(project.id, run.id);
@@ -3241,51 +3229,6 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     expect(stillOwned.attemptId).toBe(attempt.attemptId);
   })));
 
-  test("waiting STT is not reaped and finalizes only its correlated attempt", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
-    const { run, project } = await fixture("stt");
-    const lifecycle = new RenderFixtureLifecycle({
-      prisma,
-      leaseOwner: randomUUID(),
-    });
-    const claimed = await lifecycle.claim("stt");
-    if (!claimed) throw new Error("claim missing");
-    const attempt = claimed;
-    await lifecycle.beginProviderSubmission(attempt, { deadline: new Date(Date.now() + 600_000) });
-    await lifecycle.recordProviderAcceptance(attempt, {
-      requestId: "provider-request-1",
-      transcriptionId: "provider-job-1",
-      nextPollAt: new Date(Date.now() - 1_000),
-    });
-    expect(await lifecycle.reapExpiredAttempts()).toBe(0);
-    const due = await lifecycle.claimDueWaitingTranscripts(10, 5_000);
-    expect(due).toHaveLength(1);
-    expect(due[0]?.attemptId).toBe(attempt.attemptId);
-
-    await lifecycle.completeTranscript(attempt, {
-        provider: "elevenlabs",
-        providerModel: "test",
-        providerJobId: "provider-job-1",
-        languageCode: "en",
-        languageConfidence: 1,
-        text: "test transcript",
-        utterances: [] as Prisma.InputJsonValue,
-        speakerCount: 1,
-        durationSeconds: 10,
-        rawStorageKey: null,
-      });
-
-    const [settled, transcript, child] = await Promise.all([
-      prisma.workflowRun.findUniqueOrThrow({ where: { id: run.id } }),
-      prisma.transcript.findUniqueOrThrow({ where: { projectId: project.id } }),
-      prisma.workflowRun.findFirstOrThrow({
-        where: { projectId: project.id, stage: "moment_detection" },
-      }),
-    ]);
-    expect(settled.status).toBe("completed");
-    expect(transcript.workflowAttemptId).toBe(attempt.attemptId);
-    expect(child.status).toBe("queued");
-  })));
-
   describe("durable provider submission", () => {
     async function providerReply(pending: ReturnType<WorkflowRunLifecycle["expireProviderDeadline"]>) {
       const value = await pending;
@@ -3349,6 +3292,35 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
       expect((await prisma.workflowRun.findUniqueOrThrow({ where: { id: run.id } })).attemptCount).toBe(1);
       return { run, project, worker, api, attempt, deadline };
     }
+
+    test("shutdown recovery leaves an accepted provider transcript waiting instead of submitting again", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
+      const { run, project, worker, api, attempt } = await begun();
+      await providerReply(api.recordProviderAcceptance(attempt, { requestId: "request-before-shutdown", transcriptionId: "accepted-before-shutdown", nextPollAt: new Date(Date.now() + 60000) }));
+      const history = await prisma.executionAttempt.findUniqueOrThrow({ where: { attemptToken: attempt.attemptId } });
+      const reference = (await readExecutionDispatch(prisma, history.dispatchId))!.reference;
+      const replay = await createTranscriptionAdmission({ database: prisma, workflow: worker, maxUnits: 12 }).admit(reference, { owner: randomUUID() });
+      expect(replay.kind).toBe("already_waiting");
+      if (replay.kind !== "already_waiting") throw Error("Expected the same accepted provider intent");
+      expect(replay.intent.reference).toEqual({ workflowRunId: attempt.workflowRunId, attemptId: attempt.attemptId, deploymentEpoch: attempt.deploymentEpoch, sourceRevision: attempt.sourceRevision, sourceAudioId: attempt.sourceAudioId });
+      expect(await prisma.workflowRun.findUniqueOrThrow({ where: { id: run.id } })).toMatchObject({ status: "waiting", attemptId: attempt.attemptId, attemptCount: 1, leaseOwner: null, leaseExpiresAt: null });
+      expect((await prisma.transcript.findUniqueOrThrow({ where: { projectId: project.id } })).providerJobId).toBe("accepted-before-shutdown");
+      expect(await prisma.executionAttempt.count({ where: { dispatch: { subjectId: run.id }, functionName: "stt" } })).toBe(1);
+    })));
+
+    test("waiting STT survives its closed Generic watchdog and finalizes only its correlated attempt", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
+      const { run, project, worker, api, attempt } = await begun();
+      await providerReply(api.recordProviderAcceptance(attempt, { requestId: "provider-request-1", transcriptionId: "provider-job-1", nextPollAt: new Date(Date.now() - 1000) }));
+      const history = await prisma.executionAttempt.findUniqueOrThrow({ where: { attemptToken: attempt.attemptId } });
+      const reference = (await readExecutionDispatch(prisma, history.dispatchId))!.reference;
+      const control = createExecutorControl({ database: prisma, domain: worker, subjectKind: "workflow_run", deliverWakes: async () => {} });
+      expect(await control.expireDeadline({ deadline: { reference, attemptToken: attempt.attemptId, kind: "lease", observedDeadlineAt: history.leaseExpiresAt!.toISOString() }, deliveryId: randomUUID() })).toEqual({ kind: "terminal" });
+      expect(await worker.readProviderControl(attempt)).toMatchObject({ kind: "waiting", attempt: { attemptId: attempt.attemptId }, providerJobId: "provider-job-1" });
+      expect(await providerReply(api.completeProviderTranscript({ ...attempt, attemptId: randomUUID() }, transcriptInput("provider-job-1", "provider-request-1")))).toEqual({ kind: "stale", reason: "attempt_superseded" });
+      expect(await providerReply(api.completeProviderTranscript(attempt, transcriptInput("provider-job-1", "provider-request-1")))).toEqual({ kind: "applied" });
+      expect(await prisma.workflowRun.findUniqueOrThrow({ where: { id: run.id } })).toMatchObject({ status: "completed", attemptCount: 1 });
+      expect((await prisma.transcript.findUniqueOrThrow({ where: { projectId: project.id } })).workflowAttemptId).toBe(attempt.attemptId);
+      expect(await prisma.workflowRun.findFirstOrThrow({ where: { projectId: project.id, stage: "moment_detection" } })).toMatchObject({ status: "queued", attemptId: null, leaseOwner: null });
+    })));
 
     test("begin parks the run waiting with no provider id and stamps Scribe", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
       const { run, project, attempt, deadline } = await begun();

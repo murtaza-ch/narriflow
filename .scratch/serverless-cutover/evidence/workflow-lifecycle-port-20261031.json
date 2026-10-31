@@ -3,7 +3,7 @@
   "productionFilesChanged": false,
   "target": "fresh disposable workflow schema on the named local PostgreSQL gate database",
   "baselineFailed": 20,
-  "verified": { "tests": 111, "assertions": 755, "failed": 0, "servicesTypecheck": "passed", "biome": "passed" },
+  "verified": { "tests": 111, "assertions": 777, "failed": 0, "providerSubset": { "tests": 17, "assertions": 220 }, "servicesTypecheck": "passed", "biome": "passed" },
   "provider": [
     "verified SourceAudio tuple plus actual compound transcription admission",
     "one charged start and closed Generic execution before provider waiting",
@@ -11,7 +11,8 @@
     "explicit exact-ID provider deadlines, bounded retry and no duplicate charge",
     "all returned wake IDs are unique, bounded and persisted in the current epoch",
     "duplicate successful callback returns the same committed wake IDs",
-    "a separate Core-acquired running owner is not provider waiting permission"
+    "a separate Core-acquired running owner is not provider waiting permission",
+    "a closed Generic watchdog cannot reap provider waiting and fresh admission replay cannot resubmit it"
   ],
   "notification": [
     "source terminal transition and notification intent commit together",
@@ -25,5 +26,5 @@
     "missing immutable preparation cannot admit a captioned export or complete detection"
   ],
   "notRun": ["shared database mutation", "provider HTTP", "shared bucket access"],
-  "log": "/tmp/narriflow-serverless-gates/workflow-current-ports-core-final.log"
+  "log": "/tmp/narriflow-serverless-gates/workflow-current-ports-final-inclusive.log"
 }
