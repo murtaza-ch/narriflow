@@ -127,14 +127,14 @@ describe("which script the requested face draws", () => {
   });
 
   test("the own-script table is what the catalog's font files cover", () => {
-    // fontkit lives with the worker; ask it from there so the web graph stays free of it.
+    // Read native font coverage from media so the web graph stays free of fontkit.
     const script = `
       import { captionFontFilePath, fontFileCovers } from "@narriflow/caption-fonts";
       import { CAPTION_FONT_FACES } from "@narriflow/validators";
       const probes = { Cyrillic: "Жщцуф", Greek: "ΩαβγΣ" };
       console.log(JSON.stringify(Object.fromEntries(CAPTION_FONT_FACES.map((face) => [face.name,
         Object.keys(probes).filter((script) => fontFileCovers(captionFontFilePath(face.file), probes[script])).sort()]))));`;
-    const run = Bun.spawnSync([process.execPath, "-e", script], { cwd: new URL("../../worker/", import.meta.url).pathname });
+    const run = Bun.spawnSync([process.execPath, "-e", script], { cwd: new URL("../../media/", import.meta.url).pathname });
     expect(run.exitCode).toBe(0);
     const covered = JSON.parse(run.stdout.toString()) as Record<string, string[]>;
     for (const face of CAPTION_FONT_FACES) {
