@@ -1,3 +1,4 @@
+import {expireGrantNotificationRowsPage} from "./execution-private-retention";
 import {planStandingGrantAuthorityPage} from "./publication-maintenance";
 import {afterAll,afterEach,beforeAll,describe,expect,test} from 'bun:test';
 import {PrismaClient} from '@prisma/client';
@@ -140,6 +141,20 @@ suite('Targeted grant-pause mail',()=>{
   const second=await db.$transaction(tx=>planStandingGrantAuthorityPage(tx,{...page,after:first.next}));expect(second.processed).toBe(1);expect(second.next).toBeNull();
   expect(await db.grantPauseNotificationLedger.count({where:{workspaceId:f.workspace.id}})).toBe(33);
   await db.$transaction(async tx=>{await tx.$executeRawUnsafe('SET LOCAL enable_seqscan=off');const plan=await tx.$queryRaw`EXPLAIN (FORMAT JSON) SELECT id FROM "StandingGrant" WHERE status='active' AND "createdAt"<=${page.cutoff} ORDER BY "createdAt",id LIMIT 33`;expect(JSON.stringify(plan)).toContain('StandingGrant_active_authority_cursor');});
+ });
+
+ test('retention pages delete only old terminal notices and preserve old active or fresh terminal mail',async()=>{
+  const f=await fixture(),now=new Date(),rows:Array<{id:string;status:string;old:boolean}>=[];
+  for(const [index,status] of ['sent','failed','skipped','pending','claimed','sent'].entries()){
+   const old=index!==5,born=new Date(now.getTime()-(old?35-index:0)*86400_000),deadline=new Date(born.getTime()+23*3600_000),revision=index+1;
+   const event=await db.standingGrantEvent.create({data:{grantId:f.grant.id,kind:'paused',revision,actorUserId:null,reason:'post_failed',createdAt:born}});
+   const row=await db.grantPauseNotificationLedger.create({data:{workspaceId:f.workspace.id,grantId:f.grant.id,pauseEventId:event.id,grantRevision:revision,reason:'post_failed',status,createdAt:born,nextAttemptAt:born,operationDeadlineAt:deadline,...(status==='claimed'?{claimToken:crypto.randomUUID(),leaseExpiresAt:deadline}:{})}});rows.push({id:row.id,status,old});
+  }
+  const epoch=await db.executionEpoch.findUniqueOrThrow({where:{id:1}}),page={deploymentEpoch:epoch.epoch,cutoff:now,after:null,limit:2},dispatches=await db.executionDispatch.count();
+  const first=await db.$transaction(tx=>expireGrantNotificationRowsPage(tx,page));expect(first.processed).toBe(2);expect(first.next).toBeTruthy();expect(first.dispatchIds).toEqual([]);
+  const second=await db.$transaction(tx=>expireGrantNotificationRowsPage(tx,{...page,after:first.next}));expect(second.processed).toBe(1);expect(second.next).toBeNull();expect(second.dispatchIds).toEqual([]);
+  expect(await db.grantPauseNotificationLedger.findMany({where:{grantId:f.grant.id},select:{id:true},orderBy:{id:'asc'}})).toEqual(rows.filter(row=>!row.old||['pending','claimed'].includes(row.status)).map(row=>({id:row.id})).sort((a,b)=>a.id.localeCompare(b.id)));
+  expect(await db.executionDispatch.count()).toBe(dispatches);
  });
 
 });
