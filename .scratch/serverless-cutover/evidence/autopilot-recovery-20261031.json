@@ -1,0 +1,34 @@
+{
+  "status": "passed_local",
+  "scope": "Four required bounded maintenance/metadata-restore Tx ports, independent of pending producer/legacy work.",
+  "ports": [
+    "planAutopilotRecoveryPage",
+    "planZoomNotificationRecoveryPage",
+    "planAutopilotRestorePage",
+    "planZoomNotificationRestorePage"
+  ],
+  "module": "@narriflow/services/autopilot-maintenance",
+  "checks": {
+    "postgres": {
+      "files": 5,
+      "passed": 26,
+      "assertions": 198,
+      "log": "/tmp/narriflow-autopilot-ports-combined-db.log"
+    },
+    "port_tests": {
+      "passed": 2,
+      "assertions": 20
+    },
+    "services_typecheck": true,
+    "biome_files": 7
+  },
+  "properties": [
+    "createdAt/id frozen cutoff cursor, future accepted timers registered immediately",
+    "RSS effective31 rows, up to4 IDs per row; Zoom32 rows, up to3 IDs per row; <=127 IDs",
+    "Workspace usage/workspace parents locked in UUID order separately from cursor order",
+    "Metadata restore clears only short command owners and rebinds epoch/generation",
+    "Frozen source and grant body, original due/deadline, cursor, probe link, failure/native/notification counters preserved",
+    "Metadata pages append and return zero product dispatch IDs",
+    "Exact same metadata repair helpers register outbox obligations in runtime and recovery; no hash duplication"
+  ]
+}
