@@ -13,7 +13,7 @@ import math
 import re
 import socket
 import ssl
-from threading import Event, Lock, Thread, Timer
+from threading import Event, Lock, Thread
 import time
 from typing import Any, Callable, Mapping, Protocol
 from urllib.parse import urlsplit
@@ -43,6 +43,19 @@ class CommandResult:
     disposition: Mapping[str, Any]
     server_time_upper: float
     received_monotonic: float
+    received_wall: float
+
+
+class _PermissionEvent(Event):
+    """Native owners poll this event even while no renewal request is due."""
+    def __init__(self, permitted: Callable[[], bool]):
+        super().__init__()
+        self._permitted = permitted
+
+    def is_set(self):
+        if not super().is_set() and not self._permitted():
+            self.set()
+        return super().is_set()
 
 
 class ControlTransport(Protocol):
@@ -61,9 +74,15 @@ def _https(origin: str, target: str, body: bytes, headers: Mapping[str, str], ti
             except OSError:
                 pass
         connection.close()
-    timer = Timer(timeout, interrupt)
-    timer.daemon = True
-    timer.start()
+    finished = Event()
+    end_mono, end_wall = time.monotonic() + timeout, time.time() + timeout
+    def monitor():
+        while not finished.wait(0.05):
+            if time.monotonic() >= end_mono or time.time() >= end_wall:
+                interrupt()
+                return
+    watcher = Thread(target=monitor, daemon=True)
+    watcher.start()
     try:
         connection.request('POST', target, body=body, headers=dict(headers))
         response = connection.getresponse()
@@ -75,8 +94,9 @@ def _https(origin: str, target: str, body: bytes, headers: Mapping[str, str], ti
             chunks.append(chunk)
         return ControlResponse(response.status, dict(response.getheaders()), b''.join(chunks))
     finally:
-        timer.cancel()
+        finished.set()
         connection.close()
+        watcher.join(timeout=0.1)
 
 
 def _instant(value: object) -> float:
@@ -151,19 +171,24 @@ class ExecutionControlClient:
                    'X-Execution-Signature': json.dumps(signature, separators=(',', ':'))}
         # A delivery's exact bytes, signature timestamp and ID never change on
         # a transport retry. The whole sequence is shorter than the 300s window.
-        end = min(time.monotonic() + 40, deadline_monotonic or float('inf'))
+        initial_mono, initial_wall = time.monotonic(), self._clock()
+        end = min(initial_mono + 40, deadline_monotonic or float('inf'))
         for attempt in range(self._attempts):
-            remaining = end - time.monotonic()
+            if abs((self._clock() - initial_wall) - (time.monotonic() - initial_mono)) > 1:
+                raise ExecutionControlError('execution_clock_changed')
+            remaining = min(end - time.monotonic(), 40 - (self._clock() - initial_wall))
             if remaining <= 0:
                 raise ExecutionControlError('execution_command_deadline')
-            began = time.monotonic()
+            began, began_wall = time.monotonic(), self._clock()
             try:
                 response = self._transport(self._origin, TARGET, body, headers, min(self._timeout, remaining))
             except (OSError, TimeoutError, http.client.HTTPException):
                 response = None
-            received = time.monotonic()
+            received, received_wall = time.monotonic(), self._clock()
+            if abs((received_wall - began_wall) - (received - began)) > 1:
+                raise ExecutionControlError('execution_clock_changed')
             if response is not None and response.status == 200:
-                if received >= end or len(response.body) > MAX_RESPONSE_BYTES:
+                if received >= end or received_wall - initial_wall >= 40 or len(response.body) > MAX_RESPONSE_BYTES:
                     raise ExecutionControlError('execution_command_deadline')
                 try:
                     disposition = _disposition(json.loads(response.body))
@@ -171,8 +196,8 @@ class ExecutionControlClient:
                     # The current TLS response header is fresh even if the body
                     # is an old inbox receipt. Add the whole RTT and the API's
                     # one-second timestamp quantization conservatively.
-                    server_upper = _instant(server_time) + 1 + received - began
-                    return CommandResult(disposition, server_upper, received)
+                    server_upper = _instant(server_time) + 1 + max(received - began, received_wall - began_wall)
+                    return CommandResult(disposition, server_upper, received, received_wall)
                 except (ValueError, UnicodeError, StopIteration):
                     raise ExecutionControlError('execution_response_invalid') from None
             if response is not None and response.status not in {408, 425, 429, 500, 502, 503, 504}:
@@ -199,16 +224,22 @@ class ExecutorSession:
         lease = result.received_monotonic + _instant(result.disposition['leaseExpiresAt']) - result.server_time_upper
         deadline = min(result.received_monotonic + max_operation_seconds,
                        result.received_monotonic + _instant(result.disposition['operationDeadlineAt']) - result.server_time_upper)
-        if min(lease, deadline) - time.monotonic() <= 5:
+        lease_wall = result.received_wall + lease - result.received_monotonic
+        deadline_wall = result.received_wall + deadline - result.received_monotonic
+        if (min(lease, deadline) - time.monotonic() <= 5 or min(lease_wall, deadline_wall) - client._clock() <= 5
+                or abs((client._clock() - result.received_wall) - (time.monotonic() - result.received_monotonic)) > 1):
             raise ExecutionControlError('execution_authority_lost')
-        return cls(client, fence, lease, deadline)
+        return cls(client, fence, lease, deadline, lease_wall, deadline_wall, result.received_wall, result.received_monotonic)
 
-    def __init__(self, client: ExecutionControlClient, fence: Mapping[str, Any], lease: float, deadline: float):
+    def __init__(self, client: ExecutionControlClient, fence: Mapping[str, Any], lease: float, deadline: float,
+                 lease_wall: float, deadline_wall: float, anchor_wall: float, anchor_mono: float):
         self._client, self._fence = client, dict(fence)
         self._lease, self._deadline = lease, deadline
-        self.cancel_event = Event()
+        self._lease_wall, self._deadline_wall = lease_wall, deadline_wall
+        self._anchor_wall, self._anchor_mono = anchor_wall, anchor_mono
         self._stop = Event()
         self._state_lock, self._start_lock = Lock(), Lock()
+        self.cancel_event = _PermissionEvent(self._permission_live)
         self._started = False
         self._renewal: Thread | None = None
 
@@ -220,21 +251,29 @@ class ExecutorSession:
     @property
     def remaining_seconds(self):
         self.assert_live()
-        return max(0, self._deadline - time.monotonic())
+        return max(0, min(self._deadline - time.monotonic(), self._deadline_wall - self._client._clock()))
+
+    def _permission_live(self):
+        with self._state_lock:
+            mono, wall = time.monotonic(), self._client._clock()
+            return (not self._stop.is_set() and mono < min(self._lease, self._deadline)
+                    and wall < min(self._lease_wall, self._deadline_wall)
+                    and abs((wall - self._anchor_wall) - (mono - self._anchor_mono)) <= 1)
 
     def assert_live(self):
-        with self._state_lock:
-            live = not self.cancel_event.is_set() and not self._stop.is_set() and time.monotonic() < min(self._lease, self._deadline)
-        if not live:
-            self.cancel_event.set()
+        if self.cancel_event.is_set():
             raise ExecutionControlError('execution_authority_lost')
 
     def command(self, action: str, **fields: Any) -> CommandResult:
         if action not in {'read-disposition', 'commit-artifact', 'fail', 'release', 'progress'} or {'fence', 'action'} & fields.keys():
             raise ExecutionControlError('execution_command_invalid')
-        self.assert_live()
+        # Auditing never restores permission and remains possible after local
+        # cancellation or an uncertain acknowledgement. Mutations require it.
+        if action != 'read-disposition':
+            self.assert_live()
         try:
-            result = self._client.command({'action': action, 'fence': self._fence, **fields}, deadline_monotonic=min(self._deadline, self._lease))
+            result = self._client.command({'action': action, 'fence': self._fence, **fields},
+                deadline_monotonic=None if action == 'read-disposition' else min(self._deadline, self._lease))
         except ExecutionControlError:
             self.cancel_event.set()
             raise
@@ -280,11 +319,14 @@ class ExecutorSession:
                                               deadline_monotonic=min(self._deadline, self._lease))
                 if result.disposition['disposition'] != 'renewed':
                     raise ExecutionControlError('execution_authority_lost')
+                self.assert_live()
                 lease = result.received_monotonic + _instant(result.disposition['leaseExpiresAt']) - result.server_time_upper
                 if lease <= time.monotonic():
                     raise ExecutionControlError('execution_authority_lost')
                 with self._state_lock:
                     self._lease = min(lease, self._deadline)
+                    self._anchor_mono, self._anchor_wall = time.monotonic(), self._client._clock()
+                    self._lease_wall = min(result.received_wall + lease - result.received_monotonic, self._deadline_wall)
             except BaseException:
                 self.cancel_event.set()
                 return
