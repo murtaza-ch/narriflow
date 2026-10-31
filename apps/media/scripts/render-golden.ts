@@ -1,4 +1,5 @@
 import { transportRenderCommand } from "../src/render-command-transport";
+import { renderFfmpegArgs } from "../src/ffmpeg-thread-policy";
 /**
  * Render golden parity harness (render hardening ticket 01).
  *
@@ -1105,7 +1106,7 @@ export async function runCase(context: CaseContext, id: string): Promise<CaseRec
       const graph = graphOf(normalized);
       targetRecord.command = { argv: normalized, argvSha256: sha256(canonicalJson(normalized)), filterGraph: graph, filterGraphSha256: graph === null ? null : sha256(graph), argBytes: argv.reduce((total, arg) => total + Buffer.byteLength(arg) + 1, 0) };
 
-      const run = await runProcess("ffmpeg", await transportRenderCommand({ args: argv, directory: join(caseDir, "work") }), { timeoutMs: 600_000 });
+      const run = await runProcess("ffmpeg", renderFfmpegArgs(await transportRenderCommand({ args: argv, directory: join(caseDir, "work") })), { timeoutMs: 600_000 });
       targetRecord.encode = { exitCode: run.code, diagnostics: diagnosticLines(run.stderr).map(normalize) };
       // The worker fails the variant when libass proves a glyph unrenderable, even though ffmpeg exits zero.
       const glyphFailure = run.code === 0 ? captionRenderDiagnosticsFailure(classifyCaptionRenderDiagnostics(run.stderr.split(/\r?\n|\r/).filter((line) => CAPTION_RENDER_DIAGNOSTIC_PATTERN.test(line)))) : null;

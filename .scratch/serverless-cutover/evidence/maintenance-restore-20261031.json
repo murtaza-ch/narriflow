@@ -7,6 +7,7 @@
   "migration": "20261101010000_execution_maintenance_indexes (025)",
   "verified": {
     "focusedPostgres": {"tests": 59, "assertions": 474},
+    "completeDefaultPostgres": {"tests": 420, "assertions": 2939, "failed": 0, "schemas": "both empty factories self-isolated, ordinary suites together, committed epoch-fencing suites last"},
     "deterministic": {"tests": 92, "assertions": 389},
     "finalClockPutPrivacySlice": {"tests": 7, "assertions": 75},
     "clockRace": "old now() default fails; actual clock_timestamp insertion default passes",

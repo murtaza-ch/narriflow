@@ -4,6 +4,7 @@ import os
 import asyncio
 from pathlib import Path
 import signal
+import shutil
 import subprocess
 import sys
 import time
@@ -75,6 +76,29 @@ class OwnedProcessTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertEqual(result.stdout.strip(), b'{"DATABASE_URL": null, "DIRECT_URL": null, "PGPASSWORD": null, "MEDIA_TEST_VALUE": "kept"}')
 
+
+    def test_native_bun_never_autoloads_database_credentials_from_its_working_directory(self):
+        bun = shutil.which('bun')
+        self.assertIsNotNone(bun, 'the pinned native Bun executable is required')
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory)
+            (work / '.env.local').write_text('DATABASE_URL=dummy_database_not_a_credential\n')
+            environment = {'PATH': os.environ['PATH']}
+            # Calibrate the same real Bun binary: replacing inherited env does
+            # not itself disable Bun's automatic dotenv file loading.
+            ordinary = subprocess.run([bun, '-e', "console.log(Boolean(process.env.DATABASE_URL))"],
+                                      cwd=work, env=environment, capture_output=True, timeout=5)
+            self.assertEqual(ordinary.returncode, 0)
+            self.assertEqual(ordinary.stdout, b'true\n')
+            command = [bun, '-e', "if(process.env.DATABASE_URL)throw Error('native_credential_present');console.log('isolated')"]
+            code = (f'import sys;sys.path.insert(0,{str(Path(__file__).resolve().parents[1])!r});'
+                    'from narriflow_media.process import run_owned_process;'
+                    f'r=run_owned_process({command!r},timeout_seconds=5,kill_grace_seconds=.1,env={environment!r});'
+                    'sys.stdout.buffer.write(r.stdout);sys.exit(r.returncode)')
+            protected = subprocess.run([sys.executable, '-c', code], cwd=work, env=environment,
+                                       capture_output=True, timeout=8)
+            self.assertEqual(protected.returncode, 0)
+            self.assertEqual(protected.stdout, b'isolated\n')
 
     def test_process_start_fires_once_after_the_actual_native_spawn(self):
         starts = []
