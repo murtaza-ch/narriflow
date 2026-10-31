@@ -17,3 +17,10 @@ export const autopilotCycleInputSchema = autopilotImportPlanSchema.extend({
 export type AutopilotCycleInput = z.infer<typeof autopilotCycleInputSchema>;
 export const autopilotCycleSelectionSchema = z.strictObject({ indices: z.array(z.number().int().min(0).max(499)).max(10), episodeHashes: z.array(z.string().regex(/^[a-f0-9]{64}$/)).max(10), shouldAdvanceCursor: z.boolean(), deferred: z.boolean() }).refine(value => value.indices.length === value.episodeHashes.length, "Every selected episode has its frozen identity");
 export type AutopilotCycleSelection = z.infer<typeof autopilotCycleSelectionSchema>;
+export const zoomRecordingTargetSchema = z.strictObject({
+  kind: z.literal("recording"), plan: autopilotImportPlanSchema,
+  scope: z.strictObject({ workspaceId: id, actorUserId: id }),
+  connectionId: id, connectionUserId: id, titlePrefix: z.string().max(1000).nullable(),
+});
+export type ZoomRecordingTarget = z.infer<typeof zoomRecordingTargetSchema>;
+export const zoomExecutionTargetSchema = z.discriminatedUnion("kind", [zoomRecordingTargetSchema, z.strictObject({ kind: z.literal("deauthorize"), connectionId: id })]);

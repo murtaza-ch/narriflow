@@ -675,7 +675,10 @@
     "./upload-session-execution": "./src/upload-session-execution.ts",
     "./pending-workspace-execution": "./src/pending-workspace-execution.ts",
     "./project-retention-execution": "./src/project-retention-execution.ts",
-    "./project-retention-storage": "./src/project-retention-storage.ts"
+    "./project-retention-storage": "./src/project-retention-storage.ts",
+    "./zoom-execution": "./src/zoom-execution.ts",
+    "./zoom-execution-runtime": "./src/zoom-execution-runtime.ts",
+    "./zoom-token-refresh": "./src/zoom-token-refresh.ts"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",

@@ -1391,6 +1391,11 @@ model AutopilotRule {
 /// One member's user-managed Zoom authorization in a Workspace. Disconnection
 /// erases credentials but retains the identity referenced by paused rules.
 model ZoomConnection {
+  authorizedAt          DateTime @default(now())
+  refreshClaimId        String? @db.Uuid
+  refreshLeaseExpiresAt DateTime?
+  refreshStartedAt      DateTime?
+  refreshOutcomeUnknown Boolean @default(false)
   id                    String   @id @default(uuid()) @db.Uuid
   workspaceId           String   @db.Uuid
   userId                String   @db.Uuid
@@ -1432,7 +1437,7 @@ model ZoomOAuthState {
 model ZoomWebhookJob {
   deploymentEpoch     Int      @default(1)
   generation          Int      @default(1)
-  operationDeadlineAt DateTime?
+  operationDeadlineAt DateTime @default(dbgenerated("(CURRENT_TIMESTAMP + '30 days'::interval)"))
   ruleCursor          String?  @db.Uuid
   executionTarget     Json?
   skippedTargets      Int      @default(0)
