@@ -111,9 +111,14 @@ class AssignedArtifacts:
         try:
             control = await ScopedMultipartControl.initialize(self._session, artifact_id=artifact_id,
                 byte_length=byte_length, content_type=content_type)
-            completed = await upload_file(path, control.destination, control=control,
-                transport=transport if transport is not None else SignedHttpTransport(),
-                assert_owned=self._session.assert_live, cancel_event=self._session.cancel_event, expected_sha256=sha256)
+            try:
+                completed = await upload_file(path, control.destination, control=control,
+                    transport=transport if transport is not None else SignedHttpTransport(),
+                    assert_owned=self._session.assert_live, cancel_event=self._session.cancel_event, expected_sha256=sha256)
+            except BaseException:
+                if control.completion_started:
+                    raise ExecutionControlError('execution_completion_unconfirmed') from None
+                raise
             with self._lock:
                 self._completed.add(artifact_id)
             return await self._commit(assigned,completed,content_type,facts_builder)

@@ -20,7 +20,7 @@ def instant(seconds):
 
 
 class AssignedArtifactTests(unittest.IsolatedAsyncioTestCase):
-    def session(self, output, *, lost_commit=False):
+    def session(self, output, *, lost_commit=False,lost_complete=False):
         calls, stored, failures = [], [], []
         def transport(origin,target,body,headers,timeout):
             command,now=json.loads(body),time.time(); calls.append((target,command,body,dict(headers)))
@@ -38,6 +38,7 @@ class AssignedArtifactTests(unittest.IsolatedAsyncioTestCase):
                 result={'disposition':'upload_parts','artifactId':output['artifactId'],'grants':[{'partNumber':1,
                     'url':'https://r2.example/private','headers':{},'expiresAt':instant(now+60)}]}
             elif action=='upload-complete':
+                if lost_complete:raise TimeoutError('private completion acknowledgement lost')
                 result={'disposition':'upload_completed','artifactId':output['artifactId'],'object':{
                     'key':'execution/server-assigned','etag':'"sealed"','byteLength':command['byteLength'],'sha256':command['sha256'],'contentType':output['contentType']}}
             elif action=='commit-artifact':
@@ -114,6 +115,17 @@ class AssignedArtifactTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([call[1]['action'] for call in calls],['acquire','work-package','upload-initialize','upload-parts','upload-complete']+['commit-artifact']*3)
         commits=calls[-3:]
         self.assertTrue(all(call[2:]==commits[0][2:] for call in commits))
+
+    async def test_unknown_multipart_completion_is_control_uncertainty_without_abort_or_second_mutation(self):
+        output={'artifactId':str(uuid4()),'role':'thumbnail','bindingHash':'1'*64,'maxBytes':10,'contentType':'image/png','contentTypes':['image/png']}
+        session,calls,_stored,storage=self.session(output,lost_complete=True)
+        with session,tempfile.TemporaryDirectory() as directory:
+            artifacts=AssignedArtifacts(session,await load_work_package(session));path=Path(directory)/'file';path.write_bytes(b'hello')
+            with self.assertRaises(ExecutionControlError) as uncertainty:
+                await artifacts.upload(output['artifactId'],path,content_type='image/png',byte_length=5,sha256=hashlib.sha256(b'hello').hexdigest(),transport=storage)
+            self.assertEqual(uncertainty.exception.code,'execution_completion_unconfirmed')
+        self.assertEqual([call[1]['action'] for call in calls],['acquire','work-package','upload-initialize','upload-parts']+['upload-complete']*3)
+        self.assertEqual(calls[-1][2:],calls[-2][2:])
 
     async def test_source_audio_facts_bind_the_full_source_to_the_completed_server_object(self):
         output={'artifactId':str(uuid4()),'role':'source_audio','bindingHash':'1'*64,'maxBytes':10,
