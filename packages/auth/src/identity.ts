@@ -308,7 +308,7 @@ export async function markUserDeletedByClerkId(clerkId: string) {
     if (grants.length > 0) {
       await tx.standingGrant.updateMany({
         where: { id: { in: grants.map((grant) => grant.id) } },
-        data: { status: "revoked", pauseNoticePending: false, pauseNoticeLeaseUntil: null },
+        data: { status: "revoked" },
       });
       await tx.standingGrantEvent.createMany({
         data: grants.map((grant) => ({

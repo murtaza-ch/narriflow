@@ -3395,10 +3395,6 @@ model StandingGrant {
   expiresAt          DateTime
   status             StandingGrantStatus @default(active)
   pausedReason       String?
-  /// A pause the system made is emailed to the granter once.
-  pauseNoticePending Boolean             @default(false)
-  /// A worker holds the notice until this time; the notice stays pending until it is sent.
-  pauseNoticeLeaseUntil DateTime?
   /// Hash of the rule's content-bearing fields and its Brand Profile's approval rule when
   /// the grant was made or renewed. A rule that no longer matches pauses the grant.
   ruleFingerprint    String
@@ -3419,7 +3415,6 @@ model StandingGrant {
   @@index([workspaceId, status])
   @@index([autopilotRuleId, status])
   @@index([status, expiresAt])
-  @@index([pauseNoticePending])
 }
 
 /// The grant's audit trail: created, renewed, paused, revoked, expired.

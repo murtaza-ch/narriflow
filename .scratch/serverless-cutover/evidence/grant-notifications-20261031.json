@@ -1,0 +1,52 @@
+{
+  "scope": "Grant-pause notification delivery and legacy social semantic ports",
+  "migration": {
+    "path": "packages/db/prisma/migrations/20261101020000_execution_grant_notifications/migration.sql",
+    "sha256": "2d31707d97dd14adfd2ad0e342ab337f25d43b1e20c27095642f4030d1f274dd",
+    "fresh_disposable_schema_applied": true,
+    "shared_database_applied": false
+  },
+  "runtime": "PostgreSQL17.11 disposable schemas; real local workerd",
+  "gates": [
+    {
+      "suite": "grant-notification + notification-execution + publication-execution",
+      "passed": 61,
+      "assertions": 382,
+      "log": "/tmp/narriflow-grant-mail-cleanup-final-pg3.log"
+    },
+    {
+      "suite": "full existing social-publication runner (7 files)",
+      "passed": 127,
+      "assertions": 735,
+      "log": "/tmp/narriflow-grant-legacy-cleanup-red.log"
+    },
+    {
+      "suite": "actual production API Maintenance factory empty-schema pass",
+      "passed": 1,
+      "assertions": 9,
+      "log": "/tmp/narriflow-grant-mail-api-pg.log"
+    },
+    {
+      "suite": "local workerd auth/raw-webhook/invocation/DO/cache",
+      "passed": 11,
+      "log": "/tmp/narriflow-grant-mail-workerd.log"
+    }
+  ],
+  "static": {
+    "services_typecheck": true,
+    "api_typecheck": true,
+    "worker_dry_build": true,
+    "worker_forbidden_import_audit": true,
+    "biome_changed_files": true
+  },
+  "behavior": [
+    "System pause, workspace-scoped ledger and exact wake share one SQL transaction",
+    "Original provider key, encrypted body, recipient fingerprint,23-hour deadline and three-start ceiling survive retries and metadata restore",
+    "Plan loss can still notify a verified current authorized granter or Workspace owner",
+    "Renewal, expiry, recipient changes, epoch/generation changes and late ownership loss fence sends or settlement",
+    "Metadata restore returns zero product dispatch IDs; final redispatch registers future accepted due times",
+    "Daily grant authority pages use strict createdAt/id bounds, sorted parent locks and an actual partial index",
+    "Old Grant pause notice fields, notify/expiry scanners, global return helper and latest-grant inference helper removed"
+  ],
+  "provider_email_delivery": "not_run; send injected in tests per task restriction"
+}
