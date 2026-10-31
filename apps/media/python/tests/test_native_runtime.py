@@ -153,19 +153,21 @@ class NativeOperationTests(unittest.IsolatedAsyncioTestCase):
         calls=[];stored=[];state={'completed':False};artifact=str(uuid4())
         with tempfile.TemporaryDirectory() as directory:
             path=Path(directory);marker=path/'started';executable=path/'rss-child'
+            # Decode gated stdin before checking the ACK, like the trusted CLI.
             executable.write_text('#!'+os.sys.executable+'\n'+
                 'import json,os,sys\nfrom pathlib import Path\n'+
+                'command=json.load(sys.stdin)\n'+
                 f'assert Path({str(marker)!r}).read_text()=="acknowledged"\n'+
                 'assert os.environ.get("DATABASE_URL") is None\n'+
                 'assert not os.environ.get("HTTPS_PROXY")\n'+
-                'command=json.load(sys.stdin);body=json.dumps({"title":"Fixture","episodes":[],"etag":None,"lastModified":None,"finalUrl":command["input"]["url"],"notModified":False}).encode()\n'+
+                'body=json.dumps({"title":"Fixture","episodes":[],"etag":None,"lastModified":None,"finalUrl":command["input"]["url"],"notModified":False}).encode()\n'+
                 'Path(command["outputPath"]).write_bytes(body);print(json.dumps({"byteLength":len(body)}))\n')
             executable.chmod(0o700)
             def control(origin,target,body,headers,timeout):
                 command,now=json.loads(body),time.time();calls.append(command);action=command['action']
                 if action=='acquire':result={'disposition':'acquired','fence':{key:command[key] for key in ['reference','attemptToken','owner']},'serverTime':instant(now),'leaseExpiresAt':instant(now+120),'operationDeadlineAt':instant(now+600)}
                 elif action=='work-package':result={'disposition':'work_package','functionName':'outbound_delivery','inputHash':'a'*64,'input':{'kind':'inline','command':{'kind':'rss_feed','url':'https://feed.example/rss','etag':None,'lastModified':None}},'sources':[],'outputs':[{'artifactId':artifact,'role':'outbound_receipt','contentType':'application/json','contentTypes':['application/json'],'maxBytes':4194304,'bindingHash':'a'*64}]}
-                elif action=='process-start':marker.write_text('acknowledged');result={'disposition':'started'}
+                elif action=='process-start':time.sleep(1);marker.write_text('acknowledged');result={'disposition':'started'}
                 elif action=='upload-initialize':result={'disposition':'upload_ready','artifactId':artifact,'uploadId':'private','byteLength':command['byteLength'],'partSizeBytes':16777216,'partCount':1}
                 elif action=='upload-parts':result={'disposition':'upload_parts','artifactId':artifact,'grants':[{'partNumber':1,'url':'https://r2.example/rss','headers':{},'expiresAt':instant(now+60)}]}
                 elif action=='upload-complete':result={'disposition':'upload_completed','artifactId':artifact,'object':{'key':'execution/assigned','etag':'"sealed"','byteLength':command['byteLength'],'sha256':command['sha256'],'contentType':'application/json'}}
