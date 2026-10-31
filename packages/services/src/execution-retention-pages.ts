@@ -1,3 +1,5 @@
+import { appendProjectNotificationIntent } from "./notification-execution";
+import { takeExecutionDispatchIds } from "./execution-dispatch-runtime";
 import { lockExecutionRecoveryParents } from "./execution-recovery-locks";
 import { admitMediaCleanupObligations } from "./media-cleanup-admission";
 import { Prisma } from "@prisma/client";
@@ -46,8 +48,8 @@ export const expireGeneratedPromptPage: MaintenancePhaseHandler = async (tx, pag
 };
 export const expireProjectDeletionReceiptPage: MaintenancePhaseHandler = async (tx, page) => {
   const all = await rows(tx, page, "ProjectDeletionReceipt", "deleteAfter", Prisma.sql`TRUE`), selected = all.slice(0, page.limit);
-  if (selected.length) await tx.projectDeletionReceipt.deleteMany({ where: { id: { in: selected.map(row => row.id) }, deleteAfter: { lte: page.cutoff } } });
-  return result(selected, all, page);
+  if (selected.length) {const receipts=await tx.projectDeletionReceipt.findMany({where:{id:{in:selected.map(row=>row.id)},deleteAfter:{lte:page.cutoff}},select:{tombstoneStorageKey:true,deleteAfter:true}});for(const receipt of receipts)if(!/^retention-receipts\/v1\/[a-f0-9]{64}\.json$/.test(receipt.tombstoneStorageKey))throw Error("project_deletion_receipt_key_invalid");await admitMediaCleanupObligations(tx,receipts.map(row=>({origin:"project_retention",cleanupClass:"retention_receipt",objectKey:row.tombstoneStorageKey,notBefore:row.deleteAfter})));await tx.projectDeletionReceipt.deleteMany({ where: { id: { in: selected.map(row => row.id) }, deleteAfter: { lte: page.cutoff } } });}
+  return result(selected, all, page,takeExecutionDispatchIds(tx));
 };
 /** This daily safety page knows exact persisted intents only. It never lists
  * a bucket, infers an orphan, or marks an object deleted without actual ACK. */
@@ -81,4 +83,11 @@ export const retireSourceMediaPage:MaintenancePhaseHandler=async(tx,page)=>{
   dispatchIds.push(...(await queueMediaCleanupBatchWithinTransaction(tx,[intent.id])).map(row=>row.dispatchId));
  }
  return result(selected,all,page,dispatchIds);
+};
+
+export const planProjectExpiryWarningPage:MaintenancePhaseHandler=async(tx,page)=>{
+ const at=Prisma.sql`p."expiresAt"-INTERVAL '24 hours'`,after=page.after?Prisma.sql`AND (${at},p.id)>((${page.after.at}::timestamptz AT TIME ZONE 'UTC'),${page.after.id}::uuid)`:Prisma.empty;
+ const rows=await tx.$queryRaw<Array<{id:string;at:Date;projectId:string;workspaceId:string}>>`SELECT p.id,p.id AS "projectId",${at} AS at,p."workspaceId" FROM "Project" p WHERE p."expiresAt">(${page.cutoff}::timestamptz AT TIME ZONE 'UTC') AND ${at}<=(${page.cutoff}::timestamptz AT TIME ZONE 'UTC') AND p."purgeStartedAt" IS NULL ${after} ORDER BY ${at},p.id LIMIT ${page.limit+1}`,selected=rows.slice(0,page.limit);await lockExecutionRecoveryParents(tx,selected);
+ for(const row of selected){const project=await tx.project.findUniqueOrThrow({where:{id:row.id},select:{expiresAt:true,purgeStartedAt:true}});if(project.expiresAt&&project.expiresAt>page.cutoff&&project.expiresAt.getTime()-86400000<=page.cutoff.getTime()&&!project.purgeStartedAt)await appendProjectNotificationIntent(tx,{projectId:row.id,sourceId:row.id,outcome:"project_expiring"});}
+ return {processed:selected.length,next:rows.length>page.limit?selected.at(-1)!:null,dispatchIds:takeExecutionDispatchIds(tx)};
 };

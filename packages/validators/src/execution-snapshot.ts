@@ -5,6 +5,7 @@ export const executionSnapshotOriginSchema = z.string().max(2048).refine(value =
   try { const url = new URL(value); return url.protocol === "https:" && url.origin === value && !url.username && !url.password && !url.port; } catch { return false; }
 }, "An explicit canonical HTTPS API origin is required");
 export const fencedWorkerEvidenceSchema = z.strictObject({ origin: executionSnapshotOriginSchema, version: z.string().min(1).max(160).regex(/^[A-Za-z0-9_-]+$/), admissionState: z.literal("fenced") });
+export const restoreWorkerEvidenceSchema=fencedWorkerEvidenceSchema.extend({admissionState:z.enum(["fenced","closed"])});
 export const executionSnapshotQuiescenceSchema = z.strictObject({
   stoppedAt: timestamp, writesDrainedAt: timestamp, capturedAt: timestamp, verifiedAt: timestamp, evidenceSha256: sha256,
   consumers: z.strictObject({ httpIngress: z.literal("fenced"), cron: z.literal("stopped"), cleanup: z.literal("stopped"), nativeDispatch: z.literal("deferred"), localDispatch: z.literal("deferred"), legacyWorkers: z.literal("stopped") }),
@@ -17,3 +18,5 @@ export const quiescedExecutionSnapshotSchema = z.strictObject({
 export type FencedWorkerEvidence = z.infer<typeof fencedWorkerEvidenceSchema>;
 export type ExecutionSnapshotQuiescence = z.infer<typeof executionSnapshotQuiescenceSchema>;
 export type QuiescedExecutionSnapshot = z.infer<typeof quiescedExecutionSnapshotSchema>;
+
+export type RestoreWorkerEvidence=z.infer<typeof restoreWorkerEvidenceSchema>;

@@ -1,3 +1,5 @@
+import { readRestoreMetadataBarrier } from "./execution-restore-pages";
+import { queueMediaCleanupBatchWithinTransaction } from "./media-cleanup-control";
 import { Prisma } from "@prisma/client";
 import type { ExecutionRestorePage,ExecutionRestorePhaseHandler } from "./execution-restore";
 import { assertExecutionRestorePage } from "./execution-restore-pages";
@@ -42,3 +44,16 @@ function account(library:boolean):ExecutionRestorePhaseHandler{return async(tx,p
  const selected=rows.slice(0,page.limit);await lockExecutionRecoveryParents(tx,selected);const dispatchIds:string[]=[];for(const row of selected){const ref=library?await recoverLibraryIndex(tx,row.id):await recoverBillingReconciliation(tx,row.workspaceId);if(ref)dispatchIds.push(ref.dispatchId);}return {processed:selected.length,next:rows.length>page.limit?selected.at(-1)!:null,dispatchIds};};}
 export const redispatchBillingPage=account(false);
 export const redispatchLibraryPage=account(true);
+
+/** Cleanup rows have their own authority, not a domain epoch. Every accepted
+ * exact-key hold/retry must regain its timer, including dates after the snapshot. */
+export const redispatchMediaCleanupPage:ExecutionRestorePhaseHandler=async(tx,page)=>{await assertExecutionRestorePage(tx,page);const after=page.after?Prisma.sql`AND ("createdAt",id)>((${page.after.at}::timestamptz AT TIME ZONE 'UTC'),${page.after.id}::uuid)`:Prisma.empty;const rows=await tx.$queryRaw<Array<{id:string;at:Date}>>`SELECT id,"createdAt" AS at FROM "MediaCleanupObligation" WHERE "completedAt" IS NULL AND "createdAt"<=(${page.cutoff}::timestamptz AT TIME ZONE 'UTC') ${after} ORDER BY "createdAt",id LIMIT ${page.limit+1}`,selected=rows.slice(0,page.limit);const dispatchIds=(await queueMediaCleanupBatchWithinTransaction(tx,selected.map(row=>row.id))).map(ref=>ref.dispatchId);return {processed:selected.length,next:rows.length>page.limit?selected.at(-1)!:null,dispatchIds};};
+
+/** The barrier lock seals all deferred plan admissions before its timestamp.
+ * This is the only rs2 cursor whose physical row time may exceed source cutoff. */
+export const redispatchRestoredCleanupPage:ExecutionRestorePhaseHandler=async(tx,page)=>{
+ await assertExecutionRestorePage(tx,page);const barrier=await readRestoreMetadataBarrier(tx,page.deploymentEpoch,page.cutoff);if(!barrier||page.after&&page.after.at>barrier.createdAt)throw Error("restore_cleanup_barrier_missing");
+ const after=page.after?Prisma.sql`AND ("createdAt",id)>((${page.after.at}::timestamptz AT TIME ZONE 'UTC'),${page.after.id}::uuid)`:Prisma.empty;
+ const rows=await tx.$queryRaw<Array<{id:string;at:Date}>>`SELECT id,"createdAt" AS at FROM "MediaCleanupObligation" WHERE "completedAt" IS NULL AND "createdAt">(${page.cutoff}::timestamptz AT TIME ZONE 'UTC') AND "createdAt"<=(${barrier.createdAt}::timestamptz AT TIME ZONE 'UTC') ${after} ORDER BY "createdAt",id LIMIT ${page.limit+1}`,selected=rows.slice(0,page.limit);
+ return {processed:selected.length,next:rows.length>page.limit?selected.at(-1)!:null,dispatchIds:(await queueMediaCleanupBatchWithinTransaction(tx,selected.map(row=>row.id))).map(ref=>ref.dispatchId)};
+};

@@ -15,6 +15,8 @@ export const MEDIA_CLEANUP_ORIGINS = [
   "publication_execution",
   "assigned_execution_artifact",
   "outbound_delivery",
+  "project_retention",
+  "native_validation_input",
 ] as const;
 export type MediaCleanupOrigin = (typeof MEDIA_CLEANUP_ORIGINS)[number];
 
@@ -30,6 +32,7 @@ export const MEDIA_CLEANUP_CLASSES = [
   "publication_private",
   "assigned_artifact",
   "notification_body",
+  "retention_receipt",
 ] as const;
 export type MediaCleanupClass = (typeof MEDIA_CLEANUP_CLASSES)[number];
 
