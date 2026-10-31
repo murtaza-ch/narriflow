@@ -357,6 +357,16 @@ export class IngestJobLifecycle {
     const parent = await appendExecutionDispatch(tx, { deploymentEpoch: ref.deploymentEpoch, kind: "import_pipeline", subject: { kind: "ingest_job", id: ref.id },
       generation: current.generation, inputHash, dueAt: now, wakeKind });
     const ids = [parent.reference.dispatchId];
+    if (wakeKind === "video_ready") {
+      const renders = await tx.workflowRun.findMany({ where: { projectId: current.projectId, stage: "clip_rendering", status: { in: ["queued", "running", "waiting"] } }, take: 2, select: { id: true } });
+      if (renders.length > 1) throw new Error("render_run_active_conflict");
+      for (const run of renders) {
+        const registered = await this.deps.workflow.dispatchRunWithinTransaction(tx, run.id);
+        const videoReady = await appendExecutionDispatch(tx, { deploymentEpoch: registered.reference.deploymentEpoch, kind: "render_run", subject: registered.reference.subject,
+          generation: registered.reference.generation, inputHash: registered.reference.inputHash, dueAt: now, wakeKind: "video_ready" });
+        ids.push(videoReady.reference.dispatchId);
+      }
+    }
     if (wakeKind !== "audio_ready" && wakeKind !== "video_evidence_ready") {
       const finished = await appendExecutionDispatch(tx, { deploymentEpoch: ref.deploymentEpoch, kind: "operation_driver", subject: { kind: "ingest_job", id: ref.id },
         generation: ref.generation, inputHash, dueAt: now, wakeKind: "execution_finished" });
@@ -389,12 +399,18 @@ export class IngestJobLifecycle {
         committedAt: { not: null }, sourceVideoBinding: { not: Prisma.DbNull } }, take: 2 });
       if (pending.length > 1) throw new Error("source_video_evidence_ambiguous");
       const video = pending[0];
-      if (!video) return wakes;
-      if (video.byteLength === null || video.checksumSha256 === null || video.etag === null) throw new Error("source_video_evidence_incomplete");
-      const finalized = await this.finalizeVideoExecution(tx, ref, context, { artifactId: video.id, role: "source_video", storageKey: video.storageKey,
-        contentType: video.contentType, byteLength: video.byteLength, sha256: video.checksumSha256, etag: video.etag, bindingHash: video.bindingHash,
-        binding: sourceVideoBindingSchema.parse(video.sourceVideoBinding) });
-      return { dispatchIds: [...wakes.dispatchIds, ...(finalized?.dispatchIds ?? [])] };
+      let finalized: ExecutorMutationResult;
+      if (video) {
+        if (video.byteLength === null || video.checksumSha256 === null || video.etag === null) throw new Error("source_video_evidence_incomplete");
+        finalized = await this.finalizeVideoExecution(tx, ref, context, { artifactId: video.id, role: "source_video", storageKey: video.storageKey,
+          contentType: video.contentType, byteLength: video.byteLength, sha256: video.checksumSha256, etag: video.etag, bindingHash: video.bindingHash,
+          binding: sourceVideoBindingSchema.parse(video.sourceVideoBinding) });
+      }
+      // Validate already-arrived video first: known mismatches never admit or debit STT.
+      const audioReady = await readExecutionDispatch(tx, wakes.dispatchIds[0]!);
+      if (!audioReady) throw new Error("source_audio_handoff_obligation_missing");
+      const handoff = await this.handoffGenerationWithinTransaction(tx, audioReady.reference);
+      return { dispatchIds: [...wakes.dispatchIds, ...(finalized?.dispatchIds ?? []), ...handoff.dispatchIds] };
     }
     if (artifact.role !== "source_video") throw new Error("source_artifact_role_invalid");
     const binding = sourceVideoBindingSchema.parse(artifact.binding);
@@ -1017,10 +1033,14 @@ export class IngestJobLifecycle {
     return [dispatch.reference.dispatchId];
   }
 
-  /** The interim scanner delegates here; all admission decisions live in this body. */
-  private async handoffGenerationForJob(id: string, reference?: ExecutionDispatchReference): Promise<IngestGenerationHandoffResult> {
-    try {
-      return await this.deps.prisma.$transaction(async (tx) => {
+  /** Caller owns the transaction and confirms the returned scheduling receipts after commit. */
+  async handoffGenerationWithinTransaction(tx: Tx, reference: ExecutionDispatchReference): Promise<IngestGenerationHandoffResult> {
+    const parsed = executionDispatchReferenceSchema.safeParse(reference);
+    if (!parsed.success || parsed.data.kind !== "import_pipeline" || parsed.data.subject.kind !== "ingest_job") return { kind: "superseded", dispatchIds: [] };
+    return this.handoffForJobWithinTransaction(tx, parsed.data.subject.id, parsed.data);
+  }
+
+  private async handoffForJobWithinTransaction(tx: Tx, id: string, reference?: ExecutionDispatchReference): Promise<IngestGenerationHandoffResult> {
         const state = await this.lockHandoff(tx, id, reference);
         if (state.kind !== "ready") return { kind: state.kind, dispatchIds: [] };
         const { job, project, audio, now, epoch } = state;
@@ -1043,7 +1063,6 @@ export class IngestJobLifecycle {
           ? wholeSourceWindowFault(wholeSourceWindow(pack, { durationSec: measuredDuration, probeDurationSec: measuredDuration })) : null;
         if (fault) {
           await this.failHandoff(tx, job, fault, USER_ERROR_MESSAGES[fault]!);
-          await flushWorkspaceEvents(tx);
           return { kind: "refused", dispatchIds: [] };
         }
         // Settlement, STT admission, transcript source binding and dispatch are one commit.
@@ -1051,7 +1070,6 @@ export class IngestJobLifecycle {
         if (settlement.outcome === "not_ready") return { kind: "not_ready", dispatchIds: [] };
         if (settlement.outcome === "refused") {
           await this.failHandoff(tx, job, settlement.failure.code, settlement.failure.message);
-          await flushWorkspaceEvents(tx);
           return { kind: "refused", dispatchIds: [] };
         }
         const language = sourceLanguageCodeSchema.safeParse(project.languageCode);
@@ -1067,8 +1085,16 @@ export class IngestJobLifecycle {
           if (language.success) await tx.project.update({ where: { id: project.id }, data: { languageCode: language.data } });
           return this.appendGenerationDispatch(tx, run.id, epoch);
         }, tx);
-        await flushWorkspaceEvents(tx);
         return { kind: admitted.created ? "admitted" : "acknowledged", workflowRunId: admitted.id, dispatchIds: admitted.handoff };
+  }
+
+  /** The interim scanner delegates here; all admission decisions live in this body. */
+  private async handoffGenerationForJob(id: string, reference?: ExecutionDispatchReference): Promise<IngestGenerationHandoffResult> {
+    try {
+      return await this.deps.prisma.$transaction(async tx => {
+        const result = await this.handoffForJobWithinTransaction(tx, id, reference);
+        await flushWorkspaceEvents(tx);
+        return result;
       }, PROCESSING_USAGE_TRANSACTION);
     } catch (error) {
       if (error instanceof IngestJobClaimLost) return { kind: "superseded", dispatchIds: [] };
@@ -1242,7 +1268,6 @@ export class IngestJobLifecycle {
       });
       if (pack?.finishing && (await this.freezePackFinishing(tx, pack.project, pack, existing.id)))
         await queueSettledGenerationFinishing(tx, job.projectId, existing.id);
-      await flushWorkspaceEvents(tx);
       return true;
     } catch (error) {
       if (error instanceof IngestJobClaimLost) return false;

@@ -2,8 +2,8 @@ import { WORKFLOW_LEASE_DURATION_MS, WORKFLOW_HEARTBEAT_INTERVAL_MS, WorkflowFai
 export { WORKFLOW_LEASE_DURATION_MS, WORKFLOW_HEARTBEAT_INTERVAL_MS, WorkflowFailure, WorkflowAttemptLost, workflowHttpFailureDisposition, workflowFailureFromUnknown, rethrowWorkflowAttemptLost, type WorkflowFailureDisposition, type WorkflowAttemptRef, type WorkflowAttemptContext } from "./workflow-attempt-contract";
 import { randomUUID } from "node:crypto";
 import { cancelRenderGroupsWithinTransaction, admitRenderGroupsWithinTransaction, renderGroupParentSettlement, type RenderGroupAdmission } from "./render-group-lifecycle";
-import type { RenderGroupRef } from "./render-group-contract";
-import { Prisma, type PrismaClient } from "@prisma/client";
+import { renderGroupExecutionInputHash, renderGroupExportIdentity, type RenderGroupRef } from "./render-group-contract";
+import { Prisma, type PrismaClient, type WorkflowRun, type Project } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
 import {
   SCRIBE_MODEL_ID,
@@ -30,8 +30,11 @@ import { queueExportsFinishedByRun, queueFinishedGenerations } from "./operation
 import { flushWorkspaceEvents } from "./workspace-event";
 import { finalizeGenerationUsage, releaseFailedDubUsage } from "./generated-media-usage-ledger";
 import { appendWorkflowEvent, type WorkflowEventInput } from "./workflow-event-append";
-import { appendExecutionDispatch, executionDispatchIdentity, type ExecutionDispatchRecord } from "./execution-dispatch";
+import { appendExecutionDispatch, readExecutionDispatch, executionDispatchIdentity, type ExecutionDispatchRecord } from "./execution-dispatch";
 import { workflowRunExecutionInputHash } from "./workflow-execution-input";
+import { executionDispatchReferenceSchema, type ExecutionDispatchReference, type ExecutionDisposition } from "@narriflow/validators/execution";
+import { lockWorkspaceUsage } from "./processing-usage";
+import type { ExecutorDomainLock, ExecutorMutationContext, ExecutorMutationResult, ExecutorFailureInput, ExecutorReleaseInput, ExecutorProgressInput, ExecutorArtifactCommit, ExecutorExpiryObservation, ExecutorExpiryResult } from "./executor-domain-control";
 
 /** How long a stopping worker lets in-flight handlers finish
  * (`WORKER_SHUTDOWN_DRAIN_MS`, 30s by default). */
@@ -53,6 +56,15 @@ const EVENT_MAX_BACKOFF_MS = 5 * 60 * 1000;
 const TRANSACTION_RETRY_LIMIT = 10;
 
 type TransactionClient = Prisma.TransactionClient;
+
+export interface WorkflowExecutionReference {
+  id: string;
+  projectId: string;
+  stage: WorkflowStage;
+  generation: number;
+  deploymentEpoch: number;
+  attemptToken: string;
+}
 
 export interface ClaimedWorkflowAttempt extends WorkflowAttemptRef {
   status: "running";
@@ -149,6 +161,13 @@ export interface RenderWorkSetOutcome {
   superseded: number;
   followUpWorkflowRunId: string | null;
 }
+
+export type RenderRunPreparation =
+  | { kind: "prepared"; workSet: RenderWorkSet; groups: RenderGroupRef[]; dispatchIds: string[] }
+  | { kind: "superseded" | "terminal" | "waiting_for_video"; dispatchIds: string[] };
+export type RenderRunSettlement =
+  | { kind: "settled"; outcome: RenderWorkSetOutcome; dispatchIds: string[] }
+  | { kind: "superseded" | "not_prepared"; dispatchIds: string[] };
 
 export type { RenderTerminalNotificationPayload } from "@narriflow/validators";
 
@@ -466,19 +485,175 @@ export class WorkflowRunLifecycle {
     if (!contentPack) throw new Error("workflow_content_pack_invalid");
   }
 
+  private async executionState(tx: TransactionClient, reference: ExecutionDispatchReference, attemptToken: string): Promise<
+    { kind: "current"; ref: WorkflowExecutionReference; run: WorkflowRun; now: Date } | { kind: "terminal"; disposition: ExecutionDisposition }
+  > {
+    if (reference.subject.kind !== "workflow_run") return { kind: "terminal", disposition: { disposition: "superseded" } };
+    const initial = await tx.workflowRun.findUnique({ where: { id: reference.subject.id }, include: { project: { select: { workspaceId: true } } } });
+    if (!initial || initial.stage === "clip_rendering") return { kind: "terminal", disposition: { disposition: "superseded" } };
+    await lockWorkspaceUsage(tx, initial.project.workspaceId);
+    await this.lockAdmissionProject(tx, initial.projectId);
+    await tx.$queryRaw`SELECT "id" FROM "Project" WHERE "id" = ${initial.projectId}::uuid FOR UPDATE`;
+    await tx.$queryRaw`SELECT "id" FROM "WorkflowRun" WHERE "id" = ${initial.id}::uuid FOR UPDATE`;
+    const run = await tx.workflowRun.findUniqueOrThrow({ where: { id: initial.id } });
+    const now = await this.databaseNow(tx);
+    const project = await tx.project.findFirst({ where: { id: run.projectId, ...accessibleProjectWhere(now), workspace: { status: "active" } }, select: { sourceRevision: true } });
+    if (!project || run.deploymentEpoch !== reference.deploymentEpoch || run.generation !== reference.generation) return { kind: "terminal", disposition: { disposition: "superseded" } };
+    try {
+      if (await this.runInputHash(tx, run, project.sourceRevision) !== reference.inputHash) return { kind: "terminal", disposition: { disposition: "superseded" } };
+    } catch (error) {
+      if (!(error instanceof Error) || error.message !== "workflow_source_revision_superseded") throw error;
+      return { kind: "terminal", disposition: { disposition: "superseded" } };
+    }
+    if (run.status === "completed" || run.status === "partial") return { kind: "terminal", disposition: { disposition: "completed" } };
+    if (run.status === "cancelled") return { kind: "terminal", disposition: { disposition: "cancelled" } };
+    if (run.status === "failed") return { kind: "terminal", disposition: { disposition: "failed", failureCode: "workflow_failed" } };
+    if ((run.status === "running" || run.status === "waiting") && run.attemptId !== attemptToken) return { kind: "terminal", disposition: { disposition: "superseded" } };
+    return { kind: "current", ref: { id: run.id, projectId: run.projectId, stage: run.stage as WorkflowStage, generation: run.generation,
+      deploymentEpoch: run.deploymentEpoch, attemptToken }, run, now };
+  }
+
+  async lockExecution(tx: TransactionClient, reference: ExecutionDispatchReference, attemptToken: string): Promise<ExecutorDomainLock<WorkflowExecutionReference>> {
+    const state = await this.executionState(tx, reference, attemptToken);
+    return state.kind === "terminal" ? state : { kind: "current", ref: state.ref };
+  }
+
+  private executionAttempt(ref: WorkflowExecutionReference, context: ExecutorMutationContext, attemptCount = 0): WorkflowAttemptRef {
+    if (context.reference.subject.kind !== "workflow_run" || context.reference.subject.id !== ref.id || context.reference.generation !== ref.generation ||
+      context.reference.deploymentEpoch !== ref.deploymentEpoch || context.attemptToken !== ref.attemptToken) throw new Error("workflow_execution_reference_lost");
+    return { workflowRunId: ref.id, projectId: ref.projectId, stage: ref.stage, attemptId: ref.attemptToken, attemptCount };
+  }
+
+  /** A per-command owner binding; same-Tx helpers never open a nested transaction. */
+  private executionOwner(owner: string): WorkflowRunLifecycle {
+    return new WorkflowRunLifecycle({ prisma: this.prisma, leaseOwner: owner, leaseDurationMs: this.leaseDurationMs, heartbeatIntervalMs: this.heartbeatIntervalMs,
+      publishAnalytics: this.publishAnalytics, publishProgress: this.publishProgress, handoffNotification: this.handoffNotification });
+  }
+
+  private async ownedExecution(tx: TransactionClient, ref: WorkflowExecutionReference, context: ExecutorMutationContext) {
+    const attempt = this.executionAttempt(ref, context);
+    const now = await this.databaseNow(tx);
+    const run = await tx.workflowRun.findFirst({ where: { id: ref.id, projectId: ref.projectId, stage: ref.stage, generation: ref.generation,
+      deploymentEpoch: ref.deploymentEpoch, status: "running", attemptId: ref.attemptToken, leaseOwner: context.owner,
+      leaseExpiresAt: { gt: now }, operationDeadlineAt: { gt: now } } });
+    if (!run) throw new WorkflowAttemptLost(attempt);
+    return { run, now, attempt: { ...attempt, attemptCount: run.attemptCount } };
+  }
+
+  async acquireExecution(tx: TransactionClient, ref: WorkflowExecutionReference, context: ExecutorMutationContext): Promise<ExecutorMutationResult> {
+    const attempt = this.executionAttempt(ref, context);
+    const run = await tx.workflowRun.findUniqueOrThrow({ where: { id: ref.id } });
+    const now = await this.databaseNow(tx);
+    if (run.stage === "clip_rendering" || run.status !== "queued" || run.attemptId || run.leaseOwner || run.generation !== ref.generation || run.deploymentEpoch !== ref.deploymentEpoch ||
+      run.attemptCount >= WORKFLOW_MAX_ATTEMPTS || (run.nextAttemptAt && run.nextAttemptAt > now) || context.leaseExpiresAt <= now ||
+      context.leaseExpiresAt > context.operationDeadlineAt || context.operationDeadlineAt <= now ||
+      (run.operationDeadlineAt && run.operationDeadlineAt.getTime() !== context.operationDeadlineAt.getTime())) throw new WorkflowAttemptLost(attempt);
+    await tx.workflowRun.update({ where: { id: run.id }, data: { status: "running", progress: 10, attemptId: ref.attemptToken, leaseOwner: context.owner,
+      leaseExpiresAt: context.leaseExpiresAt, heartbeatAt: now, operationDeadlineAt: context.operationDeadlineAt, nextAttemptAt: null, nextPollAt: null, waitingSince: null, errorCode: null,
+      requestedCount: null, ...(run.stage === "dubbing" ? {} : { succeededCount: null }), failedCount: null } });
+    const absolute = await appendExecutionDispatch(tx, { deploymentEpoch: ref.deploymentEpoch, kind: "operation_driver", subject: { kind: "workflow_run", id: run.id },
+      generation: ref.generation, inputHash: context.reference.inputHash, dueAt: context.operationDeadlineAt, deadlineKind: "operation", observedDeadlineAt: context.operationDeadlineAt });
+    const acquired = await appendExecutionDispatch(tx, { deploymentEpoch: ref.deploymentEpoch, kind: "operation_driver", subject: { kind: "workflow_run", id: run.id },
+      generation: ref.generation, inputHash: context.reference.inputHash, dueAt: now, wakeKind: "execution_acquired", deadlineKind: "lease", observedDeadlineAt: context.leaseExpiresAt });
+    return { dispatchIds: [absolute.reference.dispatchId, acquired.reference.dispatchId] };
+  }
+
+  async startExecution(tx: TransactionClient, ref: WorkflowExecutionReference, context: ExecutorMutationContext): Promise<ExecutorMutationResult> {
+    const { run } = await this.ownedExecution(tx, ref, context);
+    const execution = await tx.executionAttempt.findUniqueOrThrow({ where: { attemptToken: ref.attemptToken }, select: { processStartedAt: true } });
+    if (execution.processStartedAt) return undefined;
+    await tx.workflowRun.update({ where: { id: run.id }, data: { attemptCount: { increment: 1 } } });
+    if (run.stage === "stt") await tx.transcript.update({ where: { projectId: run.projectId }, data: { workflowAttemptId: ref.attemptToken,
+      status: "processing", provider: "elevenlabs", providerModel: SCRIBE_MODEL_ID, providerJobId: null, providerRequestId: null, providerSubmissionDeadlineAt: null, errorCode: null } });
+    return undefined;
+  }
+
+  async renewExecution(tx: TransactionClient, ref: WorkflowExecutionReference, context: ExecutorMutationContext): Promise<ExecutorMutationResult> {
+    const { run, now, attempt } = await this.ownedExecution(tx, ref, context);
+    if (!run.operationDeadlineAt || run.operationDeadlineAt.getTime() !== context.operationDeadlineAt.getTime() || context.leaseExpiresAt <= now || context.leaseExpiresAt > run.operationDeadlineAt) throw new WorkflowAttemptLost(attempt);
+    await tx.workflowRun.update({ where: { id: run.id }, data: { heartbeatAt: now, leaseExpiresAt: context.leaseExpiresAt } });
+    return undefined;
+  }
+
+  async progressExecution(tx: TransactionClient, ref: WorkflowExecutionReference, context: ExecutorMutationContext, progress: ExecutorProgressInput): Promise<ExecutorMutationResult> {
+    const { attempt } = await this.ownedExecution(tx, ref, context);
+    await this.executionOwner(context.owner).reportProgressWithinTransaction(tx, attempt, progress.progress ?? 0);
+    return undefined;
+  }
+
+  async commitArtifactExecution(_tx: TransactionClient, _ref: WorkflowExecutionReference, _context: ExecutorMutationContext, _artifact: ExecutorArtifactCommit): Promise<ExecutorMutationResult> {
+    throw new Error("workflow_requires_typed_settlement");
+  }
+
+  private async executionWakes(tx: TransactionClient, ref: WorkflowExecutionReference, inputHash: string, retry: boolean): Promise<{ dispatchIds: string[] }> {
+    if (retry) await tx.workflowRun.update({ where: { id: ref.id }, data: { generation: { increment: 1 } } });
+    const finished = await appendExecutionDispatch(tx, { deploymentEpoch: ref.deploymentEpoch, kind: "operation_driver", subject: { kind: "workflow_run", id: ref.id },
+      generation: ref.generation, inputHash, dueAt: await this.databaseNow(tx), wakeKind: "execution_finished" });
+    const dispatchIds = [finished.reference.dispatchId];
+    if (retry) dispatchIds.push((await this.dispatchRunWithinTransaction(tx, ref.id)).reference.dispatchId);
+    return { dispatchIds };
+  }
+
+  async failExecution(tx: TransactionClient, ref: WorkflowExecutionReference, context: ExecutorMutationContext, failure: ExecutorFailureInput): Promise<ExecutorMutationResult> {
+    const { attempt } = await this.ownedExecution(tx, ref, context);
+    await this.executionOwner(context.owner).failAttemptWithinTransaction(tx, attempt, new WorkflowFailure(failure.failureCode, failure.retryable ? "retryable" : "permanent", failure.failureCode), {});
+    const current = await tx.workflowRun.findUniqueOrThrow({ where: { id: ref.id }, select: { status: true } });
+    return this.executionWakes(tx, ref, context.reference.inputHash, current.status === "queued");
+  }
+
+  async releaseExecution(tx: TransactionClient, ref: WorkflowExecutionReference, context: ExecutorMutationContext, release: ExecutorReleaseInput): Promise<ExecutorMutationResult> {
+    const { run, attempt } = await this.ownedExecution(tx, ref, context);
+    const execution = await tx.executionAttempt.findUniqueOrThrow({ where: { attemptToken: ref.attemptToken }, select: { processStartedAt: true } });
+    if (!await this.executionOwner(context.owner).releaseAttemptWithinTransaction(tx, attempt, { refundAttempt: execution.processStartedAt !== null && run.attemptCount > 0, reason: release.reason })) throw new WorkflowAttemptLost(attempt);
+    return this.executionWakes(tx, ref, context.reference.inputHash, true);
+  }
+
+  async expireExecution(tx: TransactionClient, reference: ExecutionDispatchReference, attemptToken: string, observation: ExecutorExpiryObservation): Promise<ExecutorExpiryResult> {
+    const state = await this.executionState(tx, reference, attemptToken);
+    if (state.kind === "terminal") return { kind: state.disposition.disposition === "superseded" ? "superseded" : "terminal" };
+    const { run, ref, now } = state;
+    const admitted = await tx.executionAttempt.findUniqueOrThrow({ where: { attemptToken }, include: { dispatch: true } });
+    if (admitted.dispatchId !== reference.dispatchId || admitted.deploymentEpoch !== reference.deploymentEpoch || admitted.generation !== reference.generation ||
+      admitted.inputHash !== reference.inputHash || admitted.dispatch.subjectKind !== "workflow_run" || admitted.dispatch.subjectId !== run.id) return { kind: "superseded" };
+    if (observation.kind === "operation" && observation.observedDeadlineAt.getTime() !== admitted.operationDeadlineAt.getTime()) return { kind: "superseded" };
+    const dueAt = new Date(Math.min(run.leaseExpiresAt?.getTime() ?? Infinity, admitted.operationDeadlineAt.getTime()));
+    if (dueAt > now) return { kind: "sleep", dueAt };
+    if (run.status === "waiting") throw new Error("provider_wait_execution_not_closed");
+    const absolute = admitted.operationDeadlineAt <= now;
+    if (run.status === "queued" && !run.attemptId) {
+      if (!absolute) return { kind: "superseded" };
+      await tx.workflowRun.update({ where: { id: run.id }, data: { status: "failed", progress: 100, errorCode: "operation_deadline_exceeded", nextAttemptAt: null } });
+      if (run.stage === "stt") await tx.transcript.updateMany({ where: { projectId: run.projectId, status: "queued" }, data: { status: "failed", errorCode: "operation_deadline_exceeded" } });
+      const event = { workflowRunId: run.id, projectId: run.projectId, stage: run.stage as WorkflowStage, attemptId: attemptToken };
+      await this.appendEvent(tx, { ...event, status: "failed", progress: 100, errorCode: "operation_deadline_exceeded", transition: "expired_unacquired", analyticsRequired: true });
+      await this.emitFinishedOperations(tx, event);
+    } else {
+      if (!run.attemptId || !run.leaseOwner || run.leaseExpiresAt === null || run.attemptId !== attemptToken) return { kind: "superseded" };
+      await this.executionOwner(run.leaseOwner).failAttemptWithinTransaction(tx, { workflowRunId: run.id, projectId: run.projectId, stage: run.stage as WorkflowStage, attemptId: attemptToken, attemptCount: run.attemptCount },
+        new WorkflowFailure(absolute ? "operation_deadline_exceeded" : "worker_stalled", absolute ? "permanent" : "retryable", "Workflow deadline expired"), { expiredLeaseOnly: true });
+    }
+    const current = await tx.workflowRun.findUniqueOrThrow({ where: { id: ref.id }, select: { status: true } });
+    return { kind: "expired", ...await this.executionWakes(tx, ref, reference.inputHash, current.status === "queued") };
+  }
+
   /** Registers the frozen run in the caller's domain transaction. Safe to replay. */
   async dispatchRunWithinTransaction(tx: TransactionClient, runId: string): Promise<ExecutionDispatchRecord> {
     const run = await tx.workflowRun.findUniqueOrThrow({ where: { id: runId }, include: { project: { select: { sourceRevision: true } } } });
-    const transcript = await tx.transcript.findUnique({ where: { projectId: run.projectId }, select: { sourceAudioId: true, sourceRevision: true } });
-    if (transcript && transcript.sourceRevision !== run.project.sourceRevision) throw new Error("workflow_source_revision_superseded");
+
     const identity = { deploymentEpoch: run.deploymentEpoch, kind: run.stage === "clip_rendering" ? "render_run" as const : "operation_driver" as const,
       subject: { kind: "workflow_run" as const, id: run.id }, generation: run.generation };
     const key = await executionDispatchIdentity(identity);
     const existing = await tx.executionDispatch.findUnique({ where: { deliveryKey: key.deliveryKey }, select: { dueAt: true } });
     return appendExecutionDispatch(tx, { ...identity,
-      inputHash: await workflowRunExecutionInputHash({ id: run.id, projectId: run.projectId, stage: run.stage, contentPackId: run.contentPackId,
-        generation: run.generation, deploymentEpoch: run.deploymentEpoch, sourceAudioId: transcript?.sourceAudioId ?? null, sourceRevision: transcript?.sourceRevision ?? run.project.sourceRevision }),
+      inputHash: await this.runInputHash(tx, run, run.project.sourceRevision),
       dueAt: existing?.dueAt ?? run.nextAttemptAt ?? run.createdAt });
+  }
+
+  private async runInputHash(tx: TransactionClient, run: WorkflowRun, sourceRevision: number): Promise<string> {
+    const transcript = await tx.transcript.findUnique({ where: { projectId: run.projectId }, select: { sourceAudioId: true, sourceRevision: true } });
+    if (transcript && transcript.sourceRevision !== sourceRevision) throw new Error("workflow_source_revision_superseded");
+    return workflowRunExecutionInputHash({ id: run.id, projectId: run.projectId, stage: run.stage, contentPackId: run.contentPackId,
+      generation: run.generation, deploymentEpoch: run.deploymentEpoch, sourceAudioId: transcript?.sourceAudioId ?? null, sourceRevision: transcript?.sourceRevision ?? sourceRevision });
   }
 
   private async admitWithinTransaction(
@@ -1020,6 +1195,7 @@ export class WorkflowRunLifecycle {
    * retain unrelated variants, and a running detection claim keeps authority. */
   async cancelQueuedGenerationOperation(input: { workspaceId: string; projectId: string; workflowRunId: string }): Promise<boolean> {
     return this.transaction(async (tx) => {
+      await this.lockAdmissionProject(tx, input.projectId);
       const locked = await tx.$queryRaw<Array<{ id: string }>>`
         SELECT run."id" FROM "WorkflowRun" AS run
         INNER JOIN "Project" AS project ON project."id" = run."projectId"
@@ -1039,7 +1215,7 @@ export class WorkflowRunLifecycle {
       const child = await tx.workflowRun.findFirst({ where: { projectId: input.projectId, stage: "moment_detection",
         idempotencyKey: `${origin.idempotencyKey}__moment_detection`, contentPackId: origin.contentPackId } });
       if (!child) return false;
-      // Admission fences detection before the Project lock. Keep that order.
+      // The Project admission lock precedes both generation row locks.
       await tx.$queryRaw`SELECT "id" FROM "WorkflowRun" WHERE "id" = ${child.id}::uuid FOR UPDATE`;
       const detection = await tx.workflowRun.findUniqueOrThrow({ where: { id: child.id } });
       if (detection.status !== "queued" && detection.status !== "completed") return false;
@@ -1274,7 +1450,7 @@ export class WorkflowRunLifecycle {
     });
   }
 
-  private async beginRenderWorkSetWithinTransaction(tx: TransactionClient, attempt: WorkflowAttemptRef): Promise<RenderWorkSet> {
+  private async beginRenderWorkSetWithinTransaction(tx: TransactionClient, attempt: Pick<WorkflowAttemptRef, "workflowRunId" | "projectId">): Promise<RenderWorkSet> {
       const run = await tx.workflowRun.findUniqueOrThrow({
         where: { id: attempt.workflowRunId },
         select: { renderWorkSetFrozenAt: true },
@@ -1347,6 +1523,7 @@ export class WorkflowRunLifecycle {
     expectedStage: WorkflowStage,
   ): Promise<void> {
     if (attempt.stage !== expectedStage) throw new WorkflowAttemptLost(attempt);
+    await this.lockAdmissionProject(tx, attempt.projectId);
     const owned = await tx.$queryRaw<Array<{ id: string }>>`
       SELECT "id"
       FROM "WorkflowRun"
@@ -1572,7 +1749,10 @@ export class WorkflowRunLifecycle {
     refundAttempt?: boolean;
     reason?: string;
   } = {}): Promise<boolean> {
-    return this.transaction(async (tx) => {
+    return this.transaction(tx => this.releaseAttemptWithinTransaction(tx, attempt, options));
+  }
+
+  async releaseAttemptWithinTransaction(tx: TransactionClient, attempt: WorkflowAttemptRef, options: { refundAttempt?: boolean; reason?: string } = {}): Promise<boolean> {
       if (attempt.stage === "clip_rendering") await this.lockAdmissionProject(tx, attempt.projectId);
       const now = await this.databaseNow(tx);
       const changed = await tx.workflowRun.updateMany({
@@ -1598,7 +1778,6 @@ export class WorkflowRunLifecycle {
         ...attempt, status: "queued", progress: 0, errorCode: null, transition: "released",
       });
       return true;
-    });
   }
 
   async runAttempt<T>(
@@ -1776,8 +1955,11 @@ export class WorkflowRunLifecycle {
   }
 
   async reportProgress(attempt: WorkflowAttemptRef, progress: number) {
+    await this.transaction(tx => this.reportProgressWithinTransaction(tx, attempt, progress));
+  }
+
+  async reportProgressWithinTransaction(tx: TransactionClient, attempt: WorkflowAttemptRef, progress: number): Promise<void> {
     const normalizedProgress = Math.max(0, Math.min(99, Math.round(progress)));
-    await this.transaction(async (tx) => {
       const databaseNow = await this.databaseNow(tx);
       const run = await tx.workflowRun.findFirst({
         where: {
@@ -1805,7 +1987,6 @@ export class WorkflowRunLifecycle {
         errorCode: null,
         transition: `progress:${normalizedProgress}`,
       });
-    });
   }
 
   /**
@@ -1956,7 +2137,7 @@ export class WorkflowRunLifecycle {
     return this.transaction(async (tx) => {
       const lookup = await this.lockProviderAttempt(tx, key, "fail", ids);
       if (lookup.kind !== "waiting") return lookup;
-      await this.failAttemptWithin(tx, lookup.attempt, failure, {});
+      await this.failAttemptWithinTransaction(tx, lookup.attempt, failure, {});
       return { kind: "applied" } as const;
     });
   }
@@ -1982,7 +2163,7 @@ export class WorkflowRunLifecycle {
       ) {
         return { kind: "stale", reason: "submission_pending" } as const;
       }
-      await this.failAttemptWithin(
+      await this.failAttemptWithinTransaction(
         tx,
         lookup.attempt,
         new WorkflowFailure(
@@ -2245,84 +2426,120 @@ export class WorkflowRunLifecycle {
     await this.settleSuccess(attempt, "completed", null, options.admit);
   }
 
-  /**
-   * Settles the complete durable Render Work Set in one fenced transaction.
-   * Callers never derive aggregate state or admit late work themselves.
-   */
-  async settleRenderWorkSet(
-    attempt: WorkflowAttemptRef,
-  ): Promise<RenderWorkSetOutcome> {
+  private async lockRenderRun(tx: TransactionClient, reference: ExecutionDispatchReference): Promise<
+    { run: WorkflowRun; project: Project; now: Date } | null
+  > {
+    const parsed = executionDispatchReferenceSchema.safeParse(reference);
+    if (!parsed.success || reference.kind !== "render_run" || !["workflow_run", "render_group"].includes(reference.subject.kind)) return null;
+    const [epoch] = await tx.$queryRaw<Array<{ epoch: number }>>`SELECT "epoch" FROM "ExecutionEpoch" WHERE "id" = 1 FOR SHARE`;
+    if (!epoch || reference.deploymentEpoch !== epoch.epoch) return null;
+    const ledger = (await readExecutionDispatch(tx, reference.dispatchId))?.reference;
+    if (!ledger || ledger.kind !== reference.kind || ledger.subject.kind !== reference.subject.kind || ledger.subject.id !== reference.subject.id ||
+      ledger.deploymentEpoch !== reference.deploymentEpoch || ledger.generation !== reference.generation || ledger.inputHash !== reference.inputHash) return null;
+    const initialGroup = reference.subject.kind === "render_group" ? await tx.renderGroup.findUnique({ where: { id: reference.subject.id } }) : null;
+    const id = reference.subject.kind === "workflow_run" ? reference.subject.id : initialGroup?.workflowRunId;
+    if (!id) return null;
+    const initial = await tx.workflowRun.findUnique({ where: { id }, include: { project: { select: { workspaceId: true } } } });
+    if (!initial) return null;
+    await lockWorkspaceUsage(tx, initial.project.workspaceId);
+    await this.lockAdmissionProject(tx, initial.projectId);
+    await tx.$queryRaw`SELECT "id" FROM "Project" WHERE "id" = ${initial.projectId}::uuid FOR UPDATE`;
+    await tx.$queryRaw`SELECT "id" FROM "WorkflowRun" WHERE "id" = ${id}::uuid FOR UPDATE`;
+    if (initialGroup) await tx.$queryRaw`SELECT "id" FROM "RenderGroup" WHERE "id" = ${initialGroup.id}::uuid FOR UPDATE`;
+    const now = await this.databaseNow(tx);
+    const run = await tx.workflowRun.findUniqueOrThrow({ where: { id } });
+    const project = await tx.project.findFirst({ where: { id: run.projectId, ...accessibleProjectWhere(now), workspace: { status: "active" } } });
+    if (!project || run.stage !== "clip_rendering" || run.deploymentEpoch !== epoch.epoch) return null;
+    if (initialGroup) {
+      const group = await tx.renderGroup.findUnique({ where: { id: initialGroup.id } });
+      if (!group || group.workflowRunId !== run.id || group.workSetGeneration !== run.renderWorkSetGeneration ||
+        group.generation !== reference.generation || group.deploymentEpoch !== reference.deploymentEpoch) return null;
+    } else if (run.generation !== reference.generation) return null;
+    return { run, project, now };
+  }
+
+  /** Short parent command: frozen membership and all child obligations commit together. */
+  async prepareRenderRun(reference: ExecutionDispatchReference, configurations: readonly RenderGroupAdmission[]): Promise<RenderRunPreparation> {
+    return this.transaction(async (tx) => {
+      const state = await this.lockRenderRun(tx, reference);
+      if (!state) return { kind: "superseded", dispatchIds: [] };
+      const { run, project } = state;
+      if (["completed", "partial", "failed", "cancelled"].includes(run.status)) return { kind: "terminal", dispatchIds: [] };
+      if (project.ingestStatus !== "ready" || !project.sourceStorageKey) return { kind: "waiting_for_video", dispatchIds: [] };
+      const workSet = await this.beginRenderWorkSetWithinTransaction(tx, { workflowRunId: run.id, projectId: run.projectId });
+      const groups = await admitRenderGroupsWithinTransaction(tx, { workflowRunId: run.id, projectId: run.projectId, groups: configurations });
+      await tx.workflowRun.update({ where: { id: run.id }, data: { status: "waiting", attemptId: null, leaseOwner: null, leaseExpiresAt: null, heartbeatAt: null, nextAttemptAt: null } });
+      const parent = await this.dispatchRunWithinTransaction(tx, run.id);
+      const dispatchIds: string[] = [];
+      for (const ref of groups) {
+        const group = await tx.renderGroup.findUniqueOrThrow({ where: { id: ref.groupId }, include: { members: { select: { clipRenderId: true } } } });
+        const configuration = configurations.find(candidate => candidate.configuration.clipId === group.clipId && renderGroupExportIdentity(candidate.configuration) === group.exportIdentity)?.configuration;
+        if (!configuration) throw new Error("render_group_configuration_missing");
+        if (!["queued", "running"].includes(group.status)) continue;
+        const identity = { deploymentEpoch: group.deploymentEpoch, kind: "operation_driver" as const, subject: { kind: "render_group" as const, id: group.id }, generation: group.generation };
+        const key = await executionDispatchIdentity(identity);
+        const existing = await tx.executionDispatch.findUnique({ where: { deliveryKey: key.deliveryKey }, select: { dueAt: true } });
+        const dispatch = await appendExecutionDispatch(tx, { ...identity,
+          inputHash: await renderGroupExecutionInputHash({ ...ref, parentInputHash: parent.reference.inputHash, exportIdentity: group.exportIdentity,
+            memberIds: group.members.map(member => member.clipRenderId), configuration }),
+          dueAt: existing?.dueAt ?? group.nextAttemptAt ?? group.createdAt });
+        dispatchIds.push(dispatch.reference.dispatchId);
+      }
+      return { kind: "prepared", workSet, groups, dispatchIds };
+    });
+  }
+
+  /** Parent waits are durable Workflow waits; this command never acquires a SQL lease. */
+  async settleRenderRun(reference: ExecutionDispatchReference): Promise<RenderRunSettlement> {
+    return this.transaction(async (tx) => {
+      const state = await this.lockRenderRun(tx, reference);
+      if (!state) return { kind: "superseded", dispatchIds: [] };
+      if (state.run.status === "cancelled") return { kind: "superseded", dispatchIds: [] };
+      if (!state.run.renderWorkSetGeneration || !state.run.renderWorkSetFrozenAt) return { kind: "not_prepared", dispatchIds: [] };
+      const outcome = await this.settleRenderWorkSetWithinTransaction(tx, { workflowRunId: state.run.id, projectId: state.run.projectId,
+        // Correlation for event dedupe only. It is never persisted as an execution attempt.
+        eventId: state.run.renderWorkSetGeneration });
+      const dispatchIds = outcome.followUpWorkflowRunId ? [(await this.dispatchRunWithinTransaction(tx, outcome.followUpWorkflowRunId)).reference.dispatchId] : [];
+      return { kind: "settled", outcome, dispatchIds };
+    });
+  }
+
+  /** Interim worker wrapper delegates the same settlement body until removal. */
+  async settleRenderWorkSet(attempt: WorkflowAttemptRef): Promise<RenderWorkSetOutcome> {
     if (attempt.stage !== "clip_rendering") throw new WorkflowAttemptLost(attempt);
     return this.settlementTransaction(attempt, async (tx) => {
       await this.lockAdmissionProject(tx, attempt.projectId);
-      const existingRun = await tx.workflowRun.findUniqueOrThrow({
-        where: { id: attempt.workflowRunId },
-        select: {
-          status: true,
-          attemptId: true,
-          requestedCount: true,
-          succeededCount: true,
-          failedCount: true,
-        },
-      });
-      if (
-        existingRun.attemptId === attempt.attemptId &&
-        (existingRun.status === "completed" ||
-          existingRun.status === "partial" ||
-          existingRun.status === "failed") &&
-        existingRun.requestedCount !== null &&
-        existingRun.succeededCount !== null &&
-        existingRun.failedCount !== null
-      ) {
-        const followUp = await tx.workflowRun.findUnique({
-          where: {
-            projectId_idempotencyKey: {
-              projectId: attempt.projectId,
-              idempotencyKey: `drain-${attempt.workflowRunId}`,
-            },
-          },
-          select: { id: true },
-        });
-        return {
-          status: existingRun.status,
-          requested: existingRun.requestedCount,
-          succeeded: existingRun.succeededCount,
-          failed: existingRun.failedCount,
-          superseded: Math.max(
-            0,
-            existingRun.requestedCount -
-              existingRun.succeededCount -
-              existingRun.failedCount,
-          ),
-          followUpWorkflowRunId: followUp?.id ?? null,
-        };
-      }
-
-      await this.fenceChildMutation(tx, attempt, "clip_rendering");
-      const run = await tx.workflowRun.findUniqueOrThrow({
-        where: { id: attempt.workflowRunId },
-        select: { requestedCount: true, attemptCount: true, renderWorkSetGeneration: true },
-      });
-      {
-        const decision = await renderGroupParentSettlement(tx, attempt.workflowRunId);
-        if (!decision.eligible) {
-          const progress = decision.requested > 0 ? Math.min(95, Math.round(90 * (decision.succeeded + decision.failed + decision.superseded) / decision.requested)) : 0;
-          await tx.workflowRun.update({ where: { id: attempt.workflowRunId }, data: { progress, succeededCount: decision.succeeded, failedCount: decision.failed } });
-          await this.appendEvent(tx, { ...attempt, status: "running", progress, errorCode: null, transition: `groups_progress:${decision.succeeded}:${decision.failed}:${decision.superseded}` });
-          return { status: "pending" as const, requested: run.requestedCount ?? 0, succeeded: decision.succeeded,
-            failed: decision.failed, superseded: decision.superseded, followUpWorkflowRunId: null };
-        }
-        const members = await tx.renderGroupMember.findMany({ where: { workflowRunId: attempt.workflowRunId, invalidatedAt: null }, select: { clipRenderId: true } });
-        const variants = await tx.clipRender.findMany({ where: { id: { in: members.map((m) => m.clipRenderId) }, workflowRunId: attempt.workflowRunId }, select: { id: true, status: true, exportVariantId: true } });
-        const terminal = await this.settleTerminalRenderLineage(tx, attempt, { requestedCount: decision.requested, variants, failureErrorCode: "render_work_set_failed" });
-        await this.appendEvent(tx, { ...attempt, status: terminal.status, progress: 100, errorCode: terminal.errorCode,
-          transition: `terminal:${terminal.status}`, analyticsRequired: true, notification: decision.notify ? terminal.notification : undefined });
-        const followUpWorkflowRunId = await this.admitLateRenderFollowUp(tx, attempt);
-        await this.emitFinishedOperations(tx, attempt);
-        return { status: terminal.status, requested: terminal.requested, succeeded: terminal.succeeded,
-          failed: terminal.failed, superseded: terminal.superseded, followUpWorkflowRunId };
-      }
+      const run = await tx.workflowRun.findUniqueOrThrow({ where: { id: attempt.workflowRunId }, select: { status: true, attemptId: true } });
+      if (["completed", "partial", "failed"].includes(run.status)) {
+        if (run.attemptId !== attempt.attemptId) throw new WorkflowAttemptLost(attempt);
+      } else await this.fenceChildMutation(tx, attempt, "clip_rendering");
+      return this.settleRenderWorkSetWithinTransaction(tx, { workflowRunId: attempt.workflowRunId, projectId: attempt.projectId, eventId: attempt.attemptId });
     });
+  }
+
+  private async settleRenderWorkSetWithinTransaction(tx: TransactionClient, ref: { workflowRunId: string; projectId: string; eventId: string }): Promise<RenderWorkSetOutcome> {
+    const event = { workflowRunId: ref.workflowRunId, projectId: ref.projectId, stage: "clip_rendering" as const, attemptId: ref.eventId };
+    const run = await tx.workflowRun.findUniqueOrThrow({ where: { id: ref.workflowRunId } });
+    if (["completed", "partial", "failed"].includes(run.status) && run.requestedCount !== null && run.succeededCount !== null && run.failedCount !== null) {
+      const followUp = await tx.workflowRun.findUnique({ where: { projectId_idempotencyKey: { projectId: ref.projectId, idempotencyKey: `drain-${ref.workflowRunId}` } }, select: { id: true } });
+      return { status: run.status as "completed" | "partial" | "failed", requested: run.requestedCount, succeeded: run.succeededCount, failed: run.failedCount,
+        superseded: Math.max(0, run.requestedCount - run.succeededCount - run.failedCount), followUpWorkflowRunId: followUp?.id ?? null };
+    }
+    const decision = await renderGroupParentSettlement(tx, ref.workflowRunId);
+    if (!decision.eligible) {
+      const progress = decision.requested > 0 ? Math.min(95, Math.round(90 * (decision.succeeded + decision.failed + decision.superseded) / decision.requested)) : 0;
+      await tx.workflowRun.update({ where: { id: ref.workflowRunId }, data: { progress, succeededCount: decision.succeeded, failedCount: decision.failed } });
+      await this.appendEvent(tx, { ...event, status: run.status as WorkflowStatus, progress, errorCode: null, transition: `groups_progress:${decision.succeeded}:${decision.failed}:${decision.superseded}` });
+      return { status: "pending", requested: run.requestedCount ?? 0, succeeded: decision.succeeded, failed: decision.failed, superseded: decision.superseded, followUpWorkflowRunId: null };
+    }
+    const members = await tx.renderGroupMember.findMany({ where: { workflowRunId: ref.workflowRunId, invalidatedAt: null }, select: { clipRenderId: true } });
+    const variants = await tx.clipRender.findMany({ where: { id: { in: members.map(member => member.clipRenderId) }, workflowRunId: ref.workflowRunId }, select: { id: true, status: true, exportVariantId: true } });
+    const terminal = await this.settleTerminalRenderLineage(tx, event, { requestedCount: decision.requested, variants, failureErrorCode: "render_work_set_failed" });
+    await this.appendEvent(tx, { ...event, status: terminal.status, progress: 100, errorCode: terminal.errorCode, transition: `terminal:${terminal.status}`,
+      analyticsRequired: true, notification: decision.notify ? terminal.notification : undefined });
+    const followUpWorkflowRunId = await this.admitLateRenderFollowUp(tx, event);
+    await this.emitFinishedOperations(tx, event);
+    return { status: terminal.status, requested: terminal.requested, succeeded: terminal.succeeded, failed: terminal.failed, superseded: terminal.superseded, followUpWorkflowRunId };
   }
 
   private async dubbingAggregate(db: TransactionClient | PrismaClient, attempt: WorkflowAttemptRef): Promise<WorkflowAggregateResult> {
@@ -2430,11 +2647,11 @@ export class WorkflowRunLifecycle {
     options: { expiredLeaseOnly?: boolean } = {},
   ) {
     await this.settlementTransaction(attempt, (tx) =>
-      this.failAttemptWithin(tx, attempt, failure, options),
+      this.failAttemptWithinTransaction(tx, attempt, failure, options),
     );
   }
 
-  private async failAttemptWithin(
+  async failAttemptWithinTransaction(
     tx: TransactionClient,
     attempt: WorkflowAttemptRef,
     failure: WorkflowFailure,
@@ -2541,7 +2758,7 @@ export class WorkflowRunLifecycle {
 
   private async settleTerminalRenderLineage(
     tx: TransactionClient,
-    attempt: WorkflowAttemptRef,
+    attempt: Pick<WorkflowAttemptRef, "workflowRunId" | "projectId">,
     input: {
       requestedCount: number | null;
       variants: readonly RenderLineageVariant[];
@@ -2653,7 +2870,7 @@ export class WorkflowRunLifecycle {
 
   private async admitLateRenderFollowUp(
     tx: TransactionClient,
-    attempt: WorkflowAttemptRef,
+    attempt: Pick<WorkflowAttemptRef, "workflowRunId" | "projectId">,
   ): Promise<string | null> {
     const lateVariant = await tx.clipRender.findFirst({
       where: {

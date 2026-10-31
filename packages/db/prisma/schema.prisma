@@ -2427,6 +2427,10 @@ model ThumbnailFrameOperation {
   attempt            Int                  @default(0)
   claimId            String?              @db.Uuid
   claimExpiresAt     DateTime?
+  executorOwner      String?              @db.Uuid
+  generation         Int                  @default(1)
+  deploymentEpoch    Int                  @default(1)
+  operationDeadlineAt DateTime?
   resultAssetId      String?              @db.Uuid
   errorCode          String?
   createdAt          DateTime             @default(now())
@@ -2565,6 +2569,7 @@ model BrandFont {
   storageKey               String          @unique
   sizeBytes                BigInt
   fingerprint              String
+  face                     Json?
   licenseConfirmedAt       DateTime
   createdAt                DateTime        @default(now())
   updatedAt                DateTime        @updatedAt
@@ -3427,6 +3432,9 @@ model ExecutionArtifact {
   sourceEtag          String?   @db.VarChar(160)
   sourceByteLength    BigInt?
   sourceVideoBinding  Json?
+  uploadByteLength    BigInt?
+  multipartPartChecksums Json?
+  multipartCompleteIntentAt DateTime?
   grantExpiresAt      DateTime
   committedAt         DateTime?
   createdAt           DateTime  @default(now())
@@ -3496,4 +3504,40 @@ model ClipSelectionWindow {
 
   @@unique([transcriptId, generation, windowIndex])
   @@index([status, retryAt])
+}
+
+
+/// Native font/visual validation is durable; usable assets are created only by fenced commits.
+model NativeValidationJob {
+  id String @id @default(uuid()) @db.Uuid
+  workspaceId String @db.Uuid
+  createdByUserId String @db.Uuid
+  ownerUserId String? @db.Uuid
+  ownerWorkspaceId String? @db.Uuid
+  kind String @db.VarChar(24)
+  requestFingerprint String @db.Char(64)
+  input Json
+  inputHash String @db.Char(64)
+  inputStorageKey String @db.VarChar(1024)
+  inputEtag String @db.VarChar(160)
+  inputByteLength BigInt
+  status String @default("queued") @db.VarChar(24)
+  generation Int @default(1)
+  deploymentEpoch Int
+  attemptToken String? @db.Uuid
+  executorOwner String? @db.Uuid
+  leaseExpiresAt DateTime?
+  operationDeadlineAt DateTime
+  chargedAttempts Int @default(0)
+  maxAttempts Int @default(3)
+  retryAt DateTime?
+  result Json?
+  errorCode String? @db.VarChar(100)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  completedAt DateTime?
+
+  @@unique([workspaceId, kind, requestFingerprint])
+  @@index([status, retryAt, createdAt])
+  @@index([workspaceId, createdAt])
 }

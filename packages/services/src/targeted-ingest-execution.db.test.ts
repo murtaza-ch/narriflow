@@ -27,6 +27,8 @@ dbDescribe("Targeted Ingest execution", () => {
     if (actual?.schema !== schema) throw new Error("Wrong execution schema");
   }, 60_000);
   afterAll(async () => {
+    subjects.push(...(await db.workflowEvent.findMany({ where: { project: { workspace: { ownerUserId: { in: users } } } }, select: { id: true } })).map(row => row.id));
+    subjects.push(...(await db.workspaceEvent.findMany({ where: { workspace: { ownerUserId: { in: users } } }, select: { id: true } })).map(row => row.id));
     const workflows = await db.workflowRun.findMany({ where: { project: { workspace: { ownerUserId: { in: users } } } }, select: { id: true } });
     subjects.push(...workflows.map((run) => run.id));
     const ids = (await db.executionDispatch.findMany({ where: { subjectId: { in: subjects } }, select: { id: true } })).map((row) => row.id);
@@ -239,6 +241,54 @@ dbDescribe("Targeted Ingest execution", () => {
     expect(await db.workspaceEvent.count({ where: { subject: { path: ["projectId"], equals: f.project.id }, type: "operation.finished" } })).toBe(1);
   }, 90_000);
 
+  test("audio publication atomically admits an already committed pack without another pipeline read", async () => {
+    const f = await fixture();
+    await db.contentPack.create({ data: { projectId: f.project.id, outputTypes: ["short_clip"], clipGenerationMode: "viral_moments", clipCountTarget: 10,
+      clipDurationSecTarget: 45, platformTargets: ["tiktok"], toneConstraints: [], captionPreset: "brand_default", platformPlaybookVersion: "2026-07-01" } });
+    const fence = { reference: f.reference, attemptToken: f.token, owner: f.owner };
+    await withServiceEnvironment({}, () => f.control.execute({ command: { action: "acquire", reference: f.reference, attemptToken: f.token, owner: f.owner, leaseSeconds: 120 }, verifiedRequest: f.verified() }));
+    await withServiceEnvironment({}, () => f.control.execute({ command: { action: "process-start", fence }, verifiedRequest: f.verified() }));
+    const key = `execution/${f.epoch}/${f.token}/${f.owner}/source.m4a`;
+    const binding = measuredBindings(f, key).audio;
+    const artifact = await db.executionArtifact.create({ data: { attemptToken: f.token, owner: f.owner, role: "source_audio", bindingHash: "b".repeat(64), storageKey: key,
+      contentType: "audio/mp4", maxBytes: 4096n, grantExpiresAt: new Date(Date.now() + 60_000) } });
+    await withServiceEnvironment({}, () => f.control.execute({ command: { action: "commit-artifact", fence, artifact: { artifactId: artifact.id, role: "source_audio", contentType: "audio/mp4",
+      byteLength: 1024, etag: '"audio-etag"', sha256: "c".repeat(64), bindingHash: artifact.bindingHash, sourceAudio: binding } }, verifiedRequest: f.verified() }));
+    const run = await db.workflowRun.findFirstOrThrow({ where: { projectId: f.project.id, stage: "stt" } });
+    expect(await db.ingestJob.findUniqueOrThrow({ where: { id: f.job.id } })).toMatchObject({ status: "running", generationRunId: run.id, executorOwner: f.owner });
+    expect(await db.transcript.findUniqueOrThrow({ where: { projectId: f.project.id } })).toMatchObject({ sourceAudioId: binding.sourceAudioId, sourceRevision: 1, status: "queued" });
+    expect(await db.processingUsageReservation.findUniqueOrThrow({ where: { projectId: f.project.id } })).toMatchObject({ state: "settled", settledSeconds: 180 });
+    expect(await db.executionDispatch.count({ where: { subjectId: run.id, kind: "operation_driver", wakeKind: null, deadlineKind: null } })).toBe(1);
+    expect((await db.project.findUniqueOrThrow({ where: { id: f.project.id } })).ingestStatus).not.toBe("ready");
+  }, 120_000);
+
+  test("already sealed mismatching video refuses audio admission before a debit or STT run exists", async () => {
+    const f = await fixture();
+    await db.contentPack.create({ data: { projectId: f.project.id, outputTypes: ["short_clip"], clipGenerationMode: "viral_moments", clipCountTarget: 10,
+      clipDurationSecTarget: 45, platformTargets: ["tiktok"], toneConstraints: [], captionPreset: "brand_default", platformPlaybookVersion: "2026-07-01" } });
+    const fence = { reference: f.reference, attemptToken: f.token, owner: f.owner };
+    await withServiceEnvironment({}, () => f.control.execute({ command: { action: "acquire", reference: f.reference, attemptToken: f.token, owner: f.owner, leaseSeconds: 120 }, verifiedRequest: f.verified() }));
+    await withServiceEnvironment({}, () => f.control.execute({ command: { action: "process-start", fence }, verifiedRequest: f.verified() }));
+    const key = `execution/${f.epoch}/${f.token}/${f.owner}/source.m4a`;
+    const binding = measuredBindings(f, key);
+    binding.audio.durationSeconds = 60.01;
+    binding.video.probe.durationSec = 60;
+    binding.video.probe.facts.format.durationSec = 60;
+    for (const stream of [...binding.video.probe.facts.videos, ...binding.video.probe.facts.audios]) { stream.durationSec = 60; stream.endTimeSec = 60; }
+    for (const role of ["source_video", "source_audio"] as const) {
+      const contentType = role === "source_audio" ? "audio/mp4" : "video/mp4";
+      const artifact = await db.executionArtifact.create({ data: { attemptToken: f.token, owner: f.owner, role, bindingHash: "b".repeat(64), storageKey: role === "source_audio" ? key : `${key}.mp4`,
+        contentType, maxBytes: 4096n, grantExpiresAt: new Date(Date.now() + 60_000) } });
+      await withServiceEnvironment({}, () => f.control.execute({ command: { action: "commit-artifact", fence, artifact: { artifactId: artifact.id, role, contentType,
+        byteLength: 1024, etag: '"audio-etag"', sha256: "c".repeat(64), bindingHash: artifact.bindingHash,
+        ...(role === "source_audio" ? { sourceAudio: binding.audio } : { sourceVideo: binding.video }) } }, verifiedRequest: f.verified() }));
+    }
+    expect(await db.ingestJob.findUniqueOrThrow({ where: { id: f.job.id } })).toMatchObject({ status: "failed", generationRunId: null });
+    expect(await db.processingUsageReservation.findUniqueOrThrow({ where: { projectId: f.project.id } })).toMatchObject({ state: "released", settledSeconds: null });
+    expect(await db.workflowRun.count({ where: { projectId: f.project.id, stage: "stt" } })).toBe(0);
+    expect(await db.sourceRefundNeed.count({ where: { projectId: f.project.id } })).toBe(0);
+  }, 120_000);
+
   for (const first of ["source_audio", "source_video"] as const) test(`${first} can commit first and the second callback atomically publishes verified video`, async () => {
     const f = await fixture();
     const fence = { reference: f.reference, attemptToken: f.token, owner: f.owner };
@@ -259,6 +309,14 @@ dbDescribe("Targeted Ingest execution", () => {
     expect((await commit(first)).disposition).toBe("committed");
     expect(await db.ingestJob.findUniqueOrThrow({ where: { id: f.job.id } })).toMatchObject({ status: "running" });
     expect((await db.project.findUniqueOrThrow({ where: { id: f.project.id } })).ingestStatus).not.toBe("ready");
+    let waitingRenderRunId: string | null = null;
+    if (first === "source_audio") {
+      const run = await withServiceEnvironment({}, () => f.workflow.admit({ projectId: f.project.id, stage: "clip_rendering", idempotencyKey: crypto.randomUUID() }));
+      waitingRenderRunId = run.id;
+      subjects.push(run.id);
+      const registered = await db.$transaction(tx => f.workflow.dispatchRunWithinTransaction(tx, run.id));
+      expect((await withServiceEnvironment({}, () => f.workflow.prepareRenderRun(registered.reference, []))).kind).toBe("waiting_for_video");
+    }
     if (first === "source_video") {
       expect((await db.executionArtifact.findUniqueOrThrow({ where: { id: video.id } })).sourceVideoBinding).toEqual(bindings.video);
       expect(await db.sourceAudio.findUnique({ where: { id: bindings.audio.sourceAudioId } })).toBeNull();
@@ -268,6 +326,7 @@ dbDescribe("Targeted Ingest execution", () => {
     expect(await db.project.findUniqueOrThrow({ where: { id: f.project.id } })).toMatchObject({ ingestStatus: "ready", sourceStorageKey: videoKey, sourceProbe: bindings.video.probe });
     expect(await db.executionAttempt.findUniqueOrThrow({ where: { attemptToken: f.token } })).toMatchObject({ status: "completed", owner: f.owner });
     expect(await db.executionDispatch.count({ where: { subjectId: f.job.id, kind: "import_pipeline", wakeKind: "video_ready" } })).toBe(1);
+    if (waitingRenderRunId) expect(await db.executionDispatch.count({ where: { subjectId: waitingRenderRunId, kind: "render_run", wakeKind: "video_ready" } })).toBe(1);
     expect(await db.processingUsageReservation.findUniqueOrThrow({ where: { projectId: f.project.id } })).toMatchObject({ state: "reserved", settledSeconds: null });
   }, 120_000);
 
