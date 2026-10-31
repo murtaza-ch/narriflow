@@ -727,3 +727,5 @@ export { createBillingReconciliation, queueBillingReconciliation, recoverBilling
 
 export * from "./media-cleanup-control";
 export * from "./media-cleanup-storage";
+export * from "./media-cleanup-drain";
+export * from "./media-cleanup-holds";

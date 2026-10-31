@@ -1726,6 +1726,7 @@ model MediaCleanupObligation {
   @@unique([origin, cleanupClass, objectKey])
   @@index([completedAt, nextAttemptAt, claimExpiresAt])
   @@index([clipId, completedAt])
+  @@index([createdAt, id])
 }
 
 model ClipRender {
@@ -3445,6 +3446,7 @@ model ExecutionAttempt {
   @@index([status, leaseExpiresAt])
   @@index([status, operationDeadlineAt])
   @@index([dispatchId])
+  @@index([inputStorageKey])
 }
 
 /// Committed request dispositions are replayed only for the identical canonical digest.
@@ -3705,6 +3707,7 @@ model OutboundDelivery {
 
   @@index([targetKind, targetId, createdAt])
   @@index([status, retryAt])
+  @@index([bodyStorageKey])
 }
 
 /// One immutable preview/layout preparation per source/editor/engine binding.

@@ -1,3 +1,4 @@
+import { createScheduledMediaCleanupAdmissionStore } from "./media-cleanup-admission";
 import { buildDetectedClipRows, prepareDetectedClipSeed, seedBrandMusic, runDefaultCaptionPreset, type DetectedClip, type LlmMeta } from "./clip-detection-persistence";
 export { seedBrandMusic, resolveClipCaptionPresetForContentPack } from "./clip-detection-persistence";
 import { readServiceEnvironment } from "./runtime-environment";
@@ -1330,7 +1331,7 @@ export class ClipService {
 
     try {
       return await runDurableMediaCopies({
-        store: prisma.mediaCleanupObligation,
+        store: createScheduledMediaCleanupAdmissionStore(prisma),
         plans: copyPlans,
         claimId: compensationClaimId,
         claimExpiresAt: new Date(Date.now() + 15 * 60 * 1000),

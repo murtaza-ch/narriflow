@@ -1,3 +1,4 @@
+import { admitMediaCleanupObligations } from "./media-cleanup-admission";
 import { createHash, randomUUID } from "node:crypto";
 import { readExecutionAdmission, assertExecutionAdmissionOpen } from "./execution-admission";
 import {
@@ -686,22 +687,8 @@ export class GeneratedMediaExecution
 						resultState: pending as unknown as Prisma.InputJsonValue,
 					},
 				});
-				await tx.mediaCleanupObligation.upsert({
-					where: {
-						origin_cleanupClass_objectKey: {
-							origin: "generated_media_publication",
-							cleanupClass: "generated_asset",
-							objectKey: plan.storageKey,
-						},
-					},
-					create: {
-						origin: "generated_media_publication",
-						cleanupClass: "generated_asset",
-						objectKey: plan.storageKey,
-						nextAttemptAt: new Date(row.promptExpiresAt.getTime() + 86400000),
-					},
-					update: {},
-				});
+        await admitMediaCleanupObligations(tx, [{ origin: "generated_media_publication", cleanupClass: "generated_asset", objectKey: plan.storageKey,
+          projectId: row.projectId, notBefore: new Date(row.promptExpiresAt.getTime() + 86400000) }]);
 			}
 			return {
 				kind: "stage" as const,
@@ -1640,7 +1627,7 @@ export class GeneratedMediaExecution
  * awaiting explicit outcome reconciliation. Published asset references have
  * their separate reusable-asset hold. */
 export async function generatedMediaObjectIsHeld(
-	database: PrismaClient,
+	database: Pick<PrismaClient, "generatedMediaJob" | "executionAttempt" | "executionArtifact">,
 	key: string,
 ) {
 	const planned =

@@ -140,7 +140,7 @@ export class ClipPreparationService {
       if (frozen.groupDeadlineAt <= frozen.clock) throw new ClipPreparationError("clip_preparation_input_invalid");
       const existing = await tx.clipPreparation.findUnique({ where: { id: frozen.input.preparationId } });
       const key = `projects/${frozen.input.projectId}/preparations/${frozen.input.preparationId}/${crypto.randomUUID()}.json`;
-      if (!existing) await admitMediaCleanupObligations(tx.mediaCleanupObligation, [{ origin: "clip_preparation_input", cleanupClass: "execution_input", projectId: frozen.input.projectId,
+      if (!existing) await admitMediaCleanupObligations(tx, [{ origin: "clip_preparation_input", cleanupClass: "execution_input", projectId: frozen.input.projectId,
         clipId: frozen.input.clipId, objectKey: key, notBefore: new Date(frozen.clock.getTime() + deadlineMs + 120_000) }]);
       return { ...frozen, key, existing: existing ? await this.admission(tx, existing, frozen.groupId) : null };
     });

@@ -1,3 +1,4 @@
+import { admitMediaCleanupObligations } from "./media-cleanup-admission";
 import { publicationEphemeralSchema, type PublicationEphemeral } from "@narriflow/validators/publication-execution";
 import type { ExecutionArtifact, Prisma, PrismaClient } from "@prisma/client";
 import { executionOutputDescriptorSchema, executionPartPlanSchema, executionTransferCommandSchema, executionTransferDispositionSchema,
@@ -204,7 +205,7 @@ export function createExecutionTransfer(options: Options) {
     const publication = prepared.publication === undefined ? undefined : publicationEphemeralSchema.parse(prepared.publication);
     const descriptors = prepared.outputs.map(value => executionOutputDescriptorSchema.parse(value));
     const outputs = await options.authority.withAuthority(command.fence, false, async (tx, live) => {
-      const values = [];
+      const values = [], cleanupKeys: string[] = [];
       for (const descriptor of descriptors) {
         if (!contentTypes[descriptor.role]?.includes(descriptor.contentType) || (descriptor.sourceEtag === undefined) !== (descriptor.sourceByteLength === undefined)) return invalid();
         const identity = { attemptToken: live.fence.attemptToken, owner: live.fence.owner, role: descriptor.role, bindingHash: descriptor.bindingHash };
@@ -225,8 +226,11 @@ export function createExecutionTransfer(options: Options) {
             sourceByteLength: descriptor.sourceByteLength === undefined ? null : BigInt(descriptor.sourceByteLength), createdAt: clock.now, grantExpiresAt: new Date(clock.now.getTime() + 1000) } });
         }
         if (found.maxBytes !== BigInt(descriptor.maxBytes) || found.sourceEtag !== (descriptor.sourceEtag ?? null) || found.sourceByteLength !== (descriptor.sourceByteLength === undefined ? null : BigInt(descriptor.sourceByteLength))) return invalid();
+        cleanupKeys.push(found.storageKey);
         values.push({ ...descriptor, artifactId: found.id, contentTypes: [...contentTypes[descriptor.role]!] });
       }
+      await admitMediaCleanupObligations(tx, cleanupKeys.map(objectKey => ({ origin: "assigned_execution_artifact" as const, cleanupClass: "assigned_artifact" as const, objectKey,
+        notBefore: new Date(live.operationDeadlineAt.getTime() + 120_000) })));
       return values;
     });
     const input = prepared.input.kind === "inline" ? prepared.input : await (async () => {

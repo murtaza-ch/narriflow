@@ -84,7 +84,7 @@ export function createClipSelectionPreparation(config: { database: PrismaClient;
         if (!state || !["queued", "waiting"].includes(state.run.status)) return { kind: "superseded" as const, dispatchIds: [] };
         const existing = await tx.clipSelectionWindow.findMany({ where: { workflowRunId: state.run.id, workflowGeneration: state.run.generation, deploymentEpoch: state.run.deploymentEpoch }, orderBy: { windowIndex: "asc" } });
         if (existing.length) return register(tx, existing);
-        await admitMediaCleanupObligations(tx.mediaCleanupObligation, objectKeys.map(objectKey => ({ origin: "selection_execution" as const, cleanupClass: "execution_input" as const,
+        await admitMediaCleanupObligations(tx, objectKeys.map(objectKey => ({ origin: "selection_execution" as const, cleanupClass: "execution_input" as const,
           projectId: state.project.id, objectKey, notBefore: new Date(state.now.getTime() + 720_000) })));
         return { kind: "planned" as const };
       });

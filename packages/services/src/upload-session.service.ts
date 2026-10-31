@@ -3212,7 +3212,7 @@ const SINGLE_PUT_CLEANUP_DELAY_MS = UPLOAD_SOURCE_CLEANUP_DELAY_MS +
 
 async function admitTerminatedUploadCleanup(tx: Prisma.TransactionClient, session: PrismaUploadSession, now: Date) {
   if (session.transferKind !== "single") return;
-  await admitMediaCleanupObligations(tx.mediaCleanupObligation, [{
+  await admitMediaCleanupObligations(tx, [{
     origin: "upload_session_termination",
     cleanupClass: "upload_source",
     projectId: session.preallocatedProjectId,

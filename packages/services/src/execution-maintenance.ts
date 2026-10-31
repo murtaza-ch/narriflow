@@ -1,3 +1,4 @@
+import { executeExecutionPage } from "./execution-page-receipt";
 import type { Prisma, PrismaClient } from "@prisma/client";
 import { executionDispatchReferenceSchema, type ExecutionDispatchReference } from "@narriflow/validators/execution";
 import { appendExecutionDispatch, readExecutionDispatch } from "./execution-dispatch";
@@ -73,6 +74,7 @@ export class ExecutionMaintenanceService {
       if (epoch !== reference.deploymentEpoch) return { kind: "superseded" as const, processed: 0, dispatchIds: [] };
       const page = parse(reference.subject.id);
       if (reference.inputHash !== await hash(epoch, reference.subject.id)) throw invalid();
+      return executeExecutionPage(tx, reference, "maintenance-page", async () => {
       const sequence = phases(page.cadence);
       for (let index = sequence.indexOf(page.phase); index < sequence.length; index++) {
         const phase = sequence[index]!, handler = this.options.phases[phase];
@@ -93,6 +95,7 @@ export class ExecutionMaintenanceService {
         }
       }
       return { kind: "complete" as const, processed: 0, dispatchIds: [] };
+      });
     });
     if (result.dispatchIds.length) await this.options.register(result.dispatchIds);
     return result;

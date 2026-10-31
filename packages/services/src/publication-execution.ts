@@ -1,3 +1,4 @@
+import { admitMediaCleanupObligations } from "./media-cleanup-admission";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
 	Prisma,
@@ -773,19 +774,8 @@ export class PublicationExecution
 					}),
 				},
 			});
-			await tx.mediaCleanupObligation.createMany({
-				data: [
-					{
-						origin: "publication_execution",
-						cleanupClass: "publication_private",
-						projectId: post.projectId,
-						clipId: post.clipId,
-						objectKey: plan.storageKey,
-						nextAttemptAt: claim.operationDeadlineAt!,
-					},
-				],
-				skipDuplicates: true,
-			});
+      await admitMediaCleanupObligations(tx, [{ origin: "publication_execution", cleanupClass: "publication_private", projectId: post.projectId,
+        clipId: post.clipId, objectKey: plan.storageKey, notBefore: claim.operationDeadlineAt! }]);
 		});
 		let head = await this.ports.inputStorage.head(plan);
 		if (!head) {
