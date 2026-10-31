@@ -37,7 +37,7 @@ exports[`REST v1 OpenAPI document lists exactly the v1 endpoints 1`] = `
 ]
 `;
 
-exports[`REST v1 OpenAPI document changes only additively: the whole document is snapshotted 1`] = `
+exports[`REST v1 OpenAPI document the whole public document is snapshotted for review 1`] = `
 {
   "components": {
     "parameters": {},

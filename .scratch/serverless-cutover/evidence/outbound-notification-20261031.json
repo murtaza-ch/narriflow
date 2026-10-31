@@ -46,6 +46,32 @@
       "compilationIssues": [],
       "runtimeErrors": [],
       "temporaryFixtureRemoved": true
+    },
+    "combinedPostIntegrationPostgres": {
+      "freshMigrations": 134,
+      "tests": 118,
+      "assertions": 765,
+      "files": 18,
+      "target": "guarded dedicated local PG17 disposable schema"
+    },
+    "broadServices": {
+      "passed": 1551,
+      "failed": 0,
+      "databaseSuitesSkipped": true
+    },
+    "broadApiAndClient": {
+      "passed": 1122,
+      "skippedDatabaseTests": 36,
+      "failed": 0
+    },
+    "inventory": {
+      "firstPartyRoutes": 290,
+      "protocolRoutes": 45,
+      "problems": 0
+    },
+    "openApi": {
+      "operations": 32,
+      "artifactMatchesRoutes": true
     }
   },
   "preservedContracts": [

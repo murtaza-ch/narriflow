@@ -98,8 +98,8 @@ describe("REST v1 OpenAPI document", () => {
     expect(endpoints).toMatchSnapshot();
   }));
 
-  test("changes only additively: the whole document is snapshotted", bindServiceTestEnvironment(async () => {
-    // Review any diff here: v1 may add operations or optional fields, never remove or tighten them.
+  test("the whole public document is snapshotted for review", bindServiceTestEnvironment(async () => {
+    // Review the complete public contract when changing routes or schemas.
     expect(await (await harness().call("/openapi.json", { key: null })).json()).toMatchSnapshot();
   }));
 });
