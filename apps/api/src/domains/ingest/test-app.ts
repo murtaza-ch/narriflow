@@ -84,6 +84,7 @@ export function createDomainTestApp(
     rest: new Hono<ApiEnv>(),
     mcp: new Hono<ApiEnv>(),
     progressSocket: new Hono<ApiEnv>(),
+    execution: new Hono<ApiEnv>(),
     admin: { rateLimit: async () => ({ allowed: true }) as never },
   });
 }

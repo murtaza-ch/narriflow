@@ -122,6 +122,27 @@ class OwnedProcessTests(unittest.TestCase):
         self.assertEqual(str(failure.exception), "media_process_start_unconfirmed")
         self.assert_pid_stopped(children[0])
 
+    def test_cli_work_command_is_withheld_until_the_actual_start_acknowledgement_succeeds(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'received-command'
+            code = "import sys;from pathlib import Path;data=sys.stdin.buffer.read();Path(sys.argv[1]).write_bytes(data)"
+            def acknowledge(pid):
+                os.kill(pid, 0)
+                time.sleep(0.15)
+                self.assertFalse(path.exists(), 'work command reached the native child before acknowledgement')
+            result = run_owned_process([sys.executable, '-c', code, str(path)], input_bytes=b'finite-work-command',
+                                       timeout_seconds=3, kill_grace_seconds=0.1, on_start=acknowledge)
+            self.assertEqual(result.returncode, 0)
+            self.assertEqual(path.read_bytes(), b'finite-work-command')
+            path.unlink()
+            def lost_ack(pid):
+                time.sleep(0.1)
+                raise TimeoutError('private acknowledgement details')
+            with self.assertRaises(MediaProcessError):
+                run_owned_process([sys.executable, '-c', code, str(path)], input_bytes=b'must-not-be-delivered',
+                                  timeout_seconds=3, kill_grace_seconds=0.1, on_start=lost_ack)
+            self.assertFalse(path.exists())
+
 
     def test_async_cancellation_waits_for_the_native_process_to_stop(self):
         children = []
@@ -179,7 +200,13 @@ class OwnedProcessTests(unittest.TestCase):
     def assert_pid_stopped(self, pid: int):
         until = time.monotonic() + 3
         while time.monotonic() < until:
-            state = subprocess.run(["ps", "-p", str(pid), "-o", "stat="], capture_output=True).stdout.strip()
+            if sys.platform == 'linux':
+                try:
+                    state = Path(f'/proc/{pid}/stat').read_bytes().rsplit(b')', 1)[1].split()[0]
+                except FileNotFoundError:
+                    return
+            else:
+                state = subprocess.run(["ps", "-p", str(pid), "-o", "stat="], capture_output=True).stdout.strip()
             if not state or state.startswith(b"Z"):
                 return
             time.sleep(0.025)

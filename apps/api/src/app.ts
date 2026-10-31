@@ -40,6 +40,7 @@ export interface ApiAppDependencies {
   /** MCP resource, discovery documents and upload transport, mounted at `/` outside the first-party chain. */
   mcp: AnyRoutes;
   progressSocket: AnyRoutes;
+  execution: AnyRoutes;
   /** Reserved staff area at `/api/admin`; ships no operations. */
   admin: AdminDependencies;
 }
@@ -90,6 +91,7 @@ export function createApiApp(deps: ApiAppDependencies): Hono<ApiEnv> {
   app.route("/api/v1", deps.rest);
   app.route("/", deps.mcp);
   app.route("/api", deps.progressSocket);
+  app.route("/api", deps.execution);
 
   const firstParty = new Hono<ApiEnv>();
   firstParty.use("*", firstPartyCors({ allowedOrigins: config.corsAllowedOrigins }));

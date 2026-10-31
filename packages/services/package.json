@@ -350,6 +350,14 @@
       "types": "./src/transcription-admission.ts",
       "default": "./src/transcription-admission.ts"
     },
+    "./transcription-control": {
+      "types": "./src/transcription-control.ts",
+      "default": "./src/transcription-control.ts"
+    },
+    "./transcription-control-runtime": {
+      "types": "./src/transcription-control-runtime.ts",
+      "default": "./src/transcription-control-runtime.ts"
+    },
     "./transcription-provider": {
       "types": "./src/transcription-provider.ts",
       "default": "./src/transcription-provider.ts"
@@ -457,6 +465,10 @@
     "./modal-bridge": {
       "types": "./src/modal-bridge.ts",
       "default": "./src/modal-bridge.ts"
+    },
+    "./modal-dispatch": {
+      "types": "./src/modal-dispatch.ts",
+      "default": "./src/modal-dispatch.ts"
     },
     "./language-probe-contract": {
       "types": "./src/language-probe-contract.ts",

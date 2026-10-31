@@ -16,10 +16,11 @@ export function scribeConcurrencyUnits(durationSeconds: number): number {
 }
 
 export type TranscriptionAdmissionResult =
-  | { kind: "begun"; intent: ProviderSubmissionIntent; dispatchIds: string[] }
+  | { kind: "begun"; intent: ProviderSubmissionIntent; languageCode: string | null; dispatchIds: string[] }
   | { kind: "already_waiting"; intent: ProviderSubmissionIntent; dispatchIds: string[] }
   | { kind: "capacity_wait" | "retry_wait"; dueAt: Date; dispatchIds: string[] }
   | { kind: "audio_pending" | "superseded"; dispatchIds: string[] }
+  | { kind: "completed"; dispatchIds: string[] }
   | { kind: "terminal"; disposition: ExecutionDisposition; dispatchIds: string[] };
 
 async function clock(tx: Tx): Promise<Date> {
@@ -134,6 +135,8 @@ export function createTranscriptionAdmission(input: { database: PrismaClient; wo
           return { kind: "retry_wait", dueAt: run.leaseExpiresAt, dispatchIds: [] };
         }
         if (run.nextAttemptAt && run.nextAttemptAt > now && run.errorCode !== SCRIBE_CAPACITY_WAIT) return { kind: "retry_wait", dueAt: run.nextAttemptAt, dispatchIds: [] };
+        const plan = await input.workflow.completeTranscriptionPlanWithinTransaction(tx, locked.ref);
+        if (plan.kind === "completed") { await flushWorkspaceEvents(tx); return plan; }
         const transcript = await tx.transcript.findUnique({ where: { projectId: run.projectId }, include: { sourceAudio: true } });
         const audio = transcript?.sourceAudio;
         if (!audio) return { kind: "audio_pending", dispatchIds: [] };
@@ -155,7 +158,7 @@ export function createTranscriptionAdmission(input: { database: PrismaClient; wo
         const intent = await input.workflow.beginProviderControlWithinTransaction(tx, locked.ref, { reference, attemptToken: prospectiveToken, owner: invocation.owner,
           now: activeNow, leaseExpiresAt, operationDeadlineAt, functionName: "stt" });
         await flushWorkspaceEvents(tx);
-        return { kind: "begun", intent, dispatchIds: intent.dispatchIds };
+        return { kind: "begun", intent, languageCode: plan.languageCode, dispatchIds: intent.dispatchIds };
       }, { maxWait: 10_000, timeout: 30_000 });
     },
   };

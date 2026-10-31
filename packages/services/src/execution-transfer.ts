@@ -208,7 +208,7 @@ export function createExecutionTransfer(options: Options) {
     const input = prepared.input.kind === "inline" ? prepared.input : await (async () => {
       if (!authority.input) throw new ExecutorControlError("storage_unavailable");
       const frozen = { storageKey: authority.input.storageKey, etag: authority.input.etag, byteLength: Number(authority.input.byteLength) };
-      return { kind: "object" as const, ...frozen, ...wireGrant(await options.storage.signInput(frozen, authority)) };
+      return { kind: "object" as const, ...frozen, sha256: authority.input.sha256, ...wireGrant(await options.storage.signInput(frozen, authority)) };
     })();
     const sources = await Promise.all(prepared.sources.slice(0, 16).map(async source => ({ ...source, ...wireGrant(await options.storage.signSource(source, authority)) })));
     return executionTransferDispositionSchema.parse({ disposition: "work_package", functionName: executionMediaFunctionSchema.parse(authority.functionName), inputHash: authority.fence.reference.inputHash, input, sources, outputs });
