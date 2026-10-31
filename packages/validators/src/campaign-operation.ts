@@ -7,9 +7,8 @@ import {
 } from "./timed-edits";
 import { applySceneTemplateSchema } from "./scene-template";
 
-// The worker materializes every input plus the ZIP on one volume, and R2's
-// single-part publication copy is limited to 5 GiB. Four GiB leaves room for
-// the manifest and ZIP metadata while keeping disk use predictable.
+// The aggregate source cap for an Export Bundle. Native archiving streams
+// frozen inputs into one ZIP, with separately bounded manifest/ZIP overhead.
 export const MAX_EXPORT_BUNDLE_INPUT_BYTES = 4 * 1024 * 1024 * 1024;
 export const CAMPAIGN_SELECTION_LIMIT = 100;
 export const CAMPAIGN_OPERATION_ITEM_CONCURRENCY = 1;

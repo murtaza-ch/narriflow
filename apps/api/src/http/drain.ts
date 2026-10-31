@@ -30,10 +30,12 @@ export const DRAIN_RETRY_AFTER_SECONDS = 5;
  */
 export function drainGate(options: {
   isDraining(): boolean;
+  isFenced?(): boolean;
   refusalHeaders?: (request: Request) => Record<string, string>;
 }): MiddlewareHandler<ApiEnv> {
   return async (c, next) => {
-    if (!options.isDraining() || continuesAcceptedWork(c.req.method,new URL(c.req.url).pathname)) {
+    const path = new URL(c.req.url).pathname;
+    if (options.isFenced?.() ? c.req.method === "GET" && path === "/api/health" : !options.isDraining() || continuesAcceptedWork(c.req.method,path)) {
       await next();
       return;
     }

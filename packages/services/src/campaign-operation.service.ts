@@ -1329,7 +1329,8 @@ export class CampaignOperationService {
         admitted = await this.admitExportBundleWithHandoff(admissionInput, async (tx, run) => {
           const owned = await tx.campaignOperation.updateMany({ where: { id: operation.id, status: "running", claimToken: operationClaimToken, leaseExpiresAt: { gt: new Date() } }, data: { workflowRunId: run.id, staleCount: excluded.filter((item) => item.code === "campaign_clip_stale").length, ineligibleCount: excluded.filter((item) => item.code !== "campaign_clip_stale").length, claimToken: null, leaseExpiresAt: null } });
           assertCampaignClaim(owned.count, operation.id);
-          await tx.exportBundle.create({ data: { operationId: operation.id, workflowRunId: run.id, manifest: manifest as Prisma.InputJsonValue, expiresAt } });
+          const accepted = await tx.workflowRun.findUniqueOrThrow({ where: { id: run.id }, select: { deploymentEpoch: true } });
+          await tx.exportBundle.create({ data: { operationId: operation.id, workflowRunId: run.id, deploymentEpoch: accepted.deploymentEpoch, manifest: manifest as Prisma.InputJsonValue, expiresAt } });
           return null;
         });
       } else {
@@ -1337,7 +1338,8 @@ export class CampaignOperationService {
         await prisma.$transaction(async (tx) => {
           const owned = await tx.campaignOperation.updateMany({ where: { id: operation.id, status: "running", claimToken: operationClaimToken, leaseExpiresAt: { gt: new Date() } }, data: { workflowRunId: admitted.id, staleCount: excluded.filter((item) => item.code === "campaign_clip_stale").length, ineligibleCount: excluded.filter((item) => item.code !== "campaign_clip_stale").length, claimToken: null, leaseExpiresAt: null } });
           assertCampaignClaim(owned.count, operation.id);
-          await tx.exportBundle.create({ data: { operationId: operation.id, workflowRunId: admitted.id, manifest: manifest as Prisma.InputJsonValue, expiresAt } });
+          const accepted = await tx.workflowRun.findUniqueOrThrow({ where: { id: admitted.id }, select: { deploymentEpoch: true } });
+          await tx.exportBundle.create({ data: { operationId: operation.id, workflowRunId: admitted.id, deploymentEpoch: accepted.deploymentEpoch, manifest: manifest as Prisma.InputJsonValue, expiresAt } });
         });
       }
       return { operationId: operation.id, workflowRunId: admitted.id, manifest, replayed: false };

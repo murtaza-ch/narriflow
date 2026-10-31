@@ -1,6 +1,7 @@
 import type { Prisma } from "@prisma/client";
 import { deriveClipExportAggregate } from "./clip-export-aggregate";
 import { queueExportFinished } from "./operation-finished";
+import { appendPublicationExportWake } from "./publication-producers";
 
 /** The caller flushes Workspace Events last, in the same transaction. */
 export async function syncClipExportAggregate(tx: Prisma.TransactionClient, exportId: string): Promise<ReturnType<typeof deriveClipExportAggregate>> {
@@ -8,7 +9,7 @@ export async function syncClipExportAggregate(tx: Prisma.TransactionClient, expo
   await tx.$queryRaw`SELECT "id" FROM "ClipExport" WHERE "id" = ${exportId}::uuid FOR UPDATE`;
   const variants = await tx.clipExportVariant.findMany({
     where: { exportId },
-    select: { status: true, errorCode: true },
+    select: { id: true, status: true, errorCode: true },
   });
   const aggregate = deriveClipExportAggregate(variants.map((variant) => variant.status));
   await tx.clipExport.update({
@@ -20,6 +21,7 @@ export async function syncClipExportAggregate(tx: Prisma.TransactionClient, expo
       completedAt: aggregate.terminal ? new Date() : null,
     },
   });
+  for (const variant of variants) await appendPublicationExportWake(tx,variant.id);
   if (aggregate.terminal) await queueExportFinished(tx, exportId);
   return aggregate;
 }

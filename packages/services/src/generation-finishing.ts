@@ -1,5 +1,5 @@
-import { randomUUID } from "node:crypto";
-import { Prisma, type PrismaClient } from "@prisma/client";
+import { createHash, randomUUID } from "node:crypto";
+import { Prisma, type PrismaClient, type GenerationFinishing } from "@prisma/client";
 import {
   clipExportDurationSec,
   finishingPicksSchema,
@@ -24,6 +24,11 @@ import { rankClips, readAppliedGuidance } from "./performance-guidance";
 import { accessibleProjectWhere } from "./project-access";
 import { uuidV5 } from "./uuid-v5";
 import { flushWorkspaceEvents, queueWorkspaceEvent } from "./workspace-event";
+import { readExecutionAdmission } from "./execution-admission";
+import { appendExecutionDispatch, readExecutionDispatch } from "./execution-dispatch";
+import { collectExecutionDispatch } from "./execution-dispatch-runtime";
+import { executionDispatchReferenceSchema, type ExecutionDispatchReference } from "@narriflow/validators/execution";
+import { lockWorkspaceUsage } from "./processing-usage";
 
 /** Finishing: after a generation completes, export its best clips and write
  * assisted copy as the person who asked, then leave the Project ready to
@@ -69,6 +74,40 @@ export const FINISHING_MAX_ATTEMPTS = 5;
 /** How often a clip edited mid-run is exported again at its new revision. */
 const MAX_REVISION_RETRIES = 3;
 
+async function finishingNow(tx: Tx): Promise<Date> {
+  const [clock] = await tx.$queryRaw<Array<{ now: Date }>>`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS "now"`;
+  if (!clock) throw Error("finishing_clock_unavailable");
+  return clock.now;
+}
+function finishingInputHash(row: GenerationFinishing) {
+  return createHash("sha256").update(JSON.stringify(["generation-finishing-v1", row.id, row.deploymentEpoch, row.generation,
+    row.originRunId, row.actorUserId, row.settings, row.autopilotRuleId, row.autopilotAuthority, row.dueAt?.toISOString(), row.operationDeadlineAt?.toISOString()])).digest("hex");
+}
+async function appendFinishing(tx: Tx, row: GenerationFinishing, deadline?: { kind: "lease" | "operation"; at: Date }) {
+  if (row.generation < 1 || !row.dueAt || !row.operationDeadlineAt) throw Error("finishing_obligation_invalid");
+  const record = await appendExecutionDispatch(tx, { deploymentEpoch: row.deploymentEpoch, generation: row.generation,
+    kind: "operation_driver", subject: { kind: "generation_finishing", id: row.id }, inputHash: finishingInputHash(row),
+    dueAt: deadline?.at ?? row.nextAttemptAt ?? row.dueAt,
+    ...(deadline ? { deadlineKind: deadline.kind, observedDeadlineAt: deadline.at } : {}) });
+  collectExecutionDispatch(tx, record.reference.dispatchId);
+  return record.reference;
+}
+
+/** A generation's settlement commits its exact finishing wake and deadline.
+ * Replays only repair the existing reference; they never grant a fresh budget. */
+export async function queueGenerationFinishing(tx: Tx, id: string): Promise<ExecutionDispatchReference | null> {
+  const { epoch } = await readExecutionAdmission(tx);
+  await tx.$queryRaw`SELECT id FROM "GenerationFinishing" WHERE id=${id}::uuid FOR UPDATE`;
+  let row = await tx.generationFinishing.findUnique({ where: { id } });
+  if (!row || row.deploymentEpoch !== epoch || ["waiting", "ready", "partial", "skipped"].includes(row.state)) return null;
+  if (row.generation === 0) {
+    const now = await finishingNow(tx), dueAt = row.dueAt ?? now;
+    row = await tx.generationFinishing.update({ where: { id }, data: { generation: 1, dueAt,
+      operationDeadlineAt: new Date(dueAt.getTime() + FINISHING_MAX_WAIT_MS) } });
+  }
+  return appendFinishing(tx, row);
+}
+
 // --- Transaction helpers --------------------------------------------------
 
 /** Two frozen settings ask for the same finishing when only the order of their
@@ -94,9 +133,11 @@ export async function freezeGenerationFinishing(tx: Tx, input: {
   /** The Autopilot rule whose import asked for this finishing, from its Content Pack. Only the
    * import sets it; Standing Grants cover finishing by it and by nothing else. */
   autopilotRuleId?: string | null;
+  autopilotAuthority?: Prisma.JsonValue;
   /** The generation's own default, used when the settings name no format. */
   defaultAspectRatio: ClipAspectRatio;
 }): Promise<{ created: boolean; matches: boolean; ended: boolean }> {
+  const { epoch } = await readExecutionAdmission(tx);
   const origin = await tx.workflowRun.findUnique({ where: { id: input.originRunId }, select: { stage: true, projectId: true } });
   // Only a speech-to-text run is a generation's origin; any other run never transitions.
   if (!origin || origin.stage !== "stt" || origin.projectId !== input.projectId) {
@@ -106,11 +147,13 @@ export async function freezeGenerationFinishing(tx: Tx, input: {
   const created = await tx.generationFinishing.createMany({
     data: [{
       workspaceId: input.workspaceId,
+      deploymentEpoch: epoch,
       projectId: input.projectId,
       originRunId: input.originRunId,
       actorUserId: input.actorUserId,
       settings: settings as Prisma.InputJsonValue,
       autopilotRuleId: input.autopilotRuleId ?? null,
+      autopilotAuthority: input.autopilotAuthority ?? Prisma.DbNull,
     }],
     skipDuplicates: true,
   });
@@ -129,11 +172,14 @@ type FinishedGenerationState = Exclude<OperationState, "working">;
  * partial generation makes finishing due; a failed or cancelled one skips it.
  * A plain update of this table's own row (never the Workspace counter), with
  * the skip's event queued for the transaction's flush. */
-export async function transitionGenerationFinishing(tx: Tx, originRunId: string, state: FinishedGenerationState, now = new Date()): Promise<void> {
+export async function transitionGenerationFinishing(tx: Tx, originRunId: string, state: FinishedGenerationState, _now?: Date): Promise<void> {
   const row = await tx.generationFinishing.findUnique({ where: { originRunId }, select: { id: true, workspaceId: true, projectId: true, state: true } });
-  if (!row || row.state !== "waiting") return;
+  if (!row) return;
+  if (row.state !== "waiting") { await queueGenerationFinishing(tx,row.id); return; }
+  const now = await finishingNow(tx);
   if (state === "completed" || state === "partial") {
     await tx.generationFinishing.updateMany({ where: { id: row.id, state: "waiting" }, data: { state: "due", dueAt: now } });
+    await queueGenerationFinishing(tx,row.id);
     return;
   }
   const reason: FinishingReason = state === "cancelled" ? "generation_cancelled" : "generation_failed";
@@ -181,10 +227,12 @@ interface ClaimedRow {
   attempts: number;
   dueAt: Date | null;
   claimToken: string;
+  reference?: ExecutionDispatchReference;
 }
 
 export interface GenerationFinishingDependencies {
   prisma: PrismaClient;
+  register?(ids: readonly string[]): Promise<void>;
   now?: () => Date;
   /** Throws when the person has lost access; returns the Workspace's plan. */
   requireActor(userId: string, workspaceId: string): Promise<{ pricingTier: string }>;
@@ -253,6 +301,73 @@ export function createGenerationFinishing(deps: GenerationFinishingDependencies)
   const { prisma } = deps;
   const now = () => deps.now?.() ?? new Date();
 
+  async function register(ids: readonly string[]) {
+    if (!ids.length) return;
+    if (!deps.register) throw Error("finishing_scheduler_unavailable");
+    await deps.register(ids);
+  }
+  async function current(tx: Tx, reference: ExecutionDispatchReference, claimToken?: string) {
+    if (reference.kind !== "operation_driver" || reference.subject.kind !== "generation_finishing") return null;
+    const admission = await readExecutionAdmission(tx);
+    const record = await readExecutionDispatch(tx,reference.dispatchId);
+    if (admission.epoch !== reference.deploymentEpoch || !record || JSON.stringify(record.reference) !== JSON.stringify(reference)) return null;
+    const initial = await tx.generationFinishing.findUnique({ where: { id: reference.subject.id } });
+    if (!initial) return null;
+    await lockWorkspaceUsage(tx,initial.workspaceId);
+    await tx.$queryRaw`SELECT id FROM "Project" WHERE id=${initial.projectId}::uuid FOR UPDATE`;
+    await tx.$queryRaw`SELECT id FROM "GenerationFinishing" WHERE id=${initial.id}::uuid FOR UPDATE`;
+    const clock = await finishingNow(tx);
+    const row = await tx.generationFinishing.findUniqueOrThrow({ where: { id: initial.id } });
+    const project = await tx.project.findFirst({ where: { id: row.projectId, ...accessibleProjectWhere(clock), workspace: { status: "active" } }, select: { id: true } });
+    if (!project || row.deploymentEpoch !== reference.deploymentEpoch || row.generation !== reference.generation || finishingInputHash(row) !== reference.inputHash) return null;
+    if (claimToken && (row.state !== "running" || row.claimToken !== claimToken || !row.leaseExpiresAt || row.leaseExpiresAt <= clock || !row.operationDeadlineAt || row.operationDeadlineAt <= clock)) return null;
+    return { row, clock, record };
+  }
+
+  async function runReference(value: ExecutionDispatchReference): Promise<{ kind: "complete" | "superseded" } | { kind: "sleep" | "wait"; dueAt: Date }> {
+    const reference = executionDispatchReferenceSchema.parse(value);
+    const prepared = await prisma.$transaction(async tx => {
+      const state = await current(tx,reference);
+      if (!state) return { kind: "superseded" as const };
+      const { row, clock, record } = state;
+      if (["ready", "partial", "skipped"].includes(row.state)) return { kind: "complete" as const };
+      if (record.observedDeadlineAt && record.observedDeadlineAt > clock) return { kind: "sleep" as const, dueAt: record.observedDeadlineAt };
+      if (!row.operationDeadlineAt || row.operationDeadlineAt <= clock || row.attempts >= FINISHING_MAX_ATTEMPTS) {
+        const picks = finishingPicksSchema.catch([]).parse(row.picks ?? []);
+        const finalState = picks.some(pick => pick.exportId) ? "partial" as const : "skipped" as const;
+        await tx.generationFinishing.update({ where: { id: row.id }, data: { state: finalState, reason: "finishing_failed", finishedAt: clock, claimToken: null, leaseExpiresAt: null, nextAttemptAt: null } });
+        const exports = await tx.clipExport.findMany({ where: { id: { in: picks.flatMap(pick => pick.exportId ? [pick.exportId] : []) }, status: { in: ["ready", "partial_ready"] } }, select: { id: true } });
+        queueFinishingFinished(tx,{ ...row, state: finalState, reason: "finishing_failed", exportIds: exports.map(item => item.id) });
+        await flushWorkspaceEvents(tx);
+        return { kind: "complete" as const };
+      }
+      if (row.state === "running" && row.claimToken && row.leaseExpiresAt) {
+        if (row.leaseExpiresAt > clock) return { kind: "wait" as const, dueAt: row.leaseExpiresAt };
+        const next = await tx.generationFinishing.update({ where: { id: row.id }, data: { generation: { increment: 1 }, state: "due", attempts: { increment: 1 }, nextAttemptAt: clock, claimToken: null, leaseExpiresAt: null } });
+        return { kind: "advanced" as const, dispatchId: (await appendFinishing(tx,next)).dispatchId };
+      }
+      if (row.nextAttemptAt && row.nextAttemptAt > clock) return { kind: "sleep" as const, dueAt: row.nextAttemptAt };
+      const leaseExpiresAt = new Date(Math.min(clock.getTime()+FINISHING_LEASE_MS,row.operationDeadlineAt.getTime()));
+      const claimToken = randomUUID();
+      const claimed = await tx.generationFinishing.update({ where: { id: row.id }, data: { state: "running", claimToken, leaseExpiresAt } });
+      const watchdog = await appendFinishing(tx,claimed,{ kind: "lease", at: leaseExpiresAt });
+      return { kind: "claimed" as const, row: { ...claimed, claimToken, reference }, watchdogId: watchdog.dispatchId };
+    });
+    if (prepared.kind === "advanced") { await register([prepared.dispatchId]); return { kind: "complete" }; }
+    if (prepared.kind !== "claimed") return prepared;
+    try { await register([prepared.watchdogId]); }
+    catch (error) {
+      await prisma.$transaction(async tx => { const state = await current(tx,reference,prepared.row.claimToken); if (state) await tx.generationFinishing.update({ where: { id: state.row.id }, data: { state: "due", claimToken: null, leaseExpiresAt: null } }); });
+      throw error;
+    }
+    try { await run(prepared.row); }
+    catch (error) {
+      if (error instanceof ClaimLost) return { kind: "superseded" };
+      try { await fail(prepared.row,error); } catch (failure) { if (failure instanceof ClaimLost) return { kind: "superseded" }; throw failure; }
+    }
+    return { kind: "complete" };
+  }
+
   /** Rows parked while their exports render wake here, in one statement, once
    * every export is terminal or the wait ran out. A poll costs no claim, so
    * waiting rows never use up a batch that new work could use. */
@@ -289,6 +404,22 @@ export function createGenerationFinishing(deps: GenerationFinishingDependencies)
 
   /** Writes only while this claim still owns the row. */
   async function save(row: ClaimedRow, data: Prisma.GenerationFinishingUncheckedUpdateManyInput) {
+    if (row.reference) {
+      const ids = await prisma.$transaction(async tx => {
+        const state = await current(tx,row.reference!,row.claimToken);
+        if (!state) throw new ClaimLost();
+        const patched = await tx.generationFinishing.update({ where: { id: row.id }, data });
+        if (data.state === "due") {
+          const next = await tx.generationFinishing.update({ where: { id: row.id }, data: { generation: { increment: 1 } } });
+          return [(await appendFinishing(tx,next)).dispatchId];
+        }
+        if (data.state === "exporting") return [(await appendFinishing(tx,patched,{ kind: "operation", at: patched.operationDeadlineAt! })).dispatchId];
+        if (data.leaseExpiresAt instanceof Date) return [(await appendFinishing(tx,patched,{ kind: "lease", at: data.leaseExpiresAt })).dispatchId];
+        return [];
+      });
+      await register(ids);
+      return;
+    }
     const written = await prisma.generationFinishing.updateMany({ where: { id: row.id, state: "running", claimToken: row.claimToken }, data });
     if (written.count !== 1) throw new ClaimLost();
   }
@@ -307,6 +438,7 @@ export function createGenerationFinishing(deps: GenerationFinishingDependencies)
     const statuses = await exportStatuses(outcome.picks);
     const exportIds = outcome.picks.flatMap((pick) => (pick.exportId && !pick.exportError && EXPORT_USABLE.includes(statuses.get(pick.exportId) ?? "failed") ? [pick.exportId] : []));
     await prisma.$transaction(async (tx) => {
+      if (row.reference && !await current(tx,row.reference,row.claimToken)) throw new ClaimLost();
       const ended = await tx.generationFinishing.updateMany({
         where: { id: row.id, state: "running", claimToken: row.claimToken },
         data: { state: outcome.state, reason: outcome.reason, picks: outcome.picks as Prisma.InputJsonValue, finishedAt: now(), claimToken: null, leaseExpiresAt: null, nextAttemptAt: null },
@@ -543,6 +675,7 @@ export function createGenerationFinishing(deps: GenerationFinishingDependencies)
   }
 
   return {
+    run: runReference,
     /** Wakes rows whose exports finished, then claims and runs due rows, up to
      * `limit`. Returns how many it ran. */
     async processDue(limit = 3): Promise<number> {

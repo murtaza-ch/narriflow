@@ -72,6 +72,13 @@ ProjectProgress uses hibernating WebSockets with a one-use 30-second connect tic
 
 Publication wakeups bind the exact post schedule revision. Waking rechecks frozen export, editor, account, grant, cancellation and same-attempt provider identity. Pending or unknown acceptance reconciles that operation; unrecoverable unknown becomes Needs attention. It never blindly creates another post. Completion Callback and Webhook Subscription dispatches use the guarded `outbound_delivery` function. Each subscription advances its own cursor only after 2xx. Terminal transitions, Finishing, quota effects and follow-up admission remain transaction-owned.
 
+Dubbing records a paid provider intent before its one provider POST. An intent
+without a sealed result has status `unknown`, shown as "Dubbing outcome needs
+review". Its quota reservation stays counted. The same frozen tuple cannot
+automatically create another paid request. A deliberately repeated known failed
+request receives a new Clip Dub and reservation, preserving prior accounting and
+attempt history. The accepted Workflow Run remains the only execution owner.
+
 ## Failure state diagrams
 
 ```mermaid
@@ -136,3 +143,24 @@ in the same transaction; a lost acknowledgement replays those IDs rather than
 consuming another page. These receipts retain seven days. After that window an
 operator starts a fresh bounded pass or an explicit restore heal. Signed executor
 audiences cannot write these internal receipts.
+
+
+Restore supports only a quiesced, fenced snapshot. Before capture, the operator
+fences HTTP (health only), stops maintenance/cleanup and old consumers, advances
+the epoch without issuing new permissions, and drains issued storage mutations.
+The private proof binds the exact snapshot bytes, completed migration checksums,
+closed source epoch/fence time, schema, configured account/Worker version and
+stop/drain evidence. Capture and attestation happen before overwriting the live
+database; the restored database alone cannot reveal erased execution history.
+A higher live epoch than the attested source is a typed refusal. Arbitrary PITR
+with an execution tail requires future live-facts tooling and is not supported.
+
+A fresh restore validates that proof and fresh fenced health, then atomically
+closes/advances once and records its proof-bound `rs2` initial dispatch. Exact
+proof replay recovers that obligation; it never advances twice or reopens intake.
+Recovery keeps charged budgets, provider permissions/unknown outcomes, immutable
+history and absolute deadlines. Operator resume names one exact current dispatch,
+rechecks its registered lineage, captures Workflow descriptions before/after an
+explicit restart, and uses the committed page receipt for completed-instance heal.
+The [operator runbook](../runbooks/execution-restore.md) records the required
+quiescence steps and the still-open domain/platform acceptance boundary.

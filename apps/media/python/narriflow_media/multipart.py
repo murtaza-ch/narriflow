@@ -131,9 +131,12 @@ class SignedHttpTransport:
                     or parsed.fragment or len(grant.url) > 8192 or method not in {'GET', 'PUT'}
                     or not 0 <= max_response_bytes <= PART_SIZE_BYTES):
                 raise ValueError()
-            combined = dict(grant.headers)
-            for name, value in headers.items():
-                existing = _header(combined, name)
+            combined = {}
+            for name, value in [*grant.headers.items(), *headers.items()]:
+                if not isinstance(name, str):
+                    raise ValueError()
+                name = name.lower()
+                existing = combined.get(name)
                 if existing is not None and existing != value:
                     raise ValueError()
                 combined[name] = value

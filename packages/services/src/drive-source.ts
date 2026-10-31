@@ -28,7 +28,7 @@ async function fetchGoogleMetadata(raw: string | URL, init: RequestInit, options
   if(!["https://www.googleapis.com","https://oauth2.googleapis.com"].includes(url.origin))throw new DriveSourceError("drive_file_unavailable");
   const timeout=AbortSignal.timeout(METADATA_TIMEOUT_MS);
   const signal=options.signal?AbortSignal.any([options.signal,timeout]):timeout;
-  return (options.fetch??globalThis.fetch)(url,{...init,signal,redirect:"error",credentials:"omit"});
+  return (options.fetch??globalThis.fetch)(url,{...init,signal,redirect:"manual",credentials:"omit"});
 }
 
 

@@ -77,8 +77,14 @@ class NativeEntrypointTests(unittest.IsolatedAsyncioTestCase):
     async def test_a_lost_control_ack_cannot_become_a_second_mutation(self):
         invocation, client, state, calls = self.fixture()
         async def operation(*args): raise ExecutionControlError("execution_transport_unavailable")
-        self.assertEqual(await invoke_native(invocation, "asset_validation", client=client, operation=operation,
-            max_operation_seconds=600), {"disposition": "unconfirmed"})
+        with self.assertLogs("narriflow_media.entrypoint", level="WARNING") as logs:
+            self.assertEqual(await invoke_native(invocation, "asset_validation", client=client, operation=operation,
+                max_operation_seconds=600), {"disposition": "unconfirmed"})
+        record = json.loads(logs.records[0].getMessage())
+        self.assertEqual(record, {"level": "warn", "message": "native_control_unconfirmed",
+            "functionName": "asset_validation", "stage": "operation",
+            "errorCode": "execution_transport_unavailable", "status": None})
+        self.assertNotIn(invocation["attemptToken"], logs.output[0])
         self.assertEqual([call["action"] for call in calls], ["acquire", "work-package", "read-disposition"])
 
     async def test_unexpected_failures_export_only_a_fixed_code(self):

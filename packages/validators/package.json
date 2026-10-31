@@ -10,6 +10,7 @@
       "types": "./src/index.ts",
       "default": "./src/index.ts"
     },
+    "./execution-snapshot": "./src/execution-snapshot.ts",
     "./execution": {
       "types": "./src/execution.ts",
       "default": "./src/execution.ts"
@@ -55,6 +56,10 @@
     "./render-execution": {
       "types": "./src/render-execution.ts",
       "default": "./src/render-execution.ts"
+    },
+    "./export-bundle-execution": {
+      "types": "./src/export-bundle-execution.ts",
+      "default": "./src/export-bundle-execution.ts"
     },
     "./publication-input": "./src/publication-input.ts"
   },

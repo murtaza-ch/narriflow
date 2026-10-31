@@ -14,6 +14,30 @@ from narriflow_media.multipart import CompletedObject, MultipartDestination, Mul
 
 
 class NativeMultipartTests(unittest.IsolatedAsyncioTestCase):
+    async def test_signed_headers_merge_case_insensitively_on_the_actual_http_request(self):
+        received = []
+        class Storage(BaseHTTPRequestHandler):
+            def log_message(self, *_args): pass
+            def do_GET(self):
+                received.append((self.headers.get_all('If-Match'), self.headers.get_all('Range')))
+                self.send_response(206); self.send_header('Content-Length', '3'); self.end_headers()
+                self.wfile.write(b'abc')
+        server = ThreadingHTTPServer(('127.0.0.1', 0), Storage)
+        thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+        try:
+            grant = SignedGrant(f'http://127.0.0.1:{server.server_port}/assigned',
+                {'If-Match': '"source"', 'Range': 'bytes=0-2'})
+            result = await SignedHttpTransport(allow_loopback_http=True).request(grant, 'GET', None,
+                {'if-match': '"source"', 'range': 'bytes=0-2'}, 3, lambda: False)
+            self.assertEqual(result.status, 206)
+            self.assertEqual(received, [(['"source"'], ['bytes=0-2'])])
+            with self.assertRaisesRegex(MultipartTransferError, 'multipart_grant_invalid'):
+                await SignedHttpTransport(allow_loopback_http=True).request(grant, 'GET', None,
+                    {'IF-MATCH': '"different"'}, 3, lambda: False)
+            self.assertEqual(len(received), 1)
+        finally:
+            server.shutdown(); server.server_close(); thread.join(2)
+
     async def test_cancellation_interrupts_a_stalled_response_when_the_server_closes_connections(self):
         requested, release, cancelled = threading.Event(), threading.Event(), threading.Event()
         class Storage(BaseHTTPRequestHandler):

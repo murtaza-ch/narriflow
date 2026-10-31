@@ -6,6 +6,7 @@ export const dubStatusSchema = z.enum([
   "processing",
   "completed",
   "failed",
+  "unknown",
 ]);
 
 export const dubVoiceSchema = z
