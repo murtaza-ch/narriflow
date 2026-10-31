@@ -223,12 +223,20 @@ export function workflowDomainRegistry(bindings: ApiWorkerBindings): WorkflowHan
   const maintenance: WorkflowCommandHandler = async ({ reference }) => {
     if (isPublicationObservationReference(reference)) {
       const result = await getPublicationObservations().dispatch(reference);
+      if (result.kind === "sleep") {
+        if (!result.dueAt) throw Error("publication_observation_due_missing");
+        return { type: "sleep", until: result.dueAt.toISOString() };
+      }
       return { type: "complete", disposition: result.kind === "superseded" ? "superseded" : "terminal" };
     }
     if (isPublicationProducerReference(reference)) {
       const database=getPrismaClient();
       if (!database) throw Error("Publication producer requires a database scope");
       const result=await createPublicationProducers({database,register:deliverExecutionDispatches}).dispatch(reference);
+      if (result.kind === "sleep") {
+        if (!result.dueAt) throw Error("publication_producer_due_missing");
+        return {type:"sleep",until:result.dueAt.toISOString()};
+      }
       return {type:"complete",disposition:result.kind==="superseded"?"superseded":"terminal"};
     }
     if (!reference.subject.id.startsWith("mc1.")) throw new NonRetryableError("unsupported_maintenance_subject");
