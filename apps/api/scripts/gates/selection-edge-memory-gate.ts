@@ -9,7 +9,7 @@ import { createSelectionMemoryControl, type SelectionMemoryMetadata } from "./se
 export async function runSelectionEdgeMemoryGate(storage: ClipSelectionStorage, remove: (keys: readonly string[]) => Promise<void>) {
   const capsule = await createSyntheticSelectionCapsule(), input = await encodeClipSelectionInput(capsule), plan = buildClipSelectionPlan(capsule.planning);
   if (plan.kind !== "selection" || plan.windows.length !== 6) throw new Error("selection_edge_gate_fixture_invalid");
-  const keys = new Set<string>(), inputKey = `projects/${capsule.parent.projectId}/selection/${capsule.parent.id}/${input.sha256}.json`;
+  const keys = new Set<string>(), inputKey = `projects/${capsule.parent.projectId}/selection/${capsule.parent.id}/${crypto.randomUUID()}/${input.sha256}.json`;
   const tracked: ClipSelectionStorage = { read: reference => storage.read(reference), async write(key, bytes) { keys.add(key); return storage.write(key, bytes); } };
   try {
     const stored = await writeClipSelectionObject(tracked, inputKey, input);

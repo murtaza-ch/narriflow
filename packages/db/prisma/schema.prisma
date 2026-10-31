@@ -3588,6 +3588,7 @@ model ClipSelectionWindow {
   @@index([status, retryAt])
   @@index([status, leaseExpiresAt])
   @@index([status, operationDeadlineAt])
+  @@index([inputStorageKey, operationDeadlineAt(sort: Desc)])
   @@index([projectId, deploymentEpoch, status, id])
 }
 

@@ -5,7 +5,7 @@ import { buildClipSelectionPlan, finalizeClipSelectionCandidates } from "./clip-
 import { CLIP_DETECTION_JSON_SCHEMA, normalizeLlmClip } from "./clip-selection-policy";
 import type { ClipSelectionProviderResult } from "./clip-selection-provider";
 import { writeClipSelectionObject, type ClipSelectionStorage, type createClipSelectionPreparation } from "./clip-selection-preparation";
-import { clipSelectionWindowResultKey, type createClipSelectionLifecycle, type ClipSelectionWindowAdmission, type ClipSelectionWindowSettlement } from "./clip-selection-window";
+import { type createClipSelectionLifecycle, type ClipSelectionWindowAdmission, type ClipSelectionWindowSettlement } from "./clip-selection-window";
 import { WorkflowFailure } from "./workflow-attempt-contract";
 import { buildDetectedClipRows } from "./clip-detection-persistence";
 import type { WorkflowRunLifecycle } from "./workflow-run-lifecycle";
@@ -130,7 +130,8 @@ export function createClipSelectionControl(ports: ClipSelectionControlPorts) {
         if (result.kind === "retry") settlement = await ports.lifecycle.retry(admission.attempt, { code: result.code, dueAt: result.dueAt });
         else {
           const encoded = await encodeClipSelectionResult({ parentId: metadata.parent.id, parentGeneration: metadata.parent.generation, selectionHash: metadata.selectionHash, windowIndex: metadata.windowIndex }, result.content, result);
-          const stored = await writeClipSelectionObject(ports.storage, clipSelectionWindowResultKey(admission.attempt, encoded.sha256), encoded);
+          const planned = await ports.lifecycle.planResultWrite(admission.attempt, encoded.sha256);
+          const stored = await writeClipSelectionObject(ports.storage, planned.storageKey, encoded);
           settlement = await ports.lifecycle.complete(admission.attempt, { ...stored, tokensUsed: result.tokensUsed, providerRequestId: result.providerRequestId });
         }
       } catch (error) {

@@ -155,6 +155,17 @@ suite("Clip Preparation authority and publication", () => {
     expect(await f.service.admitForGroup(f.references[0]!)).toEqual(a);
     expect(f.writes()).toBe(writes);
   });
+  test("a preparation capsule already claimed for deletion cannot be adopted and a retry uses a new key", async () => {
+    const f = await fixture();
+    f.afterWrite(async () => { await db.mediaCleanupObligation.updateMany({ where: { projectId: f.project.id, origin: "clip_preparation_input" }, data: { claimId: crypto.randomUUID(), claimExpiresAt: new Date(Date.now() + 60000) } }); });
+    await expect(f.service.admitForGroup(f.references[0]!)).rejects.toMatchObject({ code: "execution_object_deletion_admitted" });
+    expect(await db.clipPreparation.count({ where: { clipId: f.clip.id } })).toBe(0);
+    f.afterWrite(async () => {});
+    const admitted = await f.service.admitForGroup(f.references[0]!);
+    expect(f.objects.size).toBe(2);
+    const row = await db.clipPreparation.findUniqueOrThrow({ where: { id: admitted.preparationId } });
+    expect(row.inputStorageKey).not.toBe([...f.objects.keys()][0]);
+  });
 
   test("preparation provenance cannot pair another Project with this Clip", async () => {
     const f = await fixture();
@@ -380,6 +391,21 @@ suite("Clip Preparation authority and publication", () => {
     expect(await service.prepareExecution(reference)).toEqual(results[0]);
     expect(f.objects.size).toBe(writes);
     expect(await db.workflowRun.findUniqueOrThrow({ where: { id: f.run.id } })).toMatchObject({ status: "waiting", attemptId: null, leaseOwner: null, attemptCount: 0 });
+  });
+  test("render input adoption rejects another group's key and a key granted to cleanup", async () => {
+    const f = await fixture(), execution = await native(f);
+    await execution.send(execution.commit(execution.preview)); await execution.send(execution.commit(execution.peaks)); await execution.send(execution.commit(execution.manifest));
+    const reference = f.references[0]!, domain = renderService(f).domain;
+    const tuple = { storageKey: `projects/${f.project.id}/render-groups/${f.references[1]!.subject.id}/${crypto.randomUUID()}.json`, etag: '"input"', byteLength: 2,
+      sha256: "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a" };
+    await expect(domain.adoptInput(reference, execution.admitted.preparationId, tuple)).rejects.toThrow("render_input_invalid");
+    const storageKey = await domain.planInputWrite(reference, execution.admitted.preparationId);
+    await db.mediaCleanupObligation.updateMany({ where: { objectKey: storageKey }, data: { claimId: crypto.randomUUID(), claimExpiresAt: new Date(Date.now() + 60000) } });
+    await expect(domain.adoptInput(reference, execution.admitted.preparationId, { ...tuple, storageKey })).rejects.toMatchObject({ code: "execution_object_deletion_admitted" });
+    expect((await db.renderGroup.findUniqueOrThrow({ where: { id: reference.subject.id } })).inputStorageKey).toBeNull();
+    const next = await domain.planInputWrite(reference, execution.admitted.preparationId);
+    expect(next).not.toBe(storageKey);
+    expect(await domain.adoptInput(reference, execution.admitted.preparationId, { ...tuple, storageKey: next })).toEqual({ ...tuple, storageKey: next });
   });
 
   test("a failed preparation settles linked unstarted render members immediately without creating native history", async () => {

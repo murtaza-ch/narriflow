@@ -7,8 +7,8 @@ import { clipSelectionBytesHash } from "./clip-selection-input";
 import { WorkflowFailure } from "./workflow-attempt-contract";
 
 const uuid = "[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}";
-const inputKey = new RegExp(`^projects/${uuid}/selection/${uuid}/([a-f0-9]{64})\\.json$`);
-const resultKey = new RegExp(`^execution/[1-9][0-9]*/clip_selection_window/${uuid}/[1-9][0-9]*/(?:server|${uuid}/${uuid})/selection_window/([a-f0-9]{64})\\.json$`);
+const inputKey = new RegExp(`^projects/${uuid}/selection/${uuid}/${uuid}/([a-f0-9]{64})\\.json$`);
+const resultKey = new RegExp(`^execution/[1-9][0-9]*/clip_selection_window/${uuid}/[1-9][0-9]*/(?:server|${uuid}/${uuid})/selection_window/${uuid}/([a-f0-9]{64})\\.json$`);
 function failure(code: "selection_storage_reference_invalid" | "selection_storage_changed" | "selection_storage_unavailable") {
   return new WorkflowFailure(code, code === "selection_storage_unavailable" ? "retryable" : "permanent", code.replaceAll("_", " "));
 }

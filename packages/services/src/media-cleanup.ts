@@ -1,4 +1,5 @@
 import { publicationObjectIsHeld } from "./publication-cleanup";
+import { isSelectionExecutionObjectKey, selectionExecutionObjectRetainUntil } from "./execution-object-cleanup";
 import { generatedMediaObjectIsHeld } from "./generated-media-execution";
 import { readServiceEnvironment, type ServiceEnvironment } from "./runtime-environment";
 import { randomUUID } from "node:crypto";
@@ -18,6 +19,7 @@ export const MEDIA_CLEANUP_ORIGINS = [
   "upload_source_pinning",
   "upload_session_termination",
   "clip_preparation_input",
+  "selection_execution",
   "publication_execution",
 ] as const;
 export type MediaCleanupOrigin = (typeof MEDIA_CLEANUP_ORIGINS)[number];
@@ -773,10 +775,10 @@ export function createMediaCleanupWorker(input: {
             stopHeartbeat();
             await heartbeatInFlight;
             if (claimLost) throw new MediaCleanupClaimLost();
-            const settled = await input.store.complete({ id: claim.id, claimId: claim.claimId, now: now() });
+            const settled = await input.store.reschedule({ id: claim.id, claimId: claim.claimId, now: now(), nextAttemptAt: new Date(now().getTime() + 86_400_000), failureCode: "object_retained" });
             if (!settled) throw new MediaCleanupClaimLost();
-            completed += 1;
-            record({ phase: "settle", outcome: "completed", failureCode: "object_adopted" });
+            retried += 1;
+            record({ phase: "settle", outcome: "retry_scheduled", failureCode: "object_retained" });
             continue;
           }
           await input.storage.deleteExact(claim.objectKey, {
@@ -1117,7 +1119,10 @@ function productionMediaCleanupWorker() {
     },
   },
   config: mediaCleanupConfigFromEnv(),
-  retainUntil: claim => claim.cleanupClass === "execution_input" ? executionInputRetainUntil(requirePrisma(), claim.objectKey) : Promise.resolve(null),
+  retainUntil: claim => {
+    if (claim.cleanupClass !== "execution_input") return Promise.resolve(null);
+    return isSelectionExecutionObjectKey(claim.objectKey) ? selectionExecutionObjectRetainUntil(requirePrisma(), claim.objectKey) : executionInputRetainUntil(requirePrisma(), claim.objectKey);
+  },
   async isProtected(claim) {
     if(claim.cleanupClass === "publication_private")return publicationObjectIsHeld(requirePrisma(),claim.objectKey);
     if (claim.cleanupClass !== "generated_asset" && claim.cleanupClass !== "thumbnail_asset") return false;
