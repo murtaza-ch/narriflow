@@ -265,7 +265,7 @@ ALTER TABLE "ExecutionDispatch" ADD CONSTRAINT "ExecutionDispatch_reference_chec
   "generation" > 0 AND "deploymentEpoch" > 0 AND "inputHash" ~ '^[a-f0-9]{64}$'
   AND "subjectId" ~ '^[A-Za-z0-9][A-Za-z0-9._:-]*$'
   AND "kind" IN ('import_pipeline','render_run','operation_driver','maintenance','project_progress','local_fetch','modal_execution')
-  AND "subjectKind" IN ('ingest_job','workflow_run','render_group','clip_preparation','upload_session','social_publication','completion_callback','webhook_subscription','workspace_billing','autopilot_rule','generation_finishing','dubbing','export_bundle','generated_media','thumbnail_frame','library_index','notification','media_cleanup','workflow_event','workspace_event','standing_grant','pending_workspace','retention','maintenance')
+  AND "subjectKind" IN ('ingest_job','workflow_run','render_group','clip_preparation','upload_session','social_publication','completion_callback','webhook_subscription','workspace_billing','autopilot_rule','generation_finishing','dubbing','export_bundle','generated_media','thumbnail_frame','native_validation','library_index','notification','media_cleanup','workflow_event','workspace_event','standing_grant','pending_workspace','retention','maintenance')
   AND "deliveryAttempts" >= 0
   AND (("deliveryToken" IS NULL) = ("deliveryLeaseExpiresAt" IS NULL))
   AND NOT ("acknowledgedAt" IS NOT NULL AND "deadLetteredAt" IS NOT NULL)
