@@ -46,7 +46,7 @@ async function checkpointObject(database: Pick<Tx, "executionArtifact">, id: str
 }
 
 /** The accepted Workflow Run owns every lease, generation and charged start.
- * This metadata preparer is not registered until its typed native finalizer is installed. */
+ * Paid stages and final publication share its fresh authority. */
 export class DubbingExecution extends WorkflowRunLifecycle {
   constructor(private readonly database: PrismaClient, private readonly dubbingDependencies: Dependencies) {
     super({ prisma: database });
@@ -337,8 +337,7 @@ export class DubbingExecution extends WorkflowRunLifecycle {
   }
 }
 
-/** Internal checkpoint preparation. No API runtime or Modal function is wired
- * until every paid/result/expiry transition is implemented and verified. */
+/** Scoped transfer and typed artifact publication for the accepted Dub. */
 export function createDubbingExecution(options: { database: PrismaClient; domain: DubbingExecution; storage: ReturnType<typeof createExecutionStorage>;
   artifacts: { head(assignment: Readonly<ExecutionArtifact>): Promise<ExecutorArtifactHead | null>; readJson(artifact: ExecutorArtifactCommit, maxBytes: number): Promise<unknown> };
   deliverWakes(ids: readonly string[]): Promise<void> }) {
