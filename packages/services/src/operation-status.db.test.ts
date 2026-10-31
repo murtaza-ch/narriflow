@@ -1,3 +1,4 @@
+import { bindServiceTestEnvironment } from "./runtime-test-support";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { PrismaClient } from "@prisma/client";
@@ -18,15 +19,15 @@ db("Operation Status lineage", () => {
   let userId: string;
   let workspaceId: string;
   const reader = () => createOperationStatusReader(prisma);
-  beforeAll(async () => {
+  beforeAll(bindServiceTestEnvironment(async () => {
     if (!url || !schema || !/^integration_test_[a-z0-9_]+$/.test(schema)) throw new Error("Operation Status tests require a disposable schema");
     pool = new Pool({ connectionString: url, max: 5 });
     if ((await pool.query("SELECT current_schema() AS schema")).rows[0]?.schema !== schema) throw new Error("Wrong disposable schema");
     prisma = new PrismaClient({ adapter: new PrismaPg(pool, { schema }) });
     userId = (await prisma.user.create({ data: { clerkId: `operation-status:${randomUUID()}` } })).id;
     workspaceId = (await prisma.workspace.create({ data: { name: "Operation Status", ownerUserId: userId, pricingTier: "business", members: { create: { userId, role: "owner" } } } })).id;
-  });
-  afterAll(async () => { await prisma?.$disconnect(); await pool?.end(); });
+  }));
+  afterAll(bindServiceTestEnvironment(async () => { await prisma?.$disconnect(); await pool?.end(); }));
 
   async function project() {
     return prisma.project.create({ data: { workspaceId, createdByUserId: userId, title: "Lineage", sourceMediaUrl: "r2://source.mp4", ingestStatus: "ready" } });
@@ -37,7 +38,7 @@ db("Operation Status lineage", () => {
   }
   const read = (kind: "intake" | "generation" | "export", id: string) => reader().read({ workspaceId }, { kind, id });
 
-  test("a link intake reports import, then follows only the generation run it handed off to", async () => {
+  test("a link intake reports import, then follows only the generation run it handed off to", bindServiceTestEnvironment(async () => {
     const { id: projectId } = await project();
     const job = await prisma.ingestJob.create({ data: { projectId, jobType: "link_import", payload: {}, status: "running", claimId: randomUUID(), claimExpiresAt: new Date(Date.now() + 60_000), startedAt: new Date() } });
     expect(await read("intake", job.id)).toMatchObject({ state: "working", stage: "importing", results: { projectId } });
@@ -53,9 +54,9 @@ db("Operation Status lineage", () => {
 
     await prisma.workflowRun.update({ where: { id: handedOff.id }, data: { status: "failed", errorCode: "transcription_failed" } });
     expect(await read("intake", job.id)).toMatchObject({ state: "failed", failureCode: "transcription_failed" });
-  });
+  }));
 
-  test("an upload intake reports verification and pre-handoff failure before any Project exists", async () => {
+  test("an upload intake reports verification and pre-handoff failure before any Project exists", bindServiceTestEnvironment(async () => {
     const sessionId = randomUUID();
     const preallocatedProjectId = randomUUID();
     await prisma.uploadSession.create({ data: { id: sessionId, workspaceId, actorUserId: userId, clientIdempotencyKey: randomUUID(), immutableInputFingerprint: "fixture",
@@ -69,18 +70,18 @@ db("Operation Status lineage", () => {
     await prisma.uploadSession.update({ where: { id: sessionId }, data: { status: "queued_for_ingest", failureCode: null } });
     await expect(read("intake", sessionId)).rejects.toMatchObject({ code: "operation_not_found" });
     expect(await reader().readTrusted({ workspaceId }, { kind: "intake", id: sessionId })).toEqual({ kind: "intake", id: sessionId, state: "unavailable" });
-  });
+  }));
 
-  test("a handed-off intake whose generation run was deleted is unavailable", async () => {
+  test("a handed-off intake whose generation run was deleted is unavailable", bindServiceTestEnvironment(async () => {
     const { id: projectId } = await project();
     const run = await sttRun(projectId, "queued");
     const job = await prisma.ingestJob.create({ data: { projectId, jobType: "link_import", payload: {}, status: "completed", completedAt: new Date(), generationHandoffAt: new Date(), generationRunId: run.id } });
     expect(await read("intake", job.id)).toMatchObject({ state: "working", stage: "transcribing" });
     await prisma.workflowRun.delete({ where: { id: run.id } });
     expect(await reader().readTrusted({ workspaceId }, { kind: "intake", id: job.id })).toEqual({ kind: "intake", id: job.id, state: "unavailable" });
-  });
+  }));
 
-  test("an export reports mixed variants and a missing artifact per format", async () => {
+  test("an export reports mixed variants and a missing artifact per format", bindServiceTestEnvironment(async () => {
     const { id: projectId } = await project();
     const detection = await prisma.workflowRun.create({ data: { projectId, stage: "moment_detection", status: "completed", idempotencyKey: randomUUID() } });
     const clip = await prisma.clip.create({ data: { projectId, workflowRunId: detection.id, index: 0, startSec: 0, endSec: 30, hookText: "Hook", reasoning: "Test", category: "story",
@@ -95,7 +96,7 @@ db("Operation Status lineage", () => {
     const status = await read("export", exported.id);
     expect(status).toMatchObject({ state: "partial", results: { projectId, clipIds: [clip.id], exportId: exported.id } });
     expect(status.items.map((item) => [item.state, item.failureCode]).sort()).toEqual([["completed", null], ["failed", "export_file_missing"], ["failed", "render_failed"]]);
-  });
+  }));
 
   describe("a captioned video", () => {
     const probe = { durationSec: 8, video: { width: 1920, height: 1080, frameRate: { numerator: 24, denominator: 1 }, startTimecode: null }, audio: null };
@@ -123,7 +124,7 @@ db("Operation Status lineage", () => {
       prisma.clipExport.create({ data: { projectId, workspaceId, clipId, editorRevision: 0, fingerprint: randomUUID(), resolution: "1080p", watermark: false, status: status as never, progress: status === "ready" ? 100 : 20,
         variants: { create: variants.map((variant) => ({ resolution: "1080p", watermark: false, ...variant, status: variant.status as never })) } } });
 
-    test("is not done until its export is, and names the export", async () => {
+    test("is not done until its export is, and names the export", bindServiceTestEnvironment(async () => {
       const { origin, detection, projectId, clip } = await captioned("fit");
       expect(await read("generation", origin.id)).toMatchObject({ state: "failed", failureCode: "export_unavailable", results: { projectId, clipIds: [clip.id], exportId: null } });
       const exported = await exportFor(projectId, clip.id, "rendering", [{ aspectRatio: "ratio_9_16", status: "completed", storageKey: "projects/x/a.mp4" }, { aspectRatio: "ratio_1_1", status: "rendering" }]);
@@ -133,25 +134,25 @@ db("Operation Status lineage", () => {
       await prisma.clipExport.update({ where: { id: exported.id }, data: { status: "ready", progress: 100 } });
       await prisma.clipExportVariant.updateMany({ where: { exportId: exported.id, aspectRatio: "ratio_1_1" }, data: { status: "completed", storageKey: "projects/x/b.mp4" } });
       expect(await read("generation", origin.id)).toMatchObject({ state: "completed", progress: 1, results: { exportId: exported.id }, failureCode: null });
-    });
+    }));
 
-    test("an intake follows it to the export, and a failed format makes it partial", async () => {
+    test("an intake follows it to the export, and a failed format makes it partial", bindServiceTestEnvironment(async () => {
       const { origin, detection, projectId, clip } = await captioned("fit");
       const job = await prisma.ingestJob.create({ data: { projectId, jobType: "link_import", payload: {}, status: "completed", completedAt: new Date(), generationHandoffAt: new Date(), generationRunId: origin.id } });
       const exported = await exportFor(projectId, clip.id, "partial_ready", [{ aspectRatio: "ratio_9_16", status: "completed", storageKey: "projects/x/a.mp4" }, { aspectRatio: "ratio_1_1", status: "failed", errorCode: "render_failed" }]);
       await freeze(projectId, detection.id, exported.id, clip.id);
       expect(await read("intake", job.id)).toMatchObject({ kind: "intake", state: "partial", failureCode: "render_failed", results: { exportId: exported.id } });
-    });
+    }));
 
-    test("an export the person makes later never stands in for the video's own", async () => {
+    test("an export the person makes later never stands in for the video's own", bindServiceTestEnvironment(async () => {
       const { origin, detection, projectId, clip } = await captioned("fit");
       const first = await exportFor(projectId, clip.id, "rendering", [{ aspectRatio: "ratio_9_16", status: "rendering" }]);
       await freeze(projectId, detection.id, first.id, clip.id);
       await exportFor(projectId, clip.id, "ready", [{ aspectRatio: "ratio_1_1", status: "completed", storageKey: "projects/x/later.mp4" }]);
       expect(await read("generation", origin.id)).toMatchObject({ state: "working", results: { exportId: first.id } });
-    });
+    }));
 
-    test("once its export has ended, a retry or a deletion of the export leaves the generation as it reported", async () => {
+    test("once its export has ended, a retry or a deletion of the export leaves the generation as it reported", bindServiceTestEnvironment(async () => {
       const { origin, detection, projectId, clip } = await captioned("fit");
       const exported = await exportFor(projectId, clip.id, "failed", [{ aspectRatio: "ratio_9_16", status: "failed", errorCode: "render_failed" }, { aspectRatio: "ratio_1_1", status: "failed", errorCode: "render_failed" }]);
       await freeze(projectId, detection.id, exported.id, clip.id);
@@ -171,32 +172,32 @@ db("Operation Status lineage", () => {
       // Deleting the export (its clip, or the person) doesn't flip it either, and it still names the export.
       await prisma.clipExport.delete({ where: { id: exported.id } });
       expect(await read("generation", origin.id)).toEqual(reported);
-    });
+    }));
 
-    test("an export deleted before it ended leaves the generation failed, still naming it", async () => {
+    test("an export deleted before it ended leaves the generation failed, still naming it", bindServiceTestEnvironment(async () => {
       const { origin, detection, projectId, clip } = await captioned("fit");
       const exported = await exportFor(projectId, clip.id, "rendering", [{ aspectRatio: "ratio_9_16", status: "rendering" }]);
       await freeze(projectId, detection.id, exported.id, clip.id);
       await prisma.clipExport.delete({ where: { id: exported.id } });
       expect(await read("generation", origin.id)).toMatchObject({ state: "failed", failureCode: "export_unavailable", results: { exportId: exported.id } });
-    });
+    }));
 
-    test("Center reports where it crops the frame, Fit reports nothing, and a clip-mode generation has no notices", async () => {
+    test("Center reports where it crops the frame, Fit reports nothing, and a clip-mode generation has no notices", bindServiceTestEnvironment(async () => {
       const center = await captioned("center");
       expect(await read("generation", center.origin.id)).toMatchObject({ notices: [{ code: "framing_degraded", aspectRatio: "9:16", croppedPercent: 68 }, { code: "framing_degraded", aspectRatio: "1:1", croppedPercent: 44 }] });
       const fit = await captioned("fit");
       expect((await read("generation", fit.origin.id)).notices).toEqual([]);
       const { id: projectId } = await project();
       expect((await read("generation", (await sttRun(projectId, "running")).id)).notices).toEqual([]);
-    });
+    }));
   });
 
-  test("work in another Workspace is concealed, and trusted reads report deleted lineage as unavailable", async () => {
+  test("work in another Workspace is concealed, and trusted reads report deleted lineage as unavailable", bindServiceTestEnvironment(async () => {
     const { id: projectId } = await project();
     const run = await sttRun(projectId, "queued");
     await expect(reader().read({ workspaceId: randomUUID() }, { kind: "generation", id: run.id })).rejects.toMatchObject({ code: "operation_not_found" });
     await prisma.project.update({ where: { id: projectId }, data: { expiresAt: new Date(Date.now() - 1_000) } });
     await expect(read("generation", run.id)).rejects.toMatchObject({ code: "operation_not_found" });
     expect(await reader().readTrusted({ workspaceId }, { kind: "generation", id: run.id })).toEqual({ kind: "generation", id: run.id, state: "unavailable" });
-  });
+  }));
 });

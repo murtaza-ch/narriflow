@@ -1,3 +1,4 @@
+import { readServiceEnvironment } from "./runtime-environment";
 import { mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -194,7 +195,7 @@ export function createVerifiedPublicationWebhookMedia(dependencies: {
 }
 
 export function createProductionSocialPublicationRuntime(
-	environment: Record<string, string | undefined> = process.env,
+	environment: Record<string, string | undefined> = readServiceEnvironment(),
 ) {
 	const config = parseSocialPublicationConfig(environment);
 	const native = createNativePublicationPlatformRegistry({

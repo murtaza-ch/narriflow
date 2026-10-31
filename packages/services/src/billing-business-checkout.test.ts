@@ -1,3 +1,4 @@
+import { bindServiceTestEnvironment } from "./runtime-test-support";
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { BillingError, BillingService } from "./billing.service";
 import { isExpectedDomainFailure, type ExpectedDomainFailure } from "./expected-domain-failure";
@@ -50,7 +51,7 @@ async function failureOf(promise: Promise<unknown>): Promise<ExpectedDomainFailu
   return error;
 }
 
-beforeEach(() => {
+beforeEach(bindServiceTestEnvironment(() => {
   saved = Object.fromEntries(env.map((name) => [name, process.env[name]]));
   process.env.STRIPE_SECRET_KEY = "sk_test_unused";
   process.env.STRIPE_PRICE_BUSINESS_ANNUAL = "price_business_annual";
@@ -58,19 +59,19 @@ beforeEach(() => {
   service = new BillingService();
   checkouts = [];
   created = [];
-});
+}));
 
-afterEach(() => {
+afterEach(bindServiceTestEnvironment(() => {
   for (const name of env) {
     if (saved[name] === undefined) delete process.env[name];
     else process.env[name] = saved[name];
   }
   (workspaceCommands.createBusinessWorkspace as { mockRestore?: () => void }).mockRestore?.();
   (workspaceService.requireActor as { mockRestore?: () => void }).mockRestore?.();
-});
+}));
 
 describe("Business Workspace checkout", () => {
-  test("creates the pending Workspace once and starts Business Checkout against it", async () => {
+  test("creates the pending Workspace once and starts Business Checkout against it", bindServiceTestEnvironment(async () => {
     stubWorkspaces();
     stubCheckout();
     const result = await service.startBusinessWorkspaceCheckout({
@@ -99,9 +100,9 @@ describe("Business Workspace checkout", () => {
         returnDestination: RETURN,
       },
     ]);
-  });
+  }));
 
-  test("a retried submit after a lost response resumes the same pending Workspace and Checkout key", async () => {
+  test("a retried submit after a lost response resumes the same pending Workspace and Checkout key", bindServiceTestEnvironment(async () => {
     stubWorkspaces();
     stubCheckout();
     const submit = () =>
@@ -129,9 +130,9 @@ describe("Business Workspace checkout", () => {
     });
     expect(other.workspaceId).toBe(first.workspaceId);
     expect(created).toEqual(["Acme"]);
-  });
+  }));
 
-  test("an expired Checkout key is replaced on the same pending Workspace", async () => {
+  test("an expired Checkout key is replaced on the same pending Workspace", bindServiceTestEnvironment(async () => {
     stubWorkspaces();
     let calls = 0;
     stubCheckout(async () => {
@@ -142,9 +143,9 @@ describe("Business Workspace checkout", () => {
     expect(result.workspaceId).toBe("ws-pending-1");
     expect(result.checkoutIdempotencyKey).not.toBe(KEY);
     expect(created).toEqual(["Acme"]);
-  });
+  }));
 
-  test("mints the Checkout key when the caller sent none, and returns it for the retry", async () => {
+  test("mints the Checkout key when the caller sent none, and returns it for the retry", bindServiceTestEnvironment(async () => {
     stubWorkspaces();
     stubCheckout();
     const result = await service.startBusinessWorkspaceCheckout({
@@ -156,9 +157,9 @@ describe("Business Workspace checkout", () => {
     });
     expect(result.checkoutIdempotencyKey).toMatch(/^[0-9a-f-]{36}$/);
     expect(checkouts[0]?.clientIdempotencyKey).toBe(result.checkoutIdempotencyKey);
-  });
+  }));
 
-  test("resumes a Workspace awaiting payment without creating another", async () => {
+  test("resumes a Workspace awaiting payment without creating another", bindServiceTestEnvironment(async () => {
     stubWorkspaces({ role: "owner", status: "pending_payment", workspaceName: "Stored name" });
     stubCheckout();
     const result = await service.startBusinessWorkspaceCheckout({
@@ -173,12 +174,12 @@ describe("Business Workspace checkout", () => {
     expect(result.workspaceName).toBe("Stored name");
     expect(workspaceService.requireActor).toHaveBeenCalledWith("user-1", "ws-pending", "billing.manage");
     expect(checkouts[0]).toMatchObject({ workspaceId: "ws-pending", clientIdempotencyKey: KEY });
-  });
+  }));
 
   test.each([
     { role: "admin", status: "pending_payment" },
     { role: "owner", status: "active" },
-  ])("refuses to resume a Workspace that is not the owner's pending one: $role/$status", async (actor) => {
+  ])("refuses to resume a Workspace that is not the owner's pending one: $role/$status", bindServiceTestEnvironment(async (actor) => {
     stubWorkspaces({ ...actor, workspaceName: "Acme" });
     stubCheckout();
     const failure = await failureOf(
@@ -193,9 +194,9 @@ describe("Business Workspace checkout", () => {
     expect(failure.code).toBe("workspace_checkout_state_invalid");
     expect(failure.kind).toBe("conflict");
     expect(checkouts).toEqual([]);
-  });
+  }));
 
-  test("unconfigured checkout fails before any Workspace exists, naming the interval", async () => {
+  test("unconfigured checkout fails before any Workspace exists, naming the interval", bindServiceTestEnvironment(async () => {
     delete process.env.STRIPE_PRICE_BUSINESS_ANNUAL;
     stubWorkspaces();
     stubCheckout();
@@ -216,9 +217,9 @@ describe("Business Workspace checkout", () => {
     });
     expect(failure.details).toEqual({ recovery: { workspaceName: "Acme", interval: "annual", checkoutIdempotencyKey: KEY } });
     expect(created).toEqual([]);
-  });
+  }));
 
-  test("a Checkout failure after creation keeps its code and carries the pending Workspace for the retry", async () => {
+  test("a Checkout failure after creation keeps its code and carries the pending Workspace for the retry", bindServiceTestEnvironment(async () => {
     stubWorkspaces();
     stubCheckout(async () => {
       throw new BillingError("checkout_in_progress");
@@ -237,9 +238,9 @@ describe("Business Workspace checkout", () => {
     expect(failure.details).toEqual({
       recovery: { workspaceId: "ws-pending-1", workspaceName: "Acme", interval: "annual", checkoutIdempotencyKey: KEY },
     });
-  });
+  }));
 
-  test("a deleted creation receipt never leaks its old workspace in recovery or starts Checkout", async () => {
+  test("a deleted creation receipt never leaks its old workspace in recovery or starts Checkout", bindServiceTestEnvironment(async () => {
     stubWorkspaces();
     spyOn(workspaceCommands, "createBusinessWorkspace").mockRejectedValue(new WorkspaceOperationError("workspace_no_longer_exists", "This workspace no longer exists. Start a new workspace checkout."));
     stubCheckout();
@@ -247,9 +248,9 @@ describe("Business Workspace checkout", () => {
     expect(failure).toMatchObject({ code: "workspace_no_longer_exists", kind: "missing" });
     expect(failure.details).toBeUndefined();
     expect(checkouts).toEqual([]);
-  });
+  }));
 
-  test("an unexpected failure is generic, logged without its message, and still recoverable", async () => {
+  test("an unexpected failure is generic, logged without its message, and still recoverable", bindServiceTestEnvironment(async () => {
     stubWorkspaces();
     stubCheckout(async () => {
       throw new Error("connect ECONNREFUSED 10.0.0.5:5432 password=hunter2");
@@ -277,5 +278,5 @@ describe("Business Workspace checkout", () => {
     } finally {
       warn.mockRestore();
     }
-  });
+  }));
 });

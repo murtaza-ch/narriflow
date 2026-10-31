@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { Hono } from "hono";
 import { checkRouteInventory } from "../../route-inventory";
 import { integrationsAdmission } from "./admission";
-import { ExpectedDomainFailureError } from "@narriflow/services";
+import { ExpectedDomainFailureError } from "@narriflow/services/expected-domain-failure";
 import { createDomainTestApp, signedInHeaders } from "../ingest/test-app";
 import { createIntegrationsRoutes, type IntegrationsRouteDeps } from "./routes";
 

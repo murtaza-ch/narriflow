@@ -1,3 +1,6 @@
+import { readServiceEnvironment } from "./runtime-environment";
+import { pickPexelsFile, type PexelsVideo, type BrollSearchResult } from "./pexels-contract";
+export { pickPexelsFile, selectBestPexelsVideo, type PexelsUser, type PexelsVideoFile, type PexelsVideo, type BrollAttribution, type BrollClip, type BrollSearchResult } from "./pexels-contract";
 /**
  * Pexels video search — the single client used by both the studio B-roll
  * picker (web `/broll/search` route) and the worker's render-time auto
@@ -29,61 +32,6 @@ import {
 
 const PEXELS_VIDEO_SEARCH_URL = "https://api.pexels.com/videos/search";
 
-export interface PexelsUser {
-  id: number;
-  name: string;
-  url: string;
-}
-
-export interface PexelsVideoFile {
-  link: string;
-  width: number | null;
-  height: number | null;
-  quality: string | null;
-  file_type: string | null;
-}
-
-export interface PexelsVideo {
-  id: number;
-  width: number;
-  height: number;
-  duration: number;
-  /** The Pexels page URL for this specific video — used as the attribution source link. */
-  url: string;
-  /** Thumbnail, used by the studio picker's result grid. */
-  image: string;
-  user: PexelsUser | null;
-  video_files: PexelsVideoFile[];
-}
-
-export interface BrollAttribution {
-  authorName: string | null;
-  authorUrl: string | null;
-  pageUrl: string | null;
-  pexelsId: number;
-}
-
-export interface BrollClip {
-  id: number;
-  width: number;
-  height: number;
-  durationSec: number;
-  downloadUrl: string;
-  attribution: BrollAttribution;
-}
-
-export interface BrollSearchResult {
-  id: number;
-  image: string;
-  width: number;
-  height: number;
-  durationSec: number;
-  downloadUrl: string;
-  authorName: string | null;
-  authorUrl: string | null;
-  pageUrl: string | null;
-}
-
 function log(
   level: "info" | "error",
   message: string,
@@ -93,65 +41,7 @@ function log(
 }
 
 export function isPexelsConfigured(): boolean {
-  return Boolean(process.env.PEXELS_API_KEY);
-}
-
-/** Picks the smallest mp4 at/above the target width, else the largest available. */
-export function pickPexelsFile(
-  files: PexelsVideoFile[],
-  targetWidth: number,
-): PexelsVideoFile | null {
-  const mp4s = files.filter(
-    (f) => f.link && (f.file_type === "video/mp4" || f.link.includes(".mp4")),
-  );
-  const pool = mp4s.length > 0 ? mp4s : files.filter((f) => f.link);
-  if (pool.length === 0) return null;
-  const atLeast = pool
-    .filter((f) => (f.width ?? 0) >= targetWidth)
-    .sort((a, b) => (a.width ?? 0) - (b.width ?? 0));
-  if (atLeast.length > 0) return atLeast[0]!;
-  return [...pool].sort((a, b) => (b.width ?? 0) - (a.width ?? 0))[0]!;
-}
-
-/**
- * Chooses the best video for a target frame: prefers videos long enough for a
- * cutaway and closest to the target orientation, and surfaces the attribution
- * (author name/url + the video's own Pexels page URL) alongside the pick.
- */
-export function selectBestPexelsVideo(
-  videos: PexelsVideo[],
-  targetWidth: number,
-  targetHeight: number,
-  minDurationSec = 2,
-): BrollClip | null {
-  const targetPortrait = targetHeight >= targetWidth;
-  const ranked = videos
-    .filter((v) => v.duration >= minDurationSec && v.video_files?.length > 0)
-    .sort((a, b) => {
-      const aMatch = a.height >= a.width === targetPortrait ? 0 : 1;
-      const bMatch = b.height >= b.width === targetPortrait ? 0 : 1;
-      return aMatch - bMatch;
-    });
-
-  for (const video of ranked) {
-    const file = pickPexelsFile(video.video_files, targetWidth);
-    if (file) {
-      return {
-        id: video.id,
-        width: video.width,
-        height: video.height,
-        durationSec: video.duration,
-        downloadUrl: file.link,
-        attribution: {
-          authorName: video.user?.name ?? null,
-          authorUrl: video.user?.url ?? null,
-          pageUrl: video.url ?? null,
-          pexelsId: video.id,
-        },
-      };
-    }
-  }
-  return null;
+  return Boolean(readServiceEnvironment().PEXELS_API_KEY);
 }
 
 // --- Optional Redis cache (fail-open, same pattern as rate-limit.ts) --------
@@ -168,7 +58,7 @@ function resetRedisClient(failedClient: Redis) {
 }
 
 function getRedisClient(): Redis | null {
-  const url = optionalRedisUrl(process.env.UPSTASH_REDIS_URL);
+  const url = optionalRedisUrl(readServiceEnvironment().UPSTASH_REDIS_URL);
   if (!url) return null;
   if (Date.now() < redisRetryAfter) return null;
   if (!redisClient) {
@@ -202,7 +92,7 @@ const DEFAULT_CACHE_TTL_SEC = 21_600; // 6h — Pexels' catalog doesn't churn mi
 const MEMORY_CACHE_MAX_ENTRIES = 500;
 
 function cacheTtlSec(): number {
-  const raw = Number(process.env.PEXELS_SEARCH_CACHE_TTL_SEC);
+  const raw = Number(readServiceEnvironment().PEXELS_SEARCH_CACHE_TTL_SEC);
   return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_CACHE_TTL_SEC;
 }
 
@@ -310,7 +200,7 @@ export async function searchPexelsVideos(
   orientation: PexelsOrientation,
   options: SearchPexelsVideosOptions = {},
 ): Promise<PexelsVideo[]> {
-  const apiKey = process.env.PEXELS_API_KEY;
+  const apiKey = readServiceEnvironment().PEXELS_API_KEY;
   const trimmedQuery = query.trim();
   if (!apiKey || !trimmedQuery) return [];
 
@@ -434,7 +324,7 @@ export async function searchBrollVideos(
   orientation: PexelsOrientation = "portrait",
   limit = 12,
 ): Promise<BrollSearchResult[]> {
-  const apiKey = process.env.PEXELS_API_KEY;
+  const apiKey = readServiceEnvironment().PEXELS_API_KEY;
   if (!apiKey || !query.trim()) return [];
 
   const targetWidth = orientation === "landscape" ? 1920 : 1080;

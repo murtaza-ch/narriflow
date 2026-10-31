@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { createMcpUploadHandoff, verifyMcpUploadHandoff, MCP_CONTINUATION_TTL_MS, type NarriflowMcpPrincipal } from "@narriflow/mcp-core";
 import { buildGenerationContentPack, buildGenerationContext, generationSettingsSchema } from "@narriflow/validators";
-import type { ActorScope } from "@narriflow/services";
+import { type ActorScope } from "@narriflow/services/actor-scope";
 import { admitMcpUploadHandoff, type McpUploadHandoffDependencies } from "./mcp-upload-handoff";
 
 const secret = "a-shared-secret-of-at-least-32-bytes-long";

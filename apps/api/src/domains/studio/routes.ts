@@ -1,18 +1,15 @@
-import {
-  type analyzeSceneDocumentMutation,
-  type brandFontService,
-  type clipEditorDocumentPersistence,
-  type SceneDocumentMutationAnalysis,
-  type visualAssetService,
-  type BrandActorScope,
-  type autoCensorService,
-  type brandProfileService,
-  type clipService,
-  type generatedImageCapability,
-  type presignDownloadUrl,
-  type projectService,
-  type sceneTemplateService,
-} from "@narriflow/services";
+import { type analyzeSceneDocumentMutation, type SceneDocumentMutationAnalysis } from "@narriflow/services/scene-document-mutation";
+import { type brandFontService } from "@narriflow/services/brand-font.service";
+import { type clipEditorDocumentPersistence } from "@narriflow/services/clip-editor-document-persistence";
+import { type visualAssetService } from "@narriflow/services/visual-asset.service";
+import { type BrandActorScope } from "@narriflow/services/brand-ownership";
+import { type autoCensorService } from "@narriflow/services/auto-censor.service";
+import { type brandProfileService } from "@narriflow/services/brand-profile.service";
+import { type clipService } from "@narriflow/services/clip.service";
+import { type generatedImageCapability } from "@narriflow/services/generation-usage";
+import { type presignDownloadUrl } from "@narriflow/services/r2-storage";
+import { type projectService } from "@narriflow/services/project.service";
+import { type sceneTemplateService } from "@narriflow/services/scene-template.service";
 import {
   patchClipRequestSchema,
   recordCensorEventRequestSchema,

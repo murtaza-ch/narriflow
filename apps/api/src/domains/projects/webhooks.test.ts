@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { createHmac } from "node:crypto";
-import type { ProviderSettlementResult } from "@narriflow/services";
+import { type ProviderSettlementResult } from "@narriflow/services/workflow-run-lifecycle";
 import { Hono } from "hono";
 import { createProjectsWebhookRoutes, type ProjectsWebhookDeps } from "./webhooks";
 

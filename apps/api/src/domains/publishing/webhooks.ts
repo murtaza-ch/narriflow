@@ -1,4 +1,4 @@
-import type { acceptTikTokPublicationWebhook, TikTokPublicationWebhookError } from "@narriflow/services";
+import { type acceptTikTokPublicationWebhook, type TikTokPublicationWebhookError } from "@narriflow/services/social-publication-tiktok-webhook";
 import { createRouteApp } from "../../http/admission";
 import { publishingAdmission } from "./admission";
 

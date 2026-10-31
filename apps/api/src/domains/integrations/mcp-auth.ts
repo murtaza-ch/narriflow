@@ -1,14 +1,16 @@
+import { readServiceEnvironment } from "@narriflow/services/runtime-environment";
 import { OAuthError, OAuthErrorCode, verifyBearerToken, type OAuthTokenVerifier } from "@modelcontextprotocol/server";
 import { getPrismaClient } from "@narriflow/db/client";
 import { createNarriflowTokenVerifier, principalFromMcpAuth } from "@narriflow/mcp-core/auth";
 import { mcpRateLimitKey, parseMcpOrigins } from "@narriflow/mcp-core/http";
-import { checkRateLimit, workspaceService } from "@narriflow/services";
+import { checkRateLimit } from "@narriflow/services/rate-limit";
+import { workspaceService } from "@narriflow/services/workspace.service";
 import { WORKSPACE_API_KEY_SCOPES } from "@narriflow/validators";
 import type { ApiConfig, ApiEnvironment } from "../../config";
 import { mcpIntegrationAuthenticationFailure, mcpIntegrationMutationGuard } from "./mcp-integration-admission";
 
 /** API resource and browser destinations have independent canonical origins. */
-export function createMcpAuth(config: ApiConfig, env: ApiEnvironment = process.env) {
+export function createMcpAuth(config: ApiConfig, env: ApiEnvironment = readServiceEnvironment()) {
   const resourceUrl = new URL("/mcp", config.apiOrigin).href;
   const metadataUrl = new URL("/.well-known/oauth-protected-resource/mcp", config.apiOrigin).href;
   const issuerValue = env.CLERK_OAUTH_ISSUER?.trim();

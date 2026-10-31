@@ -1,3 +1,4 @@
+import { readServiceEnvironment } from "./runtime-environment";
 import { accessibleProjectWhere } from "./project-access";
 import type { ActorScope } from "./actor-scope";
 import type { ClipDub } from "@prisma/client";
@@ -230,7 +231,7 @@ export class DubbingService {
       // A queued dub with no live run is re-admitted below with its count.
     }
 
-    const model = process.env.OPENAI_TTS_MODEL ?? DEFAULT_TTS_MODEL;
+    const model = readServiceEnvironment().OPENAI_TTS_MODEL ?? DEFAULT_TTS_MODEL;
     let admitted;
     try {
       // The dub row, its count, and the Workflow Run commit together.

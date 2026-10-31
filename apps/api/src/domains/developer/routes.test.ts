@@ -1,6 +1,6 @@
 import { describe, expect, mock, test } from "bun:test";
 import type { AppUser, WorkspaceActorContext } from "@narriflow/auth";
-import { ExpectedDomainFailureError } from "@narriflow/services";
+import { ExpectedDomainFailureError } from "@narriflow/services/expected-domain-failure";
 import { createRequestPolicyRuntime } from "../../http/request-policy-runtime";
 import { createInventoryApp } from "../../test-app";
 import { createDeveloperRoutes, type DeveloperRouteDeps } from "./routes";

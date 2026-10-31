@@ -1,3 +1,4 @@
+import { readServiceEnvironment } from "./runtime-environment";
 import { createCipheriv, createDecipheriv, hkdfSync, randomBytes } from "node:crypto";
 import {
   GOOGLE_DRIVE_FILE_SCOPE,
@@ -201,7 +202,7 @@ export function createGoogleDriveFileReader(
   const { clientId, ...fetchOptions } = options;
   return {
     async read(input) {
-      const expected = clientId ?? process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID?.trim();
+      const expected = clientId ?? readServiceEnvironment().NEXT_PUBLIC_GOOGLE_CLIENT_ID?.trim();
       if (!expected) throw new DriveSourceError("drive_token_invalid");
       await verifyDriveAccessToken(input.accessToken, { clientId: expected }, fetchOptions);
       return readDriveFileMetadata(input, fetchOptions);
@@ -218,7 +219,7 @@ function tokenKey(material: string) {
 
 /** Seals the Drive access token with a purpose-bound key derived from the
  * existing data encryption key material, as Completion Callback URLs are. */
-export function createDriveTokenCipher(material = process.env.SOCIAL_TOKEN_ENCRYPTION_KEY ?? "") {
+export function createDriveTokenCipher(material = readServiceEnvironment().SOCIAL_TOKEN_ENCRYPTION_KEY ?? "") {
   const key = tokenKey(material);
   return {
     seal(token: string) {

@@ -1,4 +1,5 @@
-import { recipeService, recipesCommands } from "@narriflow/services";
+import { recipeService } from "@narriflow/services/recipe.service";
+import { recipesCommands } from "@narriflow/services/recipes-commands-runtime";
 import type { ApiConfig } from "../../config";
 import type { RecipesRouteDeps } from "./routes";
 

@@ -1,6 +1,7 @@
 import { describe, expect, mock, test } from "bun:test";
 import { Hono } from "hono";
-import { issueReviewSession, hashReviewAccessToken, reviewService, reviewsCommands } from "@narriflow/services";
+import { issueReviewSession, hashReviewAccessToken, reviewService } from "@narriflow/services/review.service";
+import { reviewsCommands } from "@narriflow/services/reviews-commands-runtime";
 import { routeBodyLimit } from "../../body-limits";
 import { installRequestPolicy, requireAdmissionDeclaration } from "../../http/admission";
 import { apiErrorHandler, apiNotFoundHandler, errorEnvelopeMiddleware } from "../../http/errors";

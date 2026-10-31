@@ -1,9 +1,7 @@
-import { createHash } from "node:crypto";
-import { createReadStream, createWriteStream } from "node:fs";
+import { createExportBundleArchive, exportBundleStorageKeys, hashFile } from "../../../media/src/tasks/export-bundle";
+export { createExportBundleArchive, exportBundleStorageKeys } from "../../../media/src/tasks/export-bundle";
 import { stat } from "node:fs/promises";
 import { join } from "node:path";
-import { pipeline } from "node:stream/promises";
-import archiver from "archiver";
 import { getPrismaClient } from "@narriflow/db/client";
 import {
   copyObject,
@@ -16,76 +14,8 @@ import {
   type WorkflowAttemptContext,
   workflowFailureFromUnknown,
 } from "@narriflow/services";
-import { exportBundleManifestSchema, type ExportBundleManifest } from "@narriflow/validators";
-import { productionWorkerProcessModule, type WorkerProcessModule } from "../worker-process";
-
-export async function createExportBundleArchive(input: {
-  outputPath: string;
-  manifest: ExportBundleManifest;
-  files: Array<{ path: string; name: string }>;
-}) {
-  const output = createWriteStream(input.outputPath, { flags: "wx" });
-  const archive = archiver("zip", { zlib: { level: 6 } });
-  const completion = pipeline(archive, output);
-  archive.append(`${JSON.stringify(input.manifest, null, 2)}\n`, {
-    name: "manifest.json",
-  });
-  for (const file of input.files) archive.append(createReadStream(file.path), { name: file.name });
-  await archive.finalize();
-  await completion;
-  return stat(input.outputPath);
-}
-
-async function hashFile(path: string) {
-  const digest = createHash("sha256");
-  for await (const chunk of createReadStream(path)) digest.update(chunk);
-  return digest.digest("hex");
-}
-
-export function exportBundleStorageKeys(projectId: string, operationId: string, attemptId: string) {
-  const prefix = `projects/${projectId}/campaign-operations/${operationId}`;
-  return {
-    attemptKey: `${prefix}/attempts/${attemptId}.zip`,
-    finalKey: `${prefix}/completed/${attemptId}.zip`,
-  };
-}
-
-export async function runExportBundlePipeline<TArchive>(input: {
-  entries: ReadonlyArray<{
-    variantId: string;
-    name: string;
-    sizeBytes: number;
-  }>;
-  signal?: AbortSignal;
-  download(
-    entry: { variantId: string; name: string; sizeBytes: number },
-    index: number,
-  ): Promise<{ path: string; sizeBytes: number }>;
-  archive(files: Array<{ path: string; name: string }>): Promise<TArchive>;
-  upload(archive: TArchive): Promise<void>;
-  assertOwnership(): Promise<void>;
-  publish(): Promise<void>;
-  settle(archive: TArchive): Promise<void>;
-}) {
-  const files: Array<{ path: string; name: string }> = [];
-  for (const [index, entry] of input.entries.entries()) {
-    input.signal?.throwIfAborted();
-    const downloaded = await input.download(entry, index);
-    if (downloaded.sizeBytes !== entry.sizeBytes) {
-      throw new Error("export_bundle_variant_size_mismatch");
-    }
-    files.push({ path: downloaded.path, name: entry.name });
-  }
-  input.signal?.throwIfAborted();
-  const archive = await input.archive(files);
-  input.signal?.throwIfAborted();
-  await input.upload(archive);
-  await input.assertOwnership();
-  await input.publish();
-  await input.assertOwnership();
-  await input.settle(archive);
-  return archive;
-}
+import { exportBundleManifestSchema, } from "@narriflow/validators";
+import { productionWorkerProcessModule, type WorkerProcessModule } from "../../../media/src/worker-process";
 
 export async function processExportBundleRun(
   attempt: ClaimedWorkflowAttempt,
@@ -253,4 +183,41 @@ export async function expireExportBundles(
 		removed += await runtime.markExpired(bundle);
   }
   return removed;
+}
+
+export async function runExportBundlePipeline<TArchive>(input: {
+  entries: ReadonlyArray<{
+    variantId: string;
+    name: string;
+    sizeBytes: number;
+  }>;
+  signal?: AbortSignal;
+  download(
+    entry: { variantId: string; name: string; sizeBytes: number },
+    index: number,
+  ): Promise<{ path: string; sizeBytes: number }>;
+  archive(files: Array<{ path: string; name: string }>): Promise<TArchive>;
+  upload(archive: TArchive): Promise<void>;
+  assertOwnership(): Promise<void>;
+  publish(): Promise<void>;
+  settle(archive: TArchive): Promise<void>;
+}) {
+  const files: Array<{ path: string; name: string }> = [];
+  for (const [index, entry] of input.entries.entries()) {
+    input.signal?.throwIfAborted();
+    const downloaded = await input.download(entry, index);
+    if (downloaded.sizeBytes !== entry.sizeBytes) {
+      throw new Error("export_bundle_variant_size_mismatch");
+    }
+    files.push({ path: downloaded.path, name: entry.name });
+  }
+  input.signal?.throwIfAborted();
+  const archive = await input.archive(files);
+  input.signal?.throwIfAborted();
+  await input.upload(archive);
+  await input.assertOwnership();
+  await input.publish();
+  await input.assertOwnership();
+  await input.settle(archive);
+  return archive;
 }

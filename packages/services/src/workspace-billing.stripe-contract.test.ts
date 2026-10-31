@@ -1,3 +1,4 @@
+import { bindServiceTestEnvironment } from "./runtime-test-support";
 import { describe, expect, test } from "bun:test";
 import Stripe from "stripe";
 import {
@@ -65,7 +66,7 @@ function fixture(type: (typeof WORKSPACE_BILLING_WAKE_EVENT_TYPES)[number]) {
 }
 
 describe("Workspace Billing Stripe adapter contracts", () => {
-  test("paginates the complete subscription collection and normalizes every status", async () => {
+  test("paginates the complete subscription collection and normalizes every status", bindServiceTestEnvironment(async () => {
     const workspaceId = "11111111-1111-4111-8111-111111111111";
     const statuses = [
       "incomplete",
@@ -150,9 +151,9 @@ describe("Workspace Billing Stripe adapter contracts", () => {
     expect(current.ownership).toEqual({ kind: "verified", workspaceId });
     expect(current.subscriptions.map((subscription) => subscription.status))
       .toEqual(statuses);
-  });
+  }));
 
-  test("normalizes a completed delayed-payment Checkout through the production adapter", async () => {
+  test("normalizes a completed delayed-payment Checkout through the production adapter", bindServiceTestEnvironment(async () => {
     const workspaceId = "11111111-1111-4111-8111-111111111111";
     const attemptId = "22222222-2222-4222-8222-222222222222";
     const fakeStripe = {
@@ -205,9 +206,9 @@ describe("Workspace Billing Stripe adapter contracts", () => {
         workspaceId,
         attemptId,
       });
-  });
+  }));
 
-  test("resolves delayed Checkout failure from the current invoice payment", async () => {
+  test("resolves delayed Checkout failure from the current invoice payment", bindServiceTestEnvironment(async () => {
     const workspaceId = "11111111-1111-4111-8111-111111111111";
     const fakeStripe = {
       checkout: {
@@ -275,9 +276,9 @@ describe("Workspace Billing Stripe adapter contracts", () => {
         paymentStatus: "failed",
         workspaceId,
       });
-  });
+  }));
 
-  test("verifies the exact raw body under the pinned API version", async () => {
+  test("verifies the exact raw body under the pinned API version", bindServiceTestEnvironment(async () => {
     const rawBody = `${fixture("checkout.session.completed")}\n`;
     const signature = await Stripe.webhooks.generateTestHeaderStringAsync({
       payload: rawBody,
@@ -305,9 +306,9 @@ describe("Workspace Billing Stripe adapter contracts", () => {
         webhookSecret,
       }),
     ).rejects.toThrow("The billing signature is invalid");
-  });
+  }));
 
-  test("normalizes every registered delivery fixture without reading entitlement state", async () => {
+  test("normalizes every registered delivery fixture without reading entitlement state", bindServiceTestEnvironment(async () => {
     const service = createWorkspaceBillingStripeContractHarness();
     for (const type of WORKSPACE_BILLING_WAKE_EVENT_TYPES) {
       const rawBody = fixture(type);
@@ -330,9 +331,9 @@ describe("Workspace Billing Stripe adapter contracts", () => {
           : null,
       );
     }
-  });
+  }));
 
-  test("creates subscription Checkout with the requested short expiry", async () => {
+  test("creates subscription Checkout with the requested short expiry", bindServiceTestEnvironment(async () => {
     const requests: Array<{ params: Record<string, unknown>; options: unknown }> = [];
     const fakeStripe = {
       checkout: {
@@ -397,9 +398,9 @@ describe("Workspace Billing Stripe adapter contracts", () => {
     });
     expect(requests[0]!.options).toEqual({ idempotencyKey: "workspace-checkout-contract" });
     expect(session.expiresAt.toISOString()).toBe("2026-10-26T10:31:00.000Z");
-  });
+  }));
 
-  test("maps STRIPE_PRICE_<TIER>_<INTERVAL> for every paid catalog tier plus seat prices", () => {
+  test("maps STRIPE_PRICE_<TIER>_<INTERVAL> for every paid catalog tier plus seat prices", bindServiceTestEnvironment(() => {
     expect(PAID_PRICING_TIERS).toEqual(
       (Object.keys(PLAN_CATALOG) as Array<keyof typeof PLAN_CATALOG>).filter(
         (tier) => tier !== "free",
@@ -434,5 +435,5 @@ describe("Workspace Billing Stripe adapter contracts", () => {
         else process.env[name] = value;
       }
     }
-  });
+  }));
 });

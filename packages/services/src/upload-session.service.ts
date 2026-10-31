@@ -1,3 +1,4 @@
+import { readServiceEnvironment } from "./runtime-environment";
 import type { ActorScope } from "./actor-scope";
 import { getIngestJobLifecycle } from "./ingest-job-lifecycle-runtime";
 import { getProcessingUsage } from "./processing-usage-runtime";
@@ -3080,7 +3081,7 @@ function configuredInteger(
 }
 
 export function uploadSessionConfigFromEnv(
-  env: NodeJS.ProcessEnv = process.env,
+  env: NodeJS.ProcessEnv = readServiceEnvironment(),
 ): UploadSessionConfig {
   const maximumSourceBytes = MAX_UPLOAD_SIZE_BYTES;
   return defaultUploadSessionConfig({
@@ -3657,7 +3658,7 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
             createdByUserId: creatorUserId,
             updatedByUserId: creatorUserId,
             title: current.title,
-            sourceMediaUrl: `r2://${process.env.R2_BUCKET ?? "unknown-bucket"}/${current.storageKey}`,
+            sourceMediaUrl: `r2://${readServiceEnvironment().R2_BUCKET ?? "unknown-bucket"}/${current.storageKey}`,
             sourceType: "upload",
             sourceInput: current.fileName,
             sourceStorageKey: current.storageKey,
@@ -4317,7 +4318,7 @@ const r2UploadSessionStorage: UploadSessionStorage = {
   },
 };
 
-const productionUploadSessionModule = createUploadSessionModule({
+const productionUploadSessionModule = () => createUploadSessionModule({
   config: uploadSessionConfigFromEnv(),
   persistence: prismaUploadSessionPersistence,
   storage: r2UploadSessionStorage,
@@ -4376,7 +4377,7 @@ export class UploadSessionService {
       workspaceId,
       "processing.consume",
     );
-    const result = await productionUploadSessionModule.open({
+    const result = await productionUploadSessionModule().open({
       actorUserId,
       workspaceId: workspaceId,
       clientIdempotencyKey: parsed.clientIdempotencyKey,
@@ -4436,7 +4437,7 @@ export class UploadSessionService {
       workspaceId,
       "processing.consume",
     );
-    const result = await productionUploadSessionModule.finalize({
+    const result = await productionUploadSessionModule().finalize({
       actorUserId,
       workspaceId: workspaceId,
       sessionId: parsed.sessionId,
@@ -4471,7 +4472,7 @@ export class UploadSessionService {
       "processing.consume",
     );
     const startedAt = performance.now();
-    const result = await productionUploadSessionModule.grant({
+    const result = await productionUploadSessionModule().grant({
       actorUserId,
       workspaceId: workspaceId,
       sessionId: parsed.sessionId,
@@ -4527,7 +4528,7 @@ export class UploadSessionService {
 
   private async ownStatus(scope: ActorScope, session: UploadSessionRecord | null) {
     if (!session || session.actorUserId !== scope.actorUserId) throw new UploadSessionNotFoundError();
-    return productionUploadSessionModule.status({
+    return productionUploadSessionModule().status({
       actorUserId: scope.actorUserId,
       workspaceId: scope.workspaceId,
       clientIdempotencyKey: session.clientIdempotencyKey,
@@ -4547,7 +4548,7 @@ export class UploadSessionService {
       workspaceId,
       "processing.consume",
     );
-    const result = await productionUploadSessionModule.status({
+    const result = await productionUploadSessionModule().status({
       actorUserId,
       workspaceId: workspaceId,
       clientIdempotencyKey: parsed.clientIdempotencyKey,
@@ -4583,7 +4584,7 @@ export class UploadSessionService {
       workspaceId,
       "processing.consume",
     );
-    const result = await productionUploadSessionModule.discard({
+    const result = await productionUploadSessionModule().discard({
       actorUserId,
       workspaceId: workspaceId,
       sessionId: parsed.sessionId,
@@ -4602,7 +4603,7 @@ export class UploadSessionService {
   }
 
   async reconcileDueSessions() {
-    return productionUploadSessionModule.reconcileDueSessions();
+    return productionUploadSessionModule().reconcileDueSessions();
   }
 }
 

@@ -1,3 +1,4 @@
+import { bindServiceTestEnvironment } from "./runtime-test-support";
 import { createDatabaseTestContext } from "@narriflow/db/testing";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
@@ -41,7 +42,7 @@ dbDescribe("Publishing Queue PostgreSQL invariants", () => {
 	let previousGlobalPrisma: PrismaClient | undefined;
 	const prismaGlobal = createDatabaseTestContext();
 
-	beforeAll(prismaGlobal.bind(async () => {
+	beforeAll(bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		if (!databaseUrl) throw new Error("SOCIAL_PUBLICATION_TEST_DATABASE_URL is required");
 		pool = new Pool({ connectionString: databaseUrl, max: 12 });
 		prisma = new PrismaClient({
@@ -50,13 +51,13 @@ dbDescribe("Publishing Queue PostgreSQL invariants", () => {
 		});
 		previousGlobalPrisma = prismaGlobal.client;
 		prismaGlobal.client = prisma;
-	}));
+	})));
 
-	afterAll(prismaGlobal.bind(async () => {
+	afterAll(bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		prismaGlobal.client = previousGlobalPrisma;
 		await prisma?.$disconnect();
 		await pool?.end();
-	}));
+	})));
 
 	/** A Workspace with a clip, a finished export, and one YouTube account that has slots. */
 	async function fixture(options: { platform?: "youtube_shorts" | "tiktok" | "x" | "facebook_reels"; schedule?: typeof EVERY_DAY | null } = {}) {
@@ -111,7 +112,7 @@ dbDescribe("Publishing Queue PostgreSQL invariants", () => {
 		return result.proposal;
 	}
 
-	test("a proposal is a draft with no time, no frozen state and no attempt, and its event is written once", prismaGlobal.bind(async () => {
+	test("a proposal is a draft with no time, no frozen state and no attempt, and its event is written once", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const f = await fixture();
 		const key = randomUUID();
 		const proposal = await propose(f, { key });
@@ -127,15 +128,15 @@ dbDescribe("Publishing Queue PostgreSQL invariants", () => {
 
 		const events = await listWorkspaceEvents(prisma, { workspaceId: f.workspace.id }, { types: ["social_post.proposed"] });
 		expect(events.data.map((event) => event.subject)).toEqual([{ socialPostId: proposal.proposalId, projectId: f.project.id, clipId: f.clip.id, socialAccountId: f.account.id, platform: "youtube_shorts" }]);
-	}));
+	})));
 
-	test("a platform whose publishing isn't available yet refuses the proposal up front", prismaGlobal.bind(async () => {
+	test("a platform whose publishing isn't available yet refuses the proposal up front", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const f = await fixture({ platform: "facebook_reels" });
 		await expect(propose(f)).rejects.toMatchObject({ code: "social_provider_publishing_disabled" });
 		expect(await prisma.socialPost.count({ where: { socialAccountId: f.account.id } })).toBe(0);
-	}));
+	})));
 
-	test("proposals never reach the scheduler or recovery", prismaGlobal.bind(async () => {
+	test("proposals never reach the scheduler or recovery", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const f = await fixture();
 		const proposal = await propose(f);
 		// A scheduler running long after any slot would have passed still never opens an attempt for it.
@@ -158,9 +159,9 @@ dbDescribe("Publishing Queue PostgreSQL invariants", () => {
 		await prisma.workspaceMember.create({ data: { workspaceId: f.workspace.id, userId: watcher.id, role: "viewer" } });
 		expect((await socialPublicationRecovery.inspect({ ...target, actorUserId: watcher.id })).allowedActions).toEqual([]);
 		expect((await prisma.socialPost.findUniqueOrThrow({ where: { id: proposal.proposalId } })).status).toBe("draft");
-	}));
+	})));
 
-	test("two concurrent accepts for one account take two different slots", prismaGlobal.bind(async () => {
+	test("two concurrent accepts for one account take two different slots", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const f = await fixture();
 		const [first, second] = await Promise.all([propose(f), propose(f)]);
 		const accepted = await Promise.all([first, second].map((proposal) => publishingQueue.accept(scope(f), proposal.proposalId)));
@@ -180,9 +181,9 @@ dbDescribe("Publishing Queue PostgreSQL invariants", () => {
 		const expected = nextFreeSlots({ schedule: EVERY_DAY, timeZone: "UTC", after: new Date(), occupied: new Set(), count: 3 }).map((slot) => slot.toISOString());
 		expect(slots.slice().sort()).toEqual(expected.filter((slot) => slots.includes(slot)).sort());
 		expect(slots.every((slot) => expected.includes(slot) || new Date(slot) > new Date(expected[2]!))).toBe(true);
-	}));
+	})));
 
-	test("many concurrent accepts never share a slot, and a slot another post holds is skipped", prismaGlobal.bind(async () => {
+	test("many concurrent accepts never share a slot, and a slot another post holds is skipped", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const f = await fixture();
 		const [firstSlot] = nextFreeSlots({ schedule: EVERY_DAY, timeZone: "UTC", after: new Date(), occupied: new Set() });
 		// A post already scheduled at the account's first slot, made some other way.
@@ -199,9 +200,9 @@ dbDescribe("Publishing Queue PostgreSQL invariants", () => {
 		expect(slots).not.toContain(firstSlot!.toISOString());
 		const all = await prisma.socialPost.findMany({ where: { socialAccountId: f.account.id, status: { not: "draft" } }, select: { scheduledFor: true } });
 		expect(new Set(all.map((post) => post.scheduledFor!.toISOString())).size).toBe(6);
-	}));
+	})));
 
-	test("accepting one proposal twice, even at once, makes one post", prismaGlobal.bind(async () => {
+	test("accepting one proposal twice, even at once, makes one post", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const f = await fixture();
 		const proposal = await propose(f);
 		const results = await Promise.all([publishingQueue.accept(scope(f), proposal.proposalId), publishingQueue.accept(scope(f), proposal.proposalId)]);
@@ -210,16 +211,16 @@ dbDescribe("Publishing Queue PostgreSQL invariants", () => {
 		const retry = await publishingQueue.accept(scope(f), proposal.proposalId);
 		expect(retry).toMatchObject({ replayed: true, socialPostId: results[0].socialPostId });
 		expect(await prisma.socialPost.count({ where: { workspaceId: f.workspace.id } })).toBe(1);
-	}));
+	})));
 
-	test("an account without slots refuses acceptance and keeps the proposal", prismaGlobal.bind(async () => {
+	test("an account without slots refuses acceptance and keeps the proposal", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const f = await fixture({ schedule: null });
 		const proposal = await propose(f);
 		await expect(publishingQueue.accept(scope(f), proposal.proposalId)).rejects.toMatchObject({ code: "posting_schedule_missing" });
 		expect((await prisma.socialPost.findUniqueOrThrow({ where: { id: proposal.proposalId } })).status).toBe("draft");
-	}));
+	})));
 
-	test("the approval gate still blocks acceptance for an approval-required brand, and the proposal survives", prismaGlobal.bind(async () => {
+	test("the approval gate still blocks acceptance for an approval-required brand, and the proposal survives", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const f = await fixture();
 		await prisma.project.update({
 			where: { id: f.project.id },
@@ -237,9 +238,9 @@ dbDescribe("Publishing Queue PostgreSQL invariants", () => {
 		await expect(publishingQueue.accept(scope(f), proposal.proposalId)).rejects.toMatchObject({ code: "review_approval_required" });
 		expect((await prisma.socialPost.findUniqueOrThrow({ where: { id: proposal.proposalId } })).status).toBe("draft");
 		expect(await prisma.socialPost.count({ where: { workspaceId: f.workspace.id, status: "scheduled" } })).toBe(0);
-	}));
+	})));
 
-	test("TikTok needs the creator's choices at acceptance, and accept-all skips it", prismaGlobal.bind(async () => {
+	test("TikTok needs the creator's choices at acceptance, and accept-all skips it", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const f = await fixture({ platform: "tiktok" });
 		const tiktok = await propose(f);
 		await expect(publishingQueue.accept(scope(f), tiktok.proposalId)).rejects.toMatchObject({ code: "social_proposal_tiktok_options_required" });
@@ -261,9 +262,9 @@ dbDescribe("Publishing Queue PostgreSQL invariants", () => {
 		const accepted = await publishingQueue.accept(scope(f), tiktok.proposalId, { tiktok: { deliveryMode: "tiktok_inbox", disableComment: false, disableDuet: false, disableStitch: false, isAigc: false } }).catch((error) => error);
 		// The fixture has no TikTok creator API, so the creator-info read refuses before any post exists.
 		expect(accepted instanceof Error || "socialPostId" in accepted).toBe(true);
-	}));
+	})));
 
-	test("rejecting cancels the proposal for good, and the caption can be edited first", prismaGlobal.bind(async () => {
+	test("rejecting cancels the proposal for good, and the caption can be edited first", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const f = await fixture();
 		const proposal = await propose(f);
 		await publishingQueue.updateProposalCaption(scope(f), proposal.proposalId, "Edited caption");
@@ -277,9 +278,9 @@ dbDescribe("Publishing Queue PostgreSQL invariants", () => {
 		const another = await propose(f);
 		await socialService.cancelPost(scope(f), f.project.id, another.proposalId);
 		expect((await prisma.socialPost.findUniqueOrThrow({ where: { id: another.proposalId } })).status).toBe("cancelled");
-	}));
+	})));
 
-	test("the inbox lists open proposals with the slot each would take", prismaGlobal.bind(async () => {
+	test("the inbox lists open proposals with the slot each would take", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const f = await fixture();
 		const [first, second] = [await propose(f), await propose(f)];
 		const inbox = await publishingQueue.listProposals(scope(f));
@@ -290,9 +291,9 @@ dbDescribe("Publishing Queue PostgreSQL invariants", () => {
 		const accepted = await publishingQueue.accept(scope(f), first.proposalId);
 		expect(accepted.scheduledFor).toBe(inbox[0]!.nextSlot!);
 		expect((await publishingQueue.listProposals(scope(f))).map((item) => item.proposalId)).toEqual([second.proposalId]);
-	}));
+	})));
 
-	test("a proposal needs a finished format the platform accepts, an active account, and a current revision", prismaGlobal.bind(async () => {
+	test("a proposal needs a finished format the platform accepts, an active account, and a current revision", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const f = await fixture();
 		const x = await prisma.socialAccount.create({
 			data: { userId: f.user.id, workspaceId: f.workspace.id, platform: "x", providerAccountId: `queue-x:${randomUUID()}`, displayName: "X", accessTokenEncrypted: "encrypted-test-token" },
@@ -309,9 +310,9 @@ dbDescribe("Publishing Queue PostgreSQL invariants", () => {
 		await prisma.clip.update({ where: { id: f.clip.id }, data: { editorRevision: { increment: 1 } } });
 		await expect(propose(f)).rejects.toMatchObject({ code: "editor_revision_conflict" });
 		expect(await prisma.socialPost.count({ where: { workspaceId: f.workspace.id } })).toBe(0);
-	}));
+	})));
 
-	test("the caption defaults to the latest assisted copy for the platform", prismaGlobal.bind(async () => {
+	test("the caption defaults to the latest assisted copy for the platform", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const f = await fixture();
 		const generation = await prisma.assistedCopyGeneration.create({
 			data: {
@@ -326,9 +327,9 @@ dbDescribe("Publishing Queue PostgreSQL invariants", () => {
 		expect(result.proposal.caption).toBe("Written by the model\n\n#clips");
 		const row = await prisma.socialPost.findUniqueOrThrow({ where: { id: result.proposal.proposalId }, include: { proposal: true } });
 		expect(row.proposal).toMatchObject({ source: "integration", assistedCopyVariantId: variant.id, title: "A title" });
-	}));
+	})));
 
-	test("the account list for finishing and rules accepts only this Workspace's active accounts", prismaGlobal.bind(async () => {
+	test("the account list for finishing and rules accepts only this Workspace's active accounts", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const f = await fixture();
 		const other = await fixture();
 		await assertQueueAccounts(f.workspace.id, [f.account.id]);
@@ -336,9 +337,9 @@ dbDescribe("Publishing Queue PostgreSQL invariants", () => {
 		await prisma.socialAccount.update({ where: { id: f.account.id }, data: { status: "revoked" } });
 		await expect(assertQueueAccounts(f.workspace.id, [f.account.id])).rejects.toMatchObject({ code: "social_account_unavailable" });
 		await assertQueueAccounts(f.workspace.id, []);
-	}));
+	})));
 
-	test("posting slots are editable by publishing managers, kept in week order, and clearable", prismaGlobal.bind(async () => {
+	test("posting slots are editable by publishing managers, kept in week order, and clearable", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const f = await fixture({ schedule: null });
 		const saved = await publishingQueue.setPostingSchedule(scope(f), f.account.id, { slots: [{ weekday: "wed", time: "17:30" }, { weekday: "mon", time: "09:00" }] });
 		expect(saved?.slots.map((slot) => `${slot.weekday} ${slot.time}`)).toEqual(["mon 09:00", "wed 17:30"]);
@@ -349,9 +350,9 @@ dbDescribe("Publishing Queue PostgreSQL invariants", () => {
 		await prisma.workspaceMember.create({ data: { workspaceId: f.workspace.id, userId: viewer.id, role: "viewer" } });
 		await expect(publishingQueue.setPostingSchedule({ actorUserId: viewer.id, workspaceId: f.workspace.id }, f.account.id, EVERY_DAY)).rejects.toBeDefined();
 		await expect(publishingQueue.accept({ actorUserId: viewer.id, workspaceId: f.workspace.id }, randomUUID())).rejects.toBeDefined();
-	}));
+	})));
 
-	test("one account's posting slots can be read by any member, but only for a connected account of this Workspace", prismaGlobal.bind(async () => {
+	test("one account's posting slots can be read by any member, but only for a connected account of this Workspace", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const f = await fixture({ schedule: null });
 		expect(await publishingQueue.getPostingSchedule(scope(f), f.account.id)).toBeNull();
 		await publishingQueue.setPostingSchedule(scope(f), f.account.id, { slots: [{ weekday: "fri", time: "08:00" }] });
@@ -363,9 +364,9 @@ dbDescribe("Publishing Queue PostgreSQL invariants", () => {
 		await expect(publishingQueue.getPostingSchedule(scope(f), other.account.id)).rejects.toMatchObject({ code: "social_account_unavailable" });
 		await prisma.socialAccount.update({ where: { id: f.account.id }, data: { status: "revoked" } });
 		await expect(publishingQueue.getPostingSchedule(scope(f), f.account.id)).rejects.toMatchObject({ code: "social_account_unavailable" });
-	}));
+	})));
 
-	test("accepting converts the proposal in place: its ID is the scheduled post, with its source kept", prismaGlobal.bind(async () => {
+	test("accepting converts the proposal in place: its ID is the scheduled post, with its source kept", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const f = await fixture();
 		const proposal = await propose(f);
 		const draft = await prisma.socialPost.findUniqueOrThrow({ where: { id: proposal.proposalId } });
@@ -389,9 +390,9 @@ dbDescribe("Publishing Queue PostgreSQL invariants", () => {
 		expect(await publishingQueue.listProposals(scope(f))).toEqual([]);
 		await expect(publishingQueue.reject(scope(f), proposal.proposalId)).rejects.toMatchObject({ code: "social_proposal_not_found" });
 		expect(await publishingQueue.accept(scope(f), proposal.proposalId)).toMatchObject({ replayed: true, socialPostId: proposal.proposalId });
-	}));
+	})));
 
-	test("nobody can take a proposal's acceptance key, and a stale caption is never accepted", prismaGlobal.bind(async () => {
+	test("nobody can take a proposal's acceptance key, and a stale caption is never accepted", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const f = await fixture();
 		const proposal = await propose(f);
 		const input = {
@@ -411,9 +412,9 @@ dbDescribe("Publishing Queue PostgreSQL invariants", () => {
 		await publishingQueue.updateProposalCaption(scope(f), proposal.proposalId, "Edited in the meantime");
 		await expect(publishingQueue.accept(scope(f), proposal.proposalId)).resolves.toMatchObject({ status: "scheduled" });
 		expect((await prisma.socialPost.findUniqueOrThrow({ where: { id: proposal.proposalId } })).caption).toBe("Edited in the meantime");
-	}));
+	})));
 
-	test("an approval-required brand's proposal is accepted once the round approves its export", prismaGlobal.bind(async () => {
+	test("an approval-required brand's proposal is accepted once the round approves its export", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const f = await fixture();
 		await prisma.project.update({
 			where: { id: f.project.id },
@@ -441,9 +442,9 @@ dbDescribe("Publishing Queue PostgreSQL invariants", () => {
 		await prisma.reviewRoundItem.update({ where: { id: round.items[0]!.id }, data: { currentDecision: "approved" } });
 		const accepted = await publishingQueue.accept(scope(f), proposal.proposalId);
 		expect(accepted).toMatchObject({ socialPostId: proposal.proposalId, status: "scheduled" });
-	}));
+	})));
 
-	test("accept all works through the inbox in batches and tells the caller where to continue", prismaGlobal.bind(async () => {
+	test("accept all works through the inbox in batches and tells the caller where to continue", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const f = await fixture();
 		const proposals = [];
 		for (let index = 0; index < 5; index += 1) proposals.push(await propose(f));
@@ -458,9 +459,9 @@ dbDescribe("Publishing Queue PostgreSQL invariants", () => {
 		expect(third.accepted.map((post) => post.socialPostId)).toEqual([proposals[4]!.proposalId]);
 		const slots = [...first.accepted, ...second.accepted, ...third.accepted].map((post) => post.scheduledFor);
 		expect(new Set(slots).size).toBe(5);
-	}));
+	})));
 
-	test("a proposal that cannot be accepted does not starve the ones behind it", prismaGlobal.bind(async () => {
+	test("a proposal that cannot be accepted does not starve the ones behind it", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const f = await fixture();
 		const noSlots = await prisma.socialAccount.create({
 			data: { userId: f.user.id, workspaceId: f.workspace.id, platform: "x", providerAccountId: `queue-x:${randomUUID()}`, displayName: "No slots", accessTokenEncrypted: "encrypted-test-token" },
@@ -473,9 +474,9 @@ dbDescribe("Publishing Queue PostgreSQL invariants", () => {
 		const third = await publishingQueue.acceptAll(scope(f), { limit: 1, after: second.nextCursor });
 		expect([...second.accepted, ...third.accepted].map((post) => post.socialPostId)).toEqual(fine.map((proposal) => proposal.proposalId));
 		expect(third.remaining).toBe(0);
-	}));
+	})));
 
-	test("the Workspace's active accounts come back in a stable order", prismaGlobal.bind(async () => {
+	test("the Workspace's active accounts come back in a stable order", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const f = await fixture();
 		const others = await Promise.all([1, 2, 3].map((n) => prisma.socialAccount.create({
 			data: { userId: f.user.id, workspaceId: f.workspace.id, platform: "x", providerAccountId: `order:${n}:${randomUUID()}`, displayName: `Order ${n}`, accessTokenEncrypted: "encrypted-test-token" },
@@ -483,9 +484,9 @@ dbDescribe("Publishing Queue PostgreSQL invariants", () => {
 		const ids = [f.account.id, ...others.map((account) => account.id)];
 		const listed = (await publishingQueue.activeAccounts(f.workspace.id, ids.slice().reverse())).map((account) => account.id);
 		expect(listed).toEqual(ids.slice().sort());
-	}));
+	})));
 
-	test("finishing that proposes to the queue needs publishing rights, accounts, and a format the platforms take", prismaGlobal.bind(async () => {
+	test("finishing that proposes to the queue needs publishing rights, accounts, and a format the platforms take", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const f = await fixture();
 		const viewer = await prisma.user.create({ data: { clerkId: `queue-viewer:${randomUUID()}`, primaryEmail: `viewer-${randomUUID()}@example.test` } });
 		await prisma.workspaceMember.create({ data: { workspaceId: f.workspace.id, userId: viewer.id, role: "viewer" } });
@@ -500,5 +501,5 @@ dbDescribe("Publishing Queue PostgreSQL invariants", () => {
 		// TikTok takes only 9:16, so 1:1 exports would fail clip by clip.
 		await expect(assertFinishingQueue(scope(f), { ...settings, queueAccountIds: [tiktok.id], aspectRatios: ["1:1", "16:9"] })).rejects.toMatchObject({ code: "finishing_queue_format_unsupported" });
 		await assertFinishingQueue(scope(f), { ...settings, queueAccountIds: [tiktok.id, f.account.id], aspectRatios: ["1:1", "9:16"] });
-	}));
+	})));
 });

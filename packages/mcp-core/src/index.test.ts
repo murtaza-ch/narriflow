@@ -1,19 +1,24 @@
+import { bindServiceTestEnvironment } from "@narriflow/services/runtime-test-support";
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { createMcpHandler } from "@modelcontextprotocol/server";
 
-import { autopilotService, clipService, ExpectedDomainFailureError, projectService, publishingQueue, workspaceService,
-  type WorkspaceActorContext, type ExpectedDomainFailureKind } from "@narriflow/services";
+import { autopilotService } from "@narriflow/services/autopilot.service";
+import { clipService } from "@narriflow/services/clip.service";
+import { ExpectedDomainFailureError, type ExpectedDomainFailureKind } from "@narriflow/services/expected-domain-failure";
+import { projectService } from "@narriflow/services/project.service";
+import { publishingQueue } from "@narriflow/services/publishing-queue.service";
+import { workspaceService, type WorkspaceActorContext } from "@narriflow/services/workspace.service";
 
-import { INTEGRATION_COMMANDS } from "@narriflow/services";
+import { INTEGRATION_COMMANDS } from "@narriflow/services/integration-admission";
 import { SCRIBE_LANGUAGE_CODES } from "@narriflow/validators";
 import { buildNarriflowMcpServer, MCP_TOOL_COMMANDS, type NarriflowMcpPrincipal, type NarriflowMcpToolName } from "./index";
 
 const clients: Client[] = [];
 
-afterEach(async () => {
+afterEach(bindServiceTestEnvironment(async () => {
   await Promise.all(clients.splice(0).map((client) => client.close()));
-});
+}));
 
 async function connect(
   principal: NarriflowMcpPrincipal,
@@ -32,7 +37,7 @@ async function connect(
 }
 
 describe("Narriflow MCP 2026-07-28 server", () => {
-  test("negotiates stateless HTTP and advertises the curated tool catalog", async () => {
+  test("negotiates stateless HTTP and advertises the curated tool catalog", bindServiceTestEnvironment(async () => {
     const client = await connect({
       kind: "oauth",
       userId: "00000000-0000-4000-8000-000000000001",
@@ -80,9 +85,9 @@ describe("Narriflow MCP 2026-07-28 server", () => {
       "narriflow_create_review_handoff", "narriflow_list_review_rounds", "narriflow_get_review_round", "narriflow_list_events"]) {
       expect(tools.find((tool) => tool.name === name)?.annotations).toEqual({ readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false });
     }
-  });
+  }));
 
-  test("returns a cacheable modern discovery document without issuing a session", async () => {
+  test("returns a cacheable modern discovery document without issuing a session", bindServiceTestEnvironment(async () => {
     const handler = createMcpHandler(() => buildNarriflowMcpServer({
       kind: "oauth",
       userId: "00000000-0000-4000-8000-000000000001",
@@ -118,9 +123,9 @@ describe("Narriflow MCP 2026-07-28 server", () => {
     expect(body).toContain("ttlMs");
     expect(body).toContain("300000");
     expect(body).toContain("public");
-  });
+  }));
 
-  test("rejects an MCP-Method header that disagrees with the JSON-RPC method", async () => {
+  test("rejects an MCP-Method header that disagrees with the JSON-RPC method", bindServiceTestEnvironment(async () => {
     const handler = createMcpHandler(() => buildNarriflowMcpServer({
       kind: "oauth",
       userId: "00000000-0000-4000-8000-000000000001",
@@ -150,9 +155,9 @@ describe("Narriflow MCP 2026-07-28 server", () => {
 
     expect(response.status).toBe(400);
     expect(await response.text()).toContain("-32020");
-  });
+  }));
 
-  test("rejects a key before database access when the required scope is absent", async () => {
+  test("rejects a key before database access when the required scope is absent", bindServiceTestEnvironment(async () => {
     const client = await connect({
       kind: "api_key",
       userId: "00000000-0000-4000-8000-000000000001",
@@ -174,9 +179,9 @@ describe("Narriflow MCP 2026-07-28 server", () => {
         details: { scope: "usage:read" },
       }),
     });
-  });
+  }));
 
-  test("requires an explicit write scope before a social publication recheck", async () => {
+  test("requires an explicit write scope before a social publication recheck", bindServiceTestEnvironment(async () => {
     const client = await connect({
       kind: "api_key",
       userId: "00000000-0000-4000-8000-000000000001",
@@ -205,7 +210,7 @@ describe("Narriflow MCP 2026-07-28 server", () => {
         details: { scope: "publishing:write" },
       }),
     });
-  });
+  }));
 
   test.each([
     [
@@ -226,7 +231,7 @@ describe("Narriflow MCP 2026-07-28 server", () => {
         duplicateRiskAcknowledged: true,
       },
     ],
-  ])("requires an explicit write scope before %s", async (name, arguments_) => {
+  ])("requires an explicit write scope before %s", bindServiceTestEnvironment(async (name, arguments_) => {
     const client = await connect({
       kind: "api_key",
       userId: "00000000-0000-4000-8000-000000000001",
@@ -248,9 +253,9 @@ describe("Narriflow MCP 2026-07-28 server", () => {
         details: { scope: "publishing:write" },
       }),
     });
-  });
+  }));
 
-  test("strictly rejects unknown recovery tool fields before service access", async () => {
+  test("strictly rejects unknown recovery tool fields before service access", bindServiceTestEnvironment(async () => {
     const client = await connect({
       kind: "oauth",
       userId: "00000000-0000-4000-8000-000000000001",
@@ -266,11 +271,11 @@ describe("Narriflow MCP 2026-07-28 server", () => {
       },
     });
     expect(result.isError).toBe(true);
-  });
+  }));
 
 	test.each(["platform_url", "provider_reference"] as const)(
 		"rejects %s confirmation without its required evidence at the MCP boundary",
-		async (evidenceKind) => {
+		bindServiceTestEnvironment(async (evidenceKind) => {
 			const client = await connect({
 				kind: "oauth",
 				userId: "00000000-0000-4000-8000-000000000001",
@@ -286,10 +291,10 @@ describe("Narriflow MCP 2026-07-28 server", () => {
 				},
 			});
 			expect(result.isError).toBe(true);
-		},
+		}),
 	);
 
-  test("rejects an API key targeting a workspace other than its bound workspace", async () => {
+  test("rejects an API key targeting a workspace other than its bound workspace", bindServiceTestEnvironment(async () => {
     const client = await connect({
       kind: "api_key",
       userId: "00000000-0000-4000-8000-000000000001",
@@ -313,8 +318,8 @@ describe("Narriflow MCP 2026-07-28 server", () => {
         retryGuidance: "request_access",
       }),
     });
-  });
-  test("get_project returns the canonical snapshot progress without deriving another state", async () => {
+  }));
+  test("get_project returns the canonical snapshot progress without deriving another state", bindServiceTestEnvironment(async () => {
     const actorUserId = "00000000-0000-4000-8000-000000000001";
     const workspaceId = "00000000-0000-4000-8000-000000000002";
     const projectId = "00000000-0000-4000-8000-000000000003";
@@ -347,7 +352,7 @@ describe("Narriflow MCP 2026-07-28 server", () => {
     } finally {
       actorSpy.mockRestore(); snapshotSpy.mockRestore(); transcriptSpy.mockRestore(); clipsSpy.mockRestore();
     }
-  });
+  }));
 
 });
 
@@ -397,7 +402,7 @@ const toolArguments: Record<Exclude<NarriflowMcpToolName, "narriflow_list_worksp
 };
 
 describe("MCP registered tool admission and failures", () => {
-  test("all registered workspace handlers use the matching table row before domain reads", async () => {
+  test("all registered workspace handlers use the matching table row before domain reads", bindServiceTestEnvironment(async () => {
     const actorSpy = spyOn(workspaceService, "requireActor").mockRejectedValue(new ExpectedDomainFailureError({
       code: "test_membership_denied", kind: "forbidden", message: "Current membership denied",
     }));
@@ -414,9 +419,9 @@ describe("MCP registered tool admission and failures", () => {
       expect(actorSpy).toHaveBeenCalledTimes(Object.keys(toolArguments).length);
       expect(snapshotSpy).not.toHaveBeenCalled(); expect(usageSpy).not.toHaveBeenCalled(); expect(runSpy).not.toHaveBeenCalled();
     } finally { actorSpy.mockRestore(); snapshotSpy.mockRestore(); usageSpy.mockRestore(); runSpy.mockRestore(); }
-  });
+  }));
 
-  test("all registered workspace handlers enforce their key scope and boundary before Workspace reads", async () => {
+  test("all registered workspace handlers enforce their key scope and boundary before Workspace reads", bindServiceTestEnvironment(async () => {
     const actorSpy = spyOn(workspaceService, "requireActor").mockRejectedValue(new Error("Workspace lookup must not occur"));
     try {
       const missingScope = await connect({ kind: "api_key", userId: ACTOR_ID, clientId: "key-client", apiKeyId: RESOURCE_ID,
@@ -434,10 +439,10 @@ describe("MCP registered tool admission and failures", () => {
       }
       expect(actorSpy).not.toHaveBeenCalled();
     } finally { actorSpy.mockRestore(); }
-  });
+  }));
 
   test.each(["invalid", "unprocessable", "forbidden", "payment_required", "missing", "conflict", "rate_limited", "unavailable"] satisfies ExpectedDomainFailureKind[])(
-    "translates a %s domain failure through the MCP client", async (kind) => {
+    "translates a %s domain failure through the MCP client", bindServiceTestEnvironment(async (kind) => {
       const actorSpy = spyOn(workspaceService, "requireActor").mockResolvedValue(currentActor);
       const usageSpy = spyOn(projectService, "getUsageSummary").mockRejectedValue(new ExpectedDomainFailureError({
         code: `domain_${kind}`, kind, message: "Safe explanation", details: { requestedWorkspace: WORKSPACE_ID }, retryAfterSeconds: 1.1,
@@ -451,10 +456,10 @@ describe("MCP registered tool admission and failures", () => {
         expect(usageSpy).toHaveBeenCalledWith(currentActor);
         expect(JSON.parse((result.content![0] as { text: string }).text)).toEqual((result.structuredContent as { data: unknown }).data);
       } finally { actorSpy.mockRestore(); usageSpy.mockRestore(); }
-    },
+    }),
   );
 
-  test("hides unknown internal exceptions even when they resemble former admission messages", async () => {
+  test("hides unknown internal exceptions even when they resemble former admission messages", bindServiceTestEnvironment(async () => {
     const actorSpy = spyOn(workspaceService, "requireActor").mockResolvedValue(currentActor);
     const usageSpy = spyOn(projectService, "getUsageSummary").mockRejectedValue(new Error("Narriflow MCP password=private"));
     try {
@@ -463,7 +468,7 @@ describe("MCP registered tool admission and failures", () => {
       expect(result.structuredContent).toEqual({ data: { error: "narriflow_tool_failed", message: "Narriflow tool failed without exposing internal details" } });
       expect(JSON.stringify(result)).not.toContain("password=private");
     } finally { actorSpy.mockRestore(); usageSpy.mockRestore(); }
-  });
+  }));
 });
 
 describe("narriflow_propose_social_post", () => {
@@ -475,7 +480,7 @@ describe("narriflow_propose_social_post", () => {
     exportId: ID, exportVariantId: ID, aspectRatio: "9:16", createdAt: "2026-10-24T12:00:00.000Z" };
   const oauth: NarriflowMcpPrincipal = { kind: "oauth", userId: actor.actorUserId, clientId: "client", scopes: ["publishing:write"] };
 
-  test("proposes into the queue without any confirmation flow and says where a person accepts it", async () => {
+  test("proposes into the queue without any confirmation flow and says where a person accepts it", bindServiceTestEnvironment(async () => {
     const actorSpy = spyOn(workspaceService, "requireActor").mockResolvedValue(actor);
     const propose = spyOn(publishingQueue, "propose").mockResolvedValue({ proposal, replayed: false } as never);
     try {
@@ -487,9 +492,9 @@ describe("narriflow_propose_social_post", () => {
       expect(propose.mock.calls[0]![1]).toEqual({ clipId: ID, exportId: ID, socialAccountId: ID, caption: "Draft" });
       expect(propose.mock.calls[0]![2]).toMatchObject({ source: "integration", mutation: { clientIdempotencyKey: ID } });
     } finally { actorSpy.mockRestore(); propose.mockRestore(); }
-  });
+  }));
 
-  test("finishing that proposes to the queue needs publishing:write on submit, generate and upload", async () => {
+  test("finishing that proposes to the queue needs publishing:write on submit, generate and upload", bindServiceTestEnvironment(async () => {
     const actorSpy = spyOn(workspaceService, "requireActor").mockResolvedValue(actor);
     const submit = spyOn(projectService, "queueLinkIngest").mockRejectedValue(new Error("must not run"));
     try {
@@ -506,9 +511,9 @@ describe("narriflow_propose_social_post", () => {
       }
       expect(submit).not.toHaveBeenCalled();
     } finally { actorSpy.mockRestore(); submit.mockRestore(); }
-  });
+  }));
 
-  test("cannot choose a time, and needs the publishing write scope", async () => {
+  test("cannot choose a time, and needs the publishing write scope", bindServiceTestEnvironment(async () => {
     const actorSpy = spyOn(workspaceService, "requireActor").mockResolvedValue(actor);
     const propose = spyOn(publishingQueue, "propose").mockResolvedValue({ proposal, replayed: false } as never);
     try {
@@ -518,11 +523,11 @@ describe("narriflow_propose_social_post", () => {
       expect(readOnly.structuredContent).toMatchObject({ data: { error: "scope_required", details: { scope: "publishing:write" } } });
       expect(propose).not.toHaveBeenCalled();
     } finally { actorSpy.mockRestore(); propose.mockRestore(); }
-  });
+  }));
 });
 
 describe("language contract", () => {
-  test("generation tools accept exactly the Scribe language registry, or null to detect, and name no provider or accuracy", async () => {
+  test("generation tools accept exactly the Scribe language registry, or null to detect, and name no provider or accuracy", bindServiceTestEnvironment(async () => {
     const client = await connect({ kind: "oauth", userId: "00000000-0000-4000-8000-000000000001", clientId: "test-oauth-client", scopes: ["projects:read"] });
     const { tools } = await client.listTools();
     const languageSchemas: unknown[] = [];
@@ -541,5 +546,5 @@ describe("language contract", () => {
       expect((schema as { anyOf: { enum?: unknown[]; type?: string }[] }).anyOf).toEqual([{ type: "string", enum: [...SCRIBE_LANGUAGE_CODES] }, { type: "null" }]);
     }
     expect(JSON.stringify(tools)).not.toMatch(/assembly|universal-?\d|accuracy|\bscribe\b|elevenlabs/i);
-  });
+  }));
 });

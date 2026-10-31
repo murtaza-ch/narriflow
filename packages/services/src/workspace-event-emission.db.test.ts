@@ -1,3 +1,4 @@
+import { bindServiceTestEnvironment } from "./runtime-test-support";
 import { createDatabaseTestContext } from "@narriflow/db/testing";
 import { RenderFixtureLifecycle } from "./render-group-test-fixture";
 import { randomUUID } from "node:crypto";
@@ -33,22 +34,22 @@ dbDescribe("Workspace Events written by operation settlement", () => {
   const globals = createDatabaseTestContext();
   let previousGlobalPrisma: PrismaClient | undefined;
 
-  beforeAll(globals.bind(() => {
+  beforeAll(bindServiceTestEnvironment(globals.bind(() => {
     if (!url || !schema?.startsWith("workflow_lifecycle_test_")) throw new Error("Workspace Event tests require a disposable workflow schema");
     pool = new Pool({ connectionString: url, max: 8 });
     prisma = new PrismaClient({ adapter: new PrismaPg(pool, { schema }), transactionOptions: { maxWait: 60_000, timeout: 60_000 } });
     previousGlobalPrisma = globals.client;
     globals.client = prisma;
-  }));
-  beforeEach(globals.bind(async () => {
+  })));
+  beforeEach(bindServiceTestEnvironment(globals.bind(async () => {
     await prisma.workspace.deleteMany({ where: { owner: { clerkId: { startsWith: "workspace-event-emission:" } } } });
     await prisma.user.deleteMany({ where: { clerkId: { startsWith: "workspace-event-emission:" } } });
-  }));
-  afterAll(globals.bind(async () => {
+  })));
+  afterAll(bindServiceTestEnvironment(globals.bind(async () => {
     globals.client = previousGlobalPrisma;
     await prisma?.$disconnect();
     await pool?.end();
-  }));
+  })));
 
   async function fixture(ingestStatus: "ready" | "queued" = "ready") {
     const suffix = randomUUID();
@@ -117,7 +118,7 @@ dbDescribe("Workspace Events written by operation settlement", () => {
   }
   const done = { storageKey: "projects/test/render.mp4", sizeBytes: 1024, durationSec: 10 };
 
-  test("a generation reaching completed emits one operation.finished, and its link intake finishes with it", globals.bind(async () => {
+  test("a generation reaching completed emits one operation.finished, and its link intake finishes with it", bindServiceTestEnvironment(globals.bind(async () => {
     const f = await fixture();
     const { stt, job } = await transcribed(f);
     expect(await feed(f.workspace.id)).toEqual([]);
@@ -144,9 +145,9 @@ dbDescribe("Workspace Events written by operation settlement", () => {
     });
     expect(await feed(f.workspace.id)).toHaveLength(2);
     expect((await prisma.workspaceEventCounter.findUniqueOrThrow({ where: { workspaceId: f.workspace.id } })).lastSeq).toBe(2n);
-  }));
+  })));
 
-  test("a generation with one failed render finishes partial", globals.bind(async () => {
+  test("a generation with one failed render finishes partial", bindServiceTestEnvironment(globals.bind(async () => {
     const f = await fixture();
     const { stt, job } = await transcribed(f);
     const { renderer, attempt, renders } = await detected(f, 2);
@@ -160,9 +161,9 @@ dbDescribe("Workspace Events written by operation settlement", () => {
       finishedSubject("generation", stt.id, f.project.id, "partial"),
       finishedSubject("intake", job.id, f.project.id, "partial"),
     ]);
-  }));
+  })));
 
-  test("a generation whose speech-to-text fails permanently finishes failed, with its upload intake named by the Upload Session", globals.bind(async () => {
+  test("a generation whose speech-to-text fails permanently finishes failed, with its upload intake named by the Upload Session", bindServiceTestEnvironment(globals.bind(async () => {
     const f = await fixture();
     const lifecycle = workflow();
     const stt = await admitStt(lifecycle, f.project.id);
@@ -175,9 +176,9 @@ dbDescribe("Workspace Events written by operation settlement", () => {
       finishedSubject("generation", stt.id, f.project.id, "failed"),
       finishedSubject("intake", sessionId, f.project.id, "failed"),
     ]);
-  }));
+  })));
 
-  test("cancelling a queued generation finishes it cancelled; a retryable failure that requeues finishes nothing", globals.bind(async () => {
+  test("cancelling a queued generation finishes it cancelled; a retryable failure that requeues finishes nothing", bindServiceTestEnvironment(globals.bind(async () => {
     const requeued = await fixture();
     const retrying = workflow();
     await admitStt(retrying, requeued.project.id);
@@ -193,7 +194,7 @@ dbDescribe("Workspace Events written by operation settlement", () => {
       finishedSubject("generation", stt.id, f.project.id, "cancelled"),
       finishedSubject("intake", job.id, f.project.id, "cancelled"),
     ]);
-  }));
+  })));
 
   async function exportFixture(f: Awaited<ReturnType<typeof fixture>>, variants = 1) {
     const run = await prisma.workflowRun.create({ data: { projectId: f.project.id, idempotencyKey: `export-render:${randomUUID()}`, stage: "clip_rendering", status: "queued" } });
@@ -217,7 +218,7 @@ dbDescribe("Workspace Events written by operation settlement", () => {
   }
   const exportSubject = (x: Awaited<ReturnType<typeof exportFixture>>, state: string) => finishedSubject("export", x.exported.id, x.project.id, state);
 
-  test("an export finishing writes one event when its last variant completes, and replays write none", globals.bind(async () => {
+  test("an export finishing writes one event when its last variant completes, and replays write none", bindServiceTestEnvironment(globals.bind(async () => {
     const f = await fixture();
     const x = await exportFixture(f, 2);
     const { lifecycle, attempt } = await claimRender();
@@ -233,9 +234,9 @@ dbDescribe("Workspace Events written by operation settlement", () => {
       await flushWorkspaceEvents(tx);
     });
     expect(await feed(f.workspace.id)).toHaveLength(1);
-  }));
+  })));
 
-  test("an export with a failed format and a completed one finishes partial once the format's retries are exhausted", globals.bind(async () => {
+  test("an export with a failed format and a completed one finishes partial once the format's retries are exhausted", bindServiceTestEnvironment(globals.bind(async () => {
     const f = await fixture();
     const x = await exportFixture(f, 2);
     const current = await claimRender();
@@ -254,9 +255,9 @@ dbDescribe("Workspace Events written by operation settlement", () => {
       await current.lifecycle.retryGroups(x.run.id);
     }
     expect(await subjects(f.workspace.id)).toEqual([exportSubject(x, "partial")]);
-  }));
+  })));
 
-  test("a retryable render failure that the run requeues is not a finished export; the retry's outcome is", globals.bind(async () => {
+  test("a retryable render failure that the run requeues is not a finished export; the retry's outcome is", bindServiceTestEnvironment(globals.bind(async () => {
     const f = await fixture();
     const x = await exportFixture(f);
     const first = await claimRender();
@@ -274,9 +275,9 @@ dbDescribe("Workspace Events written by operation settlement", () => {
     await second.lifecycle.completeClipRenderVariant(second.attempt, x.renders[0]!.id, done);
     await second.lifecycle.settleRenderWorkSet(second.attempt);
     expect(await subjects(f.workspace.id)).toEqual([exportSubject(x, "completed")]);
-  }));
+  })));
 
-  test("an export whose retries are exhausted finishes failed when its run settles", globals.bind(async () => {
+  test("an export whose retries are exhausted finishes failed when its run settles", bindServiceTestEnvironment(globals.bind(async () => {
     const f = await fixture();
     const x = await exportFixture(f);
     let current = await claimRender();
@@ -291,16 +292,16 @@ dbDescribe("Workspace Events written by operation settlement", () => {
     expect(await feed(f.workspace.id)).toEqual([]);
     expect((await current.lifecycle.settleRenderWorkSet(current.attempt)).status).toBe("failed");
     expect(await subjects(f.workspace.id)).toEqual([exportSubject(x, "failed")]);
-  }));
+  })));
 
-  test("cancelling a queued export finishes it cancelled", globals.bind(async () => {
+  test("cancelling a queued export finishes it cancelled", bindServiceTestEnvironment(globals.bind(async () => {
     const f = await fixture();
     const x = await exportFixture(f);
     expect(await clipExportService.cancelQueuedOperation({ actorUserId: f.user.id, workspaceId: f.workspace.id }, x.exported.id)).toBe(true);
     expect(await subjects(f.workspace.id)).toEqual([exportSubject(x, "cancelled")]);
-  }));
+  })));
 
-  test("a lineage that finished before its events expired is not announced again by a later settlement", globals.bind(async () => {
+  test("a lineage that finished before its events expired is not announced again by a later settlement", bindServiceTestEnvironment(globals.bind(async () => {
     const f = await fixture();
     await transcribed(f);
     const { renderer, attempt, renders } = await detected(f, 1);
@@ -325,9 +326,9 @@ dbDescribe("Workspace Events written by operation settlement", () => {
       await flushWorkspaceEvents(tx);
     });
     expect(await subjects(f.workspace.id)).toEqual([exportSubject(x, "completed")]);
-  }));
+  })));
 
-  test("a retried export that finishes again is a second event: one per terminal transition", globals.bind(async () => {
+  test("a retried export that finishes again is a second event: one per terminal transition", bindServiceTestEnvironment(globals.bind(async () => {
     const f = await fixture();
     const x = await exportFixture(f);
     const first = await claimRender();
@@ -351,7 +352,7 @@ dbDescribe("Workspace Events written by operation settlement", () => {
     const events = await feed(f.workspace.id);
     expect(new Set(events.map((event) => event.id)).size).toBe(2);
     expect(events.map((event) => event.seq)).toEqual([1, 2]);
-  }));
+  })));
 
   /** Counts how many transactions a lifecycle opens, so a silent retry shows. */
   function countingPrisma(failFirst = 0) {
@@ -375,7 +376,7 @@ dbDescribe("Workspace Events written by operation settlement", () => {
     return { wrapped, state };
   }
 
-  test("a lifecycle transaction that retries writes its events exactly once", globals.bind(async () => {
+  test("a lifecycle transaction that retries writes its events exactly once", bindServiceTestEnvironment(globals.bind(async () => {
     const f = await fixture();
     const stt = await admitStt(workflow(), f.project.id);
     const job = await handedOffJob(f.project.id, stt.id);
@@ -390,9 +391,9 @@ dbDescribe("Workspace Events written by operation settlement", () => {
     ]);
     expect((await prisma.workspaceEventCounter.findUniqueOrThrow({ where: { workspaceId: f.workspace.id } })).lastSeq).toBe(2n);
     expect(await prisma.workspaceEventKey.count({ where: { workspaceId: f.workspace.id } })).toBe(2);
-  }));
+  })));
 
-  test("an export finishing while a generation is cancelled in the same Project takes locks in one order, with no retry", globals.bind(async () => {
+  test("an export finishing while a generation is cancelled in the same Project takes locks in one order, with no retry", bindServiceTestEnvironment(globals.bind(async () => {
     for (let round = 0; round < 6; round += 1) {
       const f = await fixture();
       const stt = await admitStt(workflow(), f.project.id);
@@ -419,9 +420,9 @@ dbDescribe("Workspace Events written by operation settlement", () => {
       });
       expect(outcomes.sort()).toEqual(["export:completed", "generation:cancelled", "intake:cancelled"]);
     }
-  }));
+  })));
 
-  test("Project expiry finishes its queued generation, intake and export", globals.bind(async () => {
+  test("Project expiry finishes its queued generation, intake and export", bindServiceTestEnvironment(globals.bind(async () => {
     const f = await fixture();
     const stt = await admitStt(workflow(), f.project.id);
     const handedOff = await handedOffJob(f.project.id, stt.id);
@@ -446,7 +447,7 @@ dbDescribe("Workspace Events written by operation settlement", () => {
       named("intake", queuedImport.id, "cancelled"),
       named("export", x.exported.id, "failed"),
     ].sort());
-  }));
+  })));
 
   describe("intake before generation", () => {
     let clock = Date.now();
@@ -459,7 +460,7 @@ dbDescribe("Workspace Events written by operation settlement", () => {
       return prisma.ingestJob.create({ data: { projectId: f.project.id, jobType: "link_import", payload: {} } });
     }
 
-    test("a retried then permanently failed ingest finishes the intake failed exactly once", globals.bind(async () => {
+    test("a retried then permanently failed ingest finishes the intake failed exactly once", bindServiceTestEnvironment(globals.bind(async () => {
       const f = await fixture();
       const job = await queuedJob(f);
       const module = ingest();
@@ -471,16 +472,16 @@ dbDescribe("Workspace Events written by operation settlement", () => {
       expect(second.id).toBe(job.id);
       expect(await module.fail(second, "remote_url_unsafe", "unsafe")).toMatchObject({ outcome: "permanent" });
       expect(await subjects(f.workspace.id)).toEqual([finishedSubject("intake", job.id, f.project.id, "failed")]);
-    }));
+    })));
 
-    test("cancelling a queued intake finishes it cancelled", globals.bind(async () => {
+    test("cancelling a queued intake finishes it cancelled", bindServiceTestEnvironment(globals.bind(async () => {
       const f = await fixture();
       const job = await queuedJob(f);
       expect(await ingest().cancelQueuedOperation({ actorUserId: f.user.id, workspaceId: f.workspace.id, projectId: f.project.id, ingestJobId: job.id })).toBe(true);
       expect(await subjects(f.workspace.id)).toEqual([finishedSubject("intake", job.id, f.project.id, "cancelled")]);
-    }));
+    })));
 
-    test("a refused generation handoff finishes the intake failed", globals.bind(async () => {
+    test("a refused generation handoff finishes the intake failed", bindServiceTestEnvironment(globals.bind(async () => {
       const f = await fixture();
       const job = await prisma.ingestJob.create({ data: { projectId: f.project.id, jobType: "link_import", payload: {}, status: "completed", completedAt: new Date() } });
       const module = ingest();
@@ -489,9 +490,9 @@ dbDescribe("Workspace Events written by operation settlement", () => {
       await refuse();
       await refuse();
       expect(await subjects(f.workspace.id)).toEqual([finishedSubject("intake", job.id, f.project.id, "failed")]);
-    }));
+    })));
 
-    test("an intake that acknowledges an already finished generation finishes with it", globals.bind(async () => {
+    test("an intake that acknowledges an already finished generation finishes with it", bindServiceTestEnvironment(globals.bind(async () => {
       const f = await fixture();
       const lifecycle = workflow();
       const stt = await admitStt(lifecycle, f.project.id);
@@ -505,9 +506,9 @@ dbDescribe("Workspace Events written by operation settlement", () => {
         finishedSubject("generation", stt.id, f.project.id, "failed"),
         finishedSubject("intake", job.id, f.project.id, "failed"),
       ]);
-    }));
+    })));
 
-    test("an acknowledgement racing a speech-to-text failure still finishes the intake exactly once", globals.bind(async () => {
+    test("an acknowledgement racing a speech-to-text failure still finishes the intake exactly once", bindServiceTestEnvironment(globals.bind(async () => {
       const f = await fixture();
       const leaseOwner = randomUUID();
       let armed = false;
@@ -548,7 +549,7 @@ dbDescribe("Workspace Events written by operation settlement", () => {
         finishedSubject("generation", stt.id, f.project.id, "failed"),
         finishedSubject("intake", job.id, f.project.id, "failed"),
       ]);
-    }));
+    })));
   });
   describe("a captioned video", () => {
     const settings = buildCaptionedVideoSettings({ framing: "fit", aspectRatios: ["9:16", "1:1"], captions: { source: "none" } });
@@ -593,7 +594,7 @@ dbDescribe("Workspace Events written by operation settlement", () => {
       return { lifecycle, attempt, exported };
     }
 
-    test("its generation finishes once, when its export does, and not when detection completes", globals.bind(async () => {
+    test("its generation finishes once, when its export does, and not when detection completes", bindServiceTestEnvironment(globals.bind(async () => {
       const f = await fixture();
       const x = await detecting(f);
       await complete(x);
@@ -626,9 +627,9 @@ dbDescribe("Workspace Events written by operation settlement", () => {
       });
       expect(await feed(f.workspace.id)).toHaveLength(3);
       expect((await prisma.workspaceEventCounter.findUniqueOrThrow({ where: { workspaceId: f.workspace.id } })).lastSeq).toBe(3n);
-    }));
+    })));
 
-    test("a failed export finishes its generation failed, once", globals.bind(async () => {
+    test("a failed export finishes its generation failed, once", bindServiceTestEnvironment(globals.bind(async () => {
       const f = await fixture();
       const x = await detecting(f);
       await complete(x);
@@ -639,9 +640,9 @@ dbDescribe("Workspace Events written by operation settlement", () => {
         finishedSubject("generation", x.stt.id, f.project.id, "failed"),
         finishedSubject("intake", x.job.id, f.project.id, "failed"),
       ]);
-    }));
+    })));
 
-    test("the export exists only with the completed run: a render rescue running beside detection's completion can't lose the generation's event", globals.bind(async () => {
+    test("the export exists only with the completed run: a render rescue running beside detection's completion can't lose the generation's event", bindServiceTestEnvironment(globals.bind(async () => {
       const f = await fixture();
       let armed = false;
       let release!: () => void;
@@ -685,9 +686,9 @@ dbDescribe("Workspace Events written by operation settlement", () => {
         finishedSubject("generation", x.stt.id, f.project.id, "completed"),
         finishedSubject("intake", x.job.id, f.project.id, "completed"),
       ]);
-    }));
+    })));
 
-    test("a detection retry leaves no first export behind and renders one: nothing is lost or doubled", globals.bind(async () => {
+    test("a detection retry leaves no first export behind and renders one: nothing is lost or doubled", bindServiceTestEnvironment(globals.bind(async () => {
       const f = await fixture();
       const first = await detecting(f);
       // The first attempt wrote its clip and then lost its worker before completing: no export exists for the retry to cascade away.
@@ -712,9 +713,9 @@ dbDescribe("Workspace Events written by operation settlement", () => {
         finishedSubject("generation", first.stt.id, f.project.id, "completed"),
         finishedSubject("intake", first.job.id, f.project.id, "completed"),
       ]);
-    }));
+    })));
 
-    test("a retried export is a second export event, but its generation stays as first announced", globals.bind(async () => {
+    test("a retried export is a second export event, but its generation stays as first announced", bindServiceTestEnvironment(globals.bind(async () => {
       const f = await fixture();
       const x = await detecting(f);
       await complete(x);
@@ -742,9 +743,9 @@ dbDescribe("Workspace Events written by operation settlement", () => {
       // The export operation reports the retry; the generation keeps what it announced.
       expect(await createOperationStatusReader(prisma).readTrusted({ workspaceId: f.workspace.id }, { kind: "export", id: exported.id })).toMatchObject({ state: "completed" });
       expect(await createOperationStatusReader(prisma).readTrusted({ workspaceId: f.workspace.id }, { kind: "generation", id: x.stt.id })).toMatchObject({ state: "failed", results: { exportId: exported.id } });
-    }));
+    })));
 
-    test("deleting the export after it ended doesn't change what the generation reported", globals.bind(async () => {
+    test("deleting the export after it ended doesn't change what the generation reported", bindServiceTestEnvironment(globals.bind(async () => {
       const f = await fixture();
       const x = await detecting(f);
       await complete(x);
@@ -755,6 +756,6 @@ dbDescribe("Workspace Events written by operation settlement", () => {
       expect(reported).toMatchObject({ state: "completed", results: { exportId: exported.id } });
       await prisma.clipExport.delete({ where: { id: exported.id } });
       expect(await status()).toEqual(reported);
-    }));
+    })));
   });
 });

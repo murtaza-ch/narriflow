@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createDriveTokenCipher, ProcessingUsageError } from "@narriflow/services";
 import { creditsForSourceSeconds } from "@narriflow/validators";
-import { WorkerProcessFailure, type WorkerProcessModule } from "../worker-process";
+import { WorkerProcessFailure, type WorkerProcessModule } from "../../../media/src/worker-process";
 import {
   classifyYtdlpProviderFailure,
   executeYtdlpCommand,

@@ -1,4 +1,4 @@
-import type { workspaceLibraryService } from "@narriflow/services";
+import { type workspaceLibraryService } from "@narriflow/services/workspace-library.service";
 
 type FolderRow = Awaited<ReturnType<typeof workspaceLibraryService.listFolders>>[number];
 

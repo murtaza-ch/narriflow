@@ -2,7 +2,7 @@ import { openMcpContinuationAccessToken, type NarriflowMcpPrincipal } from "@nar
 import { OAuthError, OAuthErrorCode } from "@modelcontextprotocol/server";
 import { McpAuthUnavailableError } from "@narriflow/mcp-core/auth";
 import { getPrismaClient } from "@narriflow/db/client";
-import { ExpectedDomainFailureError } from "@narriflow/services";
+import { ExpectedDomainFailureError } from "@narriflow/services/expected-domain-failure";
 
 type SignedContinuation = { callerId: string; actorUserId: string; workspaceId: string; principalKind: "oauth" | "api_key"; scopes: string[]; oauthToken?: string };
 type ContinuationScope = "processing:write" | "publishing:write";

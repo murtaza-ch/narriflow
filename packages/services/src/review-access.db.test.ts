@@ -1,3 +1,4 @@
+import { bindServiceTestEnvironment } from "./runtime-test-support";
 import { createDatabaseTestContext } from "@narriflow/db/testing";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
@@ -31,7 +32,7 @@ dbDescribe("Review access PostgreSQL contracts", () => {
   const workspaceIds: string[] = [];
   const userIds: string[] = [];
 
-  beforeAll(prismaGlobal.bind(() => {
+  beforeAll(bindServiceTestEnvironment(prismaGlobal.bind(() => {
     if (!databaseUrl) throw new Error("Review access test database is required");
     pool = new Pool({ connectionString: databaseUrl, max: 4,
       options: databaseSchema ? `-csearch_path=${databaseSchema}` : undefined });
@@ -40,9 +41,9 @@ dbDescribe("Review access PostgreSQL contracts", () => {
     prismaGlobal.client = prisma;
     priorRedisUrl = process.env.UPSTASH_REDIS_URL;
     delete process.env.UPSTASH_REDIS_URL;
-  }));
+  })));
 
-  afterAll(prismaGlobal.bind(async () => {
+  afterAll(bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     await prisma?.workspace.deleteMany({ where: { id: { in: workspaceIds } } });
     await prisma?.user.deleteMany({ where: { id: { in: userIds } } });
     prismaGlobal.client = priorPrisma;
@@ -50,7 +51,7 @@ dbDescribe("Review access PostgreSQL contracts", () => {
     else process.env.UPSTASH_REDIS_URL = priorRedisUrl;
     await prisma?.$disconnect();
     await pool?.end();
-  }));
+  })));
 
   async function fixture() {
     const suffix = randomUUID();
@@ -77,7 +78,7 @@ dbDescribe("Review access PostgreSQL contracts", () => {
   }
 
   for (const state of ["expired", "purging"] as const) {
-    test(`blocks new guest sessions and existing guest access when the Project is ${state}`, prismaGlobal.bind(async () => {
+    test(`blocks new guest sessions and existing guest access when the Project is ${state}`, bindServiceTestEnvironment(prismaGlobal.bind(async () => {
       const current = await fixture();
       const identity = { identity: "Client", email: "client@example.test" };
       const session = await reviewService.authenticate(current.token, identity, randomUUID(), sessionSecret);
@@ -93,10 +94,10 @@ dbDescribe("Review access PostgreSQL contracts", () => {
         .rejects.toMatchObject({ code: "review_access_invalid" });
       expect(await prisma.reviewGuest.count({ where: { reviewRoundId: current.round.id } })).toBe(1);
       expect(await prisma.reviewComment.count({ where: { reviewRoundId: current.round.id } })).toBe(0);
-    }));
+    })));
   }
 
-  test("the Workspace export library excludes expired and purging Projects", prismaGlobal.bind(async () => {
+  test("the Workspace export library excludes expired and purging Projects", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const current = await fixture();
     await prisma.workspaceMember.create({ data: { workspaceId: current.workspace.id, userId: current.user.id, role: "owner" } });
     const workflow = await prisma.workflowRun.create({ data: {
@@ -121,9 +122,9 @@ dbDescribe("Review access PostgreSQL contracts", () => {
       expect((await workspaceLibraryService.listExports(actor)).items).toEqual([]);
       expect((await workspaceLibraryService.listExports(actor, { query: "Client" })).items).toEqual([]);
     }
-  }));
+  })));
 
-  test("does not email unusable guest review links or inaccessible Projects", prismaGlobal.bind(async () => {
+  test("does not email unusable guest review links or inaccessible Projects", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const store = createReviewNotificationStore();
     const invalidLedgerIds: string[] = [];
     for (const state of ["revoked", "superseded", "round_expired", "project_expired", "project_purging"] as const) {
@@ -159,5 +160,5 @@ dbDescribe("Review access PostgreSQL contracts", () => {
       expect(await prisma.reviewNotificationLedger.findUnique({ where: { id }, select: { status: true, failureCode: true } }))
         .toEqual({ status: "failed", failureCode: "context_unavailable" });
     }
-  }));
+  })));
 });

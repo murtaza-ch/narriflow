@@ -1,3 +1,4 @@
+import { bindServiceTestEnvironment } from "./runtime-test-support";
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -48,24 +49,24 @@ describe("frame and timecode math", () => {
     ["29.97", 1834, "00:01:01:04"],
     ["30", 1836, "00:01:01:06"],
     ["59.94", 3668, "00:01:01:08"],
-  ] as const)("%s fps counts exact frames and non-drop timecode", (name, frames, timecode) => {
+  ] as const)("%s fps counts exact frames and non-drop timecode", bindServiceTestEnvironment((name, frames, timecode) => {
     expect(secondsToFrames(61.2, RATES[name])).toBe(frames);
     expect(framesToTimecode(frames, RATES[name])).toBe(timecode);
-  });
+  }));
 
-  test("an hour of NTSC footage is 107892 frames, labelled 00:59:56:12 in non-drop timecode", () => {
+  test("an hour of NTSC footage is 107892 frames, labelled 00:59:56:12 in non-drop timecode", bindServiceTestEnvironment(() => {
     expect(secondsToFrames(3600, NTSC_30)).toBe(107_892);
     expect(framesToTimecode(107_892, NTSC_30)).toBe("00:59:56:12");
     expect(secondsToFrames(3600, RATES["25"])).toBe(90_000);
     expect(framesToTimecode(90_000, RATES["25"])).toBe("01:00:00:00");
-  });
+  }));
 
-  test("a half frame rounds up the same way every time", () => {
+  test("a half frame rounds up the same way every time", bindServiceTestEnvironment(() => {
     // 0.02 s at 25 fps is exactly half a frame.
     expect(secondsToFrames(0.02, RATES["25"])).toBe(1);
     expect(secondsToFrames(0.06, RATES["25"])).toBe(2);
     expect(secondsToFrames(0.019, RATES["25"])).toBe(0);
-  });
+  }));
 });
 
 // One second of footage starting 61.2 s into the source, hand-counted per rate.
@@ -79,9 +80,9 @@ describe("one second at 61.2 s, per frame rate", () => {
     ["29.97", "00:01:01:04 00:01:02:04 01:00:00:00 01:00:01:00"],
     ["30", "00:01:01:06 00:01:02:06 01:00:00:00 01:00:01:00"],
     ["59.94", "00:01:01:08 00:01:02:08 01:00:00:00 01:00:01:00"],
-  ] as const)("%s fps EDL event", (name, timecodes) => {
+  ] as const)("%s fps EDL event", bindServiceTestEnvironment((name, timecodes) => {
     expect(renderTimeline("edl", oneSecond(RATES[name]))).toContain(`AA/V  C        ${timecodes}\n`);
-  });
+  }));
 
   test.each([
     ["23.976", 1467, 1491, "489489/8000s", "1001/1000s"],
@@ -89,17 +90,17 @@ describe("one second at 61.2 s, per frame rate", () => {
     ["29.97", 1834, 1864, "917917/15000s", "1001/1000s"],
     ["30", 1836, 1866, "306/5s", "1s"],
     ["59.94", 3668, 3728, "917917/15000s", "1001/1000s"],
-  ] as const)("%s fps xmeml frames and FCPXML time", (name, inFrame, outFrame, start, duration) => {
+  ] as const)("%s fps xmeml frames and FCPXML time", bindServiceTestEnvironment((name, inFrame, outFrame, start, duration) => {
     const xmeml = renderTimeline("xmeml", oneSecond(RATES[name]));
     expect(xmeml).toContain(`<in>${inFrame}</in>`);
     expect(xmeml).toContain(`<out>${outFrame}</out>`);
     const clip = renderTimeline("fcpxml", oneSecond(RATES[name])).split("\n").find((line) => line.includes("<asset-clip"))!;
     expect(clip).toContain(`start="${start}" duration="${duration}"`);
-  });
+  }));
 });
 
 describe("EDL", () => {
-  test("cuts become events in order, with continuous record timecode from 01:00:00:00", () => {
+  test("cuts become events in order, with continuous record timecode from 01:00:00:00", bindServiceTestEnvironment(() => {
     expect(renderTimeline("edl", input(NTSC_30))).toBe([
       "TITLE: Big idea & more",
       "FCM: NON-DROP FRAME",
@@ -110,17 +111,17 @@ describe("EDL", () => {
       "* FROM CLIP NAME: my-talk-source.mp4",
       "",
     ].join("\n"));
-  });
+  }));
 
-  test("a source without audio is a video-only event", () => {
+  test("a source without audio is a video-only event", bindServiceTestEnvironment(() => {
     expect(renderTimeline("edl", input(RATES["25"], { source: probe(RATES["25"], { audio: null }) }))).toContain("001  AX       V     C        00:00:12:00 00:00:14:13 01:00:00:00 01:00:02:13\n");
-  });
+  }));
 });
 
 describe("xmeml", () => {
   const parser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: "@_", isArray: (name) => ["clipitem", "track", "link"].includes(name) });
 
-  test("is well-formed XML with one video clip item per cut and one audio track per channel", () => {
+  test("is well-formed XML with one video clip item per cut and one audio track per channel", bindServiceTestEnvironment(() => {
     const text = renderTimeline("xmeml", input(NTSC_30));
     expect(XMLValidator.validate(text)).toBe(true);
     const { xmeml } = parser.parse(text);
@@ -144,9 +145,9 @@ describe("xmeml", () => {
         [75, 112, 607, 644],
       ]);
     }
-  });
+  }));
 
-  test("defines the source file once and every other item refers to it by id", () => {
+  test("defines the source file once and every other item refers to it by id", bindServiceTestEnvironment(() => {
     const text = renderTimeline("xmeml", input(NTSC_30));
     expect(text.match(/<file id="file-1">/g)).toHaveLength(1);
     expect(text.match(/<file id="file-1"\/>/g)).toHaveLength(5);
@@ -154,9 +155,9 @@ describe("xmeml", () => {
     const file = xmeml.sequence.media.video.track[0].clipitem[0].file;
     expect(file).toMatchObject({ name: "my-talk-source.mp4", pathurl: "my-talk-source.mp4", duration: 18_000 });
     expect(file.media.audio).toMatchObject({ channelcount: 2 });
-  });
+  }));
 
-  test("links each video item to the audio items cut from it", () => {
+  test("links each video item to the audio items cut from it", bindServiceTestEnvironment(() => {
     const { xmeml } = parser.parse(renderTimeline("xmeml", input(NTSC_30)));
     const ids = (items: Array<Record<string, string>>) => items.map((item) => item["@_id"]);
     const [video] = xmeml.sequence.media.video.track;
@@ -166,7 +167,7 @@ describe("xmeml", () => {
     expect(ids(audio[1].clipitem)).toEqual(["clipitem-5", "clipitem-6"]);
     expect(video.clipitem[0].link.map((link: Record<string, string>) => link.linkclipref)).toEqual(["clipitem-1", "clipitem-3", "clipitem-5"]);
     expect(audio[1].clipitem[1].link.map((link: Record<string, string>) => link.linkclipref)).toEqual(["clipitem-2", "clipitem-4", "clipitem-6"]);
-  });
+  }));
 
   test.each([
     ["23.976", 24, "TRUE"],
@@ -174,26 +175,26 @@ describe("xmeml", () => {
     ["29.97", 30, "TRUE"],
     ["30", 30, "FALSE"],
     ["59.94", 60, "TRUE"],
-  ] as const)("%s fps is timebase %i, ntsc %s", (name, timebase, ntsc) => {
+  ] as const)("%s fps is timebase %i, ntsc %s", bindServiceTestEnvironment((name, timebase, ntsc) => {
     const { xmeml } = parser.parse(renderTimeline("xmeml", input(RATES[name])));
     expect(xmeml.sequence.rate).toEqual({ timebase, ntsc });
     expect(xmeml.sequence.timecode.rate).toEqual({ timebase, ntsc });
-  });
+  }));
 
-  test("escapes names and omits audio for a silent source", () => {
+  test("escapes names and omits audio for a silent source", bindServiceTestEnvironment(() => {
     const text = renderTimeline("xmeml", input(RATES["25"], { title: 'A <b> "quote" & more', source: probe(RATES["25"], { audio: null }) }));
     expect(XMLValidator.validate(text)).toBe(true);
     expect(text).toContain("<name>A &lt;b&gt; &quot;quote&quot; &amp; more</name>");
     const { xmeml } = parser.parse(text);
     expect(xmeml.sequence.media.audio).toBeUndefined();
     expect(xmeml.sequence.media.video.track[0].clipitem[0].link).toHaveLength(1);
-  });
+  }));
 });
 
 describe("FCPXML 1.11", () => {
   const parser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: "@_", isArray: (name) => name === "asset-clip" });
 
-  test("is well-formed XML whose spine cuts the asset in order, in exact rational time", () => {
+  test("is well-formed XML whose spine cuts the asset in order, in exact rational time", bindServiceTestEnvironment(() => {
     const text = renderTimeline("fcpxml", input(NTSC_30));
     expect(XMLValidator.validate(text)).toBe(true);
     const { fcpxml } = parser.parse(text);
@@ -209,7 +210,7 @@ describe("FCPXML 1.11", () => {
       ["r2", "0s", "3003/250s", "1001/400s"],
       ["r2", "1001/400s", "607607/30000s", "37037/30000s"],
     ]);
-  });
+  }));
 
   test.each([
     ["23.976", "1001/24000s"],
@@ -217,12 +218,12 @@ describe("FCPXML 1.11", () => {
     ["29.97", "1001/30000s"],
     ["30", "1/30s"],
     ["59.94", "1001/60000s"],
-  ] as const)("%s fps has frame duration %s", (name, frameDuration) => {
+  ] as const)("%s fps has frame duration %s", bindServiceTestEnvironment((name, frameDuration) => {
     const { fcpxml } = parser.parse(renderTimeline("fcpxml", input(RATES[name])));
     expect(fcpxml.resources.format["@_frameDuration"]).toBe(frameDuration);
-  });
+  }));
 
-  test("offsets are contiguous and sum to the sequence duration", () => {
+  test("offsets are contiguous and sum to the sequence duration", bindServiceTestEnvironment(() => {
     const { fcpxml } = parser.parse(renderTimeline("fcpxml", input(RATES["59.94"])));
     const frame = (time: string) => {
       if (time === "0s") return 0;
@@ -236,7 +237,7 @@ describe("FCPXML 1.11", () => {
       cursor += frame(clip["@_duration"]!);
     }
     expect(frame(fcpxml.library.event.project.sequence["@_duration"])).toBe(cursor);
-  });
+  }));
 
   // Apple's DTD is not in the repository. Point FCPXML_DTD at a copy (1.10's
   // version attribute is fixed to "1.10", so edit it to "1.11") to validate.
@@ -248,35 +249,35 @@ describe("FCPXML 1.11", () => {
     }
   });
 
-  test("audio is described only when the source has it, and sample rates FCPXML does not name are left off the sequence", () => {
+  test("audio is described only when the source has it, and sample rates FCPXML does not name are left off the sequence", bindServiceTestEnvironment(() => {
     const silent = parser.parse(renderTimeline("fcpxml", input(RATES["25"], { source: probe(RATES["25"], { audio: null }) }))).fcpxml;
     expect(silent.resources.asset["@_hasAudio"]).toBeUndefined();
     expect(silent.library.event.project.sequence["@_audioLayout"]).toBeUndefined();
     const odd = parser.parse(renderTimeline("fcpxml", input(RATES["25"], { source: probe(RATES["25"], { audio: { sampleRate: 22_050, channels: 1 } }) }))).fcpxml;
     expect(odd.library.event.project.sequence["@_audioRate"]).toBeUndefined();
     expect(odd.library.event.project.sequence["@_audioLayout"]).toBe("mono");
-  });
+  }));
 });
 
 describe("every format", () => {
-  test.each(TIMELINE_FORMATS)("%s drops a cut shorter than a frame", (format) => {
+  test.each(TIMELINE_FORMATS)("%s drops a cut shorter than a frame", bindServiceTestEnvironment((format) => {
     const text = renderTimeline(format, input(RATES["25"], { cuts: cutsOf([5, 5.01], [12, 14.5], [20.25, 21.5]) }));
     expect(text.match(format === "edl" ? /^\d{3} /gm : /<clipitem id="clipitem-\d+">|<asset-clip /g)).toHaveLength(format === "xmeml" ? 6 : 2);
     expect(text).not.toContain(format === "edl" ? "00:00:05:00" : "<in>125</in>");
-  });
+  }));
 
-  test.each(TIMELINE_FORMATS)("%s refuses a timeline with no video, or with no footage, as a typed failure", (format) => {
+  test.each(TIMELINE_FORMATS)("%s refuses a timeline with no video, or with no footage, as a typed failure", bindServiceTestEnvironment((format) => {
     expect(() => renderTimeline(format, input(RATES["25"], { source: probe(RATES["25"], { video: null }) }))).toThrow(expect.objectContaining({ code: "timeline_video_required", kind: "unprocessable" }));
     expect(() => renderTimeline(format, input(RATES["25"], { cuts: [] }))).toThrow(expect.objectContaining({ code: "timeline_empty", kind: "unprocessable" }));
     expect(() => renderTimeline(format, input(RATES["25"], { cuts: cutsOf([5, 5.01]) }))).toThrow(expect.objectContaining({ code: "timeline_empty" }));
-  });
+  }));
 
-  test.each(TIMELINE_FORMATS)("%s never reaches past the end of the source file", (format) => {
+  test.each(TIMELINE_FORMATS)("%s never reaches past the end of the source file", bindServiceTestEnvironment((format) => {
     const text = renderTimeline(format, input(RATES["25"], { source: probe(RATES["25"], { durationSec: 13 }), cuts: cutsOf([12, 20]) }));
     if (format === "edl") expect(text).toContain("00:00:12:00 00:00:13:00 01:00:00:00 01:00:01:00");
     if (format === "xmeml") expect(text).toContain("<out>325</out>");
     if (format === "fcpxml") expect(text).toContain('duration="1s"');
-  });
+  }));
 });
 
 describe("many cuts", () => {
@@ -287,7 +288,7 @@ describe("many cuts", () => {
   const cuts = cutsOf(...ranges);
   const parser = new XMLParser({ ignoreAttributes: false, isArray: (name) => ["clipitem", "track"].includes(name) });
 
-  test("every cut starts on the frame of its edited time and the last ends on the frame of the edited duration", () => {
+  test("every cut starts on the frame of its edited time and the last ends on the frame of the edited duration", bindServiceTestEnvironment(() => {
     const { xmeml } = parser.parse(renderTimeline("xmeml", input(RATES["25"], { cuts })));
     const items = xmeml.sequence.media.video.track[0].clipitem as Array<Record<string, number>>;
     expect(items).toHaveLength(20);
@@ -301,15 +302,15 @@ describe("many cuts", () => {
     expect(items.at(-1)!.end).toBe(secondsToFrames(total, RATES["25"]));
     expect(Math.abs(items.at(-1)!.end! / 25 - total)).toBeLessThanOrEqual(0.02);
     expect(xmeml.sequence.duration).toBe(items.at(-1)!.end);
-  });
+  }));
 
-  test("the EDL and FCPXML agree with the xmeml on where the last cut ends", () => {
+  test("the EDL and FCPXML agree with the xmeml on where the last cut ends", bindServiceTestEnvironment(() => {
     const end = secondsToFrames(cuts.at(-1)!.editedEndSec, RATES["25"]);
     expect(renderTimeline("edl", input(RATES["25"], { cuts }))).toContain(`${framesToTimecode(90_000 + end, RATES["25"])}\n`);
     const { fcpxml } = new XMLParser({ ignoreAttributes: false }).parse(renderTimeline("fcpxml", input(RATES["25"], { cuts })));
     const [seconds, divisor = "1"] = String(fcpxml.library.event.project.sequence["@_duration"]).replace("s", "").split("/");
     expect(Math.round((Number(seconds) / Number(divisor)) * 25)).toBe(end);
-  });
+  }));
 });
 
 describe("drop-frame timecode", () => {
@@ -321,52 +322,52 @@ describe("drop-frame timecode", () => {
     [RATES["59.94"], 3599, "00:00:59;59"],
     [RATES["59.94"], 3600, "00:01:00;04"],
     [RATES["59.94"], 35_964, "00:10:00;00"],
-  ] as const)("%j frame %i is %s", (rate, frames, timecode) => {
+  ] as const)("%j frame %i is %s", bindServiceTestEnvironment((rate, frames, timecode) => {
     expect(framesToTimecode(frames, rate, true)).toBe(timecode);
     expect(timecodeToFrames(timecode, rate)).toEqual({ frames, dropFrame: true });
-  });
+  }));
 
-  test("every frame round-trips through its label", () => {
+  test("every frame round-trips through its label", bindServiceTestEnvironment(() => {
     for (const rate of [NTSC_30, RATES["59.94"]]) {
       for (let frames = 0; frames < 250_000; frames += 7) {
         expect(timecodeToFrames(framesToTimecode(frames, rate, true), rate).frames).toBe(frames);
       }
     }
-  });
+  }));
 
-  test("a colon-separated label is non-drop-frame, and rates without drop-frame ignore the mark", () => {
+  test("a colon-separated label is non-drop-frame, and rates without drop-frame ignore the mark", bindServiceTestEnvironment(() => {
     expect(timecodeToFrames("01:00:00:00", NTSC_30)).toEqual({ frames: 108_000, dropFrame: false });
     expect(timecodeToFrames("01:00:00;00", RATES["25"])).toEqual({ frames: 90_000, dropFrame: false });
     expect(framesToTimecode(1800, RATES["30"], true)).toBe("00:01:00:00");
-  });
+  }));
 });
 
 describe("a source with an embedded start timecode", () => {
   const oneCut = cutsOf([12, 14.5]);
 
-  test("the EDL reads source timecode from it and leaves record timecode alone", () => {
+  test("the EDL reads source timecode from it and leaves record timecode alone", bindServiceTestEnvironment(() => {
     const text = renderTimeline("edl", input(RATES["25"], { source: probe(RATES["25"], {}, "10:00:00:00"), cuts: oneCut }));
     expect(text).toContain("FCM: NON-DROP FRAME");
     expect(text).toContain("AA/V  C        10:00:12:00 10:00:14:13 01:00:00:00 01:00:02:13\n");
-  });
+  }));
 
-  test("xmeml states the file's start timecode and keeps in and out relative to the file", () => {
+  test("xmeml states the file's start timecode and keeps in and out relative to the file", bindServiceTestEnvironment(() => {
     const { xmeml } = new XMLParser({ isArray: (name) => ["clipitem", "track"].includes(name) }).parse(
       renderTimeline("xmeml", input(RATES["25"], { source: probe(RATES["25"], {}, "10:00:00:00"), cuts: oneCut })));
     const item = xmeml.sequence.media.video.track[0].clipitem[0];
     expect(item.file.timecode).toMatchObject({ string: "10:00:00:00", frame: 900_000, displayformat: "NDF" });
     expect([item.in, item.out]).toEqual([300, 363]);
     expect(xmeml.sequence.timecode).toMatchObject({ string: "00:00:00:00", frame: 0 });
-  });
+  }));
 
-  test("FCPXML starts the asset at it and cuts from there", () => {
+  test("FCPXML starts the asset at it and cuts from there", bindServiceTestEnvironment(() => {
     const { fcpxml } = new XMLParser({ ignoreAttributes: false, isArray: (name) => name === "asset-clip" }).parse(
       renderTimeline("fcpxml", input(RATES["25"], { source: probe(RATES["25"], {}, "10:00:00:00"), cuts: oneCut })));
     expect(fcpxml.resources.asset["@_start"]).toBe("36000s");
     expect(fcpxml.library.event.project.sequence.spine["asset-clip"][0]["@_start"]).toBe("36012s");
-  });
+  }));
 
-  test("a drop-frame start timecode makes the whole timeline drop-frame", () => {
+  test("a drop-frame start timecode makes the whole timeline drop-frame", bindServiceTestEnvironment(() => {
     const source = probe(NTSC_30, {}, "01:00:00;00");
     const edl = renderTimeline("edl", input(NTSC_30, { source, cuts: cutsOf([12, 14.5]) }));
     expect(edl).toContain("FCM: DROP FRAME");
@@ -378,7 +379,7 @@ describe("a source with an embedded start timecode", () => {
     const fcpxml = renderTimeline("fcpxml", input(NTSC_30, { source, cuts: cutsOf([12, 14.5]) }));
     expect(fcpxml).toContain('tcFormat="DF"');
     expect(fcpxml).not.toContain('tcFormat="NDF"');
-  });
+  }));
 });
 
 // Golden files hold the exact text editors import. Review them by eye when
@@ -394,11 +395,11 @@ describe("golden files", () => {
     expect(text).toBe(readFileSync(path, "utf8"));
   }
 
-  test.each(TIMELINE_FORMATS)("29.97 fps stereo source, two cuts: %s", (format: TimelineFormat) => {
+  test.each(TIMELINE_FORMATS)("29.97 fps stereo source, two cuts: %s", bindServiceTestEnvironment((format: TimelineFormat) => {
     golden("29.97-two-cuts", format, renderTimeline(format, input(NTSC_30)));
-  });
+  }));
 
-  test.each(TIMELINE_FORMATS)("29.97 fps source with a drop-frame start timecode: %s", (format: TimelineFormat) => {
+  test.each(TIMELINE_FORMATS)("29.97 fps source with a drop-frame start timecode: %s", bindServiceTestEnvironment((format: TimelineFormat) => {
     golden("29.97-drop-frame-start", format, renderTimeline(format, input(NTSC_30, { source: probe(NTSC_30, {}, "01:00:00;00") })));
-  });
+  }));
 });

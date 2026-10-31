@@ -1,3 +1,4 @@
+import { bindServiceTestEnvironment } from "./runtime-test-support";
 import { randomUUID } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -97,7 +98,7 @@ describeDb("Scribe language codes migration", () => {
   const column = async (table: string, key: string, ids: Map<string, string>, name: string) =>
     (await client.query(`SELECT "${name}" AS value FROM "${table}" WHERE "id" = $1`, [ids.get(key)])).rows[0].value;
 
-  beforeAll(async () => {
+  beforeAll(bindServiceTestEnvironment(async () => {
     pool = new Pool({ connectionString: databaseUrl, max: 1 });
     client = await pool.connect();
     await createSchema(upgraded, allFolders().filter((entry) => entry !== SCRIBE_MIGRATION));
@@ -149,16 +150,16 @@ describeDb("Scribe language codes migration", () => {
     }
 
     await client.query(migrationSql(SCRIBE_MIGRATION));
-  });
+  }));
 
-  afterAll(async () => {
+  afterAll(bindServiceTestEnvironment(async () => {
     await client?.query(`DROP SCHEMA IF EXISTS "${upgraded}" CASCADE`);
     await client?.query(`DROP SCHEMA IF EXISTS "${fresh}" CASCADE`);
     client?.release();
     await pool?.end();
-  });
+  }));
 
-  test("Project languages move onto the registry; retired and unsupported codes become Auto", async () => {
+  test("Project languages move onto the registry; retired and unsupported codes become Auto", bindServiceTestEnvironment(async () => {
     const result = new Map<string, string | null>();
     for (const key of projectIds.keys()) if (key.startsWith("project-")) result.set(key, await column("Project", key, projectIds, "languageCode"));
     expect(Object.fromEntries(result)).toEqual({
@@ -177,9 +178,9 @@ describeDb("Scribe language codes migration", () => {
       "project-null": null,
     });
     for (const value of result.values()) expect(sourceLanguageCodeSchema.safeParse(value).success).toBe(true);
-  });
+  }));
 
-  test("Recipe languages follow the same rule, and only a changed Recipe is revised", async () => {
+  test("Recipe languages follow the same rule, and only a changed Recipe is revised", bindServiceTestEnvironment(async () => {
     const read = async (key: string) =>
       (await client.query(`SELECT "languageCode", "revision", "contentRevision" FROM "Recipe" WHERE "id" = $1`, [recipeIds.get(key)])).rows[0];
     expect(await read("recipe-en_us")).toEqual({ languageCode: "en", revision: 2, contentRevision: 2 });
@@ -189,9 +190,9 @@ describeDb("Scribe language codes migration", () => {
     expect(await read("recipe- ES ")).toEqual({ languageCode: "es", revision: 2, contentRevision: 2 });
     expect(await read("recipe-es")).toEqual({ languageCode: "es", revision: 1, contentRevision: 1 });
     expect(await read("recipe-null")).toEqual({ languageCode: null, revision: 1, contentRevision: 1 });
-  });
+  }));
 
-  test("Transcript languages gain the canonical spelling; unknown codes and everything else stay", async () => {
+  test("Transcript languages gain the canonical spelling; unknown codes and everything else stay", bindServiceTestEnvironment(async () => {
     const expected: Record<string, string | null> = {
       eng: "en",
       urd: "ur",
@@ -211,15 +212,15 @@ describeDb("Scribe language codes migration", () => {
       null: null,
     };
     for (const [key, value] of Object.entries(expected)) expect(await column("Transcript", key, transcriptIds, "languageCode")).toBe(value);
-  });
+  }));
 
-  test("a historical assemblyai Transcript keeps its provider, text and utterances", async () => {
+  test("a historical assemblyai Transcript keeps its provider, text and utterances", bindServiceTestEnvironment(async () => {
     const row = (await client.query(`SELECT * FROM "Transcript" WHERE "id" = $1`, [transcriptIds.get("assemblyai-en_us")])).rows[0];
     expect(row).toMatchObject({ provider: "assemblyai", providerModel: "model", text: "hello", languageCode: "en" });
     expect(row.utterancesJson).toEqual(utterances);
-  });
+  }));
 
-  test("Upload Sessions rewrite the frozen language and the fingerprint that covers it, in step", async () => {
+  test("Upload Sessions rewrite the frozen language and the fingerprint that covers it, in step", bindServiceTestEnvironment(async () => {
     const read = async (key: string) =>
       (await client.query(`SELECT "generationSettings", "immutableInputFingerprint", "status" FROM "UploadSession" WHERE "id" = $1`, [sessionIds.get(key)])).rows[0];
 
@@ -263,15 +264,15 @@ describeDb("Scribe language codes migration", () => {
     const odd = await read("unparsed-fingerprint");
     expect(odd.generationSettings.languageCode).toBe("fil");
     expect(odd.immutableInputFingerprint).toBe(unparsedFingerprint);
-  });
+  }));
 
-  test("Ingest Job payloads carry no language and are untouched", async () => {
+  test("Ingest Job payloads carry no language and are untouched", bindServiceTestEnvironment(async () => {
     const read = async (key: string) => (await client.query(`SELECT "payload" FROM "IngestJob" WHERE "id" = $1`, [jobIds.get(key)])).rows[0].payload;
     expect(await read("rss")).toEqual(rssPayload);
     expect(await read("link")).toEqual({ url: "https://example.test/v", provider: "youtube", requestedTitle: null });
-  });
+  }));
 
-  test("running the migration again changes nothing, and leaves no helpers behind", async () => {
+  test("running the migration again changes nothing, and leaves no helpers behind", bindServiceTestEnvironment(async () => {
     const snapshot = async () => ({
       projects: (await client.query(`SELECT "id", "languageCode" FROM "Project" ORDER BY "id"`)).rows,
       recipes: (await client.query(`SELECT "id", "languageCode", "revision", "contentRevision" FROM "Recipe" ORDER BY "id"`)).rows,
@@ -283,9 +284,9 @@ describeDb("Scribe language codes migration", () => {
     expect(await snapshot()).toEqual(before);
     const leftovers = await client.query(`SELECT to_regclass('pg_temp."_input_language"') AS input, to_regclass('pg_temp."_transcript_language"') AS transcript`);
     expect(leftovers.rows[0]).toEqual({ input: null, transcript: null });
-  });
+  }));
 
-  test("every registry code and Scribe code maps to itself or its canonical code", async () => {
+  test("every registry code and Scribe code maps to itself or its canonical code", bindServiceTestEnvironment(async () => {
     // The migration's tables are generated from the registry; this keeps them from drifting.
     await client.query(`SET search_path TO "${upgraded}"`);
     for (const language of SCRIBE_LANGUAGES) {
@@ -299,11 +300,11 @@ describeDb("Scribe language codes migration", () => {
       expect(await column("Project", probe, projectIds, "languageCode")).toBe(language.code);
       expect(await column("Transcript", probe, transcriptIds, "languageCode")).toBe(language.code);
     }
-  });
+  }));
 
-  test("a fresh schema built from every migration applies cleanly", async () => {
+  test("a fresh schema built from every migration applies cleanly", bindServiceTestEnvironment(async () => {
     await createSchema(fresh, allFolders());
     const { rows } = await client.query(`SELECT count(*)::int AS projects FROM "Project"`);
     expect(rows[0].projects).toBe(0);
-  });
+  }));
 });

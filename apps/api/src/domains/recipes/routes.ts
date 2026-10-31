@@ -1,4 +1,5 @@
-import { type RecipesCommands, recipeService } from "@narriflow/services";
+import { type RecipesCommands } from "@narriflow/services/recipes-commands";
+import { recipeService } from "@narriflow/services/recipe.service";
 import { recipeInputSchema, recipeUpdateSchema } from "@narriflow/validators";
 import { createRouteApp, getActor, getRecordedRateLimit } from "../../http/admission";
 import { getIdempotencyKey, requireIdempotencyKey } from "../../http/idempotency";

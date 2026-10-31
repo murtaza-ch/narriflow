@@ -1,42 +1,43 @@
+import { bindServiceTestEnvironment } from "./runtime-test-support";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { checkRateLimit } from "./rate-limit";
 
 describe("checkRateLimit (fail-open safety)", () => {
   let savedUrl: string | undefined;
 
-  beforeAll(() => {
+  beforeAll(bindServiceTestEnvironment(() => {
     savedUrl = process.env.UPSTASH_REDIS_URL;
     delete process.env.UPSTASH_REDIS_URL;
-  });
+  }));
 
-  afterAll(() => {
+  afterAll(bindServiceTestEnvironment(() => {
     if (savedUrl === undefined) {
       delete process.env.UPSTASH_REDIS_URL;
     } else {
       process.env.UPSTASH_REDIS_URL = savedUrl;
     }
-  });
+  }));
 
-  test("fails open (allowed=true) when Redis URL is unset", async () => {
+  test("fails open (allowed=true) when Redis URL is unset", bindServiceTestEnvironment(async () => {
     const result = await checkRateLimit("gen:user-1", 20, 60);
     expect(result.allowed).toBe(true);
     expect(result.limit).toBe(20);
     expect(result.remaining).toBe(20);
-  });
+  }));
 
-  test("stays open across repeated calls beyond the limit", async () => {
+  test("stays open across repeated calls beyond the limit", bindServiceTestEnvironment(async () => {
     for (let i = 0; i < 50; i += 1) {
       const result = await checkRateLimit("gen:user-2", 5, 60);
       expect(result.allowed).toBe(true);
     }
-  });
+  }));
 
-  test("returns the configured limit shape", async () => {
+  test("returns the configured limit shape", bindServiceTestEnvironment(async () => {
     const result = await checkRateLimit("presign:user-3", 60, 60);
     expect(result).toEqual({ allowed: true, remaining: 60, limit: 60, availability: "unavailable" });
-  });
+  }));
 
-  test("fails open for a malformed Redis credential URL", async () => {
+  test("fails open for a malformed Redis credential URL", bindServiceTestEnvironment(async () => {
     process.env.UPSTASH_REDIS_URL = "redis://user:secret@[invalid";
     try {
       await expect(checkRateLimit("gen:user-4", 20, 60)).resolves.toEqual({
@@ -48,9 +49,9 @@ describe("checkRateLimit (fail-open safety)", () => {
     } finally {
       delete process.env.UPSTASH_REDIS_URL;
     }
-  });
+  }));
 
-  test("concurrent cold-start requests await Redis readiness and enforce the limit", async () => {
+  test("concurrent cold-start requests await Redis readiness and enforce the limit", bindServiceTestEnvironment(async () => {
     let count = 0;
     const server = Bun.listen<{ buffer: string }>({
       hostname: "127.0.0.1",
@@ -89,7 +90,7 @@ describe("checkRateLimit (fail-open safety)", () => {
       delete process.env.UPSTASH_REDIS_URL;
       server.stop(true);
     }
-  });
+  }));
 });
 
 /** A minimal RESP server exercises the real ioredis connection handshake. */

@@ -4,7 +4,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { create } from "fontkit";
 import { CAPTION_FALLBACK_FONTS, captionFallbackFontPath, fontFileCovers, fontFileLineHeightEm } from "./fallback-fonts";
 
-const lock = JSON.parse(readFileSync(new URL("../../../apps/worker/runtime-lock.json", import.meta.url), "utf8")) as {
+const lock = JSON.parse(readFileSync(new URL("../../../apps/media/runtime-lock.json", import.meta.url), "utf8")) as {
   fallbackFonts: { sha256: Record<string, string> };
 };
 

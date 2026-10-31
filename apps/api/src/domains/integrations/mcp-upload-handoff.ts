@@ -1,5 +1,7 @@
 import type { McpUploadHandoffState, NarriflowMcpPrincipal } from "@narriflow/mcp-core";
-import { assertInlineFinishing, ExpectedDomainFailureError, type ActorScope } from "@narriflow/services";
+import { assertInlineFinishing } from "@narriflow/services/integration-commands";
+import { ExpectedDomainFailureError } from "@narriflow/services/expected-domain-failure";
+import { type ActorScope } from "@narriflow/services/actor-scope";
 import { buildGenerationContext, openUploadSessionSchema } from "@narriflow/validators";
 
 export interface McpUploadHandoffDependencies {

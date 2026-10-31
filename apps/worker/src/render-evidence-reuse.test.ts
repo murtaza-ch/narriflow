@@ -1,12 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { compositionAssetRef } from "@narriflow/composition-plan";
 import type { WorkflowAttemptContext } from "@narriflow/services";
-import { createRenderOutputFixture } from "./render-output-validation.test-fixture";
-import { parseRenderConfig } from "./render-config";
-import { RenderFactCache } from "./render-fact-cache";
-import { LayoutEvidence } from "./layout-evidence";
-import type { ClipRenderAttemptAdapters, ClipRenderingWorkflowAttempt } from "./tasks/clip-render-attempt";
-import { selectDurableLayoutEvidence } from "./tasks/clip-render-attempt";
+import { createRenderOutputFixture } from "../../media/src/render-output-validation.test-fixture";
+import { parseRenderConfig } from "../../media/src/render-config";
+import { RenderFactCache } from "../../media/src/render-fact-cache";
+import { LayoutEvidence } from "../../media/src/layout-evidence";
+import type { ClipRenderAttemptAdapters, ClipRenderingWorkflowAttempt } from "../../media/src/tasks/clip-render-attempt";
+import { selectDurableLayoutEvidence } from "../../media/src/tasks/clip-render-attempt";
 import { createClipRenderAttempt } from "./tasks/clip-render-attempt-runtime";
 
 /**

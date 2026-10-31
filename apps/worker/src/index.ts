@@ -1,10 +1,10 @@
-import { renderReplicaResources, productionRenderDiagnosticAdapter } from "./render-diagnostic-adapter";
+import { renderReplicaResources, productionRenderDiagnosticAdapter } from "../../media/src/render-diagnostic-adapter";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { getPrismaClient } from "@narriflow/db/client";
 import { RenderExecutorHealth, reserveWorkerHealthPort, verifySharedRenderEnvironment } from "./render-executor-health";
-import { configureWorkerProcessAdmission, sweepAbandonedScratch } from "./worker-process";
-import { renderResourceBudgetFor, readDiskFacts, judgeAdmission } from "./render-resource-budget";
+import { configureWorkerProcessAdmission, sweepAbandonedScratch } from "../../media/src/worker-process";
+import { renderResourceBudgetFor, readDiskFacts, judgeAdmission } from "../../media/src/render-resource-budget";
 import { mediaWorkScheduler } from "./media-work-scheduler";
 import { pruneBrollAssetCache } from "./tasks/broll";
 import { reconcileRenderObjectsForMaintenance } from "./reconcile-render-objects";
@@ -62,7 +62,7 @@ import { processIngestJob } from "./tasks/ingest";
 import { expireExportBundles, processExportBundleRun } from "./tasks/export-bundle";
 import { createClipRenderAttempt } from "./tasks/clip-render-attempt-runtime";
 import { coordinateRenderWorkSet, executeNextRenderGroup } from "./render-group-executor";
-import { parseWorkerRenderConfig } from "./render-config";
+import { parseWorkerRenderConfig } from "../../media/src/render-config";
 import { processDueSocialPosts } from "./tasks/social-publisher";
 import { parseWorkspaceBillingPollInterval } from "./workspace-billing-config";
 import {

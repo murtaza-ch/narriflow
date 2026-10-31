@@ -1,7 +1,7 @@
 import { OAuthError } from "@modelcontextprotocol/server";
-import type { RateLimitResult } from "@narriflow/services";
+import { type RateLimitResult } from "@narriflow/services/rate-limit";
 import { mcpAuthFailureResponse } from "@narriflow/mcp-core/http";
-import { requireNewMutationAllowed } from "@narriflow/services";
+import { requireNewMutationAllowed } from "@narriflow/services/rate-limit";
 
 export function mcpIntegrationAuthenticationFailure(error: unknown, metadataUrl: string) {
   return error instanceof OAuthError ? mcpAuthFailureResponse(error, metadataUrl) : null;

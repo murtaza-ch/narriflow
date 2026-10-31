@@ -1,16 +1,14 @@
-import type {
-  assistedSocialCopyService,
-  bulkSocialSchedulingService,
-  performanceService,
-  publishingQueue,
-  refreshTikTokInbox,
-  socialOAuthService,
-  socialPublishingOptions,
-  SocialService,
-  workspaceLibraryService,
-  workspaceService,
-} from "@narriflow/services";
-import { PlanRequirementError, SocialOAuthError } from "@narriflow/services";
+import { type assistedSocialCopyService } from "@narriflow/services/assisted-social-copy-runtime";
+import { type bulkSocialSchedulingService } from "@narriflow/services/bulk-social-scheduling-runtime";
+import { type performanceService } from "@narriflow/services/performance.service";
+import { type publishingQueue } from "@narriflow/services/publishing-queue.service";
+import { type refreshTikTokInbox, type socialPublishingOptions } from "@narriflow/services/social-publishing-options";
+import { type socialOAuthService } from "@narriflow/services/social-oauth.service";
+import { type SocialService } from "@narriflow/services/social.service";
+import { type workspaceLibraryService } from "@narriflow/services/workspace-library.service";
+import { type workspaceService } from "@narriflow/services/workspace.service";
+import { PlanRequirementError } from "@narriflow/services/plan-features";
+import { SocialOAuthError } from "@narriflow/services/social-oauth.service";
 import {
   acceptSocialPostProposalSchema,
   bulkSocialScheduleSchema,

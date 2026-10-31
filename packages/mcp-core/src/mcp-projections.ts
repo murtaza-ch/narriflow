@@ -1,4 +1,4 @@
-import type { socialService } from "@narriflow/services";
+import { type socialService } from "@narriflow/services/social.service";
 import type { AutopilotRuleSnapshot, SocialPostSnapshot } from "@narriflow/validators";
 
 export function mcpAutopilotRule(rule: AutopilotRuleSnapshot) {

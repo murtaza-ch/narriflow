@@ -1,3 +1,4 @@
+import { readServiceEnvironment } from "./runtime-environment";
 import { workspaceService } from "./workspace.service";
 import { accessibleProjectWhere } from "./project-access";
 import { randomUUID } from "node:crypto";
@@ -477,7 +478,7 @@ export const socialPublicationRecovery = {
           "This publication can no longer be rechecked with the existing provider operation",
         );
       }
-      const budget = parseSocialPublicationReconciliationBudget(process.env);
+      const budget = parseSocialPublicationReconciliationBudget(readServiceEnvironment());
       const renewWindow = attempt.reconciliationDeadline <= now ||
         attempt.providerCallCount >= budget.providerCallBudget ||
         attempt.failureCode === "publication_provider_call_budget_exhausted";

@@ -22,6 +22,14 @@ export interface RenderGroupAttemptRef extends RenderGroupRef {
   readonly owner: string;
 }
 
+export class RenderGroupAttemptLost extends Error {
+  readonly code = "render_group_attempt_lost";
+  constructor(readonly attempt: RenderGroupAttemptRef) {
+    super(`Render group ${attempt.groupId} is no longer owned`);
+    this.name = "RenderGroupAttemptLost";
+  }
+}
+
 export interface ClaimedRenderGroupAttempt extends RenderGroupAttemptRef {
   readonly projectId: string;
   readonly clipId: string;

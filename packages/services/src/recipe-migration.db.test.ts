@@ -1,3 +1,4 @@
+import { bindServiceTestEnvironment } from "./runtime-test-support";
 import { randomUUID } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -24,21 +25,21 @@ describeDb("Recipes migration", () => {
   const pack = (clipCountTarget: number) => ({ outputTypes: ["short_clip"], clipCountTarget, clipDurationSecTarget: 45, platformPlaybookVersion: "test" });
   const finishing = { topClips: 2, minScore: 0, resolution: "1080p", copyPlatforms: [], delivery: "ready_to_review", queueAccountIds: [] };
 
-  beforeAll(async () => {
+  beforeAll(bindServiceTestEnvironment(async () => {
     pool = new Pool({ connectionString: databaseUrl, max: 1 });
     client = await pool.connect();
     await client.query(`CREATE SCHEMA "${schema}"`);
     await client.query(`SET search_path TO "${schema}"`);
     const folders = readdirSync(MIGRATIONS).filter((entry) => entry < RECIPES_MIGRATION && entry.match(/^\d+_/)).sort();
     for (const folder of folders) await client.query(readFileSync(resolve(MIGRATIONS, folder, "migration.sql"), "utf8"));
-  });
-  afterAll(async () => {
+  }));
+  afterAll(bindServiceTestEnvironment(async () => {
     await client?.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
     client?.release();
     await pool?.end();
-  });
+  }));
 
-  test("creates one Recipe per distinct rule setting, per Workspace, and points the rules at it", async () => {
+  test("creates one Recipe per distinct rule setting, per Workspace, and points the rules at it", bindServiceTestEnvironment(async () => {
     const user = randomUUID();
     const [first, second] = [randomUUID(), randomUUID()];
     const profile = randomUUID();
@@ -98,12 +99,12 @@ describeDb("Recipes migration", () => {
     expect(recipes.find((recipe) => recipe.id === recipeOf.get(e))).toMatchObject({ brandProfileId: null, contentPack: pack(5) });
     // The same settings in another Workspace are that Workspace's own Recipe.
     expect(recipes.find((recipe) => recipe.id === recipeOf.get(f)).workspaceId).toBe(second);
-  });
+  }));
 
-  test("rules lose the settings a Recipe now holds, and a Recipe in use can't be removed from under a rule", async () => {
+  test("rules lose the settings a Recipe now holds, and a Recipe in use can't be removed from under a rule", bindServiceTestEnvironment(async () => {
     const columns = (await client.query<{ column_name: string }>(`SELECT column_name FROM information_schema.columns WHERE table_schema = $1 AND table_name = 'AutopilotRule'`, [schema])).rows.map((row) => row.column_name);
     for (const gone of ["brandProfileId", "languageCode", "contentPack", "finishing"]) expect(columns).not.toContain(gone);
     expect(columns).toContain("recipeId");
     await expect(client.query(`DELETE FROM "Recipe" WHERE "id" = (SELECT "recipeId" FROM "AutopilotRule" LIMIT 1)`)).rejects.toThrow();
-  });
+  }));
 });

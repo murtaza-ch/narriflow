@@ -30,7 +30,7 @@ import {
 } from "@narriflow/validators";
 import { probeSourceLanguage } from "../language-probe";
 import { notifyWorkflowFailureAfterSettlement } from "../notifications";
-import { productionWorkerProcessModule, type WorkerProcessModule } from "../worker-process";
+import { productionWorkerProcessModule, type WorkerProcessModule } from "../../../media/src/worker-process";
 
 const SCRIBE_BASE_URL = "https://api.elevenlabs.io/v1/speech-to-text";
 const SCRIBE_TRANSCRIPTS_URL = `${SCRIBE_BASE_URL}/transcripts`;

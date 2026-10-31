@@ -1,5 +1,6 @@
+import { readServiceEnvironment } from "@narriflow/services/runtime-environment";
 import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { ExpectedDomainFailureError } from "@narriflow/services";
+import { ExpectedDomainFailureError } from "@narriflow/services/expected-domain-failure";
 import { mcpPrepareSocialPostSchema, mcpUploadVideoSchema } from "@narriflow/validators";
 import * as z from "zod/v4";
 import type { NarriflowMcpPrincipal } from "./mcp-tool-admission";
@@ -56,7 +57,7 @@ function fail(code: string, kind: "invalid" | "forbidden" | "conflict" | "unavai
   throw new ExpectedDomainFailureError({ code, kind, message });
 }
 function secret(options: ClockAndSecret) {
-  const value = options.secret ?? process.env.MCP_CONTINUATION_SECRET;
+  const value = options.secret ?? readServiceEnvironment().MCP_CONTINUATION_SECRET;
   if (!value || Buffer.byteLength(value) < 32) fail("mcp_confirmation_unavailable", "unavailable", "Publication confirmation is not configured");
   return value;
 }

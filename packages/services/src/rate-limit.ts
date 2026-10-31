@@ -1,3 +1,4 @@
+import { readServiceEnvironment } from "./runtime-environment";
 import Redis from "ioredis";
 import { ExpectedDomainFailureError } from "./expected-domain-failure";
 import {
@@ -23,7 +24,7 @@ function resetClient(failedClient: Redis) {
 }
 
 function getClient(): Redis | null {
-  const url = optionalRedisUrl(process.env.UPSTASH_REDIS_URL);
+  const url = optionalRedisUrl(readServiceEnvironment().UPSTASH_REDIS_URL);
   if (!url) return null;
   if (Date.now() < retryAfter) return null;
   if (!client) {

@@ -1,5 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
-import { WorkerProcessFailure, type WorkerPersistentProcessRequest } from "./worker-process";
+import { WorkerProcessFailure, type WorkerPersistentProcessRequest } from "../../media/src/worker-process";
 import {
   getYoutubeProxyUrl,
   startYoutubeTokenServer,

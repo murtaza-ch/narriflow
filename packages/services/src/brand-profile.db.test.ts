@@ -1,3 +1,4 @@
+import { bindServiceTestEnvironment } from "./runtime-test-support";
 import { createDatabaseTestContext } from "@narriflow/db/testing";
 import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -46,19 +47,19 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
   let priorPrisma: PrismaClient | undefined;
   const prismaGlobal = createDatabaseTestContext();
 
-  beforeAll(prismaGlobal.bind(() => {
+  beforeAll(bindServiceTestEnvironment(prismaGlobal.bind(() => {
     if (!databaseUrl) throw new Error("Brand Profile test database is required");
     pool = new Pool({ connectionString: databaseUrl, max: 8 });
     prisma = new PrismaClient({ adapter: new PrismaPg(pool, databaseSchema ? { schema: databaseSchema } : undefined) });
     priorPrisma = prismaGlobal.client;
     prismaGlobal.client = prisma;
-  }));
+  })));
 
-  afterAll(prismaGlobal.bind(async () => {
+  afterAll(bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     prismaGlobal.client = priorPrisma;
     await prisma?.$disconnect();
     await pool?.end();
-  }));
+  })));
 
   async function workspaceFixture(label: string, personal = false) {
     const suffix = randomUUID();
@@ -85,7 +86,7 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
     };
   }
 
-  test("default brand selection uses current Workspace management permission", prismaGlobal.bind(async () => {
+  test("default brand selection uses current Workspace management permission", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const f = await workspaceFixture("default-permission");
     const template = await prisma.brandTemplate.create({ data: { name: "Workspace default", workspaceId: f.workspace.id, createdByUserId: f.user.id, captionPreset: DEFAULT_CAPTION_PRESET } });
     const editor = await prisma.user.create({ data: { clerkId: `default-editor:${randomUUID()}` } });
@@ -99,9 +100,9 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
     await prisma.workspace.update({ where: { id: f.workspace.id }, data: { status: "pending_payment", defaultBrandTemplateId: null } });
     await brandTemplateService.setDefault(f.scope, template.id);
     expect((await prisma.workspace.findUnique({ where: { id: f.workspace.id } }))?.defaultBrandTemplateId).toBe(template.id);
-  }));
+  })));
 
-  test("enforces owner scope, built-in exclusion, and optimistic concurrency", prismaGlobal.bind(async () => {
+  test("enforces owner scope, built-in exclusion, and optimistic concurrency", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const first = await workspaceFixture("scope-first");
     const second = await workspaceFixture("scope-second");
     const profile = await brandProfileService.create(first.scope, { name: "Northstar", slug: "northstar" });
@@ -140,9 +141,9 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
     });
     expect(frozen.brandProfileId).toBe(profile.id);
     expect(frozen.brandProfileSnapshot).toMatchObject({ profileId: profile.id });
-  }));
+  })));
 
-  test("freezes the profile's music and sound effects into the Project; later edits leave it alone", prismaGlobal.bind(async () => {
+  test("freezes the profile's music and sound effects into the Project; later edits leave it alone", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const f = await workspaceFixture("audio-snapshot");
     const track = (kind: "music" | "sfx", title: string) => prisma.audioAsset.create({ data: {
       kind, title, workspaceId: f.workspace.id, createdByUserId: f.user.id, storageKey: `audio-assets/${randomUUID()}.mp3`, durationSec: 42,
@@ -175,9 +176,9 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
       url: "https://www.youtube.com/watch?v=brand-audio-none", brandProfileId: null, commitToken: randomUUID(),
     });
     expect(await projectService.getProjectBrandAudio(f.scope, unbranded.project.id)).toEqual({ music: [], sfx: [] });
-  }));
+  })));
 
-  test("assistant intake resolves only Brand Profiles the actor can use and falls back to the default", prismaGlobal.bind(async () => {
+  test("assistant intake resolves only Brand Profiles the actor can use and falls back to the default", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const f = await workspaceFixture("assistant-intake");
     const foreign = await workspaceFixture("assistant-foreign");
     const memberPersonal = await workspaceFixture("assistant-member-personal", true);
@@ -205,9 +206,9 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
     expect((await assistantIntake()).project.id).toBe(first.project.id);
     await expect(projectService.queueLinkIngest({ actorUserId: f.user.id, workspaceId: f.workspace.id },
       { url: "https://www.youtube.com/watch?v=brand-foreign-db-test", commitToken: randomUUID(), brandProfileId: other.id })).rejects.toBeInstanceOf(BrandProfileNotFoundError);
-  }));
+  })));
 
-  test("a remembered default never blocks intake after a downgrade removes Brand Profiles", prismaGlobal.bind(async () => {
+  test("a remembered default never blocks intake after a downgrade removes Brand Profiles", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const f = await workspaceFixture("default-after-downgrade", true);
     const profile = await brandProfileService.create(f.scope, { name: "Kept", slug: "kept" });
     await brandProfileService.setDefault(f.scope, profile.id);
@@ -224,9 +225,9 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
     // Naming the profile explicitly is still refused by the plan.
     await expect(projectService.queueLinkIngest({ actorUserId: f.user.id, workspaceId: f.workspace.id },
       { url: "https://www.youtube.com/watch?v=brand-explicit-after-downgrade", commitToken: randomUUID(), brandProfileId: profile.id })).rejects.toMatchObject({ code: "plan_feature_required" });
-  }));
+  })));
 
-  test("RSS imports freeze the Brand Profile like link intake, so its approval rule gates the clips", prismaGlobal.bind(async () => {
+  test("RSS imports freeze the Brand Profile like link intake, so its approval rule gates the clips", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const f = await workspaceFixture("rss-intake");
     const scope = { actorUserId: f.user.id, workspaceId: f.workspace.id };
     const client = await brandProfileService.create(f.scope, { name: "Client brand", slug: "client-brand", approvalRule: "approval_required" });
@@ -263,9 +264,9 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
     await prisma.workspace.update({ where: { id: f.workspace.id }, data: { pricingTier: "free" } });
     await expect(projectService.importResolvedRssEpisodes(scope, { rssUrl: "https://feeds.example.test/show.xml", episodes: [episode("downgraded")], brandProfileId: client.id }, settings)).rejects.toBeInstanceOf(PlanRequirementError);
     expect(await rssProjects()).toBe(before);
-  }));
+  })));
 
-  test("persists a member style as the profile default", prismaGlobal.bind(async () => {
+  test("persists a member style as the profile default", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const fixture = await workspaceFixture("default-style");
     const profile = await brandProfileService.create(fixture.scope, {
       name: "Default style",
@@ -288,9 +289,9 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
       defaultTemplateId: template.id,
     });
     expect(updated.defaultTemplateId).toBe(template.id);
-  }));
+  })));
 
-  test("refuses to move a style that remains another profile's default", prismaGlobal.bind(async () => {
+  test("refuses to move a style that remains another profile's default", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const fixture = await workspaceFixture("default-style-move");
     const first = await brandProfileService.create(fixture.scope, {
       name: "First profile",
@@ -331,9 +332,9 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
     expect(
       await prisma.brandProfile.findUniqueOrThrow({ where: { id: first.id } }),
     ).toMatchObject({ defaultTemplateId: template.id });
-  }));
+  })));
 
-  test("keeps template and audio membership inside the current workspace", prismaGlobal.bind(async () => {
+  test("keeps template and audio membership inside the current workspace", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const first = await workspaceFixture("membership-workspace-a");
     const secondWorkspace = await prisma.workspace.create({
       data: {
@@ -405,9 +406,9 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
         position: 0,
       }),
     ).resolves.toMatchObject({ id: profile.id });
-  }));
+  })));
 
-  test("blocks new application when identity storage is missing", prismaGlobal.bind(async () => {
+  test("blocks new application when identity storage is missing", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const fixture = await workspaceFixture("missing-object");
     const asset = await prisma.visualAsset.create({
       data: {
@@ -447,9 +448,9 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
     await expect(
       service.resolveForProject(fixture.scope, { profileId: profile.id }),
     ).rejects.toBeInstanceOf(BrandProfileMissingAssetError);
-  }));
+  })));
 
-  test("records entitlement-blocked profile mutations", prismaGlobal.bind(async () => {
+  test("records entitlement-blocked profile mutations", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const fixture = await workspaceFixture("blocked-analytics");
     await expect(
       brandProfileService.create(
@@ -465,9 +466,9 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
         },
       }),
     ).toBe(1);
-  }));
+  })));
 
-  test("deduplicates fingerprints per owner, conceals other tenants, and replaces live references before deletion", prismaGlobal.bind(async () => {
+  test("deduplicates fingerprints per owner, conceals other tenants, and replaces live references before deletion", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const first = await workspaceFixture("asset-first");
     const second = await workspaceFixture("asset-second");
     const fingerprint = "a".repeat(64);
@@ -573,9 +574,9 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
     await visualAssetService.softDelete(first.scope, original.id, { replacementId: replacement.id });
     expect(await prisma.brandProfileAsset.findUnique({ where: { profileId_assetId: { profileId: profile.id, assetId: replacement.id } } })).not.toBeNull();
     expect((await prisma.visualAsset.findUniqueOrThrow({ where: { id: original.id } })).deletedAt).not.toBeNull();
-  }));
+  })));
 
-  test("a clip in an expired Project no longer holds a visual asset; one in a live Project still does", prismaGlobal.bind(async () => {
+  test("a clip in an expired Project no longer holds a visual asset; one in a live Project still does", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const f = await workspaceFixture("asset-expired-clip");
     const asset = await prisma.visualAsset.create({ data: {
       workspaceId: f.workspace.id, createdByUserId: f.user.id, title: "B-roll", kind: "image",
@@ -597,9 +598,9 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
     await prisma.clip.delete({ where: { id: live.id } });
     await visualAssetService.softDelete(f.scope, asset.id, {});
     expect((await prisma.visualAsset.findUniqueOrThrow({ where: { id: asset.id } })).deletedAt).not.toBeNull();
-  }));
+  })));
 
-  test("serializes Scene Template creation against referenced asset and font deletion", prismaGlobal.bind(async () => {
+  test("serializes Scene Template creation against referenced asset and font deletion", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     if (!databaseSchema || !/^[a-zA-Z0-9_]+$/.test(databaseSchema)) {
       throw new Error("A safe disposable Brand Profile test schema is required");
     }
@@ -753,9 +754,9 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
       await prisma.$executeRawUnsafe(`DROP FUNCTION IF EXISTS "${databaseSchema}"."${triggerFunction}"()`);
       blocker.release();
     }
-  }));
+  })));
 
-  test("replays upload finalization without reading the object twice", prismaGlobal.bind(async () => {
+  test("replays upload finalization without reading the object twice", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const fixture = await workspaceFixture("asset-replay");
     const fingerprint = "c".repeat(64);
     const key = `workspaces/${fixture.workspace.id}/visual-assets/replay.png`;
@@ -802,14 +803,14 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
     expect(replay.id).toBe(created.id);
     expect(replay.replayed).toBe(true);
     expect(objectReads).toBe(1);
-  }));
+  })));
 
   async function setTier<T extends { workspace: { id: string }; scope: { pricingTier: string } }>(f: T, tier: "free" | "creator" | "pro" | "business"): Promise<T> {
     await prisma.workspace.update({ where: { id: f.workspace.id }, data: { pricingTier: tier } });
     return { ...f, scope: { ...f.scope, pricingTier: tier } };
   }
 
-  test("a personal Workspace keeps the same branding across Creator, Business, and Pro", prismaGlobal.bind(async () => {
+  test("a personal Workspace keeps the same branding across Creator, Business, and Pro", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     let f = await workspaceFixture("tier-stable", true);
     const profile = await brandProfileService.create(f.scope, { name: "Stable", slug: "stable" });
     await brandProfileService.setDefault(f.scope, profile.id);
@@ -836,9 +837,9 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
       expect(await prisma.visualAsset.count({ where: { id: asset.id, ...exportOwner } })).toBe(1);
       expect(await prisma.visualAsset.count({ where: { id: asset.id, ...brandOwnerWhere(f.scope) } })).toBe(1);
     }
-  }));
+  })));
 
-  test("the ownership migration moves personal-Business rows and their default to the owner", prismaGlobal.bind(async () => {
+  test("the ownership migration moves personal-Business rows and their default to the owner", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const f = await workspaceFixture("ownership-migration", true);
     const workspaceOwned = await prisma.brandProfile.create({ data: {
       workspaceId: f.workspace.id, createdByUserId: f.user.id, updatedByUserId: f.user.id,
@@ -876,9 +877,9 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
     expect((await prisma.workspace.findUniqueOrThrow({ where: { id: f.workspace.id } })).defaultBrandProfileId).toBeNull();
     expect(await prisma.brandProfile.findUniqueOrThrow({ where: { id: sharedProfile.id } })).toMatchObject({ userId: null, workspaceId: shared.workspace.id });
     expect((await brandProfileService.list({ ...f.scope, pricingTier: "business" })).map((row) => row.id).sort()).toEqual([userOwned.id, workspaceOwned.id].sort());
-  }));
+  })));
 
-  test("admits exactly one of two concurrent creations for the last Brand Profile slot", prismaGlobal.bind(async () => {
+  test("admits exactly one of two concurrent creations for the last Brand Profile slot", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const f = await workspaceFixture("profile-last-slot", true);
     const results = await Promise.allSettled([
       brandProfileService.create(f.scope, { name: "One", slug: "one" }),
@@ -892,9 +893,9 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
       details: { limit: "brandProfiles", used: 1, max: 1, currentTier: "creator", requiredTier: "pro" },
     });
     expect(await prisma.brandProfile.count({ where: { userId: f.user.id, deletedAt: null } })).toBe(1);
-  }));
+  })));
 
-  test("over the profile limit after a downgrade, profiles stay visible, editable, and removable", prismaGlobal.bind(async () => {
+  test("over the profile limit after a downgrade, profiles stay visible, editable, and removable", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     let f = await workspaceFixture("profile-over-limit", true);
     f = await setTier(f, "pro");
     const first = await brandProfileService.create(f.scope, { name: "First", slug: "first" });
@@ -911,9 +912,9 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
     await brandProfileService.softDelete(f.scope, first.id, { revision: first.revision });
     expect(await brandProfileService.list(f.scope)).toEqual([]);
     expect(await brandProfileService.getDefaultId(f.scope)).toBeNull();
-  }));
+  })));
 
-  test("a downgraded Free Workspace can delete a profile and then its font and asset", prismaGlobal.bind(async () => {
+  test("a downgraded Free Workspace can delete a profile and then its font and asset", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     let f = await workspaceFixture("free-cleanup", true);
     const profile = await brandProfileService.create(f.scope, { name: "Cleanup", slug: "cleanup" });
     const owner = resolveBrandOwner(f.scope);
@@ -934,9 +935,9 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
     await visualAssetService.softDelete(f.scope, asset.id, {});
     expect((await prisma.brandFont.findUniqueOrThrow({ where: { id: font.id } })).deletedAt).not.toBeNull();
     expect((await prisma.visualAsset.findUniqueOrThrow({ where: { id: asset.id } })).deletedAt).not.toBeNull();
-  }));
+  })));
 
-  test("a downgraded shared Workspace can remove its default when its plan cannot choose a replacement", prismaGlobal.bind(async () => {
+  test("a downgraded shared Workspace can remove its default when its plan cannot choose a replacement", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     let f = await workspaceFixture("shared-default-cleanup");
     const profile = await brandProfileService.create(f.scope, { name: "Shared default", slug: "shared-default" });
     await brandProfileService.setDefault(f.scope, profile.id);
@@ -945,7 +946,7 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
     await brandProfileService.softDelete(f.scope, profile.id, { revision: profile.revision });
     expect(await brandProfileService.getDefaultId(f.scope)).toBeNull();
     expect((await prisma.brandProfile.findUniqueOrThrow({ where: { id: profile.id } })).deletedAt).not.toBeNull();
-  }));
+  })));
 
   describe("deleting a profile that is in use", () => {
     async function inUseFixture(label: string) {
@@ -962,15 +963,15 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
       return { f, doomed, keeper, weekly, daily, other, retired };
     }
 
-    test("usage names the default and the live Recipes", prismaGlobal.bind(async () => {
+    test("usage names the default and the live Recipes", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
       const { f, doomed, keeper } = await inUseFixture("delete-usage");
       expect(await brandProfileService.usage(f.scope, [doomed.id, keeper.id])).toEqual({
         [doomed.id]: { isDefault: true, recipes: [{ id: expect.any(String), name: "Daily" }, { id: expect.any(String), name: "Weekly" }] },
         [keeper.id]: { isDefault: false, recipes: [{ id: expect.any(String), name: "Other" }] },
       });
-    }));
+    })));
 
-    test("a replacement takes over the default and every live Recipe", prismaGlobal.bind(async () => {
+    test("a replacement takes over the default and every live Recipe", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
       const { f, doomed, keeper, weekly, other, retired } = await inUseFixture("delete-replace");
       await brandProfileService.softDelete(f.scope, doomed.id, { revision: doomed.revision, replacementProfileId: keeper.id });
       expect(await brandProfileService.getDefaultId(f.scope)).toBe(keeper.id);
@@ -980,18 +981,18 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
       expect(await prisma.recipe.count({ where: { workspaceId: f.workspace.id, brandProfileId: keeper.id, deletedAt: null } })).toBe(3);
       expect(await prisma.recipe.findUniqueOrThrow({ where: { id: other.id } })).toMatchObject({ revision: other.revision, contentRevision: other.contentRevision });
       expect((await prisma.recipe.findUniqueOrThrow({ where: { id: retired.id } })).brandProfileId).toBe(doomed.id);
-    }));
+    })));
 
-    test("no replacement clears the default and the Recipes' profile", prismaGlobal.bind(async () => {
+    test("no replacement clears the default and the Recipes' profile", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
       const { f, doomed, weekly, daily } = await inUseFixture("delete-null");
       await brandProfileService.softDelete(f.scope, doomed.id, { revision: doomed.revision, replacementProfileId: null });
       expect(await brandProfileService.getDefaultId(f.scope)).toBeNull();
       for (const recipe of [weekly, daily]) {
         expect((await prisma.recipe.findUniqueOrThrow({ where: { id: recipe.id } })).brandProfileId).toBeNull();
       }
-    }));
+    })));
 
-    test("an unusable replacement changes nothing", prismaGlobal.bind(async () => {
+    test("an unusable replacement changes nothing", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
       const { f, doomed, keeper, weekly } = await inUseFixture("delete-invalid");
       const foreign = await workspaceFixture("delete-invalid-foreign");
       const foreignProfile = await brandProfileService.create(foreign.scope, { name: "Foreign", slug: "foreign" });
@@ -1004,18 +1005,18 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
       expect(await brandProfileService.getDefaultId(f.scope)).toBe(doomed.id);
       expect((await prisma.brandProfile.findUniqueOrThrow({ where: { id: doomed.id } })).deletedAt).toBeNull();
       expect((await prisma.recipe.findUniqueOrThrow({ where: { id: weekly.id } })).brandProfileId).toBe(doomed.id);
-    }));
+    })));
 
-    test("a plan that cannot apply profiles can only delete without a replacement", prismaGlobal.bind(async () => {
+    test("a plan that cannot apply profiles can only delete without a replacement", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
       const { f: shared, doomed, keeper, weekly } = await inUseFixture("delete-plan");
       const f = await setTier(shared, "creator");
       await expect(brandProfileService.softDelete(f.scope, doomed.id, { revision: doomed.revision, replacementProfileId: keeper.id })).rejects.toBeInstanceOf(PlanRequirementError);
       await brandProfileService.softDelete(f.scope, doomed.id, { revision: doomed.revision });
       expect(await brandProfileService.getDefaultId(f.scope)).toBeNull();
       expect((await prisma.recipe.findUniqueOrThrow({ where: { id: weekly.id } })).brandProfileId).toBeNull();
-    }));
+    })));
 
-    test("deleting a profile while its replacement is deleted never leaves a default or Recipe on a deleted profile", prismaGlobal.bind(async () => {
+    test("deleting a profile while its replacement is deleted never leaves a default or Recipe on a deleted profile", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
       for (let round = 0; round < 4; round += 1) {
         const { f, doomed, keeper } = await inUseFixture(`delete-race-${round}`);
         const results = await Promise.allSettled([
@@ -1031,9 +1032,9 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
         const stranded = await prisma.recipe.findMany({ where: { workspaceId: f.workspace.id, deletedAt: null, brandProfileId: { not: null } }, select: { brandProfileId: true } });
         expect(stranded.filter((recipe) => !live.has(recipe.brandProfileId!))).toEqual([]);
       }
-    }));
+    })));
 
-    test("a single-profile plan deletes its only (default) profile", prismaGlobal.bind(async () => {
+    test("a single-profile plan deletes its only (default) profile", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
       let f = await workspaceFixture("delete-single", true);
       const only = await brandProfileService.create(f.scope, { name: "Only", slug: "only" });
       await brandProfileService.setDefault(f.scope, only.id);
@@ -1041,10 +1042,10 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
       await brandProfileService.softDelete(f.scope, only.id, { revision: only.revision, replacementProfileId: null });
       expect(await brandProfileService.getDefaultId(f.scope)).toBeNull();
       await expect(brandProfileService.create(f.scope, { name: "Next", slug: "next" })).resolves.toMatchObject({ name: "Next" });
-    }));
+    })));
   });
 
-  test("audio keeps attachment order however the client numbers positions, so the default music is stable", prismaGlobal.bind(async () => {
+  test("audio keeps attachment order however the client numbers positions, so the default music is stable", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const f = await workspaceFixture("audio-order");
     const track = (title: string) => prisma.audioAsset.create({ data: {
       kind: "music", title, workspaceId: f.workspace.id, createdByUserId: f.user.id, storageKey: `audio-assets/${randomUUID()}.mp3`, durationSec: 30,
@@ -1064,9 +1065,9 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
     // Equal stored positions (concurrent adds) fall back to attachment time.
     await prisma.brandProfileAudio.updateMany({ where: { profileId: profile.id }, data: { position: 0 } });
     expect(await titles()).toEqual(["First", "Second", "Third"]);
-  }));
+  })));
 
-  test("styles and audio can be attached and removed, and removing a default style clears the default", prismaGlobal.bind(async () => {
+  test("styles and audio can be attached and removed, and removing a default style clears the default", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const f = await workspaceFixture("membership-remove");
     const profile = await brandProfileService.create(f.scope, { name: "Members", slug: "members" });
     const template = await prisma.brandTemplate.create({ data: { workspaceId: f.workspace.id, name: "Removable", captionPreset: DEFAULT_CAPTION_PRESET } });
@@ -1082,9 +1083,9 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
     expect(afterRemoval).toMatchObject({ templates: [], audio: [], defaultTemplateId: null });
     expect(await prisma.brandTemplate.count({ where: { id: template.id, deletedAt: null } })).toBe(1);
     await expect(brandProfileService.setMembership(free.scope, profile.id, { kind: "template", resourceId: template.id, position: 0 })).rejects.toBeInstanceOf(PlanRequirementError);
-  }));
+  })));
 
-  test("approval governance needs Business, and a downgrade keeps an existing rule", prismaGlobal.bind(async () => {
+  test("approval governance needs Business, and a downgrade keeps an existing rule", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     let f = await workspaceFixture("governance", true);
     await expect(brandProfileService.create(f.scope, { name: "Governed", slug: "governed", approvalRule: "approval_required" }))
       .rejects.toMatchObject({ code: "plan_feature_required", details: { feature: "brand.governance", currentTier: "creator", requiredTier: "business" } });
@@ -1098,9 +1099,9 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
     expect(kept.approvalRule).toBe("approval_required");
     const cleared = await brandProfileService.update(f.scope, plain.id, { revision: kept.revision, approvalRule: "none" });
     expect(cleared.approvalRule).toBe("none");
-  }));
+  })));
 
-  test("custom Brand Templates need a paid plan, count per Workspace, and stay removable", prismaGlobal.bind(async () => {
+  test("custom Brand Templates need a paid plan, count per Workspace, and stay removable", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const f = await workspaceFixture("templates", true);
     const scope = { actorUserId: f.user.id, workspaceId: f.workspace.id };
     const builtIn = await prisma.brandTemplate.create({ data: { name: "Built-in", isBuiltIn: true, builtInKey: `builtin-${randomUUID()}`, captionPreset: DEFAULT_CAPTION_PRESET } });
@@ -1138,9 +1139,9 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
     expect((await brandTemplateService.list(scope)).mine).toHaveLength(3);
     for (const template of (await brandTemplateService.list(scope)).mine) await brandTemplateService.softDelete(scope, template.id);
     expect((await brandTemplateService.list(scope)).mine).toEqual([]);
-  }));
+  })));
 
-  test("default intro and outro Scenes need Business, and Scene Templates stay removable on Free", prismaGlobal.bind(async () => {
+  test("default intro and outro Scenes need Business, and Scene Templates stay removable on Free", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     let f = await workspaceFixture("default-scenes", true);
     f = await setTier(f, "pro");
     const profile = await brandProfileService.create(f.scope, { name: "Scenes", slug: "scenes" });
@@ -1158,9 +1159,9 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
       .rejects.toMatchObject({ code: "plan_feature_required", details: { feature: "brand.scenes" } });
     await sceneTemplateService.softDelete(f.scope, profile.id, intro.id, { expectedRevision: intro.revision });
     expect(await sceneTemplateService.list(f.scope, profile.id)).toEqual([]);
-  }));
+  })));
 
-  test("a downgraded Workspace can clear a default Scene but not edit Scenes", prismaGlobal.bind(async () => {
+  test("a downgraded Workspace can clear a default Scene but not edit Scenes", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     let f = await workspaceFixture("clear-default-scene", true);
     f = await setTier(f, "business");
     const profile = await brandProfileService.create(f.scope, { name: "Defaults", slug: "defaults" });
@@ -1181,9 +1182,9 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
       .rejects.toMatchObject({ code: "brand_forbidden" });
     await sceneTemplateService.update(f.scope, profile.id, intro.id, { expectedRevision: intro.revision, makeDefault: false });
     expect((await prisma.brandProfile.findUniqueOrThrow({ where: { id: profile.id } })).defaultIntroSceneTemplateId).toBeNull();
-  }));
+  })));
 
-  test("a downgraded Workspace can clear a profile's logo and default template but not change its identity", prismaGlobal.bind(async () => {
+  test("a downgraded Workspace can clear a profile's logo and default template but not change its identity", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     let f = await workspaceFixture("clear-profile-logo", true);
     f = await setTier(f, "pro");
     const profile = await brandProfileService.create(f.scope, { name: "Logo", slug: "logo" });
@@ -1207,16 +1208,16 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
     expect(stored.defaultTemplateId).toBeNull();
     expect((stored.visualIdentity as { primaryLogoAssetId: string | null }).primaryLogoAssetId).toBeNull();
     expect(await prisma.brandProfileAsset.count({ where: { profileId: profile.id, role: "logo" } })).toBe(0);
-  }));
+  })));
 
-  test("renaming a profile keeps its approval rule", prismaGlobal.bind(async () => {
+  test("renaming a profile keeps its approval rule", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     let f = await workspaceFixture("keep-approval-rule", true);
     f = await setTier(f, "business");
     const profile = await brandProfileService.create(f.scope, { name: "Governed", slug: "governed", approvalRule: "approval_required" });
     await brandProfileService.update(f.scope, profile.id, { revision: profile.revision, name: "Governed renamed" });
     expect((await prisma.brandProfile.findUniqueOrThrow({ where: { id: profile.id } })).approvalRule).toBe("approval_required");
-  }));
-  test("font uploads verify bytes and ownership; deleted uploads remain available to saved clips", prismaGlobal.bind(async () => {
+  })));
+  test("font uploads verify bytes and ownership; deleted uploads remain available to saved clips", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const f = await workspaceFixture("custom-font", true);
     const other = await workspaceFixture("other-font-owner", true);
     const bytes = readFileSync(new URL("../../caption-fonts/fonts/Anton-Regular.ttf", import.meta.url));
@@ -1271,6 +1272,6 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
     const restored = await service.finalizeUpload(f.scope, input);
     expect(restored.id).toBe(font.id);
     expect((await service.list(f.scope)).map((item) => item.id)).toEqual([font.id]);
-  }));
+  })));
 
 });

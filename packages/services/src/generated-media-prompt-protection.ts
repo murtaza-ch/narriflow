@@ -1,3 +1,4 @@
+import { readServiceEnvironment } from "./runtime-environment";
 import {
   createCipheriv,
   createDecipheriv,
@@ -78,7 +79,7 @@ function parseDecryptionKeys(value: string | undefined) {
 }
 
 export function generatedMediaPromptProtectionFromEnv(
-  environment: Record<string, string | undefined> = process.env,
+  environment: Record<string, string | undefined> = readServiceEnvironment(),
 ) {
   return createGeneratedMediaPromptProtection({
     activeKeyVersion: environment.GENERATED_MEDIA_PROMPT_ACTIVE_KEY_VERSION ?? "",

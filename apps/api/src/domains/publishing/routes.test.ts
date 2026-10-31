@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { AppUser, WorkspaceActorContext } from "@narriflow/auth";
-import { ExpectedDomainFailureError, SocialOAuthError } from "@narriflow/services";
+import { ExpectedDomainFailureError } from "@narriflow/services/expected-domain-failure";
+import { SocialOAuthError } from "@narriflow/services/social-oauth.service";
 import { createRequestPolicyRuntime } from "../../http/request-policy-runtime";
 import type { RateLimitCheck } from "../../http/request-policy";
 import { Hono } from "hono";

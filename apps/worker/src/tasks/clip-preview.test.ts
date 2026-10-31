@@ -3,8 +3,8 @@ import { DEFAULT_CAPTION_PRESET } from "@narriflow/validators";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { productionWorkerProcessModule } from "../worker-process";
-import type { WorkerProcessModule, WorkerProcessRequest } from "../worker-process";
+import { productionWorkerProcessModule } from "../../../media/src/worker-process";
+import type { WorkerProcessModule, WorkerProcessRequest } from "../../../media/src/worker-process";
 import {
   audiogramPreviewDimensions,
   buildAudiogramPreviewArgs,
@@ -721,7 +721,7 @@ describe("preview storage lifetimes", () => {
 });
 
 test("optional peaks cannot swallow executor health failure or publish a proxy after it", async () => {
-  const { WorkerProcessFailure } = await import("../worker-process");
+  const { WorkerProcessFailure } = await import("../../../media/src/worker-process");
   const failure = new WorkerProcessFailure("worker_command_spawn_failed", "retryable", "spawn EBADF", "", null, { failureScope: "executor", executableClass: "ffmpeg", errno: "EBADF" });
   let persisted = false;
   await expect(persistOptionalClipPreviewPeaks({ workerProcess: processModuleWithExecute(async () => { throw failure; }),

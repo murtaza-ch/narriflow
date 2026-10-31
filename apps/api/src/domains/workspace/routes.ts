@@ -1,14 +1,13 @@
 import type { listUserWorkspaces } from "@narriflow/auth";
 import type { sendEmail } from "@narriflow/email";
-import type {
-  WorkspaceCommands,
-  autoCensorService,
-  performanceService,
-  projectService,
-  workspaceMembershipService,
-  workspaceService,
-} from "@narriflow/services";
-import { CredentialAlreadyIssuedError, WorkspaceOperationError } from "@narriflow/services";
+import { type WorkspaceCommands } from "@narriflow/services/workspace-commands";
+import { type autoCensorService } from "@narriflow/services/auto-censor.service";
+import { type performanceService } from "@narriflow/services/performance.service";
+import { type projectService } from "@narriflow/services/project.service";
+import { type workspaceMembershipService } from "@narriflow/services/workspace-membership.service";
+import { type workspaceService } from "@narriflow/services/workspace.service";
+import { CredentialAlreadyIssuedError } from "@narriflow/services/developer-commands";
+import { WorkspaceOperationError } from "@narriflow/services/workspace.service";
 import { resolvePricingTier } from "@narriflow/validators";
 import { workspaceCapabilities } from "@narriflow/validators/api/session";
 import {

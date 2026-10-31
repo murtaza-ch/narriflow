@@ -1,3 +1,4 @@
+import { readServiceEnvironment } from "./runtime-environment";
 import { createCipheriv, createDecipheriv, createHash, createHmac, hkdfSync, randomBytes, randomUUID } from "node:crypto";
 import type { Prisma, PrismaClient } from "@prisma/client";
 import type { ActorScope } from "./actor-scope";
@@ -69,7 +70,7 @@ function callbackKey(material: string) {
 
 /** Seals callback URLs and signing secrets with a purpose-bound key derived
  * from the existing data encryption key material. */
-export function createCallbackCipher(material = process.env.SOCIAL_TOKEN_ENCRYPTION_KEY ?? "") {
+export function createCallbackCipher(material = readServiceEnvironment().SOCIAL_TOKEN_ENCRYPTION_KEY ?? "") {
   const key = callbackKey(material);
   return {
     seal(value: string) {

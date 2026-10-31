@@ -1,10 +1,5 @@
-import {
-  boundedRedisRetryDelay,
-  getWorkflowChannel,
-  installOptionalRedisErrorHandler,
-  OPTIONAL_REDIS_COMMAND_TIMEOUT_MS,
-  OPTIONAL_REDIS_CONNECT_TIMEOUT_MS,
-} from "@narriflow/services";
+import { boundedRedisRetryDelay, installOptionalRedisErrorHandler, OPTIONAL_REDIS_COMMAND_TIMEOUT_MS, OPTIONAL_REDIS_CONNECT_TIMEOUT_MS } from "@narriflow/services/optional-redis";
+import { getWorkflowChannel } from "@narriflow/services/workflow.service";
 import { workflowStageUpdatedEventSchema } from "@narriflow/validators/api/progress";
 import Redis from "ioredis";
 import type { SubscribeLive } from "./stream";

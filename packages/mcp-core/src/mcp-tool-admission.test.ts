@@ -1,12 +1,10 @@
+import { bindServiceTestEnvironment } from "@narriflow/services/runtime-test-support";
 import { describe, expect, test } from "bun:test";
-import {
-  ExpectedDomainFailureError,
-  SocialPublicationRecoveryError,
-  WorkspaceOperationError,
-  type WorkspaceActorContext,
-} from "@narriflow/services";
+import { ExpectedDomainFailureError } from "@narriflow/services/expected-domain-failure";
+import { SocialPublicationRecoveryError } from "@narriflow/services/social-publication-recovery";
+import { WorkspaceOperationError, type WorkspaceActorContext } from "@narriflow/services/workspace.service";
 import { workspaceAllowsCapability, type WorkspaceCapability } from "@narriflow/validators";
-import { INTEGRATION_COMMANDS } from "@narriflow/services";
+import { INTEGRATION_COMMANDS } from "@narriflow/services/integration-admission";
 import { MCP_TOOL_COMMANDS, McpToolAdmission, mcpToolFailure, type NarriflowMcpPrincipal, type NarriflowMcpToolName } from "./mcp-tool-admission";
 
 const USER_ID = "00000000-0000-4000-8000-000000000001";
@@ -47,7 +45,7 @@ function fixture() {
 }
 
 describe("MCP tool admission", () => {
-  test("every workspace tool admits explicitly scoped OAuth with its current capability and real actor", async () => {
+  test("every workspace tool admits explicitly scoped OAuth with its current capability and real actor", bindServiceTestEnvironment(async () => {
     const current = fixture();
     for (const tool of Object.keys(MCP_TOOL_COMMANDS) as NarriflowMcpToolName[]) {
       if (tool === "narriflow_list_workspaces") continue;
@@ -56,9 +54,9 @@ describe("MCP tool admission", () => {
       expect(current.calls.at(-1)).toEqual({ userId: USER_ID, workspaceId: WORKSPACE_ID, capability: INTEGRATION_COMMANDS[MCP_TOOL_COMMANDS[tool]!].capability });
     }
     expect(current.calls.find((call) => call.capability === "processing.consume")).toBeDefined();
-  });
+  }));
 
-  test("every scoped tool rejects a key before Workspace access when its application scope is absent", async () => {
+  test("every scoped tool rejects a key before Workspace access when its application scope is absent", bindServiceTestEnvironment(async () => {
     const current = fixture();
     for (const tool of Object.keys(MCP_TOOL_COMMANDS) as NarriflowMcpToolName[]) {
       if (tool === "narriflow_list_workspaces") continue;
@@ -66,9 +64,9 @@ describe("MCP tool admission", () => {
     }
     expect(current.calls).toEqual([]);
     expect(current.reads).toEqual([]);
-  });
+  }));
 
-  test("each explicitly scoped key passes only its bound Workspace and never falls back to the owner's Workspace", async () => {
+  test("each explicitly scoped key passes only its bound Workspace and never falls back to the owner's Workspace", bindServiceTestEnvironment(async () => {
     const current = fixture();
     for (const tool of Object.keys(MCP_TOOL_COMMANDS) as NarriflowMcpToolName[]) {
       if (tool === "narriflow_list_workspaces") continue;
@@ -79,9 +77,9 @@ describe("MCP tool admission", () => {
       expect(current.calls).toHaveLength(calls);
     }
     expect(current.reads).toEqual([]);
-  });
+  }));
 
-  test("rechecks membership and role between calls instead of trusting an earlier admission", async () => {
+  test("rechecks membership and role between calls instead of trusting an earlier admission", bindServiceTestEnvironment(async () => {
     const current = fixture();
     await current.admission.requireWorkspace("narriflow_run_autopilot_rule_now", oauth, WORKSPACE_ID);
     current.actor.role = "viewer";
@@ -90,9 +88,9 @@ describe("MCP tool admission", () => {
     current.removeMembership();
     await expect(current.admission.requireWorkspace("narriflow_get_project", oauth, WORKSPACE_ID)).rejects.toMatchObject({ code: "workspace_access_denied" });
     expect(current.calls).toHaveLength(4);
-  });
+  }));
 
-  test("rechecks the plan's MCP entitlement and retains status capability denials", async () => {
+  test("rechecks the plan's MCP entitlement and retains status capability denials", bindServiceTestEnvironment(async () => {
     const current = fixture();
     await current.admission.requireWorkspace("narriflow_get_project", oauth, WORKSPACE_ID);
     current.actor.pricingTier = "pro";
@@ -111,16 +109,16 @@ describe("MCP tool admission", () => {
     await expect(current.admission.requireWorkspace("narriflow_run_autopilot_rule_now", oauth, WORKSPACE_ID)).rejects.toMatchObject({ code: "workspace_access_denied", kind: "forbidden" });
     current.actor.status = "active";
     expect((await current.admission.requireWorkspace("narriflow_get_project", oauth, WORKSPACE_ID)).status).toBe("active");
-  });
+  }));
 
-  test("OAuth without a requested Workspace resolves its personal Workspace for that call", async () => {
+  test("OAuth without a requested Workspace resolves its personal Workspace for that call", bindServiceTestEnvironment(async () => {
     const current = fixture();
     await current.admission.requireWorkspace("narriflow_get_project", oauth);
     expect(current.reads).toEqual([`personal:${USER_ID}`]);
     expect(current.calls[0]!.userId).toBe(USER_ID);
-  });
+  }));
 
-  test("OAuth discovery lists current memberships without a plan feature and removal disappears on the next call", async () => {
+  test("OAuth discovery lists current memberships without a plan feature and removal disappears on the next call", bindServiceTestEnvironment(async () => {
     const current = fixture();
     current.actor.pricingTier = "free";
     current.actor.status = "pending_payment";
@@ -130,9 +128,9 @@ describe("MCP tool admission", () => {
     current.removeMembership();
     expect(await current.admission.listWorkspaces(oauth)).toEqual([]);
     expect(current.reads).toEqual([`memberships:${USER_ID}`, `memberships:${USER_ID}`]);
-  });
+  }));
 
-  test("key discovery needs no application scope or plan feature but preserves the content.view role/status check", async () => {
+  test("key discovery needs no application scope or plan feature but preserves the content.view role/status check", bindServiceTestEnvironment(async () => {
     const current = fixture();
     current.actor.pricingTier = "free";
     expect(await current.admission.listWorkspaces(key)).toMatchObject([{ workspaceId: WORKSPACE_ID, mcpEnabled: false }]);
@@ -145,7 +143,7 @@ describe("MCP tool admission", () => {
     current.removeMembership();
     await expect(current.admission.listWorkspaces(key)).rejects.toMatchObject({ code: "workspace_access_denied" });
     expect(current.reads).toHaveLength(2);
-  });
+  }));
 });
 
 describe("MCP expected failure translation", () => {
@@ -153,7 +151,7 @@ describe("MCP expected failure translation", () => {
     ["invalid", "correct_request"], ["unprocessable", "correct_request"], ["forbidden", "request_access"],
     ["payment_required", "review_billing"], ["missing", "refresh_resource"], ["conflict", "refresh_state"],
     ["rate_limited", "retry_later"], ["unavailable", "retry_later"],
-  ] as const)("maps %s with safe code and retry guidance", (kind, retryGuidance) => {
+  ] as const)("maps %s with safe code and retry guidance", bindServiceTestEnvironment((kind, retryGuidance) => {
     const result = mcpToolFailure(new ExpectedDomainFailureError({ code: `fixture_${kind}`, kind,
       message: "A safe domain explanation", details: { workspaceId: WORKSPACE_ID }, retryAfterSeconds: 2.2 }));
     const payload = { error: `fixture_${kind}`, kind, message: "A safe domain explanation", retryGuidance,
@@ -161,9 +159,9 @@ describe("MCP expected failure translation", () => {
     expect(result.isError).toBe(true);
     expect(result.structuredContent).toEqual({ data: payload });
     expect(result.content).toEqual([{ type: "text", text: JSON.stringify(payload) }]);
-  });
+  }));
 
-  test("bounds domain details and retry delays before the MCP response", () => {
+  test("bounds domain details and retry delays before the MCP response", bindServiceTestEnvironment(() => {
     const result = mcpToolFailure(new ExpectedDomainFailureError({ code: "bounded", kind: "rate_limited", message: "Wait",
       details: { ...Object.fromEntries(Array.from({ length: 25 }, (_, index) => [`field${index}`, "x".repeat(1_000)])) },
       retryAfterSeconds: 1_000_000 }));
@@ -171,12 +169,12 @@ describe("MCP expected failure translation", () => {
     expect("details" in payload && Object.keys(payload.details!).length).toBe(16);
     expect("details" in payload && payload.details!.field0).toBe("x".repeat(240));
     expect("retryAfterSeconds" in payload && payload.retryAfterSeconds).toBe(86_400);
-  });
+  }));
 
-  test("social recovery participates through the shared typed contract", () => {
+  test("social recovery participates through the shared typed contract", bindServiceTestEnvironment(() => {
     expect(mcpToolFailure(new SocialPublicationRecoveryError("social_publication_transition_conflict", "Refresh the publication")).structuredContent.data)
       .toEqual({ error: "social_publication_transition_conflict", kind: "conflict", message: "Refresh the publication", retryGuidance: "refresh_state" });
-  });
+  }));
 
   test.each([
     new Error("This API key requires leaked_database_secret scope"),
@@ -184,9 +182,9 @@ describe("MCP expected failure translation", () => {
     new Error("Narriflow MCP internal connection password=secret"),
     { code: "forged", kind: "forbidden", message: "untrusted detail" },
     "secret stack trace",
-  ])("unknown failures cannot acquire safe status by message or fields", (error) => {
+  ])("unknown failures cannot acquire safe status by message or fields", bindServiceTestEnvironment((error) => {
     const result = mcpToolFailure(error);
     expect(result.structuredContent.data).toEqual({ error: "narriflow_tool_failed", message: "Narriflow tool failed without exposing internal details" });
     expect(result.content[0]!.text).not.toContain("secret");
-  });
+  }));
 });

@@ -1,9 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { AppUser, WorkspaceActorContext } from "@narriflow/auth";
-import {
-  ClipActionError,
-  ClipEditorRevisionConflictError,
-} from "@narriflow/services";
+import { ClipActionError } from "@narriflow/services/clip.service";
+import { ClipEditorRevisionConflictError } from "@narriflow/services/clip-editor-document-persistence";
 import {
   captionPresetSchema,
   editorDocumentSchema,

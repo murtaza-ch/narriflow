@@ -1,26 +1,22 @@
+import { bindServiceTestEnvironment } from "@narriflow/services/runtime-test-support";
 import { createDatabaseTestContext } from "@narriflow/db/testing";
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { Validator } from "@seriousme/openapi-schema-validator";
-import {
-  callbackEventId,
-  clipExportService,
-  clipTimelineService,
-  encodeOperationId,
-  ExpectedDomainFailureError,
-  integrationUploadSessionKey,
-  operationStatusService,
-  projectService,
-  publishingQueue,
-  recipeService,
-  RecipeError,
-  socialOAuthService,
-  uploadSessionService,
-  webhookSubscriptions,
-  workspaceService,
-  WorkspaceOperationError,
-  type RateLimitResult,
-  type WorkspaceActorContext,
-} from "@narriflow/services";
+import { callbackEventId } from "@narriflow/services/completion-callback";
+import { clipExportService } from "@narriflow/services/clip-export.service";
+import { clipTimelineService } from "@narriflow/services/clip-timeline.service";
+import { encodeOperationId } from "@narriflow/services/operation-status";
+import { ExpectedDomainFailureError } from "@narriflow/services/expected-domain-failure";
+import { integrationUploadSessionKey } from "@narriflow/services/integration-commands";
+import { operationStatusService } from "@narriflow/services/operation-status-runtime";
+import { projectService } from "@narriflow/services/project.service";
+import { publishingQueue } from "@narriflow/services/publishing-queue.service";
+import { recipeService, RecipeError } from "@narriflow/services/recipe.service";
+import { socialOAuthService } from "@narriflow/services/social-oauth.service";
+import { uploadSessionService } from "@narriflow/services/upload-session.service";
+import { webhookSubscriptions } from "@narriflow/services/webhook-subscription-runtime";
+import { workspaceService, WorkspaceOperationError, type WorkspaceActorContext } from "@narriflow/services/workspace.service";
+import { type RateLimitResult } from "@narriflow/services/rate-limit";
 import { buildGenerationContentPack } from "@narriflow/validators";
 import { Hono } from "hono";
 import { createRestRoutes, REST_AUTH_FAILURE_RATE_LIMIT } from "./routes";
@@ -37,7 +33,7 @@ const SECRET = `nf_${"a".repeat(40)}`;
 const available: RateLimitResult = { allowed: true, availability: "available", remaining: 299, limit: 300 };
 
 const mocks: Array<{ mockRestore(): void }> = [];
-afterEach(() => { for (const mock of mocks.splice(0)) mock.mockRestore(); });
+afterEach(bindServiceTestEnvironment(() => { for (const mock of mocks.splice(0)) mock.mockRestore(); }));
 function spy<T extends object, K extends keyof T>(target: T, key: K) {
   const mocked = spyOn(target, key as never) as unknown as ReturnType<typeof spyOn>;
   mocks.push(mocked);
@@ -84,7 +80,7 @@ function harness(options: { scopes?: string[]; limiter?: RateLimitResult; authFa
 const linkIntake = (overrides: Record<string, unknown> = {}) => ({ project: { id: PROJECT_ID }, queuedJobId: JOB_ID, replayed: false, receiptId: "00000000-0000-4000-8000-0000000000aa", ...overrides });
 
 describe("REST v1 OpenAPI document", () => {
-  test("is served without authentication and validates as OpenAPI 3.1", async () => {
+  test("is served without authentication and validates as OpenAPI 3.1", bindServiceTestEnvironment(async () => {
     const { call } = harness();
     const response = await call("/openapi.json", { key: null });
     expect(response.status).toBe(200);
@@ -93,22 +89,22 @@ describe("REST v1 OpenAPI document", () => {
     const validation = await new Validator().validate(document);
     expect(validation.errors).toBeUndefined();
     expect(validation.valid).toBe(true);
-  });
+  }));
 
-  test("lists exactly the v1 endpoints", async () => {
+  test("lists exactly the v1 endpoints", bindServiceTestEnvironment(async () => {
     const document = await (await harness().call("/openapi.json", { key: null })).json() as { paths: Record<string, Record<string, unknown>> };
     const endpoints = Object.entries(document.paths).flatMap(([path, methods]) => Object.keys(methods).map((method) => `${method.toUpperCase()} ${path.replace("/api/v1", "")}`)).sort();
     expect(endpoints).toMatchSnapshot();
-  });
+  }));
 
-  test("changes only additively: the whole document is snapshotted", async () => {
+  test("changes only additively: the whole document is snapshotted", bindServiceTestEnvironment(async () => {
     // Review any diff here: v1 may add operations or optional fields, never remove or tighten them.
     expect(await (await harness().call("/openapi.json", { key: null })).json()).toMatchSnapshot();
-  });
+  }));
 });
 
 describe("REST v1 authentication and admission", () => {
-  test("an IP over the failed-authentication limit is refused before any DB lookup", async () => {
+  test("an IP over the failed-authentication limit is refused before any DB lookup", bindServiceTestEnvironment(async () => {
     const rateKeys: string[] = [];
     const authFailures = new Map([["rest:authfail:192.0.2.1", REST_AUTH_FAILURE_RATE_LIMIT.limit]]);
     const { call } = harness({ rateKeys, authFailures });
@@ -121,9 +117,9 @@ describe("REST v1 authentication and admission", () => {
     expect(rateKeys).toEqual([]);
     expect((await call("/workspace", { key: "nf_another", headers: { "x-real-ip": "192.0.2.2" } })).status).toBe(401);
     expect(rateKeys).toEqual(["rest:authfail:192.0.2.2"]);
-  });
+  }));
 
-  test("only failed authentications count toward the per-IP limit", async () => {
+  test("only failed authentications count toward the per-IP limit", bindServiceTestEnvironment(async () => {
     spy(projectService, "getUsageSummary").mockResolvedValue({ tier: "business", usedCredits: 0, reservedCredits: 0, limitCredits: 1800, remainingCredits: 1800, periodStart: new Date("2026-10-01T00:00:00.000Z"), renewsAt: new Date("2026-11-01T00:00:00.000Z"), inFlight: 0, inFlightLimit: 20, maxUploadSeconds: 10_800 } as never);
     const rateKeys: string[] = [];
     const authFailures = new Map<string, number>();
@@ -135,18 +131,18 @@ describe("REST v1 authentication and admission", () => {
     expect((await call("/workspace", { key: "nf_wrong", headers })).status).toBe(401);
     expect(authFailures.get("rest:authfail:192.0.2.9")).toBe(2);
     expect((await call("/workspace", { headers })).status).toBe(200);
-  });
+  }));
 
-  test("an OpenAPI suffix on another route still requires API-key authentication", async () => {
+  test("an OpenAPI suffix on another route still requires API-key authentication", bindServiceTestEnvironment(async () => {
     const { call } = harness();
     for (const path of ["/projects/openapi.json", "/recipes/openapi.json"]) {
       const response = await call(path, { key: null });
       expect(response.status).toBe(401);
       expect(await response.json()).toMatchObject({ error: "authentication_required" });
     }
-  });
+  }));
 
-  test("unknown REST paths terminate before the first-party middleware", async () => {
+  test("unknown REST paths terminate before the first-party middleware", bindServiceTestEnvironment(async () => {
     const { app, call } = harness();
     let firstPartyCalls = 0;
     app.use("/api/*", (c) => { firstPartyCalls++; return c.json({ error: "first_party" }, 415); });
@@ -156,9 +152,9 @@ describe("REST v1 authentication and admission", () => {
       expect(await response.json()).toMatchObject({ error: "route_not_found" });
     }
     expect(firstPartyCalls).toBe(0);
-  });
+  }));
 
-  test("malformed operation IDs fail validation after scope and Workspace admission", async () => {
+  test("malformed operation IDs fail validation after scope and Workspace admission", bindServiceTestEnvironment(async () => {
     const { call, requireActor } = harness();
     for (const [path, method] of [["/operations/op_bad", "GET"], ["/operations/op_bad/callback/redeliver", "POST"]]) {
       const response = await call(path!, { method, idempotencyKey: "redeliver" });
@@ -169,17 +165,17 @@ describe("REST v1 authentication and admission", () => {
     const refused = await harness({ scopes: [] }).call("/operations/op_bad");
     expect(refused.status).toBe(403);
     expect(await refused.json()).toMatchObject({ error: "scope_required" });
-  });
+  }));
 
-  test("vendor JSON content types reach the ordinary body validator", async () => {
+  test("vendor JSON content types reach the ordinary body validator", bindServiceTestEnvironment(async () => {
     const intake = spy(projectService, "queueLinkIngest").mockResolvedValue(linkIntake() as never);
     const { call } = harness();
     const response = await call("/projects", { method: "POST", idempotencyKey: "vendor-json", headers: { "content-type": "application/vnd.narriflow+json; charset=utf-8" }, body: JSON.stringify({ url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ" }) });
     expect(response.status).toBe(202);
     expect(intake).toHaveBeenCalledTimes(1);
-  });
+  }));
 
-  test("requires a Bearer API key", async () => {
+  test("requires a Bearer API key", bindServiceTestEnvironment(async () => {
     const { call } = harness();
     for (const header of [null, "Basic abc", "Bearer not-a-key"]) {
       const response = await call("/workspace", { key: null, headers: header ? { authorization: header } : {} });
@@ -190,9 +186,9 @@ describe("REST v1 authentication and admission", () => {
     const revoked = await call("/workspace", { key: `nf_${"b".repeat(40)}` });
     expect(revoked.status).toBe(401);
     expect(await revoked.json()).toMatchObject({ error: "invalid_api_key" });
-  });
+  }));
 
-  test("derives the Workspace from the key and rechecks the key creator's membership", async () => {
+  test("derives the Workspace from the key and rechecks the key creator's membership", bindServiceTestEnvironment(async () => {
     const usage = spy(projectService, "getUsageSummary").mockResolvedValue({ tier: "business", usedCredits: 1, reservedCredits: 2, limitCredits: 1800, remainingCredits: 1797, periodStart: new Date("2026-10-01T00:00:00.000Z"), renewsAt: new Date("2026-11-01T00:00:00.000Z"), inFlight: 0, inFlightLimit: 20, maxUploadSeconds: 10_800 } as never);
     const { call, requireActor } = harness();
     const response = await call("/workspace");
@@ -200,25 +196,25 @@ describe("REST v1 authentication and admission", () => {
     expect(await response.json()).toMatchObject({ workspace: { workspaceId: WORKSPACE_ID, name: "Studio", role: "editor", pricingTier: "business" }, usage: { remainingCredits: 1797, reservedCredits: 2, renewsAt: "2026-11-01T00:00:00.000Z" } });
     expect(requireActor).toHaveBeenCalledWith(USER_ID, WORKSPACE_ID, "content.view");
     expect(usage).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: WORKSPACE_ID }));
-  });
+  }));
 
-  test("refuses a key without the endpoint's scope before reading the Workspace", async () => {
+  test("refuses a key without the endpoint's scope before reading the Workspace", bindServiceTestEnvironment(async () => {
     const { call, requireActor } = harness({ scopes: ["projects:read"] });
     const response = await call("/workspace");
     expect(response.status).toBe(403);
     expect(response.headers.get("WWW-Authenticate")).toContain('scope="usage:read"');
     expect(await response.json()).toMatchObject({ error: "scope_required", details: { scope: "usage:read" } });
     expect(requireActor).not.toHaveBeenCalled();
-  });
+  }));
 
-  test("a removed key creator or a viewer role is refused like the web app", async () => {
+  test("a removed key creator or a viewer role is refused like the web app", bindServiceTestEnvironment(async () => {
     const { call } = harness({ actor: new WorkspaceOperationError("workspace_access_denied", "Current membership refuses this action") });
     const response = await call("/projects", { method: "POST", idempotencyKey: "k-1", json: { url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ" } });
     expect(response.status).toBe(403);
     expect(await response.json()).toMatchObject({ error: "workspace_access_denied" });
-  });
+  }));
 
-  test("API access follows the plan catalog: Pro and above, on an active Workspace", async () => {
+  test("API access follows the plan catalog: Pro and above, on an active Workspace", bindServiceTestEnvironment(async () => {
     for (const tier of ["free", "creator"] as const) {
       const response = await harness({ actor: actor({ pricingTier: tier }) }).call("/brand-profiles");
       expect(response.status).toBe(402);
@@ -230,11 +226,11 @@ describe("REST v1 authentication and admission", () => {
     spy(projectService, "getUsageSummary").mockResolvedValue({ tier: "pro", usedCredits: 0, reservedCredits: 0, limitCredits: 900, remainingCredits: 900, periodStart: new Date("2026-10-01T00:00:00.000Z"), renewsAt: new Date("2026-11-01T00:00:00.000Z"), inFlight: 0, inFlightLimit: 10, maxUploadSeconds: 10_800 } as never);
     const pro = await harness({ actor: actor({ pricingTier: "pro" }) }).call("/workspace");
     expect(pro.status).toBe(200);
-  });
+  }));
 });
 
 describe("REST v1 idempotency and errors", () => {
-  test("mutations require a bounded URL-safe Idempotency-Key", async () => {
+  test("mutations require a bounded URL-safe Idempotency-Key", bindServiceTestEnvironment(async () => {
     const intake = spy(projectService, "queueLinkIngest").mockResolvedValue(linkIntake() as never);
     const { call } = harness();
     for (const idempotencyKey of [undefined, "has space", "x".repeat(201)]) {
@@ -243,9 +239,9 @@ describe("REST v1 idempotency and errors", () => {
       expect(await response.json()).toMatchObject({ error: "idempotency_key_required" });
     }
     expect(intake).not.toHaveBeenCalled();
-  });
+  }));
 
-  test("an accepted link intake returns an opaque operation, and a replay says so", async () => {
+  test("an accepted link intake returns an opaque operation, and a replay says so", bindServiceTestEnvironment(async () => {
     const intake = spy(projectService, "queueLinkIngest").mockResolvedValueOnce(linkIntake() as never).mockResolvedValueOnce(linkIntake({ replayed: true }) as never);
     const { call } = harness();
     const request = { method: "POST", idempotencyKey: "drive-file-1:submit", json: { url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ", generation: { clipCountTarget: 5 } } };
@@ -259,9 +255,9 @@ describe("REST v1 idempotency and errors", () => {
     expect(replay.headers.get("Idempotent-Replayed")).toBe("true");
     expect(intake).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: WORKSPACE_ID }), { url: request.json.url, title: undefined, brandProfileId: undefined },
       expect.objectContaining({ mutation: expect.objectContaining({ clientIdempotencyKey: "drive-file-1:submit" }) }));
-  });
+  }));
 
-  test("finishing rides in the generation context to intake, and an invalid one is refused before any work", async () => {
+  test("finishing rides in the generation context to intake, and an invalid one is refused before any work", bindServiceTestEnvironment(async () => {
     const intake = spy(projectService, "queueLinkIngest").mockResolvedValue(linkIntake() as never);
     const { call } = harness();
     const url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
@@ -276,9 +272,9 @@ describe("REST v1 idempotency and errors", () => {
     const refused = await call("/projects", { method: "POST", idempotencyKey: "fin-3", json: { url, finishing: { topClips: 11 } } });
     expect(refused.status).toBe(400);
     expect(intake).toHaveBeenCalledTimes(2);
-  });
+  }));
 
-  test("a generation request passes its finishing beside the input and refuses an invalid one", async () => {
+  test("a generation request passes its finishing beside the input and refuses an invalid one", bindServiceTestEnvironment(async () => {
     const trigger = spy(projectService, "triggerGeneration").mockResolvedValue({ workflowRunId: JOB_ID, acceptedAt: "2026-10-24T00:00:00.000Z", initialSeq: 0 } as never);
     const { call } = harness();
     const path = `/projects/${PROJECT_ID}/generations`;
@@ -288,9 +284,9 @@ describe("REST v1 idempotency and errors", () => {
     expect(trigger.mock.calls[0]![4]).toMatchObject({ finishing: { topClips: 2, aspectRatios: ["1:1"], minScore: 0, delivery: "ready_to_review" } });
     expect((await call(path, { method: "POST", idempotencyKey: "gen-2", json: { finishing: { topClips: 0 } } })).status).toBe(400);
     expect(trigger).toHaveBeenCalledTimes(1);
-  });
+  }));
 
-  test("callbacks are validated at acceptance and report their event ID", async () => {
+  test("callbacks are validated at acceptance and report their event ID", bindServiceTestEnvironment(async () => {
     const intake = spy(projectService, "queueLinkIngest").mockResolvedValue(linkIntake() as never);
     const { call } = harness();
     const rejected = await call("/projects", { method: "POST", idempotencyKey: "k", json: { url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ", callback: { url: "http://hooks.example/x" } } });
@@ -301,16 +297,16 @@ describe("REST v1 idempotency and errors", () => {
     expect(response.status).toBe(202);
     expect((await response.json()).callback).toEqual({ eventId: callbackEventId(linkIntake().receiptId) });
     expect(intake.mock.calls[0]![2]).toMatchObject({ mutation: { callback: { url: new URL("https://hooks.example/resume/abc") } } });
-  });
+  }));
 
-  test("callback fields are rejected where no operation starts", async () => {
+  test("callback fields are rejected where no operation starts", bindServiceTestEnvironment(async () => {
     const { call } = harness();
     const response = await call("/uploads/00000000-0000-4000-8000-000000000006/grants", { method: "POST", json: { partNumbers: [1], callback: { url: "https://hooks.example/x" } } });
     expect(response.status).toBe(400);
     expect(await response.json()).toMatchObject({ error: "invalid_request" });
-  });
+  }));
 
-  test("errors carry a stable code, a safe message, and the request ID", async () => {
+  test("errors carry a stable code, a safe message, and the request ID", bindServiceTestEnvironment(async () => {
     spy(projectService, "getProjectSnapshot").mockRejectedValueOnce(new ExpectedDomainFailureError({ code: "project_not_found", kind: "missing", message: "Project not found" }))
       .mockRejectedValueOnce(new Error("connection string postgres://secret leaked"));
     const { call, logs } = harness();
@@ -328,14 +324,14 @@ describe("REST v1 idempotency and errors", () => {
     expect(invalid.status).toBe(400);
     expect(await invalid.json()).toMatchObject({ error: "invalid_request", details: { issues: [expect.objectContaining({ path: "id" })] } });
     expect((await call("/nowhere")).status).toBe(404);
-  });
+  }));
 });
 
 describe("REST v1 captioned videos", () => {
   const srt = "1\n00:00:00,000 --> 00:00:02,000\nHello there\n\n2\n00:00:02,000 --> 00:00:04,000\nA short film";
   const link = "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
 
-  test("a link starts a caption-only intake with settings frozen into its Content Pack and callback", async () => {
+  test("a link starts a caption-only intake with settings frozen into its Content Pack and callback", bindServiceTestEnvironment(async () => {
     const intake = spy(projectService, "queueLinkIngest").mockResolvedValue(linkIntake() as never);
     const { call, requireActor } = harness();
     const response = await call("/captioned-videos", { method: "POST", idempotencyKey: "short-1", json: {
@@ -351,16 +347,16 @@ describe("REST v1 captioned videos", () => {
     expect(options).toMatchObject({ command: "create_captioned_video", mutation: { clientIdempotencyKey: "short-1", callback: { url: new URL("https://hooks.example/resume/abc") } } });
     expect(options.generationContext.contentPack).toMatchObject({ mode: "caption_only", defaultAspectRatio: "9:16", captionedVideo: { framing: "center", aspectRatios: ["9:16", "16:9"], resolution: "720p",
       captions: { source: "supplied", utterances: [{ text: "Hello there", words: [{ word: "Hello", startSec: 0 }, { word: "there", endSec: 2 }] }, { text: "A short film" }] } } });
-  });
+  }));
 
-  test("defaults to Fit, a 9:16 1080p export, and speech captions", async () => {
+  test("defaults to Fit, a 9:16 1080p export, and speech captions", bindServiceTestEnvironment(async () => {
     const intake = spy(projectService, "queueLinkIngest").mockResolvedValue(linkIntake() as never);
     const response = await harness().call("/captioned-videos", { method: "POST", idempotencyKey: "short-2", json: { source: { kind: "url", url: link } } });
     expect(response.status).toBe(202);
     expect(intake.mock.calls[0]![2].generationContext.contentPack.captionedVideo).toEqual({ framing: "fit", aspectRatios: ["9:16"], resolution: "1080p", captions: { source: "auto" } });
-  });
+  }));
 
-  test("a file opens an Upload Session that carries the settings; finalize starts the intake", async () => {
+  test("a file opens an Upload Session that carries the settings; finalize starts the intake", bindServiceTestEnvironment(async () => {
     const open = spy(uploadSessionService, "open").mockResolvedValue({ outcome: "uploading", sessionId: SESSION_ID, projectId: PROJECT_ID, expiresAt: "2026-10-09T00:00:00.000Z",
       transfer: { kind: "single", contentType: "video/mp4", grant: { url: "https://bucket.r2.test/signed", contentType: "video/mp4" } } } as never);
     const key = "6d27d010-f52c-4e5c-9ea3-012c0bf7d921";
@@ -370,9 +366,9 @@ describe("REST v1 captioned videos", () => {
     expect(await response.json()).toMatchObject({ upload: { uploadId: SESSION_ID, state: "uploading", transfer: { kind: "single", method: "PUT" }, operation: null } });
     expect(open).toHaveBeenCalledWith(expect.objectContaining({ actorUserId: USER_ID }), expect.objectContaining({ clientIdempotencyKey: integrationUploadSessionKey(USER_ID, key), title: "ai-short.mp4", transfer: "single",
       generationContext: { languageCode: null, contentPack: expect.objectContaining({ mode: "caption_only", captionedVideo: expect.objectContaining({ captions: { source: "none" } }) }) } }));
-  });
+  }));
 
-  test("malformed, empty, and oversized supplied captions are typed refusals before any work is accepted", async () => {
+  test("malformed, empty, and oversized supplied captions are typed refusals before any work is accepted", bindServiceTestEnvironment(async () => {
     const intake = spy(projectService, "queueLinkIngest").mockResolvedValue(linkIntake() as never);
     const open = spy(uploadSessionService, "open");
     const { call } = harness();
@@ -388,42 +384,42 @@ describe("REST v1 captioned videos", () => {
     expect(await tooLarge.json()).toMatchObject({ error: "supplied_captions_too_large" });
     expect(intake).not.toHaveBeenCalled();
     expect(open).not.toHaveBeenCalled();
-  });
+  }));
 
-  test("rejects unknown settings, duplicate formats, and a callback on a file", async () => {
+  test("rejects unknown settings, duplicate formats, and a callback on a file", bindServiceTestEnvironment(async () => {
     const { call } = harness();
     const request = (json: unknown) => call("/captioned-videos", { method: "POST", idempotencyKey: "short-4", json });
     expect((await request({ source: { kind: "url", url: link }, framing: "stretch" })).status).toBe(400);
     expect((await request({ source: { kind: "url", url: link }, aspectRatios: ["9:16", "9:16"] })).status).toBe(400);
     expect((await request({ source: { kind: "upload", file: { name: "a.mp4", sizeBytes: 1, contentType: "video/mp4" }, callback: { url: "https://hooks.example/x" } } })).status).toBe(400);
     expect((await call("/captioned-videos", { method: "POST", json: { source: { kind: "url", url: link } } })).status).toBe(400);
-  });
+  }));
 
-  test("needs the processing:write scope", async () => {
+  test("needs the processing:write scope", bindServiceTestEnvironment(async () => {
     const response = await harness({ scopes: ["projects:read"] }).call("/captioned-videos", { method: "POST", idempotencyKey: "short-5", json: { source: { kind: "url", url: link } } });
     expect(response.status).toBe(403);
     expect(await response.json()).toMatchObject({ error: "scope_required", details: { scope: "processing:write" } });
-  });
+  }));
 
-  test("Operation Status reports the export and a framing notice", async () => {
+  test("Operation Status reports the export and a framing notice", bindServiceTestEnvironment(async () => {
     const notice = { code: "framing_degraded", aspectRatio: "9:16", croppedPercent: 68 };
     spy(operationStatusService, "read").mockResolvedValue({ kind: "intake", id: JOB_ID, state: "completed", stage: "rendering", progress: 1, items: [{ kind: "variant", id: EXPORT_ID, state: "completed", failureCode: null }],
       results: { projectId: PROJECT_ID, clipIds: [], exportId: EXPORT_ID }, notices: [notice], failureCode: null } as never);
     const response = await harness().call(`/operations/${encodeOperationId({ kind: "intake", id: JOB_ID })}`);
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ state: "completed", results: { exportId: EXPORT_ID }, notices: [notice] });
-  });
+  }));
 });
 
 describe("REST v1 rate limits", () => {
-  test("a key over its budget receives 429 with Retry-After", async () => {
+  test("a key over its budget receives 429 with Retry-After", bindServiceTestEnvironment(async () => {
     const response = await harness({ limiter: { allowed: false, availability: "available", remaining: 0, limit: 300 } }).call("/brand-profiles");
     expect(response.status).toBe(429);
     expect(response.headers.get("Retry-After")).toBe("60");
     expect(await response.json()).toMatchObject({ error: "rate_limited", retryAfterSeconds: 60 });
-  });
+  }));
 
-  test("while the limiter is unavailable, reads and replays proceed and new mutations pause", async () => {
+  test("while the limiter is unavailable, reads and replays proceed and new mutations pause", bindServiceTestEnvironment(async () => {
     const outage: RateLimitResult = { allowed: true, availability: "unavailable", remaining: 300, limit: 300 };
     spy(projectService, "getProjectSnapshot").mockResolvedValue({ project: { id: PROJECT_ID, workspaceId: WORKSPACE_ID, title: "T", sourceType: "link", ingestStatus: "ready", sourceDurationSeconds: 60, languageCode: "en", createdAt: "2026-10-08T00:00:00.000Z" }, progress: null, activeRun: null } as never);
     let accepted = false;
@@ -442,14 +438,14 @@ describe("REST v1 rate limits", () => {
     const replay = await call("/projects", { method: "POST", idempotencyKey: "k", json: { url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ" } });
     expect(replay.status).toBe(202);
     expect(replay.headers.get("Idempotent-Replayed")).toBe("true");
-  });
+  }));
 });
 
 describe("REST v1 uploads", () => {
   const grant = { outcome: "uploading", sessionId: SESSION_ID, projectId: PROJECT_ID, expiresAt: "2026-10-09T00:00:00.000Z",
     transfer: { kind: "single", contentType: "video/mp4", grant: { url: "https://bucket.r2.test/signed", contentType: "video/mp4" } } };
 
-  test("opens a single-PUT session under the same per-user key MCP derives", async () => {
+  test("opens a single-PUT session under the same per-user key MCP derives", bindServiceTestEnvironment(async () => {
     const open = spy(uploadSessionService, "open").mockResolvedValue(grant as never);
     const { call } = harness();
     const key = "6d27d010-f52c-4e5c-9ea3-012c0bf7d921";
@@ -457,9 +453,9 @@ describe("REST v1 uploads", () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ upload: { uploadId: SESSION_ID, state: "uploading", transfer: { kind: "single", method: "PUT", url: "https://bucket.r2.test/signed", headers: { "Content-Type": "video/mp4" } }, operation: null } });
     expect(open).toHaveBeenCalledWith(expect.objectContaining({ actorUserId: USER_ID }), expect.objectContaining({ clientIdempotencyKey: integrationUploadSessionKey(USER_ID, key), transfer: "single", title: "talk.mp4" }));
-  });
+  }));
 
-  test("an upload session freezes the finishing it was opened with", async () => {
+  test("an upload session freezes the finishing it was opened with", bindServiceTestEnvironment(async () => {
     const open = spy(uploadSessionService, "open").mockResolvedValue(grant as never);
     const { call } = harness();
     const file = { name: "talk.mp4", sizeBytes: 1_000_000, contentType: "video/mp4" };
@@ -467,9 +463,9 @@ describe("REST v1 uploads", () => {
     expect(response.status).toBe(200);
     expect(open.mock.calls[0]![1]).toMatchObject({ generationContext: { finishing: { topClips: 2, minScore: 70, aspectRatios: ["1:1"] } } });
     expect((await call("/uploads", { method: "POST", idempotencyKey: "6d27d010-f52c-4e5c-9ea3-012c0bf7d923", json: { file, finishing: { topClips: 2, copyPlatforms: ["myspace"] } } })).status).toBe(400);
-  });
+  }));
 
-  test("finalize starts the intake with its callback and reads go by Upload Session ID", async () => {
+  test("finalize starts the intake with its callback and reads go by Upload Session ID", bindServiceTestEnvironment(async () => {
     const finalize = spy(uploadSessionService, "finalize").mockResolvedValue({ outcome: "queued_for_ingest", sessionId: SESSION_ID, projectId: PROJECT_ID, queuedJobId: JOB_ID } as never);
     const read = spy(uploadSessionService, "statusById").mockResolvedValue(grant as never);
     const { call } = harness();
@@ -480,7 +476,7 @@ describe("REST v1 uploads", () => {
     expect(finalize).toHaveBeenCalledWith(expect.anything(), { sessionId: SESSION_ID, parts: [] }, { callback: { url: new URL("https://hooks.example/resume/upload") } });
     expect((await call(`/uploads/${SESSION_ID}`)).status).toBe(200);
     expect(read).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: WORKSPACE_ID }), SESSION_ID);
-  });
+  }));
 });
 
 describe("REST v1 clip timelines", () => {
@@ -490,25 +486,25 @@ describe("REST v1 clip timelines", () => {
     source: { fileName: "Talk-source.mp4", sizeBytes: 1234, downloadUrl: "https://files.example/source?signature=x", expiresAt: "2026-10-24T12:15:00.000Z" } };
   const globals = createDatabaseTestContext();
   const previous = { prisma: globals.client, database: process.env.DATABASE_URL };
-  afterEach(globals.bind(() => {
+  afterEach(bindServiceTestEnvironment(globals.bind(() => {
     globals.client = previous.prisma;
     if (previous.database === undefined) delete process.env.DATABASE_URL; else process.env.DATABASE_URL = previous.database;
-  }));
+  })));
   function knownClip() {
     process.env.DATABASE_URL ??= "postgresql://unused.test/db";
     globals.client = { clip: { findFirst: async () => ({ projectId: PROJECT_ID }) } };
   }
 
-  test("returns the timeline for the key's clip in the requested format with a source grant", globals.bind(async () => {
+  test("returns the timeline for the key's clip in the requested format with a source grant", bindServiceTestEnvironment(globals.bind(async () => {
     knownClip();
     const exported = spy(clipTimelineService, "export").mockResolvedValue(timeline as never);
     const response = await harness({ scopes: ["exports:read"] }).call(`/clips/${CLIP_ID}/timeline?format=edl`);
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual(timeline);
     expect(exported).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: WORKSPACE_ID }), PROJECT_ID, CLIP_ID, "edl", { credentialKind: "api_key" });
-  }));
+  })));
 
-  test("needs the exports:read scope, a Workspace download role, and a known format", globals.bind(async () => {
+  test("needs the exports:read scope, a Workspace download role, and a known format", bindServiceTestEnvironment(globals.bind(async () => {
     knownClip();
     const exported = spy(clipTimelineService, "export").mockResolvedValue(timeline as never);
     expect((await harness({ scopes: ["projects:read"] }).call(`/clips/${CLIP_ID}/timeline?format=edl`)).status).toBe(403);
@@ -521,9 +517,9 @@ describe("REST v1 clip timelines", () => {
       expect(await response.json()).toMatchObject({ error: "invalid_request" });
     }
     expect(exported).toHaveBeenCalledTimes(1);
-  }));
+  })));
 
-  test("a timeline that cannot be cut is a 422 with its typed code, not a 500", globals.bind(async () => {
+  test("a timeline that cannot be cut is a 422 with its typed code, not a 500", bindServiceTestEnvironment(globals.bind(async () => {
     knownClip();
     for (const code of ["timeline_empty", "timeline_source_rate_unsupported", "timeline_source_unmeasured", "timeline_video_required"]) {
       spy(clipTimelineService, "export").mockRejectedValue(new ExpectedDomainFailureError({ code, kind: "unprocessable", message: "Cannot cut a timeline" }));
@@ -531,9 +527,9 @@ describe("REST v1 clip timelines", () => {
       expect(response.status).toBe(422);
       expect(await response.json()).toMatchObject({ error: code, message: "Cannot cut a timeline" });
     }
-  }));
+  })));
 
-  test("a clip outside the key's workspace is not found", globals.bind(async () => {
+  test("a clip outside the key's workspace is not found", bindServiceTestEnvironment(globals.bind(async () => {
     process.env.DATABASE_URL ??= "postgresql://unused.test/db";
     globals.client = { clip: { findFirst: async () => null } };
     const exported = spy(clipTimelineService, "export");
@@ -541,11 +537,11 @@ describe("REST v1 clip timelines", () => {
     expect(response.status).toBe(404);
     expect(await response.json()).toMatchObject({ error: "clip_not_found" });
     expect(exported).not.toHaveBeenCalled();
-  }));
+  })));
 });
 
 describe("REST v1 operations", () => {
-  test("Operation Status uses the scope of the work it describes", async () => {
+  test("Operation Status uses the scope of the work it describes", bindServiceTestEnvironment(async () => {
     const read = spy(operationStatusService, "read").mockResolvedValue({ kind: "export", id: EXPORT_ID, state: "completed", stage: "rendering", progress: 1, items: [],
       results: { projectId: PROJECT_ID, clipIds: [], exportId: EXPORT_ID }, failureCode: null } as never);
     const operationId = encodeOperationId({ kind: "export", id: EXPORT_ID });
@@ -556,24 +552,24 @@ describe("REST v1 operations", () => {
     expect(await allowed.json()).toMatchObject({ operationId, kind: "export", state: "completed", results: { exportId: EXPORT_ID } });
     expect(read).toHaveBeenCalledWith(expect.anything(), { kind: "export", id: EXPORT_ID });
     expect((await harness().call("/operations/op_notanoperationidvalue12")).status).toBe(400);
-  });
+  }));
 
-  test("redelivery needs the original mutation's scope and an Idempotency-Key", async () => {
+  test("redelivery needs the original mutation's scope and an Idempotency-Key", bindServiceTestEnvironment(async () => {
     const operationId = encodeOperationId({ kind: "export", id: EXPORT_ID });
     expect((await harness({ scopes: ["processing:write"] }).call(`/operations/${operationId}/callback/redeliver`, { method: "POST", idempotencyKey: "r" })).status).toBe(403);
     expect((await harness({ scopes: ["exports:write"] }).call(`/operations/${operationId}/callback/redeliver`, { method: "POST" })).status).toBe(400);
-  });
+  }));
 
-  test("download grants are issued for the key's export", async () => {
+  test("download grants are issued for the key's export", bindServiceTestEnvironment(async () => {
     const grants = spy(clipExportService, "issueDownloadGrants").mockResolvedValue({ exportId: EXPORT_ID, projectId: PROJECT_ID, clipId: PROJECT_ID, editorRevision: 0, variants: [], subtitles: [] } as never);
     const response = await harness().call(`/exports/${EXPORT_ID}/download`);
     expect(response.status).toBe(200);
     expect(grants).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: WORKSPACE_ID }), EXPORT_ID, { variantId: undefined, credentialKind: "api_key" });
-  });
+  }));
 });
 
 describe("REST v1 events", () => {
-  test("need projects:read, and reject unknown types and malformed paging before any read", async () => {
+  test("need projects:read, and reject unknown types and malformed paging before any read", bindServiceTestEnvironment(async () => {
     const denied = await harness({ scopes: ["publishing:read"] }).call("/events");
     expect(denied.status).toBe(403);
     expect(await denied.json()).toMatchObject({ error: "scope_required", details: { scope: "projects:read" } });
@@ -581,17 +577,17 @@ describe("REST v1 events", () => {
     for (const query of ["?types=made.up", "?types=operation.finished,made.up", "?after=abc", "?after=-1", "?limit=201", "?limit=0"]) {
       expect(`${query} ${(await call(`/events${query}`)).status}`).toBe(`${query} 400`);
     }
-  });
+  }));
 
-  test("order=desc can't be combined with after, and an unknown order is invalid", async () => {
+  test("order=desc can't be combined with after, and an unknown order is invalid", bindServiceTestEnvironment(async () => {
     const { call } = harness({ scopes: ["projects:read", "publishing:read"] });
     const refused = await call("/events?order=desc&after=5");
     expect(refused.status).toBe(400);
     expect(await refused.json()).toMatchObject({ error: "invalid_request" });
     expect((await call("/events?order=sideways")).status).toBe(400);
-  });
+  }));
 
-  test("types the key can't see are refused with the scope it lacks instead of an empty page", async () => {
+  test("types the key can't see are refused with the scope it lacks instead of an empty page", bindServiceTestEnvironment(async () => {
     const { call } = harness({ scopes: ["projects:read"] });
     for (const types of ["social_post.finished", "social_post.proposed", "social_post.proposed,social_post.finished"]) {
       const refused = await call(`/events?types=${types}`);
@@ -599,7 +595,7 @@ describe("REST v1 events", () => {
       expect(refused.headers.get("WWW-Authenticate")).toContain('scope="publishing:read"');
       expect(await refused.json()).toMatchObject({ error: "scope_required", details: { scope: "publishing:read" } });
     }
-  });
+  }));
 });
 
 describe("REST v1 webhooks", () => {
@@ -608,7 +604,7 @@ describe("REST v1 webhooks", () => {
     lastDeliveredSeq: 0, consecutiveFailures: 0, lastAttemptAt: null, lastResponseStatus: null, lastDeliveredAt: null, createdAt: "2026-10-24T12:00:00.000Z" };
   const create = (call: ReturnType<typeof harness>["call"], json: unknown) => call("/webhooks", { method: "POST", json });
 
-  test("reading needs projects:read and the content.view role; the response never carries a URL", async () => {
+  test("reading needs projects:read and the content.view role; the response never carries a URL", bindServiceTestEnvironment(async () => {
     const list = spy(webhookSubscriptions, "list").mockResolvedValue([view] as never);
     const denied = await harness({ scopes: ["processing:write"] }).call("/webhooks");
     expect(denied.status).toBe(403);
@@ -619,9 +615,9 @@ describe("REST v1 webhooks", () => {
     expect(await response.json()).toEqual({ webhooks: [view] });
     expect(reader.requireActor).toHaveBeenCalledWith(USER_ID, WORKSPACE_ID, "content.view");
     expect(list).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: WORKSPACE_ID, actorUserId: USER_ID }));
-  });
+  }));
 
-  test("creating needs processing:write and the processing.consume role, then validates the URL and types", async () => {
+  test("creating needs processing:write and the processing.consume role, then validates the URL and types", bindServiceTestEnvironment(async () => {
     const created = spy(webhookSubscriptions, "create").mockResolvedValue(view as never);
     const body = { url: "https://hooks.example.com/narriflow", types: ["operation.finished"] };
     expect((await create(harness({ scopes: ["projects:read"] }).call, body)).status).toBe(403);
@@ -643,9 +639,9 @@ describe("REST v1 webhooks", () => {
       expect(await refused.json()).toMatchObject({ error: "callback_url_invalid" });
     }
     expect(created).not.toHaveBeenCalled();
-  });
+  }));
 
-  test("posting outcomes need publishing:read, like the feed", async () => {
+  test("posting outcomes need publishing:read, like the feed", bindServiceTestEnvironment(async () => {
     const created = spy(webhookSubscriptions, "create").mockResolvedValue(view as never);
     const body = { url: "https://hooks.example.com/narriflow", types: ["operation.finished", "social_post.finished"] };
     const denied = await create(harness({ scopes: ["processing:write"] }).call, body);
@@ -654,9 +650,9 @@ describe("REST v1 webhooks", () => {
     expect(await denied.json()).toMatchObject({ error: "scope_required", details: { scope: "publishing:read" } });
     expect(created).not.toHaveBeenCalled();
     expect((await create(harness({ scopes: ["processing:write", "publishing:read"] }).call, body)).status).toBe(201);
-  });
+  }));
 
-  test("a Workspace without a signing secret, a repeated URL, and a full list are conflicts", async () => {
+  test("a Workspace without a signing secret, a repeated URL, and a full list are conflicts", bindServiceTestEnvironment(async () => {
     const body = { url: "https://hooks.example.com/narriflow", types: ["operation.finished"] };
     for (const code of ["callback_secret_required", "webhook_exists", "webhook_limit_reached"]) {
       spy(webhookSubscriptions, "create").mockRejectedValue(new ExpectedDomainFailureError({ code, kind: "conflict", message: "Refused" }));
@@ -664,16 +660,16 @@ describe("REST v1 webhooks", () => {
       expect(`${code} ${response.status}`).toBe(`${code} 409`);
       expect(await response.json()).toMatchObject({ error: code });
     }
-  });
+  }));
 
-  test("new webhooks pause while the request limiter is unavailable", async () => {
+  test("new webhooks pause while the request limiter is unavailable", bindServiceTestEnvironment(async () => {
     const created = spy(webhookSubscriptions, "create");
     const response = await create(harness({ limiter: { allowed: true, availability: "unavailable", remaining: 0, limit: 300 } as RateLimitResult }).call, { url: "https://hooks.example.com/x", types: ["operation.finished"] });
     expect(response.status).toBe(503);
     expect(created).not.toHaveBeenCalled();
-  });
+  }));
 
-  test("delete, enable, and test act on the key's Workspace and report unknown webhooks as 404", async () => {
+  test("delete, enable, and test act on the key's Workspace and report unknown webhooks as 404", bindServiceTestEnvironment(async () => {
     const deleted = spy(webhookSubscriptions, "delete").mockResolvedValue({ webhookId: WEBHOOK_ID } as never);
     const enabled = spy(webhookSubscriptions, "enable").mockResolvedValue(view as never);
     const tested = spy(webhookSubscriptions, "test").mockResolvedValue({ eventId: WEBHOOK_ID, delivered: true, status: 200, durationMs: 12 } as never);
@@ -705,9 +701,9 @@ describe("REST v1 webhooks", () => {
     const missing = await harness().call(`/webhooks/${WEBHOOK_ID}/enable`, { method: "POST" });
     expect(missing.status).toBe(404);
     expect(await missing.json()).toMatchObject({ error: "webhook_not_found" });
-  });
+  }));
 
-  test("enable and test hand the key's scopes to the service, which refuses event types the key may not read", async () => {
+  test("enable and test hand the key's scopes to the service, which refuses event types the key may not read", bindServiceTestEnvironment(async () => {
     const refusal = new ExpectedDomainFailureError({ code: "scope_required", kind: "forbidden", message: "This credential requires the publishing:read scope", details: { scope: "publishing:read" } });
     const enabled = spy(webhookSubscriptions, "enable").mockRejectedValue(refusal);
     const tested = spy(webhookSubscriptions, "test").mockRejectedValue(refusal);
@@ -719,15 +715,15 @@ describe("REST v1 webhooks", () => {
     }
     expect(enabled.mock.calls[0]![2]).toMatchObject({ scopes: ["processing:write"] });
     expect(tested.mock.calls[0]![2]).toMatchObject({ scopes: ["processing:write"] });
-  });
+  }));
 
-  test("a test sent again within five seconds is a 429 with Retry-After", async () => {
+  test("a test sent again within five seconds is a 429 with Retry-After", bindServiceTestEnvironment(async () => {
     spy(webhookSubscriptions, "test").mockRejectedValue(new ExpectedDomainFailureError({ code: "webhook_test_throttled", kind: "rate_limited", message: "Wait a few seconds", retryAfterSeconds: 5 }));
     const response = await harness().call(`/webhooks/${WEBHOOK_ID}/test`, { method: "POST" });
     expect(response.status).toBe(429);
     expect(response.headers.get("Retry-After")).toBe("5");
     expect(await response.json()).toMatchObject({ error: "webhook_test_throttled", retryAfterSeconds: 5 });
-  });
+  }));
 });
 
 describe("REST v1 Publishing Queue", () => {
@@ -738,7 +734,7 @@ describe("REST v1 Publishing Queue", () => {
   const proposal = { proposalId: PROPOSAL_ID, projectId: PROJECT_ID, clipId: CLIP_ID, socialAccountId: ACCOUNT_ID, platform: "tiktok", caption: "Draft", source: "integration",
     exportId: EXPORT_ID, exportVariantId: "00000000-0000-4000-8000-000000000014", aspectRatio: "9:16", createdAt: "2026-10-24T12:00:00.000Z" };
 
-  test("proposing needs publishing:write and an Idempotency-Key, and never schedules", async () => {
+  test("proposing needs publishing:write and an Idempotency-Key, and never schedules", bindServiceTestEnvironment(async () => {
     const { call } = harness({ scopes: ["publishing:read"] });
     const refused = await call("/social-posts/proposals", { method: "POST", idempotencyKey: "k1", json: body });
     expect(refused.status).toBe(403);
@@ -753,26 +749,26 @@ describe("REST v1 Publishing Queue", () => {
     expect(propose).toHaveBeenCalledTimes(1);
     expect(propose.mock.calls[0]![1]).toEqual(body);
     expect(propose.mock.calls[0]![2]).toMatchObject({ source: "integration", mutation: { clientIdempotencyKey: "k1" } });
-  });
+  }));
 
-  test("a replayed proposal says so, and the body cannot choose a time", async () => {
+  test("a replayed proposal says so, and the body cannot choose a time", bindServiceTestEnvironment(async () => {
     const { call } = harness({ scopes: ["publishing:write"] });
     spy(publishingQueue, "propose").mockResolvedValue({ proposal, replayed: true } as never);
     const replay = await call("/social-posts/proposals", { method: "POST", idempotencyKey: "k1", json: body });
     expect(replay.headers.get("Idempotent-Replayed")).toBe("true");
     const timed = await call("/social-posts/proposals", { method: "POST", idempotencyKey: "k2", json: { ...body, scheduledFor: "2030-01-01T00:00:00Z" } });
     expect(timed.status).toBe(400);
-  });
+  }));
 
-  test("a queue refusal keeps its typed code", async () => {
+  test("a queue refusal keeps its typed code", bindServiceTestEnvironment(async () => {
     const { call } = harness({ scopes: ["publishing:write"] });
     spy(publishingQueue, "propose").mockRejectedValue(new ExpectedDomainFailureError({ code: "social_proposal_variant_unavailable", kind: "unprocessable", message: "No finished format" }));
     const response = await call("/social-posts/proposals", { method: "POST", idempotencyKey: "k3", json: body });
     expect(response.status).toBe(422);
     expect(((await response.json()) as { error: string }).error).toBe("social_proposal_variant_unavailable");
-  });
+  }));
 
-  test("starting finishing that proposes to the queue needs publishing:write on every route that accepts finishing", async () => {
+  test("starting finishing that proposes to the queue needs publishing:write on every route that accepts finishing", bindServiceTestEnvironment(async () => {
     const intake = spy(projectService, "queueLinkIngest").mockResolvedValue(linkIntake() as never);
     const trigger = spy(projectService, "triggerGeneration").mockResolvedValue({ workflowRunId: JOB_ID, acceptedAt: "2026-10-24T00:00:00.000Z", initialSeq: 0 } as never);
     const opened = spy(uploadSessionService, "open").mockRejectedValue(new Error("must not run"));
@@ -797,9 +793,9 @@ describe("REST v1 Publishing Queue", () => {
     expect((await withScope.call("/projects", { method: "POST", idempotencyKey: "queue-ok", json: requests[0]![1] })).status).toBe(202);
     expect((await withScope.call(requests[1]![0], { method: "POST", idempotencyKey: "queue-ok-2", json: requests[1]![1] })).status).toBe(202);
     expect(intake.mock.calls[0]![2]).toMatchObject({ generationContext: { finishing: { delivery: "propose_to_queue", queueAccountIds: [ACCOUNT_ID] } } });
-  });
+  }));
 
-  test("lists accounts with their posting slots and the Workspace time zone, never credentials", async () => {
+  test("lists accounts with their posting slots and the Workspace time zone, never credentials", bindServiceTestEnvironment(async () => {
     expect((await harness({ scopes: ["projects:read"] }).call("/social-accounts")).status).toBe(403);
     const { call } = harness({ scopes: ["publishing:read"] });
     const schedule = { slots: [{ weekday: "mon", time: "09:00" }] };
@@ -809,7 +805,7 @@ describe("REST v1 Publishing Queue", () => {
     const response = await call("/social-accounts");
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ accounts: [{ accountId: ACCOUNT_ID, platform: "tiktok", displayName: "Studio", handle: "@studio", status: "active", postingSchedule: schedule }], timeZone: "America/New_York" });
-  });
+  }));
 });
 
 describe("REST v1 Recipes", () => {
@@ -825,7 +821,7 @@ describe("REST v1 Recipes", () => {
     id: RECIPE_ID, revision: 3, brandProfileId: BRAND_ID, languageCode: "en", contentPack: buildGenerationContentPack(), finishing: null, ...overrides,
   });
 
-  test("lists Recipes and reads one at its current revision, without Content Pack internals", async () => {
+  test("lists Recipes and reads one at its current revision, without Content Pack internals", bindServiceTestEnvironment(async () => {
     spy(recipeService, "list").mockResolvedValue([snapshot()] as never);
     spy(recipeService, "get").mockResolvedValue(snapshot() as never);
     const { call } = harness();
@@ -835,17 +831,17 @@ describe("REST v1 Recipes", () => {
       generation: { clipCountTarget: 6, clipLengthPreset: "auto", defaultAspectRatio: "1:1", captionPreset: "brand_default", mode: "clip", autoHook: true, specificMoments: "", processingStartSec: null, processingEndSec: null },
     }] });
     expect(await (await call(`/recipes/${RECIPE_ID}`)).json()).toEqual({ recipe: listed.recipes[0] });
-  });
+  }));
 
-  test("an unknown Recipe is a 404 with a stable code", async () => {
+  test("an unknown Recipe is a 404 with a stable code", bindServiceTestEnvironment(async () => {
     spy(recipeService, "get").mockRejectedValue(new RecipeError("recipe_not_found"));
     const { call } = harness();
     const response = await call(`/recipes/${RECIPE_ID}`);
     expect(response.status).toBe(404);
     expect(await response.json()).toMatchObject({ error: "recipe_not_found" });
-  });
+  }));
 
-  test("an intake that names a Recipe sends no settings, and its fingerprint holds only the ID", async () => {
+  test("an intake that names a Recipe sends no settings, and its fingerprint holds only the ID", bindServiceTestEnvironment(async () => {
     const intake = spy(projectService, "queueLinkIngest").mockResolvedValue(linkIntake({ recipe: { id: RECIPE_ID, revision: 3 } }) as never);
     const { call } = harness();
     const response = await call("/projects", { method: "POST", idempotencyKey: "recipe-1", json: { url, recipeId: RECIPE_ID } });
@@ -855,9 +851,9 @@ describe("REST v1 Recipes", () => {
     expect(source).toEqual({ url, title: undefined, brandProfileId: undefined });
     expect(options).toMatchObject({ command: "submit_video", recipe: { id: RECIPE_ID } });
     expect(options).not.toHaveProperty("generationContext");
-  });
+  }));
 
-  test("a Recipe and inline settings together are a validation error before any work", async () => {
+  test("a Recipe and inline settings together are a validation error before any work", bindServiceTestEnvironment(async () => {
     const intake = spy(projectService, "queueLinkIngest").mockResolvedValue(linkIntake() as never);
     const { call } = harness();
     for (const inline of [{ generation: { clipCountTarget: 5 } }, { finishing: { topClips: 2 } }, { brandProfileId: BRAND_ID }]) {
@@ -868,9 +864,9 @@ describe("REST v1 Recipes", () => {
     const generate = await call(`/projects/${PROJECT_ID}/generations`, { method: "POST", idempotencyKey: "both", json: { recipeId: RECIPE_ID, generation: {} } });
     expect(generate.status).toBe(400);
     expect(intake).not.toHaveBeenCalled();
-  });
+  }));
 
-  test("the Recipe is read when the request is accepted: it must exist, and queue delivery needs the publishing scope", async () => {
+  test("the Recipe is read when the request is accepted: it must exist, and queue delivery needs the publishing scope", bindServiceTestEnvironment(async () => {
     const intake = spy(projectService, "queueLinkIngest").mockResolvedValue(linkIntake() as never);
     const resolve = spy(recipeService, "resolve").mockResolvedValue(resolved({ finishing: { topClips: 2, minScore: 0, resolution: "1080p", copyPlatforms: [], delivery: "propose_to_queue", queueAccountIds: ["00000000-0000-4000-8000-0000000000a9"] } }) as never);
     const queue = spy(publishingQueue, "activeAccounts");
@@ -882,9 +878,9 @@ describe("REST v1 Recipes", () => {
     const use = (intake.mock.calls[0]![2] as { recipe: { resolve(): Promise<unknown> } }).recipe;
     await expect(use.resolve()).rejects.toMatchObject({ code: "scope_required", details: { scope: "publishing:write" } });
     expect(resolve).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: WORKSPACE_ID }), RECIPE_ID);
-  });
+  }));
 
-  test("a generation that names a Recipe passes it to the run, and reports the revision it used", async () => {
+  test("a generation that names a Recipe passes it to the run, and reports the revision it used", bindServiceTestEnvironment(async () => {
     const trigger = spy(projectService, "triggerGeneration").mockResolvedValue({ workflowRunId: JOB_ID, acceptedAt: "2026-10-24T00:00:00.000Z", initialSeq: 0, recipe: { id: RECIPE_ID, revision: 3 } } as never);
     const { call } = harness();
     const response = await call(`/projects/${PROJECT_ID}/generations`, { method: "POST", idempotencyKey: "gen-r", json: { recipeId: RECIPE_ID, forceRegenerate: true } });
@@ -892,9 +888,9 @@ describe("REST v1 Recipes", () => {
     expect(await response.json()).toMatchObject({ recipe: { id: RECIPE_ID, revision: 3 } });
     expect(trigger.mock.calls[0]![2]).toMatchObject({ forceRegenerate: true, recipe: { id: RECIPE_ID } });
     expect(trigger.mock.calls[0]![2]).not.toHaveProperty("contentPack");
-  });
+  }));
 
-  test("an upload that names a Recipe opens its session with the ID alone", async () => {
+  test("an upload that names a Recipe opens its session with the ID alone", bindServiceTestEnvironment(async () => {
     const open = spy(uploadSessionService, "open").mockResolvedValue({ outcome: "reconciling", sessionId: SESSION_ID, projectId: PROJECT_ID, retryAfterSeconds: 2 } as never);
     spy(uploadSessionService, "recipeUsed").mockResolvedValue({ id: RECIPE_ID, revision: 3 } as never);
     const { call } = harness();
@@ -908,20 +904,20 @@ describe("REST v1 Recipes", () => {
     expect(options).toMatchObject({ recipe: { id: RECIPE_ID } });
     const refused = await call("/uploads", { method: "POST", idempotencyKey: "up-both", json: { file: { name: "a.mp4", sizeBytes: 10, contentType: "video/mp4" }, recipeId: RECIPE_ID, generation: {} } });
     expect(refused.status).toBe(400);
-  });
+  }));
 });
 
 describe("REST extraction boundaries", () => {
-  test("admission precedes validation and ignores session cookies", async () => {
+  test("admission precedes validation and ignores session cookies", bindServiceTestEnvironment(async () => {
     const { call } = harness({ scopes: ["projects:read"] });
     const forbidden = await call("/projects", { method: "POST", json: {} });
     expect(forbidden.status).toBe(403);
     expect(await forbidden.json()).toMatchObject({ error: "scope_required" });
     const cookie = await call("/workspace", { key: null, headers: { cookie: "__session=valid-looking-cookie" } });
     expect(cookie.status).toBe(401);
-  });
+  }));
 
-  test("allowed docs preflight and API-key requests work without Clerk CORS", async () => {
+  test("allowed docs preflight and API-key requests work without Clerk CORS", bindServiceTestEnvironment(async () => {
     const { call } = harness();
     const response = await call("/projects", { method: "OPTIONS", key: null, headers: {
       origin: "https://narriflow.test",
@@ -937,9 +933,9 @@ describe("REST extraction boundaries", () => {
     const denied = await call("/workspace", { headers: { origin: "https://foreign.example.com" } });
     expect(denied.status).toBe(403);
     expect(await denied.json()).toMatchObject({ error: "origin_not_allowed" });
-  });
+  }));
 
-  test("malformed JSON and oversized chunked bodies have bounded REST failures", async () => {
+  test("malformed JSON and oversized chunked bodies have bounded REST failures", bindServiceTestEnvironment(async () => {
     const intake = spy(projectService, "queueLinkIngest");
     const { call } = harness();
     const malformed = await call("/projects", { method: "POST", idempotencyKey: "parse", body: "{", headers: { "content-type": "application/json" } });
@@ -957,9 +953,9 @@ describe("REST extraction boundaries", () => {
     expect(oversized.status).toBe(413);
     expect(await oversized.json()).toMatchObject({ error: "payload_too_large", requestId: expect.any(String) });
     expect(intake).not.toHaveBeenCalled();
-  });
+  }));
 
-  test("immutable replays precede exhausted-budget refusal", async () => {
+  test("immutable replays precede exhausted-budget refusal", bindServiceTestEnvironment(async () => {
     let accepted = false;
     spy(projectService, "queueLinkIngest").mockImplementation(async (_actor: unknown, _input: unknown, options: { mutation: { beforeAccept(): Promise<void> } }) => {
       if (accepted) return linkIntake({ replayed: true });
@@ -978,5 +974,5 @@ describe("REST extraction boundaries", () => {
     const result = await replay.json();
     expect(result.operation.statusUrl).toStartWith("https://api.narriflow.test/");
     expect(result.reviewUrl).toStartWith("https://narriflow.test/");
-  });
+  }));
 });

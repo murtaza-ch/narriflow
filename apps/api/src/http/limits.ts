@@ -1,7 +1,5 @@
-import {
-  ExpectedDomainFailureError,
-  requireNewMutationAllowed,
-} from "@narriflow/services";
+import { ExpectedDomainFailureError } from "@narriflow/services/expected-domain-failure";
+import { requireNewMutationAllowed } from "@narriflow/services/rate-limit";
 import type { Context, MiddlewareHandler } from "hono";
 import type { ApiEnv } from "./env";
 import { failureResponse, jsonError, payloadTooLargeResponse, requestIdOf } from "./errors";

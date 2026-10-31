@@ -36,9 +36,9 @@ describe("review guest security primitives", () => {
     expect(() => verifyReviewSession(issued, secret, new Date("2026-08-31T00:00:00Z"))).toThrow();
   });
 
-  test("uses Argon2id for an optional passcode", async () => {
+  test("uses PBKDF2-SHA256 at 600,000 iterations for an optional passcode", async () => {
     const hash = await hashReviewPasscode("correct horse battery staple");
-    expect(hash.startsWith("$argon2id$")).toBe(true);
+    expect(hash).toMatch(/^pbkdf2-sha256\$600000\$[a-f0-9]{32}\$[a-f0-9]{64}$/);
     expect(await verifyReviewPasscode("correct horse battery staple", hash)).toBe(true);
     expect(await verifyReviewPasscode("wrong", hash)).toBe(false);
   });

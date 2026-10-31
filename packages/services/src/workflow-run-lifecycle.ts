@@ -1,3 +1,5 @@
+import { WORKFLOW_LEASE_DURATION_MS, WORKFLOW_HEARTBEAT_INTERVAL_MS, WorkflowFailure, WorkflowAttemptLost, type WorkflowAttemptRef, type WorkflowAttemptContext } from "./workflow-attempt-contract";
+export { WORKFLOW_LEASE_DURATION_MS, WORKFLOW_HEARTBEAT_INTERVAL_MS, WorkflowFailure, WorkflowAttemptLost, workflowHttpFailureDisposition, workflowFailureFromUnknown, rethrowWorkflowAttemptLost, type WorkflowFailureDisposition, type WorkflowAttemptRef, type WorkflowAttemptContext } from "./workflow-attempt-contract";
 import { randomUUID } from "node:crypto";
 import { cancelRenderGroupsWithinTransaction, admitRenderGroupsWithinTransaction, renderGroupParentSettlement, type RenderGroupAdmission } from "./render-group-lifecycle";
 import type { RenderGroupRef } from "./render-group-contract";
@@ -16,7 +18,6 @@ import type {
   WorkflowStatus,
 } from "@narriflow/validators";
 import { accessibleProjectWhere } from "./project-access";
-import { isExpectedDomainFailure } from "./expected-domain-failure";
 import {
   isWorkflowRedisDeliveryEnabled,
   publishPersistedWorkflowEvent,
@@ -31,18 +32,16 @@ import { flushWorkspaceEvents } from "./workspace-event";
 import { finalizeGenerationUsage, releaseFailedDubUsage } from "./generated-media-usage-ledger";
 import { appendWorkflowEvent, type WorkflowEventInput } from "./workflow-event-append";
 
-export const WORKFLOW_LEASE_DURATION_MS = 2 * 60 * 1000;
-export const WORKFLOW_HEARTBEAT_INTERVAL_MS = 30 * 1000;
 /** How long a stopping worker lets in-flight handlers finish
  * (`WORKER_SHUTDOWN_DRAIN_MS`, 30s by default). */
-export function workerShutdownDrainMs(env: Record<string, string | undefined> = process.env): number {
+export function workerShutdownDrainMs(env: Record<string, string | undefined> = {}): number {
   const configured = Number(env.WORKER_SHUTDOWN_DRAIN_MS ?? "30000");
   return Number.isFinite(configured) && configured > 0 ? configured : 30_000;
 }
 /** A released attempt's aborted handler may still be finishing an unfenced
  * provider call until the shutdown drain ends, so peers wait exactly that long
  * before claiming it. */
-export const WORKFLOW_RELEASE_GRACE_MS = workerShutdownDrainMs();
+export const WORKFLOW_RELEASE_GRACE_MS = 30_000;
 export const WORKFLOW_MAX_ATTEMPTS = 3;
 export const WORKFLOW_RETRIES_EXHAUSTED_CODE = "workflow_retries_exhausted";
 
@@ -53,14 +52,6 @@ const EVENT_MAX_BACKOFF_MS = 5 * 60 * 1000;
 const TRANSACTION_RETRY_LIMIT = 10;
 
 type TransactionClient = Prisma.TransactionClient;
-
-export interface WorkflowAttemptRef {
-  workflowRunId: string;
-  projectId: string;
-  stage: WorkflowStage;
-  attemptId: string;
-  attemptCount: number;
-}
 
 export interface ClaimedWorkflowAttempt extends WorkflowAttemptRef {
   status: "running";
@@ -80,42 +71,6 @@ export interface ClaimedWorkflowAttempt extends WorkflowAttemptRef {
     createdByUserId: string | null;
     workspaceId: string;
   };
-}
-
-export type WorkflowFailureDisposition = "retryable" | "permanent";
-
-export function workflowHttpFailureDisposition(
-  status: number,
-): WorkflowFailureDisposition {
-  return status === 408 || status === 425 || status === 429 || status >= 500
-    ? "retryable"
-    : "permanent";
-}
-
-export class WorkflowFailure extends Error {
-  constructor(
-    public readonly code: string,
-    public readonly disposition: WorkflowFailureDisposition,
-    message: string,
-    options?: ErrorOptions,
-  ) {
-    super(message, options);
-    this.name = "WorkflowFailure";
-  }
-}
-
-export class WorkflowAttemptLost extends Error {
-  readonly code = "workflow_attempt_lost";
-
-  constructor(public readonly attempt: WorkflowAttemptRef) {
-    super(`Workflow attempt ${attempt.attemptId} no longer owns ${attempt.workflowRunId}`);
-    this.name = "WorkflowAttemptLost";
-  }
-}
-
-export interface WorkflowAttemptContext {
-  signal: AbortSignal;
-  reportProgress: (progress: number) => Promise<void>;
 }
 
 export interface WaitingWorkflowAttempt extends WorkflowAttemptRef {
@@ -2933,23 +2888,3 @@ export function getWorkflowRunLifecycle() {
   return new WorkflowRunLifecycle();
 }
 
-export function workflowFailureFromUnknown(error: unknown): WorkflowFailure {
-  if (error instanceof WorkflowFailure) return error;
-  const candidate = error as { code?: unknown; message?: unknown; retryable?: unknown };
-  const code = typeof candidate.code === "string" ? candidate.code : "workflow_unexpected_error";
-  const message =
-    typeof candidate.message === "string" ? candidate.message : "Unexpected workflow failure";
-  const retryable = isExpectedDomainFailure(error)
-    ? error.details?.retryable
-    : candidate.retryable;
-  return new WorkflowFailure(
-    code,
-    retryable === false ? "permanent" : "retryable",
-    message,
-    error instanceof Error ? { cause: error } : undefined,
-  );
-}
-
-export function rethrowWorkflowAttemptLost(error: unknown): void {
-  if (error instanceof WorkflowAttemptLost) throw error;
-}
