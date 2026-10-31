@@ -727,6 +727,7 @@ export { createPrivateJsonStorage, type PrivateJsonStorage, type PrivateJsonObje
 export { createBillingReconciliation, queueBillingReconciliation, recoverBillingReconciliation } from "./billing-reconciliation";
 export { createLibraryIndex, queueLibraryIndex } from "./library-index";
 export { getLibraryIndex } from "./library-index-runtime";
+export { getMediaCleanupControl, getMediaCleanupDrain } from "./media-cleanup-runtime";
 
 export * from "./media-cleanup-control";
 export * from "./media-cleanup-storage";
