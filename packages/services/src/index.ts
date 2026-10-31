@@ -1,4 +1,5 @@
 export { workflowRunExecutionInputHash, type WorkflowRunExecutionInput } from "./workflow-execution-input";
+export { createScribeProvider, ScribeSubmissionUnconfirmed, type ScribeAcceptance, type ScribeFetchResult, type ScribeSubmissionReference } from "./transcription-provider";
 export {
 	boundedExpectedDomainFailureDetails,
 	ExpectedDomainFailureError,
@@ -487,7 +488,8 @@ export {
 	type ClaimedWorkflowAttempt,
 	type WorkflowAttemptContext,
 	type WaitingWorkflowAttempt,
-	type ProviderAttemptKey,
+	type ProviderAttemptReference,
+	type ProviderSubmissionIntent,
 	type ProviderIds,
 	type ProviderSettlementResult,
 	type ProviderAttemptLookup,
@@ -656,6 +658,7 @@ export * from "./execution-dispatch";
 
 export * from "./execution-storage";
 export * from "./execution-transfer";
+export * from "./native-validation-execution";
 
 export * from "./modal-bridge";
 

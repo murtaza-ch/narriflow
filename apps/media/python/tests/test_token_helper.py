@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import base64
 import asyncio
 import http.client
 import json
@@ -80,7 +81,8 @@ class OwnedTokenHelperTests(unittest.IsolatedAsyncioTestCase):
                     try:
                         self.assertTrue(await asyncio.to_thread(seen.wait, 4), 'token helper bypassed the bound proxy')
                         self.assertTrue(all(target.endswith(':443') for target, _auth in connects))
-                        self.assertTrue(all(auth is not None and auth.startswith('Basic ') for _target, auth in connects))
+                        expected_auth = 'Basic ' + base64.b64encode(b'sticky-11111111111111111111111111111111:test-only').decode()
+                        self.assertTrue(all(auth == expected_auth for _target, auth in connects))
                     finally:
                         # The controlled proxy rejects CONNECT and never reaches
                         # a public upstream. Stop the helper and its pending

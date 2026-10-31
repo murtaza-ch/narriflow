@@ -55,13 +55,15 @@
       "name": "@narriflow/mcp-server",
       "version": "0.0.0",
       "dependencies": {
+        "@modelcontextprotocol/client": "2.4.0",
         "@modelcontextprotocol/server": "2.4.0",
-        "@narriflow/mcp-core": "workspace:*",
-        "@narriflow/services": "workspace:*",
         "@narriflow/validators": "workspace:*",
       },
       "devDependencies": {
+        "@narriflow/mcp-core": "workspace:*",
+        "@narriflow/services": "workspace:*",
         "@types/node": "26.2.0",
+        "zod": "^4.3.6",
       },
     },
     "apps/media": {
@@ -73,9 +75,13 @@
         "@narriflow/services": "workspace:*",
         "@narriflow/validators": "workspace:*",
         "archiver": "7.0.1",
+        "fontkit": "2.0.4",
+        "sharp": "0.35.5",
+        "zod": "^4.3.6",
       },
       "devDependencies": {
         "@types/archiver": "6.0.3",
+        "@types/fontkit": "2.0.8",
         "@types/node": "26.2.0",
       },
     },
@@ -118,6 +124,7 @@
       "name": "@narriflow/worker",
       "version": "0.0.0",
       "dependencies": {
+        "@aws-sdk/client-s3": "^3.923.0",
         "@narriflow/caption-fonts": "workspace:*",
         "@narriflow/composition-plan": "workspace:*",
         "@narriflow/db": "workspace:*",
@@ -236,7 +243,6 @@
       "dependencies": {
         "@aws-sdk/client-s3": "^3.923.0",
         "@aws-sdk/s3-request-presigner": "^3.923.0",
-        "@ffprobe-installer/ffprobe": "2.1.2",
         "@narriflow/composition-plan": "workspace:*",
         "@narriflow/db": "workspace:*",
         "@narriflow/email": "workspace:*",
@@ -246,14 +252,12 @@
         "@prisma/client": "7.7.0",
         "@smithy/fetch-http-handler": "5.3.16",
         "fast-xml-parser": "^5.11.2",
-        "fontkit": "2.0.4",
         "ioredis": "^5.9.3",
         "sharp": "^0.35.5",
         "stripe": "^22.5.0",
       },
       "devDependencies": {
         "@prisma/adapter-pg": "7.7.0",
-        "@types/fontkit": "2.0.8",
         "@types/node": "26.2.0",
         "@types/pg": "8.15.5",
         "pg": "8.17.2",

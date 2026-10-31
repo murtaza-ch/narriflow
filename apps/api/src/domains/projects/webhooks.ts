@@ -1,6 +1,7 @@
+import { providerAttemptReferenceSchema } from "@narriflow/validators/execution";
 import { scribeCallbackFailure } from "@narriflow/services/scribe-errors";
 import { type FinalizeScribeTranscriptInput } from "@narriflow/services/scribe-transcript";
-import { type ProviderAttemptKey, type ProviderIds, type ProviderSettlementResult } from "@narriflow/services/workflow-run-lifecycle";
+import { type ProviderAttemptReference, type ProviderIds, type ProviderSettlementResult } from "@narriflow/services/workflow-run-lifecycle";
 import { bodyClass } from "../../body-limits";
 import { createRouteApp } from "../../http/admission";
 import { projectsAdmission } from "./admission";
@@ -14,7 +15,7 @@ export interface ProjectsWebhookDeps {
   finalizeScribeTranscript(input: FinalizeScribeTranscriptInput): Promise<ProviderSettlementResult>;
   /** Fails the waiting attempt with the normal retry policy. */
   failProviderAttempt(
-    key: ProviderAttemptKey,
+    key: ProviderAttemptReference,
     failure: { code: string; retryable: boolean; message: string },
     ids: ProviderIds,
   ): Promise<ProviderSettlementResult>;
@@ -31,7 +32,7 @@ function nonEmptyString(value: unknown): string | null {
 }
 
 /** `webhook_metadata` arrives as an object, or as the JSON string the submission carried. */
-function attemptKeyOf(metadata: unknown): ProviderAttemptKey | null {
+function attemptKeyOf(metadata: unknown): ProviderAttemptReference | null {
   let value = metadata;
   if (typeof value === "string") {
     try {
@@ -40,10 +41,8 @@ function attemptKeyOf(metadata: unknown): ProviderAttemptKey | null {
       return null;
     }
   }
-  const record = asRecord(value);
-  const workflowRunId = nonEmptyString(record?.workflowRunId);
-  const attemptId = nonEmptyString(record?.attemptId);
-  return workflowRunId && attemptId ? { workflowRunId, attemptId } : null;
+  const result = providerAttemptReferenceSchema.safeParse(value);
+  return result.success ? result.data : null;
 }
 
 function log(level: "info" | "warn" | "error", message: string, context: Record<string, unknown> = {}): void {
@@ -103,12 +102,14 @@ export function createProjectsWebhookRoutes(deps: ProjectsWebhookDeps) {
         const transcription = asRecord(data?.transcription);
         if (!data || !key) return ignored("missing_or_invalid_metadata", { type });
         if (!transcription) return ignored("missing_transcription", { type, ...key });
+        const requestId = nonEmptyString(data.request_id), transcriptionId = nonEmptyString(transcription.transcription_id);
+        if (!requestId && !transcriptionId) return ignored("missing_provider_id", { type });
         const result = await deps.finalizeScribeTranscript({
           key,
           payload: transcription,
           providerIds: {
-            requestId: nonEmptyString(data.request_id),
-            transcriptionId: nonEmptyString(transcription.transcription_id),
+            requestId,
+            transcriptionId,
           },
         });
         return c.json({ received: true, disposition: result.kind }, 200);
@@ -117,13 +118,13 @@ export function createProjectsWebhookRoutes(deps: ProjectsWebhookDeps) {
       if (type === "webhook_error") {
         const key = attemptKeyOf(envelope.webhook_metadata);
         if (!key) return ignored("missing_or_invalid_metadata", { type });
-        // The provider's message picks the code and is logged truncated; it is
-        // never stored or shown (the classified failure carries fixed text).
+        const requestId = nonEmptyString(envelope.request_id);
+        if (!requestId) return ignored("missing_provider_id", { type });
+        // Classification reads the provider message. Diagnostics carry only its fixed code.
         const failure = scribeCallbackFailure(envelope.error_message);
         log("warn", "elevenlabs_webhook_error_received", {
           ...key,
           code: failure.code,
-          providerMessage: typeof envelope.error_message === "string" ? envelope.error_message.slice(0, 200) : null,
         });
         const result = await deps.failProviderAttempt(
           key,
@@ -132,7 +133,7 @@ export function createProjectsWebhookRoutes(deps: ProjectsWebhookDeps) {
             retryable: failure.disposition === "retryable",
             message: failure.message,
           },
-          { requestId: nonEmptyString(envelope.request_id) },
+          { requestId },
         );
         return c.json({ received: true, disposition: result.kind }, 200);
       }

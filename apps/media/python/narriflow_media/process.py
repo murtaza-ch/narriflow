@@ -24,6 +24,7 @@ from threading import Event
 MAX_INPUT_BYTES = 64 * 1024
 MAX_OUTPUT_BYTES = 1024 * 1024
 MAX_ERROR_BYTES = 8192
+FILE_SIZE_LIMIT_EXIT_CODE = 73
 
 
 @dataclass(frozen=True)
@@ -49,6 +50,7 @@ def run_owned_process(
     env: Mapping[str, str] | None = None,
     on_start: Callable[[int], None] | None = None,
     cancel_event: Event | None = None,
+    max_file_bytes: int | None = None,
 ) -> ProcessResult:
     """Run one finite command; never include its argv or raw stderr in errors."""
     if not argv or any(not isinstance(value, str) or "\x00" in value for value in argv):
@@ -57,6 +59,8 @@ def run_owned_process(
         raise ValueError("media_command_too_large")
     if not 0 < timeout_seconds <= 24 * 60 * 60 or not 0 < kill_grace_seconds <= 30:
         raise ValueError("invalid_media_deadline")
+    if max_file_bytes is not None and (type(max_file_bytes) is not int or not 0 < max_file_bytes <= 10 * 1024 ** 3):
+        raise ValueError("invalid_media_file_limit")
     if cancel_event is not None and cancel_event.is_set():
         raise MediaProcessError("media_execution_cancelled")
     child_env = dict(os.environ if env is None else env)
@@ -86,7 +90,7 @@ def run_owned_process(
         try:
             supervisor = subprocess.Popen(
                 [sys.executable, str(Path(__file__).resolve()), "--supervise", str(read_fd),
-                 json.dumps(list(argv)), str(timeout_seconds), str(kill_grace_seconds), str(start_write_fd)],
+                 json.dumps(list(argv)), str(timeout_seconds), str(kill_grace_seconds), str(start_write_fd), str(max_file_bytes or 0)],
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 start_new_session=True, pass_fds=(read_fd, start_write_fd), env=child_env,
             )
@@ -141,12 +145,14 @@ def run_owned_process(
 async def run_owned_process_async(argv: Sequence[str], *, input_bytes: bytes = b"", timeout_seconds: float,
                                   kill_grace_seconds: float = 5, env: Mapping[str, str] | None = None,
                                   on_start: Callable[[int], None] | None = None,
-                                  cancel_event: Event | None = None) -> ProcessResult:
+                                  cancel_event: Event | None = None,
+                                  max_file_bytes: int | None = None) -> ProcessResult:
     """Cancellation is not complete until the native process group is reaped."""
     cancelled = cancel_event if cancel_event is not None else Event()
     task = asyncio.create_task(asyncio.to_thread(
         run_owned_process, argv, input_bytes=input_bytes, timeout_seconds=timeout_seconds,
         kill_grace_seconds=kill_grace_seconds, env=env, on_start=on_start, cancel_event=cancelled,
+        max_file_bytes=max_file_bytes,
     ))
     try:
         return await asyncio.shield(task)
@@ -243,8 +249,16 @@ def _enable_subreaper() -> None:
             raise MediaProcessError("media_subreaper_unavailable")
 
 
-def _supervise(read_fd: int, argv: list[str], timeout: float, grace: float, start_fd: int) -> int:
+def _supervise(read_fd: int, argv: list[str], timeout: float, grace: float, start_fd: int, max_file_bytes: int) -> int:
     _enable_subreaper()
+    if max_file_bytes:
+        import resource
+        _soft, hard = resource.getrlimit(resource.RLIMIT_FSIZE)
+        if hard != resource.RLIM_INFINITY and hard < max_file_bytes:
+            raise MediaProcessError("media_file_limit_unavailable")
+        # Set the limit only in this isolated supervisor. All native children
+        # inherit it, including yt-dlp's FFmpeg merger and fragment writers.
+        resource.setrlimit(resource.RLIMIT_FSIZE, (max_file_bytes, max_file_bytes))
     body = sys.stdin.buffer.read(MAX_INPUT_BYTES + 1)
     if len(body) > MAX_INPUT_BYTES:
         return 65
@@ -283,6 +297,8 @@ def _supervise(read_fd: int, argv: list[str], timeout: float, grace: float, star
         while True:
             now = time.monotonic()
             child.poll()
+            if max_file_bytes and child.returncode == -signal.SIGXFSZ:
+                failure_code = FILE_SIZE_LIMIT_EXIT_CODE
             discovered = _descendants(os.getpid())
             for pid in discovered:
                 identity = _process_identity(pid)
@@ -354,11 +370,11 @@ def _supervise(read_fd: int, argv: list[str], timeout: float, grace: float, star
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 7 or sys.argv[1] != "--supervise":
+    if len(sys.argv) != 8 or sys.argv[1] != "--supervise":
         raise SystemExit(64)
     try:
         raise SystemExit(_supervise(int(sys.argv[2]), json.loads(sys.argv[3]),
-                                   float(sys.argv[4]), float(sys.argv[5]), int(sys.argv[6])))
+                                   float(sys.argv[4]), float(sys.argv[5]), int(sys.argv[6]), int(sys.argv[7])))
     except Exception:
         # Raw exceptions can contain argv, URLs or caller payloads.
         raise SystemExit(70)
