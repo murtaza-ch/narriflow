@@ -1,6 +1,6 @@
 generator client {
   provider   = "prisma-client-js"
-  engineType = "binary"
+  engineType = "client"
 }
 
 datasource db {
@@ -428,6 +428,7 @@ enum BrandFontRole {
 
 model Project {
   id                       String                    @id @default(uuid()) @db.Uuid
+  sourceRevision           Int                       @default(1)
   title                    String
   sourceMediaUrl           String
   sourceType               SourceType                @default(upload)
@@ -474,6 +475,7 @@ model Project {
   contentPacks             ContentPack[]
   ingestJobs               IngestJob[]
   transcript               Transcript?
+  sourceAudio              SourceAudio[]
   transcriptPassages       TranscriptPassage[]
   clips                    Clip[]
   createdBy                User?                     @relation("ProjectCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
@@ -593,6 +595,9 @@ model ContentPack {
 
 model WorkflowRun {
   id                    String    @id @default(uuid()) @db.Uuid
+  deploymentEpoch       Int       @default(1)
+  generation            Int       @default(1)
+  operationDeadlineAt   DateTime?
   projectId             String    @db.Uuid
   idempotencyKey        String
   stage                 String
@@ -677,6 +682,9 @@ enum RenderGroupVariantResult {
 /// clipId and exportIdentity are historical identities, not mutable inputs.
 model RenderGroup {
   id                    String            @id @default(uuid()) @db.Uuid
+  deploymentEpoch       Int               @default(1)
+  generation            Int               @default(1)
+  operationDeadlineAt   DateTime?
   workflowRunId         String            @db.Uuid
   workSetGeneration     String            @db.Uuid
   clipId                String            @db.Uuid
@@ -790,10 +798,7 @@ model NotificationLedger {
   @@index([status, leaseExpiresAt])
 }
 
-/// NOTE: updatedAt doubles as the submit-and-release STT timeout anchor —
-/// between provider submission and completion, NOTHING may write this row
-/// (a backfill or new mid-flight write would silently disable the overall
-/// transcription timeout in processSubmittedTranscriptResults).
+/// Provider acceptance and result deadlines are explicit. updatedAt is never a timeout anchor.
 model Transcript {
   id                           String              @id @default(uuid()) @db.Uuid
   projectId                    String              @unique @db.Uuid
@@ -807,6 +812,11 @@ model Transcript {
   /// While the run is `waiting` with no `providerJobId`, the instant after which
   /// the unconfirmed submission fails the attempt. Cleared on acceptance.
   providerSubmissionDeadlineAt DateTime?
+  providerSubmittedAt          DateTime?
+  providerResultDeadlineAt     DateTime?
+  sourceAudioId                String?             @db.Uuid
+  sourceRevision               Int                 @default(1)
+  selectionGeneration          Int                 @default(1)
   workflowAttemptId            String?             @db.Uuid
   languageCode                 String?
   languageConfidence           Float?
@@ -828,9 +838,13 @@ model Transcript {
   createdAt                    DateTime            @default(now())
   updatedAt                    DateTime            @updatedAt
   project                      Project             @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  sourceAudio                  SourceAudio?        @relation(fields: [sourceAudioId, projectId, sourceRevision], references: [id, projectId, sourceRevision], onDelete: NoAction)
+  selectionWindows             ClipSelectionWindow[]
   passages                     TranscriptPassage[]
 
   @@index([status, updatedAt])
+  @@index([status, providerSubmissionDeadlineAt])
+  @@index([status, providerResultDeadlineAt])
 }
 
 /// A 30 to 60 second span of a Transcript, embedded for library search. Rows
@@ -920,6 +934,11 @@ model UploadSession {
 
 model IngestJob {
   id                       String          @id @default(uuid()) @db.Uuid
+  deploymentEpoch          Int             @default(1)
+  generation               Int             @default(1)
+  sourceRevision           Int             @default(1)
+  executorOwner            String?         @db.Uuid
+  operationDeadlineAt      DateTime?
   projectId                String          @db.Uuid
   jobType                  IngestJobType
   payload                  Json
@@ -2643,6 +2662,7 @@ model AudioAssetFavorite {
 }
 
 model SocialPost {
+  scheduleRevision         Int                            @default(1)
   deliveryMode             SocialDeliveryMode             @default(direct)
   publishedVideos          PublishedSocialVideo[]
   id                       String                         @id @default(uuid()) @db.Uuid
@@ -3306,4 +3326,169 @@ model McpTask {
   @@unique([ownerUserId, callerId, toolName, domainKind, domainId])
   @@index([expiresAt])
   @@index([workspaceId, ownerUserId])
+}
+
+/// Singleton restore fence. Admission starts closed until the exact candidate passes cutover.
+model ExecutionEpoch {
+  id            Int      @id @default(1) @db.SmallInt
+  epoch         Int      @default(1)
+  admissionOpen Boolean  @default(false)
+  changedAt     DateTime @default(now())
+}
+
+/// Transactional scheduler obligations contain durable references only.
+model ExecutionDispatch {
+  id                     String    @id @default(uuid()) @db.Uuid
+  kind                   String    @db.VarChar(40)
+  subjectKind            String    @db.VarChar(40)
+  subjectId              String    @db.VarChar(160)
+  generation             Int
+  deploymentEpoch        Int
+  inputHash              String    @db.Char(64)
+  deliveryKey            String    @unique @db.VarChar(100)
+  dueAt                  DateTime
+  nextDeliveryAt         DateTime
+  deliveryToken          String?   @db.Uuid
+  deliveryLeaseExpiresAt DateTime?
+  deliveryAttempts       Int       @default(0)
+  acknowledgedAt         DateTime?
+  destinationId          String?   @db.VarChar(160)
+  wakeKind               String?   @db.VarChar(40)
+  deadlineKind           String?   @db.VarChar(32)
+  observedDeadlineAt     DateTime?
+  deadLetteredAt         DateTime?
+  errorCode              String?   @db.VarChar(100)
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+  attempts               ExecutionAttempt[]
+
+  @@unique([id, deploymentEpoch, generation, inputHash])
+  @@index([acknowledgedAt, deadLetteredAt, nextDeliveryAt, deliveryLeaseExpiresAt])
+  @@index([deploymentEpoch, subjectKind, subjectId, generation])
+}
+
+/// Executor ownership for an already-admitted domain token, never a retry or charge budget.
+model ExecutionAttempt {
+  attemptToken        String    @id @db.Uuid
+  dispatchId          String    @db.Uuid
+  deploymentEpoch     Int
+  generation          Int
+  inputHash           String    @db.Char(64)
+  functionName        String    @db.VarChar(40)
+  owner               String?   @db.Uuid
+  leaseExpiresAt      DateTime?
+  operationDeadlineAt DateTime
+  processStartedAt    DateTime?
+  finishedAt          DateTime?
+  revokedAt           DateTime?
+  status              String    @default("admitted") @db.VarChar(24)
+  failureCode         String?   @db.VarChar(100)
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+  dispatch            ExecutionDispatch @relation(fields: [dispatchId, deploymentEpoch, generation, inputHash], references: [id, deploymentEpoch, generation, inputHash], onDelete: Restrict, onUpdate: Restrict)
+  artifacts           ExecutionArtifact[]
+
+  @@index([status, leaseExpiresAt])
+  @@index([status, operationDeadlineAt])
+}
+
+/// Committed request dispositions are replayed only for the identical canonical digest.
+model ExecutionInboxReceipt {
+  audience      String   @db.VarChar(32)
+  deliveryId    String   @db.Uuid
+  requestHash   String   @db.Char(64)
+  keyId         String   @db.VarChar(64)
+  disposition   Json
+  committedAt   DateTime @default(now())
+  expiresAt     DateTime
+
+  @@id([audience, deliveryId])
+  @@index([expiresAt])
+}
+
+/// Server-assigned, attempt- and invocation-unique destinations. HEAD precedes publication.
+model ExecutionArtifact {
+  id                  String    @id @default(uuid()) @db.Uuid
+  attemptToken        String    @db.Uuid
+  owner               String    @db.Uuid
+  role                String    @db.VarChar(32)
+  bindingHash         String    @db.Char(64)
+  storageKey          String    @unique @db.VarChar(1024)
+  contentType         String    @db.VarChar(128)
+  maxBytes            BigInt
+  byteLength          BigInt?
+  checksumSha256      String?   @db.Char(64)
+  etag                String?   @db.VarChar(160)
+  multipartUploadId   String?   @db.VarChar(1024)
+  sourceEtag          String?   @db.VarChar(160)
+  sourceByteLength    BigInt?
+  grantExpiresAt      DateTime
+  committedAt         DateTime?
+  createdAt           DateTime  @default(now())
+  attempt             ExecutionAttempt @relation(fields: [attemptToken], references: [attemptToken], onDelete: Restrict)
+
+  @@unique([attemptToken, owner, role, bindingHash])
+  @@index([committedAt, grantExpiresAt])
+}
+
+/// Immutable whole-source audio evidence, independent of full-video readiness.
+model SourceAudio {
+  id                   String    @id @default(uuid()) @db.Uuid
+  projectId            String    @db.Uuid
+  sourceRevision       Int
+  mediaProvider        String    @db.VarChar(16)
+  mediaId              String    @db.VarChar(160)
+  audioTrack           Json
+  bindingHash          String    @db.Char(64)
+  storageKey           String    @unique @db.VarChar(1024)
+  etag                 String    @db.VarChar(160)
+  byteLength           BigInt
+  checksumSha256       String    @db.Char(64)
+  durationSeconds      Float
+  audioStartTimeSec    Float
+  probeVersion         String    @db.VarChar(160)
+  toolchainFingerprint String    @db.Char(64)
+  createdAt            DateTime  @default(now())
+  project              Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  transcripts          Transcript[]
+
+  @@unique([projectId, sourceRevision])
+  @@unique([id, projectId, sourceRevision])
+}
+
+/// Settled usage is retained on A/V mismatch; only an operator may issue the refund.
+model SourceRefundNeed {
+  id             String    @id @default(uuid()) @db.Uuid
+  projectId      String    @db.Uuid
+  sourceRevision Int
+  sourceAudioId  String    @db.Uuid
+  sourceAudioBindingHash String @db.Char(64)
+  videoBindingHash String @db.Char(64)
+  failureCode    String    @default("source_audio_video_mismatch") @db.VarChar(100)
+  resolvedAt     DateTime?
+  createdAt      DateTime  @default(now())
+
+  @@unique([projectId, sourceRevision])
+  @@index([resolvedAt, createdAt])
+}
+
+/// Window results are stored by private-object reference, then globally finalized once.
+model ClipSelectionWindow {
+  id                   String     @id @default(uuid()) @db.Uuid
+  transcriptId         String     @db.Uuid
+  generation           Int
+  windowIndex          Int
+  startSec             Float
+  endSec               Float
+  inputHash            String     @db.Char(64)
+  resultStorageKey     String?    @db.VarChar(1024)
+  resultHash           String?    @db.Char(64)
+  status               String     @default("queued") @db.VarChar(24)
+  retryAt              DateTime?
+  completedAt          DateTime?
+  createdAt            DateTime   @default(now())
+  transcript           Transcript @relation(fields: [transcriptId], references: [id], onDelete: Cascade)
+
+  @@unique([transcriptId, generation, windowIndex])
+  @@index([status, retryAt])
 }
