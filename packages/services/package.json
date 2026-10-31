@@ -6,6 +6,10 @@
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "exports": {
+    "./clip-selection-policy": {
+      "types": "./src/clip-selection-policy.ts",
+      "default": "./src/clip-selection-policy.ts"
+    },
     ".": {
       "types": "./src/index.ts",
       "default": "./src/index.ts"
