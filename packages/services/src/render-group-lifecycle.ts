@@ -1,3 +1,5 @@
+import { RenderGroupAttemptLost } from "./render-group-contract";
+export { RenderGroupAttemptLost } from "./render-group-contract";
 import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient, type ClipRender } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
@@ -33,13 +35,6 @@ function captionDiagnosticsColumn(
 export interface RenderGroupAdmission {
   readonly configuration: RenderGroupConfiguration;
   readonly variantIds: readonly string[];
-}
-export class RenderGroupAttemptLost extends Error {
-  readonly code = "render_group_attempt_lost";
-  constructor(readonly attempt: RenderGroupAttemptRef) {
-    super(`Render group ${attempt.groupId} is no longer owned`);
-    this.name = "RenderGroupAttemptLost";
-  }
 }
 export async function renderGroupDatabaseNow(tx: Tx): Promise<Date> {
   const rows = await tx.$queryRaw<
