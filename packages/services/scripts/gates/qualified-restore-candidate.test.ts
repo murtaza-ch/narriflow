@@ -1,5 +1,5 @@
 import {expect,test} from "bun:test";
-import {candidateRestoreJournal,candidateRestoreTarget,candidateRestoreRefusal,candidateRestorePostgresVersion,candidateRestoreUtilityTimeout} from "./qualified-restore-candidate";
+import {candidateRestoreJournal,candidateRestoreTarget,candidateRestoreRefusal,candidateRestorePostgresVersion,candidateRestoreUtilityTimeout,candidateRestoreOperatorSelection} from "./qualified-restore-candidate";
 const connection="postgresql://operator:example@ep-wispy-field-b5wyn9o3.c-7.us-east-2.aws.neon.tech/serverless_pipeline_gates?sslmode=verify-full";
 const journal=()=>({version:1,runId:crypto.randomUUID(),jobId:crypto.randomUUID(),dispatchId:crypto.randomUUID(),attemptToken:crypto.randomUUID(),artifactId:crypto.randomUUID(),commandSha256:"a".repeat(64),operationDeadlineAt:"2026-11-01T01:10:00.000Z",fencedVersion:"fenced-version",snapshotPath:"/private/run/snapshot.dump",proofPath:"/private/run/proof.json",refusalPath:"/private/run/refusal.json"});
 test("the archive process can exceed83seconds but preserves30seconds of the original native budget",()=>{
@@ -13,7 +13,13 @@ test("the archive process can exceed83seconds but preserves30seconds of the orig
 test("candidate archive utilities require pinned18.6 and the observed PostgreSQL18 server major",()=>{
  expect(candidateRestorePostgresVersion("pg_dump","pg_dump (PostgreSQL) 18.6\n",180006)).toEqual({utilityVersion:"18.6",serverMajor:18});
  expect(candidateRestorePostgresVersion("pg_restore","pg_restore (PostgreSQL) 18.6\n",180006)).toEqual({utilityVersion:"18.6",serverMajor:18});
+ expect(candidateRestorePostgresVersion("pg_restore","pg_restore (PostgreSQL) 18.6 (Debian 18.6-1.pgdg12+2)\n",180006)).toEqual({utilityVersion:"18.6",serverMajor:18});
  for(const [tool,output,server] of [["pg_dump","pg_dump (PostgreSQL) 17.11",180006],["pg_restore","pg_restore (PostgreSQL) 17.11",180006],["pg_dump","pg_dump (PostgreSQL) 18.6",170011],["pg_restore","pg_restore (PostgreSQL) 18.6",190000],["pg_dump","pg_restore (PostgreSQL) 18.6",180006],["pg_dump","unrelated version 18.6",180006],["pg_dump","pg_dump (PostgreSQL) 18.5",180006]] as const)expect(()=>candidateRestorePostgresVersion(tool,output,server)).toThrow();
+});
+test("regional archive selection requires both exact Sandbox ID and private absolute journal path",()=>{
+ expect(candidateRestoreOperatorSelection(undefined,undefined)).toBeNull();
+ expect(candidateRestoreOperatorSelection("sb-01M69XYH8X4D1RJR2RZAA42M8N","/private/operator.json")).toEqual({sandboxId:"sb-01M69XYH8X4D1RJR2RZAA42M8N",journalPath:"/private/operator.json"});
+ for(const [id,path] of [[undefined,"/private/operator.json"],["sb-01M69XYH8X4D1RJR2RZAA42M8N",undefined],["latest","/private/operator.json"],["sb-01M69XYH8X4D1RJR2RZAA42M8N","./operator.json"]])expect(()=>candidateRestoreOperatorSelection(id,path)).toThrow();
 });
 test("candidate snapshot tooling refuses another database, pooled/shared host or TLS downgrade before any connection",()=>{
  expect(candidateRestoreTarget(`${connection}&schema=public`).hostname).toBe("ep-wispy-field-b5wyn9o3.c-7.us-east-2.aws.neon.tech");
