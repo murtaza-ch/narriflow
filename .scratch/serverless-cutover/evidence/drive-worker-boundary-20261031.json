@@ -1,0 +1,29 @@
+{
+  "date": "2026-10-31",
+  "behavior": [
+    "Worker tokeninfo and chosen-file metadata use only fixed Google HTTPS origins",
+    "Every fetch refuses redirects and has a fifteen-second signal and64KiB body limit",
+    "Canonical file ID cannot alter the provider API path",
+    "Audience and drive.file checks still precede chosen-file metadata admission",
+    "Arbitrary Drive media downloads keep native pinned DNS and redirect credential stripping"
+  ],
+  "focused": {
+    "tests": 21,
+    "assertions": 98,
+    "groups": [
+      "metadata/token/cipher",
+      "native download credentials"
+    ]
+  },
+  "types": [
+    "services",
+    "api"
+  ],
+  "databaseHarness": "existing Processing Usage real reader fixture now injects fetch; suite import parses and skips without DB authorization",
+  "remainingNativeTransportConsumer": "completion-callback.ts only; parent owns native delivery",
+  "sha256": {
+    "packages/services/src/drive-source.ts": "1056b9e59becdc2fa1099d657898e05653326ec42409fa46f697e72ce3571150",
+    "packages/services/src/drive-source.test.ts": "2d9fde75aee83a441e4488f99f7d56a9af68a4190940ba52141cbf5294554e87",
+    "apps/media/src/drive-download.test.ts": "e50aa938d2c02ca4b20950d7a6c213cebaaa71c7fa73791bd2bdb726b267f4cf"
+  }
+}

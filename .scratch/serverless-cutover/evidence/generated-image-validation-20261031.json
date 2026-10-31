@@ -1,0 +1,88 @@
+{
+  "date": "2026-10-31",
+  "scope": "Generated image native validation foundation;16 remains claimed",
+  "behavior": [
+    "Source plan and cleanup intent commit before conditional private PUT",
+    "Lost PUT ACK and fresh coordinator claim recover only the exact planned source",
+    "Missing response/source preserves unknown outcome; no silent provider resubmit",
+    "Native child admission parks parent with no renewable coordinator lease",
+    "Original source and admitting claim lineages are frozen independently",
+    "Native commit creates/adopts the validated asset, finalizes reserved generation usage and completes the parent in one transaction",
+    "Explicit cancel or restricted Workspace prevents late publication and releases reserved usage atomically",
+    "Parent lineage cannot change while a source plan/validation child is bound",
+    "Production publisher does not run Sharp, copy a final asset, or follow provider URLs"
+  ],
+  "database": {
+    "target": "guarded isolated PG17 disposable schema",
+    "allMigrations": 134,
+    "tests": 10,
+    "assertions": 83,
+    "durationMs": 1241,
+    "groups": [
+      "generated-image",
+      "font/visual",
+      "thumbnail"
+    ],
+    "covers": [
+      "parked claim release",
+      "partial binary remains unusable and usage remains reserved",
+      "atomic result and credit settlement",
+      "cancel versus seal serialization",
+      "late commit rejected after cancel",
+      "Workspace restriction before native commit",
+      "fresh claim reattaches original source lineage",
+      "SQL lineage mutation rejected"
+    ],
+    "cleanup": "disposable schema removed"
+  },
+  "focused": {
+    "tests": 42,
+    "assertions": 132,
+    "groups": [
+      "publisher source planning and recovery",
+      "generated parent state machine",
+      "fixed OpenAI provider"
+    ]
+  },
+  "fastSuites": {
+    "services": {
+      "pass": 1531,
+      "skip": 1041
+    },
+    "brandHttp": {
+      "pass": 36,
+      "assertions": 82
+    }
+  },
+  "types": [
+    "services",
+    "api"
+  ],
+  "wranglerDryBuild": {
+    "bundleEmitted": true,
+    "auditPassed": false,
+    "forbiddenPackages": [],
+    "remainingNativeServiceModules": [
+      "url-guard.ts (DNS/http/https/net)"
+    ],
+    "sharpReachable": false
+  },
+  "references": [
+    "https://developers.cloudflare.com/r2/api/s3/extensions/",
+    "https://developers.cloudflare.com/r2/reference/consistency/"
+  ],
+  "pending": [
+    "Root19 provider commands and targeted parent driver; existing .process provider network path is not the final Workflow driver",
+    "Root20 holds planned source keys while a parent remains unresolved, including unknown outcomes",
+    "Actual deployed native/R2/resource/cancellation gates; existing configured image output cap preserved",
+    "Fixed Google Drive Worker fetch and Root18 guarded native callback delivery close URL-guard closure"
+  ],
+  "sha256": {
+    "packages/services/src/generated-media-validation.ts": "37793fac890af1e8c30a4c04a54d5b113612909c30ff8a851d44d3c3f91ee5b3",
+    "packages/services/src/generated-media-publication-runtime.ts": "8b741d8d8939e97b8bd682f4dbddcdaee35820cca9bc8b0a1230952da9d8ffdd",
+    "packages/services/src/generated-media-publisher.ts": "d2f204ec8ac8c0ad5f6a58c50c4bfb4b948871af21da060f0d99cdcaa59017a8",
+    "packages/services/src/native-validation.ts": "7b1450310310632e8074eea65444af7f459ddd0d898b96883042619bda388a0a",
+    "packages/validators/src/native-validation.ts": "1f3ebb88f17558979ca6327513d82143a82d5f70f726cbf66223e689a35952ba",
+    "packages/db/prisma/migrations/20261031010000_serverless_execution/migration.sql": "3d9efbb628033db8eb09cabddbcfae4d2fcc39ee906ee4710298e4b61fd82191"
+  }
+}

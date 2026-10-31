@@ -1,5 +1,5 @@
 import { clipDurationWithinBounds, DEFAULT_CAPTION_PRESET, EDITOR_DOCUMENT_VERSION, captionPresetSchema, deletedRangesSchema, editorDocumentSchema, hasRenderableContent, normalizeDeletedRanges, normalizeTranscriptSliceForClip, studioEditsSchema, updateClipTranscriptSliceSchema, type EditorDocument } from "@narriflow/validators";
-import { assertPublicHttpUrl } from "./url-guard";
+import { assertPublicHttpUrl } from "./url-policy";
 import { ExpectedDomainFailureError, type ExpectedDomainFailureCatalog } from "./expected-domain-failure";
 
 const clipEditorDocumentPersistenceFailureCatalog = {

@@ -2338,6 +2338,8 @@ model GeneratedMediaJob {
   providerUsageImages       Int?
   providerResultContentType String?
   resultAssetId             String?                    @db.Uuid
+  validationJobId           String?                    @unique @db.Uuid
+  validationInput           Json?
   attempt                   Int                        @default(0)
   retryAt                   DateTime?
   claimId                   String?                    @db.Uuid

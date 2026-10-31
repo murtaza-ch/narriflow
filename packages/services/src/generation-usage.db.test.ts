@@ -232,6 +232,8 @@ dbDescribe("Generation usage PostgreSQL contracts", () => {
       providerUsageImages: null,
       providerResultContentType: null,
       resultAsset: null,
+      validationJobId: null,
+      validationInput: null,
       attempt: 0,
       retryAt: null,
       claimId: null,

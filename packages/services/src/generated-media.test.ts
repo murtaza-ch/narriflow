@@ -774,3 +774,16 @@ describe("Generated Media Job", () => {
     expect(usageEvents).toEqual([`reserve:${job.id}`]);
   });
 });
+
+describe("native validation parking",()=>{
+ test("does not retain a coordinator claim or resubmit the provider while its validation child is pending",async()=>{
+  const {GeneratedMediaValidationPending}=await import("./generated-media");
+  const store=createInMemoryGeneratedMediaStore();let submits=0;
+  const {module,usageEvents}=harness({store,provider:{async submit(){submits++;return{kind:"completed",providerRef:"openai:one",usage:{images:1},result:{contentType:"image/png",bytes:new Uint8Array([1])}};},async poll(){throw new Error("No poll while child pending");},async cancel(){return{kind:"cancelled"};},async result(){throw new Error("No refetch while child pending");}},publisher:{async publish(input){await store.update(input.jobId,{status:"waiting",validationJobId:"child1",claimId:null,claimExpiresAt:null});throw new GeneratedMediaValidationPending("child1");}}});
+  const created=await module.create(scope,request);
+  expect((await module.process(created.id)).status).toBe("waiting");
+  for(let i=0;i<5;i++)expect((await module.process(created.id)).status).toBe("waiting");
+  const parent=await store.get(created.id);expect(parent?.claimId).toBeNull();expect(parent?.claimExpiresAt).toBeNull();expect(submits).toBe(1);
+  expect(usageEvents).toEqual([`reserve:${created.id}`]);
+ });
+});

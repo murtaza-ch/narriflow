@@ -1,3 +1,4 @@
+import type { GeneratedValidationPlan } from "@narriflow/validators/native-validation";
 import { createHash } from "node:crypto";
 import { requirePlanFeature } from "./plan-features";
 import type { BrandActorScope } from "./brand-ownership";
@@ -87,6 +88,8 @@ export interface GeneratedMediaPublisher {
   publish(input: {
     jobId: string;
     attempt: number;
+    claimId: string | null;
+    providerRef: string;
     scope: BrandActorScope;
     title: string;
     result?: Awaited<ReturnType<GeneratedImageProvider["result"]>>;
@@ -147,6 +150,8 @@ export interface GeneratedMediaJobRecord {
   providerUsageImages: number | null;
   providerResultContentType: GeneratedMediaAsset["contentType"] | null;
   resultAsset: GeneratedMediaAsset | null;
+  validationJobId: string | null;
+  validationInput: GeneratedValidationPlan | null;
   attempt: number;
   retryAt: Date | null;
   claimId: string | null;
@@ -158,6 +163,10 @@ export interface GeneratedMediaJobRecord {
   promptExpiresAt: Date;
   createdAt: Date;
   updatedAt: Date;
+}
+
+export class GeneratedMediaValidationPending extends Error {
+  constructor(readonly validationJobId: string) { super("generated_media_validation_pending"); }
 }
 
 export interface GeneratedMediaStore {
@@ -500,6 +509,11 @@ export function createGeneratedMediaModule(dependencies: GeneratedMediaModuleDep
     return settled;
   }
 
+  async function finishProcessing(record: GeneratedMediaJobRecord,claimId:string) {
+    if(record.claimId!==claimId)return generatedMediaPublicJob(record);
+    return generatedMediaPublicJob(await dependencies.store.updateClaimed(record.id,claimId,{claimId:null,claimExpiresAt:null,updatedAt:now()}));
+  }
+
   async function complete(record: GeneratedMediaJobRecord, outcome: Extract<GeneratedImageProviderOutcome, { kind: "completed" }>) {
     let current = record;
     if (!current.resultAsset) {
@@ -522,12 +536,20 @@ export function createGeneratedMediaModule(dependencies: GeneratedMediaModuleDep
         asset = await dependencies.publisher.publish({
           jobId: current.id,
           attempt: current.attempt,
+          claimId: current.claimId,
+          providerRef: outcome.providerRef,
           scope: current.scope,
           title: current.title,
           result,
           resultContentType,
         });
       } catch (error) {
+        if (error instanceof GeneratedMediaValidationPending) {
+          const parked = await dependencies.store.get(current.id);
+          if (!parked || parked.validationJobId !== error.validationJobId) throw new GeneratedMediaJobError("generated_media_claim_lost");
+          return parked;
+        }
+        if ((error as {code?:string}).code === "generated_media_output_invalid") return release(current,"failed","generated_media_output_invalid");
         const attemptUnavailable = (error as { code?: string }).code === "generated_media_attempt_unavailable";
         return persist(current, {
           status: attemptUnavailable ? "waiting" : "queued",
@@ -677,6 +699,8 @@ export function createGeneratedMediaModule(dependencies: GeneratedMediaModuleDep
           providerUsageImages: null,
           providerResultContentType: null,
           resultAsset: null,
+          validationJobId: null,
+          validationInput: null,
           attempt: 0,
           retryAt: null,
           claimId: null,
@@ -726,7 +750,7 @@ export function createGeneratedMediaModule(dependencies: GeneratedMediaModuleDep
       let record = await owned(id);
       if (["failed", "rejected", "cancelled"].includes(record.status)) return generatedMediaPublicJob(record);
       if (record.status === "completed") return generatedMediaPublicJob(record);
-      if (record.outcomeUnknown) return generatedMediaPublicJob(record);
+      if (record.outcomeUnknown || record.validationJobId) return generatedMediaPublicJob(record);
       if (record.retryAt && record.retryAt.getTime() > now().getTime()) return generatedMediaPublicJob(record);
 
       const claimId = ids();
@@ -746,11 +770,7 @@ export function createGeneratedMediaModule(dependencies: GeneratedMediaModuleDep
             providerRef: record.providerRef ?? "published",
             usage: { images: record.providerUsageImages ?? 1 },
           });
-          return generatedMediaPublicJob(await dependencies.store.updateClaimed(next.id, claimId, {
-            claimId: null,
-            claimExpiresAt: null,
-            updatedAt: now(),
-          }));
+          return finishProcessing(next,claimId);
         }
         if (
           !record.resultAsset &&
@@ -763,16 +783,12 @@ export function createGeneratedMediaModule(dependencies: GeneratedMediaModuleDep
             providerRef: record.providerRef,
             usage: { images: record.providerUsageImages },
           });
-          return generatedMediaPublicJob(await dependencies.store.updateClaimed(next.id, claimId, {
-            claimId: null,
-            claimExpiresAt: null,
-            updatedAt: now(),
-          }));
+          return finishProcessing(next,claimId);
         }
         if (record.status === "waiting" && record.providerRef) {
           source = "poll";
           const next = await applyOutcome(record, await dependencies.provider.poll(record.providerRef), "poll");
-          return generatedMediaPublicJob(await dependencies.store.updateClaimed(next.id, claimId, { claimId: null, claimExpiresAt: null, updatedAt: now() }));
+          return finishProcessing(next,claimId);
         }
         record = await dependencies.store.updateClaimed(record.id, claimId, {
           status: "running",
@@ -787,7 +803,7 @@ export function createGeneratedMediaModule(dependencies: GeneratedMediaModuleDep
           aspectRatio: record.aspectRatio,
           style: record.style,
         }), "submit");
-        return generatedMediaPublicJob(await dependencies.store.updateClaimed(next.id, claimId, { claimId: null, claimExpiresAt: null, updatedAt: now() }));
+        return finishProcessing(next,claimId);
       } catch (error) {
         if (error instanceof GeneratedMediaProviderError) {
           if (error.details?.outcomeUnknown) {
@@ -851,6 +867,7 @@ export function createGeneratedMediaModule(dependencies: GeneratedMediaModuleDep
           providerRef: null,
           providerUsageImages: null,
           providerResultContentType: null,
+          validationInput: null,
           outcomeUnknown: false,
           errorCode: null,
           retryAt: now(),

@@ -5,7 +5,7 @@ import {
   type GeneratedImageProvider,
   type GeneratedImageStyle,
 } from "./generated-media";
-import { readResponseBodyBounded } from "./url-guard";
+import { readResponseBodyBounded } from "./url-policy";
 
 export { GeneratedMediaProviderError } from "./generated-media";
 
@@ -82,6 +82,7 @@ export function createOpenAiImageProvider(options: OpenAiImageProviderOptions): 
       try {
         const response = await request(OPENAI_IMAGE_ENDPOINT, {
           method: "POST",
+          redirect: "error",
           headers: {
             Authorization: `Bearer ${apiKey}`,
             "Content-Type": "application/json",

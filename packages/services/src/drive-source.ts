@@ -2,6 +2,7 @@ import { readServiceEnvironment } from "./runtime-environment";
 import { createCipheriv, createDecipheriv, hkdfSync, randomBytes } from "node:crypto";
 import {
   GOOGLE_DRIVE_FILE_SCOPE,
+  driveIngestSchema,
   MAX_UPLOAD_SIZE_BYTES,
   userErrorMessage,
 } from "@narriflow/validators";
@@ -9,11 +10,7 @@ import {
   ExpectedDomainFailureError,
   type ExpectedDomainFailureKind,
 } from "./expected-domain-failure";
-import {
-  guardedFetch,
-  readResponseTextBounded,
-  type GuardedFetchOptions,
-} from "./url-guard";
+import { readResponseTextBounded } from "./url-policy";
 
 /**
  * Google Drive Picker intake. The browser holds a short-lived `drive.file`
@@ -27,6 +24,16 @@ const TOKENINFO_URL = "https://oauth2.googleapis.com/tokeninfo";
 const METADATA_FIELDS = "id,name,mimeType,size,trashed,capabilities/canDownload,videoMediaMetadata/durationMillis";
 const METADATA_TIMEOUT_MS = 15_000;
 const MAX_METADATA_BYTES = 64 * 1024;
+export interface DriveMetadataOptions { fetch?: typeof globalThis.fetch; signal?: AbortSignal }
+/** Only these provider endpoints are reachable from the Worker. */
+async function fetchGoogleMetadata(raw: string | URL, init: RequestInit, options: DriveMetadataOptions) {
+  const url=new URL(raw);
+  if(!["https://www.googleapis.com","https://oauth2.googleapis.com"].includes(url.origin))throw new DriveSourceError("drive_file_unavailable");
+  const timeout=AbortSignal.timeout(METADATA_TIMEOUT_MS);
+  const signal=options.signal?AbortSignal.any([options.signal,timeout]):timeout;
+  return (options.fetch??globalThis.fetch)(url,{...init,signal,redirect:"error",credentials:"omit"});
+}
+
 
 const driveFailureKinds = {
   drive_token_expired: "forbidden",
@@ -112,17 +119,15 @@ export function driveDownloadRefusal(status: number, body: string): DriveSourceE
 export async function verifyDriveAccessToken(
   accessToken: string,
   expected: { clientId: string },
-  options: Pick<GuardedFetchOptions, "transport" | "resolver" | "signal"> = {},
+  options: DriveMetadataOptions = {},
 ): Promise<void> {
   let body: string;
   try {
-    const response = await guardedFetch(TOKENINFO_URL, {
-      ...options,
+    const response = await fetchGoogleMetadata(TOKENINFO_URL, {
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
       body: new URLSearchParams({ access_token: accessToken }).toString(),
-      timeoutMs: METADATA_TIMEOUT_MS,
-    });
+    },options);
     if (!response.ok) {
       await response.body?.cancel().catch(() => undefined);
       // Google answers 400 for a token it doesn't recognize or that has lapsed.
@@ -147,18 +152,17 @@ export async function verifyDriveAccessToken(
 
 export async function readDriveFileMetadata(
   input: { fileId: string; accessToken: string },
-  options: Pick<GuardedFetchOptions, "transport" | "resolver" | "signal"> = {},
+  options: DriveMetadataOptions = {},
 ): Promise<DriveFileMetadata> {
+  if(!driveIngestSchema.shape.fileId.safeParse(input.fileId).success)throw new DriveSourceError("drive_file_unavailable");
   const url = new URL(`${DRIVE_FILES_URL}/${input.fileId}`);
   url.searchParams.set("fields", METADATA_FIELDS);
   url.searchParams.set("supportsAllDrives", "true");
   let body: string;
   try {
-    const response = await guardedFetch(url, {
-      ...options,
+    const response = await fetchGoogleMetadata(url, {
       headers: { authorization: `Bearer ${input.accessToken}`, accept: "application/json" },
-      timeoutMs: METADATA_TIMEOUT_MS,
-    });
+    },options);
     if (!response.ok) {
       await response.body?.cancel().catch(() => undefined);
       throw driveStatusFailure(response.status);
@@ -197,7 +201,7 @@ export async function readDriveFileMetadata(
  * public one the browser used (`NEXT_PUBLIC_GOOGLE_CLIENT_ID`), read at call
  * time; without it nothing is admitted. */
 export function createGoogleDriveFileReader(
-  options: { clientId?: string } & Pick<GuardedFetchOptions, "transport" | "resolver"> = {},
+  options: { clientId?: string } & Omit<DriveMetadataOptions,"signal"> = {},
 ): DriveFileReader {
   const { clientId, ...fetchOptions } = options;
   return {

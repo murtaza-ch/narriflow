@@ -1,6 +1,9 @@
+import { workspaceAllowsCapability } from "@narriflow/validators";
+import { requirePlanFeature } from "./plan-features";
+import { generatedValidationParent, lockGeneratedValidationParent, currentGeneratedValidationParent, completeGeneratedValidation, failGeneratedValidation } from "./generated-media-validation";
 import { createHash, randomUUID } from "node:crypto";
 import { Prisma, type NativeValidationJob, type PrismaClient } from "@prisma/client";
-import { nativeValidationEvidenceSchema, nativeValidationInputSchema, type NativeValidationEvidence, type NativeValidationInput } from "@narriflow/validators/native-validation";
+import { nativeValidationEvidenceSchema, nativeValidationInputSchema, nativeValidationStoredInputSchema, generatedValidationPlanSchema, type NativeValidationEvidence, type NativeValidationInput } from "@narriflow/validators/native-validation";
 import type { ExecutionDeadline, ExecutionDispatchReference } from "@narriflow/validators/execution";
 import { appendExecutionDispatch, readExecutionDispatch } from "./execution-dispatch";
 import { assertBrandMutationAllowed, brandOwnerStoragePrefix, resolveBrandOwner, type BrandActorScope } from "./brand-ownership";
@@ -77,6 +80,56 @@ export class NativeValidationService implements ExecutorDomainControl<NativeVali
     return { ...publicJob(admitted.row), replayed: admitted.replayed };
   }
 
+  /** Internal admission is fenced by the provider coordinator's live claim;
+   * the child then owns authority independently of that deliberately cleared lease. */
+  async admitGenerated(scope: BrandActorScope, request: { jobId: string; claimId: string; input: Extract<NativeValidationInput,{kind:"visual"}> }) {
+    const input = nativeValidationInputSchema.parse(request.input);
+    if (input.kind !== "visual" || !input.contentType.startsWith("image/") || input.sizeBytes > 100000000 || !input.key.startsWith(`workspaces/${scope.workspaceId}/generated-media-attempts/${request.jobId}/`)) throw new NativeValidationError("native_validation_object_invalid");
+    const object = await this.dependencies.head(input.key);
+    if (object.contentType !== input.contentType || object.sizeBytes !== input.sizeBytes || !object.etag || object.etag.length > 160) throw new NativeValidationError("native_validation_object_invalid");
+    const admitted = await this.database.$transaction(async tx => {
+      const [epoch] = await tx.$queryRaw<Array<{epoch:number}>>`SELECT "epoch" FROM "ExecutionEpoch" WHERE "id"=1 FOR SHARE`;
+      await tx.$queryRaw`SELECT "id" FROM "Workspace" WHERE "id"=${scope.workspaceId}::uuid FOR SHARE`;
+      const owner=resolveBrandOwner(scope);
+      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`native-validation-owner:${owner.workspaceId??owner.userId}`},0)) IS NULL AS "locked"`;
+      const initial=await tx.generatedMediaJob.findUnique({where:{id:request.jobId}});
+      if(!initial)throw new NativeValidationError("native_validation_missing");
+      await tx.$queryRaw`SELECT "id" FROM "Project" WHERE "id"=${initial.projectId}::uuid FOR UPDATE`;
+      await tx.$queryRaw`SELECT "id" FROM "GeneratedMediaJob" WHERE "id"=${initial.id}::uuid FOR UPDATE`;
+      const parent=await tx.generatedMediaJob.findUniqueOrThrow({where:{id:initial.id}}),clock=await now(tx);
+      if(!epoch || parent.workspaceId!==scope.workspaceId || parent.createdByUserId!==scope.actorUserId || parent.validationJobId || parent.claimId!==request.claimId || !parent.claimExpiresAt || parent.claimExpiresAt<=clock || parent.providerRef===null || parent.providerResultContentType!==input.contentType || parent.providerUsageImages!==1 || parent.usageStatus!=="reserved" || parent.resultAssetId || parent.outcomeUnknown || !["running","waiting","queued"].includes(parent.status))throw new NativeValidationError("native_validation_conflict");
+      const plan=generatedValidationPlanSchema.parse(parent.validationInput);
+      if(plan.key!==input.key||plan.fingerprint!==input.fingerprint||plan.contentType!==input.contentType||plan.sizeBytes!==input.sizeBytes||plan.parentAttempt!==parent.attempt||plan.providerRef!==parent.providerRef||!input.key.startsWith(`workspaces/${scope.workspaceId}/generated-media-attempts/${parent.id}/${plan.sourceClaimLineage}/`))throw new NativeValidationError("native_validation_object_invalid");
+      const frozen=nativeValidationStoredInputSchema.parse({...input,provenance:"generated",generated:{id:parent.id,projectId:parent.projectId,attempt:parent.attempt,providerRef:parent.providerRef,claimLineage:plan.sourceClaimLineage,admittingClaimLineage:request.claimId}});
+      const id=randomUUID(),requestFingerprint=digest(frozen);
+      const row=await tx.nativeValidationJob.create({data:{id,workspaceId:parent.workspaceId,createdByUserId:parent.createdByUserId,ownerUserId:owner.userId,ownerWorkspaceId:owner.workspaceId,kind:"visual_asset",requestFingerprint,input:frozen as Prisma.InputJsonValue,inputHash:digest(["native-generated-validation-v1",id,epoch.epoch,requestFingerprint,object.etag]),inputStorageKey:input.key,inputEtag:object.etag,inputByteLength:BigInt(input.sizeBytes),deploymentEpoch:epoch.epoch,createdAt:clock,operationDeadlineAt:new Date(clock.getTime()+deadlineMs)}});
+      await tx.generatedMediaJob.update({where:{id:parent.id},data:{validationJobId:id,status:"waiting",claimId:null,claimExpiresAt:null,retryAt:null,errorCode:"generated_media_validation_pending",updatedAt:clock}});
+      return {row,ids:await this.registerJob(tx,row)};
+    });
+    await this.confirm(admitted.row.id,admitted.ids);
+    return publicJob(admitted.row);
+  }
+
+  async cancelGenerated(scope: BrandActorScope, parentId: string) {
+    const ids=await this.database.$transaction(async tx=>{
+      const parent=await tx.generatedMediaJob.findFirst({where:{id:parentId,workspaceId:scope.workspaceId}});
+      if(!parent?.validationJobId)throw new NativeValidationError("native_validation_missing");
+      const initial=await tx.nativeValidationJob.findUniqueOrThrow({where:{id:parent.validationJobId}});
+      await this.lockOwner(tx,initial);
+      await tx.$queryRaw`SELECT "id" FROM "NativeValidationJob" WHERE "id"=${initial.id}::uuid FOR UPDATE`;
+      const job=await tx.nativeValidationJob.findUniqueOrThrow({where:{id:initial.id}}),clock=await now(tx);
+      const workspace=await tx.workspace.findUnique({where:{id:scope.workspaceId}}),member=await tx.workspaceMember.findUnique({where:{workspaceId_userId:{workspaceId:scope.workspaceId,userId:scope.actorUserId}}});
+      if(job.workspaceId!==scope.workspaceId || generatedValidationParent(job)?.id!==parentId)throw new NativeValidationError("native_validation_missing");
+      const role=workspace?.ownerUserId===scope.actorUserId?"owner":member?.role;
+      if(!workspace||!role||!workspaceAllowsCapability({role,status:workspace.status},"content.edit"))throw new NativeValidationError("native_validation_missing");
+      if(["completed","failed","cancelled"].includes(job.status))return [];
+      await failGeneratedValidation(tx,job,clock,"cancelled","user_cancelled");
+      await tx.nativeValidationJob.update({where:{id:job.id},data:{status:"cancelled",completedAt:clock,executorOwner:null,leaseExpiresAt:null,errorCode:"user_cancelled"}});
+      return (await this.wake(tx,job,clock,"validation_cancelled")).dispatchIds;
+    });
+    await this.dependencies.register(ids);
+  }
+
   async get(scope: BrandActorScope, id: string) {
     const owner = resolveBrandOwner(scope);
     const row = await this.database.nativeValidationJob.findFirst({ where: { id, workspaceId: scope.workspaceId, ownerUserId: owner.userId, ownerWorkspaceId: owner.workspaceId } });
@@ -119,6 +172,7 @@ export class NativeValidationService implements ExecutorDomainControl<NativeVali
     await tx.$queryRaw`SELECT "id" FROM "Workspace" WHERE "id"=${job.workspaceId}::uuid FOR SHARE`;
     const ownerKey = `native-validation-owner:${job.ownerWorkspaceId ?? job.ownerUserId}`;
     await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${ownerKey},0)) IS NULL AS "locked"`;
+    await lockGeneratedValidationParent(tx, job);
   }
 
   async lockExecution(tx: Tx, reference: ExecutionDispatchReference, attemptToken: string) {
@@ -134,10 +188,17 @@ export class NativeValidationService implements ExecutorDomainControl<NativeVali
     const workspace = await tx.workspace.findUnique({ where: { id: job.workspaceId } });
     const membership = await tx.workspaceMember.findUnique({ where: { workspaceId_userId: { workspaceId: job.workspaceId, userId: job.createdByUserId } } });
     try {
+      const actorUser=await tx.user.findUnique({where:{id:job.createdByUserId},select:{deletedAt:true}});
+      if(!actorUser || actorUser.deletedAt)throw new Error("deleted actor");
       if (!workspace || (job.ownerUserId ? workspace.personalOwnerUserId !== job.ownerUserId : workspace.personalOwnerUserId !== null || workspace.id !== job.ownerWorkspaceId) || (workspace.ownerUserId !== job.createdByUserId && !membership)) throw new Error("missing actor");
-      assertBrandMutationAllowed({ actorUserId: job.createdByUserId, workspaceId: workspace.id, workspaceOwnerUserId: workspace.ownerUserId, role: workspace.ownerUserId === job.createdByUserId ? "owner" : membership!.role, status: workspace.status, pricingTier: workspace.pricingTier,
-        isPersonalWorkspace: workspace.personalOwnerUserId !== null }, job.kind === "brand_font" ? "brand.customFonts" : "brand.profiles");
+      const actor = { actorUserId: job.createdByUserId, workspaceId: workspace.id, workspaceOwnerUserId: workspace.ownerUserId, role: workspace.ownerUserId === job.createdByUserId ? "owner" as const : membership!.role, status: workspace.status, pricingTier: workspace.pricingTier, isPersonalWorkspace: workspace.personalOwnerUserId !== null };
+      if (generatedValidationParent(job)) {
+        if (!workspaceAllowsCapability(actor,"content.edit")) throw new Error("restricted actor");
+        requirePlanFeature(workspace.pricingTier,"generated.images");
+        await currentGeneratedValidationParent(tx,job,await now(tx));
+      } else assertBrandMutationAllowed(actor,job.kind === "brand_font" ? "brand.customFonts" : "brand.profiles");
     } catch {
+      await failGeneratedValidation(tx,job,await now(tx),"cancelled","generated_media_validation_cancelled");
       await tx.nativeValidationJob.update({ where: { id: job.id }, data: { status: "cancelled", completedAt: await now(tx), executorOwner: null, leaseExpiresAt: null } });
       return { kind: "terminal" as const, disposition: { disposition: "cancelled" as const } };
     }
@@ -175,7 +236,7 @@ export class NativeValidationService implements ExecutorDomainControl<NativeVali
 
   async commitArtifactExecution(tx: Tx, ref: NativeValidationReference, context: ExecutorMutationContext, artifact: NativeValidationCommit): Promise<ExecutorMutationResult> {
     const { job, clock } = await this.owned(tx, ref, context);
-    const input = nativeValidationInputSchema.parse(job.input);
+    const input = nativeValidationStoredInputSchema.parse(job.input);
     if (artifact.bindingHash !== job.inputHash) throw new NativeValidationError("native_validation_object_invalid");
     const pending = job.result && typeof job.result === "object" && !Array.isArray(job.result) ? job.result as { binary?: { artifactId: string; storageKey: string }; evidence?: NativeValidationEvidence; probeArtifactId?: string } : {};
     const expectedRole = input.kind === "font" ? "validated_font" : "validated_asset";
@@ -222,6 +283,7 @@ export class NativeValidationService implements ExecutorDomainControl<NativeVali
       const asset = existing ? await tx.visualAsset.update({ where: { id: existing.id }, data: existing.deletedAt ? data : {} }) : await tx.visualAsset.create({ data });
       result = { assetId: asset.id, fingerprint: asset.fingerprint };
     }
+    await completeGeneratedValidation(tx,job,result.assetId,clock);
     await tx.nativeValidationJob.update({ where: { id: job.id }, data: { status: "completed", result, errorCode: null, completedAt: clock, executorOwner: null, leaseExpiresAt: null } });
     return this.wake(tx, job, clock, "validation_ready");
   }
@@ -237,6 +299,7 @@ export class NativeValidationService implements ExecutorDomainControl<NativeVali
     const updated = await tx.nativeValidationJob.update({ where: { id: job.id }, data: { status: retry ? "queued" : "failed", generation: retry ? { increment: 1 } : job.generation,
       attemptToken: null, executorOwner: null, leaseExpiresAt: null, result: Prisma.DbNull, errorCode,
       retryAt: retry ? new Date(clock.getTime() + Math.min(60_000, 5000 * 2 ** job.chargedAttempts)) : null, completedAt: retry ? null : clock } });
+    if (!retry) await failGeneratedValidation(tx,job,clock,"failed",errorCode);
     return this.wake(tx, updated, clock, retry ? "validation_retry" : "validation_failed");
   }
   async failExecution(tx: Tx, ref: NativeValidationReference, context: ExecutorMutationContext, failure: { failureCode: string; retryable: boolean }): Promise<ExecutorMutationResult> {
@@ -246,6 +309,7 @@ export class NativeValidationService implements ExecutorDomainControl<NativeVali
   async releaseExecution(tx: Tx, ref: NativeValidationReference, context: ExecutorMutationContext, release: { reason: string }): Promise<ExecutorMutationResult> {
     const { job, clock } = await this.owned(tx, ref, context);
     if (release.reason === "cancelled") {
+      await failGeneratedValidation(tx,job,clock,"cancelled","generated_media_validation_cancelled");
       await tx.nativeValidationJob.update({ where: { id: job.id }, data: { status: "cancelled", completedAt: clock, executorOwner: null, leaseExpiresAt: null, errorCode: "asset_validation_cancelled" } });
       return this.wake(tx, job, clock, "validation_cancelled");
     }

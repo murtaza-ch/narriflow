@@ -1,6 +1,6 @@
 import type { AssistedCopyProvider } from "./assisted-social-copy";
 import { AssistedSocialCopyError } from "./assisted-social-copy";
-import { readResponseBodyBounded } from "./url-guard";
+import { readResponseBodyBounded } from "./url-policy";
 
 const RESPONSES_ENDPOINT = "https://api.openai.com/v1/responses";
 const MODERATIONS_ENDPOINT = "https://api.openai.com/v1/moderations";

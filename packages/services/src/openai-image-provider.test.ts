@@ -41,6 +41,7 @@ describe("OpenAI image provider", () => {
     });
     expect(outcome.kind === "completed" ? [...(outcome.result?.bytes ?? [])] : []).toEqual([137, 80, 78, 71]);
     expect(requests).toHaveLength(1);
+    expect(requests[0]!.init.redirect).toBe("error");
     expect(JSON.parse(String(requests[0]!.init.body))).toMatchObject({
       model: "gpt-image-2",
       size: "1024x1536",
