@@ -330,11 +330,7 @@ export function createProductionSocialPublicationRuntime(
 	};
 }
 
-let productionRuntime:
-	| ReturnType<typeof createProductionSocialPublicationRuntime>
-	| undefined;
 
 export function getSocialPublicationRuntime() {
-	productionRuntime ??= createProductionSocialPublicationRuntime();
-	return productionRuntime;
+	return createProductionSocialPublicationRuntime();
 }

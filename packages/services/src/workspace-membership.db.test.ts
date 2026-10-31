@@ -1,3 +1,4 @@
+import { createDatabaseTestContext } from "@narriflow/db/testing";
 import { createHash, randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
@@ -15,27 +16,27 @@ dbDescribe("Workspace membership PostgreSQL concurrency", () => {
   let prisma: PrismaClient;
   let pool: Pool;
   let priorPrisma: PrismaClient | undefined;
-  const prismaGlobal = globalThis as unknown as { narriflowPrismaClient?: PrismaClient };
+  const prismaGlobal = createDatabaseTestContext();
   const workspaceIds: string[] = [];
   const userIds: string[] = [];
 
-  beforeAll(() => {
+  beforeAll(prismaGlobal.bind(() => {
     if (!databaseUrl || !databaseSchema) throw new Error("Isolated membership test database is required");
     pool = new Pool({ connectionString: databaseUrl, max: 8,
       options: `-csearch_path=${databaseSchema}` });
     prisma = new PrismaClient({ adapter: new PrismaPg(pool, { schema: databaseSchema }),
       transactionOptions: { timeout: 15_000 } });
-    priorPrisma = prismaGlobal.narriflowPrismaClient;
-    prismaGlobal.narriflowPrismaClient = prisma;
-  });
+    priorPrisma = prismaGlobal.client;
+    prismaGlobal.client = prisma;
+  }));
 
-  afterAll(async () => {
+  afterAll(prismaGlobal.bind(async () => {
     await prisma?.workspace.deleteMany({ where: { id: { in: workspaceIds } } });
     await prisma?.user.deleteMany({ where: { id: { in: userIds } } });
-    prismaGlobal.narriflowPrismaClient = priorPrisma;
+    prismaGlobal.client = priorPrisma;
     await prisma?.$disconnect();
     await pool?.end();
-  });
+  }));
 
   async function fixture(role: WorkspaceRole) {
     const suffix = randomUUID();
@@ -85,7 +86,7 @@ dbDescribe("Workspace membership PostgreSQL concurrency", () => {
   }
 
   for (const [from, to, seats] of [["editor", "viewer", 0], ["viewer", "editor", 1]] as const) {
-    test(`concurrent identical ${from} to ${to} changes apply one seat delta`, async () => {
+    test(`concurrent identical ${from} to ${to} changes apply one seat delta`, prismaGlobal.bind(async () => {
       const current = await fixture(from);
       const change = () => workspaceMembershipService.changeRole(current.owner.id, current.workspace.id, current.member.id, to);
       const outcomes = await raceBehindMemberLock(current.member.id, [change, change]);
@@ -94,10 +95,10 @@ dbDescribe("Workspace membership PostgreSQL concurrency", () => {
       const account = await prisma.workspaceBillingAccount.findUniqueOrThrow({ where: { workspaceId: current.workspace.id } });
       expect(account.desiredAdditionalSeats).toBe(seats);
       expect(account.seatRevision).toBe(1);
-    });
+    }));
   }
 
-  test("concurrent removals are idempotent and subtract the member's seat once", async () => {
+  test("concurrent removals are idempotent and subtract the member's seat once", prismaGlobal.bind(async () => {
     const current = await fixture("editor");
     const remove = () => workspaceMembershipService.removeMember(current.owner.id, current.workspace.id, current.member.id);
     const outcomes = await raceBehindMemberLock(current.member.id, [remove, remove]);
@@ -106,12 +107,12 @@ dbDescribe("Workspace membership PostgreSQL concurrency", () => {
     const account = await prisma.workspaceBillingAccount.findUniqueOrThrow({ where: { workspaceId: current.workspace.id } });
     expect(account.desiredAdditionalSeats).toBe(0);
     expect(account.seatRevision).toBe(1);
-  });
+  }));
 
   describe("receipt-backed Workspace commands", () => {
     const inviteTokenHash = (token: string) => createHash("sha256").update(token).digest("hex");
 
-    test("simultaneous invites with one key write one invite and one receipt, and only one caller sees the token", async () => {
+    test("simultaneous invites with one key write one invite and one receipt, and only one caller sees the token", prismaGlobal.bind(async () => {
       const current = await fixture("editor");
       const email = `invitee-${randomUUID()}@example.com`;
       const actor = { actorUserId: current.owner.id, workspaceId: current.workspace.id };
@@ -136,9 +137,9 @@ dbDescribe("Workspace membership PostgreSQL concurrency", () => {
       expect(later).toMatchObject({ replayed: true, token: null });
       expect(later.invite.id).toBe(rows[0]?.id);
       expect(await prisma.workspaceInvite.count({ where: { workspaceId: current.workspace.id, email } })).toBe(1);
-    });
+    }));
 
-    test("an invite key reused with different input conflicts instead of inviting someone else", async () => {
+    test("an invite key reused with different input conflicts instead of inviting someone else", prismaGlobal.bind(async () => {
       const current = await fixture("editor");
       const actor = { actorUserId: current.owner.id, workspaceId: current.workspace.id };
       const mutation = { clientIdempotencyKey: "changed-input" };
@@ -146,9 +147,9 @@ dbDescribe("Workspace membership PostgreSQL concurrency", () => {
       await expect(
         workspaceCommands.inviteMember(actor, { email: `b-${randomUUID()}@example.com`, role: "viewer" }, mutation),
       ).rejects.toMatchObject({ code: "operation_idempotency_conflict" });
-    });
+    }));
 
-    test("an invite refused by the plan leaves no invite and no receipt", async () => {
+    test("an invite refused by the plan leaves no invite and no receipt", prismaGlobal.bind(async () => {
       const current = await fixture("editor");
       await prisma.workspace.update({ where: { id: current.workspace.id }, data: { pricingTier: "free" } });
       const actor = { actorUserId: current.owner.id, workspaceId: current.workspace.id };
@@ -157,9 +158,9 @@ dbDescribe("Workspace membership PostgreSQL concurrency", () => {
       ).rejects.toThrow();
       expect(await prisma.workspaceInvite.count({ where: { workspaceId: current.workspace.id } })).toBe(0);
       expect(await prisma.operationReceipt.count({ where: { workspaceId: current.workspace.id } })).toBe(0);
-    });
+    }));
 
-    test("a resend replaces the pending invite once per key", async () => {
+    test("a resend replaces the pending invite once per key", prismaGlobal.bind(async () => {
       const current = await fixture("editor");
       const actor = { actorUserId: current.owner.id, workspaceId: current.workspace.id };
       const email = `again-${randomUUID()}@example.com`;
@@ -171,9 +172,9 @@ dbDescribe("Workspace membership PostgreSQL concurrency", () => {
       expect([a.token, b.token].filter(Boolean)).toHaveLength(1);
       const pending = await prisma.workspaceInvite.findMany({ where: { workspaceId: current.workspace.id, email, revokedAt: null } });
       expect(pending.map((row) => row.id)).toEqual([a.invite.id]);
-    });
+    }));
 
-    test("simultaneous Workspace creation with one key creates one pending Business Workspace", async () => {
+    test("simultaneous Workspace creation with one key creates one pending Business Workspace", prismaGlobal.bind(async () => {
       const suffix = randomUUID();
       const user = await prisma.user.create({ data: { clerkId: `creator-${suffix}` } });
       userIds.push(user.id);
@@ -199,6 +200,6 @@ dbDescribe("Workspace membership PostgreSQL concurrency", () => {
       const second = await workspaceCommands.createBusinessWorkspace(user.id, { name }, { clientIdempotencyKey: "another-key" });
       expect(second.workspaceId).toBe(outcomes[0]?.workspaceId);
       expect(await prisma.workspace.count({ where: { id: { in: workspaceIds }, status: "pending_payment" } })).toBe(1);
-    });
+    }));
   });
 });

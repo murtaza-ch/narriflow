@@ -57,16 +57,10 @@ export async function openClipPersistenceTestDatabase() {
     ),
     transactionOptions: { maxWait: 120_000, timeout: 120_000 },
   });
-  const prismaGlobal = globalThis as unknown as {
-    narriflowPrismaClient?: PrismaClient;
-  };
-  const priorPrisma = prismaGlobal.narriflowPrismaClient;
-  prismaGlobal.narriflowPrismaClient = prisma;
   return {
     pool,
     prisma,
     async close() {
-      prismaGlobal.narriflowPrismaClient = priorPrisma;
       await prisma.$disconnect();
       await pool.end();
     },

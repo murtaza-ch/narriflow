@@ -1,3 +1,4 @@
+import { createDatabaseTestContext } from "@narriflow/db/testing";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
@@ -26,30 +27,30 @@ dbDescribe("Review access PostgreSQL contracts", () => {
   let pool: Pool;
   let priorPrisma: PrismaClient | undefined;
   let priorRedisUrl: string | undefined;
-  const prismaGlobal = globalThis as unknown as { narriflowPrismaClient?: PrismaClient };
+  const prismaGlobal = createDatabaseTestContext();
   const workspaceIds: string[] = [];
   const userIds: string[] = [];
 
-  beforeAll(() => {
+  beforeAll(prismaGlobal.bind(() => {
     if (!databaseUrl) throw new Error("Review access test database is required");
     pool = new Pool({ connectionString: databaseUrl, max: 4,
       options: databaseSchema ? `-csearch_path=${databaseSchema}` : undefined });
     prisma = new PrismaClient({ adapter: new PrismaPg(pool, databaseSchema ? { schema: databaseSchema } : undefined) });
-    priorPrisma = prismaGlobal.narriflowPrismaClient;
-    prismaGlobal.narriflowPrismaClient = prisma;
+    priorPrisma = prismaGlobal.client;
+    prismaGlobal.client = prisma;
     priorRedisUrl = process.env.UPSTASH_REDIS_URL;
     delete process.env.UPSTASH_REDIS_URL;
-  });
+  }));
 
-  afterAll(async () => {
+  afterAll(prismaGlobal.bind(async () => {
     await prisma?.workspace.deleteMany({ where: { id: { in: workspaceIds } } });
     await prisma?.user.deleteMany({ where: { id: { in: userIds } } });
-    prismaGlobal.narriflowPrismaClient = priorPrisma;
+    prismaGlobal.client = priorPrisma;
     if (priorRedisUrl === undefined) delete process.env.UPSTASH_REDIS_URL;
     else process.env.UPSTASH_REDIS_URL = priorRedisUrl;
     await prisma?.$disconnect();
     await pool?.end();
-  });
+  }));
 
   async function fixture() {
     const suffix = randomUUID();
@@ -76,7 +77,7 @@ dbDescribe("Review access PostgreSQL contracts", () => {
   }
 
   for (const state of ["expired", "purging"] as const) {
-    test(`blocks new guest sessions and existing guest access when the Project is ${state}`, async () => {
+    test(`blocks new guest sessions and existing guest access when the Project is ${state}`, prismaGlobal.bind(async () => {
       const current = await fixture();
       const identity = { identity: "Client", email: "client@example.test" };
       const session = await reviewService.authenticate(current.token, identity, randomUUID(), sessionSecret);
@@ -92,10 +93,10 @@ dbDescribe("Review access PostgreSQL contracts", () => {
         .rejects.toMatchObject({ code: "review_access_invalid" });
       expect(await prisma.reviewGuest.count({ where: { reviewRoundId: current.round.id } })).toBe(1);
       expect(await prisma.reviewComment.count({ where: { reviewRoundId: current.round.id } })).toBe(0);
-    });
+    }));
   }
 
-  test("the Workspace export library excludes expired and purging Projects", async () => {
+  test("the Workspace export library excludes expired and purging Projects", prismaGlobal.bind(async () => {
     const current = await fixture();
     await prisma.workspaceMember.create({ data: { workspaceId: current.workspace.id, userId: current.user.id, role: "owner" } });
     const workflow = await prisma.workflowRun.create({ data: {
@@ -120,9 +121,9 @@ dbDescribe("Review access PostgreSQL contracts", () => {
       expect((await workspaceLibraryService.listExports(actor)).items).toEqual([]);
       expect((await workspaceLibraryService.listExports(actor, { query: "Client" })).items).toEqual([]);
     }
-  });
+  }));
 
-  test("does not email unusable guest review links or inaccessible Projects", async () => {
+  test("does not email unusable guest review links or inaccessible Projects", prismaGlobal.bind(async () => {
     const store = createReviewNotificationStore();
     const invalidLedgerIds: string[] = [];
     for (const state of ["revoked", "superseded", "round_expired", "project_expired", "project_purging"] as const) {
@@ -158,5 +159,5 @@ dbDescribe("Review access PostgreSQL contracts", () => {
       expect(await prisma.reviewNotificationLedger.findUnique({ where: { id }, select: { status: true, failureCode: true } }))
         .toEqual({ status: "failed", failureCode: "context_unavailable" });
     }
-  });
+  }));
 });
