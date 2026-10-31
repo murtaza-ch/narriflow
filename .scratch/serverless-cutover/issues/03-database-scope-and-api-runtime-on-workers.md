@@ -14,4 +14,6 @@
 
 ## Evidence
 
-Pending implementation and verification.
+The request/step-scoped engine-free Prisma runtime is implemented. [Deployed isolated Hyperdrive evidence](../evidence/hyperdrive-transactions-20261031.json) proves seven checks through the configured uncached Hyperdrive: interactive transactions, advisory and row-lock exclusion, commit visibility, rollback, server statement cancellation, and a healthy query after cancellation. The separate idle Hyperdrive was not queried.
+
+Every mounted route, final native import closure, and full candidate deployment verification remain open; this ticket remains claimed.

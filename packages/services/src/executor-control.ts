@@ -157,7 +157,10 @@ export function createExecutorControl<TRef, TArtifact extends ExecutorArtifactCo
       const attempt = await tx.executionAttempt.findUnique({ where: { attemptToken }, include: { dispatch: true } });
       assertReference(attempt, reference, options.subjectKind);
       const now = await clock(tx);
-      if (locked.kind === "terminal") return record(locked.disposition, now);
+      if (locked.kind === "terminal") {
+        if (locked.dispatchIds) track({ dispatchIds: locked.dispatchIds });
+        return record(locked.disposition, now);
+      }
       const terminal = ended(attempt);
       if (terminal) return record(terminal, now);
       if (attempt.revokedAt) return record({ disposition: "superseded" }, now);
@@ -212,6 +215,7 @@ export function createExecutorControl<TRef, TArtifact extends ExecutorArtifactCo
         await tx.executionArtifact.update({ where: { id: prepared.artifactId }, data: { committedAt: now, byteLength: prepared.byteLength, etag: prepared.etag, checksumSha256: prepared.sha256 } });
         const outcome = await options.domain.lockExecution(tx, reference, attemptToken);
         if (outcome.kind === "terminal") {
+          if (outcome.dispatchIds) track({ dispatchIds: outcome.dispatchIds });
           const status = outcome.disposition.disposition;
           await tx.executionAttempt.update({ where: { attemptToken }, data: { status: ["completed", "cancelled", "expired", "superseded"].includes(status) ? status : "failed", finishedAt: now } });
         }
@@ -295,13 +299,13 @@ export function createExecutorControl<TRef, TArtifact extends ExecutorArtifactCo
       const attempt = await tx.executionAttempt.findUnique({ where: { attemptToken: deadline.attemptToken }, include: { dispatch: true } });
       assertReference(attempt, reference, options.subjectKind);
       const now = await clock(tx);
-      if (ended(attempt)) return record({ kind: "terminal" }, now);
+      if (ended(attempt)) return record({ kind: "terminal", ...(locked.kind === "terminal" ? { dispatchIds: locked.dispatchIds } : {}) }, now);
       if (locked.kind === "terminal") {
         const status = locked.disposition.disposition;
         await tx.executionAttempt.update({ where: { attemptToken: attempt.attemptToken }, data: {
           status: ["completed", "cancelled", "expired", "superseded"].includes(status) ? status : "failed", finishedAt: now, revokedAt: now,
         } });
-        return record({ kind: status === "superseded" ? "superseded" : "terminal" }, now);
+        return record({ kind: status === "superseded" ? "superseded" : "terminal", dispatchIds: locked.dispatchIds }, now);
       }
       if (deadline.kind === "operation" && new Date(deadline.observedDeadlineAt).getTime() !== attempt.operationDeadlineAt.getTime()) return record({ kind: "superseded" }, now);
       const dueAt = new Date(Math.min(attempt.leaseExpiresAt?.getTime() ?? Infinity, attempt.operationDeadlineAt.getTime()));

@@ -1,0 +1,55 @@
+{
+  "date": "2026-10-31",
+  "status": "passed",
+  "deployed": false,
+  "sourceCommit": "f7bcfcf9",
+  "sourceArchiveSha256": "b2a10c534608917941177fb13720c48c7a8b12926525bdc2e77ec0e981503dca",
+  "imageId": "sha256:07ea1aae7d730d5231b6552c2ef35e3dc8918cd3d2d318a7de85a62c7f6fe518",
+  "runtime": {
+    "python": "3.13.5",
+    "bun": "1.3.6",
+    "externalFontkit": "2.0.4",
+    "network": "none (loopback TLS fixture only)",
+    "cpu": 4,
+    "memoryBytes": 8589934592
+  },
+  "sourceStaging": "Fresh git archive extracted into an empty directory; immutable external image packages reused, all @narriflow workspace links point to staged source.",
+  "result": {
+    "tests": 22,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "elapsedSeconds": 48.357,
+    "suites": {
+      "test_native_runtime": 8,
+      "test_entrypoint": 7,
+      "test_source_sink": 4,
+      "test_source_operation": 3
+    }
+  },
+  "checks": [
+    "Actual trusted loopback TLS conditional source GET occurs only after actual Popen and acknowledged process-start; exact ETag, byte length and SHA256 checked before readonly source use.",
+    "Actual staged Bun/fontkit CLI validates pinned Inter-SemiBold.ttf; binary then bounded JSON probe upload and commit through assigned artifact ports.",
+    "Changed source ETag and oversized response headers reject before upload; header reads allocate at most65537 bytes.",
+    "Lost process-start acknowledgement sends no source request or artifact upload and cannot become a second fail mutation.",
+    "Lost binary commit acknowledgement preserves the completed object, replays exact command, omits probe upload and never aborts or deletes completed storage.",
+    "RSS actual supervised test executable receives stdin after acknowledged start, receives no synthetic database secret, and has empty proxy environment; one typed receipt reaches assigned upload.",
+    "Actual staged signed-notification Bun CLI receives verified notification_body, rejects an unsafe endpoint without external POST, and publishes only a bounded typed receipt with matching event/workspace/body hash; private destination omitted from receipt.",
+    "Notification source assignment mismatch starts no process or upload.",
+    "Common invocation duplicate, final ledger audit, lost publication acknowledgement and fixed-code failure paths pass.",
+    "SourceSink audio/probe/video order, seeded audio, optional typed degradation and upstream identity rejection pass using controlled injected ports.",
+    "Source operation production mode restrictions and runtime fingerprint refusal precede native source start; seeded audio probe refresh follows the metadata process-start callback."
+  ],
+  "log": {
+    "path": "/tmp/narriflow-serverless-gates/linux-native-operation-wrapper.log",
+    "sha256": "6be63fd9cc555c77ae6706003930b430e07cf9a42231a82bf71981fd5b5b2ddd"
+  },
+  "limits": [
+    "This is the previously built pinned Linux image with a fresh committed source overlay, not a final candidate image rebuild or Modal invocation.",
+    "Control API and multipart storage ports are deterministic fixtures; no live Worker/PostgreSQL execution fence or live R2 interaction is claimed by this wrapper gate. Separate r2-native-10gib-20261031.json records the live storage gate.",
+    "RSS gate uses an injected real child executable to verify process and receipt wiring; successful public RSS fetch is covered separately and is not established here.",
+    "Notification CLI exercised unsafe-target degradation, not a successful external callback POST.",
+    "Linux visual/thumbnail Sharp execution, remaining source adapters, actual YouTube acquisition and final full provider/media end-to-end gates remain open.",
+    "Existing strict odd-size render fixture hash mismatch and explicit standalone FFmpeg thread-cap gates remain open; no baseline or tolerance was changed."
+  ]
+}

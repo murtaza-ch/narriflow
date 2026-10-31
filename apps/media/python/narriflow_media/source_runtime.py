@@ -38,7 +38,7 @@ async def run_fetch_source(session: ExecutorSession, package: WorkPackage, work:
         raise SourceFetchFailure("source_fetch_mode_forbidden")
     package.assert_session(session)
     command = package.command
-    if package.function_name != "fetch_source" or command.get("kind") != "youtube_source":
+    if package.function_name != "fetch_source" or command.get("kind") != "youtube_source" or command.get("audioPolicy") not in {"required","none","pending_pack"}:
         raise SourceFetchFailure("source_runtime_invalid")
     fingerprint = await verify_runtime(session, bun_executable=bun_executable)
     if fingerprint != command.get("toolchainFingerprint"):
@@ -59,4 +59,4 @@ async def run_fetch_source(session: ExecutorSession, package: WorkPackage, work:
     await fetch(YouTubeSource(command["mediaId"]), source_revision=command["sourceRevision"], mode=mode,
         development=development, work_directory=work, runtime=runtime, sink=sink,
         toolchain_fingerprint=fingerprint, proxy_template=proxy_template,
-        deadline_seconds=min(2700, session.remaining_seconds), existing_audio=existing, project_id=command["projectId"])
+        deadline_seconds=min(2700, session.remaining_seconds), existing_audio=existing, project_id=command["projectId"], acquire_audio=command["audioPolicy"]!="none")
