@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 import re
 import secrets
+import sys
 from threading import Event, Lock, Thread
 
 from .artifacts import AssignedArtifacts
@@ -146,5 +147,15 @@ async def run_dubbing(session,package,work:Path,*,api_key=None,transport=None,so
             if error.code in {'media_process_start_unconfirmed','media_execution_cancelled'}:raise ExecutionControlError('execution_authority_lost') from None
             raise NativeOperationFailure('dubbing_process_unavailable',True) from None
         if control.error:raise control.error
+        for line in result.stderr.splitlines():
+            try:
+                diagnostic=json.loads(line)
+                code=diagnostic.get('errorCode')
+                if diagnostic.get('message')=='dubbing_audio_inspection_unconfirmed' and isinstance(code,str) and re.fullmatch(r'[a-z][a-z0-9_]{0,99}',code):
+                    print(json.dumps({'level':'warn','message':'dubbing_audio_inspection_unconfirmed','errorCode':code}),file=sys.stderr)
+                if diagnostic.get('message')=='dubbing_provider_outcome_unconfirmed' and diagnostic.get('providerStage') in {'translation','speech'} and diagnostic.get('phase') in {'request','response','body','payload'}:
+                    print(json.dumps({'level':'warn','message':'dubbing_provider_outcome_unconfirmed','providerStage':diagnostic['providerStage'],'phase':diagnostic['phase'],
+                        'ioCode':diagnostic.get('ioCode') if diagnostic.get('ioCode') in {'EEXIST','EBADF','ENOSPC','EACCES','EPERM','ERR_INVALID_ARG_TYPE','ERR_INVALID_ARG_VALUE'} else None}),file=sys.stderr)
+            except (ValueError,AttributeError):pass
         if result.returncode or control.outcome is None or _json(result.stdout,65536)!=control.outcome:raise NativeOperationFailure('dubbing_result_unconfirmed',True)
         return {**control.outcome,'sourceBytesTransferred':source_server.bytes_transferred}

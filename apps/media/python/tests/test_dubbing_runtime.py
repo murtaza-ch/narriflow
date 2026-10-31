@@ -30,7 +30,7 @@ class DubbingRuntimeTests(unittest.IsolatedAsyncioTestCase):
         for mode in ('lost_intent','revoked','lost_start'):
             await self.operation(mode)
 
-    async def operation(self,mode):
+    async def operation(self,mode,*,fingerprint="a"*64,enforce_runtime=False):
         root=Path(__file__).resolve().parents[4];run_id,dub_id=str(uuid4()),str(uuid4())
         with tempfile.TemporaryDirectory() as temporary:
             directory=Path(temporary);base=directory/'base.mp4';audio=directory/'speech.mp3'
@@ -40,7 +40,7 @@ class DubbingRuntimeTests(unittest.IsolatedAsyncioTestCase):
             request={'version':1,'kind':'dubbing_request','dubId':dub_id,'workflowRunId':run_id,'projectId':str(uuid4()),'workspaceId':str(uuid4()),'actorUserId':str(uuid4()),'clipId':str(uuid4()),
                 'editorRevision':1,'sourceRevision':1,'baseRender':{'id':str(uuid4()),'storageKey':'projects/frozen/base.mp4','byteLength':len(base_bytes),'durationSec':2},
                 'script':'The frozen script','sourceLanguageCode':'en','targetLanguageCode':'es','voice':'marin','aspectRatio':'9:16','provider':'openai','model':'gpt-4o-mini-tts','translationModel':'gpt-5.4-mini'}
-            raw={'version':1,'kind':'dub_mix','request':request,'toolchainFingerprint':'a'*64,'baseVideo':{'storageKey':request['baseRender']['storageKey'],'etag':'"base"','byteLength':len(base_bytes)}}
+            raw={'version':1,'kind':'dub_mix','request':request,'toolchainFingerprint':fingerprint,'baseVideo':{'storageKey':request['baseRender']['storageKey'],'etag':'"base"','byteLength':len(base_bytes)}}
             encoded=subprocess.run(['bun','-e',"import {readFileSync} from 'node:fs';import {frozenDubbingRequestHash} from './packages/services/src/dubbing-policy.ts';import {dubbingInputBinding} from './packages/services/src/dubbing-input.ts';let v=JSON.parse(readFileSync(0,'utf8'));v.requestHash=await frozenDubbingRequestHash(v.request);console.log(JSON.stringify({...v,bindingHash:await dubbingInputBinding(v)}));"],input=json.dumps(raw).encode(),capture_output=True,check=True,cwd=root,timeout=10)
             command=json.loads(encoded.stdout);expires=(datetime.now(timezone.utc)+timedelta(minutes=10)).isoformat().replace('+00:00','Z')
             source_objects={'base_video':command['baseVideo']};source_payloads={'base_video':base_bytes}
@@ -63,7 +63,7 @@ class DubbingRuntimeTests(unittest.IsolatedAsyncioTestCase):
                     self.send_response(200);self.send_header('Content-Type',mime);self.send_header('Content-Length',str(len(content)));self.end_headers();self.wfile.write(content)
             provider=ThreadingHTTPServer(('127.0.0.1',0),Provider);provider.daemon_threads=True;thread=threading.Thread(target=provider.serve_forever,daemon=True);thread.start()
             cli=directory/'controlled.ts'
-            cli.write_text("import {runDubbingCli} from "+json.dumps(str(root/'apps/media/src/dubbing-cli.ts'))+";\nif(process.env.DATABASE_URL||process.env.REDIS_URL||process.env.R2_SECRET_ACCESS_KEY||process.env.HTTP_PROXY)throw Error('unsanitized_environment');\nawait runDubbingCli((url,options)=>fetch(new URL(new URL(url).pathname,"+json.dumps(f'http://127.0.0.1:{provider.server_address[1]}')+"),{method:'POST',headers:options.headers,body:String(options.body),signal:options.signal}));\n")
+            cli.write_text("import {runDubbingCli} from "+json.dumps(str(root/'apps/media/src/dubbing-cli.ts'))+";\nif(process.env.DATABASE_URL||process.env.REDIS_URL||process.env.R2_SECRET_ACCESS_KEY||process.env.EXECUTOR_CONTROL_KEYS_JSON||process.env.DATA_ENCRYPTION_KEY||process.env.MODAL_TOKEN_SECRET||process.env.HTTP_PROXY)throw Error('unsanitized_environment');\nawait runDubbingCli((url,options)=>fetch(new URL(new URL(url).pathname,"+json.dumps(f'http://127.0.0.1:{provider.server_address[1]}')+"),{method:'POST',headers:options.headers,body:String(options.body),signal:options.signal}));\n")
             class Session:
                 fence={'reference':{'subject':{'kind':'workflow_run','id':run_id},'inputHash':'b'*64},'attemptToken':str(uuid4()),'owner':str(uuid4())}
                 remaining_seconds=120
@@ -102,10 +102,14 @@ class DubbingRuntimeTests(unittest.IsolatedAsyncioTestCase):
                         return TransferResponse(206,{'etag':source_objects[name]['etag'],'content-length':str(end-start+1),'content-range':f'bytes {start}-{end}/{len(payload)}'},payload[start:end+1])
                     identity=grant.url.rsplit('/',1)[-1];objects[identity]=bytes(body)
                     return TransferResponse(200,{'ETag':hashlib.md5(body,usedforsecurity=False).hexdigest()},b'')
-            async def verified(*_,**__):return 'a'*64
+            async def verified(session,**options):
+                if enforce_runtime:
+                    from narriflow_media.source_runtime import verify_source_runtime
+                    return await verify_source_runtime(session,**options)
+                return fingerprint
             session=Session();package=await load_work_package(session);work=directory/'work';work.mkdir()
             try:
-                with patch.dict(os.environ,{'DATABASE_URL':'must-not-reach-child','REDIS_URL':'must-not-reach-child','R2_SECRET_ACCESS_KEY':'must-not-reach-child','HTTP_PROXY':'http://forbidden.invalid'}):
+                with patch.dict(os.environ,{'DATABASE_URL':'must-not-reach-child','REDIS_URL':'must-not-reach-child','R2_SECRET_ACCESS_KEY':'must-not-reach-child','HTTP_PROXY':'http://forbidden.invalid','EXECUTOR_CONTROL_KEYS_JSON':'must-not-reach-child','DATA_ENCRYPTION_KEY':'must-not-reach-child','MODAL_TOKEN_SECRET':'must-not-reach-child'}):
                     operation=run_dubbing(session,package,work,api_key='dedicated-fixture-key',transport=Storage(),source_transport=Storage(),verify_runtime=verified,cli_path=cli)
                     if mode in {'lost_final','lost_intent'}:
                         with self.assertRaises(ArtifactCommitUnconfirmed):await operation
@@ -135,5 +139,6 @@ class DubbingRuntimeTests(unittest.IsolatedAsyncioTestCase):
                         recovered=directory/'recovered';recovered.mkdir();session=Session();package=await load_work_package(session)
                         result=await run_dubbing(session,package,recovered,transport=Storage(),source_transport=Storage(),verify_runtime=verified,cli_path=cli)
                         self.assertEqual(result['outcome'],'completed');self.assertEqual(len(posts),2);self.assertEqual(len(starts),2)
+                return {'mode':mode,'nativeStarts':len(starts),'controlledProviderRequests':len(posts),'committedStageAcknowledgements':len(commits),'completedObjectsRetained':len(objects)}
             finally:
                 provider.shutdown();provider.server_close();thread.join(timeout=1)

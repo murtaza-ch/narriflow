@@ -31,7 +31,7 @@ import { continueScribeCapacityRelease } from "@narriflow/services/transcription
 import { executionDeadlineSchema, type ExecutionDispatchReference } from "@narriflow/validators/execution";
 import { NonRetryableError } from "cloudflare:workflows";
 import type { ApiWorkerBindings } from "../worker-bindings";
-import { createWorkerExecutor, getWorkerRenderGroupService, getWorkerExportBundleService } from "../domains/execution/runtime";
+import { createWorkerExecutor, getWorkerRenderGroupService, getWorkerWorkflowRunService } from "../domains/execution/runtime";
 import { createWorkerExecutionScheduler } from "./scheduler";
 import type { WorkflowCommandHandler, WorkflowHandlerRegistry } from "./protocol";
 import { createNativeOperationDriver } from "./native-operation-driver";
@@ -46,7 +46,7 @@ async function nativeDomain(reference: ExecutionDispatchReference, bindings: Api
   if (reference.subject.kind === "generated_media") return getGeneratedMediaExecution();
   if (reference.subject.kind === "clip_preparation") return getClipPreparationService();
   if (reference.subject.kind === "render_group") return getWorkerRenderGroupService(bindings.MEDIA_BUCKET);
-  if (reference.subject.kind === "workflow_run") return getWorkerExportBundleService(bindings.MEDIA_BUCKET);
+  if (reference.subject.kind === "workflow_run") return (await getWorkerWorkflowRunService(reference, bindings.MEDIA_BUCKET)).domain;
   throw new NonRetryableError("unsupported_native_subject");
 }
 
@@ -62,7 +62,8 @@ export function workflowDomainRegistry(bindings: ApiWorkerBindings): WorkflowHan
     let attemptToken: string | undefined;
     let unownedExpiry: ExecutorExpiryResult | undefined;
     if (record.reference.subject.kind === "workflow_run" && record.deadlineKind === "operation") {
-      const expiry = await getWorkerExportBundleService(bindings.MEDIA_BUCKET).expirePreparationDeadline(record.reference,{ kind: "operation", observedDeadlineAt: record.observedDeadlineAt });
+      const service = (await getWorkerWorkflowRunService(record.reference, bindings.MEDIA_BUCKET)).domain;
+      const expiry = await service.expirePreparationDeadline(record.reference,{ kind: "operation", observedDeadlineAt: record.observedDeadlineAt });
       if (expiry.kind === "native") attemptToken = expiry.attemptToken;
       else {
         if (expiry.kind === "sleep") return expiry;
@@ -153,7 +154,7 @@ export function workflowDomainRegistry(bindings: ApiWorkerBindings): WorkflowHan
     if (record.deadlineKind && record.observedDeadlineAt && record.observedDeadlineAt.getTime() > Date.now()) return { type: "sleep", until: record.observedDeadlineAt.toISOString() };
     const run = await database.workflowRun.findUnique({ where: { id: reference.subject.id } });
     if (!run || run.deploymentEpoch !== reference.deploymentEpoch || run.generation !== reference.generation) return { type: "complete", disposition: "superseded" };
-    if (run.stage === "export_bundle") return native({ reference, wake: { type: "start" } });
+    if (run.stage === "export_bundle" || run.stage === "dubbing") return native({ reference, wake: { type: "start" } });
     // Completed selection replays also repair the committed render/progress wakes.
     if (run.stage === "moment_detection") {
       const result = await getClipSelectionControl().runParent(reference);

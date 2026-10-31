@@ -20,81 +20,37 @@ The generated-only validation child and old queue processor/publisher are remove
 
 The targeted Workspace Billing driver now validates an exact epoch, generation, due time and frozen billing input before acquiring one provider claim. Claim and expiry obligation commit before provider I/O, and the watchdog is confirmed before that call. Stripe delivery, Checkout observations, seat/membership changes, provider projections and retry decisions append next wakes in their mutation transactions. Projection and renewal authority use current epoch and database lease time. See [billing evidence](../evidence/billing-targeted-20261031.json) for tests and explicit remaining paths. This is a tested integration checkpoint; the ticket remains open.
 
-Export Bundle native preparation now uses the existing Archiver writer with one
-verified input stream at a time, following the
-[upstream streaming interface](https://github.com/archiverjs/node-archiver).
-Each input preserves its frozen manifest name and exact length, and checks an
-authoritative digest when present. The source aggregate cap remains4GiB; ZIP
-metadata has a bounded64MiB allowance. Inputs need not coexist with the finished
-ZIP on scratch. A real supervised Bun child starts only after the process-start
-acknowledgement, reads scoped If-Match source ranges, creates the ZIP, and uploads
-through the assigned multipart output. A lost commit acknowledgement retains the
-completed upload.
+Export Bundle and Dubbing now execute through the accepted Workflow Run,
+with one native owner and an original45-minute absolute deadline. Preparation
+records the watchdog before private input I/O. Native code receives only scoped
+source and multipart grants; actual Popen acknowledgement precedes work.
+Bundle ZIP publication settles campaign items and the Workflow together, and
+records exact expiry/cleanup obligations.
 
-Nine stream/archive/capsule cases pass34 assertions, including ZIP extraction,
-digest refusal and existing archive behavior. Two actual host Python/Bun wrapper
-cases pass through controlled storage/control ports. Migration013 binds the
-accepted manifest, capsule tuple and deadline, with a fenced restore exception;
-one disposable PostgreSQL constraint case passes5 assertions. API composition,
-authoritative bundle/campaign finalization, actual Linux/Modal and large archive
-gates remain required. Dubbing still needs its accepted-row/provider checkpoint
-replacement. No bundle or dub function is registered by this checkpoint.
+Dubbing freezes source render, script, languages, voice, models and revisions at
+admission. Translation and speech each require a sealed intent acknowledgement
+and fresh started authority before one fixed OpenAI POST. Sealed results become
+scoped recovery inputs. An ambiguous paid intent becomes `unknown`, keeps its
+quota reservation, and refuses an automatic new paid call. Completed audio,
+video, quota and Workflow state publish in one transaction. Deliberate requests
+after known failure use a new Clip Dub and preserve prior accounting.
 
-The Export Bundle coordinator now prepares a metadata-only native execution from
-the exact accepted Workflow Run. It commits the absolute watchdog before private
-input I/O, seals one capsule, and reuses one Generic Attempt per generation. ZIP
-commit settles the bundle, campaign items and Workflow Run in one transaction.
-Retries preserve the capsule and accepted deadline; lease release, failure and
-expiry project the same business state. Current actor access and frozen variant
-identity are rechecked before execution and publication.
+Bundle and Dub restore ports require the exact closed epoch/cutoff and revoked
+historical owner. Metadata restoration changes no accepted budget, paid evidence
+or quota, and appends no product dispatch. Final redispatch alone repairs the
+original driver/watchdog obligations. Indexed pages process at most32 rows with
+sorted parent locks. Migration019 contains their recovery indexes and the Bundle
+accepted-deadline guard.
 
-Bundle publication also records its exact expiry obligation. Expiry validates the
-observed timestamp, clears the public ZIP reference and admits the known-key
-cleanup together. Cleanup replays retain the original measured artifact facts;
-active references and outstanding grants remain held. The accepted expiry is
-immutable and has a bounded safety-page index.
-
-The new bundle PostgreSQL cases pass10/86, including concurrent preparation,
-failed input PUT with an unowned watchdog, cleanup/adoption exclusion, real control
-and transfer assignment, atomic publication, lost acknowledgment replay, stale
-deadline refusal and charged retry accounting. Bundle, Workflow, Ingest and Clip
-Preparation regressions pass65/529 across four fresh-schema suites. The existing
-fenced bundle command regression passes, the nine native/archive cases pass34
-assertions, and both actual host Python/Bun wrappers pass. Services and media
-typechecks pass. These are local controlled-port gates; API/Modal registration,
-actual Linux/Modal and large archive memory gates remain open. Dubbing replacement
-is still in progress. The database runner now rejects nonexistent named suites
-before migration so a mistyped gate cannot silently run fewer files.
-
-Dubbing admission now creates a new accepted Clip Dub and reservation for each
-deliberately repeated known failure. Prior failed accounting is retained. A raw
-partial unique index permits failed history while keeping one current queued,
-processing, completed or unknown tuple. The accepted Workflow Run is linked by
-an exact project-scoped foreign key and remains the sole execution owner. Source
-render identity, script, language, voice, models and revisions freeze in the same
-admission transaction; the existing transcript policy has one shared pure owner.
-Unknown paid outcomes remain counted and reject a new request for the tuple.
-
-Generation usage, bundle and Workflow PostgreSQL regressions pass39/276 across
-three fresh-schema suites, including new frozen request/history and mixed older
-failed/current unknown cases. Existing worker policy/error copy cases pass26/106.
-Services typecheck passes. Migration014 has only run in disposable schemas.
-The native paid-intent/result, scoped recovery, mix/publication and deployed
-dubbing gates remain required; this admission checkpoint does not register a
-dubbing function.
-
-Bundle live preparation no longer changes restore epochs or resets deadlines.
-An explicit quiesced restore port requires the exact closed epoch/cutoff proof,
-an already-unowned current parent, and revoked historical Generic permissions.
-It clears the old capsule while preserving the original accepted deadline and
-charged count, then appends the exact driver and watchdog. Bounded restore and
-expiry pages process at most32 known rows, returning strict cursors and dispatch
-IDs. Migration019 adds a cross-epoch deadline guard and active restore-page index.
-The bundle PostgreSQL suite passes12/109, including rollback-isolated restore,
-pagination, stale proof refusal and SQL budget-extension refusal. These changes
-have only run in disposable schemas. Dubbing recovery still depends on its
-remaining native checkpoint fields and protocol.
-
+The [Bundle/Dub evidence](../evidence/dubbing-bundle-native-20261031.json) records
+local PostgreSQL, actual child/control/storage fixtures and pinned Linux gates.
+The Linux x86_64 source overlay passes13cases under4CPU/8GiB/network-none using
+Bun1.3.6, Python3.13.5 and FFmpeg7.1.5. It reproduces and fixes a pinned-reader
+cleanup error without changing budgets or goldens. Worker stage routing and
+Modal `dub_mix` plus a credential-free verifier are registered in source; no
+paid provider call or deployment was made by this checkpoint. Actual Modal/live
+Bundle/Dub acceptance and the large-archive memory gate remain open. Root is also
+correcting the shared Workflow release path to retain actual charged starts.
 
 Targeted Finishing and email runtime checkpoint, 2026-10-31: each Finishing child
 admission/result transaction rechecks current claim authority. Copy generation

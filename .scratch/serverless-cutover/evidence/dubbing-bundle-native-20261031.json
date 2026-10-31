@@ -1,0 +1,91 @@
+{
+  "date": "2026-10-31",
+  "scope": "Accepted Export Bundle and Dubbing coordinators, native operation wrappers, and quiesced restore",
+  "status": "integration checkpoint; ticket19 remains in progress",
+  "authority": [
+    "Existing WorkflowRun is the only native owner, retry generation and charged-start authority. Accepted deadlines never reset during retries or restore.",
+    "Absolute watchdog commits before capsule I/O. Capsules bind exact object ETag, length and independent raw SHA256; metadata directives carry no media or captions.",
+    "Dubbing translation and speech each require a sealed stage-bound intent, its committed acknowledgement and a fresh started disposition before one fixed-origin OpenAI POST.",
+    "Sealed translation/audio/video are scoped recovery inputs. An unsealed paid intent becomes outcome_unknown without another automatic paid POST; its reservation stays held.",
+    "Completed Dub audio/video evidence, public references, generation quota and Workflow settlement share one transaction. Bundle ZIP, campaign items, Workflow settlement and exact expiry obligation share one transaction.",
+    "Restore metadata preserves original deadlines, counts, quota and paid references, revokes old ownership, clears only old capsules, and emits no product dispatch. Final redispatch repairs exact driver/watchdog obligations."
+  ],
+  "gates": {
+    "disposable_postgres": {
+      "dubbing": {
+        "tests": 7,
+        "assertions": 155,
+        "log": "/tmp/narriflow-serverless-gates/dub-restore-green2.log"
+      },
+      "regression": {
+        "tests": 48,
+        "assertions": 450,
+        "suites": [
+          "dubbing-execution",
+          "export-bundle-execution",
+          "generation-usage",
+          "targeted-workflow-execution"
+        ],
+        "log": "/tmp/narriflow-serverless-gates/dub-finalizer-regression.log"
+      }
+    },
+    "host": {
+      "native_python_regression_tests": 44,
+      "native_ts_and_driver_tests": 12,
+      "native_ts_and_driver_assertions": 60,
+      "logs": [
+        "/tmp/narriflow-serverless-gates/dub-native-python-regression.log",
+        "/tmp/narriflow-serverless-gates/dub-registration-unit.log"
+      ]
+    },
+    "linux": {
+      "kind": "preliminary Docker image with current source overlay, not a Modal Function",
+      "image": "narriflow-media:cutover-render",
+      "platform": "x86_64",
+      "python": "3.13.5",
+      "bun": "1.3.6",
+      "ffmpeg": "7.1.5",
+      "network": "none; owned loopback fixture HTTP only",
+      "cpu": 4,
+      "memoryBytes": 8589934592,
+      "tests": 13,
+      "seconds": 94.378,
+      "log": "/tmp/narriflow-serverless-gates/linux-dub-bundle-reader-fixed.log",
+      "covers": [
+        "Six actual Dub child starts including sealed recovery, lost intent/start/final acknowledgements and fresh authority revocation",
+        "Real audio probe and video mux after controlled translation and speech HTTP",
+        "Bundle ZIP extraction, exact scoped source reads and completed-object retention on lost final acknowledgement",
+        "Eight common entrypoint cases; no database or external provider requests"
+      ]
+    },
+    "reader_fix": {
+      "red": "/tmp/narriflow-serverless-gates/linux-dub-body-diagnostic.log",
+      "cause": "Pinned Bun1.3.6 optimized response reader can omit releaseLock(); redundant cleanup threw after successful body read. Awaited cancellation disposes the sole reader without reuse.",
+      "green": "/tmp/narriflow-serverless-gates/linux-dub-bundle-reader-fixed.log",
+      "limitsChanged": false,
+      "goldensChanged": false
+    },
+    "typechecks": [
+      "services",
+      "media",
+      "api"
+    ]
+  },
+  "registration": {
+    "worker": "Authoritative current WorkflowRun.stage selects bundle or dubbing for control, transfer, preparation and exact unowned deadline handling.",
+    "modal": "dub_mix uses the lean image and a dedicated narriflow-dubbing secret containing OPENAI_API_KEY. Source registration is staged; this checkpoint deploys nothing.",
+    "credentialFreeGate": "verify_dubbing_bundle_native_fixture runs actual lean runtime enforcement with owned control/storage/provider HTTP fixtures."
+  },
+  "remaining": [
+    "Actual Modal Function verifier and live Worker-to-native Bundle/Dub gates after root-owned migration/deployment coordination",
+    "Large4GiB archive peak-RSS/resource gate",
+    "Global base Workflow release must preserve actual Popen charge; root owns the correction and a new sealed-Dub release regression is pending that checkpoint",
+    "Ticket19 remaining producers/expiry/old-loop removal are tracked by their owners"
+  ],
+  "external_mutations": {
+    "providerPaidCalls": 0,
+    "emails": 0,
+    "resourceDeployments": 0,
+    "sharedDatabaseMigrationApplications": 0
+  }
+}
