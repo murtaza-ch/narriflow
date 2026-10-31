@@ -10,6 +10,7 @@ import { getClipSelectionControl } from "@narriflow/services/clip-selection-runt
 import { getGeneratedMediaExecution } from "@narriflow/services/generated-media-runtime";
 import { getClipPreparationService } from "@narriflow/services/clip-preparation-runtime";
 import { getBillingReconciliation } from "@narriflow/services/billing-reconciliation-runtime";
+import { getMediaCleanupControl, getMediaCleanupDrain } from "@narriflow/services/media-cleanup-runtime";
 import { getLibraryIndex } from "@narriflow/services/library-index-runtime";
 import { createWorkspaceNotificationDispatcher, isCurrentNotificationTarget } from "@narriflow/services/notification-dispatch";
 import { prepareIngestSourceExecution } from "@narriflow/services/ingest-source-execution";
@@ -191,6 +192,16 @@ export function workflowDomainRegistry(bindings: ApiWorkerBindings): WorkflowHan
     await createWorkspaceNotificationDispatcher({ database, deliver: deliverExecutionDispatches }).dispatch(reference);
     return { type: "complete", disposition: "terminal" };
   };
+  const cleanup: WorkflowCommandHandler = async ({ reference }) => {
+    const result = await getMediaCleanupControl().run(reference);
+    return result.kind === "wait" ? { type: "wait", until: result.until.toISOString(), deliveryId: reference.dispatchId }
+      : { type: "complete", disposition: result.kind === "superseded" ? "superseded" : "terminal" };
+  };
+  const maintenance: WorkflowCommandHandler = async ({ reference }) => {
+    if (!reference.subject.id.startsWith("mc1.")) throw new NonRetryableError("unsupported_maintenance_subject");
+    const result = await getMediaCleanupDrain().run(reference);
+    return { type: "complete", disposition: result.kind === "superseded" ? "superseded" : "terminal" };
+  };
   const progress: WorkflowCommandHandler = async ({ reference }) => {
     const outcome = await getExecutionDispatch(createWorkerExecutionScheduler(bindings)).deliver(reference.dispatchId);
     if (outcome.status === "acknowledged") return { type: "complete" as const, disposition: "terminal" as const };
@@ -198,9 +209,9 @@ export function workflowDomainRegistry(bindings: ApiWorkerBindings): WorkflowHan
     if (outcome.status === "pending") return { type: "sleep" as const, until: outcome.retryAt.toISOString() };
     throw new Error(`Progress continuation ${outcome.status}`);
   };
-  return { project_progress: { maintenance: progress, workflow_event: progress },
+  return { maintenance: { maintenance }, project_progress: { maintenance: progress, workflow_event: progress },
     import_pipeline: { ingest_job: native }, render_run: { workflow_run: render, render_group: render },
     operation_driver: { native_validation: native, thumbnail_frame: native, outbound_probe: native, outbound_delivery: native, generated_media: native, clip_preparation: native, render_group: native, ingest_job: native,
-      workflow_run: workflow, clip_selection_window: selectionWindow, workspace_billing: billing, library_index: library, completion_callback: notification, webhook_subscription: notification,
+      workflow_run: workflow, clip_selection_window: selectionWindow, workspace_billing: billing, library_index: library, media_cleanup: cleanup, completion_callback: notification, webhook_subscription: notification,
       workspace_event: notificationEvents, maintenance: notificationEvents } };
 }
