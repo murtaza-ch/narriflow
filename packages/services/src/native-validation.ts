@@ -25,6 +25,7 @@ export interface NativeValidationCommit extends ExecutorArtifactCommit { evidenc
 export type NativeValidationPreparation =
   | { kind: "terminal" | "superseded" }
   | { kind: "sleep"; dueAt: Date }
+  | { kind: "dependency_wait"; dueAt: Date; deadlineDispatchId: string; dispatchIds: readonly string[] }
   | { kind: "waiting"; deadline: ExecutionDeadline; deliveryId: string; dispatchIds: readonly string[] };
 
 async function now(tx: Tx) {

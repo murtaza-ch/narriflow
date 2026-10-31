@@ -29,6 +29,9 @@ class RenderRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_changed_source_probe_publishes_only_a_typed_permanent_failure_proof(self):
         await self.actual_operation(source_mismatch=True)
 
+    async def test_two_hundred_frozen_assets_use_only_the_original_initial_grant_and_read_the_selected_asset_on_demand(self):
+        await self.actual_operation(many_assets=True)
+
     async def test_interruption_logs_only_bounded_numeric_phase_and_control_facts(self):
         identity,group_id=str(uuid4()),str(uuid4());input_hash='d'*64
         source={'storageKey':'execution/frozen/original','etag':'"source"','byteLength':5,'sha256':'a'*64}
@@ -54,15 +57,24 @@ class RenderRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(measured['sourceBytesTransferred'],0)
         self.assertNotIn('private',logs.getvalue())
 
-    async def actual_operation(self,*,fingerprint='a'*64,enforce_runtime=False,lost_ack=False,source_mismatch=False):
+    async def actual_operation(self,*,fingerprint='a'*64,enforce_runtime=False,lost_ack=False,source_mismatch=False,many_assets=False):
         root=Path(__file__).resolve().parents[4]
         with tempfile.TemporaryDirectory() as directory:
             base=Path(directory);source=base/'original.mp4';work=base/'work';work.mkdir()
             subprocess.run(['ffmpeg','-nostdin','-hide_banner','-loglevel','error','-y','-f','lavfi','-i','testsrc2=s=320x180:r=30:d=4','-f','lavfi','-i','sine=f=330:sample_rate=48000:d=4','-c:v','libx264','-threads','1','-pix_fmt','yuv420p','-c:a','aac','-movflags','+faststart','-shortest',str(source)],check=True,timeout=10)
             payload=source.read_bytes()
+            library_payload=None;audio=[]
+            if many_assets:
+                library=base/'library.wav'
+                subprocess.run(['ffmpeg','-nostdin','-hide_banner','-loglevel','error','-y','-f','lavfi','-i','sine=f=880:sample_rate=16000:d=1','-c:a','pcm_s16le',str(library)],check=True,timeout=10)
+                library_payload=library.read_bytes()
+                audio=[{'name':f'audio_{index}','id':str(uuid4()),'title':'Fixture library','durationSec':1,'object':{'storageKey':f'audio/frozen/{index}',
+                    'etag':'"library"','byteLength':len(library_payload),'sha256':hashlib.sha256(library_payload).hexdigest()}} for index in range(200)]
             script="""import {readFileSync} from 'node:fs';import {productionWorkerProcessModule as worker} from './apps/media/src/worker-process.ts';import {clipPreparationBinding} from './packages/services/src/clip-preparation-input.ts';import {clipPreparationEngineHash} from './packages/services/src/clip-preparation-policy.ts';import {clipPreparationInputSchema} from './packages/validators/src/clip-preparation.ts';const raw=JSON.parse(readFileSync(0,'utf8'));raw.sourceProbe=(await worker.inspectMedia({sourcePath:raw.sourcePath,signal:new AbortController().signal,deadlineMs:10000})).sourceProbe;delete raw.sourcePath;raw.engineHash=await clipPreparationEngineHash(raw.toolchainFingerprint);raw.document=JSON.parse(readFileSync('./apps/media/src/__fixtures__/render-golden/documents.json','utf8')).cases['solo-auto-vertical'].document;const value=clipPreparationInputSchema.omit({bindingHash:true}).parse(raw);console.log(JSON.stringify({...value,bindingHash:await clipPreparationBinding(value)}));"""
             if source_mismatch:
                 script=script.replace('delete raw.sourcePath;', 'delete raw.sourcePath;raw.sourceProbe.video.width++;raw.sourceProbe.facts.videos[0].width++;')
+            if many_assets:
+                script=script.replace('const value=clipPreparationInputSchema',f'raw.document.studioEdits.music={{assetId:{json.dumps(audio[-1]["id"])}}};const value=clipPreparationInputSchema')
             raw={'version':1,'kind':'prepare_clip','preparationId':str(uuid4()),'projectId':str(uuid4()),'clipId':str(uuid4()),'sourceRevision':1,'editorRevision':0,
                 'toolchainFingerprint':fingerprint,'engineHash':'b'*64,'wholeSource':True,'llmModel':'fixture','sourcePath':str(source),
                 'source':{'storageKey':'execution/frozen/original','etag':'"source"','byteLength':len(payload),'sha256':hashlib.sha256(payload).hexdigest()}}
@@ -75,7 +87,8 @@ class RenderRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 'workspace':{'id':str(uuid4()),'ownerUserId':str(uuid4()),'pricingTier':'free'},'captionLanguage':None,'brandSnapshot':None,
                 'clip':{'index':0,'title':None,'hookText':'fixture','category':'hook','brollCues':None},
                 'variants':[{'renderId':render_id,'aspectRatio':'ratio_1_1','resolution':'720p','exportVariantId':None,'export':None}],
-                'assets':{'visuals':[],'fonts':[],'audio':[],'logo':None},'autoBroll':{'configured':False,'request':None,'resolved':[]}}
+                'assets':{'visuals':[],'fonts':[],'audio':audio,'logo':None},'autoBroll':{'configured':False,'request':None,'resolved':[]}}
+            capsule=json.dumps(command,separators=(',',':'),ensure_ascii=False,allow_nan=False).encode()
             outputs=[{'artifactId':str(uuid4()),'role':role,'bindingHash':artifact_binding(hash,render_id,role),'contentType':mime,'contentTypes':[mime],'maxBytes':maximum}
                 for role,mime,maximum in [('render_variant','video/mp4',512*1024**2),('render_outcome','application/json',65536)]]
             uploads={};calls=[];starts=[]
@@ -87,11 +100,13 @@ class RenderRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 def on_process_start(self,pid):os.kill(pid,0);starts.append(pid)
                 def transfer(self,action,**fields):
                     calls.append((action,fields));result={}
-                    if action=='work-package':result={'disposition':'work_package','functionName':'render_group','inputHash':hash,'input':{'kind':'inline','command':command},
+                    if action=='work-package':result={'disposition':'work_package','functionName':'render_group','inputHash':hash,'input':({'kind':'object','url':'https://scoped.invalid/capsule','headers':{},'storageKey':'projects/frozen/render-input.json',
+                            'etag':'"capsule"','byteLength':len(capsule),'sha256':hashlib.sha256(capsule).hexdigest()} if many_assets else {'kind':'inline','command':command}),
                         'sources':[{'name':'original',**preparation['source'],'url':'https://scoped.invalid/original','headers':{'if-match':'"source"'}}],'outputs':outputs}
                     elif action=='source-read':
                         assert starts
-                        result={'disposition':'source_read','sourceId':'original','object':preparation['source'],'grant':{'url':'https://scoped.invalid/original','headers':{'if-match':'"source"'}}}
+                        name=fields['sourceId'];frozen=preparation['source'] if name=='original' else next(item['object'] for item in audio if item['name']==name)
+                        result={'disposition':'source_read','sourceId':name,'object':frozen,'grant':{'url':'https://scoped.invalid/'+name,'headers':{'if-match':frozen['etag']}}}
                     elif action=='upload-initialize':result={'disposition':'upload_ready','artifactId':fields['artifactId'],'uploadId':'fixture','byteLength':fields['byteLength'],'partSizeBytes':16777216,'partCount':1}
                     elif action=='upload-parts':result={'disposition':'upload_parts','artifactId':fields['artifactId'],'grants':[{'partNumber':1,'url':'https://scoped.invalid/'+fields['artifactId'],'headers':{}}]}
                     elif action=='upload-complete':
@@ -111,14 +126,21 @@ class RenderRuntimeTests(unittest.IsolatedAsyncioTestCase):
                         'renderGroup':{'status':'failed' if failed else 'completed','requested':1,'succeeded':0 if failed else 1,'failed':1 if failed else 0,'superseded':0}}})()
             class Storage:
                 async def request(self,grant,method,body,headers,*_):
+                    if grant.url=='https://scoped.invalid/capsule':
+                        self_size=len(capsule)
+                        return TransferResponse(200,{'etag':'"capsule"','content-length':str(self_size)},capsule)
                     assert starts
                     if method=='GET':
-                        assert headers['if-match']=='"source"';start,end=map(int,headers['range'][6:].split('-'))
-                        return TransferResponse(206,{'etag':'"source"','content-length':str(end-start+1),'content-range':f'bytes {start}-{end}/{len(payload)}'},payload[start:end+1])
+                        data=payload if grant.url.endswith('/original') else library_payload
+                        assert data is not None
+                        etag='"source"' if grant.url.endswith('/original') else '"library"'
+                        assert headers['if-match']==etag;start,end=map(int,headers['range'][6:].split('-'))
+                        return TransferResponse(206,{'etag':etag,'content-length':str(end-start+1),'content-range':f'bytes {start}-{end}/{len(data)}'},data[start:end+1])
                     uploads[grant.url.rsplit('/',1)[-1]]=bytes(body)
                     return TransferResponse(200,{'ETag':hashlib.md5(body,usedforsecurity=False).hexdigest()},b'')
             async def verified_runtime(*_,**__):return fingerprint
-            session=Session();package=await load_work_package(session)
+            session=Session();package=await load_work_package(session,transport=Storage())
+            self.assertEqual([item['name'] for item in package.sources],['original'])
             if lost_ack:
                 with self.assertRaises(ArtifactCommitUnconfirmed):
                     await run_render_group(session,package,work,transport=Storage(),source_transport=Storage(),**({} if enforce_runtime else {'verify_runtime':verified_runtime}))
@@ -141,4 +163,8 @@ class RenderRuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(hashlib.sha256(uploads[outputs[0]['artifactId']]).hexdigest(),commits[0]['sha256'])
             self.assertEqual(commits[0]['renderVariant']['usedStockIds'],[])
             self.assertEqual(measured['outcome'],{'status':'completed','requested':1,'succeeded':1,'failed':0,'superseded':0})
+            if many_assets:
+                names=sorted({fields['sourceId'] for action,fields in calls if action=='source-read'})
+                self.assertEqual(names,['audio_199','original'])
+                measured['frozenAssetCount']=len(audio);measured['sourceNamesRead']=names
             return measured

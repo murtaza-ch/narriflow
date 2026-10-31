@@ -3,6 +3,7 @@ import { clipAspectRatioFromDb, clipAspectRatioOptions, sourceProbeSchema } from
 import { renderExecutionInputSchema, renderGroupOutcomeSchema, type RenderExecutionInput } from "@narriflow/validators/render-execution";
 import { encodeRenderExecutionInput } from "@narriflow/services/render-execution-input";
 import { WorkflowAttemptLost, WorkflowFailure } from "@narriflow/services/workflow-attempt-contract";
+import { assertPublicHttpUrl } from "@narriflow/services/url-policy";
 import { clipExportAttemptStorageKey, clipRenderAttemptStorageKey } from "./render-object-key";
 import { parseRenderConfig } from "./render-config";
 import { createWorkerProcessModule } from "./worker-process";
@@ -112,7 +113,7 @@ export async function renderGroup(options: { input: RenderExecutionInput; attemp
     }, workerProcess: { ...worker, execute: worker.execute.bind(worker), withScratchDirectory: worker.withScratchDirectory.bind(worker),
       inspectMedia: async query => { const inspected = await worker.inspectMedia(query); if (query.sourcePath === originalUrl &&
         !isDeepStrictEqual(sourceProbeSchema.parse(inspected.sourceProbe), sourceProbeSchema.parse(input.preparation.sourceProbe))) throw new WorkflowFailure("source_identity_mismatch", "permanent", "Frozen source probe changed"); return inspected; } },
-      optionalAssets: { downloadUrlToFile: async (url, path, _code, settings) => {
+      optionalAssets: { assertUrlAllowed: url => { if (!urlSources.has(url)) assertPublicHttpUrl(url); }, downloadUrlToFile: async (url, path, _code, settings) => {
         const found = urlSources.get(url);
         if (found) { await request({ operation: "download", sourceName: found.name, path, maxBytes: settings?.maxBytes ?? found.object.byteLength }); return; }
         // Only owned loopback URLs use the scoped storage port. Public media

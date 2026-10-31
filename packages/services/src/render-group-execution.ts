@@ -48,7 +48,8 @@ export class RenderGroupExecutionService {
         await this.dependencies.register(await this.domain.failPreparation(reference, admission.preparationId));
         return { kind: "terminal" };
       }
-      if (admission.kind !== "ready") return { kind: "sleep", dueAt: initial.deadlineAt };
+      if (admission.kind !== "ready") return { kind: "dependency_wait", dueAt: initial.deadlineAt, deadlineDispatchId: initial.deadlineDispatchId,
+        dispatchIds: [...new Set([...initial.dispatchIds, ...admission.dispatchIds])] };
       const ready = await this.dependencies.preparation.readReadyForGroup(reference);
       if (!ready) throw new Error("render_input_unavailable");
       const preparation = await decodeClipPreparationInput(await this.dependencies.inputStorage.read(ready.input), ready.input);
@@ -97,7 +98,7 @@ export function createRenderGroupExecution(options: {
     const outputs = await Promise.all(pending.flatMap(variant => (["render_variant", "render_outcome"] as const).map(async role => ({ role, bindingHash: await renderArtifactBindingHash({ inputHash: authority.fence.reference.inputHash, renderId: variant.id, role }),
       contentType: role === "render_variant" ? "video/mp4" : "application/json", maxBytes: role === "render_variant" ? 10 * 1024 ** 3 : 65536 }))));
     const assets = [...input.assets.visuals, ...input.assets.fonts, ...input.assets.audio, ...(input.assets.logo ? [input.assets.logo] : [])];
-    return { input: { kind: "object" }, outputs, sources: [{ name: "original", ...input.preparation.source }, ...assets.map(asset => ({ name: asset.name, ...asset.object }))] };
+    return { input: { kind: "object" }, outputs, initialSourceNames: ["original"], sources: [{ name: "original", ...input.preparation.source }, ...assets.map(asset => ({ name: asset.name, ...asset.object }))] };
   } });
   return { control, transfer, prepareExecution: service.prepareExecution.bind(service) };
 }

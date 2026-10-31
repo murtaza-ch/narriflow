@@ -1,0 +1,145 @@
+{
+  "date": "2026-10-31",
+  "scope": "Actual default Modal Sandbox RenderGroup child with controlled scoped grant/commit ports; real Function and live Worker domain HTTP remain separate gates",
+  "imageId": "im-Chze4M0xy7S0NbzbPpUO0I",
+  "runtimeId": "06a988fcee94757ba07d1d1cc410ca4fbf0f36ee4d8f4aab8c84711897a569b9",
+  "bun": "1.3.6",
+  "fixtureToolchainId": "e00c091bc5a81bee",
+  "cpuMax": null,
+  "memoryMax": null,
+  "opencvThreads": 2,
+  "seconds": 31.089,
+  "results": [
+    {
+      "case": "success",
+      "seconds": 10.721,
+      "result": {
+        "outcome": {
+          "status": "completed",
+          "requested": 1,
+          "succeeded": 1,
+          "failed": 0,
+          "superseded": 0
+        },
+        "bytesTransferred": 494085,
+        "upstreamRequests": 3,
+        "detectorExecutions": 0,
+        "starts": 1,
+        "artifacts": [
+          {
+            "role": "render_variant",
+            "byteLength": 691186,
+            "sha256": "0359e29dd4faa455a4025ddccca55d228d7d6cf26da09ad4e822a2b52281f170"
+          }
+        ]
+      }
+    },
+    {
+      "case": "permanent-source-proof",
+      "seconds": 9.165,
+      "result": {
+        "outcome": {
+          "status": "failed",
+          "requested": 1,
+          "succeeded": 0,
+          "failed": 1,
+          "superseded": 0
+        },
+        "bytesTransferred": 164695,
+        "upstreamRequests": 1,
+        "detectorExecutions": 0,
+        "starts": 1,
+        "artifacts": [
+          {
+            "role": "render_outcome",
+            "byteLength": 225,
+            "sha256": "2dabc861da3d6adc4e1094ef9a0664bab0e9a470c2ef602d854f71f2627d9cbf"
+          }
+        ]
+      }
+    },
+    {
+      "case": "lost-commit-ack",
+      "seconds": 10.987,
+      "result": null
+    }
+  ],
+  "sourceOverlayCommit": "d14480b5",
+  "sourceOverlay": {
+    "byteLength": 2965820,
+    "sha256": "88e30b1ed21a4f9c316b2bd4348842e48303d8dea5f4164cc1c67cdf1ece3fc7"
+  },
+  "sandbox": {
+    "id": "sb-01M68XTHP1BH3ME18EWGDC9Y4W",
+    "imageId": "im-Chze4M0xy7S0NbzbPpUO0I",
+    "terminated": true,
+    "runtime": "Modal default (runtime parameter omitted)",
+    "network": "blocked",
+    "secrets": [],
+    "requestedCpu": [
+      2,
+      2
+    ],
+    "requestedMemoryMiB": [
+      4096,
+      4096
+    ]
+  },
+  "diskFactsRegression": {
+    "measuredImageId": "im-oL95y2t0m9U3wpq9r8GRhx",
+    "bun": "1.3.6",
+    "numeric": {
+      "bsize": "4096",
+      "bavail": "-1",
+      "blocks": "-1",
+      "bfree": "-1"
+    },
+    "bigint": {
+      "bsize": "4096",
+      "bavail": "2251799813685247",
+      "blocks": "2251799813685247",
+      "bfree": "2251799813685247"
+    },
+    "fix": "Read statfs with bigint:true before conversion to disk facts. Reservation and8GiB scratch cap unchanged.",
+    "unitTests": {
+      "passed": 32,
+      "assertions": 253
+    }
+  },
+  "precedingDiagnostics": {
+    "defaultSandboxTimeoutBeforeFix": {
+      "exitCode": 124,
+      "stalledBeforeEncode": true,
+      "loopbackHttpStatus": 200,
+      "detectorExecutions": 0
+    },
+    "vmSandbox": {
+      "diagnosticOnly": true,
+      "imageId": "im-oL95y2t0m9U3wpq9r8GRhx",
+      "casesPassed": 3,
+      "seconds": 20.919,
+      "terminated": true
+    }
+  },
+  "checks": [
+    "Actual supervised Bun PID acknowledged before project reads",
+    "Immutable source ETag and normalized probe checked",
+    "Measured rendered bytes SHA matches scoped upload",
+    "Permanent source mismatch uploads only bounded render_outcome proof",
+    "Lost commit acknowledgement retains completed object and causes no fail/abort mutation",
+    "Completed preparation causes zero detector executions",
+    "Pinned startup profile enforced with Bun1.3.6",
+    "No encoder flags, fixture tolerances or golden expectations changed"
+  ],
+  "limits": [
+    "Control and storage grants are injected controlled ports; live Worker domain HTTP and R2 fence integration require separate gates.",
+    "Actual Modal Function acceptance remains with the registered credential-free Function verifier.",
+    "Four-second fixture does not establish the long-source20percent transfer or30clip throughput gate.",
+    "SDK CPU/memory limits were requested; cgroup limit files are unavailable inside this Sandbox."
+  ],
+  "sources": [
+    "https://modal.com/docs/sdk/py/latest/Sandbox",
+    "https://modal.com/docs/guide/sandbox-networking",
+    "https://github.com/oven-sh/bun/blob/main/docs/guides/http/proxy.mdx"
+  ]
+}

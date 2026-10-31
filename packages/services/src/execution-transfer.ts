@@ -18,6 +18,9 @@ export interface ExecutionPreparedPackage {
   publication?: PublicationEphemeral;
   input: { kind: "inline"; command: Prisma.JsonValue } | { kind: "object" };
   sources: readonly (ExecutionPinSource & { name: string; sha256?: string })[];
+  /** Only these server-selected sources need an initial grant. Other exact IDs
+   * remain available through source-read after actual process start. */
+  initialSourceNames?: readonly string[];
   outputs: readonly ExecutionOutputDescriptor[];
 }
 interface Options {
@@ -234,7 +237,12 @@ export function createExecutionTransfer(options: Options) {
       const frozen = { storageKey: authority.input.storageKey, etag: authority.input.etag, byteLength: Number(authority.input.byteLength) };
       return { kind: "object" as const, ...frozen, sha256: authority.input.sha256, ...wireGrant(await options.storage.signInput(frozen, authority)) };
     })();
-    const sources = await Promise.all(prepared.sources.slice(0, 16).map(async source => ({ ...source, ...wireGrant(await options.storage.signSource(source, authority)) })));
+    const initial = prepared.initialSourceNames === undefined ? prepared.sources.slice(0, 16) : prepared.initialSourceNames.map(name => prepared.sources.find(source => source.name === name));
+    if (initial.length > 16 || new Set(initial.map(source => source?.name)).size !== initial.length || initial.some(source => source === undefined)) return invalid();
+    const sources = await Promise.all(initial.map(async source => {
+      if (!source) return invalid();
+      return { ...source, ...wireGrant(await options.storage.signSource(source, authority)) };
+    }));
     return executionTransferDispositionSchema.parse({ disposition: "work_package", functionName: executionMediaFunctionSchema.parse(authority.functionName), inputHash: authority.fence.reference.inputHash, input, sources, outputs, ...(publication ? {publication} : {}) });
   }
   async function execute(input: { command: unknown; verifiedRequest: VerifiedExecutionRequest }): Promise<ExecutionTransferDisposition> {
