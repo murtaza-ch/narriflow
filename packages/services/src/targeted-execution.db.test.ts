@@ -8,6 +8,7 @@ import { createExecutorControl } from "./executor-control";
 import type { ExecutionCommand } from "@narriflow/validators/execution";
 import { RenderGroupLifecycle, type RenderGroupExecutionReference } from "./render-group-lifecycle";
 import { renderGroupExportIdentity } from "./render-group-contract";
+import { renderArtifactBindingHash } from "./render-artifact";
 import { withServiceEnvironment } from "./runtime-environment";
 import { WorkflowRunLifecycle } from "./workflow-run-lifecycle";
 
@@ -40,16 +41,17 @@ dbDescribe("Targeted serverless domain execution", () => {
   }, 60_000);
   afterAll(async () => { await db?.$disconnect(); });
 
-  async function fixture(executionDeadline?: Date) {
+  async function fixture(executionDeadline?: Date, aspects: readonly ("ratio_9_16" | "ratio_16_9" | "ratio_1_1")[] = ["ratio_9_16"]) {
     const user = await db.user.create({ data: { clerkId: `targeted-execution:${crypto.randomUUID()}` } });
     users.push(user.id);
     const workspace = await db.workspace.create({ data: { name: "Targeted execution gate", ownerUserId: user.id } });
     const project = await db.project.create({ data: { workspaceId: workspace.id, title: "Targeted execution gate", sourceMediaUrl: "r2://gate/source", sourceStorageKey: "gate/source", ingestStatus: "ready" } });
     const workSetGeneration = crypto.randomUUID();
-    const run = await db.workflowRun.create({ data: { projectId: project.id, stage: "clip_rendering", status: "queued", idempotencyKey: crypto.randomUUID(), renderWorkSetGeneration: workSetGeneration, renderWorkSetFrozenAt: new Date(), requestedCount: 1, deploymentEpoch: epoch } });
+    const run = await db.workflowRun.create({ data: { projectId: project.id, stage: "clip_rendering", status: "queued", idempotencyKey: crypto.randomUUID(), renderWorkSetGeneration: workSetGeneration, renderWorkSetFrozenAt: new Date(), requestedCount: aspects.length, deploymentEpoch: epoch } });
     const clip = await db.clip.create({ data: { projectId: project.id, workflowRunId: run.id, index: 0, startSec: 0, endSec: 10, hookText: "gate", reasoning: "gate", category: "hook", transcriptSlice: [], viralityScore: 50, hookStrengthScore: 50, emotionalIntensityScore: 50, pacingScore: 50, durationOptimalityScore: 50, tiktokScore: 50, youtubeScore: 50, instagramScore: 50, llmProvider: "gate", llmModel: "gate", editorRevision: 1 } });
-    const variant = await db.clipRender.create({ data: { clipId: clip.id, workflowRunId: run.id, aspectRatio: "ratio_9_16", resolution: "1080p", editorRevision: 1 } });
-    const group = await db.renderGroup.create({ data: { workflowRunId: run.id, workSetGeneration, clipId: clip.id, exportIdentity: renderGroupExportIdentity({ clipId: clip.id, exportId: null, editorRevision: 1, resolution: "1080p", watermark: true }), deploymentEpoch: epoch, members: { create: { clipRenderId: variant.id } } } });
+    const variants = await Promise.all(aspects.map(aspectRatio => db.clipRender.create({ data: { clipId: clip.id, workflowRunId: run.id, aspectRatio, resolution: "1080p", editorRevision: 1 } })));
+    const variant = variants[0]!;
+    const group = await db.renderGroup.create({ data: { workflowRunId: run.id, workSetGeneration, clipId: clip.id, exportIdentity: renderGroupExportIdentity({ clipId: clip.id, exportId: null, editorRevision: 1, resolution: "1080p", watermark: true }), deploymentEpoch: epoch, members: { create: variants.map(value => ({ clipRenderId: value.id })) } } });
     subjects.push(group.id, run.id);
     const record = await db.$transaction((tx) => appendExecutionDispatch(tx, { deploymentEpoch: epoch, kind: "modal_execution", subject: { kind: "render_group", id: group.id }, generation: 1, inputHash: "a".repeat(64), dueAt: new Date("2026-10-31T00:00:00.000Z") }));
     dispatches.push(record.reference.dispatchId);
@@ -59,7 +61,7 @@ dbDescribe("Targeted serverless domain execution", () => {
     await db.executionAttempt.create({ data: { attemptToken, dispatchId: record.reference.dispatchId, deploymentEpoch: epoch, generation: 1, inputHash: record.reference.inputHash, functionName: "render_group", operationDeadlineAt: deadline,
       createdAt: executionDeadline ? new Date(executionDeadline.getTime() - 60_000) : undefined } });
     const lifecycle = new RenderGroupLifecycle({ prisma: db, releaseGraceMs: 0 });
-    return { lifecycle, reference: record.reference, attemptToken, owner, deadline, group, variant, run };
+    return { lifecycle, reference: record.reference, attemptToken, owner, deadline, group, variant, variants, run };
   }
 
   async function mutate<T>(value: Awaited<ReturnType<typeof fixture>>, action: (tx: Prisma.TransactionClient, ref: RenderGroupExecutionReference, context: ExecutorMutationContext) => Promise<T>) {
@@ -129,7 +131,7 @@ dbDescribe("Targeted serverless domain execution", () => {
     await server.send({ action: "process-start", fence: fence(child) });
     const live = await withServiceEnvironment({}, () => lifecycle.settleRenderRun(reference));
     expect(live.kind === "settled" ? live.outcome.status : live.kind).toBe("pending");
-    const artifact = await db.executionArtifact.create({ data: { attemptToken, owner, role: "render_variant", bindingHash: "b".repeat(64),
+    const artifact = await db.executionArtifact.create({ data: { attemptToken, owner, role: "render_variant", bindingHash: await renderArtifactBindingHash({ inputHash: child.reference.inputHash, renderId: value.variant.id, role: "render_variant" }),
       storageKey: `execution/${epoch}/${attemptToken}/${owner}/variant.mp4`, contentType: "video/mp4", maxBytes: 4096n, grantExpiresAt: new Date(Date.now() + 60_000) } });
     await server.send({ action: "commit-artifact", fence: fence(child), artifact: { artifactId: artifact.id, role: "render_variant", contentType: "video/mp4",
       byteLength: 1024, etag: '"gate-etag"', sha256: "a".repeat(64), bindingHash: artifact.bindingHash } });
@@ -223,7 +225,7 @@ dbDescribe("Targeted serverless domain execution", () => {
     const server = control(value);
     await server.send(acquire(value));
     await server.send({ action: "process-start", fence: fence(value) });
-    const assignment = await db.executionArtifact.create({ data: { attemptToken: value.attemptToken, owner: value.owner, role: "render_variant", bindingHash: "b".repeat(64),
+    const assignment = await db.executionArtifact.create({ data: { attemptToken: value.attemptToken, owner: value.owner, role: "render_variant", bindingHash: await renderArtifactBindingHash({ inputHash: value.reference.inputHash, renderId: value.variant.id, role: "render_variant" }),
       storageKey: `execution/${epoch}/${value.attemptToken}/${value.owner}/variant.mp4`, contentType: "video/mp4", maxBytes: 4096n, grantExpiresAt: value.deadline } });
     const result = await server.send({ action: "commit-artifact", fence: fence(value), artifact: { artifactId: assignment.id, role: "render_variant", contentType: "video/mp4",
       byteLength: 1024, sha256: "a".repeat(64), etag: '"gate-etag"', bindingHash: assignment.bindingHash } });
@@ -243,6 +245,50 @@ dbDescribe("Targeted serverless domain execution", () => {
     expect(await db.renderGroup.findUniqueOrThrow({ where: { id: value.group.id } })).toMatchObject({ status: "failed", chargedAttemptCount: 0 });
     expect(await db.renderGroupExecution.findUnique({ where: { token: value.attemptToken } })).toBeNull();
     expect(await db.clipRender.findUniqueOrThrow({ where: { id: value.variant.id } })).toMatchObject({ status: "failed", errorCode: "operation_deadline_exceeded" });
+  }, 90_000);
+
+  test("sealed member failures retain permanent results and retry only failed retryable variants after the last success", async () => {
+    let value = await fixture(undefined, ["ratio_9_16", "ratio_16_9", "ratio_1_1"]);
+    const commit = async (renderId: string, failure?: { errorCode: string; disposition: "retryable" | "permanent" }) => {
+      const role = failure ? "render_outcome" as const : "render_variant" as const;
+      const bindingHash = await renderArtifactBindingHash({ inputHash: value.reference.inputHash, renderId, role });
+      const artifact = { artifactId: crypto.randomUUID(), role, storageKey: `execution/${epoch}/${value.attemptToken}/${value.owner}/${crypto.randomUUID()}`,
+        contentType: failure ? "application/json" : "video/mp4", byteLength: 1024n, etag: '"gate-etag"', sha256: "a".repeat(64), bindingHash,
+        renderId, ...(failure ? { failure: { version: 1 as const, kind: "failed" as const, renderId, bindingHash, ...failure } } : { durationSec: 10 }) };
+      return mutate(value, (tx, ref, context) => value.lifecycle.commitArtifactExecution(tx, ref, context, artifact));
+    };
+    await mutate(value, (tx, ref, context) => value.lifecycle.acquireExecution(tx, ref, context));
+    await mutate(value, (tx, ref, context) => value.lifecycle.startExecution(tx, ref, context));
+    await commit(value.variants[1]!.id, { errorCode: "render_encode_unavailable", disposition: "retryable" });
+    await commit(value.variants[2]!.id, { errorCode: "caption_glyph_unavailable", disposition: "permanent" });
+    expect(await db.renderGroup.findUniqueOrThrow({ where: { id: value.group.id } })).toMatchObject({ status: "running", generation: 1, chargedAttemptCount: 1 });
+    const retry = await commit(value.variant.id);
+    expect(retry?.dispatchIds.length).toBe(3);
+    expect(retry?.renderGroup).toEqual({ status: "queued", requested: 3, succeeded: 1, failed: 1, superseded: 0 });
+    expect(await db.renderGroup.findUniqueOrThrow({ where: { id: value.group.id } })).toMatchObject({ status: "queued", generation: 2, chargedAttemptCount: 1, operationDeadlineAt: value.deadline });
+    expect(await db.clipRender.findUniqueOrThrow({ where: { id: value.variant.id } })).toMatchObject({ status: "completed", durationSec: 10 });
+    expect(await db.clipRender.findUniqueOrThrow({ where: { id: value.variants[1]!.id } })).toMatchObject({ status: "pending", storageKey: null });
+    expect(await db.clipRender.findUniqueOrThrow({ where: { id: value.variants[2]!.id } })).toMatchObject({ status: "failed", failureDisposition: "permanent", errorCode: "caption_glyph_unavailable" });
+    const retainedSuccess = await db.clipRender.findUniqueOrThrow({ where: { id: value.variant.id } });
+    const previous = value;
+    const record = await db.$transaction(tx => appendExecutionDispatch(tx, { deploymentEpoch: epoch, kind: "modal_execution", subject: value.reference.subject, generation: 2, inputHash: value.reference.inputHash, dueAt: new Date() }));
+    dispatches.push(record.reference.dispatchId);
+    const attemptToken = crypto.randomUUID(), owner = crypto.randomUUID();
+    await db.executionAttempt.create({ data: { attemptToken, dispatchId: record.reference.dispatchId, deploymentEpoch: epoch, generation: 2, inputHash: record.reference.inputHash, functionName: "render_group", operationDeadlineAt: value.deadline } });
+    await db.renderGroup.update({ where: { id: value.group.id }, data: { nextAttemptAt: new Date(0) } });
+    value = { ...value, reference: record.reference, attemptToken, owner };
+    await mutate(value, (tx, ref, context) => value.lifecycle.acquireExecution(tx, ref, context));
+    await mutate(value, (tx, ref, context) => value.lifecycle.startExecution(tx, ref, context));
+    await expect(mutate(value, (tx, ref, context) => value.lifecycle.commitArtifactExecution(tx, ref, context, { artifactId: crypto.randomUUID(), role: "render_outcome", renderId: value.variants[1]!.id,
+      storageKey: "assigned/failure.json", contentType: "application/json", byteLength: 12n, sha256: "a".repeat(64), etag: '"gate"', bindingHash: "a".repeat(64),
+      failure: { version: 1, kind: "failed", renderId: previous.variant.id, bindingHash: "a".repeat(64), errorCode: "invalid_source", disposition: "permanent" } }))).rejects.toThrow("Invalid prepared render artifact");
+    const settled = await commit(value.variants[1]!.id);
+    expect(settled?.renderGroup).toEqual({ status: "partial", requested: 3, succeeded: 2, failed: 1, superseded: 0 });
+    expect(await db.renderGroup.findUniqueOrThrow({ where: { id: value.group.id } })).toMatchObject({ status: "partial", generation: 2, chargedAttemptCount: 2 });
+    expect(await db.renderGroupVariantOutcome.findMany({ where: { groupId: value.group.id }, orderBy: [{ token: "asc" }, { clipRenderId: "asc" }] })).toHaveLength(4);
+    expect(await db.clipRender.findUniqueOrThrow({ where: { id: value.variant.id } })).toEqual(retainedSuccess);
+    expect(await db.renderGroupVariantOutcome.findUniqueOrThrow({ where: { token_clipRenderId: { token: previous.attemptToken, clipRenderId: value.variant.id } } })).toMatchObject({ result: "completed" });
+    expect(await db.renderGroupExecution.findUniqueOrThrow({ where: { token: value.attemptToken } })).toMatchObject({ result: "partial", charged: true });
   }, 90_000);
 
 });
