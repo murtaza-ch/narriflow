@@ -713,6 +713,7 @@ export * from "./publication-checkpoint-blob";
 export * from "./clip-preparation";
 export * from "./clip-preparation-execution";
 export { RenderGroupExecutionService, createRenderGroupExecution, type RenderGroupExecutionDependencies } from "./render-group-execution";
+export { getRenderGroupExecutionService } from "./render-group-runtime";
 export { createRenderInputSnapshot, type RenderInputSnapshotDependencies } from "./render-input-snapshot";
 export { encodeRenderExecutionInput, decodeRenderExecutionInput } from "./render-execution-input";
 export * from "./execution-admission";
@@ -724,3 +725,6 @@ export { getClipPreparationService, getPrivateJsonStorage } from "./clip-prepara
 export { createPrivateJsonStorage, type PrivateJsonStorage, type PrivateJsonObject } from "./private-json-storage";
 
 export { createBillingReconciliation, queueBillingReconciliation, recoverBillingReconciliation } from "./billing-reconciliation";
+
+export * from "./media-cleanup-control";
+export * from "./media-cleanup-storage";

@@ -68,6 +68,16 @@ class BridgeTest(unittest.IsolatedAsyncioTestCase):
                                            timestamp=now, delivery_id=delivery or self.delivery)
         return {"body": body, "signature": signature, "now_seconds": now}
 
+    async def test_publication_subject_spawns_once_with_reference_only_authority(self):
+        command = {**self.command, "function": "publication", "reference": {
+            **self.reference, "subject": {"kind": "social_publication", "id": str(uuid4())}}}
+        first = await self.bridge.execute(**self.request(command))
+        self.assertEqual(await self.bridge.execute(**self.request(command)), first)
+        self.assertEqual(len(self.backend.spawns), 1)
+        function, invocation = self.backend.spawns[0]
+        self.assertEqual(function, "publication")
+        self.assertEqual(invocation["reference"], command["reference"])
+
     async def test_authentication_precedes_every_lookup_and_refresh_replays_the_receipt(self):
         request = self.request()
         with self.assertRaises(BridgeError) as caught:

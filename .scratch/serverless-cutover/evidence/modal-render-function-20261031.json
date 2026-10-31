@@ -1,0 +1,65 @@
+{
+  "date": "2026-10-31",
+  "scope": "Actual Modal Function with pinned Bun renderer, Python source/control bridge, synthetic control/storage ports, and measured assigned output bytes. No domain database or real provider in this fixture.",
+  "call": {
+    "callId": "fc-01M68Y7G05NPJ97S3DYFZ6XEE6",
+    "function": "verify_render_native_fixture",
+    "profile": "murtazach275"
+  },
+  "resources": {
+    "cpu": 4,
+    "memoryMiB": 8192,
+    "oneInputPerContainer": true,
+    "retries": 0,
+    "minContainers": 0
+  },
+  "wallSeconds": 135.295,
+  "profile": "render",
+  "toolchainFingerprint": "06a988fcee94757ba07d1d1cc410ca4fbf0f36ee4d8f4aab8c84711897a569b9",
+  "success": {
+    "outcome": {
+      "status": "completed",
+      "requested": 1,
+      "succeeded": 1,
+      "failed": 0,
+      "superseded": 0
+    },
+    "bytesTransferred": 494085,
+    "upstreamRequests": 3,
+    "detectorExecutions": 0,
+    "starts": 1,
+    "artifacts": [
+      {
+        "role": "render_variant",
+        "byteLength": 691167,
+        "sha256": "565ca58b1d4cdf65f3a1a7b8a4c0e63b9269a8dfccbf239532783bd919efe72f"
+      }
+    ]
+  },
+  "permanentFailure": {
+    "outcome": {
+      "status": "failed",
+      "requested": 1,
+      "succeeded": 0,
+      "failed": 1,
+      "superseded": 0
+    },
+    "bytesTransferred": 164695,
+    "upstreamRequests": 1,
+    "detectorExecutions": 0,
+    "starts": 1,
+    "artifacts": [
+      {
+        "role": "render_outcome",
+        "byteLength": 225,
+        "sha256": "f0f460c9de938402592725b0c86fd2499ce54e2a66f442912018ba8011e9160d"
+      }
+    ]
+  },
+  "lostAcknowledgementRetained": true,
+  "providerRequests": 0,
+  "databaseRequests": 0,
+  "rawEvidence": "/tmp/narriflow-serverless-gates/native-function-render.log",
+  "fix": "Bun1.3.6 numeric statfs sees negative capacity for Modal gVisor sentinel; bigint statfs preserves the positive capacity. Existing8GiB scratch admission cap unchanged.",
+  "remaining": "Real Worker/database/R2 full pipeline and long-source selected-window transfer acceptance remain required."
+}
