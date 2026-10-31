@@ -36,6 +36,7 @@ import { executionDispatchReferenceSchema, type ExecutionDispatchReference, type
 export type { ProviderAttemptReference } from "@narriflow/validators/execution";
 import { lockWorkspaceUsage } from "./processing-usage";
 import type { ExecutorDomainLock, ExecutorMutationContext, ExecutorMutationResult, ExecutorFailureInput, ExecutorReleaseInput, ExecutorProgressInput, ExecutorArtifactCommit, ExecutorExpiryObservation, ExecutorExpiryResult } from "./executor-domain-control";
+import { appendScribeCapacityWakesWithinTransaction } from "./transcription-admission";
 
 /** How long a stopping worker lets in-flight handlers finish
  * (`WORKER_SHUTDOWN_DRAIN_MS`, 30s by default). */
@@ -108,7 +109,7 @@ export interface ProviderIds {
 
 /** Outcome of a provider-driven settlement. Everything but `applied` is an
  * acknowledged no-op: nothing was written and nothing was resurrected. */
-export type ProviderSettlementResult =
+export type ProviderSettlementResult = (
   | { kind: "applied" }
   /** The same completion or acceptance was already recorded. */
   | { kind: "duplicate" }
@@ -122,12 +123,13 @@ export type ProviderSettlementResult =
         | "source_superseded"
         | "attempt_superseded"
         | "provider_job_mismatch"
+        | "provider_deadline_expired"
         | "not_waiting"
         | "submission_pending"
         | "submission_confirmed";
     }
   /** The run already reached a terminal status (completed, failed, partial). */
-  | { kind: "terminal"; status: WorkflowStatus };
+  | { kind: "terminal"; status: WorkflowStatus }) & { dispatchIds?: string[] };
 
 export interface ProviderSubmissionIntent {
   kind: "begun" | "already_waiting";
@@ -137,6 +139,8 @@ export interface ProviderSubmissionIntent {
   providerAudioGrantExpiresAt: Date;
   dispatchIds: string[];
 }
+
+export type ProviderDeadlineResult = ProviderSettlementResult | { kind: "sleep"; dueAt: Date };
 
 type ProviderSettlementIntent = "accept" | "complete" | "fail";
 
@@ -155,6 +159,8 @@ export type ProviderAttemptLookup =
       providerJobId: string | null;
       providerRequestId: string | null;
       submissionDeadlineAt: Date | null;
+      resultDeadlineAt: Date | null;
+      submittedAt: Date | null;
     }
   | Exclude<ProviderSettlementResult, { kind: "applied" }>;
 
@@ -514,8 +520,9 @@ export class WorkflowRunLifecycle {
     await tx.$queryRaw`SELECT "id" FROM "WorkflowRun" WHERE "id" = ${initial.id}::uuid FOR UPDATE`;
     const run = await tx.workflowRun.findUniqueOrThrow({ where: { id: initial.id } });
     const now = await this.databaseNow(tx);
-    const project = await tx.project.findFirst({ where: { id: run.projectId, ...accessibleProjectWhere(now), workspace: { status: "active" } }, select: { sourceRevision: true } });
+    const project = await tx.project.findFirst({ where: { id: run.projectId, ...accessibleProjectWhere(now), workspace: { status: "active" } }, select: { sourceRevision: true, ingestStatus: true } });
     if (!project || run.deploymentEpoch !== reference.deploymentEpoch || run.generation !== reference.generation) return { kind: "terminal", disposition: { disposition: "superseded" } };
+    if (project.ingestStatus === "failed") return { kind: "terminal", disposition: { disposition: "cancelled" } };
     try {
       if (await this.runInputHash(tx, run, project.sourceRevision) !== reference.inputHash) return { kind: "terminal", disposition: { disposition: "superseded" } };
     } catch (error) {
@@ -557,7 +564,7 @@ export class WorkflowRunLifecycle {
     return { run, now, attempt: { ...attempt, attemptCount: run.attemptCount } };
   }
 
-  async acquireExecution(tx: TransactionClient, ref: WorkflowExecutionReference, context: ExecutorMutationContext): Promise<ExecutorMutationResult> {
+  private async bindExecutionWithinTransaction(tx: TransactionClient, ref: WorkflowExecutionReference, context: ExecutorMutationContext) {
     const attempt = this.executionAttempt(ref, context);
     const run = await tx.workflowRun.findUniqueOrThrow({ where: { id: ref.id } });
     const now = await this.databaseNow(tx);
@@ -572,6 +579,11 @@ export class WorkflowRunLifecycle {
     await tx.workflowRun.update({ where: { id: run.id }, data: { status: "running", progress: 10, attemptId: ref.attemptToken, leaseOwner: context.owner,
       leaseExpiresAt: context.leaseExpiresAt, heartbeatAt: now, operationDeadlineAt: context.operationDeadlineAt, nextAttemptAt: null, nextPollAt: null, waitingSince: null, errorCode: null,
       requestedCount: null, ...(run.stage === "dubbing" ? {} : { succeededCount: null }), failedCount: null } });
+    return { run, now };
+  }
+
+  async acquireExecution(tx: TransactionClient, ref: WorkflowExecutionReference, context: ExecutorMutationContext): Promise<ExecutorMutationResult> {
+    const { run, now } = await this.bindExecutionWithinTransaction(tx, ref, context);
     const absolute = await appendExecutionDispatch(tx, { deploymentEpoch: ref.deploymentEpoch, kind: "operation_driver", subject: { kind: "workflow_run", id: run.id },
       generation: ref.generation, inputHash: context.reference.inputHash, dueAt: context.operationDeadlineAt, deadlineKind: "operation", observedDeadlineAt: context.operationDeadlineAt });
     const acquired = await appendExecutionDispatch(tx, { deploymentEpoch: ref.deploymentEpoch, kind: "operation_driver", subject: { kind: "workflow_run", id: run.id },
@@ -1214,6 +1226,106 @@ export class WorkflowRunLifecycle {
         await this.emitFinishedOperations(tx, { workflowRunId: run.id, projectId: input.projectId, stage: run.stage });
       }
       return cancelled.count;
+    });
+  }
+
+  /** Caller holds epoch, Workspace usage, Project and Ingest locks in that order. */
+  async cancelSourceExecutionsWithinTransaction(tx: TransactionClient, input: { projectId: string; deploymentEpoch: number; errorCode: string; now: Date }): Promise<{ dispatchIds: string[] }> {
+    const current = await tx.executionEpoch.findUniqueOrThrow({ where: { id: 1 } });
+    if (current.epoch !== input.deploymentEpoch) return { dispatchIds: [] };
+    await tx.$queryRaw`SELECT "id" FROM "WorkflowRun" WHERE "projectId" = ${input.projectId}::uuid AND "deploymentEpoch" = ${input.deploymentEpoch} ORDER BY "id" FOR UPDATE`;
+    const runs = await tx.workflowRun.findMany({ where: { projectId: input.projectId, deploymentEpoch: input.deploymentEpoch, status: { in: ["queued", "running", "waiting"] } }, orderBy: { id: "asc" } });
+    await tx.$queryRaw`SELECT g."id" FROM "RenderGroup" g JOIN "WorkflowRun" r ON r.id = g."workflowRunId"
+      WHERE r."projectId" = ${input.projectId}::uuid AND g."deploymentEpoch" = ${input.deploymentEpoch} AND g.status IN ('queued', 'running') ORDER BY g.id FOR UPDATE OF g`;
+    const groups = await tx.renderGroup.findMany({ where: { deploymentEpoch: input.deploymentEpoch, workflowRun: { projectId: input.projectId }, status: { in: ["queued", "running"] } }, orderBy: { id: "asc" } });
+    const groupIds = groups.map(group => group.id), runIds = runs.map(run => run.id);
+    if (groupIds.length) await tx.$queryRaw`SELECT "groupId", "clipRenderId" FROM "RenderGroupMember" WHERE "groupId" IN (${Prisma.join(groupIds.map(id => Prisma.sql`${id}::uuid`))}) ORDER BY "groupId", "clipRenderId" FOR UPDATE`;
+    await tx.$queryRaw`SELECT a."attemptToken" FROM "ExecutionAttempt" a JOIN "ExecutionDispatch" d ON d.id = a."dispatchId"
+      LEFT JOIN "WorkflowRun" r ON d."subjectKind" = 'workflow_run' AND d."subjectId" = r.id::text
+      LEFT JOIN "RenderGroup" g ON d."subjectKind" = 'render_group' AND d."subjectId" = g.id::text
+      LEFT JOIN "WorkflowRun" parent ON parent.id = g."workflowRunId"
+      WHERE a."deploymentEpoch" = ${input.deploymentEpoch} AND (r."projectId" = ${input.projectId}::uuid OR parent."projectId" = ${input.projectId}::uuid)
+      AND a.status IN ('admitted', 'running') ORDER BY a."attemptToken" FOR UPDATE OF a`;
+    await tx.executionAttempt.updateMany({ where: { deploymentEpoch: input.deploymentEpoch, status: { in: ["admitted", "running"] },
+      dispatch: { OR: [{ subjectKind: "workflow_run", subjectId: { in: runIds } }, { subjectKind: "render_group", subjectId: { in: groupIds } }] } },
+      data: { status: "failed", revokedAt: input.now, finishedAt: input.now, failureCode: input.errorCode } });
+    await tx.workflowRun.updateMany({ where: { id: { in: runIds } }, data: { status: "cancelled", errorCode: input.errorCode, leaseOwner: null, leaseExpiresAt: null,
+      heartbeatAt: null, nextAttemptAt: null, nextPollAt: null, waitingSince: null } });
+    await tx.transcript.updateMany({ where: { projectId: input.projectId }, data: { status: "failed", errorCode: input.errorCode,
+      providerSubmissionDeadlineAt: null, providerResultDeadlineAt: null } });
+    if (groupIds.length) {
+      const members = await tx.renderGroupMember.findMany({ where: { groupId: { in: groupIds }, invalidatedAt: null }, select: { clipRenderId: true } });
+      await tx.renderGroupMember.updateMany({ where: { groupId: { in: groupIds }, invalidatedAt: null }, data: { invalidatedAt: input.now } });
+      await tx.clipRender.updateMany({ where: { id: { in: members.map(member => member.clipRenderId) }, status: { in: ["pending", "rendering"] } },
+        data: { status: "failed", errorCode: input.errorCode, failureDisposition: "permanent", completedAt: input.now } });
+      await tx.renderGroupExecution.updateMany({ where: { groupId: { in: groupIds }, finishedAt: null }, data: { finishedAt: input.now, result: "superseded", errorCode: input.errorCode } });
+      await tx.renderGroup.updateMany({ where: { id: { in: groupIds } }, data: { status: "superseded", errorCode: input.errorCode, attemptToken: null,
+        leaseOwner: null, leaseExpiresAt: null, heartbeatAt: null, nextAttemptAt: null, settledAt: input.now } });
+    }
+    const capacityDispatchIds: string[] = [];
+    for (const run of runs) {
+      await this.appendEvent(tx, { workflowRunId: run.id, projectId: run.projectId, stage: run.stage as WorkflowStage, attemptId: run.attemptId ?? run.id,
+        status: "failed", progress: run.progress, errorCode: input.errorCode, transition: "source_cancelled", analyticsRequired: true });
+      await this.emitFinishedOperations(tx, { workflowRunId: run.id, projectId: run.projectId, stage: run.stage });
+      const registration = await this.dispatchRunWithinTransaction(tx, run.id);
+      await this.appendStableExecutionWake(tx, registration.reference, "source_cancelled", input.now);
+    }
+    for (const group of groups) {
+      const registration = await tx.executionDispatch.findFirst({ where: { deploymentEpoch: input.deploymentEpoch, subjectKind: "render_group", subjectId: group.id,
+        generation: group.generation }, orderBy: { createdAt: "asc" } });
+      if (!registration) continue;
+      await this.appendStableExecutionWake(tx, { dispatchId: registration.id, kind: "operation_driver", deploymentEpoch: group.deploymentEpoch,
+        subject: { kind: "render_group", id: group.id }, generation: group.generation, inputHash: registration.inputHash }, "source_cancelled", input.now);
+    }
+    if (runs.some(run => run.stage === "stt")) {
+      const event = runs.find(run => run.stage === "stt")!;
+      capacityDispatchIds.push(...(await appendScribeCapacityWakesWithinTransaction(tx, { deploymentEpoch: input.deploymentEpoch, attemptId: event.attemptId ?? event.id })).dispatchIds);
+    }
+    // All obligations are durable. A bounded response carries the first page
+    // plus a persisted full-UUID cursor, which the driver continues explicitly.
+    return this.sourceCancellationPage(tx, input.projectId, input.deploymentEpoch, capacityDispatchIds);
+  }
+
+  private async appendStableExecutionWake(tx: TransactionClient, reference: ExecutionDispatchReference, wakeKind: string, dueAt: Date): Promise<ExecutionDispatchRecord> {
+    const identity = { deploymentEpoch: reference.deploymentEpoch, kind: "operation_driver" as const, subject: reference.subject, generation: reference.generation, wakeKind };
+    const existing = await tx.executionDispatch.findUnique({ where: { deliveryKey: (await executionDispatchIdentity(identity)).deliveryKey }, select: { dueAt: true } });
+    return appendExecutionDispatch(tx, { ...identity, inputHash: reference.inputHash, dueAt: existing?.dueAt ?? dueAt });
+  }
+
+  private async sourceCancellationPage(tx: TransactionClient, projectId: string, deploymentEpoch: number, extraIds: string[] = [], afterId?: string): Promise<{ dispatchIds: string[] }> {
+    const rows = await tx.$queryRaw<Array<{ id: string }>>`SELECT d.id FROM "ExecutionDispatch" d
+      LEFT JOIN "WorkflowRun" r ON d."subjectKind" = 'workflow_run' AND d."subjectId" = r.id::text
+      LEFT JOIN "RenderGroup" g ON d."subjectKind" = 'render_group' AND d."subjectId" = g.id::text
+      LEFT JOIN "WorkflowRun" parent ON parent.id = g."workflowRunId"
+      WHERE d."deploymentEpoch" = ${deploymentEpoch} AND d."wakeKind" = 'source_cancelled' AND d."acknowledgedAt" IS NULL
+        AND (r."projectId" = ${projectId}::uuid OR parent."projectId" = ${projectId}::uuid)
+        AND (${afterId ?? null}::uuid IS NULL OR d.id > ${afterId ?? null}::uuid) ORDER BY d.id LIMIT 129`;
+    const available = 128 - extraIds.length;
+    if (available < 2) throw new Error("Source cancellation wake budget exceeded");
+    const hasMore = rows.length > available;
+    const page = rows.slice(0, hasMore ? available - 1 : available).map(row => row.id);
+    if (hasMore) {
+      const cursor = (await readExecutionDispatch(tx, page.at(-1)!))!;
+      const continuation = await this.appendStableExecutionWake(tx, cursor.reference, `cancel_${cursor.reference.dispatchId.replaceAll("-", "")}`, cursor.dueAt);
+      page.push(continuation.reference.dispatchId);
+    }
+    return { dispatchIds: [...extraIds, ...page] };
+  }
+
+  async continueSourceCancellation(value: ExecutionDispatchReference): Promise<{ dispatchIds: string[] }> {
+    const reference = executionDispatchReferenceSchema.parse(value);
+    return this.transaction(async tx => {
+      const [epoch] = await tx.$queryRaw<Array<{ epoch: number }>>`SELECT "epoch" FROM "ExecutionEpoch" WHERE "id" = 1 FOR SHARE`;
+      const record = await readExecutionDispatch(tx, reference.dispatchId);
+      if (epoch?.epoch !== reference.deploymentEpoch || !record || JSON.stringify(record.reference) !== JSON.stringify(reference) || !/^cancel_[a-f0-9]{32}$/.test(record.wakeKind ?? "")) return { dispatchIds: [] };
+      const hex = record.wakeKind!.slice(7), cursorId = `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+      const cursor = await readExecutionDispatch(tx, cursorId);
+      if (!cursor || cursor.wakeKind !== "source_cancelled" || cursor.reference.deploymentEpoch !== reference.deploymentEpoch || cursor.reference.subject.kind !== reference.subject.kind || cursor.reference.subject.id !== reference.subject.id ||
+        cursor.reference.generation !== reference.generation || cursor.reference.inputHash !== reference.inputHash) return { dispatchIds: [] };
+      const projectId = reference.subject.kind === "workflow_run" ? (await tx.workflowRun.findUnique({ where: { id: reference.subject.id }, select: { projectId: true } }))?.projectId :
+        reference.subject.kind === "render_group" ? (await tx.renderGroup.findUnique({ where: { id: reference.subject.id }, select: { workflowRun: { select: { projectId: true } } } }))?.workflowRun.projectId : null;
+      if (!projectId) return { dispatchIds: [] };
+      return this.sourceCancellationPage(tx, projectId, reference.deploymentEpoch, [], cursorId);
     });
   }
 
@@ -2075,6 +2187,20 @@ export class WorkflowRunLifecycle {
       });
   }
 
+  /** Compound STT control is never externally visible with a live generic owner. */
+  async beginProviderControlWithinTransaction(tx: TransactionClient, ref: WorkflowExecutionReference, context: ExecutorMutationContext): Promise<ProviderSubmissionIntent> {
+    if (ref.stage !== "stt") throw new Error("provider_control_stage_invalid");
+    const generic = await tx.executionAttempt.findUniqueOrThrow({ where: { attemptToken: ref.attemptToken }, include: { dispatch: true } });
+    if (generic.status !== "admitted" || generic.owner || generic.processStartedAt || generic.revokedAt || generic.functionName !== "stt" ||
+      generic.dispatchId !== context.reference.dispatchId || generic.deploymentEpoch !== ref.deploymentEpoch || generic.generation !== ref.generation ||
+      generic.inputHash !== context.reference.inputHash || generic.dispatch.subjectKind !== "workflow_run" || generic.dispatch.subjectId !== ref.id) throw new Error("provider_control_reference_lost");
+    await this.bindExecutionWithinTransaction(tx, ref, context);
+    await tx.executionAttempt.update({ where: { attemptToken: ref.attemptToken }, data: { owner: context.owner, leaseExpiresAt: context.leaseExpiresAt } });
+    await this.startExecution(tx, ref, context);
+    await tx.executionAttempt.update({ where: { attemptToken: ref.attemptToken }, data: { status: "running", processStartedAt: await this.databaseNow(tx) } });
+    return this.beginProviderSubmissionExecution(tx, ref, context);
+  }
+
   /** Records intent and closes active TS ownership before the single provider POST. */
   async beginProviderSubmissionExecution(tx: TransactionClient, ref: WorkflowExecutionReference, context: ExecutorMutationContext): Promise<ProviderSubmissionIntent> {
     const identity = this.executionAttempt(ref, context);
@@ -2143,20 +2269,24 @@ export class WorkflowRunLifecycle {
         requestId: input.requestId,
         transcriptionId: input.transcriptionId,
       });
-      if (lookup.kind !== "waiting") return lookup;
+      if (lookup.kind !== "waiting") return { ...lookup, dispatchIds: await this.providerRecordedWakes(tx, key, "accept") };
       const { attempt } = lookup;
+      if (!lookup.submittedAt) throw new Error("provider_intent_missing");
+      const resultDeadlineAt = new Date(lookup.submittedAt.getTime() + 2 * 60 * 60_000);
+      if (!Number.isFinite(input.nextPollAt.getTime())) throw new Error("provider_check_invalid");
       await tx.transcript.updateMany({
         where: { projectId: attempt.projectId, workflowAttemptId: attempt.attemptId },
         data: {
           providerJobId: input.transcriptionId,
           providerRequestId: input.requestId,
           providerSubmissionDeadlineAt: null,
+          providerResultDeadlineAt: resultDeadlineAt,
           status: "processing",
         },
       });
       await tx.workflowRun.updateMany({
         where: { id: attempt.workflowRunId, attemptId: attempt.attemptId, status: "waiting" },
-        data: { nextPollAt: input.nextPollAt },
+        data: { nextPollAt: new Date(Math.min(input.nextPollAt.getTime(), resultDeadlineAt.getTime())) },
       });
       await this.appendEvent(tx, {
         projectId: attempt.projectId,
@@ -2168,7 +2298,12 @@ export class WorkflowRunLifecycle {
         errorCode: null,
         transition: "provider-waiting",
       });
-      return { kind: "applied" } as const;
+      const run = await tx.workflowRun.findUniqueOrThrow({ where: { id: key.workflowRunId } });
+      const reference = (await this.dispatchRunWithinTransaction(tx, run.id)).reference;
+      const deadline = await appendExecutionDispatch(tx, { deploymentEpoch: run.deploymentEpoch, kind: "operation_driver", subject: reference.subject,
+        generation: run.generation, inputHash: reference.inputHash, dueAt: resultDeadlineAt, deadlineKind: "provider_result", observedDeadlineAt: resultDeadlineAt });
+      const wake = await this.appendStableExecutionWake(tx, reference, "provider_accepted", await this.databaseNow(tx));
+      return { kind: "applied", dispatchIds: [deadline.reference.dispatchId, wake.reference.dispatchId] } as const;
     });
   }
 
@@ -2196,10 +2331,10 @@ export class WorkflowRunLifecycle {
         requestId: input.providerRequestId,
         transcriptionId: input.providerJobId,
       });
-      if (lookup.kind !== "waiting") return lookup;
+      if (lookup.kind !== "waiting") return { ...lookup, dispatchIds: await this.providerRecordedWakes(tx, key, "complete") };
       // The row is locked: ids recorded by an acceptance that raced this
       // completion survive a delivery that does not carry them.
-      await this.completeTranscriptWithin(
+      const childDispatchId = await this.completeTranscriptWithin(
         tx,
         lookup.attempt,
         {
@@ -2209,7 +2344,8 @@ export class WorkflowRunLifecycle {
         },
         this.waitingAttemptWhere(lookup.attempt),
       );
-      return { kind: "applied" } as const;
+      const wakes = await this.providerTransitionWakes(tx, key);
+      return { kind: "applied", dispatchIds: [childDispatchId, ...wakes.dispatchIds] } as const;
     });
   }
 
@@ -2222,9 +2358,67 @@ export class WorkflowRunLifecycle {
   ): Promise<ProviderSettlementResult> {
     return this.transaction(async (tx) => {
       const lookup = await this.lockProviderAttempt(tx, key, "fail", ids);
-      if (lookup.kind !== "waiting") return lookup;
+      if (lookup.kind !== "waiting") return { ...lookup, dispatchIds: await this.providerRecordedWakes(tx, key, "fail") };
       await this.failAttemptWithinTransaction(tx, lookup.attempt, failure, {});
-      return { kind: "applied" } as const;
+      return { kind: "applied", ...await this.providerTransitionWakes(tx, key) } as const;
+    });
+  }
+
+  private async providerTransitionWakes(tx: TransactionClient, key: ProviderAttemptReference): Promise<{ dispatchIds: string[] }> {
+    const history = await tx.executionAttempt.findUniqueOrThrow({ where: { attemptToken: key.attemptId }, include: { dispatch: true } });
+    const run = await tx.workflowRun.findUniqueOrThrow({ where: { id: key.workflowRunId } });
+    if (history.dispatch.subjectKind !== "workflow_run" || history.dispatch.subjectId !== run.id || history.deploymentEpoch !== key.deploymentEpoch ||
+      run.deploymentEpoch !== key.deploymentEpoch || run.generation !== history.generation) throw new Error("provider_execution_lineage_lost");
+    const own = await this.executionWakes(tx, { id: run.id, projectId: run.projectId, stage: "stt", deploymentEpoch: run.deploymentEpoch,
+      generation: history.generation, attemptToken: key.attemptId }, history.inputHash, run.status === "queued");
+    const capacity = await appendScribeCapacityWakesWithinTransaction(tx, { deploymentEpoch: key.deploymentEpoch, attemptId: key.attemptId });
+    return { dispatchIds: [...own.dispatchIds, ...capacity.dispatchIds] };
+  }
+
+  /** Replays only immutable wake obligations; it grants no provider permission. */
+  private async providerRecordedWakes(tx: TransactionClient, key: ProviderAttemptReference, intent: ProviderSettlementIntent): Promise<string[]> {
+    if (!validProviderReference(key)) return [];
+    const history = await tx.executionAttempt.findUnique({ where: { attemptToken: key.attemptId }, include: { dispatch: true } });
+    const run = await tx.workflowRun.findUnique({ where: { id: key.workflowRunId }, include: { project: { select: { sourceRevision: true, transcript: { select: { sourceAudioId: true, sourceRevision: true } } } } } });
+    const epoch = await tx.executionEpoch.findUnique({ where: { id: 1 } });
+    if (!history || !run || epoch?.epoch !== key.deploymentEpoch || history.deploymentEpoch !== key.deploymentEpoch || run.deploymentEpoch !== key.deploymentEpoch ||
+      history.dispatch.subjectKind !== "workflow_run" || history.dispatch.subjectId !== run.id || run.project.sourceRevision !== key.sourceRevision ||
+      run.project.transcript?.sourceAudioId !== key.sourceAudioId || run.project.transcript.sourceRevision !== key.sourceRevision) return [];
+    const own = await tx.executionDispatch.findMany({ where: { deploymentEpoch: key.deploymentEpoch, subjectKind: "workflow_run", subjectId: run.id,
+      generation: history.generation, ...(intent === "accept" ? { OR: [{ deadlineKind: "provider_result" }, { wakeKind: "provider_accepted" }] } : { wakeKind: "execution_finished" }) },
+      orderBy: { id: "asc" }, take: 3 });
+    const ids = own.map(row => row.id);
+    if (intent === "accept" || !own.length) return ids;
+    if (intent === "fail") {
+      const next = await tx.executionDispatch.findFirst({ where: { deploymentEpoch: key.deploymentEpoch, subjectKind: "workflow_run", subjectId: run.id,
+        generation: history.generation + 1, kind: "operation_driver", wakeKind: null, deadlineKind: null } });
+      if (next) ids.push(next.id);
+    } else {
+      const child = await tx.workflowRun.findUnique({ where: { projectId_idempotencyKey: { projectId: run.projectId, idempotencyKey: `${run.idempotencyKey}__moment_detection` } } });
+      if (child) {
+        const first = await tx.executionDispatch.findFirst({ where: { deploymentEpoch: key.deploymentEpoch, subjectKind: "workflow_run", subjectId: child.id,
+          generation: 1, kind: "operation_driver", wakeKind: null, deadlineKind: null } });
+        if (first) ids.push(first.id);
+      }
+    }
+    ids.push(...(await tx.executionDispatch.findMany({ where: { deploymentEpoch: key.deploymentEpoch,
+      OR: [{ wakeKind: `cap_${key.attemptId.replaceAll("-", "")}` }, { wakeKind: `stt_${key.attemptId.replaceAll("-", "")}` }] },
+      orderBy: { createdAt: "asc" }, take: 101, select: { id: true } })).map(row => row.id));
+    return ids;
+  }
+
+  /** Provider deadlines are separate from the already-closed TS execution. */
+  async expireProviderDeadline(key: ProviderAttemptReference, observation: { kind: "submission" | "result"; observedDeadlineAt: Date }): Promise<ProviderDeadlineResult> {
+    return this.transaction(async tx => {
+      const lookup = await this.lockProviderAttempt(tx, key, "fail", {});
+      if (lookup.kind !== "waiting") return { ...lookup, dispatchIds: await this.providerRecordedWakes(tx, key, "fail") };
+      if (observation.kind === "submission" && lookup.providerJobId) return { kind: "stale", reason: "submission_confirmed" };
+      const dueAt = observation.kind === "submission" ? lookup.submissionDeadlineAt : lookup.resultDeadlineAt;
+      if (!dueAt || !Number.isFinite(observation.observedDeadlineAt.getTime()) || observation.observedDeadlineAt.getTime() !== dueAt.getTime()) return { kind: "stale", reason: "submission_pending" };
+      if (dueAt > await this.databaseNow(tx)) return { kind: "sleep", dueAt };
+      const code = observation.kind === "submission" ? "elevenlabs_submission_unconfirmed" : "elevenlabs_result_timeout";
+      await this.failAttemptWithinTransaction(tx, lookup.attempt, new WorkflowFailure(code, "retryable", "Transcription provider deadline expired"), {});
+      return { kind: "applied", ...await this.providerTransitionWakes(tx, key) };
     });
   }
 
@@ -2259,7 +2453,7 @@ export class WorkflowRunLifecycle {
         ),
         {},
       );
-      return { kind: "applied" } as const;
+      return { kind: "applied", ...await this.providerTransitionWakes(tx, key) } as const;
     });
   }
 
@@ -2310,7 +2504,7 @@ export class WorkflowRunLifecycle {
       select: {
         id: true,
         deploymentEpoch: true,
-        project: { select: { sourceRevision: true } },
+        project: { select: { sourceRevision: true, ingestStatus: true } },
         projectId: true,
         stage: true,
         status: true,
@@ -2322,7 +2516,7 @@ export class WorkflowRunLifecycle {
       return { kind: "stale", reason: "run_missing" };
     }
     if (run.deploymentEpoch !== key.deploymentEpoch) return { kind: "stale", reason: "epoch_superseded" };
-    if (run.project.sourceRevision !== key.sourceRevision) return { kind: "stale", reason: "source_superseded" };
+    if (run.project.sourceRevision !== key.sourceRevision || run.project.ingestStatus === "failed") return { kind: "stale", reason: "source_superseded" };
     if (run.attemptId !== key.attemptId) {
       return { kind: "stale", reason: "attempt_superseded" };
     }
@@ -2336,6 +2530,8 @@ export class WorkflowRunLifecycle {
         providerJobId: true,
         providerRequestId: true,
         providerSubmissionDeadlineAt: true,
+        providerResultDeadlineAt: true,
+        providerSubmittedAt: true,
       },
     });
     if (transcript && (transcript.sourceRevision !== key.sourceRevision || transcript.sourceAudioId !== key.sourceAudioId)) return { kind: "stale", reason: "source_superseded" };
@@ -2360,6 +2556,11 @@ export class WorkflowRunLifecycle {
     ) {
       return { kind: "stale", reason: "provider_job_mismatch" };
     }
+    if (intent !== "fail") {
+      const [clock] = await db.$queryRaw<Array<{ now: Date }>>`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS "now"`;
+      const deadline = transcript.providerJobId ? transcript.providerResultDeadlineAt : transcript.providerSubmissionDeadlineAt;
+      if (!clock || !deadline || deadline <= clock.now) return { kind: "stale", reason: "provider_deadline_expired" };
+    }
     if (
       intent === "accept" &&
       transcript.providerJobId &&
@@ -2379,6 +2580,8 @@ export class WorkflowRunLifecycle {
       providerJobId: transcript.providerJobId,
       providerRequestId: transcript.providerRequestId,
       submissionDeadlineAt: transcript.providerSubmissionDeadlineAt,
+      resultDeadlineAt: transcript.providerResultDeadlineAt,
+      submittedAt: transcript.providerSubmittedAt,
     };
   }
 
@@ -2514,7 +2717,7 @@ export class WorkflowRunLifecycle {
       errorCode: null,
       transition: `child:${child.id}:queued`,
     });
-    await this.dispatchRunWithinTransaction(tx, child.id);
+    return (await this.dispatchRunWithinTransaction(tx, child.id)).reference.dispatchId;
   }
 
   /**

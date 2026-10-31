@@ -1,3 +1,4 @@
+import { assertExecutionDatabaseTestTarget } from "./execution-db-test-support";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { PrismaPg } from "@prisma/adapter-pg";
@@ -16,9 +17,10 @@ dbDescribe("Executor control authority and replay", () => {
   let pool: Pool;
   const users: string[] = [], dispatches: string[] = [], receipts: string[] = [];
   beforeAll(() => {
-    if (!url || new URL(url).hostname !== "ep-wispy-field-b5wyn9o3.c-7.us-east-2.aws.neon.tech") throw new Error("Executor gates require the isolated branch");
+    assertExecutionDatabaseTestTarget(url, process.env.SERVERLESS_TEST_DATABASE_SCHEMA ?? "public");
+    const schema = process.env.SERVERLESS_TEST_DATABASE_SCHEMA ?? "public";
     pool = new Pool({ connectionString: url, max: 5 });
-    prisma = new PrismaClient({ adapter: new PrismaPg(pool), transactionOptions: { maxWait: 10_000, timeout: 30_000 } });
+    prisma = new PrismaClient({ adapter: new PrismaPg(pool, { schema }), transactionOptions: { maxWait: 10_000, timeout: 30_000 } });
   });
   afterAll(async () => {
     await prisma.executionInboxReceipt.deleteMany({ where: { deliveryId: { in: receipts } } });

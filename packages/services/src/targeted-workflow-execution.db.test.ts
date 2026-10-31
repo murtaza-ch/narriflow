@@ -1,11 +1,13 @@
+import { assertExecutionDatabaseTestTarget } from "./execution-db-test-support";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@prisma/client";
-import { WorkflowRunLifecycle } from "./workflow-run-lifecycle";
+import { WorkflowRunLifecycle, WorkflowFailure } from "./workflow-run-lifecycle";
 import { createExecutorControl } from "./executor-control";
 import { appendExecutionDispatch } from "./execution-dispatch";
 import { withServiceEnvironment } from "./runtime-environment";
 import type { ExecutorMutationContext } from "./executor-domain-control";
+import { createTranscriptionAdmission } from "./transcription-admission";
 
 const url = process.env.SERVERLESS_TEST_DATABASE_URL;
 const dbDescribe = process.env.ALLOW_SERVERLESS_DB_TESTS === "1" && url ? describe : describe.skip;
@@ -14,7 +16,7 @@ dbDescribe("Exact Workflow execution commands", () => {
   let db: PrismaClient;
   const users: string[] = [], subjects: string[] = [], receipts: string[] = [];
   beforeAll(async () => {
-    if (!url || new URL(url).hostname !== "ep-wispy-field-b5wyn9o3.c-7.us-east-2.aws.neon.tech") throw new Error("Only the isolated serverless gate branch is allowed");
+    assertExecutionDatabaseTestTarget(url, process.env.SERVERLESS_TEST_DATABASE_SCHEMA ?? "public");
     const schema = process.env.SERVERLESS_TEST_DATABASE_SCHEMA ?? "public";
     if (schema !== "public" && !/^serverless_execution_test_[a-z0-9]+$/.test(schema)) throw new Error("Only disposable execution schemas are allowed");
     db = new PrismaClient({ adapter: new PrismaPg({ connectionString: url, max: 4 }, { schema }), transactionOptions: { timeout: 60_000, maxWait: 30_000 } });
@@ -35,7 +37,7 @@ dbDescribe("Exact Workflow execution commands", () => {
     await db.$disconnect();
   }, 60_000);
 
-  async function fixture(stage = "moment_detection") {
+  async function fixture(stage = "moment_detection", admitted = true) {
     const user = await db.user.create({ data: { clerkId: `exact-workflow-gate:${crypto.randomUUID()}` } }); users.push(user.id);
     const workspace = await db.workspace.create({ data: { ownerUserId: user.id, name: "Exact workflow gate" } });
     const project = await db.project.create({ data: { workspaceId: workspace.id, title: "Exact workflow gate", sourceMediaUrl: "r2://gate/video.mp4", sourceStorageKey: "gate/video.mp4", ingestStatus: "ready" } });
@@ -61,7 +63,7 @@ dbDescribe("Exact Workflow execution commands", () => {
     const lifecycle = withServiceEnvironment({}, () => new WorkflowRunLifecycle({ prisma: db }));
     const reference = (await db.$transaction(tx => lifecycle.dispatchRunWithinTransaction(tx, run.id))).reference;
     const token = crypto.randomUUID(), owner = crypto.randomUUID();
-    await db.executionAttempt.create({ data: { attemptToken: token, dispatchId: reference.dispatchId, deploymentEpoch: epoch, generation: run.generation,
+    if (admitted) await db.executionAttempt.create({ data: { attemptToken: token, dispatchId: reference.dispatchId, deploymentEpoch: epoch, generation: run.generation,
       inputHash: reference.inputHash, functionName: stage, operationDeadlineAt: new Date(Date.now() + 10 * 60_000) } });
     const control = createExecutorControl({ database: db, subjectKind: "workflow_run", domain: lifecycle, deliverWakes: async () => {} });
     function verified() {
@@ -73,6 +75,24 @@ dbDescribe("Exact Workflow execution commands", () => {
     const acquire = () => withServiceEnvironment({}, () => control.execute({ command: { action: "acquire", reference, attemptToken: token, owner, leaseSeconds: 120 }, verifiedRequest: verified() }));
     return { run, reference, token, owner, fence, control, verified, acquire, lifecycle };
   }
+
+  test("concurrent weighted admission admits one provider and parks an uncharged waiter without a generic attempt", async () => {
+    const fixtures = await Promise.all([fixture("stt", false), fixture("stt", false)]);
+    const admission = createTranscriptionAdmission({ database: db, workflow: fixtures[0]!.lifecycle, maxUnits: 1 });
+    const results = await Promise.all(fixtures.map(f => withServiceEnvironment({}, () => admission.admit(f.reference, { owner: f.owner }))));
+    expect(results.map(result => result.kind).sort()).toEqual(["begun", "capacity_wait"]);
+    const winner = results.findIndex(result => result.kind === "begun"), loser = winner === 0 ? 1 : 0;
+    const granted = results[winner]!, denied = results[loser]!;
+    if (granted.kind !== "begun" || denied.kind !== "capacity_wait") throw new Error("Expected one admission and one durable capacity wait");
+    expect(await db.workflowRun.findUniqueOrThrow({ where: { id: fixtures[winner]!.run.id } })).toMatchObject({ status: "waiting", attemptCount: 1, leaseOwner: null });
+    expect(await db.workflowRun.findUniqueOrThrow({ where: { id: fixtures[loser]!.run.id } })).toMatchObject({ status: "queued", attemptCount: 0, attemptId: null,
+      operationDeadlineAt: null, errorCode: "provider_capacity_wait", nextAttemptAt: denied.dueAt });
+    expect(await db.executionAttempt.count({ where: { dispatch: { subjectKind: "workflow_run", subjectId: fixtures[loser]!.run.id } } })).toBe(0);
+    expect(denied.dueAt).toEqual(granted.intent.submissionDeadlineAt!);
+    const replay = await withServiceEnvironment({}, () => admission.admit(fixtures[winner]!.reference, { owner: crypto.randomUUID() }));
+    expect(replay.kind).toBe("already_waiting");
+    expect(await db.executionAttempt.count({ where: { dispatch: { subjectKind: "workflow_run", subjectId: fixtures[winner]!.run.id } } })).toBe(1);
+  }, 180_000);
 
   test("provider intent closes generic ownership and retries read the same intent without permission to POST again", async () => {
     const f = await fixture("stt");
@@ -104,6 +124,58 @@ dbDescribe("Exact Workflow execution commands", () => {
     expect(await f.lifecycle.lookupProviderAttempt({ ...first.reference, deploymentEpoch: first.reference.deploymentEpoch + 1 })).toEqual({ kind: "stale", reason: "epoch_superseded" });
     expect(await f.lifecycle.lookupProviderAttempt({ ...first.reference, sourceRevision: first.reference.sourceRevision + 1 })).toEqual({ kind: "stale", reason: "source_superseded" });
     expect(await f.lifecycle.lookupProviderAttempt({ ...first.reference, sourceAudioId: crypto.randomUUID() })).toEqual({ kind: "stale", reason: "source_superseded" });
+  }, 180_000);
+
+  test("accepted provider deadline is fixed to the intent and provider failure atomically registers the next fenced generation", async () => {
+    const f = await fixture("stt", false);
+    const admission = createTranscriptionAdmission({ database: db, workflow: f.lifecycle, maxUnits: 4 });
+    const begun = await withServiceEnvironment({}, () => admission.admit(f.reference, { owner: f.owner }));
+    if (begun.kind !== "begun") throw new Error("Expected fresh provider intent");
+    const accepted = await withServiceEnvironment({}, () => f.lifecycle.recordProviderAcceptance(begun.intent.reference,
+      { requestId: "request-gate", transcriptionId: "transcription-gate", nextPollAt: new Date(begun.intent.serverTime.getTime() + 60_000) }));
+    expect(accepted.kind).toBe("applied");
+    const transcript = await db.transcript.findUniqueOrThrow({ where: { projectId: f.run.projectId } });
+    expect(transcript.providerResultDeadlineAt).toEqual(new Date(begun.intent.serverTime.getTime() + 2 * 60 * 60_000));
+    expect(transcript.providerSubmissionDeadlineAt).toBeNull();
+    const duplicate = await withServiceEnvironment({}, () => f.lifecycle.recordProviderAcceptance(begun.intent.reference,
+      { requestId: "request-gate", transcriptionId: "transcription-gate", nextPollAt: new Date(begun.intent.serverTime.getTime() + 120_000) }));
+    expect(duplicate.kind).toBe("duplicate");
+    expect((await db.transcript.findUniqueOrThrow({ where: { projectId: f.run.projectId } })).providerResultDeadlineAt).toEqual(transcript.providerResultDeadlineAt);
+    const result = await withServiceEnvironment({}, () => f.lifecycle.failProviderAttempt(begun.intent.reference,
+      new WorkflowFailure("elevenlabs_result_timeout", "retryable", "Test timeout"), { requestId: "request-gate", transcriptionId: "transcription-gate" }));
+    expect(result.kind).toBe("applied");
+    expect(await db.workflowRun.findUniqueOrThrow({ where: { id: f.run.id } })).toMatchObject({ status: "queued", generation: 2, operationDeadlineAt: null, attemptCount: 1, attemptId: null });
+    expect(await db.executionDispatch.count({ where: { subjectId: f.run.id, generation: 2, kind: "operation_driver", wakeKind: null } })).toBe(1);
+  }, 180_000);
+
+  test("source cancellation revokes running TS ownership and provider lineage atomically without changing historical charges", async () => {
+    const f = await fixture("stt", false);
+    const admission = createTranscriptionAdmission({ database: db, workflow: f.lifecycle, maxUnits: 4 });
+    const begun = await withServiceEnvironment({}, () => admission.admit(f.reference, { owner: f.owner }));
+    if (begun.kind !== "begun") throw new Error("Expected provider lineage");
+    const sibling = await db.workflowRun.create({ data: { projectId: f.run.projectId, deploymentEpoch: f.reference.deploymentEpoch,
+      stage: "moment_detection", status: "running", idempotencyKey: crypto.randomUUID(), attemptId: crypto.randomUUID(), attemptCount: 1,
+      leaseOwner: crypto.randomUUID(), leaseExpiresAt: new Date(Date.now() + 120_000) } }); subjects.push(sibling.id);
+    const siblingDispatch = await db.$transaction(tx => f.lifecycle.dispatchRunWithinTransaction(tx, sibling.id));
+    await db.executionAttempt.create({ data: { attemptToken: sibling.attemptId!, dispatchId: siblingDispatch.reference.dispatchId,
+      deploymentEpoch: sibling.deploymentEpoch, generation: sibling.generation, inputHash: siblingDispatch.reference.inputHash,
+      functionName: "moment_detection", status: "running", owner: sibling.leaseOwner, leaseExpiresAt: sibling.leaseExpiresAt,
+      operationDeadlineAt: new Date(Date.now() + 600_000), processStartedAt: new Date() } });
+    const result = await withServiceEnvironment({}, () => db.$transaction(async tx => {
+      await tx.$queryRaw`SELECT "epoch" FROM "ExecutionEpoch" WHERE "id" = 1 FOR SHARE`;
+      await tx.$queryRaw`SELECT "id" FROM "Project" WHERE "id" = ${f.run.projectId}::uuid FOR UPDATE`;
+      return f.lifecycle.cancelSourceExecutionsWithinTransaction(tx, { projectId: f.run.projectId, deploymentEpoch: f.reference.deploymentEpoch,
+        errorCode: "source_audio_video_mismatch", now: new Date() });
+    }));
+    expect(result.dispatchIds.length).toBeGreaterThanOrEqual(2);
+    expect(await db.workflowRun.findMany({ where: { id: { in: [f.run.id, sibling.id] } } })).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: f.run.id, status: "cancelled", attemptCount: 1, leaseOwner: null, nextPollAt: null }),
+      expect.objectContaining({ id: sibling.id, status: "cancelled", attemptCount: 1, leaseOwner: null }),
+    ]));
+    expect(await db.executionAttempt.findUniqueOrThrow({ where: { attemptToken: sibling.attemptId! } })).toMatchObject({ status: "failed", failureCode: "source_audio_video_mismatch" });
+    expect((await db.executionAttempt.findUniqueOrThrow({ where: { attemptToken: sibling.attemptId! } })).revokedAt).not.toBeNull();
+    expect(await db.transcript.findUniqueOrThrow({ where: { projectId: f.run.projectId } })).toMatchObject({ status: "failed", errorCode: "source_audio_video_mismatch", providerSubmissionDeadlineAt: null, providerResultDeadlineAt: null });
+    expect(await f.lifecycle.recordProviderAcceptance(begun.intent.reference, { requestId: "cancelled-request", transcriptionId: "cancelled-provider", nextPollAt: new Date() })).toMatchObject({ kind: "terminal", status: "cancelled" });
   }, 180_000);
 
   test("startup rejection is uncharged and revokes the exact Workflow generation", async () => {

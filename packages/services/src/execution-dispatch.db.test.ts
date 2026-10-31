@@ -1,3 +1,4 @@
+import { assertExecutionDatabaseTestTarget } from "./execution-db-test-support";
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@prisma/client";
@@ -9,14 +10,14 @@ import {
 const databaseUrl = process.env.SERVERLESS_TEST_DATABASE_URL;
 const enabled = process.env.ALLOW_SERVERLESS_DB_TESTS === "1" && Boolean(databaseUrl);
 const dbDescribe = enabled ? describe : describe.skip;
-const isolatedHost = "ep-wispy-field-b5wyn9o3.c-7.us-east-2.aws.neon.tech";
+
 
 dbDescribe("Transactional Execution Dispatch", () => {
   let database: PrismaClient;
   let currentEpoch: number;
   let fixtureIds: string[] = [];
   beforeAll(async () => {
-    if (!databaseUrl || new URL(databaseUrl).hostname !== isolatedHost) throw new Error("Execution Dispatch tests require the isolated serverless gate branch");
+    assertExecutionDatabaseTestTarget(databaseUrl, process.env.SERVERLESS_TEST_DATABASE_SCHEMA ?? "public");
     const schema = process.env.SERVERLESS_TEST_DATABASE_SCHEMA ?? "public";
     if (schema !== "public" && !/^serverless_execution_test_[a-z0-9]+$/.test(schema)) throw new Error("A disposable execution schema is required");
     database = new PrismaClient({ adapter: new PrismaPg({ connectionString: databaseUrl, max: 4 }, { schema }), transactionOptions: { timeout: 20_000, maxWait: 20_000 } });
