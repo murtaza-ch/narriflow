@@ -761,3 +761,8 @@ export { DubbingExecution, createDubbingExecution, type DubbingArtifactCommit } 
 export { getDubbingExecution } from "./dubbing-execution-runtime";
 export { dubbingInputBinding, encodeDubbingInput, decodeDubbingInput } from "./dubbing-input";
 export { restoreDubWithinTransaction, restoreDubbingPage, recoverDubbingWakesPage, type DubbingRestoreProof } from "./dubbing-recovery";
+
+export * from "./execution-native-restore";
+export * from "./execution-notification-recovery";
+
+export * from "./execution-redispatch-pages";

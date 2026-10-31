@@ -1,3 +1,5 @@
+import { lockExecutionRecoveryParents } from "./execution-recovery-locks";
+import { admitMediaCleanupObligations } from "./media-cleanup-admission";
 import { Prisma } from "@prisma/client";
 import type { MaintenancePage, MaintenancePhaseHandler, MaintenancePosition } from "./execution-maintenance";
 import { queueMediaCleanupBatchWithinTransaction } from "./media-cleanup-control";
@@ -53,4 +55,30 @@ export const recoverMediaCleanupPage: MaintenancePhaseHandler = async (tx, page)
   const all = await rows(tx, page, "MediaCleanupObligation", "nextAttemptAt", Prisma.sql`"completedAt" IS NULL`), selected = all.slice(0, page.limit);
   const dispatchIds = (await queueMediaCleanupBatchWithinTransaction(tx, selected.map(row => row.id))).map(row => row.dispatchId);
   return result(selected, all, page, dispatchIds);
+};
+
+/** Retire only an authoritative current video object. SourceAudio is a separate
+ * immutable transcription binding and is not part of video retention. */
+export const retireSourceMediaPage:MaintenancePhaseHandler=async(tx,page)=>{
+ const cutoff=old(page.cutoff,EXECUTION_RETENTION_DAYS.sources),after=page.after?Prisma.sql`AND (p."ingestCompletedAt",p.id)>((${page.after.at}::timestamptz AT TIME ZONE 'UTC'),${page.after.id}::uuid)`:Prisma.empty;
+ const all=await tx.$queryRaw<Array<{id:string;at:Date;workspaceId:string;projectId:string}>>`SELECT p.id,p.id AS "projectId",p."ingestCompletedAt" AS at,p."workspaceId" FROM "Project" p
+ WHERE p."ingestStatus"='ready' AND p."sourceStorageKey" IS NOT NULL AND p."purgeStartedAt" IS NULL AND p."ingestCompletedAt"<(${cutoff}::timestamptz AT TIME ZONE 'UTC')
+ AND NOT EXISTS(SELECT 1 FROM "WorkflowRun" r WHERE r."projectId"=p.id AND r.status IN ('queued','running','waiting'))
+ AND NOT EXISTS(SELECT 1 FROM "IngestJob" j WHERE j."projectId"=p.id AND j.status IN ('queued','running'))
+ AND NOT EXISTS(SELECT 1 FROM "Clip" c WHERE c."projectId"=p.id AND c."previewStorageKey" IS NULL)
+ AND EXISTS(SELECT 1 FROM "Clip" c JOIN "ClipRender" r ON r."clipId"=c.id WHERE c."projectId"=p.id AND r.status='completed' AND r."storageKey" IS NOT NULL)
+ ${after} ORDER BY p."ingestCompletedAt",p.id LIMIT ${page.limit+1}`;
+ const selected=all.slice(0,page.limit);await lockExecutionRecoveryParents(tx,selected);
+ const dispatchIds:string[]=[];
+ for(const candidate of selected){
+  const project=await tx.project.findUniqueOrThrow({where:{id:candidate.id},include:{workflowRuns:{where:{status:{in:["queued","running","waiting"]}},take:1,select:{id:true}},ingestJobs:{where:{status:{in:["queued","running"]}},take:1,select:{id:true}},clips:{where:{previewStorageKey:null},take:1,select:{id:true}}}});
+  if(project.purgeStartedAt||project.ingestStatus!=="ready"||!project.sourceStorageKey||!project.ingestCompletedAt||project.ingestCompletedAt>=cutoff||project.workflowRuns.length||project.ingestJobs.length||project.clips.length)continue;
+  const artifact=await tx.executionArtifact.findUnique({where:{storageKey:project.sourceStorageKey},include:{attempt:{include:{dispatch:true}}}});
+  if(!artifact?.committedAt||artifact.role!=="source_video"||artifact.attempt.dispatch.subjectKind!=="ingest_job"||!await tx.ingestJob.findFirst({where:{id:artifact.attempt.dispatch.subjectId,projectId:project.id},select:{id:true}}))throw Error("source_retention_binding_unavailable");
+  await tx.project.update({where:{id:project.id},data:{sourceStorageKey:null}});
+  await admitMediaCleanupObligations(tx,[{origin:"assigned_execution_artifact",cleanupClass:"assigned_artifact",objectKey:artifact.storageKey,projectId:project.id,notBefore:new Date(Math.max(artifact.grantExpiresAt.getTime(),artifact.attempt.operationDeadlineAt.getTime())+120000)}]);
+  const intent=await tx.mediaCleanupObligation.findUniqueOrThrow({where:{origin_cleanupClass_objectKey:{origin:"assigned_execution_artifact",cleanupClass:"assigned_artifact",objectKey:artifact.storageKey}}});
+  dispatchIds.push(...(await queueMediaCleanupBatchWithinTransaction(tx,[intent.id])).map(row=>row.dispatchId));
+ }
+ return result(selected,all,page,dispatchIds);
 };

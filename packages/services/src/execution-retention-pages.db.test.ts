@@ -7,7 +7,7 @@ import * as safety from "./execution-safety-pages";
 import { recoverOutboundProbeWakePage } from "./execution-safety-pages";
 import { appendWorkflowRunDispatch } from "./workflow-dispatch";
 import { appendExecutionDispatch, readExecutionDispatch } from "./execution-dispatch";
-import { expireWorkflowEventPage, expireWorkspaceEventPage, expireWebhookLogPage, recoverMediaCleanupPage } from "./execution-retention-pages";
+import { expireWorkflowEventPage, expireWorkspaceEventPage, expireWebhookLogPage, recoverMediaCleanupPage,retireSourceMediaPage } from "./execution-retention-pages";
 const url = process.env.SERVERLESS_TEST_DATABASE_URL;
 const suite = process.env.ALLOW_SERVERLESS_DB_TESTS === "1" && url ? describe : describe.skip;
 suite("Production retention pages", () => {
@@ -80,6 +80,23 @@ suite("Production retention pages", () => {
     const key=`projects/${crypto.randomUUID()}/preparations/${crypto.randomUUID()}/${crypto.randomUUID()}.json`;
     await expect(db.$transaction(tx=>admitMediaCleanupObligations(tx,[{origin:"clip_preparation_input",cleanupClass:"execution_input",objectKey:key}],{deferDispatch:true}))).rejects.toThrow("cleanup_restore_requires_closed_admission");
     expect(await db.mediaCleanupObligation.count({where:{objectKey:key}})).toBe(0);
+  });
+
+  test("source retirement keeps active pipelines and exact source audio while planning only the completed retired video key",async()=>{
+    const {workspace,project}=await fixture(),epoch=(await page()).deploymentEpoch;
+    const completed=new Date("2026-01-01T00:00:00.000Z"),videoKey=`execution/${epoch}/${crypto.randomUUID()}/source_video`,audioKey=`execution/${epoch}/${crypto.randomUUID()}/source_audio`;
+    const job=await db.ingestJob.create({data:{projectId:project.id,jobType:"link_import",payload:{},status:"completed",completedAt:completed,generationHandoffAt:completed,deploymentEpoch:epoch}}),reference=(await db.$transaction(tx=>appendExecutionDispatch(tx,{kind:"modal_execution",subject:{kind:"ingest_job",id:job.id},generation:1,deploymentEpoch:epoch,inputHash:"a".repeat(64),dueAt:completed}))).reference,token=crypto.randomUUID(),owner=crypto.randomUUID();
+    await db.executionAttempt.create({data:{attemptToken:token,dispatchId:reference.dispatchId,generation:1,deploymentEpoch:epoch,inputHash:reference.inputHash,functionName:"fetch_source",status:"completed",owner,leaseExpiresAt:completed,processStartedAt:completed,finishedAt:completed,createdAt:new Date("2025-12-31T00:00:00.000Z"),operationDeadlineAt:completed}});
+    await db.executionArtifact.create({data:{attemptToken:token,owner,role:"source_video",bindingHash:"b".repeat(64),storageKey:videoKey,contentType:"video/mp4",maxBytes:100n,byteLength:100n,checksumSha256:"c".repeat(64),etag:'"video"',grantExpiresAt:new Date(completed.getTime()+1000),committedAt:completed,createdAt:completed}});
+    await db.project.update({where:{id:project.id},data:{sourceStorageKey:videoKey,ingestStatus:"ready",ingestCompletedAt:completed}});
+    const run=await db.workflowRun.create({data:{projectId:project.id,stage:"stt",status:"queued",idempotencyKey:crypto.randomUUID(),deploymentEpoch:epoch}});
+    const clip=await db.clip.create({data:{projectId:project.id,workflowRunId:run.id,transcriptSlice:[],index:0,title:"Retained clip",startSec:0,endSec:10,hookText:"fixture",reasoning:"fixture",category:"hook",viralityScore:50,hookStrengthScore:50,emotionalIntensityScore:50,pacingScore:50,durationOptimalityScore:50,tiktokScore:50,youtubeScore:50,instagramScore:50,llmProvider:"fixture",llmModel:"fixture",previewStorageKey:`projects/${project.id}/preview.mp4`}});
+    await db.clipRender.create({data:{clipId:clip.id,aspectRatio:"ratio_9_16",status:"completed",storageKey:`projects/${project.id}/render.mp4`}});
+    expect((await db.$transaction(async tx=>retireSourceMediaPage(tx,await page()))).processed).toBe(0);expect((await db.project.findUniqueOrThrow({where:{id:project.id}})).sourceStorageKey).toBe(videoKey);
+    await db.workflowRun.update({where:{id:run.id},data:{status:"completed"}});
+    const retired=await db.$transaction(async tx=>retireSourceMediaPage(tx,await page()));expect(retired).toMatchObject({processed:1});expect((await db.project.findUniqueOrThrow({where:{id:project.id}})).sourceStorageKey).toBeNull();
+    const intent=await db.mediaCleanupObligation.findFirstOrThrow({where:{objectKey:videoKey}});expect(intent.cleanupClass).toBe("assigned_artifact");expect(await db.mediaCleanupObligation.count({where:{objectKey:audioKey}})).toBe(0);
+    await db.workspace.delete({where:{id:workspace.id}});
   });
 
 });
