@@ -698,4 +698,4 @@ export * from "./outbound-delivery-runtime";
 
 export { clipPreparationBinding, encodeClipPreparationInput, decodeClipPreparationInput, encodeClipPreparationResult, decodeClipPreparationResult } from "./clip-preparation-input";
 
-export { clipPreparationTiming, clipPreparationPreviewWindow } from "./clip-preparation-policy";
+export { clipPreparationEngineHash, CLIP_PREPARATION_POLICY, clipPreparationTiming, clipPreparationPreviewWindow } from "./clip-preparation-policy";
