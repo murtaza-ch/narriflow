@@ -575,7 +575,12 @@
     "./clip-selection-finalization": {
       "types": "./src/clip-selection-finalization.ts",
       "default": "./src/clip-selection-finalization.ts"
-    }
+    },
+    "./url-guard": {
+      "types": "./src/url-guard.ts",
+      "default": "./src/url-guard.ts"
+    },
+    "./ingest-source-definition": "./src/ingest-source-definition.ts"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",

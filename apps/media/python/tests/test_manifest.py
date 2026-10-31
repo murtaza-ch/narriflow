@@ -3,10 +3,22 @@ from __future__ import annotations
 import json
 import unittest
 
-from narriflow_media.manifest import SourceManifestError, YouTubeSource, build_audio_manifest, normalize_youtube_source, toolchain_versions
+from narriflow_media.manifest import SourceManifestError, MediaSource,YouTubeSource, build_audio_manifest, normalize_youtube_source, toolchain_versions
 
 
 class SourceManifestTests(unittest.TestCase):
+    def test_a_direct_audio_binding_keeps_its_upstream_identity_without_a_download_url(self):
+        from narriflow_media.fetch import ExistingSourceAudio
+        source=MediaSource('rss','episode_1')
+        manifest=build_audio_manifest(source=source,source_revision=1,audio_format_id='stream:0',language=None,
+            probe={'probeVersion':'normalized-probe-v1','durationSec':60,'hasAudio':True,'facts':{'audios':[{'codec':'mp3','sampleRate':44100,'channels':2,'startTimeSec':0}]}},
+            byte_length=10,sha256='a'*64,toolchain_fingerprint='b'*64)
+        binding={key:value for key,value in manifest.items() if key not in {'byteLength','sha256'}}
+        binding.update(sourceAudioId='60000000-0000-4000-8000-000000000001',projectId='60000000-0000-4000-8000-000000000002',object={'key':'execution/audio','etag':'"sealed"','byteLength':10,'sha256':'a'*64})
+        seed=ExistingSourceAudio(binding)
+        self.assertEqual(seed.binding['mediaIdentity'],{'provider':'rss','mediaId':'episode_1'})
+        self.assertEqual(seed.binding['audioTrack']['id'],'stream:0');self.assertNotIn('http',json.dumps(seed.binding))
+
     def test_frozen_source_identity_and_whole_audio_facts_are_location_independent(self):
         source = normalize_youtube_source("https://youtu.be/_123456789-")
         self.assertEqual(source.media_id, "_123456789-")

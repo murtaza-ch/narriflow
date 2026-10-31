@@ -688,6 +688,8 @@ export * from "./outbound-probe-runtime";
 export * from "./outbound-probe-execution";
 
 export * from "./ingest-acquisition";
+
+export * from "./ingest-source-definition";
 export * from "./outbound-delivery";
 export * from "./outbound-delivery-execution";
 export * from "./notification-body-storage";

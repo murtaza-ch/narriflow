@@ -17,7 +17,7 @@ import stat
 import tempfile
 from typing import Any, Mapping, Protocol
 
-from .manifest import MAX_SOURCE_BYTES, SourceManifestError, YouTubeSource, build_audio_manifest, normalize_youtube_source
+from .manifest import MAX_SOURCE_BYTES, SourceManifestError, MediaSource,YouTubeSource, build_audio_manifest, normalize_youtube_source
 from .proxy import BoundProxySession, ProxySessionSequence
 
 
@@ -55,9 +55,9 @@ class ExistingSourceAudio:
             if type(value["sourceRevision"]) is not int or not 0 < value["sourceRevision"] <= 2 ** 53 - 1 or value["wholeSource"] is not True:
                 raise ValueError()
             identity, track, storage = value["mediaIdentity"], value["audioTrack"], value["object"]
-            if set(identity) != {"provider", "mediaId"} or identity["provider"] != "youtube":
+            if set(identity) != {"provider", "mediaId"}:
                 raise ValueError()
-            YouTubeSource(identity["mediaId"])
+            MediaSource(identity["provider"],identity["mediaId"])
             if (set(track) != {"id", "language", "codec", "sampleRate", "channels"} or not re.fullmatch(identifier, track["id"])
                     or track["language"] is not None and not re.fullmatch(r"[A-Za-z0-9-]{1,32}", track["language"])
                     or not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", track["codec"])
@@ -135,6 +135,7 @@ class VerifiedSourceFile:
     manifest: Mapping[str, Any]
     probe: Mapping[str, Any] = field(repr=False)
     snapshot: FileSnapshot
+    content_type: str | None = None
 
     def assert_unchanged(self):
         if FileSnapshot.read(self.path) != self.snapshot:
@@ -201,13 +202,14 @@ async def _verified(download: DownloadedSource, selected: ResolvedSource, source
     return artifact
 
 
-def _same_audio_binding(audio: SourceAudioEvidence, video: VerifiedSourceFile):
+def verify_source_audio_binding(audio: SourceAudioEvidence, video: VerifiedSourceFile):
     frames_per_second = video.probe.get("fps")
     frame_tolerance = 2 / frames_per_second if type(frames_per_second) in {int, float} and math.isfinite(frames_per_second) and frames_per_second > 0 else 0
     tolerance = max(1, frame_tolerance)
     if (audio.manifest["mediaIdentity"] != video.manifest["mediaIdentity"] or
             audio.manifest["sourceRevision"] != video.manifest["sourceRevision"] or
             audio.manifest["audioTrack"] != video.manifest["audioTrack"] or
+            math.ceil(audio.manifest["durationSeconds"]/60) != math.ceil(video.manifest["durationSeconds"]/60) or
             abs(audio.manifest["durationSeconds"] - video.manifest["durationSeconds"]) > tolerance or
             abs(audio.manifest["audioStartTimeSec"] - video.manifest["audioStartTimeSec"]) > tolerance):
         raise SourceFetchFailure("source_audio_video_mismatch")
@@ -270,7 +272,7 @@ async def fetch_source(source: str | YouTubeSource, *, source_revision: int, mod
                     audio = candidate
                 video = await video_task
                 if audio is not None:
-                    _same_audio_binding(audio, video)
+                    verify_source_audio_binding(audio, video)
                 video.assert_unchanged()
                 await sink.video_ready(video, audio)
                 return FetchSourceResult(audio, video)
