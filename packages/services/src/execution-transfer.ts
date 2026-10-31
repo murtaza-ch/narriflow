@@ -30,7 +30,7 @@ interface Options {
 const contentTypes: Readonly<Record<string, readonly string[]>> = {
   source_audio: ["audio/webm", "audio/mp4", "audio/mpeg", "audio/wav", "audio/ogg", "audio/aac"],
   source_video: ["application/octet-stream", "audio/ogg", "audio/flac", "audio/x-wav", "video/mp4", "video/quicktime", "video/webm", "video/x-matroska", "audio/mpeg", "audio/mp4", "audio/wav", "audio/aac"],
-  render_variant: ["video/mp4"], layout_evidence: ["application/json"], probe: ["application/json", "audio/wav"],
+  render_variant: ["video/mp4"], render_outcome: ["application/json"], clip_preview: ["video/mp4"], preview_peaks: ["application/json"], layout_evidence: ["application/json"], probe: ["application/json", "audio/wav"],
   thumbnail: ["image/png", "image/jpeg", "image/webp"], export_bundle: ["application/zip"], dub_mix: ["video/mp4", "audio/wav", "audio/mpeg", "audio/mp4"], selection_window: ["application/json"],
   validated_font: ["font/ttf", "font/otf", "font/woff2", "application/font-sfnt", "application/x-font-ttf", "application/x-font-opentype", "application/octet-stream"],
   validated_asset: ["image/png", "image/jpeg", "image/webp", "video/mp4", "video/quicktime", "video/webm", "video/x-matroska"],
@@ -206,9 +206,16 @@ export function createExecutionTransfer(options: Options) {
         let found = await tx.executionArtifact.findUnique({ where: { attemptToken_owner_role_bindingHash: identity } });
         if (!found) {
           const id = crypto.randomUUID();
+          let storageKey = `execution/${live.fence.reference.deploymentEpoch}/${live.fence.attemptToken}/${live.fence.owner}/${id}`;
+          if (descriptor.role === "clip_preview") storageKey += ".mp4";
+          if (descriptor.role === "preview_peaks") {
+            const preview = await tx.executionArtifact.findUnique({ where: { attemptToken_owner_role_bindingHash: { ...identity, role: "clip_preview" } } });
+            if (!preview || !preview.storageKey.endsWith(".mp4")) return invalid();
+            storageKey = preview.storageKey.slice(0, -4) + ".peaks.json";
+          }
           const [clock] = await tx.$queryRaw<Array<{ now: Date }>>`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS "now"`;
           if (!clock) throw new ExecutorControlError("epoch_unavailable");
-          found = await tx.executionArtifact.create({ data: { ...identity, id, storageKey: `execution/${live.fence.reference.deploymentEpoch}/${live.fence.attemptToken}/${live.fence.owner}/${id}`,
+          found = await tx.executionArtifact.create({ data: { ...identity, id, storageKey,
             contentType: descriptor.contentType, maxBytes: BigInt(descriptor.maxBytes), sourceEtag: descriptor.sourceEtag ?? null,
             sourceByteLength: descriptor.sourceByteLength === undefined ? null : BigInt(descriptor.sourceByteLength), createdAt: clock.now, grantExpiresAt: new Date(clock.now.getTime() + 1000) } });
         }

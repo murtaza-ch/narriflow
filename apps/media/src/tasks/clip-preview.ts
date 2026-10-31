@@ -1,3 +1,5 @@
+import { DEFAULT_PREVIEW_PADDING_SEC, DEFAULT_PREVIEW_MAX_HEIGHT, DEFAULT_PREVIEW_X264_PRESET, DEFAULT_PREVIEW_X264_CRF, DEFAULT_PREVIEW_AUDIO_BITRATE, DEFAULT_PREVIEW_X264_THREADS, DEFAULT_PREVIEW_FFMPEG_TIMEOUT_MS, DEFAULT_PEAKS_PCM_SAMPLE_RATE_HZ, DEFAULT_PREVIEW_PEAKS_PER_SEC } from "@narriflow/services/clip-preparation-policy";
+export { DEFAULT_PREVIEW_PADDING_SEC, DEFAULT_PREVIEW_MAX_HEIGHT, DEFAULT_PREVIEW_X264_PRESET, DEFAULT_PREVIEW_X264_CRF, DEFAULT_PREVIEW_AUDIO_BITRATE, DEFAULT_PREVIEW_X264_THREADS, DEFAULT_PREVIEW_FFMPEG_TIMEOUT_MS, DEFAULT_PEAKS_PCM_SAMPLE_RATE_HZ, DEFAULT_PREVIEW_PEAKS_PER_SEC } from "@narriflow/services/clip-preparation-policy";
 import { computeClipPreviewWindow as compileClipPreviewWindow } from "@narriflow/services/clip-preparation-policy";
 import { executorProcessFailure } from "../worker-process";
 /** Native preview encoding and waveform extraction. Admission, retries and publication belong to the service. */
@@ -10,15 +12,9 @@ import type { CaptionPreset } from "@narriflow/validators";
 import { resolveDisplayGeometry, type WorkerProcessModule } from "../worker-process";
 
 
-export const DEFAULT_PREVIEW_PADDING_SEC = 4;
-export const DEFAULT_PREVIEW_MAX_HEIGHT = 540;
-export const DEFAULT_PREVIEW_X264_PRESET = "veryfast";
 // CRF 30 at 540p measured ~1-2MB for a 30s talking-head clip in verification
 // (see the worker's clip-preview report) — tune via env without a deploy.
-export const DEFAULT_PREVIEW_X264_CRF = "30";
-export const DEFAULT_PREVIEW_AUDIO_BITRATE = "64k";
 // Preview encoding uses two threads within the container resource limit.
-export const DEFAULT_PREVIEW_X264_THREADS = "2";
 
 /** ffmpeg reads the source over HTTPS rather than from disk, so a transient
  *  network blip mid-cut would otherwise abort the encode. These make it
@@ -61,7 +57,6 @@ export const HTTP_SOURCE_ARGS = [
 // a full cut. Measured a real cut at 11.72s wall for a 38s window off a
 // 531 MB 4K source (see processPendingClipPreviews); 120s leaves generous
 // headroom for a slower network or a longer padded window before killing it.
-export const DEFAULT_PREVIEW_FFMPEG_TIMEOUT_MS = 120_000;
 export const PREVIEW_PEAKS_MAX_STDOUT_BYTES = 32 * 1024 * 1024;
 
 export function previewPaddingSec(): number {
@@ -114,8 +109,6 @@ export function previewX264Threads(): string {
 /** Chosen so it divides evenly by every sane DEFAULT_PREVIEW_PEAKS_PER_SEC
  *  value (8000 / 20 = 400 samples/bin) — plenty for max-abs amplitude
  *  binning, which only cares about peak magnitude, not frequency content. */
-export const DEFAULT_PEAKS_PCM_SAMPLE_RATE_HZ = 8000;
-export const DEFAULT_PREVIEW_PEAKS_PER_SEC = 20;
 export const PREVIEW_PEAKS_FORMAT_VERSION = 1 as const;
 
 export function previewPeaksPcmSampleRateHz(): number {
@@ -529,9 +522,10 @@ export async function generateClipPreviewPeaks(params: {
   proxyFilePath: string;
   windowStartSec: number;
   windowDurationSec: number;
+  settings?: { sampleRateHz: number; peaksPerSec: number; deadlineMs: number };
 }): Promise<ClipPreviewPeaks> {
-  const pcmSampleRateHz = previewPeaksPcmSampleRateHz();
-  const peaksPerSec = previewPeaksPerSec();
+  const pcmSampleRateHz = params.settings?.sampleRateHz ?? previewPeaksPcmSampleRateHz();
+  const peaksPerSec = params.settings?.peaksPerSec ?? previewPeaksPerSec();
 
   const pcmBuffer = (
     await params.workerProcess.execute({
@@ -541,7 +535,7 @@ export async function generateClipPreviewPeaks(params: {
         sampleRateHz: pcmSampleRateHz,
       }),
       signal: params.signal,
-      deadlineMs: previewFfmpegTimeoutMs(),
+      deadlineMs: params.settings?.deadlineMs ?? previewFfmpegTimeoutMs(),
       captureStdout: true,
       maxStdoutBytes: PREVIEW_PEAKS_MAX_STDOUT_BYTES,
     })
@@ -625,8 +619,9 @@ export async function encodeAndValidateClipPreview(params: {
   args: string[];
   outputPath: string;
   expected: RenderOutputExpectation;
+  deadlineMs?: number;
   diagnose?: Parameters<typeof validateRenderOutput>[0]["diagnose"];
 }) {
-  await params.workerProcess.execute({ command: "ffmpeg", args: params.args, signal: params.signal, deadlineMs: previewFfmpegTimeoutMs() });
+  await params.workerProcess.execute({ command: "ffmpeg", args: params.args, signal: params.signal, deadlineMs: params.deadlineMs ?? previewFfmpegTimeoutMs() });
   return validateRenderOutput({ path: params.outputPath, expected: params.expected, workerProcess: params.workerProcess, signal: params.signal, diagnose: params.diagnose });
 }

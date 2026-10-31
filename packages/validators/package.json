@@ -47,6 +47,10 @@
     "./clip-preparation": {
       "types": "./src/clip-preparation.ts",
       "default": "./src/clip-preparation.ts"
+    },
+    "./source-display-geometry": {
+      "types": "./src/source-display-geometry.ts",
+      "default": "./src/source-display-geometry.ts"
     }
   },
   "scripts": {

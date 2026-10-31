@@ -706,5 +706,5 @@ export * from "./notification-dispatch";
 export { completionCallbackExecutionInputHash, workspaceEventExecutionInputHash } from "./notification-identity";
 export { clipPreparationBinding, encodeClipPreparationInput, decodeClipPreparationInput, encodeClipPreparationResult, decodeClipPreparationResult } from "./clip-preparation-input";
 
-export { clipPreparationTiming, clipPreparationPreviewWindow } from "./clip-preparation-policy";
+export { clipPreparationEngineHash, CLIP_PREPARATION_POLICY, clipPreparationTiming, clipPreparationPreviewWindow } from "./clip-preparation-policy";
 export * from "./clip-preparation";
