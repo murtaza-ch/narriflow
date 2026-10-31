@@ -61,6 +61,7 @@ function retryAfterMs(response: Response, now: Date): number | null {
 async function readBoundedText(response: Response, maximumBytes: number) {
 	const contentLength = Number(response.headers.get("content-length") ?? "0");
 	if (Number.isFinite(contentLength) && contentLength > maximumBytes) {
+    await response.body?.cancel().catch(() => undefined);
 		throw new Error("publication_webhook_response_oversized");
 	}
 	if (!response.body) return "";
@@ -79,7 +80,7 @@ async function readBoundedText(response: Response, maximumBytes: number) {
 			chunks.push(next.value);
 		}
 	} finally {
-		reader.releaseLock();
+		await reader.cancel().catch(() => undefined);
 	}
 	const combined = new Uint8Array(total);
 	let offset = 0;

@@ -174,7 +174,7 @@ export function createPublicationProviderTransport(options: {
 					try {
 						const item = await reader.read();
 						if (item.done) {
-							reader.releaseLock();
+							await reader.cancel().catch(() => undefined);
 							controller.close();
 							return;
 						}
@@ -185,6 +185,7 @@ export function createPublicationProviderTransport(options: {
 						}
 						controller.enqueue(item.value);
 					} catch (error) {
+						await reader.cancel().catch(() => undefined);
 						controller.error(error);
 					}
 				},
