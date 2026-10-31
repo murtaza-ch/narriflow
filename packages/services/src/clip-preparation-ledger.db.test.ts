@@ -34,7 +34,10 @@ suite("Clip preparation frozen input ledger", () => {
     await client.query(`INSERT INTO "ClipPreparation" ("id","projectId","clipId","sourceRevision","editorRevision","bindingHash","engineHash","inputHash","inputStorageKey","inputEtag","inputByteLength","inputChecksumSha256","deploymentEpoch","operationDeadlineAt","updatedAt")
       VALUES ($1,$2,$3,1,2,$4,$4,$4,'projects/frozen/input.json','"input"',1234,$5,$6,now()+interval '45 minutes',now())`, [id, projectId, clipId, "a".repeat(64), "b".repeat(64), epoch]);
     const initial = (await client.query('SELECT * FROM "ClipPreparation" WHERE "id"=$1', [id])).rows[0];
-    await client.query('UPDATE "ClipPreparation" SET "generation"=2 WHERE "id"=$1', [id]);
+    await client.query('UPDATE "ClipPreparation" SET status=\'running\',"attemptToken"=$2,"executorOwner"=$3,"leaseExpiresAt"=now()+interval \'120 seconds\',"chargedAttempts"=1 WHERE id=$1', [id, crypto.randomUUID(), crypto.randomUUID()]);
+    await expect(client.query('UPDATE "ClipPreparation" SET "chargedAttempts"=0 WHERE id=$1', [id])).rejects.toThrow();
+    await expect(client.query('UPDATE "ClipPreparation" SET "generation"=4 WHERE id=$1', [id])).rejects.toThrow();
+    await client.query('UPDATE "ClipPreparation" SET status=\'queued\',"generation"=2,"attemptToken"=NULL,"executorOwner"=NULL,"leaseExpiresAt"=NULL WHERE "id"=$1', [id]);
     for (const [column, value] of [["inputEtag", '"replacement"'], ["inputChecksumSha256", "c".repeat(64)], ["bindingHash", "d".repeat(64)], ["operationDeadlineAt", new Date(Date.now() + 3600000)]]) {
       await expect(client.query(`UPDATE "ClipPreparation" SET "${column}"=$2 WHERE "id"=$1`, [id, value])).rejects.toThrow("immutable");
     }
@@ -42,5 +45,12 @@ suite("Clip preparation frozen input ledger", () => {
     const current = (await client.query('SELECT * FROM "ClipPreparation" WHERE "id"=$1', [id])).rows[0];
     expect(current).toMatchObject({ generation: 2, status: "queued", inputEtag: initial.inputEtag, inputChecksumSha256: initial.inputChecksumSha256 });
     expect(current.operationDeadlineAt).toEqual(initial.operationDeadlineAt);
+  });
+  test("completed preparation evidence and historical charge cannot be replaced", async () => {
+    await client.query('UPDATE "ClipPreparation" SET status=\'running\',"attemptToken"=$2,"executorOwner"=$3,"leaseExpiresAt"=now()+interval \'120 seconds\',"chargedAttempts"=2 WHERE id=$1', [id, crypto.randomUUID(), crypto.randomUUID()]);
+    await client.query('UPDATE "ClipPreparation" SET status=\'completed\',"executorOwner"=NULL,"leaseExpiresAt"=NULL,"completedAt"=now(),result=\'{"fixture":true}\'::jsonb WHERE id=$1', [id]);
+    await expect(client.query('UPDATE "ClipPreparation" SET result=\'{"replacement":true}\'::jsonb WHERE id=$1', [id])).rejects.toThrow();
+    await expect(client.query('UPDATE "ClipPreparation" SET status=\'queued\',"completedAt"=NULL WHERE id=$1', [id])).rejects.toThrow();
+    expect((await client.query('SELECT status,"chargedAttempts",result FROM "ClipPreparation" WHERE id=$1', [id])).rows[0]).toEqual({ status: "completed", chargedAttempts: 2, result: { fixture: true } });
   });
 });

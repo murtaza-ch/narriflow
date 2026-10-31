@@ -40,3 +40,22 @@ and the full execution gate pass146 tests/955 assertions. Services typechecking,
 focused Biome and28 cleanup tests/80 assertions pass. Exact native control, artifact
 publication, stale-export/live-Clip finalization and production composition remain
 required. This ticket remains claimed.
+
+The preparation service now implements exact Generic Executor Control ports and
+its typed transfer composition. It confirms an absolute watchdog and stable native
+attempt before returning, records an immediate lease-observation wake on acquire,
+and spends one charge at process start. Current linked group/source/editor proof
+is recompiled under the owning locks before granting fresh work. A manifest can
+arrive before preview/peaks: its bounded typed evidence stays pending until all
+required same-owner artifacts are committed. Preview publication, preparation
+completion and bounded group wakes then commit together. A frozen export can
+finish after an edit without replacing the live Clip. Terminal evidence and charge
+history are protected by database constraints.
+
+Thirteen preparation service/model cases pass107 assertions, covering owner races,
+replay, manifest order, source revocation, bounded lease retry, changed evidence,
+and SQL-injected projection rollback. The full136-migration execution gate now
+passes167 tests/1114 assertions across23 suites; services typechecking and focused
+Biome checks pass. The private JSON writer, production factories, native render
+handoff and deployed integration acceptance remain required. This ticket remains
+claimed.

@@ -2,15 +2,18 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@prisma/client";
-import { editorDocumentSchema } from "@narriflow/validators";
+import { editorDocumentSchema, CLIP_AUTO_LAYOUT_ENGINE, CLIP_AUTO_LAYOUT_VERSION } from "@narriflow/validators";
 import documents from "../../../apps/media/src/__fixtures__/render-golden/documents.json";
 import { assertExecutionDatabaseTestTarget } from "./execution-db-test-support";
-import { appendExecutionDispatch } from "./execution-dispatch";
+import { appendExecutionDispatch, readExecutionDispatch } from "./execution-dispatch";
 import { renderGroupExportIdentity } from "./render-group-contract";
 import { encodeClipEditorDocumentForStorage } from "./clip-editor-document-persistence";
-import { ClipPreparationService } from "./clip-preparation";
+import { ClipPreparationService, type ClipPreparationArtifactCommit } from "./clip-preparation";
 import { decodeClipPreparationInput } from "./clip-preparation-input";
 import { executionInputRetainUntil } from "./media-cleanup";
+import { createExecutorControl } from "./executor-control";
+import type { ExecutionCommand } from "@narriflow/validators/execution";
+import type { ClipPreparationResult } from "@narriflow/validators/clip-preparation";
 
 const url = process.env.SERVERLESS_TEST_DATABASE_URL;
 const suite = process.env.ALLOW_SERVERLESS_DB_TESTS === "1" && url ? describe : describe.skip;
@@ -24,7 +27,7 @@ suite("Clip Preparation authority and publication", () => {
   });
   afterAll(async () => { await db?.$disconnect(); });
 
-  async function fixture() {
+  async function fixture(frozenExport = false) {
     const user = await db.user.create({ data: { clerkId: `clip-preparation:${crypto.randomUUID()}` } });
     const workspace = await db.workspace.create({ data: { name: "Clip preparation gate", ownerUserId: user.id } });
     const epoch = (await db.executionEpoch.findUniqueOrThrow({ where: { id: 1 } })).epoch;
@@ -54,9 +57,17 @@ suite("Clip Preparation authority and publication", () => {
       tiktokScore: 50, youtubeScore: 50, instagramScore: 50, llmProvider: "fixture", llmModel: "fixture" } });
     const references = [];
     for (const resolution of ["720p", "1080p"]) {
-      const variant = await db.clipRender.create({ data: { clipId: clip.id, workflowRunId: run.id, editorRevision: clip.editorRevision, aspectRatio: resolution === "720p" ? "ratio_9_16" : "ratio_16_9", resolution } });
+      const aspectRatio = resolution === "720p" ? "ratio_9_16" as const : "ratio_16_9" as const;
+      let exportId: string | null = null, exportVariantId: string | undefined;
+      if (frozenExport && resolution === "720p") {
+        const exported = await db.clipExport.create({ data: { projectId: project.id, clipId: clip.id, editorRevision: clip.editorRevision, fingerprint: "fixed-export", resolution, watermark: true } });
+        exportId = exported.id;
+        exportVariantId = (await db.clipExportVariant.create({ data: { exportId, aspectRatio, resolution, watermark: true } })).id;
+      }
+      const variant = await db.clipRender.create({ data: { clipId: clip.id, workflowRunId: run.id, editorRevision: clip.editorRevision, aspectRatio, resolution,
+        ...(exportVariantId ? { exportVariantId, clipSnapshot: JSON.parse(JSON.stringify(clip)) } : {}) } });
       const group = await db.renderGroup.create({ data: { workflowRunId: run.id, workSetGeneration, clipId: clip.id, deploymentEpoch: epoch,
-        exportIdentity: renderGroupExportIdentity({ clipId: clip.id, exportId: null, editorRevision: clip.editorRevision, resolution, watermark: true }), members: { create: { clipRenderId: variant.id } } } });
+        exportIdentity: renderGroupExportIdentity({ clipId: clip.id, exportId, editorRevision: clip.editorRevision, resolution, watermark: true }), members: { create: { clipRenderId: variant.id } } } });
       references.push((await db.$transaction(tx => appendExecutionDispatch(tx, { deploymentEpoch: epoch, generation: 1, kind: "operation_driver", subject: { kind: "render_group", id: group.id }, inputHash: "d".repeat(64), dueAt: group.createdAt }))).reference);
     }
     const objects = new Map<string, Uint8Array>();
@@ -73,6 +84,48 @@ suite("Clip Preparation authority and publication", () => {
       return { etag: '"input"', byteLength: bytes.byteLength, sha256: createHash("sha256").update(bytes).digest("hex") };
     } } });
     return { user, workspace, project, run, clip, source, references, service, objects, confirmed, writes: () => writes, afterWrite: (action: () => Promise<void>) => { afterWrite = action; } };
+  }
+
+  async function native(f: Awaited<ReturnType<typeof fixture>>) {
+    const admitted = await f.service.admitForGroup(f.references[0]!);
+    const prepared = await f.service.prepareExecution((await readExecutionDispatch(db, admitted.dispatchIds[0]!))!.reference);
+    if (prepared.kind !== "waiting") throw new Error("Expected prepared native job");
+    const heads = new Map<string, { etag: string; contentType: string; byteLength: bigint; sha256: string }>();
+    const manifests = new Map<string, ClipPreparationResult>();
+    let loseAck = false;
+    const wakes: string[][] = [];
+    const control = createExecutorControl({ database: db, subjectKind: "clip_preparation", domain: f.service,
+      deliverWakes: async ids => { wakes.push([...ids]); if (loseAck) throw new Error("Lost preparation wake"); },
+      artifacts: { head: async assignment => heads.get(assignment.id) ?? null, prepare: async (_assignment, artifact): Promise<ClipPreparationArtifactCommit> => {
+        if (artifact.role === "layout_evidence") return { ...artifact, role: "layout_evidence", result: manifests.get(artifact.artifactId)! };
+        if (artifact.role === "clip_preview" || artifact.role === "preview_peaks") return { ...artifact, role: artifact.role };
+        throw new Error("Unexpected role");
+      } },
+    });
+    const verified = () => ({ requestHash: "a".repeat(64), metadata: { version: 1 as const, keyId: "gate-key", audience: "executor-control" as const, method: "POST" as const,
+      canonicalTarget: "/api/execution/command", bodySha256: "0".repeat(64), timestamp: Math.floor(Date.now() / 1000), deliveryId: crypto.randomUUID(), signature: "0".repeat(64) } });
+    const fence = { reference: prepared.deadline.reference, attemptToken: prepared.deadline.attemptToken, owner: crypto.randomUUID() };
+    const send = (command: ExecutionCommand, request = verified()) => control.execute({ command, verifiedRequest: request });
+    await send({ action: "acquire", ...fence, leaseSeconds: 120 });
+    await send({ action: "process-start", fence });
+    const previewKey = `execution/${fence.reference.deploymentEpoch}/${fence.attemptToken}/${fence.owner}/${crypto.randomUUID()}.mp4`;
+    const assignments = [];
+    for (const role of ["clip_preview", "preview_peaks", "layout_evidence"] as const) {
+      const storageKey = role === "clip_preview" ? previewKey : role === "preview_peaks" ? previewKey.slice(0, -4) + ".peaks.json" : previewKey.slice(0, -4) + ".layout.json";
+      const contentType = role === "clip_preview" ? "video/mp4" : "application/json";
+      const row = await db.executionArtifact.create({ data: { attemptToken: fence.attemptToken, owner: fence.owner, role, bindingHash: admitted.bindingHash, storageKey,
+        contentType, maxBytes: 10000n, grantExpiresAt: new Date(Date.now() + 60_000) } });
+      heads.set(row.id, { etag: `"${role}"`, contentType, byteLength: 1000n, sha256: "b".repeat(64) });
+      assignments.push(row);
+    }
+    const [preview, peaks, manifest] = assignments;
+    const result: ClipPreparationResult = { version: 1, preparationId: admitted.preparationId, bindingHash: admitted.bindingHash,
+      preview: { artifactId: preview!.id, startSec: 0, durationSec: 14 }, peaks: { state: "ready", artifactId: peaks!.id },
+      layout: { automatic: { state: "failed", reason: "analysis_unavailable" }, screen: null, split: null } };
+    manifests.set(manifest!.id, result);
+    const commit = (row: typeof assignments[number]): ExecutionCommand => ({ action: "commit-artifact", fence, artifact: { artifactId: row.id,
+      role: row.role as "clip_preview" | "preview_peaks" | "layout_evidence", bindingHash: row.bindingHash, contentType: row.contentType, byteLength: 1000, etag: heads.get(row.id)!.etag, sha256: "b".repeat(64) } });
+    return { admitted, fence, control, send, verified, preview: preview!, peaks: peaks!, manifest: manifest!, result, manifests, commit, wakes, loseAck: (value: boolean) => { loseAck = value; } };
   }
 
   test("groups over the same source/editor binding share one sealed preparation without acquiring either parent", async () => {
@@ -120,5 +173,134 @@ suite("Clip Preparation authority and publication", () => {
     expect(pending[0]!.nextAttemptAt.getTime()).toBeGreaterThan(Date.now() + 45 * 60_000);
     expect(pending[0]!.completedAt).toBeNull();
     expect(await executionInputRetainUntil(db, pending[0]!.objectKey)).toBeNull();
+  });
+
+  test("preparation registers its absolute watchdog before native admission, acquires once and charges one process start", async () => {
+    const f = await fixture();
+    const admitted = await f.service.admitForGroup(f.references[0]!);
+    const reference = (await readExecutionDispatch(db, admitted.dispatchIds[0]!))!.reference;
+    const prepared = await f.service.prepareExecution(reference);
+    if (prepared.kind !== "waiting") throw new Error("Expected native preparation");
+    const replay = await f.service.prepareExecution(reference);
+    expect(replay).toEqual(prepared);
+    const attempt = await db.executionAttempt.findUniqueOrThrow({ where: { attemptToken: prepared.deadline.attemptToken } });
+    expect(attempt).toMatchObject({ functionName: "prepare_clip", owner: null, processStartedAt: null, status: "admitted" });
+    expect(prepared.dispatchIds).toHaveLength(2);
+    const watchdog = await readExecutionDispatch(db, prepared.deliveryId);
+    expect(watchdog).toMatchObject({ deadlineKind: "operation", observedDeadlineAt: attempt.operationDeadlineAt });
+    const wakes: string[] = [];
+    const control = createExecutorControl({ database: db, subjectKind: "clip_preparation", domain: f.service, deliverWakes: async ids => { wakes.push(...ids); } });
+    const verified = () => ({ requestHash: "a".repeat(64), metadata: { version: 1 as const, keyId: "gate-key", audience: "executor-control" as const, method: "POST" as const,
+      canonicalTarget: "/api/execution/command", bodySha256: "0".repeat(64), timestamp: Math.floor(Date.now() / 1000), deliveryId: crypto.randomUUID(), signature: "0".repeat(64) } });
+    const owners = [crypto.randomUUID(), crypto.randomUUID()];
+    const results = await Promise.all(owners.map(owner => control.execute({ command: { action: "acquire", reference: prepared.deadline.reference, attemptToken: attempt.attemptToken, owner, leaseSeconds: 120 }, verifiedRequest: verified() })));
+    expect(results.map(result => result.disposition).sort()).toEqual(["acquired", "busy"]);
+    expect(wakes).toHaveLength(1);
+    expect((await db.clipPreparation.findUniqueOrThrow({ where: { id: admitted.preparationId } })).chargedAttempts).toBe(0);
+    const fence = { reference: prepared.deadline.reference, attemptToken: attempt.attemptToken, owner: owners[results.findIndex(result => result.disposition === "acquired")]! };
+    const work = await f.service.workInput(await control.authorize(fence, false));
+    expect(work.source).toEqual({ storageKey: f.source.storageKey, etag: '"source"', byteLength: 1000, sha256: "c".repeat(64) });
+    expect(work.outputs.map(output => [output.role, output.bindingHash])).toEqual([["clip_preview", admitted.bindingHash], ["preview_peaks", admitted.bindingHash], ["layout_evidence", admitted.bindingHash]]);
+    await control.execute({ command: { action: "process-start", fence }, verifiedRequest: verified() });
+    await control.execute({ command: { action: "process-start", fence }, verifiedRequest: verified() });
+    expect((await db.clipPreparation.findUniqueOrThrow({ where: { id: admitted.preparationId } })).chargedAttempts).toBe(1);
+    expect(await db.workflowRun.findUnique({ where: { id: f.run.id } })).toMatchObject({ leaseOwner: null, attemptId: null, attemptCount: 0 });
+  });
+
+  test("a manifest arriving before its objects finalizes once with the Clip and both group wakes; lost ACK replays that receipt", async () => {
+    const f = await fixture();
+    const execution = await native(f);
+    await f.service.admitForGroup(f.references[1]!);
+    await execution.send(execution.commit(execution.manifest));
+    await execution.send(execution.commit(execution.peaks));
+    expect(await db.clipPreparation.findUnique({ where: { id: execution.admitted.preparationId } })).toMatchObject({ status: "running", chargedAttempts: 1 });
+    expect((await db.clip.findUniqueOrThrow({ where: { id: f.clip.id } })).previewStorageKey).toBeNull();
+    const request = execution.verified(), command = execution.commit(execution.preview);
+    execution.loseAck(true);
+    await expect(execution.send(command, request)).rejects.toThrow("Lost preparation wake");
+    expect(await db.clipPreparation.findUnique({ where: { id: execution.admitted.preparationId } })).toMatchObject({ status: "completed", chargedAttempts: 1, executorOwner: null });
+    expect(await db.clip.findUnique({ where: { id: f.clip.id } })).toMatchObject({ previewStorageKey: execution.preview.storageKey, previewStartSec: 0, previewDurationSec: 14, autoLayoutStatus: "completed" });
+    execution.loseAck(false);
+    expect(await execution.send(command, request)).toMatchObject({ disposition: "committed" });
+    expect(execution.wakes.at(-1)).toEqual(execution.wakes.at(-2));
+    expect(execution.wakes.at(-1)).toHaveLength(2);
+    const ready = await f.service.readReadyForGroup(f.references[1]!);
+    expect(ready).toMatchObject({ preparationId: execution.admitted.preparationId, preview: { storageKey: execution.preview.storageKey }, peaks: { storageKey: execution.peaks.storageKey }, result: execution.result });
+    expect(await db.workflowRun.findUnique({ where: { id: f.run.id } })).toMatchObject({ attemptId: null, leaseOwner: null, attemptCount: 0 });
+  });
+
+  test("a frozen export finishes its preparation after a live edit without replacing the newer preview", async () => {
+    const f = await fixture(true), execution = await native(f);
+    await db.clip.update({ where: { id: f.clip.id }, data: { editorRevision: 1, startSec: 1, endSec: 11, previewStorageKey: "projects/newer-preview.mp4", previewStartSec: 1, previewDurationSec: 10 } });
+    await execution.send(execution.commit(execution.preview));
+    await execution.send(execution.commit(execution.peaks));
+    await execution.send(execution.commit(execution.manifest));
+    expect(await db.clipPreparation.findUnique({ where: { id: execution.admitted.preparationId } })).toMatchObject({ status: "completed", chargedAttempts: 1 });
+    expect(await db.clip.findUnique({ where: { id: f.clip.id } })).toMatchObject({ editorRevision: 1, previewStorageKey: "projects/newer-preview.mp4", startSec: 1, endSec: 11 });
+    expect(await f.service.readReadyForGroup(f.references[0]!)).toMatchObject({ preview: { storageKey: execution.preview.storageKey }, result: execution.result });
+  });
+
+  test("a replaced source revokes a started preparation before an old owner can publish", async () => {
+    const f = await fixture(), execution = await native(f);
+    await db.project.update({ where: { id: f.project.id }, data: { sourceRevision: 2 } });
+    expect(await execution.send(execution.commit(execution.preview))).toMatchObject({ disposition: "superseded" });
+    expect(await db.clipPreparation.findUnique({ where: { id: execution.admitted.preparationId } })).toMatchObject({ status: "superseded", chargedAttempts: 1, executorOwner: null, leaseExpiresAt: null });
+    expect((await db.executionAttempt.findUniqueOrThrow({ where: { attemptToken: execution.fence.attemptToken } })).revokedAt).not.toBeNull();
+    expect((await db.executionArtifact.findUniqueOrThrow({ where: { id: execution.preview.id } })).committedAt).toBeNull();
+    expect((await db.clip.findUniqueOrThrow({ where: { id: f.clip.id } })).previewStorageKey).toBeNull();
+    await expect(execution.control.authorize(execution.fence)).rejects.toMatchObject({ code: "authority_lost" });
+  });
+
+  test("lease expiry authorizes one fenced retry with the original deadline and preserves the charged start", async () => {
+    const f = await fixture(), execution = await native(f);
+    const initial = await db.clipPreparation.findUniqueOrThrow({ where: { id: execution.admitted.preparationId } });
+    await db.clipPreparation.update({ where: { id: initial.id }, data: { leaseExpiresAt: new Date(0) } });
+    await db.executionAttempt.update({ where: { attemptToken: execution.fence.attemptToken }, data: { leaseExpiresAt: new Date(0) } });
+    const deadline = { reference: execution.fence.reference, attemptToken: execution.fence.attemptToken, kind: "lease" as const, observedDeadlineAt: new Date(0).toISOString() };
+    expect((await execution.control.expireDeadline({ deadline, deliveryId: crypto.randomUUID() })).kind).toBe("expired");
+    const retried = await db.clipPreparation.findUniqueOrThrow({ where: { id: initial.id } });
+    expect(retried).toMatchObject({ status: "queued", generation: 2, chargedAttempts: 1, attemptToken: null, executorOwner: null, operationDeadlineAt: initial.operationDeadlineAt });
+    expect((await db.executionAttempt.findUniqueOrThrow({ where: { attemptToken: execution.fence.attemptToken } })).revokedAt).not.toBeNull();
+    const next = await db.executionDispatch.findFirstOrThrow({ where: { subjectKind: "clip_preparation", subjectId: initial.id, generation: 2, kind: "operation_driver", wakeKind: null, deadlineKind: null } });
+    expect(await f.service.prepareExecution((await readExecutionDispatch(db, next.id))!.reference)).toMatchObject({ kind: "sleep", dueAt: retried.retryAt });
+    expect(await execution.send(execution.commit(execution.preview))).toMatchObject({ disposition: "superseded" });
+  });
+
+  for (const changed of ["window", "source_identity"] as const) test(`a manifest with changed ${changed} cannot publish a preview`, async () => {
+    const f = await fixture(), execution = await native(f);
+    const result = structuredClone(execution.result);
+    if (changed === "window") result.preview.durationSec = 15;
+    else {
+      const segment = { startSec: 0, endSec: 10, layout: "single" as const, cxNorm: 0.5, cyNorm: 0.5, zoom: 1, subjects: [] };
+      result.layout.automatic = { version: CLIP_AUTO_LAYOUT_VERSION, engine: CLIP_AUTO_LAYOUT_ENGINE, sourceIdentity: "unrelated-source", analyzedAtISO: new Date().toISOString(),
+        clipStartSec: 0, clipEndSec: 10, deletedRanges: [], editedDurationSec: 10, sourceWidth: 1, sourceHeight: 1, segments: [segment], noSplitSegments: [segment],
+        shotCount: 0, soloShotCount: 0, multiShotCount: 0, twoUpSegmentCount: 0, speakerCount: 0, mappedSpeakerCount: 0 };
+    }
+    execution.manifests.set(execution.manifest.id, result);
+    await execution.send(execution.commit(execution.preview));
+    await execution.send(execution.commit(execution.peaks));
+    await expect(execution.send(execution.commit(execution.manifest))).rejects.toMatchObject({ code: "clip_preparation_input_invalid" });
+    expect(await db.clipPreparation.findUnique({ where: { id: execution.admitted.preparationId } })).toMatchObject({ status: "running", chargedAttempts: 1, result: null });
+    expect((await db.clip.findUniqueOrThrow({ where: { id: f.clip.id } })).previewStorageKey).toBeNull();
+    expect((await db.executionArtifact.findUniqueOrThrow({ where: { id: execution.manifest.id } })).committedAt).toBeNull();
+  });
+
+  test("a projection failure rolls back the manifest receipt, job completion and wakes together", async () => {
+    const f = await fixture(), execution = await native(f);
+    await execution.send(execution.commit(execution.preview));
+    await execution.send(execution.commit(execution.peaks));
+    const trigger = `fail_preparation_${crypto.randomUUID().replaceAll("-", "")}`;
+    // Generated fixture identifiers only. This runs inside the guarded disposable schema.
+    await db.$executeRawUnsafe(`CREATE FUNCTION "${trigger}"() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.id='${f.clip.id}'::uuid AND NEW."previewStorageKey" IS NOT NULL THEN RAISE EXCEPTION 'injected_preparation_projection_failure'; END IF; RETURN NEW; END $$`);
+    await db.$executeRawUnsafe(`CREATE TRIGGER "${trigger}" BEFORE UPDATE ON "Clip" FOR EACH ROW EXECUTE FUNCTION "${trigger}"()`);
+    const command = execution.commit(execution.manifest), request = execution.verified();
+    try { await expect(execution.send(command, request)).rejects.toThrow("injected_preparation_projection_failure"); }
+    finally { await db.$executeRawUnsafe(`DROP TRIGGER "${trigger}" ON "Clip"`); await db.$executeRawUnsafe(`DROP FUNCTION "${trigger}"()`); }
+    expect(await db.clipPreparation.findUnique({ where: { id: execution.admitted.preparationId } })).toMatchObject({ status: "running", chargedAttempts: 1, result: null });
+    expect((await db.executionArtifact.findUniqueOrThrow({ where: { id: execution.manifest.id } })).committedAt).toBeNull();
+    expect(await db.executionInboxReceipt.findUnique({ where: { audience_deliveryId: { audience: "executor-control", deliveryId: request.metadata.deliveryId } } })).toBeNull();
+    expect(await db.executionDispatch.count({ where: { subjectId: { in: f.references.map(reference => reference.subject.id) }, wakeKind: "preparation_outcome" } })).toBe(0);
+    expect(await execution.send(command, request)).toMatchObject({ disposition: "committed" });
+    expect(await db.clipPreparation.findUnique({ where: { id: execution.admitted.preparationId } })).toMatchObject({ status: "completed", chargedAttempts: 1 });
   });
 });

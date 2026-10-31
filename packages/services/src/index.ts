@@ -708,3 +708,4 @@ export { clipPreparationBinding, encodeClipPreparationInput, decodeClipPreparati
 
 export { clipPreparationEngineHash, CLIP_PREPARATION_POLICY, clipPreparationTiming, clipPreparationPreviewWindow } from "./clip-preparation-policy";
 export * from "./clip-preparation";
+export * from "./clip-preparation-execution";
