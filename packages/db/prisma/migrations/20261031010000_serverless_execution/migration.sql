@@ -266,7 +266,7 @@ ALTER TABLE "ExecutionDispatch" ADD CONSTRAINT "ExecutionDispatch_reference_chec
   "generation" > 0 AND "deploymentEpoch" > 0 AND "inputHash" ~ '^[a-f0-9]{64}$'
   AND "subjectId" ~ '^[A-Za-z0-9][A-Za-z0-9._:-]*$'
   AND "kind" IN ('import_pipeline','render_run','operation_driver','maintenance','project_progress','local_fetch','modal_execution')
-  AND "subjectKind" IN ('ingest_job','workflow_run','render_group','clip_preparation','upload_session','social_publication','completion_callback','webhook_subscription','workspace_billing','autopilot_rule','generation_finishing','dubbing','export_bundle','generated_media','thumbnail_frame','native_validation','library_index','notification','media_cleanup','workflow_event','workspace_event','standing_grant','pending_workspace','retention','maintenance')
+  AND "subjectKind" IN ('ingest_job','workflow_run','render_group','clip_preparation','upload_session','social_publication','completion_callback','webhook_subscription','workspace_billing','autopilot_rule','generation_finishing','dubbing','export_bundle','generated_media','thumbnail_frame','native_validation','outbound_probe','library_index','notification','media_cleanup','workflow_event','workspace_event','standing_grant','pending_workspace','retention','maintenance')
   AND "deliveryAttempts" >= 0
   AND (("deliveryToken" IS NULL) = ("deliveryLeaseExpiresAt" IS NULL))
   AND NOT ("acknowledgedAt" IS NOT NULL AND "deadLetteredAt" IS NOT NULL)
@@ -571,3 +571,44 @@ ALTER TABLE "ThumbnailFrameOperation" ADD CONSTRAINT "ThumbnailFrameOperation_ex
   AND ("status" NOT IN ('queued','processing') OR "operationDeadlineAt" IS NOT NULL)
   AND ("status" <> 'processing' OR "executorOwner" IS NOT NULL)
 );
+
+
+CREATE TABLE "OutboundProbe" (
+ "id" UUID PRIMARY KEY, "workspaceId" UUID NOT NULL, "createdByUserId" UUID NOT NULL,
+ "kind" VARCHAR(24) NOT NULL, "requestFingerprint" CHAR(64) NOT NULL, "input" JSONB NOT NULL, "inputHash" CHAR(64) NOT NULL,
+ "status" VARCHAR(24) NOT NULL DEFAULT 'queued', "generation" INTEGER NOT NULL DEFAULT 1, "deploymentEpoch" INTEGER NOT NULL,
+ "attemptToken" UUID, "executorOwner" UUID, "leaseExpiresAt" TIMESTAMP(3), "operationDeadlineAt" TIMESTAMP(3) NOT NULL,
+ "chargedAttempts" INTEGER NOT NULL DEFAULT 0, "maxAttempts" INTEGER NOT NULL DEFAULT 3, "retryAt" TIMESTAMP(3),
+ "resultArtifactId" UUID, "resultStorageKey" VARCHAR(1024), "resultEtag" VARCHAR(160), "resultSha256" CHAR(64), "resultByteLength" BIGINT,
+ "errorCode" VARCHAR(100), "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, "updatedAt" TIMESTAMP(3) NOT NULL, "completedAt" TIMESTAMP(3),
+ CONSTRAINT "OutboundProbe_authority_check" CHECK (
+  "kind" = 'rss_feed' AND "requestFingerprint" ~ '^[a-f0-9]{64}$' AND "inputHash" ~ '^[a-f0-9]{64}$'
+  AND jsonb_typeof("input")='object' AND octet_length("input"::text)<=65536
+  AND "generation">0 AND "deploymentEpoch">0 AND "operationDeadlineAt">"createdAt"
+  AND "status" IN ('queued','processing','completed','failed','cancelled')
+  AND "chargedAttempts">=0 AND "maxAttempts" BETWEEN 1 AND 10 AND "chargedAttempts"<="maxAttempts"
+  AND (("executorOwner" IS NULL)=("leaseExpiresAt" IS NULL)) AND ("executorOwner" IS NULL OR "attemptToken" IS NOT NULL)
+  AND ("leaseExpiresAt" IS NULL OR "leaseExpiresAt"<="operationDeadlineAt") AND ("status"<>'processing' OR "executorOwner" IS NOT NULL)
+  AND ("status" NOT IN ('completed','failed','cancelled') OR "completedAt" IS NOT NULL)
+  AND num_nonnulls("resultArtifactId","resultStorageKey","resultEtag","resultSha256","resultByteLength") IN (0,5)
+  AND ("resultByteLength" IS NULL OR ("resultByteLength" BETWEEN 1 AND 4194304 AND "resultSha256" ~ '^[a-f0-9]{64}$'))
+  AND ("status"<>'completed' OR "resultArtifactId" IS NOT NULL)
+ )
+);
+CREATE UNIQUE INDEX "OutboundProbe_workspaceId_createdByUserId_requestFingerprint_key" ON "OutboundProbe"("workspaceId","createdByUserId","requestFingerprint");
+CREATE INDEX "OutboundProbe_status_retryAt_createdAt_idx" ON "OutboundProbe"("status","retryAt","createdAt");
+CREATE FUNCTION outbound_probe_input_immutable() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+ IF (NEW."id",NEW."workspaceId",NEW."createdByUserId",NEW."kind",NEW."requestFingerprint",NEW."input",NEW."inputHash",NEW."createdAt",NEW."operationDeadlineAt")
+ IS DISTINCT FROM (OLD."id",OLD."workspaceId",OLD."createdByUserId",OLD."kind",OLD."requestFingerprint",OLD."input",OLD."inputHash",OLD."createdAt",OLD."operationDeadlineAt") THEN
+  RAISE EXCEPTION 'outbound probe input is immutable' USING ERRCODE='23514';
+ END IF;
+ IF NEW."generation" IS DISTINCT FROM OLD."generation" AND NOT (NEW."generation"=OLD."generation"+1 AND NEW."status"='queued' AND NEW."attemptToken" IS NULL AND NEW."executorOwner" IS NULL AND NEW."leaseExpiresAt" IS NULL) THEN
+  RAISE EXCEPTION 'outbound probe retry generation is invalid' USING ERRCODE='23514';
+ END IF;
+ IF NEW."deploymentEpoch" IS DISTINCT FROM OLD."deploymentEpoch" THEN
+  RAISE EXCEPTION 'outbound probe epoch is immutable' USING ERRCODE='23514';
+ END IF;
+ RETURN NEW;
+END; $$;
+CREATE TRIGGER "OutboundProbe_input_immutable" BEFORE UPDATE ON "OutboundProbe" FOR EACH ROW EXECUTE FUNCTION outbound_probe_input_immutable();

@@ -33,6 +33,10 @@
     "./execution-transfer": {
       "types": "./src/execution-transfer.ts",
       "default": "./src/execution-transfer.ts"
+    },
+    "./outbound-probe": {
+      "types": "./src/outbound-probe.ts",
+      "default": "./src/outbound-probe.ts"
     }
   },
   "scripts": {
