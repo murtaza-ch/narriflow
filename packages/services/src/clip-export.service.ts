@@ -689,6 +689,7 @@ export class ClipExportService {
         );
       },
       beforeAccept: mutation?.beforeAccept,
+      beforeMutation: mutation?.beforeMutation,
       prepare,
       mutate: async (tx) => {
         await requireExecutionAdmissionOpen(tx);
@@ -909,6 +910,7 @@ export class ClipExportService {
     projectId: string,
     clipId: string,
     exportId: string,
+    beforeMutation?: (tx: Prisma.TransactionClient) => Promise<void>,
   ) {
     await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "processing.consume");
     const prisma = requirePrisma();
@@ -957,7 +959,7 @@ export class ClipExportService {
     );
 
     await new WorkflowRunLifecycle({ prisma }).retryFailedClipExport({
-      projectId, exportId, expectedRetryCount: owned.retryCount, variantIds: failed.map((variant) => variant.id),
+      beforeMutation, projectId, exportId, expectedRetryCount: owned.retryCount, variantIds: failed.map((variant) => variant.id),
     });
 
     return this.getOwned(scope, projectId, clipId, exportId);

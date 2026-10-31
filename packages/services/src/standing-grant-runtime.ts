@@ -1,3 +1,4 @@
+import type { Prisma } from "@prisma/client";
 import {readExecutionAdmission} from "./execution-admission";
 import {recoverPublicationDispatches} from "./publication-dispatch";
 import { getPrismaClient } from "@narriflow/db/client";
@@ -93,7 +94,7 @@ async function readFrozenFinishingGrant(input:{finishingId:string;workspaceId:st
  return prisma.standingGrant.findFirst({where:{id:expected.id,revision:expected.revision,ruleFingerprint:expected.ruleFingerprint,workspaceId:input.workspaceId,autopilotRuleId:finishing.autopilotRuleId,kind,...(socialAccountId?{socialAccountId}:{}),status:"active",expiresAt:{gt:new Date()}},select:{id:true,revision:true,grantedByUserId:true,reviewerEmails:true}});
 }
 
-export async function acceptProposalUnderGrant(input: { finishingId: string; workspaceId: string; projectId: string; proposalId: string;expectedScheduleRevision:number;expectedGrant:{id:string;revision:number;ruleFingerprint:string}|null }): Promise<GrantAcceptOutcome> {
+export async function acceptProposalUnderGrant(input: { finishingId: string; workspaceId: string; projectId: string; proposalId: string;expectedScheduleRevision:number;expectedGrant:{id:string;revision:number;ruleFingerprint:string}|null }, options: {beforeWrite?: (tx: Prisma.TransactionClient) => Promise<void>} = {}): Promise<GrantAcceptOutcome> {
   const prisma = requiredPrisma();
   const post = await prisma.socialPost.findFirst({
     where: { id: input.proposalId, workspaceId: input.workspaceId, projectId: input.projectId, proposal: { isNot: null } },
@@ -127,7 +128,7 @@ export async function acceptProposalUnderGrant(input: { finishingId: string; wor
     return "plan_lost";
   }
   try {
-    await publishingQueue.accept({ actorUserId: granter, workspaceId: input.workspaceId }, input.proposalId, {expectedScheduleRevision:input.expectedScheduleRevision}, { grant: grantAdmission(grant.id, "publish",grant.revision) });
+    await publishingQueue.accept({ actorUserId: granter, workspaceId: input.workspaceId }, input.proposalId, {expectedScheduleRevision:input.expectedScheduleRevision}, { grant: grantAdmission(grant.id, "publish",grant.revision), beforeWrite: options.beforeWrite });
     return "accepted";
   } catch (error) {
     // The delivery's transaction rolled back with this error, so the pause is its own.
@@ -146,7 +147,7 @@ export async function acceptProposalUnderGrant(input: { finishingId: string; wor
  * One round per finishing: the round carries the finishing's ID, which is unique,
  * so a re-claim or a second worker finds it. A refusal says why, and finishing
  * ends with the reason instead of failing. */
-export async function sendReviewRoundUnderGrant(input: { finishingId: string; workspaceId: string; projectId: string; exportIds: string[];expectedGrant:FrozenStandingGrant|null }): Promise<{ sent: true } | { sent: false; reason: FinishingReason }> {
+export async function sendReviewRoundUnderGrant(input: { finishingId: string; workspaceId: string; projectId: string; exportIds: string[];expectedGrant:FrozenStandingGrant|null }, options: {beforeWrite?: (tx: Prisma.TransactionClient) => Promise<void>} = {}): Promise<{ sent: true } | { sent: false; reason: FinishingReason }> {
   const prisma = requiredPrisma();
   const sent = await prisma.reviewRound.findFirst({ where: { finishingId: input.finishingId,workspaceId:input.workspaceId,projectId:input.projectId }, select: { id: true } });
   if (sent) return { sent: true };
@@ -200,7 +201,7 @@ export async function sendReviewRoundUnderGrant(input: { finishingId: string; wo
         recipientEmails: recipients,
         items,
       },
-      { grant: grantAdmission(grant.id, "review_send",grant.revision), finishingId: input.finishingId },
+      { grant: grantAdmission(grant.id, "review_send",grant.revision), finishingId: input.finishingId, beforeWrite: options.beforeWrite },
     );
     return { sent: true };
   } catch (error) {

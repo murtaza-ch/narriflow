@@ -16,6 +16,8 @@ import {
   type FinishingState,
   type FrozenFinishingSettings,
   type SocialPlatform,
+  workspaceAllowsCapability,
+  type WorkspaceCapability,
 } from "@narriflow/validators";
 import { ExpectedDomainFailureError, type ExpectedDomainFailureCatalog } from "./expected-domain-failure";
 import { deriveGenerationStatus, encodeOperationId, readGenerationLineage, type OperationState } from "./operation-status";
@@ -254,28 +256,29 @@ export interface GenerationFinishingDependencies {
     clipId: string,
     input: { expectedRevision: number; aspectRatios: ClipAspectRatio[]; resolution: ClipRenderResolution },
     idempotencyKey: string,
+    authority: FinishingWorkAuthority,
   ): Promise<{ export: { id: string; status: string }; reused: boolean }>;
   /** Requeues the failed formats of an export, as the Exports page does. */
-  retryExport(scope: { actorUserId: string; workspaceId: string }, projectId: string, clipId: string, exportId: string): Promise<unknown>;
+  retryExport(scope: { actorUserId: string; workspaceId: string }, projectId: string, clipId: string, exportId: string, authority: FinishingWorkAuthority): Promise<unknown>;
   /** Writes assisted copy for one clip on every platform, under the given key. */
-  writeCopy(input: { actorUserId: string; workspaceId: string; projectId: string; clipId: string; platforms: SocialPlatform[]; idempotencyKey: string }): Promise<{ id: string }>;
+  writeCopy(input: { actorUserId: string; workspaceId: string; projectId: string; clipId: string; platforms: SocialPlatform[]; idempotencyKey: string }, authority: FinishingWorkAuthority): Promise<{ id: string }>;
   /** The Workspace's active accounts among those a queue-delivery setting names. */
   queueAccounts(workspaceId: string, accountIds: string[]): Promise<Array<{ id: string; platform: SocialPlatform }>>;
   /** Proposes one picked clip to one account's Publishing Queue, using the
    * platform's variant of the pick's copy. The key is derived from the finishing
    * row, so a repeat returns the proposal made before. */
-  propose(input: { actorUserId: string; workspaceId: string; clipId: string; exportId: string; socialAccountId: string; copyGenerationId: string; idempotencyKey: string }): Promise<{ proposal: { proposalId: string; scheduleRevision: number } }>;
+  propose(input: { actorUserId: string; workspaceId: string; clipId: string; exportId: string; socialAccountId: string; copyGenerationId: string; idempotencyKey: string }, authority: FinishingWorkAuthority): Promise<{ proposal: { proposalId: string; scheduleRevision: number } }>;
   /** Accepts a just-proposed post under the publish Standing Grant that covers its
    * rule and account, if there is one. Returns `accepted`, or why the post stays a
    * proposal (`no_grant` when nothing covers it). A refusal is an outcome, not an error. */
-  acceptUnderGrant(input: { finishingId: string; workspaceId: string; projectId: string; proposalId: string; expectedScheduleRevision: number; expectedGrant: FrozenStandingGrant | null }): Promise<string>;
+  acceptUnderGrant(input: { finishingId: string; workspaceId: string; projectId: string; proposalId: string; expectedScheduleRevision: number; expectedGrant: FrozenStandingGrant | null }, authority: FinishingWorkAuthority): Promise<string>;
   /** Sends the finished exports as a Review Round under the review-send Standing
    * Grant that covers the Project's rule. At most one round per finishing row; a
    * repeat finds it. A refusal says why, and the row ends with that reason. */
-  sendReviewRound(input: { finishingId: string; workspaceId: string; projectId: string; exportIds: string[]; expectedGrant: FrozenStandingGrant | null }): Promise<{ sent: true } | { sent: false; reason: FinishingReason }>;
+  sendReviewRound(input: { finishingId: string; workspaceId: string; projectId: string; exportIds: string[]; expectedGrant: FrozenStandingGrant | null }, authority: FinishingWorkAuthority): Promise<{ sent: true } | { sent: false; reason: FinishingReason }>;
   /** The "clips ready to review" notification to the acting user, through the
    * existing path. `sourceId` is the finishing row's id. Best effort. */
-  notify(input: { projectId: string; sourceId: string; clipCount: number }): Promise<void>;
+  notify(input: { projectId: string; sourceId: string; clipCount: number }, authority: FinishingWorkAuthority): Promise<void>;
 }
 
 class ClaimLost extends Error {
@@ -301,15 +304,7 @@ function log(message: string, context: Record<string, unknown>) {
   console.warn(JSON.stringify({ level: "info", message, ...context }));
 }
 
-export function createGenerationFinishing(deps: GenerationFinishingDependencies) {
-  const { prisma } = deps;
-
-  async function register(ids: readonly string[]) {
-    if (!ids.length) return;
-    if (!deps.register) throw Error("finishing_scheduler_unavailable");
-    await deps.register(ids);
-  }
-  async function current(tx: Tx, reference: ExecutionDispatchReference, claimToken?: string) {
+async function lockFinishingCommand(tx: Tx, reference: ExecutionDispatchReference, claimToken?: string) {
     if (reference.kind !== "operation_driver" || reference.subject.kind !== "generation_finishing") return null;
     const admission = await readExecutionAdmission(tx);
     const record = await readExecutionDispatch(tx,reference.dispatchId);
@@ -327,10 +322,40 @@ export function createGenerationFinishing(deps: GenerationFinishingDependencies)
     return { row, clock, record };
   }
 
+/** Server-owned continuation authority. It is never serialized as user input. */
+export interface FinishingWorkAuthority { reference: ExecutionDispatchReference; claimToken: string }
+export async function assertGenerationFinishingAuthority(tx: Tx, authority: FinishingWorkAuthority,
+  scope: { workspaceId: string; projectId: string; actorUserId?: string; clipId?: string; capability?: WorkspaceCapability }) {
+  if(authority.reference.kind!=="operation_driver" || authority.reference.subject.kind!=="generation_finishing" || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(authority.claimToken))throw new ClaimLost();
+  const initial = await tx.generationFinishing.findUnique({where:{id:authority.reference.subject.id}});
+  if(!initial?.actorUserId || initial.workspaceId!==scope.workspaceId || initial.projectId!==scope.projectId || (scope.actorUserId && initial.actorUserId!==scope.actorUserId)) throw new ClaimLost();
+  await readExecutionAdmission(tx);
+  // Membership mutations lock the member before updating Workspace usage.
+  await tx.$queryRaw`SELECT id FROM "User" WHERE id=${initial.actorUserId}::uuid FOR SHARE`;
+  await tx.$queryRaw`SELECT id FROM "WorkspaceMember" WHERE "workspaceId"=${initial.workspaceId}::uuid AND "userId"=${initial.actorUserId}::uuid FOR SHARE`;
+  await lockWorkspaceUsage(tx,initial.workspaceId);
+  await tx.$queryRaw`SELECT id FROM "Workspace" WHERE id=${initial.workspaceId}::uuid FOR SHARE`;
+  const state=await lockFinishingCommand(tx,authority.reference,authority.claimToken);
+  if(!state)throw new ClaimLost();
+  const member=await tx.workspaceMember.findUnique({where:{workspaceId_userId:{workspaceId:initial.workspaceId,userId:initial.actorUserId}},include:{user:{select:{deletedAt:true}},workspace:{select:{status:true,pricingTier:true}}}});
+  if(!member || member.user.deletedAt || !workspaceAllowsCapability({role:member.role,status:member.workspace.status},scope.capability??"processing.consume") || !hasFeature(member.workspace.pricingTier,"campaign.operations"))throw new ClaimLost();
+  if(scope.clipId && !await tx.clip.findFirst({where:{id:scope.clipId,projectId:scope.projectId},select:{id:true}}))throw new ClaimLost();
+}
+
+export function createGenerationFinishing(deps: GenerationFinishingDependencies) {
+  const { prisma } = deps;
+
+  async function register(ids: readonly string[]) {
+    if (!ids.length) return;
+    if (!deps.register) throw Error("finishing_scheduler_unavailable");
+    await deps.register(ids);
+  }
+
+
   async function runReference(value: ExecutionDispatchReference): Promise<{ kind: "complete" | "superseded" } | { kind: "sleep" | "wait"; dueAt: Date }> {
     const reference = executionDispatchReferenceSchema.parse(value);
     const prepared = await prisma.$transaction(async tx => {
-      const state = await current(tx,reference);
+      const state = await lockFinishingCommand(tx,reference);
       if (!state) return { kind: "superseded" as const };
       const { row, clock, record } = state;
       if (["ready", "partial", "skipped"].includes(row.state)) return { kind: "complete" as const };
@@ -372,7 +397,7 @@ export function createGenerationFinishing(deps: GenerationFinishingDependencies)
     }
     try { await register([prepared.watchdogId]); }
     catch (error) {
-      await prisma.$transaction(async tx => { const state = await current(tx,reference,prepared.row.claimToken); if (state) await tx.generationFinishing.update({ where: { id: state.row.id }, data: { state: "due", claimToken: null, leaseExpiresAt: null } }); });
+      await prisma.$transaction(async tx => { const state = await lockFinishingCommand(tx,reference,prepared.row.claimToken); if (state) await tx.generationFinishing.update({ where: { id: state.row.id }, data: { state: "due", claimToken: null, leaseExpiresAt: null } }); });
       throw error;
     }
     try { await run(prepared.row); }
@@ -390,7 +415,7 @@ export function createGenerationFinishing(deps: GenerationFinishingDependencies)
   /** Writes only while this claim still owns the row. */
   async function save(row: ClaimedRow, data: Prisma.GenerationFinishingUncheckedUpdateManyInput, options?: { renewLease: true }) {
       const ids = await prisma.$transaction(async tx => {
-        const state = await current(tx,row.reference,row.claimToken);
+        const state = await lockFinishingCommand(tx,row.reference,row.claimToken);
         if (!state) throw new ClaimLost();
         const updates = { ...data };
         if (options?.renewLease) updates.leaseExpiresAt = new Date(Math.min(state.clock.getTime()+FINISHING_LEASE_MS,state.row.operationDeadlineAt!.getTime()));
@@ -410,20 +435,24 @@ export function createGenerationFinishing(deps: GenerationFinishingDependencies)
   const advance = (row: ClaimedRow, picks: FinishingPick[]) => save(row,{ state: "due", picks: picks as Prisma.InputJsonValue, nextAttemptAt: null, claimToken: null, leaseExpiresAt: null });
   const renew = (row: ClaimedRow) => save(row, {}, { renewLease: true });
 
-  async function exportStatuses(picks: FinishingPick[]) {
+  async function exportStatuses(picks: FinishingPick[], database: PrismaClient | Tx = prisma) {
     const ids = picks.flatMap((pick) => (pick.exportId ? [pick.exportId] : []));
-    const rows = ids.length ? await prisma.clipExport.findMany({ where: { id: { in: ids } }, select: { id: true, status: true } }) : [];
+    const rows = ids.length ? await database.clipExport.findMany({ where: { id: { in: ids } }, select: { id: true, status: true } }) : [];
     return new Map(rows.map((entry) => [entry.id, entry.status as string]));
   }
 
   /** Ends the row and writes its one `finishing.finished` event in the same
    * transaction. The event names the exports that are usable now. */
   async function finish(row: ClaimedRow, outcome: { state: "ready" | "partial" | "skipped"; reason: FinishingReason | null; picks: FinishingPick[] }) {
-    const statuses = await exportStatuses(outcome.picks);
-    const exportIds = outcome.picks.flatMap((pick) => (pick.exportId && !pick.exportError && EXPORT_USABLE.includes(statuses.get(pick.exportId) ?? "failed") ? [pick.exportId] : []));
-    await prisma.$transaction(async (tx) => {
-      const state = await current(tx,row.reference,row.claimToken);
+    const pending = await prisma.$transaction(async (tx) => {
+      const state = await lockFinishingCommand(tx,row.reference,row.claimToken);
       if (!state) throw new ClaimLost();
+      const statuses = await exportStatuses(outcome.picks,tx);
+      if(outcome.state === "ready" && [...statuses.values()].some(status=>!EXPORT_TERMINAL.includes(status)) && state.row.dueAt && state.clock.getTime()<state.row.dueAt.getTime()+FINISHING_MAX_WAIT_MS){
+        const parked=await tx.generationFinishing.update({where:{id:row.id},data:{state:"exporting",picks:outcome.picks as Prisma.InputJsonValue,claimToken:null,leaseExpiresAt:null,nextAttemptAt:null}});
+        return (await appendFinishing(tx,parked,{kind:"operation",at:new Date(Math.min(parked.dueAt!.getTime()+FINISHING_MAX_WAIT_MS,parked.operationDeadlineAt!.getTime()))})).dispatchId;
+      }
+      const exportIds = outcome.picks.flatMap((pick) => (pick.exportId && !pick.exportError && EXPORT_USABLE.includes(statuses.get(pick.exportId) ?? "failed") ? [pick.exportId] : []));
       const ended = await tx.generationFinishing.updateMany({
         where: { id: row.id, state: "running", claimToken: row.claimToken },
         data: { state: outcome.state, reason: outcome.reason, picks: outcome.picks as Prisma.InputJsonValue, finishedAt: state.clock, claimToken: null, leaseExpiresAt: null, nextAttemptAt: null },
@@ -432,7 +461,9 @@ export function createGenerationFinishing(deps: GenerationFinishingDependencies)
       queueFinishingFinished(tx, { ...row, state: outcome.state, reason: outcome.reason, exportIds });
       // The Workspace counter is the last lock this transaction takes.
       await flushWorkspaceEvents(tx);
+      return null;
     });
+    if(pending){await register([pending]);return;}
     log("generation_finishing_finished", { finishingId: row.id, projectId: row.projectId, state: outcome.state, reason: outcome.reason });
   }
 
@@ -478,10 +509,10 @@ export function createGenerationFinishing(deps: GenerationFinishingDependencies)
       try {
         const created = await deps.createExport(scope, row.projectId, pick.clipId,
           { expectedRevision: pick.editorRevision, aspectRatios: settings.aspectRatios, resolution: settings.resolution },
-          finishingExportKey(row.id, pick.clipId, pick.editorRevision));
+          finishingExportKey(row.id, pick.clipId, pick.editorRevision), row);
         if (created.reused && EXPORT_RETRYABLE.includes(created.export.status)) {
           try {
-            await deps.retryExport(scope, row.projectId, pick.clipId, created.export.id);
+            await deps.retryExport(scope, row.projectId, pick.clipId, created.export.id, row);
           } catch (error) {
             if (!(error instanceof ExpectedDomainFailureError)) throw error;
           }
@@ -568,7 +599,7 @@ export function createGenerationFinishing(deps: GenerationFinishingDependencies)
         await renew(row);
         try {
           const copy = await deps.writeCopy({ ...actor, projectId: row.projectId, clipId: pick.clipId, platforms: copyPlatforms,
-            idempotencyKey: finishingCopyKey(row.id, pick.clipId, pick.copyAttempt ?? 0) });
+            idempotencyKey: finishingCopyKey(row.id, pick.clipId, pick.copyAttempt ?? 0) }, row);
           pick.copyGenerationId = copy.id;
         } catch (error) {
           if (transientCopyFailure(error)) {
@@ -597,10 +628,10 @@ export function createGenerationFinishing(deps: GenerationFinishingDependencies)
           await renew(row);
           try {
             const { proposal } = await deps.propose({ ...actor, clipId: pick.clipId, exportId: pick.exportId!, socialAccountId: account.id, copyGenerationId: pick.copyGenerationId,
-              idempotencyKey: finishingQueueKey(row.id, pick.clipId, account.id) });
+              idempotencyKey: finishingQueueKey(row.id, pick.clipId, account.id) }, row);
             // A grant that covers this rule and account takes the proposal into its slot; otherwise it waits for a person.
             const granted = await deps.acceptUnderGrant({ finishingId: row.id, workspaceId: row.workspaceId, projectId: row.projectId, proposalId: proposal.proposalId,
-              expectedScheduleRevision: proposal.scheduleRevision, expectedGrant: authority?.publish.find(item=>item.socialAccountId===account.id)?.grant ?? null });
+              expectedScheduleRevision: proposal.scheduleRevision, expectedGrant: authority?.publish.find(item=>item.socialAccountId===account.id)?.grant ?? null }, row);
             if (granted !== "no_grant") {
               pick.grant = { ...pick.grant, [account.id]: granted };
               if (granted !== "accepted") log("generation_finishing_grant_refused", { finishingId: row.id, projectId: row.projectId, socialAccountId: account.id, outcome: granted });
@@ -625,7 +656,7 @@ export function createGenerationFinishing(deps: GenerationFinishingDependencies)
     // row, so a re-claim finds it; a refusal leaves the clips for a person and says why.
     let reviewReason: FinishingReason | null = null;
     if (complete && settings.delivery === "send_review_round") {
-      const sent = await deps.sendReviewRound({ finishingId: row.id, workspaceId: row.workspaceId, projectId: row.projectId, exportIds: picks.filter(usable).map((pick) => pick.exportId!), expectedGrant: authority?.review ?? null });
+      const sent = await deps.sendReviewRound({ finishingId: row.id, workspaceId: row.workspaceId, projectId: row.projectId, exportIds: picks.filter(usable).map((pick) => pick.exportId!), expectedGrant: authority?.review ?? null }, row);
       if (!sent.sent) reviewReason = sent.reason;
     }
     const reason: FinishingReason | null = complete ? reviewReason
@@ -634,7 +665,7 @@ export function createGenerationFinishing(deps: GenerationFinishingDependencies)
           : !mayPropose ? "actor_lacks_publishing"
             : queue && queue.missing > 0 ? "queue_account_unavailable" : "queue_failed";
     // The ledger keys the notification by the row, so a repeat sends nothing.
-    if (exportCount > 0) await deps.notify({ projectId: row.projectId, sourceId: row.id, clipCount: exportCount }).catch((error) => {
+    if (exportCount > 0) await deps.notify({ projectId: row.projectId, sourceId: row.id, clipCount: exportCount }, row).catch((error) => {
       log("generation_finishing_notification_failed", { finishingId: row.id, code: error instanceof ExpectedDomainFailureError ? error.code : "notification_handoff_failed" });
     });
     await finish(row, { state: complete && !reviewReason ? "ready" : "partial", reason, picks });

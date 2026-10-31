@@ -883,9 +883,11 @@ export class WorkflowRunLifecycle {
     exportId: string;
     expectedRetryCount: number;
     variantIds: string[];
+    beforeMutation?: (tx: Prisma.TransactionClient) => Promise<void>;
   }): Promise<boolean> {
     return this.transaction(async (tx) => {
       const admission = await readExecutionAdmission(tx);
+      await input.beforeMutation?.(tx);
       await this.lockAdmissionProject(tx, input.projectId);
       const failed = await tx.clipExportVariant.findMany({
         where: {

@@ -29,7 +29,7 @@ import { getOperationReceiptExecutor } from "./operation-receipt-runtime";
 import { nextFreeSlots, parsePostingSchedule } from "./posting-schedule";
 import { accessibleProjectWhere } from "./project-access";
 import type { PublicationSlotQueue } from "./social-publication-scheduling";
-import { socialPublicationScheduling } from "./social-publication-scheduling-runtime";
+import { createProductionSocialPublicationScheduling, socialPublicationScheduling } from "./social-publication-scheduling-runtime";
 import { workspaceService } from "./workspace.service";
 import { requirePlanFeature } from "./plan-features";
 import { readPublishableSocialAccountIds, requirePublishableSocialAccount, socialAccountBeyondPlanError } from "./social-account-eligibility";
@@ -236,6 +236,7 @@ export const publishingQueue = {
 				tier = (await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "publishing.manage")).pricingTier;
 			},
 			beforeAccept: options.mutation.beforeAccept,
+      beforeMutation: options.mutation.beforeMutation,
 			mutate: async (tx) => {
 				const account = await tx.socialAccount.findFirst({
 					where: { id: input.socialAccountId, workspaceId: scope.workspaceId, status: "active" },
@@ -403,7 +404,7 @@ export const publishingQueue = {
 		proposalId: string,
 		input: AcceptSocialPostProposalInput,
 		/** A Standing Grant accepting for a person who isn't there: it is checked, and its caps counted, under the account lock. */
-		options: { grant?: PublicationSlotQueue["grant"] } = {},
+		options: { grant?: PublicationSlotQueue["grant"]; beforeWrite?: (tx: Prisma.TransactionClient) => Promise<void> } = {},
 	): Promise<AcceptedProposal> {
 		const actor = await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "publishing.manage");
 		const prisma = requirePrisma();
@@ -462,7 +463,7 @@ export const publishingQueue = {
 
 		const timeZone = row.workspace?.timezone ?? "UTC";
 		const variant = proposal.clipExportVariant;
-		const intent = await socialPublicationScheduling.schedule({
+		const intent = await (options.beforeWrite ? createProductionSocialPublicationScheduling({beforeWrite:options.beforeWrite}) : socialPublicationScheduling).schedule({
 			actorUserId: scope.actorUserId,
 			workspaceId: scope.workspaceId,
 			projectId: row.projectId,

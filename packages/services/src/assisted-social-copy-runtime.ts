@@ -94,8 +94,13 @@ async function readGeneration(workspaceId: string, idempotencyKey: string) {
 	});
 }
 
-export const prismaAssistedCopyStore: AssistedCopyStore = {
-	async open(input) {
+type BeforeCopyWrite = (tx: Prisma.TransactionClient) => Promise<void>;
+type GuardedCopyStore = Omit<AssistedCopyStore,"open"|"settle"> & {
+  open(input: Parameters<AssistedCopyStore["open"]>[0], beforeWrite?: BeforeCopyWrite): ReturnType<AssistedCopyStore["open"]>;
+  settle(id: string, patch: Parameters<AssistedCopyStore["settle"]>[1], beforeWrite?: BeforeCopyWrite): ReturnType<AssistedCopyStore["settle"]>;
+};
+export const prismaAssistedCopyStore: GuardedCopyStore = {
+	async open(input, beforeWrite) {
 		const existing = await readGeneration(
 			input.workspaceId,
 			input.idempotencyKey,
@@ -105,6 +110,7 @@ export const prismaAssistedCopyStore: AssistedCopyStore = {
 		try {
 			return await requirePrisma().$transaction(async tx => {
 				const admission = await readExecutionAdmission(tx);
+        await beforeWrite?.(tx);
 				const replay = await tx.assistedCopyGeneration.findUnique({ where: { workspaceId_idempotencyKey: { workspaceId: input.workspaceId, idempotencyKey: input.idempotencyKey } }, include: generationInclude });
 				if (replay) return { record: toGeneration(replay), replayed: true };
 				assertExecutionAdmissionOpen(admission);
@@ -147,9 +153,10 @@ export const prismaAssistedCopyStore: AssistedCopyStore = {
 		}
 	},
 
-	async settle(generationId, patch) {
+	async settle(generationId, patch, beforeWrite) {
 		return requirePrisma().$transaction(async (tx) => {
-			const current = await tx.assistedCopyGeneration.findUniqueOrThrow({
+			await beforeWrite?.(tx);
+      const current = await tx.assistedCopyGeneration.findUniqueOrThrow({
 				where: { id: generationId },
 				include: generationInclude,
 			});
@@ -225,7 +232,7 @@ function timeoutMs(environment: ServiceEnvironment) {
 		: 30_000;
 }
 
-function productionModule(environment: ServiceEnvironment = readServiceEnvironment()) {
+function productionModule(environment: ServiceEnvironment = readServiceEnvironment(), beforeWrite?: BeforeCopyWrite) {
 	const apiKey = environment.OPENAI_API_KEY ?? "";
 	const model =
 		environment.OPENAI_ASSISTED_COPY_MODEL ??
@@ -233,7 +240,7 @@ function productionModule(environment: ServiceEnvironment = readServiceEnvironme
 		environment.OPENAI_CLIP_MODEL ??
 		"gpt-5.4-mini";
 	return createAssistedSocialCopy({
-		store: prismaAssistedCopyStore,
+		store: beforeWrite ? { ...prismaAssistedCopyStore, open: input => prismaAssistedCopyStore.open(input,beforeWrite), settle: (id,patch) => prismaAssistedCopyStore.settle(id,patch,beforeWrite) } : prismaAssistedCopyStore,
 		provider: createOpenAiAssistedCopyProvider({ apiKey, model }),
 		moderate: createOpenAiAssistedCopyModerator({ apiKey }),
 		authorize: async ({ actorUserId, workspaceId, permission }) => {
@@ -283,8 +290,8 @@ function productionModule(environment: ServiceEnvironment = readServiceEnvironme
 }
 
 export class AssistedSocialCopyService {
-	generate(input: GenerateAssistedCopyInput) {
-		return productionModule().generate(input);
+	generate(input: GenerateAssistedCopyInput, options: {beforeWrite?: BeforeCopyWrite} = {}) {
+		return productionModule(readServiceEnvironment(),options.beforeWrite).generate(input);
 	}
 
 	requireProvenance(
