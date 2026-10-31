@@ -1,0 +1,98 @@
+{
+  "kind": "observed_prepared_worker_version_selection",
+  "scope": "Preclock candidate experiment only; private epoch 6 with admission closed. No native validation job was admitted for this experiment.",
+  "sequence": "closed-a -> fenced-b -> closed-c",
+  "worker": "narriflow-api-candidate",
+  "workflow": "narriflow-maintenance-candidate",
+  "cliVersion": "4.156.0",
+  "method": "Deploy an already uploaded Worker version at 100 percent, deploy triggers with the matching admission-state config, verify HTTP health version and mode, then trigger a fresh legitimate single-intent MC1 reference using its exact instance identity. Raw CLI triggers did not fabricate dispatch-ledger acknowledgements.",
+  "operatorObservedNewestUploadedVersionThroughout": "f345ecc1-6f05-4d1b-ae31-49498c9bd870",
+  "cases": [
+    {
+      "case": "closed-a",
+      "passed": true,
+      "observedAt": "2026-10-31T22:33:01.457Z",
+      "mode": "closed",
+      "workerVersion": "33451912-0bd9-4dcb-b45a-7794da7c01c9",
+      "status": "complete",
+      "commandStepPresent": true,
+      "receiptPresent": true,
+      "receiptProcessed": 1,
+      "cleanupAttemptCount": 0,
+      "evidenceSha256": {
+        "verified": "e97faccc921bf3faa5087c9d2b371854b75ad0558f367c4ca51a45dc91c6f924",
+        "workflow": "71392f0fa3ccc075647d241899ceb13e49c6d22d4afdbba960b4dd36924bfc03"
+      },
+      "deploy": {
+        "log": "prepared-switch-closed-a-deploy.log",
+        "sha256": "a05461df37a595f5222a736631feed7499e9af88772607ebb96835729c1f4863",
+        "reportedSeconds": 1.58
+      },
+      "triggers": {
+        "log": "prepared-switch-closed-a-triggers.log",
+        "sha256": "2f10fd71b5554ac266e98970a865724dfe1c2831472879e88c3cdc10dc731418",
+        "reportedSeconds": 5.42
+      }
+    },
+    {
+      "case": "fenced-b",
+      "passed": true,
+      "observedAt": "2026-10-31T22:34:21.376Z",
+      "mode": "fenced",
+      "workerVersion": "f345ecc1-6f05-4d1b-ae31-49498c9bd870",
+      "status": "errored",
+      "commandStepPresent": false,
+      "receiptPresent": false,
+      "receiptProcessed": null,
+      "cleanupAttemptCount": 0,
+      "evidenceSha256": {
+        "verified": "475540690b404e9ff85caa52e4ea9cb0a3cef74ae86d005c4b0394475eb933b4",
+        "workflow": "018ae3c270cf8819941af1b5166bdf20dece002748855a753c51c9c53cd1ed72"
+      },
+      "deploy": {
+        "log": "prepared-switch-fenced-b-deploy.log",
+        "sha256": "4e01f184ec542cdb7771320547395c7abcbf7760a517996677ed8d918d9668e1",
+        "reportedSeconds": 1.45
+      },
+      "triggers": {
+        "log": "prepared-switch-fenced-b-triggers.log",
+        "sha256": "162659a0777f7c44dd486fd0fca62c5cb3d4b49347506bbbd0d20941e87b17dd",
+        "reportedSeconds": 4.51
+      }
+    },
+    {
+      "case": "closed-c",
+      "passed": true,
+      "observedAt": "2026-10-31T22:34:55.415Z",
+      "mode": "closed",
+      "workerVersion": "33451912-0bd9-4dcb-b45a-7794da7c01c9",
+      "status": "complete",
+      "commandStepPresent": true,
+      "receiptPresent": true,
+      "receiptProcessed": 1,
+      "cleanupAttemptCount": 0,
+      "evidenceSha256": {
+        "verified": "3025b6e777f574265b2161731e16c72f812c06cf64e66d4c58402fdaa904ddb8",
+        "workflow": "60385fcf225f5211ca76d49a2085411c9bb1972c1b2514934f1cc990dad3c3a1"
+      },
+      "deploy": {
+        "log": "prepared-switch-closed-c-deploy.log",
+        "sha256": "648fc35770c0bae60763279f6fcfdb777c348bb9235ef7315232e3ac08025c39",
+        "reportedSeconds": 1.74
+      },
+      "triggers": {
+        "log": "prepared-switch-closed-c-triggers.log",
+        "sha256": "ff4579a111f92b9cee7c6e2b6c6871ee4d815d0bbd99ef781c5369a1ab57749f",
+        "reportedSeconds": 3.99
+      }
+    }
+  ],
+  "observedConclusion": "In this experiment, fresh Workflow instances followed the selected active Worker admission state after version deployment and matching trigger deployment. Both CLOSED runs reached command-0 and committed a new maintenance-page receipt with processed=1 while the newest uploaded version remained FENCED. The FENCED run errored with execution_fenced before any command or receipt, with zero cleanup attempts.",
+  "limits": [
+    "This is evidence for these prepared versions and this deployment sequence, not a universal or documented Cloudflare version-selection guarantee.",
+    "MC1 completion proves the cleanup range page ran and registered its separate cleanup driver. It does not prove that driver evaluated an object hold. CLOSED cases used committed validated artifacts retained by existing NativeValidationJob rows; their cleanup attempt counts were still zero when sampled.",
+    "The FENCED case addressed an exact uncommitted retired probe whose grant and operation deadline drain had elapsed. It did not execute a cleanup attempt.",
+    "Runtime source code was unchanged. This record does not qualify the timed epoch 6/7/8 restore, does not report its final result, and does not complete any ticket."
+  ],
+  "sourceHandling": "Only allowlisted verification fields, command durations, log basenames and SHA-256 digests are included. Private Workflow records and verification originals remain outside the repository; no case UUIDs, dispatch/reference IDs, storage keys, signatures, secrets, raw dumps or SQL rows are copied."
+}
