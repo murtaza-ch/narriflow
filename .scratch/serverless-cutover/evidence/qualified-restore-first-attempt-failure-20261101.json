@@ -1,0 +1,345 @@
+{
+  "version": 1,
+  "recordedAtUtc": "2026-10-31T22:03:46.379970+00:00",
+  "status": "FAILED first actual qualified restore attempt; partial restore/fence facts only. No qualification or ticket completion.",
+  "scope": "Evidence-only record of prior Root operator activity in isolated resources. No cloud, provider or database write, native admission, release, cleanup or ticket status change was performed by this evidence task.",
+  "attemptEpochs": {
+    "initialAcceptedEpoch": 3,
+    "fencedSnapshotEpoch": 4,
+    "restoredTargetEpoch": 5
+  },
+  "preClockTooling": {
+    "commit": "e8218099",
+    "change": "Use the installed Modal SDK App.app_id property in the operator helper.",
+    "provenance": "Root reports this SDK correction preceded the accepted operation clock. It is not the cause of the later boundary-registration failure or evidence of a reset native budget."
+  },
+  "positiveFacts": {
+    "nativeReady": {
+      "event": "restore_fault_ready",
+      "observedAt": "2026-10-31T21:45:26.781Z",
+      "acceptedEpoch": 3,
+      "actualProcessStarted": true,
+      "binaryArtifactCommittedBeforeHold": true,
+      "probeHeldBeforeItsCommit": true,
+      "provenance": "Root operator observation and ready/drain artifacts; object identities and invocation credentials are omitted."
+    },
+    "quiescence": {
+      "fencedWorkerVersionPrefix": "cfd7c647",
+      "fencedAt": "2026-10-31T21:46:41.405Z",
+      "admissionOpen": false,
+      "stoppedAt": "2026-10-31T21:46:35.993Z",
+      "writesDrainedAt": "2026-10-31T21:46:42.316Z",
+      "consumers": {
+        "httpIngress": "fenced",
+        "cron": "stopped",
+        "cleanup": "stopped",
+        "nativeDispatch": "deferred",
+        "localDispatch": "deferred",
+        "legacyWorkers": "stopped"
+      },
+      "allWorkflowsStopped": "Root operator confirmed; private stop inventory retained.",
+      "drainCounts": {
+        "new_dispatches": 0,
+        "other_active": 0,
+        "uncertain_complete": 0,
+        "claimed_cleanup": 0,
+        "other_active_sql": 0,
+        "source_local_fetch_dispatches": 0
+      },
+      "sourceTransferCompletedBeforeReady": true,
+      "heldProbeHadNoIssuedHttpBeforeRelease": true
+    },
+    "snapshotAndRestore": {
+      "captureMode": "snapshot_captured",
+      "attestationMode": "attested",
+      "restoreMode": "attested_snapshot_restored",
+      "sourceEpoch": 4,
+      "snapshotBytes": 1214129,
+      "snapshotSha256": "d7a4683ee48e9baa5b00c91a2b3618434f9c034246f3c83d52f4d4c9aded281f",
+      "privateSnapshotMode": "0600",
+      "snapshotRetained": true,
+      "dump": {
+        "tool": "pg_dump",
+        "utilityVersion": "18.6",
+        "serverMajor": 18,
+        "serverVersion": "18.6 (4e5fd08)",
+        "serverVersionNumber": 180006,
+        "timeoutMs": 180000,
+        "elapsedMs": 3878,
+        "backend": "regional",
+        "caBundleSha256": "9ff422bd8926c5ba278dbd44b8b10e20d19160551557ff2be4b7379da464f840",
+        "byteLength": 1214129,
+        "sha256": "d7a4683ee48e9baa5b00c91a2b3618434f9c034246f3c83d52f4d4c9aded281f"
+      },
+      "restore": {
+        "tool": "pg_restore",
+        "utilityVersion": "18.6",
+        "serverMajor": 18,
+        "serverVersion": "18.6 (4e5fd08)",
+        "serverVersionNumber": 180006,
+        "timeoutMs": 180000,
+        "elapsedMs": 37022,
+        "backend": "regional",
+        "caBundleSha256": "9ff422bd8926c5ba278dbd44b8b10e20d19160551557ff2be4b7379da464f840",
+        "byteLength": 1214129,
+        "sha256": "d7a4683ee48e9baa5b00c91a2b3618434f9c034246f3c83d52f4d4c9aded281f"
+      },
+      "attestedMigrationSha256": "ee48ab291ee53067a664cc2ab8d3dfcd25cd49457bb81e227c43eb0881377db9",
+      "attestedIdentitySha256": "c93b62c2e892adbf02dd3cc8d1f6a045fa3b701dc399c2e5f0147a6f0488ea99",
+      "attestedQuiescenceSha256": "b0159c2f74a393bf6c39c4e4b7edcac98411f5f7c7f93d782285f24eb6473c25",
+      "contentsCommitted": false,
+      "meaning": "Actual regional capture, attestation and pg_restore completed, and the same private snapshot bytes/hash are tied across those receipts. This is a successful utility/metadata stage inside an overall failed gate."
+    },
+    "begin": {
+      "mode": "registered",
+      "previousEpoch": 4,
+      "deploymentEpoch": 5,
+      "admissionOpen": false,
+      "qualificationMeaning": "The begin command registered the restore operation. It does not establish acknowledgement of the later native redispatch boundary."
+    },
+    "nativeMetadataBoundary": {
+      "observedAt": "2026-10-31T21:49:45.215Z",
+      "workerVersionPrefix": "cfd7c647",
+      "workerAdmission": "fenced",
+      "epoch": 5,
+      "admissionOpen": false,
+      "status": "queued",
+      "generation": 2,
+      "deploymentEpoch": 5,
+      "unowned": true,
+      "domainTokenCleared": true,
+      "resultSqlNull": true,
+      "chargedAttempts": 1,
+      "originalDeadlineAtUtc": "2026-10-31T21:54:23.212Z",
+      "oldAttemptStatus": "superseded",
+      "oldRevoked": true,
+      "publishedAssets": 0,
+      "deadlineUnchanged": true,
+      "meaning": "Queued generation 2 has no owner or domain result; the old attempt is revoked/superseded, original charge 1 and deadline remain, and no asset is published. Database supersession is not a native Superseded acknowledgement."
+    }
+  },
+  "failure": {
+    "closedWorkerVersionPrefix": "606206b8",
+    "boundaryRegistrationAcknowledged": false,
+    "registrationRepairObservations": [
+      {
+        "at": "2026-10-31T21:51:37.718Z",
+        "nextDeliveryAt": "2026-10-31 21:52:12.274",
+        "leaseUntil": null,
+        "errorCode": "scheduler_unavailable",
+        "acknowledgedAt": null
+      },
+      {
+        "at": "2026-10-31T21:51:55.070Z",
+        "nextDeliveryAt": "2026-10-31 21:52:12.274",
+        "leaseUntil": null,
+        "errorCode": "scheduler_unavailable",
+        "acknowledgedAt": null
+      },
+      {
+        "at": "2026-10-31T21:52:12.114Z",
+        "nextDeliveryAt": "2026-10-31 21:52:12.274",
+        "leaseUntil": null,
+        "errorCode": "scheduler_unavailable",
+        "acknowledgedAt": null
+      },
+      {
+        "at": "2026-10-31T21:52:28.828Z",
+        "nextDeliveryAt": "2026-10-31 21:54:26.561",
+        "leaseUntil": null,
+        "errorCode": "scheduler_unavailable",
+        "acknowledgedAt": null
+      },
+      {
+        "at": "2026-10-31T21:52:45.312Z",
+        "nextDeliveryAt": "2026-10-31 21:54:26.561",
+        "leaseUntil": null,
+        "errorCode": "scheduler_unavailable",
+        "acknowledgedAt": null
+      }
+    ],
+    "boundaryDescribeResult": "not_found",
+    "main": {
+      "at": "2026-10-31T21:50:37.227Z",
+      "code": "qualified_orchestration_unconfirmed",
+      "remainingOriginalBudgetMs": 225985
+    },
+    "repair": {
+      "at": "2026-10-31T21:52:48.317Z",
+      "privateErrorLabel": "original_deadline_exhausted",
+      "remainingOriginalBudgetMs": 94895,
+      "remainingOriginalBudgetSeconds": 94.895,
+      "timeUntilOperatorStaleReleaseCutoffMs": 4895,
+      "correctInterpretation": "The operator stale-release reserve could no longer be used safely. The original native operation deadline had NOT elapsed; the private original_deadline_exhausted label is not an accurate description of that timestamp."
+    },
+    "cutoffs": {
+      "originalDeadlineAt": "2026-10-31T21:54:23.212Z",
+      "operatorStaleReleaseCutoffAt": "2026-10-31T21:52:53.212Z",
+      "reservedTailSeconds": 90.0,
+      "nativeDeadlineChanged": false
+    },
+    "nativeResult": {
+      "failureClass": "ArtifactCommitUnconfirmed",
+      "typedSupersededReportObserved": false,
+      "secondCompletedStartEstablished": false,
+      "successfulCurrentCompletionEstablished": false,
+      "fullGatePassed": false
+    },
+    "operatorReportedDiagnosis": "Retries from old fenced metadata pages attempted registration across an intentional redispatch boundary after admission was closed, consuming scheduler backoff. Runtime is fixing the production policy. No successful policy fix is established by this failed attempt."
+  },
+  "retirement": {
+    "failedGateReleaseAt": "2026-10-31T21:54:10.297Z",
+    "releaseAfterOperatorStaleCutoffMs": 77085,
+    "originalBudgetRemainingAtReleaseMs": 12915,
+    "qualificationPassed": false,
+    "meaning": "This late release was failed-gate retirement only. Root reports it occurred before GET-grant expiry, but it was too late for the controlled qualification sequence and yielded no required Superseded/current-completion proof.",
+    "operatorSandboxTerminated": true,
+    "operatorRetiredAtUtc": "2026-10-31T21:55:42.370103+00:00",
+    "operatorIdentityInternallyChecked": true,
+    "snapshotRetainedPrivatelyMode0600": true,
+    "snapshotOrRowsCommitted": false
+  },
+  "followup": "Root announced a fresh 5/6/7 attempt after the production-policy fix. This record contains no result or acceptance from that follow-up.",
+  "rawPrivateEvidence": {
+    "/tmp/narriflow-serverless-control-keys/qualified-restore-20261101/ready.json": {
+      "byteLength": 409,
+      "sha256": "8f496df59a77fdb722077af403c76a81e20734eb09ef1d79ef6c7669b39d8bc9"
+    },
+    "/tmp/narriflow-serverless-control-keys/qualified-restore-20261101/drain.json": {
+      "byteLength": 986,
+      "sha256": "e87c34d183fb6411cd9cc134b151457ab41db4d0e14dd973d6c279d57e595274"
+    },
+    "/tmp/narriflow-serverless-control-keys/qualified-restore-20261101/quiescence.json": {
+      "byteLength": 469,
+      "sha256": "88431c9496895431608a76f241a60d1b539343155be033438d5b4bf7824d583d"
+    },
+    "/tmp/narriflow-serverless-control-keys/qualified-restore-20261101/proof.json": {
+      "byteLength": 1202,
+      "sha256": "d890b9588fae8641d98dfaae75b3c0e02a7a5075ffde5ed12f604985e500cf5f"
+    },
+    "/tmp/narriflow-serverless-control-keys/qualified-restore-20261101/snapshot.dump": {
+      "byteLength": 1214129,
+      "sha256": "d7a4683ee48e9baa5b00c91a2b3618434f9c034246f3c83d52f4d4c9aded281f"
+    },
+    "/tmp/narriflow-serverless-control-keys/qualified-restore-20261101/capture.stdout.log": {
+      "byteLength": 631,
+      "sha256": "2acf19dcfc0425d361ae8c3d4ad76d24305d0e3aaf645fe31b2d512e646f033a"
+    },
+    "/tmp/narriflow-serverless-control-keys/qualified-restore-20261101/attest.stdout.log": {
+      "byteLength": 655,
+      "sha256": "6233998f88aa3cbfce3cef5ce0f4ce1dad387cd38bb198719dbbd9be628c8670"
+    },
+    "/tmp/narriflow-serverless-control-keys/qualified-restore-20261101/restore-archive.stdout.log": {
+      "byteLength": 644,
+      "sha256": "d16d66c8795d323e44848ce3794ac0e5d56c19fc6ab57ce15e4ca94ed4e07d71"
+    },
+    "/tmp/narriflow-serverless-control-keys/qualified-restore-20261101/begin.stdout.log": {
+      "byteLength": 734,
+      "sha256": "f4b30f55bc2093c23221842c4658809c4295bf78d9778b9dba8a094b86f465b4"
+    },
+    "/tmp/narriflow-serverless-control-keys/qualified-restore-20261101/fence.stdout.log": {
+      "byteLength": 408,
+      "sha256": "d5f32092f9c515ee7696be7950cf60960cf640704544c325eb04f3f6d79c10b7"
+    },
+    "/tmp/narriflow-serverless-control-keys/qualified-restore-20261101/deploy-fenced.stdout.log": {
+      "byteLength": 1977,
+      "sha256": "c0dc6fd95f0e839df90ab6ca156694aef62d97631cf8e2687eb738cb02641027"
+    },
+    "/tmp/narriflow-serverless-control-keys/qualified-restore-20261101/deploy-closed.stdout.log": {
+      "byteLength": 1977,
+      "sha256": "bbbf928316b195bcd240992d5bf51ac5ad88aedeafcde9ec73d358d4735c48ac"
+    },
+    "/tmp/narriflow-serverless-control-keys/qualified-restore-20261101/metadata-native-boundary-proof.json": {
+      "byteLength": 492,
+      "sha256": "94d3a6b8fe62fabce19e5b7dec9e2c5a9d8137808eb27982f4f30857b246a8d5"
+    },
+    "/tmp/narriflow-serverless-control-keys/qualified-restore-20261101/metadata-boundary.json": {
+      "byteLength": 565,
+      "sha256": "5f952fcaa34697d93dc39eea1dc764eded35b6bf4a5e726a85c2ba93d88b9723"
+    },
+    "/tmp/narriflow-serverless-control-keys/qualified-restore-20261101/operator-cutoffs.json": {
+      "byteLength": 191,
+      "sha256": "cf3a27bc215b62a0ae23a20e2d0c8f4e3c7d9665cf8b29923d2f3c65ccc20742"
+    },
+    "/tmp/narriflow-serverless-control-keys/qualified-restore-20261101/orchestration-failure.json": {
+      "byteLength": 127,
+      "sha256": "f6faa7d643fa44050894e0a561ca78763b1dd7dadd7716e2a363c2ad770554d5"
+    },
+    "/tmp/narriflow-serverless-control-keys/qualified-restore-20261101/orchestration-repair-failure.json": {
+      "byteLength": 118,
+      "sha256": "2e88eee230880e5a6235d616871f6176a1aa5cce95ed2da75f08c7b801b63e4e"
+    },
+    "/tmp/narriflow-serverless-control-keys/qualified-restore-20261101/boundary-description.stderr.log": {
+      "byteLength": 558,
+      "sha256": "aaeff25c8170ccd523017cebf54c65b0b43e549e138be363cefa94d7223b28bf"
+    },
+    "/tmp/narriflow-serverless-control-keys/qualified-restore-20261101/boundary-description.stdout.log": {
+      "byteLength": 1,
+      "sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+    },
+    "/tmp/narriflow-serverless-control-keys/qualified-restore-20261101/native-call.stderr.log": {
+      "byteLength": 3851,
+      "sha256": "c87a48aadf6a073276663215da1fdeb122ce67263b7f43400d4753d89aadcab6"
+    },
+    "/tmp/narriflow-serverless-control-keys/qualified-restore-20261101/native-events.log": {
+      "byteLength": 349,
+      "sha256": "4dadeb86e4baa93760372dedb981107711bb9ba0fd3b60137decfe72df911e12"
+    },
+    "/tmp/narriflow-serverless-control-keys/qualified-restore-20261101/failed-gate-release.json": {
+      "byteLength": 226,
+      "sha256": "0f5bf2e2bf16f318b3ce2867da87bcd248c29d765fbc5b91997a175617271241"
+    },
+    "/tmp/narriflow-serverless-control-keys/qualified-restore-20261101/operator-retired.json": {
+      "byteLength": 171,
+      "sha256": "422384b544ceea72a82e945a00605aa24c908d89580d12cf9b6bc606cba24bf5"
+    },
+    "/tmp/narriflow-serverless-control-keys/qualified-restore-20261101/post-deadline-registration-diagnostic.json": {
+      "byteLength": 334,
+      "sha256": "ef460adf18d4f5b818476ad9f9c9ad5784f1b18ee1966462798fe092f9999f51"
+    },
+    "/tmp/narriflow-serverless-control-keys/qualified-restore-20261101/stopped-workflows.json": {
+      "byteLength": 2172,
+      "sha256": "47821837bc66f7e6f5ba209f4725aed2ead3107dcab6a1d1ffde8da1cdd3898e"
+    },
+    "/tmp/narriflow-serverless-control-keys/qualified-restore-20261101/drain-evidence.tar": {
+      "byteLength": 27648,
+      "sha256": "fe1f77e28e06584c62dab51876ed657c7ce3b57a070ab5916ff759b19dc42080"
+    },
+    "/tmp/narriflow-serverless-control-keys/qualified-restore-20261101/registration-repair-observation-0.json": {
+      "byteLength": 174,
+      "sha256": "bab49edbe17f75b5979ef43a8d9582b6cd70454d1ab50321c979260735bf4532"
+    },
+    "/tmp/narriflow-serverless-control-keys/qualified-restore-20261101/registration-repair-observation-1.json": {
+      "byteLength": 174,
+      "sha256": "602a53138ed942adbea23eeddc65c0459106a03685edf3f53d0755573440d59d"
+    },
+    "/tmp/narriflow-serverless-control-keys/qualified-restore-20261101/registration-repair-observation-2.json": {
+      "byteLength": 174,
+      "sha256": "805985777841cc41b0dcc5130f3c255463e216c3a8960f7d9e24d1bad03e5733"
+    },
+    "/tmp/narriflow-serverless-control-keys/qualified-restore-20261101/registration-repair-observation-3.json": {
+      "byteLength": 174,
+      "sha256": "3608cdbe7f6da921d7fac9898ab128200d12752b8dc7f75bbbb6103123168e6f"
+    },
+    "/tmp/narriflow-serverless-control-keys/qualified-restore-20261101/registration-repair-observation-4.json": {
+      "byteLength": 174,
+      "sha256": "fd7f295d6b65347b980049488bb1de8969b9ea44f3a473fd23bc084edf4b27db"
+    },
+    "/tmp/narriflow-serverless-gates/qualified-restore-live.log": {
+      "byteLength": 2761,
+      "sha256": "bf5fd440c26331450cde4a2bdf0d733144316bb9972acdb62acfa2205fbdfe1f"
+    },
+    "/tmp/narriflow-serverless-gates/qualified-restore-live-repair.log": {
+      "byteLength": 507,
+      "sha256": "c9e25c87a1973ff751fdbc7b92d0e0a20853b5b79dafaf8d27df12117b1da8c7"
+    }
+  },
+  "notEstablished": [
+    "Full qualified restore acceptance",
+    "Timely typed refusal of the stale native commit",
+    "A second completed native start or current successful domain publication",
+    "Actual original-operation deadline exhaustion at the repair cutoff",
+    "A completed production registration-policy fix or follow-up 5/6/7 gate",
+    "Any ticket completion or release qualification"
+  ]
+}
