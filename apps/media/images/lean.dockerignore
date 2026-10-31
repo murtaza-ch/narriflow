@@ -1,0 +1,17 @@
+.git
+**/node_modules
+**/.next
+**/.turbo
+**/.env
+**/.env.*
+**/.venv
+.vercel
+**/dist
+
+**/.dev.vars*
+**/__pycache__
+**/*.pyc
+packages/caption-fonts/fonts
+packages/caption-fonts/emoji
+apps/media/src/__fixtures__
+apps/media/models

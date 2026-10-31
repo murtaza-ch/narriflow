@@ -132,7 +132,7 @@ describe("render command graph transport", () => {
 });
 
 // This test is deliberately runnable in the pinned Linux image too:
-// bun test apps/worker/src/render-command-transport.test.ts
+// bun test apps/media/src/render-command-transport.test.ts
 // It compiles a schema-valid document rather than manufacturing a large argv.
 test("a schema-valid 64-scene composition executes a production graph above Linux MAX_ARG_STRLEN", async () => {
 	const { editorDocumentSchema } = await import("@narriflow/validators");

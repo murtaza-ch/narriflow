@@ -30,3 +30,9 @@ apps/worker/models/
 .scratch/api-extraction/browser*/
 
 .scratch/final-review-2026-10-30/live/
+
+# Ephemeral native media runtime and Python caches
+apps/media/.venv/
+apps/media/models/
+**/__pycache__/
+**/*.pyc

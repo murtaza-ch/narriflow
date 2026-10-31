@@ -1,0 +1,27 @@
+{
+  "date": "2026-10-31",
+  "cloudflareAccountId": "5359f28d385b8632c3abee12d1f5b011",
+  "worker": "narriflow-platform-gates",
+  "workerVersion": "7ba455f2-dd39-4fad-b438-26970ca392a9",
+  "compatibilityDate": "2026-10-30",
+  "httpStatus": 200,
+  "results": {
+    "webCrypto": {
+      "ok": false,
+      "error": "Pbkdf2 failed: iteration counts above 100000 are not supported (requested 600000).",
+      "ms": 0
+    },
+    "nodeCrypto": {
+      "ok": false,
+      "error": "Pbkdf2 failed: iteration counts above 100000 are not supported (requested 600000).",
+      "ms": 0
+    },
+    "noble": {
+      "ok": true,
+      "ms": 0
+    }
+  },
+  "probeSourceSha256": "dc09d5f6dea06a145b8151008d183e151b4757e80a432b299a812a4940749456",
+  "passcodeModuleSha256": "dbd468f0367e4988d19aec749ec9943e943553aa4aa240facca29750f55492a1",
+  "limits": "One protected production-runtime correctness probe, not a latency percentile or load/cost gate. Workers Date.now is frozen during CPU work; ms=0 does not measure hashing cost."
+}
