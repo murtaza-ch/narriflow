@@ -1,3 +1,4 @@
+import { appendZoomRuleWake } from "./zoom-rule-wakes";
 import { refreshZoomConnectionToken, ZoomTokenRefreshError } from "./zoom-token-refresh";
 import { readExecutionAdmission, assertExecutionAdmissionOpen } from "./execution-admission";
 import { operationFingerprint } from "./operation-receipt";
@@ -97,30 +98,42 @@ export class ZoomService {
     const row = await db().zoomConnection.findFirst({ where: { id, workspaceId: scope.workspaceId } });
     if (!row) throw new ZoomError("zoom_connection_unavailable");
     if (row.userId !== scope.actorUserId && !workspaceAllowsCapability(actor, "workspace.manage")) throw new ZoomError("zoom_connection_forbidden");
-    const sealed = await this.revokeConnection(id);
-    if (sealed) {
-      try { await this.api().revoke(this.cipher().open(sealed)); }
+    const revoked = await this.revokeConnection(id);
+    if(revoked?.dispatchIds.length)await (this.deps.register??deliverExecutionDispatches)(revoked.dispatchIds);
+    if (revoked?.sealed) {
+      try { await this.api().revoke(this.cipher().open(revoked.sealed)); }
       catch { console.warn(JSON.stringify({ level: "warn", message: "zoom_provider_revoke_failed", connectionId: id })); }
     }
   }
 
   private async revokeConnection(id: string, before?: Date, onlyUnknown=false) {
     return db().$transaction(async (tx) => {
+      await readExecutionAdmission(tx);
+      // A connection belongs to one Workspace, whose hard rule budget is10.
       // Match the rule-then-connection order used by intake and rule saves.
       await tx.$queryRaw`SELECT "id" FROM "AutopilotRule" WHERE "zoomConnectionId" = ${id}::uuid ORDER BY "id" FOR UPDATE`;
       await tx.$queryRaw`SELECT "id" FROM "ZoomConnection" WHERE "id" = ${id}::uuid FOR UPDATE`;
       const connection = await tx.zoomConnection.findUnique({ where: { id } });
-      if (!connection || connection.revokedAt || (onlyUnknown&&!connection.refreshOutcomeUnknown) || (before && connection.authorizedAt > before)) return null;
-      await tx.zoomConnection.update({ where: { id }, data: { revokedAt: this.now(), accessTokenEncrypted: null, refreshTokenEncrypted: null, expiresAt: null, refreshClaimId:null,refreshLeaseExpiresAt:null,refreshStartedAt:null } });
+      if (!connection || (onlyUnknown&&!connection.refreshOutcomeUnknown) || (before && connection.authorizedAt > before)) return null;
       const rules = await tx.autopilotRule.findMany({ where: { zoomConnectionId: id }, select: { id: true } });
-      await tx.autopilotRule.updateMany({ where: { zoomConnectionId: id }, data: { status: "paused", pauseKind: "zoom_connection", claimToken: null, leaseExpiresAt: null, lastError: "Zoom access was revoked. Reconnect Zoom, then resume this rule." } });
-      for (const rule of rules) await pauseGrantsWhoseRuleChanged(tx, rule.id);
+      if(connection.revokedAt){
+        const dispatchIds:string[]=[];
+        for(const rule of rules){const wave=await appendZoomRuleWake(tx,rule.id,{repairOnly:true});if(wave)dispatchIds.push(wave.dispatchId);}
+        return {sealed:null,dispatchIds};
+      }
+      await tx.zoomConnection.update({ where: { id }, data: { revokedAt: this.now(), accessTokenEncrypted: null, refreshTokenEncrypted: null, expiresAt: null, refreshClaimId:null,refreshLeaseExpiresAt:null,refreshStartedAt:null } });
+      await tx.autopilotRule.updateMany({ where: { zoomConnectionId: id }, data: { generation:{increment:1},status: "paused", pauseKind: "zoom_connection", claimToken: null, leaseExpiresAt: null, lastError: "Zoom access was revoked. Reconnect Zoom, then resume this rule." } });
+      const dispatchIds:string[]=[];
+      for (const rule of rules){await pauseGrantsWhoseRuleChanged(tx,rule.id);const wave=await appendZoomRuleWake(tx,rule.id);if(wave)dispatchIds.push(wave.dispatchId);}
       await flushWorkspaceEvents(tx);
-      return connection.accessTokenEncrypted;
+      return {sealed:connection.accessTokenEncrypted,dispatchIds};
     });
   }
 
-  async revokeNotifiedConnection(id:string,before:Date):Promise<void>{await this.revokeConnection(id,before);}
+  async revokeNotifiedConnection(id:string,before:Date):Promise<void>{
+    const result=await this.revokeConnection(id,before);
+    if(result?.dispatchIds.length)await (this.deps.register??deliverExecutionDispatches)(result.dispatchIds);
+  }
 
   async acceptWebhook(input: { rawBody: string; timestamp: string | null; signature: string | null }) {
     const config = this.config();
