@@ -133,6 +133,7 @@ enum DubStatus {
   processing
   completed
   failed
+  unknown
 }
 
 enum ClipAspectRatio {

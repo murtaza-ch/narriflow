@@ -3162,7 +3162,7 @@ export class WorkflowRunLifecycle {
         where: {
           projectId: attempt.projectId,
           workflowAttemptId: attempt.attemptId,
-          status: "failed",
+          status: { in: ["failed", "unknown"] },
         },
       }),
     ]);

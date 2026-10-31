@@ -70,6 +70,7 @@ const dubBadgeStatus: Record<
 > = {
   completed: "completed",
   failed: "failed",
+  unknown: "failed",
   processing: "processing",
   queued: "pending",
 };
@@ -77,6 +78,7 @@ const dubBadgeStatus: Record<
 const dubStatusLabel: Record<ClipDubSnapshot["status"], string> = {
   completed: "Completed",
   failed: "Failed",
+  unknown: "Dubbing outcome needs review",
   processing: "Processing",
   queued: "Queued",
 };
