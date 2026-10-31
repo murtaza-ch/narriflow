@@ -1,3 +1,4 @@
+import { assertExecutionDatabaseTestTarget } from "./execution-db-test-support";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { PrismaPg } from "@prisma/adapter-pg";
@@ -11,8 +12,9 @@ dbDescribe("Source Audio Processing Usage admission", () => {
   let db: PrismaClient;
   const users: string[] = [], projects: string[] = [];
   beforeAll(() => {
-    if (!url || new URL(url).hostname !== "ep-wispy-field-b5wyn9o3.c-7.us-east-2.aws.neon.tech") throw new Error("Source admission gates require the isolated branch");
-    db = new PrismaClient({ adapter: new PrismaPg({ connectionString: url, max: 5 }), transactionOptions: { maxWait: 10_000, timeout: 30_000 } });
+    assertExecutionDatabaseTestTarget(url, process.env.SERVERLESS_TEST_DATABASE_SCHEMA ?? "public");
+    const schema = process.env.SERVERLESS_TEST_DATABASE_SCHEMA ?? "public";
+    db = new PrismaClient({ adapter: new PrismaPg({ connectionString: url, max: 5 }, { schema }), transactionOptions: { maxWait: 10_000, timeout: 30_000 } });
   });
   afterAll(async () => {
     await db.sourceRefundNeed.deleteMany({ where: { projectId: { in: projects } } });

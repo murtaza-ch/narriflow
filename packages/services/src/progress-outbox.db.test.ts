@@ -1,3 +1,4 @@
+import { assertExecutionDatabaseTestTarget } from "./execution-db-test-support";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@prisma/client";
@@ -19,7 +20,7 @@ suite("Durable progress delivery and revocation", () => {
   let projectId: string;
   let extraUsers: string[] = [];
   beforeAll(async () => {
-    if (!url || new URL(url).hostname !== "ep-wispy-field-b5wyn9o3.c-7.us-east-2.aws.neon.tech") throw new Error("Progress gates require the isolated branch");
+    assertExecutionDatabaseTestTarget(url, process.env.SERVERLESS_TEST_DATABASE_SCHEMA ?? "public");
     const schema = process.env.SERVERLESS_TEST_DATABASE_SCHEMA ?? "public";
     if (schema !== "public" && !/^serverless_execution_test_[a-z0-9]+$/.test(schema)) throw new Error("Unsafe progress gate schema");
     database = new PrismaClient({ adapter: new PrismaPg({ connectionString: url, max: 4 }, { schema }), transactionOptions: { timeout: 20_000 } });

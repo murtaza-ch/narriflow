@@ -1,3 +1,4 @@
+import { assertExecutionDatabaseTestTarget } from "./execution-db-test-support";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@prisma/client";
@@ -15,7 +16,7 @@ dbDescribe("Exact Workflow execution commands", () => {
   let db: PrismaClient;
   const users: string[] = [], subjects: string[] = [], receipts: string[] = [];
   beforeAll(async () => {
-    if (!url || new URL(url).hostname !== "ep-wispy-field-b5wyn9o3.c-7.us-east-2.aws.neon.tech") throw new Error("Only the isolated serverless gate branch is allowed");
+    assertExecutionDatabaseTestTarget(url, process.env.SERVERLESS_TEST_DATABASE_SCHEMA ?? "public");
     const schema = process.env.SERVERLESS_TEST_DATABASE_SCHEMA ?? "public";
     if (schema !== "public" && !/^serverless_execution_test_[a-z0-9]+$/.test(schema)) throw new Error("Only disposable execution schemas are allowed");
     db = new PrismaClient({ adapter: new PrismaPg({ connectionString: url, max: 4 }, { schema }), transactionOptions: { timeout: 60_000, maxWait: 30_000 } });

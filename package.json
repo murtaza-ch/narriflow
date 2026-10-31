@@ -32,7 +32,8 @@
     "test:mcp:e2e": "bun --cwd apps/api ../../packages/mcp-core/scripts/e2e-clients.ts",
     "audit:production": "bun audit --production --audit-level=high",
     "clean": "turbo run clean && rm -rf .turbo node_modules",
-    "test:mcp:integration": "bun test packages/mcp-core/src apps/mcp/src apps/api/src/integration-admission-parity.test.ts apps/api/src/domains/integrations/mcp.test.ts apps/api/src/domains/integrations/mcp-configuration.test.ts apps/api/src/domains/integrations/mcp-upload-http.test.ts apps/api/src/domains/integrations/mcp-upload-handoff.test.ts apps/api/src/domains/integrations/mcp-continuation-principal.test.ts"
+    "test:mcp:integration": "bun test packages/mcp-core/src apps/mcp/src apps/api/src/integration-admission-parity.test.ts apps/api/src/domains/integrations/mcp.test.ts apps/api/src/domains/integrations/mcp-configuration.test.ts apps/api/src/domains/integrations/mcp-upload-http.test.ts apps/api/src/domains/integrations/mcp-upload-handoff.test.ts apps/api/src/domains/integrations/mcp-continuation-principal.test.ts",
+    "test:execution:db": "bun packages/services/scripts/run-execution-db-tests.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.2",
