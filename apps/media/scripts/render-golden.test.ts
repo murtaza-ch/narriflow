@@ -48,7 +48,7 @@ beforeAll(async () => {
   const fingerprint = await collectRuntimeFingerprint({ repoRoot: REPO_ROOT, lock: loadLock() });
   const { fixtureToolchainId } = await import("./check-render-environment");
   await stageFixtures({ manifest: loadInputs(fixtureDir).manifest, toolchainId: fixtureToolchainId(fingerprint), ids: ["talk-720p"], cacheDir, pin: true, manifestPath: join(fixtureDir, "manifest.json") });
-});
+}, 120_000);
 
 afterAll(async () => {
   await rm(work, { recursive: true, force: true });
@@ -131,7 +131,7 @@ describe("pinned environment", () => {
 
   test("the Dockerfile pins exactly what the lock records", () => {
     const lock = loadLock();
-    const docker = readFileSync(resolve(import.meta.dir, "..", "Dockerfile"), "utf8");
+    const docker = readFileSync(resolve(import.meta.dir, "..", "images", "Dockerfile"), "utf8");
     for (const image of Object.values(lock.images)) expect(docker).toContain(`${image.ref.replace("docker.io/", "")}@${image.digest}`);
     const linux = lock.platforms["linux-x64"]!;
     for (const [name, version] of Object.entries(linux.apt.direct)) expect(docker).toContain(`${name}=${version}`);

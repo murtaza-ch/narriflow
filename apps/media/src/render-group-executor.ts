@@ -1,13 +1,4 @@
-/**
- * Render Group execution on a replica.
- *
- * A Clip Render run is one parent Workflow Run. Its coordinator attempt admits
- * the frozen partition and waits for settlement; it never encodes. Each replica
- * claims whole Render Groups (one clip and export configuration) through
- * fenced leases, renders one group at a time on its single CPU lane, and
- * persists with that group's token. Several replicas therefore finish
- * different groups of the same project concurrently.
- */
+/** Executes one already acquired Render Group. The caller injects signed lifecycle commands; this module never chooses another job or settles its parent. */
 import { RenderGroupAttemptLost, type ClaimedRenderGroupAttempt, type RenderGroupSettlement } from "@narriflow/services/render-group-contract";
 import { WorkflowAttemptLost, workflowFailureFromUnknown, type WorkflowAttemptContext, type WorkflowAttemptRef } from "@narriflow/services/workflow-attempt-contract";
 import type { RenderGroupLifecycle } from "@narriflow/services";

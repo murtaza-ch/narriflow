@@ -1,0 +1,32 @@
+# Native media execution
+
+The TypeScript renderer, FFmpeg compiler, caption code, normalized probe, process owner, layout analysis, preview graphs, audio extraction, dub mux and export archive builder live here. Composition and caption policy still come from the shared packages.
+
+`tasks/clip-render-attempt-runtime.ts` requires domain reads, fenced writes, scoped storage and stock-media resolution as ports. Its native defaults contain no database, Redis, queue claim or parent-settlement implementation. `executeRenderGroup` consumes one already acquired group. The signed executor-control adapter supplies these ports.
+
+Both Modal images use `runtime-lock.json` and the same Dockerfile. The render profile includes detector wheels, the pinned model and caption fonts. The lean profile omits those payloads. Python stays at 3.13.5; Modal must not inject a different interpreter. The tested deployment SDK is `modal==1.2.6`.
+
+The Python process supervisor bounds input and output, propagates cancellation, kills detached native descendants, and strips PostgreSQL credentials from child environments. Its lifetime pipe also stops media if the calling Python wrapper is killed. Linux subreaping handles descendants whose Bun parent has already exited.
+
+## Local verification
+
+```sh
+bun run --cwd apps/media typecheck
+bun test apps/media/src apps/media/scripts
+PYTHONPATH=apps/media/python uv run --python 3.13.5 --no-project python -m unittest discover -s apps/media/python/tests -v
+```
+
+Native tests require FFmpeg, fontconfig and the model at `apps/media/models/face_yunet.onnx`. Download only the immutable source recorded in `runtime-lock.json` and verify its SHA-256. Model bytes are ignored locally and are baked into the render image from that same pin. Golden fixture documents, evidence, expectations and source pins are unchanged by the move.
+
+`probe-cli.ts` reads one bounded JSON object from stdin with an absolute local `sourcePath`, then emits the existing normalized probe. Python acquisition uses this CLI instead of parsing ffprobe independently.
+
+## Image verification
+
+`modal_app.py` registers `verify_render_runtime` and `verify_lean_runtime`. They verify the actual image and return its fingerprint. They carry no domain/provider secrets. Both scale to zero and have one verification container as their cap. Production functions must also use atomic executor acquisition, because Modal can reschedule crashed containers even when function retries are zero.
+
+```sh
+uv run --project apps/media --extra deploy modal run apps/media/modal_app.py::verify_render_runtime
+uv run --project apps/media --extra deploy modal run apps/media/modal_app.py::verify_lean_runtime
+```
+
+These commands require authenticated Modal access. Image verification and Linux golden/crash gates must pass before the cutover; local macOS parity does not establish Linux parity.
