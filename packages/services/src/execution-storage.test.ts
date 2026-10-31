@@ -145,3 +145,14 @@ test("abort suppresses only exact NoSuchUpload and changed part receipts never c
   expect(methods).toEqual(["DELETE", "DELETE", "GET"]);
   client.destroy();
 });
+
+test("all immutable private input namespaces retain exact If-Match signing, while publication provider pulls are URL-only and deadline bounded",async()=>{
+ const now=new Date("2026-10-31T00:00:00Z"),storage=createExecutionStorage(config,{now:()=>now}),id=crypto.randomUUID();
+ const window={leaseExpiresAt:new Date(now.getTime()+60000),operationDeadlineAt:new Date(now.getTime()+30000)};
+ for(const storageKey of [`execution-inputs/1/generated/${id}/2/${id}.json`,`execution-inputs/1/publication/${id}/2/${id}.json`,`projects/${id}/preparations/${id}/${id}.json`,`projects/${id}/render-groups/${id}/${id}.json`]){
+  const grant=await storage.signInput({storageKey,etag:'"exact"',byteLength:2},window);expect(new URL(grant.url).searchParams.get("X-Amz-SignedHeaders")).toBe("host;if-match");expect(grant.headers).toEqual({"If-Match":'"exact"'});
+ }
+ await expect(storage.signInput({storageKey:`projects/${id}/private/unassigned.json`,etag:'"exact"',byteLength:2},window)).rejects.toMatchObject({code:"storage_assignment_invalid"});
+ const pull=await storage.signProviderPullRead({...smallObject,etag:'"exact"'},window);expect(new URL(pull.url).searchParams.get("X-Amz-SignedHeaders")).toBe("host");expect(new URL(pull.url).searchParams.get("X-Amz-Expires")).toBe("30");expect(pull).not.toHaveProperty("headers");
+ await expect(storage.signProviderPullRead({...smallObject,storageKey:"foreign/private.mp4",etag:'"exact"'},window)).rejects.toMatchObject({code:"storage_assignment_invalid"});storage.close();
+});

@@ -59,3 +59,8 @@ test("publication capsules admit only a server planned exact key and inspect its
  const prior=calls;await expect(storage.inspect({storageKey:key.replace("/2/","/../"),byteLength:2,sha256})).rejects.toMatchObject({code:"execution_input_reference_invalid"});expect(calls).toBe(prior);
  missing=true;expect(await storage.inspect({storageKey:key,byteLength:2,sha256})).toBeNull();
 });
+
+test("writer and signer share every current immutable input namespace",async()=>{
+ const id=crypto.randomUUID(),storage=createPrivateJsonStorage(config,{client:{async send(){return {ETag:'"sealed"',ContentLength:2,ContentType:"application/json",Metadata:{"execution-input-sha256":sha256}};}} as unknown as S3Client});
+ for(const key of [`execution-input/frozen-source.json`,`execution-inputs/1/generated/${id}/1/${id}.json`,`execution-inputs/1/publication/${id}/1/${id}.json`,`projects/${id}/preparations/${id}/${id}.json`,`projects/${id}/render-groups/${id}/${id}.json`])expect(await storage.inspect({storageKey:key,byteLength:2,sha256})).toEqual({etag:'"sealed"',byteLength:2,sha256});
+});

@@ -82,11 +82,11 @@ export function createLocalDeviceExecutionDependencies(): ExecutionRouteDependen
     async execute(command, verified, bindings, request) {
       const value = command.action === "acquire" ? command.reference : command.fence.reference;
       await reference(request, value);
-      return createWorkerExecutor(value, bindings).control.execute({ command, verifiedRequest: verified });
+      return (await createWorkerExecutor(value, bindings)).control.execute({ command, verifiedRequest: verified });
     },
     async transfer(command, verified, bindings, request) {
       await reference(request, command.fence.reference);
-      return createWorkerExecutor(command.fence.reference, bindings).transfer.execute({ command, verifiedRequest: verified });
+      return (await createWorkerExecutor(command.fence.reference, bindings)).transfer.execute({ command, verifiedRequest: verified });
     },
   };
 }

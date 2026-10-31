@@ -7,6 +7,7 @@ import { getOutboundProbeService } from "@narriflow/services/outbound-probe-runt
 import { getOutboundDeliveryService } from "@narriflow/services/outbound-delivery-runtime";
 import { getClipSelectionControl } from "@narriflow/services/clip-selection-runtime";
 import { getGeneratedMediaExecution } from "@narriflow/services/generated-media-runtime";
+import { getClipPreparationService } from "@narriflow/services/clip-preparation-runtime";
 import { getBillingReconciliation } from "@narriflow/services/billing-reconciliation-runtime";
 import { createWorkspaceNotificationDispatcher, isCurrentNotificationTarget } from "@narriflow/services/notification-dispatch";
 import { prepareIngestSourceExecution } from "@narriflow/services/ingest-source-execution";
@@ -23,12 +24,13 @@ import { createWorkerExecutionScheduler } from "./scheduler";
 import type { WorkflowCommandHandler, WorkflowHandlerRegistry } from "./protocol";
 import { createNativeOperationDriver } from "./native-operation-driver";
 
-function nativeDomain(reference: ExecutionDispatchReference) {
+async function nativeDomain(reference: ExecutionDispatchReference) {
   if (reference.subject.kind === "native_validation") return getNativeValidationService();
   if (reference.subject.kind === "thumbnail_frame") return getThumbnailFrameExecution();
   if (reference.subject.kind === "outbound_probe") return getOutboundProbeService();
   if (reference.subject.kind === "outbound_delivery") return getOutboundDeliveryService();
   if (reference.subject.kind === "generated_media") return getGeneratedMediaExecution();
+  if (reference.subject.kind === "clip_preparation") return getClipPreparationService();
   throw new NonRetryableError("unsupported_native_subject");
 }
 
@@ -62,13 +64,13 @@ export function workflowDomainRegistry(bindings: ApiWorkerBindings): WorkflowHan
       if (!target) return { type: "complete", disposition: "superseded" };
       const deadline = executionDeadlineSchema.parse({ reference: target.reference, attemptToken: attempt.attemptToken,
         kind: record.deadlineKind, observedDeadlineAt: record.observedDeadlineAt.toISOString() });
-      const { control } = createWorkerExecutor(target.reference, bindings);
+      const { control } = await createWorkerExecutor(target.reference, bindings);
       const outcome = await control.expireDeadline({ deadline, deliveryId: record.reference.dispatchId });
       return outcome.kind === "sleep" ? { type: "sleep", until: outcome.dueAt.toISOString() }
         : { type: "complete", disposition: outcome.kind === "superseded" ? "superseded" : "terminal" };
     }
     return createNativeOperationDriver({ now: Date.now, prepare: async reference => {
-      if (reference.subject.kind !== "ingest_job") return nativeDomain(reference).prepareExecution(reference);
+      if (reference.subject.kind !== "ingest_job") return (await nativeDomain(reference)).prepareExecution(reference);
       const job = await database.ingestJob.findUnique({ where: { id: reference.subject.id }, select: { jobType: true, payload: true } });
       if (!job) return { kind: "superseded" };
       const environment = readServiceEnvironment();
@@ -76,7 +78,7 @@ export function workflowDomainRegistry(bindings: ApiWorkerBindings): WorkflowHan
       const toolchainFingerprint = (local ? environment.MEDIA_LOCAL_FETCH_TOOLCHAIN_FINGERPRINT : environment.MEDIA_FETCH_TOOLCHAIN_FINGERPRINT) ?? "";
       return prepareIngestSourceExecution({ database, domain: getIngestJobLifecycle(), reference, toolchainFingerprint, executionKind: local ? "local_fetch" : "modal_execution" });
     },
-      expire: (deadline, deliveryId) => createWorkerExecutor(deadline.reference, bindings).control.expireDeadline({ deadline, deliveryId }),
+      expire: async (deadline, deliveryId) => (await createWorkerExecutor(deadline.reference, bindings)).control.expireDeadline({ deadline, deliveryId }),
       deliver: ids => Promise.all(ids.map(id => getExecutionDispatch().deliver(id))),
     })(command);
   };
@@ -154,7 +156,7 @@ export function workflowDomainRegistry(bindings: ApiWorkerBindings): WorkflowHan
   };
   return { project_progress: { maintenance: progress, workflow_event: progress },
     import_pipeline: { ingest_job: native },
-    operation_driver: { native_validation: native, thumbnail_frame: native, outbound_probe: native, outbound_delivery: native, generated_media: native, ingest_job: native,
+    operation_driver: { native_validation: native, thumbnail_frame: native, outbound_probe: native, outbound_delivery: native, generated_media: native, clip_preparation: native, ingest_job: native,
       workflow_run: workflow, clip_selection_window: selectionWindow, workspace_billing: billing, completion_callback: notification, webhook_subscription: notification,
       workspace_event: notificationEvents, maintenance: notificationEvents } };
 }

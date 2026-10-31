@@ -1,3 +1,4 @@
+import { isExecutionInputKey } from "./execution-input-key";
 import {
   AbortMultipartUploadCommand, CompleteMultipartUploadCommand, CopyObjectCommand,
   CreateMultipartUploadCommand, GetObjectCommand, HeadObjectCommand,
@@ -144,8 +145,18 @@ export function createExecutionStorage(config: ExecutionStorageConfig, options: 
       }));
       return { url, headers: { "If-Match": frozen.etag }, expiresAt: ttl.expiresAt };
     },
+
+    /** Only publication's server-selected committed immutable assignment enters
+     * here. Downstream providers cannot send an If-Match header. The exact
+     * assigned key cannot be overwritten; all native reads still sign If-Match. */
+    async signProviderPullRead(frozen:ExecutionStorageObject&{etag:string},window:ExecutionGrantWindow):Promise<Omit<ExecutionStorageGrant,"headers">>{
+      object(frozen);if(!etag(frozen.etag))throw new ExecutionStorageError("storage_assignment_invalid");
+      const ttl=expiry(window);
+      const url=await provider(()=>getSignedUrl(client,new GetObjectCommand({Bucket:bucket,Key:frozen.storageKey}),{expiresIn:ttl.seconds,signingDate:ttl.issuedAt}));
+      return {url,expiresAt:ttl.expiresAt};
+    },
     async signInput(frozen: ExecutionPinSource, window: ExecutionGrantWindow): Promise<ExecutionStorageGrant> {
-      if (!key(frozen.storageKey) || !frozen.storageKey.startsWith("execution-input/") || !etag(frozen.etag) ||
+      if (!key(frozen.storageKey) || !isExecutionInputKey(frozen.storageKey) || !etag(frozen.etag) ||
         !Number.isSafeInteger(frozen.byteLength) || frozen.byteLength < 1 || frozen.byteLength > 16 * 1024 * 1024) throw new ExecutionStorageError("storage_assignment_invalid");
       const ttl = expiry(window);
       const url = await provider(() => getSignedUrl(client, new GetObjectCommand({ Bucket: bucket, Key: frozen.storageKey, IfMatch: frozen.etag }), {

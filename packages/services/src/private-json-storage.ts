@@ -1,3 +1,4 @@
+import { isExecutionInputKey } from "./execution-input-key";
 import {
 	GetObjectCommand,
 	HeadObjectCommand,
@@ -8,15 +9,6 @@ import { FetchHttpHandler } from "@smithy/fetch-http-handler";
 import type { ExecutionStorageConfig } from "./execution-storage";
 import { WorkflowFailure } from "./workflow-attempt-contract";
 
-const uuid = "[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}";
-const capsuleKey = new RegExp(
-	`^projects/${uuid}/(?:preparations|render-groups)/${uuid}/${uuid}\\.json$`,
-);
-const publicationKey = new RegExp(
-	`^execution-inputs/[1-9][0-9]*/publication/${uuid}/[1-9][0-9]*/${uuid}\\.json$`,
-);
-const allowedKey = (key: string) =>
-	capsuleKey.test(key) || publicationKey.test(key);
 const maximum = 16_777_216;
 export interface PrivateJsonObject {
 	storageKey: string;
@@ -112,7 +104,7 @@ export function createPrivateJsonStorage(
 	}
 	async function read(reference: PrivateJsonObject): Promise<Uint8Array> {
 		if (
-			!allowedKey(reference.storageKey) ||
+			!isExecutionInputKey(reference.storageKey) ||
 			!etag(reference.etag) ||
 			!/^[a-f0-9]{64}$/.test(reference.sha256) ||
 			!Number.isSafeInteger(reference.byteLength) ||
@@ -181,7 +173,7 @@ export function createPrivateJsonStorage(
 		sha256: string;
 	}) {
 		if (
-			!allowedKey(plan.storageKey) ||
+			!isExecutionInputKey(plan.storageKey) ||
 			!Number.isSafeInteger(plan.byteLength) ||
 			plan.byteLength < 1 ||
 			plan.byteLength > maximum ||
@@ -220,7 +212,7 @@ export function createPrivateJsonStorage(
 		inspect,
 		async write(storageKey, bytes) {
 			if (
-				!allowedKey(storageKey) ||
+				!isExecutionInputKey(storageKey) ||
 				!(bytes instanceof Uint8Array) ||
 				!bytes.byteLength ||
 				bytes.byteLength > maximum
