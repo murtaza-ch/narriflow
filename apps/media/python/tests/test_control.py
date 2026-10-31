@@ -4,6 +4,7 @@ import json
 import subprocess
 import sys
 import time
+from pathlib import Path
 from datetime import datetime, timezone
 import unittest
 
@@ -102,7 +103,13 @@ class SignedControlTests(unittest.TestCase):
             self.assertEqual(stopped.exception.code, 'media_execution_cancelled')
             self.assertLess(time.monotonic() - began, 35)
         self.assertEqual(actions, ['acquire', 'process-start', 'renew'])
-        state = subprocess.run(['ps', '-p', str(children[0]), '-o', 'stat='], capture_output=True).stdout.strip()
+        if sys.platform == 'linux':
+            try:
+                state = Path(f'/proc/{children[0]}/stat').read_bytes().rsplit(b')', 1)[1].split()[0]
+            except FileNotFoundError:
+                state = b''
+        else:
+            state = subprocess.run(['ps', '-p', str(children[0]), '-o', 'stat='], capture_output=True).stdout.strip()
         self.assertTrue(not state or state.startswith(b'Z'))
 
     def test_duplicate_invocations_get_distinct_owners_and_neither_busy_response_starts_work(self):

@@ -37,7 +37,7 @@ dbDescribe("Exact Workflow execution commands", () => {
     await db.$disconnect();
   }, 60_000);
 
-  async function fixture(stage = "moment_detection", admitted = true, hasAudio = true) {
+  async function fixture(stage = "moment_detection", admitted = true, hasAudio = true, executionDeadline?: Date) {
     const user = await db.user.create({ data: { clerkId: `exact-workflow-gate:${crypto.randomUUID()}` } }); users.push(user.id);
     const workspace = await db.workspace.create({ data: { ownerUserId: user.id, name: "Exact workflow gate" } });
     const project = await db.project.create({ data: { workspaceId: workspace.id, title: "Exact workflow gate", sourceMediaUrl: "r2://gate/video.mp4", sourceStorageKey: "gate/video.mp4", ingestStatus: "ready" } });
@@ -70,7 +70,8 @@ dbDescribe("Exact Workflow execution commands", () => {
     const reference = (await db.$transaction(tx => lifecycle.dispatchRunWithinTransaction(tx, run.id))).reference;
     const token = crypto.randomUUID(), owner = crypto.randomUUID();
     if (admitted) await db.executionAttempt.create({ data: { attemptToken: token, dispatchId: reference.dispatchId, deploymentEpoch: epoch, generation: run.generation,
-      inputHash: reference.inputHash, functionName: stage, operationDeadlineAt: new Date(Date.now() + 10 * 60_000) } });
+      inputHash: reference.inputHash, functionName: stage, operationDeadlineAt: executionDeadline ?? new Date(Date.now() + 10 * 60_000),
+      createdAt: executionDeadline ? new Date(executionDeadline.getTime() - 60_000) : undefined } });
     const control = createExecutorControl({ database: db, subjectKind: "workflow_run", domain: lifecycle, deliverWakes: async () => {} });
     function verified() {
       const deliveryId = crypto.randomUUID(); receipts.push(deliveryId);
@@ -266,9 +267,8 @@ dbDescribe("Exact Workflow execution commands", () => {
   }, 120_000);
 
   test("unacquired operation deadline fails without inventing a charged Workflow attempt", async () => {
-    const f = await fixture();
     const expired = new Date(0);
-    await db.executionAttempt.update({ where: { attemptToken: f.token }, data: { createdAt: new Date(-60_000), operationDeadlineAt: expired } });
+    const f = await fixture("moment_detection", true, true, expired);
     const deliveryId = crypto.randomUUID(); receipts.push(deliveryId);
     expect((await withServiceEnvironment({}, () => f.control.expireDeadline({ deadline: { reference: f.reference, attemptToken: f.token, kind: "operation", observedDeadlineAt: expired.toISOString() }, deliveryId }))).kind).toBe("expired");
     expect(await db.workflowRun.findUniqueOrThrow({ where: { id: f.run.id } })).toMatchObject({ status: "failed", attemptCount: 0, attemptId: null, leaseOwner: null });

@@ -158,6 +158,10 @@ class ExecutionControlClient:
         self._timeout, self._attempts, self._delay = timeout_seconds, max_attempts, retry_delay_seconds
 
     def command(self, command: Mapping[str, Any], *, deadline_monotonic: float | None = None) -> CommandResult:
+        return self._post(TARGET, command, _disposition, deadline_monotonic=deadline_monotonic)
+
+    def _post(self, target: str, command: Mapping[str, Any], parse: Callable[[object], Mapping[str, Any]],
+              *, deadline_monotonic: float | None = None) -> CommandResult:
         try:
             body = json.dumps(command, separators=(',', ':'), sort_keys=True, allow_nan=False).encode()
             if len(body) > COMMAND_MAX_BYTES:
@@ -165,7 +169,7 @@ class ExecutionControlClient:
         except (ValueError, TypeError, UnicodeError):
             raise ExecutionControlError('execution_command_invalid') from None
         signature = sign_execution_request(key_id=self._key_id, key=self._key, audience='executor-control',
-                                           method='POST', target=TARGET, body=body,
+                                           method='POST', target=target, body=body,
                                            timestamp=int(self._clock()), delivery_id=str(uuid4()))
         headers = {'Content-Type': 'application/json', 'Accept': 'application/json', 'Cache-Control': 'no-store',
                    'X-Execution-Signature': json.dumps(signature, separators=(',', ':'))}
@@ -181,7 +185,7 @@ class ExecutionControlClient:
                 raise ExecutionControlError('execution_command_deadline')
             began, began_wall = time.monotonic(), self._clock()
             try:
-                response = self._transport(self._origin, TARGET, body, headers, min(self._timeout, remaining))
+                response = self._transport(self._origin, target, body, headers, min(self._timeout, remaining))
             except (OSError, TimeoutError, http.client.HTTPException):
                 response = None
             received, received_wall = time.monotonic(), self._clock()
@@ -191,7 +195,7 @@ class ExecutionControlClient:
                 if received >= end or received_wall - initial_wall >= 40 or len(response.body) > MAX_RESPONSE_BYTES:
                     raise ExecutionControlError('execution_command_deadline')
                 try:
-                    disposition = _disposition(json.loads(response.body))
+                    disposition = parse(json.loads(response.body))
                     server_time = next(value for name, value in response.headers.items() if name.lower() == 'x-execution-server-time')
                     # The current TLS response header is fresh even if the body
                     # is an old inbox receipt. Add the whole RTT and the API's
@@ -279,6 +283,19 @@ class ExecutorSession:
             raise
         if result.disposition['disposition'] in {'expired', 'superseded', 'cancelled', 'failed', 'completed', 'released', 'retry_due'}:
             self.cancel_event.set()
+        return result
+
+    def transfer(self, action: str, **fields: Any) -> CommandResult:
+        from .transfer import TARGET as TRANSFER_TARGET, validate_transfer_command, parse_transfer_disposition, check_transfer_response
+        self.assert_live()
+        if {'action', 'fence'} & fields.keys():
+            raise ExecutionControlError('execution_transfer_invalid')
+        command = {'action': action, 'fence': self.fence, **fields}
+        validate_transfer_command(command)
+        result = self._client._post(TRANSFER_TARGET, command, parse_transfer_disposition,
+                                   deadline_monotonic=min(self._deadline, self._lease))
+        self.assert_live()
+        check_transfer_response(command, result)
         return result
 
     def on_process_start(self, pid: int):

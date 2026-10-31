@@ -1,3 +1,4 @@
+import { assertExecutionDatabaseTestTarget } from "./execution-db-test-support";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@prisma/client";
@@ -11,8 +12,9 @@ dbDescribe("Targeted thumbnail validation", () => {
   let db: PrismaClient;
   const users: string[] = [], subjects: string[] = [], receipts: string[] = [];
   beforeAll(() => {
-    if (!url || new URL(url).hostname !== "ep-wispy-field-b5wyn9o3.c-7.us-east-2.aws.neon.tech") throw new Error("Only isolated serverless gate branch is allowed");
-    db = new PrismaClient({ adapter: new PrismaPg({ connectionString: url, max: 4 }), transactionOptions: { timeout: 60_000 } });
+    const schema = process.env.SERVERLESS_TEST_DATABASE_SCHEMA ?? "public";
+    assertExecutionDatabaseTestTarget(url, schema);
+    db = new PrismaClient({ adapter: new PrismaPg({ connectionString: url, max: 4 }, { schema }), transactionOptions: { timeout: 60_000 } });
   });
   afterAll(async () => {
     const ids = (await db.executionDispatch.findMany({ where: { subjectId: { in: subjects } }, select: { id: true } })).map(row => row.id);

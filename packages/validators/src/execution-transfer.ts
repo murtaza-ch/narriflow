@@ -30,7 +30,7 @@ export const executionTransferDispositionSchema = z.discriminatedUnion("disposit
   z.strictObject({ disposition: z.literal("work_package"), functionName: executionMediaFunctionSchema, inputHash: sha256Hex,
     input: z.discriminatedUnion("kind", [
       z.strictObject({ kind: z.literal("inline"), command: z.json().refine(value => new TextEncoder().encode(JSON.stringify(value)).byteLength <= 32 * 1024, "Inline input exceeds32KiB") }),
-      grant.extend({ kind: z.literal("object"), storageKey: z.string().max(1024), etag: z.string().max(160), byteLength: z.number().int().positive().max(EXECUTION_TRANSFER_PART_BYTES) }),
+      grant.extend({ kind: z.literal("object"), storageKey: z.string().max(1024), etag: z.string().max(160), byteLength: z.number().int().positive().max(EXECUTION_TRANSFER_PART_BYTES), sha256: sha256Hex }),
     ]),
     sources: z.array(grant.extend({ name: z.string().regex(/^[a-z][a-z0-9_]{0,159}$/), storageKey: z.string().max(1024), etag: z.string().max(160), byteLength, sha256: sha256Hex.optional() })).max(16),
     outputs: z.array(executionOutputDescriptorSchema.extend({ artifactId: z.string().uuid(), contentTypes: z.array(mime).min(1).max(16) })).max(16) }),
