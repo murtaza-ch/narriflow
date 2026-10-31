@@ -1942,6 +1942,7 @@ model ExportBundle {
   workflowRun WorkflowRun       @relation(fields: [workflowRunId], references: [id], onDelete: Cascade)
 
   @@index([status, createdAt])
+  @@index([status, expiresAt, id])
 }
 
 model ReviewRound {

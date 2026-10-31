@@ -18,8 +18,8 @@ ALTER TABLE "ExportBundle" ADD CONSTRAINT "ExportBundle_execution_input_tuple" C
 ALTER TABLE "ExportBundle" ADD CONSTRAINT "ExportBundle_execution_bounds" CHECK ("deploymentEpoch">0 AND "operationDeadlineAt">"createdAt" AND "status" IN ('queued','building','completed','failed','expired'));
 CREATE FUNCTION protect_export_bundle_execution() RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN
-  IF (NEW."operationId",NEW."workflowRunId",NEW."manifest",NEW."createdAt") IS DISTINCT FROM
-     (OLD."operationId",OLD."workflowRunId",OLD."manifest",OLD."createdAt") THEN
+  IF (NEW."operationId",NEW."workflowRunId",NEW."manifest",NEW."createdAt",NEW."expiresAt") IS DISTINCT FROM
+     (OLD."operationId",OLD."workflowRunId",OLD."manifest",OLD."createdAt",OLD."expiresAt") THEN
     RAISE EXCEPTION 'Export Bundle admission is immutable' USING ERRCODE='23514';
   END IF;
   IF NEW."deploymentEpoch" IS DISTINCT FROM OLD."deploymentEpoch" THEN
@@ -49,3 +49,4 @@ BEGIN
   RETURN NEW;
 END $$;
 CREATE TRIGGER "ExportBundle_execution_immutable" BEFORE UPDATE ON "ExportBundle" FOR EACH ROW EXECUTE FUNCTION protect_export_bundle_execution();
+CREATE INDEX "ExportBundle_status_expiresAt_id_idx" ON "ExportBundle"("status","expiresAt",id);

@@ -30,7 +30,13 @@ async function assignedReferenceHeld(tx: Tx, artifact: ExecutionArtifact, now: D
       return Boolean(job && await projectHeld(tx, job.workflowRun.projectId, now));
     }
     case "workflow_run": {
-      const job = await tx.workflowRun.findUnique({ where: { id }, select: { projectId: true } });
+      const job = await tx.workflowRun.findUnique({ where: { id }, select: { projectId: true, stage: true, status: true } });
+      if (job?.stage === "export_bundle" && artifact.role === "export_bundle") {
+        const bundle = await tx.exportBundle.findUnique({ where: { workflowRunId: id }, select: { status: true, storageKey: true, expiresAt: true } });
+        if (!bundle) return false;
+        if (["queued", "building"].includes(bundle.status) && ["queued", "running", "waiting"].includes(job.status)) return true;
+        return bundle.status === "completed" && bundle.storageKey === artifact.storageKey && (!bundle.expiresAt || bundle.expiresAt > now);
+      }
       return Boolean(job && await projectHeld(tx, job.projectId, now));
     }
     case "generated_media": {

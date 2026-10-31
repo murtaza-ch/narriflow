@@ -39,3 +39,29 @@ one disposable PostgreSQL constraint case passes5 assertions. API composition,
 authoritative bundle/campaign finalization, actual Linux/Modal and large archive
 gates remain required. Dubbing still needs its accepted-row/provider checkpoint
 replacement. No bundle or dub function is registered by this checkpoint.
+
+The Export Bundle coordinator now prepares a metadata-only native execution from
+the exact accepted Workflow Run. It commits the absolute watchdog before private
+input I/O, seals one capsule, and reuses one Generic Attempt per generation. ZIP
+commit settles the bundle, campaign items and Workflow Run in one transaction.
+Retries preserve the capsule and accepted deadline; lease release, failure and
+expiry project the same business state. Current actor access and frozen variant
+identity are rechecked before execution and publication.
+
+Bundle publication also records its exact expiry obligation. Expiry validates the
+observed timestamp, clears the public ZIP reference and admits the known-key
+cleanup together. Cleanup replays retain the original measured artifact facts;
+active references and outstanding grants remain held. The accepted expiry is
+immutable and has a bounded safety-page index.
+
+The new bundle PostgreSQL cases pass10/86, including concurrent preparation,
+failed input PUT with an unowned watchdog, cleanup/adoption exclusion, real control
+and transfer assignment, atomic publication, lost acknowledgment replay, stale
+deadline refusal and charged retry accounting. Bundle, Workflow, Ingest and Clip
+Preparation regressions pass65/529 across four fresh-schema suites. The existing
+fenced bundle command regression passes, the nine native/archive cases pass34
+assertions, and both actual host Python/Bun wrappers pass. Services and media
+typechecks pass. These are local controlled-port gates; API/Modal registration,
+actual Linux/Modal and large archive memory gates remain open. Dubbing replacement
+is still in progress. The database runner now rejects nonexistent named suites
+before migration so a mistyped gate cannot silently run fewer files.
