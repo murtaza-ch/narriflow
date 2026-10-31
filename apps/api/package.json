@@ -29,7 +29,8 @@
     "test:progress:workerd": "node --experimental-strip-types scripts/run-progress-runtime-gates.ts",
     "test:workflows:workerd": "node --experimental-strip-types scripts/run-workflow-runtime-gates.ts",
     "test:storage:workerd": "node --experimental-strip-types scripts/run-storage-runtime-gates.ts",
-    "test:artifacts:workerd": "node --experimental-strip-types scripts/run-artifact-storage-gates.ts"
+    "test:artifacts:workerd": "node --experimental-strip-types scripts/run-artifact-storage-gates.ts",
+    "probe:image-provider:workerd": "node --experimental-strip-types scripts/run-image-provider-memory-probe.ts"
   },
   "dependencies": {
     "@ffprobe-installer/ffprobe": "2.1.2",

@@ -28,3 +28,5 @@ Generated image publication now stages an immutable private source and parks its
 Drive token and metadata calls now use fixed-origin Worker fetch, refuse redirects and keep bounded responses. Actual Drive downloads retain the native pinned transport. [Drive boundary evidence](../evidence/drive-worker-boundary-20261031.json).
 
 Remaining: connect signed HTTP/Workflow/Modal runtime and durable provider/maintenance commands, move callback delivery off service-native URL-guard, clear the final import audit, and run deployed/resource gates. This ticket remains claimed.
+
+The configured generated-image response cap is not yet cleared for edge memory. Local workerd completed all tested sizes through 100,000,000 bytes while reporting heap above the documented edge limit; this is evidence that local success cannot certify that limit. Provider fetch/decode/staging must move into bounded native execution or pass an equivalent deployed resource gate without reducing the cap. [Measured memory report](../evidence/image-provider-memory-20261031.md).
