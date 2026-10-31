@@ -47,7 +47,7 @@ suite("Scoped executor transfer authority", () => {
     const signature = await signExecutionRequest({ keyId: "public", key, audience: "executor-control", method: "POST", target, body, timestamp, deliveryId });
     return verifyExecutionRequest({ signature, keyRing: new Map([["public", key]]), audience: "executor-control", method: "POST", target, body, nowSeconds: timestamp });
   }
-  async function fixture(outputs: import("@narriflow/validators/execution-transfer").ExecutionOutputDescriptor[] = [{ role: "source_audio", contentType: "audio/webm", maxBytes: 10 * 1024 ** 3, bindingHash: "b".repeat(64) }]) {
+  async function fixture(outputs: import("@narriflow/validators/execution-transfer").ExecutionOutputDescriptor[] = [{ role: "source_audio", contentType: "audio/webm", maxBytes: 10 * 1024 ** 3, bindingHash: "b".repeat(64) }], sourcePlan?: Pick<import("./execution-transfer").ExecutionPreparedPackage, "sources" | "initialSourceNames">) {
     const user = await db.user.create({ data: { clerkId: `transfer-gate:${crypto.randomUUID()}` } }); users.push(user.id);
     const workspace = await db.workspace.create({ data: { ownerUserId: user.id, name: "Transfer gate" } });
     const project = await db.project.create({ data: { workspaceId: workspace.id, title: "Transfer gate", sourceMediaUrl: "r2://gate/source" } });
@@ -64,7 +64,7 @@ suite("Scoped executor transfer authority", () => {
     const fence = { reference: dispatch.reference, attemptToken, owner };
     const start = { action: "process-start", fence };
     await control.execute({ command: start, verifiedRequest: await verified(start, "/api/execution/command") });
-    const provider = { creates: 0, grants: 0, completes: 0, aborts: 0, loseCompleteAck: false };
+    const provider = { creates: 0, grants: 0, completes: 0, aborts: 0, loseCompleteAck: false, sourceKeys: [] as string[] };
     let created: ExecutionStorageObject | null = null, sealed = false;
     const storage = {
       async findUnfinished() { return []; },
@@ -75,16 +75,31 @@ suite("Scoped executor transfer authority", () => {
       async head() { return sealed && created ? { key: created.storageKey, contentType: created.contentType, byteLength: created.byteLength, etag: '"sealed"' } : null; },
       async abort() { provider.aborts++; },
       async signInput(): Promise<never> { throw new Error("No object input in this fixture"); },
-      async signSource(): Promise<never> { throw new Error("No source download in this fixture"); },
+      async signSource(source: { storageKey: string }) {
+        if (!sourcePlan) throw new Error("No source download in this fixture");
+        provider.sourceKeys.push(source.storageKey);
+        return { url: "https://private-storage.test/".padEnd(8192, "x"), headers: { "If-Match": '"source"' }, expiresAt: new Date(Date.now()+60_000) };
+      },
       async signSourceRange(): Promise<never> { throw new Error("No source pin in this fixture"); },
     };
-    const transfer = createExecutionTransfer({ database: db, authority: control, storage, resolvePackage: async () => ({ input: { kind: "inline", command: { kind: "source", mediaId: "public" } }, sources: [],
+    const transfer = createExecutionTransfer({ database: db, authority: control, storage, resolvePackage: async () => ({ input: { kind: "inline", command: { kind: "source", mediaId: "public" } }, sources: [], ...sourcePlan,
       outputs }) });
     const call = async (command: unknown, deliveryId?: string) => transfer.execute({ command, verifiedRequest: await verified(command, "/api/execution/transfer", deliveryId) });
     const work = await call({ action: "work-package", fence });
     if (work.disposition !== "work_package" || !work.outputs[0]) throw new Error("Expected assigned work package");
     return { fence, call, provider, artifactId: work.outputs[0].artifactId, job, work };
   }
+  test("large frozen asset inventories fit the envelope with one initial grant and exact on-demand reads", async () => {
+    const sources = Array.from({ length: 200 }, (_, index) => ({ name: `source_${index}`, storageKey: `projects/frozen/assets/${index}`, etag: '"source"', byteLength: 1000, sha256: "a".repeat(64) }));
+    const f = await fixture(undefined, { sources, initialSourceNames: ["source_0"] });
+    expect(f.work.sources.map(source => source.name)).toEqual(["source_0"]);
+    expect(new TextEncoder().encode(JSON.stringify(f.work)).byteLength).toBeLessThan(64*1024);
+    expect(f.provider.sourceKeys).toEqual([sources[0]!.storageKey]);
+    const read = await f.call({ action: "source-read", fence: f.fence, sourceId: "source_199" });
+    expect(read).toMatchObject({ disposition: "source_read", sourceId: "source_199", object: { storageKey: sources[199]!.storageKey, etag: '"source"', byteLength: 1000, sha256: "a".repeat(64) } });
+    expect(f.provider.sourceKeys).toEqual([sources[0]!.storageKey,sources[199]!.storageKey]);
+    await expect(f.call({ action: "source-read", fence: f.fence, sourceId: "foreign_source" })).rejects.toMatchObject({ code: "artifact_invalid" });
+  });
   test("server-assigned previews and peaks preserve the one sibling-key storage contract", async () => {
     const f = await fixture([{ role: "clip_preview", contentType: "video/mp4", maxBytes: 512*1024**2, bindingHash: "b".repeat(64) },
       { role: "preview_peaks", contentType: "application/json", maxBytes: 256*1024, bindingHash: "b".repeat(64) }]);

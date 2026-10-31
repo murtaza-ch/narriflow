@@ -104,3 +104,19 @@ detector work. This gate found Bun's numeric `statfs` overflow on Modal's large
 virtual filesystem; bigint reads fix resource admission while retaining the same
 scratch cap. Actual Function, live HTTP/domain integration, long-source transfer
 and full-batch throughput acceptance remain required. Ticket14 stays claimed.
+
+Render work packages now sign only the server-selected original source initially.
+All frozen asset descriptors remain in the verified private capsule, and exact
+source IDs obtain fresh scoped grants on demand. A PostgreSQL transfer case with
+200 assets and maximum-length grant URLs stays within the64KiB envelope and
+refuses a foreign source ID. An actual Bun/FFmpeg render loads the object-backed
+capsule and reads the selected200th library track with zero other asset downloads.
+That test caught and fixed public URL validation rejecting the renderer's own
+scoped audio URL. Only exact frozen owned URLs pass that native port; pasted media
+retains the public URL policy.
+
+Unfinished preparation returns an explicit dependency wait with its already
+registered absolute watchdog ID, without a Generic Attempt or native token.
+The two affected PostgreSQL suites pass25 cases/217 assertions; five actual
+native operation cases,43 layout cases/281 assertions and media/services
+typechecks pass. Parent Workflow integration remains in progress.

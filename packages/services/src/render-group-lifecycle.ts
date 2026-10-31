@@ -56,7 +56,7 @@ export interface RenderGroupArtifactResult {
   dispatchIds: readonly string[];
   renderGroup: RenderGroupOutcome;
 }
-export type RenderGroupInputPreparation = { kind: "ready"; group: RenderGroup; parent: WorkflowRun; deadlineAt: Date; dispatchIds: string[] }
+export type RenderGroupInputPreparation = { kind: "ready"; group: RenderGroup; parent: WorkflowRun; deadlineAt: Date; deadlineDispatchId: string; dispatchIds: string[] }
   | { kind: "terminal" | "superseded"; dispatchIds: string[] } | { kind: "sleep"; dueAt: Date; dispatchIds: string[] };
 
 /** The column value for a render's caption diagnostics: null when nothing was left out. */
@@ -607,7 +607,7 @@ export class RenderGroupLifecycle {
       }
       if (group.nextAttemptAt && group.nextAttemptAt > now) return { kind: "sleep", dueAt: group.nextAttemptAt, dispatchIds };
     }
-    return { kind: "ready", group: { ...group, operationDeadlineAt: deadlineAt }, parent, deadlineAt, dispatchIds };
+    return { kind: "ready", group: { ...group, operationDeadlineAt: deadlineAt }, parent, deadlineAt, deadlineDispatchId: watchdog.reference.dispatchId, dispatchIds };
   }
 
   /** The watchdog commits before any private input PUT or provider metadata I/O. */

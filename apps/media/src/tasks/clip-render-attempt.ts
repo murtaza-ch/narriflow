@@ -16,7 +16,6 @@ import {
 	type ClipCompositionPlanInput,
 	type CompositionMode,
 } from "@narriflow/composition-plan";
-import { assertPublicHttpUrl } from "@narriflow/services/url-policy";
 import { decodeFrozenClipEditorDocument } from "@narriflow/services/clip-editor-document-codec";
 import { motionRenderAnalyticsMetadata, type MotionRenderAnalyticsMetadata } from "@narriflow/services/motion-render-analytics";
 import { hasFeature } from "@narriflow/validators";
@@ -332,6 +331,7 @@ export interface ClipRenderAttemptAdapters {
 		}>;
 	};
 	optionalAssets: {
+		assertUrlAllowed(url: string): void;
 		downloadUrlToFile(
 			url: string,
 			path: string,
@@ -2514,7 +2514,7 @@ async function resolveClipAudioAssets(input: {
 	if (musicUrl) {
 		let musicUrlSafe = false;
 		try {
-			assertPublicHttpUrl(musicUrl);
+			currentRenderAdapters().optionalAssets.assertUrlAllowed(musicUrl);
 			musicUrlSafe = true;
 		} catch {
 			diagnoseOptionalAssetFallback({
@@ -2629,7 +2629,7 @@ async function resolveClipAudioAssets(input: {
 
 		let sfxUrlSafe = false;
 		try {
-			assertPublicHttpUrl(sfxUrl);
+			currentRenderAdapters().optionalAssets.assertUrlAllowed(sfxUrl);
 			sfxUrlSafe = true;
 		} catch (error) {
 			rethrowOptionalAssetFailure(error);
@@ -3000,7 +3000,7 @@ async function renderClipGroup(input: {
 		let safeUserBrollUrl: string | null = null;
 		if (userBrollUrl) {
 			try {
-				assertPublicHttpUrl(userBrollUrl);
+				currentRenderAdapters().optionalAssets.assertUrlAllowed(userBrollUrl);
 				safeUserBrollUrl = userBrollUrl;
 			} catch {
 				diagnoseOptionalAssetFallback({
@@ -3718,7 +3718,7 @@ async function renderClipGroup(input: {
 		) {
 			let imageUrlSafe = false;
 			try {
-				assertPublicHttpUrl(studioEdits.background.imageUrl);
+				currentRenderAdapters().optionalAssets.assertUrlAllowed(studioEdits.background.imageUrl);
 				imageUrlSafe = true;
 			} catch {
 				diagnoseOptionalAssetFallback({

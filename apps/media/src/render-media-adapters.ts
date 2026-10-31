@@ -1,5 +1,6 @@
 import { createWriteStream as productionCreateWriteStream, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { assertPublicHttpUrl } from "@narriflow/services/url-policy";
 import { Readable } from "node:stream";
 import { pipeline as productionPipeline } from "node:stream/promises";
 import { assertResponseContentLength, createByteLimitTransform, guardedFetch as productionGuardedFetch, RemoteFetchError, UnsafeUrlError } from "./outbound-transport";
@@ -100,7 +101,7 @@ export function createNativeRenderAdapters(input: {
 
  const defaults: NativeRenderAdapters = {
  workerProcess, facts: processRenderFactCache,
- optionalAssets: { downloadUrlToFile, validateOptionalMedia, resolveBrollCutaways, getCachedBrollAssetPath, saveBrollAssetToCache, probeMediaDurationSec, probeBackgroundImageDecodable },
+ optionalAssets: { assertUrlAllowed: assertPublicHttpUrl, downloadUrlToFile, validateOptionalMedia, resolveBrollCutaways, getCachedBrollAssetPath, saveBrollAssetToCache, probeMediaDurationSec, probeBackgroundImageDecodable },
  analysis: { extractFaceDetectionSegment, detectFacePath: (input) => detectors.detectFacePath(input), detectMultiFacePath: (input) => detectors.detectMultiFacePath(input), detectSceneCuts: (input) => detectors.detectSceneCuts(input), detectPipPath: (input) => detectors.detectPipPath(input) },
  remoteMedia: { createWriteStream: productionCreateWriteStream, guardedFetch: productionGuardedFetch, pipeline: productionPipeline },
  workspace: productionRenderWorkspaceAdapter, clock: productionRenderClockAdapter,

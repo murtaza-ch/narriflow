@@ -354,6 +354,19 @@ suite("Clip Preparation authority and publication", () => {
     expect(await db.workflowRun.findUniqueOrThrow({ where: { id: f.run.id } })).toMatchObject({ status: "waiting", attemptId: null, leaseOwner: null, attemptCount: 0 });
   });
 
+  test("an unfinished preparation returns an event dependency with its registered absolute deadline and no native token", async () => {
+    const f = await fixture(), reference = f.references[0]!;
+    const waiting = await renderService(f).prepareExecution(reference);
+    if (waiting.kind !== "dependency_wait") throw new Error("Expected preparation dependency");
+    const deadline = await db.executionDispatch.findUniqueOrThrow({ where: { id: waiting.deadlineDispatchId } });
+    expect(deadline).toMatchObject({ subjectId: reference.subject.id, kind: "operation_driver", deadlineKind: "operation", dueAt: waiting.dueAt, observedDeadlineAt: waiting.dueAt });
+    expect(waiting.dispatchIds).toContain(deadline.id);
+    expect(waiting).not.toHaveProperty("attemptToken");
+    expect(await db.executionAttempt.count({ where: { dispatch: { subjectId: reference.subject.id } } })).toBe(0);
+    expect(await db.executionDispatch.count({ where: { subjectId: reference.subject.id, kind: "modal_execution" } })).toBe(0);
+    expect(await db.renderGroupExecution.count({ where: { groupId: reference.subject.id } })).toBe(0);
+  });
+
   test("concurrent ready group commands adopt one capsule and admit one native generation without a coordinator lease", async () => {
     const f = await fixture(), execution = await native(f);
     await execution.send(execution.commit(execution.preview)); await execution.send(execution.commit(execution.peaks)); await execution.send(execution.commit(execution.manifest));
