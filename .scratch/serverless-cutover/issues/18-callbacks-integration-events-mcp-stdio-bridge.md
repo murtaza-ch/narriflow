@@ -4,7 +4,7 @@
 
 **Blocked by:** 04, 05, 06, 09
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 **Spec:** [Serverless cutover](../spec.md)
 
@@ -13,4 +13,12 @@
 
 ## Evidence
 
-Pending implementation and verification.
+The authenticated stdio bridge is implemented. Its spawned-child tests use the
+actual remote MCP server and poisoned local database/Redis settings. They cover
+modern and legacy envelopes, Apps resources and CSP metadata, confirmation,
+Tasks, per-call credential revocation, streamed cancellation, EOF cleanup and
+sanitized upstream failures.
+
+[Stdio bridge evidence](../evidence/mcp-stdio-20261031.json).
+Guarded outbound callback delivery and its acceptance gates remain required.
+This ticket remains claimed.

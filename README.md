@@ -316,9 +316,8 @@ Copy [`apps/mcp/.env.example`](apps/mcp/.env.example) to `apps/mcp/.env`.
 
 Minimum values:
 
-- `DATABASE_URL`
 - `NARRIFLOW_API_KEY` set to a scoped Business-workspace key created in **Settings -> Developer access**.
-- `NARRIFLOW_URL`: the API origin (`http://localhost:4000` locally). `WEB_ORIGIN` is where the human links it returns point.
+- `NARRIFLOW_URL`: the API origin (`http://localhost:4000` locally), using HTTPS when hosted.
 
 Run the stdio server with:
 
@@ -326,10 +325,11 @@ Run the stdio server with:
 bun run dev:mcp
 ```
 
-The stdio server is optional and is not started by the root `bun run dev`
-command. It requires `NARRIFLOW_API_KEY` because it acts as the workspace
-identified by that key. The remote HTTP endpoint at `/mcp` is served by the
-API instead and accepts OAuth or scoped workspace API keys.
+The optional stdio bridge forwards MCP messages to the API's `/mcp` endpoint.
+The API authenticates every request and owns tools, resources, Apps, Tasks and
+human links. The bridge needs no database or Redis credentials. The root
+`bun run dev` command does not start it. Remote clients can also connect to
+`/mcp` directly with OAuth or scoped workspace API keys.
 
 Available tools:
 

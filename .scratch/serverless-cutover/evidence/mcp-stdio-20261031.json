@@ -1,0 +1,56 @@
+{
+  "recordedAt": "2026-10-31T02:44:59.378457+00:00",
+  "scope": "Ticket18 stdio bridge only; outbound callbacks and deployed MCP cutover gates remain pending",
+  "runtime": "Bun1.4.2 spawned child; actual SDK2.4.0 remote Streamable HTTP handler and NarriflowMcpServer fixture",
+  "commands": {
+    "bun test apps/mcp/src": {
+      "passed": 9,
+      "failed": 0,
+      "assertions": 52
+    },
+    "bun run --cwd apps/mcp typecheck": "passed",
+    "bunx biome check apps/mcp/src/index.ts apps/mcp/src/index.test.ts apps/mcp/package.json": "passed"
+  },
+  "checks": [
+    "Modern discovery and tool bodies, private _meta and zero-TTL private cache fields preserved",
+    "Apps HTML/resource CSP metadata preserved",
+    "Multi-round input_required requestState and accepted inputResponses preserved",
+    "Tasks extension negotiation and get/update/cancel preserved, including nested eventual private result",
+    "Credential revocation enforced by next remote call, then restoration succeeds without restarting child",
+    "Legacy2025-11-25 initialize controls HTTP protocol header and legacy response envelope",
+    "Legacy cancellation forwarded unchanged",
+    "Concurrent modern RPC remains usable while another streams; cancellation aborts only targeted HTTP request",
+    "EOF aborts outstanding streams and exits child0",
+    "503 produces correlated sanitized JSON-RPC error; upstream body and credential absent from stdout/stderr",
+    "All remote calls carry configured Bearer; poisoned DB/DIRECT_URL/Redis/Clerk environment causes no local authentication/database access"
+  ],
+  "bundle": {
+    "tool": "esbuild, platform=node format=esm bundled index.ts",
+    "inputCount": 174,
+    "bytes": 1465157,
+    "forbiddenRuntimeInputs": [],
+    "rejectedPatterns": [
+      "packages/services/",
+      "packages/db/",
+      "packages/mcp-core/",
+      "redis",
+      "prisma",
+      "sharp",
+      "argon2"
+    ]
+  },
+  "sources": [
+    "https://github.com/modelcontextprotocol/typescript-sdk/blob/main/packages/client/src/client/streamableHttp.ts",
+    "https://github.com/modelcontextprotocol/typescript-sdk/blob/main/docs/migration/support-2026-07-28.md",
+    "https://github.com/modelcontextprotocol/typescript-sdk/blob/main/docs/serving/stdio.md",
+    "https://github.com/modelcontextprotocol/modelcontextprotocol/blob/main/docs/specification/2026-07-28/basic/transports/stdio.mdx",
+    "https://github.com/DePasqualeOrg/mcp-http-stdio-bridge",
+    "https://github.com/punkpeye/mcp-proxy"
+  ],
+  "approach": "Raw transport forwarding preserves server-defined extensions. The bridge does not rebuild a local catalog or authenticate a principal locally. SDK requestSignal closes modern streams; legacy notifications remain intact. Redirects are disabled.",
+  "sha256": {
+    "apps/mcp/src/index.ts": "7f24ad9c840cbd19f833e4762a700ee056e968c41d42f2e8dd2c2e56a443c4ec",
+    "apps/mcp/src/index.test.ts": "e08f9530b018835021870f9777d49177edd433aa94ea2debdaad374c12493def",
+    "apps/mcp/package.json": "0973906fadb75501e37787cc236c1644a7e26cd8e4d23261c742f17932b1ff62"
+  }
+}
