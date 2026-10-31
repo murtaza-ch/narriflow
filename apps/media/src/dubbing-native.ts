@@ -70,7 +70,12 @@ export async function executeDubbing(raw: unknown, options: DubbingNativeOptions
     if (result.outcome !== "completed") return failed("speech", result);
     try { const probe = await productionWorkerProcessModule.inspectMedia({ sourcePath: audioPath, signal: options.signal, deadlineMs: 30_000, localOnly: true });
       if (!probe.hasAudio) throw Error();
-    } catch { options.signal.throwIfAborted();return failed("speech", { outcome: "unknown" }); }
+    } catch (error) {
+      options.signal.throwIfAborted();
+      const code = error && typeof error === "object" && "code" in error && typeof error.code === "string" && /^[a-z][a-z0-9_]{0,99}$/.test(error.code) ? error.code : "dub_audio_invalid";
+      console.warn(JSON.stringify({ level: "warn", message: "dubbing_audio_inspection_unconfirmed", errorCode: code }));
+      return failed("speech", { outcome: "unknown" });
+    }
     await options.request({ operation: "publish", stage: "audio", path: audioPath });
   }
   const outputPath = join(work, "dub.mp4");

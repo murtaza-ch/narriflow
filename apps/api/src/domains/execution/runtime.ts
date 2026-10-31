@@ -20,6 +20,8 @@ import { createRenderGroupExecution } from "@narriflow/services/render-group-exe
 import { getRenderGroupExecutionService } from "@narriflow/services/render-group-runtime";
 import { getExportBundleExecution } from "@narriflow/services/export-bundle-runtime";
 import { createExportBundleExecution } from "@narriflow/services/export-bundle-execution";
+import { getDubbingExecution } from "@narriflow/services/dubbing-execution-runtime";
+import { createDubbingExecution } from "@narriflow/services/dubbing-execution";
 import { createPublicationExecutionControl } from "@narriflow/services/publication-execution-control";
 import { getPublicationExecution } from "@narriflow/services/publication-execution-runtime";
 import { createGeneratedMediaExecution } from "@narriflow/services/generated-media-control";
@@ -52,7 +54,10 @@ export async function createWorkerExecutor(reference: ExecutionDispatchReference
   const storage = createExecutionStorage({ accountId: required("R2_ACCOUNT_ID"), bucket: required("R2_BUCKET"),
     accessKeyId: required("R2_ACCESS_KEY_ID"), secretAccessKey: required("R2_SECRET_ACCESS_KEY") });
   const common = { database, storage, artifacts: createAssignedArtifactStorage(bindings.MEDIA_BUCKET), deliverWakes: deliverExecutionDispatches };
-  if (reference.subject.kind === "workflow_run") return createExportBundleExecution({ ...common, domain: getWorkerExportBundleService(bindings.MEDIA_BUCKET) });
+  if (reference.subject.kind === "workflow_run") {
+    const execution = await getWorkerWorkflowRunService(reference, bindings.MEDIA_BUCKET);
+    return execution.stage === "dubbing" ? createDubbingExecution({ ...common, domain: execution.domain }) : createExportBundleExecution({ ...common, domain: execution.domain });
+  }
   if (reference.subject.kind === "social_publication") return createPublicationExecutionControl({ ...common, environment,
     domain: getPublicationExecution() });
   if (reference.subject.kind === "render_group") return createRenderGroupExecution({ ...common,
@@ -74,6 +79,18 @@ export function getWorkerRenderGroupService(bucket: R2Bucket) {
 
 export function getWorkerExportBundleService(bucket: R2Bucket) {
   return getExportBundleExecution(workerArtifactHead(bucket));
+}
+
+/** Route by the current accepted row. A caller cannot select a paid stage or
+ * swap a Bundle reference into a Dub factory. Each Core then locks its exact
+ * generation, epoch, input and native owner before any mutation or grant. */
+export async function getWorkerWorkflowRunService(reference: ExecutionDispatchReference, bucket: R2Bucket) {
+  if (reference.subject.kind !== "workflow_run") throw new ExecutorControlError("invalid_reference");
+  const database = getPrismaClient();if (!database) throw new ExecutorControlError("epoch_unavailable");
+  const row = await database.workflowRun.findUnique({ where: { id: reference.subject.id }, select: { stage: true } });
+  if (row?.stage === "dubbing") return { stage: "dubbing" as const, domain: getDubbingExecution(workerArtifactHead(bucket)) };
+  if (row?.stage === "export_bundle") return { stage: "export_bundle" as const, domain: getWorkerExportBundleService(bucket) };
+  throw new ExecutorControlError("invalid_reference");
 }
 
 function workerArtifactHead(bucket: R2Bucket) {

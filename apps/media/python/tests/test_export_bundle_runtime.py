@@ -24,13 +24,13 @@ class ExportBundleRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_lost_commit_ack_retains_completed_zip_without_delete_or_second_publication(self):
         await self.operation(lost_ack=True)
 
-    async def operation(self,*,lost_ack=False):
+    async def operation(self,*,lost_ack=False,fingerprint="a"*64,enforce_runtime=False):
         run_id,bundle_id,artifact_id=str(uuid4()),str(uuid4()),str(uuid4())
         payload=bytes(range(251))*8356
         entries=[{'variantId':str(uuid4()),'aspectRatio':'9:16','name':f'project/{index+1:03d}-fixture/9x16.mp4','sizeBytes':len(payload)} for index in range(2)]
         sources=[{'variantId':entry['variantId'],'name':'variant_'+entry['variantId'].replace('-',''),'object':{'storageKey':'projects/frozen/'+entry['variantId'],
             'etag':'"'+str(index)+'"','byteLength':len(payload),'sha256':hashlib.sha256(payload).hexdigest()}} for index,entry in enumerate(entries)]
-        raw={'version':1,'kind':'export_bundle','bundleId':bundle_id,'workflowRunId':run_id,'toolchainFingerprint':'a'*64,
+        raw={'version':1,'kind':'export_bundle','bundleId':bundle_id,'workflowRunId':run_id,'toolchainFingerprint':fingerprint,
             'manifest':{'schemaVersion':1,'projectId':str(uuid4()),'operationId':str(uuid4()),'createdAt':'2026-10-31T00:00:00Z','excluded':[],
                 'included':[{'clipId':str(uuid4()),'exportId':str(uuid4()),'editorRevision':1,'files':[entry]} for entry in entries]},'sources':sources}
         root=Path(__file__).resolve().parents[4]
@@ -68,7 +68,11 @@ class ExportBundleRuntimeTests(unittest.IsolatedAsyncioTestCase):
                     assert headers['if-match']==source['object']['etag'];start,end=map(int,headers['range'][6:].split('-'))
                     return TransferResponse(206,{'etag':source['object']['etag'],'content-length':str(end-start+1),'content-range':f'bytes {start}-{end}/{len(payload)}'},payload[start:end+1])
                 uploads.append(bytes(body));return TransferResponse(200,{'ETag':hashlib.md5(body,usedforsecurity=False).hexdigest()},b'')
-        async def verified(*_,**__):return 'a'*64
+        async def verified(session,**options):
+            if enforce_runtime:
+                from narriflow_media.source_runtime import verify_source_runtime
+                return await verify_source_runtime(session,**options)
+            return fingerprint
         session=Session();package=await load_work_package(session)
         with tempfile.TemporaryDirectory() as directory:
             if lost_ack:
@@ -83,3 +87,4 @@ class ExportBundleRuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(archive.read(entries[1]['name']),payload)
             self.assertEqual(json.loads(archive.read('manifest.json')),command['manifest'])
         self.assertEqual({fields['sourceId'] for action,fields in calls if action=='source-read'},{source['name'] for source in sources})
+        return {'nativeStarts':len(starts),'completedObjectsRetained':len(uploads),'sourceBytesTransferred':len(payload)*2,'lostAcknowledgementRetained':lost_ack}
