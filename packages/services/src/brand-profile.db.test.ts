@@ -130,7 +130,7 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
     expect(updates.filter((result) => result.status === "rejected").map((result) => (result as PromiseRejectedResult).reason)).toEqual([expect.any(BrandProfileConflictError)]);
 
     const linkIngest = await projectService.queueLinkIngest({ actorUserId: first.user.id, workspaceId: first.workspace.id }, {
-      url: "https://www.youtube.com/watch?v=brand-profile-db-test",
+      url: "https://www.dropbox.com/s/brand-profile-db-test/video.mp4",
       brandProfileId: profile.id,
       commitToken: randomUUID(),
     });
@@ -155,7 +155,7 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
     await prisma.audioAsset.update({ where: { id: gone.id }, data: { deletedAt: new Date() } });
 
     const intake = (n: number) => projectService.queueLinkIngest({ actorUserId: f.user.id, workspaceId: f.workspace.id }, {
-      url: `https://www.youtube.com/watch?v=brand-audio-${n}`, brandProfileId: profile.id, commitToken: randomUUID(),
+      url: `https://www.dropbox.com/s/brand-audio-${n}/video.mp4`, brandProfileId: profile.id, commitToken: randomUUID(),
     });
     const first = await intake(1);
     const audioOf = async (projectId: string) => (await prisma.project.findUniqueOrThrow({ where: { id: projectId }, select: { brandProfileSnapshot: true } }))
@@ -172,7 +172,7 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
     expect((await audioOf((await intake(2)).project.id)).audio).toEqual({ music: [{ assetId: sting.id, title: "Sting", durationSec: 42 }], sfx: frozen.sfx });
 
     const unbranded = await projectService.queueLinkIngest({ actorUserId: f.user.id, workspaceId: f.workspace.id }, {
-      url: "https://www.youtube.com/watch?v=brand-audio-none", brandProfileId: null, commitToken: randomUUID(),
+      url: "https://www.dropbox.com/s/brand-audio-none/video.mp4", brandProfileId: null, commitToken: randomUUID(),
     });
     expect(await projectService.getProjectBrandAudio(f.scope, unbranded.project.id)).toEqual({ music: [], sfx: [] });
   })));
@@ -196,7 +196,7 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
     // with the same key keeps its identity after the default changes.
     const key = randomUUID();
     const assistantIntake = () => projectService.queueLinkIngest({ actorUserId: f.user.id, workspaceId: f.workspace.id },
-      { url: "https://www.youtube.com/watch?v=brand-default-db-test", commitToken: key },
+      { url: "https://www.dropbox.com/s/brand-default-db-test/video.mp4", commitToken: key },
       { generationContext: { contentPack: buildGenerationContentPack(), languageCode: null }, mutation: { clientIdempotencyKey: key, callerId: `oauth:test:${f.user.id}` } });
     const first = await assistantIntake();
     expect((await prisma.project.findUniqueOrThrow({ where: { id: first.project.id }, select: { brandProfileId: true } })).brandProfileId).toBe(acme.id);
@@ -204,7 +204,7 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
     await brandProfileService.setDefault(f.scope, second.id);
     expect((await assistantIntake()).project.id).toBe(first.project.id);
     await expect(projectService.queueLinkIngest({ actorUserId: f.user.id, workspaceId: f.workspace.id },
-      { url: "https://www.youtube.com/watch?v=brand-foreign-db-test", commitToken: randomUUID(), brandProfileId: other.id })).rejects.toBeInstanceOf(BrandProfileNotFoundError);
+      { url: "https://www.dropbox.com/s/brand-foreign-db-test/video.mp4", commitToken: randomUUID(), brandProfileId: other.id })).rejects.toBeInstanceOf(BrandProfileNotFoundError);
   })));
 
   test("a remembered default never blocks intake after a downgrade removes Brand Profiles", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
@@ -218,12 +218,12 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
     expect(await brandProfileService.getApplicableDefaultId(free)).toBeNull();
     const key = randomUUID();
     const intake = await projectService.queueLinkIngest({ actorUserId: f.user.id, workspaceId: f.workspace.id },
-      { url: "https://www.youtube.com/watch?v=brand-default-after-downgrade", commitToken: key },
+      { url: "https://www.dropbox.com/s/brand-default-after-downgrade/video.mp4", commitToken: key },
       { generationContext: { contentPack: buildGenerationContentPack(), languageCode: null }, mutation: { clientIdempotencyKey: key, callerId: `oauth:test:${f.user.id}` } });
     expect((await prisma.project.findUniqueOrThrow({ where: { id: intake.project.id }, select: { brandProfileId: true } })).brandProfileId).toBeNull();
     // Naming the profile explicitly is still refused by the plan.
     await expect(projectService.queueLinkIngest({ actorUserId: f.user.id, workspaceId: f.workspace.id },
-      { url: "https://www.youtube.com/watch?v=brand-explicit-after-downgrade", commitToken: randomUUID(), brandProfileId: profile.id })).rejects.toMatchObject({ code: "plan_feature_required" });
+      { url: "https://www.dropbox.com/s/brand-explicit-after-downgrade/video.mp4", commitToken: randomUUID(), brandProfileId: profile.id })).rejects.toMatchObject({ code: "plan_feature_required" });
   })));
 
   test("RSS imports freeze the Brand Profile like link intake, so its approval rule gates the clips", bindServiceTestEnvironment(prismaGlobal.bind(async () => {

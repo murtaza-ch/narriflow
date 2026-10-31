@@ -21,6 +21,8 @@ import { readExecutionAdmission } from "@narriflow/services/execution-admission"
 import { createFinishingProducers, isFinishingProducerReference } from "@narriflow/services/generation-finishing-producers";
 import { createPublicationProducers, isPublicationProducerReference } from "@narriflow/services/publication-producers";
 import { getLibraryIndex } from "@narriflow/services/library-index-runtime";
+import { getAutopilotExecution } from "@narriflow/services/autopilot-execution-runtime";
+import { getZoomNotificationExecution } from "@narriflow/services/zoom-execution-runtime";
 import { createWorkspaceNotificationDispatcher, isCurrentNotificationTarget } from "@narriflow/services/notification-dispatch";
 import { prepareIngestSourceExecution } from "@narriflow/services/ingest-source-execution";
 import { getIngestJobLifecycle } from "@narriflow/services/ingest-job-lifecycle-runtime";
@@ -37,6 +39,7 @@ import type { WorkflowCommandHandler, WorkflowHandlerRegistry } from "./protocol
 import { createNativeOperationDriver } from "./native-operation-driver";
 import { createPublicationDriver } from "./publication-driver";
 import { createRenderRunDriver } from "./render-run-driver";
+import { getWorkerMaintenanceRuntime } from "./maintenance-runtime";
 
 async function nativeDomain(reference: ExecutionDispatchReference, bindings: ApiWorkerBindings) {
   if (reference.subject.kind === "native_validation") return getNativeValidationService();
@@ -226,6 +229,22 @@ export function workflowDomainRegistry(bindings: ApiWorkerBindings): WorkflowHan
     if(result.kind==="sleep")return{type:"sleep",until:result.dueAt.toISOString()};
     return{type:"complete",disposition:result.kind==="superseded"?"superseded":"terminal"};
   };
+  const autopilot: WorkflowCommandHandler = async ({ reference }) => {
+    const result = await getAutopilotExecution().run(reference);
+    if (result.kind === "wait") return { type: "wait", until: result.dueAt.toISOString(), deliveryId: reference.dispatchId };
+    if (result.kind === "sleep") return { type: "sleep", until: result.dueAt.toISOString() };
+    return { type: "complete", disposition: result.kind === "superseded" ? "superseded" : "terminal" };
+  };
+  const zoomNotification: WorkflowCommandHandler = async ({ reference }) => {
+    const result = await getZoomNotificationExecution().run(reference);
+    if (result.kind === "wait") return { type: "wait", until: result.dueAt.toISOString(), deliveryId: reference.dispatchId };
+    if (result.kind === "sleep") return { type: "sleep", until: result.dueAt.toISOString() };
+    return { type: "complete", disposition: result.kind === "superseded" ? "superseded" : "terminal" };
+  };
+  const maintenancePage: WorkflowCommandHandler = async ({ reference }) => {
+    const result = await (await getWorkerMaintenanceRuntime()).run(reference);
+    return result.kind === "sleep" ? { type: "sleep", until: result.dueAt.toISOString() } : { type: "complete", disposition: "terminal" };
+  };
   const cleanup: WorkflowCommandHandler = async ({ reference }) => {
     const result = await getMediaCleanupControl().run(reference);
     return result.kind === "wait" ? { type: "wait", until: result.until.toISOString(), deliveryId: reference.dispatchId }
@@ -237,6 +256,7 @@ export function workflowDomainRegistry(bindings: ApiWorkerBindings): WorkflowHan
     deliver: ids => Promise.all(ids.map(id => getExecutionDispatch().deliver(id))),
   });
   const maintenance: WorkflowCommandHandler = async ({ reference }) => {
+    if (/^(?:mt1|rs2|pr1|pw1)\./.test(reference.subject.id)) return maintenancePage({ reference, wake: { type: "start" } });
     if (isFinishingProducerReference(reference)) {
       const database = getPrismaClient();
       if (!database) throw Error("Finishing producer requires a database scope");
@@ -288,5 +308,6 @@ export function workflowDomainRegistry(bindings: ApiWorkerBindings): WorkflowHan
     import_pipeline: { ingest_job: native }, render_run: { workflow_run: render, render_group: render },
     operation_driver: { native_validation: native, thumbnail_frame: native, outbound_probe: native, outbound_delivery: native, generated_media: native, clip_preparation: native, render_group: native, ingest_job: native,
       workflow_run: workflow, clip_selection_window: selectionWindow, workspace_billing: billing, library_index: library, generation_finishing: finishing, notification: emailNotification, media_cleanup: cleanup, social_publication: publication, completion_callback: notification, webhook_subscription: notification,
+      upload_session: maintenancePage, autopilot_rule: autopilot, zoom_notification: zoomNotification,
       workspace_event: notificationEvents, maintenance: notificationEvents } };
 }

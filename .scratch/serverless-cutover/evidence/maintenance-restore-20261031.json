@@ -1,7 +1,9 @@
 {
   "status": "code checkpoint; deployed acceptance pending",
   "factory": "@narriflow/services/execution-maintenance-runtime.createExecutionMaintenanceRuntime",
+  "productionComposition": "apps/api/src/workflows/maintenance-runtime.ts.getWorkerMaintenanceRuntime",
   "registry": ["maintenance/maintenance: mt1, rs2, pr1, pw1", "operation_driver/upload_session"],
+  "scheduled": {"hourlyUtc": "0 * * * *", "dailyUtc": "0 0 * * *", "fenced": "returns before settings, DB scope or runtime construction", "restore": "explicit triggers.crons=[] through closed redispatch"},
   "migration": "20261101010000_execution_maintenance_indexes (025)",
   "verified": {
     "focusedPostgres": {"tests": 59, "assertions": 474},
@@ -9,8 +11,14 @@
     "finalClockPutPrivacySlice": {"tests": 7, "assertions": 75},
     "clockRace": "old now() default fails; actual clock_timestamp insertion default passes",
     "typechecks": ["services including operator", "API"],
+    "productionEmptyPass": {"postgresTests": 1, "assertions": 9, "actualPlanners": "all required domain slots", "providerHttpCalls": 0, "executorAdmissions": 0},
+    "apiInvocation": {"tests": 14, "assertions": 71},
+    "workerd": {"checks": 7, "includes": ["all eleven development RPC methods fence before SQL/DO resources", "actual index hourly/daily scheduled export fences without DB/provider configuration"]},
+    "workerBundle": "Wrangler dry-run and forbidden native/legacy import audit passed",
     "safety": ["empty pass stops", "fenced schedule uses no SQL", "required slots fail closed", "34 captured/deferred future cleanup timers recovered", "lost cleanup parent-wake ACK replays without DELETE", "Project purge waits for actual DELETE ACK", "receipt PUT response loss verifies immutable bytes", "old Upload mutation epoch refused", "each restore PUT fences its exact planned destination"]
   },
   "notRun": ["shared database migration", "shared/candidate bucket cleanup", "bucket inventory", "deployed full restore"],
-  "remaining": ["real Autopilot/Zoom recovery and metadata restore ports from runtime agent", "production factory/registry/Cron composition", "deployed exact cleanup/maintenance/restore acceptance"]
+  "cleanupLatency": "Project purge waits for actual DELETE ACK and preserves an already accepted future object-retained revisit, including an earlier 24-hour retry; it does not promise immediate physical deletion",
+  "primaryReferences": ["https://developers.cloudflare.com/workers/configuration/cron-triggers/", "https://github.com/cloudflare/cloudflare-docs/blob/production/src/content/docs/workers/runtime-apis/handlers/scheduled.mdx"],
+  "remaining": ["deployed exact cleanup/maintenance/restore acceptance"]
 }

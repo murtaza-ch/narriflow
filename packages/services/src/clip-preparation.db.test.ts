@@ -17,6 +17,7 @@ import type { ClipPreparationResult } from "@narriflow/validators/clip-preparati
 import { clipPreparationEngineHash } from "./clip-preparation-policy";
 import { RenderGroupExecutionService, createRenderGroupExecution } from "./render-group-execution";
 import { createRenderInputSnapshot } from "./render-input-snapshot";
+import { renderArtifactBindingHash } from "./render-artifact";
 import { createExecutionStorage } from "./execution-storage";
 
 const url = process.env.SERVERLESS_TEST_DATABASE_URL;
@@ -31,7 +32,7 @@ suite("Clip Preparation authority and publication", () => {
   });
   afterAll(async () => { await db?.$disconnect(); });
 
-  async function fixture(frozenExport = false, snapshotRevision?: number) {
+  async function fixture(frozenExport = false, snapshotRevision?: number, siblingGroup = false) {
     const user = await db.user.create({ data: { clerkId: `clip-preparation:${crypto.randomUUID()}` } });
     const workspace = await db.workspace.create({ data: { name: "Clip preparation gate", ownerUserId: user.id } });
     const epoch = (await db.executionEpoch.findUniqueOrThrow({ where: { id: 1 } })).epoch;
@@ -60,7 +61,13 @@ suite("Clip Preparation authority and publication", () => {
       hookText: "fixture", reasoning: "fixture", category: "hook", viralityScore: 50, hookStrengthScore: 50, emotionalIntensityScore: 50, pacingScore: 50, durationOptimalityScore: 50,
       tiktokScore: 50, youtubeScore: 50, instagramScore: 50, llmProvider: "fixture", llmModel: "fixture" } });
     const references = [];
-    for (const resolution of ["720p", "1080p"]) {
+    if (siblingGroup) {
+      const members = [];
+      for (const aspectRatio of ["ratio_9_16", "ratio_16_9"] as const) members.push(await db.clipRender.create({ data: { clipId: clip.id, workflowRunId: run.id, editorRevision: clip.editorRevision, aspectRatio, resolution: "720p" } }));
+      const group = await db.renderGroup.create({ data: { workflowRunId: run.id, workSetGeneration, clipId: clip.id, deploymentEpoch: epoch,
+        exportIdentity: renderGroupExportIdentity({ clipId: clip.id, exportId: null, editorRevision: clip.editorRevision, resolution: "720p", watermark: true }), members: { create: members.map(member => ({ clipRenderId: member.id })) } } });
+      references.push((await db.$transaction(tx => appendExecutionDispatch(tx, { deploymentEpoch: epoch, generation: 1, kind: "operation_driver", subject: { kind: "render_group", id: group.id }, inputHash: "d".repeat(64), dueAt: group.createdAt }))).reference);
+    } else for (const resolution of ["720p", "1080p"]) {
       const aspectRatio = resolution === "720p" ? "ratio_9_16" as const : "ratio_16_9" as const;
       let exportId: string | null = null, exportVariantId: string | undefined;
       if (frozenExport && resolution === "720p") {
@@ -453,6 +460,78 @@ suite("Clip Preparation authority and publication", () => {
     expect(JSON.stringify(snapshot.assets)).not.toContain(denied.storageKey);
     expect(snapshot.assets.audio.every(asset => asset.object.sha256 === undefined)).toBe(true);
   });
+
+  test("SIGKILL after a current control commit preserves the sibling object and charged start, and a successor receives only the unsettled member", async () => {
+    const f = await fixture(false, undefined, true), preparation = await native(f);
+    await preparation.send(preparation.commit(preparation.preview));await preparation.send(preparation.commit(preparation.peaks));await preparation.send(preparation.commit(preparation.manifest));
+    const service = renderService(f), admitted = await service.prepareExecution(f.references[0]!);
+    if (admitted.kind !== "waiting") throw Error("Expected render admission");
+    const execution = createRenderGroupExecution({ database: db, service, storage: createExecutionStorage({ accountId: "a".repeat(32), bucket: "fixture-render", accessKeyId: "fixture", secretAccessKey: "fixture" }),
+      artifacts: { head: async () => ({ etag: '"render"', contentType: "video/mp4", byteLength: 1024n, sha256: "b".repeat(64) }), readJson: async () => { throw Error("Unexpected JSON"); } }, deliverWakes: async () => {} });
+    const firstFence = { reference: admitted.deadline.reference, attemptToken: admitted.deadline.attemptToken, owner: crypto.randomUUID() };
+    const send = (command: unknown) => execution.control.execute({ command, verifiedRequest: preparation.verified() });
+    const packageFor = (fence: typeof firstFence) => execution.transfer.execute({ command: { action: "work-package", fence }, verifiedRequest: preparation.verified() });
+    const program = `if(process.env.DATABASE_URL||process.env.DIRECT_URL||process.env.PGPASSWORD||process.env.SERVERLESS_TEST_DATABASE_URL)throw Error('database_credential_in_native');
+let raw='';for await(const chunk of process.stdin){raw+=chunk;if(raw.length>65536)throw Error('input_limit');}
+const input=JSON.parse(raw);const response=await fetch(input.url,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(input.command)});
+const result=await response.json();if(response.status!==200||result.disposition!=='committed')throw Error('commit_unconfirmed');
+console.log(JSON.stringify(result));if(!input.exitAfterCommit)setInterval(()=>{},1000);`;
+    let endpointFence = firstFence, serverError: unknown;
+    const secret = crypto.randomUUID();
+    const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: async request => {
+      if (new URL(request.url).pathname !== `/${secret}`) return new Response(null, { status: 404 });
+      try { const command = await request.json();if (JSON.stringify(command.fence) !== JSON.stringify(endpointFence) || command.action !== "commit-artifact") throw Error("Unexpected native command");return Response.json(await send(command)); }
+      catch (error) { serverError = error;return Response.json({ disposition: "failed" }, { status: 500 }); }
+    } });
+    const children: ReturnType<typeof Bun.spawn>[] = [];
+    try {
+      await send({ action: "acquire", ...firstFence, leaseSeconds: 2 });
+      const firstPackage = await packageFor(firstFence);if (firstPackage.disposition !== "work_package") throw Error("Expected package");
+      const frozen = await service.loadInput(await db.executionAttempt.findUniqueOrThrow({ where: { attemptToken: firstFence.attemptToken } }));
+      const outputs = firstPackage.outputs.filter(output => output.role === "render_variant");expect(outputs).toHaveLength(2);
+      const commit = (fence: typeof firstFence, output: typeof outputs[number]) => {
+        return { action: "commit-artifact", fence, artifact: { artifactId: output.artifactId, role: "render_variant", bindingHash: output.bindingHash,
+          contentType: "video/mp4", byteLength: 1024, etag: '"render"', sha256: "b".repeat(64), renderVariant: { renderId: "", durationSec: 10, usedStockIds: [] } } };
+      };
+      const bindingOf = (renderId: string) => renderArtifactBindingHash({ inputHash: firstFence.reference.inputHash, renderId, role: "render_variant" });
+      const ids = await Promise.all(frozen.variants.map(async variant => ({ id: variant.renderId, binding: await bindingOf(variant.renderId) })));
+      const commandFor = (fence: typeof firstFence, output: typeof outputs[number]) => {
+        const command = commit(fence, output);command.artifact.renderVariant.renderId = ids.find(row => row.binding === output.bindingHash)!.id;return command;
+      };
+      const child = Bun.spawn([process.execPath, "-e", program], { stdin: "pipe", stdout: "pipe", stderr: "pipe", env: { PATH: process.env.PATH! } });children.push(child);
+      process.kill(child.pid!, 0);await send({ action: "process-start", fence: firstFence });
+      child.stdin.write(JSON.stringify({ url: new URL(`/${secret}`, server.url).href, command: commandFor(firstFence, outputs[0]!), exitAfterCommit: false }));child.stdin.end();
+      const reader = child.stdout.getReader();
+      const first = await Promise.race([reader.read(), Bun.sleep(5000).then(() => { throw Error("Native sibling commit timed out"); })]);
+      expect(first.done).toBe(false);expect(JSON.parse(new TextDecoder().decode(first.value))).toMatchObject({ disposition: "committed", artifactId: outputs[0]!.artifactId });
+      if (serverError) throw serverError;
+      const keptId = ids.find(row => row.binding === outputs[0]!.bindingHash)!.id;
+      const kept = await db.clipRender.findUniqueOrThrow({ where: { id: keptId } });expect(kept.status).toBe("completed");
+      const old = await db.executionAttempt.findUniqueOrThrow({ where: { attemptToken: firstFence.attemptToken } });
+      child.kill("SIGKILL");await child.exited;await reader.cancel().catch(() => {});
+      await Bun.sleep(Math.max(0, old.leaseExpiresAt!.getTime() - Date.now()) + 50);
+      await execution.control.expireDeadline({ deadline: { reference: firstFence.reference, attemptToken: firstFence.attemptToken, kind: "lease", observedDeadlineAt: old.leaseExpiresAt!.toISOString() }, deliveryId: crypto.randomUUID() });
+      expect(await db.renderGroup.findUniqueOrThrow({ where: { id: frozen.groupId } })).toMatchObject({ status: "queued", chargedAttemptCount: 1, generation: 2 });
+      expect(await db.clipRender.findUniqueOrThrow({ where: { id: keptId } })).toMatchObject({ status: "completed", storageKey: kept.storageKey, completedAt: kept.completedAt });
+      const driver = await db.executionDispatch.findFirstOrThrow({ where: { subjectKind: "render_group", subjectId: frozen.groupId, generation: 2, kind: "operation_driver", wakeKind: null, deadlineKind: null } });
+      const reference = (await readExecutionDispatch(db, driver.id))!.reference;
+      let next = await service.prepareExecution(reference);
+      if (next.kind === "sleep") { await Bun.sleep(Math.max(0, next.dueAt.getTime() - Date.now()) + 20);next = await service.prepareExecution(reference); }
+      if (next.kind !== "waiting") throw Error("Expected successor");
+      const nextFence = { reference: next.deadline.reference, attemptToken: next.deadline.attemptToken, owner: crypto.randomUUID() };endpointFence = nextFence;
+      await send({ action: "acquire", ...nextFence, leaseSeconds: 120 });
+      const successor = await packageFor(nextFence);if (successor.disposition !== "work_package") throw Error("Expected successor package");
+      const remaining = successor.outputs.filter(output => output.role === "render_variant");expect(remaining).toHaveLength(1);expect(remaining[0]!.bindingHash).not.toBe(outputs[0]!.bindingHash);
+      const replacement = Bun.spawn([process.execPath, "-e", program], { stdin: "pipe", stdout: "pipe", stderr: "pipe", env: { PATH: process.env.PATH! } });children.push(replacement);
+      process.kill(replacement.pid!, 0);await send({ action: "process-start", fence: nextFence });
+      replacement.stdin.write(JSON.stringify({ url: new URL(`/${secret}`, server.url).href, command: commandFor(nextFence, remaining[0]!), exitAfterCommit: true }));replacement.stdin.end();
+      const acknowledgement = JSON.parse(await new Response(replacement.stdout).text());expect(await replacement.exited).toBe(0);if (serverError) throw serverError;
+      expect(acknowledgement.renderGroup).toEqual({ status: "completed", requested: 2, succeeded: 2, failed: 0, superseded: 0 });
+      expect(await db.renderGroup.findUniqueOrThrow({ where: { id: frozen.groupId } })).toMatchObject({ status: "completed", chargedAttemptCount: 2 });
+      expect(await db.clipRender.findUniqueOrThrow({ where: { id: keptId } })).toMatchObject({ storageKey: kept.storageKey, completedAt: kept.completedAt });
+      expect(await db.workflowRun.findUniqueOrThrow({ where: { id: f.run.id } })).toMatchObject({ attemptCount: 0, attemptId: null, leaseOwner: null });
+    } finally { server.stop(true);for (const child of children) { if (child.exitCode === null) child.kill("SIGKILL");await child.exited; } }
+  }, 60_000);
 
   test("the RenderGroup factory serves its frozen input and role-bound grants then commits the actual final group acknowledgement", async () => {
     const f = await fixture(), preparation = await native(f);

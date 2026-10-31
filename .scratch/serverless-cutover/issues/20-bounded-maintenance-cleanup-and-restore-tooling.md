@@ -13,7 +13,8 @@
 
 ## Evidence
 
-Partial implementation; platform mounting and the remaining phase/recovery map are still required.
+Local implementation and production composition are recorded below. Deployed
+maintenance, exact cleanup and full restore acceptance remain required.
 
 Maintenance now has a tested reference-only page controller. Hour/day starts
 coalesce on a fixed UTC cutoff, each page commits its bounded domain work and
@@ -257,3 +258,30 @@ with database intake still closed. Open mode is refused. Snapshot attestation an
 fresh begin remain strictly fenced. Eleven proof/operator/storage tests pass62
 assertions. The runbook and glossary describe the sealed metadata boundary and
 continued Cron stop through redispatch. API factory mounting is the next slice.
+
+Production composition is now implemented in the API with every real required
+domain planner, including paired Project/Review notification ledgers,
+Autopilot/Zoom, Finishing, Bundle/Dub and future publication receipt, capture,
+grant and guidance obligations. Guidance receives the frozen snapshot epoch.
+The Workflow registry mounts mt1/rs2/pr1/pw1 and Upload Session reconciliation,
+plus the targeted Autopilot/Zoom coordinators. Metadata restore remains
+product-dispatch-free until the explicit closed-mode redispatch boundary.
+
+The production entrypoint exports an awaited scoped scheduled handler. Its UTC
+hourly safety and daily retention triggers only register bounded metadata work.
+Fenced invocations stop before configuration, runtime or SQL scope construction.
+The same early fence now covers all eleven DevelopmentBindings RPC methods.
+The runbook requires explicit empty Cron configuration through closed redispatch.
+Project purge is asynchronous and preserves an already accepted future hold
+revisit, including a prior 24-hour retained-object retry.
+
+The actual API factory passes both empty cadences on a fresh full-migrated
+PostgreSQL schema, using all concrete domain planners: 1 test/9 assertions,
+zero provider HTTP and zero executor admissions. Invocation/storage cases pass
+14 tests/71 assertions. Seven workerd checks include the production scheduled
+export and all RPC fences. Services/API typechecks, Worker dry-run/import audit
+and focused Biome pass. The default execution runner self-isolates the new
+production-composition suite and includes Zoom execution/refresh and Autopilot
+maintenance. Their deliberate epoch proof writes roll back within the test.
+These checks do not replace deployed exact cleanup, maintenance and quiesced
+restore acceptance. Ticket20 remains claimed until those platform gates pass.

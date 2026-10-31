@@ -25,5 +25,8 @@ try{
  assert.equal((await client.fetch(new Request('http://gate/fetch-refused'))).status,404);checks.push('http_proxy_restricts_existing_socket_routes');
  const fenced=await mf.getWorker('fenced-client'),fencedResult=await (await fenced.fetch(new Request('http://gate/fenced-rpc'))).json();
  assert.deepEqual(fencedResult,{reasons:Array(11).fill('execution_fenced')});checks.push('fenced_rpc_refuses_all_eleven_methods_before_sql_or_durable_resources');
+ const fencedWorker=await mf.getWorker('fenced-development');
+ for(const cron of ['0 * * * *','0 0 * * *'])assert.equal((await fencedWorker.scheduled({cron,scheduledTime:new Date('2026-10-31T00:00:00.000Z')})).outcome,'ok');
+ checks.push('fenced_hourly_daily_cron_stop_before_database_or_provider_configuration');
  console.log(JSON.stringify({runtime:'workerd',checks,passed:checks.length,postgresBindings:0,externalProviderRequests:0}));
 }finally{await mf.dispose();}
