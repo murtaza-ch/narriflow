@@ -2,6 +2,7 @@ import { WORKFLOW_LEASE_DURATION_MS, WORKFLOW_HEARTBEAT_INTERVAL_MS, WorkflowFai
 export { WORKFLOW_LEASE_DURATION_MS, WORKFLOW_HEARTBEAT_INTERVAL_MS, WorkflowFailure, WorkflowAttemptLost, workflowHttpFailureDisposition, workflowFailureFromUnknown, rethrowWorkflowAttemptLost, type WorkflowFailureDisposition, type WorkflowAttemptRef, type WorkflowAttemptContext } from "./workflow-attempt-contract";
 import { randomUUID } from "node:crypto";
 import { readExecutionAdmission, assertExecutionAdmissionOpen } from "./execution-admission";
+import { queueLibraryIndex, recoverLibraryIndex } from "./library-index";
 import { cancelRenderGroupsWithinTransaction, admitRenderGroupsWithinTransaction, renderGroupParentSettlement, type RenderGroupAdmission } from "./render-group-lifecycle";
 import { renderGroupExecutionInputHash, renderGroupExportIdentity, type RenderGroupRef } from "./render-group-contract";
 import { Prisma, type PrismaClient, type WorkflowRun, type Project } from "@prisma/client";
@@ -2439,7 +2440,7 @@ export class WorkflowRunLifecycle {
     if (!run || run.stage !== "stt" || run.status !== "completed" || run.generation !== reference.generation || run.deploymentEpoch !== reference.deploymentEpoch) return [];
     queueProjectProgressCatchup(tx, run.projectId);
     const history = run.attemptId ? await tx.executionAttempt.findUnique({ where: { attemptToken: run.attemptId } }) : null;
-    const transcript = await tx.transcript.findUnique({ where: { projectId: run.projectId }, select: { sourceAudioId: true, sourceRevision: true } });
+    const transcript = await tx.transcript.findUnique({ where: { projectId: run.projectId }, select: { id: true, workflowAttemptId: true, sourceAudioId: true, sourceRevision: true } });
     if (history && run.attemptId && transcript) return this.providerRecordedWakes(tx, { workflowRunId: run.id, attemptId: run.attemptId,
       deploymentEpoch: run.deploymentEpoch, sourceAudioId: transcript.sourceAudioId, sourceRevision: transcript.sourceRevision }, "complete");
     const child = await tx.workflowRun.findUnique({ where: { projectId_idempotencyKey: { projectId: run.projectId, idempotencyKey: `${run.idempotencyKey}__moment_detection` } }, select: { id: true } });
@@ -2447,7 +2448,8 @@ export class WorkflowRunLifecycle {
       { subjectKind: "workflow_run", subjectId: run.id, generation: run.generation, kind: "operation_driver", wakeKind: "execution_finished", inputHash: reference.inputHash },
       ...(child ? [{ subjectKind: "workflow_run", subjectId: child.id, generation: 1, kind: "operation_driver", wakeKind: null, deadlineKind: null }] : []),
     ] }, orderBy: { id: "asc" }, take: 3, select: { id: true } });
-    return records.map(row => row.id);
+    const library = transcript?.workflowAttemptId === run.attemptId ? await recoverLibraryIndex(tx,transcript.id) : null;
+    return [...records.map(row => row.id), ...(library ? [library.dispatchId] : [])];
   }
 
   /** Fresh lease-free provider state for one exact Workflow command. */
@@ -2562,6 +2564,11 @@ export class WorkflowRunLifecycle {
       orderBy: { id: "asc" }, take: 3 });
     const ids = own.map(row => row.id);
     if (intent === "accept" || !own.length) return ids;
+    const completedTranscript = run.status === "completed" ? await tx.transcript.findUnique({ where: { projectId: run.projectId }, select: { id: true, workflowAttemptId: true } }) : null;
+    if (completedTranscript?.workflowAttemptId === key.attemptId) {
+      const library = await recoverLibraryIndex(tx,completedTranscript.id);
+      if (library) ids.push(library.dispatchId);
+    }
     const next = await tx.executionDispatch.findFirst({ where: { deploymentEpoch: key.deploymentEpoch, subjectKind: "workflow_run", subjectId: run.id,
       generation: history.generation + 1, kind: "operation_driver", wakeKind: null, deadlineKind: null } });
     if (next) ids.push(next.id);
@@ -2821,11 +2828,12 @@ export class WorkflowRunLifecycle {
       errorCode: null,
       completedAt,
     };
-    await tx.transcript.upsert({
+    const completedTranscript = await tx.transcript.upsert({
       where: { projectId: attempt.projectId },
       create: { projectId: attempt.projectId, ...completedFields },
       update: { ...completedFields, selectionGeneration: { increment: 1 } },
     });
+    await queueLibraryIndex(tx, completedTranscript.id);
     if (input.durationSeconds && input.durationSeconds > 0) {
       await tx.project.updateMany({
         where: { id: attempt.projectId, sourceDurationSeconds: null },

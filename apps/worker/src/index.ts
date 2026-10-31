@@ -28,7 +28,6 @@ import {
 	getPerformanceSync,
 	getPerformanceGuidance,
 	getIngestJobLifecycle,
-	getLibrarySearch,
 	IngestJobClaimLost,
 	reviewService,
 	projectRetentionService,
@@ -197,14 +196,6 @@ const mediaCleanupPollIntervalMs = Number(
 
 const workspaceBillingPollIntervalMs = parseWorkspaceBillingPollInterval(
 	process.env.WORKSPACE_BILLING_POLL_INTERVAL_MS,
-);
-// Library search indexing: embedding calls, bounded per tick. It only reads
-// finished transcripts, so it can neither delay nor block generation.
-const libraryIndexPollIntervalMs = Number(
-	process.env.LIBRARY_INDEX_POLL_INTERVAL_MS ?? "10000",
-);
-const libraryIndexBatchSize = Number(
-	process.env.LIBRARY_INDEX_BATCH_SIZE ?? "5",
 );
 const autopilotPollIntervalMs = Number(
 	process.env.AUTOPILOT_POLL_INTERVAL_MS ?? "30000",
@@ -763,18 +754,6 @@ const mediaCleanupLoop = createPollLoop("media_cleanup", mediaCleanupPollInterva
 
 
 
-
-/** Embeds completed transcripts into searchable passages. A provider failure
- * backs that transcript off and ends the tick without failing the loop. */
-createPollLoop("library_index", libraryIndexPollIntervalMs, async () => {
-	let indexed = 0;
-	while (indexed < libraryIndexBatchSize && !workerShutdown.signal.aborted) {
-		const count = await getLibrarySearch().indexNext();
-		if (count === 0) break;
-		indexed += count;
-	}
-	return indexed;
-});
 
 async function handleWorkerRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
 	if (req.url === "/health") {

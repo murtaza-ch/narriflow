@@ -841,12 +841,17 @@ model Transcript {
   completedAt                  DateTime?
   /// Library search indexing. `passagesIndexedFor` is the `completedAt` the
   /// passages were built from; a newer `completedAt` means the transcript changed.
-  /// `passagesRetryAt` is both the claim lease and the retry backoff. After
-  /// 8 attempts the transcript is left alone and `passagesIndexError` names why.
+  /// Retry due time is separate from the renewable provider claim.
   passagesIndexedFor           DateTime?
   passagesAttempts             Int                 @default(0)
   passagesRetryAt              DateTime?
   passagesIndexError           String?
+  passagesGeneration           Int                 @default(0)
+  passagesEpoch                Int                 @default(1)
+  passagesSourceHash           String?
+  passagesClaimId              String?             @db.Uuid
+  passagesLeaseUntil           DateTime?
+  passagesDeadlineAt           DateTime?
   createdAt                    DateTime            @default(now())
   updatedAt                    DateTime            @updatedAt
   project                      Project             @relation(fields: [projectId], references: [id], onDelete: Cascade)

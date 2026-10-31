@@ -17,6 +17,15 @@ export function createNativeOperationDriver(ports: Ports): WorkflowCommandHandle
   return async ({ reference }) => {
     const prepared = await ports.prepare(reference);
     if (prepared.kind === "sleep") return { type: "sleep", until: prepared.dueAt.toISOString() };
+    if (prepared.kind === "dependency_wait") {
+      for (const ids of [[prepared.deadlineDispatchId], prepared.dispatchIds.filter(id => id !== prepared.deadlineDispatchId)]) {
+        const results = await ports.deliver(ids);
+        const pending = results.filter((result): result is Extract<ExecutionDispatchDeliveryResult, { status: "pending" }> => result.status === "pending");
+        if (results.some(result => !["acknowledged", "superseded", "pending"].includes(result.status))) throw new Error("native_dispatch_unavailable");
+        if (pending.length) return { type: "sleep", until: new Date(Math.min(prepared.dueAt.getTime(), ...pending.map(result => result.retryAt.getTime()))).toISOString() };
+      }
+      return { type: "wait", until: prepared.dueAt.toISOString(), deliveryId: prepared.deadlineDispatchId };
+    }
     if (prepared.kind !== "waiting") return { type: "complete", disposition: prepared.kind };
     let deadline = prepared.deadline;
     if (Date.parse(deadline.observedDeadlineAt) <= ports.now()) {

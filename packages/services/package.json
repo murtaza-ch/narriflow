@@ -6,6 +6,8 @@
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "exports": {
+    "./library-index": "./src/library-index.ts",
+    "./library-index-runtime": "./src/library-index-runtime.ts",
     "./clip-preparation": "./src/clip-preparation.ts",
     "./clip-preparation-execution": "./src/clip-preparation-execution.ts",
     "./clip-preparation-runtime": "./src/clip-preparation-runtime.ts",

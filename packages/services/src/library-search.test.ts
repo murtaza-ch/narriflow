@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { planEmbeddingBatches } from "./library-embedding-batches";
 import type { PrismaClient } from "@prisma/client";
-import { LibrarySearch, LibrarySearchError, lexicalQueryText, planEmbeddingBatches } from "./library-search";
+import { LibrarySearch, LibrarySearchError, lexicalQueryText } from "./library-search";
 import { EmbeddingProviderError, type EmbeddingProvider } from "./openai-embedding-provider";
 
 const scope = { actorUserId: "00000000-0000-4000-8000-000000000001", workspaceId: "00000000-0000-4000-8000-000000000002" };
@@ -88,8 +89,4 @@ describe("LibrarySearch", () => {
     expect(JSON.stringify(logs)).not.toContain("secret");
   });
 
-  test("indexing waits quietly while embeddings are not configured", async () => {
-    const search = new LibrarySearch({ prisma: noDatabase, embeddings: embeddings({ configured: false }) });
-    expect(await search.indexNext()).toBe(0);
-  });
 });

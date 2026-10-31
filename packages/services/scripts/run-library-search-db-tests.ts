@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { Pool } from "pg";
+import { assertExecutionDatabaseTestTarget } from "../src/execution-db-test-support";
 
 // Library search needs pgvector, so this gate applies every migration to a
 // disposable schema and fails when the server cannot provide the extension.
@@ -13,6 +14,7 @@ if (!databaseUrl) throw new Error("LIBRARY_SEARCH_TEST_DATABASE_URL, DIRECT_URL,
 
 const root = resolve(import.meta.dir, "../../..");
 const schema = `library_search_test_${randomUUID().replaceAll("-", "")}`;
+assertExecutionDatabaseTestTarget(databaseUrl, schema);
 const pool = new Pool({ connectionString: databaseUrl, max: 1 });
 
 try {
@@ -35,6 +37,7 @@ try {
     for (const migration of migrations) {
       await client.query(readFileSync(resolve(root, "packages/db/prisma/migrations", migration, "migration.sql"), "utf8"));
     }
+    await client.query('UPDATE "ExecutionEpoch" SET "admissionOpen"=true WHERE id=1');
   } finally {
     client.release();
   }
