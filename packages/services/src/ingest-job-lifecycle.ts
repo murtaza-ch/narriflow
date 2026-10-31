@@ -260,7 +260,8 @@ export class IngestJobLifecycle {
       uploadSessionId?: string;
     },
   ): Promise<{ id: string }> {
-    const job = await tx.ingestJob.create({ data: input });
+    const project = await tx.project.findUniqueOrThrow({ where: { id: input.projectId }, select: { sourceRevision: true } });
+    const job = await tx.ingestJob.create({ data: { ...input, sourceRevision: project.sourceRevision } });
     await this.event(
       tx,
       {

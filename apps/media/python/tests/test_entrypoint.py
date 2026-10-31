@@ -11,6 +11,8 @@ from uuid import uuid4
 
 from narriflow_media.control import ControlResponse, ExecutionControlClient, ExecutionControlError
 from narriflow_media.entrypoint import invoke_native
+from narriflow_media.artifacts import ArtifactCommitUnconfirmed
+from narriflow_media.multipart import CompletedObject
 from narriflow_media.process import run_owned_process_async
 
 
@@ -84,6 +86,15 @@ class NativeEntrypointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, {"disposition": "failed"})
         self.assertNotIn("private", json.dumps(calls))
         self.assertEqual(next(call for call in calls if call["action"] == "fail")["failureCode"], "media_execution_failed")
+
+    async def test_lost_publication_ack_uses_committed_outcome_without_fail_or_release(self):
+        invocation, client, state, calls = self.fixture()
+        async def operation(*args):
+            state["completed"] = True
+            raise ArtifactCommitUnconfirmed(str(uuid4()), CompletedObject("assigned/retained", '"sealed"', 5, "a"*64))
+        result = await invoke_native(invocation, "asset_validation", client=client, operation=operation, max_operation_seconds=600)
+        self.assertEqual(result, {"disposition": "completed"})
+        self.assertEqual([call["action"] for call in calls], ["acquire", "work-package", "read-disposition"])
 
     async def test_malformed_invocations_are_rejected_before_any_control_request(self):
         invocation, client, state, calls = self.fixture()

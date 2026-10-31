@@ -8,6 +8,8 @@ export interface WorkflowRunExecutionInput {
   deploymentEpoch: number;
   sourceAudioId: string | null;
   sourceRevision: number;
+  /** Selection consumes a completed Transcript; STT produces it. */
+  sourceTranscript?: { id: string; generation: number; attemptId: string | null } | null;
 }
 
 export async function workflowRunExecutionInputHash(input: WorkflowRunExecutionInput): Promise<string> {
@@ -15,6 +17,8 @@ export async function workflowRunExecutionInputHash(input: WorkflowRunExecutionI
     id: input.id, projectId: input.projectId, stage: input.stage, contentPackId: input.contentPackId,
     generation: input.generation, deploymentEpoch: input.deploymentEpoch,
     sourceAudioId: input.sourceAudioId, sourceRevision: input.sourceRevision,
+    ...(input.stage === "moment_detection" ? { sourceTranscript: input.sourceTranscript ? { id: input.sourceTranscript.id,
+      generation: input.sourceTranscript.generation, attemptId: input.sourceTranscript.attemptId } : null } : {}),
   }));
   const hash = await crypto.subtle.digest("SHA-256", bytes);
   return Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2, "0")).join("");

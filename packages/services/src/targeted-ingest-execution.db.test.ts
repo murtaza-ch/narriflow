@@ -14,6 +14,8 @@ import { sourceAudioBindingHash } from "./source-audio-binding";
 import { workflowRunExecutionInputHash } from "./workflow-execution-input";
 import { createTranscriptionAdmission } from "./transcription-admission";
 import { createTranscriptionProbe } from "./transcription-probe";
+import { createIngestSourceExecution, ingestExecutionInputHash } from "./ingest-source-execution";
+import { createExecutionStorage } from "./execution-storage";
 
 const url = process.env.SERVERLESS_TEST_DATABASE_URL;
 const dbDescribe = process.env.ALLOW_SERVERLESS_DB_TESTS === "1" && url ? describe : describe.skip;
@@ -46,17 +48,18 @@ dbDescribe("Targeted Ingest execution", () => {
     await db.$disconnect();
   }, 60_000);
 
-  async function fixture(executionDeadline?: Date) {
+  async function fixture(executionDeadline?: Date, productionInput = false) {
     const user = await db.user.create({ data: { clerkId: `targeted-ingest:${crypto.randomUUID()}` } }); users.push(user.id);
     const workspace = await db.workspace.create({ data: { name: "Targeted ingest", ownerUserId: user.id } });
     const project = await db.project.create({ data: { workspaceId: workspace.id, title: "Targeted ingest", sourceType: "youtube", sourceMediaUrl: "https://youtube.com/watch?v=dQw4w9WgXcQ", ingestStatus: "queued" } });
-    const job = await db.ingestJob.create({ data: { projectId: project.id, jobType: "link_import", payload: { provider: "youtube", mediaId: "dQw4w9WgXcQ" } } }); subjects.push(job.id);
+    const job = await db.ingestJob.create({ data: { projectId: project.id, jobType: "link_import", payload: { provider: "youtube", mediaId: "dQw4w9WgXcQ", url: project.sourceMediaUrl } } }); subjects.push(job.id);
     const usage = new ProcessingUsage({ prisma: db, log: () => {} });
     await db.$transaction((tx) => usage.reserve(tx, { workspaceId: workspace.id, projectId: project.id, actorUserId: user.id, intakeKind: "link", declaredSeconds: 120 }));
     const workflow = withServiceEnvironment({}, () => new WorkflowRunLifecycle({ prisma: db }));
     const lifecycle = new IngestJobLifecycle({ prisma: db, workflow, usage, validateVideo: createSourceVideoValidator(usage), requireRetryActor: async () => { throw new Error("Retry admission is outside this fixture"); } });
     const epoch = (await db.executionEpoch.findUniqueOrThrow({ where: { id: 1 } })).epoch;
-    const dispatch = await db.$transaction((tx) => appendExecutionDispatch(tx, { deploymentEpoch: epoch, kind: "modal_execution", subject: { kind: "ingest_job", id: job.id }, generation: 1, inputHash: "a".repeat(64), dueAt: new Date("2026-10-31T00:00:00.000Z") }));
+    const inputHash = productionInput ? await ingestExecutionInputHash(job, "d".repeat(64)) : "a".repeat(64);
+    const dispatch = await db.$transaction((tx) => appendExecutionDispatch(tx, { deploymentEpoch: epoch, kind: "modal_execution", subject: { kind: "ingest_job", id: job.id }, generation: 1, inputHash, dueAt: new Date("2026-10-31T00:00:00.000Z") }));
     const token = crypto.randomUUID(), owner = crypto.randomUUID();
     await db.executionAttempt.create({ data: { attemptToken: token, dispatchId: dispatch.reference.dispatchId, deploymentEpoch: epoch, generation: 1, inputHash: dispatch.reference.inputHash, functionName: "fetch_source", operationDeadlineAt: executionDeadline ?? new Date(Date.now() + 45 * 60_000),
       createdAt: executionDeadline ? new Date(executionDeadline.getTime() - 60_000) : undefined } });
@@ -98,6 +101,33 @@ dbDescribe("Targeted Ingest execution", () => {
       } };
     return { audio, video };
   }
+
+  test("the production source package assigns stable outputs and rejects rewritten source evidence", async () => {
+    const f = await fixture(undefined, true);
+    const factory = createIngestSourceExecution({ database: db, domain: f.lifecycle, workflow: f.workflow, toolchainFingerprint: "d".repeat(64),
+      storage: createExecutionStorage({ accountId: "a".repeat(32), bucket: "test", accessKeyId: "fixture-key", secretAccessKey: "fixture-secret" }),
+      artifacts: { head: async assignment => ({ etag: '"audio-etag"', contentType: assignment.contentType, byteLength: 1024n, sha256: "c".repeat(64) }) }, deliverWakes: async () => {} });
+    const fence = { reference: f.reference, attemptToken: f.token, owner: f.owner };
+    await factory.control.execute({ command: { action: "acquire", ...fence, leaseSeconds: 120 }, verifiedRequest: f.verified() });
+    const first = await factory.transfer.execute({ command: { action: "work-package", fence }, verifiedRequest: f.verified() });
+    const replay = await factory.transfer.execute({ command: { action: "work-package", fence }, verifiedRequest: f.verified() });
+    expect(first).toEqual(replay);
+    if (first.disposition !== "work_package" || first.input.kind !== "inline") throw new Error("Expected inline source package");
+    expect(first.input.command).toMatchObject({ kind: "youtube_source", projectId: f.project.id, sourceAudioId: f.token, mediaId: "dQw4w9WgXcQ", existingSourceAudio: null });
+    expect(first.outputs.map(value => value.role).sort()).toEqual(["source_audio", "source_video"]);
+    expect(await db.ingestJob.findUniqueOrThrow({ where: { id: f.job.id } })).toMatchObject({ attemptCount: 0, startedAt: null });
+    await factory.control.execute({ command: { action: "process-start", fence }, verifiedRequest: f.verified() });
+    const output = first.outputs.find(value => value.role === "source_audio")!;
+    const assigned = await db.executionArtifact.findUniqueOrThrow({ where: { id: output.artifactId } });
+    const binding = { ...measuredBindings(f, assigned.storageKey).audio, sourceAudioId: f.token, probeVersion: "normalized-probe-v1" };
+    const artifact = { artifactId: assigned.id, role: "source_audio", bindingHash: assigned.bindingHash, contentType: assigned.contentType,
+      byteLength: 1024, etag: '"audio-etag"', sha256: "c".repeat(64), sourceAudio: binding };
+    await expect(factory.control.execute({ command: { action: "commit-artifact", fence, artifact: { ...artifact, sourceAudio: { ...binding, mediaIdentity: { provider: "youtube", mediaId: "abcdefghijk" } } } }, verifiedRequest: f.verified() })).rejects.toThrow("artifact_invalid");
+    expect(await db.sourceAudio.count({ where: { projectId: f.project.id } })).toBe(0);
+    expect((await factory.control.execute({ command: { action: "commit-artifact", fence, artifact }, verifiedRequest: f.verified() })).disposition).toBe("committed");
+    expect(await db.sourceAudio.findUniqueOrThrow({ where: { id: f.token } })).toMatchObject({ mediaId: "dQw4w9WgXcQ", storageKey: assigned.storageKey, durationSeconds: 120.25 });
+    await expect(Promise.resolve(db.ingestJob.update({ where: { id: f.job.id }, data: { payload: { provider: "youtube", url: "https://youtu.be/abcdefghijk" } } }))).rejects.toThrow();
+  }, 60_000);
 
   async function earlyAudio(f: Awaited<ReturnType<typeof fixture>>, draft = false) {
     await db.project.update({ where: { id: f.project.id }, data: { ingestStatus: "downloading", sourceDurationSeconds: null } });
