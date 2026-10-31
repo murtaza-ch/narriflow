@@ -1330,6 +1330,16 @@ model WorkspaceFolder {
 }
 
 model AutopilotRule {
+  deploymentEpoch     Int                        @default(1)
+  generation          Int                        @default(1)
+  executionCycleId    String?                    @db.Uuid
+  executionDueAt      DateTime?
+  operationDeadlineAt DateTime?
+  executionInput      Json?
+  executionInputHash  String?                    @db.Char(64)
+  executionProbeId    String?                    @unique @db.Uuid
+  executionSelection  Json?
+  executionCursor     Int                        @default(0)
   id                  String                     @id @default(uuid()) @db.Uuid
   workspaceId         String                     @db.Uuid
   createdByUserId     String?                    @db.Uuid
@@ -1420,6 +1430,12 @@ model ZoomOAuthState {
 /// A verified notification, reduced to recording IDs and public metadata.
 /// Leases fence acknowledgements; admission deduplicates each recording per rule.
 model ZoomWebhookJob {
+  deploymentEpoch     Int      @default(1)
+  generation          Int      @default(1)
+  operationDeadlineAt DateTime?
+  ruleCursor          String?  @db.Uuid
+  executionTarget     Json?
+  skippedTargets      Int      @default(0)
   id             String   @id @default(uuid()) @db.Uuid
   eventKey       String   @unique
   payload        Json

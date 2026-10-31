@@ -1,3 +1,6 @@
+import { queueAutopilotRule } from "./autopilot-execution";
+import { AUTOPILOT_LEASE_MS, AUTOPILOT_MAX_CONSECUTIVE_FAILURES, autopilotRetryDelayMs, selectAutopilotEpisodes } from "./autopilot-episode-policy";
+export { AUTOPILOT_LEASE_MS, AUTOPILOT_MAX_CONSECUTIVE_FAILURES, autopilotRetryDelayMs, selectAutopilotEpisodes } from "./autopilot-episode-policy";
 import { readAutopilotImportSource } from "./autopilot-finishing-authority";
 import { zoomService } from "./zoom.service";
 import { readExecutionAdmission, assertExecutionAdmissionOpen, requireExecutionAdmissionOpen } from "./execution-admission";
@@ -19,7 +22,6 @@ import {
   type AutopilotRuleSnapshot,
   type AutopilotPauseKind,
   type AutopilotRuleUpdate,
-  type RssEpisodeInput,
 } from "@narriflow/validators";
 import { fetchRssFeed, redactUrlForDisplay, RssFeedError, RssProbePending } from "./rss";
 import { RemoteFetchError, UnsafeUrlError } from "./url-policy";
@@ -36,8 +38,6 @@ import {
 } from "./expected-domain-failure";
 
 export const MAX_AUTOPILOT_RULES_PER_WORKSPACE = 10;
-export const AUTOPILOT_LEASE_MS = 2 * 60 * 1000;
-export const AUTOPILOT_MAX_CONSECUTIVE_FAILURES = 8;
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -70,70 +70,6 @@ function requirePrisma() {
 
 function nextRunFrom(intervalMinutes: number, now = Date.now()) {
   return new Date(now + intervalMinutes * 60 * 1000);
-}
-
-export function autopilotRetryDelayMs(
-  consecutiveFailures: number,
-  intervalMinutes: number,
-) {
-  const exponent = Math.max(0, Math.min(10, consecutiveFailures - 1));
-  const retryDelay = 60_000 * 2 ** exponent;
-  return Math.min(intervalMinutes * 60_000, retryDelay);
-}
-
-type EpisodeSelectionRule = {
-  initializedAt: Date | null;
-  initialImportMode: "future_only" | "latest";
-  initialImportCount: number;
-  maxEpisodesPerRun: number;
-  lastSeenEpisodeId: string | null;
-  lastSeenPublishedAt: Date | null;
-};
-
-export function selectAutopilotEpisodes(
-  episodes: RssEpisodeInput[],
-  existingIds: ReadonlySet<string>,
-  rule: EpisodeSelectionRule,
-): { episodes: RssEpisodeInput[]; shouldAdvanceCursor: boolean } {
-  if (!rule.initializedAt) {
-    if (rule.initialImportMode === "future_only") {
-      return { episodes: [], shouldAdvanceCursor: true };
-    }
-    return {
-      episodes: episodes
-        .filter((episode) => !existingIds.has(episode.id))
-        .slice(0, Math.min(rule.initialImportCount, rule.maxEpisodesPerRun)),
-      // Initial latest-N is an explicit bounded backfill. Older entries are
-      // intentionally behind the new cursor and will not churn on later runs.
-      shouldAdvanceCursor: true,
-    };
-  }
-
-  let newWindow: RssEpisodeInput[];
-  const cursorIndex = rule.lastSeenEpisodeId
-    ? episodes.findIndex((episode) => episode.id === rule.lastSeenEpisodeId)
-    : -1;
-  if (cursorIndex >= 0) {
-    newWindow = episodes.slice(0, cursorIndex);
-  } else if (rule.lastSeenPublishedAt) {
-    const baseline = rule.lastSeenPublishedAt.getTime();
-    newWindow = episodes.filter(
-      (episode) =>
-        episode.publishedAt !== null &&
-        episode.publishedAt !== undefined &&
-        Date.parse(episode.publishedAt) > baseline,
-    );
-  } else {
-    // If an undated cursor disappeared from a rolling feed, importing every
-    // item would be a surprise backfill. Wait for an identifiable new head.
-    newWindow = [];
-  }
-
-  const unseen = newWindow.filter((episode) => !existingIds.has(episode.id));
-  return {
-    episodes: unseen.slice(0, rule.maxEpisodesPerRun),
-    shouldAdvanceCursor: unseen.length <= rule.maxEpisodesPerRun,
-  };
 }
 
 /** The ways applying a Brand Profile can be refused: deleted, missing logo
@@ -270,11 +206,11 @@ export class AutopilotService {
     credential?: { scopes: readonly string[] },
   ): Promise<{ rule: AutopilotRuleSnapshot; replayed: boolean }> {
     const actor = await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.edit");
-    // Refused before the feed is fetched; the slot count is checked again with the write.
-    requirePlanFeature(actor.pricingTier, "automation.autopilot");
+    // The prepare callback runs only after an exact acceptance replay is resolved.
     const parsed = autopilotRuleInputSchema.parse(input);
     let feed: Awaited<ReturnType<typeof fetchRssFeed>> | null = null;
     const prepare = async () => {
+      requirePlanFeature(actor.pricingTier,"automation.autopilot");
       if (parsed.sourceKind === "rss") feed = await (this.dependencies.fetchFeed ?? fetchRssFeed)(parsed.rssUrl!, { scope });
       else await zoomService.requireConnection(scope, parsed.zoomConnectionId!);
       // The Recipe's settings must be ones this saver could have chosen: its
@@ -284,7 +220,7 @@ export class AutopilotService {
 
     const prisma = requirePrisma();
     const create = async (tx: Prisma.TransactionClient) => {
-      await requireExecutionAdmissionOpen(tx);
+      const admission = await requireExecutionAdmissionOpen(tx);
       // Serialize the workspace rule budget with its write, including distinct keys.
       await lockWorkspaceAutopilotRules(tx, scope.workspaceId);
       await requireAutopilotRuleSlot(tx, { workspaceId: scope.workspaceId, tier: actor.pricingTier });
@@ -305,6 +241,7 @@ export class AutopilotService {
       const row = await tx.autopilotRule.create({
         data: {
           workspaceId: scope.workspaceId,
+          deploymentEpoch: admission.epoch,
           createdByUserId: scope.actorUserId,
           updatedByUserId: scope.actorUserId,
           name: parsed.name,
@@ -329,6 +266,7 @@ export class AutopilotService {
         },
         include: ruleInclude,
       });
+      await queueAutopilotRule(tx,row.id);
       return toSnapshot(row);
     };
     if (mutation) {
@@ -344,6 +282,7 @@ export class AutopilotService {
           await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.edit");
         },
         beforeAccept: mutation.beforeAccept,
+        beforeMutation: mutation.beforeMutation,
         prepare,
         mutate: async (tx) => {
           const value = await create(tx);
@@ -354,6 +293,7 @@ export class AutopilotService {
           };
         },
       });
+      if (accepted.replayed) await prisma.$transaction(tx=>queueAutopilotRule(tx,accepted.value.id));
       return { rule: accepted.value, replayed: accepted.replayed };
     }
     await prepare();
@@ -478,6 +418,7 @@ export class AutopilotService {
       // applies or does pauses its grants until a person renews them.
       await pauseGrantsWhoseRuleChanged(tx, ruleId);
       await flushWorkspaceEvents(tx);
+      await queueAutopilotRule(tx,updated.id);
       return updated;
     });
     return toSnapshot(row);
@@ -524,11 +465,11 @@ export class AutopilotService {
     mutation: IntegrationMutation | undefined,
   ): Promise<{ rule: AutopilotRuleSnapshot; replayed: boolean }> {
     const actor = await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "processing.consume");
-    // Running a rule now is new automation, and turns a paused rule back on.
-    requirePlanFeature(actor.pricingTier, "automation.autopilot");
+    // A new run is admitted after the exact acceptance replay is resolved.
     const prisma = requirePrisma();
     const trigger = async (tx: Prisma.TransactionClient) => {
       const admission = await readExecutionAdmission(tx);
+      requirePlanFeature(actor.pricingTier,"automation.autopilot");
       await lockWorkspaceAutopilotRules(tx, scope.workspaceId);
       // A worker claim must remain visible before deciding to reset the rule.
       await tx.$queryRaw`SELECT "id" FROM "AutopilotRule" WHERE "id" = ${ruleId}::uuid FOR UPDATE`;
@@ -542,10 +483,9 @@ export class AutopilotService {
       if (!existing) throw new AutopilotError("autopilot_rule_not_found");
       if (existing.sourceKind === "zoom") await zoomService.requireConnection(scope, existing.zoomConnectionId!);
       if (
-        existing.status === "running" &&
-        existing.leaseExpiresAt &&
-        existing.leaseExpiresAt > new Date()
+        existing.status === "running" && existing.executionCycleId
       ) {
+        await queueAutopilotRule(tx,existing.id);
         return toSnapshot(existing);
       }
       if (!holdsAutopilotSlot(existing.status)) {
@@ -568,6 +508,7 @@ export class AutopilotService {
         },
         include: ruleInclude,
       });
+      await queueAutopilotRule(tx,row.id);
       return toSnapshot(row);
     };
     if (mutation) {
@@ -587,6 +528,7 @@ export class AutopilotService {
           );
         },
         beforeAccept: mutation.beforeAccept,
+        beforeMutation: mutation.beforeMutation,
         mutate: async (tx) => {
           const value = await trigger(tx);
           return {
@@ -596,6 +538,7 @@ export class AutopilotService {
           };
         },
       });
+      if (accepted.replayed) await prisma.$transaction(tx=>queueAutopilotRule(tx,accepted.value.id));
       return { rule: accepted.value, replayed: accepted.replayed };
     }
     return { rule: await prisma.$transaction(trigger), replayed: false };
@@ -638,6 +581,7 @@ export class AutopilotService {
         },
         include: ruleInclude,
       });
+      await queueAutopilotRule(tx,row.id);
       return toSnapshot(row);
     });
   }
