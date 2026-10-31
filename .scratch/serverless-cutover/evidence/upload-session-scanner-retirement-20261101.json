@@ -1,0 +1,43 @@
+{
+  "status": "local_verified_parent_integration_pending",
+  "pinned_bun": "1.3.6",
+  "removed": [
+    "Optional-target reconcileDueSessions and unused global public facade",
+    "findDueReconciliation global ordered/batch read",
+    "Reconciliation batch/concurrency scheduler and obsolete config/env fields"
+  ],
+  "current_contract": [
+    "UploadSessionService.reconcileSession(id,epoch,beforeProvider,beforeHttp) remains the production facade",
+    "Injected module reconcileSession requires a validated UUID before persistence/provider calls",
+    "readDueReconciliation requires one exact UUID, reads at most one matching due row",
+    "Claim renewal, finite provider call/time budgets, pre-provider watchdog ACK, per-HTTP epoch checks, immutable completion intent and compensation remain unchanged"
+  ],
+  "ported_semantics": [
+    "Actual PostgreSQL handoff replay after provider success/database rollback",
+    "Ambiguous multipart completion and unknown provider responses",
+    "Initiating backoff and takeover/stale writer fences",
+    "Thirty explicit accepted IDs can be read/claimed independently; active owners are excluded without resetting unrelated fixtures",
+    "Exact session cleanup failure leaves every unrelated due session untouched",
+    "Delayed known-key cleanup preserves possible late single-PUT bytes and grants",
+    "Exact queued session still validates timer registration before any provider HTTP"
+  ],
+  "obsolete_test": "Global25-row batch cap and4-slot process-worker scheduling have no equivalent execution loop; bounded Maintenance pages and one targeted Workflow per accepted session own recovery. Exact-session isolation/fresh claim-time tests remain.",
+  "verification": {
+    "fast": {
+      "tests": 83,
+      "assertions": 315
+    },
+    "upload_session_postgresql": {
+      "tests": 15,
+      "assertions": 184
+    },
+    "targeted_upload_controller_postgresql": {
+      "tests": 1,
+      "assertions": 13
+    },
+    "services_typecheck": true,
+    "api_typecheck": true,
+    "biome": true
+  },
+  "resource_actions": "Only guarded disposable local PostgreSQL schemas. No cloud, shared database or storage actions."
+}

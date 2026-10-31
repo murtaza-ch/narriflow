@@ -12,6 +12,7 @@ import { createOperationReceiptExecutor } from "./operation-receipt";
 import { prismaOperationReceiptPersistence } from "./operation-receipt-runtime";
 import { withServiceEnvironment } from "./runtime-environment";
 import { createWebhookSubscriptions } from "./webhook-subscription";
+import { OutboundDeliveryService } from "./outbound-delivery";
 
 const url = process.env.SERVERLESS_TEST_DATABASE_URL;
 const suite = process.env.ALLOW_SERVERLESS_DB_TESTS === "1" && url ? describe : describe.skip;
@@ -142,12 +143,16 @@ suite("Notification producer registration", () => {
     const original = (await readExecutionDispatch(db, confirmed[0]!))!;
     expect(await isCurrentNotificationTarget(db, original.reference)).toBe(true);
     expect(await isCurrentNotificationTarget(db, { ...original.reference, inputHash: "0".repeat(64) })).toBe(false);
-    await db.webhookSubscription.update({ where: { id: sub.webhookId }, data: { status: "disabled", disabledReason: "delivery_failed", disabledAt: new Date() } });
+    await db.workspaceEventCounter.upsert({where:{workspaceId:f.workspace.id},create:{workspaceId:f.workspace.id,lastSeq:10n},update:{lastSeq:10n}});
+    const outbound=new OutboundDeliveryService(db,{cipher:createCallbackCipher("notification-producer-gate"),register:async()=>{},body:{put:async()=>{throw Error("No outbound HTTP expected");},head:async()=>{throw Error("No outbound HTTP expected");},read:async()=>{throw Error("No outbound HTTP expected");}}});
+    expect(await withExecutionDispatches(()=>outbound.prepareSubscription(sub.webhookId),options)).toEqual({kind:"terminal"});
+    expect(await db.webhookSubscription.findUniqueOrThrow({where:{id:sub.webhookId}})).toMatchObject({status:"disabled",disableRevision:1,disabledReason:"cursor_expired"});
+    expect(confirmed).toHaveLength(2);
     const enabled = await withExecutionDispatches(() => service.enable(actor, sub.webhookId), options);
     expect(enabled.status).toBe("active");
-    expect(confirmed).toHaveLength(2);
-    expect(confirmed[1]).not.toBe(confirmed[0]);
-    expect(await isCurrentNotificationTarget(db, (await readExecutionDispatch(db, confirmed[1]!))!.reference)).toBe(true);
+    expect(confirmed).toHaveLength(3);
+    expect(confirmed[2]).not.toBe(confirmed[0]);
+    expect(await isCurrentNotificationTarget(db, (await readExecutionDispatch(db, confirmed[2]!))!.reference)).toBe(true);
     await db.webhookSubscription.update({ where: { id: sub.webhookId }, data: { types: ["finishing.finished"] } });
     expect(await isCurrentNotificationTarget(db, original.reference)).toBe(false);
     await db.workspace.delete({ where: { id: f.workspace.id } });

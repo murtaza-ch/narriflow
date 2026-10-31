@@ -9,7 +9,6 @@ import { buildGenerationContentPack,standingGrantPauseMessage } from "@narriflow
 import { autopilotService } from "./autopilot.service";
 import { recipeService } from "./recipe.service";
 import { publishingQueue } from "./publishing-queue.service";
-import { ReviewNotificationService, createReviewNotificationStore, type ReviewNotificationMailInput } from "./review-notification.service";
 import {createPublicationTestRuntime} from "./publication-execution-test-support";
 import { PublicationExecution } from "./publication-execution";
 import { createPublicationCheckpointCipher } from "./social-publication-checkpoint-cipher";
@@ -965,26 +964,22 @@ dbDescribe("Standing Grant PostgreSQL invariants", () => {
 			},
 		});
 
-		const mails: ReviewNotificationMailInput[] = [];
-		const service = new ReviewNotificationService({
-			store: createReviewNotificationStore(),
-			mailer: async (mail) => {
-				mails.push(mail);
-				return { sent: true, id: `mail-${mails.length}` };
-			},
-		});
-		// Only this Workspace's rows: other tests leave rows of their own.
-		const ledger = await prisma.reviewNotificationLedger.findMany({ where: { reviewRound: { workspaceId: f.workspace.id } }, select: { id: true, reviewRoundId: true } });
-		await prisma.reviewNotificationLedger.updateMany({ where: { id: { notIn: ledger.map((row) => row.id) }, status: "pending" }, data: { nextAttemptAt: new Date(Date.now() + 3_600_000) } });
-		await service.deliverDue(500, "https://app.narriflow.test");
-		const sentByGrant = mails.find((mail) => mail.roundTitle.endsWith("clips for review"));
-		const sentByHand = mails.find((mail) => mail.roundTitle === "By hand");
-		expect(sentByGrant?.optOut?.workspaceName).toBe("Grant DB test");
-		const url = new URL(sentByGrant!.optOut!.url);
-		expect(`${url.origin}${url.pathname}`).toBe("https://app.narriflow.test/review/opt-out");
-		expect(await reviewerOptOut.preview(url.searchParams.get("token")!)).toEqual({ workspaceName: "Grant DB test", email: "client@example.test" });
-		expect(sentByHand).toBeDefined();
-		expect(sentByHand?.optOut).toBeUndefined();
+    const mails:Array<{html:string;text:string;idempotencyKey:string}>=[];
+    const delivery=createNotificationExecution({database:prisma,register:async()=>{},prepare:prepareNotificationDelivery,send:async(_target,sealed,key)=>{
+      const envelope=JSON.parse(decryptReviewValue(sealed.encrypted,reviewDeliverySecret()));mails.push({...envelope.request,idempotencyKey:key});return{sent:true,providerMessageId:`mail-${mails.length}`};
+    }});
+    const ledgers=await prisma.reviewNotificationLedger.findMany({where:{reviewRound:{workspaceId:f.workspace.id}},select:{id:true}});
+    await withServiceEnvironment({REVIEW_ACCESS_SECRET:process.env.REVIEW_ACCESS_SECRET,RESEND_API_KEY:"fixture-never-sent",WEB_ORIGIN:"https://app.narriflow.test"},async()=>{
+      for(const row of ledgers){const reference=await prisma.$transaction(tx=>appendNotificationDelivery(tx,{kind:"review",id:row.id}));expect(await delivery.run(reference)).toEqual({kind:"complete"});await delivery.run(reference);}
+    });
+    expect(mails).toHaveLength(2);
+    const sentByGrant=mails.find(mail=>mail.html.includes("clips for review")),sentByHand=mails.find(mail=>mail.html.includes("By hand"));
+    expect(sentByGrant?.text).toContain("Stop automated review requests from Grant DB test");
+    const link=sentByGrant!.text.match(/https:\/\/app\.narriflow\.test\/review\/opt-out\?token=\S+/)?.[0];expect(link).toBeDefined();
+    const url=new URL(link!);expect(`${url.origin}${url.pathname}`).toBe("https://app.narriflow.test/review/opt-out");
+    expect(await reviewerOptOut.preview(url.searchParams.get("token")!)).toEqual({workspaceName:"Grant DB test",email:"client@example.test"});
+    expect(sentByHand).toBeDefined();expect(sentByHand!.text).not.toContain("/review/opt-out");
+    expect(new Set(mails.map(mail=>mail.idempotencyKey))).toEqual(new Set(ledgers.map(row=>`review-notification-${row.id}`)));
 		expect(byPerson.standingGrantId).toBeNull();
 	})));
 });

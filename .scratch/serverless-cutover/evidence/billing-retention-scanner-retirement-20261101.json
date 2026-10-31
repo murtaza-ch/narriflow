@@ -1,0 +1,61 @@
+{
+  "status": "local_implementation_and_gates_passed_parent_cutover_pending",
+  "pinned_bun": "1.3.6",
+  "database": "guarded loopback PostgreSQL17 isolated schemas only, full fresh migration chain",
+  "removed_production": [
+    "WorkspaceBillingStore.claimDueAccounts in-memory and Prisma global scans",
+    "WorkspaceBillingModule.reconcileDueAccounts batch concurrency/poll metrics, facade, obsolete batch/concurrency configuration",
+    "PendingBusinessWorkspace.sweep and Billing facade, candidate rotation and per-tick retry wrapper",
+    "ProjectRetention global warning scan, claimDueProject, purgeDueProjects, prefix bucket-list deletion, receipt deletion, arbitrary snapshot tombstone listing/replay"
+  ],
+  "preserved_production": [
+    "Exact Billing claimAccount/reconcileClaim and targeted Billing Workflow/lease watchdog",
+    "Exact pending Workspace expire(id,epoch) and authorized Cancel with final billing/content locks",
+    "Plan catalog retention assignment/access and atomic Workspace tier transition",
+    "Bounded pr1 Project privacy controller, exact-key MediaCleanup DELETE-ACK/MPU/grant fences",
+    "Proved rs2 quiesced snapshot recovery and bounded terminal retention pages"
+  ],
+  "semantic_ports": [
+    "Provider stale projection and stale retry races now explicitly acquire their accepted Workspace account",
+    "Plan-change schedule adoption, quoted amount/source drift, unpaid invoice and cancellation recovery call exact existing claim command",
+    "31 independent account IDs with four concurrent exact callers each proves one owner per account without global test state resets",
+    "Pending TTL, fresh-content/provider race, owner-only Cancel and missing session replay call exact expiry",
+    "Drive credential revocation uses bounded real pr1 permissions and ingest pages, no process environment/R2 failure workaround",
+    "All generated Workspace relations have an explicit removal policy; grantPauseNotifications and webhookDisabledNotifications count as protected content. Public Cancel refuses either notice before any provider call."
+  ],
+  "obsolete_tests_removed_with_replacements": {
+    "activating_poll_silence_and_worker_slot_waiting": "Targeted Billing DB gate proves future due sleep, exact acquisition, pre-provider watchdog ACK and no duplicate provider work. No process polling or batch queue exists.",
+    "pending_candidate_rotation_whole_tick_failure": "Exact command retry plus bounded page receipts replace whole-tick behavior. Existing Maintenance/runtime gates cover postcommit registration loss.",
+    "prefix_1250_objects_and_retry_bucket_scan": "Exact known-key plans and bounded cleanup controllers cover DELETE ACK/retry, incomplete MPU abort, grant holds and privacy wait. Bucket inference is forbidden by current architecture.",
+    "content_free_hash_only_test": "Actual privacy receipt test validates durable exact receipt, replay and deletion accounting."
+  },
+  "verification": {
+    "fast_billing_plan_stripe_pending_retention": {
+      "tests": 107,
+      "assertions": 566
+    },
+    "workspace_billing_postgresql": {
+      "tests": 30,
+      "assertions": 145
+    },
+    "processing_usage_postgresql": {
+      "tests": 31,
+      "assertions": 277
+    },
+    "targeted_billing_postgresql": {
+      "tests": 8,
+      "assertions": 61
+    },
+    "privacy_and_retention_pages_postgresql": {
+      "tests": 9,
+      "assertions": 102
+    },
+    "services_typecheck": true,
+    "api_typecheck": true,
+    "changed_biome": true
+  },
+  "limitations": [
+    "No Stripe requests, cloud deployment, shared migration, storage deletion or bucket listing performed.",
+    "Ticket23 closure remains owned by parent after integrated repository and deployed cutover checks."
+  ]
+}

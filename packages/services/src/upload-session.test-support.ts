@@ -420,11 +420,11 @@ export function createInMemoryUploadSessionHarness() {
       session.updatedAt = updatedAt;
       return session;
     },
-    async findDueReconciliation({ now, limit,sessionId }) {
+    async readDueReconciliation({ now, sessionId }) {
       return sessions
-        .filter(
+        .find(
           (session) =>
-            (!sessionId||session.id===sessionId) && ((session.status === "initiating" &&
+            (session.id===sessionId) && ((session.status === "initiating" &&
               !!session.admissionClaimExpiresAt &&
               session.admissionClaimExpiresAt.getTime() <= now.getTime()) ||
               (session.status === "uploading" &&
@@ -439,9 +439,7 @@ export function createInMemoryUploadSessionHarness() {
               session.reconcileAt.getTime() <= now.getTime()) &&
             (!session.reconciliationLeaseExpiresAt ||
               session.reconciliationLeaseExpiresAt.getTime() <= now.getTime()),
-        )
-        .sort((left, right) => left.updatedAt.getTime() - right.updatedAt.getTime())
-        .slice(0, limit);
+        ) ?? null;
     },
     async claimReconciliation({
       sessionId,

@@ -188,8 +188,6 @@ function catalogFromEnvironment(): BillingCatalog {
       interval,
     })),
     worker: {
-      batchSize: Number(readServiceEnvironment().WORKSPACE_BILLING_BATCH_SIZE ?? 25),
-      concurrency: Number(readServiceEnvironment().WORKSPACE_BILLING_CONCURRENCY ?? 4),
       leaseMs: Number(readServiceEnvironment().WORKSPACE_BILLING_LEASE_MS ?? 60_000),
       providerDeadlineMs: Number(
         readServiceEnvironment().WORKSPACE_BILLING_PROVIDER_DEADLINE_MS ?? 10_000,
@@ -655,10 +653,6 @@ export class BillingService {
     return this.workspaceBillingModule().inspectAccount(workspaceId);
   }
 
-  reconcileDueAccounts() {
-    return this.workspaceBillingModule().reconcileDueAccounts();
-  }
-
   reconcileClaim(claim: BillingReconciliationClaim) {
     return this.workspaceBillingModule().reconcileClaim(claim);
   }
@@ -674,9 +668,7 @@ export class BillingService {
     });
   }
 
-  sweepPendingBusinessWorkspaces() {
-    return this.pendingBusinessWorkspaces().sweep();
-  }
+
 
   expirePendingBusinessWorkspace(workspaceId: string, executionEpoch: number) {
     return this.pendingBusinessWorkspaces().expire(workspaceId, executionEpoch);

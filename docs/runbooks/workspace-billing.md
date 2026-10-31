@@ -4,39 +4,23 @@ Workspace Billing is the only owner of Stripe synchronization and Workspace enti
 
 ## Deployment gate and configuration
 
-Deploy database migrations before API or worker code. For this cutover the required order is the complete Prisma migration chain through:
-
-1. `20260828100000_workspace_entitlement_cutover`
-2. `20260828110000_workspace_billing_account`
-3. `20260828120000_stripe_delivery_acceptance`
-4. `20260828130000_replayable_workspace_checkout`
-5. `20260828140000_committed_membership_seats`
-6. `20260828150000_reusable_customer_operation_key`
-7. `20260828160000_typed_checkout_outcome`
-8. `20261026000001_checkout_slot`
-9. `20261027140000_workspace_plan_changes`
-
-Run `bun --cwd packages/db run prisma:generate`, then `bun --cwd packages/db run prisma:migrate:deploy` with `packages/db/.env`. Start the API and worker only after deployment succeeds.
+Apply the complete Prisma migration chain before deploying the API Worker. Follow [the serverless cutover runbook](serverless-cutover.md) for the selected database, Hyperdrive target, stopped consumers, and closed-admission sequence. Run `bun --cwd packages/db run prisma:generate`, then the guarded migration command against that same database.
 
 Stripe SDK requests and webhook fixtures are pinned to API version `2026-07-29.dahlia`, the version represented by the installed Stripe SDK. The Stripe webhook endpoint must use the same version. Upgrade the SDK, pinned API version, fixtures, and endpoint together.
 
 Place secrets only in the owning app-local environment file; never create a root `.env` and never commit credentials:
 
-- `apps/api/.env`: `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PORTAL_CONFIGURATION_ID`, all eight price IDs, and `DATABASE_URL`.
-- `apps/worker/.env`: `STRIPE_SECRET_KEY`, all eight price IDs, `DATABASE_URL`, and optional bounded worker controls.
+- `apps/api/.dev.vars` locally and Worker secrets when deployed: `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PORTAL_CONFIGURATION_ID`, and all eight price IDs. The Worker uses its selected Hyperdrive binding.
 - `packages/db/.env`: `DATABASE_URL` and `DIRECT_URL` for migrations and disposable database drills.
 
-The price IDs are `STRIPE_PRICE_<TIER>_<INTERVAL>` for every paid tier in `PLAN_CATALOG` (`packages/validators/src/pricing.ts`) and `STRIPE_PRICE_BUSINESS_SEAT_MONTHLY` / `_ANNUAL`. The six base prices must map exactly once to Creator, Pro, and Business monthly/annual. The two additional-seat prices must map exactly once to Business monthly/annual and must not collide with a base price. Web and worker validate this mapping at process startup. The web process additionally requires a `whsec_` webhook secret and `bpc_` portal configuration.
+The price IDs are `STRIPE_PRICE_<TIER>_<INTERVAL>` for every paid tier in `PLAN_CATALOG` (`packages/validators/src/pricing.ts`) and `STRIPE_PRICE_BUSINESS_SEAT_MONTHLY` / `_ANNUAL`. The six base prices must map exactly once to Creator, Pro, and Business monthly/annual. The two additional-seat prices must map exactly once to Business monthly/annual and must not collide with a base price. The API validates this mapping before Billing work. The API additionally requires a `whsec_` webhook secret and `bpc_` portal configuration.
 
 Stripe amounts are not read at runtime; the configured price ID is the authority for plan mapping. Each Stripe price must still match the catalog exactly: `monthlyPriceCents` / `annualPriceCents` of its tier, and `BUSINESS_ADDITIONAL_SEAT_PRICE_CENTS` for seats, in USD, licensed (not metered), with the matching recurring interval. Change the catalog and the Stripe prices together.
 
-Billing worker controls, defaults, and hard ranges:
+Billing execution controls, defaults, and hard ranges:
 
 | Variable | Default | Allowed |
 | --- | ---: | ---: |
-| `WORKSPACE_BILLING_POLL_INTERVAL_MS` | 5,000 | 250–300,000 |
-| `WORKSPACE_BILLING_BATCH_SIZE` | 25 | 1–500 |
-| `WORKSPACE_BILLING_CONCURRENCY` | 4 | 1–32 |
 | `WORKSPACE_BILLING_LEASE_MS` | 60,000 | 1,000–300,000 |
 | `WORKSPACE_BILLING_PROVIDER_DEADLINE_MS` | 10,000 | 100–120,000 |
 | `WORKSPACE_BILLING_PROVIDER_CALL_BUDGET` | 4 | 1–20 |
@@ -74,7 +58,7 @@ Keep sandbox and live completely separate: distinct keys, endpoint, signing secr
 
 Use one **Narriflow plans** product containing the six fixed USD base prices and one separate **Narriflow Business additional seat** product containing the two seat prices. Stripe charges the subscription; Narriflow reserves and settles monthly processing credits. Annual payment does not grant an annual credit pool. Product and price metadata are diagnostic; configured price IDs own the mapping.
 
-Processing Capacity is also a catalog limit: Free/Creator/Pro/Business allow 2/5/10/20 videos in flight. Admission, usage summaries, and the public comparison read the same catalog value in the API and worker. There are no environment overrides for this limit. Worker concurrency settings control execution separately.
+Processing Capacity is also a catalog limit: Free/Creator/Pro/Business allow 2/5/10/20 videos in flight. Admission, usage summaries, and the public comparison read the same catalog value in the API. There are no environment overrides for this limit. Each accepted Billing reference has its own exact lease and registered watchdog.
 
 Source credits and length caps use the probed duration: 60.01 seconds costs 2 credits, and a source a fraction over its plan's length cap is refused. Ingest ceilings the integer source-duration column while retaining the exact probe for media timing.
 
@@ -104,7 +88,7 @@ Reconciliation resumes an interrupted confirming attempt with its original quote
 Check the configured catalog and recovery-only portal without creating objects:
 
 ```sh
-RUN_STRIPE_SANDBOX_CONTRACTS=1 bun --env-file=apps/api/.env test \
+RUN_STRIPE_SANDBOX_CONTRACTS=1 bun --env-file=apps/api/.dev.vars test \
   packages/services/src/workspace-billing.sandbox.test.ts -t "match the plan catalog"
 ```
 
@@ -154,27 +138,27 @@ Provider timeouts retain the last verified projection and retry with bounded bac
 Start with read-only inspection. The command reports normalized local and provider state without customer, subscription, item, Checkout, event, or attempt IDs:
 
 ```sh
-bun --env-file=apps/api/.env run packages/services/scripts/workspace-billing-operator.ts \
+bun --env-file=apps/api/.dev.vars run packages/services/scripts/workspace-billing-operator.ts \
   --workspace 11111111-1111-4111-8111-111111111111
 ```
 
 Compare local plan, access, health, desired/synchronized seats, ownership classification, subscription count/status, mapped base plan, cancellation, period facts, and provider seat quantity. Then inspect structured `workspace_billing_*` diagnostics by Workspace and phase. Never paste raw Stripe errors, webhook bodies, signatures, URLs, email, address, payment details, or full provider IDs into logs, tickets, analytics, or product copy.
 
-The service emits `workspace_billing_metric` records for delivery disposition and acceptance latency, provider-call success/failure, claim source, queue age, bounded retry bands and delay, settlement outcome, operation duration, desired/synchronized seat quantity, conflicts, grace entry/recovery, restrictions, retention changes, and terminal health. Labels are bounded billing facts such as event class, operation, outcome, retry band, health, access, and transition; they never contain Workspace or provider identifiers. A worker poll that claims no account records nothing; check the worker's `/health` loop status for liveness.
+The service emits `workspace_billing_metric` records for delivery disposition and acceptance latency, provider-call success/failure, claim source, queue age, bounded retry bands and delay, settlement outcome, operation duration, desired/synchronized seat quantity, conflicts, grace entry/recovery, restrictions, retention changes, and terminal health. Labels are bounded billing facts such as event class, operation, outcome, retry band, health, access, and transition; they never contain Workspace or provider identifiers. Inspect the accepted `ExecutionDispatch`, its registration outcome, the current Billing generation, and its lease watchdog for scheduler liveness.
 
 For a safe manual current-state retry, add the explicit switch:
 
 ```sh
-bun --env-file=apps/api/.env run packages/services/scripts/workspace-billing-operator.ts \
+bun --env-file=apps/api/.dev.vars run packages/services/scripts/workspace-billing-operator.ts \
   --workspace 11111111-1111-4111-8111-111111111111 \
   --reconcile
 ```
 
-The command is idempotent. It retrieves current state and invokes the same fenced Workspace Billing interface as the worker. It does not directly edit a tier, cancel, merge, refund, delete, or repair Stripe objects.
+The command is idempotent. It retrieves current state and invokes the same fenced Workspace Billing interface as the Workflow driver. It does not directly edit a tier, cancel, merge, refund, delete, or repair Stripe objects.
 
 Diagnosis guide:
 
-- Accepted or duplicate event but stale UI: confirm worker is running, inspect `nextReconcileAt`, claim age, lease, and retry diagnostics, then reconcile once.
+- Accepted or duplicate event but stale UI: inspect the accepted Workflow registration, then inspect `nextReconcileAt`, claim age, lease, and retry diagnostics, then reconcile once.
 - `retrying`: check Stripe availability and provider deadlines. Preserve current access and let bounded backoff continue.
 - `payment_action_required`: confirm the fixed grace deadline and direct the owner to the portal. Do not reset the deadline.
 - `attention_required`: inspect ownership, subscription count, price mapping, and seat-item count. Correct sandbox metadata/catalog configuration only after identifying the exact Workspace.
@@ -195,7 +179,7 @@ bun run build
 bun test packages/services/src/workspace-billing.service.test.ts --rerun-each 2
 bun test packages/services/src/workspace-billing.stripe-contract.test.ts
 bun run packages/services/scripts/run-workspace-billing-db-tests.ts
-RUN_STRIPE_SANDBOX_CONTRACTS=1 bun --env-file=apps/api/.env test \
+RUN_STRIPE_SANDBOX_CONTRACTS=1 bun --env-file=apps/api/.dev.vars test \
   packages/services/src/workspace-billing.sandbox.test.ts
 ```
 
@@ -209,24 +193,22 @@ This is a direct pre-production cutover. Do not add a flag, shadow handler, dual
 
 For application rollback, preserve `WebhookDeliveryLog`, `WorkspaceBillingAccount`, `WorkspaceCheckoutAttempt`, and `WorkspaceBillingTransition` evidence. Roll back code only to a version that understands the deployed schema; otherwise roll forward. Do not reverse migrations against shared data and do not mutate live Stripe objects as part of code rollback.
 
-Because there are no production users or data, inconsistent local fixtures may instead be reset deliberately: stop the API and worker, export any evidence needed for debugging, delete only the identified local test Workspaces or recreate the local database, delete only sandbox customers carrying the known test fixture metadata, apply the full migration chain, and restart. Never use a broad customer deletion query and never apply this reset procedure to live mode.
+Because there are no production users or data, inconsistent local fixtures may instead be reset deliberately: fence the API and stop execution consumers, export any evidence needed for debugging, delete only the identified local test Workspaces or recreate the local database, delete only sandbox customers carrying the known test fixture metadata, apply the full migration chain, and restart. Never use a broad customer deletion query and never apply this reset procedure to live mode.
 
 Live-mode mutations remain prohibited until the sandbox matrix, exact event registration, portal catalog, secrets, migration deploy, operator command, database drill, repository checks, and browser checks all pass and are recorded.
 
 ### Abandoned Business checkout
 
-`checkout.session.expired` wakes the existing provider reconciliation loop. Stripe
+`checkout.session.expired` appends the exact account reconciliation obligation. Stripe
 endpoint `we_1UVobgFB4NArILpPk1Kkgqrh` was checked read-only on 2026-10-30 and still has the previous 19-event list;
 add `checkout.session.expired` to its subscriptions when rolling out this change.
 This code change does not update Stripe configuration.
 
-An independent hourly worker loop checks at most 25 pending workspaces per pass,
-skipping rows updated within the last hour. Cleanup failures are caught per row
-and per tick, and cannot delay the stalled-run reaper or billing reconciliation.
+A bounded indexed Maintenance page registers exact pending-Workspace expiry commands. Each command skips rows updated within the last hour and rechecks its current epoch. Provider failures retry that command without a process polling loop.
 An empty, creator-only workspace is eligible a day after the last session expiry, with a
 48-hour floor from creation and a 48-hour allowance for a lost session response.
 Cleanup verifies there is no Stripe subscription of any status, protects local
-subscription history and all project/brand content, then locks and rechecks the
+subscription history, project/brand content, and accepted grant/webhook notices until their own retention removes them, then locks and rechecks the
 workspace and billing facts before deletion. Provider failures defer cleanup.
 Owner Discard workspace asks for inline confirmation, verifies Stripe subscription
 history before expiring an open session, then removes the empty workspace. A
@@ -234,4 +216,4 @@ refusal offers Open billing. Discard fences unfinished provider preparations.
 Checkout creation reuses the owner's existing pending workspace across distinct form intents and renames it to the
 new requested name when it is still empty and unpaid. Creation receipt replays
 after deletion return `workspace_no_longer_exists` without stale recovery IDs.
-Missing and inaccessible Discard targets both acknowledge a no-op. No migration is needed.
+Missing and inaccessible Discard targets both acknowledge a no-op.

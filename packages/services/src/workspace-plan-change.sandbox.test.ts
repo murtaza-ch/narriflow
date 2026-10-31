@@ -13,7 +13,7 @@ sandbox("Workspace plan changes Stripe sandbox", () => {
     const key = process.env.STRIPE_SECRET_KEY;
     if (!key?.startsWith("sk_test_")) throw new Error("Stripe test key required");
     const stripe = new Stripe(key, { apiVersion: "2026-07-29.dahlia", maxNetworkRetries: 0, timeout: 15_000 });
-    const catalog = createBillingCatalog({ basePrices: PAID_PRICING_TIERS.flatMap((tier) => BILLING_INTERVALS.map((interval) => ({ tier, interval, priceId: process.env[`STRIPE_PRICE_${tier.toUpperCase()}_${interval.toUpperCase()}`]! }))), seatPrices: BILLING_INTERVALS.map((interval) => ({ interval, priceId: process.env[`STRIPE_PRICE_BUSINESS_SEAT_${interval.toUpperCase()}`]! })), worker: { batchSize: 1, concurrency: 1, leaseMs: 120_000, providerDeadlineMs: 15_000, providerCallBudget: 10 } });
+    const catalog = createBillingCatalog({ basePrices: PAID_PRICING_TIERS.flatMap((tier) => BILLING_INTERVALS.map((interval) => ({ tier, interval, priceId: process.env[`STRIPE_PRICE_${tier.toUpperCase()}_${interval.toUpperCase()}`]! }))), seatPrices: BILLING_INTERVALS.map((interval) => ({ interval, priceId: process.env[`STRIPE_PRICE_BUSINESS_SEAT_${interval.toUpperCase()}`]! })), worker: { leaseMs: 120_000, providerDeadlineMs: 15_000, providerCallBudget: 10 } });
     return { stripe, catalog, provider: createStripePlanChangeProvider(stripe, catalog) };
   }
   async function fixture(stripe: Stripe, price: string, clock = false, seats?: string) {

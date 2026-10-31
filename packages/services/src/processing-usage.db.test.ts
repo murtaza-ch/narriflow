@@ -23,7 +23,8 @@ import { startIngestTestExecution } from "./ingest-execution-test-support";
 import { ingestExecutionInputHash } from "./ingest-source-execution";
 import { createSourceVideoValidator } from "./source-readiness";
 import { createDriveTokenCipher, createGoogleDriveFileReader, DriveSourceError } from "./drive-source";
-import { projectRetentionService } from "./project-retention.service";
+import { createProjectRetentionExecution, planProjectRetentionPage } from "./project-retention-execution";
+import { readExecutionDispatch } from "./execution-dispatch";
 import { ExpectedDomainFailureError } from "./expected-domain-failure";
 import { IngestJobLifecycle } from "./ingest-job-lifecycle";
 import { ProcessingUsage, ProcessingUsageError } from "./processing-usage";
@@ -1015,18 +1016,21 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
       data: { retentionPolicyKey: "free_project_v1", expiresAt: new Date(Date.now() - 60 * 60_000) },
     });
 
-    const priorEnv = { ...process.env };
-    process.env.PROJECT_RETENTION_MODE = "enforce";
-    process.env.PROJECT_RETENTION_ENFORCEMENT_STARTED_AT = "2020-01-01T00:00:00.000Z";
-    // Without R2 the purge stops after claiming, so the cancelled job stays inspectable.
-    delete process.env.R2_ACCOUNT_ID;
-    try {
-      await projectRetentionService.purgeDueProjects(10, new Date());
-    } finally {
-      for (const key of ["PROJECT_RETENTION_MODE", "PROJECT_RETENTION_ENFORCEMENT_STARTED_AT", "R2_ACCOUNT_ID"]) {
-        if (priorEnv[key] === undefined) delete process.env[key];
-        else process.env[key] = priorEnv[key];
-      }
+    const epoch = (await prisma.executionEpoch.findUniqueOrThrow({ where: { id: 1 } })).epoch;
+    const expired = await prisma.project.findUniqueOrThrow({ where: { id: drive.project.id } });
+    const planned = await prisma.$transaction(tx => planProjectRetentionPage(tx, { deploymentEpoch: epoch, cutoff: new Date(),
+      after: { at: new Date(expired.expiresAt!.getTime() - 1), id: "00000000-0000-0000-0000-000000000000" }, limit: 1 }));
+    let current = (await readExecutionDispatch(prisma, planned.dispatchIds![0]!))!.reference;
+    expect(current.subject.id).toContain(drive.project.id);
+    let nextIds: readonly string[] = [];
+    const retention = createProjectRetentionExecution({ database: prisma, register: async ids => { nextIds = ids; },
+      releaseUsage: async () => { throw Error("Credential test must stop before final purge"); },
+      writeDeletionReceipt: async () => { throw Error("Credential test must not touch storage"); } });
+    for (let step = 0; step < 3; step++) {
+      const phase = current.subject.id;
+      await retention.run(current);
+      if (phase.includes(".ingest")) break;
+      current = (await readExecutionDispatch(prisma, nextIds.at(-1)!))!.reference;
     }
 
     const after = await prisma.ingestJob.findUniqueOrThrow({ where: { id: drive.queuedJobId! } });

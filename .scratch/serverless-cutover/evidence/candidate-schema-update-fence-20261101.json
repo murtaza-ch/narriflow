@@ -1,0 +1,75 @@
+{
+  "observedAt": "2026-10-31T19:29:31.350Z",
+  "scope": "Isolated serverless_pipeline_gates candidate only; shared development untouched",
+  "worker": {
+    "observedAt": "2026-10-31T19:27:03.923Z",
+    "status": 200,
+    "cacheControl": "no-store",
+    "ok": true,
+    "service": "narriflow-api",
+    "version": "64d0a753-b4d5-4e40-a85c-cdfaa9d77ad2",
+    "admissionState": "fenced"
+  },
+  "cron": "Explicit empty crons array deployed; no scheduled trigger listed in deploy result",
+  "workflowInstancesBefore": {
+    "import": {},
+    "render": {
+      "complete": 3
+    },
+    "operation": {
+      "waiting": 9,
+      "errored": 1,
+      "complete": 48
+    },
+    "maintenance": {
+      "complete": 76
+    }
+  },
+  "terminatedWaitingOperationInstances": 9,
+  "databaseBeforeEpochFence": {
+    "database": "serverless_pipeline_gates",
+    "observed_at": "2026-10-31T19:27:04.799Z",
+    "epoch": {
+      "id": 1,
+      "epoch": 1,
+      "admissionOpen": false,
+      "changedAt": "2026-10-31T13:06:47.553"
+    },
+    "active_attempts": 0,
+    "uncertain_multipart": 0,
+    "claimed_cleanup": 0,
+    "processing_posts": 0
+  },
+  "epochFence": {
+    "mode": "fenced",
+    "resource": {
+      "environment": null,
+      "accountId": "5359f28d385b8632c3abee12d1f5b011",
+      "workflowName": "narriflow-maintenance-candidate",
+      "databaseHost": "ep-wispy-field-b5wyn9o3.c-7.us-east-2.aws.neon.tech",
+      "database": "serverless_pipeline_gates",
+      "schema": "public"
+    },
+    "sourceEpoch": 2,
+    "fencedAt": "2026-10-31T19:27:25.888Z",
+    "admissionOpen": false
+  },
+  "modal": {
+    "app": "narriflow-media-gates",
+    "containers": 0
+  },
+  "backup": {
+    "capturedAt": "2026-10-31T19:29:31.350Z",
+    "byteLength": 679905,
+    "sha256": "1d81e5879f02d0128bce2cba43a4885fa34104de0909ea68c33c675ec3a51228",
+    "entries": 1117,
+    "scope": "private fenced pre-migration backup; not a qualified restore snapshot"
+  },
+  "qualification": "Operational fence and pre-migration backup only. Qualified restore and final idle acceptance remain open.",
+  "logHashes": {
+    "candidate-quiesced-triggers-deploy.log": "bcfacd015370e2617a50475c64ecbf0bafefff677850154b7dc6605f60c691ac",
+    "candidate-fenced-deploy.log": "6fee1f74883d92b6994f4c30c2f82f1cba98cc8e254b52b1d38ff0488e8771ca",
+    "pre-migration-terminated-instances.json": "239eedb3e88bfb2feed12edddbd3f8e577fe7715edbb50ba29444d97335462e6",
+    "pre-migration-backup.json": "f737db0ffa00992faf6d56553fbe7e080297f473003067f2f1f1899e91cfaecf"
+  }
+}

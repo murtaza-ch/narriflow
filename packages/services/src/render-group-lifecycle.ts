@@ -455,7 +455,7 @@ export class RenderGroupLifecycle {
   }
   /** Root executor control holds the epoch lock before entering this domain. */
   private async executionState(tx: Tx, reference: ExecutionDispatchReference, attemptToken: string): Promise<
-    { kind: "current"; ref: RenderGroupExecutionReference; group: RenderGroup; parent: WorkflowRun; now: Date } |
+    { kind: "current"; ref: RenderGroupExecutionReference; group: RenderGroup; parent: WorkflowRun; now: Date; clipExists: boolean } |
     { kind: "terminal"; disposition: ExecutionDisposition }
   > {
     if (reference.subject.kind !== "render_group") return { kind: "terminal", disposition: { disposition: "superseded" } };
@@ -475,14 +475,32 @@ export class RenderGroupLifecycle {
     if (group.status === "superseded") return { kind: "terminal", disposition: { disposition: "superseded" } };
     if (group.status === "failed") return { kind: "terminal", disposition: { disposition: "failed", failureCode: "render_group_failed" } };
     if (group.status === "running" && group.attemptToken !== attemptToken) return { kind: "terminal", disposition: { disposition: "superseded" } };
+    const clips = await tx.$queryRaw<Array<{ id: string }>>`SELECT id FROM "Clip" WHERE id = ${group.clipId}::uuid AND "projectId" = ${parent.projectId}::uuid FOR KEY SHARE`;
     await memberSnapshot(tx, groupRef);
     const now = await renderGroupDatabaseNow(tx);
-    return { kind: "current", ref: { ...groupRef, projectId: parent.projectId, generation: group.generation, deploymentEpoch: group.deploymentEpoch, attemptToken }, group, parent, now };
+    return { kind: "current", clipExists: clips.length === 1, ref: { ...groupRef, projectId: parent.projectId, generation: group.generation, deploymentEpoch: group.deploymentEpoch, attemptToken }, group, parent, now };
   }
 
   async lockExecution(tx: Tx, reference: ExecutionDispatchReference, attemptToken: string): Promise<ExecutorDomainLock<RenderGroupExecutionReference>> {
     const state = await this.executionState(tx, reference, attemptToken);
     if (state.kind === "terminal") return { ...state, dispatchIds: await this.recordedExecutionWakes(tx, reference) };
+    if (!state.clipExists) {
+      // Historical preparation and charged execution rows survive Clip replacement.
+      // Only this group's publication permission ends; other Clips keep their owners.
+      const { group, now } = state;
+      await tx.renderGroupMember.updateMany({ where: { groupId: group.id, invalidatedAt: null }, data: { invalidatedAt: now } });
+      if (group.attemptToken) {
+        await tx.renderGroupExecution.updateMany({ where: { groupId: group.id, token: group.attemptToken, finishedAt: null },
+          data: { finishedAt: now, result: "interrupted", errorCode: "render_clip_deleted" } });
+      }
+      await tx.renderGroup.update({ where: { id: group.id }, data: { status: "superseded", attemptToken: null, leaseOwner: null,
+        leaseExpiresAt: null, heartbeatAt: null, nextAttemptAt: null, settledAt: now } });
+      await tx.$queryRaw`SELECT "attemptToken" FROM "ExecutionAttempt" WHERE "attemptToken" = ${attemptToken}::uuid FOR UPDATE`;
+      await tx.executionAttempt.updateMany({ where: { attemptToken, dispatchId: reference.dispatchId, generation: reference.generation,
+        deploymentEpoch: reference.deploymentEpoch, inputHash: reference.inputHash, status: { in: ["admitted", "running"] } },
+        data: { status: "superseded", revokedAt: now, finishedAt: now, failureCode: "render_clip_deleted" } });
+      return { kind: "terminal", disposition: { disposition: "superseded" }, ...(await this.executionWakes(tx, state.ref, reference.inputHash, false)) };
+    }
     const project = await tx.project.findFirst({ where: { id: state.ref.projectId, ...accessibleProjectWhere(state.now), workspace: { status: "active" } }, select: { id: true, sourceRevision: true } });
     const preparation = state.group.preparationId ? await tx.clipPreparation.findUnique({ where: { id: state.group.preparationId }, select: { sourceRevision: true, projectId: true, clipId: true, deploymentEpoch: true } }) : null;
     if (project && preparation && (preparation.sourceRevision !== project.sourceRevision || preparation.projectId !== project.id || preparation.clipId !== state.group.clipId || preparation.deploymentEpoch !== state.group.deploymentEpoch)) {

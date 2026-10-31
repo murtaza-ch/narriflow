@@ -35,5 +35,5 @@
   ],
   // Admission stays closed until the domain handler registry and acceptance
   // gates integrate. Unknown Workflow subjects fail explicitly.
-  "vars": { "ADMISSION_STATE": "closed", "APP_ENV": "development" }
+  "vars": { "ADMISSION_STATE": "closed", "APP_ENV": "development", "TRUSTED_CLIENT_IP_HEADER": "cf-connecting-ip" }
 }

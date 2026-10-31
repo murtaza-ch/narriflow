@@ -27,7 +27,6 @@ dbDescribe("Review access PostgreSQL contracts", () => {
   let prisma: PrismaClient;
   let pool: Pool;
   let priorPrisma: PrismaClient | undefined;
-  let priorRedisUrl: string | undefined;
   const prismaGlobal = createDatabaseTestContext();
   const workspaceIds: string[] = [];
   const userIds: string[] = [];
@@ -39,16 +38,12 @@ dbDescribe("Review access PostgreSQL contracts", () => {
     prisma = new PrismaClient({ adapter: new PrismaPg(pool, databaseSchema ? { schema: databaseSchema } : undefined) });
     priorPrisma = prismaGlobal.client;
     prismaGlobal.client = prisma;
-    priorRedisUrl = process.env.UPSTASH_REDIS_URL;
-    delete process.env.UPSTASH_REDIS_URL;
   })));
 
   afterAll(bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     await prisma?.workspace.deleteMany({ where: { id: { in: workspaceIds } } });
     await prisma?.user.deleteMany({ where: { id: { in: userIds } } });
     prismaGlobal.client = priorPrisma;
-    if (priorRedisUrl === undefined) delete process.env.UPSTASH_REDIS_URL;
-    else process.env.UPSTASH_REDIS_URL = priorRedisUrl;
     await prisma?.$disconnect();
     await pool?.end();
   })));

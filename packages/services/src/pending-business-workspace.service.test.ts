@@ -50,6 +50,15 @@ describe("pending Business workspace removal policy", () => {
     }
   });
 
+  test("accepted grant and webhook notices prevent Cancel from deleting their sealed facts", async () => {
+    for (const relation of ["grantPauseNotifications", "webhookDisabledNotifications"] as const) {
+      const row = empty(); row._count[relation] = 1;
+      const service = createPendingBusinessWorkspaceService({ prisma: { workspace: { findUnique: async () => row } } as unknown as PrismaClient,
+        provider: { retrieveCurrentState: async () => { throw new Error("Protected notice must stop before provider IO"); } }, expireSession: async () => { throw new Error("Protected notice must not expire Checkout"); } });
+      expect(await service.cancel("workspace", "creator")).toBe(false);
+    }
+  });
+
   test("only an empty creator-only unpaid workspace qualifies", () => {
     expect(canRemovePendingBusinessWorkspace(empty())).toBe(true);
     for (const change of [
@@ -79,27 +88,5 @@ describe("pending Business workspace removal policy", () => {
     expect(pendingBusinessWorkspaceDueAt(row)).toBe(now.getTime() + 2 * 86400_000);
     row.billingAccount!.checkoutAttempts = [{ expiresAt: new Date(now.getTime() + 3 * 86400_000), createdAt: now }] as NonNullable<Row["billingAccount"]>["checkoutAttempts"];
     expect(pendingBusinessWorkspaceDueAt(row)).toBe(now.getTime() + 4 * 86400_000);
-  });
-});
-
-describe("pending cleanup failure isolation", () => {
-  test("a failed candidate rotation does not skip the next candidate", async () => {
-    const checked: string[] = [];
-    const rotated: string[] = [];
-    const prisma = { workspace: {
-      findMany: async () => [{ id: "first" }, { id: "second" }],
-      findUnique: async ({ where }: { where: { id: string } }) => { checked.push(where.id); throw new Error("Read unavailable"); },
-      updateMany: async ({ where }: { where: { id: string } }) => { rotated.push(where.id); throw new Error("Rotation unavailable"); },
-    } } as unknown as PrismaClient;
-    const service = createPendingBusinessWorkspaceService({ prisma, provider: { retrieveCurrentState: async () => { throw new Error("unused"); } }, expireSession: async () => {} });
-    expect(await service.sweep()).toEqual({ checked: 2, removed: 0 });
-    expect(checked).toEqual(["first", "second"]);
-    expect(rotated).toEqual(checked);
-  });
-
-  test("a failed whole-tick candidate read is deferred", async () => {
-    const prisma = { workspace: { findMany: async () => { throw new Error("Database unavailable"); } } } as unknown as PrismaClient;
-    const service = createPendingBusinessWorkspaceService({ prisma, provider: { retrieveCurrentState: async () => { throw new Error("unused"); } }, expireSession: async () => {} });
-    expect(await service.sweep()).toEqual({ checked: 0, removed: 0 });
   });
 });
