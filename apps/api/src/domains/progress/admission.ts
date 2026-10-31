@@ -1,14 +1,10 @@
 import type { AdmissionTable } from "../platform/admission-table";
 
-/**
- * Admission of the progress routes, keyed by `METHOD /path` under `/api`.
- * The `stream` tier is the actor's connection-start limit (30/minute).
- */
+/** Ticket issuance resolves the current actor, membership and Project. */
 export const progressAdmission = {
-  "GET /stream/:projectId": {
-    kind: "project",
-    capability: "content.view",
-    projectParam: "projectId",
-    tier: "stream",
-  },
+  "POST /projects/:projectId/progress-ticket": { kind: "project", capability: "content.view", projectParam: "projectId", tier: "stream" },
+} as const satisfies AdmissionTable;
+
+export const progressSocketAdmission = {
+  "GET /progress/:projectId": { trust: "progress_connect_ticket" },
 } as const satisfies AdmissionTable;

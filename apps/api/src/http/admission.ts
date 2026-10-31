@@ -76,6 +76,7 @@ export type AdmissionDeclaration =
  * given a Clerk session. Declaring it keeps the route off the fail-closed path.
  */
 export type IndependentTrust =
+  | "progress_connect_ticket"
   | "signed_review_token"
   | "public_share_token"
   | "signed_opt_out_token"

@@ -405,6 +405,14 @@
     "./webhook-subscription": {
       "types": "./src/webhook-subscription.ts",
       "default": "./src/webhook-subscription.ts"
+    },
+    "./progress-ticket": {
+      "types": "./src/progress-ticket.ts",
+      "default": "./src/progress-ticket.ts"
+    },
+    "./progress-feed": {
+      "types": "./src/progress-feed.ts",
+      "default": "./src/progress-feed.ts"
     }
   },
   "scripts": {

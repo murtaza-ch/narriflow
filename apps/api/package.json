@@ -25,7 +25,8 @@
     "migrations:check": "bun scripts/generate-database-migrations.ts --check",
     "test:runtime:workerd": "node --experimental-strip-types scripts/run-worker-runtime-gates.ts",
     "audit:worker": "bun scripts/audit-worker-bundle.ts",
-    "test:mcp:workerd": "node --experimental-strip-types scripts/run-mcp-runtime-gates.ts"
+    "test:mcp:workerd": "node --experimental-strip-types scripts/run-mcp-runtime-gates.ts",
+    "test:progress:workerd": "node --experimental-strip-types scripts/run-progress-runtime-gates.ts"
   },
   "dependencies": {
     "@ffprobe-installer/ffprobe": "2.1.2",
@@ -55,6 +56,8 @@
     "@types/pg": "8.15.5",
     "pg": "8.17.2",
     "wrangler": "4.156.0",
-    "@cloudflare/workers-types": "5.20261030.1"
+    "@cloudflare/workers-types": "5.20261030.1",
+    "ws": "8.21.3",
+    "@types/ws": "8.18.1"
   }
 }

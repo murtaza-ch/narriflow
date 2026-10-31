@@ -9,3 +9,5 @@ export default createApiWorker({
 });
 
 export { RateLimiter } from "./durable-objects/rate-limiter";
+
+export { ProjectProgress } from "./durable-objects/project-progress";

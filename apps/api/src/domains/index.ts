@@ -11,7 +11,7 @@ import { integrationsAdmission } from "./integrations/admission";
 import { libraryAdmission } from "./library/admission";
 import type { AdmissionTable } from "./platform/admission-table";
 import { platformAdmission } from "./platform/admission";
-import { progressAdmission } from "./progress/admission";
+import { progressAdmission, progressSocketAdmission } from "./progress/admission";
 import { projectsAdmission } from "./projects/admission";
 import { publishingAdmission } from "./publishing/admission";
 import { recipesAdmission } from "./recipes/admission";
@@ -86,5 +86,6 @@ export const ADMISSION_TABLES = {
   developer: developerAdmission,
   integrations: integrationsAdmission,
   progress: progressAdmission,
+  progressSocket: progressSocketAdmission,
   rest: restAdmission,
 } as const satisfies Record<string, AdmissionTable>;

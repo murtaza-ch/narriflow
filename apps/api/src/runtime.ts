@@ -35,7 +35,8 @@ import { createLibraryRoutes } from "./domains/library/routes";
 import { createClerkWebhookDependencies } from "./domains/platform/clerk/runtime";
 import { createDatabaseReadiness, expectedDatabaseMigrations } from "./domains/platform/database-readiness";
 import type { HealthDependencies } from "./domains/platform/health";
-import { createProgressRouteDeps } from "./domains/progress/runtime";
+import { createProgressSocketRoutes } from "./domains/progress/socket";
+import { createProgressSocketDeps, createProgressRouteDeps } from "./domains/progress/runtime";
 import { createProgressRoutes } from "./domains/progress/routes";
 import { createProjectsRouteDeps } from "./domains/projects/runtime";
 import { createProjectsRoutes } from "./domains/projects/routes";
@@ -114,7 +115,7 @@ export function createExternalRoutes(
   config: ApiConfig,
   clerkClient?: ReturnType<typeof createServerClerkClient>,
   runInRequestScope?: WorkerInvocation,
-): Pick<ApiAppDependencies, "webhooks" | "rest" | "mcp"> {
+): Pick<ApiAppDependencies, "webhooks" | "rest" | "mcp" | "progressSocket"> {
   return {
     webhooks: {
       billing: createBillingWebhookRoutes(createBillingWebhookDeps()),
@@ -122,6 +123,7 @@ export function createExternalRoutes(
       automation: createAutomationWebhookRoutes(createAutomationWebhookDeps()),
       projects: createProjectsWebhookRoutes(createProjectsWebhookDeps()),
     },
+    progressSocket: createProgressSocketRoutes(createProgressSocketDeps(config)),
     rest: createRestRoutes(createRestRouteDeps(config)),
     mcp: createMcpTransportRoutes(createMcpTransportDeps(config, clerkClient, runInRequestScope)),
   };

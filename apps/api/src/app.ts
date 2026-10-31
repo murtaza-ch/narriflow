@@ -39,6 +39,7 @@ export interface ApiAppDependencies {
   rest: AnyRoutes;
   /** MCP resource, discovery documents and upload transport, mounted at `/` outside the first-party chain. */
   mcp: AnyRoutes;
+  progressSocket: AnyRoutes;
   /** Reserved staff area at `/api/admin`; ships no operations. */
   admin: AdminDependencies;
 }
@@ -63,6 +64,7 @@ export function createApiApp(deps: ApiAppDependencies): Hono<ApiEnv> {
   const { config } = deps;
   const app = new Hono<ApiEnv>();
 
+  app.use("*", async (c, next) => { c.set("requestStartedAt", Date.now()); await next(); });
   app.use("*", apiRequestId());
   app.use("*", requestLogger({ skipRoutes: ["/api/health", "/api/ready"] }));
   app.use("*", apiSecurityHeaders({ production: config.nodeEnv === "production" }));
@@ -87,6 +89,7 @@ export function createApiApp(deps: ApiAppDependencies): Hono<ApiEnv> {
 
   app.route("/api/v1", deps.rest);
   app.route("/", deps.mcp);
+  app.route("/api", deps.progressSocket);
 
   const firstParty = new Hono<ApiEnv>();
   firstParty.use("*", firstPartyCors({ allowedOrigins: config.corsAllowedOrigins }));
