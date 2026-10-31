@@ -30,6 +30,16 @@ suite("Clip preparation frozen input ledger", () => {
     if (workspaceId) await database.workspace.delete({ where: { id: workspaceId } });
     if (userId) await database.user.delete({ where: { id: userId } });
     await database?.$disconnect(); });
+  test("new preparation admission requires a live Clip in the same Project", async () => {
+    const epoch = (await database.executionEpoch.findUniqueOrThrow({ where: { id: 1 } })).epoch;
+    const data = { projectId, clipId: crypto.randomUUID(), sourceRevision: 1, editorRevision: 1, bindingHash: "1".repeat(64), engineHash: "2".repeat(64), inputHash: "3".repeat(64),
+      inputStorageKey: `projects/${projectId}/preparations/${crypto.randomUUID()}/${crypto.randomUUID()}.json`, inputEtag: '"input"', inputByteLength: 100n, inputChecksumSha256: "4".repeat(64), deploymentEpoch: epoch,
+      operationDeadlineAt: new Date(Date.now() + 45 * 60_000) };
+    await expect(Promise.resolve(database.clipPreparation.create({ data }))).rejects.toThrow();
+    const other = await database.project.create({ data: { workspaceId, title: "Other project", sourceMediaUrl: "r2://other" } });
+    await expect(Promise.resolve(database.clipPreparation.create({ data: { ...data, projectId: other.id, clipId } }))).rejects.toThrow();
+    expect(await database.clipPreparation.count({ where: { inputStorageKey: data.inputStorageKey } })).toBe(0);
+  });
   test("sealed input and absolute deadline survive a retry and reject replacement or partial ownership", async () => {
     const epoch = (await client.query('SELECT "epoch" FROM "ExecutionEpoch" WHERE "id"=1')).rows[0].epoch;
     await client.query(`INSERT INTO "ClipPreparation" ("id","projectId","clipId","sourceRevision","editorRevision","bindingHash","engineHash","inputHash","inputStorageKey","inputEtag","inputByteLength","inputChecksumSha256","deploymentEpoch","operationDeadlineAt","updatedAt")

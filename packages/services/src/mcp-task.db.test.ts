@@ -1,5 +1,9 @@
 import { bindServiceTestEnvironment } from "./runtime-test-support";
 import { createDatabaseTestContext } from "@narriflow/db/testing";
+import { admitMediaCleanupObligations } from "./media-cleanup-admission";
+import { mediaCleanupObjectRetainUntil } from "./media-cleanup-holds";
+import { executionInputRetainUntil } from "./execution-input-retention";
+import { prepareSelectionTestExecution } from "./selection-execution-test-support";
 import { RenderFixtureLifecycle } from "./render-group-test-fixture";
 import { randomUUID } from "node:crypto";
 import { beforeAll, beforeEach, afterAll, describe, expect, test, setDefaultTimeout } from "bun:test";
@@ -192,21 +196,12 @@ db("durable MCP Task lifecycle", () => {
     expect((await registry().get(row.id, { ownerUserId: userId, callerId: input.callerId })).status).toBe("cancelled");
   })));
   test("durable child outcomes survive Studio cache reset and ignore unrelated shared drains", bindServiceTestEnvironment(globals.bind(async () => {
-    const input = await taskInput(); const row = await registry().register(input); const child = await detection(input, "running");
-    const attemptId = randomUUID();
-    await prisma.workflowRun.update({ where: { id: child.id }, data: { attemptId, attemptCount: 1, leaseOwner: "mcp-generation-history",
-      leaseExpiresAt: new Date(Date.now() + 60_000) } });
-    const generated = await clip(child.id);
-    const lifecycle = new RenderFixtureLifecycle({ prisma, leaseOwner: "mcp-generation-history", publishProgress: async () => {} });
-    const attempt = { projectId, workflowRunId: child.id, stage: "moment_detection" as const, attemptId, attemptCount: 1 };
-    const admitted = await lifecycle.admitAutoRenderWork(attempt, { idempotencyKey: `auto-render-${child.id}`,
-      renders: [{ clipId: generated.id, aspectRatio: "ratio_9_16", resolution: "1080p" }] });
-    await lifecycle.completeMomentDetection(attempt);
+    const input = await taskInput(); const row = await registry().register(input); const child = await detection(input, "queued");
+    const selection = await prepareSelectionTestExecution(prisma, child.id, [{ title: "A complete story", start_time: 0, end_time: 30, hook_text: "Hook", payoff_text: "Payoff", reasoning: "Fixture", category: "hook", platform_fit: ["tiktok"], hook_strength: 70, emotional_intensity: 70, story_completeness_score: 70, broll_cues: [] }]);
+    await selection.control.runParent(selection.reference);
     expect(await operationState(row)).toBe("working");
-    const renderAttemptId = randomUUID();
-    await prisma.workflowRun.update({ where: { id: admitted.id }, data: { status: "running", attemptId: renderAttemptId,
-      attemptCount: 1, leaseOwner: "mcp-generation-history", leaseExpiresAt: new Date(Date.now() + 60_000) } });
-    const renderAttempt = { projectId, workflowRunId: admitted.id, stage: "clip_rendering" as const, attemptId: renderAttemptId, attemptCount: 1 };
+    const admitted = await prisma.workflowRun.findFirstOrThrow({ where: { projectId, stage: "clip_rendering", status: "queued" } });
+    const lifecycle = new RenderFixtureLifecycle({ prisma }), renderAttempt = await lifecycle.renderParent(admitted.id);
     const workSet = await lifecycle.beginRenderWorkSet(renderAttempt);
     const renderId = workSet.variantIds[0]!;
     expect(await lifecycle.markClipRenderVariantRendering(renderAttempt, renderId)).toBe(true);
@@ -227,8 +222,8 @@ db("durable MCP Task lifecycle", () => {
     const work = await renderRun(child.id, "queued"); const generated = await clip(child.id);
     const render = await prisma.clipRender.create({ data: { clipId: generated.id, aspectRatio: "ratio_9_16", status: "pending" } });
     await handoff(child.id, work.id, [render.id]);
-    const lifecycle = new RenderFixtureLifecycle({ prisma, leaseOwner: "mcp-generation-retry", publishProgress: async () => {} });
-    const first = await lifecycle.claim("clip_rendering");
+    const lifecycle = new RenderFixtureLifecycle({ prisma });
+    const first = await lifecycle.renderParent(work.id);
     if (!first) throw new Error("Expected queued render claim");
     await lifecycle.beginRenderWorkSet(first);
     expect(await lifecycle.markClipRenderVariantRendering(first, render.id)).toBe(true);
@@ -247,20 +242,37 @@ db("durable MCP Task lifecycle", () => {
     expect(await operationState(row)).toBe("completed");
   })));
   test("permanent failure history survives later clip replacement before the first Task poll", bindServiceTestEnvironment(globals.bind(async () => {
-    const input = await taskInput(); const row = await registry().register(input); const child = await detection(input, "completed");
-    const work = await renderRun(child.id, "running");
-    const generated = await clip(child.id);
-    const render = await prisma.clipRender.create({ data: { clipId: generated.id, aspectRatio: "ratio_9_16", status: "pending" } });
-    await handoff(child.id, work.id, [render.id]);
-    const attemptId = randomUUID();
-    await prisma.workflowRun.update({ where: { id: work.id }, data: { attemptId, attemptCount: 1, leaseOwner: "mcp-generation-failure",
-      leaseExpiresAt: new Date(Date.now() + 60_000) } });
-    const lifecycle = new RenderFixtureLifecycle({ prisma, leaseOwner: "mcp-generation-failure", publishProgress: async () => {} });
-    const attempt = { projectId, workflowRunId: work.id, stage: "clip_rendering" as const, attemptId, attemptCount: 1 };
+    const input = await taskInput(); const row = await registry().register(input); const child = await detection(input, "queued");
+    const firstSelection = await prepareSelectionTestExecution(prisma, child.id, [{ title: "Original story", start_time: 0, end_time: 30, hook_text: "Hook", payoff_text: "Payoff", reasoning: "Fixture", category: "hook", platform_fit: ["tiktok"], hook_strength: 70, emotional_intensity: 70, story_completeness_score: 70, broll_cues: [] }]);
+    await firstSelection.control.runParent(firstSelection.reference);
+    const work = await prisma.workflowRun.findFirstOrThrow({ where: { projectId, stage: "clip_rendering", status: "queued" } });
+    const generated = await prisma.clip.findFirstOrThrow({ where: { workflowRunId: child.id } });
+    const render = await prisma.clipRender.findFirstOrThrow({ where: { clipId: generated.id } });
+    const lifecycle = new RenderFixtureLifecycle({ prisma });
+    const attempt = await lifecycle.renderParent(work.id);
     await lifecycle.beginRenderWorkSet(attempt);
     expect(await lifecycle.markClipRenderVariantRendering(attempt, render.id)).toBe(true);
     expect(await lifecycle.failClipRenderVariant(attempt, render.id, "render_failed", "permanent")).toBe(true);
-    await prisma.clip.deleteMany({ where: { workflowRunId: child.id } });
+    const originalGroup = await prisma.renderGroup.findFirstOrThrow({ where: { workflowRunId: work.id } });
+    const originalPreparation = await prisma.clipPreparation.findUniqueOrThrow({ where: { id: originalGroup.preparationId! } });
+    const executionHistory = await prisma.renderGroupExecution.findMany({ where: { groupId: originalGroup.id } });
+    const preview = await prisma.executionArtifact.findFirstOrThrow({ where: { role: "clip_preview", attempt: { dispatch: { subjectKind: "clip_preparation", subjectId: originalPreparation.id } } }, include: { attempt: true } });
+    const holdUntil = new Date(Math.max(preview.grantExpiresAt.getTime(), preview.attempt.operationDeadlineAt.getTime()) + 120_000);
+    const afterDrain = new Date(holdUntil.getTime() + 1);
+    await prisma.$transaction(tx => admitMediaCleanupObligations(tx, [{ origin: "assigned_execution_artifact", cleanupClass: "assigned_artifact", objectKey: preview.storageKey }]));
+    const previewIntent = await prisma.mediaCleanupObligation.findFirstOrThrow({ where: { objectKey: preview.storageKey } });
+    expect(await prisma.$transaction(tx => mediaCleanupObjectRetainUntil(tx, previewIntent, afterDrain))).toBeInstanceOf(Date);
+    const replacement = await lifecycle.admit({ projectId, stage: "moment_detection", idempotencyKey: `replacement:${randomUUID()}`, contentPackId: (await prisma.workflowRun.findUniqueOrThrow({ where: { id: child.id } })).contentPackId! });
+    const selection = await prepareSelectionTestExecution(prisma, replacement.id, [{ title: "Replacement story", start_time: 0, end_time: 30, hook_text: "Hook", payoff_text: "Payoff", reasoning: "Fixture", category: "hook", platform_fit: ["tiktok"], hook_strength: 70, emotional_intensity: 70, story_completeness_score: 70, broll_cues: [] }]);
+    await selection.control.runParent(selection.reference);
+    expect(await prisma.clip.findUnique({ where: { id: generated.id } })).toBeNull();
+    expect(await prisma.clipPreparation.findUniqueOrThrow({ where: { id: originalPreparation.id } })).toEqual(originalPreparation);
+    expect(await prisma.renderGroup.findUniqueOrThrow({ where: { id: originalGroup.id } })).toEqual(originalGroup);
+    expect(await prisma.renderGroupExecution.findMany({ where: { groupId: originalGroup.id } })).toEqual(executionHistory);
+    expect(await prisma.$transaction(tx => mediaCleanupObjectRetainUntil(tx, previewIntent, new Date(holdUntil.getTime() - 1)))).toEqual(holdUntil);
+    expect(await prisma.$transaction(tx => mediaCleanupObjectRetainUntil(tx, previewIntent, afterDrain))).toBeNull();
+    expect(await executionInputRetainUntil(prisma, originalPreparation.inputStorageKey)).toEqual(new Date(originalPreparation.operationDeadlineAt.getTime() + 120_000));
+    expect(await executionInputRetainUntil(prisma, originalGroup.inputStorageKey!)).toEqual(new Date(originalGroup.operationDeadlineAt!.getTime() + 120_000));
     expect(await operationState(row)).toBe("failed");
   })));
 });

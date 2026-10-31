@@ -173,7 +173,7 @@ export async function acquireFixtureRenderGroup(db: PrismaClient, reference: Exe
     if (!assigned) throw Error("Render output not assigned");
     return db.executionArtifact.findUniqueOrThrow({ where: { id: assigned.artifactId } });
   }
-  return { attempt, fence, control: execution.control, send,
+  return { attempt, fence, control: execution.control, transfer: execution.transfer, send,
     loseNextWakeAcknowledgement() { loseWakeAck = true; },
     async expire() {
       const lease = new Date(0);

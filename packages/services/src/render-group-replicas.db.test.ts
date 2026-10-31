@@ -143,4 +143,29 @@ suite("Render Group independent native invocations", () => {
     expect(await db.renderGroup.findUniqueOrThrow({ where: { id: f.groups[0]!.id } })).toMatchObject({ chargedAttemptCount: 1 });
   }));
 
+  test("a deleted Clip revokes only its native owner before any new work-package grant", bindServiceTestEnvironment(async () => {
+    const f = await fixture(2), [retired, healthy] = await Promise.all(f.refs.map(ref => acquireFixtureRenderGroup(db, ref)));
+    const retiredGroup = await db.renderGroup.findUniqueOrThrow({ where: { id: retired!.attempt.groupId } });
+    const before = await db.executionAttempt.findUniqueOrThrow({ where: { attemptToken: retired!.fence.attemptToken } });
+    await db.clip.delete({ where: { id: retiredGroup.clipId } });
+    await expect(retired!.transfer.execute({ command: { action: "work-package", fence: retired!.fence }, verifiedRequest: fixtureExecutionRequest() })).rejects.toThrow("authority_lost");
+    expect(await retired!.send({ action: "renew", fence: retired!.fence, leaseSeconds: 120 })).toEqual({ disposition: "superseded" });
+    expect(await db.executionAttempt.findUniqueOrThrow({ where: { attemptToken: retired!.fence.attemptToken } })).toMatchObject({ status: "superseded", revokedAt: expect.any(Date), processStartedAt: before.processStartedAt });
+    expect(await db.renderGroup.findUniqueOrThrow({ where: { id: retiredGroup.id } })).toMatchObject({ status: "superseded", chargedAttemptCount: 1, attemptToken: null, leaseOwner: null });
+    expect(await db.clipPreparation.findUniqueOrThrow({ where: { id: retiredGroup.preparationId! } })).toMatchObject({ status: "completed", chargedAttempts: 1, clipId: retiredGroup.clipId });
+    expect((await healthy!.send({ action: "renew", fence: healthy!.fence, leaseSeconds: 120 })).disposition).toBe("renewed");
+    for (const id of healthy!.attempt.memberIds) await healthy!.complete(id, completed);
+    expect(await f.workflow.settleRenderRun(f.reference)).toMatchObject({ kind: "settled", outcome: { status: "completed", requested: 4, succeeded: 2, superseded: 2 } });
+  }));
+
+  test("Clip deletion before process-start spends no native budget", bindServiceTestEnvironment(async () => {
+    const f = await fixture(), owner = await acquireFixtureRenderGroup(db, f.refs[0]!, { start: false });
+    await db.clip.delete({ where: { id: f.groups[0]!.clipId } });
+    await expect(owner.transfer.execute({ command: { action: "work-package", fence: owner.fence }, verifiedRequest: fixtureExecutionRequest() })).rejects.toThrow("authority_lost");
+    expect(await owner.send({ action: "process-start", fence: owner.fence })).toEqual({ disposition: "superseded" });
+    expect(await db.renderGroup.findUniqueOrThrow({ where: { id: f.groups[0]!.id } })).toMatchObject({ status: "superseded", chargedAttemptCount: 0, attemptToken: null, leaseOwner: null });
+    expect(await db.renderGroupExecution.findUniqueOrThrow({ where: { token: owner.fence.attemptToken } })).toMatchObject({ startedAt: null, charged: false, result: "interrupted" });
+    expect(await db.executionAttempt.findUniqueOrThrow({ where: { attemptToken: owner.fence.attemptToken } })).toMatchObject({ status: "superseded", revokedAt: expect.any(Date), processStartedAt: null });
+  }));
+
 });
