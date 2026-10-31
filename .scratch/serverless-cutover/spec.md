@@ -342,7 +342,7 @@ All 24 ship together. "Blocked by" is a dependency, not a release phase. Shared 
 1. Verify the full deletion-inclusive candidate in isolated staging. Record SHA, migration hash, image fingerprint, Worker/Workflow versions, DO migration tag and rollback artifacts. One scheduler environment per database.
 2. Prepare accounts, bindings, secrets, DNS and certificates. Keep the API hostname and switch its routing. Disable old Railway/Vercel push-to-deploy side effects.
 3. Pause intake and irreversible publishing. Stop **all** old local and Railway workers and API mutations. Drain or fence active attempts. Reconcile uncertain provider effects. Revoke old consumer credentials.
-4. Snapshot the DB, confirm the target via both connection variables, and apply the migration once (explicit reset list, new epoch).
+4. Capture a quiesced, fenced DB snapshot only after the API is health-only fenced, all scheduled/cleanup/legacy consumers are stopped or deferred, and issued storage mutations have drained. Record the closed source epoch/fence, exact snapshot and migration hashes, Worker version and stop/drain proof before overwriting live state; maintain quiescence. Confirm the target via both connection variables and apply the migration once (explicit reset list, new epoch).
 5. Deploy the Modal functions and bridge, then the Worker, Workflows and DO migrations with admission closed. Validate Hyperdrive (cache off), R2 private access/CORS/lifecycle and secrets. Connect the dev laptop (`local` mode).
 6. Switch API routing. Rebuild Vercel with `NEXT_PUBLIC_API_URL`, the `wss:` CSP and the media origin. Update provider callbacks, OAuth redirects, Clerk/MCP audience and integration clients. Playback through signed grants or an authenticated media Worker.
 7. With admission paused, run smokes: upload, local YouTube audio/video overlap, Scribe callback, render batch, export, Studio evidence reuse, MCP/operation status, progress reconnect/revocation, publication recovery on sandbox destinations. Check outbox drain, single settlement and credits.
@@ -350,7 +350,7 @@ All 24 ship together. "Blocked by" is a dependency, not a release phase. Shared 
 9. Delete the Railway services/triggers/variables and the Upstash DB. Code deletions are already in the candidate.
 10. Reopen admission once and record acceptance. **At launch:** set `YOUTUBE_FETCH_MODE=proxy` and the proxy secret, run the proxy gates and canary. No code change is needed.
 
-**On failure:** keep intake closed, fence the candidate's executions and epoch, then fix forward or restore the snapshot together with the prior full release. Never run two schedulers.
+**On failure:** keep intake closed and fence the candidate's executions. Fix forward, or restore only the proved quiesced snapshot together with the reviewed release when no later execution history exists. A live epoch above the proof source is a typed refusal; arbitrary PITR requires future live-facts recovery tooling. Follow [the execution restore runbook](../../docs/runbooks/execution-restore.md); never run two schedulers.
 
 ## 9. Owner prerequisites and decisions (recommended answers)
 1. **Cloudflare:** enable Workers Paid before the gates (free is fine during development), with scoped deploy access for Workers, Workflows, DOs, Hyperdrive, the existing R2 bucket and API DNS. **Yes.**

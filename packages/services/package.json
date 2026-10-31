@@ -25,6 +25,7 @@
     "./execution-object-cleanup": "./src/execution-object-cleanup.ts",
     "./execution-restore": "./src/execution-restore.ts",
     "./execution-restore-pages": "./src/execution-restore-pages.ts",
+    "./execution-restore-operator": "./src/execution-restore-operator.ts",
     "./ingest-source-execution": {
       "types": "./src/ingest-source-execution.ts",
       "default": "./src/ingest-source-execution.ts"
@@ -634,6 +635,7 @@
     "./publication-execution-runtime": "./src/publication-execution-runtime.ts",
     "./publication-execution-control": "./src/publication-execution-control.ts",
     "./publication-producers": "./src/publication-producers.ts",
+    "./execution-snapshot": "./src/execution-snapshot.ts",
     "./publication-observations": "./src/publication-observations.ts",
     "./publication-observations-runtime": "./src/publication-observations-runtime.ts",
     "./performance-capture-contract": "./src/performance-capture-contract.ts",
@@ -643,6 +645,7 @@
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "bun test",
+    "execution:restore": "bun scripts/execution-restore.ts",
     "billing:operator": "bun scripts/workspace-billing-operator.ts",
     "generated-media:operator": "bun scripts/generated-media-operator.ts",
     "social-publication:operator": "bun scripts/social-publication-operator.ts",
