@@ -543,4 +543,14 @@ dbDescribe("Targeted Ingest execution", () => {
     expect(await db.processingUsageReservation.findUniqueOrThrow({ where: { projectId: f.project.id } })).toMatchObject({ state: "reserved", settledSeconds: null });
   }, 120_000);
 
+  test("accepted source admission freezes one replayable import-pipeline obligation from the canonical job input", async () => {
+    const f = await fixture();
+    const first = await db.$transaction(tx => f.lifecycle.queueExecutionWithinTransaction(tx,f.job.id));
+    expect(first?.subject).toEqual({ kind: "ingest_job", id: f.job.id });
+    expect(first?.inputHash).toBe(await ingestExecutionInputHash(f.job,"d".repeat(64)));
+    expect(first?.kind).toBe("import_pipeline");
+    expect(await db.$transaction(tx => f.lifecycle.queueExecutionWithinTransaction(tx,f.job.id))).toEqual(first);
+    expect(await db.executionDispatch.count({ where: { subjectKind: "ingest_job", subjectId: f.job.id, kind: "import_pipeline", wakeKind: null } })).toBe(1);
+  });
+
 });

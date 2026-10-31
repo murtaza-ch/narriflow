@@ -4,20 +4,21 @@ import { PrismaClient } from "@prisma/client";
 import { createDatabaseTestContext } from "@narriflow/db/testing";
 import { acceptedRecipe, contentPackSchema, finishingSettingsSchema } from "@narriflow/validators";
 import { assertExecutionDatabaseTestTarget } from "./execution-db-test-support";
-import { bindServiceTestEnvironment } from "./runtime-test-support";
+import { withServiceEnvironment } from "./runtime-environment";
+import { withExecutionDispatches } from "./execution-dispatch-runtime";
 import { readAutopilotImportSource } from "./autopilot-finishing-authority";
 import { projectService } from "./project.service";
 import { recipeService } from "./recipe.service";
 import { ruleFingerprint } from "./standing-grant";
 import { getIngestJobLifecycle } from "./ingest-job-lifecycle-runtime";
-import { appendExecutionDispatch } from "./execution-dispatch";
+import { readExecutionDispatch } from "./execution-dispatch";
 
 const url = process.env.SERVERLESS_TEST_DATABASE_URL;
 const suite = process.env.ALLOW_SERVERLESS_DB_TESTS === "1" && url ? describe : describe.skip;
 suite("Autopilot authority frozen at accepted source intake", () => {
   let db: PrismaClient;
   const context = createDatabaseTestContext();
-  const scoped = <T>(run: () => Promise<T>) => bindServiceTestEnvironment(context.bind(run));
+  const scoped = <T>(run: () => Promise<T>) => () => withServiceEnvironment({ ...process.env, MEDIA_FETCH_TOOLCHAIN_FINGERPRINT: "d".repeat(64) }, context.bind(run));
   beforeAll(() => {
     const schema = process.env.SERVERLESS_TEST_DATABASE_SCHEMA ?? "public";
     assertExecutionDatabaseTestTarget(url, schema);
@@ -52,6 +53,27 @@ suite("Autopilot authority frozen at accepted source intake", () => {
     await db.standingGrant.update({ where: { id: f.grant.id }, data: { revision: 2 } });
     expect((await projectService.importResolvedRssEpisodes(f.scope, f.input, f.options)).count).toBe(0);
     expect((await db.contentPack.findUniqueOrThrow({ where: { id: pack.id } })).autopilotAuthority).toEqual(expected);
+  }));
+  test("accepted RSS intake repairs its exact pipeline wake after a lost scheduler response", scoped(async () => {
+    const f = await fixture();
+    const delivered: string[][] = [];
+    const invoke = () => withExecutionDispatches(() => projectService.importResolvedRssEpisodes(f.scope, f.input, f.options), { database: db, deliver: async ids => { delivered.push([...ids]); if (delivered.length === 1) throw Error("lost_scheduler_ack"); } });
+    await expect(invoke()).rejects.toThrow("lost_scheduler_ack");
+    const job = await db.ingestJob.findFirstOrThrow({ where: { project: { workspaceId: f.workspace.id } } });
+    expect(await db.processingUsageReservation.count({ where: { workspaceId: f.workspace.id } })).toBe(1);
+    expect((await invoke()).count).toBe(0);
+    expect(delivered).toHaveLength(2);
+    const pipeline = await db.executionDispatch.findFirstOrThrow({ where: { subjectId: job.id, kind: "import_pipeline" } });
+    expect(delivered[0]).toContain(pipeline.id);
+    expect(delivered[1]).toContain(pipeline.id);
+    expect(await db.executionDispatch.count({ where: { subjectId: job.id, kind: "import_pipeline" } })).toBe(1);
+    expect(await db.project.count({ where: { workspaceId: f.workspace.id } })).toBe(1);
+  }));
+  test("expired coordinator authority cannot reserve intake credits or publish a child job", scoped(async () => {
+    const f = await fixture();
+    await expect(projectService.importResolvedRssEpisodes(f.scope, f.input, { ...f.options, beforeAutopilotAdmit: async () => { throw Error("coordinator_superseded"); } })).rejects.toThrow("coordinator_superseded");
+    expect(await db.processingUsageReservation.count({ where: { workspaceId: f.workspace.id } })).toBe(0);
+    expect(await db.project.count({ where: { workspaceId: f.workspace.id } })).toBe(0);
   }));
   test("source authority cannot accompany settings different from the accepted Recipe", scoped(async () => {
     const f = await fixture();
@@ -102,7 +124,8 @@ suite("Autopilot authority frozen at accepted source intake", () => {
     await db.standingGrant.update({ where: { id: f.grant.id }, data: { revision: 2, status: "revoked" } });
     await db.project.update({ where: { id: projectId }, data: { ingestStatus: "ready", sourceDurationSeconds: 60, sourceProbe: { durationSec: 60, video: null, audio: null } } });
     const job = await db.ingestJob.update({ where: { id: jobId }, data: { status: "completed", completedAt: new Date() } });
-    const dispatch = await db.$transaction(tx => appendExecutionDispatch(tx, { kind: "import_pipeline", subject: { kind: "ingest_job", id: job.id }, generation: job.generation, deploymentEpoch: job.deploymentEpoch, inputHash: "a".repeat(64), dueAt: job.createdAt }));
+    const existing = await db.executionDispatch.findFirstOrThrow({ where: { kind: "import_pipeline", subjectId: job.id, generation: job.generation, deploymentEpoch: job.deploymentEpoch } });
+    const dispatch = (await db.$transaction(tx => readExecutionDispatch(tx, existing.id)))!;
     const handoff = await db.$transaction(tx => getIngestJobLifecycle().handoffGenerationWithinTransaction(tx, dispatch.reference));
     expect(handoff.kind).toBe("admitted");
     const finishing = await db.generationFinishing.findFirstOrThrow({ where: { projectId } });

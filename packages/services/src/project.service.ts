@@ -25,6 +25,7 @@ import { freezeIngestAcquisition } from "./ingest-acquisition";
 import { requireYouTubeImport } from "./source-fetch-capability";
 import { getProcessingUsage } from "./processing-usage-runtime";
 import {
+	lockWorkspaceUsage,
 	isProcessingUsageFailureCode,
 	PROCESSING_USAGE_TRANSACTION,
 	ProcessingUsageError,
@@ -1831,6 +1832,7 @@ export class ProjectService {
 
 	async importZoomRecording(scope: ActorScope, input: {
 		source: AutopilotImportSource; ruleUpdatedAt: Date; connectionId: string;
+		beforeAutopilotAdmit?: (tx: Prisma.TransactionClient) => Promise<void>;
 		notification: ZoomRecordingNotification; titlePrefix: string | null;
 		recipe: ResolvedRecipe;
 	}) {
@@ -1842,6 +1844,7 @@ export class ProjectService {
 			brandProfileId: input.recipe.brandProfileId,
 		}, {
 			autopilotSource: input.source,
+			beforeAutopilotAdmit: input.beforeAutopilotAdmit,
 			generationContext: { contentPack: input.recipe.contentPack, languageCode: input.recipe.languageCode, finishing: input.recipe.finishing, recipe: acceptedRecipe(input.recipe) },
 			zoom: { connectionId: input.connectionId, meetingUuid: item.meetingUuid, recordingId: item.recordingId, ruleUpdatedAt: input.ruleUpdatedAt },
 		});
@@ -1871,6 +1874,7 @@ export class ProjectService {
 		options: {
 			generationContext?: IntakeGenerationContext;
 			autopilotSource?: AutopilotImportSource;
+			beforeAutopilotAdmit?: (tx: Prisma.TransactionClient) => Promise<void>;
 		} = {},
 	) {
 		const { rssUrl, ...media } = input;
@@ -1896,6 +1900,7 @@ export class ProjectService {
 		options: {
 			generationContext?: IntakeGenerationContext;
 			autopilotSource?: AutopilotImportSource;
+			beforeAutopilotAdmit?: (tx: Prisma.TransactionClient) => Promise<void>;
 			zoom?: { connectionId: string; meetingUuid: string; recordingId: string; ruleUpdatedAt: Date };
 		} = {},
 	) {
@@ -1914,6 +1919,13 @@ export class ProjectService {
 
 		const prisma = this.requirePrisma();
 		const actor = await this.requireActor(scope, "processing.consume");
+    const repairIngestWake = async (projectId: string) => prisma.$transaction(async tx => {
+      const project = await tx.project.findFirst({ where: { id: projectId, workspaceId: actor.workspaceId }, select: { id: true } });
+      if (!project) throw new ProjectNotFoundError();
+      const job = await tx.ingestJob.findFirst({ where: { projectId }, orderBy: [{ createdAt: "desc" }, { id: "desc" }] });
+      if (!job) throw new ProjectServiceError("rss_ingest_job_missing", "The RSS ingest job is unavailable.");
+      await getIngestJobLifecycle().queueExecutionWithinTransaction(tx, job.id);
+    });
 
 		if (options.autopilotSource?.ruleId && input.episodes.length === 1) {
 			const existing = await prisma.autopilotEpisode.findUnique({
@@ -1924,7 +1936,10 @@ export class ProjectService {
 					},
 				},
 			});
-			if (existing) return { count: 0, projects: [] };
+			if (existing) {
+        if (existing.projectId) await repairIngestWake(existing.projectId);
+        return { count: 0, projects: [] };
+      }
 		}
 		if (input.commitToken) {
 			const existing = await prisma.project.findUnique({
@@ -1935,6 +1950,7 @@ export class ProjectService {
 				if (existing.workspaceId !== actor.workspaceId) {
 					throw new ProjectNotFoundError();
 				}
+				await repairIngestWake(existing.id);
 				const queuedJobId = existing.ingestJobs[0]?.id;
 				if (!queuedJobId) {
 					throw new ProjectServiceError(
@@ -1959,7 +1975,7 @@ export class ProjectService {
 		}> = [];
 		// Each episode is admitted in its own transaction. Episodes that don't
 		// fit the remaining minutes or capacity are reported, not admitted;
-		// Autopilot retries them on its next poll.
+		// Autopilot retries them on its next accepted cycle.
 		const notAdmitted: Array<{
 			episodeId: string;
 			code: ProcessingUsageError["code"];
@@ -1977,12 +1993,14 @@ export class ProjectService {
 			try {
 				const created = await prisma.$transaction(async (tx) => {
 					await requireExecutionAdmissionOpen(tx);
+          await lockWorkspaceUsage(tx, actor.workspaceId);
 					const authority = options.autopilotSource ? await freezeAutopilotFinishingAuthority(tx, { workspaceId: actor.workspaceId, actorUserId: actor.actorUserId, source: options.autopilotSource, recipe: options.generationContext?.recipe, finishing: options.generationContext?.finishing, contentPack: options.generationContext?.contentPack, languageCode: options.generationContext?.languageCode, brandProfileId: input.brandProfileId ?? null }) : null;
 					if (options.zoom) {
 						await tx.$queryRaw`SELECT "id" FROM "ZoomConnection" WHERE "id" = ${options.zoom.connectionId}::uuid FOR UPDATE`;
 						const live = await tx.autopilotRule.findFirst({ where: { id: options.autopilotSource?.ruleId, workspaceId: actor.workspaceId, sourceKind: "zoom", status: "active", updatedAt: options.zoom.ruleUpdatedAt, zoomConnectionId: options.zoom.connectionId, zoomConnection: { revokedAt: null } } });
 						if (!live) throw new ZoomError("zoom_rule_changed");
 					}
+					await options.beforeAutopilotAdmit?.(tx);
 					const projectId = randomUUID();
 					await getProcessingUsage().reserve(tx, {
 						workspaceId: actor.workspaceId,
@@ -2052,6 +2070,7 @@ export class ProjectService {
 						acquisition,
 					});
 
+          await getIngestJobLifecycle().queueExecutionWithinTransaction(tx, createdJob.id);
 					if (options.autopilotSource?.ruleId) {
 						await tx.autopilotEpisode.update({
 							where: {
@@ -2096,7 +2115,7 @@ export class ProjectService {
 							},
 							include: { project: { include: { ingestJobs: { take: 1 } } } },
 						});
-						if (winner) continue;
+						if (winner) { if (winner.projectId) await repairIngestWake(winner.projectId); continue; }
 					}
 					if (input.commitToken) {
 						const winner = await prisma.project.findUnique({
@@ -2106,6 +2125,7 @@ export class ProjectService {
 							},
 						});
 						if (winner && winner.workspaceId === actor.workspaceId) {
+              await repairIngestWake(winner.id);
 							const queuedJobId = winner.ingestJobs[0]?.id;
 							if (!queuedJobId) {
 								throw new ProjectServiceError(
