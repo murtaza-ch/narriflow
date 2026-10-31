@@ -554,7 +554,7 @@ export { getProcessingUsage } from "./processing-usage-runtime";
 export { createDriveTokenCipher, createGoogleDriveFileReader, driveDownloadRefusal, driveFileMediaUrl, DriveSourceError, googleDriveFileReader, readDriveFileMetadata, verifyDriveAccessToken, type DriveFileMetadata, type DriveFileReader, type DriveTokenCipher } from "./drive-source";
 export { IngestJobLifecycle, IngestJobClaimLost, IngestNotFailedError, IngestReselectRequiredError, IngestRetryLimitExceededError, type IngestClaimRef, type IngestFailureDecision, type IngestJobLifecycleDependencies } from "./ingest-job-lifecycle";
 
-export type { DurableLayoutEvidence, DurableLayoutEvidenceReader, ClipPendingAutoLayoutAnalysis } from "./layout-evidence";
+export type { DurableLayoutEvidence, DurableLayoutEvidenceReader } from "./layout-evidence";
 export type { ActorScope } from "./actor-scope";
 
 export { createOperationReceiptExecutor, operationFingerprint, OperationIdempotencyConflictError, RECEIPT_COMMANDS, type ReceiptCommand, type IntegrationMutation, type OperationReceiptIdentity } from "./operation-receipt";

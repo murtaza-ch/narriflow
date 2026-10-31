@@ -2,15 +2,18 @@ import { clipPreparationReadyObjectsSchema } from "@narriflow/validators/clip-pr
 import type { PrismaClient } from "@prisma/client";
 
 /** Only producer-planned keys can enter this class. A referenced capsule stays
- * retained even after completion; deleting its Project/Clip removes the row.
+ * retained while its live Project/Clip still publishes it. Historical execution
+ * rows survive Clip replacement without retaining obsolete capsules forever.
  * A future check remains durable, so deletion cannot strand a forgotten key. */
-export async function executionInputRetainUntil(database: Pick<PrismaClient, "clipPreparation" | "renderGroup" | "exportBundle" | "clipDub" | "project" | "$queryRaw">, objectKey: string): Promise<Date | null> {
+export async function executionInputRetainUntil(database: Pick<PrismaClient, "clipPreparation" | "renderGroup" | "exportBundle" | "clipDub" | "project" | "clip" | "$queryRaw">, objectKey: string): Promise<Date | null> {
   const groupMatch = /^projects\/([a-f0-9-]{36})\/render-groups\/([a-f0-9-]{36})\/[a-f0-9-]{36}\.json$/.exec(objectKey);
   let deadlineAt: Date;
+  let clipId: string | null = null;
   if (groupMatch) {
     const row = await database.renderGroup.findUnique({ where: { id: groupMatch[2]! }, include: { workflowRun: { select: { projectId: true } } } });
     if (!row || row.workflowRun.projectId !== groupMatch[1] || row.inputStorageKey !== objectKey || !row.operationDeadlineAt) return null;
     deadlineAt = row.operationDeadlineAt;
+    clipId = row.clipId;
   } else if (/^projects\/[a-f0-9-]{36}\/export-bundles\//.test(objectKey)) {
     const match=/^projects\/([a-f0-9-]{36})\/export-bundles\/([a-f0-9-]{36})\/[a-f0-9-]{36}\.json$/.exec(objectKey);
     if(!match)throw Error("Invalid execution input cleanup key");
@@ -26,15 +29,17 @@ export async function executionInputRetainUntil(database: Pick<PrismaClient, "cl
   } else {
     const match = /^projects\/([a-f0-9-]{36})\/preparations\/([a-f0-9-]{36})\/([a-f0-9-]{36})\.json$/.exec(objectKey);
     if (!match) throw new Error("Invalid execution input cleanup key");
-    const row = await database.clipPreparation.findUnique({ where: { id: match[2]! }, select: { projectId: true, inputStorageKey: true, operationDeadlineAt: true, readyObjects: true } });
+    const row = await database.clipPreparation.findUnique({ where: { id: match[2]! }, select: { projectId: true, clipId: true, inputStorageKey: true, operationDeadlineAt: true, readyObjects: true } });
     const objects = clipPreparationReadyObjectsSchema.safeParse(row?.readyObjects);
     if (!row || row.projectId !== match[1] || (row.inputStorageKey !== objectKey && (!objects.success || objects.data.manifest.storageKey !== objectKey))) return null;
     deadlineAt = row.operationDeadlineAt;
+    clipId = row.clipId;
   }
   const [clock] = await database.$queryRaw<Array<{ now: Date }>>`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS now`;
   if (!clock) throw new Error("Cleanup clock unavailable");
   const projectId=/^projects\/([a-f0-9-]{36})\//.exec(objectKey)?.[1];
   const project=projectId?await database.project.findUnique({where:{id:projectId},select:{purgeStartedAt:true,expiresAt:true}}):null;
-  if(!project || project.purgeStartedAt || (project.expiresAt && project.expiresAt<=clock.now))return deadlineAt.getTime()+120000>clock.now.getTime()?new Date(deadlineAt.getTime()+120000):null;
+  const clipExists = !clipId || Boolean(await database.clip.findFirst({ where: { id: clipId, projectId }, select: { id: true } }));
+  if(!clipExists || !project || project.purgeStartedAt || (project.expiresAt && project.expiresAt<=clock.now))return deadlineAt.getTime()+120000>clock.now.getTime()?new Date(deadlineAt.getTime()+120000):null;
   return new Date(Math.max(clock.now.getTime() + 24 * 60 * 60_000, deadlineAt.getTime() + 120_000));
 }

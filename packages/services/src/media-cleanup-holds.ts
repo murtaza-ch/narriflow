@@ -24,12 +24,12 @@ async function assignedReferenceHeld(tx: Tx, artifact: ExecutionArtifact, now: D
       return true;
     }
     case "clip_preparation": {
-      const job = await tx.clipPreparation.findUnique({ where: { id }, select: { projectId: true } });
-      return Boolean(job && await projectHeld(tx, job.projectId, now));
+      const job = await tx.clipPreparation.findUnique({ where: { id }, select: { projectId: true, clipId: true } });
+      return Boolean(job && await projectHeld(tx, job.projectId, now) && await tx.clip.findFirst({ where: { id: job.clipId, projectId: job.projectId }, select: { id: true } }));
     }
     case "render_group": {
-      const job = await tx.renderGroup.findUnique({ where: { id }, select: { workflowRun: { select: { projectId: true } } } });
-      return Boolean(job && await projectHeld(tx, job.workflowRun.projectId, now));
+      const job = await tx.renderGroup.findUnique({ where: { id }, select: { clipId: true, workflowRun: { select: { projectId: true } } } });
+      return Boolean(job && await projectHeld(tx, job.workflowRun.projectId, now) && await tx.clip.findFirst({ where: { id: job.clipId, projectId: job.workflowRun.projectId }, select: { id: true } }));
     }
     case "workflow_run": {
       const job = await tx.workflowRun.findUnique({ where: { id }, select: { projectId: true, stage: true, status: true } });

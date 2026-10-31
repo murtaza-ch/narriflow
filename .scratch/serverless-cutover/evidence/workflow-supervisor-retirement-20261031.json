@@ -297,7 +297,7 @@
       "unused DB singleton runtime getter"
     ],
     "remaining_contract": "A pure DurableLayoutEvidenceReader supplies the immutable preparation observations to the renderer. Native validates frozen source/window/editor/engine fingerprints; no DB/background ownership exists in this interface.",
-    "temporary_native_type": "ClipPendingAutoLayoutAnalysis remains pure input typing for the standalone native diagnostic wrapper. Media agent is porting its two test consumers and removing that unused wrapper. It confers no execution or publication authority.",
+    "temporary_native_type": "Removed after the Media agent ported both diagnostic callers to the current shared detector owner and deleted the standalone wrapper.",
     "removed_old_mock_contract_tests": [
       "renews throughout work longer than the original lease",
       "renewal loss cancels active IO and cannot release a replacement owner",
@@ -318,5 +318,30 @@
     "Actor read/admission fixtures include normalized measured60s probe facts; rounded display duration is not billing evidence",
     "Manual export live-retry guard uses an actual active native group and unsettled sibling, never hand-seeded parent charges",
     "Workflow runner supplies explicit controlled MEDIA_FETCH_TOOLCHAIN_FINGERPRINT matching other isolated runners"
-  ]
+  ],
+  "selection_replacement_028": {
+    "status": "focused_passed_broader_gates_running",
+    "migration": "20261101040000_execution_preparation_history",
+    "model": "ClipPreparation.clipId is immutable historical identity with an insert-time live Project/Clip lineage guard. Project privacy deletion still cascades histories; Clip replacement preserves charged Prep/RenderGroup/executions.",
+    "authority": "Core rejects work-package and process-start after live Clip deletion. A signed command atomically supersedes only the exact affected group/token with parent wakes, preserving other groups and all charged counts.",
+    "cleanup": "Exact assigned media retains the maximum grant/absolute deadline plus120s drain. Deleted Clip history no longer creates a perpetual publication hold. Prep/group private capsules retain only the original absolute deadline plus120s after replacement. Existing exact-key storage controller aborts incomplete MPUs before DELETE ACK.",
+    "pinned_bun": "1.3.6",
+    "passed": {
+      "mcp_task_actual_selection_and_render_core": {
+        "tests": 12,
+        "assertions": 59
+      },
+      "render_group_replicas": {
+        "tests": 10,
+        "assertions": 50
+      },
+      "preparation_ledger_fresh_migrations": {
+        "tests": 3,
+        "assertions": 16
+      },
+      "services_typecheck": true,
+      "changed_ts_biome": true
+    },
+    "remaining": "Parent owns actual cloud/migration acceptance and full23 completion. No shared resource actions performed."
+  }
 }
