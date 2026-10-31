@@ -141,7 +141,7 @@ async function preparationForGroup(db: PrismaClient, reference: ExecutionDispatc
   return { service, storage };
 }
 
-export async function acquireFixtureRenderGroup(db: PrismaClient, reference: ExecutionDispatchReference) {
+export async function acquireFixtureRenderGroup(db: PrismaClient, reference: ExecutionDispatchReference, options: { start?: boolean } = {}) {
   const group = await db.renderGroup.findUniqueOrThrow({ where: { id: reference.subject.id }, include: { workflowRun: true } });
   await prepareFixtureSource(db, group.workflowRun.projectId);
   const preparation = await preparationForGroup(db, reference);
@@ -151,15 +151,17 @@ export async function acquireFixtureRenderGroup(db: PrismaClient, reference: Exe
   if (prepared.kind !== "waiting") throw Error(`Fixture render not admitted: ${prepared.kind}`);
   const heads = new Map<string, { etag: string; contentType: string; byteLength: bigint; sha256: string }>();
   const outcomes = new Map<string, unknown>();
+  let loseWakeAck = false;
+  const completionReceipts = new Map<string, ReturnType<typeof fixtureExecutionRequest>>();
   const execution = createRenderGroupExecution({ database: db, service, storage: createExecutionStorage({ accountId: "a".repeat(32), bucket: "render-fixture", accessKeyId: "fixture", secretAccessKey: "fixture" }),
-    artifacts: { head: async assignment => heads.get(assignment.id) ?? null, readJson: async artifact => outcomes.get(artifact.storageKey) }, deliverWakes: ids => confirmed(db, ids) });
+    artifacts: { head: async assignment => heads.get(assignment.id) ?? null, readJson: async artifact => outcomes.get(artifact.storageKey) }, deliverWakes: async ids => { if (loseWakeAck) { loseWakeAck = false; throw Error("fixture_render_wake_ack_lost"); } await confirmed(db, ids); } });
   const fence = { reference: prepared.deadline.reference, attemptToken: prepared.deadline.attemptToken, owner: randomUUID() };
-  const send = (command: ExecutionCommand) => execution.control.execute({ command, verifiedRequest: fixtureExecutionRequest() });
+  const send = (command: ExecutionCommand, verifiedRequest = fixtureExecutionRequest()) => execution.control.execute({ command, verifiedRequest });
   if ((await send({ action: "acquire", ...fence, leaseSeconds: 120 })).disposition !== "acquired") throw Error("Fixture render not acquired");
   const packageResult = await execution.transfer.execute({ command: { action: "work-package", fence }, verifiedRequest: fixtureExecutionRequest() });
   if (packageResult.disposition !== "work_package") throw Error("Fixture work package unavailable");
   const outputs = packageResult.outputs;
-  if ((await send({ action: "process-start", fence })).disposition !== "started") throw Error("Fixture render not started");
+  if (options.start !== false && (await send({ action: "process-start", fence })).disposition !== "started") throw Error("Fixture render not started");
   const input = await service.loadInput(await db.executionAttempt.findUniqueOrThrow({ where: { attemptToken: fence.attemptToken } }));
   const current = await db.renderGroup.findUniqueOrThrow({ where: { id: group.id } });
   const attempt: ClaimedRenderGroupAttempt = { workflowRunId: group.workflowRunId, workSetGeneration: group.workSetGeneration, groupId: group.id,
@@ -172,11 +174,24 @@ export async function acquireFixtureRenderGroup(db: PrismaClient, reference: Exe
     return db.executionArtifact.findUniqueOrThrow({ where: { id: assigned.artifactId } });
   }
   return { attempt, fence, control: execution.control, send,
-    async complete(renderId: string, details: { sizeBytes: number; durationSec: number }) {
+    loseNextWakeAcknowledgement() { loseWakeAck = true; },
+    async expire() {
+      const lease = new Date(0);
+      await db.$transaction(async tx => {
+        await tx.renderGroup.update({ where: { id: group.id }, data: { leaseExpiresAt: lease } });
+        await tx.executionAttempt.update({ where: { attemptToken: fence.attemptToken }, data: { leaseExpiresAt: lease } });
+      });
+      return execution.control.expireDeadline({ deadline: { reference: fence.reference, attemptToken: fence.attemptToken, kind: "lease", observedDeadlineAt: lease.toISOString() }, deliveryId: randomUUID() });
+    },
+    async complete(renderId: string, details: { sizeBytes: number; durationSec: number; captionDiagnostics?: { omittedCodePoints: string[]; skippedEmoji: string[] } | null }) {
       const artifact = await output(renderId, "render_variant");
       heads.set(artifact.id, { etag: `"${artifact.id}"`, contentType: artifact.contentType, byteLength: BigInt(details.sizeBytes), sha256 });
-      const reply = await send({ action: "commit-artifact", fence, artifact: { artifactId: artifact.id, role: "render_variant", bindingHash: artifact.bindingHash,
-        contentType: artifact.contentType, byteLength: details.sizeBytes, etag: heads.get(artifact.id)!.etag, sha256, renderVariant: { renderId, durationSec: details.durationSec, usedStockIds: [] } } });
+      const command: ExecutionCommand = { action: "commit-artifact", fence, artifact: { artifactId: artifact.id, role: "render_variant", bindingHash: artifact.bindingHash,
+        contentType: artifact.contentType, byteLength: details.sizeBytes, etag: heads.get(artifact.id)!.etag, sha256, renderVariant: { renderId, durationSec: details.durationSec, usedStockIds: [], ...(details.captionDiagnostics ? { captionDiagnostics: details.captionDiagnostics } : {}) } } };
+      const key = JSON.stringify(command);
+      let receipt = completionReceipts.get(key);
+      if (!receipt) { receipt = fixtureExecutionRequest(); receipt.requestHash = createHash("sha256").update(key).digest("hex"); completionReceipts.set(key, receipt); }
+      const reply = await send(command, receipt);
       if (reply.disposition !== "committed") throw Error("Fixture render did not commit");
       return true;
     },

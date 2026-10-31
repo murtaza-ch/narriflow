@@ -653,7 +653,7 @@ export { reviewsCommands } from "./reviews-commands-runtime";
 export { syncClipExportAggregate, syncClipExportAggregates } from "./clip-export-aggregates";
 
 export * from "./render-group-contract";
-export { RenderGroupLifecycle, RenderGroupAttemptLost, getRenderGroupLifecycle, invalidateRenderGroupMembersWithinTransaction, type RenderGroupAdmission, type RenderGroupLifecycleDependencies } from "./render-group-lifecycle";
+export { RenderGroupLifecycle, RenderGroupAttemptLost, invalidateRenderGroupMembersWithinTransaction, type RenderGroupAdmission, type RenderGroupLifecycleDependencies } from "./render-group-lifecycle";
 
 export { createPendingBusinessWorkspaceService, type PendingBusinessWorkspaceDependencies } from "./pending-business-workspace.service";
 

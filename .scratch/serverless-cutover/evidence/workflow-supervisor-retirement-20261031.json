@@ -2,7 +2,7 @@
   "date": "2026-10-31",
   "ticket": "23",
   "scope": "WorkflowRunLifecycle production poller and supervisor retirement",
-  "status": "workflow_lifecycle_checkpoint_passed_other_fixture_suites_pending",
+  "status": "workflow_render_group_quota_checkpoint_passed_other_fixture_ports_pending",
   "removed_production_paths": [
     "global claim(stage)",
     "global render rescue scan",
@@ -177,12 +177,99 @@
       "tests": 3,
       "assertions": 7,
       "failures": 0
+    },
+    "workflow_render_manual_retry_pg": {
+      "tests": 88,
+      "assertions": 570,
+      "failures": 0
+    },
+    "current_preparation_finishing_quota_core_pg": {
+      "tests": 85,
+      "assertions": 586,
+      "failures": 0
+    },
+    "generation_usage_pg": {
+      "tests": 17,
+      "assertions": 90,
+      "failures": 0
+    },
+    "finishing_pg": {
+      "tests": 37,
+      "assertions": 223,
+      "failures": 0
     }
   },
   "remaining": [
-    "generation usage old Dub fixture ports",
-    "old replica loop fixture replacement",
-    "other Workflow/Render helper consumers",
+    "LayoutEvidenceLifecycle obsolete background scanner/supervisor retirement and semantic mapping",
+    "actor-scope remaining current fixture ports",
+    "parent-owned FinishingTransition and Workspace event ports",
     "full repository gate and retirement acceptance owned by parent"
-  ]
+  ],
+  "render_retirement": {
+    "production": [
+      "RenderGroup global claim/reaper/heartbeat and process-facing wrapper commands",
+      "unused background RenderGroup evidence writer",
+      "unreferenced native render-group-executor.ts process supervisor"
+    ],
+    "removed_tests": {
+      "packages/services/src/render-group-lifecycle.db.test.ts": [
+        "atomic partition admission is idempotent and validates frozen identities",
+        "a committed render keeps the caption characters it left out, and nothing when none",
+        "generic parent completion cannot bypass live group settlement",
+        "ten-group progress polling bounds database round trips while a child renders",
+        "SIGKILL of a real lease-owning process preserves completion and charges only its interrupted group",
+        "two simultaneous replicas claim distinct groups and duplicate claim has one winner",
+        "coordinator death and reclaim beyond three claims preserves live group token and variant state",
+        "stale child lease, parent generation and invalidated membership reject every child writer",
+        "poison group exhausts only its charged starts while healthy siblings finish",
+        "pre-start expiry/rejection and graceful shutdown refund once with drain deferral",
+        "mixed siblings retain success/permanent outcomes and retry only transient member",
+        "duplicate completion reconciles committed bytes after token expiry and parent terminal settlement",
+        "a lost commit acknowledgement retains a queryable durable completion",
+        "late variants enter exactly one follow-up under duplicate terminal settlement",
+        "background layout defers live rendering and resumes after its lease ends",
+        "cancelling queued coordination closes group leases and invalidates current membership",
+        "DB time after a parent lock wait rejects an expired heartbeat",
+        "deleted automatic members become superseded without stranding healthy membership"
+      ],
+      "packages/services/src/workflow-render-rescue.db.test.ts": [
+        "rescues usable work and atomically links only pending exports with its queued event",
+        "competing rescuers admit one run and event",
+        "an ordinary admission winning the Project lock prevents rescue and export relinking",
+        "expired or purging Projects and pending work already bound to terminal runs are not rescued",
+        "rescues no work after the discovered candidate settles before its transaction",
+        "rechecks Project availability after candidate discovery",
+        "an export linkage failure rolls back admission, event and sequence allocation"
+      ]
+    },
+    "current_seams": [
+      "packages/services/src/render-group-replicas.db.test.ts",
+      "packages/services/src/clip-preparation.db.test.ts",
+      "packages/services/src/executor-control.db.test.ts",
+      "packages/services/src/targeted-workflow-execution.db.test.ts",
+      "packages/services/src/workflow-run-lifecycle.db.test.ts",
+      "packages/services/src/execution-maintenance.db.test.ts",
+      "apps/media/python/tests/test_control.py",
+      "apps/media/python/tests/test_process.py"
+    ],
+    "contract_changes": [
+      "parent has no executor owner or lease",
+      "only registered exact IDs may start; hourly repair never invents an orphan render admission",
+      "Core charges native process start, and an unstarted release remains uncharged",
+      "native commits replay the same inbox delivery after lost wake acknowledgement",
+      "successful and permanent members survive a retry; new output assignments include only unsettled members",
+      "source observations belong to the immutable preparation producer, not background render writers"
+    ],
+    "current_additional_checks": [
+      "four actual concurrent groups/eight committed outputs",
+      "twenty busy duplicate native invocations cannot acquire an owner",
+      "exact lease watchdog and successor",
+      "pre-start release and once-only successor start",
+      "idempotent partition and changed dispatch hash refusal",
+      "omitted caption glyph diagnostics and clean sibling",
+      "lost native output acknowledgement survives parent terminal settlement",
+      "manual retry races/rollback/frozen snapshot preservation through real old and new native executions"
+    ],
+    "old_process_timing_assertions": "Controlled host sleeps, parent-heartbeat timers, and global queue discovery are retired. Physical SIGKILL/renewal-loss behavior is covered by actual native subprocess gates; deployed HD timing/resource acceptance remains separate parent evidence."
+  }
 }

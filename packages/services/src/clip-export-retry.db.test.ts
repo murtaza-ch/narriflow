@@ -6,6 +6,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, setDefaultTimeout, t
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@prisma/client";
 import { Pool } from "pg";
+import { decodeClipEditorDocumentFromStorage, encodeClipEditorDocumentForStorage } from "./clip-editor-document-persistence";
 import { clipExportService } from "./clip-export.service";
 
 const databaseUrl = process.env.WORKFLOW_TEST_DATABASE_URL;
@@ -45,11 +46,9 @@ dbDescribe("Manual Clip Export retry PostgreSQL invariants", () => {
       workspaceId: workspace.id, createdByUserId: user.id, title: "Retry test", ingestStatus: "ready",
       sourceMediaUrl: "r2://test/source.mp4", sourceDurationSeconds: 30,
     } });
-    const oldAttemptId = randomUUID();
-    const oldRun = await prisma.workflowRun.create({ data: {
-      projectId: project.id, stage: "clip_rendering", status: "partial", attemptId: oldAttemptId,
-      attemptCount: 3, idempotencyKey: randomUUID(), requestedCount: 2, succeededCount: 1, failedCount: 1,
-    } });
+    const lifecycle = new RenderFixtureLifecycle({ prisma });
+    const admitted = await lifecycle.admit({ projectId: project.id, stage: "clip_rendering", idempotencyKey: randomUUID() });
+    let oldRun = await prisma.workflowRun.findUniqueOrThrow({ where: { id: admitted.id } });
     const clip = await prisma.clip.create({ data: {
       projectId: project.id, workflowRunId: oldRun.id, index: 0, startSec: 0, endSec: 10,
       hookText: "Retry clip", reasoning: "Test", category: "hook", transcriptSlice: [],
@@ -60,31 +59,34 @@ dbDescribe("Manual Clip Export retry PostgreSQL invariants", () => {
     const exported = await prisma.clipExport.create({ data: {
       projectId: project.id, workspaceId: workspace.id, createdByUserId: user.id, clipId: clip.id,
       workflowRunId: oldRun.id, editorRevision: 0, fingerprint: randomUUID(),
-      resolution: "720p", watermark: true, status: "partial_ready", progress: 100, completedAt: new Date(),
+      resolution: "720p", watermark: true, status: "queued", progress: 0,
     } });
-    const snapshot = { startSec: 0, endSec: 10, wholeSource: false, transcriptSlice: [],
-      captionPreset: {}, studioEdits: {}, deletedRanges: [], brollUrl: null,
-      editorDocumentVersion: 1, sceneBlocks: [], censorSegments: [], mediaMotions: [] };
-    const success = await prisma.clipExportVariant.create({ data: {
+    const snapshot = JSON.parse(JSON.stringify({ ...clip, ...encodeClipEditorDocumentForStorage(decodeClipEditorDocumentFromStorage(clip, { durationSec: 30, wholeSource: false }), { durationSec: 30, wholeSource: false }) }));
+    let success = await prisma.clipExportVariant.create({ data: {
       exportId: exported.id, aspectRatio: "ratio_9_16", resolution: "720p", watermark: true,
-      status: "completed", storageKey: "tests/preserved.mp4", sizeBytes: 123n, durationSec: 10, completedAt: new Date(),
+      status: "pending",
       render: { create: { clipId: clip.id, aspectRatio: "ratio_9_16", resolution: "720p", editorRevision: 0,
-        clipSnapshot: snapshot, workflowRunId: oldRun.id, workflowAttemptId: oldAttemptId,
-        status: "completed", storageKey: "tests/preserved.mp4", sizeBytes: 123n, durationSec: 10 } },
+        clipSnapshot: snapshot, status: "pending" } },
     }, include: { render: true } });
-    const failed = await prisma.clipExportVariant.create({ data: {
+    let failed = await prisma.clipExportVariant.create({ data: {
       exportId: exported.id, aspectRatio: "ratio_1_1", resolution: "720p", watermark: true,
-      status: "failed", errorCode: "render_output_invalid", completedAt: new Date(),
-      // Stale result fields must also be cleared on both rows.
-      storageKey: "tests/stale.mp4", sizeBytes: 9n, durationSec: 1,
+      status: "pending",
       render: { create: { clipId: clip.id, aspectRatio: "ratio_1_1", resolution: "720p", editorRevision: 0,
-        clipSnapshot: snapshot, workflowRunId: oldRun.id, workflowAttemptId: oldAttemptId,
-        status: "failed", failureDisposition: "retryable", errorCode: "render_output_invalid",
-        storageKey: "tests/stale.mp4", sizeBytes: 9n, durationSec: 1, startedAt: new Date(), completedAt: new Date() } },
+        clipSnapshot: snapshot, status: "pending" } },
     }, include: { render: true } });
+    const parent = await lifecycle.renderParent(oldRun.id);await lifecycle.beginRenderWorkSet(parent);
+    await lifecycle.markClipRenderVariantRendering(parent, success.render!.id);
+    await lifecycle.completeClipRenderVariant(parent, success.render!.id, { storageKey: "server-assigned", sizeBytes: 123, durationSec: 10 });
+    await lifecycle.failClipRenderVariant(parent, failed.render!.id, "render_output_invalid", "permanent");
+    await lifecycle.settleRenderWorkSet(parent);
+    oldRun = await prisma.workflowRun.findUniqueOrThrow({ where: { id: oldRun.id } });
+    success = await prisma.clipExportVariant.findUniqueOrThrow({ where: { id: success.id }, include: { render: true } });
+    // Deliberately stale result metadata must not survive a manual retry.
+    await prisma.clipRender.update({ where: { id: failed.render!.id }, data: { storageKey: "tests/stale.mp4", sizeBytes: 9n, durationSec: 1 } });
+    failed = await prisma.clipExportVariant.update({ where: { id: failed.id }, data: { storageKey: "tests/stale.mp4", sizeBytes: 9n, durationSec: 1 }, include: { render: true } });
     const scope = { workspaceId: workspace.id, actorUserId: user.id };
     const retry = () => clipExportService.retryFailed(scope, project.id, clip.id, exported.id);
-    return { project, clip, exported, oldRun, success, failed, retry };
+    return { project, clip, exported: await prisma.clipExport.findUniqueOrThrow({ where: { id: exported.id } }), oldRun, success, failed, retry };
   }
 
   test("actual simultaneous retry requests detach failed lineage once, admit claimable work and preserve successful bytes", bindServiceTestEnvironment(globals.bind(async () => {
@@ -104,8 +106,8 @@ dbDescribe("Manual Clip Export retry PostgreSQL invariants", () => {
     });
     expect(await prisma.clipExportVariant.findUniqueOrThrow({ where: { id: f.success.id }, include: { render: true } })).toEqual(f.success);
     const lifecycle = new RenderFixtureLifecycle({ prisma, leaseOwner: randomUUID() });
-    expect(await lifecycle.rescuePendingClipRenderingRun()).toBeNull();
-    const attempt = await lifecycle.claim("clip_rendering");
+    expect(await prisma.executionDispatch.count({ where: { kind: "render_run", subjectId: exported.workflowRunId!, generation: 1, wakeKind: null } })).toBe(1);
+    const attempt = await lifecycle.renderParent((await prisma.clipExport.findUniqueOrThrow({ where: { id: f.exported.id } })).workflowRunId!);
     if (!attempt) throw new Error("Manual retry must be claimable");
     expect(attempt.workflowRunId).toBe(exported.workflowRunId!);
     expect((await lifecycle.beginRenderWorkSet(attempt)).variantIds).toEqual([f.failed.render!.id]);
@@ -129,7 +131,7 @@ dbDescribe("Manual Clip Export retry PostgreSQL invariants", () => {
     expect(await prisma.clipExport.findUniqueOrThrow({ where: { id: f.exported.id } })).toMatchObject({ status: "failed" });
     expect(await f.retry()).toMatchObject({ status: "queued", progress: 0 });
     const lifecycle = new RenderFixtureLifecycle({ prisma, leaseOwner: randomUUID() });
-    const attempt = await lifecycle.claim("clip_rendering");
+    const attempt = await lifecycle.renderParent((await prisma.clipExport.findUniqueOrThrow({ where: { id: f.exported.id } })).workflowRunId!);
     if (!attempt) throw new Error("All-failed manual retry missing");
     const workSet = await lifecycle.beginRenderWorkSet(attempt);
     expect(workSet.variantIds.sort()).toEqual([f.failed.render!.id, f.success.render!.id].sort());
@@ -156,15 +158,15 @@ dbDescribe("Manual Clip Export retry PostgreSQL invariants", () => {
   test("a retry shares an active frozen run's normal drain follow-up without expanding its work set", bindServiceTestEnvironment(globals.bind(async () => {
     const f = await fixture();
     const lifecycle = new RenderFixtureLifecycle({ prisma, leaseOwner: randomUUID() });
-    await lifecycle.admit({ projectId: f.project.id, stage: "clip_rendering", idempotencyKey: "active-before-retry" });
-    const attempt = await lifecycle.claim("clip_rendering");
+    const active = await lifecycle.admit({ projectId: f.project.id, stage: "clip_rendering", idempotencyKey: "active-before-retry" });
+    const attempt = await lifecycle.renderParent(active.id);
     if (!attempt) throw new Error("Active run missing");
     expect((await lifecycle.beginRenderWorkSet(attempt)).variantIds).toEqual([]);
     await f.retry();
     expect((await lifecycle.beginRenderWorkSet(attempt)).variantIds).toEqual([]);
     const settled = await lifecycle.settleRenderWorkSet(attempt);
     expect(settled.followUpWorkflowRunId).toBeTruthy();
-    const followUp = await lifecycle.claim("clip_rendering");
+    const followUp = await lifecycle.renderParent(settled.followUpWorkflowRunId!);
     if (!followUp) throw new Error("Retry follow-up missing");
     expect(followUp.workflowRunId).toBe(settled.followUpWorkflowRunId!);
     expect((await lifecycle.beginRenderWorkSet(followUp)).variantIds).toEqual([f.failed.render!.id]);
@@ -172,13 +174,14 @@ dbDescribe("Manual Clip Export retry PostgreSQL invariants", () => {
 
   test("failed admission rolls back retry count, child resets, aggregates and outbox", bindServiceTestEnvironment(globals.bind(async () => {
     const f = await fixture();
+    const eventCount = await prisma.workflowEvent.count({ where: { projectId: f.project.id } });
     await prisma.$executeRawUnsafe(`CREATE FUNCTION "${databaseSchema}".reject_manual_retry() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'manual retry rejected'; END; $$`);
     await prisma.$executeRawUnsafe(`CREATE TRIGGER reject_manual_retry BEFORE INSERT ON "${databaseSchema}"."WorkflowRun" FOR EACH ROW EXECUTE FUNCTION "${databaseSchema}".reject_manual_retry()`);
     try {
       await expect(f.retry()).rejects.toThrow("manual retry rejected");
       expect(await prisma.clipExport.findUniqueOrThrow({ where: { id: f.exported.id } })).toEqual(f.exported);
       expect(await prisma.clipExportVariant.findUniqueOrThrow({ where: { id: f.failed.id }, include: { render: true } })).toEqual(f.failed);
-      expect(await prisma.workflowEvent.count({ where: { projectId: f.project.id } })).toBe(0);
+      expect(await prisma.workflowEvent.count({ where: { projectId: f.project.id } })).toBe(eventCount);
     } finally {
       await prisma.$executeRawUnsafe(`DROP TRIGGER reject_manual_retry ON "${databaseSchema}"."WorkflowRun"`);
       await prisma.$executeRawUnsafe(`DROP FUNCTION "${databaseSchema}".reject_manual_retry()`);
