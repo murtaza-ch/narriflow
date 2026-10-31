@@ -4,6 +4,7 @@ import { createExecutionStorage } from "../../src/execution-storage";
 const config = { accountId: "a".repeat(32), bucket: "private-bucket", accessKeyId: "fixture-access", secretAccessKey: "fixture-secret" };
 const object = { artifactId: "00000000-0000-4000-8000-000000000001", storageKey: "execution/1/token/owner/source",
   bindingHash: "b".repeat(64), contentType: "video/mp4", byteLength: 3 };
+const md5 = "kAFQmDzST7DWlj99KOF/cg==";
 const checksum = "ungWv48Bz+pBQUDeXa4iI7ADYaOWF3qctBD/YfIAFa0=";
 export default {
   async fetch() {
@@ -18,7 +19,7 @@ export default {
         let xml = "";
         const headers: Record<string, string> = { "content-type": "application/xml" };
         if (request.method === "POST" && "uploads" in request.query) xml = "<InitiateMultipartUploadResult><UploadId>assigned-upload</UploadId></InitiateMultipartUploadResult>";
-        else if (request.method === "GET") xml = `<ListPartsResult><Part><PartNumber>1</PartNumber><ETag>part-etag</ETag><Size>3</Size><ChecksumSHA256>${checksum}</ChecksumSHA256></Part><IsTruncated>false</IsTruncated></ListPartsResult>`;
+        else if (request.method === "GET") xml = `<ListPartsResult><Part><PartNumber>1</PartNumber><ETag>900150983cd24fb0d6963f7d28e17f72</ETag><Size>3</Size></Part><IsTruncated>false</IsTruncated></ListPartsResult>`;
         else if (request.method === "POST") xml = failComplete ? "<Error><Code>InvalidPart</Code><Message>fixture failure</Message></Error>" : "<CompleteMultipartUploadResult><ETag>final-etag</ETag></CompleteMultipartUploadResult>";
         else if (request.method === "HEAD") Object.assign(headers, { "content-length": "3", "content-type": object.contentType,
           etag: "final-etag", "x-amz-meta-execution-artifact-id": object.artifactId, "x-amz-meta-execution-binding-hash": object.bindingHash });
@@ -31,11 +32,11 @@ export default {
       const assignment = await storage.create(object);
       check(assignment.uploadId === "assigned-upload", "create_multipart");
       const window = { leaseExpiresAt: new Date(Date.now() + 90_000), operationDeadlineAt: new Date(Date.now() + 2_700_000) };
-      const upload = await storage.signPart(assignment, { ...window, partNumber: 1, byteLength: 3, checksumSha256: checksum });
-      check(new URL(upload.url).searchParams.get("X-Amz-SignedHeaders") === "content-length;host;x-amz-checksum-sha256", "sigv4_part_checksum_and_length");
+      const upload = await storage.signPart(assignment, { ...window, partNumber: 1, byteLength: 3, checksumSha256: checksum, checksumMd5: md5 });
+      check(new URL(upload.url).searchParams.get("X-Amz-SignedHeaders") === "content-length;content-md5;host", "sigv4_part_checksum_and_length");
       const range = await storage.signSourceRange(assignment, { storageKey: "uploads/verified", etag: '"source"', byteLength: 3 }, { ...window, start: 0, end: 3 });
       check(new URL(range.url).searchParams.get("X-Amz-SignedHeaders") === "host;if-match;range", "sigv4_exact_source_condition");
-      const receipts = [{ partNumber: 1, etag: "part-etag", checksumSha256: checksum }];
+      const receipts = [{ partNumber: 1, etag: "900150983cd24fb0d6963f7d28e17f72", checksumSha256: checksum, checksumMd5: md5 }];
       const completed = await storage.complete(assignment, receipts);
       check(completed.byteLength === 3 && completed.etag === "final-etag", "complete_then_exact_head");
       failComplete = true;
