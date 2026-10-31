@@ -152,4 +152,54 @@ dbDescribe("Fenced clip selection provider windows", () => {
     expect(admitted.kind).toBe("acquired");
     if (admitted.kind === "acquired") await service.complete(admitted.attempt, result(admitted.attempt));
   });
+  test("source replacement revokes an unstarted historical owner without charging when its exact watchdog is observed", async () => {
+    const f = await fixture(), service = createClipSelectionLifecycle({ database: db, maxInFlightRequests: 1, maxEstimatedTokens: 100 });
+    const active = await service.admit(f.windows[0]!.reference, { owner: crypto.randomUUID() });
+    if (active.kind !== "acquired") throw new Error("Window not acquired");
+    await db.transcript.update({ where: { id: f.transcript.id }, data: { selectionGeneration: { increment: 1 }, text: "Replacement" } });
+    expect((await service.start(active.attempt)).kind).toBe("superseded");
+    expect((await service.expire(active.attempt.reference)).kind).toBe("superseded");
+    expect((await db.clipSelectionWindow.findUniqueOrThrow({ where: { id: f.windows[0]!.row.id } }))).toMatchObject({ status: "cancelled", attemptCount: 0 });
+    expect((await db.executionAttempt.findUniqueOrThrow({ where: { attemptToken: active.attempt.token } }))).toMatchObject({ status: "superseded", failureCode: "selection_source_superseded", processStartedAt: null });
+  });
+  test("changed contents cannot consume a permit or strand the fair queue even if a writer failed to advance its Transcript generation", async () => {
+    const stale = await fixture(), fresh = await fixture();
+    await db.transcript.update({ where: { id: stale.transcript.id }, data: { text: "Changed contents" } });
+    const service = createClipSelectionLifecycle({ database: db, maxInFlightRequests: 1, maxEstimatedTokens: 100 });
+    expect((await service.admit(stale.windows[0]!.reference, { owner: crypto.randomUUID() })).kind).toBe("superseded");
+    expect((await db.clipSelectionWindow.findUniqueOrThrow({ where: { id: stale.windows[0]!.row.id } }))).toMatchObject({ status: "cancelled", attemptCount: 0, executorOwner: null });
+    const admitted = await admitStarted(service, fresh.windows[0]!.reference, { owner: crypto.randomUUID() });
+    expect(admitted.kind).toBe("acquired");
+    if (admitted.kind === "acquired") await service.complete(admitted.attempt, result(admitted.attempt));
+  });
+  test("completion rechecks the database lease after waiting for the account lock", async () => {
+    const f = await fixture(), service = createClipSelectionLifecycle({ database: db, maxInFlightRequests: 1, maxEstimatedTokens: 100 });
+    const active = await admitStarted(service, f.windows[0]!.reference, { owner: crypto.randomUUID() });
+    if (active.kind !== "acquired") throw new Error("Window not acquired");
+    const leaseExpiresAt = new Date(Date.now() + 1500);
+    await db.clipSelectionWindow.update({ where: { id: f.windows[0]!.row.id }, data: { leaseExpiresAt } });
+    await db.executionAttempt.update({ where: { attemptToken: active.attempt.token }, data: { leaseExpiresAt } });
+    let release!: () => void, markHeld!: (pid: number) => void;
+    const released = new Promise<void>(resolve => { release = resolve; }), held = new Promise<number>(resolve => { markHeld = resolve; });
+    const holder = db.$transaction(async tx => {
+      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended('provider_capacity:openai:clip_selection', 0)) IS NULL AS "locked"`;
+      const [session] = await tx.$queryRaw<Array<{ pid: number }>>`SELECT pg_backend_pid() AS pid`;
+      markHeld(session!.pid); await released;
+    });
+    const pid = await held, completing = service.complete(active.attempt, result(active.attempt));
+    try {
+      let blocked = false;
+      for (let count = 0; count < 100 && !blocked; count++) {
+        const [activity] = await db.$queryRaw<Array<{ blocked: boolean }>>`SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE ${pid}::integer = ANY(pg_blocking_pids(pid))) AS blocked`;
+        blocked = activity!.blocked; if (!blocked) await new Promise(resolve => setTimeout(resolve, 5));
+      }
+      expect(blocked).toBe(true);
+      expect(Date.now()).toBeLessThan(leaseExpiresAt.getTime());
+      await new Promise(resolve => setTimeout(resolve, Math.max(0, leaseExpiresAt.getTime() - Date.now() + 30)));
+    } finally { release(); await holder; }
+    expect((await completing).kind).toBe("superseded");
+    expect((await db.clipSelectionWindow.findUniqueOrThrow({ where: { id: f.windows[0]!.row.id } })).resultStorageKey).toBeNull();
+    expect((await service.expire(active.attempt.reference)).kind).toBe("superseded");
+    expect((await db.clipSelectionWindow.findUniqueOrThrow({ where: { id: f.windows[0]!.row.id } }))).toMatchObject({ status: "queued", generation: 2, attemptCount: 1 });
+  });
 });

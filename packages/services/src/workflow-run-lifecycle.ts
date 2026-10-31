@@ -9,6 +9,7 @@ import {
   SCRIBE_MODEL_ID,
   workflowStageUpdatedEventSchema,
   planTranscript, parseStoredContentPack, sourceProbeSchema, fitSuppliedUtterances, toProviderLanguageCode,
+  clipAspectRatioToDb, resolvePricingTier,
 } from "@narriflow/validators";
 import type {
   ClipCategory,
@@ -41,6 +42,9 @@ export type { ProviderAttemptReference } from "@narriflow/validators/execution";
 import { lockWorkspaceUsage } from "./processing-usage";
 import type { ExecutorDomainLock, ExecutorMutationContext, ExecutorMutationResult, ExecutorFailureInput, ExecutorReleaseInput, ExecutorProgressInput, ExecutorArtifactCommit, ExecutorExpiryObservation, ExecutorExpiryResult } from "./executor-domain-control";
 import { appendScribeCapacityWakesWithinTransaction } from "./transcription-admission";
+import { lockClipSelectionParent, clipSelectionTranscriptHash, cancelClipSelectionWindowsWithinTransaction } from "./clip-selection-window";
+import { admitCaptionedExportWithinTransaction, resolveClipExportOutput } from "./clip-export.service";
+import type { ClipSelectionFinalizationResult, PreparedClipSelectionFinalization } from "./clip-selection-finalization";
 
 /** How long a stopping worker lets in-flight handlers finish
  * (`WORKER_SHUTDOWN_DRAIN_MS`, 30s by default). */
@@ -1256,6 +1260,9 @@ export class WorkflowRunLifecycle {
     const groups = await tx.renderGroup.findMany({ where: { deploymentEpoch: input.deploymentEpoch, workflowRun: { projectId: input.projectId }, status: { in: ["queued", "running"] } }, orderBy: { id: "asc" } });
     const groupIds = groups.map(group => group.id), runIds = runs.map(run => run.id);
     if (groupIds.length) await tx.$queryRaw`SELECT "groupId", "clipRenderId" FROM "RenderGroupMember" WHERE "groupId" IN (${Prisma.join(groupIds.map(id => Prisma.sql`${id}::uuid`))}) ORDER BY "groupId", "clipRenderId" FOR UPDATE`;
+    await tx.$queryRaw`SELECT id FROM "ClipSelectionWindow" WHERE "projectId" = ${input.projectId}::uuid AND "deploymentEpoch" = ${input.deploymentEpoch}
+      AND status IN ('queued', 'running') ORDER BY id FOR UPDATE`;
+    const selectionCapacityDispatchIds = await cancelClipSelectionWindowsWithinTransaction(tx, { ...input, cause: runs.find(run => run.stage === "moment_detection")?.id ?? input.projectId });
     await tx.$queryRaw`SELECT a."attemptToken" FROM "ExecutionAttempt" a JOIN "ExecutionDispatch" d ON d.id = a."dispatchId"
       LEFT JOIN "WorkflowRun" r ON d."subjectKind" = 'workflow_run' AND d."subjectId" = r.id::text
       LEFT JOIN "RenderGroup" g ON d."subjectKind" = 'render_group' AND d."subjectId" = g.id::text
@@ -1278,7 +1285,7 @@ export class WorkflowRunLifecycle {
       await tx.renderGroup.updateMany({ where: { id: { in: groupIds } }, data: { status: "superseded", errorCode: input.errorCode, attemptToken: null,
         leaseOwner: null, leaseExpiresAt: null, heartbeatAt: null, nextAttemptAt: null, settledAt: input.now, updatedAt: input.now } });
     }
-    const capacityDispatchIds: string[] = [];
+    const capacityDispatchIds: string[] = [...selectionCapacityDispatchIds];
     if (runs.some(run => run.stage === "stt")) {
       const event = runs.find(run => run.stage === "stt")!;
       capacityDispatchIds.push(...(await appendScribeCapacityWakesWithinTransaction(tx, { deploymentEpoch: input.deploymentEpoch, attemptId: event.attemptId ?? event.id })).dispatchIds);
@@ -1719,24 +1726,19 @@ export class WorkflowRunLifecycle {
     }
   }
 
-  async replaceDetectedClips(
-    attempt: WorkflowAttemptRef,
-    clips: DetectedClipArtifactInput[],
-  ) {
-    await this.transaction(async (tx) => {
-      await this.fenceChildMutation(tx, attempt, "moment_detection");
+  private async replaceDetectedClipsWithinTransaction(tx: TransactionClient, origin: { projectId: string; workflowRunId: string }, clips: DetectedClipArtifactInput[]) {
       await admitRetiredClipMediaCleanup(
         tx,
         "detected_clip_replacement",
-        attempt.projectId,
+        origin.projectId,
       );
-      await tx.clip.deleteMany({ where: { projectId: attempt.projectId } });
+      await tx.clip.deleteMany({ where: { projectId: origin.projectId } });
       if (clips.length > 0) {
         await tx.clip.createMany({
           data: clips.map((clip) => ({
             ...clip,
-            projectId: attempt.projectId,
-            workflowRunId: attempt.workflowRunId,
+            projectId: origin.projectId,
+            workflowRunId: origin.workflowRunId,
             brollCues:
               clip.brollCues === null || clip.brollCues === undefined
                 ? Prisma.JsonNull
@@ -1744,6 +1746,12 @@ export class WorkflowRunLifecycle {
           })),
         });
       }
+  }
+
+  async replaceDetectedClips(attempt: WorkflowAttemptRef, clips: DetectedClipArtifactInput[]) {
+    await this.transaction(async tx => {
+      await this.fenceChildMutation(tx, attempt, "moment_detection");
+      await this.replaceDetectedClipsWithinTransaction(tx, attempt, clips);
     });
   }
 
@@ -1759,19 +1767,11 @@ export class WorkflowRunLifecycle {
     });
   }
 
-  async admitAutoRenderWork(
-    attempt: WorkflowAttemptRef,
-    input: {
-      idempotencyKey: string;
-      renders: RenderArtifactInput[];
-    },
-  ) {
-    return this.transaction(async (tx) => {
-      await this.fenceChildMutation(tx, attempt, "moment_detection");
+  private async admitAutoRenderWorkWithinTransaction(tx: TransactionClient, origin: { projectId: string; workflowRunId: string; eventId: string }, input: { idempotencyKey: string; renders: RenderArtifactInput[] }) {
       if (input.renders.length > 0) {
         const projectClipCount = await tx.clip.count({
           where: {
-            projectId: attempt.projectId,
+            projectId: origin.projectId,
             id: { in: input.renders.map((render) => render.clipId) },
           },
         });
@@ -1779,7 +1779,7 @@ export class WorkflowRunLifecycle {
           projectClipCount !==
           new Set(input.renders.map((render) => render.clipId)).size
         ) {
-          throw new WorkflowAttemptLost(attempt);
+          throw new WorkflowFailure("selection_render_membership_invalid", "permanent", "A selection render belongs to a different Project");
         }
         await tx.clipRender.createMany({
           data: input.renders.map((render) => ({
@@ -1794,11 +1794,11 @@ export class WorkflowRunLifecycle {
       // deliberately not assigned to the detection attempt: beginRenderWorkSet
       // binds them to the render run, and the Render Group lifecycle binds
       // each child to the render attempt that actually owns its mutation.
-      await this.lockAdmissionProject(tx, attempt.projectId);
+      await this.lockAdmissionProject(tx, origin.projectId);
       const existing = await tx.workflowRun.findUnique({
         where: {
           projectId_idempotencyKey: {
-            projectId: attempt.projectId,
+            projectId: origin.projectId,
             idempotencyKey: input.idempotencyKey,
           },
         },
@@ -1806,29 +1806,35 @@ export class WorkflowRunLifecycle {
       });
       const active = await tx.workflowRun.findFirst({
         where: {
-          projectId: attempt.projectId,
+          projectId: origin.projectId,
           stage: "clip_rendering",
           status: { in: ["queued", "running", "waiting"] },
         },
         select: { id: true },
       });
       const admitted = existing ? { id: existing.id, created: false } : active ? { id: active.id, created: false } : await this.admitWithinTransaction(tx, {
-        projectId: attempt.projectId,
+        projectId: origin.projectId,
         idempotencyKey: input.idempotencyKey,
         stage: "clip_rendering",
         contentPackId: null,
       });
-      const detection = await tx.workflowRun.findUniqueOrThrow({ where: { id: attempt.workflowRunId }, select: { progress: true } });
+      const detection = await tx.workflowRun.findUniqueOrThrow({ where: { id: origin.workflowRunId }, select: { progress: true } });
       const generationRenders = await tx.clipRender.findMany({ where: { exportVariantId: null,
-        clip: { projectId: attempt.projectId, workflowRunId: attempt.workflowRunId },
+        clip: { projectId: origin.projectId, workflowRunId: origin.workflowRunId },
         OR: input.renders.map((render) => ({ clipId: render.clipId, aspectRatio: render.aspectRatio as Prisma.ClipRenderWhereInput["aspectRatio"] })) },
         orderBy: { id: "asc" }, select: { id: true, clipId: true } });
-      await this.appendEvent(tx, { projectId: attempt.projectId, workflowRunId: attempt.workflowRunId,
-        attemptId: attempt.attemptId, stage: "moment_detection", status: "running", progress: detection.progress,
+      await this.appendEvent(tx, { projectId: origin.projectId, workflowRunId: origin.workflowRunId,
+        attemptId: origin.eventId, stage: "moment_detection", status: "running", progress: detection.progress,
         errorCode: null, transition: `render_handoff:${admitted.id}`, followUpWorkflowRunId: admitted.id,
         generationRenders: generationRenders.map((render) => ({ renderId: render.id, clipId: render.clipId })) });
       await this.dispatchRunWithinTransaction(tx, admitted.id);
       return admitted;
+  }
+
+  async admitAutoRenderWork(attempt: WorkflowAttemptRef, input: { idempotencyKey: string; renders: RenderArtifactInput[] }) {
+    return this.transaction(async tx => {
+      await this.fenceChildMutation(tx, attempt, "moment_detection");
+      return this.admitAutoRenderWorkWithinTransaction(tx, { ...attempt, eventId: attempt.attemptId }, input);
     });
   }
 
@@ -2850,6 +2856,79 @@ export class WorkflowRunLifecycle {
     options: { admit?: (tx: TransactionClient) => Promise<{ exportId: string; clipId: string }> } = {},
   ) {
     await this.settleSuccess(attempt, "completed", null, options.admit);
+  }
+
+  /** Verified private results become Clips, render obligations and one terminal event together. */
+  async finalizeClipSelection(reference: ExecutionDispatchReference, prepared: PreparedClipSelectionFinalization | null): Promise<ClipSelectionFinalizationResult> {
+    return this.transaction(async tx => {
+      const state = await lockClipSelectionParent(tx, reference);
+      if (!state) return { kind: "superseded", dispatchIds: [] };
+      const { run, project, now, transcript } = state;
+      queueProjectProgressCatchup(tx, project.id);
+      await tx.$queryRaw`SELECT id FROM "ClipSelectionWindow" WHERE "workflowRunId" = ${run.id}::uuid AND "workflowGeneration" = ${run.generation} ORDER BY id FOR UPDATE`;
+      const windows = await tx.clipSelectionWindow.findMany({ where: { workflowRunId: run.id, workflowGeneration: run.generation, deploymentEpoch: run.deploymentEpoch }, orderBy: { windowIndex: "asc" } });
+      if (!windows.length) return { kind: "not_prepared", dispatchIds: [] };
+      const first = windows[0]!;
+      if (windows.length !== first.windowCount || windows.some((window, index) => window.windowIndex !== index || window.selectionHash !== first.selectionHash || window.transcriptId !== transcript.id ||
+        window.transcriptGeneration !== transcript.selectionGeneration || window.transcriptAttemptId !== transcript.workflowAttemptId || window.sourceRevision !== transcript.sourceRevision || window.sourceAudioId !== transcript.sourceAudioId ||
+        window.sourceAudioBindingHash !== (transcript.sourceAudio?.bindingHash ?? null) || window.transcriptContentHash !== first.transcriptContentHash) || first.transcriptContentHash !== await clipSelectionTranscriptHash(transcript)) return { kind: "superseded", dispatchIds: [] };
+      // This stable UUID correlates events. It is never an executor token or a parent lease.
+      const origin = { projectId: project.id, workflowRunId: run.id, eventId: first.id };
+      const replayWakes = async () => {
+        const handoff = await tx.workflowEvent.findFirst({ where: { workflowRunId: run.id, dedupeKey: { startsWith: `${run.id}:${origin.eventId}:render_handoff:` } }, orderBy: { seq: "desc" }, select: { payload: true } });
+        if (!handoff) return [];
+        const event = workflowStageUpdatedEventSchema.parse(handoff.payload);
+        return event.followUpWorkflowRunId ? [(await this.dispatchRunWithinTransaction(tx, event.followUpWorkflowRunId)).reference.dispatchId] : [];
+      };
+      if (["completed", "failed", "cancelled"].includes(run.status)) return { kind: run.status as "completed" | "failed" | "cancelled", dispatchIds: await replayWakes() };
+      const failed = windows.find(window => window.status === "failed" || window.status === "cancelled");
+      if (!failed && windows.some(window => window.status !== "completed")) {
+        const progress = 20 + Math.round(windows.filter(window => window.status === "completed").length / windows.length * 60);
+        await tx.workflowRun.update({ where: { id: run.id }, data: { progress } });
+        await this.appendEvent(tx, { projectId: project.id, workflowRunId: run.id, attemptId: origin.eventId, stage: "moment_detection", status: "waiting", progress,
+          errorCode: null, transition: `selection_progress:${progress}` });
+        const deadlines = windows.filter(window => window.status === "queued" || window.status === "running").map(window => window.leaseExpiresAt ?? (window.retryAt && window.retryAt > now ? window.retryAt : window.operationDeadlineAt));
+        return { kind: "wait", dueAt: new Date(Math.min(...deadlines.map(deadline => deadline.getTime()))), dispatchIds: [] };
+      }
+      if (!failed) {
+        if (!prepared) return { kind: "not_prepared", dispatchIds: [] };
+        const { proof } = prepared;
+        if (proof.selectionHash !== first.selectionHash || proof.windows.length !== windows.length || windows.some(window => {
+          const result = proof.windows.find(candidate => candidate.id === window.id);
+          return window.inputStorageKey !== proof.input.storageKey || window.inputEtag !== proof.input.etag || window.inputChecksumSha256 !== proof.input.sha256 || window.inputByteLength !== BigInt(proof.input.byteLength) ||
+            !result || result.generation !== window.generation || result.windowIndex !== window.windowIndex || result.result.storageKey !== window.resultStorageKey || result.result.etag !== window.resultEtag ||
+            result.result.sha256 !== window.resultHash || BigInt(result.result.byteLength) !== window.resultByteLength || result.tokensUsed !== window.tokensUsed || result.providerRequestId !== window.providerRequestId;
+        })) throw new Error("selection_finalization_proof_conflict");
+      }
+      const failureCode = failed?.errorCode ?? (prepared?.outcome.kind === "failure" ? prepared.outcome.code : null);
+      let generationExport: { exportId: string; clipId: string } | undefined;
+      const dispatchIds: string[] = [];
+      if (failed || failureCode) {
+        dispatchIds.push(...await cancelClipSelectionWindowsWithinTransaction(tx, { projectId: project.id, workflowRunId: run.id, deploymentEpoch: run.deploymentEpoch,
+          errorCode: failureCode ?? "selection_window_failed", now, cause: origin.eventId }));
+      } else {
+        if (!prepared || prepared.outcome.kind !== "clips" || !prepared.outcome.clips.length) throw new Error("selection_finalization_clips_missing");
+        await this.replaceDetectedClipsWithinTransaction(tx, origin, prepared.outcome.clips);
+        const pack = prepared.outcome.contentPack;
+        let renders: RenderArtifactInput[] = [];
+        if (pack.mode === "caption_only" && pack.captionedVideo) generationExport = await admitCaptionedExportWithinTransaction(tx, origin, pack.captionedVideo);
+        else {
+          const workspace = await tx.workspace.findUniqueOrThrow({ where: { id: project.workspaceId }, select: { pricingTier: true } });
+          const resolution = resolveClipExportOutput(resolvePricingTier(workspace.pricingTier), "1080p").granted.resolution;
+          const clips = await tx.clip.findMany({ where: { projectId: project.id, workflowRunId: run.id }, orderBy: { index: "asc" }, select: { id: true } });
+          renders = clips.map(clip => ({ clipId: clip.id, aspectRatio: clipAspectRatioToDb[pack.defaultAspectRatio], resolution, status: "pending" }));
+        }
+        const render = await this.admitAutoRenderWorkWithinTransaction(tx, origin, { idempotencyKey: `auto-render-${run.id}`, renders });
+        dispatchIds.push((await this.dispatchRunWithinTransaction(tx, render.id)).reference.dispatchId);
+      }
+      const status = failed || failureCode ? "failed" : "completed";
+      await tx.workflowRun.update({ where: { id: run.id }, data: { status, progress: 100, errorCode: status === "failed" ? failureCode ?? "selection_window_failed" : null,
+        attemptId: null, leaseOwner: null, leaseExpiresAt: null, heartbeatAt: null, nextAttemptAt: null, nextPollAt: null } });
+      await this.appendEvent(tx, { projectId: project.id, workflowRunId: run.id, attemptId: origin.eventId, stage: "moment_detection", status, progress: 100,
+        errorCode: status === "failed" ? failureCode ?? "selection_window_failed" : null, transition: `terminal:${status}`, analyticsRequired: true, ...(generationExport ? { generationExport } : {}) });
+      await this.emitFinishedOperations(tx, { workflowRunId: run.id, projectId: project.id, stage: "moment_detection" });
+      return { kind: status, dispatchIds };
+    });
   }
 
   private async lockRenderRun(tx: TransactionClient, reference: ExecutionDispatchReference): Promise<

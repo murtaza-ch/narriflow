@@ -563,7 +563,19 @@
     "./outbound-delivery-execution": "./src/outbound-delivery-execution.ts",
     "./notification-body-storage": "./src/notification-body-storage.ts",
     "./outbound-delivery-runtime": "./src/outbound-delivery-runtime.ts",
-    "./drive-source-contract": "./src/drive-source-contract.ts"
+    "./drive-source-contract": "./src/drive-source-contract.ts",
+    "./clip-selection-runtime": {
+      "types": "./src/clip-selection-runtime.ts",
+      "default": "./src/clip-selection-runtime.ts"
+    },
+    "./clip-selection-storage": {
+      "types": "./src/clip-selection-storage.ts",
+      "default": "./src/clip-selection-storage.ts"
+    },
+    "./clip-selection-finalization": {
+      "types": "./src/clip-selection-finalization.ts",
+      "default": "./src/clip-selection-finalization.ts"
+    }
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
