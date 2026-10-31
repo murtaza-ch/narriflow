@@ -50,7 +50,7 @@ function sameReference(left: ExecutionDispatchReference, right: ExecutionDispatc
 }
 function uuid(value: string): boolean { return /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(value); }
 
-export async function lockClipSelectionWindow(tx: Tx, value: ExecutionDispatchReference, historicalResult = false): Promise<{ row: ClipSelectionWindow; now: Date } | null> {
+export async function lockClipSelectionWindow(tx: Tx, value: ExecutionDispatchReference, historicalResult = false, verifyContent = true): Promise<{ row: ClipSelectionWindow; now: Date; current: boolean } | null> {
   const parsed = executionDispatchReferenceSchema.safeParse(value);
   if (!parsed.success || value.kind !== "operation_driver" || value.subject.kind !== "clip_selection_window") return null;
   const [epoch] = await tx.$queryRaw<Array<{ epoch: number }>>`SELECT "epoch" FROM "ExecutionEpoch" WHERE id = 1 FOR SHARE`;
@@ -65,17 +65,18 @@ export async function lockClipSelectionWindow(tx: Tx, value: ExecutionDispatchRe
   await tx.$queryRaw`SELECT id FROM "ClipSelectionWindow" WHERE id = ${initial.id}::uuid FOR UPDATE`;
   const row = await tx.clipSelectionWindow.findUniqueOrThrow({ where: { id: initial.id } }), now = await clock(tx);
   if (row.deploymentEpoch !== value.deploymentEpoch || row.generation !== value.generation || row.inputHash !== value.inputHash) return null;
-  if (historicalResult && row.status === "completed") return { row, now };
+  if (historicalResult && row.status === "completed") return { row, now, current: true };
   const parent = await tx.workflowRun.findUniqueOrThrow({ where: { id: row.workflowRunId } });
   const project = await tx.project.findFirst({ where: { id: row.projectId, ...accessibleProjectWhere(now), ingestStatus: { not: "failed" }, workspace: { status: "active" } } });
-  const transcript = await tx.transcript.findUnique({ where: { projectId: row.projectId }, include: { sourceAudio: { select: { bindingHash: true } } } });
+  const transcript = await tx.transcript.findUnique({ where: { projectId: row.projectId }, select: { id: true, status: true, sourceRevision: true, selectionGeneration: true, workflowAttemptId: true,
+    sourceAudioId: true, sourceAudio: { select: { bindingHash: true } } } });
   if (!project || !transcript || parent.stage !== "moment_detection" || parent.status !== "waiting" || parent.attemptId || parent.leaseOwner || parent.leaseExpiresAt ||
     parent.deploymentEpoch !== row.deploymentEpoch || parent.generation !== row.workflowGeneration || transcript.status !== "completed" ||
     project.sourceRevision !== row.sourceRevision || transcript.sourceRevision !== row.sourceRevision || transcript.id !== row.transcriptId ||
     transcript.selectionGeneration !== row.transcriptGeneration || transcript.workflowAttemptId !== row.transcriptAttemptId ||
-    transcript.sourceAudioId !== row.sourceAudioId || (transcript.sourceAudio?.bindingHash ?? null) !== row.sourceAudioBindingHash ||
-    await clipSelectionTranscriptHash(transcript) !== row.transcriptContentHash) return null;
-  return { row, now };
+    transcript.sourceAudioId !== row.sourceAudioId || (transcript.sourceAudio?.bindingHash ?? null) !== row.sourceAudioBindingHash) return { row, now, current: false };
+  if (verifyContent && await clipSelectionTranscriptHash(await tx.transcript.findUniqueOrThrow({ where: { id: transcript.id } })) !== row.transcriptContentHash) return { row, now, current: false };
+  return { row, now, current: true };
 }
 
 /** Parent commands freeze inputs and finalize children without a long-lived lease. */
@@ -137,6 +138,8 @@ async function replayWakes(tx: Tx, reference: ExecutionDispatchReference): Promi
 /** No other Project or window row is locked while holding this account lock. */
 async function capacity(tx: Tx, deploymentEpoch: number, now: Date) {
   await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${CAPACITY_LOCK}, 0)) IS NULL AS "locked"`;
+  // The account lock may have waited behind another Project.
+  now = await clock(tx);
   const current = Prisma.sql`run.status = 'waiting' AND run.generation = w."workflowGeneration" AND run."deploymentEpoch" = w."deploymentEpoch"
     AND run."attemptId" IS NULL AND run."leaseOwner" IS NULL AND run."leaseExpiresAt" IS NULL
     AND p."ingestStatus" <> 'failed' AND p."sourceRevision" = w."sourceRevision" AND p."purgeStartedAt" IS NULL
@@ -163,7 +166,7 @@ async function capacity(tx: Tx, deploymentEpoch: number, now: Date) {
     ORDER BY (SELECT MAX(turn."lastProviderStartedAt") FROM "ClipSelectionWindow" turn WHERE turn."projectId" = w."projectId" AND turn."deploymentEpoch" = w."deploymentEpoch") ASC NULLS FIRST,
       w."providerQueuedAt" ASC, w."windowIndex" ASC, w.id ASC LIMIT 1
   `;
-  return { ...usage, head };
+  return { ...usage, head, now };
 }
 async function wakeHead(tx: Tx, deploymentEpoch: number, cause: string, now: Date): Promise<string[]> {
   const { head } = await capacity(tx, deploymentEpoch, now);
@@ -173,6 +176,18 @@ async function wakeHead(tx: Tx, deploymentEpoch: number, cause: string, now: Dat
   // Epoch zero is a stable due time for replay of this exact release hint.
   const wake = await appendExecutionDispatch(tx, { ...reference, subject: reference.subject, dueAt: new Date(0), wakeKind: `sel_${cause.replaceAll("-", "")}` });
   return [wake.reference.dispatchId];
+}
+
+async function retireSupersededWindow(tx: Tx, state: { row: ClipSelectionWindow; now: Date }): Promise<string[]> {
+  const { row, now } = state;
+  if (!["queued", "running"].includes(row.status)) return [await parentWake(tx, row)];
+  await capacity(tx, row.deploymentEpoch, now);
+  if (row.attemptToken) {
+    await tx.$queryRaw`SELECT "attemptToken" FROM "ExecutionAttempt" WHERE "attemptToken" = ${row.attemptToken}::uuid FOR UPDATE`;
+    await tx.executionAttempt.updateMany({ where: { attemptToken: row.attemptToken, status: { in: ["admitted", "running"] } }, data: { status: "superseded", failureCode: "selection_source_superseded", revokedAt: now, finishedAt: now } });
+  }
+  const cancelled = await tx.clipSelectionWindow.update({ where: { id: row.id }, data: { status: "cancelled", errorCode: "selection_source_superseded", leaseExpiresAt: null, completedAt: now } });
+  return [await parentWake(tx, cancelled), ...await wakeHead(tx, row.deploymentEpoch, row.attemptToken ?? row.id, now)];
 }
 
 /** Caller holds the Project/parent locks; finished results remain reusable. */
@@ -199,10 +214,14 @@ export function createClipSelectionLifecycle(config: { database: PrismaClient; m
   if (!Number.isSafeInteger(config.maxInFlightRequests) || config.maxInFlightRequests <= 0 || !Number.isSafeInteger(config.maxEstimatedTokens) || config.maxEstimatedTokens <= 0) throw new RangeError("Explicit selection provider request and token limits are required");
   const transaction = <T>(body: (tx: Tx) => Promise<T>) => config.database.$transaction(body, { maxWait: 10_000, timeout: 30_000 });
 
-  async function finish(tx: Tx, row: ClipSelectionWindow, now: Date, input: { failureCode: string; dueAt?: Date }): Promise<ClipSelectionWindowSettlement> {
-    await capacity(tx, row.deploymentEpoch, now);
+  async function finish(tx: Tx, row: ClipSelectionWindow, observedAt: Date, input: { failureCode: string; dueAt?: Date; requireLiveOwner?: boolean }): Promise<ClipSelectionWindowSettlement> {
+    await capacity(tx, row.deploymentEpoch, observedAt);
     if (row.attemptToken) {
       await tx.$queryRaw`SELECT "attemptToken" FROM "ExecutionAttempt" WHERE "attemptToken" = ${row.attemptToken}::uuid FOR UPDATE`;
+    }
+    const now = await clock(tx);
+    if (input.requireLiveOwner && (!row.leaseExpiresAt || row.leaseExpiresAt <= now || row.operationDeadlineAt <= now)) return { kind: "superseded", dispatchIds: [await leaseWake(tx, row, await registerClipSelectionWindow(tx, row))] };
+    if (row.attemptToken) {
       await tx.executionAttempt.updateMany({ where: { attemptToken: row.attemptToken, status: { in: ["admitted", "running"] } },
         data: { status: "failed", failureCode: input.failureCode, revokedAt: now, finishedAt: now } });
     }
@@ -220,8 +239,9 @@ export function createClipSelectionLifecycle(config: { database: PrismaClient; m
     async admit(reference: ExecutionDispatchReference, invocation: { owner: string }): Promise<ClipSelectionWindowAdmission> {
       if (!uuid(invocation.owner)) throw new Error("Invalid selection invocation owner");
       return transaction(async tx => {
-        const state = await lockClipSelectionWindow(tx, reference, true);
+        const state = await lockClipSelectionWindow(tx, reference, true, false);
         if (!state) return { kind: "superseded", dispatchIds: await replayWakes(tx, reference) };
+        if (!state.current) return { kind: "superseded", dispatchIds: await retireSupersededWindow(tx, state) };
         const { row, now } = state;
         if (["completed", "failed", "cancelled"].includes(row.status)) return { kind: row.status as "completed" | "failed" | "cancelled", dispatchIds: [await parentWake(tx, row)] };
         if (row.operationDeadlineAt <= now) return { ...await finish(tx, row, now, { failureCode: "operation_deadline_exceeded" }), kind: "failed" };
@@ -236,6 +256,7 @@ export function createClipSelectionLifecycle(config: { database: PrismaClient; m
         if (row.retryAt && row.retryAt > now && row.errorCode !== CLIP_SELECTION_CAPACITY_WAIT) return { kind: "wait", dueAt: row.retryAt, dispatchIds: [] };
         if (row.estimatedTokens > config.maxEstimatedTokens) throw new RangeError("Selection token cap cannot admit this window");
         const used = await capacity(tx, row.deploymentEpoch, now);
+        if (row.operationDeadlineAt <= used.now) return { ...await finish(tx, row, used.now, { failureCode: "operation_deadline_exceeded" }), kind: "failed" };
         if (used.head?.id !== row.id || used.requests >= config.maxInFlightRequests || used.tokens + row.estimatedTokens > config.maxEstimatedTokens) {
           const dueAt = new Date(Math.min(row.operationDeadlineAt.getTime(), used.dueAt?.getTime() ?? used.head?.operationDeadlineAt.getTime() ?? row.operationDeadlineAt.getTime()));
           await tx.clipSelectionWindow.update({ where: { id: row.id }, data: { errorCode: CLIP_SELECTION_CAPACITY_WAIT, retryAt: dueAt } });
@@ -243,13 +264,19 @@ export function createClipSelectionLifecycle(config: { database: PrismaClient; m
             ? await wakeHead(tx, row.deploymentEpoch, row.id, now) : [];
           return { kind: "wait", dueAt, dispatchIds };
         }
-        const token = crypto.randomUUID(), leaseExpiresAt = new Date(Math.min(now.getTime() + 120_000, row.operationDeadlineAt.getTime()));
+        // Denied waiters never load the full word graph. Only the next permit
+        // holder proves its frozen contents before acquiring ownership.
+        const transcript = await tx.transcript.findUniqueOrThrow({ where: { id: row.transcriptId } });
+        if (await clipSelectionTranscriptHash(transcript) !== row.transcriptContentHash) return { kind: "superseded", dispatchIds: await retireSupersededWindow(tx, state) };
+        const activeNow = await clock(tx);
+        if (row.operationDeadlineAt <= activeNow) return { ...await finish(tx, row, activeNow, { failureCode: "operation_deadline_exceeded" }), kind: "failed" };
+        const token = crypto.randomUUID(), leaseExpiresAt = new Date(Math.min(activeNow.getTime() + 120_000, row.operationDeadlineAt.getTime()));
         await tx.executionAttempt.create({ data: { attemptToken: token, dispatchId: reference.dispatchId, deploymentEpoch: row.deploymentEpoch, generation: row.generation,
           inputHash: row.inputHash, functionName: "clip_selection_window", inputStorageKey: row.inputStorageKey, inputEtag: row.inputEtag, inputByteLength: row.inputByteLength,
           inputChecksumSha256: row.inputChecksumSha256, owner: invocation.owner, leaseExpiresAt, operationDeadlineAt: row.operationDeadlineAt, status: "admitted" } });
         await tx.clipSelectionWindow.update({ where: { id: row.id }, data: { status: "running", attemptToken: token, executorOwner: invocation.owner, leaseExpiresAt,
-          lastProviderStartedAt: now, errorCode: null, retryAt: null } });
-        const dispatchIds = [await leaseWake(tx, { ...row, leaseExpiresAt }, reference), ...await wakeHead(tx, row.deploymentEpoch, token, now)];
+          lastProviderStartedAt: activeNow, errorCode: null, retryAt: null } });
+        const dispatchIds = [await leaseWake(tx, { ...row, leaseExpiresAt }, reference), ...await wakeHead(tx, row.deploymentEpoch, token, activeNow)];
         return { kind: "acquired", attempt: { reference, token, owner: invocation.owner }, input: { storageKey: row.inputStorageKey, etag: row.inputEtag,
           sha256: row.inputChecksumSha256, byteLength: Number(row.inputByteLength) }, windowIndex: row.windowIndex, operationDeadlineAt: row.operationDeadlineAt, leaseExpiresAt, dispatchIds };
       });
@@ -258,16 +285,17 @@ export function createClipSelectionLifecycle(config: { database: PrismaClient; m
     async start(attempt: ClipSelectionWindowAttempt): Promise<ClipSelectionWindowStart> {
       return transaction(async tx => {
         const state = await lockClipSelectionWindow(tx, attempt.reference);
-        if (!state || state.row.status !== "running" || state.row.attemptToken !== attempt.token || state.row.executorOwner !== attempt.owner ||
+        if (!state?.current || state.row.status !== "running" || state.row.attemptToken !== attempt.token || state.row.executorOwner !== attempt.owner ||
           state.row.leaseExpiresAt! <= state.now || state.row.operationDeadlineAt <= state.now) return { kind: "superseded" };
         await tx.$queryRaw`SELECT "attemptToken" FROM "ExecutionAttempt" WHERE "attemptToken" = ${attempt.token}::uuid FOR UPDATE`;
+        const activeNow = await clock(tx);
         const execution = await tx.executionAttempt.findUnique({ where: { attemptToken: attempt.token } });
         if (!execution || execution.owner !== attempt.owner || execution.revokedAt || !["admitted", "running"].includes(execution.status) ||
-          !execution.leaseExpiresAt || execution.leaseExpiresAt <= state.now || execution.operationDeadlineAt <= state.now) return { kind: "superseded" };
-        const times = { now: state.now, leaseExpiresAt: execution.leaseExpiresAt, operationDeadlineAt: execution.operationDeadlineAt };
+          !execution.leaseExpiresAt || execution.leaseExpiresAt <= activeNow || execution.operationDeadlineAt <= activeNow) return { kind: "superseded" };
+        const times = { now: activeNow, leaseExpiresAt: execution.leaseExpiresAt, operationDeadlineAt: execution.operationDeadlineAt };
         if (execution.processStartedAt) return { kind: "already_started", ...times };
         if (state.row.attemptCount >= state.row.maxAttempts) return { kind: "superseded" };
-        await tx.executionAttempt.update({ where: { attemptToken: attempt.token }, data: { status: "running", processStartedAt: state.now } });
+        await tx.executionAttempt.update({ where: { attemptToken: attempt.token }, data: { status: "running", processStartedAt: activeNow } });
         await tx.clipSelectionWindow.update({ where: { id: state.row.id }, data: { attemptCount: { increment: 1 } } });
         return { kind: "started", ...times };
       });
@@ -275,6 +303,7 @@ export function createClipSelectionLifecycle(config: { database: PrismaClient; m
     async rejectInput(reference: ExecutionDispatchReference): Promise<ClipSelectionWindowSettlement> {
       return transaction(async tx => {
         const state = await lockClipSelectionWindow(tx, reference);
+        if (state && !state.current) return { kind: "superseded", dispatchIds: await retireSupersededWindow(tx, state) };
         if (!state || state.row.status !== "queued") return { kind: "superseded", dispatchIds: await replayWakes(tx, reference) };
         return finish(tx, state.row, state.now, { failureCode: "selection_input_invalid" });
       });
@@ -285,6 +314,7 @@ export function createClipSelectionLifecycle(config: { database: PrismaClient; m
       return transaction(async tx => {
         const state = await lockClipSelectionWindow(tx, attempt.reference, true);
         if (!state) return { kind: "superseded", dispatchIds: await replayWakes(tx, attempt.reference) };
+        if (!state.current) return { kind: "superseded", dispatchIds: await retireSupersededWindow(tx, state) };
         const { row, now } = state;
         if (row.status === "completed") {
           if (row.attemptToken !== attempt.token || row.executorOwner !== attempt.owner || row.resultStorageKey !== result.storageKey || row.resultEtag !== result.etag || row.resultHash !== result.sha256 || row.resultByteLength !== BigInt(result.byteLength) ||
@@ -294,10 +324,12 @@ export function createClipSelectionLifecycle(config: { database: PrismaClient; m
         if (row.status !== "running" || row.attemptToken !== attempt.token || row.executorOwner !== attempt.owner || row.leaseExpiresAt! <= now || row.operationDeadlineAt <= now) return { kind: "superseded", dispatchIds: [] };
         await capacity(tx, row.deploymentEpoch, now);
         await tx.$queryRaw`SELECT "attemptToken" FROM "ExecutionAttempt" WHERE "attemptToken" = ${attempt.token}::uuid FOR UPDATE`;
-        const closed = await tx.executionAttempt.updateMany({ where: { attemptToken: attempt.token, owner: attempt.owner, status: "running", revokedAt: null, leaseExpiresAt: { gt: now }, operationDeadlineAt: { gt: now } },
-          data: { status: "completed", finishedAt: now } });
+        const commitAt = await clock(tx);
+        if (row.leaseExpiresAt! <= commitAt || row.operationDeadlineAt <= commitAt) return { kind: "superseded", dispatchIds: [await leaseWake(tx, row, attempt.reference)] };
+        const closed = await tx.executionAttempt.updateMany({ where: { attemptToken: attempt.token, owner: attempt.owner, status: "running", revokedAt: null, leaseExpiresAt: { gt: commitAt }, operationDeadlineAt: { gt: commitAt } },
+          data: { status: "completed", finishedAt: commitAt } });
         if (closed.count !== 1) return { kind: "superseded", dispatchIds: [] };
-        const completed = await tx.clipSelectionWindow.update({ where: { id: row.id }, data: { status: "completed", leaseExpiresAt: null, completedAt: now, resultStorageKey: result.storageKey,
+        const completed = await tx.clipSelectionWindow.update({ where: { id: row.id }, data: { status: "completed", leaseExpiresAt: null, completedAt: commitAt, resultStorageKey: result.storageKey,
           resultEtag: result.etag, resultHash: result.sha256, resultByteLength: BigInt(result.byteLength), tokensUsed: result.tokensUsed, providerRequestId: result.providerRequestId } });
         return { kind: "completed", dispatchIds: [await parentWake(tx, completed), ...await wakeHead(tx, row.deploymentEpoch, attempt.token, now)] };
       });
@@ -306,14 +338,16 @@ export function createClipSelectionLifecycle(config: { database: PrismaClient; m
       if (!/^[a-z][a-z0-9_]{0,99}$/.test(failure.code) || (failure.dueAt && !Number.isFinite(failure.dueAt.getTime()))) throw new Error("Invalid selection failure");
       return transaction(async tx => {
         const state = await lockClipSelectionWindow(tx, attempt.reference);
+        if (state && !state.current) return { kind: "superseded", dispatchIds: await retireSupersededWindow(tx, state) };
         if (!state || state.row.status !== "running" || state.row.attemptToken !== attempt.token || state.row.executorOwner !== attempt.owner || state.row.leaseExpiresAt! <= state.now || state.row.operationDeadlineAt <= state.now) return { kind: "superseded", dispatchIds: await replayWakes(tx, attempt.reference) };
-        return finish(tx, state.row, state.now, { failureCode: failure.code, dueAt: failure.dueAt });
+        return finish(tx, state.row, state.now, { failureCode: failure.code, dueAt: failure.dueAt, requireLiveOwner: true });
       });
     },
     async expire(reference: ExecutionDispatchReference): Promise<ClipSelectionWindowAdmission> {
       return transaction(async tx => {
         const state = await lockClipSelectionWindow(tx, reference, true);
         if (!state) return { kind: "superseded", dispatchIds: await replayWakes(tx, reference) };
+        if (!state.current) return { kind: "superseded", dispatchIds: await retireSupersededWindow(tx, state) };
         const { row, now } = state;
         if (["completed", "failed", "cancelled"].includes(row.status)) return { kind: row.status as "completed" | "failed" | "cancelled", dispatchIds: [await parentWake(tx, row)] };
         if (row.operationDeadlineAt <= now) return { ...await finish(tx, row, now, { failureCode: "operation_deadline_exceeded" }), kind: "failed" };

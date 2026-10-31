@@ -98,8 +98,8 @@ export function createClipSelectionPreparation(config: { database: PrismaClient;
     },
     async readWindow(reference: ExecutionDispatchReference) {
       return transaction(async tx => {
-        const state = await lockClipSelectionWindow(tx, reference, true);
-        if (!state) return null;
+        const state = await lockClipSelectionWindow(tx, reference, true, false);
+        if (!state?.current) return null;
         const { row } = state;
         const parentRegistration = await tx.executionDispatch.findFirstOrThrow({ where: { subjectKind: "workflow_run", subjectId: row.workflowRunId, kind: "operation_driver",
           deploymentEpoch: row.deploymentEpoch, generation: row.workflowGeneration, wakeKind: null, deadlineKind: null }, orderBy: { createdAt: "asc" } });

@@ -124,7 +124,7 @@ dbDescribe("Frozen selection preparation", () => {
     expect(store.objects.has(completed.resultStorageKey!)).toBe(true);
     expect((await db.workflowRun.findUniqueOrThrow({ where: { id: f.run.id } }))).toMatchObject({ status: "waiting", attemptId: null, leaseExpiresAt: null });
   });
-  test("failed scheduler confirmation spends no paid start and a corrupt private input fails before ownership", async () => {
+  test("failed scheduler confirmation and corrupt private inputs spend no paid start", async () => {
     for (const corrupt of [false, true]) {
       const f = await fixture(), store = storageFixture();
       const preparation = createClipSelectionPreparation({ database: db, storage: store.storage, provider });
@@ -158,6 +158,20 @@ dbDescribe("Frozen selection preparation", () => {
     expect(requests).toBe(1);
     expect((await db.clipSelectionWindow.findUniqueOrThrow({ where: { id: prepared.windows[0]!.subject.id } }))).toMatchObject({ status: "queued", generation: 2,
       attemptCount: 1, attemptToken: null, executorOwner: null, retryAt: dueAt });
+  });
+  test("a capacity waiter does not fetch or parse the private transcript while another uncharged reservation owns the slot", async () => {
+    const first = await fixture(), waiting = await fixture(), store = storageFixture();
+    const preparation = createClipSelectionPreparation({ database: db, storage: store.storage, provider });
+    const a = await preparation.prepare(first.reference), b = await preparation.prepare(waiting.reference);
+    if (a.kind !== "prepared" || b.kind !== "prepared") throw new Error("Selection was not prepared");
+    const lifecycle = createClipSelectionLifecycle({ database: db, maxInFlightRequests: 1, maxEstimatedTokens: 1_000_000 });
+    expect((await lifecycle.admit(a.windows[0]!, { owner: crypto.randomUUID() })).kind).toBe("acquired");
+    let reads = 0;
+    const control = createClipSelectionControl({ preparation, lifecycle, storage: { ...store.storage, async read(reference) { reads++; return store.storage.read(reference); } },
+      async deliver() {}, provider: { async generate() { throw new Error("Capacity wait cannot POST"); } } });
+    expect((await control.runWindow(b.windows[0]!)).kind).toBe("wait");
+    expect(reads).toBe(0);
+    expect((await db.clipSelectionWindow.findUniqueOrThrow({ where: { id: b.windows[0]!.subject.id } }))).toMatchObject({ status: "queued", attemptCount: 0, executorOwner: null });
   });
   test("one global finalization deduplicates overlapping windows and atomically publishes Clips, renders and terminal progress; replay preserves edits and repairs wakes", async () => {
     const f = await fixture(), store = storageFixture();

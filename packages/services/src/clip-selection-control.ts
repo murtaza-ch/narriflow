@@ -94,11 +94,17 @@ export function createClipSelectionControl(ports: ClipSelectionControlPorts) {
       const metadata = await ports.preparation.readWindow(reference);
       if (!metadata) return disposition(await ports.lifecycle.expire(reference));
       if (metadata.status !== "queued") return disposition(await ports.lifecycle.admit(reference, { owner: crypto.randomUUID() }));
+      const admission = await ports.lifecycle.admit(reference, { owner: crypto.randomUUID() });
+      if (admission.kind !== "acquired") return disposition(admission);
+      // Confirmation failure leaves an uncharged live reservation. Its registered
+      // lease observation, replay or absolute deadline can revoke it durably.
+      if (admission.dispatchIds.length) await ports.deliver(admission.dispatchIds);
+      options.signal?.throwIfAborted();
       let bytes: Uint8Array;
       try { bytes = await ports.storage.read(metadata.input); }
       catch (error) {
-        if (error instanceof WorkflowFailure && error.disposition === "permanent") return disposition(await ports.lifecycle.rejectInput(reference));
-        throw new WorkflowFailure("selection_input_unavailable", "retryable", "The private selection input is unavailable");
+        return disposition(await ports.lifecycle.retry(admission.attempt, { code: "selection_input_unavailable",
+          ...(error instanceof WorkflowFailure && error.disposition === "permanent" ? {} : { dueAt: new Date(now().getTime() + 30000) }) }));
       }
       let capsule: ClipSelectionInput, userPrompt: string;
       try {
@@ -109,13 +115,7 @@ export function createClipSelectionControl(ports: ClipSelectionControlPorts) {
         if (!window?.userPrompt || window.startSec !== metadata.startSec || window.endSec !== metadata.endSec || await clipSelectionWindowInputHash({ selectionHash: metadata.selectionHash,
           windowIndex: metadata.windowIndex, startSec: metadata.startSec, endSec: metadata.endSec }) !== reference.inputHash) throw new Error("Selection window mismatch");
         userPrompt = window.userPrompt;
-      } catch { return disposition(await ports.lifecycle.rejectInput(reference)); }
-      options.signal?.throwIfAborted();
-      const admission = await ports.lifecycle.admit(reference, { owner: crypto.randomUUID() });
-      if (admission.kind !== "acquired") return disposition(admission);
-      // Confirmation failure leaves an uncharged live reservation. Its registered
-      // lease observation, replay or absolute deadline can revoke it durably.
-      if (admission.dispatchIds.length) await ports.deliver(admission.dispatchIds);
+      } catch { return disposition(await ports.lifecycle.retry(admission.attempt, { code: "selection_input_invalid" })); }
       options.signal?.throwIfAborted();
       const started = await ports.lifecycle.start(admission.attempt);
       if (started.kind === "superseded") return disposition(await ports.lifecycle.expire(reference));
