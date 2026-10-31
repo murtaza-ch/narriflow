@@ -39,6 +39,7 @@ export interface ExecutorArtifactCommit {
 export type ExecutorFailureInput = Pick<Extract<ExecutionCommand, { action: "fail" }>, "failureCode" | "retryable">;
 export type ExecutorReleaseInput = Pick<Extract<ExecutionCommand, { action: "release" }>, "reason">;
 export type ExecutorProgressInput = Pick<Extract<ExecutionCommand, { action: "progress" }>, "phase" | "progress">;
+// biome-ignore lint/suspicious/noConfusingVoidType: Commands without wakes intentionally preserve their Promise<void> interface.
 export type ExecutorMutationResult = void | { dispatchIds: readonly string[] };
 
 export interface ExecutorExpiryObservation {
@@ -49,7 +50,6 @@ export type ExecutorExpiryResult =
   | { kind: "terminal" | "superseded" | "expired"; dispatchIds?: readonly string[] }
   | { kind: "sleep"; dueAt: Date };
 
-export type ExecutorMutationResult = void | { dispatchIds: readonly string[] };
 
 /** Trusted TypeScript service ports. None is exposed as a generic remote command. */
 export interface ExecutorDomainControl<TRef = unknown, TArtifact extends ExecutorArtifactCommit = ExecutorArtifactCommit> {

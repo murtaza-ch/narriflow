@@ -50,6 +50,14 @@
       "types": "./src/motion-render-analytics.ts",
       "default": "./src/motion-render-analytics.ts"
     },
+    "./source-audio-binding": {
+      "types": "./src/source-audio-binding.ts",
+      "default": "./src/source-audio-binding.ts"
+    },
+    "./render-group-lifecycle": {
+      "types": "./src/render-group-lifecycle.ts",
+      "default": "./src/render-group-lifecycle.ts"
+    },
     "./render-group-contract": {
       "types": "./src/render-group-contract.ts",
       "default": "./src/render-group-contract.ts"
