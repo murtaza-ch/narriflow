@@ -8,6 +8,7 @@ import { buildClipSelectionPlan } from "./clip-selection-plan";
 import { CLIP_DETECTION_JSON_SCHEMA, SYSTEM_PROMPT } from "./clip-selection-policy";
 import { clipSelectionTranscriptHash, lockClipSelectionParent, lockClipSelectionWindow, registerClipSelectionWindow, type ClipSelectionObjectReference } from "./clip-selection-window";
 import { WorkflowFailure } from "./workflow-attempt-contract";
+import type { ClipSelectionFinalizationProof } from "./clip-selection-finalization";
 
 type Tx = Prisma.TransactionClient;
 export interface ClipSelectionStorage {
@@ -97,14 +98,37 @@ export function createClipSelectionPreparation(config: { database: PrismaClient;
     },
     async readWindow(reference: ExecutionDispatchReference) {
       return transaction(async tx => {
-        const state = await lockClipSelectionWindow(tx, reference, true);
-        if (!state) return null;
+        const state = await lockClipSelectionWindow(tx, reference, true, false);
+        if (!state?.current) return null;
         const { row } = state;
         const parentRegistration = await tx.executionDispatch.findFirstOrThrow({ where: { subjectKind: "workflow_run", subjectId: row.workflowRunId, kind: "operation_driver",
           deploymentEpoch: row.deploymentEpoch, generation: row.workflowGeneration, wakeKind: null, deadlineKind: null }, orderBy: { createdAt: "asc" } });
         const parent: ClipSelectionParent = { id: row.workflowRunId, projectId: row.projectId, generation: row.workflowGeneration, deploymentEpoch: row.deploymentEpoch, inputHash: parentRegistration.inputHash };
         return { parent, status: row.status, selectionHash: row.selectionHash, windowIndex: row.windowIndex, startSec: row.startSec, endSec: row.endSec,
           input: { storageKey: row.inputStorageKey, etag: row.inputEtag, sha256: row.inputChecksumSha256, byteLength: Number(row.inputByteLength) } };
+      });
+    },
+    async readFinalization(reference: ExecutionDispatchReference) {
+      return transaction(async tx => {
+        const state = await lockClipSelectionParent(tx, reference);
+        if (!state) return { kind: "superseded" as const };
+        if (["completed", "failed", "cancelled"].includes(state.run.status)) return { kind: "terminal" as const };
+        const rows = await tx.clipSelectionWindow.findMany({ where: { workflowRunId: state.run.id, workflowGeneration: state.run.generation, deploymentEpoch: state.run.deploymentEpoch }, orderBy: { windowIndex: "asc" } });
+        if (!rows.length) return { kind: "not_prepared" as const };
+        if (rows.some(row => row.transcriptId !== state.transcript.id || row.transcriptContentHash !== rows[0]!.transcriptContentHash || row.selectionHash !== rows[0]!.selectionHash) ||
+          rows[0]!.transcriptContentHash !== await clipSelectionTranscriptHash(state.transcript)) return { kind: "superseded" as const };
+        if (rows.some(row => row.status !== "completed")) {
+          const due = rows.filter(row => (row.status === "queued" && row.operationDeadlineAt <= state.now) ||
+            (row.status === "running" && (row.operationDeadlineAt <= state.now || row.leaseExpiresAt! <= state.now)));
+          return { kind: "pending" as const, dueWindows: await Promise.all(due.map(row => registerClipSelectionWindow(tx, row))) };
+        }
+        const first = rows[0]!;
+        const parent: ClipSelectionParent = { id: state.run.id, projectId: state.project.id, generation: state.run.generation, deploymentEpoch: state.run.deploymentEpoch, inputHash: reference.inputHash };
+        const proof: ClipSelectionFinalizationProof = { selectionHash: first.selectionHash,
+          input: { storageKey: first.inputStorageKey, etag: first.inputEtag, sha256: first.inputChecksumSha256, byteLength: Number(first.inputByteLength) },
+          windows: rows.map(row => ({ id: row.id, generation: row.generation, windowIndex: row.windowIndex, result: { storageKey: row.resultStorageKey!, etag: row.resultEtag!, sha256: row.resultHash!, byteLength: Number(row.resultByteLength!) },
+            tokensUsed: row.tokensUsed!, providerRequestId: row.providerRequestId })) };
+        return { kind: "ready" as const, parent, proof };
       });
     },
   };

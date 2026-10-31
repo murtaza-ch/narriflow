@@ -183,6 +183,23 @@ class SharedFetchTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(closed), 1)
             self.assertEqual(audio_file.read_bytes(), b"a")
 
+    async def test_a_credit_difference_inside_probe_tolerance_stops_the_video_after_early_audio(self):
+        events=[]
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);audio=root/'audio.m4a';video=root/'video.mp4';audio.write_bytes(b'a');video.write_bytes(b'v')
+            class Runtime:
+                async def resolve(self,source,session,work):return ResolvedSource(source.media_id,'140','137',None,work/'metadata')
+                async def download_audio(self,selected,session,work):return DownloadedSource(audio,selected.media_id,'140')
+                async def download_video(self,selected,session,work):return DownloadedSource(video,selected.media_id,'140')
+                async def probe(self,path):return {**probe(path==video),'durationSec':60.0 if path==video else 60.01}
+                async def end_session(self,work):pass
+            class Sink:
+                async def audio_ready(self,artifact):events.append('audio')
+                async def video_ready(self,*args):events.append('video')
+            with self.assertRaisesRegex(SourceFetchFailure,'source_audio_video_mismatch'):
+                await fetch_source('_123456789-',source_revision=1,mode='local',development=True,work_directory=root,runtime=Runtime(),sink=Sink(),toolchain_fingerprint='b'*64)
+            self.assertEqual(events,['audio'])
+
     async def test_a_sealed_existing_audio_binding_is_reused_without_a_second_download_or_commit(self):
         binding = {
             "sourceAudioId": "00000000-0000-4000-8000-000000000001", "projectId": "00000000-0000-4000-8000-000000000002",

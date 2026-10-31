@@ -8,6 +8,8 @@ export { buildCaptionOnlyTranscriptSlice, buildMarketCompliantClipCandidates, bu
 export { createClipSelectionProvider, classifyOpenAiHttpFailure, type ClipSelectionProviderResult } from "./clip-selection-provider";
 export { createClipSelectionPreparation, type ClipSelectionPreparation, type ClipSelectionStorage } from "./clip-selection-preparation";
 export { createClipSelectionControl, type ClipSelectionControlPorts, type ClipSelectionControlResult } from "./clip-selection-control";
+export { getClipSelectionControl } from "./clip-selection-runtime";
+export type { ClipSelectionFinalizationProof, PreparedClipSelectionFinalization, ClipSelectionFinalizationResult } from "./clip-selection-finalization";
 export { buildClipSelectionPlan, finalizeClipSelectionCandidates, type ClipSelectionPlanInput, type ParallelClipSelectionPlan } from "./clip-selection-plan";
 export { createClipSelectionLifecycle, clipSelectionTranscriptHash, clipSelectionWindowResultKey, type ClipSelectionWindowAttempt,
   type ClipSelectionWindowAdmission, type ClipSelectionWindowStart, type ClipSelectionWindowSettlement, type ClipSelectionObjectReference } from "./clip-selection-window";
@@ -686,6 +688,8 @@ export * from "./outbound-probe-runtime";
 export * from "./outbound-probe-execution";
 
 export * from "./ingest-acquisition";
+
+export * from "./ingest-source-definition";
 export * from "./outbound-delivery";
 export * from "./outbound-delivery-execution";
 export * from "./notification-body-storage";

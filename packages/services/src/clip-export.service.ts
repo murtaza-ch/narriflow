@@ -338,6 +338,40 @@ async function upsertClipExport(
   return { row, reused: row.id !== exportId };
 }
 
+export async function admitCaptionedExportWithinTransaction(tx: Prisma.TransactionClient, origin: { projectId: string; workflowRunId: string },
+  settings: { aspectRatios: ClipAspectRatio[]; resolution: ClipRenderResolution }): Promise<{ exportId: string; clipId: string }> {
+      const clip = await tx.clip.findFirst({
+        where: { projectId: origin.projectId, workflowRunId: origin.workflowRunId },
+        include: {
+          project: {
+            select: {
+              workspaceId: true,
+              createdByUserId: true,
+              sourceDurationSeconds: true,
+              sourceProbe: true,
+              workspace: { select: { pricingTier: true } },
+            },
+          },
+        },
+      });
+      if (!clip) throw new ClipExportError("clip_not_found", "Clip not found");
+      const { granted } = resolveClipExportOutput(resolvePricingTier(clip.project.workspace.pricingTier), settings.resolution);
+      const aspectRatios = normalizeAspectRatios(settings.aspectRatios);
+      const { row } = await upsertClipExport(tx, {
+        workspaceId: clip.project.workspaceId,
+        createdByUserId: clip.project.createdByUserId,
+        projectId: origin.projectId,
+        clipId: clip.id,
+        clip,
+        sourceDurationSec: clipSourceEdgeSec(clip.project),
+        fingerprint: buildClipExportFingerprint({ editorRevision: clip.editorRevision, aspectRatios, ...granted }),
+        resolution: granted.resolution,
+        watermark: granted.watermark,
+        aspectRatios,
+      });
+      return { exportId: row.id, clipId: clip.id };
+}
+
 async function toExportSnapshot(
   row: {
     id: string;
@@ -705,42 +739,8 @@ export class ClipExportService {
    * owns the clip is the only one whose completion commits, and the export
    * exists only with that completion.
    */
-  captionedExportWrite(
-    attempt: WorkflowAttemptRef,
-    settings: { aspectRatios: ClipAspectRatio[]; resolution: ClipRenderResolution },
-  ): (tx: Prisma.TransactionClient) => Promise<{ exportId: string; clipId: string }> {
-    return async (tx) => {
-      const clip = await tx.clip.findFirst({
-        where: { projectId: attempt.projectId, workflowRunId: attempt.workflowRunId },
-        include: {
-          project: {
-            select: {
-              workspaceId: true,
-              createdByUserId: true,
-              sourceDurationSeconds: true,
-              sourceProbe: true,
-              workspace: { select: { pricingTier: true } },
-            },
-          },
-        },
-      });
-      if (!clip) throw new ClipExportError("clip_not_found", "Clip not found");
-      const { granted } = resolveClipExportOutput(resolvePricingTier(clip.project.workspace.pricingTier), settings.resolution);
-      const aspectRatios = normalizeAspectRatios(settings.aspectRatios);
-      const { row } = await upsertClipExport(tx, {
-        workspaceId: clip.project.workspaceId,
-        createdByUserId: clip.project.createdByUserId,
-        projectId: attempt.projectId,
-        clipId: clip.id,
-        clip,
-        sourceDurationSec: clipSourceEdgeSec(clip.project),
-        fingerprint: buildClipExportFingerprint({ editorRevision: clip.editorRevision, aspectRatios, ...granted }),
-        resolution: granted.resolution,
-        watermark: granted.watermark,
-        aspectRatios,
-      });
-      return { exportId: row.id, clipId: clip.id };
-    };
+  captionedExportWrite(attempt: WorkflowAttemptRef, settings: { aspectRatios: ClipAspectRatio[]; resolution: ClipRenderResolution }) {
+    return (tx: Prisma.TransactionClient) => admitCaptionedExportWithinTransaction(tx, attempt, settings);
   }
 
   async getOwned(

@@ -219,6 +219,8 @@ export interface WorkerMediaSamples {
 
 export interface WorkerMediaInspectionRequest {
   sourcePath: string;
+  /** New source acquisition probes accept local files and at most two decoder threads. */
+  localOnly?: boolean;
   /** Output validation obtains complete timestamps from its full decode. */
   analyzeVideoClock?: boolean;
   sample?: WorkerMediaSampleRequest;
@@ -323,6 +325,7 @@ export async function inspectAudioTimestampGaps(
       command: "ffprobe",
       args: ["-v", "error", "-of", "csv=p=0", "-select_streams", Number.isInteger(audio.index) ? String(audio.index) : "a:0",
         "-read_intervals", `${from.toFixed(3)}%${to.toFixed(3)}`, "-show_packets", "-show_entries", "packet=pts_time",
+        ...(request.localOnly?["-protocol_whitelist","file,pipe","-threads","2"]:[]),
         ...(/^https?:\/\//i.test(request.sourcePath) ? ["-rw_timeout", String(HTTP_SOURCE_RW_TIMEOUT_US)] : []),
         request.sourcePath],
       signal: request.signal, deadlineMs: Math.min(request.deadlineMs, AUDIO_GAP_SCAN_TIMEOUT_MS), captureStdout: true,
@@ -1327,6 +1330,7 @@ class ProductionWorkerProcessModule implements WorkerProcessModule {
           "json",
           "-show_streams",
           "-show_format",
+          ...(request.localOnly?["-protocol_whitelist","file,pipe","-threads","2"]:[]),
           ...(/^https?:\/\//i.test(request.sourcePath)
             ? ["-rw_timeout", String(HTTP_SOURCE_RW_TIMEOUT_US)]
             : []),
@@ -1415,6 +1419,7 @@ class ProductionWorkerProcessModule implements WorkerProcessModule {
           command: "ffprobe",
           args: ["-v", "error", "-print_format", "json", "-select_streams", String(stream.index ?? streamIndex),
             "-read_intervals", `%+#${CLOCK_PACKET_BUDGET}`, "-show_packets", "-show_entries", "packet=pts_time,dts_time",
+            ...(request.localOnly?["-protocol_whitelist","file,pipe","-threads","2"]:[]),
             ...(/^https?:\/\//i.test(request.sourcePath) ? ["-rw_timeout", String(HTTP_SOURCE_RW_TIMEOUT_US)] : []),
             request.sourcePath],
           signal: request.signal, deadlineMs, captureStdout: true, maxStdoutBytes: 1024 * 1024, diagnose: request.diagnose,

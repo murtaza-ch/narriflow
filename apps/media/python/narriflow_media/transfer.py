@@ -321,6 +321,7 @@ class ScopedMultipartControl:
     def __init__(self, session, destination, *, content_type, source_etag=None):
         self._session, self.destination, self._source_etag = session, destination, source_etag
         self._content_type = content_type
+        self.completion_started = False
 
     @classmethod
     async def initialize(cls, session: ExecutorSession, *, artifact_id: str, byte_length: int, content_type: str,
@@ -360,6 +361,7 @@ class ScopedMultipartControl:
     async def complete(self, parts, sha256):
         # The API reconciles its own immutable part plan with ListParts. Never
         # serialize the local receipts, even when the object contains640parts.
+        self.completion_started = True
         value = await self._call('upload-complete', byteLength=self.destination.byte_length, sha256=sha256)
         obj = value['object']
         if obj['contentType'] != self._content_type:

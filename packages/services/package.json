@@ -562,7 +562,20 @@
     "./drive-source-contract": "./src/drive-source-contract.ts",
     "./generated-media-execution": "./src/generated-media-execution.ts",
     "./generated-media-control": "./src/generated-media-control.ts",
-    "./generated-media-retention": "./src/generated-media-retention.ts"
+    "./generated-media-retention": "./src/generated-media-retention.ts",
+    "./clip-selection-runtime": {
+      "types": "./src/clip-selection-runtime.ts",
+      "default": "./src/clip-selection-runtime.ts"
+    },
+    "./clip-selection-storage": {
+      "types": "./src/clip-selection-storage.ts",
+      "default": "./src/clip-selection-storage.ts"
+    },
+    "./clip-selection-finalization": {
+      "types": "./src/clip-selection-finalization.ts",
+      "default": "./src/clip-selection-finalization.ts"
+    },
+    "./ingest-source-definition": "./src/ingest-source-definition.ts"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",

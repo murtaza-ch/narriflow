@@ -1,5 +1,5 @@
 import type { IngestJob, Prisma, PrismaClient } from "@prisma/client";
-import { ingestAcquisitionSchema, ingestFetchSourceCommandSchema, sourceAudioBindingSchema, sourceVideoBindingSchema } from "@narriflow/validators/execution";
+import { ingestAcquisitionSchema, ingestNativeSourceCommandSchema,ingestSourceRefusalCommandSchema, sourceAudioBindingSchema, sourceVideoBindingSchema } from "@narriflow/validators/execution";
 import { createExecutorControl, ExecutorControlError, type ExecutorArtifactHead } from "./executor-control";
 import { createExecutionTransfer } from "./execution-transfer";
 import type { createExecutionStorage } from "./execution-storage";
@@ -10,6 +10,8 @@ import type { ExecutionDispatchReference } from "@narriflow/validators/execution
 import { appendExecutionDispatch, readExecutionDispatch } from "./execution-dispatch";
 import type { NativeValidationPreparation } from "./native-validation";
 import { autoRetryBackoffMs } from "./processing-retry-policy";
+import { ingestSourceMediaIdentity,resolveIngestSourceDefinition,IngestSourceDefinitionError,type IngestSourceReadPorts } from "./ingest-source-definition";
+import type { ExecutorLiveAuthority } from "./executor-control";
 
 function canonical(value: Prisma.JsonValue): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
@@ -92,30 +94,47 @@ export async function prepareIngestSourceExecution(options: {
 export function createIngestSourceExecution(options: {
   database: PrismaClient; domain: IngestJobLifecycle; workflow: WorkflowRunLifecycle;
   storage: ReturnType<typeof createExecutionStorage>; toolchainFingerprint: string;
+  sourceReads?: IngestSourceReadPorts;
   artifacts: { head(assignment: Readonly<import("@prisma/client").ExecutionArtifact>): Promise<ExecutorArtifactHead | null> };
   deliverWakes(ids: readonly string[]): Promise<void>;
 }) {
   if (!/^[a-f0-9]{64}$/.test(options.toolchainFingerprint)) throw new ExecutorControlError("invalid_reference");
   const probe = createTranscriptionProbe({ database: options.database, workflow: options.workflow });
+  const isYouTube=(job:IngestJob)=>job.jobType==="link_import"&&job.payload!==null&&typeof job.payload==="object"&&!Array.isArray(job.payload)&&job.payload.provider==="youtube";
+  async function identity(job:IngestJob){
+    if(isYouTube(job))return {provider:"youtube" as const,mediaId:ingestYouTubeMediaId((job.payload as Prisma.JsonObject).url)};
+    return ingestSourceMediaIdentity(job);
+  }
+  async function current(authority:ExecutorLiveAuthority){
+    const {reference}=authority.fence;
+    if(!["modal_execution","local_fetch"].includes(reference.kind)||reference.subject.kind!=="ingest_job")throw new ExecutorControlError("invalid_reference");
+    const job=await options.database.ingestJob.findUniqueOrThrow({where:{id:reference.subject.id},include:{project:{select:{sourceRevision:true}}}});
+    if(job.deploymentEpoch!==reference.deploymentEpoch||job.generation!==reference.generation||job.sourceRevision!==job.project.sourceRevision||reference.inputHash!==await ingestExecutionInputHash(job,options.toolchainFingerprint))throw new ExecutorControlError("authority_lost");
+    if(authority.functionName!==(job.jobType==="upload_finalize"?"pin_source":"fetch_source")||reference.kind==="local_fetch"&&!isYouTube(job))throw new ExecutorControlError("invalid_reference");
+    return job;
+  }
   const control = createExecutorControl({ database: options.database, subjectKind: "ingest_job", domain: options.domain,
     artifacts: { head: options.artifacts.head, prepare: async (assignment, artifact, reported): Promise<IngestArtifactCommit> => {
       if (reported.role === "probe") return { ...artifact, role: "probe" };
       const attempt = await options.database.executionAttempt.findUniqueOrThrow({ where: { attemptToken: assignment.attemptToken }, include: { dispatch: true } });
       const job = await options.database.ingestJob.findUniqueOrThrow({ where: { id: attempt.dispatch.subjectId } });
-      if (attempt.dispatch.subjectKind !== "ingest_job" || attempt.inputHash !== await ingestExecutionInputHash(job, options.toolchainFingerprint) ||
-        !job.payload || typeof job.payload !== "object" || Array.isArray(job.payload) || job.payload.provider !== "youtube") throw new ExecutorControlError("artifact_invalid");
-      const mediaId = ingestYouTubeMediaId(job.payload.url);
+      if (attempt.dispatch.subjectKind !== "ingest_job" || attempt.inputHash !== await ingestExecutionInputHash(job, options.toolchainFingerprint)) throw new ExecutorControlError("artifact_invalid");
+      const mediaIdentity=await identity(job),acquisition=ingestAcquisitionSchema.parse((job.payload as Prisma.JsonObject).acquisition);
       const expected = (binding: { projectId: string; sourceRevision: number; mediaIdentity: { provider: string; mediaId: string }; toolchainFingerprint: string; probeVersion: string }) =>
-        binding.projectId === job.projectId && binding.sourceRevision === job.sourceRevision && binding.mediaIdentity.provider === "youtube" && binding.mediaIdentity.mediaId === mediaId &&
+        binding.projectId === job.projectId && binding.sourceRevision === job.sourceRevision && binding.mediaIdentity.provider === mediaIdentity.provider && binding.mediaIdentity.mediaId === mediaIdentity.mediaId &&
         binding.toolchainFingerprint === options.toolchainFingerprint && binding.probeVersion === "normalized-probe-v1";
       if (reported.role === "source_audio") {
         const binding = sourceAudioBindingSchema.parse(reported.sourceAudio);
-        if (!expected(binding) || binding.sourceAudioId !== assignment.attemptToken) throw new ExecutorControlError("artifact_invalid");
+        if (acquisition.audioPolicy==="none"||!expected(binding) || binding.sourceAudioId !== assignment.attemptToken) throw new ExecutorControlError("artifact_invalid");
         return { ...artifact, role: "source_audio", binding };
       }
       if (reported.role === "source_video") {
         const binding = sourceVideoBindingSchema.parse(reported.sourceVideo);
         if (!expected(binding)) throw new ExecutorControlError("artifact_invalid");
+        if(job.jobType==="upload_finalize"){
+          const definition=await resolveIngestSourceDefinition(job,{});
+          if(definition.kind!=="upload_source"||BigInt(definition.source.byteLength)!==artifact.byteLength||definition.source.contentType!==artifact.contentType)throw new ExecutorControlError("artifact_invalid");
+        }
         return { ...artifact, role: "source_video", binding };
       }
       throw new ExecutorControlError("artifact_invalid");
@@ -123,32 +142,41 @@ export function createIngestSourceExecution(options: {
   });
   const transfer = createExecutionTransfer({ database: options.database, authority: control, storage: options.storage,
     resolvePackage: async authority => {
-      const { reference, attemptToken } = authority.fence;
-      if (!["modal_execution", "local_fetch"].includes(reference.kind) || reference.subject.kind !== "ingest_job" || authority.functionName !== "fetch_source") throw new ExecutorControlError("invalid_reference");
-      const job = await options.database.ingestJob.findUniqueOrThrow({ where: { id: reference.subject.id }, include: { project: { select: { sourceRevision: true } } } });
-      if (job.deploymentEpoch !== reference.deploymentEpoch || job.generation !== reference.generation || job.sourceRevision !== job.project.sourceRevision ||
-        reference.inputHash !== await ingestExecutionInputHash(job, options.toolchainFingerprint)) throw new ExecutorControlError("authority_lost");
-      const payload = job.payload;
-      if (job.jobType !== "link_import" || !payload || Array.isArray(payload) || typeof payload !== "object" || payload.provider !== "youtube") throw new ExecutorControlError("invalid_reference");
-      const acquisition=ingestAcquisitionSchema.parse(payload.acquisition);
-      const mediaId = ingestYouTubeMediaId(payload.url);
+      const {reference,attemptToken}=authority.fence,job=await current(authority);
+      const acquisition=ingestAcquisitionSchema.parse((job.payload as Prisma.JsonObject).acquisition);
+      const mediaIdentity=await identity(job);
+      let definition;
+      try{definition=isYouTube(job)?{kind:"youtube_source" as const,mediaId:mediaIdentity.mediaId}:await resolveIngestSourceDefinition(job,options.sourceReads??{});}
+      catch(error){
+        if(!(error instanceof IngestSourceDefinitionError))throw error;
+        const refusal=ingestSourceRefusalCommandSchema.parse({kind:"source_refusal",failureCode:error.code,retryable:error.retryable});
+        return {input:{kind:"inline" as const,command:refusal},sources:[],outputs:[]};
+      }
       const audio = await options.database.sourceAudio.findUnique({ where: { projectId_sourceRevision: { projectId: job.projectId, sourceRevision: job.sourceRevision } } });
       const existingSourceAudio = audio ? sourceAudioBindingSchema.parse({ sourceAudioId: audio.id, projectId: audio.projectId, sourceRevision: audio.sourceRevision,
         mediaIdentity: { provider: audio.mediaProvider, mediaId: audio.mediaId }, audioTrack: audio.audioTrack,
         object: { key: audio.storageKey, etag: audio.etag, byteLength: Number(audio.byteLength), sha256: audio.checksumSha256 }, durationSeconds: audio.durationSeconds,
         wholeSource: true, audioStartTimeSec: audio.audioStartTimeSec, probeVersion: audio.probeVersion, toolchainFingerprint: audio.toolchainFingerprint }) : null;
-      if (existingSourceAudio && (existingSourceAudio.mediaIdentity.provider !== "youtube" || existingSourceAudio.mediaIdentity.mediaId !== mediaId ||
+      if (existingSourceAudio && (existingSourceAudio.mediaIdentity.provider !== mediaIdentity.provider || existingSourceAudio.mediaIdentity.mediaId !== mediaIdentity.mediaId ||
         existingSourceAudio.toolchainFingerprint !== options.toolchainFingerprint || existingSourceAudio.probeVersion !== "normalized-probe-v1")) throw new ExecutorControlError("authority_lost");
       const optionalProbe = await probe.descriptorForIngest(authority.fence);
-      const command = ingestFetchSourceCommandSchema.parse({ kind: "youtube_source", audioPolicy:acquisition.audioPolicy, projectId: job.projectId, sourceRevision: job.sourceRevision,
-        mediaId, sourceAudioId: existingSourceAudio?.sourceAudioId ?? attemptToken, toolchainFingerprint: options.toolchainFingerprint,
+      const command = ingestNativeSourceCommandSchema.parse({ ...definition, projectId: job.projectId, sourceRevision: job.sourceRevision,
+        audioPolicy:acquisition.audioPolicy,sourceAudioId: existingSourceAudio?.sourceAudioId ?? attemptToken, toolchainFingerprint: options.toolchainFingerprint,
         probeVersion: "normalized-probe-v1", existingSourceAudio, languageProbe: optionalProbe?.input ?? null });
       const output = async (role: "source_audio" | "source_video", contentType: string, maxBytes: number) => ({ role, contentType, maxBytes,
         bindingHash: await digest(JSON.stringify(["ingest_assigned_v1", reference.inputHash, role])) });
+      const pin=definition.kind==="upload_source"?definition.source:null;
+      const video=await output("source_video",pin?.contentType??(definition.kind==="youtube_source"?"video/mp4":"application/octet-stream"),pin?.byteLength??10*1024**3);
       return { input: { kind: "inline", command },
-        sources: optionalProbe && existingSourceAudio ? [{ name: "source_audio", storageKey: existingSourceAudio.object.key, etag: existingSourceAudio.object.etag,
-          byteLength: existingSourceAudio.object.byteLength, sha256: existingSourceAudio.object.sha256 }] : [],
-        outputs: [await output("source_video", "video/mp4", 10 * 1024 ** 3), ...(!existingSourceAudio && acquisition.audioPolicy!=="none" ? [await output("source_audio", "audio/mp4", 2 * 1024 ** 3)] : []), ...(optionalProbe ? [optionalProbe.output] : [])] };
+        sources: [...(pin?[{name:"upload_source",storageKey:pin.storageKey,etag:pin.etag,byteLength:pin.byteLength}]:[]),
+          ...(optionalProbe && existingSourceAudio ? [{ name: "source_audio", storageKey: existingSourceAudio.object.key, etag: existingSourceAudio.object.etag,
+          byteLength: existingSourceAudio.object.byteLength, sha256: existingSourceAudio.object.sha256 }] : [])],
+        outputs: [{...video,...(pin?{sourceEtag:pin.etag,sourceByteLength:pin.byteLength}:{})}, ...(!existingSourceAudio && acquisition.audioPolicy!=="none" ? [await output("source_audio", "audio/mp4", 2 * 1024 ** 3)] : []), ...(optionalProbe ? [optionalProbe.output] : [])] };
+    },
+    resolvePinSource:async(row,authority)=>{
+      const job=await current(authority),definition=await resolveIngestSourceDefinition(job,{});
+      if(definition.kind!=="upload_source"||row.role!=="source_video"||definition.source.etag!==row.sourceEtag||BigInt(definition.source.byteLength)!==row.sourceByteLength)throw new ExecutorControlError("artifact_invalid");
+      return {storageKey:definition.source.storageKey,etag:definition.source.etag,byteLength:definition.source.byteLength};
     },
   });
   return { control, transfer };

@@ -111,24 +111,55 @@ class AssignedArtifacts:
         try:
             control = await ScopedMultipartControl.initialize(self._session, artifact_id=artifact_id,
                 byte_length=byte_length, content_type=content_type)
-            completed = await upload_file(path, control.destination, control=control,
-                transport=transport if transport is not None else SignedHttpTransport(),
-                assert_owned=self._session.assert_live, cancel_event=self._session.cancel_event, expected_sha256=sha256)
+            try:
+                completed = await upload_file(path, control.destination, control=control,
+                    transport=transport if transport is not None else SignedHttpTransport(),
+                    assert_owned=self._session.assert_live, cancel_event=self._session.cancel_event, expected_sha256=sha256)
+            except BaseException:
+                if control.completion_started:
+                    raise ExecutionControlError('execution_completion_unconfirmed') from None
+                raise
             with self._lock:
                 self._completed.add(artifact_id)
-            artifact = {'artifactId':artifact_id,'role':assigned['role'],'bindingHash':assigned['bindingHash'],
-                'contentType':content_type,'byteLength':completed.byte_length,'sha256':completed.sha256,'etag':completed.etag,
-                **_facts(assigned['role'],facts_builder,completed)}
-            # command() retains exact body, timestamp and delivery ID across its
-            # finite retries. Never abort or delete a completed object, including
-            # when the domain commit acknowledgement cannot be recovered.
-            try:
-                result = await asyncio.to_thread(self._session.command,'commit-artifact',artifact=artifact)
-                if result.disposition != {'disposition':'committed','artifactId':artifact_id}:
-                    raise ExecutionControlError('execution_response_invalid')
-            except ExecutionControlError:
-                raise ArtifactCommitUnconfirmed(artifact_id,completed) from None
-            return PublishedArtifact(artifact_id,assigned['role'],assigned['bindingHash'],content_type,completed)
+            return await self._commit(assigned,completed,content_type,facts_builder)
         finally:
             with self._lock:
                 self._in_flight.discard(artifact_id)
+
+    async def _commit(self,assigned,completed,content_type,facts_builder):
+        artifact = {'artifactId':assigned['artifactId'],'role':assigned['role'],'bindingHash':assigned['bindingHash'],
+            'contentType':content_type,'byteLength':completed.byte_length,'sha256':completed.sha256,'etag':completed.etag,
+            **_facts(assigned['role'],facts_builder,completed)}
+        # command() retains exact body, timestamp and delivery ID across its
+        # finite retries. Never abort or delete a completed object, including
+        # when the domain commit acknowledgement cannot be recovered.
+        try:
+            result = await asyncio.to_thread(self._session.command,'commit-artifact',artifact=artifact)
+            if result.disposition != {'disposition':'committed','artifactId':assigned['artifactId']}:
+                raise ExecutionControlError('execution_response_invalid')
+        except ExecutionControlError:
+            raise ArtifactCommitUnconfirmed(assigned['artifactId'],completed) from None
+        return PublishedArtifact(assigned['artifactId'],assigned['role'],assigned['bindingHash'],content_type,completed)
+
+
+    async def commit_completed(self,artifact_id:str,completed:CompletedObject,*,content_type:str,
+                               facts_builder:Callable[[CompletedObject],ArtifactRoleFacts]|None=None)->PublishedArtifact:
+        """Commit a server-completed conditional pin. It never creates a new upload."""
+        self._session.assert_live();assigned=self._outputs.get(artifact_id)
+        try:
+            if assigned is None or not isinstance(completed,CompletedObject) or content_type not in assigned['contentTypes']:
+                raise ValueError()
+            _integer(completed.byte_length,assigned['maxBytes']);_text(completed.sha256,64,SHA)
+            _text(completed.key,1024);_text(completed.etag,160,r'[\x21-\x7e]+')
+            if assigned.get('sourceByteLength',completed.byte_length)!=completed.byte_length:
+                raise ValueError()
+        except (ValueError,TypeError,ExecutionControlError):
+            raise ExecutionControlError('execution_artifact_invalid') from None
+        with self._lock:
+            if artifact_id in self._in_flight or artifact_id in self._completed:
+                raise ExecutionControlError('execution_artifact_already_claimed')
+            self._in_flight.add(artifact_id);self._completed.add(artifact_id)
+        try:
+            return await self._commit(assigned,completed,content_type,facts_builder)
+        finally:
+            with self._lock:self._in_flight.discard(artifact_id)

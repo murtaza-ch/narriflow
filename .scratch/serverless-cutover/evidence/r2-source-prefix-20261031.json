@@ -1,0 +1,31 @@
+{
+  "date": "2026-10-31",
+  "scope": "real R2 signed If-Match source grant with an added bounded Range; controlled process-start acknowledgement, no live domain fence",
+  "runtime": "CPython 3.13.5",
+  "status": "passed",
+  "frozenObjectBytes": 36,
+  "rangeBytes": 16,
+  "rangeSha256": "49ad22582c025b4d4dcfcd87fc63d9cc24f0295a51dccab93795389b26b3578a",
+  "ownedProcessStarts": 1,
+  "elapsedSeconds": 0.897,
+  "providerCredentialsInPython": false,
+  "cleanup": {
+    "deleted": 1,
+    "verifiedMissing": true
+  },
+  "accountId": "5359f28d385b8632c3abee12d1f5b011",
+  "bucket": "narriflow-dev",
+  "sourceHelperCommit": "2375ef6f",
+  "curl": "curl 8.7.1 (x86_64-apple-darwin25.0) libcurl/8.7.1 (SecureTransport) LibreSSL/3.3.6 zlib/1.2.12 nghttp2/1.68.1",
+  "grantService": "packages/services/scripts/r2-source-prefix-gate.ts",
+  "nativeDriver": "apps/media/python/gates/r2_source_prefix.py",
+  "priorRun": {
+    "status": "fixture_expectation_corrected",
+    "reason": "The expected literal had17 bytes for a16-byte range. Protocol header checks passed; own fixture deletion and HEAD404 were confirmed before rerun."
+  },
+  "limits": [
+    "No live execution/domain fence or production callback integration is claimed.",
+    "This host curl probe is separate from the final Modal image and runtime acceptance gates.",
+    "HEAD verifies absence during cleanup; it is not an independent full-object SHA256 authority."
+  ]
+}
