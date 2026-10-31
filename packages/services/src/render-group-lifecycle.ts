@@ -490,7 +490,8 @@ export class RenderGroupLifecycle {
     await tx.$queryRaw`SELECT "id" FROM "RenderGroup" WHERE "id" = ${ref.groupId}::uuid FOR UPDATE`;
     const group = await tx.renderGroup.findUniqueOrThrow({ where: { id: ref.groupId } });
     const now = await renderGroupDatabaseNow(tx);
-    if (!parent || group.generation !== ref.generation || group.deploymentEpoch !== ref.deploymentEpoch ||
+    const source = parent ? await tx.project.findUnique({ where: { id: parent.projectId }, select: { ingestStatus: true, sourceStorageKey: true } }) : null;
+    if (!parent || source?.ingestStatus !== "ready" || !source.sourceStorageKey || group.generation !== ref.generation || group.deploymentEpoch !== ref.deploymentEpoch ||
       group.status !== "queued" || (group.nextAttemptAt && group.nextAttemptAt > now) ||
       context.leaseExpiresAt <= now || context.leaseExpiresAt > context.operationDeadlineAt || context.operationDeadlineAt <= now ||
       (group.operationDeadlineAt && group.operationDeadlineAt.getTime() !== context.operationDeadlineAt.getTime())) throw new RenderGroupAttemptLost(attempt);
@@ -513,6 +514,7 @@ export class RenderGroupLifecycle {
     if (!group.operationDeadlineAt || group.operationDeadlineAt.getTime() !== context.operationDeadlineAt.getTime() ||
       context.leaseExpiresAt <= now || context.leaseExpiresAt > group.operationDeadlineAt) throw new RenderGroupAttemptLost(attempt);
     await tx.renderGroup.update({ where: { id: group.id }, data: { heartbeatAt: now, leaseExpiresAt: context.leaseExpiresAt } });
+    return undefined;
   }
 
   async startExecution(tx: Tx, ref: RenderGroupExecutionReference, context: ExecutorMutationContext): Promise<ExecutorMutationResult> {
@@ -522,6 +524,7 @@ export class RenderGroupLifecycle {
       analysisFingerprint: context.fingerprints.analysis, toolchainFingerprint: context.fingerprints.toolchain });
     const members = await memberSnapshot(tx, ref);
     for (const member of members) if (member.status === "pending") await this.markClipRenderVariantRenderingWithinTransaction(tx, attempt, member.clipRenderId);
+    return undefined;
   }
 
   private async executionWakes(tx: Tx, ref: RenderGroupExecutionReference, inputHash: string, retry: boolean): Promise<{ dispatchIds: string[] }> {
@@ -568,6 +571,7 @@ export class RenderGroupLifecycle {
   async progressExecution(tx: Tx, ref: RenderGroupExecutionReference, context: ExecutorMutationContext, _progress: ExecutorProgressInput): Promise<ExecutorMutationResult> {
     // Public render progress is derived from committed member outcomes.
     await this.owned(tx, this.executionAttempt(ref, context));
+    return undefined;
   }
 
   async expireExecution(tx: Tx, reference: ExecutionDispatchReference, attemptToken: string, observation: ExecutorExpiryObservation): Promise<ExecutorExpiryResult> {

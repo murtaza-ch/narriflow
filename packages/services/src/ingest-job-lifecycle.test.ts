@@ -18,9 +18,14 @@ function harness() {
     expiresAt: 10_000 as number | null,
     status: "running",
     attemptCount: 1,
+    startedAt: new Date(0) as Date | null,
   };
   const tx = {
     ingestJob: {
+      findFirst: async ({ where }: { where: Record<string, unknown> }) =>
+        where.claimId === lease.claimId && lease.status === "running" && (lease.expiresAt ?? 0) > clock
+          ? { id: claim.id, projectId: claim.projectId, attemptCount: lease.attemptCount, startedAt: lease.startedAt }
+          : null,
       updateMany: async ({
         where,
         data,
@@ -42,7 +47,10 @@ function harness() {
           lease.status = "queued";
           lease.claimId = null;
           lease.expiresAt = null;
-          lease.attemptCount--;
+          lease.startedAt = null;
+          if (data.attemptCount && typeof data.attemptCount === "object" && "decrement" in data.attemptCount) {
+            lease.attemptCount -= Number(data.attemptCount.decrement);
+          }
         }
         return { count: 1 };
       },
@@ -69,6 +77,7 @@ function harness() {
       ) => work(tx),
     } as unknown as PrismaClient,
     workflow: {
+      dispatchRunWithinTransaction: async () => { throw new Error("Handoff is outside this fixture"); },
       admitWithHandoff: async () => {
         throw new Error("unexpected generation");
       },

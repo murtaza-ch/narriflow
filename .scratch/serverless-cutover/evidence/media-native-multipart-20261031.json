@@ -1,0 +1,32 @@
+{
+  "date": "2026-10-31",
+  "runtime": "CPython 3.13.5, macOS arm64",
+  "command": "PYTHONPATH=apps/media/python uv run --project apps/media --frozen python -m unittest discover -s apps/media/python/tests -p test_multipart.py -v",
+  "testsPassed": 7,
+  "virtualPin": {
+    "byteLength": 10737418240,
+    "partSizeBytes": 16777216,
+    "partCount": 640,
+    "maximumConcurrentParts": 4,
+    "tracedAllocationPeakUpperBoundBytes": 83886080,
+    "network": "injected controlled transfer transport; not R2"
+  },
+  "realLocalHttp": [
+    "conditional Range plus If-Match GET",
+    "exact 206, Content-Range, ETag and length",
+    "small output uses only multipart UploadPart PUT"
+  ],
+  "faults": [
+    "failed condition cancels a stalled sibling and aborts before completion",
+    "stale owner stops before a new part or completion",
+    "file mutation rejects completion",
+    "over-cap input receives no grant",
+    "lost completion acknowledgement does not abort or delete"
+  ],
+  "openGates": [
+    "live fenced API grants and durable multipart state",
+    "actual R2 checksum signing, completion and HEAD",
+    "real 10 GiB transfer and greater-than-5-GiB pin",
+    "Modal deployment and operation deadline integration"
+  ]
+}

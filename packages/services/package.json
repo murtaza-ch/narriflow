@@ -38,6 +38,10 @@
       "types": "./src/workflow-attempt-contract.ts",
       "default": "./src/workflow-attempt-contract.ts"
     },
+    "./workflow-execution-input": {
+      "types": "./src/workflow-execution-input.ts",
+      "default": "./src/workflow-execution-input.ts"
+    },
     "./brand-font-parser": {
       "types": "./src/brand-font-parser.ts",
       "default": "./src/brand-font-parser.ts"
@@ -433,6 +437,14 @@
     "./progress-outbox": {
       "types": "./src/progress-outbox.ts",
       "default": "./src/progress-outbox.ts"
+    },
+    "./execution-storage": {
+      "types": "./src/execution-storage.ts",
+      "default": "./src/execution-storage.ts"
+    },
+    "./modal-bridge": {
+      "types": "./src/modal-bridge.ts",
+      "default": "./src/modal-bridge.ts"
     }
   },
   "scripts": {
@@ -460,7 +472,8 @@
     "ioredis": "^5.9.3",
     "sharp": "^0.35.5",
     "stripe": "^22.5.0",
-    "@noble/hashes": "2.4.0"
+    "@noble/hashes": "2.4.0",
+    "@smithy/fetch-http-handler": "5.3.16"
   },
   "devDependencies": {
     "@prisma/adapter-pg": "7.7.0",

@@ -16,15 +16,20 @@ from .fetch import DownloadedSource, ProviderAccessBlocked, ResolvedSource, Sour
 from .manifest import MAX_SOURCE_BYTES, YouTubeSource, toolchain_versions
 from .process import run_owned_process_async
 from .proxy import BoundProxySession
+from .token_helper import OwnedTokenHelper
 
 FORMAT_PREFERENCE = "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080]/best"
 
 
 class YtDlpSourceRuntime:
-    def __init__(self, *, token_provider_url: str, on_process_start: Callable[[int], None],
+    def __init__(self, *, token_provider_url: str | None = None, on_process_start: Callable[[int], None],
                  deadline_seconds: float = 45 * 60, bun_executable: str = "bun",
-                 cancel_event: Event | None = None):
+                 cancel_event: Event | None = None, token_server_home: Path | None = None,
+                 assert_owned: Callable[[], None] | None = None):
         try:
+            if (token_server_home is None) == (token_provider_url is None) or token_server_home is not None and not callable(assert_owned):
+                raise ValueError()
+            token_provider_url = token_provider_url or "http://127.0.0.1:4416"
             parsed = urlsplit(token_provider_url)
             if (parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost", "::1"} or
                     parsed.port is None or not 0 < parsed.port <= 65535 or parsed.path not in {"", "/"} or
@@ -42,7 +47,10 @@ class YtDlpSourceRuntime:
             raise SourceFetchFailure("source_runtime_invalid") from None
         self._token_url = token_provider_url.rstrip("/")
         self._start = on_process_start
-        self._cancel = cancel_event
+        self._cancel = cancel_event if cancel_event is not None else Event()
+        self._token_home, self._assert_owned = token_server_home, assert_owned
+        self._helper: OwnedTokenHelper | None = None
+        self._session_directory: Path | None = None
         self._deadline = time.monotonic() + deadline_seconds
         self._bun = bun_executable
         self._probe = Path(__file__).resolve().parents[2] / "src/probe-cli.ts"
@@ -85,6 +93,8 @@ class YtDlpSourceRuntime:
         return args + (session.yt_dlp_arguments() if session is not None else ["--proxy", ""])
 
     async def _yt_dlp(self, args: list[str], session: BoundProxySession | None):
+        if self._helper is not None:
+            self._helper.assert_live()
         result = await run_owned_process_async(
             [sys.executable, "-I", "-m", "yt_dlp", *self._arguments(session), *args],
             timeout_seconds=self._remaining(), env=self._environment(session), on_start=self._start,
@@ -96,9 +106,19 @@ class YtDlpSourceRuntime:
                     or b"403 forbidden" in diagnostic):
                 raise ProviderAccessBlocked()
             raise SourceFetchFailure("source_fetch_failed", True)
+        if self._helper is not None:
+            self._helper.assert_live()
         return result.stdout
 
     async def resolve(self, source: YouTubeSource, session: BoundProxySession | None, work: Path):
+        if self._token_home is not None:
+            if self._helper is not None or self._assert_owned is None:
+                raise SourceFetchFailure("source_runtime_invalid")
+            helper = OwnedTokenHelper(server_home=self._token_home, work_directory=work, session=session,
+                                      assert_owned=self._assert_owned, cancel_event=self._cancel,
+                                      deadline_seconds=self._remaining(), bun_executable=self._bun)
+            await helper.__aenter__()
+            self._helper, self._session_directory, self._token_url = helper, work.resolve(), helper.url
         output = await self._yt_dlp([
             "--format", FORMAT_PREFERENCE, "--skip-download", "--no-simulate", "--write-info-json",
             "--output", str(work / "metadata.%(ext)s"), "--print", "%(id)j", source.url,
@@ -127,6 +147,13 @@ class YtDlpSourceRuntime:
             return ResolvedSource(source.media_id, audio["format_id"], video["format_id"], language, metadata)
         except (ValueError, TypeError, KeyError, StopIteration, OSError):
             raise SourceFetchFailure("source_metadata_invalid") from None
+
+    async def end_session(self, work: Path):
+        if self._helper is not None:
+            if self._session_directory != work.resolve():
+                raise SourceFetchFailure("source_runtime_invalid")
+            await self._helper.close()
+            self._helper, self._session_directory = None, None
 
     async def _download(self, selected: ResolvedSource, session: BoundProxySession | None, work: Path, audio: bool):
         work.mkdir(parents=True, exist_ok=True)
