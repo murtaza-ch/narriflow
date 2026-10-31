@@ -3,10 +3,10 @@ import { compositionAssetRef, planClipComposition, splitLayoutInputFingerprint, 
 import { CLIP_AUTO_LAYOUT_ENGINE, SCREEN_LAYOUT_ENGINE_VERSION, editorDocumentSchema, captionPresetSchema } from "@narriflow/validators";
 import { LayoutEvidence, type LayoutEvidenceDependencies, type LayoutEvidenceInput, type LayoutEvidenceWrite } from "./layout-evidence";
 import { parseRenderConfig } from "./render-config";
-import { analyzeClipAutoLayout } from "./tasks/auto-layout-analysis";
+import { createLayoutEvidenceDetectors } from "./layout-evidence-runtime";
 import { WorkflowFailure } from "@narriflow/services";
 import { deriveRenderCompositionEvidence } from "./tasks/clip-render-attempt";
-import { WorkerProcessFailure, type WorkerProcessModule } from "./worker-process";
+import { WorkerProcessFailure, resolveDisplayGeometry, type WorkerProcessModule } from "./worker-process";
 
 const requests: CompositionEvidenceRequest[] = [
   { key: "automatic", kind: "automatic-speaker-layout", engineVersion: CLIP_AUTO_LAYOUT_ENGINE },
@@ -232,7 +232,7 @@ describe("LayoutEvidence", () => {
     expect(h.owner.availability.automaticLayout.state).toBe("available");
   });
 
-  test("background proxy and render share original dimensions, normalized geometry, and zoom policy", async () => {
+  test("prepared proxy and render share original dimensions, normalized geometry, and zoom policy", async () => {
     const originalPath = "original-1920x1080.mp4";
     const commands: Array<{ args: readonly string[] }> = [];
     const workerProcess: WorkerProcessModule = {
@@ -240,10 +240,23 @@ describe("LayoutEvidence", () => {
       execute: async (request) => { commands.push(request); return { exitCode: 0, stdout: Buffer.from(request.command === "ffmpeg" ? "pts_time:5" : JSON.stringify({ samples })) }; },
       withScratchDirectory: async (_prefix, work) => work("unused"),
     };
-    const preview = await analyzeClipAutoLayout({
-      clip: { id: "clip-1", projectId: "project-1", startSec: 10, endSec: 20, deletedRanges: [], transcriptSlice: [], editorRevision: 7, previewStorageKey: "preview", sourceStorageKey: "source", previewStartSec: 8, previewDurationSec: 14, autoLayoutClaimToken: "claim", leaseMs: 180000 },
-      previewPath: "proxy-640x360.mp4", originalSourcePath: originalPath, workerProcess, config: parseRenderConfig({}),
+    const signal = new AbortController().signal;
+    const original = await workerProcess.inspectMedia({ sourcePath: originalPath, signal, deadlineMs: 120_000 });
+    const display = resolveDisplayGeometry(original);
+    const owner = new LayoutEvidence(input({
+      source: { identity: compositionAssetRef("source", "project-1"), hasVideo: original.hasVideo, width: display.width, height: display.height },
+      clip: { id: "clip-1", startSec: 10, endSec: 20, deletedRanges: [], utterances: [], editorRevision: 7, previewStorageKey: null },
+      signal, enabled: { automatic: true, screen: false, split: false },
+      preparationPreviewArtifactId: "1926d146-807b-4e55-8ef6-0ac87f95bea2",
+      getSegment: async () => ({ path: "proxy-640x360.mp4", startSec: 2, durationSec: 12 }),
+    }), {
+      detectors: createLayoutEvidenceDetectors({ workerProcess, config: parseRenderConfig({}), signal }),
+      persist: async () => true, now: Date.now, rethrowControl: () => signal.throwIfAborted(), diagnose: () => {},
     });
+    await owner.fulfill(requests.slice(0, 1));
+    const prepared = owner.availability.automaticLayout;
+    if (prepared.state !== "available") throw new Error("prepared Automatic evidence unavailable");
+    const preview = prepared.value.analysis;
     const rendered = harness(); await rendered.owner.fulfill(requests.slice(0, 1));
     const result = rendered.owner.availability.automaticLayout;
     expect(result.state).toBe("available");
