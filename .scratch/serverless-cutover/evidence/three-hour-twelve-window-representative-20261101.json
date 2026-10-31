@@ -1,0 +1,6207 @@
+{
+  "date": "2026-11-01",
+  "status": "PASS representative-source aggregate reads; controlled domain/storage ports, actual pinned native children",
+  "scope": "Twelve 30s windows: real prepare_clip at 2 CPU / 4 GiB then render_group at 4 CPU / 8 GiB, one 1080p portrait target each. No external network, DB or provider credentials. All 24 charged-start callbacks follow actual Bun Popen. Domain/storage replies are fixtures, not live authority proof.",
+  "source": {
+    "original": {
+      "title": "WikiTalks Podcast Episode 1",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:WikiTalks_Podcast_Episode_1.webm",
+      "url": "https://upload.wikimedia.org/wikipedia/commons/b/bb/WikiTalks_Podcast_Episode_1.webm",
+      "author": "IB COMPUTING and Wikimedians of Kerala User Group",
+      "license": "CC BY-SA 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0/",
+      "expectedByteLength": 1247663962,
+      "publishedSha1": "4c7bbd6768465efd8adc7e9f87164745b5fedcf7",
+      "changes": "Loop/remux actual encoded media to exactly three hours for private benchmark; no padding or target-bitrate inflation.",
+      "sha1": "4c7bbd6768465efd8adc7e9f87164745b5fedcf7",
+      "sha256": "a5bd22240b1159834c776a77cc7cc6e0f324e6e8f791dc88a151300f35d89ef9",
+      "byteLength": 1247663962,
+      "probe": {
+        "streams": [
+          {
+            "index": 0,
+            "codec_name": "vp9",
+            "codec_long_name": "Google VP9",
+            "profile": "Profile 0",
+            "codec_type": "video",
+            "codec_tag_string": "[0][0][0][0]",
+            "codec_tag": "0x0000",
+            "width": 2560,
+            "height": 1440,
+            "coded_width": 2560,
+            "coded_height": 1440,
+            "closed_captions": 0,
+            "film_grain": 0,
+            "has_b_frames": 0,
+            "sample_aspect_ratio": "1:1",
+            "display_aspect_ratio": "16:9",
+            "pix_fmt": "yuv420p",
+            "level": -99,
+            "color_range": "tv",
+            "color_space": "bt709",
+            "color_transfer": "bt709",
+            "color_primaries": "bt709",
+            "refs": 1,
+            "r_frame_rate": "30000/1001",
+            "avg_frame_rate": "30000/1001",
+            "time_base": "1/1000",
+            "start_pts": 0,
+            "start_time": "0.000000",
+            "disposition": {
+              "default": 1,
+              "dub": 0,
+              "original": 0,
+              "comment": 0,
+              "lyrics": 0,
+              "karaoke": 0,
+              "forced": 0,
+              "hearing_impaired": 0,
+              "visual_impaired": 0,
+              "clean_effects": 0,
+              "attached_pic": 0,
+              "timed_thumbnails": 0,
+              "non_diegetic": 0,
+              "captions": 0,
+              "descriptions": 0,
+              "metadata": 0,
+              "dependent": 0,
+              "still_image": 0,
+              "multilayer": 0
+            },
+            "tags": {
+              "language": "eng"
+            }
+          }
+        ],
+        "format": {
+          "filename": "/fixture/podcast-original.webm",
+          "nb_streams": 1,
+          "nb_programs": 0,
+          "nb_stream_groups": 0,
+          "format_name": "matroska,webm",
+          "format_long_name": "Matroska / WebM",
+          "start_time": "0.000000",
+          "duration": "2440.571000",
+          "size": "1247663962",
+          "bit_rate": "4089744",
+          "probe_score": 100,
+          "tags": {
+            "encoder": "google/video-file"
+          }
+        }
+      }
+    },
+    "construction": {
+      "argv": [
+        "ffmpeg",
+        "-nostdin",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-stream_loop",
+        "4",
+        "-i",
+        "/fixture/podcast-original.webm",
+        "-f",
+        "lavfi",
+        "-i",
+        "sine=f=330:sample_rate=48000:d=10800",
+        "-map",
+        "0:v:0",
+        "-map",
+        "1:a:0",
+        "-t",
+        "10800",
+        "-c:v",
+        "copy",
+        "-c:a",
+        "aac",
+        "-ar",
+        "48000",
+        "-ac",
+        "1",
+        "-b:a",
+        "64k",
+        "-movflags",
+        "+faststart",
+        "-shortest",
+        "/fixture/podcast-three-hours.mp4"
+      ],
+      "video": "Unchanged encoded VP9 stream, repeated and remuxed without encoding",
+      "audio": "Generated continuous330Hz test tone, AAC-LC64kbps,48kHz mono. Original Commons file is video-only.",
+      "durationSec": 10800,
+      "paddingBytes": 0,
+      "forcedVideoBitrate": false
+    },
+    "byteLength": 5622653880,
+    "sha256": "d4bb1b3a46807b2d979bcb65a33479d43ee86be36cb3fce60d60ae0f97453530",
+    "probe": {
+      "streams": [
+        {
+          "index": 0,
+          "codec_name": "vp9",
+          "codec_long_name": "Google VP9",
+          "profile": "Profile 0",
+          "codec_type": "video",
+          "codec_tag_string": "vp09",
+          "codec_tag": "0x39307076",
+          "width": 2560,
+          "height": 1440,
+          "coded_width": 2560,
+          "coded_height": 1440,
+          "closed_captions": 0,
+          "film_grain": 0,
+          "has_b_frames": 0,
+          "sample_aspect_ratio": "1:1",
+          "display_aspect_ratio": "16:9",
+          "pix_fmt": "yuv420p",
+          "level": -99,
+          "color_range": "tv",
+          "color_space": "bt709",
+          "color_transfer": "bt709",
+          "color_primaries": "bt709",
+          "refs": 1,
+          "id": "0x1",
+          "r_frame_rate": "30000/1001",
+          "avg_frame_rate": "323676000/10799987",
+          "time_base": "1/16000",
+          "start_pts": 0,
+          "start_time": "0.000000",
+          "duration_ts": 172799792,
+          "duration": "10799.987000",
+          "bit_rate": "4090389",
+          "nb_frames": "323676",
+          "disposition": {
+            "default": 1,
+            "dub": 0,
+            "original": 0,
+            "comment": 0,
+            "lyrics": 0,
+            "karaoke": 0,
+            "forced": 0,
+            "hearing_impaired": 0,
+            "visual_impaired": 0,
+            "clean_effects": 0,
+            "attached_pic": 0,
+            "timed_thumbnails": 0,
+            "non_diegetic": 0,
+            "captions": 0,
+            "descriptions": 0,
+            "metadata": 0,
+            "dependent": 0,
+            "still_image": 0,
+            "multilayer": 0
+          },
+          "tags": {
+            "language": "eng",
+            "handler_name": "VideoHandler",
+            "vendor_id": "[0][0][0][0]"
+          }
+        },
+        {
+          "index": 1,
+          "codec_name": "aac",
+          "codec_long_name": "AAC (Advanced Audio Coding)",
+          "profile": "LC",
+          "codec_type": "audio",
+          "codec_tag_string": "mp4a",
+          "codec_tag": "0x6134706d",
+          "sample_fmt": "fltp",
+          "sample_rate": "48000",
+          "channels": 1,
+          "channel_layout": "mono",
+          "bits_per_sample": 0,
+          "initial_padding": 0,
+          "id": "0x2",
+          "r_frame_rate": "0/0",
+          "avg_frame_rate": "0/0",
+          "time_base": "1/48000",
+          "start_pts": 0,
+          "start_time": "0.000000",
+          "duration_ts": 518400000,
+          "duration": "10800.000000",
+          "bit_rate": "64324",
+          "nb_frames": "506251",
+          "extradata_size": 5,
+          "disposition": {
+            "default": 1,
+            "dub": 0,
+            "original": 0,
+            "comment": 0,
+            "lyrics": 0,
+            "karaoke": 0,
+            "forced": 0,
+            "hearing_impaired": 0,
+            "visual_impaired": 0,
+            "clean_effects": 0,
+            "attached_pic": 0,
+            "timed_thumbnails": 0,
+            "non_diegetic": 0,
+            "captions": 0,
+            "descriptions": 0,
+            "metadata": 0,
+            "dependent": 0,
+            "still_image": 0,
+            "multilayer": 0
+          },
+          "tags": {
+            "language": "und",
+            "handler_name": "SoundHandler",
+            "vendor_id": "[0][0][0][0]"
+          }
+        }
+      ],
+      "format": {
+        "filename": "/fixture/podcast-three-hours.mp4",
+        "nb_streams": 2,
+        "nb_programs": 0,
+        "nb_stream_groups": 0,
+        "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+        "format_long_name": "QuickTime / MOV",
+        "start_time": "0.000000",
+        "duration": "10800.000000",
+        "size": "5622653880",
+        "bit_rate": "4164928",
+        "probe_score": 100,
+        "tags": {
+          "major_brand": "isom",
+          "minor_version": "512",
+          "compatible_brands": "isomiso2mp41",
+          "encoder": "Lavf61.7.103"
+        }
+      }
+    },
+    "atoms": [
+      {
+        "offset": 0,
+        "length": 28,
+        "headerBytes": 8,
+        "type": "ftyp"
+      },
+      {
+        "offset": 28,
+        "length": 13796068,
+        "headerBytes": 8,
+        "type": "moov"
+      },
+      {
+        "offset": 13796096,
+        "length": 5608857784,
+        "headerBytes": 16,
+        "type": "mdat"
+      }
+    ],
+    "packetsByStream": {
+      "1": {
+        "count": 506251,
+        "encodedBytes": 86838270
+      },
+      "0": {
+        "count": 323676,
+        "encodedBytes": 5522019498
+      }
+    },
+    "encodedPayloadBytes": 5608857768,
+    "containerIndexAndHeadersBytes": 13796112,
+    "scope": "Preparation/render source-read benchmark; not an STT, provider, lip-sync or real conversational audio gate."
+  },
+  "snapshotProvenance": {
+    "sandboxId": "sb-01M69R6SX88H5C1RMB9ZMNA0S8",
+    "sourceImageId": "im-01M69QNG12TQMK3NSV61BBXWKY",
+    "baseRuntimeImageId": "im-SLp7lHRnWYYTmYFvwKtCL6",
+    "externalNetworkBlocked": true,
+    "secrets": [],
+    "snapshotTtlSeconds": 21600,
+    "snapshotImageId": "im-01M69R9W587KQ27ANVV3KFNW58"
+  },
+  "benchmark": {
+    "requested": 12,
+    "completed": 12,
+    "sourceBytes": 5622653880,
+    "sourceSha256": "d4bb1b3a46807b2d979bcb65a33479d43ee86be36cb3fce60d60ae0f97453530",
+    "originalReadBytes": 1012669647,
+    "ratio": 0.18010527921736488,
+    "withinTwentyPercent": true,
+    "profiles": {
+      "prepare": {
+        "cpu": 2,
+        "memoryMiB": 4096
+      },
+      "render": {
+        "cpu": 4,
+        "memoryMiB": 8192
+      }
+    }
+  },
+  "profileEnvironment": {
+    "imageProfile": "render for BOTH profiles, matching deployed prepare_clip",
+    "OMP_NUM_THREADS": "4",
+    "OPENBLAS_NUM_THREADS": "4",
+    "MKL_NUM_THREADS": "4",
+    "ORT_INTRA_OP_NUM_THREADS": "4",
+    "OPENCV_FOR_THREADS_NUM": "4",
+    "OPENCV_FFMPEG_THREADS": "4",
+    "REFRAME_PYTHON": "/usr/bin/python3",
+    "threadOverridesDuringBenchmark": false
+  },
+  "runtime": {
+    "fingerprint": "06a988fcee94757ba07d1d1cc410ca4fbf0f36ee4d8f4aab8c84711897a569b9",
+    "fixtureToolchainId": "e00c091bc5a81bee",
+    "bun": "1.3.6",
+    "python": "3.13.5",
+    "ffmpeg": "7.1.5",
+    "source": {
+      "commit": "76c5c788619e6f23983e1bcc84dc1cc389e0907f",
+      "files": {
+        "apps/media/python/tests/test_clip_preparation_runtime.py": "e0700adca0cca50eb73cbc0e3053783ab5665a49f3b226451985f851e00fd8af",
+        "apps/media/python/tests/test_render_runtime.py": "62d755489703d040be2e327a4c19a45a4bc82dcd37eae151820b4d1935f8b50a",
+        "apps/media/python/narriflow_media/source_server.py": "efffb437df602f0d838578f480fb9869a702b4d84f0e39d1ca1e9868d46655e7",
+        "apps/media/src/prepare-clip.ts": "27069bcdcc548b7797e44120738d49f0fbad5a3948227ca71735ef982fe25f7f",
+        "apps/media/src/tasks/clip-preview.ts": "269c68bf87f36af7725bac5df9950ba6c16aab8a5c7ff283ca9aff349ef2a940",
+        "packages/services/src/clip-preparation-policy.ts": "e5e4cd2d53d97d142016aae6ce58840c99bcf3f02636039e369c99cbe683c1bc"
+      },
+      "beforeCacheCommit": "d73b79b7",
+      "beforeCacheSha256": "679c555e5e67f8825f9e96e025de6dedd18f54ddb33ca6463351165fa4a6522c",
+      "stageDriverSha256": "5917a71e120ef523a9d20ac3fd7555ab5f1475033146c0e2e1b767995353e160",
+      "hostDriverSha256": "7d7ea74201bfb6335cd662a549c84d28427a585d28587f3862651de5637e5f61"
+    }
+  },
+  "sandboxes": {
+    "imageId": "im-01M69R9W587KQ27ANVV3KFNW58",
+    "profiles": {
+      "prepare": {
+        "cpu": 2,
+        "memoryMiB": 4096
+      },
+      "render": {
+        "cpu": 4,
+        "memoryMiB": 8192
+      }
+    },
+    "sandboxes": {
+      "prepare": "sb-01M69T0CH8SDASPXXJS4R30RC5",
+      "render": "sb-01M69T0GDN526FKKQD612TCGZG"
+    },
+    "networkBlocked": true,
+    "secrets": []
+  },
+  "terminated": true,
+  "stageTotals": {
+    "prepare": {
+      "actualOriginalBytes": 523508943,
+      "actualIndexAndHeaderBytes": 165553344,
+      "actualEncodedMdatBytes": 357955599,
+      "actualBytesIntersectingOfflineSelectedPacketsIncludingPreroll": 255361528,
+      "otherEncodedMdatBytes": 102594071
+    },
+    "render": {
+      "actualOriginalBytes": 489160704,
+      "actualIndexAndHeaderBytes": 165553344,
+      "actualEncodedMdatBytes": 323607360,
+      "actualBytesIntersectingOfflineSelectedPacketsIncludingPreroll": 208283659,
+      "otherEncodedMdatBytes": 115323701
+    }
+  },
+  "selectedPacketAccounting": "Offline ffprobe packet positions include seek preroll; intersections classify measured upstream bytes only. Other mdat bytes include startup, readahead and interleaving. Neither socket writes nor packet-reference inventories prove application consumption. Cache hits are excluded from upstream bytes.",
+  "cache32to64Identity": {
+    "outputIdentity": {
+      "clip_preview": {
+        "before": {
+          "role": "clip_preview",
+          "byteLength": 1278848,
+          "sha256": "5aa6ae117278e29cc096a3b87ea18d60be0998d0a02e00603cd38a5a953ef606"
+        },
+        "after": {
+          "role": "clip_preview",
+          "byteLength": 1278848,
+          "sha256": "5aa6ae117278e29cc096a3b87ea18d60be0998d0a02e00603cd38a5a953ef606"
+        }
+      },
+      "render_variant": {
+        "before": {
+          "role": "render_variant",
+          "byteLength": 11029760,
+          "sha256": "d1fc5cb3e5c8873712a083c77e28e17300b4c58c8ba398f133340e53e7436cd7"
+        },
+        "after": {
+          "role": "render_variant",
+          "byteLength": 11029760,
+          "sha256": "d1fc5cb3e5c8873712a083c77e28e17300b4c58c8ba398f133340e53e7436cd7"
+        }
+      }
+    },
+    "profiles": {
+      "prepare": {
+        "cpu": 2,
+        "memoryMiB": 4096
+      },
+      "render": {
+        "cpu": 4,
+        "memoryMiB": 8192
+      }
+    },
+    "beforeOriginalBytes": 124321792,
+    "afterOriginalBytes": 74186752
+  },
+  "cacheSafety": {
+    "configuredBytes": 67108864,
+    "configuredEntries": 128,
+    "prepareMemoryFraction": 0.015625,
+    "renderMemoryFraction": 0.0078125,
+    "sixPinnedTestsPassed": true,
+    "virtualSourceBytes": 10737418240,
+    "streamedBytes": 84934656,
+    "peakPythonAllocatedBytes": 68634245,
+    "allocationCeilingBytes": 83886080,
+    "provenance": {
+      "sandboxId": "sb-01M69S9JQKSK04V6XK7HC4RHT9",
+      "imageId": "im-SLp7lHRnWYYTmYFvwKtCL6",
+      "commit": "76c5c788619e6f23983e1bcc84dc1cc389e0907f",
+      "externalNetworkBlocked": true,
+      "cpu": 2,
+      "memoryMiB": 4096,
+      "secrets": [],
+      "overlay": {
+        "apps/media/python/narriflow_media/source_server.py": "efffb437df602f0d838578f480fb9869a702b4d84f0e39d1ca1e9868d46655e7",
+        "apps/media/python/tests/test_source_server.py": "38357b8eee2debfaa96f03fba9b520cee755ae4041c39684a56a5045f4210917"
+      }
+    }
+  },
+  "limitations": [
+    "The Commons original is video-only. Added continuous330Hz AAC-LC64k48kHz mono audio contributes86838270 encoded bytes. This is not anSTT/provider/lip-sync acceptance gate.",
+    "Actual video packets were stream-copied, repeated/remuxed, never inflated/padded or target-bitrate encoded.",
+    "The compact433155186-byte index-heavy3h fixture failed at357.55% before the cache change; keep three-hour-twelve-window-baseline-20261101.json visible. This result is the declared representative-source gate, not a universal ratio guarantee.",
+    "Process-tree RSS is sampled every25ms; it is not cgroup peak memory or a production latency cohort.",
+    "Root-owned final immutable image/actualFunction and live R2/domain fault gates remain separate."
+  ],
+  "records": [
+    {
+      "index": 0,
+      "window": [
+        828.462,
+        858.462
+      ],
+      "prepare": {
+        "secondsDiagnosticOnly": 30.235,
+        "starts": 1,
+        "reads": {
+          "actualOriginalBytes": 43957382,
+          "actualIndexAndHeaderBytes": 13796112,
+          "actualEncodedMdatBytes": 30161270,
+          "ranges": [
+            [
+              0,
+              65535
+            ],
+            [
+              65536,
+              196607
+            ],
+            [
+              196608,
+              458751
+            ],
+            [
+              458752,
+              983039
+            ],
+            [
+              983040,
+              2031615
+            ],
+            [
+              2031616,
+              3080191
+            ],
+            [
+              3080192,
+              4128767
+            ],
+            [
+              4128768,
+              5177343
+            ],
+            [
+              5177344,
+              6225919
+            ],
+            [
+              6225920,
+              7274495
+            ],
+            [
+              7274496,
+              8323071
+            ],
+            [
+              8323072,
+              9371647
+            ],
+            [
+              9371648,
+              10420223
+            ],
+            [
+              10420224,
+              11468799
+            ],
+            [
+              11468800,
+              12517375
+            ],
+            [
+              12517376,
+              13565951
+            ],
+            [
+              13565952,
+              14614527
+            ],
+            [
+              14614528,
+              15663103
+            ],
+            [
+              15663104,
+              16711679
+            ],
+            [
+              16711680,
+              17760255
+            ],
+            [
+              17760256,
+              18808831
+            ],
+            [
+              436371149,
+              436436684
+            ],
+            [
+              436436685,
+              436567756
+            ],
+            [
+              436567757,
+              436829900
+            ],
+            [
+              436829901,
+              437354188
+            ],
+            [
+              437354189,
+              438402764
+            ],
+            [
+              438402765,
+              439451340
+            ],
+            [
+              439451341,
+              440499916
+            ],
+            [
+              440499917,
+              441548492
+            ],
+            [
+              441548493,
+              442597068
+            ],
+            [
+              442597069,
+              443645644
+            ],
+            [
+              443645645,
+              444694220
+            ],
+            [
+              444694221,
+              445742796
+            ],
+            [
+              445742797,
+              446791372
+            ],
+            [
+              446791373,
+              447839948
+            ],
+            [
+              447839949,
+              448888524
+            ],
+            [
+              448888525,
+              449937100
+            ],
+            [
+              449937101,
+              450985676
+            ],
+            [
+              450985677,
+              452034252
+            ],
+            [
+              452034253,
+              453082828
+            ],
+            [
+              453082829,
+              454131404
+            ],
+            [
+              454131405,
+              455179980
+            ],
+            [
+              455179981,
+              456228556
+            ],
+            [
+              456228557,
+              457277132
+            ],
+            [
+              457277133,
+              458325708
+            ],
+            [
+              458325709,
+              459374284
+            ],
+            [
+              459374285,
+              460422860
+            ],
+            [
+              460422861,
+              461471436
+            ],
+            [
+              461471437,
+              461519698
+            ]
+          ],
+          "actualBytesIntersectingOfflineSelectedPacketsIncludingPreroll": 21061512,
+          "otherEncodedMdatBytes": 9099758
+        },
+        "offlinePacketReference": {
+          "requestedStartSec": 824.462,
+          "requestedEndSec": 862.462,
+          "firstReturnedPtsSec": 822.144,
+          "lastReturnedPtsSec": 862.442667,
+          "encodedPacketBytes": 21061512,
+          "packetCount": 3098
+        },
+        "sampledPeakTreeRssBytes": 1117040640,
+        "outputs": [
+          {
+            "role": "clip_preview",
+            "byteLength": 1162605,
+            "sha256": "9f982919bd3d81acf0d54f0229c08c25764413519aba4b2f8149e6c973c9b81a"
+          },
+          {
+            "role": "preview_peaks",
+            "byteLength": 2378,
+            "sha256": "c69395e423d6bb56daf64e7791d758e4d5e95e2373d7b8ca6b94f7e80abb097f"
+          },
+          {
+            "role": "layout_evidence",
+            "byteLength": 12370,
+            "sha256": "8bf20b867b8286c66b37aef8ce8d87ab9afbd33dedd05d421ebfa6d00bb8b876"
+          }
+        ],
+        "engineHash": "53abefd81154ffed1f44a94efd84ec0fee7a07925b0ff127bcfdf8a54dafbbc4",
+        "automaticEngine": "shot-layout-v1",
+        "screenObserved": true,
+        "splitObserved": true
+      },
+      "render": {
+        "secondsDiagnosticOnly": 23.104,
+        "starts": 1,
+        "reads": {
+          "actualOriginalBytes": 41811968,
+          "actualIndexAndHeaderBytes": 13796112,
+          "actualEncodedMdatBytes": 28015856,
+          "ranges": [
+            [
+              0,
+              65535
+            ],
+            [
+              65536,
+              196607
+            ],
+            [
+              196608,
+              458751
+            ],
+            [
+              458752,
+              983039
+            ],
+            [
+              983040,
+              2031615
+            ],
+            [
+              2031616,
+              3080191
+            ],
+            [
+              3080192,
+              4128767
+            ],
+            [
+              4128768,
+              5177343
+            ],
+            [
+              5177344,
+              6225919
+            ],
+            [
+              6225920,
+              7274495
+            ],
+            [
+              7274496,
+              8323071
+            ],
+            [
+              8323072,
+              9371647
+            ],
+            [
+              9371648,
+              10420223
+            ],
+            [
+              10420224,
+              11468799
+            ],
+            [
+              11468800,
+              12517375
+            ],
+            [
+              12517376,
+              13565951
+            ],
+            [
+              13565952,
+              14614527
+            ],
+            [
+              14614528,
+              15663103
+            ],
+            [
+              15663104,
+              16711679
+            ],
+            [
+              16711680,
+              17760255
+            ],
+            [
+              17760256,
+              18808831
+            ],
+            [
+              438908991,
+              438974526
+            ],
+            [
+              438974527,
+              439105598
+            ],
+            [
+              439105599,
+              439367742
+            ],
+            [
+              439367743,
+              439892030
+            ],
+            [
+              439892031,
+              440940606
+            ],
+            [
+              440940607,
+              441989182
+            ],
+            [
+              441989183,
+              443037758
+            ],
+            [
+              443037759,
+              444086334
+            ],
+            [
+              444086335,
+              445134910
+            ],
+            [
+              445134911,
+              446183486
+            ],
+            [
+              446183487,
+              447232062
+            ],
+            [
+              447232063,
+              448280638
+            ],
+            [
+              448280639,
+              449329214
+            ],
+            [
+              449329215,
+              450377790
+            ],
+            [
+              450377791,
+              451426366
+            ],
+            [
+              451426367,
+              452474942
+            ],
+            [
+              452474943,
+              453523518
+            ],
+            [
+              453523519,
+              454572094
+            ],
+            [
+              454572095,
+              455620670
+            ],
+            [
+              455620671,
+              456669246
+            ],
+            [
+              456669247,
+              457717822
+            ],
+            [
+              438516386,
+              438581921
+            ],
+            [
+              438581922,
+              438712993
+            ],
+            [
+              438712994,
+              438908990
+            ],
+            [
+              457717823,
+              458373793
+            ],
+            [
+              458373794,
+              459422369
+            ],
+            [
+              459422370,
+              460470945
+            ],
+            [
+              460470946,
+              461519521
+            ]
+          ],
+          "actualBytesIntersectingOfflineSelectedPacketsIncludingPreroll": 17495236,
+          "otherEncodedMdatBytes": 10520620
+        },
+        "offlinePacketReference": {
+          "requestedStartSec": 828.462,
+          "requestedEndSec": 858.462,
+          "firstReturnedPtsSec": 827.477333,
+          "lastReturnedPtsSec": 858.458,
+          "encodedPacketBytes": 17495236,
+          "packetCount": 2382
+        },
+        "sampledPeakTreeRssBytes": 1397624832,
+        "outputs": [
+          {
+            "role": "render_variant",
+            "byteLength": 21053881,
+            "sha256": "b36ca81c241ebf558949dfc4e9d9f1d474ebf2d1f41638247b9dfb08924abf26"
+          }
+        ],
+        "outcome": {
+          "status": "completed",
+          "requested": 1,
+          "succeeded": 1,
+          "failed": 0,
+          "superseded": 0
+        },
+        "detectorExecutions": 0
+      }
+    },
+    {
+      "index": 1,
+      "window": [
+        1656.923,
+        1686.923
+      ],
+      "prepare": {
+        "secondsDiagnosticOnly": 29.26,
+        "starts": 1,
+        "reads": {
+          "actualOriginalBytes": 43909120,
+          "actualIndexAndHeaderBytes": 13796112,
+          "actualEncodedMdatBytes": 30113008,
+          "ranges": [
+            [
+              0,
+              65535
+            ],
+            [
+              65536,
+              196607
+            ],
+            [
+              196608,
+              458751
+            ],
+            [
+              458752,
+              983039
+            ],
+            [
+              983040,
+              2031615
+            ],
+            [
+              2031616,
+              3080191
+            ],
+            [
+              3080192,
+              4128767
+            ],
+            [
+              4128768,
+              5177343
+            ],
+            [
+              5177344,
+              6225919
+            ],
+            [
+              6225920,
+              7274495
+            ],
+            [
+              7274496,
+              8323071
+            ],
+            [
+              8323072,
+              9371647
+            ],
+            [
+              9371648,
+              10420223
+            ],
+            [
+              10420224,
+              11468799
+            ],
+            [
+              11468800,
+              12517375
+            ],
+            [
+              12517376,
+              13565951
+            ],
+            [
+              13565952,
+              14614527
+            ],
+            [
+              14614528,
+              15663103
+            ],
+            [
+              15663104,
+              16711679
+            ],
+            [
+              16711680,
+              17760255
+            ],
+            [
+              17760256,
+              18808831
+            ],
+            [
+              873302477,
+              873368012
+            ],
+            [
+              873368013,
+              873499084
+            ],
+            [
+              873499085,
+              873761228
+            ],
+            [
+              873761229,
+              874285516
+            ],
+            [
+              874285517,
+              875334092
+            ],
+            [
+              875334093,
+              876382668
+            ],
+            [
+              876382669,
+              877431244
+            ],
+            [
+              877431245,
+              878479820
+            ],
+            [
+              878479821,
+              879528396
+            ],
+            [
+              879528397,
+              880576972
+            ],
+            [
+              880576973,
+              881625548
+            ],
+            [
+              881625549,
+              882674124
+            ],
+            [
+              882674125,
+              883722700
+            ],
+            [
+              883722701,
+              884771276
+            ],
+            [
+              884771277,
+              885819852
+            ],
+            [
+              885819853,
+              886868428
+            ],
+            [
+              886868429,
+              887917004
+            ],
+            [
+              887917005,
+              888965580
+            ],
+            [
+              888965581,
+              890014156
+            ],
+            [
+              890014157,
+              891062732
+            ],
+            [
+              891062733,
+              892111308
+            ],
+            [
+              892111309,
+              893159884
+            ],
+            [
+              893159885,
+              894208460
+            ],
+            [
+              894208461,
+              895257036
+            ],
+            [
+              895257037,
+              896305612
+            ],
+            [
+              896305613,
+              897354188
+            ],
+            [
+              897354189,
+              898402764
+            ]
+          ],
+          "actualBytesIntersectingOfflineSelectedPacketsIncludingPreroll": 20835707,
+          "otherEncodedMdatBytes": 9277301
+        },
+        "offlinePacketReference": {
+          "requestedStartSec": 1652.923,
+          "requestedEndSec": 1690.923,
+          "firstReturnedPtsSec": 1649.642667,
+          "lastReturnedPtsSec": 1690.922667,
+          "encodedPacketBytes": 20835707,
+          "packetCount": 3173
+        },
+        "sampledPeakTreeRssBytes": 1111695360,
+        "outputs": [
+          {
+            "role": "clip_preview",
+            "byteLength": 1110319,
+            "sha256": "fcf48c6f19cf7f1f5789e4b37247c7c2687dc290b9621d5c97684eeaf4266bec"
+          },
+          {
+            "role": "preview_peaks",
+            "byteLength": 2379,
+            "sha256": "3eedb773e7145fed1ffa6f8a1a6890c3bff92417b11d3566f3ab8031785e8388"
+          },
+          {
+            "role": "layout_evidence",
+            "byteLength": 12415,
+            "sha256": "20781e807cfe5ff42046784164a798f18088750b28cb3e69df8185cf68654030"
+          }
+        ],
+        "engineHash": "53abefd81154ffed1f44a94efd84ec0fee7a07925b0ff127bcfdf8a54dafbbc4",
+        "automaticEngine": "shot-layout-v1",
+        "screenObserved": true,
+        "splitObserved": true
+      },
+      "render": {
+        "secondsDiagnosticOnly": 23.901,
+        "starts": 1,
+        "reads": {
+          "actualOriginalBytes": 41811968,
+          "actualIndexAndHeaderBytes": 13796112,
+          "actualEncodedMdatBytes": 28015856,
+          "ranges": [
+            [
+              0,
+              65535
+            ],
+            [
+              65536,
+              196607
+            ],
+            [
+              196608,
+              458751
+            ],
+            [
+              458752,
+              983039
+            ],
+            [
+              983040,
+              2031615
+            ],
+            [
+              2031616,
+              3080191
+            ],
+            [
+              3080192,
+              4128767
+            ],
+            [
+              4128768,
+              5177343
+            ],
+            [
+              5177344,
+              6225919
+            ],
+            [
+              6225920,
+              7274495
+            ],
+            [
+              7274496,
+              8323071
+            ],
+            [
+              8323072,
+              9371647
+            ],
+            [
+              9371648,
+              10420223
+            ],
+            [
+              10420224,
+              11468799
+            ],
+            [
+              11468800,
+              12517375
+            ],
+            [
+              12517376,
+              13565951
+            ],
+            [
+              13565952,
+              14614527
+            ],
+            [
+              14614528,
+              15663103
+            ],
+            [
+              15663104,
+              16711679
+            ],
+            [
+              16711680,
+              17760255
+            ],
+            [
+              17760256,
+              18808831
+            ],
+            [
+              876424066,
+              876489601
+            ],
+            [
+              876489602,
+              876620673
+            ],
+            [
+              876620674,
+              876882817
+            ],
+            [
+              876882818,
+              877407105
+            ],
+            [
+              877407106,
+              878455681
+            ],
+            [
+              878455682,
+              879504257
+            ],
+            [
+              879504258,
+              880552833
+            ],
+            [
+              880552834,
+              881601409
+            ],
+            [
+              881601410,
+              882649985
+            ],
+            [
+              882649986,
+              883698561
+            ],
+            [
+              883698562,
+              884747137
+            ],
+            [
+              884747138,
+              885795713
+            ],
+            [
+              885795714,
+              886844289
+            ],
+            [
+              886844290,
+              887892865
+            ],
+            [
+              887892866,
+              888941441
+            ],
+            [
+              888941442,
+              889990017
+            ],
+            [
+              889990018,
+              891038593
+            ],
+            [
+              891038594,
+              892087169
+            ],
+            [
+              892087170,
+              893135745
+            ],
+            [
+              893135746,
+              894184321
+            ],
+            [
+              875620176,
+              875685711
+            ],
+            [
+              875685712,
+              875816783
+            ],
+            [
+              875816784,
+              876078927
+            ],
+            [
+              876078928,
+              876424065
+            ],
+            [
+              894184322,
+              894429007
+            ],
+            [
+              894429008,
+              895477583
+            ],
+            [
+              895477584,
+              896526159
+            ],
+            [
+              896526160,
+              897574735
+            ],
+            [
+              897574736,
+              898623311
+            ]
+          ],
+          "actualBytesIntersectingOfflineSelectedPacketsIncludingPreroll": 17305273,
+          "otherEncodedMdatBytes": 10710583
+        },
+        "offlinePacketReference": {
+          "requestedStartSec": 1656.923,
+          "requestedEndSec": 1686.923,
+          "firstReturnedPtsSec": 1654.976,
+          "lastReturnedPtsSec": 1686.919,
+          "encodedPacketBytes": 17305273,
+          "packetCount": 2456
+        },
+        "sampledPeakTreeRssBytes": 1388634112,
+        "outputs": [
+          {
+            "role": "render_variant",
+            "byteLength": 20793968,
+            "sha256": "e77e1645f0079d6786425e669a904353b206982bdf1c648bde3cb17afd5b49d2"
+          }
+        ],
+        "outcome": {
+          "status": "completed",
+          "requested": 1,
+          "succeeded": 1,
+          "failed": 0,
+          "superseded": 0
+        },
+        "detectorExecutions": 0
+      }
+    },
+    {
+      "index": 2,
+      "window": [
+        2485.385,
+        2515.385
+      ],
+      "prepare": {
+        "secondsDiagnosticOnly": 31.999,
+        "starts": 1,
+        "reads": {
+          "actualOriginalBytes": 43909120,
+          "actualIndexAndHeaderBytes": 13796112,
+          "actualEncodedMdatBytes": 30113008,
+          "ranges": [
+            [
+              0,
+              65535
+            ],
+            [
+              65536,
+              196607
+            ],
+            [
+              196608,
+              458751
+            ],
+            [
+              458752,
+              983039
+            ],
+            [
+              983040,
+              2031615
+            ],
+            [
+              2031616,
+              3080191
+            ],
+            [
+              3080192,
+              4128767
+            ],
+            [
+              4128768,
+              5177343
+            ],
+            [
+              5177344,
+              6225919
+            ],
+            [
+              6225920,
+              7274495
+            ],
+            [
+              7274496,
+              8323071
+            ],
+            [
+              8323072,
+              9371647
+            ],
+            [
+              9371648,
+              10420223
+            ],
+            [
+              10420224,
+              11468799
+            ],
+            [
+              11468800,
+              12517375
+            ],
+            [
+              12517376,
+              13565951
+            ],
+            [
+              13565952,
+              14614527
+            ],
+            [
+              14614528,
+              15663103
+            ],
+            [
+              15663104,
+              16711679
+            ],
+            [
+              16711680,
+              17760255
+            ],
+            [
+              17760256,
+              18808831
+            ],
+            [
+              1301514815,
+              1301580350
+            ],
+            [
+              1301580351,
+              1301711422
+            ],
+            [
+              1301711423,
+              1301973566
+            ],
+            [
+              1301973567,
+              1302497854
+            ],
+            [
+              1302497855,
+              1303546430
+            ],
+            [
+              1303546431,
+              1304595006
+            ],
+            [
+              1304595007,
+              1305643582
+            ],
+            [
+              1305643583,
+              1306692158
+            ],
+            [
+              1306692159,
+              1307740734
+            ],
+            [
+              1307740735,
+              1308789310
+            ],
+            [
+              1308789311,
+              1309837886
+            ],
+            [
+              1309837887,
+              1310886462
+            ],
+            [
+              1310886463,
+              1311935038
+            ],
+            [
+              1311935039,
+              1312983614
+            ],
+            [
+              1312983615,
+              1314032190
+            ],
+            [
+              1314032191,
+              1315080766
+            ],
+            [
+              1315080767,
+              1316129342
+            ],
+            [
+              1316129343,
+              1317177918
+            ],
+            [
+              1317177919,
+              1318226494
+            ],
+            [
+              1318226495,
+              1319275070
+            ],
+            [
+              1319275071,
+              1320323646
+            ],
+            [
+              1320323647,
+              1321372222
+            ],
+            [
+              1321372223,
+              1322420798
+            ],
+            [
+              1322420799,
+              1323469374
+            ],
+            [
+              1323469375,
+              1324517950
+            ],
+            [
+              1324517951,
+              1325566526
+            ],
+            [
+              1325566527,
+              1326615102
+            ]
+          ],
+          "actualBytesIntersectingOfflineSelectedPacketsIncludingPreroll": 22162724,
+          "otherEncodedMdatBytes": 7950284
+        },
+        "offlinePacketReference": {
+          "requestedStartSec": 2481.385,
+          "requestedEndSec": 2519.385,
+          "firstReturnedPtsSec": 2480.597333,
+          "lastReturnedPtsSec": 2519.383,
+          "encodedPacketBytes": 22162724,
+          "packetCount": 2982
+        },
+        "sampledPeakTreeRssBytes": 1121714176,
+        "outputs": [
+          {
+            "role": "clip_preview",
+            "byteLength": 1608204,
+            "sha256": "fbfac0060caf0145c113a22989e1bc7f78cd91d48dd9be5d17d8852e5d6a07bc"
+          },
+          {
+            "role": "preview_peaks",
+            "byteLength": 2379,
+            "sha256": "b8ce0f13ed6554a1c0355745c66269c106b74db442a4c0b7a62344e132bc4adb"
+          },
+          {
+            "role": "layout_evidence",
+            "byteLength": 25414,
+            "sha256": "08baa793e71aa26f7532be71b8ba2a0b3e9ca3b4402f426b4994ab3cb887fbb3"
+          }
+        ],
+        "engineHash": "53abefd81154ffed1f44a94efd84ec0fee7a07925b0ff127bcfdf8a54dafbbc4",
+        "automaticEngine": "shot-layout-v1",
+        "screenObserved": true,
+        "splitObserved": true
+      },
+      "render": {
+        "secondsDiagnosticOnly": 25.429,
+        "starts": 1,
+        "reads": {
+          "actualOriginalBytes": 41811968,
+          "actualIndexAndHeaderBytes": 13796112,
+          "actualEncodedMdatBytes": 28015856,
+          "ranges": [
+            [
+              0,
+              65535
+            ],
+            [
+              65536,
+              196607
+            ],
+            [
+              196608,
+              458751
+            ],
+            [
+              458752,
+              983039
+            ],
+            [
+              983040,
+              2031615
+            ],
+            [
+              2031616,
+              3080191
+            ],
+            [
+              3080192,
+              4128767
+            ],
+            [
+              4128768,
+              5177343
+            ],
+            [
+              5177344,
+              6225919
+            ],
+            [
+              6225920,
+              7274495
+            ],
+            [
+              7274496,
+              8323071
+            ],
+            [
+              8323072,
+              9371647
+            ],
+            [
+              9371648,
+              10420223
+            ],
+            [
+              10420224,
+              11468799
+            ],
+            [
+              11468800,
+              12517375
+            ],
+            [
+              12517376,
+              13565951
+            ],
+            [
+              13565952,
+              14614527
+            ],
+            [
+              14614528,
+              15663103
+            ],
+            [
+              15663104,
+              16711679
+            ],
+            [
+              16711680,
+              17760255
+            ],
+            [
+              17760256,
+              18808831
+            ],
+            [
+              1304637540,
+              1304703075
+            ],
+            [
+              1304703076,
+              1304834147
+            ],
+            [
+              1304834148,
+              1305096291
+            ],
+            [
+              1305096292,
+              1305620579
+            ],
+            [
+              1305620580,
+              1306669155
+            ],
+            [
+              1306669156,
+              1307717731
+            ],
+            [
+              1307717732,
+              1308766307
+            ],
+            [
+              1308766308,
+              1309814883
+            ],
+            [
+              1309814884,
+              1310863459
+            ],
+            [
+              1310863460,
+              1311912035
+            ],
+            [
+              1311912036,
+              1312960611
+            ],
+            [
+              1312960612,
+              1314009187
+            ],
+            [
+              1314009188,
+              1315057763
+            ],
+            [
+              1315057764,
+              1316106339
+            ],
+            [
+              1316106340,
+              1317154915
+            ],
+            [
+              1317154916,
+              1318203491
+            ],
+            [
+              1318203492,
+              1319252067
+            ],
+            [
+              1319252068,
+              1320300643
+            ],
+            [
+              1320300644,
+              1321349219
+            ],
+            [
+              1321349220,
+              1322397795
+            ],
+            [
+              1302902785,
+              1302968320
+            ],
+            [
+              1302968321,
+              1303099392
+            ],
+            [
+              1303099393,
+              1303361536
+            ],
+            [
+              1303361537,
+              1303885824
+            ],
+            [
+              1303885825,
+              1304637539
+            ],
+            [
+              1322397796,
+              1322760192
+            ],
+            [
+              1322760193,
+              1323808768
+            ],
+            [
+              1323808769,
+              1324857344
+            ],
+            [
+              1324857345,
+              1325905920
+            ]
+          ],
+          "actualBytesIntersectingOfflineSelectedPacketsIncludingPreroll": 18397502,
+          "otherEncodedMdatBytes": 9618354
+        },
+        "offlinePacketReference": {
+          "requestedStartSec": 2485.385,
+          "requestedEndSec": 2515.385,
+          "firstReturnedPtsSec": 2483.264,
+          "lastReturnedPtsSec": 2515.379,
+          "encodedPacketBytes": 18397502,
+          "packetCount": 2469
+        },
+        "sampledPeakTreeRssBytes": 1481609216,
+        "outputs": [
+          {
+            "role": "render_variant",
+            "byteLength": 21708577,
+            "sha256": "5a0ab235d751fc40045d020ef3e6a94214b74eb9dabc883524c74b835e71bc70"
+          }
+        ],
+        "outcome": {
+          "status": "completed",
+          "requested": 1,
+          "succeeded": 1,
+          "failed": 0,
+          "superseded": 0
+        },
+        "detectorExecutions": 0
+      }
+    },
+    {
+      "index": 3,
+      "window": [
+        3313.846,
+        3343.846
+      ],
+      "prepare": {
+        "secondsDiagnosticOnly": 30.086,
+        "starts": 1,
+        "reads": {
+          "actualOriginalBytes": 48103424,
+          "actualIndexAndHeaderBytes": 13796112,
+          "actualEncodedMdatBytes": 34307312,
+          "ranges": [
+            [
+              0,
+              65535
+            ],
+            [
+              65536,
+              196607
+            ],
+            [
+              196608,
+              458751
+            ],
+            [
+              458752,
+              983039
+            ],
+            [
+              983040,
+              2031615
+            ],
+            [
+              2031616,
+              3080191
+            ],
+            [
+              3080192,
+              4128767
+            ],
+            [
+              4128768,
+              5177343
+            ],
+            [
+              5177344,
+              6225919
+            ],
+            [
+              6225920,
+              7274495
+            ],
+            [
+              7274496,
+              8323071
+            ],
+            [
+              8323072,
+              9371647
+            ],
+            [
+              9371648,
+              10420223
+            ],
+            [
+              10420224,
+              11468799
+            ],
+            [
+              11468800,
+              12517375
+            ],
+            [
+              12517376,
+              13565951
+            ],
+            [
+              13565952,
+              14614527
+            ],
+            [
+              14614528,
+              15663103
+            ],
+            [
+              15663104,
+              16711679
+            ],
+            [
+              16711680,
+              17760255
+            ],
+            [
+              17760256,
+              18808831
+            ],
+            [
+              1724862440,
+              1724927975
+            ],
+            [
+              1724927976,
+              1725059047
+            ],
+            [
+              1725059048,
+              1725321191
+            ],
+            [
+              1725321192,
+              1725845479
+            ],
+            [
+              1725845480,
+              1726894055
+            ],
+            [
+              1726894056,
+              1727942631
+            ],
+            [
+              1727942632,
+              1728991207
+            ],
+            [
+              1728991208,
+              1730039783
+            ],
+            [
+              1730039784,
+              1731088359
+            ],
+            [
+              1731088360,
+              1732136935
+            ],
+            [
+              1732136936,
+              1733185511
+            ],
+            [
+              1733185512,
+              1734234087
+            ],
+            [
+              1734234088,
+              1735282663
+            ],
+            [
+              1735282664,
+              1736331239
+            ],
+            [
+              1736331240,
+              1737379815
+            ],
+            [
+              1737379816,
+              1738428391
+            ],
+            [
+              1738428392,
+              1739476967
+            ],
+            [
+              1739476968,
+              1740525543
+            ],
+            [
+              1740525544,
+              1741574119
+            ],
+            [
+              1741574120,
+              1742622695
+            ],
+            [
+              1742622696,
+              1743671271
+            ],
+            [
+              1743671272,
+              1744719847
+            ],
+            [
+              1744719848,
+              1745768423
+            ],
+            [
+              1745768424,
+              1746816999
+            ],
+            [
+              1746817000,
+              1747865575
+            ],
+            [
+              1747865576,
+              1748914151
+            ],
+            [
+              1748914152,
+              1749962727
+            ],
+            [
+              1749962728,
+              1751011303
+            ],
+            [
+              1751011304,
+              1752059879
+            ],
+            [
+              1752059880,
+              1753108455
+            ],
+            [
+              1753108456,
+              1754157031
+            ]
+          ],
+          "actualBytesIntersectingOfflineSelectedPacketsIncludingPreroll": 25420401,
+          "otherEncodedMdatBytes": 8886911
+        },
+        "offlinePacketReference": {
+          "requestedStartSec": 3309.846,
+          "requestedEndSec": 3347.846,
+          "firstReturnedPtsSec": 3305.429333,
+          "lastReturnedPtsSec": 3347.844,
+          "encodedPacketBytes": 25420401,
+          "packetCount": 3261
+        },
+        "sampledPeakTreeRssBytes": 1120841728,
+        "outputs": [
+          {
+            "role": "clip_preview",
+            "byteLength": 1168417,
+            "sha256": "b24193290f469067e2b2da236d1b1ae89cb97cc652dc040ed4daca0c6a28e40c"
+          },
+          {
+            "role": "preview_peaks",
+            "byteLength": 2379,
+            "sha256": "0f92be6900d8e275edb33139e38cbbc30cfff27c39cc5074bffafe5c5f2b7693"
+          },
+          {
+            "role": "layout_evidence",
+            "byteLength": 12424,
+            "sha256": "b584768449ae150b6afe7e6a967355fb9a05c29df9699aa50c7fd101094d798e"
+          }
+        ],
+        "engineHash": "53abefd81154ffed1f44a94efd84ec0fee7a07925b0ff127bcfdf8a54dafbbc4",
+        "automaticEngine": "shot-layout-v1",
+        "screenObserved": true,
+        "splitObserved": true
+      },
+      "render": {
+        "secondsDiagnosticOnly": 22.623,
+        "starts": 1,
+        "reads": {
+          "actualOriginalBytes": 38666240,
+          "actualIndexAndHeaderBytes": 13796112,
+          "actualEncodedMdatBytes": 24870128,
+          "ranges": [
+            [
+              0,
+              65535
+            ],
+            [
+              65536,
+              196607
+            ],
+            [
+              196608,
+              458751
+            ],
+            [
+              458752,
+              983039
+            ],
+            [
+              983040,
+              2031615
+            ],
+            [
+              2031616,
+              3080191
+            ],
+            [
+              3080192,
+              4128767
+            ],
+            [
+              4128768,
+              5177343
+            ],
+            [
+              5177344,
+              6225919
+            ],
+            [
+              6225920,
+              7274495
+            ],
+            [
+              7274496,
+              8323071
+            ],
+            [
+              8323072,
+              9371647
+            ],
+            [
+              9371648,
+              10420223
+            ],
+            [
+              10420224,
+              11468799
+            ],
+            [
+              11468800,
+              12517375
+            ],
+            [
+              12517376,
+              13565951
+            ],
+            [
+              13565952,
+              14614527
+            ],
+            [
+              14614528,
+              15663103
+            ],
+            [
+              15663104,
+              16711679
+            ],
+            [
+              16711680,
+              17760255
+            ],
+            [
+              17760256,
+              18808831
+            ],
+            [
+              1731076487,
+              1731142022
+            ],
+            [
+              1731142023,
+              1731273094
+            ],
+            [
+              1731273095,
+              1731535238
+            ],
+            [
+              1731535239,
+              1732059526
+            ],
+            [
+              1732059527,
+              1733108102
+            ],
+            [
+              1733108103,
+              1734156678
+            ],
+            [
+              1734156679,
+              1735205254
+            ],
+            [
+              1735205255,
+              1736253830
+            ],
+            [
+              1736253831,
+              1737302406
+            ],
+            [
+              1737302407,
+              1738350982
+            ],
+            [
+              1738350983,
+              1739399558
+            ],
+            [
+              1739399559,
+              1740448134
+            ],
+            [
+              1740448135,
+              1741496710
+            ],
+            [
+              1741496711,
+              1742545286
+            ],
+            [
+              1742545287,
+              1743593862
+            ],
+            [
+              1743593863,
+              1744642438
+            ],
+            [
+              1744642439,
+              1745691014
+            ],
+            [
+              1745691015,
+              1746739590
+            ],
+            [
+              1746739591,
+              1747788166
+            ],
+            [
+              1747788167,
+              1748836742
+            ],
+            [
+              1730738665,
+              1730804200
+            ],
+            [
+              1730804201,
+              1730935272
+            ],
+            [
+              1730935273,
+              1731076486
+            ],
+            [
+              1748836743,
+              1749547496
+            ],
+            [
+              1749547497,
+              1750596072
+            ]
+          ],
+          "actualBytesIntersectingOfflineSelectedPacketsIncludingPreroll": 16814310,
+          "otherEncodedMdatBytes": 8055818
+        },
+        "offlinePacketReference": {
+          "requestedStartSec": 3313.846,
+          "requestedEndSec": 3343.846,
+          "firstReturnedPtsSec": 3313.429333,
+          "lastReturnedPtsSec": 3343.84,
+          "encodedPacketBytes": 16814310,
+          "packetCount": 2338
+        },
+        "sampledPeakTreeRssBytes": 1385402368,
+        "outputs": [
+          {
+            "role": "render_variant",
+            "byteLength": 21154309,
+            "sha256": "d894a9dfbfa4719459aad160bb5b0cfe7a2074365fd659c7bf372866f3735030"
+          }
+        ],
+        "outcome": {
+          "status": "completed",
+          "requested": 1,
+          "succeeded": 1,
+          "failed": 0,
+          "superseded": 0
+        },
+        "detectorExecutions": 0
+      }
+    },
+    {
+      "index": 4,
+      "window": [
+        4142.308,
+        4172.308
+      ],
+      "prepare": {
+        "secondsDiagnosticOnly": 30.798,
+        "starts": 1,
+        "reads": {
+          "actualOriginalBytes": 40763392,
+          "actualIndexAndHeaderBytes": 13796112,
+          "actualEncodedMdatBytes": 26967280,
+          "ranges": [
+            [
+              0,
+              65535
+            ],
+            [
+              65536,
+              196607
+            ],
+            [
+              196608,
+              458751
+            ],
+            [
+              458752,
+              983039
+            ],
+            [
+              983040,
+              2031615
+            ],
+            [
+              2031616,
+              3080191
+            ],
+            [
+              3080192,
+              4128767
+            ],
+            [
+              4128768,
+              5177343
+            ],
+            [
+              5177344,
+              6225919
+            ],
+            [
+              6225920,
+              7274495
+            ],
+            [
+              7274496,
+              8323071
+            ],
+            [
+              8323072,
+              9371647
+            ],
+            [
+              9371648,
+              10420223
+            ],
+            [
+              10420224,
+              11468799
+            ],
+            [
+              11468800,
+              12517375
+            ],
+            [
+              12517376,
+              13565951
+            ],
+            [
+              13565952,
+              14614527
+            ],
+            [
+              14614528,
+              15663103
+            ],
+            [
+              15663104,
+              16711679
+            ],
+            [
+              16711680,
+              17760255
+            ],
+            [
+              17760256,
+              18808831
+            ],
+            [
+              2163080418,
+              2163145953
+            ],
+            [
+              2163145954,
+              2163277025
+            ],
+            [
+              2163277026,
+              2163539169
+            ],
+            [
+              2163539170,
+              2164063457
+            ],
+            [
+              2164063458,
+              2165112033
+            ],
+            [
+              2165112034,
+              2166160609
+            ],
+            [
+              2166160610,
+              2167209185
+            ],
+            [
+              2167209186,
+              2168257761
+            ],
+            [
+              2168257762,
+              2169306337
+            ],
+            [
+              2169306338,
+              2170354913
+            ],
+            [
+              2170354914,
+              2171403489
+            ],
+            [
+              2171403490,
+              2172452065
+            ],
+            [
+              2172452066,
+              2173500641
+            ],
+            [
+              2173500642,
+              2174549217
+            ],
+            [
+              2174549218,
+              2175597793
+            ],
+            [
+              2175597794,
+              2176646369
+            ],
+            [
+              2176646370,
+              2177694945
+            ],
+            [
+              2177694946,
+              2178743521
+            ],
+            [
+              2178743522,
+              2179792097
+            ],
+            [
+              2179792098,
+              2180840673
+            ],
+            [
+              2180840674,
+              2181889249
+            ],
+            [
+              2181889250,
+              2182937825
+            ],
+            [
+              2182937826,
+              2183986401
+            ],
+            [
+              2183986402,
+              2185034977
+            ]
+          ],
+          "actualBytesIntersectingOfflineSelectedPacketsIncludingPreroll": 19159680,
+          "otherEncodedMdatBytes": 7807600
+        },
+        "offlinePacketReference": {
+          "requestedStartSec": 4138.308,
+          "requestedEndSec": 4176.308,
+          "firstReturnedPtsSec": 4138.261333,
+          "lastReturnedPtsSec": 4176.305,
+          "encodedPacketBytes": 19159680,
+          "packetCount": 2925
+        },
+        "sampledPeakTreeRssBytes": 1097281536,
+        "outputs": [
+          {
+            "role": "clip_preview",
+            "byteLength": 1226124,
+            "sha256": "39ebecbc0e283e6ec26bad9ea1c37ce35517d0d825906eb78264a8fe7b2b0e3e"
+          },
+          {
+            "role": "preview_peaks",
+            "byteLength": 2379,
+            "sha256": "b6d68809e4ba3a403ef13f7703b25a8f2ea22680ef1612c6830c97344a5e3225"
+          },
+          {
+            "role": "layout_evidence",
+            "byteLength": 28641,
+            "sha256": "98b6e7cf1ec37f0132214e5ad6e74a36cdb92319254ad2af272e45fc46b7328f"
+          }
+        ],
+        "engineHash": "53abefd81154ffed1f44a94efd84ec0fee7a07925b0ff127bcfdf8a54dafbbc4",
+        "automaticEngine": "shot-layout-v1",
+        "screenObserved": true,
+        "splitObserved": true
+      },
+      "render": {
+        "secondsDiagnosticOnly": 21.071,
+        "starts": 1,
+        "reads": {
+          "actualOriginalBytes": 38666240,
+          "actualIndexAndHeaderBytes": 13796112,
+          "actualEncodedMdatBytes": 24870128,
+          "ranges": [
+            [
+              0,
+              65535
+            ],
+            [
+              65536,
+              196607
+            ],
+            [
+              196608,
+              458751
+            ],
+            [
+              458752,
+              983039
+            ],
+            [
+              983040,
+              2031615
+            ],
+            [
+              2031616,
+              3080191
+            ],
+            [
+              3080192,
+              4128767
+            ],
+            [
+              4128768,
+              5177343
+            ],
+            [
+              5177344,
+              6225919
+            ],
+            [
+              6225920,
+              7274495
+            ],
+            [
+              7274496,
+              8323071
+            ],
+            [
+              8323072,
+              9371647
+            ],
+            [
+              9371648,
+              10420223
+            ],
+            [
+              10420224,
+              11468799
+            ],
+            [
+              11468800,
+              12517375
+            ],
+            [
+              12517376,
+              13565951
+            ],
+            [
+              13565952,
+              14614527
+            ],
+            [
+              14614528,
+              15663103
+            ],
+            [
+              15663104,
+              16711679
+            ],
+            [
+              16711680,
+              17760255
+            ],
+            [
+              17760256,
+              18808831
+            ],
+            [
+              2166402557,
+              2166468092
+            ],
+            [
+              2166468093,
+              2166599164
+            ],
+            [
+              2166599165,
+              2166861308
+            ],
+            [
+              2166861309,
+              2167385596
+            ],
+            [
+              2167385597,
+              2168434172
+            ],
+            [
+              2168434173,
+              2169482748
+            ],
+            [
+              2169482749,
+              2170531324
+            ],
+            [
+              2170531325,
+              2171579900
+            ],
+            [
+              2171579901,
+              2172628476
+            ],
+            [
+              2172628477,
+              2173677052
+            ],
+            [
+              2173677053,
+              2174725628
+            ],
+            [
+              2174725629,
+              2175774204
+            ],
+            [
+              2175774205,
+              2176822780
+            ],
+            [
+              2176822781,
+              2177871356
+            ],
+            [
+              2177871357,
+              2178919932
+            ],
+            [
+              2178919933,
+              2179968508
+            ],
+            [
+              2179968509,
+              2181017084
+            ],
+            [
+              2163080418,
+              2163145953
+            ],
+            [
+              2163145954,
+              2163277025
+            ],
+            [
+              2163277026,
+              2163539169
+            ],
+            [
+              2163539170,
+              2164063457
+            ],
+            [
+              2164063458,
+              2165112033
+            ],
+            [
+              2165112034,
+              2166160609
+            ],
+            [
+              2166160610,
+              2166402556
+            ],
+            [
+              2181017085,
+              2181889249
+            ],
+            [
+              2181889250,
+              2182937825
+            ]
+          ],
+          "actualBytesIntersectingOfflineSelectedPacketsIncludingPreroll": 16750763,
+          "otherEncodedMdatBytes": 8119365
+        },
+        "offlinePacketReference": {
+          "requestedStartSec": 4142.308,
+          "requestedEndSec": 4172.308,
+          "firstReturnedPtsSec": 4138.261333,
+          "lastReturnedPtsSec": 4172.301,
+          "encodedPacketBytes": 16750763,
+          "packetCount": 2617
+        },
+        "sampledPeakTreeRssBytes": 1479360512,
+        "outputs": [
+          {
+            "role": "render_variant",
+            "byteLength": 13793465,
+            "sha256": "e55488394325f9a17a2147564a52d036c0166da41d4d04059ede04044e051ef6"
+          }
+        ],
+        "outcome": {
+          "status": "completed",
+          "requested": 1,
+          "succeeded": 1,
+          "failed": 0,
+          "superseded": 0
+        },
+        "detectorExecutions": 0
+      }
+    },
+    {
+      "index": 5,
+      "window": [
+        4970.769,
+        5000.769
+      ],
+      "prepare": {
+        "secondsDiagnosticOnly": 30.028,
+        "starts": 1,
+        "reads": {
+          "actualOriginalBytes": 41868902,
+          "actualIndexAndHeaderBytes": 13796112,
+          "actualEncodedMdatBytes": 28072790,
+          "ranges": [
+            [
+              0,
+              65535
+            ],
+            [
+              65536,
+              196607
+            ],
+            [
+              196608,
+              458751
+            ],
+            [
+              458752,
+              983039
+            ],
+            [
+              983040,
+              2031615
+            ],
+            [
+              2031616,
+              3080191
+            ],
+            [
+              3080192,
+              4128767
+            ],
+            [
+              4128768,
+              5177343
+            ],
+            [
+              5177344,
+              6225919
+            ],
+            [
+              6225920,
+              7274495
+            ],
+            [
+              7274496,
+              8323071
+            ],
+            [
+              8323072,
+              9371647
+            ],
+            [
+              9371648,
+              10420223
+            ],
+            [
+              10420224,
+              11468799
+            ],
+            [
+              11468800,
+              12517375
+            ],
+            [
+              12517376,
+              13565951
+            ],
+            [
+              13565952,
+              14614527
+            ],
+            [
+              14614528,
+              15663103
+            ],
+            [
+              15663104,
+              16711679
+            ],
+            [
+              16711680,
+              17760255
+            ],
+            [
+              17760256,
+              18808831
+            ],
+            [
+              2593133235,
+              2593198770
+            ],
+            [
+              2593198771,
+              2593329842
+            ],
+            [
+              2593329843,
+              2593591986
+            ],
+            [
+              2593591987,
+              2594116274
+            ],
+            [
+              2594116275,
+              2595164850
+            ],
+            [
+              2595164851,
+              2596213426
+            ],
+            [
+              2596213427,
+              2597262002
+            ],
+            [
+              2597262003,
+              2598310578
+            ],
+            [
+              2598310579,
+              2599359154
+            ],
+            [
+              2599359155,
+              2600407730
+            ],
+            [
+              2600407731,
+              2601456306
+            ],
+            [
+              2601456307,
+              2602504882
+            ],
+            [
+              2602504883,
+              2603553458
+            ],
+            [
+              2603553459,
+              2604602034
+            ],
+            [
+              2604602035,
+              2605650610
+            ],
+            [
+              2605650611,
+              2606699186
+            ],
+            [
+              2606699187,
+              2607747762
+            ],
+            [
+              2607747763,
+              2608796338
+            ],
+            [
+              2608796339,
+              2609844914
+            ],
+            [
+              2609844915,
+              2610893490
+            ],
+            [
+              2610893491,
+              2611942066
+            ],
+            [
+              2611942067,
+              2612990642
+            ],
+            [
+              2612990643,
+              2614039218
+            ],
+            [
+              2614039219,
+              2615087794
+            ],
+            [
+              2615087795,
+              2616136370
+            ],
+            [
+              2616136371,
+              2616193304
+            ]
+          ],
+          "actualBytesIntersectingOfflineSelectedPacketsIncludingPreroll": 20146547,
+          "otherEncodedMdatBytes": 7926243
+        },
+        "offlinePacketReference": {
+          "requestedStartSec": 4966.769,
+          "requestedEndSec": 5004.769,
+          "firstReturnedPtsSec": 4966.549333,
+          "lastReturnedPtsSec": 5004.766,
+          "encodedPacketBytes": 20146547,
+          "packetCount": 2938
+        },
+        "sampledPeakTreeRssBytes": 1110843392,
+        "outputs": [
+          {
+            "role": "clip_preview",
+            "byteLength": 1189279,
+            "sha256": "a7551163e2f2c969919cee0a46e56361aab82bddcfd66465d2608808f2f22811"
+          },
+          {
+            "role": "preview_peaks",
+            "byteLength": 2379,
+            "sha256": "a55db40d0fb572d1507097f6446280a8033481fdac3d97a837524d8501f95bf2"
+          },
+          {
+            "role": "layout_evidence",
+            "byteLength": 12401,
+            "sha256": "4ee9f5f7cf5b5a1bc02e9e77a7aad09d79ba3eb702f94f107c467b2501b42088"
+          }
+        ],
+        "engineHash": "53abefd81154ffed1f44a94efd84ec0fee7a07925b0ff127bcfdf8a54dafbbc4",
+        "automaticEngine": "shot-layout-v1",
+        "screenObserved": true,
+        "splitObserved": true
+      },
+      "render": {
+        "secondsDiagnosticOnly": 22.718,
+        "starts": 1,
+        "reads": {
+          "actualOriginalBytes": 41811968,
+          "actualIndexAndHeaderBytes": 13796112,
+          "actualEncodedMdatBytes": 28015856,
+          "ranges": [
+            [
+              0,
+              65535
+            ],
+            [
+              65536,
+              196607
+            ],
+            [
+              196608,
+              458751
+            ],
+            [
+              458752,
+              983039
+            ],
+            [
+              983040,
+              2031615
+            ],
+            [
+              2031616,
+              3080191
+            ],
+            [
+              3080192,
+              4128767
+            ],
+            [
+              4128768,
+              5177343
+            ],
+            [
+              5177344,
+              6225919
+            ],
+            [
+              6225920,
+              7274495
+            ],
+            [
+              7274496,
+              8323071
+            ],
+            [
+              8323072,
+              9371647
+            ],
+            [
+              9371648,
+              10420223
+            ],
+            [
+              10420224,
+              11468799
+            ],
+            [
+              11468800,
+              12517375
+            ],
+            [
+              12517376,
+              13565951
+            ],
+            [
+              13565952,
+              14614527
+            ],
+            [
+              14614528,
+              15663103
+            ],
+            [
+              15663104,
+              16711679
+            ],
+            [
+              16711680,
+              17760255
+            ],
+            [
+              17760256,
+              18808831
+            ],
+            [
+              2594909638,
+              2594975173
+            ],
+            [
+              2594975174,
+              2595106245
+            ],
+            [
+              2595106246,
+              2595368389
+            ],
+            [
+              2595368390,
+              2595892677
+            ],
+            [
+              2595892678,
+              2596941253
+            ],
+            [
+              2596941254,
+              2597989829
+            ],
+            [
+              2597989830,
+              2599038405
+            ],
+            [
+              2599038406,
+              2600086981
+            ],
+            [
+              2600086982,
+              2601135557
+            ],
+            [
+              2601135558,
+              2602184133
+            ],
+            [
+              2602184134,
+              2603232709
+            ],
+            [
+              2603232710,
+              2604281285
+            ],
+            [
+              2604281286,
+              2605329861
+            ],
+            [
+              2605329862,
+              2606378437
+            ],
+            [
+              2606378438,
+              2607427013
+            ],
+            [
+              2607427014,
+              2608475589
+            ],
+            [
+              2608475590,
+              2609524165
+            ],
+            [
+              2609524166,
+              2610572741
+            ],
+            [
+              2610572742,
+              2611621317
+            ],
+            [
+              2611621318,
+              2612669893
+            ],
+            [
+              2612669894,
+              2613718469
+            ],
+            [
+              2594238570,
+              2594304105
+            ],
+            [
+              2594304106,
+              2594435177
+            ],
+            [
+              2594435178,
+              2594697321
+            ],
+            [
+              2594697322,
+              2594909637
+            ],
+            [
+              2613718470,
+              2614095977
+            ],
+            [
+              2614095978,
+              2615144553
+            ],
+            [
+              2615144554,
+              2616193129
+            ],
+            [
+              2616193130,
+              2617241705
+            ]
+          ],
+          "actualBytesIntersectingOfflineSelectedPacketsIncludingPreroll": 17571965,
+          "otherEncodedMdatBytes": 10443891
+        },
+        "offlinePacketReference": {
+          "requestedStartSec": 4970.769,
+          "requestedEndSec": 5000.769,
+          "firstReturnedPtsSec": 4969.216,
+          "lastReturnedPtsSec": 5000.768,
+          "encodedPacketBytes": 17571965,
+          "packetCount": 2426
+        },
+        "sampledPeakTreeRssBytes": 1396977664,
+        "outputs": [
+          {
+            "role": "render_variant",
+            "byteLength": 22256717,
+            "sha256": "aa0a46b53e30fe89f7d94072d49f58056369409aef5b3742f7fad941bfa3387d"
+          }
+        ],
+        "outcome": {
+          "status": "completed",
+          "requested": 1,
+          "succeeded": 1,
+          "failed": 0,
+          "superseded": 0
+        },
+        "detectorExecutions": 0
+      }
+    },
+    {
+      "index": 6,
+      "window": [
+        5799.231,
+        5829.231
+      ],
+      "prepare": {
+        "secondsDiagnosticOnly": 30.362,
+        "starts": 1,
+        "reads": {
+          "actualOriginalBytes": 43909120,
+          "actualIndexAndHeaderBytes": 13796112,
+          "actualEncodedMdatBytes": 30113008,
+          "ranges": [
+            [
+              0,
+              65535
+            ],
+            [
+              65536,
+              196607
+            ],
+            [
+              196608,
+              458751
+            ],
+            [
+              458752,
+              983039
+            ],
+            [
+              983040,
+              2031615
+            ],
+            [
+              2031616,
+              3080191
+            ],
+            [
+              3080192,
+              4128767
+            ],
+            [
+              4128768,
+              5177343
+            ],
+            [
+              5177344,
+              6225919
+            ],
+            [
+              6225920,
+              7274495
+            ],
+            [
+              7274496,
+              8323071
+            ],
+            [
+              8323072,
+              9371647
+            ],
+            [
+              9371648,
+              10420223
+            ],
+            [
+              10420224,
+              11468799
+            ],
+            [
+              11468800,
+              12517375
+            ],
+            [
+              12517376,
+              13565951
+            ],
+            [
+              13565952,
+              14614527
+            ],
+            [
+              14614528,
+              15663103
+            ],
+            [
+              15663104,
+              16711679
+            ],
+            [
+              16711680,
+              17760255
+            ],
+            [
+              17760256,
+              18808831
+            ],
+            [
+              3020839301,
+              3020904836
+            ],
+            [
+              3020904837,
+              3021035908
+            ],
+            [
+              3021035909,
+              3021298052
+            ],
+            [
+              3021298053,
+              3021822340
+            ],
+            [
+              3021822341,
+              3022870916
+            ],
+            [
+              3022870917,
+              3023919492
+            ],
+            [
+              3023919493,
+              3024968068
+            ],
+            [
+              3024968069,
+              3026016644
+            ],
+            [
+              3026016645,
+              3027065220
+            ],
+            [
+              3027065221,
+              3028113796
+            ],
+            [
+              3028113797,
+              3029162372
+            ],
+            [
+              3029162373,
+              3030210948
+            ],
+            [
+              3030210949,
+              3031259524
+            ],
+            [
+              3031259525,
+              3032308100
+            ],
+            [
+              3032308101,
+              3033356676
+            ],
+            [
+              3033356677,
+              3034405252
+            ],
+            [
+              3034405253,
+              3035453828
+            ],
+            [
+              3035453829,
+              3036502404
+            ],
+            [
+              3036502405,
+              3037550980
+            ],
+            [
+              3037550981,
+              3038599556
+            ],
+            [
+              3038599557,
+              3039648132
+            ],
+            [
+              3039648133,
+              3040696708
+            ],
+            [
+              3040696709,
+              3041745284
+            ],
+            [
+              3041745285,
+              3042793860
+            ],
+            [
+              3042793861,
+              3043842436
+            ],
+            [
+              3043842437,
+              3044891012
+            ],
+            [
+              3044891013,
+              3045939588
+            ]
+          ],
+          "actualBytesIntersectingOfflineSelectedPacketsIncludingPreroll": 20965068,
+          "otherEncodedMdatBytes": 9147940
+        },
+        "offlinePacketReference": {
+          "requestedStartSec": 5795.231,
+          "requestedEndSec": 5833.231,
+          "firstReturnedPtsSec": 5794.048,
+          "lastReturnedPtsSec": 5833.226,
+          "encodedPacketBytes": 20965068,
+          "packetCount": 3012
+        },
+        "sampledPeakTreeRssBytes": 1105076224,
+        "outputs": [
+          {
+            "role": "clip_preview",
+            "byteLength": 1211193,
+            "sha256": "e98bd53757a3c27a4b6ac04d7518dd4e78b4632ab221264485f661a66ca538c7"
+          },
+          {
+            "role": "preview_peaks",
+            "byteLength": 2379,
+            "sha256": "6d1e8fb0a6edf33e0828423aa2db49ec59e4935938c146afc59c42b0e986f65f"
+          },
+          {
+            "role": "layout_evidence",
+            "byteLength": 12392,
+            "sha256": "e2c225e160c8551f7dc6ccf9241a0cd83026e6efb97977bf3dc4928d88033e3f"
+          }
+        ],
+        "engineHash": "53abefd81154ffed1f44a94efd84ec0fee7a07925b0ff127bcfdf8a54dafbbc4",
+        "automaticEngine": "shot-layout-v1",
+        "screenObserved": true,
+        "splitObserved": true
+      },
+      "render": {
+        "secondsDiagnosticOnly": 23.732,
+        "starts": 1,
+        "reads": {
+          "actualOriginalBytes": 41811968,
+          "actualIndexAndHeaderBytes": 13796112,
+          "actualEncodedMdatBytes": 28015856,
+          "ranges": [
+            [
+              0,
+              65535
+            ],
+            [
+              65536,
+              196607
+            ],
+            [
+              196608,
+              458751
+            ],
+            [
+              458752,
+              983039
+            ],
+            [
+              983040,
+              2031615
+            ],
+            [
+              2031616,
+              3080191
+            ],
+            [
+              3080192,
+              4128767
+            ],
+            [
+              4128768,
+              5177343
+            ],
+            [
+              5177344,
+              6225919
+            ],
+            [
+              6225920,
+              7274495
+            ],
+            [
+              7274496,
+              8323071
+            ],
+            [
+              8323072,
+              9371647
+            ],
+            [
+              9371648,
+              10420223
+            ],
+            [
+              10420224,
+              11468799
+            ],
+            [
+              11468800,
+              12517375
+            ],
+            [
+              12517376,
+              13565951
+            ],
+            [
+              13565952,
+              14614527
+            ],
+            [
+              14614528,
+              15663103
+            ],
+            [
+              15663104,
+              16711679
+            ],
+            [
+              16711680,
+              17760255
+            ],
+            [
+              17760256,
+              18808831
+            ],
+            [
+              3022971989,
+              3023037524
+            ],
+            [
+              3023037525,
+              3023168596
+            ],
+            [
+              3023168597,
+              3023430740
+            ],
+            [
+              3023430741,
+              3023955028
+            ],
+            [
+              3023955029,
+              3025003604
+            ],
+            [
+              3025003605,
+              3026052180
+            ],
+            [
+              3026052181,
+              3027100756
+            ],
+            [
+              3027100757,
+              3028149332
+            ],
+            [
+              3028149333,
+              3029197908
+            ],
+            [
+              3029197909,
+              3030246484
+            ],
+            [
+              3030246485,
+              3031295060
+            ],
+            [
+              3031295061,
+              3032343636
+            ],
+            [
+              3032343637,
+              3033392212
+            ],
+            [
+              3033392213,
+              3034440788
+            ],
+            [
+              3034440789,
+              3035489364
+            ],
+            [
+              3035489365,
+              3036537940
+            ],
+            [
+              3036537941,
+              3037586516
+            ],
+            [
+              3037586517,
+              3038635092
+            ],
+            [
+              3038635093,
+              3039683668
+            ],
+            [
+              3039683669,
+              3040732244
+            ],
+            [
+              3040732245,
+              3041780820
+            ],
+            [
+              3020839301,
+              3020904836
+            ],
+            [
+              3020904837,
+              3021035908
+            ],
+            [
+              3021035909,
+              3021298052
+            ],
+            [
+              3021298053,
+              3021822340
+            ],
+            [
+              3021822341,
+              3022870916
+            ],
+            [
+              3022870917,
+              3022971988
+            ],
+            [
+              3041780821,
+              3042793860
+            ],
+            [
+              3042793861,
+              3043842436
+            ]
+          ],
+          "actualBytesIntersectingOfflineSelectedPacketsIncludingPreroll": 19121557,
+          "otherEncodedMdatBytes": 8894299
+        },
+        "offlinePacketReference": {
+          "requestedStartSec": 5799.231,
+          "requestedEndSec": 5829.231,
+          "firstReturnedPtsSec": 5794.048,
+          "lastReturnedPtsSec": 5829.226667,
+          "encodedPacketBytes": 19121557,
+          "packetCount": 2705
+        },
+        "sampledPeakTreeRssBytes": 1409474560,
+        "outputs": [
+          {
+            "role": "render_variant",
+            "byteLength": 21048742,
+            "sha256": "56933121c6d8a0fceb93d1445a1144726d2be6b01dfc459aad3d36d5ecc43ea1"
+          }
+        ],
+        "outcome": {
+          "status": "completed",
+          "requested": 1,
+          "succeeded": 1,
+          "failed": 0,
+          "superseded": 0
+        },
+        "detectorExecutions": 0
+      }
+    },
+    {
+      "index": 7,
+      "window": [
+        6627.692,
+        6657.692
+      ],
+      "prepare": {
+        "secondsDiagnosticOnly": 29.237,
+        "starts": 1,
+        "reads": {
+          "actualOriginalBytes": 44957696,
+          "actualIndexAndHeaderBytes": 13796112,
+          "actualEncodedMdatBytes": 31161584,
+          "ranges": [
+            [
+              0,
+              65535
+            ],
+            [
+              65536,
+              196607
+            ],
+            [
+              196608,
+              458751
+            ],
+            [
+              458752,
+              983039
+            ],
+            [
+              983040,
+              2031615
+            ],
+            [
+              2031616,
+              3080191
+            ],
+            [
+              3080192,
+              4128767
+            ],
+            [
+              4128768,
+              5177343
+            ],
+            [
+              5177344,
+              6225919
+            ],
+            [
+              6225920,
+              7274495
+            ],
+            [
+              7274496,
+              8323071
+            ],
+            [
+              8323072,
+              9371647
+            ],
+            [
+              9371648,
+              10420223
+            ],
+            [
+              10420224,
+              11468799
+            ],
+            [
+              11468800,
+              12517375
+            ],
+            [
+              12517376,
+              13565951
+            ],
+            [
+              13565952,
+              14614527
+            ],
+            [
+              14614528,
+              15663103
+            ],
+            [
+              15663104,
+              16711679
+            ],
+            [
+              16711680,
+              17760255
+            ],
+            [
+              17760256,
+              18808831
+            ],
+            [
+              3452204972,
+              3452270507
+            ],
+            [
+              3452270508,
+              3452401579
+            ],
+            [
+              3452401580,
+              3452663723
+            ],
+            [
+              3452663724,
+              3453188011
+            ],
+            [
+              3453188012,
+              3454236587
+            ],
+            [
+              3454236588,
+              3455285163
+            ],
+            [
+              3455285164,
+              3456333739
+            ],
+            [
+              3456333740,
+              3457382315
+            ],
+            [
+              3457382316,
+              3458430891
+            ],
+            [
+              3458430892,
+              3459479467
+            ],
+            [
+              3459479468,
+              3460528043
+            ],
+            [
+              3460528044,
+              3461576619
+            ],
+            [
+              3461576620,
+              3462625195
+            ],
+            [
+              3462625196,
+              3463673771
+            ],
+            [
+              3463673772,
+              3464722347
+            ],
+            [
+              3464722348,
+              3465770923
+            ],
+            [
+              3465770924,
+              3466819499
+            ],
+            [
+              3466819500,
+              3467868075
+            ],
+            [
+              3467868076,
+              3468916651
+            ],
+            [
+              3468916652,
+              3469965227
+            ],
+            [
+              3469965228,
+              3471013803
+            ],
+            [
+              3471013804,
+              3472062379
+            ],
+            [
+              3472062380,
+              3473110955
+            ],
+            [
+              3473110956,
+              3474159531
+            ],
+            [
+              3474159532,
+              3475208107
+            ],
+            [
+              3475208108,
+              3476256683
+            ],
+            [
+              3476256684,
+              3477305259
+            ],
+            [
+              3477305260,
+              3478353835
+            ]
+          ],
+          "actualBytesIntersectingOfflineSelectedPacketsIncludingPreroll": 22724731,
+          "otherEncodedMdatBytes": 8436853
+        },
+        "offlinePacketReference": {
+          "requestedStartSec": 6623.692,
+          "requestedEndSec": 6661.692,
+          "firstReturnedPtsSec": 6621.546667,
+          "lastReturnedPtsSec": 6661.687,
+          "encodedPacketBytes": 22724731,
+          "packetCount": 3086
+        },
+        "sampledPeakTreeRssBytes": 1174503424,
+        "outputs": [
+          {
+            "role": "clip_preview",
+            "byteLength": 1283328,
+            "sha256": "5ef4630421fe291d4e23ab5693044c738bb930cb1575fbf72e3402f9bb50ba21"
+          },
+          {
+            "role": "preview_peaks",
+            "byteLength": 2379,
+            "sha256": "2310494a711120545314d99877fe753f2b5e23402979788ce6506e3a34f5319d"
+          },
+          {
+            "role": "layout_evidence",
+            "byteLength": 12354,
+            "sha256": "6772169987106c82c842594f59d3a0c581c5f0cf8c6a474cae260bb79be93ae6"
+          }
+        ],
+        "engineHash": "53abefd81154ffed1f44a94efd84ec0fee7a07925b0ff127bcfdf8a54dafbbc4",
+        "automaticEngine": "shot-layout-v1",
+        "screenObserved": true,
+        "splitObserved": true
+      },
+      "render": {
+        "secondsDiagnosticOnly": 22.916,
+        "starts": 1,
+        "reads": {
+          "actualOriginalBytes": 41811968,
+          "actualIndexAndHeaderBytes": 13796112,
+          "actualEncodedMdatBytes": 28015856,
+          "ranges": [
+            [
+              0,
+              65535
+            ],
+            [
+              65536,
+              196607
+            ],
+            [
+              196608,
+              458751
+            ],
+            [
+              458752,
+              983039
+            ],
+            [
+              983040,
+              2031615
+            ],
+            [
+              2031616,
+              3080191
+            ],
+            [
+              3080192,
+              4128767
+            ],
+            [
+              4128768,
+              5177343
+            ],
+            [
+              5177344,
+              6225919
+            ],
+            [
+              6225920,
+              7274495
+            ],
+            [
+              7274496,
+              8323071
+            ],
+            [
+              8323072,
+              9371647
+            ],
+            [
+              9371648,
+              10420223
+            ],
+            [
+              10420224,
+              11468799
+            ],
+            [
+              11468800,
+              12517375
+            ],
+            [
+              12517376,
+              13565951
+            ],
+            [
+              13565952,
+              14614527
+            ],
+            [
+              14614528,
+              15663103
+            ],
+            [
+              15663104,
+              16711679
+            ],
+            [
+              16711680,
+              17760255
+            ],
+            [
+              17760256,
+              18808831
+            ],
+            [
+              3456404095,
+              3456469630
+            ],
+            [
+              3456469631,
+              3456600702
+            ],
+            [
+              3456600703,
+              3456862846
+            ],
+            [
+              3456862847,
+              3457387134
+            ],
+            [
+              3457387135,
+              3458435710
+            ],
+            [
+              3458435711,
+              3459484286
+            ],
+            [
+              3459484287,
+              3460532862
+            ],
+            [
+              3460532863,
+              3461581438
+            ],
+            [
+              3461581439,
+              3462630014
+            ],
+            [
+              3462630015,
+              3463678590
+            ],
+            [
+              3463678591,
+              3464727166
+            ],
+            [
+              3464727167,
+              3465775742
+            ],
+            [
+              3465775743,
+              3466824318
+            ],
+            [
+              3466824319,
+              3467872894
+            ],
+            [
+              3467872895,
+              3468921470
+            ],
+            [
+              3468921471,
+              3469970046
+            ],
+            [
+              3469970047,
+              3471018622
+            ],
+            [
+              3471018623,
+              3472067198
+            ],
+            [
+              3472067199,
+              3473115774
+            ],
+            [
+              3473115775,
+              3474164350
+            ],
+            [
+              3474164351,
+              3475212926
+            ],
+            [
+              3455908078,
+              3455973613
+            ],
+            [
+              3455973614,
+              3456104685
+            ],
+            [
+              3456104686,
+              3456366829
+            ],
+            [
+              3456366830,
+              3456404094
+            ],
+            [
+              3475212927,
+              3475765485
+            ],
+            [
+              3475765486,
+              3476814061
+            ],
+            [
+              3476814062,
+              3477862637
+            ],
+            [
+              3477862638,
+              3478911213
+            ]
+          ],
+          "actualBytesIntersectingOfflineSelectedPacketsIncludingPreroll": 17320514,
+          "otherEncodedMdatBytes": 10695342
+        },
+        "offlinePacketReference": {
+          "requestedStartSec": 6627.692,
+          "requestedEndSec": 6657.692,
+          "firstReturnedPtsSec": 6626.88,
+          "lastReturnedPtsSec": 6657.685333,
+          "encodedPacketBytes": 17320514,
+          "packetCount": 2369
+        },
+        "sampledPeakTreeRssBytes": 1398988800,
+        "outputs": [
+          {
+            "role": "render_variant",
+            "byteLength": 22018958,
+            "sha256": "13d944f69d876cfe77bbd5632b913c18d8f1463dc46730e9c07894a29249a914"
+          }
+        ],
+        "outcome": {
+          "status": "completed",
+          "requested": 1,
+          "succeeded": 1,
+          "failed": 0,
+          "superseded": 0
+        },
+        "detectorExecutions": 0
+      }
+    },
+    {
+      "index": 8,
+      "window": [
+        7456.154,
+        7486.154
+      ],
+      "prepare": {
+        "secondsDiagnosticOnly": 31.155,
+        "starts": 1,
+        "reads": {
+          "actualOriginalBytes": 41811968,
+          "actualIndexAndHeaderBytes": 13796112,
+          "actualEncodedMdatBytes": 28015856,
+          "ranges": [
+            [
+              0,
+              65535
+            ],
+            [
+              65536,
+              196607
+            ],
+            [
+              196608,
+              458751
+            ],
+            [
+              458752,
+              983039
+            ],
+            [
+              983040,
+              2031615
+            ],
+            [
+              2031616,
+              3080191
+            ],
+            [
+              3080192,
+              4128767
+            ],
+            [
+              4128768,
+              5177343
+            ],
+            [
+              5177344,
+              6225919
+            ],
+            [
+              6225920,
+              7274495
+            ],
+            [
+              7274496,
+              8323071
+            ],
+            [
+              8323072,
+              9371647
+            ],
+            [
+              9371648,
+              10420223
+            ],
+            [
+              10420224,
+              11468799
+            ],
+            [
+              11468800,
+              12517375
+            ],
+            [
+              12517376,
+              13565951
+            ],
+            [
+              13565952,
+              14614527
+            ],
+            [
+              14614528,
+              15663103
+            ],
+            [
+              15663104,
+              16711679
+            ],
+            [
+              16711680,
+              17760255
+            ],
+            [
+              17760256,
+              18808831
+            ],
+            [
+              3881300673,
+              3881366208
+            ],
+            [
+              3881366209,
+              3881497280
+            ],
+            [
+              3881497281,
+              3881759424
+            ],
+            [
+              3881759425,
+              3882283712
+            ],
+            [
+              3882283713,
+              3883332288
+            ],
+            [
+              3883332289,
+              3884380864
+            ],
+            [
+              3884380865,
+              3885429440
+            ],
+            [
+              3885429441,
+              3886478016
+            ],
+            [
+              3886478017,
+              3887526592
+            ],
+            [
+              3887526593,
+              3888575168
+            ],
+            [
+              3888575169,
+              3889623744
+            ],
+            [
+              3889623745,
+              3890672320
+            ],
+            [
+              3890672321,
+              3891720896
+            ],
+            [
+              3891720897,
+              3892769472
+            ],
+            [
+              3892769473,
+              3893818048
+            ],
+            [
+              3893818049,
+              3894866624
+            ],
+            [
+              3894866625,
+              3895915200
+            ],
+            [
+              3895915201,
+              3896963776
+            ],
+            [
+              3896963777,
+              3898012352
+            ],
+            [
+              3898012353,
+              3899060928
+            ],
+            [
+              3899060929,
+              3900109504
+            ],
+            [
+              3900109505,
+              3901158080
+            ],
+            [
+              3901158081,
+              3902206656
+            ],
+            [
+              3902206657,
+              3903255232
+            ],
+            [
+              3903255233,
+              3904303808
+            ]
+          ],
+          "actualBytesIntersectingOfflineSelectedPacketsIncludingPreroll": 19746244,
+          "otherEncodedMdatBytes": 8269612
+        },
+        "offlinePacketReference": {
+          "requestedStartSec": 7452.154,
+          "requestedEndSec": 7490.154,
+          "firstReturnedPtsSec": 7449.834667,
+          "lastReturnedPtsSec": 7490.148,
+          "encodedPacketBytes": 19746244,
+          "packetCount": 3099
+        },
+        "sampledPeakTreeRssBytes": 1100492800,
+        "outputs": [
+          {
+            "role": "clip_preview",
+            "byteLength": 1214717,
+            "sha256": "035fc8ad3042274d1160dc586be6e2e5cb89c8da657f75df75595683747929ab"
+          },
+          {
+            "role": "preview_peaks",
+            "byteLength": 2379,
+            "sha256": "e53c89fbb2816d577ae081dec0187138953b61446b03e7ac2a49927938fc5254"
+          },
+          {
+            "role": "layout_evidence",
+            "byteLength": 26006,
+            "sha256": "21e3d494d1a5b037fba8c92a8c1437c3164aac813edf94021e90546339bf5b56"
+          }
+        ],
+        "engineHash": "53abefd81154ffed1f44a94efd84ec0fee7a07925b0ff127bcfdf8a54dafbbc4",
+        "automaticEngine": "shot-layout-v1",
+        "screenObserved": true,
+        "splitObserved": true
+      },
+      "render": {
+        "secondsDiagnosticOnly": 22.342,
+        "starts": 1,
+        "reads": {
+          "actualOriginalBytes": 38666240,
+          "actualIndexAndHeaderBytes": 13796112,
+          "actualEncodedMdatBytes": 24870128,
+          "ranges": [
+            [
+              0,
+              65535
+            ],
+            [
+              65536,
+              196607
+            ],
+            [
+              196608,
+              458751
+            ],
+            [
+              458752,
+              983039
+            ],
+            [
+              983040,
+              2031615
+            ],
+            [
+              2031616,
+              3080191
+            ],
+            [
+              3080192,
+              4128767
+            ],
+            [
+              4128768,
+              5177343
+            ],
+            [
+              5177344,
+              6225919
+            ],
+            [
+              6225920,
+              7274495
+            ],
+            [
+              7274496,
+              8323071
+            ],
+            [
+              8323072,
+              9371647
+            ],
+            [
+              9371648,
+              10420223
+            ],
+            [
+              10420224,
+              11468799
+            ],
+            [
+              11468800,
+              12517375
+            ],
+            [
+              12517376,
+              13565951
+            ],
+            [
+              13565952,
+              14614527
+            ],
+            [
+              14614528,
+              15663103
+            ],
+            [
+              15663104,
+              16711679
+            ],
+            [
+              16711680,
+              17760255
+            ],
+            [
+              17760256,
+              18808831
+            ],
+            [
+              3884516916,
+              3884582451
+            ],
+            [
+              3884582452,
+              3884713523
+            ],
+            [
+              3884713524,
+              3884975667
+            ],
+            [
+              3884975668,
+              3885499955
+            ],
+            [
+              3885499956,
+              3886548531
+            ],
+            [
+              3886548532,
+              3887597107
+            ],
+            [
+              3887597108,
+              3888645683
+            ],
+            [
+              3888645684,
+              3889694259
+            ],
+            [
+              3889694260,
+              3890742835
+            ],
+            [
+              3890742836,
+              3891791411
+            ],
+            [
+              3891791412,
+              3892839987
+            ],
+            [
+              3892839988,
+              3893888563
+            ],
+            [
+              3893888564,
+              3894937139
+            ],
+            [
+              3894937140,
+              3895985715
+            ],
+            [
+              3895985716,
+              3897034291
+            ],
+            [
+              3897034292,
+              3898082867
+            ],
+            [
+              3898082868,
+              3899131443
+            ],
+            [
+              3899131444,
+              3900180019
+            ],
+            [
+              3900180020,
+              3901228595
+            ],
+            [
+              3883739117,
+              3883804652
+            ],
+            [
+              3883804653,
+              3883935724
+            ],
+            [
+              3883935725,
+              3884197868
+            ],
+            [
+              3884197869,
+              3884516915
+            ],
+            [
+              3901228596,
+              3901499372
+            ],
+            [
+              3901499373,
+              3902547948
+            ],
+            [
+              3902547949,
+              3903596524
+            ]
+          ],
+          "actualBytesIntersectingOfflineSelectedPacketsIncludingPreroll": 15710001,
+          "otherEncodedMdatBytes": 9160127
+        },
+        "offlinePacketReference": {
+          "requestedStartSec": 7456.154,
+          "requestedEndSec": 7486.154,
+          "firstReturnedPtsSec": 7455.168,
+          "lastReturnedPtsSec": 7486.144,
+          "encodedPacketBytes": 15710001,
+          "packetCount": 2382
+        },
+        "sampledPeakTreeRssBytes": 1464795136,
+        "outputs": [
+          {
+            "role": "render_variant",
+            "byteLength": 19125880,
+            "sha256": "737f5e9ce3fe96d62db403160791be300c8a8b0f793dcf9673bbf44c23510462"
+          }
+        ],
+        "outcome": {
+          "status": "completed",
+          "requested": 1,
+          "succeeded": 1,
+          "failed": 0,
+          "superseded": 0
+        },
+        "detectorExecutions": 0
+      }
+    },
+    {
+      "index": 9,
+      "window": [
+        8284.615,
+        8314.615
+      ],
+      "prepare": {
+        "secondsDiagnosticOnly": 30.195,
+        "starts": 1,
+        "reads": {
+          "actualOriginalBytes": 43909120,
+          "actualIndexAndHeaderBytes": 13796112,
+          "actualEncodedMdatBytes": 30113008,
+          "ranges": [
+            [
+              0,
+              65535
+            ],
+            [
+              65536,
+              196607
+            ],
+            [
+              196608,
+              458751
+            ],
+            [
+              458752,
+              983039
+            ],
+            [
+              983040,
+              2031615
+            ],
+            [
+              2031616,
+              3080191
+            ],
+            [
+              3080192,
+              4128767
+            ],
+            [
+              4128768,
+              5177343
+            ],
+            [
+              5177344,
+              6225919
+            ],
+            [
+              6225920,
+              7274495
+            ],
+            [
+              7274496,
+              8323071
+            ],
+            [
+              8323072,
+              9371647
+            ],
+            [
+              9371648,
+              10420223
+            ],
+            [
+              10420224,
+              11468799
+            ],
+            [
+              11468800,
+              12517375
+            ],
+            [
+              12517376,
+              13565951
+            ],
+            [
+              13565952,
+              14614527
+            ],
+            [
+              14614528,
+              15663103
+            ],
+            [
+              15663104,
+              16711679
+            ],
+            [
+              16711680,
+              17760255
+            ],
+            [
+              17760256,
+              18808831
+            ],
+            [
+              4309870971,
+              4309936506
+            ],
+            [
+              4309936507,
+              4310067578
+            ],
+            [
+              4310067579,
+              4310329722
+            ],
+            [
+              4310329723,
+              4310854010
+            ],
+            [
+              4310854011,
+              4311902586
+            ],
+            [
+              4311902587,
+              4312951162
+            ],
+            [
+              4312951163,
+              4313999738
+            ],
+            [
+              4313999739,
+              4315048314
+            ],
+            [
+              4315048315,
+              4316096890
+            ],
+            [
+              4316096891,
+              4317145466
+            ],
+            [
+              4317145467,
+              4318194042
+            ],
+            [
+              4318194043,
+              4319242618
+            ],
+            [
+              4319242619,
+              4320291194
+            ],
+            [
+              4320291195,
+              4321339770
+            ],
+            [
+              4321339771,
+              4322388346
+            ],
+            [
+              4322388347,
+              4323436922
+            ],
+            [
+              4323436923,
+              4324485498
+            ],
+            [
+              4324485499,
+              4325534074
+            ],
+            [
+              4325534075,
+              4326582650
+            ],
+            [
+              4326582651,
+              4327631226
+            ],
+            [
+              4327631227,
+              4328679802
+            ],
+            [
+              4328679803,
+              4329728378
+            ],
+            [
+              4329728379,
+              4330776954
+            ],
+            [
+              4330776955,
+              4331825530
+            ],
+            [
+              4331825531,
+              4332874106
+            ],
+            [
+              4332874107,
+              4333922682
+            ],
+            [
+              4333922683,
+              4334971258
+            ]
+          ],
+          "actualBytesIntersectingOfflineSelectedPacketsIncludingPreroll": 22117464,
+          "otherEncodedMdatBytes": 7995544
+        },
+        "offlinePacketReference": {
+          "requestedStartSec": 8280.615,
+          "requestedEndSec": 8318.615,
+          "firstReturnedPtsSec": 8277.333333,
+          "lastReturnedPtsSec": 8318.613333,
+          "encodedPacketBytes": 22117464,
+          "packetCount": 3174
+        },
+        "sampledPeakTreeRssBytes": 1116856320,
+        "outputs": [
+          {
+            "role": "clip_preview",
+            "byteLength": 1159437,
+            "sha256": "0d36761bef2f7c580abe6659e38bec97b711ac8d3dbe9bd73e7b4fdc916e412c"
+          },
+          {
+            "role": "preview_peaks",
+            "byteLength": 2379,
+            "sha256": "4e61e92433d4b901c408aa59c2e357a15a11649aa126abf602618b1fd9eaa709"
+          },
+          {
+            "role": "layout_evidence",
+            "byteLength": 12375,
+            "sha256": "6cbff9b2c09ce88373578d9cf6010f2338864ddfbd2c10317275e18caa62845a"
+          }
+        ],
+        "engineHash": "53abefd81154ffed1f44a94efd84ec0fee7a07925b0ff127bcfdf8a54dafbbc4",
+        "automaticEngine": "shot-layout-v1",
+        "screenObserved": true,
+        "splitObserved": true
+      },
+      "render": {
+        "secondsDiagnosticOnly": 23.031,
+        "starts": 1,
+        "reads": {
+          "actualOriginalBytes": 41811968,
+          "actualIndexAndHeaderBytes": 13796112,
+          "actualEncodedMdatBytes": 28015856,
+          "ranges": [
+            [
+              0,
+              65535
+            ],
+            [
+              65536,
+              196607
+            ],
+            [
+              196608,
+              458751
+            ],
+            [
+              458752,
+              983039
+            ],
+            [
+              983040,
+              2031615
+            ],
+            [
+              2031616,
+              3080191
+            ],
+            [
+              3080192,
+              4128767
+            ],
+            [
+              4128768,
+              5177343
+            ],
+            [
+              5177344,
+              6225919
+            ],
+            [
+              6225920,
+              7274495
+            ],
+            [
+              7274496,
+              8323071
+            ],
+            [
+              8323072,
+              9371647
+            ],
+            [
+              9371648,
+              10420223
+            ],
+            [
+              10420224,
+              11468799
+            ],
+            [
+              11468800,
+              12517375
+            ],
+            [
+              12517376,
+              13565951
+            ],
+            [
+              13565952,
+              14614527
+            ],
+            [
+              14614528,
+              15663103
+            ],
+            [
+              15663104,
+              16711679
+            ],
+            [
+              16711680,
+              17760255
+            ],
+            [
+              17760256,
+              18808831
+            ],
+            [
+              4313360651,
+              4313426186
+            ],
+            [
+              4313426187,
+              4313557258
+            ],
+            [
+              4313557259,
+              4313819402
+            ],
+            [
+              4313819403,
+              4314343690
+            ],
+            [
+              4314343691,
+              4315392266
+            ],
+            [
+              4315392267,
+              4316440842
+            ],
+            [
+              4316440843,
+              4317489418
+            ],
+            [
+              4317489419,
+              4318537994
+            ],
+            [
+              4318537995,
+              4319586570
+            ],
+            [
+              4319586571,
+              4320635146
+            ],
+            [
+              4320635147,
+              4321683722
+            ],
+            [
+              4321683723,
+              4322732298
+            ],
+            [
+              4322732299,
+              4323780874
+            ],
+            [
+              4323780875,
+              4324829450
+            ],
+            [
+              4324829451,
+              4325878026
+            ],
+            [
+              4325878027,
+              4326926602
+            ],
+            [
+              4326926603,
+              4327975178
+            ],
+            [
+              4327975179,
+              4329023754
+            ],
+            [
+              4329023755,
+              4330072330
+            ],
+            [
+              4311653205,
+              4311718740
+            ],
+            [
+              4311718741,
+              4311849812
+            ],
+            [
+              4311849813,
+              4312111956
+            ],
+            [
+              4312111957,
+              4312636244
+            ],
+            [
+              4312636245,
+              4313360650
+            ],
+            [
+              4330072331,
+              4330462036
+            ],
+            [
+              4330462037,
+              4331510612
+            ],
+            [
+              4331510613,
+              4332559188
+            ],
+            [
+              4332559189,
+              4333607764
+            ],
+            [
+              4333607765,
+              4334656340
+            ]
+          ],
+          "actualBytesIntersectingOfflineSelectedPacketsIncludingPreroll": 17285683,
+          "otherEncodedMdatBytes": 10730173
+        },
+        "offlinePacketReference": {
+          "requestedStartSec": 8284.615,
+          "requestedEndSec": 8314.615,
+          "firstReturnedPtsSec": 8282.666667,
+          "lastReturnedPtsSec": 8314.605,
+          "encodedPacketBytes": 17285683,
+          "packetCount": 2456
+        },
+        "sampledPeakTreeRssBytes": 1393836032,
+        "outputs": [
+          {
+            "role": "render_variant",
+            "byteLength": 20480283,
+            "sha256": "2ac24bd64b09caa52ed69b62cc8ac8eb288c605dc444f1f9b334c01300f70e01"
+          }
+        ],
+        "outcome": {
+          "status": "completed",
+          "requested": 1,
+          "succeeded": 1,
+          "failed": 0,
+          "superseded": 0
+        },
+        "detectorExecutions": 0
+      }
+    },
+    {
+      "index": 10,
+      "window": [
+        9113.077,
+        9143.077
+      ],
+      "prepare": {
+        "secondsDiagnosticOnly": 29.483,
+        "starts": 1,
+        "reads": {
+          "actualOriginalBytes": 42500579,
+          "actualIndexAndHeaderBytes": 13796112,
+          "actualEncodedMdatBytes": 28704467,
+          "ranges": [
+            [
+              0,
+              65535
+            ],
+            [
+              65536,
+              196607
+            ],
+            [
+              196608,
+              458751
+            ],
+            [
+              458752,
+              983039
+            ],
+            [
+              983040,
+              2031615
+            ],
+            [
+              2031616,
+              3080191
+            ],
+            [
+              3080192,
+              4128767
+            ],
+            [
+              4128768,
+              5177343
+            ],
+            [
+              5177344,
+              6225919
+            ],
+            [
+              6225920,
+              7274495
+            ],
+            [
+              7274496,
+              8323071
+            ],
+            [
+              8323072,
+              9371647
+            ],
+            [
+              9371648,
+              10420223
+            ],
+            [
+              10420224,
+              11468799
+            ],
+            [
+              11468800,
+              12517375
+            ],
+            [
+              12517376,
+              13565951
+            ],
+            [
+              13565952,
+              14614527
+            ],
+            [
+              14614528,
+              15663103
+            ],
+            [
+              15663104,
+              16711679
+            ],
+            [
+              16711680,
+              17760255
+            ],
+            [
+              17760256,
+              18808831
+            ],
+            [
+              4743014398,
+              4743079933
+            ],
+            [
+              4743079934,
+              4743211005
+            ],
+            [
+              4743211006,
+              4743473149
+            ],
+            [
+              4743473150,
+              4743997437
+            ],
+            [
+              4743997438,
+              4745046013
+            ],
+            [
+              4745046014,
+              4746094589
+            ],
+            [
+              4746094590,
+              4747143165
+            ],
+            [
+              4747143166,
+              4748191741
+            ],
+            [
+              4748191742,
+              4749240317
+            ],
+            [
+              4749240318,
+              4750288893
+            ],
+            [
+              4750288894,
+              4751337469
+            ],
+            [
+              4751337470,
+              4752386045
+            ],
+            [
+              4752386046,
+              4753434621
+            ],
+            [
+              4753434622,
+              4754483197
+            ],
+            [
+              4754483198,
+              4755531773
+            ],
+            [
+              4755531774,
+              4756580349
+            ],
+            [
+              4756580350,
+              4757628925
+            ],
+            [
+              4757628926,
+              4758677501
+            ],
+            [
+              4758677502,
+              4759726077
+            ],
+            [
+              4759726078,
+              4760774653
+            ],
+            [
+              4760774654,
+              4761823229
+            ],
+            [
+              4761823230,
+              4762871805
+            ],
+            [
+              4762871806,
+              4763920381
+            ],
+            [
+              4763920382,
+              4764968957
+            ],
+            [
+              4764968958,
+              4766017533
+            ],
+            [
+              4766017534,
+              4766706144
+            ]
+          ],
+          "actualBytesIntersectingOfflineSelectedPacketsIncludingPreroll": 20087574,
+          "otherEncodedMdatBytes": 8616893
+        },
+        "offlinePacketReference": {
+          "requestedStartSec": 9109.077,
+          "requestedEndSec": 9147.077,
+          "firstReturnedPtsSec": 9107.477333,
+          "lastReturnedPtsSec": 9147.072,
+          "encodedPacketBytes": 20087574,
+          "packetCount": 3044
+        },
+        "sampledPeakTreeRssBytes": 1092161536,
+        "outputs": [
+          {
+            "role": "clip_preview",
+            "byteLength": 1120090,
+            "sha256": "dd2512fc4b5b403b084e686746bb228ccd4b81047053f24f94e0fa4dac414249"
+          },
+          {
+            "role": "preview_peaks",
+            "byteLength": 2379,
+            "sha256": "512551b8efc6bf196aac624f9b01e7699b626df3197c485357a62c2cb461307d"
+          },
+          {
+            "role": "layout_evidence",
+            "byteLength": 12374,
+            "sha256": "632cf61e33641fa8fd321ed4eb9b57afbdd6508c68438b30e500cc7e39283049"
+          }
+        ],
+        "engineHash": "53abefd81154ffed1f44a94efd84ec0fee7a07925b0ff127bcfdf8a54dafbbc4",
+        "automaticEngine": "shot-layout-v1",
+        "screenObserved": true,
+        "splitObserved": true
+      },
+      "render": {
+        "secondsDiagnosticOnly": 23.139,
+        "starts": 1,
+        "reads": {
+          "actualOriginalBytes": 41811968,
+          "actualIndexAndHeaderBytes": 13796112,
+          "actualEncodedMdatBytes": 28015856,
+          "ranges": [
+            [
+              0,
+              65535
+            ],
+            [
+              65536,
+              196607
+            ],
+            [
+              196608,
+              458751
+            ],
+            [
+              458752,
+              983039
+            ],
+            [
+              983040,
+              2031615
+            ],
+            [
+              2031616,
+              3080191
+            ],
+            [
+              3080192,
+              4128767
+            ],
+            [
+              4128768,
+              5177343
+            ],
+            [
+              5177344,
+              6225919
+            ],
+            [
+              6225920,
+              7274495
+            ],
+            [
+              7274496,
+              8323071
+            ],
+            [
+              8323072,
+              9371647
+            ],
+            [
+              9371648,
+              10420223
+            ],
+            [
+              10420224,
+              11468799
+            ],
+            [
+              11468800,
+              12517375
+            ],
+            [
+              12517376,
+              13565951
+            ],
+            [
+              13565952,
+              14614527
+            ],
+            [
+              14614528,
+              15663103
+            ],
+            [
+              15663104,
+              16711679
+            ],
+            [
+              16711680,
+              17760255
+            ],
+            [
+              17760256,
+              18808831
+            ],
+            [
+              4744689165,
+              4744754700
+            ],
+            [
+              4744754701,
+              4744885772
+            ],
+            [
+              4744885773,
+              4745147916
+            ],
+            [
+              4745147917,
+              4745672204
+            ],
+            [
+              4745672205,
+              4746720780
+            ],
+            [
+              4746720781,
+              4747769356
+            ],
+            [
+              4747769357,
+              4748817932
+            ],
+            [
+              4748817933,
+              4749866508
+            ],
+            [
+              4749866509,
+              4750915084
+            ],
+            [
+              4750915085,
+              4751963660
+            ],
+            [
+              4751963661,
+              4753012236
+            ],
+            [
+              4753012237,
+              4754060812
+            ],
+            [
+              4754060813,
+              4755109388
+            ],
+            [
+              4755109389,
+              4756157964
+            ],
+            [
+              4756157965,
+              4757206540
+            ],
+            [
+              4757206541,
+              4758255116
+            ],
+            [
+              4758255117,
+              4759303692
+            ],
+            [
+              4759303693,
+              4760352268
+            ],
+            [
+              4760352269,
+              4761400844
+            ],
+            [
+              4761400845,
+              4762449420
+            ],
+            [
+              4762449421,
+              4763497996
+            ],
+            [
+              4743702841,
+              4743768376
+            ],
+            [
+              4743768377,
+              4743899448
+            ],
+            [
+              4743899449,
+              4744161592
+            ],
+            [
+              4744161593,
+              4744685880
+            ],
+            [
+              4744685881,
+              4744689164
+            ],
+            [
+              4763497997,
+              4763560248
+            ],
+            [
+              4763560249,
+              4764608824
+            ],
+            [
+              4764608825,
+              4765657400
+            ],
+            [
+              4765657401,
+              4766705976
+            ]
+          ],
+          "actualBytesIntersectingOfflineSelectedPacketsIncludingPreroll": 18096728,
+          "otherEncodedMdatBytes": 9919128
+        },
+        "offlinePacketReference": {
+          "requestedStartSec": 9113.077,
+          "requestedEndSec": 9143.077,
+          "firstReturnedPtsSec": 9110.165333,
+          "lastReturnedPtsSec": 9143.066,
+          "encodedPacketBytes": 18096728,
+          "packetCount": 2530
+        },
+        "sampledPeakTreeRssBytes": 1386835968,
+        "outputs": [
+          {
+            "role": "render_variant",
+            "byteLength": 21885500,
+            "sha256": "b8b242f1763871883dac0b970946f96fb0a1247b19638a5dd5c50165d28216af"
+          }
+        ],
+        "outcome": {
+          "status": "completed",
+          "requested": 1,
+          "succeeded": 1,
+          "failed": 0,
+          "superseded": 0
+        },
+        "detectorExecutions": 0
+      }
+    },
+    {
+      "index": 11,
+      "window": [
+        9941.538,
+        9971.538
+      ],
+      "prepare": {
+        "secondsDiagnosticOnly": 30.205,
+        "starts": 1,
+        "reads": {
+          "actualOriginalBytes": 43909120,
+          "actualIndexAndHeaderBytes": 13796112,
+          "actualEncodedMdatBytes": 30113008,
+          "ranges": [
+            [
+              0,
+              65535
+            ],
+            [
+              65536,
+              196607
+            ],
+            [
+              196608,
+              458751
+            ],
+            [
+              458752,
+              983039
+            ],
+            [
+              983040,
+              2031615
+            ],
+            [
+              2031616,
+              3080191
+            ],
+            [
+              3080192,
+              4128767
+            ],
+            [
+              4128768,
+              5177343
+            ],
+            [
+              5177344,
+              6225919
+            ],
+            [
+              6225920,
+              7274495
+            ],
+            [
+              7274496,
+              8323071
+            ],
+            [
+              8323072,
+              9371647
+            ],
+            [
+              9371648,
+              10420223
+            ],
+            [
+              10420224,
+              11468799
+            ],
+            [
+              11468800,
+              12517375
+            ],
+            [
+              12517376,
+              13565951
+            ],
+            [
+              13565952,
+              14614527
+            ],
+            [
+              14614528,
+              15663103
+            ],
+            [
+              15663104,
+              16711679
+            ],
+            [
+              16711680,
+              17760255
+            ],
+            [
+              17760256,
+              18808831
+            ],
+            [
+              5168825542,
+              5168891077
+            ],
+            [
+              5168891078,
+              5169022149
+            ],
+            [
+              5169022150,
+              5169284293
+            ],
+            [
+              5169284294,
+              5169808581
+            ],
+            [
+              5169808582,
+              5170857157
+            ],
+            [
+              5170857158,
+              5171905733
+            ],
+            [
+              5171905734,
+              5172954309
+            ],
+            [
+              5172954310,
+              5174002885
+            ],
+            [
+              5174002886,
+              5175051461
+            ],
+            [
+              5175051462,
+              5176100037
+            ],
+            [
+              5176100038,
+              5177148613
+            ],
+            [
+              5177148614,
+              5178197189
+            ],
+            [
+              5178197190,
+              5179245765
+            ],
+            [
+              5179245766,
+              5180294341
+            ],
+            [
+              5180294342,
+              5181342917
+            ],
+            [
+              5181342918,
+              5182391493
+            ],
+            [
+              5182391494,
+              5183440069
+            ],
+            [
+              5183440070,
+              5184488645
+            ],
+            [
+              5184488646,
+              5185537221
+            ],
+            [
+              5185537222,
+              5186585797
+            ],
+            [
+              5186585798,
+              5187634373
+            ],
+            [
+              5187634374,
+              5188682949
+            ],
+            [
+              5188682950,
+              5189731525
+            ],
+            [
+              5189731526,
+              5190780101
+            ],
+            [
+              5190780102,
+              5191828677
+            ],
+            [
+              5191828678,
+              5192877253
+            ],
+            [
+              5192877254,
+              5193925829
+            ]
+          ],
+          "actualBytesIntersectingOfflineSelectedPacketsIncludingPreroll": 20933876,
+          "otherEncodedMdatBytes": 9179132
+        },
+        "offlinePacketReference": {
+          "requestedStartSec": 9937.538,
+          "requestedEndSec": 9975.538,
+          "firstReturnedPtsSec": 9933.12,
+          "lastReturnedPtsSec": 9975.530667,
+          "encodedPacketBytes": 20933876,
+          "packetCount": 3261
+        },
+        "sampledPeakTreeRssBytes": 1114501120,
+        "outputs": [
+          {
+            "role": "clip_preview",
+            "byteLength": 1209657,
+            "sha256": "d98ece4c3225a00df252b719b2706f0448f5134abbb6cddb9fe26d084627c95a"
+          },
+          {
+            "role": "preview_peaks",
+            "byteLength": 2379,
+            "sha256": "011d6e664eabb3a5f4709c874ce42ee641c8fdb1c1dd7084d85194330b28856c"
+          },
+          {
+            "role": "layout_evidence",
+            "byteLength": 28801,
+            "sha256": "ebb34ba68b0fa8a311ff8acf4d0619c0c0019e883060cffa34a7eb2c5620faf4"
+          }
+        ],
+        "engineHash": "53abefd81154ffed1f44a94efd84ec0fee7a07925b0ff127bcfdf8a54dafbbc4",
+        "automaticEngine": "shot-layout-v1",
+        "screenObserved": true,
+        "splitObserved": true
+      },
+      "render": {
+        "secondsDiagnosticOnly": 22.485,
+        "starts": 1,
+        "reads": {
+          "actualOriginalBytes": 38666240,
+          "actualIndexAndHeaderBytes": 13796112,
+          "actualEncodedMdatBytes": 24870128,
+          "ranges": [
+            [
+              0,
+              65535
+            ],
+            [
+              65536,
+              196607
+            ],
+            [
+              196608,
+              458751
+            ],
+            [
+              458752,
+              983039
+            ],
+            [
+              983040,
+              2031615
+            ],
+            [
+              2031616,
+              3080191
+            ],
+            [
+              3080192,
+              4128767
+            ],
+            [
+              4128768,
+              5177343
+            ],
+            [
+              5177344,
+              6225919
+            ],
+            [
+              6225920,
+              7274495
+            ],
+            [
+              7274496,
+              8323071
+            ],
+            [
+              8323072,
+              9371647
+            ],
+            [
+              9371648,
+              10420223
+            ],
+            [
+              10420224,
+              11468799
+            ],
+            [
+              11468800,
+              12517375
+            ],
+            [
+              12517376,
+              13565951
+            ],
+            [
+              13565952,
+              14614527
+            ],
+            [
+              14614528,
+              15663103
+            ],
+            [
+              15663104,
+              16711679
+            ],
+            [
+              16711680,
+              17760255
+            ],
+            [
+              17760256,
+              18808831
+            ],
+            [
+              5172771151,
+              5172836686
+            ],
+            [
+              5172836687,
+              5172967758
+            ],
+            [
+              5172967759,
+              5173229902
+            ],
+            [
+              5173229903,
+              5173754190
+            ],
+            [
+              5173754191,
+              5174802766
+            ],
+            [
+              5174802767,
+              5175851342
+            ],
+            [
+              5175851343,
+              5176899918
+            ],
+            [
+              5176899919,
+              5177948494
+            ],
+            [
+              5177948495,
+              5178997070
+            ],
+            [
+              5178997071,
+              5180045646
+            ],
+            [
+              5180045647,
+              5181094222
+            ],
+            [
+              5181094223,
+              5182142798
+            ],
+            [
+              5182142799,
+              5183191374
+            ],
+            [
+              5183191375,
+              5184239950
+            ],
+            [
+              5184239951,
+              5185288526
+            ],
+            [
+              5185288527,
+              5186337102
+            ],
+            [
+              5186337103,
+              5187385678
+            ],
+            [
+              5187385679,
+              5188434254
+            ],
+            [
+              5188434255,
+              5189482830
+            ],
+            [
+              5171734874,
+              5171800409
+            ],
+            [
+              5171800410,
+              5171931481
+            ],
+            [
+              5171931482,
+              5172193625
+            ],
+            [
+              5172193626,
+              5172717913
+            ],
+            [
+              5172717914,
+              5172771150
+            ],
+            [
+              5189482831,
+              5189495129
+            ],
+            [
+              5189495130,
+              5190543705
+            ],
+            [
+              5190543706,
+              5191592281
+            ]
+          ],
+          "actualBytesIntersectingOfflineSelectedPacketsIncludingPreroll": 16414127,
+          "otherEncodedMdatBytes": 8456001
+        },
+        "offlinePacketReference": {
+          "requestedStartSec": 9941.538,
+          "requestedEndSec": 9971.538,
+          "firstReturnedPtsSec": 9938.453333,
+          "lastReturnedPtsSec": 9971.526,
+          "encodedPacketBytes": 16414127,
+          "packetCount": 2543
+        },
+        "sampledPeakTreeRssBytes": 1482657792,
+        "outputs": [
+          {
+            "role": "render_variant",
+            "byteLength": 15996004,
+            "sha256": "14ed61bc2195bb686d7f75a9f9e283efa88819c54c8f7537914ce1cdd65aefd3"
+          }
+        ],
+        "outcome": {
+          "status": "completed",
+          "requested": 1,
+          "succeeded": 1,
+          "failed": 0,
+          "superseded": 0
+        },
+        "detectorExecutions": 0
+      }
+    }
+  ],
+  "rawEvidence": {
+    "/tmp/narriflow-serverless-gates/final-media-21/paired-podcast/result.json": {
+      "sha256": "1b641da766ff7fab31cb384a3b307012fe7aa7b187517d635b37958ea4fd11ff",
+      "byteLength": 838121
+    },
+    "/tmp/narriflow-serverless-gates/final-media-21/paired-podcast/run.py": {
+      "sha256": "7d7ea74201bfb6335cd662a549c84d28427a585d28587f3862651de5637e5f61",
+      "byteLength": 5712
+    },
+    "/tmp/narriflow-serverless-gates/final-media-21/paired-podcast/stage.py": {
+      "sha256": "5917a71e120ef523a9d20ac3fd7555ab5f1475033146c0e2e1b767995353e160",
+      "byteLength": 2646
+    },
+    "/tmp/narriflow-serverless-gates/final-media-21/paired-podcast/overlay.tar.gz": {
+      "sha256": "5284e118bdac808c741fcef95b9e58512a52372a127b55b77fc6b32ff5e47bec",
+      "byteLength": 22047
+    },
+    "/tmp/narriflow-serverless-gates/final-media-21/selected-packet-reference/result.json": {
+      "sha256": "7615e7795c905389aaf77a0a6ebbc33e0b08a9f6937fca9cf0967a20f629c789",
+      "byteLength": 1718258
+    },
+    "/tmp/narriflow-serverless-gates/final-media-21/representative-source/source.json": {
+      "sha256": "a2b16c208946cd04cab8a350166192d3308c594233b91f3ecbcf56ea14acf0df",
+      "byteLength": 6112
+    },
+    "/tmp/narriflow-serverless-gates/final-media-21/source-cache-64-focused/test.log": {
+      "sha256": "ea5d80c8cb4029d4080215ef661b936a8c392606bc18c5a90263fefd8b515f60",
+      "byteLength": 260
+    }
+  },
+  "admissionSetup": "Fixture construction, one immutable snapshot SHA verification and local fixture admission-probe construction are excluded from scoped execution reads, as the production frozen SourceVideo already carries the admitted complete probe and checksum. Actual native preparation/render original reads, including their probes and analyzers, are all counted through ScopedSourceServer."
+}
