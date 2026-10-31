@@ -16,6 +16,14 @@ The expected sequence is an actual native start in epoch 3, a quiescence fence t
 - The actual old acquire/start/upload calls require the candidate HTTP in `closed` mode first, with public intake and Cron still stopped. A `fenced` API refuses these calls. Switch to the prepared fenced deployment only after the ready event; do not advance the database fence before the old start is recorded.
 - Arm the real admitted native-validation visual PNG job. Wait for `restore_fault_ready`, which follows actual process-start ACK, committed binary, uploaded probe and stopped renewals. Record the exact event and database deadline. Check exactly one recorded start/charge and no published asset. Abort the gate if setup consumed too much of its original budget; do not extend or recreate that accepted operation to hide expiry.
 
+The private fixture helper is `packages/services/scripts/gates/qualified-restore-native-fixture.ts prepare`. Run it only after all timing/image/deployment preflight is complete: its actual domain admission starts the original ten-minute clock. Set `RESTORE_FIXTURE_JOURNAL` to the private precreated `{version:1,runId,inputKey,inputBytes,inputSha256}` journal and `RESTORE_FIXTURE_INVOCATION` to a new absolute private file. The helper reads the existing fixed auth/settings files under `/tmp/narriflow-serverless-control-keys`, derives the actual SQL actor/brand scope, and uses an actual SDK R2 HEAD with a ten-second timeout. No SourceBlob is fabricated. The PNG key must be under the actual brand-owner `visual-assets` prefix and end in `/restore-<runId>/source.png`.
+
+```sh
+bun --no-env-file --env-file="$OPERATOR_ENV" packages/services/scripts/gates/qualified-restore-native-fixture.ts prepare
+```
+
+It briefly opens only closed epoch 3 for actual `NativeValidationService.admit`, deliberately fails initial registration without an ACK, closes admission in `finally`, and calls actual `prepareExecution`. It writes only `{reference,attemptToken}` to the mode-0600 invocation file and stores the real job/deadline/ETag/pending DIDs plus the observed configured lean-image fingerprint in the private fixture journal. Its stdout contains only setup status. It creates no owner, process start or charge and signs no grant. SIGINT/SIGTERM also closes temporary admission; a hard kill cannot run process hooks, so the operator must independently inspect closed admission before snapshot/fence. The ordinary Core acquire wake may later register a duplicate, which must start nothing after the manual fault owner acquires.
+
 ## Execute the qualified sequence
 
 The operator supplies `OPERATOR_ENV`, `RESTORE_CONFIG`, `RUN_DIR` and `DID` as private absolute paths or exact recorded IDs. The env file contains explicit `DIRECT_URL`, `API_ORIGIN` and `RESTORE_GATE_JOURNAL`; it contains no root dotenv fallback. Run from the repository root with pinned Bun on `PATH`.

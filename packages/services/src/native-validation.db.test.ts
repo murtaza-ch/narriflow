@@ -5,6 +5,7 @@ import { PrismaClient } from "@prisma/client";
 import { NativeValidationService } from "./native-validation";
 import { createExecutorControl } from "./executor-control";
 import { readExecutionDispatch } from "./execution-dispatch";
+import { nativeRestoreFixtureInput,prepareNativeRestoreFixture } from "../scripts/gates/qualified-restore-native-fixture";
 
 const url = process.env.SERVERLESS_TEST_DATABASE_URL;
 const dbDescribe = process.env.ALLOW_SERVERLESS_DB_TESTS === "1" && url ? describe : describe.skip;
@@ -109,4 +110,27 @@ dbDescribe("Native validation admission and fenced publication", () => {
     expect(current.generation).toBe(2); expect(current.chargedAttempts).toBe(0); expect(current.executorOwner).toBeNull();
     expect(await db.brandFont.count({ where: { licenseConfirmedByUserId: f.scope.actorUserId } })).toBe(0);
   }, 180_000);
+  test("private restore fixture uses actual admission/preparation, leaves registration pending, and closes temporary admission on replay or HEAD failure",async()=>{
+    const f=await fixture(),state=await db.executionEpoch.findUniqueOrThrow({where:{id:1}}),runId=crypto.randomUUID();
+    const input=nativeRestoreFixtureInput({version:1,runId,inputKey:`visual-assets/${f.scope.actorUserId}/restore-${runId}/source.png`,inputBytes:72,inputSha256:"a".repeat(64)});
+    await db.executionEpoch.update({where:{id:1},data:{admissionOpen:false}});
+    try{
+      const options={database:db,epoch:state.epoch,userId:f.scope.actorUserId,workspaceId:f.scope.workspaceId,input,head:async()=>({contentType:"image/png",sizeBytes:72,etag:'"png"'})};
+      const prepared=await prepareNativeRestoreFixture(options);subjects.push(prepared.jobId!);
+      expect(prepared).toMatchObject({normalModalRegistration:"pending",invocation:{reference:{kind:"modal_execution",deploymentEpoch:state.epoch}}});
+      expect(await db.nativeValidationJob.findUniqueOrThrow({where:{id:prepared.jobId}})).toMatchObject({status:"queued",chargedAttempts:0,executorOwner:null,inputStorageKey:input.inputKey,inputEtag:'"png"'});
+      expect(await db.executionAttempt.findUniqueOrThrow({where:{attemptToken:prepared.invocation.attemptToken}})).toMatchObject({status:"admitted",owner:null,processStartedAt:null});
+      expect(await db.executionDispatch.count({where:{subjectId:prepared.jobId,acknowledgedAt:{not:null}}})).toBe(0);
+      expect((await db.executionEpoch.findUniqueOrThrow({where:{id:1}})).admissionOpen).toBe(false);
+      expect(await prepareNativeRestoreFixture(options)).toEqual(prepared);
+      expect(await db.executionAttempt.count({where:{dispatch:{subjectId:prepared.jobId}}})).toBe(1);
+      let heads=0;const failedRun=crypto.randomUUID();
+      await expect(prepareNativeRestoreFixture({...options,input:{...input,runId:failedRun,inputKey:`visual-assets/${f.scope.actorUserId}/restore-${failedRun}/source.png`},head:async()=>{heads++;if(heads===2)throw Error("head_failed_after_admission_open");return{contentType:"image/png",sizeBytes:72,etag:'"png"'};}})).rejects.toThrow("head_failed_after_admission_open");
+      expect((await db.executionEpoch.findUniqueOrThrow({where:{id:1}})).admissionOpen).toBe(false);
+      expect(await db.nativeValidationJob.count({where:{createdByUserId:f.scope.actorUserId}})).toBe(1);
+      const cancellation=new AbortController();cancellation.abort();
+      await expect(prepareNativeRestoreFixture({...options,signal:cancellation.signal})).rejects.toThrow("qualified_native_fixture_refused");
+      expect((await db.executionEpoch.findUniqueOrThrow({where:{id:1}})).admissionOpen).toBe(false);
+    }finally{await db.executionEpoch.update({where:{id:1},data:{admissionOpen:state.admissionOpen}});}
+  });
 });
