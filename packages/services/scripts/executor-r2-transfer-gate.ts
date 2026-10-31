@@ -1,6 +1,9 @@
 /** Operator-only fixture preparation and exact cleanup. Never run on shared dev. */
 import { readFile, writeFile, rename, stat } from "node:fs/promises";
 import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
 import { PrismaClient } from "@prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
@@ -14,11 +17,14 @@ import { getIngestJobLifecycle } from "../src/ingest-job-lifecycle-runtime";
 import { prepareIngestSourceExecution } from "../src/ingest-source-execution";
 import { prismaUploadSessionPersistence } from "../src/upload-session.service";
 import { createExecutionStorage } from "../src/execution-storage";
-import { createMediaCleanupStorage } from "../src/media-cleanup-storage";
 import { admitMediaCleanupObligations } from "../src/media-cleanup-admission";
-import { createMediaCleanupControl, queueMediaCleanupWithinTransaction } from "../src/media-cleanup-control";
-import { mediaCleanupObjectRetainUntil } from "../src/media-cleanup-holds";
+import { createExecutionDispatch, executionDispatchContinuationId, readExecutionDispatch } from "../src/execution-dispatch";
+import { takeExecutionDispatchIds } from "../src/execution-dispatch-runtime";
+import { readRestoreResumeWorker } from "../src/execution-snapshot";
+import { cleanupWorkflowTarget, createGateCleanupScheduler } from "./executor-r2-cleanup-registration";
 import type { ExecutionDispatchReference } from "@narriflow/validators/execution";
+
+declare const Bun: { JSONC: { parse(input: string): unknown } };
 
 const BYTES = 10 * 1024 ** 3, PART_BYTES = 16 * 1024 ** 2;
 type Invocation = { reference: ExecutionDispatchReference; attemptToken: string };
@@ -78,6 +84,7 @@ function argumentsForGate() {
   if (!["seed-upload", "bind-pin", "status", "cleanup"].includes(phase ?? "")) code("gate_phase_invalid");
   return { phase, journalPath: resolve(required("--journal")), settingsPath: resolve(required("--settings")),
     expectedHost: required("--expected-host"), expectedDatabase: "serverless_pipeline_gates", epoch: Number(required("--epoch")),
+    configPath: phase === "cleanup" ? resolve(required("--config")) : undefined,
     reportPath: args.get("--report") ? resolve(args.get("--report")!) : undefined };
 }
 
@@ -202,19 +209,54 @@ export async function main() {
       if (artifacts.some(row => !["failed", "cancelled", "expired"].includes(row.attempt.status))) code("gate_live_owner_blocks_cleanup");
       const notBefore = Math.max(...artifacts.map(row => Math.max(row.grantExpiresAt.getTime(), row.attempt.operationDeadlineAt.getTime()) + 120_000));
       if (Date.now() < notBefore) { console.log(JSON.stringify({ cleanup: "waiting", notBefore: new Date(notBefore).toISOString() })); return; }
-      await db.$transaction(tx => admitMediaCleanupObligations(tx, artifacts.map(row => ({ origin: "assigned_execution_artifact", cleanupClass: "assigned_artifact",
-        objectKey: row.storageKey, projectId: phases.find(phase => phase.invocation!.attemptToken === row.attemptToken)!.projectId,
-        notBefore: new Date(notBefore) }))));
+      if (!artifacts.length) code("gate_cleanup_assignments_missing");
+      const cleanupTarget = cleanupWorkflowTarget(Bun.JSONC.parse(await readFile(options.configPath!, "utf8")), options.configPath!);
+      await readRestoreResumeWorker(settings.API_ORIGIN ?? "", true);
+      const registrationIds: string[] = [];
+      // One exact-row range per artifact cannot sweep a different producer's
+      // cleanup intents created between this fixture's rows.
+      for (const row of artifacts) registrationIds.push(...await db.$transaction(async tx => {
+        await admitMediaCleanupObligations(tx, [{ origin: "assigned_execution_artifact", cleanupClass: "assigned_artifact", objectKey: row.storageKey,
+          projectId: phases.find(phase => phase.invocation!.attemptToken === row.attemptToken)!.projectId, notBefore: new Date(notBefore) }]);
+        return takeExecutionDispatchIds(tx);
+      }));
       const intents = await db.mediaCleanupObligation.findMany({ where: { origin: "assigned_execution_artifact", cleanupClass: "assigned_artifact",
         objectKey: { in: artifacts.map(row => row.storageKey) } } });
-      const pending: string[] = [], cleanup = createMediaCleanupControl({ database: db, storage: createMediaCleanupStorage(config),
-        hold: mediaCleanupObjectRetainUntil, register: async ids => { pending.push(...ids); } });
-      for (const intent of intents) {
-        const reference = await db.$transaction(tx => queueMediaCleanupWithinTransaction(tx, intent.id));
-        if (reference) await cleanup.run(reference);
+      if (intents.length !== artifacts.length) code("gate_cleanup_intent_scope_invalid");
+      const references: ExecutionDispatchReference[] = [];
+      for (const id of [...new Set(registrationIds)]) {
+        const row = await readExecutionDispatch(db, id); if (!row) throw Error("gate_cleanup_dispatch_missing"); references.push(row.reference);
+      }
+      const registrationPath = `${options.journalPath}.cleanup-registration.json`;
+      let observations: Array<Record<string, unknown>> = [];
+      try {
+        const previous = await privateJson<{ mode: string; observations: Array<Record<string, unknown>> }>(registrationPath);
+        if (previous.mode !== "deployed_worker_only" || !Array.isArray(previous.observations) || previous.observations.length >= 32) code("gate_cleanup_audit_invalid");
+        observations = previous.observations;
+      } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+      const registrations: Array<{ dispatchId: string; status: string; observedAt: string }> = [];
+      observations.push({ observedAt: new Date().toISOString(), epoch: current.epoch, references, registrations,
+        knownIntentIds: intents.map(row => row.id), preexistingCompletedIntentIds: intents.filter(row => row.completedAt).map(row => row.id) });
+      const saveRegistration = () => save(registrationPath, { mode: "deployed_worker_only", observations, localDeletes: 0 });
+      await saveRegistration();
+      const execute = promisify(execFile), apiDirectory = fileURLToPath(new URL("../../../apps/api/", import.meta.url));
+      const wrangler = fileURLToPath(new URL("../../../apps/api/node_modules/.bin/wrangler", import.meta.url));
+      const scheduler = createGateCleanupScheduler({ target: cleanupTarget, references, async run(args) {
+        const env: Record<string, string> = { CLOUDFLARE_ACCOUNT_ID: cleanupTarget.accountId, WRANGLER_SEND_METRICS: "false", CI: "true" };
+        for (const name of ["PATH", "HOME", "USERPROFILE", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "TMPDIR", "SYSTEMROOT", "CLOUDFLARE_API_TOKEN"]) {
+          if (process.env[name]) env[name] = process.env[name]!;
+        }
+        const { stdout } = await execute(wrangler, [...args], { cwd: apiDirectory, env, timeout: 30_000, maxBuffer: 1_048_576, encoding: "utf8" });
+        return stdout.trim() ? JSON.parse(stdout) : null;
+      } });
+      const dispatch = createExecutionDispatch({ database: db, scheduler, options: { deliveryLeaseMs: 120_000 } });
+      for (const reference of references) {
+        const result = await dispatch.deliver(reference.dispatchId);
+        registrations.push({ dispatchId: reference.dispatchId, status: result.status, observedAt: new Date().toISOString() }); await saveRegistration();
+        if (result.status !== "acknowledged") code("gate_cleanup_registration_pending");
       }
       const remaining = await db.mediaCleanupObligation.count({ where: { id: { in: intents.map(row => row.id) }, completedAt: null } });
-      if (remaining || pending.length) code("gate_cleanup_obligation_pending");
+      if (remaining) { console.log(JSON.stringify({ cleanup: "pending", remaining, registeredRanges: references.length, localDeletes: 0 })); return; }
       client = new S3Client({ region: "auto", endpoint: `https://${config.accountId}.r2.cloudflarestorage.com`,
         credentials: { accessKeyId: config.accessKeyId, secretAccessKey: config.secretAccessKey }, maxAttempts: 1,
         requestHandler:new FetchHttpHandler({requestTimeout:30000}) });
@@ -225,10 +267,20 @@ export async function main() {
         catch (error) { if ((error as { $metadata?: { httpStatusCode?: number } }).$metadata?.httpStatusCode === 404) missing = true; else throw error; }
         const uploads = await client.send(new ListMultipartUploadsCommand({ Bucket: config.bucket, Prefix: artifact.storageKey, MaxUploads: 9 }));
         if (!missing || uploads.IsTruncated || uploads.Uploads?.some(value => value.Key === artifact.storageKey)) code("gate_cleanup_storage_not_empty");
-        proofs.push({ artifactId: artifact.id, headStatus: 404, exactKeyMultipartUploads: 0 });
+        const intent = await db.mediaCleanupObligation.findUniqueOrThrow({ where: { origin_cleanupClass_objectKey: {
+          origin: "assigned_execution_artifact", cleanupClass: "assigned_artifact", objectKey: artifact.storageKey } } });
+        const timer = await db.executionDispatch.findFirst({ where: { subjectKind: "media_cleanup", subjectId: intent.id, kind: "operation_driver",
+          wakeKind: "cleanup_claimed", deadlineKind: "lease", createdAt: { lte: intent.completedAt! } }, orderBy: [{ createdAt: "desc" }, { id: "desc" }] });
+        proofs.push({ artifactId: artifact.id, intentId: intent.id, headStatus: 404, exactKeyMultipartUploads: 0,
+          latestLeaseTimerAcknowledgedBeforeCompletion: Boolean(timer?.acknowledgedAt && timer.acknowledgedAt <= intent.completedAt! &&
+            timer.destinationId === executionDispatchContinuationId({ dispatchId: timer.id })),
+          latestLeaseTimerDispatchId: timer?.id ?? null, latestLeaseTimerAcknowledgedAt: timer?.acknowledgedAt ?? null });
       }
-      await save(`${options.journalPath}.cleanup.json`, { passed: true, proofs, fixtureRowsRetainedForAudit: true });
-      console.log(JSON.stringify({ cleanup: "passed", objectsVerifiedAbsent: proofs.length, exactKeyMultipartUploads: 0 }));
+      const productionCleanupRegistrationVerified = proofs.every(row => row.latestLeaseTimerAcknowledgedBeforeCompletion);
+      await save(`${options.journalPath}.cleanup.json`, { passed: productionCleanupRegistrationVerified, storageAbsenceVerified: true,
+        productionCleanupRegistrationVerified, proofs, fixtureRowsRetainedForAudit: true, localDeletes: 0 });
+      console.log(JSON.stringify({ cleanup: productionCleanupRegistrationVerified ? "passed" : "verified_absent_prior_registration_unproved",
+        objectsVerifiedAbsent: proofs.length, exactKeyMultipartUploads: 0, productionCleanupRegistrationVerified, localDeletes: 0 }));
     }));
   } finally { client?.destroy(); await db.$disconnect(); }
 }
