@@ -29,7 +29,7 @@ export const executionDispatchKindSchema = z.enum([
 ]);
 
 export const executionSubjectKindSchema = z.enum([
-  "ingest_job", "workflow_run", "render_group", "clip_preparation", "upload_session",
+  "ingest_job", "workflow_run", "render_group", "clip_selection_window", "clip_preparation", "upload_session",
   "social_publication", "completion_callback", "webhook_subscription", "workspace_billing",
   "autopilot_rule", "generation_finishing", "dubbing", "export_bundle", "generated_media",
   "thumbnail_frame", "native_validation", "outbound_probe", "library_index", "notification", "media_cleanup", "workflow_event",
@@ -83,7 +83,7 @@ export const executorFenceSchema = z.strictObject({
 
 export const executionArtifactRoleSchema = z.enum([
   "source_audio", "source_video", "layout_evidence", "render_variant", "probe",
-  "thumbnail", "export_bundle", "dub_mix", "validated_font", "validated_asset", "outbound_receipt",
+  "thumbnail", "export_bundle", "dub_mix", "validated_font", "validated_asset", "selection_window", "outbound_receipt",
 ]);
 
 /** artifactId identifies a server-assigned key. Executors cannot choose publication keys. */
@@ -221,6 +221,15 @@ export const sourceAudioBindingSchema = z.strictObject({
 
 export type ExecutionObjectIdentity = z.infer<typeof executionObjectIdentitySchema>;
 export type SourceAudioBinding = z.infer<typeof sourceAudioBindingSchema>;
+
+/** Worker-produced source input. Scoped grants stay in the package descriptors. */
+export const ingestFetchSourceCommandSchema = z.strictObject({
+  kind: z.literal("youtube_source"), projectId: z.string().uuid(), sourceRevision: generation,
+  mediaId: z.string().regex(/^[A-Za-z0-9_-]{11}$/), sourceAudioId: z.string().uuid(),
+  toolchainFingerprint: sha256, probeVersion: z.literal("normalized-probe-v1"),
+  existingSourceAudio: sourceAudioBindingSchema.nullable(), languageProbe: sourceLanguageProbeInputSchema.nullable(),
+});
+export type IngestFetchSourceCommand = z.infer<typeof ingestFetchSourceCommandSchema>;
 
 /** Complete probe facts plus the extraction identity, before any full-video publication. */
 export const sourceVideoBindingSchema = z.strictObject({

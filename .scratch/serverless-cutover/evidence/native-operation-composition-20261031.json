@@ -1,0 +1,54 @@
+{
+  "status": "passed_composition_and_isolated_contract_gates",
+  "shared_development_database_changed": false,
+  "deployed": false,
+  "checks": {
+    "production_ingest_database": {
+      "tests": 15,
+      "assertions": 116,
+      "log": "/tmp/narriflow-serverless-gates/ingest-source-production-green.log"
+    },
+    "integrated_execution_database": {
+      "tests": 89,
+      "assertions": 476,
+      "suites": 14,
+      "log": "/tmp/narriflow-serverless-gates/windows-integrated-gates.log"
+    },
+    "native_entrypoint_host": {
+      "tests": 7,
+      "log": "/tmp/narriflow-serverless-gates/entrypoint-typed-gates.log"
+    },
+    "source_sink_and_operation_host": {
+      "tests": 7,
+      "log": "/tmp/narriflow-serverless-gates/source-python-gates.log"
+    },
+    "native_validation_and_rss_host": {
+      "tests": 5,
+      "log": "/tmp/narriflow-serverless-gates/merged-native-runtime.log"
+    },
+    "modal_sdk_declaration": {
+      "version": "1.2.6",
+      "functions": [
+        "verify_render_runtime",
+        "verify_lean_runtime",
+        "asset_validation",
+        "outbound_delivery",
+        "fetch_source",
+        "dispatch_bridge"
+      ],
+      "auth_or_network_required": false
+    }
+  },
+  "sources": [
+    "https://modal.com/docs/guide/webhooks",
+    "https://modal.com/docs/guide/secrets",
+    "https://modal.com/docs/guide/resources",
+    "https://modal.com/docs/sdk/py/latest/Dict"
+  ],
+  "limits": [
+    "Only YouTube source work-package composition exists in this source adapter; other source intake adapters and pipeline admission remain incomplete.",
+    "The laptop mailbox, final image deployment, full provider/media end-to-end gates, and single cutover remain incomplete.",
+    "Host integration is not a Linux or Modal container result; the independent Linux overlay gate is running.",
+    "The Modal function list includes implemented operations only; render and remaining operation wrappers are still pending."
+  ]
+}

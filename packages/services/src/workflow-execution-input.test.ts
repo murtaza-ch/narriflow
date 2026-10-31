@@ -18,3 +18,13 @@ test("workflow dispatch hashes the frozen server provenance independently of cal
     expect(await workflowRunExecutionInputHash(changed)).not.toBe(await workflowRunExecutionInputHash(input));
   }
 });
+
+test("selection parent authority binds the completed Transcript generation while STT authority binds only its source audio", async () => {
+  const transcript = { id: "636cb598-8264-438e-a008-1fb23b75395a", generation: 2, attemptId: "1600b42c-702d-4fd5-a141-705e250617a1" };
+  const selection = { ...input, stage: "moment_detection", sourceTranscript: transcript };
+  // Independently calculated from compact ordered JSON with Python hashlib.
+  expect(await workflowRunExecutionInputHash(selection)).toBe("e5041e008fddb037b522e03ecc1dcdfccaa5a0d740e8ffd7ad414222a64a741f");
+  expect(await workflowRunExecutionInputHash({ ...selection, sourceTranscript: { ...transcript, generation: 3 } })).not.toBe(await workflowRunExecutionInputHash(selection));
+  expect(await workflowRunExecutionInputHash({ ...selection, sourceTranscript: { ...transcript, attemptId: crypto.randomUUID() } })).not.toBe(await workflowRunExecutionInputHash(selection));
+  expect(await workflowRunExecutionInputHash({ ...input, sourceTranscript: transcript })).toBe(await workflowRunExecutionInputHash(input));
+});

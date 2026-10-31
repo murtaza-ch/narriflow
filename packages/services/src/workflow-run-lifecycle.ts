@@ -696,10 +696,11 @@ export class WorkflowRunLifecycle {
   }
 
   private async runInputHash(tx: TransactionClient, run: WorkflowRun, sourceRevision: number): Promise<string> {
-    const transcript = await tx.transcript.findUnique({ where: { projectId: run.projectId }, select: { sourceAudioId: true, sourceRevision: true } });
+    const transcript = await tx.transcript.findUnique({ where: { projectId: run.projectId }, select: { id: true, selectionGeneration: true, workflowAttemptId: true, sourceAudioId: true, sourceRevision: true } });
     if (transcript && transcript.sourceRevision !== sourceRevision) throw new Error("workflow_source_revision_superseded");
     return workflowRunExecutionInputHash({ id: run.id, projectId: run.projectId, stage: run.stage, contentPackId: run.contentPackId,
-      generation: run.generation, deploymentEpoch: run.deploymentEpoch, sourceAudioId: transcript?.sourceAudioId ?? null, sourceRevision: transcript?.sourceRevision ?? sourceRevision });
+      generation: run.generation, deploymentEpoch: run.deploymentEpoch, sourceAudioId: transcript?.sourceAudioId ?? null, sourceRevision: transcript?.sourceRevision ?? sourceRevision,
+      sourceTranscript: transcript ? { id: transcript.id, generation: transcript.selectionGeneration, attemptId: transcript.workflowAttemptId } : null });
   }
 
   private async admitWithinTransaction(
@@ -2365,10 +2366,33 @@ export class WorkflowRunLifecycle {
     key: ProviderAttemptReference,
     ids: ProviderIds = {},
   ): Promise<ProviderAttemptLookup> {
-    const lookup = await this.classifyProviderAttempt(this.prisma, key, "complete", ids);
-    if (lookup.kind === "waiting") return lookup;
-    const dispatchIds = await this.providerRecordedWakes(this.prisma, key, "complete");
-    return dispatchIds.length ? { ...lookup, dispatchIds } : lookup;
+    return this.transaction(async tx => {
+      const lookup = await this.classifyProviderAttempt(tx, key, "complete", ids);
+      if (lookup.kind === "waiting") return lookup;
+      const dispatchIds = await this.providerRecordedWakes(tx, key, "complete");
+      return dispatchIds.length ? { ...lookup, dispatchIds } : lookup;
+    });
+  }
+
+  /** Recovers a completed supplied/empty plan or provider receipt, without new work. */
+  async readCompletedTranscriptionWakesWithinTransaction(tx: TransactionClient, reference: ExecutionDispatchReference): Promise<string[]> {
+    const ledger = await readExecutionDispatch(tx, reference.dispatchId);
+    if (!ledger || ledger.reference.deploymentEpoch !== reference.deploymentEpoch || ledger.reference.generation !== reference.generation ||
+      ledger.reference.inputHash !== reference.inputHash || ledger.reference.kind !== reference.kind || reference.kind !== "operation_driver" ||
+      ledger.reference.subject.kind !== reference.subject.kind || reference.subject.kind !== "workflow_run" || ledger.reference.subject.id !== reference.subject.id) return [];
+    const run = await tx.workflowRun.findUnique({ where: { id: reference.subject.id } });
+    if (!run || run.stage !== "stt" || run.status !== "completed" || run.generation !== reference.generation || run.deploymentEpoch !== reference.deploymentEpoch) return [];
+    queueProjectProgressCatchup(tx, run.projectId);
+    const history = run.attemptId ? await tx.executionAttempt.findUnique({ where: { attemptToken: run.attemptId } }) : null;
+    const transcript = await tx.transcript.findUnique({ where: { projectId: run.projectId }, select: { sourceAudioId: true, sourceRevision: true } });
+    if (history && run.attemptId && transcript) return this.providerRecordedWakes(tx, { workflowRunId: run.id, attemptId: run.attemptId,
+      deploymentEpoch: run.deploymentEpoch, sourceAudioId: transcript.sourceAudioId, sourceRevision: transcript.sourceRevision }, "complete");
+    const child = await tx.workflowRun.findUnique({ where: { projectId_idempotencyKey: { projectId: run.projectId, idempotencyKey: `${run.idempotencyKey}__moment_detection` } }, select: { id: true } });
+    const records = await tx.executionDispatch.findMany({ where: { deploymentEpoch: reference.deploymentEpoch, OR: [
+      { subjectKind: "workflow_run", subjectId: run.id, generation: run.generation, kind: "operation_driver", wakeKind: "execution_finished", inputHash: reference.inputHash },
+      ...(child ? [{ subjectKind: "workflow_run", subjectId: child.id, generation: 1, kind: "operation_driver", wakeKind: null, deadlineKind: null }] : []),
+    ] }, orderBy: { id: "asc" }, take: 3, select: { id: true } });
+    return records.map(row => row.id);
   }
 
   /** Fresh lease-free provider state for one exact Workflow command. */
@@ -2745,7 +2769,7 @@ export class WorkflowRunLifecycle {
     await tx.transcript.upsert({
       where: { projectId: attempt.projectId },
       create: { projectId: attempt.projectId, ...completedFields },
-      update: completedFields,
+      update: { ...completedFields, selectionGeneration: { increment: 1 } },
     });
     if (input.durationSeconds && input.durationSeconds > 0) {
       await tx.project.updateMany({
