@@ -3,7 +3,11 @@
 Narriflow serves `/mcp` through the SDK v2 request-scoped HTTP factory. Modern
 `2026-07-28` exchanges have no initialization handshake or session. Older
 Streamable HTTP clients use SDK legacy handling with the same tool/admission
-implementation. Stdio in `apps/mcp` revalidates its API key on every request.
+implementation. Stdio in `apps/mcp` forwards messages to this endpoint with
+its configured API key. The API revalidates the key on every request.
+The bridge requires only `NARRIFLOW_URL` and `NARRIFLOW_API_KEY` and keeps no
+local domain server, database client, Redis connection or tool result cache.
+Modern cancellation closes the request's HTTP stream; other requests continue.
 
 ## Access and workflow
 
