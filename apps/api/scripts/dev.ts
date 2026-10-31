@@ -1,6 +1,6 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, relative } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import ts from "typescript";
@@ -35,8 +35,11 @@ try {
   await writeFile(localConfig, JSON.stringify(local), { mode: 0o600 });
   // --env-file is loaded as secret_text by Wrangler, so values are masked.
   await writeFile(localSettings, Object.entries(settings).map(([name, value]) => `${name}=${JSON.stringify(value)}`).join("\n"), { mode: 0o600 });
-  const child = Bun.spawn(["bunx", "wrangler", "dev", "--config", localConfig, "--env-file", localSettings, ...process.argv.slice(2)], {
-    cwd: api, stdin: "inherit", stdout: "inherit", stderr: "inherit", env: { ...process.env,
+  // Wrangler normalizes tsconfig against cwd, then builds against the config
+  // directory. Use the same directory for both and the installed pinned CLI.
+  const wrangler = join(dirname(require.resolve("wrangler/package.json")), "bin/wrangler.js");
+  const child = Bun.spawn(["node", wrangler, "dev", "--config", localConfig, "--env-file", localSettings, ...process.argv.slice(2)], {
+    cwd: temporary, stdin: "inherit", stdout: "inherit", stderr: "inherit", env: { ...process.env,
       CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE: direct.href,
       CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV: "true", CLOUDFLARE_INCLUDE_PROCESS_ENV: "false" },
   });
