@@ -539,7 +539,8 @@
       "default": "./src/generated-media-validation.ts"
     },
     "./ingest-acquisition": "./src/ingest-acquisition.ts",
-    "./drive-source-contract": "./src/drive-source-contract.ts"
+    "./drive-source-contract": "./src/drive-source-contract.ts",
+    "./ingest-source-definition": "./src/ingest-source-definition.ts"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
