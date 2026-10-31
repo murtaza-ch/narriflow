@@ -11,3 +11,7 @@ export default createApiWorker({
 export { RateLimiter } from "./durable-objects/rate-limiter";
 
 export { ProjectProgress } from "./durable-objects/project-progress";
+export { ImportPipeline } from "./workflows/import-pipeline";
+export { RenderRun } from "./workflows/render-run";
+export { OperationDriver } from "./workflows/operation-driver";
+export { Maintenance } from "./workflows/maintenance";

@@ -4,7 +4,7 @@
 
 **Blocked by:** 04–13
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 **Spec:** [Serverless cutover](../spec.md)
 
@@ -14,4 +14,6 @@
 
 ## Evidence
 
-Pending implementation and verification.
+Workflow infrastructure is implemented: explicit four entrypoints, fresh DB/env/ports per command step, metadata-only durable waits, deterministic confirmed registration/wakes, and bounded progress continuation delivery. Unknown business subjects fail explicitly.
+
+[Local workerd/real PostgreSQL infrastructure evidence](../evidence/workflows-workerd-20261031.json) covers8checks. Domain handlers, full import/render acceptance and deployed gates remain required. This ticket remains claimed.

@@ -18,6 +18,7 @@
       "name": "@narriflow/api",
       "version": "0.0.0",
       "dependencies": {
+        "@aws-sdk/xml-builder": "3.972.17",
         "@ffprobe-installer/ffprobe": "2.1.2",
         "@hono/zod-openapi": "^1.2.2",
         "@hono/zod-validator": "^0.7.6",
@@ -44,8 +45,10 @@
         "@seriousme/openapi-schema-validator": "^2.11.0",
         "@types/node": "26.2.0",
         "@types/pg": "8.15.5",
+        "@types/ws": "8.18.1",
         "pg": "8.17.2",
         "wrangler": "4.156.0",
+        "ws": "8.21.3",
       },
     },
     "apps/mcp": {
@@ -136,7 +139,6 @@
         "@narriflow/validators": "workspace:*",
         "@tanstack/query-core": "^5.105.0",
         "@tanstack/react-query": "^5.105.0",
-        "eventsource-parser": "^4.1.3",
         "hono": "^4.13.11",
       },
       "devDependencies": {
@@ -242,6 +244,7 @@
         "@noble/hashes": "2.4.0",
         "@node-rs/argon2": "^2.2.0",
         "@prisma/client": "7.7.0",
+        "@smithy/fetch-http-handler": "5.3.16",
         "fast-xml-parser": "^5.11.2",
         "fontkit": "2.0.4",
         "ioredis": "^5.9.3",
@@ -1507,7 +1510,7 @@
 
     "eventsource": ["eventsource@3.0.7", "", { "dependencies": { "eventsource-parser": "^3.0.1" } }, "sha512-CRT1WTyuQoD771GW56XEZFQ/ZoSfWid1alKGDYMmkt2yl8UXrVR4pspqWNEcqKvVIzg6PAltWjxcSSPrboA4iA=="],
 
-    "eventsource-parser": ["eventsource-parser@4.1.3", "", {}, "sha512-jZVIVilXZfAx6H20ZKKEj5dabbpD9ETmMj3uHsjMmgBzBHB6tsHrmdWB4mAiy3amtN6MOoVkfXRQu4wf1n88Rw=="],
+    "eventsource-parser": ["eventsource-parser@3.1.1", "", {}, "sha512-EKN1vKAMcZ8MlYMpaNuxN6R9yakzH6uajHcHVTqWJzvu5pWw9DyhbP35HH8MVBQ+dZjAfDxk+A8NiR9KWaXiyQ=="],
 
     "exsolve": ["exsolve@1.0.8", "", {}, "sha512-LmDxfWXwcTArk8fUEnOfSZpHOJ6zOMUJKOtFLFqJLoKJetuQG874Uc7/Kki7zFLzYybmZhp1M7+98pfMqeX8yA=="],
 
@@ -2310,8 +2313,6 @@
     "@jridgewell/remapping/@jridgewell/trace-mapping": ["@jridgewell/trace-mapping@0.3.31", "", { "dependencies": { "@jridgewell/resolve-uri": "^3.1.0", "@jridgewell/sourcemap-codec": "^1.4.14" } }, "sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw=="],
 
     "@mdx-js/mdx/source-map": ["source-map@0.7.6", "", {}, "sha512-i5uvt8C3ikiWeNZSVZNWcfZPItFQOsYTUAOkcUPGd8DqDy1uOUikjt5dG+uRlwyvR108Fb9DOd4GvXfT0N2/uQ=="],
-
-    "@modelcontextprotocol/client/eventsource-parser": ["eventsource-parser@3.1.1", "", {}, "sha512-EKN1vKAMcZ8MlYMpaNuxN6R9yakzH6uajHcHVTqWJzvu5pWw9DyhbP35HH8MVBQ+dZjAfDxk+A8NiR9KWaXiyQ=="],
 
     "@prisma/adapter-pg/@types/pg": ["@types/pg@8.21.0", "", { "dependencies": { "@types/node": "*", "pg-protocol": "*", "pg-types": "^2.2.0" } }, "sha512-AYdtudzabjLZgVgRZmAnU8bAnVUXzuJX2IYHeSIiIHm68olD+LgQYCGWdtcNYnP0uq9c4S4NibVG3Ni7VbKW7Q=="],
 

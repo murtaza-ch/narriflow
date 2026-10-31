@@ -3,7 +3,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@prisma/client";
 import { createDatabaseScope, withDatabaseScope } from "@narriflow/db/client";
 import { appendWorkflowEvent } from "./workflow-event-append";
-import { appendProgressRevocation, deliverProgressDispatch } from "./progress-outbox";
+import { appendProgressRevocation, deliverProgressAfterCommit, deliverProgressDispatch } from "./progress-outbox";
 import { createExecutionDispatch } from "./execution-dispatch";
 import { withProgressDelivery } from "./progress-delivery";
 import { withServiceEnvironment } from "./runtime-environment";
@@ -55,18 +55,25 @@ suite("Durable progress delivery and revocation", () => {
 
   test("a lost DO acknowledgement keeps the same durable obligation retryable", async () => {
     const { row, dispatch } = await event(); let sends = 0; let loseAck = true;
-    await withProgressDelivery({ publish: async (_scope, payload) => { sends += 1; expect(payload).not.toHaveProperty("generationRenders"); if (loseAck) throw new Error("lost response"); }, revoke: async () => {} }, async () => {
+    await withProgressDelivery({ registerContinuations: async () => {}, publish: async (_scope, payload) => { sends += 1; expect(payload).not.toHaveProperty("generationRenders"); if (loseAck) throw new Error("lost response"); }, revoke: async () => {} }, async () => {
       expect((await scheduler().deliver(dispatch.id)).status).toBe("pending"); expect((await database.workflowEvent.findUniqueOrThrow({ where: { id: row.id } })).progressPublishedAt).toBeNull();
       loseAck = false; await database.executionDispatch.update({ where: { id: dispatch.id }, data: { nextDeliveryAt: new Date(0) } });
       expect((await scheduler().deliver(dispatch.id)).status).toBe("acknowledged"); expect((await database.workflowEvent.findUniqueOrThrow({ where: { id: row.id } })).progressPublishedAt).not.toBeNull();
     }); expect(sends).toBe(2);
   }, 60_000);
 
+  test("an uncertain postcommit push registers a bounded retry instead of waiting for the hourly scan", async () => {
+    const { dispatch } = await event(); const registered: string[] = [];
+    const record = await scheduler().read(dispatch.id);
+    await withProgressDelivery({ publish: async () => { throw new Error("lost response"); }, revoke: async () => {}, registerContinuations: async (ids) => { registered.push(...ids); } }, () => deliverProgressAfterCommit(database, [record!]));
+    expect(registered).toEqual([dispatch.id]); expect((await scheduler().read(dispatch.id))?.acknowledgedAt).toBeNull();
+  }, 60_000);
+
   test("membership removal durably records a cutoff and pushes only after commit", async () => {
     const viewer = await database.user.create({ data: { clerkId: `progress-gate:${crypto.randomUUID()}` } }); extraUsers.push(viewer.id);
     const member = await database.workspaceMember.create({ data: { workspaceId, userId: viewer.id, role: "viewer" } });
     const revoked: Array<{ projectId: string; actorUserId?: string; authorizedBefore: number }> = [];
-    await withProgressDelivery({ publish: async () => {}, revoke: async (input) => { expect(await database.workspaceMember.findUnique({ where: { id: member.id } })).toBeNull(); revoked.push(input); } }, () => scoped(() => new WorkspaceMembershipService().removeMember(ownerId, workspaceId, member.id)));
+    await withProgressDelivery({ registerContinuations: async () => {}, publish: async () => {}, revoke: async (input) => { expect(await database.workspaceMember.findUnique({ where: { id: member.id } })).toBeNull(); revoked.push(input); } }, () => scoped(() => new WorkspaceMembershipService().removeMember(ownerId, workspaceId, member.id)));
     expect(revoked).toHaveLength(1); expect(revoked[0]).toMatchObject({ projectId, actorUserId: viewer.id }); expect(revoked[0]!.authorizedBefore).toBeGreaterThan(Date.now() - 30_000);
   }, 60_000);
 
@@ -76,7 +83,7 @@ suite("Durable progress delivery and revocation", () => {
     expect(await database.executionDispatch.findUnique({ where: { id: rolledBackId } })).toBeNull();
     const record = await database.$transaction(async (tx) => { await tx.project.delete({ where: { id: projectId } }); return appendProgressRevocation(tx, { workspaceId, projectId, error: "project_inaccessible" }); });
     const revoked: string[] = [];
-    await withProgressDelivery({ publish: async () => {}, revoke: async (input) => { revoked.push(input.projectId); } }, async () => expect((await scheduler().deliver(record.reference.dispatchId)).status).toBe("acknowledged"));
+    await withProgressDelivery({ registerContinuations: async () => {}, publish: async () => {}, revoke: async (input) => { revoked.push(input.projectId); } }, async () => expect((await scheduler().deliver(record.reference.dispatchId)).status).toBe("acknowledged"));
     expect(revoked).toEqual([projectId]);
   }, 60_000);
 
@@ -84,7 +91,7 @@ suite("Durable progress delivery and revocation", () => {
     await database.project.createMany({ data: Array.from({ length: 100 }, (_, index) => ({ workspaceId, title: `Progress gate${index}`, sourceMediaUrl: "r2://gate/source" })) });
     const record = await database.$transaction((tx) => appendProgressRevocation(tx, { workspaceId, error: "workspace_restricted" }));
     const revoked = new Set<string>(); let continuations: string[] = [];
-    await withProgressDelivery({ publish: async () => {}, revoke: async (input) => { revoked.add(input.projectId); } }, async () => {
+    await withProgressDelivery({ registerContinuations: async () => {}, publish: async () => {}, revoke: async (input) => { revoked.add(input.projectId); } }, async () => {
       const outcome = await deliverProgressDispatch(database, record.reference); continuations = outcome.continuationDispatchIds; expect(revoked.size).toBe(100); expect(continuations).toHaveLength(1);
       expect((await scheduler().deliver(continuations[0]!)).status).toBe("acknowledged");
     }); expect(revoked.size).toBe(101);

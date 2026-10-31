@@ -40,7 +40,7 @@ dbDescribe("Targeted serverless domain execution", () => {
     const user = await db.user.create({ data: { clerkId: `targeted-execution:${crypto.randomUUID()}` } });
     users.push(user.id);
     const workspace = await db.workspace.create({ data: { name: "Targeted execution gate", ownerUserId: user.id } });
-    const project = await db.project.create({ data: { workspaceId: workspace.id, title: "Targeted execution gate", sourceMediaUrl: "r2://gate/source", ingestStatus: "ready" } });
+    const project = await db.project.create({ data: { workspaceId: workspace.id, title: "Targeted execution gate", sourceMediaUrl: "r2://gate/source", sourceStorageKey: "gate/source", ingestStatus: "ready" } });
     const workSetGeneration = crypto.randomUUID();
     const run = await db.workflowRun.create({ data: { projectId: project.id, stage: "clip_rendering", status: "queued", idempotencyKey: crypto.randomUUID(), renderWorkSetGeneration: workSetGeneration, renderWorkSetFrozenAt: new Date(), requestedCount: 1, deploymentEpoch: epoch } });
     const clip = await db.clip.create({ data: { projectId: project.id, workflowRunId: run.id, index: 0, startSec: 0, endSec: 10, hookText: "gate", reasoning: "gate", category: "hook", transcriptSlice: [], viralityScore: 50, hookStrengthScore: 50, emotionalIntensityScore: 50, pacingScore: 50, durationOptimalityScore: 50, tiktokScore: 50, youtubeScore: 50, instagramScore: 50, llmProvider: "gate", llmModel: "gate", editorRevision: 1 } });
@@ -79,7 +79,7 @@ dbDescribe("Targeted serverless domain execution", () => {
     const api = createExecutorControl({ database: db, subjectKind: "render_group", domain: value.lifecycle,
       prepareContext: async () => ({ source: "gate-source#1", analysis: null, toolchain: "gate-toolchain" }),
       deliverWakes: async (ids) => { wakes.push(...ids); },
-      artifacts: { head: async (assignment) => ({ etag: "gate-etag", contentType: assignment.contentType, byteLength: 1024n, sha256: "a".repeat(64) }),
+      artifacts: { head: async (assignment) => ({ etag: '"gate-etag"', contentType: assignment.contentType, byteLength: 1024n, sha256: "a".repeat(64) }),
         prepare: async (_assignment, artifact) => ({ ...artifact, role: "render_variant" as const, renderId: value.variant.id, durationSec: 10 }) },
     });
     return { api, wakes, send: (command: ExecutionCommand, receipt = verified()) => withServiceEnvironment({}, () => api.execute({ command, verifiedRequest: receipt })) };
@@ -88,6 +88,17 @@ dbDescribe("Targeted serverless domain execution", () => {
     return { action: "acquire", reference: value.reference, attemptToken: value.attemptToken, owner, leaseSeconds: 120 };
   }
   function fence(value: Awaited<ReturnType<typeof fixture>>) { return { reference: value.reference, attemptToken: value.attemptToken, owner: value.owner }; }
+
+  test("audio readiness cannot acquire rendering before verified video is ready", async () => {
+    const value = await fixture();
+    await db.project.update({ where: { id: value.run.projectId }, data: { ingestStatus: "downloading", sourceStorageKey: null } });
+    const server = control(value);
+    await expect(server.send(acquire(value))).rejects.toThrow();
+    expect(await db.renderGroup.findUniqueOrThrow({ where: { id: value.group.id } })).toMatchObject({ status: "queued", attemptToken: null, chargedAttemptCount: 0 });
+    expect(await db.executionAttempt.findUniqueOrThrow({ where: { attemptToken: value.attemptToken } })).toMatchObject({ status: "admitted", owner: null });
+    await db.project.update({ where: { id: value.run.projectId }, data: { ingestStatus: "ready", sourceStorageKey: "gate/source" } });
+    expect((await server.send(acquire(value))).disposition).toBe("acquired");
+  }, 90_000);
 
   test("a pre-start release creates no charged render attempt and admits one new generation", async () => {
     const value = await fixture();
@@ -140,7 +151,7 @@ dbDescribe("Targeted serverless domain execution", () => {
     const assignment = await db.executionArtifact.create({ data: { attemptToken: value.attemptToken, owner: value.owner, role: "render_variant", bindingHash: "b".repeat(64),
       storageKey: `execution/${epoch}/${value.attemptToken}/${value.owner}/variant.mp4`, contentType: "video/mp4", maxBytes: 4096n, grantExpiresAt: value.deadline } });
     const result = await server.send({ action: "commit-artifact", fence: fence(value), artifact: { artifactId: assignment.id, role: "render_variant", contentType: "video/mp4",
-      byteLength: 1024, sha256: "a".repeat(64), etag: "gate-etag", bindingHash: assignment.bindingHash } });
+      byteLength: 1024, sha256: "a".repeat(64), etag: '"gate-etag"', bindingHash: assignment.bindingHash } });
     expect(result).toEqual({ disposition: "committed", artifactId: assignment.id });
     expect(await db.renderGroup.findUniqueOrThrow({ where: { id: value.group.id } })).toMatchObject({ status: "completed", chargedAttemptCount: 1, attemptToken: null });
     expect(await db.executionAttempt.findUniqueOrThrow({ where: { attemptToken: value.attemptToken } })).toMatchObject({ status: "completed" });

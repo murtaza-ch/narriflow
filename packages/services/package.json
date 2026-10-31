@@ -441,6 +441,10 @@
     "./execution-storage": {
       "types": "./src/execution-storage.ts",
       "default": "./src/execution-storage.ts"
+    },
+    "./modal-bridge": {
+      "types": "./src/modal-bridge.ts",
+      "default": "./src/modal-bridge.ts"
     }
   },
   "scripts": {

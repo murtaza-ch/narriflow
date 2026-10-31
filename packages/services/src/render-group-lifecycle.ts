@@ -490,7 +490,8 @@ export class RenderGroupLifecycle {
     await tx.$queryRaw`SELECT "id" FROM "RenderGroup" WHERE "id" = ${ref.groupId}::uuid FOR UPDATE`;
     const group = await tx.renderGroup.findUniqueOrThrow({ where: { id: ref.groupId } });
     const now = await renderGroupDatabaseNow(tx);
-    if (!parent || group.generation !== ref.generation || group.deploymentEpoch !== ref.deploymentEpoch ||
+    const source = parent ? await tx.project.findUnique({ where: { id: parent.projectId }, select: { ingestStatus: true, sourceStorageKey: true } }) : null;
+    if (!parent || source?.ingestStatus !== "ready" || !source.sourceStorageKey || group.generation !== ref.generation || group.deploymentEpoch !== ref.deploymentEpoch ||
       group.status !== "queued" || (group.nextAttemptAt && group.nextAttemptAt > now) ||
       context.leaseExpiresAt <= now || context.leaseExpiresAt > context.operationDeadlineAt || context.operationDeadlineAt <= now ||
       (group.operationDeadlineAt && group.operationDeadlineAt.getTime() !== context.operationDeadlineAt.getTime())) throw new RenderGroupAttemptLost(attempt);

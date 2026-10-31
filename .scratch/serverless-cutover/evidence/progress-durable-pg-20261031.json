@@ -1,11 +1,12 @@
 {
   "date": "2026-10-31",
   "target": "isolated serverless gate Neon branch; credentials excluded",
-  "passed": 6,
+  "passed": 7,
   "failed": 0,
   "checks": [
     "event_and_destination_obligation_atomic_rollback",
     "lost_do_ack_keeps_durable_retry_checkpoint",
+    "uncertain_postcommit_push_registers_bounded_retry",
     "public_membership_removal_commits_before_push",
     "rollback_and_deleted_project_revocation",
     "bounded_workspace_fanout_with_durable_continuation",
@@ -13,13 +14,12 @@
   ],
   "fixtureCleanup": "All tagged fixture users/workspaces/projects and their dispatch rows deleted. Epoch unchanged.",
   "limitations": [
-    "The injected destination port tests durable PostgreSQL delivery semantics; actual DO transport is tested in the separate workerd gates.",
-    "Root Worker scheduler must register project_progress and immediately arrange continuationDispatchIds for later bounded pages.",
-    "Protected deployed full hibernation and end-to-end candidate smokes remain required."
+    "The injected destination port tests PostgreSQL delivery semantics. Actual101Project continuation and uncertain acknowledgement recovery also pass in workflows-workerd-20261031.json.",
+    "Protected deployed hibernation and candidate end-to-end smokes remain required."
   ],
   "sha256": {
-    "packages/services/src/progress-outbox.ts": "48e41b4d007d191097e6314b2c6232d7f51ba0d90185e687bcc31b080d887322",
-    "packages/services/src/progress-outbox.db.test.ts": "2a25bc451fcb46c6844466936260139a867331bcabe746e6aa39c276058626b4",
+    "packages/services/src/progress-outbox.ts": "24274559d4300eba79d93d1d67240fa721823d1b7d5c086617fae0075903c3ea",
+    "packages/services/src/progress-outbox.db.test.ts": "a1a41256a7aef247b30411e4ad6ce801e0b49b4148b440b8eba1e4382cef1850",
     "packages/services/src/workflow-event-append.ts": "4b5017fd342c199f0d8701c2b8620b01cd5de777ac19ed4a30db050f6f2302b1",
     "packages/services/src/ingest-job-lifecycle.ts": "39632765a303bc366bef5ad010a0a6f1b291319f9c164554e4279537d4b71e92",
     "packages/services/src/workspace-membership.service.ts": "c187e83b2cd100e7fe038ef4685ee21c1dce7688c5af273c1f539fffab46cb16",

@@ -1,3 +1,4 @@
+import { registerProgressContinuations } from "./workflows/scheduler";
 import { withProgressDelivery } from "@narriflow/services/progress-delivery";
 import { withRateLimiter } from "@narriflow/services/rate-limit";
 import { withPexelsSearchCache } from "@narriflow/services/pexels.service";
@@ -19,6 +20,7 @@ export function withWorkerServices<Result>(bindings: ApiWorkerBindings, environm
   return withServiceEnvironment(environment, () => withRateLimiter(createRateLimiterClient(bindings.RATE_LIMITER), () =>
     withPexelsSearchCache(typeof caches === "undefined" ? null : createPexelsSearchCache((caches as CacheStorage & { default: Cache }).default), () => withProgressDelivery({
       publish: (scope, event) => bindings.PROJECT_PROGRESS.getByName(scope.projectId).publish(scope, event),
+      registerContinuations: (ids) => registerProgressContinuations(bindings, ids),
       revoke: (input) => bindings.PROJECT_PROGRESS.getByName(input.projectId).revoke(input),
     }, operation))));
 }

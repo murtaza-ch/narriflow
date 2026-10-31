@@ -1,6 +1,6 @@
 import { appendProgressEventDispatch } from "./progress-outbox";
 import { randomUUID } from "node:crypto";
-import { Prisma, type PrismaClient, type IngestJob } from "@prisma/client";
+import { Prisma, type PrismaClient, type IngestJob, type SourceAudio, type Project } from "@prisma/client";
 import {
   defaultAspectRatioSchema,
   finishingSettingsSchema,
@@ -20,6 +20,7 @@ import { accessibleProjectWhere } from "./project-access";
 import { autoTriggerIdempotencyKey } from "./generation-sequencing";
 import {
   decideAutoRetry,
+  autoRetryBackoffMs,
   claimBackoffWhereClauses,
   INGEST_AUTO_RETRY_MAX_ATTEMPTS,
   INGEST_RETRIES_EXHAUSTED_CODE,
@@ -28,11 +29,34 @@ import {
 import type { WorkflowRunLifecycle } from "./workflow-run-lifecycle";
 import {
   PROCESSING_USAGE_TRANSACTION,
+  lockWorkspaceUsage,
   type ProcessingUsage,
 } from "./processing-usage";
 import { admitMediaCleanupObligations } from "./media-cleanup";
 import { emitIntakeFinished, queueIntakeFinishedByGeneration } from "./operation-finished";
 import { flushWorkspaceEvents } from "./workspace-event";
+
+import { sourceAudioBindingSchema, sourceVideoBindingSchema, type SourceAudioBinding, type SourceVideoBinding, type ExecutionDispatchReference, type ExecutionDisposition, executionDispatchReferenceSchema } from "@narriflow/validators/execution";
+import { sourceAudioBindingHash } from "./source-audio-binding";
+import { appendExecutionDispatch, readExecutionDispatch } from "./execution-dispatch";
+import type { ExecutorArtifactCommit, ExecutorDomainLock, ExecutorFailureInput, ExecutorMutationContext, ExecutorMutationResult, ExecutorProgressInput, ExecutorReleaseInput, ExecutorExpiryObservation, ExecutorExpiryResult } from "./executor-domain-control";
+
+export interface IngestExecutionReference {
+  id: string;
+  projectId: string;
+  generation: number;
+  deploymentEpoch: number;
+  sourceRevision: number;
+  attemptToken: string;
+}
+export type IngestArtifactCommit = ExecutorArtifactCommit & (
+  { role: "source_audio"; binding: SourceAudioBinding } | { role: "source_video"; binding: SourceVideoBinding }
+);
+export type IngestVideoValidator = (tx: Prisma.TransactionClient, input: {
+  ref: IngestExecutionReference;
+  artifact: ExecutorArtifactCommit & { role: "source_video"; binding: SourceVideoBinding };
+  sourceAudio: SourceAudio | null;
+}) => Promise<{ kind: "accepted" | "waiting_for_audio" } | { kind: "rejected"; failureCode: "source_audio_video_mismatch" }>;
 
 // Placeholder until the Scribe worker adapter lands (ticket 06).
 const PENDING_STT_PROVIDER_MODEL = SCRIBE_MODEL_ID;
@@ -83,7 +107,12 @@ export class IngestRetryLimitExceededError extends ExpectedDomainFailureError<
     });
   }
 }
-class IngestGenerationAlreadyAdmitted extends Error {}
+export type IngestGenerationHandoffResult = {
+  kind: "admitted" | "acknowledged" | "waiting_for_pack" | "not_ready" | "superseded" | "refused" | "deferred";
+  dispatchIds: string[];
+  workflowRunId?: string;
+  retryAt?: Date;
+};
 
 export interface IngestClaimRef {
   id: string;
@@ -106,11 +135,13 @@ export type IngestFailureDecision =
 type Tx = Prisma.TransactionClient;
 export interface IngestJobLifecycleDependencies {
   prisma: PrismaClient;
-  workflow: Pick<WorkflowRunLifecycle, "admitWithHandoff">;
+  workflow: Pick<WorkflowRunLifecycle, "admitWithHandoff" | "dispatchRunWithinTransaction">;
   usage: Pick<ProcessingUsage, "reserve" | "settle" | "release">;
   requireRetryActor(actorUserId: string, workspaceId: string): Promise<unknown>;
   progressRequired?: boolean;
   sourceBucket?: string;
+  /** Required for video publication. Performs only typed validation/DB facts, never R2 I/O under locks. */
+  validateVideo?: IngestVideoValidator;
   now?: () => Date;
   leaseMs?: number;
   heartbeatMs?: number;
@@ -243,6 +274,192 @@ export class IngestJobLifecycle {
     );
     return { id: job.id };
   }
+  private async executionState(tx: Tx, reference: ExecutionDispatchReference, attemptToken: string): Promise<
+    { kind: "current"; ref: IngestExecutionReference; job: IngestJob; now: Date } | { kind: "terminal"; disposition: ExecutionDisposition }
+  > {
+    if (reference.subject.kind !== "ingest_job") return { kind: "terminal", disposition: { disposition: "superseded" } };
+    const initial = await tx.ingestJob.findUnique({ where: { id: reference.subject.id }, include: { project: { select: { workspaceId: true } } } });
+    if (!initial) return { kind: "terminal", disposition: { disposition: "superseded" } };
+    await lockWorkspaceUsage(tx, initial.project.workspaceId);
+    await this.lockGeneration(tx, initial.projectId);
+    await tx.$queryRaw`SELECT "id" FROM "IngestJob" WHERE "id" = ${initial.id}::uuid FOR UPDATE`;
+    const job = await tx.ingestJob.findUnique({ where: { id: initial.id } });
+    const project = await tx.project.findUnique({ where: { id: initial.projectId }, select: { sourceRevision: true } });
+    const now = await this.now(tx);
+    if (!job || !project || job.deploymentEpoch !== reference.deploymentEpoch || job.generation !== reference.generation || job.sourceRevision !== project.sourceRevision) {
+      return { kind: "terminal", disposition: { disposition: "superseded" } };
+    }
+    if (job.status === "completed") return { kind: "terminal", disposition: { disposition: "completed" } };
+    if (job.status === "cancelled") return { kind: "terminal", disposition: { disposition: "cancelled" } };
+    if (job.status === "failed") return { kind: "terminal", disposition: { disposition: "failed", failureCode: "source_ingest_failed" } };
+    if (job.status === "running" && job.claimId !== attemptToken) return { kind: "terminal", disposition: { disposition: "superseded" } };
+    return { kind: "current", ref: { id: job.id, projectId: job.projectId, generation: job.generation, deploymentEpoch: job.deploymentEpoch, sourceRevision: job.sourceRevision, attemptToken }, job, now };
+  }
+
+  async lockExecution(tx: Tx, reference: ExecutionDispatchReference, attemptToken: string): Promise<ExecutorDomainLock<IngestExecutionReference>> {
+    const state = await this.executionState(tx, reference, attemptToken);
+    if (state.kind === "terminal") return state;
+    const project = await tx.project.findFirst({ where: { id: state.ref.projectId, ...accessibleProjectWhere(state.now), workspace: { status: "active" } }, select: { id: true } });
+    return project ? { kind: "current", ref: state.ref } : { kind: "terminal", disposition: { disposition: "cancelled" } };
+  }
+
+  private executionClaim(ref: IngestExecutionReference, context: ExecutorMutationContext): IngestClaimRef {
+    if (context.reference.subject.kind !== "ingest_job" || context.reference.subject.id !== ref.id || context.reference.generation !== ref.generation ||
+      context.reference.deploymentEpoch !== ref.deploymentEpoch || context.attemptToken !== ref.attemptToken) throw new IngestJobClaimLost(ref.id);
+    return { id: ref.id, projectId: ref.projectId, claimId: ref.attemptToken };
+  }
+
+  private async ownedExecution(tx: Tx, ref: IngestExecutionReference, context: ExecutorMutationContext) {
+    const claim = this.executionClaim(ref, context);
+    const now = await this.now(tx);
+    const job = await tx.ingestJob.findFirst({ where: { ...this.owned(claim, now), generation: ref.generation, deploymentEpoch: ref.deploymentEpoch,
+      executorOwner: context.owner, sourceRevision: ref.sourceRevision, operationDeadlineAt: { gt: now }, project: { sourceRevision: ref.sourceRevision } } });
+    if (!job) throw new IngestJobClaimLost(ref.id);
+    return { claim, job, now };
+  }
+
+  async acquireExecution(tx: Tx, ref: IngestExecutionReference, context: ExecutorMutationContext): Promise<ExecutorMutationResult> {
+    const claim = this.executionClaim(ref, context);
+    const job = await tx.ingestJob.findUniqueOrThrow({ where: { id: ref.id } });
+    const now = await this.now(tx);
+    const retryAt = job.attemptCount === 0 ? job.createdAt : new Date(job.updatedAt.getTime() + autoRetryBackoffMs(job.attemptCount));
+    if (job.status !== "queued" || job.claimId || job.executorOwner || job.generation !== ref.generation || job.deploymentEpoch !== ref.deploymentEpoch ||
+      job.sourceRevision !== ref.sourceRevision || job.attemptCount >= INGEST_AUTO_RETRY_MAX_ATTEMPTS || retryAt > now || context.leaseExpiresAt <= now || context.leaseExpiresAt > context.operationDeadlineAt ||
+      context.operationDeadlineAt <= now || (job.operationDeadlineAt && job.operationDeadlineAt.getTime() !== context.operationDeadlineAt.getTime())) throw new IngestJobClaimLost(claim.id);
+    await tx.ingestJob.update({ where: { id: job.id }, data: { status: "running", claimId: claim.claimId, executorOwner: context.owner,
+      claimExpiresAt: context.leaseExpiresAt, operationDeadlineAt: context.operationDeadlineAt, startedAt: null, completedAt: null } });
+    const absolute = await appendExecutionDispatch(tx, { deploymentEpoch: ref.deploymentEpoch, kind: "operation_driver", subject: { kind: "ingest_job", id: ref.id },
+      generation: ref.generation, inputHash: context.reference.inputHash, dueAt: context.operationDeadlineAt, deadlineKind: "operation", observedDeadlineAt: context.operationDeadlineAt });
+    const acquired = await appendExecutionDispatch(tx, { deploymentEpoch: ref.deploymentEpoch, kind: "operation_driver", subject: { kind: "ingest_job", id: ref.id },
+      generation: ref.generation, inputHash: context.reference.inputHash, dueAt: now, wakeKind: "execution_acquired", deadlineKind: "lease", observedDeadlineAt: context.leaseExpiresAt });
+    return { dispatchIds: [absolute.reference.dispatchId, acquired.reference.dispatchId] };
+  }
+
+  async renewExecution(tx: Tx, ref: IngestExecutionReference, context: ExecutorMutationContext): Promise<ExecutorMutationResult> {
+    const { job, now } = await this.ownedExecution(tx, ref, context);
+    if (!job.operationDeadlineAt || job.operationDeadlineAt.getTime() !== context.operationDeadlineAt.getTime() || context.leaseExpiresAt <= now ||
+      context.leaseExpiresAt > job.operationDeadlineAt) throw new IngestJobClaimLost(ref.id);
+    await tx.ingestJob.update({ where: { id: ref.id }, data: { claimExpiresAt: context.leaseExpiresAt } });
+    return undefined;
+  }
+
+  async startExecution(tx: Tx, ref: IngestExecutionReference, context: ExecutorMutationContext): Promise<ExecutorMutationResult> {
+    const { job, now } = await this.ownedExecution(tx, ref, context);
+    if (job.startedAt) return undefined;
+    await tx.ingestJob.update({ where: { id: ref.id }, data: { startedAt: now, attemptCount: { increment: 1 } } });
+    return undefined;
+  }
+
+  private async executionWakes(tx: Tx, ref: IngestExecutionReference, inputHash: string, wakeKind: string, retryAt?: Date): Promise<{ dispatchIds: string[] }> {
+    const current = retryAt ? await tx.ingestJob.update({ where: { id: ref.id }, data: { generation: { increment: 1 } } })
+      : await tx.ingestJob.findUniqueOrThrow({ where: { id: ref.id } });
+    const now = await this.now(tx);
+    const parent = await appendExecutionDispatch(tx, { deploymentEpoch: ref.deploymentEpoch, kind: "import_pipeline", subject: { kind: "ingest_job", id: ref.id },
+      generation: current.generation, inputHash, dueAt: now, wakeKind });
+    const ids = [parent.reference.dispatchId];
+    if (wakeKind !== "audio_ready" && wakeKind !== "video_evidence_ready") {
+      const finished = await appendExecutionDispatch(tx, { deploymentEpoch: ref.deploymentEpoch, kind: "operation_driver", subject: { kind: "ingest_job", id: ref.id },
+        generation: ref.generation, inputHash, dueAt: now, wakeKind: "execution_finished" });
+      ids.push(finished.reference.dispatchId);
+    }
+    if (retryAt) {
+      const retry = await appendExecutionDispatch(tx, { deploymentEpoch: ref.deploymentEpoch, kind: "operation_driver", subject: { kind: "ingest_job", id: ref.id },
+        generation: current.generation, inputHash, dueAt: retryAt });
+      ids.push(retry.reference.dispatchId);
+    }
+    return { dispatchIds: ids };
+  }
+
+  async commitArtifactExecution(tx: Tx, ref: IngestExecutionReference, context: ExecutorMutationContext, artifact: IngestArtifactCommit): Promise<ExecutorMutationResult> {
+    await this.ownedExecution(tx, ref, context);
+    if (artifact.role === "source_audio") {
+      const binding = sourceAudioBindingSchema.parse(artifact.binding);
+      if (binding.projectId !== ref.projectId || binding.sourceRevision !== ref.sourceRevision || binding.object.key !== artifact.storageKey ||
+        BigInt(binding.object.byteLength) !== artifact.byteLength || binding.object.etag !== artifact.etag || binding.object.sha256 !== artifact.sha256) throw new IngestJobClaimLost(ref.id);
+      const bindingHash = await sourceAudioBindingHash(binding);
+      const existing = await tx.sourceAudio.findUnique({ where: { projectId_sourceRevision: { projectId: ref.projectId, sourceRevision: ref.sourceRevision } } });
+      if (existing && (existing.id !== binding.sourceAudioId || existing.bindingHash !== bindingHash)) throw new IngestJobClaimLost(ref.id);
+      if (!existing) await tx.sourceAudio.create({ data: { id: binding.sourceAudioId, projectId: ref.projectId, sourceRevision: ref.sourceRevision,
+        mediaProvider: binding.mediaIdentity.provider, mediaId: binding.mediaIdentity.mediaId, audioTrack: binding.audioTrack, bindingHash,
+        storageKey: binding.object.key, etag: binding.object.etag, byteLength: BigInt(binding.object.byteLength), checksumSha256: binding.object.sha256,
+        durationSeconds: binding.durationSeconds, audioStartTimeSec: binding.audioStartTimeSec, probeVersion: binding.probeVersion, toolchainFingerprint: binding.toolchainFingerprint } });
+      const wakes = await this.executionWakes(tx, ref, context.reference.inputHash, "audio_ready");
+      // Video can commit first. Only this invocation's sealed evidence is eligible.
+      const pending = await tx.executionArtifact.findMany({ where: { attemptToken: context.attemptToken, owner: context.owner, role: "source_video",
+        committedAt: { not: null }, sourceVideoBinding: { not: Prisma.DbNull } }, take: 2 });
+      if (pending.length > 1) throw new Error("source_video_evidence_ambiguous");
+      const video = pending[0];
+      if (!video) return wakes;
+      if (video.byteLength === null || video.checksumSha256 === null || video.etag === null) throw new Error("source_video_evidence_incomplete");
+      const finalized = await this.finalizeVideoExecution(tx, ref, context, { artifactId: video.id, role: "source_video", storageKey: video.storageKey,
+        contentType: video.contentType, byteLength: video.byteLength, sha256: video.checksumSha256, etag: video.etag, bindingHash: video.bindingHash,
+        binding: sourceVideoBindingSchema.parse(video.sourceVideoBinding) });
+      return { dispatchIds: [...wakes.dispatchIds, ...(finalized?.dispatchIds ?? [])] };
+    }
+    if (artifact.role !== "source_video") throw new Error("source_artifact_role_invalid");
+    const binding = sourceVideoBindingSchema.parse(artifact.binding);
+    if (binding.projectId !== ref.projectId || binding.sourceRevision !== ref.sourceRevision) throw new IngestJobClaimLost(ref.id);
+    await tx.executionArtifact.update({ where: { id: artifact.artifactId }, data: { sourceVideoBinding: binding as unknown as Prisma.InputJsonValue } });
+    return this.finalizeVideoExecution(tx, ref, context, { ...artifact, binding });
+  }
+
+  private async finalizeVideoExecution(tx: Tx, ref: IngestExecutionReference, context: ExecutorMutationContext,
+    artifact: ExecutorArtifactCommit & { role: "source_video"; binding: SourceVideoBinding }): Promise<ExecutorMutationResult> {
+    if (!this.deps.validateVideo) throw new Error("source_video_validation_unavailable");
+    const { claim, job, now } = await this.ownedExecution(tx, ref, context);
+    const audio = await tx.sourceAudio.findUnique({ where: { projectId_sourceRevision: { projectId: ref.projectId, sourceRevision: ref.sourceRevision } } });
+    const decision = await this.deps.validateVideo(tx, { ref, artifact, sourceAudio: audio });
+    if (decision.kind === "waiting_for_audio") return this.executionWakes(tx, ref, context.reference.inputHash, "video_evidence_ready");
+    if (decision.kind === "rejected") {
+      const result = await this.settleFailure(tx, job, this.owned(claim, now), decision.failureCode, decision.failureCode, `${claim.claimId}:source_mismatch`, now, "permanent");
+      if (!result) throw new IngestJobClaimLost(ref.id);
+      return this.executionWakes(tx, ref, context.reference.inputHash, "ingest_failed");
+    }
+    await this.completeWithinTransaction(tx, claim, { sourceStorageKey: artifact.storageKey, sourceMimeType: artifact.contentType,
+      sourceSizeBytes: Number(artifact.byteLength), sourceDurationSeconds: Math.ceil(artifact.binding.probe.durationSec), sourceProbe: artifact.binding.probe });
+    return this.executionWakes(tx, ref, context.reference.inputHash, "video_ready");
+  }
+
+  async failExecution(tx: Tx, ref: IngestExecutionReference, context: ExecutorMutationContext, failure: ExecutorFailureInput): Promise<ExecutorMutationResult> {
+    const { claim, job, now } = await this.ownedExecution(tx, ref, context);
+    const decision = await this.settleFailure(tx, job, this.owned(claim, now), failure.failureCode, failure.failureCode,
+      `${claim.claimId}:failed`, now, failure.retryable ? undefined : "permanent");
+    if (!decision) throw new IngestJobClaimLost(ref.id);
+    return this.executionWakes(tx, ref, context.reference.inputHash, "ingest_outcome", decision.outcome === "requeue" ? new Date(now.getTime() + autoRetryBackoffMs(job.attemptCount)) : undefined);
+  }
+
+  async releaseExecution(tx: Tx, ref: IngestExecutionReference, context: ExecutorMutationContext, release: ExecutorReleaseInput): Promise<ExecutorMutationResult> {
+    const { claim, now } = await this.ownedExecution(tx, ref, context);
+    await this.releaseWithinTransaction(tx, claim);
+    return this.executionWakes(tx, ref, context.reference.inputHash, "ingest_released", new Date(now.getTime() + (release.reason === "startup_rejected" ? 0 : 30_000)));
+  }
+
+  async progressExecution(tx: Tx, ref: IngestExecutionReference, context: ExecutorMutationContext, progress: ExecutorProgressInput): Promise<ExecutorMutationResult> {
+    const { claim } = await this.ownedExecution(tx, ref, context);
+    await this.progressWithinTransaction(tx, claim, progress.phase === "downloading" ? "downloading" : "normalizing");
+    return undefined;
+  }
+
+  async expireExecution(tx: Tx, reference: ExecutionDispatchReference, attemptToken: string, observation: ExecutorExpiryObservation): Promise<ExecutorExpiryResult> {
+    if (!["lease", "operation"].includes(observation.kind) || !Number.isFinite(observation.observedDeadlineAt.getTime())) throw new Error("Invalid execution deadline observation");
+    const state = await this.executionState(tx, reference, attemptToken);
+    if (state.kind === "terminal") return { kind: state.disposition.disposition === "superseded" ? "superseded" : "terminal" };
+    const { job, ref, now } = state;
+    const admitted = await tx.executionAttempt.findFirst({ where: { attemptToken, deploymentEpoch: reference.deploymentEpoch, generation: reference.generation, inputHash: reference.inputHash,
+      dispatch: { id: reference.dispatchId, kind: reference.kind, subjectKind: "ingest_job", subjectId: ref.id } } });
+    if (!admitted || (job.operationDeadlineAt && job.operationDeadlineAt.getTime() !== admitted.operationDeadlineAt.getTime()) ||
+      (observation.kind === "operation" && observation.observedDeadlineAt.getTime() !== admitted.operationDeadlineAt.getTime())) return { kind: "superseded" };
+    const absolute = admitted.operationDeadlineAt;
+    const deadline = job.status === "running" && job.claimExpiresAt ? new Date(Math.min(job.claimExpiresAt.getTime(), absolute.getTime())) : absolute;
+    if (deadline > now) return { kind: "sleep", dueAt: deadline };
+    const permanent = absolute <= now;
+    const decision = await this.settleFailure(tx, job, { id: job.id, generation: ref.generation, deploymentEpoch: ref.deploymentEpoch,
+      status: job.status, claimId: job.claimId, ...(job.status === "running" ? { claimExpiresAt: { lte: now } } : {}) }, permanent ? "operation_deadline_exceeded" : "worker_stalled",
+      permanent ? "Source acquisition deadline expired" : "Ingest execution lease expired", `${attemptToken}:expired`, now, permanent ? "permanent" : undefined);
+    if (!decision) return { kind: "superseded" };
+    return { kind: "expired", ...await this.executionWakes(tx, ref, reference.inputHash, "ingest_expired", decision.outcome === "requeue" ? new Date(now.getTime() + autoRetryBackoffMs(job.attemptCount)) : undefined) };
+  }
+
   async claim(
     options: { youtubeAvailable?: boolean } = {},
   ): Promise<ClaimedIngestJob | null> {
@@ -314,49 +531,59 @@ export class IngestJobLifecycle {
     });
   }
   async renew(claim: IngestClaimRef): Promise<void> {
-    await this.deps.prisma.$transaction(async (tx) => {
-      const now = await this.now(tx);
-      const updated = await tx.ingestJob.updateMany({
-        where: this.owned(claim, now),
-        data: { claimExpiresAt: new Date(now.getTime() + this.leaseMs) },
-      });
-      if (!updated.count) throw new IngestJobClaimLost(claim.id);
+    return this.deps.prisma.$transaction((tx) => this.renewWithinTransaction(tx, claim));
+  }
+  /** Caller owns the transaction and flushes Workspace Events after all domain locks. */
+  async renewWithinTransaction(tx: Tx, claim: IngestClaimRef): Promise<void> {
+
+
+    const now = await this.now(tx);
+    const updated = await tx.ingestJob.updateMany({
+      where: this.owned(claim, now),
+      data: { claimExpiresAt: new Date(now.getTime() + this.leaseMs) },
     });
+    if (!updated.count) throw new IngestJobClaimLost(claim.id);
   }
   async progress(
     claim: IngestClaimRef,
     status: "downloading" | "normalizing",
   ): Promise<void> {
-    await this.deps.prisma.$transaction(async (tx) => {
-      const now = await this.now(tx);
-      const updated = await tx.ingestJob.updateMany({
-        where: this.owned(claim, now),
-        data: {
-          lastError: null,
-          claimExpiresAt: new Date(now.getTime() + this.leaseMs),
-        },
-      });
-      if (!updated.count) throw new IngestJobClaimLost(claim.id);
-      const project = await tx.project.updateMany({
-        where: { id: claim.projectId, ...accessibleProjectWhere(now) },
-        data: { ingestStatus: status, ingestErrorCode: null },
-      });
-      if (!project.count) throw new IngestJobClaimLost(claim.id);
-      await this.event(
-        tx,
-        {
-          ...claim,
-          transition: `${claim.claimId}:${status}`,
-          stage:
-            status === "downloading"
-              ? "ingest_downloading"
-              : "ingest_normalizing",
-          status: "running",
-          progress: status === "downloading" ? 40 : 75,
-        },
-        now,
-      );
+    return this.deps.prisma.$transaction((tx) => this.progressWithinTransaction(tx, claim, status));
+  }
+  /** Caller owns the transaction and flushes Workspace Events after all domain locks. */
+  async progressWithinTransaction(tx: Tx, 
+    claim: IngestClaimRef,
+    status: "downloading" | "normalizing",
+  ): Promise<void> {
+
+
+    const now = await this.now(tx);
+    const updated = await tx.ingestJob.updateMany({
+      where: this.owned(claim, now),
+      data: {
+        lastError: null,
+      },
     });
+    if (!updated.count) throw new IngestJobClaimLost(claim.id);
+    const project = await tx.project.updateMany({
+      where: { id: claim.projectId, ...accessibleProjectWhere(now) },
+      data: { ingestStatus: status, ingestErrorCode: null },
+    });
+    if (!project.count) throw new IngestJobClaimLost(claim.id);
+    await this.event(
+      tx,
+      {
+        ...claim,
+        transition: `${claim.claimId}:${status}`,
+        stage:
+          status === "downloading"
+            ? "ingest_downloading"
+            : "ingest_normalizing",
+        status: "running",
+        progress: status === "downloading" ? 40 : 75,
+      },
+      now,
+    );
   }
   async complete(
     claim: IngestClaimRef,
@@ -370,52 +597,67 @@ export class IngestJobLifecycle {
       sourceProbe?: SourceProbe | null;
     },
   ): Promise<void> {
+    return this.deps.prisma.$transaction((tx) => this.completeWithinTransaction(tx, claim, source));
+  }
+  /** Caller owns the transaction and flushes Workspace Events after all domain locks. */
+  async completeWithinTransaction(tx: Tx, 
+    claim: IngestClaimRef,
+    source: {
+      sourceStorageKey: string;
+      sourceMediaUrl?: string;
+      sourceInput?: string | null;
+      sourceMimeType?: string | null;
+      sourceSizeBytes?: number | null;
+      sourceDurationSeconds?: number | null;
+      sourceProbe?: SourceProbe | null;
+    },
+  ): Promise<void> {
     const { sourceProbe, ...sourceFacts } = source;
-    await this.deps.prisma.$transaction(async (tx) => {
-      const now = await this.now(tx);
-      const updated = await tx.ingestJob.updateMany({
-        where: this.owned(claim, now),
-        data: {
-          status: "completed",
-          claimId: null,
-          claimExpiresAt: null,
-          completedAt: now,
-          lastError: null,
-          sourceCredential: null,
-          generationHandoffAt: null,
-          generationHandoffRetryAt: null,
-        },
-      });
-      if (!updated.count) throw new IngestJobClaimLost(claim.id);
-      await tx.project.update({
-        where: { id: claim.projectId },
-        data: {
-          ...sourceFacts,
-          sourceMediaUrl:
-            source.sourceMediaUrl ??
-            `r2://${this.deps.sourceBucket ?? "unknown-bucket"}/${source.sourceStorageKey}`,
-          sourceSizeBytes:
-            typeof source.sourceSizeBytes === "number"
-              ? BigInt(source.sourceSizeBytes)
-              : undefined,
-          sourceProbe: sourceProbe ?? Prisma.DbNull,
-          ingestStatus: "ready",
-          ingestErrorCode: null,
-          ingestCompletedAt: now,
-        },
-      });
-      await this.event(
-        tx,
-        {
-          ...claim,
-          transition: `${claim.claimId}:completed`,
-          stage: "ingest_ready",
-          status: "completed",
-          progress: 100,
-        },
-        now,
-      );
+
+    const now = await this.now(tx);
+    const updated = await tx.ingestJob.updateMany({
+      where: this.owned(claim, now),
+      data: {
+        status: "completed",
+        claimId: null,
+        claimExpiresAt: null,
+        executorOwner: null,
+        completedAt: now,
+        lastError: null,
+        sourceCredential: null,
+        generationHandoffAt: null,
+        generationHandoffRetryAt: null,
+      },
     });
+    if (!updated.count) throw new IngestJobClaimLost(claim.id);
+    await tx.project.update({
+      where: { id: claim.projectId },
+      data: {
+        ...sourceFacts,
+        sourceMediaUrl:
+          source.sourceMediaUrl ??
+          `r2://${this.deps.sourceBucket ?? "unknown-bucket"}/${source.sourceStorageKey}`,
+        sourceSizeBytes:
+          typeof source.sourceSizeBytes === "number"
+            ? BigInt(source.sourceSizeBytes)
+            : undefined,
+        sourceProbe: sourceProbe ?? Prisma.DbNull,
+        ingestStatus: "ready",
+        ingestErrorCode: null,
+        ingestCompletedAt: now,
+      },
+    });
+    await this.event(
+      tx,
+      {
+        ...claim,
+        transition: `${claim.claimId}:completed`,
+        stage: "ingest_ready",
+        status: "completed",
+        progress: 100,
+      },
+      now,
+    );
   }
   /** Records an ingest-owned pinned copy of a verified upload as the Project
    * source and schedules the grantable upload key for Media Cleanup after any
@@ -428,28 +670,39 @@ export class IngestJobLifecycle {
       releaseNotBefore: Date;
     },
   ): Promise<void> {
-    await this.deps.prisma.$transaction(async (tx) => {
-      const now = await this.now(tx);
-      const owned = await tx.ingestJob.updateMany({
-        where: this.owned(claim, now),
-        data: { claimExpiresAt: new Date(now.getTime() + this.leaseMs) },
-      });
-      if (!owned.count) throw new IngestJobClaimLost(claim.id);
-      await tx.project.update({
-        where: { id: claim.projectId },
-        data: { sourceStorageKey: input.sourceStorageKey },
-      });
-      if (input.releasedStorageKey !== input.sourceStorageKey)
-        await admitMediaCleanupObligations(tx.mediaCleanupObligation, [
-          {
-            origin: "upload_source_pinning",
-            cleanupClass: "upload_source",
-            projectId: claim.projectId,
-            objectKey: input.releasedStorageKey,
-            notBefore: input.releaseNotBefore,
-          },
-        ]);
+    return this.deps.prisma.$transaction((tx) => this.pinSourceWithinTransaction(tx, claim, input));
+  }
+  /** Caller owns the transaction and flushes Workspace Events after all domain locks. */
+  async pinSourceWithinTransaction(tx: Tx, 
+    claim: IngestClaimRef,
+    input: {
+      sourceStorageKey: string;
+      releasedStorageKey: string;
+      releaseNotBefore: Date;
+    },
+  ): Promise<void> {
+
+
+    const now = await this.now(tx);
+    const owned = await tx.ingestJob.updateMany({
+      where: this.owned(claim, now),
+      data: { lastError: null },
     });
+    if (!owned.count) throw new IngestJobClaimLost(claim.id);
+    await tx.project.update({
+      where: { id: claim.projectId },
+      data: { sourceStorageKey: input.sourceStorageKey },
+    });
+    if (input.releasedStorageKey !== input.sourceStorageKey)
+      await admitMediaCleanupObligations(tx.mediaCleanupObligation, [
+        {
+          origin: "upload_source_pinning",
+          cleanupClass: "upload_source",
+          projectId: claim.projectId,
+          objectKey: input.releasedStorageKey,
+          notBefore: input.releaseNotBefore,
+        },
+      ]);
   }
   private async settleFailure(
     tx: Tx,
@@ -459,8 +712,9 @@ export class IngestJobLifecycle {
     message: string,
     transition: string,
     now: Date,
+    disposition?: "permanent",
   ): Promise<IngestFailureDecision | null> {
-    const decision = decideAutoRetry(
+    const decision = disposition === "permanent" ? { outcome: "permanent" as const, terminalErrorCode: code } : decideAutoRetry(
       job.attemptCount,
       code,
       INGEST_AUTO_RETRY_MAX_ATTEMPTS,
@@ -473,6 +727,7 @@ export class IngestJobLifecycle {
         status: terminal ? "failed" : "queued",
         claimId: null,
         claimExpiresAt: null,
+        executorOwner: null,
         startedAt: null,
         lastError: `${code}: ${message}`,
         completedAt: terminal ? now : null,
@@ -516,58 +771,73 @@ export class IngestJobLifecycle {
     code: string,
     message: string,
   ): Promise<IngestFailureDecision> {
-    return this.deps.prisma.$transaction(async (tx) => {
-      const now = await this.now(tx);
-      const job = await tx.ingestJob.findFirst({
-        where: this.owned(claim, now),
-      });
-      if (!job) throw new IngestJobClaimLost(claim.id);
-      const result = await this.settleFailure(
-        tx,
-        job,
-        this.owned(claim, now),
-        code,
-        message,
-        `${claim.claimId}:failed`,
-        now,
-      );
-      if (!result) throw new IngestJobClaimLost(claim.id);
-      return result;
+    return this.deps.prisma.$transaction((tx) => this.failWithinTransaction(tx, claim, code, message));
+  }
+  /** Caller owns the transaction and flushes Workspace Events after all domain locks. */
+  async failWithinTransaction(tx: Tx, 
+    claim: IngestClaimRef,
+    code: string,
+    message: string,
+  ): Promise<IngestFailureDecision> {
+
+
+    const now = await this.now(tx);
+    const job = await tx.ingestJob.findFirst({
+      where: this.owned(claim, now),
     });
+    if (!job) throw new IngestJobClaimLost(claim.id);
+    const result = await this.settleFailure(
+      tx,
+      job,
+      this.owned(claim, now),
+      code,
+      message,
+      `${claim.claimId}:failed`,
+      now,
+    );
+    if (!result) throw new IngestJobClaimLost(claim.id);
+    return result;
   }
   /** Graceful process shutdown is not a failed source attempt. Release its
    * claim immediately and refund the claim's automatic retry budget. */
   async release(claim: IngestClaimRef): Promise<void> {
-    await this.deps.prisma.$transaction(async (tx) => {
-      const now = await this.now(tx);
-      const updated = await tx.ingestJob.updateMany({
-        where: this.owned(claim, now),
-        data: {
-          status: "queued",
-          claimId: null,
-          claimExpiresAt: null,
-          startedAt: null,
-          attemptCount: { decrement: 1 },
-          updatedAt: now,
-        },
-      });
-      if (!updated.count) return;
-      await tx.project.update({
-        where: { id: claim.projectId },
-        data: { ingestStatus: "queued", ingestErrorCode: null },
-      });
-      await this.event(
-        tx,
-        {
-          ...claim,
-          transition: `${claim.claimId}:released`,
-          stage: "ingest_queued",
-          status: "queued",
-          progress: 5,
-        },
-        now,
-      );
+    return this.deps.prisma.$transaction((tx) => this.releaseWithinTransaction(tx, claim));
+  }
+  /** Caller owns the transaction and flushes Workspace Events after all domain locks. */
+  async releaseWithinTransaction(tx: Tx, claim: IngestClaimRef): Promise<void> {
+
+
+    const now = await this.now(tx);
+    const prior = await tx.ingestJob.findFirst({ where: this.owned(claim, now) });
+    if (!prior) return;
+    const updated = await tx.ingestJob.updateMany({
+      where: this.owned(claim, now),
+      data: {
+        status: "queued",
+        claimId: null,
+        claimExpiresAt: null,
+        executorOwner: null,
+        startedAt: null,
+        ...(prior.startedAt && prior.attemptCount > 0 ? { attemptCount: { decrement: 1 } } : {}),
+        updatedAt: now,
+      },
     });
+    if (!updated.count) return;
+    await tx.project.update({
+      where: { id: claim.projectId },
+      data: { ingestStatus: "queued", ingestErrorCode: null },
+    });
+    await this.event(
+      tx,
+      {
+        ...claim,
+        transition: `${claim.claimId}:released`,
+        stage: "ingest_queued",
+        status: "queued",
+        progress: 5,
+      },
+      now,
+    );
   }
   async reapExpired(limit = 100): Promise<number> {
     const now = await this.deps.prisma.$transaction((tx) => this.now(tx));
@@ -706,13 +976,126 @@ export class IngestJobLifecycle {
       };
     }, PROCESSING_USAGE_TRANSACTION);
   }
+  /** Executes one trusted Import Pipeline obligation. No queue scan grants authority. */
+  async handoffGeneration(reference: ExecutionDispatchReference): Promise<IngestGenerationHandoffResult> {
+    const parsed = executionDispatchReferenceSchema.safeParse(reference);
+    if (!parsed.success || parsed.data.kind !== "import_pipeline" || parsed.data.subject.kind !== "ingest_job") {
+      return { kind: "superseded", dispatchIds: [] };
+    }
+    return this.handoffGenerationForJob(parsed.data.subject.id, parsed.data);
+  }
+
+  private async lockHandoff(tx: Tx, id: string, reference?: ExecutionDispatchReference): Promise<
+    { kind: "superseded" | "not_ready" } | { kind: "ready"; job: IngestJob; project: Project; audio: SourceAudio | null; now: Date; epoch: number }
+  > {
+    const [epoch] = await tx.$queryRaw<Array<{ epoch: number }>>`SELECT "epoch" FROM "ExecutionEpoch" WHERE "id" = 1 FOR SHARE`;
+    if (!epoch || (reference && reference.deploymentEpoch !== epoch.epoch)) return { kind: "superseded" };
+    if (reference) {
+      const ledger = (await readExecutionDispatch(tx, reference.dispatchId))?.reference;
+      if (!ledger || ledger.kind !== reference.kind || ledger.subject.kind !== reference.subject.kind || ledger.subject.id !== id ||
+        ledger.deploymentEpoch !== reference.deploymentEpoch || ledger.generation !== reference.generation || ledger.inputHash !== reference.inputHash) return { kind: "superseded" };
+    }
+    const initial = await tx.ingestJob.findUnique({ where: { id }, include: { project: { select: { workspaceId: true } } } });
+    if (!initial) return { kind: "superseded" };
+    await lockWorkspaceUsage(tx, initial.project.workspaceId);
+    await this.lockGeneration(tx, initial.projectId);
+    await tx.$queryRaw`SELECT "id" FROM "Project" WHERE "id" = ${initial.projectId}::uuid FOR UPDATE`;
+    await tx.$queryRaw`SELECT "id" FROM "IngestJob" WHERE "id" = ${id}::uuid FOR UPDATE`;
+    const now = await this.now(tx);
+    const job = await tx.ingestJob.findUniqueOrThrow({ where: { id } });
+    const project = await tx.project.findFirst({ where: { id: job.projectId, ...accessibleProjectWhere(now) } });
+    if (!project || job.deploymentEpoch !== epoch.epoch || job.sourceRevision !== project.sourceRevision ||
+      (reference && job.generation !== reference.generation)) return { kind: "superseded" };
+    const audio = await tx.sourceAudio.findUnique({ where: { projectId_sourceRevision: { projectId: project.id, sourceRevision: project.sourceRevision } } });
+    if (!((job.status === "completed" && project.ingestStatus === "ready") || (job.status === "running" && audio))) return { kind: "not_ready" };
+    return { kind: "ready", job, project, audio, now, epoch: epoch.epoch };
+  }
+
+  private async appendGenerationDispatch(tx: Tx, runId: string, epoch: number): Promise<string[]> {
+    const dispatch = await this.deps.workflow.dispatchRunWithinTransaction(tx, runId);
+    if (dispatch.reference.deploymentEpoch !== epoch) throw new Error("workflow_generation_superseded");
+    return [dispatch.reference.dispatchId];
+  }
+
+  /** The interim scanner delegates here; all admission decisions live in this body. */
+  private async handoffGenerationForJob(id: string, reference?: ExecutionDispatchReference): Promise<IngestGenerationHandoffResult> {
+    try {
+      return await this.deps.prisma.$transaction(async (tx) => {
+        const state = await this.lockHandoff(tx, id, reference);
+        if (state.kind !== "ready") return { kind: state.kind, dispatchIds: [] };
+        const { job, project, audio, now, epoch } = state;
+        if (job.generationHandoffAt && job.generationRunId) return { kind: "acknowledged", workflowRunId: job.generationRunId,
+          dispatchIds: await this.appendGenerationDispatch(tx, job.generationRunId, epoch) };
+        if (job.generationHandoffAt) return { kind: "refused", dispatchIds: [] };
+        if (job.generationHandoffRetryAt && job.generationHandoffRetryAt > now) return { kind: "deferred", retryAt: job.generationHandoffRetryAt, dispatchIds: [] };
+        // Re-read the latest pack under the admission lock. Drafts never authorize STT.
+        const pack = await tx.contentPack.findFirst({ where: { projectId: project.id }, orderBy: [{ createdAt: "desc" }, { id: "desc" }] });
+        if (!pack || pack.draft) return { kind: "waiting_for_pack", dispatchIds: [] };
+        const existing = await this.acknowledgeExistingGeneration(tx, job, pack.id);
+        if (existing !== null) {
+          const acknowledged = await tx.ingestJob.findUniqueOrThrow({ where: { id: job.id }, select: { generationRunId: true } });
+          return { kind: "acknowledged", workflowRunId: acknowledged.generationRunId ?? undefined,
+            dispatchIds: acknowledged.generationRunId ? await this.appendGenerationDispatch(tx, acknowledged.generationRunId, epoch) : [] };
+        }
+        const probe = sourceProbeSchema.safeParse(project.sourceProbe).data;
+        const measuredDuration = audio?.durationSeconds ?? probe?.durationSec ?? null;
+        const fault = pack.mode === "caption_only" && pack.captionedVideo !== null && measuredDuration !== null
+          ? wholeSourceWindowFault(wholeSourceWindow(pack, { durationSec: measuredDuration, probeDurationSec: measuredDuration })) : null;
+        if (fault) {
+          await this.failHandoff(tx, job, fault, USER_ERROR_MESSAGES[fault]!);
+          await flushWorkspaceEvents(tx);
+          return { kind: "refused", dispatchIds: [] };
+        }
+        // Settlement, STT admission, transcript source binding and dispatch are one commit.
+        const settlement = await this.deps.usage.settle(tx, project.id);
+        if (settlement.outcome === "not_ready") return { kind: "not_ready", dispatchIds: [] };
+        if (settlement.outcome === "refused") {
+          await this.failHandoff(tx, job, settlement.failure.code, settlement.failure.message);
+          await flushWorkspaceEvents(tx);
+          return { kind: "refused", dispatchIds: [] };
+        }
+        const language = sourceLanguageCodeSchema.safeParse(project.languageCode);
+        const admitted = await this.deps.workflow.admitWithHandoff({ projectId: project.id, idempotencyKey: autoTriggerIdempotencyKey(project.id, pack.id), stage: "stt", contentPackId: pack.id }, async (tx, run) => {
+          await this.freezePackFinishing(tx, project, pack, run.id);
+          await this.acknowledgeHandoff(tx, job, run.id);
+          if (run.created) await tx.transcript.upsert({ where: { projectId: project.id },
+            create: { projectId: project.id, status: "queued", provider: "elevenlabs", providerModel: PENDING_STT_PROVIDER_MODEL,
+              sourceAudioId: audio?.id ?? null, sourceRevision: project.sourceRevision },
+            update: { status: "queued", providerJobId: null, providerRequestId: null, providerSubmissionDeadlineAt: null, providerSubmittedAt: null, providerResultDeadlineAt: null,
+              workflowAttemptId: null, errorCode: null, completedAt: null, provider: "elevenlabs", providerModel: PENDING_STT_PROVIDER_MODEL,
+              sourceAudioId: audio?.id ?? null, sourceRevision: project.sourceRevision } });
+          if (language.success) await tx.project.update({ where: { id: project.id }, data: { languageCode: language.data } });
+          return this.appendGenerationDispatch(tx, run.id, epoch);
+        }, tx);
+        await flushWorkspaceEvents(tx);
+        return { kind: admitted.created ? "admitted" : "acknowledged", workflowRunId: admitted.id, dispatchIds: admitted.handoff };
+      }, PROCESSING_USAGE_TRANSACTION);
+    } catch (error) {
+      if (error instanceof IngestJobClaimLost) return { kind: "superseded", dispatchIds: [] };
+      const code = error instanceof ExpectedDomainFailureError ? error.code : "ingest_handoff_unavailable";
+      return this.deps.prisma.$transaction(async (tx) => {
+        const state = await this.lockHandoff(tx, id, reference);
+        if (state.kind !== "ready") return { kind: state.kind, dispatchIds: [] };
+        if (error instanceof ExpectedDomainFailureError && (!isAutoRetryableFailureCode(code) || ["invalid", "unprocessable", "missing", "forbidden", "payment_required"].includes(error.kind))) {
+          await this.failHandoff(tx, state.job, code, error.message);
+          await flushWorkspaceEvents(tx);
+          return { kind: "refused", dispatchIds: [] };
+        }
+        console.warn(JSON.stringify({ level: "warn", message: "ingest_generation_handoff_deferred", jobId: id, projectId: state.project.id, errorCode: code }));
+        const retryAt = new Date(state.now.getTime() + 60_000);
+        await tx.ingestJob.updateMany({ where: { id, generationHandoffAt: null }, data: { generationHandoffRetryAt: retryAt } });
+        return { kind: "deferred", retryAt, dispatchIds: [] };
+      }, PROCESSING_USAGE_TRANSACTION);
+    }
+  }
+
   async processGenerationHandoffs(limit = 25, jobId?: string): Promise<number> {
     const now = await this.deps.prisma.$transaction((tx) => this.now(tx));
-    const jobs = await this.deps.prisma.$queryRaw<
-      Array<{ id: string; projectId: string }>
-    >(Prisma.sql`
-      SELECT job.id, job."projectId" FROM "IngestJob" job JOIN "Project" project ON project.id = job."projectId"
-      WHERE job.status = 'completed' AND job."generationHandoffAt" IS NULL AND project."ingestStatus" = 'ready'
+    const jobs = await this.deps.prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+      SELECT job.id FROM "IngestJob" job JOIN "Project" project ON project.id = job."projectId"
+      WHERE job."generationHandoffAt" IS NULL
+        AND ((job.status = 'completed' AND project."ingestStatus" = 'ready') OR (job.status = 'running' AND EXISTS (
+          SELECT 1 FROM "SourceAudio" audio WHERE audio."projectId" = project.id AND audio."sourceRevision" = project."sourceRevision")))
         AND (project."expiresAt" IS NULL OR project."expiresAt" > ${now}) AND project."purgeStartedAt" IS NULL
         AND (job."generationHandoffRetryAt" IS NULL OR job."generationHandoffRetryAt" <= ${now})
         ${jobId ? Prisma.sql`AND job.id = ${jobId}::uuid` : Prisma.empty}
@@ -720,173 +1103,9 @@ export class IngestJobLifecycle {
     `);
     let settled = 0;
     for (const job of jobs) {
-      let contentPackId: string | null = null;
-      try {
-        const project = await this.deps.prisma.project.findUniqueOrThrow({
-          where: { id: job.projectId },
-        });
-        const pack = await this.deps.prisma.contentPack.findFirst({
-          where: { projectId: job.projectId },
-          orderBy: { createdAt: "desc" },
-        });
-        if (!pack || pack.draft) {
-          await this.deferHandoff(job.id, now);
-          continue;
-        }
-        contentPackId = pack.id;
-        const key = autoTriggerIdempotencyKey(project.id, pack.id);
-        const acknowledged = await this.deps.prisma.$transaction(async (tx) => {
-          await this.lockGeneration(tx, project.id);
-          return this.acknowledgeExistingGeneration(tx, job, pack.id);
-        });
-        if (acknowledged !== null) {
-          if (acknowledged) settled++;
-          continue;
-        }
-        const language = sourceLanguageCodeSchema.safeParse(
-          project.languageCode,
-        );
-        const result = await this.deps.prisma.$transaction(async (tx) => {
-          // A captioned video is its whole window, so a window outside the
-          // whole-source bounds is refused before it costs minutes or speech-to-text.
-          // Other caption-only runs fail in detection and leave the Project ready.
-          const fault = pack.mode === "caption_only" && pack.captionedVideo !== null && project.sourceDurationSeconds !== null
-            ? wholeSourceWindowFault(wholeSourceWindow(pack, {
-                durationSec: project.sourceDurationSeconds,
-                probeDurationSec: sourceProbeSchema.safeParse(project.sourceProbe).data?.durationSec ?? null,
-              }))
-            : null;
-          if (fault) {
-            await this.failHandoff(tx, job, fault, USER_ERROR_MESSAGES[fault]!);
-            return { handoff: false };
-          }
-          // Settlement precedes speech-to-text admission in this transaction.
-          const settlement = await this.deps.usage.settle(tx, project.id);
-          if (settlement.outcome === "not_ready")
-            throw new Error("ingest_handoff_source_unmeasured");
-          if (settlement.outcome === "refused") {
-            await this.failHandoff(
-              tx,
-              job,
-              settlement.failure.code,
-              settlement.failure.message,
-            );
-            return { handoff: false };
-          }
-          const admitted = await this.deps.workflow.admitWithHandoff(
-          {
-            projectId: project.id,
-            idempotencyKey: key,
-            stage: "stt",
-            contentPackId: pack.id,
-          },
-          async (tx, run) => {
-            const prior = await tx.workflowRun.findFirst({
-              where: {
-                id: { not: run.id },
-                projectId: project.id,
-                stage: "stt",
-                contentPackId: pack.id,
-              },
-              select: { id: true },
-            });
-            if (prior) throw new IngestGenerationAlreadyAdmitted();
-            // Finishing was frozen onto the Content Pack at acceptance; it
-            // becomes this generation's row here, beside the handoff.
-            await this.freezePackFinishing(tx, project, pack, run.id);
-            await this.acknowledgeHandoff(tx, job, run.id);
-            if (run.created)
-              await tx.transcript.upsert({
-                where: { projectId: project.id },
-                create: {
-                  projectId: project.id,
-                  status: "queued",
-                  provider: "elevenlabs",
-                  providerModel: PENDING_STT_PROVIDER_MODEL,
-                },
-                update: {
-                  status: "queued",
-                  providerJobId: null,
-                  workflowAttemptId: null,
-                  errorCode: null,
-                  completedAt: null,
-                  provider: "elevenlabs",
-                  providerModel: PENDING_STT_PROVIDER_MODEL,
-                },
-              });
-            if (language.success)
-              await tx.project.update({
-                where: { id: project.id },
-                data: { languageCode: language.data },
-              });
-            return true;
-          },
-          tx,
-          );
-          await flushWorkspaceEvents(tx);
-          return admitted;
-        }, PROCESSING_USAGE_TRANSACTION);
-        if (result.handoff) settled++;
-      } catch (error) {
-        if (error instanceof IngestJobClaimLost) continue;
-        if (error instanceof IngestGenerationAlreadyAdmitted && contentPackId) {
-          const acknowledged = await this.deps.prisma.$transaction(
-            async (tx) => {
-              await this.lockGeneration(tx, job.projectId);
-              return this.acknowledgeExistingGeneration(
-                tx,
-                job,
-                contentPackId!,
-              );
-            },
-          );
-          if (acknowledged) settled++;
-          continue;
-        }
-        const code =
-          error instanceof ExpectedDomainFailureError
-            ? error.code
-            : "ingest_handoff_unavailable";
-        if (
-          error instanceof ExpectedDomainFailureError &&
-          (!isAutoRetryableFailureCode(code) ||
-            [
-              "invalid",
-              "unprocessable",
-              "missing",
-              "forbidden",
-              "payment_required",
-            ].includes(error.kind))
-        ) {
-          const acknowledged = await this.deps.prisma.$transaction(
-            async (tx) => {
-              await this.lockGeneration(tx, job.projectId);
-              if (contentPackId) {
-                const existing = await this.acknowledgeExistingGeneration(
-                  tx,
-                  job,
-                  contentPackId,
-                );
-                if (existing !== null) return existing;
-              }
-              await this.failHandoff(tx, job, code, error.message);
-              return false;
-            },
-          );
-          if (acknowledged) settled++;
-        } else {
-          console.warn(
-            JSON.stringify({
-              level: "warn",
-              message: "ingest_generation_handoff_deferred",
-              jobId: job.id,
-              projectId: job.projectId,
-              errorCode: code,
-            }),
-          );
-          await this.deferHandoff(job.id, now);
-        }
-      }
+      const result = await this.handoffGenerationForJob(job.id);
+      if (result.kind === "admitted" || result.kind === "acknowledged") settled++;
+      if (result.kind === "waiting_for_pack") await this.deferHandoff(job.id, now);
     }
     return settled;
   }
@@ -900,21 +1119,36 @@ export class IngestJobLifecycle {
     message: string,
   ): Promise<boolean> {
     const clock = await this.now(tx);
+    const current = await tx.ingestJob.findUnique({ where: { id: job.id }, select: { sourceRevision: true, generation: true, deploymentEpoch: true } });
+    if (!current) return false;
     const failed = await tx.ingestJob.updateMany({
       where: {
         id: job.id,
-        status: "completed",
+        sourceRevision: current.sourceRevision,
+        generation: current.generation,
+        deploymentEpoch: current.deploymentEpoch,
         generationHandoffAt: null,
-        project: { ingestStatus: "ready" },
+        project: { sourceRevision: current.sourceRevision },
+        OR: [{ status: "completed", project: { ingestStatus: "ready" } },
+          { status: "running", project: { sourceAudio: { some: { sourceRevision: current.sourceRevision } } } }],
       },
       data: {
         status: "failed",
+        claimId: null,
+        executorOwner: null,
+        claimExpiresAt: null,
+        sourceCredential: null,
         generationHandoffAt: clock,
         generationHandoffRetryAt: null,
         lastError: `${code}: ${message}`,
       },
     });
     if (!failed.count) return false;
+    // The active native download loses authority in this same refusal commit.
+    await tx.executionAttempt.updateMany({ where: { deploymentEpoch: current.deploymentEpoch, generation: current.generation,
+      status: { in: ["admitted", "running"] }, dispatch: { subjectKind: "ingest_job", subjectId: job.id,
+        deploymentEpoch: current.deploymentEpoch, generation: current.generation } },
+      data: { status: "failed", failureCode: code, revokedAt: clock, finishedAt: clock } });
     await this.deps.usage.release(tx, { projectId: job.projectId, reason: code });
     await tx.project.update({
       where: { id: job.projectId },
@@ -965,13 +1199,16 @@ export class IngestJobLifecycle {
     generationRunId: string,
   ): Promise<void> {
     const clock = await this.now(tx);
+    const current = await tx.ingestJob.findUniqueOrThrow({ where: { id: job.id }, select: { sourceRevision: true } });
     const accepted = await tx.ingestJob.updateMany({
       where: {
         id: job.id,
         projectId: job.projectId,
-        status: "completed",
+        sourceRevision: current.sourceRevision,
         generationHandoffAt: null,
-        project: { ingestStatus: "ready", ...accessibleProjectWhere(clock) },
+        project: { sourceRevision: current.sourceRevision, ...accessibleProjectWhere(clock) },
+        OR: [{ status: "completed", project: { ingestStatus: "ready" } },
+          { status: "running", project: { sourceAudio: { some: { sourceRevision: current.sourceRevision } } } }],
       },
       data: { generationHandoffAt: clock, generationHandoffRetryAt: null, generationRunId },
     });
@@ -1038,7 +1275,7 @@ export class IngestJobLifecycle {
   }
   private async deferHandoff(id: string, now: Date) {
     await this.deps.prisma.ingestJob.updateMany({
-      where: { id, status: "completed", generationHandoffAt: null },
+      where: { id, status: { in: ["running", "completed"] }, generationHandoffAt: null },
       data: { generationHandoffRetryAt: new Date(now.getTime() + 60_000) },
     });
   }

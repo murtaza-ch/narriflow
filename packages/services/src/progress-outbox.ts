@@ -76,6 +76,7 @@ export async function deliverProgressDispatch(database: PrismaClient, reference:
       await Promise.all(projects.slice(offset, offset + 10).map((project) => port.revoke({ projectId: project.id, workspaceId: scope.workspaceId, ...(scope.actorUserId ? { actorUserId: scope.actorUserId } : {}), authorizedBefore: scope.authorizedBefore, error: scope.error })));
     }
   } else throw new Error("Unsupported progress dispatch subject");
+  if (continuationDispatchIds.length) await port.registerContinuations(continuationDispatchIds);
   return { status: "confirmed_notified", destinationId: `project-progress:${reference.subject.id}`, continuationDispatchIds };
 }
 
@@ -87,6 +88,9 @@ export async function deliverProgressAfterCommit(database: PrismaClient, records
   for (const record of records) if (record) {
     try {
       const result = await dispatch.deliver(record.reference.dispatchId);
+      if (result.status === "pending" || result.status === "unavailable") {
+        await progressDeliveryPort()!.registerContinuations([record.reference.dispatchId]);
+      }
       if (result.status !== "acknowledged") console.warn(JSON.stringify({ level: "warn", message: "progress_revocation_delivery_pending", dispatchId: record.reference.dispatchId, outcome: result.status }));
     }
     catch { console.warn(JSON.stringify({ level: "warn", message: "progress_revocation_delivery_pending", dispatchId: record.reference.dispatchId })); }

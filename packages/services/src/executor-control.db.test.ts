@@ -84,12 +84,16 @@ dbDescribe("Executor control authority and replay", () => {
     expect([a.disposition, b.disposition].sort()).toEqual(["acquired", "busy"]);
     const winner = a.disposition === "acquired" ? owner : other;
     const fence = { reference: f.reference, attemptToken: f.token, owner: winner };
+    expect((await control.authorize(fence, false)).fence).toEqual(fence);
+    await expect(control.authorize(fence)).rejects.toMatchObject({ code: "authority_lost" });
     const request = verified();
     const command = { action: "process-start" as const, fence };
     expect(await control.execute({ command, verifiedRequest: request })).toEqual({ disposition: "started" });
     expect(await control.execute({ command, verifiedRequest: request })).toEqual({ disposition: "started" });
+    expect((await control.authorize(fence)).functionName).toBe("fetch_source");
+    await expect(control.authorize({ ...fence, owner: winner === owner ? other : owner })).rejects.toMatchObject({ code: "authority_lost" });
     expect((await prisma.ingestJob.findUniqueOrThrow({ where: { id: f.job.id } })).attemptCount).toBe(1);
-  }, 30_000);
+  }, 45_000);
 
   test("a conflicting delivery ID and a changed input hash cannot gain authority", async () => {
     const f = await fixture();
@@ -133,6 +137,7 @@ dbDescribe("Executor control authority and replay", () => {
     const owner = randomUUID(), fence = { reference: f.reference, attemptToken: f.token, owner };
     await control.execute({ command: { action: "acquire", reference: f.reference, attemptToken: f.token, owner, leaseSeconds: 120 }, verifiedRequest: verified() });
     await prisma.executionAttempt.update({ where: { attemptToken: f.token }, data: { leaseExpiresAt: new Date(Date.now() - 1_000) } });
+    await expect(control.authorize(fence, false)).rejects.toMatchObject({ code: "authority_lost" });
     expect(await control.execute({ command: { action: "renew", fence, leaseSeconds: 120 }, verifiedRequest: verified() })).toEqual({ disposition: "expired" });
     expect(await control.execute({ command: { action: "process-start", fence }, verifiedRequest: verified() })).toEqual({ disposition: "expired" });
     expect((await prisma.ingestJob.findUniqueOrThrow({ where: { id: f.job.id } })).attemptCount).toBe(0);
