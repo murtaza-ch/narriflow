@@ -97,8 +97,13 @@ describe("canonical JSON and assertions", () => {
 });
 
 describe("pinned environment", () => {
+  let fingerprint: Awaited<ReturnType<typeof collectRuntimeFingerprint>>;
+  // Probe the installed toolchain once. This includes native font/FFmpeg
+  // processes; release startup latency is measured by the deployed gates.
+  beforeAll(async () => {
+    fingerprint = await collectRuntimeFingerprint({ repoRoot: REPO_ROOT, lock: loadLock() });
+  }, 30_000);
   test("the fingerprint records the resolved fallback font files, their hashes and the model hash", async () => {
-    const fingerprint = await collectRuntimeFingerprint({ repoRoot: REPO_ROOT, lock: loadLock() });
     const resolved = fingerprint.fontProbes.filter((probe) => probe.file);
     expect(resolved.length).toBeGreaterThan(5);
     for (const probe of resolved) expect(probe.sha256).toMatch(/^[0-9a-f]{64}$/);
@@ -109,7 +114,6 @@ describe("pinned environment", () => {
 
   test("a changed vendored font, face model or FFmpeg build changes the fingerprint and is named", async () => {
     const lock = loadLock();
-    const fingerprint = await collectRuntimeFingerprint({ repoRoot: REPO_ROOT, lock });
     const font = clone(fingerprint);
     font.captionFonts[Object.keys(font.captionFonts)[0]!] = "0".repeat(64);
     const model = clone(fingerprint);
