@@ -118,6 +118,9 @@ CREATE TABLE "ExecutionArtifact" (
     "sourceEtag" VARCHAR(160),
     "sourceByteLength" BIGINT,
     "sourceVideoBinding" JSONB,
+    "uploadByteLength" BIGINT,
+    "multipartPartChecksums" JSONB,
+    "multipartCompleteIntentAt" TIMESTAMP(3),
     "grantExpiresAt" TIMESTAMP(3) NOT NULL,
     "committedAt" TIMESTAMP(3),
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -404,3 +407,162 @@ END;
 $$;
 CREATE TRIGGER "ExecutionArtifact_sealed_evidence" BEFORE UPDATE ON "ExecutionArtifact"
 FOR EACH ROW EXECUTE FUNCTION execution_artifact_sealed_evidence();
+
+-- Compact per-part tuples [byteLength, MD5-base64, measured-SHA256-base64].
+-- Index is partNumber-1. Native callers never send a 640-part completion body.
+ALTER TABLE "ExecutionArtifact" ADD CONSTRAINT "ExecutionArtifact_upload_plan_check" CHECK (
+  ("uploadByteLength" IS NULL OR ("uploadByteLength" > 0 AND "uploadByteLength" <= "maxBytes"))
+  AND ("multipartPartChecksums" IS NULL OR ("uploadByteLength" IS NOT NULL
+    AND jsonb_typeof("multipartPartChecksums") = 'array'
+    AND jsonb_array_length("multipartPartChecksums") <= 640
+    AND octet_length("multipartPartChecksums"::text) <= 65536))
+  AND ("multipartCompleteIntentAt" IS NULL OR ("uploadByteLength" IS NOT NULL
+    AND "multipartUploadId" IS NOT NULL AND "checksumSha256" IS NOT NULL))
+);
+CREATE FUNCTION execution_artifact_transfer_identity() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE
+  item jsonb;
+  position bigint;
+  expected bigint;
+BEGIN
+  IF TG_OP = 'UPDATE' THEN
+    IF (NEW."id", NEW."attemptToken", NEW."owner", NEW."role", NEW."bindingHash", NEW."storageKey", NEW."maxBytes", NEW."sourceEtag", NEW."sourceByteLength", NEW."createdAt")
+       IS DISTINCT FROM
+       (OLD."id", OLD."attemptToken", OLD."owner", OLD."role", OLD."bindingHash", OLD."storageKey", OLD."maxBytes", OLD."sourceEtag", OLD."sourceByteLength", OLD."createdAt") THEN
+      RAISE EXCEPTION 'execution artifact assignment is immutable' USING ERRCODE='23514';
+    END IF;
+    IF (OLD."uploadByteLength" IS NOT NULL AND (NEW."uploadByteLength", NEW."contentType") IS DISTINCT FROM (OLD."uploadByteLength", OLD."contentType"))
+       OR (OLD."multipartUploadId" IS NOT NULL AND NEW."multipartUploadId" IS DISTINCT FROM OLD."multipartUploadId")
+       OR (OLD."multipartCompleteIntentAt" IS NOT NULL AND (NEW."multipartCompleteIntentAt", NEW."checksumSha256") IS DISTINCT FROM (OLD."multipartCompleteIntentAt", OLD."checksumSha256")) THEN
+      RAISE EXCEPTION 'execution multipart intent is immutable' USING ERRCODE='23514';
+    END IF;
+    IF OLD."multipartPartChecksums" IS NOT NULL THEN
+      FOR item, position IN SELECT value, ordinality FROM jsonb_array_elements(OLD."multipartPartChecksums") WITH ORDINALITY LOOP
+        IF item <> 'null'::jsonb AND item IS DISTINCT FROM NEW."multipartPartChecksums" -> (position::int - 1) THEN
+          RAISE EXCEPTION 'granted part checksums are immutable' USING ERRCODE='23514';
+        END IF;
+      END LOOP;
+    END IF;
+  END IF;
+  IF NEW."multipartPartChecksums" IS NOT NULL THEN
+    FOR item, position IN SELECT value, ordinality FROM jsonb_array_elements(NEW."multipartPartChecksums") WITH ORDINALITY LOOP
+      expected := LEAST(16777216, NEW."uploadByteLength" - (position - 1) * 16777216);
+      IF item <> 'null'::jsonb AND (jsonb_typeof(item) <> 'array' OR jsonb_array_length(item) <> 3
+         OR jsonb_typeof(item -> 0) <> 'number' OR (item ->> 0)::bigint IS DISTINCT FROM expected OR expected <= 0
+         OR jsonb_typeof(item -> 1) IS DISTINCT FROM 'string' OR jsonb_typeof(item -> 2) IS DISTINCT FROM 'string'
+         OR (item ->> 1) !~ '^[A-Za-z0-9+/]{22}==$' OR (item ->> 2) !~ '^[A-Za-z0-9+/]{43}=$') THEN
+        RAISE EXCEPTION 'execution multipart plan is invalid' USING ERRCODE='23514';
+      END IF;
+    END LOOP;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+CREATE TRIGGER "ExecutionArtifact_transfer_identity" BEFORE INSERT OR UPDATE ON "ExecutionArtifact"
+FOR EACH ROW EXECUTE FUNCTION execution_artifact_transfer_identity();
+
+-- Native validation replaces synchronous font/asset parsing on Workers.
+-- AlterTable
+ALTER TABLE "ThumbnailFrameOperation" ADD COLUMN     "deploymentEpoch" INTEGER NOT NULL DEFAULT 1,
+ADD COLUMN     "executorOwner" UUID,
+ADD COLUMN     "generation" INTEGER NOT NULL DEFAULT 1,
+ADD COLUMN     "operationDeadlineAt" TIMESTAMP(3);
+
+-- AlterTable
+ALTER TABLE "BrandFont" ADD COLUMN     "face" JSONB;
+
+-- CreateTable
+CREATE TABLE "NativeValidationJob" (
+    "id" UUID NOT NULL,
+    "workspaceId" UUID NOT NULL,
+    "createdByUserId" UUID NOT NULL,
+    "ownerUserId" UUID,
+    "ownerWorkspaceId" UUID,
+    "kind" VARCHAR(24) NOT NULL,
+    "requestFingerprint" CHAR(64) NOT NULL,
+    "input" JSONB NOT NULL,
+    "inputHash" CHAR(64) NOT NULL,
+    "inputStorageKey" VARCHAR(1024) NOT NULL,
+    "inputEtag" VARCHAR(160) NOT NULL,
+    "inputByteLength" BIGINT NOT NULL,
+    "status" VARCHAR(24) NOT NULL DEFAULT 'queued',
+    "generation" INTEGER NOT NULL DEFAULT 1,
+    "deploymentEpoch" INTEGER NOT NULL,
+    "attemptToken" UUID,
+    "executorOwner" UUID,
+    "leaseExpiresAt" TIMESTAMP(3),
+    "operationDeadlineAt" TIMESTAMP(3) NOT NULL,
+    "chargedAttempts" INTEGER NOT NULL DEFAULT 0,
+    "maxAttempts" INTEGER NOT NULL DEFAULT 3,
+    "retryAt" TIMESTAMP(3),
+    "result" JSONB,
+    "errorCode" VARCHAR(100),
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+    "completedAt" TIMESTAMP(3),
+
+    CONSTRAINT "NativeValidationJob_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateIndex
+CREATE INDEX "NativeValidationJob_status_retryAt_createdAt_idx" ON "NativeValidationJob"("status", "retryAt", "createdAt");
+
+-- CreateIndex
+CREATE INDEX "NativeValidationJob_workspaceId_createdAt_idx" ON "NativeValidationJob"("workspaceId", "createdAt");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "NativeValidationJob_workspaceId_kind_requestFingerprint_key" ON "NativeValidationJob"("workspaceId", "kind", "requestFingerprint");
+
+
+ALTER TABLE "NativeValidationJob" ADD CONSTRAINT "NativeValidationJob_authority_check" CHECK (
+  num_nonnulls("ownerUserId", "ownerWorkspaceId") = 1
+  AND "kind" IN ('brand_font','visual_asset')
+  AND "requestFingerprint" ~ '^[a-f0-9]{64}$' AND "inputHash" ~ '^[a-f0-9]{64}$'
+  AND jsonb_typeof("input") = 'object' AND octet_length("input"::text) <= 65536
+  AND ("result" IS NULL OR (jsonb_typeof("result") = 'object' AND octet_length("result"::text) <= 65536))
+  AND "inputByteLength" > 0 AND "inputByteLength" <= 16777216
+  AND "generation" > 0 AND "deploymentEpoch" > 0
+  AND "status" IN ('queued','processing','completed','failed','cancelled')
+  AND "chargedAttempts" >= 0 AND "maxAttempts" BETWEEN 1 AND 10 AND "chargedAttempts" <= "maxAttempts"
+  AND "operationDeadlineAt" > "createdAt"
+  AND (("executorOwner" IS NULL) = ("leaseExpiresAt" IS NULL))
+  AND ("executorOwner" IS NULL OR "attemptToken" IS NOT NULL)
+  AND ("leaseExpiresAt" IS NULL OR "leaseExpiresAt" <= "operationDeadlineAt")
+  AND ("status" <> 'processing' OR "executorOwner" IS NOT NULL)
+  AND ("status" NOT IN ('completed','failed','cancelled') OR "completedAt" IS NOT NULL)
+  AND ("status" <> 'completed' OR "result" IS NOT NULL)
+);
+CREATE FUNCTION native_validation_input_immutable() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (NEW."id",NEW."workspaceId",NEW."createdByUserId",NEW."ownerUserId",NEW."ownerWorkspaceId",NEW."kind",NEW."requestFingerprint",NEW."input",NEW."inputHash",NEW."inputStorageKey",NEW."inputEtag",NEW."inputByteLength",NEW."createdAt")
+     IS DISTINCT FROM
+     (OLD."id",OLD."workspaceId",OLD."createdByUserId",OLD."ownerUserId",OLD."ownerWorkspaceId",OLD."kind",OLD."requestFingerprint",OLD."input",OLD."inputHash",OLD."inputStorageKey",OLD."inputEtag",OLD."inputByteLength",OLD."createdAt") THEN
+    RAISE EXCEPTION 'native validation input is immutable' USING ERRCODE='23514';
+  END IF;
+  IF NEW."generation" IS DISTINCT FROM OLD."generation" AND NOT (NEW."generation" = OLD."generation" + 1 AND NEW."status" = 'queued' AND NEW."attemptToken" IS NULL AND NEW."executorOwner" IS NULL AND NEW."leaseExpiresAt" IS NULL) THEN
+    RAISE EXCEPTION 'native validation retry generation is invalid' USING ERRCODE='23514';
+  END IF;
+  IF NEW."deploymentEpoch" IS DISTINCT FROM OLD."deploymentEpoch" AND NOT (NEW."deploymentEpoch" > OLD."deploymentEpoch" AND NEW."deploymentEpoch" = (SELECT "epoch" FROM "ExecutionEpoch" WHERE "id"=1) AND NEW."status" = 'queued' AND NEW."executorOwner" IS NULL AND NEW."leaseExpiresAt" IS NULL) THEN
+    RAISE EXCEPTION 'native validation epoch is invalid' USING ERRCODE='23514';
+  END IF;
+  IF NEW."operationDeadlineAt" IS DISTINCT FROM OLD."operationDeadlineAt" AND NEW."deploymentEpoch" = OLD."deploymentEpoch" THEN
+    RAISE EXCEPTION 'native validation deadline is immutable within its epoch' USING ERRCODE='23514';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+CREATE TRIGGER "NativeValidationJob_input_immutable" BEFORE UPDATE ON "NativeValidationJob"
+FOR EACH ROW EXECUTE FUNCTION native_validation_input_immutable();
+
+-- Old native thumbnail claims cannot authorize the new executor contract.
+UPDATE "ThumbnailFrameOperation" SET "status"='failed',"errorCode"='serverless_cutover_reset',"completedAt"=CURRENT_TIMESTAMP,"claimId"=NULL,"claimExpiresAt"=NULL
+WHERE "status" IN ('queued','processing');
+UPDATE "ThumbnailFrameOperation" SET "claimId"=NULL,"claimExpiresAt"=NULL WHERE "claimId" IS NOT NULL;
+ALTER TABLE "ThumbnailFrameOperation" ADD CONSTRAINT "ThumbnailFrameOperation_execution_check" CHECK (
+  "generation" > 0 AND "deploymentEpoch" > 0 AND "attempt" >= 0
+  AND (("executorOwner" IS NULL) = ("claimExpiresAt" IS NULL))
+  AND ("executorOwner" IS NULL OR "claimId" IS NOT NULL)
+  AND ("operationDeadlineAt" IS NULL OR "operationDeadlineAt" > "createdAt")
+  AND ("status" NOT IN ('queued','processing') OR "operationDeadlineAt" IS NOT NULL)
+  AND ("status" <> 'processing' OR "executorOwner" IS NOT NULL)
+);
