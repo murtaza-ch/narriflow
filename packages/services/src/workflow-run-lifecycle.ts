@@ -30,6 +30,8 @@ import { queueExportsFinishedByRun, queueFinishedGenerations } from "./operation
 import { flushWorkspaceEvents } from "./workspace-event";
 import { finalizeGenerationUsage, releaseFailedDubUsage } from "./generated-media-usage-ledger";
 import { appendWorkflowEvent, type WorkflowEventInput } from "./workflow-event-append";
+import { appendExecutionDispatch, executionDispatchIdentity, type ExecutionDispatchRecord } from "./execution-dispatch";
+import { workflowRunExecutionInputHash } from "./workflow-execution-input";
 
 /** How long a stopping worker lets in-flight handlers finish
  * (`WORKER_SHUTDOWN_DRAIN_MS`, 30s by default). */
@@ -464,6 +466,21 @@ export class WorkflowRunLifecycle {
     if (!contentPack) throw new Error("workflow_content_pack_invalid");
   }
 
+  /** Registers the frozen run in the caller's domain transaction. Safe to replay. */
+  async dispatchRunWithinTransaction(tx: TransactionClient, runId: string): Promise<ExecutionDispatchRecord> {
+    const run = await tx.workflowRun.findUniqueOrThrow({ where: { id: runId }, include: { project: { select: { sourceRevision: true } } } });
+    const transcript = await tx.transcript.findUnique({ where: { projectId: run.projectId }, select: { sourceAudioId: true, sourceRevision: true } });
+    if (transcript && transcript.sourceRevision !== run.project.sourceRevision) throw new Error("workflow_source_revision_superseded");
+    const identity = { deploymentEpoch: run.deploymentEpoch, kind: run.stage === "clip_rendering" ? "render_run" as const : "operation_driver" as const,
+      subject: { kind: "workflow_run" as const, id: run.id }, generation: run.generation };
+    const key = await executionDispatchIdentity(identity);
+    const existing = await tx.executionDispatch.findUnique({ where: { deliveryKey: key.deliveryKey }, select: { dueAt: true } });
+    return appendExecutionDispatch(tx, { ...identity,
+      inputHash: await workflowRunExecutionInputHash({ id: run.id, projectId: run.projectId, stage: run.stage, contentPackId: run.contentPackId,
+        generation: run.generation, deploymentEpoch: run.deploymentEpoch, sourceAudioId: transcript?.sourceAudioId ?? null, sourceRevision: transcript?.sourceRevision ?? run.project.sourceRevision }),
+      dueAt: existing?.dueAt ?? run.nextAttemptAt ?? run.createdAt });
+  }
+
   private async admitWithinTransaction(
     tx: TransactionClient,
     input: Omit<AdmitWorkflowRunInput, "contentPack">,
@@ -481,11 +498,11 @@ export class WorkflowRunLifecycle {
     const workflowRunId = randomUUID();
     const inserted = await tx.$queryRaw<Array<{ id: string }>>`
       INSERT INTO "WorkflowRun" (
-        "id", "projectId", "idempotencyKey", "stage", "status",
+        "id", "deploymentEpoch", "projectId", "idempotencyKey", "stage", "status",
         "progress", "attemptCount", "contentPackId",
         "createdAt", "updatedAt"
       ) VALUES (
-        ${workflowRunId}::uuid, ${input.projectId}::uuid,
+        ${workflowRunId}::uuid, (SELECT "epoch" FROM "ExecutionEpoch" WHERE "id" = 1), ${input.projectId}::uuid,
         ${input.idempotencyKey}, ${input.stage}, 'queued', 0, 0,
         ${input.contentPackId ?? null}::uuid,
         (CURRENT_TIMESTAMP AT TIME ZONE 'UTC'), (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
@@ -587,12 +604,11 @@ export class WorkflowRunLifecycle {
             contentPackId,
           );
         }
-        return this.admitWithinTransaction(tx, {
-          projectId: input.projectId,
-          idempotencyKey: input.idempotencyKey,
-          stage: input.stage,
-          contentPackId,
+        const admitted = await this.admitWithinTransaction(tx, {
+          projectId: input.projectId, idempotencyKey: input.idempotencyKey, stage: input.stage, contentPackId,
         });
+        await this.dispatchRunWithinTransaction(tx, admitted.id);
+        return admitted;
       });
     } catch (error) {
       return this.recoverAdmissionConflict(input, error);
@@ -647,6 +663,7 @@ export class WorkflowRunLifecycle {
       });
       await tx.clipExport.update({ where: { id: input.exportId }, data: { workflowRunId: admitted.id } });
       await syncClipExportAggregates(tx, ids);
+      await this.dispatchRunWithinTransaction(tx, admitted.id);
       return true;
     });
   }
@@ -704,6 +721,7 @@ export class WorkflowRunLifecycle {
         where: { projectId, status: { in: ["queued", "rendering"] } },
         data: { workflowRunId: run.id },
       });
+      await this.dispatchRunWithinTransaction(tx, run.id);
       return run.id;
     });
   }
@@ -736,6 +754,7 @@ export class WorkflowRunLifecycle {
         admitted = await this.admitWithinTransaction(tx, { ...input, contentPackId: input.contentPackId ?? null });
       }
       const value = await handoff(tx, admitted);
+      await this.dispatchRunWithinTransaction(tx, admitted.id);
       return { ...admitted, handoff: value };
     };
     return transactionClient ? admit(transactionClient) : this.transaction(admit);
@@ -795,6 +814,8 @@ export class WorkflowRunLifecycle {
           data: { languageCode: input.languageCode },
         });
       }
+      const project = await tx.project.findUniqueOrThrow({ where: { id: input.projectId }, select: { sourceRevision: true } });
+      const audio = await tx.sourceAudio.findUnique({ where: { projectId_sourceRevision: { projectId: input.projectId, sourceRevision: project.sourceRevision } }, select: { id: true } });
       await tx.transcript.upsert({
         where: { projectId: input.projectId },
         create: {
@@ -802,6 +823,8 @@ export class WorkflowRunLifecycle {
           status: "queued",
           provider: input.transcriptProvider,
           providerModel: input.transcriptProviderModel,
+          sourceAudioId: audio?.id ?? null,
+          sourceRevision: project.sourceRevision,
           providerJobId: null,
           errorCode: null,
         },
@@ -809,12 +832,15 @@ export class WorkflowRunLifecycle {
           status: "queued",
           provider: input.transcriptProvider,
           providerModel: input.transcriptProviderModel,
+          sourceAudioId: audio?.id ?? null,
+          sourceRevision: project.sourceRevision,
           providerJobId: null,
           workflowAttemptId: null,
           errorCode: null,
           completedAt: null,
         },
       });
+      await this.dispatchRunWithinTransaction(tx, admitted.id);
       return admitted;
     };
     if (transactionClient) return admit(transactionClient);
@@ -1459,6 +1485,7 @@ export class WorkflowRunLifecycle {
         attemptId: attempt.attemptId, stage: "moment_detection", status: "running", progress: detection.progress,
         errorCode: null, transition: `render_handoff:${admitted.id}`, followUpWorkflowRunId: admitted.id,
         generationRenders: generationRenders.map((render) => ({ renderId: render.id, clipId: render.clipId })) });
+      await this.dispatchRunWithinTransaction(tx, admitted.id);
       return admitted;
     });
   }
@@ -2154,6 +2181,7 @@ export class WorkflowRunLifecycle {
         },
       },
       create: {
+        deploymentEpoch: run.deploymentEpoch,
         projectId: attempt.projectId,
         idempotencyKey: childIdempotencyKey,
         stage: "moment_detection",
@@ -2200,6 +2228,7 @@ export class WorkflowRunLifecycle {
       errorCode: null,
       transition: `child:${child.id}:queued`,
     });
+    await this.dispatchRunWithinTransaction(tx, child.id);
   }
 
   /**
@@ -2641,6 +2670,7 @@ export class WorkflowRunLifecycle {
       stage: "clip_rendering",
       contentPackId: null,
     });
+    await this.dispatchRunWithinTransaction(tx, followUp.id);
     return followUp.id;
   }
 

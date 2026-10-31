@@ -10,6 +10,7 @@ import { createSourceVideoValidator } from "./source-readiness";
 import { createExecutorControl } from "./executor-control";
 import type { SourceAudioBinding, SourceVideoBinding } from "@narriflow/validators/execution";
 import { sourceAudioBindingHash } from "./source-audio-binding";
+import { workflowRunExecutionInputHash } from "./workflow-execution-input";
 
 const url = process.env.SERVERLESS_TEST_DATABASE_URL;
 const dbDescribe = process.env.ALLOW_SERVERLESS_DB_TESTS === "1" && url ? describe : describe.skip;
@@ -119,6 +120,8 @@ dbDescribe("Targeted Ingest execution", () => {
     expect(await db.project.findUniqueOrThrow({ where: { id: f.project.id } })).toMatchObject({ ingestStatus: "downloading", sourceStorageKey: null });
     const dispatches = await db.executionDispatch.findMany({ where: { subjectKind: "workflow_run", subjectId: run.id, kind: "operation_driver" } });
     expect(dispatches).toHaveLength(1);
+    expect(dispatches[0]!.inputHash).toBe(await workflowRunExecutionInputHash({ id: run.id, projectId: f.project.id, stage: "stt", contentPackId: audio.pack.id,
+      generation: run.generation, deploymentEpoch: run.deploymentEpoch, sourceAudioId: audio.sourceAudio.id, sourceRevision: 1 }));
     expect(results[0]!.dispatchIds).toEqual([dispatches[0]!.id]);
     expect(results[1]!.dispatchIds).toEqual([dispatches[0]!.id]);
   }, 120_000);
