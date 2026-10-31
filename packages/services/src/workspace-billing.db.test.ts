@@ -298,27 +298,27 @@ dbDescribe("Workspace Billing PostgreSQL invariants", () => {
         return { kind: "pending_payment", paymentUrl: source.pending.paymentUrl!, effectiveAt: null };
       },
     };
-    const module = () => createWorkspaceBillingModule({ catalog, store: createPrismaWorkspaceBillingStore(), provider, clock: { now: () => now }, diagnostics: { record: () => undefined } });
+    const module = () => createWorkspaceBillingModule({ catalog, store: createPrismaWorkspaceBillingStore({ register: async () => {} }), provider, clock: { now: () => now }, diagnostics: { record: () => undefined } });
     const input = { workspaceId: workspace.id, actorUserId: user.id, clientIdempotencyKey: randomUUID(), targetTier: "business" as const, interval: "monthly" as const };
     const first = await module().previewPlanChange(input);
     expect(await module().previewPlanChange(input)).toEqual(first);
-    expect(await createPrismaWorkspaceBillingStore().readPlanChangeQuote({ workspaceId: other.workspace.id, id: first.quote.id })).toBeNull();
+    expect(await createPrismaWorkspaceBillingStore({ register: async () => {} }).readPlanChangeQuote({ workspaceId: other.workspace.id, id: first.quote.id })).toBeNull();
     await expect(module().previewPlanChange({ ...input, interval: "annual" })).rejects.toMatchObject({ code: "plan_change_conflict" });
     // A crash after durable confirmation can be discovered without browser state.
-    await createPrismaWorkspaceBillingStore().markPlanChangeQuote({ workspaceId: workspace.id, id: first.quote.id, phase: "confirming" });
-    expect((await createPrismaWorkspaceBillingStore().readConfirmingPlanChangeQuote(workspace.id))?.public.id).toBe(first.quote.id);
-    expect(await createPrismaWorkspaceBillingStore().readConfirmingPlanChangeQuote(other.workspace.id)).toBeNull();
+    await createPrismaWorkspaceBillingStore({ register: async () => {} }).markPlanChangeQuote({ workspaceId: workspace.id, id: first.quote.id, phase: "confirming" });
+    expect((await createPrismaWorkspaceBillingStore({ register: async () => {} }).readConfirmingPlanChangeQuote(workspace.id))?.public.id).toBe(first.quote.id);
+    expect(await createPrismaWorkspaceBillingStore({ register: async () => {} }).readConfirmingPlanChangeQuote(other.workspace.id)).toBeNull();
     expect((await module().confirmPlanChange({ ...input, quoteId: first.quote.id })).kind).toBe("pending_payment");
     expect((await module().confirmPlanChange({ ...input, quoteId: first.quote.id })).kind).toBe("pending_payment");
     expect(mutations).toBe(1);
     expect((await prisma.workspace.findUniqueOrThrow({ where: { id: workspace.id } })).pricingTier).toBe("pro");
     expect((await prisma.workspacePlanChangeAttempt.findUniqueOrThrow({ where: { id: first.quote.id } })).phase).toBe("submitted");
-    expect(await createPrismaWorkspaceBillingStore().readConfirmingPlanChangeQuote(workspace.id)).toBeNull();
-    const claimed = await createPrismaWorkspaceBillingStore().claimAccount({ workspaceId: workspace.id, now, leaseMs: 60_000 });
+    expect(await createPrismaWorkspaceBillingStore({ register: async () => {} }).readConfirmingPlanChangeQuote(workspace.id)).toBeNull();
+    const claimed = await createPrismaWorkspaceBillingStore({ register: async () => {} }).claimAccount({ workspaceId: workspace.id, now, leaseMs: 60_000 });
     expect(claimed).not.toBeNull();
-    await createPrismaWorkspaceBillingStore().releasePlanChangeClaim({ workspaceId: workspace.id, attemptId: randomUUID(), now, wake: true });
-    expect(await createPrismaWorkspaceBillingStore().claimAccount({ workspaceId: workspace.id, now, leaseMs: 60_000 })).toBeNull();
-    await createPrismaWorkspaceBillingStore().releasePlanChangeClaim({ workspaceId: workspace.id, attemptId: claimed!.attemptId, now, wake: true });
+    await createPrismaWorkspaceBillingStore({ register: async () => {} }).releasePlanChangeClaim({ workspaceId: workspace.id, attemptId: randomUUID(), now, wake: true });
+    expect(await createPrismaWorkspaceBillingStore({ register: async () => {} }).claimAccount({ workspaceId: workspace.id, now, leaseMs: 60_000 })).toBeNull();
+    await createPrismaWorkspaceBillingStore({ register: async () => {} }).releasePlanChangeClaim({ workspaceId: workspace.id, attemptId: claimed!.attemptId, now, wake: true });
   })));
 
   test("enforces one account per Workspace and unique provider bindings", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
@@ -465,7 +465,7 @@ dbDescribe("Workspace Billing PostgreSQL invariants", () => {
     const world = checkoutProvider(workspace.id);
     const billing = createWorkspaceBillingModule({
       catalog,
-      store: createPrismaWorkspaceBillingStore(),
+      store: createPrismaWorkspaceBillingStore({ register: async () => {} }),
       provider: world.provider,
       clock: { now: () => new Date("2026-08-28T10:00:00.000Z") },
       diagnostics: { record: () => undefined },
@@ -508,7 +508,7 @@ dbDescribe("Workspace Billing PostgreSQL invariants", () => {
     const world = checkoutProvider(workspace.id);
     const billing = createWorkspaceBillingModule({
       catalog,
-      store: createPrismaWorkspaceBillingStore(),
+      store: createPrismaWorkspaceBillingStore({ register: async () => {} }),
       provider: world.provider,
       clock: { now: () => new Date("2026-08-28T10:00:00.000Z") },
       diagnostics: { record: () => undefined },
@@ -559,7 +559,7 @@ dbDescribe("Workspace Billing PostgreSQL invariants", () => {
 
   test("a stale unbound release and a session bind serialize: exactly one wins", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const { user, workspace } = await createWorkspace("slot-release-race");
-    const store = createPrismaWorkspaceBillingStore();
+    const store = createPrismaWorkspaceBillingStore({ register: async () => {} });
     const now = new Date("2026-08-28T10:00:00.000Z");
     for (let round = 0; round < 6; round += 1) {
       const prepared = await store.prepareCheckoutAttempt({
@@ -661,7 +661,7 @@ dbDescribe("Workspace Billing PostgreSQL invariants", () => {
     };
     const billing = createWorkspaceBillingModule({
       catalog,
-      store: createPrismaWorkspaceBillingStore(),
+      store: createPrismaWorkspaceBillingStore({ register: async () => {} }),
       provider,
       clock: { now: () => now },
       diagnostics: { record: () => undefined },
@@ -714,7 +714,7 @@ dbDescribe("Workspace Billing PostgreSQL invariants", () => {
         paymentStatus: "unpaid",
       },
     });
-    const store = createPrismaWorkspaceBillingStore();
+    const store = createPrismaWorkspaceBillingStore({ register: async () => {} });
     const billing = createWorkspaceBillingModule({
       catalog,
       store,
@@ -959,7 +959,7 @@ dbDescribe("Workspace Billing PostgreSQL invariants", () => {
     };
     const billing = createWorkspaceBillingModule({
       catalog,
-      store: createPrismaWorkspaceBillingStore(),
+      store: createPrismaWorkspaceBillingStore({ register: async () => {} }),
       provider,
       clock: { now: () => now },
       diagnostics: { record: () => undefined },
@@ -1003,7 +1003,7 @@ dbDescribe("Workspace Billing PostgreSQL invariants", () => {
       data: { nextReconcileAt: now },
     });
     const stores = Array.from({ length: 4 }, () =>
-      createPrismaWorkspaceBillingStore(),
+      createPrismaWorkspaceBillingStore({ register: async () => {} }),
     );
     const batches = await Promise.all(
       stores.map((store) =>
@@ -1025,7 +1025,7 @@ dbDescribe("Workspace Billing PostgreSQL invariants", () => {
         nextReconcileAt: new Date("2026-08-28T10:00:00.000Z"),
       },
     });
-    const store = createPrismaWorkspaceBillingStore();
+    const store = createPrismaWorkspaceBillingStore({ register: async () => {} });
     const claimedAt = new Date("2026-08-28T10:00:00.000Z");
     const [first] = await store.claimDueAccounts({
       now: claimedAt,
@@ -1110,7 +1110,7 @@ dbDescribe("Workspace Billing PostgreSQL invariants", () => {
         expiresAt: deadline,
       },
     });
-    const store = createPrismaWorkspaceBillingStore();
+    const store = createPrismaWorkspaceBillingStore({ register: async () => {} });
     const now = new Date("2026-08-28T10:00:00.000Z");
     const firstAccount = await prisma.workspaceBillingAccount.findUniqueOrThrow({
       where: { workspaceId: first.workspace.id },
@@ -1191,7 +1191,7 @@ dbDescribe("Workspace Billing PostgreSQL invariants", () => {
     let now = new Date("2026-08-28T10:00:00.000Z");
     const billing = createWorkspaceBillingModule({
       catalog,
-      store: createPrismaWorkspaceBillingStore(),
+      store: createPrismaWorkspaceBillingStore({ register: async () => {} }),
       provider: {
         verifyDelivery: () => {
           throw new Error("not used");
@@ -1326,7 +1326,7 @@ dbDescribe("Workspace Billing PostgreSQL invariants", () => {
     });
     const billing = createWorkspaceBillingModule({
       catalog,
-      store: createPrismaWorkspaceBillingStore(),
+      store: createPrismaWorkspaceBillingStore({ register: async () => {} }),
       provider: {
         verifyDelivery: () => {
           throw new Error("not used");

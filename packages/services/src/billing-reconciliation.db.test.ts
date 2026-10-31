@@ -143,4 +143,47 @@ suite("Targeted billing reconciliation", () => {
     expect((await db.workspaceBillingAccount.findUniqueOrThrow({ where: { workspaceId: stale.id } })).reconciliationGeneration).toBe(1);
     expect((await driver.run(staleReference)).kind).toBe("superseded");
   });
+
+  test("interactive and plan-change claims confirm a watchdog before returning provider authority", async () => {
+    const workspace = await fixture();
+    const context = createDatabaseTestContext(); context.client = db;
+    let rejectRegistration = true;
+    const invoke = context.bind(async () => {
+      const store = createPrismaWorkspaceBillingStore({ register: async ids => {
+        expect(ids).toHaveLength(2);
+        const record = await readExecutionDispatch(db, ids[0]!);
+        expect(record).toMatchObject({ deadlineKind: "lease", reference: { subject: { kind: "workspace_billing", id: workspace.id } } });
+        if (rejectRegistration) throw new Error("interactive_watchdog_unconfirmed");
+      } });
+      return store.claimAccount({ workspaceId: workspace.id, now: new Date(0), leaseMs: 60_000 });
+    });
+    await expect(invoke()).rejects.toThrow("interactive_watchdog_unconfirmed");
+    expect(await db.workspaceBillingAccount.findUniqueOrThrow({ where: { workspaceId: workspace.id } })).toMatchObject({ reconcileAttemptId: null, leaseExpiresAt: null, attemptCount: 0 });
+    rejectRegistration = false;
+    const claim = await invoke();
+    expect(claim?.attemptCount).toBe(1);
+    const row = await db.workspaceBillingAccount.findUniqueOrThrow({ where: { workspaceId: workspace.id } });
+    expect(row.leaseExpiresAt!.getTime()).toBeGreaterThan(Date.now());
+    expect(row.reconcileAttemptId).toBe(claim!.attemptId);
+  });
+  test("a lost scheduling acknowledgement replays the same durable Checkout and due obligation", async () => {
+    const workspace = await fixture();
+    const context = createDatabaseTestContext(); context.client = db;
+    const registrations: string[][] = [];
+    let loseAck = true;
+    const input = { workspaceId: workspace.id, actorUserId: workspace.ownerUserId, clientIdempotencyKey: crypto.randomUUID(),
+      targetTier: "pro" as const, interval: "monthly" as const, catalogVersion: "gate-v1", returnDestination: "/settings/billing", now: new Date() };
+    const invoke = context.bind(async () => createPrismaWorkspaceBillingStore({ register: async ids => {
+      registrations.push([...ids]); if (loseAck) throw new Error("checkout_schedule_unconfirmed");
+    } }).prepareCheckoutAttempt(input));
+    await expect(invoke()).rejects.toThrow("checkout_schedule_unconfirmed");
+    const accepted = await db.workspaceCheckoutAttempt.findUniqueOrThrow({ where: { clientIdempotencyKey: input.clientIdempotencyKey } });
+    loseAck = false;
+    const replay = await invoke();
+    expect(replay).toMatchObject({ kind: "existing", attempt: { id: accepted.id } });
+    expect(registrations).toHaveLength(2);
+    expect(registrations[1]).toEqual(registrations[0]);
+    expect(await db.workspaceCheckoutAttempt.count({ where: { billingAccount: { workspaceId: workspace.id } } })).toBe(1);
+    expect((await db.workspaceBillingAccount.findUniqueOrThrow({ where: { workspaceId: workspace.id } })).reconciliationGeneration).toBe(1);
+  });
 });

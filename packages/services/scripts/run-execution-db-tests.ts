@@ -55,6 +55,11 @@ try {
       VIZARD_EXPANSION_TEST_DATABASE_URL: testUrl.toString(),
       VIZARD_EXPANSION_TEST_DATABASE_SCHEMA: schema,
     } : {}),
+    ...(tests.includes("packages/services/src/workspace-billing.db.test.ts") ? {
+      ALLOW_WORKSPACE_BILLING_DB_TESTS: "1",
+      WORKSPACE_BILLING_TEST_DATABASE_URL: testUrl.toString(),
+      WORKSPACE_BILLING_TEST_DATABASE_SCHEMA: schema,
+    } : {}),
   };
   // Verify the actual migration's closed seed before operational fixture
   // setup. Service gates exercise an explicitly opened deployment.

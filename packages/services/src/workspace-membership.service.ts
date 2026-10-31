@@ -1,5 +1,6 @@
 import { appendProgressRevocation, deliverProgressAfterCommit } from "./progress-outbox";
-import { queueBillingReconciliation } from "./billing-reconciliation";
+import { queueBillingReconciliation, recoverBillingReconciliation } from "./billing-reconciliation";
+import { readExecutionAdmission } from "./execution-admission";
 import type { ExecutionDispatchRecord } from "./execution-dispatch";
 import { createHash } from "node:crypto";
 import type { Prisma, WorkspaceRole } from "@prisma/client";
@@ -138,6 +139,14 @@ export class WorkspaceMembershipService {
         workspace: { select: { id: true, name: true, pricingTier: true, status: true } },
       },
     });
+    if (invite?.acceptedAt && !invite.revokedAt) {
+      const member = await prisma.workspaceMember.findFirst({ where: { workspaceId: invite.workspaceId, userId,
+        user: { deletedAt: null, primaryEmail: { equals: invite.email, mode: "insensitive" } } } });
+      if (member) {
+        await prisma.$transaction(async tx => { await readExecutionAdmission(tx); await recoverBillingReconciliation(tx, invite.workspaceId); });
+        return { workspaceId: invite.workspaceId, workspaceName: invite.workspace.name, role: member.role };
+      }
+    }
     if (!invite || invite.revokedAt || invite.acceptedAt || invite.expiresAt <= new Date()) {
       throw new WorkspaceOperationError(
         "workspace_invite_invalid",
@@ -168,6 +177,7 @@ export class WorkspaceMembershipService {
     }
 
     const member = await prisma.$transaction(async (tx) => {
+      await readExecutionAdmission(tx);
       const fresh = await tx.workspaceInvite.findFirst({
         where: {
           id: invite.id,
@@ -221,6 +231,7 @@ export class WorkspaceMembershipService {
     }
     const prisma = requiredPrisma();
     return prisma.$transaction(async (tx) => {
+      await readExecutionAdmission(tx);
       await lockWorkspaceMember(tx, workspaceId, memberId);
       const member = await tx.workspaceMember.findFirst({
         where: { id: memberId, workspaceId },
@@ -243,7 +254,7 @@ export class WorkspaceMembershipService {
           "Admins cannot manage other admins",
         );
       }
-      if (member.role === nextRole) return member;
+      if (member.role === nextRole) { await recoverBillingReconciliation(tx, workspaceId); return member; }
       const delta = Number(isBillable(nextRole)) - Number(isBillable(member.role));
       if (isWorkspaceRoleElevation(member.role, nextRole)) {
         await requireMemberGrowthAllowed(tx, workspaceId, { addsSeat: delta > 0 });
@@ -266,11 +277,12 @@ export class WorkspaceMembershipService {
     const prisma = requiredPrisma();
     const revocations: ExecutionDispatchRecord[] = [];
     await prisma.$transaction(async (tx) => {
+      await readExecutionAdmission(tx);
       await lockWorkspaceMember(tx, workspaceId, memberId);
       const member = await tx.workspaceMember.findFirst({
         where: { id: memberId, workspaceId },
       });
-      if (!member) return;
+      if (!member) { await recoverBillingReconciliation(tx, workspaceId); return; }
       if (member.role === "owner") {
         throw new WorkspaceOperationError(
           "workspace_owner_removal_forbidden",
