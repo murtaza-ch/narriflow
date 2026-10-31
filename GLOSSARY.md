@@ -44,7 +44,7 @@ The plan does not carry render-time media facts that only one adapter can observ
 _Avoid_: FFmpeg filter graph, preview layout, auto-layout analysis
 
 **Layout Evidence**:
-Source-bound Automatic, Screen, or Split observations for one canonical Clip window and edited timeline. The worker owner validates durable evidence, lazily obtains one complete analysis segment, normalizes detector facts, constructs current envelopes, and publishes through revision and execution-owner fences. Preview analysis and export share original source dimensions and zoom limits; proxy dimensions never choose composition policy. Typed unavailable, failed, and disabled states remain planner inputs.
+Source-bound Automatic, Screen, or Split observations for one canonical Clip window and edited timeline. The media execution owner validates durable evidence, lazily obtains one complete analysis segment, normalizes detector facts, constructs current envelopes, and publishes through revision and execution-owner fences. Preview analysis and export share original source dimensions and zoom limits; proxy dimensions never choose composition policy. Typed unavailable, failed, and disabled states remain planner inputs.
 _Avoid_: Layout plan, detector payload, renderer fallback
 
 **Layout Evidence Lifecycle**:
@@ -72,6 +72,23 @@ The exclusive right of one Studio Editing Session in a browser profile to change
 _Avoid_: Workflow Attempt, worker lease, tab lock
 
 ## Processing
+
+**Execution Dispatch**:
+A durable obligation to deliver one accepted domain transition to a named scheduler or transport destination, identified independently of the domain attempt it concerns. Repeated delivery never authorizes another domain attempt.
+_Avoid_: Workflow Event, Workspace Event, job payload
+
+**Execution Attempt**:
+The exclusive execution-owner record for one already admitted domain attempt, binding its immutable inputs, current generation and deployment epoch to one live owner. Acquiring it is distinct from starting chargeable work.
+_Avoid_: Workflow Attempt, Clip Render Attempt, transport retry
+
+**Deployment Epoch**:
+The authority generation shared by one database and its execution environment. Advancing it after restore revokes every earlier external execution and development-device authority.
+_Avoid_: Deployment version, application revision
+
+**Source Audio**:
+Immutable whole-source audio evidence bound to a Project's source revision, upstream media identity and selected audio track, with verified object identity and exact measured duration. It can become ready before the original video without making that video ready.
+_Avoid_: Audio excerpt, transcription fallback, provider duration
+
 
 **Upload Session**:
 A workspace-owned, durable intake record that binds one immutable browser upload intent to its declared source, frozen brand and generation settings, server-chosen transfer plan, private storage identity, exact-object verification, and exactly-once handoff to a Project and Upload Finalize Ingest Job.
@@ -162,7 +179,7 @@ A signed, at-least-once notification delivered to a caller-supplied URL when one
 _Avoid_: Webhook, event stream
 
 **Transcript Passage**:
-A 30 to 60 second span of a finished Transcript, cut on utterance boundaries, with its embedding and full-text form. A worker loop builds Passages from each completed Transcript and replaces only the ones whose content hash changed; a failed embedding backs that Transcript off and never touches generation. Library search ranks Passages by meaning and by exact words after limiting them to the actor's Workspace and viewable Projects, in the same query.
+A 30 to 60 second span of a finished Transcript, cut on utterance boundaries, with its embedding and full-text form. Transcript completion makes Passage indexing due; indexing replaces only Passages whose content hash changed; a failed embedding backs that Transcript off and never touches generation. Library search ranks Passages by meaning and by exact words after limiting them to the actor's Workspace and viewable Projects, in the same query.
 _Avoid_: Chunk, snippet, search index entry
 
 **Workspace Event**:
@@ -178,7 +195,7 @@ A named, revisioned set of Workspace settings: a Brand Profile (or none), the so
 _Avoid_: Preset, template, profile (a Brand Profile is only the branding part)
 
 **Finishing**:
-What happens after one generation completes, asked for by a Recipe (so by an Autopilot rule that uses it) or inline on a REST or MCP request: export the generation's best clips, write assisted copy for chosen platforms, then leave the Project ready to review, propose each picked clip to chosen accounts' Publishing Queues, or (for an Autopilot rule with a Standing Grant) send the finished exports to the grant's reviewers as a Review Round. The settings are one schema, frozen with the generation when it is admitted as one Generation Finishing row keyed by the generation's speech-to-text run. The generation's settlement makes the row due in its own transaction; a worker loop claims due rows with a lease, checks the plan (Pro and above) and that the acting user still has access, and ends the row `ready`, `partial` or `skipped` with a reason. Exports and copy use keys derived from the row, so a re-claim never repeats them.
+What happens after one generation completes, asked for by a Recipe (so by an Autopilot rule that uses it) or inline on a REST or MCP request: export the generation's best clips, write assisted copy for chosen platforms, then leave the Project ready to review, propose each picked clip to chosen accounts' Publishing Queues, or (for an Autopilot rule with a Standing Grant) send the finished exports to the grant's reviewers as a Review Round. The settings are one schema, frozen with the generation when it is admitted as one Generation Finishing row keyed by the generation's speech-to-text run. The generation's settlement makes the row due in its own transaction; its execution owner claims the due row with a lease, checks the plan (Pro and above) and that the acting user still has access, and ends the row `ready`, `partial` or `skipped` with a reason. Exports and copy use keys derived from the row, so a re-claim never repeats them.
 _Avoid_: Auto-export, post-processing, publishing (Finishing proposes posts and never posts)
 
 **Media Cleanup**:
