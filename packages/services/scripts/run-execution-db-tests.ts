@@ -22,7 +22,7 @@ const requestedTests = Bun.argv.slice(2);
 const tests = requestedTests.length ? requestedTests : [
   "execution-ledger", "execution-admission", "execution-maintenance", "execution-retention-pages", "media-cleanup-control", "execution-snapshot", "execution-restore", "execution-dispatch", "executor-control", "execution-transfer", "source-audio-admission",
   "targeted-execution", "targeted-ingest-execution", "targeted-workflow-execution", "clip-preparation", "clip-preparation-ledger", "clip-selection", "clip-selection-window", "clip-selection-preparation", "clip-selection-hyperdrive-gate", "native-validation", "thumbnail-frame-execution", "generated-media-execution",
-  "outbound-probe", "outbound-delivery", "webhook-subscription", "notification-dispatch", "publication-execution", "modal-dispatch", "progress-outbox", "billing-reconciliation", "library-index", "generation-finishing-execution", "generation-finishing", "social-token-refresh",
+  "outbound-probe", "outbound-delivery", "webhook-subscription", "notification-dispatch", "notification-execution", "publication-execution", "modal-dispatch", "progress-outbox", "billing-reconciliation", "library-index", "generation-finishing-execution", "generation-finishing", "social-token-refresh",
 ].map(name => `packages/services/src/${name}.db.test.ts`);
 if (tests.some(path => !/^packages\/services\/src\/[a-z0-9-]+\.db\.test\.ts$/.test(path))) throw new Error("Only named execution database test files are allowed");
 for (const path of tests) if (!await Bun.file(new URL(`../../../${path}`, import.meta.url)).exists()) throw new Error(`Execution database test file does not exist: ${path}`);
@@ -51,8 +51,9 @@ try {
       SOCIAL_PUBLICATION_TEST_DATABASE_URL: testUrl.toString(),
       SOCIAL_PUBLICATION_TEST_DATABASE_SCHEMA: schema,
     } : {}),
-    ...(tests.includes("packages/services/src/generation-usage.db.test.ts") ? {
+    ...(tests.some(path => ["generation-usage", "review-access"].some(name => path === `packages/services/src/${name}.db.test.ts`)) ? {
       ALLOW_VIZARD_EXPANSION_DB_TESTS: "1",
+      REVIEW_ACCESS_SECRET: "serverless-review-delivery-isolated-fixture-secret",
       VIZARD_EXPANSION_TEST_DATABASE_URL: testUrl.toString(),
       VIZARD_EXPANSION_TEST_DATABASE_SCHEMA: schema,
     } : {}),

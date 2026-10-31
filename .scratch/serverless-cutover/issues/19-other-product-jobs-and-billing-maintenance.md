@@ -94,3 +94,30 @@ The bundle PostgreSQL suite passes12/109, including rollback-isolated restore,
 pagination, stale proof refusal and SQL budget-extension refusal. These changes
 have only run in disposable schemas. Dubbing recovery still depends on its
 remaining native checkpoint fields and protocol.
+
+
+Targeted Finishing and email runtime checkpoint, 2026-10-31: each Finishing child
+admission/result transaction rechecks current claim authority. Copy generation
+and moderation also recheck authority before physical provider requests. Original
+source grants and proposal revisions remain frozen. Final Finishing state and its
+mail intent now commit in one transaction. Export completion wakes bounded exact
+dependents; metadata-only restore revokes owners without changing paid child
+identities or original clocks, and final recovery alone appends product wakes.
+
+Project and review email delivery use exact reference drivers with watchdogs,
+current recipients, encrypted byte-stable requests, original provider keys and a
+23-hour deadline within the provider's24-hour idempotency retention. Automatic
+retries keep one body/key; explicit current human retries can start another
+bounded attempt cycle before the same original deadline. Review invite and guest
+receipts retain their exact wake IDs for lost-ACK replay. Source-terminal events,
+review changes and Finishing handoffs append intents with their domain changes.
+Two fixed table cursors implement recovery and metadata-only restore. Existing
+`packages/email` adapters/templates were not changed and no real emails were sent.
+
+Five disposable-schema suites pass103tests/610assertions, and the existing mail
+and receipt unit contracts pass51/194. Services/API typechecks and the actual
+Worker bundle import audit pass. Migration024 has only run in disposable local
+schemas. Obsolete notification poller deletion/remaining semantic ports, deployed
+fault acceptance and the rest of ticket19 remain open. Evidence is in
+`evidence/notification-execution-20261031.json` and
+`evidence/finishing-obligations-20261031.json`.
