@@ -1,7 +1,7 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
 import { createDatabaseScope, getPrismaClient, withDatabaseScope } from "@narriflow/db/client";
 import { ExecutionDispatchError, readExecutionDispatch } from "@narriflow/services/execution-dispatch";
-import { withNotificationDispatches } from "@narriflow/services/notification-dispatch";
+import { withExecutionDispatches } from "@narriflow/services/execution-dispatch-runtime";
 import type { LocalFetchDeviceClaims } from "@narriflow/services/local-fetch-device";
 import type { ProgressRevocation } from "@narriflow/services/progress-feed";
 import { executionDispatchReferenceSchema, type ExecutionDispatchReference } from "@narriflow/validators/execution";
@@ -24,7 +24,7 @@ export class DevelopmentBindings extends WorkerEntrypoint<ApiWorkerBindings> imp
   #database<T>(operation: () => Promise<T>) {
     const bindings = this.#bindings();
     return withWorkerServices(bindings, workerServiceEnvironment(bindings), () => withDatabaseScope(
-      createDatabaseScope({ connectionString: bindings.HYPERDRIVE.connectionString }), () => withNotificationDispatches(operation)));
+      createDatabaseScope({ connectionString: bindings.HYPERDRIVE.connectionString }), () => withExecutionDispatches(operation)));
   }
   async dispatch(value: ExecutionDispatchReference) {
     const reference = executionDispatchReferenceSchema.parse(value);

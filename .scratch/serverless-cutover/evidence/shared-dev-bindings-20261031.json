@@ -11,7 +11,7 @@
   "postgresBindings": 0,
   "externalProviderRequests": 0,
   "transport": "Named WorkerEntrypoint service binding between two Workers in one real Workerd runtime",
-  "liveCloudRemoteConnection": "pending canonical API deployment",
+  "liveCloudRemoteConnection": "passed local Wrangler to deployed named WorkerEntrypoint RPC",
   "documentation": "https://developers.cloudflare.com/workers/local-development/#using-remote-resources-with-durable-objects-and-workflows",
   "deployedGate": {
     "runtime": "wrangler-local-to-cloud",
@@ -40,5 +40,17 @@
     "assertions": 1173,
     "failed": 0,
     "database": "disposable local PostgreSQL17 schema,136 migrations"
+  },
+  "localDevelopmentWrapper": {
+    "passed": true,
+    "port": 4199,
+    "database": "serverless_pipeline_gates, isolated Neon branch",
+    "databaseRequests": 0,
+    "livenessStatus": 200,
+    "closedIntakeStatus": 503,
+    "secretsMasked": true,
+    "databaseUrlsExcludedFromWorkerSettings": true,
+    "wranglerVersion": "4.156.0",
+    "note": "Temporary config and Wrangler cwd match to keep tsconfig resolution correct; installed pinned CLI is invoked by absolute path."
   }
 }

@@ -4,7 +4,7 @@ import { createDatabaseScope, withDatabaseScope, type DatabaseScope } from "@nar
 import { executionDispatchIdentity } from "@narriflow/services/execution-dispatch";
 import { executionDispatchReferenceSchema, type ExecutionDispatchReference } from "@narriflow/validators/execution";
 import { withWorkerServices, workerServiceEnvironment } from "../worker-services";
-import { withNotificationDispatches } from "@narriflow/services/notification-dispatch";
+import { withExecutionDispatches } from "@narriflow/services/execution-dispatch-runtime";
 import type { ApiWorkerBindings } from "../worker-bindings";
 import { workflowDomainRegistry } from "./domain-runtime";
 import { assertMetadataBound, dispatchContinuationInstanceId, workflowDirectiveSchema, workflowDispatchEventSchema, WORKFLOW_DISPATCH_EVENT, type WorkflowHandlerRegistry, type WorkflowKind, type WorkflowWake } from "./protocol";
@@ -28,7 +28,7 @@ export abstract class ScopedDomainWorkflow extends WorkflowEntrypoint<ApiWorkerB
     for (let index = 0; index < MAX_COMMAND_STEPS; index++) {
       const input = { reference, wake };
       const directive = await step.do(`command-${index}`, { retries: { limit: 3, delay: "1 second", backoff: "exponential" }, timeout: "2 minutes" }, () =>
-        withWorkerServices(this.env, workerServiceEnvironment(this.env), () => withDatabaseScope(this.scope(), () => withNotificationDispatches(async () => {
+        withWorkerServices(this.env, workerServiceEnvironment(this.env), () => withDatabaseScope(this.scope(), () => withExecutionDispatches(async () => {
           // Construct the registry after entering the new scope. A factory may
           // resolve service ports here but cannot retain a prior step's client.
           const handler = this.registry()[reference.kind]?.[reference.subject.kind];

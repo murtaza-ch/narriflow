@@ -1,0 +1,12 @@
+{
+  "passed": 2,
+  "checks": [
+    "unsigned_command_refused",
+    "signed_status_without_spawn_returns_unconfirmed"
+  ],
+  "spawnedHeavyFunctions": 0,
+  "providerRequests": 0,
+  "profile": "murtazach275",
+  "application": "narriflow-media-gates",
+  "note": "This proves authentication and reference-only unknown-status handling. It does not prove media execution or provider throughput."
+}
