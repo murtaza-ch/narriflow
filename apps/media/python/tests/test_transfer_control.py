@@ -14,7 +14,7 @@ from uuid import uuid4
 from narriflow_media.control import ControlResponse, ExecutionControlClient, ExecutionControlError, ExecutorSession
 from narriflow_media.multipart import MultipartTransferError, TransferResponse, upload_file
 from narriflow_media.signing import verify_execution_request
-from narriflow_media.transfer import ScopedMultipartControl
+from narriflow_media.transfer import ScopedMultipartControl, load_work_package
 
 
 def instant(seconds):
@@ -34,7 +34,7 @@ class ScopedTransferTests(unittest.IsolatedAsyncioTestCase):
                 result = reply(command, calls)
             return ControlResponse(200, {'X-Execution-Server-Time': instant(now)}, json.dumps(result).encode())
         client = ExecutionControlClient(origin='https://api.example', key_id='dev', key=b'k'*32, transport=transport, retry_delay_seconds=0)
-        return ExecutorSession.acquire(client, reference={'dispatchId':'fixture'}, attempt_token='fixture'), calls
+        return ExecutorSession.acquire(client, reference={'dispatchId':'fixture','inputHash':'0'*64}, attempt_token='fixture'), calls
 
     async def test_native_upload_uses_signed_assigned_ids_and_completes_without_part_inventory(self):
         artifact = str(uuid4())
@@ -134,6 +134,41 @@ class ScopedTransferTests(unittest.IsolatedAsyncioTestCase):
                     assert_owned=session.assert_live, cancel_event=session.cancel_event)
         self.assertEqual([call[1]['action'] for call in calls], ['acquire','upload-initialize','upload-parts']+['upload-complete']*3)
         self.assertEqual(calls[-1][2:],calls[-2][2:])
+
+    async def test_work_package_object_is_conditionally_read_and_raw_hash_verified_before_json_parse(self):
+        raw = b'{"native":true}'
+        requests = []
+        def reply(command, calls):
+            return {'disposition':'work_package','functionName':'fetch_source','inputHash':'0'*64,
+                'input':{'kind':'object','storageKey':'assigned-input','etag':'"immutable"','byteLength':len(raw),
+                    'sha256':hashlib.sha256(raw).hexdigest(),'url':'https://r2.example/secret','headers':{'If-Match':'"immutable"'},'expiresAt':instant(time.time()+60)},
+                'sources':[],'outputs':[]}
+        class Storage:
+            async def request(self, grant, method, body, headers, limit, cancelled):
+                requests.append((method,headers,limit))
+                return TransferResponse(200,{'ETag':'"immutable"','Content-Length':str(len(raw))},raw)
+        session,_=self.make_session(reply)
+        with session:
+            package=await load_work_package(session,transport=Storage())
+        self.assertEqual(package.command,{'native':True})
+        self.assertEqual(package.input_hash,'0'*64)  # Semantic identity differs from raw object bytes.
+        self.assertEqual(requests,[('GET',{'If-Match':'"immutable"'},16777216)])
+        self.assertNotIn('secret',repr(package))
+
+    async def test_changed_work_package_bytes_are_never_parsed_or_exposed(self):
+        raw = b'not valid json'
+        def reply(command,calls):
+            return {'disposition':'work_package','functionName':'fetch_source','inputHash':'0'*64,
+                'input':{'kind':'object','storageKey':'assigned-input','etag':'"immutable"','byteLength':len(raw),'sha256':'0'*64,
+                    'url':'https://r2.example/private','headers':{},'expiresAt':instant(time.time()+60)},'sources':[],'outputs':[]}
+        class Storage:
+            async def request(self,*args):
+                return TransferResponse(200,{'ETag':'"immutable"','Content-Length':str(len(raw))},raw)
+        session,_=self.make_session(reply)
+        with session:
+            with self.assertRaises(ExecutionControlError) as changed:
+                await load_work_package(session,transport=Storage())
+        self.assertEqual(str(changed.exception),'execution_input_changed')
 
 
 if __name__ == '__main__':
