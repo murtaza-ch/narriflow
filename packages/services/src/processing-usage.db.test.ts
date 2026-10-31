@@ -830,6 +830,7 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
       workflow: new WorkflowRunLifecycle({ prisma }),
       usage: module,
       requireRetryActor: async () => {},
+      executionInputHash: job => ingestExecutionInputHash(job, "f".repeat(64)),
     });
     const project = await measuredProject(ws.id, 1200, { ingestStatus: "queued" });
     await prisma.project.update({ where: { id: project.id }, data: { ingestStatus: "failed", sourceDurationSeconds: 1200 } });
@@ -847,7 +848,11 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
     expect((await row(project.id)).state).toBe("released");
 
     await prisma.$transaction((tx) => module.release(tx, { projectId: blocker.projectId, reason: "test" }));
-    await retry();
+    const accepted = await retry();
+    const queued = await prisma.ingestJob.findUniqueOrThrow({ where: { id: accepted.queuedJobId } });
+    const dispatch = await prisma.executionDispatch.findFirstOrThrow({ where: { kind: "import_pipeline", subjectKind: "ingest_job", subjectId: queued.id } });
+    expect(dispatch).toMatchObject({ deploymentEpoch: queued.deploymentEpoch, generation: queued.generation,
+      inputHash: await ingestExecutionInputHash(queued, "f".repeat(64)) });
     expect(await row(project.id)).toMatchObject({
       state: "reserved",
       reservedSeconds: 1200,
