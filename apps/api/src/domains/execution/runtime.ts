@@ -13,6 +13,8 @@ import { createOutboundProbeExecution } from "@narriflow/services/outbound-probe
 import { createIngestSourceExecution } from "@narriflow/services/ingest-source-execution";
 import { createOutboundDeliveryExecution } from "@narriflow/services/outbound-delivery-execution";
 import { getOutboundDeliveryService } from "@narriflow/services/outbound-delivery-runtime";
+import { getGeneratedMediaExecution } from "@narriflow/services/generated-media-runtime";
+import { createGeneratedMediaExecution } from "@narriflow/services/generated-media-control";
 import { getIngestJobLifecycle } from "@narriflow/services/ingest-job-lifecycle-runtime";
 import { getWorkflowRunLifecycle } from "@narriflow/services/workflow-run-lifecycle";
 import { createDriveTokenCipher } from "@narriflow/services/drive-source";
@@ -34,7 +36,7 @@ export function createExecutionDependencies(environment: Readonly<Record<string,
  * command step's fresh database scope. No clients survive this invocation. */
 export function createWorkerExecutor(reference: ExecutionDispatchReference, bindings?: ApiWorkerBindings) {
   if (!bindings?.MEDIA_BUCKET) throw new ExecutorControlError("storage_unavailable");
-  if (!["native_validation", "thumbnail_frame", "outbound_probe", "outbound_delivery", "ingest_job"].includes(reference.subject.kind)) throw new ExecutorControlError("scheduler_unavailable");
+  if (!["native_validation", "thumbnail_frame", "outbound_probe", "outbound_delivery", "generated_media", "ingest_job"].includes(reference.subject.kind)) throw new ExecutorControlError("scheduler_unavailable");
   const database = getPrismaClient();
   if (!database) throw new ExecutorControlError("epoch_unavailable");
   const environment = readServiceEnvironment();
@@ -45,6 +47,7 @@ export function createWorkerExecutor(reference: ExecutionDispatchReference, bind
   if (reference.subject.kind === "ingest_job") return createIngestSourceExecution({ ...common, domain: getIngestJobLifecycle(), workflow: getWorkflowRunLifecycle(), toolchainFingerprint: required(reference.kind === "local_fetch" ? "MEDIA_LOCAL_FETCH_TOOLCHAIN_FINGERPRINT" : "MEDIA_FETCH_TOOLCHAIN_FINGERPRINT"),
     sourceReads: { openDriveCredential: sealed => createDriveTokenCipher().open(sealed), zoomRecordingDownload: input => zoomService.recordingDownload(input) } });
   if (reference.subject.kind === "outbound_delivery") return createOutboundDeliveryExecution({ ...common, domain: getOutboundDeliveryService() });
+  if (reference.subject.kind === "generated_media") return createGeneratedMediaExecution({ ...common, domain: getGeneratedMediaExecution() });
   if (reference.subject.kind === "outbound_probe") return createOutboundProbeExecution({ ...common, domain: getOutboundProbeService() });
   const domain = reference.subject.kind === "thumbnail_frame" ? { subjectKind: "thumbnail_frame" as const, domain: getThumbnailFrameExecution() }
     : { subjectKind: "native_validation" as const, domain: getNativeValidationService() };
