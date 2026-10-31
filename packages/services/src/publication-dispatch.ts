@@ -5,6 +5,7 @@ import {
 	appendExecutionDispatch,
 	readExecutionDispatch,
 } from "./execution-dispatch";
+import {collectExecutionDispatch} from "./execution-dispatch-runtime";
 
 const scheduleInclude = {
 	frozenState: true,
@@ -94,6 +95,21 @@ export async function appendPublicationDispatch(
 		...(options.wakeKind ? { wakeKind: options.wakeKind } : {}),
 	});
 	return result.reference.dispatchId;
+}
+
+/** Repair an accepted identity only. Never creates a new admission or invents
+ * a next wake from a stale request, even if the producer committed a newer cycle. */
+export async function recoverPublicationDispatches(tx:Tx,postId:string,workspaceId?:string){
+ const epoch=await tx.executionEpoch.findUniqueOrThrow({where:{id:1}});
+ const post=await tx.socialPost.findFirst({where:{id:postId,...(workspaceId?{workspaceId}:{}),deploymentEpoch:epoch.epoch},include:scheduleInclude});
+ if(!post)return [];
+ const rows=await tx.executionDispatch.findMany({where:{deploymentEpoch:epoch.epoch,subjectKind:"social_publication",subjectId:post.id,generation:post.generation,inputHash:publicationExecutionInputHash(post),kind:{in:["operation_driver","modal_execution"]},acknowledgedAt:null,deadLetteredAt:null},orderBy:{id:"asc"},take:129,select:{id:true}});
+ if(rows.length>128)throw Error("publication_dispatch_repair_bound");
+ for(const row of rows)collectExecutionDispatch(tx,row.id);
+ return rows.map(row=>row.id);
+}
+export function samePublicationDispatch(a:ExecutionDispatchReference,b:ExecutionDispatchReference){
+ return a.dispatchId===b.dispatchId&&a.kind===b.kind&&a.subject.kind===b.subject.kind&&a.subject.id===b.subject.id&&a.deploymentEpoch===b.deploymentEpoch&&a.generation===b.generation&&a.inputHash===b.inputHash;
 }
 
 export type PublicationScheduleObservation =

@@ -33,6 +33,8 @@ import {
 } from "./execution-dispatch";
 import {
 	appendPublicationDispatch,
+ recoverPublicationDispatches,
+ samePublicationDispatch,
 	publicationExecutionInputHash,
 	type PublicationSchedule,
 } from "./publication-dispatch";
@@ -79,6 +81,7 @@ interface ClaimState {
 	providerGrant?: { operation: string; purpose: string };
 	irreversibleGrants?: string[];
 	instructionArtifactId?: string;
+ transitionDispatchIds?:string[];
 }
 const state = (claim: PublicationClaim) =>
 	claim.workState as unknown as ClaimState;
@@ -271,6 +274,12 @@ export class PublicationExecution
 			data: { currentClaimId: null },
 		});
 	}
+ private async rememberTransition(tx:Tx,ref:PublicationExecutionRef,result:{dispatchIds:string[]}){
+  if(result.dispatchIds.length>128)throw new PublicationExecutionError("publication_dispatch_repair_bound");
+  const claim=await tx.publicationClaim.findUniqueOrThrow({where:{id:ref.claimId}});
+  await tx.publicationClaim.update({where:{id:claim.id},data:{workState:json({...state(claim),transitionDispatchIds:[...new Set(result.dispatchIds)]})}});
+  return result;
+ }
 	private async stop(
 		tx: Tx,
 		ref: PublicationExecutionRef,
@@ -302,14 +311,17 @@ export class PublicationExecution
 			socialPostId: ref.postId,
 			attemptId: ref.attemptId,
 		});
-		return {
+		return this.rememberTransition(tx,ref,{
 			dispatchIds: [
 				...(await this.wake(tx, ref.postId, now, "publication_terminal")),
 				...takeExecutionDispatchIds(tx),
 			],
-		};
+		});
 	}
-	private async uncertain(tx: Tx, ref: PublicationExecutionRef, code: string) {
+ private async uncertain(tx:Tx,ref:PublicationExecutionRef,code:string){
+  return this.rememberTransition(tx,ref,await this.uncertainResult(tx,ref,code));
+ }
+ private async uncertainResult(tx: Tx, ref: PublicationExecutionRef, code: string) {
 		const attempt = await tx.socialPublicationAttempt.findUniqueOrThrow({
 				where: { id: ref.attemptId },
 			}),
@@ -374,10 +386,8 @@ export class PublicationExecution
 		)?.reference;
 		if (
 			!ledger ||
-			ledger.inputHash !== reference.inputHash ||
-			ledger.generation !== reference.generation ||
-			ledger.subject.kind !== "social_publication" ||
-			ledger.subject.id !== reference.subject.id
+			!samePublicationDispatch(ledger,reference) ||
+   ledger.subject.kind!=="social_publication"
 		)
 			return;
 		const post = await this.post(this.database, reference.subject.id);
@@ -425,6 +435,23 @@ export class PublicationExecution
 	async prepareExecution(
 		reference: ExecutionDispatchReference,
 	): Promise<PublicationPreparation> {
+  // Registration is outside SQL. An exact old delivery can repair the already
+  // committed next cycle before its ordinary stale-generation return.
+  const repaired=await this.database.$transaction(async tx=>{
+   if(reference.kind!=="operation_driver"||reference.subject.kind!=="social_publication"||(await this.epoch(tx))!==reference.deploymentEpoch)return [];
+   const ledger=(await readExecutionDispatch(tx,reference.dispatchId))?.reference;
+   if(!ledger||!samePublicationDispatch(ledger,reference))return [];
+   await lockPublicationPost(tx,reference.subject.id);
+   const ids=await recoverPublicationDispatches(tx,reference.subject.id);
+   const claim=await tx.publicationClaim.findFirst({where:{deploymentEpoch:reference.deploymentEpoch,generation:reference.generation,attempt:{socialPostId:reference.subject.id}},orderBy:{createdAt:"desc"}});
+   const transitions=claim?state(claim)?.transitionDispatchIds:undefined;
+   if(transitions){
+    if(!Array.isArray(transitions)||transitions.length>128||transitions.some(id=>typeof id!=="string"||!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(id)))throw new PublicationExecutionError("publication_dispatch_repair_bound");
+    ids.push(...transitions);
+   }
+   return [...new Set(ids)];
+  });
+  if(repaired.length)await this.ports.register(repaired);
 		await this.expireAccountSlot(reference);
 		const snapshot = await this.database.$transaction(async (tx) => {
 			const epoch = await this.epoch(tx),
@@ -435,9 +462,7 @@ export class PublicationExecution
 				reference.kind !== "operation_driver" ||
 				epoch !== reference.deploymentEpoch ||
 				!ledger ||
-				ledger.generation !== reference.generation ||
-				ledger.inputHash !== reference.inputHash ||
-				ledger.subject.id !== reference.subject.id
+				!samePublicationDispatch(ledger,reference)
 			)
 				return { kind: "superseded" as const };
 			await lockPublicationPost(tx, reference.subject.id);

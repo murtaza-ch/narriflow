@@ -96,8 +96,8 @@ export async function refreshSocialAccountToken(options: {
 		});
 		return { claim: { epoch: observed.epoch, owner, row: current } };
 	});
-	if ("error" in admitted) throw new SocialTokenRefreshError(admitted.error);
-	if ("row" in admitted) return admitted.row;
+	if ("error" in admitted) throw new SocialTokenRefreshError(admitted.error!);
+	if ("row" in admitted) return admitted.row!;
 	const claim = admitted.claim;
 	const started = await db.$transaction(async (tx) => {
 		const observed = await clock(tx),
@@ -172,6 +172,6 @@ export async function refreshSocialAccountToken(options: {
 				}
 			: busy;
 	});
-	if ("error" in outcome) throw new SocialTokenRefreshError(outcome.error);
-	return outcome.row;
+	if ("error" in outcome) throw new SocialTokenRefreshError(outcome.error!);
+	return outcome.row!;
 }

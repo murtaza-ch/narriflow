@@ -217,9 +217,11 @@ suite("Revision-bound publication execution", () => {
 		let inputBuilder:
 			| ReturnType<typeof createPublicationInputBuilder>
 			| undefined;
+		let lostRegisterAck = false;
 		let lostPutAck = false,
 			beforePut: (() => Promise<void>) | undefined;
 		const register = async (ids: readonly string[]) => {
+			if(lostRegisterAck && ids.length){lostRegisterAck=false;throw Error("lost_register_ack");}
 			await db.executionDispatch.updateMany({
 				where: { id: { in: [...ids] } },
 				data: { acknowledgedAt: new Date() },
@@ -309,6 +311,7 @@ suite("Revision-bound publication execution", () => {
 			objects,
 			inputBytes,
 			hooks: {
+				lostRegister:()=>{lostRegisterAck=true;},
 				buildInput: (
 					value: ReturnType<typeof createPublicationInputBuilder>,
 				) => {
@@ -673,6 +676,22 @@ suite("Revision-bound publication execution", () => {
 				}),
 			),
 		).rejects.toBeDefined();
+	});
+
+	test("an old generation wake repairs its committed next obligation after scheduler ACK loss",async()=>{
+		const f=await active(), p=await claimed(f);
+		await db.publicationClaim.update({where:{id:p.fence.attemptToken},data:{leaseExpiresAt:new Date(Date.now()-1000)}});
+		f.hooks.lostRegister();
+		await expect(f.domain.prepareExecution(f.reference)).rejects.toThrow("lost_register_ack");
+		const post=await db.socialPost.findUniqueOrThrow({where:{id:f.post.id}});
+		expect(post.generation).toBe(f.reference.generation+1);
+		const pending=await db.executionDispatch.findMany({where:{subjectKind:"social_publication",subjectId:post.id,generation:post.generation,acknowledgedAt:null}});
+		expect(pending).toHaveLength(1);
+		await expect(f.domain.prepareExecution({...f.reference,inputHash:"f".repeat(64)})).resolves.toMatchObject({kind:"superseded"});
+		expect((await db.executionDispatch.findUniqueOrThrow({where:{id:pending[0]!.id}})).acknowledgedAt).toBeNull();
+		await expect(f.domain.prepareExecution(f.reference)).resolves.toMatchObject({kind:"superseded"});
+		expect((await db.executionDispatch.findUniqueOrThrow({where:{id:pending[0]!.id}})).acknowledgedAt).not.toBeNull();
+		expect(await db.socialPublicationAttempt.count({where:{socialPostId:post.id}})).toBe(1);
 	});
 
 	test("targeted native publication seals private input before dispatch and charges only one real start", async () => {
