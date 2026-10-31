@@ -36,7 +36,7 @@ class SourceSinkTests(unittest.IsolatedAsyncioTestCase):
         audio = Path(directory)/"audio.m4a"; audio.write_bytes(b"hello")
         video = Path(directory)/"video.mp4"; video.write_bytes(b"hello")
         audio_artifact = VerifiedSourceFile(audio, manifest, {}, FileSnapshot.read(audio))
-        video_artifact = VerifiedSourceFile(video, manifest, {"facts": {"videos": [{"startTimeSec": 0}]}}, FileSnapshot.read(video))
+        video_artifact = VerifiedSourceFile(video, manifest, {"sourceProbe":{"durationSec":120,"audio":{"sampleRate":48000,"channels":2},"video":{"width":1920,"height":1080,"frameRate":{"numerator":30,"denominator":1},"startTimecode":None}},"facts": {"videos": [{"startTimeSec": 0}]}}, FileSnapshot.read(video))
         outputs = {role: {"artifactId": str(uuid4()), "role": role, "bindingHash": "b"*64, "contentType": mime,
             "contentTypes": [mime], "maxBytes": 2_000_000} for role,mime in [("source_audio","audio/mp4"),("source_video","video/mp4"),("probe","audio/wav")]}
         def package(refreshed=False):
@@ -83,6 +83,8 @@ class SourceSinkTests(unittest.IsolatedAsyncioTestCase):
             await sink.audio_ready(audio);await sink.video_ready(video,audio)
             self.assertEqual(trace,["source_audio","refresh","probe_process","probe","source_video"])
             self.assertEqual(state['video']['mediaIdentity'],{'provider':'rss','mediaId':'episode1'})
+            self.assertEqual(state['video']['probe']['audio'],{'sampleRate':48000,'channels':2})
+            self.assertNotIn('sourceProbe',state['video']['probe'])
 
     async def test_an_already_completed_pin_uses_its_assigned_commit_without_a_second_video_upload(self):
         with tempfile.TemporaryDirectory() as directory:

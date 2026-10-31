@@ -132,10 +132,14 @@ class ScopedSourceSink:
         if "source_video" in self._published:
             raise ExecutionControlError("execution_artifact_already_claimed")
         output, manifest = self._output("source_video"), artifact.manifest
+        normalized=artifact.probe.get("sourceProbe")
+        if not isinstance(normalized,dict) or not isinstance(artifact.probe.get("facts"),dict):
+            raise ExecutionControlError("execution_artifact_facts_invalid")
+        normalized={**normalized,"facts":dict(artifact.probe["facts"])}
         def facts(_completed):
             videos = artifact.probe["facts"]["videos"]
             return {"sourceVideo": {"projectId": self.command["projectId"], "sourceRevision": self.command["sourceRevision"],
-                "mediaIdentity": manifest["mediaIdentity"], "audioTrack": manifest["audioTrack"], "probe": dict(artifact.probe), "wholeSource": True,
+                "mediaIdentity": manifest["mediaIdentity"], "audioTrack": manifest["audioTrack"], "probe": normalized, "wholeSource": True,
                 "audioStartTimeSec": manifest["audioStartTimeSec"], "videoStartTimeSec": (videos[0]["startTimeSec"] or 0) if videos else None,
                 "probeVersion": manifest["probeVersion"], "toolchainFingerprint": manifest["toolchainFingerprint"]}}
         content_type=artifact.content_type or _content_type(artifact.path,True)
