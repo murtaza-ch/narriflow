@@ -1993,7 +1993,10 @@ export class ProjectService {
 			try {
 				const created = await prisma.$transaction(async (tx) => {
 					await requireExecutionAdmissionOpen(tx);
+          await tx.$queryRaw`SELECT id FROM "User" WHERE id=${actor.actorUserId}::uuid FOR SHARE`;
+          await tx.$queryRaw`SELECT id FROM "WorkspaceMember" WHERE "workspaceId"=${actor.workspaceId}::uuid AND "userId"=${actor.actorUserId}::uuid FOR SHARE`;
           await lockWorkspaceUsage(tx, actor.workspaceId);
+          await tx.$queryRaw`SELECT id FROM "Workspace" WHERE id=${actor.workspaceId}::uuid FOR SHARE`;
 					const authority = options.autopilotSource ? await freezeAutopilotFinishingAuthority(tx, { workspaceId: actor.workspaceId, actorUserId: actor.actorUserId, source: options.autopilotSource, recipe: options.generationContext?.recipe, finishing: options.generationContext?.finishing, contentPack: options.generationContext?.contentPack, languageCode: options.generationContext?.languageCode, brandProfileId: input.brandProfileId ?? null }) : null;
 					if (options.zoom) {
 						await tx.$queryRaw`SELECT "id" FROM "ZoomConnection" WHERE "id" = ${options.zoom.connectionId}::uuid FOR UPDATE`;
