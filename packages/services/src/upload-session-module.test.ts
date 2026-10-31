@@ -1471,7 +1471,7 @@ describe("Upload Session", () => {
     });
     now = new Date("2026-08-27T00:00:06.000Z");
 
-    const result = await module.reconcileDueSessions();
+    const result = await module.reconcileSession({ sessionId: harness.facts.sessions[0]!.id });
 
     expect(result).toEqual({ claimed: 1, settled: 1, deferred: 0 });
     expect(harness.facts.sessions[0]).toMatchObject({
@@ -1517,7 +1517,7 @@ describe("Upload Session", () => {
       parts: [],
     });
     now = new Date("2026-08-27T00:00:06.000Z");
-    const background = await module.reconcileDueSessions();
+    const background = await module.reconcileSession({ sessionId: harness.facts.sessions[0]!.id });
 
     expect(inline).toEqual({
       outcome: "reconciling",
@@ -1646,7 +1646,7 @@ describe("Upload Session", () => {
     harness.failNextProviderAbort(timeout);
     now = new Date("2026-08-28T00:00:00.001Z");
 
-    expect(await module.reconcileDueSessions()).toEqual({
+    expect(await module.reconcileSession({ sessionId: harness.facts.sessions[0]!.id })).toEqual({
       claimed: 1,
       settled: 0,
       deferred: 1,
@@ -1656,7 +1656,7 @@ describe("Upload Session", () => {
       failureCode: "upload_session_expired",
     });
     now = new Date("2026-08-28T01:00:00.000Z");
-    await module.reconcileDueSessions();
+    await module.reconcileSession({ sessionId: harness.facts.sessions[0]!.id });
 
     expect(harness.facts.sessions[0]).toMatchObject({
       status: "expired",
@@ -1689,7 +1689,7 @@ describe("Upload Session", () => {
     });
     now = new Date("2026-08-28T00:00:00.001Z");
 
-    const result = await module.reconcileDueSessions();
+    const result = await module.reconcileSession({ sessionId: harness.facts.sessions[0]!.id });
 
     expect(result).toEqual({ claimed: 1, settled: 1, deferred: 0 });
     expect(harness.facts.sessions[0]).toMatchObject({
@@ -1740,7 +1740,7 @@ describe("Upload Session", () => {
     ).rejects.toThrow("injected provider bind loss");
     now = new Date("2026-08-27T00:00:31.000Z");
 
-    const result = await module.reconcileDueSessions();
+    const result = await module.reconcileSession({ sessionId: harness.facts.sessions[0]!.id });
 
     expect(result).toEqual({ claimed: 1, settled: 1, deferred: 0 });
     expect(harness.facts.sessions[0]).toMatchObject({
@@ -1795,7 +1795,7 @@ describe("Upload Session", () => {
     session.admissionClaimExpiresAt = new Date("2026-08-27T00:00:01.000Z");
     session.admissionClaimExpiresAt = new Date(now.getTime() - 1);
 
-    const result = await module.reconcileDueSessions();
+    const result = await module.reconcileSession({ sessionId: harness.facts.sessions[0]!.id });
 
     expect(result).toEqual({ claimed: 1, settled: 0, deferred: 1 });
     expect(session).toMatchObject({
@@ -1832,7 +1832,7 @@ describe("Upload Session", () => {
     ).rejects.toThrow("injected provider bind loss");
     now = new Date("2026-08-28T00:00:00.001Z");
 
-    const result = await module.reconcileDueSessions();
+    const result = await module.reconcileSession({ sessionId: harness.facts.sessions[0]!.id });
 
     expect(result).toEqual({ claimed: 1, settled: 1, deferred: 0 });
     expect(harness.facts.sessions[0]).toMatchObject({
@@ -1843,11 +1843,9 @@ describe("Upload Session", () => {
     expect(harness.facts.unfinishedProviderUploads).toHaveLength(0);
   });
 
-  test("maintenance bounds provider concurrency and isolates one session failure", async () => {
+  test("an exact cleanup failure does not mutate a different due session", async () => {
     const harness = createInMemoryUploadSessionHarness();
     let now = new Date("2026-08-27T00:00:00.000Z");
-    let active = 0;
-    let maximumActive = 0;
     let aborts = 0;
     const baseStorage = harness.adapters.storage;
     const module = createUploadSessionModule({
@@ -1857,12 +1855,8 @@ describe("Upload Session", () => {
       storage: {
         ...baseStorage,
         async abortMultipart(input) {
-          active += 1;
-          maximumActive = Math.max(maximumActive, active);
           aborts += 1;
           const abortNumber = aborts;
-          await new Promise((resolve) => setTimeout(resolve, 5));
-          active -= 1;
           if (abortNumber === 1) throw new Error("cleanup denied");
           await baseStorage.abortMultipart(input);
         },
@@ -1885,18 +1879,14 @@ describe("Upload Session", () => {
     }
     now = new Date("2026-08-28T00:00:00.001Z");
 
-    const result = await module.reconcileDueSessions();
+    const result = await module.reconcileSession({ sessionId: harness.facts.sessions[0]!.id });
 
-    expect(result).toEqual({ claimed: 6, settled: 5, deferred: 1 });
-    expect(maximumActive).toBe(4);
-    expect(
-      harness.facts.sessions.filter((session) => session.status === "expired"),
-    ).toHaveLength(5);
-    expect(
-      harness.facts.sessions.filter(
-        (session) => session.status === "compensating",
-      ),
-    ).toHaveLength(1);
+    expect(result).toEqual({ claimed: 1, settled: 0, deferred: 1 });
+    expect(harness.facts.sessions[0]!.status).toBe("compensating");
+    expect(harness.facts.sessions.slice(1).every(session => session.status === "uploading" && session.reconciliationAttemptCount === 0)).toBe(true);
+    expect(await module.reconcileSession({ sessionId: harness.facts.sessions[1]!.id })).toEqual({ claimed: 1, settled: 1, deferred: 0 });
+    expect(harness.facts.sessions[1]!.status).toBe("expired");
+    expect(aborts).toBe(2);
   });
 
   test("maintenance caps provider calls and defers remaining exact-key cleanup", async () => {
@@ -1933,7 +1923,7 @@ describe("Upload Session", () => {
     session.admissionClaimExpiresAt = new Date("2026-08-27T00:00:01.000Z");
     now = new Date("2026-08-28T00:00:00.001Z");
 
-    const result = await module.reconcileDueSessions();
+    const result = await module.reconcileSession({ sessionId: harness.facts.sessions[0]!.id });
 
     expect(result).toEqual({ claimed: 1, settled: 0, deferred: 1 });
     expect(harness.facts.providerAborts).toHaveLength(2);
@@ -1985,7 +1975,7 @@ describe("Upload Session", () => {
     session.admissionClaimExpiresAt = new Date("2026-08-27T00:00:01.000Z");
     now = new Date("2026-08-28T00:00:00.001Z");
 
-    expect(await module.reconcileDueSessions()).toEqual({
+    expect(await module.reconcileSession({ sessionId: harness.facts.sessions[0]!.id })).toEqual({
       claimed: 1,
       settled: 0,
       deferred: 1,
@@ -2034,7 +2024,7 @@ describe("Upload Session", () => {
       session.admissionClaimExpiresAt = new Date("2026-08-27T00:00:01.000Z");
       now = new Date("2026-08-28T00:00:00.001Z");
 
-      expect(await module.reconcileDueSessions()).toEqual({
+      expect(await module.reconcileSession({ sessionId: harness.facts.sessions[0]!.id })).toEqual({
         claimed: 1,
         settled: 1,
         deferred: 0,
@@ -2075,7 +2065,7 @@ describe("Upload Session", () => {
     harness.failNextProviderAbort(denied);
     now = new Date("2026-08-28T00:00:00.001Z");
 
-    const result = await module.reconcileDueSessions();
+    const result = await module.reconcileSession({ sessionId: harness.facts.sessions[0]!.id });
 
     expect(result).toEqual({ claimed: 1, settled: 1, deferred: 0 });
     expect(harness.facts.sessions[0]).toMatchObject({
@@ -2115,7 +2105,7 @@ describe("Upload Session", () => {
     harness.failNextProviderAbort(unavailable);
     now = new Date("2026-08-28T00:00:00.001Z");
 
-    expect(await module.reconcileDueSessions()).toEqual({
+    expect(await module.reconcileSession({ sessionId: harness.facts.sessions[0]!.id })).toEqual({
       claimed: 1,
       settled: 1,
       deferred: 0,
@@ -2138,40 +2128,6 @@ describe("Upload Session", () => {
       failureCode: "upload_reconciliation_exhausted",
       freshUploadAllowed: false,
     });
-  });
-
-  test("maintenance caps a batch at twenty-five sessions and leaves the rest fair", async () => {
-    const harness = createInMemoryUploadSessionHarness();
-    let now = new Date("2026-08-27T00:00:00.000Z");
-    const module = createUploadSessionModule({
-      ...harness.adapters,
-      now: () => now,
-    });
-    for (let index = 0; index < 30; index += 1) {
-      await module.open({
-        ...ACTOR,
-        clientIdempotencyKey: `61000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
-        title: `Batch ${index}`,
-        source: {
-          fileName: `batch-${index}.mp4`,
-          sizeBytes: 100,
-          contentType: "video/mp4",
-          browserFingerprint: `["batch-${index}.mp4",100,"video/mp4",${index}]`,
-        },
-        brandTemplateId: null,
-        generation: { languageCode: "en", contentPack: CONTENT_PACK },
-      });
-    }
-    now = new Date("2026-08-28T00:00:00.001Z");
-
-    const first = await module.reconcileDueSessions();
-    const second = await module.reconcileDueSessions();
-
-    expect(first).toEqual({ claimed: 25, settled: 25, deferred: 0 });
-    expect(second).toEqual({ claimed: 5, settled: 5, deferred: 0 });
-    expect(
-      harness.facts.sessions.filter((session) => session.status === "expired"),
-    ).toHaveLength(30);
   });
 
   test("maintenance retries due duplicate multipart cleanup without a browser", async () => {
@@ -2198,7 +2154,7 @@ describe("Upload Session", () => {
     harness.createDuplicateUnfinishedUpload(opened.sessionId);
     harness.facts.sessions[0]!.cleanupRetryAt = now;
 
-    const result = await module.reconcileDueSessions();
+    const result = await module.reconcileSession({ sessionId: harness.facts.sessions[0]!.id });
 
     expect(result).toEqual({ claimed: 1, settled: 1, deferred: 0 });
     expect(harness.facts.sessions[0]).toMatchObject({
@@ -2245,7 +2201,7 @@ describe("Upload Session", () => {
     harness.failNextProviderCompletion(invalidPart);
     now = new Date("2026-08-27T00:00:06.000Z");
 
-    const result = await module.reconcileDueSessions();
+    const result = await module.reconcileSession({ sessionId: harness.facts.sessions[0]!.id });
 
     expect(result).toEqual({ claimed: 1, settled: 1, deferred: 0 });
     expect(harness.facts.sessions[0]).toMatchObject({
@@ -2285,7 +2241,7 @@ describe("Upload Session", () => {
     harness.failNextObjectProbe("unavailable");
     now = new Date("2026-08-27T00:00:06.000Z");
 
-    const result = await module.reconcileDueSessions();
+    const result = await module.reconcileSession({ sessionId: harness.facts.sessions[0]!.id });
 
     expect(result).toEqual({ claimed: 1, settled: 1, deferred: 0 });
     expect(harness.facts.sessions[0]).toMatchObject({
@@ -2303,7 +2259,6 @@ describe("Upload Session", () => {
     let deletes = 0;
     const module = createUploadSessionModule({
       ...harness.adapters,
-      config: defaultUploadSessionConfig({ reconciliationConcurrency: 1 }),
       now: () => now,
       persistence: {
         ...basePersistence,
@@ -2343,7 +2298,7 @@ describe("Upload Session", () => {
     }
     now = new Date("2026-08-28T00:00:00.000Z");
 
-    await module.reconcileDueSessions();
+    for (const session of harness.facts.sessions) await module.reconcileSession({ sessionId: session.id });
 
     expect(claims).toHaveLength(2);
     expect(claims[1]!.updatedAt).toEqual(now);
@@ -2392,7 +2347,7 @@ describe("Upload Session", () => {
     harness.facts.sessions[0]!.status = "reconciling";
     harness.facts.sessions[0]!.reconcileAt = now;
 
-    const result = await module.reconcileDueSessions();
+    const result = await module.reconcileSession({ sessionId: harness.facts.sessions[0]!.id });
 
     expect(result).toEqual({ claimed: 1, settled: 0, deferred: 0 });
     expect(harness.facts.sessions[0]).toMatchObject({
@@ -2444,7 +2399,7 @@ describe("Upload Session", () => {
     session.completionParts = [];
     session.reconcileAt = now;
 
-    expect(await module.reconcileDueSessions()).toEqual({
+    expect(await module.reconcileSession({ sessionId: harness.facts.sessions[0]!.id })).toEqual({
       claimed: 1,
       settled: 0,
       deferred: 0,
@@ -2828,7 +2783,7 @@ describe("Upload Session", () => {
     });
     await inlineEntered;
     now = new Date("2026-08-27T00:00:06.000Z");
-    expect(await module.reconcileDueSessions()).toEqual({
+    expect(await module.reconcileSession({ sessionId: harness.facts.sessions[0]!.id })).toEqual({
       claimed: 1,
       settled: 1,
       deferred: 0,
@@ -2900,7 +2855,7 @@ describe("Upload Session", () => {
     });
     await inlineEntered;
     now = new Date("2026-08-27T00:00:06.000Z");
-    expect(await module.reconcileDueSessions()).toEqual({
+    expect(await module.reconcileSession({ sessionId: harness.facts.sessions[0]!.id })).toEqual({
       claimed: 1,
       settled: 1,
       deferred: 0,
@@ -3023,7 +2978,7 @@ describe("Upload Session", () => {
       session.completionParts = [];
       session.reconcileAt = now;
 
-      const result = await module.reconcileDueSessions();
+      const result = await module.reconcileSession({ sessionId: harness.facts.sessions[0]!.id });
 
       expect(result).toEqual(
         failure === "timeout"
@@ -3454,15 +3409,23 @@ describe("Upload Session", () => {
 });
 
 describe("exact Upload Session recovery",()=>{
+ test("an absent or malformed session identity cannot select provider work",async()=>{
+  const harness=createInMemoryUploadSessionHarness(),module=createUploadSessionModule({...harness.adapters,config:defaultUploadSessionConfig(),now:()=>new Date("2026-08-27T00:00:00.000Z")});
+  await expect(module.reconcileSession(undefined as never)).rejects.toThrow();
+  await expect(module.reconcileSession({sessionId:""})).rejects.toThrow();
+  await expect(module.reconcileSession({sessionId:"not-a-session"})).rejects.toThrow();
+  expect(harness.facts.objectProbes).toBe(0);expect(harness.facts.providerAborts).toHaveLength(0);
+ });
+
  test("confirms its claimed lease timer before HTTP and never claims a different due session",async()=>{
   const harness=createInMemoryUploadSessionHarness();let now=new Date("2026-08-27T00:00:00.000Z");
   const module=createUploadSessionModule({...harness.adapters,config:defaultUploadSessionConfig(),now:()=>now});
   const opened=[];
   for(let i=0;i<2;i++)opened.push(await module.open({...ACTOR,clientIdempotencyKey:`50000000-0000-4000-8000-00000000009${i}`,title:"Exact recovery",source:{fileName:"expired.mp4",sizeBytes:1000,contentType:"video/mp4",browserFingerprint:`expired-${i}`},brandTemplateId:null,generation:{languageCode:"en",contentPack:CONTENT_PACK}}));
   now=new Date("2026-08-30T00:00:00.000Z");const id=opened[0]!.sessionId;let timers=0;
-  await expect(module.reconcileDueSessions({sessionId:id,beforeProvider:async(session)=>{timers++;expect(session.id).toBe(id);expect(session.reconciliationLeaseExpiresAt!.getTime()).toBeGreaterThan(now.getTime());throw Error("timer registration lost");}})).rejects.toThrow("timer registration lost");
+  await expect(module.reconcileSession({sessionId:id,beforeProvider:async(session)=>{timers++;expect(session.id).toBe(id);expect(session.reconciliationLeaseExpiresAt!.getTime()).toBeGreaterThan(now.getTime());throw Error("timer registration lost");}})).rejects.toThrow("timer registration lost");
   expect(timers).toBe(1);expect(harness.facts.objectProbes).toBe(0);expect(harness.facts.providerAborts).toHaveLength(0);expect(harness.facts.sessions[1]!.reconciliationAttemptCount).toBe(0);
-  now=new Date("2026-08-30T01:00:00.000Z");expect(await module.reconcileDueSessions({sessionId:id,beforeProvider:async()=>{timers++;}})).toMatchObject({claimed:1,settled:1});
+  now=new Date("2026-08-30T01:00:00.000Z");expect(await module.reconcileSession({sessionId:id,beforeProvider:async()=>{timers++;}})).toMatchObject({claimed:1,settled:1});
   expect(timers).toBe(2);expect(harness.facts.sessions[1]!.status).toBe("uploading");
  });
 });

@@ -439,7 +439,7 @@ dbDescribe("Upload Session PostgreSQL invariants", () => {
       data: { reconcileAt: new Date(Date.now() - 1_000) },
     });
 
-    const recoveredHandoff = await module.reconcileDueSessions();
+    const recoveredHandoff = await module.reconcileSession({ sessionId: rollbackOpen.sessionId });
 
     expect(recoveredHandoff).toEqual({ claimed: 1, settled: 1, deferred: 0 });
     expect(
@@ -568,14 +568,7 @@ dbDescribe("Upload Session PostgreSQL invariants", () => {
         hardExpiresAt: new Date(backoffNow.getTime() + 180_000),
       },
     });
-    expect(
-      (
-        await prismaUploadSessionPersistence.findDueReconciliation({
-          now: backoffNow,
-          limit: 25,
-        })
-      ).some((session) => session.id === backoffSessionId),
-    ).toBe(false);
+    expect(await prismaUploadSessionPersistence.readDueReconciliation({ now: backoffNow, sessionId: backoffSessionId })).toBeNull();
     expect(
       (
         await prismaUploadSessionPersistence.claimReconciliation({
@@ -740,26 +733,6 @@ dbDescribe("Upload Session PostgreSQL invariants", () => {
     });
 
     const fairnessNow = new Date(Date.now() + 5 * 60_000);
-    await prisma.uploadSession.updateMany({
-      where: {
-        workspaceId: workspace.id,
-        status: {
-          in: [
-            "initiating",
-            "uploading",
-            "finalizing",
-            "reconciling",
-            "compensating",
-          ],
-        },
-      },
-      data: {
-        status: "failed",
-        failureCode: "test_fixture_settled",
-        reconciliationAttemptId: null,
-        reconciliationLeaseExpiresAt: null,
-      },
-    });
     const fairnessRows = Array.from({ length: 30 }, (_, index) => {
       const id = randomUUID();
       return {
@@ -767,13 +740,13 @@ dbDescribe("Upload Session PostgreSQL invariants", () => {
         workspaceId: workspace.id,
         actorUserId: user.id,
         clientIdempotencyKey: randomUUID(),
-        immutableInputFingerprint: `batch-fairness-${index}`,
+        immutableInputFingerprint: `exact-recovery-${index}`,
         preallocatedProjectId: randomUUID(),
-        title: `Batch fairness ${index}`,
+        title: `Exact recovery ${index}`,
         fileName: `batch-${index}.mp4`,
         fileSizeBytes: 2_048n,
         contentType: "video/mp4",
-        browserFingerprint: `batch-fairness-${index}`,
+        browserFingerprint: `exact-recovery-${index}`,
         generationSettings: { languageCode: "en", contentPack: CONTENT_PACK },
         transferKind: "single" as const,
         partCount: 1,
@@ -786,34 +759,15 @@ dbDescribe("Upload Session PostgreSQL invariants", () => {
       };
     });
     await prisma.uploadSession.createMany({ data: fairnessRows });
-    const firstBatch = await prismaUploadSessionPersistence.findDueReconciliation({
-      now: fairnessNow,
-      limit: 25,
-    });
-    expect(firstBatch).toHaveLength(25);
-    for (const session of firstBatch) {
-      expect(
-        (
-          await prismaUploadSessionPersistence.claimReconciliation({
-            sessionId: session.id,
-            reconciliationAttemptId: randomUUID(),
-            leaseExpiresAt: new Date(fairnessNow.getTime() + 60_000),
-            updatedAt: fairnessNow,
-          })
-        ).claimed,
-      ).toBe(true);
+    const selected = await Promise.all(fairnessRows.map(row => prismaUploadSessionPersistence.readDueReconciliation({ now: fairnessNow, sessionId: row.id })));
+    expect(selected).toHaveLength(30);
+    for (const session of selected) {
+      expect(session).not.toBeNull();
+      expect((await prismaUploadSessionPersistence.claimReconciliation({ sessionId: session!.id, reconciliationAttemptId: randomUUID(),
+        leaseExpiresAt: new Date(fairnessNow.getTime() + 60_000), updatedAt: fairnessNow })).claimed).toBe(true);
     }
-    const secondBatch =
-      await prismaUploadSessionPersistence.findDueReconciliation({
-        now: fairnessNow,
-        limit: 25,
-      });
-    expect(secondBatch).toHaveLength(5);
-    expect(
-      secondBatch.every(
-        (session) => !firstBatch.some((claimed) => claimed.id === session.id),
-      ),
-    ).toBe(true);
+    expect(await Promise.all(fairnessRows.map(row => prismaUploadSessionPersistence.readDueReconciliation({ now: fairnessNow, sessionId: row.id })))).toEqual(Array.from({ length: 30 }, () => null));
+
   })));
 
   test("Prisma persists immutable conflicts, lost binds, expiry cleanup, discard fencing, and event replay", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
@@ -1020,7 +974,7 @@ dbDescribe("Upload Session PostgreSQL invariants", () => {
     let expiryRecoveryClaimed = 0;
     let expiryRecoverySettled = 0;
     for (let attempt = 0; attempt < 3; attempt += 1) {
-      const recovery = await module.reconcileDueSessions();
+      const recovery = await module.reconcileSession({ sessionId: expiring.sessionId });
       expiryRecoveryClaimed += recovery.claimed;
       expiryRecoverySettled += recovery.settled;
       const current = await prisma.uploadSession.findUniqueOrThrow({
