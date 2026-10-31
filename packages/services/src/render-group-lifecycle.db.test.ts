@@ -21,6 +21,7 @@ const dbDescribe = process.env.ALLOW_WORKFLOW_DB_TESTS === "1" && url ? describe
 dbDescribe("Render Group PostgreSQL invariants", () => {
   let prisma: PrismaClient;
   let pool: Pool;
+  let queries: string[] = [];
   beforeAll(() => {
     if (
       !url ||
@@ -29,10 +30,13 @@ dbDescribe("Render Group PostgreSQL invariants", () => {
     )
       throw new Error("Use db-gate.sh with a disposable workflow schema");
     pool = new Pool({ connectionString: url, max: 8 });
-    prisma = new PrismaClient({
+    const client = new PrismaClient({
       adapter: new PrismaPg(pool, { schema }),
       transactionOptions: { maxWait: 30_000, timeout: 30_000 },
+      log: [{ emit: "event", level: "query" }],
     });
+    client.$on("query", (event) => queries.push(event.query));
+    prisma = client;
   });
   beforeEach(async () => {
     await prisma.workspace.deleteMany({
@@ -272,6 +276,21 @@ dbDescribe("Render Group PostgreSQL invariants", () => {
     expect((await prisma.workflowRun.findUniqueOrThrow({ where: { id: f.run.id } })).status).toBe(
       "running",
     );
+  });
+
+  test("ten-group progress polling bounds database round trips while a child renders", async () => {
+    const f = await fixture(10);
+    const child = (await f.worker.claim())!;
+    await start(f.worker, child);
+    await f.worker.markClipRenderVariantRendering(child, child.memberIds[0]!);
+    queries = [];
+    expect(await f.coordinator.settleRenderWorkSet(f.attempt)).toMatchObject({
+      status: "pending", requested: 10, succeeded: 0, failed: 0,
+    });
+    // The coordinator holds the parent lock throughout these round trips.
+    // One per-group scan starves both child writes and their heartbeats on Neon.
+    expect(queries.length).toBeLessThanOrEqual(35);
+    await f.worker.heartbeat(child);
   });
 
   test("SIGKILL of a real lease-owning process preserves completion and charges only its interrupted group", async () => {

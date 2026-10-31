@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { Prisma, type PrismaClient } from "@prisma/client";
+import { Prisma, type PrismaClient, type ClipRender } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
 import type { ClipRenderCaptionDiagnostics } from "@narriflow/validators";
 import { accessibleProjectWhere } from "./project-access";
@@ -161,26 +161,51 @@ export async function admitRenderGroupsWithinTransaction(
 /** Reconcile historical membership under parent/group locks. Editor deletion or
  * reassignment cannot erase the requested denominator or authorize stale writes. */
 async function memberSnapshot(tx: Tx, group: RenderGroupRef) {
-  await tx.$queryRaw`SELECT "clipRenderId" FROM "RenderGroupMember" WHERE "groupId" = ${group.groupId}::uuid ORDER BY "clipRenderId" FOR UPDATE`;
+  return (await memberSnapshots(tx, [group])).get(group.groupId)!;
+}
+
+/** Lock and read the complete partition in batches. The coordinator owns the
+ * parent lock here, so per-group round trips block child writes and heartbeats. */
+type MemberSnapshot = {
+  clipRenderId: string;
+  status: ClipRender["status"] | "superseded";
+  failureDisposition: ClipRender["failureDisposition"];
+  variant: ClipRender | null;
+};
+async function memberSnapshots(tx: Tx, groups: readonly RenderGroupRef[]): Promise<Map<string, MemberSnapshot[]>> {
+  const groupIds = groups.map((group) => group.groupId);
+  if (groupIds.length === 0) return new Map();
+  const ids = Prisma.join(groupIds.map((id) => Prisma.sql`${id}::uuid`));
+  await tx.$queryRaw`SELECT "clipRenderId" FROM "RenderGroupMember" WHERE "groupId" IN (${ids}) ORDER BY "groupId", "clipRenderId" FOR UPDATE`;
   const members = await tx.renderGroupMember.findMany({
-    where: { groupId: group.groupId },
-    orderBy: { clipRenderId: "asc" },
+    where: { groupId: { in: groupIds } },
+    orderBy: [{ groupId: "asc" }, { clipRenderId: "asc" }],
   });
-  await tx.$queryRaw`SELECT "id" FROM "ClipRender" WHERE "id" IN (SELECT "clipRenderId" FROM "RenderGroupMember" WHERE "groupId" = ${group.groupId}::uuid) ORDER BY "id" FOR UPDATE`;
+  await tx.$queryRaw`SELECT "id" FROM "ClipRender" WHERE "id" IN (SELECT "clipRenderId" FROM "RenderGroupMember" WHERE "groupId" IN (${ids})) ORDER BY "id" FOR UPDATE`;
   const variants = await tx.clipRender.findMany({
     where: { id: { in: members.map((m) => m.clipRenderId) } },
   });
   const now = await renderGroupDatabaseNow(tx);
-  return Promise.all(
-    members.map(async (m) => {
-      const variant = variants.find((v) => v.id === m.clipRenderId);
+  const variantsById = new Map(variants.map((variant) => [variant.id, variant]));
+  const groupsById = new Map(groups.map((group) => [group.groupId, group]));
+  const newlySuperseded = members.filter((member) => {
+    const variant = variantsById.get(member.clipRenderId);
+    return !member.invalidatedAt &&
+      (!variant || variant.workflowRunId !== groupsById.get(member.groupId)!.workflowRunId);
+  });
+  if (newlySuperseded.length > 0)
+    await tx.renderGroupMember.updateMany({
+      where: {
+        OR: newlySuperseded.map(({ groupId, clipRenderId }) => ({ groupId, clipRenderId })),
+        invalidatedAt: null,
+      },
+      data: { invalidatedAt: now },
+    });
+  return new Map(groups.map((group) => [group.groupId,
+    members.filter((member) => member.groupId === group.groupId).map((m) => {
+      const variant = variantsById.get(m.clipRenderId);
       const superseded =
         m.invalidatedAt !== null || !variant || variant.workflowRunId !== group.workflowRunId;
-      if (superseded && !m.invalidatedAt)
-        await tx.renderGroupMember.update({
-          where: { groupId_clipRenderId: { groupId: group.groupId, clipRenderId: m.clipRenderId } },
-          data: { invalidatedAt: now },
-        });
       return {
         clipRenderId: m.clipRenderId,
         status: superseded ? ("superseded" as const) : variant!.status,
@@ -188,7 +213,7 @@ async function memberSnapshot(tx: Tx, group: RenderGroupRef) {
         variant: superseded ? null : variant!,
       };
     }),
-  );
+  ] as const));
 }
 
 /** Caller holds the parent lock. Reconcile queued/terminal groups too, so
@@ -200,23 +225,27 @@ export async function renderGroupParentSettlement(tx: Tx, workflowRunId: string)
     where: { workflowRunId },
     orderBy: { id: "asc" },
   });
+  const membersByGroup = await memberSnapshots(tx, groups.map((group) => ({
+    groupId: group.id, workflowRunId, workSetGeneration: group.workSetGeneration,
+  })));
+  const now = await renderGroupDatabaseNow(tx);
   const snapshots = [];
   for (const group of groups) {
-    const ref = { groupId: group.id, workflowRunId, workSetGeneration: group.workSetGeneration };
-    const members = await memberSnapshot(tx, ref);
+    const members = membersByGroup.get(group.id)!;
     const decision = deriveRenderGroupSettlement({
       members,
       chargedAttemptCount: group.chargedAttemptCount,
-      databaseNow: await renderGroupDatabaseNow(tx),
+      databaseNow: now,
     });
     // Live/expired executions must be finished by their owner or reaper first.
-    if (group.status !== "running" && decision.status !== "queued")
+    if (group.status !== "running" && decision.status !== "queued" &&
+      (group.status !== decision.status || group.nextAttemptAt !== null || group.settledAt === null))
       await tx.renderGroup.update({
         where: { id: group.id },
         data: {
           status: decision.status,
           nextAttemptAt: null,
-          settledAt: group.settledAt ?? (await renderGroupDatabaseNow(tx)),
+          settledAt: group.settledAt ?? now,
         },
       });
     snapshots.push({
