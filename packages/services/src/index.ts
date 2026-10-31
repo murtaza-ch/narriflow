@@ -602,7 +602,7 @@ export {
 } from "./processing-usage";
 export { getProcessingUsage } from "./processing-usage-runtime";
 export { createDriveTokenCipher, createGoogleDriveFileReader, driveDownloadRefusal, driveFileMediaUrl, DriveSourceError, googleDriveFileReader, readDriveFileMetadata, verifyDriveAccessToken, type DriveFileMetadata, type DriveFileReader, type DriveTokenCipher } from "./drive-source";
-export { IngestJobLifecycle, IngestJobClaimLost, IngestNotFailedError, IngestReselectRequiredError, IngestRetryLimitExceededError, type ClaimedIngestJob, type IngestClaimRef, type IngestExecutionContext, type IngestFailureDecision, type IngestJobLifecycleDependencies } from "./ingest-job-lifecycle";
+export { IngestJobLifecycle, IngestJobClaimLost, IngestNotFailedError, IngestReselectRequiredError, IngestRetryLimitExceededError, type IngestClaimRef, type IngestFailureDecision, type IngestJobLifecycleDependencies } from "./ingest-job-lifecycle";
 
 export { LayoutEvidenceLifecycle, LayoutEvidenceClaimLost, type ClipPendingPreview, type ClipPendingAutoLayoutAnalysis } from "./layout-evidence";
 export { getLayoutEvidenceLifecycle } from "./layout-evidence-runtime";
