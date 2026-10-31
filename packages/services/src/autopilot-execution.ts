@@ -1,3 +1,4 @@
+import { queueOutboundProbeExecution } from "./outbound-probe-dispatch";
 import { createHash, randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient, type AutopilotRule } from "@prisma/client";
 import { roleHasWorkspaceCapability, workspaceAllowsCapability, type AutopilotPauseKind, type RssEpisodeInput } from "@narriflow/validators";
@@ -59,10 +60,20 @@ async function actorAvailable(tx: Tx, rule: Pick<AutopilotRule,"workspaceId"|"cr
   const member = await tx.workspaceMember.findUnique({ where: { workspaceId_userId: { workspaceId: rule.workspaceId, userId: rule.createdByUserId } }, include: { user: { select: { deletedAt: true } }, workspace: { select: { status: true } } } });
   return !!member && !member.user.deletedAt && roleHasWorkspaceCapability(member.role,"processing.consume") && workspaceAllowsCapability({ role: member.role, status: member.workspace.status },"processing.consume");
 }
+/** Registers accepted metadata only. Physical execution rechecks every fence. */
+export async function recoverAutopilotRule(tx:Tx,id:string,wakeKind?:string):Promise<string[]>{
+  const {epoch}=await readExecutionAdmission(tx),row=await tx.autopilotRule.findUnique({where:{id}});
+  if(!row||row.deploymentEpoch!==epoch||row.sourceKind!=="rss"||!["active","running"].includes(row.status))return [];
+  const ids=[(await appendRule(tx,row,wakeKind?{wakeKind}:{})).dispatchId];
+  if(row.operationDeadlineAt)ids.push((await appendRule(tx,row,{deadline:{kind:"operation",at:row.operationDeadlineAt}})).dispatchId);
+  if(row.claimToken&&row.leaseExpiresAt)ids.push((await appendRule(tx,row,{deadline:{kind:"lease",at:row.leaseExpiresAt}})).dispatchId);
+  if(row.executionProbeId)ids.push(...await queueOutboundProbeExecution(tx,row.executionProbeId));
+  return ids;
+}
 export type AutopilotExecutionResult = { kind: "complete" | "superseded" } | { kind: "sleep" | "wait"; dueAt: Date };
 export interface AutopilotExecutionDependencies {
   database: PrismaClient;
-  probe: Pick<OutboundProbeService, "admitWithinTransaction" | "get" | "queueExecutionWithinTransaction">;
+  probe: Pick<OutboundProbeService, "admitWithinTransaction" | "get">;
   register(ids: readonly string[]): Promise<void>;
   importEpisode(input: { scope: ActorScope; plan: AutopilotCycleInput; episode: RssEpisodeInput; finalUrl: string; reference: ExecutionDispatchReference; claimToken: string }): Promise<{ count: number; refusal?: "deferred" | "too_long" | "brand_profile" }>;
 }
@@ -157,14 +168,7 @@ export class AutopilotExecution {
     }
   }
 
-  private async repair(tx: Tx, row: AutopilotRule) {
-    if (row.deploymentEpoch !== (await readExecutionAdmission(tx)).epoch || row.sourceKind !== "rss" || !["active","running"].includes(row.status)) return [];
-    const ids = [(await appendRule(tx,row)).dispatchId];
-    if (row.operationDeadlineAt) ids.push((await appendRule(tx,row,{deadline:{kind:"operation",at:row.operationDeadlineAt}})).dispatchId);
-    if (row.claimToken && row.leaseExpiresAt) ids.push((await appendRule(tx,row,{deadline:{kind:"lease",at:row.leaseExpiresAt}})).dispatchId);
-    if (row.executionProbeId) ids.push(...await this.deps.probe.queueExecutionWithinTransaction(tx,row.executionProbeId));
-    return ids;
-  }
+  private async repair(tx:Tx,row:AutopilotRule){return recoverAutopilotRule(tx,row.id);}
 
   private async runAction(reference: ExecutionDispatchReference, prepared: Extract<Prepared,{ action: string }>): Promise<AutopilotExecutionResult> {
     const snapshot = await this.deps.probe.get({ workspaceId: prepared.row.workspaceId, actorUserId: prepared.row.createdByUserId! },prepared.row.executionProbeId!);

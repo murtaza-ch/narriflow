@@ -17,19 +17,22 @@ export const ZOOM_NOTIFICATION_DEADLINE_MS = 30*86400_000;
 export function zoomNotificationInputHash(row:ZoomWebhookJob) {
   return operationFingerprint(["zoom-notification-v1",row.id,row.eventKey,row.payload,row.deploymentEpoch,row.generation,row.ruleCursor,row.executionTarget,row.availableAt.toISOString(),row.operationDeadlineAt?.toISOString()]);
 }
-async function appendZoom(tx:Tx,row:ZoomWebhookJob,deadline?:{kind:"lease"|"operation";at:Date}) {
-  const identity = {kind:"operation_driver" as const,subject:{kind:"zoom_notification" as const,id:row.id},deploymentEpoch:row.deploymentEpoch,generation:row.generation,...(deadline?{deadlineKind:deadline.kind,observedDeadlineAt:deadline.at}:{})};
+async function appendZoom(tx:Tx,row:ZoomWebhookJob,deadline?:{kind:"lease"|"operation";at:Date},wakeKind?:string) {
+  const identity = {kind:"operation_driver" as const,subject:{kind:"zoom_notification" as const,id:row.id},deploymentEpoch:row.deploymentEpoch,generation:row.generation,...(deadline?{deadlineKind:deadline.kind,observedDeadlineAt:deadline.at}:{}),...(wakeKind?{wakeKind}:{})};
   const known = await tx.executionDispatch.findUnique({where:{deliveryKey:(await executionDispatchIdentity(identity)).deliveryKey},select:{dueAt:true}});
   const record = await appendExecutionDispatch(tx,{...identity,inputHash:zoomNotificationInputHash(row),dueAt:known?.dueAt??deadline?.at??row.availableAt});
   collectExecutionDispatch(tx,record.reference.dispatchId);
   return record.reference;
 }
-async function repair(tx:Tx,row:ZoomWebhookJob):Promise<string[]> {
+async function repair(tx:Tx,row:ZoomWebhookJob,wakeKind?:string):Promise<string[]> {
   if(row.deploymentEpoch!==(await readExecutionAdmission(tx)).epoch||!["queued","running"].includes(row.status))return [];
-  const ids=[(await appendZoom(tx,row)).dispatchId];
+  const ids=[(await appendZoom(tx,row,undefined,wakeKind)).dispatchId];
   if(row.operationDeadlineAt)ids.push((await appendZoom(tx,row,{kind:"operation",at:row.operationDeadlineAt})).dispatchId);
   if(row.claimToken&&row.leaseExpiresAt)ids.push((await appendZoom(tx,row,{kind:"lease",at:row.leaseExpiresAt})).dispatchId);
   return ids;
+}
+export async function recoverZoomNotification(tx:Tx,id:string,wakeKind?:string):Promise<string[]>{
+  const row=await tx.zoomWebhookJob.findUnique({where:{id}});return row?repair(tx,row,wakeKind):[];
 }
 export async function queueZoomNotification(tx:Tx,id:string) {
   const {epoch}=await readExecutionAdmission(tx),row=await tx.zoomWebhookJob.findUnique({where:{id}});

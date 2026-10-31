@@ -1,3 +1,4 @@
+import { queueOutboundProbeRow } from "./outbound-probe-dispatch";
 import { createHash, randomUUID } from "node:crypto";
 import { readExecutionAdmission, assertExecutionAdmissionOpen } from "./execution-admission";
 import { Prisma, type OutboundProbe, type PrismaClient } from "@prisma/client";
@@ -76,13 +77,13 @@ export class OutboundProbeService implements ExecutorDomainControl<OutboundProbe
       const requestFingerprint = digest([input, key, epoch.epoch]);
       await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`outbound-probe:${scope.workspaceId}:${scope.actorUserId}:${requestFingerprint}`},0)) IS NULL AS "locked"`;
       const known = await tx.outboundProbe.findUnique({ where: { workspaceId_createdByUserId_requestFingerprint: { workspaceId: scope.workspaceId, createdByUserId: scope.actorUserId, requestFingerprint } } });
-      if (known) return { row: known, ids: await this.registerJob(tx, known) };
+      if (known) return { row: known, ids: await queueOutboundProbeRow(tx, known) };
       assertExecutionAdmissionOpen(epoch);
       const id = randomUUID();
       const row = await tx.outboundProbe.create({ data: { id, workspaceId: scope.workspaceId, createdByUserId: scope.actorUserId, kind: "rss_feed",
         requestFingerprint, input: input as Prisma.InputJsonValue, inputHash: outboundProbeExecutionInputHash({id,deploymentEpoch:epoch.epoch,requestFingerprint}),
         deploymentEpoch: epoch.epoch, createdAt: clock, operationDeadlineAt: new Date(clock.getTime() + deadlineMs) } });
-      return { row, ids: await this.registerJob(tx, row) };
+      return { row, ids: await queueOutboundProbeRow(tx, row) };
   }
 
   async get(scope: ActorScope, id: string) {
@@ -237,17 +238,6 @@ export class OutboundProbeService implements ExecutorDomainControl<OutboundProbe
     return { kind: "expired", dispatchIds: wakes.dispatchIds };
   }
 
-  async queueExecutionWithinTransaction(tx: Tx, id: string): Promise<string[]> {
-    const { epoch } = await readExecutionAdmission(tx), row = await tx.outboundProbe.findUnique({ where: { id } });
-    return row?.deploymentEpoch === epoch ? this.registerJob(tx,row) : [];
-  }
-
-  private async registerJob(tx: Tx, row: OutboundProbe) {
-    if (["completed", "failed", "cancelled"].includes(row.status)) return [];
-    const dispatch = await appendExecutionDispatch(tx, { deploymentEpoch: row.deploymentEpoch, generation: row.generation,
-      kind: "operation_driver", subject: { kind: "outbound_probe", id: row.id }, inputHash: row.inputHash, dueAt: row.createdAt });
-    return [dispatch.reference.dispatchId];
-  }
 
   private async confirm(jobId: string, ids: readonly string[]) {
     if (!ids.length) return;

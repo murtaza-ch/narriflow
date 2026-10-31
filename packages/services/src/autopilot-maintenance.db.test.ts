@@ -1,0 +1,73 @@
+import { afterAll,beforeAll,describe,expect,test } from "bun:test";
+import { PrismaClient } from "@prisma/client";
+import { PrismaPg } from "@prisma/adapter-pg";
+import { contentPackSchema } from "@narriflow/validators";
+import { assertExecutionDatabaseTestTarget } from "./execution-db-test-support";
+import { planAutopilotRecoveryPage,planZoomNotificationRecoveryPage,planAutopilotRestorePage,planZoomNotificationRestorePage } from "./autopilot-maintenance";
+import { readExecutionDispatch } from "./execution-dispatch";
+import { AutopilotExecution,queueAutopilotRule } from "./autopilot-execution";
+import { OutboundProbeService } from "./outbound-probe";
+import { ZoomNotificationExecution,queueZoomNotification } from "./zoom-execution";
+const url=process.env.SERVERLESS_TEST_DATABASE_URL;
+const suite=process.env.ALLOW_SERVERLESS_DB_TESTS==="1"&&url?describe:describe.skip;
+suite("Bounded Autopilot and Zoom recovery pages",()=>{
+  let db:PrismaClient;
+  beforeAll(()=>{const schema=process.env.SERVERLESS_TEST_DATABASE_SCHEMA??"public";assertExecutionDatabaseTestTarget(url,schema);db=new PrismaClient({adapter:new PrismaPg({connectionString:url,max:6},{schema}),transactionOptions:{maxWait:10000,timeout:30000}});});
+  afterAll(async()=>{await db?.$disconnect();});
+  const clock=async()=>(await db.$queryRaw<Array<{now:Date}>>`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS now`)[0]!.now;
+  async function fixture(){
+    const floor=await clock(),epoch=(await db.executionEpoch.findUniqueOrThrow({where:{id:1}})).epoch;
+    const user=await db.user.create({data:{clerkId:`autopilot-pages:${crypto.randomUUID()}`}});
+    const workspace=await db.workspace.create({data:{name:"Autopilot pages",ownerUserId:user.id,pricingTier:"business",members:{create:{userId:user.id,role:"owner"}}}});
+    const recipe=await db.recipe.create({data:{workspaceId:workspace.id,createdByUserId:user.id,name:"Frozen source",contentPack:contentPackSchema.parse({outputTypes:["short_clip"],clipCountTarget:3,clipDurationSecTarget:45,platformPlaybookVersion:"test"})}});
+    const rss=await db.autopilotRule.create({data:{deploymentEpoch:epoch,workspaceId:workspace.id,createdByUserId:user.id,name:"Future RSS",rssUrl:"https://feeds.example.test/future",recipeId:recipe.id,nextRunAt:new Date(Date.now()+3600_000)}});
+    const createdAt=await clock();
+    const zoom=await db.zoomWebhookJob.create({data:{deploymentEpoch:epoch,eventKey:crypto.randomUUID(),payload:{event:"recording.completed",eventTs:createdAt.getTime(),accountId:"unmatched",hostId:"synthetic-host",meetingUuid:"synthetic",recordingId:"synthetic",topic:"Synthetic",durationSeconds:60},createdAt,availableAt:new Date(createdAt.getTime()+3600_000),operationDeadlineAt:new Date(createdAt.getTime()+30*86400_000)}});
+    return {floor,epoch,user,workspace,recipe,rss,zoom};
+  }
+  test("bounded createdAt pages confirm future accepted timers and replay their exact identifiers",async()=>{
+    const f=await fixture(),cutoff=await clock(),page={deploymentEpoch:f.epoch,cutoff,after:{at:f.floor,id:"00000000-0000-0000-0000-000000000000"},limit:1};
+    const rss=await db.$transaction(tx=>planAutopilotRecoveryPage(tx,page)),zoom=await db.$transaction(tx=>planZoomNotificationRecoveryPage(tx,page));
+    expect(rss.processed).toBe(1);expect(zoom.processed).toBe(1);
+    expect(rss.dispatchIds).toHaveLength(1);expect(zoom.dispatchIds).toHaveLength(2);
+    expect((await readExecutionDispatch(db,rss.dispatchIds![0]!))?.dueAt).toEqual(f.rss.nextRunAt);
+    const zoomRecords=await Promise.all(zoom.dispatchIds!.map(id=>readExecutionDispatch(db,id)));
+    expect(zoomRecords.some(row=>row?.dueAt.getTime()===f.zoom.availableAt.getTime())).toBe(true);
+    expect(zoomRecords.some(row=>row?.dueAt.getTime()===f.zoom.operationDeadlineAt.getTime())).toBe(true);
+    expect(await db.$transaction(tx=>planAutopilotRecoveryPage(tx,page))).toEqual(rss);
+    expect(await db.$transaction(tx=>planZoomNotificationRecoveryPage(tx,page))).toEqual(zoom);
+    expect(await db.$transaction(tx=>planAutopilotRecoveryPage(tx,{...page,after:{at:cutoff,id:"ffffffff-ffff-ffff-ffff-ffffffffffff"}}))).toEqual({processed:0,next:null,dispatchIds:[]});
+    await expect(db.$transaction(tx=>planZoomNotificationRecoveryPage(tx,{...page,limit:33}))).rejects.toThrow("autopilot_recovery_page_invalid");
+  });
+  test("metadata restore clears short owners while frozen source, grant intent and deadlines stay identical",async()=>{
+    const f=await fixture();
+    await db.autopilotRule.update({where:{id:f.rss.id},data:{nextRunAt:new Date(Date.now()-1000)}});
+    const probe=new OutboundProbeService(db,{register:async()=>{},readResult:async()=>{throw Error("No source reads during metadata restore");}});
+    const rssDriver=new AutopilotExecution({database:db,probe,register:async()=>{},importEpisode:async()=>{throw Error("No intake during metadata restore");}});
+    await rssDriver.run((await db.$transaction(tx=>queueAutopilotRule(tx,f.rss.id)))!);
+    const connection=await db.zoomConnection.create({data:{workspaceId:f.workspace.id,userId:f.user.id,zoomAccountId:crypto.randomUUID(),zoomUserId:"restore-host",displayName:"Synthetic",accessTokenEncrypted:"unused",refreshTokenEncrypted:"unused",scopes:[]}});
+    const rule=await db.autopilotRule.create({data:{deploymentEpoch:f.epoch,workspaceId:f.workspace.id,createdByUserId:f.user.id,name:"Zoom restore",sourceKind:"zoom",zoomConnectionId:connection.id,recipeId:f.recipe.id}});
+    const createdAt=await clock(),job=await db.zoomWebhookJob.create({data:{deploymentEpoch:f.epoch,eventKey:crypto.randomUUID(),payload:{event:"recording.completed",eventTs:createdAt.getTime(),accountId:connection.zoomAccountId,hostId:connection.zoomUserId,meetingUuid:"restore",recordingId:"restore",topic:"Synthetic",durationSeconds:60},createdAt,operationDeadlineAt:new Date(createdAt.getTime()+30*86400_000)}});
+    const zoomDriver=new ZoomNotificationExecution({database:db,register:async()=>{},importRecording:async()=>{throw Error("No intake during metadata restore");},revokeConnection:async()=>{}});
+    await zoomDriver.run((await db.$transaction(tx=>queueZoomNotification(tx,job.id)))!);
+    const rss=await db.autopilotRule.update({where:{id:f.rss.id},data:{claimToken:crypto.randomUUID(),leaseExpiresAt:new Date(Date.now()+60_000),consecutiveFailures:3}});
+    const zoom=await db.zoomWebhookJob.update({where:{id:job.id},data:{status:"running",claimToken:crypto.randomUUID(),leaseExpiresAt:new Date(Date.now()+60_000),attempts:2}});
+    const rollback=Error("restore test rollback");
+    await expect(db.$transaction(async tx=>{
+      const cutoff=(await tx.$queryRaw<Array<{now:Date}>>`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS now`)[0]!.now;
+      await tx.executionEpoch.update({where:{id:1},data:{epoch:f.epoch+1,admissionOpen:false,changedAt:cutoff}});
+      const page={deploymentEpoch:f.epoch+1,snapshotEpoch:f.epoch,fenceAboveEpoch:f.epoch,cutoff,after:{at:f.floor,id:"00000000-0000-0000-0000-000000000000"},limit:32};
+      const before=await tx.executionDispatch.count({where:{deploymentEpoch:page.deploymentEpoch,kind:{not:"maintenance"}}});
+      expect((await planAutopilotRestorePage(tx,page)).dispatchIds).toEqual([]);
+      expect((await planZoomNotificationRestorePage(tx,page)).dispatchIds).toEqual([]);
+      const restoredRss=await tx.autopilotRule.findUniqueOrThrow({where:{id:rss.id}}),restoredZoom=await tx.zoomWebhookJob.findUniqueOrThrow({where:{id:zoom.id}});
+      expect(restoredRss).toMatchObject({deploymentEpoch:page.deploymentEpoch,generation:rss.generation+1,claimToken:null,leaseExpiresAt:null,executionInput:rss.executionInput,executionInputHash:rss.executionInputHash,executionProbeId:rss.executionProbeId,executionDueAt:rss.executionDueAt,operationDeadlineAt:rss.operationDeadlineAt,consecutiveFailures:3});
+      expect(restoredZoom).toMatchObject({deploymentEpoch:page.deploymentEpoch,generation:zoom.generation+1,claimToken:null,leaseExpiresAt:null,attempts:2,executionTarget:zoom.executionTarget,operationDeadlineAt:zoom.operationDeadlineAt,availableAt:zoom.availableAt});
+      expect((await tx.autopilotRule.findUniqueOrThrow({where:{id:rule.id}})).generation).toBe(rule.generation+1);
+      expect(await tx.executionDispatch.count({where:{deploymentEpoch:page.deploymentEpoch,kind:{not:"maintenance"}}})).toBe(before);
+      expect((await planAutopilotRestorePage(tx,page)).dispatchIds).toEqual([]);
+      expect((await planZoomNotificationRestorePage(tx,page)).dispatchIds).toEqual([]);
+      throw rollback;
+    })).rejects.toBe(rollback);
+  });
+});
