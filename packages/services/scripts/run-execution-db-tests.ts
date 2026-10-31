@@ -19,8 +19,8 @@ const testUrl = new URL(configuredUrl);
 testUrl.searchParams.delete("schema");
 testUrl.searchParams.set("options", `-csearch_path=${schema},public`);
 const requestedTests = Bun.argv.slice(2);
-const tests = requestedTests.length ? requestedTests : [
-  "execution-ledger", "execution-admission", "execution-maintenance", "execution-retention-pages", "media-cleanup-control", "execution-snapshot", "execution-object-restore", "execution-native-restore", "execution-native-restore", "execution-restore", "execution-dispatch", "executor-control", "execution-transfer", "source-audio-admission",
+let tests = requestedTests.length ? requestedTests : [
+  "execution-ledger", "execution-admission", "execution-maintenance", "execution-retention-pages", "project-retention-execution", "media-cleanup-control", "execution-snapshot", "execution-object-restore", "execution-native-restore", "upload-session-execution", "execution-maintenance-runtime", "execution-restore", "execution-dispatch", "executor-control", "execution-transfer", "source-audio-admission",
   "targeted-execution", "targeted-ingest-execution", "targeted-workflow-execution", "clip-preparation", "clip-preparation-ledger", "clip-selection", "clip-selection-window", "clip-selection-preparation", "clip-selection-hyperdrive-gate", "native-validation", "thumbnail-frame-execution", "generated-media-execution",
   "outbound-probe", "outbound-delivery", "webhook-subscription", "notification-dispatch", "notification-execution", "publication-execution", "modal-dispatch", "progress-outbox", "billing-reconciliation", "library-index", "generation-finishing-execution", "generation-finishing", "social-token-refresh",
 ].map(name => `packages/services/src/${name}.db.test.ts`);
@@ -37,6 +37,15 @@ async function run(args: string[], env: Record<string, string>) {
   if (code !== 0) throw new Error(`Serverless database gate command failed with exit ${code}`);
 }
 
+// The empty production-factory pass observes the entire schema. Its epoch
+// changes and global empty assertion require a separate disposable schema,
+// not deletion of other suites' accepted fixture obligations.
+const emptyFactory="packages/services/src/execution-maintenance-runtime.db.test.ts";
+if(tests.length>1&&tests.includes(emptyFactory)){
+ await run(["bun","packages/services/scripts/run-execution-db-tests.ts",emptyFactory],{});
+ tests=tests.filter(path=>path!==emptyFactory);
+}
+
 try {
   await pool.query(`CREATE SCHEMA "${schema}"`);
   await run(["bun", "run", "--cwd", "packages/db", "prisma:migrate:deploy"], {
@@ -46,6 +55,7 @@ try {
     ALLOW_SERVERLESS_DB_TESTS: "1", ALLOW_EXECUTION_CONTROL_DB_TESTS: "1", ALLOW_EXECUTION_TRANSFER_DB_TESTS: "1", ALLOW_SOURCE_AUDIO_DB_TESTS: "1",
     SERVERLESS_TEST_DATABASE_URL: testUrl.toString(),
     SERVERLESS_TEST_DATABASE_SCHEMA: schema,
+    ...(tests.includes("packages/services/src/upload-session.db.test.ts")?{ALLOW_UPLOAD_SESSION_DB_TESTS:"1",UPLOAD_SESSION_TEST_DATABASE_URL:testUrl.toString(),UPLOAD_SESSION_TEST_DATABASE_SCHEMA:schema}:{}),
     ...(tests.includes("packages/services/src/social-publication.db.test.ts") ? {
       ALLOW_SOCIAL_PUBLICATION_DB_TESTS: "1",
       SOCIAL_PUBLICATION_TEST_DATABASE_URL: testUrl.toString(),
@@ -73,7 +83,7 @@ try {
     await pool.query(`UPDATE "${schema}"."ExecutionEpoch" SET "admissionOpen" = true WHERE id = 1`);
     // Epoch-fencing tests deliberately invalidate every old reference. Run
     // them after suites whose fixtures freeze the initial deployment epoch.
-    const fences = remaining.filter(path => ["billing-reconciliation", "execution-snapshot", "execution-object-restore", "execution-native-restore"].some(name => path === `packages/services/src/${name}.db.test.ts`));
+    const fences = remaining.filter(path => ["billing-reconciliation", "execution-snapshot", "execution-object-restore", "execution-native-restore", "upload-session-execution", "execution-maintenance-runtime"].some(name => path === `packages/services/src/${name}.db.test.ts`));
     // This suite deliberately reconciles the whole disposable outbox. Run it
     // before domain fixtures create their own pending durable obligations.
     const dispatch = "packages/services/src/execution-dispatch.db.test.ts";

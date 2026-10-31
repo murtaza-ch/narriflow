@@ -204,3 +204,56 @@ The broader native/source regression slice passes49PGtests/389assertions; focuse
 redispatch/object transformation passes3PGtests/78assertions. Empty final-model
 selectors execute valid SQL and stop immediately. Phase orchestration and external
 future timers still need the production factory; these planners alone do not close20.
+
+The production factory is now implemented as
+`createExecutionMaintenanceRuntime(options)`, returning `maintenance`, `restore`,
+`scheduled` and one reference-only `run` port. Every external product planner is
+required, including paired Project/Review mail, Autopilot/Zoom and future publication
+observations/grants/guidance. Missing slots fail construction. Fenced scheduling
+makes no SQL call. The registry routes `mt1`, `rs2`, exact Project privacy `pr1`,
+pending Workspace `pw1`, and operation_driver/upload_session references.
+
+Daily retention now has real source-video retirement, private validation/RSS row
+retention (30days, with an indexed live Rule/result hold), expiry warnings through
+the current notification intent, bounded known-key Project privacy pages, deletion
+receipt expiry, pending unpaid Workspace cleanup and exact cleanup repair. Privacy
+cancels/revokes bounded domain pages, enumerates a Project's indexed ledger/artifact
+references and planned keys, waits for actual DELETE acknowledgements, and writes
+an immutable hash-addressed proof before database purge. Unresolved paid/provider
+outcomes refuse destructive progression. Independent Workspace assets remain held.
+The proof labels its counters as acknowledged exact keys and known committed bytes;
+it does not claim a physical bucket inventory. Receipt retirement is another exact
+known-key cleanup intent. No bucket listing or global orphan inference is used.
+
+Upload state transitions and their repair wakes now commit together. Its existing
+reconciliation body runs one exact session, confirms a lease watchdog before HTTP,
+and checks the captured epoch at background mutation boundaries. Replays recover
+already committed timers. The expanded Upload PostgreSQL cases use the current
+exact cleanup controller rather than a global legacy25-row claim and fake clock.
+
+Restore has an inspectable metadata-ready boundary followed by fixed per-model
+redispatch pages, including future holds/timers. Deferred PUT plans and that
+boundary serialize on one short advisory lock; no new deferred plan is admitted
+after sealing. Captured cleanup rows use the original cutoff, and post-cutoff
+plans use the exact recorded barrier horizon. Migration025 makes Dispatch.createdAt
+an actual insertion clock, matching Prisma, so a transaction begun before a later
+planner cannot backdate the barrier. The real race is red with the old now()
+default and green with clock_timestamp(). Every individual restore PUT also fences
+its planned destination and refreshes the120s physical-write drain before HTTP.
+
+The production checkpoint passes59PostgreSQLtests/474assertions across Upload,
+privacy, maintenance, cleanup and restore, plus92deterministictests/389assertions.
+The final clock/PUT/privacy review slice passes7PGtests/75assertions. Services/API
+typechecks and focused Biome pass. The empty-factory suite runs in its own fresh
+schema; it never deletes other suites' accepted obligations to manufacture emptiness.
+These are local gates. Root still must supply the four real Autopilot/Zoom page
+ports, mount the factory/Cron/registry, and run deployed maintenance, exact R2-delete
+and full quiesced restore acceptance. External-domain empty functions in the factory
+tests are explicit fixtures only. Ticket20 remains claimed until that acceptance.
+
+The CLI now enforces the mode boundary too: metadata repair resumes only against
+fresh fenced health; metadata-ready redispatch resumes only against closed health
+with database intake still closed. Open mode is refused. Snapshot attestation and
+fresh begin remain strictly fenced. Eleven proof/operator/storage tests pass62
+assertions. The runbook and glossary describe the sealed metadata boundary and
+continued Cron stop through redispatch. API factory mounting is the next slice.

@@ -3500,7 +3500,7 @@ model ExecutionDispatch {
   observedDeadlineAt     DateTime?
   deadLetteredAt         DateTime?
   errorCode              String?   @db.VarChar(100)
-  createdAt              DateTime  @default(now())
+  createdAt              DateTime  @default(dbgenerated("(clock_timestamp() AT TIME ZONE 'UTC')"))
   updatedAt              DateTime  @updatedAt
   attempts               ExecutionAttempt[]
 

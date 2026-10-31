@@ -1,3 +1,4 @@
+import { readExecutionAdmission } from "./execution-admission";
 import type { Prisma, PrismaClient } from "@prisma/client";
 import type { WorkspaceBillingProvider } from "./workspace-billing.service";
 
@@ -90,7 +91,8 @@ export function createPendingBusinessWorkspaceService(deps: PendingBusinessWorks
   const { prisma, provider } = deps;
   const now = deps.now ?? (() => new Date());
 
-  async function remove(workspaceId: string, reason: "expired" | "canceled", actorUserId?: string): Promise<boolean> {
+  async function remove(workspaceId: string, reason: "expired" | "canceled", actorUserId?: string,executionEpoch?:number): Promise<boolean> {
+    if(executionEpoch!==undefined)await prisma.$transaction(async tx=>{if((await readExecutionAdmission(tx)).epoch!==executionEpoch)throw Error("pending_workspace_epoch_changed");});
     let row = await prisma.workspace.findUnique({ where: { id: workspaceId }, select: pendingBusinessWorkspaceSelection });
     // Missing and inaccessible IDs both acknowledge an idempotent no-op.
     if (!row) return true;
@@ -103,13 +105,19 @@ export function createPendingBusinessWorkspaceService(deps: PendingBusinessWorks
     // Fence an abandoned provider preparation before recovering its possible session.
     // A late bind cannot hand out its URL after this slot is released.
     if (preparing.length) {
-      await prisma.workspaceCheckoutAttempt.updateMany({
+      await prisma.$transaction(async tx=>{if(executionEpoch!==undefined&&(await readExecutionAdmission(tx)).epoch!==executionEpoch)throw Error("pending_workspace_epoch_changed");
+      await tx.workspaceCheckoutAttempt.updateMany({
         where: { id: { in: preparing.map((attempt) => attempt.id) }, providerSessionId: null },
         data: { activeBillingAccountId: null },
+      });
       });
       row = await prisma.workspace.findUnique({ where: { id: workspaceId }, select: pendingBusinessWorkspaceSelection });
       if (!row || !canRemovePendingBusinessWorkspace(row)) return false;
     }
+    // Expired Checkout sessions are terminal provider facts already projected
+    // by the targeted billing reconciler. Only one unresolved intent is read
+    // per cleanup command; billing continues its own bounded reconciliation.
+    if(reason==="expired" && row.billingAccount!.checkoutAttempts.filter(attempt=>attempt.sessionStatus!=="expired").length>1)return false;
     const before = billingFacts(row);
     const current = row.billingAccount!;
     const customers = current.providerCustomerId
@@ -125,6 +133,7 @@ export function createPendingBusinessWorkspaceService(deps: PendingBusinessWorks
         state.customerId !== customer.customerId || state.subscriptions.length !== 0) return false;
     }
     for (const attempt of current.checkoutAttempts) {
+      if(reason==="expired" && attempt.sessionStatus==="expired" && attempt.paymentStatus!=="paid")continue;
       const sessions = attempt.providerSessionId
         ? [await provider.retrieveCheckoutSession!(attempt.providerSessionId)]
         : customers.length
@@ -142,6 +151,7 @@ export function createPendingBusinessWorkspaceService(deps: PendingBusinessWorks
       }
     }
     const removed = await prisma.$transaction(async (tx) => {
+      const epoch=await readExecutionAdmission(tx);if(executionEpoch!==undefined&&epoch.epoch!==executionEpoch)throw Error("pending_workspace_epoch_changed");
       // FOR UPDATE blocks new FK children during the final content check/delete.
       await tx.$queryRaw`SELECT id FROM "Workspace" WHERE id = ${workspaceId}::uuid FOR UPDATE`;
       await tx.$queryRaw`SELECT id FROM "WorkspaceBillingAccount" WHERE "workspaceId" = ${workspaceId}::uuid FOR UPDATE`;
@@ -159,6 +169,7 @@ export function createPendingBusinessWorkspaceService(deps: PendingBusinessWorks
   }
 
   return {
+    expire:(workspaceId:string,executionEpoch:number)=>remove(workspaceId,"expired",undefined,executionEpoch),
     cancel: (workspaceId: string, actorUserId: string) => remove(workspaceId, "canceled", actorUserId),
     async sweep() {
       let checked = 0;

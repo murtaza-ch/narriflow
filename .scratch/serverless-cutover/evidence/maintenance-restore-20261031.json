@@ -1,0 +1,16 @@
+{
+  "status": "code checkpoint; deployed acceptance pending",
+  "factory": "@narriflow/services/execution-maintenance-runtime.createExecutionMaintenanceRuntime",
+  "registry": ["maintenance/maintenance: mt1, rs2, pr1, pw1", "operation_driver/upload_session"],
+  "migration": "20261101010000_execution_maintenance_indexes (025)",
+  "verified": {
+    "focusedPostgres": {"tests": 59, "assertions": 474},
+    "deterministic": {"tests": 92, "assertions": 389},
+    "finalClockPutPrivacySlice": {"tests": 7, "assertions": 75},
+    "clockRace": "old now() default fails; actual clock_timestamp insertion default passes",
+    "typechecks": ["services including operator", "API"],
+    "safety": ["empty pass stops", "fenced schedule uses no SQL", "required slots fail closed", "34 captured/deferred future cleanup timers recovered", "lost cleanup parent-wake ACK replays without DELETE", "Project purge waits for actual DELETE ACK", "receipt PUT response loss verifies immutable bytes", "old Upload mutation epoch refused", "each restore PUT fences its exact planned destination"]
+  },
+  "notRun": ["shared database migration", "shared/candidate bucket cleanup", "bucket inventory", "deployed full restore"],
+  "remaining": ["real Autopilot/Zoom recovery and metadata restore ports from runtime agent", "production factory/registry/Cron composition", "deployed exact cleanup/maintenance/restore acceptance"]
+}

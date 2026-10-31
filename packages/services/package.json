@@ -667,7 +667,15 @@
     "./execution-redispatch-pages": "./src/execution-redispatch-pages.ts",
     "./autopilot-execution": "./src/autopilot-execution.ts",
     "./autopilot-execution-runtime": "./src/autopilot-execution-runtime.ts",
-    "./autopilot-episode-policy": "./src/autopilot-episode-policy.ts"
+    "./autopilot-episode-policy": "./src/autopilot-episode-policy.ts",
+    "./execution-maintenance-runtime": "./src/execution-maintenance-runtime.ts",
+    "./execution-private-retention": "./src/execution-private-retention.ts",
+    "./execution-restore-verification": "./src/execution-restore-verification.ts",
+    "./upload-session-dispatch": "./src/upload-session-dispatch.ts",
+    "./upload-session-execution": "./src/upload-session-execution.ts",
+    "./pending-workspace-execution": "./src/pending-workspace-execution.ts",
+    "./project-retention-execution": "./src/project-retention-execution.ts",
+    "./project-retention-storage": "./src/project-retention-storage.ts"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
