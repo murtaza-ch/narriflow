@@ -11,7 +11,7 @@ import {brandOwnerStoragePrefix,resolveBrandOwner,type BrandActorScope} from "..
 import {readExecutionDispatch} from "../../src/execution-dispatch";
 import {readRestoreResumeWorker} from "../../src/execution-snapshot";
 import {candidateRestoreTarget} from "./qualified-restore-candidate";
-const expectedEpoch=6;
+const expectedEpoch=8;
 const leanFingerprint="6235b66ae20332ba1024049d77166d850c4fed0b7d4378bbb5d5d9e74f1cb38d";
 const fail=()=>Error("qualified_native_fixture_refused");
 const uuid=(value:unknown):value is string=>typeof value==="string"&&/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value);

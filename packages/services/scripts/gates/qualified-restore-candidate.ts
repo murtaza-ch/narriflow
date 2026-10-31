@@ -13,7 +13,7 @@ import { assertExecutionSnapshotDatabase, readFencedWorker, readRestoreResumeWor
 import { hashSnapshotFile, hashSnapshotMigrations, readSnapshotJson } from "../execution-snapshot-files";
 
 const host="ep-wispy-field-b5wyn9o3.c-7.us-east-2.aws.neon.tech",databaseName="serverless_pipeline_gates";
-const invocationEpoch=6,snapshotEpoch=7,restoredEpoch=8;
+const invocationEpoch=8,snapshotEpoch=9,restoredEpoch=10;
 const pgDirectory="/opt/homebrew/opt/libpq/bin",pgVersion="18.6",pgMajor=18;
 const invalid=()=>Error("qualified_restore_gate_refused");
 export function candidateRestoreUtilityTimeout(deadline:number,now:number){

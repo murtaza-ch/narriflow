@@ -73,23 +73,25 @@
   "operatorPlan": "qualified-restore-plan-20261101.md",
   "operatorHelper": "packages/services/scripts/gates/qualified-restore-candidate.ts",
   "plannedEpochs": {
-    "oldInvocation": 6,
-    "snapshotFence": 7,
-    "restored": 8
+    "oldInvocation": 8,
+    "snapshotFence": 9,
+    "restored": 10
   },
-  "expectedCloudSequence": "fresh old epoch6 actual start -> immediately stop consumers while HTTP closed -> deploy fenced -> source7 actual dump/attest/restore -> begin8 metadata -> explicit closed redispatch -> fresh signed old probe refusal + current ordinary completion",
+  "expectedCloudSequence": "fresh old epoch8 actual start -> immediately stop consumers while HTTP closed -> select prepared fenced version and deploy matching triggers -> source9 actual dump/attest/restore -> begin10 metadata -> select prepared closed version and deploy matching triggers -> prove stale old probe superseded with current job still queued/unowned/result SQL NULL/charged1/assets0 -> resume same boundary -> ordinary current completion within unchanged original600s",
   "requiredCloudAssertions": {
     "chargedStarts": 2,
     "staleCallbackAdditionalCharge": 0,
     "publishedCurrentAssets": 1,
     "originalOperationBudgetMinutes": 10,
-    "deadlineExtensionAllowed": false
+    "deadlineExtensionAllowed": false,
+    "releaseBeforeOrdinaryRedispatch": true,
+    "releaseGetGeneratedAfterFixturePreparation": true
   },
   "notEstablishedLocally": [
-    "fresh6/7/8 candidate dump/restore",
-    "fresh Cloudflare metadata and closed redispatch receipts",
-    "actual Modal hold and stale signed refusal",
-    "actual current native completion before original deadline",
+    "fresh8/9/10 candidate dump/restore",
+    "fresh8/9/10 Cloudflare metadata and closed redispatch receipts",
+    "fresh8/9/10 actual Modal hold and stale signed refusal before ordinary redispatch",
+    "fresh8/9/10 actual current native completion before its original deadline",
     "exact owned cloud fixture cleanup"
   ],
   "priorOperatorAttempt": {
@@ -107,18 +109,19 @@
     "evidenceSource": "parent operator report; existing private run directory unchanged"
   },
   "freshSequenceLocalChecks": {
-    "plannedEpochs": "6/7/8",
+    "plannedEpochs": "8/9/10",
     "qualifiedGuardTestsPassed": 6,
-    "qualifiedGuardAssertions": 45,
+    "qualifiedGuardAssertions": 46,
     "combinedQualifiedAndPendingLargeGuardTestsPassed": 9,
-    "combinedAssertions": 73,
+    "combinedAssertions": 77,
     "servicesTypecheck": "passed",
     "focusedBiome": "passed",
     "databaseActionsPerformed": false,
     "cloudActionsPerformed": false,
     "privateFailedRunDirectoryModified": false,
     "largeGateLaunchTemplateFilled": false,
-    "largeGateRequiresPassedFreshRestore": true
+    "largeGateRequiresPassedFreshRestore": true,
+    "bunVersion": "1.3.6"
   },
   "secondOperatorAttempt": {
     "epochs": {
@@ -141,5 +144,36 @@
     },
     "reusePermitted": false,
     "evidenceSource": "parent operator report; existing private run directory unchanged"
+  },
+  "thirdOperatorAttempt": {
+    "epochs": {
+      "oldInvocation": 6,
+      "snapshotFence": 7,
+      "restored": 8
+    },
+    "snapshotMetadataAndBoundaryPassed": true,
+    "qualifiedGatePassed": false,
+    "ordinaryPath": {
+      "status": "completed",
+      "completedAtUtc": "2026-10-31T22:47:54.683Z",
+      "originalDeadlineAtUtc": "2026-10-31T22:48:32.146Z",
+      "deadlineUnchanged": true,
+      "totalChargedAttempts": 2,
+      "actualStartedAttempts": 2,
+      "prestartSuccessorExpiries": 1,
+      "prestartExpiryCharged": false,
+      "publishedAssets": 1
+    },
+    "failure": "operator soft cutoff exhausted; old held callback never produced the released Superseded report within its original deadline and hold bound",
+    "firstOrdinaryLog": {
+      "message": "native_control_unconfirmed",
+      "stage": "work_package",
+      "errorCode": "execution_transport_unavailable",
+      "status": null,
+      "rootCauseEstablished": false
+    },
+    "staleSignedRefusalEstablished": false,
+    "reusePermitted": false,
+    "evidenceSource": "parent operator report of final actual SQL and filtered native log; failed private run directory unchanged"
   }
 }

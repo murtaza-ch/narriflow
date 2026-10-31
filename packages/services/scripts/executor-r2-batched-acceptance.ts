@@ -11,14 +11,14 @@ import {sourceReceipt} from "./executor-r2-transfer-gate";
 const folder="/tmp/narriflow-executor-r2-batched",settingsPath="/tmp/narriflow-serverless-control-keys/candidate-worker-secrets.json";
 const repo=fileURLToPath(new URL("../../../",import.meta.url));
 const fail=()=>Error("batched_acceptance_refused");
-interface Config{version:1;expectedEpoch:8;expectedWorkerVersion:string;apiOrigin:string;qualifiedRestoreProofPath:string;expectedFunctionId:string;modalSourceWitness:string}
+interface Config{version:1;expectedEpoch:10;expectedWorkerVersion:string;apiOrigin:string;qualifiedRestoreProofPath:string;expectedFunctionId:string;modalSourceWitness:string}
 export function batchedAcceptanceConfig(raw:unknown):Config{
  if(!raw||typeof raw!=="object"||Array.isArray(raw))throw fail();const c=raw as Config;
- if(Object.keys(c).sort().join(",")!==["version","expectedEpoch","expectedWorkerVersion","apiOrigin","qualifiedRestoreProofPath","expectedFunctionId","modalSourceWitness"].sort().join(",")||c.version!==1||c.expectedEpoch!==8||typeof c.expectedWorkerVersion!=="string"||!/^[-a-zA-Z0-9_]{1,160}$/.test(c.expectedWorkerVersion)||typeof c.apiOrigin!=="string"||new URL(c.apiOrigin).origin!==c.apiOrigin||new URL(c.apiOrigin).protocol!=="https:"||!isAbsolute(c.qualifiedRestoreProofPath)||!/^fu-[A-Za-z0-9]{10,40}$/.test(c.expectedFunctionId)||typeof c.modalSourceWitness!=="string"||!/^35ca[A-Za-z0-9._-]{0,156}$/.test(c.modalSourceWitness))throw fail();return c;
+ if(Object.keys(c).sort().join(",")!==["version","expectedEpoch","expectedWorkerVersion","apiOrigin","qualifiedRestoreProofPath","expectedFunctionId","modalSourceWitness"].sort().join(",")||c.version!==1||c.expectedEpoch!==10||typeof c.expectedWorkerVersion!=="string"||!/^[-a-zA-Z0-9_]{1,160}$/.test(c.expectedWorkerVersion)||typeof c.apiOrigin!=="string"||new URL(c.apiOrigin).origin!==c.apiOrigin||new URL(c.apiOrigin).protocol!=="https:"||!isAbsolute(c.qualifiedRestoreProofPath)||!/^fu-[A-Za-z0-9]{10,40}$/.test(c.expectedFunctionId)||typeof c.modalSourceWitness!=="string"||!/^35ca[A-Za-z0-9._-]{0,156}$/.test(c.modalSourceWitness))throw fail();return c;
 }
 export function batchedRestoreProof(raw:unknown){
  const p=raw as Record<string,unknown>;
- if(!p||p.mode!=="qualified_restore_verified"||p.sourceEpoch!==6||p.snapshotEpoch!==7||p.targetEpoch!==8||p.chargedStarts!==2||p.staleCommit!=="superseded"||p.publishedAssets!==1||typeof p.operationDeadlineAt!=="string"||typeof p.completedAt!=="string"||!Number.isFinite(Date.parse(p.completedAt))||!Number.isFinite(Date.parse(p.operationDeadlineAt))||Date.parse(p.completedAt)>Date.parse(p.operationDeadlineAt))throw fail();
+ if(!p||p.mode!=="qualified_restore_verified"||p.sourceEpoch!==8||p.snapshotEpoch!==9||p.targetEpoch!==10||p.chargedStarts!==2||p.staleCommit!=="superseded"||p.publishedAssets!==1||typeof p.operationDeadlineAt!=="string"||typeof p.completedAt!=="string"||!Number.isFinite(Date.parse(p.completedAt))||!Number.isFinite(Date.parse(p.operationDeadlineAt))||Date.parse(p.completedAt)>Date.parse(p.operationDeadlineAt))throw fail();
 }
 export function batchedTimings(raw:unknown){
  if(!raw||typeof raw!=="object"||Array.isArray(raw))throw fail();
