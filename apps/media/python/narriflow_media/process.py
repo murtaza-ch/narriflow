@@ -85,6 +85,12 @@ def run_owned_process(
                     on_start(int(message))
                 except Exception:
                     raise MediaProcessError("media_process_start_unconfirmed") from None
+            # The supervisor already owns the actual child. Release its stdin
+            # only after the control API has acknowledged that native start.
+            try:
+                os.write(write_fd, b'1')
+            except OSError:
+                raise MediaProcessError("media_process_start_unconfirmed") from None
     supervisor = None
     try:
         try:
@@ -282,10 +288,7 @@ def _supervise(read_fd: int, argv: list[str], timeout: float, grace: float, star
     os.set_blocking(read_fd, False)
     selector.register(read_fd, selectors.EVENT_READ, "owner")
     os.set_blocking(child.stdin.fileno(), False)
-    if body:
-        selector.register(child.stdin, selectors.EVENT_WRITE, "stdin")
-    else:
-        child.stdin.close()
+    acknowledged = False
     offset = 0
     sizes = {"stdout": 0, "stderr": 0}
     caps = {"stdout": MAX_OUTPUT_BYTES, "stderr": MAX_ERROR_BYTES}
@@ -322,7 +325,7 @@ def _supervise(read_fd: int, argv: list[str], timeout: float, grace: float, star
                 elif now - termination_at >= grace:
                     _signal_tree(descendants, signal.SIGKILL, identities)
             streams_open = any(key.data in {"stdout", "stderr"} for key in selector.get_map().values())
-            if child.returncode is not None and not streams_open and not descendants:
+            if child.returncode is not None and not streams_open and not descendants and (acknowledged or stopping):
                 return failure_code if failure_code is not None else child.returncode
             # Even a descendant that ignores TERM cannot keep this supervisor
             # alive indefinitely. KILL is repeated while adopted children reap.
@@ -331,9 +334,18 @@ def _supervise(read_fd: int, argv: list[str], timeout: float, grace: float, star
                 return failure_code if failure_code is not None else (child.returncode or 137)
             for key, _events in selector.select(timeout=0.025):
                 if key.data == "owner":
-                    if os.read(read_fd, 1) == b"":
+                    message = os.read(read_fd, 1)
+                    if message == b"":
                         stopping = True
                         selector.unregister(read_fd)
+                    elif message == b'1' and not acknowledged:
+                        acknowledged = True
+                        if body:
+                            selector.register(child.stdin, selectors.EVENT_WRITE, "stdin")
+                        else:
+                            child.stdin.close()
+                    else:
+                        failure_code, stopping = 65, True
                 elif key.data == "stdin":
                     try:
                         offset += os.write(key.fileobj.fileno(), body[offset:])
