@@ -1925,9 +1925,14 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 			return acceptTikTokPublicationWebhook({ rawBody, signature: `t=${timestamp},s=${digest}`, clientKey: "test-client", clientSecret, now: at });
 		};
 
-		expect(await failed(now)).toMatchObject({ kind: "failed", attemptId: attempt.id });
-		// The redelivery arrives later, so a rewritten terminalAt would name a new event.
-		expect(await failed(new Date(now.getTime() + 5_000))).toMatchObject({ kind: "already_settled", attemptId: attempt.id });
+  let loseAck=true;const deliveries:string[][]=[];
+  const send=(at:Date)=>withExecutionDispatches(()=>failed(at),{database:prisma,deliver:async ids=>{deliveries.push([...ids]);if(loseAck)throw Error("lost_tiktok_wake_ack");await prisma.executionDispatch.updateMany({where:{id:{in:[...ids]}},data:{acknowledgedAt:new Date()}});}});
+  await expect(send(now)).rejects.toThrow("lost_tiktok_wake_ack");
+  const saved=(await prisma.publicationClaim.findUniqueOrThrow({where:{id:claim.claimId}})).workState as {transitionDispatchIds:string[]};
+  expect(saved.transitionDispatchIds.length).toBeGreaterThanOrEqual(2);
+  loseAck=false;
+  expect(await send(new Date(now.getTime()+5000))).toMatchObject({kind:"already_settled",attemptId:attempt.id});
+  for(const id of saved.transitionDispatchIds)expect((await prisma.executionDispatch.findUniqueOrThrow({where:{id}})).acknowledgedAt).not.toBeNull();
 		expect(await prisma.socialPost.findUniqueOrThrow({ where: { id: socialPostId } })).toMatchObject({ status: "failed", errorCode: "tiktok_spam_risk" });
 		expect(await postEvents(f.workspace.id)).toEqual([finishedPost(f, socialPostId, "tiktok", "failed")]);
 	})));
