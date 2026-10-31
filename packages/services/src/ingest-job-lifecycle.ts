@@ -208,7 +208,7 @@ export class IngestJobLifecycle {
         emittedAt: now,
         dedupeKey: `ingest:${input.id}:${input.transition}`,
         payload: payload as unknown as Prisma.InputJsonValue,
-        progressRequired: this.deps.progressRequired ?? false,
+        progressRequired: true,
         notificationRequired: input.notify ?? false,
         availableAt: now,
         nextDeliveryAt: now,

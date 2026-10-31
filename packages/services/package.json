@@ -417,6 +417,10 @@
     "./executor-control": {
       "types": "./src/executor-control.ts",
       "default": "./src/executor-control.ts"
+    },
+    "./progress-delivery": {
+      "types": "./src/progress-delivery.ts",
+      "default": "./src/progress-delivery.ts"
     }
   },
   "scripts": {

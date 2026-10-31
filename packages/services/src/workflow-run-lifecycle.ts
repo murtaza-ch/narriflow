@@ -19,7 +19,6 @@ import type {
 } from "@narriflow/validators";
 import { accessibleProjectWhere } from "./project-access";
 import {
-  isWorkflowRedisDeliveryEnabled,
   publishPersistedWorkflowEvent,
 } from "./workflow.service";
 import { notificationService, type NotificationOutcome } from "./notification.service";
@@ -191,7 +190,7 @@ export interface WorkflowLifecycleDependencies {
     event: WorkflowStageUpdatedEvent,
     dedupeKey: string,
   ) => Promise<void>;
-  publishRedis?: (event: WorkflowStageUpdatedEvent) => Promise<boolean>;
+  publishProgress?: (event: WorkflowStageUpdatedEvent) => Promise<boolean>;
   handoffNotification?: (
     payload: NonNullable<WorkflowStageUpdatedEvent["notification"]>,
   ) => Promise<void>;
@@ -327,10 +326,10 @@ export class WorkflowRunLifecycle {
   readonly leaseDurationMs: number;
   readonly heartbeatIntervalMs: number;
   private readonly publishAnalytics?: WorkflowLifecycleDependencies["publishAnalytics"];
-  private readonly publishRedis: NonNullable<
-    WorkflowLifecycleDependencies["publishRedis"]
+  private readonly publishProgress: NonNullable<
+    WorkflowLifecycleDependencies["publishProgress"]
   >;
-  private readonly redisDeliveryRequired: boolean;
+  private readonly progressDeliveryRequired: boolean;
   private readonly handoffNotification: NonNullable<
     WorkflowLifecycleDependencies["handoffNotification"]
   >;
@@ -361,10 +360,10 @@ export class WorkflowRunLifecycle {
     this.heartbeatIntervalMs =
       dependencies.heartbeatIntervalMs ?? WORKFLOW_HEARTBEAT_INTERVAL_MS;
     this.publishAnalytics = dependencies.publishAnalytics;
-    this.publishRedis =
-      dependencies.publishRedis ?? publishPersistedWorkflowEvent;
-    this.redisDeliveryRequired =
-      Boolean(dependencies.publishRedis) || isWorkflowRedisDeliveryEnabled();
+    this.publishProgress =
+      dependencies.publishProgress ?? publishPersistedWorkflowEvent;
+    this.progressDeliveryRequired =
+      true;
     this.handoffNotification =
       dependencies.handoffNotification ??
       (async (payload) => {
@@ -439,7 +438,7 @@ export class WorkflowRunLifecycle {
 
   private appendEvent(tx: TransactionClient, input: WorkflowEventInput) {
     return appendWorkflowEvent(tx, input, {
-      progressRequired: this.redisDeliveryRequired,
+      progressRequired: this.progressDeliveryRequired,
       analyticsEnabled: Boolean(this.publishAnalytics),
     });
   }
@@ -2821,9 +2820,9 @@ export class WorkflowRunLifecycle {
         const parsed = workflowStageUpdatedEventSchema.parse(event.payload);
         if (event.progressRequired && !event.progressPublishedAt) {
           if (!(await renew())) continue;
-          const published = await this.publishRedis(parsed);
+          const published = await this.publishProgress(parsed);
           if (!published) {
-            throw new Error("Workflow Redis publisher unavailable");
+            throw new Error("Workflow progress destination unavailable");
           }
           const acknowledged = await this.prisma.workflowEvent.updateMany({
             where: held(),

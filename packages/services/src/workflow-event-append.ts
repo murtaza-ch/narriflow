@@ -27,7 +27,7 @@ export interface WorkflowEventInput {
   notification?: RenderTerminalNotificationPayload;
 }
 
-/** Which deliveries the event is owed: Redis for live progress, analytics for
+/** Which deliveries the event is owed: Durable Objects for live progress, analytics for
  * terminal runs. A record that only history reads needs neither. */
 export interface WorkflowEventDelivery {
   progressRequired: boolean;

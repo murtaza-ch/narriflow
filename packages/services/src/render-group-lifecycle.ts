@@ -8,7 +8,6 @@ import { accessibleProjectWhere } from "./project-access";
 import { syncClipExportAggregates } from "./clip-export-aggregates";
 import { flushWorkspaceEvents } from "./workspace-event";
 import { appendWorkflowEvent } from "./workflow-event-append";
-import { isWorkflowRedisDeliveryEnabled } from "./workflow.service";
 import {
   type ClaimedRenderGroupAttempt,
   type FinishRenderGroupExecution,
@@ -679,7 +678,7 @@ export class RenderGroupLifecycle {
         stage: "clip_rendering", status: parent.status as "queued" | "running", progress: parent.progress,
         errorCode: null, transition: `child_completed:${id}`,
         generationRenderResults: [{ renderId: id, status: "completed", errorCode: null }],
-      }, { progressRequired: isWorkflowRedisDeliveryEnabled(), analyticsEnabled: false });
+      }, { progressRequired: true, analyticsEnabled: false });
       return true;
     });
   }
@@ -733,7 +732,7 @@ export class RenderGroupLifecycle {
         stage: "clip_rendering", status: parent.status as "queued" | "running", progress: parent.progress,
         errorCode: null, transition: `child_failed:${id}`,
         generationRenderResults: [{ renderId: id, status: "failed", errorCode }],
-      }, { progressRequired: isWorkflowRedisDeliveryEnabled(), analyticsEnabled: false });
+      }, { progressRequired: true, analyticsEnabled: false });
       return true;
     });
   }
@@ -916,7 +915,7 @@ export class RenderGroupLifecycle {
         transition: `group_finished:${input.token}`,
         ...(publicResults.length ? { generationRenderResults: publicResults } : {}),
       },
-      { progressRequired: isWorkflowRedisDeliveryEnabled(), analyticsEnabled: false },
+      { progressRequired: true, analyticsEnabled: false },
     );
     return decision;
   }
