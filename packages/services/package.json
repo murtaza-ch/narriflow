@@ -561,7 +561,8 @@
     "./clip-selection-control": {
       "types": "./src/clip-selection-control.ts",
       "default": "./src/clip-selection-control.ts"
-    }
+    },
+    "./ingest-acquisition": "./src/ingest-acquisition.ts"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",

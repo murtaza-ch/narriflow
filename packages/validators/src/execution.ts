@@ -222,6 +222,12 @@ export const sourceAudioBindingSchema = z.strictObject({
 export type ExecutionObjectIdentity = z.infer<typeof executionObjectIdentitySchema>;
 export type SourceAudioBinding = z.infer<typeof sourceAudioBindingSchema>;
 
+/** Frozen at source admission. Draft settings cannot authorize speech work. */
+export const ingestAcquisitionSchema = z.strictObject({
+  audioPolicy: z.enum(["required", "none", "pending_pack"]), contentPackId: z.string().uuid().optional(),
+});
+export type IngestAcquisition = z.infer<typeof ingestAcquisitionSchema>;
+
 /** Worker-produced source input. Scoped grants stay in the package descriptors. */
 export const ingestFetchSourceCommandSchema = z.strictObject({
   kind: z.literal("youtube_source"), projectId: z.string().uuid(), sourceRevision: generation,

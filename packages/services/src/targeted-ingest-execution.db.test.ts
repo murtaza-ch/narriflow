@@ -14,7 +14,7 @@ import { sourceAudioBindingHash } from "./source-audio-binding";
 import { workflowRunExecutionInputHash } from "./workflow-execution-input";
 import { createTranscriptionAdmission } from "./transcription-admission";
 import { createTranscriptionProbe } from "./transcription-probe";
-import { createIngestSourceExecution, ingestExecutionInputHash } from "./ingest-source-execution";
+import { createIngestSourceExecution, ingestExecutionInputHash, prepareIngestSourceExecution } from "./ingest-source-execution";
 import { createExecutionStorage } from "./execution-storage";
 
 const url = process.env.SERVERLESS_TEST_DATABASE_URL;
@@ -48,7 +48,7 @@ dbDescribe("Targeted Ingest execution", () => {
     await db.$disconnect();
   }, 60_000);
 
-  async function fixture(executionDeadline?: Date, productionInput = false) {
+  async function fixture(executionDeadline?: Date) {
     const user = await db.user.create({ data: { clerkId: `targeted-ingest:${crypto.randomUUID()}` } }); users.push(user.id);
     const workspace = await db.workspace.create({ data: { name: "Targeted ingest", ownerUserId: user.id } });
     const project = await db.project.create({ data: { workspaceId: workspace.id, title: "Targeted ingest", sourceType: "youtube", sourceMediaUrl: "https://youtube.com/watch?v=dQw4w9WgXcQ", ingestStatus: "queued" } });
@@ -56,9 +56,9 @@ dbDescribe("Targeted Ingest execution", () => {
     const usage = new ProcessingUsage({ prisma: db, log: () => {} });
     await db.$transaction((tx) => usage.reserve(tx, { workspaceId: workspace.id, projectId: project.id, actorUserId: user.id, intakeKind: "link", declaredSeconds: 120 }));
     const workflow = withServiceEnvironment({}, () => new WorkflowRunLifecycle({ prisma: db }));
-    const lifecycle = new IngestJobLifecycle({ prisma: db, workflow, usage, validateVideo: createSourceVideoValidator(usage), requireRetryActor: async () => { throw new Error("Retry admission is outside this fixture"); } });
+    const lifecycle = new IngestJobLifecycle({ prisma: db, workflow, usage, validateVideo: createSourceVideoValidator(usage), executionInputHash: job => ingestExecutionInputHash(job, "d".repeat(64)), requireRetryActor: async () => { throw new Error("Retry admission is outside this fixture"); } });
     const epoch = (await db.executionEpoch.findUniqueOrThrow({ where: { id: 1 } })).epoch;
-    const inputHash = productionInput ? await ingestExecutionInputHash(job, "d".repeat(64)) : "a".repeat(64);
+    const inputHash = await ingestExecutionInputHash(job, "d".repeat(64));
     const dispatch = await db.$transaction((tx) => appendExecutionDispatch(tx, { deploymentEpoch: epoch, kind: "modal_execution", subject: { kind: "ingest_job", id: job.id }, generation: 1, inputHash, dueAt: new Date("2026-10-31T00:00:00.000Z") }));
     const token = crypto.randomUUID(), owner = crypto.randomUUID();
     await db.executionAttempt.create({ data: { attemptToken: token, dispatchId: dispatch.reference.dispatchId, deploymentEpoch: epoch, generation: 1, inputHash: dispatch.reference.inputHash, functionName: "fetch_source", operationDeadlineAt: executionDeadline ?? new Date(Date.now() + 45 * 60_000),
@@ -79,6 +79,50 @@ dbDescribe("Targeted Ingest execution", () => {
     }
     return { job, project, owner, token, reference: dispatch.reference, control, verified, lifecycle, epoch, workflow, usage };
   }
+
+  test("source preparation admits one unowned generic attempt and retains one absolute deadline on replay", async () => {
+    const f = await fixture();
+    await db.executionAttempt.delete({ where: { attemptToken: f.token } });
+    await db.executionDispatch.delete({ where: { id: f.reference.dispatchId } });
+    const driver = await db.$transaction(tx => appendExecutionDispatch(tx, { deploymentEpoch: f.epoch, generation: 1,
+      kind: "operation_driver", subject: { kind: "ingest_job", id: f.job.id }, inputHash: f.reference.inputHash, dueAt: f.job.createdAt }));
+    const prepare = () => prepareIngestSourceExecution({ database: db, domain: f.lifecycle, reference: driver.reference,
+      toolchainFingerprint: "d".repeat(64), executionKind: "modal_execution" });
+    const [first, replay] = await Promise.all([prepare(), prepare()]);
+    expect(first.kind).toBe("waiting"); expect(replay.kind).toBe("waiting");
+    if (first.kind !== "waiting" || replay.kind !== "waiting") throw new Error("Preparation missing");
+    expect(first.deadline).toEqual(replay.deadline);
+    const attempts = await db.executionAttempt.findMany({ where: { dispatch: { subjectId: f.job.id, kind: "modal_execution" } } });
+    expect(attempts).toHaveLength(1);expect(attempts[0]!.owner).toBeNull();expect(attempts[0]!.status).toBe("admitted");
+    const job=await db.ingestJob.findUniqueOrThrow({where:{id:f.job.id}});
+    expect(job).toMatchObject({status:"queued",claimId:null,executorOwner:null,attemptCount:0,operationDeadlineAt:attempts[0]!.operationDeadlineAt});
+    expect(attempts[0]!.operationDeadlineAt.getTime()-attempts[0]!.createdAt.getTime()).toBeGreaterThan(44*60_000);
+    expect(attempts[0]!.operationDeadlineAt.getTime()-attempts[0]!.createdAt.getTime()).toBeLessThanOrEqual(45*60_000);
+    expect(await prepareIngestSourceExecution({database:db,domain:f.lifecycle,reference:{...driver.reference,inputHash:"f".repeat(64)},toolchainFingerprint:"d".repeat(64),executionKind:"modal_execution"})).toEqual({kind:"superseded"});
+  });
+
+  test("a charged transient retry wakes the next exact source generation without extending its deadline",async()=>{
+    const f=await fixture();const fence={reference:f.reference,attemptToken:f.token,owner:f.owner};
+    await f.control.execute({command:{action:"acquire",...fence,leaseSeconds:120},verifiedRequest:f.verified()});
+    await f.control.execute({command:{action:"process-start",fence},verifiedRequest:f.verified()});
+    const before=await db.ingestJob.findUniqueOrThrow({where:{id:f.job.id}});
+    expect((await f.control.execute({command:{action:"fail",fence,failureCode:"remote_download_failed",retryable:true},verifiedRequest:f.verified()})).disposition).toBe("failed");
+    const job=await db.ingestJob.findUniqueOrThrow({where:{id:f.job.id}});
+    expect(job).toMatchObject({status:"queued",generation:2,attemptCount:1,claimId:null,executorOwner:null,operationDeadlineAt:before.operationDeadlineAt});
+    const retry=await db.executionDispatch.findFirstOrThrow({where:{subjectId:job.id,kind:"operation_driver",generation:2}});
+    expect(retry.inputHash).toBe(await ingestExecutionInputHash(job,"d".repeat(64)));
+    expect(retry.inputHash).not.toBe(f.reference.inputHash);
+    expect(await db.executionAttempt.count({where:{dispatch:{subjectId:job.id,generation:2}}})).toBe(0);
+  });
+
+  test("enqueue seals the producer's acquisition policy into the source payload",async()=>{
+    const f=await fixture();
+    const project=await db.project.create({data:{workspaceId:f.project.workspaceId,title:"Supplied source",sourceType:"upload",sourceMediaUrl:"r2://verified/source.mp4",ingestStatus:"queued"}});
+    const admitted=await db.$transaction(tx=>f.lifecycle.enqueue(tx,{projectId:project.id,jobType:"upload_finalize",payload:{storageKey:"verified/source.mp4"},acquisition:{audioPolicy:"none"}}));subjects.push(admitted.id);
+    const job=await db.ingestJob.findUniqueOrThrow({where:{id:admitted.id}});
+    expect(job.payload).toEqual({storageKey:"verified/source.mp4",acquisition:{audioPolicy:"none"}});
+    expect(job).toMatchObject({status:"queued",attemptCount:0,claimId:null});
+  });
 
   function measuredBindings(f: Awaited<ReturnType<typeof fixture>>, audioKey: string): { audio: SourceAudioBinding; video: SourceVideoBinding } {
     const audio: SourceAudioBinding = { sourceAudioId: crypto.randomUUID(), projectId: f.project.id, sourceRevision: 1,
@@ -103,7 +147,7 @@ dbDescribe("Targeted Ingest execution", () => {
   }
 
   test("the production source package assigns stable outputs and rejects rewritten source evidence", async () => {
-    const f = await fixture(undefined, true);
+    const f = await fixture();
     const factory = createIngestSourceExecution({ database: db, domain: f.lifecycle, workflow: f.workflow, toolchainFingerprint: "d".repeat(64),
       storage: createExecutionStorage({ accountId: "a".repeat(32), bucket: "test", accessKeyId: "fixture-key", secretAccessKey: "fixture-secret" }),
       artifacts: { head: async assignment => ({ etag: '"audio-etag"', contentType: assignment.contentType, byteLength: 1024n, sha256: "c".repeat(64) }) }, deliverWakes: async () => {} });

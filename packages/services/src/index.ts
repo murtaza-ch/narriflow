@@ -684,3 +684,5 @@ export { ThumbnailFrameExecution, thumbnailFrameExecutionInputHash, type Thumbna
 export * from "./outbound-probe";
 export * from "./outbound-probe-runtime";
 export * from "./outbound-probe-execution";
+
+export * from "./ingest-acquisition";
