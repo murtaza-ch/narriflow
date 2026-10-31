@@ -1,8 +1,9 @@
+import {readExecutionAdmission} from "./execution-admission";
 import { refreshSocialAccountToken,SocialTokenRefreshError } from "./social-token-refresh";
 import { readServiceEnvironment } from "./runtime-environment";
 import { workspaceService } from "./workspace.service";
 import { parsePostingSchedule } from "./posting-schedule";
-import { returnGrantPosts, revokeGrantsInTransaction } from "./standing-grant";
+import { revokeGrantsInTransaction } from "./standing-grant";
 import type { ActorScope } from "./actor-scope";
 import {
 	createCipheriv,
@@ -349,6 +350,7 @@ export class SocialOAuthService {
 		await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "social.manage");
 		const prisma = requirePrisma();
 		await prisma.$transaction(async (tx) => {
+   await readExecutionAdmission(tx);
 			const disconnected = await tx.socialAccount.updateMany({
 				where: { id: accountId, workspaceId: scope.workspaceId },
 				data: {
@@ -360,7 +362,6 @@ export class SocialOAuthService {
 			// Nothing can be accepted into a disconnected account, so a grant for it ends, kept as the audit trail.
 			if (disconnected.count > 0) await revokeGrantsInTransaction(tx, { socialAccountId: accountId }, "account_disconnected");
 		});
-		await returnGrantPosts(prisma);
 	}
 
 	/** `origin` is the origin providers call back to (the API); where the browser returns to is the caller's concern. */

@@ -627,7 +627,8 @@
     "./social-publication-observability": "./src/social-publication-observability.ts",
     "./publication-webhook-body": "./src/publication-webhook-body.ts",
     "./publication-execution-runtime": "./src/publication-execution-runtime.ts",
-    "./publication-execution-control": "./src/publication-execution-control.ts"
+    "./publication-execution-control": "./src/publication-execution-control.ts",
+    "./publication-producers": "./src/publication-producers.ts"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",

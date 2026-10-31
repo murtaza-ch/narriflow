@@ -33,8 +33,8 @@ export async function executeExecutionPage(tx: Tx, reference: ExecutionDispatchR
     if (prior.expiresAt <= clock.now) throw new ExecutionPageReceiptError("execution_page_expired");
     return parse(prior.disposition, prior.wakeDispatchIds);
   }
-  const dispatch = await tx.executionDispatch.findUniqueOrThrow({ where: { id: reference.dispatchId }, select: { createdAt: true } });
-  if (dispatch.createdAt.getTime() + RETENTION_MS <= clock.now.getTime()) throw new ExecutionPageReceiptError("execution_page_expired");
+  const dispatch = await tx.executionDispatch.findUniqueOrThrow({ where: { id: reference.dispatchId }, select: { createdAt: true, dueAt:true } });
+  if (Math.max(dispatch.createdAt.getTime(),dispatch.dueAt.getTime()) + RETENTION_MS <= clock.now.getTime()) throw new ExecutionPageReceiptError("execution_page_expired");
   const outcome = await operation(), result = parse({ kind: outcome.kind, processed: outcome.processed }, outcome.dispatchIds);
   await tx.executionInboxReceipt.create({ data: { ...key, keyId: "internal-maintenance", requestHash,
     disposition: { kind: result.kind, processed: result.processed }, wakeDispatchIds: result.dispatchIds, committedAt: clock.now, expiresAt: new Date(clock.now.getTime() + RETENTION_MS) } });

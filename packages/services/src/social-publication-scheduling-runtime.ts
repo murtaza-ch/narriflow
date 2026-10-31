@@ -1,3 +1,4 @@
+import {appendPublicationExportWake} from "./publication-producers";
 import {appendPublicationDispatch,recoverPublicationDispatches} from "./publication-dispatch";
 import { lockPublicationPost, lockPublicationScope } from "./publication-locks";
 import { readExecutionAdmission, assertExecutionAdmissionOpen } from "./execution-admission";
@@ -385,33 +386,10 @@ export const prismaPublicationSchedulingStore: PublicationSchedulingStore = {
 	},
 
 	async recordExportReady(input) {
-		await requirePrisma().$transaction(async (tx) => {
-			const states = await tx.frozenPublicationState.findMany({
-				where: {
-					clipExportVariantId: input.clipExportVariantId,
-					socialPost: { status: "preparing_video" },
-				},
-				select: { id: true, socialPostId: true },
-			});
-			if (states.length === 0) return;
-			await tx.frozenPublicationState.updateMany({
-				where: { id: { in: states.map((state) => state.id) } },
-				data: {
-					storageKey: input.storageKey,
-					sizeBytes: input.sizeBytes,
-					durationSec: input.durationSec,
-					mediaReadyAt: input.now,
-				},
-			});
-			await tx.socialPost.updateMany({
-				where: {
-					id: { in: states.map((state) => state.socialPostId) },
-					status: "preparing_video",
-				},
-				data: { status: "scheduled" },
-			});
-		});
-	},
+  // Result bytes and status come from the committed variant, never a second
+  // mutable fan-out path supplied by the caller.
+  await requirePrisma().$transaction(async tx=>{await readExecutionAdmission(tx);await appendPublicationExportWake(tx,input.clipExportVariantId);});
+ },
 };
 
 export function createProductionSocialPublicationScheduling() {

@@ -1,3 +1,4 @@
+import {refreshPublicationExport,returnPublicationGrantPost} from "./publication-producers";
 import { admitMediaCleanupObligations } from "./media-cleanup-admission";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
@@ -467,8 +468,7 @@ export class PublicationExecution
 			)
 				return { kind: "superseded" as const };
 			await lockPublicationPost(tx, reference.subject.id);
-			const post = await this.post(tx, reference.subject.id),
-				now = await clock(tx);
+   let post=await this.post(tx,reference.subject.id);const now=await clock(tx);
 			if (
 				!post ||
 				post.generation !== reference.generation ||
@@ -489,12 +489,11 @@ export class PublicationExecution
 				return { kind: "terminal" as const };
 			const due = post.nextAttemptAt ?? post.scheduledFor ?? post.createdAt;
 			if (due > now) return { kind: "sleep" as const, dueAt: due };
-			if (
-				!post.frozenState?.storageKey ||
-				post.frozenState.sizeBytes === null ||
-				post.frozenState.durationSec === null
-			)
-				return { kind: "waiting_export" as const };
+   const exportState=await refreshPublicationExport(tx,post);
+   if(exportState==="waiting")return {kind:"waiting_export" as const};
+   if(exportState==="terminal")return {kind:"terminal" as const,dispatchIds:takeExecutionDispatchIds(tx)};
+   post=(await this.post(tx,post.id))!;
+   if(!post.frozenState)throw new PublicationExecutionError("publication_frozen_media_unsealed");
 			let attempt = await tx.socialPublicationAttempt.findFirst({
 				where: { socialPostId: post.id },
 				orderBy: { attemptNumber: "desc" },
@@ -508,12 +507,17 @@ export class PublicationExecution
 					? settings.confirmedBy
 					: null;
 			try {
-				await this.actor(tx, post, sent, actorUserId);
-			} catch (error) {
+    await this.actor(tx,post,sent,actorUserId);
+    if(!sent&&(await this.grant(tx,post))==="waiting")return {kind:"waiting_grant" as const};
+   } catch(error){
 				const code =
 					error instanceof PublicationExecutionError
 						? error.code
 						: "publication_authority_revoked";
+    if(code==="publication_grant_changed"&&!attempt&&post.standingGrantId){
+     const grant=await tx.standingGrant.findUnique({where:{id:post.standingGrantId}});
+     if(grant&&await returnPublicationGrantPost(tx,post,grant))return {kind:"terminal" as const,dispatchIds:await this.wake(tx,post.id,new Date(0),"publication_grant_returned")};
+    }
 				if (attempt?.currentClaimId) {
 					const result = await this.stop(
 						tx,
@@ -558,8 +562,6 @@ export class PublicationExecution
 					],
 				};
 			}
-			if (!sent && (await this.grant(tx, post)) === "waiting")
-				return { kind: "waiting_grant" as const };
 			if (!attempt)
 				attempt = await tx.socialPublicationAttempt.create({
 					data: {

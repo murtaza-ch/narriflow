@@ -1,3 +1,5 @@
+import {appendPublicationGrantWake,appendPublicationGrantExpiry} from "./publication-producers";
+import {readExecutionAdmission} from "./execution-admission";
 import { createHash } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import {
@@ -232,6 +234,7 @@ async function pauseInTransaction(
   await tx.standingGrantEvent.create({
     data: { grantId: input.grantId, kind: "paused", revision: grant.revision, actorUserId: input.actorUserId, reason: input.reason },
   });
+  await appendPublicationGrantWake(tx,input.grantId);
   // One pause per revision: only an active grant pauses, and renewing starts a new revision.
   queueWorkspaceEvent(tx, {
     workspaceId: grant.workspaceId,
@@ -301,15 +304,19 @@ export async function revokeGrantsInTransaction(
   reason: "rule_deleted" | "account_disconnected",
 ): Promise<number> {
   const grants = await tx.standingGrant.findMany({
-    where: { ...where, status: { in: ["active", "paused", "expired"] } },
-    select: { id: true, revision: true },
+    where: { ...where, status: { in: ["active", "paused", "expired", "revoked"] } },
+    select: { id: true, revision: true,status:true },
     orderBy: { id: "asc" },
   });
+  let changed=0;
   for (const grant of grants) {
+    if(grant.status==="revoked"){await appendPublicationGrantWake(tx,grant.id);continue;}
+    changed++;
     await tx.standingGrant.update({ where: { id: grant.id }, data: { status: "revoked", pauseNoticePending: false, pauseNoticeLeaseUntil: null } });
     await tx.standingGrantEvent.create({ data: { grantId: grant.id, kind: "revoked", revision: grant.revision, actorUserId: null, reason } });
+    await appendPublicationGrantWake(tx,grant.id);
   }
-  return grants.length;
+  return changed;
 }
 
 /** Gives the posts of grants that ended (revoked or expired) back to the proposal
@@ -329,6 +336,7 @@ export async function returnGrantPosts(prisma: PrismaClient, input: { limit?: nu
   let returned = 0;
   for (const { grantId } of waiting) {
     returned += await prisma.$transaction(async (tx) => {
+      await readExecutionAdmission(tx);
       // The publisher claims a post under the post's own lock, so skipping a locked row is safe: it is being claimed.
       const rows = await tx.$queryRaw<Array<{ id: string }>>`
         SELECT p."id" FROM "SocialPost" p
@@ -424,6 +432,7 @@ export function createStandingGrants(deps: StandingGrantDependencies) {
     for (const grant of active) {
       if (planCoversGrant(grant.workspace.pricingTier, grant.kind)) continue;
       const done = await prisma.$transaction(async (tx) => {
+      await readExecutionAdmission(tx);
         const changed = await pauseInTransaction(tx, { grantId: grant.id, reason: "plan_lost", actorUserId: null, revision: grant.revision });
         await flushWorkspaceEvents(tx);
         return changed;
@@ -571,6 +580,7 @@ export function createStandingGrants(deps: StandingGrantDependencies) {
       requireGrantPlan(actor.pricingTier, parsed.kind);
       const at = now();
       return prisma.$transaction(async (tx) => {
+      await readExecutionAdmission(tx);
         // The rule's row serializes grants for one rule, so two requests can't both pass the duplicate check.
         if (!(await lockRule(tx, scope.workspaceId, parsed.autopilotRuleId))) {
           throw new StandingGrantError("standing_grant_rule_not_found", "Choose one of this Workspace's Autopilot rules.");
@@ -606,6 +616,7 @@ export function createStandingGrants(deps: StandingGrantDependencies) {
           select: { id: true },
         });
         await tx.standingGrantEvent.create({ data: { grantId: grant.id, kind: "created", revision: 1, actorUserId: scope.actorUserId } });
+        await appendPublicationGrantExpiry(tx,await tx.standingGrant.findUniqueOrThrow({where:{id:grant.id}}));
         return grant;
       });
     },
@@ -620,6 +631,7 @@ export function createStandingGrants(deps: StandingGrantDependencies) {
       if (!existing) throw new StandingGrantError("standing_grant_not_found", "This grant no longer exists.");
       if (existing.status === "revoked" || !existing.autopilotRuleId) throw new StandingGrantError("standing_grant_closed", "This grant was revoked. Create a new one.");
       await prisma.$transaction(async (tx) => {
+      await readExecutionAdmission(tx);
         // Rule, then grant: the same order as creating one and deleting a rule.
         const ruleId = existing.autopilotRuleId!;
         if (!(await lockRule(tx, scope.workspaceId, ruleId))) throw new StandingGrantError("standing_grant_closed", "This grant's rule was deleted. Create a new one.");
@@ -652,12 +664,15 @@ export function createStandingGrants(deps: StandingGrantDependencies) {
           },
         });
         await tx.standingGrantEvent.create({ data: { grantId: grant.id, kind: "renewed", revision, actorUserId: scope.actorUserId } });
+        await appendPublicationGrantWake(tx,grant.id);
+        await appendPublicationGrantExpiry(tx,await tx.standingGrant.findUniqueOrThrow({where:{id:grant.id}}));
       });
     },
 
     async pause(scope: ActorScope, grantId: string): Promise<void> {
       await requireGrantManager(scope);
       await prisma.$transaction(async (tx) => {
+      await readExecutionAdmission(tx);
         await lockGrant(tx, scope.workspaceId, grantId);
         if (!(await pauseInTransaction(tx, { grantId, reason: "manual", actorUserId: scope.actorUserId }))) {
           throw new StandingGrantError("standing_grant_not_active", "Only an active grant can be paused.");
@@ -671,17 +686,19 @@ export function createStandingGrants(deps: StandingGrantDependencies) {
     async revoke(scope: ActorScope, grantId: string): Promise<void> {
       await requireGrantManager(scope);
       await prisma.$transaction(async (tx) => {
+      await readExecutionAdmission(tx);
         const grant = await lockGrant(tx, scope.workspaceId, grantId);
-        if (grant.status === "revoked") return;
+        if(grant.status==="revoked"){await appendPublicationGrantWake(tx,grant.id);return;}
         await tx.standingGrant.update({ where: { id: grantId }, data: { status: "revoked", pauseNoticePending: false, pauseNoticeLeaseUntil: null } });
         await tx.standingGrantEvent.create({ data: { grantId, kind: "revoked", revision: grant.revision, actorUserId: scope.actorUserId } });
+        await appendPublicationGrantWake(tx,grantId);
       });
-      await returnGrantPosts(prisma);
     },
 
     /** Pauses a grant on the system's own account, such as when its granter loses the role. */
     async pauseBySystem(grantId: string, reason: StandingGrantPauseReason, revision?: number): Promise<boolean> {
       return prisma.$transaction(async (tx) => {
+      await readExecutionAdmission(tx);
         const paused = await pauseInTransaction(tx, { grantId, reason, actorUserId: null, revision });
         await flushWorkspaceEvents(tx);
         return paused;
@@ -704,6 +721,7 @@ export function createStandingGrants(deps: StandingGrantDependencies) {
       let expired = 0;
       for (const { id } of due) {
         expired += await prisma.$transaction(async (tx) => {
+      await readExecutionAdmission(tx);
           const done = await tx.standingGrant.updateMany({
             where: { id, status: { in: ["active", "paused"] }, expiresAt: { lte: at } },
             data: { status: "expired" },
@@ -711,6 +729,7 @@ export function createStandingGrants(deps: StandingGrantDependencies) {
           if (done.count !== 1) return 0;
           const grant = await tx.standingGrant.findUniqueOrThrow({ where: { id }, select: { workspaceId: true, kind: true, autopilotRuleId: true, revision: true } });
           await tx.standingGrantEvent.create({ data: { grantId: id, kind: "expired", revision: grant.revision, actorUserId: null } });
+          await appendPublicationGrantWake(tx,id);
           queueWorkspaceEvent(tx, {
             workspaceId: grant.workspaceId,
             projectId: null,
