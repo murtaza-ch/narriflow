@@ -717,12 +717,50 @@ export class PublicationExecution
 			);
 		if ("dispatchIds" in snapshot)
 			await this.ports.register(snapshot.dispatchIds ?? []);
-		const built = await this.ports.buildInput(snapshot),
-			plan: PublicationInputPlan = {
-				storageKey: `execution-inputs/${snapshot.post.deploymentEpoch}/publication/${snapshot.post.id}/${snapshot.post.generation}/${snapshot.claim.id}.json`,
-				sha256: createHash("sha256").update(built.bytes).digest("hex"),
-				byteLength: built.bytes.byteLength,
-			};
+		let built: Awaited<
+			ReturnType<PublicationExecutionDependencies["buildInput"]>
+		>;
+		try {
+			built = await this.ports.buildInput(snapshot);
+		} catch (error) {
+			if (
+				!(error instanceof PublicationExecutionError) ||
+				![
+					"publication_frozen_media_unsealed",
+					"publication_thumbnail_unsealed",
+					"publication_checkpoint_invalid",
+					"publication_input_invalid",
+				].includes(error.code)
+			)
+				throw error;
+			const failed = await this.database.$transaction(async (tx) => {
+				if ((await this.epoch(tx)) !== snapshot.post.deploymentEpoch)
+					throw new PublicationExecutionError("publication_epoch_superseded");
+				await lockPublicationAttempt(tx, snapshot.attempt.id);
+				const attempt = await tx.socialPublicationAttempt.findUniqueOrThrow({
+					where: { id: snapshot.attempt.id },
+				});
+				if (attempt.currentClaimId !== snapshot.claim.id)
+					return { dispatchIds: [] };
+				return this.stop(
+					tx,
+					{
+						postId: snapshot.post.id,
+						attemptId: attempt.id,
+						claimId: snapshot.claim.id,
+					},
+					error.code,
+					submitted(attempt) || Boolean(state(snapshot.claim).providerGrant),
+				);
+			});
+			await this.ports.register(failed.dispatchIds);
+			return { kind: "terminal" };
+		}
+		const plan: PublicationInputPlan = {
+			storageKey: `execution-inputs/${snapshot.post.deploymentEpoch}/publication/${snapshot.post.id}/${snapshot.post.generation}/${snapshot.claim.id}.json`,
+			sha256: createHash("sha256").update(built.bytes).digest("hex"),
+			byteLength: built.bytes.byteLength,
+		};
 		if (
 			!plan.byteLength ||
 			plan.byteLength > 16 * 1024 * 1024 ||
@@ -1346,7 +1384,49 @@ export class PublicationExecution
 				attemptId: attempt.id,
 				claimId: claim.id,
 			};
+		if (command.kind === "preflight")
+			return { reply: { kind: "recorded" } as PublicationNativeReply };
 		if (command.kind === "provider_call") {
+			if (!["read", "cleanup"].includes(command.operation)) {
+				const currentPost = await this.post(tx, ref.postId);
+				if (!currentPost)
+					throw new PublicationExecutionError("publication_claim_lost");
+				try {
+					await this.actor(
+						tx,
+						currentPost,
+						false,
+						attempt.executionActorUserId,
+					);
+					if ((await this.grant(tx, currentPost)) === "waiting")
+						throw new PublicationExecutionError("publication_grant_paused");
+				} catch (error) {
+					const code =
+							error instanceof PublicationExecutionError
+								? error.code
+								: "publication_authority_revoked",
+						mutation = await this.stop(
+							tx,
+							ref,
+							code,
+							submitted(attempt) || Boolean(state(claim).providerGrant),
+						);
+					return {
+						reply: {
+							kind: "settled",
+							outcome:
+								submitted(attempt) || state(claim).providerGrant
+									? "needs_attention"
+									: "failed",
+							attemptId: attempt.id,
+							socialPostId: ref.postId,
+							code,
+						} as PublicationNativeReply,
+						complete: true,
+						dispatchIds: mutation.dispatchIds,
+					};
+				}
+			}
 			if (
 				command.operation !== "read" &&
 				(await tx.publicationManualDecision.findFirst({
@@ -1355,8 +1435,14 @@ export class PublicationExecution
 				}))
 			)
 				throw new PublicationExecutionError("publication_new_create_forbidden");
+			const post = await this.post(tx, ref.postId);
+			const idempotentWebhookReplay =
+				!post?.socialAccountId &&
+				attempt.operationKind === "submission_started" &&
+				command.operation === "submit";
 			if (
 				(claim.executionMode === "reconcile" &&
+					!idempotentWebhookReplay &&
 					["initialize", "submit"].includes(command.operation)) ||
 				(claim.executionMode === "resume" &&
 					command.operation === "initialize" &&
@@ -1405,9 +1491,11 @@ export class PublicationExecution
 				owned,
 				operationKind: operation.kind,
 				sealedState: seal(operation),
-				operationLookupHash: operation.lookupKey
-					? createHash("sha256").update(operation.lookupKey).digest("hex")
-					: null,
+				operationLookupHash:
+					command.operationLookupHash ??
+					(operation.lookupKey
+						? createHash("sha256").update(operation.lookupKey).digest("hex")
+						: null),
 				now: c.now,
 			});
 			return { reply: { kind: "recorded" } as PublicationNativeReply };
@@ -1479,6 +1567,9 @@ export class PublicationExecution
 					attemptId: attempt.id,
 					socialPostId: ref.postId,
 					code: command.failure.code,
+					...(["processing", "reconciling"].includes(current.phase)
+						? { nextActionAt: current.nextActionAt.toISOString() }
+						: {}),
 				} as PublicationNativeReply,
 				complete: true,
 				dispatchIds: mutation.dispatchIds,

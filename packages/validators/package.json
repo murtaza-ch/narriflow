@@ -55,7 +55,8 @@
     "./render-execution": {
       "types": "./src/render-execution.ts",
       "default": "./src/render-execution.ts"
-    }
+    },
+    "./publication-input": "./src/publication-input.ts"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",

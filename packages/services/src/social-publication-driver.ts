@@ -168,6 +168,7 @@ export interface SocialPublicationAttemptStore {
 		retryAfterMs: number | null;
 		failureEvidence?: Prisma.InputJsonValue;
 		submissionMayHaveStarted: boolean;
+  definitiveNonPublication?:boolean;
 		now: Date;
 		retry: PublicationRetryPolicy;
 		processingDeadlineMs: number;
@@ -269,9 +270,9 @@ export function createSocialPublicationAttempt(dependencies: {
 	planEligibility: {
 		refusal(input: { workspaceId: string; socialAccountId: string | null; customThumbnail: boolean }): Promise<PublicationPlanRefusal | null>;
 	};
-	checkpointCipher: {
-		seal(value: Prisma.JsonObject): string;
-		open(value: string): Prisma.JsonObject;
+	checkpointCodec: {
+		encode(value: Prisma.JsonObject): string;
+		decode(value: string): Prisma.JsonObject;
 	};
 	clock: { now(): Date };
 	diagnostics: { record(event: SocialPublicationDiagnostic): void };
@@ -476,7 +477,7 @@ export function createSocialPublicationAttempt(dependencies: {
 						try {
 							operation = {
 								kind: loaded.checkpointKind,
-								state: dependencies.checkpointCipher.open(
+								state: dependencies.checkpointCodec.decode(
 									loaded.sealedCheckpoint,
 								),
 							};
@@ -581,7 +582,7 @@ export function createSocialPublicationAttempt(dependencies: {
 				projectId: loaded.socialPost.projectId,
 				platform: loaded.frozen.platform,
 				caption: loaded.frozen.caption,
-				scheduledFor: loaded.frozen.scheduledFor,
+				scheduledFor: loaded.socialPost.scheduledFor,
 				providerSettings: loaded.frozen.providerSettings,
 				account,
 				media: {
@@ -601,7 +602,7 @@ export function createSocialPublicationAttempt(dependencies: {
 				loaded.sealedCheckpoint && loaded.checkpointKind
 					? {
 							kind: loaded.checkpointKind,
-							state: dependencies.checkpointCipher.open(
+							state: dependencies.checkpointCodec.decode(
 								loaded.sealedCheckpoint,
 							),
 						}
@@ -647,7 +648,7 @@ export function createSocialPublicationAttempt(dependencies: {
 					},
 					checkpoint: async (operation: PublicationProviderOperation) => {
 						lastCheckpointOperation = operation;
-						const sealedState = dependencies.checkpointCipher.seal(
+						const sealedState = dependencies.checkpointCodec.encode(
 							operation.state,
 						);
 						await dependencies.store.checkpoint({
@@ -719,7 +720,7 @@ export function createSocialPublicationAttempt(dependencies: {
 						settled = await dependencies.store.settlePending({
 							owned: input.attempt,
 							result,
-							sealedState: dependencies.checkpointCipher.seal(
+							sealedState: dependencies.checkpointCodec.encode(
 								result.operation.state,
 							),
 							operationLookupHash: result.operation.lookupKey
@@ -732,6 +733,7 @@ export function createSocialPublicationAttempt(dependencies: {
 						settled = await dependencies.store.settleFailed({
 							owned: input.attempt,
 							code: result.failure.code,
+							definitiveNonPublication:result.failure.safeToRepublishAfterSubmission===true,
 							phase: result.failure.phase,
 							disposition: result.failure.disposition,
 							retryAfterMs: result.failure.retryAfterMs,
@@ -756,7 +758,7 @@ export function createSocialPublicationAttempt(dependencies: {
 							code: result.code,
 							operation,
 							sealedState: operation
-								? dependencies.checkpointCipher.seal(operation.state)
+								? dependencies.checkpointCodec.encode(operation.state)
 								: null,
 							canReconcile,
 							nextActionAt: canReconcile
@@ -820,7 +822,7 @@ export function createSocialPublicationAttempt(dependencies: {
 							code: "publication_interrupted_after_submission",
 							operation: lastCheckpointOperation,
 							sealedState: lastCheckpointOperation
-								? dependencies.checkpointCipher.seal(
+								? dependencies.checkpointCodec.encode(
 										lastCheckpointOperation.state,
 									)
 								: null,
@@ -882,7 +884,7 @@ export function createSocialPublicationAttempt(dependencies: {
 							code,
 							operation: lastCheckpointOperation,
 							sealedState: lastCheckpointOperation
-								? dependencies.checkpointCipher.seal(
+								? dependencies.checkpointCodec.encode(
 										lastCheckpointOperation.state,
 									)
 								: null,

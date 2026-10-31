@@ -902,6 +902,25 @@ BEGIN
 END; $$;
 CREATE TRIGGER "SocialPost_schedule_revision" BEFORE UPDATE ON "SocialPost"
  FOR EACH ROW EXECUTE FUNCTION social_post_schedule_revision();
+-- Frozen publication identity never changes. Only its initially absent exact
+-- export tuple can be filled once by the targeted readiness continuation.
+CREATE FUNCTION frozen_publication_state_immutable() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+ IF (to_jsonb(NEW)-ARRAY['storageKey','sizeBytes','durationSec','mediaReadyAt']) IS DISTINCT FROM
+    (to_jsonb(OLD)-ARRAY['storageKey','sizeBytes','durationSec','mediaReadyAt']) THEN
+  RAISE EXCEPTION 'frozen publication intent is immutable' USING ERRCODE='23514';
+ END IF;
+ IF (NEW."storageKey",NEW."sizeBytes",NEW."durationSec",NEW."mediaReadyAt") IS DISTINCT FROM
+    (OLD."storageKey",OLD."sizeBytes",OLD."durationSec",OLD."mediaReadyAt") AND NOT (
+    OLD."storageKey" IS NULL AND OLD."sizeBytes" IS NULL AND OLD."durationSec" IS NULL AND OLD."mediaReadyAt" IS NULL
+    AND NEW."storageKey" IS NOT NULL AND NEW."sizeBytes">0 AND NEW."durationSec">0 AND NEW."mediaReadyAt" IS NOT NULL) THEN
+  RAISE EXCEPTION 'frozen publication media is already sealed' USING ERRCODE='23514';
+ END IF;
+ RETURN NEW;
+END; $$;
+CREATE TRIGGER "FrozenPublicationState_immutable" BEFORE UPDATE ON "FrozenPublicationState"
+ FOR EACH ROW EXECUTE FUNCTION frozen_publication_state_immutable();
+
 ALTER TABLE "PublicationManualDecision" ADD CONSTRAINT "PublicationManualDecision_execution_audit" CHECK (
  "executionBudgetAudit" IS NULL OR (jsonb_typeof("executionBudgetAudit")='object' AND octet_length("executionBudgetAudit"::text)<=1024)
 );
