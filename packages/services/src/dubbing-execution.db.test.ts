@@ -9,6 +9,8 @@ import { reserveGenerationUsage } from "./generated-media-usage-ledger";
 import { WorkflowRunLifecycle } from "./workflow-run-lifecycle";
 import { withServiceEnvironment } from "./runtime-environment";
 import { DubbingExecution, createDubbingExecution } from "./dubbing-execution";
+import { restoreDubWithinTransaction, restoreDubbingPage, recoverDubbingWakesPage } from "./dubbing-recovery";
+import { takeExecutionDispatchIds } from "./execution-dispatch-runtime";
 import { createExecutionStorage } from "./execution-storage";
 
 const url = process.env.SERVERLESS_TEST_DATABASE_URL;
@@ -51,6 +53,36 @@ suite("Native Dubbing execution", () => {
       } } });
     return { user, workspace, project, run, clip, render, dub, request, reference, domain, objects, registrations };
   }
+  test("quiesced Dub restore changes metadata only, preserves paid evidence and accepted budget, and dispatches only in the final phase", async () => {
+    const f = await fixture(), others = [await fixture(), await fixture()], rollback = Error("rollback_dub_restore");
+    try {
+      await withServiceEnvironment({}, () => f.domain.prepareExecution(f.reference));
+      const paidIntentId = randomUUID(), reservation = await db.generatedMediaUsageReservation.findUniqueOrThrow({ where: { jobId: f.dub.id } });
+      await db.clipDub.update({ where: { id: f.dub.id }, data: { translationIntentArtifactId: paidIntentId } });
+      await expect(db.$transaction(async tx => {
+        const epoch = await tx.executionEpoch.findUniqueOrThrow({ where: { id: 1 } });
+        const fence = await tx.executionEpoch.update({ where: { id: 1 }, data: { epoch: epoch.epoch + 1, admissionOpen: false, changedAt: new Date() } });
+        const proof = { snapshotEpoch: epoch.epoch, fenceAboveEpoch: epoch.epoch, deploymentEpoch: fence.epoch, cutoff: fence.changedAt };
+        await tx.workflowRun.updateMany({ where: { id: { in: [f.run.id, ...others.map(value => value.run.id)] } }, data: { deploymentEpoch: fence.epoch, generation: { increment: 1 }, status: "queued", attemptCount: 2, attemptId: null, leaseOwner: null, leaseExpiresAt: null } });
+        await expect(restoreDubWithinTransaction(tx, f.dub.id, proof)).rejects.toThrow("dubbing_restore_owner_not_revoked");
+        await tx.executionAttempt.updateMany({ where: { dispatch: { subjectId: f.run.id } }, data: { status: "superseded", revokedAt: fence.changedAt, finishedAt: fence.changedAt } });
+        const count = await tx.executionDispatch.count({ where: { deploymentEpoch: fence.epoch } });
+        expect(await restoreDubWithinTransaction(tx, f.dub.id, proof)).toEqual({ dispatchIds: [] });
+        const first = await restoreDubbingPage(tx, { ...proof, after: null, limit: 1 });expect(first.processed).toBe(1);expect(first.next).not.toBeNull();expect(first.dispatchIds).toEqual([]);
+        const last = await restoreDubbingPage(tx, { ...proof, after: first.next, limit: 1 });expect(last.processed).toBe(1);expect(last.next).toBeNull();expect(last.dispatchIds).toEqual([]);
+        expect(await tx.executionDispatch.count({ where: { deploymentEpoch: fence.epoch } })).toBe(count);expect(takeExecutionDispatchIds(tx)).toEqual([]);
+        expect(await tx.clipDub.findUniqueOrThrow({ where: { id: f.dub.id } })).toMatchObject({ status: "queued", deploymentEpoch: fence.epoch, translationIntentArtifactId: paidIntentId, translationResultArtifactId: null,
+          requestHash: f.dub.requestHash, frozenRequest: f.request, inputStorageKey: null, inputBindingHash: null, operationDeadlineAt: f.dub.operationDeadlineAt });
+        expect(await tx.workflowRun.findUniqueOrThrow({ where: { id: f.run.id } })).toMatchObject({ attemptCount: 2, attemptId: null, operationDeadlineAt: f.dub.operationDeadlineAt });
+        expect(await tx.generatedMediaUsageReservation.findUniqueOrThrow({ where: { jobId: f.dub.id } })).toEqual(reservation);
+        const final = await recoverDubbingWakesPage(tx, { deploymentEpoch: fence.epoch, cutoff: proof.cutoff, after: null, limit: 3 });expect(final.processed).toBe(3);expect(final.dispatchIds).toHaveLength(6);
+        expect(await tx.executionAttempt.count({ where: { dispatch: { subjectId: f.run.id } } })).toBe(1);
+        await expect(restoreDubWithinTransaction(tx, f.dub.id, { ...proof, cutoff: new Date(proof.cutoff.getTime() + 1) })).rejects.toThrow("dubbing_restore_fence_invalid");
+        throw rollback;
+      })).rejects.toBe(rollback);
+      expect((await db.executionEpoch.findUniqueOrThrow({ where: { id: 1 } })).epoch).toBe(f.reference.deploymentEpoch);
+    } finally { for (const value of [f, ...others]) { await db.executionAttempt.deleteMany({ where: { dispatch: { subjectId: value.run.id } } });await db.executionDispatch.deleteMany({ where: { subjectId: value.run.id } });await db.workspace.delete({ where: { id: value.workspace.id } });await db.user.delete({ where: { id: value.user.id } }); } }
+  });
   test("one sealed request and absolute watchdog prepare one unowned native attempt without charging provider work", async () => {
     const f = await fixture();
     try {
