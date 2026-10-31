@@ -1896,7 +1896,10 @@ export class WorkflowRunLifecycle {
   }
 
   async markDubProcessing(attempt: WorkflowAttemptRef, dubId: string) {
-    return this.transaction(async (tx) => {
+    return this.transaction(tx => this.markDubProcessingWithinTransaction(tx, attempt, dubId));
+  }
+
+  async markDubProcessingWithinTransaction(tx: TransactionClient, attempt: WorkflowAttemptRef, dubId: string) {
       await this.fenceChildMutation(tx, attempt, "dubbing");
       // No provider call starts without the dub's own live count.
       const usage = await tx.generatedMediaUsageReservation.findUnique({
@@ -1924,7 +1927,6 @@ export class WorkflowRunLifecycle {
           errorCode: null,
         },
       });
-    });
   }
 
   async completeDub(
@@ -1932,7 +1934,10 @@ export class WorkflowRunLifecycle {
     dubId: string,
     data: CompletedDubArtifactInput,
   ) {
-    return this.transaction(async (tx) => {
+    return this.transaction(tx => this.completeDubWithinTransaction(tx, attempt, dubId, data));
+  }
+
+  async completeDubWithinTransaction(tx: TransactionClient, attempt: WorkflowAttemptRef, dubId: string, data: CompletedDubArtifactInput) {
       await this.fenceChildMutation(tx, attempt, "dubbing");
       const completed = await tx.clipDub.updateMany({
         where: {
@@ -1948,7 +1953,6 @@ export class WorkflowRunLifecycle {
         await finalizeGenerationUsage(tx, { kind: "dub", jobId: dubId, units: 1 });
       }
       return completed;
-    });
   }
 
   async failDub(

@@ -1,4 +1,4 @@
-import { buildDubTranscriptText as buildTranscriptText, shouldTranslateDub as shouldTranslate, dubLanguageLabel as targetLanguageLabel } from "@narriflow/services/dubbing-policy";
+import { buildDubTranscriptText as buildTranscriptText, shouldTranslateDub as shouldTranslate, dubTranslationRequestBody, dubSpeechRequestBody } from "@narriflow/services/dubbing-policy";
 import { downloadObjectToFile, putFileFromPath } from "../r2-file-transfer";
 import { probeDubbedMediaDuration, muxDubbedVideo, } from "../../../media/src/tasks/dub-mix";
 export { probeDubbedMediaDuration, muxDubbedVideo } from "../../../media/src/tasks/dub-mix";
@@ -85,9 +85,7 @@ function extractResponseText(response: unknown): string | null {
 
 async function callOpenAIText(params: {
   apiKey: string;
-  model: string;
-  systemPrompt: string;
-  userPrompt: string;
+  body: ReturnType<typeof dubTranslationRequestBody>;
 }) {
   const response = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
@@ -95,13 +93,7 @@ async function callOpenAIText(params: {
       Authorization: `Bearer ${params.apiKey}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({
-      model: params.model,
-      input: [
-        { role: "system", content: params.systemPrompt },
-        { role: "user", content: params.userPrompt },
-      ],
-    }),
+    body: JSON.stringify(params.body),
   });
 
   const payload = (await response.json().catch(() => null)) as
@@ -142,18 +134,7 @@ async function translateForDub(params: {
     process.env.OPENAI_CONTENT_MODEL ??
     process.env.OPENAI_CLIP_MODEL ??
     "gpt-5.4-mini";
-  const target = targetLanguageLabel(params.targetLanguageCode);
-  return callOpenAIText({
-    apiKey: params.apiKey,
-    model,
-    systemPrompt:
-      "Translate creator video transcripts for natural voiceover dubbing. Preserve meaning, names, numbers, and tone. Return only the translated script with no markdown or commentary.",
-    userPrompt: `Source language: ${params.sourceLanguageCode ?? "auto"}
-Target language: ${target} (${params.targetLanguageCode})
-
-SCRIPT:
-${params.script}`,
-  });
+  return callOpenAIText({ apiKey: params.apiKey, body: dubTranslationRequestBody({ ...params, translationModel: model }) });
 }
 
 async function synthesizeSpeech(params: {
@@ -169,12 +150,7 @@ async function synthesizeSpeech(params: {
       Authorization: `Bearer ${params.apiKey}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({
-      model: params.model,
-      voice: params.voice,
-      input: params.input,
-      response_format: "mp3",
-    }),
+    body: JSON.stringify(dubSpeechRequestBody(params, params.input)),
   });
 
   if (!response.ok) {
