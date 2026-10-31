@@ -830,6 +830,7 @@ export async function putObjectBytes(params: {
       Body: params.bytes,
       ContentLength: params.bytes.byteLength,
       ContentType: params.contentType,
+      IfNoneMatch: params.ifNoneMatch,
       Metadata: sanitizeObjectMetadata(params.metadata),
     }),
     { abortSignal: params.signal },
