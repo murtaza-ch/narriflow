@@ -458,6 +458,10 @@
       "types": "./src/modal-bridge.ts",
       "default": "./src/modal-bridge.ts"
     },
+    "./modal-dispatch": {
+      "types": "./src/modal-dispatch.ts",
+      "default": "./src/modal-dispatch.ts"
+    },
     "./language-probe-contract": {
       "types": "./src/language-probe-contract.ts",
       "default": "./src/language-probe-contract.ts"

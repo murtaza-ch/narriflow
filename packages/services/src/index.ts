@@ -662,6 +662,7 @@ export * from "./execution-transfer";
 export * from "./native-validation-execution";
 
 export * from "./modal-bridge";
+export * from "./modal-dispatch";
 
 export * from "./language-probe-contract";
 

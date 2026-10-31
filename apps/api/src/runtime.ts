@@ -25,6 +25,8 @@ import { createDeveloperRouteDeps } from "./domains/developer/runtime";
 import { createDeveloperRoutes } from "./domains/developer/routes";
 import { createExportsRouteDeps } from "./domains/exports/runtime";
 import { createExportsRoutes } from "./domains/exports/routes";
+import { createExecutionRoutes } from "./domains/execution/routes";
+import { createWorkerExecutionDependencies } from "./domains/execution/runtime";
 import { createIngestRouteDeps } from "./domains/ingest/runtime";
 import { createIngestRoutes } from "./domains/ingest/routes";
 import { createIntegrationsRouteDeps, createMcpTransportDeps } from "./domains/integrations/runtime";
@@ -115,7 +117,7 @@ export function createExternalRoutes(
   config: ApiConfig,
   clerkClient?: ReturnType<typeof createServerClerkClient>,
   runInRequestScope?: WorkerInvocation,
-): Pick<ApiAppDependencies, "webhooks" | "rest" | "mcp" | "progressSocket"> {
+): Pick<ApiAppDependencies, "webhooks" | "rest" | "mcp" | "progressSocket" | "execution"> {
   return {
     webhooks: {
       billing: createBillingWebhookRoutes(createBillingWebhookDeps()),
@@ -124,6 +126,7 @@ export function createExternalRoutes(
       projects: createProjectsWebhookRoutes(createProjectsWebhookDeps()),
     },
     progressSocket: createProgressSocketRoutes(createProgressSocketDeps(config)),
+    execution: createExecutionRoutes(createWorkerExecutionDependencies()),
     rest: createRestRoutes(createRestRouteDeps(config)),
     mcp: createMcpTransportRoutes(createMcpTransportDeps(config, clerkClient, runInRequestScope)),
   };

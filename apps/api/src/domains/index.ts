@@ -6,6 +6,7 @@ import { brandAdmission } from "./brand/admission";
 import { clipsAdmission } from "./clips/admission";
 import { developerAdmission } from "./developer/admission";
 import { exportsAdmission } from "./exports/admission";
+import { executionAdmission } from "./execution/admission";
 import { ingestAdmission } from "./ingest/admission";
 import { integrationsAdmission } from "./integrations/admission";
 import { libraryAdmission } from "./library/admission";
@@ -87,5 +88,6 @@ export const ADMISSION_TABLES = {
   integrations: integrationsAdmission,
   progress: progressAdmission,
   progressSocket: progressSocketAdmission,
+  execution: executionAdmission,
   rest: restAdmission,
 } as const satisfies Record<string, AdmissionTable>;

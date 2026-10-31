@@ -2,6 +2,10 @@ import { getPrismaClient } from "@narriflow/db/client";
 import { getExecutionDispatch } from "@narriflow/services/execution-dispatch-runtime";
 import { ExecutionDispatchError, type ExecutionDispatchConfirmation, type ExecutionDispatchScheduler } from "@narriflow/services/execution-dispatch";
 import { deliverProgressDispatch } from "@narriflow/services/progress-outbox";
+import { createModalDispatch } from "@narriflow/services/modal-dispatch";
+import { createModalBridgeClient } from "@narriflow/services/modal-bridge";
+import { readServiceEnvironment } from "@narriflow/services/runtime-environment";
+import { executionKeyRing } from "../execution-keys";
 import { executionDispatchReferenceSchema, type ExecutionDispatchReference } from "@narriflow/validators/execution";
 import type { ApiWorkerBindings } from "../worker-bindings";
 import { assertMetadataBound, workflowDispatchEventSchema, WORKFLOW_DISPATCH_EVENT } from "./protocol";
@@ -42,6 +46,15 @@ export function createWorkerExecutionScheduler(bindings: ApiWorkerBindings): Exe
           await registerProgressContinuations(bindings, [reference.dispatchId]);
           throw cause;
         }
+      }
+      if (reference.kind === "modal_execution") {
+        if (delivery.mode !== "registration") throw new ExecutionDispatchError("invalid_dispatch");
+        const database = getPrismaClient(), environment = readServiceEnvironment();
+        const keyId = environment.MODAL_BRIDGE_KEY_ID, origin = environment.MODAL_BRIDGE_ORIGIN;
+        if (!database || !keyId || !origin) throw new ExecutionDispatchError("scheduler_unavailable");
+        const key = executionKeyRing(environment.MODAL_BRIDGE_KEYS_JSON).get(keyId);
+        if (!key) throw new ExecutionDispatchError("scheduler_unavailable");
+        return createModalDispatch(database, createModalBridgeClient({ origin, keyId, key })).spawn(reference);
       }
       const binding = reference.kind === "import_pipeline" ? bindings.IMPORT_PIPELINE
         : reference.kind === "render_run" ? bindings.RENDER_RUN
