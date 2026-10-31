@@ -1,6 +1,6 @@
 import { deriveCaptionCues, formatSubtitles, type SubtitleFormat } from "@narriflow/composition-plan";
 import { resolveClipRenderTiming, type EditorDocument } from "@narriflow/validators";
-import { decodeFrozenClipEditorDocument } from "./clip-editor-document-persistence";
+import { decodeFrozenClipEditorDocument } from "./clip-editor-document-codec";
 
 export interface ClipExportSubtitleFile {
   format: SubtitleFormat;

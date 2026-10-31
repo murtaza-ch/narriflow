@@ -2,10 +2,11 @@ import { createAssignedArtifactStorage } from "../../src/domains/execution/artif
 import { openPublicationPayload,derivePublicationPurposeKey,publicationCheckpointBindingHash } from "@narriflow/services/publication-checkpoint-blob";
 import { linkedInInstructionBlobSchema } from "@narriflow/validators/publication-execution";
 export const PUBLICATION_MEMORY_FIXTURE={key:"__serverless-cutover-gates/20261031/publication/instructions-16MiB.bin",artifactId:"00000000-0000-4000-8000-000000000004",master:"public-synthetic-publication-memory-fixture-only",scope:{deploymentEpoch:1,socialPostId:"00000000-0000-4000-8000-000000000001",attemptId:"00000000-0000-4000-8000-000000000002",claimId:"00000000-0000-4000-8000-000000000003",bindingHash:"a".repeat(64)}};
-const isolateId=crypto.randomUUID();
+let isolateId:string|undefined;
 /** Protected platform-gate host calls only this fixed, credential-free fixture.
  * Two reads/decryptions intentionally share a single actual Cloudflare isolate. */
 export async function probePublicationMemory(bucket:R2Bucket,copies:1|2){
+ isolateId??=crypto.randomUUID();
  if(copies!==1&&copies!==2)throw Error("publication_probe_invalid");
  const fixture=PUBLICATION_MEMORY_FIXTURE,head=await bucket.head(fixture.key);
  if(!head||head.size!==16*1024**2||!head.customMetadata?.["fixture-sha256"])throw Error("publication_probe_fixture_missing");

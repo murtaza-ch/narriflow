@@ -164,6 +164,17 @@ describe("disk admission", () => {
     expect(facts).toEqual({ freeBytes: 20, volumeBytes: 200 });
   });
 
+  test("virtual filesystems with large capacity remain readable without relaxing the configured scratch cap", async () => {
+    // Actual Modal Sandbox statfs returns -1 in Bun's numeric path, while its
+    // bigint path reports these positive block counts from the same filesystem.
+    const virtualStatfs = async (_path: string, options?: { bigint?: boolean }) => options?.bigint
+      ? { bsize: 4096n, bavail: 2251799813685247n, blocks: 2251799813685247n }
+      : { bsize: 4096, bavail: -1, blocks: -1 };
+    const facts = await readDiskFacts("/virtual", virtualStatfs);
+    expect(judgeAdmission(config, facts, 0, 16 * MIB)).toBe("admit");
+    expect(judgeAdmission(config, facts, 0, 9 * GIB)).toBe("never_fits");
+  });
+
   test("the output estimate has a floor and grows with duration", () => {
     expect(estimateRenderOutputBytes(0)).toBe(16 * MIB);
     expect(estimateRenderOutputBytes(60)).toBe(120 * MIB);

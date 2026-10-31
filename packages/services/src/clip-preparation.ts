@@ -11,6 +11,7 @@ import { accessibleProjectWhere } from "./project-access";
 import { lockWorkspaceUsage } from "./processing-usage";
 import { uuidV5 } from "./uuid-v5";
 import { admitMediaCleanupObligations } from "./media-cleanup";
+import { lockPlannedExecutionObject } from "./execution-object-cleanup";
 import { clipPreparationTiming, clipPreparationPreviewWindow, resolveDisplayGeometry } from "./clip-preparation-policy";
 import type { ExecutorArtifactCommit, ExecutorDomainLock, ExecutorMutationContext, ExecutorMutationResult, ExecutorFailureInput, ExecutorReleaseInput, ExecutorProgressInput, ExecutorExpiryObservation, ExecutorExpiryResult } from "./executor-domain-control";
 import { derivePeaksStorageKey } from "./clip-preview-storage";
@@ -154,6 +155,9 @@ export class ClipPreparationService {
         if (fresh.input.bindingHash !== prepared.input.bindingHash || fresh.input.preparationId !== prepared.input.preparationId) throw new ClipPreparationError("clip_preparation_input_invalid");
         const deadline = new Date(Math.min(fresh.clock.getTime() + deadlineMs, fresh.groupDeadlineAt?.getTime() ?? Infinity));
         if (deadline <= fresh.clock) throw new ClipPreparationError("clip_preparation_input_invalid");
+        const existing = await tx.clipPreparation.findUnique({ where: { id: fresh.input.preparationId } });
+        if (existing) return this.admission(tx, existing, fresh.groupId);
+        await lockPlannedExecutionObject(tx, { origin: "clip_preparation_input", storageKey: key });
         const row = await tx.clipPreparation.upsert({ where: { id: fresh.input.preparationId }, update: {}, create: {
           id: fresh.input.preparationId, projectId: fresh.input.projectId, clipId: fresh.input.clipId, sourceRevision: fresh.input.sourceRevision, editorRevision: fresh.input.editorRevision,
           bindingHash: fresh.input.bindingHash, engineHash: fresh.input.engineHash, inputHash: digest(["clip-preparation-v1", fresh.input.preparationId, fresh.input.bindingHash]),

@@ -432,7 +432,7 @@ export class AudioAssetService {
       where: {
         id: assetId,
         deletedAt: null,
-        OR: [{ userId: null }, workspaceId ? { workspaceId } : { userId: ownerUserId }],
+        OR: [{ userId: null, workspaceId: null }, workspaceId ? { workspaceId } : { userId: ownerUserId, workspaceId: null }],
       },
     });
     if (!row) return null;

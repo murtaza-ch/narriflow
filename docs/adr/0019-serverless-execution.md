@@ -57,6 +57,15 @@ Clip Preparation is deduplicated by Clip, immutable source/editor/engine binding
 
 Server-side capsule writes have an exact-key cleanup obligation before PUT. Tentative writes use unique keys, so a later admission cannot revive a key already granted to a cleanup owner. Only one immutable input tuple is adopted by the deduplicated preparation row; losing writes remain known cleanup work. Referenced inputs retain their cleanup obligation for a future check, rather than completing the obligation while the reference exists. Cleanup scheduling and grant-aware deletion remain separate domain work.
 
+Selection inputs and results also use unique nonce destinations. Their adoption
+locks the planned exact-key cleanup row; a claimed or completed deletion target
+cannot become a visible reference. Successful sibling results stay held by their
+immutable row references. Object cleanup runs in TypeScript on the Worker through
+fixed-origin R2 DeleteObject, with no database lock across HTTP. It needs no native
+process, so there is no additional Modal function or executor signature action.
+Only an actual deletion acknowledgement completes an obligation; a reference hold
+reschedules a future check. This replaces the earlier lean-Modal cleanup destination.
+
 ## Progress and external delivery
 
 ProjectProgress uses hibernating WebSockets with a one-use 30-second connect ticket and a 60-second maximum subscription. Scope, Origin, actor, audience, nonce, expiry and cursor are persisted in the socket attachment. The DO consumes the nonce before upgrade, uses one earliest-expiry alarm and receives immediate membership/restriction/deletion revocations. Subscribe-buffer-replay merges committed events through a high-water mark, deduplicates sequence numbers, catches gaps and resets beyond retention. A healthy stream and idle local-agent socket perform zero SQL polling.

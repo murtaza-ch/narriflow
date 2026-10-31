@@ -4,6 +4,8 @@ import { appendExecutionDispatch, executionDispatchIdentity, readExecutionDispat
 import { lockWorkspaceUsage } from "./processing-usage";
 import { accessibleProjectWhere } from "./project-access";
 import { workflowRunExecutionInputHash } from "./workflow-execution-input";
+import { admitMediaCleanupObligations } from "./media-cleanup";
+import { lockPlannedExecutionObject } from "./execution-object-cleanup";
 
 type Tx = Prisma.TransactionClient;
 const CAPACITY_LOCK = "provider_capacity:openai:clip_selection";
@@ -204,9 +206,9 @@ export async function cancelClipSelectionWindowsWithinTransaction(tx: Tx, input:
   return active.length ? wakeHead(tx, input.deploymentEpoch, input.cause, input.now) : [];
 }
 
-export function clipSelectionWindowResultKey(attempt: ClipSelectionWindowAttempt, sha: string): string {
-  if (!uuid(attempt.token) || !uuid(attempt.owner) || !/^[a-f0-9]{64}$/.test(sha)) throw new Error("Invalid selection result identity");
-  return `execution/${attempt.reference.deploymentEpoch}/clip_selection_window/${attempt.reference.subject.id}/${attempt.reference.generation}/${attempt.token}/${attempt.owner}/selection_window/${sha}.json`;
+export function clipSelectionWindowResultKey(attempt: ClipSelectionWindowAttempt, sha: string, nonce: string): string {
+  if (!uuid(attempt.token) || !uuid(attempt.owner) || !uuid(nonce) || !/^[a-f0-9]{64}$/.test(sha)) throw new Error("Invalid selection result identity");
+  return `execution/${attempt.reference.deploymentEpoch}/clip_selection_window/${attempt.reference.subject.id}/${attempt.reference.generation}/${attempt.token}/${attempt.owner}/selection_window/${nonce}/${sha}.json`;
 }
 
 /** Short authoritative commands. Provider and storage I/O never run under locks. */
@@ -308,8 +310,23 @@ export function createClipSelectionLifecycle(config: { database: PrismaClient; m
         return finish(tx, state.row, state.now, { failureCode: "selection_input_invalid" });
       });
     },
+    async planResultWrite(attempt: ClipSelectionWindowAttempt, sha256: string): Promise<{ storageKey: string }> {
+      const storageKey = clipSelectionWindowResultKey(attempt, sha256, crypto.randomUUID());
+      return transaction(async tx => {
+        const state = await lockClipSelectionWindow(tx, attempt.reference, true);
+        if (!state?.current || state.row.status !== "running" || state.row.attemptToken !== attempt.token || state.row.executorOwner !== attempt.owner) throw new Error("Selection owner lost");
+        await tx.$queryRaw`SELECT "attemptToken" FROM "ExecutionAttempt" WHERE "attemptToken" = ${attempt.token}::uuid FOR UPDATE`;
+        const execution = await tx.executionAttempt.findUnique({ where: { attemptToken: attempt.token } });
+        const now = await clock(tx);
+        if (!execution || execution.owner !== attempt.owner || execution.status !== "running" || execution.revokedAt || !execution.processStartedAt ||
+          !execution.leaseExpiresAt || execution.leaseExpiresAt <= now || execution.operationDeadlineAt <= now || state.row.leaseExpiresAt! <= now || state.row.operationDeadlineAt <= now) throw new Error("Selection owner lost");
+        await admitMediaCleanupObligations(tx.mediaCleanupObligation, [{ origin: "selection_execution", cleanupClass: "execution_input", projectId: state.row.projectId,
+          objectKey: storageKey, notBefore: new Date(state.row.operationDeadlineAt.getTime() + 120_000) }]);
+        return { storageKey };
+      });
+    },
     async complete(attempt: ClipSelectionWindowAttempt, result: ClipSelectionObjectReference & { tokensUsed: number; providerRequestId: string | null }): Promise<ClipSelectionWindowSettlement> {
-      if (result.storageKey !== clipSelectionWindowResultKey(attempt, result.sha256) || !/^"[^\r\n"]+"$/.test(result.etag) || !Number.isSafeInteger(result.byteLength) || result.byteLength < 1 || result.byteLength > 1_048_576 ||
+      if (result.storageKey !== clipSelectionWindowResultKey(attempt, result.sha256, result.storageKey.split("/").at(-2) ?? "") || !/^"[^\r\n"]+"$/.test(result.etag) || !Number.isSafeInteger(result.byteLength) || result.byteLength < 1 || result.byteLength > 1_048_576 ||
         !Number.isSafeInteger(result.tokensUsed) || result.tokensUsed < 0 || (result.providerRequestId !== null && result.providerRequestId.length > 160)) throw new Error("Invalid selection result reference");
       return transaction(async tx => {
         const state = await lockClipSelectionWindow(tx, attempt.reference, true);
@@ -326,6 +343,7 @@ export function createClipSelectionLifecycle(config: { database: PrismaClient; m
         await tx.$queryRaw`SELECT "attemptToken" FROM "ExecutionAttempt" WHERE "attemptToken" = ${attempt.token}::uuid FOR UPDATE`;
         const commitAt = await clock(tx);
         if (row.leaseExpiresAt! <= commitAt || row.operationDeadlineAt <= commitAt) return { kind: "superseded", dispatchIds: [await leaseWake(tx, row, attempt.reference)] };
+        await lockPlannedExecutionObject(tx, { origin: "selection_execution", storageKey: result.storageKey });
         const closed = await tx.executionAttempt.updateMany({ where: { attemptToken: attempt.token, owner: attempt.owner, status: "running", revokedAt: null, leaseExpiresAt: { gt: commitAt }, operationDeadlineAt: { gt: commitAt } },
           data: { status: "completed", finishedAt: commitAt } });
         if (closed.count !== 1) return { kind: "superseded", dispatchIds: [] };

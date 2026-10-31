@@ -14,6 +14,10 @@ import { executionInputRetainUntil } from "./media-cleanup";
 import { createExecutorControl } from "./executor-control";
 import type { ExecutionCommand } from "@narriflow/validators/execution";
 import type { ClipPreparationResult } from "@narriflow/validators/clip-preparation";
+import { clipPreparationEngineHash } from "./clip-preparation-policy";
+import { RenderGroupExecutionService, createRenderGroupExecution } from "./render-group-execution";
+import { createRenderInputSnapshot } from "./render-input-snapshot";
+import { createExecutionStorage } from "./execution-storage";
 
 const url = process.env.SERVERLESS_TEST_DATABASE_URL;
 const suite = process.env.ALLOW_SERVERLESS_DB_TESTS === "1" && url ? describe : describe.skip;
@@ -74,7 +78,7 @@ suite("Clip Preparation authority and publication", () => {
     let writes = 0;
     let afterWrite: (() => Promise<void>) | undefined;
     const confirmed: string[] = [];
-    const service = new ClipPreparationService(db, { toolchainFingerprint: "e".repeat(64), engineHash: "f".repeat(64), register: async (ids: readonly string[]) => {
+    const service = new ClipPreparationService(db, { toolchainFingerprint: "e".repeat(64), engineHash: await clipPreparationEngineHash("e".repeat(64)), register: async (ids: readonly string[]) => {
       expect(await db.executionDispatch.count({ where: { id: { in: [...ids] } } })).toBe(ids.length);
       confirmed.push(...ids);
     }, storage: { write: async (key: string, bytes: Uint8Array) => {
@@ -150,6 +154,17 @@ suite("Clip Preparation authority and publication", () => {
     const writes = f.writes();
     expect(await f.service.admitForGroup(f.references[0]!)).toEqual(a);
     expect(f.writes()).toBe(writes);
+  });
+  test("a preparation capsule already claimed for deletion cannot be adopted and a retry uses a new key", async () => {
+    const f = await fixture();
+    f.afterWrite(async () => { await db.mediaCleanupObligation.updateMany({ where: { projectId: f.project.id, origin: "clip_preparation_input" }, data: { claimId: crypto.randomUUID(), claimExpiresAt: new Date(Date.now() + 60000) } }); });
+    await expect(f.service.admitForGroup(f.references[0]!)).rejects.toMatchObject({ code: "execution_object_deletion_admitted" });
+    expect(await db.clipPreparation.count({ where: { clipId: f.clip.id } })).toBe(0);
+    f.afterWrite(async () => {});
+    const admitted = await f.service.admitForGroup(f.references[0]!);
+    expect(f.objects.size).toBe(2);
+    const row = await db.clipPreparation.findUniqueOrThrow({ where: { id: admitted.preparationId } });
+    expect(row.inputStorageKey).not.toBe([...f.objects.keys()][0]);
   });
 
   test("preparation provenance cannot pair another Project with this Clip", async () => {
@@ -317,5 +332,137 @@ suite("Clip Preparation authority and publication", () => {
     expect(await db.executionDispatch.count({ where: { subjectId: { in: f.references.map(reference => reference.subject.id) }, wakeKind: "preparation_outcome" } })).toBe(0);
     expect(await execution.send(command, request)).toMatchObject({ disposition: "committed" });
     expect(await db.clipPreparation.findUnique({ where: { id: execution.admitted.preparationId } })).toMatchObject({ status: "completed", chargedAttempts: 1 });
+  });
+
+  function renderService(f: Awaited<ReturnType<typeof fixture>>) {
+    const storage = { read: async (reference: { storageKey: string }) => {
+      const bytes = f.objects.get(reference.storageKey); if (!bytes) throw new Error("Missing immutable fixture input"); return bytes.slice();
+    }, write: async (key: string, bytes: Uint8Array) => {
+      f.objects.set(key, bytes.slice()); return { etag: '"render-input"', byteLength: bytes.byteLength, sha256: createHash("sha256").update(bytes).digest("hex") };
+    } };
+    return new RenderGroupExecutionService(db, { toolchainFingerprint: "e".repeat(64), preparation: f.service, inputStorage: storage,
+      snapshot: createRenderInputSnapshot(db, { object: async () => { throw new Error("No media assets requested"); }, pexelsConfigured: false, searchStock: async () => { throw new Error("Stock search disabled"); } }),
+      register: async ids => { expect(await db.executionDispatch.count({ where: { id: { in: [...ids] } } })).toBe(ids.length); } });
+  }
+
+  test("a failed preparation input PUT leaves the group watchdog durable and expires without a generic render or charge", async () => {
+    const f = await fixture(), reference = f.references[0]!, service = renderService(f);
+    const absolute = new Date(Date.now()+500);
+    await db.renderGroup.update({ where: { id: reference.subject.id }, data: { operationDeadlineAt: absolute } });
+    f.afterWrite(async () => { throw new Error("injected_preparation_put_failure"); });
+    await expect(service.prepareExecution(reference)).rejects.toThrow("injected_preparation_put_failure");
+    const watchdog = await db.executionDispatch.findFirstOrThrow({ where: { subjectId: reference.subject.id, kind: "operation_driver", deadlineKind: "operation" } });
+    expect(watchdog.observedDeadlineAt).toEqual(absolute);
+    expect(await db.clipPreparation.count({ where: { clipId: f.clip.id } })).toBe(0);
+    expect(await db.executionAttempt.count({ where: { dispatch: { subjectId: reference.subject.id } } })).toBe(0);
+    expect(await db.executionDispatch.count({ where: { subjectId: reference.subject.id, kind: "modal_execution" } })).toBe(0);
+    const deadlineRef = (await readExecutionDispatch(db, watchdog.id))!.reference;
+    expect((await service.domain.expirePreparationDeadline(deadlineRef, { kind: "operation", observedDeadlineAt: absolute })).kind).toBe("sleep");
+    await Bun.sleep(Math.max(0,absolute.getTime()-Date.now()+25));
+    expect((await service.domain.expirePreparationDeadline(deadlineRef, { kind: "operation", observedDeadlineAt: absolute })).kind).toBe("expired");
+    expect(await db.renderGroup.findUniqueOrThrow({ where: { id: reference.subject.id } })).toMatchObject({ status: "failed", chargedAttemptCount: 0, attemptToken: null, preparationId: null, inputStorageKey: null });
+    expect(await db.renderGroupExecution.count({ where: { groupId: reference.subject.id } })).toBe(0);
+    expect(await db.workflowRun.findUniqueOrThrow({ where: { id: f.run.id } })).toMatchObject({ status: "waiting", attemptId: null, leaseOwner: null, attemptCount: 0 });
+  });
+
+  test("concurrent ready group commands adopt one capsule and admit one native generation without a coordinator lease", async () => {
+    const f = await fixture(), execution = await native(f);
+    await execution.send(execution.commit(execution.preview)); await execution.send(execution.commit(execution.peaks)); await execution.send(execution.commit(execution.manifest));
+    await db.workspace.update({ where: { id: f.workspace.id }, data: { pricingTier: "business" } });
+    const reference = f.references[0]!, service = renderService(f);
+    const results = await Promise.all([service.prepareExecution(reference),service.prepareExecution(reference),service.prepareExecution(reference)]);
+    expect(results.every(result => result.kind === "waiting")).toBe(true);
+    const waiting = results[0]; if (waiting?.kind !== "waiting") throw new Error("Expected native admission");
+    expect(new Set(results.map(result => result.kind === "waiting" ? result.deadline.attemptToken : null)).size).toBe(1);
+    const group = await db.renderGroup.findUniqueOrThrow({ where: { id: reference.subject.id } });
+    expect(group).toMatchObject({ status: "queued", attemptToken: null, leaseOwner: null, chargedAttemptCount: 0, preparationId: execution.admitted.preparationId });
+    const attempts = await db.executionAttempt.findMany({ where: { dispatch: { subjectId: group.id, kind: "modal_execution" } } });
+    expect(attempts).toHaveLength(1);
+    expect(attempts[0]).toMatchObject({ owner: null, status: "admitted", inputStorageKey: group.inputStorageKey, inputEtag: group.inputEtag, operationDeadlineAt: group.operationDeadlineAt });
+    const frozen = await service.loadInput(attempts[0]!);
+    expect(frozen.prepared.result).toEqual(execution.result);
+    expect(frozen.workspace.pricingTier).toBe("business");
+    expect(frozen.watermark).toBe(true);
+    expect(frozen.variants).toHaveLength(1);
+    expect(frozen.preparation.document).toEqual((await decodeClipPreparationInput(f.objects.get((await db.clipPreparation.findUniqueOrThrow({ where: { id: group.preparationId! } })).inputStorageKey)!,
+      await f.service.readReadyForGroup(reference).then(ready => ready!.input))).document);
+    expect((await executionInputRetainUntil(db, group.inputStorageKey!))!.getTime()).toBeGreaterThan(group.operationDeadlineAt!.getTime());
+    const writes = f.objects.size;
+    expect(await service.prepareExecution(reference)).toEqual(results[0]);
+    expect(f.objects.size).toBe(writes);
+    expect(await db.workflowRun.findUniqueOrThrow({ where: { id: f.run.id } })).toMatchObject({ status: "waiting", attemptId: null, leaseOwner: null, attemptCount: 0 });
+  });
+  test("render input adoption rejects another group's key and a key granted to cleanup", async () => {
+    const f = await fixture(), execution = await native(f);
+    await execution.send(execution.commit(execution.preview)); await execution.send(execution.commit(execution.peaks)); await execution.send(execution.commit(execution.manifest));
+    const reference = f.references[0]!, domain = renderService(f).domain;
+    const tuple = { storageKey: `projects/${f.project.id}/render-groups/${f.references[1]!.subject.id}/${crypto.randomUUID()}.json`, etag: '"input"', byteLength: 2,
+      sha256: "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a" };
+    await expect(domain.adoptInput(reference, execution.admitted.preparationId, tuple)).rejects.toThrow("render_input_invalid");
+    const storageKey = await domain.planInputWrite(reference, execution.admitted.preparationId);
+    await db.mediaCleanupObligation.updateMany({ where: { objectKey: storageKey }, data: { claimId: crypto.randomUUID(), claimExpiresAt: new Date(Date.now() + 60000) } });
+    await expect(domain.adoptInput(reference, execution.admitted.preparationId, { ...tuple, storageKey })).rejects.toMatchObject({ code: "execution_object_deletion_admitted" });
+    expect((await db.renderGroup.findUniqueOrThrow({ where: { id: reference.subject.id } })).inputStorageKey).toBeNull();
+    const next = await domain.planInputWrite(reference, execution.admitted.preparationId);
+    expect(next).not.toBe(storageKey);
+    expect(await domain.adoptInput(reference, execution.admitted.preparationId, { ...tuple, storageKey: next })).toEqual({ ...tuple, storageKey: next });
+  });
+
+  test("a failed preparation settles linked unstarted render members immediately without creating native history", async () => {
+    const f = await fixture(), execution = await native(f);
+    await execution.send({ action: "fail", fence: execution.fence, failureCode: "clip_preparation_failed", retryable: false });
+    expect(await renderService(f).prepareExecution(f.references[0]!)).toEqual({ kind: "terminal" });
+    expect(await db.renderGroup.findUniqueOrThrow({ where: { id: f.references[0]!.subject.id } })).toMatchObject({ status: "failed", chargedAttemptCount: 0, attemptToken: null });
+    expect(await db.renderGroupExecution.count({ where: { groupId: f.references[0]!.subject.id } })).toBe(0);
+    expect(await db.executionAttempt.count({ where: { dispatch: { subjectId: f.references[0]!.subject.id } } })).toBe(0);
+  });
+
+  test("render metadata grants include curated and current-workspace audio while refusing a foreign workspace reference", async () => {
+    const f = await fixture(), foreign = await db.workspace.create({ data: { name: "Foreign audio owner", ownerUserId: f.user.id } });
+    const curated = await db.audioAsset.create({ data: { kind: "sfx", title: "Curated", storageKey: `audio/${crypto.randomUUID()}`, durationSec: 1 } });
+    const own = await db.audioAsset.create({ data: { kind: "sfx", title: "Current", storageKey: `audio/${crypto.randomUUID()}`, durationSec: 1, workspaceId: f.workspace.id } });
+    const denied = await db.audioAsset.create({ data: { kind: "music", title: "Foreign", storageKey: `audio/${crypto.randomUUID()}`, durationSec: 1, workspaceId: foreign.id } });
+    const document = editorDocumentSchema.parse({ ...documents.cases["solo-auto-vertical"].document, clipEndSec: 10,
+      studioEdits: { ...documents.cases["solo-auto-vertical"].document.studioEdits, music: { assetId: denied.id }, sfx: [{ id: "curated", assetId: curated.id, startSec: 0 }, { id: "own", assetId: own.id, startSec: 1 }] } });
+    await db.clip.update({ where: { id: f.clip.id }, data: encodeClipEditorDocumentForStorage(document, { durationSec: 20, wholeSource: false }) });
+    const execution = await native(f);
+    await execution.send(execution.commit(execution.preview)); await execution.send(execution.commit(execution.peaks)); await execution.send(execution.commit(execution.manifest));
+    const ready = (await f.service.readReadyForGroup(f.references[0]!))!;
+    const preparation = await decodeClipPreparationInput(f.objects.get(ready.input.storageKey)!, ready.input);
+    const keys: string[] = [];
+    const snapshot = await createRenderInputSnapshot(db, { pexelsConfigured: false, searchStock: async () => { throw new Error("No stock media"); },
+      object: async key => { keys.push(key); return { storageKey: key, etag: '"audio"', byteLength: 1000 }; } })(f.references[0]!, preparation, ready);
+    expect(snapshot.assets.audio.map(asset => asset.id).sort()).toEqual([own.id,curated.id].sort());
+    expect(keys.sort()).toEqual([own.storageKey,curated.storageKey].sort());
+    expect(JSON.stringify(snapshot.assets)).not.toContain(denied.storageKey);
+    expect(snapshot.assets.audio.every(asset => asset.object.sha256 === undefined)).toBe(true);
+  });
+
+  test("the RenderGroup factory serves its frozen input and role-bound grants then commits the actual final group acknowledgement", async () => {
+    const f = await fixture(), preparation = await native(f);
+    await preparation.send(preparation.commit(preparation.preview)); await preparation.send(preparation.commit(preparation.peaks)); await preparation.send(preparation.commit(preparation.manifest));
+    const service = renderService(f), admitted = await service.prepareExecution(f.references[0]!);
+    if (admitted.kind !== "waiting") throw new Error("Expected render admission");
+    const execution = createRenderGroupExecution({ database: db, service, storage: createExecutionStorage({ accountId: "a".repeat(32), bucket: "fixture-render", accessKeyId: "fixture", secretAccessKey: "fixture" }),
+      artifacts: { head: async () => ({ etag: '"render"', contentType: "video/mp4", byteLength: 1024n, sha256: "b".repeat(64) }), readJson: async () => { throw new Error("No JSON artifact committed"); } },
+      deliverWakes: async ids => { expect(await db.executionDispatch.count({ where: { id: { in: [...ids] } } })).toBe(ids.length); } });
+    const fence = { reference: admitted.deadline.reference, attemptToken: admitted.deadline.attemptToken, owner: crypto.randomUUID() };
+    expect(await execution.control.execute({ command: { action: "acquire", ...fence, leaseSeconds: 120 }, verifiedRequest: preparation.verified() })).toMatchObject({ disposition: "acquired" });
+    const packageResult = await execution.transfer.execute({ command: { action: "work-package", fence }, verifiedRequest: preparation.verified() });
+    if (packageResult.disposition !== "work_package") throw new Error("Expected a work package");
+    expect(packageResult.functionName).toBe("render_group");
+    expect(packageResult.input.kind).toBe("object");
+    expect(packageResult.outputs.map(output => output.role).sort()).toEqual(["render_outcome","render_variant"]);
+    expect(packageResult.sources.map(source => source.name)).toEqual(["original"]);
+    const started = await execution.control.execute({ command: { action: "process-start", fence }, verifiedRequest: preparation.verified() });
+    expect(started.disposition).toBe("started");
+    const output = packageResult.outputs.find(output => output.role === "render_variant")!;
+    const frozen = await service.loadInput(await db.executionAttempt.findUniqueOrThrow({ where: { attemptToken: fence.attemptToken } }));
+    const committed = await execution.control.execute({ command: { action: "commit-artifact", fence, artifact: { artifactId: output.artifactId, role: output.role, contentType: "video/mp4", byteLength: 1024,
+      bindingHash: output.bindingHash, etag: '"render"', sha256: "b".repeat(64), renderVariant: { renderId: frozen.variants[0]!.renderId, durationSec: 10, usedStockIds: [] } } }, verifiedRequest: preparation.verified() });
+    expect(committed).toEqual({ disposition: "committed", artifactId: output.artifactId, renderGroup: { status: "completed", requested: 1, succeeded: 1, failed: 0, superseded: 0 } });
+    expect(await db.renderGroup.findUniqueOrThrow({ where: { id: frozen.groupId } })).toMatchObject({ status: "completed", chargedAttemptCount: 1, attemptToken: null });
+    expect(await db.workflowRun.findUniqueOrThrow({ where: { id: f.run.id } })).toMatchObject({ status: "waiting", attemptId: null, leaseOwner: null, attemptCount: 0 });
+    expect(await db.renderGroupExecution.findUniqueOrThrow({ where: { token: fence.attemptToken } })).toMatchObject({ charged: true, analysisFingerprint: frozen.preparation.bindingHash, toolchainFingerprint: "e".repeat(64), result: "completed" });
   });
 });

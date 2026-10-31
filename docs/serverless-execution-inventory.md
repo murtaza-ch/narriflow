@@ -28,7 +28,7 @@ This is the implementation contract for [ADR 0019](adr/0019-serverless-execution
 | `preview` | Preview request with source/window/revision/engine binding | Deduplicated Modal `prepare_clip` through OperationDriver | Exact preparation binding, active lease/deadline, typed current degradation |
 | `auto_layout` | Shared preparation request, missing evidence binding | Same deduplicated Modal `prepare_clip` | Evidence lifecycle revision/token fence, exact complete-window evidence; no separate detector queue |
 | `notification_retry` | Terminal/review/paused-grant/disabled-subscription notification intent | OperationDriver with existing email adapter | Intent identity, exact claim, bounded backoff; email package unchanged |
-| `media_cleanup` | Producer commits exact-key unreferenced obligation and holds | OperationDriver to lean Modal cleanup | Current cleanup token, reference/hold recheck, known grant expiry, bounded retry |
+| `media_cleanup` | Producer commits exact-key unreferenced obligation and holds | OperationDriver with Workers-safe fixed-origin R2 DeleteObject | Current exact-ID cleanup token, reference/hold and grant-expiry recheck, no SQL lock across HTTP, bounded retry |
 | `generated_media` | Generated media admission/provider result | OperationDriver and bounded media validation | Domain attempt/generation, provider deadline and immutable artifact binding |
 | `thumbnail_frames` | Thumbnail admission or required source readiness | OperationDriver; Modal `thumbnail` | Exact source/revision/generation, native-process deadline; publish only validated artifact |
 | `library_index` | Transcript completion/content hash change | OperationDriver | Exact transcript binding, per-provider backoff; no generation mutation on embedding failure |

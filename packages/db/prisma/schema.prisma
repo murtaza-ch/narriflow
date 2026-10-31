@@ -3374,7 +3374,7 @@ model McpTask {
   expiresAt               DateTime
 
   @@unique([ownerUserId, callerId, toolName, domainKind, domainId])
-  @@index([expiresAt])
+  @@index([expiresAt, id])
   @@index([workspaceId, ownerUserId])
 }
 
@@ -3588,6 +3588,7 @@ model ClipSelectionWindow {
   @@index([status, retryAt])
   @@index([status, leaseExpiresAt])
   @@index([status, operationDeadlineAt])
+  @@index([inputStorageKey, operationDeadlineAt(sort: Desc)])
   @@index([projectId, deploymentEpoch, status, id])
 }
 

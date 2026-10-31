@@ -666,8 +666,8 @@ describe("Media Cleanup", () => {
     expect(store.inspect("cleanup-1")?.completedAt).toEqual(now);
   });
 
-  test("settles an adopted generated object without deleting the live asset", async () => {
-    const now = new Date("2026-08-29T00:00:01.000Z");
+  test("retains an adopted object for a future check and deletes only after its reference is removed", async () => {
+    let now = new Date("2026-08-29T00:00:01.000Z"), adopted = true;
     const store = createInMemoryMediaCleanupStore([seed({
       origin: "generated_media_publication",
       cleanupClass: "generated_asset",
@@ -677,16 +677,20 @@ describe("Media Cleanup", () => {
     const worker = createMediaCleanupWorker({
       store,
       storage: { deleteExact: async (key) => void deleted.push(key) },
-      isProtected: async (claim) => claim.objectKey.endsWith("adopted.png"),
+      isProtected: async () => adopted,
       now: () => now,
       createId: () => "claim-1",
       random: () => 0.5,
       config: defaultMediaCleanupConfig(),
     });
 
-    expect(await worker.processDue()).toEqual({ claimed: 1, completed: 1, retried: 0 });
+    expect(await worker.processDue()).toEqual({ claimed: 1, completed: 0, retried: 1 });
     expect(deleted).toEqual([]);
-    expect(store.inspect("cleanup-1")?.completedAt).toEqual(now);
+    expect(store.inspect("cleanup-1")?.completedAt).toBeNull();
+    now = store.inspect("cleanup-1")!.nextAttemptAt;
+    adopted = false;
+    expect(await worker.processDue()).toEqual({ claimed: 1, completed: 1, retried: 0 });
+    expect(deleted).toEqual(["workspaces/workspace-1/visual-assets/generated/adopted.png"]);
   });
 
   test("a retained execution input stays due for a later check instead of being deleted or forgotten", async () => {
