@@ -14,7 +14,7 @@
 
 ## Evidence
 
-Render Group transaction-aware control is implemented; Ingest, Workflow and other background domains remain in progress. This ticket is not complete.
+Render Group and Ingest transaction-aware control are implemented; exact generation handoff, Workflow and other background domains remain in progress. This ticket is not complete.
 
 - Shared `ExecutorDomainControl` ports and wake-result/observed-deadline contracts are available through a narrow services export.
 - Render Group exact-id lock/acquire/renew/start/artifact/fail/release/progress methods share the caller transaction. Existing charge, member and variant bodies were lifted rather than duplicated.
@@ -29,4 +29,12 @@ Verification so far, 2026-10-31:
 - All five domain cases have passed, with 24 assertions across the main and focused runs. This is domain correctness evidence, not deployed Workers or Linux media evidence.
 - Service typecheck and scoped Biome checks pass.
 
-Source Audio measured-binding hash helper is also prepared: strict schema normalization, full measured evidence hash distinct from assigned pre-output artifact binding, and a frozen independent SHA-256 vector. Ingest persistence and video-equivalence wiring follow next.
+Ingest now exposes the same exact-id lock/acquire/renew/start/artifact/fail/release/progress and targeted-expiry ports. Acquisition reserves ownership without charging; process-start increments once, and progress does not extend the native lease. Retry/release revokes the old generation and appends retry plus parent/finished wakes in the same transaction. Pre-start release cannot decrement below zero.
+
+Whole-source Source Audio is stored with its strict normalized measured-binding hash, distinct from the pre-output artifact binding. It wakes the Import Pipeline while leaving video unready and usage reserved. The role-specific video validator must accept matching whole-source evidence before publication. Either callback order is durable: video-first seals its binding on the immutable committed artifact; the later same-owner audio commit validates that evidence and completes ingest plus video-ready/finished wakes atomically. No object-store reads occur under domain locks.
+
+Additional verification, 2026-10-31:
+
+- Real PostgreSQL plus Executor Control/Ingest: startup rejection, exact process-start replay/progress lease preservation, Source Audio persistence and never-acquired absolute expiry passed in the main gate. Both callback orders reached publication; their final assertion originally used the wrong generic history field. Correcting only that assertion yielded two passing focused cases and 20 assertions. Raw logs: `/tmp/narriflow-serverless-gates/targeted-ingest-complete.log` and `targeted-ingest-either-order.log`.
+- Ingest claim lifetime, independent measured hash and real video comparison unit suites: 9 tests, 37 assertions passed. Services typecheck and scoped Biome pass.
+- The shared Workflow Run provenance hash helper has an independent Python-calculated literal vector and mutation/property-order checks: 1 test, 8 assertions passed. Handoff/admission wiring follows next.
