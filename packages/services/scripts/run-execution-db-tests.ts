@@ -20,7 +20,7 @@ testUrl.searchParams.delete("schema");
 testUrl.searchParams.set("options", `-csearch_path=${schema},public`);
 const requestedTests = Bun.argv.slice(2);
 const tests = requestedTests.length ? requestedTests : [
-  "execution-ledger", "execution-admission", "execution-dispatch", "executor-control", "execution-transfer", "source-audio-admission",
+  "execution-ledger", "execution-admission", "execution-maintenance", "execution-restore", "execution-dispatch", "executor-control", "execution-transfer", "source-audio-admission",
   "targeted-execution", "targeted-ingest-execution", "targeted-workflow-execution", "clip-preparation", "clip-preparation-ledger", "clip-selection", "clip-selection-window", "clip-selection-preparation", "clip-selection-hyperdrive-gate", "native-validation", "thumbnail-frame-execution", "generated-media-execution",
   "outbound-probe", "outbound-delivery", "webhook-subscription", "notification-dispatch", "publication-execution", "modal-dispatch", "progress-outbox",
 ].map(name => `packages/services/src/${name}.db.test.ts`);
@@ -60,10 +60,14 @@ try {
   // setup. Service gates exercise an explicitly opened deployment.
   const ledger = "packages/services/src/execution-ledger.db.test.ts";
   if (tests.includes(ledger)) await run(["bun", "test", ledger], testEnvironment);
-  const remaining = tests.filter(path => path !== ledger);
-  if (remaining.length) {
+  const restore = "packages/services/src/execution-restore.db.test.ts";
+  const remaining = tests.filter(path => path !== ledger && path !== restore);
+  if (remaining.length || tests.includes(restore)) {
     await pool.query(`UPDATE "${schema}"."ExecutionEpoch" SET "admissionOpen" = true WHERE id = 1`);
-    await run(["bun", "test", ...remaining], testEnvironment);
+    if (remaining.length) await run(["bun", "test", ...remaining], testEnvironment);
+    // Restore advances authority and leaves intake closed. Keep it in a final
+    // process so no other fixture silently relies on the previous epoch.
+    if (tests.includes(restore)) await run(["bun", "test", restore], testEnvironment);
   }
 } finally {
   await pool.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
