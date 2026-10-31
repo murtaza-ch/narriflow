@@ -20,7 +20,7 @@ import { decodeFrozenClipEditorDocument } from "@narriflow/services/clip-editor-
 import { motionRenderAnalyticsMetadata, type MotionRenderAnalyticsMetadata } from "@narriflow/services/motion-render-analytics";
 import { hasFeature } from "@narriflow/validators";
 import { rethrowWorkflowAttemptLost, WorkflowAttemptLost, WorkflowFailure, workflowFailureFromUnknown, type WorkflowAttemptContext, type WorkflowAttemptRef } from "@narriflow/services/workflow-attempt-contract";
-import type { audioAssetService as productionAudioAssetService, clipService as productionClipService, deleteObject as productionDeleteObject, DownloadObjectToFile as productionDownloadObjectToFile, presignDownloadUrl as productionPresignDownloadUrl, PutFileFromPath as productionPutFileFromPath, LayoutEvidenceLifecycle } from "@narriflow/services";
+import type { audioAssetService as productionAudioAssetService, clipService as productionClipService, deleteObject as productionDeleteObject, DownloadObjectToFile as productionDownloadObjectToFile, presignDownloadUrl as productionPresignDownloadUrl, PutFileFromPath as productionPutFileFromPath, DurableLayoutEvidenceReader } from "@narriflow/services";
 import {
 	AUDIO_UPLOAD_MAX_BYTES,
 	CLIP_AUTO_LAYOUT_ENGINE,
@@ -251,7 +251,7 @@ export interface ClipRenderAttemptAdapters {
       Promise<(NonNullable<Awaited<ReturnType<typeof productionClipService.getFrozenRenderingStateForWorkSet>>> & { frozenWatermark?: boolean }) | null>;
   };
 	/** Layout evidence another group stored since this attempt's snapshot. */
-	layoutEvidence: Pick<LayoutEvidenceLifecycle, "readCompatibleDurable"> & { completedPreparation?: boolean };
+	layoutEvidence: DurableLayoutEvidenceReader & { completedPreparation?: boolean };
 	/** Immutable facts shared by every render in this worker process. */
 	facts: RenderFactCache;
 	clip: {
@@ -459,7 +459,7 @@ export function deriveRenderCompositionEvidence(input: {
 }
 
 type DurableLayoutEvidence = NonNullable<
-	Awaited<ReturnType<LayoutEvidenceLifecycle["readCompatibleDurable"]>>
+	Awaited<ReturnType<DurableLayoutEvidenceReader["readCompatibleDurable"]>>
 >;
 
 /**
