@@ -1,3 +1,4 @@
+import { bindServiceTestEnvironment } from "./runtime-test-support";
 import { createDatabaseTestContext } from "@narriflow/db/testing";
 import { WorkflowAttemptLost } from "./workflow-run-lifecycle";
 import { RenderFixtureLifecycle } from "./render-group-test-fixture";
@@ -137,7 +138,7 @@ describeDb("Operation Receipt PostgreSQL acceptance invariants", () => {
     return { run, attempt, lifecycle };
 	}
 
-	beforeAll(globalPrisma.bind(async () => {
+	beforeAll(bindServiceTestEnvironment(globalPrisma.bind(async () => {
 		if (!databaseUrl || !schema || !/^integration_test_[a-z0-9_]+$/.test(schema))
 			throw new Error("Integration DB tests require a disposable integration_test_ schema");
 		pool = new Pool({ connectionString: databaseUrl, max: 10 });
@@ -163,15 +164,15 @@ describeDb("Operation Receipt PostgreSQL acceptance invariants", () => {
 			},
 		});
 		workspaceId = workspace.id;
-	}));
+	})));
 
-	afterAll(globalPrisma.bind(async () => {
+	afterAll(bindServiceTestEnvironment(globalPrisma.bind(async () => {
 		globalPrisma.client = priorPrisma;
 		await prisma?.$disconnect();
 		await pool?.end();
-	}));
+	})));
 
-	test("concurrent duplicate requests commit one domain record and immutable receipt", globalPrisma.bind(async () => {
+	test("concurrent duplicate requests commit one domain record and immutable receipt", bindServiceTestEnvironment(globalPrisma.bind(async () => {
 		const executor = createOperationReceiptExecutor(
 			prismaOperationReceiptPersistence(prisma),
 		);
@@ -224,9 +225,9 @@ describeDb("Operation Receipt PostgreSQL acceptance invariants", () => {
 				},
 			}),
 		).rejects.toBeInstanceOf(OperationIdempotencyConflictError);
-	}));
+	})));
 
-	test("interrupted acceptance rolls back domain work and survives executor restart", globalPrisma.bind(async () => {
+	test("interrupted acceptance rolls back domain work and survives executor restart", bindServiceTestEnvironment(globalPrisma.bind(async () => {
 		const identity = {
 			workspaceId,
 			actorUserId,
@@ -294,9 +295,9 @@ describeDb("Operation Receipt PostgreSQL acceptance invariants", () => {
 		});
 		expect(replay.receiptId).toBe(accepted.receiptId);
 		expect(replay.value).toEqual(accepted.value);
-	}));
+	})));
 
-	test("link intake commits the ingest job and runnable generation settings together", globalPrisma.bind(async () => {
+	test("link intake commits the ingest job and runnable generation settings together", bindServiceTestEnvironment(globalPrisma.bind(async () => {
 		const mutation = {
 			clientIdempotencyKey: randomUUID(),
 		};
@@ -346,9 +347,9 @@ describeDb("Operation Receipt PostgreSQL acceptance invariants", () => {
 				mutation,
 			}),
 		).rejects.toBeInstanceOf(OperationIdempotencyConflictError);
-	}));
+	})));
 
-	test("a captioned video freezes its settings and normalized captions with its intake, under its own receipt command", globalPrisma.bind(async () => {
+	test("a captioned video freezes its settings and normalized captions with its intake, under its own receipt command", bindServiceTestEnvironment(globalPrisma.bind(async () => {
 		const scope = { actorUserId, workspaceId };
 		const input = { title: "AI short", url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ" };
 		const mutation = { clientIdempotencyKey: randomUUID() };
@@ -369,9 +370,9 @@ describeDb("Operation Receipt PostgreSQL acceptance invariants", () => {
 			generationContext: captionedVideoGenerationContext(captionedVideoSettings({ framing: "fit" })) })).rejects.toBeInstanceOf(OperationIdempotencyConflictError);
 		const other = await projectService.queueLinkIngest(scope, input, { generationContext: options.generationContext, mutation });
 		expect(other.project.id).not.toBe(accepted.project.id);
-	}));
+	})));
 
-	test("saving a generation draft over a captioned pack replaces its settings, never leaving stale ones behind", globalPrisma.bind(async () => {
+	test("saving a generation draft over a captioned pack replaces its settings, never leaving stale ones behind", bindServiceTestEnvironment(globalPrisma.bind(async () => {
 		const scope = { actorUserId, workspaceId };
 		const accepted = await projectService.queueLinkIngest(scope, { url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ" }, {
 			generationContext: captionedVideoGenerationContext(captionedVideoSettings({ captions: { source: "none" } })),
@@ -384,9 +385,9 @@ describeDb("Operation Receipt PostgreSQL acceptance invariants", () => {
 		expect(stored).toHaveLength(1);
 		expect(stored[0]).toMatchObject({ mode: "clip", captionedVideo: null, draft: true });
 		expect(parseStoredContentPack(stored[0]).captionedVideo).toBeUndefined();
-	}));
+	})));
 
-	test("generation reuses only the requested settings and replays accepted work during outages", globalPrisma.bind(async () => {
+	test("generation reuses only the requested settings and replays accepted work during outages", bindServiceTestEnvironment(globalPrisma.bind(async () => {
 		const project = await prisma.project.create({
 			data: {
 				workspaceId,
@@ -465,9 +466,9 @@ describeDb("Operation Receipt PostgreSQL acceptance invariants", () => {
 		expect(
 			await prisma.contentPack.count({ where: { projectId: project.id } }),
 		).toBe(1);
-	}));
+	})));
 
-	test("forced generation waits for downstream work and ordinary reuse retains the generation root", globalPrisma.bind(async () => {
+	test("forced generation waits for downstream work and ordinary reuse retains the generation root", bindServiceTestEnvironment(globalPrisma.bind(async () => {
 		const project = await prisma.project.create({
 			data: {
 				workspaceId,
@@ -584,9 +585,9 @@ describeDb("Operation Receipt PostgreSQL acceptance invariants", () => {
 			include: { contentPack: true },
 		});
 		expect(newRun.contentPack?.clipCountTarget).toBe(8);
-	}));
+	})));
 
-	test("RSS creation replays without fetching a now unavailable feed", globalPrisma.bind(async () => {
+	test("RSS creation replays without fetching a now unavailable feed", bindServiceTestEnvironment(globalPrisma.bind(async () => {
 		let feedReads = 0;
 		const service = new AutopilotService({
 			fetchFeed: async (rssUrl) => {
@@ -626,9 +627,9 @@ describeDb("Operation Receipt PostgreSQL acceptance invariants", () => {
 				mutation,
 			),
 		).rejects.toBeInstanceOf(OperationIdempotencyConflictError);
-	}));
+	})));
 
-	test("run-now replays without resetting a later worker claim", globalPrisma.bind(async () => {
+	test("run-now replays without resetting a later worker claim", bindServiceTestEnvironment(globalPrisma.bind(async () => {
 		const service = new AutopilotService({
 			fetchFeed: async (rssUrl) => ({
 				title: "Run now",
@@ -665,9 +666,9 @@ describeDb("Operation Receipt PostgreSQL acceptance invariants", () => {
 				select: { claimToken: true, leaseExpiresAt: true },
 			}),
 		).toEqual({ claimToken, leaseExpiresAt });
-	}));
+	})));
 
-	test("exports replay their accepted revision and conflict on changed key input", globalPrisma.bind(async () => {
+	test("exports replay their accepted revision and conflict on changed key input", bindServiceTestEnvironment(globalPrisma.bind(async () => {
 		const project = await prisma.project.create({
 			data: {
 				workspaceId,
@@ -728,9 +729,9 @@ describeDb("Operation Receipt PostgreSQL acceptance invariants", () => {
 		expect(await prisma.clipExport.count({ where: { clipId: clip.id } })).toBe(
 			1,
 		);
-	}));
+	})));
 
-	test("export cancellation stops pending variants before a render run is assigned", globalPrisma.bind(async () => {
+	test("export cancellation stops pending variants before a render run is assigned", bindServiceTestEnvironment(globalPrisma.bind(async () => {
 		const project = await prisma.project.create({
 			data: {
 				workspaceId,
@@ -781,9 +782,9 @@ describeDb("Operation Receipt PostgreSQL acceptance invariants", () => {
 		expect(
 			await clipExportService.cancelQueuedOperation(scope, accepted.export.id),
 		).toBe(false);
-	}));
+	})));
 
-	test("export cancellation preserves a shared run, another export, and claimed variants", globalPrisma.bind(async () => {
+	test("export cancellation preserves a shared run, another export, and claimed variants", bindServiceTestEnvironment(globalPrisma.bind(async () => {
 		const { project, clip, scope } = await exportSource("Shared export run");
 		const first = await clipExportService.create(
 			scope,
@@ -850,9 +851,9 @@ describeDb("Operation Receipt PostgreSQL acceptance invariants", () => {
 		});
 		expect(partial.status).toBe("partial_ready");
 		expect(partial.errorCode).toBeNull();
-	}));
+	})));
 
-	test("export cancellation and worker claims agree on which pending variant won", globalPrisma.bind(async () => {
+	test("export cancellation and worker claims agree on which pending variant won", bindServiceTestEnvironment(globalPrisma.bind(async () => {
 		for (let i = 0; i < 4; i++) {
 			const { project, clip, scope } = await exportSource(
 				`Export claim race ${i}`,
@@ -893,5 +894,5 @@ describeDb("Operation Receipt PostgreSQL acceptance invariants", () => {
 					.status,
 			).toBe("running");
 		}
-	}));
+	})));
 });

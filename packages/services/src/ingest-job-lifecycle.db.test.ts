@@ -1,3 +1,4 @@
+import { bindServiceTestEnvironment } from "./runtime-test-support";
 import { randomUUID } from "node:crypto";
 import {
   afterAll,
@@ -37,7 +38,7 @@ dbDescribe("Ingest Job lifecycle PostgreSQL interface", () => {
   let pool: Pool;
   let clock = Date.now();
   const users: string[] = [];
-  beforeAll(() => {
+  beforeAll(bindServiceTestEnvironment(() => {
     if (!schema?.startsWith("workflow_lifecycle_test_"))
       throw new Error("Ingest tests require a disposable schema");
     pool = new Pool({ connectionString: url, max: 4 });
@@ -45,16 +46,16 @@ dbDescribe("Ingest Job lifecycle PostgreSQL interface", () => {
       adapter: new PrismaPg(pool, { schema }),
       transactionOptions: { timeout: 30_000 },
     });
-  });
-  afterEach(async () => {
+  }));
+  afterEach(bindServiceTestEnvironment(async () => {
     const userIds = users.splice(0);
     await prisma.workspace.deleteMany({ where: { ownerUserId: { in: userIds } } });
     await prisma.user.deleteMany({ where: { id: { in: userIds } } });
-  });
-  afterAll(async () => {
+  }));
+  afterAll(bindServiceTestEnvironment(async () => {
     await prisma.$disconnect();
     await pool.end();
-  });
+  }));
   function usage(
     hooks: { beforeSettle?: () => Promise<void> } = {},
   ): IngestJobLifecycleDependencies["usage"] {
@@ -195,7 +196,7 @@ dbDescribe("Ingest Job lifecycle PostgreSQL interface", () => {
     }) as PrismaClient;
   }
 
-  test("every stale claim command rejects without changing Project or events", async () => {
+  test("every stale claim command rejects without changing Project or events", bindServiceTestEnvironment(async () => {
     const { project, job } = await fixture();
     const module = lifecycle();
     const claim = (await module.claim())!;
@@ -223,8 +224,8 @@ dbDescribe("Ingest Job lifecycle PostgreSQL interface", () => {
     expect(
       await prisma.workflowEvent.count({ where: { projectId: project.id } }),
     ).toBe(0);
-  });
-  test("expired unreaped claims cannot report progress or settle", async () => {
+  }));
+  test("expired unreaped claims cannot report progress or settle", bindServiceTestEnvironment(async () => {
     await fixture();
     const module = lifecycle();
     const claim = (await module.claim())!;
@@ -241,8 +242,8 @@ dbDescribe("Ingest Job lifecycle PostgreSQL interface", () => {
     await expect(
       module.complete(claim, { sourceStorageKey: "new.mp4" }),
     ).rejects.toBeInstanceOf(IngestJobClaimLost);
-  });
-  test("transient failure requeues with backoff; permanent failure stores notification intent", async () => {
+  }));
+  test("transient failure requeues with backoff; permanent failure stores notification intent", bindServiceTestEnvironment(async () => {
     const { project, job } = await fixture();
     const module = lifecycle();
     const first = (await module.claim())!;
@@ -291,8 +292,8 @@ dbDescribe("Ingest Job lifecycle PostgreSQL interface", () => {
         })
       ).notificationDeliveredAt,
     ).not.toBeNull();
-  });
-  test("outbox insertion failure rolls back source acceptance and progress", async () => {
+  }));
+  test("outbox insertion failure rolls back source acceptance and progress", bindServiceTestEnvironment(async () => {
     const { project, job } = await fixture();
     const normal = lifecycle();
     const claim = (await normal.claim())!;
@@ -318,8 +319,8 @@ dbDescribe("Ingest Job lifecycle PostgreSQL interface", () => {
       (await prisma.project.findUniqueOrThrow({ where: { id: project.id } }))
         .sourceStorageKey,
     ).toBeNull();
-  });
-  test("source acceptance keeps the storage URI and pending handoff durable", async () => {
+  }));
+  test("source acceptance keeps the storage URI and pending handoff durable", bindServiceTestEnvironment(async () => {
     const { project, job } = await fixture();
     const module = lifecycle();
     const claim = (await module.claim())!;
@@ -353,8 +354,8 @@ dbDescribe("Ingest Job lifecycle PostgreSQL interface", () => {
         })
       ).stage,
     ).toBe("ingest_ready");
-  });
-  test("manual retry rolls back queued Project if job insertion fails", async () => {
+  }));
+  test("manual retry rolls back queued Project if job insertion fails", bindServiceTestEnvironment(async () => {
     const { project, workspace, user } = await fixture("failed");
     const module = lifecycle({
       prisma: transactionFault("create", "ingestJob"),
@@ -376,8 +377,8 @@ dbDescribe("Ingest Job lifecycle PostgreSQL interface", () => {
     expect(
       await prisma.workflowEvent.count({ where: { projectId: project.id } }),
     ).toBe(0);
-  });
-  test("concurrent manual retries create one fresh job, with a separate manual budget", async () => {
+  }));
+  test("concurrent manual retries create one fresh job, with a separate manual budget", bindServiceTestEnvironment(async () => {
     const { project, job, workspace, user } = await fixture("failed");
     await prisma.ingestJob.update({
       where: { id: job.id },
@@ -420,8 +421,8 @@ dbDescribe("Ingest Job lifecycle PostgreSQL interface", () => {
     await expect(module.retry(input)).rejects.toBeInstanceOf(
       IngestRetryLimitExceededError,
     );
-  });
-  test("reaper preserves renewed leases, retries expired claims, then fails with durable intent at cap", async () => {
+  }));
+  test("reaper preserves renewed leases, retries expired claims, then fails with durable intent at cap", bindServiceTestEnvironment(async () => {
     const { project, job } = await fixture();
     const module = lifecycle();
     const first = (await module.claim())!;
@@ -453,8 +454,8 @@ dbDescribe("Ingest Job lifecycle PostgreSQL interface", () => {
         where: { ingestJobId: job.id, notificationRequired: true },
       }),
     ).toBe(1);
-  });
-  test("repeated graceful deploy releases do not consume automatic retries", async () => {
+  }));
+  test("repeated graceful deploy releases do not consume automatic retries", bindServiceTestEnvironment(async () => {
     const { job } = await fixture();
     const module = lifecycle();
     for (let deploy = 0; deploy < 6; deploy++) {
@@ -468,8 +469,8 @@ dbDescribe("Ingest Job lifecycle PostgreSQL interface", () => {
     });
     expect(row.status).toBe("queued");
     expect(row.attemptCount).toBe(0);
-  });
-  test("an admitted ingest handoff survives creator removal without impersonating the Workspace owner", async () => {
+  }));
+  test("an admitted ingest handoff survives creator removal without impersonating the Workspace owner", bindServiceTestEnvironment(async () => {
     const { project, job, workspace } = await fixture("ready");
     const creator = await prisma.user.create({ data: { clerkId: `ingest-creator:${randomUUID()}` } });
     users.push(creator.id);
@@ -484,8 +485,8 @@ dbDescribe("Ingest Job lifecycle PostgreSQL interface", () => {
     ).toBe("settled");
     expect((await prisma.project.findUniqueOrThrow({ where: { id: project.id } })).createdByUserId).toBeNull();
     expect(await prisma.workflowRun.count({ where: { projectId: project.id, stage: "stt" } })).toBe(1);
-  });
-  test("settlement refusal atomically fails Project/job, releases usage, and leaves actionable notification", async () => {
+  }));
+  test("settlement refusal atomically fails Project/job, releases usage, and leaves actionable notification", bindServiceTestEnvironment(async () => {
     const { project, job, workspace } = await fixture("ready");
     await committedPack(project.id);
     await reservation(project.id, workspace.id);
@@ -513,7 +514,7 @@ dbDescribe("Ingest Job lifecycle PostgreSQL interface", () => {
       }),
     ).toBe(1);
     expect(await module.processGenerationHandoffs(1, job.id)).toBe(0);
-  });
+  }));
   describe("whole-source windows at the generation handoff", () => {
     const captionedVideo = { framing: "fit", aspectRatios: ["9:16"], resolution: "1080p", captions: { source: "none" } };
     async function captionOnlyHandoff(sourceDurationSeconds: number, options: { probe?: number; window?: [number, number]; plain?: boolean } = {}) {
@@ -540,7 +541,7 @@ dbDescribe("Ingest Job lifecycle PostgreSQL interface", () => {
     const reservationState = async (projectId: string) =>
       (await prisma.processingUsageReservation.findUniqueOrThrow({ where: { projectId } })).state;
 
-    test("a captioned video over 3 minutes is refused before it costs minutes or speech-to-text", async () => {
+    test("a captioned video over 3 minutes is refused before it costs minutes or speech-to-text", bindServiceTestEnvironment(async () => {
       const { project, job, handed } = await captionOnlyHandoff(181);
       expect(handed).toBe(0);
       expect(await reservationState(project.id)).toBe("released");
@@ -548,9 +549,9 @@ dbDescribe("Ingest Job lifecycle PostgreSQL interface", () => {
       expect(await prisma.ingestJob.findUniqueOrThrow({ where: { id: job.id } })).toMatchObject({ status: "failed", lastError: expect.stringContaining("whole_source_too_long") });
       expect((await prisma.project.findUniqueOrThrow({ where: { id: project.id } })).ingestErrorCode).toBe("whole_source_too_long");
       expect(await prisma.workflowEvent.count({ where: { ingestJobId: job.id, notificationRequired: true } })).toBe(1);
-    });
+    }));
 
-    test("a source under a second is refused, while 8 seconds and exactly 3 minutes are admitted", async () => {
+    test("a source under a second is refused, while 8 seconds and exactly 3 minutes are admitted", bindServiceTestEnvironment(async () => {
       const short = await captionOnlyHandoff(1, { probe: 0.6 });
       expect(short.handed).toBe(0);
       expect((await prisma.project.findUniqueOrThrow({ where: { id: short.project.id } })).ingestErrorCode).toBe("whole_source_too_short");
@@ -560,9 +561,9 @@ dbDescribe("Ingest Job lifecycle PostgreSQL interface", () => {
         expect(await reservationState(admitted.project.id)).toBe("settled");
         expect(await prisma.workflowRun.count({ where: { projectId: admitted.project.id, stage: "stt" } })).toBe(1);
       }
-    });
+    }));
 
-    test("the exact probed duration decides: 180.4 seconds is a 3 minute source, 180.6 is not", async () => {
+    test("the exact probed duration decides: 180.4 seconds is a 3 minute source, 180.6 is not", bindServiceTestEnvironment(async () => {
       // Project.sourceDurationSeconds is rounded (180 and 181); the probe is exact.
       const admitted = await captionOnlyHandoff(180, { probe: 180.4 });
       expect(admitted.handed).toBe(1);
@@ -572,30 +573,30 @@ dbDescribe("Ingest Job lifecycle PostgreSQL interface", () => {
       expect((await prisma.project.findUniqueOrThrow({ where: { id: over.project.id } })).ingestErrorCode).toBe("whole_source_too_long");
       // An 8.4 second source is admitted whole.
       expect((await captionOnlyHandoff(8, { probe: 8.4 })).handed).toBe(1);
-    });
+    }));
 
-    test("a processing window decides, not the length of a long source", async () => {
+    test("a processing window decides, not the length of a long source", bindServiceTestEnvironment(async () => {
       expect((await captionOnlyHandoff(1_800, { window: [60, 150] })).handed).toBe(1);
       const tooWide = await captionOnlyHandoff(1_800, { window: [0, 600] });
       expect(tooWide.handed).toBe(0);
       expect((await prisma.project.findUniqueOrThrow({ where: { id: tooWide.project.id } })).ingestErrorCode).toBe("whole_source_too_long");
-    });
+    }));
 
-    test("a plain caption-only run keeps its Project ready and fails in detection, not at the handoff", async () => {
+    test("a plain caption-only run keeps its Project ready and fails in detection, not at the handoff", bindServiceTestEnvironment(async () => {
       const admitted = await captionOnlyHandoff(600, { plain: true });
       expect(admitted.handed).toBe(1);
       expect((await prisma.project.findUniqueOrThrow({ where: { id: admitted.project.id } })).ingestStatus).toBe("ready");
-    });
+    }));
 
-    test("a clip-mode source of any length is not subject to the whole-source bounds", async () => {
+    test("a clip-mode source of any length is not subject to the whole-source bounds", bindServiceTestEnvironment(async () => {
       const { project, job, workspace } = await fixture("ready");
       await committedPack(project.id);
       await reservation(project.id, workspace.id, "reserved", 600);
       await prisma.project.update({ where: { id: project.id }, data: { sourceDurationSeconds: 600 } });
       expect(await lifecycle().processGenerationHandoffs(1, job.id)).toBe(1);
-    });
+    }));
   });
-  test("handoff retry is durable, fair to due retries and exactly-once at admission", async () => {
+  test("handoff retry is durable, fair to due retries and exactly-once at admission", bindServiceTestEnvironment(async () => {
     const { project, job, workspace } = await fixture("ready");
     const pack = await committedPack(project.id);
     await reservation(project.id, workspace.id);
@@ -651,8 +652,8 @@ dbDescribe("Ingest Job lifecycle PostgreSQL interface", () => {
       ).status,
     ).toBe("queued");
     expect(await module.processGenerationHandoffs(1, job.id)).toBe(0);
-  });
-  test("a manually admitted same-pack run acknowledges handoff after its stage advances", async () => {
+  }));
+  test("a manually admitted same-pack run acknowledges handoff after its stage advances", bindServiceTestEnvironment(async () => {
     const { project, job, workspace } = await fixture("ready");
     const pack = await committedPack(project.id);
     await reservation(project.id, workspace.id, "settled");
@@ -688,8 +689,8 @@ dbDescribe("Ingest Job lifecycle PostgreSQL interface", () => {
       (await prisma.project.findUniqueOrThrow({ where: { id: project.id } }))
         .ingestStatus,
     ).toBe("ready");
-  });
-  test("a same-pack admission during settlement wins over a stale permanent error", async () => {
+  }));
+  test("a same-pack admission during settlement wins over a stale permanent error", bindServiceTestEnvironment(async () => {
     const { project, job, workspace } = await fixture("ready");
     const pack = await committedPack(project.id);
     await reservation(project.id, workspace.id, "settled");
@@ -726,8 +727,8 @@ dbDescribe("Ingest Job lifecycle PostgreSQL interface", () => {
         where: { projectId: project.id, notificationRequired: true },
       }),
     ).toBe(0);
-  });
-  test("a manual stage completing during admission rolls back the extra automatic run", async () => {
+  }));
+  test("a manual stage completing during admission rolls back the extra automatic run", bindServiceTestEnvironment(async () => {
     const { project, job, workspace } = await fixture("ready");
     const pack = await committedPack(project.id);
     await reservation(project.id, workspace.id, "settled");
@@ -762,8 +763,8 @@ dbDescribe("Ingest Job lifecycle PostgreSQL interface", () => {
       (await prisma.ingestJob.findUniqueOrThrow({ where: { id: job.id } }))
         .generationHandoffAt,
     ).not.toBeNull();
-  });
-  test("lost handoff guard rolls back its newly admitted run, outbox, and settlement", async () => {
+  }));
+  test("lost handoff guard rolls back its newly admitted run, outbox, and settlement", bindServiceTestEnvironment(async () => {
     const { project, job, workspace } = await fixture("ready");
     await committedPack(project.id);
     await reservation(project.id, workspace.id);
@@ -790,7 +791,7 @@ dbDescribe("Ingest Job lifecycle PostgreSQL interface", () => {
     expect(
       await prisma.transcript.count({ where: { projectId: project.id } }),
     ).toBe(0);
-  });
+  }));
   describe("Drive Picker intake credential", () => {
     const SEALED = "v1:sealed-test-credential";
     async function driveFixture() {
@@ -804,24 +805,24 @@ dbDescribe("Ingest Job lifecycle PostgreSQL interface", () => {
     const credential = async (id: string) =>
       (await prisma.ingestJob.findUniqueOrThrow({ where: { id } })).sourceCredential;
 
-    test("a claim carries the sealed credential, and a requeued job keeps it while it can still download", async () => {
+    test("a claim carries the sealed credential, and a requeued job keeps it while it can still download", bindServiceTestEnvironment(async () => {
       const { job } = await driveFixture();
       const module = lifecycle();
       const first = (await module.claim({ youtubeAvailable: false }))!;
       expect(first).toMatchObject({ id: job.id, jobType: "drive_import", sourceCredential: SEALED });
       expect(await module.fail(first, "source_download_failed", "socket closed")).toEqual({ outcome: "requeue" });
       expect(await credential(job.id)).toBe(SEALED);
-    });
+    }));
 
-    test("completing the download discards the credential", async () => {
+    test("completing the download discards the credential", bindServiceTestEnvironment(async () => {
       const { job } = await driveFixture();
       const module = lifecycle();
       const claim = (await module.claim())!;
       await module.complete(claim, { sourceStorageKey: "projects/p/link/a.mp4" });
       expect(await credential(job.id)).toBeNull();
-    });
+    }));
 
-    test("a permanent failure, the reaper's last attempt, and a cancellation all discard it", async () => {
+    test("a permanent failure, the reaper's last attempt, and a cancellation all discard it", bindServiceTestEnvironment(async () => {
       const expired = await driveFixture();
       const module = lifecycle();
       const claim = (await module.claim())!;
@@ -856,9 +857,9 @@ dbDescribe("Ingest Job lifecycle PostgreSQL interface", () => {
         }),
       ).toBe(true);
       expect(await credential(cancelled.job.id)).toBeNull();
-    });
+    }));
 
-    test("a failed Drive import is never retried with a new job, because the token is gone", async () => {
+    test("a failed Drive import is never retried with a new job, because the token is gone", bindServiceTestEnvironment(async () => {
       const { project, job, user, workspace } = await driveFixture();
       const module = lifecycle();
       await reservation(project.id, workspace.id);
@@ -868,9 +869,9 @@ dbDescribe("Ingest Job lifecycle PostgreSQL interface", () => {
       ).rejects.toBeInstanceOf(IngestReselectRequiredError);
       expect(await prisma.ingestJob.count({ where: { projectId: project.id } })).toBe(1);
       expect(await credential(job.id)).toBeNull();
-    });
+    }));
   });
-  test("unavailable YouTube skips its current link payload while other intake claims", async () => {
+  test("unavailable YouTube skips its current link payload while other intake claims", bindServiceTestEnvironment(async () => {
     const { project, job } = await fixture("queued", {
       provider: "youtube",
       url: "https://youtube.test/a",
@@ -890,5 +891,5 @@ dbDescribe("Ingest Job lifecycle PostgreSQL interface", () => {
     });
     expect(youtube.status).toBe("queued");
     expect(youtube.attemptCount).toBe(0);
-  });
+  }));
 });

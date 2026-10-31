@@ -1,3 +1,4 @@
+import { bindServiceTestEnvironment } from "./runtime-test-support";
 import { createDatabaseTestContext } from "@narriflow/db/testing";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
@@ -40,7 +41,7 @@ dbDescribe("Generation usage PostgreSQL contracts", () => {
   const currentPeriod = processingPeriodStart(now);
   const previousPeriod = processingPeriodStart(new Date(currentPeriod.getTime() - DAY_MS));
 
-  beforeAll(prismaGlobal.bind(() => {
+  beforeAll(bindServiceTestEnvironment(prismaGlobal.bind(() => {
     if (!databaseUrl) throw new Error("Vizard expansion test database is required");
     pool = new Pool({
       connectionString: databaseUrl,
@@ -52,13 +53,13 @@ dbDescribe("Generation usage PostgreSQL contracts", () => {
     });
     priorPrisma = prismaGlobal.client;
     prismaGlobal.client = prisma;
-  }));
+  })));
 
-  afterAll(prismaGlobal.bind(async () => {
+  afterAll(bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     prismaGlobal.client = priorPrisma;
     await prisma?.$disconnect();
     await pool?.end();
-  }));
+  })));
 
   async function user(label: string) {
     const suffix = randomUUID();
@@ -248,7 +249,7 @@ dbDescribe("Generation usage PostgreSQL contracts", () => {
   const reserveImage = (workspaceId: string, actorUserId: string, pricingTier: string) =>
     ledger.reserve({ kind: "image", jobId: randomUUID(), workspaceId, actorUserId, pricingTier });
 
-  test("the last image of the month goes to exactly one of several concurrent requests", prismaGlobal.bind(async () => {
+  test("the last image of the month goes to exactly one of several concurrent requests", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const { owner, workspace: ws } = await workspace("creator");
     await prefill({ workspaceId: ws.id, kind: "image", count: 9 });
     // A dub never consumes image allowance or concurrency.
@@ -273,9 +274,9 @@ dbDescribe("Generation usage PostgreSQL contracts", () => {
       remaining: 0,
       concurrency: { limit: 2, active: 1 },
     });
-  }));
+  })));
 
-  test("image concurrency spans periods while counts stay pinned to their admission month", prismaGlobal.bind(async () => {
+  test("image concurrency spans periods while counts stay pinned to their admission month", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const { owner, workspace: ws } = await workspace("creator");
     // Two requests admitted last month are still waiting on the provider.
     await prefill({ workspaceId: ws.id, kind: "image", count: 2, status: "reserved", periodStart: previousPeriod });
@@ -292,9 +293,9 @@ dbDescribe("Generation usage PostgreSQL contracts", () => {
     expect(rows.every((row) => row.periodStart.getTime() === previousPeriod.getTime())).toBe(true);
     await reserveImage(ws.id, owner.id, "creator");
     expect((await summarizeGenerationUsage(ws.id)).images).toMatchObject({ used: 1, remaining: 9 });
-  }));
+  })));
 
-  test("a Free refusal after paid images this month offers a plan with room for them", prismaGlobal.bind(async () => {
+  test("a Free refusal after paid images this month offers a plan with room for them", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     // Downgraded to Free after the sample plus 29 paid images this month: Creator's
     // 10 a month can't admit another image, so the offer must be Business, not Creator.
     const { owner, workspace: ws } = await workspace("free", "month-history");
@@ -305,9 +306,9 @@ dbDescribe("Generation usage PostgreSQL contracts", () => {
       details: { limit: "generatedImages", used: 1, max: 1, requiredTier: "business" },
     });
     expect((await summarizeGenerationUsage(ws.id)).images).toMatchObject({ used: 1, monthUsed: 30 });
-  }));
+  })));
 
-  test("the Free image sample is lifetime, ignores paid history, and survives upgrade and downgrade", prismaGlobal.bind(async () => {
+  test("the Free image sample is lifetime, ignores paid history, and survives upgrade and downgrade", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const { owner, workspace: ws } = await workspace("free");
     const sample = await reserveImage(ws.id, owner.id, "free");
     expect(
@@ -347,9 +348,9 @@ dbDescribe("Generation usage PostgreSQL contracts", () => {
     await expect(reserveImage(paid.workspace.id, paid.owner.id, "free")).rejects.toMatchObject({
       code: "plan_limit_reached",
     });
-  }));
+  })));
 
-  test("attaching an image job requires its own image reservation in the same Workspace", prismaGlobal.bind(async () => {
+  test("attaching an image job requires its own image reservation in the same Workspace", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const { owner, workspace: ws } = await workspace("creator", "attach");
     const other = await workspace("creator", "attach-other");
     const { project } = await dubbableProject(ws.id, owner.id);
@@ -380,9 +381,9 @@ dbDescribe("Generation usage PostgreSQL contracts", () => {
     await expect(
       ledger.reserve({ kind: "image", jobId: id, workspaceId: other.workspace.id, actorUserId: other.owner.id, pricingTier: "creator" }),
     ).rejects.toMatchObject({ code: "generated_media_usage_reconciliation_required" });
-  }));
+  })));
 
-  test("the sweep releases admission orphans, keeps unknown outcomes reserved, and never refunds deletion", prismaGlobal.bind(async () => {
+  test("the sweep releases admission orphans, keeps unknown outcomes reserved, and never refunds deletion", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const { owner, workspace: ws } = await workspace("creator", "sweep-images");
     const { project } = await dubbableProject(ws.id, owner.id);
     const orphan = await reserveImage(ws.id, owner.id, "creator");
@@ -415,9 +416,9 @@ dbDescribe("Generation usage PostgreSQL contracts", () => {
       await prisma.generatedMediaUsageReservation.findUniqueOrThrow({ where: { id: unknown.reservationId } }),
     ).toMatchObject({ status: "finalized", reason: "generation_subject_deleted" });
     expect((await summarizeGenerationUsage(ws.id)).images).toMatchObject({ used: 1, concurrency: { active: 0 } });
-  }));
+  })));
 
-  test("image claims fence expired owners and serialize cancellation with processing", prismaGlobal.bind(async () => {
+  test("image claims fence expired owners and serialize cancellation with processing", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const { owner, workspace: ws } = await workspace("creator", "image-claims");
     const { project } = await dubbableProject(ws.id, owner.id);
     const id = randomUUID();
@@ -454,9 +455,9 @@ dbDescribe("Generation usage PostgreSQL contracts", () => {
       status: "cancelled", claimId: null, claimExpiresAt: null, updatedAt: expiredAt,
     });
     await ledger.release({ jobId: id, reservationId: reservation.reservationId, reason: "test_cancelled" });
-  }));
+  })));
 
-  test("deleting the actor, output, or Project never refunds a finalized count", prismaGlobal.bind(async () => {
+  test("deleting the actor, output, or Project never refunds a finalized count", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const { owner, workspace: ws } = await workspace("business", "deletion");
     const member = await user("deletion-member");
     await prisma.workspaceMember.create({ data: { workspaceId: ws.id, userId: member.id, role: "editor" } });
@@ -483,9 +484,9 @@ dbDescribe("Generation usage PostgreSQL contracts", () => {
     const summary = await summarizeGenerationUsage(ws.id);
     expect(summary.images.used).toBe(1);
     expect(summary.dubs).toMatchObject({ used: 1, limit: 30, remaining: 29, entitled: true, maxClipSeconds: 180 });
-  }));
+  })));
 
-  test("dubbing needs the plan, a short enough clip, and an unexhausted month", prismaGlobal.bind(async () => {
+  test("dubbing needs the plan, a short enough clip, and an unexhausted month", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const creator = await workspace("creator", "dub-creator");
     const creatorProject = await dubbableProject(creator.workspace.id, creator.owner.id);
     await expect(
@@ -512,9 +513,9 @@ dbDescribe("Generation usage PostgreSQL contracts", () => {
       ),
     ).rejects.toMatchObject({ code: "dubbing_clip_too_long" });
     expect(await prisma.clipDub.count({ where: { projectId: long.project.id } })).toBe(0);
-  }));
+  })));
 
-  test("the last dub of the month goes to one of two members racing on different Projects", prismaGlobal.bind(async () => {
+  test("the last dub of the month goes to one of two members racing on different Projects", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const { owner, workspace: ws } = await workspace("business", "dub-race");
     const member = await user("dub-race-member");
     await prisma.workspaceMember.create({ data: { workspaceId: ws.id, userId: member.id, role: "editor" } });
@@ -541,9 +542,9 @@ dbDescribe("Generation usage PostgreSQL contracts", () => {
     expect(dubs).toBe(1);
     expect(runs).toBe(1);
     expect((await summarizeGenerationUsage(ws.id)).dubs).toMatchObject({ used: 30, remaining: 0 });
-  }));
+  })));
 
-  test("a concurrent idempotent dub request admits one dub, one run, and one count", prismaGlobal.bind(async () => {
+  test("a concurrent idempotent dub request admits one dub, one run, and one count", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const { owner, workspace: ws } = await workspace("pro", "dub-idempotent");
     const { project, clip } = await dubbableProject(ws.id, owner.id);
     const key = randomUUID();
@@ -564,9 +565,9 @@ dbDescribe("Generation usage PostgreSQL contracts", () => {
       dubbingService.requestClipDub({ actorUserId: owner.id, workspaceId: ws.id }, project.id, randomUUID(), dubInput(clip.id, "fr")),
     ).rejects.toMatchObject({ code: "dubbing_in_progress" });
     expect(await prisma.generatedMediaUsageReservation.count({ where: { workspaceId: ws.id, kind: "dub" } })).toBe(1);
-  }));
+  })));
 
-  test("a failed dub re-request is counted again in the current month", prismaGlobal.bind(async () => {
+  test("a failed dub re-request is counted again in the current month", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const { owner, workspace: ws } = await workspace("pro", "dub-readmit");
     const { project, clip } = await dubbableProject(ws.id, owner.id);
     const scope = { actorUserId: owner.id, workspaceId: ws.id };
@@ -606,9 +607,9 @@ dbDescribe("Generation usage PostgreSQL contracts", () => {
     await expect(
       dubbingService.requestClipDub(scope, project.id, randomUUID(), dubInput(clip.id)),
     ).rejects.toMatchObject({ code: "plan_limit_reached" });
-  }));
+  })));
 
-  test("a worker crash before completion retries on the same count; completion finalizes atomically", prismaGlobal.bind(async () => {
+  test("a worker crash before completion retries on the same count; completion finalizes atomically", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const { owner, workspace: ws } = await workspace("pro", "dub-crash");
     const { project, clip } = await dubbableProject(ws.id, owner.id);
     const admitted = await dubbingService.requestClipDub({ actorUserId: owner.id, workspaceId: ws.id }, project.id, randomUUID(), dubInput(clip.id));
@@ -636,9 +637,9 @@ dbDescribe("Generation usage PostgreSQL contracts", () => {
     const replay = await dubbingService.requestClipDub({ actorUserId: owner.id, workspaceId: ws.id }, project.id, randomUUID(), dubInput(clip.id));
     expect(replay).toMatchObject({ dub: { id: admitted.dub.id, status: "completed" }, workflowRunId: null });
     expect((await summarizeGenerationUsage(ws.id)).dubs).toMatchObject({ used: 1, finalized: 1, reserved: 0 });
-  }));
+  })));
 
-  test("no dub runs or completes without its live count, and a terminal failure releases it", prismaGlobal.bind(async () => {
+  test("no dub runs or completes without its live count, and a terminal failure releases it", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const { owner, workspace: ws } = await workspace("pro", "dub-guards");
     const { project, clip } = await dubbableProject(ws.id, owner.id);
     const scope = { actorUserId: owner.id, workspaceId: ws.id };
@@ -678,9 +679,9 @@ dbDescribe("Generation usage PostgreSQL contracts", () => {
     expect(
       await prisma.generatedMediaUsageReservation.findUniqueOrThrow({ where: { jobId: admitted.dub.id } }),
     ).toMatchObject({ status: "released", reason: "dubbing_failed" });
-  }));
+  })));
 
-  test("a partial run releases its failed dub, but not one re-admitted before the release", prismaGlobal.bind(async () => {
+  test("a partial run releases its failed dub, but not one re-admitted before the release", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const { owner, workspace: ws } = await workspace("pro", "dub-partial");
     const { project, clip } = await dubbableProject(ws.id, owner.id);
     const scope = { actorUserId: owner.id, workspaceId: ws.id };
@@ -732,9 +733,9 @@ dbDescribe("Generation usage PostgreSQL contracts", () => {
     // The accepted retry still runs on its count.
     const { lifecycle, attempt } = await claimOnly(readmitted.workflowRunId!);
     expect((await lifecycle.markDubProcessing(attempt, second.admitted.dub.id)).count).toBe(1);
-  }));
+  })));
 
-  test("the sweep never releases a queued dub and settles terminal or deleted ones", prismaGlobal.bind(async () => {
+  test("the sweep never releases a queued dub and settles terminal or deleted ones", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const { owner, workspace: ws } = await workspace("business", "dub-sweep");
     const scope = { actorUserId: owner.id, workspaceId: ws.id };
     const queued = await dubbableProject(ws.id, owner.id);
@@ -765,9 +766,9 @@ dbDescribe("Generation usage PostgreSQL contracts", () => {
     expect(await status(liveDub.dub.id)).toBe("reserved");
     expect(await status(doneDub.dub.id)).toBe("released");
     expect(await status(deletedDub.dub.id)).toBe("finalized");
-  }));
+  })));
 
-  test("a new Free Project gets its 72-hour deadline with no retention configuration", prismaGlobal.bind(async () => {
+  test("a new Free Project gets its 72-hour deadline with no retention configuration", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     for (const key of ["PROJECT_RETENTION_MODE", "PROJECT_RETENTION_ENFORCEMENT_STARTED_AT"]) delete process.env[key];
     const free = await workspace("free", "retention");
     const paid = await workspace("pro", "retention-paid");
@@ -777,5 +778,5 @@ dbDescribe("Generation usage PostgreSQL contracts", () => {
       expiresAt: new Date(createdAt.getTime() + 72 * 60 * 60 * 1000),
     });
     expect(await projectRetentionService.assignmentForWorkspace(paid.workspace.id, createdAt)).toBeNull();
-  }));
+  })));
 });

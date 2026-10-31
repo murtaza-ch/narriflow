@@ -1,3 +1,4 @@
+import { bindServiceTestEnvironment } from "./runtime-test-support";
 import { describe, expect, test } from "bun:test";
 import type { PrismaClient } from "@prisma/client";
 import { ClipEditorDocumentPersistenceError } from "./clip-editor-document-persistence";
@@ -28,7 +29,7 @@ describe("Workflow Attempt heartbeat recovery", () => {
     });
   }
 
-  test("a transient database error leaves the attempt running for the next heartbeat", async () => {
+  test("a transient database error leaves the attempt running for the next heartbeat", bindServiceTestEnvironment(async () => {
     const runner = lifecycle();
     let heartbeatCount = 0;
     let renewed!: () => void;
@@ -48,9 +49,9 @@ describe("Workflow Attempt heartbeat recovery", () => {
       return outcome;
     })).resolves.toBe("renewed");
     expect(heartbeatCount).toBe(2);
-  });
+  }));
 
-  test("confirmed ownership loss aborts execution and preserves the ownership error", async () => {
+  test("confirmed ownership loss aborts execution and preserves the ownership error", bindServiceTestEnvironment(async () => {
     const runner = lifecycle();
     const lost = new WorkflowAttemptLost(attempt);
     runner.heartbeat = async () => { throw lost; };
@@ -63,9 +64,9 @@ describe("Workflow Attempt heartbeat recovery", () => {
       }, { once: true }));
     })).rejects.toBe(lost);
     expect(executionAborted).toBe(true);
-  });
+  }));
 
-  test.each(["commit", "rollback"])("an in-flight heartbeat waits for settlement %s before deciding ownership", async (outcome) => {
+  test.each(["commit", "rollback"])("an in-flight heartbeat waits for settlement %s before deciding ownership", bindServiceTestEnvironment(async (outcome) => {
     let commit!: () => void;
     let rollback!: (error: unknown) => void;
     const transaction = new Promise<void>((resolve, reject) => { commit = resolve; rollback = reject; });
@@ -75,7 +76,8 @@ describe("Workflow Attempt heartbeat recovery", () => {
     const heartbeatReleased = new Promise<void>((resolve) => { finishHeartbeat = resolve; });
     const runner = new WorkflowRunLifecycle({
       prisma: { $transaction: () => transaction } as unknown as PrismaClient,
-      leaseOwner: "heartbeat-worker", leaseDurationMs: 100, heartbeatIntervalMs: 5,
+      leaseOwner: "heartbeat-worker",
+      redisRequired: false, leaseDurationMs: 100, heartbeatIntervalMs: 5,
     });
     runner.heartbeat = async () => { started(); await heartbeatReleased; throw new WorkflowAttemptLost(attempt); };
     const result = runner.runAttempt(attempt, async ({ signal }) => {
@@ -101,9 +103,9 @@ describe("Workflow Attempt heartbeat recovery", () => {
     });
     if (outcome === "commit") await expect(result).resolves.toBe("settled");
     else await expect(result).rejects.toBeInstanceOf(WorkflowAttemptLost);
-  });
+  }));
 
-  test("a sustained database outage stops execution once the lease cannot be renewed", async () => {
+  test("a sustained database outage stops execution once the lease cannot be renewed", bindServiceTestEnvironment(async () => {
     const runner = new WorkflowRunLifecycle({
       prisma: {} as PrismaClient,
       leaseOwner: "heartbeat-worker",
@@ -120,9 +122,9 @@ describe("Workflow Attempt heartbeat recovery", () => {
       await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
     })).rejects.toBeInstanceOf(WorkflowAttemptLost);
     expect(heartbeats).toBeGreaterThan(1);
-  });
+  }));
 
-  test("an unresponsive heartbeat cannot keep work running past its lease", async () => {
+  test("an unresponsive heartbeat cannot keep work running past its lease", bindServiceTestEnvironment(async () => {
     const runner = new WorkflowRunLifecycle({
       prisma: {} as PrismaClient,
       leaseOwner: "heartbeat-worker",
@@ -139,27 +141,27 @@ describe("Workflow Attempt heartbeat recovery", () => {
     } finally {
       clearTimeout(stop);
     }
-  });
+  }));
 });
 
 describe("Workflow Failure disposition", () => {
-  test("classifies permanent and transient HTTP responses at the provider boundary", () => {
+  test("classifies permanent and transient HTTP responses at the provider boundary", bindServiceTestEnvironment(() => {
     expect(workflowHttpFailureDisposition(400)).toBe("permanent");
     expect(workflowHttpFailureDisposition(401)).toBe("permanent");
     expect(workflowHttpFailureDisposition(429)).toBe("retryable");
     expect(workflowHttpFailureDisposition(503)).toBe("retryable");
-  });
+  }));
 
-  test("preserves a disposition already assigned by the failure source", () => {
+  test("preserves a disposition already assigned by the failure source", bindServiceTestEnvironment(() => {
     const source = new WorkflowFailure(
       "invalid_provider_request",
       "permanent",
       "Provider rejected the request",
     );
     expect(workflowFailureFromUnknown(source)).toBe(source);
-  });
+  }));
 
-  test("reads typed retryability from bounded domain details", () => {
+  test("reads typed retryability from bounded domain details", bindServiceTestEnvironment(() => {
     expect(
       workflowFailureFromUnknown(
         new ClipEditorDocumentPersistenceError(
@@ -176,5 +178,5 @@ describe("Workflow Failure disposition", () => {
         ),
       ).disposition,
     ).toBe("retryable");
-  });
+  }));
 });

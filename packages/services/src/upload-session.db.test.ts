@@ -1,3 +1,4 @@
+import { bindServiceTestEnvironment } from "./runtime-test-support";
 import { createDatabaseTestContext } from "@narriflow/db/testing";
 import { randomUUID } from "node:crypto";
 import {
@@ -73,7 +74,7 @@ dbDescribe("Upload Session PostgreSQL invariants", () => {
   let priorPrisma: PrismaClient | undefined;
   const prismaGlobal = createDatabaseTestContext();
 
-  beforeAll(prismaGlobal.bind(async () => {
+  beforeAll(bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     if (!databaseUrl) throw new Error("UPLOAD_SESSION_TEST_DATABASE_URL is required");
     assertSafeDatabase(databaseUrl);
     pool = new Pool({ connectionString: databaseUrl, max: 8 });
@@ -86,20 +87,20 @@ dbDescribe("Upload Session PostgreSQL invariants", () => {
     });
     priorPrisma = prismaGlobal.client;
     prismaGlobal.client = prisma;
-  }));
+  })));
 
-  afterAll(prismaGlobal.bind(async () => {
+  afterAll(bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     prismaGlobal.client = priorPrisma;
     await prisma?.$disconnect();
     await pool?.end();
-  }));
+  })));
 
   test.each([
     ["single", "finalize"],
     ["multipart", "finalize"],
     ["single", "discard"],
     ["multipart", "discard"],
-  ] as const)("a recovered %s upload can %s after its reconciler's lease expires", prismaGlobal.bind(async (transferKind, action) => {
+  ] as const)("a recovered %s upload can %s after its reconciler's lease expires", bindServiceTestEnvironment(prismaGlobal.bind(async (transferKind, action) => {
     const user = await prisma.user.create({ data: { clerkId: `upload-recovery:${randomUUID()}` } });
     const workspace = await prisma.workspace.create({ data: { name: "Recovered upload", ownerUserId: user.id } });
     try {
@@ -158,9 +159,9 @@ dbDescribe("Upload Session PostgreSQL invariants", () => {
       await prisma.workspace.delete({ where: { id: workspace.id } });
       await prisma.user.delete({ where: { id: user.id } });
     }
-  }));
+  })));
 
-  test("same-key concurrent opens replay the admitted session at the Workspace capacity limit", prismaGlobal.bind(async () => {
+  test("same-key concurrent opens replay the admitted session at the Workspace capacity limit", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const user = await prisma.user.create({ data: { clerkId: `upload-capacity-race:${randomUUID()}` } });
     const workspace = await prisma.workspace.create({ data: { name: "Last upload slot", ownerUserId: user.id, pricingTier: "free" } });
     let arrivals = 0;
@@ -190,9 +191,9 @@ dbDescribe("Upload Session PostgreSQL invariants", () => {
       await prisma.workspace.delete({ where: { id: workspace.id } });
       await prisma.user.delete({ where: { id: user.id } });
     }
-  }));
+  })));
 
-  test("durable handoff survives removal of the non-owner creator", prismaGlobal.bind(async () => {
+  test("durable handoff survives removal of the non-owner creator", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const owner = await prisma.user.create({ data: { clerkId: `upload-owner:${randomUUID()}` } });
     const creator = await prisma.user.create({ data: { clerkId: `upload-creator:${randomUUID()}` } });
     const workspace = await prisma.workspace.create({ data: { name: "Surviving upload", ownerUserId: owner.id, pricingTier: "business", members: { create: [{ userId: owner.id, role: "owner" }, { userId: creator.id, role: "editor" }] } } });
@@ -211,9 +212,9 @@ dbDescribe("Upload Session PostgreSQL invariants", () => {
     expect(await prisma.project.findUnique({ where: { id: session.preallocatedProjectId } })).toMatchObject({ workspaceId: workspace.id, createdByUserId: null, ingestStatus: "queued" });
     expect(await prisma.ingestJob.findUnique({ where: { id: jobId } })).toMatchObject({ projectId: session.preallocatedProjectId, status: "queued" });
     expect(await prismaUploadSessionPersistence.handoff({ sessionId: session.id, queuedJobId: randomUUID(), verifiedSizeBytes: 2048, verifiedContentType: "video/mp4", reconciliationAttemptId: null, updatedAt: now })).toMatchObject({ queuedJobId: jobId });
-  }));
+  })));
 
-  test("concurrent open and finalize produce one session and one atomic handoff", prismaGlobal.bind(async () => {
+  test("concurrent open and finalize produce one session and one atomic handoff", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const suffix = randomUUID();
     const user = await prisma.user.create({
       data: {
@@ -812,9 +813,9 @@ dbDescribe("Upload Session PostgreSQL invariants", () => {
         (session) => !firstBatch.some((claimed) => claimed.id === session.id),
       ),
     ).toBe(true);
-  }));
+  })));
 
-  test("Prisma persists immutable conflicts, lost binds, expiry cleanup, discard fencing, and event replay", prismaGlobal.bind(async () => {
+  test("Prisma persists immutable conflicts, lost binds, expiry cleanup, discard fencing, and event replay", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const suffix = randomUUID();
     const user = await prisma.user.create({
       data: {
@@ -1116,9 +1117,9 @@ dbDescribe("Upload Session PostgreSQL invariants", () => {
     ).toBe(1);
     expect(providerAborts).toContain("provider-2");
     expect(providerAborts).toContain("provider-3");
-  }));
+  })));
 
-  test("an Upload Session that ends before its import emits one intake event, whichever way it ends", prismaGlobal.bind(async () => {
+  test("an Upload Session that ends before its import emits one intake event, whichever way it ends", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const owner = await prisma.user.create({ data: { clerkId: `upload-events:${randomUUID()}` } });
     const workspace = await prisma.workspace.create({ data: { name: "Upload events", ownerUserId: owner.id, pricingTier: "business", members: { create: { userId: owner.id, role: "owner" } } } });
     const now = new Date();
@@ -1150,9 +1151,9 @@ dbDescribe("Upload Session PostgreSQL invariants", () => {
     await expect(prismaUploadSessionPersistence.settleTerminal({ sessionId: expired.row.id, reconciliationAttemptId: expired.attemptId, status: "expired", failureCode: "upload_session_expired", updatedAt: now }))
       .rejects.toBeInstanceOf(UploadSessionReconciliationClaimLostError);
     expect(await feed()).toHaveLength(3);
-  }));
+  })));
 
-  test.each(["aborted", "expired", "failed"] as const)("a %s single upload retains delayed cleanup for bytes written by a still-valid grant", prismaGlobal.bind(async (status) => {
+  test.each(["aborted", "expired", "failed"] as const)("a %s single upload retains delayed cleanup for bytes written by a still-valid grant", bindServiceTestEnvironment(prismaGlobal.bind(async (status) => {
     const user = await prisma.user.create({ data: { clerkId: `upload-late-put:${randomUUID()}` } });
     const workspace = await prisma.workspace.create({ data: { name: "Late PUT", ownerUserId: user.id } });
     const at = new Date();
@@ -1197,9 +1198,9 @@ dbDescribe("Upload Session PostgreSQL invariants", () => {
       await prisma.workspace.delete({ where: { id: workspace.id } });
       await prisma.user.delete({ where: { id: user.id } });
     }
-  }));
+  })));
 
-  test("single-PUT cleanup retains its exact key when transfer finishes after the old 70-minute window", prismaGlobal.bind(async () => {
+  test("single-PUT cleanup retains its exact key when transfer finishes after the old 70-minute window", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const user = await prisma.user.create({ data: { clerkId: `upload-very-late:${randomUUID()}` } });
     const workspace = await prisma.workspace.create({ data: { name: "In-flight PUT", ownerUserId: user.id } });
     const at = new Date();
@@ -1231,9 +1232,9 @@ dbDescribe("Upload Session PostgreSQL invariants", () => {
       await prisma.workspace.delete({ where: { id: workspace.id } });
       await prisma.user.delete({ where: { id: user.id } });
     }
-  }));
+  })));
 
-  test("an upload opened with a Recipe replays after the Recipe is edited, keeps the revision it froze, and a new key sees the edit", prismaGlobal.bind(async () => {
+  test("an upload opened with a Recipe replays after the Recipe is edited, keeps the revision it froze, and a new key sees the edit", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const user = await prisma.user.create({ data: { clerkId: `upload-recipe-${randomUUID()}` } });
     const workspace = await prisma.workspace.create({ data: { name: "Upload Recipe", ownerUserId: user.id, pricingTier: "business", members: { create: { userId: user.id, role: "owner" } } } });
     const scope = { actorUserId: user.id, workspaceId: workspace.id };
@@ -1281,8 +1282,8 @@ dbDescribe("Upload Session PostgreSQL invariants", () => {
     const fresh = await open(randomUUID());
     expect(fresh.sessionId).not.toBe(first.sessionId);
     expect(await stored(fresh.sessionId)).toMatchObject({ contentPack: { clipCountTarget: 4 }, recipe: { id: recipe.id, revision: 2 } });
-  }));
-  test("a handoff past its expiry can find the caller's own session by key, and nobody else's", prismaGlobal.bind(async () => {
+  })));
+  test("a handoff past its expiry can find the caller's own session by key, and nobody else's", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const owner = await prisma.user.create({ data: { clerkId: `upload-lookup-${randomUUID()}` } });
     const other = await prisma.user.create({ data: { clerkId: `upload-lookup-other-${randomUUID()}` } });
     const workspace = await prisma.workspace.create({
@@ -1323,5 +1324,5 @@ dbDescribe("Upload Session PostgreSQL invariants", () => {
     expect(await uploadSessionService.hasOwnSessionByClientKey(ownerScope, key)).toBe(true);
     expect(await uploadSessionService.hasOwnSessionByClientKey(ownerScope, randomUUID())).toBe(false);
     expect(await uploadSessionService.hasOwnSessionByClientKey(otherScope, key)).toBe(false);
-  }));
+  })));
 });

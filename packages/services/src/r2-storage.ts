@@ -1,3 +1,4 @@
+import { readServiceEnvironment } from "./runtime-environment";
 import { open, readFile, stat } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { basename } from "node:path";
@@ -202,7 +203,7 @@ const MULTIPART_PART_SIZE_BYTES = 16 * 1024 * 1024;
  *  read into memory (see the pool loop below). Clamped to [1, 16] so a bad
  *  env value can't accidentally serialize uploads or blow the heap. */
 function getMultipartConcurrency() {
-  const raw = Number(process.env.R2_MULTIPART_CONCURRENCY);
+  const raw = Number(readServiceEnvironment().R2_MULTIPART_CONCURRENCY);
   if (!Number.isFinite(raw)) {
     return 4;
   }
@@ -210,7 +211,7 @@ function getMultipartConcurrency() {
 }
 
 function getRequiredEnv(name: string) {
-  const value = process.env[name]?.trim();
+  const value = readServiceEnvironment()[name]?.trim();
   if (!value) {
     throw new Error(`Missing required environment variable: ${name}`);
   }
@@ -226,16 +227,10 @@ function getR2Config() {
   };
 }
 
-let r2Client: S3Client | null = null;
-
 function getClient() {
-  if (r2Client) {
-    return r2Client;
-  }
-
   const { accountId, accessKeyId, secretAccessKey } = getR2Config();
 
-  r2Client = new S3Client({
+  return new S3Client({
     region: "auto",
     endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
     credentials: {
@@ -258,15 +253,14 @@ function getClient() {
     requestChecksumCalculation: "WHEN_REQUIRED",
   });
 
-  return r2Client;
 }
 
 export function isR2Configured() {
   return Boolean(
-    process.env.R2_ACCOUNT_ID &&
-    process.env.R2_ACCESS_KEY_ID &&
-    process.env.R2_SECRET_ACCESS_KEY &&
-    process.env.R2_BUCKET,
+    readServiceEnvironment().R2_ACCOUNT_ID &&
+    readServiceEnvironment().R2_ACCESS_KEY_ID &&
+    readServiceEnvironment().R2_SECRET_ACCESS_KEY &&
+    readServiceEnvironment().R2_BUCKET,
   );
 }
 

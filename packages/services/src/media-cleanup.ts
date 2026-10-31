@@ -1,3 +1,4 @@
+import { readServiceEnvironment } from "./runtime-environment";
 import { randomUUID } from "node:crypto";
 import { getPrismaClient } from "@narriflow/db/client";
 import type { MediaCleanupObligation } from "@prisma/client";
@@ -580,7 +581,7 @@ export function validateMediaCleanupConfig(
 }
 
 export function mediaCleanupConfigFromEnv(
-  env: NodeJS.ProcessEnv = process.env,
+  env: NodeJS.ProcessEnv = readServiceEnvironment(),
 ): MediaCleanupConfig {
   const defaults = defaultMediaCleanupConfig();
   const number = (name: string, fallback: number) => {
@@ -1087,7 +1088,8 @@ const diagnostics: MediaCleanupDiagnostics = {
   },
 };
 
-export const mediaCleanupWorker = createMediaCleanupWorker({
+function productionMediaCleanupWorker() {
+  return createMediaCleanupWorker({
   store: prismaMediaCleanupStore,
   storage: {
     async deleteExact(key, options) {
@@ -1103,4 +1105,9 @@ export const mediaCleanupWorker = createMediaCleanupWorker({
     }));
   },
   diagnostics,
-});
+  });
+}
+
+export const mediaCleanupWorker = {
+  processDue: (options?: Parameters<ReturnType<typeof createMediaCleanupWorker>["processDue"]>[0]) => productionMediaCleanupWorker().processDue(options),
+};

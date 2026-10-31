@@ -1,3 +1,4 @@
+import { withServiceEnvironment } from "../src/runtime-environment";
 import { createDatabaseScope, withDatabaseScope } from "@narriflow/db/client";
 import { BillingError, billingService } from "../src/billing.service";
 import { parseWorkspaceBillingOperatorArgs } from "../src/workspace-billing-operator";
@@ -9,7 +10,7 @@ function write(value: unknown) {
 try {
   const connectionString = process.env.DIRECT_URL ?? process.env.DATABASE_URL;
   if (!connectionString) throw new Error("Database connection is required");
-  await withDatabaseScope(createDatabaseScope({ connectionString }), async () => {
+  await withServiceEnvironment(process.env, () => withDatabaseScope(createDatabaseScope({ connectionString }), async () => {
   const input = parseWorkspaceBillingOperatorArgs(process.argv.slice(2));
   billingService.validateConfiguration({ surface: "operator" });
   const before = await billingService.inspectAccount(input.workspaceId);
@@ -27,7 +28,7 @@ try {
       after,
     });
   }
-  });
+  }));
 } catch (error) {
   write({
     mode: "failed",

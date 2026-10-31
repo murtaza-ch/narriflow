@@ -1,3 +1,4 @@
+import { readServiceEnvironment } from "./runtime-environment";
 import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { hash as argon2Hash, verify as argon2Verify } from "@node-rs/argon2";
 import { AnalyticsEventType, Prisma } from "@prisma/client";
@@ -172,7 +173,7 @@ export function decryptReviewValue(value: string, secret: string) {
 }
 
 export function reviewDeliverySecret() {
-  const secret = process.env.REVIEW_ACCESS_SECRET?.trim() || process.env.REVIEW_SESSION_SECRET?.trim();
+  const secret = readServiceEnvironment().REVIEW_ACCESS_SECRET?.trim() || readServiceEnvironment().REVIEW_SESSION_SECRET?.trim();
   if (!secret || secret.length < 32) {
     throw new ReviewServiceError(
       "review_delivery_configuration_invalid",

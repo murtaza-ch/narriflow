@@ -1,3 +1,4 @@
+import { bindServiceTestEnvironment } from "./runtime-test-support";
 import { createDatabaseTestContext } from "@narriflow/db/testing";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import type { PrismaClient } from "@prisma/client";
@@ -51,18 +52,18 @@ const fakePrisma = {
 const globals = createDatabaseTestContext();
 const previousPrisma = globals.client;
 const previousDatabaseUrl = process.env.DATABASE_URL;
-beforeAll(globals.bind(() => {
+beforeAll(bindServiceTestEnvironment(globals.bind(() => {
   globals.client = fakePrisma;
   process.env.DATABASE_URL = process.env.DATABASE_URL ?? "postgresql://unused.test/db";
-}));
-afterAll(globals.bind(() => {
+})));
+afterAll(bindServiceTestEnvironment(globals.bind(() => {
   globals.client = previousPrisma;
   if (previousDatabaseUrl === undefined) delete process.env.DATABASE_URL;
   else process.env.DATABASE_URL = previousDatabaseUrl;
-}));
+})));
 
 describe("Workspace censored words", () => {
-  test("equal the defaults until edited, then replace them entirely and reset back", globals.bind(async () => {
+  test("equal the defaults until edited, then replace them entirely and reset back", bindServiceTestEnvironment(globals.bind(async () => {
     workspaceRow = { censorWords: [], censorWordsCustomized: false };
     expect(await autoCensorService.getWorkspaceWords(scope("viewer"))).toEqual({
       words: [...DEFAULT_CENSOR_WORD_LIST], customized: false,
@@ -83,9 +84,9 @@ describe("Workspace censored words", () => {
       words: [...DEFAULT_CENSOR_WORD_LIST], customized: false,
     });
     expect(updates.at(-1)).toEqual({ censorWords: [], censorWordsCustomized: false });
-  }));
+  })));
 
-  test("only roles that manage the workspace can change the list", globals.bind(async () => {
+  test("only roles that manage the workspace can change the list", bindServiceTestEnvironment(globals.bind(async () => {
     workspaceRow = { censorWords: [], censorWordsCustomized: false };
     const before = updates.length;
     for (const role of ["editor", "viewer"] as const) {
@@ -95,16 +96,16 @@ describe("Workspace censored words", () => {
         .rejects.toMatchObject({ code: "auto_censor_forbidden" });
     }
     expect(updates.length).toBe(before);
-  }));
+  })));
 
-  test("reject lists that break the limits", globals.bind(async () => {
+  test("reject lists that break the limits", bindServiceTestEnvironment(globals.bind(async () => {
     await expect(autoCensorService.replaceWorkspaceWords(scope("owner"), ["f*ck"])).rejects.toThrow();
     await expect(
       autoCensorService.replaceWorkspaceWords(scope("owner"), Array.from({ length: 201 }, (_, index) => `w${index}x`)),
     ).rejects.toThrow();
-  }));
+  })));
 
-  test("the Studio policy carries the workspace list, project terms and who may edit the list", globals.bind(async () => {
+  test("the Studio policy carries the workspace list, project terms and who may edit the list", bindServiceTestEnvironment(globals.bind(async () => {
     workspaceRow = { censorWords: ["heck"], censorWordsCustomized: true };
     const admin = await autoCensorService.getPolicy(scope("admin"), PROJECT);
     expect(admin).toMatchObject({
@@ -118,9 +119,9 @@ describe("Workspace censored words", () => {
     expect(editor.canEditWorkspaceTerms).toBe(false);
     expect(editor.canApply).toBe(true);
     expect((await autoCensorService.getPolicy(scope("editor", "free"), PROJECT)).canApply).toBe(false);
-  }));
+  })));
 
-  test("a stored project term the rules now reject is skipped, not fatal", globals.bind(async () => {
+  test("a stored project term the rules now reject is skipped, not fatal", bindServiceTestEnvironment(globals.bind(async () => {
     workspaceRow = { censorWords: [], censorWordsCustomized: false };
     storedProjectTerms = ["fu*ck", "ab*", "launch*", "Launch*", 42, "x".repeat(81), " ok word "];
     try {
@@ -133,18 +134,18 @@ describe("Workspace censored words", () => {
     }
     // Writes stay strict.
     await expect(autoCensorService.replaceProjectTerms(scope("editor"), PROJECT, ["fu*ck"])).rejects.toThrow();
-  }));
+  })));
 });
 
 describe("Auto Censor analytics", () => {
-  test("records an event for a clip of the Project and for any role that can view", globals.bind(async () => {
+  test("records an event for a clip of the Project and for any role that can view", bindServiceTestEnvironment(globals.bind(async () => {
     const before = events.length;
     await autoCensorService.recordEvent(scope("viewer"), PROJECT, CLIP, { type: "auto_censor_scan_started" });
     expect(events.length).toBe(before + 1);
     expect(events.at(-1)).toMatchObject({ projectId: PROJECT, clipId: CLIP });
-  }));
+  })));
 
-  test("refuses a clip that is not in the Project without recording anything", globals.bind(async () => {
+  test("refuses a clip that is not in the Project without recording anything", bindServiceTestEnvironment(globals.bind(async () => {
     const before = events.length;
     await expect(
       autoCensorService.recordEvent(scope("editor"), PROJECT, "00000000-0000-4000-8000-0000000000ff", {
@@ -152,5 +153,5 @@ describe("Auto Censor analytics", () => {
       }),
     ).rejects.toMatchObject({ code: "auto_censor_forbidden" });
     expect(events.length).toBe(before);
-  }));
+  })));
 });

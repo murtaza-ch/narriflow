@@ -1,3 +1,4 @@
+import { bindServiceTestEnvironment } from "./runtime-test-support";
 import { createDatabaseTestContext } from "@narriflow/db/testing";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
@@ -23,7 +24,7 @@ db("Workspace Event feed", () => {
   const globals = createDatabaseTestContext();
   let previousGlobalPrisma: PrismaClient | undefined;
 
-  beforeAll(globals.bind(async () => {
+  beforeAll(bindServiceTestEnvironment(globals.bind(async () => {
     if (!url || !schema || !/^integration_test_[a-z0-9_]+$/.test(schema)) throw new Error("Workspace Event tests require a disposable schema");
     pool = new Pool({ connectionString: url, max: 40 });
     if ((await pool.query("SELECT current_schema() AS schema")).rows[0]?.schema !== schema) throw new Error("Wrong disposable schema");
@@ -32,12 +33,12 @@ db("Workspace Event feed", () => {
     previousGlobalPrisma = globals.client;
     globals.client = prisma;
     userId = (await prisma.user.create({ data: { clerkId: `workspace-event:${randomUUID()}` } })).id;
-  }));
-  afterAll(globals.bind(async () => {
+  })));
+  afterAll(bindServiceTestEnvironment(globals.bind(async () => {
     globals.client = previousGlobalPrisma;
     await prisma?.$disconnect();
     await pool?.end();
-  }));
+  })));
 
   async function workspace() {
     return (await prisma.workspace.create({ data: { name: "Events", ownerUserId: userId, pricingTier: "business", members: { create: { userId, role: "owner" } } } })).id;
@@ -50,7 +51,7 @@ db("Workspace Event feed", () => {
   const tags = (page: Awaited<ReturnType<typeof listWorkspaceEvents>>) =>
     page.data.map((event) => (event.subject as { operation: { id: string } }).operation.id);
 
-  test("two interleaved transactions commit in seq order, and a blocked writer waits for the first to commit", globals.bind(async () => {
+  test("two interleaved transactions commit in seq order, and a blocked writer waits for the first to commit", bindServiceTestEnvironment(globals.bind(async () => {
     const workspaceId = await workspace();
     let release!: () => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });
@@ -75,9 +76,9 @@ db("Workspace Event feed", () => {
     const page = await listWorkspaceEvents(prisma, { workspaceId });
     expect(tags(page)).toEqual(["first", "second"]);
     expect(page.data.map((event) => event.seq)).toEqual([1, 2]);
-  }));
+  })));
 
-  test("a reader polling during 24 racing writers only ever sees a gapless prefix", globals.bind(async () => {
+  test("a reader polling during 24 racing writers only ever sees a gapless prefix", bindServiceTestEnvironment(globals.bind(async () => {
     const workspaceId = await workspace();
     const snapshots: number[][] = [];
     let writing = true;
@@ -99,9 +100,9 @@ db("Workspace Event feed", () => {
     for (const seqs of snapshots) expect(seqs).toEqual(seqs.map((_, index) => index + 1));
     const final = await listWorkspaceEvents(prisma, { workspaceId }, { limit: 200 });
     expect(final.data.map((event) => event.seq)).toEqual(Array.from({ length: 24 }, (_, index) => index + 1));
-  }));
+  })));
 
-  test("a rolled-back transaction consumes no seq", globals.bind(async () => {
+  test("a rolled-back transaction consumes no seq", bindServiceTestEnvironment(globals.bind(async () => {
     const workspaceId = await workspace();
     await expect(prisma.$transaction(async (tx) => {
       await appendWorkspaceEvent(tx, finished(workspaceId, "lost"));
@@ -111,9 +112,9 @@ db("Workspace Event feed", () => {
     const page = await listWorkspaceEvents(prisma, { workspaceId });
     expect(tags(page)).toEqual(["kept"]);
     expect(page.data[0]?.seq).toBe(1);
-  }));
+  })));
 
-  test("one dedupe key writes once and advances the counter once, including racing writers", globals.bind(async () => {
+  test("one dedupe key writes once and advances the counter once, including racing writers", bindServiceTestEnvironment(globals.bind(async () => {
     const workspaceId = await workspace();
     await Promise.all(Array.from({ length: 6 }, () => prisma.$transaction((tx) => appendWorkspaceEvent(tx, finished(workspaceId, "same", `test:${workspaceId}:same`)))));
     expect(await prisma.workspaceEvent.count({ where: { workspaceId } })).toBe(1);
@@ -122,9 +123,9 @@ db("Workspace Event feed", () => {
     await prisma.$transaction((tx) => appendWorkspaceEvent(tx, finished(workspaceId, "same", `test:${workspaceId}:same`)));
     await prisma.$transaction((tx) => appendWorkspaceEvent(tx, finished(workspaceId, "next")));
     expect((await listWorkspaceEvents(prisma, { workspaceId })).data.map((event) => event.seq)).toEqual([1, 2]);
-  }));
+  })));
 
-  test("each Workspace counts its own seq", globals.bind(async () => {
+  test("each Workspace counts its own seq", bindServiceTestEnvironment(globals.bind(async () => {
     const [one, two] = [await workspace(), await workspace()];
     await prisma.$transaction(async (tx) => {
       await appendWorkspaceEvent(tx, finished(one, "a"));
@@ -133,9 +134,9 @@ db("Workspace Event feed", () => {
     });
     expect((await listWorkspaceEvents(prisma, { workspaceId: one })).data.map((event) => event.seq)).toEqual([1, 2]);
     expect((await listWorkspaceEvents(prisma, { workspaceId: two })).data.map((event) => event.seq)).toEqual([1]);
-  }));
+  })));
 
-  test("reads page by seq, filter by type, and echo the cursor when nothing is newer", globals.bind(async () => {
+  test("reads page by seq, filter by type, and echo the cursor when nothing is newer", bindServiceTestEnvironment(globals.bind(async () => {
     const workspaceId = await workspace();
     await prisma.$transaction(async (tx) => {
       for (const tag of ["a", "b", "c"]) await appendWorkspaceEvent(tx, finished(workspaceId, tag));
@@ -155,9 +156,9 @@ db("Workspace Event feed", () => {
     // An empty list is every type, as it is for the REST query and the MCP tool.
     expect((await listWorkspaceEvents(prisma, { workspaceId }, { types: [] })).data).toHaveLength(4);
     expect(Number.isNaN(Date.parse(first.data[0]!.occurredAt))).toBe(false);
-  }));
+  })));
 
-  test("posting outcomes are filtered without publishing:read, and the cursor still advances past visible rows only", globals.bind(async () => {
+  test("posting outcomes are filtered without publishing:read, and the cursor still advances past visible rows only", bindServiceTestEnvironment(globals.bind(async () => {
     const workspaceId = await workspace();
     await prisma.$transaction(async (tx) => {
       await appendWorkspaceEvent(tx, finished(workspaceId, "visible-1"));
@@ -176,9 +177,9 @@ db("Workspace Event feed", () => {
     // ...while hidden types among visible ones are filtered out silently.
     expect((await listEvents(actor, { scopes: ["projects:read"] }, { types: ["social_post.finished", "operation.finished"] })).data.map((event) => event.seq)).toEqual([1, 3]);
     expect((await listEvents(actor, { scopes: ["projects:read", "publishing:read"] }, { types: ["social_post.finished"] })).data).toHaveLength(1);
-  }));
+  })));
 
-  test("a descending read is the newest matching events, newest first, with a forward cursor", globals.bind(async () => {
+  test("a descending read is the newest matching events, newest first, with a forward cursor", bindServiceTestEnvironment(globals.bind(async () => {
     const workspaceId = await workspace();
     expect(await listWorkspaceEvents(prisma, { workspaceId }, { order: "desc" })).toEqual({ data: [], nextCursor: "0" });
     await prisma.$transaction(async (tx) => {
@@ -199,9 +200,9 @@ db("Workspace Event feed", () => {
     // A cursor to continue from makes no sense for the newest page.
     await expect(listWorkspaceEvents(prisma, { workspaceId }, { order: "desc", after: "2" })).rejects.toThrow();
     await expect(listEvents({ actorUserId: userId, workspaceId }, { scopes: ["projects:read"] }, { order: "desc", after: "2" })).rejects.toMatchObject({ code: "invalid_request", kind: "invalid" });
-  }));
+  })));
 
-  test("a descending read uses the (workspaceId, seq) index backwards, not a sort", globals.bind(async () => {
+  test("a descending read uses the (workspaceId, seq) index backwards, not a sort", bindServiceTestEnvironment(globals.bind(async () => {
     const workspaceId = await workspace();
     await prisma.$transaction(async (tx) => {
       for (let index = 0; index < 5; index += 1) await appendWorkspaceEvent(tx, finished(workspaceId, `plan-${index}`));
@@ -216,9 +217,9 @@ db("Workspace Event feed", () => {
     expect(text).toContain("Index Scan Backward");
     expect(text).toContain("WorkspaceEvent_workspaceId_seq_key");
     expect(text).not.toContain("Sort");
-  }));
+  })));
 
-  test("events outlive their Project, and retention deletes only rows older than 30 days", globals.bind(async () => {
+  test("events outlive their Project, and retention deletes only rows older than 30 days", bindServiceTestEnvironment(globals.bind(async () => {
     const workspaceId = await workspace();
     const project = await prisma.project.create({ data: { workspaceId, createdByUserId: userId, title: "Doomed", sourceMediaUrl: "r2://source.mp4" } });
     await prisma.$transaction(async (tx) => {
@@ -241,9 +242,9 @@ db("Workspace Event feed", () => {
     expect((await listWorkspaceEvents(prisma, { workspaceId })).data.map((event) => event.seq)).toEqual([2, 3]);
     // Without a cursor the feed starts at the oldest retained row.
     expect(tags(await listWorkspaceEvents(prisma, { workspaceId }))[0]).toBe("recent");
-  }));
+  })));
 
-  test("an expired event is never written again, because its key outlives it", globals.bind(async () => {
+  test("an expired event is never written again, because its key outlives it", bindServiceTestEnvironment(globals.bind(async () => {
     const workspaceId = await workspace();
     await prisma.$transaction((tx) => appendWorkspaceEvent(tx, finished(workspaceId, "once")));
     const day = 24 * 60 * 60 * 1000;
@@ -254,9 +255,9 @@ db("Workspace Event feed", () => {
     await prisma.$transaction((tx) => appendWorkspaceEvent(tx, finished(workspaceId, "once")));
     expect(await prisma.workspaceEvent.count({ where: { workspaceId } })).toBe(0);
     expect((await prisma.workspaceEventCounter.findUniqueOrThrow({ where: { workspaceId } })).lastSeq).toBe(1n);
-  }));
+  })));
 
-  test("one transaction's events take one counter bump, in queue order, and drop duplicate keys", globals.bind(async () => {
+  test("one transaction's events take one counter bump, in queue order, and drop duplicate keys", bindServiceTestEnvironment(globals.bind(async () => {
     const workspaceId = await workspace();
     await prisma.$transaction(async (tx) => {
       for (const tag of ["a", "b", "a", "c"]) queueWorkspaceEvent(tx, finished(workspaceId, tag));
@@ -266,9 +267,9 @@ db("Workspace Event feed", () => {
     expect(tags(page)).toEqual(["a", "b", "c"]);
     expect(page.data.map((event) => event.seq)).toEqual([1, 2, 3]);
     expect((await prisma.workspaceEventCounter.findUniqueOrThrow({ where: { workspaceId } })).lastSeq).toBe(3n);
-  }));
+  })));
 
-  test("a queued event is dropped with a transaction that rolls back, and never written without a flush", globals.bind(async () => {
+  test("a queued event is dropped with a transaction that rolls back, and never written without a flush", bindServiceTestEnvironment(globals.bind(async () => {
     const workspaceId = await workspace();
     await expect(prisma.$transaction(async (tx) => {
       queueWorkspaceEvent(tx, finished(workspaceId, "rolled-back"));
@@ -278,9 +279,9 @@ db("Workspace Event feed", () => {
     await prisma.$transaction(async (tx) => { queueWorkspaceEvent(tx, finished(workspaceId, "never-flushed")); });
     expect(await prisma.workspaceEvent.count({ where: { workspaceId } })).toBe(0);
     expect(await prisma.workspaceEventKey.count({ where: { workspaceId } })).toBe(0);
-  }));
+  })));
 
-  test("a replay takes no counter lock, so it never waits behind another writer", globals.bind(async () => {
+  test("a replay takes no counter lock, so it never waits behind another writer", bindServiceTestEnvironment(globals.bind(async () => {
     const workspaceId = await workspace();
     await prisma.$transaction((tx) => appendWorkspaceEvent(tx, finished(workspaceId, "known")));
     let release!: () => void;
@@ -300,5 +301,5 @@ db("Workspace Event feed", () => {
     release();
     await holder;
     expect(tags(await listWorkspaceEvents(prisma, { workspaceId }))).toEqual(["known", "holder"]);
-  }));
+  })));
 });

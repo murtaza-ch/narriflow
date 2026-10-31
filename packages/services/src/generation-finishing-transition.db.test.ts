@@ -1,3 +1,4 @@
+import { bindServiceTestEnvironment } from "./runtime-test-support";
 import { createDatabaseTestContext } from "@narriflow/db/testing";
 import { RenderFixtureLifecycle } from "./render-group-test-fixture";
 import { randomUUID } from "node:crypto";
@@ -38,22 +39,22 @@ dbDescribe("Finishing hooks on the generation lifecycle", () => {
   const globals = createDatabaseTestContext();
   let previousGlobalPrisma: PrismaClient | undefined;
 
-  beforeAll(globals.bind(() => {
+  beforeAll(bindServiceTestEnvironment(globals.bind(() => {
     if (!url || !schema?.startsWith("workflow_lifecycle_test_")) throw new Error("Finishing tests require a disposable workflow schema");
     pool = new Pool({ connectionString: url, max: 8 });
     prisma = new PrismaClient({ adapter: new PrismaPg(pool, { schema }), transactionOptions: { maxWait: 60_000, timeout: 60_000 } });
     previousGlobalPrisma = globals.client;
     globals.client = prisma;
-  }));
-  beforeEach(globals.bind(async () => {
+  })));
+  beforeEach(bindServiceTestEnvironment(globals.bind(async () => {
     await prisma.workspace.deleteMany({ where: { owner: { clerkId: { startsWith: "finishing-transition:" } } } });
     await prisma.user.deleteMany({ where: { clerkId: { startsWith: "finishing-transition:" } } });
-  }));
-  afterAll(globals.bind(async () => {
+  })));
+  afterAll(bindServiceTestEnvironment(globals.bind(async () => {
     globals.client = previousGlobalPrisma;
     await prisma?.$disconnect();
     await pool?.end();
-  }));
+  })));
 
   async function fixture() {
     const suffix = randomUUID();
@@ -101,7 +102,7 @@ dbDescribe("Finishing hooks on the generation lifecycle", () => {
     return { stt, renderer, render, renders };
   }
 
-  test("the handoff freezes finishing once for the generation it admits, and replays find the same row", globals.bind(async () => {
+  test("the handoff freezes finishing once for the generation it admits, and replays find the same row", bindServiceTestEnvironment(globals.bind(async () => {
     const f = await fixture();
     await prisma.ingestJob.create({ data: { projectId: f.project.id, jobType: "link_import", payload: {}, status: "completed", completedAt: new Date() } });
     const job = await prisma.ingestJob.findFirstOrThrow({ where: { projectId: f.project.id } });
@@ -125,9 +126,9 @@ dbDescribe("Finishing hooks on the generation lifecycle", () => {
     await freeze(f, run.id, { topClips: 9, minScore: 0, copyPlatforms: [], resolution: "720p", delivery: "ready_to_review" });
     expect(await prisma.generationFinishing.count({ where: { projectId: f.project.id } })).toBe(1);
     expect((await finishingRow(run.id)).settings).toEqual(row.settings);
-  }));
+  })));
 
-  test("the finishing row records the Autopilot rule only when the pack's import named one", globals.bind(async () => {
+  test("the finishing row records the Autopilot rule only when the pack's import named one", bindServiceTestEnvironment(globals.bind(async () => {
     const handoff = async (autopilotRuleId: string | null) => {
       const f = await fixture();
       const job = await prisma.ingestJob.create({ data: { projectId: f.project.id, jobType: "link_import", payload: {}, status: "completed", completedAt: new Date() } });
@@ -146,9 +147,9 @@ dbDescribe("Finishing hooks on the generation lifecycle", () => {
     // The Autopilot import names its rule on the pack; a request's settings never do, so a grant covers only the former.
     expect(await handoff(ruleId)).toMatchObject({ autopilotRuleId: ruleId });
     expect(await handoff(null)).toMatchObject({ autopilotRuleId: null });
-  }));
+  })));
 
-  test("only a generation's speech-to-text run can carry finishing", globals.bind(async () => {
+  test("only a generation's speech-to-text run can carry finishing", bindServiceTestEnvironment(globals.bind(async () => {
     const f = await fixture();
     const detection = await prisma.workflowRun.create({ data: { projectId: f.project.id, stage: "moment_detection", status: "queued", idempotencyKey: `detect:${randomUUID()}` } });
     await expect(freeze(f, detection.id)).rejects.toMatchObject({ code: "finishing_origin_invalid" });
@@ -159,7 +160,7 @@ dbDescribe("Finishing hooks on the generation lifecycle", () => {
     expect(await prisma.generationFinishing.count({ where: { projectId: { in: [f.project.id, other.project.id] } } })).toBe(0);
     await freeze(other, stt.id);
     expect(await prisma.generationFinishing.count({ where: { projectId: other.project.id } })).toBe(1);
-  }));
+  })));
 
   /** A ready Project whose committed pack asks for finishing, with a handoff waiting and a generation for that pack already admitted by another path. */
   async function preAdmitted(runStatus: "queued" | "failed", existingFinishing?: Parameters<typeof freeze>[2]) {
@@ -176,24 +177,24 @@ dbDescribe("Finishing hooks on the generation lifecycle", () => {
     return { f, job, run, lifecycle };
   }
 
-  test("a handoff that finds its generation already admitted still freezes the intake's finishing", globals.bind(async () => {
+  test("a handoff that finds its generation already admitted still freezes the intake's finishing", bindServiceTestEnvironment(globals.bind(async () => {
     const { f, job, run, lifecycle } = await preAdmitted("queued");
     expect(await lifecycle.processGenerationHandoffs(1, job.id)).toBe(1);
     expect((await prisma.ingestJob.findUniqueOrThrow({ where: { id: job.id } })).generationRunId).toBe(run.id);
     const row = await finishingRow(run.id);
     expect(row).toMatchObject({ state: "waiting", actorUserId: f.user.id });
     expect(row.settings).toEqual({ topClips: 2, minScore: 40, copyPlatforms: [], resolution: "1080p", delivery: "ready_to_review", queueAccountIds: [], aspectRatios: ["16:9"] });
-  }));
+  })));
 
-  test("and when that generation has already failed, the frozen row is skipped at once with its event", globals.bind(async () => {
+  test("and when that generation has already failed, the frozen row is skipped at once with its event", bindServiceTestEnvironment(globals.bind(async () => {
     const { f, job, run, lifecycle } = await preAdmitted("failed");
     expect(await lifecycle.processGenerationHandoffs(1, job.id)).toBe(1);
     expect(await finishingRow(run.id)).toMatchObject({ state: "skipped", reason: "generation_failed" });
     const events = await feed(f.workspace.id);
     expect(events.filter((event) => event.type === "finishing.finished").map((event) => event.subject)).toMatchObject([{ state: "skipped", reason: "generation_failed", exportIds: [] }]);
-  }));
+  })));
 
-  test("a generation another path already froze different finishing onto keeps it; the handoff still settles", globals.bind(async () => {
+  test("a generation another path already froze different finishing onto keeps it; the handoff still settles", bindServiceTestEnvironment(globals.bind(async () => {
     const { job, run, lifecycle } = await preAdmitted("queued", { topClips: 9, minScore: 0, copyPlatforms: ["x"], resolution: "720p", delivery: "ready_to_review" });
     const warn = spyOn(console, "warn").mockImplementation(() => {});
     try {
@@ -206,9 +207,9 @@ dbDescribe("Finishing hooks on the generation lifecycle", () => {
     // The path that froze it first named no rule, and the intake can't add one afterwards.
     expect((await finishingRow(run.id)).autopilotRuleId).toBeNull();
     expect((await prisma.ingestJob.findUniqueOrThrow({ where: { id: job.id } })).generationRunId).toBe(run.id);
-  }));
+  })));
 
-  test("a handoff without finishing creates no row", globals.bind(async () => {
+  test("a handoff without finishing creates no row", bindServiceTestEnvironment(globals.bind(async () => {
     const f = await fixture();
     const job = await prisma.ingestJob.create({ data: { projectId: f.project.id, jobType: "link_import", payload: {}, status: "completed", completedAt: new Date() } });
     await prisma.processingUsageReservation.create({ data: { projectId: f.project.id, workspaceId: f.workspace.id, intakeKind: "link",
@@ -219,9 +220,9 @@ dbDescribe("Finishing hooks on the generation lifecycle", () => {
       requireRetryActor: async () => {}, sourceBucket: "finishing-test" });
     expect(await lifecycle.processGenerationHandoffs(1, job.id)).toBe(1);
     expect(await prisma.generationFinishing.count({ where: { projectId: f.project.id } })).toBe(0);
-  }));
+  })));
 
-  test("a completed generation makes finishing due in the settling transaction, and a replay changes nothing", globals.bind(async () => {
+  test("a completed generation makes finishing due in the settling transaction, and a replay changes nothing", bindServiceTestEnvironment(globals.bind(async () => {
     const f = await fixture();
     const { stt, renderer, render, renders } = await rendering(f, 1);
     expect((await finishingRow(stt.id)).state).toBe("waiting");
@@ -244,9 +245,9 @@ dbDescribe("Finishing hooks on the generation lifecycle", () => {
       await flushWorkspaceEvents(tx);
     });
     expect((await finishingRow(stt.id)).dueAt).toEqual(due.dueAt);
-  }));
+  })));
 
-  test("a partial generation also makes finishing due", globals.bind(async () => {
+  test("a partial generation also makes finishing due", bindServiceTestEnvironment(globals.bind(async () => {
     const f = await fixture();
     const { stt, renderer, render, renders } = await rendering(f, 2);
     await renderer.markClipRenderVariantRendering(render, renders[0]!.id);
@@ -256,9 +257,9 @@ dbDescribe("Finishing hooks on the generation lifecycle", () => {
     await renderer.settleRenderWorkSet(render);
     expect((await finishingRow(stt.id)).state).toBe("due");
     expect((await feed(f.workspace.id)).map((event) => event.subject)).toMatchObject([{ state: "partial" }]);
-  }));
+  })));
 
-  test("a failed generation skips finishing with that reason and writes its one finishing.finished", globals.bind(async () => {
+  test("a failed generation skips finishing with that reason and writes its one finishing.finished", bindServiceTestEnvironment(globals.bind(async () => {
     const f = await fixture();
     await settledUsage(f);
     const lifecycle = workflow();
@@ -286,9 +287,9 @@ dbDescribe("Finishing hooks on the generation lifecycle", () => {
       await flushWorkspaceEvents(tx);
     });
     expect(await feed(f.workspace.id)).toHaveLength(2);
-  }));
+  })));
 
-  test("a cancelled generation skips finishing as cancelled", globals.bind(async () => {
+  test("a cancelled generation skips finishing as cancelled", bindServiceTestEnvironment(globals.bind(async () => {
     const f = await fixture();
     await settledUsage(f);
     const stt = await admitStt(workflow(), f.project.id);
@@ -296,9 +297,9 @@ dbDescribe("Finishing hooks on the generation lifecycle", () => {
     expect(await workflow().cancelQueuedGenerationOperation({ workspaceId: f.workspace.id, projectId: f.project.id, workflowRunId: stt.id })).toBe(true);
     expect(await finishingRow(stt.id)).toMatchObject({ state: "skipped", reason: "generation_cancelled" });
     expect((await feed(f.workspace.id)).map((event) => event.type)).toEqual(["operation.finished", "finishing.finished"]);
-  }));
+  })));
 
-  test("a generation that did not ask for finishing is unaffected", globals.bind(async () => {
+  test("a generation that did not ask for finishing is unaffected", bindServiceTestEnvironment(globals.bind(async () => {
     const f = await fixture();
     await settledUsage(f);
     const lifecycle = workflow();
@@ -307,5 +308,5 @@ dbDescribe("Finishing hooks on the generation lifecycle", () => {
     await lifecycle.failAttempt(attempt!, new WorkflowFailure("transcription_failed", "permanent", "no audio"));
     expect(await prisma.generationFinishing.count({ where: { projectId: f.project.id } })).toBe(0);
     expect((await feed(f.workspace.id)).map((event) => event.type)).toEqual(["operation.finished"]);
-  }));
+  })));
 });

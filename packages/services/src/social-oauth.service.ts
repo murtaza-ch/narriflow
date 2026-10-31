@@ -1,3 +1,4 @@
+import { readServiceEnvironment } from "./runtime-environment";
 import { workspaceService } from "./workspace.service";
 import { parsePostingSchedule } from "./posting-schedule";
 import { returnGrantPosts, revokeGrantsInTransaction } from "./standing-grant";
@@ -81,7 +82,7 @@ function requirePrisma() {
 }
 
 function requireEnv(name: string) {
-	const value = process.env[name]?.trim();
+	const value = readServiceEnvironment()[name]?.trim();
 	if (!value) {
 		throw new SocialOAuthError(
 			"social_oauth_env_missing",
@@ -92,7 +93,7 @@ function requireEnv(name: string) {
 }
 
 function optionalEnv(name: string) {
-	return process.env[name]?.trim() || null;
+	return readServiceEnvironment()[name]?.trim() || null;
 }
 
 function normalizeOrigin(origin: string) {

@@ -1,3 +1,4 @@
+import { bindServiceTestEnvironment } from "./runtime-test-support";
 import { createDatabaseTestContext } from "@narriflow/db/testing";
 import { RenderFixtureLifecycle } from "./render-group-test-fixture";
 import { randomUUID } from "node:crypto";
@@ -18,7 +19,7 @@ dbDescribe("Manual Clip Export retry PostgreSQL invariants", () => {
   const globals = createDatabaseTestContext();
   let previous: PrismaClient | undefined;
   const prefix = "clip-export-retry-db:";
-  beforeAll(globals.bind(() => {
+  beforeAll(bindServiceTestEnvironment(globals.bind(() => {
     if (!databaseUrl || !databaseSchema || !/^workflow_lifecycle_test_[a-z0-9_]+$/.test(databaseSchema)) {
       throw new Error("Manual retry tests require a disposable workflow schema");
     }
@@ -27,12 +28,12 @@ dbDescribe("Manual Clip Export retry PostgreSQL invariants", () => {
       transactionOptions: { maxWait: 120_000, timeout: 120_000 } });
     previous = globals.client;
     globals.client = prisma;
-  }));
-  beforeEach(globals.bind(async () => {
+  })));
+  beforeEach(bindServiceTestEnvironment(globals.bind(async () => {
     await prisma.workspace.deleteMany({ where: { owner: { clerkId: { startsWith: prefix } } } });
     await prisma.user.deleteMany({ where: { clerkId: { startsWith: prefix } } });
-  }));
-  afterAll(globals.bind(async () => { globals.client = previous; await prisma?.$disconnect(); await pool?.end(); }));
+  })));
+  afterAll(bindServiceTestEnvironment(globals.bind(async () => { globals.client = previous; await prisma?.$disconnect(); await pool?.end(); })));
 
   async function fixture() {
     const user = await prisma.user.create({ data: { clerkId: `${prefix}${randomUUID()}` } });
@@ -86,7 +87,7 @@ dbDescribe("Manual Clip Export retry PostgreSQL invariants", () => {
     return { project, clip, exported, oldRun, success, failed, retry };
   }
 
-  test("actual simultaneous retry requests detach failed lineage once, admit claimable work and preserve successful bytes", globals.bind(async () => {
+  test("actual simultaneous retry requests detach failed lineage once, admit claimable work and preserve successful bytes", bindServiceTestEnvironment(globals.bind(async () => {
     const f = await fixture();
     const snapshots = await Promise.all([f.retry(), f.retry(), f.retry()]);
     for (const snapshot of snapshots) expect(snapshot).toMatchObject({ status: "rendering", progress: 45 });
@@ -118,9 +119,9 @@ dbDescribe("Manual Clip Export retry PostgreSQL invariants", () => {
     expect(await prisma.clipExport.findUniqueOrThrow({ where: { id: f.exported.id } })).toMatchObject({ status: "ready", progress: 100, retryCount: 1 });
     expect(await prisma.clipExportVariant.findUniqueOrThrow({ where: { id: f.success.id }, include: { render: true } })).toEqual(f.success);
     expect(await prisma.workflowRun.count({ where: { projectId: f.project.id, stage: "clip_rendering" } })).toBe(2);
-  }));
+  })));
 
-  test("an all-failed export can manually retry permanent failures with the same frozen outputs", globals.bind(async () => {
+  test("an all-failed export can manually retry permanent failures with the same frozen outputs", bindServiceTestEnvironment(globals.bind(async () => {
     const f = await fixture();
     await prisma.clipRender.update({ where: { id: f.success.render!.id }, data: { status: "failed", failureDisposition: "permanent", errorCode: "source_media_invalid" } });
     await prisma.clipExportVariant.update({ where: { id: f.success.id }, data: { status: "failed", errorCode: "source_media_invalid" } });
@@ -141,18 +142,18 @@ dbDescribe("Manual Clip Export retry PostgreSQL invariants", () => {
     }
     expect(await lifecycle.settleRenderWorkSet(attempt)).toMatchObject({ status: "completed", succeeded: 2, failed: 0 });
     expect(await prisma.clipExport.findUniqueOrThrow({ where: { id: f.exported.id } })).toMatchObject({ status: "ready", retryCount: 1, watermark: true, resolution: "720p" });
-  }));
+  })));
 
-  test("a delayed retry cannot reset a failed child still owned by a live automatic retry", globals.bind(async () => {
+  test("a delayed retry cannot reset a failed child still owned by a live automatic retry", bindServiceTestEnvironment(globals.bind(async () => {
     const f = await fixture();
     await prisma.workflowRun.update({ where: { id: f.oldRun.id }, data: { status: "queued", attemptCount: 1, nextAttemptAt: new Date(Date.now() + 30_000) } });
     const original = await prisma.clipRender.findUniqueOrThrow({ where: { id: f.failed.render!.id } });
     await Promise.all([f.retry(), f.retry()]);
     expect(await prisma.clipRender.findUniqueOrThrow({ where: { id: original.id } })).toEqual(original);
     expect(await prisma.clipExport.findUniqueOrThrow({ where: { id: f.exported.id } })).toEqual(f.exported);
-  }));
+  })));
 
-  test("a retry shares an active frozen run's normal drain follow-up without expanding its work set", globals.bind(async () => {
+  test("a retry shares an active frozen run's normal drain follow-up without expanding its work set", bindServiceTestEnvironment(globals.bind(async () => {
     const f = await fixture();
     const lifecycle = new RenderFixtureLifecycle({ prisma, leaseOwner: randomUUID() });
     await lifecycle.admit({ projectId: f.project.id, stage: "clip_rendering", idempotencyKey: "active-before-retry" });
@@ -167,9 +168,9 @@ dbDescribe("Manual Clip Export retry PostgreSQL invariants", () => {
     if (!followUp) throw new Error("Retry follow-up missing");
     expect(followUp.workflowRunId).toBe(settled.followUpWorkflowRunId!);
     expect((await lifecycle.beginRenderWorkSet(followUp)).variantIds).toEqual([f.failed.render!.id]);
-  }));
+  })));
 
-  test("failed admission rolls back retry count, child resets, aggregates and outbox", globals.bind(async () => {
+  test("failed admission rolls back retry count, child resets, aggregates and outbox", bindServiceTestEnvironment(globals.bind(async () => {
     const f = await fixture();
     await prisma.$executeRawUnsafe(`CREATE FUNCTION "${databaseSchema}".reject_manual_retry() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'manual retry rejected'; END; $$`);
     await prisma.$executeRawUnsafe(`CREATE TRIGGER reject_manual_retry BEFORE INSERT ON "${databaseSchema}"."WorkflowRun" FOR EACH ROW EXECUTE FUNCTION "${databaseSchema}".reject_manual_retry()`);
@@ -182,5 +183,5 @@ dbDescribe("Manual Clip Export retry PostgreSQL invariants", () => {
       await prisma.$executeRawUnsafe(`DROP TRIGGER reject_manual_retry ON "${databaseSchema}"."WorkflowRun"`);
       await prisma.$executeRawUnsafe(`DROP FUNCTION "${databaseSchema}".reject_manual_retry()`);
     }
-  }));
+  })));
 });

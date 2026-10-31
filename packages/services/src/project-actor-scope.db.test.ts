@@ -1,3 +1,4 @@
+import { bindServiceTestEnvironment } from "./runtime-test-support";
 import { createDatabaseTestContext } from "@narriflow/db/testing";
 import { randomUUID } from "node:crypto";
 import {
@@ -42,7 +43,7 @@ dbDescribe("Project Actor Scope PostgreSQL interface", () => {
 	const workspaces: string[] = [];
 	const prismaGlobal = createDatabaseTestContext();
 
-	beforeAll(prismaGlobal.bind(() => {
+	beforeAll(bindServiceTestEnvironment(prismaGlobal.bind(() => {
 		if (!schema?.startsWith("workflow_lifecycle_test_")) {
 			throw new Error("Project Actor Scope tests require a disposable schema");
 		}
@@ -53,18 +54,18 @@ dbDescribe("Project Actor Scope PostgreSQL interface", () => {
 		});
 		priorPrisma = prismaGlobal.client;
 		prismaGlobal.client = prisma;
-	}));
-	afterEach(prismaGlobal.bind(async () => {
+	})));
+	afterEach(bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		await prisma.workspace.deleteMany({
 			where: { id: { in: workspaces.splice(0) } },
 		});
 		await prisma.user.deleteMany({ where: { id: { in: users.splice(0) } } });
-	}));
-	afterAll(prismaGlobal.bind(async () => {
+	})));
+	afterAll(bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		prismaGlobal.client = priorPrisma;
 		await prisma.$disconnect();
 		await pool.end();
-	}));
+	})));
 
 	async function user(label: string) {
 		const suffix = randomUUID();
@@ -132,7 +133,7 @@ dbDescribe("Project Actor Scope PostgreSQL interface", () => {
 		return created;
 	}
 
-	test("a non-owner editor creates, reads and changes shared content as themselves", prismaGlobal.bind(async () => {
+	test("a non-owner editor creates, reads and changes shared content as themselves", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const { owner, editor, viewer, workspace, scope } = await fixture();
 		const created = await project(scope(editor.id));
 		expect(created).toMatchObject({
@@ -179,9 +180,9 @@ dbDescribe("Project Actor Scope PostgreSQL interface", () => {
 			scope(editor.id),
 			created.id,
 		);
-	}));
+	})));
 
-	test("viewer, removed and deleted principals cannot mutate or consume processing", prismaGlobal.bind(async () => {
+	test("viewer, removed and deleted principals cannot mutate or consume processing", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const { editor, viewer, workspace, scope } = await fixture();
 		const created = await project(scope(editor.id));
 		await expect(
@@ -228,9 +229,9 @@ dbDescribe("Project Actor Scope PostgreSQL interface", () => {
 		expect(
 			await prisma.project.findUniqueOrThrow({ where: { id: created.id } }),
 		).toMatchObject({ languageCode: null, createdByUserId: editor.id });
-	}));
+	})));
 
-	test("foreign and inaccessible Projects expose no detail, transcript, pack or workflow state", prismaGlobal.bind(async () => {
+	test("foreign and inaccessible Projects expose no detail, transcript, pack or workflow state", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const first = await fixture();
 		const second = await fixture();
 		const created = await project(first.scope(first.editor.id));
@@ -337,9 +338,9 @@ dbDescribe("Project Actor Scope PostgreSQL interface", () => {
 				).items,
 			).toEqual([]);
 		}
-	}));
+	})));
 
-	test("filtering and pagination operate on shared Workspace content", prismaGlobal.bind(async () => {
+	test("filtering and pagination operate on shared Workspace content", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const { owner, editor, scope } = await fixture();
 		await project(scope(editor.id), "Zebra interview");
 		await project(scope(editor.id), "Alpha launch");
@@ -360,9 +361,9 @@ dbDescribe("Project Actor Scope PostgreSQL interface", () => {
 		});
 		expect(second.items.map((row) => row.title)).toEqual(["Alpha launch"]);
 		expect(second.nextCursor).toBeNull();
-	}));
+	})));
 
-	test("a current editor can delete shared content and receives a missing result on repetition", prismaGlobal.bind(async () => {
+	test("a current editor can delete shared content and receives a missing result on repetition", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const { owner, editor, viewer, scope } = await fixture();
 		const created = await project(scope(owner.id));
 		await expect(
@@ -375,9 +376,9 @@ dbDescribe("Project Actor Scope PostgreSQL interface", () => {
 		await expect(
 			projectService.deleteProject(scope(editor.id), created.id),
 		).rejects.toBeInstanceOf(ProjectNotFoundError);
-	}));
+	})));
 
-	test("removing the creator clears attribution and preserves Project and workflow history", prismaGlobal.bind(async () => {
+	test("removing the creator clears attribution and preserves Project and workflow history", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const { owner, editor, scope } = await fixture();
 		const created = await project(scope(editor.id));
 		const run = await prisma.workflowRun.create({
@@ -418,9 +419,9 @@ dbDescribe("Project Actor Scope PostgreSQL interface", () => {
 				)
 			).outcome,
 		).toBe("settled");
-	}));
+	})));
 
-	test("owner deletion is explicit and an ownership transfer preserves existing content", prismaGlobal.bind(async () => {
+	test("owner deletion is explicit and an ownership transfer preserves existing content", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const { owner, editor, workspace, scope } = await fixture();
 		const created = await project(scope(owner.id));
 		const run = await prisma.workflowRun.create({
@@ -481,9 +482,9 @@ dbDescribe("Project Actor Scope PostgreSQL interface", () => {
 		expect(
 			restricted.outcome === "refused" && restricted.failure.code,
 		).toBe("project_access_denied");
-	}));
+	})));
 
-	test("a personal owner cannot be deleted while the personal Workspace still exists", prismaGlobal.bind(async () => {
+	test("a personal owner cannot be deleted while the personal Workspace still exists", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const { owner, editor, workspace } = await fixture();
 		await prisma.workspace.update({
 			where: { id: workspace.id },
@@ -495,9 +496,9 @@ dbDescribe("Project Actor Scope PostgreSQL interface", () => {
 		expect(await prisma.workspace.count({ where: { id: workspace.id } })).toBe(
 			1,
 		);
-	}));
+	})));
 
-	test("bound Content Packs never fall through to a newer, foreign, draft or missing pack", prismaGlobal.bind(async () => {
+	test("bound Content Packs never fall through to a newer, foreign, draft or missing pack", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const { editor, scope } = await fixture();
 		const created = await project(scope(editor.id));
 		const foreign = await project(scope(editor.id), "Different project");
@@ -550,9 +551,9 @@ dbDescribe("Project Actor Scope PostgreSQL interface", () => {
 		}
 		await prisma.contentPack.delete({ where: { id: bound.id } });
 		expect(await projectService.getContentPackForRun(run)).toBeNull();
-	}));
+	})));
 
-	test("draft, configure, fresh generation and RSS writes preserve every canonical Content Pack setting", prismaGlobal.bind(async () => {
+	test("draft, configure, fresh generation and RSS writes preserve every canonical Content Pack setting", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const { editor, scope } = await fixture();
 		const actor = scope(editor.id);
 		const created = await project(actor);
@@ -649,9 +650,9 @@ dbDescribe("Project Actor Scope PostgreSQL interface", () => {
 		});
 		expect(parseStoredContentPack(rssPack)).toEqual(settings);
 		expect(rssPack.draft).toBe(false);
-	}));
+	})));
 
-	test("equal-time terminal runs select the same id in library, detail and ingest progress", prismaGlobal.bind(async () => {
+	test("equal-time terminal runs select the same id in library, detail and ingest progress", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const { editor, scope } = await fixture();
 		const actor = scope(editor.id);
 		const created = await project(actor);
@@ -695,8 +696,8 @@ dbDescribe("Project Actor Scope PostgreSQL interface", () => {
 		});
 		expect(page.items[0]?.progress).toEqual(detail.progress);
 		expect(ingest?.progress).toEqual(detail.progress);
-	}));
-	test("a failed render run reads as partly ready once any clip has rendered, in list, counts, detail and ingest", prismaGlobal.bind(async () => {
+	})));
+	test("a failed render run reads as partly ready once any clip has rendered, in list, counts, detail and ingest", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const { editor, scope } = await fixture();
 		const actor = scope(editor.id);
 		const rendered = await project(actor, "Has a render");
@@ -757,5 +758,5 @@ dbDescribe("Project Actor Scope PostgreSQL interface", () => {
 		).toEqual(partial);
 		expect((await projectService.getIngestSnapshot(actor, rendered.id))?.progress).toEqual(partial);
 		expect((await projectService.getProjectSnapshot(actor, bare.id)).progress).toEqual(failed);
-	}));
+	})));
 });

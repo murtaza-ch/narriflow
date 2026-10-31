@@ -1,3 +1,4 @@
+import { bindServiceTestEnvironment } from "./runtime-test-support";
 import { describe, expect, test } from "bun:test";
 import {
   pickPexelsFile,
@@ -14,17 +15,17 @@ describe("pickPexelsFile", () => {
     { link: "c.mp4", width: 1920, height: 1080, file_type: "video/mp4" },
   ];
 
-  test("picks the smallest file at or above the target width", () => {
+  test("picks the smallest file at or above the target width", bindServiceTestEnvironment(() => {
     expect(pickPexelsFile(files, 1000)?.link).toBe("b.mp4");
-  });
+  }));
 
-  test("falls back to the largest when none reach the target", () => {
+  test("falls back to the largest when none reach the target", bindServiceTestEnvironment(() => {
     expect(pickPexelsFile(files, 4000)?.link).toBe("c.mp4");
-  });
+  }));
 
-  test("returns null with no usable files", () => {
+  test("returns null with no usable files", bindServiceTestEnvironment(() => {
     expect(pickPexelsFile([], 1080)).toBeNull();
-  });
+  }));
 });
 
 describe("selectBestPexelsVideo", () => {
@@ -32,7 +33,7 @@ describe("selectBestPexelsVideo", () => {
     { link: "p.mp4", width: 1080, height: 1920, quality: "hd", file_type: "video/mp4" },
   ];
 
-  test("skips videos shorter than the minimum and returns a downloadable pick with attribution", () => {
+  test("skips videos shorter than the minimum and returns a downloadable pick with attribution", bindServiceTestEnvironment(() => {
     const videos: PexelsVideo[] = [
       {
         id: 1,
@@ -64,9 +65,9 @@ describe("selectBestPexelsVideo", () => {
       pageUrl: "https://pexels.com/video/2",
       pexelsId: 2,
     });
-  });
+  }));
 
-  test("returns null attribution fields when Pexels reports no user", () => {
+  test("returns null attribution fields when Pexels reports no user", bindServiceTestEnvironment(() => {
     const videos: PexelsVideo[] = [
       {
         id: 3,
@@ -86,7 +87,7 @@ describe("selectBestPexelsVideo", () => {
       pageUrl: "https://pexels.com/video/3",
       pexelsId: 3,
     });
-  });
+  }));
 });
 
 function withPexelsKey<T>(fn: () => Promise<T>): Promise<T> {
@@ -107,7 +108,7 @@ function jsonResponse(body: unknown, init?: ResponseInit): Response {
 }
 
 describe("searchBrollVideos", () => {
-  test("returns [] with no API key configured (graceful)", async () => {
+  test("returns [] with no API key configured (graceful)", bindServiceTestEnvironment(async () => {
     const prev = process.env.PEXELS_API_KEY;
     delete process.env.PEXELS_API_KEY;
     try {
@@ -115,11 +116,11 @@ describe("searchBrollVideos", () => {
     } finally {
       if (prev !== undefined) process.env.PEXELS_API_KEY = prev;
     }
-  });
+  }));
 });
 
 describe("searchPexelsVideos (resilient search)", () => {
-  test("returns [] immediately with no API key, without calling fetch", async () => {
+  test("returns [] immediately with no API key, without calling fetch", bindServiceTestEnvironment(async () => {
     const prev = process.env.PEXELS_API_KEY;
     delete process.env.PEXELS_API_KEY;
     let called = false;
@@ -135,9 +136,9 @@ describe("searchPexelsVideos (resilient search)", () => {
     } finally {
       if (prev !== undefined) process.env.PEXELS_API_KEY = prev;
     }
-  });
+  }));
 
-  test("logs and returns [] distinctly on zero results (no retry)", () =>
+  test("logs and returns [] distinctly on zero results (no retry)", bindServiceTestEnvironment(() =>
     withPexelsKey(async () => {
       let calls = 0;
       const result = await searchPexelsVideos("nonexistent-topic-zzz", "portrait", {
@@ -149,9 +150,9 @@ describe("searchPexelsVideos (resilient search)", () => {
       });
       expect(result).toEqual([]);
       expect(calls).toBe(1); // zero results never retries
-    }));
+    })));
 
-  test("retries on 429 with backoff and eventually succeeds", () =>
+  test("retries on 429 with backoff and eventually succeeds", bindServiceTestEnvironment(() =>
     withPexelsKey(async () => {
       let calls = 0;
       const video: PexelsVideo = {
@@ -178,9 +179,9 @@ describe("searchPexelsVideos (resilient search)", () => {
       expect(calls).toBe(3);
       expect(result).toHaveLength(1);
       expect(result[0]!.id).toBe(42);
-    }));
+    })));
 
-  test("gives up after exhausting retries on persistent 429", () =>
+  test("gives up after exhausting retries on persistent 429", bindServiceTestEnvironment(() =>
     withPexelsKey(async () => {
       let calls = 0;
       const result = await searchPexelsVideos("always limited", "portrait", {
@@ -193,9 +194,9 @@ describe("searchPexelsVideos (resilient search)", () => {
       });
       expect(result).toEqual([]);
       expect(calls).toBe(2);
-    }));
+    })));
 
-  test("retries transient network errors, then succeeds", () =>
+  test("retries transient network errors, then succeeds", bindServiceTestEnvironment(() =>
     withPexelsKey(async () => {
       let calls = 0;
       const result = await searchPexelsVideos("city skyline", "landscape", {
@@ -209,9 +210,9 @@ describe("searchPexelsVideos (resilient search)", () => {
       });
       expect(calls).toBe(2);
       expect(result).toEqual([]);
-    }));
+    })));
 
-  test("does not retry a non-retryable 4xx (e.g. bad API key)", () =>
+  test("does not retry a non-retryable 4xx (e.g. bad API key)", bindServiceTestEnvironment(() =>
     withPexelsKey(async () => {
       let calls = 0;
       const result = await searchPexelsVideos("office team", "portrait", {
@@ -224,9 +225,9 @@ describe("searchPexelsVideos (resilient search)", () => {
       });
       expect(result).toEqual([]);
       expect(calls).toBe(1);
-    }));
+    })));
 
-  test("caches search results so a repeat query does not re-hit the network", () =>
+  test("caches search results so a repeat query does not re-hit the network", bindServiceTestEnvironment(() =>
     withPexelsKey(async () => {
       let calls = 0;
       const video: PexelsVideo = {
@@ -251,5 +252,5 @@ describe("searchPexelsVideos (resilient search)", () => {
       expect(first).toHaveLength(1);
       expect(second).toHaveLength(1);
       expect(calls).toBe(1); // second call served entirely from cache
-    }));
+    })));
 });

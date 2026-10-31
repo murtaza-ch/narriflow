@@ -1,3 +1,4 @@
+import { readServiceEnvironment } from "./runtime-environment";
 import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { zoomRecordingCompletedSchema, type ZoomNotification, type ZoomRecordingFile } from "@narriflow/validators";
 import { ExpectedDomainFailureError, type ExpectedDomainFailureKind } from "./expected-domain-failure";
@@ -38,11 +39,11 @@ export class ZoomError extends ExpectedDomainFailureError<keyof typeof failures>
   }
 }
 
-export function zoomConfigured(env = process.env): boolean {
+export function zoomConfigured(env = readServiceEnvironment()): boolean {
   return Boolean(env.ZOOM_CLIENT_ID && env.ZOOM_CLIENT_SECRET && env.ZOOM_WEBHOOK_SECRET_TOKEN && env.SOCIAL_TOKEN_ENCRYPTION_KEY);
 }
 
-export function zoomConfig(env = process.env) {
+export function zoomConfig(env = readServiceEnvironment()) {
   if (!zoomConfigured(env)) throw new ZoomError("zoom_not_configured");
   return {
     clientId: env.ZOOM_CLIENT_ID!, clientSecret: env.ZOOM_CLIENT_SECRET!,

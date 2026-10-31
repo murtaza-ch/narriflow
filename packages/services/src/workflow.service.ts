@@ -1,3 +1,4 @@
+import { readServiceEnvironment } from "./runtime-environment";
 import Redis from "ioredis";
 import { getPrismaClient } from "@narriflow/db/client";
 import { workflowStageUpdatedEventSchema, type WorkflowStageUpdatedEvent } from "@narriflow/validators";
@@ -11,10 +12,10 @@ import {
   optionalRedisUrl,
 } from "./optional-redis";
 
-const redisUrl = optionalRedisUrl(process.env.UPSTASH_REDIS_URL);
+const redisUrl = () => optionalRedisUrl(readServiceEnvironment().UPSTASH_REDIS_URL);
 
 export function isWorkflowRedisDeliveryEnabled() {
-  return Boolean(redisUrl);
+  return Boolean(redisUrl());
 }
 
 let publisher: Redis | null = null;
@@ -33,14 +34,15 @@ function resetPublisher(client: Redis): boolean {
 }
 
 function getPublisher() {
-  if (!redisUrl || Date.now() < publisherRetryAfter) {
+  const url = redisUrl();
+  if (!url || Date.now() < publisherRetryAfter) {
     return null;
   }
 
   if (!publisher) {
     let nextPublisher: Redis;
     try {
-      nextPublisher = new Redis(redisUrl, {
+      nextPublisher = new Redis(url, {
         maxRetriesPerRequest: 1,
         enableOfflineQueue: false,
         lazyConnect: true,

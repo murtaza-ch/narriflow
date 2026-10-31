@@ -1,3 +1,4 @@
+import { readServiceEnvironment } from "./runtime-environment";
 import { workspaceService } from "./workspace.service";
 import { accessibleProjectWhere } from "./project-access";
 import type { ActorScope } from "./actor-scope";
@@ -140,7 +141,7 @@ function assertCampaignBrandApplicationAllowed(scope: CampaignBrandActorScope) {
 }
 
 export function exportBundleRetentionMs(
-	env: Record<string, string | undefined> = process.env,
+	env: Record<string, string | undefined> = readServiceEnvironment(),
 ): number {
 	const raw = env.EXPORT_BUNDLE_RETENTION_DAYS?.trim() || "7";
 	if (!/^\d+$/.test(raw)) {

@@ -1,3 +1,4 @@
+import { readServiceEnvironment } from "./runtime-environment";
 import {
   GeneratedMediaProviderError,
   type GeneratedImageAspectRatio,
@@ -173,7 +174,7 @@ export function createOpenAiImageProvider(options: OpenAiImageProviderOptions): 
   };
 }
 
-export function openAiImageProviderFromEnv(environment: Record<string, string | undefined> = process.env) {
+export function openAiImageProviderFromEnv(environment: Record<string, string | undefined> = readServiceEnvironment()) {
   const parsedMaxBytes = Number(environment.GENERATED_IMAGE_MAX_OUTPUT_BYTES);
   return createOpenAiImageProvider({
     apiKey: environment.OPENAI_API_KEY ?? "",

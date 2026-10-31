@@ -1,3 +1,4 @@
+import { readServiceEnvironment } from "./runtime-environment";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
@@ -226,7 +227,7 @@ const DEFAULT_EXTRACTION_CONCURRENCY = 2;
 const MAX_EXTRACTION_CONCURRENCY = 4;
 
 export function thumbnailExtractionConcurrency(
-  env: Record<string, string | undefined> = process.env,
+  env: Record<string, string | undefined> = {},
 ): number {
   const configured = Number(env.THUMBNAIL_EXTRACTION_CONCURRENCY);
   if (!Number.isInteger(configured) || configured < 1) return DEFAULT_EXTRACTION_CONCURRENCY;
@@ -254,8 +255,6 @@ export function createConcurrencyGate(limit: number) {
     },
   };
 }
-
-const extractionGate = createConcurrencyGate(thumbnailExtractionConcurrency());
 
 function ffmpegFrame(inputUrl: string, sourceTimeMs: number) {
   return new Promise<Uint8Array>((resolve, reject) => {
@@ -386,6 +385,7 @@ async function publishFrame(input: {
 }
 
 function productionModule() {
+  const extractionGate = createConcurrencyGate(thumbnailExtractionConcurrency(readServiceEnvironment()));
   return createThumbnailFramePreparation({
     store: prismaThumbnailFrameStore,
     authorize: async ({ actorUserId, workspaceId, permission }) => {
