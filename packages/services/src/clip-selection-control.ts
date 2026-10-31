@@ -65,7 +65,11 @@ export function createClipSelectionControl(ports: ClipSelectionControlPorts) {
         // Six bounded result objects at most. No model text leaves this step.
         resultBytes = [];
         for (const window of read.proof.windows) resultBytes.push(await ports.storage.read(window.result));
-      } catch { throw new WorkflowFailure("selection_result_unavailable", "retryable", "Private selection evidence is unavailable"); }
+      } catch (error) {
+        if (error instanceof WorkflowFailure && error.disposition === "permanent") return parentDisposition(await ports.finalization.finalizeClipSelection(reference,
+          { proof: read.proof, outcome: { kind: "failure", code: "selection_result_invalid" } }));
+        throw new WorkflowFailure("selection_result_unavailable", "retryable", "Private selection evidence is unavailable");
+      }
       let evidence: PreparedClipSelectionFinalization;
       try {
         const capsule = await decodeClipSelectionInput(inputBytes, read.proof.input, read.parent);
@@ -92,7 +96,10 @@ export function createClipSelectionControl(ports: ClipSelectionControlPorts) {
       if (metadata.status !== "queued") return disposition(await ports.lifecycle.admit(reference, { owner: crypto.randomUUID() }));
       let bytes: Uint8Array;
       try { bytes = await ports.storage.read(metadata.input); }
-      catch { throw new WorkflowFailure("selection_input_unavailable", "retryable", "The private selection input is unavailable"); }
+      catch (error) {
+        if (error instanceof WorkflowFailure && error.disposition === "permanent") return disposition(await ports.lifecycle.rejectInput(reference));
+        throw new WorkflowFailure("selection_input_unavailable", "retryable", "The private selection input is unavailable");
+      }
       let capsule: ClipSelectionInput, userPrompt: string;
       try {
         capsule = await decodeClipSelectionInput(bytes, metadata.input, metadata.parent);
