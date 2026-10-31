@@ -229,11 +229,15 @@ suite("Targeted export bundle execution",()=>{
         expect(await tx.exportBundle.findUniqueOrThrow({where:{id:f.bundle.id}})).toMatchObject({deploymentEpoch:fence.epoch,status:'queued',inputStorageKey:null,inputBindingHash:null,operationDeadlineAt:f.bundle.operationDeadlineAt});
         expect(await tx.workflowRun.findUniqueOrThrow({where:{id:f.run.id}})).toMatchObject({attemptCount:2,attemptId:null,operationDeadlineAt:f.bundle.operationDeadlineAt});
         expect(await restoreExportBundleWithinTransaction(tx,f.bundle.id,proof)).toEqual(first);
+        const priorDispatches=await tx.executionDispatch.count({where:{deploymentEpoch:fence.epoch,subjectKind:'workflow_run'}});
         const page=await restoreExportBundlesPage(tx,{...proof,after:null,limit:1});
-        expect(page.processed).toBe(1);expect(page.next).not.toBeNull();
+        expect(page.processed).toBe(1);expect(page.next).not.toBeNull();expect(page.dispatchIds).toEqual([]);
         const tail=await restoreExportBundlesPage(tx,{...proof,after:page.next,limit:1});
-        expect(tail.processed).toBe(1);expect(tail.next).toBeNull();expect(tail.dispatchIds).toHaveLength(2);
+        expect(tail.processed).toBe(1);expect(tail.next).toBeNull();expect(tail.dispatchIds).toEqual([]);
+        expect(await tx.executionDispatch.count({where:{deploymentEpoch:fence.epoch,subjectKind:'workflow_run'}})).toBe(priorDispatches);
         for(const value of others)expect(await tx.exportBundle.findUniqueOrThrow({where:{id:value.bundle.id}})).toMatchObject({deploymentEpoch:fence.epoch,operationDeadlineAt:value.bundle.operationDeadlineAt});
+        const final=await recoverExportBundleWakesPage(tx,{deploymentEpoch:fence.epoch,cutoff:proof.cutoff,after:null,limit:3});
+        expect(final.processed).toBe(3);expect(final.dispatchIds).toHaveLength(6);
         expect(await tx.executionAttempt.count({where:{dispatch:{subjectId:f.run.id}}})).toBe(1);
         await expect(restoreExportBundleWithinTransaction(tx,f.bundle.id,{...proof,cutoff:new Date(proof.cutoff.getTime()+1)})).rejects.toThrow('bundle_restore_fence_invalid');
         throw rollback;
