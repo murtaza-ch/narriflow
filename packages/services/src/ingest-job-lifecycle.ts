@@ -143,6 +143,8 @@ export interface IngestJobLifecycleDependencies {
   sourceBucket?: string;
   /** Required for video publication. Performs only typed validation/DB facts, never R2 I/O under locks. */
   validateVideo?: IngestVideoValidator;
+  /** Recomputes semantic identity after a retry advances the exact source generation. */
+  executionInputHash?: (job: IngestJob) => Promise<string>;
   now?: () => Date;
   leaseMs?: number;
   heartbeatMs?: number;
@@ -355,6 +357,10 @@ export class IngestJobLifecycle {
   private async executionWakes(tx: Tx, ref: IngestExecutionReference, inputHash: string, wakeKind: string, retryAt?: Date): Promise<{ dispatchIds: string[] }> {
     const current = retryAt ? await tx.ingestJob.update({ where: { id: ref.id }, data: { generation: { increment: 1 } } })
       : await tx.ingestJob.findUniqueOrThrow({ where: { id: ref.id } });
+    if (retryAt) {
+      if (!this.deps.executionInputHash) throw new Error("ingest_execution_hash_unavailable");
+      inputHash = await this.deps.executionInputHash(current);
+    }
     const now = await this.now(tx);
     const parent = await appendExecutionDispatch(tx, { deploymentEpoch: ref.deploymentEpoch, kind: "import_pipeline", subject: { kind: "ingest_job", id: ref.id },
       generation: current.generation, inputHash, dueAt: now, wakeKind });
