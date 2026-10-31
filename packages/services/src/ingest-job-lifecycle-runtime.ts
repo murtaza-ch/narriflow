@@ -4,12 +4,10 @@ import { getWorkflowRunLifecycle } from "./workflow-run-lifecycle";
 import { isWorkflowRedisDeliveryEnabled } from "./workflow.service";
 import { getProcessingUsage } from "./processing-usage-runtime";
 import { workspaceService } from "./workspace.service";
-let lifecycle: IngestJobLifecycle | undefined;
 export function getIngestJobLifecycle(): IngestJobLifecycle {
-  if (!lifecycle) {
     const prisma = getPrismaClient();
     if (!prisma) throw new Error("Database client unavailable");
-    lifecycle = new IngestJobLifecycle({
+    return new IngestJobLifecycle({
       prisma,
       workflow: getWorkflowRunLifecycle(),
       redisRequired: isWorkflowRedisDeliveryEnabled(),
@@ -22,6 +20,4 @@ export function getIngestJobLifecycle(): IngestJobLifecycle {
         release: (tx, input) => getProcessingUsage().release(tx, input),
       },
     });
-  }
-  return lifecycle;
 }

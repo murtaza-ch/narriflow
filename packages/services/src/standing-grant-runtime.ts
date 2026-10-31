@@ -27,8 +27,7 @@ function requiredPrisma() {
 const requireActor = (userId: string, workspaceId: string, capability: Parameters<typeof workspaceService.requireActor>[2]) =>
   workspaceService.requireActor(userId, workspaceId, capability);
 
-let grants: StandingGrants | null = null;
-const service = () => (grants ??= createStandingGrants({ prisma: requiredPrisma(), requireActor }));
+const service = () => createStandingGrants({ prisma: requiredPrisma(), requireActor });
 
 /** Production management of Standing Grants on the shared database. */
 export const standingGrants = {
@@ -39,8 +38,7 @@ export const standingGrants = {
   revoke: (actor: ActorScope, grantId: string) => service().revoke(actor, grantId),
 };
 
-let optOut: ReturnType<typeof createReviewerOptOut> | null = null;
-const reviewerOptOutService = () => (optOut ??= createReviewerOptOut({ prisma: requiredPrisma(), secret: reviewDeliverySecret }));
+const reviewerOptOutService = () => createReviewerOptOut({ prisma: requiredPrisma(), secret: reviewDeliverySecret });
 
 /** A reviewer's opt-out from automated review requests, by the signed link in the email. */
 export const reviewerOptOut = {
@@ -64,16 +62,14 @@ async function emailPausedNotice(appBaseUrl: string | null, notice: GrantPausedN
   return { sent: false, reason: result.reason ?? "email_not_sent" };
 }
 
-let maintenance: StandingGrants | null = null;
 
 /** The worker's side: the expiry sweep, and the emails for grants that paused themselves. */
 export function getStandingGrantMaintenance(appBaseUrl: () => string | null) {
-  maintenance ??= createStandingGrants({
+  return createStandingGrants({
     prisma: requiredPrisma(),
     requireActor,
     notifyPaused: (notice) => emailPausedNotice(appBaseUrl(), notice),
   });
-  return maintenance;
 }
 
 /** What happened to a proposal a publish grant was asked to accept. `accepted`

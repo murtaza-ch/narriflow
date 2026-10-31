@@ -1,26 +1,10 @@
-import { PrismaNeon } from "@prisma/adapter-neon";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@prisma/client";
 
-const globalForPrisma = globalThis as unknown as {
-  narriflowAdapter?: PrismaNeon;
-  narriflowPrismaClient?: PrismaClient;
-};
-
-/**
- * Driver defaults for a process with no pool settings in its environment.
- * `@neondatabase/serverless` ships with no connection timeout and no query
- * timeout, so a websocket that dies without a clean close (Neon dropping a
- * pooled connection, a NAT idling it out) leaves every pending
- * `pool.connect()` or query awaiting forever — and with it every worker poll
- * loop that is waiting on one. Bounding both makes a dead connection reject,
- * so the caller's normal failure path runs.
- *
- * `query_timeout` is a client-side read timeout on a single statement; it is
- * deliberately not Prisma's interactive-transaction timeout (see
- * `transactionOptions` below), and it is not a server `statement_timeout`,
- * which the Neon pooler does not accept as a startup parameter.
- */
+/** Hyperdrive owns the origin pool. This pool belongs to just one invocation. */
 export const DATABASE_POOL_DEFAULTS = {
+  max: 2,
   idleTimeoutMillis: 30_000,
   connectionTimeoutMillis: 10_000,
   query_timeout: 60_000,
@@ -33,14 +17,8 @@ export interface DatabasePoolOptions {
   query_timeout?: number;
 }
 
-/**
- * Optional pool settings from the environment. Only settings that are present
- * (and positive integers) are returned; `databasePoolConfig` layers them over
- * `DATABASE_POOL_DEFAULTS`.
- */
-export function databasePoolOptions(
-  env: Record<string, string | undefined> = process.env,
-): DatabasePoolOptions {
+/** CLI callers may pass their environment explicitly. Workers pass bindings. */
+export function databasePoolOptions(env: Record<string, string | undefined>): DatabasePoolOptions {
   const read = (name: string) => {
     const value = Number(env[name]);
     return Number.isSafeInteger(value) && value > 0 ? value : undefined;
@@ -57,46 +35,79 @@ export function databasePoolOptions(
   };
 }
 
-/** Defaults plus environment overrides: the pool config every process uses. */
-export function databasePoolConfig(
-  env: Record<string, string | undefined> = process.env,
-): DatabasePoolOptions {
+export function databasePoolConfig(env: Record<string, string | undefined> = {}): DatabasePoolOptions {
   return { ...DATABASE_POOL_DEFAULTS, ...databasePoolOptions(env) };
 }
 
-export function getPrismaClient() {
-  if (!process.env.DATABASE_URL) {
-    return null;
+export interface DatabaseClientResource {
+  readonly client: PrismaClient;
+  dispose(): Promise<void>;
+}
+
+export type DatabaseScopeOptions =
+  | { connectionString: string; pool?: DatabasePoolOptions }
+  | { createClient(): DatabaseClientResource };
+
+const currentDatabaseScope = new AsyncLocalStorage<DatabaseScope>();
+
+function createClientResource(options: DatabaseScopeOptions): DatabaseClientResource {
+  if ("createClient" in options) return options.createClient();
+  const adapter = new PrismaPg({
+    connectionString: options.connectionString,
+    ...DATABASE_POOL_DEFAULTS,
+    ...options.pool,
+  });
+  const client = new PrismaClient({
+    adapter,
+    log: ["error"],
+    transactionOptions: { timeout: 30_000, maxWait: 10_000 },
+  });
+  return { client, dispose: () => client.$disconnect() };
+}
+
+/** One request, Workflow step or CLI command. A scope cannot be reopened. */
+export class DatabaseScope {
+  private resource: DatabaseClientResource | undefined;
+  private started = false;
+  private closed = false;
+
+  constructor(private readonly options: DatabaseScopeOptions) {}
+
+  client(): PrismaClient {
+    if (this.closed) throw new Error("Database scope is closed");
+    this.resource ??= createClientResource(this.options);
+    return this.resource.client;
   }
 
-  if (!globalForPrisma.narriflowAdapter) {
-    globalForPrisma.narriflowAdapter = new PrismaNeon({
-      connectionString: process.env.DATABASE_URL,
-      ...databasePoolConfig(),
+  async run<T>(operation: () => T | Promise<T>): Promise<T> {
+    if (this.started) throw new Error("Database scope can only run once");
+    this.started = true;
+    return currentDatabaseScope.run(this, async () => {
+      try {
+        return await operation();
+      } finally {
+        this.closed = true;
+        const resource = this.resource;
+        this.resource = undefined;
+        await resource?.dispose();
+      }
     });
   }
+}
 
-  if (!globalForPrisma.narriflowPrismaClient) {
-    globalForPrisma.narriflowPrismaClient = new PrismaClient({
-      adapter: globalForPrisma.narriflowAdapter,
-      log: ["error"],
-      // Prisma's default interactive-transaction timeout is 5s of wall
-      // clock, which is statement time — not held-lock time — and our
-      // transactions ship large JSON columns (transcriptSlice/studioEdits)
-      // across whatever latency separates the process from Neon. Two live
-      // incidents on 2026-08-06 from a high-RTT connection: the editor
-      // autosave PUT expired at 10.3s, and the worker's post-render
-      // completion bookkeeping expired at 7.5s (which cascaded into a
-      // requeued run that then failed permanently on no_renderable_clips).
-      // Every mutating transaction in this codebase is either
-      // revision-guarded or a conditional update, so a longer window can
-      // only fail cleanly — never produce a torn write.
-      transactionOptions: {
-        timeout: 30_000,
-        maxWait: 10_000,
-      },
-    });
+/** Construction is lazy, so liveness and DO-only requests never create a pool. */
+export function createDatabaseScope(options: DatabaseScopeOptions): DatabaseScope {
+  if ("connectionString" in options && !options.connectionString.trim()) {
+    throw new Error("A database connection string is required");
   }
+  return new DatabaseScope(options);
+}
 
-  return globalForPrisma.narriflowPrismaClient;
+export function withDatabaseScope<T>(scope: DatabaseScope, operation: () => T | Promise<T>): Promise<T> {
+  return scope.run(operation);
+}
+
+/** Reads only the injected invocation scope. There is no process-env fallback. */
+export function getPrismaClient(): PrismaClient | null {
+  return currentDatabaseScope.getStore()?.client() ?? null;
 }

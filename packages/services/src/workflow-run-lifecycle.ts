@@ -2928,11 +2928,9 @@ export class WorkflowRunLifecycle {
   }
 }
 
-let singleton: WorkflowRunLifecycle | null = null;
 
 export function getWorkflowRunLifecycle() {
-  singleton ??= new WorkflowRunLifecycle();
-  return singleton;
+  return new WorkflowRunLifecycle();
 }
 
 export function workflowFailureFromUnknown(error: unknown): WorkflowFailure {

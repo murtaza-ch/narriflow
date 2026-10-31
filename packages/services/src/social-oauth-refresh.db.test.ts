@@ -1,3 +1,4 @@
+import { createDatabaseTestContext } from "@narriflow/db/testing";
 import { randomUUID } from "node:crypto";
 import {
 	afterAll,
@@ -43,26 +44,26 @@ dbDescribe("Social account token refresh PostgreSQL invariants", () => {
 	let pool: Pool;
 	let previousGlobalPrisma: PrismaClient | undefined;
 	const originalFetch = globalThis.fetch;
-	const prismaGlobal = globalThis as unknown as { narriflowPrismaClient?: PrismaClient };
+	const prismaGlobal = createDatabaseTestContext();
 
-	beforeAll(async () => {
+	beforeAll(prismaGlobal.bind(async () => {
 		pool = new Pool({ connectionString: databaseUrl!, max: 8 });
 		prisma = new PrismaClient({
 			adapter: new PrismaPg(pool, databaseSchema ? { schema: databaseSchema } : undefined),
 		});
-		previousGlobalPrisma = prismaGlobal.narriflowPrismaClient;
-		prismaGlobal.narriflowPrismaClient = prisma;
-	});
+		previousGlobalPrisma = prismaGlobal.client;
+		prismaGlobal.client = prisma;
+	}));
 
-	afterEach(() => {
+	afterEach(prismaGlobal.bind(() => {
 		globalThis.fetch = originalFetch;
-	});
+	}));
 
-	afterAll(async () => {
-		prismaGlobal.narriflowPrismaClient = previousGlobalPrisma;
+	afterAll(prismaGlobal.bind(async () => {
+		prismaGlobal.client = previousGlobalPrisma;
 		await prisma?.$disconnect();
 		await pool?.end();
-	});
+	}));
 
 	/** A TikTok account whose access token is about to expire, so the next read refreshes it. */
 	async function expiringAccount() {
@@ -107,7 +108,7 @@ dbDescribe("Social account token refresh PostgreSQL invariants", () => {
 			select: { accessTokenEncrypted: true, refreshTokenEncrypted: true, status: true },
 		});
 
-	test.each(["rotated", "unchanged", "no expiry"])("concurrent refreshes make one provider exchange when the response is %s", async (response) => {
+	test.each(["rotated", "unchanged", "no expiry"])("concurrent refreshes make one provider exchange when the response is %s", prismaGlobal.bind(async (response) => {
 		const id = await expiringAccount();
 		let calls = 0;
 		globalThis.fetch = (async () => {
@@ -129,9 +130,9 @@ dbDescribe("Social account token refresh PostgreSQL invariants", () => {
 		expect(calls).toBe(1);
 		expect((await socialOAuthService.getPublishAccount(id)).accessToken).toBe("access-1");
 		expect(calls).toBe(1);
-	});
+	}));
 
-	test("a rejected refresh surfaces with its HTTP status and leaves the stored tokens alone", async () => {
+	test("a rejected refresh surfaces with its HTTP status and leaves the stored tokens alone", prismaGlobal.bind(async () => {
 		const id = await expiringAccount();
 		const before = await stored(id);
 		globalThis.fetch = (async () =>
@@ -141,9 +142,9 @@ dbDescribe("Social account token refresh PostgreSQL invariants", () => {
 		expect(failure).toBeInstanceOf(SocialOAuthError);
 		expect(failure).toMatchObject({ code: "social_oauth_http_failed", status: 400 });
 		expect(await stored(id)).toEqual(before);
-	});
+	}));
 
-	test.each([{}, { access_token: "" }])("a response with no access token never overwrites a good token: %j", async (token) => {
+	test.each([{}, { access_token: "" }])("a response with no access token never overwrites a good token: %j", prismaGlobal.bind(async (token) => {
 		const id = await expiringAccount();
 		const before = await stored(id);
 		globalThis.fetch = (async () =>
@@ -153,29 +154,29 @@ dbDescribe("Social account token refresh PostgreSQL invariants", () => {
 			code: "social_oauth_refresh_invalid",
 		});
 		expect(await stored(id)).toEqual(before);
-	});
+	}));
 });
 
 dbDescribe("Social Destination plan count PostgreSQL invariants", () => {
 	let prisma: PrismaClient;
 	let pool: Pool;
 	let previousGlobalPrisma: PrismaClient | undefined;
-	const prismaGlobal = globalThis as unknown as { narriflowPrismaClient?: PrismaClient };
+	const prismaGlobal = createDatabaseTestContext();
 
-	beforeAll(async () => {
+	beforeAll(prismaGlobal.bind(async () => {
 		pool = new Pool({ connectionString: databaseUrl!, max: 8 });
 		prisma = new PrismaClient({
 			adapter: new PrismaPg(pool, databaseSchema ? { schema: databaseSchema } : undefined),
 		});
-		previousGlobalPrisma = prismaGlobal.narriflowPrismaClient;
-		prismaGlobal.narriflowPrismaClient = prisma;
-	});
+		previousGlobalPrisma = prismaGlobal.client;
+		prismaGlobal.client = prisma;
+	}));
 
-	afterAll(async () => {
-		prismaGlobal.narriflowPrismaClient = previousGlobalPrisma;
+	afterAll(prismaGlobal.bind(async () => {
+		prismaGlobal.client = previousGlobalPrisma;
 		await prisma?.$disconnect();
 		await pool?.end();
-	});
+	}));
 
 	type Saved = { id: string; providerAccountId: string; publishingEligible: boolean };
 	// The OAuth callbacks end in this private save; the provider exchanges before it are not under test.
@@ -202,7 +203,7 @@ dbDescribe("Social Destination plan count PostgreSQL invariants", () => {
 	}
 	const slots = (workspaceId: string) => prisma.socialAccount.count({ where: { workspaceId, status: { not: "revoked" } } });
 
-	test("Free connects no destination; Creator's last slot goes to exactly one of two concurrent connects", async () => {
+	test("Free connects no destination; Creator's last slot goes to exactly one of two concurrent connects", prismaGlobal.bind(async () => {
 		const free = await workspace("free");
 		await expect(free.connect("a")).rejects.toMatchObject({ code: "plan_feature_required", details: { limit: "socialDestinations", requiredTier: "creator" } });
 
@@ -212,9 +213,9 @@ dbDescribe("Social Destination plan count PostgreSQL invariants", () => {
 		expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
 		expect(results.find((result) => result.status === "rejected")).toMatchObject({ reason: { code: "plan_limit_reached", details: { used: 3, max: 3, requiredTier: "pro" } } });
 		expect(await slots(creator.workspaceId)).toBe(3);
-	});
+	}));
 
-	test("reconnecting an account at the cap is free, a revoked one needs a slot, and disconnecting frees one", async () => {
+	test("reconnecting an account at the cap is free, a revoked one needs a slot, and disconnecting frees one", prismaGlobal.bind(async () => {
 		const creator = await workspace("creator");
 		const [first] = await creator.connect("one", "two", "three");
 		await expect(creator.connect("two")).resolves.toMatchObject([{ providerAccountId: "two", publishingEligible: true }]);
@@ -225,17 +226,17 @@ dbDescribe("Social Destination plan count PostgreSQL invariants", () => {
 		await socialOAuthService.disconnectAccount(creator.scope, four.id);
 		await expect(creator.connect("one")).resolves.toMatchObject([{ id: first!.id }]);
 		expect(await slots(creator.workspaceId)).toBe(3);
-	});
+	}));
 
-	test("one grant with more destinations than free slots saves the first ones, in provider order", async () => {
+	test("one grant with more destinations than free slots saves the first ones, in provider order", prismaGlobal.bind(async () => {
 		const creator = await workspace("creator");
 		await creator.connect("existing");
 		const saved = await creator.connect("a", "existing", "b", "c");
 		expect(saved.map((account) => account.providerAccountId)).toEqual(["a", "existing", "b"]);
 		expect(await slots(creator.workspaceId)).toBe(3);
-	});
+	}));
 
-	test("after a downgrade the oldest accounts publish, the rest are plan-ineligible with their tokens kept", async () => {
+	test("after a downgrade the oldest accounts publish, the rest are plan-ineligible with their tokens kept", prismaGlobal.bind(async () => {
 		const pro = await workspace("pro");
 		const ids: string[] = [];
 		for (const name of ["a", "b", "c", "d", "e"]) ids.push((await pro.connect(name))[0]!.id);
@@ -260,5 +261,5 @@ dbDescribe("Social Destination plan count PostgreSQL invariants", () => {
 		expect(await publicationPlanRefusal(prisma, { workspaceId: pro.workspaceId, socialAccountId: ids[3]!, customThumbnail: false })).toBeNull();
 		await prisma.workspace.update({ where: { id: pro.workspaceId }, data: { pricingTier: "free" } });
 		expect(await publicationPlanRefusal(prisma, { workspaceId: pro.workspaceId, socialAccountId: ids[1]!, customThumbnail: false })).toBe("publication_plan_required");
-	});
+	}));
 });

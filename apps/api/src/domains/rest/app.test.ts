@@ -1,3 +1,4 @@
+import { createDatabaseTestContext } from "@narriflow/db/testing";
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { Validator } from "@seriousme/openapi-schema-validator";
 import {
@@ -487,27 +488,27 @@ describe("REST v1 clip timelines", () => {
   const timeline = { projectId: PROJECT_ID, clipId: CLIP_ID, editorRevision: 3, format: "edl", timeline: { fileName: "Big-Idea-v3.edl", content: "TITLE: Big Idea\n" },
     subtitles: { format: "srt", fileName: "Big-Idea-v3.srt", content: "" },
     source: { fileName: "Talk-source.mp4", sizeBytes: 1234, downloadUrl: "https://files.example/source?signature=x", expiresAt: "2026-10-24T12:15:00.000Z" } };
-  const globals = globalThis as unknown as { narriflowPrismaClient?: unknown };
-  const previous = { prisma: globals.narriflowPrismaClient, database: process.env.DATABASE_URL };
-  afterEach(() => {
-    globals.narriflowPrismaClient = previous.prisma;
+  const globals = createDatabaseTestContext();
+  const previous = { prisma: globals.client, database: process.env.DATABASE_URL };
+  afterEach(globals.bind(() => {
+    globals.client = previous.prisma;
     if (previous.database === undefined) delete process.env.DATABASE_URL; else process.env.DATABASE_URL = previous.database;
-  });
+  }));
   function knownClip() {
     process.env.DATABASE_URL ??= "postgresql://unused.test/db";
-    globals.narriflowPrismaClient = { clip: { findFirst: async () => ({ projectId: PROJECT_ID }) } };
+    globals.client = { clip: { findFirst: async () => ({ projectId: PROJECT_ID }) } };
   }
 
-  test("returns the timeline for the key's clip in the requested format with a source grant", async () => {
+  test("returns the timeline for the key's clip in the requested format with a source grant", globals.bind(async () => {
     knownClip();
     const exported = spy(clipTimelineService, "export").mockResolvedValue(timeline as never);
     const response = await harness({ scopes: ["exports:read"] }).call(`/clips/${CLIP_ID}/timeline?format=edl`);
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual(timeline);
     expect(exported).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: WORKSPACE_ID }), PROJECT_ID, CLIP_ID, "edl", { credentialKind: "api_key" });
-  });
+  }));
 
-  test("needs the exports:read scope, a Workspace download role, and a known format", async () => {
+  test("needs the exports:read scope, a Workspace download role, and a known format", globals.bind(async () => {
     knownClip();
     const exported = spy(clipTimelineService, "export").mockResolvedValue(timeline as never);
     expect((await harness({ scopes: ["projects:read"] }).call(`/clips/${CLIP_ID}/timeline?format=edl`)).status).toBe(403);
@@ -520,9 +521,9 @@ describe("REST v1 clip timelines", () => {
       expect(await response.json()).toMatchObject({ error: "invalid_request" });
     }
     expect(exported).toHaveBeenCalledTimes(1);
-  });
+  }));
 
-  test("a timeline that cannot be cut is a 422 with its typed code, not a 500", async () => {
+  test("a timeline that cannot be cut is a 422 with its typed code, not a 500", globals.bind(async () => {
     knownClip();
     for (const code of ["timeline_empty", "timeline_source_rate_unsupported", "timeline_source_unmeasured", "timeline_video_required"]) {
       spy(clipTimelineService, "export").mockRejectedValue(new ExpectedDomainFailureError({ code, kind: "unprocessable", message: "Cannot cut a timeline" }));
@@ -530,17 +531,17 @@ describe("REST v1 clip timelines", () => {
       expect(response.status).toBe(422);
       expect(await response.json()).toMatchObject({ error: code, message: "Cannot cut a timeline" });
     }
-  });
+  }));
 
-  test("a clip outside the key's workspace is not found", async () => {
+  test("a clip outside the key's workspace is not found", globals.bind(async () => {
     process.env.DATABASE_URL ??= "postgresql://unused.test/db";
-    globals.narriflowPrismaClient = { clip: { findFirst: async () => null } };
+    globals.client = { clip: { findFirst: async () => null } };
     const exported = spy(clipTimelineService, "export");
     const response = await harness().call(`/clips/${CLIP_ID}/timeline?format=fcpxml`);
     expect(response.status).toBe(404);
     expect(await response.json()).toMatchObject({ error: "clip_not_found" });
     expect(exported).not.toHaveBeenCalled();
-  });
+  }));
 });
 
 describe("REST v1 operations", () => {

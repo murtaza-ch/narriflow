@@ -1,3 +1,4 @@
+import { createDatabaseTestContext } from "@narriflow/db/testing";
 import { RenderFixtureLifecycle } from "./render-group-test-fixture";
 import type { WorkflowAttemptRef } from "./workflow-run-lifecycle";
 import { randomUUID } from "node:crypto";
@@ -35,24 +36,24 @@ describeDb("Finishing runner on PostgreSQL", () => {
   let prisma: PrismaClient;
   let pool: Pool;
   let priorPrisma: PrismaClient | undefined;
-  const globalPrisma = globalThis as unknown as { narriflowPrismaClient?: PrismaClient };
+  const globalPrisma = createDatabaseTestContext();
 
-  beforeAll(() => {
+  beforeAll(globalPrisma.bind(() => {
     if (!databaseUrl || !schema || !/^integration_test_[a-z0-9_]+$/.test(schema)) throw new Error("Integration DB tests require a disposable integration_test_ schema");
     pool = new Pool({ connectionString: databaseUrl, max: 10 });
     prisma = new PrismaClient({ adapter: new PrismaPg(pool, { schema }), transactionOptions: { maxWait: 120_000, timeout: 120_000 } });
-    priorPrisma = globalPrisma.narriflowPrismaClient;
-    globalPrisma.narriflowPrismaClient = prisma;
-  });
+    priorPrisma = globalPrisma.client;
+    globalPrisma.client = prisma;
+  }));
   // Earlier tests leave rows that a later processDue would claim.
-  beforeEach(async () => {
+  beforeEach(globalPrisma.bind(async () => {
     await prisma.generationFinishing.updateMany({ where: { state: { in: ["due", "running", "exporting"] } }, data: { state: "skipped", reason: "finishing_failed" } });
-  });
-  afterAll(async () => {
-    globalPrisma.narriflowPrismaClient = priorPrisma;
+  }));
+  afterAll(globalPrisma.bind(async () => {
+    globalPrisma.client = priorPrisma;
     await prisma?.$disconnect();
     await pool?.end();
-  });
+  }));
 
   async function workspace(pricingTier: "business" | "pro" | "creator" = "business") {
     const user = await prisma.user.create({ data: { clerkId: `finishing-runner:${randomUUID()}` } });
@@ -156,7 +157,7 @@ describeDb("Finishing runner on PostgreSQL", () => {
   }
   const exportsOf = async (finishingId: string) => ((await row(finishingId)).picks as Pick[] | null) ?? [];
 
-  test("picks the best clips at or above the minimum score, exports and writes copy for each exactly once, and ends ready", async () => {
+  test("picks the best clips at or above the minimum score, exports and writes copy for each exactly once, and ends ready", globalPrisma.bind(async () => {
     const owner = await workspace();
     const g = await finishedGeneration(owner, [90, 40, 80, 70, 20]);
     const { service, calls } = runner();
@@ -201,7 +202,7 @@ describeDb("Finishing runner on PostgreSQL", () => {
     const view = await readProjectFinishing(prisma, { workspaceId: owner.workspaceId, projectId: g.project.id });
     expect(view).toMatchObject({ state: "ready", message: null });
     expect(view?.clips.map((clip) => [clip.title, clip.exportStatus, clip.copyWritten])).toEqual([["Clip 0", "ready", true], ["Clip 2", "ready", true]]);
-  });
+  }));
 
   describe("ranking with the Workspace's audience data", () => {
     const COMPUTED_AT = new Date("2026-10-23T03:00:00.000Z");
@@ -219,7 +220,7 @@ describeDb("Finishing runner on PostgreSQL", () => {
       return { owner, g };
     }
 
-    test("score times a bounded factor picks the clip, the factor is recorded, and the Project says so", async () => {
+    test("score times a bounded factor picks the clip, the factor is recorded, and the Project says so", globalPrisma.bind(async () => {
       const { owner, g } = await setup({ groups: GROUPS });
       await runner().service.processDue();
       // Plain scores would pick clip 0 (80); 70 x 1.25 beats 80 x 0.8.
@@ -234,9 +235,9 @@ describeDb("Finishing runner on PostgreSQL", () => {
       const view = await readProjectFinishing(prisma, { workspaceId: owner.workspaceId, projectId: g.project.id });
       expect(view?.rankedWithAudienceData).toBe(true);
       expect(view?.clips[0]?.ranking).toMatchObject({ score: 70, factor: 1.25 });
-    });
+    }));
 
-    test("a clip is measured by its edited length, the measure its clip facts use", async () => {
+    test("a clip is measured by its edited length, the measure its clip facts use", globalPrisma.bind(async () => {
       // Under 20 seconds is the strong length band. Clip 1 is 30 seconds long but 15 of them are cut; clip 0 is a plain 30.
       const { g } = await setup({ groups: [{ dimension: "duration", key: "under-20", posts: 12, lift: 1.5 }] });
       await prisma.clip.updateMany({ where: { id: { in: [g.clips[0]!.id, g.clips[1]!.id] } }, data: { category: "insight" } });
@@ -246,9 +247,9 @@ describeDb("Finishing runner on PostgreSQL", () => {
       const picks = (await row(g.row.id).then((found) => found.picks)) as Array<Pick & { ranking?: unknown }>;
       expect(picks.map((pick) => pick.clipId)).toEqual([g.clips[1]!.id]);
       expect(picks[0]!.ranking).toMatchObject({ score: 70, factor: 1.25, groups: [{ dimension: "duration", label: "Length Under 20 seconds", lift: 1.5 }] });
-    });
+    }));
 
-    test("a clip may not overtake one more than 15 points above it, whatever its factor", async () => {
+    test("a clip may not overtake one more than 15 points above it, whatever its factor", globalPrisma.bind(async () => {
       // Clip 0 scores 80 and is the weak category; clip 1 scores 70 and is the strong one; clip 2 scores 45, below the minimum.
       // Move clip 1 down to 64: the factor would put it first (64 x 1.25 = 80 > 64), but it is 16 points behind.
       const { g } = await setup({ groups: GROUPS });
@@ -256,17 +257,17 @@ describeDb("Finishing runner on PostgreSQL", () => {
       await runner().service.processDue();
       const picks = (await row(g.row.id).then((found) => found.picks)) as Array<Pick & { ranking?: unknown }>;
       expect(picks.map((pick) => pick.clipId)).toEqual([g.clips[0]!.id]);
-    });
+    }));
 
-    test("the minimum score is checked against the plain score, whatever the factor", async () => {
+    test("the minimum score is checked against the plain score, whatever the factor", globalPrisma.bind(async () => {
       const { g } = await setup({ groups: GROUPS });
       // Three picks are allowed, but clip 2 (45, a story at 1.25) is under minScore 50.
       await prisma.generationFinishing.update({ where: { id: g.row.id }, data: { settings: { ...FINISHING, topClips: 3, copyPlatforms: [], aspectRatios: ["1:1"] } } });
       await runner().service.processDue();
       expect((await exportsOf(g.row.id)).map((pick) => pick.clipId)).toEqual([g.clips[1]!.id, g.clips[0]!.id]);
-    });
+    }));
 
-    test("switched off, without data, or without enough data, clips are ranked on their own score", async () => {
+    test("switched off, without data, or without enough data, clips are ranked on their own score", globalPrisma.bind(async () => {
       for (const scenario of [
         { guidance: { groups: GROUPS }, setting: false },
         { guidance: null, setting: null },
@@ -280,9 +281,9 @@ describeDb("Finishing runner on PostgreSQL", () => {
         const view = await readProjectFinishing(prisma, { workspaceId: owner.workspaceId, projectId: g.project.id });
         expect(view?.rankedWithAudienceData).toBe(false);
       }
-    });
+    }));
 
-    test("a re-claim keeps the picks and the factors it first used", async () => {
+    test("a re-claim keeps the picks and the factors it first used", globalPrisma.bind(async () => {
       const { g } = await setup({ groups: GROUPS });
       const { service } = runner();
       await service.processDue();
@@ -293,10 +294,10 @@ describeDb("Finishing runner on PostgreSQL", () => {
         "leaseExpiresAt" = (now() AT TIME ZONE 'UTC') - interval '1 second' WHERE "id" = ${g.row.id}::uuid`;
       await service.processDue();
       expect((await row(g.row.id)).picks).toEqual(first);
-    });
+    }));
   });
 
-  test("a re-claim, even one that lost its picks, creates no second export and finishes no second time", async () => {
+  test("a re-claim, even one that lost its picks, creates no second export and finishes no second time", globalPrisma.bind(async () => {
     const owner = await workspace();
     const g = await finishedGeneration(owner, [90, 80, 10]);
     const { service, calls } = runner();
@@ -324,9 +325,9 @@ describeDb("Finishing runner on PostgreSQL", () => {
     expect(calls.copy).toHaveLength(copyCalls);
     expect(calls.exports).toHaveLength(4);
     expect(await finishingEvents(owner.workspaceId)).toHaveLength(1);
-  });
+  }));
 
-  test("a Workspace below Pro keeps its rule but ends skipped with a visible reason and exports nothing", async () => {
+  test("a Workspace below Pro keeps its rule but ends skipped with a visible reason and exports nothing", globalPrisma.bind(async () => {
     for (const tier of ["free", "creator"] as const) {
       const owner = await workspace(tier as "creator");
       const g = await finishedGeneration(owner, [90, 80]);
@@ -345,25 +346,25 @@ describeDb("Finishing runner on PostgreSQL", () => {
     const g = await finishedGeneration(pro, [90]);
     await runner().service.processDue();
     expect((await row(g.row.id)).picks).not.toBeNull();
-  });
+  }));
 
-  test("a person who left the Workspace ends it skipped", async () => {
+  test("a person who left the Workspace ends it skipped", globalPrisma.bind(async () => {
     const owner = await workspace();
     const g = await finishedGeneration(owner, [90]);
     await prisma.generationFinishing.update({ where: { id: g.row.id }, data: { actorUserId: (await prisma.user.create({ data: { clerkId: `finishing-stranger:${randomUUID()}` } })).id } });
     expect(await runner().service.processDue()).toBe(1);
     expect(await row(g.row.id)).toMatchObject({ state: "skipped", reason: "actor_unavailable" });
-  });
+  }));
 
-  test("no clip at or above the minimum score ends skipped without exporting", async () => {
+  test("no clip at or above the minimum score ends skipped without exporting", globalPrisma.bind(async () => {
     const owner = await workspace();
     const g = await finishedGeneration(owner, [10, 20]);
     expect(await runner().service.processDue()).toBe(1);
     expect(await row(g.row.id)).toMatchObject({ state: "skipped", reason: "no_clips" });
     expect(await prisma.clipExport.count({ where: { projectId: g.project.id } })).toBe(0);
-  });
+  }));
 
-  test("a failed export leaves the rest ready and ends partial, naming only what finished", async () => {
+  test("a failed export leaves the rest ready and ends partial, naming only what finished", globalPrisma.bind(async () => {
     const owner = await workspace();
     const g = await finishedGeneration(owner, [90, 80]);
     const { service, calls } = runner();
@@ -377,9 +378,9 @@ describeDb("Finishing runner on PostgreSQL", () => {
     expect(calls.copy.map((call) => call.clipId)).toEqual([good!.clipId]);
     expect(calls.notifications).toEqual([{ projectId: g.project.id, sourceId: g.row.id, clipCount: 1 }]);
     expect((await finishingEvents(owner.workspaceId))[0]!.subject).toMatchObject({ state: "partial", reason: "exports_failed", exportIds: [good!.exportId] });
-  });
+  }));
 
-  test("a copy the provider refuses outright ends partial and is not retried", async () => {
+  test("a copy the provider refuses outright ends partial and is not retried", globalPrisma.bind(async () => {
     const owner = await workspace();
     const g = await finishedGeneration(owner, [90]);
     let attempts = 0;
@@ -390,9 +391,9 @@ describeDb("Finishing runner on PostgreSQL", () => {
     expect(await row(g.row.id)).toMatchObject({ state: "partial", reason: "copy_failed", attempts: 0 });
     expect(attempts).toBe(1);
     expect((await exportsOf(g.row.id))[0]!.copyError).toBe("assisted_copy_moderation_rejected");
-  });
+  }));
 
-  test("a transient copy failure backs the row off and the retry writes it under a fresh key, without exporting again", async () => {
+  test("a transient copy failure backs the row off and the retry writes it under a fresh key, without exporting again", globalPrisma.bind(async () => {
     const owner = await workspace();
     const g = await finishedGeneration(owner, [90]);
     const keys: string[] = [];
@@ -431,9 +432,9 @@ describeDb("Finishing runner on PostgreSQL", () => {
     expect(calls.exports).toHaveLength(1);
     expect(await prisma.clipExport.count({ where: { projectId: g.project.id } })).toBe(1);
     expect(await finishingEvents(owner.workspaceId)).toHaveLength(1);
-  });
+  }));
 
-  test("a clip edited between picking and exporting is exported at the revision it has now, under that revision's key", async () => {
+  test("a clip edited between picking and exporting is exported at the revision it has now, under that revision's key", globalPrisma.bind(async () => {
     const owner = await workspace();
     const g = await finishedGeneration(owner, [90]);
     const keys: string[] = [];
@@ -457,9 +458,9 @@ describeDb("Finishing runner on PostgreSQL", () => {
     const exported = await prisma.clipExport.findMany({ where: { clipId } });
     expect(exported.map((entry) => [entry.id, entry.editorRevision])).toEqual([[pick!.exportId, 1]]);
     expect(await row(g.row.id)).toMatchObject({ state: "exporting", attempts: 0 });
-  });
+  }));
 
-  test("an earlier failed export of the same revision and formats is requeued through the export retry path, not reported failed", async () => {
+  test("an earlier failed export of the same revision and formats is requeued through the export retry path, not reported failed", globalPrisma.bind(async () => {
     const owner = await workspace();
     const g = await finishedGeneration(owner, [90]);
     const earlier = await clipExportService.create(owner.scope, g.project.id, g.clips[0]!.id, { expectedRevision: 0, aspectRatios: ["9:16", "1:1"], resolution: "1080p" }, randomUUID());
@@ -481,9 +482,9 @@ describeDb("Finishing runner on PostgreSQL", () => {
     await service.processDue();
     expect(await row(g.row.id)).toMatchObject({ state: "ready" });
     expect((await finishingEvents(owner.workspaceId))[0]!.subject).toMatchObject({ state: "ready", exportIds: [earlier.export.id] });
-  });
+  }));
 
-  test("a plan that changes after the exports exist ends the row partial with them, not skipped", async () => {
+  test("a plan that changes after the exports exist ends the row partial with them, not skipped", globalPrisma.bind(async () => {
     const owner = await workspace();
     const g = await finishedGeneration(owner, [90, 80]);
     const { service, calls } = runner();
@@ -497,9 +498,9 @@ describeDb("Finishing runner on PostgreSQL", () => {
     expect((await finishingEvents(owner.workspaceId))[0]!.subject).toMatchObject({ state: "partial", reason: "plan_required", exportIds: picks.map((pick) => pick.exportId) });
     expect((await exportsOf(g.row.id)).map((pick) => pick.exportId)).toEqual(picks.map((pick) => pick.exportId));
     expect(calls.copy).toHaveLength(0);
-  });
+  }));
 
-  test("rows waiting for their renders are woken without using the batch that new work needs", async () => {
+  test("rows waiting for their renders are woken without using the batch that new work needs", globalPrisma.bind(async () => {
     const owner = await workspace();
     const parked = [];
     for (let index = 0; index < 3; index += 1) {
@@ -521,9 +522,9 @@ describeDb("Finishing runner on PostgreSQL", () => {
     expect(await service.processDue(1)).toBe(1);
     expect(await row(parked[1]!.row.id)).toMatchObject({ state: "ready" });
     expect(await row(parked[0]!.row.id)).toMatchObject({ state: "exporting" });
-  });
+  }));
 
-  test("the notification reaches the person finishing ran for, through the real ledger, once", async () => {
+  test("the notification reaches the person finishing ran for, through the real ledger, once", globalPrisma.bind(async () => {
     const owner = await workspace();
     const actor = await prisma.user.create({ data: { clerkId: `finishing-actor:${randomUUID()}`, primaryEmail: `actor-${randomUUID()}@example.test` } });
     await prisma.workspaceMember.create({ data: { workspaceId: owner.workspaceId, userId: actor.id, role: "editor" } });
@@ -555,9 +556,9 @@ describeDb("Finishing runner on PostgreSQL", () => {
     await service.processDue();
     expect(mails).toHaveLength(1);
     expect(await prisma.notificationLedger.count({ where: { projectId: g.project.id } })).toBe(1);
-  });
+  }));
 
-  test("exports still unfinished long after finishing came due count as failed", async () => {
+  test("exports still unfinished long after finishing came due count as failed", globalPrisma.bind(async () => {
     const owner = await workspace();
     const g = await finishedGeneration(owner, [90]);
     await runner().service.processDue();
@@ -565,9 +566,9 @@ describeDb("Finishing runner on PostgreSQL", () => {
     await late.service.processDue();
     expect(await row(g.row.id)).toMatchObject({ state: "partial", reason: "exports_failed" });
     expect(((await row(g.row.id)).picks as Array<{ exportError?: string }>)[0]!.exportError).toBe("export_timeout");
-  });
+  }));
 
-  test("an unexpected failure releases the row with backoff, and running out of attempts reports what exists", async () => {
+  test("an unexpected failure releases the row with backoff, and running out of attempts reports what exists", globalPrisma.bind(async () => {
     const owner = await workspace();
     const g = await finishedGeneration(owner, [90]);
     const broken = runner({ createExport: async () => { throw new Error("database blip"); } });
@@ -579,9 +580,9 @@ describeDb("Finishing runner on PostgreSQL", () => {
     await prisma.generationFinishing.update({ where: { id: g.row.id }, data: { attempts: 4, nextAttemptAt: new Date(Date.now() - 1_000) } });
     await broken.service.processDue();
     expect(await row(g.row.id)).toMatchObject({ state: "skipped", reason: "finishing_failed" });
-  });
+  }));
 
-  test("running out of attempts after some exports exist ends partial and keeps them", async () => {
+  test("running out of attempts after some exports exist ends partial and keeps them", globalPrisma.bind(async () => {
     const owner = await workspace();
     const g = await finishedGeneration(owner, [90, 80]);
     await prisma.generationFinishing.update({ where: { id: g.row.id }, data: { attempts: 4 } });
@@ -601,9 +602,9 @@ describeDb("Finishing runner on PostgreSQL", () => {
     expect(await prisma.clipExport.count({ where: { projectId: g.project.id } })).toBe(1);
     // The one export that exists is not yet finished, so the event names none.
     expect((await finishingEvents(owner.workspaceId))[0]!.subject).toMatchObject({ state: "partial", reason: "finishing_failed", exportIds: [] });
-  });
+  }));
 
-  test("two workers never run the same row", async () => {
+  test("two workers never run the same row", globalPrisma.bind(async () => {
     const owner = await workspace();
     const g = await finishedGeneration(owner, [90, 80]);
     const a = runner();
@@ -612,7 +613,7 @@ describeDb("Finishing runner on PostgreSQL", () => {
     expect(handled.reduce((sum, count) => sum + count, 0)).toBe(1);
     expect(a.calls.exports.length + b.calls.exports.length).toBe(2);
     expect((await row(g.row.id)).state).toBe("exporting");
-  });
+  }));
 
   describe("freezing at generate_clips admission", () => {
     const request = (forceRegenerate = false) => ({ contentPack: parseStoredContentPack(PACK), languageCode: "en" as const, forceRegenerate });
@@ -625,7 +626,7 @@ describeDb("Finishing runner on PostgreSQL", () => {
       return project;
     };
 
-    test("a new generation freezes one row keyed by its run, stable under replay and reuse", async () => {
+    test("a new generation freezes one row keyed by its run, stable under replay and reuse", globalPrisma.bind(async () => {
       const owner = await workspace();
       const project = await freshProject(owner, "fresh");
       const key = randomUUID();
@@ -644,9 +645,9 @@ describeDb("Finishing runner on PostgreSQL", () => {
 
       // The request's finishing is part of its fingerprint: the same key with other settings conflicts.
       await expect(trigger(owner, project.id, { topClips: 4 }, key)).rejects.toThrow();
-    });
+    }));
 
-    test("a request without finishing creates no row, and may reuse a generation that has one", async () => {
+    test("a request without finishing creates no row, and may reuse a generation that has one", globalPrisma.bind(async () => {
       const owner = await workspace();
       const plain = await freshProject(owner, "plain");
       await trigger(owner, plain.id, undefined);
@@ -656,9 +657,9 @@ describeDb("Finishing runner on PostgreSQL", () => {
       const first = await trigger(owner, withFinishing.id, { topClips: 2 });
       expect((await trigger(owner, withFinishing.id, undefined)).workflowRunId).toBe(first.workflowRunId);
       expect(await prisma.generationFinishing.count({ where: { projectId: withFinishing.id } })).toBe(1);
-    });
+    }));
 
-    test("a request that reuses a generation with other finishing, or finishing that already ran, conflicts", async () => {
+    test("a request that reuses a generation with other finishing, or finishing that already ran, conflicts", globalPrisma.bind(async () => {
       const owner = await workspace();
       const project = await freshProject(owner, "conflict");
       const first = await trigger(owner, project.id, { topClips: 2, copyPlatforms: ["tiktok", "x"] });
@@ -674,16 +675,16 @@ describeDb("Finishing runner on PostgreSQL", () => {
       await prisma.generationFinishing.update({ where: origin, data: { state: "ready", finishedAt: new Date() } });
       await expect(trigger(owner, project.id, { topClips: 2, copyPlatforms: ["tiktok", "x"] })).rejects.toMatchObject(conflict);
       expect(await prisma.generationFinishing.count({ where: { projectId: project.id } })).toBe(1);
-    });
+    }));
 
-    test("only integration requests carry finishing; the browser's generate path refuses it", async () => {
+    test("only integration requests carry finishing; the browser's generate path refuses it", globalPrisma.bind(async () => {
       const owner = await workspace();
       const project = await freshProject(owner, "browser");
       await expect(projectService.triggerGeneration(owner.scope, project.id, request(), randomUUID(), { finishing: finishingFor({ topClips: 2 }) })).rejects.toThrow("integration");
       expect(await prisma.generationFinishing.count({ where: { projectId: project.id } })).toBe(0);
-    });
+    }));
 
-    test("asking for finishing on a generation that already finished makes it due at once", async () => {
+    test("asking for finishing on a generation that already finished makes it due at once", globalPrisma.bind(async () => {
       const owner = await workspace();
       const g = await finishedGeneration(owner, [90], null);
       await prisma.project.update({ where: { id: g.project.id }, data: { sourceDurationSeconds: 60 } });
@@ -694,7 +695,7 @@ describeDb("Finishing runner on PostgreSQL", () => {
       const frozen = await prisma.generationFinishing.findUniqueOrThrow({ where: { originRunId: g.stt.id } });
       expect(frozen.state).toBe("due");
       expect(frozen.dueAt).not.toBeNull();
-    });
+    }));
   });
 
   describe("delivery: propose_to_queue", () => {
@@ -719,7 +720,7 @@ describeDb("Finishing runner on PostgreSQL", () => {
       ({ topClips: 2, minScore: 0, aspectRatios: ["9:16"], resolution: "1080p", copyPlatforms: [], delivery: "propose_to_queue", queueAccountIds: accountIds, ...extra }) as unknown as FinishingSettingsInput;
     const proposalsOf = (workspaceId: string) => prisma.socialPost.findMany({ where: { workspaceId, status: "draft", proposal: { isNot: null } }, include: { proposal: true }, orderBy: { createdAt: "asc" } });
 
-    test("proposes each picked clip to each account with that platform's copy, once, and ends ready", async () => {
+    test("proposes each picked clip to each account with that platform's copy, once, and ends ready", globalPrisma.bind(async () => {
       const owner = await workspace();
       const [youtube, x] = [await account(owner, "youtube_shorts"), await account(owner, "x")];
       const g = await finishedGeneration(owner, [90, 80, 10], queueSettings([youtube.id, x.id]));
@@ -751,9 +752,9 @@ describeDb("Finishing runner on PostgreSQL", () => {
       expect(await proposalsOf(owner.workspaceId)).toHaveLength(4);
       expect((await listWorkspaceEvents(prisma, { workspaceId: owner.workspaceId }, { limit: 200, types: ["social_post.proposed"] })).data).toHaveLength(4);
       expect(await row(g.row.id)).toMatchObject({ state: "ready" });
-    });
+    }));
 
-    test("a member who can't manage publishing runs a shared Recipe's queue delivery without proposing: exports and copy finish, the reason says why", async () => {
+    test("a member who can't manage publishing runs a shared Recipe's queue delivery without proposing: exports and copy finish, the reason says why", globalPrisma.bind(async () => {
       const owner = await workspace();
       const live = await account(owner, "youtube_shorts");
       // The settings were saved by someone who may propose; they run as the row's member, who may not.
@@ -775,9 +776,9 @@ describeDb("Finishing runner on PostgreSQL", () => {
       const picks = await exportsOf(g.row.id);
       expect(picks.every((pick) => pick.exportId && pick.copyGenerationId && !pick.queue)).toBe(true);
       expect(finishingReasonMessage("actor_lacks_publishing")).toContain("can't manage publishing");
-    });
+    }));
 
-    test("an account that is no longer active gets nothing, and the rest of finishing still happens", async () => {
+    test("an account that is no longer active gets nothing, and the rest of finishing still happens", globalPrisma.bind(async () => {
       const owner = await workspace();
       const [live, gone] = [await account(owner, "youtube_shorts"), await account(owner, "x")];
       const g = await finishedGeneration(owner, [90, 80], queueSettings([live.id, gone.id]));
@@ -790,9 +791,9 @@ describeDb("Finishing runner on PostgreSQL", () => {
       const proposals = await proposalsOf(owner.workspaceId);
       expect(proposals.map((post) => post.socialAccountId)).toEqual([live.id, live.id]);
       expect(await row(g.row.id)).toMatchObject({ state: "partial", reason: "queue_account_unavailable" });
-    });
+    }));
 
-    test("an account the queue refuses is recorded, and the accounts after it still get their proposals", async () => {
+    test("an account the queue refuses is recorded, and the accounts after it still get their proposals", globalPrisma.bind(async () => {
       const owner = await workspace();
       // TikTok takes only 9:16 and this finishing exports only 1:1. Its ID sorts before X's, so it is tried first.
       const hex = () => randomUUID().replaceAll("-", "").slice(0, 12);
@@ -818,9 +819,9 @@ describeDb("Finishing runner on PostgreSQL", () => {
       await service.processDue();
       expect(await proposalsOf(owner.workspaceId)).toHaveLength(2);
       expect(await row(g.row.id)).toMatchObject({ state: "partial", reason: "queue_failed" });
-    });
+    }));
 
-    test("ready_to_review proposes nothing", async () => {
+    test("ready_to_review proposes nothing", globalPrisma.bind(async () => {
       const owner = await workspace();
       const live = await account(owner, "youtube_shorts");
       const g = await finishedGeneration(owner, [90], { ...FINISHING, topClips: 1 });
@@ -831,7 +832,7 @@ describeDb("Finishing runner on PostgreSQL", () => {
       expect(await row(g.row.id)).toMatchObject({ state: "ready" });
       expect(await proposalsOf(owner.workspaceId)).toHaveLength(0);
       expect(live.id).toBeDefined();
-    });
+    }));
   });
 
   describe("standing grants", () => {
@@ -839,17 +840,17 @@ describeDb("Finishing runner on PostgreSQL", () => {
     const settings = (extra: Record<string, unknown>) =>
       ({ topClips: 2, minScore: 0, aspectRatios: ["9:16"], resolution: "1080p", copyPlatforms: [], queueAccountIds: [], delivery: "ready_to_review", ...extra }) as unknown as FinishingSettingsInput;
     let secret: string | undefined;
-    beforeAll(() => {
+    beforeAll(globalPrisma.bind(() => {
       secret = process.env.REVIEW_ACCESS_SECRET;
       process.env.REVIEW_ACCESS_SECRET = "finishing-grant-review-secret-0123456789abcdef";
       // Accepting a post with assisted copy checks its provenance, which builds the copy provider; nothing calls it.
       process.env.OPENAI_API_KEY ||= "test-key-never-sent";
       process.env.OPENAI_ASSISTED_COPY_MODEL ||= "test-model";
-    });
-    afterAll(() => {
+    }));
+    afterAll(globalPrisma.bind(() => {
       if (secret === undefined) delete process.env.REVIEW_ACCESS_SECRET;
       else process.env.REVIEW_ACCESS_SECRET = secret;
-    });
+    }));
 
     /** A generation the Autopilot rule imported, so grants for that rule cover it. */
     async function ruleGeneration(owner: Owner, scores: number[], finishing: FinishingSettingsInput) {
@@ -877,7 +878,7 @@ describeDb("Finishing runner on PostgreSQL", () => {
       await service.processDue();
     }
 
-    test("a publish grant takes the proposals it covers into slots within its cap, and the rest wait for a person", async () => {
+    test("a publish grant takes the proposals it covers into slots within its cap, and the rest wait for a person", globalPrisma.bind(async () => {
       const owner = await workspace();
       const account = await prisma.socialAccount.create({ data: { userId: owner.user.id, workspaceId: owner.workspaceId, platform: "youtube_shorts", providerAccountId: `grant-finishing:${randomUUID()}`,
         displayName: "YouTube", accessTokenEncrypted: "encrypted-test-token", postingSchedule: EVERY_DAY } });
@@ -898,9 +899,9 @@ describeDb("Finishing runner on PostgreSQL", () => {
       await service.processDue();
       expect(await prisma.socialPost.count({ where: { workspaceId: owner.workspaceId } })).toBe(2);
       expect(await prisma.socialPost.count({ where: { workspaceId: owner.workspaceId, standingGrantId: grant.id } })).toBe(1);
-    });
+    }));
 
-    test("without a grant a proposal stays a proposal and the pick records no grant", async () => {
+    test("without a grant a proposal stays a proposal and the pick records no grant", globalPrisma.bind(async () => {
       const owner = await workspace();
       const account = await prisma.socialAccount.create({ data: { userId: owner.user.id, workspaceId: owner.workspaceId, platform: "youtube_shorts", providerAccountId: `grant-finishing:${randomUUID()}`,
         displayName: "YouTube", accessTokenEncrypted: "encrypted-test-token", postingSchedule: EVERY_DAY } });
@@ -909,9 +910,9 @@ describeDb("Finishing runner on PostgreSQL", () => {
       await finishAll(service, g.row.id);
       expect((await exportsOf(g.row.id))[0]).not.toHaveProperty("grant");
       expect(await prisma.socialPost.findMany({ where: { workspaceId: owner.workspaceId } })).toMatchObject([{ status: "draft", standingGrantId: null }]);
-    });
+    }));
 
-    test("send_review_round sends one round to the grant's reviewers when finishing ends ready", async () => {
+    test("send_review_round sends one round to the grant's reviewers when finishing ends ready", globalPrisma.bind(async () => {
       const owner = await workspace();
       const g = await ruleGeneration(owner, [90, 80], settings({ delivery: "send_review_round" }));
       await prisma.user.update({ where: { id: owner.user.id }, data: { primaryEmail: `owner-${randomUUID()}@example.test` } });
@@ -930,9 +931,9 @@ describeDb("Finishing runner on PostgreSQL", () => {
       await service.processDue();
       expect(await prisma.reviewRound.count({ where: { projectId: g.project.id } })).toBe(1);
       expect(await row(g.row.id)).toMatchObject({ state: "ready" });
-    });
+    }));
 
-    test("send_review_round with no grant, or below Business, ends partial with the reason and the clips still finished", async () => {
+    test("send_review_round with no grant, or below Business, ends partial with the reason and the clips still finished", globalPrisma.bind(async () => {
       const owner = await workspace();
       const g = await ruleGeneration(owner, [90], settings({ topClips: 1, delivery: "send_review_round" }));
       const { service, calls } = runner();
@@ -950,6 +951,6 @@ describeDb("Finishing runner on PostgreSQL", () => {
       await finishAll(service, second.row.id);
       expect(await row(second.row.id)).toMatchObject({ state: "partial", reason: "review_not_sent_plan" });
       expect(await prisma.reviewRound.count({ where: { projectId: second.project.id } })).toBe(0);
-    });
+    }));
   });
 });
