@@ -708,3 +708,5 @@ export { completionCallbackExecutionInputHash, workspaceEventExecutionInputHash 
 export { clipPreparationBinding, encodeClipPreparationInput, decodeClipPreparationInput, encodeClipPreparationResult, decodeClipPreparationResult } from "./clip-preparation-input";
 
 export { clipPreparationEngineHash, CLIP_PREPARATION_POLICY, clipPreparationTiming, clipPreparationPreviewWindow } from "./clip-preparation-policy";
+
+export { renderArtifactBindingHash, encodeRenderVariantFailure, decodeRenderVariantFailure } from "./render-artifact";
