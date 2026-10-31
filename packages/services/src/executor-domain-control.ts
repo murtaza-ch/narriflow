@@ -1,4 +1,5 @@
 import type { PublicationNativeCommand, PublicationNativeReply } from "@narriflow/validators/publication-execution";
+import type { RenderGroupOutcome } from "@narriflow/validators/render-execution";
 import type { Prisma } from "@prisma/client";
 import type { ExecutionArtifactRole, ExecutionCommand, ExecutionDispatchReference, ExecutionDisposition } from "@narriflow/validators/execution";
 
@@ -40,7 +41,7 @@ export interface ExecutorArtifactCommit {
 export type ExecutorFailureInput = Pick<Extract<ExecutionCommand, { action: "fail" }>, "failureCode" | "retryable">;
 export type ExecutorReleaseInput = Pick<Extract<ExecutionCommand, { action: "release" }>, "reason">;
 export type ExecutorProgressInput = Pick<Extract<ExecutionCommand, { action: "progress" }>, "phase" | "progress">;
-export type ExecutorMutationResult = undefined | { dispatchIds: readonly string[] };
+export type ExecutorMutationResult = undefined | { dispatchIds: readonly string[]; renderGroup?: RenderGroupOutcome };
 
 export interface ExecutorExpiryObservation {
   kind: "lease" | "operation";

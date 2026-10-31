@@ -81,11 +81,11 @@ dbDescribe("Targeted serverless domain execution", () => {
     return { requestHash: crypto.randomUUID().replaceAll("-", "").repeat(2), metadata: { version: 1 as const, keyId: "gate-key", audience: "executor-control" as const,
       method: "POST" as const, canonicalTarget: "/api/execution/command", bodySha256: "0".repeat(64), timestamp: Math.floor(Date.now() / 1000), deliveryId, signature: "0".repeat(64) } };
   }
-  function control(value: Awaited<ReturnType<typeof fixture>>) {
+  function control(value: Awaited<ReturnType<typeof fixture>>, deliver?: (ids: readonly string[]) => Promise<void>) {
     const wakes: string[] = [];
     const api = createExecutorControl({ database: db, subjectKind: "render_group", domain: value.lifecycle,
       prepareContext: async () => ({ source: "gate-source#1", analysis: null, toolchain: "gate-toolchain" }),
-      deliverWakes: async (ids) => { wakes.push(...ids); },
+      deliverWakes: async (ids) => { wakes.push(...ids); await deliver?.(ids); },
       artifacts: { head: async (assignment) => ({ etag: '"gate-etag"', contentType: assignment.contentType, byteLength: 1024n, sha256: "a".repeat(64) }),
         prepare: async (_assignment, artifact) => ({ ...artifact, role: "render_variant" as const, renderId: value.variant.id, durationSec: 10 }) },
     });
@@ -222,14 +222,21 @@ dbDescribe("Targeted serverless domain execution", () => {
 
   test("the final validated artifact commits child outcome and parent wake together, leaving parent settlement unleased", async () => {
     const value = await fixture();
-    const server = control(value);
+    let loseAck = false;
+    const server = control(value, async () => { if (loseAck) throw new Error("lost_group_wake_ack"); });
     await server.send(acquire(value));
     await server.send({ action: "process-start", fence: fence(value) });
     const assignment = await db.executionArtifact.create({ data: { attemptToken: value.attemptToken, owner: value.owner, role: "render_variant", bindingHash: await renderArtifactBindingHash({ inputHash: value.reference.inputHash, renderId: value.variant.id, role: "render_variant" }),
       storageKey: `execution/${epoch}/${value.attemptToken}/${value.owner}/variant.mp4`, contentType: "video/mp4", maxBytes: 4096n, grantExpiresAt: value.deadline } });
-    const result = await server.send({ action: "commit-artifact", fence: fence(value), artifact: { artifactId: assignment.id, role: "render_variant", contentType: "video/mp4",
-      byteLength: 1024, sha256: "a".repeat(64), etag: '"gate-etag"', bindingHash: assignment.bindingHash } });
-    expect(result).toEqual({ disposition: "committed", artifactId: assignment.id });
+    const command = { action: "commit-artifact" as const, fence: fence(value), artifact: { artifactId: assignment.id, role: "render_variant" as const, contentType: "video/mp4",
+      byteLength: 1024, sha256: "a".repeat(64), etag: '"gate-etag"', bindingHash: assignment.bindingHash } };
+    const receipt = verified();
+    loseAck = true;
+    await expect(server.send(command, receipt)).rejects.toThrow("lost_group_wake_ack");
+    loseAck = false;
+    const result = await server.send(command, receipt);
+    expect(result).toEqual({ disposition: "committed", artifactId: assignment.id,
+      renderGroup: { status: "completed", requested: 1, succeeded: 1, failed: 0, superseded: 0 } });
     expect(await db.renderGroup.findUniqueOrThrow({ where: { id: value.group.id } })).toMatchObject({ status: "completed", chargedAttemptCount: 1, attemptToken: null });
     expect(await db.executionAttempt.findUniqueOrThrow({ where: { attemptToken: value.attemptToken } })).toMatchObject({ status: "completed" });
     expect(await db.workflowRun.findUniqueOrThrow({ where: { id: value.run.id } })).toMatchObject({ status: "queued", leaseOwner: null, leaseExpiresAt: null });

@@ -2,6 +2,7 @@ import { z } from "zod";
 import { publicationNativeCommandSchema, publicationNativeReplySchema } from "./publication-execution";
 import { clipRenderCaptionDiagnosticsSchema } from "./clip";
 import { mediaFactsSchema, sourceProbeSchema } from "./source-probe";
+import { renderGroupOutcomeSchema } from "./render-execution";
 
 export const EXECUTION_ENVELOPE_MAX_BYTES = 64 * 1024;
 export const EXECUTION_COMMAND_MAX_BYTES = 64 * 1024;
@@ -175,7 +176,7 @@ export const executionDispositionSchema = z.discriminatedUnion("disposition", [
   z.strictObject({ disposition: z.literal("busy"), leaseExpiresAt: instant }),
   z.strictObject({ disposition: z.literal("renewed"), leaseExpiresAt: instant }),
   z.strictObject({ disposition: z.literal("started") }),
-  z.strictObject({ disposition: z.literal("committed"), artifactId: z.string().uuid() }),
+  z.strictObject({ disposition: z.literal("committed"), artifactId: z.string().uuid(), renderGroup: renderGroupOutcomeSchema.optional() }),
   z.strictObject({ disposition: z.literal("progress_recorded") }),
   z.strictObject({ disposition: z.literal("publication_recorded"), result: publicationNativeReplySchema }),
   z.strictObject({ disposition: z.literal("released"), dueAt: instant.nullable() }),
