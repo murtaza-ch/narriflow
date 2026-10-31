@@ -9,6 +9,7 @@ import { WorkflowRunLifecycle } from "./workflow-run-lifecycle";
 import { withServiceEnvironment } from "./runtime-environment";
 import { expireExportBundle } from "./export-bundle-expiry";
 import { mediaCleanupObjectRetainUntil } from "./media-cleanup-holds";
+import { restoreExportBundleWithinTransaction,restoreExportBundlesPage,expireExportBundlesPage } from "./export-bundle-recovery";
 
 const url=process.env.SERVERLESS_TEST_DATABASE_URL;
 const suite=process.env.ALLOW_SERVERLESS_DB_TESTS==="1"&&url?describe:describe.skip;
@@ -127,6 +128,8 @@ suite("Targeted export bundle execution",()=>{
       expect(expiry).toHaveLength(1);expect(expiry[0]).toMatchObject({dueAt:f.bundle.expiresAt,observedDeadlineAt:f.bundle.expiresAt,deadlineKind:'operation'});
       expect(await db.$transaction(tx=>expireExportBundle(tx,f.bundle.id,new Date(f.bundle.expiresAt!.getTime()+1)))).toEqual({kind:'superseded'});
       expect((await db.exportBundle.findUniqueOrThrow({where:{id:f.bundle.id}})).storageKey).toBe(assigned.storageKey);
+      const expiryPage=await db.$transaction(tx=>expireExportBundlesPage(tx,{deploymentEpoch:f.reference.deploymentEpoch,cutoff:new Date(),after:null,limit:1}));
+      expect(expiryPage.processed).toBe(1);expect(expiryPage.next).toBeNull();expect(expiryPage.dispatchIds.length).toBeGreaterThan(0);
       const result=await db.$transaction(tx=>expireExportBundle(tx,f.bundle.id,f.bundle.expiresAt!));
       expect(result.kind).toBe('expired');
       expect(await db.exportBundle.findUniqueOrThrow({where:{id:f.bundle.id}})).toMatchObject({status:'expired',storageKey:null,sizeBytes:12345n,checksumSha256:'c'.repeat(64)});
@@ -191,6 +194,47 @@ suite("Targeted export bundle execution",()=>{
       await db.workflowRun.update({where:{id:f.run.id},data:{nextAttemptAt:new Date(Date.now()+10*60_000)}});
       expect(await withServiceEnvironment({},()=>f.service.prepareExecution(f.reference))).toEqual({kind:'sleep',dueAt:f.bundle.operationDeadlineAt});
       expect(f.objects.size).toBe(0);expect(await db.executionAttempt.count({where:{dispatch:{subjectId:f.run.id}}})).toBe(0);
+    }finally{await db.executionDispatch.deleteMany({where:{subjectId:f.run.id}});await db.workspace.delete({where:{id:f.workspace.id}});await db.user.delete({where:{id:f.user.id}});}
+  });
+  test("only an explicit quiesced restore clears the old capsule, preserving the accepted deadline and charged count",async()=>{
+    const f=await fixture(),others=[await fixture(),await fixture()],rollback=Error('rollback_bundle_restore_fixture');
+    try{
+      await withServiceEnvironment({},()=>f.service.prepareExecution(f.reference));
+      await expect(db.$transaction(async tx=>{
+        const epoch=await tx.executionEpoch.findUniqueOrThrow({where:{id:1}});
+        const fence=await tx.executionEpoch.update({where:{id:1},data:{epoch:epoch.epoch+1,admissionOpen:false,changedAt:new Date()}});
+        const proof={snapshotEpoch:epoch.epoch,fenceAboveEpoch:epoch.epoch,deploymentEpoch:fence.epoch,cutoff:fence.changedAt};
+        await tx.workflowRun.updateMany({where:{id:{in:[f.run.id,...others.map(value=>value.run.id)]}},data:{deploymentEpoch:fence.epoch,generation:{increment:1},attemptCount:2,status:'queued',attemptId:null,leaseOwner:null,leaseExpiresAt:null}});
+        await expect(restoreExportBundleWithinTransaction(tx,f.bundle.id,proof)).rejects.toThrow('bundle_restore_owner_not_revoked');
+        await tx.executionAttempt.updateMany({where:{dispatch:{subjectId:f.run.id}},data:{status:'superseded',revokedAt:fence.changedAt,finishedAt:fence.changedAt}});
+        const first=await restoreExportBundleWithinTransaction(tx,f.bundle.id,proof);
+        expect(first.dispatchIds).toHaveLength(2);
+        expect(await tx.exportBundle.findUniqueOrThrow({where:{id:f.bundle.id}})).toMatchObject({deploymentEpoch:fence.epoch,status:'queued',inputStorageKey:null,inputBindingHash:null,operationDeadlineAt:f.bundle.operationDeadlineAt});
+        expect(await tx.workflowRun.findUniqueOrThrow({where:{id:f.run.id}})).toMatchObject({attemptCount:2,attemptId:null,operationDeadlineAt:f.bundle.operationDeadlineAt});
+        expect(await restoreExportBundleWithinTransaction(tx,f.bundle.id,proof)).toEqual(first);
+        const page=await restoreExportBundlesPage(tx,{...proof,after:null,limit:1});
+        expect(page.processed).toBe(1);expect(page.next).not.toBeNull();
+        const tail=await restoreExportBundlesPage(tx,{...proof,after:page.next,limit:1});
+        expect(tail.processed).toBe(1);expect(tail.next).toBeNull();expect(tail.dispatchIds).toHaveLength(2);
+        for(const value of others)expect(await tx.exportBundle.findUniqueOrThrow({where:{id:value.bundle.id}})).toMatchObject({deploymentEpoch:fence.epoch,operationDeadlineAt:value.bundle.operationDeadlineAt});
+        expect(await tx.executionAttempt.count({where:{dispatch:{subjectId:f.run.id}}})).toBe(1);
+        await expect(restoreExportBundleWithinTransaction(tx,f.bundle.id,{...proof,cutoff:new Date(proof.cutoff.getTime()+1)})).rejects.toThrow('bundle_restore_fence_invalid');
+        throw rollback;
+      })).rejects.toBe(rollback);
+      expect((await db.executionEpoch.findUniqueOrThrow({where:{id:1}})).epoch).toBe(f.reference.deploymentEpoch);
+    }finally{for(const value of [f,...others]){await db.executionAttempt.deleteMany({where:{dispatch:{subjectId:value.run.id}}});await db.executionDispatch.deleteMany({where:{subjectId:value.run.id}});await db.workspace.delete({where:{id:value.workspace.id}});await db.user.delete({where:{id:value.user.id}});}}
+  });
+  test("SQL refuses a budget extension even while an unowned restored parent permits adopting its new epoch",async()=>{
+    const f=await fixture();
+    try{
+      await expect(db.$transaction(async tx=>{
+        const epoch=await tx.executionEpoch.findUniqueOrThrow({where:{id:1}});
+        await tx.executionEpoch.update({where:{id:1},data:{epoch:epoch.epoch+1,admissionOpen:false,changedAt:new Date()}});
+        await tx.workflowRun.update({where:{id:f.run.id},data:{deploymentEpoch:epoch.epoch+1}});
+        await tx.exportBundle.update({where:{id:f.bundle.id},data:{deploymentEpoch:epoch.epoch+1,operationDeadlineAt:new Date(f.bundle.operationDeadlineAt.getTime()+1000)}});
+      })).rejects.toThrow('accepted deadline is immutable across restore');
+      expect((await db.executionEpoch.findUniqueOrThrow({where:{id:1}})).epoch).toBe(f.reference.deploymentEpoch);
+      expect(await db.exportBundle.findUniqueOrThrow({where:{id:f.bundle.id}})).toMatchObject({deploymentEpoch:f.reference.deploymentEpoch,operationDeadlineAt:f.bundle.operationDeadlineAt});
     }finally{await db.executionDispatch.deleteMany({where:{subjectId:f.run.id}});await db.workspace.delete({where:{id:f.workspace.id}});await db.user.delete({where:{id:f.user.id}});}
   });
   test("a charged native failure preserves the frozen input and fixed deadline while projecting the bounded retry or terminal result",async()=>{

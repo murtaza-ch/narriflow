@@ -82,3 +82,15 @@ Services typecheck passes. Migration014 has only run in disposable schemas.
 The native paid-intent/result, scoped recovery, mix/publication and deployed
 dubbing gates remain required; this admission checkpoint does not register a
 dubbing function.
+
+Bundle live preparation no longer changes restore epochs or resets deadlines.
+An explicit quiesced restore port requires the exact closed epoch/cutoff proof,
+an already-unowned current parent, and revoked historical Generic permissions.
+It clears the old capsule while preserving the original accepted deadline and
+charged count, then appends the exact driver and watchdog. Bounded restore and
+expiry pages process at most32 known rows, returning strict cursors and dispatch
+IDs. Migration019 adds a cross-epoch deadline guard and active restore-page index.
+The bundle PostgreSQL suite passes12/109, including rollback-isolated restore,
+pagination, stale proof refusal and SQL budget-extension refusal. These changes
+have only run in disposable schemas. Dubbing recovery still depends on its
+remaining native checkpoint fields and protocol.

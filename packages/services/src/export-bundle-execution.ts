@@ -82,12 +82,9 @@ export class ExportBundleExecution extends WorkflowRunLifecycle {
     }
     await tx.$queryRaw`SELECT id FROM "ExportBundle" WHERE "workflowRunId"=${initial.id}::uuid FOR UPDATE`;
     const run=await tx.workflowRun.findUniqueOrThrow({where:{id:initial.id}});
-    let bundle=await tx.exportBundle.findUnique({where:{workflowRunId:run.id},include:{operation:{select:{projectId:true,workspaceId:true,workflowRunId:true,actorUserId:true}}}});
+    const bundle=await tx.exportBundle.findUnique({where:{workflowRunId:run.id},include:{operation:{select:{projectId:true,workspaceId:true,workflowRunId:true,actorUserId:true}}}});
     const [clock]=await tx.$queryRaw<Array<{now:Date}>>`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS now`;
     if(!bundle||!clock||bundle.operation.projectId!==run.projectId||bundle.operation.workflowRunId!==run.id)return null;
-    if(bundle.deploymentEpoch<run.deploymentEpoch&&run.status==='queued'&&!run.attemptId&&!run.leaseOwner&&!run.leaseExpiresAt){
-      bundle=await tx.exportBundle.update({where:{id:bundle.id},data:{deploymentEpoch:run.deploymentEpoch,status:'queued',attemptStorageKey:null,inputBindingHash:null,inputStorageKey:null,inputEtag:null,inputByteLength:null,inputChecksumSha256:null,operationDeadlineAt:new Date(clock.now.getTime()+45*60_000)},include:{operation:{select:{projectId:true,workspaceId:true,workflowRunId:true,actorUserId:true}}}});
-    }
     if(bundle.deploymentEpoch!==run.deploymentEpoch||['completed','failed','expired'].includes(bundle.status))return null;
     const manifest=exportBundleManifestSchema.parse(bundle.manifest);
     if(manifest.operationId!==bundle.operationId||manifest.projectId!==run.projectId)return invalid();

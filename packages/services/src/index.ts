@@ -737,3 +737,5 @@ export * from "./export-bundle-input";
 export * from "./export-bundle-expiry";
 
 export * from "./dubbing-policy";
+
+export * from "./export-bundle-recovery";
