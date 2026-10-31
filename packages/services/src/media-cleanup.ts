@@ -2,7 +2,7 @@ import { generatedMediaObjectIsHeld } from "./generated-media-execution";
 import { readServiceEnvironment, type ServiceEnvironment } from "./runtime-environment";
 import { randomUUID } from "node:crypto";
 import { getPrismaClient } from "@narriflow/db/client";
-import type { MediaCleanupObligation } from "@prisma/client";
+import type { MediaCleanupObligation, PrismaClient } from "@prisma/client";
 import { tryDerivePeaksStorageKey } from "./clip-preview-storage";
 import { classifyR2StorageError, deleteObject } from "./r2-storage";
 
@@ -16,6 +16,7 @@ export const MEDIA_CLEANUP_ORIGINS = [
   "thumbnail_frame_preparation",
   "upload_source_pinning",
   "upload_session_termination",
+  "clip_preparation_input",
 ] as const;
 export type MediaCleanupOrigin = (typeof MEDIA_CLEANUP_ORIGINS)[number];
 
@@ -27,6 +28,7 @@ export const MEDIA_CLEANUP_CLASSES = [
   "generated_asset",
   "thumbnail_asset",
   "upload_source",
+  "execution_input",
 ] as const;
 export type MediaCleanupClass = (typeof MEDIA_CLEANUP_CLASSES)[number];
 
@@ -666,6 +668,9 @@ export function createMediaCleanupWorker(input: {
   createId?: () => string;
   random?: () => number;
   isProtected?: (claim: ClaimedMediaCleanup) => Promise<boolean>;
+  /** Retained execution inputs keep their obligation for a future exact-key
+   * check. They are not permanently adopted by a mutable asset row. */
+  retainUntil?: (claim: ClaimedMediaCleanup) => Promise<Date | null>;
 }) {
   const config = validateMediaCleanupConfig(input.config);
   const now = input.now ?? (() => new Date());
@@ -750,6 +755,17 @@ export function createMediaCleanupWorker(input: {
           stopScheduledHeartbeat();
         };
         try {
+          const retainedUntil = await input.retainUntil?.(claim);
+          if (retainedUntil && retainedUntil > now()) {
+            stopHeartbeat();
+            await heartbeatInFlight;
+            if (claimLost) throw new MediaCleanupClaimLost();
+            const settled = await input.store.reschedule({ id: claim.id, claimId: claim.claimId, now: now(), nextAttemptAt: retainedUntil, failureCode: "object_retained" });
+            if (!settled) throw new MediaCleanupClaimLost();
+            retried += 1;
+            record({ phase: "settle", outcome: "retry_scheduled", failureCode: "object_retained" });
+            continue;
+          }
           if (await input.isProtected?.(claim)) {
             stopHeartbeat();
             await heartbeatInFlight;
@@ -1098,6 +1114,7 @@ function productionMediaCleanupWorker() {
     },
   },
   config: mediaCleanupConfigFromEnv(),
+  retainUntil: claim => claim.cleanupClass === "execution_input" ? executionInputRetainUntil(requirePrisma(), claim.objectKey) : Promise.resolve(null),
   async isProtected(claim) {
     if (claim.cleanupClass !== "generated_asset" && claim.cleanupClass !== "thumbnail_asset") return false;
     if(claim.cleanupClass === "generated_asset" && await generatedMediaObjectIsHeld(requirePrisma(),claim.objectKey))return true;
@@ -1113,3 +1130,16 @@ function productionMediaCleanupWorker() {
 export const mediaCleanupWorker = {
   processDue: (options?: Parameters<ReturnType<typeof createMediaCleanupWorker>["processDue"]>[0]) => productionMediaCleanupWorker().processDue(options),
 };
+
+/** Only producer-planned keys can enter this class. A referenced capsule stays
+ * retained even after completion; deleting its Project/Clip removes the row.
+ * A future check remains durable, so deletion cannot strand a forgotten key. */
+export async function executionInputRetainUntil(database: Pick<PrismaClient, "clipPreparation" | "$queryRaw">, objectKey: string): Promise<Date | null> {
+  const match = /^projects\/([a-f0-9-]{36})\/preparations\/([a-f0-9-]{36})\/([a-f0-9-]{36})\.json$/.exec(objectKey);
+  if (!match) throw new Error("Invalid execution input cleanup key");
+  const row = await database.clipPreparation.findUnique({ where: { id: match[2]! }, select: { projectId: true, inputStorageKey: true, operationDeadlineAt: true } });
+  if (!row || row.projectId !== match[1] || row.inputStorageKey !== objectKey) return null;
+  const [clock] = await database.$queryRaw<Array<{ now: Date }>>`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS now`;
+  if (!clock) throw new Error("Cleanup clock unavailable");
+  return new Date(Math.max(clock.now.getTime() + 24 * 60 * 60_000, row.operationDeadlineAt.getTime() + 120_000));
+}

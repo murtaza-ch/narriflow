@@ -118,6 +118,10 @@ _Avoid_: Pending renders, render queue, Render Group
 One partition of a Render Work Set containing one clip and one frozen export configuration, including its requested aspect variants. Groups can execute and retry independently while belonging to the same Workflow Run.
 _Avoid_: Render Work Set, per-clip Workflow Run, render queue
 
+**Clip Preparation**:
+One bounded execution that creates a preview, optional waveform and source layout observations for a frozen Clip, source, editor revision and engine binding. Render Groups share its committed artifacts and typed unavailable outcomes while their parent remains unleased. A frozen export may reuse its own preparation after a live editor change; it cannot replace the newer live Clip's preview or evidence. B-roll availability gates application of source observations during rendering.
+_Avoid_: Preview poller, per-aspect analysis, render ownership
+
 **Frozen Rendering State**:
 The canonical project, clip, entitlement, and output state a Clip Render Attempt uses for all decisions in one execution. Expiring access locations may be refreshed without changing that state.
 _Avoid_: Render manifest, live project state, FFmpeg options

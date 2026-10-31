@@ -695,7 +695,6 @@ export * from "./outbound-delivery-execution";
 export * from "./notification-body-storage";
 
 export * from "./outbound-delivery-runtime";
-
 export * from "./local-fetch-device";
 
 export * from "./source-fetch-capability";
@@ -708,6 +707,7 @@ export { completionCallbackExecutionInputHash, workspaceEventExecutionInputHash 
 export { clipPreparationBinding, encodeClipPreparationInput, decodeClipPreparationInput, encodeClipPreparationResult, decodeClipPreparationResult } from "./clip-preparation-input";
 
 export { clipPreparationEngineHash, CLIP_PREPARATION_POLICY, clipPreparationTiming, clipPreparationPreviewWindow } from "./clip-preparation-policy";
-
 export * from "./publication-checkpoint-blob";
 export { renderArtifactBindingHash, encodeRenderVariantFailure, decodeRenderVariantFailure } from "./render-artifact";
+export * from "./clip-preparation";
+export * from "./clip-preparation-execution";
