@@ -115,6 +115,15 @@ dbDescribe("Targeted Ingest execution", () => {
     expect(await db.executionAttempt.count({where:{dispatch:{subjectId:job.id,generation:2}}})).toBe(0);
   });
 
+  test("enqueue seals the producer's acquisition policy into the source payload",async()=>{
+    const f=await fixture();
+    const project=await db.project.create({data:{workspaceId:f.project.workspaceId,title:"Supplied source",sourceType:"upload",sourceMediaUrl:"r2://verified/source.mp4",ingestStatus:"queued"}});
+    const admitted=await db.$transaction(tx=>f.lifecycle.enqueue(tx,{projectId:project.id,jobType:"upload_finalize",payload:{storageKey:"verified/source.mp4"},acquisition:{audioPolicy:"none"}}));subjects.push(admitted.id);
+    const job=await db.ingestJob.findUniqueOrThrow({where:{id:admitted.id}});
+    expect(job.payload).toEqual({storageKey:"verified/source.mp4",acquisition:{audioPolicy:"none"}});
+    expect(job).toMatchObject({status:"queued",attemptCount:0,claimId:null});
+  });
+
   function measuredBindings(f: Awaited<ReturnType<typeof fixture>>, audioKey: string): { audio: SourceAudioBinding; video: SourceVideoBinding } {
     const audio: SourceAudioBinding = { sourceAudioId: crypto.randomUUID(), projectId: f.project.id, sourceRevision: 1,
       mediaIdentity: { provider: "youtube", mediaId: "dQw4w9WgXcQ" }, audioTrack: { id: "140", language: "en", codec: "aac", sampleRate: 48000, channels: 2 },

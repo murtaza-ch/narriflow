@@ -36,7 +36,7 @@ import { admitMediaCleanupObligations } from "./media-cleanup";
 import { emitIntakeFinished, queueIntakeFinishedByGeneration } from "./operation-finished";
 import { flushWorkspaceEvents } from "./workspace-event";
 
-import { sourceAudioBindingSchema, sourceVideoBindingSchema, type SourceAudioBinding, type SourceVideoBinding, type ExecutionDispatchReference, type ExecutionDisposition, executionDispatchReferenceSchema } from "@narriflow/validators/execution";
+import { ingestAcquisitionSchema, type IngestAcquisition, sourceAudioBindingSchema, sourceVideoBindingSchema, type SourceAudioBinding, type SourceVideoBinding, type ExecutionDispatchReference, type ExecutionDisposition, executionDispatchReferenceSchema } from "@narriflow/validators/execution";
 import { sourceAudioBindingHash } from "./source-audio-binding";
 import { commitSourceLanguageProbeWithinTransaction } from "./transcription-probe";
 import { appendExecutionDispatch, readExecutionDispatch } from "./execution-dispatch";
@@ -258,12 +258,16 @@ export class IngestJobLifecycle {
       projectId: string;
       jobType: IngestJob["jobType"];
       payload: Prisma.InputJsonValue;
+      acquisition: IngestAcquisition;
       sourceCredential?: string;
       uploadSessionId?: string;
     },
   ): Promise<{ id: string }> {
     const project = await tx.project.findUniqueOrThrow({ where: { id: input.projectId }, select: { sourceRevision: true } });
-    const job = await tx.ingestJob.create({ data: { ...input, sourceRevision: project.sourceRevision } });
+    const {acquisition,...data}=input;
+    if (!data.payload || typeof data.payload!=="object" || Array.isArray(data.payload)) throw new Error("ingest_source_payload_invalid");
+    const frozen={...data.payload,acquisition:ingestAcquisitionSchema.parse(acquisition)} as Prisma.InputJsonObject;
+    const job = await tx.ingestJob.create({ data: { ...data,payload:frozen, sourceRevision: project.sourceRevision } });
     await this.event(
       tx,
       {
@@ -996,6 +1000,7 @@ export class IngestJobLifecycle {
         projectId: input.projectId,
         jobType: last.jobType,
         payload: last.payload as Prisma.InputJsonValue,
+        acquisition: ingestAcquisitionSchema.parse(last.payload && typeof last.payload==="object" && !Array.isArray(last.payload)?last.payload.acquisition:null),
       });
       return {
         queuedJobId: job.id,

@@ -537,7 +537,8 @@
     "./generated-media-validation": {
       "types": "./src/generated-media-validation.ts",
       "default": "./src/generated-media-validation.ts"
-    }
+    },
+    "./ingest-acquisition": "./src/ingest-acquisition.ts"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
