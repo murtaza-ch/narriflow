@@ -1,6 +1,6 @@
 import type { Server } from "node:http";
-import { assertRenderEnvironment, fingerprintId, loadLock } from "../scripts/check-render-environment";
-import { executorProcessFailure, WorkerProcessFailure } from "./worker-process";
+import { assertRenderEnvironment, fingerprintId, loadLock } from "../../media/scripts/check-render-environment";
+import { executorProcessFailure, WorkerProcessFailure } from "../../media/src/worker-process";
 
 /** Port ownership is established before any polling, including startup sweeps. */
 export async function reserveWorkerHealthPort(server: Server, port: number): Promise<void> {

@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { createOrdinaryTracer } from "./tasks/clip-render-attempt.fixture.test";
-import { renderTelemetryReport } from "../scripts/render-telemetry-report";
+import { renderTelemetryReport } from "../../media/scripts/render-telemetry-report";
 
 // Runs the complete attempt with its planner/compiler/validator and bounded
 // delivery adapters. Native media and durable lease recovery are separate gates.

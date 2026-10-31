@@ -1,5 +1,5 @@
-import { RenderFactCache } from "../render-fact-cache";
-import { createRenderOutputFixture } from "../render-output-validation.test-fixture";
+import { RenderFactCache } from "../../../media/src/render-fact-cache";
+import { createRenderOutputFixture } from "../../../media/src/render-output-validation.test-fixture";
 import { createClipRenderAttempt } from "./clip-render-attempt-runtime";
 import { expect } from "bun:test";
 import { copyFile } from "node:fs/promises";
@@ -10,15 +10,15 @@ import {
 	WorkflowAttemptLost,
 	WorkflowFailure,
 } from "@narriflow/services";
-import { parseRenderConfig } from "../render-config";
+import { parseRenderConfig } from "../../../media/src/render-config";
 import {
  WorkerProcessFailure,
 	type WorkerProcessModule,
-} from "../worker-process";
+} from "../../../media/src/worker-process";
 import {
 	type RenderGroupOutcome,
 	type ClipRenderingWorkflowAttempt,
-} from "./clip-render-attempt";
+} from "../../../media/src/tasks/clip-render-attempt";
 
 export type PendingClipRender = Awaited<
 	ReturnType<typeof clipService.getPendingClipRendersForWorkSet>

@@ -108,7 +108,7 @@ SAMPLE_FPS = 2.0
 # (screen-layout.ts) owns that, calibrated against `movingPxFrac` values
 # this floor produces; see `docs/plans/vizard-parity.md`'s landed note (H1,
 # adversarial review) for the full raw-vs-proxy measurement table, and
-# `apps/worker/scripts/pip_calibrate.sh` to reproduce it.
+# `apps/media/scripts/pip_calibrate.sh` to reproduce it.
 MOVING_NOISE_FLOOR = 4.0
 
 # Percentile threshold for the CANDIDATE mask (connected components) — a

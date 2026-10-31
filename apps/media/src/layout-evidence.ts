@@ -34,7 +34,7 @@ import {
   type SourceRange,
   type TranscriptUtterance,
 } from "@narriflow/validators";
-import { WorkflowFailure } from "@narriflow/services";
+import { WorkflowFailure } from "@narriflow/services/workflow-attempt-contract";
 import { WorkerProcessFailure } from "./worker-process";
 import { setTimeout as delay } from "node:timers/promises";
 import { automaticLayoutFrameOptions } from "./tasks/auto-layout-zoom";

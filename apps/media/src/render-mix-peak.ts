@@ -1,4 +1,4 @@
-import { WorkflowFailure } from "@narriflow/services";
+import { WorkflowFailure } from "@narriflow/services/workflow-attempt-contract";
 import type { BoundCompositionAudioRenderRequest } from "./composition-ffmpeg-adapter";
 
 /**

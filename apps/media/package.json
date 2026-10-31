@@ -1,0 +1,23 @@
+{
+  "name": "@narriflow/media",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "bun test src/ scripts/",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@narriflow/caption-fonts": "workspace:*",
+    "@narriflow/composition-plan": "workspace:*",
+    "@narriflow/services": "workspace:*",
+    "@narriflow/validators": "workspace:*",
+    "archiver": "7.0.1"
+  },
+  "devDependencies": {
+    "@types/archiver": "6.0.3",
+    "@types/node": "26.2.0"
+  }
+}

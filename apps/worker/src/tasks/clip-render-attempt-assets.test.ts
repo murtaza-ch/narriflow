@@ -1,10 +1,10 @@
-import { WorkerProcessFailure } from "../worker-process";
-import { createRenderOutputFixture } from "../render-output-validation.test-fixture";
+import { WorkerProcessFailure } from "../../../media/src/worker-process";
+import { createRenderOutputFixture } from "../../../media/src/render-output-validation.test-fixture";
 import { describe, expect, test } from "bun:test";
 import { WorkflowFailure, type WorkflowAttemptContext } from "@narriflow/services";
 import { sceneBlockSchema, type SceneBlock } from "@narriflow/validators";
-import { parseRenderConfig } from "../render-config";
-import type { ClipRenderAttemptAdapters, ClipRenderingWorkflowAttempt } from "./clip-render-attempt";
+import { parseRenderConfig } from "../../../media/src/render-config";
+import type { ClipRenderAttemptAdapters, ClipRenderingWorkflowAttempt } from "../../../media/src/tasks/clip-render-attempt";
 import { createClipRenderAttempt } from "./clip-render-attempt-runtime";
 
 const WORKSPACE_ID = "10000000-0000-4000-8000-000000000001";

@@ -15,7 +15,7 @@ import {
   compileCompositionPlanAudioSchedule,
 } from "./composition-ffmpeg-adapter";
 import { compositionSourceFor } from "./tasks/clip-render-attempt";
-import { buildClipPreviewArgs } from "./tasks/clip-preview";
+import { buildClipPreviewArgs } from "../../worker/src/tasks/clip-preview";
 import { productionWorkerProcessModule, resolveDisplayGeometry, type WorkerMediaInspection } from "./worker-process";
 
 const ONE = 65536;

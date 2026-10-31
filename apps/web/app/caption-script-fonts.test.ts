@@ -68,7 +68,7 @@ describe("pill and plate extent", () => {
   const ANTON_CAP = 0.8594;
 
   test("keeps the margin under fallback ink the burn-in leaves", () => {
-    const worker = readFileSync(new URL("../../worker/src/caption-ass.ts", import.meta.url), "utf8");
+    const worker = readFileSync(new URL("../../media/src/caption-ass.ts", import.meta.url), "utf8");
     expect(worker).toContain(`const CAPTION_INK_MARGIN_EM = ${CAPTION_INK_MARGIN_EM};`);
   });
 

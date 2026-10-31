@@ -30,14 +30,14 @@ import {
 	planClipComposition,
 	screenLayoutInputFingerprint,
 } from "@narriflow/composition-plan";
-import { renderResourceBudgetFor } from "../render-resource-budget";
-import { WorkerProcessFailure } from "../worker-process";
+import { renderResourceBudgetFor } from "../../../media/src/render-resource-budget";
+import { WorkerProcessFailure } from "../../../media/src/worker-process";
 import {
 	compileClipCompositionCommand,
 	bindCompositionPlanAudioInputs,
 	compileCompositionPlanAudioSchedule,
-} from "../composition-ffmpeg-adapter";
-import { buildClipCutPlan } from "./cut-plan";
+} from "../../../media/src/composition-ffmpeg-adapter";
+import { buildClipCutPlan } from "../../../media/src/tasks/cut-plan";
 
 import { attemptContext, clipFixture, createCoreRenderPathTracer, CoreRenderTopology, CoreVariantFixture, } from "./clip-render-attempt-core-paths.fixture.test";
 

@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
 import { RenderAttemptTelemetry, renderReplicaResources } from "../render-diagnostic-adapter";
-import { mediaWorkScheduler } from "../media-work-scheduler";
 import { executorProcessFailure } from "../worker-process";
 import { statfs } from "node:fs/promises";
 import { transportRenderCommand } from "../render-command-transport";
@@ -17,26 +16,12 @@ import {
 	type ClipCompositionPlanInput,
 	type CompositionMode,
 } from "@narriflow/composition-plan";
-import {
-	assertPublicHttpUrl,
-	type audioAssetService as productionAudioAssetService,
-	type clipService as productionClipService,
-	decodeFrozenClipEditorDocument,
-	type deleteObject as productionDeleteObject,
-	type downloadObjectToFile as productionDownloadObjectToFile,
-	hasFeature,
-	motionRenderAnalyticsMetadata,
-	type presignDownloadUrl as productionPresignDownloadUrl,
-	type putFileFromPath as productionPutFileFromPath,
-	rethrowWorkflowAttemptLost,
-	WorkflowAttemptLost,
-	WorkflowFailure,
-	workflowFailureFromUnknown,
-	type LayoutEvidenceLifecycle,
-	type MotionRenderAnalyticsMetadata,
-	type WorkflowAttemptContext,
-	type WorkflowAttemptRef,
-} from "@narriflow/services";
+import { assertPublicHttpUrl } from "@narriflow/services/url-guard";
+import { decodeFrozenClipEditorDocument } from "@narriflow/services/clip-editor-document-codec";
+import { motionRenderAnalyticsMetadata, type MotionRenderAnalyticsMetadata } from "@narriflow/services/motion-render-analytics";
+import { hasFeature } from "@narriflow/validators";
+import { rethrowWorkflowAttemptLost, WorkflowAttemptLost, WorkflowFailure, workflowFailureFromUnknown, type WorkflowAttemptContext, type WorkflowAttemptRef } from "@narriflow/services/workflow-attempt-contract";
+import type { audioAssetService as productionAudioAssetService, clipService as productionClipService, deleteObject as productionDeleteObject, downloadObjectToFile as productionDownloadObjectToFile, presignDownloadUrl as productionPresignDownloadUrl, putFileFromPath as productionPutFileFromPath, LayoutEvidenceLifecycle } from "@narriflow/services";
 import {
 	AUDIO_UPLOAD_MAX_BYTES,
 	CLIP_AUTO_LAYOUT_ENGINE,
@@ -68,16 +53,9 @@ import {
 	type LayoutEvidenceDetectors,
 	type LayoutEvidenceAvailability,
 } from "../layout-evidence";
-import {
-	brollQueryForClip,
-	dominantPexelsOrientation,
-	getCachedBrollAssetPath,
-	planBrollWindow,
-	remapBrollCuesForCutPlan,
-	resolveBrollCutaways,
-	saveBrollAssetToCache,
-	type BrollCueInput,
-} from "./broll";
+import { brollQueryForClip, dominantPexelsOrientation, planBrollWindow } from "@narriflow/validators";
+import { remapBrollCuesForCutPlan } from "./broll";
+import type { getCachedBrollAssetPath, ResolveBrollCutaways, saveBrollAssetToCache, BrollCueInput } from "./broll";
 import { type RenderConfig } from "../render-config";
 import {
 	RenderResourceDeferral,
@@ -366,7 +344,7 @@ export interface ClipRenderAttemptAdapters {
 			kind: "video" | "audio" | "image",
 			window?: { startSec: number; durationSec: number },
 		): Promise<boolean>;
-		resolveBrollCutaways: typeof resolveBrollCutaways;
+		resolveBrollCutaways: ResolveBrollCutaways;
 		getCachedBrollAssetPath: typeof getCachedBrollAssetPath;
 		saveBrollAssetToCache: typeof saveBrollAssetToCache;
 		probeMediaDurationSec(path: string): Promise<number | null>;
@@ -4629,7 +4607,7 @@ async function executeClipRenderAttemptInScratch(params: {
 			signal?.throwIfAborted();
 			const renderGroup = clipGroups[clipGroupIndex]!;
 			try {
-				await mediaWorkScheduler.run("render", renderGroup[0]!.clipId, signal, () => renderClipGroup({
+				await renderClipGroup({
 					run,
 					attempt,
 					renderGroup,
@@ -4644,7 +4622,7 @@ async function executeClipRenderAttemptInScratch(params: {
 					applyWatermark,
 					scratch,
 					scheduleUpload,
-				}));
+				});
 			} catch (error) {
 				rethrowRenderControlFlow(error);
 				// Any delivery already scheduled must settle before failure writes.

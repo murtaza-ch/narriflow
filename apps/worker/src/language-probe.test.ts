@@ -5,7 +5,7 @@ import {
   probeSourceLanguage,
   selectProbeWindows,
 } from "./language-probe";
-import type { WorkerProcessModule, WorkerProcessRequest } from "./worker-process";
+import type { WorkerProcessModule, WorkerProcessRequest } from "../../media/src/worker-process";
 
 describe("selectProbeWindows", () => {
   test("is null below 60 s", () => {

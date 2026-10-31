@@ -9,7 +9,7 @@ import {
   resolveBrollCutaways,
   saveBrollAssetToCache,
 } from "./broll";
-import { buildClipCutPlan } from "./cut-plan";
+import { buildClipCutPlan } from "../../../media/src/tasks/cut-plan";
 
 // Pure query/orientation/placement logic (brollQueryForClip, planBrollWindow,
 // planBrollCutaways, orientation mapping) is unit-tested at its source of

@@ -1217,7 +1217,7 @@ describe("scratch ownership and the abandoned-directory sweep", () => {
 for (const asynchronous of [false, true]) {
   for (const helper of [false, true]) {
     test(`${asynchronous ? "async" : "sync"} ${helper ? "helper" : "probe"} start failure quarantines before the next spawn`, async () => {
-      const { RenderExecutorHealth } = await import("./render-executor-health");
+      const { RenderExecutorHealth } = await import("../../worker/src/render-executor-health");
       let spawns = 0;
       const health = new RenderExecutorHealth({ check: async () => {}, recycle: () => {} });
       await health.checkIfDue();

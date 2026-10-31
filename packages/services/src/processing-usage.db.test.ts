@@ -20,7 +20,7 @@ import {
   planLimits,
 } from "@narriflow/validators";
 import { processIngestJob } from "../../../apps/worker/src/tasks/ingest";
-import { productionWorkerProcessModule, type WorkerProcessModule } from "../../../apps/worker/src/worker-process";
+import { productionWorkerProcessModule, type WorkerProcessModule } from "../../../apps/media/src/worker-process";
 import { createDriveTokenCipher, createGoogleDriveFileReader, DriveSourceError } from "./drive-source";
 import { projectRetentionService } from "./project-retention.service";
 import { ExpectedDomainFailureError } from "./expected-domain-failure";

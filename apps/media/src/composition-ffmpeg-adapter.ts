@@ -7,7 +7,7 @@ import {
 	captionEmojiMotionTiming,
 	captionEmojiScaleExpression,
 } from "@narriflow/caption-fonts";
-import { WorkflowFailure } from "@narriflow/services";
+import { WorkflowFailure } from "@narriflow/services/workflow-attempt-contract";
 import {
 	clipAspectRatioOptions,
 	standardFrameRate,
