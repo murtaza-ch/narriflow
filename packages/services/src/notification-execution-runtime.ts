@@ -1,3 +1,4 @@
+import {readWebhookNotificationContext,WEBHOOK_DISABLED_REASON_TEXT} from "./webhook-notification-context";
 import {readGrantNotificationContext} from "./grant-notification-context";
 import {standingGrantPauseMessage} from "@narriflow/validators";
 import {createHash} from "node:crypto";
@@ -20,6 +21,11 @@ async function currentMail(target:NotificationTarget){
  const environment=readServiceEnvironment();if(!environment.RESEND_API_KEY?.trim())return null;
  const origin=environment.WEB_ORIGIN;if(!origin)throw Error('notification_web_origin_unavailable');
  const from=environment.NARRIFLOW_EMAIL_FROM??'Narriflow <no-reply@narriflow.app>';
+ if(target.kind==='webhook'){
+  const current=await database().$transaction(tx=>readWebhookNotificationContext(tx,target.id));if(!current)return null;
+  const email=await import('@narriflow/email/worker');const template=email.webhookDisabled({urlHost:current.urlHost,reason:WEBHOOK_DISABLED_REASON_TEXT[current.reason],settingsLink:new URL('/settings/api#webhooks',origin).toString()});
+  return{input:{...template,to:current.to,from,idempotencyKey:''},contextFingerprint:current.contextFingerprint};
+ }
  if(target.kind==='grant'){
   const current=await database().$transaction(async tx=>{const at=(await tx.$queryRaw<Array<{now:Date}>>`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS now`)[0]!.now;return readGrantNotificationContext(tx,target.id,at);});if(!current)return null;
   const email=await import('@narriflow/email/worker');const template=email.standingGrantPaused({ruleName:current.ruleName,destination:current.destination,reason:standingGrantPauseMessage(current.reason)??'The grant paused.',settingsLink:new URL('/settings/automation-grants',origin).toString()});

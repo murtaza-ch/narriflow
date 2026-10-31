@@ -1,0 +1,69 @@
+{
+  "scope": "Required disabled-subscription notice, shared sealed NotificationExecution target em1.w",
+  "migration": {
+    "path": "packages/db/prisma/migrations/20261101030000_execution_webhook_notifications/migration.sql",
+    "sha256": "6b607a8967b4b6efe4fbdf69bb74edaf322d4a6fd491ea8d0ca35b8de0764dfd",
+    "fresh_disposable_schema_applied": true,
+    "shared_database_applied": false
+  },
+  "gates": [
+    {
+      "suite": "disabled webhook mail",
+      "passed": 12,
+      "assertions": 75,
+      "log": "/tmp/narriflow-webhook-notice-final-pg2.log"
+    },
+    {
+      "suite": "actual OutboundDelivery Core and webhook management",
+      "passed": 16,
+      "assertions": 166,
+      "log": "/tmp/narriflow-webhook-notice-outbound-pg.log"
+    },
+    {
+      "suite": "existing Grant and common NotificationExecution",
+      "passed": 23,
+      "assertions": 129,
+      "log": "/tmp/narriflow-webhook-notice-common-pg.log"
+    },
+    {
+      "suite": "production API empty Maintenance composition",
+      "passed": 1,
+      "assertions": 9,
+      "log": "/tmp/narriflow-webhook-notice-api-factory-pg.log"
+    },
+    {
+      "suite": "complete Maintenance factory and restore barrier",
+      "passed": 5,
+      "assertions": 20,
+      "log": "/tmp/narriflow-webhook-notice-maintenance-factory-pg.log"
+    },
+    {
+      "suite": "actual local workerd auth/raw webhook/DO/cache",
+      "passed": 11,
+      "log": "/tmp/narriflow-webhook-notice-workerd.log"
+    }
+  ],
+  "static": {
+    "services_typecheck": true,
+    "api_typecheck": true,
+    "worker_dry_build": true,
+    "worker_import_audit": true,
+    "biome_changed_files": true,
+    "obsolete_direct_notifier_symbol_search": "zero matches"
+  },
+  "behavior": [
+    "Subscription disable, immutable notice and exact mail wake share one SQL transaction; lost acknowledgement replay repairs the original obligation",
+    "A disable revision advances only for an active-to-disabled transition and never resets; repeated disable retains the original notice identity",
+    "The common executor preserves one encrypted body and provider key across generations, with three provider starts and the original 23-hour deadline",
+    "Fresh disabled-subscription identity, verified creator membership or owner fallback and recipient fingerprint are rechecked before submission and late settlement",
+    "Plan loss still permits the notice; unverified recipients skip; enable, delete or changed sealed-recipient context prevents stale delivery",
+    "Metadata restore emits zero product dispatch IDs and preserves body, counter, deadline and future due; final createdAt recovery alone redispatches",
+    "Indexed bounded recovery and at least 30-day terminal retention preserve all active rows",
+    "Old direct notifier, five-minute retry path and disabledNotifiedAt flag are removed; their membership/retry/targeting test is ported to the current shared executor"
+  ],
+  "red_green": {
+    "missing_producer": "/tmp/narriflow-webhook-notice-producer-red.log",
+    "changed_sealed_recipient": "/tmp/narriflow-webhook-notice-recipient-red.log"
+  },
+  "provider_email_delivery": "not run; sender injected and no packages/email change"
+}
