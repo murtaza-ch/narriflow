@@ -1,4 +1,4 @@
-import { readServiceEnvironment } from "./runtime-environment";
+import { readServiceEnvironment, type ServiceEnvironment } from "./runtime-environment";
 import { randomUUID } from "node:crypto";
 import { getPrismaClient } from "@narriflow/db/client";
 import { resolvePricingTier, type CreateGeneratedImageInput } from "@narriflow/validators";
@@ -25,7 +25,7 @@ function boundedInteger(value: string | undefined, fallback: number, minimum: nu
   return Number.isSafeInteger(parsed) && parsed >= minimum && parsed <= maximum ? parsed : fallback;
 }
 
-export function createProductionModule(environment: NodeJS.ProcessEnv = readServiceEnvironment()) {
+export function createProductionModule(environment: ServiceEnvironment = readServiceEnvironment()) {
   // The rule Studio's capability reports: without its settings, generation is
   // temporarily unavailable (a typed 503), never an unexpected failure.
   if (!generatedImageProviderConfigured(environment)) {

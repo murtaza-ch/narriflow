@@ -49,11 +49,8 @@ export interface JsonRequestOptions<T> {
   parse?: (data: unknown) => T;
 }
 
-interface Performed extends OpenedResponse {
+interface Performed {
   tracked: TrackedRequest;
-}
-
-export interface OpenedResponse {
   response: Response;
   /** Stops scope tracking; call when the body is finished or abandoned. */
   release(): void;
@@ -73,8 +70,8 @@ export interface BoundTransport {
   readonly baseUrl: string;
   fetch(input: string | URL, init?: RequestInit): Promise<Response>;
   json<T = unknown>(path: string, options?: JsonRequestOptions<T>): Promise<T>;
-  /** Streaming responses (SSE): scope tracking continues until `release()`. */
-  open(path: string, init?: RequestInit): Promise<OpenedResponse>;
+  /** Keeps a WebSocket bound to this exact identity and Workspace. */
+  track(signal?: AbortSignal): TrackedRequest;
 }
 
 export interface ApiTransport {
@@ -411,10 +408,7 @@ export function createApiTransport(options: TransportOptions): ApiTransport {
       return guardBody(response, target, tracked, init.signal ?? undefined);
     },
 
-    async open(path, init = {}) {
-      const { response, release } = await perform(target, resolveUrl(path, base), init);
-      return { response, release };
-    },
+    track(signal) { return scope.track(target, signal); },
 
     async json<T>(path: string, request: JsonRequestOptions<T> = {}): Promise<T> {
       const url = resolveUrl(path, base);

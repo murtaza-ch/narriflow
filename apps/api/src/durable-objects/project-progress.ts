@@ -1,12 +1,12 @@
 import { DurableObject } from "cloudflare:workers";
 import { createProgressTicketCodec, loadProgressTicketKeys } from "@narriflow/services/progress-ticket";
-import type { ProgressReplay } from "@narriflow/services/progress-feed";
+import type { ProgressReplay, ProgressRevocation } from "@narriflow/services/progress-feed";
 import { PROGRESS_FRAME_MAX_BYTES, progressSocketFrameSchema, workflowStageUpdatedEventSchema, type ProgressSocketFrame, type ProgressTicketPayload, type WorkflowStageUpdatedEvent } from "@narriflow/validators/api/progress";
 
 interface ProgressBindings { [name: string]: string | undefined; API_ORIGIN?: string; PROGRESS_CONNECT_KEY_ID?: string; PROGRESS_CONNECT_KEYS_JSON?: string }
 interface Scope { projectId: string; workspaceId: string }
 interface Attachment extends Scope { actorUserId: string; nonce: string; authorizedAt: number; expiresAt: number; cursor: number; replaying: boolean }
-export interface ProgressRevocation extends Scope { actorUserId?: string; authorizedBefore: number; error: "workspace_membership_required" | "workspace_restricted" | "project_inaccessible" }
+
 const MAX_SOCKETS = 1_000;
 const MAX_ACTOR_SOCKETS = 5;
 const MAX_CACHED_EVENTS = 1_000;

@@ -28,3 +28,14 @@ export async function readProgressReplay(prisma: PrismaClient, scope: { projectI
   const reset = cursor > highWater || rows.length > PROGRESS_REPLAY_LIMIT || rows.some((row) => row.seq !== ++expected) || expected !== highWater;
   return { events: reset ? [] : rows.map(progressEvent), highWater, reset };
 }
+
+export interface ProgressRevocation { projectId: string; workspaceId: string; actorUserId?: string; authorizedBefore: number; error: "workspace_membership_required" | "workspace_restricted" | "project_inaccessible" }
+
+/** Structural HTTP binding contract. Browser RPC types never load Workers globals. */
+export interface ProgressConnection {
+  fetch(request: Request): Promise<Response>;
+  replay(nonce: string, replay: ProgressReplay): Promise<void>;
+  abortReplay(nonce: string): Promise<void>;
+  revoke(input: ProgressRevocation): Promise<void>;
+  publish(scope: { projectId: string; workspaceId: string }, event: WorkflowStageUpdatedEvent): Promise<void>;
+}

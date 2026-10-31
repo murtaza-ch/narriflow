@@ -21,3 +21,5 @@ export {
 } from "./hub";
 export { invalidateAfterProgress, invalidateAfterTerminalProgress } from "./invalidation";
 export { progressHubFor, useProgressStream, type UseProgressStreamOptions } from "./react";
+
+export { runProgressSocket, type ProgressSocketOptions, type StreamStatus, type StreamEnd } from "./socket";

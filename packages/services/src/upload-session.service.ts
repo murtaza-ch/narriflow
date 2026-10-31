@@ -1,4 +1,4 @@
-import { readServiceEnvironment } from "./runtime-environment";
+import { readServiceEnvironment, type ServiceEnvironment } from "./runtime-environment";
 import type { ActorScope } from "./actor-scope";
 import { getIngestJobLifecycle } from "./ingest-job-lifecycle-runtime";
 import { getProcessingUsage } from "./processing-usage-runtime";
@@ -161,7 +161,7 @@ export function defaultUploadSessionConfig(
 }
 
 export function assertUploadProviderLifecyclePrerequisite(
-  env: NodeJS.ProcessEnv,
+  env: ServiceEnvironment,
   hardLifetimeMs = defaultUploadSessionConfig().sessionHardLifetimeMs,
 ) {
   const name = "R2_INCOMPLETE_MULTIPART_LIFECYCLE_DAYS";
@@ -3061,7 +3061,7 @@ export function createUploadSessionModule(
 }
 
 function configuredInteger(
-  env: NodeJS.ProcessEnv,
+  env: ServiceEnvironment,
   name: string,
   fallback: number,
   limits: { minimum: number; maximum: number },
@@ -3081,7 +3081,7 @@ function configuredInteger(
 }
 
 export function uploadSessionConfigFromEnv(
-  env: NodeJS.ProcessEnv = readServiceEnvironment(),
+  env: ServiceEnvironment = readServiceEnvironment(),
 ): UploadSessionConfig {
   const maximumSourceBytes = MAX_UPLOAD_SIZE_BYTES;
   return defaultUploadSessionConfig({

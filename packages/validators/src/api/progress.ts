@@ -3,16 +3,6 @@ import { workflowStageUpdatedEventSchema } from "../workflow";
 
 export { type WorkflowStageUpdatedEvent, workflowStageUpdatedEventSchema } from "../workflow";
 
-// Wire protocol of `GET /api/stream/:projectId` (Server-Sent Events).
-
-/** SSE event names. Anything else on the wire (heartbeat comments aside) is ignored by clients. */
-export const PROGRESS_STREAM_EVENTS = {
-  connected: "connected",
-  workflow: "workflow.stage.updated",
-  ping: "ping",
-  revoked: "authorization.revoked",
-} as const;
-
 /**
  * The control event sent at most once, immediately before the server closes a
  * stream whose access ended (session expiry, removed membership, restriction,
@@ -23,14 +13,6 @@ export const progressRevokedControlSchema = z.object({
   requestId: z.string().min(1).max(120).optional(),
 });
 export type ProgressRevokedControl = z.infer<typeof progressRevokedControlSchema>;
-
-/** The first frame of every connection. */
-export const progressConnectedSchema = z.object({
-  projectId: z.string(),
-  sinceSeq: z.number().int().nonnegative(),
-  ts: z.string(),
-});
-export type ProgressConnected = z.infer<typeof progressConnectedSchema>;
 
 /** A workflow sequence is a non-negative safe integer; anything else is not a cursor. */
 export function normalizeWorkflowSeq(value: unknown): number | null {

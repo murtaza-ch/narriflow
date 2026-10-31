@@ -5,7 +5,7 @@ import { createProgressSocketRoutes } from "../../src/domains/progress/socket";
 import { createProgressTicketCodec, loadProgressTicketKeys } from "@narriflow/services/progress-ticket";
 import type { ProgressReplay } from "@narriflow/services/progress-feed";
 import type { ApiEnv } from "../../src/http/env";
-import type { ProgressRevocation } from "../../src/durable-objects/project-progress";
+import type { ProgressRevocation } from "@narriflow/services/progress-feed";
 export { ProjectProgress } from "../../src/durable-objects/project-progress";
 
 const replays = new Map<string, ProgressReplay & { delayMs?: number }>();

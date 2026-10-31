@@ -2,7 +2,7 @@
   "date": "2026-10-31",
   "runtime": "local workerd",
   "transport": "actual external WebSockets with Origin headers",
-  "passed": 9,
+  "passed": 10,
   "checks": [
     "ticket_origin_audience_and_project_scope",
     "subscribe_before_replay_merges_live_tail",
@@ -12,7 +12,8 @@
     "membership_push_and_stale_ticket_cutoff",
     "restriction_and_deletion_push",
     "earliest_expiry_alarm_closes_idle_socket",
-    "retention_reset_to_snapshot"
+    "retention_reset_to_snapshot",
+    "bounded_replay_frames_reset_snapshot"
   ],
   "limitations": [
     "The gate injects the bounded replay port, without actual PostgreSQL replay reads.",
@@ -20,10 +21,10 @@
     "Full deployed hibernation, durable event delivery, revocation transaction hooks and browser client replacement remain before ticket completion."
   ],
   "sha256": {
-    "apps/api/src/durable-objects/project-progress.ts": "b3d0f4606762856646155c444cd6a1337475dbdb51ad1321d06ca47e62ad5d23",
+    "apps/api/src/durable-objects/project-progress.ts": "352bb43ca4fa5b3d3b94c343ddc0b68a043b372e0dcee5ade5d0f19a0ab094f5",
     "apps/api/src/domains/progress/socket.ts": "37dce1aa3bde0110be7f7b13560bda3cd37953dbf1fbc26c61f1d2c0364945ea",
-    "apps/api/scripts/run-progress-runtime-gates.ts": "e4f71501e690c5f68e0f827c254d70d4677cc5b70f35db616116163637f914c9",
-    "apps/api/scripts/gates/progress-runtime-probe.ts": "9890bea80eb1b6ede7c7d61686f60db2794b3058e82a6663d1016f501b01c558",
+    "apps/api/scripts/run-progress-runtime-gates.ts": "7d38344adf1d1a8a7f9abba6606ad9badcc5329e34bf8f3cb7fd0a92e3e71e1c",
+    "apps/api/scripts/gates/progress-runtime-probe.ts": "538377513a3fc693f733e0e7169f3d3250b73db38c53d3fdb0698447535b7db1",
     "packages/services/src/progress-ticket.ts": "79c689d1633247f53a6de9e147ed5b385bcec2ce5f43ea63c5cb6b2484c5182a"
   }
 }

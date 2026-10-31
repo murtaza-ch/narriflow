@@ -1,3 +1,4 @@
+import { runProgressSocket, type ProgressSocketOptions, type StreamEnd, type StreamStatus } from "./socket";
 import type { QueryClient } from "@tanstack/query-core";
 import type {
   ProgressRevokedControl,
@@ -6,14 +7,9 @@ import type {
 import {
   type ApiError,
   type ApiTransport,
-  type EventStreamOptions,
-  type StreamEnd,
   type WorkspaceScope,
-  runEventStream,
 } from "../core";
 import {
-  type ProgressMessage,
-  decodeProgressMessage,
   isTerminalProgress,
   terminalProgressIdentity,
 } from "./events";
@@ -35,6 +31,7 @@ export interface ProgressSubscriber {
   sinceSeq?: number;
   onEvent?(event: WorkflowStageUpdatedEvent): void;
   /** The connection (re)opened; `reconnected` is false for the first open. Anything that expires while disconnected should be re-read. */
+  onStatus?(status: StreamStatus): void;
   onOpen?(info: { reconnected: boolean }): void;
   /** Access ended (membership removed, restriction, Project gone). The stream is closed and not retried. */
   onRevoked?(control: ProgressRevokedControl): void;
@@ -55,7 +52,7 @@ export interface ProgressHubOptions {
   transport: ApiTransport;
   queryClient: QueryClient;
   /** Test seams. */
-  runStream?: typeof runEventStream;
+  runStream?: typeof runProgressSocket;
   now?: () => number;
   lingerMs?: number;
   throttleMs?: number;
@@ -81,6 +78,7 @@ interface Entry {
   lastInvalidatedAt: number;
   terminalSeen: Set<string>;
   terminalPending: boolean;
+  status: StreamStatus;
 }
 
 function remember(set: Set<string>, value: string): boolean {
@@ -117,7 +115,7 @@ function safely(callback: () => void): void {
  * throttle, and each terminal outcome invalidates what its run produced once.
  */
 export function createProgressHub(options: ProgressHubOptions): ProgressHub {
-  const run = options.runStream ?? runEventStream;
+  const run = options.runStream ?? runProgressSocket;
   const now = options.now ?? Date.now;
   const lingerMs = options.lingerMs ?? PROGRESS_LINGER_MS;
   const throttleMs = options.throttleMs ?? PROGRESS_INVALIDATE_THROTTLE_MS;
@@ -202,15 +200,14 @@ export function createProgressHub(options: ProgressHubOptions): ProgressHub {
     entry.abort = abort;
     entry.floor = from;
     entry.buffer = [];
-    const stream: EventStreamOptions<ProgressMessage> = {
+    const stream: ProgressSocketOptions = {
       transport: options.transport.scoped(entry.scope),
-      path: `/api/stream/${encodeURIComponent(entry.projectId)}`,
+      projectId: entry.projectId,
       signal: abort.signal,
       initialCursor: from,
-      query: (cursor) => ({ sinceSeq: cursor ?? from }),
-      decode: decodeProgressMessage,
-      cursorOf: (message) => (message.kind === "event" ? message.event.seq : null),
       onStatus: (status) => {
+        entry.status = status;
+        for (const member of entry.members) if (member.subscriber.onStatus) safely(() => member.subscriber.onStatus!(status));
         if (status.state !== "open" || abort.signal.aborted) return;
         const reconnected = entry.opens > 0;
         entry.opens += 1;
@@ -224,6 +221,11 @@ export function createProgressHub(options: ProgressHubOptions): ProgressHub {
         if (message.kind === "event") {
           applyEvent(entry, message.event);
           return;
+        }
+        if (message.kind === "reset") {
+          entry.buffer = []; entry.floor = message.cursor;
+          for (const member of entry.members) member.delivered = Math.max(member.delivered, message.cursor);
+          invalidate(entry, true); return;
         }
         // An expired session token closes the stream and the run reconnects with
         // a fresh one; any other revocation ends access to this Project.
@@ -267,6 +269,7 @@ export function createProgressHub(options: ProgressHubOptions): ProgressHub {
           lastInvalidatedAt: 0,
           terminalSeen: new Set(),
           terminalPending: false,
+          status: { state: "connecting", attempt: 0 },
         };
         entries.set(key, entry);
         entry.members.add(member);
@@ -278,6 +281,7 @@ export function createProgressHub(options: ProgressHubOptions): ProgressHub {
         entry.lingerTimer = null;
       }
       entry.members.add(member);
+      if (subscriber.onStatus) safely(() => subscriber.onStatus!(entry!.status));
       if (sinceSeq < entry.floor) {
         // The buffer no longer reaches back far enough for this subscriber: reconnect from its cursor.
         // Subscribers that already hold the newer events skip them by their own cursor.
