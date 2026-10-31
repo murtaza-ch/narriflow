@@ -1503,6 +1503,9 @@ model ApiKey {
 }
 
 model SocialAccount {
+  tokenRefreshOwner          String?   @db.Uuid
+  tokenRefreshLeaseExpiresAt  DateTime?
+  tokenRefreshStartedAt      DateTime?
   id                    String              @id @default(uuid()) @db.Uuid
   userId                String              @db.Uuid
   workspaceId           String?             @db.Uuid

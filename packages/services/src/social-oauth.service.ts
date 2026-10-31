@@ -1,3 +1,4 @@
+import { refreshSocialAccountToken,SocialTokenRefreshError } from "./social-token-refresh";
 import { readServiceEnvironment } from "./runtime-environment";
 import { workspaceService } from "./workspace.service";
 import { parsePostingSchedule } from "./posting-schedule";
@@ -351,7 +352,7 @@ export class SocialOAuthService {
 			const disconnected = await tx.socialAccount.updateMany({
 				where: { id: accountId, workspaceId: scope.workspaceId },
 				data: {
-					status: "revoked",
+					status: "revoked",tokenRefreshOwner:null,tokenRefreshLeaseExpiresAt:null,tokenRefreshStartedAt:null,
 					refreshTokenEncrypted: null,
 					accessTokenEncrypted: encryptToken(`revoked:${randomBase64Url(16)}`),
 				},
@@ -626,13 +627,11 @@ export class SocialOAuthService {
 
 		if (
 			activeRow.expiresAt &&
-			activeRow.expiresAt.getTime() <= Date.now() &&
-			!activeRow.refreshTokenEncrypted
+			activeRow.expiresAt.getTime() <= Date.now()
 		) {
-			await prisma.socialAccount.update({
-				where: { id: activeRow.id },
-				data: { status: "expired" },
-			});
+			await prisma.socialAccount.updateMany({
+    where:{id:activeRow.id,status:{not:"revoked"},accessTokenEncrypted:activeRow.accessTokenEncrypted,refreshTokenEncrypted:activeRow.refreshTokenEncrypted},data:{status:"expired"},
+   });
 			throw new SocialOAuthError(
 				"social_account_expired",
 				"Connected social account token has expired",
@@ -717,7 +716,7 @@ export class SocialOAuthService {
 					refreshTokenEncrypted: encryptedRefreshToken,
 					scopes: input.scopes,
 					expiresAt: input.expiresAt ?? null,
-					status: "active" as const,
+					status: "active" as const,tokenRefreshOwner:null,tokenRefreshLeaseExpiresAt:null,tokenRefreshStartedAt:null,
 					metadata: input.metadata ?? Prisma.JsonNull,
 				};
 
@@ -1363,44 +1362,27 @@ export class SocialOAuthService {
 		];
 	}
 
-	private async refreshAccount(accountId: string) {
-		return requirePrisma().$transaction(async (tx) => {
-			// Hold the account row through the provider exchange and persistence.
-			// A rotated credential must never be sent by a second worker before
-			// the first worker has committed its replacement.
-			await tx.$queryRaw`SELECT "id" FROM "SocialAccount" WHERE "id" = ${accountId}::uuid FOR UPDATE`;
-			const row = await tx.socialAccount.findUnique({ where: { id: accountId } });
-			if (!row || row.status === "revoked") {
-				throw new SocialOAuthError("social_account_missing", "Connected social account was not found");
-			}
-			if (!row.expiresAt || row.expiresAt.getTime() - Date.now() > TOKEN_REFRESH_WINDOW_MS) return row;
-			if (!row.refreshTokenEncrypted) {
-				throw new SocialOAuthError("social_account_refresh_missing", "Connected social account has no refresh token");
-			}
-			const refreshToken = decryptToken(row.refreshTokenEncrypted);
-			const refreshed = row.platform === "tiktok"
-				? await this.refreshTikTok(refreshToken)
-				: row.platform === "youtube_shorts"
-					? await this.refreshGoogle(refreshToken)
-					: row.platform === "linkedin"
-						? await this.refreshLinkedIn(refreshToken)
-						: row.platform === "x" ? await this.refreshX(refreshToken) : null;
-			if (!refreshed) return row;
-			if (!refreshed.accessToken.trim()) {
-				throw new SocialOAuthError("social_oauth_refresh_invalid", "The provider refresh response had no access token");
-			}
-			return tx.socialAccount.update({
-				where: { id: row.id },
-				data: {
-					accessTokenEncrypted: encryptToken(refreshed.accessToken),
-					refreshTokenEncrypted: refreshed.refreshToken === undefined ? row.refreshTokenEncrypted : refreshed.refreshToken ? encryptToken(refreshed.refreshToken) : null,
-					expiresAt: refreshed.expiresAt ?? null,
-					scopes: refreshed.scopes.length > 0 ? refreshed.scopes : row.scopes,
-					status: "active",
-				},
-			});
-		}, { timeout: 25_000 });
-	}
+	private async refreshAccount(accountId:string){
+  const database=requirePrisma(),observed=await database.socialAccount.findUnique({where:{id:accountId}});
+  if(!observed||observed.status==="revoked")throw new SocialOAuthError("social_account_missing","Connected social account was not found");
+  // Meta connections use the existing reconnect contract rather than a
+  // refresh endpoint this adapter does not implement.
+  if(!["tiktok","youtube_shorts","linkedin","x"].includes(observed.platform))return observed;
+  // Fail local configuration and decryption before recording a possibly sent
+  // rotating-token exchange. The fresh owned snapshot is decrypted again below.
+  if(observed.refreshTokenEncrypted)decryptToken(observed.refreshTokenEncrypted);
+  const refreshEnvironment:Record<string,string[]>={tiktok:["TIKTOK_CLIENT_KEY","TIKTOK_CLIENT_SECRET"],youtube_shorts:["GOOGLE_CLIENT_ID","GOOGLE_CLIENT_SECRET"],linkedin:["LINKEDIN_CLIENT_ID","LINKEDIN_CLIENT_SECRET"],x:["X_CLIENT_ID"]};
+  for(const key of refreshEnvironment[observed.platform]??[])requireEnv(key);
+  try{return await refreshSocialAccountToken({database,accountId,refreshWindowMs:TOKEN_REFRESH_WINDOW_MS,exchange:async row=>{
+   const refreshToken=decryptToken(row.refreshTokenEncrypted!);
+   const refreshed=row.platform==="tiktok"?await this.refreshTikTok(refreshToken):row.platform==="youtube_shorts"?await this.refreshGoogle(refreshToken):row.platform==="linkedin"?await this.refreshLinkedIn(refreshToken):await this.refreshX(refreshToken);
+   if(!refreshed.accessToken.trim())throw new SocialOAuthError("social_oauth_refresh_invalid","The provider refresh response had no access token");
+   return {accessTokenEncrypted:encryptToken(refreshed.accessToken),refreshTokenEncrypted:refreshed.refreshToken===undefined?row.refreshTokenEncrypted:refreshed.refreshToken?encryptToken(refreshed.refreshToken):null,expiresAt:refreshed.expiresAt??null,scopes:refreshed.scopes.length?refreshed.scopes:row.scopes};
+  }});}catch(error){
+   if(error instanceof SocialTokenRefreshError)throw new SocialOAuthError(error.code,error.code==="social_account_refresh_unconfirmed"?"The token exchange outcome is unconfirmed. Reconnect this social account.":error.code==="social_account_refresh_in_progress"?"A token exchange is already in progress.":"Connected social account is unavailable.",error.code==="social_account_refresh_in_progress"?503:409);
+   throw error;
+  }
+ }
 
 	private async refreshTikTok(refreshToken: string): Promise<OAuthToken> {
 		const token = (await postForm(
