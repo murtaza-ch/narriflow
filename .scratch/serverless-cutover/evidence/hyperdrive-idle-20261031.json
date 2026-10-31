@@ -1,5 +1,5 @@
 {
-  "status": "partial_platform_evidence_one_hour_gate_pending",
+  "status": "passed_isolated_platform_probe",
   "accountId": "5359f28d385b8632c3abee12d1f5b011",
   "worker": "narriflow-platform-gates",
   "isolatedNeonProject": "ancient-violet-37185608",
@@ -34,11 +34,19 @@
       "state": "idle",
       "suspendedAt": "2026-10-31T01:57:32Z",
       "lastActive": "2026-10-31T01:52:14Z"
+    },
+    {
+      "observedAt": "2026-10-31T03:31:03Z",
+      "state": "idle",
+      "suspendedAt": "2026-10-31T01:57:32Z",
+      "lastActive": "2026-10-31T01:52:14Z"
     }
   ],
   "notes": [
     "One fixed SELECT42 through the production request database scope and deployed Hyperdrive. Client disposed in finally.",
     "Later observations use the Neon control plane only, without SQL that would wake compute.",
-    "This is a separate isolated test branch. It is not a measurement of the complete candidate."
-  ]
+    "This is a separate isolated test branch. It is not a measurement of the complete candidate.",
+    "The isolated platform probe passed its one-hour idle observation. The full candidate idle gate remains required before cutover."
+  ],
+  "idleObservationSeconds": 5929
 }

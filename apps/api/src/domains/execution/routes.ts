@@ -1,6 +1,10 @@
 import { EXECUTION_COMMAND_MAX_BYTES, executionCommandSchema, executionDispositionSchema,
   type ExecutionCommand, type ExecutionDisposition } from "@narriflow/validators/execution";
 import { ExecutorControlError } from "@narriflow/services/executor-control";
+import { ExecutionStorageError } from "@narriflow/services/execution-storage";
+import { executionTransferCommandSchema, executionTransferDispositionSchema,
+  type ExecutionTransferCommand, type ExecutionTransferDisposition } from "@narriflow/validators/execution-transfer";
+import type { Context } from "hono";
 import { ExecutionSignatureError, verifyExecutionRequest, type VerifiedExecutionRequest } from "@narriflow/services/execution-signature";
 import { createRouteApp } from "../../http/admission";
 import { jsonError, markEnvelope, requestIdOf } from "../../http/errors";
@@ -11,6 +15,7 @@ export interface ExecutionRouteDependencies {
   nowSeconds(): number;
   /** Construct database/domain work only after the signature and command have passed. */
   execute(command: ExecutionCommand, verifiedRequest: VerifiedExecutionRequest): Promise<ExecutionDisposition>;
+  transfer(command: ExecutionTransferCommand, verifiedRequest: VerifiedExecutionRequest): Promise<ExecutionTransferDisposition>;
 }
 
 class CommandTooLarge extends Error {}
@@ -36,7 +41,7 @@ async function readCommandBody(request: Request) {
 }
 
 export function createExecutionRoutes(deps: ExecutionRouteDependencies) {
-  return createRouteApp(executionAdmission).post("/execution/command", async c => {
+  const handle = (kind: "command" | "transfer") => async (c: Context) => {
     const serverTime = () => new Date(deps.nowSeconds() * 1_000).toISOString();
     const refuse = (status: number, code: string, message: string) => markEnvelope(c, jsonError(status, code, message, requestIdOf(c), {
       "X-Execution-Server-Time": serverTime(),
@@ -51,15 +56,23 @@ export function createExecutionRoutes(deps: ExecutionRouteDependencies) {
       const url = new URL(c.req.url);
       const verified = await verifyExecutionRequest({ signature, keyRing: deps.keyRing(), audience: "executor-control",
         method: c.req.method, target: url.pathname + url.search, body, nowSeconds: deps.nowSeconds() });
-      let command: ExecutionCommand;
-      try { command = executionCommandSchema.parse(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body))); }
+      let parsed: unknown;
+      try { parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body)); }
       catch { return refuse(400, "execution_command_invalid", "Execution command is invalid"); }
-      const disposition = executionDispositionSchema.parse(await deps.execute(command, verified));
+      const command = kind === "command" ? executionCommandSchema.safeParse(parsed) : executionTransferCommandSchema.safeParse(parsed);
+      if (!command.success) return refuse(400, "execution_command_invalid", "Execution command is invalid");
+      const disposition = kind === "command"
+        ? executionDispositionSchema.parse(await deps.execute(command.data as ExecutionCommand, verified))
+        : executionTransferDispositionSchema.parse(await deps.transfer(command.data as ExecutionTransferCommand, verified));
       c.header("X-Execution-Server-Time", serverTime());
       return c.json(disposition);
     } catch (error) {
       if (error instanceof CommandTooLarge) return refuse(413, "execution_command_too_large", "Execution command exceeds 64 KiB");
       if (error instanceof ExecutionSignatureError) return refuse(401, "execution_signature_invalid", "Execution signature is invalid");
+      if (error instanceof ExecutionStorageError) {
+        const unavailable = ["storage_configuration_invalid", "storage_provider_failed", "storage_completion_unconfirmed"].includes(error.code);
+        return refuse(unavailable ? 503 : 409, error.code, "Execution transfer was refused");
+      }
       if (error instanceof ExecutorControlError) {
         const status = error.code === "storage_unavailable" || error.code === "scheduler_unavailable" || error.code === "epoch_unavailable" || error.code === "keys_unavailable" ? 503
           : error.code === "artifact_invalid" ? 422 : 409;
@@ -67,5 +80,8 @@ export function createExecutionRoutes(deps: ExecutionRouteDependencies) {
       }
       throw error;
     }
-  });
+  };
+  return createRouteApp(executionAdmission)
+    .post("/execution/command", handle("command"))
+    .post("/execution/transfer", handle("transfer"));
 }
