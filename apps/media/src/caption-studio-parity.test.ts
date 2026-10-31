@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { captionFallbackFontPath, CAPTION_FALLBACK_FONTS, shapeCaptionRun } from "@narriflow/caption-fonts";
 import type { CompositionCaptionVisualLayer } from "@narriflow/composition-plan";
-import { brandFontRenderer } from "@narriflow/services";
+import { brandFontRenderer } from "./brand-font-parser";
 import { CAPTION_PILL, CAPTION_PLATE, captionPresetSchema } from "@narriflow/validators";
 import { captionDecorationExtentEm, measureCaptionFallbackInkEm } from "../../web/app/caption-script-fonts";
 import { type RenderBrandFonts, brandFontKey } from "./brand-font-resolution";
