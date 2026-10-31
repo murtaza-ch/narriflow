@@ -115,26 +115,28 @@ dbDescribe("Targeted serverless domain execution", () => {
     await db.clipRender.update({ where: { id: value.variant.id }, data: { workflowRunId: null } });
     const lifecycle = withServiceEnvironment({}, () => new WorkflowRunLifecycle({ prisma: db }));
     const reference = (await db.$transaction(tx => lifecycle.dispatchRunWithinTransaction(tx, value.run.id))).reference;
-    const groups = [{ configuration: { clipId: value.group.clipId, exportId: null, editorRevision: 1, resolution: "1080p", watermark: true }, variantIds: [value.variant.id] }];
-    expect((await withServiceEnvironment({}, () => lifecycle.prepareRenderRun({ ...reference, generation: reference.generation + 1 }, groups))).kind).toBe("superseded");
-    const prepared = await withServiceEnvironment({}, () => lifecycle.prepareRenderRun(reference, groups));
+    expect((await withServiceEnvironment({}, () => lifecycle.prepareRenderRun({ ...reference, generation: reference.generation + 1 }))).kind).toBe("superseded");
+    const prepared = await withServiceEnvironment({}, () => lifecycle.prepareRenderRun(reference));
     expect(prepared.kind).toBe("prepared");
     if (prepared.kind !== "prepared") throw new Error("Expected a prepared Render Work Set");
     subjects.push(...prepared.groups.map(group => group.groupId));
     const parent = await db.workflowRun.findUniqueOrThrow({ where: { id: value.run.id } });
     expect(parent).toMatchObject({ status: "waiting", attemptId: null, leaseOwner: null, leaseExpiresAt: null, attemptCount: 0, requestedCount: 1 });
     expect(parent.renderWorkSetGeneration).not.toBeNull();
-    expect((await withServiceEnvironment({}, () => lifecycle.prepareRenderRun(reference, groups))).dispatchIds).toEqual(prepared.dispatchIds);
-    await expect(withServiceEnvironment({}, () => lifecycle.prepareRenderRun(reference, [{ ...groups[0]!, configuration: { ...groups[0]!.configuration, watermark: false } }]))).rejects.toThrow("immutable");
+    await db.workspace.update({ where: { id: (await db.project.findUniqueOrThrow({ where: { id: value.run.projectId } })).workspaceId }, data: { pricingTier: "business" } });
+    expect((await withServiceEnvironment({}, () => lifecycle.prepareRenderRun(reference))).dispatchIds).toEqual(prepared.dispatchIds);
+    expect(await db.renderGroup.findUniqueOrThrow({ where: { id: prepared.groups[0]!.groupId } })).toMatchObject({ exportIdentity: renderGroupExportIdentity({ clipId: value.group.clipId, exportId: null, editorRevision: 1, resolution: "1080p", watermark: true }) });
+    const late = await db.clipRender.create({ data: { clipId: value.group.clipId, aspectRatio: "ratio_16_9", resolution: "1080p", editorRevision: 1 } });
     const pending = await withServiceEnvironment({}, () => lifecycle.settleRenderRun(reference));
     expect(pending.kind === "settled" ? pending.outcome.status : pending.kind).toBe("pending");
+    expect(pending.kind === "settled" ? pending.wait?.deadlines.map(value => value.reference.subject.kind) : []).toEqual(["render_group"]);
     expect(await db.workflowRun.findUniqueOrThrow({ where: { id: value.run.id } })).toMatchObject({ status: "waiting", leaseOwner: null, attemptId: null, attemptCount: 0 });
     const group = await db.renderGroup.findUniqueOrThrow({ where: { id: prepared.groups[0]!.groupId } });
-    const driver = (await readExecutionDispatch(db, prepared.dispatchIds[0]!))!;
+    const driver = (await Promise.all(prepared.dispatchIds.map(id => readExecutionDispatch(db,id)))).find(record => record?.reference.kind === "operation_driver" && record.deadlineKind === null)!;
     const modal = await db.$transaction(tx => appendExecutionDispatch(tx, { deploymentEpoch: epoch, kind: "modal_execution", subject: { kind: "render_group", id: group.id },
       generation: group.generation, inputHash: driver.reference.inputHash, dueAt: driver.dueAt }));
     dispatches.push(modal.reference.dispatchId);
-    const attemptToken = crypto.randomUUID(), owner = crypto.randomUUID(), deadline = new Date(Date.now() + 10 * 60_000);
+    const attemptToken = crypto.randomUUID(), owner = crypto.randomUUID(), deadline = group.operationDeadlineAt!;
     const input = await sealInput(group, value.run.projectId, deadline);
     await db.executionAttempt.create({ data: { attemptToken, dispatchId: modal.reference.dispatchId, deploymentEpoch: epoch, generation: group.generation,
       inputHash: modal.reference.inputHash, functionName: "render_group", operationDeadlineAt: deadline, ...input } });
@@ -148,15 +150,59 @@ dbDescribe("Targeted serverless domain execution", () => {
       storageKey: `execution/${epoch}/${attemptToken}/${owner}/variant.mp4`, contentType: "video/mp4", maxBytes: 4096n, grantExpiresAt: new Date(Date.now() + 60_000) } });
     await server.send({ action: "commit-artifact", fence: fence(child), artifact: { artifactId: artifact.id, role: "render_variant", contentType: "video/mp4",
       byteLength: 1024, etag: '"gate-etag"', sha256: "a".repeat(64), bindingHash: artifact.bindingHash } });
+    const parentWake = await db.executionDispatch.findFirstOrThrow({ where: { subjectKind: "workflow_run", subjectId: value.run.id, kind: "render_run", wakeKind: { startsWith: "group_" } } });
+    expect((await readExecutionDispatch(db,parentWake.id))!.reference).toMatchObject({ ...reference, dispatchId: parentWake.id });
     const wake = await db.executionDispatch.findFirstOrThrow({ where: { subjectKind: "render_group", subjectId: group.id, kind: "render_run", wakeKind: "group_outcome" } });
     const wakeReference = (await readExecutionDispatch(db, wake.id))!.reference;
     const completed = await withServiceEnvironment({}, () => lifecycle.settleRenderRun(wakeReference));
     expect(completed.kind === "settled" ? completed.outcome : completed).toMatchObject({ status: "completed", requested: 1, succeeded: 1, failed: 0 });
+    if (completed.kind !== "settled" || !completed.outcome.followUpWorkflowRunId) throw new Error("Expected one late-variant follow-up");
+    subjects.push(completed.outcome.followUpWorkflowRunId);
+    expect(await db.clipRender.findUniqueOrThrow({ where: { id: late.id } })).toMatchObject({ status: "pending", workflowRunId: null });
+    const followUpReference = (await db.$transaction(tx => lifecycle.dispatchRunWithinTransaction(tx, completed.outcome.followUpWorkflowRunId!))).reference;
+    const followUp = await withServiceEnvironment({}, () => lifecycle.prepareRenderRun(followUpReference));
+    expect(followUp.kind === "prepared" ? followUp.workSet.variantIds : []).toEqual([late.id]);
+    if (followUp.kind === "prepared") subjects.push(...followUp.groups.map(group => group.groupId));
     const replay = await withServiceEnvironment({}, () => lifecycle.settleRenderRun(reference));
     expect(replay).toEqual(completed);
     expect(await db.workflowEvent.count({ where: { workflowRunId: value.run.id, notificationRequired: true } })).toBe(1);
     expect(await db.workflowRun.findUniqueOrThrow({ where: { id: value.run.id } })).toMatchObject({ attemptId: null, attemptCount: 0, leaseOwner: null });
   }, 180_000);
+
+  test("a missing video freezes admission and expires at the accepted run deadline without a native owner", async () => {
+    const value = await fixture();
+    await db.renderGroup.delete({ where: { id: value.group.id } });
+    const acceptedAt = new Date(Date.now() - 46 * 60_000);
+    await db.workflowRun.update({ where: { id: value.run.id }, data: { createdAt: acceptedAt, renderWorkSetGeneration: null, renderWorkSetFrozenAt: null, requestedCount: null } });
+    await db.clipRender.update({ where: { id: value.variant.id }, data: { workflowRunId: null } });
+    await db.project.update({ where: { id: value.run.projectId }, data: { ingestStatus: "pending", sourceStorageKey: null } });
+    const lifecycle = withServiceEnvironment({}, () => new WorkflowRunLifecycle({ prisma: db }));
+    const reference = (await db.$transaction(tx => lifecycle.dispatchRunWithinTransaction(tx, value.run.id))).reference;
+    const result = await withServiceEnvironment({}, () => lifecycle.prepareRenderRun(reference));
+    expect(result.kind).toBe("terminal");
+    const parent = await db.workflowRun.findUniqueOrThrow({ where: { id: value.run.id } });
+    expect(parent).toMatchObject({ status: "failed", operationDeadlineAt: new Date(acceptedAt.getTime() + 45 * 60_000), attemptId: null, attemptCount: 0, leaseOwner: null, requestedCount: 1, failedCount: 1 });
+    expect(await db.clipRender.findUniqueOrThrow({ where: { id: value.variant.id } })).toMatchObject({ status: "failed", errorCode: "source_video_unavailable", failureDisposition: "permanent" });
+    const watchdog = await db.executionDispatch.findFirstOrThrow({ where: { subjectId: value.run.id, deadlineKind: "operation" } });
+    expect(watchdog.observedDeadlineAt).toEqual(parent.operationDeadlineAt);
+    expect(await db.executionAttempt.count({ where: { dispatch: { subjectKind: "render_group", subjectId: { in: (await db.renderGroup.findMany({ where: { workflowRunId: value.run.id } })).map(group => group.id) } } } })).toBe(0);
+    expect(await db.renderGroupExecution.count({ where: { group: { workflowRunId: value.run.id } } })).toBe(0);
+    subjects.push(...(await db.renderGroup.findMany({ where: { workflowRunId: value.run.id } })).map(group => group.id));
+  });
+
+  test("variants already assigned to the accepted run are included in its frozen denominator", async () => {
+    const value = await fixture();
+    await db.renderGroup.delete({ where: { id: value.group.id } });
+    await db.workflowRun.update({ where: { id: value.run.id }, data: { renderWorkSetGeneration: null, renderWorkSetFrozenAt: null, requestedCount: null } });
+    const lifecycle = withServiceEnvironment({}, () => new WorkflowRunLifecycle({ prisma: db }));
+    const reference = (await db.$transaction(tx => lifecycle.dispatchRunWithinTransaction(tx, value.run.id))).reference;
+    const prepared = await withServiceEnvironment({}, () => lifecycle.prepareRenderRun(reference));
+    expect(prepared.kind).toBe("prepared");
+    if (prepared.kind !== "prepared") throw new Error("Expected prepared assigned variants");
+    expect(prepared.workSet.variantIds).toEqual([value.variant.id]);
+    expect(await db.workflowRun.findUniqueOrThrow({ where: { id: value.run.id } })).toMatchObject({ requestedCount: 1, status: "waiting", attemptCount: 0, attemptId: null });
+    subjects.push(...prepared.groups.map(group => group.groupId));
+  });
 
   test("a group seals one preparation and one complete input tuple across retries", async () => {
     const value = await fixture(undefined, undefined, false);
@@ -338,7 +384,7 @@ dbDescribe("Targeted serverless domain execution", () => {
     await commit(value.variants[2]!.id, { errorCode: "caption_glyph_unavailable", disposition: "permanent" });
     expect(await db.renderGroup.findUniqueOrThrow({ where: { id: value.group.id } })).toMatchObject({ status: "running", generation: 1, chargedAttemptCount: 1 });
     const retry = await commit(value.variant.id);
-    expect(retry?.dispatchIds.length).toBe(3);
+    expect((await Promise.all((retry?.dispatchIds ?? []).map(id => readExecutionDispatch(db,id)))).filter(record => record?.reference.kind === "render_run" && record.reference.subject.kind === "workflow_run")).toHaveLength(1);
     expect(retry?.renderGroup).toEqual({ status: "queued", requested: 3, succeeded: 1, failed: 1, superseded: 0 });
     expect(await db.renderGroup.findUniqueOrThrow({ where: { id: value.group.id } })).toMatchObject({ status: "queued", generation: 2, chargedAttemptCount: 1, operationDeadlineAt: value.deadline });
     expect(await db.clipRender.findUniqueOrThrow({ where: { id: value.variant.id } })).toMatchObject({ status: "completed", durationSec: 10,

@@ -31,6 +31,7 @@ import { lockPlannedExecutionObject } from "./execution-object-cleanup";
 import type { NativeValidationPreparation } from "./native-validation";
 import { appendExecutionDispatch, readExecutionDispatch, executionDispatchIdentity } from "./execution-dispatch";
 import { lockWorkspaceUsage } from "./processing-usage";
+import { appendWorkflowRunDispatch } from "./workflow-dispatch";
 import type { ExecutorArtifactCommit, ExecutorDomainLock, ExecutorMutationResult, ExecutorFailureInput, ExecutorMutationContext, ExecutorProgressInput, ExecutorReleaseInput, ExecutorExpiryObservation, ExecutorExpiryResult } from "./executor-domain-control";
 
 type Tx = Prisma.TransactionClient;
@@ -572,6 +573,9 @@ export class RenderGroupLifecycle {
     const finished = await appendExecutionDispatch(tx, { deploymentEpoch: ref.deploymentEpoch, kind: "operation_driver", subject: { kind: "render_group", id: ref.groupId },
       generation: ref.generation, inputHash: inputHash, dueAt: now, wakeKind: "execution_finished" });
     const ids = [wake.reference.dispatchId, finished.reference.dispatchId];
+    const parent = await appendWorkflowRunDispatch(tx, ref.workflowRunId);
+    const parentWake = await appendExecutionDispatch(tx, { ...parent.reference, dueAt: now, wakeKind: `group_${wake.reference.dispatchId.replaceAll("-", "")}` });
+    ids.push(parentWake.reference.dispatchId);
     if (retry) {
       const queued = await appendExecutionDispatch(tx, { deploymentEpoch: current.deploymentEpoch, kind: "operation_driver", subject: { kind: "render_group", id: current.id },
         generation: current.generation, inputHash: inputHash, dueAt: current.nextAttemptAt ?? now });
