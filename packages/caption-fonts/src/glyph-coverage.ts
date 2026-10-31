@@ -2,7 +2,7 @@ import { CAPTION_COVERED_RANGES } from "./glyph-coverage-data";
 
 /**
  * Which caption characters the burn-in can draw, answerable in the browser.
- * The export planner (apps/worker/src/caption-glyphs.ts) walks the pinned
+ * The export planner (apps/media/src/caption-glyphs.ts) walks the pinned
  * fallback chain with fontkit; this table is that chain's code point union,
  * so the Studio can warn before an export leaves a character out.
  */

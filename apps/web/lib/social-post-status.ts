@@ -2,7 +2,7 @@
  * Display + polling logic for scheduled social posts.
  *
  * The Posts tab renders a server snapshot, but a post's real state changes
- * in the worker (`apps/worker/src/tasks/social-publisher.ts`) with no SSE
+ * in the worker (`packages/services/src/publication-execution.ts`) with no SSE
  * channel of its own — the project stream only carries `workflow.stage.updated`
  * events for pipeline stages. So the panel polls while a post is still in the
  * worker's hands, and these pure helpers decide what to say and how often to

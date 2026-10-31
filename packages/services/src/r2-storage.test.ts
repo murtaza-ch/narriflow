@@ -1,18 +1,14 @@
-import { downloadObjectToFile, putFileFromPath } from "../../../apps/worker/src/r2-file-transfer";
 import { bindServiceTestEnvironment } from "./runtime-test-support";
-import { afterEach, describe, expect, setDefaultTimeout, spyOn, test } from "bun:test";
+import { describe, expect, setDefaultTimeout, spyOn, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile, rm, truncate, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, truncate, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import {
-  AbortMultipartUploadCommand,
   CompleteMultipartUploadCommand,
-  CreateMultipartUploadCommand,
   S3Client,
   PutObjectCommand,
-  UploadPartCommand,
 } from "@aws-sdk/client-s3";
 import {
   abortMultipartUpload,
@@ -255,20 +251,6 @@ test("R2 object operations reject a pre-aborted signal before storage access", b
   controller.abort(reason);
 
   await expect(
-    putFileFromPath({
-      key: "test/clip-render-attempt/aborted/upload.mp4",
-      filePath: "/file-is-never-opened.mp4",
-      signal: controller.signal,
-    }),
-  ).rejects.toBe(reason);
-  await expect(
-    downloadObjectToFile({
-      key: "test/clip-render-attempt/aborted/download.mp4",
-      filePath: "/file-is-never-created.mp4",
-      signal: controller.signal,
-    }),
-  ).rejects.toBe(reason);
-  await expect(
     deleteObject("test/clip-render-attempt/aborted/delete.mp4", {
       signal: controller.signal,
     }),
@@ -283,156 +265,11 @@ test("R2 object operations reject a pre-aborted signal before storage access", b
   ).rejects.toBe(reason);
 }));
 
-describe("multipart failure cleanup is bounded", () => {
-  const MIB = 1024 * 1024;
-  const environment = {
-    R2_ACCOUNT_ID: "test-account",
-    R2_ACCESS_KEY_ID: "test",
-    R2_SECRET_ACCESS_KEY: "test",
-    R2_BUCKET: "test-bucket",
-  };
-  const previous = Object.fromEntries(
-    Object.keys(environment).map((name) => [name, process.env[name]]),
-  );
-  let directory: string | null = null;
-  const restores: Array<() => void> = [];
-
-  afterEach(bindServiceTestEnvironment(async () => {
-    for (const restore of restores.splice(0)) restore();
-    for (const [name, value] of Object.entries(previous)) {
-      if (value === undefined) delete process.env[name];
-      else process.env[name] = value;
-    }
-    if (directory) await rm(directory, { recursive: true, force: true });
-    directory = null;
-  }));
-
-  async function sparseFile(bytes: number) {
-    Object.assign(process.env, environment);
-    directory = await mkdtemp(join(tmpdir(), "narriflow-r2-multipart-"));
-    const filePath = join(directory, "upload.mp4");
-    await writeFile(filePath, "");
-    await truncate(filePath, bytes);
-    return filePath;
-  }
-
-  function stubSend(
-    handle: (command: unknown, options?: { abortSignal?: AbortSignal }) => Promise<unknown>,
-  ) {
-    const spy = spyOn(S3Client.prototype, "send").mockImplementation(
-      ((command: unknown, options?: { abortSignal?: AbortSignal }) =>
-        handle(command, options)) as never,
-    );
-    restores.push(() => spy.mockRestore());
-    const warn = spyOn(console, "warn").mockImplementation(() => undefined);
-    restores.push(() => warn.mockRestore());
-    return warn;
-  }
-
-  test("a rejected part followed by a never-settling abort returns the original failure within the cleanup grace", bindServiceTestEnvironment(async () => {
-    const filePath = await sparseFile(16 * MIB + 1);
-    const partFailure = new Error("part 1 rejected");
-    let siblingCancelled = false;
-    let abortCalls = 0;
-    const warn = stubSend((command, options) => {
-      if (command instanceof CreateMultipartUploadCommand) {
-        return Promise.resolve({ UploadId: "upload-1" });
-      }
-      if (command instanceof UploadPartCommand) {
-        if (command.input.PartNumber === 1) return Promise.reject(partFailure);
-        return new Promise((_, reject) => {
-          const cancelled = () => {
-            siblingCancelled = true;
-            reject(new DOMException("cancelled", "AbortError"));
-          };
-          if (options?.abortSignal?.aborted) return cancelled();
-          options?.abortSignal?.addEventListener("abort", cancelled);
-        });
-      }
-      if (command instanceof AbortMultipartUploadCommand) {
-        abortCalls += 1;
-        return new Promise(() => undefined);
-      }
-      throw new Error("unexpected command");
-    });
-
-    const startedAt = Date.now();
-    await expect(
-      putFileFromPath({ key: "test/multipart/stalled-abort.mp4", filePath }),
-    ).rejects.toBe(partFailure);
-    const elapsedMs = Date.now() - startedAt;
-
-    expect(abortCalls).toBe(1);
-    expect(siblingCancelled).toBe(true);
-    expect(elapsedMs).toBeGreaterThanOrEqual(4_900);
-    expect(elapsedMs).toBeLessThan(7_000);
-    expect(String(warn.mock.calls.at(-1)?.[0])).toContain("r2_multipart_abort_unconfirmed");
-  }));
-
-  test("a caller-cancelled upload still gets its own abort request", bindServiceTestEnvironment(async () => {
-    const filePath = await sparseFile(16 * MIB + 1);
-    const controller = new AbortController();
-    let abortSignalWasLive: boolean | null = null;
-    stubSend((command, options) => {
-      if (command instanceof CreateMultipartUploadCommand) {
-        return Promise.resolve({ UploadId: "upload-2" });
-      }
-      if (command instanceof UploadPartCommand) {
-        return new Promise((_, reject) => {
-          const cancelled = () => reject(new DOMException("cancelled", "AbortError"));
-          if (options?.abortSignal?.aborted) return cancelled();
-          options?.abortSignal?.addEventListener("abort", cancelled);
-          queueMicrotask(() => controller.abort());
-        });
-      }
-      if (command instanceof AbortMultipartUploadCommand) {
-        abortSignalWasLive = options?.abortSignal?.aborted === false;
-        return Promise.resolve({});
-      }
-      throw new Error("unexpected command");
-    });
-
-    await expect(
-      putFileFromPath({
-        key: "test/multipart/cancelled.mp4",
-        filePath,
-        signal: controller.signal,
-      }),
-    ).rejects.toMatchObject({ name: "AbortError" });
-    expect(abortSignalWasLive).toBe(true);
-  }));
-
-  test("parts complete in ascending order regardless of finish order", bindServiceTestEnvironment(async () => {
-    const filePath = await sparseFile(32 * MIB + 1);
-    let completed: number[] = [];
-    stubSend(async (command) => {
-      if (command instanceof CreateMultipartUploadCommand) return { UploadId: "upload-3" };
-      if (command instanceof UploadPartCommand) {
-        const partNumber = command.input.PartNumber ?? 0;
-        await new Promise((resolve) => setTimeout(resolve, (4 - partNumber) * 20));
-        return { ETag: `"etag-${partNumber}"` };
-      }
-      if (command instanceof CompleteMultipartUploadCommand) {
-        completed = (command.input.MultipartUpload?.Parts ?? []).map(
-          (part) => part.PartNumber ?? 0,
-        );
-        return {};
-      }
-      throw new Error("unexpected command");
-    });
-
-    await putFileFromPath({ key: "test/multipart/ordered.mp4", filePath });
-    expect(completed).toEqual([1, 2, 3]);
-  }));
-
-  test("putJson honours a cancelled signal before storage access", bindServiceTestEnvironment(async () => {
-    const controller = new AbortController();
-    controller.abort(new DOMException("shutdown", "AbortError"));
-    await expect(
-      putJson({ key: "test/json.json", value: {}, signal: controller.signal }),
-    ).rejects.toMatchObject({ name: "AbortError" });
-  }));
-});
+test("putJson honours a cancelled signal before storage access", bindServiceTestEnvironment(async () => {
+  const controller = new AbortController();
+  controller.abort(new DOMException("shutdown", "AbortError"));
+  await expect(putJson({ key: "test/json.json", value: {}, signal: controller.signal })).rejects.toMatchObject({ name: "AbortError" });
+}));
 
 const configuredContractPrefix = process.env.R2_CONTRACT_TEST_PREFIX?.trim();
 const isolatedContractPrefix =
@@ -443,7 +280,7 @@ const isolatedContractPrefix =
 const r2ContractTest = bindServiceTestEnvironment(isR2Configured)() && isolatedContractPrefix ? test : test.skip;
 
 r2ContractTest(
-  "R2 object adapter uploads, downloads, lists an isolated prefix, normalizes metadata, and deletes",
+  "R2 object adapter stages bytes, verifies metadata, lists an isolated prefix, and deletes",
   async () => {
     const runId = randomUUID();
     const firstAttemptId = randomUUID();
@@ -453,32 +290,26 @@ r2ContractTest(
     const key = `${prefix}9x16-${firstAttemptId}.mp4`;
     const secondAttemptKey = `${prefix}9x16-${secondAttemptId}.mp4`;
     const siblingKey = `${siblingPrefix}render.mp4`;
-    const directory = await mkdtemp(join(tmpdir(), "narriflow-r2-contract-"));
-    const uploadPath = join(directory, "upload.mp4");
-    const downloadPath = join(directory, "download.mp4");
-    const activeAbortPath = join(directory, "active-abort.mp4");
-    const activeAbortKey = `${prefix}9x16-${randomUUID()}.mp4`;
     const bytes = Buffer.from("isolated clip render contract bytes");
 
     try {
-      await writeFile(uploadPath, bytes);
-      await putFileFromPath({
+      await putObjectBytes({
         key,
-        filePath: uploadPath,
+        bytes,
         contentType: "video/mp4",
         metadata: {
           project_id: "contract-project",
           title: "Résumé 🎙️",
         },
       });
-      await putFileFromPath({
+      await putObjectBytes({
         key: siblingKey,
-        filePath: uploadPath,
+        bytes,
         contentType: "video/mp4",
       });
-      await putFileFromPath({
+      await putObjectBytes({
         key: secondAttemptKey,
-        filePath: uploadPath,
+        bytes,
         contentType: "video/mp4",
       });
 
@@ -491,9 +322,6 @@ r2ContractTest(
           title: sanitizeObjectMetadata({ title: "Résumé 🎙️" })?.title,
         },
       });
-
-      await downloadObjectToFile({ key, filePath: downloadPath });
-      expect(await readFile(downloadPath)).toEqual(bytes);
 
       const firstPage = await listObjectPageByPrefix(prefix, 1);
       expect(firstPage.objects).toHaveLength(1);
@@ -518,23 +346,6 @@ r2ContractTest(
       expect(key).not.toBe(secondAttemptKey);
       expect(key).toEndWith(`9x16-${firstAttemptId}.mp4`);
 
-      await writeFile(activeAbortPath, "");
-      await truncate(activeAbortPath, 16 * 1024 * 1024 + 1);
-      const controller = new AbortController();
-      const activeUpload = putFileFromPath({
-        key: activeAbortKey,
-        filePath: activeAbortPath,
-        contentType: "video/mp4",
-        signal: controller.signal,
-      });
-      setTimeout(() => controller.abort(), 1);
-      await expect(activeUpload).rejects.toMatchObject({ name: "AbortError" });
-      expect(
-        (await listObjectPageByPrefix(prefix, 100)).objects
-          .map((object) => object.key)
-          .sort(),
-      ).toEqual([key, secondAttemptKey].sort());
-
       await deleteObject(key);
       await deleteObject(key);
       await deleteObject(secondAttemptKey);
@@ -544,9 +355,7 @@ r2ContractTest(
         deleteObject(key),
         deleteObject(secondAttemptKey),
         deleteObject(siblingKey),
-        deleteObject(activeAbortKey),
       ]);
-      await rm(directory, { recursive: true, force: true });
     }
   },
 );

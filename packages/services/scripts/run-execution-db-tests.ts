@@ -1,3 +1,4 @@
+import { assertIsolatedDatabaseGateTarget } from "./db-gate-target";
 import { randomUUID } from "node:crypto";
 import { Pool } from "pg";
 import { assertExecutionDatabaseTestTarget } from "../src/execution-db-test-support";
@@ -11,6 +12,7 @@ if (target.hostname.includes("ep-rough-hill-b57kvyah")) {
 if (target.hostname.includes("-pooler.")) throw new Error("Serverless gates require a direct TLS connection");
 const schema = `serverless_execution_test_${randomUUID().replaceAll("-", "")}`;
 assertExecutionDatabaseTestTarget(configuredUrl, schema);
+assertIsolatedDatabaseGateTarget(configuredUrl);
 const pool = new Pool({ connectionString: configuredUrl, max: 1 });
 const migrationUrl = new URL(configuredUrl);
 migrationUrl.searchParams.delete("options");

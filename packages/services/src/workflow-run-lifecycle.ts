@@ -1,6 +1,6 @@
 import {recoverProjectNotificationDeliveries} from "./notification-execution";
-import { WORKFLOW_LEASE_DURATION_MS, WORKFLOW_HEARTBEAT_INTERVAL_MS, WorkflowFailure, WorkflowAttemptLost, type WorkflowAttemptRef, type WorkflowAttemptContext } from "./workflow-attempt-contract";
-export { WORKFLOW_LEASE_DURATION_MS, WORKFLOW_HEARTBEAT_INTERVAL_MS, WorkflowFailure, WorkflowAttemptLost, workflowHttpFailureDisposition, workflowFailureFromUnknown, rethrowWorkflowAttemptLost, type WorkflowFailureDisposition, type WorkflowAttemptRef, type WorkflowAttemptContext } from "./workflow-attempt-contract";
+import { WorkflowFailure, WorkflowAttemptLost, type WorkflowAttemptRef } from "./workflow-attempt-contract";
+export { WORKFLOW_LEASE_DURATION_MS, type WorkflowAttemptContext, WorkflowFailure, WorkflowAttemptLost, workflowHttpFailureDisposition, workflowFailureFromUnknown, rethrowWorkflowAttemptLost, type WorkflowFailureDisposition, type WorkflowAttemptRef } from "./workflow-attempt-contract";
 import { randomUUID } from "node:crypto";
 import { readExecutionAdmission, assertExecutionAdmissionOpen } from "./execution-admission";
 import { queueLibraryIndex, recoverLibraryIndex } from "./library-index";
@@ -20,14 +20,9 @@ import type {
   ContentPack,
   RenderTerminalNotificationPayload,
   WorkflowStage,
-  WorkflowStageUpdatedEvent,
   WorkflowStatus,
 } from "@narriflow/validators";
 import { accessibleProjectWhere } from "./project-access";
-import {
-  publishPersistedWorkflowEvent,
-} from "./workflow.service";
-import { notificationService, type NotificationOutcome } from "./notification.service";
 import { syncClipExportAggregates } from "./clip-export-aggregates";
 import {
   admitRetiredClipMediaCleanup,
@@ -52,24 +47,13 @@ import { appendScribeCapacityWakesWithinTransaction } from "./transcription-admi
 import { lockClipSelectionParent, clipSelectionTranscriptHash, cancelClipSelectionWindowsWithinTransaction } from "./clip-selection-window";
 import { admitCaptionedExportWithinTransaction, resolveClipExportOutput } from "./clip-export.service";
 import type { ClipSelectionFinalizationResult, PreparedClipSelectionFinalization } from "./clip-selection-finalization";
-
-/** How long a stopping worker lets in-flight handlers finish
- * (`WORKER_SHUTDOWN_DRAIN_MS`, 30s by default). */
-export function workerShutdownDrainMs(env: Record<string, string | undefined> = {}): number {
-  const configured = Number(env.WORKER_SHUTDOWN_DRAIN_MS ?? "30000");
-  return Number.isFinite(configured) && configured > 0 ? configured : 30_000;
-}
-/** A released attempt's aborted handler may still be finishing an unfenced
- * provider call until the shutdown drain ends, so peers wait exactly that long
- * before claiming it. */
+/** An explicit release delays its next generation for physical process drain.
+ * Ownership is already revoked; this delay never extends the old lease. */
 export const WORKFLOW_RELEASE_GRACE_MS = 30_000;
 export const WORKFLOW_MAX_ATTEMPTS = 3;
 export const WORKFLOW_RETRIES_EXHAUSTED_CODE = "workflow_retries_exhausted";
 
 const WORKFLOW_RETRY_BASE_DELAY_MS = 30_000;
-const EVENT_DELIVERY_LEASE_MS = 30_000;
-const EVENT_MAX_DELIVERY_ATTEMPTS = 20;
-const EVENT_MAX_BACKOFF_MS = 5 * 60 * 1000;
 const TRANSACTION_RETRY_LIMIT = 10;
 
 type TransactionClient = Prisma.TransactionClient;
@@ -81,35 +65,6 @@ export interface WorkflowExecutionReference {
   generation: number;
   deploymentEpoch: number;
   attemptToken: string;
-}
-
-export interface ClaimedWorkflowAttempt extends WorkflowAttemptRef, ProviderAttemptReference {
-  status: "running";
-  progress: number;
-  contentPackId: string | null;
-  leaseExpiresAt: Date;
-  project: {
-    id: string;
-    title: string;
-    sourceMediaUrl: string;
-    sourceType: string;
-    sourceInput: string | null;
-    sourceStorageKey: string | null;
-    sourceMimeType: string | null;
-    sourceDurationSeconds: number | null;
-    sourceSizeBytes: bigint | null;
-    createdByUserId: string | null;
-    workspaceId: string;
-  };
-}
-
-export interface WaitingWorkflowAttempt extends WorkflowAttemptRef, ProviderAttemptReference {
-  progress: number;
-  /** Null while the submission is unconfirmed: the worker can only expire it. */
-  providerJobId: string | null;
-  /** Set with a null `providerJobId`; the instant the unconfirmed submission fails. */
-  submissionDeadlineAt: Date | null;
-  submittedAt: Date;
 }
 
 /** Identifies the attempt a provider callback belongs to. The webhook carries
@@ -251,16 +206,6 @@ export interface CompleteTranscriptInput {
 export interface WorkflowLifecycleDependencies {
   prisma?: PrismaClient;
   leaseOwner?: string;
-  leaseDurationMs?: number;
-  heartbeatIntervalMs?: number;
-  publishAnalytics?: (
-    event: WorkflowStageUpdatedEvent,
-    dedupeKey: string,
-  ) => Promise<void>;
-  publishProgress?: (event: WorkflowStageUpdatedEvent) => Promise<boolean>;
-  handoffNotification?: (
-    payload: NonNullable<WorkflowStageUpdatedEvent["notification"]>,
-  ) => Promise<void>;
 }
 
 export interface AdmitWorkflowRunInput {
@@ -335,10 +280,6 @@ function retryBackoffMs(attemptCount: number) {
   return WORKFLOW_RETRY_BASE_DELAY_MS * 2 ** Math.max(0, attemptCount - 1);
 }
 
-function eventBackoffMs(attemptCount: number) {
-  return Math.min(EVENT_MAX_BACKOFF_MS, 1000 * 2 ** Math.max(0, attemptCount - 1));
-}
-
 function terminalStatusForAggregate(
   result: WorkflowAggregateResult,
 ): Extract<WorkflowStatus, "completed" | "partial" | "failed"> {
@@ -390,62 +331,12 @@ function retryableTransactionFailure(error: unknown): boolean {
 export class WorkflowRunLifecycle {
   private readonly prisma: PrismaClient;
   readonly leaseOwner: string;
-  readonly leaseDurationMs: number;
-  readonly heartbeatIntervalMs: number;
-  private readonly publishAnalytics?: WorkflowLifecycleDependencies["publishAnalytics"];
-  private readonly publishProgress: NonNullable<
-    WorkflowLifecycleDependencies["publishProgress"]
-  >;
-  private readonly progressDeliveryRequired: boolean;
-  private readonly handoffNotification: NonNullable<
-    WorkflowLifecycleDependencies["handoffNotification"]
-  >;
-
-  private readonly executions = new Map<string, { settled: boolean; finished: boolean; settlement?: Promise<unknown> }>();
-
-  /** Publish the local marker only after the fenced settlement commits. A
-   * heartbeat blocked on its row lock must wait for that commit or rollback. */
-  private async settlementTransaction<T>(attempt: WorkflowAttemptRef, operation: (tx: TransactionClient) => Promise<T>): Promise<T> {
-    const execution = this.executions.get(attempt.attemptId);
-    const settlement = this.transaction(operation);
-    if (execution) execution.settlement = settlement;
-    try {
-      const result = await settlement;
-      if (execution && !(result && typeof result === "object" && "status" in result && result.status === "pending")) execution.settled = true;
-      return result;
-    } finally {
-      if (execution?.settlement === settlement) execution.settlement = undefined;
-    }
-  }
 
   constructor(dependencies: WorkflowLifecycleDependencies = {}) {
     const prisma = dependencies.prisma ?? getPrismaClient();
     if (!prisma) throw new Error("Database client unavailable");
     this.prisma = prisma;
     this.leaseOwner = dependencies.leaseOwner ?? randomUUID();
-    this.leaseDurationMs = dependencies.leaseDurationMs ?? WORKFLOW_LEASE_DURATION_MS;
-    this.heartbeatIntervalMs =
-      dependencies.heartbeatIntervalMs ?? WORKFLOW_HEARTBEAT_INTERVAL_MS;
-    this.publishAnalytics = dependencies.publishAnalytics;
-    this.publishProgress =
-      dependencies.publishProgress ?? publishPersistedWorkflowEvent;
-    this.progressDeliveryRequired =
-      true;
-    this.handoffNotification =
-      dependencies.handoffNotification ??
-      (async (payload) => {
-        const outcome: NotificationOutcome =
-          payload.kind === "ingest.failed" ? "import_failed" : payload.kind === "clip_render.failed" ? "generation_failed" : "clips_ready";
-        await notificationService.handoff({
-          projectId: payload.projectId,
-          sourceId: payload.kind === "ingest.failed" ? payload.ingestJobId : payload.workflowRunId,
-          outcome,
-        });
-      });
-
-    if (this.heartbeatIntervalMs * 2 >= this.leaseDurationMs) {
-      throw new Error("Workflow heartbeat interval must be less than half the lease duration");
-    }
   }
 
   private async transaction<T>(
@@ -512,8 +403,8 @@ export class WorkflowRunLifecycle {
 
   private appendEvent(tx: TransactionClient, input: WorkflowEventInput) {
     return appendWorkflowEvent(tx, input, {
-      progressRequired: this.progressDeliveryRequired,
-      analyticsEnabled: Boolean(this.publishAnalytics),
+      progressRequired: true,
+      analyticsEnabled: false,
     });
   }
 
@@ -580,8 +471,7 @@ export class WorkflowRunLifecycle {
 
   /** A per-command owner binding; same-Tx helpers never open a nested transaction. */
   private executionOwner(owner: string): WorkflowRunLifecycle {
-    return new WorkflowRunLifecycle({ prisma: this.prisma, leaseOwner: owner, leaseDurationMs: this.leaseDurationMs, heartbeatIntervalMs: this.heartbeatIntervalMs,
-      publishAnalytics: this.publishAnalytics, publishProgress: this.publishProgress, handoffNotification: this.handoffNotification });
+    return new WorkflowRunLifecycle({ prisma: this.prisma, leaseOwner: owner });
   }
 
   private async ownedExecution(tx: TransactionClient, ref: WorkflowExecutionReference, context: ExecutorMutationContext) {
@@ -934,64 +824,6 @@ export class WorkflowRunLifecycle {
     });
   }
 
-  /** Recovers unassigned render work without creating another active run.
-   * Admission, its event, and pending export linkage share the Project lock
-   * and transaction used by ordinary render admission. */
-  async rescuePendingClipRenderingRun(): Promise<string | null> {
-    const candidate = await this.prisma.clipRender.findFirst({
-      where: {
-        status: "pending",
-        workflowRunId: null,
-        clip: {
-          project: {
-            ...accessibleProjectWhere(),
-            workflowRuns: {
-              none: {
-                stage: "clip_rendering",
-                status: { in: ["queued", "running", "waiting"] },
-              },
-            },
-          },
-        },
-      },
-      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-      select: { clip: { select: { projectId: true } } },
-    });
-    if (!candidate) return null;
-    const projectId = candidate.clip.projectId;
-
-    return this.transaction(async (tx) => {
-      await this.lockAdmissionProject(tx, projectId);
-      const project = await tx.project.findFirst({
-        where: {
-          id: projectId,
-          ...accessibleProjectWhere(),
-          clips: { some: { renders: { some: { status: "pending", workflowRunId: null } } } },
-          workflowRuns: {
-            none: {
-              stage: "clip_rendering",
-              status: { in: ["queued", "running", "waiting"] },
-            },
-          },
-        },
-        select: { id: true },
-      });
-      if (!project) return null;
-
-      const run = await this.admitWithinTransaction(tx, {
-        projectId,
-        idempotencyKey: `render-rescue:${randomUUID()}`,
-        stage: "clip_rendering",
-      });
-      await tx.clipExport.updateMany({
-        where: { projectId, status: { in: ["queued", "rendering"] } },
-        data: { workflowRunId: run.id },
-      });
-      await this.dispatchRunWithinTransaction(tx, run.id);
-      return run.id;
-    });
-  }
-
   /** Admits a run and persists its domain handoff in the same transaction.
    * Workers can never claim a queued run whose required domain row is still
    * missing. The project advisory lock preserves the ordinary admission
@@ -1140,137 +972,6 @@ export class WorkflowRunLifecycle {
       },
       orderBy: { updatedAt: "desc" },
       select: { id: true, updatedAt: true },
-    });
-  }
-
-  async claim<TStage extends WorkflowStage>(
-    stage: TStage,
-  ): Promise<(ClaimedWorkflowAttempt & { stage: TStage }) | null> {
-    const attemptId = randomUUID();
-
-    return this.transaction(async (tx) => {
-      const now = await this.databaseNow(tx);
-      const leaseExpiresAt = new Date(now.getTime() + this.leaseDurationMs);
-      const candidate = await tx.workflowRun.findFirst({
-        where: {
-          stage,
-          status: "queued",
-          OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: now } }],
-          project: {
-            ...accessibleProjectWhere(now),
-            workspace: { status: "active" },
-          },
-        },
-        orderBy: { createdAt: "asc" },
-        select: { id: true, progress: true },
-      });
-      if (!candidate) return null;
-
-      const won = await tx.workflowRun.updateMany({
-        where: {
-          id: candidate.id,
-          status: "queued",
-          OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: now } }],
-        },
-        data: {
-          status: "running",
-          progress: stage === "clip_rendering" ? Math.max(10, candidate.progress) : 10,
-          attemptCount: { increment: 1 },
-          attemptId,
-          leaseOwner: this.leaseOwner,
-          leaseExpiresAt,
-          heartbeatAt: now,
-          nextAttemptAt: null,
-          nextPollAt: null,
-          waitingSince: null,
-          errorCode: null,
-          // A frozen Render Work Set keeps its original size even when
-          // editor changes remove variants before a retry starts.
-          ...(stage === "clip_rendering" ? {} : { requestedCount: null }),
-          // Completed children remain owned by their original attempt. Keep
-          // settled render counts and the successful dubbing prefix on retry.
-          ...(stage === "dubbing" || stage === "clip_rendering" ? {} : { succeededCount: null }),
-          ...(stage === "clip_rendering" ? {} : { failedCount: null }),
-        },
-      });
-      if (won.count === 0) return null;
-
-      const run = await tx.workflowRun.findUnique({
-        where: { id: candidate.id },
-        include: {
-          project: {
-            select: {
-              id: true,
-              title: true,
-              sourceMediaUrl: true,
-              sourceType: true,
-              sourceInput: true,
-              sourceStorageKey: true,
-              sourceRevision: true,
-              transcript: { select: { sourceAudioId: true } },
-              sourceMimeType: true,
-              sourceDurationSeconds: true,
-              sourceSizeBytes: true,
-              createdByUserId: true,
-              workspaceId: true,
-            },
-          },
-        },
-      });
-      if (!run?.attemptId || !run.leaseExpiresAt) return null;
-
-      if (stage === "stt") {
-        await tx.transcript.upsert({
-          where: { projectId: run.projectId },
-          create: {
-            projectId: run.projectId,
-            status: "processing",
-            provider: "elevenlabs",
-            providerModel: SCRIBE_MODEL_ID,
-            providerJobId: null,
-            providerRequestId: null,
-            providerSubmissionDeadlineAt: null,
-            workflowAttemptId: run.attemptId,
-          },
-          update: {
-            status: "processing",
-            provider: "elevenlabs",
-            providerModel: SCRIBE_MODEL_ID,
-            providerJobId: null,
-            providerRequestId: null,
-            providerSubmissionDeadlineAt: null,
-            workflowAttemptId: run.attemptId,
-            errorCode: null,
-          },
-        });
-      }
-
-      await this.appendEvent(tx, {
-        projectId: run.projectId,
-        workflowRunId: run.id,
-        attemptId: run.attemptId,
-        stage,
-        status: "running",
-        progress: run.progress,
-        errorCode: null,
-        transition: "claimed",
-      });
-
-      return {
-        workflowRunId: run.id,
-        projectId: run.projectId,
-        stage,
-        attemptId: run.attemptId,
-        deploymentEpoch: run.deploymentEpoch,
-        sourceRevision: run.project.sourceRevision,
-        sourceAudioId: run.project.transcript?.sourceAudioId ?? null,
-        attemptCount: run.attemptCount,
-        status: "running",
-        progress: run.progress,
-        contentPackId: run.contentPackId,
-        leaseExpiresAt: run.leaseExpiresAt,
-        project: run.project,
-      };
     });
   }
 
@@ -1484,45 +1185,6 @@ export class WorkflowRunLifecycle {
       return true;
   }
 
-  async heartbeat(attempt: WorkflowAttemptRef): Promise<void> {
-    const updated = await this.prisma.$executeRaw`
-      UPDATE "WorkflowRun"
-      SET
-        "heartbeatAt" = (clock_timestamp() AT TIME ZONE 'UTC'),
-        "leaseExpiresAt" = (clock_timestamp() AT TIME ZONE 'UTC') + (${this.leaseDurationMs} * INTERVAL '1 millisecond'),
-        "updatedAt" = (clock_timestamp() AT TIME ZONE 'UTC')
-      WHERE "id" = ${attempt.workflowRunId}
-        AND "projectId" = ${attempt.projectId}::uuid
-        AND "stage" = ${attempt.stage}
-        AND "status" = 'running'
-        AND "attemptId" = ${attempt.attemptId}::uuid
-        AND "leaseOwner" = ${this.leaseOwner}
-        AND "leaseExpiresAt" > (clock_timestamp() AT TIME ZONE 'UTC')
-    `;
-    if (updated === 0) throw new WorkflowAttemptLost(attempt);
-  }
-
-  async assertOwnership(attempt: WorkflowAttemptRef): Promise<void> {
-    const owned = await this.prisma.$queryRaw<Array<{ id: string }>>`
-      SELECT "id"
-      FROM "WorkflowRun"
-      WHERE "id" = ${attempt.workflowRunId}
-        AND "projectId" = ${attempt.projectId}::uuid
-        AND "stage" = ${attempt.stage}
-        AND "attemptId" = ${attempt.attemptId}::uuid
-        AND (
-          "status" = 'waiting'
-          OR (
-            "status" = 'running'
-            AND "leaseOwner" = ${this.leaseOwner}
-            AND "leaseExpiresAt" > (clock_timestamp() AT TIME ZONE 'UTC')
-          )
-        )
-      LIMIT 1
-    `;
-    if (owned.length === 0) throw new WorkflowAttemptLost(attempt);
-  }
-
   private async requireOwnedExportBundle(
     tx: TransactionClient,
     attempt: WorkflowAttemptRef,
@@ -1541,19 +1203,8 @@ export class WorkflowRunLifecycle {
     if (!bundle) throw new WorkflowAttemptLost(attempt);
   }
 
-  async beginExportBundleBuild(
-    attempt: WorkflowAttemptRef,
-    input: {
-      bundleId: string;
-      operationId: string;
-      attemptStorageKey: string | null;
-    },
-  ): Promise<void> {
-    return this.transaction(tx => this.beginExportBundleBuildWithinTransaction(tx, attempt, input));
-  }
-
   async beginExportBundleBuildWithinTransaction(tx: TransactionClient, attempt: WorkflowAttemptRef,
-    input: Parameters<WorkflowRunLifecycle["beginExportBundleBuild"]>[1]): Promise<void> {
+    input: { bundleId: string; operationId: string; attemptStorageKey: string | null }): Promise<void> {
       await this.requireOwnedExportBundle(tx, attempt, input);
       await tx.exportBundle.update({
         where: { id: input.bundleId },
@@ -1582,23 +1233,8 @@ export class WorkflowRunLifecycle {
       });
   }
 
-  async completeExportBundleBuild(
-    attempt: WorkflowAttemptRef,
-    input: {
-      bundleId: string;
-      operationId: string;
-      storageKey: string;
-      sizeBytes: number;
-      checksumSha256: string;
-      operationStatus: "completed" | "partial";
-      succeededCount: number;
-    },
-  ): Promise<void> {
-    return this.transaction(tx => this.completeExportBundleBuildWithinTransaction(tx, attempt, input));
-  }
-
   async completeExportBundleBuildWithinTransaction(tx: TransactionClient, attempt: WorkflowAttemptRef,
-    input: Parameters<WorkflowRunLifecycle["completeExportBundleBuild"]>[1]): Promise<void> {
+    input: { bundleId: string; operationId: string; storageKey: string; sizeBytes: number; checksumSha256: string; operationStatus: "completed" | "partial"; succeededCount: number }): Promise<void> {
       await this.requireOwnedExportBundle(tx, attempt, input);
       const completedAt = await this.databaseNow(tx);
       await tx.campaignOperationItem.updateMany({
@@ -1627,59 +1263,6 @@ export class WorkflowRunLifecycle {
           completedAt,
         },
       });
-  }
-
-  async failExportBundleBuild(
-    attempt: WorkflowAttemptRef,
-    input: {
-      bundleId: string;
-      operationId: string;
-      errorCode: string;
-      failedCount: number;
-    },
-  ): Promise<void> {
-    return this.transaction(tx => this.failExportBundleBuildWithinTransaction(tx, attempt, input));
-  }
-
-  async failExportBundleBuildWithinTransaction(tx: TransactionClient, attempt: WorkflowAttemptRef,
-    input: Parameters<WorkflowRunLifecycle["failExportBundleBuild"]>[1]): Promise<void> {
-      await this.requireOwnedExportBundle(tx, attempt, input);
-      const completedAt = await this.databaseNow(tx);
-      await tx.exportBundle.update({
-        where: { id: input.bundleId },
-        data: {
-          status: "failed",
-          attemptStorageKey: null,
-          errorCode: input.errorCode,
-        },
-      });
-      await tx.campaignOperationItem.updateMany({
-        where: { operationId: input.operationId, status: "pending" },
-        data: {
-          status: "failed",
-          errorCode: input.errorCode,
-          settledAt: completedAt,
-        },
-      });
-      await tx.campaignOperation.update({
-        where: { id: input.operationId },
-        data: {
-          status: "failed",
-          succeededCount: 0,
-          failedCount: input.failedCount,
-          completedAt,
-        },
-      });
-  }
-
-  async beginRenderWorkSet(
-    attempt: WorkflowAttemptRef,
-  ): Promise<RenderWorkSet> {
-    return this.transaction(async (tx) => {
-      await this.lockAdmissionProject(tx, attempt.projectId);
-      await this.fenceChildMutation(tx, attempt, "clip_rendering");
-      return this.beginRenderWorkSetWithinTransaction(tx, attempt);
-    });
   }
 
   private async beginRenderWorkSetWithinTransaction(tx: TransactionClient, attempt: Pick<WorkflowAttemptRef, "workflowRunId" | "projectId">): Promise<RenderWorkSet> {
@@ -1732,17 +1315,6 @@ export class WorkflowRunLifecycle {
         frozenAt,
         variantIds: variants.map((variant) => variant.id),
       };
-  }
-
-  /** Freeze and admit the complete partition in one coordinator transaction.
-   * Configurations come from the worker's frozen export/entitlement snapshot. */
-  async admitRenderGroups(attempt: WorkflowAttemptRef, groups: readonly RenderGroupAdmission[]): Promise<RenderGroupRef[]> {
-    return this.transaction(async (tx) => {
-      await this.lockAdmissionProject(tx, attempt.projectId);
-      await this.fenceChildMutation(tx, attempt, "clip_rendering");
-      await this.beginRenderWorkSetWithinTransaction(tx, attempt);
-      return admitRenderGroupsWithinTransaction(tx, { workflowRunId: attempt.workflowRunId, projectId: attempt.projectId, groups });
-    });
   }
 
   /**
@@ -1809,25 +1381,6 @@ export class WorkflowRunLifecycle {
       }
   }
 
-  async replaceDetectedClips(attempt: WorkflowAttemptRef, clips: DetectedClipArtifactInput[]) {
-    await this.transaction(async tx => {
-      await this.fenceChildMutation(tx, attempt, "moment_detection");
-      await this.replaceDetectedClipsWithinTransaction(tx, attempt, clips);
-    });
-  }
-
-  /** Runs a domain write in a transaction that only the owning moment
-   * detection attempt can commit. */
-  async fencedDetectionWrite<T>(
-    attempt: WorkflowAttemptRef,
-    write: (tx: TransactionClient) => Promise<T>,
-  ): Promise<T> {
-    return this.transaction(async (tx) => {
-      await this.fenceChildMutation(tx, attempt, "moment_detection");
-      return write(tx);
-    });
-  }
-
   private async admitAutoRenderWorkWithinTransaction(tx: TransactionClient, origin: { projectId: string; workflowRunId: string; eventId: string }, input: { idempotencyKey: string; renders: RenderArtifactInput[] }) {
       if (input.renders.length > 0) {
         const projectClipCount = await tx.clip.count({
@@ -1892,17 +1445,6 @@ export class WorkflowRunLifecycle {
       return admitted;
   }
 
-  async admitAutoRenderWork(attempt: WorkflowAttemptRef, input: { idempotencyKey: string; renders: RenderArtifactInput[] }) {
-    return this.transaction(async tx => {
-      await this.fenceChildMutation(tx, attempt, "moment_detection");
-      return this.admitAutoRenderWorkWithinTransaction(tx, { ...attempt, eventId: attempt.attemptId }, input);
-    });
-  }
-
-  async markDubProcessing(attempt: WorkflowAttemptRef, dubId: string) {
-    return this.transaction(tx => this.markDubProcessingWithinTransaction(tx, attempt, dubId));
-  }
-
   async markDubProcessingWithinTransaction(tx: TransactionClient, attempt: WorkflowAttemptRef, dubId: string) {
       await this.fenceChildMutation(tx, attempt, "dubbing");
       // No provider call starts without the dub's own live count.
@@ -1933,14 +1475,6 @@ export class WorkflowRunLifecycle {
       });
   }
 
-  async completeDub(
-    attempt: WorkflowAttemptRef,
-    dubId: string,
-    data: CompletedDubArtifactInput,
-  ) {
-    return this.transaction(tx => this.completeDubWithinTransaction(tx, attempt, dubId, data));
-  }
-
   async completeDubWithinTransaction(tx: TransactionClient, attempt: WorkflowAttemptRef, dubId: string, data: CompletedDubArtifactInput) {
       await this.fenceChildMutation(tx, attempt, "dubbing");
       const completed = await tx.clipDub.updateMany({
@@ -1958,36 +1492,6 @@ export class WorkflowRunLifecycle {
         await finalizeGenerationUsage(tx, { kind: "dub", jobId: dubId, units: 1 });
       }
       return completed;
-  }
-
-  async failDub(
-    attempt: WorkflowAttemptRef,
-    dubId: string,
-    errorCode: string,
-  ) {
-    return this.transaction(async (tx) => {
-      await this.fenceChildMutation(tx, attempt, "dubbing");
-      return tx.clipDub.updateMany({
-        where: {
-          id: dubId,
-          projectId: attempt.projectId,
-          workflowRunId: attempt.workflowRunId,
-          workflowAttemptId: attempt.attemptId,
-        },
-        data: { status: "failed", errorCode, completedAt: new Date() },
-      });
-    });
-  }
-
-  /** A graceful shutdown returns owned work after `WORKFLOW_RELEASE_GRACE_MS`
-   * instead of a full lease and refunds only this claim's retry. Expired,
-   * waiting, and superseded attempts are untouched. */
-  async releaseAttempt(attempt: WorkflowAttemptRef, options: {
-    /** Controls coordinator/provider claim accounting; media charges belong to groups. */
-    refundAttempt?: boolean;
-    reason?: string;
-  } = {}): Promise<boolean> {
-    return this.transaction(tx => this.releaseAttemptWithinTransaction(tx, attempt, options));
   }
 
   async releaseAttemptWithinTransaction(tx: TransactionClient, attempt: WorkflowAttemptRef, options: { refundAttempt?: boolean; reason?: string } = {}): Promise<boolean> {
@@ -2016,190 +1520,6 @@ export class WorkflowRunLifecycle {
         ...attempt, status: "queued", progress: 0, errorCode: null, transition: "released",
       });
       return true;
-  }
-
-  async runAttempt<T>(
-    attempt: WorkflowAttemptRef,
-    handler: (context: WorkflowAttemptContext) => Promise<T>,
-    options: { signal?: AbortSignal } = {},
-  ): Promise<T> {
-    const execution = { settled: false, finished: false, settlement: undefined as Promise<unknown> | undefined };
-    this.executions.set(attempt.attemptId, execution);
-    const controller = new AbortController();
-    let shutdownRelease: Promise<void> | undefined;
-    const stopForWorkerShutdown = () => {
-      controller.abort(options.signal?.reason);
-      shutdownRelease ??= this.releaseAttempt(attempt).then(() => {}).catch(() => {
-        console.warn(JSON.stringify({ level: "error", message: "workflow_shutdown_release_failed",
-          workflowRunId: attempt.workflowRunId, attemptId: attempt.attemptId, stage: attempt.stage }));
-      });
-    };
-    if (options.signal?.aborted) {
-      stopForWorkerShutdown();
-      await shutdownRelease;
-      this.executions.delete(attempt.attemptId);
-      controller.signal.throwIfAborted();
-    }
-    options.signal?.addEventListener("abort", stopForWorkerShutdown, { once: true });
-    let ownershipError: WorkflowAttemptLost | null = null;
-    let checkingOwnershipLoss = false;
-    const confirmOwnershipLoss = async (error: WorkflowAttemptLost) => {
-      if (checkingOwnershipLoss || execution.settled || execution.finished) return;
-      checkingOwnershipLoss = true;
-      try {
-        // Settlement's fence decides authority while its transaction owns the
-        // row. A rejected settlement cannot hide a genuine lease loss.
-        await execution.settlement?.catch(() => undefined);
-        if (execution.settled || execution.finished) return;
-        ownershipError = error;
-        controller.abort(error);
-      } finally {
-        checkingOwnershipLoss = false;
-      }
-    };
-    let heartbeatInFlight = false;
-    let lastHeartbeatAt = performance.now();
-    const heartbeatTimer = setInterval(() => {
-      if (controller.signal.aborted || ownershipError || execution.settled) return;
-      // Check the lease even while a database request is still pending.
-      if (performance.now() - lastHeartbeatAt >= this.leaseDurationMs) {
-        void confirmOwnershipLoss(new WorkflowAttemptLost(attempt));
-        return;
-      }
-      if (heartbeatInFlight) return;
-      heartbeatInFlight = true;
-      const heartbeatStartedAt = performance.now();
-      void this.heartbeat(attempt)
-        .then(() => { lastHeartbeatAt = heartbeatStartedAt; })
-        .catch(async (error: unknown) => {
-          if (execution.settled || execution.finished) return;
-          // A connection error is not evidence that another attempt owns
-          // the run. Retry within the lease; durable writes remain fenced.
-          if (error instanceof WorkflowAttemptLost || performance.now() - lastHeartbeatAt >= this.leaseDurationMs) {
-            await confirmOwnershipLoss(error instanceof WorkflowAttemptLost ? error : new WorkflowAttemptLost(attempt));
-            return;
-          }
-          console.warn(JSON.stringify({
-            level: "warn",
-            message: "workflow_heartbeat_failed",
-            workflowRunId: attempt.workflowRunId,
-            attemptId: attempt.attemptId,
-            stage: attempt.stage,
-          }));
-        })
-        .finally(() => {
-          heartbeatInFlight = false;
-        });
-    }, this.heartbeatIntervalMs);
-
-    try {
-      const result = await handler({
-        signal: controller.signal,
-        reportProgress: (progress) => this.reportProgress(attempt, progress),
-      });
-      if (ownershipError) throw ownershipError;
-      controller.signal.throwIfAborted();
-      return result;
-    } catch (error) {
-      if (ownershipError) throw ownershipError;
-      throw error;
-    } finally {
-      execution.finished = true;
-      this.executions.delete(attempt.attemptId);
-      clearInterval(heartbeatTimer);
-      options.signal?.removeEventListener("abort", stopForWorkerShutdown);
-      if (options.signal?.aborted) {
-        stopForWorkerShutdown();
-        await shutdownRelease;
-      }
-    }
-  }
-
-  async claimDueWaitingTranscripts(
-    batchSize: number,
-    minPollIntervalMs: number,
-  ): Promise<WaitingWorkflowAttempt[]> {
-    const now = new Date();
-    const candidates = await this.prisma.workflowRun.findMany({
-      where: {
-        stage: "stt",
-        status: "waiting",
-        nextPollAt: { lte: now },
-        attemptId: { not: null },
-        // A submission with no provider id yet is claimed too, so the worker can
-        // fail it once its deadline passes.
-        project: {
-          transcript: {
-            workflowAttemptId: { not: null },
-            status: "processing",
-          },
-        },
-      },
-      orderBy: { nextPollAt: "asc" },
-      take: batchSize,
-      select: {
-        id: true,
-        deploymentEpoch: true,
-        projectId: true,
-        stage: true,
-        progress: true,
-        attemptId: true,
-        attemptCount: true,
-        waitingSince: true,
-        project: {
-          select: {
-            sourceRevision: true,
-            transcript: {
-              select: {
-                sourceAudioId: true,
-                providerJobId: true,
-                providerSubmissionDeadlineAt: true,
-                workflowAttemptId: true,
-                updatedAt: true,
-              },
-            },
-          },
-        },
-      },
-    });
-    const claimed: WaitingWorkflowAttempt[] = [];
-    for (const run of candidates) {
-      const transcript = run.project.transcript;
-      if (!run.attemptId || transcript?.workflowAttemptId !== run.attemptId) {
-        continue;
-      }
-      const won = await this.prisma.workflowRun.updateMany({
-        where: {
-          id: run.id,
-          status: "waiting",
-          attemptId: run.attemptId,
-          nextPollAt: { lte: now },
-        },
-        data: { nextPollAt: new Date(now.getTime() + minPollIntervalMs) },
-      });
-      if (won.count === 0) continue;
-      claimed.push({
-        workflowRunId: run.id,
-        projectId: run.projectId,
-        stage: "stt",
-        attemptId: run.attemptId,
-        deploymentEpoch: run.deploymentEpoch,
-        sourceRevision: run.project.sourceRevision,
-        sourceAudioId: transcript.sourceAudioId,
-        attemptCount: run.attemptCount,
-        progress: run.progress,
-        providerJobId: transcript.providerJobId,
-        submissionDeadlineAt: transcript.providerJobId
-          ? null
-          : transcript.providerSubmissionDeadlineAt,
-        submittedAt: run.waitingSince ?? transcript.updatedAt,
-      });
-    }
-    return claimed;
-  }
-
-  async reportProgress(attempt: WorkflowAttemptRef, progress: number) {
-    await this.transaction(tx => this.reportProgressWithinTransaction(tx, attempt, progress));
   }
 
   async reportProgressWithinTransaction(tx: TransactionClient, attempt: WorkflowAttemptRef, progress: number): Promise<void> {
@@ -2231,18 +1551,6 @@ export class WorkflowRunLifecycle {
         errorCode: null,
         transition: `progress:${normalizedProgress}`,
       });
-  }
-
-  /**
-   * Durable intent for an asynchronous provider submission: the run is
-   * `waiting` with no provider id and a deadline, before the POST leaves. A
-   * crash between the POST and `recordProviderAcceptance` is then recovered by
-   * the deadline (`expireUnconfirmedProviderSubmission`) instead of stalling.
-   * No lease is held afterwards; callbacks and the worker act lease-free.
-   */
-  async beginProviderSubmission(attempt: WorkflowAttemptRef, input: { deadline: Date }) {
-    if (attempt.stage !== "stt") throw new WorkflowAttemptLost(attempt);
-    await this.settlementTransaction(attempt, tx => this.beginProviderSubmissionWithinTransaction(tx, attempt, input));
   }
 
   async beginProviderSubmissionWithinTransaction(tx: TransactionClient, attempt: WorkflowAttemptRef, input: { deadline: Date }): Promise<void> {
@@ -2619,41 +1927,6 @@ export class WorkflowRunLifecycle {
     });
   }
 
-  /**
-   * Fails a submission whose acceptance was never recorded once its deadline
-   * has passed (`elevenlabs_submission_unconfirmed`, retryable). Not due, or
-   * accepted in the meantime, is a no-op.
-   */
-  async expireUnconfirmedProviderSubmission(
-    key: ProviderAttemptReference,
-  ): Promise<ProviderSettlementResult> {
-    return this.transaction(async (tx) => {
-      const lookup = await this.lockProviderAttempt(tx, key, "fail", {});
-      if (lookup.kind !== "waiting") return lookup;
-      if (lookup.providerJobId) {
-        return { kind: "stale", reason: "submission_confirmed" } as const;
-      }
-      const databaseNow = await this.databaseNow(tx);
-      if (
-        !lookup.submissionDeadlineAt ||
-        lookup.submissionDeadlineAt.getTime() > databaseNow.getTime()
-      ) {
-        return { kind: "stale", reason: "submission_pending" } as const;
-      }
-      await this.failAttemptWithinTransaction(
-        tx,
-        lookup.attempt,
-        new WorkflowFailure(
-          "elevenlabs_submission_unconfirmed",
-          "retryable",
-          "The transcription request was not confirmed before its deadline",
-        ),
-        {},
-      );
-      return { kind: "applied", ...await this.providerTransitionWakes(tx, key) } as const;
-    });
-  }
-
   /** A waiting run needs no lease: this is `ownedAttemptWhere`'s waiting arm,
    * without widening that predicate for running work. */
   private waitingAttemptWhere(
@@ -2782,25 +2055,6 @@ export class WorkflowRunLifecycle {
     };
   }
 
-  async completeStage(attempt: WorkflowAttemptRef) {
-    await this.settleSuccess(attempt, "completed", null);
-  }
-
-  async completeTranscript(
-    attempt: WorkflowAttemptRef,
-    input: CompleteTranscriptInput,
-  ) {
-    await this.settlementTransaction(attempt, async (tx) => {
-      const databaseNow = await this.databaseNow(tx);
-      await this.completeTranscriptWithin(
-        tx,
-        attempt,
-        input,
-        this.ownedAttemptWhere(attempt, databaseNow),
-      );
-    });
-  }
-
   private async completeTranscriptWithin(
     tx: TransactionClient,
     attempt: WorkflowAttemptRef,
@@ -2916,20 +2170,6 @@ export class WorkflowRunLifecycle {
       transition: `child:${child.id}:queued`,
     });
     return (await this.dispatchRunWithinTransaction(tx, child.id)).reference.dispatchId;
-  }
-
-  /**
-   * Completes a moment-detection attempt. `admit` is the domain write the
-   * completion cannot be separated from: a captioned video's export. It runs in
-   * the same transaction, so the export becomes visible exactly when the run
-   * is completed, and a crash or retry of detection leaves no export behind.
-   * The export is frozen into the completion event.
-   */
-  async completeMomentDetection(
-    attempt: WorkflowAttemptRef,
-    options: { admit?: (tx: TransactionClient) => Promise<{ exportId: string; clipId: string }> } = {},
-  ) {
-    await this.settleSuccess(attempt, "completed", null, options.admit);
   }
 
   /** Verified private results become Clips, render obligations and one terminal event together. */
@@ -3125,19 +2365,6 @@ export class WorkflowRunLifecycle {
     });
   }
 
-  /** Interim worker wrapper delegates the same settlement body until removal. */
-  async settleRenderWorkSet(attempt: WorkflowAttemptRef): Promise<RenderWorkSetOutcome> {
-    if (attempt.stage !== "clip_rendering") throw new WorkflowAttemptLost(attempt);
-    return this.settlementTransaction(attempt, async (tx) => {
-      await this.lockAdmissionProject(tx, attempt.projectId);
-      const run = await tx.workflowRun.findUniqueOrThrow({ where: { id: attempt.workflowRunId }, select: { status: true, attemptId: true } });
-      if (["completed", "partial", "failed"].includes(run.status)) {
-        if (run.attemptId !== attempt.attemptId) throw new WorkflowAttemptLost(attempt);
-      } else await this.fenceChildMutation(tx, attempt, "clip_rendering");
-      return this.settleRenderWorkSetWithinTransaction(tx, { workflowRunId: attempt.workflowRunId, projectId: attempt.projectId, eventId: attempt.attemptId });
-    });
-  }
-
   private async settleRenderWorkSetWithinTransaction(tx: TransactionClient, ref: { workflowRunId: string; projectId: string; eventId: string }): Promise<RenderWorkSetOutcome> {
     const event = { workflowRunId: ref.workflowRunId, projectId: ref.projectId, stage: "clip_rendering" as const, attemptId: ref.eventId };
     const run = await tx.workflowRun.findUniqueOrThrow({ where: { id: ref.workflowRunId } });
@@ -3188,35 +2415,6 @@ export class WorkflowRunLifecycle {
     return { requestedCount: succeededCount + failedCount, succeededCount, failedCount };
   }
 
-  async completeDubbing(attempt: WorkflowAttemptRef) {
-    const { requestedCount, succeededCount, failedCount } = await this.dubbingAggregate(this.prisma, attempt);
-    const terminalCount = succeededCount + failedCount;
-    if (terminalCount === 0) {
-      await this.completeStage(attempt);
-      return;
-    }
-    await this.completeAggregateStage(attempt, {
-      requestedCount,
-      succeededCount,
-      failedCount,
-    });
-    if (failedCount === 0) return;
-    // The run is terminal, so its failed dubs are known failures. A crash
-    // here leaves them to the generation usage sweep.
-    await this.prisma.$transaction((tx) =>
-      releaseFailedDubUsage(tx, { projectId: attempt.projectId, workflowRunId: attempt.workflowRunId, attemptId: attempt.attemptId, reason: "dub_failed" }),
-    );
-  }
-
-  async completeAggregateStage(
-    attempt: WorkflowAttemptRef,
-    result: WorkflowAggregateResult,
-  ) {
-    validateAggregate(result);
-    const status = terminalStatusForAggregate(result);
-    await this.settleSuccess(attempt, status, result);
-  }
-
   /** Typed native finalizers call this only after verifying their sealed output. */
   async completeExecutionWithinTransaction(tx: TransactionClient, ref: WorkflowExecutionReference, context: ExecutorMutationContext,
     aggregate: WorkflowAggregateResult | null = null): Promise<ExecutorMutationResult> {
@@ -3224,15 +2422,6 @@ export class WorkflowRunLifecycle {
     if (aggregate) validateAggregate(aggregate);
     await this.executionOwner(context.owner).settleSuccessWithinTransaction(tx, attempt, aggregate ? terminalStatusForAggregate(aggregate) : "completed", aggregate);
     return this.executionWakes(tx, ref, context.reference.inputHash, false);
-  }
-
-  private async settleSuccess(
-    attempt: WorkflowAttemptRef,
-    status: Extract<WorkflowStatus, "completed" | "partial" | "failed">,
-    aggregate: WorkflowAggregateResult | null,
-    admit?: (tx: TransactionClient) => Promise<{ exportId: string; clipId: string }>,
-  ) {
-    await this.settlementTransaction(attempt, tx => this.settleSuccessWithinTransaction(tx, attempt, status, aggregate, admit));
   }
 
   private async settleSuccessWithinTransaction(tx: TransactionClient, attempt: WorkflowAttemptRef,
@@ -3276,16 +2465,6 @@ export class WorkflowRunLifecycle {
         ...(generationExport ? { generationExport } : {}),
       });
       await this.emitFinishedOperations(tx, attempt);
-  }
-
-  async failAttempt(
-    attempt: WorkflowAttemptRef,
-    failure: WorkflowFailure,
-    options: { expiredLeaseOnly?: boolean } = {},
-  ) {
-    await this.settlementTransaction(attempt, (tx) =>
-      this.failAttemptWithinTransaction(tx, attempt, failure, options),
-    );
   }
 
   async failAttemptWithinTransaction(
@@ -3591,178 +2770,6 @@ export class WorkflowRunLifecycle {
             },
       });
     }
-  }
-
-  async reapExpiredAttempts(): Promise<number> {
-    const databaseClock = await this.prisma.$queryRaw<
-      Array<{ databaseNow: Date }>
-    >`SELECT (clock_timestamp() AT TIME ZONE 'UTC') AS "databaseNow"`;
-    const now = databaseClock[0]?.databaseNow;
-    if (!now) throw new Error("Database clock unavailable");
-    const expired = await this.prisma.workflowRun.findMany({
-      where: {
-        status: "running",
-        leaseExpiresAt: { lte: now },
-      },
-      select: {
-        id: true,
-        projectId: true,
-        stage: true,
-        attemptId: true,
-        attemptCount: true,
-      },
-      take: 100,
-    });
-    let reaped = 0;
-    for (const run of expired) {
-      if (!run.attemptId) continue;
-      const attempt: WorkflowAttemptRef = {
-        workflowRunId: run.id,
-        projectId: run.projectId,
-        stage: run.stage as WorkflowStage,
-        attemptId: run.attemptId,
-        attemptCount: run.attemptCount,
-      };
-      try {
-        await this.failAttempt(
-          attempt,
-          new WorkflowFailure("worker_stalled", "retryable", "Workflow lease expired"),
-          { expiredLeaseOnly: true },
-        );
-        reaped += 1;
-      } catch (error) {
-        if (!(error instanceof WorkflowAttemptLost)) throw error;
-      }
-    }
-    return reaped;
-  }
-
-  async dispatchEvents(batchSize = 100): Promise<number> {
-    const now = new Date();
-    const pendingChannels: Prisma.WorkflowEventWhereInput[] = [
-      { progressRequired: true, progressPublishedAt: null },
-      { analyticsRequired: true, analyticsPublishedAt: null },
-      { notificationRequired: true, notificationDeliveredAt: null },
-    ];
-    const candidates = await this.prisma.workflowEvent.findMany({
-      where: {
-        deadLetteredAt: null,
-        nextDeliveryAt: { lte: now },
-        OR: [
-          { deliveryLeaseExpiresAt: null },
-          { deliveryLeaseExpiresAt: { lte: now } },
-        ],
-        AND: [{ OR: pendingChannels }],
-      },
-      orderBy: [{ projectId: "asc" }, { seq: "asc" }],
-      take: batchSize,
-    });
-
-    let delivered = 0;
-    for (const candidate of candidates) {
-      const claimedAt = new Date();
-      const claimOwner = randomUUID();
-      const leaseExpiresAt = new Date(claimedAt.getTime() + EVENT_DELIVERY_LEASE_MS);
-      const claimed = await this.prisma.workflowEvent.updateMany({
-        where: {
-          id: candidate.id,
-          deadLetteredAt: null,
-          nextDeliveryAt: { lte: claimedAt },
-          OR: [
-            { deliveryLeaseExpiresAt: null },
-            { deliveryLeaseExpiresAt: { lte: claimedAt } },
-          ],
-          AND: [{ OR: pendingChannels }],
-        },
-        data: {
-          deliveryLeaseOwner: claimOwner,
-          deliveryLeaseExpiresAt: leaseExpiresAt,
-          deliveryAttempts: { increment: 1 },
-        },
-      });
-      if (claimed.count === 0) continue;
-      // Discovery can precede another sender's acknowledgement. Execute only
-      // the current claim's fresh channel checkpoints, not the candidate copy.
-      const event = await this.prisma.workflowEvent.findFirst({ where: {
-        id: candidate.id, deliveryLeaseOwner: claimOwner,
-        deliveryLeaseExpiresAt: { gt: new Date() }, deadLetteredAt: null,
-      } });
-      if (!event) continue;
-      const held = (): Prisma.WorkflowEventWhereInput => ({
-        id: event.id, deliveryLeaseOwner: claimOwner,
-        deliveryLeaseExpiresAt: { gt: new Date() }, deadLetteredAt: null,
-      });
-      const renew = async () => {
-        const expiresAt = new Date(Date.now() + EVENT_DELIVERY_LEASE_MS);
-        const updated = await this.prisma.workflowEvent.updateMany({
-          where: held(), data: { deliveryLeaseExpiresAt: expiresAt },
-        });
-        return updated.count === 1 && expiresAt.getTime() > Date.now();
-      };
-
-      try {
-        const parsed = workflowStageUpdatedEventSchema.parse(event.payload);
-        if (event.progressRequired && !event.progressPublishedAt) {
-          if (!(await renew())) continue;
-          const published = await this.publishProgress(parsed);
-          if (!published) {
-            throw new Error("Workflow progress destination unavailable");
-          }
-          const acknowledged = await this.prisma.workflowEvent.updateMany({
-            where: held(),
-            data: { progressPublishedAt: new Date() },
-          });
-          if (acknowledged.count === 0) continue;
-        }
-        if (event.analyticsRequired && !event.analyticsPublishedAt) {
-          if (!(await renew())) continue;
-          if (this.publishAnalytics) {
-            await this.publishAnalytics(parsed, event.dedupeKey);
-          }
-          const acknowledged = await this.prisma.workflowEvent.updateMany({
-            where: held(),
-            data: { analyticsPublishedAt: new Date() },
-          });
-          if (acknowledged.count === 0) continue;
-        }
-        if (event.notificationRequired && !event.notificationDeliveredAt) {
-          if (!(await renew())) continue;
-          const notification = parsed.notification;
-          if (!notification) {
-            throw new Error("Render notification payload unavailable");
-          }
-          await this.handoffNotification(notification);
-          const acknowledged = await this.prisma.workflowEvent.updateMany({
-            where: held(),
-            data: { notificationDeliveredAt: new Date() },
-          });
-          if (acknowledged.count === 0) continue;
-        }
-        const released = await this.prisma.workflowEvent.updateMany({
-          where: held(),
-          data: {
-            deliveryLeaseOwner: null,
-            deliveryLeaseExpiresAt: null,
-            lastDeliveryError: null,
-          },
-        });
-        if (released.count > 0) delivered += 1;
-      } catch (error) {
-        const attempts = event.deliveryAttempts;
-        await this.prisma.workflowEvent.updateMany({
-          where: held(),
-          data: {
-            deliveryLeaseOwner: null,
-            deliveryLeaseExpiresAt: null,
-            nextDeliveryAt: new Date(Date.now() + eventBackoffMs(attempts)),
-            lastDeliveryError: error instanceof Error ? error.message.slice(0, 500) : String(error).slice(0, 500),
-            deadLetteredAt:
-              attempts >= EVENT_MAX_DELIVERY_ATTEMPTS ? new Date() : null,
-          },
-        });
-      }
-    }
-    return delivered;
   }
 }
 

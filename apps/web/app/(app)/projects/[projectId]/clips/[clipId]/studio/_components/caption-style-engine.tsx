@@ -18,7 +18,7 @@ import {
  *   - tool-panels/preset-card.tsx (animated preset thumbnails)
  *   - tool-panels/captions-panel.tsx (live panel preview of the current cue)
  *
- * It mirrors the worker's ASS burn-in (apps/worker/src/caption-ass.ts) layer
+ * It mirrors the worker's ASS burn-in (apps/media/src/caption-ass.ts) layer
  * for layer, from the same spec (packages/validators/src/caption-style.ts):
  * plate, pill, shadow, outer stroke, glow, text, karaoke sweep, typewriter
  * letters, glitch ghosts, and the active word's entrance motion. Fonts are the
