@@ -381,7 +381,6 @@ interface RawProbeStream {
 }
 
 export interface WorkerProcessModuleDependencies {
-  admission?: WorkerProcessAdmission;
   killGraceMs?: number;
   spawn?: typeof spawn;
   execute?: (request: WorkerProcessRequest) => Promise<WorkerProcessResult>;
@@ -465,15 +464,6 @@ export function executorProcessFailure(error: unknown): WorkerProcessFailure | n
     error = error.cause;
   }
   return null;
-}
-
-export interface WorkerProcessAdmission {
-  beforeStart(command: string): void;
-  failed(error: unknown): void;
-}
-let productionAdmission: WorkerProcessAdmission | undefined;
-export function configureWorkerProcessAdmission(admission: WorkerProcessAdmission): void {
-  productionAdmission = admission;
 }
 
 function exitFailure(
@@ -864,16 +854,6 @@ class ProductionWorkerProcessModule implements WorkerProcessModule {
   }
 
   async execute(request: WorkerProcessRequest): Promise<WorkerProcessResult> {
-    try {
-      if (!request.signal.aborted) (this.dependencies.admission ?? (this === productionWorkerProcessModule ? productionAdmission : undefined))?.beforeStart(request.command);
-      return await this.executeAdmitted(request);
-    } catch (error) {
-      (this.dependencies.admission ?? (this === productionWorkerProcessModule ? productionAdmission : undefined))?.failed(error);
-      throw error;
-    }
-  }
-
-  private async executeAdmitted(request: WorkerProcessRequest): Promise<WorkerProcessResult> {
     if (!Number.isFinite(request.deadlineMs) || request.deadlineMs <= 0) {
       throw new Error("Worker process deadline must be finite and positive");
     }
@@ -1122,16 +1102,6 @@ class ProductionWorkerProcessModule implements WorkerProcessModule {
   }
 
   async start(request: WorkerPersistentProcessRequest): Promise<WorkerPersistentProcess> {
-    try {
-      if (!request.signal.aborted) (this.dependencies.admission ?? (this === productionWorkerProcessModule ? productionAdmission : undefined))?.beforeStart(request.command);
-      return await this.startAdmitted(request);
-    } catch (error) {
-      (this.dependencies.admission ?? (this === productionWorkerProcessModule ? productionAdmission : undefined))?.failed(error);
-      throw error;
-    }
-  }
-
-  private async startAdmitted(request: WorkerPersistentProcessRequest): Promise<WorkerPersistentProcess> {
     const startedAt = Date.now();
     const diagnose = (event: Omit<WorkerProcessDiagnostic, "elapsedMs">) =>
       safeDiagnose(request.diagnose, { ...event, elapsedMs: Date.now() - startedAt });
@@ -1492,13 +1462,8 @@ export function createWorkerProcessModule(
   return new ProductionWorkerProcessModule(dependencies);
 }
 
-function productionKillGraceMs(): number {
-  const configured = Number(process.env.WORKER_PROCESS_KILL_GRACE_MS);
-  return Number.isFinite(configured) && configured > 0 ? configured : DEFAULT_KILL_GRACE_MS;
-}
-
 export const productionWorkerProcessModule = createWorkerProcessModule({
-  killGraceMs: productionKillGraceMs(),
+  killGraceMs: DEFAULT_KILL_GRACE_MS,
 });
 
 // --- Scratch ownership, heartbeat and abandoned-directory sweep ----------------
