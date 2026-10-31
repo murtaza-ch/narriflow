@@ -304,8 +304,12 @@ export function createExecutorControl<TRef, TArtifact extends ExecutorArtifactCo
       if (deadline.kind === "operation" && new Date(deadline.observedDeadlineAt).getTime() !== attempt.operationDeadlineAt.getTime()) return record({ kind: "superseded" }, now);
       const dueAt = new Date(Math.min(attempt.leaseExpiresAt?.getTime() ?? Infinity, attempt.operationDeadlineAt.getTime()));
       if (dueAt > now) return { outcome: { kind: "sleep" as const, dueAt }, dispatchIds: [] };
+      // A persisted timer retains its original observation across renewals.
+      // Authority comes from the current locked deadline, never that cache.
+      const currentKind = attempt.operationDeadlineAt <= now ? "operation" as const : "lease" as const;
+      const currentDeadline = currentKind === "operation" ? attempt.operationDeadlineAt : attempt.leaseExpiresAt!;
       const outcome = await options.domain.expireExecution!(tx, reference, deadline.attemptToken, {
-        kind: deadline.kind as "lease" | "operation", observedDeadlineAt: new Date(deadline.observedDeadlineAt),
+        kind: currentKind, observedDeadlineAt: currentDeadline,
       });
       if (outcome.kind === "expired") await tx.executionAttempt.update({ where: { attemptToken: attempt.attemptToken }, data: { status: "expired", finishedAt: now, revokedAt: now } });
       return record(outcome, now);

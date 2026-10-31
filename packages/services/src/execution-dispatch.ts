@@ -65,6 +65,11 @@ export async function executionDispatchIdentity(input: ExecutionDispatchIdentity
   return { deliveryKey: `ed_${delivery}`, instanceId: `nf_${instance}` };
 }
 
+export function executionDispatchContinuationId(reference: { dispatchId: string }): string {
+  validateId(reference.dispatchId);
+  return `nf_dispatch_${reference.dispatchId}`;
+}
+
 export interface ExecutionDispatchRecord {
   reference: ExecutionDispatchReference;
   deliveryKey: string;
@@ -102,7 +107,8 @@ async function asRecord(row: DispatchRow): Promise<ExecutionDispatchRecord> {
   });
   return {
     reference, deliveryKey: row.deliveryKey,
-    instanceId: (await executionDispatchIdentity({ ...reference, subject: reference.subject })).instanceId,
+    instanceId: row.deadlineKind !== null || /^(?:cancel_|stt_)[a-f0-9]{32}$/.test(row.wakeKind ?? "")
+      ? executionDispatchContinuationId(reference) : (await executionDispatchIdentity({ ...reference, subject: reference.subject })).instanceId,
     dueAt: row.dueAt, nextDeliveryAt: row.nextDeliveryAt, deliveryAttempts: row.deliveryAttempts,
     acknowledgedAt: row.acknowledgedAt, destinationId: row.destinationId, wakeKind: row.wakeKind,
     deadlineKind: row.deadlineKind as ExecutionDeadlineKind | null, observedDeadlineAt: row.observedDeadlineAt,

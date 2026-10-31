@@ -4,7 +4,7 @@
   "main": "workflow-runtime-probe.ts",
   "compatibility_date": "2026-10-30",
   "compatibility_flags": ["nodejs_compat", "disallow_importable_env"],
-  "workflows": [{ "name": "narriflow-gate-workflow", "binding": "GATE_WORKFLOW", "class_name": "GateWorkflow" }, { "name": "narriflow-gate-maintenance", "binding": "MAINTENANCE", "class_name": "Maintenance" }],
+  "workflows": [{ "name": "narriflow-gate-workflow", "binding": "GATE_WORKFLOW", "class_name": "GateWorkflow" }, { "name": "narriflow-gate-maintenance", "binding": "MAINTENANCE", "class_name": "Maintenance" }, { "name": "narriflow-gate-continuation", "binding": "GATE_CONTINUATION", "class_name": "GateContinuation" }],
   "durable_objects": { "bindings": [{ "name": "GATE_STATE", "class_name": "GateState" }, { "name": "PROJECT_PROGRESS", "class_name": "ProjectProgress" }] },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["GateState", "ProjectProgress"] }],
   "workers_dev": false,

@@ -101,7 +101,9 @@ dbDescribe("Native validation admission and fenced publication", () => {
       return clock!.due;
     });
     const deliveryId = crypto.randomUUID(); receipts.push(deliveryId);
-    expect((await control.expireDeadline({ deadline: { reference, attemptToken, kind: "lease", observedDeadlineAt: due.toISOString() }, deliveryId })).kind).toBe("expired");
+    // The persisted timer can name an older lease after active renewal. Once
+    // the current lease is also due, it must still expire this exact owner.
+    expect((await control.expireDeadline({ deadline: { reference, attemptToken, kind: "lease", observedDeadlineAt: new Date(due.getTime() - 1000).toISOString() }, deliveryId })).kind).toBe("expired");
     expect((await control.execute({ command: { action: "process-start", fence: { reference, attemptToken, owner } }, verifiedRequest: verified() })).disposition).toBe("superseded");
     const current = await db.nativeValidationJob.findUniqueOrThrow({ where: { id: opened.jobId } });
     expect(current.generation).toBe(2); expect(current.chargedAttempts).toBe(0); expect(current.executorOwner).toBeNull();

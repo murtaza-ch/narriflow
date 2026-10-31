@@ -67,6 +67,21 @@ try {
   await until(async () => (await call("/status", mismatch)).status === "errored");
   assert.equal((await call("/stats", mismatch) as Log).filter((row) => row.kind === "query").length, 1);
   checks.push("cross_subject_wake_rejected_before_next_sql_command");
+  const completed = reference("continuation"); await call("/create", completed);
+  await until(async () => (await call("/status", completed)).status === "complete");
+  const late = { ...completed, dispatchId: randomUUID() };
+  assert.equal((await call("/late-wake", late)).status, "confirmed_notified");
+  await until(async () => (await call("/continuation-status", late)).status === "complete");
+  const lateLog = await call("/stats", late) as Log; allClosed(lateLog);
+  assert.equal(lateLog.filter(row => row.kind === "query").length, 2);
+  checks.push("late_wake_after_closed_parent_runs_distinct_fresh_scope_continuation");
+  const watchdog = { ...completed, dispatchId: randomUUID() };
+  assert.equal((await call("/deadline", watchdog)).status, "confirmed_created");
+  await until(async () => (await call("/continuation-status", watchdog)).status === "complete");
+  assert.equal((await call("/deadline", watchdog)).status, "confirmed_existing");
+  const deadlineLog = await call("/stats", watchdog) as Log; allClosed(deadlineLog);
+  assert.equal(deadlineLog.filter(row => row.kind === "query").length, 3);
+  checks.push("deadline_has_independent_durable_instance_and_duplicate_registration_does_not_restart");
   }
   const owner = await database.user.create({ data: { clerkId: `workflow-progress-gate:${randomUUID()}` } });
   const workspace = await database.workspace.create({ data: { name: "Workflow progress gate", ownerUserId: owner.id } });

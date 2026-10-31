@@ -8,7 +8,7 @@ import { readServiceEnvironment } from "@narriflow/services/runtime-environment"
 import { executionKeyRing } from "../execution-keys";
 import { executionDispatchReferenceSchema, type ExecutionDispatchReference } from "@narriflow/validators/execution";
 import type { ApiWorkerBindings } from "../worker-bindings";
-import { assertMetadataBound, workflowDispatchEventSchema, WORKFLOW_DISPATCH_EVENT } from "./protocol";
+import { assertMetadataBound, dispatchContinuationInstanceId, workflowDispatchEventSchema, WORKFLOW_DISPATCH_EVENT } from "./protocol";
 
 const REGISTERED = new Set(["queued", "running", "paused", "errored", "terminated", "complete", "waiting", "waitingForPause"]);
 async function createConfirmed(binding: Workflow, id: string, reference: ExecutionDispatchReference): Promise<ExecutionDispatchConfirmation> {
@@ -61,12 +61,23 @@ export function createWorkerExecutionScheduler(bindings: ApiWorkerBindings): Exe
         : reference.kind === "operation_driver" ? bindings.OPERATION_DRIVER
         : reference.kind === "maintenance" ? bindings.MAINTENANCE : null;
       if (!binding) throw new ExecutionDispatchError("scheduler_unavailable");
+      const independent = () => createConfirmed(bindings.MAINTENANCE, dispatchContinuationInstanceId(reference), reference);
+      if (delivery.deadlineKind !== null || /^(?:cancel_|stt_)[a-f0-9]{32}$/.test(delivery.wakeKind ?? "")) {
+        const confirmed = await independent();
+        return { ...confirmed, status: delivery.mode === "wake" ? "confirmed_notified" : confirmed.status };
+      }
       if (delivery.mode === "registration") return createConfirmed(binding, delivery.instanceId, reference);
       const payload = workflowDispatchEventSchema.parse({ reference, wakeKind: delivery.wakeKind, deadlineKind: delivery.deadlineKind, observedDeadlineAt: delivery.observedDeadlineAt?.toISOString() ?? null });
       assertMetadataBound(payload);
-      const instance = await binding.get(delivery.instanceId);
-      await instance.sendEvent({ type: WORKFLOW_DISPATCH_EVENT, payload });
-      return { status: "confirmed_notified", destinationId: delivery.instanceId };
+      try {
+        const instance = await binding.get(delivery.instanceId);
+        await instance.sendEvent({ type: WORKFLOW_DISPATCH_EVENT, payload });
+      } catch { /* The independently registered command owns delivery. */ }
+      // sendEvent can acknowledge an event after the instance has closed. It
+      // accelerates the original waiter, but only an independently confirmed
+      // command guarantees that this committed obligation will be re-read.
+      const confirmed = await independent();
+      return { status: "confirmed_notified", destinationId: confirmed.destinationId };
     },
   };
 }

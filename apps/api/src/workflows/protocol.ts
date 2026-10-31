@@ -1,9 +1,15 @@
 import { z } from "zod";
 import { executionDeadlineSchema, executionDispatchReferenceSchema, type ExecutionDispatchKind, type ExecutionDispatchReference, type ExecutionSubjectKind } from "@narriflow/validators/execution";
+import { executionDispatchContinuationId } from "@narriflow/services/execution-dispatch";
 
 export const WORKFLOW_METADATA_MAX_BYTES = 64 * 1024;
 export const WORKFLOW_DISPATCH_EVENT = "dispatch";
 export type WorkflowKind = "import_pipeline" | "render_run" | "operation_driver" | "maintenance";
+/** Independent continuations must remain runnable after their domain's main
+ * Workflow has completed. The dispatch UUID is their durable identity. */
+export function dispatchContinuationInstanceId(reference: ExecutionDispatchReference): string {
+  return executionDispatchContinuationId(reference);
+}
 export const workflowDispatchEventSchema = z.strictObject({
   reference: executionDispatchReferenceSchema,
   wakeKind: z.string().regex(/^[a-z][a-z0-9_.-]{0,39}$/),
