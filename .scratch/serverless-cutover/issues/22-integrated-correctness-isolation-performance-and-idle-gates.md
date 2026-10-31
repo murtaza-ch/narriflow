@@ -13,7 +13,7 @@
 
 ## Evidence
 
-Pending implementation and verification.
+Integrated acceptance remains open. Gate-specific evidence is recorded below.
 
 ## Preparation evidence, 2026-10-31
 
@@ -27,4 +27,11 @@ The non-execution AGENTS PostgreSQL matrix passed715 test executions and4726 ass
 
 The complete deployed Worker passed the real one/two/one concurrent16MiB publication payload sequence in one isolate with1082 constructed production routes and zero SQL. The absent synthetic object was recreated before that successful sequence. The temporary CutoverVerification export and implementation have been removed from release source. See [the deployed result](../evidence/publication-full-worker-memory-20261101.json).
 
-The owner's database choice is Neon Free. The actual signed10GiB upload/pin gate is running against the isolated candidate. Final local-device, deployed HTTP/MCP, real provider pipeline, qualified restore, quota/burst, latency and exact-candidate one-hour idle gates remain open. No shared cutover, dev push, infrastructure deletion or reopening has occurred.
+The owner's database choice is Neon Free. The actual signed10GiB upload/pin gate is running against the isolated candidate. The isolated qualified restore gate has now passed. Final local-device, deployed HTTP/MCP, real provider pipeline, quota/burst, latency and exact-candidate one-hour idle gates remain open. No shared cutover, dev push, infrastructure deletion or reopening has occurred.
+
+
+## Qualified restore acceptance, 2026-11-01
+
+The fourth isolated source-8 / snapshot-9 / target-10 gate passed [its actual verifier](../evidence/qualified-restore-fourth-attempt-passed-20261101.json). The 1,297,895-byte snapshot was captured, attested and restored. Typed stale Superseded proof preceded ordinary redispatch and left the current job queued/unowned, result SQL NULL, charge 1 and assets 0. The ordinary generation-2 successor completed at 23:16:55.450 UTC, 73.744 seconds before the unchanged original deadline, with two actual starts/charges, one published asset and an uncommitted old probe. The exact privileged operator Sandbox was terminated and retired.
+
+All three earlier attempts remain failed and retain their evidence. The candidate remains at epoch 10 with HTTP and database admission closed. The coalesced 10 GiB gate is separately running against the fixed closed Worker; its result is not claimed here. No shared cutover, reopening, deployment change, dev merge/push or ticket completion follows from the qualified restore pass. Ticket 22 remains claimed until all acceptance gates pass.

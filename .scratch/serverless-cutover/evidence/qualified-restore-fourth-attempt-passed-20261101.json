@@ -1,0 +1,295 @@
+{
+  "version": 1,
+  "recordedAtUtc": "2026-10-31T23:19:34.491089+00:00",
+  "status": "PASSED fourth isolated qualified restore gate, source 8 / snapshot 9 / target 10.",
+  "scope": "Evidence-only sealing of retained operator artifacts. This task performed no cloud/database actions, deployments, admissions, releases, cleanup, live helper/config edits or production changes.",
+  "repositoryCommitAtSeal": "6c93a6eff17a7760949fed7bd9640b5d8a3c292b",
+  "qualifiedVerification": {
+    "mode": "qualified_restore_verified",
+    "sourceEpoch": 8,
+    "snapshotEpoch": 9,
+    "targetEpoch": 10,
+    "serverVersion": {
+      "version": "18.6 (4e5fd08)",
+      "number": 180006
+    },
+    "chargedStarts": 2,
+    "staleCommit": "superseded",
+    "publishedAssets": 1,
+    "operationDeadlineAt": "2026-10-31T23:18:09.194Z",
+    "completedAt": "2026-10-31T23:16:55.450Z"
+  },
+  "orchestration": {
+    "passed": true,
+    "completedAt": "2026-10-31T23:17:01.380Z",
+    "remainingOriginalBudgetMs": 67814
+  },
+  "completionBeforeOriginalDeadlineMs": 73744,
+  "snapshot": {
+    "sourceEpoch": 9,
+    "byteLength": 1297895,
+    "sha256": "fd564543e8a69dcf3e25680f94fce3eeca8ae69d60474d292202836333bdf83a",
+    "migrationSha256": "ee48ab291ee53067a664cc2ab8d3dfcd25cd49457bb81e227c43eb0881377db9",
+    "identitySha256": "59dbf80e2feae1970deb39be7750e997c91c0f46e088ed5008f0022dce897f12",
+    "quiescenceSha256": "96af1b8584c9dac6dd7a3ab345c50f6baedf5e2744678833ac9646920d918a73",
+    "fencedAt": "2026-10-31T23:09:46.613Z",
+    "quiescence": {
+      "stoppedAt": "2026-10-31T23:09:27.081Z",
+      "writesDrainedAt": "2026-10-31T23:09:47.504Z",
+      "capturedAt": "2026-10-31T23:10:05.225Z",
+      "verifiedAt": "2026-10-31T23:10:05.252Z",
+      "evidenceSha256": "5b8730c3f063958341e1053bc84c52c27e580eb8ce817ec550f078b2218d8c63",
+      "consumers": {
+        "httpIngress": "fenced",
+        "cron": "stopped",
+        "cleanup": "stopped",
+        "nativeDispatch": "deferred",
+        "localDispatch": "deferred",
+        "legacyWorkers": "stopped"
+      }
+    },
+    "capturedAt": "2026-10-31T23:10:05.225Z",
+    "dumpUtility": {
+      "tool": "pg_dump",
+      "utilityVersion": "18.6",
+      "serverMajor": 18,
+      "serverVersion": "18.6 (4e5fd08)",
+      "serverVersionNumber": 180006,
+      "timeoutMs": 180000,
+      "elapsedMs": 5805,
+      "backend": "regional",
+      "caBundleSha256": "9ff422bd8926c5ba278dbd44b8b10e20d19160551557ff2be4b7379da464f840",
+      "byteLength": 1297895,
+      "sha256": "fd564543e8a69dcf3e25680f94fce3eeca8ae69d60474d292202836333bdf83a"
+    },
+    "restoreUtility": {
+      "tool": "pg_restore",
+      "utilityVersion": "18.6",
+      "serverMajor": 18,
+      "serverVersion": "18.6 (4e5fd08)",
+      "serverVersionNumber": 180006,
+      "timeoutMs": 180000,
+      "elapsedMs": 42293,
+      "backend": "regional",
+      "caBundleSha256": "9ff422bd8926c5ba278dbd44b8b10e20d19160551557ff2be4b7379da464f840",
+      "byteLength": 1297895,
+      "sha256": "fd564543e8a69dcf3e25680f94fce3eeca8ae69d60474d292202836333bdf83a"
+    },
+    "dumpWrapper": {
+      "startedAt": "2026-10-31T23:09:47.505Z",
+      "endedAt": "2026-10-31T23:10:05.232Z",
+      "elapsedMs": 17727,
+      "exitCode": 0
+    },
+    "restoreWrapper": {
+      "startedAt": "2026-10-31T23:10:10.768Z",
+      "endedAt": "2026-10-31T23:11:12.591Z",
+      "elapsedMs": 61823,
+      "exitCode": 0
+    },
+    "timingMeaning": "Wrapper elapsed includes the regional operator/SDK orchestration. Utility elapsed is the separately reported pg_dump or pg_restore process duration."
+  },
+  "staleRefusalBeforeRedispatch": {
+    "releasedAtUtc": "2026-10-31T23:13:12.685Z",
+    "releaseTimestampProvenance": "Operator release observation; release command ended at 23:13:12.689Z.",
+    "releaseCommand": {
+      "startedAt": "2026-10-31T23:13:10.183Z",
+      "endedAt": "2026-10-31T23:13:12.689Z",
+      "elapsedMs": 2506,
+      "exitCode": 0
+    },
+    "nativeReport": {
+      "event": "restore_fault_refused",
+      "sourceEpoch": 8,
+      "targetEpoch": 10,
+      "refusal": "superseded"
+    },
+    "metadataBoundary": {
+      "observedAt": "2026-10-31T23:12:56.365Z",
+      "workerAdmission": "fenced",
+      "epoch": 10,
+      "admissionOpen": false,
+      "status": "queued",
+      "generation": 2,
+      "deploymentEpoch": 10,
+      "unowned": true,
+      "domainTokenCleared": true,
+      "resultSqlNull": true,
+      "chargedAttempts": 1,
+      "oldAttemptStatus": "superseded",
+      "oldRevoked": true,
+      "publishedAssets": 0,
+      "deadlineUnchanged": true
+    },
+    "postRefusalBoundary": {
+      "observedAt": "2026-10-31T23:13:20.326Z",
+      "workerAdmission": "closed",
+      "epoch": 10,
+      "admissionOpen": false,
+      "status": "queued",
+      "generation": 2,
+      "deploymentEpoch": 10,
+      "unowned": true,
+      "domainTokenCleared": true,
+      "resultSqlNull": true,
+      "chargedAttempts": 1,
+      "oldAttemptStatus": "superseded",
+      "oldRevoked": true,
+      "publishedAssets": 0,
+      "deadlineUnchanged": true
+    },
+    "resumeCommand": {
+      "startedAt": "2026-10-31T23:13:20.630Z",
+      "endedAt": "2026-10-31T23:13:41.261Z",
+      "elapsedMs": 20631,
+      "exitCode": 0
+    },
+    "additionalStarts": 0,
+    "additionalCharges": 0,
+    "additionalPublishedAssets": 0,
+    "oldProbeRemainedUncommitted": true,
+    "meaning": "The native old fence/probe callback returned typed Superseded before ordinary redispatch. The post-refusal job remained queued, unowned, result SQL NULL, with one historical charge and zero assets."
+  },
+  "nativeAttempts": {
+    "old": {
+      "deploymentEpoch": 8,
+      "processStartedAtUtc": "2026-10-31T23:08:35.415Z",
+      "status": "superseded",
+      "finishedAtUtc": "2026-10-31T23:11:31.106Z"
+    },
+    "successor": {
+      "deploymentEpoch": 10,
+      "generation": 2,
+      "processStartedAtUtc": "2026-10-31T23:16:20.735Z",
+      "status": "completed",
+      "finishedAtUtc": "2026-10-31T23:16:55.370Z"
+    },
+    "actualStarts": 2,
+    "chargedAttempts": 2,
+    "extraAttempts": 0,
+    "publishedCurrentAssets": 1,
+    "oldProbeUncommitted": true,
+    "deadlineUnchanged": true,
+    "provenance": "Verifier output and operator-confirmed final actual SQL. Individual attempt identities and raw rows are omitted."
+  },
+  "ordinaryWorkflowObservation": {
+    "observedStatus": "running",
+    "stepName": "command-0-1",
+    "config": {
+      "retries": {
+        "limit": 3,
+        "delay": "1 second",
+        "backoff": "exponential"
+      },
+      "timeout": "2 minutes"
+    },
+    "commandAttempts": [
+      {
+        "start": "2026-10-31T23:13:50.700Z",
+        "end": "2026-10-31T23:15:50.700Z",
+        "success": false,
+        "errorName": "WorkflowTimeoutError",
+        "errorMessage": "Execution timed out after 120000ms"
+      },
+      {
+        "start": "2026-10-31T23:15:51.700Z",
+        "end": "2026-10-31T23:16:08.859Z",
+        "success": true
+      }
+    ],
+    "commandSucceeded": true,
+    "interpretation": "The first command attempt timed out after 120 seconds; the configured retry began one second later and succeeded. This observation does not establish the cause. The retained Workflow snapshot was still running; qualified domain completion is independently established by the final verifier."
+  },
+  "operatorRetirement": {
+    "observedAt": "2026-10-31T23:17:30.704822+00:00",
+    "exitCodeBefore": null,
+    "terminationRequested": true,
+    "exitCodeAfter": 137,
+    "retired": true,
+    "exactSandboxInternallyMatched": true,
+    "identityProvenance": "Operator confirmed termination of the exact journaled privileged Sandbox; its identifier is omitted."
+  },
+  "candidateAfterGate": {
+    "deploymentEpoch": 10,
+    "admissionOpen": false,
+    "httpAdmission": "closed",
+    "closedWorkerVersionPrefix": "33451912"
+  },
+  "priorFailuresRemainFailed": [
+    "qualified-restore-first-attempt-failure-20261101.json",
+    "qualified-restore-second-attempt-source-guard-20261101.json",
+    "qualified-restore-third-attempt-partial-completion-20261101.json"
+  ],
+  "limits": [
+    "This passes the isolated qualified restore gate only; it does not complete ticket 22 or authorize shared cutover, reopening, merge or push.",
+    "The coalesced 10 GiB transfer gate is separate and was running when this record was assigned. No result is claimed here.",
+    "The guarded source-8 helper recipe describes this one-shot accepted run. The candidate is now at epoch 10; this record does not authorize replaying the old snapshot or admission."
+  ],
+  "privateArtifactDirectory": "/tmp/narriflow-serverless-control-keys/qualified-restore-epoch8-20261101",
+  "rawPrivateEvidence": {
+    "verify.stdout.log": {
+      "byteLength": 399,
+      "sha256": "2f9be0b034bb491bc962a5b180fb68691721608ee4e746ad6e7ccbae8c0b99c3"
+    },
+    "orchestration-complete.json": {
+      "byteLength": 155,
+      "sha256": "c4d7233c97bb4b70c6823bff36eb49d0e1ee90bc6561190d6c955890d21f86a5"
+    },
+    "metadata-native-boundary-proof.json": {
+      "byteLength": 494,
+      "sha256": "9b595361a05a4b6a8ee8120f4debcf46daf77e0645ffdbb61e4b2f5e03c3ac51"
+    },
+    "post-refusal-native-boundary-proof.json": {
+      "byteLength": 494,
+      "sha256": "392d618ca21b3d6290af6a8944aeba2a10e1215c096826c9bdc75cc7f61d5248"
+    },
+    "proof.json": {
+      "byteLength": 1202,
+      "sha256": "13dc16ffc15a7a7cba2ebad5a22ccb59dd9d611eaf9740a58bce4efad8366523"
+    },
+    "operator-retirement-observation.json": {
+      "byteLength": 204,
+      "sha256": "7d7f7c1379e4fb685e3fd3d89ae1845ad79dac7d34e89c5c057a50614ccc47e6"
+    },
+    "ordinary-driver-workflow.json": {
+      "byteLength": 2755,
+      "sha256": "5859ae934024a9a97327fd3a3d709b17cc6bc7464dd27b27ce888fedbd8f923e"
+    },
+    "capture.stdout.log": {
+      "byteLength": 631,
+      "sha256": "37b3db0ff804399cb7d8bd8c44c0cd9724bb55526cea191922798e042e53c394"
+    },
+    "restore-archive.stdout.log": {
+      "byteLength": 644,
+      "sha256": "f0ec0146297b9cb7db2a20f9ddf1d4ea52fc315910a1be26e48a796c6ad5c0ef"
+    },
+    "refusal.json": {
+      "byteLength": 1555,
+      "sha256": "e88c89ffadf074b7e02d2ee62bef6c1cdd9976b8861e002fc11b54240a01767b"
+    },
+    "release-stale.stdout.log": {
+      "byteLength": 60,
+      "sha256": "08adc725a466bf6014de99e7fe7f42a6459062b73e40c6011c2dacdc7007f765"
+    },
+    "capture.command.json": {
+      "byteLength": 148,
+      "sha256": "fe3fb644397a906e1f4fc2790a0ff425a54122d3369ac3642611901f4661bed5"
+    },
+    "restore-archive.command.json": {
+      "byteLength": 156,
+      "sha256": "e2383fe2db240a07d6cc83ead7a0e6ac7320e4ea42aa69f0375d1e6e8f37db34"
+    },
+    "release-stale.command.json": {
+      "byteLength": 153,
+      "sha256": "723e2f65b304c635307d5e8b44c39a0fa5000d3cd24dbe86af7fdfa736d63c3c"
+    },
+    "resume-boundary.command.json": {
+      "byteLength": 156,
+      "sha256": "b5c385583769a872a5732333d764766fbd3665bc725f5dfc0aff7c00c75b958f"
+    },
+    "verify.command.json": {
+      "byteLength": 146,
+      "sha256": "fcfad78aabde9bd03eb0012f842688969b38dccab919f05499583dd13a7b6630"
+    }
+  }
+}
