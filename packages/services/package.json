@@ -10,6 +10,18 @@
       "types": "./src/index.ts",
       "default": "./src/index.ts"
     },
+    "./executor-domain-control": {
+      "types": "./src/executor-domain-control.ts",
+      "default": "./src/executor-domain-control.ts"
+    },
+    "./execution-dispatch": {
+      "types": "./src/execution-dispatch.ts",
+      "default": "./src/execution-dispatch.ts"
+    },
+    "./execution-dispatch-runtime": {
+      "types": "./src/execution-dispatch-runtime.ts",
+      "default": "./src/execution-dispatch-runtime.ts"
+    },
     "./execution-signature": {
       "types": "./src/execution-signature.ts",
       "default": "./src/execution-signature.ts"
