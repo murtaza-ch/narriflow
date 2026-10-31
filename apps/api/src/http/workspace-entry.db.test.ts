@@ -1,3 +1,4 @@
+import { bindServiceTestEnvironment } from "@narriflow/services/runtime-test-support";
 import { afterAll, afterEach, beforeAll, describe, expect, mock, setDefaultTimeout, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import type { ClerkUserDirectory } from "@narriflow/auth";
@@ -47,16 +48,16 @@ function clerkProfile(name?: string, provider = "oauth_apple") {
   return { id, firstName: name ?? null, lastName: null, imageUrl: null, lastSignInAt: Date.now(), primaryEmailAddressId: "email", emailAddresses: [{ id: "email", emailAddress: `${id}@example.test`, verification: { status: "verified" } }], externalAccounts: [{ provider, providerUserId: id, emailAddress: `${id}@example.test` }] };
 }
 
-beforeAll(async () => {
+beforeAll(bindServiceTestEnvironment(async () => {
   if (!enabled) return;
   if (!url || !schema || !schema.startsWith("authenticated_request_policy_test_")) throw new Error("Disposable authentication schema required");
   pool = new Pool({ connectionString: url, max: 4 });
   prisma = new PrismaClient({ adapter: new PrismaPg(pool, { schema }) });
   const template = await prisma.brandTemplate.upsert({ where: { builtInKey: "karaoke" }, create: { name: "Karaoke", builtInKey: "karaoke", isBuiltIn: true, captionPreset: {} }, update: {} });
   templateId = template.id;
-});
-afterEach(() => { previousIdentityLookup = null; });
-afterAll(async () => { await prisma?.$disconnect(); await pool?.end(); });
+}));
+afterEach(bindServiceTestEnvironment(() => { previousIdentityLookup = null; }));
+afterAll(bindServiceTestEnvironment(async () => { await prisma?.$disconnect(); await pool?.end(); }));
 
 async function expectWorkspace(userId: string, name: string) {
   const workspaces = await prisma.workspace.findMany({ where: { personalOwnerUserId: userId }, include: { members: true, billingAccount: true } });
@@ -72,23 +73,23 @@ async function expectWorkspace(userId: string, name: string) {
 }
 
 dbDescribe("automatic workspace entry before webhook delivery", () => {
-  test("concurrent first sign-ins create one free workspace, owner, and billing account", async () => {
+  test("concurrent first sign-ins create one free workspace, owner, and billing account", bindServiceTestEnvironment(async () => {
     payload = clerkProfile("Ada");
     const users = await Promise.all([getCurrentAppUser(), getCurrentAppUser(), getCurrentAppUser()]);
     expect(new Set(users.map((user) => user?.id)).size).toBe(1);
     await expectWorkspace(users[0]!.id, "Ada's workspace");
     expect(await prisma.webhookDeliveryLog.count()).toBe(0);
     expect(await prisma.authIdentity.count({ where: { userId: users[0]!.id, provider: "apple" } })).toBe(1);
-  });
-  test("nameless verified accounts enter My workspace and keep custom names", async () => {
+  }));
+  test("nameless verified accounts enter My workspace and keep custom names", bindServiceTestEnvironment(async () => {
     payload = clerkProfile();
     const user = await getCurrentAppUser();
     const workspace = await expectWorkspace(user!.id, "My workspace");
     await prisma.workspace.update({ where: { id: workspace.id }, data: { name: "My studio" } });
     await syncClerkUserPayload(payload);
     await expectWorkspace(user!.id, "My studio");
-  });
-  test("database failure is retryable without a duplicate user or partial workspace", async () => {
+  }));
+  test("database failure is retryable without a duplicate user or partial workspace", bindServiceTestEnvironment(async () => {
     payload = clerkProfile(undefined, "oauth_google");
     failProvisioning = true;
     try { await expect(getCurrentAppUser()).rejects.toThrow("Injected database outage"); }
@@ -96,8 +97,8 @@ dbDescribe("automatic workspace entry before webhook delivery", () => {
     const user = await getCurrentAppUser();
     expect(await prisma.user.count({ where: { clerkId: String(payload.id) } })).toBe(1);
     await expectWorkspace(user!.id, "My workspace");
-  });
-  test("deletion releases email and identities while a new account receives its own workspace", async () => {
+  }));
+  test("deletion releases email and identities while a new account receives its own workspace", bindServiceTestEnvironment(async () => {
     const previous = clerkProfile("Former"); payload = previous;
     const oldUser = await getCurrentAppUser();
     const oldWorkspace = await expectWorkspace(oldUser!.id, "Former's workspace");
@@ -109,8 +110,8 @@ dbDescribe("automatic workspace entry before webhook delivery", () => {
     expect(newUser!.id).not.toBe(oldUser!.id);
     expect((await expectWorkspace(newUser!.id, "New's workspace")).id).not.toBe(oldWorkspace.id);
     expect(await prisma.workspaceMember.count({ where: { userId: newUser!.id, workspaceId: oldWorkspace.id } })).toBe(0);
-  });
-  test("concurrent registrations can reuse an email left on an old soft-deleted fixture", async () => {
+  }));
+  test("concurrent registrations can reuse an email left on an old soft-deleted fixture", bindServiceTestEnvironment(async () => {
     const previous = clerkProfile(); payload = previous;
     const oldUser = await getCurrentAppUser();
     await prisma.user.update({ where: { id: oldUser!.id }, data: { deletedAt: new Date() } });
@@ -121,8 +122,8 @@ dbDescribe("automatic workspace entry before webhook delivery", () => {
     await expectWorkspace(users[0]!.id, "My workspace");
     expect((await prisma.user.findUniqueOrThrow({ where: { id: oldUser!.id } })).primaryEmail).toBeNull();
     expect(await prisma.authIdentity.count({ where: { userId: oldUser!.id } })).toBe(0);
-  });
-  test("a missed deletion webhook is repaired only after Clerk confirms the previous identity is gone", async () => {
+  }));
+  test("a missed deletion webhook is repaired only after Clerk confirms the previous identity is gone", bindServiceTestEnvironment(async () => {
     const previous = clerkProfile(); payload = previous;
     const oldUser = await getCurrentAppUser();
     const next = clerkProfile(); next.emailAddresses[0].emailAddress = previous.emailAddresses[0].emailAddress; payload = next;
@@ -133,8 +134,8 @@ dbDescribe("automatic workspace entry before webhook delivery", () => {
     await expectWorkspace(newUser!.id, "My workspace");
     const deletedUser = await prisma.user.findUniqueOrThrow({ where: { id: oldUser!.id } });
     expect(deletedUser.deletedAt).not.toBeNull(); expect(deletedUser.primaryEmail).toBeNull();
-  });
-  test("a live identity or unavailable Clerk API cannot release another user's email", async () => {
+  }));
+  test("a live identity or unavailable Clerk API cannot release another user's email", bindServiceTestEnvironment(async () => {
     const previous = clerkProfile(); payload = previous;
     const oldUser = await getCurrentAppUser();
     const identityCount = await prisma.authIdentity.count({ where: { userId: oldUser!.id } });
@@ -148,5 +149,5 @@ dbDescribe("automatic workspace entry before webhook delivery", () => {
     expect(retainedUser.deletedAt).toBeNull(); expect(retainedUser.primaryEmail).toBe(previous.emailAddresses[0].emailAddress);
     expect(await prisma.authIdentity.count({ where: { userId: oldUser!.id } })).toBe(identityCount);
     expect(await prisma.user.count({ where: { clerkId: next.id } })).toBe(0);
-  });
+  }));
 });

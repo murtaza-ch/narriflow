@@ -1,4 +1,4 @@
-import { billingService } from "@narriflow/services";
+import { billingService } from "@narriflow/services/billing.service";
 import type { ApiConfig } from "../../config";
 import type { BillingRouteDeps } from "./routes";
 import type { BillingWebhookDeps } from "./webhooks";

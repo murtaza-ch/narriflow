@@ -1,4 +1,4 @@
-import { checkRateLimit, readRateLimit } from "@narriflow/services";
+import { checkRateLimit, readRateLimit } from "@narriflow/services/rate-limit";
 import type { ApiConfig } from "../../config";
 import type { RestRouteDeps } from "./routes";
 

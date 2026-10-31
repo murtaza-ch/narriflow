@@ -30,7 +30,7 @@ export interface WorkflowEventInput {
 /** Which deliveries the event is owed: Redis for live progress, analytics for
  * terminal runs. A record that only history reads needs neither. */
 export interface WorkflowEventDelivery {
-  redisRequired: boolean;
+  progressRequired: boolean;
   analyticsEnabled: boolean;
 }
 
@@ -107,7 +107,7 @@ export async function appendWorkflowEvent(tx: Tx, input: WorkflowEventInput, del
       payload: payload as unknown as Prisma.InputJsonValue,
       availableAt: emittedAt,
       nextDeliveryAt: emittedAt,
-      redisRequired: delivery.redisRequired,
+      progressRequired: delivery.progressRequired,
       analyticsRequired: (input.analyticsRequired ?? false) && delivery.analyticsEnabled,
       notificationRequired: Boolean(input.notification),
     },

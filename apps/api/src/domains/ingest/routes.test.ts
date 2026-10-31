@@ -1,5 +1,6 @@
 import { describe, expect, mock, test } from "bun:test";
-import { ExpectedDomainFailureError, IngestNotFailedError } from "@narriflow/services";
+import { ExpectedDomainFailureError } from "@narriflow/services/expected-domain-failure";
+import { IngestNotFailedError } from "@narriflow/services/ingest-job-lifecycle";
 import { ingestAdmission } from "./admission";
 import { createIngestRoutes, type IngestRouteDeps } from "./routes";
 import { createDomainTestApp, signedInHeaders as signedIn, TEST_WEB_ORIGIN as WEB } from "./test-app";

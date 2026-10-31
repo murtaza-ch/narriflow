@@ -1,3 +1,4 @@
+import { bindServiceTestEnvironment } from "@narriflow/services/runtime-test-support";
 import { describe, expect, test } from "bun:test";
 import {
 	McpServer,
@@ -122,7 +123,7 @@ function modernRequest(
 }
 
 describe("Authenticated stateless MCP wire", () => {
-	test("serves a modern complete result and never issues a session", async () => {
+	test("serves a modern complete result and never issues a session", bindServiceTestEnvironment(async () => {
 		const h = harness();
 		const response = await h.fetch(modernRequest("server/discover"));
 		expect(response.status).toBe(200);
@@ -131,9 +132,9 @@ describe("Authenticated stateless MCP wire", () => {
 		expect(body.result.resultType).toBe("complete");
 		expect(h.factories).toEqual(["caller-a"]);
 		expect(h.eras).toEqual(["modern"]);
-	});
+	}));
 
-	test("older clients use the same request factory and current credentials", async () => {
+	test("older clients use the same request factory and current credentials", bindServiceTestEnvironment(async () => {
 		const h = harness();
 		const client = new Client(
 			{ name: "older-acceptance", version: "1" },
@@ -165,9 +166,9 @@ describe("Authenticated stateless MCP wire", () => {
 		} finally {
 			await client.close();
 		}
-	});
+	}));
 
-	test("private complete results never reuse another caller's snapshot", async () => {
+	test("private complete results never reuse another caller's snapshot", bindServiceTestEnvironment(async () => {
 		const h = harness();
 		for (const caller of ["caller-a", "caller-b", "caller-a"]) {
 			const response = await h.fetch(
@@ -188,14 +189,14 @@ describe("Authenticated stateless MCP wire", () => {
 			expect(response.headers.get("MCP-Session-Id")).toBeNull();
 		}
 		expect(h.factories).toEqual(["caller-a", "caller-b", "caller-a"]);
-	});
+	}));
 
 	for (const [label, headers] of [
 		["method", { "MCP-Method": "tools/list" }],
 		["version", { "MCP-Protocol-Version": "2025-11-25" }],
 		["name", { "MCP-Name": "another_tool" }],
 	] as const)
-		test(`rejects ${label} header/body mismatch before dispatch`, async () => {
+		test(`rejects ${label} header/body mismatch before dispatch`, bindServiceTestEnvironment(async () => {
 			const h = harness();
 			const response = await h.fetch(
 				modernRequest(
@@ -207,9 +208,9 @@ describe("Authenticated stateless MCP wire", () => {
 			expect(response.status).toBe(400);
 			expect((await response.json()).error.code).toBe(-32020);
 			expect(h.factories).toEqual([]);
-		});
+		}));
 
-	test("malformed modern metadata is rejected without invoking a tool", async () => {
+	test("malformed modern metadata is rejected without invoking a tool", bindServiceTestEnvironment(async () => {
 		const h = harness();
 		const request = modernRequest("server/discover");
 		const response = await h.fetch(
@@ -229,9 +230,9 @@ describe("Authenticated stateless MCP wire", () => {
 		);
 		expect(response.status).toBe(400);
 		expect(h.factories).toEqual([]);
-	});
+	}));
 
-	test("HTTP methods, CORS, bearer challenges and byte bounds share the serving boundary", async () => {
+	test("HTTP methods, CORS, bearer challenges and byte bounds share the serving boundary", bindServiceTestEnvironment(async () => {
 		const h = harness();
 		const unauthorized = modernRequest(
 			"server/discover",
@@ -280,9 +281,9 @@ describe("Authenticated stateless MCP wire", () => {
 		);
 		expect(oversized.status).toBe(413);
 		expect(h.factories).toEqual([]);
-	});
+	}));
 
-	test("application write consent fails with a standard scope challenge before tool dispatch", async () => {
+	test("application write consent fails with a standard scope challenge before tool dispatch", bindServiceTestEnvironment(async () => {
 		const h = harness();
 		const response = await h.fetch(
 			modernRequest("tools/call", {
@@ -298,7 +299,7 @@ describe("Authenticated stateless MCP wire", () => {
 			"autopilot:write",
 		);
 		expect(h.factories).toEqual([]);
-	});
+	}));
 	for (const [tool, scope] of [
 		["narriflow_upload_open", "processing:write"],
 		["narriflow_upload_status", "processing:write"],
@@ -306,14 +307,14 @@ describe("Authenticated stateless MCP wire", () => {
 		["narriflow_upload_finalize", "processing:write"],
 		["narriflow_upload_discard", "processing:write"],
 		["narriflow_accept_social_post_intent", "publishing:write"],
-	] as const) test(`embedded ${tool} uses its public workflow scope challenge`, async () => {
+	] as const) test(`embedded ${tool} uses its public workflow scope challenge`, bindServiceTestEnvironment(async () => {
 		const h = harness();
 		const response = await h.fetch(modernRequest("tools/call", { name: tool, arguments: {} }));
 		expect(response.status).toBe(403);
 		expect(response.headers.get("WWW-Authenticate")).toContain(scope);
 		expect(h.factories).toEqual([]);
-	});
-	test("Operation Status preflight asks for the scope of the operation's kind", async () => {
+	}));
+	test("Operation Status preflight asks for the scope of the operation's kind", bindServiceTestEnvironment(async () => {
 		const h = harness();
 		const exported = await h.fetch(modernRequest("tools/call", { name: "narriflow_get_operation", arguments: { operation: { kind: "export", id: "00000000-0000-4000-8000-000000000001" } } }));
 		expect(exported.status).toBe(403);
@@ -322,5 +323,5 @@ describe("Authenticated stateless MCP wire", () => {
 		const intake = await h.fetch(modernRequest("tools/call", { name: "narriflow_get_operation", arguments: { operation: { kind: "intake", id: "00000000-0000-4000-8000-000000000001" } } }));
 		expect(intake.status).not.toBe(403);
 		expect(h.factories).toHaveLength(1);
-	});
+	}));
 });

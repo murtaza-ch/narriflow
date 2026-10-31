@@ -34,14 +34,14 @@ import { appendWorkflowEvent, type WorkflowEventInput } from "./workflow-event-a
 
 /** How long a stopping worker lets in-flight handlers finish
  * (`WORKER_SHUTDOWN_DRAIN_MS`, 30s by default). */
-export function workerShutdownDrainMs(env: Record<string, string | undefined> = process.env): number {
+export function workerShutdownDrainMs(env: Record<string, string | undefined> = {}): number {
   const configured = Number(env.WORKER_SHUTDOWN_DRAIN_MS ?? "30000");
   return Number.isFinite(configured) && configured > 0 ? configured : 30_000;
 }
 /** A released attempt's aborted handler may still be finishing an unfenced
  * provider call until the shutdown drain ends, so peers wait exactly that long
  * before claiming it. */
-export const WORKFLOW_RELEASE_GRACE_MS = workerShutdownDrainMs();
+export const WORKFLOW_RELEASE_GRACE_MS = 30_000;
 export const WORKFLOW_MAX_ATTEMPTS = 3;
 export const WORKFLOW_RETRIES_EXHAUSTED_CODE = "workflow_retries_exhausted";
 
@@ -439,7 +439,7 @@ export class WorkflowRunLifecycle {
 
   private appendEvent(tx: TransactionClient, input: WorkflowEventInput) {
     return appendWorkflowEvent(tx, input, {
-      redisRequired: this.redisDeliveryRequired,
+      progressRequired: this.redisDeliveryRequired,
       analyticsEnabled: Boolean(this.publishAnalytics),
     });
   }
@@ -2757,7 +2757,7 @@ export class WorkflowRunLifecycle {
   async dispatchEvents(batchSize = 100): Promise<number> {
     const now = new Date();
     const pendingChannels: Prisma.WorkflowEventWhereInput[] = [
-      { redisRequired: true, redisPublishedAt: null },
+      { progressRequired: true, progressPublishedAt: null },
       { analyticsRequired: true, analyticsPublishedAt: null },
       { notificationRequired: true, notificationDeliveredAt: null },
     ];
@@ -2819,7 +2819,7 @@ export class WorkflowRunLifecycle {
 
       try {
         const parsed = workflowStageUpdatedEventSchema.parse(event.payload);
-        if (event.redisRequired && !event.redisPublishedAt) {
+        if (event.progressRequired && !event.progressPublishedAt) {
           if (!(await renew())) continue;
           const published = await this.publishRedis(parsed);
           if (!published) {
@@ -2827,7 +2827,7 @@ export class WorkflowRunLifecycle {
           }
           const acknowledged = await this.prisma.workflowEvent.updateMany({
             where: held(),
-            data: { redisPublishedAt: new Date() },
+            data: { progressPublishedAt: new Date() },
           });
           if (acknowledged.count === 0) continue;
         }

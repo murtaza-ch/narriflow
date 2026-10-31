@@ -1,3 +1,4 @@
+import { readServiceEnvironment } from "./runtime-environment";
 import { getPrismaClient } from "@narriflow/db/client";
 import { IngestJobLifecycle } from "./ingest-job-lifecycle";
 import { getWorkflowRunLifecycle } from "./workflow-run-lifecycle";
@@ -10,8 +11,8 @@ export function getIngestJobLifecycle(): IngestJobLifecycle {
     return new IngestJobLifecycle({
       prisma,
       workflow: getWorkflowRunLifecycle(),
-      redisRequired: isWorkflowRedisDeliveryEnabled(),
-      sourceBucket: process.env.R2_BUCKET ?? "unknown-bucket",
+      progressRequired: isWorkflowRedisDeliveryEnabled(),
+      sourceBucket: readServiceEnvironment().R2_BUCKET ?? "unknown-bucket",
       requireRetryActor: (actor, workspace) =>
         workspaceService.requireActor(actor, workspace, "processing.consume"),
       usage: {

@@ -1,3 +1,4 @@
+import { readServiceEnvironment } from "./runtime-environment";
 import { pickPexelsFile, type PexelsVideo, type BrollSearchResult } from "./pexels-contract";
 export { pickPexelsFile, selectBestPexelsVideo, type PexelsUser, type PexelsVideoFile, type PexelsVideo, type BrollAttribution, type BrollClip, type BrollSearchResult } from "./pexels-contract";
 /**
@@ -40,7 +41,7 @@ function log(
 }
 
 export function isPexelsConfigured(): boolean {
-  return Boolean(process.env.PEXELS_API_KEY);
+  return Boolean(readServiceEnvironment().PEXELS_API_KEY);
 }
 
 // --- Optional Redis cache (fail-open, same pattern as rate-limit.ts) --------
@@ -57,7 +58,7 @@ function resetRedisClient(failedClient: Redis) {
 }
 
 function getRedisClient(): Redis | null {
-  const url = optionalRedisUrl(process.env.UPSTASH_REDIS_URL);
+  const url = optionalRedisUrl(readServiceEnvironment().UPSTASH_REDIS_URL);
   if (!url) return null;
   if (Date.now() < redisRetryAfter) return null;
   if (!redisClient) {
@@ -91,7 +92,7 @@ const DEFAULT_CACHE_TTL_SEC = 21_600; // 6h — Pexels' catalog doesn't churn mi
 const MEMORY_CACHE_MAX_ENTRIES = 500;
 
 function cacheTtlSec(): number {
-  const raw = Number(process.env.PEXELS_SEARCH_CACHE_TTL_SEC);
+  const raw = Number(readServiceEnvironment().PEXELS_SEARCH_CACHE_TTL_SEC);
   return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_CACHE_TTL_SEC;
 }
 
@@ -199,7 +200,7 @@ export async function searchPexelsVideos(
   orientation: PexelsOrientation,
   options: SearchPexelsVideosOptions = {},
 ): Promise<PexelsVideo[]> {
-  const apiKey = process.env.PEXELS_API_KEY;
+  const apiKey = readServiceEnvironment().PEXELS_API_KEY;
   const trimmedQuery = query.trim();
   if (!apiKey || !trimmedQuery) return [];
 
@@ -323,7 +324,7 @@ export async function searchBrollVideos(
   orientation: PexelsOrientation = "portrait",
   limit = 12,
 ): Promise<BrollSearchResult[]> {
-  const apiKey = process.env.PEXELS_API_KEY;
+  const apiKey = readServiceEnvironment().PEXELS_API_KEY;
   if (!apiKey || !query.trim()) return [];
 
   const targetWidth = orientation === "landscape" ? 1920 : 1080;

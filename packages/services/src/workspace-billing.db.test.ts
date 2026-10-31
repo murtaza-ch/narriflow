@@ -1,3 +1,4 @@
+import { bindServiceTestEnvironment } from "./runtime-test-support";
 import { createDatabaseTestContext } from "@narriflow/db/testing";
 import { createPendingBusinessWorkspaceService } from "./pending-business-workspace.service";
 import { workspaceCommands } from "./workspace-commands-runtime";
@@ -55,7 +56,7 @@ dbDescribe("Workspace Billing PostgreSQL invariants", () => {
   let priorPrisma: PrismaClient | undefined;
   const prismaGlobal = createDatabaseTestContext();
 
-  beforeAll(prismaGlobal.bind(async () => {
+  beforeAll(bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     if (!databaseUrl) throw new Error("Workspace Billing test database is required");
     pool = new Pool({ connectionString: databaseUrl, max: 8 });
     prisma = new PrismaClient({
@@ -70,13 +71,13 @@ dbDescribe("Workspace Billing PostgreSQL invariants", () => {
     process.env.PROJECT_RETENTION_MODE = "enforce";
     process.env.PROJECT_RETENTION_ENFORCEMENT_STARTED_AT =
       "2026-01-01T00:00:00.000Z";
-  }));
+  })));
 
-  afterAll(prismaGlobal.bind(async () => {
+  afterAll(bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     prismaGlobal.client = priorPrisma;
     await prisma?.$disconnect();
     await pool?.end();
-  }));
+  })));
 
   async function createWorkspace(label: string, options?: { team?: boolean }) {
     const suffix = randomUUID();
@@ -128,22 +129,22 @@ dbDescribe("Workspace Billing PostgreSQL invariants", () => {
     };
   }
 
-  test("different and concurrent creation intents reuse one pending workspace per creator", prismaGlobal.bind(async () => {
+  test("different and concurrent creation intents reuse one pending workspace per creator", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const { user } = await createWorkspace("pending-reuse");
     const results = await Promise.all(["First", "Second", "Third"].map((name) => workspaceService.createPendingBusinessWorkspace(user.id, { name })));
     expect(new Set(results.map((row) => row.id)).size).toBe(1);
     expect(await prisma.workspace.count({ where: { ownerUserId: user.id, status: "pending_payment" } })).toBe(1);
-  }));
+  })));
 
-  test("a new creation intent renames the reused empty workspace", prismaGlobal.bind(async () => {
+  test("a new creation intent renames the reused empty workspace", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const { user } = await createWorkspace("rename");
     const first = await workspaceService.createPendingBusinessWorkspace(user.id, { name: "Acme" });
     const second = await workspaceService.createPendingBusinessWorkspace(user.id, { name: " Beta  Studio " });
     expect(second).toMatchObject({ id: first.id, name: "Beta Studio" });
     expect((await prisma.workspace.findUniqueOrThrow({ where: { id: first.id } })).name).toBe("Beta Studio");
-  }));
+  })));
 
-  test("Cancel tolerates expiry webhook reconciliation bookkeeping on the first click", prismaGlobal.bind(async () => {
+  test("Cancel tolerates expiry webhook reconciliation bookkeeping on the first click", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const f = await pendingFixture("expiry-race", async () => {
       await prisma.workspaceBillingAccount.update({ where: { workspaceId: f.workspace.id }, data: {
         nextReconcileAt: new Date(), reconcileAttemptId: randomUUID(), leaseExpiresAt: new Date(), attemptCount: { increment: 1 },
@@ -153,9 +154,9 @@ dbDescribe("Workspace Billing PostgreSQL invariants", () => {
     await f.session("open");
     expect(await f.service.cancel(f.workspace.id, f.user.id)).toBe(true);
     expect(await prisma.workspace.findUnique({ where: { id: f.workspace.id } })).toBeNull();
-  }));
+  })));
 
-  test("the sweep handles real pending creation and skips recently updated rows", prismaGlobal.bind(async () => {
+  test("the sweep handles real pending creation and skips recently updated rows", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const { user } = await createWorkspace("real-sweep");
     const workspace = await workspaceService.createPendingBusinessWorkspace(user.id, { name: "Abandoned" });
     const at = new Date();
@@ -169,9 +170,9 @@ dbDescribe("Workspace Billing PostgreSQL invariants", () => {
     await prisma.workspace.update({ where: { id: workspace.id }, data: { updatedAt: old } });
     await service.sweep();
     expect(await prisma.workspace.findUnique({ where: { id: workspace.id } })).toBeNull();
-  }));
+  })));
 
-  test("a workspace updated during sweep verification is kept", prismaGlobal.bind(async () => {
+  test("a workspace updated during sweep verification is kept", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const f = await pendingFixture("sweep-recent-race");
     const account = await prisma.workspaceBillingAccount.update({ where: { workspaceId: f.workspace.id }, data: { providerCustomerId: `cus_${f.workspace.id}` } });
     const service = createPendingBusinessWorkspaceService({ prisma, now: () => f.at, expireSession: async () => {}, provider: {
@@ -182,9 +183,9 @@ dbDescribe("Workspace Billing PostgreSQL invariants", () => {
     } });
     await service.sweep();
     expect(await prisma.workspace.findUnique({ where: { id: f.workspace.id } })).not.toBeNull();
-  }));
+  })));
 
-  test("a real creation receipt cannot replay a workspace deleted by Cancel", prismaGlobal.bind(async () => {
+  test("a real creation receipt cannot replay a workspace deleted by Cancel", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const { user } = await createWorkspace("receipt-delete");
     const create = () => workspaceCommands.createBusinessWorkspace(user.id, { name: "Discarded" }, { clientIdempotencyKey: randomKey });
     const randomKey = randomUUID();
@@ -193,9 +194,9 @@ dbDescribe("Workspace Billing PostgreSQL invariants", () => {
     expect(await service.cancel(first.workspaceId, user.id)).toBe(true);
     await expect(create()).rejects.toMatchObject({ code: "workspace_no_longer_exists", kind: "missing" });
     expect(await prisma.operationReceipt.count({ where: { actorUserId: user.id, command: "create_business_workspace" } })).toBe(1);
-  }));
+  })));
 
-  test("sweeps old empty pending workspaces, including a missing Checkout, idempotently", prismaGlobal.bind(async () => {
+  test("sweeps old empty pending workspaces, including a missing Checkout, idempotently", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const f = await pendingFixture("sweep");
     expect((await f.service.sweep()).removed).toBeGreaterThanOrEqual(1);
     expect(await prisma.workspace.findUnique({ where: { id: f.workspace.id } })).toBeNull();
@@ -204,9 +205,9 @@ dbDescribe("Workspace Billing PostgreSQL invariants", () => {
     await prisma.workspace.update({ where: { id: fresh.workspace.id }, data: { createdAt: fresh.at } });
     await fresh.service.sweep();
     expect(await prisma.workspace.findUnique({ where: { id: fresh.workspace.id } })).not.toBeNull();
-  }));
+  })));
 
-  test("cancel expires an open session, while the sweep keeps it; only the owner can cancel", prismaGlobal.bind(async () => {
+  test("cancel expires an open session, while the sweep keeps it; only the owner can cancel", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const f = await pendingFixture("cancel");
     await f.session("open");
     expect(await f.service.cancel(f.workspace.id, randomUUID())).toBe(true);
@@ -214,9 +215,9 @@ dbDescribe("Workspace Billing PostgreSQL invariants", () => {
     await f.service.sweep();
     expect(await prisma.workspace.findUnique({ where: { id: f.workspace.id } })).not.toBeNull();
     expect(await f.service.cancel(f.workspace.id, f.user.id)).toBe(true);
-  }));
+  })));
 
-  test("Cancel fences a fresh unfinished checkout preparation immediately", prismaGlobal.bind(async () => {
+  test("Cancel fences a fresh unfinished checkout preparation immediately", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const f = await pendingFixture("preparing");
     const account = await prisma.workspaceBillingAccount.findUniqueOrThrow({ where: { workspaceId: f.workspace.id } });
     const attempt = await prisma.workspaceCheckoutAttempt.create({ data: {
@@ -226,9 +227,9 @@ dbDescribe("Workspace Billing PostgreSQL invariants", () => {
     } });
     expect(await f.service.cancel(f.workspace.id, f.user.id)).toBe(true);
     expect(await prisma.workspaceCheckoutAttempt.findUnique({ where: { id: attempt.id } })).toBeNull();
-  }));
+  })));
 
-  test("a project or checkout added during provider verification prevents deletion", prismaGlobal.bind(async () => {
+  test("a project or checkout added during provider verification prevents deletion", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     for (const change of ["project", "checkout"] as const) {
       const f = await pendingFixture(`concurrent-${change}`);
       const account = await prisma.workspaceBillingAccount.update({ where: { workspaceId: f.workspace.id }, data: { providerCustomerId: `cus_${f.workspace.id}` } });
@@ -246,18 +247,18 @@ dbDescribe("Workspace Billing PostgreSQL invariants", () => {
       expect(await service.cancel(f.workspace.id, f.user.id)).toBe(false);
       expect(await prisma.workspace.findUnique({ where: { id: f.workspace.id } })).not.toBeNull();
     }
-  }));
+  })));
 
-  test.each(["active", "canceled", "incomplete_expired"])("never removes a workspace with provider subscription history: %s", prismaGlobal.bind(async (status) => {
+  test.each(["active", "canceled", "incomplete_expired"])("never removes a workspace with provider subscription history: %s", bindServiceTestEnvironment(prismaGlobal.bind(async (status) => {
     let expired = false;
     const f = await pendingFixture(status, async () => { expired = true; });
     await f.session("open");
     f.subscription([{ id: "sub_history", status }]);
     expect(await f.service.cancel(f.workspace.id, f.user.id)).toBe(false);
     expect(expired).toBe(false);
-  }));
+  })));
 
-  test("protects projects, brand data, other members and local subscription history", prismaGlobal.bind(async () => {
+  test("protects projects, brand data, other members and local subscription history", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     for (const protect of ["project", "brand", "member", "subscription", "transition", "complete"] as const) {
       const f = await pendingFixture(protect);
       if (protect === "project") await prisma.project.create({ data: { title: "Keep", sourceMediaUrl: "https://example.test/video", workspaceId: f.workspace.id } });
@@ -275,9 +276,9 @@ dbDescribe("Workspace Billing PostgreSQL invariants", () => {
       expect(await f.service.cancel(f.workspace.id, f.user.id)).toBe(false);
       expect(await prisma.workspace.findUnique({ where: { id: f.workspace.id } })).not.toBeNull();
     }
-  }));
+  })));
 
-  test("persists plan-change quotes across module instances and keeps payment pending off entitlements", prismaGlobal.bind(async () => {
+  test("persists plan-change quotes across module instances and keeps payment pending off entitlements", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const { user, workspace } = await createWorkspace("plan-change");
     const other = await createWorkspace("plan-change-other");
     const now = new Date("2026-10-27T12:00:00Z");
@@ -318,9 +319,9 @@ dbDescribe("Workspace Billing PostgreSQL invariants", () => {
     await createPrismaWorkspaceBillingStore().releasePlanChangeClaim({ workspaceId: workspace.id, attemptId: randomUUID(), now, wake: true });
     expect(await createPrismaWorkspaceBillingStore().claimAccount({ workspaceId: workspace.id, now, leaseMs: 60_000 })).toBeNull();
     await createPrismaWorkspaceBillingStore().releasePlanChangeClaim({ workspaceId: workspace.id, attemptId: claimed!.attemptId, now, wake: true });
-  }));
+  })));
 
-  test("enforces one account per Workspace and unique provider bindings", prismaGlobal.bind(async () => {
+  test("enforces one account per Workspace and unique provider bindings", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const first = await createWorkspace("unique-first");
     const second = await createWorkspace("unique-second");
     await expect(
@@ -343,9 +344,9 @@ dbDescribe("Workspace Billing PostgreSQL invariants", () => {
         }),
       ),
     ).rejects.toMatchObject({ code: "P2002" });
-  }));
+  })));
 
-  test("represents pending, paid, past-due, and conflicted billing states", prismaGlobal.bind(async () => {
+  test("represents pending, paid, past-due, and conflicted billing states", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const pending = await createWorkspace("fixture-pending");
     const paid = await createWorkspace("fixture-paid");
     const pastDue = await createWorkspace("fixture-past-due");
@@ -414,7 +415,7 @@ dbDescribe("Workspace Billing PostgreSQL invariants", () => {
       "current",
       "payment_action_required",
     ]);
-  }));
+  })));
 
   /** A Stripe-like Checkout provider whose create calls honor idempotency keys. */
   function checkoutProvider(workspaceId: string) {
@@ -459,7 +460,7 @@ dbDescribe("Workspace Billing PostgreSQL invariants", () => {
     return { provider, customers, sessions };
   }
 
-  test("concurrent Checkout starts settle on one durable attempt and provider identity", prismaGlobal.bind(async () => {
+  test("concurrent Checkout starts settle on one durable attempt and provider identity", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const { user, workspace } = await createWorkspace("checkout-race");
     const world = checkoutProvider(workspace.id);
     const billing = createWorkspaceBillingModule({
@@ -500,9 +501,9 @@ dbDescribe("Workspace Billing PostgreSQL invariants", () => {
       }),
     ).toBe(1);
     expect(world.sessions.size).toBe(1);
-  }));
+  })));
 
-  test("concurrent different choices with different keys produce one provider session", prismaGlobal.bind(async () => {
+  test("concurrent different choices with different keys produce one provider session", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const { user, workspace } = await createWorkspace("checkout-choice-race");
     const world = checkoutProvider(workspace.id);
     const billing = createWorkspaceBillingModule({
@@ -554,9 +555,9 @@ dbDescribe("Workspace Billing PostgreSQL invariants", () => {
         },
       }),
     ).toBe(1);
-  }));
+  })));
 
-  test("a stale unbound release and a session bind serialize: exactly one wins", prismaGlobal.bind(async () => {
+  test("a stale unbound release and a session bind serialize: exactly one wins", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const { user, workspace } = await createWorkspace("slot-release-race");
     const store = createPrismaWorkspaceBillingStore();
     const now = new Date("2026-08-28T10:00:00.000Z");
@@ -599,9 +600,9 @@ dbDescribe("Workspace Billing PostgreSQL invariants", () => {
         expect(row).toMatchObject({ providerSessionId: null, activeBillingAccountId: null });
       }
     }
-  }));
+  })));
 
-  test("the schema admits one Checkout slot holder on its own account", prismaGlobal.bind(async () => {
+  test("the schema admits one Checkout slot holder on its own account", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const first = await createWorkspace("slot-schema-first");
     const second = await createWorkspace("slot-schema-second");
     const attempt = async (billingAccountId: string, activeBillingAccountId: string) => {
@@ -630,9 +631,9 @@ dbDescribe("Workspace Billing PostgreSQL invariants", () => {
       code: "P2002",
     });
     await expect(attempt(secondAccount, firstAccount)).rejects.toThrow();
-  }));
+  })));
 
-  test("accepts one delivery and wakes its account atomically under concurrency", prismaGlobal.bind(async () => {
+  test("accepts one delivery and wakes its account atomically under concurrency", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const { workspace } = await createWorkspace("delivery");
     await prisma.workspaceBillingAccount.update({
       where: { workspaceId: workspace.id },
@@ -683,9 +684,9 @@ dbDescribe("Workspace Billing PostgreSQL invariants", () => {
       where: { workspaceId: workspace.id },
     });
     expect(account.nextReconcileAt).toEqual(now);
-  }));
+  })));
 
-  test("persists asynchronous failure and keeps terminal Checkout outcomes monotonic", prismaGlobal.bind(async () => {
+  test("persists asynchronous failure and keeps terminal Checkout outcomes monotonic", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const { user, workspace } = await createWorkspace("checkout-failure");
     const account = await prisma.workspaceBillingAccount.findUniqueOrThrow({
       where: { workspaceId: workspace.id },
@@ -903,9 +904,9 @@ dbDescribe("Workspace Billing PostgreSQL invariants", () => {
       sessionStatus: "complete",
       paymentStatus: "failed",
     });
-  }));
+  })));
 
-  test("settles projection, retention, and audit atomically and replayably", prismaGlobal.bind(async () => {
+  test("settles projection, retention, and audit atomically and replayably", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const { workspace } = await createWorkspace("projection");
     await prisma.workspaceBillingAccount.update({
       where: { workspaceId: workspace.id },
@@ -983,9 +984,9 @@ dbDescribe("Workspace Billing PostgreSQL invariants", () => {
         where: { id: acceptedDelivery.id },
       }),
     ).toMatchObject({ status: "reconciled", processedAt: now });
-  }));
+  })));
 
-  test("claims competing workers without duplication and drains beyond three batches", prismaGlobal.bind(async () => {
+  test("claims competing workers without duplication and drains beyond three batches", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     await prisma.workspaceBillingAccount.updateMany({
       data: {
         nextReconcileAt: new Date("2027-01-01T00:00:00.000Z"),
@@ -1013,9 +1014,9 @@ dbDescribe("Workspace Billing PostgreSQL invariants", () => {
 
     expect(workspaceIds).toHaveLength(31);
     expect(new Set(workspaceIds).size).toBe(31);
-  }));
+  })));
 
-  test("expired claims are taken over and stale retry or commit settlement is fenced", prismaGlobal.bind(async () => {
+  test("expired claims are taken over and stale retry or commit settlement is fenced", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const { workspace } = await createWorkspace("takeover");
     await prisma.workspaceBillingAccount.update({
       where: { workspaceId: workspace.id },
@@ -1083,9 +1084,9 @@ dbDescribe("Workspace Billing PostgreSQL invariants", () => {
         attemptId: first!.attemptId,
       }),
     ).rejects.toBeInstanceOf(WorkspaceBillingAttemptLost);
-  }));
+  })));
 
-  test("a failed projection transaction rolls back tier, retention, and audit", prismaGlobal.bind(async () => {
+  test("a failed projection transaction rolls back tier, retention, and audit", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const first = await createWorkspace("rollback-first");
     const second = await createWorkspace("rollback-second");
     await prisma.workspaceBillingAccount.update({
@@ -1166,9 +1167,9 @@ dbDescribe("Workspace Billing PostgreSQL invariants", () => {
         where: { id: delivery.id },
       }),
     ).toMatchObject({ status: "accepted" });
-  }));
+  })));
 
-  test("Business to Pro with a member restricts, and removing the member lifts it", prismaGlobal.bind(async () => {
+  test("Business to Pro with a member restricts, and removing the member lifts it", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const { user, workspace } = await createWorkspace("team-downgrade", { team: true });
     const viewer = await prisma.user.create({
       data: {
@@ -1233,9 +1234,9 @@ dbDescribe("Workspace Billing PostgreSQL invariants", () => {
     expect(await billing.reconcileCurrentState(workspace.id)).toMatchObject({
       view: { plan: "pro", workspaceAccessStatus: "active" },
     });
-  }));
+  })));
 
-  test("below Business only demotion and removal are allowed; any elevation is refused", prismaGlobal.bind(async () => {
+  test("below Business only demotion and removal are allowed; any elevation is refused", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const { user: owner, workspace } = await createWorkspace("restricted-roles", {
       team: true,
     });
@@ -1315,9 +1316,9 @@ dbDescribe("Workspace Billing PostgreSQL invariants", () => {
     await expect(
       workspaceMembershipService.changeRole(owner.id, workspace.id, admin.id, "admin"),
     ).resolves.toMatchObject({ role: "admin" });
-  }));
+  })));
 
-  test("access projection commits wait behind the Workspace usage lock", prismaGlobal.bind(async () => {
+  test("access projection commits wait behind the Workspace usage lock", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const { workspace } = await createWorkspace("usage-lock");
     await prisma.workspaceBillingAccount.update({
       where: { workspaceId: workspace.id },
@@ -1379,5 +1380,5 @@ dbDescribe("Workspace Billing PostgreSQL invariants", () => {
       kind: "reconciled",
       view: { plan: "creator", workspaceAccessStatus: "active" },
     });
-  }));
+  })));
 });

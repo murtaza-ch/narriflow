@@ -1,3 +1,4 @@
+import { bindServiceTestEnvironment } from "@narriflow/services/runtime-test-support";
 import { afterAll, beforeAll, describe, expect, mock, setDefaultTimeout, test } from "bun:test";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { ClerkUserDirectory } from "@narriflow/auth";
@@ -95,48 +96,48 @@ async function expectClosed(account: Account) {
   await expect(verifier.verifyAccessToken(secret)).rejects.toThrow();
 }
 
-beforeAll(async () => {
+beforeAll(bindServiceTestEnvironment(async () => {
   if (!enabled) return;
   if (!url || !schema || !schema.startsWith("authenticated_request_policy_test_")) throw new Error("Disposable authentication schema required");
   pool = new Pool({ connectionString: url, max: 8 });
   prisma = new PrismaClient({ adapter: new PrismaPg(pool, { schema }) });
   await prisma.brandTemplate.upsert({ where: { builtInKey: "karaoke" }, create: { name: "Karaoke", builtInKey: "karaoke", isBuiltIn: true, captionPreset: {} }, update: {} });
-});
-afterAll(async () => {
+}));
+afterAll(bindServiceTestEnvironment(async () => {
   if (!enabled) return;
   await prisma.$disconnect();
   await pool.end();
-});
+}));
 
 dbDescribe("Clerk deletion is terminal", () => {
-  test("a live account works, then deletion closes its keys, grants and admission", async () => {
+  test("a live account works, then deletion closes its keys, grants and admission", bindServiceTestEnvironment(async () => {
     const account = await provision();
     const principal = await workspaceService.authenticateApiKey(account.secret);
     expect(principal?.userId).toBe(account.user.id);
     await workspaceService.requireActor(account.user.id, account.workspace.id);
     await auth.markUserDeletedByClerkId(account.user.clerkId);
     await expectClosed(account);
-  });
+  }));
 
-  test("a delayed older user.updated or user.created after user.deleted is refused", async () => {
+  test("a delayed older user.updated or user.created after user.deleted is refused", bindServiceTestEnvironment(async () => {
     const account = await provision();
     await auth.markUserDeletedByClerkId(account.user.clerkId);
     for (const stale of [{ ...account.profile, updated_at: Date.now() - 86_400_000 }, account.profile]) {
       await expect(auth.syncClerkUserPayload(stale, directory)).rejects.toBeInstanceOf(auth.ClerkIdentityDeletedError);
     }
     await expectClosed(account);
-  });
+  }));
 
-  test("a deletion that arrives before the first provisioning keeps the identity from ever being created", async () => {
+  test("a deletion that arrives before the first provisioning keeps the identity from ever being created", bindServiceTestEnvironment(async () => {
     const profile = clerkProfile();
     await auth.markUserDeletedByClerkId(profile.id);
     await expect(auth.syncClerkUserPayload(profile, directory)).rejects.toBeInstanceOf(auth.ClerkIdentityDeletedError);
     await expect(auth.getAppUserForClerkIdentity(profile.id, { users: { getUser: async () => profile } } as never)).rejects.toBeInstanceOf(auth.ClerkIdentityDeletedError);
     expect(await prisma.user.count({ where: { clerkId: profile.id } })).toBe(0);
     expect(await prisma.clerkDeletedIdentity.count({ where: { clerkId: profile.id } })).toBe(1);
-  });
+  }));
 
-  test("concurrent deletes and updates in any interleaving end deleted, never revived", async () => {
+  test("concurrent deletes and updates in any interleaving end deleted, never revived", bindServiceTestEnvironment(async () => {
     for (let round = 0; round < 6; round++) {
       const account = await provision();
       const sync = () => auth.syncClerkUserPayload(account.profile, directory).catch((error: unknown) => {
@@ -146,9 +147,9 @@ dbDescribe("Clerk deletion is terminal", () => {
       await Promise.all(events);
       await expectClosed(account);
     }
-  });
+  }));
 
-  test("concurrent delete and first provisioning of an unknown identity leaves no live user", async () => {
+  test("concurrent delete and first provisioning of an unknown identity leaves no live user", bindServiceTestEnvironment(async () => {
     for (let round = 0; round < 6; round++) {
       const profile = clerkProfile();
       const sync = () => auth.syncClerkUserPayload(profile, directory).catch((error: unknown) => {
@@ -158,9 +159,9 @@ dbDescribe("Clerk deletion is terminal", () => {
       expect(await prisma.user.count({ where: { clerkId: profile.id, deletedAt: null } })).toBe(0);
       expect(await prisma.clerkDeletedIdentity.count({ where: { clerkId: profile.id } })).toBe(1);
     }
-  });
+  }));
 
-  test("a delivery claim is exclusive, replayable after success and retaken after failure", async () => {
+  test("a delivery claim is exclusive, replayable after success and retaken after failure", bindServiceTestEnvironment(async () => {
     const input = { provider: "clerk" as const, eventId: `msg_${randomUUID()}`, eventType: "email.created" };
     const claims = await Promise.all([auth.claimWebhookDelivery(input), auth.claimWebhookDelivery(input), auth.claimWebhookDelivery(input)]);
     expect(claims.filter((claim) => claim === "claimed")).toHaveLength(1);
@@ -174,5 +175,5 @@ dbDescribe("Clerk deletion is terminal", () => {
       data: { status: "processing", processedAt: new Date(Date.now() - 10 * 60_000) },
     });
     expect(await auth.claimWebhookDelivery(input)).toBe("claimed");
-  });
+  }));
 });

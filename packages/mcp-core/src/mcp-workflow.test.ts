@@ -1,7 +1,15 @@
+import { bindServiceTestEnvironment } from "@narriflow/services/runtime-test-support";
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { createMcpHandler } from "@modelcontextprotocol/server";
-import { autopilotService, clipService, clipExportService, projectService, recipeService, socialPublicationScheduling, workspaceService, ExpectedDomainFailureError } from "@narriflow/services";
+import { autopilotService } from "@narriflow/services/autopilot.service";
+import { clipService } from "@narriflow/services/clip.service";
+import { clipExportService } from "@narriflow/services/clip-export.service";
+import { projectService } from "@narriflow/services/project.service";
+import { recipeService } from "@narriflow/services/recipe.service";
+import { socialPublicationScheduling } from "@narriflow/services/social-publication-scheduling-runtime";
+import { workspaceService } from "@narriflow/services/workspace.service";
+import { ExpectedDomainFailureError } from "@narriflow/services/expected-domain-failure";
 import { buildNarriflowMcpServer, type NarriflowMcpPrincipal, type NarriflowMcpServerOptions } from "./index";
 import * as services from "@narriflow/services";
 import { buildGenerationContentPack } from "@narriflow/validators";
@@ -12,7 +20,7 @@ const projectId = "00000000-0000-4000-8000-000000000003";
 const principal = { kind: "oauth" as const, userId, clientId: "test-client", scopes: ["projects:read"], oauthAccessToken: "test-oauth-access-token" };
 const clients: Client[] = [];
 const mocks: Array<{ mockRestore(): void }> = [];
-afterEach(async () => { for (const mock of mocks.splice(0)) mock.mockRestore(); await Promise.all(clients.splice(0).map((client) => client.close())); });
+afterEach(bindServiceTestEnvironment(async () => { for (const mock of mocks.splice(0)) mock.mockRestore(); await Promise.all(clients.splice(0).map((client) => client.close())); }));
 async function connect(subject: NarriflowMcpPrincipal = principal, options: NarriflowMcpServerOptions = {}, confirm?: () => boolean, mode: "auto" | "legacy" = "auto") {
   const handler = createMcpHandler(({ era }) => buildNarriflowMcpServer(subject, { appOrigin: "https://narriflow.test", protocolEra: era, ...options }));
   const client = new Client({ name: "workflow-test", version: "1" }, { versionNegotiation: { mode }, capabilities: { ...(confirm ? { elicitation: { form: {} } } : {}), ...(mode === "legacy" ? { extensions: { "io.modelcontextprotocol/ui": { mimeTypes: ["text/html;profile=mcp-app"] } } } : {}) } });
@@ -22,7 +30,7 @@ async function connect(subject: NarriflowMcpPrincipal = principal, options: Narr
   return client;
 }
 describe("Compact MCP workflow", () => {
-  test("project progress contains product facts and never loads a transcript body", async () => {
+  test("project progress contains product facts and never loads a transcript body", bindServiceTestEnvironment(async () => {
     mocks.push(spyOn(workspaceService, "requireActor").mockResolvedValue({ actorUserId: userId, workspaceId, workspaceName: "Team", workspaceOwnerUserId: userId, role: "owner", status: "active", pricingTier: "business", isPersonalWorkspace: true }));
     mocks.push(spyOn(projectService, "getProjectSnapshot").mockResolvedValue({ project: { id: projectId, workspaceId, createdByUserId: userId, title: "A test project", sourceType: "upload", sourceMediaUrl: "private-url", sourceStorageKey: "private-key", sourceProvider: "internal", sourceInput: null, sourceMimeType: "video/mp4", sourceSizeBytes: 12, sourceDurationSeconds: 45, languageCode: "en", brandProfileId: null, brandTemplateId: null, ingestStatus: "ready", ingestErrorCode: null, ingestCompletedAt: null, notifyOnComplete: false, retentionPolicyKey: null, expiresAt: null, persisted: true, createdAt: "2026-10-05T00:00:00.000Z" }, progress: { status: "ready", active: false, label: "Ready" }, activeRun: null, lastSeq: 4, ingestAttemptCount: 1 }));
     const transcript = spyOn(projectService, "getTranscriptSnapshot"); mocks.push(transcript);
@@ -31,9 +39,9 @@ describe("Compact MCP workflow", () => {
     expect(result.structuredContent).toEqual({ data: { project: { projectId, workspaceId, title: "A test project", sourceType: "upload", ingestStatus: "ready", durationSeconds: 45, languageCode: "en", createdAt: "2026-10-05T00:00:00.000Z", reviewUrl: `https://narriflow.test/projects/${projectId}` }, progress: { status: "ready", active: false, label: "Ready", stage: null, percent: null } } });
     expect(transcript).not.toHaveBeenCalled();
     expect(JSON.stringify(result)).not.toContain("private-key");
-  });
+  }));
 
-  test("clip paging returns review facts and fetches excerpts only on request", async () => {
+  test("clip paging returns review facts and fetches excerpts only on request", bindServiceTestEnvironment(async () => {
     admitActor();
     const clipId = "00000000-0000-4000-8000-000000000004";
     const read = spyOn(clipService, "listClipReviewFacts").mockResolvedValue({ items: [{ id: clipId, projectId, editorRevision: 7, index: 0, status: "edited", startSec: 10, endSec: 40, durationSec: 30, title: "A useful moment", hookText: "The hook", reasoning: "Clear payoff", category: "insight", platformFit: ["youtube_shorts"], viralityScore: 80, hookStrengthScore: 75, emotionalIntensityScore: 50, storyCompletenessScore: 80, pacingScore: 70, durationOptimalityScore: 95, hasPreview: true, createdAt: "2026-10-05T00:00:00.000Z", transcriptExcerpt: "Requested words only" }], nextCursor: "next-page" });
@@ -46,9 +54,9 @@ describe("Compact MCP workflow", () => {
     const withExcerpt = await client.callTool({ name: "narriflow_list_clips", arguments: { workspaceId, projectId, includeTranscriptExcerpt: true, limit: 5 } });
     expect(withExcerpt.structuredContent).toMatchObject({ data: { items: [{ transcriptExcerpt: "Requested words only" }] } });
     expect(read).toHaveBeenLastCalledWith(expect.objectContaining({ workspaceId }), projectId, expect.objectContaining({ limit: 5, includeTranscriptExcerpt: true }));
-  });
+  }));
 
-  test("legacy clip cards receive private preview metadata without exposing it to the model", async () => {
+  test("legacy clip cards receive private preview metadata without exposing it to the model", bindServiceTestEnvironment(async () => {
     admitActor();
     const clipId = "00000000-0000-4000-8000-000000000004";
     mocks.push(spyOn(clipService, "getClipReviewFacts").mockResolvedValue({ id: clipId, projectId, editorRevision: 7, index: 0, status: "edited", startSec: 10, endSec: 40, durationSec: 30, title: "A useful moment", hookText: "The hook", reasoning: "Clear payoff", category: "insight", platformFit: ["youtube_shorts"], viralityScore: 80, hookStrengthScore: 75, emotionalIntensityScore: 50, storyCompletenessScore: 80, pacingScore: 70, durationOptimalityScore: 95, hasPreview: true, createdAt: "2026-10-05T00:00:00.000Z" }));
@@ -60,9 +68,9 @@ describe("Compact MCP workflow", () => {
     expect(result._meta).toMatchObject({ previewMediaUrl: "https://bucket.storage.test/private-preview", previewStartSec: 0, previewDurationSec: 60 });
     expect(JSON.stringify(result.content)).not.toContain("private-preview");
     expect(JSON.stringify(result.structuredContent)).not.toContain("private-preview");
-  });
+  }));
 
-  test("generation admits the canonical settings and returns the durable workflow ID", async () => {
+  test("generation admits the canonical settings and returns the durable workflow ID", bindServiceTestEnvironment(async () => {
     admitActor();
     const operationId = "00000000-0000-4000-8000-000000000006";
     const trigger = spyOn(projectService, "triggerGeneration").mockResolvedValue({ workflowRunId: operationId, acceptedAt: "2026-10-05T00:00:00.000Z", initialSeq: 2 });
@@ -72,9 +80,9 @@ describe("Compact MCP workflow", () => {
     const result = await client.callTool({ name: "narriflow_generate_clips", arguments: { workspaceId, projectId, clientIdempotencyKey: key, generation: { clipCountTarget: 6, clipLengthPreset: "under_30s" } } });
     expect(result.structuredContent).toMatchObject({ data: { projectId, operation: { kind: "generation", id: operationId }, status: "accepted", statusTool: "narriflow_get_operation" } });
     expect(trigger).toHaveBeenCalledWith(expect.objectContaining({ workspaceId }), projectId, expect.objectContaining({ contentPack: expect.objectContaining({ clipCountTarget: 6, clipDurationSecTarget: 25, maxDurationSec: 35 }) }), services.integrationKeyUuid(userId, "generate_clips", key), expect.objectContaining({ mutation: expect.objectContaining({ clientIdempotencyKey: key }) }));
-  });
+  }));
 
-  test("generation and submission carry finishing to the service, and an invalid one never reaches it", async () => {
+  test("generation and submission carry finishing to the service, and an invalid one never reaches it", bindServiceTestEnvironment(async () => {
     admitActor();
     const trigger = spyOn(projectService, "triggerGeneration").mockResolvedValue({ workflowRunId: "00000000-0000-4000-8000-000000000006", acceptedAt: "2026-10-05T00:00:00.000Z", initialSeq: 2 });
     mocks.push(trigger);
@@ -94,9 +102,9 @@ describe("Compact MCP workflow", () => {
     const refused = await client.callTool({ name: "narriflow_generate_clips", arguments: { workspaceId, projectId, clientIdempotencyKey: key, finishing: { topClips: 11 } } });
     expect(refused.isError).toBe(true);
     expect(trigger).toHaveBeenCalledTimes(2);
-  });
+  }));
 
-  test("recipes are listed by name for choosing, without Content Pack internals", async () => {
+  test("recipes are listed by name for choosing, without Content Pack internals", bindServiceTestEnvironment(async () => {
     admitActor();
     const recipeId = "00000000-0000-4000-8000-0000000000e1";
     const list = spyOn(recipeService, "list").mockResolvedValue([{ id: recipeId, workspaceId, name: "Weekly show", revision: 3, brandProfileId: null, languageCode: "en", contentPack: buildGenerationContentPack({ clipCountTarget: 6 }), finishing: null, ruleCount: 1, createdAt: "2026-10-01T00:00:00.000Z", updatedAt: "2026-10-02T00:00:00.000Z" }]);
@@ -105,9 +113,9 @@ describe("Compact MCP workflow", () => {
     expect(result.isError).not.toBe(true);
     expect(result.structuredContent).toMatchObject({ data: { recipes: [{ recipeId, name: "Weekly show", revision: 3, languageCode: "en", finishing: null, generation: { clipCountTarget: 6, defaultAspectRatio: "9:16" } }] } });
     expect(JSON.stringify(result.structuredContent)).not.toContain("platformPlaybookVersion");
-  });
+  }));
 
-  test("generation and submission can name a Recipe in place of settings, and report the revision they used", async () => {
+  test("generation and submission can name a Recipe in place of settings, and report the revision they used", bindServiceTestEnvironment(async () => {
     admitActor();
     const recipeId = "00000000-0000-4000-8000-0000000000e1";
     const operationId = "00000000-0000-4000-8000-000000000006";
@@ -135,9 +143,9 @@ describe("Compact MCP workflow", () => {
     }
     expect(trigger).toHaveBeenCalledTimes(1);
     expect(intake).toHaveBeenCalledTimes(1);
-  });
+  }));
 
-  test("autopilot rules import with a Recipe, and a paused rule says why", async () => {
+  test("autopilot rules import with a Recipe, and a paused rule says why", bindServiceTestEnvironment(async () => {
     admitActor();
     const ruleId = "00000000-0000-4000-8000-000000000007";
     const recipeId = "00000000-0000-4000-8000-000000000008";
@@ -165,9 +173,9 @@ describe("Compact MCP workflow", () => {
       { status: "failed", recipeId, pausedReason: null },
     ] } });
     expect(JSON.stringify(listed.structuredContent)).not.toContain("feed unreachable");
-  });
+  }));
 
-  test("export review exposes the exact revision and ordinary download page without signed URLs", async () => {
+  test("export review exposes the exact revision and ordinary download page without signed URLs", bindServiceTestEnvironment(async () => {
     admitActor();
     const clipId = "00000000-0000-4000-8000-000000000004";
     const exportId = "00000000-0000-4000-8000-000000000005";
@@ -176,9 +184,9 @@ describe("Compact MCP workflow", () => {
     const result = await (await connect({ ...principal, scopes: ["exports:read"] })).callTool({ name: "narriflow_get_clip_export", arguments: { workspaceId, projectId, clipId, exportId } });
     expect(result.structuredContent).toMatchObject({ data: { export: { exportId, editorRevision: 7, currentEditorRevision: 8, isOlderVersion: true, reviewUrl: `https://narriflow.test/projects/${projectId}/clips/${clipId}/exports/${exportId}` } } });
     expect(JSON.stringify(result)).not.toContain("secret=temporary");
-  });
+  }));
 
-  test("a prepared post without user confirmation never calls scheduling", async () => {
+  test("a prepared post without user confirmation never calls scheduling", bindServiceTestEnvironment(async () => {
     await withSecret(async () => {
       admitActor();
       const schedule = spyOn(socialPublicationScheduling, "schedule"); mocks.push(schedule);
@@ -189,9 +197,9 @@ describe("Compact MCP workflow", () => {
       expect(result.structuredContent).toMatchObject({ data: { error: "mcp_confirmation_required", kind: "forbidden" } });
       expect(schedule).not.toHaveBeenCalled();
     });
-  });
+  }));
 
-  test("a prepared-post replay from a second credential receives a continuation bound to that credential", async () => {
+  test("a prepared-post replay from a second credential receives a continuation bound to that credential", bindServiceTestEnvironment(async () => {
     await withSecret(async () => {
       admitActor();
       const receipts = new Map<string, services.OperationReceiptIdentity & { id: string; fingerprint: string; resourceType: string; resourceId: string; result: unknown }>();
@@ -217,9 +225,9 @@ describe("Compact MCP workflow", () => {
       expect(() => verifyMcpPreparation(replayed.preparationToken, { principal: first })).toThrow(expect.objectContaining({ code: "mcp_confirmation_binding_mismatch" }));
       expect(JSON.stringify([...receipts.values()][0]?.result)).not.toContain(original.preparationToken);
     });
-  });
+  }));
 
-  test("modern elicitation schedules the exact intent only after the client's accepted response", async () => {
+  test("modern elicitation schedules the exact intent only after the client's accepted response", bindServiceTestEnvironment(async () => {
     await withSecret(async () => {
       admitActor();
       const intent = publicationIntent();
@@ -232,9 +240,9 @@ describe("Compact MCP workflow", () => {
       expect(schedule).toHaveBeenCalledTimes(1);
       expect(schedule).toHaveBeenCalledWith(expect.objectContaining({ expectedEditorRevision: 3, clipExportId: intent.clipExportId, clipExportVariantId: intent.clipExportVariantId, caption: "Exact caption", accountId: intent.accountId }), expect.objectContaining({ actor: expect.objectContaining({ actorUserId: userId }) }));
     });
-  });
+  }));
 
-  test("declined elicitation and expired new approvals cannot submit a post", async () => {
+  test("declined elicitation and expired new approvals cannot submit a post", bindServiceTestEnvironment(async () => {
     await withSecret(async () => {
       admitActor();
       const schedule = spyOn(socialPublicationScheduling, "schedule").mockImplementation(async (input) => { await input.beforeAccept?.(); return scheduledPublication(); }); mocks.push(schedule);
@@ -250,9 +258,9 @@ describe("Compact MCP workflow", () => {
       expect(result.structuredContent).toMatchObject({ data: { error: "mcp_confirmation_expired" } });
       expect(schedule).toHaveBeenCalledTimes(1);
     });
-  });
+  }));
 
-  test("accepted scheduling replays survive confirmation expiry and a limiter outage", async () => {
+  test("accepted scheduling replays survive confirmation expiry and a limiter outage", bindServiceTestEnvironment(async () => {
     await withSecret(async () => {
       const replay = admitActor();
       replay.mockResolvedValue(scheduledPublication());
@@ -266,9 +274,9 @@ describe("Compact MCP workflow", () => {
       expect(result.structuredContent).toMatchObject({ data: { socialPostId: scheduledPublication().id } });
       expect(schedule).not.toHaveBeenCalled();
     });
-  });
+  }));
 
-  test("a lost elicitation response replays the accepted post without a receipt or another confirmation", async () => {
+  test("a lost elicitation response replays the accepted post without a receipt or another confirmation", bindServiceTestEnvironment(async () => {
     await withSecret(async () => {
       const replay = admitActor();
       replay.mockResolvedValue(scheduledPublication());
@@ -281,9 +289,9 @@ describe("Compact MCP workflow", () => {
       expect(result.structuredContent).toMatchObject({ data: { socialPostId: scheduledPublication().id, status: "scheduled" } });
       expect(schedule).not.toHaveBeenCalled();
     });
-  });
+  }));
 
-  test("an exact confirmed intent still respects the authoritative review gate without an override", async () => {
+  test("an exact confirmed intent still respects the authoritative review gate without an override", bindServiceTestEnvironment(async () => {
     await withSecret(async () => {
       admitActor();
       const schedule = spyOn(socialPublicationScheduling, "schedule").mockImplementation(async (input) => {
@@ -300,7 +308,7 @@ describe("Compact MCP workflow", () => {
       expect(result.structuredContent).toMatchObject({ data: { error: "review_approval_required" } });
       expect(schedule).toHaveBeenCalledTimes(1);
     });
-  });
+  }));
 });
 
 function admitActor() {

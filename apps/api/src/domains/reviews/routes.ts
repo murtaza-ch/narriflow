@@ -1,4 +1,7 @@
-import type { clipExportService, reviewerOptOut, reviewsCommands, reviewService } from "@narriflow/services";
+import { type clipExportService } from "@narriflow/services/clip-export.service";
+import { type reviewerOptOut } from "@narriflow/services/standing-grant-runtime";
+import { type reviewsCommands } from "@narriflow/services/reviews-commands-runtime";
+import { type reviewService } from "@narriflow/services/review.service";
 import { clipExportSnapshotSchema, resolvePricingTier, workspaceAllowsCapability } from "@narriflow/validators";
 import {
   createReviewRoundSchema, internalReviewCommentSchema, inviteReviewersSchema, retryReviewNotificationSchema,

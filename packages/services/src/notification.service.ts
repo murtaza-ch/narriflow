@@ -1,3 +1,4 @@
+import { readServiceEnvironment } from "./runtime-environment";
 import { getPrismaClient } from "@narriflow/db/client";
 import { finishingPicksSchema } from "@narriflow/validators";
 import { accessibleProjectWhere } from "./project-access";
@@ -461,7 +462,7 @@ export class NotificationService {
     this.now = dependencies.now ?? (() => new Date());
     this.hasResendApiKey =
       dependencies.hasResendApiKey ??
-      (() => Boolean(process.env.RESEND_API_KEY?.trim()));
+      (() => Boolean(readServiceEnvironment().RESEND_API_KEY?.trim()));
     this.leaseMs = dependencies.leaseMs ?? NOTIFICATION_LEASE_MS;
   }
 

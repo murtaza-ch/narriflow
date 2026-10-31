@@ -1,3 +1,4 @@
+import { readServiceEnvironment } from "./runtime-environment";
 import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
@@ -217,7 +218,7 @@ function timeoutMs(environment: NodeJS.ProcessEnv) {
 		: 30_000;
 }
 
-function productionModule(environment: NodeJS.ProcessEnv = process.env) {
+function productionModule(environment: NodeJS.ProcessEnv = readServiceEnvironment()) {
 	const apiKey = environment.OPENAI_API_KEY ?? "";
 	const model =
 		environment.OPENAI_ASSISTED_COPY_MODEL ??

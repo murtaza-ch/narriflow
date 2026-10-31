@@ -604,7 +604,7 @@ export class RenderGroupLifecycle {
         projectId: parent.projectId, workflowRunId: parent.id, attemptId: attempt.token,
         stage: "clip_rendering", status: parent.status as "queued" | "running", progress: parent.progress,
         errorCode: null, transition: `variant_started:${id}`,
-      }, { redisRequired: false, analyticsEnabled: false });
+      }, { progressRequired: false, analyticsEnabled: false });
       return true;
     });
   }
@@ -679,7 +679,7 @@ export class RenderGroupLifecycle {
         stage: "clip_rendering", status: parent.status as "queued" | "running", progress: parent.progress,
         errorCode: null, transition: `child_completed:${id}`,
         generationRenderResults: [{ renderId: id, status: "completed", errorCode: null }],
-      }, { redisRequired: isWorkflowRedisDeliveryEnabled(), analyticsEnabled: false });
+      }, { progressRequired: isWorkflowRedisDeliveryEnabled(), analyticsEnabled: false });
       return true;
     });
   }
@@ -733,7 +733,7 @@ export class RenderGroupLifecycle {
         stage: "clip_rendering", status: parent.status as "queued" | "running", progress: parent.progress,
         errorCode: null, transition: `child_failed:${id}`,
         generationRenderResults: [{ renderId: id, status: "failed", errorCode }],
-      }, { redisRequired: isWorkflowRedisDeliveryEnabled(), analyticsEnabled: false });
+      }, { progressRequired: isWorkflowRedisDeliveryEnabled(), analyticsEnabled: false });
       return true;
     });
   }
@@ -916,7 +916,7 @@ export class RenderGroupLifecycle {
         transition: `group_finished:${input.token}`,
         ...(publicResults.length ? { generationRenderResults: publicResults } : {}),
       },
-      { redisRequired: isWorkflowRedisDeliveryEnabled(), analyticsEnabled: false },
+      { progressRequired: isWorkflowRedisDeliveryEnabled(), analyticsEnabled: false },
     );
     return decision;
   }

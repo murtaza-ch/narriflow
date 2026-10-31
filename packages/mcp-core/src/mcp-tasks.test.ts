@@ -1,5 +1,6 @@
+import { bindServiceTestEnvironment } from "@narriflow/services/runtime-test-support";
 import { expect, test } from "bun:test";
-import { createMcpTaskRegistry, type McpTaskRecord, type McpTaskResolution } from "@narriflow/services";
+import { createMcpTaskRegistry, type McpTaskRecord, type McpTaskResolution } from "@narriflow/services/mcp-task";
 import { z } from "zod";
 import { installNarriflowTasks, mcpTaskTerminalResult, NarriflowMcpServer } from "./mcp-tasks";
 import { createNarriflowMcpHttpHandler } from "./mcp-http-handler";
@@ -53,7 +54,7 @@ function fixture() {
   return { rpc, rows, finish: (outcome: McpTaskResolution) => { resolution = outcome; }, setCaller: () => { principal = { ...principal, clientId: "other" }; } };
 }
 
-test("Tasks discovery and tool handles require the negotiated modern extension", async () => {
+test("Tasks discovery and tool handles require the negotiated modern extension", bindServiceTestEnvironment(async () => {
   const h = fixture();
   expect((await h.rpc("server/discover")).result.capabilities.extensions[extension]).toEqual({});
   expect((await h.rpc("server/discover", {}, false)).result.capabilities.extensions[extension]).toBeUndefined();
@@ -64,8 +65,8 @@ test("Tasks discovery and tool handles require the negotiated modern extension",
   expect(created.result.taskId).toBeString();
   expect(created.result._meta["narriflow/operation"]).toEqual({ workspaceId, domainKind: "intake", domainId, projectId });
   expect(created.result._meta.privateGrant).toBeUndefined();
-});
-test("expired retained Tasks do not block an accepted operation replay", async () => {
+}));
+test("expired retained Tasks do not block an accepted operation replay", bindServiceTestEnvironment(async () => {
   const h = fixture();
   const request = { name: "narriflow_submit_video", arguments: { clientIdempotencyKey: key } };
   const created = (await h.rpc("tools/call", request)).result;
@@ -75,8 +76,8 @@ test("expired retained Tasks do not block an accepted operation replay", async (
   expect(replay.result).toMatchObject({ resultType: "complete", structuredContent: { data: { projectId, operationId: domainId } } });
   expect((await h.rpc("tasks/get", { taskId: created.taskId })).error.code).toBe(-32602);
   expect(h.rows.size).toBe(1);
-});
-test("Tasks preserve SDK method/name validation and reject malformed extension input", async () => {
+}));
+test("Tasks preserve SDK method/name validation and reject malformed extension input", bindServiceTestEnvironment(async () => {
   const h = fixture();
   const created = (await h.rpc("tools/call", { name: "narriflow_submit_video", arguments: { clientIdempotencyKey: key } })).result;
   const params = { taskId: created.taskId };
@@ -90,8 +91,8 @@ test("Tasks preserve SDK method/name validation and reject malformed extension i
     "io.modelcontextprotocol/protocolVersion": "2026-07-28", "io.modelcontextprotocol/clientCapabilities": { extensions: { [extension]: [] } },
   } });
   expect(malformed.httpStatus).toBe(400);
-});
-test("modern get/update/cancel wire methods reconnect and preserve immutable terminal outcomes", async () => {
+}));
+test("modern get/update/cancel wire methods reconnect and preserve immutable terminal outcomes", bindServiceTestEnvironment(async () => {
   const h = fixture();
   const created = (await h.rpc("tools/call", { name: "narriflow_submit_video", arguments: { clientIdempotencyKey: key } })).result;
   const params = { taskId: created.taskId };
@@ -106,8 +107,8 @@ test("modern get/update/cancel wire methods reconnect and preserve immutable ter
   expect((await h.rpc("tasks/get", params)).result.status).toBe("completed");
   expect((await h.rpc("tasks/get", params, false)).error.code).toBe(-32601);
   h.setCaller(); expect((await h.rpc("tasks/get", params)).error.code).toBe(-32602);
-});
-test("eventual Task ToolResults carry private zero-TTL cache fields on the wire", async () => {
+}));
+test("eventual Task ToolResults carry private zero-TTL cache fields on the wire", bindServiceTestEnvironment(async () => {
   const h = fixture();
   const created = (await h.rpc("tools/call", { name: "narriflow_submit_video", arguments: { clientIdempotencyKey: key } })).result;
   const record = h.rows.get(created.taskId)!;
@@ -117,4 +118,4 @@ test("eventual Task ToolResults carry private zero-TTL cache fields on the wire"
   const eventual = (await h.rpc("tasks/get", { taskId: created.taskId })).result;
   expect(eventual).toMatchObject({ status: "completed", result: { resultType: "complete", ttlMs: 0, cacheScope: "private",
     structuredContent: { data: { projectId, status: "completed" } } } });
-});
+}));

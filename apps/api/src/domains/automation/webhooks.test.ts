@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { createHmac } from "node:crypto";
-import { ZoomError, ZoomService } from "@narriflow/services";
+import { ZoomError } from "@narriflow/services/zoom";
+import { ZoomService } from "@narriflow/services/zoom.service";
 import { Hono } from "hono";
 import { createAutomationWebhookRoutes } from "./webhooks";
 

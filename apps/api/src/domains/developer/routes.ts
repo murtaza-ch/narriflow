@@ -1,11 +1,9 @@
-import type {
-  DeveloperCommands,
-  callbackSigningSecrets,
-  socialOAuthService,
-  webhookSubscriptions,
-  workspaceService,
-} from "@narriflow/services";
-import { hasFeature, requirePlanFeature } from "@narriflow/services";
+import { type DeveloperCommands } from "@narriflow/services/developer-commands";
+import { type callbackSigningSecrets } from "@narriflow/services/completion-callback-runtime";
+import { type socialOAuthService } from "@narriflow/services/social-oauth.service";
+import { type webhookSubscriptions } from "@narriflow/services/webhook-subscription-runtime";
+import { type workspaceService } from "@narriflow/services/workspace.service";
+import { hasFeature, requirePlanFeature } from "@narriflow/services/plan-features";
 import { workspaceAllowsCapability } from "@narriflow/validators";
 import {
   createApiKeyRequestSchema,

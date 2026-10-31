@@ -1,3 +1,4 @@
+import { bindServiceTestEnvironment } from "@narriflow/services/runtime-test-support";
 import { createDatabaseTestContext } from "@narriflow/db/testing";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
@@ -24,7 +25,7 @@ const service = new ReviewService(async (_key, limit) => ({ allowed: true, avail
   let oldClient: PrismaClient | undefined;
   let oldRedisUrl: string | undefined;
   const global = createDatabaseTestContext();
-  beforeAll(global.bind(async () => {
+  beforeAll(bindServiceTestEnvironment(global.bind(async () => {
     oldRedisUrl = process.env.UPSTASH_REDIS_URL;
     delete process.env.UPSTASH_REDIS_URL;
     const url = process.env.DATABASE_URL!;
@@ -40,8 +41,8 @@ const service = new ReviewService(async (_key, limit) => ({ allowed: true, avail
     pool = new Pool({ connectionString: url, max: 4, options: `-csearch_path=${schema}` });
     prisma = new PrismaClient({ adapter: new PrismaPg(pool, { schema }) });
     oldClient = global.client; global.client = prisma;
-  }), 30_000);
-  afterAll(global.bind(async () => { if (oldRedisUrl === undefined) delete process.env.UPSTASH_REDIS_URL; else process.env.UPSTASH_REDIS_URL = oldRedisUrl; global.client = oldClient; await prisma?.$disconnect(); await pool?.end(); if (admin) { await admin.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`); await admin.end(); } }));
+  })), 30_000);
+  afterAll(bindServiceTestEnvironment(global.bind(async () => { if (oldRedisUrl === undefined) delete process.env.UPSTASH_REDIS_URL; else process.env.UPSTASH_REDIS_URL = oldRedisUrl; global.client = oldClient; await prisma?.$disconnect(); await pool?.end(); if (admin) { await admin.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`); await admin.end(); } })));
   async function fixture() {
     const id = randomUUID();
     const user = await prisma.user.create({ data: { clerkId: id, primaryEmail: `${id}@example.test` } });
@@ -54,7 +55,7 @@ const service = new ReviewService(async (_key, limit) => ({ allowed: true, avail
     const claims = { roundId: round.id, guestId: guest.id, identity: "Client", subject, grant: hashReviewAccessToken(token) };
     return { user, workspace, project, round, guest, claims, session: issueReviewSession(claims, secret), token };
   }
-  test("two processes serialize one key and commit exactly one domain row plus immutable event", global.bind(async () => {
+  test("two processes serialize one key and commit exactly one domain row plus immutable event", bindServiceTestEnvironment(global.bind(async () => {
     const f = await fixture();
     const results = await Promise.all([1, 2].map(async () => {
       const child = Bun.spawn([process.execPath, resolve(import.meta.dir, "guest-replay-child.ts")], { stdout: "pipe", stderr: "pipe", env: { ...process.env, REVIEW_TEST_URL: process.env.DATABASE_URL, REVIEW_TEST_SCHEMA: schema, REVIEW_TEST_SESSION: f.session, REVIEW_TEST_SECRET: secret } });
@@ -68,8 +69,8 @@ const service = new ReviewService(async (_key, limit) => ({ allowed: true, avail
     expect(events).toHaveLength(1);
     for (const value of [f.session, f.token, f.claims.subject, "cross-process-key"]) expect(JSON.stringify(events)).not.toContain(value);
     expect(await prisma.operationReceipt.count()).toBe(0);
-  }), 30_000);
-  test("lost response and later edit/delete replay the original snapshot, and changed input conflicts", global.bind(async () => {
+  })), 30_000);
+  test("lost response and later edit/delete replay the original snapshot, and changed input conflicts", bindServiceTestEnvironment(global.bind(async () => {
     const f = await fixture(); const mutation = { clientIdempotencyKey: randomUUID() };
     const accepted = await service.addComment(f.session, secret, { body: "Original" }, mutation);
     await service.editComment(f.session, secret, accepted.value.id, { body: "Edited" });
@@ -77,8 +78,8 @@ const service = new ReviewService(async (_key, limit) => ({ allowed: true, avail
     await service.deleteComment(f.session, secret, accepted.value.id);
     expect(await service.addComment(f.session, secret, { body: "Original" }, mutation)).toEqual({ value: accepted.value, replayed: true });
     await expect(service.addComment(f.session, secret, { body: "Changed" }, mutation)).rejects.toMatchObject({ code: "operation_idempotency_conflict" });
-  }));
-  test("decision replay survives subsequent decisions and precedes unavailable limiter refusal", global.bind(async () => {
+  })));
+  test("decision replay survives subsequent decisions and precedes unavailable limiter refusal", bindServiceTestEnvironment(global.bind(async () => {
     const f = await fixture(); const mutation = { clientIdempotencyKey: randomUUID() };
     const first = await service.decide(f.session, secret, { decision: "approved" }, mutation);
     await service.decide(f.session, secret, { decision: "changes_requested" }, { clientIdempotencyKey: randomUUID() });
@@ -86,8 +87,8 @@ const service = new ReviewService(async (_key, limit) => ({ allowed: true, avail
     expect(await unavailable.decide(f.session, secret, { decision: "approved" }, mutation)).toEqual({ value: first.value, replayed: true });
     await expect(unavailable.decide(f.session, secret, { decision: "approved" }, { clientIdempotencyKey: randomUUID() })).rejects.toMatchObject({ code: "mutations_unavailable" });
     await expect(unavailable.addComment(f.session, secret, { body: "new" }, { clientIdempotencyKey: randomUUID() })).rejects.toMatchObject({ code: "mutations_unavailable" });
-  }));
-  test("rotation and expiry refuse replay; a new grant has independent caller-key identity", global.bind(async () => {
+  })));
+  test("rotation and expiry refuse replay; a new grant has independent caller-key identity", bindServiceTestEnvironment(global.bind(async () => {
     const f = await fixture(); const mutation = { clientIdempotencyKey: randomUUID() };
     await service.authorizeSession(f.session, secret);
     await service.addComment(f.session, secret, { body: "Original" }, mutation);
@@ -102,8 +103,8 @@ const service = new ReviewService(async (_key, limit) => ({ allowed: true, avail
     expect(verifyReviewSession(rotated, secret).grant).toBe(hashReviewAccessToken(f.token));
     await prisma.reviewRound.update({ where: { id: f.round.id }, data: { revokedAt: new Date(), status: "revoked" } });
     await expect(service.addComment(rotated, secret, { body: "New grant" }, mutation)).rejects.toMatchObject({ code: "review_session_invalid" });
-  }));
-  test("internal commands commit receipts with their writes and reauthorize before immutable replay", global.bind(async () => {
+  })));
+  test("internal commands commit receipts with their writes and reauthorize before immutable replay", bindServiceTestEnvironment(global.bind(async () => {
     const f = await fixture();
     let authorized = true; let checkedLimit = 0;
     const commands = createReviewsCommands({ service, receipts: createOperationReceiptExecutor(prismaOperationReceiptPersistence(prisma)),
@@ -133,8 +134,8 @@ const service = new ReviewService(async (_key, limit) => ({ allowed: true, avail
     await commands.revoke(scope, f.round.id, revoked);
     expect((await commands.revoke(scope, f.round.id, revoked)).value).toEqual({ revoked: true });
     expect(await prisma.operationReceipt.count({ where: { workspaceId: f.workspace.id } })).toBe(5);
-  }));
-  test("round creation and its notification intent share one receipt transaction, without plaintext links", global.bind(async () => {
+  })));
+  test("round creation and its notification intent share one receipt transaction, without plaintext links", bindServiceTestEnvironment(global.bind(async () => {
     const f = await fixture();
     const workflow = await prisma.workflowRun.create({ data: { projectId: f.project.id, idempotencyKey: randomUUID(), stage: "moment_detection", status: "completed" } });
     const clip = await prisma.clip.create({ data: { projectId: f.project.id, workflowRunId: workflow.id, index: 0, startSec: 0, endSec: 10, title: "Teaser", hookText: "Hook", reasoning: "Fixture", category: "hook", transcriptSlice: [], viralityScore: 80, hookStrengthScore: 80, emotionalIntensityScore: 80, pacingScore: 80, durationOptimalityScore: 80, tiktokScore: 80, youtubeScore: 80, instagramScore: 80, llmProvider: "test", llmModel: "test" } });
@@ -153,5 +154,5 @@ const service = new ReviewService(async (_key, limit) => ({ allowed: true, avail
       const receipt = await prisma.operationReceipt.findFirstOrThrow({ where: { workspaceId: f.workspace.id } });
       expect(JSON.stringify(receipt.result)).not.toContain(first.value.token);
     } finally { if (prior === undefined) delete process.env.REVIEW_ACCESS_SECRET; else process.env.REVIEW_ACCESS_SECRET = prior; }
-  }));
+  })));
 });

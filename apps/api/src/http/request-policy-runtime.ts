@@ -14,7 +14,7 @@ import {
   type WorkspaceActorContext,
 } from "@narriflow/auth";
 import { getPrismaClient } from "@narriflow/db/client";
-import { checkRateLimit } from "@narriflow/services";
+import { checkRateLimit } from "@narriflow/services/rate-limit";
 import { resolveAuthenticatedProject } from "./project-admission";
 import {
   type ActorScope,

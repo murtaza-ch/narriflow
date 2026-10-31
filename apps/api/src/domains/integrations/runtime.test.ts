@@ -1,6 +1,10 @@
+import { bindServiceTestEnvironment } from "@narriflow/services/runtime-test-support";
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { createMcpConfirmation, createMcpUploadHandoff, type NarriflowMcpPrincipal } from "@narriflow/mcp-core";
-import { integrationUploadSessionKey, socialPublicationScheduling, uploadSessionService, workspaceService, type WorkspaceActorContext } from "@narriflow/services";
+import { integrationUploadSessionKey } from "@narriflow/services/integration-commands";
+import { socialPublicationScheduling } from "@narriflow/services/social-publication-scheduling-runtime";
+import { uploadSessionService } from "@narriflow/services/upload-session.service";
+import { workspaceService, type WorkspaceActorContext } from "@narriflow/services/workspace.service";
 import { loadApiConfig } from "../../config";
 import { createIntegrationsRouteDeps, requireContinuationActor } from "./runtime";
 
@@ -12,11 +16,11 @@ const principal: NarriflowMcpPrincipal = { kind: "api_key", apiKeyId: keyId, use
 const config = loadApiConfig({ NODE_ENV: "test", API_ORIGIN: "https://api.test", WEB_ORIGIN: "https://web.test", CLERK_AUTHORIZED_PARTIES: "https://web.test", CLERK_SECRET_KEY: "inert", CLERK_PUBLISHABLE_KEY: "inert" });
 const restores: Array<{ mockRestore(): void }> = [];
 const previousSecret = process.env.MCP_CONTINUATION_SECRET;
-afterEach(() => {
+afterEach(bindServiceTestEnvironment(() => {
   for (const spy of restores.splice(0)) spy.mockRestore();
   if (previousSecret === undefined) delete process.env.MCP_CONTINUATION_SECRET;
   else process.env.MCP_CONTINUATION_SECRET = previousSecret;
-});
+}));
 function track<T extends { mockRestore(): void }>(spy: T) { restores.push(spy); return spy; }
 function admitActor() {
   track(spyOn(workspaceService, "findActor").mockResolvedValue(actor));
@@ -28,7 +32,7 @@ function expiredHandoff() {
 }
 
 describe("MCP continuation runtime", () => {
-  for (const alreadyAccepted of [false, true]) test(`declining ${alreadyAccepted ? "an accepted" : "an unaccepted"} confirmation checks the durable publication`, async () => {
+  for (const alreadyAccepted of [false, true]) test(`declining ${alreadyAccepted ? "an accepted" : "an unaccepted"} confirmation checks the durable publication`, bindServiceTestEnvironment(async () => {
     admitActor();
     process.env.MCP_CONTINUATION_SECRET = "shared-test-continuation-secret-at-least-32-bytes";
     const intent = { workspaceId, clientIdempotencyKey: keyId, projectId: actorId, clipId: keyId, clipExportId: keyId, clipExportVariantId: keyId, expectedEditorRevision: 1, accountId: keyId, platform: "tiktok" as const, aspectRatio: "9:16" as const, resolution: "1080p" as const, scheduledFor: "2026-11-01T09:00:00.000Z", caption: "Frozen caption", providerSettings: {} };
@@ -44,8 +48,8 @@ describe("MCP continuation runtime", () => {
     expect(await createIntegrationsRouteDeps(config).confirm(actorId, { token, decision: "decline" }, () => {})).toEqual({ destination: alreadyAccepted ? `/projects/${actorId}?publicationId=accepted-publication` : "/integrations/mcp/confirm?declined=1" });
     expect(replay).toHaveBeenCalledWith({ ...intent, deliveryMode: "direct", actorUserId: actorId, scheduledFor: new Date(intent.scheduledFor) }, { actor });
     expect(schedule).not.toHaveBeenCalled();
-  });
-  test("expired handoff resume goes through the service with the originating actor's stored key", async () => {
+  }));
+  test("expired handoff resume goes through the service with the originating actor's stored key", bindServiceTestEnvironment(async () => {
     admitActor();
     const lookup = track(spyOn(uploadSessionService, "hasOwnSessionByClientKey").mockResolvedValue(true));
     const token = expiredHandoff();
@@ -55,21 +59,21 @@ describe("MCP continuation runtime", () => {
     expect(result).not.toHaveProperty("oauthToken");
     expect(result).not.toHaveProperty("callerId");
     expect(JSON.stringify(result)).not.toContain(token);
-  });
-  test("expired handoff with no own session cannot become a fresh upload", async () => {
+  }));
+  test("expired handoff with no own session cannot become a fresh upload", bindServiceTestEnvironment(async () => {
     admitActor();
     track(spyOn(uploadSessionService, "hasOwnSessionByClientKey").mockResolvedValue(false));
     await expect(createIntegrationsRouteDeps(config).uploadHandoff(actorId, expiredHandoff())).rejects.toMatchObject({ code: "mcp_upload_handoff_expired" });
-  });
-  test("the signed state rejects another actor before reading session ownership", async () => {
+  }));
+  test("the signed state rejects another actor before reading session ownership", bindServiceTestEnvironment(async () => {
     const lookup = track(spyOn(uploadSessionService, "hasOwnSessionByClientKey").mockResolvedValue(true));
     await expect(createIntegrationsRouteDeps(config).uploadHandoff(keyId, expiredHandoff())).rejects.toMatchObject({ code: "mcp_upload_handoff_binding_mismatch" });
     expect(lookup).not.toHaveBeenCalled();
-  });
+  }));
   for (const [patch, reason] of [[{ role: "viewer" }, "role"], [{ pricingTier: "free" }, "plan"], [{ status: "past_due" }, "status"]] as const) {
-    test(`current membership refusal preserves ${reason} recovery facts for the web UI`, async () => {
+    test(`current membership refusal preserves ${reason} recovery facts for the web UI`, bindServiceTestEnvironment(async () => {
       track(spyOn(workspaceService, "findActor").mockResolvedValue({ ...actor, ...patch }));
       await expect(requireContinuationActor(actorId, workspaceId, "processing.consume")).rejects.toMatchObject({ code: "integration_access_unavailable", details: { reason, workspace: { workspaceId } } });
-    });
+    }));
   }
 });

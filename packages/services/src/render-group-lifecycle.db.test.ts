@@ -1,3 +1,4 @@
+import { bindServiceTestEnvironment } from "./runtime-test-support";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
@@ -22,7 +23,7 @@ dbDescribe("Render Group PostgreSQL invariants", () => {
   let prisma: PrismaClient;
   let pool: Pool;
   let queries: string[] = [];
-  beforeAll(() => {
+  beforeAll(bindServiceTestEnvironment(() => {
     if (
       !url ||
       !schema?.startsWith("workflow_lifecycle_test_") ||
@@ -37,14 +38,14 @@ dbDescribe("Render Group PostgreSQL invariants", () => {
     });
     client.$on("query", (event) => queries.push(event.query));
     prisma = client;
-  });
-  beforeEach(async () => {
+  }));
+  beforeEach(bindServiceTestEnvironment(async () => {
     await prisma.workspace.deleteMany({
       where: { owner: { clerkId: { startsWith: "group-db-test:" } } },
     });
     await prisma.user.deleteMany({ where: { clerkId: { startsWith: "group-db-test:" } } });
-  });
-  afterAll(async () => {
+  }));
+  afterAll(bindServiceTestEnvironment(async () => {
     if (prisma) {
       await prisma.workspace.deleteMany({
         where: { owner: { clerkId: { startsWith: "group-db-test:" } } },
@@ -53,7 +54,7 @@ dbDescribe("Render Group PostgreSQL invariants", () => {
     }
     await prisma?.$disconnect();
     await pool?.end();
-  });
+  }));
 
   async function fixture(
     count = 2,
@@ -229,7 +230,7 @@ dbDescribe("Render Group PostgreSQL invariants", () => {
     });
   }
 
-  test("atomic partition admission is idempotent and validates frozen identities", async () => {
+  test("atomic partition admission is idempotent and validates frozen identities", bindServiceTestEnvironment(async () => {
     const f = await fixture(2, ["ratio_9_16", "ratio_1_1"]);
     expect(await f.coordinator.admitRenderGroups(f.attempt, f.admissions)).toEqual(f.refs);
     expect(await prisma.renderGroup.count()).toBe(2);
@@ -249,9 +250,9 @@ dbDescribe("Render Group PostgreSQL invariants", () => {
     expect("markClipRenderVariantRendering" in f.coordinator).toBe(false);
     expect("completeClipRenderVariant" in f.coordinator).toBe(false);
     expect("failClipRenderVariant" in f.coordinator).toBe(false);
-  });
+  }));
 
-  test("a committed render keeps the caption characters it left out, and nothing when none", async () => {
+  test("a committed render keeps the caption characters it left out, and nothing when none", bindServiceTestEnvironment(async () => {
     const f = await fixture(2, ["ratio_9_16", "ratio_1_1"]);
     await f.coordinator.admitRenderGroups(f.attempt, f.admissions);
     const diagnostics = { omittedCodePoints: ["U+2605"], skippedEmoji: [] as string[] };
@@ -263,9 +264,9 @@ dbDescribe("Render Group PostgreSQL invariants", () => {
     const byId = new Map(rows.map((row) => [row.id, row.captionDiagnostics]));
     for (const id of withOmission.memberIds) expect(byId.get(id)).toEqual(diagnostics);
     for (const id of clean.memberIds) expect(byId.get(id)).toBeNull();
-  });
+  }));
 
-  test("generic parent completion cannot bypass live group settlement", async () => {
+  test("generic parent completion cannot bypass live group settlement", bindServiceTestEnvironment(async () => {
     const f = await fixture(1);
     const child = (await f.worker.claim())!;
     await expect(f.coordinator.completeStage(f.attempt)).rejects.toBeInstanceOf(
@@ -276,9 +277,9 @@ dbDescribe("Render Group PostgreSQL invariants", () => {
     expect((await prisma.workflowRun.findUniqueOrThrow({ where: { id: f.run.id } })).status).toBe(
       "running",
     );
-  });
+  }));
 
-  test("ten-group progress polling bounds database round trips while a child renders", async () => {
+  test("ten-group progress polling bounds database round trips while a child renders", bindServiceTestEnvironment(async () => {
     const f = await fixture(10);
     const child = (await f.worker.claim())!;
     await start(f.worker, child);
@@ -291,9 +292,9 @@ dbDescribe("Render Group PostgreSQL invariants", () => {
     // One per-group scan starves both child writes and their heartbeats on Neon.
     expect(queries.length).toBeLessThanOrEqual(35);
     await f.worker.heartbeat(child);
-  });
+  }));
 
-  test("SIGKILL of a real lease-owning process preserves completion and charges only its interrupted group", async () => {
+  test("SIGKILL of a real lease-owning process preserves completion and charges only its interrupted group", bindServiceTestEnvironment(async () => {
     const f = await fixture(1, ["ratio_9_16", "ratio_1_1"]);
     const child = Bun.spawn(["bun", "-e", `
       import { PrismaPg } from "@prisma/adapter-pg";
@@ -338,9 +339,9 @@ dbDescribe("Render Group PostgreSQL invariants", () => {
       if (child.exitCode === null) child.kill("SIGKILL");
       await child.exited;
     }
-  }, 20_000);
+  }), 20_000);
 
-  test("two simultaneous replicas claim distinct groups and duplicate claim has one winner", async () => {
+  test("two simultaneous replicas claim distinct groups and duplicate claim has one winner", bindServiceTestEnvironment(async () => {
     const f = await fixture(4);
     const second = new RenderGroupLifecycle({ prisma, leaseOwner: "second" });
     const claims = await Promise.all([f.worker.claim(), second.claim()]);
@@ -350,9 +351,9 @@ dbDescribe("Render Group PostgreSQL invariants", () => {
     const same = await Promise.all([f.worker.claim({ groupId }), second.claim({ groupId })]);
     expect(same.filter(Boolean)).toHaveLength(1);
     expect(await prisma.renderGroupExecution.count()).toBe(3);
-  });
+  }));
 
-  test("coordinator death and reclaim beyond three claims preserves live group token and variant state", async () => {
+  test("coordinator death and reclaim beyond three claims preserves live group token and variant state", bindServiceTestEnvironment(async () => {
     const f = await fixture(1);
     const child = (await f.worker.claim())!;
     await start(f.worker, child);
@@ -381,9 +382,9 @@ dbDescribe("Render Group PostgreSQL invariants", () => {
       (await prisma.renderGroup.findUniqueOrThrow({ where: { id: child.groupId } }))
         .chargedAttemptCount,
     ).toBe(1);
-  });
+  }));
 
-  test("stale child lease, parent generation and invalidated membership reject every child writer", async () => {
+  test("stale child lease, parent generation and invalidated membership reject every child writer", bindServiceTestEnvironment(async () => {
     const f = await fixture(1);
     const child = (await f.worker.claim())!;
     const id = child.memberIds[0]!;
@@ -422,9 +423,9 @@ dbDescribe("Render Group PostgreSQL invariants", () => {
         where: { workflowRunId: f.run.id, notificationRequired: true },
       }),
     ).toBe(0);
-  });
+  }));
 
-  test("poison group exhausts only its charged starts while healthy siblings finish", async () => {
+  test("poison group exhausts only its charged starts while healthy siblings finish", bindServiceTestEnvironment(async () => {
     const f = await fixture(2);
     const poison = (await f.worker.claim({ groupId: f.refs[0]!.groupId }))!;
     const healthy = (await f.worker.claim({ groupId: f.refs[1]!.groupId }))!;
@@ -471,9 +472,9 @@ dbDescribe("Render Group PostgreSQL invariants", () => {
         where: { workflowRunId: f.run.id, notificationRequired: true },
       }),
     ).toBe(1);
-  });
+  }));
 
-  test("pre-start expiry/rejection and graceful shutdown refund once with drain deferral", async () => {
+  test("pre-start expiry/rejection and graceful shutdown refund once with drain deferral", bindServiceTestEnvironment(async () => {
     const f = await fixture(1);
     let child = (await f.worker.claim())!;
     await expire(child.groupId);
@@ -501,9 +502,9 @@ dbDescribe("Render Group PostgreSQL invariants", () => {
     expect(
       (await prisma.clipRender.findUniqueOrThrow({ where: { id: child.memberIds[0]! } })).status,
     ).toBe("pending");
-  });
+  }));
 
-  test("mixed siblings retain success/permanent outcomes and retry only transient member", async () => {
+  test("mixed siblings retain success/permanent outcomes and retry only transient member", bindServiceTestEnvironment(async () => {
     const f = await fixture(1, ["ratio_9_16", "ratio_1_1", "ratio_16_9"], true);
     const child = (await f.worker.claim())!;
     await start(f.worker, child);
@@ -544,9 +545,9 @@ dbDescribe("Render Group PostgreSQL invariants", () => {
       ).status,
     ).toBe("partial_ready");
     expect(await prisma.renderGroupVariantOutcome.count({ where: { token: retry.token } })).toBe(1);
-  });
+  }));
 
-  test("duplicate completion reconciles committed bytes after token expiry and parent terminal settlement", async () => {
+  test("duplicate completion reconciles committed bytes after token expiry and parent terminal settlement", bindServiceTestEnvironment(async () => {
     const f = await fixture(1);
     const child = (await f.worker.claim())!;
     await success(f.worker, child);
@@ -568,9 +569,9 @@ dbDescribe("Render Group PostgreSQL invariants", () => {
     ).toBe(false);
     expect((await f.worker.readVariantOutcome(child, id))?.result).toBe("completed");
     expect(await prisma.renderGroupVariantOutcome.count({ where: { token: child.token } })).toBe(1);
-  });
+  }));
 
-  test("a lost commit acknowledgement retains a queryable durable completion", async () => {
+  test("a lost commit acknowledgement retains a queryable durable completion", bindServiceTestEnvironment(async () => {
     const f = await fixture(1);
     const child = (await f.worker.claim())!;
     await start(f.worker, child);
@@ -605,9 +606,9 @@ dbDescribe("Render Group PostgreSQL invariants", () => {
       status: "completed",
       succeeded: 1,
     });
-  });
+  }));
 
-  test("late variants enter exactly one follow-up under duplicate terminal settlement", async () => {
+  test("late variants enter exactly one follow-up under duplicate terminal settlement", bindServiceTestEnvironment(async () => {
     const f = await fixture(1);
     const child = (await f.worker.claim())!;
     const late = await prisma.clipRender.create({
@@ -631,9 +632,9 @@ dbDescribe("Render Group PostgreSQL invariants", () => {
       status: "completed",
       requested: 1,
     });
-  });
+  }));
 
-  test("background layout defers live rendering and resumes after its lease ends", async () => {
+  test("background layout defers live rendering and resumes after its lease ends", bindServiceTestEnvironment(async () => {
     const f = await fixture(1);
     const child = (await f.worker.claim())!;
     const evidence = new LayoutEvidenceLifecycle({ prisma });
@@ -643,9 +644,9 @@ dbDescribe("Render Group PostgreSQL invariants", () => {
     ).toBe(0);
     await f.worker.release({ ...child, reason: "pre_start_rejection" });
     expect((await evidence.claimAutomatic(60_000))?.id).toBe(child.clipId);
-  });
+  }));
 
-  test("cancelling queued coordination closes group leases and invalidates current membership", async () => {
+  test("cancelling queued coordination closes group leases and invalidates current membership", bindServiceTestEnvironment(async () => {
     const f = await fixture(1);
     const child = (await f.worker.claim())!;
     await start(f.worker, child);
@@ -665,9 +666,9 @@ dbDescribe("Render Group PostgreSQL invariants", () => {
         .result,
     ).toBe("superseded");
     expect(await f.worker.claim()).toBeNull();
-  });
+  }));
 
-  test("DB time after a parent lock wait rejects an expired heartbeat", async () => {
+  test("DB time after a parent lock wait rejects an expired heartbeat", bindServiceTestEnvironment(async () => {
     const f = await fixture(1);
     const child = (await f.worker.claim())!;
     let locked!: () => void;
@@ -692,9 +693,9 @@ dbDescribe("Render Group PostgreSQL invariants", () => {
     unlock();
     await lock;
     expect(await heartbeat).toBeInstanceOf(RenderGroupAttemptLost);
-  });
+  }));
 
-  test("deleted automatic members become superseded without stranding healthy membership", async () => {
+  test("deleted automatic members become superseded without stranding healthy membership", bindServiceTestEnvironment(async () => {
     const f = await fixture(2);
     await prisma.clipRender.delete({ where: { id: f.admissions[0]!.variantIds[0]! } });
     expect(await f.worker.claim({ groupId: f.refs[0]!.groupId })).toBeNull();
@@ -706,5 +707,5 @@ dbDescribe("Render Group PostgreSQL invariants", () => {
       succeeded: 1,
       superseded: 1,
     });
-  });
+  }));
 });

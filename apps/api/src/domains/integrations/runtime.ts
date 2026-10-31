@@ -1,10 +1,19 @@
+import { readServiceEnvironment } from "@narriflow/services/runtime-environment";
 import { OAuthError, OAuthErrorCode } from "@modelcontextprotocol/server";
 import { createBearerAuthenticator, createServerClerkClient, getAppUserForClerkIdentity } from "@narriflow/auth";
 import { getPrismaClient } from "@narriflow/db/client";
 import { buildNarriflowMcpServer, McpToolAdmission, MCP_WORKSPACE_ACCESS_MESSAGE, verifyMcpPreparation, verifyMcpUploadHandoff, acceptMcpConfirmation } from "@narriflow/mcp-core";
 import { principalFromMcpAuth } from "@narriflow/mcp-core/auth";
 import { createNarriflowMcpHttpHandler } from "@narriflow/mcp-core/http";
-import { checkRateLimit, ExpectedDomainFailureError, integrationUploadSessionKey, integrationUploadSessions, recipeService, requirePlanFeature, socialOAuthService, socialPublicationScheduling, uploadSessionService, workspaceService } from "@narriflow/services";
+import { checkRateLimit } from "@narriflow/services/rate-limit";
+import { ExpectedDomainFailureError } from "@narriflow/services/expected-domain-failure";
+import { integrationUploadSessionKey, integrationUploadSessions } from "@narriflow/services/integration-commands";
+import { recipeService } from "@narriflow/services/recipe.service";
+import { requirePlanFeature } from "@narriflow/services/plan-features";
+import { socialOAuthService } from "@narriflow/services/social-oauth.service";
+import { socialPublicationScheduling } from "@narriflow/services/social-publication-scheduling-runtime";
+import { uploadSessionService } from "@narriflow/services/upload-session.service";
+import { workspaceService } from "@narriflow/services/workspace.service";
 import { buildGenerationContext, hasFeature, roleHasWorkspaceCapability, type WorkspaceCapability } from "@narriflow/validators";
 import type { ApiConfig } from "../../config";
 import { createMcpAuth, getMcpMutationGuard } from "./mcp-auth";
@@ -41,7 +50,7 @@ export function createIntegrationsRouteDeps(config: ApiConfig): IntegrationsRout
   const admitContinuation = continuationAdmission(auth);
   return {
     async status(actor) {
-      const configuration = await inspectMcpConfiguration({ resourceUrl: auth.resourceUrl, issuerUrl: auth.issuerUrl, hasVerificationSecret: Boolean(config.clerk.secretKey), hasConfirmationSecret: Buffer.byteLength(process.env.MCP_CONTINUATION_SECRET ?? "") >= 32 });
+      const configuration = await inspectMcpConfiguration({ resourceUrl: auth.resourceUrl, issuerUrl: auth.issuerUrl, hasVerificationSecret: Boolean(config.clerk.secretKey), hasConfirmationSecret: Buffer.byteLength(readServiceEnvironment().MCP_CONTINUATION_SECRET ?? "") >= 32 });
       return { mcpUrl: auth.resourceUrl, configuration, workspace: { workspaceId: actor.workspaceId, workspaceName: actor.workspaceName, role: actor.role, status: actor.status, pricingTier: actor.pricingTier } };
     },
     async preparation(userId, token) {

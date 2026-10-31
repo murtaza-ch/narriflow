@@ -1,8 +1,9 @@
+import { bindServiceTestEnvironment } from "@narriflow/services/runtime-test-support";
 import { describe, expect, test } from "bun:test";
 import { createPublicationDecision, isPublicationDeclined } from "./mcp-apps/v2/publication-decision";
 
 describe("MCP App publication decision", () => {
-  test("an in-flight decision and successful scheduling prevent another decision", async () => {
+  test("an in-flight decision and successful scheduling prevent another decision", bindServiceTestEnvironment(async () => {
     const decision = createPublicationDecision();
     let release!: () => void;
     let calls = 0;
@@ -18,9 +19,9 @@ describe("MCP App publication decision", () => {
     expect(decision.state).toBe("scheduled");
     expect(decision.canConfirm).toBe(false);
     expect(decision.canDecline).toBe(false);
-  });
+  }));
 
-  test("a declined intent is terminal; an unavailable decision remains retryable", async () => {
+  test("a declined intent is terminal; an unavailable decision remains retryable", bindServiceTestEnvironment(async () => {
     const declined = createPublicationDecision();
     await declined.decide(false, async () => {
       expect(isPublicationDeclined({ isError: true, structuredContent: { data: { error: "mcp_confirmation_declined" } } })).toBe(true);
@@ -33,9 +34,9 @@ describe("MCP App publication decision", () => {
     expect(unavailable.canConfirm).toBe(true);
     expect(unavailable.canDecline).toBe(true);
     expect(isPublicationDeclined({ isError: true, structuredContent: { data: { error: "mcp_confirmation_expired" } } })).toBe(false);
-  });
+  }));
 
-  test("a lost scheduling response prevents decline and retries the same accepted intent", async () => {
+  test("a lost scheduling response prevents decline and retries the same accepted intent", bindServiceTestEnvironment(async () => {
     const decision = createPublicationDecision();
     await expect(decision.decide(true, async (markSchedulingAttempted) => {
       markSchedulingAttempted();
@@ -50,5 +51,5 @@ describe("MCP App publication decision", () => {
     await decision.decide(true, async () => {});
     expect(decision.state).toBe("scheduled");
     expect(decision.canConfirm).toBe(false);
-  });
+  }));
 });

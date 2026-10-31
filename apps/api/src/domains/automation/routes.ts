@@ -1,12 +1,10 @@
-import {
-  type AutomationCommands,
-  type ZoomService,
-  ZoomError,
-  autopilotService,
-  recipeService,
-  socialOAuthService,
-  standingGrants,
-} from "@narriflow/services";
+import { type AutomationCommands } from "@narriflow/services/automation-commands";
+import { type ZoomService } from "@narriflow/services/zoom.service";
+import { ZoomError } from "@narriflow/services/zoom";
+import { autopilotService } from "@narriflow/services/autopilot.service";
+import { recipeService } from "@narriflow/services/recipe.service";
+import { socialOAuthService } from "@narriflow/services/social-oauth.service";
+import { standingGrants } from "@narriflow/services/standing-grant-runtime";
 import {
   autopilotRuleInputSchema,
   autopilotRuleUpdateSchema,

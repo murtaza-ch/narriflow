@@ -1,10 +1,7 @@
 import { describe, expect, mock, test } from "bun:test";
 import type { AppUser, WorkspaceActorContext } from "@narriflow/auth";
-import {
-  BrandProfileConflictError,
-  BrandProfileNotFoundError,
-  GeneratedMediaJobError,
-} from "@narriflow/services";
+import { BrandProfileConflictError, BrandProfileNotFoundError } from "@narriflow/services/brand-profile.service";
+import { GeneratedMediaJobError } from "@narriflow/services/generated-media";
 import { Hono } from "hono";
 import {
   installRequestPolicy,

@@ -262,7 +262,7 @@ ALTER TABLE "ExecutionDispatch" ADD CONSTRAINT "ExecutionDispatch_reference_chec
   AND "subjectId" ~ '^[A-Za-z0-9][A-Za-z0-9._:-]*$'
   AND "kind" IN ('import_pipeline','render_run','operation_driver','maintenance','project_progress','local_fetch','modal_execution')
   AND "subjectKind" IN ('ingest_job','workflow_run','render_group','clip_preparation','upload_session','social_publication','completion_callback','webhook_subscription','workspace_billing','autopilot_rule','generation_finishing','dubbing','export_bundle','generated_media','thumbnail_frame','library_index','notification','media_cleanup','workflow_event','workspace_event','standing_grant','pending_workspace','retention','maintenance')
-  AND "deliveryAttempts" >= 0 AND "nextDeliveryAt" >= "dueAt"
+  AND "deliveryAttempts" >= 0
   AND (("deliveryToken" IS NULL) = ("deliveryLeaseExpiresAt" IS NULL))
   AND NOT ("acknowledgedAt" IS NOT NULL AND "deadLetteredAt" IS NOT NULL)
   AND (("deadlineKind" IS NULL) = ("observedDeadlineAt" IS NULL))
@@ -308,7 +308,7 @@ ALTER TABLE "ClipSelectionWindow" ADD CONSTRAINT "ClipSelectionWindow_bounds_che
   "generation" > 0 AND "windowIndex" >= 0 AND "startSec" >= 0 AND "endSec" > "startSec"
   AND "endSec" < 'Infinity'::float8 AND "inputHash" ~ '^[a-f0-9]{64}$'
   AND "status" IN ('queued','running','completed','failed')
-  AND ("status" <> 'completed' OR ("resultStorageKey" IS NOT NULL AND "resultHash" ~ '^[a-f0-9]{64}$' AND "completedAt" IS NOT NULL))
+  AND ("status" <> 'completed' OR ("resultStorageKey" IS NOT NULL AND "resultHash" IS NOT NULL AND "resultHash" ~ '^[a-f0-9]{64}$' AND "completedAt" IS NOT NULL))
 );
 
 -- Evidence is append-only. A source replacement allocates a new Project source revision.
@@ -325,3 +325,21 @@ UPDATE "Transcript" SET "providerSubmittedAt" = "updatedAt",
   "providerResultDeadlineAt" = "updatedAt" + INTERVAL '2 hours'
 WHERE "status" = 'processing' AND ("providerJobId" IS NOT NULL OR "providerRequestId" IS NOT NULL);
 
+
+-- Future work registers its scheduler immediately; nextDeliveryAt is independent of dueAt.
+CREATE INDEX "ExecutionDispatch_pending_epoch_due_idx"
+  ON "ExecutionDispatch" ("deploymentEpoch", "nextDeliveryAt", "id")
+  WHERE "acknowledgedAt" IS NULL AND "deadLetteredAt" IS NULL;
+
+ALTER TABLE "WorkflowEvent" RENAME COLUMN "redisRequired" TO "progressRequired";
+ALTER TABLE "WorkflowEvent" RENAME COLUMN "redisPublishedAt" TO "progressPublishedAt";
+ALTER TABLE "Project" ADD CONSTRAINT "Project_source_revision_check" CHECK ("sourceRevision" > 0);
+ALTER TABLE "WorkflowRun" ADD CONSTRAINT "WorkflowRun_execution_revision_check" CHECK ("deploymentEpoch" > 0 AND "generation" > 0);
+ALTER TABLE "RenderGroup" ADD CONSTRAINT "RenderGroup_execution_revision_check" CHECK ("deploymentEpoch" > 0 AND "generation" > 0);
+ALTER TABLE "IngestJob" ADD CONSTRAINT "IngestJob_execution_revision_check" CHECK ("deploymentEpoch" > 0 AND "generation" > 0 AND "sourceRevision" > 0);
+ALTER TABLE "SocialPost" ADD CONSTRAINT "SocialPost_schedule_revision_check" CHECK ("scheduleRevision" > 0);
+
+-- Dev-only passcodes are reset without making protected rounds accessible.
+-- Revoke first in the same statement; review audits and recipient history remain.
+UPDATE "ReviewRound" SET "revokedAt" = COALESCE("revokedAt", now()), "passcodeHash" = NULL
+  WHERE "passcodeHash" IS NOT NULL;

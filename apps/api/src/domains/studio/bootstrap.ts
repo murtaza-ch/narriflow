@@ -1,18 +1,15 @@
 import { compositionAssetRef } from "@narriflow/composition-plan";
-import {
-  type BrandActorScope,
-  ClipActionError,
-  type autoCensorService,
-  type brandFontService,
-  type brandProfileService,
-  type clipService,
-  type generatedImageCapability,
-  hasFeature,
-  type presignDownloadUrl,
-  type projectService,
-  type sceneTemplateService,
-  type visualAssetService,
-} from "@narriflow/services";
+import { type BrandActorScope } from "@narriflow/services/brand-ownership";
+import { ClipActionError, type clipService } from "@narriflow/services/clip.service";
+import { type autoCensorService } from "@narriflow/services/auto-censor.service";
+import { type brandFontService } from "@narriflow/services/brand-font.service";
+import { type brandProfileService } from "@narriflow/services/brand-profile.service";
+import { type generatedImageCapability } from "@narriflow/services/generation-usage";
+import { hasFeature } from "@narriflow/services/plan-features";
+import { type presignDownloadUrl } from "@narriflow/services/r2-storage";
+import { type projectService } from "@narriflow/services/project.service";
+import { type sceneTemplateService } from "@narriflow/services/scene-template.service";
+import { type visualAssetService } from "@narriflow/services/visual-asset.service";
 import {
   brandPlanRequirement,
   type EditorDocument,

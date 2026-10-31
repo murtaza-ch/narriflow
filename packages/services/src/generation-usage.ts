@@ -1,3 +1,4 @@
+import { readServiceEnvironment } from "./runtime-environment";
 import { planLimits, resolvePricingTier } from "@narriflow/validators";
 import { hasFeature } from "./plan-features";
 import type { BrandActorScope } from "./brand-ownership";
@@ -29,7 +30,7 @@ export type GeneratedImageCapability = {
  * temporarily unavailable rather than failing each request.
  */
 export function generatedImageProviderConfigured(
-  environment: Record<string, string | undefined> = process.env,
+  environment: Record<string, string | undefined> = readServiceEnvironment(),
 ): boolean {
   try {
     openAiImageProviderFromEnv(environment);
@@ -46,7 +47,7 @@ export function generatedImageProviderConfigured(
 /** One policy seam shared by admission and Studio's server-rendered capability. */
 export function generatedImageCapability(
   scope: BrandActorScope,
-  environment: Record<string, string | undefined> = process.env,
+  environment: Record<string, string | undefined> = readServiceEnvironment(),
 ): GeneratedImageCapability {
   const usage = generatedImagePolicy(scope.pricingTier);
   if (!hasFeature(scope.pricingTier, "generated.images")) {

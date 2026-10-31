@@ -1,4 +1,4 @@
-import { SocialOAuthError } from "@narriflow/services";
+import { SocialOAuthError } from "@narriflow/services/social-oauth.service";
 import { AuthenticatedRequestFailure } from "../../http/request-policy";
 
 /**

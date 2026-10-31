@@ -1,10 +1,10 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { OAuthError, type JSONRPCMessage, type MessageExtraInfo, type Transport } from "@modelcontextprotocol/server";
-import type { RateLimitResult } from "@narriflow/services";
+import { type RateLimitResult } from "@narriflow/services/rate-limit";
 import { McpAuthUnavailableError } from "./mcp-auth";
 import { recordMcpDiagnostic } from "./mcp-diagnostics";
 import { mcpRateLimitKey } from "./mcp-http-handler";
-import { requireNewMutationAllowed } from "@narriflow/services";
+import { requireNewMutationAllowed } from "@narriflow/services/rate-limit";
 import type { NarriflowMcpPrincipal } from "./mcp-tool-admission";
 
 interface RequestAdmission { principal: NarriflowMcpPrincipal; limiter: RateLimitResult }

@@ -1,3 +1,4 @@
+import { withServiceEnvironment } from "../src/runtime-environment";
 import { createDatabaseScope, withDatabaseScope } from "@narriflow/db/client";
 import { parseSocialPublicationOperatorArgs } from "../src/social-publication-operator";
 import { socialService } from "../src/social.service";
@@ -9,7 +10,7 @@ function write(value: unknown) {
 try {
   const connectionString = process.env.DIRECT_URL ?? process.env.DATABASE_URL;
   if (!connectionString) throw new Error("Database connection is required");
-  await withDatabaseScope(createDatabaseScope({ connectionString }), async () => {
+  await withServiceEnvironment(process.env, () => withDatabaseScope(createDatabaseScope({ connectionString }), async () => {
   const input = parseSocialPublicationOperatorArgs(process.argv.slice(2));
   const scope = { actorUserId: input.actorUserId, workspaceId: input.workspaceId };
   const before = await socialService.inspectPublication(
@@ -30,7 +31,7 @@ try {
     );
     write({ mode: "recheck", reconciliation, before, after });
   }
-  });
+  }));
 } catch (error) {
   write({
     mode: "failed",

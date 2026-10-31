@@ -1,8 +1,9 @@
+import { bindServiceTestEnvironment } from "@narriflow/services/runtime-test-support";
 import { expect, test } from "bun:test";
 import { OAuthError, OAuthErrorCode, type JSONRPCMessage, type Transport } from "@modelcontextprotocol/server";
 import { createAuthenticatedStdioTransport } from "./mcp-stdio";
 
-test("stdio stops requests after revocation and refreshes scopes without restarting", async () => {
+test("stdio stops requests after revocation and refreshes scopes without restarting", bindServiceTestEnvironment(async () => {
   let active = true;
   let scopes = ["projects:read"];
   const sent: JSONRPCMessage[] = [];
@@ -23,9 +24,9 @@ test("stdio stops requests after revocation and refreshes scopes without restart
   await invoke(3);
   expect(calls).toEqual([["projects:read"], ["projects:read", "processing:write"]]);
   expect(sent).toEqual([{ jsonrpc: "2.0", id: 3, error: { code: -32001, message: "Credential is invalid or revoked", data: { error: "invalid_token" } } }]);
-});
+}));
 
-test("stdio keeps concurrent request admission isolated and pauses only new writes in an outage", async () => {
+test("stdio keeps concurrent request admission isolated and pauses only new writes in an outage", bindServiceTestEnvironment(async () => {
   let sequence = 0;
   const wire: Transport = { start: async () => {}, close: async () => {}, send: async () => {} };
   const checked = createAuthenticatedStdioTransport({ wire, diagnostic: () => {}, authenticate: async () => ({
@@ -44,4 +45,4 @@ test("stdio keeps concurrent request admission isolated and pauses only new writ
   wire.onmessage?.({ jsonrpc: "2.0", id: 2, method: "tools/list" });
   await Bun.sleep(5);
   expect(observed).toEqual(["user-1", "user-2"]);
-});
+}));

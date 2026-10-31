@@ -1,10 +1,11 @@
+import { bindServiceTestEnvironment } from "@narriflow/services/runtime-test-support";
 import { afterEach, describe, expect, test } from "bun:test";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { createMcpHandler, McpServer } from "@modelcontextprotocol/server";
 import { registerNarriflowMcpApps } from "./mcp-apps";
 
 const clients: Client[] = [];
-afterEach(async () => { await Promise.all(clients.splice(0).map((client) => client.close())); });
+afterEach(bindServiceTestEnvironment(async () => { await Promise.all(clients.splice(0).map((client) => client.close())); }));
 async function connect(apps: boolean, mode: "auto" | "legacy" = "auto") {
   const handler = createMcpHandler(({ era }) => {
     const server = new McpServer({ name: "apps-test", version: "1" });
@@ -18,15 +19,15 @@ async function connect(apps: boolean, mode: "auto" | "legacy" = "auto") {
 }
 
 describe("MCP Apps delivery", () => {
-  test("serves card HTML to an Apps host using the SDK's stateless legacy transport", async () => {
+  test("serves card HTML to an Apps host using the SDK's stateless legacy transport", bindServiceTestEnvironment(async () => {
     const client = await connect(true, "legacy");
     for (const view of ["upload", "progress", "clip-review", "publication-confirmation"]) {
       const result = await client.readResource({ uri: `ui://narriflow/v2/${view}.html` });
       expect(result.contents[0]?.mimeType).toBe("text/html;profile=mcp-app");
       expect(result.contents[0] && "text" in result.contents[0] ? result.contents[0].text : "").toContain(`data-view="${view}"`);
     }
-  });
-  test("serves an immutable bridge template with explicit upload CSP and no private results", async () => {
+  }));
+  test("serves an immutable bridge template with explicit upload CSP and no private results", bindServiceTestEnvironment(async () => {
     const client = await connect(true);
     const result = await client.readResource({ uri: "ui://narriflow/v2/upload.html" });
     const content = result.contents[0];
@@ -34,9 +35,9 @@ describe("MCP Apps delivery", () => {
     expect(content && "text" in content ? content.text : "").toContain("Upload and generate clips");
     expect(content && "text" in content ? content.text : "").not.toContain("private-grant");
     expect(content?._meta).toEqual({ ui: { csp: { connectDomains: ["https://api.narriflow.test", "https://bucket.storage.test"], resourceDomains: ["https://api.narriflow.test"], frameDomains: [] } } });
-  });
+  }));
 
-  test("CSP permits the bucket origin used by signed upload and preview URLs", async () => {
+  test("CSP permits the bucket origin used by signed upload and preview URLs", bindServiceTestEnvironment(async () => {
     const previousAccount = process.env.R2_ACCOUNT_ID;
     const previousBucket = process.env.R2_BUCKET;
     process.env.R2_ACCOUNT_ID = "a".repeat(32);
@@ -53,16 +54,16 @@ describe("MCP Apps delivery", () => {
       if (previousAccount === undefined) delete process.env.R2_ACCOUNT_ID; else process.env.R2_ACCOUNT_ID = previousAccount;
       if (previousBucket === undefined) delete process.env.R2_BUCKET; else process.env.R2_BUCKET = previousBucket;
     }
-  });
+  }));
 
-  test("static card templates remain readable for host prefetch and inspection", async () => {
+  test("static card templates remain readable for host prefetch and inspection", bindServiceTestEnvironment(async () => {
     const client = await connect(false);
     const result = await client.readResource({ uri: "ui://narriflow/v2/upload.html" });
     expect(result.contents[0]?.mimeType).toBe("text/html;profile=mcp-app");
     expect(JSON.stringify(result)).not.toContain("private-grant");
-  });
+  }));
 
-  test("legacy host bridge can call transfer and confirmation tools after initialization", async () => {
+  test("legacy host bridge can call transfer and confirmation tools after initialization", bindServiceTestEnvironment(async () => {
     const client = await connect(true, "legacy");
     const transfer = await client.callTool({ name: "narriflow_upload_grants", arguments: { workspaceId: "b6558e07-d826-46a2-a919-4c9a4e7c4c62", sessionId: "27ea4880-e97e-49a4-b8e0-8af86e00a1d7", partNumbers: [1] } });
     expect(transfer.isError).not.toBe(true);
@@ -70,17 +71,17 @@ describe("MCP Apps delivery", () => {
     const confirmation = await client.callTool({ name: "narriflow_accept_social_post_intent", arguments: { workspaceId: "b6558e07-d826-46a2-a919-4c9a4e7c4c62", token: "signed-intent", accepted: true } });
     expect(confirmation.isError).not.toBe(true);
     expect(confirmation._meta?.confirmationReceipt).toBe("private-receipt");
-  });
+  }));
 
-  test("modern bridge calls still require declared Apps capability", async () => {
+  test("modern bridge calls still require declared Apps capability", bindServiceTestEnvironment(async () => {
     const client = await connect(false);
     const result = await client.callTool({ name: "narriflow_upload_grants", arguments: { workspaceId: "b6558e07-d826-46a2-a919-4c9a4e7c4c62", sessionId: "27ea4880-e97e-49a4-b8e0-8af86e00a1d7", partNumbers: [1] } });
     expect(result.isError).toBe(true);
     expect(JSON.stringify(result.content)).toContain("MCP Apps capability is required");
     expect(result._meta?.uploadTransfer).toBeUndefined();
-  });
+  }));
 
-  test("picker transfer tools are App-only and keep upload grants outside structured results", async () => {
+  test("picker transfer tools are App-only and keep upload grants outside structured results", bindServiceTestEnvironment(async () => {
     const client = await connect(true);
     const tools = await client.listTools();
     expect(tools.tools.map((tool) => tool.name).sort()).toEqual([
@@ -93,5 +94,5 @@ describe("MCP Apps delivery", () => {
     expect(JSON.stringify(result.structuredContent)).not.toContain("private-grant");
     expect(JSON.stringify(result.content)).not.toContain("private-grant");
     expect(JSON.stringify(result._meta)).toContain("private-grant");
-  });
+  }));
 });

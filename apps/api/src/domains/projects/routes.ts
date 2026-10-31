@@ -1,20 +1,18 @@
-import {
-  analyticsService,
-  autopilotService,
-  brandProfileService,
-  clipService,
-  contentSuiteService,
-  dubbingService,
-  getProcessingUsage,
-  getProjectFinishing,
-  presignDownloadUrl,
-  projectService,
-  reviewService,
-  socialOAuthService,
-  socialService,
-  workspaceLibraryService,
-  workspaceService,
-} from "@narriflow/services";
+import { analyticsService } from "@narriflow/services/analytics.service";
+import { autopilotService } from "@narriflow/services/autopilot.service";
+import { brandProfileService } from "@narriflow/services/brand-profile.service";
+import { clipService } from "@narriflow/services/clip.service";
+import { contentSuiteService } from "@narriflow/services/content-suite.service";
+import { dubbingService } from "@narriflow/services/dubbing.service";
+import { getProcessingUsage } from "@narriflow/services/processing-usage-runtime";
+import { getProjectFinishing } from "@narriflow/services/generation-finishing-runtime";
+import { presignDownloadUrl } from "@narriflow/services/r2-storage";
+import { projectService } from "@narriflow/services/project.service";
+import { reviewService } from "@narriflow/services/review.service";
+import { socialOAuthService } from "@narriflow/services/social-oauth.service";
+import { socialService } from "@narriflow/services/social.service";
+import { workspaceLibraryService } from "@narriflow/services/workspace-library.service";
+import { workspaceService } from "@narriflow/services/workspace.service";
 import {
   dubDownloadQuerySchema,
   generateContentSuiteRequestSchema,

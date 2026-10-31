@@ -1,9 +1,11 @@
+import { bindServiceTestEnvironment } from "@narriflow/services/runtime-test-support";
 import { createDatabaseTestContext } from "@narriflow/db/testing";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, spyOn, test } from "bun:test";
 import { createMcpHandler } from "@modelcontextprotocol/server";
 import { buildNarriflowMcpServer } from "@narriflow/mcp-core";
-import { appendWorkspaceEvent, workspaceService } from "@narriflow/services";
+import { appendWorkspaceEvent } from "@narriflow/services/workspace-event";
+import { workspaceService } from "@narriflow/services/workspace.service";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@prisma/client";
 import { Pool } from "pg";
@@ -28,7 +30,7 @@ db("REST and MCP Workspace Event feeds", () => {
   const globals = createDatabaseTestContext();
   let previousGlobalPrisma: PrismaClient | undefined;
 
-  beforeAll(globals.bind(async () => {
+  beforeAll(bindServiceTestEnvironment(globals.bind(async () => {
     if (!url || !schema || !/^integration_test_[a-z0-9_]+$/.test(schema)) throw new Error("Event feed tests require a disposable schema");
     pool = new Pool({ connectionString: url, max: 8 });
     prisma = new PrismaClient({ adapter: new PrismaPg(pool, { schema }) });
@@ -48,12 +50,12 @@ db("REST and MCP Workspace Event feeds", () => {
         subject: { socialPostId: randomUUID(), projectId, clipId: null, platform: "youtube_shorts", state: "posted" } });
       await operation("two");
     });
-  }));
-  afterAll(globals.bind(async () => {
+  })));
+  afterAll(bindServiceTestEnvironment(globals.bind(async () => {
     globals.client = previousGlobalPrisma;
     await prisma?.$disconnect();
     await pool?.end();
-  }));
+  })));
 
   const rest = new Hono().route("/api/v1", createRestRoutes({ checkRateLimit: async () => ({ allowed: true, availability: "available", remaining: 299, limit: 300 }), readRateLimit: async () => ({ allowed: true, availability: "available", remaining: 600, limit: 600 }), apiOrigin: () => "https://api.narriflow.test", webOrigin: () => "https://narriflow.test", corsAllowedOrigins: ["https://narriflow.test"], log: () => {} }));
   const restEvents = async (granted: string[], query = "") => {
@@ -77,7 +79,7 @@ db("REST and MCP Workspace Event feeds", () => {
   const mcpEvents = async (granted: string[], args: Record<string, unknown> = {}) =>
     (await mcpCall(granted, args)).structuredContent.data as { data: Array<{ seq: number; type: string }>; nextCursor: string };
 
-  test("REST and MCP return the same rows and cursor for the same credential", globals.bind(async () => {
+  test("REST and MCP return the same rows and cursor for the same credential", bindServiceTestEnvironment(globals.bind(async () => {
     const granted = ["projects:read", "publishing:read"];
     const { status, body } = await restEvents(granted);
     expect(status).toBe(200);
@@ -96,17 +98,17 @@ db("REST and MCP Workspace Event feeds", () => {
     const empty = await restEvents(granted, "?after=4");
     expect(empty.body).toEqual({ data: [], nextCursor: "4" });
     expect(await mcpEvents(granted, { after: "4" })).toEqual(empty.body);
-  }));
+  })));
 
-  test("posting outcomes need publishing:read on both surfaces", globals.bind(async () => {
+  test("posting outcomes need publishing:read on both surfaces", bindServiceTestEnvironment(globals.bind(async () => {
     const granted = ["projects:read"];
     const { body } = await restEvents(granted);
     expect(body.data.map((event) => event.type)).toEqual(["operation.finished", "autopilot.episode_imported", "operation.finished"]);
     expect(body.nextCursor).toBe("4");
     expect(await mcpEvents(granted)).toEqual(body);
-  }));
+  })));
 
-  test("naming only types the credential can't see is refused with the scope it lacks, on both surfaces", globals.bind(async () => {
+  test("naming only types the credential can't see is refused with the scope it lacks, on both surfaces", bindServiceTestEnvironment(globals.bind(async () => {
     const granted = ["projects:read"];
     for (const types of ["social_post.finished", "social_post.proposed", "social_post.finished,social_post.proposed"]) {
       const refused = await restEvents(granted, `?types=${types}`);
@@ -123,9 +125,9 @@ db("REST and MCP Workspace Event feeds", () => {
     expect(await mcpEvents(granted, { types: ["social_post.finished", "operation.finished"] })).toEqual(mixed.body);
     // With the scope, the same request returns them.
     expect((await restEvents(["projects:read", "publishing:read"], "?types=social_post.finished")).body.data.map((event) => event.seq)).toEqual([3]);
-  }));
+  })));
 
-  test("order=desc returns the newest matching events newest first, the same rows on both surfaces", globals.bind(async () => {
+  test("order=desc returns the newest matching events newest first, the same rows on both surfaces", bindServiceTestEnvironment(globals.bind(async () => {
     const granted = ["projects:read", "publishing:read"];
     const all = await restEvents(granted, "?order=desc");
     expect(all.status).toBe(200);
@@ -147,9 +149,9 @@ db("REST and MCP Workspace Event feeds", () => {
 
     // The default is still ascending, and `order=asc` is the same read.
     expect((await restEvents(granted, "?order=asc")).body).toEqual((await restEvents(granted)).body);
-  }));
+  })));
 
-  test("a descending page's cursor is its highest seq, a forward cursor that never points backwards", globals.bind(async () => {
+  test("a descending page's cursor is its highest seq, a forward cursor that never points backwards", bindServiceTestEnvironment(globals.bind(async () => {
     const granted = ["projects:read", "publishing:read"];
     const newest = await restEvents(granted, "?order=desc&limit=2");
     expect(newest.body.nextCursor).toBe("4");
@@ -163,9 +165,9 @@ db("REST and MCP Workspace Event feeds", () => {
     const none = await restEvents(granted, "?order=desc&types=social_post.proposed");
     expect(none.body).toEqual({ data: [], nextCursor: "4" });
     expect(await mcpEvents(granted, { order: "desc", types: ["social_post.proposed"] })).toEqual(none.body);
-  }));
+  })));
 
-  test("order=desc has no cursor to continue from: combining it with after is a 400 invalid_request", globals.bind(async () => {
+  test("order=desc has no cursor to continue from: combining it with after is a 400 invalid_request", bindServiceTestEnvironment(globals.bind(async () => {
     const granted = ["projects:read", "publishing:read"];
     const refused = await restEvents(granted, "?order=desc&after=2");
     expect(refused.status).toBe(400);
@@ -174,13 +176,13 @@ db("REST and MCP Workspace Event feeds", () => {
     expect(refusedByMcp.isError).toBe(true);
     expect(refusedByMcp.structuredContent.data).toMatchObject({ error: "invalid_request" });
     expect((await restEvents(granted, "?order=sideways")).status).toBe(400);
-  }));
+  })));
 
-  test("REST requires projects:read and rejects unknown types and malformed cursors", globals.bind(async () => {
+  test("REST requires projects:read and rejects unknown types and malformed cursors", bindServiceTestEnvironment(globals.bind(async () => {
     expect((await restEvents(["publishing:read"])).status).toBe(403);
     expect((await restEvents(["projects:read"], "?types=made.up")).status).toBe(400);
     expect((await restEvents(["projects:read"], "?after=abc")).status).toBe(400);
     expect((await restEvents(["projects:read"], "?limit=201")).status).toBe(400);
     expect((await restEvents(["projects:read"], "?limit=0")).status).toBe(400);
-  }));
+  })));
 });

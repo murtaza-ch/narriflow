@@ -1,3 +1,4 @@
+import { bindServiceTestEnvironment } from "./runtime-test-support";
 import { afterEach, describe, expect, setDefaultTimeout, spyOn, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm, truncate, writeFile } from "node:fs/promises";
@@ -37,7 +38,7 @@ import {
 
 setDefaultTimeout(60_000);
 
-test("AWS SDK rejects an HTTP-200 embedded multipart completion error", async () => {
+test("AWS SDK rejects an HTTP-200 embedded multipart completion error", bindServiceTestEnvironment(async () => {
   let providerStatusCode = 0;
   const client = new S3Client({
     region: "auto",
@@ -80,9 +81,9 @@ test("AWS SDK rejects an HTTP-200 embedded multipart completion error", async ()
     name: "InvalidPart",
     message: "embedded failure",
   });
-});
+}));
 
-test("R2 adapter classifies access, missing-object, and cancellation failures", () => {
+test("R2 adapter classifies access, missing-object, and cancellation failures", bindServiceTestEnvironment(() => {
   expect(
     classifyR2StorageError({
       name: "AccessDenied",
@@ -98,9 +99,9 @@ test("R2 adapter classifies access, missing-object, and cancellation failures", 
   expect(classifyR2StorageError(new DOMException("cancelled", "AbortError"))).toBe(
     "storage_operation_cancelled",
   );
-});
+}));
 
-test("R2 multipart abort only suppresses an exact missing-upload response", () => {
+test("R2 multipart abort only suppresses an exact missing-upload response", bindServiceTestEnvironment(() => {
   expect(
     isExactMissingMultipartUploadError({
       name: "NoSuchUpload",
@@ -119,9 +120,9 @@ test("R2 multipart abort only suppresses an exact missing-upload response", () =
       $metadata: { httpStatusCode: 404 },
     }),
   ).toBe(false);
-});
+}));
 
-test("R2 exact-key recovery follows every provider inventory page", async () => {
+test("R2 exact-key recovery follows every provider inventory page", bindServiceTestEnvironment(async () => {
   const markers: Array<{
     keyMarker?: string;
     uploadIdMarker?: string;
@@ -167,9 +168,9 @@ test("R2 exact-key recovery follows every provider inventory page", async () => 
     "opaque/first",
     "opaque/second",
   ]);
-});
+}));
 
-test("R2 multipart resume follows pagination and preserves malformed provider facts", async () => {
+test("R2 multipart resume follows pagination and preserves malformed provider facts", bindServiceTestEnvironment(async () => {
   const markers: Array<string | undefined> = [];
   const parts = await collectUploadedParts(async ({ partNumberMarker }) => {
     markers.push(partNumberMarker);
@@ -194,16 +195,16 @@ test("R2 multipart resume follows pagination and preserves malformed provider fa
     { partNumber: 2, etag: "etag-2" },
     { partNumber: 0, etag: "" },
   ]);
-});
+}));
 
 describe("buildAttachmentContentDisposition", () => {
-  test("forces attachment delivery with ASCII and UTF-8 filename forms", () => {
+  test("forces attachment delivery with ASCII and UTF-8 filename forms", bindServiceTestEnvironment(() => {
     expect(buildAttachmentContentDisposition("Résumé final.mp4")).toBe(
       "attachment; filename=\"Resume final.mp4\"; filename*=UTF-8''R%C3%A9sum%C3%A9%20final.mp4",
     );
-  });
+  }));
 
-  test("removes path traversal and header-control characters", () => {
+  test("removes path traversal and header-control characters", bindServiceTestEnvironment(() => {
     const value = buildAttachmentContentDisposition(
       "../../unsafe\\name\r\nX-Evil: yes.mp4",
     );
@@ -212,17 +213,17 @@ describe("buildAttachmentContentDisposition", () => {
     expect(value).not.toContain("\n");
     expect(value).not.toContain("../");
     expect(value).not.toContain("X-Evil:");
-  });
+  }));
 });
 
 describe("sanitizeObjectMetadata", () => {
-  test("keeps ordinary ASCII values readable", () => {
+  test("keeps ordinary ASCII values readable", bindServiceTestEnvironment(() => {
     expect(
       sanitizeObjectMetadata({ source: "rss", rss_url: "https://feeds.npr.org/..." }),
     ).toEqual({ source: "rss", rss_url: "https://feeds.npr.org/..." });
-  });
+  }));
 
-  test("encodes the Unicode ellipsis that previously crashed RSS uploads", () => {
+  test("encodes the Unicode ellipsis that previously crashed RSS uploads", bindServiceTestEnvironment(() => {
     const metadata = sanitizeObjectMetadata({
       rss_url: "https://feeds.npr.org/…",
       file_name: "Résumé 🎙️.mp3",
@@ -233,21 +234,21 @@ describe("sanitizeObjectMetadata", () => {
     for (const value of Object.values(metadata ?? {})) {
       expect(value).toMatch(/^[\x20-\x7e]*$/);
     }
-  });
+  }));
 
-  test("hashes oversized optional values instead of breaking the upload", () => {
+  test("hashes oversized optional values instead of breaking the upload", bindServiceTestEnvironment(() => {
     expect(sanitizeObjectMetadata({ source_url: `https://example.com/${"x".repeat(2000)}` }))
       .toEqual({ source_url: expect.stringMatching(/^sha256:[a-f0-9]{64}$/) });
-  });
+  }));
 
-  test("rejects invalid internal metadata keys before reaching the SDK", () => {
+  test("rejects invalid internal metadata keys before reaching the SDK", bindServiceTestEnvironment(() => {
     expect(() => sanitizeObjectMetadata({ "bad header": "value" })).toThrow(
       InvalidObjectMetadataError,
     );
-  });
+  }));
 });
 
-test("R2 object operations reject a pre-aborted signal before storage access", async () => {
+test("R2 object operations reject a pre-aborted signal before storage access", bindServiceTestEnvironment(async () => {
   const controller = new AbortController();
   const reason = new DOMException("contract cancelled", "AbortError");
   controller.abort(reason);
@@ -279,7 +280,7 @@ test("R2 object operations reject a pre-aborted signal before storage access", a
       { signal: controller.signal },
     ),
   ).rejects.toBe(reason);
-});
+}));
 
 describe("multipart failure cleanup is bounded", () => {
   const MIB = 1024 * 1024;
@@ -295,7 +296,7 @@ describe("multipart failure cleanup is bounded", () => {
   let directory: string | null = null;
   const restores: Array<() => void> = [];
 
-  afterEach(async () => {
+  afterEach(bindServiceTestEnvironment(async () => {
     for (const restore of restores.splice(0)) restore();
     for (const [name, value] of Object.entries(previous)) {
       if (value === undefined) delete process.env[name];
@@ -303,7 +304,7 @@ describe("multipart failure cleanup is bounded", () => {
     }
     if (directory) await rm(directory, { recursive: true, force: true });
     directory = null;
-  });
+  }));
 
   async function sparseFile(bytes: number) {
     Object.assign(process.env, environment);
@@ -327,7 +328,7 @@ describe("multipart failure cleanup is bounded", () => {
     return warn;
   }
 
-  test("a rejected part followed by a never-settling abort returns the original failure within the cleanup grace", async () => {
+  test("a rejected part followed by a never-settling abort returns the original failure within the cleanup grace", bindServiceTestEnvironment(async () => {
     const filePath = await sparseFile(16 * MIB + 1);
     const partFailure = new Error("part 1 rejected");
     let siblingCancelled = false;
@@ -365,9 +366,9 @@ describe("multipart failure cleanup is bounded", () => {
     expect(elapsedMs).toBeGreaterThanOrEqual(4_900);
     expect(elapsedMs).toBeLessThan(7_000);
     expect(String(warn.mock.calls.at(-1)?.[0])).toContain("r2_multipart_abort_unconfirmed");
-  });
+  }));
 
-  test("a caller-cancelled upload still gets its own abort request", async () => {
+  test("a caller-cancelled upload still gets its own abort request", bindServiceTestEnvironment(async () => {
     const filePath = await sparseFile(16 * MIB + 1);
     const controller = new AbortController();
     let abortSignalWasLive: boolean | null = null;
@@ -398,9 +399,9 @@ describe("multipart failure cleanup is bounded", () => {
       }),
     ).rejects.toMatchObject({ name: "AbortError" });
     expect(abortSignalWasLive).toBe(true);
-  });
+  }));
 
-  test("parts complete in ascending order regardless of finish order", async () => {
+  test("parts complete in ascending order regardless of finish order", bindServiceTestEnvironment(async () => {
     const filePath = await sparseFile(32 * MIB + 1);
     let completed: number[] = [];
     stubSend(async (command) => {
@@ -421,15 +422,15 @@ describe("multipart failure cleanup is bounded", () => {
 
     await putFileFromPath({ key: "test/multipart/ordered.mp4", filePath });
     expect(completed).toEqual([1, 2, 3]);
-  });
+  }));
 
-  test("putJson honours a cancelled signal before storage access", async () => {
+  test("putJson honours a cancelled signal before storage access", bindServiceTestEnvironment(async () => {
     const controller = new AbortController();
     controller.abort(new DOMException("shutdown", "AbortError"));
     await expect(
       putJson({ key: "test/json.json", value: {}, signal: controller.signal }),
     ).rejects.toMatchObject({ name: "AbortError" });
-  });
+  }));
 });
 
 const configuredContractPrefix = process.env.R2_CONTRACT_TEST_PREFIX?.trim();
@@ -438,7 +439,7 @@ const isolatedContractPrefix =
   configuredContractPrefix?.startsWith("tests/")
     ? configuredContractPrefix.replace(/\/+$/, "")
     : null;
-const r2ContractTest = isR2Configured() && isolatedContractPrefix ? test : test.skip;
+const r2ContractTest = bindServiceTestEnvironment(isR2Configured)() && isolatedContractPrefix ? test : test.skip;
 
 r2ContractTest(
   "R2 object adapter uploads, downloads, lists an isolated prefix, normalizes metadata, and deletes",

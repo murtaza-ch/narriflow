@@ -1,3 +1,4 @@
+import { readServiceEnvironment } from "./runtime-environment";
 
 export { motionRenderAnalyticsMetadata, type MotionRenderAnalyticsMetadata } from "./motion-render-analytics";
 import { randomUUID } from "node:crypto";
@@ -1235,7 +1236,7 @@ export class ClipService {
       throw new ClipActionError("clip_not_found");
     }
 
-    const apiKey = process.env.OPENAI_API_KEY;
+    const apiKey = readServiceEnvironment().OPENAI_API_KEY;
     if (!apiKey) {
       // Distinct from clip_title_suggestion_failed: nothing the user does will
       // fix a missing key, so the copy must not invite a retry.
@@ -1257,8 +1258,8 @@ export class ClipService {
     const languageCode = clip.project?.transcript?.languageCode ?? null;
 
     const model =
-      process.env.OPENAI_CONTENT_MODEL ??
-      process.env.OPENAI_CLIP_MODEL ??
+      readServiceEnvironment().OPENAI_CONTENT_MODEL ??
+      readServiceEnvironment().OPENAI_CLIP_MODEL ??
       "gpt-5.4-mini";
 
     let response: Response;

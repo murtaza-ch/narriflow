@@ -1,3 +1,4 @@
+import { bindServiceTestEnvironment } from "./runtime-test-support";
 import { randomUUID } from "node:crypto";
 import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import Stripe from "stripe";
@@ -16,7 +17,7 @@ const sandboxDescribe = enabled ? describe : describe.skip;
 setDefaultTimeout(120_000);
 
 sandboxDescribe("Workspace Billing Stripe sandbox", () => {
-  test("configured prices and portal match the plan catalog (read-only)", async () => {
+  test("configured prices and portal match the plan catalog (read-only)", bindServiceTestEnvironment(async () => {
     const key = process.env.STRIPE_SECRET_KEY ?? "";
     if (!key.startsWith("sk_test_")) {
       throw new Error("Workspace Billing sandbox contracts require an sk_test_ key");
@@ -85,9 +86,9 @@ sandboxDescribe("Workspace Billing Stripe sandbox", () => {
     expect(portal.features.payment_method_update.enabled).toBe(true);
     expect(portal.features.invoice_history.enabled).toBe(true);
     expect(portal.features.subscription_cancel.mode).toBe("at_period_end");
-  });
+  }));
 
-  test("replays customer and Checkout operations and exercises portal and seat contracts", async () => {
+  test("replays customer and Checkout operations and exercises portal and seat contracts", bindServiceTestEnvironment(async () => {
     const key = process.env.STRIPE_SECRET_KEY ?? "";
     if (!key.startsWith("sk_test_")) {
       throw new Error("Workspace Billing sandbox contracts require an sk_test_ key");
@@ -351,5 +352,5 @@ sandboxDescribe("Workspace Billing Stripe sandbox", () => {
         await stripe.customers.del(customerId).catch(() => undefined);
       }
     }
-  });
+  }));
 });

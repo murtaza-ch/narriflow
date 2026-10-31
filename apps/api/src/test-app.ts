@@ -1,3 +1,4 @@
+import { withServiceEnvironment } from "@narriflow/services/runtime-environment";
 import { createApiApp, type ApiAppDependencies } from "./app";
 import type { ApiDomainRoutes } from "./domains";
 import { loadApiConfig } from "./config";
@@ -46,7 +47,7 @@ export function createInventoryApp(
       now: Date.now,
     },
   });
-  return createApiApp({
+  return withServiceEnvironment({}, () => createApiApp({
     config,
     policyRuntime: overrides.policyRuntime ?? signedOut,
     health: {
@@ -69,5 +70,5 @@ export function createInventoryApp(
     domains: { ...createDomainRoutes(config), ...overrides.domains },
     ...createExternalRoutes(config),
     admin: { rateLimit: async () => ({ allowed: true }) as never },
-  });
+  }));
 }
