@@ -60,7 +60,7 @@ describe("readDriveFileMetadata", () => {
     expect(seen[0]!.url.searchParams.get("supportsAllDrives")).toBe("true");
     expect(seen[0]!.url.searchParams.get("fields")).toContain("videoMediaMetadata");
     expect(seen[0]!.headers.get("authorization")).toBe(`Bearer ${TOKEN}`);
-    expect(seen[0]!.init.redirect).toBe("error");
+    expect(seen[0]!.init.redirect).toBe("manual");
   }));
 
   test("a video whose duration Drive hasn't measured yet is admitted without one", bindServiceTestEnvironment(async () => {
@@ -130,7 +130,7 @@ describe("verifyDriveAccessToken", () => {
     expect(seen).toHaveLength(1);
     expect(seen[0]!.url.href).toBe("https://oauth2.googleapis.com/tokeninfo");
     expect(seen[0]!.url.href).not.toContain(TOKEN);
-    expect(seen[0]!.init.redirect).toBe("error");
+    expect(seen[0]!.init.redirect).toBe("manual");
     expect(seen[0]!.init.method).toBe("POST");
     expect(new URLSearchParams(String(seen[0]!.init.body)).get("access_token")).toBe(TOKEN);
     expect(seen[0]!.headers.get("content-type")).toBe("application/x-www-form-urlencoded");
@@ -274,7 +274,7 @@ describe("Worker Drive provider boundary",()=>{
  test("metadata and token verification refuse provider redirects without following them",bindServiceTestEnvironment(async()=>{
   const metadata=drive(()=>new Response(null,{status:302,headers:{location:"http://127.0.0.1/private"}}));
   await expect(readDriveFileMetadata({fileId:FILE_ID,accessToken:TOKEN},metadata.options)).rejects.toMatchObject({code:"drive_file_unavailable"});
-  expect(metadata.seen).toHaveLength(1);expect(metadata.seen[0]!.init.redirect).toBe("error");
+  expect(metadata.seen).toHaveLength(1);expect(metadata.seen[0]!.init.redirect).toBe("manual");
   const token=drive(()=>new Response(null,{status:307,headers:{location:"https://other.example/collect"}}));
   await expect(verifyDriveAccessToken(TOKEN,{clientId:CLIENT_ID},token.options)).rejects.toMatchObject({code:"drive_file_unavailable"});
   expect(token.seen).toHaveLength(1);expect(token.seen[0]!.url.origin).toBe("https://oauth2.googleapis.com");
