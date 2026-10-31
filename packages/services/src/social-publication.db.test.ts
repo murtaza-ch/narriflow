@@ -1,3 +1,4 @@
+import {withExecutionDispatches} from "./execution-dispatch-runtime";
 import { bindServiceTestEnvironment } from "./runtime-test-support";
 import { createDatabaseTestContext } from "@narriflow/db/testing";
 import { createHmac, randomUUID } from "node:crypto";
@@ -483,6 +484,27 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 			expect(await prismaAssistedCopyStore.open(input)).toMatchObject({ replayed: true, record: { id: candidate.id } });
 		} finally { await prisma.executionEpoch.update({ where: { id: 1 }, data: { admissionOpen: true } }); }
 	})));
+
+ test("schedule and cancellation repair committed targeted wakes before returning an exact replay",bindServiceTestEnvironment(prismaGlobal.bind(async()=>{
+  const f=await fixture(),candidate=frozenCandidate(f,{id:randomUUID(),key:randomUUID(),hash:"registration-repair",accountId:f.firstAccount.id,scheduledFor:new Date(Date.now()+3600000)});
+  const input={workspaceId:f.workspace.id,clientIdempotencyKey:candidate.clientIdempotencyKey,immutableRequestHash:candidate.immutableRequestHash,create:async()=>candidate};
+  let lose=true;
+  const deliver=async(ids:readonly string[])=>{if(lose){lose=false;throw Error("lost_publication_registration");}await prisma.executionDispatch.updateMany({where:{id:{in:[...ids]}},data:{acknowledgedAt:new Date()}});};
+  const run=<T>(operation:()=>Promise<T>)=>withExecutionDispatches(operation,{database:prisma,deliver});
+  await expect(run(()=>prismaPublicationSchedulingStore.open(input))).rejects.toThrow("lost_publication_registration");
+  expect(await prisma.socialPost.count({where:{id:candidate.id}})).toBe(1);
+  expect(await prisma.executionDispatch.count({where:{subjectKind:"social_publication",subjectId:candidate.id,acknowledgedAt:null}})).toBe(1);
+  await expect(run(()=>prismaPublicationSchedulingStore.open({...input,create:async()=>{throw Error("Replay cannot refreeze");}}))).resolves.toMatchObject({id:candidate.id});
+  expect(await prisma.executionDispatch.count({where:{subjectKind:"social_publication",subjectId:candidate.id,acknowledgedAt:null}})).toBe(0);
+  lose=true;
+  const cancellation={workspaceId:f.workspace.id,postId:candidate.id,now:new Date()};
+  await expect(run(()=>prismaPublicationSchedulingStore.cancel(cancellation))).rejects.toThrow("lost_publication_registration");
+  const cancelled=await prisma.socialPost.findUniqueOrThrow({where:{id:candidate.id}});
+  expect(cancelled.status).toBe("cancelled");expect(cancelled.generation).toBe(2);
+  await expect(run(()=>prismaPublicationSchedulingStore.cancel({...cancellation,now:new Date()}))).resolves.toMatchObject({status:"cancelled"});
+  expect(await prisma.executionDispatch.count({where:{subjectKind:"social_publication",subjectId:candidate.id,generation:2,acknowledgedAt:null}})).toBe(0);
+  expect(await prisma.executionDispatch.count({where:{subjectKind:"social_publication",subjectId:candidate.id}})).toBe(2);
+ })));
 
 	test("replays every advanced post state without refreezing or reopening eligibility", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const f = await fixture();

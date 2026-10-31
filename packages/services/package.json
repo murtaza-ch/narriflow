@@ -6,6 +6,7 @@
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "exports": {
+    "./media-cleanup-runtime": "./src/media-cleanup-runtime.ts",
     "./library-index": "./src/library-index.ts",
     "./library-index-runtime": "./src/library-index-runtime.ts",
     "./clip-preparation": "./src/clip-preparation.ts",
@@ -627,7 +628,8 @@
     "./social-publication-observability": "./src/social-publication-observability.ts",
     "./publication-webhook-body": "./src/publication-webhook-body.ts",
     "./publication-execution-runtime": "./src/publication-execution-runtime.ts",
-    "./publication-execution-control": "./src/publication-execution-control.ts"
+    "./publication-execution-control": "./src/publication-execution-control.ts",
+    "./publication-producers": "./src/publication-producers.ts"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",

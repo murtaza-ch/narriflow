@@ -1,3 +1,4 @@
+import {recoverPublicationDispatches} from "./publication-dispatch";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
 import {
@@ -15,8 +16,14 @@ function unique(identity: OperationReceiptIdentity) {
 export function prismaOperationReceiptPersistence(
 	prisma: PrismaClient,
 ): OperationReceiptPersistence<Prisma.TransactionClient> {
+ const recover:NonNullable<OperationReceiptPersistence<Prisma.TransactionClient>["recover"]>=async(receipt,tx)=>{
+  if(!tx)return prisma.$transaction(tx=>recover(receipt,tx));
+  await readExecutionAdmission(tx);
+  await recoverReceiptNotificationDispatches(tx,receipt);
+  if(receipt.resourceType==="social_post"&&["recheck_social_publication","publish_social_publication_again"].includes(receipt.command))await recoverPublicationDispatches(tx,receipt.resourceId,receipt.workspaceId);
+ };
 	return {
-		recover: (receipt, tx) => tx ? recoverReceiptNotificationDispatches(tx, receipt) : prisma.$transaction(tx => recoverReceiptNotificationDispatches(tx, receipt)),
+  recover,
 		read: (identity) =>
 			prisma.operationReceipt.findUnique({ where: unique(identity) }),
 		transaction: (run) => prisma.$transaction(run),
