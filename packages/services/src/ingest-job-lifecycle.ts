@@ -39,7 +39,6 @@ import { flushWorkspaceEvents } from "./workspace-event";
 import { sourceAudioBindingSchema, sourceVideoBindingSchema, type SourceAudioBinding, type SourceVideoBinding, type ExecutionDispatchReference, type ExecutionDisposition, executionDispatchReferenceSchema } from "@narriflow/validators/execution";
 import { sourceAudioBindingHash } from "./source-audio-binding";
 import { appendExecutionDispatch, readExecutionDispatch } from "./execution-dispatch";
-import { workflowRunExecutionInputHash } from "./workflow-execution-input";
 import type { ExecutorArtifactCommit, ExecutorDomainLock, ExecutorFailureInput, ExecutorMutationContext, ExecutorMutationResult, ExecutorProgressInput, ExecutorReleaseInput, ExecutorExpiryObservation, ExecutorExpiryResult } from "./executor-domain-control";
 
 export interface IngestExecutionReference {
@@ -136,7 +135,7 @@ export type IngestFailureDecision =
 type Tx = Prisma.TransactionClient;
 export interface IngestJobLifecycleDependencies {
   prisma: PrismaClient;
-  workflow: Pick<WorkflowRunLifecycle, "admitWithHandoff">;
+  workflow: Pick<WorkflowRunLifecycle, "admitWithHandoff" | "dispatchRunWithinTransaction">;
   usage: Pick<ProcessingUsage, "reserve" | "settle" | "release">;
   requireRetryActor(actorUserId: string, workspaceId: string): Promise<unknown>;
   progressRequired?: boolean;
@@ -1012,13 +1011,9 @@ export class IngestJobLifecycle {
     return { kind: "ready", job, project, audio, now, epoch: epoch.epoch };
   }
 
-  private async appendGenerationDispatch(tx: Tx, runId: string, project: Project, audio: SourceAudio | null, epoch: number): Promise<string[]> {
-    const run = await tx.workflowRun.findUniqueOrThrow({ where: { id: runId } });
-    if (run.deploymentEpoch !== epoch) throw new Error("workflow_generation_superseded");
-    const dispatch = await appendExecutionDispatch(tx, { deploymentEpoch: epoch, kind: "operation_driver", subject: { kind: "workflow_run", id: run.id }, generation: run.generation,
-      inputHash: await workflowRunExecutionInputHash({ id: run.id, projectId: project.id, stage: run.stage, contentPackId: run.contentPackId,
-        generation: run.generation, deploymentEpoch: epoch, sourceAudioId: audio?.id ?? null, sourceRevision: project.sourceRevision }),
-      dueAt: run.nextAttemptAt ?? run.createdAt });
+  private async appendGenerationDispatch(tx: Tx, runId: string, epoch: number): Promise<string[]> {
+    const dispatch = await this.deps.workflow.dispatchRunWithinTransaction(tx, runId);
+    if (dispatch.reference.deploymentEpoch !== epoch) throw new Error("workflow_generation_superseded");
     return [dispatch.reference.dispatchId];
   }
 
@@ -1030,7 +1025,7 @@ export class IngestJobLifecycle {
         if (state.kind !== "ready") return { kind: state.kind, dispatchIds: [] };
         const { job, project, audio, now, epoch } = state;
         if (job.generationHandoffAt && job.generationRunId) return { kind: "acknowledged", workflowRunId: job.generationRunId,
-          dispatchIds: await this.appendGenerationDispatch(tx, job.generationRunId, project, audio, epoch) };
+          dispatchIds: await this.appendGenerationDispatch(tx, job.generationRunId, epoch) };
         if (job.generationHandoffAt) return { kind: "refused", dispatchIds: [] };
         if (job.generationHandoffRetryAt && job.generationHandoffRetryAt > now) return { kind: "deferred", retryAt: job.generationHandoffRetryAt, dispatchIds: [] };
         // Re-read the latest pack under the admission lock. Drafts never authorize STT.
@@ -1040,7 +1035,7 @@ export class IngestJobLifecycle {
         if (existing !== null) {
           const acknowledged = await tx.ingestJob.findUniqueOrThrow({ where: { id: job.id }, select: { generationRunId: true } });
           return { kind: "acknowledged", workflowRunId: acknowledged.generationRunId ?? undefined,
-            dispatchIds: acknowledged.generationRunId ? await this.appendGenerationDispatch(tx, acknowledged.generationRunId, project, audio, epoch) : [] };
+            dispatchIds: acknowledged.generationRunId ? await this.appendGenerationDispatch(tx, acknowledged.generationRunId, epoch) : [] };
         }
         const probe = sourceProbeSchema.safeParse(project.sourceProbe).data;
         const measuredDuration = audio?.durationSeconds ?? probe?.durationSec ?? null;
@@ -1070,7 +1065,7 @@ export class IngestJobLifecycle {
               workflowAttemptId: null, errorCode: null, completedAt: null, provider: "elevenlabs", providerModel: PENDING_STT_PROVIDER_MODEL,
               sourceAudioId: audio?.id ?? null, sourceRevision: project.sourceRevision } });
           if (language.success) await tx.project.update({ where: { id: project.id }, data: { languageCode: language.data } });
-          return this.appendGenerationDispatch(tx, run.id, project, audio, epoch);
+          return this.appendGenerationDispatch(tx, run.id, epoch);
         }, tx);
         await flushWorkspaceEvents(tx);
         return { kind: admitted.created ? "admitted" : "acknowledged", workflowRunId: admitted.id, dispatchIds: admitted.handoff };

@@ -77,6 +77,7 @@ function harness() {
       ) => work(tx),
     } as unknown as PrismaClient,
     workflow: {
+      dispatchRunWithinTransaction: async () => { throw new Error("Handoff is outside this fixture"); },
       admitWithHandoff: async () => {
         throw new Error("unexpected generation");
       },
