@@ -8,6 +8,9 @@
   "exports": {
     "./clip-preparation": "./src/clip-preparation.ts",
     "./clip-preparation-execution": "./src/clip-preparation-execution.ts",
+    "./clip-preparation-runtime": "./src/clip-preparation-runtime.ts",
+    "./private-json-storage": "./src/private-json-storage.ts",
+    "./execution-admission": "./src/execution-admission.ts",
     "./ingest-source-execution": {
       "types": "./src/ingest-source-execution.ts",
       "default": "./src/ingest-source-execution.ts"
@@ -600,7 +603,14 @@
     "./broll-plan": "./src/broll-plan.ts",
     "./render-execution-input": "./src/render-execution-input.ts",
     "./render-group-execution": "./src/render-group-execution.ts",
-    "./render-input-snapshot": "./src/render-input-snapshot.ts"
+    "./render-input-snapshot": "./src/render-input-snapshot.ts",
+    "./billing-reconciliation": "./src/billing-reconciliation.ts",
+    "./billing-reconciliation-runtime": "./src/billing-reconciliation-runtime.ts",
+    "./publication-execution": "./src/publication-execution.ts",
+    "./publication-cleanup": "./src/publication-cleanup.ts",
+    "./social-publication-platform": "./src/social-publication-platform.ts",
+    "./social-publication-config": "./src/social-publication-config.ts"
+
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",

@@ -72,6 +72,7 @@ try {
     DATABASE_URL: migrationUrl.toString(),
     DIRECT_URL: migrationUrl.toString(),
   });
+  await pool.query(`UPDATE "${schema}"."ExecutionEpoch" SET "admissionOpen" = true WHERE id = 1`);
   await run(["bun", "test", "packages/services/src/upload-session.db.test.ts"], {
     ALLOW_UPLOAD_SESSION_DB_TESTS: "1",
     DATABASE_URL: testUrl.toString(),

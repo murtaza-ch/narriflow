@@ -1,3 +1,4 @@
+import { publicationObjectIsHeld } from "./publication-cleanup";
 import { generatedMediaObjectIsHeld } from "./generated-media-execution";
 import { readServiceEnvironment, type ServiceEnvironment } from "./runtime-environment";
 import { randomUUID } from "node:crypto";
@@ -17,6 +18,7 @@ export const MEDIA_CLEANUP_ORIGINS = [
   "upload_source_pinning",
   "upload_session_termination",
   "clip_preparation_input",
+  "publication_execution",
 ] as const;
 export type MediaCleanupOrigin = (typeof MEDIA_CLEANUP_ORIGINS)[number];
 
@@ -29,6 +31,7 @@ export const MEDIA_CLEANUP_CLASSES = [
   "thumbnail_asset",
   "upload_source",
   "execution_input",
+  "publication_private",
 ] as const;
 export type MediaCleanupClass = (typeof MEDIA_CLEANUP_CLASSES)[number];
 
@@ -1116,6 +1119,7 @@ function productionMediaCleanupWorker() {
   config: mediaCleanupConfigFromEnv(),
   retainUntil: claim => claim.cleanupClass === "execution_input" ? executionInputRetainUntil(requirePrisma(), claim.objectKey) : Promise.resolve(null),
   async isProtected(claim) {
+    if(claim.cleanupClass === "publication_private")return publicationObjectIsHeld(requirePrisma(),claim.objectKey);
     if (claim.cleanupClass !== "generated_asset" && claim.cleanupClass !== "thumbnail_asset") return false;
     if(claim.cleanupClass === "generated_asset" && await generatedMediaObjectIsHeld(requirePrisma(),claim.objectKey))return true;
     return Boolean(await requirePrisma().visualAsset.findFirst({

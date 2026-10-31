@@ -1,5 +1,6 @@
 import { appendProgressEventDispatch, flushProjectProgressDrains, queueProjectProgressCatchup } from "./progress-outbox";
 import { randomUUID } from "node:crypto";
+import { requireExecutionAdmissionOpen } from "./execution-admission";
 import { Prisma, type PrismaClient, type IngestJob, type SourceAudio, type Project } from "@prisma/client";
 import {
   defaultAspectRatioSchema,
@@ -35,7 +36,7 @@ import {
 import { admitMediaCleanupObligations } from "./media-cleanup";
 import { emitIntakeFinished, queueIntakeFinishedByGeneration } from "./operation-finished";
 import { flushWorkspaceEvents } from "./workspace-event";
-import { takeNotificationDispatchIds } from "./notification-dispatch";
+import { takeExecutionDispatchIds } from "./execution-dispatch-runtime";
 
 import { ingestAcquisitionSchema, type IngestAcquisition, sourceAudioBindingSchema, sourceVideoBindingSchema, type SourceAudioBinding, type SourceVideoBinding, type ExecutionDispatchReference, type ExecutionDisposition, executionDispatchReferenceSchema } from "@narriflow/validators/execution";
 import { sourceAudioBindingHash } from "./source-audio-binding";
@@ -920,6 +921,7 @@ export class IngestJobLifecycle {
   async cancelQueuedOperation(input: { actorUserId: string; workspaceId: string; projectId: string; ingestJobId: string }): Promise<boolean> {
     await this.deps.requireRetryActor(input.actorUserId, input.workspaceId);
     return this.deps.prisma.$transaction(async (tx) => {
+      await requireExecutionAdmissionOpen(tx);
       const job = await tx.ingestJob.findFirst({ where: { id: input.ingestJobId, projectId: input.projectId,
         status: "queued", project: { workspaceId: input.workspaceId, ...accessibleProjectWhere() } } });
       if (!job) return false;
@@ -1129,7 +1131,7 @@ export class IngestJobLifecycle {
       return await this.deps.prisma.$transaction(async tx => {
         const result = await this.handoffForJobWithinTransaction(tx, id, reference);
         await flushWorkspaceEvents(tx);
-        return { ...result, dispatchIds: [...new Set([...result.dispatchIds, ...await flushProjectProgressDrains(tx), ...takeNotificationDispatchIds(tx)])] };
+        return { ...result, dispatchIds: [...new Set([...result.dispatchIds, ...await flushProjectProgressDrains(tx), ...takeExecutionDispatchIds(tx)])] };
       }, PROCESSING_USAGE_TRANSACTION);
     } catch (error) {
       if (error instanceof IngestJobClaimLost) return { kind: "superseded", dispatchIds: [] };
@@ -1140,7 +1142,7 @@ export class IngestJobLifecycle {
         if (error instanceof ExpectedDomainFailureError && (!isAutoRetryableFailureCode(code) || ["invalid", "unprocessable", "missing", "forbidden", "payment_required"].includes(error.kind))) {
           await this.failHandoff(tx, state.job, code, error.message);
           await flushWorkspaceEvents(tx);
-          return { kind: "refused", dispatchIds: [...await flushProjectProgressDrains(tx), ...takeNotificationDispatchIds(tx)] };
+          return { kind: "refused", dispatchIds: [...await flushProjectProgressDrains(tx), ...takeExecutionDispatchIds(tx)] };
         }
         console.warn(JSON.stringify({ level: "warn", message: "ingest_generation_handoff_deferred", jobId: id, projectId: state.project.id, errorCode: code }));
         const retryAt = new Date(state.now.getTime() + 60_000);

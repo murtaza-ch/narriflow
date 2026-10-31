@@ -73,6 +73,7 @@ try {
 		DATABASE_URL: migrationUrl.toString(),
 		DIRECT_URL: migrationUrl.toString(),
 	});
+	await pool.query(`UPDATE "${schema}"."ExecutionEpoch" SET "admissionOpen" = true WHERE id = 1`);
 	for (const suite of [
 		"packages/services/src/operation-receipt.db.test.ts",
 		"packages/services/src/completion-callback.db.test.ts",

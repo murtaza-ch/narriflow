@@ -31,7 +31,7 @@ suite("Clip Preparation authority and publication", () => {
   });
   afterAll(async () => { await db?.$disconnect(); });
 
-  async function fixture(frozenExport = false) {
+  async function fixture(frozenExport = false, snapshotRevision?: number) {
     const user = await db.user.create({ data: { clerkId: `clip-preparation:${crypto.randomUUID()}` } });
     const workspace = await db.workspace.create({ data: { name: "Clip preparation gate", ownerUserId: user.id } });
     const epoch = (await db.executionEpoch.findUniqueOrThrow({ where: { id: 1 } })).epoch;
@@ -69,7 +69,7 @@ suite("Clip Preparation authority and publication", () => {
         exportVariantId = (await db.clipExportVariant.create({ data: { exportId, aspectRatio, resolution, watermark: true } })).id;
       }
       const variant = await db.clipRender.create({ data: { clipId: clip.id, workflowRunId: run.id, editorRevision: clip.editorRevision, aspectRatio, resolution,
-        ...(exportVariantId ? { exportVariantId, clipSnapshot: JSON.parse(JSON.stringify(clip)) } : {}) } });
+        ...(exportVariantId ? { exportVariantId, clipSnapshot: JSON.parse(JSON.stringify({ ...clip, editorRevision: snapshotRevision ?? clip.editorRevision })) } : {}) } });
       const group = await db.renderGroup.create({ data: { workflowRunId: run.id, workSetGeneration, clipId: clip.id, deploymentEpoch: epoch,
         exportIdentity: renderGroupExportIdentity({ clipId: clip.id, exportId, editorRevision: clip.editorRevision, resolution, watermark: true }), members: { create: { clipRenderId: variant.id } } } });
       references.push((await db.$transaction(tx => appendExecutionDispatch(tx, { deploymentEpoch: epoch, generation: 1, kind: "operation_driver", subject: { kind: "render_group", id: group.id }, inputHash: "d".repeat(64), dueAt: group.createdAt }))).reference);
@@ -242,6 +242,21 @@ suite("Clip Preparation authority and publication", () => {
     expect(await db.clipPreparation.findUnique({ where: { id: execution.admitted.preparationId } })).toMatchObject({ status: "completed", chargedAttempts: 1 });
     expect(await db.clip.findUnique({ where: { id: f.clip.id } })).toMatchObject({ editorRevision: 1, previewStorageKey: "projects/newer-preview.mp4", startSec: 1, endSec: 11 });
     expect(await f.service.readReadyForGroup(f.references[0]!)).toMatchObject({ preview: { storageKey: execution.preview.storageKey }, result: execution.result });
+  });
+
+  test("an export snapshot must carry its exact frozen revision before a capsule is written", async () => {
+    const f = await fixture(true, 99);
+    await expect(f.service.admitForGroup(f.references[0]!)).rejects.toMatchObject({ code: "clip_preparation_input_invalid" });
+    expect(f.writes()).toBe(0);
+    expect(await db.clipPreparation.count({ where: { clipId: f.clip.id } })).toBe(0);
+  });
+
+  test("an elapsed group deadline refuses preparation before storage I/O", async () => {
+    const f = await fixture();
+    await db.renderGroup.update({ where: { id: f.references[0]!.subject.id }, data: { operationDeadlineAt: new Date(0) } });
+    await expect(f.service.admitForGroup(f.references[0]!)).rejects.toMatchObject({ code: "clip_preparation_input_invalid" });
+    expect(f.writes()).toBe(0);
+    expect(await db.clipPreparation.count({ where: { clipId: f.clip.id } })).toBe(0);
   });
 
   test("a replaced source revokes a started preparation before an old owner can publish", async () => {

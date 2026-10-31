@@ -3,7 +3,7 @@ import { executionDispatchReferenceSchema, providerAttemptReferenceSchema, type 
 import { appendExecutionDispatch, readExecutionDispatch, executionDispatchIdentity } from "./execution-dispatch";
 import type { ProviderSubmissionIntent, WorkflowRunLifecycle } from "./workflow-run-lifecycle";
 import { flushWorkspaceEvents } from "./workspace-event";
-import { takeNotificationDispatchIds } from "./notification-dispatch";
+import { takeExecutionDispatchIds } from "./execution-dispatch-runtime";
 import { flushProjectProgressDrains, queueProjectProgressCatchup } from "./progress-outbox";
 
 type Tx = Prisma.TransactionClient;
@@ -162,7 +162,7 @@ export function createTranscriptionAdmission(input: { database: PrismaClient; wo
           return { kind: "begun", intent, languageCode: plan.languageCode, dispatchIds: intent.dispatchIds };
         })();
         await flushWorkspaceEvents(tx);
-        return { ...result, dispatchIds: [...new Set([...result.dispatchIds, ...await flushProjectProgressDrains(tx), ...takeNotificationDispatchIds(tx)])] };
+        return { ...result, dispatchIds: [...new Set([...result.dispatchIds, ...await flushProjectProgressDrains(tx), ...takeExecutionDispatchIds(tx)])] };
       }, { maxWait: 10_000, timeout: 30_000 });
     },
   };

@@ -14,6 +14,8 @@ import { createIngestSourceExecution } from "@narriflow/services/ingest-source-e
 import { createOutboundDeliveryExecution } from "@narriflow/services/outbound-delivery-execution";
 import { getOutboundDeliveryService } from "@narriflow/services/outbound-delivery-runtime";
 import { getGeneratedMediaExecution } from "@narriflow/services/generated-media-runtime";
+import { getClipPreparationService } from "@narriflow/services/clip-preparation-runtime";
+import { createClipPreparationExecution } from "@narriflow/services/clip-preparation-execution";
 import { createGeneratedMediaExecution } from "@narriflow/services/generated-media-control";
 import { getIngestJobLifecycle } from "@narriflow/services/ingest-job-lifecycle-runtime";
 import { getWorkflowRunLifecycle } from "@narriflow/services/workflow-run-lifecycle";
@@ -34,9 +36,9 @@ export function createExecutionDependencies(environment: Readonly<Record<string,
 
 /** Called only after raw-byte signature verification, inside the request or
  * command step's fresh database scope. No clients survive this invocation. */
-export function createWorkerExecutor(reference: ExecutionDispatchReference, bindings?: ApiWorkerBindings) {
+export async function createWorkerExecutor(reference: ExecutionDispatchReference, bindings?: ApiWorkerBindings) {
   if (!bindings?.MEDIA_BUCKET) throw new ExecutorControlError("storage_unavailable");
-  if (!["native_validation", "thumbnail_frame", "outbound_probe", "outbound_delivery", "generated_media", "ingest_job"].includes(reference.subject.kind)) throw new ExecutorControlError("scheduler_unavailable");
+  if (!["native_validation", "thumbnail_frame", "outbound_probe", "outbound_delivery", "generated_media", "clip_preparation", "ingest_job"].includes(reference.subject.kind)) throw new ExecutorControlError("scheduler_unavailable");
   const database = getPrismaClient();
   if (!database) throw new ExecutorControlError("epoch_unavailable");
   const environment = readServiceEnvironment();
@@ -44,6 +46,7 @@ export function createWorkerExecutor(reference: ExecutionDispatchReference, bind
   const storage = createExecutionStorage({ accountId: required("R2_ACCOUNT_ID"), bucket: required("R2_BUCKET"),
     accessKeyId: required("R2_ACCESS_KEY_ID"), secretAccessKey: required("R2_SECRET_ACCESS_KEY") });
   const common = { database, storage, artifacts: createAssignedArtifactStorage(bindings.MEDIA_BUCKET), deliverWakes: deliverExecutionDispatches };
+  if (reference.subject.kind === "clip_preparation") return createClipPreparationExecution({ ...common, domain: await getClipPreparationService() });
   if (reference.subject.kind === "ingest_job") return createIngestSourceExecution({ ...common, domain: getIngestJobLifecycle(), workflow: getWorkflowRunLifecycle(), toolchainFingerprint: required(reference.kind === "local_fetch" ? "MEDIA_LOCAL_FETCH_TOOLCHAIN_FINGERPRINT" : "MEDIA_FETCH_TOOLCHAIN_FINGERPRINT"),
     sourceReads: { openDriveCredential: sealed => createDriveTokenCipher().open(sealed), zoomRecordingDownload: input => zoomService.recordingDownload(input) } });
   if (reference.subject.kind === "outbound_delivery") return createOutboundDeliveryExecution({ ...common, domain: getOutboundDeliveryService() });
@@ -56,7 +59,7 @@ export function createWorkerExecutor(reference: ExecutionDispatchReference, bind
 
 export function createWorkerExecutionDependencies(): ExecutionRouteDependencies {
   return { keyRing: () => executorControlKeyRing(readServiceEnvironment()), nowSeconds: () => Math.floor(Date.now() / 1000),
-    execute: (command, verifiedRequest, bindings) => createWorkerExecutor(command.action === "acquire" ? command.reference : command.fence.reference, bindings).control.execute({ command, verifiedRequest }),
-    transfer: (command, verifiedRequest, bindings) => createWorkerExecutor(command.fence.reference, bindings).transfer.execute({ command, verifiedRequest }),
+    execute: async (command, verifiedRequest, bindings) => (await createWorkerExecutor(command.action === "acquire" ? command.reference : command.fence.reference, bindings)).control.execute({ command, verifiedRequest }),
+    transfer: async (command, verifiedRequest, bindings) => (await createWorkerExecutor(command.fence.reference, bindings)).transfer.execute({ command, verifiedRequest }),
   };
 }

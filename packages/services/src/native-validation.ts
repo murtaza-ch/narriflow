@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { readExecutionAdmission, assertExecutionAdmissionOpen } from "./execution-admission";
 import { Prisma, type NativeValidationJob, type PrismaClient } from "@prisma/client";
 import { nativeValidationEvidenceSchema, nativeValidationInputSchema, type NativeValidationEvidence, type NativeValidationInput } from "@narriflow/validators/native-validation";
 import type { ExecutionDeadline, ExecutionDispatchReference } from "@narriflow/validators/execution";
@@ -60,11 +61,11 @@ export class NativeValidationService implements ExecutorDomainControl<NativeVali
     const object = await this.dependencies.head(input.key);
     if (object.contentType !== input.contentType || object.sizeBytes !== input.sizeBytes || !object.etag || object.etag.length > 160) throw new NativeValidationError("native_validation_object_invalid");
     const admitted = await this.database.$transaction(async tx => {
-      const [epoch] = await tx.$queryRaw<Array<{ epoch: number }>>`SELECT "epoch" FROM "ExecutionEpoch" WHERE "id"=1 FOR SHARE`;
-      if (!epoch) throw new NativeValidationError("native_validation_unavailable");
+      const epoch = await readExecutionAdmission(tx);
       await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`native-validation:${scope.workspaceId}:${kind}:${requestFingerprint}`},0)) IS NULL AS "locked"`;
       const replay = await tx.nativeValidationJob.findUnique({ where: { workspaceId_kind_requestFingerprint: { workspaceId: scope.workspaceId, kind, requestFingerprint } } });
       if (replay) return { row: replay, ids: await this.registerJob(tx, replay), replayed: true };
+      assertExecutionAdmissionOpen(epoch);
       const clock = await now(tx); const owner = resolveBrandOwner(scope); const id = randomUUID();
       const row = await tx.nativeValidationJob.create({ data: { id, workspaceId: scope.workspaceId, createdByUserId: scope.actorUserId,
         ownerUserId: owner.userId, ownerWorkspaceId: owner.workspaceId, kind, requestFingerprint,

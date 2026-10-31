@@ -1,4 +1,5 @@
 import { appendProgressRevocation, deliverProgressAfterCommit } from "./progress-outbox";
+import { readExecutionAdmission, assertExecutionAdmissionOpen, requireExecutionAdmissionOpen } from "./execution-admission";
 import type { ExecutionDispatchRecord } from "./execution-dispatch";
 import { type ZoomRecordingNotification } from "@narriflow/validators";
 
@@ -1297,6 +1298,7 @@ export class ProjectService {
 						}
 					: undefined,
 				mutate: async (tx) => {
+					const admission = await readExecutionAdmission(tx);
 					const { contentPack, languageCode } = settings!;
 					const refusal = await this.settleForGeneration(
 						tx,
@@ -1362,6 +1364,7 @@ export class ProjectService {
 							})
 						: null;
 					const contentPackId = options.existingContentPackId ?? null;
+					if (!reusable) assertExecutionAdmissionOpen(admission);
 					const admitted =
 						reusable ??
 						(await getWorkflowRunLifecycle().admitTranscript(
@@ -1438,6 +1441,7 @@ export class ProjectService {
 			);
 		const prisma = this.requirePrisma();
 		const outcome = await prisma.$transaction(async (tx) => {
+			const admission = await readExecutionAdmission(tx);
 			const refusal = await this.settleForGeneration(
 				tx,
 				scope.workspaceId,
@@ -1471,6 +1475,7 @@ export class ProjectService {
 					return { workflowRunId: reusable.id, acceptedAt: reusable.updatedAt };
 			}
 			const contentPackId = options.existingContentPackId ?? null;
+			assertExecutionAdmissionOpen(admission);
 			const admitted = await getWorkflowRunLifecycle().admitTranscript(
 				{
 					projectId,
@@ -1970,6 +1975,7 @@ export class ProjectService {
 			let jobId: string;
 			try {
 				const created = await prisma.$transaction(async (tx) => {
+					await requireExecutionAdmissionOpen(tx);
 					if (options.zoom) {
 						await tx.$queryRaw`SELECT "id" FROM "AutopilotRule" WHERE "id" = ${options.autopilotRuleId!}::uuid FOR UPDATE`;
 						await tx.$queryRaw`SELECT "id" FROM "ZoomConnection" WHERE "id" = ${options.zoom.connectionId}::uuid FOR UPDATE`;
@@ -2314,6 +2320,7 @@ export class ProjectService {
 		// concurrent finalize that lost the claim race must not rewrite the
 		// settings the running claim was made with.
 		const committedPack = await prisma.$transaction(async (tx) => {
+			await requireExecutionAdmissionOpen(tx);
 			const latest = await tx.contentPack.findFirst({
 				where: { projectId },
 				orderBy: { createdAt: "desc" },

@@ -1,4 +1,5 @@
 import { validatedFontFaceSchema } from "@narriflow/validators/native-validation";
+import { requireExecutionAdmissionOpen } from "./execution-admission";
 import type { ActorScope } from "./actor-scope";
 import { getOperationReceiptExecutor } from "./operation-receipt-runtime";
 import { receiptCallback } from "./completion-callback";
@@ -690,6 +691,7 @@ export class ClipExportService {
       beforeAccept: mutation?.beforeAccept,
       prepare,
       mutate: async (tx) => {
+        await requireExecutionAdmissionOpen(tx);
         // Fence the prepared document against an edit that races admission.
         await tx.$queryRaw`SELECT "id" FROM "Clip" WHERE "id" = ${clipId}::uuid FOR UPDATE`;
         const current = await tx.clip.findFirst({

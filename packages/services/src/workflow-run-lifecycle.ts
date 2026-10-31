@@ -1,6 +1,7 @@
 import { WORKFLOW_LEASE_DURATION_MS, WORKFLOW_HEARTBEAT_INTERVAL_MS, WorkflowFailure, WorkflowAttemptLost, type WorkflowAttemptRef, type WorkflowAttemptContext } from "./workflow-attempt-contract";
 export { WORKFLOW_LEASE_DURATION_MS, WORKFLOW_HEARTBEAT_INTERVAL_MS, WorkflowFailure, WorkflowAttemptLost, workflowHttpFailureDisposition, workflowFailureFromUnknown, rethrowWorkflowAttemptLost, type WorkflowFailureDisposition, type WorkflowAttemptRef, type WorkflowAttemptContext } from "./workflow-attempt-contract";
 import { randomUUID } from "node:crypto";
+import { readExecutionAdmission, assertExecutionAdmissionOpen } from "./execution-admission";
 import { cancelRenderGroupsWithinTransaction, admitRenderGroupsWithinTransaction, renderGroupParentSettlement, type RenderGroupAdmission } from "./render-group-lifecycle";
 import { renderGroupExecutionInputHash, renderGroupExportIdentity, type RenderGroupRef } from "./render-group-contract";
 import { Prisma, type PrismaClient, type WorkflowRun, type Project } from "@prisma/client";
@@ -30,7 +31,7 @@ import {
 } from "./media-cleanup";
 import { queueExportsFinishedByRun, queueFinishedGenerations } from "./operation-finished";
 import { flushWorkspaceEvents } from "./workspace-event";
-import { takeNotificationDispatchIds } from "./notification-dispatch";
+import { takeExecutionDispatchIds } from "./execution-dispatch-runtime";
 import { finalizeGenerationUsage, releaseFailedDubUsage } from "./generated-media-usage-ledger";
 import { appendWorkflowEvent, type WorkflowEventInput } from "./workflow-event-append";
 import { flushProjectProgressDrains, queueProjectProgressCatchup } from "./progress-outbox";
@@ -448,7 +449,7 @@ export class WorkflowRunLifecycle {
         const result = await this.prisma.$transaction(async (tx) => {
           const result = await operation(tx);
           await flushWorkspaceEvents(tx);
-          progressDispatchIds = [...await flushProjectProgressDrains(tx), ...takeNotificationDispatchIds(tx)];
+          progressDispatchIds = [...await flushProjectProgressDrains(tx), ...takeExecutionDispatchIds(tx)];
           return result;
         });
         if (progressDeliveryPort()) await deliverExecutionDispatches(progressDispatchIds);
@@ -791,8 +792,23 @@ export class WorkflowRunLifecycle {
   }
 
   async admit(input: AdmitWorkflowRunInput): Promise<{ id: string; created: boolean }> {
+    return this.admitRoot(input);
+  }
+
+  /** Ordinary render requests mutate their variants and register the run in
+   * one admission transaction, including when an active run absorbs them. */
+  async admitClipRendering(input: { projectId: string; idempotencyKey: string; variants: readonly {
+    clipId: string; aspectRatio: Prisma.ClipRenderCreateManyInput["aspectRatio"]; resolution: Prisma.ClipRenderCreateManyInput["resolution"];
+  }[] }): Promise<{ id: string; created: boolean }> {
+    return this.admitRoot({ projectId: input.projectId, idempotencyKey: input.idempotencyKey, stage: "clip_rendering" }, input.variants);
+  }
+
+  private async admitRoot(input: AdmitWorkflowRunInput, variants?: readonly {
+    clipId: string; aspectRatio: Prisma.ClipRenderCreateManyInput["aspectRatio"]; resolution: Prisma.ClipRenderCreateManyInput["resolution"];
+  }[]): Promise<{ id: string; created: boolean }> {
     try {
       return await this.transaction(async (tx) => {
+        const admission = await readExecutionAdmission(tx);
         await this.lockAdmissionProject(tx, input.projectId);
         const existing = await tx.workflowRun.findUnique({
           where: {
@@ -803,6 +819,28 @@ export class WorkflowRunLifecycle {
           },
           select: { id: true },
         });
+        if (variants) {
+          if (!admission.admissionOpen && existing) return { id: existing.id, created: false };
+          assertExecutionAdmissionOpen(admission);
+          const clipIds = [...new Set(variants.map(variant => variant.clipId))];
+          if (await tx.clip.count({ where: { id: { in: clipIds }, projectId: input.projectId } }) !== clipIds.length) throw new Error("clip_render_admission_invalid");
+          const current = await tx.clipRender.findMany({ where: { clipId: { in: clipIds }, exportVariantId: null }, select: { id: true, clipId: true, aspectRatio: true, status: true } });
+          const byIdentity = new Map(current.map(row => [`${row.clipId}:${row.aspectRatio}`, row]));
+          const creates: Prisma.ClipRenderCreateManyInput[] = [];
+          const resets = new Map<Prisma.ClipRenderCreateManyInput["resolution"], string[]>();
+          for (const variant of variants) {
+            const row = byIdentity.get(`${variant.clipId}:${variant.aspectRatio}`);
+            if (!row) creates.push({ ...variant, status: "pending" });
+            else if (!["pending", "rendering"].includes(row.status)) {
+              const ids = resets.get(variant.resolution) ?? []; ids.push(row.id); resets.set(variant.resolution, ids);
+            }
+          }
+          if (creates.length) await tx.clipRender.createMany({ data: creates });
+          for (const [resolution, ids] of resets) await tx.clipRender.updateMany({ where: { id: { in: ids } }, data: {
+            status: "pending", storageKey: null, sizeBytes: null, durationSec: null, errorCode: null, failureDisposition: null,
+            captionDiagnostics: Prisma.DbNull, workflowAttemptId: null, workflowRunId: null, startedAt: null, completedAt: null, resolution,
+          } });
+        }
         if (existing) return { id: existing.id, created: false };
         const active = await tx.workflowRun.findFirst({
           where: {
@@ -813,6 +851,7 @@ export class WorkflowRunLifecycle {
           select: { id: true },
         });
         if (active) return { id: active.id, created: false };
+        assertExecutionAdmissionOpen(admission);
 
         let contentPackId = input.contentPackId ?? null;
         if (input.contentPack) {
@@ -853,6 +892,7 @@ export class WorkflowRunLifecycle {
     variantIds: string[];
   }): Promise<boolean> {
     return this.transaction(async (tx) => {
+      const admission = await readExecutionAdmission(tx);
       await this.lockAdmissionProject(tx, input.projectId);
       const failed = await tx.clipExportVariant.findMany({
         where: {
@@ -866,6 +906,7 @@ export class WorkflowRunLifecycle {
         select: { id: true },
       });
       if (failed.length === 0) return false;
+      assertExecutionAdmissionOpen(admission);
       const ids = failed.map((variant) => variant.id);
       const reset = { status: "pending" as const, errorCode: null, startedAt: null,
         completedAt: null, storageKey: null, sizeBytes: null, durationSec: null };
@@ -964,6 +1005,8 @@ export class WorkflowRunLifecycle {
     transactionClient?: TransactionClient,
   ): Promise<{ id: string; created: boolean; handoff: T }> {
     const admit = async (tx: TransactionClient) => {
+      // A caller transaction is an already admitted parent's atomic handoff.
+      const admission = transactionClient ? null : await readExecutionAdmission(tx);
       await this.lockAdmissionProject(tx, input.projectId);
       const existing = await tx.workflowRun.findUnique({
         where: { projectId_idempotencyKey: { projectId: input.projectId, idempotencyKey: input.idempotencyKey } },
@@ -973,6 +1016,7 @@ export class WorkflowRunLifecycle {
       if (existing) {
         admitted = { id: existing.id, created: false };
       } else {
+        if (admission) assertExecutionAdmissionOpen(admission);
         const active = await tx.workflowRun.findFirst({
           where: { projectId: input.projectId, stage: input.stage, status: { in: ["queued", "running", "waiting"] } },
           select: { id: true },
@@ -993,6 +1037,7 @@ export class WorkflowRunLifecycle {
     transactionClient?: TransactionClient,
   ): Promise<{ id: string; created: boolean }> {
     const admit = async (tx: TransactionClient) => {
+      const admission = transactionClient ? null : await readExecutionAdmission(tx);
       await this.lockAdmissionProject(tx, input.projectId);
       const existing = await tx.workflowRun.findUnique({
         where: {
@@ -1013,6 +1058,7 @@ export class WorkflowRunLifecycle {
         select: { id: true },
       });
       if (active) return { id: active.id, created: false };
+      if (admission) assertExecutionAdmissionOpen(admission);
 
       let contentPackId = input.contentPackId ?? null;
       if (input.contentPack) {

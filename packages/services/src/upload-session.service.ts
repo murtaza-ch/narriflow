@@ -1,4 +1,5 @@
 import { readServiceEnvironment, type ServiceEnvironment } from "./runtime-environment";
+import { readExecutionAdmission, assertExecutionAdmissionOpen } from "./execution-admission";
 import type { ActorScope } from "./actor-scope";
 import { getIngestJobLifecycle } from "./ingest-job-lifecycle-runtime";
 import { freezeIngestAcquisition } from "./ingest-acquisition";
@@ -3307,6 +3308,7 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
   async reserve(record, usage) {
     try {
       const row = await requiredPrisma().$transaction(async (tx) => {
+        const admission = await readExecutionAdmission(tx);
         // Replay durable identity under the same lock as quota admission.
         // A competing open may have committed while this one waited for the
         // last slot; its existing session must win before another reservation.
@@ -3315,6 +3317,7 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
           where: { workspaceId_clientIdempotencyKey: { workspaceId: record.workspaceId, clientIdempotencyKey: record.clientIdempotencyKey } },
         });
         if (existing) return existing;
+        assertExecutionAdmissionOpen(admission);
         if (usage)
           await getProcessingUsage().reserve(tx, {
             workspaceId: record.workspaceId,

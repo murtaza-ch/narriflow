@@ -4,7 +4,7 @@ import { withWorkerServices, workerServiceEnvironment } from "./worker-services"
 export { workerServiceEnvironment } from "./worker-services";
 import { healthResponse } from "./domains/platform/health";
 import type { ApiWorkerBindings } from "./worker-bindings";
-import { withNotificationDispatches } from "@narriflow/services/notification-dispatch";
+import { withExecutionDispatches } from "@narriflow/services/execution-dispatch-runtime";
 import { failureResponse } from "./http/errors";
 
 interface WorkerApiApp {
@@ -31,7 +31,7 @@ export function createApiWorker(dependencies: ApiWorkerDependencies) {
       // MCP callbacks can continue after fetch returns an SSE Response. Capture
       // settings and a factory, never a Prisma client or an open socket.
       const runInvocation: WorkerInvocation = (operation) => withWorkerServices(bindings, environment, () => withDatabaseScope(
-        (dependencies.createScope ?? ((connectionString) => createDatabaseScope({ connectionString })))(bindings.HYPERDRIVE.connectionString), () => withNotificationDispatches(operation),
+        (dependencies.createScope ?? ((connectionString) => createDatabaseScope({ connectionString })))(bindings.HYPERDRIVE.connectionString), () => withExecutionDispatches(operation),
       ));
       return runInvocation(async () => dependencies.createApp(environment, runInvocation).fetch(request, bindings, context));
     },

@@ -59,3 +59,15 @@ passes167 tests/1114 assertions across23 suites; services typechecking and focus
 Biome checks pass. The private JSON writer, production factories, native render
 handoff and deployed integration acceptance remain required. This ticket remains
 claimed.
+
+The shared private JSON adapter and preparation runtime factory are now committed.
+`getPrivateJsonStorage` supplies bounded conditional input reads and immutable
+nonce-key writes for preparation and Render Group capsules. An uncertain PUT is
+accepted only after HEAD plus an If-Match read verifies the actual byte digest.
+Two storage cases pass21 assertions, including lost acknowledgement, conflicting
+bytes and oversized-stream cancellation. `getClipPreparationService` derives the
+shared engine hash from the required render toolchain fingerprint in a fresh
+database/environment scope. Additional PostgreSQL cases reject mismatched frozen
+export revisions and elapsed group deadlines before input PUT. Media owns the
+Render Group factory's durable deadline before input I/O, failure gate and final
+native handoff; full ticket14 integration acceptance remains open.

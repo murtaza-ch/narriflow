@@ -33,6 +33,7 @@ try {
   } finally {
     client.release();
   }
+  await pool.query(`UPDATE "${schema}"."ExecutionEpoch" SET "admissionOpen" = true WHERE id = 1`);
   const env = {
     ...process.env,
     ALLOW_VIZARD_EXPANSION_DB_TESTS: "1",

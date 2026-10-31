@@ -194,7 +194,14 @@ def parse_transfer_disposition(value):
             if account is not None:
                 _object(account,{'id','userId','platform','providerAccountId','displayName','handle','accessToken','scopes','metadata'})
                 _id(account['id']);_id(account['userId'])
-                if account['platform'] not in {'youtube_shorts','instagram_reels','facebook_reels','tiktok','linkedin','x'} or account['metadata'] is not None:_invalid()
+                if account['platform'] not in {'youtube_shorts','instagram_reels','facebook_reels','tiktok','linkedin','x'}:_invalid()
+                metadata=account['metadata']
+                if metadata is not None:
+                    _object(metadata,set(),{'ownerUrn','igUserId','auditEnforcedPrivate','forcePrivateUploads'})
+                    for name in ('ownerUrn','igUserId'):
+                        if name in metadata and (not isinstance(metadata[name],str) or len(metadata[name])>2048):_invalid()
+                    for name in ('auditEnforcedPrivate','forcePrivateUploads'):
+                        if name in metadata and type(metadata[name]) is not bool:_invalid()
                 _text(account['providerAccountId'],2048);_text(account['accessToken'],16384)
                 if not isinstance(account['displayName'],str) or len(account['displayName'])>512 or account['handle'] is not None and (not isinstance(account['handle'],str) or len(account['handle'])>512):_invalid()
                 if not isinstance(account['scopes'],list) or len(account['scopes'])>100:_invalid()

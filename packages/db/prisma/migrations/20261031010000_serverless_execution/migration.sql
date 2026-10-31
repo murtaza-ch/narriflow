@@ -872,7 +872,7 @@ CREATE TRIGGER "GeneratedMediaJob_native_identity_immutable" BEFORE UPDATE ON "G
 -- Publication scheduling and native ownership extend the existing domain ledger.
 ALTER TABLE "SocialPost" ADD COLUMN "generation" INTEGER NOT NULL DEFAULT 1,
  ADD COLUMN "deploymentEpoch" INTEGER NOT NULL DEFAULT 1;
-ALTER TABLE "SocialPublicationAttempt" ADD COLUMN "nativeStartRound" INTEGER NOT NULL DEFAULT 1, ADD COLUMN "nativeStartCount" INTEGER NOT NULL DEFAULT 0,
+ALTER TABLE "SocialPublicationAttempt" ADD COLUMN "executionActorUserId" UUID, ADD COLUMN "providerCallCeiling" INTEGER NOT NULL DEFAULT 100, ADD COLUMN "nativeStartRound" INTEGER NOT NULL DEFAULT 1, ADD COLUMN "nativeStartCount" INTEGER NOT NULL DEFAULT 0,
  ADD COLUMN "nativeStartCeiling" INTEGER NOT NULL DEFAULT 104;
 ALTER TABLE "PublicationManualDecision" ADD COLUMN "executionBudgetAudit" JSONB;
 ALTER TABLE "PublicationClaim" ADD COLUMN "workState" JSONB, ADD COLUMN "executionMode" VARCHAR(16) NOT NULL DEFAULT 'publish', ADD COLUMN "deploymentEpoch" INTEGER NOT NULL DEFAULT 1,
@@ -880,7 +880,7 @@ ALTER TABLE "PublicationClaim" ADD COLUMN "workState" JSONB, ADD COLUMN "executi
  ADD COLUMN "operationDeadlineAt" TIMESTAMP(3);
 ALTER TABLE "SocialPost" ADD CONSTRAINT "SocialPost_execution_shape" CHECK ("generation">0 AND "deploymentEpoch">0 AND "scheduleRevision">0);
 ALTER TABLE "SocialPublicationAttempt" ADD CONSTRAINT "SocialPublicationAttempt_native_budget" CHECK (
- "nativeStartRound">0 AND "nativeStartCount">=0 AND "nativeStartCeiling" BETWEEN 2 AND 110 AND "nativeStartCount"<="nativeStartCeiling"
+ "providerCallCeiling" BETWEEN 1 AND 100 AND "nativeStartRound">0 AND "nativeStartCount">=0 AND "nativeStartCeiling" BETWEEN 2 AND 110 AND "nativeStartCount"<="nativeStartCeiling"
 );
 ALTER TABLE "PublicationClaim" ADD CONSTRAINT "PublicationClaim_execution_shape" CHECK (
  ("workState" IS NULL OR (jsonb_typeof("workState")='object' AND octet_length("workState"::text)<=65536))
@@ -910,7 +910,10 @@ DECLARE round_reset boolean;
 BEGIN
  round_reset := NEW."nativeStartRound"=OLD."nativeStartRound"+1 AND OLD."phase"='needs_attention'
   AND NEW."phase"='reconciling' AND NEW."nativeStartCount"=0 AND NEW."currentClaimId" IS NULL;
- IF NEW."nativeStartCeiling" IS DISTINCT FROM OLD."nativeStartCeiling" OR
+ IF NEW."executionActorUserId" IS DISTINCT FROM OLD."executionActorUserId" AND NOT (OLD."phase"='needs_attention' AND NEW."phase"='reconciling' AND NEW."currentClaimId" IS NULL) THEN
+  RAISE EXCEPTION 'publication actor changes require explicit recheck' USING ERRCODE='23514';
+ END IF;
+ IF NEW."providerCallCeiling" IS DISTINCT FROM OLD."providerCallCeiling" OR NEW."nativeStartCeiling" IS DISTINCT FROM OLD."nativeStartCeiling" OR
   (NEW."nativeStartRound" IS DISTINCT FROM OLD."nativeStartRound" AND NOT round_reset) OR
   (NEW."nativeStartCount"<OLD."nativeStartCount" AND NOT round_reset) OR NEW."nativeStartCount">OLD."nativeStartCount"+1 THEN
   RAISE EXCEPTION 'publication native start budget needs an explicit recheck round' USING ERRCODE='23514';
@@ -930,6 +933,12 @@ BEGIN
   AND (d."executionBudgetAudit"->>'previousNativeStartCount')::integer=OLD."nativeStartCount"
   AND (d."executionBudgetAudit"->>'ceiling')::integer=NEW."nativeStartCeiling"
  ) THEN RAISE EXCEPTION 'publication native round has no durable recheck audit' USING ERRCODE='23514'; END IF;
+ IF NEW."executionActorUserId" IS DISTINCT FROM OLD."executionActorUserId" AND NOT EXISTS (
+  SELECT 1 FROM "PublicationManualDecision" d WHERE d."attemptId"=NEW."id" AND d."kind"='recheck_requested'
+   AND d."actorUserId"=NEW."executionActorUserId"
+   AND d."executionBudgetAudit"->'previousActorUserId'=COALESCE(to_jsonb(OLD."executionActorUserId"),'null'::jsonb)
+   AND d."executionBudgetAudit"->>'actorUserId'=NEW."executionActorUserId"::text
+ ) THEN RAISE EXCEPTION 'publication actor has no durable recheck audit' USING ERRCODE='23514'; END IF;
  RETURN NULL;
 END; $$;
 CREATE CONSTRAINT TRIGGER "SocialPublicationAttempt_native_round_audit" AFTER UPDATE ON "SocialPublicationAttempt"
