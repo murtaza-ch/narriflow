@@ -210,10 +210,12 @@ export const webhooksResultSchema = z.strictObject({ webhooks: z.array(webhookVi
 export const deletedWebhookSchema = z.strictObject({ webhookId: id, deleted: z.literal(true) }).meta({ id: "DeletedWebhook" });
 export const webhookTestResultSchema = z.strictObject({
   eventId: id.describe("The webhook-id of the webhook.test event"),
-  delivered: z.boolean().describe("True when the endpoint answered 2xx"),
-  status: z.number().int().nullable().describe("The endpoint's HTTP status, or null when it didn't answer"),
-  durationMs: z.number().int().nonnegative(),
+  deliveryId: id.describe("The durable test delivery ID"),
+  state: z.enum(["pending", "delivered", "unconfirmed"]),
+  status: z.number().int().nullable().describe("The confirmed endpoint HTTP status, or null when no answer was confirmed"),
+  durationMs: z.number().int().nonnegative().nullable(),
 }).meta({ id: "WebhookTestResult" });
+export const restWebhookDeliveryParam = z.object({ id, deliveryId: id });
 
 export const eventsResultSchema = workspaceEventsResultSchema.meta({ id: "EventsResult" });
 

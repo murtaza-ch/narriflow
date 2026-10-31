@@ -24,8 +24,6 @@ import {
 	assertUploadProviderLifecyclePrerequisite,
 	getWorkflowRunLifecycle,
 	getSocialPublicationRuntime,
-	getCompletionCallbackProcessor,
-	getWebhookDeliveryProcessor,
 	getStandingGrantMaintenance,
 	getPerformanceSync,
 	getPerformanceGuidance,
@@ -106,9 +104,6 @@ const workflowLeaseReapIntervalMs = Number(
 );
 const workflowEventDispatchIntervalMs = Number(
 	process.env.WORKFLOW_EVENT_DISPATCH_INTERVAL_MS ?? "1000",
-);
-const completionCallbackPollIntervalMs = Number(
-	process.env.COMPLETION_CALLBACK_POLL_INTERVAL_MS ?? "5000",
 );
 // Readings are scheduled hours apart, so a minute only bounds how soon a due
 // capture is noticed.
@@ -540,25 +535,6 @@ createPollLoop("workflow_lease", workflowLeaseReapIntervalMs, async () => {
 
 createPollLoop("workflow_events", workflowEventDispatchIntervalMs, async () => {
 	return getWorkflowRunLifecycle().dispatchEvents(100);
-});
-
-// Completion Callbacks: observe accepted operations until terminal, then
-// deliver signed events. Observation backs off per row; this cadence only
-// bounds how soon a due row is noticed.
-createPollLoop("completion_callbacks", completionCallbackPollIntervalMs, async () => {
-	if (workerShutdown.signal.aborted) return 0;
-	const callbacks = getCompletionCallbackProcessor();
-	return (await callbacks.observe()) + (await callbacks.deliver());
-});
-
-// Webhook Subscriptions: send each active subscription its next Workspace Events
-// in order, then email the creator of any that were just disabled. It shares the
-// callback cadence; a caught-up subscription is looked at again every few seconds.
-createPollLoop("webhook_deliveries", completionCallbackPollIntervalMs, async () => {
-	if (workerShutdown.signal.aborted) return 0;
-	const webhooks = getWebhookDeliveryProcessor(getWorkerAppBaseUrl);
-	const delivered = await webhooks.deliver();
-	return delivered + (await webhooks.notifyDisabled());
 });
 
 // Optional provider cleanup has its own hourly loop. A slow Stripe request must

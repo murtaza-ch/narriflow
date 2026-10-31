@@ -47,6 +47,7 @@ export default createApiWorker({
       })
       .get("/scope", (c) => c.json({ fixture: readServiceEnvironment().FIXTURE_ID }))
       .route("/api", createProjectsWebhookRoutes({
+        deliverWakes: async () => {},
         webhookSecret: () => environment.ELEVENLABS_WEBHOOK_SECRET ?? null,
         finalizeScribeTranscript: async () => ({ kind: "applied" }),
         failProviderAttempt: async () => ({ kind: "applied" }),

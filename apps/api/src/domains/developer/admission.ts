@@ -21,5 +21,6 @@ export const developerAdmission = {
   "DELETE /workspace/webhooks/:webhookId": { kind: "workspace", capability: "api.manage" },
   "POST /workspace/webhooks/:webhookId/enable": { kind: "workspace", capability: "api.manage" },
   // A test send is retry-safe: the endpoint's answer is recorded under the caller's key.
+  "GET /workspace/webhooks/:webhookId/tests/:deliveryId": { kind: "workspace", capability: "api.manage" },
   "POST /workspace/webhooks/:webhookId/test": { kind: "workspace", capability: "api.manage", deferRateRefusal: true },
 } as const satisfies AdmissionTable;

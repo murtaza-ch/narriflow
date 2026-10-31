@@ -11,7 +11,7 @@ export const WEBHOOK_MAX_CONSECUTIVE_FAILURES = 20;
 /** `type` of the event that `POST /webhooks/{id}/test` sends. It is not in the feed. */
 export const WEBHOOK_TEST_EVENT_TYPE = "webhook.test";
 
-export const WEBHOOK_DISABLED_REASONS = ["consecutive_failures", "cursor_expired", "endpoint_gone"] as const;
+export const WEBHOOK_DISABLED_REASONS = ["consecutive_failures", "cursor_expired", "endpoint_gone", "delivery_attempts_exhausted"] as const;
 export const webhookDisabledReasonSchema = z.enum(WEBHOOK_DISABLED_REASONS);
 export type WebhookDisabledReason = z.infer<typeof webhookDisabledReasonSchema>;
 

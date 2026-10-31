@@ -1,8 +1,8 @@
-import { randomUUID } from "node:crypto";
 import { getPrismaClient } from "@narriflow/db/client";
+import { getOutboundDeliveryService } from "./outbound-delivery-runtime";
 import type { ActorScope } from "./actor-scope";
 import {
-  createWebhookDeliveryProcessor,
+  createWebhookDisabledNotifier,
   createWebhookSubscriptions,
   type WebhookCredential,
   type WebhookDisabledNotice,
@@ -16,7 +16,7 @@ function requiredPrisma() {
   return prisma;
 }
 
-const service = () => createWebhookSubscriptions({ prisma: requiredPrisma() });
+const service = () => createWebhookSubscriptions({ prisma: requiredPrisma(), delivery: getOutboundDeliveryService });
 
 /** Production management of Webhook Subscriptions on the shared database. */
 export const webhookSubscriptions = {
@@ -27,13 +27,15 @@ export const webhookSubscriptions = {
   explainInsertFailure: (...args: Parameters<WebhookSubscriptions["explainInsertFailure"]>) => service().explainInsertFailure(...args),
   delete: (actor: ActorScope, id: string) => service().delete(actor, id),
   enable: (actor: ActorScope, id: string, credential?: WebhookCredential) => service().enable(actor, id, credential),
-  test: (actor: ActorScope, id: string, credential?: WebhookCredential) => service().test(actor, id, credential),
+  test: (...args: Parameters<WebhookSubscriptions["test"]>) => service().test(...args),
+  testStatus: (...args: Parameters<WebhookSubscriptions["testStatus"]>) => service().testStatus(...args),
 };
 
 const REASON_TEXT = {
   consecutive_failures: "Narriflow could not deliver 20 events in a row",
   cursor_expired: "Delivery fell more than 30 days behind, so events expired before they were sent",
   endpoint_gone: "The endpoint answered 410 Gone",
+  delivery_attempts_exhausted: "The delivery used its 20 native attempts before acknowledgment; re-enable it to retry",
 } as const;
 
 /** Emails the person who should hear about a disabled subscription. Nothing sent for a reason that
@@ -53,11 +55,7 @@ async function emailDisabledNotice(appBaseUrl: string | null, notice: WebhookDis
 }
 
 
-/** The worker's production processor. `appBaseUrl` is where Settings lives. */
-export function getWebhookDeliveryProcessor(appBaseUrl: () => string | null) {
-  return createWebhookDeliveryProcessor({
-    prisma: requiredPrisma(),
-    leaseOwner: `webhooks:${randomUUID()}`,
-    notifyDisabled: (notice) => emailDisabledNotice(appBaseUrl(), notice),
-  });
+/** The Workflow invokes one identifier and persists a returned sleep. */
+export function notifyDisabledWebhook(id:string,appBaseUrl:string|null){
+ return createWebhookDisabledNotifier({prisma:requiredPrisma(),send:notice=>emailDisabledNotice(appBaseUrl,notice)}).notify(id);
 }

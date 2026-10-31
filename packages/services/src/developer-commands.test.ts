@@ -94,7 +94,7 @@ function fixture(options: { loseCommitResponse?: boolean; tier?: "free" | "pro";
       if (options.throttleTest && calls.tests > 1) {
         throw new ExpectedDomainFailureError({ code: "webhook_test_throttled", kind: "rate_limited", message: "wait", retryAfterSeconds: 5 });
       }
-      return { eventId: `event-${calls.tests}`, delivered: true, status: 200, durationMs: 4 };
+      return { deliveryId:`delivery-${calls.tests}`,eventId: `event-${calls.tests}`, state: "pending" as const, status: null, durationMs: null };
     },
     explainInsertFailure: async (_actor: unknown, _prepared: unknown, error: unknown) =>
       (error as { code?: string }).code === "P2002"
@@ -249,9 +249,9 @@ describe("test_webhook", () => {
     const { commands, calls } = fixture({ loseCommitResponse: true, throttleTest: true });
     // The commit succeeded but its response was lost; the retry finds the receipt.
     const first = await commands.testWebhook(actor, HOOK, mutation("t1")).catch((error: unknown) => error);
-    expect(first).toMatchObject({ result: { eventId: "event-1", delivered: true } });
+    expect(first).toMatchObject({ result: { eventId: "event-1", state: "pending" } });
     const retry = await commands.testWebhook(actor, HOOK, mutation("t1"));
-    expect(retry).toMatchObject({ replayed: true, result: { eventId: "event-1", delivered: true, status: 200 } });
+    expect(retry).toMatchObject({ replayed: true, result: { eventId: "event-1", state: "pending", status: null } });
     expect(calls.tests).toBe(1);
   });
 

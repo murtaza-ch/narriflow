@@ -32,7 +32,7 @@ export const executionSubjectKindSchema = z.enum([
   "ingest_job", "workflow_run", "render_group", "clip_selection_window", "clip_preparation", "upload_session",
   "social_publication", "completion_callback", "webhook_subscription", "workspace_billing",
   "autopilot_rule", "generation_finishing", "dubbing", "export_bundle", "generated_media",
-  "thumbnail_frame", "native_validation", "outbound_probe", "library_index", "notification", "media_cleanup", "workflow_event",
+  "thumbnail_frame", "native_validation", "outbound_probe", "outbound_delivery", "library_index", "notification", "media_cleanup", "workflow_event",
   "workspace_event", "standing_grant", "pending_workspace", "retention", "maintenance",
 ]);
 
@@ -284,7 +284,7 @@ export const executionInvocationSchema = z.strictObject({
 });
 export const executionMediaFunctionSchema = z.enum([
   "fetch_source", "pin_source", "prepare_clip", "render_group", "probe_extract", "thumbnail",
-  "export_bundle", "dub_mix", "outbound_delivery", "asset_validation",
+  "export_bundle", "dub_mix", "outbound_delivery", "asset_validation", "generated_image",
 ]);
 const bridgeInvocation = executionInvocationSchema.shape;
 export const modalBridgeCommandSchema = z.discriminatedUnion("action", [

@@ -74,10 +74,6 @@
       "types": "./src/render-group-contract.ts",
       "default": "./src/render-group-contract.ts"
     },
-    "./url-guard": {
-      "types": "./src/url-guard.ts",
-      "default": "./src/url-guard.ts"
-    },
     "./pexels-contract": {
       "types": "./src/pexels-contract.ts",
       "default": "./src/pexels-contract.ts"
@@ -538,8 +534,52 @@
       "types": "./src/generated-media-validation.ts",
       "default": "./src/generated-media-validation.ts"
     },
+    "./clip-selection-plan": {
+      "types": "./src/clip-selection-plan.ts",
+      "default": "./src/clip-selection-plan.ts"
+    },
+    "./clip-selection-window": {
+      "types": "./src/clip-selection-window.ts",
+      "default": "./src/clip-selection-window.ts"
+    },
+    "./clip-selection-input": {
+      "types": "./src/clip-selection-input.ts",
+      "default": "./src/clip-selection-input.ts"
+    },
+    "./clip-selection-preparation": {
+      "types": "./src/clip-selection-preparation.ts",
+      "default": "./src/clip-selection-preparation.ts"
+    },
+    "./clip-detection-persistence": {
+      "types": "./src/clip-detection-persistence.ts",
+      "default": "./src/clip-detection-persistence.ts"
+    },
+    "./clip-selection-control": {
+      "types": "./src/clip-selection-control.ts",
+      "default": "./src/clip-selection-control.ts"
+    },
     "./ingest-acquisition": "./src/ingest-acquisition.ts",
+    "./outbound-delivery": "./src/outbound-delivery.ts",
+    "./outbound-delivery-execution": "./src/outbound-delivery-execution.ts",
+    "./notification-body-storage": "./src/notification-body-storage.ts",
+    "./outbound-delivery-runtime": "./src/outbound-delivery-runtime.ts",
     "./drive-source-contract": "./src/drive-source-contract.ts",
+    "./clip-selection-runtime": {
+      "types": "./src/clip-selection-runtime.ts",
+      "default": "./src/clip-selection-runtime.ts"
+    },
+    "./clip-selection-storage": {
+      "types": "./src/clip-selection-storage.ts",
+      "default": "./src/clip-selection-storage.ts"
+    },
+    "./clip-selection-finalization": {
+      "types": "./src/clip-selection-finalization.ts",
+      "default": "./src/clip-selection-finalization.ts"
+    },
+    "./url-guard": {
+      "types": "./src/url-guard.ts",
+      "default": "./src/url-guard.ts"
+    },
     "./ingest-source-definition": "./src/ingest-source-definition.ts"
   },
   "scripts": {

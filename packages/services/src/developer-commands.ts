@@ -6,7 +6,7 @@ import { ExpectedDomainFailureError } from "./expected-domain-failure";
 import type { IntegrationMutation } from "./operation-receipt";
 import type { getOperationReceiptExecutor } from "./operation-receipt-runtime";
 import { requirePlanFeature } from "./plan-features";
-import { canonicalWebhookTypes, type WebhookSubscriptions } from "./webhook-subscription";
+import { canonicalWebhookTypes, type WebhookSubscriptions, type WebhookCredential } from "./webhook-subscription";
 import { normalizeWorkspaceApiKeyInput, type WorkspaceService } from "./workspace.service";
 import { DEVELOPER_RECEIPT_COMMANDS } from "./developer-receipt-commands";
 
@@ -20,7 +20,7 @@ export interface DeveloperCommandDependencies {
     issue(tx: Prisma.TransactionClient, workspaceId: string): Promise<{ id: string; secret: string; createdAt: string }>;
   };
   webhooks: Pick<WebhookSubscriptions, "prepareCreate" | "insert" | "explainInsertFailure" | "test">;
-  /** The SSRF guard for a webhook URL: HTTPS, public host, port 443. Resolves DNS. */
+  /** The SSRF guard for a webhook URL: HTTPS, public host, port 443. Each native delivery resolves and pins DNS. */
   assertCallbackUrl: (raw: string) => Promise<URL>;
 }
 
@@ -196,7 +196,7 @@ export function createDeveloperCommands(deps: DeveloperCommandDependencies) {
             await requireApiAccess(actor);
           },
           beforeAccept: mutation.beforeAccept,
-          // DNS resolution and URL sealing never hold the transaction.
+          // Structural URL validation and sealing happen before the transaction.
           prepare: async () => {
             state.prepared = webhooks.prepareCreate({ url: await assertCallbackUrl(url), types });
           },
@@ -213,14 +213,8 @@ export function createDeveloperCommands(deps: DeveloperCommandDependencies) {
       }
     },
 
-    /**
-     * Sends one signed `webhook.test` event and records the endpoint's answer under the caller's
-     * key. A retry after a lost response replays that answer: it neither sends again nor meets the
-     * per-webhook throttle. The send happens outside any database transaction, before the answer
-     * commits; if the process dies in between, the retry sends once more once the throttle allows
-     * (a test event is a diagnostic, so at-least-once is the contract).
-     */
-    async testWebhook(actor: ActorScope, webhookId: string, mutation: DeveloperMutation): Promise<WebhookTested> {
+    /** Records confirmed durable admission, so receipt replays never submit another test event. */
+    async testWebhook(actor: ActorScope, webhookId: string, mutation: DeveloperMutation, credential?: WebhookCredential): Promise<WebhookTested> {
       const state: { result: WebhookTestResult | null } = { result: null };
       const accepted = await receipts().execute<WebhookTestResult>({
         identity: {
@@ -231,15 +225,16 @@ export function createDeveloperCommands(deps: DeveloperCommandDependencies) {
         },
         input: { webhookId },
         authorize: async () => {
-          await requireApiAccess(actor);
+          const current=await workspaces.requireActor(actor.actorUserId,actor.workspaceId,credential?"processing.consume":"api.manage");
+          requirePlanFeature(current.pricingTier,"integrations.api");
         },
         // The send is new work, so the limiter's recorded outcome is enforced before it, after the replay lookup.
         prepare: async () => {
           await mutation.beforeAccept?.();
-          state.result = await webhooks.test(actor, webhookId);
+          state.result = await webhooks.test(actor, webhookId, mutation.clientIdempotencyKey, credential);
         },
         mutate: async () => {
-          if (!state.result) throw new Error("The webhook test was not sent");
+          if (!state.result) throw new Error("The webhook test was not admitted");
           return { resourceType: "webhook_subscription", resourceId: webhookId, value: state.result };
         },
       });

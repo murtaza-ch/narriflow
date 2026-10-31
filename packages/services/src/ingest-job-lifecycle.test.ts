@@ -12,7 +12,7 @@ function harness() {
   let cancelled = false;
   let renewals = 0;
   let seq = 0;
-  const claim = { id: "job", projectId: "project", claimId: "claim" };
+  const claim = { id: "job", projectId: "60000000-0000-4000-8000-000000000001", claimId: "claim" };
   const lease = {
     claimId: "claim" as string | null,
     expiresAt: 10_000 as number | null,
@@ -56,7 +56,7 @@ function harness() {
       },
     },
     project: { update: async () => ({ workflowEventSeq: ++seq }) },
-    workflowEvent: { create: async () => ({ id: "50000000-0000-4000-8000-000000000001", emittedAt: new Date(clock) }) },
+    workflowEvent: { create: async ({ data }: { data: Record<string, unknown> }) => ({ ...data, id: "50000000-0000-4000-8000-000000000001", projectId: claim.projectId, emittedAt: new Date(clock) }) },
     executionEpoch: { findUniqueOrThrow: async () => ({ epoch: 1 }) },
     // This claim-lifetime fixture borrows the transaction boundary. Durable
     // event/dispatch semantics themselves run against PostgreSQL in the gate.

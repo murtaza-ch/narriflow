@@ -158,7 +158,7 @@ CREATE TABLE "SourceRefundNeed" (
     "sourceRevision" INTEGER NOT NULL,
     "sourceAudioId" UUID NOT NULL,
     "sourceAudioBindingHash" CHAR(64) NOT NULL,
-    "videoBindingHash" CHAR(64) NOT NULL,
+    "videoBindingHash" CHAR(64),
     "failureCode" VARCHAR(100) NOT NULL DEFAULT 'source_audio_video_mismatch',
     "resolvedAt" TIMESTAMP(3),
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -304,7 +304,7 @@ ALTER TABLE "ExecutionDispatch" ADD CONSTRAINT "ExecutionDispatch_reference_chec
   "generation" > 0 AND "deploymentEpoch" > 0 AND "inputHash" ~ '^[a-f0-9]{64}$'
   AND "subjectId" ~ '^[A-Za-z0-9][A-Za-z0-9._:-]*$'
   AND "kind" IN ('import_pipeline','render_run','operation_driver','maintenance','project_progress','local_fetch','modal_execution')
-  AND "subjectKind" IN ('ingest_job','workflow_run','render_group','clip_selection_window','clip_preparation','upload_session','social_publication','completion_callback','webhook_subscription','workspace_billing','autopilot_rule','generation_finishing','dubbing','export_bundle','generated_media','thumbnail_frame','native_validation','outbound_probe','library_index','notification','media_cleanup','workflow_event','workspace_event','standing_grant','pending_workspace','retention','maintenance')
+  AND "subjectKind" IN ('ingest_job','workflow_run','render_group','clip_selection_window','clip_preparation','upload_session','social_publication','completion_callback','webhook_subscription','workspace_billing','autopilot_rule','generation_finishing','dubbing','export_bundle','generated_media','thumbnail_frame','native_validation','outbound_probe','outbound_delivery','library_index','notification','media_cleanup','workflow_event','workspace_event','standing_grant','pending_workspace','retention','maintenance')
   AND "deliveryAttempts" >= 0
   AND (("deliveryToken" IS NULL) = ("deliveryLeaseExpiresAt" IS NULL))
   AND NOT ("acknowledgedAt" IS NOT NULL AND "deadLetteredAt" IS NOT NULL)
@@ -345,7 +345,7 @@ ALTER TABLE "SourceAudio" ADD CONSTRAINT "SourceAudio_whole_source_check" CHECK 
   AND "toolchainFingerprint" ~ '^[a-f0-9]{64}$' AND jsonb_typeof("audioTrack") = 'object'
 );
 ALTER TABLE "SourceRefundNeed" ADD CONSTRAINT "SourceRefundNeed_binding_check" CHECK (
-  "sourceRevision" > 0 AND "sourceAudioBindingHash" ~ '^[a-f0-9]{64}$' AND "videoBindingHash" ~ '^[a-f0-9]{64}$'
+  "sourceRevision" > 0 AND "sourceAudioBindingHash" ~ '^[a-f0-9]{64}$' AND ("videoBindingHash" IS NULL OR "videoBindingHash" ~ '^[a-f0-9]{64}$')
 );
 ALTER TABLE "ClipSelectionWindow" ADD CONSTRAINT "ClipSelectionWindow_bounds_check" CHECK (
   "generation" > 0 AND "workflowGeneration" > 0 AND "deploymentEpoch" > 0 AND "transcriptGeneration" > 0 AND "sourceRevision" > 0
@@ -766,3 +766,66 @@ BEGIN
 END; $$;
 CREATE TRIGGER "IngestJob_source_identity_immutable" BEFORE UPDATE ON "IngestJob"
  FOR EACH ROW EXECUTE FUNCTION ingest_source_identity_immutable();
+
+-- A notification's body and endpoint are frozen before any external write.
+-- Explicit redelivery creates another UUID with the same event identity.
+CREATE TABLE "OutboundDelivery" (
+ "id" UUID PRIMARY KEY, "workspaceId" UUID NOT NULL REFERENCES "Workspace"("id") ON DELETE CASCADE,
+ "targetKind" VARCHAR(24) NOT NULL, "targetId" UUID NOT NULL, "eventId" UUID NOT NULL, "eventSeq" BIGINT,
+ "createdByUserId" UUID, "actorCapability" VARCHAR(24), "apiKeyId" UUID, "requestFingerprint" CHAR(64), "encryptedUrl" TEXT NOT NULL,
+ "urlHost" VARCHAR(255) NOT NULL, "urlFingerprint" CHAR(64) NOT NULL,
+ "bodyStorageKey" VARCHAR(1024) NOT NULL, "bodySha256" CHAR(64) NOT NULL, "bodyByteLength" BIGINT NOT NULL, "bodyEtag" VARCHAR(160),
+ "inputHash" CHAR(64) NOT NULL, "status" VARCHAR(24) NOT NULL DEFAULT 'preparing',
+ "generation" INTEGER NOT NULL DEFAULT 1, "deploymentEpoch" INTEGER NOT NULL,
+ "attemptToken" UUID, "executorOwner" UUID, "leaseExpiresAt" TIMESTAMP(3), "operationDeadlineAt" TIMESTAMP(3),
+ "expiresAt" TIMESTAMP(3) NOT NULL, "chargedAttempts" INTEGER NOT NULL DEFAULT 0,
+ "policyFailures" INTEGER NOT NULL DEFAULT 0, "maxAttempts" INTEGER NOT NULL, "retryAt" TIMESTAMP(3),
+ "lastResponseStatus" INTEGER, "durationMs" INTEGER, "errorCode" VARCHAR(100), "lastReceiptArtifactId" UUID,
+ "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, "updatedAt" TIMESTAMP(3) NOT NULL, "completedAt" TIMESTAMP(3),
+ CONSTRAINT "OutboundDelivery_shape_check" CHECK (
+  "targetKind" IN ('completion_callback','webhook_event','webhook_test')
+  AND ("targetKind"='webhook_event')=("eventSeq" IS NOT NULL) AND ("eventSeq" IS NULL OR "eventSeq">0)
+  AND ("targetKind"<>'webhook_test' OR ("createdByUserId" IS NOT NULL AND "actorCapability" IN ('api.manage','processing.consume') AND "requestFingerprint" IS NOT NULL AND "maxAttempts"=1))
+  AND "inputHash" ~ '^[a-f0-9]{64}$' AND "urlFingerprint" ~ '^[a-f0-9]{64}$' AND "bodySha256" ~ '^[a-f0-9]{64}$'
+  AND "bodyByteLength" BETWEEN 1 AND 16777216 AND "generation">0 AND "deploymentEpoch">0
+  AND "chargedAttempts" BETWEEN 0 AND "maxAttempts" AND "policyFailures">=0 AND "maxAttempts" BETWEEN 1 AND 20
+  AND "status" IN ('preparing','queued','processing','completed','failed','cancelled')
+  AND ("status"='preparing' OR "bodyEtag" IS NOT NULL)
+  AND ("executorOwner" IS NULL)=("leaseExpiresAt" IS NULL)
+  AND ("executorOwner" IS NULL OR ("attemptToken" IS NOT NULL AND "operationDeadlineAt" IS NOT NULL AND "status"='processing'))
+  AND ("status"<>'processing' OR "executorOwner" IS NOT NULL)
+  AND ("leaseExpiresAt" IS NULL OR "leaseExpiresAt"<="operationDeadlineAt")
+  AND ("operationDeadlineAt" IS NULL OR "operationDeadlineAt"<="expiresAt")
+  AND "expiresAt">"createdAt" AND "expiresAt"<="createdAt"+INTERVAL '30 days'
+  AND ("status" NOT IN ('completed','failed','cancelled') OR "completedAt" IS NOT NULL)
+  AND ("lastResponseStatus" IS NULL OR "lastResponseStatus" BETWEEN 100 AND 599)
+  AND ("durationMs" IS NULL OR "durationMs" BETWEEN 0 AND 120000)
+ )
+);
+CREATE UNIQUE INDEX "OutboundDelivery_requestFingerprint_key" ON "OutboundDelivery"("requestFingerprint");
+CREATE INDEX "OutboundDelivery_targetKind_targetId_createdAt_idx" ON "OutboundDelivery"("targetKind","targetId","createdAt");
+CREATE INDEX "OutboundDelivery_status_retryAt_idx" ON "OutboundDelivery"("status","retryAt");
+CREATE UNIQUE INDEX "OutboundDelivery_active_parent_event_key" ON "OutboundDelivery"("targetKind","targetId","eventId")
+ WHERE "status" IN ('preparing','queued','processing');
+-- A subscription sends at most one event at a time, preserving cursor order.
+CREATE UNIQUE INDEX "OutboundDelivery_active_subscription_key" ON "OutboundDelivery"("targetId")
+ WHERE "targetKind"='webhook_event' AND "status" IN ('preparing','queued','processing');
+CREATE FUNCTION outbound_delivery_input_immutable() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+ IF (NEW."id",NEW."workspaceId",NEW."targetKind",NEW."targetId",NEW."eventId",NEW."eventSeq",NEW."createdByUserId",NEW."actorCapability",NEW."apiKeyId",NEW."requestFingerprint",NEW."encryptedUrl",NEW."urlHost",NEW."urlFingerprint",NEW."bodyStorageKey",NEW."bodySha256",NEW."bodyByteLength",NEW."inputHash",NEW."expiresAt",NEW."maxAttempts",NEW."createdAt",NEW."deploymentEpoch") IS DISTINCT FROM
+    (OLD."id",OLD."workspaceId",OLD."targetKind",OLD."targetId",OLD."eventId",OLD."eventSeq",OLD."createdByUserId",OLD."actorCapability",OLD."apiKeyId",OLD."requestFingerprint",OLD."encryptedUrl",OLD."urlHost",OLD."urlFingerprint",OLD."bodyStorageKey",OLD."bodySha256",OLD."bodyByteLength",OLD."inputHash",OLD."expiresAt",OLD."maxAttempts",OLD."createdAt",OLD."deploymentEpoch") THEN
+  RAISE EXCEPTION 'outbound delivery input is immutable' USING ERRCODE='23514';
+ END IF;
+ IF OLD."bodyEtag" IS NOT NULL AND NEW."bodyEtag" IS DISTINCT FROM OLD."bodyEtag" THEN
+  RAISE EXCEPTION 'outbound delivery body is immutable' USING ERRCODE='23514';
+ END IF;
+ IF OLD."status" IN ('completed','failed','cancelled') AND NEW."status" IS DISTINCT FROM OLD."status" THEN
+  RAISE EXCEPTION 'outbound delivery terminal state is immutable' USING ERRCODE='23514';
+ END IF;
+ IF NEW."generation" IS DISTINCT FROM OLD."generation" AND NOT (NEW."generation"=OLD."generation"+1 AND NEW."status"='queued' AND NEW."attemptToken" IS NULL AND NEW."executorOwner" IS NULL AND NEW."leaseExpiresAt" IS NULL AND NEW."operationDeadlineAt" IS NULL) THEN
+  RAISE EXCEPTION 'outbound delivery retry generation is invalid' USING ERRCODE='23514';
+ END IF;
+ RETURN NEW;
+END; $$;
+CREATE TRIGGER "OutboundDelivery_input_immutable" BEFORE UPDATE ON "OutboundDelivery"
+ FOR EACH ROW EXECUTE FUNCTION outbound_delivery_input_immutable();

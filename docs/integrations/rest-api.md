@@ -87,13 +87,21 @@ MCP has `narriflow_create_captioned_video` for links.
   may include `callback.url`; otherwise acceptance returns
   `409 callback_secret_required` and no work starts.
 - URLs and secrets are sealed with AES-256-GCM under a key derived from
-  `SOCIAL_TOKEN_ENCRYPTION_KEY`, which web and worker must share.
-- `COMPLETION_CALLBACK_POLL_INTERVAL_MS` (worker, default 5000) sets how
-  often the loop looks for due rows. Each waiting row backs off on its own
-  from 15 seconds to 5 minutes.
-- Logs: `completion_callback_attempt` records Workspace, operation, event
-  ID, host, attempt, status, duration, and disposition. They never carry
-  the URL path, query, or payload.
+  `SOCIAL_TOKEN_ENCRYPTION_KEY` in the API Worker.
+- Terminal operation wakes prepare one immutable `OutboundDelivery` round.
+  Its private body key, full SHA256 and byte length are planned before a
+  conditional PUT. Admission reconciles lost write acknowledgments against
+  that exact key and confirms durable execution registration before acceptance.
+- The Worker signs the verified body stream with the current and overlapping
+  signing secrets. The native `signed_notification` command receives only
+  ephemeral headers and the assigned body source, resolves and pins public
+  DNS on every attempt, posts once without redirects, and seals a bounded
+  receipt. Signing keys never reach native execution.
+- Each physical attempt has a two-minute deadline; the logical round expires
+  after 30 days. Explicit redelivery creates a new authority UUID with the
+  same event ID and frozen body. Native starts alone consume the physical
+  budget; policy failures such as missing signing secrets remain separately
+  counted. No parent operation lease stays alive while delivery waits.
 
 ## Workspace Events
 
@@ -145,48 +153,33 @@ guide is `apps/web/content/docs/api/events.mdx`.
 [ADR 0014](../adr/0014-workspace-events.md) records the design. The user
 guide is `apps/web/content/docs/api/webhooks.mdx`.
 
-- `packages/services/src/webhook-subscription.ts` owns the management
-  service (`list`, `create`, `delete`, `enable`, `test`) and the delivery
-  processor; `webhook-subscription-runtime.ts` is the production wiring.
-  Delivery is `deliverCallback` from `completion-callback.ts`: the same
-  sealed URL, signing secrets, Standard Webhooks signature, pinned guard,
-  and `nextAttemptDelayMs` backoff.
-- `lastDeliveredSeq` is the only cursor, and it moves only after a 2xx. An
-  idle pass moves it to the Workspace counter's head, read before the
-  events, so a subscription filtered to a quiet type doesn't mistake expired
-  events of other types for a gap. `retentionFloor` (oldest retained `seq`
-  minus one, or the head when nothing is retained) is the lowest cursor that
-  lost nothing; a cursor below it disables the subscription with
-  `cursor_expired`. `enable` raises the cursor to the floor.
-- Ordering across workers: the processor claims one subscription at a time,
-  right before draining it, and before every POST it renews the lease in a
-  statement that also requires the cursor to still be below that event. A
-  worker whose lease lapsed finds the row taken (or the cursor passed) and
-  sends nothing; the cursor update repeats the same condition. A tick runs
-  four lanes (`WEBHOOK_CONCURRENCY`) with a 20 s budget
-  (`WEBHOOK_TICK_BUDGET_MS`) and stops between events when it is spent, so
-  one slow endpoint holds one lane. Never two lanes on one subscription.
-- Disabled reasons: `consecutive_failures` (20), `endpoint_gone` (410),
-  `cursor_expired`. Re-enabling sets `skipExpiredOnResume`; the next drain
-  moves the cursor past events that expired meanwhile, so a purge before the
-  first drain can't disable it again.
-- The worker's `webhook_deliveries` loop emails the creator while they are
-  still a Workspace member, otherwise the owner, once per disabling
-  (`disabledNotifiedAt` is written first). A send that goes out or fails
-  stays final. A skipped send (no app base URL or no Resend key) is unmarked, logged as
-  `webhook_disabled_notice_skipped`, and retried after five minutes.
-- `POST /webhooks/{id}/test` allows one test per webhook every 5 seconds
-  (`lastTestedAt`, `webhook_test_throttled`), for REST and Settings alike.
-  Enable and test check the webhook's event types against the key's scopes.
-- The loop uses `COMPLETION_CALLBACK_POLL_INTERVAL_MS`; a caught-up
-  subscription is looked at again every 5 seconds. Logs:
-  `webhook_delivery_attempt` and `webhook_subscription_disabled` carry
-  Workspace, webhook ID, host, event ID, `seq`, status and duration, never
-  the URL or payload.
-- `list_webhooks` (`projects:read`) and `manage_webhooks` (`processing:write`)
-  are the commands. Creating with `social_post.proposed` or `social_post.finished` also needs
-  `publishing:read`, as in the feed. Apply the `WebhookSubscription`
-  migration before deploying the worker.
+- `webhook-subscription.ts` owns management and targeted disabled notices;
+  `outbound-delivery.ts` owns native delivery authority, retries and receipt
+  adoption. Runtime factories resolve fresh invocation-scoped dependencies.
+- A targeted subscription wake chooses one matching event. Only a sealed 2xx
+  receipt advances `lastDeliveredSeq`, in the same transaction that accepts
+  delivery. Another subscription has independent authority, so a slow receiver
+  does not block it. Caught-up subscriptions own no polling timer or lease.
+- The committed head and oldest retained sequence define the retention floor.
+  A cursor below it disables with `cursor_expired`; explicit re-enable skips
+  expired events. Events of unselected types cannot create a false gap.
+- A 410 disables with `endpoint_gone`; 20 consecutive failures disable with
+  `consecutive_failures`. Exhausting 20 physical starts after plan holds uses
+  `delivery_attempts_exhausted`, preserving the actual failure count. Explicit
+  re-enable admits a new round. Inactive API access persists a 15-minute timer
+  without advancing cursor or failure count.
+- A targeted disabled notice uses the verified creator while still a member,
+  otherwise the verified Workspace owner. A skipped provider send stays due
+  and returns a five-minute durable timer.
+- `POST /webhooks/{id}/test` requires an `Idempotency-Key` and returns 202 with
+  the admitted `deliveryId`. `GET /webhooks/{id}/tests/{deliveryId}` returns
+  `pending`, `delivered`, or `unconfirmed`; an unknown outcome is never called
+  a confirmed failure. One new test per webhook is allowed every five seconds.
+  Tests move no feed cursor. Enable and test preserve event-type scope checks.
+- `list_webhooks` uses `projects:read`; `manage_webhooks` uses
+  `processing:write`. Publishing event types also require `publishing:read`.
+  REST tests freeze their API-key identity and recheck revocation before native
+  authority. Apply the serverless migration before deploying these handlers.
 
 ## Publishing Queue
 

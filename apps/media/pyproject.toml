@@ -13,7 +13,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-deploy = ["modal==1.2.6"]
+deploy = ["modal==1.6.3"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["python/narriflow_media"]

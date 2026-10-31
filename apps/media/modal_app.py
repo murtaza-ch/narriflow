@@ -34,18 +34,20 @@ lean_image = image("lean")
 render_image = image("render")
 executor_secret = modal.Secret.from_name("narriflow-executor-control", required_keys=["API_ORIGIN", "EXECUTOR_CONTROL_KEY_ID", "EXECUTOR_CONTROL_KEYS_JSON"])
 bridge_secret = modal.Secret.from_name("narriflow-modal-bridge", required_keys=["MODAL_BRIDGE_KEYS_JSON"])
-youtube_secret = modal.Secret.from_name("narriflow-youtube-proxy", required_keys=["YTDLP_PROXY_URL"])
+youtube_secret = modal.Secret.from_name("narriflow-youtube-fetch", required_keys=["YOUTUBE_FETCH_MODE"])
 dispatch_receipts = modal.Dict.from_name("narriflow-dispatch-receipts-v1", create_if_missing=True)
 
 # One active input per container is Modal's default without @modal.concurrent.
 # CPU requests are physical cores. Tuple limits bound both compute and memory.
-LEAN_RESOURCES = dict(cpu=(2, 2), memory=(4096, 4096), ephemeral_disk=64 * 1024,
+LEAN_RESOURCES = dict(cpu=(2, 2), memory=(4096, 4096),
                       min_containers=0, buffer_containers=0, scaledown_window=2,
                       retries=0, startup_timeout=60)
-RENDER_RESOURCES = dict(cpu=(4, 4), memory=(8192, 8192), ephemeral_disk=64 * 1024,
+RENDER_RESOURCES = dict(cpu=(4, 4), memory=(8192, 8192),
                         min_containers=0, buffer_containers=0, scaledown_window=2,
                         retries=0, startup_timeout=60)
-# SDK 1.2.6 rejects an explicit retries option on ASGI endpoints, including 0.
+# The default ephemeral quota is already 512 GiB. Requesting disk explicitly
+# increases the billed memory request and is unnecessary for bounded scratch.
+# ASGI endpoints reject an explicit retries option, including 0.
 BRIDGE_RESOURCES = {key: value for key, value in LEAN_RESOURCES.items() if key != "retries"}
 
 
@@ -95,9 +97,12 @@ async def outbound_delivery(invocation: dict) -> dict:
 async def fetch_source(invocation: dict) -> dict:
     from narriflow_media.entrypoint import invoke_native, native_client
     from narriflow_media.source_runtime import run_fetch_source
+    from narriflow_media.fetch import SourceFetchFailure
     async def run(session, package, work):
+        if package.command.get("kind") == "youtube_source" and os.environ["YOUTUBE_FETCH_MODE"] != "proxy":
+            raise SourceFetchFailure("source_fetch_mode_forbidden")
         await run_fetch_source(session, package, work, mode="proxy", development=False,
-            token_server_home=Path("/opt/youtube-tokens"), proxy_template=os.environ["YTDLP_PROXY_URL"])
+            token_server_home=Path("/opt/youtube-tokens"), proxy_template=os.environ.get("YTDLP_PROXY_URL"))
     return await invoke_native(invocation, "fetch_source", client=native_client(os.environ),
                                operation=run, max_operation_seconds=2700)
 
