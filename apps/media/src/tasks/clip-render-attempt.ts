@@ -253,7 +253,7 @@ export interface ClipRenderAttemptAdapters {
 		"getFrozenRenderingStateForWorkSet" | "getProjectRenderStorageReferences"
 	>;
 	/** Layout evidence another group stored since this attempt's snapshot. */
-	layoutEvidence: Pick<LayoutEvidenceLifecycle, "readCompatibleDurable">;
+	layoutEvidence: Pick<LayoutEvidenceLifecycle, "readCompatibleDurable"> & { completedPreparation?: boolean };
 	/** Immutable facts shared by every render in this worker process. */
 	facts: RenderFactCache;
 	clip: {
@@ -3576,6 +3576,7 @@ async function renderClipGroup(input: {
 				split: true,
 			},
 			hasBroll: Boolean(brollPlan),
+            completedPreparation: currentRenderAdapters().layoutEvidence.completedPreparation,
 			pipMotionThreshold: currentRenderConfig().pipMotionThreshold,
 			signal: currentRenderSignal() ?? new AbortController().signal,
 			getSegment: getAnalysisSegment,

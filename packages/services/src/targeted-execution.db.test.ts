@@ -143,6 +143,27 @@ dbDescribe("Targeted serverless domain execution", () => {
     expect(await db.workflowRun.findUniqueOrThrow({ where: { id: value.run.id } })).toMatchObject({ attemptId: null, attemptCount: 0, leaseOwner: null });
   }, 180_000);
 
+  test("a group seals one preparation and one complete input tuple across retries", async () => {
+    const value = await fixture();
+    const preparation = await db.clipPreparation.create({ data: { projectId: value.run.projectId, clipId: value.group.clipId,
+      sourceRevision: 1, editorRevision: 1, bindingHash: "a".repeat(64), engineHash: "b".repeat(64), inputHash: "c".repeat(64),
+      inputStorageKey: "projects/frozen/preparation.json", inputEtag: '"preparation"', inputByteLength: 1000n, inputChecksumSha256: "d".repeat(64),
+      deploymentEpoch: epoch, operationDeadlineAt: new Date(Date.now()+600000) } });
+    try {
+      await db.renderGroup.update({ where: { id: value.group.id }, data: { preparationId: preparation.id } });
+      await expect(Promise.resolve(db.renderGroup.update({ where: { id: value.group.id }, data: { inputStorageKey: "projects/frozen/render.json" } }))).rejects.toThrow();
+      const input = { inputStorageKey: "projects/frozen/render.json", inputEtag: '"render"', inputByteLength: 2000n, inputChecksumSha256: "e".repeat(64) };
+      await db.renderGroup.update({ where: { id: value.group.id }, data: input });
+      await expect(Promise.resolve(db.renderGroup.update({ where: { id: value.group.id }, data: { inputEtag: '"replacement"' } }))).rejects.toThrow("immutable");
+      await expect(Promise.resolve(db.renderGroup.update({ where: { id: value.group.id }, data: { preparationId: null } }))).rejects.toThrow();
+      await db.renderGroup.update({ where: { id: value.group.id }, data: { generation: { increment: 1 } } });
+      expect(await db.renderGroup.findUniqueOrThrow({ where: { id: value.group.id } })).toMatchObject({ ...input, preparationId: preparation.id, generation: 2 });
+    } finally {
+      await db.renderGroup.delete({ where: { id: value.group.id } });
+      await db.clipPreparation.delete({ where: { id: preparation.id } });
+    }
+  });
+
   test("audio readiness cannot acquire rendering before verified video is ready", async () => {
     const value = await fixture();
     await db.project.update({ where: { id: value.run.projectId }, data: { ingestStatus: "downloading", sourceStorageKey: null } });

@@ -1,0 +1,280 @@
+{
+  "date": "2026-10-31",
+  "scope": "Full36-case exact relocation parity on the deployed native Modal render image, using a rebuilt frozen pre-cutover reference. This is not complete ticket21 crash/domain acceptance.",
+  "image": {
+    "imageId": "im-2pdVge20RxCwJdDGJncVuV",
+    "sandboxId": "sb-01M68P0YS54AWP0SS7WF1BRA6B",
+    "terminated": true,
+    "architecture": "x86_64",
+    "networkBlocked": true,
+    "cpu": 4,
+    "memoryMiB": 8192,
+    "modalSdk": "1.6.3",
+    "measuredRuntimeId": "e6b5b5e56a392b94ee5beb5ef556ac4e21067d8023eff3ec8b13c224b8c06e11",
+    "canonicalRuntimeId": "06a988fcee94757ba07d1d1cc410ca4fbf0f36ee4d8f4aab8c84711897a569b9",
+    "fixtureToolchainId": "e00c091bc5a81bee"
+  },
+  "frozenReference": {
+    "commit": "623aadca7e5790cf456100f7b7966fbaf74e8bf7",
+    "sourceArchiveSha256": "459be5ff31af8fcc1bb3f2397cb4bede83b5c80a6bd11f32923cd450cafdb71b",
+    "archiveScope": "All frozen packages except the caption-fonts directory, plus apps/worker/src, scripts, runtime lock and manifests. Vendored caption-font files reused from image only after matching their lock hashes.",
+    "captureSha256": "e4d746a86d13eb7b5d0f2c7af88502edd05d5f8c87bcfbc342c87da8f71c1c1f",
+    "sourceChanged": false,
+    "referenceOnlyDependencyOverlay": {
+      "archiveSha256": "4dbf48aacd1d1ee78efc2696d820f621bd72f992f325b8daa0d133c08617eba8",
+      "dependencies": [
+        "@prisma/adapter-neon7.7.0",
+        "@neondatabase/serverless1.0.2",
+        "Prisma7.7.0 generated JS schema/enum data"
+      ],
+      "scope": "Loads the original services barrel. No renderer/compiler/process module changes, DB credentials, DB access or network access."
+    }
+  },
+  "candidate": {
+    "commit": "57a5c63d8ad192fb5a5ba6cd13791f93d722279f",
+    "sourceArchiveSha256": "23732d59efcf6a3eff1ed4992b7bab1b58dea30e07c5ec450f10161714c9ba47",
+    "captureSha256": "09571507feeee0041f39a7de6677aa5436b7f374743742bd50879989214fb3e9",
+    "sourceChanged": false
+  },
+  "comparison": {
+    "ok": true,
+    "summary": {
+      "normal": {
+        "total": 18,
+        "pass": 18,
+        "fail": 0
+      },
+      "knownDefects": {
+        "total": 18,
+        "xfail": 2,
+        "xpass": 0,
+        "changed": 0,
+        "activatedPass": 16,
+        "activatedFail": 0
+      }
+    },
+    "mismatches": [],
+    "caseVerdicts": [
+      {
+        "id": "solo-auto-vertical",
+        "verdict": "pass"
+      },
+      {
+        "id": "two-up-speaker-vertical",
+        "verdict": "pass"
+      },
+      {
+        "id": "screen-pip-portrait",
+        "verdict": "pass"
+      },
+      {
+        "id": "explicit-split-portrait",
+        "verdict": "pass"
+      },
+      {
+        "id": "rtl-arabic-captions",
+        "verdict": "pass"
+      },
+      {
+        "id": "cjk-dense-captions",
+        "verdict": "pass"
+      },
+      {
+        "id": "logo-broll-music-sfx-censor",
+        "verdict": "pass"
+      },
+      {
+        "id": "cut-and-inserted-scenes",
+        "verdict": "pass"
+      },
+      {
+        "id": "exact-source-end",
+        "verdict": "pass"
+      },
+      {
+        "id": "treatments-720p-watermark-1080p",
+        "verdict": "pass"
+      },
+      {
+        "id": "image-background-fit",
+        "verdict": "pass"
+      },
+      {
+        "id": "audio-only-audiogram",
+        "verdict": "pass"
+      },
+      {
+        "id": "mono-44k",
+        "verdict": "pass"
+      },
+      {
+        "id": "silent-video",
+        "verdict": "pass"
+      },
+      {
+        "id": "ntsc-24000-1001",
+        "verdict": "pass"
+      },
+      {
+        "id": "ntsc-30000-1001",
+        "verdict": "pass"
+      },
+      {
+        "id": "text-layers-transition",
+        "verdict": "pass"
+      },
+      {
+        "id": "speed-playback-rate-ui-only",
+        "verdict": "pass"
+      },
+      {
+        "id": "rot90",
+        "verdict": "activated-pass"
+      },
+      {
+        "id": "rot180",
+        "verdict": "guard-pass"
+      },
+      {
+        "id": "rot270",
+        "verdict": "activated-pass"
+      },
+      {
+        "id": "mirror-h",
+        "verdict": "guard-pass"
+      },
+      {
+        "id": "rot90-mirror",
+        "verdict": "activated-pass"
+      },
+      {
+        "id": "sar-2x1",
+        "verdict": "activated-pass"
+      },
+      {
+        "id": "odd-321x181",
+        "verdict": "activated-pass"
+      },
+      {
+        "id": "audio-late-start",
+        "verdict": "activated-pass"
+      },
+      {
+        "id": "audio-short",
+        "verdict": "activated-pass"
+      },
+      {
+        "id": "audio-late-cut-scene-music",
+        "verdict": "activated-pass"
+      },
+      {
+        "id": "vfr-irregular",
+        "verdict": "activated-pass"
+      },
+      {
+        "id": "hdr-pq",
+        "verdict": "activated-pass"
+      },
+      {
+        "id": "hdr-hlg",
+        "verdict": "activated-pass"
+      },
+      {
+        "id": "hot-mix",
+        "verdict": "activated-pass"
+      },
+      {
+        "id": "emoji-sequences",
+        "verdict": "activated-pass"
+      },
+      {
+        "id": "missing-glyph",
+        "verdict": "activated-pass"
+      },
+      {
+        "id": "seek-past-source-end",
+        "verdict": "activated-pass"
+      },
+      {
+        "id": "http-interrupted-read",
+        "verdict": "activated-pass"
+      }
+    ],
+    "reportSha256": "389d064dbf86ee3d912e9345719a3c0832131b69dd5a0e6f48d24ee0d0c000b3",
+    "baselineRefreshed": false,
+    "recipeFlagsChanged": false,
+    "tolerancesChanged": false,
+    "inputHashes": {
+      "manifest": "e87ca72642998347dbe6ffdffb9c16617ac7002e1b5604c928ca59399179b42f",
+      "documents": "d5a7e0b46a5c0cbdb2243ad872c31bd813d0887f3e57d2e8ad5874db7115ea3e",
+      "evidence": "cedcdddb939e558137c82ecdb6b82ad7e3dc155a6f1be7b29bfccbf6b1742848",
+      "knownDefects": "5d31a4dc0793e28ed846dc569d6934588816c95fc0abf78be4cee6082069fede",
+      "activations": {
+        "03-display-geometry.json": "d18e0ee3b2edcbe1852596805bf0de1604f767de6f9f5383974cf65333fbf47d",
+        "03b-output-sar.json": "fafa1a402e3aee4ceeb2825b8e6f7c85f02917bfcbb4d5af3cf344c547381861",
+        "04-audio-clock.json": "6e766f6169fea1e5096f5c0dd16bd62d63eb20bd01199beeec11b6858101a049",
+        "05-mix-clipping.json": "0b512c4f62b5bd21e76b67339de1222de6bf26d3c71fdd954de8dcf19f197ebd",
+        "06-vfr-clock.json": "9924a8052eb03cccafd85412bd00d03766446c5d172a277136dc2af7cc26fb5e",
+        "07-hdr-to-sdr.json": "04ac246ed095bbc1823a18b9753ee463ebbfd09fb32d2ef8a1a14bfba94d5f2f",
+        "08-emoji-and-glyphs.json": "64ccb798a387becd9d6eb0c95c33a34c007b27ef4014e2b8fb1e08efb9d55e5b",
+        "09-output-validation.json": "b68bf52435ab25a24ab3872e489cd52755ddac4b986861e0f7661b4ae9e6a0e9",
+        "09b-output-pixel-format.json": "a036a18d0281cfd2841d84a658a61576a37b99cf0d9a73eab6929c87273dde3e"
+      }
+    },
+    "fixtureHashes": {
+      "talk-720p": "b72876624412225a916465e47abd936c50f4d5acb806cf6ca7ec5614b945befa",
+      "talk-gray-720p": "435ae033c65d97faeb951bebd1e659c2d9f4c030712c8afacfe4813b09457120",
+      "talk-mono44": "7b6ed0cbd96eb2325757a484817772faa0935dfb8ca4868ac73d5b07f2e64c0b",
+      "talk-silent": "8e4627539031bd1882bb068ec32717dc63e1451063f562974bb1560988b5fff3",
+      "ntsc-24000-1001": "a422f6a711fb4e141a71aa6af751febe8b2f06216e06665a389d294a77c17f7e",
+      "ntsc-30000-1001": "bd529dfd650c668b8887c7747f6fdd6354932aaac7dd69ba1425c36e348df4a3",
+      "talk-audio": "aea06a607072334ec6a960df8b74436e6581b3d07290b4b4dc02e8c0e274b98f",
+      "logo": "e2b8bd149599eb8c3956f132ea01c9acbb9d4276126c9f78641da064a2ef7fb2",
+      "music-bed": "55e84c5840e34caf206c9a26b99e941c112f6ed47b922da545b220eaeb8c515a",
+      "sfx-hit": "587a0823ca1d9e02f4b47806eb7d36c3561076d0e6653af947a93981adcf8ea4",
+      "scene-card": "606cb2d28ffa25503579e16368d8cdbb5ece12febd47d9c893de022c9c863bbc",
+      "scene-clip": "110b1278711bec76d7b7baecd0921837844c21c6e5723791f25dc7a5f738d854",
+      "background": "8c67a0da4cd08309b860fdf986ce29c0d37373098d7a2fefdf3aca888212aa03",
+      "broll-card": "f4f0256a8e6f8a5b603fdf59825ed4a119c2c8bb239c96672b4d61420607256b",
+      "quad-720p": "1d5287b1c7d1d79d2635704298108d6fba1140361914248a243b076d75b4662e",
+      "rot90": "62670be3f91dfeb49b75473710885faf2aec8ca1c18eb22e9b0c43aba4ca47d9",
+      "rot180": "1b279ce69573edc5813b05e7be6d73af247e5c2d0c6a3d3cac294cb290bbbe4a",
+      "rot270": "3b6682d188d52387939ddd5487fb81a3877d66568676f19851aa8aff2d11affe",
+      "mirror-h": "24b8721f73b0c73dbb38d361de0ff9683ccf0cead361e3e2d646a941227149a4",
+      "rot90-mirror": "5b4c3fbe6603748ef21ed3fbacf5bf9bbdb7eef0ef08d0e7537eb1dae5a2946f",
+      "sar-2x1": "96a51664154bb68a80439bfceec730430c6eaba1923fc5e1211d1a5e1586add6",
+      "odd-321x181": "6da8c138f102bab7b25705dbc0345e52b8b483bbb8d309c0a4f7ce282152ba1e",
+      "audio-late": "5e60ca0822b1bee80bda19d25a0a0f8e8841af8d3bb6ea24998e8ace35bfe917",
+      "audio-short": "11eefa4a0c3e1eb7d01a364776712348f71b40c967fac32c6b2537c4ba89fd79",
+      "vfr-irregular": "12a8f1483db50ffc97803ceb77e0de38545fa92b67c8d7ad89ddb3813fbea509",
+      "hdr-pq": "ebc07aad66189a4d26e16cf6d2cd340fad866fc986dbe18ace7a8ae0d141e7c9",
+      "hdr-hlg": "3a87aad1ebcc08b81df2dc88a09ed77da120a53433ee517ae259da5f6c959b1d",
+      "music-hot": "f387266bea1f0c68898d5543675985d662d9d33226809c9521aa0b26fda034fc",
+      "sfx-hot": "205230c010df61de5832533752be2bf5c234acac50657cc84a7d0f43ee998843"
+    }
+  },
+  "cameraClock": {
+    "testsPassed": 7,
+    "assertions": 41,
+    "elapsedSeconds": 7.556,
+    "sourceSha256": "9e95aba567472382d47d9b6934a6d0c8ca3540921394eee071242b3358178764",
+    "logSha256": "d872420222b90fcd0d68f3fe29cf7d9343f472ebe2125f60fab5de5a808b489e",
+    "sourceChanged": false
+  },
+  "logs": {
+    "modal-reference-all.log": "48ce92bd381e8b534c888f832f486e50a1657b51c2f8a2fecb72cd5277ca426e",
+    "modal-candidate-all.log": "927b6137ad27fc6be6dc92eaeead5e508b49cca1de5d496fb00b95e2e668c3d1",
+    "modal-full-parity.log": "cc961cf6bf205697a2019cba1f01461ea4700820e069b195ac46843208dd928c"
+  },
+  "historicalCaptureDiagnostic": {
+    "captureSha256": "ddd776add5a7d484687f8c199098692da733fe653b139fc265dc337c3ec8c7fe",
+    "suitableAsCutoverBaseline": false,
+    "reason": "This older capture predates accepted pre-cutover frame-clock and caption changes. Its original cases were preserved and comparison failed. No historical expectations were updated; the valid reference was rebuilt from frozen623aadca source instead."
+  },
+  "open": [
+    "Final candidate image with the canonical checker and completed native wrappers must be rebuilt and verified.",
+    "Standalone decoder/filter/encoder thread caps still require parity evidence.",
+    "Full domain crash matrix and actual scoped Worker control/commit gates remain required.",
+    "Optional media and cloud proxy hard egress/provider acceptance remain separate gates."
+  ]
+}

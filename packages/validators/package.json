@@ -42,7 +42,11 @@
       "types": "./src/outbound-delivery.ts",
       "default": "./src/outbound-delivery.ts"
     },
-    "./generated-image-execution": "./src/generated-image-execution.ts"
+    "./generated-image-execution": "./src/generated-image-execution.ts",
+    "./clip-preparation": {
+      "types": "./src/clip-preparation.ts",
+      "default": "./src/clip-preparation.ts"
+    }
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
