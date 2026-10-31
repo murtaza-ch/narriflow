@@ -1,7 +1,7 @@
 import type { Prisma, PrismaClient } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { createExecutionDispatch, ExecutionDispatchError, type ExecutionDispatchOptions, type ExecutionDispatchScheduler } from "./execution-dispatch";
+import { createExecutionDispatch, ExecutionDispatchError, ExecutionDispatchPendingError, type ExecutionDispatchOptions, type ExecutionDispatchScheduler } from "./execution-dispatch";
 
 type Tx = Prisma.TransactionClient;
 
@@ -37,6 +37,10 @@ export async function withExecutionDispatches<T>(operation: () => Promise<T>, op
     let failed = false;
     let failure: unknown;
     try { result = await operation(); } catch (error) { failed = true; failure = error; }
+    // The current Workflow must register its prerequisite before dependent
+    // work. Replaying the command after this persisted retry repairs the same
+    // committed IDs; an automatic flush cannot bypass that prerequisite.
+    if(failed&&failure instanceof ExecutionDispatchPendingError)throw failure;
     const ids = [...invocation.getStore()!];
     // DO-only invocations must retain the database scope's lazy construction.
     const database = ids.length ? (options?.database ?? getPrismaClient()) : null;
@@ -75,8 +79,8 @@ export async function deliverExecutionDispatches(ids: readonly string[]): Promis
   const unique = [...new Set(ids)];
   for (let offset = 0; offset < unique.length; offset += 4) {
     const results = await Promise.allSettled(unique.slice(offset, offset + 4).map(id => dispatch.deliver(id)));
-    if (results.some(result => result.status === "rejected" || (result.value.status !== "acknowledged" && result.value.status !== "superseded"))) {
-      throw new ExecutionDispatchError("scheduler_unavailable");
-    }
+    if(results.some(result=>result.status==="rejected" || !["acknowledged","superseded","pending"].includes(result.value.status)))throw new ExecutionDispatchError("scheduler_unavailable");
+    const retryTimes=results.flatMap(result=>result.status==="fulfilled"&&result.value.status==="pending"?[result.value.retryAt.getTime()]:[]);
+    if(retryTimes.length)throw new ExecutionDispatchPendingError(new Date(Math.min(...retryTimes)));
   }
 }

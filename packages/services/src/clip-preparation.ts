@@ -1,3 +1,4 @@
+import {ExecutionDispatchPendingError} from "./execution-dispatch";
 import { assertExecutionRestorePage } from "./execution-restore-pages";
 import type { ExecutionRestorePage } from "./execution-restore";
 import { createHash } from "node:crypto";
@@ -219,7 +220,7 @@ export class ClipPreparationService {
       });
     }
     try { await this.dependencies.register(result.dispatchIds); }
-    catch { throw new ClipPreparationError("clip_preparation_unavailable", result.preparationId); }
+    catch(error) { if(error instanceof ExecutionDispatchPendingError)throw error; throw new ClipPreparationError("clip_preparation_unavailable", result.preparationId); }
     return result;
   }
 

@@ -1,0 +1,35 @@
+{
+  "status": "passed_local_workerd_and_isolated_database",
+  "scope": "Known persisted scheduler retries; not a final deployed cutover acceptance claim.",
+  "unit": {
+    "tests": 13,
+    "assertions": 26
+  },
+  "database": {
+    "tests": 35,
+    "assertions": 248,
+    "suites": [
+      "execution-dispatch",
+      "clip-preparation"
+    ],
+    "target": "disposable local PostgreSQL schema"
+  },
+  "workerd": {
+    "checks": 10,
+    "database": "isolated direct Neon gate branch",
+    "newCheck": "persisted_scheduler_retry_sleeps_without_step_failure_or_open_sql_scope"
+  },
+  "checks": [
+    "Strict registration preserves the retry timestamp actually committed by ExecutionDispatch.",
+    "An unconfirmed watchdog prevents physical heavy dispatch, including the automatic postcommit collector.",
+    "Prerequisite retry stops automatic dependent flushing; other committed-error paths still flush their explicit obligations.",
+    "The Worker Workflow boundary closes its database scope before returning a durable sleep.",
+    "Unknown failures keep ordinary failure handling and cannot invent a retry time.",
+    "Actual Workflows engine command history is start,timer rather than start,start from a failed-step replay.",
+    "No domain attempt or credit budget is incremented by a delivery retry."
+  ],
+  "workerBundleAudit": "passed; no forbidden, native-service or obsolete imports",
+  "remaining": [
+    "Deploy the final integrated revision and rerun the cloud fault/availability acceptance matrix."
+  ]
+}

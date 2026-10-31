@@ -1,3 +1,6 @@
+import {collectExecutionDispatch,withExecutionDispatches} from "@narriflow/services/execution-dispatch-runtime";
+import type {Prisma,PrismaClient} from "@prisma/client";
+import {runWorkflowCommand} from "./dispatch-retry";
 import { expect, test } from "bun:test";
 import { createNativeOperationDriver } from "./native-operation-driver";
 import type { ExecutionDispatchReference } from "@narriflow/validators/execution";
@@ -13,7 +16,7 @@ test("a known failed spawn sleeps to its persisted retry, without parking until 
     expire: async () => { throw new Error("Not due"); },
     deliver: async () => [{ status: "pending", dispatchId: deadline.reference.dispatchId, reason: "delivery_failed", retryAt: new Date(now + 1_000) }],
   });
-  expect(await run({ reference, wake: { type: "start" } })).toEqual({ type: "sleep", until: new Date(now + 1_000).toISOString() });
+  expect(await runWorkflowCommand(()=>run({ reference, wake: { type: "start" } }))).toEqual({ type: "sleep", until: new Date(now + 1_000).toISOString() });
 });
 
 test("a fresh renewal observation controls the next wait and terminal domains never construct storage work", async () => {
@@ -22,7 +25,7 @@ test("a fresh renewal observation controls the next wait and terminal domains ne
     prepare: async () => ({ kind: "waiting", deadline: { ...deadline, kind: "lease", observedDeadlineAt: new Date(now - 1_000).toISOString() }, deliveryId, dispatchIds: [] }),
     expire: async () => ({ kind: "sleep", dueAt: new Date(now + 90_000) }), deliver: async () => { delivered++; return []; },
   });
-  expect(await run({ reference, wake: { type: "start" } })).toMatchObject({ type: "wait", until: new Date(now + 90_000).toISOString() });
+  expect(await runWorkflowCommand(()=>run({ reference, wake: { type: "start" } }))).toMatchObject({ type: "wait", until: new Date(now + 90_000).toISOString() });
   const terminal = createNativeOperationDriver({ now: () => now, prepare: async () => ({ kind: "terminal" }),
     expire: async () => { throw new Error("Unexpected expiry"); }, deliver: async () => { throw new Error("Unexpected storage/provider work"); } });
   expect(await terminal({ reference, wake: { type: "start" } })).toEqual({ type: "complete", disposition: "terminal" });
@@ -36,7 +39,7 @@ test("an unconfirmed watchdog never dispatches the heavy operation", async () =>
     expire: async () => { throw new Error("Not due"); },
     deliver: async ids => { batches.push([...ids]); return [{ status: "pending", dispatchId: deliveryId, reason: "delivery_failed", retryAt: new Date(now + 1_000) }]; },
   });
-  expect(await run({ reference, wake: { type: "start" } })).toMatchObject({ type: "sleep" });
+  expect(await runWorkflowCommand(()=>run({ reference, wake: { type: "start" } }))).toMatchObject({ type: "sleep" });
   expect(batches).toEqual([[deliveryId]]);
 });
 
@@ -47,6 +50,17 @@ test("a preparation dependency confirms its own watchdog and waits without a nat
     expire: async () => { throw new Error("No native attempt exists"); },
     deliver: async ids => { batches.push([...ids]); return ids.map(dispatchId => ({ status: "acknowledged", dispatchId, destinationId: "fixture" })); },
   });
-  expect(await run({ reference, wake: { type: "start" } })).toEqual({ type: "wait", until: new Date(now + 600_000).toISOString(), deliveryId });
+  expect(await runWorkflowCommand(()=>run({ reference, wake: { type: "start" } }))).toEqual({ type: "wait", until: new Date(now + 600_000).toISOString(), deliveryId });
   expect(batches).toEqual([[deliveryId], [preparation]]);
+});
+
+test("a pending watchdog cannot be bypassed by the automatic postcommit collector",async()=>{
+  const tx={} as Prisma.TransactionClient,batches:string[][]=[];let automatic=0;
+  const run=createNativeOperationDriver({now:()=>now,prepare:async()=>{
+    collectExecutionDispatch(tx,deliveryId);collectExecutionDispatch(tx,deadline.reference.dispatchId);
+    return{kind:"waiting",deadline,deliveryId,dispatchIds:[deliveryId,deadline.reference.dispatchId]};
+  },expire:async()=>{throw Error("not_due");},deliver:async ids=>{batches.push([...ids]);return[{status:"pending",dispatchId:deliveryId,reason:"delivery_failed",retryAt:new Date(now+1000)}];}});
+  const database={executionDispatch:{findMany:async()=>[{id:deliveryId},{id:deadline.reference.dispatchId}]}} as unknown as PrismaClient;
+  expect(await runWorkflowCommand(()=>withExecutionDispatches(()=>run({reference,wake:{type:"start"}}),{database,deliver:async()=>{automatic++;}}))).toEqual({type:"sleep",until:new Date(now+1000).toISOString()});
+  expect(batches).toEqual([[deliveryId]]);expect(automatic).toBe(0);
 });

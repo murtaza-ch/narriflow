@@ -83,6 +83,13 @@ try {
   assert.equal(deadlineLog.filter(row => row.kind === "query").length, 3);
   checks.push("deadline_has_independent_durable_instance_and_duplicate_registration_does_not_restart");
   }
+  if(process.env.WORKFLOW_GATE_PROGRESS_ONLY!=="1"){
+  const pending=reference("pending");await call("/create",pending);
+  await until(async()=>(await call("/status",pending)).status==="complete");
+  const pendingLog=await call("/stats",pending) as Log;allClosed(pendingLog);
+  assert.deepEqual(pendingLog.filter(row=>row.kind==="query").map(row=>row.detail),["start","timer"]);
+  checks.push("persisted_scheduler_retry_sleeps_without_step_failure_or_open_sql_scope");
+  }
   const owner = await database.user.create({ data: { clerkId: `workflow-progress-gate:${randomUUID()}` } });
   const workspace = await database.workspace.create({ data: { name: "Workflow progress gate", ownerUserId: owner.id } });
   fixture = { ownerId: owner.id, workspaceId: workspace.id };

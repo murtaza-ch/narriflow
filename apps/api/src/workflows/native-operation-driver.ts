@@ -1,7 +1,7 @@
 import type { ExecutionDeadline, ExecutionDispatchReference } from "@narriflow/validators/execution";
 import type { NativeValidationPreparation } from "@narriflow/services/native-validation";
 import type { ExecutorExpiryResult } from "@narriflow/services/executor-domain-control";
-import type { ExecutionDispatchDeliveryResult } from "@narriflow/services/execution-dispatch";
+import { ExecutionDispatchPendingError, type ExecutionDispatchDeliveryResult } from "@narriflow/services/execution-dispatch";
 import type { WorkflowCommandHandler } from "./protocol";
 
 interface Ports {
@@ -22,7 +22,7 @@ export function createNativeOperationDriver(ports: Ports): WorkflowCommandHandle
         const results = await ports.deliver(ids);
         const pending = results.filter((result): result is Extract<ExecutionDispatchDeliveryResult, { status: "pending" }> => result.status === "pending");
         if (results.some(result => !["acknowledged", "superseded", "pending"].includes(result.status))) throw new Error("native_dispatch_unavailable");
-        if (pending.length) return { type: "sleep", until: new Date(Math.min(prepared.dueAt.getTime(), ...pending.map(result => result.retryAt.getTime()))).toISOString() };
+        if (pending.length) throw new ExecutionDispatchPendingError(new Date(Math.min(prepared.dueAt.getTime(), ...pending.map(result => result.retryAt.getTime()))));
       }
       return { type: "wait", until: prepared.dueAt.toISOString(), deliveryId: prepared.deadlineDispatchId };
     }
@@ -39,7 +39,7 @@ export function createNativeOperationDriver(ports: Ports): WorkflowCommandHandle
       const results = await ports.deliver(ids);
       const pending = results.filter((result): result is Extract<ExecutionDispatchDeliveryResult, { status: "pending" }> => result.status === "pending");
       if (results.some(result => !["acknowledged", "superseded", "pending"].includes(result.status))) throw new Error("native_dispatch_unavailable");
-      if (pending.length) return { type: "sleep", until: new Date(Math.min(Date.parse(deadline.observedDeadlineAt), ...pending.map(result => result.retryAt.getTime()))).toISOString() };
+      if (pending.length) throw new ExecutionDispatchPendingError(new Date(Math.min(Date.parse(deadline.observedDeadlineAt), ...pending.map(result => result.retryAt.getTime()))));
     }
     return { type: "wait", until: deadline.observedDeadlineAt, deliveryId: prepared.deliveryId, deadline };
   };

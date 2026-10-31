@@ -15,6 +15,17 @@ export class ExecutionDispatchError extends Error {
   }
 }
 
+/** A confirmed persisted retry can become a durable Workflow sleep. It does
+ * not acknowledge registration or admit another charged domain attempt. */
+export class ExecutionDispatchPendingError extends ExecutionDispatchError {
+  readonly retryAt: Date;
+  constructor(retryAt: Date) {
+    super("scheduler_unavailable");this.name="ExecutionDispatchPendingError";
+    if(!validDate(retryAt))throw new ExecutionDispatchError("invalid_dispatch");
+    this.retryAt=new Date(retryAt);
+  }
+}
+
 export interface ExecutionDispatchIdentityInput {
   deploymentEpoch: number;
   kind: ExecutionDispatchKind;

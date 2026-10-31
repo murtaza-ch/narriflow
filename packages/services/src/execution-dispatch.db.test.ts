@@ -1,9 +1,11 @@
+import {DatabaseScope} from "@narriflow/db/client";
+import {deliverExecutionDispatches,withExecutionDispatchScheduler} from "./execution-dispatch-runtime";
 import { assertExecutionDatabaseTestTarget } from "./execution-db-test-support";
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@prisma/client";
 import {
-  appendExecutionDispatch, appendExecutionDispatches, createExecutionDispatch, ExecutionDispatchError,
+  appendExecutionDispatch, appendExecutionDispatches, createExecutionDispatch, ExecutionDispatchError, ExecutionDispatchPendingError,
   type AppendExecutionDispatchInput, type ExecutionDispatchDatabase, type ExecutionDispatchScheduler,
 } from "./execution-dispatch";
 
@@ -233,6 +235,17 @@ dbDescribe("Transactional Execution Dispatch", () => {
     expect((await dispatch.read(id))?.errorCode).toBe("scheduler_unavailable");
   }, 60_000);
 
+  test("strict registration exposes its persisted retry without creating another domain attempt",async()=>{
+    const record=await append();let calls=0;
+    const rejected:ExecutionDispatchScheduler={deliver:async()=>{calls++;throw Error("controlled_transport_failure");}};
+    let failure:unknown;
+    await new DatabaseScope({createClient:()=>({client:database,dispose:async()=>{}})}).run(()=>withExecutionDispatchScheduler(rejected,()=>deliverExecutionDispatches([record.reference.dispatchId]))).catch(error=>{failure=error;});
+    expect(failure).toBeInstanceOf(ExecutionDispatchPendingError);
+    const persisted=await database.executionDispatch.findUniqueOrThrow({where:{id:record.reference.dispatchId}});
+    expect((failure as ExecutionDispatchPendingError).retryAt).toEqual(persisted.nextDeliveryAt);
+    expect(persisted).toMatchObject({deliveryAttempts:1,acknowledgedAt:null,errorCode:"scheduler_unavailable"});expect(calls).toBe(1);
+    expect(await database.executionAttempt.count({where:{dispatchId:record.reference.dispatchId}})).toBe(0);
+  });
   test("hourly safety reconciliation consumes at most one bounded indexed page", async () => {
     await Promise.all(Array.from({ length: 4 }, () => append()));
     const dispatch = service();
