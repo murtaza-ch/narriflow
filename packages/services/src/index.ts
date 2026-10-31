@@ -709,4 +709,6 @@ export { clipPreparationBinding, encodeClipPreparationInput, decodeClipPreparati
 
 export { clipPreparationEngineHash, CLIP_PREPARATION_POLICY, clipPreparationTiming, clipPreparationPreviewWindow } from "./clip-preparation-policy";
 
-export { renderArtifactBindingHash, encodeRenderVariantFailure, decodeRenderVariantFailure } from "./render-artifact";
+export { renderArtifactBindingHash, encodeRenderVariantFailure, decodeRenderVariantFailure, prepareRenderArtifact } from "./render-artifact";
+
+export { resolveBrollCutaways, remapBrollCuesForCutPlan, type ResolveBrollCutaways, type ResolveBrollCutawaysParams, type ResolvedBrollCutaway, type BrollSearch } from "./broll-plan";

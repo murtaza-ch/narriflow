@@ -593,7 +593,8 @@
     "./render-artifact": {
       "types": "./src/render-artifact.ts",
       "default": "./src/render-artifact.ts"
-    }
+    },
+    "./broll-plan": "./src/broll-plan.ts"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { encodeRenderVariantFailure, decodeRenderVariantFailure } from "./render-artifact";
+import { encodeRenderVariantFailure, decodeRenderVariantFailure, prepareRenderArtifact, renderArtifactBindingHash } from "./render-artifact";
 import { renderGroupOutcomeSchema } from "@narriflow/validators/render-execution";
 
 test("a sealed variant failure carries only a bounded current binding and preserves its disposition", async () => {
@@ -22,4 +22,22 @@ test("group acknowledgement counts distinguish unsettled retries from terminal r
     { status: "queued", requested: 3, succeeded: 3, failed: 0, superseded: 0 },
     { status: "failed", requested: 5, succeeded: 0, failed: 5, superseded: 0 },
   ]) expect(renderGroupOutcomeSchema.safeParse(value).success).toBe(false);
+});
+
+test("failure preparation reads only the exact assigned object and rejects foreign members before publication", async () => {
+  const renderId = crypto.randomUUID(), inputHash = "a".repeat(64);
+  const bindingHash = await renderArtifactBindingHash({ inputHash, renderId, role: "render_outcome" });
+  const failure = { version: 1 as const, kind: "failed" as const, renderId, bindingHash, errorCode: "render_encode_failed", disposition: "retryable" as const };
+  const encoded = await encodeRenderVariantFailure(failure);
+  const artifact = { artifactId: crypto.randomUUID(), role: "render_outcome" as const, storageKey: "execution/assigned/failure.json", contentType: "application/json", byteLength: BigInt(encoded.byteLength), etag: '"assigned"', sha256: encoded.sha256, bindingHash };
+  const reported = { ...artifact, byteLength: encoded.byteLength };
+  let reads = 0;
+  const read = async (reference: { storageKey: string; etag: string; byteLength: number; sha256: string }, limit: number) => {
+    reads++; expect(reference).toEqual({ storageKey: artifact.storageKey, etag: artifact.etag, byteLength: encoded.byteLength, sha256: encoded.sha256 });
+    expect(limit).toBe(65536); return encoded.bytes;
+  };
+  expect(await prepareRenderArtifact(artifact, reported, { inputHash, memberIds: [renderId], read })).toMatchObject({ renderId, failure });
+  await expect(prepareRenderArtifact(artifact, reported, { inputHash, memberIds: [crypto.randomUUID()], read })).rejects.toThrow("render_artifact_invalid");
+  await expect(prepareRenderArtifact({ ...artifact, byteLength: 65537n }, reported, { inputHash, memberIds: [renderId], read })).rejects.toThrow("render_artifact_invalid");
+  expect(reads).toBe(2);
 });
