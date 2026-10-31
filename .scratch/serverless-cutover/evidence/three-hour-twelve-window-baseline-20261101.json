@@ -1,0 +1,1084 @@
+{
+  "acceptance": "FAILED aggregate original-source read budget; diagnostic only",
+  "sourcePolicyVersion": 3,
+  "scopeExclusions": [
+    "No real SQL/control HTTP authority or R2 network; deterministic injected control/conditional file-backed storage ports.",
+    "Source construction, hashing and admission-time normalized probe are excluded from scoped execution read counters.",
+    "No live service latency acceptance.",
+    "Explicit preparer decoder/filter caps from9716bca8 are not in this baseline; render thread policy is active."
+  ],
+  "summary": {
+    "message": "native_pipeline_resource",
+    "scope": "real native prepare_clip then render_group; controlled control/storage ports; no DB/providers",
+    "fingerprint": "06a988fcee94757ba07d1d1cc410ca4fbf0f36ee4d8f4aab8c84711897a569b9",
+    "sourceDurationSec": 10800,
+    "sourceByteLength": 433155186,
+    "sourceConstruction": "CFR30 320x180 four-second video-only loop plus continuous 48kHz mono AAC64k sine",
+    "windowDurationSec": 30,
+    "requested": 12,
+    "completed": 12,
+    "target": {
+      "resolution": "1080p",
+      "aspectRatio": "ratio_9_16"
+    },
+    "aggregateOriginalSourceBytes": 1548746752,
+    "preparationOriginalSourceBytes": 774897664,
+    "renderOriginalSourceBytes": 773849088,
+    "sourceReadRatio": 3.575500887573351,
+    "withinTwentyPercent": false,
+    "seconds": 577.057,
+    "resources": {
+      "samples": 22052,
+      "sampleIntervalMs": 25,
+      "sampledPeakTreeRssBytes": 1257709568,
+      "byCommand": {
+        "python": {
+          "rssBytes": 114294784,
+          "threads": 7
+        },
+        "ffmpeg": {
+          "rssBytes": 763756544,
+          "threads": 33
+        },
+        "bun": {
+          "rssBytes": 425062400,
+          "threads": 17
+        },
+        "ffprobe": {
+          "rssBytes": 258592768,
+          "threads": 1
+        },
+        "sh": {
+          "rssBytes": 4677632,
+          "threads": 1
+        },
+        "ldd": {
+          "rssBytes": 6193152,
+          "threads": 1
+        },
+        "ld-linux-x86-64": {
+          "rssBytes": 51875840,
+          "threads": 1
+        },
+        "basename": {
+          "rssBytes": 2924544,
+          "threads": 1
+        },
+        "fc-match": {
+          "rssBytes": 10977280,
+          "threads": 1
+        },
+        "dpkg-query": {
+          "rssBytes": 10518528,
+          "threads": 1
+        },
+        "dpkg": {
+          "rssBytes": 8695808,
+          "threads": 1
+        },
+        "python3": {
+          "rssBytes": 258867200,
+          "threads": 7
+        },
+        "dirname": {
+          "rssBytes": 3411968,
+          "threads": 1
+        },
+        "readlink": {
+          "rssBytes": 3174400,
+          "threads": 1
+        }
+      }
+    }
+  },
+  "operations": [
+    {
+      "index": 0,
+      "window": {
+        "startSec": 828.462,
+        "endSec": 858.462
+      },
+      "seconds": 40.16,
+      "preparation": {
+        "kind": "video",
+        "enforcedRuntime": true,
+        "starts": 1,
+        "roles": [
+          "clip_preview",
+          "preview_peaks",
+          "layout_evidence"
+        ],
+        "outputs": [
+          {
+            "role": "clip_preview",
+            "byteLength": 2673994,
+            "sha256": "cd7ab31806d1d5c5d8f5c1d7ff32d1b0a086fc358b65ab439241b575bf1e097c"
+          },
+          {
+            "role": "preview_peaks",
+            "byteLength": 2378,
+            "sha256": "c69395e423d6bb56daf64e7791d758e4d5e95e2373d7b8ca6b94f7e80abb097f"
+          },
+          {
+            "role": "layout_evidence",
+            "byteLength": 1645,
+            "sha256": "0289b1bb800c4b7ce0b6842ac2d4ee1eb449bdeae552545f6f5ba411f3ab652c"
+          }
+        ],
+        "measurements": {
+          "bytesTransferred": 63963136,
+          "upstreamRequests": 61,
+          "sourceBytes": 433155186
+        },
+        "automaticEngine": "shot-layout-v1",
+        "screenObserved": true,
+        "splitObserved": true
+      },
+      "layoutObservation": {
+        "automatic": {
+          "engine": "shot-layout-v1",
+          "state": "ready"
+        },
+        "screen": {
+          "state": "ready",
+          "reason": null
+        },
+        "split": {
+          "state": "failed",
+          "reason": "insufficient_clusters"
+        }
+      },
+      "render": {
+        "outcome": {
+          "status": "completed",
+          "requested": 1,
+          "succeeded": 1,
+          "failed": 0,
+          "superseded": 0
+        },
+        "bytesTransferred": 66060288,
+        "upstreamRequests": 63,
+        "detectorExecutions": 0,
+        "starts": 1,
+        "artifacts": [
+          {
+            "role": "render_variant",
+            "byteLength": 5947836,
+            "sha256": "f5656a99cab2c20c7308f025b38effa949e2c97de715d4eaf0b9eb092cf0e538"
+          }
+        ]
+      }
+    },
+    {
+      "index": 1,
+      "window": {
+        "startSec": 1656.923,
+        "endSec": 1686.923
+      },
+      "seconds": 39.94,
+      "preparation": {
+        "kind": "video",
+        "enforcedRuntime": true,
+        "starts": 1,
+        "roles": [
+          "clip_preview",
+          "preview_peaks",
+          "layout_evidence"
+        ],
+        "outputs": [
+          {
+            "role": "clip_preview",
+            "byteLength": 2687584,
+            "sha256": "83eb139b6ea7ed7cee0b88a7b67f2bd8f0e3025cf782b7cb1fe7d86cedff0162"
+          },
+          {
+            "role": "preview_peaks",
+            "byteLength": 2379,
+            "sha256": "3eedb773e7145fed1ffa6f8a1a6890c3bff92417b11d3566f3ab8031785e8388"
+          },
+          {
+            "role": "layout_evidence",
+            "byteLength": 1649,
+            "sha256": "3567ccafd531c375d8297b8459ec022798a4e8e0e5db03adcef66cd5ee60d2b1"
+          }
+        ],
+        "measurements": {
+          "bytesTransferred": 65011712,
+          "upstreamRequests": 62,
+          "sourceBytes": 433155186
+        },
+        "automaticEngine": "shot-layout-v1",
+        "screenObserved": true,
+        "splitObserved": true
+      },
+      "layoutObservation": {
+        "automatic": {
+          "engine": "shot-layout-v1",
+          "state": "ready"
+        },
+        "screen": {
+          "state": "ready",
+          "reason": null
+        },
+        "split": {
+          "state": "failed",
+          "reason": "insufficient_clusters"
+        }
+      },
+      "render": {
+        "outcome": {
+          "status": "completed",
+          "requested": 1,
+          "succeeded": 1,
+          "failed": 0,
+          "superseded": 0
+        },
+        "bytesTransferred": 63963136,
+        "upstreamRequests": 61,
+        "detectorExecutions": 0,
+        "starts": 1,
+        "artifacts": [
+          {
+            "role": "render_variant",
+            "byteLength": 5954658,
+            "sha256": "226f694f12b53ef79dc12f1df49110d51fa9760b85e53e71f9f8f1cec1f8f295"
+          }
+        ]
+      }
+    },
+    {
+      "index": 2,
+      "window": {
+        "startSec": 2485.385,
+        "endSec": 2515.385
+      },
+      "seconds": 40.936,
+      "preparation": {
+        "kind": "video",
+        "enforcedRuntime": true,
+        "starts": 1,
+        "roles": [
+          "clip_preview",
+          "preview_peaks",
+          "layout_evidence"
+        ],
+        "outputs": [
+          {
+            "role": "clip_preview",
+            "byteLength": 2695187,
+            "sha256": "5bc28d1332bb11f1ab7b3672224533f2e75468e887bd137e2bdd9981a2629e5f"
+          },
+          {
+            "role": "preview_peaks",
+            "byteLength": 2379,
+            "sha256": "b8ce0f13ed6554a1c0355745c66269c106b74db442a4c0b7a62344e132bc4adb"
+          },
+          {
+            "role": "layout_evidence",
+            "byteLength": 1660,
+            "sha256": "f68c9a4aab4776660683087585be4aed10ec429f267938d41459a279981ecb01"
+          }
+        ],
+        "measurements": {
+          "bytesTransferred": 63963136,
+          "upstreamRequests": 61,
+          "sourceBytes": 433155186
+        },
+        "automaticEngine": "shot-layout-v1",
+        "screenObserved": true,
+        "splitObserved": true
+      },
+      "layoutObservation": {
+        "automatic": {
+          "engine": "shot-layout-v1",
+          "state": "ready"
+        },
+        "screen": {
+          "state": "ready",
+          "reason": null
+        },
+        "split": {
+          "state": "failed",
+          "reason": "insufficient_clusters"
+        }
+      },
+      "render": {
+        "outcome": {
+          "status": "completed",
+          "requested": 1,
+          "succeeded": 1,
+          "failed": 0,
+          "superseded": 0
+        },
+        "bytesTransferred": 59768832,
+        "upstreamRequests": 57,
+        "detectorExecutions": 0,
+        "starts": 1,
+        "artifacts": [
+          {
+            "role": "render_variant",
+            "byteLength": 5950502,
+            "sha256": "c21722dc66a887c3c8bf8539fdc74459e5fd72713a25ffa8903dbaef95d217c1"
+          }
+        ]
+      }
+    },
+    {
+      "index": 3,
+      "window": {
+        "startSec": 3313.846,
+        "endSec": 3343.846
+      },
+      "seconds": 40.739,
+      "preparation": {
+        "kind": "video",
+        "enforcedRuntime": true,
+        "starts": 1,
+        "roles": [
+          "clip_preview",
+          "preview_peaks",
+          "layout_evidence"
+        ],
+        "outputs": [
+          {
+            "role": "clip_preview",
+            "byteLength": 2713663,
+            "sha256": "9ba8d180d008b657b073533343db4eb012adda511efdb7b1252e9a9263b3b3ad"
+          },
+          {
+            "role": "preview_peaks",
+            "byteLength": 2379,
+            "sha256": "0f92be6900d8e275edb33139e38cbbc30cfff27c39cc5074bffafe5c5f2b7693"
+          },
+          {
+            "role": "layout_evidence",
+            "byteLength": 1660,
+            "sha256": "cb910f9b0550be3705c9de9c2190f9fe1b24cde4cbb42c182cf1e4d6fdba89a9"
+          }
+        ],
+        "measurements": {
+          "bytesTransferred": 63963136,
+          "upstreamRequests": 61,
+          "sourceBytes": 433155186
+        },
+        "automaticEngine": "shot-layout-v1",
+        "screenObserved": true,
+        "splitObserved": true
+      },
+      "layoutObservation": {
+        "automatic": {
+          "engine": "shot-layout-v1",
+          "state": "ready"
+        },
+        "screen": {
+          "state": "ready",
+          "reason": null
+        },
+        "split": {
+          "state": "failed",
+          "reason": "insufficient_clusters"
+        }
+      },
+      "render": {
+        "outcome": {
+          "status": "completed",
+          "requested": 1,
+          "succeeded": 1,
+          "failed": 0,
+          "superseded": 0
+        },
+        "bytesTransferred": 68157440,
+        "upstreamRequests": 65,
+        "detectorExecutions": 0,
+        "starts": 1,
+        "artifacts": [
+          {
+            "role": "render_variant",
+            "byteLength": 5988412,
+            "sha256": "83ab1f773eb2b8bdf66dbf187990c4d2d8153561d57f2ee25a82e8bf706c936d"
+          }
+        ]
+      }
+    },
+    {
+      "index": 4,
+      "window": {
+        "startSec": 4142.308,
+        "endSec": 4172.308
+      },
+      "seconds": 41.542,
+      "preparation": {
+        "kind": "video",
+        "enforcedRuntime": true,
+        "starts": 1,
+        "roles": [
+          "clip_preview",
+          "preview_peaks",
+          "layout_evidence"
+        ],
+        "outputs": [
+          {
+            "role": "clip_preview",
+            "byteLength": 2713779,
+            "sha256": "b0667b67b5b20ff95fe6e8752ff73003cf5f3585fc3cafca40e7d9dd1c279a4e"
+          },
+          {
+            "role": "preview_peaks",
+            "byteLength": 2379,
+            "sha256": "b6d68809e4ba3a403ef13f7703b25a8f2ea22680ef1612c6830c97344a5e3225"
+          },
+          {
+            "role": "layout_evidence",
+            "byteLength": 1651,
+            "sha256": "fdd55ddd56150d92246e143c5cf4d885f5cf49ef5c95fa789205718aa1bcdcdd"
+          }
+        ],
+        "measurements": {
+          "bytesTransferred": 63963136,
+          "upstreamRequests": 61,
+          "sourceBytes": 433155186
+        },
+        "automaticEngine": "shot-layout-v1",
+        "screenObserved": true,
+        "splitObserved": true
+      },
+      "layoutObservation": {
+        "automatic": {
+          "engine": "shot-layout-v1",
+          "state": "ready"
+        },
+        "screen": {
+          "state": "ready",
+          "reason": null
+        },
+        "split": {
+          "state": "failed",
+          "reason": "insufficient_clusters"
+        }
+      },
+      "render": {
+        "outcome": {
+          "status": "completed",
+          "requested": 1,
+          "succeeded": 1,
+          "failed": 0,
+          "superseded": 0
+        },
+        "bytesTransferred": 63963136,
+        "upstreamRequests": 61,
+        "detectorExecutions": 0,
+        "starts": 1,
+        "artifacts": [
+          {
+            "role": "render_variant",
+            "byteLength": 5989781,
+            "sha256": "12782ebc84f2c78fc44c784a5d272f257f29618203c25af9bf06f89fe6ba45b6"
+          }
+        ]
+      }
+    },
+    {
+      "index": 5,
+      "window": {
+        "startSec": 4970.769,
+        "endSec": 5000.769
+      },
+      "seconds": 39.981,
+      "preparation": {
+        "kind": "video",
+        "enforcedRuntime": true,
+        "starts": 1,
+        "roles": [
+          "clip_preview",
+          "preview_peaks",
+          "layout_evidence"
+        ],
+        "outputs": [
+          {
+            "role": "clip_preview",
+            "byteLength": 2708104,
+            "sha256": "dcdbf7bef24cabe858edcd914beb28f1aa4c0ce86c9a02f80c78c9b487a1d4e8"
+          },
+          {
+            "role": "preview_peaks",
+            "byteLength": 2379,
+            "sha256": "a55db40d0fb572d1507097f6446280a8033481fdac3d97a837524d8501f95bf2"
+          },
+          {
+            "role": "layout_evidence",
+            "byteLength": 1660,
+            "sha256": "8a3db24934b14d1d698c10f323c0b219baab539624abb6e81a4f09b90c74aaec"
+          }
+        ],
+        "measurements": {
+          "bytesTransferred": 61865984,
+          "upstreamRequests": 59,
+          "sourceBytes": 433155186
+        },
+        "automaticEngine": "shot-layout-v1",
+        "screenObserved": true,
+        "splitObserved": true
+      },
+      "layoutObservation": {
+        "automatic": {
+          "engine": "shot-layout-v1",
+          "state": "ready"
+        },
+        "screen": {
+          "state": "ready",
+          "reason": null
+        },
+        "split": {
+          "state": "failed",
+          "reason": "insufficient_clusters"
+        }
+      },
+      "render": {
+        "outcome": {
+          "status": "completed",
+          "requested": 1,
+          "succeeded": 1,
+          "failed": 0,
+          "superseded": 0
+        },
+        "bytesTransferred": 63963136,
+        "upstreamRequests": 61,
+        "detectorExecutions": 0,
+        "starts": 1,
+        "artifacts": [
+          {
+            "role": "render_variant",
+            "byteLength": 5990673,
+            "sha256": "5caa987f15430c809e996dc8691ad3a375dbf9693e52f09b6f02b0f09b17c927"
+          }
+        ]
+      }
+    },
+    {
+      "index": 6,
+      "window": {
+        "startSec": 5799.231,
+        "endSec": 5829.231
+      },
+      "seconds": 40.228,
+      "preparation": {
+        "kind": "video",
+        "enforcedRuntime": true,
+        "starts": 1,
+        "roles": [
+          "clip_preview",
+          "preview_peaks",
+          "layout_evidence"
+        ],
+        "outputs": [
+          {
+            "role": "clip_preview",
+            "byteLength": 2693215,
+            "sha256": "8e286c22ef61f4ed03e7f32bd5fd9530c25ea728edd56891caab480f8628f3d6"
+          },
+          {
+            "role": "preview_peaks",
+            "byteLength": 2379,
+            "sha256": "6d1e8fb0a6edf33e0828423aa2db49ec59e4935938c146afc59c42b0e986f65f"
+          },
+          {
+            "role": "layout_evidence",
+            "byteLength": 1660,
+            "sha256": "7b8a6556a334bb812e5f4e6092296743ca1434d231d2b607fd31046d2ec21ef4"
+          }
+        ],
+        "measurements": {
+          "bytesTransferred": 63963136,
+          "upstreamRequests": 61,
+          "sourceBytes": 433155186
+        },
+        "automaticEngine": "shot-layout-v1",
+        "screenObserved": true,
+        "splitObserved": true
+      },
+      "layoutObservation": {
+        "automatic": {
+          "engine": "shot-layout-v1",
+          "state": "ready"
+        },
+        "screen": {
+          "state": "ready",
+          "reason": null
+        },
+        "split": {
+          "state": "failed",
+          "reason": "insufficient_clusters"
+        }
+      },
+      "render": {
+        "outcome": {
+          "status": "completed",
+          "requested": 1,
+          "succeeded": 1,
+          "failed": 0,
+          "superseded": 0
+        },
+        "bytesTransferred": 66060288,
+        "upstreamRequests": 63,
+        "detectorExecutions": 0,
+        "starts": 1,
+        "artifacts": [
+          {
+            "role": "render_variant",
+            "byteLength": 6033958,
+            "sha256": "593acbbeb5055f6079e22a38a78e59fd63148d87dfaef19f921b00412fa67a8f"
+          }
+        ]
+      }
+    },
+    {
+      "index": 7,
+      "window": {
+        "startSec": 6627.692,
+        "endSec": 6657.692
+      },
+      "seconds": 42.166,
+      "preparation": {
+        "kind": "video",
+        "enforcedRuntime": true,
+        "starts": 1,
+        "roles": [
+          "clip_preview",
+          "preview_peaks",
+          "layout_evidence"
+        ],
+        "outputs": [
+          {
+            "role": "clip_preview",
+            "byteLength": 2677965,
+            "sha256": "43ac5c9da3a37fcbfdb13231e78b7fa3427b69a153cc7d18c8dabfa27e6313c3"
+          },
+          {
+            "role": "preview_peaks",
+            "byteLength": 2379,
+            "sha256": "2310494a711120545314d99877fe753f2b5e23402979788ce6506e3a34f5319d"
+          },
+          {
+            "role": "layout_evidence",
+            "byteLength": 1660,
+            "sha256": "af8c7df851c3fa0514f0a87eb625035ffbd4e904231b658eb8e8c993c07748d9"
+          }
+        ],
+        "measurements": {
+          "bytesTransferred": 66060288,
+          "upstreamRequests": 63,
+          "sourceBytes": 433155186
+        },
+        "automaticEngine": "shot-layout-v1",
+        "screenObserved": true,
+        "splitObserved": true
+      },
+      "layoutObservation": {
+        "automatic": {
+          "engine": "shot-layout-v1",
+          "state": "ready"
+        },
+        "screen": {
+          "state": "ready",
+          "reason": null
+        },
+        "split": {
+          "state": "failed",
+          "reason": "insufficient_clusters"
+        }
+      },
+      "render": {
+        "outcome": {
+          "status": "completed",
+          "requested": 1,
+          "succeeded": 1,
+          "failed": 0,
+          "superseded": 0
+        },
+        "bytesTransferred": 61865984,
+        "upstreamRequests": 59,
+        "detectorExecutions": 0,
+        "starts": 1,
+        "artifacts": [
+          {
+            "role": "render_variant",
+            "byteLength": 6034868,
+            "sha256": "3cc942b4f7e8fed36606345dfb00fc0455aa0be425a6fcbda33f80e349ba1675"
+          }
+        ]
+      }
+    },
+    {
+      "index": 8,
+      "window": {
+        "startSec": 7456.154,
+        "endSec": 7486.154
+      },
+      "seconds": 42.319,
+      "preparation": {
+        "kind": "video",
+        "enforcedRuntime": true,
+        "starts": 1,
+        "roles": [
+          "clip_preview",
+          "preview_peaks",
+          "layout_evidence"
+        ],
+        "outputs": [
+          {
+            "role": "clip_preview",
+            "byteLength": 2673644,
+            "sha256": "37d4ca84ab1bacbff46e05d2cb4e75ef89d219f09c3f0a9753017d64c4a909dd"
+          },
+          {
+            "role": "preview_peaks",
+            "byteLength": 2379,
+            "sha256": "e53c89fbb2816d577ae081dec0187138953b61446b03e7ac2a49927938fc5254"
+          },
+          {
+            "role": "layout_evidence",
+            "byteLength": 1660,
+            "sha256": "0d716a4d4bfe7fd93680039bb14d9f2c21d06bbd065d87dde197dff674fabc44"
+          }
+        ],
+        "measurements": {
+          "bytesTransferred": 66060288,
+          "upstreamRequests": 63,
+          "sourceBytes": 433155186
+        },
+        "automaticEngine": "shot-layout-v1",
+        "screenObserved": true,
+        "splitObserved": true
+      },
+      "layoutObservation": {
+        "automatic": {
+          "engine": "shot-layout-v1",
+          "state": "ready"
+        },
+        "screen": {
+          "state": "ready",
+          "reason": null
+        },
+        "split": {
+          "state": "failed",
+          "reason": "insufficient_clusters"
+        }
+      },
+      "render": {
+        "outcome": {
+          "status": "completed",
+          "requested": 1,
+          "succeeded": 1,
+          "failed": 0,
+          "superseded": 0
+        },
+        "bytesTransferred": 61865984,
+        "upstreamRequests": 59,
+        "detectorExecutions": 0,
+        "starts": 1,
+        "artifacts": [
+          {
+            "role": "render_variant",
+            "byteLength": 5982580,
+            "sha256": "70723711151897935a2ee07b82b8d6c68e8111e91152148a3e9f2609b53a36bb"
+          }
+        ]
+      }
+    },
+    {
+      "index": 9,
+      "window": {
+        "startSec": 8284.615,
+        "endSec": 8314.615
+      },
+      "seconds": 41.74,
+      "preparation": {
+        "kind": "video",
+        "enforcedRuntime": true,
+        "starts": 1,
+        "roles": [
+          "clip_preview",
+          "preview_peaks",
+          "layout_evidence"
+        ],
+        "outputs": [
+          {
+            "role": "clip_preview",
+            "byteLength": 2673268,
+            "sha256": "c46d6f8202174aaea1d1d79c1ac9087809751e5d3654ad2da31c5e06832cc316"
+          },
+          {
+            "role": "preview_peaks",
+            "byteLength": 2379,
+            "sha256": "4e61e92433d4b901c408aa59c2e357a15a11649aa126abf602618b1fd9eaa709"
+          },
+          {
+            "role": "layout_evidence",
+            "byteLength": 1728,
+            "sha256": "02b746c73e2d5233dfed39e83f9597e270e32bd1d6fa1dda04b10ca298ff9b4c"
+          }
+        ],
+        "measurements": {
+          "bytesTransferred": 66060288,
+          "upstreamRequests": 63,
+          "sourceBytes": 433155186
+        },
+        "automaticEngine": "shot-layout-v1",
+        "screenObserved": true,
+        "splitObserved": true
+      },
+      "layoutObservation": {
+        "automatic": {
+          "engine": "shot-layout-v1",
+          "state": "ready"
+        },
+        "screen": {
+          "state": "ready",
+          "reason": null
+        },
+        "split": {
+          "state": "failed",
+          "reason": "insufficient_clusters"
+        }
+      },
+      "render": {
+        "outcome": {
+          "status": "completed",
+          "requested": 1,
+          "succeeded": 1,
+          "failed": 0,
+          "superseded": 0
+        },
+        "bytesTransferred": 63963136,
+        "upstreamRequests": 61,
+        "detectorExecutions": 0,
+        "starts": 1,
+        "artifacts": [
+          {
+            "role": "render_variant",
+            "byteLength": 6009364,
+            "sha256": "a90132480938e6b525dd574192deae7780f1d1b6c207559690f99cb9cf16e299"
+          }
+        ]
+      }
+    },
+    {
+      "index": 10,
+      "window": {
+        "startSec": 9113.077,
+        "endSec": 9143.077
+      },
+      "seconds": 41.279,
+      "preparation": {
+        "kind": "video",
+        "enforcedRuntime": true,
+        "starts": 1,
+        "roles": [
+          "clip_preview",
+          "preview_peaks",
+          "layout_evidence"
+        ],
+        "outputs": [
+          {
+            "role": "clip_preview",
+            "byteLength": 2686971,
+            "sha256": "d25fab59c8e4ba808ca0a5f8f59857cc590b09a3ab67f80cd3aa62c1c2733338"
+          },
+          {
+            "role": "preview_peaks",
+            "byteLength": 2379,
+            "sha256": "512551b8efc6bf196aac624f9b01e7699b626df3197c485357a62c2cb461307d"
+          },
+          {
+            "role": "layout_evidence",
+            "byteLength": 1710,
+            "sha256": "6c41e5d616a590c37459574a4e0f6d695dec534fec036146a392d1a96e8eda00"
+          }
+        ],
+        "measurements": {
+          "bytesTransferred": 63963136,
+          "upstreamRequests": 61,
+          "sourceBytes": 433155186
+        },
+        "automaticEngine": "shot-layout-v1",
+        "screenObserved": true,
+        "splitObserved": true
+      },
+      "layoutObservation": {
+        "automatic": {
+          "engine": "shot-layout-v1",
+          "state": "ready"
+        },
+        "screen": {
+          "state": "ready",
+          "reason": null
+        },
+        "split": {
+          "state": "failed",
+          "reason": "insufficient_clusters"
+        }
+      },
+      "render": {
+        "outcome": {
+          "status": "completed",
+          "requested": 1,
+          "succeeded": 1,
+          "failed": 0,
+          "superseded": 0
+        },
+        "bytesTransferred": 67108864,
+        "upstreamRequests": 64,
+        "detectorExecutions": 0,
+        "starts": 1,
+        "artifacts": [
+          {
+            "role": "render_variant",
+            "byteLength": 6028374,
+            "sha256": "892f5be2a210e170eb9c993993d891b4ddd86bd13fc7ee7f1ea8c6f39ff4cc77"
+          }
+        ]
+      }
+    },
+    {
+      "index": 11,
+      "window": {
+        "startSec": 9941.538,
+        "endSec": 9971.538
+      },
+      "seconds": 39.359,
+      "preparation": {
+        "kind": "video",
+        "enforcedRuntime": true,
+        "starts": 1,
+        "roles": [
+          "clip_preview",
+          "preview_peaks",
+          "layout_evidence"
+        ],
+        "outputs": [
+          {
+            "role": "clip_preview",
+            "byteLength": 2695457,
+            "sha256": "4d1b1cbe3ad168783e774fd4997be754878cbaff0908b2d481f64e671a344fb8"
+          },
+          {
+            "role": "preview_peaks",
+            "byteLength": 2379,
+            "sha256": "011d6e664eabb3a5f4709c874ce42ee641c8fdb1c1dd7084d85194330b28856c"
+          },
+          {
+            "role": "layout_evidence",
+            "byteLength": 1709,
+            "sha256": "6f5c7277cd5b7461e79c8fe5f44820177b53b245a7ac0ce04e2d91f21815d9a8"
+          }
+        ],
+        "measurements": {
+          "bytesTransferred": 66060288,
+          "upstreamRequests": 63,
+          "sourceBytes": 433155186
+        },
+        "automaticEngine": "shot-layout-v1",
+        "screenObserved": true,
+        "splitObserved": true
+      },
+      "layoutObservation": {
+        "automatic": {
+          "engine": "shot-layout-v1",
+          "state": "ready"
+        },
+        "screen": {
+          "state": "ready",
+          "reason": null
+        },
+        "split": {
+          "state": "failed",
+          "reason": "insufficient_clusters"
+        }
+      },
+      "render": {
+        "outcome": {
+          "status": "completed",
+          "requested": 1,
+          "succeeded": 1,
+          "failed": 0,
+          "superseded": 0
+        },
+        "bytesTransferred": 67108864,
+        "upstreamRequests": 64,
+        "detectorExecutions": 0,
+        "starts": 1,
+        "artifacts": [
+          {
+            "role": "render_variant",
+            "byteLength": 6036542,
+            "sha256": "697b5b86af506ac97444412c066cc996e4a53bada8effb5653aed20644771866"
+          }
+        ]
+      }
+    }
+  ],
+  "provenance": {
+    "candidateCommit": "deployed-image+recorded-test-gate-overlay",
+    "sandboxId": "sb-01M69NH4PQFGYSF3K5VPCK6GZW",
+    "imageId": "im-SLp7lHRnWYYTmYFvwKtCL6",
+    "cpu": 4,
+    "memoryMiB": 8192,
+    "networkBlocked": true,
+    "secrets": [],
+    "files": {
+      "/tmp/candidate.tar.gz": "e3aeeeaed7eee0454f12337747032f608b32669d238e35998716ffe14abb2e07",
+      "/tmp/run.py": "29953a6567d6ed73648c9c4f262aaf0e92fe3cdbb9e1c4471032a594d7e5dd1e"
+    }
+  },
+  "source": {
+    "base": "immutable deployed render image source",
+    "commit": "effbe3666c97cfdb3f181e98159e56fd806ac70f",
+    "overlayFiles": {
+      "apps/media/python/tests/test_artifacts.py": "4e507b6b327b70bfd2a78faef9f07b998e8003d3427bc9f21ee4f14592128199",
+      "apps/media/python/tests/test_multipart.py": "96d27a63ce8592eb202a5f954cb3cfd1276864834607985ab9f281518dff3934",
+      "apps/media/python/tests/test_clip_preparation_runtime.py": "641d32f30030e7e3c017ac17cdde3df53c7ae8184097603544f4a1b17b3a839e",
+      "apps/media/python/tests/test_render_runtime.py": "a42ab067ba80c14f7dbacb8ae8099a0f15911621a9cb16f0d06a256a4a2a9f56",
+      "apps/media/python/gates/pipeline_resource.py": "a9737f199a56cc3d0801730bb56569c18f83fb700de7b2ac7340c59677eafbd8",
+      "apps/media/src/prepare-clip.ts": "5b93ebe914bd45080b7dc1df2dc49c49e5ac5b27a55c9f57358c3c223bb9e83b",
+      "apps/media/src/prepare-clip.test.ts": "8af2e3e8be75a27a32f10149f359fb1989ea9c4eb14847d05485cb8bdbb37fcf",
+      "apps/media/src/tasks/clip-preview.ts": "269c68bf87f36af7725bac5df9950ba6c16aab8a5c7ff283ca9aff349ef2a940",
+      "packages/services/src/clip-preparation-policy.ts": "0f5ec3efb8e403156c1661f3e4a7f2cde9e062f7b84b1f6917fc65069c59aaef"
+    },
+    "archiveSha256": "e3aeeeaed7eee0454f12337747032f608b32669d238e35998716ffe14abb2e07"
+  },
+  "suiteStatus": {
+    "runtime": {
+      "exitCode": 0,
+      "seconds": 28.258
+    },
+    "preparation-vfr": {
+      "exitCode": 0,
+      "seconds": 4.299
+    },
+    "all-native-tests": {
+      "exitCode": 1,
+      "seconds": 131.045
+    },
+    "pipeline-smoke": {
+      "exitCode": 0,
+      "seconds": 34.338
+    },
+    "pipeline-12": {
+      "exitCode": 0,
+      "seconds": 584.533
+    }
+  },
+  "knownSuiteFailures": {
+    "rss": "Fixed by fixture stdin ordering3a44bb15; no credential/start assertion removed.",
+    "publication": "Fixed by canonical678f275b, imported here as118177fd. Neither is hidden by this diagnostic pass."
+  },
+  "rawDirectory": "/tmp/narriflow-serverless-gates/final-media-21/pipeline-cfr-12",
+  "rawHashes": {
+    "runtime.log": "509d4f76a79b7bdaabf44ae54d7b01a38f8bc4f2df63c614835c1db1a0024f05",
+    "preparation-vfr.log": "a43daaf0fbaa28fa2af01b138b280cd9a79d5ef077f034894bf6e288c6bfb9b4",
+    "all-native-tests.log": "b125f03ad2a1d7aa4d33bd56046bbcb6f504dfa10a74b17c41dbce7eda8de90a",
+    "pipeline-smoke.log": "c358833fa46fa29cf49db03a7653522afe5af187432eb8d9c06197f8b05ebc35",
+    "pipeline-12.log": "cccd2a4816a08aac9f47f6ee9725ec4d9529ac8eaa1c344ef5d090adc0861956",
+    "status.json": "a5479166a8e2209400ee8c480a0df3f958062e24090f8b72a93df270f2d44168"
+  }
+}
