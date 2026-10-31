@@ -747,4 +747,4 @@ export * from "./dubbing-policy";
 export * from "./export-bundle-recovery";
 export { readAutopilotImportPlan, readAutopilotImportSource, freezeAutopilotFinishingAuthority, AutopilotSourceChanged, type AutopilotImportSource, type AutopilotImportPlan } from "./autopilot-finishing-authority";
 
-export { planPublicationRecoveryPage, planStandingGrantExpiryPage, planPublicationReceiptRecoveryPage, planPerformanceCaptureRecoveryPage, planPublicationRestorePage } from "./publication-maintenance";
+export { planPublicationRecoveryPage, planStandingGrantExpiryPage, planPublicationReceiptRecoveryPage, planPerformanceCaptureRecoveryPage, planPublicationRestorePage, planPublicationReceiptRedispatchPage, planPerformanceCaptureRedispatchPage, planStandingGrantRedispatchPage, planPublicationGuidanceRedispatchPage } from "./publication-maintenance";

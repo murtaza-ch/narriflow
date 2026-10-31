@@ -5,8 +5,9 @@ import { readExecutionAdmission } from "./execution-admission";
 import { lockWorkspaceUsage } from "./processing-usage";
 import { appendPublicationDispatch } from "./publication-dispatch";
 import { appendPublicationGrantExpiry, restorePublication } from "./publication-producers";
-import { appendPerformanceCapture, appendYouTubeReceiptEnrichment } from "./publication-observations";
+import { appendPerformanceCapture, appendYouTubeReceiptEnrichment, appendPerformanceGuidance, isPublicationObservationReference, publicationObservationInputHash } from "./publication-observations";
 import { lockPublicationAttempt } from "./publication-locks";
+import { readExecutionDispatch } from "./execution-dispatch";
 
 type Tx = Prisma.TransactionClient;
 type Position = { id: string; at: Date };
@@ -63,28 +64,35 @@ export const planPublicationRecoveryPage: MaintenancePhaseHandler = async (tx, p
 
 /** Expiry itself belongs to the exact grant/revision timer and its audit
  * transaction. A maintenance page only restores that obligation. */
-export const planStandingGrantExpiryPage: MaintenancePhaseHandler = async (tx, page) => {
+export const planStandingGrantExpiryPage: MaintenancePhaseHandler = (tx, page) => planGrantPage(tx,page,false);
+/** Final restore registers even future accepted expiries before reopening. */
+export const planStandingGrantRedispatchPage: MaintenancePhaseHandler = (tx, page) => planGrantPage(tx,page,true);
+async function planGrantPage(tx: Tx, page: MaintenancePage, redispatch: boolean) {
   await validate(tx, page);
-  const rows = await tx.$queryRaw<Array<Position & Parents>>`SELECT "id", "expiresAt" AS at, "workspaceId" FROM "StandingGrant"
-    WHERE "status" IN ('active','paused') AND "expiresAt" <= (${page.cutoff}::timestamptz AT TIME ZONE 'UTC')
-    ${after(page, Prisma.sql`"expiresAt"`, Prisma.sql`"id"`)} ORDER BY "expiresAt", "id" LIMIT ${page.limit + 1}`;
+  const at = redispatch ? Prisma.sql`"createdAt"` : Prisma.sql`"expiresAt"`;
+  const rows = await tx.$queryRaw<Array<Position & Parents>>`SELECT "id", ${at} AS at, "workspaceId" FROM "StandingGrant"
+    WHERE "status" IN ('active','paused') AND ${at} <= (${page.cutoff}::timestamptz AT TIME ZONE 'UTC')
+    ${after(page,at, Prisma.sql`"id"`)} ORDER BY ${at}, "id" LIMIT ${page.limit + 1}`;
   const selected = rows.slice(0, page.limit), ids: string[] = [];
   await lockParents(tx, selected);
   for (const row of selected) {
     const grant = await tx.standingGrant.findUnique({ where: { id: row.id } });
-    if (grant && ["active", "paused"].includes(grant.status) && grant.expiresAt <= page.cutoff) ids.push(await appendPublicationGrantExpiry(tx, grant));
+    if (grant && ["active", "paused"].includes(grant.status) && (redispatch || grant.expiresAt <= page.cutoff)) ids.push(await appendPublicationGrantExpiry(tx, grant));
   }
   return result(rows, page.limit, ids);
-};
+}
 
 const receiptDue = Prisma.sql`COALESCE(r."enrichmentLeaseExpiresAt", r."enrichmentNextCheckAt", r."createdAt")`;
-export const planPublicationReceiptRecoveryPage: MaintenancePhaseHandler = async (tx, page) => {
+export const planPublicationReceiptRecoveryPage: MaintenancePhaseHandler = (tx,page) => planReceiptPage(tx,page,false);
+export const planPublicationReceiptRedispatchPage: MaintenancePhaseHandler = (tx,page) => planReceiptPage(tx,page,true);
+async function planReceiptPage(tx: Tx, page: MaintenancePage, redispatch: boolean) {
   await validate(tx, page);
-  const rows = await tx.$queryRaw<Array<Position & Parents & { attemptId: string }>>`SELECT r."id", ${receiptDue} AS at, r."attemptId", p."id" AS "postId", p."workspaceId", p."projectId", p."socialAccountId"
+  const at = redispatch ? Prisma.sql`r."createdAt"` : receiptDue;
+  const rows = await tx.$queryRaw<Array<Position & Parents & { attemptId: string }>>`SELECT r."id", ${at} AS at, r."attemptId", p."id" AS "postId", p."workspaceId", p."projectId", p."socialAccountId"
     FROM "ProviderReceipt" r JOIN "SocialPublicationAttempt" a ON a."id"=r."attemptId" JOIN "SocialPost" p ON p."id"=a."socialPostId"
     WHERE p."deploymentEpoch"=${page.deploymentEpoch} AND r."platform"='youtube_shorts' AND r."providerProcessingStatus"='processing' AND r."enrichedAt" IS NULL
-      AND ${receiptDue} <= (${page.cutoff}::timestamptz AT TIME ZONE 'UTC') ${after(page, receiptDue, Prisma.sql`r."id"`)}
-    ORDER BY ${receiptDue}, r."id" LIMIT ${page.limit + 1}`;
+      AND ${at} <= (${page.cutoff}::timestamptz AT TIME ZONE 'UTC') ${after(page, at, Prisma.sql`r."id"`)}
+    ORDER BY ${at}, r."id" LIMIT ${page.limit + 1}`;
   const selected = rows.slice(0, page.limit), ids: string[] = [];
   await lockParents(tx, selected);
   for (const id of [...new Set(selected.map(row => row.attemptId))].sort()) await lockPublicationAttempt(tx, id);
@@ -94,15 +102,18 @@ export const planPublicationReceiptRecoveryPage: MaintenancePhaseHandler = async
     if (id) ids.push(id);
   }
   return result(rows, page.limit, ids);
-};
+}
 
 const captureDue = Prisma.sql`COALESCE(c."leaseExpiresAt", c."dueAt")`;
-export const planPerformanceCaptureRecoveryPage: MaintenancePhaseHandler = async (tx, page) => {
+export const planPerformanceCaptureRecoveryPage: MaintenancePhaseHandler = (tx,page) => planCapturePage(tx,page,false);
+export const planPerformanceCaptureRedispatchPage: MaintenancePhaseHandler = (tx,page) => planCapturePage(tx,page,true);
+async function planCapturePage(tx: Tx, page: MaintenancePage, redispatch: boolean) {
   await validate(tx, page);
-  const rows = await tx.$queryRaw<Array<Position & Parents>>`SELECT c."id", ${captureDue} AS at, v."workspaceId", p."projectId", p."socialAccountId", p."id" AS "postId"
+  const at = redispatch ? Prisma.sql`c."createdAt"` : captureDue;
+  const rows = await tx.$queryRaw<Array<Position & Parents>>`SELECT c."id", ${at} AS at, v."workspaceId", p."projectId", p."socialAccountId", p."id" AS "postId"
     FROM "PerformanceCapture" c JOIN "TrackedVideo" v ON v."id"=c."trackedVideoId" LEFT JOIN "SocialPost" p ON p."id"=v."socialPostId"
-    WHERE c."state"='scheduled' AND (p."id" IS NULL OR p."deploymentEpoch"=${page.deploymentEpoch}) AND ${captureDue} <= (${page.cutoff}::timestamptz AT TIME ZONE 'UTC')
-      ${after(page, captureDue, Prisma.sql`c."id"`)} ORDER BY ${captureDue}, c."id" LIMIT ${page.limit + 1}`;
+    WHERE c."state"='scheduled' AND (p."id" IS NULL OR p."deploymentEpoch"=${page.deploymentEpoch}) AND ${at} <= (${page.cutoff}::timestamptz AT TIME ZONE 'UTC')
+      ${after(page, at, Prisma.sql`c."id"`)} ORDER BY ${at}, c."id" LIMIT ${page.limit + 1}`;
   const selected = rows.slice(0, page.limit), ids: string[] = [];
   await lockParents(tx, selected);
   for (const row of [...selected].sort((a, b) => a.id.localeCompare(b.id))) {
@@ -111,7 +122,7 @@ export const planPerformanceCaptureRecoveryPage: MaintenancePhaseHandler = async
     if (id) ids.push(id);
   }
   return result(rows, page.limit, ids);
-};
+}
 
 /** Rebind the original logical intent under the verified restored epoch.
  * This never resets budgets, deadlines, checkpoints or uncertain outcomes. */
@@ -123,6 +134,38 @@ export const planPublicationRestorePage: ExecutionRestorePhaseHandler = async (t
     ${after(page, Prisma.sql`"createdAt"`, Prisma.sql`"id"`)} ORDER BY "createdAt", "id" LIMIT ${page.limit + 1}`;
   const selected = rows.slice(0, page.limit), ids: string[] = [];
   await lockParents(tx, selected);
-  for (const row of selected) ids.push(...await restorePublication(tx, row.id, page.deploymentEpoch));
+  for (const row of selected) ids.push(...await restorePublication(tx, row.id, page.deploymentEpoch,{deferDispatch:true}));
   return result(rows, page.limit, ids);
+};
+
+/** Reconstruct only the last accepted night in each source-epoch chain. Old
+ * receipt expiry cannot turn completed historical nights into fresh work. */
+export const planPublicationGuidanceRedispatchPage: ExecutionRestorePhaseHandler = async (tx, page) => {
+  await validate(tx,page);
+  if (!Number.isSafeInteger(page.snapshotEpoch) || page.snapshotEpoch < 1 || page.snapshotEpoch >= page.deploymentEpoch) throw Error("publication_maintenance_page_invalid");
+  const rows = await tx.$queryRaw<Position[]>`SELECT "id", "createdAt" AS at FROM "ExecutionDispatch"
+    WHERE "deploymentEpoch"=${page.snapshotEpoch} AND "kind"='maintenance' AND "subjectKind"='maintenance' AND "subjectId" LIKE 'po1.g.%'
+      AND "createdAt" <= (${page.cutoff}::timestamptz AT TIME ZONE 'UTC') ${after(page,Prisma.sql`"createdAt"`,Prisma.sql`"id"`)}
+    ORDER BY "createdAt", "id" LIMIT ${page.limit + 1}`;
+  const selected: Array<Position & { workspaceId: string; subjectId: string; dueAt: Date }> = [];
+  for (const row of rows.slice(0,page.limit)) {
+    const original = await readExecutionDispatch(tx,row.id);
+    if (!original || !isPublicationObservationReference(original.reference) || !original.reference.subject.id.startsWith("po1.g.") || original.reference.generation !== 1 || original.reference.deploymentEpoch !== page.snapshotEpoch || original.reference.inputHash !== publicationObservationInputHash(original.reference.subject.id)) throw Error("publication_guidance_restore_reference_invalid");
+    const parts = original.reference.subject.id.split("."), workspaceId = parts[2]!, night = Number(parts[3]);
+    if (original.dueAt.getTime() !== night) throw Error("publication_guidance_restore_reference_invalid");
+    selected.push({ ...row, workspaceId, subjectId: original.reference.subject.id, dueAt: original.dueAt });
+  }
+  await lockParents(tx,selected);
+  const ids: string[] = [];
+  for (const row of selected) {
+    const workspace = await tx.workspace.findUnique({ where: { id: row.workspaceId }, select: { status: true } });
+    if (workspace?.status !== "active") continue;
+    const [latest] = await tx.$queryRaw<Array<{ id: string }>>`SELECT "id" FROM "ExecutionDispatch"
+      WHERE "deploymentEpoch"=${page.snapshotEpoch} AND "kind"='maintenance' AND "subjectKind"='maintenance' AND "subjectId" LIKE 'po1.g.%'
+        AND left("subjectId",42)=${`po1.g.${row.workspaceId}`} AND "createdAt" <= (${page.cutoff}::timestamptz AT TIME ZONE 'UTC')
+      ORDER BY "dueAt" DESC,"id" DESC LIMIT 1`;
+    if (latest?.id !== row.id) continue;
+    ids.push(await appendPerformanceGuidance(tx,row.workspaceId,row.dueAt));
+  }
+  return result(rows,page.limit,ids);
 };

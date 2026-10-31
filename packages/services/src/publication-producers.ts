@@ -128,13 +128,16 @@ export function createPublicationProducers(options:{database:PrismaClient;regist
 
 /** Restore invalidates physical owners, never the provider identity or charged
  * history. Reconciliation continues on the same logical attempt and deadline. */
-export async function restorePublication(tx:Tx,postId:string,epoch:number){
- await lockPublicationPost(tx,postId);const post=await tx.socialPost.findUnique({where:{id:postId},include:{publicationAttempts:true}});
- if(!post||post.deploymentEpoch===epoch)return recoverPublicationDispatches(tx,postId);
+export async function restorePublication(tx:Tx,postId:string,epoch:number,options:{deferDispatch?:boolean}={}){
+ await lockPublicationPost(tx,postId);const post=await tx.socialPost.findUnique({where:{id:postId}});
+ if(!post||post.deploymentEpoch===epoch)return options.deferDispatch?[]:recoverPublicationDispatches(tx,postId);
  if(post.deploymentEpoch>epoch)throw Error("publication_epoch_superseded");
  const clock=await now(tx);
- for(const attempt of post.publicationAttempts){if(!attempt.currentClaimId)continue;await tx.publicationClaim.updateMany({where:{id:attempt.currentClaimId},data:{releasedAt:clock,accountSlotKey:null}});await tx.socialPublicationAttempt.update({where:{id:attempt.id},data:{currentClaimId:null}});}
+ const owned=await tx.socialPublicationAttempt.findMany({where:{socialPostId:post.id,currentClaimId:{not:null}},take:2,select:{id:true,currentClaimId:true}});
+ if(owned.length>1)throw Error("publication_restore_owner_conflict");
+ for(const attempt of owned){await tx.publicationClaim.updateMany({where:{id:attempt.currentClaimId!},data:{releasedAt:clock,accountSlotKey:null}});await tx.socialPublicationAttempt.update({where:{id:attempt.id},data:{currentClaimId:null}});}
  await tx.socialPost.update({where:{id:post.id},data:{deploymentEpoch:epoch,generation:{increment:1}}});
+ if(options.deferDispatch)return [];
  const observation=await appendPublicationObservationRestore(tx,post.id);
  if(!["preparing_video","scheduled","publishing","processing","reconciling"].includes(post.status))return [observation];
  return [observation,await appendPublicationDispatch(tx,post.id,{wakeKind:"publication_restored"})];

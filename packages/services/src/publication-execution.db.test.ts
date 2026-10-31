@@ -1,9 +1,9 @@
-import { planPublicationRecoveryPage, planPublicationRestorePage, planStandingGrantExpiryPage, planPublicationReceiptRecoveryPage, planPerformanceCaptureRecoveryPage } from "./publication-maintenance";
+import { planPublicationRecoveryPage, planPublicationRestorePage, planStandingGrantExpiryPage, planPublicationReceiptRecoveryPage, planPerformanceCaptureRecoveryPage, planPublicationReceiptRedispatchPage, planPerformanceCaptureRedispatchPage, planStandingGrantRedispatchPage, planPublicationGuidanceRedispatchPage } from "./publication-maintenance";
 import {publishingQueue} from "./publishing-queue.service";
 import {acceptProposalUnderGrant} from "./standing-grant-runtime";
 import {appendYouTubeReceiptEnrichment,appendPerformanceCapture,trackPublishedVideo,appendPerformanceGuidance,createPublicationObservations} from "./publication-observations";
 import {appendPublicationExportWake,appendPublicationGrantWake,appendPublicationGrantExpiry,createPublicationProducers,restorePublication} from "./publication-producers";
-import {withExecutionDispatches} from "./execution-dispatch-runtime";
+import {withExecutionDispatches,takeExecutionDispatchIds} from "./execution-dispatch-runtime";
 import {
 	createPublicationInputBuilder,
 	publicationProviderPullReads,
@@ -1712,12 +1712,59 @@ suite("Revision-bound publication execution", () => {
    await tx.executionEpoch.update({where:{id:1},data:{epoch:2,admissionOpen:false}});
    const page={snapshotEpoch:1,fenceAboveEpoch:1,deploymentEpoch:2,cutoff:new Date(11000),after:{at:new Date(9500),id:"00000000-0000-0000-0000-000000000000"},limit:32};
    const planned=await planPublicationRestorePage(tx,page);
-   expect(planned.processed).toBe(1);expect(planned.next).toBeNull();expect(planned.dispatchIds).toHaveLength(2);
+   expect(planned.processed).toBe(1);expect(planned.next).toBeNull();expect(planned.dispatchIds).toEqual([]);
+   expect(await tx.executionDispatch.count({where:{deploymentEpoch:2,subjectId:{in:[f.post.id,`po1.r.${f.post.id}.0`]}}})).toBe(0);
+   expect(takeExecutionDispatchIds(tx)).toEqual([]);
    expect(await tx.socialPost.findUniqueOrThrow({where:{id:future.post.id}})).toMatchObject({deploymentEpoch:1});
    expect(await tx.socialPublicationAttempt.findUniqueOrThrow({where:{id:before.id}})).toMatchObject({idempotencyKey:before.idempotencyKey,nativeStartCount:before.nativeStartCount,providerCallCount:before.providerCallCount,checkpointEncrypted:before.checkpointEncrypted,processingDeadline:before.processingDeadline,reconciliationDeadline:before.reconciliationDeadline,currentClaimId:null});
    expect(await tx.publicationClaim.findUniqueOrThrow({where:{id:physical.fence.attemptToken}})).toMatchObject({accountSlotKey:null});
    expect((await tx.socialPost.findUniqueOrThrow({where:{id:f.post.id}})).deploymentEpoch).toBe(2);
    expect((await planPublicationRestorePage(tx,page)).processed).toBe(0);
+   throw sentinel;
+  })).rejects.toBe(sentinel);
+ });
+
+ test("final redispatch immediately registers future accepted receipt, capture and grant timers through createdAt cursors",async()=>{
+  const f=await fixture(),at=new Date("2030-01-01T00:00:00.000Z"),due=new Date(at.getTime()+3600000),cutoff=new Date(at.getTime()+1000);
+  const attempt=await db.socialPublicationAttempt.create({data:{socialPostId:f.post.id,frozenStateId:f.post.frozenState!.id,attemptNumber:1,idempotencyKey:crypto.randomUUID(),phase:"succeeded",outcome:"accepted",terminalAt:at,nextActionAt:at,processingDeadline:new Date(due.getTime()+3600000),reconciliationDeadline:new Date(due.getTime()+7200000),receipt:{create:{createdAt:at,platform:"youtube_shorts",receiptId:crypto.randomUUID(),platformPostId:"future-receipt",providerProcessingStatus:"processing",enrichmentNextCheckAt:due}}},include:{receipt:true}});
+  const video=await db.trackedVideo.create({data:{workspaceId:f.post.workspaceId!,socialPostId:f.post.id,socialAccountId:f.post.socialAccountId,platform:"youtube_shorts",platformPostId:crypto.randomUUID(),publishedAt:at}});
+  const captures=await Promise.all([0,1].map(slot=>db.performanceCapture.create({data:{trackedVideoId:video.id,slot,dueAt:due,createdAt:at}})));
+  const grant=await db.standingGrant.create({data:{workspaceId:f.post.workspaceId!,kind:"publish",socialAccountId:f.post.socialAccountId,dailyCap:10,weeklyCap:20,expiresAt:due,createdAt:at,ruleFingerprint:"fixture",grantedByUserId:f.post.createdByUserId}});
+  const page={deploymentEpoch:1,cutoff,after:{at:new Date(at.getTime()-1),id:"00000000-0000-0000-0000-000000000000"},limit:1};
+  const receiptPage=await db.$transaction(tx=>planPublicationReceiptRedispatchPage(tx,page));
+  const capturePage=await db.$transaction(tx=>planPerformanceCaptureRedispatchPage(tx,page));
+  const grantPage=await db.$transaction(tx=>planStandingGrantRedispatchPage(tx,page));
+  expect(receiptPage.processed).toBe(1);expect(capturePage.processed).toBe(1);expect(grantPage.processed).toBe(1);
+  expect(capturePage.next).not.toBeNull();
+  const lastCapture=await db.$transaction(tx=>planPerformanceCaptureRedispatchPage(tx,{...page,after:capturePage.next}));
+  expect(lastCapture.processed).toBe(1);expect(lastCapture.next).toBeNull();
+  const ids=[...receiptPage.dispatchIds!,...capturePage.dispatchIds!,...lastCapture.dispatchIds!,...grantPage.dispatchIds!];
+  expect(new Set(ids).size).toBe(4);
+  const records=await db.executionDispatch.findMany({where:{id:{in:ids}}});
+  expect(records.every(row=>row.dueAt.getTime()===due.getTime())).toBe(true);
+  expect(records.some(row=>row.subjectId.startsWith(`po1.y.${attempt.receipt!.id}.`))).toBe(true);
+  expect(records.filter(row=>captures.some(capture=>row.subjectId.startsWith(`po1.c.${capture.id}.`)))).toHaveLength(2);
+  expect(records.some(row=>row.subjectId===`pub1.x.${grant.id}.1.${due.getTime()}`)).toBe(true);
+  expect(await db.$transaction(tx=>planPublicationReceiptRedispatchPage(tx,page))).toEqual(receiptPage);
+ });
+
+ test("guidance redispatch preserves only each Workspace's latest accepted night from the explicit snapshot epoch",async()=>{
+  const f=await fixture(),firstNight=new Date("2030-01-01T00:00:00.000Z"),latestNight=new Date("2030-01-02T00:00:00.000Z");
+  const old=await db.$transaction(tx=>appendPerformanceGuidance(tx,f.post.workspaceId!,firstNight));
+  const latest=await db.$transaction(tx=>appendPerformanceGuidance(tx,f.post.workspaceId!,latestNight));
+  const older=await db.executionDispatch.findUniqueOrThrow({where:{id:old}}),current=await db.executionDispatch.findUniqueOrThrow({where:{id:latest}}),sentinel=Error("rollback guidance restore gate");
+  await expect(db.$transaction(async tx=>{
+   await tx.executionEpoch.update({where:{id:1},data:{epoch:2,admissionOpen:false}});
+   const base={snapshotEpoch:1,fenceAboveEpoch:1,deploymentEpoch:2,cutoff:new Date(current.createdAt.getTime()+1),after:{at:new Date(older.createdAt.getTime()-1),id:"00000000-0000-0000-0000-000000000000"},limit:1};
+   const first=await planPublicationGuidanceRedispatchPage(tx,base);
+   const second=await planPublicationGuidanceRedispatchPage(tx,{...base,after:first.next});
+   expect(first.processed).toBe(1);expect(second.processed).toBe(1);expect(second.next).toBeNull();
+   const ids=[...first.dispatchIds!,...second.dispatchIds!];expect(ids).toHaveLength(1);
+   const rebound=await tx.executionDispatch.findUniqueOrThrow({where:{id:ids[0]}});
+   expect(rebound).toMatchObject({deploymentEpoch:2,subjectId:current.subjectId,inputHash:current.inputHash,dueAt:latestNight});
+   expect(await planPublicationGuidanceRedispatchPage(tx,{...base,after:first.next})).toEqual(second);
+   await tx.workspace.update({where:{id:f.post.workspaceId!},data:{status:"restricted"}});
+   const unavailable=await planPublicationGuidanceRedispatchPage(tx,{...base,after:first.next});expect(unavailable.dispatchIds).toEqual([]);
    throw sentinel;
   })).rejects.toBe(sentinel);
  });
