@@ -56,7 +56,45 @@
   },
   "open": [
     "Final candidate image rebuild and deployed Modal proof",
-    "Full golden parity, actual sibling commit/SIGKILL, storage hang and full-disk commit-boundary scenarios remain incomplete",
+    "Full golden parity and end-to-end sibling-commit/SIGKILL, storage-hang and full-disk domain commit scenarios remain incomplete; isolated native faults above passed",
     "Linux all-suite fixture reconstruction stopped on odd-321x181 strict historical SHA mismatch; no baseline/fixture refresh or tolerance change was made"
-  ]
+  ],
+  "additionalProbes": {
+    "sourceCommit": "3b65cfa4ca6d741083284608b34b654c7398b2b0",
+    "sourceArchiveSha256": "92a1f6d14fa3533014fec1c0de3205c33e4a2d97f99501fde52bb34b66d40dbb",
+    "closedConnectionStorageRead": {
+      "scope": "native transfer/process fault probes only, controlled storage replies, no live domain fence claim",
+      "storageHang": {
+        "cancelledWithinSeconds": 0.287,
+        "requests": [
+          "GET",
+          "abort"
+        ],
+        "uploadedParts": 0,
+        "completedObjects": 0
+      },
+      "kernelEnospc": {
+        "actualNativeStarts": 1,
+        "returncode": 228,
+        "errorClass": "ENOSPC",
+        "commitAttempted": false
+      }
+    },
+    "httpsSlowTrickle": {
+      "passed": 1,
+      "elapsedSeconds": 1.222,
+      "scope": "Actual trusted loopback TLS response with Connection:close, periodic bytes remain within idle timeout, whole-response deadline still interrupts it."
+    },
+    "fix": "Retain and shut down the active response socket after http.client detaches it from HTTPConnection. A refused transfer sets the native cancellation event.",
+    "hostRegressions": {
+      "controlTestsPassed": 10,
+      "multipartTestsPassed": 9,
+      "transferTestsPassed": 8,
+      "artifactTestsPassed": 4
+    },
+    "logSha256": {
+      "linux-storage-disk-faults.json": "85e4a91757fcb3c734b40b6de9afcbda986b02e075a7dbdc02f77051f04ecac1",
+      "linux-socket-tls.log": "2a5276e0bebd1baddc0cd939c63c196fb2632c6cad57fcd067c4a21b65a8518d"
+    }
+  }
 }
