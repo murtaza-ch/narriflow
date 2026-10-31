@@ -11,7 +11,7 @@ import { assertExecutionDatabaseTestTarget } from "./execution-db-test-support";
 import { AutopilotExecution, queueAutopilotRule } from "./autopilot-execution";
 import { OutboundProbeService } from "./outbound-probe";
 import { createExecutorControl } from "./executor-control";
-import { readExecutionDispatch } from "./execution-dispatch";
+import { ExecutionDispatchPendingError, readExecutionDispatch } from "./execution-dispatch";
 
 const url = process.env.SERVERLESS_TEST_DATABASE_URL;
 const suite = process.env.ALLOW_SERVERLESS_DB_TESTS === "1" && url ? describe : describe.skip;
@@ -79,6 +79,25 @@ suite("Exact Autopilot source coordination", () => {
     expect(deliveries[1]).toEqual(deliveries[0]);
     expect(await db.executionDispatch.count({where:{kind:"operation_driver",subjectKind:"autopilot_rule",subjectId:replay.rule.id}})).toBe(1);
     expect(await db.autopilotRule.count({where:{workspaceId:f.workspace.id}})).toBe(2);
+  }));
+  test("an admitted episode stays at the same cursor until its ingest registration is confirmed", scoped(async () => {
+    const f = await fixture(), confirmations: string[][] = []; let lose = true;
+    const snapshot = { title:"Synthetic",episodes:["first","prior"].map(id=>({id,title:id,enclosureUrl:`https://cdn.example.test/${id}.mp3`,durationSeconds:60})),etag:null,lastModified:null,finalUrl:f.rule.rssUrl!,notModified:false };
+    const probe = new OutboundProbeService(db,{register:async()=>{},readResult:async()=>snapshot});
+    const driver: AutopilotExecution = new AutopilotExecution({ database:db,probe,register:async()=>{},importEpisode:input=>projectService.importResolvedRssEpisodes(input.scope,{rssUrl:input.finalUrl,episodes:[input.episode],brandProfileId:input.plan.recipe.brandProfileId},{autopilotSource:input.plan.source,generationContext:{contentPack:input.plan.recipe.contentPack,languageCode:input.plan.recipe.languageCode,finishing:input.plan.recipe.finishing,recipe:acceptedRecipe(input.plan.recipe)},beforeAutopilotAdmit:tx=>driver.assertIntakeWithinTransaction(tx,input),confirmIngest:async ids=>{confirmations.push([...ids]);if(lose){lose=false;throw new ExecutionDispatchPendingError(new Date(Date.now()+1000));}}}) });
+    await driver.run((await db.$transaction(tx=>queueAutopilotRule(tx,f.rule.id)))!);
+    await driver.run(await sealResult(probe,f.rule.id));
+    const episode = (await db.$transaction(tx=>queueAutopilotRule(tx,f.rule.id)))!;
+    await expect(driver.run(episode)).rejects.toBeInstanceOf(ExecutionDispatchPendingError);
+    const interrupted = await db.autopilotRule.findUniqueOrThrow({where:{id:f.rule.id}});
+    expect(interrupted).toMatchObject({status:"running",executionCursor:0,generation:episode.generation,consecutiveFailures:0,claimToken:null,leaseExpiresAt:null});
+    expect(await db.project.count({where:{workspaceId:f.workspace.id}})).toBe(1);
+    await driver.run(episode);
+    expect(confirmations).toHaveLength(2);
+    expect(confirmations[1]).toEqual(confirmations[0]);
+    expect(await db.project.count({where:{workspaceId:f.workspace.id}})).toBe(1);
+    expect(await db.processingUsageReservation.count({where:{workspaceId:f.workspace.id}})).toBe(1);
+    expect(await db.autopilotRule.findUniqueOrThrow({where:{id:f.rule.id}})).toMatchObject({status:"active",executionCycleId:null,consecutiveFailures:0,lastSeenEpisodeId:"first"});
   }));
   test("the accepted cycle's source plan and deadline are immutable, and an explicit source edit revokes it", async () => {
     const f = await fixture();
