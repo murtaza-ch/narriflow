@@ -1,0 +1,117 @@
+{
+  "recordedAt": "2026-10-31T23:45:20.349117+00:00",
+  "scope": "Local release checks and public pre-push audit; integrated cutover is not accepted",
+  "checkedSources": {
+    "runtimeAndBuild": "16ef579f0a1116f0487d8bc5363627462c9c8593",
+    "fullFastAfterExpiryFixtureFix": "6c93a6eff17a7760949fed7bd9640b5d8a3c292b",
+    "publicAuditAndFirstPreviewPush": "75729a8491700b2d7e46e103489aee42669b92ea"
+  },
+  "localChecks": {
+    "lint": {
+      "passed": true,
+      "errors": 0,
+      "warnings": 11,
+      "info": 1
+    },
+    "typecheck": {
+      "passed": true,
+      "successfulWorkspaceTasks": 15
+    },
+    "fastTests": {
+      "passed": true,
+      "successfulWorkspaceTasks": 14,
+      "cachedWorkspaceTasks": 12,
+      "elapsedSeconds": 130.595,
+      "media": {
+        "passed": 793,
+        "platformSkipped": 1,
+        "failed": 0,
+        "assertions": 4042
+      }
+    },
+    "apiInventory": {
+      "passed": true,
+      "routes": 296,
+      "protocolDeclarations": 45,
+      "problems": 0
+    },
+    "openapiCheck": {
+      "passed": true,
+      "operations": 32
+    },
+    "webSplit": {
+      "sourcePassed": true,
+      "bundlePassed": true
+    },
+    "environmentConsistency": {
+      "passed": true,
+      "scope": "Local files and storage bindings only; does not establish final deployed configuration"
+    },
+    "workerDryBuild": {
+      "passed": true,
+      "importAuditPassed": true,
+      "wranglerVersion": "4.156.0",
+      "uploadKiB": 14371.8,
+      "gzipKiB": 3240.5,
+      "deployed": false
+    },
+    "webProductionBuild": {
+      "passed": true,
+      "compiledSeconds": 11,
+      "typecheckSeconds": 51,
+      "staticPages": 232,
+      "apiOrigin": "https://narriflow-api-candidate.murtazach275.workers.dev",
+      "deployed": false
+    }
+  },
+  "initialFastFailure": {
+    "source": "16ef579f",
+    "test": "mounted guest access expires without silently exchanging a fresh credential",
+    "causeEstablished": "A 250ms real-time session fixture could expire before initial render under load; a controlled 300ms pre-mount delay reproduced the failure",
+    "fixCommit": "6c93a6eff17a7760949fed7bd9640b5d8a3c292b",
+    "change": "Test-only fixed clock with the actual scheduled expiry callback at the unchanged 250ms boundary",
+    "controlledDelayRegressionPassed": true,
+    "fullBrowserWrapperPassed": true,
+    "fullFastAfterFixPassed": true
+  },
+  "prePushAudit": {
+    "candidateSHA": "75729a8491700b2d7e46e103489aee42669b92ea",
+    "originDevSHA": "9a56538bf7f704c783f5c0f20b200ca8b7bafd2a",
+    "ahead": 768,
+    "behind": 0,
+    "repositoryVisibility": "public",
+    "gitleaksVersion": "8.30.1",
+    "genericFindingsReviewed": 53,
+    "findingFiles": 11,
+    "confirmedLeaks": 0,
+    "knownPrivateCredentialLeavesCompared": 24,
+    "blobsCompared": 5838,
+    "bytesCompared": 130753726,
+    "knownCredentialMatches": 0,
+    "confirmedLiveSignedUrls": 0,
+    "nonexampleEnvironmentPaths": 0,
+    "confirmedPrivateResponseBodies": 0,
+    "limitation": "Pattern and exact-value scans cannot prove absence of unknown or encoded secrets"
+  },
+  "remotePreparation": {
+    "previewBranch": "codex/serverless-cutover",
+    "previewBranchFirstPushSHA": "75729a8491700b2d7e46e103489aee42669b92ea",
+    "devMergedOrPushed": false,
+    "ciWorkflowId": 322110424,
+    "ciWasDisabledManually": true,
+    "ciEnabledAndObservedActive": true,
+    "ciRunPassed": false,
+    "previewApiVariableSaved": true,
+    "previewApiVariableScope": "codex/serverless-cutover only; general Preview and Production settings unchanged",
+    "previewApiOrigin": "https://narriflow-api-candidate.murtazach275.workers.dev",
+    "previewDeploymentAccepted": false
+  },
+  "remaining": [
+    "Actual combined 10GiB transfer and exact-key cleanup",
+    "Real file/provider/render/export and HTTP/MCP acceptance",
+    "Real laptop fetch",
+    "Required latency/quota/fairness and complete candidate idle gates",
+    "Final resource/routing cutover and dev merge/push"
+  ],
+  "preservedUncommittedUserFile": "apps/api/scripts/dev.ts"
+}
