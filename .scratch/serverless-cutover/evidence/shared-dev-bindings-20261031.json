@@ -12,5 +12,33 @@
   "externalProviderRequests": 0,
   "transport": "Named WorkerEntrypoint service binding between two Workers in one real Workerd runtime",
   "liveCloudRemoteConnection": "pending canonical API deployment",
-  "documentation": "https://developers.cloudflare.com/workers/local-development/#using-remote-resources-with-durable-objects-and-workflows"
+  "documentation": "https://developers.cloudflare.com/workers/local-development/#using-remote-resources-with-durable-objects-and-workflows",
+  "deployedGate": {
+    "runtime": "wrangler-local-to-cloud",
+    "accountId": "5359f28d385b8632c3abee12d1f5b011",
+    "worker": "narriflow-api-candidate",
+    "entrypoint": "DevelopmentBindings",
+    "checks": [
+      "local_wrangler_rpc_shares_cloud_durable_counter",
+      "cloud_device_presence_without_database_query",
+      "invalid_dispatch_refused_before_database",
+      "private_helpers_inaccessible_over_cloud_rpc",
+      "cloud_entrypoint_http_proxy_restricted"
+    ],
+    "passed": 5,
+    "externalProviderRequests": 0,
+    "sharedDatabaseRequests": 0,
+    "workerVersion": "a2f6f7cd-0ac6-415f-97a0-49c67df9b5e6",
+    "closedAdmission": {
+      "livenessStatus": 200,
+      "intakeStatus": 503,
+      "retryAfterSeconds": 5
+    }
+  },
+  "integratedPostgresSuite": {
+    "tests": 176,
+    "assertions": 1173,
+    "failed": 0,
+    "database": "disposable local PostgreSQL17 schema,136 migrations"
+  }
 }
