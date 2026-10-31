@@ -543,7 +543,6 @@ export {
 	acceptTikTokPublicationWebhook,
 	TikTokPublicationWebhookError,
 } from "./social-publication-tiktok-webhook";
-export * from "./optional-redis";
 export {
 	notificationService,
 	NotificationService,

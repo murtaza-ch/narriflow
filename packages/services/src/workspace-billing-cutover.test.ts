@@ -55,7 +55,7 @@ describe("Workspace billing direct cutover", () => {
       "apps/web/app/(app)/_components/plan-limit-notice.tsx",
       "apps/web/app/(app)/settings/layout.tsx",
       "apps/web/app/(marketing)/pricing/page.tsx",
-      "apps/worker/src/notifications.ts",
+      "packages/services/src/notification-execution-runtime.ts",
     ].map((path) => readFileSync(resolve(root, path), "utf8"));
 
     expect(sources.join("\n")).not.toContain("/settings/subscription");

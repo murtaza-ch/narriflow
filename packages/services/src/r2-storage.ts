@@ -838,8 +838,6 @@ export async function putObjectBytes(params: {
   return { key: params.key };
 }
 
-/** Transitional old-worker adapter only. Candidate code uses scoped grants. */
-export const r2FileTransferControl = { getClient, getR2Config, projectStorageDeadline };
 
 
 /** Exact assigned object, independently measured bytes; descriptor fields never authorize another key. */

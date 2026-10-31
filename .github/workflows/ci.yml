@@ -5,6 +5,39 @@ on:
   pull_request:
 
 jobs:
+  native-media:
+    name: Pinned Linux media runtime
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build the pinned render image from tracked files
+        shell: bash
+        run: |
+          set -euo pipefail
+          media_context="$(mktemp -d)"
+          trap 'rm -rf -- "$media_context"' EXIT
+          git archive HEAD | tar -x -C "$media_context"
+          cp "$media_context/apps/media/images/render.dockerignore" "$media_context/.dockerignore"
+          docker build --platform linux/amd64 \
+            --file "$media_context/apps/media/images/Dockerfile" \
+            --build-arg MEDIA_PROFILE=render --build-arg MEDIA_THREADS=4 \
+            --tag narriflow-media:native-ci "$media_context"
+
+      - name: Run native and fault tests without external network or credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          media_cpuset="$(python3 -c 'import os; cpus=sorted(os.sched_getaffinity(0)); assert len(cpus)>=4; print(",".join(map(str,cpus[:4])))')"
+          docker run --rm --init --platform linux/amd64 \
+            --network none --cpus 4 --cpuset-cpus "$media_cpuset" \
+            --memory 8g --memory-swap 8g --workdir /app \
+            --env PYTHONPATH=/app/apps/media/python:/app \
+            narriflow-media:native-ci \
+            python -m unittest discover -s apps/media/python/tests -p 'test_*.py'
+
   check:
     runs-on: ubuntu-latest
     steps:

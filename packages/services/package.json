@@ -439,10 +439,6 @@
       "types": "./src/recipes-commands.ts",
       "default": "./src/recipes-commands.ts"
     },
-    "./optional-redis": {
-      "types": "./src/optional-redis.ts",
-      "default": "./src/optional-redis.ts"
-    },
     "./automation-commands": {
       "types": "./src/automation-commands.ts",
       "default": "./src/automation-commands.ts"
@@ -700,11 +696,8 @@
     "@narriflow/db": "workspace:*",
     "@narriflow/email": "workspace:*",
     "@narriflow/validators": "workspace:*",
-    "@node-rs/argon2": "^2.2.0",
     "@prisma/client": "7.7.0",
     "fast-xml-parser": "^5.11.2",
-    "ioredis": "^5.9.3",
-    "sharp": "^0.35.5",
     "stripe": "^22.5.0",
     "@noble/hashes": "2.4.0",
     "@smithy/fetch-http-handler": "5.3.16"

@@ -1513,7 +1513,7 @@ export class ClipService {
    * This never copies renders or the preview proxy at all — the new clip
    * gets neither, and the worker's preview-backfill poll
    * (`getClipsNeedingPreview` / `processPendingClipPreviews` in
-   * apps/worker/src/tasks/clip-preview.ts) picks it up for a proxy on its
+   * apps/media/src/prepare-clip.ts) picks it up for a proxy on its
    * own the same way every other proxy-less clip does; there is no separate
    * trigger to fire from here.
    *
