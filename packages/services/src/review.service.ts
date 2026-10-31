@@ -1,6 +1,7 @@
 import { readServiceEnvironment } from "./runtime-environment";
 import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { hash as argon2Hash, verify as argon2Verify } from "@node-rs/argon2";
+import { hashReviewPasscode, verifyReviewPasscode } from "./review-passcode";
+export { hashReviewPasscode, verifyReviewPasscode } from "./review-passcode";
 import { AnalyticsEventType, Prisma } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
 import {
@@ -32,7 +33,6 @@ const REVIEW_SESSION_TTL_SEC = 12 * 60 * 60;
 const REVIEW_COMMENT_EDIT_WINDOW_MS = 15 * 60_000;
 const REVIEW_ACCESS_WINDOW_MS = 15 * 60_000;
 const REVIEW_ACCESS_LIMIT = 8;
-const ARGON2ID_ALGORITHM = 2 as const;
 const localAccessAttempts = new Map<string, { count: number; resetAt: number }>();
 
 const REVIEW_FAILURES = {
@@ -106,20 +106,6 @@ function requirePrisma() {
 
 export function hashReviewAccessToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
-}
-
-export function hashReviewPasscode(passcode: string) {
-  return argon2Hash(passcode, {
-    algorithm: ARGON2ID_ALGORITHM,
-    memoryCost: 65_536,
-    timeCost: 3,
-    parallelism: 1,
-    outputLen: 32,
-  });
-}
-
-export function verifyReviewPasscode(passcode: string, hash: string) {
-  return argon2Verify(hash, passcode);
 }
 
 export type ReviewSessionClaims = { roundId: string; guestId: string; grant: string; identity: string; subject: string; exp: number };
