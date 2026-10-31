@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 import os
+import asyncio
 from pathlib import Path
 import signal
 import subprocess
 import sys
 import time
 import tempfile
+import threading
 import unittest
 
-from narriflow_media.process import MAX_OUTPUT_BYTES, run_owned_process
+from narriflow_media.process import MAX_OUTPUT_BYTES, MediaProcessError, run_owned_process, run_owned_process_async
 
 
 class OwnedProcessTests(unittest.TestCase):
@@ -72,6 +74,74 @@ class OwnedProcessTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0)
         self.assertEqual(result.stdout.strip(), b'{"DATABASE_URL": null, "DIRECT_URL": null, "PGPASSWORD": null, "MEDIA_TEST_VALUE": "kept"}')
+
+
+    def test_process_start_fires_once_after_the_actual_native_spawn(self):
+        starts = []
+        result = run_owned_process(
+            [sys.executable, "-c", "import time;time.sleep(0.2)"],
+            timeout_seconds=2, kill_grace_seconds=0.1,
+            on_start=lambda pid: (os.kill(pid, 0), starts.append(pid)),
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(len(starts), 1)
+        rejected = []
+        failure = run_owned_process(
+            ["/definitely-absent-narriflow-tool"], timeout_seconds=2,
+            kill_grace_seconds=0.1, on_start=lambda pid: rejected.append(pid),
+        )
+        self.assertNotEqual(failure.returncode, 0)
+        self.assertEqual(rejected, [])
+
+
+    def test_cancellation_stops_active_work_and_waits_for_reaping(self):
+        cancelled = threading.Event()
+        children = []
+        def started(pid):
+            children.append(pid)
+            threading.Timer(0.2, cancelled.set).start()
+        began = time.monotonic()
+        with self.assertRaises(MediaProcessError) as failure:
+            run_owned_process([sys.executable, "-c", "import time;time.sleep(60)"],
+                              timeout_seconds=60, kill_grace_seconds=0.1,
+                              on_start=started, cancel_event=cancelled)
+        self.assertEqual(failure.exception.code, "media_execution_cancelled")
+        self.assertLess(time.monotonic() - began, 2)
+        self.assertEqual(len(children), 1)
+        self.assert_pid_stopped(children[0])
+
+    def test_an_unconfirmed_start_ack_is_not_a_spawn_rejection(self):
+        children = []
+        def unconfirmed(pid):
+            children.append(pid)
+            raise OSError("private callback URL and credentials")
+        with self.assertRaises(MediaProcessError) as failure:
+            run_owned_process([sys.executable, "-c", "import time;time.sleep(60)"],
+                              timeout_seconds=60, kill_grace_seconds=0.1, on_start=unconfirmed)
+        self.assertEqual(failure.exception.code, "media_process_start_unconfirmed")
+        self.assertEqual(str(failure.exception), "media_process_start_unconfirmed")
+        self.assert_pid_stopped(children[0])
+
+
+    def test_async_cancellation_waits_for_the_native_process_to_stop(self):
+        children = []
+        async def exercise():
+            ready = asyncio.Event()
+            loop = asyncio.get_running_loop()
+            def started(pid):
+                children.append(pid)
+                loop.call_soon_threadsafe(ready.set)
+            task = asyncio.create_task(run_owned_process_async(
+                [sys.executable, "-c", "import time;time.sleep(60)"],
+                timeout_seconds=60, kill_grace_seconds=0.1, on_start=started,
+            ))
+            await asyncio.wait_for(ready.wait(), 2)
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+        asyncio.run(exercise())
+        self.assertEqual(len(children), 1)
+        self.assert_pid_stopped(children[0])
 
     def assert_pid_stopped(self, pid: int):
         until = time.monotonic() + 3
