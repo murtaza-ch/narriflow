@@ -144,16 +144,17 @@ suite("Targeted generation finishing obligations", () => {
     expect(await db.clipExport.count({where:{projectId:value.row.projectId}})).toBe(0);
     expect(await db.generationFinishing.findUniqueOrThrow({where:{id:value.row.id}})).toMatchObject({attempts:0});
   });
-  test("an export retried during final handoff parks its finishing instead of publishing a stale ready outcome",async()=>{
+  test("a notification intent rolls back with failed final settlement",async()=>{
     const value=await due({topClips:1});await withClips(value);
     const service=driver({createExport:async(_scope,projectId,clipId,input,key)=>{
       const exported=await db.clipExport.create({data:{workspaceId:value.row.workspaceId,projectId,clipId,editorRevision:input.expectedRevision,fingerprint:key,status:"ready",resolution:"720p",watermark:false}});
       return{export:{id:exported.id,status:exported.status},reused:false};
-    },notify:async()=>{await db.clipExport.updateMany({where:{projectId:value.row.projectId},data:{status:"queued"}});}});
+    },notify:async(input,_authority,tx)=>{await tx.notificationLedger.create({data:{projectId:input.projectId,sourceId:input.sourceId,outcome:"finishing_ready"}});throw Error("notification_intent_rollback");}});
     await service.run(value.reference);
     const next=(await db.$transaction(tx=>queueGenerationFinishing(tx,value.row.id)))!;
-    expect((await service.run(next)).kind).toBe("wait");
-    expect(await db.generationFinishing.findUniqueOrThrow({where:{id:value.row.id}})).toMatchObject({state:"exporting",finishedAt:null,claimToken:null,attempts:0});
+    await service.run(next);
+    expect(await db.notificationLedger.count({where:{projectId:value.row.projectId}})).toBe(0);
+    expect(await db.generationFinishing.findUniqueOrThrow({where:{id:value.row.id}})).toMatchObject({state:"due",finishedAt:null,claimToken:null,attempts:1});
   });
   test("an already-started copy request ends partial under its original key without a fresh paid retry",async()=>{
     const value=await due({topClips:1,copyPlatforms:["x"]});await withClips(value);let copies=0;

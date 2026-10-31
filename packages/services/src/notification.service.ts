@@ -204,7 +204,7 @@ function isNotificationOutcome(value: string): value is NotificationOutcome {
   );
 }
 
-function getDefaultStore(): NotificationStore {
+export function createNotificationStore(): NotificationStore {
   function requirePrisma() {
     const prisma = getPrismaClient();
     if (!prisma) {
@@ -356,9 +356,11 @@ function getDefaultStore(): NotificationStore {
       const prisma = requirePrisma();
       const finishing = await prisma.generationFinishing.findUnique({
         where: { id: finishingId },
-        select: { actorUserId: true, picks: true },
+        select: { actorUserId: true, workspaceId:true, picks: true },
       });
       if (!finishing?.actorUserId) return null;
+      const member=await prisma.workspaceMember.findUnique({where:{workspaceId_userId:{workspaceId:finishing.workspaceId,userId:finishing.actorUserId}},select:{role:true}});
+      if(!member||member.role==="viewer")return null;
       const user = await prisma.user.findFirst({
         where: { id: finishing.actorUserId, deletedAt: null },
         select: { primaryEmail: true, emailVerifiedAt: true },
@@ -374,7 +376,7 @@ function getDefaultStore(): NotificationStore {
   };
 }
 
-const defaultMailer: NotificationMailer = async (input) => {
+export async function buildNotificationMail(input: NotificationMailInput) {
   const emailModule = await import("@narriflow/email/worker");
   const email = emailModule as {
     clipsReady: (input: {
@@ -442,11 +444,16 @@ const defaultMailer: NotificationMailer = async (input) => {
             kind: input.outcome === "import_failed" ? "import" : "generation",
           });
 
-  return email.sendEmail({
+  return {
     to: input.to,
     ...template,
     idempotencyKey: input.idempotencyKey,
-  });
+  };
+}
+
+export const sendNotificationMail: NotificationMailer = async (input) => {
+  const email=await import("@narriflow/email/worker");
+  return email.sendEmail(await buildNotificationMail(input));
 };
 
 export class NotificationService {
@@ -457,8 +464,8 @@ export class NotificationService {
   private readonly leaseMs: number;
 
   constructor(dependencies: NotificationServiceDependencies = {}) {
-    this.store = dependencies.store ?? getDefaultStore();
-    this.mailer = dependencies.mailer ?? defaultMailer;
+    this.store = dependencies.store ?? createNotificationStore();
+    this.mailer = dependencies.mailer ?? sendNotificationMail;
     this.now = dependencies.now ?? (() => new Date());
     this.hasResendApiKey =
       dependencies.hasResendApiKey ??

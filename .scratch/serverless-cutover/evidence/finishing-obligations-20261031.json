@@ -1,5 +1,5 @@
 {
-  "status": "passed_isolated_database_foundation_not_complete",
+  "status": "passed_isolated_database_runtime_not_cutover_complete",
   "date": "2026-10-31",
   "tests": 6,
   "assertions": 40,
@@ -18,10 +18,11 @@
     "A role downgrade before child admission creates no export and consumes no retry.",
     "Final settlement rechecks export status under the parent lock and parks a concurrently retried export.",
     "Restore revokes the old owner without extending deadlines or changing child identities; metadata replay creates no product dispatches.",
-    "Final recovery alone appends exact current base and bounded cutoff wake identities."
+    "Final recovery alone appends exact current base and bounded cutoff wake identities.",
+    "Final Finishing state and durable notification intent commit or roll back in one transaction."
   ],
   "remaining": [
-    "Durable notification intent and registry/runtime integration.",
+    "Remove the remaining obsolete notification polling code with ticket23.",
     "Deployed fault acceptance and the full integrated cutover gates."
   ],
   "deployment": "No shared database migration or candidate deployment includes this foundation yet.",
@@ -31,8 +32,8 @@
     "replayExtendsNeither": true
   },
   "integrationTests": {
-    "tests": 88,
-    "assertions": 520,
-    "scope": "targeted finishing, preserved semantic cases and publication integration; isolated disposable PostgreSQL schema"
+    "tests": 103,
+    "assertions": 610,
+    "scope": "notification, targeted and semantic Finishing, review-access and publication suites on a disposable schema"
   }
 }

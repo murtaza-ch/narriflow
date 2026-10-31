@@ -1,3 +1,4 @@
+import {appendNotificationDelivery,createNotificationExecution} from "./notification-execution";
 import { bindServiceTestEnvironment } from "./runtime-test-support";
 import { createDatabaseTestContext } from "@narriflow/db/testing";
 import { randomUUID } from "node:crypto";
@@ -8,7 +9,6 @@ import { Pool } from "pg";
 import { workspaceLibraryService } from "./workspace-library.service";
 import {
   createReviewNotificationStore,
-  ReviewNotificationService,
 } from "./review-notification.service";
 import {
   encryptReviewValue,
@@ -151,14 +151,17 @@ dbDescribe("Review access PostgreSQL contracts", () => {
       reviewRoundId: active.round.id, recipientEmail: "client@example.test", kind: "round_sent", scopeKey: "round",
     } });
     const sentIds: string[] = [];
-    const notifications = new ReviewNotificationService({ store, enabled: () => true,
-      mailer: async (input) => { sentIds.push(input.idempotencyKey); return { sent: true }; } });
-    const result = await notifications.deliverDue(50, "https://review.example.test");
+    const notifications=createNotificationExecution({database:prisma,register:async()=>{},
+      prepare:async(target)=>await store.getContext(target.id)?{encrypted:"private-review-fixture",hash:"a".repeat(64)}:null,
+      send:async(_target,_sealed,key)=>{sentIds.push(key);return{sent:true};}});
+    for(const id of [...invalidLedgerIds,validLedger.id]){
+      const reference=await prisma.$transaction(tx=>appendNotificationDelivery(tx,{kind:"review",id}));
+      await notifications.run(reference);
+    }
     expect(sentIds).toEqual([`review-notification-${validLedger.id}`]);
-    expect(result.sent).toBe(1);
     for (const id of invalidLedgerIds) {
       expect(await prisma.reviewNotificationLedger.findUnique({ where: { id }, select: { status: true, failureCode: true } }))
-        .toEqual({ status: "failed", failureCode: "context_unavailable" });
+        .toEqual({ status: "skipped", failureCode: "context_unavailable" });
     }
   })));
 });

@@ -1,3 +1,5 @@
+import {readExecutionAdmission} from "./execution-admission";
+import {appendNotificationDelivery} from "./notification-execution";
 import { readServiceEnvironment } from "./runtime-environment";
 import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { hashReviewPasscode, verifyReviewPasscode } from "./review-passcode";
@@ -468,6 +470,7 @@ export class ReviewService {
       : null;
     const round = await reviewTransaction(options.tx, async (tx) => {
       await options.beforeWrite?.(tx);
+      const notificationEpoch=(await readExecutionAdmission(tx)).epoch;
       await tx.$queryRaw`SELECT "id" FROM "Project" WHERE "id" = ${scope.projectId}::uuid FOR UPDATE`;
       const granted = options.grant ? await options.grant.admit(tx) : null;
       const latest = await tx.reviewRound.findFirst({
@@ -529,13 +532,15 @@ export class ReviewService {
         } },
         notificationLedgers: { create: recipientEmails.map((recipientEmail) => ({
           recipientEmail,
+          deploymentEpoch: notificationEpoch,
           kind: "round_sent",
           scopeKey: "round",
         })) },
         contextLinks: {
           create: contextComments.map((comment) => ({ sourceCommentId: comment.id })),
         },
-      }, select: { id: true, revision: true, createdAt: true } });
+      }, select: { id: true, revision: true, createdAt: true, notificationLedgers: {select:{id:true}} } });
+      for(const notification of created.notificationLedgers)await appendNotificationDelivery(tx,{kind:"review",id:notification.id});
       await recordReviewAnalytics(
         tx,
         scope.projectId,
@@ -544,7 +549,8 @@ export class ReviewService {
       );
       return created;
     }, true);
-    return { ...round, token: rawToken, path: `/review/${rawToken}` };
+    const {notificationLedgers:_delivery,...acceptedRound}=round;
+    return { ...acceptedRound, token: rawToken, path: `/review/${rawToken}` };
   }
 
   async inviteReviewers(
@@ -595,15 +601,19 @@ export class ReviewService {
           where: { id: round.id },
           data: { recipientEmails },
         });
-        await tx.reviewNotificationLedger.createMany({
+        const notificationEpoch=(await readExecutionAdmission(tx)).epoch;
+        const notifications=await tx.reviewNotificationLedger.createManyAndReturn({
           data: addedEmails.map((recipientEmail) => ({
             reviewRoundId: round.id,
+            deploymentEpoch: notificationEpoch,
             recipientEmail,
             kind: "round_sent",
             scopeKey: "round",
           })),
           skipDuplicates: true,
+          select:{id:true},
         });
+        for(const notification of notifications)await appendNotificationDelivery(tx,{kind:"review",id:notification.id});
         await tx.reviewAuditEvent.create({
           data: {
             reviewRoundId: round.id,
@@ -872,7 +882,7 @@ export class ReviewService {
         });
         const recipientEmail = creator?.primaryEmail?.trim().toLowerCase();
         if (recipientEmail && parsed.decision === "changes_requested") {
-          await tx.reviewNotificationLedger.upsert({
+          const notification=await tx.reviewNotificationLedger.upsert({
             where: { reviewRoundId_recipientEmail_kind_scopeKey: {
               reviewRoundId: round.id,
               recipientEmail,
@@ -880,8 +890,9 @@ export class ReviewService {
               scopeKey: "round",
             } },
             update: {},
-            create: { reviewRoundId: round.id, recipientEmail, kind: "first_change_requested", scopeKey: "round" },
+            create: { deploymentEpoch:(await readExecutionAdmission(tx)).epoch, reviewRoundId: round.id, recipientEmail, kind: "first_change_requested", scopeKey: "round" },
           });
+          await appendNotificationDelivery(tx,{kind:"review",id:notification.id});
         }
         const decisionsAfterChange = currentItems.map((candidate) =>
           candidate.id === item?.id ? { ...candidate, currentDecision: parsed.decision } : candidate,
@@ -892,7 +903,7 @@ export class ReviewService {
           requiredAfterChange.length > 0 &&
           requiredAfterChange.every((candidate) => candidate.currentDecision === "approved")
         ) {
-          await tx.reviewNotificationLedger.upsert({
+          const notification=await tx.reviewNotificationLedger.upsert({
             where: { reviewRoundId_recipientEmail_kind_scopeKey: {
               reviewRoundId: round.id,
               recipientEmail,
@@ -900,8 +911,9 @@ export class ReviewService {
               scopeKey: "round",
             } },
             update: {},
-            create: { reviewRoundId: round.id, recipientEmail, kind: "all_approved", scopeKey: "round" },
+            create: { deploymentEpoch:(await readExecutionAdmission(tx)).epoch, reviewRoundId: round.id, recipientEmail, kind: "all_approved", scopeKey: "round" },
           });
+          await appendNotificationDelivery(tx,{kind:"review",id:notification.id});
         }
         return guestDecisionResult(decision);
     } });
@@ -958,15 +970,19 @@ export class ReviewService {
       const mentions = normalizeRecipientEmails(parsed.mentionRecipients)
         .filter((recipientEmail) => configuredRecipients.has(recipientEmail));
       if (mentions.length > 0) {
-        await tx.reviewNotificationLedger.createMany({
+        const notificationEpoch=(await readExecutionAdmission(tx)).epoch;
+        const notifications=await tx.reviewNotificationLedger.createManyAndReturn({
           data: mentions.map((recipientEmail) => ({
             reviewRoundId: round.id,
+            deploymentEpoch: notificationEpoch,
             recipientEmail,
             kind: "mention",
             scopeKey: comment.id,
           })),
           skipDuplicates: true,
+          select:{id:true},
         });
+        for(const notification of notifications)await appendNotificationDelivery(tx,{kind:"review",id:notification.id});
       }
       return comment;
     });

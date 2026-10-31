@@ -1,3 +1,4 @@
+import {appendProjectNotificationIntent} from "./notification-execution";
 import { assertExecutionDatabaseTestTarget } from "./execution-db-test-support";
 import { ruleFingerprint } from "./standing-grant";
 import type { AutopilotFinishingAuthority } from "@narriflow/validators/autopilot-finishing-authority";
@@ -564,8 +565,8 @@ describeDb("Finishing runner on PostgreSQL", () => {
     const notifications = new NotificationService({ mailer: async (mail) => { mails.push(mail); return { sent: true, id: `message-${mails.length}` }; }, hasResendApiKey: () => true });
     const results: string[] = [];
     const { service } = runner({
-      notify: async (input) => {
-        results.push((await notifications.enqueueAndSend({ ...input, outcome: "finishing_ready", deepLink: `https://app.narriflow.test/projects/${input.projectId}` })).status);
+      notify: async (input,_authority,tx) => {
+        await appendProjectNotificationIntent(tx,{...input,outcome:"finishing_ready"});
       },
     });
     await drive(service);
@@ -573,8 +574,9 @@ describeDb("Finishing runner on PostgreSQL", () => {
     await drive(service);
 
     expect(await row(g.row.id)).toMatchObject({ state: "ready" });
+    results.push((await notifications.enqueueAndSend({projectId:g.project.id,sourceId:g.row.id,outcome:"finishing_ready",clipCount:2,deepLink:`https://app.narriflow.test/projects/${g.project.id}`})).status);
     expect(results).toEqual(["sent"]);
-    const ledger = await prisma.notificationLedger.findMany({ where: { projectId: g.project.id } });
+    const ledger = await prisma.notificationLedger.findMany({ where: { projectId: g.project.id, sourceId:g.row.id, outcome:"finishing_ready" } });
     expect(ledger).toHaveLength(1);
     expect(ledger[0]).toMatchObject({ sourceId: g.row.id, outcome: "finishing_ready", status: "sent" });
     const actorEmail = (await prisma.user.findUniqueOrThrow({ where: { id: actor.id } })).primaryEmail;
@@ -584,7 +586,7 @@ describeDb("Finishing runner on PostgreSQL", () => {
     await prisma.generationFinishing.update({ where: { id: g.row.id }, data: { state: "running", claimToken: randomUUID(), leaseExpiresAt: new Date(Date.now() - 1_000), finishedAt: null } });
     await drive(service);
     expect(mails).toHaveLength(1);
-    expect(await prisma.notificationLedger.count({ where: { projectId: g.project.id } })).toBe(1);
+    expect(await prisma.notificationLedger.count({ where: { projectId: g.project.id, sourceId:g.row.id, outcome:"finishing_ready" } })).toBe(1);
   })));
 
   test("exports still unfinished long after finishing came due count as failed", bindServiceTestEnvironment(globalPrisma.bind(async () => {

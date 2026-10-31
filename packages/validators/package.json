@@ -10,6 +10,7 @@
       "types": "./src/index.ts",
       "default": "./src/index.ts"
     },
+    "./notification-delivery": "./src/notification-delivery.ts",
     "./execution-snapshot": "./src/execution-snapshot.ts",
     "./execution": {
       "types": "./src/execution.ts",

@@ -1,3 +1,4 @@
+import {appendProjectNotificationIntent} from "./notification-execution";
 import { appendProgressEventDispatch } from "./progress-outbox";
 import { Prisma } from "@prisma/client";
 import type {
@@ -47,6 +48,7 @@ export async function appendWorkflowEvent(tx: Tx, input: WorkflowEventInput, del
     where: { dedupeKey },
     select: { id: true },
   });
+  if(input.notification)await appendProjectNotificationIntent(tx,{projectId:input.projectId,sourceId:input.workflowRunId,outcome:input.notification.kind==="clip_render.failed"?"generation_failed":"clips_ready",clipCount:input.notification.succeeded});
   if (existing) return;
   const projects = await tx.$queryRaw<Array<{ workflowEventSeq: number }>>`
     UPDATE "Project"
@@ -111,6 +113,7 @@ export async function appendWorkflowEvent(tx: Tx, input: WorkflowEventInput, del
       progressRequired: true,
       analyticsRequired: (input.analyticsRequired ?? false) && delivery.analyticsEnabled,
       notificationRequired: Boolean(input.notification),
+      notificationDeliveredAt: input.notification ? emittedAt : null,
     },
   });
   await appendProgressEventDispatch(tx, created);

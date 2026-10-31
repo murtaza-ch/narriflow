@@ -1,0 +1,45 @@
+{
+  "status": "passed_isolated_runtime_not_full_cutover",
+  "checkedAt": "2026-10-31T16:11:25Z",
+  "database": {
+    "tests": 103,
+    "assertions": 610,
+    "files": [
+      "notification-execution",
+      "generation-finishing-execution",
+      "generation-finishing",
+      "review-access",
+      "social-publication"
+    ],
+    "target": "disposable schema on dedicated local PostgreSQL17.11; shared development database untouched"
+  },
+  "unit": {
+    "tests": 51,
+    "assertions": 194
+  },
+  "checks": [
+    "Terminal source facts, project mail intent and exact delivery obligation commit or roll back together.",
+    "Finishing notification handoff is inside its final settlement transaction.",
+    "Watchdog registration precedes physical sending; missing ACK consumes no attempt.",
+    "Concurrent duplicate waits; a late response after owner revocation cannot publish.",
+    "Review invite receipt replays its stored notification dispatch IDs after scheduler ACK loss.",
+    "Encrypted provider request bytes and provider idempotency key remain unchanged across retry generations.",
+    "Current recipient or review-token changes revoke old delivery context.",
+    "The original23-hour deadline and3-attempt automatic cycle remain bounded; a current in-flight final attempt is not revoked by a duplicate.",
+    "Two fixed maintenance cursors repair the existing project and review ledgers.",
+    "Restore preserves sealed payloads, deadlines and counted starts, revokes old claims and appends zero product dispatches before final redispatch.",
+    "Services/API typechecks and real Worker bundle import audit passed."
+  ],
+  "providerContract": {
+    "source": "https://resend.com/changelog/idempotency-keys",
+    "retentionHours": 24,
+    "applicationDeadlineHours": 23,
+    "packagesEmailUnchanged": true,
+    "realEmailsSent": false
+  },
+  "remaining": [
+    "Remove obsolete Bun polling code and port its remaining useful cases with ticket23.",
+    "Complete deployed Workerd/platform fault gates on the final integrated revision.",
+    "Finish the remaining product drivers, complete the full acceptance matrix, then perform the single development cutover."
+  ]
+}
