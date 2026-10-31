@@ -350,6 +350,10 @@
       "types": "./src/scribe-transcript.ts",
       "default": "./src/scribe-transcript.ts"
     },
+    "./transcription-admission": {
+      "types": "./src/transcription-admission.ts",
+      "default": "./src/transcription-admission.ts"
+    },
     "./transcription-provider": {
       "types": "./src/transcription-provider.ts",
       "default": "./src/transcription-provider.ts"
