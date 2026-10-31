@@ -117,6 +117,7 @@ CREATE TABLE "ExecutionArtifact" (
     "multipartUploadId" VARCHAR(1024),
     "sourceEtag" VARCHAR(160),
     "sourceByteLength" BIGINT,
+    "sourceVideoBinding" JSONB,
     "grantExpiresAt" TIMESTAMP(3) NOT NULL,
     "committedAt" TIMESTAMP(3),
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -384,3 +385,22 @@ BEGIN
   END IF;
   RETURN NEW;
 END $$;
+
+-- A complete video may arrive before its whole-source audio. Retain its sealed
+-- evidence for the audio callback without making the Project video-ready.
+ALTER TABLE "ExecutionArtifact" ADD CONSTRAINT "ExecutionArtifact_video_evidence_check" CHECK (
+  "sourceVideoBinding" IS NULL OR ("role" = 'source_video'
+    AND jsonb_typeof("sourceVideoBinding") = 'object'
+    AND octet_length("sourceVideoBinding"::text) <= 65536)
+);
+CREATE FUNCTION execution_artifact_sealed_evidence() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF OLD."committedAt" IS NOT NULL AND
+     (to_jsonb(NEW) - 'grantExpiresAt') IS DISTINCT FROM (to_jsonb(OLD) - 'grantExpiresAt') THEN
+    RAISE EXCEPTION 'committed execution artifact evidence is immutable' USING ERRCODE='23514';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+CREATE TRIGGER "ExecutionArtifact_sealed_evidence" BEFORE UPDATE ON "ExecutionArtifact"
+FOR EACH ROW EXECUTE FUNCTION execution_artifact_sealed_evidence();
