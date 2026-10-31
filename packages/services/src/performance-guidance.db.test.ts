@@ -1,3 +1,4 @@
+import {computeKnownGuidance} from "./publication-observation-test-support";
 import { bindServiceTestEnvironment } from "./runtime-test-support";
 import { createDatabaseTestContext } from "@narriflow/db/testing";
 import { randomUUID } from "node:crypto";
@@ -24,7 +25,7 @@ import {
 	readAppliedGuidance,
 	type GuidanceVideo,
 } from "./performance-guidance";
-import { COMPARISON_SLOT } from "./performance-sync";
+import { COMPARISON_SLOT } from "./performance-capture-contract";
 import { performanceService } from "./performance.service";
 
 const databaseUrl = process.env.SOCIAL_PUBLICATION_TEST_DATABASE_URL;
@@ -43,6 +44,7 @@ dbDescribe("Performance Guidance PostgreSQL invariants", () => {
 	let pool: Pool;
 	let previousGlobalPrisma: PrismaClient | undefined;
 	const prismaGlobal = createDatabaseTestContext();
+  const ownedWorkspaces:string[]=[];
 
 	beforeAll(bindServiceTestEnvironment(prismaGlobal.bind(() => {
 		pool = new Pool({ connectionString: databaseUrl!, max: 8 });
@@ -62,8 +64,9 @@ dbDescribe("Performance Guidance PostgreSQL invariants", () => {
 
 	// The schema is shared with the other publication suites.
 	beforeEach(bindServiceTestEnvironment(prismaGlobal.bind(async () => {
-		await prisma.trackedVideo.deleteMany();
-		await prisma.performanceGuidance.deleteMany();
+		await prisma.trackedVideo.deleteMany({where:{workspaceId:{in:ownedWorkspaces}}});
+		await prisma.performanceGuidance.deleteMany({where:{workspaceId:{in:ownedWorkspaces}}});
+    ownedWorkspaces.length=0;
 	})));
 
 	async function workspace() {
@@ -71,7 +74,8 @@ dbDescribe("Performance Guidance PostgreSQL invariants", () => {
 		const created = await prisma.workspace.create({
 			data: { name: "Guidance", ownerUserId: user.id, members: { create: { userId: user.id, role: "owner" } } },
 		});
-		return { user, workspaceId: created.id, scope: { actorUserId: user.id, workspaceId: created.id } };
+		ownedWorkspaces.push(created.id);
+    return { user, workspaceId: created.id, scope: { actorUserId: user.id, workspaceId: created.id } };
 	}
 
 	const facts = (category: ClipCategory, platform: SocialPlatform): ClipFacts => ({
@@ -122,9 +126,8 @@ dbDescribe("Performance Guidance PostgreSQL invariants", () => {
 		await posts(enough.workspaceId, MINIMUM_GUIDANCE_WORKSPACE_POSTS + 3);
 		await posts(few.workspaceId, MINIMUM_GUIDANCE_WORKSPACE_POSTS - 1);
 
-		let clock = new Date("2026-10-24T03:00:00.000Z");
-		const guidance = createPerformanceGuidance({ prisma, now: () => clock });
-		expect(await guidance.refreshStale()).toBe(1);
+    let clock=new Date('2026-10-24T03:00:00.000Z');
+    await computeKnownGuidance(prisma,enough.workspaceId,clock);
 
 		const stored = await prisma.performanceGuidance.findUniqueOrThrow({ where: { workspaceId: enough.workspaceId } });
 		expect(stored.computedAt).toEqual(clock);
@@ -137,14 +140,14 @@ dbDescribe("Performance Guidance PostgreSQL invariants", () => {
 		expect({ totalPosts: stored.totalPosts, platforms: stored.platforms, groups: stored.groups }).toEqual(expected);
 		expect(expected.groups.length).toBeGreaterThan(0);
 
-		// Not again until a day has passed.
-		clock = new Date(clock.getTime() + GUIDANCE_REFRESH_MS - 60_000);
-		expect(await guidance.refreshStale()).toBe(0);
+    // Exact same-night redelivery uses its receipt and cannot recompute.
+    const firstAt=clock;
+    clock=new Date(clock.getTime()+60_000);await computeKnownGuidance(prisma,enough.workspaceId,clock);
+    expect((await prisma.performanceGuidance.findUniqueOrThrow({where:{workspaceId:enough.workspaceId}})).computedAt).toEqual(firstAt);
+    // The next accepted nightly command reaches the newly qualifying Workspace.
+    await posts(few.workspaceId,1);clock=new Date(firstAt.getTime()+GUIDANCE_REFRESH_MS);
+    await computeKnownGuidance(prisma,enough.workspaceId,clock);await computeKnownGuidance(prisma,few.workspaceId,clock);
 
-		// New posts arrive, and the Workspace that was short gets there.
-		await posts(few.workspaceId, 1);
-		clock = new Date(clock.getTime() + 2 * 60_000);
-		expect(await guidance.refreshStale()).toBe(2);
 		const later = await prisma.performanceGuidance.findUniqueOrThrow({ where: { workspaceId: enough.workspaceId } });
 		expect(later.computedAt).toEqual(clock);
 		expect(await prisma.performanceGuidance.findUnique({ where: { workspaceId: few.workspaceId } })).not.toBeNull();
@@ -155,7 +158,7 @@ dbDescribe("Performance Guidance PostgreSQL invariants", () => {
 		// 60 old story clips that went viral, then 36 recent ones with the usual mix.
 		for (let index = 0; index < 60; index += 1) await post(owner.workspaceId, "story", 1_000_000, { ageDays: GUIDANCE_WINDOW_DAYS + 20 });
 		await posts(owner.workspaceId, 36);
-		await createPerformanceGuidance({ prisma }).refresh(owner.workspaceId);
+		await computeKnownGuidance(prisma,owner.workspaceId);
 		const stored = await prisma.performanceGuidance.findUniqueOrThrow({ where: { workspaceId: owner.workspaceId } });
 		expect({ totalPosts: stored.totalPosts, platforms: stored.platforms, groups: stored.groups }).toEqual(expectedFor(36));
 
@@ -163,7 +166,7 @@ dbDescribe("Performance Guidance PostgreSQL invariants", () => {
 		const stale = await workspace();
 		for (let index = 0; index < 40; index += 1) await post(stale.workspaceId, "story", 1_000, { ageDays: GUIDANCE_WINDOW_DAYS + 1 });
 		await posts(stale.workspaceId, 5);
-		await createPerformanceGuidance({ prisma }).refresh(stale.workspaceId);
+		await computeKnownGuidance(prisma,stale.workspaceId);
 		expect(await prisma.performanceGuidance.findUniqueOrThrow({ where: { workspaceId: stale.workspaceId } })).toMatchObject({ totalPosts: 0, groups: [] });
 	})));
 
@@ -175,11 +178,11 @@ dbDescribe("Performance Guidance PostgreSQL invariants", () => {
 			await post(owner.workspaceId, "story", 100, { clipId, platform: "youtube_shorts" });
 			await post(owner.workspaceId, "story", 1_000, { clipId, platform: "tiktok" });
 		}
-		await createPerformanceGuidance({ prisma }).refresh(owner.workspaceId);
+		await computeKnownGuidance(prisma,owner.workspaceId);
 		expect(await prisma.performanceGuidance.findUniqueOrThrow({ where: { workspaceId: owner.workspaceId } })).toMatchObject({ totalPosts: 29, groups: [] });
 		// One more clip makes thirty.
 		await post(owner.workspaceId, "story", 100, { platform: "youtube_shorts" });
-		await createPerformanceGuidance({ prisma }).refresh(owner.workspaceId);
+		await computeKnownGuidance(prisma,owner.workspaceId,new Date(Date.now()+GUIDANCE_REFRESH_MS));
 		const stored = await prisma.performanceGuidance.findUniqueOrThrow({ where: { workspaceId: owner.workspaceId } });
 		expect(stored.totalPosts).toBe(30);
 		expect((stored.platforms as Array<{ platform: string }>).map((entry) => entry.platform)).toEqual(["tiktok", "youtube_shorts"]);
@@ -189,78 +192,37 @@ dbDescribe("Performance Guidance PostgreSQL invariants", () => {
 		const owner = await workspace();
 		await posts(owner.workspaceId, 30);
 		await post(owner.workspaceId, "story", null, { state: "skipped" });
-		await createPerformanceGuidance({ prisma }).refresh(owner.workspaceId);
+		await computeKnownGuidance(prisma,owner.workspaceId);
 		expect((await prisma.performanceGuidance.findUniqueOrThrow({ where: { workspaceId: owner.workspaceId } })).totalPosts).toBe(30);
 	})));
 
-	test("a Workspace that fails is stamped as tried and cannot hold up the others", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
-		const bad = await workspace();
-		const good = await workspace();
-		await posts(bad.workspaceId, 31);
-		await posts(good.workspaceId, 31);
-		// The bad Workspace already has a result from yesterday; the good one has none.
-		const earlier = new Date("2026-10-22T03:00:00.000Z");
-		await prisma.performanceGuidance.create({ data: { workspaceId: bad.workspaceId, computedAt: earlier, attemptedAt: earlier, totalPosts: 31, platforms: [], groups: [] } });
-		const failing = new Proxy(prisma, {
-			get(target, property) {
-				if (property === "trackedVideo") {
-					return { findMany: (args: { where: { workspaceId: string } }) => (args.where.workspaceId === bad.workspaceId ? Promise.reject(new Error("boom")) : target.trackedVideo.findMany(args as never)) };
-				}
-				const value = Reflect.get(target, property);
-				return typeof value === "function" ? value.bind(target) : value;
-			},
-		});
-		const clock = new Date("2026-10-24T03:00:00.000Z");
-		const guidance = createPerformanceGuidance({ prisma: failing, now: () => clock });
-		const warn = console.warn;
-		console.warn = () => {};
-		try {
-			// One at a time: whichever goes first, the next tick reaches the other.
-			expect(await guidance.refreshStale(1)).toBe(1);
-			expect(await guidance.refreshStale(1)).toBe(0);
-			expect(await guidance.refreshStale(1)).toBe(0);
-		} finally {
-			console.warn = warn;
-		}
-		const goodRow = await prisma.performanceGuidance.findUniqueOrThrow({ where: { workspaceId: good.workspaceId } });
-		expect(goodRow.computedAt).toEqual(clock);
-		expect(goodRow.totalPosts).toBe(31);
-		// The failure kept what was computed before, and only moved the time of the try.
-		const badRow = await prisma.performanceGuidance.findUniqueOrThrow({ where: { workspaceId: bad.workspaceId } });
-		expect(badRow.computedAt).toEqual(earlier);
-		expect(badRow.attemptedAt).toEqual(clock);
-		// It is tried again a day later, not on every tick.
-		const later = createPerformanceGuidance({ prisma, now: () => new Date(clock.getTime() + GUIDANCE_REFRESH_MS + 1_000) });
-		expect(await later.refreshStale()).toBe(2);
-	})));
+  test('a failed known Workspace command rolls back without blocking another and replays the same target after recovery',bindServiceTestEnvironment(prismaGlobal.bind(async()=>{
+    const bad=await workspace(),good=await workspace();await posts(bad.workspaceId,31);await posts(good.workspaceId,31);
+    const earlier=new Date('2026-10-22T03:00:00.000Z'),clock=new Date('2026-10-24T03:00:00.000Z');
+    await prisma.performanceGuidance.create({data:{workspaceId:bad.workspaceId,computedAt:earlier,attemptedAt:earlier,totalPosts:31,platforms:[],groups:[]}});
+    const failing=prisma.$extends({query:{trackedVideo:{async findMany({args,query}){const rows=await query(args);if(args.where?.workspaceId===bad.workspaceId)throw Error('boom');return rows;}}}}) as unknown as PrismaClient;
+    await expect(computeKnownGuidance(failing,bad.workspaceId,clock)).rejects.toThrow('boom');
+    await computeKnownGuidance(prisma,good.workspaceId,clock);
+    expect(await prisma.performanceGuidance.findUniqueOrThrow({where:{workspaceId:good.workspaceId}})).toMatchObject({computedAt:clock,totalPosts:31});
+    expect(await prisma.performanceGuidance.findUniqueOrThrow({where:{workspaceId:bad.workspaceId}})).toMatchObject({computedAt:earlier,attemptedAt:earlier,totalPosts:31});
+    await computeKnownGuidance(prisma,bad.workspaceId,clock);
+    expect(await prisma.performanceGuidance.findUniqueOrThrow({where:{workspaceId:bad.workspaceId}})).toMatchObject({computedAt:clock,attemptedAt:clock,totalPosts:31});
+  })));
 
-	test("a Workspace that has never been computed and fails gets an empty, honest row", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
-		const bad = await workspace();
-		await posts(bad.workspaceId, 31);
-		const failing = new Proxy(prisma, {
-			get(target, property) {
-				if (property === "trackedVideo") return { findMany: () => Promise.reject(new Error("boom")) };
-				const value = Reflect.get(target, property);
-				return typeof value === "function" ? value.bind(target) : value;
-			},
-		});
-		const warn = console.warn;
-		console.warn = () => {};
-		try {
-			expect(await createPerformanceGuidance({ prisma: failing }).refreshStale()).toBe(0);
-		} finally {
-			console.warn = warn;
-		}
-		expect(await prisma.performanceGuidance.findUniqueOrThrow({ where: { workspaceId: bad.workspaceId } })).toMatchObject({ totalPosts: 0, platforms: [], groups: [] });
-		expect(await readAppliedGuidance(prisma, bad.workspaceId)).toBeNull();
-	})));
+  test('a failed first computation invents no result and its same known command remains retryable',bindServiceTestEnvironment(prismaGlobal.bind(async()=>{
+    const bad=await workspace();await posts(bad.workspaceId,31);
+    const failing=prisma.$extends({query:{trackedVideo:{async findMany({args,query}){await query(args);throw Error('boom');}}}}) as unknown as PrismaClient;
+    const clock=new Date();await expect(computeKnownGuidance(failing,bad.workspaceId,clock)).rejects.toThrow('boom');
+    expect(await prisma.performanceGuidance.findUnique({where:{workspaceId:bad.workspaceId}})).toBeNull();expect(await readAppliedGuidance(prisma,bad.workspaceId)).toBeNull();
+    await computeKnownGuidance(prisma,bad.workspaceId,clock);expect((await prisma.performanceGuidance.findUniqueOrThrow({where:{workspaceId:bad.workspaceId}})).totalPosts).toBe(31);
+  })));
 
 	test("the Workspace setting decides whether qualifying guidance is used, and null means the default", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const owner = await workspace();
 		await posts(owner.workspaceId, 36);
 		const guidance = createPerformanceGuidance({ prisma });
 		expect(await guidance.promptLine(owner.workspaceId)).toBeNull();
-		await guidance.refresh(owner.workspaceId);
+		await computeKnownGuidance(prisma,owner.workspaceId);
 
 		// Default: on once the data qualifies.
 		expect((await prisma.workspace.findUniqueOrThrow({ where: { id: owner.workspaceId } })).usePerformanceGuidance).toBeNull();
