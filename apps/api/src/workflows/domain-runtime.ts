@@ -12,6 +12,7 @@ import { getClipPreparationService } from "@narriflow/services/clip-preparation-
 import { getBillingReconciliation } from "@narriflow/services/billing-reconciliation-runtime";
 import { getMediaCleanupControl, getMediaCleanupDrain } from "@narriflow/services/media-cleanup-runtime";
 import { getPublicationExecution } from "@narriflow/services/publication-execution-runtime";
+import { createPublicationProducers, isPublicationProducerReference } from "@narriflow/services/publication-producers";
 import { getLibraryIndex } from "@narriflow/services/library-index-runtime";
 import { createWorkspaceNotificationDispatcher, isCurrentNotificationTarget } from "@narriflow/services/notification-dispatch";
 import { prepareIngestSourceExecution } from "@narriflow/services/ingest-source-execution";
@@ -205,6 +206,12 @@ export function workflowDomainRegistry(bindings: ApiWorkerBindings): WorkflowHan
     deliver: ids => Promise.all(ids.map(id => getExecutionDispatch().deliver(id))),
   });
   const maintenance: WorkflowCommandHandler = async ({ reference }) => {
+    if (isPublicationProducerReference(reference)) {
+      const database=getPrismaClient();
+      if (!database) throw Error("Publication producer requires a database scope");
+      const result=await createPublicationProducers({database,register:deliverExecutionDispatches}).dispatch(reference);
+      return {type:"complete",disposition:result.kind==="superseded"?"superseded":"terminal"};
+    }
     if (!reference.subject.id.startsWith("mc1.")) throw new NonRetryableError("unsupported_maintenance_subject");
     const result = await getMediaCleanupDrain().run(reference);
     return { type: "complete", disposition: result.kind === "superseded" ? "superseded" : "terminal" };
