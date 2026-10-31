@@ -96,9 +96,9 @@ function createAttemptHarness(
 		}),
 		credentials: { load: credentialsLoad },
 		planEligibility: { refusal: async () => planRefusal },
-		checkpointCipher: {
-			seal: (value) => `sealed:${JSON.stringify(value)}`,
-			open: (value) => JSON.parse(value.slice("sealed:".length)),
+		checkpointCodec: {
+			encode: (value) => `sealed:${JSON.stringify(value)}`,
+			decode: (value) => JSON.parse(value.slice("sealed:".length)),
 		},
 		clock: { now: () => new Date("2026-08-28T10:00:10.000Z") },
 		diagnostics: { record: (event) => diagnostics.push(event) },
@@ -123,7 +123,47 @@ function createAttemptHarness(
 }
 
 describe("Social Publication Attempt", () => {
-	test.each([null, "social_account_expired", "social_account_missing"])("a credential failure after submission preserves recoverability unless reconnect is required: %s", async (code) => {
+	test("rescheduling changes provider intent time while the accepted frozen export and copy stay immutable", async () => {
+		const due = new Date("2026-08-28T10:00:05Z"),
+			platform = {
+				...createDeterministicPublicationPlatform([]),
+				async publish(
+					input: Parameters<
+						ReturnType<typeof createDeterministicPublicationPlatform>["publish"]
+					>[0],
+				) {
+					expect(input.scheduledFor).toEqual(due);
+					expect(input.caption).toBe(seed.frozen.caption);
+					return {
+						kind: "accepted" as const,
+						receipt: {
+							receiptId: "rescheduled",
+							platformPostId: "post",
+							externalUrl: null,
+						},
+					};
+				},
+			};
+		const { attempt } = createAttemptHarness(platform, {
+			...seed,
+			socialPost: { ...seed.socialPost, scheduledFor: due },
+		});
+		expect(
+			(
+				await attempt.execute({
+					attempt: { attemptId: "attempt-1", claimId: "claim-1" },
+					signal: new AbortController().signal,
+				})
+			).kind,
+		).toBe("posted");
+		expect(seed.frozen.scheduledFor).toEqual(new Date("2026-08-28T10:00:00Z"));
+	});
+
+	test.each([
+		null,
+		"social_account_expired",
+		"social_account_missing",
+	])("a credential failure after submission preserves recoverability unless reconnect is required: %s", async (code) => {
 		const accountSeed: PublicationAttemptSeed = {
 			...seed,
 			frozen: { ...seed.frozen, socialAccountId: "account-1" },
@@ -131,36 +171,72 @@ describe("Social Publication Attempt", () => {
 		};
 		let unavailable = true;
 		let reconciled = 0;
-		const platform: ReturnType<typeof createDeterministicPublicationPlatform> = {
-			...createDeterministicPublicationPlatform([]),
-			async publish() { throw new Error("An existing submission must never be resubmitted"); },
-			async reconcile(_input, operation) {
-				reconciled += 1;
-				expect(operation).toEqual({ kind: "youtube_upload", state: { session: "existing-operation" } });
-				return { kind: "accepted", receipt: { receiptId: "recovered-receipt", platformPostId: "recovered-post", externalUrl: null } };
+		const platform: ReturnType<typeof createDeterministicPublicationPlatform> =
+			{
+				...createDeterministicPublicationPlatform([]),
+				async publish() {
+					throw new Error("An existing submission must never be resubmitted");
+				},
+				async reconcile(_input, operation) {
+					reconciled += 1;
+					expect(operation).toEqual({
+						kind: "youtube_upload",
+						state: { session: "existing-operation" },
+					});
+					return {
+						kind: "accepted",
+						receipt: {
+							receiptId: "recovered-receipt",
+							platformPostId: "recovered-post",
+							externalUrl: null,
+						},
+					};
+				},
+			};
+		const { attempt, store } = createAttemptHarness(
+			platform,
+			accountSeed,
+			12,
+			{},
+			async () => {
+				if (unavailable)
+					throw Object.assign(
+						new Error("credential lookup failed"),
+						code ? { code } : {},
+					);
+				return null;
 			},
-		};
-		const { attempt, store } = createAttemptHarness(platform, accountSeed, 12, {}, async () => {
-			if (unavailable) throw Object.assign(new Error("credential lookup failed"), code ? { code } : {});
-			return null;
-		});
+		);
 		await store.checkpoint({
 			owned: { attemptId: "attempt-1", claimId: "claim-1" },
 			operationKind: "youtube_upload",
 			sealedState: 'sealed:{"session":"existing-operation"}',
 			now: new Date("2026-08-28T10:00:00Z"),
 		});
-		const result = await attempt.execute({ attempt: { attemptId: "attempt-1", claimId: "claim-1" }, signal: new AbortController().signal });
+		const result = await attempt.execute({
+			attempt: { attemptId: "attempt-1", claimId: "claim-1" },
+			signal: new AbortController().signal,
+		});
 		expect(result.kind).toBe(code ? "needs_attention" : "reconciling");
 		expect(await store.inspect("attempt-1")).toMatchObject({
-			attempt: { phase: code ? "needs_attention" : "reconciling", providerCallCount: 0 },
+			attempt: {
+				phase: code ? "needs_attention" : "reconciling",
+				providerCallCount: 0,
+			},
 			receipt: null,
 		});
 		if (code === null) {
 			unavailable = false;
-			await store.takeOver("attempt-1", { ...seed.claim, id: "recovered-claim" });
-			expect(await attempt.execute({ attempt: { attemptId: "attempt-1", claimId: "recovered-claim" }, signal: new AbortController().signal }))
-				.toMatchObject({ kind: "posted", attemptId: "attempt-1" });
+			await store.takeOver("attempt-1", {
+				...seed.claim,
+				id: "recovered-claim",
+			});
+			expect(
+				await attempt.execute({
+					attempt: { attemptId: "attempt-1", claimId: "recovered-claim" },
+					signal: new AbortController().signal,
+				}),
+			).toMatchObject({ kind: "posted", attemptId: "attempt-1" });
 			expect(reconciled).toBe(1);
 		}
 	});
@@ -219,7 +295,14 @@ describe("Social Publication Attempt", () => {
 	test("a post the plan no longer allows ends before any provider call, as an actionable outcome", async () => {
 		let providerCalls = 0;
 		const platform = createDeterministicPublicationPlatform([
-			{ kind: "accepted", receipt: { receiptId: "must-not-submit", platformPostId: "must-not-submit", externalUrl: null } },
+			{
+				kind: "accepted",
+				receipt: {
+					receiptId: "must-not-submit",
+					platformPostId: "must-not-submit",
+					externalUrl: null,
+				},
+			},
 		]);
 		const counted = {
 			...platform,
@@ -228,9 +311,20 @@ describe("Social Publication Attempt", () => {
 				return platform.publish(...args);
 			},
 		};
-		for (const refusal of ["publication_plan_required", "publication_account_beyond_plan", "publication_thumbnail_plan_required"] as const) {
+		for (const refusal of [
+			"publication_plan_required",
+			"publication_account_beyond_plan",
+			"publication_thumbnail_plan_required",
+		] as const) {
 			providerCalls = 0;
-			const { attempt, store } = createAttemptHarness(counted, seed, 12, {}, async () => null, refusal);
+			const { attempt, store } = createAttemptHarness(
+				counted,
+				seed,
+				12,
+				{},
+				async () => null,
+				refusal,
+			);
 			const result = await attempt.execute({
 				attempt: { attemptId: "attempt-1", claimId: "claim-1" },
 				signal: new AbortController().signal,
@@ -254,7 +348,14 @@ describe("Social Publication Attempt", () => {
 			},
 			async reconcile() {
 				reconcileCalls += 1;
-				return { kind: "accepted" as const, receipt: { receiptId: "receipt-1", platformPostId: "post-1", externalUrl: null } };
+				return {
+					kind: "accepted" as const,
+					receipt: {
+						receiptId: "receipt-1",
+						platformPostId: "post-1",
+						externalUrl: null,
+					},
+				};
 			},
 		};
 		const submittedSeed: PublicationAttemptSeed = {
@@ -264,11 +365,20 @@ describe("Social Publication Attempt", () => {
 			checkpointKind: "provider_processing",
 			sealedCheckpoint: 'sealed:{"operationId":"provider-operation-1"}',
 		};
-		const { attempt } = createAttemptHarness(platform, submittedSeed, 12, {}, async () => null, "publication_plan_required");
-		await expect(attempt.execute({
-			attempt: { attemptId: "attempt-1", claimId: "claim-1" },
-			signal: new AbortController().signal,
-		})).resolves.toMatchObject({ kind: "posted" });
+		const { attempt } = createAttemptHarness(
+			platform,
+			submittedSeed,
+			12,
+			{},
+			async () => null,
+			"publication_plan_required",
+		);
+		await expect(
+			attempt.execute({
+				attempt: { attemptId: "attempt-1", claimId: "claim-1" },
+				signal: new AbortController().signal,
+			}),
+		).resolves.toMatchObject({ kind: "posted" });
 		expect(publishCalls).toBe(0);
 		expect(reconcileCalls).toBe(1);
 	});
@@ -398,27 +508,78 @@ describe("Social Publication Attempt", () => {
 		});
 	});
 
-	test.each(["pending", "safe retry"])("manual Recheck remains read-only after a %s result", async (resultKind) => {
+	test.each([
+		"pending",
+		"safe retry",
+	])("manual Recheck remains read-only after a %s result", async (resultKind) => {
 		let publishes = 0;
 		let readOnly: boolean | undefined;
 		const platform = {
 			capabilities: createDeterministicPublicationPlatform([]).capabilities,
-			async publish() { publishes += 1; throw new Error("manual Recheck must never publish"); },
-			async reconcile(_input: unknown, _operation: unknown, context: { reconciliationOnly?: boolean }) {
+			async publish() {
+				publishes += 1;
+				throw new Error("manual Recheck must never publish");
+			},
+			async reconcile(
+				_input: unknown,
+				_operation: unknown,
+				context: { reconciliationOnly?: boolean },
+			) {
 				readOnly = context.reconciliationOnly;
-				return resultKind === "pending" ? { kind: "pending" as const, receiptId: "original-operation", operation: { kind: "provider_processing", state: { operationId: "original-operation" } }, nextCheckAt: new Date("2026-08-28T10:00:40.000Z") }
-					: { kind: "failed" as const, failure: { code: "provider_proves_not_published", phase: "reconciliation" as const, disposition: "safe_retry" as const, retryAfterMs: null, safeToRepublishAfterSubmission: true } };
+				return resultKind === "pending"
+					? {
+							kind: "pending" as const,
+							receiptId: "original-operation",
+							operation: {
+								kind: "provider_processing",
+								state: { operationId: "original-operation" },
+							},
+							nextCheckAt: new Date("2026-08-28T10:00:40.000Z"),
+						}
+					: {
+							kind: "failed" as const,
+							failure: {
+								code: "provider_proves_not_published",
+								phase: "reconciliation" as const,
+								disposition: "safe_retry" as const,
+								retryAfterMs: null,
+								safeToRepublishAfterSubmission: true,
+							},
+						};
 			},
 		};
-		const manualSeed: PublicationAttemptSeed = { ...seed, socialPost: { ...seed.socialPost, status: "reconciling" },
-			attempt: { ...seed.attempt, phase: "reconciling", reconciliationOnly: true, processingDeadline: new Date("2026-08-28T09:00:00.000Z") },
-			checkpointKind: "provider_processing", sealedCheckpoint: 'sealed:{"operationId":"original-operation"}' };
+		const manualSeed: PublicationAttemptSeed = {
+			...seed,
+			socialPost: { ...seed.socialPost, status: "reconciling" },
+			attempt: {
+				...seed.attempt,
+				phase: "reconciling",
+				reconciliationOnly: true,
+				processingDeadline: new Date("2026-08-28T09:00:00.000Z"),
+			},
+			checkpointKind: "provider_processing",
+			sealedCheckpoint: 'sealed:{"operationId":"original-operation"}',
+		};
 		const { attempt, store } = createAttemptHarness(platform, manualSeed);
-		const result = await attempt.execute({ attempt: { attemptId: "attempt-1", claimId: "claim-1" }, signal: new AbortController().signal });
+		const result = await attempt.execute({
+			attempt: { attemptId: "attempt-1", claimId: "claim-1" },
+			signal: new AbortController().signal,
+		});
 		expect(readOnly).toBe(true);
 		expect(publishes).toBe(0);
-		expect(result.kind).toBe(resultKind === "pending" ? "reconciling" : "needs_attention");
-		if (resultKind === "pending") expect(await store.inspect("attempt-1")).toMatchObject({ attempt: { phase: "reconciling", nextActionAt: new Date("2026-08-28T10:00:40.000Z"), reconciliationDeadline: seed.attempt.reconciliationDeadline, processingDeadline: new Date("2026-08-28T09:00:00.000Z") }, socialPost: { status: "reconciling" } });
+		expect(result.kind).toBe(
+			resultKind === "pending" ? "reconciling" : "needs_attention",
+		);
+		if (resultKind === "pending")
+			expect(await store.inspect("attempt-1")).toMatchObject({
+				attempt: {
+					phase: "reconciling",
+					nextActionAt: new Date("2026-08-28T10:00:40.000Z"),
+					reconciliationDeadline: seed.attempt.reconciliationDeadline,
+					processingDeadline: new Date("2026-08-28T09:00:00.000Z"),
+				},
+				socialPost: { status: "reconciling" },
+			});
 	});
 
 	test("a transient reconciliation failure preserves the durable operation", async () => {

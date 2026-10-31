@@ -28,7 +28,16 @@ const receipt = z.strictObject({
 });
 export const publicationNativeCommandSchema = z
 	.discriminatedUnion("kind", [
-		z.strictObject({ kind: z.literal("checkpoint"), operation }),
+		z.strictObject({ kind: z.literal("preflight") }),
+		z.strictObject({
+			kind: z.literal("checkpoint"),
+			operation,
+			operationLookupHash: z
+				.string()
+				.regex(/^[a-f0-9]{64}$/)
+				.nullable()
+				.optional(),
+		}),
 		z.strictObject({
 			kind: z.literal("provider_call"),
 			operation: z.enum(["initialize", "upload", "submit", "read", "cleanup"]),
@@ -136,6 +145,33 @@ const scopedKey = z.strictObject({
 export const publicationEphemeralSchema = z
 	.strictObject({
 		version: z.literal(1),
+		webhook: z
+			.strictObject({
+				receiverUrl: z.string().url().max(8192),
+				bodySha256: z.string().regex(/^[a-f0-9]{64}$/),
+				signature: z.string().regex(/^sha256=[a-f0-9]{64}$/),
+				deadlineMs: z.number().int().min(1000).max(60000),
+				maxResponseBytes: z.number().int().min(1024).max(1048576),
+				reconciliationMaxMs: z
+					.number()
+					.int()
+					.min(60000)
+					.max(7 * 86400000),
+			})
+			.optional(),
+		media: z
+			.strictObject({
+				url: z.string().url().max(8192),
+				expiresAt: z.iso.datetime(),
+			})
+			.optional(),
+		thumbnail: z
+			.strictObject({
+				url: z.string().url().max(8192),
+				expiresAt: z.iso.datetime(),
+				contentType: z.enum(["image/jpeg", "image/png", "image/webp"]),
+			})
+			.optional(),
 		inputKey: scopedKey,
 		checkpointKey: scopedKey,
 		priorCheckpointKey: scopedKey

@@ -285,7 +285,7 @@ export function createProductionSocialPublicationRuntime(
 				return publicationPlanRefusal(prisma, input);
 			},
 		},
-		checkpointCipher: createPublicationCheckpointCipher(config.checkpointKey),
+		checkpointCodec: (()=>{const cipher=createPublicationCheckpointCipher(config.checkpointKey);return {encode:cipher.seal,decode:cipher.open};})(),
 		clock: { now: () => new Date() },
 		diagnostics: {
 			record(event) {

@@ -1,3 +1,16 @@
+import {
+	createPublicationInputBuilder,
+	publicationProviderPullReads,
+} from "./publication-execution-runtime";
+import { createPublicationExecutionControl } from "./publication-execution-control";
+import { createExecutionStorage } from "./execution-storage";
+import { renderArtifactBindingHash } from "./render-artifact";
+import {
+	openPublicationPayload,
+	derivePublicationPurposeKey,
+} from "./publication-checkpoint-blob";
+import { publicationInputPayloadSchema } from "@narriflow/validators/publication-input";
+import { createCipheriv } from "node:crypto";
 import { PublicationExecution } from "./publication-execution";
 import { createPublicationCheckpointCipher } from "./social-publication-checkpoint-cipher";
 import { createDatabaseTestContext } from "@narriflow/db/testing";
@@ -185,8 +198,8 @@ suite("Revision-bound publication execution", () => {
 		return { post, record, variant };
 	}
 
-	async function active() {
-		const f = await fixture(),
+	async function active(ready = true) {
+		const f = await fixture(ready),
 			due = new Date(Date.now() - 1000);
 		const id = await db.$transaction(async (tx) => {
 			await tx.socialPost.update({
@@ -200,6 +213,10 @@ suite("Revision-bound publication execution", () => {
 			string,
 			{ etag: string; sha256: string; byteLength: number }
 		>();
+		const inputBytes = new Map<string, Uint8Array>();
+		let inputBuilder:
+			| ReturnType<typeof createPublicationInputBuilder>
+			| undefined;
 		let lostPutAck = false,
 			beforePut: (() => Promise<void>) | undefined;
 		const register = async (ids: readonly string[]) => {
@@ -227,21 +244,25 @@ suite("Revision-bound publication execution", () => {
 				Buffer.alloc(32, 1).toString("base64"),
 			),
 			planRefusal: async () => null,
-			buildInput: async (snapshot) => ({
-				bytes: new TextEncoder().encode(
-					JSON.stringify({
-						postId: snapshot.post.id,
-						attemptId: snapshot.attempt.id,
-						claimId: snapshot.claim.id,
-						nonce: (snapshot.claim.workState as { nonce: string }).nonce,
-					}),
-				),
-				sources: [],
-			}),
+			buildInput: async (snapshot) =>
+				inputBuilder
+					? inputBuilder(snapshot)
+					: {
+							bytes: new TextEncoder().encode(
+								JSON.stringify({
+									postId: snapshot.post.id,
+									attemptId: snapshot.attempt.id,
+									claimId: snapshot.claim.id,
+									nonce: (snapshot.claim.workState as { nonce: string }).nonce,
+								}),
+							),
+							sources: [],
+						},
 			inputStorage: {
 				head: async (plan) => objects.get(plan.storageKey) ?? null,
-				put: async (plan) => {
+				put: async (plan, bytes) => {
 					await beforePut?.();
+					inputBytes.set(plan.storageKey, new Uint8Array(bytes));
 					objects.set(plan.storageKey, {
 						etag: '"sealed"',
 						sha256: plan.sha256,
@@ -286,7 +307,13 @@ suite("Revision-bound publication execution", () => {
 			reference,
 			call,
 			objects,
+			inputBytes,
 			hooks: {
+				buildInput: (
+					value: ReturnType<typeof createPublicationInputBuilder>,
+				) => {
+					inputBuilder = value;
+				},
 				beforePut: (v: () => Promise<void>) => {
 					beforePut = v;
 				},
@@ -313,6 +340,341 @@ suite("Revision-bound publication execution", () => {
 				f.call({ action: "publication-command", fence, command }, id),
 		};
 	}
+	const environment = {
+		SOCIAL_PUBLICATION_CHECKPOINT_KEY: Buffer.alloc(32, 3).toString("base64"),
+		SOCIAL_TOKEN_ENCRYPTION_KEY: Buffer.alloc(32, 5).toString("base64"),
+	};
+	async function nativeVideo(
+		f: Awaited<ReturnType<typeof active>>,
+		foreign = false,
+		committed = true,
+	) {
+		const token = crypto.randomUUID(),
+			owner = crypto.randomUUID(),
+			artifactId = crypto.randomUUID(),
+			storageKey = `execution/1/${token}/${owner}/${artifactId}`;
+		const d = await db.$transaction((tx) =>
+			appendExecutionDispatch(tx, {
+				deploymentEpoch: 1,
+				generation: 1,
+				kind: "modal_execution",
+				subject: { kind: "render_group", id: crypto.randomUUID() },
+				inputHash: "b".repeat(64),
+				dueAt: new Date(),
+			}),
+		);
+		await db.executionAttempt.create({
+			data: {
+				attemptToken: token,
+				owner,
+				dispatchId: d.reference.dispatchId,
+				deploymentEpoch: 1,
+				generation: 1,
+				inputHash: "b".repeat(64),
+				functionName: "render_group",
+				status: "completed",
+				operationDeadlineAt: new Date(Date.now() + 600000),
+				leaseExpiresAt: new Date(Date.now() + 60000),
+				processStartedAt: new Date(),
+				finishedAt: new Date(),
+			},
+		});
+		const render = await db.clipRender.create({
+			data: {
+				clipId: f.post.clipId!,
+				exportVariantId: f.variant.id,
+				editorRevision: f.post.frozenState!.editorRevision,
+				clipSnapshot: {},
+				aspectRatio: "ratio_9_16",
+				status: "completed",
+				storageKey,
+				sizeBytes: 1234n,
+				durationSec: 30,
+			},
+		});
+		const artifact = await db.executionArtifact.create({
+			data: {
+				id: artifactId,
+				attemptToken: token,
+				owner,
+				role: "render_variant",
+				bindingHash: await renderArtifactBindingHash({
+					inputHash: "b".repeat(64),
+					renderId: foreign ? crypto.randomUUID() : render.id,
+					role: "render_variant",
+				}),
+				storageKey,
+				contentType: "video/mp4",
+				maxBytes: 1234n,
+				byteLength: 1234n,
+				checksumSha256: "c".repeat(64),
+				etag: '"source"',
+				committedAt: committed ? new Date() : null,
+				grantExpiresAt: new Date(Date.now() + 60000),
+			},
+		});
+		await db.$transaction(async (tx) => {
+			await tx.clipExportVariant.update({
+				where: { id: f.variant.id },
+				data: {
+					status: "completed",
+					storageKey,
+					sizeBytes: 1234n,
+					durationSec: 30,
+				},
+			});
+			await tx.frozenPublicationState.update({
+				where: { socialPostId: f.post.id },
+				data: {
+					storageKey,
+					sizeBytes: 1234n,
+					durationSec: 30,
+					mediaReadyAt: new Date(),
+				},
+			});
+			await tx.socialPost.update({
+				where: { id: f.post.id },
+				data: { status: "scheduled" },
+			});
+		});
+		await db.executionDispatch.update({
+			where: { id: d.reference.dispatchId },
+			data: { acknowledgedAt: new Date() },
+		});
+		return artifact;
+	}
+	test("actual runtime builder seals private input and only grants the exact committed frozen render", async () => {
+		const f = await active(false),
+			artifact = await nativeVideo(f);
+		f.hooks.buildInput(createPublicationInputBuilder(db, environment));
+		const prepared = await f.domain.prepareExecution(f.reference);
+		expect(prepared.kind).toBe("waiting");
+		if (prepared.kind !== "waiting") return;
+		const snapshot = await f.domain.workSnapshot(
+				prepared.deadline.reference,
+				prepared.deadline.attemptToken,
+			),
+			bytes = f.inputBytes.get(snapshot.inputPlan.storageKey)!;
+		const envelope = JSON.parse(new TextDecoder().decode(bytes));
+		expect(new TextDecoder().decode(bytes)).not.toContain(
+			"Frozen private copy",
+		);
+		const decoded = publicationInputPayloadSchema.parse(
+			await openPublicationPayload(
+				Buffer.from(envelope.payload, "base64url"),
+				await derivePublicationPurposeKey(
+					environment.SOCIAL_PUBLICATION_CHECKPOINT_KEY,
+					envelope.scope,
+					"input_state",
+				),
+				envelope.scope,
+				"input_state",
+			),
+		);
+		expect(decoded.loaded.frozen.storageKey).toBe(artifact.storageKey);
+		expect(snapshot.sources).toEqual([
+			{
+				name: "publication_media",
+				storageKey: artifact.storageKey,
+				etag: artifact.etag,
+				byteLength: 1234,
+				sha256: artifact.checksumSha256,
+			},
+		]);
+		let grants = 0;
+		expect(
+			await publicationProviderPullReads(
+				db,
+				snapshot,
+				{
+					signProviderPullRead: async (frozen) => {
+						grants++;
+						expect(frozen.artifactId).toBe(artifact.id);
+						return {
+							url: "https://r2.example/exact",
+							expiresAt: new Date(Date.now() + 30000),
+						};
+					},
+				},
+				{
+					leaseExpiresAt: new Date(Date.now() + 60000),
+					operationDeadlineAt: new Date(Date.now() + 60000),
+				},
+			),
+		).toHaveProperty("media");
+		expect(grants).toBe(1);
+		const pending = await active(false);
+		await nativeVideo(pending, false, false);
+		const own = await claimed(pending);
+		const pendingSnapshot = await pending.domain.workSnapshot(
+			own.prepared.deadline.reference,
+			own.prepared.deadline.attemptToken,
+		);
+		grants = 0;
+		await expect(
+			publicationProviderPullReads(
+				db,
+				pendingSnapshot,
+				{
+					signProviderPullRead: async () => {
+						grants++;
+						throw Error("must not grant");
+					},
+				},
+				{
+					leaseExpiresAt: new Date(Date.now() + 60000),
+					operationDeadlineAt: new Date(Date.now() + 60000),
+				},
+			),
+		).rejects.toMatchObject({ code: "publication_frozen_media_unsealed" });
+		expect(grants).toBe(0);
+	});
+	test("real control and signing factory returns fresh invocation-only access and refuses replay after account revocation", async () => {
+		const f = await active(false);
+		await nativeVideo(f);
+		f.hooks.buildInput(createPublicationInputBuilder(db, environment));
+		const key = Buffer.alloc(32, 5),
+			iv = Buffer.alloc(12, 2),
+			cipher = createCipheriv("aes-256-gcm", key, iv),
+			encrypted = Buffer.concat([
+				cipher.update("fixture-publication-access", "utf8"),
+				cipher.final(),
+			]);
+		await db.socialAccount.update({
+			where: { id: f.post.socialAccountId! },
+			data: {
+				accessTokenEncrypted: [
+					"v1",
+					iv.toString("base64url"),
+					cipher.getAuthTag().toString("base64url"),
+					encrypted.toString("base64url"),
+				].join(":"),
+				scopes: ["https://www.googleapis.com/auth/youtube.upload"],
+			},
+		});
+		const p = await claimed(f);
+		let pulls = 0;
+		const storage = createExecutionStorage({
+			accountId: "a".repeat(32),
+			bucket: "fixture-private",
+			accessKeyId: "fixture",
+			secretAccessKey: "fixture",
+		});
+		const wired = createPublicationExecutionControl({
+			database: db,
+			domain: f.domain,
+			storage: {
+				...storage,
+				signProviderPullRead: async (...args) => {
+					pulls++;
+					return storage.signProviderPullRead(...args);
+				},
+			},
+			environment,
+			artifacts: {
+				head: async () => null,
+				readBytes: async () => {
+					throw Error("No instruction assignment on YouTube");
+				},
+			},
+			deliverWakes: async (ids) => {
+				await db.executionDispatch.updateMany({
+					where: { id: { in: [...ids] } },
+					data: { acknowledgedAt: new Date() },
+				});
+			},
+		});
+		const command = { action: "work-package", fence: p.fence },
+			deliveryId = crypto.randomUUID(),
+			verifiedRequest = {
+				requestHash: createHash("sha256")
+					.update(JSON.stringify(command))
+					.digest("hex"),
+				metadata: {
+					version: 1 as const,
+					keyId: "fixture",
+					audience: "executor-control" as const,
+					method: "POST" as const,
+					canonicalTarget: "/api/execution/transfer",
+					bodySha256: "0".repeat(64),
+					timestamp: Math.floor(Date.now() / 1000),
+					deliveryId,
+					signature: "0".repeat(64),
+				},
+			};
+		const context = createDatabaseTestContext();
+		context.client = db;
+		const execute = () =>
+			withServiceEnvironment(
+				environment,
+				context.bind(() =>
+					wired.transfer.execute({ command, verifiedRequest }),
+				),
+			);
+		const result = await execute();
+		expect(result.disposition).toBe("work_package");
+		if (result.disposition !== "work_package") throw Error("Missing package");
+		expect(result.publication?.account?.accessToken).toBe(
+			"fixture-publication-access",
+		);
+		expect(result.publication?.media?.url).toContain(
+			"X-Amz-SignedHeaders=host",
+		);
+		expect(result.sources[0]?.headers).toEqual({ "If-Match": '"source"' });
+		expect(result.input.kind).toBe("object");
+		if (result.input.kind === "object")
+			expect(result.input.headers).toEqual({ "If-Match": '"sealed"' });
+		const inbox = await db.executionInboxReceipt.findUniqueOrThrow({
+			where: {
+				audience_deliveryId: { audience: "executor-control", deliveryId },
+			},
+		});
+		expect(inbox.disposition).toEqual({ disposition: "transfer_granted" });
+		expect(JSON.stringify(inbox)).not.toContain("fixture-publication-access");
+		expect(JSON.stringify(inbox)).not.toContain("X-Amz");
+		expect(pulls).toBe(1);
+		await db.socialAccount.update({
+			where: { id: f.post.socialAccountId! },
+			data: { status: "revoked" },
+		});
+		await expect(execute()).rejects.toMatchObject({ code: "authority_lost" });
+		expect(pulls).toBe(1);
+		storage.close();
+	});
+
+	test("a foreign render binding cannot obtain an input capsule or downstream grant", async () => {
+		const f = await active(false);
+		await nativeVideo(f, true);
+		f.hooks.buildInput(createPublicationInputBuilder(db, environment));
+		expect((await f.domain.prepareExecution(f.reference)).kind).toBe(
+			"terminal",
+		);
+		expect(f.inputBytes.size).toBe(0);
+		expect(
+			(await db.socialPost.findUniqueOrThrow({ where: { id: f.post.id } }))
+				.errorCode,
+		).toBe("publication_frozen_media_unsealed");
+	});
+	test("frozen intent and a filled media tuple cannot change after admission", async () => {
+		const f = await fixture();
+		await expect(
+			db.$transaction((tx) =>
+				tx.frozenPublicationState.update({
+					where: { socialPostId: f.post.id },
+					data: { providerSettings: { replacement: true } },
+				}),
+			),
+		).rejects.toBeDefined();
+		await expect(
+			db.$transaction((tx) =>
+				tx.frozenPublicationState.update({
+					where: { socialPostId: f.post.id },
+					data: { storageKey: "execution/foreign/key" },
+				}),
+			),
+		).rejects.toBeDefined();
+	});
+
 	test("targeted native publication seals private input before dispatch and charges only one real start", async () => {
 		const f = await active();
 		f.hooks.lostPut();
@@ -477,6 +839,16 @@ suite("Revision-bound publication execution", () => {
 			).currentClaimId,
 		).toBeNull();
 	});
+
+ test("a submission checkpoint does not authorize a first provider mutation after workspace restriction",async()=>{
+  const f=await active(),p=await claimed(f);await f.call({action:"process-start",fence:p.fence});
+  await p.command({kind:"checkpoint",operation:{kind:"submission_started",state:{providerOperation:"linkedin_post",videoUrn:"urn:li:video:one"}}});
+  await db.workspace.update({where:{id:f.post.workspaceId!},data:{status:"restricted"}});
+  const refused=await p.command({kind:"provider_call",operation:"submit"});
+  expect(refused).toMatchObject({disposition:"publication_recorded",result:{kind:"settled",outcome:"needs_attention",code:"publication_workspace_restricted"}});
+  expect((await db.socialPublicationAttempt.findFirstOrThrow({where:{socialPostId:f.post.id}})).providerCallCount).toBe(0);
+  expect((await db.socialPost.findUniqueOrThrow({where:{id:f.post.id}})).status).toBe("needs_attention");
+ });
 
 	test("a confirmed pending operation releases SQL ownership and resumes the same attempt without new initialization", async () => {
 		const f = await active(),
