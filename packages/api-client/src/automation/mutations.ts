@@ -1,3 +1,4 @@
+import { afterRssProbe } from "../ingest/rss-probe";
 import type {
   AutopilotRuleInput,
   AutopilotRuleUpdate,
@@ -26,9 +27,9 @@ export function createAutomationActions(transport: ApiTransport, scope: Workspac
 
   return {
     createRule: async (input: AutopilotRuleInput, idempotencyKey: string, signal?: AbortSignal) =>
-      (await client.autopilot.rules.$post({ json: input }, keyed(idempotencyKey, signal))).json(),
+      afterRssProbe(transport, scope, async () => (await client.autopilot.rules.$post({ json: input }, keyed(idempotencyKey, signal))).json(), signal),
     updateRule: async (ruleId: string, input: AutopilotRuleUpdate, signal?: AbortSignal) =>
-      (await rule.$patch({ param: { ruleId }, json: input }, { init: { signal } })).json(),
+      afterRssProbe(transport, scope, async () => (await rule.$patch({ param: { ruleId }, json: input }, { init: { signal } })).json(), signal),
     deleteRule: async (ruleId: string, signal?: AbortSignal) =>
       (await rule.$delete({ param: { ruleId } }, { init: { signal } })).json(),
     takeOverRule: async (ruleId: string, signal?: AbortSignal) =>

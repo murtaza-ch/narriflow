@@ -1,3 +1,4 @@
+import { afterRssProbe, waitForRssProbe } from "./rss-probe";
 import type {
   DriveCommitRequest,
   GenerationSetupInput,
@@ -35,10 +36,12 @@ export function createIngestActions(transport: ApiTransport, scope: WorkspaceSco
     /** The Drive access token travels only in this request body; it is never a query parameter or part of a result. */
     commitDrive: async (input: DriveCommitRequest, signal?: AbortSignal) =>
       (await client.ingest.drive.$post({ json: input }, { init: { signal } })).json(),
-    previewRss: async (input: RssPreviewInput, signal?: AbortSignal) =>
-      (await client.ingest.rss.preview.$post({ json: input }, { init: { signal } })).json(),
+    previewRss: async (input: RssPreviewInput, signal?: AbortSignal) => {
+      const job = await (await client.ingest.rss.preview.$post({ json: input }, { init: { signal } })).json();
+      return waitForRssProbe(transport, scope, job.jobId, signal);
+    },
     importRss: async (input: RssImportRequest, signal?: AbortSignal) =>
-      (await client.ingest.rss.import.$post({ json: input }, { init: { signal } })).json(),
+      afterRssProbe(transport, scope, async () => (await client.ingest.rss.import.$post({ json: input }, { init: { signal } })).json(), signal),
     retryIngest: async (projectId: string, signal?: AbortSignal) =>
       (await client.ingest[":projectId"].retry.$post({ param: { projectId } }, { init: { signal } })).json(),
     /** "Save settings and finish later": replaces the draft; a no-op once a run exists. */

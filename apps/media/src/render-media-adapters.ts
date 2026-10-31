@@ -2,7 +2,7 @@ import { createWriteStream as productionCreateWriteStream, readFileSync } from "
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline as productionPipeline } from "node:stream/promises";
-import { assertResponseContentLength, createByteLimitTransform, guardedFetch as productionGuardedFetch, RemoteFetchError, UnsafeUrlError } from "@narriflow/services/url-guard";
+import { assertResponseContentLength, createByteLimitTransform, guardedFetch as productionGuardedFetch, RemoteFetchError, UnsafeUrlError } from "./outbound-transport";
 import { rethrowWorkflowAttemptLost, WorkflowFailure, workflowHttpFailureDisposition } from "@narriflow/services/workflow-attempt-contract";
 import type { RenderConfig } from "./render-config";
 import { productionWorkerProcessModule, WorkerProcessFailure, executorProcessFailure, type WorkerProcessDiagnostic } from "./worker-process";

@@ -1779,13 +1779,8 @@ export class ProjectService {
 	async previewRssFeed(scope: ActorScope, rssUrl: string) {
 		await this.requireActor(scope, "processing.consume");
 		const parsed = rssPreviewSchema.parse({ rssUrl });
-		const feed = await fetchRssFeed(parsed.rssUrl);
-
-		return {
-			rssUrl: feed.finalUrl,
-			title: feed.title,
-			episodes: feed.episodes,
-		};
+		const { getOutboundProbeService } = await import("./outbound-probe-runtime");
+		return getOutboundProbeService().admit(scope, { kind: "rss_feed", url: parsed.rssUrl, etag: null, lastModified: null });
 	}
 
 	async importFromRss(
@@ -1797,7 +1792,7 @@ export class ProjectService {
 		// Authorize before performing remote network I/O. importResolvedRssEpisodes
 		// repeats this check because it is also called directly by Autopilot.
 		await this.requireActor(scope, "processing.consume");
-		const feed = await fetchRssFeed(parsed.rssUrl);
+		const feed = await fetchRssFeed(parsed.rssUrl, { scope });
 		const episodesById = new Map(
 			feed.episodes.map((episode) => [episode.id, episode]),
 		);

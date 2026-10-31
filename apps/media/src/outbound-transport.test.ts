@@ -7,7 +7,7 @@ import {
   RemoteFetchError,
   type HostResolver,
   UnsafeUrlError,
-} from "./url-guard";
+} from "./outbound-transport";
 
 const PUBLIC_ADDRESS = "93.184.216.34";
 const publicResolver: HostResolver = async () => [
@@ -421,7 +421,7 @@ describe("pinned connections", () => {
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     try {
       const port = (server.address() as { port: number }).port;
-      const { pinnedTransport } = await import("./url-guard");
+      const { pinnedTransport } = await import("./outbound-transport");
       const response = await pinnedTransport(new URL(`http://unresolvable.invalid:${port}/path?q=1`), {
         addresses: [{ address: "127.0.0.1", family: 4 }],
         method: "POST",
@@ -445,7 +445,7 @@ describe("pinned connections", () => {
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     try {
       const port = (server.address() as { port: number }).port;
-      const { pinnedTransport } = await import("./url-guard");
+      const { pinnedTransport } = await import("./outbound-transport");
       const response = await pinnedTransport(new URL(`http://hooks.invalid:${port}/`), {
         addresses: [{ address: "127.0.0.1", family: 4 }], method: "POST", headers: new Headers(), body: "{}", signal: AbortSignal.timeout(5_000),
       });
@@ -466,7 +466,7 @@ describe("pinned connections", () => {
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     try {
       const port = (server.address() as { port: number }).port;
-      const { pinnedTransport } = await import("./url-guard");
+      const { pinnedTransport } = await import("./outbound-transport");
       await expect(pinnedTransport(new URL(`https://sni.example:${port}/`), {
         addresses: [{ address: "127.0.0.1", family: 4 }],
         method: "GET",
@@ -479,4 +479,12 @@ describe("pinned connections", () => {
       await new Promise((resolve) => server.close(resolve));
     }
   });
+});
+
+test("malformed resolver addresses cannot bypass the public address policy", async () => {
+  for (const address of ["008.008.008.008", "2606:4700:4700:0:0:0:0::1111", "1.1.1.1 "]) {
+    let calls = 0;
+    await expect(guardedFetch("https://feed.example/", { resolver: async () => [{address}], transport: async () => { calls++; return new Response("never"); } })).rejects.toMatchObject({code:"remote_url_unsafe"});
+    expect(calls).toBe(0);
+  }
 });

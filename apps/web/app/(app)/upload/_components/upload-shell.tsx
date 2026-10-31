@@ -1041,7 +1041,7 @@ export function UploadShell({
                   <Flex align="center" gap="2">
                     <Spinner size="xs" />
                     <Text fontSize="13px" color="fg.muted">
-                      Loading episodes…
+                      Checking the feed and loading episodes…
                     </Text>
                   </Flex>
                 )}

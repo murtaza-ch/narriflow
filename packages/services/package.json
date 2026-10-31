@@ -497,6 +497,26 @@
     "./thumbnail-frame-execution": {
       "types": "./src/thumbnail-frame-execution.ts",
       "default": "./src/thumbnail-frame-execution.ts"
+    },
+    "./url-policy": {
+      "types": "./src/url-policy.ts",
+      "default": "./src/url-policy.ts"
+    },
+    "./rss-parser": {
+      "types": "./src/rss-parser.ts",
+      "default": "./src/rss-parser.ts"
+    },
+    "./outbound-probe": {
+      "types": "./src/outbound-probe.ts",
+      "default": "./src/outbound-probe.ts"
+    },
+    "./outbound-probe-runtime": {
+      "types": "./src/outbound-probe-runtime.ts",
+      "default": "./src/outbound-probe-runtime.ts"
+    },
+    "./outbound-probe-execution": {
+      "types": "./src/outbound-probe-execution.ts",
+      "default": "./src/outbound-probe-execution.ts"
     }
   },
   "scripts": {

@@ -671,3 +671,7 @@ export type { PutFileFromPath, DownloadObjectToFile } from "./r2-transfer-contra
 export { NativeValidationService, NativeValidationError, type NativeValidationCommit, type NativeValidationReference, type NativeValidationPreparation } from "./native-validation";
 
 export { ThumbnailFrameExecution, thumbnailFrameExecutionInputHash, type ThumbnailFrameExecutionReference } from "./thumbnail-frame-execution";
+
+export * from "./outbound-probe";
+export * from "./outbound-probe-runtime";
+export * from "./outbound-probe-execution";
