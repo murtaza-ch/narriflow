@@ -40,3 +40,17 @@ These commands require authenticated Modal access. Image verification and Linux 
 The reference-only Modal bridge is split into `narriflow_media.bridge` and the SDK adapters in `bridge_runtime`. Raw-body HMAC verification precedes any durable lookup. Immutable transport intent rejects changed content for a delivery ID before spawn. A durable receipt replays the recorded call ID; a bounded 30-second transport slot permits recovery when a bridge crashes or loses the spawn acknowledgement. Duplicate heavy calls still have to acquire one executor owner through the API before starting native work. Status reads platform call metadata, and cancellation only targets a call bound to the recorded invocation. These facts never settle a domain operation.
 
 The implementation follows Modal's [web spawn example](https://github.com/modal-labs/modal-examples/blob/main/09_job_queues/doc_ocr_webapp.py) and its [durable Dict API](https://modal.com/docs/sdk/py/latest/Dict), using the pinned SDK's atomic `put(skip_if_exists=True)`. Transport records are content-free primitive dictionaries. They expire after seven days of inactivity. Native handlers and the deployed ASGI endpoint remain integration gates; the pure bridge tests are not a live Modal deployment.
+
+## Development YouTube fetch
+
+The development Workspace must be explicitly listed in `LOCAL_FETCH_WORKSPACE_IDS_JSON`, with `APP_ENV=development` and `YOUTUBE_FETCH_MODE=local`. Configure the distinct `DEV_DEVICE_KEY_ID`/`DEV_DEVICE_KEYS_JSON` ring on the Worker; never give that ring to the laptop.
+
+On Upload, create a development fetch session. The downloaded JSON grants only that Workspace/actor/epoch for two hours and replaces the previous device. Start the outbound agent with:
+
+```sh
+bun run fetch:local --session ~/Downloads/narriflow-local-fetch-device.json
+```
+
+The agent restricts the file to mode600, opens an outbound WebSocket, and starts at most two native invocations. The default command uses the locked lean Linux image on the Mac's Docker network, with2CPU/4GiB per invocation and no database or provider credential. Build that image with the same `apps/media/images/Dockerfile`, lean profile and2threads, tagging it `narriflow-media:local-fetch`. A development runtime can supply an explicit argv array using `--native-command-json`; no shell evaluates it. The API's `MEDIA_LOCAL_FETCH_TOOLCHAIN_FINGERPRINT` must equal that image's verified lean fingerprint.
+
+Keepalives use Durable Object hibernation and make no PostgreSQL requests. Each connection performs one paged reconciliation; there is no SQL polling loop. Losing the connection stops native process groups. Database owner/lease checks fence stale commits independently. Offline development devices refuse new YouTube imports and keep upload available. Production rejects device routing; proxy admission requires a recorded acceptance check through `YOUTUBE_PROXY_ACCEPTED=true`.

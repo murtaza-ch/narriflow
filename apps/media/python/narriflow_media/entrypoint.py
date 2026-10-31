@@ -18,15 +18,23 @@ NativeOperation = Callable[[ExecutorSession, WorkPackage, Path], Awaitable[None]
 _TERMINAL = {"completed", "failed", "cancelled", "expired", "superseded", "released", "retry_due"}
 
 
-def invocation_reference(value: object, function_name: str) -> dict:
+def invocation_reference(value: object, function_name: str, reference_kind: str = 'modal_execution') -> dict:
     try:
         if type(value) is not dict or set(value) != {"reference", "attemptToken"}:
             raise ValueError()
-        body = json.dumps({"action": "spawn", "function": function_name, **value},
+        if reference_kind not in {'modal_execution', 'local_fetch'}:
+            raise ValueError()
+        reference = value['reference']
+        if type(reference) is not dict or reference.get('kind') != reference_kind:
+            raise ValueError()
+        if reference_kind == 'local_fetch' and (function_name != 'fetch_source' or type(reference.get('subject')) is not dict or reference['subject'].get('kind') != 'ingest_job'):
+            raise ValueError()
+        body = json.dumps({"action": "spawn", "function": function_name, **value, 'reference': {**reference, 'kind': 'modal_execution'}},
                           separators=(",", ":"), allow_nan=False).encode()
         if len(body) > 65536:
             raise ValueError()
         command = _parse(body)
+        command['reference']['kind'] = reference_kind
         return {"reference": command["reference"], "attemptToken": command["attemptToken"]}
     except (BridgeError, ValueError, TypeError, UnicodeError):
         raise ExecutionControlError("execution_invocation_invalid") from None
@@ -55,8 +63,8 @@ async def _observe(session: ExecutorSession) -> dict:
 
 
 async def invoke_native(value: object, function_name: str, *, client: ExecutionControlClient,
-                        operation: NativeOperation, max_operation_seconds: float) -> dict:
-    invocation = invocation_reference(value, function_name)
+                        operation: NativeOperation, max_operation_seconds: float, reference_kind: str = 'modal_execution') -> dict:
+    invocation = invocation_reference(value, function_name, reference_kind)
     try:
         session = await asyncio.to_thread(ExecutorSession.acquire, client,
             reference=invocation["reference"], attempt_token=invocation["attemptToken"],

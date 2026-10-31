@@ -5,12 +5,28 @@ import { deliverProgressDispatch } from "@narriflow/services/progress-outbox";
 import { createModalDispatch } from "@narriflow/services/modal-dispatch";
 import { createModalBridgeClient } from "@narriflow/services/modal-bridge";
 import { readServiceEnvironment } from "@narriflow/services/runtime-environment";
+import { requireLocalFetchDevelopment } from "@narriflow/services/local-fetch-device";
 import { executionKeyRing } from "../execution-keys";
 import { executionDispatchReferenceSchema, type ExecutionDispatchReference } from "@narriflow/validators/execution";
 import type { ApiWorkerBindings } from "../worker-bindings";
 import { assertMetadataBound, dispatchContinuationInstanceId, workflowDispatchEventSchema, WORKFLOW_DISPATCH_EVENT } from "./protocol";
 
 const REGISTERED = new Set(["queued", "running", "paused", "errored", "terminated", "complete", "waiting", "waitingForPause"]);
+/** A reconnect may redeliver an acknowledged mailbox message. Only the
+ * database acquire command can grant the device an executor owner. */
+export async function deliverLocalFetchReference(reference: ExecutionDispatchReference, bindings: ApiWorkerBindings): Promise<ExecutionDispatchConfirmation> {
+  const database = getPrismaClient();
+  if (!database || !bindings.LOCAL_FETCH_MAILBOX || reference.kind !== "local_fetch" || reference.subject.kind !== "ingest_job") throw new ExecutionDispatchError("scheduler_unavailable");
+  const job = await database.ingestJob.findUnique({ where: { id: reference.subject.id }, include: { project: { select: { workspaceId: true } } } });
+  if (!job || job.deploymentEpoch !== reference.deploymentEpoch || job.generation !== reference.generation || !["queued", "running"].includes(job.status) || job.jobType !== "link_import" ||
+    !job.payload || Array.isArray(job.payload) || typeof job.payload !== "object" || job.payload.provider !== "youtube") throw new ExecutionDispatchError("invalid_dispatch");
+  requireLocalFetchDevelopment(readServiceEnvironment(), job.project.workspaceId);
+  const attempts = await database.executionAttempt.findMany({ where: { dispatchId: reference.dispatchId }, take: 2 });
+  const attempt = attempts[0];
+  if (attempts.length !== 1 || !attempt || attempt.inputHash !== reference.inputHash || attempt.functionName !== "fetch_source") throw new ExecutionDispatchError("invalid_dispatch");
+  const confirmed = await bindings.LOCAL_FETCH_MAILBOX.getByName(job.project.workspaceId).deliver({ reference, attemptToken: attempt.attemptToken });
+  return { status: "confirmed_notified", destinationId: confirmed.destinationId };
+}
 async function createConfirmed(binding: Workflow, id: string, reference: ExecutionDispatchReference): Promise<ExecutionDispatchConfirmation> {
   assertMetadataBound(reference);
   try {
@@ -56,6 +72,7 @@ export function createWorkerExecutionScheduler(bindings: ApiWorkerBindings): Exe
         if (!key) throw new ExecutionDispatchError("scheduler_unavailable");
         return createModalDispatch(database, createModalBridgeClient({ origin, keyId, key })).spawn(reference);
       }
+      if (reference.kind === "local_fetch") return deliverLocalFetchReference(reference, bindings);
       const binding = reference.kind === "import_pipeline" ? bindings.IMPORT_PIPELINE
         : reference.kind === "render_run" ? bindings.RENDER_RUN
         : reference.kind === "operation_driver" ? bindings.OPERATION_DRIVER

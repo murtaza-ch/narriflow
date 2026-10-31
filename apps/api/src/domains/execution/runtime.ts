@@ -15,6 +15,8 @@ import { createOutboundDeliveryExecution } from "@narriflow/services/outbound-de
 import { getOutboundDeliveryService } from "@narriflow/services/outbound-delivery-runtime";
 import { getIngestJobLifecycle } from "@narriflow/services/ingest-job-lifecycle-runtime";
 import { getWorkflowRunLifecycle } from "@narriflow/services/workflow-run-lifecycle";
+import { createDriveTokenCipher } from "@narriflow/services/drive-source";
+import { zoomService } from "@narriflow/services/zoom.service";
 import type { ExecutionDispatchReference } from "@narriflow/validators/execution";
 import type { ApiWorkerBindings } from "../../worker-bindings";
 import { createAssignedArtifactStorage } from "./artifact-storage";
@@ -40,7 +42,8 @@ export function createWorkerExecutor(reference: ExecutionDispatchReference, bind
   const storage = createExecutionStorage({ accountId: required("R2_ACCOUNT_ID"), bucket: required("R2_BUCKET"),
     accessKeyId: required("R2_ACCESS_KEY_ID"), secretAccessKey: required("R2_SECRET_ACCESS_KEY") });
   const common = { database, storage, artifacts: createAssignedArtifactStorage(bindings.MEDIA_BUCKET), deliverWakes: deliverExecutionDispatches };
-  if (reference.subject.kind === "ingest_job") return createIngestSourceExecution({ ...common, domain: getIngestJobLifecycle(), workflow: getWorkflowRunLifecycle(), toolchainFingerprint: required(reference.kind === "local_fetch" ? "MEDIA_LOCAL_FETCH_TOOLCHAIN_FINGERPRINT" : "MEDIA_FETCH_TOOLCHAIN_FINGERPRINT") });
+  if (reference.subject.kind === "ingest_job") return createIngestSourceExecution({ ...common, domain: getIngestJobLifecycle(), workflow: getWorkflowRunLifecycle(), toolchainFingerprint: required(reference.kind === "local_fetch" ? "MEDIA_LOCAL_FETCH_TOOLCHAIN_FINGERPRINT" : "MEDIA_FETCH_TOOLCHAIN_FINGERPRINT"),
+    sourceReads: { openDriveCredential: sealed => createDriveTokenCipher().open(sealed), zoomRecordingDownload: input => zoomService.recordingDownload(input) } });
   if (reference.subject.kind === "outbound_delivery") return createOutboundDeliveryExecution({ ...common, domain: getOutboundDeliveryService() });
   if (reference.subject.kind === "outbound_probe") return createOutboundProbeExecution({ ...common, domain: getOutboundProbeService() });
   const domain = reference.subject.kind === "thumbnail_frame" ? { subjectKind: "thumbnail_frame" as const, domain: getThumbnailFrameExecution() }

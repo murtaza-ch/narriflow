@@ -36,6 +36,14 @@ export function workflowDomainRegistry(bindings: ApiWorkerBindings): WorkflowHan
     if (!database) throw new Error("Native driver requires a database scope");
     const record = await readExecutionDispatch(database, command.reference.dispatchId);
     if (!record || JSON.stringify(record.reference) !== JSON.stringify(command.reference)) return { type: "complete", disposition: "superseded" };
+    if (command.reference.kind === "import_pipeline" && command.reference.subject.kind === "ingest_job") {
+      const handoff = await getIngestJobLifecycle().handoffGeneration(command.reference);
+      await deliverExecutionDispatches(handoff.dispatchIds);
+      if (handoff.kind === "deferred") {
+        if (!handoff.retryAt) throw new Error("ingest_handoff_retry_missing");
+        return { type: "sleep", until: handoff.retryAt.toISOString() };
+      }
+    }
     if (record.deadlineKind) {
       if (record.deadlineKind !== "lease" && record.deadlineKind !== "operation") throw new NonRetryableError("unsupported_native_deadline");
       if (!record.observedDeadlineAt) throw new NonRetryableError("missing_native_deadline");

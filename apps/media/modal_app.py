@@ -107,12 +107,21 @@ async def fetch_source(invocation: dict) -> dict:
                                operation=run, max_operation_seconds=2700)
 
 
+@app.function(image=lean_image, secrets=[executor_secret], timeout=2700,
+              restrict_modal_access=True, **LEAN_RESOURCES)
+async def pin_source(invocation: dict) -> dict:
+    from narriflow_media.entrypoint import invoke_native, native_client
+    from narriflow_media.source_runtime import run_pin_source
+    return await invoke_native(invocation, "pin_source", client=native_client(os.environ),
+                               operation=run_pin_source, max_operation_seconds=2700)
+
+
 @app.function(image=lean_image, secrets=[bridge_secret], timeout=30, **BRIDGE_RESOURCES)
 @modal.asgi_app(label="narriflow-media-bridge")
 def dispatch_bridge():
     from narriflow_media.bridge import BridgeAsgiApp, ModalBridge
     from narriflow_media.bridge_runtime import ModalBackend, ModalDictStore, parse_bridge_keys
     bridge = ModalBridge(store=ModalDictStore(dispatch_receipts),
-        backend=ModalBackend(modal, {"asset_validation": asset_validation, "outbound_delivery": outbound_delivery, "fetch_source": fetch_source}),
+        backend=ModalBackend(modal, {"asset_validation": asset_validation, "outbound_delivery": outbound_delivery, "fetch_source": fetch_source, "pin_source": pin_source}),
         key_ring=parse_bridge_keys(os.environ["MODAL_BRIDGE_KEYS_JSON"]))
     return BridgeAsgiApp(bridge, time.time)

@@ -695,3 +695,7 @@ export * from "./outbound-delivery-execution";
 export * from "./notification-body-storage";
 
 export * from "./outbound-delivery-runtime";
+
+export * from "./local-fetch-device";
+
+export * from "./source-fetch-capability";

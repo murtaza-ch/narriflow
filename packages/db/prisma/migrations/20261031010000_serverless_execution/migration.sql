@@ -829,3 +829,6 @@ BEGIN
 END; $$;
 CREATE TRIGGER "OutboundDelivery_input_immutable" BEFORE UPDATE ON "OutboundDelivery"
  FOR EACH ROW EXECUTE FUNCTION outbound_delivery_input_immutable();
+
+-- Targeted callback notification pages skip completed historical registrations.
+CREATE INDEX "CompletionCallback_notification_cursor_idx" ON "CompletionCallback" ("workspaceId", "operationKind", "operationId", "id") WHERE "state" IN ('waiting', 'pending');

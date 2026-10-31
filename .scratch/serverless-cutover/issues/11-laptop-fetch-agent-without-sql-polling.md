@@ -4,7 +4,7 @@
 
 **Blocked by:** 04, 05, 06, 10
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 **Spec:** [Serverless cutover](../spec.md)
 
@@ -14,4 +14,6 @@
 
 ## Evidence
 
-Pending implementation and verification.
+Device session codec, hibernating Workspace mailbox, signed HTTP boundary, reconnect dispatcher, outbound laptop agent and development setup UI are implemented. Workerd mailbox5checks, HTTPwrong-audience/tamper/Workspace isolation, source availability refusals and native client protocol tests pass. Idle mailbox traffic has no PostgreSQL binding. Production and non-allowlisted Workspaces cannot route to a device.
+
+The deployed Mac YouTube completion and integrated sleep/crash/stale-upload acceptance gates remain open; this ticket remains claimed.
