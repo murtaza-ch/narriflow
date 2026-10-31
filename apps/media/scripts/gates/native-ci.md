@@ -24,6 +24,6 @@ docker run --rm --init --platform linux/amd64 \
   python -m unittest discover -s apps/media/python/tests -p 'test_*.py'
 ```
 
-The current sweep passes143 tests under Bun1.3.6 and Python3.13.5, including actual native children for rendering, preparation, source/audio, token helper, asset/image validation, publication, dubbing and export bundles. Domain/control/storage/provider replies are controlled fixtures. This command does not establish live Worker/PostgreSQL fences or R2 behavior.
+The [recorded final Linux sweep](../../../../.scratch/serverless-cutover/evidence/final-linux-native-parity-20261101.json) passes 162 tests under Bun 1.3.6 and Python 3.13.5, including actual native children for rendering, preparation, source/audio, token helper, asset/image validation, publication, dubbing and export bundles. Domain/control/storage/provider replies are controlled fixtures. This command does not establish live Worker/PostgreSQL fences or R2 behavior.
 
 For an existing image built from the same committed checkout, use only the `docker run` step. Do not pass database/provider variables, mount local environment files, or give this test container external network access. Image validation and full golden provenance are recorded in `.scratch/serverless-cutover/evidence/render-thread-policy-20261031.json`; its exact36-case reference comparison is a separate gate.
