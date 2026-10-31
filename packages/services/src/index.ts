@@ -701,3 +701,5 @@ export * from "./local-fetch-device";
 export * from "./source-fetch-capability";
 export * from "./generated-media-execution";
 export * from "./generated-media-control";
+export * from "./notification-dispatch";
+export { completionCallbackExecutionInputHash, workspaceEventExecutionInputHash } from "./notification-identity";

@@ -1,5 +1,5 @@
 import { executionDispatchReferenceSchema, type ExecutionDispatchKind, type ExecutionDispatchReference, type ExecutionSubject } from "@narriflow/validators/execution";
-import type { Prisma, PrismaClient, ExecutionDispatch as DispatchRow } from "@prisma/client";
+import { Prisma, type PrismaClient, type ExecutionDispatch as DispatchRow } from "@prisma/client";
 
 type Tx = Prisma.TransactionClient;
 type QueryClient = Pick<Tx, "$queryRaw">;
@@ -158,6 +158,36 @@ export async function appendExecutionDispatch(tx: Tx, input: AppendExecutionDisp
     throw new ExecutionDispatchError("dispatch_conflict");
   }
   return asRecord(existing);
+}
+
+/** Bounded fan-out has the same immutable identity checks as a single append,
+ * with one epoch read, one INSERT and one exact-key read for the whole page. */
+export async function appendExecutionDispatches(tx: Tx, inputs: readonly AppendExecutionDispatchInput[]): Promise<ExecutionDispatchRecord[]> {
+  if (inputs.length > 128) throw new ExecutionDispatchError("invalid_dispatch");
+  if (!inputs.length) return [];
+  const values = await Promise.all(inputs.map(async input => {
+    if (!validDate(input.dueAt) || !/^[a-f0-9]{64}$/.test(input.inputHash)) throw new ExecutionDispatchError("invalid_dispatch");
+    validateIdentity(input);
+    const value = { ...input, subject: { ...input.subject }, dueAt: new Date(input.dueAt), wakeKind: input.wakeKind ?? null, deadlineKind: input.deadlineKind ?? null,
+      observedDeadlineAt: input.observedDeadlineAt ? new Date(input.observedDeadlineAt) : null };
+    return { ...value, identity: await executionDispatchIdentity(value) };
+  }));
+  const currentEpoch = await epoch(tx);
+  if (values.some(value => value.deploymentEpoch !== currentEpoch)) throw new ExecutionDispatchError("epoch_superseded");
+  const rows = values.map(value => Prisma.sql`(${crypto.randomUUID()}::uuid, ${value.kind}, ${value.subject.kind}, ${value.subject.id}, ${value.generation}, ${value.deploymentEpoch},
+    ${value.inputHash}, ${value.identity.deliveryKey}, (${value.dueAt}::timestamptz AT TIME ZONE 'UTC'), clock_timestamp() AT TIME ZONE 'UTC', ${value.wakeKind}, ${value.deadlineKind},
+    (${value.observedDeadlineAt}::timestamptz AT TIME ZONE 'UTC'), clock_timestamp() AT TIME ZONE 'UTC')`);
+  await tx.$executeRaw(Prisma.sql`INSERT INTO "ExecutionDispatch" ("id", "kind", "subjectKind", "subjectId", "generation", "deploymentEpoch", "inputHash", "deliveryKey", "dueAt", "nextDeliveryAt", "wakeKind", "deadlineKind", "observedDeadlineAt", "updatedAt")
+    VALUES ${Prisma.join(rows)} ON CONFLICT ("deliveryKey") DO NOTHING`);
+  const existing = await tx.$queryRaw<DispatchRow[]>(Prisma.sql`SELECT * FROM "ExecutionDispatch" WHERE "deliveryKey" IN (${Prisma.join(values.map(value => value.identity.deliveryKey))})`);
+  const byKey = new Map(existing.map(row => [row.deliveryKey, row]));
+  return Promise.all(values.map(value => {
+    const row = byKey.get(value.identity.deliveryKey);
+    if (!row || row.kind !== value.kind || row.subjectKind !== value.subject.kind || row.subjectId !== value.subject.id || row.generation !== value.generation ||
+      row.deploymentEpoch !== value.deploymentEpoch || row.inputHash !== value.inputHash || row.dueAt.getTime() !== value.dueAt.getTime() || row.wakeKind !== value.wakeKind ||
+      row.deadlineKind !== value.deadlineKind || (row.observedDeadlineAt?.getTime() ?? null) !== (value.observedDeadlineAt?.getTime() ?? null)) throw new ExecutionDispatchError("dispatch_conflict");
+    return asRecord(row);
+  }));
 }
 
 export interface ExecutionDispatchDelivery {

@@ -18,6 +18,7 @@ import {
 } from "./completion-callback";
 import { ExpectedDomainFailureError } from "./expected-domain-failure";
 import { IntegrationAdmissionError } from "./integration-admission";
+import { appendWebhookSubscriptionDispatch } from "./notification-dispatch";
 
 /** Management and notification ports. Delivery ordering, retries and ownership
  * belong to OutboundDelivery; subscriptions never hold a coordinator lease. */
@@ -122,9 +123,11 @@ export function createWebhookSubscriptions(dependencies: WebhookSubscriptionDepe
     if (await tx.webhookSubscription.count({ where: { workspaceId: actor.workspaceId } }) >= WEBHOOK_SUBSCRIPTION_LIMIT) {
       throw failure("webhook_limit_reached", "conflict", `A workspace can have ${WEBHOOK_SUBSCRIPTION_LIMIT} webhooks. Delete one first.`);
     }
-    return webhookView(await tx.webhookSubscription.create({
+    const row = await tx.webhookSubscription.create({
       data: { workspaceId: actor.workspaceId, createdByUserId: actor.actorUserId, ...prepared.registration, types: prepared.types, lastDeliveredSeq: await headSeq(tx, actor.workspaceId), nextAttemptAt: now() },
-    }));
+    });
+    await appendWebhookSubscriptionDispatch(tx, row);
+    return webhookView(row);
   }
 
   async function explainInsertFailure(actor: ActorScope, prepared: PreparedCreate, error: unknown) {
@@ -172,10 +175,12 @@ export function createWebhookSubscriptions(dependencies: WebhookSubscriptionDepe
      * retained one, deciding at that moment instead of failing the retention
      * check again. `credential` limits what the caller may see, as on create. */
     async enable(actor: ActorScope, id: string, credential?: WebhookCredential) {
-      const row = await owned(actor, id);
+      return prisma.$transaction(async tx => {
+      await tx.$queryRaw`SELECT id FROM "WebhookSubscription" WHERE id = ${id}::uuid AND "workspaceId" = ${actor.workspaceId}::uuid FOR UPDATE`;
+      const row = await tx.webhookSubscription.findFirst({ where: { id, workspaceId: actor.workspaceId } });
+      if (!row) throw notFound();
       if (credential) requireWebhookTypeScopes(row.types as WorkspaceEventType[], credential.scopes);
-      if (row.status === "active") return webhookView(row);
-      await prisma.webhookSubscription.updateMany({
+      if (row.status !== "active") await tx.webhookSubscription.updateMany({
         where: { id, workspaceId: actor.workspaceId, status: "disabled" },
         data: {
           status: "active",
@@ -189,7 +194,10 @@ export function createWebhookSubscriptions(dependencies: WebhookSubscriptionDepe
           leaseExpiresAt: null,
         },
       });
-      return webhookView(await owned(actor, id));
+      const enabled = await tx.webhookSubscription.findUniqueOrThrow({ where: { id } });
+      await appendWebhookSubscriptionDispatch(tx, enabled, `enable_${enabled.updatedAt.getTime().toString(36)}`);
+      return webhookView(enabled);
+      });
     },
 
     /** Admission returns a confirmed durable delivery; status reports the receipt later. */

@@ -11,6 +11,7 @@ import {
 import { OutboundDeliveryService } from "./outbound-delivery";
 import { readExecutionDispatch } from "./execution-dispatch";
 import { createExecutorControl } from "./executor-control";
+import { appendCompletionCallbackDispatch, appendWebhookSubscriptionDispatch } from "./notification-dispatch";
 
 const url = process.env.SERVERLESS_TEST_DATABASE_URL;
 const suite =
@@ -199,6 +200,33 @@ suite("Fenced notification deliveries", () => {
 		});
 		return { command, control, fence, reference, attemptToken, owner };
 	}
+	test("Workflow preparation requires its exact live immutable notification reference", async () => {
+		const f = await fixture();
+		const id = await db.$transaction(tx => appendWebhookSubscriptionDispatch(tx, f.sub));
+		const reference = (await readExecutionDispatch(db, id))!.reference;
+		expect(await f.service.prepareSubscription(f.sub.id, { ...reference, inputHash: "0".repeat(64) })).toEqual({ kind: "terminal" });
+		expect(await f.service.prepareSubscription(f.sub.id, reference)).toEqual({ kind: "idle" });
+		await db.webhookSubscription.update({ where: { id: f.sub.id }, data: { types: ["finishing.finished"] } });
+		expect(await f.service.prepareSubscription(f.sub.id, reference)).toEqual({ kind: "terminal" });
+		expect(await db.outboundDelivery.count({ where: { targetId: f.sub.id } })).toBe(0);
+	});
+	test("callback preparation rechecks its immutable reference after remote-free status reads and before publication", async () => {
+		const f = await fixture();
+		const callback = await db.completionCallback.create({ data: { workspaceId: f.scope.workspaceId, operationKind: "generation", operationId: crypto.randomUUID(),
+			receiptId: crypto.randomUUID(), eventId: crypto.randomUUID(), ...f.registration } });
+		const id = await db.$transaction(tx => appendCompletionCallbackDispatch(tx, callback));
+		const reference = (await readExecutionDispatch(db, id))!.reference;
+		const service = new OutboundDeliveryService(db, { cipher: f.cipher, register: async () => { throw new Error("Unexpected registration"); },
+			body: { put: async () => { throw new Error("Unexpected PUT"); }, head: async () => null, read: async () => { throw new Error("Unexpected body read"); } },
+			readTrusted: async () => {
+				await db.completionCallback.update({ where: { id: callback.id }, data: { urlFingerprint: "changed-during-status-read" } });
+				return { kind: "generation", id: callback.operationId, state: "unavailable" };
+			},
+		});
+		expect(await service.prepareCompletion(callback.id, reference)).toEqual({ kind: "terminal" });
+		expect(await db.outboundDelivery.count({ where: { targetId: callback.id } })).toBe(0);
+		expect((await db.completionCallback.findUniqueOrThrow({ where: { id: callback.id } })).payload).toBeNull();
+	});
 	test("test admission freezes before PUT, reconciles both lost ACKs, and replays the same event without another POST", async () => {
 		const f = await fixture();
 		f.losePutAck(true);

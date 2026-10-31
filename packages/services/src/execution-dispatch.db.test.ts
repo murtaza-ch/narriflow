@@ -3,7 +3,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@prisma/client";
 import {
-  appendExecutionDispatch, createExecutionDispatch, ExecutionDispatchError,
+  appendExecutionDispatch, appendExecutionDispatches, createExecutionDispatch, ExecutionDispatchError,
   type AppendExecutionDispatchInput, type ExecutionDispatchDatabase, type ExecutionDispatchScheduler,
 } from "./execution-dispatch";
 
@@ -72,6 +72,17 @@ dbDescribe("Transactional Execution Dispatch", () => {
     await expect(append({ ...input, dueAt: new Date("2026-11-01T00:00:00.000Z") })).rejects.toMatchObject({ code: "dispatch_conflict" });
     expect((await service().read(first.reference.dispatchId))?.reference.inputHash).toBe(input.inputHash);
   }, 60_000);
+
+  test("bounded fan-out replays exact identities and a conflicting member rolls back the entire new page", async () => {
+    const inputs = [command(), command()];
+    const first = await database.$transaction(tx => appendExecutionDispatches(tx, inputs));
+    fixtureIds.push(...first.map(row => row.reference.dispatchId));
+    expect((await database.$transaction(tx => appendExecutionDispatches(tx, inputs))).map(row => row.reference)).toEqual(first.map(row => row.reference));
+    const unrelated = command();
+    await expect(database.$transaction(tx => appendExecutionDispatches(tx, [unrelated, { ...inputs[0]!, inputHash: "b".repeat(64) }]))).rejects.toMatchObject({ code: "dispatch_conflict" });
+    expect(await database.executionDispatch.count({ where: { subjectId: unrelated.subject.id } })).toBe(0);
+    await expect(database.$transaction(tx => appendExecutionDispatches(tx, Array.from({ length: 129 }, () => command())))).rejects.toMatchObject({ code: "invalid_dispatch" });
+  });
 
   test("rollback cannot leave an orphan scheduler obligation", async () => {
     let dispatchId = "";

@@ -33,3 +33,29 @@ unconfirmed and Workspace switching.
 [Notification evidence](../evidence/outbound-notification-20261031.json).
 The root Workflow/producer composition, deployed 16 MiB body resource gate and
 final native callback acceptance gates remain required. This ticket remains claimed.
+
+Notification producers now append callback creation/reset, subscription creation/enable,
+and Workspace Event obligations in their owning transactions. A Workspace transaction
+records one frozen sequence range, then bounded dispatchers create at most one hundred
+event wakes, or one hundred callback wakes plus ten subscription wakes and a cursor.
+No waiting-operation timer or SQL poller is added. Target preparation validates the
+current epoch, exact ledger tuple and immutable callback/subscription hash. Native
+terminal and watchdog receipts include the notification drain alongside domain and
+progress wakes. Cancellation pages reserve the additional receipt slot.
+
+The producer tests failed first on absent registration, absent bounded fan-out, lost
+receipt-wake recovery, and absent enable wakes. Real PostgreSQL now covers those paths,
+rollback isolation, changed target input, exact reset replay and terminal native receipt
+replay after a lost scheduler acknowledgement. All 134 migrations plus the complete
+execution gate pass 139 tests/909 assertions. Services, API and worker typechecks and
+focused Biome checks pass. The invocation wrapper must run inside the database scope
+before API responses or Workflow directives are returned. Production composition and
+the remaining deployed native acceptance gates are still owned by integration, so this
+ticket remains claimed.
+
+Outbound preparation also accepts its expected immutable dispatch reference. It
+checks the reference before reading trusted operation status and checks it again
+under the existing epoch, Workspace and target locks before creating delivery
+intent. A callback input changed between those checks produces a terminal result
+without a frozen payload, body write or delivery row. The subscription and callback
+race regressions failed first, then passed with the authoritative recheck.

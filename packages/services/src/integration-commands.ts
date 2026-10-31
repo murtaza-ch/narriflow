@@ -356,10 +356,10 @@ export async function redeliverCallbacks(actor: ActorScope, operation: Operation
       await workspaceService.requireActor(actor.actorUserId, actor.workspaceId, "processing.consume");
     },
     beforeAccept: mutation.beforeAccept,
-    mutate: async (tx) => ({
+    mutate: async (tx, { receiptId }) => ({
       resourceType: "completion_callback",
       resourceId: operation.id,
-      value: { callbacks: await resetCompletionCallbacks(tx, actor, operation, new Date()) },
+      value: { callbacks: await resetCompletionCallbacks(tx, actor, operation, new Date(), receiptId) },
     }),
   });
   return { ...accepted.value, replayed: accepted.replayed };
