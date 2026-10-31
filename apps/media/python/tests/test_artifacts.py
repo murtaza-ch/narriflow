@@ -11,7 +11,7 @@ from datetime import datetime,timezone
 
 from narriflow_media.artifacts import AssignedArtifacts, ArtifactCommitUnconfirmed
 from narriflow_media.control import ControlResponse, ExecutionControlClient, ExecutionControlError, ExecutorSession
-from narriflow_media.multipart import TransferResponse
+from narriflow_media.multipart import TransferResponse,CompletedObject
 from narriflow_media.transfer import load_work_package
 
 
@@ -73,6 +73,18 @@ class AssignedArtifactTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(commits[0][2:],commits[1][2:])
         self.assertEqual(commits[0][1]['artifact'],{'artifactId':output['artifactId'],'role':'thumbnail','bindingHash':'1'*64,
             'contentType':'image/png','byteLength':5,'sha256':hashlib.sha256(b'hello').hexdigest(),'etag':'"sealed"'})
+
+    async def test_a_completed_pin_is_committed_without_reuploading_or_deleting_it(self):
+        output={'artifactId':str(uuid4()),'role':'thumbnail','bindingHash':'1'*64,'maxBytes':10,
+            'contentType':'image/png','contentTypes':['image/png'],'sourceByteLength':5,'sourceEtag':'"frozen"'}
+        session,calls,stored,_storage=self.session(output)
+        with session:
+            artifacts=AssignedArtifacts(session,await load_work_package(session))
+            result=await artifacts.commit_completed(output['artifactId'],CompletedObject('execution/server-assigned','"sealed"',5,hashlib.sha256(b'hello').hexdigest()),content_type='image/png')
+            self.assertEqual(result.object.key,'execution/server-assigned')
+        self.assertEqual(stored,[])
+        self.assertEqual([call[1]['action'] for call in calls],['acquire','work-package','commit-artifact','commit-artifact'])
+        self.assertEqual(calls[-1][2:],calls[-2][2:])
 
     async def test_unassigned_id_and_mime_or_size_overrides_are_refused_before_upload_initialization(self):
         output={'artifactId':str(uuid4()),'role':'thumbnail','bindingHash':'1'*64,'maxBytes':4,
