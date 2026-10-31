@@ -712,3 +712,5 @@ export { resolveBrollCutaways, remapBrollCuesForCutPlan, type ResolveBrollCutawa
 export * from "./publication-checkpoint-blob";
 export * from "./clip-preparation";
 export * from "./clip-preparation-execution";
+export { getClipPreparationService, getPrivateJsonStorage } from "./clip-preparation-runtime";
+export { createPrivateJsonStorage, type PrivateJsonStorage, type PrivateJsonObject } from "./private-json-storage";
