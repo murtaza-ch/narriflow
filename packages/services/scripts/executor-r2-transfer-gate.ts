@@ -108,8 +108,9 @@ export async function main() {
   if (!rawUrl || process.env.DATABASE_URL !== rawUrl) code("gate_direct_urls_must_match");
   validateGateTarget(rawUrl, options.expectedHost, options.expectedDatabase);
   const settings = await privateJson<Record<string, string>>(options.settingsPath);
+  // These RSS and upload fixtures use cloud transfer regardless of YouTube routing.
   if (settings.R2_ACCOUNT_ID !== "5359f28d385b8632c3abee12d1f5b011" || settings.R2_BUCKET !== "narriflow-dev" ||
-      !/^[a-f0-9]{64}$/.test(settings.MEDIA_FETCH_TOOLCHAIN_FINGERPRINT ?? "") || settings.YOUTUBE_FETCH_MODE === "local") code("gate_candidate_settings_invalid");
+      !/^[a-f0-9]{64}$/.test(settings.MEDIA_FETCH_TOOLCHAIN_FINGERPRINT ?? "")) code("gate_candidate_settings_invalid");
   const config = { accountId: settings.R2_ACCOUNT_ID!, bucket: settings.R2_BUCKET!,
     accessKeyId: settings.R2_ACCESS_KEY_ID!, secretAccessKey: settings.R2_SECRET_ACCESS_KEY! };
   const db = new PrismaClient({ adapter: new PrismaPg({ connectionString: rawUrl, max: 2 }),

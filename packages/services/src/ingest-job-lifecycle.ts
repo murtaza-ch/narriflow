@@ -234,11 +234,12 @@ export class IngestJobLifecycle {
       uploadSessionId?: string;
     },
   ): Promise<{ id: string }> {
+    const { epoch } = await readExecutionAdmission(tx);
     const project = await tx.project.findUniqueOrThrow({ where: { id: input.projectId }, select: { sourceRevision: true } });
     const {acquisition,...data}=input;
     if (!data.payload || typeof data.payload!=="object" || Array.isArray(data.payload)) throw new Error("ingest_source_payload_invalid");
     const frozen={...data.payload,acquisition:ingestAcquisitionSchema.parse(acquisition)} as Prisma.InputJsonObject;
-    const job = await tx.ingestJob.create({ data: { ...data,payload:frozen, sourceRevision: project.sourceRevision } });
+    const job = await tx.ingestJob.create({ data: { ...data,payload:frozen, sourceRevision: project.sourceRevision, deploymentEpoch: epoch } });
     await this.event(
       tx,
       {
@@ -691,7 +692,7 @@ export class IngestJobLifecycle {
   async cancelQueuedOperation(input: { actorUserId: string; workspaceId: string; projectId: string; ingestJobId: string }): Promise<boolean> {
     await this.deps.requireRetryActor(input.actorUserId, input.workspaceId);
     return this.deps.prisma.$transaction(async (tx) => {
-      await requireExecutionAdmissionOpen(tx);
+      await readExecutionAdmission(tx);
       const job = await tx.ingestJob.findFirst({ where: { id: input.ingestJobId, projectId: input.projectId,
         status: "queued", project: { workspaceId: input.workspaceId, ...accessibleProjectWhere() } } });
       if (!job) return false;
@@ -720,6 +721,7 @@ export class IngestJobLifecycle {
   }> {
     await this.deps.requireRetryActor(input.actorUserId, input.workspaceId);
     return this.deps.prisma.$transaction(async (tx) => {
+      await requireExecutionAdmissionOpen(tx);
       const intake = await tx.project.findFirst({
         where: {
           id: input.projectId,
@@ -790,6 +792,8 @@ export class IngestJobLifecycle {
         payload: last.payload as Prisma.InputJsonValue,
         acquisition: ingestAcquisitionSchema.parse(last.payload && typeof last.payload==="object" && !Array.isArray(last.payload)?last.payload.acquisition:null),
       });
+      await this.queueExecutionWithinTransaction(tx, job.id);
+      await flushProjectProgressDrains(tx);
       return {
         queuedJobId: job.id,
         attemptsUsed: count + 1,

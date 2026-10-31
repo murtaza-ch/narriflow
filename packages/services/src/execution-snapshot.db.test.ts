@@ -1,3 +1,12 @@
+import { IngestJobLifecycle } from "./ingest-job-lifecycle";
+import { WorkflowRunLifecycle } from "./workflow-run-lifecycle";
+import { ProcessingUsage } from "./processing-usage";
+import { ingestExecutionInputHash } from "./ingest-source-execution";
+import { startIngestTestExecution } from "./ingest-execution-test-support";
+import { createSourceVideoValidator } from "./source-readiness";
+import { restoreIngestJobsPage } from "./execution-source-recovery-pages";
+import { capturedExecutionSnapshotFixture } from "./execution-snapshot-test-support";
+import { withExecutionDispatches } from "./execution-dispatch-runtime";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaClient } from "@prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
@@ -37,6 +46,71 @@ suite("Fenced snapshot source proof", () => {
     const restore = new ExecutionRestoreService({ database, register: async () => {} });
     await expect(restore.begin({ expectedEpoch: before.epoch, fenceAboveEpoch: before.epoch } as never)).rejects.toMatchObject({ code: "restore_snapshot_proof_required" });
     expect(await database.executionEpoch.findUniqueOrThrow({ where: { id: 1 } })).toEqual(before);
+  });
+
+  test("fresh source admission and manual/automatic retries retain the current epoch before and after restore", async () => {
+    const original = await database.executionEpoch.findUniqueOrThrow({ where: { id: 1 } });
+    const fence = await fenceExecutionSnapshot(database, { expectedEpoch: original.epoch, worker });
+    const epoch = fence.sourceEpoch;
+    expect(epoch).toBeGreaterThan(1);
+    await database.executionEpoch.update({ where: { id: 1 }, data: { admissionOpen: true } });
+    const user = await database.user.create({ data: { clerkId: `fresh-epoch:${crypto.randomUUID()}` } });
+    const workspace = await database.workspace.create({ data: { name: "Fresh epoch admission", ownerUserId: user.id, pricingTier: "business" } });
+    const usage = new ProcessingUsage({ prisma: database, log: () => {} }), workflow = new WorkflowRunLifecycle({ prisma: database });
+    const lifecycle = new IngestJobLifecycle({ prisma: database, workflow, usage, executionInputHash: job => ingestExecutionInputHash(job, "f".repeat(64)),
+      validateVideo: createSourceVideoValidator(usage), requireRetryActor: async (actorId, workspaceId) => { expect(actorId).toBe(user.id); expect(workspaceId).toBe(workspace.id); } });
+    const registrations: string[] = [];
+    const confirm = { database, deliver: async (ids: readonly string[]) => { registrations.push(...ids); } };
+    async function admit() {
+      return withExecutionDispatches(() => database.$transaction(async tx => {
+        const projectId = crypto.randomUUID();
+        await usage.reserve(tx, { projectId, workspaceId: workspace.id, actorUserId: user.id, intakeKind: "upload", declaredSeconds: 60 });
+        const project = await tx.project.create({ data: { id: projectId, workspaceId: workspace.id, title: "Current source", sourceType: "upload", sourceMediaUrl: "r2://verified/source.mp4", ingestStatus: "queued" } });
+        const job = await lifecycle.enqueue(tx, { projectId, jobType: "upload_finalize", payload: { uploadSessionId: crypto.randomUUID(), storageKey: "verified/source.mp4", verifiedSizeBytes: 42, verifiedContentType: "video/mp4", verifiedEtag: '"source"' }, acquisition: { audioPolicy: "none" } });
+        const reference = await lifecycle.queueExecutionWithinTransaction(tx, job.id);
+        return { project, job, reference };
+      }), confirm);
+    }
+    try {
+      const first = await admit();
+      expect(await database.ingestJob.findUniqueOrThrow({ where: { id: first.job.id } })).toMatchObject({ deploymentEpoch: epoch, generation: 1, claimId: null, attemptCount: 0 });
+      expect(first.reference).toMatchObject({ deploymentEpoch: epoch, subject: { kind: "ingest_job", id: first.job.id } });
+      expect(registrations).toContain(first.reference!.dispatchId);
+      const native = await startIngestTestExecution(database, lifecycle, workflow, first.job.id);
+      await native.command("fail", { failureCode: "source_media_invalid", retryable: false });
+      // An existing reservation is replayable while closed, but a new manual
+      // source attempt still needs independent admission permission.
+      await database.$transaction(tx => usage.reserve(tx, { projectId: first.project.id, workspaceId: workspace.id, actorUserId: user.id, intakeKind: "upload", declaredSeconds: 60 }));
+      await database.executionEpoch.update({ where: { id: 1 }, data: { admissionOpen: false } });
+      await expect(lifecycle.retry({ projectId: first.project.id, workspaceId: workspace.id, actorUserId: user.id })).rejects.toMatchObject({ code: "execution_admission_closed" });
+      expect(await database.ingestJob.count({ where: { projectId: first.project.id } })).toBe(1);
+      await database.executionEpoch.update({ where: { id: 1 }, data: { admissionOpen: true } });
+      const retry = await withExecutionDispatches(() => lifecycle.retry({ projectId: first.project.id, workspaceId: workspace.id, actorUserId: user.id }), confirm);
+      const manual = await database.ingestJob.findUniqueOrThrow({ where: { id: retry.queuedJobId } });
+      expect(manual).toMatchObject({ deploymentEpoch: epoch, status: "queued", attemptCount: 0 });
+      const manualDispatch = await database.executionDispatch.findFirstOrThrow({ where: { kind: "import_pipeline", subjectKind: "ingest_job", subjectId: manual.id, deploymentEpoch: epoch } });
+      expect(registrations).toContain(manualDispatch.id);
+      const next = await startIngestTestExecution(database, lifecycle, workflow, manual.id);
+      const before = await database.ingestJob.findUniqueOrThrow({ where: { id: manual.id } });
+      await next.command("fail", { failureCode: "remote_download_failed", retryable: true });
+      expect(await database.ingestJob.findUniqueOrThrow({ where: { id: manual.id } })).toMatchObject({ deploymentEpoch: epoch, generation: 2, status: "queued", attemptCount: 1, operationDeadlineAt: before.operationDeadlineAt });
+      expect(await database.executionDispatch.findFirstOrThrow({ where: { kind: "operation_driver", subjectKind: "ingest_job", subjectId: manual.id, generation: 2, deadlineKind: null, wakeKind: null } })).toMatchObject({ deploymentEpoch: epoch });
+      const proof = await capturedExecutionSnapshotFixture(database);
+      const begun = await new ExecutionRestoreService({ database, register: async () => {} }).begin(proof);
+      const state = await database.executionEpoch.findUniqueOrThrow({ where: { id: 1 } });
+      await database.$transaction(tx => restoreIngestJobsPage(tx, { deploymentEpoch: begun.deploymentEpoch, snapshotEpoch: proof.expectedEpoch, fenceAboveEpoch: proof.fenceAboveEpoch,
+        cutoff: state.changedAt, after: null, limit: 32 }));
+      await database.executionEpoch.update({ where: { id: 1 }, data: { admissionOpen: true } });
+      const afterRestore = await admit();
+      expect(await database.ingestJob.findUniqueOrThrow({ where: { id: afterRestore.job.id } })).toMatchObject({ deploymentEpoch: begun.deploymentEpoch, generation: 1, attemptCount: 0 });
+      expect(afterRestore.reference).toMatchObject({ deploymentEpoch: begun.deploymentEpoch });
+      expect(registrations).toContain(afterRestore.reference!.dispatchId);
+      await database.executionEpoch.update({ where: { id: 1 }, data: { admissionOpen: false } });
+      expect(await lifecycle.cancelQueuedOperation({ actorUserId: user.id, workspaceId: workspace.id, projectId: afterRestore.project.id, ingestJobId: afterRestore.job.id })).toBe(true);
+      expect(await database.ingestJob.findUniqueOrThrow({ where: { id: afterRestore.job.id } })).toMatchObject({ status: "cancelled", deploymentEpoch: begun.deploymentEpoch });
+    } finally {
+      await database.executionEpoch.update({ where: { id: 1 }, data: { admissionOpen: false } });
+    }
   });
 
 });
