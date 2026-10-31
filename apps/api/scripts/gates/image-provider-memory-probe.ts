@@ -1,4 +1,4 @@
-import { createOpenAiImageProvider } from "@narriflow/services/openai-image-provider";
+import { createOpenAiImageProvider } from "../../../media/src/openai-image-provider";
 
 (globalThis as unknown as {__imageProviderMemoryProbe:string}).__imageProviderMemoryProbe="narriflow-image-provider-memory-probe";
 let retained: Uint8Array | null = null;

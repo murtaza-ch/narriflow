@@ -1,5 +1,5 @@
 import type { PrismaClient } from "@prisma/client";
-import { nativeValidationEvidenceSchema, nativeValidationStoredInputSchema } from "@narriflow/validators/native-validation";
+import { nativeValidationEvidenceSchema, nativeValidationInputSchema } from "@narriflow/validators/native-validation";
 import type { ExecutorArtifactCommit } from "./executor-domain-control";
 import { NativeValidationError, type NativeValidationCommit } from "./native-validation";
 
@@ -8,7 +8,7 @@ import { NativeValidationError, type NativeValidationCommit } from "./native-val
 export async function nativeValidationWorkInput(database: PrismaClient, id: string) {
   const job = await database.nativeValidationJob.findUnique({ where: { id } });
   if (!job || !job.attemptToken || job.status !== "processing") throw new NativeValidationError("native_validation_missing");
-  const input = nativeValidationStoredInputSchema.parse(job.input);
+  const input = nativeValidationInputSchema.parse(job.input);
   return {
     functionName: "asset_validation" as const, inputHash: job.inputHash,
     command: { kind: input.kind, expected: { contentType: input.contentType, byteLength: Number(job.inputByteLength), sha256: input.fingerprint } },

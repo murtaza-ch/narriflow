@@ -530,10 +530,6 @@
       "types": "./src/outbound-probe-execution.ts",
       "default": "./src/outbound-probe-execution.ts"
     },
-    "./generated-media-validation": {
-      "types": "./src/generated-media-validation.ts",
-      "default": "./src/generated-media-validation.ts"
-    },
     "./clip-selection-plan": {
       "types": "./src/clip-selection-plan.ts",
       "default": "./src/clip-selection-plan.ts"
@@ -564,6 +560,9 @@
     "./notification-body-storage": "./src/notification-body-storage.ts",
     "./outbound-delivery-runtime": "./src/outbound-delivery-runtime.ts",
     "./drive-source-contract": "./src/drive-source-contract.ts",
+    "./generated-media-execution": "./src/generated-media-execution.ts",
+    "./generated-media-control": "./src/generated-media-control.ts",
+    "./generated-media-retention": "./src/generated-media-retention.ts",
     "./clip-selection-runtime": {
       "types": "./src/clip-selection-runtime.ts",
       "default": "./src/clip-selection-runtime.ts"
@@ -575,10 +574,6 @@
     "./clip-selection-finalization": {
       "types": "./src/clip-selection-finalization.ts",
       "default": "./src/clip-selection-finalization.ts"
-    },
-    "./url-guard": {
-      "types": "./src/url-guard.ts",
-      "default": "./src/url-guard.ts"
     },
     "./ingest-source-definition": "./src/ingest-source-definition.ts",
     "./local-fetch-device": "./src/local-fetch-device.ts",

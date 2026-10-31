@@ -1,13 +1,11 @@
-import { readServiceEnvironment } from "./runtime-environment";
 import {
   GeneratedMediaProviderError,
   type GeneratedImageAspectRatio,
-  type GeneratedImageProvider,
   type GeneratedImageStyle,
-} from "./generated-media";
-import { readResponseBodyBounded } from "./url-policy";
+} from "@narriflow/services/generated-media";
+import { readResponseBodyBounded } from "@narriflow/services/url-policy";
 
-export { GeneratedMediaProviderError } from "./generated-media";
+export { GeneratedMediaProviderError } from "@narriflow/services/generated-media";
 
 const OPENAI_IMAGE_ENDPOINT = "https://api.openai.com/v1/images/generations";
 
@@ -61,7 +59,7 @@ function normalizedProviderError(status: number, providerCode: string | null, re
   return new GeneratedMediaProviderError("generated_media_provider_validation");
 }
 
-export function createOpenAiImageProvider(options: OpenAiImageProviderOptions): GeneratedImageProvider {
+export function createOpenAiImageProvider(options: OpenAiImageProviderOptions) {
   const apiKey = options.apiKey.trim();
   const model = options.model.trim();
   if (!apiKey || !model) {
@@ -76,7 +74,7 @@ export function createOpenAiImageProvider(options: OpenAiImageProviderOptions): 
     name: "openai",
     modelAlias: model,
 
-    async submit(input) {
+    async submit(input: { requestId: string; prompt: string; aspectRatio: GeneratedImageAspectRatio; style: GeneratedImageStyle }) {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), timeoutMs);
       try {
@@ -125,7 +123,7 @@ export function createOpenAiImageProvider(options: OpenAiImageProviderOptions): 
         if (encoded.length > Math.ceil(maxOutputBytes * 4 / 3) + 4) {
           throw new GeneratedMediaProviderError("generated_media_provider_output_too_large");
         }
-        const bytes = Uint8Array.from(Buffer.from(encoded, "base64"));
+        const bytes = Buffer.from(encoded, "base64");
         if (bytes.length === 0) {
           throw new GeneratedMediaProviderError("generated_media_provider_malformed_output");
         }
@@ -153,40 +151,5 @@ export function createOpenAiImageProvider(options: OpenAiImageProviderOptions): 
       }
     },
 
-    async poll(providerRef) {
-      return {
-        kind: "failed" as const,
-        code: providerRef.startsWith("openai:")
-          ? "generated_media_provider_outcome_unknown"
-          : "generated_media_provider_reference_invalid",
-        retryable: false,
-      };
-    },
-
-    async cancel() {
-      return { kind: "cancelled" as const };
-    },
-
-    async result() {
-      throw new GeneratedMediaProviderError("generated_media_provider_result_unavailable", {
-        outcomeUnknown: true,
-      });
-    },
   };
-}
-
-export function openAiImageProviderFromEnv(environment: Record<string, string | undefined> = readServiceEnvironment()) {
-  const parsedMaxBytes = Number(environment.GENERATED_IMAGE_MAX_OUTPUT_BYTES);
-  return createOpenAiImageProvider({
-    apiKey: environment.OPENAI_API_KEY ?? "",
-    model: environment.OPENAI_IMAGE_MODEL ?? "",
-    quality: environment.OPENAI_IMAGE_QUALITY === "high"
-      ? "high"
-      : environment.OPENAI_IMAGE_QUALITY === "low"
-        ? "low"
-        : "medium",
-    maxOutputBytes: Number.isSafeInteger(parsedMaxBytes) && parsedMaxBytes >= 1_000_000 && parsedMaxBytes <= 100_000_000
-      ? parsedMaxBytes
-      : 20 * 1024 * 1024,
-  });
 }
