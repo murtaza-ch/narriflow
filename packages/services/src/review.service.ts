@@ -22,7 +22,7 @@ import { requirePlanFeature } from "./plan-features";
 import type { ActorScope } from "./actor-scope";
 import { accessibleProjectWhere } from "./project-access";
 import { workspaceService } from "./workspace.service";
-import { checkRateLimit, requireNewMutationAllowed } from "./rate-limit";
+import { checkRateLimit, readRateLimit, requireNewMutationAllowed } from "./rate-limit";
 import { presignDownloadUrl } from "./r2-storage";
 import {
   ExpectedDomainFailureError,
@@ -389,7 +389,10 @@ function guestDecisionResult(decision: { id: string; itemId: string | null; deci
 }
 
 export class ReviewService {
-  constructor(private readonly commandRateLimit: typeof checkRateLimit = checkRateLimit) {}
+  constructor(
+    private readonly commandRateLimit: typeof checkRateLimit = checkRateLimit,
+    private readonly accessRateRead: typeof readRateLimit = readRateLimit,
+  ) {}
   async prepareHandoff(scope: ActorScope, items: Array<{ exportId: string; variantIds: string[] }>) {
     const actor = await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.view");
     requirePlanFeature(actor.pricingTier, "review.rooms");
@@ -634,6 +637,13 @@ export class ReviewService {
     const actualToken = Buffer.from(tokenHash, "hex");
     if (expectedToken.length !== actualToken.length || !timingSafeEqual(expectedToken, actualToken)) {
 			return rejectAccess();
+    }
+    if (round.passcodeHash && parsed.passcode) {
+      for (const key of [`review-access-source:${tokenHash}:${sourceHash}`, `review-access-token:${tokenHash}`]) {
+        const admission = await this.accessRateRead(key, REVIEW_ACCESS_LIMIT, REVIEW_ACCESS_WINDOW_MS / 1_000);
+        if (!admission.allowed) throw new ReviewServiceError("review_access_rate_limited", "Too many review access attempts");
+        requireNewMutationAllowed(admission);
+      }
     }
     if (round.passcodeHash && (!parsed.passcode || !(await verifyReviewPasscode(parsed.passcode, round.passcodeHash)))) {
 			return rejectAccess();
