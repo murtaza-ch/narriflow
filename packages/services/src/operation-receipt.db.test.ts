@@ -116,29 +116,13 @@ describeDb("Operation Receipt PostgreSQL acceptance invariants", () => {
 		return { project, clip, scope: { actorUserId, workspaceId } };
 	}
 	async function assignedExportRun(projectId: string, exportIds: string[]) {
-		const leaseOwner = `mcp-export-cancel:${randomUUID()}`;
-		const attemptId = randomUUID();
-		const run = await prisma.workflowRun.create({
-			data: {
-				projectId,
-				stage: "clip_rendering",
-				status: "running",
-				idempotencyKey: randomUUID(),
-				attemptId,
-				attemptCount: 1,
-				leaseOwner,
-				leaseExpiresAt: new Date(Date.now() + 120_000),
-			},
-		});
-		await prisma.clipExport.updateMany({
-			where: { id: { in: exportIds } },
-			data: { workflowRunId: run.id },
-		});
-    const attempt = { workflowRunId: run.id, projectId, stage: "clip_rendering" as const, attemptId, attemptCount: 1 };
-    const lifecycle = new RenderFixtureLifecycle({ prisma, leaseOwner });
+    const run = await prisma.workflowRun.create({data:{projectId,stage:"clip_rendering",status:"queued",idempotencyKey:randomUUID()}});
+    await prisma.clipExport.updateMany({where:{id:{in:exportIds}},data:{workflowRunId:run.id}});
+    const lifecycle=new RenderFixtureLifecycle({prisma,leaseOwner:randomUUID()});
+    const attempt=await lifecycle.renderParent(run.id);
     await lifecycle.beginRenderWorkSet(attempt);
-    return { run, attempt, lifecycle };
-	}
+    return{run,attempt,lifecycle};
+  }
 
 	beforeAll(bindServiceTestEnvironment(globalPrisma.bind(async () => {
 		if (!databaseUrl || !schema || !/^integration_test_[a-z0-9_]+$/.test(schema))
@@ -789,7 +773,7 @@ describeDb("Operation Receipt PostgreSQL acceptance invariants", () => {
 		).toBe(false);
 	})));
 
-	test("export cancellation preserves a shared run, another export, and claimed variants", bindServiceTestEnvironment(globalPrisma.bind(async () => {
+	test("export cancellation preserves an acquired Render Group and another queued export", bindServiceTestEnvironment(globalPrisma.bind(async () => {
 		const { project, clip, scope } = await exportSource("Shared export run");
 		const first = await clipExportService.create(
 			scope,
@@ -825,14 +809,14 @@ describeDb("Operation Receipt PostgreSQL acceptance invariants", () => {
 		).toBe(true);
 		expect(
 			await clipExportService.cancelQueuedOperation(scope, first.export.id),
-		).toBe(true);
+		).toBe(false);
 		const cancelled = await clipExportService.getWorkspaceOwned(
 			scope,
 			first.export.id,
 		);
 		expect(cancelled?.status).toBe("rendering");
 		expect(cancelled?.variants.map((variant) => variant.status).sort()).toEqual(
-			["failed", "rendering"],
+			["rendering", "rendering"],
 		);
 		expect(
 			(await clipExportService.getWorkspaceOwned(scope, second.export.id))
@@ -845,20 +829,21 @@ describeDb("Operation Receipt PostgreSQL acceptance invariants", () => {
 		expect(
 			(await prisma.workflowRun.findUniqueOrThrow({ where: { id: run.id } }))
 				.status,
-		).toBe("running");
-		await lifecycle.completeClipRenderVariant(attempt, render.id, {
+		).toBe("waiting");
+		const acquired = await prisma.clipRender.findMany({where:{exportVariant:{exportId:first.export.id}},orderBy:{id:"asc"}});
+		for (const member of acquired) await lifecycle.completeClipRenderVariant(attempt, member.id, {
 			storageKey: "test/cancel-preserved.mp4",
 			sizeBytes: 100,
 			durationSec: 30,
 		});
-		const partial = await prisma.clipExport.findUniqueOrThrow({
+		const completed = await prisma.clipExport.findUniqueOrThrow({
 			where: { id: first.export.id },
 		});
-		expect(partial.status).toBe("partial_ready");
-		expect(partial.errorCode).toBeNull();
+		expect(completed.status).toBe("ready");
+		expect(completed.errorCode).toBeNull();
 	})));
 
-	test("export cancellation and worker claims agree on which pending variant won", bindServiceTestEnvironment(globalPrisma.bind(async () => {
+	test("export cancellation and native acquisition agree on which pending Render Group won", bindServiceTestEnvironment(globalPrisma.bind(async () => {
 		for (let i = 0; i < 4; i++) {
 			const { project, clip, scope } = await exportSource(
 				`Export claim race ${i}`,
@@ -881,7 +866,7 @@ describeDb("Operation Receipt PostgreSQL acceptance invariants", () => {
 				where: { exportVariant: { exportId: accepted.export.id } },
 			});
 			const [claimed, cancelled] = await Promise.all([
-				lifecycle.markClipRenderVariantRendering(attempt, render.id).catch((error: unknown) => { if (error instanceof WorkflowAttemptLost) return false; throw error; }),
+				lifecycle.markClipRenderVariantRendering(attempt, render.id).catch((error: unknown) => { if (error instanceof WorkflowAttemptLost || error instanceof Error && error.message === "Fixture render not admitted: terminal") return false; throw error; }),
 				clipExportService.cancelQueuedOperation(scope, accepted.export.id),
 			]);
 			expect(cancelled).toBe(!claimed);
@@ -897,7 +882,9 @@ describeDb("Operation Receipt PostgreSQL acceptance invariants", () => {
 			expect(
 				(await prisma.workflowRun.findUniqueOrThrow({ where: { id: run.id } }))
 					.status,
-			).toBe("running");
+			).toBe("waiting");
+			expect(await prisma.workflowRun.findUniqueOrThrow({where:{id:run.id}})).toMatchObject({attemptCount:0,leaseOwner:null,leaseExpiresAt:null});
+			expect(await prisma.renderGroup.aggregate({where:{workflowRunId:run.id},_sum:{chargedAttemptCount:true}})).toMatchObject({_sum:{chargedAttemptCount:claimed?1:0}});
 		}
 	})));
 });

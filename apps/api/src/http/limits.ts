@@ -264,7 +264,7 @@ export function rateLimitHeaders(
 export interface ClientIpOptions {
   /**
    * The single header the deployment's trusted ingress overwrites with the
-   * client address (for Railway, `X-Real-IP`). Null trusts no forwarded header.
+   * client address (`CF-Connecting-IP` on Cloudflare). Null trusts no forwarded header.
    */
   trustedHeader: string | null;
   /** The socket peer, used when no trusted header applies. */

@@ -1,0 +1,17 @@
+{
+  "date": "2026-11-01",
+  "scope": "Operation Receipt cancellation fixtures through real current Render Core",
+  "verification": {
+    "tests": 13,
+    "assertions": 99,
+    "failures": 0,
+    "runtime": "Bun 1.3.6"
+  },
+  "changes": [
+    "Queued Render parent is registered by exact run reference with no lease and no charged parent start.",
+    "Native acquisition owns all variants in its Render Group; queued cancellation preserves the entire acquired group and another export.",
+    "Four cancellation/acquisition races prove mutually exclusive outcomes, no parent lease or start, and no charged child when cancellation wins."
+  ],
+  "remaining": "Whole integration run stops at three MCP Task fixtures being ported separately; this is not a full integration acceptance claim.",
+  "logSha256": "bf35ebdc238412eb6ce202153b067876d1cc12a4362e83d1b845e90fa6a841bd"
+}

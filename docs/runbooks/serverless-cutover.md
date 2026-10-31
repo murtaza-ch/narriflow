@@ -2,7 +2,7 @@
 
 Status: implementation and isolated verification in progress. Admission remains closed on the candidate. No merge/push to `dev`, shared-database migration, API routing switch, Railway/Upstash deletion or reopening is recorded yet.
 
-The owner authorized account setup, deployments, testing, merge to `dev` and push after verification. The release must include the complete replacement and deletion set in one switch. [The spec](../../.scratch/serverless-cutover/spec.md) owns the acceptance gates; [the resource runbook](environments.md) owns resource selection and local setup.
+The owner authorized account setup, deployments, testing, merge to `dev` and push after verification. On 2026-11-01 the owner explicitly selected **Keep Neon Free**; no Launch upgrade or new payment authorization was submitted. Verify the deployment within Free limits. The release must include the complete replacement and deletion set in one switch. [The spec](../../.scratch/serverless-cutover/spec.md) owns the acceptance gates; [the resource runbook](environments.md) owns resource selection and local setup.
 
 ## Recorded isolated evidence
 

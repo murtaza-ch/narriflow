@@ -19,7 +19,7 @@ Binding constraints:
 Browser ──> Vercel (apps/web, Next.js)
    ├─ direct multipart upload / signed playback ────────────────> R2 (private)
    └─ API (Bearer) ─> Cloudflare Worker "narriflow-api" (apps/api, Hono)
-        ├─ Hyperdrive (cache OFF, direct TLS) ─> Neon Postgres (Launch, scale-to-zero)   ← sole domain authority
+        ├─ Hyperdrive (cache OFF, direct TLS) ─> Neon Postgres (Free, scale-to-zero)   ← sole domain authority
         ├─ Workflows: ImportPipeline · RenderRun · OperationDriver · Maintenance          ← when things run
         ├─ Durable Objects: ProjectProgress (hibernating WS) · RateLimiter · LocalFetchMailbox (dev only)
         ├─ Cron Triggers: hourly safety reconciliation, daily retention/cleanup
@@ -37,7 +37,7 @@ Dev only: laptop fetch agent (outbound WebSocket to LocalFetchMailbox; no inboun
 | Web | Vercel | Pro at launch |
 | API, workflows, progress, rate limits, cron | Cloudflare Workers + Workflows + Durable Objects + Hyperdrive | Workers Paid ($5/month plus usage); upgraded during development after deployed CPU gates exceeded Free limits |
 | Storage and playback | Cloudflare R2 (private, signed grants) | Pay-as-you-go |
-| Database | Neon (existing `narriflow-dev`) | Launch (usage-based) |
+| Database | Neon (existing `narriflow-dev`) | Free (owner decision, 2026-11-01); verify all gates within its limits |
 | Media execution | Modal Functions | Starter, then Team when more than 100 containers |
 | STT / selection | ElevenLabs Scribe v2 / OpenAI GPT-5.4 mini | Usage |
 | YouTube | yt-dlp; residential HTTP sticky proxy at launch | Bought at launch |
@@ -354,7 +354,7 @@ All 24 ship together. "Blocked by" is a dependency, not a release phase. Shared 
 
 ## 9. Owner prerequisites and decisions (recommended answers)
 1. **Cloudflare:** enable Workers Paid before the gates (free is fine during development), with scoped deploy access for Workers, Workflows, DOs, Hyperdrive, the existing R2 bucket and API DNS. **Yes.**
-2. **Neon:** upgrade `narriflow-dev` to Launch, keep 5-minute suspend, allow a disposable test branch, and use a separate migration credential. **Yes.**
+2. **Neon:** keep `narriflow-dev` on Free (owner decision, 2026-11-01), retain its default idle suspension, allow an isolated test branch and use a separate migration credential. Verify the deployed connection and burst budget within Free limits. No paid upgrade is authorized.
 3. **Modal:** Starter workspace with a compute budget, per-function caps and `min_containers=0`. **Yes.**
 4. **Dev laptop:** one allowlisted device and one test Workspace for local YouTube fetches. **Yes.**
 5. **Proxy:** defer purchase. Ship the generic HTTP sticky-session contract tested against a controlled proxy, and pick the provider at launch after throughput and billable-byte tests. **Yes.**
