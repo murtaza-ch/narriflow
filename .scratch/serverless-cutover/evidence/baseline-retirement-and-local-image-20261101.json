@@ -1,0 +1,154 @@
+{
+  "version": 1,
+  "recordedAtUtc": "2026-10-31T21:44:08.328554+00:00",
+  "status": "Exact baseline fixture retirement independently verified; local image build/runtime verified. Deployed cleanup registration and local YouTube acceptance remain OPEN.",
+  "scope": "Evidence-only summary of prior Root operator actions. No cloud/database write, provider call, native admission, device issuance or ticket-status change was performed while preparing this record.",
+  "baselineFixtureRetirement": {
+    "operator": "Root",
+    "maximumHoldUntilUtc": "2026-10-31T21:36:29.253Z",
+    "correctedUtcReadback": {
+      "readAt": "2026-10-31T21:40:49.311Z",
+      "parser": "The corrected readback uses explicit UTC timestamps; all 4 completedAt values parse as UTC and fall after the maximum hold.",
+      "knownArtifactCleanupRows": 4,
+      "completedRows": 4,
+      "pendingKnownArtifactCleanupRows": 0,
+      "earliestCompletedAt": "2026-10-31T21:37:03.334Z",
+      "latestCompletedAt": "2026-10-31T21:37:30.613Z",
+      "rows": [
+        {
+          "role": "source_audio",
+          "grantExpiresAt": "2026-10-31T20:21:39.163Z",
+          "cleanupAttemptCount": 1,
+          "nextAttemptAt": "2026-10-31T21:07:35.358Z",
+          "claimed": false,
+          "claimExpiresAt": null,
+          "failureCode": null,
+          "completedAt": "2026-10-31T21:37:12.505Z",
+          "artifactCommitted": false
+        },
+        {
+          "role": "source_video",
+          "grantExpiresAt": "2026-10-31T20:50:13.082Z",
+          "cleanupAttemptCount": 1,
+          "nextAttemptAt": "2026-10-31T21:07:35.358Z",
+          "claimed": false,
+          "claimExpiresAt": null,
+          "failureCode": null,
+          "completedAt": "2026-10-31T21:37:03.334Z",
+          "artifactCommitted": false
+        },
+        {
+          "role": "source_audio",
+          "grantExpiresAt": "2026-10-31T20:49:46.777Z",
+          "cleanupAttemptCount": 1,
+          "nextAttemptAt": "2026-10-31T21:36:29.253Z",
+          "claimed": false,
+          "claimExpiresAt": null,
+          "failureCode": null,
+          "completedAt": "2026-10-31T21:37:30.613Z",
+          "artifactCommitted": false
+        },
+        {
+          "role": "source_video",
+          "grantExpiresAt": "2026-10-31T21:06:15.510Z",
+          "cleanupAttemptCount": 1,
+          "nextAttemptAt": "2026-10-31T21:36:29.253Z",
+          "claimed": false,
+          "claimExpiresAt": null,
+          "failureCode": null,
+          "completedAt": "2026-10-31T21:37:21.439Z",
+          "artifactCommitted": false
+        }
+      ]
+    },
+    "initialHelper": {
+      "result": false,
+      "failureCode": "gate_cleanup_obligation_pending",
+      "operatorReportedExplanation": "The pending set also contained ordinary lease timers. The callback merely collected dispatch references instead of registering the deployed Workflow. The helper result is not deployed cleanup or timer-registration acceptance.",
+      "deployedCleanupRegistrationAccepted": false,
+      "deployedTimerRegistrationAccepted": false,
+      "runtimeFollowup": "Runtime is fixing the helper to use the actual deployed Workflow; no successful result from that fix is asserted here."
+    },
+    "independentSecondOperatorVerification": {
+      "passed": true,
+      "matchedUniqueKnownArtifacts": 4,
+      "head404Count": 4,
+      "headStatuses": [
+        404,
+        404,
+        404,
+        404
+      ],
+      "exactKeyMultipartUploadsTotal": 0,
+      "fixtureRowsRetainedForAudit": true,
+      "claim": "Four exact known objects returned HEAD 404, with zero multipart uploads for those exact keys. This is an independent post-cleanup operator observation, not a substitute for deployed Workflow registration proof."
+    },
+    "accounting": {
+      "newNativeOrMediaChargesAddedByRetirement": 0,
+      "retainedMetadataAndOriginalAccounting": true,
+      "provenance": "Root operator confirmation; cleanup row attemptCount is a cleanup-attempt counter, not a native charge counter. No charge, refund or billing-row mutation was performed by this evidence task."
+    },
+    "baselineOutcomeUnchanged": "The earlier upload-plus-pin baseline remains failed. Object retirement does not turn it into a successful large-transfer or release gate."
+  },
+  "laptopImage": {
+    "sourceCommit": "35ca2425dd61b8469ce89d7ea9ea2b0f65a0d678",
+    "imageTag": "narriflow-media:local-fetch",
+    "actualDockerImageId": "sha256:792d398d0cd347f47a156642369e9e615209b133c1dbec2b9aaca64b03e7d5bc",
+    "manifestListSha256": "792d398d0cd347f47a156642369e9e615209b133c1dbec2b9aaca64b03e7d5bc",
+    "buildLogConfigSha256": "86c340e1dc0944adbf9ddede74c4e5f03255932aaa1859c06282659b6bae2b77",
+    "identityMeaning": "The observed Docker image ID matches the exported manifest-list digest. The separately exported build-config SHA is different and must not be substituted for the Docker image ID.",
+    "cachedBuildStepsObserved": 9,
+    "build": "An actual local Docker build from the immutable 35ca2425 source context used cached layers; this was not merely a proposed Dockerfile or reused tag assertion.",
+    "profile": "lean",
+    "threads": 2,
+    "verification": {
+      "network": "none",
+      "cpu": 2,
+      "memoryGiB": 4,
+      "pidsLimit": 512,
+      "fingerprint": "6235b66ae20332ba1024049d77166d850c4fed0b7d4378bbb5d5d9e74f1cb38d"
+    },
+    "runtimeLogSha256": "99072ea9d8798927e0ebb2186b85198e9ca0fed1e6809d74137de1ce91559b2c",
+    "containsDatabaseCredential": false,
+    "deviceSessionIssued": false,
+    "localYouTubeAcceptance": false,
+    "limits": "The network-none runtime check establishes the lean toolchain fingerprint. It does not issue a device session, fetch a real local YouTube source, prove a source handoff, or establish Local mode release acceptance."
+  },
+  "rawPrivateEvidence": {
+    "/tmp/narriflow-executor-r2-final/cleanup-current-state.json": {
+      "byteLength": 1898,
+      "sha256": "5237d5184ddc90541b5de8a8c492d3a592b1ec26fb2b71a584b38a5ca7c93369"
+    },
+    "/tmp/narriflow-executor-r2-final/fixture.json.cleanup.json": {
+      "byteLength": 614,
+      "sha256": "2a4b236e59a8dfd5b9f997c47b88c14e0619fd2e1e74e9c950f62cae7bad0f03"
+    },
+    "/tmp/narriflow-serverless-gates/baseline-retirement-final.log": {
+      "byteLength": 76,
+      "sha256": "4fde87cabea471237593f5975a091385901e97a436cd388fd3f8bb3af9c17940"
+    },
+    "/tmp/narriflow-serverless-gates/local-fetch-batched-image-proof.json": {
+      "byteLength": 906,
+      "sha256": "f1a4bc9a4670e11ecb3ff7a2a66cad99169197368bdb21c4b90002cddb55a050"
+    },
+    "/tmp/narriflow-serverless-gates/local-fetch-batched-image-id.txt": {
+      "byteLength": 72,
+      "sha256": "096dbec688a90465ca43708a513d92a27c44a349f987664ffd14cf6ec1b1232a"
+    },
+    "/tmp/narriflow-serverless-gates/local-fetch-batched-image-build.log": {
+      "byteLength": 6550,
+      "sha256": "11e986706e16ff7b36d7a6f904555d6c19381e566d1f9708dd88c080b2c3a336"
+    },
+    "/tmp/narriflow-serverless-gates/local-fetch-batched-runtime.log": {
+      "byteLength": 84,
+      "sha256": "99072ea9d8798927e0ebb2186b85198e9ca0fed1e6809d74137de1ce91559b2c"
+    }
+  },
+  "notEstablished": [
+    "Deployed cleanup Workflow and timer registration acceptance",
+    "Successful combined 10 GiB upload+conditional-pin gate",
+    "Local YouTube/device-session acceptance",
+    "Qualified restore or release acceptance",
+    "Any ticket completion"
+  ]
+}
