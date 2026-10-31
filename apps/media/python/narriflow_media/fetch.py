@@ -243,7 +243,10 @@ async def fetch_source(source: str | YouTubeSource, *, source_revision: int, mod
                     return await _verified(downloaded, selected, identity, source_revision, runtime, toolchain_fingerprint)
                 async def prepare_video():
                     downloaded = await runtime.download_video(selected, session, directory)
-                    return await _verified(downloaded, selected, identity, source_revision, runtime, toolchain_fingerprint)
+                    verified = await _verified(downloaded, selected, identity, source_revision, runtime, toolchain_fingerprint)
+                    if verified.probe.get("hasVideo") is not True:
+                        raise SourceFetchFailure("source_audio_video_mismatch")
+                    return verified
                 audio_task = asyncio.create_task(prepare_audio()) if audio is None else None
                 video_task = asyncio.create_task(prepare_video())
                 tasks = [task for task in [audio_task, video_task] if task is not None]
