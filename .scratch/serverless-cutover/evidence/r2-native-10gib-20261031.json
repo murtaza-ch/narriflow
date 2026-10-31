@@ -1,0 +1,66 @@
+{
+  "runtime": "CPython 3.13.5",
+  "scope": "native multipart plus local injected TS grant service, real R2; no live domain fence claim",
+  "checks": [
+    "native file uploaded with measured SHA256 and provider MD5 verification",
+    "still-live UploadPart grant returns404 after completion and cannot overwrite",
+    "conditional pin preserved independently reread whole-object SHA256",
+    "actual source overwrite during pin caused failed condition and aborted unpublished MPU"
+  ],
+  "phases": [
+    {
+      "name": "file_upload",
+      "uploadedBytes": 10737418240,
+      "downloadedBytes": 0,
+      "startedAt": 1793414455.029369,
+      "elapsedSeconds": 4613.08,
+      "peakRssMiB": 104.2
+    },
+    {
+      "name": "conditional_pin",
+      "uploadedBytes": 10737418240,
+      "downloadedBytes": 10737418240,
+      "startedAt": 1793419075.831947,
+      "elapsedSeconds": 5171.66,
+      "peakRssMiB": 111.23
+    },
+    {
+      "name": "source_mutation_fault",
+      "uploadedBytes": 16777216,
+      "downloadedBytes": 16777216,
+      "startedAt": 1793424247.766162,
+      "elapsedSeconds": 15.71,
+      "peakRssMiB": 111.23
+    }
+  ],
+  "status": "passed",
+  "gateDeadlineSeconds": 14400,
+  "logicalSourceBytes": 10737418240,
+  "allocatedSourceBytes": 32768,
+  "tracedPeakBytes": 85052636,
+  "peakRssMiB": 111.23,
+  "cleanup": {
+    "deleted": 2,
+    "aborted": 1,
+    "uncertain": 0
+  },
+  "date": "2026-10-31",
+  "accountId": "5359f28d385b8632c3abee12d1f5b011",
+  "bucket": "narriflow-dev",
+  "providerCredentialsInPython": false,
+  "grantService": "packages/services/scripts/r2-native-grant-gate.ts",
+  "nativeDriver": "apps/media/python/gates/r2_large_transfer.py",
+  "partBytes": 16777216,
+  "concurrency": 4,
+  "largeObjectParts": 640,
+  "checksumAuthority": {
+    "transport": "Content-MD5 checked by R2 UploadPart; receipts reconcile MD5 and byte length",
+    "fullObjectSha256": "measured by native executor and independently reread during conditional pin",
+    "head": "metadata, ETag, size; no independent full-object SHA256 for multipart objects"
+  },
+  "openGates": [
+    "live domain and signed HTTP fence integration",
+    "Modal execution and final candidate image rebuild",
+    "production fetch operation deadline; this controlled storage gate used a four-hour gate deadline"
+  ]
+}
