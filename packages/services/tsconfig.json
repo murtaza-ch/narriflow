@@ -9,6 +9,7 @@
     "scripts/execution-restore.ts",
     "scripts/execution-snapshot-files.ts",
     "scripts/executor-r2-transfer-gate.ts",
+    "scripts/executor-r2-batched-acceptance.ts",
     "scripts/gates/qualified-restore-candidate.ts",
     "scripts/gates/qualified-restore-native-fixture.ts"
   ],
