@@ -3,7 +3,7 @@ import { planClipComposition } from "@narriflow/composition-plan";
 import {
 	bindCompositionPlanAudioInputs,
 	compileCompositionPlanAudioSchedule,
-} from "../composition-ffmpeg-adapter";
+} from "../../../media/src/composition-ffmpeg-adapter";
 import {
 	captionPresetSchema,
 	computeSpeechWindows,
@@ -20,9 +20,9 @@ import {
 	compileClipCompositionCommand,
 	compileCompositionPlanCaptions,
 	type ClipCompositionCommandInput,
-} from "../composition-ffmpeg-adapter";
-import { clipRenderAttemptStorageKey } from "../render-object-key";
-import { buildClipCutPlan } from "./cut-plan";
+} from "../../../media/src/composition-ffmpeg-adapter";
+import { clipRenderAttemptStorageKey } from "../../../media/src/render-object-key";
+import { buildClipCutPlan } from "../../../media/src/tasks/cut-plan";
 
 type PlannedTestCommand = {
 	sourcePath: string;

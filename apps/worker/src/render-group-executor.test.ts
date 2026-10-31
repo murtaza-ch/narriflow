@@ -8,8 +8,8 @@ import {
 	coordinateRenderWorkSet,
 	executeNextRenderGroup,
 } from "./render-group-executor";
-import { RenderResourceDeferral } from "./render-resource-budget";
-import { WorkerProcessFailure } from "./worker-process";
+import { RenderResourceDeferral } from "../../media/src/render-resource-budget";
+import { WorkerProcessFailure } from "../../media/src/worker-process";
 
 const group: ClaimedRenderGroupAttempt = {
 	workflowRunId: "run",
@@ -250,7 +250,7 @@ test("a heartbeat loss reported after the group settled is ignored", async () =>
 	expect(groups.releases).toEqual([]);
 });
 
-test("an unexpected failure settles the group as a charged retryable failure and surfaces", async () => {
+test("an unexpected failure before a media process starts remains uncharged and surfaces", async () => {
 	const groups = fakeGroups();
 	await expect(
 		executeNextRenderGroup({
@@ -261,7 +261,7 @@ test("an unexpected failure settles the group as a charged retryable failure and
 			},
 		}),
 	).rejects.toThrow("database unavailable");
-	expect(groups.calls).toEqual(["start", "finish"]);
+	expect(groups.calls).toEqual(["finish"]);
 	expect(groups.finishes).toEqual([
 		expect.objectContaining({ failureDisposition: "retryable" }),
 	]);

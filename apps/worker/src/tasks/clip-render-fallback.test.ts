@@ -1,10 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { WorkflowFailure } from "@narriflow/services";
-import { WorkerProcessFailure } from "../worker-process";
+import { WorkerProcessFailure } from "../../../media/src/worker-process";
 import {
 	isRecoverableRangedSourceFailure,
 	normalizeRenderProcessFailure,
-} from "./clip-render-attempt";
+} from "../../../media/src/tasks/clip-render-attempt";
 
 describe("ranged source recovery", () => {
 	for (const diagnostic of [

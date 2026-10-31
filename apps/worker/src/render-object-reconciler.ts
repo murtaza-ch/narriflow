@@ -4,11 +4,11 @@ import {
   deleteObject,
   listObjectPageByPrefix,
 } from "@narriflow/services";
-import { parseWorkerRenderConfig } from "./render-config";
+import { parseWorkerRenderConfig } from "../../media/src/render-config";
 import {
   classifyRenderObjectKey,
   isAttemptUniqueProjectRenderObjectKey,
-} from "./render-object-key";
+} from "../../media/src/render-object-key";
 
 const ORPHAN_SAFETY_AGE_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_STORAGE_OPERATION_TIMEOUT_MS = 2 * 60 * 1000;

@@ -3,9 +3,9 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { platformKey } from "../scripts/check-render-environment";
+import { platformKey } from "../../media/scripts/check-render-environment";
 import { RenderExecutorHealth, reserveWorkerHealthPort, verifySharedRenderEnvironment } from "./render-executor-health";
-import { executorProcessFailure, WorkerProcessFailure } from "./worker-process";
+import { executorProcessFailure, WorkerProcessFailure } from "../../media/src/worker-process";
 
 const spawnFailure = () => new WorkerProcessFailure("worker_command_spawn_failed", "retryable", "spawn failed", "", null,
   { errno: "EBADF", executableClass: "ffprobe", failureScope: "executor" });

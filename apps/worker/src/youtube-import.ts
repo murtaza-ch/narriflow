@@ -8,7 +8,7 @@ import {
   WorkerProcessFailure,
   type WorkerPersistentProcess,
   type WorkerProcessModule,
-} from "./worker-process";
+} from "../../media/src/worker-process";
 
 export const YOUTUBE_TOKEN_SERVER_URL = "http://127.0.0.1:4416";
 export const YOUTUBE_TOKEN_SERVER_VERSION = "2.0.0";
@@ -76,7 +76,7 @@ export async function startYoutubeTokenServer(
     `--allow-ffi=${modules}`, `--allow-read=${modules},${resolve(home, "src")}`,
     // The provider image ships package.json and deno.lock but no deno.json;
     // Deno discovers both from cwd, exactly like the image's own entrypoint.
-    fileURLToPath(new URL("./owned-helper.ts", import.meta.url)),
+    fileURLToPath(new URL("../../media/src/owned-helper.ts", import.meta.url)),
     resolve(home, "src/main.ts"), "--host", "127.0.0.1",
   ],
     cwd: home,

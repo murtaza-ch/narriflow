@@ -1,6 +1,6 @@
 import { stat } from "node:fs/promises";
 import type { ClipCompositionPlan } from "@narriflow/composition-plan";
-import { WorkflowFailure } from "@narriflow/services";
+import { WorkflowFailure } from "@narriflow/services/workflow-attempt-contract";
 import {
 	type FrameRate,
 	type MediaFacts,

@@ -5,10 +5,10 @@
  * (FFmpeg/ffprobe builds, libass/fontconfig/freetype/harfbuzz/x264/zimg
  * libraries, the fonts that fallback actually resolves to, the vendored
  * caption faces, the face model, the Python wheels) and compares them with
- * `apps/worker/runtime-lock.json`.
+ * `apps/media/runtime-lock.json`.
  *
- *   bun apps/worker/scripts/check-render-environment.ts            report only
- *   bun apps/worker/scripts/check-render-environment.ts --enforce  exit 1 on mismatch
+ *   bun apps/media/scripts/check-render-environment.ts            report only
+ *   bun apps/media/scripts/check-render-environment.ts --enforce  exit 1 on mismatch
  *   ... --stage build|image|start   what the caller can check (see below)
  *   ... --json                      print the fingerprint
  *   ... --emit-pip-requirements     hashed requirements for the Dockerfile
@@ -380,7 +380,7 @@ export async function collectRuntimeFingerprint(options: CollectOptions = {}): P
   const filtersOut = ffmpegPath ? (await run(ffmpegPath, ["-hide_banner", "-filters"])).stdout : "";
   const encodersOut = ffmpegPath ? (await run(ffmpegPath, ["-hide_banner", "-encoders"])).stdout : "";
   const hasWord = (listing: string, name: string) => new RegExp(`^\\s*[A-Z.]{1,6}\\s+${name}\\s`, "m").test(listing);
-  const modelPath = options.modelPath ?? process.env.REFRAME_MODEL_PATH?.trim() ?? [platformLock.model.path, join(repoRoot, "apps/worker/models/face_yunet.onnx")].find((candidate) => existsSync(candidate)) ?? null;
+  const modelPath = options.modelPath ?? process.env.REFRAME_MODEL_PATH?.trim() ?? [platformLock.model.path, join(repoRoot, "apps/media/models/face_yunet.onnx")].find((candidate) => existsSync(candidate)) ?? null;
   const fontsDirectory = options.captionFontsDirectory ?? join(repoRoot, lock.captionFonts.directory);
   const fontconfig = await run("fc-match", ["--version"]);
   const osRelease = process.platform === "linux" ? (await run("sh", ["-c", ". /etc/os-release && echo \"$ID $VERSION_CODENAME $VERSION_ID\""])).stdout.trim() : (await run("sw_vers", ["-productVersion"])).stdout.trim();

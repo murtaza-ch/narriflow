@@ -4,8 +4,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LayoutEvidenceClaimLost, WorkflowFailure, type ClipPendingAutoLayoutAnalysis } from "@narriflow/services";
-import { parseRenderConfig } from "../render-config";
-import { WorkerProcessFailure, type WorkerProcessModule } from "../worker-process";
+import { parseRenderConfig } from "../../../media/src/render-config";
+import { WorkerProcessFailure, type WorkerProcessModule } from "../../../media/src/worker-process";
 import {
   analyzeClipAutoLayout,
   processPendingAutoLayoutAnalyses,

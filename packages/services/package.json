@@ -22,6 +22,34 @@
       "types": "./src/workflow.service.ts",
       "default": "./src/workflow.service.ts"
     },
+    "./workflow-attempt-contract": {
+      "types": "./src/workflow-attempt-contract.ts",
+      "default": "./src/workflow-attempt-contract.ts"
+    },
+    "./brand-font-parser": {
+      "types": "./src/brand-font-parser.ts",
+      "default": "./src/brand-font-parser.ts"
+    },
+    "./clip-editor-document-codec": {
+      "types": "./src/clip-editor-document-codec.ts",
+      "default": "./src/clip-editor-document-codec.ts"
+    },
+    "./motion-render-analytics": {
+      "types": "./src/motion-render-analytics.ts",
+      "default": "./src/motion-render-analytics.ts"
+    },
+    "./render-group-contract": {
+      "types": "./src/render-group-contract.ts",
+      "default": "./src/render-group-contract.ts"
+    },
+    "./url-guard": {
+      "types": "./src/url-guard.ts",
+      "default": "./src/url-guard.ts"
+    },
+    "./pexels-contract": {
+      "types": "./src/pexels-contract.ts",
+      "default": "./src/pexels-contract.ts"
+    },
     "./runtime-environment": {
       "types": "./src/runtime-environment.ts",
       "default": "./src/runtime-environment.ts"
@@ -365,10 +393,6 @@
     "./webhook-subscription": {
       "types": "./src/webhook-subscription.ts",
       "default": "./src/webhook-subscription.ts"
-    },
-    "./url-guard": {
-      "types": "./src/url-guard.ts",
-      "default": "./src/url-guard.ts"
     }
   },
   "scripts": {
@@ -389,14 +413,14 @@
     "@narriflow/db": "workspace:*",
     "@narriflow/email": "workspace:*",
     "@narriflow/validators": "workspace:*",
-    "@noble/hashes": "2.4.0",
     "@node-rs/argon2": "^2.2.0",
     "@prisma/client": "^7.4.2",
     "fast-xml-parser": "^5.11.2",
     "fontkit": "2.0.4",
     "ioredis": "^5.9.3",
     "sharp": "^0.35.5",
-    "stripe": "^22.5.0"
+    "stripe": "^22.5.0",
+    "@noble/hashes": "2.4.0"
   },
   "devDependencies": {
     "@prisma/adapter-pg": "7.7.0",

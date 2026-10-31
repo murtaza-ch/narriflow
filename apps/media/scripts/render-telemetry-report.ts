@@ -1,5 +1,5 @@
 /** Read Railway JSON/JSONL without a DB connection. Usage:
- * bun apps/worker/scripts/render-telemetry-report.ts LOG_FILE WORKFLOW_RUN_ID
+ * bun apps/media/scripts/render-telemetry-report.ts LOG_FILE WORKFLOW_RUN_ID
  * Exit 1 for missing execution summaries or accepted artifacts without a
  * validation record. Durable denominators require the runbook ledger query. */
 import { readFile } from "node:fs/promises";

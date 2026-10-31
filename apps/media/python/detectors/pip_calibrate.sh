@@ -20,7 +20,7 @@
 # videos, and prints a raw-vs-proxy table.
 #
 # Usage:
-#   apps/worker/scripts/pip_calibrate.sh video1.mp4 [video2.mp4 ...]
+#   apps/media/scripts/pip_calibrate.sh video1.mp4 [video2.mp4 ...]
 #
 # Env overrides:
 #   PYTHON    - interpreter with opencv-python-headless + numpy installed
