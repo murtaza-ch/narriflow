@@ -7,15 +7,18 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from dataclasses import dataclass, field
+import hashlib
 import json
 import re
 import time
 from urllib.parse import urlsplit
 from uuid import UUID
+from typing import Any
 
 from .control import ExecutionControlError, ExecutorSession, _instant
 from .multipart import (CompletedObject, MultipartDestination, MultipartTransferError,
-                        PART_SIZE_BYTES, SignedGrant)
+                        PART_SIZE_BYTES, SignedGrant, SignedHttpTransport)
 
 TARGET = '/api/execution/transfer'
 MAX_BYTES = 10 * 1024**3
@@ -182,10 +185,11 @@ def parse_transfer_disposition(value):
             if len(json.dumps(source['command'], separators=(',', ':'), ensure_ascii=False, allow_nan=False).encode()) > 32*1024:
                 _invalid()
         elif source.get('kind') == 'object':
-            _grant(source, additional={'kind', 'storageKey', 'etag', 'byteLength'})
+            _grant(source, additional={'kind', 'storageKey', 'etag', 'byteLength', 'sha256'})
             _text(source['storageKey'], 1024)
             _text(source['etag'], 160, r'[\x21-\x7e]+')
             _integer(source['byteLength'], PART_SIZE_BYTES)
+            _text(source['sha256'], 64, SHA)
         else:
             _invalid()
         if not isinstance(value['sources'], list) or len(value['sources']) > 16 or not isinstance(value['outputs'], list) or len(value['outputs']) > 16:
@@ -239,6 +243,57 @@ def check_transfer_response(command, result):
     upper = result.server_time_upper + max(0, time.monotonic()-result.received_monotonic)
     if any(_instant(grant['expiresAt']) <= upper+1 for grant in grants):
         raise ExecutionControlError('execution_grant_expired')
+
+
+@dataclass(frozen=True)
+class WorkPackage:
+    function_name: str
+    input_hash: str
+    command: Any = field(repr=False)
+    sources: tuple[dict, ...] = field(repr=False)
+    outputs: tuple[dict, ...]
+
+
+async def load_work_package(session: ExecutorSession, *, transport=None) -> WorkPackage:
+    """Load only the input assigned by a freshly signed work-package response."""
+    storage = transport if transport is not None else SignedHttpTransport()
+    for attempt in range(3):
+        try:
+            value = (await asyncio.to_thread(session.transfer, 'work-package')).disposition
+        except ExecutionControlError as error:
+            if error.code == 'execution_grant_expired' and attempt < 2:
+                continue
+            raise
+        if value['inputHash'] != session.fence['reference'].get('inputHash'):
+            raise ExecutionControlError('execution_input_changed')
+        source = value['input']
+        if source['kind'] == 'inline':
+            command = source['command']
+        else:
+            try:
+                response = await storage.request(SignedGrant(source['url'], source['headers']), 'GET', None,
+                    {'If-Match':source['etag']}, PART_SIZE_BYTES, session.cancel_event.is_set)
+            except MultipartTransferError as error:
+                if error.code == 'multipart_transport_failed' and attempt < 2:
+                    continue
+                raise ExecutionControlError('execution_input_unavailable') from None
+            session.assert_live()
+            if response.status in {403, 408, 429, 500, 502, 503, 504} and attempt < 2:
+                continue
+            headers = {name.lower():content for name,content in response.headers.items()}
+            if (response.status != 200 or headers.get('etag') != source['etag']
+                    or headers.get('content-length') != str(source['byteLength'])
+                    or len(response.body) != source['byteLength']
+                    or hashlib.sha256(response.body).hexdigest() != source['sha256']):
+                raise ExecutionControlError('execution_input_changed')
+            def invalid_constant(_):
+                raise ValueError()
+            try:
+                command = json.loads(bytes(response.body), parse_constant=invalid_constant)
+            except (ValueError, UnicodeError):
+                raise ExecutionControlError('execution_input_invalid') from None
+        return WorkPackage(value['functionName'], value['inputHash'], command, tuple(value['sources']), tuple(value['outputs']))
+    raise ExecutionControlError('execution_input_unavailable')
 
 
 class ScopedMultipartControl:
