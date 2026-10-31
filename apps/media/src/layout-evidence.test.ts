@@ -133,7 +133,7 @@ describe("LayoutEvidence", () => {
     expect(await unavailable.owner.fulfill(requests)).toMatchObject({ automaticLayout: { state: "failed" }, screenLayout: { state: "failed" }, splitLayout: { state: "failed" } });
     expect(unavailable.calls).toEqual({ segment: 0, multi: 0, face: 0, pip: 0, cuts: 0 });
     expect(() => harness(input({ durable, completedPreparation: true, clip: { ...input().clip, editorRevision: 8, startSec: 11 } }))).toThrow("layout_preparation_binding_mismatch");
-    expect(() => harness(input({ durable: { ...durable, automatic: { ...durable.automatic, engine: "foreign-engine" } }, completedPreparation: true }))).toThrow("layout_preparation_binding_mismatch");
+    expect(() => harness(input({ durable: { ...durable, automatic: { ...durable.automatic, engine: "foreign-engine" } }, completedPreparation: true }))).toThrow("unsupported_clip_composition_evidence_version");
   });
 
   test.each(["trim", "dimensions", "deleted ranges"])("rejects durable evidence after changing %s", async (change) => {
