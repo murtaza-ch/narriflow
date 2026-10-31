@@ -1,0 +1,28 @@
+{
+  "status": "passed_local",
+  "scope": "Immediate bounded Rule resume/delete/revocation producers; legacy scanner ports/deletion remain.",
+  "protocol": "maintenance/maintenance zw1.<workspaceUUIDcompact>.<ruleUUIDcompact>.<acceptedVersion|d>[.<createdAtMillis>.<cursorUUIDcompact>]",
+  "factory": "@narriflow/services/zoom-rule-wakes createZoomRuleWakes({database,register}).dispatch(reference); isZoomRuleWakeReference(reference)",
+  "checks": {
+    "postgres": {
+      "passed": 28,
+      "assertions": 188,
+      "files": 4,
+      "log": "/tmp/narriflow-zoom-rule-wake-combined-db.log"
+    },
+    "services_typecheck": true,
+    "biome_files": 6
+  },
+  "behavior": [
+    "Explicit settings/run-now/takeover changes advance Rule metadata generation once; exact receipt replay repairs existing current obligations only.",
+    "Run-now cannot reuse a delivery identity with a changed nextRunAt/inputHash.",
+    "Zoom target payload does not depend on Rule execution generation. Original018source/scope is rechecked at intake.",
+    "Paused targets wait lease-free for a distinct event or original deadline.",
+    "33 targets drain as32+1 with one committed continuation and <=127 identifiers per page.",
+    "Page Inbox replay repairs lost registration acknowledgements without rerunning the page.",
+    "Deleted Rules have one Workspace-scoped deletion obligation recoverable after deletion.",
+    "Connection revocation and Rule wake obligations commit together; notification acknowledgement waits for confirmed registration.",
+    "OAuth authorizedAt remains separate from ordinary token refresh updates."
+  ],
+  "schema": "No DDL changes since6915ebeb; final023 remains frozen."
+}

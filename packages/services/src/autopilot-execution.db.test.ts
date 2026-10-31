@@ -80,6 +80,19 @@ suite("Exact Autopilot source coordination", () => {
     expect(await db.executionDispatch.count({where:{kind:"operation_driver",subjectKind:"autopilot_rule",subjectId:replay.rule.id}})).toBe(1);
     expect(await db.autopilotRule.count({where:{workspaceId:f.workspace.id}})).toBe(2);
   }));
+  test("run-now creates one fresh dispatch identity and exact receipt replay cannot move the schedule again",scoped(async()=>{
+    const f=await fixture(),scope={workspaceId:f.workspace.id,actorUserId:f.user.id},key=crypto.randomUUID(),service=new AutopilotService();
+    const before=(await db.$transaction(tx=>queueAutopilotRule(tx,f.rule.id)))!;
+    const first=await service.acceptRunNow(scope,f.rule.id,{clientIdempotencyKey:key});
+    expect(first.replayed).toBe(false);
+    const accepted=await db.autopilotRule.findUniqueOrThrow({where:{id:f.rule.id}});
+    expect(accepted.generation).toBe(f.rule.generation+1);
+    const after=(await db.$transaction(tx=>queueAutopilotRule(tx,f.rule.id)))!;
+    expect(after.dispatchId).not.toBe(before.dispatchId);
+    expect((await service.acceptRunNow(scope,f.rule.id,{clientIdempotencyKey:key})).replayed).toBe(true);
+    expect(await db.autopilotRule.findUniqueOrThrow({where:{id:f.rule.id}})).toMatchObject({generation:accepted.generation,nextRunAt:accepted.nextRunAt});
+    expect((await db.$transaction(tx=>queueAutopilotRule(tx,f.rule.id)))!.dispatchId).toBe(after.dispatchId);
+  }));
   test("an admitted episode stays at the same cursor until its ingest registration is confirmed", scoped(async () => {
     const f = await fixture(), confirmations: string[][] = []; let lose = true;
     const snapshot = { title:"Synthetic",episodes:["first","prior"].map(id=>({id,title:id,enclosureUrl:`https://cdn.example.test/${id}.mp3`,durationSeconds:60})),etag:null,lastModified:null,finalUrl:f.rule.rssUrl!,notModified:false };
