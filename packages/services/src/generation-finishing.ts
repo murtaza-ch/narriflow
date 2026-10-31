@@ -25,7 +25,7 @@ import { accessibleProjectWhere } from "./project-access";
 import { uuidV5 } from "./uuid-v5";
 import { flushWorkspaceEvents, queueWorkspaceEvent } from "./workspace-event";
 import { readExecutionAdmission } from "./execution-admission";
-import { appendExecutionDispatch, readExecutionDispatch } from "./execution-dispatch";
+import { appendExecutionDispatch, readExecutionDispatch, executionDispatchIdentity } from "./execution-dispatch";
 import { collectExecutionDispatch } from "./execution-dispatch-runtime";
 import { executionDispatchReferenceSchema, type ExecutionDispatchReference } from "@narriflow/validators/execution";
 import { lockWorkspaceUsage } from "./processing-usage";
@@ -70,6 +70,9 @@ export const finishingQueueKey = (finishingId: string, clipId: string, accountId
 export const FINISHING_LEASE_MS = 5 * 60 * 1000;
 /** Exports that haven't finished this long after finishing became due count as failed. */
 export const FINISHING_MAX_WAIT_MS = 6 * 60 * 60 * 1000;
+/** Keep the existing six-hour export wait, then allow a bounded hour for the
+ * remaining copy, queue and review actions. Neither clock moves on replay. */
+export const FINISHING_MAX_OPERATION_MS = FINISHING_MAX_WAIT_MS + 60 * 60_000;
 export const FINISHING_MAX_ATTEMPTS = 5;
 /** How often a clip edited mid-run is exported again at its new revision. */
 const MAX_REVISION_RETRIES = 3;
@@ -85,9 +88,11 @@ function finishingInputHash(row: GenerationFinishing) {
 }
 async function appendFinishing(tx: Tx, row: GenerationFinishing, deadline?: { kind: "lease" | "operation"; at: Date }) {
   if (row.generation < 1 || !row.dueAt || !row.operationDeadlineAt) throw Error("finishing_obligation_invalid");
-  const record = await appendExecutionDispatch(tx, { deploymentEpoch: row.deploymentEpoch, generation: row.generation,
-    kind: "operation_driver", subject: { kind: "generation_finishing", id: row.id }, inputHash: finishingInputHash(row),
-    dueAt: deadline?.at ?? row.nextAttemptAt ?? row.dueAt,
+  const identity = { deploymentEpoch: row.deploymentEpoch, generation: row.generation, kind: "operation_driver" as const, subject: { kind: "generation_finishing" as const, id: row.id } };
+  const key = deadline ? null : await executionDispatchIdentity(identity);
+  const existing = key ? await tx.executionDispatch.findUnique({ where: { deliveryKey: key.deliveryKey }, select: { dueAt: true } }) : null;
+  const record = await appendExecutionDispatch(tx, { ...identity, inputHash: finishingInputHash(row),
+    dueAt: deadline?.at ?? existing?.dueAt ?? row.nextAttemptAt ?? row.dueAt,
     ...(deadline ? { deadlineKind: deadline.kind, observedDeadlineAt: deadline.at } : {}) });
   collectExecutionDispatch(tx, record.reference.dispatchId);
   return record.reference;
@@ -103,7 +108,7 @@ export async function queueGenerationFinishing(tx: Tx, id: string): Promise<Exec
   if (row.generation === 0) {
     const now = await finishingNow(tx), dueAt = row.dueAt ?? now;
     row = await tx.generationFinishing.update({ where: { id }, data: { generation: 1, dueAt,
-      operationDeadlineAt: new Date(dueAt.getTime() + FINISHING_MAX_WAIT_MS) } });
+      operationDeadlineAt: new Date(dueAt.getTime() + FINISHING_MAX_OPERATION_MS) } });
   }
   return appendFinishing(tx, row);
 }
@@ -354,7 +359,19 @@ export function createGenerationFinishing(deps: GenerationFinishingDependencies)
       return { kind: "claimed" as const, row: { ...claimed, claimToken, reference }, watchdogId: watchdog.dispatchId };
     });
     if (prepared.kind === "advanced") { await register([prepared.dispatchId]); return { kind: "complete" }; }
-    if (prepared.kind !== "claimed") return prepared;
+    if (prepared.kind !== "claimed") {
+      if (prepared.kind === "superseded" && reference.kind === "operation_driver" && reference.subject.kind === "generation_finishing") {
+        const repaired = await prisma.$transaction(async tx => {
+          const { epoch } = await readExecutionAdmission(tx), original = await readExecutionDispatch(tx,reference.dispatchId);
+          if (epoch !== reference.deploymentEpoch || !original || JSON.stringify(original.reference) !== JSON.stringify(reference)) return null;
+          // Repair only the already committed current obligation. An old
+          // receipt cannot grant another generation, deadline or claim.
+          return queueGenerationFinishing(tx,reference.subject.id);
+        });
+        if (repaired) await register([repaired.dispatchId]);
+      }
+      return prepared;
+    }
     try { await register([prepared.watchdogId]); }
     catch (error) {
       await prisma.$transaction(async tx => { const state = await current(tx,reference,prepared.row.claimToken); if (state) await tx.generationFinishing.update({ where: { id: state.row.id }, data: { state: "due", claimToken: null, leaseExpiresAt: null } }); });
@@ -364,6 +381,10 @@ export function createGenerationFinishing(deps: GenerationFinishingDependencies)
     catch (error) {
       if (error instanceof ClaimLost) return { kind: "superseded" };
       try { await fail(prepared.row,error); } catch (failure) { if (failure instanceof ClaimLost) return { kind: "superseded" }; throw failure; }
+    }
+    const parked = await prisma.generationFinishing.findUnique({ where: { id: reference.subject.id }, select: { state: true, dueAt: true, operationDeadlineAt: true, deploymentEpoch: true, generation: true } });
+    if (parked?.state === "exporting" && parked.deploymentEpoch === reference.deploymentEpoch && parked.generation === reference.generation && parked.dueAt && parked.operationDeadlineAt) {
+      return { kind: "wait", dueAt: new Date(Math.min(parked.dueAt.getTime()+FINISHING_MAX_WAIT_MS,parked.operationDeadlineAt.getTime())) };
     }
     return { kind: "complete" };
   }
@@ -408,13 +429,16 @@ export function createGenerationFinishing(deps: GenerationFinishingDependencies)
       const ids = await prisma.$transaction(async tx => {
         const state = await current(tx,row.reference!,row.claimToken);
         if (!state) throw new ClaimLost();
-        const patched = await tx.generationFinishing.update({ where: { id: row.id }, data });
+        const updates = { ...data };
+        if (updates.leaseExpiresAt instanceof Date) updates.leaseExpiresAt = new Date(Math.min(state.clock.getTime()+FINISHING_LEASE_MS,state.row.operationDeadlineAt!.getTime()));
+        if (updates.state === "due") updates.nextAttemptAt = new Date(Math.min(state.clock.getTime()+(typeof updates.attempts === "number" ? Math.min(2**updates.attempts*30_000,15*60_000) : 0),state.row.operationDeadlineAt!.getTime()));
+        const patched = await tx.generationFinishing.update({ where: { id: row.id }, data: updates });
         if (data.state === "due") {
           const next = await tx.generationFinishing.update({ where: { id: row.id }, data: { generation: { increment: 1 } } });
           return [(await appendFinishing(tx,next)).dispatchId];
         }
-        if (data.state === "exporting") return [(await appendFinishing(tx,patched,{ kind: "operation", at: patched.operationDeadlineAt! })).dispatchId];
-        if (data.leaseExpiresAt instanceof Date) return [(await appendFinishing(tx,patched,{ kind: "lease", at: data.leaseExpiresAt })).dispatchId];
+        if (data.state === "exporting") return [(await appendFinishing(tx,patched,{ kind: "operation", at: new Date(Math.min(patched.dueAt!.getTime()+FINISHING_MAX_WAIT_MS,patched.operationDeadlineAt!.getTime())) })).dispatchId];
+        if (updates.leaseExpiresAt instanceof Date) return [(await appendFinishing(tx,patched,{ kind: "lease", at: updates.leaseExpiresAt })).dispatchId];
         return [];
       });
       await register(ids);
@@ -424,6 +448,7 @@ export function createGenerationFinishing(deps: GenerationFinishingDependencies)
     if (written.count !== 1) throw new ClaimLost();
   }
   const savePicks = (row: ClaimedRow, picks: FinishingPick[]) => save(row, { picks: picks as Prisma.InputJsonValue });
+  const advance = (row: ClaimedRow, picks: FinishingPick[]) => save(row,{ state: "due", picks: picks as Prisma.InputJsonValue, nextAttemptAt: now(), claimToken: null, leaseExpiresAt: null });
   const renew = (row: ClaimedRow) => save(row, { leaseExpiresAt: new Date(now().getTime() + FINISHING_LEASE_MS) });
 
   async function exportStatuses(picks: FinishingPick[]) {
@@ -438,10 +463,11 @@ export function createGenerationFinishing(deps: GenerationFinishingDependencies)
     const statuses = await exportStatuses(outcome.picks);
     const exportIds = outcome.picks.flatMap((pick) => (pick.exportId && !pick.exportError && EXPORT_USABLE.includes(statuses.get(pick.exportId) ?? "failed") ? [pick.exportId] : []));
     await prisma.$transaction(async (tx) => {
-      if (row.reference && !await current(tx,row.reference,row.claimToken)) throw new ClaimLost();
+      const state = row.reference ? await current(tx,row.reference,row.claimToken) : null;
+      if (row.reference && !state) throw new ClaimLost();
       const ended = await tx.generationFinishing.updateMany({
         where: { id: row.id, state: "running", claimToken: row.claimToken },
-        data: { state: outcome.state, reason: outcome.reason, picks: outcome.picks as Prisma.InputJsonValue, finishedAt: now(), claimToken: null, leaseExpiresAt: null, nextAttemptAt: null },
+        data: { state: outcome.state, reason: outcome.reason, picks: outcome.picks as Prisma.InputJsonValue, finishedAt: state?.clock ?? now(), claimToken: null, leaseExpiresAt: null, nextAttemptAt: null },
       });
       if (ended.count !== 1) throw new ClaimLost();
       queueFinishingFinished(tx, { ...row, state: outcome.state, reason: outcome.reason, exportIds });
@@ -548,13 +574,15 @@ export function createGenerationFinishing(deps: GenerationFinishingDependencies)
       await renew(row);
       await exportPick(row, actor, settings, pick, picks);
       await savePicks(row, picks);
+      if (row.reference) return advance(row,picks);
     }
 
     // Park the row while the renders run. It wakes without a claim.
     const statuses = await exportStatuses(picks);
     const unfinished = picks.filter((pick) => pick.exportId && !EXPORT_TERMINAL.includes(statuses.get(pick.exportId) ?? "failed"));
     if (unfinished.length > 0) {
-      if (now().getTime() - (row.dueAt ?? now()).getTime() < FINISHING_MAX_WAIT_MS) {
+      const observed = row.reference ? await prisma.$transaction(finishingNow) : now();
+      if (observed.getTime() - (row.dueAt ?? observed).getTime() < FINISHING_MAX_WAIT_MS) {
         return save(row, { state: "exporting", nextAttemptAt: null, claimToken: null, leaseExpiresAt: null });
       }
       for (const pick of unfinished) pick.exportError = "export_timeout";
@@ -591,6 +619,7 @@ export function createGenerationFinishing(deps: GenerationFinishingDependencies)
           pick.copyError = error instanceof ExpectedDomainFailureError ? error.code : "copy_failed";
         }
         await savePicks(row, picks);
+        if (row.reference) return advance(row,picks);
       }
     }
 
@@ -621,6 +650,7 @@ export function createGenerationFinishing(deps: GenerationFinishingDependencies)
             results[account.id] = error.code;
           }
           await savePicks(row, picks);
+          if (row.reference) return advance(row,picks);
         }
       }
     }
@@ -644,7 +674,7 @@ export function createGenerationFinishing(deps: GenerationFinishingDependencies)
             : queue && queue.missing > 0 ? "queue_account_unavailable" : "queue_failed";
     // The ledger keys the notification by the row, so a repeat sends nothing.
     if (exportCount > 0) await deps.notify({ projectId: row.projectId, sourceId: row.id, clipCount: exportCount }).catch((error) => {
-      log("generation_finishing_notification_failed", { finishingId: row.id, error: error instanceof Error ? error.message : String(error) });
+      log("generation_finishing_notification_failed", { finishingId: row.id, code: error instanceof ExpectedDomainFailureError ? error.code : "notification_handoff_failed" });
     });
     await finish(row, { state: complete && !reviewReason ? "ready" : "partial", reason, picks });
   }
@@ -658,7 +688,7 @@ export function createGenerationFinishing(deps: GenerationFinishingDependencies)
   /** An unexpected failure releases the row to try again, until the budget runs out. */
   async function fail(row: ClaimedRow, error: unknown) {
     const attempts = row.attempts + 1;
-    log("generation_finishing_attempt_failed", { finishingId: row.id, projectId: row.projectId, attempts, error: error instanceof Error ? error.message : String(error) });
+    log("generation_finishing_attempt_failed", { finishingId: row.id, projectId: row.projectId, attempts, code: error instanceof ExpectedDomainFailureError ? error.code : "finishing_action_failed" });
     if (attempts < FINISHING_MAX_ATTEMPTS) {
       await save(row, { state: "due", attempts, nextAttemptAt: new Date(now().getTime() + Math.min(2 ** attempts * 30_000, 15 * 60_000)), claimToken: null, leaseExpiresAt: null });
       return;

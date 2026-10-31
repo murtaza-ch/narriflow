@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@prisma/client";
 import { assertExecutionDatabaseTestTarget } from "./execution-db-test-support";
-import { createGenerationFinishing, FINISHING_MAX_WAIT_MS, freezeGenerationFinishing, queueGenerationFinishing, transitionGenerationFinishing, type GenerationFinishingDependencies } from "./generation-finishing";
+import { createGenerationFinishing, FINISHING_MAX_OPERATION_MS, freezeGenerationFinishing, queueGenerationFinishing, transitionGenerationFinishing, type GenerationFinishingDependencies } from "./generation-finishing";
 
 const url = process.env.SERVERLESS_TEST_DATABASE_URL;
 const suite = process.env.ALLOW_SERVERLESS_DB_TESTS === "1" && url ? describe : describe.skip;
@@ -38,7 +38,7 @@ suite("Targeted generation finishing obligations", () => {
     const first = await db.generationFinishing.findUniqueOrThrow({ where: { id: row.id } });
     expect(first).toMatchObject({ state: "due", generation: 1, attempts: 0, claimToken: null, leaseExpiresAt: null });
     expect(first.dueAt!.getTime()).toBeGreaterThan(Date.now()-30_000);
-    expect(first.operationDeadlineAt!.getTime()-first.dueAt!.getTime()).toBe(FINISHING_MAX_WAIT_MS);
+    expect(first.operationDeadlineAt!.getTime()-first.dueAt!.getTime()).toBe(FINISHING_MAX_OPERATION_MS);
     const reference = await db.$transaction(tx => queueGenerationFinishing(tx,row.id));
     await db.$transaction(tx => transitionGenerationFinishing(tx,origin.id,"completed"));
     expect(await db.$transaction(tx => queueGenerationFinishing(tx,row.id))).toEqual(reference);
@@ -64,6 +64,48 @@ suite("Targeted generation finishing obligations", () => {
     await db.$transaction(tx => transitionGenerationFinishing(tx,value.origin.id,"completed"));
     return { ...value, reference: (await db.$transaction(tx => queueGenerationFinishing(tx,value.row.id)))! };
   }
+  async function withClips(value: Awaited<ReturnType<typeof due>>) {
+    await db.transcript.create({ data: { projectId: value.row.projectId, status: "completed", completedAt: new Date(), utterancesJson: [] } });
+    const selected = await db.workflowRun.create({ data: { projectId: value.row.projectId, stage: "moment_detection", status: "completed", idempotencyKey: `${value.origin.idempotencyKey}__moment_detection` } });
+    for (let index=0;index<2;index++) await db.clip.create({ data: { projectId: value.row.projectId, workflowRunId: selected.id, index, startSec: 0, endSec: 30,
+      hookText: "Synthetic pick", reasoning: "Fixture", category: "hook", transcriptSlice: [], viralityScore: 80-index, hookStrengthScore: 80, emotionalIntensityScore: 80,
+      pacingScore: 80, durationOptimalityScore: 80, tiktokScore: 80, youtubeScore: 80, instagramScore: 80, llmProvider: "fixture", llmModel: "fixture" } });
+  }
+  test("a command admits only one picked export and advances through exact continuation references", async () => {
+    const value = await due(); await withClips(value); let exports=0, notified=0;
+    const service = driver({ createExport: async (_scope, projectId, clipId, input, key) => {
+      exports++;
+      const row = await db.clipExport.create({ data: { workspaceId: value.row.workspaceId, projectId, clipId, editorRevision: input.expectedRevision,
+        fingerprint: key, status: "ready", resolution: "720p", watermark: false } });
+      return { export: { id: row.id, status: row.status }, reused: false };
+    }, notify: async () => { notified++; } });
+    await service.run(value.reference); expect(exports).toBe(1); expect(notified).toBe(0);
+    const next = (await db.$transaction(tx => queueGenerationFinishing(tx,value.row.id)))!;
+    expect(next.generation).toBeGreaterThan(value.reference.generation);
+    expect((await service.run(value.reference)).kind).toBe("superseded"); expect(exports).toBe(1);
+    await service.run(next); expect(exports).toBe(2); expect(notified).toBe(0);
+    await service.run((await db.$transaction(tx => queueGenerationFinishing(tx,value.row.id)))!);
+    expect(notified).toBe(1);
+    expect(await db.generationFinishing.findUniqueOrThrow({ where: { id: value.row.id } })).toMatchObject({ state: "ready", attempts: 0, claimToken: null, leaseExpiresAt: null });
+  });
+  test("an old exact receipt repairs its committed next wake after ACK loss without admitting another export", async () => {
+    const value = await due(); await withClips(value); let exports=0, loseNext=true, nextRegistrations=0;
+    const service = driver({ register: async ids => {
+      const next = await db.executionDispatch.findMany({ where: { id: { in: [...ids] }, generation: { gt: value.reference.generation }, deadlineKind: null } });
+      if (next.length) { nextRegistrations++; if (loseNext) { loseNext=false; throw Error("next_wake_ack_lost"); } }
+    }, createExport: async (_scope, projectId, clipId, input, key) => {
+      exports++;
+      const row=await db.clipExport.create({ data: { workspaceId:value.row.workspaceId,projectId,clipId,editorRevision:input.expectedRevision,fingerprint:key,status:"ready",resolution:"720p",watermark:false } });
+      return { export:{id:row.id,status:row.status},reused:false };
+    }, notify: async () => {} });
+    await service.run(value.reference);
+    expect(exports).toBe(1); expect(nextRegistrations).toBe(1);
+    const committed=await db.generationFinishing.findUniqueOrThrow({ where:{id:value.row.id} });
+    expect(committed).toMatchObject({state:"due",generation:2,attempts:0,claimToken:null,leaseExpiresAt:null});
+    expect((await service.run(value.reference)).kind).toBe("superseded");
+    expect(nextRegistrations).toBe(2); expect(exports).toBe(1);
+    expect(await db.generationFinishing.findUniqueOrThrow({ where:{id:value.row.id} })).toEqual(committed);
+  });
   test("one exact driver confirms its watchdog before work and a concurrent duplicate waits", async () => {
     const first = await due(), unrelated = await due(); let calls = 0, registrations = 0;
     let entered!: () => void, release!: () => void;
