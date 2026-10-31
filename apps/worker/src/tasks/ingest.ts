@@ -1,3 +1,4 @@
+import { guardedFetch, createByteLimitTransform } from "../../../media/src/outbound-transport";
 import { putFileFromPath } from "../r2-file-transfer";
 import { stat } from "node:fs/promises";
 import { createWriteStream } from "node:fs";
@@ -8,12 +9,10 @@ import { setTimeout as sleep } from "node:timers/promises";
 import {
   assertPublicHttpUrl,
   assertResponseContentLength,
-  createByteLimitTransform,
   createDriveTokenCipher,
   driveDownloadRefusal,
   driveFileMediaUrl,
   ExpectedDomainFailureError,
-  guardedFetch,
   getIngestJobLifecycle,
   getProcessingUsage,
   IngestJobClaimLost,

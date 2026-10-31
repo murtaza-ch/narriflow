@@ -11,7 +11,7 @@ import {
   rotateCallbackSigningSecretMutation,
   testWebhookMutation,
 } from "./mutations";
-import { developerSettingsQuery, integrationsOverviewQuery } from "./queries";
+import { developerSettingsQuery, integrationsOverviewQuery, webhookTestQuery } from "./queries";
 
 const scope = { userId: USER, workspaceId: WORKSPACE_A };
 const headers = { "X-Workspace-Id": WORKSPACE_A };
@@ -154,12 +154,12 @@ describe("webhooks", () => {
 
   test("a test posts to the webhook's own path; a retry keeps its key and a finished test takes a new one", async () => {
     const id = "00000000-0000-4000-8000-000000000040";
-    const ok = () => jsonResponse({ eventId: "e", delivered: true, status: 200, durationMs: 4 }, { headers });
+    const ok = () => jsonResponse({ deliveryId:"d",eventId: "e", state: "pending", status: null, durationMs: null }, { headers });
     const { api, calls } = setup(() => new Response("down", { status: 503 }), ok, ok);
     const options = testWebhookMutation(api, scope);
     await expect(options.mutationFn?.(id, undefined as never)).rejects.toThrow();
     const result = await options.mutationFn?.(id, undefined as never);
-    expect(result).toMatchObject({ delivered: true });
+    expect(result).toMatchObject({ state: "pending" });
     expect(calls[0]?.url).toBe(`https://api.example.test/api/workspace/webhooks/${id}/test`);
     expect(calls[0]?.headers.get("idempotency-key")).toBeTruthy();
     expect(calls[1]?.headers.get("idempotency-key")).toBe(calls[0]?.headers.get("idempotency-key"));
@@ -167,4 +167,17 @@ describe("webhooks", () => {
     await options.mutationFn?.(id, undefined as never);
     expect(calls[2]?.headers.get("idempotency-key")).not.toBe(calls[0]?.headers.get("idempotency-key"));
   });
+});
+
+
+test("test status is scoped to user, Workspace, webhook and admitted delivery; terminal responses stop observing",async()=>{
+ const id="60000000-0000-4000-8000-000000000001",deliveryId="60000000-0000-4000-8000-000000000002";
+ const {api,calls}=setup(()=>jsonResponse({deliveryId,eventId:deliveryId,state:"pending",status:null,durationMs:null},{headers}));
+ const query=webhookTestQuery(api.transport,scope,id,deliveryId);await api.queryClient.fetchQuery(query);
+ expect(calls[0]?.url).toBe(`https://api.example.test/api/workspace/webhooks/${id}/tests/${deliveryId}`);expect(calls[0]?.headers.get("x-workspace-id")).toBe(WORKSPACE_A);
+ expect(query.queryKey).toEqual(scopedKey(scope,"developer","webhook-test",{webhookId:id,deliveryId}));
+ expect(webhookTestQuery(api.transport,scope,null,null).enabled).toBe(false);
+ if(typeof query.refetchInterval!=="function")throw new Error("Expected observation interval");
+ expect(query.refetchInterval({state:{data:{state:"pending"}}} as never)).toBe(1000);
+ expect(query.refetchInterval({state:{data:{state:"unconfirmed"}}} as never)).toBe(false);
 });

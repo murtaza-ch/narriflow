@@ -3634,6 +3634,8 @@ model OutboundDelivery {
   eventId String @db.Uuid
   eventSeq BigInt?
   createdByUserId String? @db.Uuid
+  actorCapability String? @db.VarChar(24)
+  apiKeyId String? @db.Uuid
   requestFingerprint String? @unique @db.Char(64)
   encryptedUrl String
   urlHost String @db.VarChar(255)

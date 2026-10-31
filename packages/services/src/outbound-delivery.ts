@@ -179,7 +179,11 @@ export class OutboundDeliveryService
 	private cipher() {
 		return this.dependencies.cipher ?? createCallbackCipher();
 	}
-	private async actor(tx: Tx, scope: ActorScope) {
+	private async actor(
+		tx: Tx,
+		scope: ActorScope,
+		capability: "api.manage" | "processing.consume" = "api.manage",
+	) {
 		const workspace = await tx.workspace.findUnique({
 			where: { id: scope.workspaceId },
 		});
@@ -202,10 +206,10 @@ export class OutboundDeliveryService
 			!user ||
 			user.deletedAt ||
 			!role ||
-			!roleHasWorkspaceCapability(role, "api.manage") ||
+			!roleHasWorkspaceCapability(role, capability) ||
 			!workspaceAllowsCapability(
 				{ role, status: workspace.status },
-				"api.manage",
+				capability,
 			) ||
 			!hasFeature(workspace.pricingTier, "integrations.api")
 		)
@@ -240,6 +244,8 @@ export class OutboundDeliveryService
 			eventId: string;
 			eventSeq?: bigint;
 			actor?: string;
+			actorCapability?: "api.manage" | "processing.consume";
+			apiKeyId?: string;
 			requestFingerprint?: string;
 			registration: CallbackRegistration;
 			payload: unknown;
@@ -276,6 +282,8 @@ export class OutboundDeliveryService
 			input.eventId,
 			input.eventSeq?.toString() ?? null,
 			input.registration.urlFingerprint,
+			input.actorCapability ?? null,
+			input.apiKeyId ?? null,
 			bodyStorageKey,
 			bodySha256,
 			bytes.byteLength,
@@ -290,6 +298,8 @@ export class OutboundDeliveryService
 				eventId: input.eventId,
 				eventSeq: input.eventSeq,
 				createdByUserId: input.actor,
+				actorCapability: input.actorCapability,
+				apiKeyId: input.apiKeyId,
 				requestFingerprint: input.requestFingerprint,
 				encryptedUrl: input.registration.encryptedUrl,
 				urlHost: input.registration.urlHost,
@@ -324,14 +334,24 @@ export class OutboundDeliveryService
 			);
 			return publicJob(row);
 		}
-		let head = await this.dependencies.body.head(plan(row));
+		const headBody = async () => {
+			try {
+				return await this.dependencies.body.head(plan(row));
+			} catch {
+				throw new OutboundDeliveryError(
+					"outbound_delivery_unavailable",
+					row.id,
+				);
+			}
+		};
+		let head = await headBody();
 		if (!head) {
 			try {
 				await this.dependencies.body.put(plan(row), bytes);
 			} catch {
 				/* An acknowledgment may be lost after the conditional PUT. */
 			}
-			head = await this.dependencies.body.head(plan(row));
+			head = await headBody();
 		}
 		if (
 			!head ||
@@ -398,7 +418,15 @@ export class OutboundDeliveryService
 			throw new OutboundDeliveryError("outbound_delivery_invalid");
 		return bytes;
 	}
-	async admitTest(scope: ActorScope, subscriptionId: string, intent: string) {
+	async admitTest(
+		scope: ActorScope,
+		subscriptionId: string,
+		intent: string,
+		authority: {
+			capability: "api.manage" | "processing.consume";
+			apiKeyId?: string;
+		} = { capability: "api.manage" },
+	) {
 		if (!intent || intent.length > 256)
 			throw new OutboundDeliveryError("outbound_delivery_conflict");
 		const fingerprint = hash([
@@ -415,7 +443,7 @@ export class OutboundDeliveryService
 				targetKind: "webhook_test",
 				targetId: subscriptionId,
 			});
-			await this.actor(tx, scope);
+			await this.actor(tx, scope, authority.capability);
 			const sub = await tx.webhookSubscription.findFirst({
 				where: { id: subscriptionId, workspaceId: scope.workspaceId },
 			});
@@ -440,6 +468,8 @@ export class OutboundDeliveryService
 				targetId: sub.id,
 				eventId,
 				actor: scope.actorUserId,
+				actorCapability: authority.capability,
+				apiKeyId: authority.apiKeyId,
 				requestFingerprint: fingerprint,
 				registration: sub,
 				payload: {
@@ -459,7 +489,6 @@ export class OutboundDeliveryService
 	}
 	async getTest(scope: ActorScope, subscriptionId: string, id: string) {
 		return this.database.$transaction(async (tx) => {
-			await this.actor(tx, scope);
 			const sub = await tx.webhookSubscription.findFirst({
 				where: { id: subscriptionId, workspaceId: scope.workspaceId },
 			});
@@ -474,6 +503,11 @@ export class OutboundDeliveryService
 			});
 			if (!sub || !row)
 				throw new OutboundDeliveryError("outbound_delivery_missing");
+			await this.actor(
+				tx,
+				scope,
+				row.actorCapability as "api.manage" | "processing.consume",
+			);
 			return publicJob(row);
 		});
 	}
@@ -746,10 +780,30 @@ export class OutboundDeliveryService
 			return "cancel";
 		if (row.targetKind === "webhook_test") {
 			try {
-				await this.actor(tx, {
-					workspaceId: row.workspaceId,
-					actorUserId: row.createdByUserId!,
-				});
+				await this.actor(
+					tx,
+					{
+						workspaceId: row.workspaceId,
+						actorUserId: row.createdByUserId!,
+					},
+					row.actorCapability as "api.manage" | "processing.consume",
+				);
+				if (row.apiKeyId) {
+					await tx.$queryRaw`SELECT "id" FROM "ApiKey" WHERE "id"=${row.apiKeyId}::uuid FOR SHARE`;
+					const key = await tx.apiKey.findUnique({
+						where: { id: row.apiKeyId },
+					});
+					if (
+						!key ||
+						key.revokedAt ||
+						key.workspaceId !== row.workspaceId ||
+						(key.createdByUserId ?? key.userId) !== row.createdByUserId ||
+						!key.scopes.includes("processing:write") ||
+						(sub.types.includes("social_post.finished") &&
+							!key.scopes.includes("publishing:read"))
+					)
+						return "cancel";
+				}
 			} catch {
 				return "cancel";
 			}
@@ -799,7 +853,7 @@ export class OutboundDeliveryService
 				dispatchIds: await this.register(tx, updated),
 			};
 		}
-		await tx.outboundDelivery.update({
+		const cancelled = await tx.outboundDelivery.update({
 			where: { id: row.id },
 			data: {
 				status: "cancelled",
@@ -814,9 +868,23 @@ export class OutboundDeliveryService
 				where: { id: row.targetId, state: "pending" },
 				data: { state: "cancelled", leaseOwner: null, leaseExpiresAt: null },
 			});
+		if (row.targetKind === "webhook_event" && row.expiresAt <= at) {
+			const subscription = await tx.webhookSubscription.findUnique({
+				where: { id: row.targetId },
+			});
+			if (subscription?.status === "active")
+				await this.disable(tx, subscription, "cursor_expired", at);
+		}
+		const continuation = await this.terminalWakes(
+			tx,
+			cancelled,
+			at,
+			"notification_cancelled",
+		);
 		return {
 			kind: "terminal" as const,
 			disposition: { disposition: "cancelled" as const },
+			dispatchIds: continuation.dispatchIds,
 		};
 	}
 	async lockExecution(
@@ -922,6 +990,10 @@ export class OutboundDeliveryService
 				)
 					return { kind: "superseded" };
 				if (final.includes(row.status)) return { kind: "terminal" };
+				if (row.status === "queued" && row.chargedAttempts >= row.maxAttempts) {
+					const result = await this.exhausted(tx, row, at);
+					return { kind: "terminal", dispatchIds: result.dispatchIds };
+				}
 				const changed = await this.transitionPolicy(tx, row, at);
 				if (changed)
 					return { kind: "terminal", dispatchIds: changed.dispatchIds };
@@ -946,7 +1018,6 @@ export class OutboundDeliveryService
 						null,
 						0,
 						"signing_secret_missing",
-						false,
 					);
 					return { kind: "terminal", dispatchIds: failed?.dispatchIds };
 				}
@@ -1140,7 +1211,6 @@ export class OutboundDeliveryService
 			receipt.status,
 			receipt.durationMs,
 			receipt.errorCode,
-			true,
 		);
 	}
 	/** Cursor/parent result and assigned receipt adoption commit together. A
@@ -1152,7 +1222,6 @@ export class OutboundDeliveryService
 		status: number | null,
 		durationMs: number,
 		errorCode: string | null,
-		_charged: boolean,
 	): Promise<ExecutorMutationResult> {
 		const delivered = status !== null && status >= 200 && status < 300,
 			gone = status === 410;
@@ -1221,7 +1290,13 @@ export class OutboundDeliveryService
 				await this.disable(
 					tx,
 					sub,
-					gone ? "endpoint_gone" : "consecutive_failures",
+					gone
+						? "endpoint_gone"
+						: failures >= 20
+							? "consecutive_failures"
+							: row.chargedAttempts >= row.maxAttempts
+								? "delivery_attempts_exhausted"
+								: "cursor_expired",
 					at,
 				);
 		} else retry = false;
@@ -1260,12 +1335,20 @@ export class OutboundDeliveryService
 			},
 		});
 		if (retry) return { dispatchIds: await this.register(tx, updated) };
-		const local = await this.wake(
+		return this.terminalWakes(
 			tx,
 			updated,
 			at,
 			delivered ? "notification_delivered" : "notification_terminal",
 		);
+	}
+	private async terminalWakes(
+		tx: Tx,
+		row: OutboundDelivery,
+		at: Date,
+		wakeKind: string,
+	) {
+		const local = await this.wake(tx, row, at, wakeKind);
 		if (row.targetKind === "webhook_event") {
 			const subscription = await tx.webhookSubscription.findUnique({
 				where: { id: row.targetId },
@@ -1290,6 +1373,36 @@ export class OutboundDeliveryService
 		}
 		return local;
 	}
+	private async exhausted(tx: Tx, row: OutboundDelivery, at: Date) {
+		const updated = await tx.outboundDelivery.update({
+			where: { id: row.id },
+			data: {
+				status: "failed",
+				completedAt: at,
+				executorOwner: null,
+				leaseExpiresAt: null,
+				retryAt: null,
+				errorCode: "delivery_attempts_exhausted",
+			},
+		});
+		if (row.targetKind === "webhook_event") {
+			const sub = await tx.webhookSubscription.findUnique({
+				where: { id: row.targetId },
+			});
+			if (sub) await this.disable(tx, sub, "delivery_attempts_exhausted", at);
+		} else if (row.targetKind === "completion_callback")
+			await tx.completionCallback.updateMany({
+				where: { id: row.targetId, state: "pending" },
+				data: {
+					state: "failed",
+					leaseOwner: null,
+					leaseExpiresAt: null,
+					nextAttemptAt: null,
+				},
+			});
+		return this.terminalWakes(tx, updated, at, "notification_terminal");
+	}
+
 	async failExecution(
 		tx: Tx,
 		ref: OutboundDeliveryReference,
@@ -1297,7 +1410,7 @@ export class OutboundDeliveryService
 		f: { failureCode: string; retryable: boolean },
 	): Promise<ExecutorMutationResult> {
 		const { row, at } = await this.owned(tx, ref, c);
-		return this.settle(tx, row, at, null, 0, f.failureCode, true);
+		return this.settle(tx, row, at, null, 0, f.failureCode);
 	}
 	async releaseExecution(
 		tx: Tx,
@@ -1306,19 +1419,9 @@ export class OutboundDeliveryService
 		r: { reason: string },
 	): Promise<ExecutorMutationResult> {
 		const { row, at } = await this.owned(tx, ref, c);
-		if (r.reason === "cancelled") {
-			await tx.outboundDelivery.update({
-				where: { id: row.id },
-				data: {
-					status: "cancelled",
-					executorOwner: null,
-					leaseExpiresAt: null,
-					completedAt: at,
-				},
-			});
-			return this.wake(tx, row, at, "notification_cancelled");
-		}
-		return this.settle(tx, row, at, null, 0, `notification_${r.reason}`, false);
+		// Parent cancellation is decided by lockExecution. A stopped physical
+		// POST with current authority is unconfirmed, so retain this round's budget.
+		return this.settle(tx, row, at, null, 0, `notification_${r.reason}`);
 	}
 	async expireExecution(
 		tx: Tx,
@@ -1359,7 +1462,6 @@ export class OutboundDeliveryService
 			attempt?.processStartedAt
 				? "notification_outcome_unconfirmed"
 				: "notification_start_unconfirmed",
-			Boolean(attempt?.processStartedAt),
 		);
 		return { kind: "expired", dispatchIds: result?.dispatchIds };
 	}

@@ -1,3 +1,4 @@
+import { developerCommands } from "@narriflow/services/developer-commands-runtime";
 import { randomUUID } from "node:crypto";
 import { createRoute, OpenAPIHono, type RouteConfig } from "@hono/zod-openapi";
 import { Hono, type Context, type MiddlewareHandler } from "hono";
@@ -27,7 +28,6 @@ import { webhookSubscriptions } from "@narriflow/services/webhook-subscription-r
 import { workspaceLibraryService } from "@narriflow/services/workspace-library.service";
 import { workspaceService } from "@narriflow/services/workspace.service";
 import { type ActorScope } from "@narriflow/services/actor-scope";
-import { type HostResolver } from "@narriflow/services/url-guard";
 import { type IntegrationMutation } from "@narriflow/services/operation-receipt";
 import { buildGenerationContext, generationSettingsSchema, parseWorkspaceEventTypes, restApiSchemas as schemas } from "@narriflow/validators";
 import { domainFailureHttpStatus } from "../../http/errors";
@@ -54,8 +54,6 @@ export interface RestRouteDeps {
   webOrigin(): string;
   corsAllowedOrigins: readonly string[];
   trustedClientIpHeader?: string | null;
-  /** Test seam for callback URL DNS checks. */
-  callbackResolver?: HostResolver;
   log?: (entry: Record<string, unknown>) => void;
 }
 
@@ -242,7 +240,7 @@ export function createRestOpenApiRoutes(dependencies: RestRouteDeps) {
   const mutation = async (c: RestContext, callback?: { url: string }): Promise<IntegrationMutation> => ({
     clientIdempotencyKey: idempotencyKey(c),
     beforeAccept: newMutationGuard(c),
-    ...(callback ? { callback: { url: await assertCompletionCallbackUrl(callback.url, dependencies.callbackResolver) } } : {}),
+    ...(callback ? { callback: { url: await assertCompletionCallbackUrl(callback.url) } } : {}),
   });
   const replayed = (c: RestContext, wasReplayed: boolean) => { if (wasReplayed) c.header("Idempotent-Replayed", "true"); };
   const statusUrl = (operationId: string) => `${apiOrigin()}/api/v1/operations/${operationId}`;
@@ -346,7 +344,7 @@ export function createRestOpenApiRoutes(dependencies: RestRouteDeps) {
       const input = c.req.valid("json");
       const actor = requireActor(c);
       const sessionId = c.req.valid("param").id;
-      const callback = input.callback ? { url: await assertCompletionCallbackUrl(input.callback.url, dependencies.callbackResolver) } : undefined;
+      const callback = input.callback ? { url: await assertCompletionCallbackUrl(input.callback.url) } : undefined;
       const outcome = await uploads.finalize(actor, { sessionId, parts: input.parts }, { callback }, newMutationGuard(c));
       return c.json({ upload: uploadView(outcome), callback: callback ? { eventId: callbackEventId(sessionId) } : null }, 200);
     })
@@ -507,7 +505,7 @@ export function createRestOpenApiRoutes(dependencies: RestRouteDeps) {
       const actor = requireActor(c);
       requireWebhookTypeScopes(input.types, c.get("restPrincipal").scopes);
       await newMutationGuard(c)();
-      const url = await assertCompletionCallbackUrl(input.url, dependencies.callbackResolver);
+      const url = await assertCompletionCallbackUrl(input.url);
       return c.json({ webhook: await webhookSubscriptions.create(actor, { url, types: input.types }) }, 201);
     })
     .openapi(route({ method: "delete", path: "/webhooks/{id}", summary: "Delete a webhook", tags: ["Webhooks"],
@@ -524,11 +522,15 @@ export function createRestOpenApiRoutes(dependencies: RestRouteDeps) {
       return c.json({ webhook: await webhookSubscriptions.enable(actor, c.req.valid("param").id, c.get("restPrincipal")) }, 200);
     })
     .openapi(route({ method: "post", path: "/webhooks/{id}/test", summary: "Send a test event", tags: ["Webhooks"],
-      description: "Sends one signed webhook.test event to the endpoint now and reports its answer. It is not part of the event feed and does not move the webhook's cursor. One test per webhook every 5 seconds; a second one sooner is 429 webhook_test_throttled.",
-      request: { params: schemas.restUuidParam }, responses: { 200: json(schemas.webhookTestResultSchema, "The endpoint's answer") } }), async (c) => {
+      description: "Queues one signed webhook.test event and returns its durable delivery ID. Read GET /webhooks/{id}/tests/{deliveryId} for the confirmed result. It is not part of the event feed and does not move the webhook's cursor. One test per webhook every 5 seconds; a second one sooner is 429 webhook_test_throttled.",
+      request: { params: schemas.restUuidParam, headers: schemas.restIdempotencyHeaders }, responses: { 202: json(schemas.webhookTestResultSchema, "The queued test delivery") } }), async (c) => {
       const actor = requireActor(c);
-      await newMutationGuard(c)();
-      return c.json(await webhookSubscriptions.test(actor, c.req.valid("param").id, c.get("restPrincipal")), 200);
+      const result=await developerCommands.testWebhook(actor,c.req.valid("param").id,await mutation(c),c.get("restPrincipal"));
+      replayed(c,result.replayed);return c.json(result.result,202);
+    })
+    .openapi(route({method:"get",path:"/webhooks/{id}/tests/{deliveryId}",summary:"Read a test delivery",tags:["Webhooks"],request:{params:schemas.restWebhookDeliveryParam},responses:{200:json(schemas.webhookTestResultSchema,"The test delivery state")}}),async c=>{
+      const {id,deliveryId}=c.req.valid("param");c.header("Cache-Control","no-store");
+      return c.json(await webhookSubscriptions.testStatus(requireActor(c),id,deliveryId,c.get("restPrincipal")),200);
     })
     .openapi(route({ method: "post", path: "/operations/{id}/callback/redeliver", summary: "Redeliver completion callbacks", tags: ["Operations"],
       description: "Resets this operation's delivered or failed callbacks with a fresh attempt budget and the same event IDs.",

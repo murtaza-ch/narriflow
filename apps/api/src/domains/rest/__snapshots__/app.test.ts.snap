@@ -20,6 +20,7 @@ exports[`REST v1 OpenAPI document lists exactly the v1 endpoints 1`] = `
   "GET /social-accounts",
   "GET /uploads/{id}",
   "GET /webhooks",
+  "GET /webhooks/{id}/tests/{deliveryId}",
   "GET /workspace",
   "POST /captioned-videos",
   "POST /clips/{id}/exports",
@@ -3621,6 +3622,7 @@ exports[`REST v1 OpenAPI document changes only additively: the whole document is
               "consecutive_failures",
               "cursor_expired",
               "endpoint_gone",
+              "delivery_attempts_exhausted",
               null,
             ],
             "type": [
@@ -3716,21 +3718,33 @@ exports[`REST v1 OpenAPI document changes only additively: the whole document is
       "WebhookTestResult": {
         "additionalProperties": false,
         "properties": {
-          "delivered": {
-            "description": "True when the endpoint answered 2xx",
-            "type": "boolean",
+          "deliveryId": {
+            "description": "The durable test delivery ID",
+            "format": "uuid",
+            "type": "string",
           },
           "durationMs": {
             "minimum": 0,
-            "type": "integer",
+            "type": [
+              "integer",
+              "null",
+            ],
           },
           "eventId": {
             "description": "The webhook-id of the webhook.test event",
             "format": "uuid",
             "type": "string",
           },
+          "state": {
+            "enum": [
+              "pending",
+              "delivered",
+              "unconfirmed",
+            ],
+            "type": "string",
+          },
           "status": {
-            "description": "The endpoint's HTTP status, or null when it didn't answer",
+            "description": "The confirmed endpoint HTTP status, or null when no answer was confirmed",
             "type": [
               "integer",
               "null",
@@ -3739,7 +3753,8 @@ exports[`REST v1 OpenAPI document changes only additively: the whole document is
         },
         "required": [
           "eventId",
-          "delivered",
+          "deliveryId",
+          "state",
           "status",
           "durationMs",
         ],
@@ -7820,7 +7835,7 @@ exports[`REST v1 OpenAPI document changes only additively: the whole document is
     },
     "/api/v1/webhooks/{id}/test": {
       "post": {
-        "description": "Sends one signed webhook.test event to the endpoint now and reports its answer. It is not part of the event feed and does not move the webhook's cursor. One test per webhook every 5 seconds; a second one sooner is 429 webhook_test_throttled.",
+        "description": "Queues one signed webhook.test event and returns its durable delivery ID. Read GET /webhooks/{id}/tests/{deliveryId} for the confirmed result. It is not part of the event feed and does not move the webhook's cursor. One test per webhook every 5 seconds; a second one sooner is 429 webhook_test_throttled.",
         "parameters": [
           {
             "description": "Resource ID",
@@ -7833,9 +7848,20 @@ exports[`REST v1 OpenAPI document changes only additively: the whole document is
               "type": "string",
             },
           },
+          {
+            "description": "1–200 URL-safe characters. Retrying with the same key and input returns the original result; different input under the same key is a conflict.",
+            "in": "header",
+            "name": "idempotency-key",
+            "required": true,
+            "schema": {
+              "description": "1–200 URL-safe characters. Retrying with the same key and input returns the original result; different input under the same key is a conflict.",
+              "pattern": "^[A-Za-z0-9._~:-]{1,200}$",
+              "type": "string",
+            },
+          },
         ],
         "responses": {
-          "200": {
+          "202": {
             "content": {
               "application/json": {
                 "schema": {
@@ -7843,7 +7869,7 @@ exports[`REST v1 OpenAPI document changes only additively: the whole document is
                 },
               },
             },
-            "description": "The endpoint's answer",
+            "description": "The queued test delivery",
           },
           "400": {
             "content": {
@@ -7942,6 +7968,141 @@ exports[`REST v1 OpenAPI document changes only additively: the whole document is
           },
         ],
         "summary": "Send a test event",
+        "tags": [
+          "Webhooks",
+        ],
+      },
+    },
+    "/api/v1/webhooks/{id}/tests/{deliveryId}": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string",
+            },
+          },
+          {
+            "in": "path",
+            "name": "deliveryId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string",
+            },
+          },
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookTestResult",
+                },
+              },
+            },
+            "description": "The test delivery state",
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Invalid request",
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Missing or invalid API key",
+          },
+          "402": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Plan or billing refusal. \`plan_feature_required\` and \`plan_limit_reached\` name the feature or limit, the current tier, and the required tier in \`details\`; \`credits_exhausted\` reports the month's credits; \`integration_access_unavailable\` means the Workspace isn't active",
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Scope, role, or Workspace boundary refusal",
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Not found",
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Conflict, including an idempotency key reused with different input",
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Unprocessable",
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Rate limited; see Retry-After",
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error",
+                },
+              },
+            },
+            "description": "Temporarily unavailable; see Retry-After",
+          },
+        },
+        "security": [
+          {
+            "bearerAuth": [],
+          },
+        ],
+        "summary": "Read a test delivery",
         "tags": [
           "Webhooks",
         ],

@@ -74,10 +74,6 @@
       "types": "./src/render-group-contract.ts",
       "default": "./src/render-group-contract.ts"
     },
-    "./url-guard": {
-      "types": "./src/url-guard.ts",
-      "default": "./src/url-guard.ts"
-    },
     "./pexels-contract": {
       "types": "./src/pexels-contract.ts",
       "default": "./src/pexels-contract.ts"
@@ -540,7 +536,8 @@
     },
     "./outbound-delivery": "./src/outbound-delivery.ts",
     "./outbound-delivery-execution": "./src/outbound-delivery-execution.ts",
-    "./notification-body-storage": "./src/notification-body-storage.ts"
+    "./notification-body-storage": "./src/notification-body-storage.ts",
+    "./outbound-delivery-runtime": "./src/outbound-delivery-runtime.ts"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",

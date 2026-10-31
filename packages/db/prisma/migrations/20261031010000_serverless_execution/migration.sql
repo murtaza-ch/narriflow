@@ -772,7 +772,7 @@ CREATE TRIGGER "IngestJob_source_identity_immutable" BEFORE UPDATE ON "IngestJob
 CREATE TABLE "OutboundDelivery" (
  "id" UUID PRIMARY KEY, "workspaceId" UUID NOT NULL REFERENCES "Workspace"("id") ON DELETE CASCADE,
  "targetKind" VARCHAR(24) NOT NULL, "targetId" UUID NOT NULL, "eventId" UUID NOT NULL, "eventSeq" BIGINT,
- "createdByUserId" UUID, "requestFingerprint" CHAR(64), "encryptedUrl" TEXT NOT NULL,
+ "createdByUserId" UUID, "actorCapability" VARCHAR(24), "apiKeyId" UUID, "requestFingerprint" CHAR(64), "encryptedUrl" TEXT NOT NULL,
  "urlHost" VARCHAR(255) NOT NULL, "urlFingerprint" CHAR(64) NOT NULL,
  "bodyStorageKey" VARCHAR(1024) NOT NULL, "bodySha256" CHAR(64) NOT NULL, "bodyByteLength" BIGINT NOT NULL, "bodyEtag" VARCHAR(160),
  "inputHash" CHAR(64) NOT NULL, "status" VARCHAR(24) NOT NULL DEFAULT 'preparing',
@@ -785,7 +785,7 @@ CREATE TABLE "OutboundDelivery" (
  CONSTRAINT "OutboundDelivery_shape_check" CHECK (
   "targetKind" IN ('completion_callback','webhook_event','webhook_test')
   AND ("targetKind"='webhook_event')=("eventSeq" IS NOT NULL) AND ("eventSeq" IS NULL OR "eventSeq">0)
-  AND ("targetKind"<>'webhook_test' OR ("createdByUserId" IS NOT NULL AND "requestFingerprint" IS NOT NULL AND "maxAttempts"=1))
+  AND ("targetKind"<>'webhook_test' OR ("createdByUserId" IS NOT NULL AND "actorCapability" IN ('api.manage','processing.consume') AND "requestFingerprint" IS NOT NULL AND "maxAttempts"=1))
   AND "inputHash" ~ '^[a-f0-9]{64}$' AND "urlFingerprint" ~ '^[a-f0-9]{64}$' AND "bodySha256" ~ '^[a-f0-9]{64}$'
   AND "bodyByteLength" BETWEEN 1 AND 16777216 AND "generation">0 AND "deploymentEpoch">0
   AND "chargedAttempts" BETWEEN 0 AND "maxAttempts" AND "policyFailures">=0 AND "maxAttempts" BETWEEN 1 AND 20
@@ -812,8 +812,8 @@ CREATE UNIQUE INDEX "OutboundDelivery_active_subscription_key" ON "OutboundDeliv
  WHERE "targetKind"='webhook_event' AND "status" IN ('preparing','queued','processing');
 CREATE FUNCTION outbound_delivery_input_immutable() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
- IF (NEW."id",NEW."workspaceId",NEW."targetKind",NEW."targetId",NEW."eventId",NEW."eventSeq",NEW."createdByUserId",NEW."requestFingerprint",NEW."encryptedUrl",NEW."urlHost",NEW."urlFingerprint",NEW."bodyStorageKey",NEW."bodySha256",NEW."bodyByteLength",NEW."inputHash",NEW."expiresAt",NEW."maxAttempts",NEW."createdAt",NEW."deploymentEpoch") IS DISTINCT FROM
-    (OLD."id",OLD."workspaceId",OLD."targetKind",OLD."targetId",OLD."eventId",OLD."eventSeq",OLD."createdByUserId",OLD."requestFingerprint",OLD."encryptedUrl",OLD."urlHost",OLD."urlFingerprint",OLD."bodyStorageKey",OLD."bodySha256",OLD."bodyByteLength",OLD."inputHash",OLD."expiresAt",OLD."maxAttempts",OLD."createdAt",OLD."deploymentEpoch") THEN
+ IF (NEW."id",NEW."workspaceId",NEW."targetKind",NEW."targetId",NEW."eventId",NEW."eventSeq",NEW."createdByUserId",NEW."actorCapability",NEW."apiKeyId",NEW."requestFingerprint",NEW."encryptedUrl",NEW."urlHost",NEW."urlFingerprint",NEW."bodyStorageKey",NEW."bodySha256",NEW."bodyByteLength",NEW."inputHash",NEW."expiresAt",NEW."maxAttempts",NEW."createdAt",NEW."deploymentEpoch") IS DISTINCT FROM
+    (OLD."id",OLD."workspaceId",OLD."targetKind",OLD."targetId",OLD."eventId",OLD."eventSeq",OLD."createdByUserId",OLD."actorCapability",OLD."apiKeyId",OLD."requestFingerprint",OLD."encryptedUrl",OLD."urlHost",OLD."urlFingerprint",OLD."bodyStorageKey",OLD."bodySha256",OLD."bodyByteLength",OLD."inputHash",OLD."expiresAt",OLD."maxAttempts",OLD."createdAt",OLD."deploymentEpoch") THEN
   RAISE EXCEPTION 'outbound delivery input is immutable' USING ERRCODE='23514';
  END IF;
  IF OLD."bodyEtag" IS NOT NULL AND NEW."bodyEtag" IS DISTINCT FROM OLD."bodyEtag" THEN

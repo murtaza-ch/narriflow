@@ -86,7 +86,7 @@ function deps(over: Partial<DeveloperRouteDeps> = {}) {
       }),
       testWebhook: mock(async (_actor: unknown, _id: string, mutation: { beforeAccept?: () => Promise<void> }) => {
         await mutation.beforeAccept?.();
-        return { result: { eventId: HOOK, delivered: true, status: 200, durationMs: 12 }, replayed: false };
+        return { result: { deliveryId:HOOK,eventId: HOOK, state: "pending", status: null, durationMs: null }, replayed: false };
       }),
     },
     callbackSigningSecrets: {
@@ -96,6 +96,7 @@ function deps(over: Partial<DeveloperRouteDeps> = {}) {
       list: mock(async () => [webhook]),
       delete: mock(async (_actor: unknown, id: string) => ({ webhookId: id })),
       enable: mock(async () => webhook),
+      testStatus:mock(async()=>({deliveryId:HOOK,eventId:HOOK,state:"delivered",status:204,durationMs:1})),
     },
     socialOAuthService: { listAccounts: mock(async () => []) },
     ...over,
@@ -296,17 +297,22 @@ describe("keys and webhooks", () => {
     expect(d.developerCommands.testWebhook).not.toHaveBeenCalled();
 
     const sent = await send(app(d), "POST", path, undefined, keyed);
-    expect(sent.status).toBe(200);
+    expect(sent.status).toBe(202);
     expect(sent.headers.get("idempotent-replayed")).toBeNull();
-    expect(await sent.json()).toEqual({ eventId: HOOK, delivered: true, status: 200, durationMs: 12 });
+    expect(await sent.json()).toEqual({ deliveryId:HOOK,eventId: HOOK, state: "pending", status: null, durationMs: null });
     expect(d.developerCommands.testWebhook).toHaveBeenCalledWith(expect.anything(), HOOK, expect.objectContaining({ clientIdempotencyKey: "intent-1" }));
 
     const replayDeps = deps({
-      developerCommands: { ...d.developerCommands, testWebhook: mock(async () => ({ result: { eventId: HOOK, delivered: true, status: 200, durationMs: 12 }, replayed: true })) } as never,
+      developerCommands: { ...d.developerCommands, testWebhook: mock(async () => ({ result: { deliveryId:HOOK,eventId: HOOK, state: "pending", status: null, durationMs: null }, replayed: true })) } as never,
     });
     const replay = await send(app(replayDeps), "POST", path, undefined, keyed);
-    expect(replay.status).toBe(200);
+    expect(replay.status).toBe(202);
     expect(replay.headers.get("idempotent-replayed")).toBe("true");
     expect(await replay.json()).toMatchObject({ eventId: HOOK });
   });
+ test("test status uses both scoped identifiers and refuses malformed IDs before service access",async()=>{
+  const d=deps();const response=await send(app(d),"GET",`/workspace/webhooks/${HOOK}/tests/${HOOK}`);expect(response.status).toBe(200);expect(response.headers.get("cache-control")).toBe("no-store");expect(d.webhookSubscriptions.testStatus).toHaveBeenCalledWith(expect.objectContaining({workspaceId:WORKSPACE}),HOOK,HOOK);
+  expect((await send(app(d),"GET",`/workspace/webhooks/${HOOK}/tests/bad`)).status).toBe(400);
+ });
+
 });
