@@ -536,6 +536,7 @@ export * from "./assisted-social-copy";
 export * from "./assisted-social-copy-runtime";
 export { getGenerationFinishing, getProjectFinishing } from "./generation-finishing-runtime";
 export type { ProjectFinishingView } from "./generation-finishing";
+export { appendFinishingExportWake, createFinishingProducers, isFinishingProducerReference } from "./generation-finishing-producers";
 export * from "./bulk-social-scheduling";
 export * from "./bulk-social-scheduling-runtime";
 export * from "./openai-assisted-copy-provider";
@@ -738,6 +739,12 @@ export * from "./export-bundle-input";
 
 export * from "./export-bundle-expiry";
 
+export * from "./execution-maintenance-ports";
+export * from "./execution-retention-pages";
+export * from "./execution-safety-pages";
+export * from "./execution-account-recovery-pages";
 export * from "./dubbing-policy";
 export * from "./export-bundle-recovery";
-export { readAutopilotImportSource, freezeAutopilotFinishingAuthority, AutopilotSourceChanged, type AutopilotImportSource } from "./autopilot-finishing-authority";
+export { readAutopilotImportPlan, readAutopilotImportSource, freezeAutopilotFinishingAuthority, AutopilotSourceChanged, type AutopilotImportSource, type AutopilotImportPlan } from "./autopilot-finishing-authority";
+
+export { planPublicationRecoveryPage, planStandingGrantExpiryPage, planPublicationReceiptRecoveryPage, planPerformanceCaptureRecoveryPage, planPublicationRestorePage } from "./publication-maintenance";

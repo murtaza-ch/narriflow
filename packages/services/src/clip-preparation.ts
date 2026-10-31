@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { Prisma, type PrismaClient, type ClipPreparation, type ExecutionArtifact } from "@prisma/client";
 import { executionDispatchReferenceSchema, sourceVideoBindingSchema, type ExecutionDispatchReference, type ExecutionDeadline } from "@narriflow/validators/execution";
-import { clipPreparationInputSchema, clipPreparationResultSchema, type ClipPreparationInput, type ClipPreparationResult, type ClipPreparationObject } from "@narriflow/validators/clip-preparation";
+import { clipPreparationInputSchema, clipPreparationResultSchema, clipPreparationReadyObjectsSchema, type ClipPreparationInput, type ClipPreparationResult, type ClipPreparationObject } from "@narriflow/validators/clip-preparation";
 import { buildEditedTimeMap, clipAutoLayoutMatchesInputs, CLIP_AUTO_LAYOUT_ENGINE, SCREEN_LAYOUT_ENGINE_VERSION } from "@narriflow/validators";
 import { compositionAssetRef, screenLayoutInputFingerprint, splitLayoutInputFingerprint } from "@narriflow/composition-plan";
 import { clipPreparationBinding, encodeClipPreparationInput } from "./clip-preparation-input";
@@ -425,7 +425,7 @@ export class ClipPreparationService {
         autoLayoutStatus: "completed", autoLayoutClaimToken: null, autoLayoutLeaseExpiresAt: null } });
     }
     const completed = await tx.clipPreparation.update({ where: { id: job.id }, data: { status: "completed", completedAt: clock, executorOwner: null, leaseExpiresAt: null,
-      errorCode: null, retryAt: null, result: result as Prisma.InputJsonValue } });
+      errorCode: null, retryAt: null, result: result as Prisma.InputJsonValue, readyObjects: clipPreparationReadyObjectsSchema.parse({ preview: ready.preview, peaks: ready.peaks, manifest: ready.manifest }) as Prisma.InputJsonValue } });
     return { dispatchIds: await this.wakeGroups(tx, completed) };
   }
 
@@ -437,9 +437,11 @@ export class ClipPreparationService {
       const job = await tx.clipPreparation.findUnique({ where: { id: state.input.preparationId } });
       if (!job || job.status !== "completed" || job.result === null) return null;
       const result = this.validateManifest(state.input, job.result as ClipPreparationResult);
-      const ready = await this.ready(tx, job, result);
-      if (!ready) throw new ClipPreparationError("clip_preparation_input_invalid");
-      return ready;
+      const objects = clipPreparationReadyObjectsSchema.safeParse(job.readyObjects);
+      if (!objects.success || (result.peaks.state === "ready") !== (objects.data.peaks !== null)) throw new ClipPreparationError("clip_preparation_input_invalid");
+      return { preparationId: job.id, bindingHash: job.bindingHash, input: { storageKey: job.inputStorageKey, etag: job.inputEtag,
+        byteLength: Number(job.inputByteLength), sha256: job.inputChecksumSha256 }, ...objects.data, result };
+
     });
   }
 

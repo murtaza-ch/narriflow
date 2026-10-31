@@ -1,11 +1,14 @@
+import type { Prisma } from "@prisma/client";
+import type { WorkspaceCapability } from "@narriflow/validators";
 import { getPrismaClient } from "@narriflow/db/client";
 import { assistedSocialCopyService } from "./assisted-social-copy-runtime";
 import { clipExportService } from "./clip-export.service";
 import { publishingQueue } from "./publishing-queue.service";
-import { createGenerationFinishing, readProjectFinishing, type GenerationFinishingDependencies } from "./generation-finishing";
+import { assertGenerationFinishingAuthority, createGenerationFinishing, readProjectFinishing, type GenerationFinishingDependencies, type FinishingWorkAuthority } from "./generation-finishing";
 import { ExpectedDomainFailureError } from "./expected-domain-failure";
 import { acceptProposalUnderGrant, sendReviewRoundUnderGrant } from "./standing-grant-runtime";
 import { workspaceService } from "./workspace.service";
+import { deliverExecutionDispatches } from "./execution-dispatch-runtime";
 
 function requirePrisma() {
   const prisma = getPrismaClient();
@@ -13,11 +16,15 @@ function requirePrisma() {
   return prisma;
 }
 
-/** The worker's finishing loop. `notify` is the worker's own "clips ready"
- * notification, which knows the app's base URL. */
+function childFence(authority: FinishingWorkAuthority, scope: {workspaceId:string;projectId:string;actorUserId?:string;clipId?:string;capability?:WorkspaceCapability}) {
+  return (tx: Prisma.TransactionClient) => assertGenerationFinishingAuthority(tx,authority,scope);
+}
+
+/** Fresh runtime wiring for one targeted Finishing command. */
 export function getGenerationFinishing(notify: GenerationFinishingDependencies["notify"]) {
   return createGenerationFinishing({
     prisma: requirePrisma(),
+    register: deliverExecutionDispatches,
     requireActor: (userId, workspaceId) => workspaceService.requireActor(userId, workspaceId, "processing.consume"),
     canManagePublishing: (userId, workspaceId) =>
       workspaceService.requireActor(userId, workspaceId, "publishing.manage").then(
@@ -27,17 +34,19 @@ export function getGenerationFinishing(notify: GenerationFinishingDependencies["
           throw error;
         },
       ),
-    createExport: (scope, projectId, clipId, input, key) => clipExportService.create(scope, projectId, clipId, input, key),
-    retryExport: (scope, projectId, clipId, exportId) => clipExportService.retryFailed(scope, projectId, clipId, exportId),
-    writeCopy: (input) => assistedSocialCopyService.generate(input),
+    createExport: (scope, projectId, clipId, input, key, authority) => clipExportService.create(scope, projectId, clipId, input, key, {clientIdempotencyKey:key,beforeMutation:childFence(authority,{...scope,projectId,clipId})}),
+    retryExport: (scope, projectId, clipId, exportId, authority) => clipExportService.retryFailed(scope, projectId, clipId, exportId, childFence(authority,{...scope,projectId,clipId})),
+    writeCopy: (input, authority) => assistedSocialCopyService.generate(input,{beforeWrite:childFence(authority,input)}),
     queueAccounts: (workspaceId, accountIds) => publishingQueue.activeAccounts(workspaceId, accountIds),
-    propose: (input) => publishingQueue.propose(
+    propose: async (input, authority) => {
+      const finishing=await requirePrisma().generationFinishing.findUniqueOrThrow({where:{id:authority.reference.subject.id},select:{projectId:true}});
+      return publishingQueue.propose(
       { actorUserId: input.actorUserId, workspaceId: input.workspaceId },
       { clipId: input.clipId, exportId: input.exportId, socialAccountId: input.socialAccountId },
-      { source: "finishing", copyGenerationId: input.copyGenerationId, mutation: { clientIdempotencyKey: input.idempotencyKey } },
-    ),
-    acceptUnderGrant: acceptProposalUnderGrant,
-    sendReviewRound: sendReviewRoundUnderGrant,
+      { source: "finishing", copyGenerationId: input.copyGenerationId, mutation: { clientIdempotencyKey: input.idempotencyKey, beforeMutation:childFence(authority,{...input,projectId:finishing.projectId,capability:"publishing.manage"}) } },
+    ); },
+    acceptUnderGrant: (input,authority) => acceptProposalUnderGrant(input,{beforeWrite:childFence(authority,{...input,capability:"publishing.manage"})}),
+    sendReviewRound: (input,authority) => sendReviewRoundUnderGrant(input,{beforeWrite:childFence(authority,input)}),
     notify,
   });
 }

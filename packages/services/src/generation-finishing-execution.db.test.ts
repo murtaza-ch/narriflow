@@ -1,8 +1,13 @@
+import {planFinishingRecoveryPage,planFinishingRestorePage} from "./generation-finishing-maintenance";
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@prisma/client";
 import { assertExecutionDatabaseTestTarget } from "./execution-db-test-support";
-import { createGenerationFinishing, FINISHING_MAX_OPERATION_MS, freezeGenerationFinishing, queueGenerationFinishing, transitionGenerationFinishing, type GenerationFinishingDependencies } from "./generation-finishing";
+import { assertGenerationFinishingAuthority, createGenerationFinishing, FINISHING_MAX_OPERATION_MS, freezeGenerationFinishing, queueGenerationFinishing, transitionGenerationFinishing, type GenerationFinishingDependencies } from "./generation-finishing";
+import { appendFinishingExportWake, createFinishingProducers } from "./generation-finishing-producers";
+import { readExecutionDispatch } from "./execution-dispatch";
+import { AssistedSocialCopyError } from "./assisted-social-copy";
+import type { FinishingSettings } from "@narriflow/validators";
 
 const url = process.env.SERVERLESS_TEST_DATABASE_URL;
 const suite = process.env.ALLOW_SERVERLESS_DB_TESTS === "1" && url ? describe : describe.skip;
@@ -21,16 +26,40 @@ suite("Targeted generation finishing obligations", () => {
     users.length = workspaces.length = finishings.length = 0;
   });
   afterAll(async () => { await db.$disconnect(); });
-  async function fixture() {
+  async function fixture(settings: Partial<FinishingSettings> = {}) {
     const user = await db.user.create({ data: { clerkId: `finishing-execution:${crypto.randomUUID()}` } }); users.push(user.id);
     const workspace = await db.workspace.create({ data: { name: "Finishing gate", ownerUserId: user.id, pricingTier: "business" } }); workspaces.push(workspace.id);
+    await db.workspaceMember.create({data:{workspaceId:workspace.id,userId:user.id,role:"owner"}});
     const project = await db.project.create({ data: { workspaceId: workspace.id, title: "Finishing gate", sourceMediaUrl: "r2://synthetic/source" } });
     const origin = await db.workflowRun.create({ data: { projectId: project.id, stage: "stt", status: "completed", idempotencyKey: crypto.randomUUID() } });
     await db.$transaction(tx => freezeGenerationFinishing(tx, { workspaceId: workspace.id, projectId: project.id, originRunId: origin.id, actorUserId: user.id,
-      settings: { topClips: 2, minScore: 0, resolution: "720p", copyPlatforms: [], delivery: "ready_to_review", queueAccountIds: [] }, defaultAspectRatio: "9:16" }));
+      settings: { topClips: 2, minScore: 0, resolution: "720p", copyPlatforms: [], delivery: "ready_to_review", queueAccountIds: [], ...settings }, defaultAspectRatio: "9:16" }));
     const row = await db.generationFinishing.findUniqueOrThrow({ where: { originRunId: origin.id } }); finishings.push(row.id);
     return { row, origin };
   }
+  test("restore revokes the old owner and preserves child facts and deadlines before final redispatch",async()=>{
+    const value=await due();const original=await db.generationFinishing.update({where:{id:value.row.id},data:{state:"running",claimToken:crypto.randomUUID(),leaseExpiresAt:new Date(Date.now()+60_000),attempts:2,picks:[{clipId:crypto.randomUUID(),editorRevision:3,exportId:crypto.randomUUID(),copyGenerationId:crypto.randomUUID()}]}});
+    const rollback=Error("restore_fixture_rollback");
+    await expect(db.$transaction(async tx=>{
+      const epoch=await tx.executionEpoch.findUniqueOrThrow({where:{id:1}});
+      const fence=await tx.executionEpoch.update({where:{id:1},data:{epoch:epoch.epoch+1,admissionOpen:false,changedAt:new Date()}});
+      const page={snapshotEpoch:epoch.epoch,fenceAboveEpoch:epoch.epoch,deploymentEpoch:fence.epoch,cutoff:fence.changedAt,after:{at:original.createdAt,id:"00000000-0000-0000-0000-000000000000"},limit:1};
+      const before=await tx.executionDispatch.count();
+      expect(await planFinishingRestorePage(tx,page)).toMatchObject({processed:1,next:null,dispatchIds:[]});
+      expect(await tx.executionDispatch.count()).toBe(before);
+      const restored=await tx.generationFinishing.findUniqueOrThrow({where:{id:original.id}});
+      expect(restored).toMatchObject({deploymentEpoch:fence.epoch,generation:original.generation+1,state:"due",claimToken:null,leaseExpiresAt:null,attempts:3,picks:original.picks,dueAt:original.dueAt,operationDeadlineAt:original.operationDeadlineAt,nextAttemptAt:original.nextAttemptAt,settings:original.settings});
+      expect(await planFinishingRestorePage(tx,page)).toMatchObject({processed:0,dispatchIds:[]});
+      const recovery=await planFinishingRecoveryPage(tx,page);expect(recovery.dispatchIds).toHaveLength(2);
+      expect(await planFinishingRecoveryPage(tx,page)).toEqual(recovery);
+      expect(await tx.generationFinishing.findUniqueOrThrow({where:{id:original.id}})).toEqual(restored);
+      await expect(planFinishingRestorePage(tx,{...page,cutoff:new Date(page.cutoff.getTime()+1)})).rejects.toThrow("restore_page_proof_invalid");
+      await tx.executionEpoch.update({where:{id:1},data:{admissionOpen:true}});
+      await expect(planFinishingRestorePage(tx,page)).rejects.toThrow("restore_page_proof_invalid");
+      throw rollback;
+    })).rejects.toBe(rollback);
+    expect(await db.generationFinishing.findUniqueOrThrow({where:{id:original.id}})).toEqual(original);
+  });
   test("generation settlement atomically freezes a database-clock deadline and one replayable wake", async () => {
     const { row, origin } = await fixture();
     expect(await db.executionDispatch.count({ where: { subjectId: row.id } })).toBe(0);
@@ -59,8 +88,8 @@ suite("Targeted generation finishing obligations", () => {
       createExport: unexpected, retryExport: unexpected, writeCopy: unexpected, queueAccounts: async () => [], propose: unexpected,
       acceptUnderGrant: unexpected, sendReviewRound: unexpected, notify: unexpected, ...overrides });
   }
-  async function due() {
-    const value = await fixture();
+  async function due(settings?: Parameters<typeof fixture>[0]) {
+    const value = await fixture(settings);
     await db.$transaction(tx => transitionGenerationFinishing(tx,value.origin.id,"completed"));
     return { ...value, reference: (await db.$transaction(tx => queueGenerationFinishing(tx,value.row.id)))! };
   }
@@ -88,6 +117,58 @@ suite("Targeted generation finishing obligations", () => {
     expect(notified).toBe(1);
     expect(await db.generationFinishing.findUniqueOrThrow({ where: { id: value.row.id } })).toMatchObject({ state: "ready", attempts: 0, claimToken: null, leaseExpiresAt: null });
   });
+  test("child admission and late result publication reject a revoked finishing claim in their own transaction",async()=>{
+    const value=await due();await withClips(value);let attempts=0;
+    const service=driver({createExport:async(scope,projectId,clipId,input,key,authority)=>{
+      attempts++;
+      await db.$transaction(tx=>assertGenerationFinishingAuthority(tx,authority,{workspaceId:scope.workspaceId,projectId,actorUserId:scope.actorUserId,clipId}));
+      await db.generationFinishing.update({where:{id:value.row.id},data:{state:"due",claimToken:null,leaseExpiresAt:null}});
+      await db.$transaction(async tx=>{
+        await assertGenerationFinishingAuthority(tx,authority,{workspaceId:scope.workspaceId,projectId,clipId});
+        return tx.clipExport.create({data:{workspaceId:scope.workspaceId,projectId,clipId,editorRevision:input.expectedRevision,fingerprint:key,status:"ready",resolution:"720p",watermark:false}});
+      });
+      throw Error("revoked_child_must_not_commit");
+    }});
+    expect((await service.run(value.reference)).kind).toBe("superseded");
+    expect(attempts).toBe(1);expect(await db.clipExport.count({where:{projectId:value.row.projectId}})).toBe(0);
+    expect(await db.generationFinishing.findUniqueOrThrow({where:{id:value.row.id}})).toMatchObject({state:"due",attempts:0});
+  });
+  test("a role downgrade before child acceptance leaves no export or charged retry",async()=>{
+    const value=await due();await withClips(value);
+    const service=driver({createExport:async(scope,projectId,clipId,_input,_key,authority)=>{
+      await db.workspaceMember.update({where:{workspaceId_userId:{workspaceId:scope.workspaceId,userId:scope.actorUserId}},data:{role:"viewer"}});
+      await db.$transaction(tx=>assertGenerationFinishingAuthority(tx,authority,{...scope,projectId,clipId}));
+      throw Error("downgraded_actor_must_not_commit");
+    }});
+    expect((await service.run(value.reference)).kind).toBe("superseded");
+    expect(await db.clipExport.count({where:{projectId:value.row.projectId}})).toBe(0);
+    expect(await db.generationFinishing.findUniqueOrThrow({where:{id:value.row.id}})).toMatchObject({attempts:0});
+  });
+  test("an export retried during final handoff parks its finishing instead of publishing a stale ready outcome",async()=>{
+    const value=await due({topClips:1});await withClips(value);
+    const service=driver({createExport:async(_scope,projectId,clipId,input,key)=>{
+      const exported=await db.clipExport.create({data:{workspaceId:value.row.workspaceId,projectId,clipId,editorRevision:input.expectedRevision,fingerprint:key,status:"ready",resolution:"720p",watermark:false}});
+      return{export:{id:exported.id,status:exported.status},reused:false};
+    },notify:async()=>{await db.clipExport.updateMany({where:{projectId:value.row.projectId},data:{status:"queued"}});}});
+    await service.run(value.reference);
+    const next=(await db.$transaction(tx=>queueGenerationFinishing(tx,value.row.id)))!;
+    expect((await service.run(next)).kind).toBe("wait");
+    expect(await db.generationFinishing.findUniqueOrThrow({where:{id:value.row.id}})).toMatchObject({state:"exporting",finishedAt:null,claimToken:null,attempts:0});
+  });
+  test("an already-started copy request ends partial under its original key without a fresh paid retry",async()=>{
+    const value=await due({topClips:1,copyPlatforms:["x"]});await withClips(value);let copies=0;
+    const service=driver({createExport:async(_scope,projectId,clipId,input,key)=>{
+      const row=await db.clipExport.create({data:{workspaceId:value.row.workspaceId,projectId,clipId,editorRevision:input.expectedRevision,fingerprint:key,status:"ready",resolution:"720p",watermark:false}});
+      return{export:{id:row.id,status:row.status},reused:false};
+    },writeCopy:async()=>{copies++;throw new AssistedSocialCopyError("assisted_copy_generation_in_progress");},notify:async()=>{}});
+    await service.run(value.reference);
+    await service.run((await db.$transaction(tx=>queueGenerationFinishing(tx,value.row.id)))!);
+    const progress=await db.generationFinishing.findUniqueOrThrow({where:{id:value.row.id}});
+    expect(progress.picks).toEqual([expect.objectContaining({copyError:"assisted_copy_generation_in_progress"})]);
+    await service.run((await db.$transaction(tx=>queueGenerationFinishing(tx,value.row.id)))!);
+    expect(copies).toBe(1);
+    expect(await db.generationFinishing.findUniqueOrThrow({where:{id:value.row.id}})).toMatchObject({state:"partial",reason:"copy_failed",attempts:0});
+  });
   test("an old exact receipt repairs its committed next wake after ACK loss without admitting another export", async () => {
     const value = await due(); await withClips(value); let exports=0, loseNext=true, nextRegistrations=0;
     const service = driver({ register: async ids => {
@@ -105,6 +186,52 @@ suite("Targeted generation finishing obligations", () => {
     expect((await service.run(value.reference)).kind).toBe("superseded");
     expect(nextRegistrations).toBe(2); expect(exports).toBe(1);
     expect(await db.generationFinishing.findUniqueOrThrow({ where:{id:value.row.id} })).toEqual(committed);
+  });
+  test("terminal exports wake only their parked finishing and a lost page ACK replays the exact obligation list",async()=>{
+    const value=await due();await withClips(value);let exports=0,notified=0;
+    const service=driver({createExport:async(_scope,projectId,clipId,input,key)=>{
+      exports++;const row=await db.clipExport.create({data:{workspaceId:value.row.workspaceId,projectId,clipId,editorRevision:input.expectedRevision,fingerprint:key,status:"queued",resolution:"720p",watermark:false}});
+      return{export:{id:row.id,status:row.status},reused:false};
+    },notify:async()=>{notified++;}});
+    let reference=value.reference;
+    await service.run(reference);reference=(await db.$transaction(tx=>queueGenerationFinishing(tx,value.row.id)))!;
+    await service.run(reference);reference=(await db.$transaction(tx=>queueGenerationFinishing(tx,value.row.id)))!;
+    expect((await service.run(reference)).kind).toBe("wait");expect(exports).toBe(2);
+    expect(await db.$transaction(tx=>queueGenerationFinishing(tx,value.row.id))).toEqual(reference);
+    const included=await db.clipExport.findMany({where:{projectId:value.row.projectId},orderBy:{id:"asc"}});
+    expect(await db.$transaction(tx=>appendFinishingExportWake(tx,included[0]!.id))).toBeNull();
+    await db.clipExport.updateMany({where:{id:{in:included.map(row=>row.id)}},data:{status:"ready"}});
+    const pageId=(await db.$transaction(tx=>appendFinishingExportWake(tx,included[0]!.id)))!;
+    expect(await db.$transaction(tx=>appendFinishingExportWake(tx,included[0]!.id))).toBe(pageId);
+    const page=(await readExecutionDispatch(db,pageId))!;let loseAck=true;const registrations:string[][]=[];
+    const producer=createFinishingProducers({database:db,register:async ids=>{registrations.push([...ids]);if(loseAck){loseAck=false;throw Error("finishing_page_ack_lost");}}});
+    await expect(producer.dispatch(page.reference)).rejects.toThrow("finishing_page_ack_lost");
+    expect((await producer.dispatch(page.reference)).kind).toBe("complete");
+    expect(registrations).toHaveLength(2);expect(registrations[1]).toEqual(registrations[0]);
+    expect((await service.run(reference)).kind).toBe("complete");expect(exports).toBe(2);expect(notified).toBe(1);
+  });
+  test("export completion fans out in bounded pages without losing the final dependent",async()=>{
+    const value=await due();await withClips(value);
+    const clip=await db.clip.findFirstOrThrow({where:{projectId:value.row.projectId}});
+    const exported=await db.clipExport.create({data:{workspaceId:value.row.workspaceId,projectId:value.row.projectId,clipId:clip.id,editorRevision:clip.editorRevision,fingerprint:crypto.randomUUID(),status:"ready",resolution:"720p",watermark:false}});
+    const frozen=await db.generationFinishing.findUniqueOrThrow({where:{id:value.row.id}});
+    const picks=[{clipId:clip.id,editorRevision:clip.editorRevision,exportId:exported.id}];
+    await db.generationFinishing.update({where:{id:frozen.id},data:{state:"exporting",picks}});
+    for(let index=0;index<64;index++){
+      const origin=await db.workflowRun.create({data:{projectId:frozen.projectId,stage:"stt",status:"completed",idempotencyKey:crypto.randomUUID()}});
+      const row=await db.generationFinishing.create({data:{workspaceId:frozen.workspaceId,projectId:frozen.projectId,originRunId:origin.id,actorUserId:frozen.actorUserId,settings:frozen.settings,
+        deploymentEpoch:frozen.deploymentEpoch,generation:1,state:"exporting",dueAt:frozen.dueAt,operationDeadlineAt:frozen.operationDeadlineAt,picks}});finishings.push(row.id);
+    }
+    let pageId=(await db.$transaction(tx=>appendFinishingExportWake(tx,exported.id)))!,pages=0;
+    const producer=createFinishingProducers({database:db,register:async ids=>{expect(ids.length).toBeLessThanOrEqual(65);}});
+    while(pageId){
+      const reference=(await readExecutionDispatch(db,pageId))!.reference;
+      const result=await producer.dispatch(reference);pages++;expect(pages).toBeLessThanOrEqual(3);
+      const next=await db.executionDispatch.findFirst({where:{id:{in:result.dispatchIds},kind:"maintenance",subjectKind:"maintenance",subjectId:{startsWith:`gf1.e.${exported.id}.`}}});
+      pageId=next?.id??"";
+    }
+    expect(pages).toBe(3);
+    expect(await db.executionDispatch.count({where:{subjectKind:"generation_finishing",subjectId:{in:finishings},wakeKind:{startsWith:"ex_"}}})).toBe(65);
   });
   test("one exact driver confirms its watchdog before work and a concurrent duplicate waits", async () => {
     const first = await due(), unrelated = await due(); let calls = 0, registrations = 0;

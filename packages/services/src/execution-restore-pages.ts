@@ -1,9 +1,17 @@
 import { Prisma } from "@prisma/client";
-import type { ExecutionRestorePhaseHandler } from "./execution-restore";
+import type { ExecutionRestorePhaseHandler, ExecutionRestorePage } from "./execution-restore";
+
+/** Domain restore ports only run under the source pair already admitted by
+ * rs2. This guard cannot open intake or invent a new restore epoch. */
+export async function assertExecutionRestorePage(tx: Prisma.TransactionClient, page: ExecutionRestorePage) {
+  const [state] = await tx.$queryRaw<Array<{ epoch: number; admissionOpen: boolean; changedAt: Date }>>`SELECT epoch,"admissionOpen","changedAt" FROM "ExecutionEpoch" WHERE id=1 FOR SHARE`;
+  if (!state || state.admissionOpen || state.epoch !== page.deploymentEpoch || page.snapshotEpoch !== page.fenceAboveEpoch || page.deploymentEpoch !== page.snapshotEpoch + 1 || state.changedAt.getTime() !== page.cutoff.getTime()) throw new Error("restore_page_proof_invalid");
+}
 
 /** Historical owners remain audit facts. Epoch, status and revocation remove
  * every old permission before any domain is requeued under the new epoch. */
 export const revokeRestoredAttemptsPage: ExecutionRestorePhaseHandler = async (tx, page) => {
+  await assertExecutionRestorePage(tx,page);
   const after = page.after ? Prisma.sql`AND ("createdAt", "attemptToken") > ((${page.after.at}::timestamptz AT TIME ZONE 'UTC'), ${page.after.id}::uuid)` : Prisma.empty;
   const rows = await tx.$queryRaw<Array<{ id: string; at: Date }>>`SELECT "attemptToken" AS id, "createdAt" AS at FROM "ExecutionAttempt"
     WHERE "deploymentEpoch" < ${page.deploymentEpoch} AND status IN ('admitted','running') AND "createdAt" <= (${page.cutoff}::timestamptz AT TIME ZONE 'UTC') ${after}

@@ -4,6 +4,7 @@ import { PrismaClient } from "@prisma/client";
 import { assertExecutionDatabaseTestTarget } from "./execution-db-test-support";
 import { createLibraryIndex, queueLibraryIndex } from "./library-index";
 import { readExecutionDispatch } from "./execution-dispatch";
+import { takeExecutionDispatchIds } from "./execution-dispatch-runtime";
 import { LIBRARY_EMBEDDING_DIMENSIONS, LIBRARY_EMBEDDING_MODEL, EmbeddingProviderError } from "./openai-embedding-provider";
 
 const url = process.env.SERVERLESS_TEST_DATABASE_URL;
@@ -139,5 +140,21 @@ suite("Targeted library indexing", () => {
     const next = await current(value.transcript.id);
     expect((await driver.run(value.reference)).kind).toBe("superseded");
     expect(calls).toBe(1); expect(registrations).toHaveLength(3); expect(registrations.at(-1)).toEqual([next.dispatchId]);
+  });
+  test("restore rebinds metadata without collecting product dispatch or changing paid budget and retry time", async () => {
+    const value=await fixture(),retryAt=new Date(Date.now()+60_000);
+    await db.transcript.update({where:{id:value.transcript.id},data:{passagesAttempts:2,passagesRetryAt:retryAt,passagesClaimId:crypto.randomUUID(),passagesLeaseUntil:new Date(Date.now()+30_000)}});
+    const before=await db.transcript.findUniqueOrThrow({where:{id:value.transcript.id}}),count=await db.executionDispatch.count({where:{subjectId:value.transcript.id}});
+    await expect(db.$transaction(tx=>queueLibraryIndex(tx,value.transcript.id,{deferDispatch:true}))).rejects.toThrow("library_restore_requires_closed_admission");
+    await expect(db.$transaction(async tx=>{
+      const epoch=await tx.executionEpoch.update({where:{id:1},data:{epoch:{increment:1},admissionOpen:false}});
+      expect(await queueLibraryIndex(tx,value.transcript.id,{deferDispatch:true})).toBeNull();
+      expect(takeExecutionDispatchIds(tx)).toEqual([]);
+      expect(await tx.executionDispatch.count({where:{subjectId:value.transcript.id}})).toBe(count);
+      expect(await tx.transcript.findUniqueOrThrow({where:{id:value.transcript.id}})).toMatchObject({passagesEpoch:epoch.epoch,passagesGeneration:before.passagesGeneration+1,
+        passagesAttempts:2,passagesDeadlineAt:before.passagesDeadlineAt,passagesRetryAt:retryAt,passagesSourceHash:before.passagesSourceHash,passagesClaimId:null,passagesLeaseUntil:null});
+      throw Error("restore_test_rollback");
+    })).rejects.toThrow("restore_test_rollback");
+    expect(await db.transcript.findUniqueOrThrow({where:{id:value.transcript.id}})).toEqual(before);
   });
 });
