@@ -36,3 +36,7 @@ BEGIN
 END $$;
 CREATE TRIGGER "GrantPauseNotificationLedger_immutable_input" BEFORE UPDATE ON "GrantPauseNotificationLedger" FOR EACH ROW EXECUTE FUNCTION protect_grant_notification_input();
 CREATE INDEX "GrantPauseNotificationLedger_terminal_cursor" ON "GrantPauseNotificationLedger"("createdAt",id) WHERE status IN ('sent','failed','skipped');
+
+-- Pre-production replacement: shared mail ledger is the sole notice authority.
+ALTER TABLE "StandingGrant" DROP COLUMN "pauseNoticePending", DROP COLUMN "pauseNoticeLeaseUntil";
+CREATE INDEX "StandingGrant_active_authority_cursor" ON "StandingGrant"("createdAt",id) WHERE status='active';

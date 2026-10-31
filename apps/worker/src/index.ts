@@ -23,7 +23,6 @@ import {
 	mediaCleanupWorker,
 	assertUploadProviderLifecyclePrerequisite,
 	getWorkflowRunLifecycle,
-	getStandingGrantMaintenance,
 	getIngestJobLifecycle,
 	IngestJobClaimLost,
 	reviewService,
@@ -58,7 +57,6 @@ import {
 	processTranscriptRun,
 } from "./tasks/transcribe";
 import {
-	getWorkerAppBaseUrl,
 	notifyExpiringProject,
 	retryPendingNotifications,
 	retryPendingReviewNotifications,
@@ -454,19 +452,6 @@ const maintenanceLoop = createPollLoop("maintenance", 60 * 1000, async () => {
 			}),
 		);
 	}
-	// Standing Grants past their expiry end, and a grant that paused itself tells its granter.
-	const grants = getStandingGrantMaintenance(getWorkerAppBaseUrl);
-	const expiredGrants = await grants.expireDue();
-	if (expiredGrants > 0) {
-		console.warn(
-			JSON.stringify({
-				level: "info",
-				message: "standing_grants_expired",
-				count: expiredGrants,
-			}),
-		);
-	}
-	await grants.notifyPaused();
 	return 0;
 });
 

@@ -1,3 +1,4 @@
+import {planStandingGrantAuthorityPage} from "./publication-maintenance";
 import {afterAll,afterEach,beforeAll,describe,expect,test} from 'bun:test';
 import {PrismaClient} from '@prisma/client';
 import {PrismaPg} from '@prisma/adapter-pg';
@@ -122,6 +123,23 @@ suite('Targeted grant-pause mail',()=>{
    throw rollback;
   })).rejects.toBe(rollback);
   expect(await db.grantPauseNotificationLedger.findUniqueOrThrow({where:{id:n.row.id}})).toEqual(original);
+ });
+
+ test('daily authority pages are indexed, bounded and atomic before notifications are dispatched',async()=>{
+  const f=await fixture(),born=(await db.standingGrant.findUniqueOrThrow({where:{id:f.grant.id}})).createdAt,createdAt=new Date(born.getTime()+1);
+  for(let i=0;i<32;i++){
+   const rule=await db.autopilotRule.create({data:{workspaceId:f.workspace.id,createdByUserId:f.user.id,name:`Authority ${i}`,rssUrl:'https://feeds.example.test/feed',recipeId:f.rule.recipeId}});
+   await db.standingGrant.create({data:{workspaceId:f.workspace.id,autopilotRuleId:rule.id,kind:'review_send',reviewerEmails:['reviewer@example.test'],dailyCap:1,weeklyCap:2,expiresAt:new Date(Date.now()+86400_000),grantedByUserId:f.user.id,ruleFingerprint:'f'.repeat(64),createdAt}});
+  }
+  await db.workspace.update({where:{id:f.workspace.id},data:{pricingTier:'free'}});
+  const epoch=await db.executionEpoch.findUniqueOrThrow({where:{id:1}}),page={deploymentEpoch:epoch.epoch,cutoff:createdAt,after:{at:born,id:'00000000-0000-0000-0000-000000000000'},limit:32};
+  await expect(db.$transaction(async tx=>{await planStandingGrantAuthorityPage(tx,page);throw Error('authority-rollback');})).rejects.toThrow('authority-rollback');
+  expect(await db.grantPauseNotificationLedger.count({where:{workspaceId:f.workspace.id}})).toBe(0);
+  const first=await db.$transaction(tx=>planStandingGrantAuthorityPage(tx,page));expect(first.processed).toBe(32);expect(first.next).toBeTruthy();expect(first.dispatchIds!.length).toBeLessThanOrEqual(127);
+  expect(await db.grantPauseNotificationLedger.count({where:{workspaceId:f.workspace.id}})).toBe(32);
+  const second=await db.$transaction(tx=>planStandingGrantAuthorityPage(tx,{...page,after:first.next}));expect(second.processed).toBe(1);expect(second.next).toBeNull();
+  expect(await db.grantPauseNotificationLedger.count({where:{workspaceId:f.workspace.id}})).toBe(33);
+  await db.$transaction(async tx=>{await tx.$executeRawUnsafe('SET LOCAL enable_seqscan=off');const plan=await tx.$queryRaw`EXPLAIN (FORMAT JSON) SELECT id FROM "StandingGrant" WHERE status='active' AND "createdAt"<=${page.cutoff} ORDER BY "createdAt",id LIMIT 33`;expect(JSON.stringify(plan)).toContain('StandingGrant_active_authority_cursor');});
  });
 
 });

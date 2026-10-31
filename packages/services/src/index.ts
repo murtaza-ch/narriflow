@@ -626,7 +626,7 @@ export { callbackSigningSecrets } from "./completion-callback-runtime";
 export { createWebhookDisabledNotifier, requireWebhookTypeScopes, webhookView, type WebhookCredential, type WebhookDisabledNotice, type WebhookNoticeResult } from "./webhook-subscription";
 export { webhookSubscriptions, notifyDisabledWebhook } from "./webhook-subscription-runtime";
 export { StandingGrantError, normalizeReviewerEmails } from "./standing-grant";
-export { acceptProposalUnderGrant, getStandingGrantMaintenance, reviewerOptOut, sendReviewRoundUnderGrant, standingGrants } from "./standing-grant-runtime";
+export { acceptProposalUnderGrant, reviewerOptOut, sendReviewRoundUnderGrant, standingGrants } from "./standing-grant-runtime";
 
 export { chunkUtterances, PASSAGE_MAX_MS, PASSAGE_MIN_MS, type TranscriptPassageDraft } from "./library-passages";
 export { LibrarySearch, LibrarySearchError, lexicalQueryText, type LibrarySearchDependencies, type LibrarySearchInput } from "./library-search";
@@ -756,7 +756,7 @@ export * from "./execution-source-recovery-pages";
 export * from "./execution-selection-restore";
 export * from "./execution-preparation-restore";
 export * from "./execution-recovery-locks";
-export { planPublicationRecoveryPage, planStandingGrantExpiryPage, planPublicationReceiptRecoveryPage, planPerformanceCaptureRecoveryPage, planPublicationRestorePage, planPublicationReceiptRedispatchPage, planPerformanceCaptureRedispatchPage, planStandingGrantRedispatchPage, planPublicationGuidanceRedispatchPage } from "./publication-maintenance";
+export { planPublicationRecoveryPage, planStandingGrantAuthorityPage, planStandingGrantExpiryPage, planPublicationReceiptRecoveryPage, planPerformanceCaptureRecoveryPage, planPublicationRestorePage, planPublicationReceiptRedispatchPage, planPerformanceCaptureRedispatchPage, planStandingGrantRedispatchPage, planPublicationGuidanceRedispatchPage } from "./publication-maintenance";
 export { DubbingExecution, createDubbingExecution, type DubbingArtifactCommit } from "./dubbing-execution";
 export { getDubbingExecution } from "./dubbing-execution-runtime";
 export { dubbingInputBinding, encodeDubbingInput, decodeDubbingInput } from "./dubbing-input";

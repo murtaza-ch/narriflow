@@ -40,14 +40,9 @@ type Tx = Prisma.TransactionClient;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const WEEK_MS = 7 * DAY_MS;
-/** A skipped pause notice (emails off, no app URL) is tried again after this long. */
-const NOTICE_RETRY_MS = 5 * 60_000;
-/** A worker holds a notice this long; one that never settles is tried again after it. */
-const NOTICE_LEASE_MS = 5 * 60_000;
 const HISTORY_EVENTS = 12;
 const HISTORY_SENT = 5;
 const MAX_LISTED_GRANTS = 100;
-const RETURN_BATCH = 100;
 
 const failures = {
   standing_grant_account_unavailable: "missing",
@@ -218,14 +213,14 @@ export function grantAdmission(grantId: string, kind: StandingGrantKind, expecte
 /** Pauses an active grant. Queues `grant.paused` for the caller's flush, and
  * does nothing when the grant is not active (or, with `revision`, not at that
  * revision). Returns whether it paused. */
-async function pauseInTransaction(
+export async function pauseStandingGrantWithinTransaction(
   tx: Tx,
   input: { grantId: string; reason: StandingGrantPauseReason; actorUserId: string | null; revision?: number },
 ): Promise<boolean> {
   const paused = await tx.standingGrant.updateMany({
     where: { id: input.grantId, status: "active", ...(input.revision === undefined ? {} : { revision: input.revision }) },
     // A pause the system made is emailed to the granter once; a person already knows.
-    data: { status: "paused", pausedReason: input.reason, pauseNoticePending: input.actorUserId === null, pauseNoticeLeaseUntil: null },
+    data: { status: "paused", pausedReason: input.reason },
   });
   if (paused.count !== 1) {
     if(input.actorUserId===null){
@@ -265,7 +260,7 @@ async function pauseInTransaction(
 export async function pauseGrantForOutcome(tx: Tx, input: { socialPostId: string; state: "failed" | "needs_attention" }): Promise<void> {
   const post = await tx.socialPost.findUnique({ where: { id: input.socialPostId }, select: { standingGrantId: true, standingGrantRevision: true } });
   if (!post?.standingGrantId || post.standingGrantRevision === null) return;
-  await pauseInTransaction(tx, {
+  await pauseStandingGrantWithinTransaction(tx, {
     grantId: post.standingGrantId,
     revision: post.standingGrantRevision,
     reason: input.state === "failed" ? "post_failed" : "post_needs_attention",
@@ -284,7 +279,7 @@ export async function pauseGrantsOfGranter(tx: Tx, input: { workspaceId: string;
   });
   let paused = 0;
   for (const { id } of grants) {
-    if (await pauseInTransaction(tx, { grantId: id, reason: "granter_unavailable", actorUserId: null })) paused += 1;
+    if (await pauseStandingGrantWithinTransaction(tx, { grantId: id, reason: "granter_unavailable", actorUserId: null })) paused += 1;
   }
   return paused;
 }
@@ -302,7 +297,7 @@ export async function pauseGrantsWhoseRuleChanged(tx: Tx, ruleId: string): Promi
   const current = await ruleFingerprint(tx, ruleId);
   let paused = 0;
   for (const grant of grants) {
-    if (grant.ruleFingerprint !== current && await pauseInTransaction(tx, { grantId: grant.id, reason: "rule_changed", actorUserId: null })) paused += 1;
+    if (grant.ruleFingerprint !== current && await pauseStandingGrantWithinTransaction(tx, { grantId: grant.id, reason: "rule_changed", actorUserId: null })) paused += 1;
   }
   return paused;
 }
@@ -324,135 +319,24 @@ export async function revokeGrantsInTransaction(
   for (const grant of grants) {
     if(grant.status==="revoked"){await appendPublicationGrantWake(tx,grant.id);continue;}
     changed++;
-    await tx.standingGrant.update({ where: { id: grant.id }, data: { status: "revoked", pauseNoticePending: false, pauseNoticeLeaseUntil: null } });
+    await tx.standingGrant.update({ where: { id: grant.id }, data: { status: "revoked" } });
     await tx.standingGrantEvent.create({ data: { grantId: grant.id, kind: "revoked", revision: grant.revision, actorUserId: null, reason } });
     await appendPublicationGrantWake(tx,grant.id);
   }
   return changed;
 }
 
-/** Gives the posts of grants that ended (revoked or expired) back to the proposal
- * inbox, unless the publisher already took them. A post that has no attempt yet is
- * only a scheduled slot, so it reverts cleanly in place: it becomes the draft it
- * was, with no time and no frozen state, and a person can accept it again. A post
- * the publisher is working on is left to finish, because an attempt that has begun
- * can't be taken back. Returns how many were returned. */
-export async function returnGrantPosts(prisma: PrismaClient, input: { limit?: number } = {}): Promise<number> {
-  const waiting = await prisma.$queryRaw<Array<{ grantId: string }>>`
-    SELECT DISTINCT p."standingGrantId" AS "grantId"
-    FROM "SocialPost" p JOIN "StandingGrant" g ON g."id" = p."standingGrantId"
-    WHERE g."status" IN ('revoked', 'expired') AND p."status" IN ('scheduled', 'preparing_video')
-      AND NOT EXISTS (SELECT 1 FROM "SocialPublicationAttempt" a WHERE a."socialPostId" = p."id")
-    LIMIT 50
-  `;
-  let returned = 0;
-  for (const { grantId } of waiting) {
-    returned += await prisma.$transaction(async (tx) => {
-      await readExecutionAdmission(tx);
-      // The publisher claims a post under the post's own lock, so skipping a locked row is safe: it is being claimed.
-      const rows = await tx.$queryRaw<Array<{ id: string }>>`
-        SELECT p."id" FROM "SocialPost" p
-        WHERE p."standingGrantId" = ${grantId}::uuid AND p."status" IN ('scheduled', 'preparing_video')
-          AND NOT EXISTS (SELECT 1 FROM "SocialPublicationAttempt" a WHERE a."socialPostId" = p."id")
-        ORDER BY p."id" LIMIT ${input.limit ?? RETURN_BATCH}
-        FOR UPDATE OF p SKIP LOCKED
-      `;
-      if (rows.length === 0) return 0;
-      const ids = rows.map((row) => row.id);
-      const grant = await tx.standingGrant.findUniqueOrThrow({ where: { id: grantId }, select: { revision: true, status: true } });
-      await tx.frozenPublicationState.deleteMany({ where: { socialPostId: { in: ids } } });
-      await tx.socialPost.updateMany({
-        where: { id: { in: ids } },
-        data: { status: "draft", scheduledFor: null, nextAttemptAt: null, standingGrantId: null, standingGrantRevision: null },
-      });
-      await tx.socialPostProposal.updateMany({ where: { socialPostId: { in: ids } }, data: { acceptedAt: null, acceptedByUserId: null } });
-      await tx.standingGrantEvent.create({
-        data: {
-          grantId, kind: "returned", revision: grant.revision, actorUserId: null,
-          reason: `${ids.length} scheduled post${ids.length === 1 ? "" : "s"} returned to the proposal inbox because the grant ${grant.status === "expired" ? "expired" : "was revoked"}`,
-        },
-      });
-      return ids.length;
-    });
-  }
-  return returned;
-}
-
-/** The active grant of a kind that covers a finishing, if any. A finishing is covered
- * by the rule that froze it: the Autopilot import records its rule on the finishing,
- * and nothing else does, so settings a request passes for a rule's Project are never
- * covered by that rule's grants. */
-export async function findCoveringGrant(
-  db: Pick<PrismaClient, "generationFinishing" | "standingGrant">,
-  input: { workspaceId: string; finishingId: string; kind: StandingGrantKind; socialAccountId?: string; now?: Date },
-) {
-  const finishing = await db.generationFinishing.findFirst({
-    where: { id: input.finishingId, workspaceId: input.workspaceId },
-    select: { autopilotRuleId: true },
-  });
-  if (!finishing?.autopilotRuleId) return null;
-  return db.standingGrant.findFirst({
-    where: {
-      workspaceId: input.workspaceId,
-      autopilotRuleId: finishing.autopilotRuleId,
-      kind: input.kind,
-      status: "active",
-      expiresAt: { gt: input.now ?? new Date() },
-      ...(input.socialAccountId ? { socialAccountId: input.socialAccountId } : {}),
-    },
-    select: { id: true, kind: true, revision: true,ruleFingerprint:true, grantedByUserId: true, reviewerEmails: true },
-  });
-}
-
 // --- Management --------------------------------------------------------------
-
-export interface GrantPausedNotice {
-  to: string;
-  grantId: string;
-  ruleName: string;
-  destination: string;
-  reason: string;
-  /** Names the grant and revision, so a send that is repeated reaches the inbox once. */
-  idempotencyKey: string;
-}
-export type GrantNoticeResult = { sent: true } | { sent: false; reason: string };
 
 export interface StandingGrantDependencies {
   prisma: PrismaClient;
   requireActor(userId: string, workspaceId: string, capability: WorkspaceCapability): Promise<{ pricingTier: string }>;
   now?: () => Date;
-  /** Emails the person who should hear that a grant paused itself. */
-  notifyPaused?: (notice: GrantPausedNotice) => Promise<GrantNoticeResult>;
-  log?: (entry: Record<string, unknown>) => void;
 }
 
 export function createStandingGrants(deps: StandingGrantDependencies) {
   const { prisma } = deps;
   const now = () => deps.now?.() ?? new Date();
-  const log = deps.log ?? ((entry) => console.warn(JSON.stringify(entry)));
-  let noticesPausedUntil = 0;
-
-  /** Pauses active grants whose Workspace's plan no longer covers their kind. */
-  async function pauseBeyondPlan(limit: number): Promise<number> {
-    const active = await prisma.standingGrant.findMany({
-      where: { status: "active" },
-      orderBy: { id: "asc" },
-      take: limit * 10,
-      select: { id: true, kind: true, revision: true, workspace: { select: { pricingTier: true } } },
-    });
-    let paused = 0;
-    for (const grant of active) {
-      if (planCoversGrant(grant.workspace.pricingTier, grant.kind)) continue;
-      const done = await prisma.$transaction(async (tx) => {
-      await readExecutionAdmission(tx);
-        const changed = await pauseInTransaction(tx, { grantId: grant.id, reason: "plan_lost", actorUserId: null, revision: grant.revision });
-        await flushWorkspaceEvents(tx);
-        return changed;
-      });
-      if (done) paused += 1;
-    }
-    return paused;
-  }
 
   async function requireGrantManager(scope: ActorScope) {
     return deps.requireActor(scope.actorUserId, scope.workspaceId, "workspace.manage");
@@ -664,8 +548,6 @@ export function createStandingGrants(deps: StandingGrantDependencies) {
             status: "active",
             revision,
             pausedReason: null,
-            pauseNoticePending: false,
-            pauseNoticeLeaseUntil: null,
             dailyCap: parsed.dailyCap,
             weeklyCap: parsed.weeklyCap,
             expiresAt: new Date(at.getTime() + parsed.expiresInDays * DAY_MS),
@@ -686,7 +568,7 @@ export function createStandingGrants(deps: StandingGrantDependencies) {
       await prisma.$transaction(async (tx) => {
       await readExecutionAdmission(tx);
         await lockGrant(tx, scope.workspaceId, grantId);
-        if (!(await pauseInTransaction(tx, { grantId, reason: "manual", actorUserId: scope.actorUserId }))) {
+        if (!(await pauseStandingGrantWithinTransaction(tx, { grantId, reason: "manual", actorUserId: scope.actorUserId }))) {
           throw new StandingGrantError("standing_grant_not_active", "Only an active grant can be paused.");
         }
         await flushWorkspaceEvents(tx);
@@ -701,7 +583,7 @@ export function createStandingGrants(deps: StandingGrantDependencies) {
       await readExecutionAdmission(tx);
         const grant = await lockGrant(tx, scope.workspaceId, grantId);
         if(grant.status==="revoked"){await appendPublicationGrantWake(tx,grant.id);return;}
-        await tx.standingGrant.update({ where: { id: grantId }, data: { status: "revoked", pauseNoticePending: false, pauseNoticeLeaseUntil: null } });
+        await tx.standingGrant.update({ where: { id: grantId }, data: { status: "revoked" } });
         await tx.standingGrantEvent.create({ data: { grantId, kind: "revoked", revision: grant.revision, actorUserId: scope.actorUserId } });
         await appendPublicationGrantWake(tx,grantId);
       });
@@ -711,127 +593,12 @@ export function createStandingGrants(deps: StandingGrantDependencies) {
     async pauseBySystem(grantId: string, reason: StandingGrantPauseReason, revision?: number): Promise<boolean> {
       return prisma.$transaction(async (tx) => {
       await readExecutionAdmission(tx);
-        const paused = await pauseInTransaction(tx, { grantId, reason, actorUserId: null, revision });
+        const paused = await pauseStandingGrantWithinTransaction(tx, { grantId, reason, actorUserId: null, revision });
         await flushWorkspaceEvents(tx);
         return paused;
       });
     },
 
-    /** The maintenance sweep: grants past their expiry become `expired`, each with
-     * its audit line and its one `grant.expired` event, and the posts of grants that
-     * ended go back to the proposal inbox. Returns how many grants it expired. */
-    async expireDue(limit = 50): Promise<number> {
-      // A downgrade pauses the grants the plan no longer covers, even ones nothing has used since.
-      await pauseBeyondPlan(limit);
-      const at = now();
-      const due = await prisma.standingGrant.findMany({
-        where: { status: { in: ["active", "paused"] }, expiresAt: { lte: at } },
-        orderBy: { expiresAt: "asc" },
-        take: limit,
-        select: { id: true },
-      });
-      let expired = 0;
-      for (const { id } of due) {
-        expired += await prisma.$transaction(async (tx) => {
-      await readExecutionAdmission(tx);
-          const done = await tx.standingGrant.updateMany({
-            where: { id, status: { in: ["active", "paused"] }, expiresAt: { lte: at } },
-            data: { status: "expired" },
-          });
-          if (done.count !== 1) return 0;
-          const grant = await tx.standingGrant.findUniqueOrThrow({ where: { id }, select: { workspaceId: true, kind: true, autopilotRuleId: true, revision: true } });
-          await tx.standingGrantEvent.create({ data: { grantId: id, kind: "expired", revision: grant.revision, actorUserId: null } });
-          await appendPublicationGrantWake(tx,id);
-          queueWorkspaceEvent(tx, {
-            workspaceId: grant.workspaceId,
-            projectId: null,
-            type: "grant.expired",
-            subject: { grantId: id, kind: grant.kind, autopilotRuleId: grant.autopilotRuleId },
-            dedupeKey: `grant.expired:${id}:${grant.revision}`,
-          });
-          await flushWorkspaceEvents(tx);
-          return 1;
-        });
-      }
-      // Also settles what an earlier sweep or revocation was interrupted before returning.
-      await returnGrantPosts(prisma);
-      return expired;
-    },
-
-    /** Emails the granter about each grant the system paused. When the granter is no longer an
-     * Owner or Admin, the Workspace owner hears instead. A notice stays pending until the send
-     * succeeds: a worker holds it for a while, and one that is skipped (emails off, no app URL)
-     * or fails is tried again later. A grant that is no longer paused has nothing to announce. */
-    async notifyPaused(batchSize = 10): Promise<number> {
-      const send = deps.notifyPaused;
-      if (!send || now().getTime() < noticesPausedUntil) return 0;
-      const at = now();
-      const free = { OR: [{ pauseNoticeLeaseUntil: null }, { pauseNoticeLeaseUntil: { lte: at } }] };
-      const due = await prisma.standingGrant.findMany({ where: { pauseNoticePending: true, ...free }, take: batchSize, select: { id: true } });
-      let notified = 0;
-      for (const { id } of due) {
-        const held = await prisma.standingGrant.updateMany({
-          where: { id, pauseNoticePending: true, ...free },
-          data: { pauseNoticeLeaseUntil: new Date(at.getTime() + NOTICE_LEASE_MS) },
-        });
-        if (held.count !== 1) continue;
-        const settle = () => prisma.standingGrant.updateMany({ where: { id, pauseNoticePending: true }, data: { pauseNoticePending: false, pauseNoticeLeaseUntil: null } });
-        const row = await prisma.standingGrant.findUnique({
-          where: { id },
-          select: {
-            workspaceId: true,
-            status: true,
-            revision: true,
-            pausedReason: true,
-            grantedByUserId: true,
-            autopilotRule: { select: { name: true } },
-            socialAccount: { select: { displayName: true } },
-            reviewerEmails: true,
-            grantedBy: { select: { primaryEmail: true, emailVerifiedAt: true } },
-            workspace: { select: { owner: { select: { primaryEmail: true, emailVerifiedAt: true } } } },
-          },
-        });
-        // Renewed, revoked or expired since: a "paused" email would only mislead.
-        if (!row || row.status !== "paused" || !row.pausedReason) {
-          await settle();
-          continue;
-        }
-        const granterRole = row.grantedByUserId
-          ? (await prisma.workspaceMember.findFirst({ where: { workspaceId: row.workspaceId, userId: row.grantedByUserId }, select: { role: true } }))?.role
-          : null;
-        const granterManages = granterRole === "owner" || granterRole === "admin";
-        const recipient = [granterManages ? row.grantedBy : null, row.workspace.owner].find((user) => user?.primaryEmail && user.emailVerifiedAt);
-        if (!recipient?.primaryEmail) {
-          log({ level: "warn", message: "standing_grant_notice_skipped", grantId: id, reason: "no_verified_recipient" });
-          await settle();
-          continue;
-        }
-        const count = emailsOf(row.reviewerEmails).length;
-        try {
-          const result = await send({
-            to: recipient.primaryEmail,
-            grantId: id,
-            ruleName: row.autopilotRule?.name ?? "A deleted rule",
-            destination: row.socialAccount ? row.socialAccount.displayName : `${count} reviewer${count === 1 ? "" : "s"}`,
-            reason: standingGrantPauseMessage(row.pausedReason) ?? "The grant paused.",
-            idempotencyKey: `standing-grant-paused:${id}:${row.revision}`,
-          });
-          if (result.sent) {
-            await settle();
-            notified += 1;
-            continue;
-          }
-          await prisma.standingGrant.updateMany({ where: { id, pauseNoticePending: true }, data: { pauseNoticeLeaseUntil: new Date(now().getTime() + NOTICE_RETRY_MS) } });
-          noticesPausedUntil = now().getTime() + NOTICE_RETRY_MS;
-          log({ level: "warn", message: "standing_grant_notice_skipped", grantId: id, reason: result.reason, retryAfterMs: NOTICE_RETRY_MS });
-          break;
-        } catch (error) {
-          // Left pending under its lease: the next pass after the lease tries again.
-          log({ level: "error", message: "standing_grant_notice_failed", grantId: id, errorName: error instanceof Error ? error.name : "unknown" });
-        }
-      }
-      return notified;
-    },
   };
 }
 
