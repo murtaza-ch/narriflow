@@ -1,3 +1,4 @@
+import { clipPreparationReadyObjectsSchema } from "@narriflow/validators/clip-preparation";
 import type { PrismaClient } from "@prisma/client";
 
 /** Only producer-planned keys can enter this class. A referenced capsule stays
@@ -19,8 +20,9 @@ export async function executionInputRetainUntil(database: Pick<PrismaClient, "cl
   } else {
     const match = /^projects\/([a-f0-9-]{36})\/preparations\/([a-f0-9-]{36})\/([a-f0-9-]{36})\.json$/.exec(objectKey);
     if (!match) throw new Error("Invalid execution input cleanup key");
-    const row = await database.clipPreparation.findUnique({ where: { id: match[2]! }, select: { projectId: true, inputStorageKey: true, operationDeadlineAt: true } });
-    if (!row || row.projectId !== match[1] || row.inputStorageKey !== objectKey) return null;
+    const row = await database.clipPreparation.findUnique({ where: { id: match[2]! }, select: { projectId: true, inputStorageKey: true, operationDeadlineAt: true, readyObjects: true } });
+    const objects = clipPreparationReadyObjectsSchema.safeParse(row?.readyObjects);
+    if (!row || row.projectId !== match[1] || (row.inputStorageKey !== objectKey && (!objects.success || objects.data.manifest.storageKey !== objectKey))) return null;
     deadlineAt = row.operationDeadlineAt;
   }
   const [clock] = await database.$queryRaw<Array<{ now: Date }>>`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS now`;

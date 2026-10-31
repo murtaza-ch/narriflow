@@ -3763,6 +3763,7 @@ model ClipPreparation {
   chargedAttempts Int @default(0)
   retryAt DateTime?
   result Json?
+  readyObjects Json?
   errorCode String? @db.VarChar(100)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

@@ -639,7 +639,11 @@
     "./publication-observations": "./src/publication-observations.ts",
     "./publication-observations-runtime": "./src/publication-observations-runtime.ts",
     "./performance-capture-contract": "./src/performance-capture-contract.ts",
-    "./social-provider-http": "./src/social-provider-http.ts"
+    "./social-provider-http": "./src/social-provider-http.ts",
+    "./execution-maintenance-ports": "./src/execution-maintenance-ports.ts",
+    "./execution-retention-pages": "./src/execution-retention-pages.ts",
+    "./execution-safety-pages": "./src/execution-safety-pages.ts",
+    "./execution-account-recovery-pages": "./src/execution-account-recovery-pages.ts"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",

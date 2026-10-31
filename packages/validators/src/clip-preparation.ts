@@ -40,3 +40,14 @@ export const clipPreparationResultSchema = z.strictObject({
   }),
 }).refine(value => value.peaks.state !== "ready" || value.peaks.artifactId !== value.preview.artifactId, "Preview and peaks require distinct assigned artifacts");
 export type ClipPreparationResult = z.infer<typeof clipPreparationResultSchema>;
+
+
+/** Sealed once on normal completion or validated restore transformation. This
+ * references verified outputs without inventing a native owner for reused work. */
+export const clipPreparationReadyObjectsSchema = z.strictObject({
+  preview: clipPreparationObjectSchema,
+  peaks: clipPreparationObjectSchema.nullable(),
+  manifest: clipPreparationObjectSchema,
+}).refine(value => value.preview.byteLength <= 512 * 1024 ** 2 && value.manifest.byteLength <= 1024 ** 2 &&
+  (value.peaks === null || value.peaks.byteLength <= 256 * 1024), "Preparation output bounds");
+export type ClipPreparationReadyObjects = z.infer<typeof clipPreparationReadyObjectsSchema>;
