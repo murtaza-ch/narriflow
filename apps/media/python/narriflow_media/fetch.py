@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 import hashlib
+import json
 import math
 from pathlib import Path
 import re
@@ -29,6 +30,69 @@ class SourceFetchFailure(RuntimeError):
 class ProviderAccessBlocked(SourceFetchFailure):
     def __init__(self):
         super().__init__("source_provider_access_denied")
+
+
+@dataclass(frozen=True, init=False)
+class ExistingSourceAudio:
+    """A current sealed binding supplied by the verified work package.
+
+    This validates immutable wire facts. Only the control API can establish
+    that the binding is still current for the Project and source revision.
+    No local file or new source_audio assignment is manufactured for it.
+    """
+    _wire: bytes = field(repr=False)
+
+    def __init__(self, binding: Mapping[str, Any]):
+        try:
+            wire = json.dumps(dict(binding), separators=(",", ":"), sort_keys=True, allow_nan=False).encode()
+            value = json.loads(wire)
+            fields = {"sourceAudioId", "projectId", "sourceRevision", "mediaIdentity", "audioTrack", "object",
+                      "durationSeconds", "wholeSource", "audioStartTimeSec", "probeVersion", "toolchainFingerprint"}
+            uuid = r"[a-fA-F0-9]{8}(?:-[a-fA-F0-9]{4}){3}-[a-fA-F0-9]{12}"
+            identifier = r"[A-Za-z0-9][A-Za-z0-9._:-]{0,159}"
+            if len(wire) > 65536 or set(value) != fields or any(not re.fullmatch(uuid, value[name]) for name in ("sourceAudioId", "projectId")):
+                raise ValueError()
+            if type(value["sourceRevision"]) is not int or not 0 < value["sourceRevision"] <= 2 ** 53 - 1 or value["wholeSource"] is not True:
+                raise ValueError()
+            identity, track, storage = value["mediaIdentity"], value["audioTrack"], value["object"]
+            if set(identity) != {"provider", "mediaId"} or identity["provider"] != "youtube":
+                raise ValueError()
+            YouTubeSource(identity["mediaId"])
+            if (set(track) != {"id", "language", "codec", "sampleRate", "channels"} or not re.fullmatch(identifier, track["id"])
+                    or track["language"] is not None and not re.fullmatch(r"[A-Za-z0-9-]{1,32}", track["language"])
+                    or not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", track["codec"])
+                    or type(track["sampleRate"]) is not int or not 0 < track["sampleRate"] <= 768000
+                    or type(track["channels"]) is not int or not 0 < track["channels"] <= 64):
+                raise ValueError()
+            if (set(storage) != {"key", "etag", "byteLength", "sha256"}
+                    or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9/_.-]{0,1023}", storage["key"])
+                    or any(segment in {"", ".", ".."} for segment in storage["key"].split("/"))
+                    or not re.fullmatch(r"[\x21-\x7e]{1,160}", storage["etag"])
+                    or type(storage["byteLength"]) is not int or not 0 < storage["byteLength"] <= MAX_SOURCE_BYTES
+                    or not re.fullmatch(r"[a-f0-9]{64}", storage["sha256"])):
+                raise ValueError()
+            for name in ("durationSeconds", "audioStartTimeSec"):
+                if type(value[name]) not in {int, float} or not math.isfinite(value[name]):
+                    raise ValueError()
+            if (value["durationSeconds"] <= 0 or not re.fullmatch(identifier, value["probeVersion"])
+                    or not re.fullmatch(r"[a-f0-9]{64}", value["toolchainFingerprint"])):
+                raise ValueError()
+            object.__setattr__(self, "_wire", wire)
+        except (ValueError, TypeError, KeyError, SourceManifestError):
+            raise SourceManifestError("source_audio_seed_invalid") from None
+
+    @property
+    def binding(self) -> dict[str, Any]:
+        return json.loads(self._wire)
+
+    @property
+    def manifest(self) -> Mapping[str, Any]:
+        return self.binding
+
+
+class SourceAudioEvidence(Protocol):
+    @property
+    def manifest(self) -> Mapping[str, Any]: ...
 
 
 @dataclass(frozen=True)
@@ -76,7 +140,7 @@ class VerifiedSourceFile:
 
 @dataclass(frozen=True)
 class FetchSourceResult:
-    audio: VerifiedSourceFile
+    audio: VerifiedSourceFile | ExistingSourceAudio
     video: VerifiedSourceFile
 
 
@@ -90,7 +154,7 @@ class SourceRuntime(Protocol):
 
 class SourceSink(Protocol):
     async def audio_ready(self, artifact: VerifiedSourceFile) -> None: ...
-    async def video_ready(self, artifact: VerifiedSourceFile, audio: VerifiedSourceFile) -> None: ...
+    async def video_ready(self, artifact: VerifiedSourceFile, audio: SourceAudioEvidence) -> None: ...
 
 
 def _file_hash(path: Path):
@@ -124,7 +188,7 @@ async def _verified(download: DownloadedSource, selected: ResolvedSource, source
     return artifact
 
 
-def _same_audio_binding(audio: VerifiedSourceFile, video: VerifiedSourceFile):
+def _same_audio_binding(audio: SourceAudioEvidence, video: VerifiedSourceFile):
     frames_per_second = video.probe.get("fps")
     frame_tolerance = 2 / frames_per_second if type(frames_per_second) in {int, float} and math.isfinite(frames_per_second) and frames_per_second > 0 else 0
     tolerance = max(1, frame_tolerance)
@@ -141,7 +205,8 @@ def _same_audio_binding(audio: VerifiedSourceFile, video: VerifiedSourceFile):
 async def fetch_source(source: str | YouTubeSource, *, source_revision: int, mode: str, development: bool,
                        work_directory: Path, runtime: SourceRuntime, sink: SourceSink,
                        toolchain_fingerprint: str, proxy_template: str | None = None,
-                       deadline_seconds: float = 45 * 60) -> FetchSourceResult:
+                       deadline_seconds: float = 45 * 60, existing_audio: ExistingSourceAudio | None = None,
+                       project_id: str | None = None) -> FetchSourceResult:
     if mode not in {"local", "proxy"} or (mode == "local" and not development):
         raise SourceFetchFailure("source_fetch_mode_forbidden")
     if type(source_revision) is not int or not 0 < source_revision <= 2 ** 53 - 1 or not re.fullmatch(r"[a-f0-9]{64}", toolchain_fingerprint):
@@ -149,9 +214,16 @@ async def fetch_source(source: str | YouTubeSource, *, source_revision: int, mod
     if not 0 < deadline_seconds <= 45 * 60:
         raise SourceFetchFailure("source_fetch_deadline_invalid")
     identity = normalize_youtube_source(source) if isinstance(source, str) else source
+    if existing_audio is not None:
+        if not isinstance(existing_audio, ExistingSourceAudio):
+            raise SourceManifestError("source_audio_seed_invalid")
+        binding = existing_audio.binding
+        if (binding["projectId"] != project_id or binding["sourceRevision"] != source_revision
+                or binding["mediaIdentity"] != {"provider": "youtube", "mediaId": identity.media_id}):
+            raise SourceFetchFailure("source_audio_video_mismatch")
     sessions = ProxySessionSequence(proxy_template or "") if mode == "proxy" else None
     work_directory.mkdir(parents=True, exist_ok=True)
-    audio: VerifiedSourceFile | None = None
+    audio: VerifiedSourceFile | ExistingSourceAudio | None = existing_audio
     async with asyncio.timeout(deadline_seconds):
         for _attempt in range(3 if sessions is not None else 1):
             session = sessions.next() if sessions is not None else None
