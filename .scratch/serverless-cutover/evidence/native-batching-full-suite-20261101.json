@@ -1,0 +1,110 @@
+{
+  "date": "2026-11-01",
+  "status": "PASS full current Python native suite after bounded part authorization batching",
+  "candidateCommit": "35ca2425dd61b8469ce89d7ea9ea2b0f65a0d678",
+  "dirtyFiles": [],
+  "provenance": {
+    "candidateCommit": "35ca2425dd61b8469ce89d7ea9ea2b0f65a0d678",
+    "sandboxId": "sb-01M69W3PEAV596MND144X8231C",
+    "imageId": "im-m1o1Ri9tUwxXuVZCxfxUNq",
+    "cpu": 4,
+    "memoryMiB": 8192,
+    "networkBlocked": true,
+    "secrets": [],
+    "files": {
+      "/tmp/candidate.tar.gz": "a0d34bc0c04e91e6a188ac60bd3a629b388be1929d398c999be6daf41aaad4ea",
+      "/tmp/run.py": "be7b1a0c5d13ea9655bb47bdd72ad30160282d44a01e7c0fd4554b340d4d28d6"
+    }
+  },
+  "terminated": true,
+  "runtime": {
+    "id": "06a988fcee94757ba07d1d1cc410ca4fbf0f36ee4d8f4aab8c84711897a569b9",
+    "fixtureToolchainId": "e00c091bc5a81bee",
+    "bun": "1.3.6",
+    "python": "3.13.5",
+    "platform": "linux-x64"
+  },
+  "suite": {
+    "passed": 177,
+    "failed": 0,
+    "seconds": 109.569,
+    "command": "python -m unittest discover -s apps/media/python/tests -p test_*.py",
+    "scope": "Complete existing fetch, source, pin, media preparation/render, asset, generated-image, publication, dubbing, bundle, process/control/artifact, restore and transfer harness cases together with new batching/collector/barrier cases.",
+    "controls": "Actual native children and loopback fixtures; no external network or credentials. This is not live DB, provider or R2 evidence."
+  },
+  "diagnosticExecutionDurations": {
+    "runtime": {
+      "exitCode": 0,
+      "seconds": 25.569
+    },
+    "all-native-tests": {
+      "exitCode": 0,
+      "seconds": 109.825
+    }
+  },
+  "boundedAllocations": {
+    "multipart": {
+      "virtualObjectBytes": 10737418240,
+      "parts": 640,
+      "maximumPartBuffers": 4,
+      "peakTrackedBytes": 67359821,
+      "ceilingBytes": 83886080
+    },
+    "sourceCache": {
+      "virtualObjectBytes": 10737418240,
+      "streamReadBytes": 84934656,
+      "configuredCacheBytes": 67108864,
+      "configuredEntries": 128,
+      "peakTrackedBytes": 68622492,
+      "ceilingBytes": 83886080
+    },
+    "scope": "Dedicated Python tracked-allocation tests; not process or cgroup peak memory."
+  },
+  "keySourceSha256": {
+    "apps/media/python/narriflow_media/transfer.py": "6fa8d615387374d67b5b2ceec82c4f3c4071f5c3d1285872cafcd584958011f4",
+    "apps/media/python/narriflow_media/multipart.py": "8f32a89204b1336a03235b242e6d00156b787dd846dacfb2883eba001f1550ba",
+    "apps/media/python/gates/executor_r2_transfer.py": "fbd152ebe3b63b6445990585ebf658b61f8be4ad32c6a2a2a1b5659c4fe100de",
+    "apps/media/python/tests/test_transfer_part_batching.py": "cc570e71dbf31a0c6f554cc7103cb17dbd262a7ba44d57eb1f842a218354af04",
+    "apps/media/python/tests/test_transfer_control.py": "3a5f4d99e8ccc2b3d21b4fecac2b3be38570c4f4c4ad7fe49f06d79dbc05a355",
+    "apps/media/python/tests/test_executor_r2_transfer_gate.py": "9c3da5183085db7757fe0a512a7356a5d3d48f168be2f360fe61732faca510b1",
+    "apps/media/python/tests/test_multipart.py": "a521cec1fc3afb17b7d2b61c72d6a15dd6fc260e4f56a798c4584dbfeea2b668"
+  },
+  "rawEvidence": {
+    "/tmp/narriflow-serverless-gates/final-media-21/batching-current-sweep/candidate.tar.gz": {
+      "sha256": "a0d34bc0c04e91e6a188ac60bd3a629b388be1929d398c999be6daf41aaad4ea",
+      "byteLength": 2787534
+    },
+    "/tmp/narriflow-serverless-gates/final-media-21/batching-current-sweep/source.json": {
+      "sha256": "d82f2a41294dc725410d9d5b1d67472bfed7d38c789ac6be606197557982be77",
+      "byteLength": 124425
+    },
+    "/tmp/narriflow-serverless-gates/final-media-21/batching-current-sweep/run.py": {
+      "sha256": "d6dd0764067b7d5179e7c6b4e8452ad21826827cfd0c92063aab103b1632a9da",
+      "byteLength": 1916
+    },
+    "/tmp/narriflow-serverless-gates/final-media-21/batching-current-sweep/remote.py": {
+      "sha256": "be7b1a0c5d13ea9655bb47bdd72ad30160282d44a01e7c0fd4554b340d4d28d6",
+      "byteLength": 1119
+    },
+    "/tmp/narriflow-serverless-gates/final-media-21/batching-current-sweep/provenance.json": {
+      "sha256": "a6cb6187cac4c99a0e41043f56f3a4dcbdb01461f93edf37376b76d7de25f6c3",
+      "byteLength": 435
+    },
+    "/tmp/narriflow-serverless-gates/final-media-21/batching-current-sweep/runtime.log": {
+      "sha256": "509d4f76a79b7bdaabf44ae54d7b01a38f8bc4f2df63c614835c1db1a0024f05",
+      "byteLength": 17949
+    },
+    "/tmp/narriflow-serverless-gates/final-media-21/batching-current-sweep/all-native-tests.log": {
+      "sha256": "3fe4a393e478174e1d682eeb574df28e0ae98b65717d7f93b2aae18d73e6ef50",
+      "byteLength": 17130
+    },
+    "/tmp/narriflow-serverless-gates/final-media-21/batching-current-sweep/status.json": {
+      "sha256": "0ad2066fdd9fb251b9f4cb783b6d0e5c76591be998737f9cac02e2c92e6c465c",
+      "byteLength": 135
+    }
+  },
+  "priorRendererProof": "final-linux-native-parity-20261101.json",
+  "goldenRerun": false,
+  "goldenScope": "The renderer is unchanged. The prior exact36-case frozen matrix remains its separate evidence.",
+  "remaining": "Root owns immutable Function refresh with batching/cache and live regional transfer/performance gates. No deployment or account change was made here."
+}
