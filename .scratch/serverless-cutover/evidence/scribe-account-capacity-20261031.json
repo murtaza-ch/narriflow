@@ -1,0 +1,24 @@
+{
+  "checkedAt": "2026-10-31",
+  "provider": "ElevenLabs",
+  "workspace": "Murtaza\u2019s Workspace",
+  "applicationKeyName": "narriflow-dev",
+  "applicationKeyEnabled": true,
+  "maskedKeyMatchesLocalConfiguration": true,
+  "plan": "Starter",
+  "configuredScribeMaxConcurrentUnits": 12,
+  "durationWeight": "min(4, ceil(sourceAudio.durationSeconds / 480))",
+  "evidence": [
+    "Signed-in Developers overview and profile explicitly show Starter plan.",
+    "Existing enabled narriflow-dev key masked suffix matches the app-local worker key. No credentials were revealed or changed.",
+    "Read-only subscription API refuses user-read access with missing_permissions. This does not imply the transcription key is invalid."
+  ],
+  "sources": [
+    "https://elevenlabs.io/docs/help-center/product/core-capabilities/speech-to-text/how-many-speech-to-text-requests-can-i-make-and-can-i-increase-it",
+    "https://elevenlabs.io/docs/overview/capabilities/speech-to-text"
+  ],
+  "limits": [
+    "Provider429 remains authoritative if account-level usage changes.",
+    "Cutover must set the explicit configuration. No default cap is inferred in application code."
+  ]
+}

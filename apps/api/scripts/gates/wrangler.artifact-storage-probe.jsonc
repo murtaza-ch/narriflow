@@ -1,0 +1,11 @@
+{
+  "name": "narriflow-artifact-storage-runtime-probe",
+  "main": "./artifact-storage-probe.ts",
+  "compatibility_date": "2026-10-30",
+  "compatibility_flags": ["nodejs_compat", "disallow_importable_env"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [],
+  "r2_buckets": [{ "binding": "MEDIA_BUCKET", "bucket_name": "narriflow-artifact-storage-runtime-probe" }],
+  "observability": { "enabled": false }
+}

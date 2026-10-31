@@ -446,6 +446,10 @@
       "types": "./src/execution-transfer.ts",
       "default": "./src/execution-transfer.ts"
     },
+    "./native-validation-execution": {
+      "types": "./src/native-validation-execution.ts",
+      "default": "./src/native-validation-execution.ts"
+    },
     "./modal-bridge": {
       "types": "./src/modal-bridge.ts",
       "default": "./src/modal-bridge.ts"
