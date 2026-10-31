@@ -39,17 +39,11 @@ try {
   const env = {
     ...process.env,
     ALLOW_VIZARD_EXPANSION_DB_TESTS: "1",
+    MEDIA_FETCH_TOOLCHAIN_FINGERPRINT: "f".repeat(64),
     DATABASE_URL: databaseUrl,
     VIZARD_EXPANSION_TEST_DATABASE_URL: databaseUrl,
     VIZARD_EXPANSION_TEST_DATABASE_SCHEMA: schema,
-
-
-
-
     REVIEW_ACCESS_SECRET: "vizard-expansion-review-delivery-secret-for-tests",
-
-
-
     SOCIAL_TOKEN_ENCRYPTION_KEY: "vizard-expansion-test-encryption-key-not-a-secret",
     ZOOM_CLIENT_ID: "zoom-test-client",
     ZOOM_CLIENT_SECRET: "zoom-test-secret",
@@ -57,8 +51,7 @@ try {
     META_CLIENT_ID: "vizard-meta-client",
     META_CLIENT_SECRET: "vizard-meta-secret",
   };
-  // Each group runs in its own process: the Workflow Run lifecycle singleton
-  // binds to the first Prisma client a process creates.
+  // Each fixture group receives an independent module and service environment.
   for (const files of [
     ["packages/services/src/generation-usage.db.test.ts"],
     ["packages/services/src/review-access.db.test.ts"],

@@ -7,7 +7,8 @@
   "include": [
     "src",
     "scripts/execution-restore.ts",
-    "scripts/execution-snapshot-files.ts"
+    "scripts/execution-snapshot-files.ts",
+    "scripts/executor-r2-transfer-gate.ts"
   ],
   "exclude": [
     "src/**/*.test.ts"

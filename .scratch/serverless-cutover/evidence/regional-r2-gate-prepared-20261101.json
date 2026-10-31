@@ -1,0 +1,51 @@
+{
+  "status": "prepared_live_execution_pending_final_candidate",
+  "scope": "Regional ten-GiB upload and greater-than-five-GiB pin through deployed Executor authority",
+  "native": "apps/media/python/gates/executor_r2_transfer.py",
+  "caller": "apps/media/python/gates/run_executor_r2_transfer.py",
+  "operator": "packages/services/scripts/executor-r2-transfer-gate.ts",
+  "runbook": "apps/media/python/gates/executor-r2-transfer.md",
+  "constraints": {
+    "perInvocationSeconds": 2700,
+    "combinedUploadPinChecksSeconds": 2700,
+    "nativeDatabaseOrR2Credentials": false,
+    "syntheticMediaPublication": false,
+    "providerRequests": false,
+    "neonUpgrade": false
+  },
+  "localChecks": [
+    {
+      "suite": "actual Upload Session handoff and Ingest pin preparation in fresh local PostgreSQL schema",
+      "passed": 1,
+      "assertions": 12,
+      "log": "/tmp/narriflow-executor-transfer-gate-pin-pg.log",
+      "proves": "frozen verified tuple, UploadSession FK, exact replay, one uncharged pin attempt and immutable source payload; no live R2 claim"
+    },
+    {
+      "suite": "operator target and completed-source receipt guards",
+      "passed": 2,
+      "assertions": 11,
+      "log": "/tmp/narriflow-executor-transfer-gate-fast.log"
+    },
+    {
+      "suite": "native credential/deadline guards and real sparse generator process",
+      "passed": 3,
+      "log": "/tmp/narriflow-executor-transfer-gate-python3.log"
+    }
+  ],
+  "static": {
+    "servicesTypecheckIncludingOperator": true,
+    "biome": true,
+    "pythonCompile": true,
+    "modalSdkCallerHelp": true
+  },
+  "liveActionsPerformed": [],
+  "liveCompletionCriteria": [
+    "Final candidate deployed and root operator confirms private target and epoch",
+    "Both native reports pass with 10737418240 bytes and equal full SHA-256; combined time at most2700s",
+    "Cached UploadPart receives404 after completion; fresh signed grant request is refused after permanent fixture failure",
+    "Native RSS, traced allocations and container memory upper bound recorded",
+    "Exact fixture SQL shows one charged start each and no committed source media",
+    "After real deadlines and120s drain, production cleanup finishes every exact obligation and fresh R2 HEAD404/zero exact-key MPUs are recorded"
+  ]
+}
