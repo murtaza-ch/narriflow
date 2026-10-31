@@ -156,5 +156,6 @@
   "20261031220000_finishing_recovery_indexes",
   "20261031230000_execution_autopilot",
   "20261101000000_execution_notifications",
-  "20261101010000_execution_maintenance_indexes"
+  "20261101010000_execution_maintenance_indexes",
+  "20261101020000_execution_grant_notifications"
 ]

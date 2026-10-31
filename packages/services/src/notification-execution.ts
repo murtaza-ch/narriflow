@@ -1,3 +1,4 @@
+import {readGrantNotificationContext} from "./grant-notification-context";
 import {createHash,randomUUID} from "node:crypto";
 import {Prisma,type PrismaClient} from "@prisma/client";
 import {executionDispatchReferenceSchema,type ExecutionDispatchReference} from "@narriflow/validators/execution";
@@ -8,18 +9,19 @@ import {lockWorkspaceUsage} from "./processing-usage";
 import {accessibleProjectWhere} from "./project-access";
 
 type Tx=Prisma.TransactionClient;
-export type NotificationTarget={kind:'project'|'review';id:string};
-export interface SealedNotification {encrypted:string;hash:string}
+export type NotificationTarget={kind:'project'|'review'|'grant';id:string};
+export interface SealedNotification {encrypted:string;hash:string;contextFingerprint?:string}
 export interface NotificationSendResult {sent:boolean;providerMessageId?:string;retryable?:boolean}
 const MAX_ATTEMPTS=3,LEASE_MS=5*60_000;
 const uuid=/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
-function identity(target:NotificationTarget){if(!uuid.test(target.id))throw Error('notification_target_invalid');return `em1.${target.kind==='project'?'p':'r'}.${target.id}`;}
+function identity(target:NotificationTarget){if(!uuid.test(target.id))throw Error('notification_target_invalid');return `em1.${target.kind==='project'?'p':target.kind==='review'?'r':'g'}.${target.id}`;}
 export function notificationTarget(reference:ExecutionDispatchReference):NotificationTarget|null{
  if(reference.kind!=='operation_driver'||reference.subject.kind!=='notification')return null;
- const match=/^em1\.([pr])\.([a-f0-9-]{36})$/.exec(reference.subject.id);
- if(!match||!uuid.test(match[2]!))return null;return{kind:match[1]==='p'?'project':'review',id:match[2]!};
+ const match=/^em1\.([prg])\.([a-f0-9-]{36})$/.exec(reference.subject.id);
+ if(!match||!uuid.test(match[2]!))return null;return{kind:match[1]==='p'?'project':match[1]==='r'?'review':'grant',id:match[2]!};
 }
 async function view(tx:Tx,target:NotificationTarget){
+ if(target.kind==='grant'){const row=await tx.grantPauseNotificationLedger.findUnique({where:{id:target.id}});return row?{row,projectId:null,workspaceId:row.workspaceId,identity:[row.workspaceId,row.grantId,row.pauseEventId,row.grantRevision,row.reason]}:null;}
  if(target.kind==='project'){
   const row=await tx.notificationLedger.findUnique({where:{id:target.id},include:{project:{select:{workspaceId:true}}}});
   return row?{row,projectId:row.projectId,workspaceId:row.project.workspaceId,identity:[row.projectId,row.sourceId,row.outcome]}:null;
@@ -28,19 +30,26 @@ async function view(tx:Tx,target:NotificationTarget){
  return row?{row,projectId:row.reviewRound.projectId,workspaceId:row.reviewRound.workspaceId,identity:[row.reviewRoundId,row.recipientEmail,row.kind,row.scopeKey]}:null;
 }
 type View=NonNullable<Awaited<ReturnType<typeof view>>>;
-type Update={status?:string;deploymentEpoch?:number;generation?:number;claimToken?:string|null;leaseExpiresAt?:Date|null;attemptCount?:number;nextAttemptAt?:Date;deliveryInputEncrypted?:string;deliveryInputHash?:string;submissionStartedAt?:Date|null;providerMessageId?:string|null;sentAt?:Date;failureCode?:string|null};
+type Update={status?:string;deploymentEpoch?:number;generation?:number;claimToken?:string|null;leaseExpiresAt?:Date|null;attemptCount?:number;nextAttemptAt?:Date;deliveryInputEncrypted?:string;deliveryInputHash?:string;deliveryContextFingerprint?:string;submissionStartedAt?:Date|null;providerMessageId?:string|null;sentAt?:Date;failureCode?:string|null};
 async function update(tx:Tx,target:NotificationTarget,data:Update){
  if(target.kind==='project')await tx.notificationLedger.update({where:{id:target.id},data});
- else await tx.reviewNotificationLedger.update({where:{id:target.id},data});
+ else if(target.kind==='review') await tx.reviewNotificationLedger.update({where:{id:target.id},data});
+ else await tx.grantPauseNotificationLedger.update({where:{id:target.id},data});
 }
 function hash(target:NotificationTarget,value:View){return createHash('sha256').update(JSON.stringify(['notification-delivery-v1',identity(target),value.row.deploymentEpoch,value.row.generation,value.identity,value.row.operationDeadlineAt.toISOString()])).digest('hex');}
 async function clock(tx:Tx){const [value]=await tx.$queryRaw<Array<{now:Date}>>`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS now`;if(!value)throw Error('notification_clock_unavailable');return value.now;}
 async function lockLeaf(tx:Tx,target:NotificationTarget){
  if(target.kind==='project')await tx.$queryRaw`SELECT id FROM "NotificationLedger" WHERE id=${target.id}::uuid FOR UPDATE`;
- else await tx.$queryRaw`SELECT id FROM "ReviewNotificationLedger" WHERE id=${target.id}::uuid FOR UPDATE`;
+ else if(target.kind==='review') await tx.$queryRaw`SELECT id FROM "ReviewNotificationLedger" WHERE id=${target.id}::uuid FOR UPDATE`;
+ else await tx.$queryRaw`SELECT id FROM "GrantPauseNotificationLedger" WHERE id=${target.id}::uuid FOR UPDATE`;
 }
 async function lock(tx:Tx,target:NotificationTarget,initial:View){
  await lockWorkspaceUsage(tx,initial.workspaceId);
+ if(target.kind==='grant'){
+  await tx.$queryRaw`SELECT id FROM "Workspace" WHERE id=${initial.workspaceId}::uuid FOR SHARE`;
+  const row=initial.row as {grantId:string};await tx.$queryRaw`SELECT id FROM "StandingGrant" WHERE id=${row.grantId}::uuid FOR SHARE`;
+  await lockLeaf(tx,target);return;
+ }
  await tx.$queryRaw`SELECT id FROM "Project" WHERE id=${initial.projectId}::uuid FOR UPDATE`;
  if(target.kind==='project')await tx.$queryRaw`SELECT id FROM "NotificationLedger" WHERE id=${target.id}::uuid FOR UPDATE`;
  else{await tx.$queryRaw`SELECT id FROM "ReviewRound" WHERE id=${(initial.row as {reviewRoundId:string}).reviewRoundId}::uuid FOR UPDATE`;await tx.$queryRaw`SELECT id FROM "ReviewNotificationLedger" WHERE id=${target.id}::uuid FOR UPDATE`;}
@@ -65,9 +74,11 @@ async function current(tx:Tx,reference:ExecutionDispatchReference,owner?:string)
  const initial=await view(tx,target);if(!initial)return null;await lock(tx,target,initial);
  const value=(await view(tx,target))!,now=await clock(tx),row=value.row;
  if(row.deploymentEpoch!==reference.deploymentEpoch||row.generation!==reference.generation||hash(target,value)!==reference.inputHash)return null;
- const available=Boolean(await tx.project.findFirst({where:{id:value.projectId,workspaceId:value.workspaceId,...accessibleProjectWhere(now),workspace:{status:'active'}},select:{id:true}}));
+ const context=target.kind==='grant'?await readGrantNotificationContext(tx,target.id,now):null;
+ const available=target.kind==='grant'?context!==null:Boolean(await tx.project.findFirst({where:{id:value.projectId!,workspaceId:value.workspaceId,...accessibleProjectWhere(now),workspace:{status:'active'}},select:{id:true}}));
+ if(owner&&target.kind==='grant'&&value.row.deliveryInputHash&&(value.row as {deliveryContextFingerprint:string}).deliveryContextFingerprint!==context?.contextFingerprint)return null;
  if(owner&&(!available||row.status!=='claimed'||row.claimToken!==owner||!row.leaseExpiresAt||row.leaseExpiresAt<=now||row.operationDeadlineAt<=now))return null;
- return{target,value,now,record,available};
+ return{target,value,now,record,available,context};
 }
 type DriverResult={kind:'complete'|'superseded'}|{kind:'sleep'|'wait';dueAt:Date};
 export function createNotificationExecution(options:{database:PrismaClient;register(ids:readonly string[]):Promise<void>;prepare(target:NotificationTarget,sealed:SealedNotification|null):Promise<SealedNotification|null>;send(target:NotificationTarget,sealed:SealedNotification,key:string):Promise<NotificationSendResult>}){
@@ -96,7 +107,7 @@ export function createNotificationExecution(options:{database:PrismaClient;regis
    if(row.nextAttemptAt>now)return{kind:'sleep' as const,dueAt:new Date(Math.min(row.nextAttemptAt.getTime(),row.operationDeadlineAt.getTime()))};
    const owner=randomUUID(),lease=new Date(Math.min(now.getTime()+LEASE_MS,row.operationDeadlineAt.getTime()));
    await update(tx,target,{status:'claimed',claimToken:owner,leaseExpiresAt:lease,submissionStartedAt:null});
-   return{kind:'claimed' as const,target,owner,sealed:row.deliveryInputEncrypted&&row.deliveryInputHash?{encrypted:row.deliveryInputEncrypted,hash:row.deliveryInputHash}:null,watchdog:(await append(tx,target,(await view(tx,target))!,lease)).dispatchId};
+   return{kind:'claimed' as const,target,owner,providerKey:target.kind==='grant'?`standing-grant-paused:${(row as {grantId:string}).grantId}:${(row as {grantRevision:number}).grantRevision}`:`${target.kind==='project'?'notification-ledger':'review-notification'}-${target.id}`,sealed:row.deliveryInputEncrypted&&row.deliveryInputHash?{encrypted:row.deliveryInputEncrypted,hash:row.deliveryInputHash,...(target.kind==='grant'?{contextFingerprint:(row as {deliveryContextFingerprint:string}).deliveryContextFingerprint}:{})}:null,watchdog:(await append(tx,target,(await view(tx,target))!,lease)).dispatchId};
   });
   if(prepared.kind==='advanced'){await register([prepared.id]);return{kind:'complete'};}
   if(prepared.kind!=='claimed'){if(prepared.kind==='superseded')await repair(reference);return prepared;}
@@ -114,12 +125,13 @@ export function createNotificationExecution(options:{database:PrismaClient;regis
   const admitted=await database.$transaction(async tx=>{
    const state=await current(tx,reference,prepared.owner);if(!state)return false;
    if(!sealed){await update(tx,state.target,{status:'skipped',claimToken:null,leaseExpiresAt:null,failureCode:'context_unavailable'});return false;}
+   if(state.target.kind==='grant'&&(!sealed.contextFingerprint||state.context?.contextFingerprint!==sealed.contextFingerprint)){await update(tx,state.target,{status:'skipped',claimToken:null,leaseExpiresAt:null,failureCode:'recipient_changed'});return false;}
    const row=state.value.row;
    if(row.deliveryInputHash&&row.deliveryInputHash!==sealed.hash)throw Error('notification_sealed_input_changed');
-   await update(tx,state.target,{deliveryInputEncrypted:sealed.encrypted,deliveryInputHash:sealed.hash,submissionStartedAt:state.now,attemptCount:row.attemptCount+1});return true;
+   await update(tx,state.target,{deliveryInputEncrypted:sealed.encrypted,deliveryInputHash:sealed.hash,...(state.target.kind==='grant'?{deliveryContextFingerprint:sealed.contextFingerprint}:{}),submissionStartedAt:state.now,attemptCount:row.attemptCount+1});return true;
   });
   if(!admitted)return{kind:sealed?'superseded':'complete'};
-  const key=`${prepared.target.kind==='project'?'notification-ledger':'review-notification'}-${prepared.target.id}`;
+  const key=prepared.providerKey;
   let outcome:NotificationSendResult;
   try{outcome=await options.send(prepared.target,sealed!,key);}catch{outcome={sent:false};}
   const settled=await database.$transaction(async tx=>{
@@ -151,7 +163,7 @@ export async function recoverNotificationDispatchIds(tx:Tx,value:unknown){
  if(!Array.isArray(value)||value.length>128||value.some(id=>typeof id!=="string"||!uuid.test(id)))throw Error("notification_receipt_dispatch_invalid");
  const admission=await readExecutionAdmission(tx);
  const rows=await tx.executionDispatch.findMany({where:{id:{in:value},deploymentEpoch:admission.epoch,kind:"operation_driver",subjectKind:"notification"},select:{id:true,subjectId:true}});
- for(const row of rows)if(/^em1\.[pr]\.[a-f0-9-]{36}$/.test(row.subjectId))collectExecutionDispatch(tx,row.id);
+ for(const row of rows)if(/^em1\.[prg]\.[a-f0-9-]{36}$/.test(row.subjectId))collectExecutionDispatch(tx,row.id);
 }
 
 /** A fresh human retry may use another bounded attempt cycle while retaining
@@ -173,4 +185,13 @@ export async function recoverProjectNotificationDeliveries(tx:Tx,input:{projectI
  const {epoch}=await readExecutionAdmission(tx);
  const rows=await tx.notificationLedger.findMany({where:{projectId:input.projectId,sourceId:input.sourceId,outcome:{in:[...input.outcomes]},deploymentEpoch:epoch},orderBy:{id:"asc"},take:6});
  const ids:string[]=[];for(const row of rows)ids.push((await appendNotificationDelivery(tx,{kind:"project",id:row.id})).dispatchId);return ids;
+}
+
+/** A system pause accepts one workspace notice in the same transaction. No
+ * latest-grant lookup, fake Project, provider request, or new retry core. */
+export async function appendGrantPauseNotificationIntent(tx:Tx,input:{workspaceId:string;grantId:string;pauseEventId:string;grantRevision:number;reason:string}){
+ const {epoch}=await readExecutionAdmission(tx),at=await clock(tx);
+ const row=await tx.grantPauseNotificationLedger.upsert({where:{grantId_grantRevision:{grantId:input.grantId,grantRevision:input.grantRevision}},update:{},create:{...input,deploymentEpoch:epoch,createdAt:at,nextAttemptAt:at,operationDeadlineAt:new Date(at.getTime()+23*3600_000)}});
+ if(row.workspaceId!==input.workspaceId||row.pauseEventId!==input.pauseEventId||row.reason!==input.reason)throw Error('grant_notification_intent_conflict');
+ await appendNotificationDelivery(tx,{kind:'grant',id:row.id});return row;
 }

@@ -10,8 +10,8 @@ import { getProcessingUsage } from "@narriflow/services/processing-usage-runtime
 import { uploadSessionService } from "@narriflow/services/upload-session.service";
 import { billingService } from "@narriflow/services/billing.service";
 import { planFinishingRecoveryPage, planFinishingRestorePage } from "@narriflow/services/generation-finishing-maintenance";
-import { planProjectNotificationRecoveryPage, planProjectNotificationRestorePage, planReviewNotificationRecoveryPage, planReviewNotificationRestorePage } from "@narriflow/services/notification-maintenance";
-import { planPublicationRecoveryPage, planPublicationRestorePage, planPublicationReceiptRecoveryPage, planPublicationReceiptRedispatchPage, planPerformanceCaptureRecoveryPage, planPerformanceCaptureRedispatchPage, planStandingGrantExpiryPage, planStandingGrantRedispatchPage, planPublicationGuidanceRedispatchPage } from "@narriflow/services/publication-maintenance";
+import { planProjectNotificationRecoveryPage, planProjectNotificationRestorePage,planGrantNotificationRecoveryPage,planGrantNotificationRestorePage, planReviewNotificationRecoveryPage, planReviewNotificationRestorePage } from "@narriflow/services/notification-maintenance";
+import { planPublicationRecoveryPage, planPublicationRestorePage, planPublicationReceiptRecoveryPage, planPublicationReceiptRedispatchPage, planPerformanceCaptureRecoveryPage, planPerformanceCaptureRedispatchPage, planStandingGrantExpiryPage,planStandingGrantAuthorityPage, planStandingGrantRedispatchPage, planPublicationGuidanceRedispatchPage } from "@narriflow/services/publication-maintenance";
 import { recoverExportBundleWakesPage, expireExportBundlesPage, restoreExportBundlesPage } from "@narriflow/services/export-bundle-recovery";
 import { recoverDubbingWakesPage, restoreDubbingPage } from "@narriflow/services/dubbing-recovery";
 import { planAutopilotRecoveryPage, planAutopilotRestorePage, planZoomNotificationRecoveryPage, planZoomNotificationRestorePage } from "@narriflow/services/autopilot-maintenance";
@@ -25,11 +25,13 @@ const ports = {
     bundle_wakes: recoverExportBundleWakesPage,
     dubbing_wakes: recoverDubbingWakesPage,
     grants: planStandingGrantExpiryPage,
+    grant_authority:planStandingGrantAuthorityPage,
     bundle_expiry: expireExportBundlesPage,
     autopilot_wakes: planAutopilotRecoveryPage,
     zoom_notification_wakes: planZoomNotificationRecoveryPage,
     notification_wakes: planProjectNotificationRecoveryPage,
     review_notification_wakes: planReviewNotificationRecoveryPage,
+    grant_notification_wakes:planGrantNotificationRecoveryPage,
   },
   restore: {
     finishing: planFinishingRestorePage,
@@ -40,6 +42,7 @@ const ports = {
     zoom_notifications: planZoomNotificationRestorePage,
     notifications: planProjectNotificationRestorePage,
     review_notifications: planReviewNotificationRestorePage,
+    grant_notifications:planGrantNotificationRestorePage,
   },
   redispatch: {
     publication_receipts: planPublicationReceiptRedispatchPage,

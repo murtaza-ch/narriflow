@@ -102,7 +102,7 @@ export function createPublicationProducers(options:{database:PrismaClient;regist
      await tx.$queryRaw`SELECT "id" FROM "StandingGrant" WHERE "id"=${expires[1]}::uuid FOR UPDATE`;
      const grant=await tx.standingGrant.findUnique({where:{id:expires[1]}});
      if(!grant||grant.revision!==Number(expires[2])||grant.expiresAt.getTime()!==Number(expires[3])||!["active","paused"].includes(grant.status))return {kind:"complete",processed:0,dispatchIds:[]};
-     await tx.standingGrant.update({where:{id:grant.id},data:{status:"expired",pauseNoticePending:false,pauseNoticeLeaseUntil:null}});
+     await tx.standingGrant.update({where:{id:grant.id},data:{status:"expired"}});
      await tx.standingGrantEvent.create({data:{grantId:grant.id,kind:"expired",revision:grant.revision,actorUserId:null}});
      await appendPublicationGrantWake(tx,grant.id);
      queueWorkspaceEvent(tx,{workspaceId:grant.workspaceId,projectId:null,type:"grant.expired",subject:{grantId:grant.id,kind:grant.kind,autopilotRuleId:grant.autopilotRuleId},dedupeKey:`grant.expired:${grant.id}:${grant.revision}`});await flushWorkspaceEvents(tx);

@@ -1,3 +1,6 @@
+import {planCoversGrant,pauseStandingGrantWithinTransaction} from "./standing-grant";
+import {flushWorkspaceEvents} from "./workspace-event";
+import {takeExecutionDispatchIds} from "./execution-dispatch-runtime";
 import { Prisma } from "@prisma/client";
 import type { MaintenancePage, MaintenancePhaseHandler, MaintenancePageResult } from "./execution-maintenance";
 import type { ExecutionRestorePhaseHandler } from "./execution-restore";
@@ -168,4 +171,19 @@ export const planPublicationGuidanceRedispatchPage: ExecutionRestorePhaseHandler
     ids.push(await appendPerformanceGuidance(tx,row.workspaceId,row.dueAt));
   }
   return result(rows,page.limit,ids);
+};
+
+/** Daily authority reconciliation is a bounded command page. It preserves
+ * existing grants on upgrade and accepts one notice only on a system pause. */
+export const planStandingGrantAuthorityPage:MaintenancePhaseHandler=async(tx,page)=>{
+ await validate(tx,page);
+ const rows=await tx.$queryRaw<Array<Position&Parents>>`SELECT "id","createdAt" AS at,"workspaceId" FROM "StandingGrant" WHERE status='active' AND "createdAt"<=(${page.cutoff}::timestamptz AT TIME ZONE 'UTC') ${after(page,Prisma.sql`"createdAt"`,Prisma.sql`"id"`)} ORDER BY "createdAt",id LIMIT ${page.limit+1}`;
+ await lockParents(tx,rows.slice(0,page.limit));
+ for(const row of rows.slice(0,page.limit)){
+  const grant=await tx.standingGrant.findUnique({where:{id:row.id},include:{workspace:{select:{pricingTier:true}}}});if(!grant||grant.status!=='active')continue;
+  const member=grant.grantedByUserId?await tx.workspaceMember.findUnique({where:{workspaceId_userId:{workspaceId:grant.workspaceId,userId:grant.grantedByUserId}},include:{user:{select:{deletedAt:true}}}}):null;
+  const reason=!planCoversGrant(grant.workspace.pricingTier,grant.kind)?'plan_lost':!member||member.user.deletedAt||!['owner','admin'].includes(member.role)?'granter_unavailable':null;
+  if(reason)await pauseStandingGrantWithinTransaction(tx,{grantId:grant.id,revision:grant.revision,reason,actorUserId:null});
+ }
+ await flushWorkspaceEvents(tx);return result(rows,page.limit,takeExecutionDispatchIds(tx));
 };

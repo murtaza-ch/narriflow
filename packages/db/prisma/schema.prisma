@@ -1168,6 +1168,7 @@ model Workspace {
   webhookSubscriptions       WebhookSubscription[]
   generationFinishings       GenerationFinishing[]
   standingGrants             StandingGrant[]
+  grantPauseNotifications    GrantPauseNotificationLedger[]
   reviewerOptOuts            ReviewerOptOut[]
   billingAccount             WorkspaceBillingAccount?
 
@@ -3394,10 +3395,6 @@ model StandingGrant {
   expiresAt          DateTime
   status             StandingGrantStatus @default(active)
   pausedReason       String?
-  /// A pause the system made is emailed to the granter once.
-  pauseNoticePending Boolean             @default(false)
-  /// A worker holds the notice until this time; the notice stays pending until it is sent.
-  pauseNoticeLeaseUntil DateTime?
   /// Hash of the rule's content-bearing fields and its Brand Profile's approval rule when
   /// the grant was made or renewed. A rule that no longer matches pauses the grant.
   ruleFingerprint    String
@@ -3411,13 +3408,13 @@ model StandingGrant {
   socialAccount SocialAccount?       @relation(fields: [socialAccountId], references: [id], onDelete: SetNull)
   grantedBy     User?                @relation("StandingGrantGrantedBy", fields: [grantedByUserId], references: [id], onDelete: SetNull)
   events        StandingGrantEvent[]
+  pauseNotifications GrantPauseNotificationLedger[]
   socialPosts   SocialPost[]
   reviewRounds  ReviewRound[]
 
   @@index([workspaceId, status])
   @@index([autopilotRuleId, status])
   @@index([status, expiresAt])
-  @@index([pauseNoticePending])
 }
 
 /// The grant's audit trail: created, renewed, paused, revoked, expired.
@@ -3432,6 +3429,7 @@ model StandingGrantEvent {
   createdAt   DateTime @default(now())
 
   grant StandingGrant @relation(fields: [grantId], references: [id], onDelete: Cascade)
+  pauseNotification GrantPauseNotificationLedger?
 
   @@index([grantId, createdAt])
 }
@@ -3842,4 +3840,36 @@ model ClipPreparation {
 
   @@unique([clipId, bindingHash, deploymentEpoch])
   @@index([projectId, status])
+}
+
+/// One immutable notice for an accepted system pause. Uses the shared mail driver.
+model GrantPauseNotificationLedger {
+ id String @id @default(uuid()) @db.Uuid
+ workspaceId String @db.Uuid
+ grantId String @db.Uuid
+ pauseEventId String @unique @db.Uuid
+ grantRevision Int
+ reason String
+ status String @default("pending")
+ deploymentEpoch Int @default(1)
+ generation Int @default(1)
+ claimToken String? @db.Uuid
+ operationDeadlineAt DateTime @default(dbgenerated("(CURRENT_TIMESTAMP + '23 hours'::interval)"))
+ deliveryInputEncrypted String?
+ deliveryInputHash String?
+ deliveryContextFingerprint String?
+ submissionStartedAt DateTime?
+ leaseExpiresAt DateTime?
+ attemptCount Int @default(0)
+ nextAttemptAt DateTime @default(now())
+ failureCode String?
+ providerMessageId String?
+ sentAt DateTime?
+ createdAt DateTime @default(now())
+ updatedAt DateTime @updatedAt
+ workspace Workspace @relation(fields:[workspaceId],references:[id],onDelete:Cascade)
+ grant StandingGrant @relation(fields:[grantId],references:[id],onDelete:Cascade)
+ pauseEvent StandingGrantEvent @relation(fields:[pauseEventId],references:[id],onDelete:Cascade)
+ @@unique([grantId,grantRevision])
+ @@index([deploymentEpoch,createdAt,id])
 }
