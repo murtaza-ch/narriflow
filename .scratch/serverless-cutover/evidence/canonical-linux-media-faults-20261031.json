@@ -296,7 +296,8 @@
     }
   },
   "open": [
-    "Full-render FFmpeg has automatic codec/filter thread selection: measured34OS threads under the hard4CPU allocation. Explicit4-thread diagnostic is being compared with an unchanged frozen control; no compiler/golden/tolerance change is accepted here.",
+    "Explicit decoder/filter4 and x264encoder6 policy now passes full36 exact comparisons; see render-thread-policy-20261031.json. Final candidate image refresh is still required.",
     "Live Worker-domain fault combinations, paid provider/proxy egress and performance cohorts remain separate22 work."
-  ]
+  ],
+  "threadGateResolvedBy": "render-thread-policy-20261031.json"
 }
