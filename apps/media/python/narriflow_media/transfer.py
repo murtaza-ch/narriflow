@@ -370,6 +370,13 @@ class ScopedMultipartControl:
         self._session, self.destination, self._source_etag = session, destination, source_etag
         self._content_type = content_type
         self.completion_started = False
+        # Reuse the four bodies already held by multipart.py. Only checksum
+        # tuples and waiter futures are queued here, never additional media.
+        self._part_slots = asyncio.Semaphore(4)
+        self._part_pending = []
+        self._part_flush = None
+        self._part_batches = {}
+        self._part_aborted = False
 
     @classmethod
     async def initialize(cls, session: ExecutorSession, *, artifact_id: str, byte_length: int, content_type: str,
@@ -388,11 +395,66 @@ class ScopedMultipartControl:
                 raise MultipartTransferError('multipart_transport_failed') from None
             raise
 
+    def _flush_part_batch(self):
+        if self._part_flush is not None:
+            self._part_flush.cancel()
+            self._part_flush = None
+        batch, self._part_pending = self._part_pending, []
+        batch = [(part, waiter) for part, waiter in batch if not waiter.cancelled()]
+        if not batch:
+            return
+        task = asyncio.create_task(self._send_part_batch(batch))
+        self._part_batches[task] = batch
+        task.add_done_callback(lambda done: self._part_batches.pop(done, None))
+
+    async def _send_part_batch(self, batch):
+        try:
+            value = await self._call('upload-parts', parts=[part for part, _ in batch])
+            grants = value['grants']
+            expected = {part['partNumber'] for part, _ in batch}
+            if (len(grants) != len(batch) or {grant['partNumber'] for grant in grants} != expected):
+                raise MultipartTransferError('multipart_grant_invalid')
+            by_number = {grant['partNumber']:SignedGrant(grant['url'], grant['headers']) for grant in grants}
+        except (Exception, asyncio.CancelledError) as error:
+            if isinstance(error, asyncio.CancelledError):
+                error = MultipartTransferError('multipart_cancelled')
+            for _, waiter in batch:
+                if not waiter.done():
+                    waiter.set_exception(error)
+        else:
+            for part, waiter in batch:
+                if not waiter.done():
+                    waiter.set_result(by_number[part['partNumber']])
+
     async def authorize_part(self, part_number, byte_length, checksum_sha256, checksum_md5):
-        value = await self._call('upload-parts', parts=[{'partNumber':part_number, 'byteLength':byte_length,
-            'checksumMd5':checksum_md5, 'checksumSha256':checksum_sha256}])
-        grant = value['grants'][0]
-        return SignedGrant(grant['url'], grant['headers'])
+        async with self._part_slots:
+            if self._part_aborted:
+                raise MultipartTransferError('multipart_cancelled')
+            waiter = asyncio.get_running_loop().create_future()
+            # Concurrent duplicate part calls retain their separate immutable
+            # command identities instead of creating an invalid duplicate array.
+            if any(part['partNumber'] == part_number for part, _ in self._part_pending):
+                self._flush_part_batch()
+            part = {'partNumber':part_number, 'byteLength':byte_length,
+                    'checksumMd5':checksum_md5, 'checksumSha256':checksum_sha256}
+            self._part_pending.append((part, waiter))
+            if len(self._part_pending) == 4:
+                self._flush_part_batch()
+            elif self._part_flush is None:
+                # A partial batch must progress even when other slots are doing
+                # slow storage IO. This does not wait for sixteen participants.
+                self._part_flush = asyncio.get_running_loop().call_later(0.01, self._flush_part_batch)
+            try:
+                return await waiter
+            finally:
+                if waiter.cancelled():
+                    self._part_pending = [(part, future) for part, future in self._part_pending if future is not waiter]
+                    if not self._part_pending and self._part_flush is not None:
+                        self._part_flush.cancel()
+                        self._part_flush = None
+                    for task, batch in list(self._part_batches.items()):
+                        if all(future.cancelled() for _, future in batch):
+                            task.cancel()
 
     async def authorize_source_range(self, start, end, source_etag):
         if (self._source_etag != source_etag or start < 0 or start % PART_SIZE_BYTES
@@ -417,4 +479,20 @@ class ScopedMultipartControl:
         return CompletedObject(obj['key'], obj['etag'], obj['byteLength'], obj['sha256'])
 
     async def abort(self, reason):
+        self._part_aborted = True
+        if self._part_flush is not None:
+            self._part_flush.cancel()
+            self._part_flush = None
+        queued, self._part_pending = self._part_pending, []
+        for _, waiter in queued:
+            if not waiter.done():
+                waiter.set_exception(MultipartTransferError('multipart_cancelled'))
+        tasks = list(self._part_batches)
+        for task in tasks:
+            for _, waiter in self._part_batches[task]:
+                if not waiter.done():
+                    waiter.set_exception(MultipartTransferError('multipart_cancelled'))
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
         await self._call('upload-abort')
