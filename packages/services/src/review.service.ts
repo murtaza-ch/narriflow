@@ -431,7 +431,7 @@ export class ReviewService {
     input: unknown,
     /** A Standing Grant sending the round, and the finishing it is the round of. `admit` runs in the
      * round's transaction: it checks the grant and counts its caps, and returns the revision it ran under. */
-    options: { grant?: { id: string; admit(tx: Prisma.TransactionClient): Promise<{ revision: number }> }; finishingId?: string; tx?: Prisma.TransactionClient } = {},
+    options: { grant?: { id: string; admit(tx: Prisma.TransactionClient): Promise<{ revision: number }> }; finishingId?: string; tx?: Prisma.TransactionClient; beforeWrite?: (tx: Prisma.TransactionClient) => Promise<void> } = {},
   ) {
     requirePlanFeature(scope.pricingTier, "review.rooms");
     const parsed = createReviewRoundSchema.parse(input);
@@ -467,6 +467,7 @@ export class ReviewService {
       ? await hashReviewPasscode(parsed.passcode)
       : null;
     const round = await reviewTransaction(options.tx, async (tx) => {
+      await options.beforeWrite?.(tx);
       await tx.$queryRaw`SELECT "id" FROM "Project" WHERE "id" = ${scope.projectId}::uuid FOR UPDATE`;
       const granted = options.grant ? await options.grant.admit(tx) : null;
       const latest = await tx.reviewRound.findFirst({

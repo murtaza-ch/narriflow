@@ -16,6 +16,7 @@ import { getPublicationObservations } from "@narriflow/services/publication-obse
 import { isPublicationObservationReference } from "@narriflow/services/publication-observations";
 import { expireExportBundle, exportBundleExpiryInputHash } from "@narriflow/services/export-bundle-expiry";
 import { readExecutionAdmission } from "@narriflow/services/execution-admission";
+import { createFinishingProducers, isFinishingProducerReference } from "@narriflow/services/generation-finishing-producers";
 import { createPublicationProducers, isPublicationProducerReference } from "@narriflow/services/publication-producers";
 import { getLibraryIndex } from "@narriflow/services/library-index-runtime";
 import { createWorkspaceNotificationDispatcher, isCurrentNotificationTarget } from "@narriflow/services/notification-dispatch";
@@ -221,6 +222,12 @@ export function workflowDomainRegistry(bindings: ApiWorkerBindings): WorkflowHan
     deliver: ids => Promise.all(ids.map(id => getExecutionDispatch().deliver(id))),
   });
   const maintenance: WorkflowCommandHandler = async ({ reference }) => {
+    if (isFinishingProducerReference(reference)) {
+      const database = getPrismaClient();
+      if (!database) throw Error("Finishing producer requires a database scope");
+      const result = await createFinishingProducers({database,register:deliverExecutionDispatches}).dispatch(reference);
+      return {type:"complete",disposition:result.kind==="superseded"?"superseded":"terminal"};
+    }
     if (isPublicationObservationReference(reference)) {
       const result = await getPublicationObservations().dispatch(reference);
       if (result.kind === "sleep") {

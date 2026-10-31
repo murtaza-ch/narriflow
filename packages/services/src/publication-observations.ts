@@ -113,16 +113,21 @@ export async function appendYouTubeReceiptEnrichment(tx: Tx, id: string) {
 		return null;
 	const { epoch } = await readExecutionAdmission(tx);
 	if (row.attempt.socialPost.deploymentEpoch !== epoch) return null;
+	if (row.enrichmentClaimId && row.enrichmentLeaseExpiresAt)
+		return append(tx, `po1.yw.${id}.${row.enrichmentClaimId}.${row.enrichmentLeaseExpiresAt.getTime()}`, row.enrichmentLeaseExpiresAt);
 	return append(tx, receiptId(row), row.enrichmentNextCheckAt ?? row.createdAt);
 }
 export async function appendPerformanceCapture(tx: Tx, id: string) {
 	const row = await tx.performanceCapture.findUnique({
 		where: { id },
-		include: { trackedVideo: true },
+		include: { trackedVideo: { include: { socialPost: { select: { deploymentEpoch: true } } } } },
 	});
-	return row?.state === "scheduled"
-		? append(tx, captureId(row), row.dueAt)
-		: null;
+	if (row?.state !== "scheduled") return null;
+	const { epoch } = await readExecutionAdmission(tx);
+	if (row.trackedVideo.socialPost && row.trackedVideo.socialPost.deploymentEpoch !== epoch) return null;
+	if (row.leaseOwner && row.leaseExpiresAt)
+		return append(tx, `po1.cw.${id}.${row.leaseOwner}.${row.leaseExpiresAt.getTime()}`, row.leaseExpiresAt);
+	return append(tx, captureId(row), row.dueAt);
 }
 /** One bounded restore cursor revives admitted observations in the new epoch;
  * old provider responses remain fenced by their invocation's captured epoch. */

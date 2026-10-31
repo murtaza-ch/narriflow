@@ -146,5 +146,11 @@
   "20261031120000_execution_finishing",
   "20261031130000_execution_export_bundle",
   "20261031140000_execution_dubbing",
-  "20261031150000_publication_restore"
+  "20261031150000_publication_restore",
+  "20261031160000_execution_maintenance_restore",
+  "20261031170000_frozen_publication_readmission",
+  "20261031180000_autopilot_finishing_authority",
+  "20261031190000_execution_product_restore",
+  "20261031200000_publication_recovery_indexes",
+  "20261031220000_finishing_recovery_indexes"
 ]

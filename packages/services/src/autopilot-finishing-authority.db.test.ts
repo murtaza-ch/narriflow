@@ -60,6 +60,14 @@ suite("Autopilot authority frozen at accepted source intake", () => {
     expect(await db.project.count({ where: { workspaceId: f.workspace.id } })).toBe(0);
     expect(await db.processingUsageReservation.count({ where: { workspaceId: f.workspace.id } })).toBe(0);
   }));
+  test("a grant renewed or created during the source wait cannot replace the source's intended authority", scoped(async () => {
+    const f = await fixture();
+    await db.standingGrant.update({ where: { id: f.grant.id }, data: { revision: 2 } });
+    await db.standingGrant.create({ data: { workspaceId: f.workspace.id, autopilotRuleId: f.rule.id, kind: "publish", socialAccountId: f.second.id, ruleFingerprint: f.fingerprint, dailyCap: 3, weeklyCap: 10, expiresAt: new Date(Date.now() + 86400_000), grantedByUserId: f.user.id } });
+    const admitted = await projectService.importResolvedRssEpisodes(f.scope, f.input, f.options);
+    const pack = await db.contentPack.findFirstOrThrow({ where: { projectId: admitted.projects[0]!.project.id } });
+    expect(pack.autopilotAuthority).toEqual({ sourceRuleFingerprint: f.fingerprint, publish: [{ socialAccountId: f.first.id, grant: { id: f.grant.id, revision: 1, ruleFingerprint: f.fingerprint } }, { socialAccountId: f.second.id, grant: null }], review: null });
+  }));
   test("a rule or Recipe edited during source fetch cannot grant the old import new authority", scoped(async () => {
     for (const change of ["rule", "recipe"] as const) {
       const f = await fixture();

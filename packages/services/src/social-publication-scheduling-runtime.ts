@@ -136,13 +136,15 @@ function frozenStateData(candidate: PublicationIntent,confirmedScheduleRevision:
  * key belongs to the proposal, so only that proposal's acceptance may use it. */
 const isAdmitted = (row: { status: string }) => row.status !== "draft";
 
-export const prismaPublicationSchedulingStore: PublicationSchedulingStore = {
+type BeforePublicationWrite = (tx: Prisma.TransactionClient) => Promise<void>;
+type GuardedSchedulingStore = Omit<PublicationSchedulingStore,"open"> & { open(input: Parameters<PublicationSchedulingStore["open"]>[0], beforeWrite?: BeforePublicationWrite): ReturnType<PublicationSchedulingStore["open"]> };
+export const prismaPublicationSchedulingStore: GuardedSchedulingStore = {
 	async readByKey(workspaceId, clientIdempotencyKey) {
 		const row = await readIntentByKey(workspaceId, clientIdempotencyKey);
 		return row && isAdmitted(row) ? recoverAcceptedIntent(row) : null;
 	},
 
-	async open(input) {
+	async open(input, beforeWrite) {
 		const existing = await readIntentByKey(
 			input.workspaceId,
 			input.clientIdempotencyKey,
@@ -163,6 +165,7 @@ export const prismaPublicationSchedulingStore: PublicationSchedulingStore = {
 			const created = await requirePrisma().$transaction(
 				async (tx) => {
                     const admission = await readExecutionAdmission(tx);
+                    await beforeWrite?.(tx);
                     await lockPublicationScope(tx,{workspaceId:candidate.workspaceId,projectId:candidate.projectId,socialAccountId:input.slotQueue?null:candidate.frozen.socialAccountId});
      // Take the account's queue mutex directly. Parallel SHARE→NO KEY UPDATE
      // upgrades deadlock even when the publications themselves are distinct.
@@ -398,9 +401,9 @@ export const prismaPublicationSchedulingStore: PublicationSchedulingStore = {
  },
 };
 
-export function createProductionSocialPublicationScheduling() {
+export function createProductionSocialPublicationScheduling(options: {beforeWrite?: BeforePublicationWrite} = {}) {
 	return createSocialPublicationScheduling({
-		store: prismaPublicationSchedulingStore,
+		store: options.beforeWrite ? { ...prismaPublicationSchedulingStore, open: input => prismaPublicationSchedulingStore.open(input,options.beforeWrite) } : prismaPublicationSchedulingStore,
 		authorize: async ({ actorUserId, workspaceId, permission }) => {
 			const actor = await workspaceService.requireActor(actorUserId, workspaceId, permission);
 			return { ...actor, actorUserId };

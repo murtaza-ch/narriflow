@@ -1,3 +1,4 @@
+import { buildDubTranscriptText as buildTranscriptText, shouldTranslateDub as shouldTranslate, dubLanguageLabel as targetLanguageLabel } from "@narriflow/services/dubbing-policy";
 import { downloadObjectToFile, putFileFromPath } from "../r2-file-transfer";
 import { probeDubbedMediaDuration, muxDubbedVideo, } from "../../../media/src/tasks/dub-mix";
 export { probeDubbedMediaDuration, muxDubbedVideo } from "../../../media/src/tasks/dub-mix";
@@ -19,8 +20,6 @@ import {
 import {
   clipAspectRatioDbSchema,
   clipAspectRatioFromDb,
-  transcriptUtteranceSchema,
-  type TranscriptUtterance,
 } from "@narriflow/validators";
 import { productionWorkerProcessModule, type WorkerProcessModule } from "../../../media/src/worker-process";
 
@@ -82,61 +81,6 @@ function extractResponseText(response: unknown): string | null {
       .filter((text): text is string => typeof text === "string") ?? [];
 
   return textParts.length > 0 ? textParts.join("") : null;
-}
-
-function languageRoot(code: string | null | undefined) {
-  return code?.split("-")[0]?.toLowerCase() ?? null;
-}
-
-function shouldTranslate(sourceCode: string | null, targetCode: string) {
-  const source = languageRoot(sourceCode);
-  const target = languageRoot(targetCode);
-  return Boolean(target && source !== target);
-}
-
-function targetLanguageLabel(code: string) {
-  const labels: Record<string, string> = {
-    ar: "Arabic",
-    de: "German",
-    en: "English",
-    es: "Spanish",
-    fr: "French",
-    hi: "Hindi",
-    it: "Italian",
-    ja: "Japanese",
-    ko: "Korean",
-    nl: "Dutch",
-    pt: "Portuguese",
-    tr: "Turkish",
-    ur: "Urdu",
-    zh: "Chinese",
-  };
-  return labels[languageRoot(code) ?? ""] ?? code;
-}
-
-function buildTranscriptText(input: {
-  transcriptSlice: unknown;
-  hookText: string;
-  payoffText: string | null;
-}) {
-  const parsed = transcriptUtteranceSchema
-    .array()
-    .safeParse(input.transcriptSlice);
-  const utterances: TranscriptUtterance[] = parsed.success ? parsed.data : [];
-  const text = utterances
-    .map((utterance) => utterance.text.trim())
-    .filter(Boolean)
-    .join(" ")
-    .replace(/\s+/g, " ")
-    .trim();
-
-  if (text) return text;
-
-  return [input.hookText, input.payoffText]
-    .filter((value): value is string => Boolean(value?.trim()))
-    .join(" ")
-    .replace(/\s+/g, " ")
-    .trim();
 }
 
 async function callOpenAIText(params: {

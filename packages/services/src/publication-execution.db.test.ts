@@ -1,3 +1,4 @@
+import { planPublicationRecoveryPage, planPublicationRestorePage, planStandingGrantExpiryPage, planPublicationReceiptRecoveryPage, planPerformanceCaptureRecoveryPage } from "./publication-maintenance";
 import {publishingQueue} from "./publishing-queue.service";
 import {acceptProposalUnderGrant} from "./standing-grant-runtime";
 import {appendYouTubeReceiptEnrichment,appendPerformanceCapture,trackPublishedVideo,appendPerformanceGuidance,createPublicationObservations} from "./publication-observations";
@@ -1659,4 +1660,66 @@ suite("Revision-bound publication execution", () => {
 			}),
 		).toBe(0);
 	});
+ test("hourly publication recovery has a strict bounded cutoff and reproduces committed wake identities",async()=>{
+  const fixtures=await Promise.all([fixture(),fixture(),fixture()]);
+  for(let index=0;index<fixtures.length;index++)await db.socialPost.update({where:{id:fixtures[index]!.post.id},data:{createdAt:new Date(index<2?1000:2000)}});
+  const page={deploymentEpoch:1,cutoff:new Date(1500),after:null,limit:1};
+  const first=await db.$transaction(tx=>planPublicationRecoveryPage(tx,page));
+  expect(first.processed).toBe(1);expect(first.next).not.toBeNull();expect(first.dispatchIds).toHaveLength(1);
+  expect(await db.$transaction(tx=>planPublicationRecoveryPage(tx,page))).toEqual(first);
+  const second=await db.$transaction(tx=>planPublicationRecoveryPage(tx,{...page,after:first.next}));
+  expect(second.processed).toBe(1);expect(second.next).toBeNull();expect(second.dispatchIds).toHaveLength(1);
+  const targets=await db.executionDispatch.findMany({where:{id:{in:[...first.dispatchIds!,...second.dispatchIds!]}},select:{subjectId:true}});
+  expect(targets.map(row=>row.subjectId).sort()).toEqual(fixtures.slice(0,2).map(f=>f.post.id).sort());
+  await expect(db.$transaction(tx=>planPublicationRecoveryPage(tx,{...page,limit:33}))).rejects.toThrow("publication_maintenance_page_invalid");
+ });
+
+ test("hourly receipt and capture recovery restores exact expired-owner timers without spending attempts",async()=>{
+  const f=await observationReceipt(),owner=crypto.randomUUID(),until=new Date(5000);
+  await db.providerReceipt.update({where:{id:f.receipt.id},data:{enrichmentClaimId:owner,enrichmentLeaseExpiresAt:until}});
+  const video=await db.trackedVideo.create({data:{workspaceId:f.post.workspaceId!,socialPostId:f.post.id,socialAccountId:f.post.socialAccountId,platform:"youtube_shorts",platformPostId:crypto.randomUUID(),publishedAt:new Date()}});
+  const capture=await db.performanceCapture.create({data:{trackedVideoId:video.id,slot:0,dueAt:new Date(1000),leaseOwner:owner,leaseExpiresAt:until}});
+  const page={deploymentEpoch:1,cutoff:new Date(6000),after:null,limit:32};
+  const receipts=await db.$transaction(tx=>planPublicationReceiptRecoveryPage(tx,page));
+  const captures=await db.$transaction(tx=>planPerformanceCaptureRecoveryPage(tx,page));
+  expect(receipts.processed).toBe(1);expect(captures.processed).toBe(1);
+  const records=await db.executionDispatch.findMany({where:{id:{in:[...receipts.dispatchIds!,...captures.dispatchIds!]}}});
+  expect(records.map(row=>row.subjectId).sort()).toEqual([`po1.yw.${f.receipt.id}.${owner}.5000`,`po1.cw.${capture.id}.${owner}.5000`].sort());
+  expect(records.every(row=>row.dueAt.getTime()===5000)).toBe(true);
+  expect((await db.providerReceipt.findUniqueOrThrow({where:{id:f.receipt.id}})).enrichmentCheckCount).toBe(0);
+  expect((await db.performanceCapture.findUniqueOrThrow({where:{id:capture.id}})).attempts).toBe(0);
+ });
+
+ test("daily grant expiry only restores the matching revision timer and leaves future grants alone",async()=>{
+  const due=await publicationGrant(await fixture(),new Date(7000)),future=await publicationGrant(await fixture(),new Date(9000));
+  const page={deploymentEpoch:1,cutoff:new Date(8000),after:{at:new Date(6500),id:"00000000-0000-0000-0000-000000000000"},limit:1};
+  const planned=await db.$transaction(tx=>planStandingGrantExpiryPage(tx,page));
+  expect(planned.processed).toBe(1);expect(planned.next).toBeNull();expect(planned.dispatchIds).toHaveLength(1);
+  const timer=await db.executionDispatch.findUniqueOrThrow({where:{id:planned.dispatchIds![0]}});
+  expect(timer.subjectId).toBe(`pub1.x.${due.id}.1.7000`);expect(timer.dueAt).toEqual(due.expiresAt);
+  expect((await db.standingGrant.findUniqueOrThrow({where:{id:due.id}})).status).toBe("active");
+  expect((await db.standingGrant.findUniqueOrThrow({where:{id:future.id}})).status).toBe("active");
+  expect(await db.$transaction(tx=>planStandingGrantExpiryPage(tx,page))).toEqual(planned);
+ });
+ test("restore pages keep accepted provider identity and budgets while respecting the frozen source cutoff",async()=>{
+  const f=await active(),physical=await claimed(f),future=await fixture();
+  await f.call({action:"process-start",fence:physical.fence});
+  await physical.command({kind:"checkpoint",operation:{kind:"upload_prepared",state:{providerOperation:"youtube_resumable_upload",uploadUrl:"https://www.googleapis.com/exact-session"}}});
+  await db.socialPost.update({where:{id:f.post.id},data:{createdAt:new Date(10000)}});
+  await db.socialPost.update({where:{id:future.post.id},data:{createdAt:new Date(12000)}});
+  const before=await db.socialPublicationAttempt.findFirstOrThrow({where:{socialPostId:f.post.id}}),sentinel=Error("rollback publication page proof");
+  await expect(db.$transaction(async tx=>{
+   await tx.executionEpoch.update({where:{id:1},data:{epoch:2,admissionOpen:false}});
+   const page={snapshotEpoch:1,fenceAboveEpoch:1,deploymentEpoch:2,cutoff:new Date(11000),after:{at:new Date(9500),id:"00000000-0000-0000-0000-000000000000"},limit:32};
+   const planned=await planPublicationRestorePage(tx,page);
+   expect(planned.processed).toBe(1);expect(planned.next).toBeNull();expect(planned.dispatchIds).toHaveLength(2);
+   expect(await tx.socialPost.findUniqueOrThrow({where:{id:future.post.id}})).toMatchObject({deploymentEpoch:1});
+   expect(await tx.socialPublicationAttempt.findUniqueOrThrow({where:{id:before.id}})).toMatchObject({idempotencyKey:before.idempotencyKey,nativeStartCount:before.nativeStartCount,providerCallCount:before.providerCallCount,checkpointEncrypted:before.checkpointEncrypted,processingDeadline:before.processingDeadline,reconciliationDeadline:before.reconciliationDeadline,currentClaimId:null});
+   expect(await tx.publicationClaim.findUniqueOrThrow({where:{id:physical.fence.attemptToken}})).toMatchObject({accountSlotKey:null});
+   expect((await tx.socialPost.findUniqueOrThrow({where:{id:f.post.id}})).deploymentEpoch).toBe(2);
+   expect((await planPublicationRestorePage(tx,page)).processed).toBe(0);
+   throw sentinel;
+  })).rejects.toBe(sentinel);
+ });
+
 });

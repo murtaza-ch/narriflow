@@ -1,3 +1,4 @@
+import type { Prisma } from "@prisma/client";
 import { createHash, randomUUID } from "node:crypto";
 import { AUTOMATION_RECEIPT_COMMANDS } from "./automation-receipt-commands";
 import { BRAND_RECEIPT_COMMANDS } from "./brand-receipt-commands";
@@ -48,6 +49,8 @@ export interface OperationReceiptIdentity {
 export interface IntegrationMutation {
 	clientIdempotencyKey: string;
 	beforeAccept?: () => Promise<void>;
+	/** Server-only fence checked with the mutation, after receipt replay is resolved. */
+	beforeMutation?: (tx: Prisma.TransactionClient) => Promise<void>;
 	/** Called when the command resolved to an earlier acceptance, so an adapter can say so (`Idempotent-Replayed`). */
 	onReplay?: () => void;
 	/** A validated Completion Callback URL, for commands that start work. */
@@ -131,6 +134,7 @@ export function createOperationReceiptExecutor<Tx>(
 			input: unknown;
 			authorize: () => Promise<void>;
 			beforeAccept?: () => Promise<void>;
+			beforeMutation?: (tx: Tx) => Promise<void>;
 			prepare?: () => Promise<void>;
 			callback?: ReceiptCallback<Tx, NoInfer<T>>;
 			/** A mutation may commit a durable refusal, such as a released usage
@@ -184,6 +188,7 @@ export function createOperationReceiptExecutor<Tx>(
 					);
 					if (accepted) return replay(accepted, tx);
 					await input.beforeAccept?.();
+					await input.beforeMutation?.(tx);
 					const id = randomUUID();
 					const result = await input.mutate(tx, { receiptId: id });
 					if ("refusal" in result) return result;

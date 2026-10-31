@@ -10,20 +10,29 @@
     "A concurrent duplicate waits for the existing claim without touching an unrelated finishing.",
     "An unconfirmed watchdog starts no action and consumes no attempt.",
     "Each command admits at most one picked child action before advancing to another exact reference.",
-    "An old exact receipt repairs the committed next wake after ACK loss without admitting another export."
+    "An old exact receipt repairs the committed next wake after ACK loss without admitting another export.",
+    "Exact terminal export facts create bounded dependent wake pages; 65 dependents finish across three pages.",
+    "A lost export-page acknowledgement replays its stored wake list.",
+    "An existing in-progress copy request is never replaced with a fresh paid request key.",
+    "Child admission and late result publication recheck the exact Finishing claim inside their owning transaction.",
+    "A role downgrade before child admission creates no export and consumes no retry.",
+    "Final settlement rechecks export status under the parent lock and parks a concurrently retried export.",
+    "Restore revokes the old owner without extending deadlines or changing child identities; metadata replay creates no product dispatches.",
+    "Final recovery alone appends exact current base and bounded cutoff wake identities."
   ],
   "remaining": [
-    "Fence each child admission/publication transaction with the current finishing owner.",
-    "Freeze original Autopilot grant intent and carry exact proposal revisions.",
-    "Wake export dependents from exact terminal outcomes and retain bounded timer recovery.",
     "Durable notification intent and registry/runtime integration.",
-    "Remove the old processDue poller and port its product-semantic tests.",
-    "Complete restore transformations and deployed fault acceptance."
+    "Deployed fault acceptance and the full integrated cutover gates."
   ],
   "deployment": "No shared database migration or candidate deployment includes this foundation yet.",
   "clocks": {
     "exportWaitHours": 6,
     "totalOperationHours": 7,
     "replayExtendsNeither": true
+  },
+  "integrationTests": {
+    "tests": 88,
+    "assertions": 520,
+    "scope": "targeted finishing, preserved semantic cases and publication integration; isolated disposable PostgreSQL schema"
   }
 }

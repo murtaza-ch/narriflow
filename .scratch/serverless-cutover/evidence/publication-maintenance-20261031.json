@@ -1,0 +1,32 @@
+{
+  "date": "2026-10-31",
+  "scope": "Bounded transaction-only publication/observations maintenance and restore adapters",
+  "database": "Dedicated PostgreSQL17 disposable schema, all migrations fresh; no shared database changed",
+  "verification": {
+    "postgresql": {
+      "tests": 37,
+      "assertions": 239,
+      "file": "packages/services/src/publication-execution.db.test.ts",
+      "log": "/tmp/narriflow-publication-maintenance-db.log"
+    },
+    "red": "Expired receipt/capture recovery originally recreated due references instead of exact owner watchdogs; behavioral test failed before fix",
+    "typecheck": "services passed"
+  },
+  "ports": [
+    "planPublicationRecoveryPage",
+    "planStandingGrantExpiryPage",
+    "planPublicationReceiptRecoveryPage",
+    "planPerformanceCaptureRecoveryPage",
+    "planPublicationRestorePage"
+  ],
+  "guarantees": [
+    "Five fixed model cursors, limit32, frozen cutoff, lexicographic timestamp/UUID cursor",
+    "Sorted WorkspaceUsage/Workspace/Project/Account/Post locks before per-row domain locks",
+    "Hourly pages only restore targeted accepted obligations; no provider I/O or claim budget mutation",
+    "Expired receipt/capture owner recovered by exact token/deadline timer",
+    "Restore preserves provider IDs, opaque checkpoints, uncertainty, charged native/provider counts and original deadlines",
+    "At most64 dispatch IDs per restore page; shared page receipt reserves room for continuation"
+  ],
+  "migration": "020 publication recovery indexes",
+  "integration": "Contracts20 owns central factory phase mounting; root owns API/Workflow composition"
+}
