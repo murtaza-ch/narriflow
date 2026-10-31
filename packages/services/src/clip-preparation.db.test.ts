@@ -471,11 +471,13 @@ suite("Clip Preparation authority and publication", () => {
     const firstFence = { reference: admitted.deadline.reference, attemptToken: admitted.deadline.attemptToken, owner: crypto.randomUUID() };
     const send = (command: unknown) => execution.control.execute({ command, verifiedRequest: preparation.verified() });
     const packageFor = (fence: typeof firstFence) => execution.transfer.execute({ command: { action: "work-package", fence }, verifiedRequest: preparation.verified() });
-    const program = `if(process.env.DATABASE_URL||process.env.DIRECT_URL||process.env.PGPASSWORD||process.env.SERVERLESS_TEST_DATABASE_URL)throw Error('database_credential_in_native');
-let raw='';for await(const chunk of process.stdin){raw+=chunk;if(raw.length>65536)throw Error('input_limit');}
-const input=JSON.parse(raw);const response=await fetch(input.url,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(input.command)});
-const result=await response.json();if(response.status!==200||result.disposition!=='committed')throw Error('commit_unconfirmed');
-console.log(JSON.stringify(result));if(!input.exitAfterCommit)setInterval(()=>{},1000);`;
+    const program = `let stage='credential_guard',status=null;
+try{if(process.env.DATABASE_URL||process.env.DIRECT_URL||process.env.PGPASSWORD||process.env.SERVERLESS_TEST_DATABASE_URL)throw Error();
+stage='command_input';let raw='';for await(const chunk of process.stdin){raw+=chunk;if(raw.length>65536)throw Error();}
+const input=JSON.parse(raw);stage='commit_request';const response=await fetch(input.url,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(input.command)});
+status=response.status;stage='commit_ack';const result=await response.json();if(response.status!==200||result.disposition!=='committed')throw Error();
+console.log(JSON.stringify(result));if(!input.exitAfterCommit)setInterval(()=>{},1000);
+}catch{console.error(JSON.stringify({errorCode:'native_sibling_'+stage,status}));process.exitCode=1;}`;
     let endpointFence = firstFence, serverError: unknown;
     const secret = crypto.randomUUID();
     const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: async request => {
@@ -484,6 +486,17 @@ console.log(JSON.stringify(result));if(!input.exitAfterCommit)setInterval(()=>{}
       catch (error) { serverError = error;return Response.json({ disposition: "failed" }, { status: 500 }); }
     } });
     const children: ReturnType<typeof Bun.spawn>[] = [];
+    const childFailure = async (child: ReturnType<typeof Bun.spawn>) => {
+      const reader = (child.stderr as ReadableStream<Uint8Array>).getReader();let bytes = 0, stderr = "";
+      try { while (true) { const item = await reader.read();if (item.done) break;bytes += item.value.byteLength;
+        if (bytes > 8192) { child.kill("SIGKILL");break; } stderr += new TextDecoder().decode(item.value); } }
+      finally { await reader.cancel().catch(() => {}); }
+      let detail: Record<string, unknown> = { stderrBytes: bytes };
+      try { const parsed = JSON.parse(stderr);if (/^native_sibling_[a-z_]{1,40}$/.test(parsed.errorCode) && (parsed.status === null || Number.isInteger(parsed.status) && parsed.status >= 100 && parsed.status <= 599)) detail = { ...detail, errorCode: parsed.errorCode, status: parsed.status }; } catch {}
+      const code = serverError && typeof serverError === "object" && "code" in serverError ? serverError.code : null;
+      if (typeof code === "string" && /^[a-z][a-z0-9_]{0,99}$/.test(code)) detail.controlErrorCode = code;
+      return new Error(`Native sibling child failed: ${JSON.stringify({ ...detail, exitCode: await child.exited })}`);
+    };
     try {
       await send({ action: "acquire", ...firstFence, leaseSeconds: 2 });
       const firstPackage = await packageFor(firstFence);if (firstPackage.disposition !== "work_package") throw Error("Expected package");
@@ -498,12 +511,13 @@ console.log(JSON.stringify(result));if(!input.exitAfterCommit)setInterval(()=>{}
       const commandFor = (fence: typeof firstFence, output: typeof outputs[number]) => {
         const command = commit(fence, output);command.artifact.renderVariant.renderId = ids.find(row => row.binding === output.bindingHash)!.id;return command;
       };
-      const child = Bun.spawn([process.execPath, "-e", program], { stdin: "pipe", stdout: "pipe", stderr: "pipe", env: { PATH: process.env.PATH! } });children.push(child);
+      const child = Bun.spawn([process.execPath, "--no-env-file", "-e", program], { stdin: "pipe", stdout: "pipe", stderr: "pipe", env: { PATH: process.env.PATH! } });children.push(child);
       process.kill(child.pid!, 0);await send({ action: "process-start", fence: firstFence });
       child.stdin.write(JSON.stringify({ url: new URL(`/${secret}`, server.url).href, command: commandFor(firstFence, outputs[0]!), exitAfterCommit: false }));child.stdin.end();
       const reader = child.stdout.getReader();
       const first = await Promise.race([reader.read(), Bun.sleep(5000).then(() => { throw Error("Native sibling commit timed out"); })]);
-      expect(first.done).toBe(false);expect(JSON.parse(new TextDecoder().decode(first.value))).toMatchObject({ disposition: "committed", artifactId: outputs[0]!.artifactId });
+      if (first.done) throw await childFailure(child);
+      expect(JSON.parse(new TextDecoder().decode(first.value))).toMatchObject({ disposition: "committed", artifactId: outputs[0]!.artifactId });
       if (serverError) throw serverError;
       const keptId = ids.find(row => row.binding === outputs[0]!.bindingHash)!.id;
       const kept = await db.clipRender.findUniqueOrThrow({ where: { id: keptId } });expect(kept.status).toBe("completed");
@@ -522,10 +536,11 @@ console.log(JSON.stringify(result));if(!input.exitAfterCommit)setInterval(()=>{}
       await send({ action: "acquire", ...nextFence, leaseSeconds: 120 });
       const successor = await packageFor(nextFence);if (successor.disposition !== "work_package") throw Error("Expected successor package");
       const remaining = successor.outputs.filter(output => output.role === "render_variant");expect(remaining).toHaveLength(1);expect(remaining[0]!.bindingHash).not.toBe(outputs[0]!.bindingHash);
-      const replacement = Bun.spawn([process.execPath, "-e", program], { stdin: "pipe", stdout: "pipe", stderr: "pipe", env: { PATH: process.env.PATH! } });children.push(replacement);
+      const replacement = Bun.spawn([process.execPath, "--no-env-file", "-e", program], { stdin: "pipe", stdout: "pipe", stderr: "pipe", env: { PATH: process.env.PATH! } });children.push(replacement);
       process.kill(replacement.pid!, 0);await send({ action: "process-start", fence: nextFence });
       replacement.stdin.write(JSON.stringify({ url: new URL(`/${secret}`, server.url).href, command: commandFor(nextFence, remaining[0]!), exitAfterCommit: true }));replacement.stdin.end();
-      const acknowledgement = JSON.parse(await new Response(replacement.stdout).text());expect(await replacement.exited).toBe(0);if (serverError) throw serverError;
+      const reply = await new Response(replacement.stdout).text();if (!reply || await replacement.exited !== 0) throw await childFailure(replacement);
+      const acknowledgement = JSON.parse(reply);if (serverError) throw serverError;
       expect(acknowledgement.renderGroup).toEqual({ status: "completed", requested: 2, succeeded: 2, failed: 0, superseded: 0 });
       expect(await db.renderGroup.findUniqueOrThrow({ where: { id: frozen.groupId } })).toMatchObject({ status: "completed", chargedAttemptCount: 2 });
       expect(await db.clipRender.findUniqueOrThrow({ where: { id: keptId } })).toMatchObject({ storageKey: kept.storageKey, completedAt: kept.completedAt });
