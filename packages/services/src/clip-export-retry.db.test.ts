@@ -36,7 +36,7 @@ dbDescribe("Manual Clip Export retry PostgreSQL invariants", () => {
   })));
   afterAll(bindServiceTestEnvironment(globals.bind(async () => { globals.client = previous; await prisma?.$disconnect(); await pool?.end(); })));
 
-  async function fixture() {
+  async function fixture(options: { liveAutomaticRetry?: boolean } = {}) {
     const user = await prisma.user.create({ data: { clerkId: `${prefix}${randomUUID()}` } });
     const workspace = await prisma.workspace.create({ data: {
       name: "Manual export retry", ownerUserId: user.id, personalOwnerUserId: user.id,
@@ -74,11 +74,15 @@ dbDescribe("Manual Clip Export retry PostgreSQL invariants", () => {
       render: { create: { clipId: clip.id, aspectRatio: "ratio_1_1", resolution: "720p", editorRevision: 0,
         clipSnapshot: snapshot, status: "pending" } },
     }, include: { render: true } });
+    const extra = options.liveAutomaticRetry ? await prisma.clipExportVariant.create({ data: {
+      exportId: exported.id, aspectRatio: "ratio_4_5", resolution: "720p", watermark: true, status: "pending",
+      render: { create: { clipId: clip.id, aspectRatio: "ratio_4_5", resolution: "720p", editorRevision: 0, clipSnapshot: snapshot, status: "pending" } },
+    }, include: { render: true } }) : null;
     const parent = await lifecycle.renderParent(oldRun.id);await lifecycle.beginRenderWorkSet(parent);
     await lifecycle.markClipRenderVariantRendering(parent, success.render!.id);
     await lifecycle.completeClipRenderVariant(parent, success.render!.id, { storageKey: "server-assigned", sizeBytes: 123, durationSec: 10 });
-    await lifecycle.failClipRenderVariant(parent, failed.render!.id, "render_output_invalid", "permanent");
-    await lifecycle.settleRenderWorkSet(parent);
+    await lifecycle.failClipRenderVariant(parent, failed.render!.id, "render_output_invalid", options.liveAutomaticRetry ? "retryable" : "permanent");
+    if (!options.liveAutomaticRetry) await lifecycle.settleRenderWorkSet(parent);
     oldRun = await prisma.workflowRun.findUniqueOrThrow({ where: { id: oldRun.id } });
     success = await prisma.clipExportVariant.findUniqueOrThrow({ where: { id: success.id }, include: { render: true } });
     // Deliberately stale result metadata must not survive a manual retry.
@@ -86,7 +90,7 @@ dbDescribe("Manual Clip Export retry PostgreSQL invariants", () => {
     failed = await prisma.clipExportVariant.update({ where: { id: failed.id }, data: { storageKey: "tests/stale.mp4", sizeBytes: 9n, durationSec: 1 }, include: { render: true } });
     const scope = { workspaceId: workspace.id, actorUserId: user.id };
     const retry = () => clipExportService.retryFailed(scope, project.id, clip.id, exported.id);
-    return { project, clip, exported: await prisma.clipExport.findUniqueOrThrow({ where: { id: exported.id } }), oldRun, success, failed, retry };
+    return { project, clip, exported: await prisma.clipExport.findUniqueOrThrow({ where: { id: exported.id } }), oldRun, success, failed, retry, lifecycle, parent, extra };
   }
 
   test("actual simultaneous retry requests detach failed lineage once, admit claimable work and preserve successful bytes", bindServiceTestEnvironment(globals.bind(async () => {
@@ -147,12 +151,19 @@ dbDescribe("Manual Clip Export retry PostgreSQL invariants", () => {
   })));
 
   test("a delayed retry cannot reset a failed child still owned by a live automatic retry", bindServiceTestEnvironment(globals.bind(async () => {
-    const f = await fixture();
-    await prisma.workflowRun.update({ where: { id: f.oldRun.id }, data: { status: "queued", attemptCount: 1, nextAttemptAt: new Date(Date.now() + 30_000) } });
+    const f = await fixture({ liveAutomaticRetry: true });
     const original = await prisma.clipRender.findUniqueOrThrow({ where: { id: f.failed.render!.id } });
     await Promise.all([f.retry(), f.retry()]);
     expect(await prisma.clipRender.findUniqueOrThrow({ where: { id: original.id } })).toEqual(original);
     expect(await prisma.clipExport.findUniqueOrThrow({ where: { id: f.exported.id } })).toEqual(f.exported);
+    expect(await prisma.workflowRun.findUniqueOrThrow({ where: { id: f.oldRun.id } })).toMatchObject({ attemptCount: 0, attemptId: null, leaseOwner: null });
+    const active = await prisma.renderGroup.findFirstOrThrow({ where: { workflowRunId: f.oldRun.id } });
+    expect(active).toMatchObject({ status: "running", chargedAttemptCount: 1 });
+    await f.lifecycle.completeClipRenderVariant(f.parent, f.extra!.render!.id, { storageKey: "server-assigned", sizeBytes: 123, durationSec: 10 });
+    await f.lifecycle.settleRenderWorkSet(f.parent);await f.lifecycle.retryGroups(f.oldRun.id);
+    await f.lifecycle.markClipRenderVariantRendering(f.parent, f.failed.render!.id);
+    await f.lifecycle.completeClipRenderVariant(f.parent, f.failed.render!.id, { storageKey: "server-assigned", sizeBytes: 123, durationSec: 10 });
+    await f.lifecycle.settleRenderWorkSet(f.parent);
   })));
 
   test("a retry shares an active frozen run's normal drain follow-up without expanding its work set", bindServiceTestEnvironment(globals.bind(async () => {

@@ -1,0 +1,31 @@
+{
+  "date": "2026-11-01",
+  "removed": [
+    "Unused project/review global notification delivery classes, pending-mail scanners, old claims and unbounded worker retries",
+    "Memory-store poller tests superseded by actual current execution protocol suites"
+  ],
+  "retained": [
+    "Existing packages/email templates unchanged",
+    "Current project and review context readers, mail body builders and exact review retry admission",
+    "Current sealed NotificationExecution with bounded starts, original idempotency key, deadline, context rechecks, restore and recovery"
+  ],
+  "verification": {
+    "runtime": "Bun 1.3.6",
+    "postgresTests": 60,
+    "postgresAssertions": 356,
+    "failures": 0,
+    "servicesTypecheck": "passed",
+    "biome": "passed"
+  },
+  "semanticMap": {
+    "terminalIntent": "Current notification-execution tests prove terminal event, ledger and dispatch commit or roll back together.",
+    "duplicateAndDeliveryBudget": "Exact delivery replays retain original sealed bytes and provider key; maximum three physical starts and absolute deadline remain authoritative.",
+    "contextAndReview": "Production preparation verifies current recipient and review-token context; changes revoke stale delivery. Accepted review invites repair the same wake after scheduler ACK loss.",
+    "finishingActor": "Generation Finishing uses real production prepareNotificationDelivery under DatabaseScope, decrypts the sealed request at an external fake sender, addresses the actual actor and retains one original provider key on replay.",
+    "restoreRetentionAndGrant": "Grant notices have separate disposable schema for whole-ledger recovery/restore assertions; actual current protocol verifies expiry, plan loss, recipient changes, restore, retention and bounded retries."
+  },
+  "logHashes": {
+    "mail-scanner-retirement-db.log": "e3be400df26b9f5210884654d455148ca3efdfcfdfa6be31aa221b4acf7021e0",
+    "mail-retirement-typecheck.log": "38ac890c60e7f38d59ddfb410325cdfb5fca83c9411765c5481754e01c021630"
+  }
+}

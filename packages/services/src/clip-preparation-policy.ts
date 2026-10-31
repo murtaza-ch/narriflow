@@ -14,10 +14,11 @@ export const DEFAULT_PREVIEW_PEAKS_PER_SEC = 20;
 export const DEFAULT_CLIP_PREVIEW_PADDING_SEC = DEFAULT_PREVIEW_PADDING_SEC;
 
 export const CLIP_PREPARATION_POLICY = Object.freeze({
-  version: 3,
+  version: 4,
   sourceTiming: "clip-render-timing-v1",
   preview: Object.freeze({ paddingSec: DEFAULT_PREVIEW_PADDING_SEC, maxHeight: DEFAULT_PREVIEW_MAX_HEIGHT,
     videoClock: "constant-rate-preserve-window-v1",
+    threadPolicy: "render-4cpu-v1", decoderThreads: 4, filterThreads: 4,
     x264Preset: DEFAULT_PREVIEW_X264_PRESET, x264Crf: DEFAULT_PREVIEW_X264_CRF,
     audioBitrate: DEFAULT_PREVIEW_AUDIO_BITRATE, x264Threads: DEFAULT_PREVIEW_X264_THREADS,
     timeoutMs: DEFAULT_PREVIEW_FFMPEG_TIMEOUT_MS }),

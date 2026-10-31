@@ -13,14 +13,6 @@ export class RenderFixtureLifecycle extends WorkflowRunLifecycle {
     super(deps);
     this.fixturePrisma = deps.prisma;
   }
-  /** Select controlled fixture data, then use the production exact reference.
-   * The UUID below is a test handle, never a parent execution or charged claim. */
-  async claim(stage: string) {
-    if (stage !== "clip_rendering") throw Error(`Use a targeted ${stage} fixture`);
-    const run = await this.fixturePrisma.workflowRun.findFirst({ where: { stage, status: { in: ["queued", "waiting"] } }, orderBy: [{ createdAt: "asc" }, { id: "asc" }], include: { project: true } });
-    if (!run) return null;
-    return this.renderParent(run.id);
-  }
   /** Registers the exact accepted parent without acquiring execution authority. */
   async renderParent(runId: string) {
     const run = await this.fixturePrisma.workflowRun.findUniqueOrThrow({ where: { id: runId }, include: { project: true } });

@@ -40,10 +40,10 @@ async function run(args: string[], env: Record<string, string>) {
   if (code !== 0) throw new Error(`Serverless database gate command failed with exit ${code}`);
 }
 
-// The empty production-factory pass observes the entire schema. Its epoch
-// changes and global empty assertion require a separate disposable schema,
+// Grant restore and the empty production-factory pass observe the whole schema.
+// Their epoch changes and global assertions require separate disposable schemas,
 // not deletion of other suites' accepted fixture obligations.
-for(const emptyFactory of ["packages/services/src/execution-maintenance-runtime.db.test.ts",apiFactory]){
+for(const emptyFactory of ["packages/services/src/grant-notification.db.test.ts","packages/services/src/execution-maintenance-runtime.db.test.ts",apiFactory]){
  if(tests.length>1&&tests.includes(emptyFactory)){
   await run(["bun","packages/services/scripts/run-execution-db-tests.ts",emptyFactory],{});
   tests=tests.filter(path=>path!==emptyFactory);

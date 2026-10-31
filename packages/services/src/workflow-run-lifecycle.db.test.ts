@@ -199,12 +199,12 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     }
   }
 
-  async function claimRenderAttempt() {
+  async function renderParentFixture(runId: string) {
     const lifecycle = new RenderFixtureLifecycle({
       prisma,
       leaseOwner: randomUUID(),
     });
-    const attempt = await lifecycle.claim("clip_rendering");
+    const attempt = await lifecycle.renderParent(runId);
     if (!attempt) throw new Error("clip-rendering claim missing");
     return { attempt, lifecycle };
   }
@@ -223,7 +223,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
   ) {
     await lifecycle.finishGroups();
     await lifecycle.retryGroups(runId);
-    return claimRenderAttempt();
+    return renderParentFixture(runId);
   }
 
   async function failOwnedRenderVariant(
@@ -249,7 +249,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     const firstVariant = await prisma.clipRender.create({
       data: { clipId: firstClip.id, aspectRatio: "ratio_9_16" },
     });
-    const { lifecycle, attempt } = await claimRenderAttempt();
+    const { lifecycle, attempt } = await renderParentFixture(run.id);
     const suffix = randomUUID().replaceAll("-", "");
     const names = {
       functionName: `workflow_test_failure_${suffix}`,
@@ -380,7 +380,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
         },
       }),
     ]);
-    const { lifecycle, attempt } = await claimRenderAttempt();
+    const { lifecycle, attempt } = await renderParentFixture(run.id);
 
     const workSet = await lifecycle.beginRenderWorkSet(attempt);
 
@@ -424,7 +424,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
         completedAt: new Date(),
       },
     });
-    const { lifecycle, attempt } = await claimRenderAttempt();
+    const { lifecycle, attempt } = await renderParentFixture(run.id);
     await lifecycle.beginRenderWorkSet(attempt);
 
     const state = await clipService.getFrozenRenderingStateForWorkSet(
@@ -459,7 +459,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     const { project, run } = await fixture("clip_rendering");
     const clip = await clipFixture(project.id, run.id);
     const { lifecycle: firstLifecycle, attempt: firstAttempt } =
-      await claimRenderAttempt();
+      await renderParentFixture(run.id);
 
     const firstWorkSet = await firstLifecycle.beginRenderWorkSet(firstAttempt);
     expect(firstWorkSet.variantIds).toEqual([]);
@@ -483,7 +483,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
       data: { clipId: firstClip.id, aspectRatio: "ratio_9_16" },
     });
     const { lifecycle: firstLifecycle, attempt: firstAttempt } =
-      await claimRenderAttempt();
+      await renderParentFixture(run.id);
     expect(
       (await firstLifecycle.beginRenderWorkSet(firstAttempt)).variantIds,
     ).toEqual([originalVariant.id]);
@@ -502,7 +502,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     const { project, run } = await fixture("clip_rendering");
     const clip = await clipFixture(project.id, run.id);
     const variant = await prisma.clipRender.create({ data: { clipId: clip.id, aspectRatio: "ratio_9_16" } });
-    const { lifecycle, attempt } = await claimRenderAttempt();
+    const { lifecycle, attempt } = await renderParentFixture(run.id);
     const reference = await lifecycle.referenceFor(attempt);
     expect(await lifecycle.prepareRenderRun({ ...reference, inputHash: "f".repeat(64) })).toMatchObject({ kind: "superseded" });
     expect(await prisma.workflowEvent.count({ where: { workflowRunId: run.id, notificationRequired: true } })).toBe(0);
@@ -518,7 +518,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
       data: { clipId: clip.id, aspectRatio: "ratio_9_16" },
     });
     const { lifecycle: firstLifecycle, attempt: firstAttempt } =
-      await claimRenderAttempt();
+      await renderParentFixture(run.id);
     expect(
       (await firstLifecycle.beginRenderWorkSet(firstAttempt)).variantIds,
     ).toEqual([variant.id]);
@@ -560,7 +560,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
         clipSnapshot: { id: clip.id, editorRevision: 1 },
       },
     });
-    const { lifecycle, attempt } = await claimRenderAttempt();
+    const { lifecycle, attempt } = await renderParentFixture(run.id);
 
     expect((await lifecycle.beginRenderWorkSet(attempt)).variantIds).toEqual([
       render.id,
@@ -627,7 +627,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     const firstVariant = await prisma.clipRender.create({
       data: { clipId: firstClip.id, aspectRatio: "ratio_9_16" },
     });
-    const { lifecycle, attempt } = await claimRenderAttempt();
+    const { lifecycle, attempt } = await renderParentFixture(run.id);
     const suffix = randomUUID().replaceAll("-", "");
     const functionName = `workflow_test_pause_candidate_${suffix}`;
     const triggerName = `workflow_test_pause_candidate_${suffix}`;
@@ -701,7 +701,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
         data: { clipId: clip.id, aspectRatio: "ratio_1_1" },
       }),
     ]);
-    const { lifecycle, attempt } = await claimRenderAttempt();
+    const { lifecycle, attempt } = await renderParentFixture(run.id);
     await lifecycle.beginRenderWorkSet(attempt);
     await lifecycle.markClipRenderVariantRendering(attempt, completedVariant.id);
     await lifecycle.completeClipRenderVariant(attempt, completedVariant.id, {
@@ -767,7 +767,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
           }),
         ),
       );
-      const { lifecycle, attempt } = await claimRenderAttempt();
+      const { lifecycle, attempt } = await renderParentFixture(run.id);
       await lifecycle.beginRenderWorkSet(attempt);
 
       if (outcome !== "failed") {
@@ -842,7 +842,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     const variant = await prisma.clipRender.create({
       data: { clipId: clip.id, aspectRatio: "ratio_9_16" },
     });
-    const { lifecycle, attempt } = await claimRenderAttempt();
+    const { lifecycle, attempt } = await renderParentFixture(run.id);
     await lifecycle.beginRenderWorkSet(attempt);
     await lifecycle.markClipRenderVariantRendering(attempt, variant.id);
     await lifecycle.completeClipRenderVariant(attempt, variant.id, {
@@ -929,7 +929,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     const variant = await prisma.clipRender.create({
       data: { clipId: clip.id, aspectRatio: "ratio_9_16" },
     });
-    const { lifecycle, attempt } = await claimRenderAttempt();
+    const { lifecycle, attempt } = await renderParentFixture(run.id);
     await lifecycle.beginRenderWorkSet(attempt);
     await failOwnedRenderVariant(
       lifecycle,
@@ -976,7 +976,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     const completed = await prisma.clipRender.create({ data: { clipId: clip.id, aspectRatio: "ratio_9_16" } });
     const transient = await prisma.clipRender.create({ data: { clipId: clip.id, aspectRatio: "ratio_1_1" } });
     const permanent = await prisma.clipRender.create({ data: { clipId: clip.id, aspectRatio: "ratio_16_9" } });
-    const { lifecycle, attempt } = await claimRenderAttempt();
+    const { lifecycle, attempt } = await renderParentFixture(run.id);
     await lifecycle.beginRenderWorkSet(attempt);
     await lifecycle.markClipRenderVariantRendering(attempt, completed.id);
     await lifecycle.completeClipRenderVariant(attempt, completed.id, { storageKey: "tests/preserved-success.mp4", sizeBytes: 123, durationSec: 10 });
@@ -1030,7 +1030,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
         data: { clipId: clip.id, aspectRatio: "ratio_1_1" },
       }),
     ]);
-    const { lifecycle, attempt } = await claimRenderAttempt();
+    const { lifecycle, attempt } = await renderParentFixture(run.id);
     await lifecycle.beginRenderWorkSet(attempt);
     for (const [variant, disposition] of [
       [permanentVariant, "permanent"],
@@ -1084,7 +1084,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     const variant = await prisma.clipRender.create({
       data: { clipId: clip.id, aspectRatio: "ratio_9_16" },
     });
-    const { lifecycle, attempt } = await claimRenderAttempt();
+    const { lifecycle, attempt } = await renderParentFixture(run.id);
     await lifecycle.beginRenderWorkSet(attempt);
     await prisma.clipRender.update({
       where: { id: variant.id },
@@ -1123,7 +1123,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
         data: { clipId: clip.id, aspectRatio: "ratio_1_1" },
       }),
     ]);
-    const first = await claimRenderAttempt();
+    const first = await renderParentFixture(run.id);
     await first.lifecycle.beginRenderWorkSet(first.attempt);
     await first.lifecycle.markClipRenderVariantRendering(first.attempt, completedVariant.id);
     await first.lifecycle.completeClipRenderVariant(first.attempt, completedVariant.id, {
@@ -1176,7 +1176,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
         prisma.clipRender.create({ data: { clipId: clip.id, aspectRatio } }),
       ),
     );
-    const { lifecycle, attempt } = await claimRenderAttempt();
+    const { lifecycle, attempt } = await renderParentFixture(run.id);
     await lifecycle.beginRenderWorkSet(attempt);
     for (const variant of variants) {
       await failOwnedRenderVariant(
@@ -1215,7 +1215,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     const completedVariant = await prisma.clipRender.create({
       data: { clipId: firstClip.id, aspectRatio: "ratio_9_16" },
     });
-    const { lifecycle, attempt } = await claimRenderAttempt();
+    const { lifecycle, attempt } = await renderParentFixture(run.id);
     await lifecycle.beginRenderWorkSet(attempt);
     const lateVariant = await prisma.clipRender.create({
       data: { clipId: lateClip.id, aspectRatio: "ratio_1_1" },
@@ -1320,7 +1320,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
         const variant = await prisma.clipRender.create({
           data: { clipId: firstClip.id, aspectRatio: "ratio_9_16" },
         });
-        const { lifecycle, attempt } = await claimRenderAttempt();
+        const { lifecycle, attempt } = await renderParentFixture(run.id);
         await lifecycle.beginRenderWorkSet(attempt);
         const lateVariant = await prisma.clipRender.create({
           data: { clipId: lateClip.id, aspectRatio: "ratio_1_1" },
@@ -1379,7 +1379,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     const variant = await prisma.clipRender.create({
       data: { clipId: clip.id, aspectRatio: "ratio_9_16" },
     });
-    const { lifecycle, attempt } = await claimRenderAttempt();
+    const { lifecycle, attempt } = await renderParentFixture(run.id);
     expect((await lifecycle.beginRenderWorkSet(attempt)).variantIds).toEqual([
       variant.id,
     ]);
@@ -1406,12 +1406,12 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     const variant = await prisma.clipRender.create({
       data: { clipId: clip.id, aspectRatio: "ratio_9_16" },
     });
-    const first = await claimRenderAttempt();
+    const first = await renderParentFixture(run.id);
     await first.lifecycle.beginRenderWorkSet(first.attempt);
     await first.lifecycle.finishGroups();
     await prisma.clipRender.delete({ where: { id: variant.id } });
 
-    const retry = await claimRenderAttempt();
+    const retry = await renderParentFixture(run.id);
     expect((await retry.lifecycle.beginRenderWorkSet(retry.attempt)).variantIds).toEqual([]);
 
     expect(await retry.lifecycle.settleRenderWorkSet(retry.attempt)).toMatchObject({
@@ -1428,7 +1428,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     const variant = await prisma.clipRender.create({
       data: { clipId: clip.id, aspectRatio: "ratio_9_16" },
     });
-    const { lifecycle, attempt } = await claimRenderAttempt();
+    const { lifecycle, attempt } = await renderParentFixture(run.id);
     await lifecycle.beginRenderWorkSet(attempt);
     await lifecycle.markClipRenderVariantRendering(attempt, variant.id);
     await spendRenderStarts(lifecycle, attempt, variant.id);
@@ -1488,7 +1488,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
         },
       }),
     ]);
-    const { lifecycle, attempt } = await claimRenderAttempt();
+    const { lifecycle, attempt } = await renderParentFixture(run.id);
     await lifecycle.beginRenderWorkSet(attempt);
     const lateVariant = await prisma.clipRender.create({
       data: { clipId: clip.id, aspectRatio: "ratio_16_9" },
@@ -1588,7 +1588,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
         select: { status: true, completedAt: true },
       });
 
-    const first = await claimRenderAttempt();
+    const first = await renderParentFixture(run.id);
     await first.lifecycle.beginRenderWorkSet(first.attempt);
     await first.lifecycle.markClipRenderVariantRendering(first.attempt, render.id);
     await first.lifecycle.failClipRenderVariant(
@@ -1629,7 +1629,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     const variant = await prisma.clipRender.create({
       data: { clipId: clip.id, aspectRatio: "ratio_9_16" },
     });
-    const { lifecycle, attempt } = await claimRenderAttempt();
+    const { lifecycle, attempt } = await renderParentFixture(run.id);
     await lifecycle.beginRenderWorkSet(attempt);
     await prisma.clipRender.delete({ where: { id: variant.id } });
 
@@ -1985,7 +1985,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
         exportVariantId: exportVariant.id, clipSnapshot: frozenExportSnapshot(clip), editorRevision: clip.editorRevision,
       },
     });
-    const { lifecycle, attempt } = await claimRenderAttempt();
+    const { lifecycle, attempt } = await renderParentFixture(run.id);
     await lifecycle.beginRenderWorkSet(attempt);
     await lifecycle.markClipRenderVariantRendering(attempt, render.id);
 
@@ -2019,7 +2019,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     const sourceBodies=new Map<string,Uint8Array>();
     const observer = new OutboundDeliveryService(prisma,{readTrusted:createOperationStatusReader(prisma).readTrusted,cipher:createCallbackCipher("workflow-callback-test-key"),register:async()=>{},body:{put:async(plan,bytes)=>{sourceBodies.set(plan.storageKey,bytes);},head:async plan=>sourceBodies.has(plan.storageKey)?{etag:'"body"',sha256:plan.sha256,byteLength:plan.byteLength}:null,read:async()=>{throw new Error("No native execution in lifecycle freeze test");}}});
     const sibling = ending === "partial success" ? await prisma.clipRender.create({ data: { clipId: clip.id, aspectRatio: "ratio_1_1" } }) : null;
-    const { lifecycle, attempt } = await claimRenderAttempt();
+    const { lifecycle, attempt } = await renderParentFixture(run.id);
     await lifecycle.beginRenderWorkSet(attempt);
     await lifecycle.markClipRenderVariantRendering(attempt, render.id);
     if (sibling) {
@@ -2086,7 +2086,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
         }),
       ),
     );
-    const { lifecycle, attempt } = await claimRenderAttempt();
+    const { lifecycle, attempt } = await renderParentFixture(run.id);
     await lifecycle.beginRenderWorkSet(attempt);
     await Promise.all(
       renders.map((render) =>
