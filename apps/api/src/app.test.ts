@@ -53,8 +53,8 @@ describe("ingress", () => {
     const app = createInventoryApp();
     const response = await app.request("/api/health");
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ ok: true, service: "narriflow-api", version: "test" });
-    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(await response.json()).toEqual({ ok: true, service: "narriflow-api", version: "test", admissionState: "open" });
+    expect(response.headers.get("cache-control")).toBe("no-store");
     expect(response.headers.get("x-content-type-options")).toBe("nosniff");
     expect(response.headers.get("x-request-id")).toBeTruthy();
   });
@@ -84,6 +84,17 @@ describe("ingress", () => {
     const drained = await draining.request("/api/ready");
     expect(drained.status).toBe(503);
     expect(await drained.json()).toEqual({ ok: false, status: "draining" });
+  });
+
+  test("restore fencing closes callbacks and readiness before database and domain handlers", async () => {
+    let probes = 0;
+    const app = createInventoryApp({ health: { admissionState: () => "fenced", isDraining: () => true,
+      checkDatabase: async () => { probes++; } } });
+    expect((await app.request("/api/health")).status).toBe(200);
+    for (const [method, path] of [["GET", "/api/ready"], ["POST", "/api/execution/command"], ["POST", "/api/webhooks/stripe"]]) {
+      expect((await app.request(path, { method })).status).toBe(503);
+    }
+    expect(probes).toBe(0);
   });
 
   test("an unknown path is a JSON 404, never a missing-policy 500", async () => {

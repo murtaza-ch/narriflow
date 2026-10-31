@@ -49,3 +49,13 @@ test("local development confirms the canonical cloud scheduler instead of creati
   expect((await createWorkerExecutionScheduler(bindings).deliver(await delivery())).destinationId).toBe(dispatchContinuationInstanceId(reference));
   expect(called).toBe(1);
 });
+
+test("restore fencing defers native delivery before local RPC, storage or database work", async () => {
+  let remoteCalls = 0;
+  const bindings = { ADMISSION_STATE: "fenced", DEV_CLOUD: { dispatch: async () => { remoteCalls++; throw Error("Forbidden delivery"); } } } as unknown as ApiWorkerBindings;
+  for (const kind of ["modal_execution", "local_fetch"] as const) {
+    const input = { ...await delivery(), reference: { ...reference, kind } };
+    await expect(createWorkerExecutionScheduler(bindings).deliver(input)).rejects.toMatchObject({ code: "scheduler_unavailable" });
+  }
+  expect(remoteCalls).toBe(0);
+});

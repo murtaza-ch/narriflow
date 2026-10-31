@@ -1,3 +1,4 @@
+import {appendYouTubeReceiptEnrichment,appendPerformanceCapture,trackPublishedVideo,appendPerformanceGuidance,createPublicationObservations} from "./publication-observations";
 import {appendPublicationExportWake,appendPublicationGrantWake,appendPublicationGrantExpiry,createPublicationProducers,restorePublication} from "./publication-producers";
 import {withExecutionDispatches} from "./execution-dispatch-runtime";
 import {
@@ -990,6 +991,61 @@ suite("Revision-bound publication execution", () => {
    expect(attempt.idempotencyKey).toBe(before.idempotencyKey);expect(attempt.checkpointEncrypted).toBe(before.checkpointEncrypted);expect(attempt.nativeStartCount).toBe(before.nativeStartCount);expect(attempt.processingDeadline).toEqual(before.processingDeadline);expect(attempt.reconciliationDeadline).toEqual(before.reconciliationDeadline);
    throw sentinel;
   })).rejects.toBe(sentinel);
+ });
+
+ async function observationReceipt(){
+  const f=await fixture(),at=new Date();await db.socialPost.update({where:{id:f.post.id},data:{status:"posted",postedAt:at}});
+  const attempt=await db.socialPublicationAttempt.create({data:{socialPostId:f.post.id,frozenStateId:f.post.frozenState!.id,attemptNumber:1,idempotencyKey:crypto.randomUUID(),phase:"succeeded",outcome:"accepted",terminalAt:at,nextActionAt:at,processingDeadline:new Date(at.getTime()+3600000),reconciliationDeadline:new Date(at.getTime()+7200000),receipt:{create:{platform:"youtube_shorts",receiptId:crypto.randomUUID(),platformPostId:"verified-youtube-id",providerProcessingStatus:"processing",providerVisibility:"private",enrichmentNextCheckAt:new Date(at.getTime()-1000)}}},include:{receipt:true}});
+  const id=await db.$transaction(tx=>appendYouTubeReceiptEnrichment(tx,attempt.receipt!.id));await db.executionDispatch.update({where:{id:id!},data:{acknowledgedAt:new Date()}});return {...f,receipt:attempt.receipt!,reference:(await readExecutionDispatch(db,id!))!.reference};
+ }
+ const acknowledge=async(ids:readonly string[])=>{await db.executionDispatch.updateMany({where:{id:{in:[...ids]}},data:{acknowledgedAt:new Date()}});};
+ test("receipt status reads confirm a watchdog before IO and stale replay repairs a committed retry without another GET",async()=>{
+  const f=await observationReceipt();let gets=0,registrations=0;
+  const observer=createPublicationObservations({database:db,accounts:{getPublishAccount:async()=>({accessToken:"private-access"})},register:async ids=>{registrations++;if(registrations===2)throw Error("lost_receipt_next_ack");await acknowledge(ids);},fetch:(async()=>{gets++;const watch=await db.executionDispatch.findFirstOrThrow({where:{subjectId:{startsWith:`po1.yw.${f.receipt.id}.`}}});expect(watch.acknowledgedAt).not.toBeNull();return Response.json({items:[{status:{uploadStatus:"uploaded",privacyStatus:"private"}}]});}) as typeof fetch});
+  await expect(observer.dispatch(f.reference)).rejects.toThrow("lost_receipt_next_ack");
+  expect((await db.providerReceipt.findUniqueOrThrow({where:{id:f.receipt.id}})).enrichmentCheckCount).toBe(1);
+  expect(gets).toBe(1);await observer.dispatch(f.reference);expect(gets).toBe(1);
+  expect(await db.executionDispatch.count({where:{subjectId:{startsWith:`po1.y.${f.receipt.id}.`},acknowledgedAt:null}})).toBe(0);
+ });
+ test("a disconnect during OAuth lookup opens no status HTTP request",async()=>{
+  const f=await observationReceipt();let gets=0;
+  const observer=createPublicationObservations({database:db,register:acknowledge,accounts:{getPublishAccount:async()=>{await db.socialAccount.update({where:{id:f.post.socialAccountId!},data:{status:"revoked"}});return {accessToken:"stale-access"};}},fetch:(async()=>{gets++;throw Error("Revoked provider request");}) as typeof fetch});
+  await observer.dispatch(f.reference);expect(gets).toBe(0);expect(await db.providerReceipt.findUniqueOrThrow({where:{id:f.receipt.id}})).toMatchObject({providerProcessingStatus:"unknown",providerProcessingFailureCode:"social_account_reconnect_required",enrichmentClaimId:null});
+ });
+ test("a late status response cannot overwrite the newer lease owner's receipt",async()=>{
+  const f=await observationReceipt();let release!:()=>void,began!:()=>void;const begin=new Promise<void>(r=>began=r),gate=new Promise<void>(r=>release=r);let gets=0;
+  const observer=createPublicationObservations({database:db,register:acknowledge,accounts:{getPublishAccount:async()=>({accessToken:"private-access"})},fetch:(async()=>{gets++;if(gets===1){began();await gate;return Response.json({items:[{status:{uploadStatus:"rejected"}}]});}return Response.json({items:[{status:{uploadStatus:"processed",privacyStatus:"public"}}]});}) as typeof fetch});
+  const first=observer.dispatch(f.reference);await begin;
+  await db.providerReceipt.update({where:{id:f.receipt.id},data:{enrichmentLeaseExpiresAt:new Date(Date.now()-1000)}});
+  await observer.dispatch(f.reference);
+  const timer=await db.executionDispatch.findFirstOrThrow({where:{subjectId:{startsWith:`po1.yw.${f.receipt.id}.`},dueAt:{lt:new Date()}},orderBy:{createdAt:"desc"}});
+  await observer.dispatch((await readExecutionDispatch(db,timer.id))!.reference);
+  const next=await db.executionDispatch.findFirstOrThrow({where:{subjectId:{startsWith:`po1.y.${f.receipt.id}.`},id:{not:f.reference.dispatchId}},orderBy:{createdAt:"desc"}});
+  await observer.dispatch((await readExecutionDispatch(db,next.id))!.reference);release();await first;
+  expect(gets).toBe(2);expect(await db.providerReceipt.findUniqueOrThrow({where:{id:f.receipt.id}})).toMatchObject({providerProcessingStatus:"succeeded",providerVisibility:"public",providerProcessingFailureCode:null,enrichmentClaimId:null});
+ });
+ test("a verified publication freezes five capture rows atomically and a bounded tracking page replays its exact wake list",async()=>{
+  const f=await fixture();const publishedAt=new Date(Date.now()-61*60000);
+  const videoId=await db.$transaction(async tx=>{await tx.publishedSocialVideo.create({data:{socialPostId:f.post.id,platformPostId:"public-metrics-id",publishedAt}});return trackPublishedVideo(tx,{socialPostId:f.post.id,platformPostId:"public-metrics-id"});});
+  expect(await db.performanceCapture.count({where:{trackedVideoId:videoId!}})).toBe(5);const facts=(await db.trackedVideo.findUniqueOrThrow({where:{id:videoId!}})).clipFacts;await db.clip.update({where:{id:f.post.clipId!},data:{viralityScore:1}});expect((await db.trackedVideo.findUniqueOrThrow({where:{id:videoId!}})).clipFacts).toEqual(facts);
+  const tracking=await db.executionDispatch.findFirstOrThrow({where:{subjectId:`po1.t.${videoId}`}});let lose=true,gets=0;const ids:string[][]=[];
+  const observer=createPublicationObservations({database:db,accounts:{getPublishAccount:async()=>({accessToken:"private-access"})},register:async values=>{ids.push([...values]);if(lose)throw Error("lost_capture_page_ack");await acknowledge(values);},fetch:(async()=>{gets++;return Response.json({items:[{id:"public-metrics-id",statistics:{viewCount:"120",likeCount:"3"}}]});}) as typeof fetch});
+  const reference=(await readExecutionDispatch(db,tracking.id))!.reference;await expect(observer.dispatch(reference)).rejects.toThrow("lost_capture_page_ack");lose=false;await observer.dispatch(reference);expect(ids[1]).toEqual(ids[0]!);expect(ids[0]).toHaveLength(5);
+  const capture=await db.performanceCapture.findUniqueOrThrow({where:{trackedVideoId_slot:{trackedVideoId:videoId!,slot:0}}});const due=await db.executionDispatch.findFirstOrThrow({where:{subjectId:{startsWith:`po1.c.${capture.id}.`}}});const captureReference=(await readExecutionDispatch(db,due.id))!.reference;
+  await observer.dispatch(captureReference);await observer.dispatch(captureReference);expect(gets).toBe(1);expect(await db.performanceCapture.findUniqueOrThrow({where:{id:capture.id}})).toMatchObject({state:"captured",views:120,likes:3,leaseOwner:null});
+ });
+
+ test("known daily capture quota waits for its fixed reset without consuming the failure budget",async()=>{
+  const f=await fixture();const video=await db.trackedVideo.create({data:{workspaceId:f.post.workspaceId!,socialAccountId:f.post.socialAccountId,platform:"youtube_shorts",platformPostId:crypto.randomUUID(),publishedAt:new Date()}});const capture=await db.performanceCapture.create({data:{trackedVideoId:video.id,slot:0,dueAt:new Date(Date.now()-1000)}});
+  const id=await db.$transaction(tx=>appendPerformanceCapture(tx,capture.id));let gets=0;
+  const observer=createPublicationObservations({database:db,register:acknowledge,accounts:{getPublishAccount:async()=>({accessToken:"private-access"})},fetch:(async()=>{gets++;return Response.json({error:{errors:[{reason:"quotaExceeded"}]}},{status:403});}) as typeof fetch});
+  const ref=(await readExecutionDispatch(db,id!))!.reference;await observer.dispatch(ref);const after=await db.performanceCapture.findUniqueOrThrow({where:{id:capture.id}});expect(after.state).toBe("scheduled");expect(after.attempts).toBe(0);expect(after.dueAt>new Date()).toBe(true);await observer.dispatch(ref);expect(gets).toBe(1);
+ });
+ test("nightly guidance commits the next exact Workspace wake and replays it after ACK loss without recomputing",async()=>{
+  const f=await fixture();await db.trackedVideo.createMany({data:Array.from({length:30},()=>({workspaceId:f.post.workspaceId!,platform:"youtube_shorts" as const,platformPostId:crypto.randomUUID(),publishedAt:new Date()}))});
+  const id=await db.$transaction(tx=>appendPerformanceGuidance(tx,f.post.workspaceId!,new Date(Date.now()-1000)));let lose=true;const deliveries:string[][]=[];
+  const observer=createPublicationObservations({database:db,accounts:{getPublishAccount:async()=>{throw Error("Guidance has no provider IO");}},fetch:(async()=>{throw Error("Guidance has no provider IO");}) as typeof fetch,register:async ids=>{deliveries.push([...ids]);if(lose)throw Error("lost_guidance_ack");await acknowledge(ids);}});
+  const ref=(await readExecutionDispatch(db,id))!.reference;await expect(observer.dispatch(ref)).rejects.toThrow("lost_guidance_ack");const original=await db.performanceGuidance.findUniqueOrThrow({where:{workspaceId:f.post.workspaceId!}});lose=false;await observer.dispatch(ref);expect(deliveries[1]).toEqual(deliveries[0]!);expect(deliveries[0]).toHaveLength(1);expect((await db.performanceGuidance.findUniqueOrThrow({where:{workspaceId:f.post.workspaceId!}})).computedAt).toEqual(original.computedAt);
  });
 
 	test("registration is eligible now while the Workflow sleeps until the frozen due time", async () => {

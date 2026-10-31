@@ -25,7 +25,7 @@ import { RemoteFetchError, UnsafeUrlError } from "./url-policy";
 import { ProcessingUsageError } from "./processing-usage";
 import { projectService } from "./project.service";
 import { lockLiveRecipe, recipeService, type ResolvedRecipe } from "./recipe.service";
-import { pauseGrantsWhoseRuleChanged, returnGrantPosts, revokeGrantsInTransaction } from "./standing-grant";
+import { pauseGrantsWhoseRuleChanged, revokeGrantsInTransaction } from "./standing-grant";
 import { flushWorkspaceEvents } from "./workspace-event";
 import { requirePlanFeature } from "./plan-features";
 import { autopilotPlanPauseReason, holdsAutopilotSlot, lockWorkspaceAutopilotRules, requireAutopilotRuleSlot } from "./autopilot-plan";
@@ -498,7 +498,6 @@ export class AutopilotService {
       await tx.autopilotRule.delete({ where: { id: ruleId } });
     });
     // Posts a revoked grant scheduled go back to the proposal inbox.
-    await returnGrantPosts(prisma);
   }
 
   async triggerRuleNow(

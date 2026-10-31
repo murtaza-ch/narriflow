@@ -610,6 +610,25 @@ dbDescribe("Generation usage PostgreSQL contracts", () => {
     expect((await lifecycle.markDubProcessing(attempt, second.admitted.dub.id)).count).toBe(1);
   })));
 
+  test("an ambiguous paid dub keeps its reservation and refuses a fresh request for the same tuple", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
+    const { owner, workspace: ws } = await workspace("pro", "dub-unknown");
+    const { project, clip } = await dubbableProject(ws.id, owner.id);
+    const scope = { actorUserId: owner.id, workspaceId: ws.id };
+    const admitted = await dubbingService.requestClipDub(scope, project.id, randomUUID(), dubInput(clip.id));
+    const { lifecycle, attempt } = await claimOnly(admitted.workflowRunId!);
+    expect((await lifecycle.markDubProcessing(attempt, admitted.dub.id)).count).toBe(1);
+    await prisma.$executeRaw`UPDATE "ClipDub" SET status='unknown', "errorCode"='dub_provider_outcome_unknown' WHERE id=${admitted.dub.id}::uuid`;
+    await lifecycle.failAttempt(attempt, new WorkflowFailure("dub_provider_outcome_unknown", "permanent", "Dubbing outcome needs review"));
+    await prisma.$transaction(tx => releaseFailedDubUsage(tx, { projectId: project.id, attemptId: attempt.attemptId, reason: "dub_failed" }));
+    await reconcileGenerationUsageReservations(new Date(Date.now() + DAY_MS));
+    expect(await prisma.generatedMediaUsageReservation.findUniqueOrThrow({ where: { jobId: admitted.dub.id } })).toMatchObject({ status: "reserved", reason: null });
+    await expect(dubbingService.requestClipDub(scope, project.id, randomUUID(), dubInput(clip.id))).rejects.toMatchObject({ code: "dubbing_outcome_unknown" });
+    expect(await prisma.clipDub.findUniqueOrThrow({ where: { id: admitted.dub.id } })).toMatchObject({ status: "unknown", errorCode: "dub_provider_outcome_unknown" });
+    await expect(Promise.resolve(prisma.clipDub.update({ where: { id: admitted.dub.id }, data: { status: "queued", errorCode: null } }))).rejects.toThrow("Unknown paid dubbing outcome is immutable");
+    expect(await prisma.workflowRun.findUniqueOrThrow({ where: { id: admitted.workflowRunId! } })).toMatchObject({ status: "failed", requestedCount: 1, failedCount: 1 });
+    expect(await prisma.workflowRun.count({ where: { projectId: project.id, stage: "dubbing" } })).toBe(1);
+  })));
+
   test("the sweep never releases a queued dub and settles terminal or deleted ones", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const { owner, workspace: ws } = await workspace("business", "dub-sweep");
     const scope = { actorUserId: owner.id, workspaceId: ws.id };

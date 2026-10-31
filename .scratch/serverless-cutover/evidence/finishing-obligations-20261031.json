@@ -1,0 +1,22 @@
+{
+  "status": "passed_isolated_database_foundation_not_complete",
+  "date": "2026-10-31",
+  "tests": 4,
+  "assertions": 24,
+  "checks": [
+    "Generation settlement and its exact finishing dispatch commit or roll back together.",
+    "Database time freezes the deadline; replay retains the same reference and budget.",
+    "SQL prevents changing frozen source authority and extending the original deadline.",
+    "A concurrent duplicate waits for the existing claim without touching an unrelated finishing.",
+    "An unconfirmed watchdog starts no action and consumes no attempt."
+  ],
+  "remaining": [
+    "Bound each command to one external child action and fence its admission/publication transaction.",
+    "Freeze original Autopilot grant intent and carry exact proposal revisions.",
+    "Wake export dependents from exact terminal outcomes and retain bounded timer recovery.",
+    "Durable notification intent and registry/runtime integration.",
+    "Remove the old processDue poller and port its product-semantic tests.",
+    "Complete restore transformations and deployed fault acceptance."
+  ],
+  "deployment": "No shared database migration or candidate deployment includes this foundation yet."
+}

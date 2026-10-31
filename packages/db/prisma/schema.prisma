@@ -133,6 +133,7 @@ enum DubStatus {
   processing
   completed
   failed
+  unknown
 }
 
 enum ClipAspectRatio {
@@ -1929,11 +1930,20 @@ model ExportBundle {
   errorCode         String?
   createdAt         DateTime  @default(now())
   completedAt       DateTime?
+  operationDeadlineAt DateTime @default(dbgenerated("(CURRENT_TIMESTAMP + '00:45:00'::interval)"))
+  /// The Workflow Run owns execution. This binds only the sealed capsule to its restore epoch.
+  deploymentEpoch Int @default(1)
+  inputBindingHash String?
+  inputStorageKey String?
+  inputEtag String?
+  inputByteLength BigInt?
+  inputChecksumSha256 String?
 
   operation   CampaignOperation @relation(fields: [operationId], references: [id], onDelete: Cascade)
   workflowRun WorkflowRun       @relation(fields: [workflowRunId], references: [id], onDelete: Cascade)
 
   @@index([status, createdAt])
+  @@index([status, expiresAt, id])
 }
 
 model ReviewRound {
@@ -3254,6 +3264,8 @@ model WebhookSubscription {
 /// re-claim resumes where the last attempt stopped instead of starting over.
 model GenerationFinishing {
   id             String    @id @default(uuid()) @db.Uuid
+  deploymentEpoch Int      @default(1)
+  generation      Int      @default(0)
   workspaceId    String    @db.Uuid
   projectId      String    @db.Uuid
   originRunId    String    @unique @db.Uuid
@@ -3264,6 +3276,9 @@ model GenerationFinishing {
   /// The Autopilot rule whose import froze this row, from its Content Pack. Null for
   /// finishing asked for inline by a request. Standing Grants cover only these rows.
   autopilotRuleId String?   @db.Uuid
+  /// Original accepted source authority, including explicit absence of grants.
+  /// A later grant renewal cannot authorize a replay of this finishing.
+  autopilotAuthority Json?
   /// waiting | due | running | exporting | ready | partial | skipped
   state          String    @default("waiting")
   reason         String?
@@ -3271,6 +3286,7 @@ model GenerationFinishing {
   /// Unexpected failures; waiting for exports is not an attempt.
   attempts       Int       @default(0)
   dueAt          DateTime?
+  operationDeadlineAt DateTime?
   nextAttemptAt  DateTime?
   claimToken     String?   @db.Uuid
   leaseExpiresAt DateTime?

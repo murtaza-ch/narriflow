@@ -5,7 +5,7 @@ import type { PublicationPlatformInput } from "@narriflow/services/social-public
 
 const CONTRACT_FIXTURE = (await Bun.file(
 	new URL(
-		"../../../packages/services/src/__fixtures__/social-publication/native-provider-contracts.json",
+		"./__fixtures__/publication-native-provider-contracts.json",
 		import.meta.url,
 	),
 ).json()) as {

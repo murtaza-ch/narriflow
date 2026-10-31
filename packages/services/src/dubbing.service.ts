@@ -47,6 +47,7 @@ const dubbingFailureCatalog = {
   dubbing_idempotency_key_required: "invalid",
   dubbing_in_progress: "conflict",
   dubbing_render_required: "unprocessable",
+  dubbing_outcome_unknown: "conflict",
 } as const satisfies ExpectedDomainFailureCatalog<string>;
 
 export type DubbingFailureCode = keyof typeof dubbingFailureCatalog;
@@ -220,6 +221,7 @@ export class DubbingService {
     // An accepted dub replays without another count: completed returns its
     // output, a live one returns the run that owns it.
     const existing = await prisma.clipDub.findUnique({ where: tuple });
+    if (existing?.status === "unknown") throw new DubbingFailureError("dubbing_outcome_unknown", "Dubbing outcome needs review. This request will not be repeated automatically.");
     if (existing?.status === "completed") return replay(existing, null);
     if (existing && LIVE_DUB.includes(existing.status)) {
       const run = await prisma.workflowRun.findFirst({
@@ -251,6 +253,7 @@ export class DubbingService {
             }
           }
           const current = await tx.clipDub.findUnique({ where: tuple });
+          if (current?.status === "unknown") throw new DubbingFailureError("dubbing_outcome_unknown", "Dubbing outcome needs review. This request will not be repeated automatically.");
           if (current && (current.status === "completed" || LIVE_DUB.includes(current.status))) {
             return current;
           }

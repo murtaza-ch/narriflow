@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from pathlib import Path
 import tempfile
 from typing import Awaitable, Callable, Mapping
@@ -17,6 +18,15 @@ from .transfer import WorkPackage, load_work_package
 
 NativeOperation = Callable[[ExecutorSession, WorkPackage, Path], Awaitable[None]]
 _TERMINAL = {"completed", "failed", "cancelled", "expired", "superseded", "released", "retry_due"}
+_logger = logging.getLogger(__name__)
+
+
+def _control_failure(function_name: str, stage: str, error: ExecutionControlError):
+    # Control errors contain protocol codes only. Never log request bodies,
+    # exception text, source grants, provider settings or owner credentials.
+    _logger.warning(json.dumps({"level": "warn", "message": "native_control_unconfirmed",
+        "functionName": function_name, "stage": stage, "errorCode": error.code,
+        "status": error.status}, separators=(",", ":")))
 
 
 def invocation_reference(value: object, function_name: str, reference_kind: str = 'modal_execution') -> dict:
@@ -73,16 +83,21 @@ async def invoke_native(value: object, function_name: str, *, client: ExecutionC
     except ExecutionControlError as error:
         if error.code == "execution_not_acquired":
             return {"disposition": "not_acquired"}
+        _control_failure(function_name, "acquire", error)
         return {"disposition": "unconfirmed"}
+    stage = "work_package"
     try:
         with tempfile.TemporaryDirectory(prefix="narriflow-execution-") as directory:
             package = await load_work_package(session)
             if package.function_name != function_name:
                 raise ExecutionControlError("execution_work_package_mismatch")
+            stage = "operation"
             await operation(session, package, Path(directory))
-    except (ArtifactCommitUnconfirmed, ExecutionControlError):
+    except (ArtifactCommitUnconfirmed, ExecutionControlError) as error:
         # A transport failure may follow a successful publication. Never turn
         # its missing acknowledgement into a failed domain result or delete it.
+        if isinstance(error, ExecutionControlError):
+            _control_failure(function_name, stage, error)
         return await _observe(session)
     except (SourceFetchFailure, NativeOperationFailure) as error:
         try:

@@ -5,7 +5,7 @@ import {
 	type SocialPlatform,
 	type SocialPostMetricsSnapshot,
 } from "@narriflow/validators";
-import { COMPARISON_SLOT } from "./performance-sync";
+import { COMPARISON_SLOT } from "./performance-capture-contract";
 
 /** The newest captured reading of each Tracked Video, as Social Post reads select it. */
 export const latestCaptureInclude = {

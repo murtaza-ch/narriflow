@@ -617,6 +617,10 @@
     },
     "./broll-plan": "./src/broll-plan.ts",
     "./render-execution-input": "./src/render-execution-input.ts",
+    "./export-bundle-input": "./src/export-bundle-input.ts",
+    "./export-bundle-execution": "./src/export-bundle-execution.ts",
+    "./export-bundle-runtime": "./src/export-bundle-runtime.ts",
+    "./export-bundle-expiry": "./src/export-bundle-expiry.ts",
     "./render-group-execution": "./src/render-group-execution.ts",
     "./render-group-runtime": "./src/render-group-runtime.ts",
     "./render-input-snapshot": "./src/render-input-snapshot.ts",
@@ -631,7 +635,11 @@
     "./publication-execution-runtime": "./src/publication-execution-runtime.ts",
     "./publication-execution-control": "./src/publication-execution-control.ts",
     "./publication-producers": "./src/publication-producers.ts",
-    "./execution-snapshot": "./src/execution-snapshot.ts"
+    "./execution-snapshot": "./src/execution-snapshot.ts",
+    "./publication-observations": "./src/publication-observations.ts",
+    "./publication-observations-runtime": "./src/publication-observations-runtime.ts",
+    "./performance-capture-contract": "./src/performance-capture-contract.ts",
+    "./social-provider-http": "./src/social-provider-http.ts"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",

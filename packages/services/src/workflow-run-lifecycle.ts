@@ -45,6 +45,7 @@ import { workflowRunExecutionInputHash } from "./workflow-execution-input";
 import { executionDispatchReferenceSchema, type ExecutionDispatchReference, type ExecutionDisposition, providerAttemptReferenceSchema, type ProviderAttemptReference } from "@narriflow/validators/execution";
 export type { ProviderAttemptReference } from "@narriflow/validators/execution";
 import { lockWorkspaceUsage } from "./processing-usage";
+import { appendExportBundleExpiry } from "./export-bundle-expiry";
 import type { ExecutorDomainLock, ExecutorMutationContext, ExecutorMutationResult, ExecutorFailureInput, ExecutorReleaseInput, ExecutorProgressInput, ExecutorArtifactCommit, ExecutorExpiryObservation, ExecutorExpiryResult } from "./executor-domain-control";
 import { appendScribeCapacityWakesWithinTransaction } from "./transcription-admission";
 import { lockClipSelectionParent, clipSelectionTranscriptHash, cancelClipSelectionWindowsWithinTransaction } from "./clip-selection-window";
@@ -1536,10 +1537,14 @@ export class WorkflowRunLifecycle {
     input: {
       bundleId: string;
       operationId: string;
-      attemptStorageKey: string;
+      attemptStorageKey: string | null;
     },
   ): Promise<void> {
-    return this.transaction(async (tx) => {
+    return this.transaction(tx => this.beginExportBundleBuildWithinTransaction(tx, attempt, input));
+  }
+
+  async beginExportBundleBuildWithinTransaction(tx: TransactionClient, attempt: WorkflowAttemptRef,
+    input: Parameters<WorkflowRunLifecycle["beginExportBundleBuild"]>[1]): Promise<void> {
       await this.requireOwnedExportBundle(tx, attempt, input);
       await tx.exportBundle.update({
         where: { id: input.bundleId },
@@ -1566,7 +1571,6 @@ export class WorkflowRunLifecycle {
           completedAt: null,
         },
       });
-    });
   }
 
   async completeExportBundleBuild(
@@ -1581,14 +1585,18 @@ export class WorkflowRunLifecycle {
       succeededCount: number;
     },
   ): Promise<void> {
-    return this.transaction(async (tx) => {
+    return this.transaction(tx => this.completeExportBundleBuildWithinTransaction(tx, attempt, input));
+  }
+
+  async completeExportBundleBuildWithinTransaction(tx: TransactionClient, attempt: WorkflowAttemptRef,
+    input: Parameters<WorkflowRunLifecycle["completeExportBundleBuild"]>[1]): Promise<void> {
       await this.requireOwnedExportBundle(tx, attempt, input);
       const completedAt = await this.databaseNow(tx);
       await tx.campaignOperationItem.updateMany({
         where: { operationId: input.operationId, status: "pending" },
         data: { status: "succeeded", settledAt: completedAt, errorCode: null },
       });
-      await tx.exportBundle.update({
+      const completedBundle = await tx.exportBundle.update({
         where: { id: input.bundleId },
         data: {
           status: "completed",
@@ -1600,6 +1608,7 @@ export class WorkflowRunLifecycle {
           errorCode: null,
         },
       });
+      await appendExportBundleExpiry(tx, completedBundle);
       await tx.campaignOperation.update({
         where: { id: input.operationId },
         data: {
@@ -1609,7 +1618,6 @@ export class WorkflowRunLifecycle {
           completedAt,
         },
       });
-    });
   }
 
   async failExportBundleBuild(
@@ -1621,7 +1629,11 @@ export class WorkflowRunLifecycle {
       failedCount: number;
     },
   ): Promise<void> {
-    return this.transaction(async (tx) => {
+    return this.transaction(tx => this.failExportBundleBuildWithinTransaction(tx, attempt, input));
+  }
+
+  async failExportBundleBuildWithinTransaction(tx: TransactionClient, attempt: WorkflowAttemptRef,
+    input: Parameters<WorkflowRunLifecycle["failExportBundleBuild"]>[1]): Promise<void> {
       await this.requireOwnedExportBundle(tx, attempt, input);
       const completedAt = await this.databaseNow(tx);
       await tx.exportBundle.update({
@@ -1649,7 +1661,6 @@ export class WorkflowRunLifecycle {
           completedAt,
         },
       });
-    });
   }
 
   async beginRenderWorkSet(
@@ -3151,7 +3162,7 @@ export class WorkflowRunLifecycle {
         where: {
           projectId: attempt.projectId,
           workflowAttemptId: attempt.attemptId,
-          status: "failed",
+          status: { in: ["failed", "unknown"] },
         },
       }),
     ]);
@@ -3188,13 +3199,27 @@ export class WorkflowRunLifecycle {
     await this.settleSuccess(attempt, status, result);
   }
 
+  /** Typed native finalizers call this only after verifying their sealed output. */
+  async completeExecutionWithinTransaction(tx: TransactionClient, ref: WorkflowExecutionReference, context: ExecutorMutationContext,
+    aggregate: WorkflowAggregateResult | null = null): Promise<ExecutorMutationResult> {
+    const { attempt } = await this.ownedExecution(tx, ref, context);
+    if (aggregate) validateAggregate(aggregate);
+    await this.executionOwner(context.owner).settleSuccessWithinTransaction(tx, attempt, aggregate ? terminalStatusForAggregate(aggregate) : "completed", aggregate);
+    return this.executionWakes(tx, ref, context.reference.inputHash, false);
+  }
+
   private async settleSuccess(
     attempt: WorkflowAttemptRef,
     status: Extract<WorkflowStatus, "completed" | "partial" | "failed">,
     aggregate: WorkflowAggregateResult | null,
     admit?: (tx: TransactionClient) => Promise<{ exportId: string; clipId: string }>,
   ) {
-    await this.settlementTransaction(attempt, async (tx) => {
+    await this.settlementTransaction(attempt, tx => this.settleSuccessWithinTransaction(tx, attempt, status, aggregate, admit));
+  }
+
+  private async settleSuccessWithinTransaction(tx: TransactionClient, attempt: WorkflowAttemptRef,
+    status: Extract<WorkflowStatus, "completed" | "partial" | "failed">, aggregate: WorkflowAggregateResult | null,
+    admit?: (tx: TransactionClient) => Promise<{ exportId: string; clipId: string }>) {
       if (attempt.stage === "clip_rendering") {
         await this.lockAdmissionProject(tx, attempt.projectId);
         await this.fenceChildMutation(tx, attempt, "clip_rendering");
@@ -3233,7 +3258,6 @@ export class WorkflowRunLifecycle {
         ...(generationExport ? { generationExport } : {}),
       });
       await this.emitFinishedOperations(tx, attempt);
-    });
   }
 
   async failAttempt(

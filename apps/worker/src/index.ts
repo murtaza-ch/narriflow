@@ -23,10 +23,7 @@ import {
 	mediaCleanupWorker,
 	assertUploadProviderLifecyclePrerequisite,
 	getWorkflowRunLifecycle,
-	getSocialPublicationRuntime,
 	getStandingGrantMaintenance,
-	getPerformanceSync,
-	getPerformanceGuidance,
 	getIngestJobLifecycle,
 	IngestJobClaimLost,
 	reviewService,
@@ -57,7 +54,6 @@ import { expireExportBundles, processExportBundleRun } from "./tasks/export-bund
 import { createClipRenderAttempt } from "./tasks/clip-render-attempt-runtime";
 import { coordinateRenderWorkSet, executeNextRenderGroup } from "./render-group-executor";
 import { parseWorkerRenderConfig } from "../../media/src/render-config";
-import { processDueSocialPosts } from "./tasks/social-publisher";
 import { parseWorkspaceBillingPollInterval } from "./workspace-billing-config";
 import {
 	processSubmittedTranscriptResults,
@@ -82,7 +78,6 @@ let youtubeLinkIntakeAvailable = false;
 const youtubeProxyUrl = getYoutubeProxyUrl();
 assertUploadProviderLifecyclePrerequisite(process.env);
 billingService.validateConfiguration({ surface: "worker" });
-getSocialPublicationRuntime();
 const pollIntervalMs = Number(process.env.INGEST_POLL_INTERVAL_MS ?? "2500");
 // Rendering is CPU-bound and can run for minutes (ffmpeg saturates all cores
 // per clip already — measured intra-machine clip parallelism buys nothing: 4
@@ -101,16 +96,6 @@ const workflowLeaseReapIntervalMs = Number(
 );
 const workflowEventDispatchIntervalMs = Number(
 	process.env.WORKFLOW_EVENT_DISPATCH_INTERVAL_MS ?? "1000",
-);
-// Readings are scheduled hours apart, so a minute only bounds how soon a due
-// capture is noticed.
-const performanceSyncPollIntervalMs = Number(
-	process.env.PERFORMANCE_SYNC_POLL_INTERVAL_MS ?? "60000",
-);
-// Performance Guidance is recomputed for a Workspace once its last result is a
-// day old; this only bounds how soon a stale one is noticed.
-const performanceGuidancePollIntervalMs = Number(
-	process.env.PERFORMANCE_GUIDANCE_POLL_INTERVAL_MS ?? String(15 * 60 * 1000),
 );
 const maxConsecutivePollFailures = Number(
 	process.env.WORKER_MAX_CONSECUTIVE_POLL_FAILURES ?? "20",
@@ -606,50 +591,6 @@ const exportBundleLoop = createPollLoop("export_bundle", pollIntervalMs, async (
 		stage: "export_bundle",
 		process: processExportBundleRun,
 	});
-});
-
-// Deadline-sensitive scheduled posts have a dedicated loop. Remote RSS feeds
-// can be slow or unavailable and must never delay a due social publish.
-createPollLoop("publish", pollIntervalMs, async () => {
-	return processDueSocialPosts(workerShutdown.signal);
-});
-
-// Reads view and engagement counts back from the platforms. A rate limit or a
-// revoked grant only delays or skips captures; it never touches the Social Post.
-// This loop is optional, so its failures are logged instead of tripping the
-// circuit breaker that would restart publishing with it.
-createPollLoop("performance_sync", performanceSyncPollIntervalMs, async () => {
-	try {
-		return await getPerformanceSync().run();
-	} catch (error) {
-		console.warn(
-			JSON.stringify({
-				level: "error",
-				message: "performance_sync_failed",
-				ts: new Date().toISOString(),
-				error: error instanceof Error ? error.message : "Unknown error",
-			}),
-		);
-		return 0;
-	}
-});
-
-// Recomputes each Workspace's Performance Guidance about nightly. Optional, so
-// a failure is logged instead of tripping the circuit breaker.
-createPollLoop("performance_guidance", performanceGuidancePollIntervalMs, async () => {
-	try {
-		return await getPerformanceGuidance().refreshStale();
-	} catch (error) {
-		console.warn(
-			JSON.stringify({
-				level: "error",
-				message: "performance_guidance_failed",
-				ts: new Date().toISOString(),
-				error: error instanceof Error ? error.message : "Unknown error",
-			}),
-		);
-		return 0;
-	}
 });
 
 createPollLoop("autopilot", autopilotPollIntervalMs, async () => {

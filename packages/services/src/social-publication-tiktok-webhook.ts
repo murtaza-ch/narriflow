@@ -1,3 +1,8 @@
+import {trackPublishedVideo} from "./publication-observations";
+import {readExecutionAdmission} from "./execution-admission";
+import {appendPublicationDispatch,recoverPublicationDispatches} from "./publication-dispatch";
+import {takeExecutionDispatchIds} from "./execution-dispatch-runtime";
+import {createHash} from "node:crypto";
 import { lockPublicationAttempt } from "./publication-locks";
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { Prisma } from "@prisma/client";
@@ -164,6 +169,17 @@ export function parseTikTokPublicationWebhook(
 	};
 }
 
+async function recordTerminalWake(tx:Prisma.TransactionClient,postId:string,attemptId:string,event:TikTokPublicationEvent,now:Date){
+ const wakeKind=`pub_${createHash("sha256").update(JSON.stringify([event.event,event.publishId,event.postId])).digest("hex").slice(0,32)}`;
+ await appendPublicationDispatch(tx,postId,{dueAt:new Date(0),wakeKind});
+ const claim=await tx.publicationClaim.findFirst({where:{attemptId},orderBy:{createdAt:"desc"}});
+ if(claim){
+  await tx.executionAttempt.updateMany({where:{attemptToken:claim.id,status:{in:["queued","owned","running"]}},data:{status:"completed",finishedAt:now}});
+  const dispatchIds=takeExecutionDispatchIds(tx);if(dispatchIds.length>128)throw Error("publication_dispatch_repair_bound");
+  await tx.publicationClaim.update({where:{id:claim.id},data:{workState:{...(claim.workState as Prisma.InputJsonObject??{}),transitionDispatchIds:dispatchIds}}});
+ }
+}
+
 export async function acceptTikTokPublicationWebhook(input: {
 	rawBody: string;
 	signature: string | null;
@@ -193,6 +209,7 @@ export async function recordTikTokPublicationEvent(
 	);
 	try {
 		return await requirePrisma().$transaction(async (tx) => {
+   await readExecutionAdmission(tx);
 			// Serialize competing poll/webhook deliveries, including separate public posts from one upload.
 			const candidates = await tx.socialPublicationAttempt.findMany({
 				where: { operationLookupHash: lookupHash },
@@ -216,8 +233,7 @@ export async function recordTikTokPublicationEvent(
 				return { kind: "ignored" as const };
 			if (event.event === "post.publish.inbox_delivered" && !inbox)
 				return { kind: "ignored" as const };
-			if (attempt.socialPost.status === "cancelled")
-				return { kind: "already_settled" as const, attemptId: attempt.id };
+   if(attempt.socialPost.status==="cancelled"){await recoverPublicationDispatches(tx,attempt.socialPostId);return {kind:"already_settled" as const,attemptId:attempt.id};}
 			if (event.event === "post.publish.failed") {
 				// A redelivered failure, or one that arrives after a worker already
 				// failed the attempt, changes nothing and so announces nothing.
@@ -225,8 +241,7 @@ export async function recordTikTokPublicationEvent(
 					attempt.receipt ||
 					attempt.phase === "succeeded" ||
 					attempt.phase === "failed"
-				)
-					return { kind: "already_settled" as const, attemptId: attempt.id };
+    ){await recoverPublicationDispatches(tx,attempt.socialPostId);return {kind:"already_settled" as const,attemptId:attempt.id};}
 				const codes: Record<string, string> = {
 					spam_risk: "tiktok_spam_risk",
 					spam_risk_text: "tiktok_spam_risk",
@@ -263,6 +278,7 @@ export async function recordTikTokPublicationEvent(
 						data: { releasedAt: now, accountSlotKey: null },
 					});
 				await emitSocialPostFinished(tx, { socialPostId: attempt.socialPostId, attemptId: attempt.id });
+    await recordTerminalWake(tx,attempt.socialPostId,attempt.id,event,now);
 				return { kind: "failed" as const, attemptId: attempt.id };
 			}
 			const published = event.event !== "post.publish.inbox_delivered";
@@ -381,7 +397,9 @@ export async function recordTikTokPublicationEvent(
 					},
 				});
 			}
+   if(published&&event.postId)await trackPublishedVideo(tx,{socialPostId:attempt.socialPostId,platformPostId:event.postId});
 			await emitSocialPostFinished(tx, { socialPostId: attempt.socialPostId, attemptId: attempt.id });
+   await recordTerminalWake(tx,attempt.socialPostId,attempt.id,event,now);
 			return {
 				kind:
 					alreadyRecorded || (!published && attempt.receipt)
