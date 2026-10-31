@@ -751,7 +751,7 @@
               "sizeBytes": {
                 "type": "integer",
                 "exclusiveMinimum": 0,
-                "maximum": 5363466240
+                "maximum": 10737418240
               },
               "contentType": {
                 "type": "string",
@@ -798,7 +798,7 @@
               "single"
             ],
             "default": "auto",
-            "description": "single returns one signed PUT at any supported size; auto uses multipart above 100 MiB"
+            "description": "single returns one signed PUT up to 5 GiB and otherwise returns multipart_required; auto uses multipart above 100 MiB, up to 10 GiB"
           }
         },
         "required": [
@@ -1459,7 +1459,7 @@
                       "sizeBytes": {
                         "type": "integer",
                         "exclusiveMinimum": 0,
-                        "maximum": 5363466240
+                        "maximum": 10737418240
                       },
                       "contentType": {
                         "type": "string",
@@ -1490,7 +1490,7 @@
                       "single"
                     ],
                     "default": "auto",
-                    "description": "single returns one signed PUT at any supported size; auto uses multipart above 100 MiB"
+                    "description": "single returns one signed PUT up to 5 GiB and otherwise returns multipart_required; auto uses multipart above 100 MiB, up to 10 GiB"
                   }
                 },
                 "required": [
@@ -4339,7 +4339,7 @@
         "tags": [
           "Uploads"
         ],
-        "description": "Returns signed transfer URLs. Use transfer \"single\" to upload any supported size with one PUT. Retrying with the same Idempotency-Key returns the same Upload Session.",
+        "description": "Returns signed transfer URLs. Use transfer \"single\" for one PUT up to 5 GiB. Larger sources up to 10 GiB require the auto multipart plan and otherwise return multipart_required. Retrying with the same Idempotency-Key returns the same Upload Session.",
         "parameters": [
           {
             "schema": {

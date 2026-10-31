@@ -67,7 +67,7 @@ export const openUploadRequestSchema = z.strictObject({
   generation: generationSettingsInput.optional(),
   finishing: finishingSettingsInput.optional(),
   recipeId: recipeIdSchema.optional(),
-  transfer: z.enum(["auto", "single"]).default("auto").describe("single returns one signed PUT at any supported size; auto uses multipart above 100 MiB"),
+  transfer: z.enum(["auto", "single"]).default("auto").describe("single returns one signed PUT up to 5 GiB and otherwise returns multipart_required; auto uses multipart above 100 MiB, up to 10 GiB"),
 }).superRefine(refuseRecipeWithInlineSettings).meta({ id: "OpenUploadRequest" });
 
 export const uploadSchema = z.strictObject({
