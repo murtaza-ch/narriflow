@@ -1,0 +1,454 @@
+{
+  "date": "2026-11-01",
+  "status": "passed",
+  "productionBaseSha": "1ddc366d0270393bd0fb971e5da0812264abc31a",
+  "fixturePatchSha": "0a22aff01f80a681ac803de6cc1aeed59ab49838",
+  "productionChangesDuringMatrix": [],
+  "fixtureChanges": [
+    "packages/services/src/processing-usage.db.test.ts"
+  ],
+  "scope": "Every AGENTS-listed disposable-schema PostgreSQL gate except execution, which Root owns. Tests run sequentially; only explicitly configured dedicated localhost database is used.",
+  "environment": {
+    "bun": "1.3.6",
+    "envFile": "/tmp/narriflow-serverless-gates/local-database.env",
+    "PRISMA_SCHEMA_DISABLE_ADVISORY_LOCK": "1",
+    "target": "localhost:55432",
+    "databaseName": "narriflow_serverless_gates_20261031_a18f",
+    "version": "17.11 (Homebrew)",
+    "timezone": "UTC",
+    "vector": "0.8.7",
+    "ownedSchemasChecked": 9,
+    "ownedSchemasRemaining": []
+  },
+  "commands": {
+    "prefix": "PATH=/tmp/narriflow-serverless-gates/bun-1.3.6/bun-darwin-aarch64:$PATH PRISMA_SCHEMA_DISABLE_ADVISORY_LOCK=1 /tmp/narriflow-serverless-gates/bun-1.3.6/bun-darwin-aarch64/bun --env-file=/tmp/narriflow-serverless-gates/local-database.env run",
+    "gates": [
+      "test:workflow:db",
+      "test:workspace-billing:db",
+      "test:upload-session:db",
+      "test:processing-usage:db",
+      "test:social-publication:db",
+      "test:clip-editor-persistence:db",
+      "test:authenticated-request-policy:db",
+      "test:brand-profiles:db",
+      "test:vizard-expansion:db",
+      "test:integration-api:db",
+      "test:library-search:db"
+    ]
+  },
+  "totalsFinalRuns": {
+    "pass": 715,
+    "fail": 0,
+    "skip": 0,
+    "assertions": 4726
+  },
+  "finalResults": [
+    {
+      "gate": "workflow",
+      "sha": "1ddc366d0270393bd0fb971e5da0812264abc31a",
+      "dirty": false,
+      "startedAt": "2026-10-31T20:30:09.358562+00:00",
+      "finishedAt": "2026-10-31T20:31:11.411880+00:00",
+      "elapsedSeconds": 62.053,
+      "exitCode": 0,
+      "counts": {
+        "pass": 164,
+        "fail": 0,
+        "skip": 0,
+        "assertions": 966
+      },
+      "log": "/tmp/narriflow-serverless-gates/final-agents-workflow-db.log",
+      "schemas": [
+        "workflow_lifecycle_test_c8adb4e063224de9bd9999877b777403"
+      ],
+      "bunVersions": [
+        "1.3.6"
+      ],
+      "summaries": [
+        "\n 164 pass",
+        " 0 fail",
+        " 966 expect() calls",
+        "Ran 164 tests across 7 files. [59.84s]"
+      ],
+      "outputSha256": "880807bfb653e73760d8ad37505ff9df0b73d0dcec4ef21c9d713a0300cc8374"
+    },
+    {
+      "gate": "workspace-billing",
+      "sha": "1ddc366d0270393bd0fb971e5da0812264abc31a",
+      "dirty": false,
+      "startedAt": "2026-10-31T20:31:11.518578+00:00",
+      "finishedAt": "2026-10-31T20:31:15.854009+00:00",
+      "elapsedSeconds": 4.335,
+      "exitCode": 0,
+      "counts": {
+        "pass": 30,
+        "fail": 0,
+        "skip": 0,
+        "assertions": 145
+      },
+      "log": "/tmp/narriflow-serverless-gates/final-agents-workspace-billing-db.log",
+      "schemas": [
+        "workspace_billing_test_7fba2f21552241cc87ca1aa41c67692b"
+      ],
+      "bunVersions": [
+        "1.3.6"
+      ],
+      "summaries": [
+        "\n 30 pass",
+        " 0 fail",
+        " 145 expect() calls",
+        "Ran 30 tests across 1 file. [2.33s]"
+      ],
+      "outputSha256": "f88e6b9c18310b6363940368cdc4dd68ee1d53c9b317b5b461298ab6d33d805d"
+    },
+    {
+      "gate": "upload-session",
+      "sha": "1ddc366d0270393bd0fb971e5da0812264abc31a",
+      "dirty": false,
+      "startedAt": "2026-10-31T20:31:15.920874+00:00",
+      "finishedAt": "2026-10-31T20:31:20.352923+00:00",
+      "elapsedSeconds": 4.432,
+      "exitCode": 0,
+      "counts": {
+        "pass": 15,
+        "fail": 0,
+        "skip": 0,
+        "assertions": 184
+      },
+      "log": "/tmp/narriflow-serverless-gates/final-agents-upload-session-db.log",
+      "schemas": [
+        "upload_session_test_998c452e01384521b4dbe984b4c0ed2c"
+      ],
+      "bunVersions": [
+        "1.3.6"
+      ],
+      "summaries": [
+        "\n 15 pass",
+        " 0 fail",
+        " 184 expect() calls",
+        "Ran 15 tests across 1 file. [2.52s]"
+      ],
+      "outputSha256": "a0434d71044c823b4119a861798e3a0262822230fe41787c922e5233ce214777"
+    },
+    {
+      "gate": "processing-usage",
+      "sha": "0a22aff01f80a681ac803de6cc1aeed59ab49838",
+      "dirty": false,
+      "startedAt": "2026-10-31T20:32:22.647789+00:00",
+      "finishedAt": "2026-10-31T20:32:28.160934+00:00",
+      "elapsedSeconds": 5.513,
+      "exitCode": 0,
+      "counts": {
+        "pass": 31,
+        "fail": 0,
+        "skip": 0,
+        "assertions": 278
+      },
+      "log": "/tmp/narriflow-serverless-gates/final-agents-processing-usage-db-attempt2.log",
+      "schemas": [
+        "processing_usage_test_b568ce3ac7484f67a5c1d04e08921430"
+      ],
+      "bunVersions": [
+        "1.3.6"
+      ],
+      "summaries": [
+        "\n 31 pass",
+        " 0 fail",
+        " 278 expect() calls",
+        "Ran 31 tests across 1 file. [3.68s]"
+      ],
+      "outputSha256": "c77422e96fc05a9dc7811b7dbfabcc9416f88ada50feb3b732f0c22e2919bdb4"
+    },
+    {
+      "gate": "social-publication",
+      "sha": "0a22aff01f80a681ac803de6cc1aeed59ab49838",
+      "dirty": false,
+      "startedAt": "2026-10-31T20:32:28.218298+00:00",
+      "finishedAt": "2026-10-31T20:32:42.469533+00:00",
+      "elapsedSeconds": 14.251,
+      "exitCode": 0,
+      "counts": {
+        "pass": 127,
+        "fail": 0,
+        "skip": 0,
+        "assertions": 732
+      },
+      "log": "/tmp/narriflow-serverless-gates/final-agents-social-publication-db.log",
+      "schemas": [
+        "social_publication_test_fd805cbf289d4a7db5dbee8d951aafca"
+      ],
+      "bunVersions": [
+        "1.3.6"
+      ],
+      "summaries": [
+        "\n 127 pass",
+        " 0 fail",
+        " 732 expect() calls",
+        "Ran 127 tests across 7 files. [12.41s]"
+      ],
+      "outputSha256": "0e19c9bfc2838c212f04c37d672b31eeb6af00d6c62173186fa3bad1e020cd56"
+    },
+    {
+      "gate": "clip-editor-persistence",
+      "sha": "0a22aff01f80a681ac803de6cc1aeed59ab49838",
+      "dirty": false,
+      "startedAt": "2026-10-31T20:32:42.534723+00:00",
+      "finishedAt": "2026-10-31T20:32:48.058918+00:00",
+      "elapsedSeconds": 5.524,
+      "exitCode": 0,
+      "counts": {
+        "pass": 36,
+        "fail": 0,
+        "skip": 0,
+        "assertions": 182
+      },
+      "log": "/tmp/narriflow-serverless-gates/final-agents-clip-editor-persistence-db.log",
+      "schemas": [
+        "clip_editor_persistence_test_362b5b4173ae419c956b423cc0c60d85"
+      ],
+      "bunVersions": [
+        "1.3.6"
+      ],
+      "summaries": [
+        "\n 26 pass",
+        " 0 fail",
+        " 137 expect() calls",
+        "Ran 26 tests across 1 file. [1.80s]",
+        "\n 7 pass",
+        " 0 fail",
+        " 29 expect() calls",
+        "Ran 7 tests across 1 file. [963.00ms]",
+        "\n 3 pass",
+        " 0 fail",
+        " 16 expect() calls",
+        "Ran 3 tests across 1 file. [700.00ms]"
+      ],
+      "outputSha256": "6803c693760317ba4175be0539548dc53890fff134ba7995e7700d476516de5f"
+    },
+    {
+      "gate": "authenticated-request-policy",
+      "sha": "0a22aff01f80a681ac803de6cc1aeed59ab49838",
+      "dirty": false,
+      "startedAt": "2026-10-31T20:32:48.116319+00:00",
+      "finishedAt": "2026-10-31T20:32:50.796630+00:00",
+      "elapsedSeconds": 2.68,
+      "exitCode": 0,
+      "counts": {
+        "pass": 17,
+        "fail": 0,
+        "skip": 0,
+        "assertions": 203
+      },
+      "log": "/tmp/narriflow-serverless-gates/final-agents-authenticated-request-policy-db.log",
+      "schemas": [],
+      "bunVersions": [
+        "1.3.6"
+      ],
+      "summaries": [
+        "\n 17 pass",
+        " 0 fail",
+        " 203 expect() calls",
+        "Ran 17 tests across 3 files. [1.87s]"
+      ],
+      "outputSha256": "45c0cf92750eeaa4282de3519d75ef9690286b4c865dea0baef970c889347c23"
+    },
+    {
+      "gate": "brand-profiles",
+      "sha": "0a22aff01f80a681ac803de6cc1aeed59ab49838",
+      "dirty": false,
+      "startedAt": "2026-10-31T20:32:50.851987+00:00",
+      "finishedAt": "2026-10-31T20:32:54.880261+00:00",
+      "elapsedSeconds": 4.028,
+      "exitCode": 0,
+      "counts": {
+        "pass": 51,
+        "fail": 0,
+        "skip": 0,
+        "assertions": 250
+      },
+      "log": "/tmp/narriflow-serverless-gates/final-agents-brand-profiles-db.log",
+      "schemas": [],
+      "bunVersions": [
+        "1.3.6"
+      ],
+      "summaries": [
+        "\n 51 pass",
+        " 0 fail",
+        " 250 expect() calls",
+        "Ran 51 tests across 2 files. [3.21s]"
+      ],
+      "outputSha256": "49a5c6aff2e172911ab61466e7dd8859e797efdee85a29a7312bac6b631a29a9"
+    },
+    {
+      "gate": "vizard-expansion",
+      "sha": "0a22aff01f80a681ac803de6cc1aeed59ab49838",
+      "dirty": false,
+      "startedAt": "2026-10-31T20:32:54.935151+00:00",
+      "finishedAt": "2026-10-31T20:33:36.482508+00:00",
+      "elapsedSeconds": 41.547,
+      "exitCode": 0,
+      "counts": {
+        "pass": 102,
+        "fail": 0,
+        "skip": 0,
+        "assertions": 653
+      },
+      "log": "/tmp/narriflow-serverless-gates/final-agents-vizard-expansion-db.log",
+      "schemas": [],
+      "bunVersions": [
+        "1.3.6"
+      ],
+      "summaries": [
+        "\n 17 pass",
+        " 0 fail",
+        " 90 expect() calls",
+        "Ran 17 tests across 1 file. [4.89s]",
+        "\n 4 pass",
+        " 0 fail",
+        " 28 expect() calls",
+        "Ran 4 tests across 1 file. [972.00ms]",
+        "\n 8 pass",
+        " 0 fail",
+        " 38 expect() calls",
+        "Ran 8 tests across 1 file. [922.00ms]",
+        "\n 73 pass",
+        " 0 fail",
+        " 497 expect() calls",
+        "Ran 73 tests across 3 files. [33.92s]"
+      ],
+      "outputSha256": "539a59fc65f131a3016edfde6df655a36f6bed1d996c8ebc87777cdef4b72ccc"
+    },
+    {
+      "gate": "integration-api",
+      "sha": "0a22aff01f80a681ac803de6cc1aeed59ab49838",
+      "dirty": false,
+      "startedAt": "2026-10-31T20:33:36.540556+00:00",
+      "finishedAt": "2026-10-31T20:34:20.571472+00:00",
+      "elapsedSeconds": 44.031,
+      "exitCode": 0,
+      "counts": {
+        "pass": 125,
+        "fail": 0,
+        "skip": 0,
+        "assertions": 1081
+      },
+      "log": "/tmp/narriflow-serverless-gates/final-agents-integration-api-db.log",
+      "schemas": [
+        "integration_test_e7afbf2e39da47978e63b78bfe591784",
+        "serverless_execution_test_6e7bfec7ff3c4d75abef5b5b210ebe31"
+      ],
+      "bunVersions": [
+        "1.3.6"
+      ],
+      "summaries": [
+        "\n 13 pass",
+        " 0 fail",
+        " 99 expect() calls",
+        "Ran 13 tests across 1 file. [4.22s]",
+        "\n 3 pass",
+        " 0 fail",
+        " 10 expect() calls",
+        "Ran 3 tests across 1 file. [574.00ms]",
+        "\n 12 pass",
+        " 0 fail",
+        " 59 expect() calls",
+        "Ran 12 tests across 1 file. [5.01s]",
+        "\n 11 pass",
+        " 0 fail",
+        " 29 expect() calls",
+        "Ran 11 tests across 1 file. [970.00ms]",
+        "\n 14 pass",
+        " 0 fail",
+        " 220 expect() calls",
+        "Ran 14 tests across 1 file. [1.77s]",
+        "\n 15 pass",
+        " 0 fail",
+        " 75 expect() calls",
+        "Ran 15 tests across 1 file. [1279.00ms]",
+        "\n 2 pass",
+        " 0 fail",
+        " 26 expect() calls",
+        "Ran 2 tests across 1 file. [617.00ms]",
+        "\n 9 pass",
+        " 0 fail",
+        " 269 expect() calls",
+        "Ran 9 tests across 1 file. [1451.00ms]",
+        "\n 7 pass",
+        " 0 fail",
+        " 55 expect() calls",
+        "Ran 7 tests across 1 file. [732.00ms]",
+        "\n 39 pass",
+        " 0 fail",
+        " 239 expect() calls",
+        "Ran 39 tests across 2 files. [23.43s]"
+      ],
+      "outputSha256": "24dcc674295a49fad5822ad814786835f97f60347ecf601126a6d6176c63d9c4"
+    },
+    {
+      "gate": "library-search",
+      "sha": "0a22aff01f80a681ac803de6cc1aeed59ab49838",
+      "dirty": false,
+      "startedAt": "2026-10-31T20:34:20.628077+00:00",
+      "finishedAt": "2026-10-31T20:34:22.839581+00:00",
+      "elapsedSeconds": 2.211,
+      "exitCode": 0,
+      "counts": {
+        "pass": 17,
+        "fail": 0,
+        "skip": 0,
+        "assertions": 52
+      },
+      "log": "/tmp/narriflow-serverless-gates/final-agents-library-search-db.log",
+      "schemas": [],
+      "bunVersions": [
+        "1.3.6"
+      ],
+      "summaries": [
+        "\n 17 pass",
+        " 0 fail",
+        " 52 expect() calls",
+        "Ran 17 tests across 1 file. [1409.00ms]"
+      ],
+      "outputSha256": "f4924a1fcf3f07ed871a1cd41f8e8b1362bf40165b944318740faabe781411ef"
+    }
+  ],
+  "initialFailure": {
+    "gate": "processing-usage",
+    "errorCode": "ingest_execution_hash_unavailable",
+    "cause": "Manual-retry fixture constructed IngestJobLifecycle without its now-required canonical executionInputHash dependency.",
+    "repair": "Supply the existing canonical helper and assert the persisted retry dispatch generation, epoch and hash; all original credit/re-admission assertions preserved.",
+    "productionChanged": false,
+    "originalRun": {
+      "gate": "processing-usage",
+      "sha": "1ddc366d0270393bd0fb971e5da0812264abc31a",
+      "dirty": false,
+      "startedAt": "2026-10-31T20:31:20.409504+00:00",
+      "finishedAt": "2026-10-31T20:31:27.156003+00:00",
+      "elapsedSeconds": 6.746,
+      "exitCode": 1,
+      "counts": {
+        "pass": 30,
+        "fail": 1,
+        "skip": 0,
+        "assertions": 275
+      },
+      "log": "/tmp/narriflow-serverless-gates/final-agents-processing-usage-db.log",
+      "schemas": [
+        "processing_usage_test_9dfdcadbc72547a9b7dc649a5911468f"
+      ],
+      "bunVersions": [
+        "1.3.6"
+      ],
+      "summaries": [
+        "\n 30 pass",
+        " 1 fail",
+        " 275 expect() calls",
+        "Ran 31 tests across 1 file. [4.45s]"
+      ],
+      "outputSha256": "ad62ca2b499be09c8a28aec46be89dd8c63a0047bfbf2a05924b198314654992"
+    }
+  },
+  "outputRetention": "Full raw outputs remain in the absolute log paths. SHA256 and exact Bun summaries accompany every run; the failed attempt output was not overwritten.",
+  "schemaCleanupScope": "Nine exact schema names observed in migration output were checked absent after the matrix. Other runners apply SQL directly without printing schema names and exited successfully through their finally cleanup.",
+  "externalActions": "No shared/private cloud database, paid provider or account actions. No execution gate was run by this child."
+}
