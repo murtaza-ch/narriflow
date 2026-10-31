@@ -55,6 +55,11 @@ def run_owned_process(
     """Run one finite command; never include its argv or raw stderr in errors."""
     if not argv or any(not isinstance(value, str) or "\x00" in value for value in argv):
         raise ValueError("invalid_media_command")
+    # Native Bun children receive an explicit environment. Bun would otherwise
+    # add credentials from a caller's .env.local after that filtering.
+    command = list(argv)
+    if Path(command[0]).name in {"bun", "bun.exe"} and (len(command) < 2 or command[1] != "--no-env-file"):
+        command.insert(1, "--no-env-file")
     if len(input_bytes) > MAX_INPUT_BYTES:
         raise ValueError("media_command_too_large")
     if not 0 < timeout_seconds <= 24 * 60 * 60 or not 0 < kill_grace_seconds <= 30:
@@ -101,7 +106,7 @@ def run_owned_process(
         try:
             supervisor = subprocess.Popen(
                 [sys.executable, str(Path(__file__).resolve()), "--supervise", str(read_fd),
-                 json.dumps(list(argv)), str(timeout_seconds), str(kill_grace_seconds), str(start_write_fd), str(max_file_bytes or 0)],
+                 json.dumps(command), str(timeout_seconds), str(kill_grace_seconds), str(start_write_fd), str(max_file_bytes or 0)],
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 start_new_session=True, pass_fds=(read_fd, start_write_fd), env=child_env,
             )
