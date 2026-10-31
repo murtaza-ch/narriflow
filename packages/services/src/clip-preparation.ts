@@ -105,7 +105,11 @@ export class ClipPreparationService {
     const first = frozen ? variants[0]!.clipSnapshot as Record<string, unknown> : clip;
     const wholeSource = first.wholeSource, llmModel = first.llmModel;
     if (typeof wholeSource !== "boolean" || typeof llmModel !== "string" || !llmModel) throw new ClipPreparationError("clip_preparation_input_invalid");
-    if (frozen && variants.some(variant => digest(decodeFrozenClipEditorDocument(variant.clipSnapshot, probe.durationSec)) !== digest(document))) throw new ClipPreparationError("clip_preparation_input_invalid");
+    if (frozen && variants.some(variant => {
+      const snapshot = variant.clipSnapshot as Record<string, unknown> | null;
+      return !snapshot || snapshot.editorRevision !== configuration[2] || snapshot.wholeSource !== wholeSource || snapshot.llmModel !== llmModel ||
+        digest(decodeFrozenClipEditorDocument(snapshot, probe.durationSec)) !== digest(document);
+    })) throw new ClipPreparationError("clip_preparation_input_invalid");
     const base = { version: 1 as const, kind: "prepare_clip" as const, preparationId: "00000000-0000-0000-0000-000000000000", projectId: project.id, clipId: clip.id,
       sourceRevision: project.sourceRevision, editorRevision: configuration[2] as number, engineHash: this.dependencies.engineHash, toolchainFingerprint: this.dependencies.toolchainFingerprint,
       source: { storageKey: source.storageKey, etag: source.etag, byteLength: Number(source.byteLength), sha256: source.checksumSha256 }, sourceProbe: probe, document, wholeSource, llmModel };
@@ -132,6 +136,7 @@ export class ClipPreparationService {
     const reference = executionDispatchReferenceSchema.parse(value);
     const prepared = await this.database.$transaction(async tx => {
       const frozen = await this.inputForGroup(tx, reference);
+      if (frozen.groupDeadlineAt <= frozen.clock) throw new ClipPreparationError("clip_preparation_input_invalid");
       const existing = await tx.clipPreparation.findUnique({ where: { id: frozen.input.preparationId } });
       const key = `projects/${frozen.input.projectId}/preparations/${frozen.input.preparationId}/${crypto.randomUUID()}.json`;
       if (!existing) await admitMediaCleanupObligations(tx.mediaCleanupObligation, [{ origin: "clip_preparation_input", cleanupClass: "execution_input", projectId: frozen.input.projectId,
