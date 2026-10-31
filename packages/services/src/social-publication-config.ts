@@ -178,25 +178,6 @@ export function parseSocialPublicationConfig(
 	environment: Record<string, string | undefined>,
 	now = new Date(),
 ) {
-	const leaseMs = integer(
-		environment,
-		"SOCIAL_PUBLISH_LEASE_MS",
-		60_000,
-		15_000,
-		15 * 60_000,
-	);
-	const heartbeatMs = integer(
-		environment,
-		"SOCIAL_PUBLISH_HEARTBEAT_MS",
-		15_000,
-		1_000,
-		5 * 60_000,
-	);
-	if (heartbeatMs * 2 >= leaseMs) {
-		throw new SocialPublicationConfigurationError(
-			"SOCIAL_PUBLISH_HEARTBEAT_MS must be less than half SOCIAL_PUBLISH_LEASE_MS",
-		);
-	}
 	const checkpointKey = environment.SOCIAL_PUBLICATION_CHECKPOINT_KEY?.trim();
 	if (!checkpointKey || checkpointKey.length < 32) {
 		throw new SocialPublicationConfigurationError(
@@ -218,11 +199,7 @@ export function parseSocialPublicationConfig(
 		24 * 60 * 60_000,
 	);
 	return {
-		worker: {
-			batchSize: integer(environment, "SOCIAL_PUBLISH_BATCH_SIZE", 20, 1, 100),
-			concurrency: integer(environment, "SOCIAL_PUBLISH_CONCURRENCY", 4, 1, 20),
-			leaseMs,
-			heartbeatMs,
+		execution: {
 			providerDeadlineMs: integer(
 				environment,
 				"SOCIAL_PUBLISH_PROVIDER_DEADLINE_MS",
