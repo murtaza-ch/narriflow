@@ -667,7 +667,10 @@
     "./dubbing-recovery": "./src/dubbing-recovery.ts",
     "./execution-native-restore": "./src/execution-native-restore.ts",
     "./execution-notification-recovery": "./src/execution-notification-recovery.ts",
-    "./execution-redispatch-pages": "./src/execution-redispatch-pages.ts"
+    "./execution-redispatch-pages": "./src/execution-redispatch-pages.ts",
+    "./zoom-execution": "./src/zoom-execution.ts",
+    "./zoom-execution-runtime": "./src/zoom-execution-runtime.ts",
+    "./zoom-token-refresh": "./src/zoom-token-refresh.ts"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",

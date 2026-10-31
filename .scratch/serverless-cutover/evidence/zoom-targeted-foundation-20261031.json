@@ -1,0 +1,30 @@
+{
+  "status": "partial",
+  "scope": "Ticket19 targeted Zoom coordinator and rotating credential foundation; rule-resume producers, maintenance/restore ports and legacy scanner semantic ports remain.",
+  "migration023": "Schema/DDL frozen for candidate fresh migration gate. Existing queued/running pre-cutover Zoom notifications become failed/serverless_cutover_reset rather than acquire a new unfrozen intent. No shared migration applied.",
+  "checks": {
+    "postgres": {
+      "files": 4,
+      "passed": 30,
+      "assertions": 188,
+      "log": "/tmp/narriflow-zoom-foundation-db.log"
+    },
+    "services_typecheck": true,
+    "biome_files": 11
+  },
+  "behavior": [
+    "One target frozen per command, carrying original018Recipe/grant tuples. One actual intake or deauthorization per subsequent command.",
+    "Job epoch/generation and full frozen source/scope/current connection are rechecked under Project admission locks. Rule RSS execution generation is deliberately independent.",
+    "Eager child registration gates cursor advancement. Lost ACK replay uses the same ingest, project and credit reservation.",
+    "Brand/actor pauses park lease-free at the original30day deadline; no retry polling while idle.",
+    "SQL protects full target, event input, deadline, nondecreasing counters and cursor.",
+    "Refresh exchange holds no SQL lock. A second actual PG connection acquires the row during the controlled provider call.",
+    "One concurrent refresh, expired-start uncertainty, missing provider ACK and reconnect races preserve rotating credential safety; unknown results require reconnect.",
+    "authorizedAt records OAuth authorization separately from ordinary token refresh updates."
+  ],
+  "limitations": [
+    "Not deployed or mounted yet.",
+    "Existing old scanners remain pending ticket23 deletion and semantic test ports.",
+    "Resume wake paging and required bounded maintenance/restore ports are the next slice."
+  ]
+}

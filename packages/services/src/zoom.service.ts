@@ -1,3 +1,8 @@
+import { refreshZoomConnectionToken, ZoomTokenRefreshError } from "./zoom-token-refresh";
+import { readExecutionAdmission, assertExecutionAdmissionOpen } from "./execution-admission";
+import { operationFingerprint } from "./operation-receipt";
+import { deliverExecutionDispatches } from "./execution-dispatch-runtime";
+import { queueZoomNotification, ZOOM_NOTIFICATION_DEADLINE_MS } from "./zoom-execution";
 import { readAutopilotImportSource } from "./autopilot-finishing-authority";
 import { randomBytes, randomUUID } from "node:crypto";
 import { getPrismaClient } from "@narriflow/db/client";
@@ -19,7 +24,7 @@ import { requirePlanFeature } from "./plan-features";
 function db() { const prisma = getPrismaClient(); if (!prisma) throw new Error("Database client unavailable"); return prisma; }
 
 export class ZoomService {
-  constructor(private readonly deps: { api?: ZoomApi; config?: typeof zoomConfig; now?: () => Date } = {}) {}
+  constructor(private readonly deps: { api?: ZoomApi; config?: typeof zoomConfig; now?: () => Date; register?: (ids: readonly string[]) => Promise<void> } = {}) {}
   private now() { return this.deps.now?.() ?? new Date(); }
   private config() { return (this.deps.config ?? zoomConfig)(); }
   private api() { return this.deps.api ?? createZoomApi(this.config()); }
@@ -29,14 +34,14 @@ export class ZoomService {
     const actor = await workspaceService.requireActor(scope.actorUserId, scope.workspaceId, "content.view");
     const admin = workspaceAllowsCapability(actor, "workspace.manage");
     const rows = await db().zoomConnection.findMany({ where: { workspaceId: scope.workspaceId }, orderBy: { createdAt: "asc" } });
-    return rows.map((row) => ({ id: row.id, userId: row.userId, displayName: row.displayName, revoked: row.revokedAt !== null, canDisconnect: admin || row.userId === scope.actorUserId }));
+    return rows.map((row) => ({ id: row.id, userId: row.userId, displayName: row.displayName, revoked: row.revokedAt !== null || row.refreshOutcomeUnknown, canDisconnect: admin || row.userId === scope.actorUserId }));
   }
 
   async requireConnection(scope: ActorScope, connectionId: string) {
     this.config();
     if (!connectionId) throw new ZoomError("zoom_connection_unavailable");
     const connection = await db().zoomConnection.findFirst({ where: { id: connectionId, workspaceId: scope.workspaceId, revokedAt: null } });
-    if (!connection) throw new ZoomError("zoom_connection_unavailable");
+    if (!connection || connection.refreshOutcomeUnknown) throw new ZoomError("zoom_connection_unavailable");
     // A rule can use a connected Workspace member's source, but it can't keep
     // using their recordings after they lose Workspace access.
     try { await workspaceService.requireActor(connection.userId, scope.workspaceId, "processing.consume"); }
@@ -82,7 +87,7 @@ export class ZoomService {
     const identity = await this.api().me(tokens.access_token);
     // Recheck after network work; the member may have been removed meanwhile.
     await workspaceService.requireActor(state.userId, state.workspaceId, "content.edit");
-    const data = { zoomAccountId: identity.account_id, displayName: identity.displayName, accessTokenEncrypted: this.cipher().seal(tokens.access_token), refreshTokenEncrypted: this.cipher().seal(tokens.refresh_token), expiresAt: new Date(this.now().getTime() + tokens.expires_in * 1000), scopes: tokens.scope.split(" "), revokedAt: null };
+    const data = { zoomAccountId: identity.account_id, displayName: identity.displayName, accessTokenEncrypted: this.cipher().seal(tokens.access_token), refreshTokenEncrypted: this.cipher().seal(tokens.refresh_token), expiresAt: new Date(this.now().getTime() + tokens.expires_in * 1000), scopes: tokens.scope.split(" "), revokedAt: null, authorizedAt:this.now(),refreshClaimId:null,refreshLeaseExpiresAt:null,refreshStartedAt:null,refreshOutcomeUnknown:false };
     await db().zoomConnection.upsert({ where: { workspaceId_userId_zoomUserId: { workspaceId: state.workspaceId, userId: state.userId, zoomUserId: identity.id } }, create: { workspaceId: state.workspaceId, userId: state.userId, zoomUserId: identity.id, ...data }, update: data });
     // Reconnecting never resumes rules or grants without a person's choice.
   }
@@ -99,14 +104,14 @@ export class ZoomService {
     }
   }
 
-  private async revokeConnection(id: string, before?: Date) {
+  private async revokeConnection(id: string, before?: Date, onlyUnknown=false) {
     return db().$transaction(async (tx) => {
       // Match the rule-then-connection order used by intake and rule saves.
       await tx.$queryRaw`SELECT "id" FROM "AutopilotRule" WHERE "zoomConnectionId" = ${id}::uuid ORDER BY "id" FOR UPDATE`;
       await tx.$queryRaw`SELECT "id" FROM "ZoomConnection" WHERE "id" = ${id}::uuid FOR UPDATE`;
       const connection = await tx.zoomConnection.findUnique({ where: { id } });
-      if (!connection || connection.revokedAt || (before && connection.updatedAt > before)) return null;
-      await tx.zoomConnection.update({ where: { id }, data: { revokedAt: this.now(), accessTokenEncrypted: null, refreshTokenEncrypted: null, expiresAt: null } });
+      if (!connection || connection.revokedAt || (onlyUnknown&&!connection.refreshOutcomeUnknown) || (before && connection.authorizedAt > before)) return null;
+      await tx.zoomConnection.update({ where: { id }, data: { revokedAt: this.now(), accessTokenEncrypted: null, refreshTokenEncrypted: null, expiresAt: null, refreshClaimId:null,refreshLeaseExpiresAt:null,refreshStartedAt:null } });
       const rules = await tx.autopilotRule.findMany({ where: { zoomConnectionId: id }, select: { id: true } });
       await tx.autopilotRule.updateMany({ where: { zoomConnectionId: id }, data: { status: "paused", pauseKind: "zoom_connection", claimToken: null, leaseExpiresAt: null, lastError: "Zoom access was revoked. Reconnect Zoom, then resume this rule." } });
       for (const rule of rules) await pauseGrantsWhoseRuleChanged(tx, rule.id);
@@ -114,6 +119,8 @@ export class ZoomService {
       return connection.accessTokenEncrypted;
     });
   }
+
+  async revokeNotifiedConnection(id:string,before:Date):Promise<void>{await this.revokeConnection(id,before);}
 
   async acceptWebhook(input: { rawBody: string; timestamp: string | null; signature: string | null }) {
     const config = this.config();
@@ -127,7 +134,22 @@ export class ZoomService {
     verifyZoomSignature({ ...input, secret: config.webhookSecret, nowMs: this.now().getTime() });
     const parsed = parseZoomNotification(body);
     if (!parsed) return { accepted: true };
-    await db().zoomWebhookJob.createMany({ data: [{ eventKey: parsed.eventKey, payload: parsed.notification }], skipDuplicates: true });
+    const ids = await db().$transaction(async tx => {
+      const admission=await readExecutionAdmission(tx);
+      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`zoom-notification:${parsed.eventKey}`},0)) IS NULL AS locked`;
+      const known=await tx.zoomWebhookJob.findUnique({where:{eventKey:parsed.eventKey}});
+      if(known){
+        if(operationFingerprint(known.payload)!==operationFingerprint(parsed.notification))throw new ZoomError("zoom_payload_invalid");
+        const dispatch=await queueZoomNotification(tx,known.id);
+        return dispatch?[dispatch.dispatchId]:[];
+      }
+      if(parsed.notification.event!=="app_deauthorized")assertExecutionAdmissionOpen(admission);
+      const now=(await tx.$queryRaw<Array<{now:Date}>>`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS now`)[0]!.now;
+      const row=await tx.zoomWebhookJob.create({data:{eventKey:parsed.eventKey,payload:parsed.notification,deploymentEpoch:admission.epoch,createdAt:now,availableAt:now,operationDeadlineAt:new Date(now.getTime()+ZOOM_NOTIFICATION_DEADLINE_MS)}});
+      const dispatch=await queueZoomNotification(tx,row.id);
+      return dispatch?[dispatch.dispatchId]:[];
+    });
+    await (this.deps.register??deliverExecutionDispatches)(ids);
     return { accepted: true };
   }
 
@@ -137,22 +159,21 @@ export class ZoomService {
     const project = await db().project.findUnique({ where: { id: input.projectId }, select: { workspaceId: true } });
     if (!project) throw new ZoomError("zoom_recording_unavailable");
     const connection = await this.requireConnection({ actorUserId: "", workspaceId: project.workspaceId }, input.connectionId);
-    let authorizedAt = connection.updatedAt;
     try {
-      const accessToken = await db().$transaction(async (tx) => {
-        await tx.$queryRaw`SELECT "id" FROM "ZoomConnection" WHERE "id" = ${connection.id}::uuid FOR UPDATE`;
-        const row = await tx.zoomConnection.findUniqueOrThrow({ where: { id: connection.id } });
-        authorizedAt = row.updatedAt;
-        if (row.revokedAt || !row.accessTokenEncrypted || !row.refreshTokenEncrypted) throw new ZoomError("zoom_connection_unavailable");
-        if (row.expiresAt && row.expiresAt.getTime() > this.now().getTime() + 60_000) return this.cipher().open(row.accessTokenEncrypted);
-        const refreshed = await this.api().refresh(this.cipher().open(row.refreshTokenEncrypted));
-        const refreshedRow = await tx.zoomConnection.update({ where: { id: row.id }, data: { accessTokenEncrypted: this.cipher().seal(refreshed.access_token), refreshTokenEncrypted: this.cipher().seal(refreshed.refresh_token), expiresAt: new Date(this.now().getTime() + refreshed.expires_in * 1000), scopes: refreshed.scope.split(" ") } });
-        authorizedAt = refreshedRow.updatedAt;
-        return refreshed.access_token;
-      }, { timeout: 25_000 });
-      return { downloadUrl: await this.api().recording(accessToken, input.meetingUuid, input.recordingId, connection.zoomUserId), accessToken };
-    } catch (error) {
-      if (error instanceof ZoomError && error.code === "zoom_connection_unavailable") await this.revokeConnection(connection.id, authorizedAt);
+      const current=await refreshZoomConnectionToken({database:db(),connectionId:connection.id,exchange:async row=>{
+        const refreshed=await this.api().refresh(this.cipher().open(row.refreshTokenEncrypted!));
+        return {accessTokenEncrypted:this.cipher().seal(refreshed.access_token),refreshTokenEncrypted:this.cipher().seal(refreshed.refresh_token),expiresInSeconds:refreshed.expires_in,scopes:refreshed.scope.split(" ")};
+      }});
+      const accessToken=this.cipher().open(current.accessTokenEncrypted!);
+      const downloadUrl=await this.api().recording(accessToken,input.meetingUuid,input.recordingId,current.zoomUserId);
+      await this.requireConnection({actorUserId:"",workspaceId:project.workspaceId},connection.id);
+      return {downloadUrl,accessToken};
+    } catch(error) {
+      if(error instanceof ZoomTokenRefreshError){
+        if(error.code==="unconfirmed")await this.revokeConnection(connection.id,undefined,true);
+        throw new ZoomError(error.code==="busy"?"zoom_api_unavailable":"zoom_connection_unavailable");
+      }
+      if(error instanceof ZoomError&&error.code==="zoom_connection_unavailable")await this.revokeConnection(connection.id,connection.authorizedAt);
       throw error;
     }
   }
@@ -213,7 +234,7 @@ export class ZoomService {
         await this.requireConnection(scope, rule.zoomConnectionId!);
         const source = await readAutopilotImportSource(prisma, rule);
         const recipe = await recipeService.resolve(scope, rule.recipeId);
-        await projectService.importZoomRecording(scope, { source, ruleUpdatedAt: rule.updatedAt, connectionId: rule.zoomConnectionId!, notification, titlePrefix: rule.titlePrefix, recipe });
+        await projectService.importZoomRecording(scope, { source, connectionId: rule.zoomConnectionId!, notification, titlePrefix: rule.titlePrefix, recipe });
         await prisma.autopilotRule.updateMany({ where: { id: rule.id, status: "active", updatedAt: rule.updatedAt }, data: { lastCheckedAt: this.now(), lastSuccessAt: this.now(), lastError: null, consecutiveFailures: 0 } });
       } catch (error) {
         if (error instanceof WorkspaceOperationError && error.code === "workspace_access_denied") {
