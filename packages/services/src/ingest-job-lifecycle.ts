@@ -2,7 +2,7 @@ import {appendProjectNotificationIntent} from "./notification-execution";
 import { autopilotFinishingAuthoritySchema } from "@narriflow/validators/autopilot-finishing-authority";
 import { appendProgressEventDispatch, flushProjectProgressDrains, queueProjectProgressCatchup } from "./progress-outbox";
 import { randomUUID } from "node:crypto";
-import { requireExecutionAdmissionOpen } from "./execution-admission";
+import { requireExecutionAdmissionOpen, readExecutionAdmission } from "./execution-admission";
 import { Prisma, type PrismaClient, type IngestJob, type SourceAudio, type Project } from "@prisma/client";
 import {
   defaultAspectRatioSchema,
@@ -38,7 +38,7 @@ import {
 import { admitMediaCleanupObligations } from "./media-cleanup";
 import { emitIntakeFinished, queueIntakeFinishedByGeneration } from "./operation-finished";
 import { flushWorkspaceEvents } from "./workspace-event";
-import { takeExecutionDispatchIds } from "./execution-dispatch-runtime";
+import { collectExecutionDispatch, takeExecutionDispatchIds } from "./execution-dispatch-runtime";
 
 import { ingestAcquisitionSchema, type IngestAcquisition, sourceAudioBindingSchema, sourceVideoBindingSchema, type SourceAudioBinding, type SourceVideoBinding, type ExecutionDispatchReference, type ExecutionDisposition, executionDispatchReferenceSchema } from "@narriflow/validators/execution";
 import { sourceAudioBindingHash } from "./source-audio-binding";
@@ -287,6 +287,25 @@ export class IngestJobLifecycle {
       await this.now(tx),
     );
     return { id: job.id };
+  }
+  /** Initial source admission and an honest replay use one canonical subject.
+   * The caller confirms the collected obligation only after its intake commits. */
+  async queueExecutionWithinTransaction(tx: Tx, id: string): Promise<ExecutionDispatchReference | null> {
+    const { epoch } = await readExecutionAdmission(tx);
+    const job = await tx.ingestJob.findUnique({ where: { id } });
+    if (!job || job.deploymentEpoch !== epoch) return null;
+    const known = await tx.executionDispatch.findFirst({ where: { deploymentEpoch: epoch, generation: job.generation, kind: "import_pipeline", subjectKind: "ingest_job", subjectId: job.id, deadlineKind: null }, orderBy: [{ createdAt: "asc" }, { id: "asc" }], select: { id: true } });
+    if (known) {
+      const registered = await readExecutionDispatch(tx,known.id);
+      if (!registered) throw Error("ingest_initial_dispatch_missing");
+      collectExecutionDispatch(tx,registered.reference.dispatchId);
+      return registered.reference;
+    }
+    if (!["queued","running"].includes(job.status)) return null;
+    if (!this.deps.executionInputHash) throw Error("ingest_execution_hash_unavailable");
+    const dispatch = await appendExecutionDispatch(tx,{ deploymentEpoch: epoch, generation: job.generation, kind: "import_pipeline", subject: { kind: "ingest_job", id: job.id }, inputHash: await this.deps.executionInputHash(job), dueAt: job.createdAt });
+    collectExecutionDispatch(tx,dispatch.reference.dispatchId);
+    return dispatch.reference;
   }
   private async executionState(tx: Tx, reference: ExecutionDispatchReference, attemptToken: string): Promise<
     { kind: "current"; ref: IngestExecutionReference; job: IngestJob; now: Date } | { kind: "terminal"; disposition: ExecutionDisposition }
