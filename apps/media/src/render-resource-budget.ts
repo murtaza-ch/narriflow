@@ -99,6 +99,7 @@ export interface DiskFacts {
 }
 export type StatFsLike = (
   path: string,
+  options?: { bigint: true },
 ) => Promise<{ bavail: number | bigint; bsize: number | bigint; blocks: number | bigint }>;
 
 /** statfs of `path`, or of its nearest existing parent when the scratch path is not created yet. */
@@ -106,7 +107,7 @@ export async function readDiskFacts(path: string, statfs: StatFsLike = nodeStatf
   let candidate = path;
   for (;;) {
     try {
-      const disk = await statfs(candidate);
+      const disk = await statfs(candidate, { bigint: true });
       return {
         freeBytes: Number(disk.bavail) * Number(disk.bsize),
         volumeBytes: Number(disk.blocks) * Number(disk.bsize),
@@ -263,7 +264,7 @@ export class RenderResourceBudget {
     let delayMs = DISK_BACKOFF_START_MS;
     for (;;) {
       environment.signal?.throwIfAborted();
-      const facts = await readDiskFacts(request.directory, environment.statfs ?? nodeStatfs);
+      const facts = await readDiskFacts(request.directory, environment.statfs);
       environment.signal?.throwIfAborted();
       const verdict = judgeAdmission(this.policy, facts, this.reservedBytes(), bytes);
       if (verdict === "admit") return this.register(bytes);
