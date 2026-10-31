@@ -62,3 +62,14 @@ test("layout evidence may carry the bounded one MiB preparation manifest", async
   await expect(port.readJson(manifest, 1048577)).rejects.toMatchObject({ code: "artifact_invalid" });
   await expect(port.readJson({ ...manifest, role: "probe" }, 1048576)).rejects.toMatchObject({ code: "artifact_invalid" });
 });
+
+test("only assigned encrypted publication instruction blobs receive the sixteen MiB binary reader",async()=>{
+ const data=new Uint8Array(100000).fill(7),digest=Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256",data)),b=>b.toString(16).padStart(2,"0")).join("");
+ let reads=0;
+ const port=createAssignedArtifactStorage({get:async()=>{reads++;return {...metadata,size:data.length,httpMetadata:{contentType:"application/octet-stream"},body:new Blob([data]).stream()};}} as unknown as R2Bucket);
+ const blob={...artifact,role:"publication_checkpoint" as const,byteLength:BigInt(data.length),contentType:"application/octet-stream",sha256:digest};
+ expect(await port.readBytes(blob,16*1024**2)).toEqual(data);
+ await expect(port.readBytes({...blob,role:"probe"},16*1024**2)).rejects.toMatchObject({code:"artifact_invalid"});
+ await expect(port.readBytes(blob,16*1024**2+1)).rejects.toMatchObject({code:"artifact_invalid"});expect(reads).toBe(1);
+ await expect(port.readBytes({...blob,sha256:"f".repeat(64)},16*1024**2)).rejects.toMatchObject({code:"artifact_invalid"});
+});
