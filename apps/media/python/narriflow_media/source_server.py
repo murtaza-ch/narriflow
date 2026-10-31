@@ -16,7 +16,7 @@ CHUNK_BYTES = 1024 * 1024
 INITIAL_CHUNK_BYTES = 64 * 1024
 SOCKET_SEND_BYTES = 64 * 1024
 MAX_CONNECTIONS = 4
-MAX_CACHE_BYTES = 32 * 1024 * 1024
+MAX_CACHE_BYTES = 64 * 1024 * 1024
 MAX_CACHE_ENTRIES = 128
 
 
@@ -24,7 +24,7 @@ class ScopedSourceServer:
     """Loopback transport only. The operation supplies verified package sources.
 
     No source URL is handed to FFmpeg. Each upstream chunk gets a fresh scoped
-    grant and If-Match. A 32MiB/128-entry LRU reuses verified immutable intervals
+    grant and If-Match. A 64MiB/128-entry LRU reuses verified immutable intervals
     within this operation, plus at most four 1MiB response buffers.
     The actual Popen start acknowledgement must precede allow_reads().
     """
