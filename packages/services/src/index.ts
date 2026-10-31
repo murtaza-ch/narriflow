@@ -745,6 +745,6 @@ export * from "./execution-safety-pages";
 export * from "./execution-account-recovery-pages";
 export * from "./dubbing-policy";
 export * from "./export-bundle-recovery";
-export { readAutopilotImportSource, freezeAutopilotFinishingAuthority, AutopilotSourceChanged, type AutopilotImportSource } from "./autopilot-finishing-authority";
+export { readAutopilotImportPlan, readAutopilotImportSource, freezeAutopilotFinishingAuthority, AutopilotSourceChanged, type AutopilotImportSource, type AutopilotImportPlan } from "./autopilot-finishing-authority";
 
 export { planPublicationRecoveryPage, planStandingGrantExpiryPage, planPublicationReceiptRecoveryPage, planPerformanceCaptureRecoveryPage, planPublicationRestorePage } from "./publication-maintenance";
