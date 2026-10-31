@@ -4,7 +4,7 @@
 
 **Blocked by:** none
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 **Spec:** [Serverless cutover](../spec.md)
 

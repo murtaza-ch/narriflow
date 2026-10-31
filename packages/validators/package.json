@@ -10,6 +10,10 @@
       "types": "./src/index.ts",
       "default": "./src/index.ts"
     },
+    "./execution": {
+      "types": "./src/execution.ts",
+      "default": "./src/execution.ts"
+    },
     "./api/*": {
       "types": "./src/api/*.ts",
       "default": "./src/api/*.ts"
