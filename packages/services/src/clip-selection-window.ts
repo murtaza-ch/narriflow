@@ -175,6 +175,20 @@ async function wakeHead(tx: Tx, deploymentEpoch: number, cause: string, now: Dat
   return [wake.reference.dispatchId];
 }
 
+/** Caller holds the Project/parent locks; finished results remain reusable. */
+export async function cancelClipSelectionWindowsWithinTransaction(tx: Tx, input: { projectId: string; workflowRunId?: string; deploymentEpoch: number; errorCode: string; now: Date; cause: string }): Promise<string[]> {
+  await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${CAPACITY_LOCK}, 0)) IS NULL AS "locked"`;
+  const active = await tx.clipSelectionWindow.findMany({ where: { projectId: input.projectId, deploymentEpoch: input.deploymentEpoch,
+    ...(input.workflowRunId ? { workflowRunId: input.workflowRunId } : {}), status: { in: ["queued", "running"] } }, orderBy: { id: "asc" }, select: { id: true, attemptToken: true } });
+  const tokens = active.flatMap(row => row.attemptToken ? [row.attemptToken] : []).sort();
+  if (tokens.length) {
+    await tx.$queryRaw(Prisma.sql`SELECT "attemptToken" FROM "ExecutionAttempt" WHERE "attemptToken" IN (${Prisma.join(tokens.map(token => Prisma.sql`${token}::uuid`))}) ORDER BY "attemptToken" FOR UPDATE`);
+    await tx.executionAttempt.updateMany({ where: { attemptToken: { in: tokens }, status: { in: ["admitted", "running"] } }, data: { status: "cancelled", failureCode: input.errorCode, revokedAt: input.now, finishedAt: input.now } });
+  }
+  if (active.length) await tx.clipSelectionWindow.updateMany({ where: { id: { in: active.map(row => row.id) } }, data: { status: "cancelled", errorCode: input.errorCode, leaseExpiresAt: null, completedAt: input.now } });
+  return active.length ? wakeHead(tx, input.deploymentEpoch, input.cause, input.now) : [];
+}
+
 export function clipSelectionWindowResultKey(attempt: ClipSelectionWindowAttempt, sha: string): string {
   if (!uuid(attempt.token) || !uuid(attempt.owner) || !/^[a-f0-9]{64}$/.test(sha)) throw new Error("Invalid selection result identity");
   return `execution/${attempt.reference.deploymentEpoch}/clip_selection_window/${attempt.reference.subject.id}/${attempt.reference.generation}/${attempt.token}/${attempt.owner}/selection_window/${sha}.json`;
