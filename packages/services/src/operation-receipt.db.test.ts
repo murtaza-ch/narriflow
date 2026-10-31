@@ -29,6 +29,8 @@ import {
 import { prismaOperationReceiptPersistence } from "./operation-receipt-runtime";
 import { projectService } from "./project.service";
 import { AutopilotService } from "./autopilot.service";
+import { AutopilotExecution, queueAutopilotRule } from "./autopilot-execution";
+import { OutboundProbeService } from "./outbound-probe";
 import {
 	clipExportService,
 	ClipExportRevisionConflictError,
@@ -304,7 +306,7 @@ describeDb("Operation Receipt PostgreSQL acceptance invariants", () => {
 		const scope = { actorUserId, workspaceId };
 		const input = {
 			title: "Atomic link",
-			url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+			url: "https://www.dropbox.com/s/receipt-source/video.mp4",
 		};
 		const [first, duplicate] = await Promise.all([
 			projectService.queueLinkIngest(scope, input, {
@@ -351,7 +353,7 @@ describeDb("Operation Receipt PostgreSQL acceptance invariants", () => {
 
 	test("a captioned video freezes its settings and normalized captions with its intake, under its own receipt command", bindServiceTestEnvironment(globalPrisma.bind(async () => {
 		const scope = { actorUserId, workspaceId };
-		const input = { title: "AI short", url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ" };
+		const input = { title: "AI short", url: "https://www.dropbox.com/s/receipt-source/video.mp4" };
 		const mutation = { clientIdempotencyKey: randomUUID() };
 		const settings = captionedVideoSettings({ framing: "center", aspectRatios: ["9:16", "1:1"], resolution: "720p",
 			captions: { source: "supplied", text: "1\n00:00:00,000 --> 00:00:02,000\nHello there" } });
@@ -374,7 +376,7 @@ describeDb("Operation Receipt PostgreSQL acceptance invariants", () => {
 
 	test("saving a generation draft over a captioned pack replaces its settings, never leaving stale ones behind", bindServiceTestEnvironment(globalPrisma.bind(async () => {
 		const scope = { actorUserId, workspaceId };
-		const accepted = await projectService.queueLinkIngest(scope, { url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ" }, {
+		const accepted = await projectService.queueLinkIngest(scope, { url: "https://www.dropbox.com/s/receipt-source/video.mp4" }, {
 			generationContext: captionedVideoGenerationContext(captionedVideoSettings({ captions: { source: "none" } })),
 			mutation: { clientIdempotencyKey: randomUUID() },
 			command: "create_captioned_video",
@@ -394,6 +396,7 @@ describeDb("Operation Receipt PostgreSQL acceptance invariants", () => {
 				title: "Generation settings",
 				sourceMediaUrl: "https://example.test/generation.mp4",
 				sourceDurationSeconds: 60,
+				sourceProbe: { durationSec: 60, video: null, audio: null },
 				ingestStatus: "ready",
 			},
 		});
@@ -475,6 +478,7 @@ describeDb("Operation Receipt PostgreSQL acceptance invariants", () => {
 				title: "Generation overlap",
 				sourceMediaUrl: "https://example.test/overlap.mp4",
 				sourceDurationSeconds: 60,
+				sourceProbe: { durationSec: 60, video: null, audio: null },
 				ingestStatus: "ready",
 			},
 		});
@@ -629,7 +633,7 @@ describeDb("Operation Receipt PostgreSQL acceptance invariants", () => {
 		).rejects.toBeInstanceOf(OperationIdempotencyConflictError);
 	})));
 
-	test("run-now replays without resetting a later worker claim", bindServiceTestEnvironment(globalPrisma.bind(async () => {
+	test("run-now replays without resetting a later durable cycle or its probe", bindServiceTestEnvironment(globalPrisma.bind(async () => {
 		const service = new AutopilotService({
 			fetchFeed: async (rssUrl) => ({
 				title: "Run now",
@@ -647,12 +651,13 @@ describeDb("Operation Receipt PostgreSQL acceptance invariants", () => {
 		});
 		const mutation = { clientIdempotencyKey: randomUUID() };
 		const first = await service.triggerRuleNow(scope, rule.id, mutation);
-		const claimToken = randomUUID();
-		const leaseExpiresAt = new Date(Date.now() + 60_000);
-		await prisma.autopilotRule.update({
-			where: { id: rule.id },
-			data: { status: "running", claimToken, leaseExpiresAt },
-		});
+		const probe = new OutboundProbeService(prisma, { register: async () => {}, readResult: async () => { throw Error("Pending probe cannot read an object"); } });
+		const driver = new AutopilotExecution({ database: prisma, probe, register: async () => {}, importEpisode: async () => { throw Error("Pending probe cannot import an episode"); } });
+		const reference = await prisma.$transaction(tx => queueAutopilotRule(tx, rule.id));
+		if (!reference) throw Error("Expected accepted Rule obligation");
+		await driver.run(reference);
+		const accepted = await prisma.autopilotRule.findUniqueOrThrow({ where: { id: rule.id } });
+		expect(accepted).toMatchObject({ status: "running", claimToken: null, leaseExpiresAt: null, executionCycleId: expect.any(String), executionProbeId: expect.any(String) });
 		expect(await service.triggerRuleNow(scope, rule.id, mutation)).toEqual(
 			first,
 		);
@@ -663,9 +668,9 @@ describeDb("Operation Receipt PostgreSQL acceptance invariants", () => {
 		expect(
 			await prisma.autopilotRule.findUniqueOrThrow({
 				where: { id: rule.id },
-				select: { claimToken: true, leaseExpiresAt: true },
 			}),
-		).toEqual({ claimToken, leaseExpiresAt });
+		).toEqual(accepted);
+		expect(await prisma.outboundProbe.count({ where: { id: accepted.executionProbeId! } })).toBe(1);
 	})));
 
 	test("exports replay their accepted revision and conflict on changed key input", bindServiceTestEnvironment(globalPrisma.bind(async () => {

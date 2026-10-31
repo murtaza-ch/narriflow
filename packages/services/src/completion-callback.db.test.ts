@@ -55,7 +55,7 @@ describeDb("Completion Callback PostgreSQL invariants", () => {
     await pool?.end();
   })));
 
-  const link = (key: string, url: string) => projectService.queueLinkIngest(scope(), { title: `Callback ${key}`, url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ" },
+  const link = (key: string, url: string) => projectService.queueLinkIngest(scope(), { title: `Callback ${key}`, url: "https://www.dropbox.com/s/callback-source/video.mp4" },
     { generationContext: { contentPack: pack, languageCode: "en" }, mutation: { clientIdempotencyKey: key, callback: { url: new URL(url) } } });
 
   test("a callback request refuses before any work commits when the Workspace has no signing secret", bindServiceTestEnvironment(globalPrisma.bind(async () => {
