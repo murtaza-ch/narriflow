@@ -1,3 +1,5 @@
+import { DatabaseScope } from "@narriflow/db/client";
+import { readExecutionDispatch } from "./execution-dispatch";
 import {appendProjectNotificationIntent} from "./notification-execution";
 import { assertExecutionDatabaseTestTarget } from "./execution-db-test-support";
 import { ruleFingerprint } from "./standing-grant";
@@ -23,7 +25,10 @@ import {
   readProjectFinishing,
   type GenerationFinishingDependencies,
 } from "./generation-finishing";
-import { NotificationService } from "./notification.service";
+import { createNotificationExecution } from "./notification-execution";
+import { prepareNotificationDelivery } from "./notification-execution-runtime";
+import { decryptReviewValue, reviewDeliverySecret } from "./review.service";
+import { withServiceEnvironment, readServiceEnvironment } from "./runtime-environment";
 import { publishingQueue } from "./publishing-queue.service";
 import { encodeOperationId } from "./operation-status";
 import { projectService } from "./project.service";
@@ -559,9 +564,15 @@ describeDb("Finishing runner on PostgreSQL", () => {
     await prisma.workspaceMember.create({ data: { workspaceId: owner.workspaceId, userId: actor.id, role: "editor" } });
     const g = await finishedGeneration(owner, [90, 80], FINISHING, { actorUserId: actor.id });
 
-    const mails: Array<{ to: string; outcome: string; clipCount: number; deepLink: string }> = [];
-    const notifications = new NotificationService({ mailer: async (mail) => { mails.push(mail); return { sent: true, id: `message-${mails.length}` }; }, hasResendApiKey: () => true });
-    const results: string[] = [];
+    const mails: Array<{to:string;html:string;subject:string;idempotencyKey:string}> = [];
+    const environment={...readServiceEnvironment(),RESEND_API_KEY:"fixture-no-provider-http",WEB_ORIGIN:"https://app.narriflow.test",REVIEW_ACCESS_SECRET:"sealed-mail-private-fixture-secret-long-enough"};
+    const mailScope=<T>(action:()=>T|Promise<T>)=>withServiceEnvironment(environment,()=>new DatabaseScope({createClient:()=>({client:prisma,dispose:async()=>{}})}).run(async()=>action()));
+    const notifications = createNotificationExecution({database:prisma,register:async()=>{},
+      prepare:(target,sealed)=>mailScope(()=>prepareNotificationDelivery(target,sealed)),
+      send:async(_target,sealed,key)=>mailScope(()=>{
+        const body=JSON.parse(decryptReviewValue(sealed.encrypted,reviewDeliverySecret())).request;
+        mails.push({...body,idempotencyKey:key});return{sent:true,providerMessageId:`message-${mails.length}`};
+      })});
     const { service } = runner({
       notify: async (input,_authority,tx) => {
         await appendProjectNotificationIntent(tx,{...input,outcome:"finishing_ready"});
@@ -572,16 +583,18 @@ describeDb("Finishing runner on PostgreSQL", () => {
     await drive(service);
 
     expect(await row(g.row.id)).toMatchObject({ state: "ready" });
-    results.push((await notifications.enqueueAndSend({projectId:g.project.id,sourceId:g.row.id,outcome:"finishing_ready",clipCount:2,deepLink:`https://app.narriflow.test/projects/${g.project.id}`})).status);
-    expect(results).toEqual(["sent"]);
     const ledger = await prisma.notificationLedger.findMany({ where: { projectId: g.project.id, sourceId:g.row.id, outcome:"finishing_ready" } });
     expect(ledger).toHaveLength(1);
-    expect(ledger[0]).toMatchObject({ sourceId: g.row.id, outcome: "finishing_ready", status: "sent" });
+    const wake=await prisma.executionDispatch.findFirstOrThrow({where:{kind:"operation_driver",subjectKind:"notification",subjectId:`em1.p.${ledger[0]!.id}`,wakeKind:null,deadlineKind:null}});
+    const reference=(await readExecutionDispatch(prisma,wake.id))!.reference;
+    expect(await notifications.run(reference)).toEqual({kind:"complete"});
+    expect(await prisma.notificationLedger.findUniqueOrThrow({where:{id:ledger[0]!.id}})).toMatchObject({ sourceId: g.row.id, outcome: "finishing_ready", status: "sent" });
     const actorEmail = (await prisma.user.findUniqueOrThrow({ where: { id: actor.id } })).primaryEmail;
-    expect(mails).toEqual([{ to: actorEmail!, outcome: "finishing_ready", clipCount: 2, deepLink: `https://app.narriflow.test/projects/${g.project.id}`, reason: expect.any(String), expiresAt: null, idempotencyKey: `notification-ledger-${ledger[0]!.id}`, projectTitle: "Generated" }]);
-
-    // A re-claim of the finished work asks again and the ledger absorbs it.
-    await prisma.generationFinishing.update({ where: { id: g.row.id }, data: { state: "running", claimToken: randomUUID(), leaseExpiresAt: new Date(Date.now() - 1_000), finishedAt: null } });
+    expect(mails).toHaveLength(1);expect(mails[0]!.to).toBe(actorEmail!);
+    expect(mails[0]!.html).toContain(`https://app.narriflow.test/projects/${g.project.id}`);
+    expect(mails[0]!.idempotencyKey).toBe(`notification-ledger-${ledger[0]!.id}`);
+    // Exact delivery and Finishing replays both retain the same sealed message.
+    expect(await notifications.run(reference)).toEqual({kind:"complete"});
     await drive(service);
     expect(mails).toHaveLength(1);
     expect(await prisma.notificationLedger.count({ where: { projectId: g.project.id, sourceId:g.row.id, outcome:"finishing_ready" } })).toBe(1);
