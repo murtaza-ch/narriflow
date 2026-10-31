@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@prisma/client";
 import { contentPackSchema } from "@narriflow/validators";
@@ -7,6 +7,8 @@ import { appendExecutionDispatch } from "./execution-dispatch";
 import { workflowRunExecutionInputHash } from "./workflow-execution-input";
 import { clipSelectionBytesHash, decodeClipSelectionInput } from "./clip-selection-input";
 import { createClipSelectionPreparation, type ClipSelectionStorage } from "./clip-selection-preparation";
+import { createClipSelectionLifecycle } from "./clip-selection-window";
+import { createClipSelectionControl } from "./clip-selection-control";
 
 const url = process.env.SERVERLESS_TEST_DATABASE_URL;
 const dbDescribe = process.env.ALLOW_SERVERLESS_DB_TESTS === "1" && url ? describe : describe.skip;
@@ -23,6 +25,7 @@ dbDescribe("Frozen selection preparation", () => {
     await db.user.deleteMany({ where: { id: { in: users } } });
     await db.$disconnect();
   });
+  afterEach(async () => { await db.project.updateMany({ where: { workspace: { ownerUserId: { in: users } } }, data: { ingestStatus: "failed" } }); });
   async function fixture(sparse = false, captionOnly = false) {
     const user = await db.user.create({ data: { clerkId: `selection-preparation:${crypto.randomUUID()}` } }); users.push(user.id);
     const workspace = await db.workspace.create({ data: { ownerUserId: user.id, name: "Selection preparation" } });
@@ -92,5 +95,65 @@ dbDescribe("Frozen selection preparation", () => {
     expect((await raced.prepare(f.reference)).kind).toBe("superseded");
     expect(await db.clipSelectionWindow.count({ where: { workflowRunId: f.run.id } })).toBe(0);
     expect((await db.workflowRun.findUniqueOrThrow({ where: { id: f.run.id } })).status).toBe("queued");
+  });
+  test("the controller confirms watchdogs before a fresh paid start and reuses a completed private result without another POST", async () => {
+    const f = await fixture(), store = storageFixture();
+    const preparation = createClipSelectionPreparation({ database: db, storage: store.storage, provider });
+    const prepared = await preparation.prepare(f.reference);
+    if (prepared.kind !== "prepared") throw new Error("Selection was not prepared");
+    const lifecycle = createClipSelectionLifecycle({ database: db, maxInFlightRequests: 2, maxEstimatedTokens: 1_000_000 });
+    let providerCalls = 0, confirmed = false;
+    const control = createClipSelectionControl({ preparation, lifecycle, storage: store.storage, async deliver(ids) {
+      expect(ids.length).toBeGreaterThan(0); confirmed = true;
+    }, provider: { async generate(input) {
+      expect(confirmed).toBe(true); providerCalls++;
+      expect(input.configuration).toEqual(provider);
+      const current = await db.clipSelectionWindow.findUniqueOrThrow({ where: { id: prepared.windows[0]!.subject.id } });
+      expect(current.attemptCount).toBe(1);
+      expect((await db.executionAttempt.findUniqueOrThrow({ where: { attemptToken: current.attemptToken! } })).status).toBe("running");
+      return { kind: "completed", content: '{"clips":[]}', tokensUsed: 123, providerRequestId: "req_gate", rateLimitHeaders: {} };
+    } } });
+    expect(await control.runWindow(prepared.windows[0]!)).toEqual({ kind: "complete", outcome: "completed" });
+    expect(await control.runWindow(prepared.windows[0]!)).toEqual({ kind: "complete", outcome: "completed" });
+    expect(providerCalls).toBe(1);
+    const completed = await db.clipSelectionWindow.findUniqueOrThrow({ where: { id: prepared.windows[0]!.subject.id } });
+    expect(completed).toMatchObject({ status: "completed", attemptCount: 1, tokensUsed: 123 });
+    expect(store.objects.has(completed.resultStorageKey!)).toBe(true);
+    expect((await db.workflowRun.findUniqueOrThrow({ where: { id: f.run.id } }))).toMatchObject({ status: "waiting", attemptId: null, leaseExpiresAt: null });
+  });
+  test("failed scheduler confirmation spends no paid start and a corrupt private input fails before ownership", async () => {
+    for (const corrupt of [false, true]) {
+      const f = await fixture(), store = storageFixture();
+      const preparation = createClipSelectionPreparation({ database: db, storage: store.storage, provider });
+      const prepared = await preparation.prepare(f.reference);
+      if (prepared.kind !== "prepared") throw new Error("Selection was not prepared");
+      const lifecycle = createClipSelectionLifecycle({ database: db, maxInFlightRequests: 2, maxEstimatedTokens: 1_000_000 });
+      let providerCalls = 0;
+      const control = createClipSelectionControl({ preparation, lifecycle, storage: { ...store.storage, async read(reference) {
+        const bytes = await store.storage.read(reference); if (corrupt) bytes[0] = 0; return bytes;
+      } }, async deliver() { if (!corrupt) throw new Error("Scheduler unavailable"); }, provider: { async generate() { providerCalls++; throw new Error("Unexpected POST"); } } });
+      if (corrupt) expect(await control.runWindow(prepared.windows[0]!)).toEqual({ kind: "complete", outcome: "failed" });
+      else await expect(control.runWindow(prepared.windows[0]!)).rejects.toThrow("Scheduler unavailable");
+      expect(providerCalls).toBe(0);
+      expect((await db.clipSelectionWindow.findUniqueOrThrow({ where: { id: prepared.windows[0]!.subject.id } }))).toMatchObject({ attemptCount: 0, status: corrupt ? "failed" : "running" });
+      await db.project.update({ where: { id: f.project.id }, data: { ingestStatus: "failed" } });
+    }
+  });
+  test("a provider 429 persists its due time, revokes the old owner and never sends a second request from an old window delivery", async () => {
+    const f = await fixture(), store = storageFixture();
+    const preparation = createClipSelectionPreparation({ database: db, storage: store.storage, provider });
+    const prepared = await preparation.prepare(f.reference);
+    if (prepared.kind !== "prepared") throw new Error("Selection was not prepared");
+    const lifecycle = createClipSelectionLifecycle({ database: db, maxInFlightRequests: 2, maxEstimatedTokens: 1_000_000 });
+    let requests = 0;
+    const dueAt = new Date(Date.now() + 30_000);
+    const control = createClipSelectionControl({ preparation, lifecycle, storage: store.storage, async deliver() {}, provider: { async generate() {
+      requests++; return { kind: "retry", dueAt, code: "openai_request_failed", providerRequestId: "req_429", rateLimitHeaders: { "x-ratelimit-remaining-requests": "0" } };
+    } } });
+    expect(await control.runWindow(prepared.windows[0]!)).toEqual({ kind: "complete", outcome: "retried" });
+    expect(await control.runWindow(prepared.windows[0]!)).toEqual({ kind: "complete", outcome: "superseded" });
+    expect(requests).toBe(1);
+    expect((await db.clipSelectionWindow.findUniqueOrThrow({ where: { id: prepared.windows[0]!.subject.id } }))).toMatchObject({ status: "queued", generation: 2,
+      attemptCount: 1, attemptToken: null, executorOwner: null, retryAt: dueAt });
   });
 });

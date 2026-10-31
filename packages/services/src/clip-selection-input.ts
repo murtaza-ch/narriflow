@@ -39,7 +39,7 @@ export async function encodeClipSelectionResult(binding: ClipSelectionResultBind
     const clip = clipDetectionLlmResponseSchema.shape.clips.element.safeParse(raw);
     return clip.success ? [clip.data] : [];
   });
-  return encode(clipSelectionResultSchema.parse({ version: 1, ...binding, ...metadata, clips }), 1_048_576);
+  return encode(clipSelectionResultSchema.parse({ version: 1, ...binding, tokensUsed: metadata.tokensUsed, providerRequestId: metadata.providerRequestId, clips }), 1_048_576);
 }
 export async function decodeClipSelectionResult(bytes: Uint8Array, reference: { sha256: string; byteLength: number }, binding: ClipSelectionResultBinding) {
   const value = clipSelectionResultSchema.parse(await decode(bytes, reference, 1_048_576));

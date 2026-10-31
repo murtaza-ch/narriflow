@@ -557,6 +557,10 @@
     "./clip-detection-persistence": {
       "types": "./src/clip-detection-persistence.ts",
       "default": "./src/clip-detection-persistence.ts"
+    },
+    "./clip-selection-control": {
+      "types": "./src/clip-selection-control.ts",
+      "default": "./src/clip-selection-control.ts"
     }
   },
   "scripts": {

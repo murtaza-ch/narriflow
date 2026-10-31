@@ -7,9 +7,10 @@ export { buildCaptionOnlyTranscriptSlice, buildMarketCompliantClipCandidates, bu
   normalizeLlmClip, resolveCandidateCountTarget, resolveClipCountTarget, resolveDefaultClipCountTarget } from "./clip-selection-policy";
 export { createClipSelectionProvider, classifyOpenAiHttpFailure, type ClipSelectionProviderResult } from "./clip-selection-provider";
 export { createClipSelectionPreparation, type ClipSelectionPreparation, type ClipSelectionStorage } from "./clip-selection-preparation";
+export { createClipSelectionControl, type ClipSelectionControlPorts, type ClipSelectionControlResult } from "./clip-selection-control";
 export { buildClipSelectionPlan, finalizeClipSelectionCandidates, type ClipSelectionPlanInput, type ParallelClipSelectionPlan } from "./clip-selection-plan";
 export { createClipSelectionLifecycle, clipSelectionTranscriptHash, clipSelectionWindowResultKey, type ClipSelectionWindowAttempt,
-  type ClipSelectionWindowAdmission, type ClipSelectionWindowSettlement, type ClipSelectionObjectReference } from "./clip-selection-window";
+  type ClipSelectionWindowAdmission, type ClipSelectionWindowStart, type ClipSelectionWindowSettlement, type ClipSelectionObjectReference } from "./clip-selection-window";
 export {
 	boundedExpectedDomainFailureDetails,
 	ExpectedDomainFailureError,

@@ -103,7 +103,7 @@ export function createClipSelectionPreparation(config: { database: PrismaClient;
         const parentRegistration = await tx.executionDispatch.findFirstOrThrow({ where: { subjectKind: "workflow_run", subjectId: row.workflowRunId, kind: "operation_driver",
           deploymentEpoch: row.deploymentEpoch, generation: row.workflowGeneration, wakeKind: null, deadlineKind: null }, orderBy: { createdAt: "asc" } });
         const parent: ClipSelectionParent = { id: row.workflowRunId, projectId: row.projectId, generation: row.workflowGeneration, deploymentEpoch: row.deploymentEpoch, inputHash: parentRegistration.inputHash };
-        return { parent, selectionHash: row.selectionHash, windowIndex: row.windowIndex, startSec: row.startSec, endSec: row.endSec,
+        return { parent, status: row.status, selectionHash: row.selectionHash, windowIndex: row.windowIndex, startSec: row.startSec, endSec: row.endSec,
           input: { storageKey: row.inputStorageKey, etag: row.inputEtag, sha256: row.inputChecksumSha256, byteLength: Number(row.inputByteLength) } };
       });
     },

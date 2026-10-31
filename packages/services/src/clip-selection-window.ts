@@ -21,10 +21,11 @@ export interface ClipSelectionWindowAttempt {
   owner: string;
 }
 export type ClipSelectionWindowAdmission =
-  | { kind: "begun"; attempt: ClipSelectionWindowAttempt; input: ClipSelectionObjectReference; windowIndex: number; operationDeadlineAt: Date; leaseExpiresAt: Date; dispatchIds: string[] }
+  | { kind: "acquired"; attempt: ClipSelectionWindowAttempt; input: ClipSelectionObjectReference; windowIndex: number; operationDeadlineAt: Date; leaseExpiresAt: Date; dispatchIds: string[] }
   | { kind: "wait"; dueAt: Date; dispatchIds: string[] }
   | { kind: "completed" | "failed" | "cancelled" | "superseded"; dispatchIds: string[] };
 export type ClipSelectionWindowSettlement = { kind: "completed" | "retried" | "failed" | "cancelled" | "superseded"; dispatchIds: string[] };
+export type ClipSelectionWindowStart = { kind: "started" | "already_started"; now: Date; leaseExpiresAt: Date; operationDeadlineAt: Date } | { kind: "superseded" };
 
 async function sha256(value: string): Promise<string> {
   const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
@@ -231,12 +232,37 @@ export function createClipSelectionLifecycle(config: { database: PrismaClient; m
         const token = crypto.randomUUID(), leaseExpiresAt = new Date(Math.min(now.getTime() + 120_000, row.operationDeadlineAt.getTime()));
         await tx.executionAttempt.create({ data: { attemptToken: token, dispatchId: reference.dispatchId, deploymentEpoch: row.deploymentEpoch, generation: row.generation,
           inputHash: row.inputHash, functionName: "clip_selection_window", inputStorageKey: row.inputStorageKey, inputEtag: row.inputEtag, inputByteLength: row.inputByteLength,
-          inputChecksumSha256: row.inputChecksumSha256, owner: invocation.owner, leaseExpiresAt, operationDeadlineAt: row.operationDeadlineAt, status: "running", processStartedAt: now } });
+          inputChecksumSha256: row.inputChecksumSha256, owner: invocation.owner, leaseExpiresAt, operationDeadlineAt: row.operationDeadlineAt, status: "admitted" } });
         await tx.clipSelectionWindow.update({ where: { id: row.id }, data: { status: "running", attemptToken: token, executorOwner: invocation.owner, leaseExpiresAt,
-          attemptCount: { increment: 1 }, lastProviderStartedAt: now, errorCode: null, retryAt: null } });
+          lastProviderStartedAt: now, errorCode: null, retryAt: null } });
         const dispatchIds = [await leaseWake(tx, { ...row, leaseExpiresAt }, reference), ...await wakeHead(tx, row.deploymentEpoch, token, now)];
-        return { kind: "begun", attempt: { reference, token, owner: invocation.owner }, input: { storageKey: row.inputStorageKey, etag: row.inputEtag,
+        return { kind: "acquired", attempt: { reference, token, owner: invocation.owner }, input: { storageKey: row.inputStorageKey, etag: row.inputEtag,
           sha256: row.inputChecksumSha256, byteLength: Number(row.inputByteLength) }, windowIndex: row.windowIndex, operationDeadlineAt: row.operationDeadlineAt, leaseExpiresAt, dispatchIds };
+      });
+    },
+    /** Only a fresh started response authorizes one provider POST. */
+    async start(attempt: ClipSelectionWindowAttempt): Promise<ClipSelectionWindowStart> {
+      return transaction(async tx => {
+        const state = await lockClipSelectionWindow(tx, attempt.reference);
+        if (!state || state.row.status !== "running" || state.row.attemptToken !== attempt.token || state.row.executorOwner !== attempt.owner ||
+          state.row.leaseExpiresAt! <= state.now || state.row.operationDeadlineAt <= state.now) return { kind: "superseded" };
+        await tx.$queryRaw`SELECT "attemptToken" FROM "ExecutionAttempt" WHERE "attemptToken" = ${attempt.token}::uuid FOR UPDATE`;
+        const execution = await tx.executionAttempt.findUnique({ where: { attemptToken: attempt.token } });
+        if (!execution || execution.owner !== attempt.owner || execution.revokedAt || !["admitted", "running"].includes(execution.status) ||
+          !execution.leaseExpiresAt || execution.leaseExpiresAt <= state.now || execution.operationDeadlineAt <= state.now) return { kind: "superseded" };
+        const times = { now: state.now, leaseExpiresAt: execution.leaseExpiresAt, operationDeadlineAt: execution.operationDeadlineAt };
+        if (execution.processStartedAt) return { kind: "already_started", ...times };
+        if (state.row.attemptCount >= state.row.maxAttempts) return { kind: "superseded" };
+        await tx.executionAttempt.update({ where: { attemptToken: attempt.token }, data: { status: "running", processStartedAt: state.now } });
+        await tx.clipSelectionWindow.update({ where: { id: state.row.id }, data: { attemptCount: { increment: 1 } } });
+        return { kind: "started", ...times };
+      });
+    },
+    async rejectInput(reference: ExecutionDispatchReference): Promise<ClipSelectionWindowSettlement> {
+      return transaction(async tx => {
+        const state = await lockClipSelectionWindow(tx, reference);
+        if (!state || state.row.status !== "queued") return { kind: "superseded", dispatchIds: await replayWakes(tx, reference) };
+        return finish(tx, state.row, state.now, { failureCode: "selection_input_invalid" });
       });
     },
     async complete(attempt: ClipSelectionWindowAttempt, result: ClipSelectionObjectReference & { tokensUsed: number; providerRequestId: string | null }): Promise<ClipSelectionWindowSettlement> {
