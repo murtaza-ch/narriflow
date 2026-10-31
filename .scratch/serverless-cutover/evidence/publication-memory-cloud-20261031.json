@@ -1,0 +1,69 @@
+{
+  "date": "2026-10-31",
+  "scope": "Actual Cloudflare Worker 128MiB isolate, full API graph with 1082 routes retained. One, then two parallel, then one reads/decryptions of an exact16MiB encrypted assigned LinkedIn checkpoint. No database request or real provider call.",
+  "candidateVersion": "9af34932-93b0-4846-967e-4321529e30b6",
+  "probeVersion": "fd0e61ea-362b-4d1a-b777-6755492d8bb2",
+  "observations": [
+    {
+      "copies": 1,
+      "status": 200,
+      "wallMs": 1347,
+      "runtime": "cloudflare-workerd",
+      "isolateId": "8454a458-f0b8-4515-ada6-127732d6e36c",
+      "results": [
+        {
+          "byteLength": 16777216,
+          "instructions": 2200,
+          "totalBytes": 9227468800
+        }
+      ],
+      "productionRouteCount": 1082,
+      "databaseRequests": 0
+    },
+    {
+      "copies": 2,
+      "status": 200,
+      "wallMs": 1029,
+      "runtime": "cloudflare-workerd",
+      "isolateId": "8454a458-f0b8-4515-ada6-127732d6e36c",
+      "results": [
+        {
+          "byteLength": 16777216,
+          "instructions": 2200,
+          "totalBytes": 9227468800
+        },
+        {
+          "byteLength": 16777216,
+          "instructions": 2200,
+          "totalBytes": 9227468800
+        }
+      ],
+      "productionRouteCount": 1082,
+      "databaseRequests": 0
+    },
+    {
+      "copies": 1,
+      "status": 200,
+      "wallMs": 892,
+      "runtime": "cloudflare-workerd",
+      "isolateId": "8454a458-f0b8-4515-ada6-127732d6e36c",
+      "results": [
+        {
+          "byteLength": 16777216,
+          "instructions": 2200,
+          "totalBytes": 9227468800
+        }
+      ],
+      "productionRouteCount": 1082,
+      "databaseRequests": 0
+    }
+  ],
+  "sameIsolateAfterPair": true,
+  "rawEvidence": "/tmp/narriflow-serverless-gates/publication-memory-full-cloud-reuse.log",
+  "limits": "Supports this bounded checkpoint and concurrency case. Does not establish safety under arbitrary concurrent mixed requests. Temporary closed-candidate RPC must be removed before release.",
+  "fixtureCleanup": {
+    "exactKeyDeleted": true,
+    "accountVerified": true,
+    "unrelatedObjectsEnumerated": 0
+  }
+}
