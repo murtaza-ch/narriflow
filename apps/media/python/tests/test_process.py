@@ -122,6 +122,20 @@ class OwnedProcessTests(unittest.TestCase):
         self.assertEqual(str(failure.exception), "media_process_start_unconfirmed")
         self.assert_pid_stopped(children[0])
 
+    def test_confirmed_start_retains_the_exit_result_when_the_child_finishes_during_acknowledgement(self):
+        starts = []
+        def acknowledge(pid):
+            starts.append(pid)
+            time.sleep(2.5)
+        result = run_owned_process([sys.executable, '-c', "print('finished');raise SystemExit(7)"],
+                                   input_bytes=b'withheld-work', timeout_seconds=5,
+                                   kill_grace_seconds=0.1, on_start=acknowledge)
+        self.assertEqual(len(starts), 1)
+        self.assertEqual(result.returncode, 7)
+        self.assertEqual(result.stdout, b'finished\n')
+        self.assertEqual(result.stderr, b'')
+        self.assert_pid_stopped(starts[0])
+
     def test_cli_work_command_is_withheld_until_the_actual_start_acknowledgement_succeeds(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'received-command'
