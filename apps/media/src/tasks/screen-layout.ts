@@ -49,7 +49,7 @@ export interface PipRect {
  *  `pip_detect.py` against `extractFaceDetectionSegment`'s 360p CRF-30
  *  ultrafast proxy, never the raw file, whenever the source is an HTTP(S)
  *  presigned URL (the common case). Recalibrated through that SAME proxy
- *  (`apps/worker/scripts/pip_calibrate.sh`, run over the 7 synthetic
+ *  (`apps/media/python/detectors/pip_calibrate.sh`, run over the 7 synthetic
  *  screencast fixtures + the real talking-head control `jensen-0-90.mp4` —
  *  see `docs/plans/vizard-parity.md`'s landed note for the full raw-vs-proxy
  *  table): proxy `movingPxFrac` measured 0.0000-0.0509 across all 7

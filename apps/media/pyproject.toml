@@ -1,0 +1,15 @@
+[build-system]
+requires = ["hatchling==1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "narriflow-media"
+version = "0.0.0"
+requires-python = "==3.13.5"
+dependencies = []
+
+[project.optional-dependencies]
+deploy = ["modal==1.2.6"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["python/narriflow_media"]
