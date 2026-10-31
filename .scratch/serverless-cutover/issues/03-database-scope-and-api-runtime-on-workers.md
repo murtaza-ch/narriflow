@@ -16,4 +16,11 @@
 
 The request/step-scoped engine-free Prisma runtime is implemented. [Deployed isolated Hyperdrive evidence](../evidence/hyperdrive-transactions-20261031.json) proves seven checks through the configured uncached Hyperdrive: interactive transactions, advisory and row-lock exclusion, commit visibility, rollback, server statement cancellation, and a healthy query after cancellation. The separate idle Hyperdrive was not queried.
 
-Every mounted route, final native import closure, and full candidate deployment verification remain open; this ticket remains claimed.
+Every mounted route and full candidate deployment verification remain open; this ticket remains claimed.
+
+The final native import closure now passes the actual Wrangler dry bundle audit:
+no forbidden packages, native service imports, or old-worker modules are emitted.
+Callback transport moved to the native signed-notification executor; API
+handlers retain pure structural URL policy and Worker-side HMAC only.
+[Notification/runtime evidence](../evidence/outbound-notification-20261031.json).
+Every mounted route and final deployed/resource verification remain open.

@@ -1,3 +1,4 @@
+import { developerCommands } from "@narriflow/services/developer-commands-runtime";
 import { bindServiceTestEnvironment } from "@narriflow/services/runtime-test-support";
 import { createDatabaseTestContext } from "@narriflow/db/testing";
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
@@ -66,7 +67,7 @@ function harness(options: { scopes?: string[]; limiter?: RateLimitResult; authFa
       const count = failures.get(key) ?? 0;
       return { allowed: count < limit, availability: "available", remaining: Math.max(0, limit - count), limit };
     }, trustedClientIpHeader: "x-real-ip", apiOrigin: () => "https://api.narriflow.test", webOrigin: () => "https://narriflow.test", corsAllowedOrigins: ["https://narriflow.test"],
-    callbackResolver: async () => [{ address: "93.184.216.34", family: 4 }], log: (entry) => logs.push(entry) }));
+    log: (entry) => logs.push(entry) }));
   const call = (path: string, init: RequestInit & { key?: string | null; idempotencyKey?: string; json?: unknown } = {}) => {
     const headers = new Headers(init.headers);
     if (init.key !== null) headers.set("authorization", `Bearer ${init.key ?? SECRET}`);
@@ -97,8 +98,8 @@ describe("REST v1 OpenAPI document", () => {
     expect(endpoints).toMatchSnapshot();
   }));
 
-  test("changes only additively: the whole document is snapshotted", bindServiceTestEnvironment(async () => {
-    // Review any diff here: v1 may add operations or optional fields, never remove or tighten them.
+  test("the whole public document is snapshotted for review", bindServiceTestEnvironment(async () => {
+    // Review the complete public contract when changing routes or schemas.
     expect(await (await harness().call("/openapi.json", { key: null })).json()).toMatchSnapshot();
   }));
 });
@@ -672,7 +673,7 @@ describe("REST v1 webhooks", () => {
   test("delete, enable, and test act on the key's Workspace and report unknown webhooks as 404", bindServiceTestEnvironment(async () => {
     const deleted = spy(webhookSubscriptions, "delete").mockResolvedValue({ webhookId: WEBHOOK_ID } as never);
     const enabled = spy(webhookSubscriptions, "enable").mockResolvedValue(view as never);
-    const tested = spy(webhookSubscriptions, "test").mockResolvedValue({ eventId: WEBHOOK_ID, delivered: true, status: 200, durationMs: 12 } as never);
+    const tested = spy(developerCommands, "testWebhook").mockResolvedValue({result:{deliveryId:WEBHOOK_ID,eventId: WEBHOOK_ID,state:"pending",status:null,durationMs:null},replayed:false} as never);
     const { call, requireActor } = harness({ scopes: ["processing:write"] });
 
     const remove = await call(`/webhooks/${WEBHOOK_ID}`, { method: "DELETE" });
@@ -685,10 +686,10 @@ describe("REST v1 webhooks", () => {
     expect(await enable.json()).toEqual({ webhook: view });
     expect(enabled).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: WORKSPACE_ID }), WEBHOOK_ID, expect.objectContaining({ scopes: ["processing:write"] }));
 
-    const test = await call(`/webhooks/${WEBHOOK_ID}/test`, { method: "POST" });
-    expect(test.status).toBe(200);
-    expect(await test.json()).toEqual({ eventId: WEBHOOK_ID, delivered: true, status: 200, durationMs: 12 });
-    expect(tested).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: WORKSPACE_ID }), WEBHOOK_ID, expect.objectContaining({ scopes: ["processing:write"] }));
+    const test = await call(`/webhooks/${WEBHOOK_ID}/test`, { method: "POST", idempotencyKey:"test-intent" });
+    expect(test.status).toBe(202);
+    expect(await test.json()).toEqual({deliveryId:WEBHOOK_ID,eventId:WEBHOOK_ID,state:"pending",status:null,durationMs:null});
+    expect(tested).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: WORKSPACE_ID }), WEBHOOK_ID, expect.objectContaining({clientIdempotencyKey:"test-intent"}),expect.objectContaining({ scopes: ["processing:write"] }));
     expect(requireActor).toHaveBeenCalledWith(USER_ID, WORKSPACE_ID, "processing.consume");
 
     const reader = harness({ scopes: ["projects:read"] });
@@ -706,20 +707,26 @@ describe("REST v1 webhooks", () => {
   test("enable and test hand the key's scopes to the service, which refuses event types the key may not read", bindServiceTestEnvironment(async () => {
     const refusal = new ExpectedDomainFailureError({ code: "scope_required", kind: "forbidden", message: "This credential requires the publishing:read scope", details: { scope: "publishing:read" } });
     const enabled = spy(webhookSubscriptions, "enable").mockRejectedValue(refusal);
-    const tested = spy(webhookSubscriptions, "test").mockRejectedValue(refusal);
+    const tested = spy(developerCommands, "testWebhook").mockRejectedValue(refusal);
     const { call } = harness({ scopes: ["processing:write"] });
     for (const action of ["enable", "test"]) {
-      const response = await call(`/webhooks/${WEBHOOK_ID}/${action}`, { method: "POST" });
+      const response = await call(`/webhooks/${WEBHOOK_ID}/${action}`, { method: "POST",idempotencyKey:"test-intent" });
       expect(`${action} ${response.status}`).toBe(`${action} 403`);
       expect(await response.json()).toMatchObject({ error: "scope_required", details: { scope: "publishing:read" } });
     }
     expect(enabled.mock.calls[0]![2]).toMatchObject({ scopes: ["processing:write"] });
-    expect(tested.mock.calls[0]![2]).toMatchObject({ scopes: ["processing:write"] });
+    expect(tested.mock.calls[0]![3]).toMatchObject({ scopes: ["processing:write"] });
+  }));
+
+  test("reads a test result under the key's Workspace without caching the result",bindServiceTestEnvironment(async()=>{
+   const status=spy(webhookSubscriptions,"testStatus").mockResolvedValue({deliveryId:WEBHOOK_ID,eventId:WEBHOOK_ID,state:"delivered",status:204,durationMs:4});
+   const response=await harness({scopes:["processing:write"]}).call(`/webhooks/${WEBHOOK_ID}/tests/${WEBHOOK_ID}`);
+   expect(response.status).toBe(200);expect(response.headers.get("cache-control")).toBe("no-store");expect(status).toHaveBeenCalledWith(expect.objectContaining({workspaceId:WORKSPACE_ID}),WEBHOOK_ID,WEBHOOK_ID,expect.objectContaining({scopes:["processing:write"]}));
   }));
 
   test("a test sent again within five seconds is a 429 with Retry-After", bindServiceTestEnvironment(async () => {
-    spy(webhookSubscriptions, "test").mockRejectedValue(new ExpectedDomainFailureError({ code: "webhook_test_throttled", kind: "rate_limited", message: "Wait a few seconds", retryAfterSeconds: 5 }));
-    const response = await harness().call(`/webhooks/${WEBHOOK_ID}/test`, { method: "POST" });
+    spy(developerCommands, "testWebhook").mockRejectedValue(new ExpectedDomainFailureError({ code: "webhook_test_throttled", kind: "rate_limited", message: "Wait a few seconds", retryAfterSeconds: 5 }));
+    const response = await harness().call(`/webhooks/${WEBHOOK_ID}/test`, { method: "POST", idempotencyKey:"test-intent" });
     expect(response.status).toBe(429);
     expect(response.headers.get("Retry-After")).toBe("5");
     expect(await response.json()).toMatchObject({ error: "webhook_test_throttled", retryAfterSeconds: 5 });

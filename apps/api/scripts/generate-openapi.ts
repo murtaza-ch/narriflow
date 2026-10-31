@@ -9,7 +9,7 @@ if (process.argv.includes("--check")) {
   if (normalize(document) !== normalize(committed)) {
     throw new Error("Public OpenAPI artifact is stale. Run bun run --cwd apps/api openapi:generate");
   }
-  console.log("Public OpenAPI artifact matches all 31 REST operations");
+  console.log("Public OpenAPI artifact matches all 32 REST operations");
 } else {
   await writeFile(artifact, `${JSON.stringify(document, null, 2)}\n`);
   console.log("Generated packages/api-client/src/openapi/public-v1.json");

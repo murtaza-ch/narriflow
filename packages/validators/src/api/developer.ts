@@ -71,9 +71,10 @@ export interface WebhookEnabledResult {
 /** `POST /api/workspace/webhooks/:webhookId/test`. */
 export interface WebhookTestResult {
   eventId: string;
-  delivered: boolean;
+  deliveryId: string;
+  state: "pending" | "delivered" | "unconfirmed";
   status: number | null;
-  durationMs: number;
+  durationMs: number | null;
 }
 
 /**

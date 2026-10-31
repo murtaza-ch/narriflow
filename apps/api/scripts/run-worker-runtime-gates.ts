@@ -46,7 +46,7 @@ try {
   checks.push("clerk_authorized_party");
   assert.deepEqual(await (await worker.fetch("/scope")).json(), { fixture: "isolated-local-runtime" });
   checks.push("invocation_settings");
-  const body = '{ "type" : "speech_to_text_transcription", "data": { "request_id": "gate", "webhook_metadata": { "workflowRunId": "run", "attemptId": "attempt" }, "transcription": { "transcription_id": "gate", "text": "\\u0061" } } }\n';
+  const body = '{ "type" : "speech_to_text_transcription", "data": { "request_id": "gate", "webhook_metadata": { "workflowRunId": "10000000-0000-4000-8000-000000000001", "attemptId": "20000000-0000-4000-8000-000000000001", "deploymentEpoch": 1, "sourceRevision": 1, "sourceAudioId": null }, "transcription": { "transcription_id": "gate", "text": "\\u0061" } } }\n';
   const digest = createHmac("sha256", webhookSecret).update(`${now}.`).update(body).digest("hex");
   const headers = { "content-type": "application/json", "elevenlabs-signature": `t=${now},v0=${digest}` };
   const exact = await worker.fetch("/api/webhooks/elevenlabs", { method: "POST", headers, body });

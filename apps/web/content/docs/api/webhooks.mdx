@@ -43,7 +43,9 @@ Use a webhook for work no request of yours started, such as an Autopilot import.
     The key needs the `processing:write` scope. `social_post.proposed` and `social_post.finished` also need `publishing:read`.
   </Step>
   <Step title="Send a test event">
-    `POST /webhooks/{id}/test` sends one `webhook.test` event now and returns your server's HTTP status. Test events are not part of the feed and don't move the webhook forward. A webhook takes one test every 5 seconds; a second one sooner returns `429 webhook_test_throttled`.
+    Send `POST /webhooks/{id}/test` with an `Idempotency-Key`. It returns `202` with a `deliveryId` after the test is queued. Read `GET /webhooks/{id}/tests/{deliveryId}` until its `state` is `delivered` or `unconfirmed`; `status` contains the confirmed HTTP response when available. Retrying the POST with the same key observes the same test.
+
+    Test events are not part of the feed and don't move the webhook forward. A webhook takes one new test every 5 seconds; a second one sooner returns `429 webhook_test_throttled`.
   </Step>
 </Steps>
 

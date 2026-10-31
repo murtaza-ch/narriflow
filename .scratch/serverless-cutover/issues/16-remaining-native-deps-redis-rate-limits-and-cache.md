@@ -23,10 +23,17 @@ Thumbnail requests now use a targeted fenced domain and the same owned media CLI
 
 RSS preview/import now use a frozen OutboundProbe and private sealed result. The native owner performs pinned DNS/HTTP and bounded parsing; browser commands await pending status without holding SQL. Fresh-schema publication/member-revocation gates, native transport tests and the actual Next upload screen pass. [Outbound RSS evidence](../evidence/outbound-rss-20261031.json).
 
-Generated image publication now stages an immutable private source and parks its parent on native validation. Validated asset adoption, the parent terminal result and generation usage finalization commit together. Lost upload acknowledgments recover the exact source, and cancellation prevents late publication. The dry bundle has no forbidden packages; URL-guard native transport is its remaining service import blocker. [Generated-image evidence](../evidence/generated-image-validation-20261031.json).
+Generated image publication now stages an immutable private source and parks its parent on native validation. Validated asset adoption, the parent terminal result and generation usage finalization commit together. Lost upload acknowledgments recover the exact source, and cancellation prevents late publication. The dry bundle has no forbidden packages. [Generated-image evidence](../evidence/generated-image-validation-20261031.json).
 
 Drive token and metadata calls now use fixed-origin Worker fetch, refuse redirects and keep bounded responses. Actual Drive downloads retain the native pinned transport. [Drive boundary evidence](../evidence/drive-worker-boundary-20261031.json).
 
-Remaining: connect signed HTTP/Workflow/Modal runtime and durable provider/maintenance commands, move callback delivery off service-native URL-guard, clear the final import audit, and run deployed/resource gates. This ticket remains claimed.
+Remaining: connect signed HTTP/Workflow/Modal runtime and durable provider/maintenance commands, and run deployed/resource gates. This ticket remains claimed.
 
 The configured generated-image response cap is not yet cleared for edge memory. Local workerd completed all tested sizes through 100,000,000 bytes while reporting heap above the documented edge limit; this is evidence that local success cannot certify that limit. Provider fetch/decode/staging must move into bounded native execution or pass an equivalent deployed resource gate without reducing the cap. [Measured memory report](../evidence/image-provider-memory-20261031.md).
+
+Callback delivery now uses frozen OutboundDelivery subjects and the bounded
+native notification command. The service-native URL guard and polling loops
+are removed. The candidate bundle audit passes with no forbidden or native
+service modules. [Notification evidence](../evidence/outbound-notification-20261031.json).
+Platform composition, resource gates and generated-provider native offload
+remain required; this ticket remains claimed.

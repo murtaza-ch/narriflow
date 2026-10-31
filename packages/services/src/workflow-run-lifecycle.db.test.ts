@@ -41,7 +41,8 @@ import { notificationService } from "./notification.service";
 import { clipService } from "./clip.service";
 import { projectService } from "./project.service";
 import { workspaceLibraryService } from "./workspace-library.service";
-import { createCallbackCipher, createCompletionCallbackProcessor } from "./completion-callback";
+import { createCallbackCipher } from "./completion-callback";
+import { OutboundDeliveryService } from "./outbound-delivery";
 import { createOperationStatusReader } from "./operation-status";
 
 const databaseUrl = process.env.WORKFLOW_TEST_DATABASE_URL;
@@ -2767,8 +2768,9 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     const exported = await prisma.clipExport.create({ data: { workspaceId: workspace.id, projectId: project.id, clipId: clip.id, editorRevision: 0, fingerprint: randomUUID(), resolution: "1080p", watermark: false } });
     const variant = await prisma.clipExportVariant.create({ data: { exportId: exported.id, aspectRatio: "ratio_9_16", resolution: "1080p", watermark: false } });
     const render = await prisma.clipRender.create({ data: { clipId: clip.id, aspectRatio: "ratio_9_16", exportVariantId: variant.id } });
-    const callback = await prisma.completionCallback.create({ data: { workspaceId: workspace.id, operationKind: "export", operationId: exported.id, receiptId: randomUUID(), encryptedUrl: "unused", urlHost: "example.test", urlFingerprint: randomUUID(), eventId: randomUUID() } });
-    const observer = createCompletionCallbackProcessor({ prisma, readTrusted: createOperationStatusReader(prisma).readTrusted, leaseOwner: randomUUID(), cipher: createCallbackCipher("workflow-callback-test-key") });
+    const callback = await prisma.completionCallback.create({ data: { workspaceId: workspace.id, operationKind: "export", operationId: exported.id, receiptId: randomUUID(), encryptedUrl: "unused", urlHost: "example.test", urlFingerprint: "a".repeat(64), eventId: randomUUID() } });
+    const sourceBodies=new Map<string,Uint8Array>();
+    const observer = new OutboundDeliveryService(prisma,{readTrusted:createOperationStatusReader(prisma).readTrusted,cipher:createCallbackCipher("workflow-callback-test-key"),register:async()=>{},body:{put:async(plan,bytes)=>{sourceBodies.set(plan.storageKey,bytes);},head:async plan=>sourceBodies.has(plan.storageKey)?{etag:'"body"',sha256:plan.sha256,byteLength:plan.byteLength}:null,read:async()=>{throw new Error("No native execution in lifecycle freeze test");}}});
     const sibling = ending === "partial success" ? await prisma.clipRender.create({ data: { clipId: clip.id, aspectRatio: "ratio_1_1" } }) : null;
     const { lifecycle, attempt } = await claimRenderAttempt();
     await lifecycle.beginRenderWorkSet(attempt);
@@ -2779,7 +2781,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     }
     if (ending !== "retry success") await prisma.renderGroup.updateMany({ where: { workflowRunId: run.id }, data: { chargedAttemptCount: 3 } });
     await lifecycle.failClipRenderVariant(attempt, render.id, "storage_temporarily_unavailable", "retryable");
-    expect(await observer.observe()).toBe(0);
+    expect((await observer.prepareCompletion(callback.id)).kind).toBe("waiting");
     expect(await prisma.completionCallback.findUniqueOrThrow({ where: { id: callback.id } })).toMatchObject({ state: "waiting", payload: null });
     expect(await prisma.clipExport.findUniqueOrThrow({ where: { id: exported.id } })).toMatchObject({ status: "rendering", completedAt: null });
     expect(await lifecycle.settleRenderWorkSet(attempt)).toMatchObject({ status: ending === "retry success" ? "pending" : ending === "partial success" ? "partial" : "failed" });
@@ -2793,7 +2795,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
       await retry.lifecycle.settleRenderWorkSet(retry.attempt);
     }
     await prisma.completionCallback.update({ where: { id: callback.id }, data: { nextObservationAt: new Date(Date.now() - 1000) } });
-    expect(await observer.observe()).toBe(1);
+    expect((await observer.prepareCompletion(callback.id)).kind).toBe("accepted");
     expect(await prisma.clipExport.findUniqueOrThrow({ where: { id: exported.id } })).toMatchObject({ status: ending === "retry success" ? "ready" : "failed", completedAt: expect.any(Date) });
     expect(await prisma.completionCallback.findUniqueOrThrow({ where: { id: callback.id } })).toMatchObject({ state: "pending", payload: { data: { state: ending === "retry success" ? "completed" : "failed" } } });
   })));

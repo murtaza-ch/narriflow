@@ -102,7 +102,7 @@ suite("Fenced notification deliveries", () => {
 				workspaceId: workspace.id,
 				createdByUserId: user.id,
 				...registration,
-				types: ["project.ready"],
+				types: ["operation.finished"],
 				lastDeliveredSeq: 0n,
 			},
 		});
@@ -285,7 +285,7 @@ suite("Fenced notification deliveries", () => {
 				data: {
 					workspaceId: f.scope.workspaceId,
 					seq,
-					type: "project.ready",
+					type: "operation.finished",
 					subject: { projectId: crypto.randomUUID() },
 					occurredAt: new Date(),
 					dedupeKey: crypto.randomUUID(),
@@ -356,7 +356,7 @@ suite("Fenced notification deliveries", () => {
 				data: {
 					workspaceId: f.scope.workspaceId,
 					seq: BigInt(n),
-					type: "project.ready",
+					type: "operation.finished",
 					subject: { projectId: crypto.randomUUID() },
 					occurredAt: new Date(),
 					dedupeKey: crypto.randomUUID(),
@@ -572,5 +572,201 @@ suite("Fenced notification deliveries", () => {
 			where: { id: callback.id },
 		});
 		expect(JSON.stringify(parent.payload)).toBe(frozen);
+	});
+	test("physical attempt exhaustion after plan holds preserves the actual failure counter until explicit re-enable", async () => {
+		const f = await fixture();
+		await events(f, 1);
+		const admitted = await f.service.prepareSubscription(f.sub.id);
+		if (admitted.kind !== "accepted") throw new Error("Missing event");
+		await db.outboundDelivery.update({
+			where: { id: admitted.deliveryId },
+			data: { chargedAttempts: 20 },
+		});
+		await db.webhookSubscription.update({
+			where: { id: f.sub.id },
+			data: { consecutiveFailures: 2 },
+		});
+		const row = await db.outboundDelivery.findUniqueOrThrow({
+			where: { id: admitted.deliveryId },
+		});
+		const d = await db.executionDispatch.findFirstOrThrow({
+			where: {
+				subjectKind: "outbound_delivery",
+				subjectId: row.id,
+				kind: "operation_driver",
+				generation: row.generation,
+				wakeKind: null,
+				deadlineKind: null,
+			},
+		});
+		expect(
+			(
+				await f.service.prepareExecution(
+					(await readExecutionDispatch(db, d.id))!.reference,
+				)
+			).kind,
+		).toBe("terminal");
+		const sub = await db.webhookSubscription.findUniqueOrThrow({
+			where: { id: f.sub.id },
+		});
+		expect(sub.status).toBe("disabled");
+		expect(sub.disabledReason).toBe("delivery_attempts_exhausted");
+		expect(sub.consecutiveFailures).toBe(2);
+		expect(sub.lastDeliveredSeq).toBe(0n);
+		expect((await f.service.prepareSubscription(sub.id)).kind).toBe("terminal");
+		await db.webhookSubscription.update({
+			where: { id: sub.id },
+			data: {
+				status: "active",
+				disabledReason: null,
+				disabledAt: null,
+				consecutiveFailures: 0,
+				skipExpiredOnResume: true,
+				nextAttemptAt: new Date(),
+			},
+		});
+		const next = await f.service.prepareSubscription(sub.id);
+		if (next.kind !== "accepted") throw new Error("Missing explicit new round");
+		expect(next.deliveryId).not.toBe(row.id);
+		expect(
+			(await db.outboundDelivery.findUniqueOrThrow({ where: { id: row.id } }))
+				.chargedAttempts,
+		).toBe(20);
+	});
+	test("an API-key test keeps processing admission and loses native authority immediately when that key is revoked", async () => {
+		const f = await fixture();
+		const editor = await db.user.create({
+			data: { clerkId: `rest-test:${crypto.randomUUID()}` },
+		});
+		await db.workspaceMember.create({
+			data: {
+				workspaceId: f.scope.workspaceId,
+				userId: editor.id,
+				role: "editor",
+			},
+		});
+		const key = await db.apiKey.create({
+			data: {
+				workspaceId: f.scope.workspaceId,
+				userId: f.scope.actorUserId,
+				createdByUserId: editor.id,
+				name: "Native test",
+				prefix: `gate_${crypto.randomUUID()}`,
+				hashedSecret: "gate",
+				scopes: ["processing:write"],
+			},
+		});
+		const scope = { workspaceId: f.scope.workspaceId, actorUserId: editor.id };
+		const accepted = await f.service.admitTest(scope, f.sub.id, "rest-editor", {
+			capability: "processing.consume",
+			apiKeyId: key.id,
+		});
+		const x = await executeFixture(f, accepted.deliveryId);
+		await x.command({ action: "process-start", fence: x.fence });
+		await db.apiKey.update({
+			where: { id: key.id },
+			data: { revokedAt: new Date() },
+		});
+		await expect(x.control.authorize(x.fence)).rejects.toMatchObject({
+			code: "authority_lost",
+		});
+		expect(
+			(
+				await db.outboundDelivery.findUniqueOrThrow({
+					where: { id: accepted.deliveryId },
+				})
+			).status,
+		).toBe("processing");
+		expect(
+			(await x.command({ action: "read-disposition", fence: x.fence }))
+				.disposition,
+		).toBe("cancelled");
+		expect(
+			(
+				await db.outboundDelivery.findUniqueOrThrow({
+					where: { id: accepted.deliveryId },
+				})
+			).status,
+		).toBe("cancelled");
+	});
+	test("a sealed active body does not depend on retained event bytes during replay; expiry cancels before any native start", async () => {
+		const f = await fixture();
+		await events(f, 1);
+		const first = await f.service.prepareSubscription(f.sub.id);
+		if (first.kind !== "accepted") throw new Error("Missing delivery");
+		await db.workspaceEvent.deleteMany({
+			where: { workspaceId: f.scope.workspaceId },
+		});
+		expect(await f.service.prepareSubscription(f.sub.id)).toEqual(first);
+		const row = await db.outboundDelivery.findUniqueOrThrow({
+			where: { id: first.deliveryId },
+		});
+		const dispatch = await db.executionDispatch.findFirstOrThrow({
+			where: {
+				kind: "operation_driver",
+				subjectKind: "outbound_delivery",
+				subjectId: row.id,
+				generation: row.generation,
+				wakeKind: null,
+				deadlineKind: null,
+			},
+		});
+		expect(
+			(
+				await f.service.prepareExecution(
+					(await readExecutionDispatch(db, dispatch.id))!.reference,
+				)
+			).kind,
+		).toBe("terminal");
+		const current = await db.outboundDelivery.findUniqueOrThrow({
+			where: { id: row.id },
+		});
+		expect(current.status).toBe("cancelled");
+		expect(current.chargedAttempts).toBe(0);
+		const sub = await db.webhookSubscription.findUniqueOrThrow({
+			where: { id: f.sub.id },
+		});
+		expect(sub.disabledReason).toBe("cursor_expired");
+		expect(sub.lastDeliveredSeq).toBe(0n);
+	});
+	test.each([
+		"social_post.proposed",
+		"social_post.finished",
+	])("a current key that loses publishing:read cannot authorize a %s test", async (type) => {
+		const f = await fixture();
+		await db.webhookSubscription.update({
+			where: { id: f.sub.id },
+			data: { types: [type] },
+		});
+		const key = await db.apiKey.create({
+			data: {
+				workspaceId: f.scope.workspaceId,
+				userId: f.scope.actorUserId,
+				createdByUserId: f.scope.actorUserId,
+				name: "Publishing test",
+				prefix: `gate_${crypto.randomUUID()}`,
+				hashedSecret: "gate",
+				scopes: ["processing:write", "publishing:read"],
+			},
+		});
+		const accepted = await f.service.admitTest(
+			f.scope,
+			f.sub.id,
+			"publishing-scope",
+			{ capability: "processing.consume", apiKeyId: key.id },
+		);
+		const x = await executeFixture(f, accepted.deliveryId);
+		await x.command({ action: "process-start", fence: x.fence });
+		await db.apiKey.update({
+			where: { id: key.id },
+			data: { scopes: ["processing:write"] },
+		});
+		await expect(x.control.authorize(x.fence)).rejects.toMatchObject({
+			code: "authority_lost",
+		});
+		expect(
+			(await x.command({ action: "read-disposition", fence: x.fence }))
+				.disposition,
+		).toBe("cancelled");
 	});
 });
