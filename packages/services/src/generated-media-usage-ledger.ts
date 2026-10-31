@@ -224,7 +224,7 @@ export async function releaseGenerationUsage(
  */
 export async function releaseFailedDubUsage(
   tx: Tx,
-  input: { projectId: string; attemptId: string; reason: string; includeProcessing?: boolean },
+  input: { projectId: string; workflowRunId: string; attemptId: string; reason: string; includeProcessing?: boolean },
 ) {
   const project = await tx.project.findUnique({ where: { id: input.projectId }, select: { workspaceId: true } });
   if (!project) return 0;
@@ -232,6 +232,7 @@ export async function releaseFailedDubUsage(
   const failed = await tx.clipDub.findMany({
     where: {
       projectId: input.projectId,
+      workflowRunId: input.workflowRunId,
       workflowAttemptId: input.attemptId,
       status: input.includeProcessing ? { in: ["processing", "failed"] } : "failed",
     },

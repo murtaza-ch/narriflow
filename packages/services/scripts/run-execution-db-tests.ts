@@ -64,11 +64,17 @@ try {
       SOCIAL_PUBLICATION_TEST_DATABASE_URL: testUrl.toString(),
       SOCIAL_PUBLICATION_TEST_DATABASE_SCHEMA: schema,
     } : {}),
-    ...(tests.some(path => ["generation-usage", "review-access"].some(name => path === `packages/services/src/${name}.db.test.ts`)) ? {
+    ...(tests.some(path => ["generation-usage", "review-access", "autopilot", "zoom", "vizard-expansion"].some(name => path === `packages/services/src/${name}.db.test.ts`)) ? {
       ALLOW_VIZARD_EXPANSION_DB_TESTS: "1",
       REVIEW_ACCESS_SECRET: "serverless-review-delivery-isolated-fixture-secret",
       VIZARD_EXPANSION_TEST_DATABASE_URL: testUrl.toString(),
       VIZARD_EXPANSION_TEST_DATABASE_SCHEMA: schema,
+      SOCIAL_TOKEN_ENCRYPTION_KEY: "vizard-expansion-test-encryption-key-not-a-secret",
+      ZOOM_CLIENT_ID: "zoom-test-client",
+      ZOOM_CLIENT_SECRET: "zoom-test-secret",
+      ZOOM_WEBHOOK_SECRET_TOKEN: "zoom-test-webhook",
+      META_CLIENT_ID: "vizard-meta-client",
+      META_CLIENT_SECRET: "vizard-meta-secret",
     } : {}),
     ...(tests.includes("packages/services/src/workspace-billing.db.test.ts") ? {
       ALLOW_WORKSPACE_BILLING_DB_TESTS: "1",
