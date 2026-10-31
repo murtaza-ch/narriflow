@@ -35,14 +35,14 @@ export const WORKFLOW_LEASE_DURATION_MS = 2 * 60 * 1000;
 export const WORKFLOW_HEARTBEAT_INTERVAL_MS = 30 * 1000;
 /** How long a stopping worker lets in-flight handlers finish
  * (`WORKER_SHUTDOWN_DRAIN_MS`, 30s by default). */
-export function workerShutdownDrainMs(env: Record<string, string | undefined> = process.env): number {
+export function workerShutdownDrainMs(env: Record<string, string | undefined> = {}): number {
   const configured = Number(env.WORKER_SHUTDOWN_DRAIN_MS ?? "30000");
   return Number.isFinite(configured) && configured > 0 ? configured : 30_000;
 }
 /** A released attempt's aborted handler may still be finishing an unfenced
  * provider call until the shutdown drain ends, so peers wait exactly that long
  * before claiming it. */
-export const WORKFLOW_RELEASE_GRACE_MS = workerShutdownDrainMs();
+export const WORKFLOW_RELEASE_GRACE_MS = 30_000;
 export const WORKFLOW_MAX_ATTEMPTS = 3;
 export const WORKFLOW_RETRIES_EXHAUSTED_CODE = "workflow_retries_exhausted";
 

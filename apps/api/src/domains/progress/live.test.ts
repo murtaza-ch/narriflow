@@ -1,3 +1,4 @@
+import { bindServiceTestEnvironment } from "@narriflow/services/runtime-test-support";
 /**
  * End-to-end: a real Bun server, a real Redis (when `redis-server` exists), the
  * production route and the browser hub with the real transport. Timing-based, so
@@ -49,11 +50,11 @@ describe.skipIf(SECONDS <= 0)("progress stream over a real server", () => {
   const redisServer = hasRedis && SECONDS > 0
     ? Bun.spawn(["redis-server", "--port", String(REDIS_PORT), "--save", "", "--appendonly", "no"], { stdout: "ignore", stderr: "ignore" })
     : null;
-  afterAll(() => redisServer?.kill());
+  afterAll(bindServiceTestEnvironment(() => redisServer?.kill()));
 
   test(
     `delivers every event once, in order, across token expiry, idle timeouts and Redis loss for ${SECONDS}s`,
-    async () => {
+    bindServiceTestEnvironment(async () => {
       if (redisServer) await sleep(400);
       const redisUrl = `redis://127.0.0.1:${REDIS_PORT}`;
       const publisher = redisServer ? new Redis(redisUrl, { maxRetriesPerRequest: 1, enableOfflineQueue: false, retryStrategy: () => null }) : null;
@@ -199,7 +200,7 @@ describe.skipIf(SECONDS <= 0)("progress stream over a real server", () => {
       expect(server.pendingRequests).toBe(0);
       publisher?.disconnect();
       await server.stop(true);
-    },
+    }),
     (SECONDS + 60) * 1_000,
   );
 });

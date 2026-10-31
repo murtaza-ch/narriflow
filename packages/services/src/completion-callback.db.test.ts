@@ -1,3 +1,4 @@
+import { bindServiceTestEnvironment } from "./runtime-test-support";
 import { createDatabaseTestContext } from "@narriflow/db/testing";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
@@ -51,7 +52,7 @@ describeDb("Completion Callback PostgreSQL invariants", () => {
   let workspaceId: string;
   let clock = new Date(Math.ceil(Date.now() / 1000) * 1000 + 1000);
   const now = () => clock;
-  const cipher = createCallbackCipher();
+  const cipher = createCallbackCipher(process.env.SOCIAL_TOKEN_ENCRYPTION_KEY);
   const processor = (transport: PinnedTransport, leaseOwner = `test:${randomUUID()}`) =>
     createCompletionCallbackProcessor({ prisma, readTrusted: (scope, operation) => createOperationStatusReader(prisma).readTrusted(scope, operation),
       leaseOwner, now, random: () => 0.5, cipher, transport, resolver: publicResolver, log: () => {} });
@@ -72,7 +73,7 @@ describeDb("Completion Callback PostgreSQL invariants", () => {
     });
   };
 
-  beforeAll(globalPrisma.bind(async () => {
+  beforeAll(bindServiceTestEnvironment(globalPrisma.bind(async () => {
     if (!databaseUrl || !schema || !/^integration_test_[a-z0-9_]+$/.test(schema)) throw new Error("Integration DB tests require a disposable integration_test_ schema");
     pool = new Pool({ connectionString: databaseUrl, max: 10 });
     prisma = new PrismaClient({ adapter: new PrismaPg(pool, { schema }), transactionOptions: { maxWait: 120_000, timeout: 120_000 } });
@@ -82,28 +83,28 @@ describeDb("Completion Callback PostgreSQL invariants", () => {
     actorUserId = actor.id;
     const workspace = await prisma.workspace.create({ data: { name: "Callbacks", ownerUserId: actor.id, pricingTier: "business", members: { create: { userId: actor.id, role: "owner" } } } });
     workspaceId = workspace.id;
-  }));
+  })));
 
-  afterAll(globalPrisma.bind(async () => {
+  afterAll(bindServiceTestEnvironment(globalPrisma.bind(async () => {
     globalPrisma.client = priorPrisma;
     await prisma?.$disconnect();
     await pool?.end();
-  }));
+  })));
 
   const link = (key: string, url: string) => projectService.queueLinkIngest(scope(), { title: `Callback ${key}`, url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ" },
     { generationContext: { contentPack: pack, languageCode: "en" }, mutation: { clientIdempotencyKey: key, callback: { url: new URL(url) } } });
 
-  test("a callback request refuses before any work commits when the Workspace has no signing secret", globalPrisma.bind(async () => {
+  test("a callback request refuses before any work commits when the Workspace has no signing secret", bindServiceTestEnvironment(globalPrisma.bind(async () => {
     const key = randomUUID();
     await expect(link(key, "https://hooks.example/a")).rejects.toMatchObject({ code: "callback_secret_required" });
     expect(await prisma.project.count({ where: { title: `Callback ${key}` } })).toBe(0);
     expect(await prisma.operationReceipt.count({ where: { clientIdempotencyKey: key } })).toBe(0);
-  }));
+  })));
 
   let linkIntake: { receiptId: string; projectId: string; jobId: string };
   let currentSecret: string;
 
-  test("acceptance registers exactly one callback per receipt, including on replay", globalPrisma.bind(async () => {
+  test("acceptance registers exactly one callback per receipt, including on replay", bindServiceTestEnvironment(globalPrisma.bind(async () => {
     currentSecret = (await secrets().rotate(workspaceId)).secret;
     const key = randomUUID();
     const first = await link(key, "https://hooks.example/a");
@@ -116,9 +117,9 @@ describeDb("Completion Callback PostgreSQL invariants", () => {
     expect(rows[0]!.encryptedUrl).not.toContain("hooks.example");
     await expect(link(key, "https://hooks.example/b")).rejects.toMatchObject({ code: "operation_idempotency_conflict" });
     linkIntake = { receiptId: receipt.id, projectId: first.project.id, jobId: first.queuedJobId! };
-  }));
+  })));
 
-  test("a Project deleted while its callback waits produces one unavailable event", globalPrisma.bind(async () => {
+  test("a Project deleted while its callback waits produces one unavailable event", bindServiceTestEnvironment(globalPrisma.bind(async () => {
     const receive = receiver([200]);
     const worker = processor(receive.transport);
     expect(await worker.observe()).toBe(0);
@@ -140,9 +141,9 @@ describeDb("Completion Callback PostgreSQL invariants", () => {
     expect(event).toMatchObject({ id: row.eventId, type: "operation.completed", version: 1, workspaceId,
       data: { kind: "intake", state: "unavailable", projectId: null, failureCode: "project_unavailable" } });
     expect(decodeOperationId(event.data.operationId)).toEqual({ kind: "intake", id: linkIntake.jobId });
-  }));
+  })));
 
-  test("a permanent upload failure produces one failed event for the upload intake", globalPrisma.bind(async () => {
+  test("a permanent upload failure produces one failed event for the upload intake", bindServiceTestEnvironment(globalPrisma.bind(async () => {
     const sessionId = randomUUID();
     await prisma.uploadSession.create({ data: { id: sessionId, workspaceId, actorUserId, clientIdempotencyKey: randomUUID(), immutableInputFingerprint: "fixture",
       preallocatedProjectId: randomUUID(), title: "Upload", fileName: "upload.mp4", fileSizeBytes: 10n, contentType: "video/mp4", browserFingerprint: "fixture",
@@ -168,9 +169,9 @@ describeDb("Completion Callback PostgreSQL invariants", () => {
     expect(event.id).toBe(callbackEventId(sessionId));
     expect(event.data).toMatchObject({ kind: "intake", state: "failed", failureCode: "upload_object_size_mismatch" });
     expect(decodeOperationId(event.data.operationId)).toEqual({ kind: "intake", id: sessionId });
-  }));
+  })));
 
-  test("an upload callback without a signing secret leaves the session uploading", globalPrisma.bind(async () => {
+  test("an upload callback without a signing secret leaves the session uploading", bindServiceTestEnvironment(globalPrisma.bind(async () => {
     const other = await prisma.workspace.create({ data: { name: "No secret", ownerUserId: actorUserId, pricingTier: "business" } });
     const sessionId = randomUUID();
     await prisma.uploadSession.create({ data: { id: sessionId, workspaceId: other.id, actorUserId, clientIdempotencyKey: randomUUID(), immutableInputFingerprint: "fixture",
@@ -180,9 +181,9 @@ describeDb("Completion Callback PostgreSQL invariants", () => {
     await expect(prismaUploadSessionPersistence.beginFinalization({ sessionId, parts: [], reconcileAt: new Date(), updatedAt: new Date(),
       callback: prepareCallbackRegistration(new URL("https://hooks.example/upload"), cipher) })).rejects.toMatchObject({ code: "callback_secret_required" });
     expect((await prisma.uploadSession.findUniqueOrThrow({ where: { id: sessionId } })).status).toBe("uploading");
-  }));
+  })));
 
-  test("retries back off with jitter, timeouts retry, and 410 cancels", globalPrisma.bind(async () => {
+  test("retries back off with jitter, timeouts retry, and 410 cancels", bindServiceTestEnvironment(globalPrisma.bind(async () => {
     const row = await pendingRow("pending");
     const receive = receiver([500, "timeout", 410]);
     const worker = processor(receive.transport);
@@ -201,9 +202,9 @@ describeDb("Completion Callback PostgreSQL invariants", () => {
     current = await prisma.completionCallback.findUniqueOrThrow({ where: { id: row.id } });
     expect(current).toMatchObject({ state: "cancelled", attempts: 3, lastResponseStatus: 410, nextAttemptAt: null });
     expect(new Set(receive.requests.map((request) => request.headers.get("webhook-id")))).toEqual(new Set([row.eventId]));
-  }));
+  })));
 
-  test("the retry budget ends in failed, and redelivery restarts it with the same event ID", globalPrisma.bind(async () => {
+  test("the retry budget ends in failed, and redelivery restarts it with the same event ID", bindServiceTestEnvironment(globalPrisma.bind(async () => {
     const row = await pendingRow("pending");
     const receive = receiver(Array(10).fill(503));
     const worker = processor(receive.transport);
@@ -219,9 +220,9 @@ describeDb("Completion Callback PostgreSQL invariants", () => {
     expect(await prisma.completionCallback.findUniqueOrThrow({ where: { id: row.id } })).toMatchObject({ state: "delivered", attempts: 1 });
     expect(redelivered.requests[0]!.headers.get("webhook-id")).toBe(row.eventId);
     await expect(prisma.$transaction((tx) => resetCompletionCallbacks(tx, scope(), { kind: "export", id: randomUUID() }, clock))).rejects.toMatchObject({ code: "callback_not_found" });
-  }));
+  })));
 
-  test("a worker that lost its lease can't overwrite the newer outcome", globalPrisma.bind(async () => {
+  test("a worker that lost its lease can't overwrite the newer outcome", bindServiceTestEnvironment(globalPrisma.bind(async () => {
     const row = await pendingRow("pending");
     let release!: () => void;
     let started!: () => void;
@@ -234,9 +235,9 @@ describeDb("Completion Callback PostgreSQL invariants", () => {
     release();
     await slow;
     expect(await prisma.completionCallback.findUniqueOrThrow({ where: { id: row.id } })).toMatchObject({ state: "delivered", attempts: 1, lastResponseStatus: 200 });
-  }));
+  })));
 
-  test("callbacks claim their lease when delivery starts, rather than while waiting in a batch", globalPrisma.bind(async () => {
+  test("callbacks claim their lease when delivery starts, rather than while waiting in a batch", bindServiceTestEnvironment(globalPrisma.bind(async () => {
     const previousClock = clock;
     const rows = await Promise.all(Array.from({ length: 8 }, () => pendingRow("pending")));
     const remainingLeases: number[] = [];
@@ -254,9 +255,9 @@ describeDb("Completion Callback PostgreSQL invariants", () => {
       await prisma.completionCallback.deleteMany({ where: { id: { in: rows.map((row) => row.id) } } });
       clock = previousClock;
     }
-  }));
+  })));
 
-  test("an expired callback claim cannot acknowledge a delivery", globalPrisma.bind(async () => {
+  test("an expired callback claim cannot acknowledge a delivery", bindServiceTestEnvironment(globalPrisma.bind(async () => {
     const previousClock = clock;
     const row = await pendingRow("pending");
     try {
@@ -272,9 +273,9 @@ describeDb("Completion Callback PostgreSQL invariants", () => {
       await prisma.completionCallback.delete({ where: { id: row.id } });
       clock = previousClock;
     }
-  }));
+  })));
 
-  test("an old callback execution cannot cancel a new claim by the same worker", globalPrisma.bind(async () => {
+  test("an old callback execution cannot cancel a new claim by the same worker", bindServiceTestEnvironment(globalPrisma.bind(async () => {
     const previousClock = clock;
     const row = await pendingRow("pending");
     let releaseOld!: () => void;
@@ -306,9 +307,9 @@ describeDb("Completion Callback PostgreSQL invariants", () => {
       await prisma.completionCallback.delete({ where: { id: row.id } });
       clock = previousClock;
     }
-  }));
+  })));
 
-  test("rotation keeps the previous secret signing during the overlap, then retires it", globalPrisma.bind(async () => {
+  test("rotation keeps the previous secret signing during the overlap, then retires it", bindServiceTestEnvironment(globalPrisma.bind(async () => {
     const before = currentSecret;
     const rotated = (await secrets().rotate(workspaceId)).secret;
     expect(await secrets().signingSecrets(workspaceId)).toEqual([rotated, before]);
@@ -323,5 +324,5 @@ describeDb("Completion Callback PostgreSQL invariants", () => {
     clock = new Date(clock.getTime() + 86_400_001);
     expect(await secrets().signingSecrets(workspaceId)).toEqual([rotated]);
     currentSecret = rotated;
-  }));
+  })));
 });

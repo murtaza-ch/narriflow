@@ -21,6 +21,354 @@
     "./workflow": {
       "types": "./src/workflow.service.ts",
       "default": "./src/workflow.service.ts"
+    },
+    "./runtime-environment": {
+      "types": "./src/runtime-environment.ts",
+      "default": "./src/runtime-environment.ts"
+    },
+    "./runtime-test-support": {
+      "types": "./src/runtime-test-support.ts",
+      "default": "./src/runtime-test-support.ts"
+    },
+    "./rate-limit": {
+      "types": "./src/rate-limit.ts",
+      "default": "./src/rate-limit.ts"
+    },
+    "./clip-export.service": {
+      "types": "./src/clip-export.service.ts",
+      "default": "./src/clip-export.service.ts"
+    },
+    "./mcp-task": {
+      "types": "./src/mcp-task.ts",
+      "default": "./src/mcp-task.ts"
+    },
+    "./mcp-task-runtime": {
+      "types": "./src/mcp-task-runtime.ts",
+      "default": "./src/mcp-task-runtime.ts"
+    },
+    "./operation-status-runtime": {
+      "types": "./src/operation-status-runtime.ts",
+      "default": "./src/operation-status-runtime.ts"
+    },
+    "./workspace.service": {
+      "types": "./src/workspace.service.ts",
+      "default": "./src/workspace.service.ts"
+    },
+    "./expected-domain-failure": {
+      "types": "./src/expected-domain-failure.ts",
+      "default": "./src/expected-domain-failure.ts"
+    },
+    "./integration-commands": {
+      "types": "./src/integration-commands.ts",
+      "default": "./src/integration-commands.ts"
+    },
+    "./autopilot.service": {
+      "types": "./src/autopilot.service.ts",
+      "default": "./src/autopilot.service.ts"
+    },
+    "./clip.service": {
+      "types": "./src/clip.service.ts",
+      "default": "./src/clip.service.ts"
+    },
+    "./project.service": {
+      "types": "./src/project.service.ts",
+      "default": "./src/project.service.ts"
+    },
+    "./recipe.service": {
+      "types": "./src/recipe.service.ts",
+      "default": "./src/recipe.service.ts"
+    },
+    "./social-publication-scheduling-runtime": {
+      "types": "./src/social-publication-scheduling-runtime.ts",
+      "default": "./src/social-publication-scheduling-runtime.ts"
+    },
+    "./billing.service": {
+      "types": "./src/billing.service.ts",
+      "default": "./src/billing.service.ts"
+    },
+    "./social-publication-recovery": {
+      "types": "./src/social-publication-recovery.ts",
+      "default": "./src/social-publication-recovery.ts"
+    },
+    "./integration-admission": {
+      "types": "./src/integration-admission.ts",
+      "default": "./src/integration-admission.ts"
+    },
+    "./brand-profile.service": {
+      "types": "./src/brand-profile.service.ts",
+      "default": "./src/brand-profile.service.ts"
+    },
+    "./clip-timeline.service": {
+      "types": "./src/clip-timeline.service.ts",
+      "default": "./src/clip-timeline.service.ts"
+    },
+    "./review.service": {
+      "types": "./src/review.service.ts",
+      "default": "./src/review.service.ts"
+    },
+    "./social.service": {
+      "types": "./src/social.service.ts",
+      "default": "./src/social.service.ts"
+    },
+    "./social-oauth.service": {
+      "types": "./src/social-oauth.service.ts",
+      "default": "./src/social-oauth.service.ts"
+    },
+    "./social-publishing-options": {
+      "types": "./src/social-publishing-options.ts",
+      "default": "./src/social-publishing-options.ts"
+    },
+    "./upload-session.service": {
+      "types": "./src/upload-session.service.ts",
+      "default": "./src/upload-session.service.ts"
+    },
+    "./workspace-library.service": {
+      "types": "./src/workspace-library.service.ts",
+      "default": "./src/workspace-library.service.ts"
+    },
+    "./operation-receipt-runtime": {
+      "types": "./src/operation-receipt-runtime.ts",
+      "default": "./src/operation-receipt-runtime.ts"
+    },
+    "./library-search-runtime": {
+      "types": "./src/library-search-runtime.ts",
+      "default": "./src/library-search-runtime.ts"
+    },
+    "./operation-receipt": {
+      "types": "./src/operation-receipt.ts",
+      "default": "./src/operation-receipt.ts"
+    },
+    "./plan-features": {
+      "types": "./src/plan-features.ts",
+      "default": "./src/plan-features.ts"
+    },
+    "./publishing-queue.service": {
+      "types": "./src/publishing-queue.service.ts",
+      "default": "./src/publishing-queue.service.ts"
+    },
+    "./workspace-membership.service": {
+      "types": "./src/workspace-membership.service.ts",
+      "default": "./src/workspace-membership.service.ts"
+    },
+    "./campaign-operation.service": {
+      "types": "./src/campaign-operation.service.ts",
+      "default": "./src/campaign-operation.service.ts"
+    },
+    "./workflow.service": {
+      "types": "./src/workflow.service.ts",
+      "default": "./src/workflow.service.ts"
+    },
+    "./brand-template.service": {
+      "types": "./src/brand-template.service.ts",
+      "default": "./src/brand-template.service.ts"
+    },
+    "./ingest-job-lifecycle-runtime": {
+      "types": "./src/ingest-job-lifecycle-runtime.ts",
+      "default": "./src/ingest-job-lifecycle-runtime.ts"
+    },
+    "./clip-editor-document-persistence": {
+      "types": "./src/clip-editor-document-persistence.ts",
+      "default": "./src/clip-editor-document-persistence.ts"
+    },
+    "./clips-commands-runtime": {
+      "types": "./src/clips-commands-runtime.ts",
+      "default": "./src/clips-commands-runtime.ts"
+    },
+    "./thumbnail-frame-preparation-runtime": {
+      "types": "./src/thumbnail-frame-preparation-runtime.ts",
+      "default": "./src/thumbnail-frame-preparation-runtime.ts"
+    },
+    "./completion-callback-runtime": {
+      "types": "./src/completion-callback-runtime.ts",
+      "default": "./src/completion-callback-runtime.ts"
+    },
+    "./developer-commands-runtime": {
+      "types": "./src/developer-commands-runtime.ts",
+      "default": "./src/developer-commands-runtime.ts"
+    },
+    "./webhook-subscription-runtime": {
+      "types": "./src/webhook-subscription-runtime.ts",
+      "default": "./src/webhook-subscription-runtime.ts"
+    },
+    "./pexels.service": {
+      "types": "./src/pexels.service.ts",
+      "default": "./src/pexels.service.ts"
+    },
+    "./projects-commands-runtime": {
+      "types": "./src/projects-commands-runtime.ts",
+      "default": "./src/projects-commands-runtime.ts"
+    },
+    "./analytics.service": {
+      "types": "./src/analytics.service.ts",
+      "default": "./src/analytics.service.ts"
+    },
+    "./content-suite.service": {
+      "types": "./src/content-suite.service.ts",
+      "default": "./src/content-suite.service.ts"
+    },
+    "./dubbing.service": {
+      "types": "./src/dubbing.service.ts",
+      "default": "./src/dubbing.service.ts"
+    },
+    "./scribe-transcript-runtime": {
+      "types": "./src/scribe-transcript-runtime.ts",
+      "default": "./src/scribe-transcript-runtime.ts"
+    },
+    "./processing-usage-runtime": {
+      "types": "./src/processing-usage-runtime.ts",
+      "default": "./src/processing-usage-runtime.ts"
+    },
+    "./generation-finishing-runtime": {
+      "types": "./src/generation-finishing-runtime.ts",
+      "default": "./src/generation-finishing-runtime.ts"
+    },
+    "./workflow-run-lifecycle": {
+      "types": "./src/workflow-run-lifecycle.ts",
+      "default": "./src/workflow-run-lifecycle.ts"
+    },
+    "./r2-storage": {
+      "types": "./src/r2-storage.ts",
+      "default": "./src/r2-storage.ts"
+    },
+    "./social-publication-tiktok-webhook": {
+      "types": "./src/social-publication-tiktok-webhook.ts",
+      "default": "./src/social-publication-tiktok-webhook.ts"
+    },
+    "./assisted-social-copy-runtime": {
+      "types": "./src/assisted-social-copy-runtime.ts",
+      "default": "./src/assisted-social-copy-runtime.ts"
+    },
+    "./bulk-social-scheduling-runtime": {
+      "types": "./src/bulk-social-scheduling-runtime.ts",
+      "default": "./src/bulk-social-scheduling-runtime.ts"
+    },
+    "./performance.service": {
+      "types": "./src/performance.service.ts",
+      "default": "./src/performance.service.ts"
+    },
+    "./standing-grant-runtime": {
+      "types": "./src/standing-grant-runtime.ts",
+      "default": "./src/standing-grant-runtime.ts"
+    },
+    "./reviews-commands-runtime": {
+      "types": "./src/reviews-commands-runtime.ts",
+      "default": "./src/reviews-commands-runtime.ts"
+    },
+    "./actor-scope": {
+      "types": "./src/actor-scope.ts",
+      "default": "./src/actor-scope.ts"
+    },
+    "./ingest-job-lifecycle": {
+      "types": "./src/ingest-job-lifecycle.ts",
+      "default": "./src/ingest-job-lifecycle.ts"
+    },
+    "./audio-asset.service": {
+      "types": "./src/audio-asset.service.ts",
+      "default": "./src/audio-asset.service.ts"
+    },
+    "./brand-font.service": {
+      "types": "./src/brand-font.service.ts",
+      "default": "./src/brand-font.service.ts"
+    },
+    "./generated-media-runtime": {
+      "types": "./src/generated-media-runtime.ts",
+      "default": "./src/generated-media-runtime.ts"
+    },
+    "./scene-template.service": {
+      "types": "./src/scene-template.service.ts",
+      "default": "./src/scene-template.service.ts"
+    },
+    "./visual-asset.service": {
+      "types": "./src/visual-asset.service.ts",
+      "default": "./src/visual-asset.service.ts"
+    },
+    "./generated-media": {
+      "types": "./src/generated-media.ts",
+      "default": "./src/generated-media.ts"
+    },
+    "./brand-ownership": {
+      "types": "./src/brand-ownership.ts",
+      "default": "./src/brand-ownership.ts"
+    },
+    "./scribe-errors": {
+      "types": "./src/scribe-errors.ts",
+      "default": "./src/scribe-errors.ts"
+    },
+    "./scribe-transcript": {
+      "types": "./src/scribe-transcript.ts",
+      "default": "./src/scribe-transcript.ts"
+    },
+    "./developer-commands": {
+      "types": "./src/developer-commands.ts",
+      "default": "./src/developer-commands.ts"
+    },
+    "./auto-censor.service": {
+      "types": "./src/auto-censor.service.ts",
+      "default": "./src/auto-censor.service.ts"
+    },
+    "./workspace-commands-runtime": {
+      "types": "./src/workspace-commands-runtime.ts",
+      "default": "./src/workspace-commands-runtime.ts"
+    },
+    "./generation-usage": {
+      "types": "./src/generation-usage.ts",
+      "default": "./src/generation-usage.ts"
+    },
+    "./workspace-commands": {
+      "types": "./src/workspace-commands.ts",
+      "default": "./src/workspace-commands.ts"
+    },
+    "./recipes-commands-runtime": {
+      "types": "./src/recipes-commands-runtime.ts",
+      "default": "./src/recipes-commands-runtime.ts"
+    },
+    "./scene-document-mutation": {
+      "types": "./src/scene-document-mutation.ts",
+      "default": "./src/scene-document-mutation.ts"
+    },
+    "./automation-commands-runtime": {
+      "types": "./src/automation-commands-runtime.ts",
+      "default": "./src/automation-commands-runtime.ts"
+    },
+    "./zoom": {
+      "types": "./src/zoom.ts",
+      "default": "./src/zoom.ts"
+    },
+    "./zoom.service": {
+      "types": "./src/zoom.service.ts",
+      "default": "./src/zoom.service.ts"
+    },
+    "./recipes-commands": {
+      "types": "./src/recipes-commands.ts",
+      "default": "./src/recipes-commands.ts"
+    },
+    "./optional-redis": {
+      "types": "./src/optional-redis.ts",
+      "default": "./src/optional-redis.ts"
+    },
+    "./automation-commands": {
+      "types": "./src/automation-commands.ts",
+      "default": "./src/automation-commands.ts"
+    },
+    "./workspace-event": {
+      "types": "./src/workspace-event.ts",
+      "default": "./src/workspace-event.ts"
+    },
+    "./completion-callback": {
+      "types": "./src/completion-callback.ts",
+      "default": "./src/completion-callback.ts"
+    },
+    "./operation-status": {
+      "types": "./src/operation-status.ts",
+      "default": "./src/operation-status.ts"
+    },
+    "./webhook-subscription": {
+      "types": "./src/webhook-subscription.ts",
+      "default": "./src/webhook-subscription.ts"
+    },
+    "./url-guard": {
+      "types": "./src/url-guard.ts",
+      "default": "./src/url-guard.ts"
     }
   },
   "scripts": {

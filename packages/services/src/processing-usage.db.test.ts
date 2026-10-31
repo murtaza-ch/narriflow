@@ -1,3 +1,4 @@
+import { bindServiceTestEnvironment } from "./runtime-test-support";
 import { createDatabaseTestContext } from "@narriflow/db/testing";
 import { randomUUID } from "node:crypto";
 import {
@@ -83,7 +84,7 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
   const prismaGlobal = createDatabaseTestContext();
   let clock = new Date();
 
-  beforeAll(prismaGlobal.bind(() => {
+  beforeAll(bindServiceTestEnvironment(prismaGlobal.bind(() => {
     if (!schema?.startsWith("processing_usage_test_"))
       throw new Error("Processing Usage tests require a disposable schema");
     pool = new Pool({ connectionString: url, max: 24 });
@@ -95,14 +96,14 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
     prismaGlobal.client = prisma;
     priorEncryptionKey = process.env.SOCIAL_TOKEN_ENCRYPTION_KEY;
     process.env.SOCIAL_TOKEN_ENCRYPTION_KEY = "processing-usage-db-test-key";
-  }));
-  afterAll(prismaGlobal.bind(async () => {
+  })));
+  afterAll(bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     if (priorEncryptionKey === undefined) delete process.env.SOCIAL_TOKEN_ENCRYPTION_KEY;
     else process.env.SOCIAL_TOKEN_ENCRYPTION_KEY = priorEncryptionKey;
     prismaGlobal.client = priorPrisma;
     await prisma.$disconnect();
     await pool.end();
-  }));
+  })));
 
   function usage() {
     return new ProcessingUsage({
@@ -214,7 +215,7 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
     return failures;
   }
 
-  test("runtime capacity summary and admission use the catalog despite environment overrides", prismaGlobal.bind(async () => {
+  test("runtime capacity summary and admission use the catalog despite environment overrides", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     clock = new Date();
     const overrides = { PROCESSING_CAPACITY_FREE: "1", PROCESSING_CAPACITY_CREATOR: "1000", PROCESSING_CAPACITY_PRO: "1", PROCESSING_CAPACITY_BUSINESS: "1000" };
     const previous = Object.fromEntries(Object.keys(overrides).map((key) => [key, process.env[key]]));
@@ -242,9 +243,9 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
         else process.env[key] = value;
       }
     }
-  }));
+  })));
 
-  test("worker ingest charges 60.01 measured seconds as two credits through settlement", prismaGlobal.bind(async () => {
+  test("worker ingest charges 60.01 measured seconds as two credits through settlement", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     clock = new Date();
     const { workspace: ws } = await workspace("creator");
     const module = usage();
@@ -254,9 +255,9 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
     expect(await module.summarize(ws.id)).toMatchObject({ reservedCredits: 2 });
     expect(await settle(module, project.id)).toEqual({ outcome: "settled", charged: true, settledSeconds: 120 });
     expect(await module.summarize(ws.id)).toMatchObject({ usedCredits: 2, reservedCredits: 0 });
-  }));
+  })));
 
-  test("worker ingest refuses a source a fraction above its plan's duration cap", prismaGlobal.bind(async () => {
+  test("worker ingest refuses a source a fraction above its plan's duration cap", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     clock = new Date();
     const { workspace: ws } = await workspace("creator");
     const module = usage();
@@ -266,9 +267,9 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
     expect(await ingestMeasuredSource(module, project.id, cap + 0.01)).toEqual(["upload_too_long"]);
     expect(await prisma.project.findUniqueOrThrow({ where: { id: project.id } })).toMatchObject({ ingestStatus: "queued", sourceDurationSeconds: null });
     expect(await module.summarize(ws.id)).toMatchObject({ usedCredits: 0 });
-  }));
+  })));
 
-  test("the sweep releases stranded reservations and never releases intakes awaiting handoff", prismaGlobal.bind(async () => {
+  test("the sweep releases stranded reservations and never releases intakes awaiting handoff", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     clock = new Date();
     const { workspace: ws, user } = await workspace("business");
     const module = usage();
@@ -315,9 +316,9 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
     for (const kept of [awaiting.id, running.id, uploading])
       expect((await row(kept)).state).toBe("reserved");
     expect(await module.reconcileStranded()).toBe(0);
-  }));
+  })));
 
-  test("sizes reservations from declared facts, the per-video cap, and the remaining credits", prismaGlobal.bind(async () => {
+  test("sizes reservations from declared facts, the per-video cap, and the remaining credits", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     clock = new Date("2026-10-15T12:00:00.000Z");
     const { workspace: ws } = await workspace("free");
     const module = usage();
@@ -364,9 +365,9 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
       inFlightLimit: 2,
       maxUploadSeconds: 3600,
     });
-  }));
+  })));
 
-  test("a refusal after a downgrade reports what was actually spent", prismaGlobal.bind(async () => {
+  test("a refusal after a downgrade reports what was actually spent", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     clock = new Date();
     const { workspace: ws } = await workspace("business");
     const module = usage();
@@ -385,9 +386,9 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
     const none = await refusal(reserve(module, ws.id, { declaredSeconds: 30 }));
     expect(none).toMatchObject({ details: { spentCredits: 1800 } });
     expect(none.message).not.toContain("upgrade");
-  }));
+  })));
 
-  test("every started minute of a source is one whole credit", prismaGlobal.bind(async () => {
+  test("every started minute of a source is one whole credit", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     clock = new Date();
     const { workspace: ws } = await workspace("creator");
     const module = usage();
@@ -401,9 +402,9 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
     expect((await module.resize({ projectId, seconds: 60.01 })).reservedSeconds).toBe(120);
     const rows = await prisma.processingUsageReservation.findMany({ where: { workspaceId: ws.id } });
     for (const usageRow of rows) expect(usageRow.reservedSeconds % 60).toBe(0);
-  }));
+  })));
 
-  test("sixty 1-second sources use sixty credits", prismaGlobal.bind(async () => {
+  test("sixty 1-second sources use sixty credits", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     clock = new Date();
     const { workspace: ws } = await workspace("free");
     const module = usage();
@@ -414,9 +415,9 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
     }
     expect(await module.summarize(ws.id)).toMatchObject({ usedCredits: 60, reservedCredits: 0, remainingCredits: 0 });
     expect((await refusal(reserve(module, ws.id, { declaredSeconds: 1 }))).code).toBe("credits_exhausted");
-  }));
+  })));
 
-  test("a Project's credit guidance excludes its hold and follows retry admission after release", prismaGlobal.bind(async () => {
+  test("a Project's credit guidance excludes its hold and follows retry admission after release", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     clock = new Date("2026-12-15T08:30:00.000Z");
     const { workspace: ws } = await workspace("creator");
     const module = usage();
@@ -443,13 +444,13 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
       periodStart: new Date("2027-01-01T00:00:00.000Z"), spentCredits: 200, state: "released",
     });
     expect(await module.projectCreditUsage(randomUUID())).toBeNull();
-  }));
+  })));
 
   for (const scenario of [
     { priorCredits: 1000, currentCredits: 0, tier: "business" },
     { priorCredits: 0, currentCredits: 1800, tier: "creator" },
   ] as const) {
-    test(`cross-month guidance with ${scenario.priorCredits} prior and ${scenario.currentCredits} current credits admits settlement on ${scenario.tier}`, prismaGlobal.bind(async () => {
+    test(`cross-month guidance with ${scenario.priorCredits} prior and ${scenario.currentCredits} current credits admits settlement on ${scenario.tier}`, bindServiceTestEnvironment(prismaGlobal.bind(async () => {
       clock = new Date("2026-09-30T23:59:00.000Z");
       const { workspace: ws } = await workspace("business");
       const module = usage();
@@ -473,10 +474,10 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
       expect(await settle(module, project.id)).toEqual({ outcome: "settled", charged: true, settledSeconds: 61 * 60 });
       expect((await row(project.id)).periodStart).toEqual(new Date("2026-09-01T00:00:00.000Z"));
       expect((await module.summarize(ws.id)).reservedCredits).toBe(scenario.currentCredits);
-    }));
+    })));
   }
 
-  test("the summary's credit parts sum to the limit and renew on the next UTC month", prismaGlobal.bind(async () => {
+  test("the summary's credit parts sum to the limit and renew on the next UTC month", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     clock = new Date("2026-12-15T08:30:00.000Z");
     const { workspace: ws } = await workspace("creator");
     const module = usage();
@@ -494,9 +495,9 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
       renewsAt: new Date("2027-01-01T00:00:00.000Z"),
     });
     expect(summary.usedCredits + summary.reservedCredits + summary.remainingCredits).toBe(summary.limitCredits);
-  }));
+  })));
 
-  test("a repeated admission for the same Project returns the original reservation", prismaGlobal.bind(async () => {
+  test("a repeated admission for the same Project returns the original reservation", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     clock = new Date();
     const { workspace: ws } = await workspace("creator");
     const module = usage();
@@ -507,9 +508,9 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
     expect(first.replayed).toBe(false);
     expect(replay).toMatchObject({ replayed: true, reservedSeconds: 600 });
     expect(await module.summarize(ws.id)).toEqual(before);
-  }));
+  })));
 
-  test("parallel admissions near the limit admit exactly what fits", prismaGlobal.bind(async () => {
+  test("parallel admissions near the limit admit exactly what fits", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     clock = new Date();
     const { workspace: ws } = await workspace("free");
     const module = usage();
@@ -534,9 +535,9 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
     });
     expect(total._sum.reservedSeconds).toBe(3600);
     expect((await module.summarize(ws.id)).remainingCredits).toBe(0);
-  }));
+  })));
 
-  test("parallel admissions admit exactly the Processing Capacity, with retry guidance", prismaGlobal.bind(async () => {
+  test("parallel admissions admit exactly the Processing Capacity, with retry guidance", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     clock = new Date();
     const { workspace: ws } = await workspace("pro");
     const module = usage();
@@ -553,9 +554,9 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
         details: { inFlight: 10, inFlightLimit: 10 },
       });
     }
-  }));
+  })));
 
-  test("capacity counts active runs and accepted export renders, and frees at terminal states", prismaGlobal.bind(async () => {
+  test("capacity counts active runs and accepted export renders, and frees at terminal states", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     clock = new Date();
     const { workspace: ws } = await workspace("free");
     const module = usage();
@@ -586,9 +587,9 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
     );
     await prisma.clipRender.update({ where: { id: render.id }, data: { status: "completed" } });
     expect((await reserve(module, ws.id, { declaredSeconds: 60 })).state).toBe("reserved");
-  }));
+  })));
 
-  test("an ingested intake awaiting setup keeps its credits but frees capacity", prismaGlobal.bind(async () => {
+  test("an ingested intake awaiting setup keeps its credits but frees capacity", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     clock = new Date();
     const { workspace: ws } = await workspace("free");
     const module = usage();
@@ -602,9 +603,9 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
     });
     expect(await module.summarize(ws.id)).toMatchObject({ inFlight: 1, reservedCredits: 11 });
     expect((await reserve(module, ws.id, { declaredSeconds: 60 })).state).toBe("reserved");
-  }));
+  })));
 
-  test("settlement requires a live reservation and never admits on its own", prismaGlobal.bind(async () => {
+  test("settlement requires a live reservation and never admits on its own", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     clock = new Date();
     const { workspace: ws } = await workspace("free");
     const module = usage();
@@ -626,9 +627,9 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
       settledSeconds: null,
     });
     expect((await module.summarize(ws.id)).usedCredits).toBe(0);
-  }));
+  })));
 
-  test("resize shrinks, grows from the remaining allowance, or refuses without changing the row", prismaGlobal.bind(async () => {
+  test("resize shrinks, grows from the remaining allowance, or refuses without changing the row", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     clock = new Date();
     const { workspace: ws } = await workspace("free");
     const module = usage();
@@ -647,9 +648,9 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
     });
     expect((await row(projectId)).reservedSeconds).toBe(1200);
     expect((await module.resize({ projectId, seconds: 1500 })).reservedSeconds).toBe(1500);
-  }));
+  })));
 
-  test("settlement charges the probed duration's whole credits once, at the boundary, and refuses what can't fit", prismaGlobal.bind(async () => {
+  test("settlement charges the probed duration's whole credits once, at the boundary, and refuses what can't fit", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     clock = new Date();
     const { workspace: ws } = await workspace("free");
     const module = usage();
@@ -697,9 +698,9 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
     });
     expect(await settle(module, pending.id)).toEqual({ outcome: "not_ready" });
     expect((await row(pending.id)).state).toBe("reserved");
-  }));
+  })));
 
-  test("a downgrade or restriction refuses settlement and releases the reservation", prismaGlobal.bind(async () => {
+  test("a downgrade or restriction refuses settlement and releases the reservation", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     clock = new Date();
     const { workspace: ws } = await workspace("pro");
     const module = usage();
@@ -724,9 +725,9 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
       kind: "forbidden",
     });
     expect(await prisma.processingUsageReservation.count({ where: { workspaceId: ws.id, state: "reserved" } })).toBe(0);
-  }));
+  })));
 
-  test("no speech-to-text Workflow Run exists without settled usage", prismaGlobal.bind(async () => {
+  test("no speech-to-text Workflow Run exists without settled usage", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     clock = new Date();
     const { workspace: ws } = await workspace("creator");
     const module = usage();
@@ -751,9 +752,9 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
       WHERE run."stage" = 'stt' AND (usage."state" IS NULL OR usage."state" NOT IN ('settled', 'refunded'))
     `;
     expect(unsettled[0]?.count).toBe(0);
-  }));
+  })));
 
-  test("usage stays in its admission month and an upgrade raises the allowance at once", prismaGlobal.bind(async () => {
+  test("usage stays in its admission month and an upgrade raises the allowance at once", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     const { workspace: ws } = await workspace("free");
     const module = usage();
     const project = await measuredProject(ws.id, 600);
@@ -796,9 +797,9 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
     // A downgrade below what's already held clamps what's left at zero.
     await prisma.workspace.update({ where: { id: ws.id }, data: { pricingTier: "free" } });
     expect(await module.summarize(ws.id)).toMatchObject({ limitCredits: 60, reservedCredits: 180, remainingCredits: 0 });
-  }));
+  })));
 
-  test("settled usage survives Project deletion and actor removal; refunds are audited", prismaGlobal.bind(async () => {
+  test("settled usage survives Project deletion and actor removal; refunds are audited", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     clock = new Date();
     const { workspace: ws } = await workspace("creator");
     const module = usage();
@@ -832,9 +833,9 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
     expect(
       (await refusal(module.refund({ projectId: reserved.projectId, actorUserId: operator, reason: "no" }))).code,
     ).toBe("processing_usage_not_refundable");
-  }));
+  })));
 
-  test("manual retry re-admits a released reservation with fresh checks", prismaGlobal.bind(async () => {
+  test("manual retry re-admits a released reservation with fresh checks", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     clock = new Date();
     const { workspace: ws, user } = await workspace("free");
     const module = usage();
@@ -868,9 +869,9 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
       actorUserId: user.id,
     });
     expect((await row(project.id)).periodStart.getTime()).toBeGreaterThan(new Date("2026-01-01").getTime());
-  }));
+  })));
 
-  test("link and RSS intake reserve in their acceptance transactions", prismaGlobal.bind(async () => {
+  test("link and RSS intake reserve in their acceptance transactions", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     clock = new Date();
     const { workspace: ws, scope } = await workspace("free");
     const rss = await projectService.importResolvedRssEpisodes(scope, {
@@ -897,9 +898,9 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
 
     await projectService.deleteProject(scope, link.project.id);
     expect(await row(link.project.id)).toMatchObject({ state: "released", reason: "project_deleted" });
-  }));
+  })));
 
-  test("a Drive Picker file is admitted as link intake from Drive's own facts, with its token sealed on the job", prismaGlobal.bind(async () => {
+  test("a Drive Picker file is admitted as link intake from Drive's own facts, with its token sealed on the job", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     clock = new Date();
     const { workspace: ws, scope } = await workspace("free");
     const accessToken = "ya29.drive-picker-secret";
@@ -973,9 +974,9 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
     ).toMatchObject({ code: "drive_token_expired" });
     expect(await prisma.project.count({ where: { workspaceId: ws.id } })).toBe(1);
     expect(await prisma.ingestJob.count({ where: { project: { workspaceId: ws.id } } })).toBe(1);
-  }));
+  })));
 
-  test("Drive intake through the real reader refuses a foreign token and a video longer than the tier allows", prismaGlobal.bind(async () => {
+  test("Drive intake through the real reader refuses a foreign token and a video longer than the tier allows", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     clock = new Date();
     const { workspace: ws, scope } = await workspace("free");
     const fileId = "1AbCdEfGhIjKlMnOpQrStUvWxYz_-0123";
@@ -1009,9 +1010,9 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
     expect(await projectService.getProjectSnapshot(scope, admitted.project.id)).toMatchObject({
       ingestJobType: "drive_import",
     });
-  }));
+  })));
 
-  test("a retention purge discards the Drive token of the queued job it cancels", prismaGlobal.bind(async () => {
+  test("a retention purge discards the Drive token of the queued job it cancels", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     clock = new Date();
     const { scope } = await workspace("free");
     const drive = await projectService.queueDriveIngest(
@@ -1046,9 +1047,9 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
 
     const after = await prisma.ingestJob.findUniqueOrThrow({ where: { id: drive.queuedJobId! } });
     expect(after).toMatchObject({ status: "cancelled", lastError: "PROJECT_EXPIRED", sourceCredential: null });
-  }));
+  })));
 
-  test("generation admission settles once and commits a refusal on the failed Project", prismaGlobal.bind(async () => {
+  test("generation admission settles once and commits a refusal on the failed Project", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     clock = new Date();
     const { workspace: ws, scope } = await workspace("free");
     const ready = async (seconds: number, reservedSeconds: number) => {
@@ -1110,9 +1111,9 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
     expect(
       (await prisma.project.findUniqueOrThrow({ where: { id: mcp.id } })).ingestErrorCode,
     ).toBe("credits_exhausted");
-  }));
+  })));
 
-  test("Upload Session open reserves declared credits and terminal compensation releases them", prismaGlobal.bind(async () => {
+  test("Upload Session open reserves declared credits and terminal compensation releases them", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     clock = new Date();
     const { workspace: ws, user } = await workspace("free");
     const storage: UploadSessionStorage = {
@@ -1160,5 +1161,5 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
       outcome: "discarded",
     });
     expect(await row(opened.projectId)).toMatchObject({ state: "released", reason: "user_discarded" });
-  }));
+  })));
 });

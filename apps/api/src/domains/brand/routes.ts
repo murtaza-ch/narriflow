@@ -1,15 +1,13 @@
-import {
-  audioAssetService,
-  brandFontService,
-  brandProfileService,
-  brandTemplateService,
-  campaignOperationService,
-  generatedMediaService,
-  GeneratedMediaJobError,
-  sceneTemplateService,
-  visualAssetService,
-  type BrandActorScope,
-} from "@narriflow/services";
+import { audioAssetService } from "@narriflow/services/audio-asset.service";
+import { brandFontService } from "@narriflow/services/brand-font.service";
+import { brandProfileService } from "@narriflow/services/brand-profile.service";
+import { brandTemplateService } from "@narriflow/services/brand-template.service";
+import { campaignOperationService } from "@narriflow/services/campaign-operation.service";
+import { generatedMediaService } from "@narriflow/services/generated-media-runtime";
+import { GeneratedMediaJobError } from "@narriflow/services/generated-media";
+import { sceneTemplateService } from "@narriflow/services/scene-template.service";
+import { visualAssetService } from "@narriflow/services/visual-asset.service";
+import { type BrandActorScope } from "@narriflow/services/brand-ownership";
 import {
   brandProfileDetailQuerySchema,
   brandProfilesPageQuerySchema,

@@ -1,3 +1,4 @@
+import { readServiceEnvironment } from "./runtime-environment";
 import { getPrismaClient } from "@narriflow/db/client";
 import type { ActorScope } from "./actor-scope";
 import { LibrarySearch, type LibrarySearchInput } from "./library-search";
@@ -11,7 +12,7 @@ export function getLibrarySearch() {
   if (!prisma) throw new Error("Library search storage is unavailable");
   return new LibrarySearch({
     prisma,
-    embeddings: createOpenAiEmbeddingProvider({ apiKey: process.env.OPENAI_API_KEY }),
+    embeddings: createOpenAiEmbeddingProvider({ apiKey: readServiceEnvironment().OPENAI_API_KEY }),
   });
 }
 

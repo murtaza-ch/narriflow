@@ -7,57 +7,28 @@ import type { ApiEnv } from "../../http/env";
 import { limitBody, trustedIngressIp } from "../../http/limits";
 import { socketAddress } from "../../server-hooks";
 import { REST_ENDPOINT_COMMANDS, type RestEndpoint } from "./admission";
-import {
-  assertCompletionCallbackUrl,
-  boundedExpectedDomainFailureDetails,
-  brandProfileService,
-  callbackEventId,
-  captionedVideoGenerationContext,
-  captionedVideoSettings,
-  clipExportService,
-  clipService,
-  clipTimelineService,
-  clipView,
-  createCaptionedVideo,
-  createClipExport,
-  decodeOperationId,
-  encodeOperationId,
-  ExpectedDomainFailureError,
-  exportView,
-  generateClips,
-  IntegrationAdmission,
-  integrationUploadSessions,
-  isExpectedDomainFailure,
-  librarySearchService,
-  listEvents,
-  locateClip,
-  locateExport,
-  operationReadScope,
-  operationStatusService,
-  operationWriteScope,
-  projectService,
-  projectView,
-  proposeSocialPost,
-  recipeService,
-  recipesView,
-  recipeView,
-  redeliverCallbacks,
-  requireNewMutationAllowed,
-  requireQueueDeliveryScope,
-  requireWebhookTypeScopes,
-  socialAccountsView,
-  submitVideo,
-  uploadSessionService,
-  webhookSubscriptions,
-  workspaceLibraryService,
-  workspaceService,
-  type ActorScope,
-  type HostResolver,
-  type IntegrationMutation,
-  type IntegrationPrincipal,
-  type OperationStatus,
-  type RateLimitResult,
-} from "@narriflow/services";
+import { assertCompletionCallbackUrl, callbackEventId } from "@narriflow/services/completion-callback";
+import { boundedExpectedDomainFailureDetails, ExpectedDomainFailureError, isExpectedDomainFailure } from "@narriflow/services/expected-domain-failure";
+import { brandProfileService } from "@narriflow/services/brand-profile.service";
+import { captionedVideoGenerationContext, captionedVideoSettings, clipView, createCaptionedVideo, createClipExport, exportView, generateClips, integrationUploadSessions, listEvents, locateClip, locateExport, projectView, proposeSocialPost, recipesView, recipeView, redeliverCallbacks, requireQueueDeliveryScope, socialAccountsView, submitVideo } from "@narriflow/services/integration-commands";
+import { clipExportService } from "@narriflow/services/clip-export.service";
+import { clipService } from "@narriflow/services/clip.service";
+import { clipTimelineService } from "@narriflow/services/clip-timeline.service";
+import { decodeOperationId, encodeOperationId, type OperationStatus } from "@narriflow/services/operation-status";
+import { IntegrationAdmission, operationReadScope, operationWriteScope, type IntegrationPrincipal } from "@narriflow/services/integration-admission";
+import { librarySearchService } from "@narriflow/services/library-search-runtime";
+import { operationStatusService } from "@narriflow/services/operation-status-runtime";
+import { projectService } from "@narriflow/services/project.service";
+import { recipeService } from "@narriflow/services/recipe.service";
+import { requireNewMutationAllowed, type RateLimitResult } from "@narriflow/services/rate-limit";
+import { requireWebhookTypeScopes } from "@narriflow/services/webhook-subscription";
+import { uploadSessionService } from "@narriflow/services/upload-session.service";
+import { webhookSubscriptions } from "@narriflow/services/webhook-subscription-runtime";
+import { workspaceLibraryService } from "@narriflow/services/workspace-library.service";
+import { workspaceService } from "@narriflow/services/workspace.service";
+import { type ActorScope } from "@narriflow/services/actor-scope";
+import { type HostResolver } from "@narriflow/services/url-guard";
+import { type IntegrationMutation } from "@narriflow/services/operation-receipt";
 import { buildGenerationContext, generationSettingsSchema, parseWorkspaceEventTypes, restApiSchemas as schemas } from "@narriflow/validators";
 import { domainFailureHttpStatus } from "../../http/errors";
 

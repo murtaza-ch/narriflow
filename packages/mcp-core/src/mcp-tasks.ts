@@ -1,14 +1,18 @@
+import { readServiceEnvironment } from "@narriflow/services/runtime-environment";
 import { CreateTaskResultV2Schema, GetTaskResultV2Schema, UpdateTaskRequestV2Schema, UpdateTaskResultV2Schema, CancelTaskResultV2Schema,
   hasTaskClientCapabilityV2, TASKS_EXTENSION_ID_V2 } from "@modelcontextprotocol/ext-tasks/core/v2";
 import { isInputRequiredResult, ProtocolError, ProtocolErrorCode, McpServer, Server, type Implementation, type ServerOptions,
   type Transport, type CallToolRequest, type CallToolResult, type ServerContext, type InputRequiredResult } from "@modelcontextprotocol/server";
-import { clipExportService, createMcpTaskRegistry, getMcpTaskPersistence, operationStatusService, cancelMcpTaskDomainWork, workspaceService,
-  MCP_TASK_TTL_MS, MCP_TASK_POLL_INTERVAL_MS, ExpectedDomainFailureError, isExpectedDomainFailure,
-  type McpTaskRecord, type McpTaskResolution } from "@narriflow/services";
+import { clipExportService } from "@narriflow/services/clip-export.service";
+import { createMcpTaskRegistry, MCP_TASK_TTL_MS, MCP_TASK_POLL_INTERVAL_MS, type McpTaskRecord, type McpTaskResolution } from "@narriflow/services/mcp-task";
+import { getMcpTaskPersistence, cancelMcpTaskDomainWork } from "@narriflow/services/mcp-task-runtime";
+import { operationStatusService } from "@narriflow/services/operation-status-runtime";
+import { workspaceService } from "@narriflow/services/workspace.service";
+import { ExpectedDomainFailureError, isExpectedDomainFailure } from "@narriflow/services/expected-domain-failure";
 import { mcpCreatedClipExportResultSchema, mcpOperationSchema, mcpResultSchema } from "@narriflow/validators";
 import { z } from "zod";
 import { mcpCallerId } from "./mcp-confirmation";
-import { exportView } from "@narriflow/services";
+import { exportView } from "@narriflow/services/integration-commands";
 import { McpToolAdmission, mcpOperationReadScope, type NarriflowMcpPrincipal, type NarriflowMcpToolName } from "./mcp-tool-admission";
 
 type Registry = ReturnType<typeof createMcpTaskRegistry>;
@@ -115,7 +119,7 @@ function productionRegistry(principal: NarriflowMcpPrincipal, options: TaskOptio
         if (!snapshot) return { status: "failed", error: { code: -32003, message: "Export is unavailable" } };
         const initial = (record.initialResult as CallToolResult).structuredContent as { data: Record<string, unknown> };
         return { status: "completed", result: mcpTaskTerminalResult(record, status.state === "failed" ? "failed" : "completed",
-          { ...initial.data, export: exportView(snapshot, new URL(options.appOrigin ?? process.env.WEB_ORIGIN ?? "http://localhost:3000").origin) }) };
+          { ...initial.data, export: exportView(snapshot, new URL(options.appOrigin ?? readServiceEnvironment().WEB_ORIGIN ?? "http://localhost:3000").origin) }) };
       }
       return { status: "completed", result: mcpTaskTerminalResult(record, status.state === "failed" ? "failed" : "completed") };
     },

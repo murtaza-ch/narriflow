@@ -1,3 +1,4 @@
+import { readServiceEnvironment } from "@narriflow/services/runtime-environment";
 import { registerAppResource, registerAppTool, getUiCapability, RESOURCE_MIME_TYPE } from "@modelcontextprotocol/ext-apps/server";
 import { type McpServer, type CallToolResult, type ClientCapabilities, type ServerContext, ProtocolError } from "@modelcontextprotocol/server";
 import { openUploadSessionSchema, readUploadSessionSchema, grantUploadPartsSchema, finalizeUploadSessionSchema, discardUploadSessionSchema, mcpAppTransferResultSchema, mcpAppConfirmationResultSchema, mcpAppConfirmIntentSchema } from "@narriflow/validators";
@@ -41,9 +42,9 @@ function origin(value: string) {
  * host bridge and must use private, zero-TTL caching in the server factory. */
 export function registerNarriflowMcpApps(server: McpServer, options: NarriflowMcpAppsOptions) {
   const appOrigin = origin(options.appOrigin);
-  const storageDomains = /^[a-f0-9]{32}$/i.test(process.env.R2_ACCOUNT_ID ?? "") ? [`https://${process.env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`] : [];
-  if (storageDomains.length && /^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/.test(process.env.R2_BUCKET ?? "")) {
-    storageDomains.push(`https://${process.env.R2_BUCKET}.${process.env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`);
+  const storageDomains = /^[a-f0-9]{32}$/i.test(readServiceEnvironment().R2_ACCOUNT_ID ?? "") ? [`https://${readServiceEnvironment().R2_ACCOUNT_ID}.r2.cloudflarestorage.com`] : [];
+  if (storageDomains.length && /^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/.test(readServiceEnvironment().R2_BUCKET ?? "")) {
+    storageDomains.push(`https://${readServiceEnvironment().R2_BUCKET}.${readServiceEnvironment().R2_ACCOUNT_ID}.r2.cloudflarestorage.com`);
   }
   const apiDomains = options.apiOrigin ? [origin(options.apiOrigin)] : [];
   const csp = { connectDomains: [...new Set([...apiDomains, ...storageDomains, ...(options.connectDomains ?? []).map(origin)])], resourceDomains: [...new Set([...apiDomains, ...storageDomains, ...(options.resourceDomains ?? []).map(origin)])], frameDomains: [] };

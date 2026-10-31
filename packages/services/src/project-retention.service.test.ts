@@ -1,3 +1,4 @@
+import { bindServiceTestEnvironment } from "./runtime-test-support";
 import { describe, expect, test } from "bun:test";
 import { PAID_ACCESS_ENDED_GRACE_DAYS, planLimits } from "@narriflow/validators";
 import {
@@ -11,7 +12,7 @@ import {
 } from "./project-retention.service";
 
 describe("project retention policy", () => {
-  test("a new Free project gets the catalog's 72-hour deadline without any configuration", () => {
+  test("a new Free project gets the catalog's 72-hour deadline without any configuration", bindServiceTestEnvironment(() => {
     const createdAt = new Date("2026-08-21T05:06:07.008Z");
     const assignment = retentionAssignmentForNewProject({ tier: "free", createdAt });
     expect(assignment?.retentionPolicyKey).toBe("free_project_v1");
@@ -19,9 +20,9 @@ describe("project retention policy", () => {
     expect(RETENTION_POLICIES.free_project_v1.durationMs).toBe(
       (planLimits("free").projectRetentionHours ?? 0) * 60 * 60 * 1000,
     );
-  });
+  }));
 
-  test("a Free deadline is assigned even when legacy retention variables say observe", async () => {
+  test("a Free deadline is assigned even when legacy retention variables say observe", bindServiceTestEnvironment(async () => {
     const prior = process.env.PROJECT_RETENTION_MODE;
     process.env.PROJECT_RETENTION_MODE = "observe";
     try {
@@ -34,18 +35,18 @@ describe("project retention policy", () => {
       if (prior === undefined) delete process.env.PROJECT_RETENTION_MODE;
       else process.env.PROJECT_RETENTION_MODE = prior;
     }
-  });
+  }));
 
-  test("paid projects never receive the Free deadline", () => {
+  test("paid projects never receive the Free deadline", bindServiceTestEnvironment(() => {
     expect(
       retentionAssignmentForNewProject({
         tier: "creator",
         createdAt: new Date("2026-08-21T00:00:00.000Z"),
       }),
     ).toBeNull();
-  });
+  }));
 
-  test("paid-to-Free transition assigns an exact 28-day grace deadline", () => {
+  test("paid-to-Free transition assigns an exact 28-day grace deadline", bindServiceTestEnvironment(() => {
     const effectiveAt = new Date("2026-08-25T10:00:00.000Z");
     const transition = retentionTransitionForTierChange({
       previousTier: "creator",
@@ -61,9 +62,9 @@ describe("project retention policy", () => {
       effectiveAt.getTime() +
         RETENTION_POLICIES.downgrade_to_free_v1.durationMs,
     );
-  });
+  }));
 
-  test("an upgrade clears still-unexpired project deadlines", () => {
+  test("an upgrade clears still-unexpired project deadlines", bindServiceTestEnvironment(() => {
     expect(
       retentionTransitionForTierChange({
         previousTier: "free",
@@ -71,9 +72,9 @@ describe("project retention policy", () => {
         effectiveAt: new Date("2026-08-25T10:00:00.000Z"),
       }),
     ).toEqual({ kind: "clear_unexpired" });
-  });
+  }));
 
-  test("upgrade persistence uses a strict greater-than deadline boundary", async () => {
+  test("upgrade persistence uses a strict greater-than deadline boundary", bindServiceTestEnvironment(async () => {
     const calls: Array<Record<string, unknown>> = [];
     const service = new ProjectRetentionService();
     const effectiveAt = new Date("2026-08-25T10:00:00.000Z");
@@ -102,9 +103,9 @@ describe("project retention policy", () => {
         purgeStorageVerifiedAt: null,
       },
     });
-  });
+  }));
 
-  test("Workspace recovery cannot clear a deadline that passed before verification", async () => {
+  test("Workspace recovery cannot clear a deadline that passed before verification", bindServiceTestEnvironment(async () => {
     const calls: Array<Record<string, unknown>> = [];
     const service = new ProjectRetentionService();
     const effectiveAt = new Date("2026-08-25T10:00:00.000Z");
@@ -130,9 +131,9 @@ describe("project retention policy", () => {
     expect(
       ((calls[0]?.where as { expiresAt: { gt: Date } }).expiresAt.gt),
     ).toEqual(observedAt);
-  });
+  }));
 
-  test("the paid-to-Free grace is the catalog's 28 days", () => {
+  test("the paid-to-Free grace is the catalog's 28 days", bindServiceTestEnvironment(() => {
     expect(RETENTION_POLICIES.downgrade_to_free_v1.durationMs).toBe(
       PAID_ACCESS_ENDED_GRACE_DAYS * 24 * 60 * 60 * 1000,
     );
@@ -143,9 +144,9 @@ describe("project retention policy", () => {
         effectiveAt: new Date("2026-08-25T10:00:00.000Z"),
       }),
     ).toEqual({ kind: "none" });
-  });
+  }));
 
-  test("access locks at the exact deadline and when purge is fenced", () => {
+  test("access locks at the exact deadline and when purge is fenced", bindServiceTestEnvironment(() => {
     const deadline = new Date("2026-08-24T00:00:00.000Z");
     expect(
       isProjectAccessible(
@@ -165,19 +166,19 @@ describe("project retention policy", () => {
         new Date(0),
       ),
     ).toBe(false);
-  });
+  }));
 
-  test("deletion identity is a stable content-free SHA-256 hash", () => {
+  test("deletion identity is a stable content-free SHA-256 hash", bindServiceTestEnvironment(() => {
     const hash = projectDeletionHash("0beec7b5-ea3f-4b61-8c8b-35c7f34af830");
     expect(hash).toMatch(/^[a-f0-9]{64}$/);
     expect(hash).toBe(
       projectDeletionHash("0beec7b5-ea3f-4b61-8c8b-35c7f34af830"),
     );
-  });
+  }));
 });
 
 describe("project prefix deletion", () => {
-  test("deletes more than 1,000 objects in bounded batches until the prefix is empty", async () => {
+  test("deletes more than 1,000 objects in bounded batches until the prefix is empty", bindServiceTestEnvironment(async () => {
     const objects = new Map(
       Array.from({ length: 1_250 }, (_, index) => [
         `projects/project-1/object-${index}`,
@@ -201,9 +202,9 @@ describe("project prefix deletion", () => {
     expect(result.objectCount).toBe(1_250);
     expect(result.totalBytes).toBe((1_250 * 1_251) / 2);
     expect(objects.size).toBe(0);
-  });
+  }));
 
-  test("a retry continues safely after a completed earlier batch", async () => {
+  test("a retry continues safely after a completed earlier batch", bindServiceTestEnvironment(async () => {
     const objects = new Map(
       Array.from({ length: 1_005 }, (_, index) => [
         `projects/project-2/object-${index}`,
@@ -237,5 +238,5 @@ describe("project prefix deletion", () => {
     });
     expect(retried.objectCount).toBe(5);
     expect(objects.size).toBe(0);
-  });
+  }));
 });

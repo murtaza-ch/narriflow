@@ -1,3 +1,4 @@
+import { bindServiceTestEnvironment } from "./runtime-test-support";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, setSystemTime, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
@@ -45,7 +46,7 @@ describeDb("Webhook Subscription PostgreSQL invariants", () => {
   let clock = new Date(Math.ceil(Date.now() / 1000) * 1000 + 1000);
   const now = () => clock;
   const advance = (ms: number) => { clock = new Date(clock.getTime() + ms); };
-  const cipher = createCallbackCipher();
+  const cipher = createCallbackCipher(process.env.SOCIAL_TOKEN_ENCRYPTION_KEY);
   const logs: Array<Record<string, unknown>> = [];
 
   /** A real HTTP server on loopback, reached through the injected pinned
@@ -95,7 +96,7 @@ describeDb("Webhook Subscription PostgreSQL invariants", () => {
   const subscriptions = () => createWebhookSubscriptions({ prisma, cipher, now, transport, resolver: publicResolver });
   const secrets = () => createCallbackSigningSecrets({ prisma, cipher, now });
 
-  beforeAll(async () => {
+  beforeAll(bindServiceTestEnvironment(async () => {
     if (!databaseUrl || !schema || !/^integration_test_[a-z0-9_]+$/.test(schema)) throw new Error("Webhook tests require a disposable integration_test_ schema");
     pool = new Pool({ connectionString: databaseUrl, max: 10 });
     prisma = new PrismaClient({ adapter: new PrismaPg(pool, { schema }), transactionOptions: { maxWait: 60_000, timeout: 60_000 } });
@@ -110,13 +111,13 @@ describeDb("Webhook Subscription PostgreSQL invariants", () => {
         return new Response(null, { status: script.shift() ?? 200 });
       },
     });
-  });
+  }));
 
-  afterAll(async () => {
+  afterAll(bindServiceTestEnvironment(async () => {
     await server?.stop(true);
     await prisma?.$disconnect();
     await pool?.end();
-  });
+  }));
 
   /** A Workspace with a signing secret, like one that already set up callbacks. */
   async function workspace(options: { secret?: boolean } = {}) {
@@ -166,7 +167,7 @@ describeDb("Webhook Subscription PostgreSQL invariants", () => {
     await deleteExpiredWorkspaceEvents(prisma, new Date());
   }
 
-  test("sends matching events in seq order, signed, and moves the cursor only after each 2xx", async () => {
+  test("sends matching events in seq order, signed, and moves the cursor only after each 2xx", bindServiceTestEnvironment(async () => {
     await reset();
     const { actor, workspaceId, secret } = await workspace();
     const created = await subscribe(actor, "/secret-token/a");
@@ -194,9 +195,9 @@ describeDb("Webhook Subscription PostgreSQL invariants", () => {
     expect(JSON.stringify(logs)).not.toContain("secret-token");
     expect(JSON.stringify(logs)).not.toContain("completed");
     expect(logs.filter((entry) => entry.message === "webhook_delivery_attempt")).toHaveLength(3);
-  });
+  }));
 
-  test("a Workspace without API access is held, never starves others, and resumes from its cursor when access returns", async () => {
+  test("a Workspace without API access is held, never starves others, and resumes from its cursor when access returns", bindServiceTestEnvironment(async () => {
     await reset();
     const held = await workspace();
     const other = await workspace();
@@ -225,9 +226,9 @@ describeDb("Webhook Subscription PostgreSQL invariants", () => {
     expect(await processor().deliver()).toBe(1);
     expect(operationIds(received.map((request) => verify(held.secret, request)))).toEqual(["after-downgrade"]);
     expect(await row(heldHook.webhookId)).toMatchObject({ lastDeliveredSeq: 2n, status: "active" });
-  });
+  }));
 
-  test("a restricted Workspace is held even when its plan includes API access, as API admission refuses it", async () => {
+  test("a restricted Workspace is held even when its plan includes API access, as API admission refuses it", bindServiceTestEnvironment(async () => {
     await reset();
     const { actor, workspaceId, secret } = await workspace();
     const created = await subscribe(actor, "/restricted");
@@ -243,9 +244,9 @@ describeDb("Webhook Subscription PostgreSQL invariants", () => {
     advance(WEBHOOK_PLAN_HOLD_MS);
     expect(await processor().deliver()).toBe(1);
     expect(operationIds(received.map((request) => verify(secret, request)))).toEqual(["while-restricted"]);
-  });
+  }));
 
-  test("losing API access mid-page stops before the next POST and keeps the cursor", async () => {
+  test("losing API access mid-page stops before the next POST and keeps the cursor", bindServiceTestEnvironment(async () => {
     await reset();
     const { actor, workspaceId } = await workspace();
     const created = await subscribe(actor, "/mid-page");
@@ -258,9 +259,9 @@ describeDb("Webhook Subscription PostgreSQL invariants", () => {
     expect(await processor().deliver()).toBe(1);
     expect(received).toHaveLength(1);
     expect(await row(created.webhookId)).toMatchObject({ lastDeliveredSeq: 1n, consecutiveFailures: 0, status: "active", leaseOwner: null });
-  });
+  }));
 
-  test("retries a failed event with the same id after the callback backoff, and sends what follows only after it", async () => {
+  test("retries a failed event with the same id after the callback backoff, and sends what follows only after it", bindServiceTestEnvironment(async () => {
     await reset();
     const { actor, workspaceId, secret } = await workspace();
     const created = await subscribe(actor, "/retry");
@@ -283,9 +284,9 @@ describeDb("Webhook Subscription PostgreSQL invariants", () => {
     expect(operationIds(payloads)).toEqual(["stuck", "stuck", "behind"]);
     expect(payloads[1]!.id).toBe(payloads[0]!.id);
     expect(await row(created.webhookId)).toMatchObject({ lastDeliveredSeq: 2n, consecutiveFailures: 0, lastResponseStatus: 200 });
-  });
+  }));
 
-  test("a subscription whose lease was taken can't move the cursor, and the event is sent again", async () => {
+  test("a subscription whose lease was taken can't move the cursor, and the event is sent again", bindServiceTestEnvironment(async () => {
     await reset();
     const { actor, workspaceId } = await workspace();
     const created = await subscribe(actor, "/fenced");
@@ -303,9 +304,9 @@ describeDb("Webhook Subscription PostgreSQL invariants", () => {
     expect(received).toHaveLength(2);
     expect(JSON.parse(received[1]!.body).id).toBe(JSON.parse(received[0]!.body).id);
     expect(await row(created.webhookId)).toMatchObject({ lastDeliveredSeq: 1n });
-  });
+  }));
 
-  test("two workers racing for a subscription send each event once, in order", async () => {
+  test("two workers racing for a subscription send each event once, in order", bindServiceTestEnvironment(async () => {
     await reset();
     const { actor, workspaceId, secret } = await workspace();
     await subscribe(actor, "/race");
@@ -313,9 +314,9 @@ describeDb("Webhook Subscription PostgreSQL invariants", () => {
     const delivered = await Promise.all([processor().deliver(), processor().deliver()]);
     expect(delivered.reduce((sum, count) => sum + count, 0)).toBe(5);
     expect(operationIds(received.map((request) => verify(secret, request)))).toEqual(["a", "b", "c", "d", "e"]);
-  });
+  }));
 
-  test("disables after 20 consecutive failures, emails the creator once, and re-enabling resumes where it stopped", async () => {
+  test("disables after 20 consecutive failures, emails the creator once, and re-enabling resumes where it stopped", bindServiceTestEnvironment(async () => {
     await reset();
     const { actor, workspaceId, secret } = await workspace();
     const created = await subscribe(actor, "/flaky");
@@ -346,9 +347,9 @@ describeDb("Webhook Subscription PostgreSQL invariants", () => {
     expect(await worker.deliver()).toBe(2);
     expect(operationIds(received.slice(20).map((request) => verify(secret, request)))).toEqual(["one", "two"]);
     expect(await row(created.webhookId)).toMatchObject({ lastDeliveredSeq: 2n, disabledNotifiedAt: null });
-  });
+  }));
 
-  test("a success resets the failure count", async () => {
+  test("a success resets the failure count", bindServiceTestEnvironment(async () => {
     await reset();
     const { actor, workspaceId } = await workspace();
     const created = await subscribe(actor, "/recovers");
@@ -363,9 +364,9 @@ describeDb("Webhook Subscription PostgreSQL invariants", () => {
     advance(25 * 60 * 60 * 1000);
     await worker.deliver();
     expect(await row(created.webhookId)).toMatchObject({ lastDeliveredSeq: 1n, consecutiveFailures: 1, status: "active" });
-  });
+  }));
 
-  test("a 410 disables the subscription at once", async () => {
+  test("a 410 disables the subscription at once", bindServiceTestEnvironment(async () => {
     await reset();
     const { actor, workspaceId } = await workspace();
     const created = await subscribe(actor, "/gone");
@@ -373,9 +374,9 @@ describeDb("Webhook Subscription PostgreSQL invariants", () => {
     script.push(410);
     expect(await processor().deliver()).toBe(0);
     expect(await row(created.webhookId)).toMatchObject({ status: "disabled", disabledReason: "endpoint_gone", lastDeliveredSeq: 0n });
-  });
+  }));
 
-  test("a missing signing secret counts as a failed delivery and sends nothing", async () => {
+  test("a missing signing secret counts as a failed delivery and sends nothing", bindServiceTestEnvironment(async () => {
     await reset();
     const { actor, workspaceId } = await workspace();
     const created = await subscribe(actor, "/unsigned");
@@ -385,9 +386,9 @@ describeDb("Webhook Subscription PostgreSQL invariants", () => {
     expect(received).toHaveLength(0);
     expect(await row(created.webhookId)).toMatchObject({ consecutiveFailures: 1, lastDeliveredSeq: 0n });
     expect(logs.find((entry) => entry.message === "webhook_delivery_attempt")).toMatchObject({ reason: "signing_secret_missing" });
-  });
+  }));
 
-  test("disables when events it hadn't sent expired, and re-enabling continues from the oldest retained event", async () => {
+  test("disables when events it hadn't sent expired, and re-enabling continues from the oldest retained event", bindServiceTestEnvironment(async () => {
     await reset();
     const { actor, workspaceId, secret } = await workspace();
     const created = await subscribe(actor, "/behind");
@@ -403,9 +404,9 @@ describeDb("Webhook Subscription PostgreSQL invariants", () => {
     expect(await processor().deliver()).toBe(1);
     expect(operationIds(received.map((request) => verify(secret, request)))).toEqual(["kept"]);
     expect(await row(created.webhookId)).toMatchObject({ lastDeliveredSeq: 3n, status: "active" });
-  });
+  }));
 
-  test("disables when every unsent event expired", async () => {
+  test("disables when every unsent event expired", bindServiceTestEnvironment(async () => {
     await reset();
     const { actor, workspaceId } = await workspace();
     const created = await subscribe(actor, "/all-gone");
@@ -417,9 +418,9 @@ describeDb("Webhook Subscription PostgreSQL invariants", () => {
     expect(await subscriptions().enable(actor, created.webhookId)).toMatchObject({ status: "active", lastDeliveredSeq: 0 });
     expect(await processor().deliver()).toBe(0);
     expect(await row(created.webhookId)).toMatchObject({ status: "active", skipExpiredOnResume: false, lastDeliveredSeq: 2n });
-  });
+  }));
 
-  test("a subscription to a quiet type stays active when other types' events expire", async () => {
+  test("a subscription to a quiet type stays active when other types' events expire", bindServiceTestEnvironment(async () => {
     await reset();
     const { actor, workspaceId, secret } = await workspace();
     const created = await subscribe(actor, "/quiet", ["social_post.finished"]);
@@ -442,9 +443,9 @@ describeDb("Webhook Subscription PostgreSQL invariants", () => {
     advance(WEBHOOK_IDLE_POLL_MS);
     expect(await worker.deliver()).toBe(1);
     expect(verify(secret, received[0]!)).toMatchObject({ seq: 4, type: "social_post.finished" });
-  });
+  }));
 
-  test("a new subscription starts at the newest event", async () => {
+  test("a new subscription starts at the newest event", bindServiceTestEnvironment(async () => {
     await reset();
     const { actor, workspaceId, secret } = await workspace();
     await emit(workspaceId, "before");
@@ -453,9 +454,9 @@ describeDb("Webhook Subscription PostgreSQL invariants", () => {
     await emit(workspaceId, "after");
     await processor().deliver();
     expect(operationIds(received.map((request) => verify(secret, request)))).toEqual(["after"]);
-  });
+  }));
 
-  test("rotating the signing secret signs with both during the overlap", async () => {
+  test("rotating the signing secret signs with both during the overlap", bindServiceTestEnvironment(async () => {
     await reset();
     const { actor, workspaceId, secret } = await workspace();
     await subscribe(actor, "/rotation");
@@ -463,9 +464,9 @@ describeDb("Webhook Subscription PostgreSQL invariants", () => {
     await emit(workspaceId, "x");
     await processor().deliver();
     expect(verify(secret, received[0]!).id).toBe(verify(next, received[0]!).id);
-  });
+  }));
 
-  test("create refuses without a signing secret, repeats, and past the limit; reads and writes stay in the Workspace", async () => {
+  test("create refuses without a signing secret, repeats, and past the limit; reads and writes stay in the Workspace", bindServiceTestEnvironment(async () => {
     await reset();
     const bare = await workspace({ secret: false });
     await expect(subscribe(bare.actor, "/x")).rejects.toMatchObject({ code: "callback_secret_required" });
@@ -490,9 +491,9 @@ describeDb("Webhook Subscription PostgreSQL invariants", () => {
     expect(await prisma.webhookSubscription.count({ where: { workspaceId } })).toBe(10);
     expect(await subscriptions().delete(actor, first.webhookId)).toEqual({ webhookId: first.webhookId });
     await expect(subscriptions().delete(actor, first.webhookId)).rejects.toMatchObject({ code: "webhook_not_found" });
-  });
+  }));
 
-  test("test sends one signed webhook.test event and moves no cursor, even while disabled", async () => {
+  test("test sends one signed webhook.test event and moves no cursor, even while disabled", bindServiceTestEnvironment(async () => {
     await reset();
     const { actor, workspaceId, secret } = await workspace();
     const created = await subscribe(actor, "/test-me");
@@ -510,9 +511,9 @@ describeDb("Webhook Subscription PostgreSQL invariants", () => {
     script.push(500);
     advance(WEBHOOK_TEST_INTERVAL_MS);
     expect(await subscriptions().test(actor, created.webhookId)).toMatchObject({ delivered: false, status: 500 });
-  });
+  }));
 
-  test("a webhook takes one test every 5 seconds, without sending the refused one", async () => {
+  test("a webhook takes one test every 5 seconds, without sending the refused one", bindServiceTestEnvironment(async () => {
     await reset();
     const { actor } = await workspace();
     const first = await subscribe(actor, "/throttled");
@@ -528,9 +529,9 @@ describeDb("Webhook Subscription PostgreSQL invariants", () => {
     advance(1);
     await subscriptions().test(actor, first.webhookId);
     expect(received).toHaveLength(3);
-  });
+  }));
 
-  test("enabling and testing need the scopes of the event types the webhook carries", async () => {
+  test("enabling and testing need the scopes of the event types the webhook carries", bindServiceTestEnvironment(async () => {
     await reset();
     const { actor } = await workspace();
     const created = await subscribe(actor, "/outcomes", ["social_post.finished"]);
@@ -545,9 +546,9 @@ describeDb("Webhook Subscription PostgreSQL invariants", () => {
     const withScope = { scopes: ["processing:write", "publishing:read"] };
     expect(await subscriptions().test(actor, created.webhookId, withScope)).toMatchObject({ delivered: true });
     expect(await subscriptions().enable(actor, created.webhookId, withScope)).toMatchObject({ status: "active" });
-  });
+  }));
 
-  test("falls back to the Workspace owner when the creator is gone, and skips when nobody can be emailed", async () => {
+  test("falls back to the Workspace owner when the creator is gone, and skips when nobody can be emailed", bindServiceTestEnvironment(async () => {
     await reset();
     const { actor } = await workspace();
     const created = await subscribe(actor, "/orphan");
@@ -561,9 +562,9 @@ describeDb("Webhook Subscription PostgreSQL invariants", () => {
     expect(await processor(undefined, async (notice) => { notices.push(notice); return { sent: true }; }).notifyDisabled()).toBe(0);
     expect(notices).toHaveLength(1);
     await prisma.user.update({ where: { id: userId }, data: { emailVerifiedAt: new Date() } });
-  });
+  }));
 
-  test("emails the creator while they are a member, and the owner once they have left", async () => {
+  test("emails the creator while they are a member, and the owner once they have left", bindServiceTestEnvironment(async () => {
     await reset();
     const { workspaceId } = await workspace();
     const member = async (label: string) => {
@@ -582,9 +583,9 @@ describeDb("Webhook Subscription PostgreSQL invariants", () => {
     const notices: WebhookDisabledNotice[] = [];
     expect(await processor(undefined, async (notice) => { notices.push(notice); return { sent: true }; }).notifyDisabled()).toBe(2);
     expect(Object.fromEntries(notices.map((notice) => [notice.webhookId, notice.to]))).toEqual({ [staying.webhookId]: stays.email, [leaving.webhookId]: userEmail });
-  });
+  }));
 
-  test("a notice that was skipped stays due, is logged, and is tried again a few minutes later", async () => {
+  test("a notice that was skipped stays due, is logged, and is tried again a few minutes later", bindServiceTestEnvironment(async () => {
     await reset();
     const { actor, workspaceId } = await workspace();
     const created = await subscribe(actor, "/mute");
@@ -609,9 +610,9 @@ describeDb("Webhook Subscription PostgreSQL invariants", () => {
     expect(calls).toHaveLength(2);
     expect((await row(created.webhookId)).disabledNotifiedAt).not.toBeNull();
     expect(await worker.notifyDisabled()).toBe(0);
-  });
+  }));
 
-  test("a worker whose lease lapsed sends nothing once another worker has taken over", async () => {
+  test("a worker whose lease lapsed sends nothing once another worker has taken over", bindServiceTestEnvironment(async () => {
     await reset();
     const { actor, workspaceId, secret } = await workspace();
     const created = await subscribe(actor, "/stale");
@@ -632,9 +633,9 @@ describeDb("Webhook Subscription PostgreSQL invariants", () => {
     expect(received).toHaveLength(3);
     expect(await row(created.webhookId)).toMatchObject({ lastDeliveredSeq: 3n, status: "active" });
     expect(logs.find((entry) => entry.message === "webhook_delivery_stopped")).toMatchObject({ webhookId: created.webhookId, seq: 1 });
-  });
+  }));
 
-  test("webhook admission rechecks retry backoff after discovering a due subscription", async () => {
+  test("webhook admission rechecks retry backoff after discovering a due subscription", bindServiceTestEnvironment(async () => {
     await reset();
     const { actor, workspaceId } = await workspace();
     const created = await subscribe(actor, "/deferred-after-discovery");
@@ -664,9 +665,9 @@ describeDb("Webhook Subscription PostgreSQL invariants", () => {
     expect(await processor(undefined, undefined, client).deliver()).toBe(0);
     expect(received).toHaveLength(0);
     expect(await row(created.webhookId)).toMatchObject({ lastDeliveredSeq: 0n, nextAttemptAt: deferredUntil });
-  });
+  }));
 
-  test("an older webhook execution cannot disable a newer claim by the same worker", async () => {
+  test("an older webhook execution cannot disable a newer claim by the same worker", bindServiceTestEnvironment(async () => {
     await reset();
     const { actor, workspaceId } = await workspace();
     const created = await subscribe(actor, "/same-worker");
@@ -698,9 +699,9 @@ describeDb("Webhook Subscription PostgreSQL invariants", () => {
       resumeOld(); resumeNew();
       await Promise.allSettled([old, fresh]);
     }
-  });
+  }));
 
-  test("a worker does not POST an event the cursor has already passed, even while it still holds the lease", async () => {
+  test("a worker does not POST an event the cursor has already passed, even while it still holds the lease", bindServiceTestEnvironment(async () => {
     await reset();
     const { actor, workspaceId } = await workspace();
     const created = await subscribe(actor, "/passed");
@@ -715,9 +716,9 @@ describeDb("Webhook Subscription PostgreSQL invariants", () => {
     expect(await worker).toBe(0);
     expect(received).toHaveLength(0);
     expect(await row(created.webhookId)).toMatchObject({ lastDeliveredSeq: 2n });
-  });
+  }));
 
-  test("deleting a subscription mid-drain stops the POSTs behind the one in flight", async () => {
+  test("deleting a subscription mid-drain stops the POSTs behind the one in flight", bindServiceTestEnvironment(async () => {
     await reset();
     const { actor, workspaceId } = await workspace();
     const created = await subscribe(actor, "/doomed");
@@ -729,9 +730,9 @@ describeDb("Webhook Subscription PostgreSQL invariants", () => {
     expect(await processor().deliver()).toBe(0);
     expect(received).toHaveLength(1);
     expect(await prisma.webhookSubscription.count({ where: { id: created.webhookId } })).toBe(0);
-  });
+  }));
 
-  test("disabling a subscription mid-drain stops the POSTs behind the one in flight", async () => {
+  test("disabling a subscription mid-drain stops the POSTs behind the one in flight", bindServiceTestEnvironment(async () => {
     await reset();
     const { actor, workspaceId } = await workspace();
     const created = await subscribe(actor, "/paused");
@@ -743,9 +744,9 @@ describeDb("Webhook Subscription PostgreSQL invariants", () => {
     expect(await processor().deliver()).toBe(0);
     expect(received).toHaveLength(1);
     expect(await row(created.webhookId)).toMatchObject({ status: "disabled", lastDeliveredSeq: 0n });
-  });
+  }));
 
-  test("a slow endpoint holds one lane, not the others", async () => {
+  test("a slow endpoint holds one lane, not the others", bindServiceTestEnvironment(async () => {
     await reset();
     const { actor, workspaceId } = await workspace();
     const slow = await subscribe(actor, "/slow");
@@ -762,9 +763,9 @@ describeDb("Webhook Subscription PostgreSQL invariants", () => {
     open();
     expect(await tick).toBe(2);
     expect(received.map((request) => request.path).sort()).toEqual(["/fast", "/slow"]);
-  });
+  }));
 
-  test("a tick's budget ends a drain between events, and the next tick continues in order", async () => {
+  test("a tick's budget ends a drain between events, and the next tick continues in order", bindServiceTestEnvironment(async () => {
     await reset();
     const { actor, workspaceId, secret } = await workspace();
     const created = await subscribe(actor, "/budget");
@@ -783,9 +784,9 @@ describeDb("Webhook Subscription PostgreSQL invariants", () => {
     delayMs = 0;
     expect(first + await processor().deliver()).toBe(5);
     expect(operationIds(received.map((request) => verify(secret, request)))).toEqual(["e1", "e2", "e3", "e4", "e5"]);
-  });
+  }));
 
-  test("re-enabling after events expired isn't undone by a purge that runs before the first drain, and mails once", async () => {
+  test("re-enabling after events expired isn't undone by a purge that runs before the first drain, and mails once", bindServiceTestEnvironment(async () => {
     await reset();
     const { actor, workspaceId } = await workspace();
     const created = await subscribe(actor, "/revived");
@@ -814,5 +815,5 @@ describeDb("Webhook Subscription PostgreSQL invariants", () => {
     advance(WEBHOOK_IDLE_POLL_MS);
     expect(await worker.deliver()).toBe(0);
     expect(await row(created.webhookId)).toMatchObject({ status: "disabled", disabledReason: "cursor_expired" });
-  });
+  }));
 });

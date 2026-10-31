@@ -1,5 +1,5 @@
 import { describe, expect, mock, test } from "bun:test";
-import type { BrandActorScope } from "@narriflow/services";
+import { type BrandActorScope } from "@narriflow/services/brand-ownership";
 import {
   type BrandAggregateServices,
   readBrandKit,

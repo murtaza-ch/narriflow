@@ -1,3 +1,4 @@
+import { bindServiceTestEnvironment } from "@narriflow/services/runtime-test-support";
 import { describe, expect, test } from "bun:test";
 import { admitMcpContinuation } from "./mcp-continuation-principal";
 import { createMcpConfirmation, createMcpUploadHandoff, verifyMcpPreparation, verifyMcpUploadHandoff } from "@narriflow/mcp-core";
@@ -47,7 +48,7 @@ async function withOAuthContinuations(run: (h: {
 }
 
 describe("signed continuation admission", () => {
-  test("OAuth upload and publication continuations recheck the originating token before admitting a write", async () => {
+  test("OAuth upload and publication continuations recheck the originating token before admitting a write", bindServiceTestEnvironment(async () => {
     await withOAuthContinuations(async ({ claims, upload, publication, recheck }) => {
       await expect(admitMcpContinuation(upload, "processing:write", undefined, recheck)).resolves.toMatchObject({ kind: "oauth" });
       await expect(admitMcpContinuation(publication, "publishing:write", undefined, recheck)).resolves.toMatchObject({ kind: "oauth" });
@@ -55,8 +56,8 @@ describe("signed continuation admission", () => {
       await expect(admitMcpContinuation(upload, "processing:write", undefined, recheck)).rejects.toMatchObject({ code: "mcp_continuation_revoked" });
       await expect(admitMcpContinuation(publication, "publishing:write", undefined, recheck)).rejects.toMatchObject({ code: "mcp_continuation_revoked" });
     });
-  });
-  test("OAuth continuations use the intersection of the signed and current scopes", async () => {
+  }));
+  test("OAuth continuations use the intersection of the signed and current scopes", bindServiceTestEnvironment(async () => {
     await withOAuthContinuations(async ({ claims, upload, publication, recheck }) => {
       claims.scopes = ["processing:write", "exports:write"];
       await expect(admitMcpContinuation(upload, "processing:write", undefined, recheck)).resolves.toMatchObject({ scopes: ["processing:write"] });
@@ -64,8 +65,8 @@ describe("signed continuation admission", () => {
       claims.scopes = ["publishing:write"];
       await expect(admitMcpContinuation(upload, "processing:write", undefined, recheck)).rejects.toMatchObject({ code: "scope_required" });
     });
-  });
-  test("expired, wrongly bound, and unverifiable OAuth credentials cannot continue", async () => {
+  }));
+  test("expired, wrongly bound, and unverifiable OAuth credentials cannot continue", bindServiceTestEnvironment(async () => {
     await withOAuthContinuations(async ({ claims, upstream, upload, recheck }) => {
       upstream.status = 503;
       await expect(admitMcpContinuation(upload, "processing:write", undefined, recheck)).rejects.toMatchObject({ code: "mcp_continuation_unavailable", kind: "unavailable" });
@@ -79,20 +80,20 @@ describe("signed continuation admission", () => {
       claims.aud = ["https://another.test/mcp"];
       await expect(admitMcpContinuation(upload, "processing:write", undefined, recheck)).rejects.toMatchObject({ code: "mcp_continuation_revoked" });
     });
-  });
-  test("an OAuth continuation signed with read scopes only is refused for writes", async () => {
+  }));
+  test("an OAuth continuation signed with read scopes only is refused for writes", bindServiceTestEnvironment(async () => {
     await expect(admitMcpContinuation(oauth(["projects:read"]), "publishing:write")).rejects.toMatchObject({ code: "scope_required" });
     await expect(admitMcpContinuation(oauth(["projects:read"]), "processing:write")).rejects.toMatchObject({ code: "scope_required" });
     await expect(admitMcpContinuation(oauth(["projects:read", "publishing:write"]), "publishing:write")).rejects.toThrow();
-  });
-  test("an API-key continuation needs the signed scope, an active key, and the key's current grant", async () => {
+  }));
+  test("an API-key continuation needs the signed scope, an active key, and the key's current grant", bindServiceTestEnvironment(async () => {
     await expect(admitMcpContinuation(apiKey(["projects:read"]), "processing:write", activeKey(["processing:write"]))).rejects.toMatchObject({ code: "scope_required" });
     await expect(admitMcpContinuation(apiKey(["processing:write"]), "processing:write", async () => null)).rejects.toMatchObject({ code: "mcp_continuation_revoked" });
     await expect(admitMcpContinuation(apiKey(["processing:write"]), "processing:write", async () => ({ createdByUserId: "someone-else", userId, scopes: ["processing:write"] }))).rejects.toMatchObject({ code: "mcp_continuation_revoked" });
     await expect(admitMcpContinuation(apiKey(["processing:write"]), "processing:write", activeKey(["projects:read"]))).rejects.toMatchObject({ code: "scope_required" });
     await expect(admitMcpContinuation(apiKey(["processing:write", "projects:read"]), "processing:write", activeKey(["processing:write", "exports:read"]))).resolves.toMatchObject({ kind: "api_key", apiKeyId: keyId, scopes: ["processing:write"] });
-  });
-  test("caller identity must match the signed credential kind", async () => {
+  }));
+  test("caller identity must match the signed credential kind", bindServiceTestEnvironment(async () => {
     await expect(admitMcpContinuation({ ...oauth(["publishing:write"]), principalKind: "api_key" }, "publishing:write", activeKey(["publishing:write"]))).rejects.toThrow("Invalid signed caller identity");
-  });
+  }));
 });

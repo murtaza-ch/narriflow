@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { AppUser, WorkspaceActorContext } from "@narriflow/auth";
-import { ExpectedDomainFailureError, ZoomError } from "@narriflow/services";
+import { ExpectedDomainFailureError } from "@narriflow/services/expected-domain-failure";
+import { ZoomError } from "@narriflow/services/zoom";
 import { Hono } from "hono";
 import { routeBodyLimit } from "../../body-limits";
 import { installRequestPolicy, requireAdmissionDeclaration } from "../../http/admission";

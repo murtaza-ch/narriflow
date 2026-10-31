@@ -1,3 +1,4 @@
+import { bindServiceTestEnvironment } from "./runtime-test-support";
 import { randomUUID } from "node:crypto";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { Pool } from "pg";
@@ -47,7 +48,7 @@ function executionFixture() {
 }
 
 describe("Layout Evidence background execution", () => {
-  test("renews throughout work longer than the original lease", async () => {
+  test("renews throughout work longer than the original lease", bindServiceTestEnvironment(async () => {
     const f = executionFixture();
     let finish!: () => void;
     const work = f.lifecycle.runAutomaticClaim(f.claim, async ({ signal }) => {
@@ -62,9 +63,9 @@ describe("Layout Evidence background execution", () => {
     finish();
     expect(await work).toBe(true);
     expect(f.cancelled()).toBe(true);
-  });
+  }));
 
-  test("renewal loss cancels active IO and cannot release a replacement owner", async () => {
+  test("renewal loss cancels active IO and cannot release a replacement owner", bindServiceTestEnvironment(async () => {
     const f = executionFixture();
     let observed: AbortSignal | undefined;
     const work = f.lifecycle.runAutomaticClaim(f.claim, async ({ signal }) => {
@@ -79,9 +80,9 @@ describe("Layout Evidence background execution", () => {
     expect(observed?.aborted).toBe(true);
     expect(f.status()).toBe("processing");
     expect(f.cancelled()).toBe(true);
-  });
+  }));
 
-  test("shutdown releases immediately when a handler ignores cancellation", async () => {
+  test("shutdown releases immediately when a handler ignores cancellation", bindServiceTestEnvironment(async () => {
     const f = executionFixture();
     const shutdown = new AbortController();
     let finish!: () => void;
@@ -95,10 +96,10 @@ describe("Layout Evidence background execution", () => {
     expect(f.cancelled()).toBe(true);
     finish();
     await work;
-  });
+  }));
 });
 
-test("targeted transient evidence reset is bounded and touches only failed infrastructure envelopes", async () => {
+test("targeted transient evidence reset is bounded and touches only failed infrastructure envelopes", bindServiceTestEnvironment(async () => {
   const updates: unknown[] = [];
   const prisma = {
     clip: { updateMany: async (query: unknown) => { updates.push(query); return { count: 2 }; } },
@@ -119,7 +120,7 @@ test("targeted transient evidence reset is bounded and touches only failed infra
       { OR: ["analysis_unavailable", "detection_unavailable"].map((reason) => ({ splitLayoutAnalysis: { path: ["reason"], equals: reason } })) },
     ] }, data: { splitLayoutAnalysis: Prisma.DbNull } },
   ]);
-});
+}));
 
 
 test.skipIf(process.env.ALLOW_LAYOUT_EVIDENCE_RESET_DB_TESTS !== "1")("resets old transient envelopes on disposable local Postgres and preserves valid content", async () => {
@@ -153,7 +154,7 @@ test.skipIf(process.env.ALLOW_LAYOUT_EVIDENCE_RESET_DB_TESTS !== "1")("resets ol
   }
 });
 
-test("a late evidence read is bound to the frozen editor revision and preview and returns stored evidence verbatim", async () => {
+test("a late evidence read is bound to the frozen editor revision and preview and returns stored evidence verbatim", bindServiceTestEnvironment(async () => {
   const queries: Array<{ where: Record<string, unknown>; select: Record<string, unknown> }> = [];
   const row = { autoLayoutAnalysis: { engine: "shot-layout-v1" }, layoutAnalysis: null, splitLayoutAnalysis: { engine: "explicit-split-v1" } };
   let stored: typeof row | null = row;
@@ -169,9 +170,9 @@ test("a late evidence read is bound to the frozen editor revision and preview an
 
   stored = null;
   expect(await lifecycle.readCompatibleDurable("clip-1", { editorRevision: 8, previewStorageKey: "preview-a" })).toBeNull();
-});
+}));
 
-test("background completion keeps the provenance that tells a render whose crops these are", async () => {
+test("background completion keeps the provenance that tells a render whose crops these are", bindServiceTestEnvironment(async () => {
   const writes: Array<{ data: { autoLayoutAnalysis: { analysisPath?: string } } }> = [];
   const prisma = { clip: { updateMany: async (query: { data: { autoLayoutAnalysis: { analysisPath?: string } } }) => { writes.push(query); return { count: 1 }; } } } as unknown as PrismaClient;
   const lifecycle = new LayoutEvidenceLifecycle({ prisma, now: () => new Date(1_000) });
@@ -182,4 +183,4 @@ test("background completion keeps the provenance that tells a render whose crops
   } as const;
   expect(await lifecycle.completeAutomatic("clip-1", analysis, { editorRevision: 1, previewStorageKey: "preview", claimToken: "owned" })).toBe(true);
   expect(writes[0]!.data.autoLayoutAnalysis.analysisPath).toBe("proxy");
-});
+}));

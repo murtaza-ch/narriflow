@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { createHmac } from "node:crypto";
-import { acceptTikTokPublicationWebhook, TikTokPublicationWebhookError } from "@narriflow/services";
+import { acceptTikTokPublicationWebhook, TikTokPublicationWebhookError } from "@narriflow/services/social-publication-tiktok-webhook";
 import { Hono } from "hono";
 import { createPublishingWebhookRoutes, type PublishingWebhookDeps } from "./webhooks";
 

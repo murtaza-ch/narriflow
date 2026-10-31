@@ -1,3 +1,4 @@
+import { bindServiceTestEnvironment } from "./runtime-test-support";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
@@ -15,7 +16,7 @@ dbDescribe("Workflow render rescue PostgreSQL invariants", () => {
   let pool: Pool;
   const fixturePrefix = "render-rescue-db-test:";
 
-  beforeAll(() => {
+  beforeAll(bindServiceTestEnvironment(() => {
     if (!databaseUrl || !databaseSchema?.startsWith("workflow_lifecycle_test_") ||
       !/^workflow_lifecycle_test_[a-z0-9_]+$/.test(databaseSchema)) {
       throw new Error("Render rescue tests require a disposable workflow schema");
@@ -25,17 +26,17 @@ dbDescribe("Workflow render rescue PostgreSQL invariants", () => {
       adapter: new PrismaPg(pool, { schema: databaseSchema }),
       transactionOptions: { maxWait: 120_000, timeout: 120_000 },
     });
-  });
+  }));
 
-  beforeEach(async () => {
+  beforeEach(bindServiceTestEnvironment(async () => {
     await prisma.workspace.deleteMany({ where: { owner: { clerkId: { startsWith: fixturePrefix } } } });
     await prisma.user.deleteMany({ where: { clerkId: { startsWith: fixturePrefix } } });
-  });
+  }));
 
-  afterAll(async () => {
+  afterAll(bindServiceTestEnvironment(async () => {
     await prisma?.$disconnect();
     await pool?.end();
-  });
+  }));
 
   async function fixture() {
     const suffix = randomUUID();
@@ -86,7 +87,7 @@ dbDescribe("Workflow render rescue PostgreSQL invariants", () => {
     return { module: new WorkflowRunLifecycle({ prisma: adapter }), entered, release };
   }
 
-  test("rescues usable work and atomically links only pending exports with its queued event", async () => {
+  test("rescues usable work and atomically links only pending exports with its queued event", bindServiceTestEnvironment(async () => {
     const f = await fixture();
     const ready = await prisma.clipExport.create({ data: {
       ...f.clipExport, id: randomUUID(), fingerprint: randomUUID(), status: "ready",
@@ -104,17 +105,17 @@ dbDescribe("Workflow render rescue PostgreSQL invariants", () => {
     const attempt = await module.claim("clip_rendering");
     if (!attempt) throw new Error("Rescued run must be claimable");
     expect((await module.beginRenderWorkSet(attempt)).variantIds).toEqual([f.render.id]);
-  });
+  }));
 
-  test("competing rescuers admit one run and event", async () => {
+  test("competing rescuers admit one run and event", bindServiceTestEnvironment(async () => {
     const f = await fixture();
     const results = await Promise.all([lifecycle().rescuePendingClipRenderingRun(), lifecycle().rescuePendingClipRenderingRun()]);
     expect(results.filter(Boolean)).toHaveLength(1);
     expect(await prisma.workflowRun.count({ where: { projectId: f.project.id, stage: "clip_rendering" } })).toBe(1);
     expect(await prisma.workflowEvent.count({ where: { projectId: f.project.id, stage: "clip_rendering" } })).toBe(1);
-  });
+  }));
 
-  test("an ordinary admission winning the Project lock prevents rescue and export relinking", async () => {
+  test("an ordinary admission winning the Project lock prevents rescue and export relinking", bindServiceTestEnvironment(async () => {
     const f = await fixture();
     const paused = pausedRescue();
     const rescue = paused.module.rescuePendingClipRenderingRun();
@@ -125,9 +126,9 @@ dbDescribe("Workflow render rescue PostgreSQL invariants", () => {
     expect(await rescue).toBeNull();
     expect(await prisma.workflowRun.count({ where: { projectId: f.project.id, stage: "clip_rendering" } })).toBe(1);
     expect((await prisma.clipExport.findUniqueOrThrow({ where: { id: f.clipExport.id } })).workflowRunId).toBeNull();
-  });
+  }));
 
-  test("expired or purging Projects and pending work already bound to terminal runs are not rescued", async () => {
+  test("expired or purging Projects and pending work already bound to terminal runs are not rescued", bindServiceTestEnvironment(async () => {
     const f = await fixture();
     await prisma.project.update({ where: { id: f.project.id }, data: { expiresAt: new Date(Date.now() - 1_000) } });
     expect(await lifecycle().rescuePendingClipRenderingRun()).toBeNull();
@@ -138,9 +139,9 @@ dbDescribe("Workflow render rescue PostgreSQL invariants", () => {
     await prisma.clipRender.update({ where: { id: f.render.id }, data: { workflowRunId: terminal.id } });
     expect(await lifecycle().rescuePendingClipRenderingRun()).toBeNull();
     expect(await prisma.workflowRun.count({ where: { projectId: f.project.id, stage: "clip_rendering" } })).toBe(1);
-  });
+  }));
 
-  test("rescues no work after the discovered candidate settles before its transaction", async () => {
+  test("rescues no work after the discovered candidate settles before its transaction", bindServiceTestEnvironment(async () => {
     const f = await fixture();
     const paused = pausedRescue();
     const rescue = paused.module.rescuePendingClipRenderingRun();
@@ -149,9 +150,9 @@ dbDescribe("Workflow render rescue PostgreSQL invariants", () => {
     finally { paused.release(); }
     expect(await rescue).toBeNull();
     expect(await prisma.workflowRun.count({ where: { projectId: f.project.id, stage: "clip_rendering" } })).toBe(0);
-  });
+  }));
 
-  test("rechecks Project availability after candidate discovery", async () => {
+  test("rechecks Project availability after candidate discovery", bindServiceTestEnvironment(async () => {
     const f = await fixture();
     const paused = pausedRescue();
     const rescue = paused.module.rescuePendingClipRenderingRun();
@@ -160,9 +161,9 @@ dbDescribe("Workflow render rescue PostgreSQL invariants", () => {
     finally { paused.release(); }
     expect(await rescue).toBeNull();
     expect(await prisma.workflowEvent.count({ where: { projectId: f.project.id } })).toBe(0);
-  });
+  }));
 
-  test("an export linkage failure rolls back admission, event and sequence allocation", async () => {
+  test("an export linkage failure rolls back admission, event and sequence allocation", bindServiceTestEnvironment(async () => {
     const f = await fixture();
     const schema = databaseSchema!;
     await prisma.$executeRawUnsafe(`CREATE FUNCTION "${schema}".reject_rescue_export_link() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'rescue export link rejected'; END; $$`);
@@ -177,5 +178,5 @@ dbDescribe("Workflow render rescue PostgreSQL invariants", () => {
       await prisma.$executeRawUnsafe(`DROP TRIGGER reject_rescue_export_link ON "${schema}"."ClipExport"`);
       await prisma.$executeRawUnsafe(`DROP FUNCTION "${schema}".reject_rescue_export_link()`);
     }
-  });
+  }));
 });

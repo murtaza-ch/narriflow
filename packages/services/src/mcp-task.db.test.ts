@@ -1,3 +1,4 @@
+import { bindServiceTestEnvironment } from "./runtime-test-support";
 import { createDatabaseTestContext } from "@narriflow/db/testing";
 import { RenderFixtureLifecycle } from "./render-group-test-fixture";
 import { randomUUID } from "node:crypto";
@@ -25,7 +26,7 @@ db("durable MCP Task lifecycle", () => {
   let projectId: string;
   const globals = createDatabaseTestContext();
   let previous: PrismaClient | undefined;
-  beforeAll(globals.bind(async () => {
+  beforeAll(bindServiceTestEnvironment(globals.bind(async () => {
     if (!url || !schema || !/^integration_test_[a-z0-9_]+$/.test(schema)) throw new Error("Tasks require a disposable schema");
     pool = new Pool({ connectionString: url, max: 10 });
     if ((await pool.query("SELECT current_schema() AS schema")).rows[0]?.schema !== schema) throw new Error("Wrong disposable schema");
@@ -34,11 +35,11 @@ db("durable MCP Task lifecycle", () => {
     userId = (await prisma.user.create({ data: { clerkId: `mcp-task-test:${randomUUID()}` } })).id;
     workspaceId = (await prisma.workspace.create({ data: { name: "Task test", ownerUserId: userId, pricingTier: "business", members: { create: { userId, role: "owner" } } } })).id;
     projectId = (await prisma.project.create({ data: { workspaceId, createdByUserId: userId, title: "Task fixture", sourceMediaUrl: "https://example.test/video.mp4", ingestStatus: "ready" } })).id;
-  }));
-  beforeEach(globals.bind(async () => {
+  })));
+  beforeEach(bindServiceTestEnvironment(globals.bind(async () => {
     projectId = (await prisma.project.create({ data: { workspaceId, createdByUserId: userId, title: "Task fixture", sourceMediaUrl: "https://example.test/video.mp4", ingestStatus: "ready" } })).id;
-  }));
-  afterAll(globals.bind(async () => { globals.client = previous; await prisma?.$disconnect(); await pool?.end(); }));
+  })));
+  afterAll(bindServiceTestEnvironment(globals.bind(async () => { globals.client = previous; await prisma?.$disconnect(); await pool?.end(); })));
   /** MCP Tasks read the shared Operation Status module. */
   async function operationState(record: Pick<McpTaskRecord, "workspaceId" | "domainKind" | "domainId">) {
     return (await createOperationStatusReader(prisma).read({ workspaceId: record.workspaceId }, { kind: record.domainKind, id: record.domainId })).state;
@@ -86,7 +87,7 @@ db("durable MCP Task lifecycle", () => {
     await event(childId, "moment_detection", "running", { followUpWorkflowRunId: workId,
       generationRenders: renderIds.map((renderId) => ({ renderId, clipId: renders.find((render) => render.id === renderId)!.clipId })) });
   }
-  test("concurrent registrations reconnect to one handle and immutable terminal snapshot", globals.bind(async () => {
+  test("concurrent registrations reconnect to one handle and immutable terminal snapshot", bindServiceTestEnvironment(globals.bind(async () => {
     const input = await taskInput(); const owned = { ownerUserId: input.ownerUserId, callerId: input.callerId };
     const receipts = await Promise.all(Array.from({ length: 6 }, () => registry().register(input)));
     expect(new Set(receipts.map((row) => row.id)).size).toBe(1);
@@ -97,15 +98,15 @@ db("durable MCP Task lifecycle", () => {
     expect((await registry().get(id, owned)).status).toBe("completed");
     await expect(Promise.resolve(prisma.mcpTask.update({ where: { id }, data: { status: "cancelled", terminalOutcome: { status: "cancelled" } } }))).rejects.toThrow();
     await expect(Promise.resolve(prisma.mcpTask.update({ where: { id }, data: { resultContract: { version: 2 } } }))).rejects.toThrow();
-  }));
-  test("terminal settlement races preserve the first durable outcome", globals.bind(async () => {
+  })));
+  test("terminal settlement races preserve the first durable outcome", bindServiceTestEnvironment(globals.bind(async () => {
     const row = await registry().register(await taskInput()); const store = prismaMcpTaskPersistence(prisma);
     await Promise.all([store.settle(row.id, { status: "completed", result: { done: true } }, new Date()), store.settle(row.id, { status: "cancelled" }, new Date())]);
     const first = await store.read(row.id);
     await store.settle(row.id, { status: "failed", error: { code: -1, message: "Late error" } }, new Date());
     expect((await store.read(row.id))?.terminalOutcome).toEqual(first?.terminalOutcome);
-  }));
-  test("cooperative cancellation races queued work admission without cancelling a running claim", globals.bind(async () => {
+  })));
+  test("cooperative cancellation races queued work admission without cancelling a running claim", bindServiceTestEnvironment(globals.bind(async () => {
     const input = await taskInput(); const row = await registry().register(input);
     const [claim] = await Promise.all([
       prisma.workflowRun.updateMany({ where: { id: input.domainId, status: "queued" }, data: { status: "running" } }),
@@ -116,8 +117,8 @@ db("durable MCP Task lifecycle", () => {
     if (!claim.count) expect(work.errorCode).toBe("MCP_CANCELLED");
     const polled = await registry().get(row.id, { ownerUserId: userId, callerId: input.callerId });
     expect(polled.status).toBe(claim.count ? "working" : "cancelled");
-  }));
-  test("expiry and caller isolation leave domain execution untouched", globals.bind(async () => {
+  })));
+  test("expiry and caller isolation leave domain execution untouched", bindServiceTestEnvironment(globals.bind(async () => {
     const input = await taskInput(); const at = new Date("2026-01-01T00:00:00Z");
     const row = await createMcpTaskRegistry({ persistence: prismaMcpTaskPersistence(prisma), now: () => at,
       authorize: async () => {}, resolve: async () => ({ status: "working" }), cancel: async () => { throw new Error("Must not cancel"); } }).register(input);
@@ -125,8 +126,8 @@ db("durable MCP Task lifecycle", () => {
     expect((await prisma.workflowRun.findUniqueOrThrow({ where: { id: input.domainId } })).status).toBe("queued");
     const current = await registry().register(await taskInput());
     await expect(registry().get(current.id, { ownerUserId: userId, callerId: "another-client" })).rejects.toMatchObject({ code: "mcp_task_not_found" });
-  }));
-  test("generation remains working after STT and isolates the exact detection child", globals.bind(async () => {
+  })));
+  test("generation remains working after STT and isolates the exact detection child", bindServiceTestEnvironment(globals.bind(async () => {
     const input = await taskInput(); const row = await registry().register(input);
     const child = await detection(input, "queued");
     await detection(await taskInput(), "failed");
@@ -134,8 +135,8 @@ db("durable MCP Task lifecycle", () => {
     expect((await registry().get(row.id, { ownerUserId: userId, callerId: input.callerId })).status).toBe("working");
     await prisma.workflowRun.update({ where: { id: child.id }, data: { status: "failed", errorCode: "detection_failed" } });
     expect(await operationState(row)).toBe("failed");
-  }));
-  test("generation waits for its clip renders and reports partial rendering", globals.bind(async () => {
+  })));
+  test("generation waits for its clip renders and reports partial rendering", bindServiceTestEnvironment(globals.bind(async () => {
     const input = await taskInput(); const row = await registry().register(input);
     const child = await detection(input, "completed");
     const work = await renderRun(child.id, "queued");
@@ -147,8 +148,8 @@ db("durable MCP Task lifecycle", () => {
     await prisma.clipRender.update({ where: { id: rendering.id }, data: { status: "failed", errorCode: "render_failed" } });
     await prisma.workflowRun.update({ where: { id: work.id }, data: { status: "partial" } });
     expect(await operationState(row)).toBe("partial");
-  }));
-  test("cancelling a handed-off intake Task cancels its queued generation, not the finished import", globals.bind(async () => {
+  })));
+  test("cancelling a handed-off intake Task cancels its queued generation, not the finished import", bindServiceTestEnvironment(globals.bind(async () => {
     const generation = await taskInput();
     const job = await prisma.ingestJob.create({ data: { projectId, jobType: "link_import", payload: {}, status: "completed", completedAt: new Date(),
       generationHandoffAt: new Date(), generationRunId: generation.domainId } });
@@ -159,8 +160,8 @@ db("durable MCP Task lifecycle", () => {
     expect((await prisma.ingestJob.findUniqueOrThrow({ where: { id: job.id } })).status).toBe("completed");
     expect(await operationState(row)).toBe("cancelled");
     expect((await registry().get(row.id, { ownerUserId: userId, callerId: input.callerId })).status).toBe("cancelled");
-  }));
-  test("cancellation reaches a queued detection child while a running detection wins", globals.bind(async () => {
+  })));
+  test("cancellation reaches a queued detection child while a running detection wins", bindServiceTestEnvironment(globals.bind(async () => {
     const input = await taskInput(); const row = await registry().register(input); const child = await detection(input, "queued");
     await registry().cancel(row.id, { ownerUserId: userId, callerId: input.callerId });
     expect((await prisma.workflowRun.findUniqueOrThrow({ where: { id: input.domainId } })).status).toBe("completed");
@@ -170,8 +171,8 @@ db("durable MCP Task lifecycle", () => {
     await registry().cancel(running.id, { ownerUserId: userId, callerId: runningInput.callerId });
     expect((await prisma.workflowRun.findUniqueOrThrow({ where: { id: runningChild.id } })).status).toBe("running");
     expect((await registry().get(running.id, { ownerUserId: userId, callerId: runningInput.callerId })).status).toBe("working");
-  }));
-  test("shared render cancellation stops only this generation's pending variants", globals.bind(async () => {
+  })));
+  test("shared render cancellation stops only this generation's pending variants", bindServiceTestEnvironment(globals.bind(async () => {
     const input = await taskInput(); const row = await registry().register(input); const child = await detection(input, "completed");
     const otherChild = await detection(await taskInput(), "completed");
     const shared = await renderRun(child.id, "running");
@@ -189,8 +190,8 @@ db("durable MCP Task lifecycle", () => {
     await prisma.clipRender.update({ where: { id: running.id }, data: { status: "completed" } });
     await event(shared.id, "clip_rendering", "running", { generationRenderResults: [{ renderId: running.id, status: "completed", errorCode: null }] });
     expect((await registry().get(row.id, { ownerUserId: userId, callerId: input.callerId })).status).toBe("cancelled");
-  }));
-  test("durable child outcomes survive Studio cache reset and ignore unrelated shared drains", globals.bind(async () => {
+  })));
+  test("durable child outcomes survive Studio cache reset and ignore unrelated shared drains", bindServiceTestEnvironment(globals.bind(async () => {
     const input = await taskInput(); const row = await registry().register(input); const child = await detection(input, "running");
     const attemptId = randomUUID();
     await prisma.workflowRun.update({ where: { id: child.id }, data: { attemptId, attemptCount: 1, leaseOwner: "mcp-generation-history",
@@ -220,8 +221,8 @@ db("durable MCP Task lifecycle", () => {
     const unrelatedDrain = await prisma.workflowRun.create({ data: { projectId, stage: "clip_rendering", status: "queued", idempotencyKey: `drain-${admitted.id}` } });
     expect(await operationState(row)).toBe("completed");
     await prisma.workflowRun.update({ where: { id: unrelatedDrain.id }, data: { status: "completed" } });
-  }));
-  test("retryable child failure does not settle a Task before the later attempt succeeds", globals.bind(async () => {
+  })));
+  test("retryable child failure does not settle a Task before the later attempt succeeds", bindServiceTestEnvironment(globals.bind(async () => {
     const input = await taskInput(); const row = await registry().register(input); const child = await detection(input, "completed");
     const work = await renderRun(child.id, "queued"); const generated = await clip(child.id);
     const render = await prisma.clipRender.create({ data: { clipId: generated.id, aspectRatio: "ratio_9_16", status: "pending" } });
@@ -244,8 +245,8 @@ db("durable MCP Task lifecycle", () => {
     expect(await lifecycle.markClipRenderVariantRendering(second, render.id)).toBe(true);
     expect(await lifecycle.completeClipRenderVariant(second, render.id, { storageKey: "private/retry.mp4", sizeBytes: 100, durationSec: 30 })).toBe(true);
     expect(await operationState(row)).toBe("completed");
-  }));
-  test("permanent failure history survives later clip replacement before the first Task poll", globals.bind(async () => {
+  })));
+  test("permanent failure history survives later clip replacement before the first Task poll", bindServiceTestEnvironment(globals.bind(async () => {
     const input = await taskInput(); const row = await registry().register(input); const child = await detection(input, "completed");
     const work = await renderRun(child.id, "running");
     const generated = await clip(child.id);
@@ -261,5 +262,5 @@ db("durable MCP Task lifecycle", () => {
     expect(await lifecycle.failClipRenderVariant(attempt, render.id, "render_failed", "permanent")).toBe(true);
     await prisma.clip.deleteMany({ where: { workflowRunId: child.id } });
     expect(await operationState(row)).toBe("failed");
-  }));
+  })));
 });

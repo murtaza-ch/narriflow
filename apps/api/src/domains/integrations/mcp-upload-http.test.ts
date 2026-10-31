@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { ExpectedDomainFailureError, integrationUploadSessionKey, integrationUploadSessions, type ActorScope, type UploadSessionService } from "@narriflow/services";
+import { ExpectedDomainFailureError } from "@narriflow/services/expected-domain-failure";
+import { integrationUploadSessionKey, integrationUploadSessions } from "@narriflow/services/integration-commands";
+import { type ActorScope } from "@narriflow/services/actor-scope";
+import { type UploadSessionService } from "@narriflow/services/upload-session.service";
 import { buildGenerationContentPack } from "@narriflow/validators";
 import { createMcpUploadHttpHandler } from "./mcp-upload-http";
 import { mcpIntegrationAuthenticationFailure, mcpIntegrationMutationGuard } from "./mcp-integration-admission";

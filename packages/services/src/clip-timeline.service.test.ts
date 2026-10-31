@@ -1,3 +1,4 @@
+import { bindServiceTestEnvironment } from "./runtime-test-support";
 import { createDatabaseTestContext } from "@narriflow/db/testing";
 import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import type { PrismaClient } from "@prisma/client";
@@ -29,16 +30,16 @@ const fakePrisma = {
 const globals = createDatabaseTestContext();
 const previousPrisma = globals.client;
 const previousEnv = { ...process.env };
-beforeAll(globals.bind(() => {
+beforeAll(bindServiceTestEnvironment(globals.bind(() => {
   globals.client = fakePrisma;
   Object.assign(process.env, { DATABASE_URL: process.env.DATABASE_URL ?? "postgresql://unused.test/db", R2_ACCOUNT_ID: "account", R2_ACCESS_KEY_ID: "access", R2_SECRET_ACCESS_KEY: "secret", R2_BUCKET: "bucket" });
-}));
-afterAll(globals.bind(() => {
+})));
+afterAll(bindServiceTestEnvironment(globals.bind(() => {
   globals.client = previousPrisma;
   for (const key of ["DATABASE_URL", "R2_ACCOUNT_ID", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_BUCKET"]) {
     if (previousEnv[key] === undefined) delete process.env[key]; else process.env[key] = previousEnv[key];
   }
-}));
+})));
 
 function clipRow(project: Record<string, unknown> = {}) {
   return { ...stored, id: CLIP, projectId: PROJECT, llmModel: "test", title: "Big Idea", hookText: "Hook", editorRevision: 4,
@@ -46,7 +47,7 @@ function clipRow(project: Record<string, unknown> = {}) {
 }
 
 describe("clip timelines", () => {
-  test("export returns the timeline text, SRT, and an expiring source grant under the name the timeline uses, with a URL-free audit log", globals.bind(async () => {
+  test("export returns the timeline text, SRT, and an expiring source grant under the name the timeline uses, with a URL-free audit log", bindServiceTestEnvironment(globals.bind(async () => {
     row = clipRow();
     const actor = spyOn(workspaceService, "requireActor").mockResolvedValue({ pricingTier: "pro" } as never);
     const logs: string[] = [];
@@ -74,9 +75,9 @@ describe("clip timelines", () => {
       expect(logs.join("\n")).not.toContain("X-Amz");
       expect(logs.join("\n")).not.toContain("https://");
     } finally { actor.mockRestore(); warn.mockRestore(); }
-  }));
+  })));
 
-  test("archive is a ZIP of the timeline and the SRT; the source is not in it", globals.bind(async () => {
+  test("archive is a ZIP of the timeline and the SRT; the source is not in it", bindServiceTestEnvironment(globals.bind(async () => {
     row = clipRow();
     const actor = spyOn(workspaceService, "requireActor").mockResolvedValue({ pricingTier: "pro" } as never);
     try {
@@ -90,9 +91,9 @@ describe("clip timelines", () => {
       expect(text).toContain("FCM: NON-DROP FRAME");
       expect(archive.bytes.length).toBeLessThan(5_000);
     } finally { actor.mockRestore(); }
-  }));
+  })));
 
-  test("issues the source grant alone for the web page's separate download", globals.bind(async () => {
+  test("issues the source grant alone for the web page's separate download", bindServiceTestEnvironment(globals.bind(async () => {
     row = clipRow({ sourceProbe: null });
     const actor = spyOn(workspaceService, "requireActor").mockResolvedValue({ pricingTier: "pro" } as never);
     const warn = spyOn(console, "warn").mockImplementation(() => {});
@@ -101,9 +102,9 @@ describe("clip timelines", () => {
       expect(source.fileName).toBe("Quarterly-Talk-source.mp4");
       expect(new URL(source.downloadUrl).searchParams.get("X-Amz-Expires")).toBe("900");
     } finally { actor.mockRestore(); warn.mockRestore(); }
-  }));
+  })));
 
-  test("refuses a missing clip, a purged source, an unmeasured source, and a member without download access", globals.bind(async () => {
+  test("refuses a missing clip, a purged source, an unmeasured source, and a member without download access", bindServiceTestEnvironment(globals.bind(async () => {
     const actor = spyOn(workspaceService, "requireActor").mockResolvedValue({ pricingTier: "pro" } as never);
     try {
       row = null;
@@ -118,9 +119,9 @@ describe("clip timelines", () => {
       row = clipRow();
       await expect(clipTimelineService.export(scope, PROJECT, CLIP, "edl", { credentialKind: "api_key" })).rejects.toThrow("forbidden");
     } finally { actor.mockRestore(); }
-  }));
+  })));
 
-  test("refuses timelines and source grants below Pro with the shared plan refusal", globals.bind(async () => {
+  test("refuses timelines and source grants below Pro with the shared plan refusal", bindServiceTestEnvironment(globals.bind(async () => {
     row = clipRow();
     const actor = spyOn(workspaceService, "requireActor").mockResolvedValue({ pricingTier: "creator" } as never);
     try {
@@ -129,5 +130,5 @@ describe("clip timelines", () => {
       await expect(clipTimelineService.archive(scope, PROJECT, CLIP, "edl")).rejects.toMatchObject(refusal);
       await expect(clipTimelineService.issueSourceGrant(scope, PROJECT, CLIP, { credentialKind: "session" })).rejects.toMatchObject(refusal);
     } finally { actor.mockRestore(); }
-  }));
+  })));
 });

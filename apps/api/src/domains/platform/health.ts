@@ -13,6 +13,10 @@ export interface HealthDependencies {
   now?: () => number;
 }
 
+export function healthResponse(version: string, requestId: string = crypto.randomUUID()): Response {
+  return Response.json({ ok: true, service: "narriflow-api", version }, { headers: { "X-Request-ID": requestId } });
+}
+
 const DEFAULT_DATABASE_TIMEOUT_MS = 2_000;
 
 async function databaseReady(dependencies: HealthDependencies): Promise<boolean> {
@@ -52,9 +56,7 @@ export function createHealthRoutes(dependencies: HealthDependencies) {
     return inFlight;
   };
   return createRouteApp(platformAdmission)
-    .get("/health", (c) =>
-      c.json({ ok: true, service: "narriflow-api", version: dependencies.version }),
-    )
+    .get("/health", (c) => healthResponse(dependencies.version, c.get("requestId")))
     .get("/ready", async (c) => {
       if (dependencies.isDraining()) {
         return c.json({ ok: false, status: "draining" as const }, 503);

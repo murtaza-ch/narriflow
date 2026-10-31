@@ -1,3 +1,4 @@
+import { withServiceEnvironment } from "../src/runtime-environment";
 import { createDatabaseScope, withDatabaseScope } from "@narriflow/db/client";
 import { parseGeneratedMediaOperatorArgs } from "../src/generated-media-operator";
 import { generatedMediaService } from "../src/generated-media-runtime";
@@ -9,7 +10,7 @@ function write(value: unknown) {
 try {
   const connectionString = process.env.DIRECT_URL ?? process.env.DATABASE_URL;
   if (!connectionString) throw new Error("Database connection is required");
-  await withDatabaseScope(createDatabaseScope({ connectionString }), async () => {
+  await withServiceEnvironment(process.env, () => withDatabaseScope(createDatabaseScope({ connectionString }), async () => {
   const input = parseGeneratedMediaOperatorArgs(process.argv.slice(2));
   const before = await generatedMediaService.inspectForOperator(input.workspaceId, input.jobId);
   if (!input.reconcile) {
@@ -31,7 +32,7 @@ try {
     }));
     write({ mode: "reconcile", before, result });
   }
-  });
+  }));
 } catch (error) {
   write({
     mode: "failed",

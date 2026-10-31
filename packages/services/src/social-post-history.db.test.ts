@@ -1,3 +1,4 @@
+import { bindServiceTestEnvironment } from "./runtime-test-support";
 import { createDatabaseTestContext } from "@narriflow/db/testing";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
@@ -18,17 +19,17 @@ dbDescribe("Social Post history PostgreSQL", () => {
 	let previous: PrismaClient | undefined;
 	const globalPrisma = createDatabaseTestContext();
 
-	beforeAll(globalPrisma.bind(async () => {
+	beforeAll(bindServiceTestEnvironment(globalPrisma.bind(async () => {
 		pool = new Pool({ connectionString: databaseUrl!, max: 4 });
 		prisma = new PrismaClient({ adapter: new PrismaPg(pool, databaseSchema ? { schema: databaseSchema } : undefined) });
 		previous = globalPrisma.client;
 		globalPrisma.client = prisma;
-	}));
-	afterAll(globalPrisma.bind(async () => {
+	})));
+	afterAll(bindServiceTestEnvironment(globalPrisma.bind(async () => {
 		globalPrisma.client = previous;
 		await prisma.$disconnect();
 		await pool.end();
-	}));
+	})));
 
 	async function fixture() {
 		const suffix = randomUUID();
@@ -46,7 +47,7 @@ dbDescribe("Social Post history PostgreSQL", () => {
 		return { user, workspace, project, rows };
 	}
 
-	test("pages every post in newest-first order across a deleted and malformed cursor", globalPrisma.bind(async () => {
+	test("pages every post in newest-first order across a deleted and malformed cursor", bindServiceTestEnvironment(globalPrisma.bind(async () => {
 		const f = await fixture();
 		const service = new SocialService();
 		const first = await service.listProjectPosts({ actorUserId: f.user.id, workspaceId: f.workspace.id }, f.project.id);
@@ -59,9 +60,9 @@ dbDescribe("Social Post history PostgreSQL", () => {
 		// still reaches every remaining row without a duplicate or query failure.
 		expect([...first.items, ...second.items, ...third.items].map((post) => post.id)).toHaveLength(205);
 		expect((await service.listProjectPosts({ actorUserId: f.user.id, workspaceId: f.workspace.id }, f.project.id, { cursor: "not-a-cursor" })).items[0]!.caption).toBe("post 204");
-	}));
+	})));
 
-	test("bounds tracked terminal reads and discovers new live posts", globalPrisma.bind(async () => {
+	test("bounds tracked terminal reads and discovers new live posts", bindServiceTestEnvironment(globalPrisma.bind(async () => {
 		const f = await fixture();
 		const service = new SocialService();
 		const tracked = f.rows.slice(0, 101).map((row) => row.id);
@@ -72,9 +73,9 @@ dbDescribe("Social Post history PostgreSQL", () => {
 		const discovered = await service.listProjectPosts({ actorUserId: f.user.id, workspaceId: f.workspace.id }, f.project.id, { activeOnly: true });
 		expect(discovered.items).toHaveLength(100);
 		expect(discovered.items.every((post) => post.status === "scheduled")).toBe(true);
-	}));
+	})));
 
-	test("a member reads Workspace history without borrowing its owner's identity", globalPrisma.bind(async () => {
+	test("a member reads Workspace history without borrowing its owner's identity", bindServiceTestEnvironment(globalPrisma.bind(async () => {
 		const f = await fixture();
 		const editor = await prisma.user.create({ data: { clerkId: `history-editor:${randomUUID()}` } });
 		await prisma.workspaceMember.create({ data: { workspaceId: f.workspace.id, userId: editor.id, role: "editor" } });
@@ -85,5 +86,5 @@ dbDescribe("Social Post history PostgreSQL", () => {
 		expect((await service.listProjectPosts({ ...scope, workspaceId: other.id }, f.project.id)).items).toEqual([]);
 		await prisma.workspaceMember.delete({ where: { workspaceId_userId: { workspaceId: f.workspace.id, userId: editor.id } } });
 		await expect(service.listProjectPosts(scope, f.project.id)).rejects.toMatchObject({ code: "workspace_access_denied" });
-	}));
+	})));
 });

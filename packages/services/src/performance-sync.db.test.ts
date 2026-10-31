@@ -1,3 +1,4 @@
+import { bindServiceTestEnvironment } from "./runtime-test-support";
 import { createDatabaseTestContext } from "@narriflow/db/testing";
 import { randomUUID } from "node:crypto";
 import {
@@ -73,7 +74,7 @@ dbDescribe("Performance sync PostgreSQL invariants", () => {
 	let previousGlobalPrisma: PrismaClient | undefined;
 	const prismaGlobal = createDatabaseTestContext();
 
-	beforeAll(prismaGlobal.bind(async () => {
+	beforeAll(bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		pool = new Pool({ connectionString: databaseUrl!, max: 12 });
 		prisma = new PrismaClient({
 			adapter: new PrismaPg(pool, databaseSchema ? { schema: databaseSchema } : undefined),
@@ -81,21 +82,21 @@ dbDescribe("Performance sync PostgreSQL invariants", () => {
 		});
 		previousGlobalPrisma = prismaGlobal.client;
 		prismaGlobal.client = prisma;
-	}));
+	})));
 
-	afterAll(prismaGlobal.bind(async () => {
+	afterAll(bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		prismaGlobal.client = previousGlobalPrisma;
 		await prisma?.$disconnect();
 		await pool?.end();
-	}));
+	})));
 
 	// The schema is disposable and shared with the other publication suites;
 	// start each test with no tracked or published videos so a test's calls
 	// only ever see its own videos.
-	beforeEach(prismaGlobal.bind(async () => {
+	beforeEach(bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		await prisma.trackedVideo.deleteMany();
 		await prisma.publishedSocialVideo.deleteMany();
-	}));
+	})));
 
 	function sync(
 		fetcher: typeof fetch,
@@ -300,7 +301,7 @@ dbDescribe("Performance sync PostgreSQL invariants", () => {
 			include: { captures: { orderBy: { slot: "asc" } } },
 		});
 
-	test("tracking is idempotent: one Tracked Video and five slots per verified video, however many workers schedule it", prismaGlobal.bind(async () => {
+	test("tracking is idempotent: one Tracked Video and five slots per verified video, however many workers schedule it", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const f = await fixture();
 		const publishedAt = new Date(Date.now() - 2 * HOUR);
 		await published(f, { platformPostId: "idempotent-1", publishedAt });
@@ -347,9 +348,9 @@ dbDescribe("Performance sync PostgreSQL invariants", () => {
 		expect(new Set(tracked.captures.map((capture) => capture.state))).toEqual(
 			new Set(["scheduled"]),
 		);
-	}));
+	})));
 
-	test("only public videos are tracked", prismaGlobal.bind(async () => {
+	test("only public videos are tracked", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const f = await fixture();
 		const publishedAt = new Date(Date.now() - 2 * HOUR);
 		await published(f, { platformPostId: "public-1", publishedAt, visibility: "public" });
@@ -363,9 +364,9 @@ dbDescribe("Performance sync PostgreSQL invariants", () => {
 				(video) => video.platformPostId,
 			),
 		).toEqual(["public-1"]);
-	}));
+	})));
 
-	test("two workers racing for one due capture capture it once", prismaGlobal.bind(async () => {
+	test("two workers racing for one due capture capture it once", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const f = await fixture();
 		await published(f, { platformPostId: "race-1", publishedAt: new Date(Date.now() - 2 * HOUR) });
 		await sync(youtube({}).fetcher).scheduleTrackedVideos();
@@ -396,9 +397,9 @@ dbDescribe("Performance sync PostgreSQL invariants", () => {
 			leaseExpiresAt: null,
 		});
 		expect(captures[0]!.raw).toEqual({ viewCount: "500", likeCount: "3" });
-	}));
+	})));
 
-	test("a worker that lost its lease cannot overwrite the capture that replaced it", prismaGlobal.bind(async () => {
+	test("a worker that lost its lease cannot overwrite the capture that replaced it", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const f = await fixture();
 		const startedAt = new Date();
 		await published(f, { platformPostId: "fence-1", publishedAt: new Date(startedAt.getTime() - 2 * HOUR) });
@@ -424,9 +425,9 @@ dbDescribe("Performance sync PostgreSQL invariants", () => {
 		expect(await stale).toBe(0);
 		const { captures } = await trackedFor("fence-1");
 		expect(captures[0]).toMatchObject({ state: "captured", views: 222 });
-	}));
+	})));
 
-	test("a post whose slots all fell due is read once, at the newest slot", prismaGlobal.bind(async () => {
+	test("a post whose slots all fell due is read once, at the newest slot", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const f = await fixture();
 		const start = new Date();
 		await published(f, { platformPostId: "backfill-1", publishedAt: new Date(start.getTime() - 4 * DAY) });
@@ -445,9 +446,9 @@ dbDescribe("Performance sync PostgreSQL invariants", () => {
 			["scheduled", null, null],
 			["scheduled", null, null],
 		]);
-	}));
+	})));
 
-	test("batches due captures per account", prismaGlobal.bind(async () => {
+	test("batches due captures per account", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const f = await fixture();
 		const second = await newAccount(f, "youtube_shorts");
 		const publishedAt = new Date(Date.now() - 2 * HOUR);
@@ -466,9 +467,9 @@ dbDescribe("Performance sync PostgreSQL invariants", () => {
 		);
 		expect(platform.calls).toHaveLength(2);
 		expect(lookups.sort()).toEqual([f.account.id, second.id].sort());
-	}));
+	})));
 
-	test("TikTok batches at the documented 20 IDs per query", prismaGlobal.bind(async () => {
+	test("TikTok batches at the documented 20 IDs per query", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const f = await fixture("tiktok");
 		const publishedAt = new Date(Date.now() - 2 * HOUR);
 		for (let index = 0; index < 21; index += 1) {
@@ -490,9 +491,9 @@ dbDescribe("Performance sync PostgreSQL invariants", () => {
 		expect(
 			await prisma.performanceCapture.count({ where: { state: "captured", shares: 2 } }),
 		).toBe(21);
-	}));
+	})));
 
-	test("clip facts freeze when the video is first tracked and survive Project deletion with the history", prismaGlobal.bind(async () => {
+	test("clip facts freeze when the video is first tracked and survive Project deletion with the history", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const f = await fixture();
 		const clockStart = new Date();
 		const publishedAt = new Date(clockStart.getTime() - 2 * HOUR);
@@ -579,9 +580,9 @@ dbDescribe("Performance sync PostgreSQL invariants", () => {
 		expect(
 			summary.dimensions.find((dimension) => dimension.id === "category")!.groups.map((group) => group.key),
 		).toEqual(["insight"]);
-	}));
+	})));
 
-	test("What worked compares the 7-day capture and counts only videos still waiting for it", prismaGlobal.bind(async () => {
+	test("What worked compares the 7-day capture and counts only videos still waiting for it", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const f = await fixture();
 		const start = new Date();
 		const actor = { actorUserId: f.user.id, workspaceId: f.workspace.id };
@@ -614,9 +615,9 @@ dbDescribe("Performance sync PostgreSQL invariants", () => {
 			waitingVideos: 0,
 			totals: { views: 790 },
 		});
-	}));
+	})));
 
-	test("Project totals aggregate every post, not the first page", prismaGlobal.bind(async () => {
+	test("Project totals aggregate every post, not the first page", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const f = await fixture();
 		const publishedAt = new Date(Date.now() - 2 * HOUR);
 		const posts = Array.from({ length: 105 }, (_, index) => ({
@@ -658,9 +659,9 @@ dbDescribe("Performance sync PostgreSQL invariants", () => {
 		expect(postPerformance.measuredVideos).toBe(105);
 		expect(postPerformance.totals).toEqual({ views: 1_050, likes: 210, comments: 105, shares: 0 });
 		expect(postPerformance.posts).toHaveLength(100);
-	}));
+	})));
 
-	test("a disconnected, expired or unauthorized grant skips the capture with a reason and never touches the Social Post", prismaGlobal.bind(async () => {
+	test("a disconnected, expired or unauthorized grant skips the capture with a reason and never touches the Social Post", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const f = await fixture();
 		const publishedAt = new Date(Date.now() - 2 * HOUR);
 		const gone = await newAccount(f, "youtube_shorts");
@@ -713,9 +714,9 @@ dbDescribe("Performance sync PostgreSQL invariants", () => {
 				errorCode: null,
 			});
 		}
-	}));
+	})));
 
-	test("a video the platform no longer returns is skipped, not retried", prismaGlobal.bind(async () => {
+	test("a video the platform no longer returns is skipped, not retried", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const f = await fixture();
 		await published(f, { platformPostId: "deleted-1", publishedAt: new Date(Date.now() - 2 * HOUR) });
 		await sync(youtube({}).fetcher).scheduleTrackedVideos();
@@ -724,9 +725,9 @@ dbDescribe("Performance sync PostgreSQL invariants", () => {
 			state: "skipped",
 			skipReason: "video_unavailable",
 		});
-	}));
+	})));
 
-	test("an exception inside one batch spends an attempt on that batch and leaves the others to finish", prismaGlobal.bind(async () => {
+	test("an exception inside one batch spends an attempt on that batch and leaves the others to finish", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const f = await fixture();
 		const broken = await newAccount(f, "youtube_shorts");
 		const start = new Date();
@@ -756,9 +757,9 @@ dbDescribe("Performance sync PostgreSQL invariants", () => {
 			leaseOwner: null,
 		});
 		expect((await trackedFor("broken-1")).captures[0]!.dueAt.getTime()).toBeGreaterThan(start.getTime());
-	}));
+	})));
 
-	test("a rate limit backs off the batch, spares the platform for the run, and gives up after the budget", prismaGlobal.bind(async () => {
+	test("a rate limit backs off the batch, spares the platform for the run, and gives up after the budget", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const f = await fixture();
 		const second = await newAccount(f, "youtube_shorts");
 		const start = new Date();
@@ -798,9 +799,9 @@ dbDescribe("Performance sync PostgreSQL invariants", () => {
 			state: "skipped",
 			skipReason: "rate_limited",
 		});
-	}));
+	})));
 
-	test("a YouTube daily quota waits for the next reset without spending the attempt budget", prismaGlobal.bind(async () => {
+	test("a YouTube daily quota waits for the next reset without spending the attempt budget", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const f = await fixture();
 		const start = new Date();
 		await published(f, { platformPostId: "quota-1", publishedAt: new Date(start.getTime() - 2 * HOUR) });
@@ -813,5 +814,5 @@ dbDescribe("Performance sync PostgreSQL invariants", () => {
 		const capture = (await trackedFor("quota-1")).captures[0]!;
 		expect(capture).toMatchObject({ state: "scheduled", attempts: 0, leaseOwner: null });
 		expect(capture.dueAt.getTime()).toBe(start.getTime() + msUntilQuotaReset(start));
-	}));
+	})));
 });

@@ -1,3 +1,4 @@
+import { readServiceEnvironment } from "./runtime-environment";
 import { randomUUID } from "node:crypto";
 import { getPrismaClient } from "@narriflow/db/client";
 import {
@@ -239,7 +240,7 @@ function repositoryForEnvironment(): GeneratedMediaAssetRepository {
   };
 }
 
-export function createProductionGeneratedMediaPublisher(environment: NodeJS.ProcessEnv = process.env) {
+export function createProductionGeneratedMediaPublisher(environment: NodeJS.ProcessEnv = readServiceEnvironment()) {
   const parsedMaxBytes = Number(environment.GENERATED_IMAGE_MAX_OUTPUT_BYTES);
   const maxBytes = Number.isSafeInteger(parsedMaxBytes) && parsedMaxBytes >= 1_000_000 && parsedMaxBytes <= 100_000_000
     ? parsedMaxBytes

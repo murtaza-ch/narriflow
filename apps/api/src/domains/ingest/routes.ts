@@ -1,11 +1,9 @@
-import {
-  type IngestJobLifecycle,
-  type UploadSessionService,
-  brandProfileService,
-  brandTemplateService,
-  projectService,
-  recipeService,
-} from "@narriflow/services";
+import { type IngestJobLifecycle } from "@narriflow/services/ingest-job-lifecycle";
+import { type UploadSessionService } from "@narriflow/services/upload-session.service";
+import { brandProfileService } from "@narriflow/services/brand-profile.service";
+import { brandTemplateService } from "@narriflow/services/brand-template.service";
+import { projectService } from "@narriflow/services/project.service";
+import { recipeService } from "@narriflow/services/recipe.service";
 import {
   discardUploadSessionSchema,
   finalizeUploadSessionSchema,

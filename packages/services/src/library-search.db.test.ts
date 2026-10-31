@@ -1,3 +1,4 @@
+import { bindServiceTestEnvironment } from "./runtime-test-support";
 import { createDatabaseTestContext } from "@narriflow/db/testing";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
@@ -93,20 +94,20 @@ dbDescribe("Library search PostgreSQL contracts", () => {
   let priorPrisma: PrismaClient | undefined;
   let library: LibrarySearch;
 
-  beforeAll(prismaGlobal.bind(() => {
+  beforeAll(bindServiceTestEnvironment(prismaGlobal.bind(() => {
     pool = new Pool({ connectionString: databaseUrl, max: 6 });
     prisma = new PrismaClient({ adapter: new PrismaPg(pool, databaseSchema ? { schema: databaseSchema } : undefined) });
     // The services under test (membership checks, clips) read the shared client.
     priorPrisma = prismaGlobal.client;
     prismaGlobal.client = prisma;
     library = new LibrarySearch({ prisma, embeddings: embeddings.provider, log: (entry) => logs.push(entry) });
-  }));
+  })));
 
-  afterAll(prismaGlobal.bind(async () => {
+  afterAll(bindServiceTestEnvironment(prismaGlobal.bind(async () => {
     prismaGlobal.client = priorPrisma;
     await prisma?.$disconnect();
     await pool?.end();
-  }));
+  })));
 
   async function workspaceFixture(label: string) {
     const suffix = randomUUID();
@@ -137,7 +138,7 @@ dbDescribe("Library search PostgreSQL contracts", () => {
   }
 
   describe("Workspace isolation", () => {
-    test("never returns another Workspace's passages, including by project filter", prismaGlobal.bind(async () => {
+    test("never returns another Workspace's passages, including by project filter", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
       const mine = await workspaceFixture("mine");
       const theirs = await workspaceFixture("theirs");
       const own = await indexedProject(mine.workspaceId, "Own episode", ["Our subscription price was too high"]);
@@ -150,9 +151,9 @@ dbDescribe("Library search PostgreSQL contracts", () => {
       expect(await library.search(mine.scope, { query: "subscription price", projectIds: [other.projectId] })).toEqual([]);
       const theirResults = await library.search(theirs.scope, { query: "subscription price" });
       expect(theirResults.map((result) => result.projectId)).toEqual([other.projectId]);
-    }));
+    })));
 
-    test("does not trust a stale denormalized workspaceId on a passage", prismaGlobal.bind(async () => {
+    test("does not trust a stale denormalized workspaceId on a passage", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
       const first = await workspaceFixture("stale-first");
       const second = await workspaceFixture("stale-second");
       const moved = await indexedProject(first.workspaceId, "Moved episode", ["The hiring interview went well"]);
@@ -160,9 +161,9 @@ dbDescribe("Library search PostgreSQL contracts", () => {
       await prisma.$executeRaw`UPDATE "TranscriptPassage" SET "workspaceId" = ${second.workspaceId}::uuid WHERE "projectId" = ${moved.projectId}::uuid`;
       expect(await library.search(second.scope, { query: "hiring interview" })).toEqual([]);
       expect(await library.search(first.scope, { query: "hiring interview" })).toEqual([]);
-    }));
+    })));
 
-    test("only Projects the actor can view: purging and expired Projects are excluded", prismaGlobal.bind(async () => {
+    test("only Projects the actor can view: purging and expired Projects are excluded", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
       const { scope, workspaceId } = await workspaceFixture("access");
       const live = await indexedProject(workspaceId, "Live", ["Dough needs a hot oven"]);
       const later = await indexedProject(workspaceId, "Expires later", ["Dough rests before the oven"], { expiresAt: new Date(Date.now() + 86_400_000) });
@@ -172,20 +173,20 @@ dbDescribe("Library search PostgreSQL contracts", () => {
       const results = await library.search(scope, { query: "dough oven" });
       expect(results.map((result) => result.projectTitle).sort()).toEqual(["Expires later", "Live"]);
       expect(results.map((result) => result.projectId).sort()).toEqual([live.projectId, later.projectId].sort());
-    }));
+    })));
 
-    test("deleting a Project removes its passages", prismaGlobal.bind(async () => {
+    test("deleting a Project removes its passages", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
       const { scope, workspaceId } = await workspaceFixture("cascade");
       const doomed = await indexedProject(workspaceId, "Doomed", ["Recruit the best candidate"]);
       expect(await passageCount(doomed.transcriptId)).toBe(1);
       await prisma.project.delete({ where: { id: doomed.projectId } });
       expect(await passageCount(doomed.transcriptId)).toBe(0);
       expect(await library.search(scope, { query: "recruit candidate" })).toEqual([]);
-    }));
+    })));
   });
 
   describe("hybrid ranking", () => {
-    test("ranks a passage that matches both meaning and words above those matching only one", prismaGlobal.bind(async () => {
+    test("ranks a passage that matches both meaning and words above those matching only one", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
       const { scope, workspaceId } = await workspaceFixture("ranking");
       const { projectId } = await indexedProject(workspaceId, "Founders talk", [
         "We argued about subscription fees and the hiring interview all week", // meaning only: part pricing, never says "pricing"
@@ -207,9 +208,9 @@ dbDescribe("Library search PostgreSQL contracts", () => {
       expect(results[0]).toMatchObject({ projectId, projectTitle: "Founders talk", startMs: 80_000, endMs: 115_000 });
       expect(results.map((result) => result.score)).toEqual([...results.map((result) => result.score)].sort((a, b) => b - a));
       expect(results[0]!.score).toBeGreaterThan(results[2]!.score * 1.5);
-    }));
+    })));
 
-    test("finds exact words that a semantic search alone would bury", prismaGlobal.bind(async () => {
+    test("finds exact words that a semantic search alone would bury", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
       const { scope, workspaceId } = await workspaceFixture("exact");
       await indexedProject(workspaceId, "Show notes", [
         "The pricing page and subscription cost were debated",
@@ -218,9 +219,9 @@ dbDescribe("Library search PostgreSQL contracts", () => {
       ]);
       const [top] = await library.search(scope, { query: "Zanzibar" });
       expect(top?.text).toBe("Our codename was Zanzibar for the recipe oven launch");
-    }));
+    })));
 
-    test("respects the limit and the project filter", prismaGlobal.bind(async () => {
+    test("respects the limit and the project filter", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
       const { scope, workspaceId } = await workspaceFixture("limit");
       const a = await indexedProject(workspaceId, "A", ["subscription price one", "subscription price two", "subscription price three"]);
       const b = await indexedProject(workspaceId, "B", ["subscription price four"]);
@@ -228,17 +229,17 @@ dbDescribe("Library search PostgreSQL contracts", () => {
       const onlyB = await library.search(scope, { query: "subscription price", projectIds: [b.projectId] });
       expect(onlyB.map((result) => result.projectId)).toEqual([b.projectId]);
       expect((await library.search(scope, { query: "subscription price", projectIds: [a.projectId], limit: 25 })).length).toBe(3);
-    }));
+    })));
 
-    test("a query of only stop words and punctuation still returns by meaning", prismaGlobal.bind(async () => {
+    test("a query of only stop words and punctuation still returns by meaning", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
       const { scope, workspaceId } = await workspaceFixture("stopwords");
       await indexedProject(workspaceId, "Quiet", ["subscription price talk"]);
       expect((await library.search(scope, { query: "the of and" })).length).toBe(1);
-    }));
+    })));
   });
 
   describe("indexing", () => {
-    test("indexes a finished transcript once, with usage logged", prismaGlobal.bind(async () => {
+    test("indexes a finished transcript once, with usage logged", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
       const { workspaceId } = await workspaceFixture("index-once");
       logs.length = 0;
       const created = await prisma.project.create({ data: { title: "Once", sourceMediaUrl: "https://example.test/once.mp4", workspaceId } });
@@ -255,9 +256,9 @@ dbDescribe("Library search PostgreSQL contracts", () => {
       expect(indexed).toMatchObject({ transcriptId: transcript.id, passages: 3, embedded: 3, removed: 0, tokens: 30, model: LIBRARY_EMBEDDING_MODEL });
 
       expect(await library.indexNext()).toBe(0);
-    }));
+    })));
 
-    test("re-embeds only what changed when a transcript is replaced", prismaGlobal.bind(async () => {
+    test("re-embeds only what changed when a transcript is replaced", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
       const { workspaceId } = await workspaceFixture("reindex");
       const { projectId, transcriptId } = await indexedProject(workspaceId, "Changing", ["Alpha point", "Beta point", "Gamma point"]);
       embeddings.embedded.length = 0;
@@ -271,9 +272,9 @@ dbDescribe("Library search PostgreSQL contracts", () => {
       expect(embeddings.embedded.sort()).toEqual(["Beta point revised", "Delta point"]);
       const texts = (await prisma.$queryRaw<Array<{ text: string }>>`SELECT "text" FROM "TranscriptPassage" WHERE "transcriptId" = ${transcriptId}::uuid ORDER BY "startMs"`).map((row) => row.text);
       expect(texts).toEqual(["Alpha point", "Beta point revised", "Gamma point", "Delta point"]);
-    }));
+    })));
 
-    test("a provider failure backs off, keeps old passages, and never throws", prismaGlobal.bind(async () => {
+    test("a provider failure backs off, keeps old passages, and never throws", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
       const { scope, workspaceId } = await workspaceFixture("failure");
       const { projectId, transcriptId } = await indexedProject(workspaceId, "Flaky", ["Subscription price before"]);
       await prisma.transcript.update({ where: { projectId }, data: { utterancesJson: utterancesFor(["Subscription price after"]), completedAt: new Date(Date.now() + 1_000) } });
@@ -300,9 +301,9 @@ dbDescribe("Library search PostgreSQL contracts", () => {
       expect((await library.search(scope, { query: "subscription price" })).map((result) => result.text)).toEqual(["Subscription price after"]);
       const recovered = await prisma.transcript.findUniqueOrThrow({ where: { projectId } });
       expect([recovered.passagesAttempts, recovered.passagesRetryAt, recovered.passagesIndexError]).toEqual([0, null, null]);
-    }));
+    })));
 
-    test("a failure part way keeps the batches already paid for and a retry embeds only the rest", prismaGlobal.bind(async () => {
+    test("a failure part way keeps the batches already paid for and a retry embeds only the rest", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
       const { scope, workspaceId } = await workspaceFixture("partial");
       const { projectId, transcriptId } = await indexedProject(workspaceId, "Partial", ["Old point"]);
       await indexAll();
@@ -333,9 +334,9 @@ dbDescribe("Library search PostgreSQL contracts", () => {
       expect(embeddings.embedded.sort()).toEqual(["Point five", "Point four", "Point three"]);
       expect(await texts()).toEqual(["Point one", "Point two", "Point three", "Point four", "Point five"]);
       expect((await library.search(scope, { query: "point" })).length).toBe(5);
-    }));
+    })));
 
-    test("a transcript that keeps failing is left alone after the attempt cap, with its error recorded", prismaGlobal.bind(async () => {
+    test("a transcript that keeps failing is left alone after the attempt cap, with its error recorded", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
       const { workspaceId } = await workspaceFixture("cap");
       await indexAll();
       const project = await prisma.project.create({ data: { title: "Never works", sourceMediaUrl: "https://example.test/n.mp4", workspaceId } });
@@ -364,9 +365,9 @@ dbDescribe("Library search PostgreSQL contracts", () => {
       await prisma.$executeRaw`UPDATE "Transcript" SET "passagesAttempts" = 0 WHERE "projectId" = ${project.id}::uuid`;
       expect(await library.indexNext()).toBe(1);
       expect((await prisma.transcript.findUniqueOrThrow({ where: { projectId: project.id } })).passagesIndexError).toBeNull();
-    }));
+    })));
 
-    test("two workers never claim the same transcript", prismaGlobal.bind(async () => {
+    test("two workers never claim the same transcript", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
       const { workspaceId } = await workspaceFixture("claim");
       const created = await prisma.project.create({ data: { title: "Contended", sourceMediaUrl: "https://example.test/c.mp4", workspaceId } });
       await prisma.transcript.create({ data: { projectId: created.id, status: "completed", completedAt: new Date(), utterancesJson: utterancesFor(["Only one worker"]) } });
@@ -376,9 +377,9 @@ dbDescribe("Library search PostgreSQL contracts", () => {
 
       const results = await Promise.all([library.indexNext(), library.indexNext(), library.indexNext()]);
       expect(results.reduce((total, count) => total + count, 0)).toBe(1);
-    }));
+    })));
 
-    test("skips transcripts that are unfinished or whose Project is purging", prismaGlobal.bind(async () => {
+    test("skips transcripts that are unfinished or whose Project is purging", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
       const { workspaceId } = await workspaceFixture("skip");
       await indexAll();
       const processing = await prisma.project.create({ data: { title: "Processing", sourceMediaUrl: "https://example.test/p.mp4", workspaceId } });
@@ -386,19 +387,19 @@ dbDescribe("Library search PostgreSQL contracts", () => {
       const purging = await prisma.project.create({ data: { title: "Purging", sourceMediaUrl: "https://example.test/g.mp4", workspaceId, purgeStartedAt: new Date() } });
       await prisma.transcript.create({ data: { projectId: purging.id, status: "completed", completedAt: new Date(), utterancesJson: utterancesFor(["Going away"]) } });
       expect(await library.indexNext()).toBe(0);
-    }));
+    })));
 
-    test("a transcript with no speech is marked indexed and not retried", prismaGlobal.bind(async () => {
+    test("a transcript with no speech is marked indexed and not retried", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
       const { workspaceId } = await workspaceFixture("silent");
       const project = await prisma.project.create({ data: { title: "Silent", sourceMediaUrl: "https://example.test/s.mp4", workspaceId } });
       await prisma.transcript.create({ data: { projectId: project.id, status: "completed", completedAt: new Date(), utterancesJson: [] } });
       expect(await library.indexNext()).toBe(1);
       expect(await library.indexNext()).toBe(0);
-    }));
+    })));
   });
 
   describe("access through the service", () => {
-    test("admits a member who can view content and refuses a non-member", prismaGlobal.bind(async () => {
+    test("admits a member who can view content and refuses a non-member", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
       const member = await workspaceFixture("members");
       const outsider = await workspaceFixture("outsider");
       const viewer = await prisma.user.create({ data: { clerkId: `library-viewer-${randomUUID()}`, primaryEmail: `viewer-${randomUUID()}@example.test` } });
@@ -417,7 +418,7 @@ dbDescribe("Library search PostgreSQL contracts", () => {
       } finally {
         if (priorKey !== undefined) process.env.OPENAI_API_KEY = priorKey;
       }
-    }));
+    })));
   });
 
   describe("Make a clip", () => {
@@ -461,15 +462,15 @@ dbDescribe("Library search PostgreSQL contracts", () => {
       } });
     }
 
-    test("a Project without clips has nothing to join and is refused with a conflict", prismaGlobal.bind(async () => {
+    test("a Project without clips has nothing to join and is refused with a conflict", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
       const { scope, workspaceId, userId } = await workspaceFixture("clips-none");
       const project = await clipProject(workspaceId, userId);
       const refusal = await clipService.createClipFromRange(scope, project.id, range).catch((error) => error);
       expect(refusal).toMatchObject({ code: "clip_source_missing", kind: "conflict" });
       expect(await prisma.clip.count({ where: { projectId: project.id } })).toBe(0);
-    }));
+    })));
 
-    test("starts from the run's defaults and copies nothing from the source clip's look", prismaGlobal.bind(async () => {
+    test("starts from the run's defaults and copies nothing from the source clip's look", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
       const { scope, workspaceId, userId } = await workspaceFixture("clips-range");
       const project = await clipProject(workspaceId, userId);
       const run = await generationRun(project.id, "bold-pop");
@@ -485,9 +486,9 @@ dbDescribe("Library search PostgreSQL contracts", () => {
       expect(studioEditsSchema.parse(row.studioEdits)).toEqual(studioEditsSchema.parse(undefined));
       expect(row.brollUrl).toBeNull();
       expect(row.id).not.toBe(source.id);
-    }));
+    })));
 
-    test("starts with the Project's brand music, and leaves the source clip's music alone", prismaGlobal.bind(async () => {
+    test("starts with the Project's brand music, and leaves the source clip's music alone", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
       const { scope, workspaceId, userId } = await workspaceFixture("clips-brand-music");
       const project = await clipProject(workspaceId, userId);
       const run = await generationRun(project.id, "bold-pop");
@@ -501,9 +502,9 @@ dbDescribe("Library search PostgreSQL contracts", () => {
       const created = await clipService.createClipFromRange(scope, project.id, range);
       const edits = studioEditsSchema.parse((await prisma.clip.findUniqueOrThrow({ where: { id: created.id } })).studioEdits);
       expect(edits.music).toEqual({ ...studioEditsSchema.parse(undefined).music, assetId: trackId, title: "Theme", url: null });
-    }));
+    })));
 
-    test("the run's default falls back to the Brand Profile style, then the built-in style", prismaGlobal.bind(async () => {
+    test("the run's default falls back to the Brand Profile style, then the built-in style", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
       const { scope, workspaceId, userId } = await workspaceFixture("clips-brand");
       const project = await clipProject(workspaceId, userId);
       const run = await generationRun(project.id, "brand_default");
@@ -513,9 +514,9 @@ dbDescribe("Library search PostgreSQL contracts", () => {
 
       const created = await clipService.createClipFromRange(scope, project.id, range);
       expect((await prisma.clip.findUniqueOrThrow({ where: { id: created.id } })).captionPreset).toEqual(brand);
-    }));
+    })));
 
-    test("a clip created from a selection keeps the source style but not its timed B-roll", prismaGlobal.bind(async () => {
+    test("a clip created from a selection keeps the source style but not its timed B-roll", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
       const { scope, workspaceId, userId } = await workspaceFixture("clips-selection");
       const project = await clipProject(workspaceId, userId);
       const run = await generationRun(project.id, "bold-pop");
@@ -529,9 +530,9 @@ dbDescribe("Library search PostgreSQL contracts", () => {
       expect(edits.music?.url).toBe("https://example.test/song.mp3");
       expect(edits.sourceAudio).toEqual({ volume: 55, muted: true });
       expect(row.captionPreset).toEqual(getCaptionPresetById("blast")!.preset);
-    }));
+    })));
 
-    test("refuses a Project from another Workspace or one that does not exist", prismaGlobal.bind(async () => {
+    test("refuses a Project from another Workspace or one that does not exist", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
       const mine = await workspaceFixture("clips-mine");
       const theirs = await workspaceFixture("clips-theirs");
       const project = await clipProject(theirs.workspaceId, theirs.userId);
@@ -549,10 +550,10 @@ dbDescribe("Library search PostgreSQL contracts", () => {
       const forbidden = await clipService.createClipFromRange({ actorUserId: viewer.id, workspaceId: theirs.workspaceId }, project.id, range).catch((error) => error);
       expect(isExpectedDomainFailure(forbidden)).toBe(true);
       expect(await prisma.clip.count({ where: { projectId: project.id } })).toBe(1);
-    }));
+    })));
   });
   describe("Folder names", () => {
-    test("a name is unique per Workspace regardless of case or spacing, on create, rename and the receipt-backed create", prismaGlobal.bind(async () => {
+    test("a name is unique per Workspace regardless of case or spacing, on create, rename and the receipt-backed create", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
       const mine = await workspaceFixture("folders-mine");
       const other = await workspaceFixture("folders-other");
       const taken = { code: "workspace_folder_name_taken", kind: "conflict" };
@@ -570,9 +571,9 @@ dbDescribe("Library search PostgreSQL contracts", () => {
       await workspaceLibraryService.renameFolder(mine.scope, launch.id, "LAUNCH");
       expect((await prisma.workspaceFolder.findUniqueOrThrow({ where: { id: launch.id } })).name).toBe("LAUNCH");
       expect(await prisma.workspaceFolder.count({ where: { workspaceId: mine.workspaceId } })).toBe(2);
-    }));
+    })));
 
-    test("replaying a successful create still replays, and the same key keeps its original folder", prismaGlobal.bind(async () => {
+    test("replaying a successful create still replays, and the same key keeps its original folder", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
       const mine = await workspaceFixture("folders-replay");
       const key = randomUUID();
       const first = await projectsCommands.createFolder(mine.scope, "Replay", { clientIdempotencyKey: key });
@@ -580,6 +581,6 @@ dbDescribe("Library search PostgreSQL contracts", () => {
       expect(replay).toEqual({ folder: first.folder, replayed: true });
       const clash = await projectsCommands.createFolder(mine.scope, "replay", { clientIdempotencyKey: randomUUID() }).catch((error) => error);
       expect(clash).toMatchObject({ code: "workspace_folder_name_taken" });
-    }));
+    })));
   });
 });

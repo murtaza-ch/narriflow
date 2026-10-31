@@ -1,3 +1,4 @@
+import { bindServiceTestEnvironment } from "./runtime-test-support";
 import { createDatabaseTestContext } from "@narriflow/db/testing";
 import { randomUUID } from "node:crypto";
 import {
@@ -43,7 +44,7 @@ dbDescribe("Performance Guidance PostgreSQL invariants", () => {
 	let previousGlobalPrisma: PrismaClient | undefined;
 	const prismaGlobal = createDatabaseTestContext();
 
-	beforeAll(prismaGlobal.bind(() => {
+	beforeAll(bindServiceTestEnvironment(prismaGlobal.bind(() => {
 		pool = new Pool({ connectionString: databaseUrl!, max: 8 });
 		prisma = new PrismaClient({
 			adapter: new PrismaPg(pool, databaseSchema ? { schema: databaseSchema } : undefined),
@@ -51,19 +52,19 @@ dbDescribe("Performance Guidance PostgreSQL invariants", () => {
 		});
 		previousGlobalPrisma = prismaGlobal.client;
 		prismaGlobal.client = prisma;
-	}));
+	})));
 
-	afterAll(prismaGlobal.bind(async () => {
+	afterAll(bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		prismaGlobal.client = previousGlobalPrisma;
 		await prisma?.$disconnect();
 		await pool?.end();
-	}));
+	})));
 
 	// The schema is shared with the other publication suites.
-	beforeEach(prismaGlobal.bind(async () => {
+	beforeEach(bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		await prisma.trackedVideo.deleteMany();
 		await prisma.performanceGuidance.deleteMany();
-	}));
+	})));
 
 	async function workspace() {
 		const user = await prisma.user.create({ data: { clerkId: `guidance-db-test:${randomUUID()}` } });
@@ -115,7 +116,7 @@ dbDescribe("Performance Guidance PostgreSQL invariants", () => {
 			}),
 		);
 
-	test("computes guidance for Workspaces with enough posts, about once a day", prismaGlobal.bind(async () => {
+	test("computes guidance for Workspaces with enough posts, about once a day", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const enough = await workspace();
 		const few = await workspace();
 		await posts(enough.workspaceId, MINIMUM_GUIDANCE_WORKSPACE_POSTS + 3);
@@ -147,9 +148,9 @@ dbDescribe("Performance Guidance PostgreSQL invariants", () => {
 		const later = await prisma.performanceGuidance.findUniqueOrThrow({ where: { workspaceId: enough.workspaceId } });
 		expect(later.computedAt).toEqual(clock);
 		expect(await prisma.performanceGuidance.findUnique({ where: { workspaceId: few.workspaceId } })).not.toBeNull();
-	}));
+	})));
 
-	test("only videos from the last 180 days count, however many older ones there are", prismaGlobal.bind(async () => {
+	test("only videos from the last 180 days count, however many older ones there are", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const owner = await workspace();
 		// 60 old story clips that went viral, then 36 recent ones with the usual mix.
 		for (let index = 0; index < 60; index += 1) await post(owner.workspaceId, "story", 1_000_000, { ageDays: GUIDANCE_WINDOW_DAYS + 20 });
@@ -164,9 +165,9 @@ dbDescribe("Performance Guidance PostgreSQL invariants", () => {
 		await posts(stale.workspaceId, 5);
 		await createPerformanceGuidance({ prisma }).refresh(stale.workspaceId);
 		expect(await prisma.performanceGuidance.findUniqueOrThrow({ where: { workspaceId: stale.workspaceId } })).toMatchObject({ totalPosts: 0, groups: [] });
-	}));
+	})));
 
-	test("a clip posted to two platforms is one clip, from the clip frozen on its video", prismaGlobal.bind(async () => {
+	test("a clip posted to two platforms is one clip, from the clip frozen on its video", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const owner = await workspace();
 		// 29 clips, each on YouTube Shorts and TikTok: 58 videos, but not 30 clips.
 		for (let index = 0; index < 29; index += 1) {
@@ -182,17 +183,17 @@ dbDescribe("Performance Guidance PostgreSQL invariants", () => {
 		const stored = await prisma.performanceGuidance.findUniqueOrThrow({ where: { workspaceId: owner.workspaceId } });
 		expect(stored.totalPosts).toBe(30);
 		expect((stored.platforms as Array<{ platform: string }>).map((entry) => entry.platform)).toEqual(["tiktok", "youtube_shorts"]);
-	}));
+	})));
 
-	test("a post whose 7-day reading was skipped, or is still waiting, is not counted", prismaGlobal.bind(async () => {
+	test("a post whose 7-day reading was skipped, or is still waiting, is not counted", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const owner = await workspace();
 		await posts(owner.workspaceId, 30);
 		await post(owner.workspaceId, "story", null, { state: "skipped" });
 		await createPerformanceGuidance({ prisma }).refresh(owner.workspaceId);
 		expect((await prisma.performanceGuidance.findUniqueOrThrow({ where: { workspaceId: owner.workspaceId } })).totalPosts).toBe(30);
-	}));
+	})));
 
-	test("a Workspace that fails is stamped as tried and cannot hold up the others", prismaGlobal.bind(async () => {
+	test("a Workspace that fails is stamped as tried and cannot hold up the others", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const bad = await workspace();
 		const good = await workspace();
 		await posts(bad.workspaceId, 31);
@@ -231,9 +232,9 @@ dbDescribe("Performance Guidance PostgreSQL invariants", () => {
 		// It is tried again a day later, not on every tick.
 		const later = createPerformanceGuidance({ prisma, now: () => new Date(clock.getTime() + GUIDANCE_REFRESH_MS + 1_000) });
 		expect(await later.refreshStale()).toBe(2);
-	}));
+	})));
 
-	test("a Workspace that has never been computed and fails gets an empty, honest row", prismaGlobal.bind(async () => {
+	test("a Workspace that has never been computed and fails gets an empty, honest row", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const bad = await workspace();
 		await posts(bad.workspaceId, 31);
 		const failing = new Proxy(prisma, {
@@ -252,9 +253,9 @@ dbDescribe("Performance Guidance PostgreSQL invariants", () => {
 		}
 		expect(await prisma.performanceGuidance.findUniqueOrThrow({ where: { workspaceId: bad.workspaceId } })).toMatchObject({ totalPosts: 0, platforms: [], groups: [] });
 		expect(await readAppliedGuidance(prisma, bad.workspaceId)).toBeNull();
-	}));
+	})));
 
-	test("the Workspace setting decides whether qualifying guidance is used, and null means the default", prismaGlobal.bind(async () => {
+	test("the Workspace setting decides whether qualifying guidance is used, and null means the default", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const owner = await workspace();
 		await posts(owner.workspaceId, 36);
 		const guidance = createPerformanceGuidance({ prisma });
@@ -277,9 +278,9 @@ dbDescribe("Performance Guidance PostgreSQL invariants", () => {
 		// On again, explicitly.
 		await performanceService.setGuidanceEnabled(owner.scope, true);
 		expect(await readAppliedGuidance(prisma, owner.workspaceId)).not.toBeNull();
-	}));
+	})));
 
-	test("only people who manage the Workspace change the setting", prismaGlobal.bind(async () => {
+	test("only people who manage the Workspace change the setting", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const owner = await workspace();
 		const viewer = await prisma.user.create({ data: { clerkId: `guidance-viewer:${randomUUID()}` } });
 		await prisma.workspaceMember.create({ data: { workspaceId: owner.workspaceId, userId: viewer.id, role: "viewer" } });
@@ -287,5 +288,5 @@ dbDescribe("Performance Guidance PostgreSQL invariants", () => {
 		expect((await prisma.workspace.findUniqueOrThrow({ where: { id: owner.workspaceId } })).usePerformanceGuidance).toBeNull();
 		// A viewer can still read what the guidance says.
 		expect(await performanceService.guidance({ actorUserId: viewer.id, workspaceId: owner.workspaceId })).toMatchObject({ enabled: true, qualifies: false, applied: false, totalPosts: null });
-	}));
+	})));
 });

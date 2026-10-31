@@ -1,4 +1,5 @@
-import { ZoomError, type ZoomService } from "@narriflow/services";
+import { ZoomError } from "@narriflow/services/zoom";
+import { type ZoomService } from "@narriflow/services/zoom.service";
 import { createRouteApp } from "../../http/admission";
 import { automationAdmission } from "./admission";
 

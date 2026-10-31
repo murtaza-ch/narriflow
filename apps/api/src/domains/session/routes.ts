@@ -3,8 +3,10 @@ import type {
   resolveWorkspaceContext,
   selectWorkspaceForActor,
 } from "@narriflow/auth";
-import type { projectService, workspaceMembershipService, workspaceService } from "@narriflow/services";
-import { WorkspaceOperationError } from "@narriflow/services";
+import { type projectService } from "@narriflow/services/project.service";
+import { type workspaceMembershipService } from "@narriflow/services/workspace-membership.service";
+import { type workspaceService } from "@narriflow/services/workspace.service";
+import { WorkspaceOperationError } from "@narriflow/services/workspace.service";
 import { resolvePricingTier } from "@narriflow/validators";
 import {
   type AuthContinuationConfig,

@@ -1,3 +1,4 @@
+import { bindServiceTestEnvironment } from "./runtime-test-support";
 import { randomUUID } from "node:crypto";
 import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import Stripe from "stripe";
@@ -53,7 +54,7 @@ sandbox("Workspace plan changes Stripe sandbox", () => {
     }
   }
 
-  test("reviews and applies one paid upgrade with stable replay", async () => {
+  test("reviews and applies one paid upgrade with stable replay", bindServiceTestEnvironment(async () => {
     const { stripe, provider } = setup();
     const f = await fixture(stripe, process.env.STRIPE_PRICE_CREATOR_MONTHLY!);
     try {
@@ -72,10 +73,10 @@ sandbox("Workspace plan changes Stripe sandbox", () => {
       expect(typeof current.latest_invoice === "object" && current.latest_invoice?.status).toBe("paid");
       expect(typeof current.latest_invoice === "object" && current.latest_invoice?.amount_due).toBe(preview.amountDue);
     } finally { await f.cleanup(); }
-  });
+  }));
 
   for (const methodId of ["pm_card_chargeCustomerFail", "pm_card_threeDSecure2Required"]) {
-    test(`${methodId} retains old items until pending payment succeeds`, async () => {
+    test(`${methodId} retains old items until pending payment succeeds`, bindServiceTestEnvironment(async () => {
       const { stripe, provider } = setup();
       const f = await fixture(stripe, process.env.STRIPE_PRICE_CREATOR_MONTHLY!);
       try {
@@ -94,10 +95,10 @@ sandbox("Workspace plan changes Stripe sandbox", () => {
         expect(paid.pending_update).toBeNull();
         expect(paid.items.data[0]?.price.id).toBe(process.env.STRIPE_PRICE_PRO_MONTHLY);
       } finally { await f.cleanup(); }
-    });
+    }));
   }
 
-  test("keeping the current plan voids a declined upgrade's invoice and discards the pending update", async () => {
+  test("keeping the current plan voids a declined upgrade's invoice and discards the pending update", bindServiceTestEnvironment(async () => {
     const { stripe, provider } = setup();
     const f = await fixture(stripe, process.env.STRIPE_PRICE_CREATOR_MONTHLY!);
     try {
@@ -118,9 +119,9 @@ sandbox("Workspace plan changes Stripe sandbox", () => {
       // With nothing outstanding, a new plan change is allowed again.
       await expect(provider.retrievePlanChangeSubscription!(f.subscription.id)).resolves.toMatchObject({ pending: null });
     } finally { await f.cleanup(); }
-  });
+  }));
 
-  test("Business interval changes preserve seats and removed seats cannot return at renewal", async () => {
+  test("Business interval changes preserve seats and removed seats cannot return at renewal", bindServiceTestEnvironment(async () => {
     const { stripe, provider } = setup();
     const f = await fixture(stripe, process.env.STRIPE_PRICE_BUSINESS_MONTHLY!, true, process.env.STRIPE_PRICE_BUSINESS_SEAT_MONTHLY!);
     try {
@@ -147,9 +148,9 @@ sandbox("Workspace plan changes Stripe sandbox", () => {
       await provider.finalizeCompletedPlanChangeSchedule!({ workspaceId: f.workspaceId, subscriptionId: source.id });
       expect((await stripe.subscriptions.retrieve(source.id)).schedule).toBeNull();
     } finally { await f.cleanup(); }
-  });
+  }));
 
-  test("a scheduled downgrade keeps Pro until renewal and supports undo", async () => {
+  test("a scheduled downgrade keeps Pro until renewal and supports undo", bindServiceTestEnvironment(async () => {
     const { stripe, provider } = setup();
     const f = await fixture(stripe, process.env.STRIPE_PRICE_PRO_MONTHLY!, true);
     try {
@@ -169,5 +170,5 @@ sandbox("Workspace plan changes Stripe sandbox", () => {
       await provider.finalizeCompletedPlanChangeSchedule!({ workspaceId: f.workspaceId, subscriptionId: source.id });
       expect((await stripe.subscriptions.retrieve(source.id)).schedule).toBeNull();
     } finally { await f.cleanup(); }
-  });
+  }));
 });

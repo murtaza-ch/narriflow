@@ -5,7 +5,6 @@ export type ApiEnvironment = Record<string, string | undefined>;
 
 export interface ApiConfig {
   nodeEnv: "development" | "test" | "production";
-  port: number;
   /** A: where providers, machine clients and MCP resolve this API. */
   apiOrigin: string;
   /** W: where humans are sent. Never derived from `Host`. */
@@ -91,7 +90,7 @@ function isLoopback(value: string): boolean {
  * Optional provider capabilities (Stripe, social, AI, ...) are validated by the
  * domains that use them so one missing optional provider never stops startup.
  */
-export function loadApiConfig(env: ApiEnvironment = process.env): ApiConfig {
+export function loadApiConfig(env: ApiEnvironment): ApiConfig {
   const problems: string[] = [];
   const nodeEnv =
     env.NODE_ENV === "production" || env.NODE_ENV === "test"
@@ -134,7 +133,6 @@ export function loadApiConfig(env: ApiEnvironment = process.env): ApiConfig {
 
   const config: ApiConfig = {
     nodeEnv,
-    port: positiveInteger(env, "PORT", 4000, problems),
     apiOrigin,
     webOrigin,
     corsAllowedOrigins,

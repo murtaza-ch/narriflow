@@ -1,4 +1,4 @@
-import type { billingService } from "@narriflow/services";
+import { type billingService } from "@narriflow/services/billing.service";
 import {
   businessWorkspaceCheckoutRequestSchema,
   cancelBusinessWorkspaceCheckoutRequestSchema,

@@ -1,3 +1,4 @@
+import { bindServiceTestEnvironment } from "./runtime-test-support";
 import { createDatabaseTestContext } from "@narriflow/db/testing";
 import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import type { PrismaClient } from "@prisma/client";
@@ -32,20 +33,20 @@ const fakePrisma = {
 const globals = createDatabaseTestContext();
 const previousPrisma = globals.client;
 const previousEnv = { ...process.env };
-beforeAll(globals.bind(() => {
+beforeAll(bindServiceTestEnvironment(globals.bind(() => {
   globals.client = fakePrisma;
   // getPrismaClient returns the stand-in only when a database is configured.
   Object.assign(process.env, { DATABASE_URL: process.env.DATABASE_URL ?? "postgresql://unused.test/db", R2_ACCOUNT_ID: "account", R2_ACCESS_KEY_ID: "access", R2_SECRET_ACCESS_KEY: "secret", R2_BUCKET: "bucket" });
-}));
-afterAll(globals.bind(() => {
+})));
+afterAll(bindServiceTestEnvironment(globals.bind(() => {
   globals.client = previousPrisma;
   for (const key of ["DATABASE_URL", "R2_ACCOUNT_ID", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_BUCKET"]) {
     if (previousEnv[key] === undefined) delete process.env[key]; else process.env[key] = previousEnv[key];
   }
-}));
+})));
 
 describe("Download Grants", () => {
-  test("grant fresh, expiring URLs only for completed variants with files, with subtitles and a URL-free audit log", globals.bind(async () => {
+  test("grant fresh, expiring URLs only for completed variants with files, with subtitles and a URL-free audit log", bindServiceTestEnvironment(globals.bind(async () => {
     row = { id: EXPORT, projectId: PROJECT, clipId: "00000000-0000-4000-8000-000000000005", editorRevision: 4,
       clip: { title: "Big Idea", hookText: "Hook" }, project: { sourceDurationSeconds: 600 },
       variants: [variant("00000000-0000-4000-8000-00000000000a", "completed", `projects/${PROJECT}/exports/${EXPORT}/a.mp4`),
@@ -75,9 +76,9 @@ describe("Download Grants", () => {
       expect(logs.join("\n")).not.toContain("X-Amz");
       expect(logs.join("\n")).not.toContain("https://");
     } finally { actor.mockRestore(); warn.mockRestore(); }
-  }));
+  })));
 
-  test("refuses a missing variant, an export with no finished file, and a member without download access", globals.bind(async () => {
+  test("refuses a missing variant, an export with no finished file, and a member without download access", bindServiceTestEnvironment(globals.bind(async () => {
     const actor = spyOn(workspaceService, "requireActor").mockResolvedValue({} as never);
     try {
       row = { id: EXPORT, projectId: PROJECT, clipId: "00000000-0000-4000-8000-000000000005", editorRevision: 1,
@@ -89,5 +90,5 @@ describe("Download Grants", () => {
       actor.mockRejectedValue(new ExpectedDomainFailureError({ code: "workspace_access_denied", kind: "forbidden", message: "Download access required" }));
       await expect(clipExportService.issueDownloadGrants(scope, EXPORT, { credentialKind: "oauth" })).rejects.toMatchObject({ code: "workspace_access_denied" });
     } finally { actor.mockRestore(); }
-  }));
+  })));
 });

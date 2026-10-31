@@ -1,3 +1,4 @@
+import { bindServiceTestEnvironment } from "./runtime-test-support";
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { autoCensorWordId, editorDocumentSchema } from "@narriflow/validators";
 import { brandOwnerForWorkspace } from "./brand-ownership";
@@ -27,7 +28,7 @@ describe("clip export motion entitlement", () => {
     deletedRanges: [],
   });
 
-  test("blocks a frozen motion snapshot after a workspace downgrades", () => {
+  test("blocks a frozen motion snapshot after a workspace downgrades", bindServiceTestEnvironment(() => {
     expect(() => assertClipExportDocumentAllowed("free", motionDocument)).toThrow(
       expect.objectContaining({
         code: "plan_feature_required",
@@ -35,15 +36,15 @@ describe("clip export motion entitlement", () => {
         details: expect.objectContaining({ feature: "editor.motion", requiredTier: "creator" }),
       }),
     );
-  });
+  }));
 
-  test("allows the same frozen snapshot on an entitled tier", () => {
+  test("allows the same frozen snapshot on an entitled tier", bindServiceTestEnvironment(() => {
     expect(() =>
       assertClipExportDocumentAllowed("creator", motionDocument),
     ).not.toThrow();
-  });
+  }));
 
-  test("refuses enabled Auto Censor segments that no longer match the transcript", () => {
+  test("refuses enabled Auto Censor segments that no longer match the transcript", bindServiceTestEnvironment(() => {
     const segment = {
       schemaVersion: 1,
       id: "50000000-0000-4000-8000-000000000001",
@@ -64,7 +65,7 @@ describe("clip export motion entitlement", () => {
     );
     const disabled = editorDocumentSchema.parse({ ...motionDocument, studioEdits: {}, censorSegments: [{ ...segment, enabled: false }] });
     expect(() => assertClipExportDocumentAllowed("free", disabled)).not.toThrow();
-  });
+  }));
 
   describe("Auto Censor entitlement", () => {
     const words = [{ word: "heck", startSec: 1, endSec: 1.4, confidence: 0.9 }];
@@ -89,7 +90,7 @@ describe("clip export motion entitlement", () => {
       studioEdits: {}, brollUrl: null, deletedRanges: [], censorSegments: [segment(enabled)],
     });
 
-    test("refuses current, enabled censor segments on Free (a downgraded workspace)", () => {
+    test("refuses current, enabled censor segments on Free (a downgraded workspace)", bindServiceTestEnvironment(() => {
       expect(() => assertClipExportDocumentAllowed("free", current(true))).toThrow(
         expect.objectContaining({
           code: "plan_feature_required",
@@ -97,19 +98,19 @@ describe("clip export motion entitlement", () => {
           details: expect.objectContaining({ feature: "editor.censoring", requiredTier: "creator" }),
         }),
       );
-    });
+    }));
 
-    test("allows only disabled censor segments on Free, and enabled ones on a paid plan", () => {
+    test("allows only disabled censor segments on Free, and enabled ones on a paid plan", bindServiceTestEnvironment(() => {
       expect(() => assertClipExportDocumentAllowed("free", current(false))).not.toThrow();
       for (const tier of ["creator", "pro", "business"] as const) {
         expect(() => assertClipExportDocumentAllowed(tier, current(true))).not.toThrow();
       }
-    });
+    }));
   });
 });
 
 describe("clip export fingerprint", () => {
-  test("is stable across caller ordering and duplicate aspect ratios", () => {
+  test("is stable across caller ordering and duplicate aspect ratios", bindServiceTestEnvironment(() => {
     const first = buildClipExportFingerprint({
       editorRevision: 12,
       aspectRatios: ["16:9", "9:16", "9:16"],
@@ -124,9 +125,9 @@ describe("clip export fingerprint", () => {
     });
     expect(first).toBe(second);
     expect(first).toMatch(/^[a-f0-9]{64}$/);
-  });
+  }));
 
-  test("changes for every output-affecting contract field", () => {
+  test("changes for every output-affecting contract field", bindServiceTestEnvironment(() => {
     const base = {
       editorRevision: 4,
       aspectRatios: ["9:16"] as const,
@@ -138,11 +139,11 @@ describe("clip export fingerprint", () => {
     expect(buildClipExportFingerprint({ ...base, aspectRatios: ["1:1"] })).not.toBe(fingerprint);
     expect(buildClipExportFingerprint({ ...base, aspectRatios: [...base.aspectRatios], resolution: "720p" })).not.toBe(fingerprint);
     expect(buildClipExportFingerprint({ ...base, aspectRatios: [...base.aspectRatios], watermark: true })).not.toBe(fingerprint);
-  });
+  }));
 });
 
 describe("clip export aggregate state", () => {
-  test("covers queued, rendering, ready, partial and failed terminal states", () => {
+  test("covers queued, rendering, ready, partial and failed terminal states", bindServiceTestEnvironment(() => {
     expect(deriveClipExportAggregate(["pending", "pending"])).toEqual({
       status: "queued",
       progress: 0,
@@ -164,19 +165,19 @@ describe("clip export aggregate state", () => {
       progress: 100,
       terminal: true,
     });
-  });
+  }));
 
-  test("fails closed for a corrupt empty export", () => {
+  test("fails closed for a corrupt empty export", bindServiceTestEnvironment(() => {
     expect(deriveClipExportAggregate([])).toEqual({
       status: "failed",
       progress: 100,
       terminal: true,
     });
-  });
+  }));
 });
 
 describe("clip export storage and sharing", () => {
-  test("blocks export admission when a frozen Scene file identity is unavailable", () => {
+  test("blocks export admission when a frozen Scene file identity is unavailable", bindServiceTestEnvironment(() => {
     const visualId = "11111111-1111-4111-8111-111111111111";
     const fontId = "22222222-2222-4222-8222-222222222222";
     const document = editorDocumentSchema.parse({
@@ -214,16 +215,16 @@ describe("clip export storage and sharing", () => {
     expect(() => assertSceneExportReferenceRows(document, visuals, fonts)).not.toThrow();
     expect(() => assertSceneExportReferenceRows(document, [], fonts)).toThrow("unavailable Scene asset");
     expect(() => assertSceneExportReferenceRows(document, visuals, [])).toThrow("unavailable Brand font");
-  });
+  }));
 
-  test("resolves Scene asset ownership from the Workspace kind, never its plan", () => {
+  test("resolves Scene asset ownership from the Workspace kind, never its plan", bindServiceTestEnvironment(() => {
     expect(brandOwnerForWorkspace({ id: "personal-workspace", personalOwnerUserId: "owner" }))
       .toEqual({ userId: "owner", workspaceId: null });
     expect(brandOwnerForWorkspace({ id: "shared-workspace", personalOwnerUserId: null }))
       .toEqual({ userId: null, workspaceId: "shared-workspace" });
-  });
+  }));
 
-  test("builds a safe, descriptive download filename", () => {
+  test("builds a safe, descriptive download filename", bindServiceTestEnvironment(() => {
     expect(
       clipExportDownloadFileName({
         clipTitle: 'My: “launch” / clip\r\n',
@@ -232,9 +233,9 @@ describe("clip export storage and sharing", () => {
         editorRevision: 12,
       }),
     ).toBe("My-launch-clip-16x9-1080p-v12.mp4");
-  });
+  }));
 
-  test("uses export and variant identities in immutable storage keys", () => {
+  test("uses export and variant identities in immutable storage keys", bindServiceTestEnvironment(() => {
     expect(
       clipExportVariantStorageKey({
         projectId: "project-id",
@@ -243,24 +244,24 @@ describe("clip export storage and sharing", () => {
         aspectRatio: "9:16",
       }),
     ).toBe("projects/project-id/exports/export-id/variant-id-9x16.mp4");
-  });
+  }));
 
-  test("hashes share tokens deterministically without retaining the token", () => {
+  test("hashes share tokens deterministically without retaining the token", bindServiceTestEnvironment(() => {
     const token = "VwSuLaxd0mI6uP7Xa0xbsK_kulNPQruUB6PR6Oa7y_E";
     const hash = hashClipShareToken(token);
     expect(hash).toMatch(/^[a-f0-9]{64}$/);
     expect(hash).not.toContain(token);
     expect(hashClipShareToken(token)).toBe(hash);
     expect(hashClipShareToken(`${token}x`)).not.toBe(hash);
-  });
+  }));
 });
 
 describe("explicit export output", () => {
-  test("reports the requested resolution, the granted output, and the plan-limit reason", () => {
+  test("reports the requested resolution, the granted output, and the plan-limit reason", bindServiceTestEnvironment(() => {
     expect(resolveClipExportOutput("free", "1080p")).toEqual({ requested: { resolution: "1080p" }, granted: { resolution: "720p", watermark: true }, reason: "plan_limit" });
     expect(resolveClipExportOutput("free", "720p")).toEqual({ requested: { resolution: "720p" }, granted: { resolution: "720p", watermark: true }, reason: "plan_limit" });
     expect(resolveClipExportOutput("business", "1080p")).toEqual({ requested: { resolution: "1080p" }, granted: { resolution: "1080p", watermark: false }, reason: null });
-  });
+  }));
 });
 
 describe("Workspace export delivery", () => {
@@ -272,15 +273,15 @@ describe("Workspace export delivery", () => {
     R2_BUCKET: "bucket",
   };
   const previous = { ...process.env };
-  beforeEach(() => {
+  beforeEach(bindServiceTestEnvironment(() => {
     Object.assign(process.env, R2_ENV);
-  });
-  afterEach(() => {
+  }));
+  afterEach(bindServiceTestEnvironment(() => {
     for (const key of Object.keys(R2_ENV)) {
       if (previous[key] === undefined) delete process.env[key];
       else process.env[key] = previous[key];
     }
-  });
+  }));
 
   const item = (variants: Array<{ id: string; status: "pending" | "rendering" | "completed" | "failed"; storageKey: string | null }>) => ({
     id: "export-1",
@@ -298,7 +299,7 @@ describe("Workspace export delivery", () => {
     variants: variants.map((variant) => ({ ...variant, aspectRatio: "ratio_9_16" as const, sizeBytes: 10 })),
   });
 
-  test("a page never exposes storage keys and previews only finished files", async () => {
+  test("a page never exposes storage keys and previews only finished files", bindServiceTestEnvironment(async () => {
     const page = await clipExportService.presentWorkspaceExports({
       items: [
         item([
@@ -316,9 +317,9 @@ describe("Workspace export delivery", () => {
     expect(failed).toMatchObject({ hasAsset: false, previewUrl: null });
     expect(lost).toMatchObject({ hasAsset: false, previewUrl: null });
     expect(JSON.stringify(page)).not.toContain("storageKey");
-  });
+  }));
 
-  test("a grant is the first finished variant's file, name and expiry, without the subtitles", async () => {
+  test("a grant is the first finished variant's file, name and expiry, without the subtitles", bindServiceTestEnvironment(async () => {
     const grants = spyOn(clipExportService, "issueDownloadGrants").mockResolvedValue({
       exportId: "export-1",
       projectId: "project-1",
@@ -346,9 +347,9 @@ describe("Workspace export delivery", () => {
     } finally {
       grants.mockRestore();
     }
-  });
+  }));
 
-  test("a Workspace retry resolves the export's project and clip, and a foreign export is not found", async () => {
+  test("a Workspace retry resolves the export's project and clip, and a foreign export is not found", bindServiceTestEnvironment(async () => {
     const owned = spyOn(clipExportService, "getWorkspaceOwned");
     const retry = spyOn(clipExportService, "retryFailed").mockResolvedValue({ id: "export-1" } as never);
     try {
@@ -366,5 +367,5 @@ describe("Workspace export delivery", () => {
       owned.mockRestore();
       retry.mockRestore();
     }
-  });
+  }));
 });

@@ -1,5 +1,5 @@
 import { describe, expect, mock, test } from "bun:test";
-import { ExpectedDomainFailureError } from "@narriflow/services";
+import { ExpectedDomainFailureError } from "@narriflow/services/expected-domain-failure";
 import { mountDomain, PROJECT_ID, policyRuntime, signedInHeaders, workspaceContext } from "../projects/test-support";
 import { createLibraryRoutes, type LibraryRouteDeps } from "./routes";
 

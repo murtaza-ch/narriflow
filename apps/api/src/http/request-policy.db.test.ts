@@ -1,3 +1,4 @@
+import { bindServiceTestEnvironment } from "@narriflow/services/runtime-test-support";
 import { randomUUID } from "node:crypto";
 import {
   afterAll,
@@ -39,7 +40,7 @@ dbDescribe("Authenticated Request Policy PostgreSQL admission", () => {
   let crossWorkspaceProjectId: string;
   let inaccessibleProjectId: string;
 
-  beforeAll(async () => {
+  beforeAll(bindServiceTestEnvironment(async () => {
     if (!databaseUrl) throw new Error("Policy test database is required");
     pool = new Pool({ connectionString: databaseUrl, max: 4 });
     prisma = new PrismaClient({
@@ -129,12 +130,12 @@ dbDescribe("Authenticated Request Policy PostgreSQL admission", () => {
     purgingProjectId = purging.id;
     crossWorkspaceProjectId = cross.id;
     inaccessibleProjectId = inaccessible.id;
-  });
+  }));
 
-  afterAll(async () => {
+  afterAll(bindServiceTestEnvironment(async () => {
     await prisma?.$disconnect();
     await pool?.end();
-  });
+  }));
 
   async function resolveActor(): Promise<ActorScope | null> {
     const membership = await prisma.workspaceMember.findUnique({
@@ -192,7 +193,7 @@ dbDescribe("Authenticated Request Policy PostgreSQL admission", () => {
     });
   }
 
-  test("uses current membership role and Workspace status on every request", async () => {
+  test("uses current membership role and Workspace status on every request", bindServiceTestEnvironment(async () => {
     expect((await admit(activeProjectId, "processing.consume")).ok).toBe(true);
     await prisma.workspaceMember.update({
       where: {
@@ -226,9 +227,9 @@ dbDescribe("Authenticated Request Policy PostgreSQL admission", () => {
       where: { id: workspaceAId },
       data: { status: "active" },
     });
-  });
+  }));
 
-  test("conceals lifecycle and inaccessible Projects but identifies an entitled mismatch", async () => {
+  test("conceals lifecycle and inaccessible Projects but identifies an entitled mismatch", bindServiceTestEnvironment(async () => {
     await expect(
       admit(expiredProjectId, "content.view"),
     ).resolves.toMatchObject({
@@ -256,16 +257,16 @@ dbDescribe("Authenticated Request Policy PostgreSQL admission", () => {
         details: { workspaceId: workspaceBId, workspaceName: "Policy B" },
       },
     });
-  });
+  }));
 
-  test("a malformed Project identifier is concealed like a missing Project without a database error", async () => {
+  test("a malformed Project identifier is concealed like a missing Project without a database error", bindServiceTestEnvironment(async () => {
     await expect(admit("not-a-uuid", "content.view")).resolves.toMatchObject({
       ok: false,
       failure: { code: "project_not_found" },
     });
-  });
+  }));
 
-  test("membership removal takes effect between requests", async () => {
+  test("membership removal takes effect between requests", bindServiceTestEnvironment(async () => {
     expect((await admit(activeProjectId, "content.view")).ok).toBe(true);
     await prisma.workspaceMember.delete({
       where: {
@@ -278,5 +279,5 @@ dbDescribe("Authenticated Request Policy PostgreSQL admission", () => {
         failure: { code: "authentication_required" },
       },
     );
-  });
+  }));
 });

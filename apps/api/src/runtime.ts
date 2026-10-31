@@ -1,9 +1,11 @@
+import { readServiceEnvironment, type ServiceEnvironment } from "@narriflow/services/runtime-environment";
 import {
   createBearerAuthenticator,
   createServerClerkClient,
 } from "@narriflow/auth";
 import { getPrismaClient } from "@narriflow/db/client";
-import { billingService, checkRateLimit } from "@narriflow/services";
+import { billingService } from "@narriflow/services/billing.service";
+import { checkRateLimit } from "@narriflow/services/rate-limit";
 import type { Hono } from "hono";
 import { createApiApp, type ApiAppDependencies } from "./app";
 import type { ApiDomainRoutes } from "./domains";
@@ -55,38 +57,29 @@ import { createWorkspaceRouteDeps } from "./domains/workspace/runtime";
 import { createWorkspaceRoutes } from "./domains/workspace/routes";
 import { createProductionRequestPolicyRuntime } from "./http/request-policy-runtime";
 import type { ApiEnv } from "./http/env";
-import type { ApiLifecycle } from "./server-hooks";
 
 /** A required, non-secret-logged setting. The message names the setting, never its value. */
 function requireSetting(name: string): string {
-  const value = process.env[name]?.trim();
+  const value = readServiceEnvironment()[name]?.trim();
   if (!value) throw new Error(`${name} is required`);
   return value;
 }
 
-/** Process-wide DB pool sizing for the API; other processes keep their existing defaults. */
-export function applyApiPoolDefaults(env: NodeJS.ProcessEnv = process.env): void {
-  env.DATABASE_POOL_MAX ??= "10";
-  env.DATABASE_POOL_IDLE_TIMEOUT_MS ??= "30000";
-  env.DATABASE_POOL_CONNECTION_TIMEOUT_MS ??= "10000";
-}
-
-function createHealthDependencies(lifecycle: ApiLifecycle): HealthDependencies {
+function createHealthDependencies(environment: ServiceEnvironment): HealthDependencies {
   return {
-    version: process.env.RAILWAY_GIT_COMMIT_SHA?.slice(0, 12) ?? "dev",
-    isDraining: () => lifecycle.draining,
+    version: environment.DEPLOYMENT_VERSION?.slice(0, 64) ?? "dev",
+    isDraining: () => false,
     checkDatabase: createDatabaseReadiness({
       expectedMigrations: expectedDatabaseMigrations(),
       async appliedMigrations() {
         const prisma = getPrismaClient();
-        if (!prisma) throw new Error("DATABASE_URL is not configured");
+        if (!prisma) throw new Error("Database scope is unavailable");
         const rows = await prisma.$queryRaw<Array<{ migration_name: string }>>`
           SELECT migration_name FROM "_prisma_migrations"
           WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL
         `;
         return rows.map((row) => row.migration_name);
       },
-      onStartupTimeout: () => process.exit(1),
       log: (entry) => console.warn(JSON.stringify(entry)),
     }),
   };
@@ -133,8 +126,7 @@ export function createExternalRoutes(
 }
 
 /** Wires every production dependency and returns the composed app. Throws on missing core settings. */
-export function createProductionApp(config: ApiConfig, lifecycle: ApiLifecycle): Hono<ApiEnv> {
-  requireSetting("DATABASE_URL");
+export function createProductionApp(config: ApiConfig, environment: ServiceEnvironment): Hono<ApiEnv> {
   requireSetting("ELEVENLABS_WEBHOOK_SECRET");
   billingService.validateConfiguration({ surface: "web" });
 
@@ -154,7 +146,7 @@ export function createProductionApp(config: ApiConfig, lifecycle: ApiLifecycle):
   return createApiApp({
     config,
     policyRuntime,
-    health: createHealthDependencies(lifecycle),
+    health: createHealthDependencies(environment),
     clerkWebhook: createClerkWebhookDependencies({
       webhookSecret: requireSetting("CLERK_WEBHOOK_SECRET"),
       clerkClient,

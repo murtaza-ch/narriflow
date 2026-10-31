@@ -1,4 +1,4 @@
-import { deriveReviewRoundStatus, hashReviewAccessToken, reviewGuestCanEditComment, ReviewServiceError, verifyReviewSession } from "@narriflow/services";
+import { deriveReviewRoundStatus, hashReviewAccessToken, reviewGuestCanEditComment, ReviewServiceError, verifyReviewSession } from "@narriflow/services/review.service";
 import type { MiddlewareHandler } from "hono";
 import type { ApiEnv } from "../../http/env";
 import type { ReviewsRouteDeps } from "./routes";

@@ -9,8 +9,8 @@
     }
   },
   "scripts": {
-    "dev": "bun --watch src/index.ts",
-    "start": "bun run src/index.ts",
+    "dev": "wrangler dev",
+    "start": "wrangler dev",
     "build": "tsc -p tsconfig.build.json --noEmit",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "bun test src/",
@@ -18,7 +18,11 @@
     "openapi:generate": "bun scripts/generate-openapi.ts",
     "openapi:check": "bun scripts/generate-openapi.ts --check",
     "clean": "rm -rf dist",
-    "smoke:native": "bun scripts/native-smoke.ts"
+    "smoke:native": "bun scripts/native-smoke.ts",
+    "build:worker": "bun run migrations:generate && wrangler deploy --dry-run --outdir dist/worker --metafile",
+    "deploy": "wrangler deploy",
+    "migrations:generate": "bun scripts/generate-database-migrations.ts",
+    "migrations:check": "bun scripts/generate-database-migrations.ts --check"
   },
   "dependencies": {
     "@ffprobe-installer/ffprobe": "2.1.2",
@@ -46,6 +50,8 @@
     "@seriousme/openapi-schema-validator": "^2.11.0",
     "@types/node": "26.2.0",
     "@types/pg": "8.15.5",
-    "pg": "8.16.3"
+    "pg": "8.17.2",
+    "wrangler": "4.156.0",
+    "@cloudflare/workers-types": "5.20261030.1"
   }
 }

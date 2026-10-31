@@ -1,3 +1,4 @@
+import { readServiceEnvironment } from "./runtime-environment";
 import { getPrismaClient } from "@narriflow/db/client";
 import { createPendingBusinessWorkspaceService } from "./pending-business-workspace.service";
 import { randomUUID } from "node:crypto";
@@ -123,14 +124,14 @@ export class BillingError extends ExpectedDomainFailureError<
 export const WORKSPACE_BILLING_STRIPE_API_VERSION = "2026-07-29.dahlia" as const;
 
 function getStripe(): Stripe {
-  const key = process.env.STRIPE_SECRET_KEY;
+  const key = readServiceEnvironment().STRIPE_SECRET_KEY;
   if (!key) {
     throw new BillingError("stripe_not_configured");
   }
   return new Stripe(key, {
     apiVersion: WORKSPACE_BILLING_STRIPE_API_VERSION,
     timeout: Number(
-      process.env.WORKSPACE_BILLING_PROVIDER_DEADLINE_MS ?? 10_000,
+      readServiceEnvironment().WORKSPACE_BILLING_PROVIDER_DEADLINE_MS ?? 10_000,
     ),
     // The module owns retries and fencing. Keeping SDK retries disabled makes
     // the per-attempt provider call budget exact and observable.
@@ -150,14 +151,14 @@ function priceIdFor(
   interval: BillingInterval,
 ): string | null {
   return (
-    process.env[`STRIPE_PRICE_${tier.toUpperCase()}_${interval.toUpperCase()}`] ??
+    readServiceEnvironment()[`STRIPE_PRICE_${tier.toUpperCase()}_${interval.toUpperCase()}`] ??
     null
   );
 }
 
 /** `STRIPE_PRICE_BUSINESS_SEAT_<INTERVAL>`, matching `BUSINESS_ADDITIONAL_SEAT_PRICE_CENTS`. */
 function seatPriceIdFor(interval: BillingInterval): string | null {
-  return process.env[`STRIPE_PRICE_BUSINESS_SEAT_${interval.toUpperCase()}`] ?? null;
+  return readServiceEnvironment()[`STRIPE_PRICE_BUSINESS_SEAT_${interval.toUpperCase()}`] ?? null;
 }
 
 function catalogFromEnvironment(): BillingCatalog {
@@ -186,14 +187,14 @@ function catalogFromEnvironment(): BillingCatalog {
       interval,
     })),
     worker: {
-      batchSize: Number(process.env.WORKSPACE_BILLING_BATCH_SIZE ?? 25),
-      concurrency: Number(process.env.WORKSPACE_BILLING_CONCURRENCY ?? 4),
-      leaseMs: Number(process.env.WORKSPACE_BILLING_LEASE_MS ?? 60_000),
+      batchSize: Number(readServiceEnvironment().WORKSPACE_BILLING_BATCH_SIZE ?? 25),
+      concurrency: Number(readServiceEnvironment().WORKSPACE_BILLING_CONCURRENCY ?? 4),
+      leaseMs: Number(readServiceEnvironment().WORKSPACE_BILLING_LEASE_MS ?? 60_000),
       providerDeadlineMs: Number(
-        process.env.WORKSPACE_BILLING_PROVIDER_DEADLINE_MS ?? 10_000,
+        readServiceEnvironment().WORKSPACE_BILLING_PROVIDER_DEADLINE_MS ?? 10_000,
       ),
       providerCallBudget: Number(
-        process.env.WORKSPACE_BILLING_PROVIDER_CALL_BUDGET ?? 4,
+        readServiceEnvironment().WORKSPACE_BILLING_PROVIDER_CALL_BUDGET ?? 4,
       ),
     },
   });
@@ -228,7 +229,11 @@ export interface BusinessWorkspaceCheckout {
 }
 
 export class BillingService {
-  private catalog: BillingCatalog | null = null;
+  private catalogOverride: BillingCatalog | null = null;
+
+  private get catalog(): BillingCatalog | null {
+    return this.catalogOverride ?? (readServiceEnvironment().STRIPE_SECRET_KEY ? catalogFromEnvironment() : null);
+  }
   private stripeOverride: Stripe | null = null;
 
   private stripe() {
@@ -237,18 +242,17 @@ export class BillingService {
 
   /** Validate once at each process entry point, before it accepts work. */
   validateConfiguration(input?: { surface?: "core" | "web" | "worker" | "operator" }): void {
-    if (!process.env.STRIPE_SECRET_KEY) {
-      this.catalog = null;
+    if (!readServiceEnvironment().STRIPE_SECRET_KEY) {
       return;
     }
-    this.catalog ??= catalogFromEnvironment();
+    catalogFromEnvironment();
     if (input?.surface === "web") {
-      if (!process.env.STRIPE_WEBHOOK_SECRET?.startsWith("whsec_")) {
+      if (!readServiceEnvironment().STRIPE_WEBHOOK_SECRET?.startsWith("whsec_")) {
         throw new BillingError(
           "webhook_not_configured",
         );
       }
-      if (!process.env.STRIPE_PORTAL_CONFIGURATION_ID?.startsWith("bpc_")) {
+      if (!readServiceEnvironment().STRIPE_PORTAL_CONFIGURATION_ID?.startsWith("bpc_")) {
         throw new BillingError(
           "portal_not_configured",
         );
@@ -258,7 +262,7 @@ export class BillingService {
 
   /** Whether Stripe is wired up (secret key present). UI hides upgrade if not. */
   isConfigured(): boolean {
-    return Boolean(process.env.STRIPE_SECRET_KEY);
+    return Boolean(readServiceEnvironment().STRIPE_SECRET_KEY);
   }
 
   /** Paid tiers that have at least one price id configured (so the UI can hide unset ones). */
@@ -461,7 +465,7 @@ export class BillingService {
         retrieveCheckoutSession: (sessionId) =>
           this.retrieveCheckoutSession(sessionId),
         createPortalSession: async (input) => {
-          const configuration = process.env.STRIPE_PORTAL_CONFIGURATION_ID;
+          const configuration = readServiceEnvironment().STRIPE_PORTAL_CONFIGURATION_ID;
           if (!configuration) {
             throw new BillingError(
               "portal_not_configured",
@@ -692,7 +696,7 @@ export class BillingService {
     signature: string,
     contract?: { stripe: Stripe; webhookSecret: string },
   ) {
-    const secret = contract?.webhookSecret ?? process.env.STRIPE_WEBHOOK_SECRET;
+    const secret = contract?.webhookSecret ?? readServiceEnvironment().STRIPE_WEBHOOK_SECRET;
     if (!secret) {
       throw new BillingError(
         "webhook_not_configured",
@@ -775,7 +779,7 @@ export class BillingService {
       },
       providerWith: (input: { stripe: Stripe; catalog: BillingCatalog }) => {
         this.stripeOverride = input.stripe;
-        this.catalog = input.catalog;
+        this.catalogOverride = input.catalog;
         return this.stripeProviderAdapter();
       },
       verifyDelivery: (
