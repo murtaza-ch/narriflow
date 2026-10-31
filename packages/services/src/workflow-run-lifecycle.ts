@@ -1912,7 +1912,7 @@ export class WorkflowRunLifecycle {
       });
       if (usage?.kind !== "dub" || usage.status !== "reserved") {
         await tx.clipDub.updateMany({
-          where: { id: dubId, projectId: attempt.projectId, status: "queued" },
+          where: { id: dubId, projectId: attempt.projectId, workflowRunId: attempt.workflowRunId, status: "queued" },
           data: {
             status: "failed",
             workflowAttemptId: attempt.attemptId,
@@ -1923,7 +1923,7 @@ export class WorkflowRunLifecycle {
         return { count: 0 };
       }
       return tx.clipDub.updateMany({
-        where: { id: dubId, projectId: attempt.projectId, status: "queued" },
+        where: { id: dubId, projectId: attempt.projectId, workflowRunId: attempt.workflowRunId, status: "queued" },
         data: {
           status: "processing",
           workflowAttemptId: attempt.attemptId,
@@ -1947,6 +1947,7 @@ export class WorkflowRunLifecycle {
         where: {
           id: dubId,
           projectId: attempt.projectId,
+          workflowRunId: attempt.workflowRunId,
           status: "processing",
           workflowAttemptId: attempt.attemptId,
         },
@@ -1970,6 +1971,7 @@ export class WorkflowRunLifecycle {
         where: {
           id: dubId,
           projectId: attempt.projectId,
+          workflowRunId: attempt.workflowRunId,
           workflowAttemptId: attempt.attemptId,
         },
         data: { status: "failed", errorCode, completedAt: new Date() },
@@ -3168,6 +3170,7 @@ export class WorkflowRunLifecycle {
       db.clipDub.count({
         where: {
           projectId: attempt.projectId,
+          workflowRunId: attempt.workflowRunId,
           workflowAttemptId: attempt.attemptId,
           status: "completed",
         },
@@ -3175,6 +3178,7 @@ export class WorkflowRunLifecycle {
       db.clipDub.count({
         where: {
           projectId: attempt.projectId,
+          workflowRunId: attempt.workflowRunId,
           workflowAttemptId: attempt.attemptId,
           status: { in: ["failed", "unknown"] },
         },
@@ -3200,7 +3204,7 @@ export class WorkflowRunLifecycle {
     // The run is terminal, so its failed dubs are known failures. A crash
     // here leaves them to the generation usage sweep.
     await this.prisma.$transaction((tx) =>
-      releaseFailedDubUsage(tx, { projectId: attempt.projectId, attemptId: attempt.attemptId, reason: "dub_failed" }),
+      releaseFailedDubUsage(tx, { projectId: attempt.projectId, workflowRunId: attempt.workflowRunId, attemptId: attempt.attemptId, reason: "dub_failed" }),
     );
   }
 
@@ -3533,10 +3537,9 @@ export class WorkflowRunLifecycle {
       await tx.clipDub.updateMany({
         where: {
           projectId: attempt.projectId,
+          workflowRunId: attempt.workflowRunId,
           OR: [
             { workflowAttemptId: attempt.attemptId, status: { in: outcome.requeue ? ["processing", "failed"] : ["processing"] } },
-            // Only one dubbing run may be live for a Project. A terminal
-            // failure also owns queued siblings it never reached.
             ...(!outcome.requeue ? [{ workflowAttemptId: null, status: "queued" as const }] : []),
           ],
         },
@@ -3555,11 +3558,12 @@ export class WorkflowRunLifecycle {
               completedAt: new Date(),
             },
       });
-      // A requeued dub keeps its count; settle every known failure, including
-      // siblings newly marked above, in this same terminal transaction.
+      // A requeued dub keeps its reservation. Only this accepted run can
+      // settle a known failure; an unknown paid outcome keeps its count.
       if (!outcome.requeue) {
         await releaseFailedDubUsage(tx, {
           projectId: attempt.projectId,
+          workflowRunId: attempt.workflowRunId,
           attemptId: attempt.attemptId,
           reason: outcome.errorCode,
         });

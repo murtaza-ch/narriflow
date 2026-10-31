@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { checkEnvironmentValues, checkStorageBindings, webBackendVariables, type EnvironmentFiles, type EnvironmentValues } from "./env-check";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { checkEnvironmentValues, checkStorageBindings, runEnvironmentCheck, webBackendVariables, type EnvironmentFiles, type EnvironmentValues } from "./env-check";
 
 const database = "postgresql://user:password@ep-dev-pooler.us-east-1.aws.neon.tech/neondb?schema=public";
 const directDatabase = "postgresql://user:password@ep-dev.us-east-1.aws.neon.tech/neondb?schema=public";
@@ -33,6 +36,16 @@ function files(overrides: Partial<EnvironmentFiles> = {}): EnvironmentFiles {
 const messages = (issues: { message: string }[]) => issues.map(issue => issue.message);
 
 describe("serverless env check", () => {
+  test("rejects an autoloaded root dotenv file without reading or printing its credentials", () => {
+    const root = mkdtempSync(join(tmpdir(), "narriflow-env-check-"));
+    try {
+      writeFileSync(join(root, ".env.local"), "DATABASE_URL=postgresql://private-password@wrong-db/private-db\n", { mode: 0o600 });
+      const { issues } = runEnvironmentCheck(root);
+      expect(messages(issues)).toContain("root .env.local is not supported; use app-specific env files");
+      expect(JSON.stringify(issues)).not.toContain("private-password");
+      expect(JSON.stringify(issues)).not.toContain("wrong-db");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
   test("accepts three consistent files with pooled and direct URLs of one database", () => {
     expect(checkEnvironmentValues(files())).toEqual([]);
   });

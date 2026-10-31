@@ -597,7 +597,7 @@ dbDescribe("Generation usage PostgreSQL contracts", () => {
     expect(readmitted.dub.status).toBe("queued");
     expect(readmitted.dub.id).not.toBe(second.admitted.dub.id);
     await prisma.$transaction((tx) =>
-      releaseFailedDubUsage(tx, { projectId: project.id, attemptId: second.attempt.attemptId, reason: "dub_failed" }),
+      releaseFailedDubUsage(tx, { projectId: project.id, workflowRunId: second.attempt.workflowRunId, attemptId: second.attempt.attemptId, reason: "dub_failed" }),
     );
     expect(
       await prisma.generatedMediaUsageReservation.findUniqueOrThrow({ where: { jobId: readmitted.dub.id } }),
@@ -616,7 +616,7 @@ dbDescribe("Generation usage PostgreSQL contracts", () => {
     expect((await lifecycle.markDubProcessing(attempt, admitted.dub.id)).count).toBe(1);
     await prisma.$executeRaw`UPDATE "ClipDub" SET status='unknown', "errorCode"='dub_provider_outcome_unknown' WHERE id=${admitted.dub.id}::uuid`;
     await lifecycle.failAttempt(attempt, new WorkflowFailure("dub_provider_outcome_unknown", "permanent", "Dubbing outcome needs review"));
-    await prisma.$transaction(tx => releaseFailedDubUsage(tx, { projectId: project.id, attemptId: attempt.attemptId, reason: "dub_failed" }));
+    await prisma.$transaction(tx => releaseFailedDubUsage(tx, { projectId: project.id, workflowRunId: attempt.workflowRunId, attemptId: attempt.attemptId, reason: "dub_failed" }));
     await reconcileGenerationUsageReservations(new Date(Date.now() + DAY_MS));
     expect(await prisma.generatedMediaUsageReservation.findUniqueOrThrow({ where: { jobId: admitted.dub.id } })).toMatchObject({ status: "reserved", reason: null });
     await expect(dubbingService.requestClipDub(scope, project.id, randomUUID(), dubInput(clip.id))).rejects.toMatchObject({ code: "dubbing_outcome_unknown" });
