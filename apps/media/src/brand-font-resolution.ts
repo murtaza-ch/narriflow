@@ -6,34 +6,13 @@ import { CAPTION_FALLBACK_FONTS, CAPTION_FONTS_DIRECTORY } from "@narriflow/capt
 import { rethrowWorkflowAttemptLost } from "@narriflow/services/workflow-attempt-contract";
 import {
   CAPTION_FONT_FACES,
-  type CaptionPreset,
-  type StudioTextLayer,
 } from "@narriflow/validators";
 import type { RenderFactCache } from "./render-fact-cache";
 
-export type FontReference = NonNullable<CaptionPreset["fontAsset"]>;
-export type RenderBrandFont = ReturnType<typeof brandFontRenderer> & {
-  path: string;
-};
+export type RenderBrandFont = ReturnType<typeof brandFontRenderer> & { path: string };
 export type RenderBrandFonts = ReadonlyMap<string, RenderBrandFont>;
-export const brandFontKey = (font: { id: string; fingerprint: string }) =>
-  `${font.id}:${font.fingerprint}`;
-
-export function documentFontReferences(document: {
-  captionPreset: CaptionPreset;
-  studioEdits: { textLayers: readonly StudioTextLayer[] };
-}): FontReference[] {
-  return [
-    ...new Map(
-      [
-        document.captionPreset.fontAsset,
-        ...document.studioEdits.textLayers.map((layer) => layer.fontAsset),
-      ]
-        .filter((font): font is FontReference => Boolean(font))
-        .map((font) => [brandFontKey(font), font]),
-    ).values(),
-  ];
-}
+import { brandFontKey, type FontReference } from "@narriflow/services/brand-font-contract";
+export { brandFontKey, documentFontReferences, type FontReference } from "@narriflow/services/brand-font-contract";
 
 /** Missing or changed uploads use the saved built-in fallback, including after deletion. */
 export async function resolveRenderBrandFonts(input: {

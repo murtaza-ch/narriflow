@@ -712,3 +712,6 @@ export { resolveBrollCutaways, remapBrollCuesForCutPlan, type ResolveBrollCutawa
 export * from "./publication-checkpoint-blob";
 export * from "./clip-preparation";
 export * from "./clip-preparation-execution";
+export { RenderGroupExecutionService, createRenderGroupExecution, type RenderGroupExecutionDependencies } from "./render-group-execution";
+export { createRenderInputSnapshot, type RenderInputSnapshotDependencies } from "./render-input-snapshot";
+export { encodeRenderExecutionInput, decodeRenderExecutionInput } from "./render-execution-input";

@@ -1,5 +1,5 @@
 import { selectBestPexelsVideo, type BrollAttribution, type BrollClip } from "./pexels-contract";
-import { isSourceTimeDeleted, sourceToEdited, planBrollCutaways, type BrollCueInput, type PexelsOrientation, type PlannedBrollCutaway, type ClipCutPlan } from "@narriflow/validators";
+import { isSourceTimeDeleted, sourceToEdited, planBrollCutaways, CATEGORY_BROLL_FALLBACK_QUERY, brollQueryForClip, dominantPexelsOrientation, type ClipCategory, type ClipAspectRatio, type BrollCueInput, type PexelsOrientation, type PlannedBrollCutaway, type ClipCutPlan } from "@narriflow/validators";
 
 export interface ResolvedBrollCutaway {
   startSec: number;
@@ -151,3 +151,18 @@ export async function resolveBrollCutaways(
 
 export type ResolveBrollCutaways = (params: ResolveBrollCutawaysParams) => Promise<ResolvedBrollCutaway[]>;
 export type BrollSearch = (query: string, orientation: PexelsOrientation, options: { fetchImpl?: typeof fetch }) => Promise<import("./pexels-contract").PexelsVideo[]>;
+
+/** Sole stock search request constructor for both the Worker snapshot and renderer. */
+export function compileBrollSearchRequest(input: {
+  clipDurationSec: number; rawCues: BrollCueInput[] | null; cutPlan: ClipCutPlan; clipStartSec: number;
+  title: string | null; hookText: string; category: ClipCategory; aspects: readonly ClipAspectRatio[];
+}): ResolveBrollCutawaysParams | null {
+  const remappedCues = remapBrollCuesForCutPlan(input.rawCues, input.cutPlan, input.clipStartSec);
+  const cues = remappedCues && remappedCues.length > 0 ? remappedCues : null;
+  const fallbackQuery = brollQueryForClip(input.title, input.hookText, input.category);
+  if (!cues && !fallbackQuery) return null;
+  const broaderFallbackQuery = CATEGORY_BROLL_FALLBACK_QUERY[input.category] ?? null;
+  const orientation = dominantPexelsOrientation([...input.aspects]);
+  return { clipDurationSec: input.clipDurationSec, cues, fallbackQuery, broaderFallbackQuery, orientation,
+    targetWidth: orientation === "landscape" ? 1920 : 1080, targetHeight: orientation === "landscape" ? 1080 : 1920 };
+}
