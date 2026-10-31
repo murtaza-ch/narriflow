@@ -13,6 +13,7 @@ import { assertExecutionSnapshotDatabase, readFencedWorker, readRestoreResumeWor
 import { hashSnapshotFile, hashSnapshotMigrations, readSnapshotJson } from "../execution-snapshot-files";
 
 const host="ep-wispy-field-b5wyn9o3.c-7.us-east-2.aws.neon.tech",databaseName="serverless_pipeline_gates";
+const invocationEpoch=3,snapshotEpoch=4,restoredEpoch=5;
 const pgDirectory="/opt/homebrew/opt/postgresql@17/bin";
 const invalid=()=>Error("qualified_restore_gate_refused");
 const uuid=(value:unknown):value is string=>typeof value==="string"&&/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value);
@@ -34,6 +35,12 @@ export function candidateRestoreJournal(raw:unknown):Journal{
   !files.every(path=>typeof path==="string"&&isAbsolute(path)&&![...path].some(char=>char.charCodeAt(0)<32||char.charCodeAt(0)===127))||new Set(files).size!==3)throw invalid();
  return j;
 }
+export function candidateRestoreRefusal(raw:unknown,j:Journal){
+ if(!raw||typeof raw!=="object"||Array.isArray(raw))throw invalid();
+ const report=raw as Record<string,unknown>;
+ if(report.event!=="restore_fault_refused"||report.runId!==j.runId||report.sourceEpoch!==invocationEpoch||report.targetEpoch!==restoredEpoch||report.attemptToken!==j.attemptToken||report.artifactId!==j.artifactId||report.dispatchId!==j.dispatchId||report.refusal!=="superseded"||report.commandSha256!==j.commandSha256)throw invalid();
+ return report;
+}
 
 async function main(){
  const stage=process.argv[2];if(!["dump","restore","verify"].includes(stage??"")||process.argv.length!==3)throw invalid();
@@ -53,15 +60,15 @@ async function main(){
   const job=await db.nativeValidationJob.findUniqueOrThrow({where:{id:j.jobId}}),attempt=await db.executionAttempt.findUniqueOrThrow({where:{attemptToken:j.attemptToken}}),artifact=await db.executionArtifact.findUniqueOrThrow({where:{id:j.artifactId}});
   const dispatch=await db.executionDispatch.findUniqueOrThrow({where:{id:attempt.dispatchId}});
   const input=nativeValidationInputSchema.parse(job.input);
-  if(job.kind!=="visual_asset"||input.kind!=="visual"||input.contentType!=="image/png"||input.sizeBytes>1024*1024||job.operationDeadlineAt.toISOString()!==j.operationDeadlineAt||job.maxAttempts!==3||attempt.deploymentEpoch!==2||attempt.functionName!=="asset_validation"||!attempt.processStartedAt||attempt.operationDeadlineAt.toISOString()!==j.operationDeadlineAt||dispatch.id!==j.dispatchId||dispatch.subjectKind!=="native_validation"||dispatch.subjectId!==j.jobId||artifact.attemptToken!==j.attemptToken||artifact.owner!==attempt.owner||artifact.role!=="probe"||artifact.committedAt)throw invalid();
+  if(job.kind!=="visual_asset"||input.kind!=="visual"||input.contentType!=="image/png"||input.sizeBytes>1024*1024||job.operationDeadlineAt.toISOString()!==j.operationDeadlineAt||job.maxAttempts!==3||attempt.deploymentEpoch!==invocationEpoch||attempt.functionName!=="asset_validation"||!attempt.processStartedAt||attempt.operationDeadlineAt.toISOString()!==j.operationDeadlineAt||dispatch.id!==j.dispatchId||dispatch.subjectKind!=="native_validation"||dispatch.subjectId!==j.jobId||artifact.attemptToken!==j.attemptToken||artifact.owner!==attempt.owner||artifact.role!=="probe"||artifact.committedAt)throw invalid();
   if(await db.executionArtifact.count({where:{attemptToken:j.attemptToken,role:"validated_asset",committedAt:{not:null}}})!==1)throw invalid();
   return {job,attempt,artifact,input};
  }
  async function source(){
-  const state=await identity(3),worker=await readFencedWorker(origin!);
-  if(worker.version!==j.fencedVersion||await db.executionDispatch.findFirst({where:{deploymentEpoch:{gte:3}},select:{id:true}}))throw invalid();
+  const state=await identity(snapshotEpoch),worker=await readFencedWorker(origin!);
+  if(worker.version!==j.fencedVersion||await db.executionDispatch.findFirst({where:{deploymentEpoch:{gte:snapshotEpoch}},select:{id:true}}))throw invalid();
   const facts=await original();
-  if(facts.job.deploymentEpoch!==2||facts.job.status!=="processing"||facts.job.attemptToken!==j.attemptToken||facts.job.chargedAttempts!==1||deadline-Date.now()<30000||await db.visualAsset.count({where:{userId:facts.job.ownerUserId,workspaceId:facts.job.ownerWorkspaceId,fingerprint:facts.input.fingerprint}})!==0)throw invalid();
+  if(facts.job.deploymentEpoch!==invocationEpoch||facts.job.status!=="processing"||facts.job.attemptToken!==j.attemptToken||facts.job.chargedAttempts!==1||deadline-Date.now()<30000||await db.visualAsset.count({where:{userId:facts.job.ownerUserId,workspaceId:facts.job.ownerWorkspaceId,fingerprint:facts.input.fingerprint}})!==0)throw invalid();
   return {state,worker};
  }
  const runFile=promisify(execFile);
@@ -78,28 +85,28 @@ async function main(){
    await db.$disconnect();
    await postgres("pg_dump",["--format=custom","--compress=0","--no-owner","--no-privileges",`--file=${temporary}`]);
    await link(temporary,j.snapshotPath);await unlink(temporary);
-   console.log(JSON.stringify({mode:"snapshot_captured",runId:j.runId,sourceEpoch:3,capturedAt:new Date().toISOString(),snapshotSha256:await hashSnapshotFile(j.snapshotPath)}));
+   console.log(JSON.stringify({mode:"snapshot_captured",runId:j.runId,sourceEpoch:snapshotEpoch,capturedAt:new Date().toISOString(),snapshotSha256:await hashSnapshotFile(j.snapshotPath)}));
   }else if(stage==="restore"){
    const {state,worker}=await source();
    const evidence=await validateExecutionSnapshotEvidence({proof:await readSnapshotJson(j.proofPath),snapshotSha256:await hashSnapshotFile(j.snapshotPath),localMigrationSha256:await hashSnapshotMigrations(fileURLToPath(new URL("../../../db/prisma/migrations/",import.meta.url))),worker});
-   if(evidence.proof.sourceEpoch!==3||evidence.proof.schema!=="public")throw invalid();
-   const validate=()=>db.$transaction(async tx=>{const [current]=await tx.$queryRaw<Array<typeof state>>`SELECT epoch,"admissionOpen","changedAt" FROM "ExecutionEpoch" WHERE id=1 FOR UPDATE`;if(!current)throw invalid();await assertExecutionSnapshotDatabase(tx,evidence,{...current,expectedEpoch:3,fenceAboveEpoch:3});});
+   if(evidence.proof.sourceEpoch!==snapshotEpoch||evidence.proof.schema!=="public")throw invalid();
+   const validate=()=>db.$transaction(async tx=>{const [current]=await tx.$queryRaw<Array<typeof state>>`SELECT epoch,"admissionOpen","changedAt" FROM "ExecutionEpoch" WHERE id=1 FOR UPDATE`;if(!current)throw invalid();await assertExecutionSnapshotDatabase(tx,evidence,{...current,expectedEpoch:snapshotEpoch,fenceAboveEpoch:snapshotEpoch});});
    await validate();await db.$disconnect();
    await postgres("pg_restore",["--clean","--if-exists","--single-transaction","--exit-on-error","--no-owner","--no-privileges",`--dbname=${databaseName}`,j.snapshotPath]);
    db=makeDatabase();await validate();await original();
-   console.log(JSON.stringify({mode:"attested_snapshot_restored",runId:j.runId,sourceEpoch:3,restoredAt:new Date().toISOString(),snapshotSha256:evidence.proof.snapshotSha256}));
+   console.log(JSON.stringify({mode:"attested_snapshot_restored",runId:j.runId,sourceEpoch:snapshotEpoch,restoredAt:new Date().toISOString(),snapshotSha256:evidence.proof.snapshotSha256}));
   }else{
-   await identity(4);await readRestoreResumeWorker(origin,true);
-   const {job,attempt}=await original(),report=await readSnapshotJson(j.refusalPath) as Record<string,unknown>;
-   if(report.event!=="restore_fault_refused"||report.runId!==j.runId||report.sourceEpoch!==2||report.targetEpoch!==4||report.attemptToken!==j.attemptToken||report.artifactId!==j.artifactId||report.dispatchId!==attempt.dispatchId||report.refusal!=="superseded"||report.commandSha256!==j.commandSha256||job.deploymentEpoch!==4||job.status!=="completed"||job.chargedAttempts!==2||!job.completedAt||job.completedAt.getTime()>deadline||attempt.status!=="superseded"||!attempt.revokedAt)throw invalid();
+   await identity(restoredEpoch);await readRestoreResumeWorker(origin,true);
+   const {job,attempt}=await original();candidateRestoreRefusal(await readSnapshotJson(j.refusalPath),j);
+   if(job.deploymentEpoch!==restoredEpoch||job.status!=="completed"||job.chargedAttempts!==2||!job.completedAt||job.completedAt.getTime()>deadline||attempt.status!=="superseded"||!attempt.revokedAt)throw invalid();
    const starts=await db.executionAttempt.findMany({where:{dispatch:{subjectKind:"native_validation",subjectId:j.jobId},processStartedAt:{not:null}},take:4});
-   const successor=starts.filter(row=>row.deploymentEpoch===4&&row.status==="completed");
+   const successor=starts.filter(row=>row.deploymentEpoch===restoredEpoch&&row.status==="completed");
    if(starts.length!==2||successor.length!==1||starts.some(row=>row.operationDeadlineAt.getTime()!==deadline))throw invalid();
    const binary=await db.executionArtifact.findFirstOrThrow({where:{attemptToken:successor[0]!.attemptToken,role:"validated_asset",committedAt:{not:null}}});
    const result=job.result as {assetId?:string};if(!result?.assetId)throw invalid();
    const asset=await db.visualAsset.findUniqueOrThrow({where:{id:result.assetId}});
    if(asset.storageKey!==binary.storageKey||await db.visualAsset.count({where:{userId:job.ownerUserId,workspaceId:job.ownerWorkspaceId,fingerprint:asset.fingerprint}})!==1)throw invalid();
-   console.log(JSON.stringify({mode:"qualified_restore_verified",runId:j.runId,jobId:j.jobId,sourceEpoch:2,snapshotEpoch:3,targetEpoch:4,chargedStarts:2,staleCommit:"superseded",publishedAssets:1,operationDeadlineAt:j.operationDeadlineAt,completedAt:job.completedAt.toISOString()}));
+   console.log(JSON.stringify({mode:"qualified_restore_verified",runId:j.runId,jobId:j.jobId,sourceEpoch:invocationEpoch,snapshotEpoch,targetEpoch:restoredEpoch,chargedStarts:2,staleCommit:"superseded",publishedAssets:1,operationDeadlineAt:j.operationDeadlineAt,completedAt:job.completedAt.toISOString()}));
   }
  }finally{await db.$disconnect();}
 }

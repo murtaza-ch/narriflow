@@ -11,14 +11,15 @@
     "The new source-admission restore regression selects its owned cursor range rather than consuming another suite's superseded source fixtures."
   ],
   "postgresql": {"testsPassed": 38, "assertions": 326, "suites": ["targeted-ingest-execution", "execution-snapshot", "execution-native-restore", "execution-restore"], "freshMigrations": true, "includes030NativeRestoreGuard": true},
-  "fast": {"testsPassed": 16, "assertions": 163, "suites": ["scheduler", "execution-restore-operator", "qualified-restore-candidate"]},
+  "fast": {"testsPassed": 17, "assertions": 169, "suites": ["scheduler", "execution-restore-operator", "qualified-restore-candidate"]},
   "servicesTypecheck": "passed",
   "apiTypecheck": "passed",
   "workerDryRunAndImportAudit": "passed",
   "focusedBiome": "passed",
   "operatorPlan": "qualified-restore-plan-20261101.md",
   "operatorHelper": "packages/services/scripts/gates/qualified-restore-candidate.ts",
-  "expectedCloudSequence": "old epoch2 actual start -> fenced source3 actual dump/attest/restore -> begin4 metadata -> explicit closed redispatch -> fresh signed old probe refusal + current ordinary completion",
+  "plannedEpochs": {"oldInvocation": 3, "snapshotFence": 4, "restored": 5},
+  "expectedCloudSequence": "old epoch3 actual start -> fenced source4 actual dump/attest/restore -> begin5 metadata -> explicit closed redispatch -> fresh signed old probe refusal + current ordinary completion",
   "requiredCloudAssertions": {"chargedStarts": 2, "staleCallbackAdditionalCharge": 0, "publishedCurrentAssets": 1, "originalOperationBudgetMinutes": 10, "deadlineExtensionAllowed": false},
   "notEstablishedLocally": ["actual candidate dump/restore", "actual Cloudflare metadata and closed redispatch receipts", "actual Modal hold and stale signed refusal", "actual current native completion before original deadline", "exact owned cloud fixture cleanup"]
 }
