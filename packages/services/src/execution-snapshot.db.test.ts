@@ -78,6 +78,13 @@ suite("Fenced snapshot source proof", () => {
       expect(registrations).toContain(first.reference!.dispatchId);
       const native = await startIngestTestExecution(database, lifecycle, workflow, first.job.id);
       await native.command("fail", { failureCode: "source_media_invalid", retryable: false });
+      // An existing reservation is replayable while closed, but a new manual
+      // source attempt still needs independent admission permission.
+      await database.$transaction(tx => usage.reserve(tx, { projectId: first.project.id, workspaceId: workspace.id, actorUserId: user.id, intakeKind: "upload", declaredSeconds: 60 }));
+      await database.executionEpoch.update({ where: { id: 1 }, data: { admissionOpen: false } });
+      await expect(lifecycle.retry({ projectId: first.project.id, workspaceId: workspace.id, actorUserId: user.id })).rejects.toMatchObject({ code: "execution_admission_closed" });
+      expect(await database.ingestJob.count({ where: { projectId: first.project.id } })).toBe(1);
+      await database.executionEpoch.update({ where: { id: 1 }, data: { admissionOpen: true } });
       const retry = await withExecutionDispatches(() => lifecycle.retry({ projectId: first.project.id, workspaceId: workspace.id, actorUserId: user.id }), confirm);
       const manual = await database.ingestJob.findUniqueOrThrow({ where: { id: retry.queuedJobId } });
       expect(manual).toMatchObject({ deploymentEpoch: epoch, status: "queued", attemptCount: 0 });
@@ -98,6 +105,9 @@ suite("Fenced snapshot source proof", () => {
       expect(await database.ingestJob.findUniqueOrThrow({ where: { id: afterRestore.job.id } })).toMatchObject({ deploymentEpoch: begun.deploymentEpoch, generation: 1, attemptCount: 0 });
       expect(afterRestore.reference).toMatchObject({ deploymentEpoch: begun.deploymentEpoch });
       expect(registrations).toContain(afterRestore.reference!.dispatchId);
+      await database.executionEpoch.update({ where: { id: 1 }, data: { admissionOpen: false } });
+      expect(await lifecycle.cancelQueuedOperation({ actorUserId: user.id, workspaceId: workspace.id, projectId: afterRestore.project.id, ingestJobId: afterRestore.job.id })).toBe(true);
+      expect(await database.ingestJob.findUniqueOrThrow({ where: { id: afterRestore.job.id } })).toMatchObject({ status: "cancelled", deploymentEpoch: begun.deploymentEpoch });
     } finally {
       await database.executionEpoch.update({ where: { id: 1 }, data: { admissionOpen: false } });
     }
