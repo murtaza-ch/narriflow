@@ -19,7 +19,7 @@ export const BACKEND_PACKAGES = [
   "@narriflow/api",
 ] as const;
 
-/** Dependencies the web app no longer needs: they belong to the API or the worker. */
+/** Dependencies the web app no longer needs: they belong to the API or the native executor. */
 export const BACKEND_DEPENDENCIES = [
   ...BACKEND_PACKAGES,
   "@prisma/client",
@@ -39,7 +39,7 @@ export const BACKEND_DEPENDENCIES = [
 /** Repository directories web code must never reach by relative path. */
 const BACKEND_DIRECTORIES = [
   "apps/api",
-  "apps/worker",
+  "apps/media",
   "apps/mcp",
   "packages/services",
   "packages/db",
@@ -148,10 +148,10 @@ export function checkManifest(webRoot: string, repositoryRoot: string): Violatio
  */
 const ALLOWED_VARIABLE_NAMES = new Set(["NODE_ENV", "CLERK_SECRET_KEY", "CLERK_PUBLISHABLE_KEY"]);
 
-/** Variable names the API and worker read: they must not appear in code sent to browsers. */
+/** Variable names the API and native executors read: they must not appear in code sent to browsers. */
 export function serverVariableNames(repositoryRoot: string): string[] {
   const names = new Set<string>();
-  for (const example of ["apps/api/.env.example", "apps/worker/.env.example", "packages/db/.env.example"]) {
+  for (const example of ["apps/api/.dev.vars.example", "packages/db/.env.example"]) {
     const path = join(repositoryRoot, example);
     if (!existsSync(path)) continue;
     for (const line of readFileSync(path, "utf8").split(/\r?\n/)) {
