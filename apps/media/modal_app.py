@@ -85,6 +85,22 @@ def verify_generated_image_resources() -> dict:
     return json.loads(result.stdout)
 
 
+@app.function(image=render_image, max_containers=1, timeout=900,
+              restrict_modal_access=True, **RENDER_RESOURCES)
+async def verify_render_native_fixture() -> dict:
+    """Real Function/process gate with synthetic control and storage ports."""
+    import sys
+    sys.path.insert(0, "/app/apps/media/python/tests")
+    from test_render_runtime import RenderRuntimeTests
+    fingerprint = _verify("render")["id"]
+    case = RenderRuntimeTests("test_actual_renderer_uploads_measured_bytes_then_waits_for_real_final_ack")
+    success = await case.actual_operation(fingerprint=fingerprint, enforce_runtime=True)
+    failure = await case.actual_operation(fingerprint=fingerprint, enforce_runtime=True, source_mismatch=True)
+    await case.actual_operation(fingerprint=fingerprint, enforce_runtime=True, lost_ack=True)
+    return {"profile": "render", "toolchainFingerprint": fingerprint, "success": success,
+            "permanentFailure": failure, "lostAcknowledgementRetained": True, "providerRequests": 0, "databaseRequests": 0}
+
+
 @app.function(image=lean_image, secrets=[executor_secret], timeout=600,
               restrict_modal_access=True, **LEAN_RESOURCES)
 async def asset_validation(invocation: dict) -> dict:

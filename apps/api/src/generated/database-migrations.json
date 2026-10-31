@@ -136,5 +136,6 @@
   "20261031020000_clip_preparation",
   "20261031030000_render_preparation_input",
   "20261031040000_render_stock_credits",
-  "20261031050000_billing_reconciliation"
+  "20261031050000_billing_reconciliation",
+  "20261031060000_execution_maintenance"
 ]
