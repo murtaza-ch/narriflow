@@ -18,14 +18,17 @@ class ClipPreparationRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_actual_bun_child_starts_before_conditional_source_reads_and_commits_real_outputs_in_order(self):
         await self.actual_operation()
 
-    async def actual_operation(self, *, video=False, fingerprint='a'*64, enforce_runtime=False, source_path=None, window=None, project_id=None, capture=False):
+    async def actual_operation(self, *, video=False, fingerprint='a'*64, enforce_runtime=False, source_path=None, source_sha256=None, window=None, project_id=None, capture=False):
         root=Path(__file__).resolve().parents[4]
         with tempfile.TemporaryDirectory() as directory:
             base=Path(directory);original=Path(source_path) if source_path is not None else base/('original.mp4' if video else 'original.wav');work=base/'work';work.mkdir()
             if source_path is None:
                 subprocess.run(['ffmpeg','-nostdin','-hide_banner','-loglevel','error','-y',*(['-f','lavfi','-i','testsrc2=s=320x180:r=30:d=4','-f','lavfi','-i','sine=f=330:sample_rate=48000:d=4','-c:v','libx264','-threads','1','-pix_fmt','yuv420p','-c:a','aac','-movflags','+faststart','-shortest'] if video else ['-f','lavfi','-i','sine=f=330:sample_rate=16000:d=4','-c:a','pcm_s16le']),str(original)],check=True,timeout=10)
             source_size=original.stat().st_size
-            with original.open('rb') as stream:source_sha=hashlib.file_digest(stream,'sha256').hexdigest()
+            if source_sha256 is None:
+                with original.open('rb') as stream:source_sha=hashlib.file_digest(stream,'sha256').hexdigest()
+            else:
+                self.assertRegex(source_sha256,r'^[a-f0-9]{64}$');source_sha=source_sha256
             payload=original.read_bytes() if source_path is None else None
             script="""import {readFileSync} from 'node:fs';import {productionWorkerProcessModule as worker} from './apps/media/src/worker-process.ts';import {clipPreparationBinding} from './packages/services/src/clip-preparation-input.ts';import {clipPreparationEngineHash} from './packages/services/src/clip-preparation-policy.ts';import {clipPreparationInputSchema} from './packages/validators/src/clip-preparation.ts';const raw=JSON.parse(readFileSync(0,'utf8'));raw.sourceProbe=(await worker.inspectMedia({sourcePath:raw.sourcePath,signal:new AbortController().signal,deadlineMs:10000})).sourceProbe;delete raw.sourcePath;raw.engineHash=await clipPreparationEngineHash(raw.toolchainFingerprint);raw.document=JSON.parse(readFileSync('./apps/media/src/__fixtures__/render-golden/documents.json','utf8')).cases['solo-auto-vertical'].document;const value=clipPreparationInputSchema.omit({bindingHash:true}).parse(raw);console.log(JSON.stringify({...value,bindingHash:await clipPreparationBinding(value)}));"""
             if window is not None:
