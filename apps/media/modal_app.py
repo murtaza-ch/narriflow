@@ -97,7 +97,7 @@ async def fetch_source(invocation: dict) -> dict:
     from narriflow_media.source_runtime import run_fetch_source
     from narriflow_media.fetch import SourceFetchFailure
     async def run(session, package, work):
-        if os.environ["YOUTUBE_FETCH_MODE"] != "proxy":
+        if package.command.get("kind") == "youtube_source" and os.environ["YOUTUBE_FETCH_MODE"] != "proxy":
             raise SourceFetchFailure("source_fetch_mode_forbidden")
         await run_fetch_source(session, package, work, mode="proxy", development=False,
             token_server_home=Path("/opt/youtube-tokens"), proxy_template=os.environ.get("YTDLP_PROXY_URL"))
