@@ -28,7 +28,7 @@ export interface ExecutionStorageObject {
 }
 export interface ExecutionPinSource { storageKey: string; etag: string; byteLength: number }
 export interface ExecutionMultipartAssignment extends ExecutionStorageObject { uploadId: string; partSizeBytes: number }
-export interface ExecutionPartReceipt { partNumber: number; etag: string; checksumSha256: string }
+export interface ExecutionPartReceipt { partNumber: number; etag: string; checksumSha256: string; checksumMd5: string }
 export interface ExecutionStorageGrant { url: string; headers: Record<string, string>; expiresAt: Date }
 export interface ExecutionStoredObject { key: string; etag: string; byteLength: number; contentType: string }
 export interface ExecutionGrantWindow { leaseExpiresAt: Date; operationDeadlineAt: Date }
@@ -38,8 +38,15 @@ function key(value: string) {
     !value.split("/").some(segment => segment === "" || segment === "." || segment === "..");
 }
 function etag(value: unknown): value is string { return typeof value === "string" && /^[\x21-\x7e]{1,160}$/.test(value); }
-function checksum(value: unknown): value is string {
-  return typeof value === "string" && /^[A-Za-z0-9+/]{43}=$/.test(value) && btoa(atob(value)) === value;
+function checksum(value: unknown, byteLength = 32): value is string {
+  if (typeof value !== "string" || !/^[A-Za-z0-9+/]+={0,2}$/.test(value)) return false;
+  try { const decoded = atob(value); return decoded.length === byteLength && btoa(decoded) === value; } catch { return false; }
+}
+function partMd5(value: string) {
+  const match = /^(?:"([a-f0-9]{32})"|([a-f0-9]{32}))$/.exec(value);
+  const hex = match?.[1] ?? match?.[2];
+  if (!hex) throw new ExecutionStorageError("storage_part_checksum_unavailable");
+  return btoa(hex.replace(/../g, pair => String.fromCharCode(Number.parseInt(pair, 16))));
 }
 function object(value: ExecutionStorageObject) {
   if (!key(value.storageKey) || !value.storageKey.startsWith("execution/") ||
@@ -65,7 +72,9 @@ function partBytes(value: ExecutionMultipartAssignment, number: number) {
   return Math.min(value.partSizeBytes, value.byteLength - (number - 1) * value.partSizeBytes);
 }
 
-/** Provider operations only. Callers must authorize fences and persist create/complete intent before calling. */
+/** Content-MD5 is the one proven R2 UploadPart checksum plan. SHA256 remains
+ * executor-measured evidence; neither ListParts nor HEAD independently verifies
+ * the full-object SHA256. Provider operations only. Callers must authorize fences and persist create/complete intent before calling. */
 export function createExecutionStorage(config: ExecutionStorageConfig, options: { client?: S3Client; now?: () => Date } = {}) {
   if (!/^[a-f0-9]{32}$/.test(config.accountId) || !/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(config.bucket) ||
     typeof config.accessKeyId !== "string" || !config.accessKeyId || typeof config.secretAccessKey !== "string" || !config.secretAccessKey) throw new ExecutionStorageError("storage_configuration_invalid");
@@ -109,15 +118,14 @@ export function createExecutionStorage(config: ExecutionStorageConfig, options: 
   }
   async function listParts(value: ExecutionMultipartAssignment, signal?: AbortSignal) {
     assignment(value);
-    const parts: Array<ExecutionPartReceipt & { byteLength: number }> = [];
+    const parts: Array<Omit<ExecutionPartReceipt, "checksumSha256"> & { byteLength: number }> = [];
     let marker: string | undefined;
     for (let page = 0; page < 2; page++) {
       const result = await provider(abortSignal => client.send(new ListPartsCommand({ Bucket: bucket, Key: value.storageKey,
         UploadId: value.uploadId, PartNumberMarker: marker, MaxParts: 1000 }), { abortSignal }), signal);
       for (const part of result.Parts ?? []) {
         if (!Number.isInteger(part.PartNumber) || !etag(part.ETag) || part.Size !== partBytes(value, part.PartNumber ?? 0)) throw new ExecutionStorageError("storage_parts_invalid");
-        if (!checksum(part.ChecksumSHA256)) throw new ExecutionStorageError("storage_part_checksum_unavailable");
-        parts.push({ partNumber: part.PartNumber ?? 0, etag: part.ETag, checksumSha256: part.ChecksumSHA256, byteLength: part.Size });
+        parts.push({ partNumber: part.PartNumber ?? 0, etag: part.ETag, checksumMd5: partMd5(part.ETag), byteLength: part.Size });
       }
       if (parts.length > Math.ceil(value.byteLength / value.partSizeBytes)) throw new ExecutionStorageError("storage_parts_invalid");
       if (!result.IsTruncated) return parts;
@@ -130,7 +138,7 @@ export function createExecutionStorage(config: ExecutionStorageConfig, options: 
     async create(value: ExecutionStorageObject, signal?: AbortSignal): Promise<ExecutionMultipartAssignment> {
       object(value);
       const result = await provider(abortSignal => client.send(new CreateMultipartUploadCommand({ Bucket: bucket, Key: value.storageKey,
-        ContentType: value.contentType, Metadata: metadata(value), ChecksumAlgorithm: "SHA256", ChecksumType: "COMPOSITE" }), { abortSignal }), signal);
+        ContentType: value.contentType, Metadata: metadata(value) }), { abortSignal }), signal);
       const created = { ...value, uploadId: result.UploadId ?? "", partSizeBytes: EXECUTION_PART_SIZE_BYTES };
       assignment(created);
       return created;
@@ -153,15 +161,15 @@ export function createExecutionStorage(config: ExecutionStorageConfig, options: 
       }
       throw new ExecutionStorageError("storage_parts_invalid");
     },
-    async signPart(value: ExecutionMultipartAssignment, input: ExecutionGrantWindow & { partNumber: number; byteLength: number; checksumSha256: string }): Promise<ExecutionStorageGrant> {
+    async signPart(value: ExecutionMultipartAssignment, input: ExecutionGrantWindow & { partNumber: number; byteLength: number; checksumSha256: string; checksumMd5: string }): Promise<ExecutionStorageGrant> {
       assignment(value);
-      if (input.byteLength !== partBytes(value, input.partNumber) || !checksum(input.checksumSha256)) throw new ExecutionStorageError("storage_parts_invalid");
+      if (input.byteLength !== partBytes(value, input.partNumber) || !checksum(input.checksumSha256) || !checksum(input.checksumMd5, 16)) throw new ExecutionStorageError("storage_parts_invalid");
       const ttl = expiry(input);
       const url = await provider(() => getSignedUrl(client, new UploadPartCommand({ Bucket: bucket, Key: value.storageKey, UploadId: value.uploadId,
-        PartNumber: input.partNumber, ContentLength: input.byteLength, ChecksumSHA256: input.checksumSha256 }), {
-        expiresIn: ttl.seconds, signingDate: ttl.issuedAt, signableHeaders: new Set(["content-length"]), unhoistableHeaders: new Set(["x-amz-checksum-sha256"]),
+        PartNumber: input.partNumber, ContentLength: input.byteLength, ContentMD5: input.checksumMd5 }), {
+        expiresIn: ttl.seconds, signingDate: ttl.issuedAt, signableHeaders: new Set(["content-length", "content-md5"]),
       }));
-      return { url, headers: { "Content-Length": String(input.byteLength), "x-amz-checksum-sha256": input.checksumSha256 }, expiresAt: ttl.expiresAt };
+      return { url, headers: { "Content-Length": String(input.byteLength), "Content-MD5": input.checksumMd5 }, expiresAt: ttl.expiresAt };
     },
     async signSourceRange(value: ExecutionMultipartAssignment, frozen: ExecutionPinSource,
       input: ExecutionGrantWindow & { start: number; end: number }): Promise<ExecutionStorageGrant> {
@@ -178,13 +186,12 @@ export function createExecutionStorage(config: ExecutionStorageConfig, options: 
     async complete(value: ExecutionMultipartAssignment, receipts: readonly ExecutionPartReceipt[], signal?: AbortSignal) {
       assignment(value);
       const count = Math.ceil(value.byteLength / value.partSizeBytes);
-      if (receipts.length !== count || receipts.some((part, index) => part.partNumber !== index + 1 || !etag(part.etag) || !checksum(part.checksumSha256))) throw new ExecutionStorageError("storage_parts_invalid");
+      if (receipts.length !== count || receipts.some((part, index) => part.partNumber !== index + 1 || !etag(part.etag) || !checksum(part.checksumSha256) || !checksum(part.checksumMd5, 16))) throw new ExecutionStorageError("storage_parts_invalid");
       const inventory = await listParts(value, signal);
       if (inventory.length !== count || inventory.some((part, index) => part.partNumber !== receipts[index]?.partNumber ||
-        part.etag !== receipts[index]?.etag || part.checksumSha256 !== receipts[index]?.checksumSha256)) throw new ExecutionStorageError("storage_parts_invalid");
+        part.etag !== receipts[index]?.etag || part.checksumMd5 !== receipts[index]?.checksumMd5)) throw new ExecutionStorageError("storage_parts_invalid");
       await provider(abortSignal => client.send(new CompleteMultipartUploadCommand({ Bucket: bucket, Key: value.storageKey, UploadId: value.uploadId,
-        MultipartUpload: { Parts: receipts.map(part => ({ PartNumber: part.partNumber, ETag: part.etag, ChecksumSHA256: part.checksumSha256 })) },
-        ChecksumType: "COMPOSITE" }), { abortSignal }), signal, true);
+        MultipartUpload: { Parts: receipts.map(part => ({ PartNumber: part.partNumber, ETag: part.etag })) } }), { abortSignal }), signal, true);
       const target = await head(value, signal);
       if (!target) throw new ExecutionStorageError("storage_completion_unconfirmed");
       return target;

@@ -13,14 +13,16 @@ test("executor UploadPart grants bind length, checksum and the current lease", a
   const now = new Date("2026-10-31T00:00:00.000Z");
   const storage = createExecutionStorage(config, { now: () => now });
   const grant = await storage.signPart(assignment, { partNumber: 1, byteLength: 16 * 1024 * 1024,
-    checksumSha256: "ungWv48Bz+pBQUDeXa4iI7ADYaOWF3qctBD/YfIAFa0=",
+    checksumSha256: "ungWv48Bz+pBQUDeXa4iI7ADYaOWF3qctBD/YfIAFa0=", checksumMd5: "kAFQmDzST7DWlj99KOF/cg==",
     leaseExpiresAt: new Date(now.getTime() + 90_000), operationDeadlineAt: new Date(now.getTime() + 60_000) });
   const url = new URL(grant.url);
   expect(url.searchParams.get("uploadId")).toBe("assigned-upload");
   expect(url.searchParams.get("partNumber")).toBe("1");
   expect(url.searchParams.get("X-Amz-Expires")).toBe("60");
-  expect(url.searchParams.get("X-Amz-SignedHeaders")).toBe("content-length;host;x-amz-checksum-sha256");
-  expect(grant.headers).toEqual({ "Content-Length": "16777216", "x-amz-checksum-sha256": "ungWv48Bz+pBQUDeXa4iI7ADYaOWF3qctBD/YfIAFa0=" });
+  expect(url.searchParams.has("x-amz-checksum-sha256")).toBe(false);
+  expect(url.searchParams.has("x-amz-sdk-checksum-algorithm")).toBe(false);
+  expect(url.searchParams.get("X-Amz-SignedHeaders")).toBe("content-length;content-md5;host");
+  expect(grant.headers).toEqual({ "Content-Length": "16777216", "Content-MD5": "kAFQmDzST7DWlj99KOF/cg==" });
   storage.close();
 });
 
@@ -35,7 +37,7 @@ test("pin grants sign the exact original ETag and bounded range, and expired or 
   await expect(storage.signSourceRange(assignment, { storageKey: "uploads/verified/source", etag: '"original"', byteLength: object.byteLength },
     { ...window, start: 1, end: 100 })).rejects.toMatchObject({ code: "storage_parts_invalid" });
   await expect(storage.signPart(assignment, { ...window, leaseExpiresAt: now, partNumber: 1, byteLength: 16 * 1024 * 1024,
-    checksumSha256: "ungWv48Bz+pBQUDeXa4iI7ADYaOWF3qctBD/YfIAFa0=" })).rejects.toMatchObject({ code: "storage_grant_expired" });
+    checksumSha256: "ungWv48Bz+pBQUDeXa4iI7ADYaOWF3qctBD/YfIAFa0=", checksumMd5: "kAFQmDzST7DWlj99KOF/cg==" })).rejects.toMatchObject({ code: "storage_grant_expired" });
   storage.close();
 });
 
@@ -55,7 +57,8 @@ function fixtureClient(handle: (request: WireRequest) => { status?: number; head
 const smallObject = { ...object, byteLength: 3 };
 const smallAssignment = { ...assignment, byteLength: 3 };
 const partChecksum = "ungWv48Bz+pBQUDeXa4iI7ADYaOWF3qctBD/YfIAFa0=";
-const partInventory = `<ListPartsResult><Part><PartNumber>1</PartNumber><ETag>part-etag</ETag><Size>3</Size><ChecksumSHA256>${partChecksum}</ChecksumSHA256></Part><IsTruncated>false</IsTruncated></ListPartsResult>`;
+const partMd5 = "kAFQmDzST7DWlj99KOF/cg==";
+const partInventory = `<ListPartsResult><Part><PartNumber>1</PartNumber><ETag>900150983cd24fb0d6963f7d28e17f72</ETag><Size>3</Size></Part><IsTruncated>false</IsTruncated></ListPartsResult>`;
 const targetHeaders = { "content-length": "3", "content-type": "video/mp4", etag: "final-etag",
   "x-amz-meta-execution-artifact-id": smallObject.artifactId, "x-amz-meta-execution-binding-hash": smallObject.bindingHash };
 
@@ -72,13 +75,13 @@ test("concrete S3 control creates checksum MPU, verifies every listed receipt, c
   const storage = createExecutionStorage(config, { client });
   const created = await storage.create(smallObject);
   expect(created).toEqual(smallAssignment);
-  expect(requests[0]?.headers["x-amz-checksum-algorithm"]).toBe("SHA256");
-  expect(requests[0]?.headers["x-amz-checksum-type"]).toBe("COMPOSITE");
-  expect(await storage.complete(created, [{ partNumber: 1, etag: "part-etag", checksumSha256: partChecksum }])).toEqual({
+  expect(requests[0]?.headers["x-amz-checksum-algorithm"]).toBeUndefined();
+  expect(requests[0]?.headers["x-amz-checksum-type"]).toBeUndefined();
+  expect(await storage.complete(created, [{ partNumber: 1, etag: "900150983cd24fb0d6963f7d28e17f72", checksumSha256: partChecksum, checksumMd5: partMd5 }])).toEqual({
     key: smallObject.storageKey, etag: "final-etag", byteLength: 3, contentType: "video/mp4",
   });
   expect(requests.map(request => request.method)).toEqual(["POST", "GET", "POST", "HEAD"]);
-  expect(String(requests[2]?.body)).toContain(`<ChecksumSHA256>${partChecksum}</ChecksumSHA256>`);
+  expect(String(requests[2]?.body)).not.toContain("ChecksumSHA256");
   client.destroy();
 });
 
@@ -87,11 +90,11 @@ test("missing provider part checksums refuse completion and embedded HTTP 200 er
     const methods: string[] = [];
     const client = fixtureClient(request => {
       methods.push(request.method);
-      if (request.method === "GET") return { xml: missingChecksum ? partInventory.replace(`<ChecksumSHA256>${partChecksum}</ChecksumSHA256>`, "") : partInventory };
+      if (request.method === "GET") return { xml: missingChecksum ? partInventory.replace("900150983cd24fb0d6963f7d28e17f72", "opaque-provider-etag") : partInventory };
       return { xml: "<Error><Code>InvalidPart</Code><Message>private storage diagnostic</Message></Error>" };
     });
     const storage = createExecutionStorage(config, { client });
-    await expect(storage.complete(smallAssignment, [{ partNumber: 1, etag: "part-etag", checksumSha256: partChecksum }])).rejects.toMatchObject({
+    await expect(storage.complete(smallAssignment, [{ partNumber: 1, etag: "900150983cd24fb0d6963f7d28e17f72", checksumSha256: partChecksum, checksumMd5: partMd5 }])).rejects.toMatchObject({
       code: missingChecksum ? "storage_part_checksum_unavailable" : "storage_completion_unconfirmed",
     });
     expect(methods).toEqual(missingChecksum ? ["GET"] : ["GET", "POST"]);
@@ -138,7 +141,7 @@ test("abort suppresses only exact NoSuchUpload and changed part receipts never c
   await storage.abort(smallAssignment);
   missing = "NoSuchKey";
   await expect(storage.abort(smallAssignment)).rejects.toMatchObject({ code: "storage_object_missing" });
-  await expect(storage.complete(smallAssignment, [{ partNumber: 1, etag: "changed", checksumSha256: partChecksum }])).rejects.toMatchObject({ code: "storage_parts_invalid" });
+  await expect(storage.complete(smallAssignment, [{ partNumber: 1, etag: "changed", checksumSha256: partChecksum, checksumMd5: partMd5 }])).rejects.toMatchObject({ code: "storage_parts_invalid" });
   expect(methods).toEqual(["DELETE", "DELETE", "GET"]);
   client.destroy();
 });
