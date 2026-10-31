@@ -11,6 +11,9 @@
     "./clip-preparation-runtime": "./src/clip-preparation-runtime.ts",
     "./private-json-storage": "./src/private-json-storage.ts",
     "./execution-admission": "./src/execution-admission.ts",
+    "./execution-maintenance": "./src/execution-maintenance.ts",
+    "./execution-maintenance-pages": "./src/execution-maintenance-pages.ts",
+    "./execution-restore": "./src/execution-restore.ts",
     "./ingest-source-execution": {
       "types": "./src/ingest-source-execution.ts",
       "default": "./src/ingest-source-execution.ts"

@@ -3374,7 +3374,7 @@ model McpTask {
   expiresAt               DateTime
 
   @@unique([ownerUserId, callerId, toolName, domainKind, domainId])
-  @@index([expiresAt])
+  @@index([expiresAt, id])
   @@index([workspaceId, ownerUserId])
 }
 

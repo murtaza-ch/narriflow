@@ -716,6 +716,9 @@ export { RenderGroupExecutionService, createRenderGroupExecution, type RenderGro
 export { createRenderInputSnapshot, type RenderInputSnapshotDependencies } from "./render-input-snapshot";
 export { encodeRenderExecutionInput, decodeRenderExecutionInput } from "./render-execution-input";
 export * from "./execution-admission";
+export * from "./execution-maintenance";
+export * from "./execution-maintenance-pages";
+export * from "./execution-restore";
 export { getClipPreparationService, getPrivateJsonStorage } from "./clip-preparation-runtime";
 export { createPrivateJsonStorage, type PrivateJsonStorage, type PrivateJsonObject } from "./private-json-storage";
 
