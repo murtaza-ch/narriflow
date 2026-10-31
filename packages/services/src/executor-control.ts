@@ -1,6 +1,6 @@
 import type { ExecutionArtifact as ArtifactRow, ExecutionAttempt as AttemptRow, ExecutionDispatch as DispatchRow, Prisma, PrismaClient } from "@prisma/client";
 import {
-  executionCommandSchema, executionDispositionSchema, executionDeadlineSchema,
+  executionCommandSchema, executionDispositionSchema, executionDeadlineSchema, executorFenceSchema,
   type ExecutionCommand, type ExecutionDispatchReference, type ExecutionDisposition, type ExecutionSubjectKind,
 } from "@narriflow/validators/execution";
 import type { VerifiedExecutionRequest } from "./execution-signature";
@@ -11,6 +11,14 @@ type Attempt = AttemptRow & { dispatch: DispatchRow };
 type FailureCode = "invalid_reference" | "replay_conflict" | "authority_lost" | "artifact_invalid" | "storage_unavailable" | "scheduler_unavailable" | "epoch_unavailable" | "keys_unavailable" | "invalid_audience";
 export class ExecutorControlError extends Error {
   constructor(readonly code: FailureCode) { super(code); this.name = "ExecutorControlError"; }
+}
+
+export interface ExecutorLiveAuthority {
+  fence: { reference: ExecutionDispatchReference; attemptToken: string; owner: string };
+  functionName: string;
+  leaseExpiresAt: Date;
+  operationDeadlineAt: Date;
+  input: { storageKey: string; etag: string; byteLength: bigint } | null;
 }
 
 export interface ExecutorArtifactHead {
@@ -223,6 +231,27 @@ export function createExecutorControl<TRef, TArtifact extends ExecutorArtifactCo
     });
     return finish(result);
   }
+  /** Read fresh ownership before preparing a work package or scoped storage
+   * grant. The caller rechecks after external I/O and never caches this result. */
+  async function authorize(fenceInput: unknown, requireStarted = true): Promise<ExecutorLiveAuthority> {
+    const fence = executorFenceSchema.parse(fenceInput);
+    return db.$transaction(async tx => {
+      const [epoch] = await tx.$queryRaw<Array<{ epoch: number }>>`SELECT "epoch" FROM "ExecutionEpoch" WHERE "id"=1 FOR SHARE`;
+      if (!epoch || epoch.epoch !== fence.reference.deploymentEpoch) throw new ExecutorControlError("authority_lost");
+      const locked = await options.domain.lockExecution(tx, fence.reference, fence.attemptToken);
+      await tx.$queryRaw`SELECT "attemptToken" FROM "ExecutionAttempt" WHERE "attemptToken"=${fence.attemptToken}::uuid FOR UPDATE`;
+      const attempt = await tx.executionAttempt.findUnique({ where: { attemptToken: fence.attemptToken }, include: { dispatch: true } });
+      assertReference(attempt, fence.reference, options.subjectKind);
+      const now = await clock(tx);
+      if (locked.kind === "terminal" || ended(attempt) || attempt.revokedAt || attempt.owner !== fence.owner ||
+        !attempt.leaseExpiresAt || attempt.leaseExpiresAt <= now || attempt.operationDeadlineAt <= now ||
+        (requireStarted && (!attempt.processStartedAt || attempt.status !== "running"))) throw new ExecutorControlError("authority_lost");
+      return { fence, functionName: attempt.functionName, leaseExpiresAt: attempt.leaseExpiresAt, operationDeadlineAt: attempt.operationDeadlineAt,
+        input: attempt.inputStorageKey && attempt.inputEtag && attempt.inputByteLength !== null
+          ? { storageKey: attempt.inputStorageKey, etag: attempt.inputEtag, byteLength: attempt.inputByteLength } : null };
+    });
+  }
+
   /** A scheduler observation can revoke authority, never grant or extend it.
    * Mutating outcomes and their wakes are replayable; a sleep is always re-read. */
   async function expireDeadline(input: { deadline: unknown; deliveryId: string }): Promise<ExecutorExpiryResult> {
@@ -283,7 +312,7 @@ export function createExecutorControl<TRef, TArtifact extends ExecutorArtifactCo
     }
     return result.outcome.kind === "sleep" ? result.outcome : { kind: result.outcome.kind };
   }
-  return { execute, expireDeadline };
+  return { execute, expireDeadline, authorize };
 }
 
 async function clock(tx: Tx) {

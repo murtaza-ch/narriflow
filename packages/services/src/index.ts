@@ -654,3 +654,5 @@ export { createPendingBusinessWorkspaceService, type PendingBusinessWorkspaceDep
 export * from "./executor-control";
 export * from "./executor-domain-control";
 export * from "./execution-dispatch";
+
+export * from "./execution-storage";
