@@ -6,6 +6,9 @@ export { createTranscriptionProbe, type SourceLanguageProbeDescriptor, type Tran
 export { buildCaptionOnlyTranscriptSlice, buildMarketCompliantClipCandidates, buildUserPrompt, CLIP_DURATION_POLICY, formatTimestamp, formatTranscriptForLlm,
   normalizeLlmClip, resolveCandidateCountTarget, resolveClipCountTarget, resolveDefaultClipCountTarget } from "./clip-selection-policy";
 export { createClipSelectionProvider, classifyOpenAiHttpFailure, type ClipSelectionProviderResult } from "./clip-selection-provider";
+export { buildClipSelectionPlan, finalizeClipSelectionCandidates, type ClipSelectionPlanInput, type ParallelClipSelectionPlan } from "./clip-selection-plan";
+export { createClipSelectionLifecycle, clipSelectionTranscriptHash, clipSelectionWindowResultKey, type ClipSelectionWindowAttempt,
+  type ClipSelectionWindowAdmission, type ClipSelectionWindowSettlement, type ClipSelectionObjectReference } from "./clip-selection-window";
 export {
 	boundedExpectedDomainFailureDetails,
 	ExpectedDomainFailureError,

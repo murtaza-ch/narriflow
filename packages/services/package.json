@@ -537,6 +537,14 @@
     "./generated-media-validation": {
       "types": "./src/generated-media-validation.ts",
       "default": "./src/generated-media-validation.ts"
+    },
+    "./clip-selection-plan": {
+      "types": "./src/clip-selection-plan.ts",
+      "default": "./src/clip-selection-plan.ts"
+    },
+    "./clip-selection-window": {
+      "types": "./src/clip-selection-window.ts",
+      "default": "./src/clip-selection-window.ts"
     }
   },
   "scripts": {
