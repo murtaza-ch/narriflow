@@ -18,12 +18,35 @@ export function buildDubTranscriptText(input: { transcriptSlice: unknown; hookTe
   if (text) return text;
   return [input.hookText, input.payoffText].filter((value): value is string => Boolean(value?.trim())).join(" ").replace(/\s+/g, " ").trim();
 }
-function canonical(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
-  if (value !== null && typeof value === "object") return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonical(Reflect.get(value, key))}`).join(",")}}`;
+export function canonicalDubbingJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalDubbingJson).join(",")}]`;
+  if (value !== null && typeof value === "object") return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonicalDubbingJson(Reflect.get(value, key))}`).join(",")}}`;
   return JSON.stringify(value);
 }
 export async function frozenDubbingRequestHash(value: FrozenDubbingRequest) {
-  const bytes = new TextEncoder().encode(canonical(frozenDubbingRequestSchema.parse(value)));
+  const bytes = new TextEncoder().encode(canonicalDubbingJson(frozenDubbingRequestSchema.parse(value)));
   return Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)), byte => byte.toString(16).padStart(2, "0")).join("");
+}
+
+export function dubTranslationRequestBody(input: Pick<FrozenDubbingRequest, "translationModel" | "script" | "sourceLanguageCode" | "targetLanguageCode">) {
+  return { model: input.translationModel, input: [
+    { role: "system", content: "Translate creator video transcripts for natural voiceover dubbing. Preserve meaning, names, numbers, and tone. Return only the translated script with no markdown or commentary." },
+    { role: "user", content: `Source language: ${input.sourceLanguageCode ?? "auto"}\nTarget language: ${dubLanguageLabel(input.targetLanguageCode)} (${input.targetLanguageCode})\n\nSCRIPT:\n${input.script}` },
+  ] };
+}
+export function dubSpeechRequestBody(input: Pick<FrozenDubbingRequest, "model" | "voice">, text: string) {
+  return { model: input.model, voice: input.voice, input: text, response_format: "mp3" };
+}
+export const DUBBING_STAGE_OUTPUTS = {
+  translation_intent: { role: "probe", contentType: "application/json", maxBytes: 65536 },
+  translation_result: { role: "probe", contentType: "application/json", maxBytes: 1024 ** 2 },
+  speech_intent: { role: "probe", contentType: "application/json", maxBytes: 65536 },
+  audio: { role: "dub_mix", contentType: "audio/mpeg", maxBytes: 64 * 1024 ** 2 },
+  video: { role: "dub_mix", contentType: "video/mp4", maxBytes: 10 * 1024 ** 3 },
+  final_result: { role: "probe", contentType: "application/json", maxBytes: 65536 },
+} as const;
+export type DubbingArtifactStage = keyof typeof DUBBING_STAGE_OUTPUTS;
+export async function dubbingArtifactBindingHash(requestHash: string, stage: DubbingArtifactStage) {
+  const value = JSON.stringify({ version: 1, kind: "dubbing_artifact", requestHash, stage });
+  return Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value))), byte => byte.toString(16).padStart(2, "0")).join("");
 }

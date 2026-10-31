@@ -285,8 +285,9 @@ export class DubbingService {
             targetLanguageCode: parsed.targetLanguageCode, voice: parsed.voice, aspectRatio: parsed.aspectRatio, provider: "openai", model, translationModel });
           const [clock] = await tx.$queryRaw<Array<{ now: Date }>>`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS now`;
           if (!clock) throw Error("dubbing_clock_unavailable");
+          const acceptedRun = await tx.workflowRun.findUniqueOrThrow({ where: { id: run.id }, select: { deploymentEpoch: true } });
           const dub = await tx.clipDub.create({ data: { id, projectId, clipId: source.id, aspectRatio: aspectRatioDb, targetLanguageCode: parsed.targetLanguageCode, voice: parsed.voice,
-            model, status: "queued", workflowRunId: run.id, frozenRequest: request, requestHash: await frozenDubbingRequestHash(request), createdAt: clock.now, operationDeadlineAt: new Date(clock.now.getTime() + 45 * 60_000) } });
+            model, status: "queued", workflowRunId: run.id, frozenRequest: request, requestHash: await frozenDubbingRequestHash(request), createdAt: clock.now, operationDeadlineAt: new Date(clock.now.getTime() + 45 * 60_000), deploymentEpoch: acceptedRun.deploymentEpoch } });
           await reserveGenerationUsage(tx, { kind: "dub", jobId: dub.id, workspaceId: scope.workspaceId, actorUserId: scope.actorUserId,
             pricingTier: workspace.pricingTier, now: clock.now, attached: true });
           return dub;

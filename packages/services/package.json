@@ -657,7 +657,11 @@
     "./execution-source-recovery-pages": "./src/execution-source-recovery-pages.ts",
     "./execution-selection-restore": "./src/execution-selection-restore.ts",
     "./execution-preparation-restore": "./src/execution-preparation-restore.ts",
-    "./execution-recovery-locks": "./src/execution-recovery-locks.ts"
+    "./execution-recovery-locks": "./src/execution-recovery-locks.ts",
+    "./dubbing-input": "./src/dubbing-input.ts",
+    "./dubbing-execution": "./src/dubbing-execution.ts",
+    "./dubbing-execution-runtime": "./src/dubbing-execution-runtime.ts",
+    "./dubbing-recovery": "./src/dubbing-recovery.ts"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
