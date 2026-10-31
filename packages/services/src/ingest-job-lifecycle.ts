@@ -108,7 +108,7 @@ export interface IngestJobLifecycleDependencies {
   workflow: Pick<WorkflowRunLifecycle, "admitWithHandoff">;
   usage: Pick<ProcessingUsage, "reserve" | "settle" | "release">;
   requireRetryActor(actorUserId: string, workspaceId: string): Promise<unknown>;
-  redisRequired?: boolean;
+  progressRequired?: boolean;
   sourceBucket?: string;
   now?: () => Date;
   leaseMs?: number;
@@ -208,7 +208,7 @@ export class IngestJobLifecycle {
         emittedAt: now,
         dedupeKey: `ingest:${input.id}:${input.transition}`,
         payload: payload as unknown as Prisma.InputJsonValue,
-        redisRequired: this.deps.redisRequired ?? false,
+        progressRequired: this.deps.progressRequired ?? false,
         notificationRequired: input.notify ?? false,
         availableAt: now,
         nextDeliveryAt: now,

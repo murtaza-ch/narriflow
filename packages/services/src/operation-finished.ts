@@ -199,7 +199,7 @@ async function queueCaptionedGenerationFinished(tx: Tx, input: { projectId: stri
         items: input.derived.items.map((item) => ({ id: item.id, state: item.state === "working" ? "failed" : item.state, failureCode: item.failureCode })),
       },
     // A record for history: nothing is owed to Redis or analytics.
-    }, { redisRequired: false, analyticsEnabled: false });
+    }, { progressRequired: false, analyticsEnabled: false });
   }
   await queueFinishedGenerations(tx, { id: detection.id, projectId: input.projectId });
 }
