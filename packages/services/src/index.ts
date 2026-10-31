@@ -709,3 +709,5 @@ export { clipPreparationBinding, encodeClipPreparationInput, decodeClipPreparati
 export { clipPreparationEngineHash, CLIP_PREPARATION_POLICY, clipPreparationTiming, clipPreparationPreviewWindow } from "./clip-preparation-policy";
 export * from "./clip-preparation";
 export * from "./clip-preparation-execution";
+export { getClipPreparationService, getPrivateJsonStorage } from "./clip-preparation-runtime";
+export { createPrivateJsonStorage, type PrivateJsonStorage, type PrivateJsonObject } from "./private-json-storage";
