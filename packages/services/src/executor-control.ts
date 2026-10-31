@@ -215,7 +215,9 @@ export function createExecutorControl<TRef, TArtifact extends ExecutorArtifactCo
       }
       if (command.action === "commit-artifact") {
         if (!prepared || !attempt.processStartedAt) throw new ExecutorControlError("artifact_invalid");
-        track(await options.domain.commitArtifactExecution(tx, locked.ref, context, prepared));
+        const mutation = await options.domain.commitArtifactExecution(tx, locked.ref, context, prepared);
+        track(mutation);
+        if (mutation?.renderGroup && reference.subject.kind !== "render_group") throw new ExecutorControlError("invalid_reference");
         await tx.executionArtifact.update({ where: { id: prepared.artifactId }, data: { committedAt: now, byteLength: prepared.byteLength, etag: prepared.etag, checksumSha256: prepared.sha256 } });
         const outcome = await options.domain.lockExecution(tx, reference, attemptToken);
         if (outcome.kind === "terminal") {
@@ -223,7 +225,8 @@ export function createExecutorControl<TRef, TArtifact extends ExecutorArtifactCo
           const status = outcome.disposition.disposition;
           await tx.executionAttempt.update({ where: { attemptToken }, data: { status: ["completed", "cancelled", "expired", "superseded"].includes(status) ? status : "failed", finishedAt: now } });
         }
-        return record({ disposition: "committed", artifactId: prepared.artifactId }, now);
+        return record({ disposition: "committed", artifactId: prepared.artifactId,
+          ...(mutation?.renderGroup ? { renderGroup: mutation.renderGroup } : {}) }, now);
       }
       if (command.action === "publication-command") {
         if (reference.subject.kind !== "social_publication" || attempt.functionName !== "publication" || !attempt.processStartedAt || !options.domain.publicationCommandExecution) throw new ExecutorControlError("authority_lost");

@@ -125,8 +125,25 @@ def _disposition(value: object):
         'retry_due': {'dueAt'}, 'completed': set(), 'failed': {'failureCode'}, 'cancelled': set(),
         'expired': set(), 'superseded': set(), 'publication_recorded': {'result'},
     }
-    if not isinstance(kind, str) or kind not in fields or set(value) != fields[kind] | {'disposition'}:
+    optional = {'renderGroup'} if kind == 'committed' else set()
+    if not isinstance(kind, str) or kind not in fields or not fields[kind] | {'disposition'} <= set(value) <= fields[kind] | {'disposition'} | optional:
         raise ExecutionControlError('execution_response_invalid')
+    if 'renderGroup' in value:
+        group = value['renderGroup']
+        if (not isinstance(group, dict) or set(group) != {'status', 'requested', 'succeeded', 'failed', 'superseded'} or
+                group['status'] not in {'queued', 'completed', 'partial', 'failed', 'superseded'} or
+                any(type(group[name]) is not int or not 0 <= group[name] <= 4 for name in ('requested', 'succeeded', 'failed', 'superseded')) or
+                group['requested'] < 1):
+            raise ExecutionControlError('execution_response_invalid')
+        settled = group['succeeded'] + group['failed'] + group['superseded']
+        consistent = (settled < group['requested'] if group['status'] == 'queued' else
+            settled == group['requested'] and (
+                group['superseded'] == group['requested'] if group['status'] == 'superseded' else
+                group['succeeded'] > 0 and group['failed'] == 0 if group['status'] == 'completed' else
+                group['succeeded'] > 0 and group['failed'] > 0 if group['status'] == 'partial' else
+                group['failed'] > 0 and group['succeeded'] == 0))
+        if not consistent:
+            raise ExecutionControlError('execution_response_invalid')
     for name in ('serverTime', 'leaseExpiresAt', 'operationDeadlineAt', 'dueAt'):
         if name in value and value[name] is not None:
             _instant(value[name])

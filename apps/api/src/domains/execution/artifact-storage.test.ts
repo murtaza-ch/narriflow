@@ -52,3 +52,13 @@ test("only assigned outbound receipts may use the bounded four MiB JSON reader",
   await expect(port.readJson({ ...receipt, role: "probe" }, 4194304)).rejects.toMatchObject({ code: "artifact_invalid" });
   await expect(port.readJson(receipt, 4194305)).rejects.toMatchObject({ code: "artifact_invalid" });
 });
+
+test("layout evidence may carry the bounded one MiB preparation manifest", async () => {
+  const data = new TextEncoder().encode(JSON.stringify({ observations: "e".repeat(100000) }));
+  const digest = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", data)), byte => byte.toString(16).padStart(2,"0")).join("");
+  const port = createAssignedArtifactStorage({ get: async () => ({ ...metadata, size: data.length, body: new Blob([data]).stream() }) } as unknown as R2Bucket);
+  const manifest = { ...artifact, role: "layout_evidence" as const, byteLength: BigInt(data.length), sha256: digest };
+  expect((await port.readJson(manifest, 1048576) as { observations: string }).observations.length).toBe(100000);
+  await expect(port.readJson(manifest, 1048577)).rejects.toMatchObject({ code: "artifact_invalid" });
+  await expect(port.readJson({ ...manifest, role: "probe" }, 1048576)).rejects.toMatchObject({ code: "artifact_invalid" });
+});

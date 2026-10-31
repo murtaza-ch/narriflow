@@ -6,7 +6,7 @@
   "compatibility_date": "2026-10-30",
   "compatibility_flags": ["nodejs_compat", "disallow_importable_env"],
   "alias": { "@aws-sdk/xml-builder": "@aws-sdk/xml-builder/dist-cjs/index.js" },
-  "workers_dev": false,
+  "workers_dev": true,
   "preview_urls": false,
   "limits": { "cpu_ms": 30000 },
   "routes": [],
@@ -21,12 +21,12 @@
   "version_metadata": { "binding": "CF_VERSION_METADATA" },
   "dev": { "port": 4000 },
   "hyperdrive": [
-    { "binding": "HYPERDRIVE", "id": "1eab68bf4a3d41a996ad13d9ec03265a" }
+    { "binding": "HYPERDRIVE", "id": "89ce779c45464717afa3398590d531c5" }
   ],
   "r2_buckets": [
-    { "binding": "MEDIA_BUCKET", "bucket_name": "narriflow-cutover-gates" }
+    { "binding": "MEDIA_BUCKET", "bucket_name": "narriflow-dev" }
   ],
   // Admission stays closed until the domain handler registry and acceptance
   // gates integrate. Unknown Workflow subjects fail explicitly.
-  "vars": { "ADMISSION_STATE": "closed", "APP_ENV": "staging" }
+  "vars": { "ADMISSION_STATE": "closed", "APP_ENV": "development" }
 }

@@ -20,6 +20,23 @@ from narriflow_media.signing import verify_execution_request
 
 
 class SignedControlTests(unittest.TestCase):
+    def test_committed_group_acknowledgements_preserve_only_bounded_consistent_outcomes(self):
+        artifact_id = '477b7dc3-0584-44db-8ae7-e9269e8d37af'
+        def reply(facts):
+            value = {'disposition': 'committed', 'artifactId': artifact_id, 'renderGroup': facts}
+            client = ExecutionControlClient(origin='https://api.example', key_id='dev', key=b'k' * 32,
+                transport=lambda *_args: ControlResponse(200, {'X-Execution-Server-Time': '2033-05-18T03:33:20.000Z'}, json.dumps(value).encode()))
+            return client.command({'action': 'commit-artifact'}).disposition
+        queued = {'status': 'queued', 'requested': 3, 'succeeded': 1, 'failed': 1, 'superseded': 0}
+        partial = {**queued, 'status': 'partial', 'succeeded': 2}
+        self.assertEqual(reply(queued)['renderGroup'], queued)
+        self.assertEqual(reply(partial)['renderGroup'], partial)
+        for invalid in [{**partial, 'requested': 5}, {**partial, 'succeeded': True},
+                        {**partial, 'failed': 0}, {**queued, 'status': 'completed'},
+                        {**partial, 'accessToken': 'private'}, {**partial, 'status': 'unknown'}]:
+            with self.assertRaises(ExecutionControlError):
+                reply(invalid)
+
     @unittest.skipUnless(shutil.which('openssl'),'TLS fixture certificate requires openssl')
     def test_https_deadline_interrupts_a_stalled_body_when_the_server_closes_connections(self):
         release=threading.Event()

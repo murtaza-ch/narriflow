@@ -18,7 +18,8 @@ export function createAssignedArtifactStorage(bucket: R2Bucket) {
         ...(object.checksums.sha256 ? { sha256: hex(object.checksums.sha256) } : {}) };
     },
     async readJson(artifact: ExecutorArtifactCommit, maxBytes: number): Promise<unknown> {
-      if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > (artifact.role === "outbound_receipt" ? 4 * 1024 * 1024 : 65536) || artifact.byteLength > BigInt(maxBytes) || artifact.contentType !== "application/json") return invalid();
+      const roleLimit = artifact.role === "outbound_receipt" ? 4 * 1024 * 1024 : artifact.role === "layout_evidence" ? 1024 * 1024 : 65536;
+      if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > roleLimit || artifact.byteLength > BigInt(maxBytes) || artifact.contentType !== "application/json") return invalid();
       const object = await bucket.get(artifact.storageKey, { onlyIf: new Headers({ "If-Match": artifact.etag }), range: { offset: 0, length: maxBytes + 1 } });
       if (!object || !("body" in object)) return invalid();
       if (object.key !== artifact.storageKey || object.httpEtag !== artifact.etag || BigInt(object.size) !== artifact.byteLength ||
