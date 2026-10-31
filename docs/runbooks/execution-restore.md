@@ -60,7 +60,11 @@ intent. This procedure captures those facts before replacing the database.
    normal registration without admitting new intake. Resume only the exact
    metadata-ready page. The CLI requires `fenced` health for earlier metadata
    pages and `closed` health for redispatch; `open` health is refused. No command
-   changes either mode or reopens intake.
+   changes either mode or reopens intake. Fenced scheduling and Workflow entry
+   refuse every `redispatch*` page before SQL. The boundary ledger and preceding
+   metadata receipt remain committed when registration is pending. Closed-mode
+   `resume` confirms that same unregistered boundary before describe/restart, so
+   its first Workflow is created under the closed deployment.
 10. After a repaired deployment, explicit `resume --dispatch-id` may restart a known
    errored or terminated instance. The CLI proves the current registered source
    pair, describes the deterministic instance, rechecks the phase-appropriate Worker mode and
