@@ -37,6 +37,10 @@
     "./outbound-probe": {
       "types": "./src/outbound-probe.ts",
       "default": "./src/outbound-probe.ts"
+    },
+    "./outbound-delivery": {
+      "types": "./src/outbound-delivery.ts",
+      "default": "./src/outbound-delivery.ts"
     }
   },
   "scripts": {
