@@ -1,0 +1,50 @@
+{
+  "gate": "native-generated-image-decode",
+  "results": [
+    {
+      "size": 20971520,
+      "calls": 1,
+      "decoded": {
+        "byteLength": 20971520,
+        "sha256": "cd52d81e25f372e6fa4db2c0dfceb59862c1969cab17096da352b34950c973cc"
+      },
+      "result": {
+        "outcome": "failed",
+        "code": "generated_media_output_invalid"
+      },
+      "peakRssBytes": 480116736,
+      "nativeMemoryLimitBytes": 4294967296,
+      "syntheticNonImageRejected": true,
+      "usableAssetPublished": false,
+      "platform": "linux",
+      "bun": "1.3.6"
+    },
+    {
+      "size": 100000000,
+      "calls": 1,
+      "decoded": {
+        "byteLength": 100000000,
+        "sha256": "a993f8c574e0fea8c1cdcbcd9408d9e2e107ee6e4d120edcfa11decd53fa0cae"
+      },
+      "result": {
+        "outcome": "failed",
+        "code": "generated_media_output_invalid"
+      },
+      "peakRssBytes": 964009984,
+      "nativeMemoryLimitBytes": 4294967296,
+      "syntheticNonImageRejected": true,
+      "usableAssetPublished": false,
+      "platform": "linux",
+      "bun": "1.3.6"
+    }
+  ],
+  "runtime": "Modal lean function",
+  "workspace": "murtazach275",
+  "environment": "main",
+  "sdk": "1.6.3",
+  "cpuLimit": 2,
+  "memoryLimitBytes": 4294967296,
+  "minContainers": 0,
+  "externalProviderRequests": 0,
+  "scope": "Synthetic decoding and invalid-pixel rejection; not a valid paid image generation completion."
+}

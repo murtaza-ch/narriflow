@@ -581,7 +581,15 @@
     "./local-fetch-device": "./src/local-fetch-device.ts",
     "./source-fetch-capability": "./src/source-fetch-capability.ts",
     "./drive-source": "./src/drive-source.ts",
-    "./social-publication-driver": "./src/social-publication-driver.ts"
+    "./social-publication-driver": "./src/social-publication-driver.ts",
+    "./clip-preparation-input": {
+      "types": "./src/clip-preparation-input.ts",
+      "default": "./src/clip-preparation-input.ts"
+    },
+    "./clip-preparation-policy": {
+      "types": "./src/clip-preparation-policy.ts",
+      "default": "./src/clip-preparation-policy.ts"
+    }
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
