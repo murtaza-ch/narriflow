@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaClient } from "@prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { assertExecutionDatabaseTestTarget } from "./execution-db-test-support";
-import { createMediaCleanupControl, queueMediaCleanupWithinTransaction } from "./media-cleanup-control";
+import { createMediaCleanupControl, queueMediaCleanupWithinTransaction, queueMediaCleanupBatchWithinTransaction } from "./media-cleanup-control";
 import { createMediaCleanupDrain, queueMediaCleanupRangeWithinTransaction } from "./media-cleanup-drain";
 import { mediaCleanupObjectRetainUntil } from "./media-cleanup-holds";
 import { appendExecutionDispatch, readExecutionDispatch } from "./execution-dispatch";
@@ -37,6 +37,15 @@ suite("Exact media cleanup authority", () => {
     expect(await drain.run(reference)).toMatchObject({ kind: "complete", processed: 1 });
     expect(await database.executionDispatch.count({ where: { subjectKind: "media_cleanup", subjectId: { in: rows.map(row => row.id) }, wakeKind: null } })).toBe(5);
     expect(registered.every(ids => ids.length <= 3)).toBe(true);
+  });
+  test("a bounded cleanup batch preserves each identity and refuses oversized fanout before any append", async () => {
+    const rows = await database.mediaCleanupObligation.createManyAndReturn({ data: Array.from({ length: 105 }, () => ({ origin: "clip_editor_document_persistence", cleanupClass: "mutable_render", objectKey: `projects/${crypto.randomUUID()}/renders/${crypto.randomUUID()}.mp4`, nextAttemptAt: new Date(0) })) });
+    await expect(database.$transaction(tx => queueMediaCleanupBatchWithinTransaction(tx, rows.map(row => row.id)))).rejects.toMatchObject({ code: "cleanup_intent_invalid" });
+    const ids = rows.slice(0, 100).map(row => row.id);
+    const first = await database.$transaction(tx => queueMediaCleanupBatchWithinTransaction(tx, ids));
+    expect(first).toHaveLength(100);
+    expect(await database.$transaction(tx => queueMediaCleanupBatchWithinTransaction(tx, ids))).toEqual(first);
+    expect(await database.executionDispatch.count({ where: { subjectKind: "media_cleanup", subjectId: { in: rows.map(row => row.id) } } })).toBe(100);
   });
   test("one exact owner confirms its lease timer before DELETE, and committed replay issues no HTTP", async () => {
     const { row, reference } = await fixture();

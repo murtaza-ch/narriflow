@@ -4,7 +4,7 @@ import { executionDispatchReferenceSchema, type ExecutionDispatchReference } fro
 import { appendExecutionDispatch, readExecutionDispatch } from "./execution-dispatch";
 import { collectExecutionDispatch } from "./execution-dispatch-runtime";
 import { readExecutionAdmission } from "./execution-admission";
-import { queueMediaCleanupWithinTransaction, MediaCleanupControlError } from "./media-cleanup-control";
+import { queueMediaCleanupBatchWithinTransaction, MediaCleanupControlError } from "./media-cleanup-control";
 
 type Position = { id: string; at: Date };
 const invalid = () => new MediaCleanupControlError("cleanup_reference_invalid");
@@ -53,11 +53,8 @@ export function createMediaCleanupDrain(options: { database: PrismaClient; regis
       const start = after ? Prisma.sql`("createdAt", id) > ((${after.at}::timestamptz AT TIME ZONE 'UTC'), ${after.id}::uuid)` : Prisma.sql`("createdAt", id) >= ((${first.at}::timestamptz AT TIME ZONE 'UTC'), ${first.id}::uuid)`;
       const rows = await tx.$queryRaw<Array<{ id: string; at: Date }>>`SELECT id, "createdAt" AS at FROM "MediaCleanupObligation" WHERE ${start}
         AND ("createdAt", id) <= ((${through.at}::timestamptz AT TIME ZONE 'UTC'), ${through.id}::uuid) ORDER BY "createdAt", id LIMIT ${limit + 1}`;
-      const selected = rows.slice(0, limit), dispatchIds: string[] = [];
-      for (const row of selected) {
-        const next = await queueMediaCleanupWithinTransaction(tx, row.id);
-        if (next) dispatchIds.push(next.dispatchId);
-      }
+      const selected = rows.slice(0, limit);
+      const dispatchIds = (await queueMediaCleanupBatchWithinTransaction(tx, selected.map(row => row.id))).map(reference => reference.dispatchId);
       if (rows.length > limit) dispatchIds.push((await append(tx, epoch, first, through, selected.at(-1)!)).dispatchId);
       return { kind: rows.length > limit ? "continue" as const : "complete" as const, processed: selected.length, dispatchIds };
       });
