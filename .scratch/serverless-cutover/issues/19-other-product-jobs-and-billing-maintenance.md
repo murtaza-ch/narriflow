@@ -19,3 +19,23 @@ The generated-only validation child and old queue processor/publisher are remove
 
 
 The targeted Workspace Billing driver now validates an exact epoch, generation, due time and frozen billing input before acquiring one provider claim. Claim and expiry obligation commit before provider I/O, and the watchdog is confirmed before that call. Stripe delivery, Checkout observations, seat/membership changes, provider projections and retry decisions append next wakes in their mutation transactions. Projection and renewal authority use current epoch and database lease time. See [billing evidence](../evidence/billing-targeted-20261031.json) for tests and explicit remaining paths. This is a tested integration checkpoint; the ticket remains open.
+
+Export Bundle native preparation now uses the existing Archiver writer with one
+verified input stream at a time, following the
+[upstream streaming interface](https://github.com/archiverjs/node-archiver).
+Each input preserves its frozen manifest name and exact length, and checks an
+authoritative digest when present. The source aggregate cap remains4GiB; ZIP
+metadata has a bounded64MiB allowance. Inputs need not coexist with the finished
+ZIP on scratch. A real supervised Bun child starts only after the process-start
+acknowledgement, reads scoped If-Match source ranges, creates the ZIP, and uploads
+through the assigned multipart output. A lost commit acknowledgement retains the
+completed upload.
+
+Nine stream/archive/capsule cases pass34 assertions, including ZIP extraction,
+digest refusal and existing archive behavior. Two actual host Python/Bun wrapper
+cases pass through controlled storage/control ports. Migration013 binds the
+accepted manifest, capsule tuple and deadline, with a fenced restore exception;
+one disposable PostgreSQL constraint case passes5 assertions. API composition,
+authoritative bundle/campaign finalization, actual Linux/Modal and large archive
+gates remain required. Dubbing still needs its accepted-row/provider checkpoint
+replacement. No bundle or dub function is registered by this checkpoint.

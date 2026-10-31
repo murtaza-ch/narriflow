@@ -56,6 +56,10 @@
       "types": "./src/render-execution.ts",
       "default": "./src/render-execution.ts"
     },
+    "./export-bundle-execution": {
+      "types": "./src/export-bundle-execution.ts",
+      "default": "./src/export-bundle-execution.ts"
+    },
     "./publication-input": "./src/publication-input.ts"
   },
   "scripts": {

@@ -614,6 +614,7 @@
     },
     "./broll-plan": "./src/broll-plan.ts",
     "./render-execution-input": "./src/render-execution-input.ts",
+    "./export-bundle-input": "./src/export-bundle-input.ts",
     "./render-group-execution": "./src/render-group-execution.ts",
     "./render-group-runtime": "./src/render-group-runtime.ts",
     "./render-input-snapshot": "./src/render-input-snapshot.ts",
