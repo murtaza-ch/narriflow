@@ -2,6 +2,7 @@ import { renderVariantFailureSchema, type RenderVariantFailure } from "@narriflo
 import type { ExecutionArtifact } from "@narriflow/validators/execution";
 import type { ExecutorArtifactCommit } from "./executor-domain-control";
 import type { RenderGroupArtifactCommit } from "./render-group-lifecycle";
+import type { BrollAttribution } from "./pexels-contract";
 
 async function digest(bytes: Uint8Array): Promise<string> {
   return Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", Uint8Array.from(bytes))), byte => byte.toString(16).padStart(2, "0")).join("");
@@ -25,6 +26,7 @@ export async function decodeRenderVariantFailure(bytes: Uint8Array, reference: {
 /** Runs before SQL locks. Only an assigned exact-key reader may supply failure evidence. */
 export async function prepareRenderArtifact(artifact: ExecutorArtifactCommit, reported: ExecutionArtifact, input: {
   inputHash: string; memberIds: readonly string[];
+  stockCredits?: readonly BrollAttribution[];
   read(reference: { storageKey: string; etag: string; byteLength: number; sha256: string }, maxBytes: number): Promise<Uint8Array>;
 }): Promise<RenderGroupArtifactCommit> {
   const invalid = () => new Error("render_artifact_invalid");
@@ -32,7 +34,10 @@ export async function prepareRenderArtifact(artifact: ExecutorArtifactCommit, re
     const facts = reported.renderVariant;
     if (!facts || artifact.contentType !== "video/mp4" || !input.memberIds.includes(facts.renderId) ||
       artifact.bindingHash !== await renderArtifactBindingHash({ inputHash: input.inputHash, renderId: facts.renderId, role: artifact.role })) throw invalid();
-    return { ...artifact, role: artifact.role, ...facts };
+    const used = facts.usedStockIds ?? [];
+    if (used.some(id => !input.stockCredits?.some(credit => credit.pexelsId === id))) throw invalid();
+    const brollCredits = used.map(id => ({ ...input.stockCredits!.find(credit => credit.pexelsId === id)! }));
+    return { ...artifact, role: artifact.role, ...facts, brollCredits: brollCredits.length ? brollCredits : null };
   }
   if (artifact.role !== "render_outcome" || artifact.contentType !== "application/json" || artifact.byteLength <= 0n || artifact.byteLength > 65536n) throw invalid();
   const reference = { storageKey: artifact.storageKey, etag: artifact.etag, byteLength: Number(artifact.byteLength), sha256: artifact.sha256 };

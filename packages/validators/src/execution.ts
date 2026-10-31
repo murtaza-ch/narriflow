@@ -100,6 +100,7 @@ export const executionArtifactSchema = z.strictObject({
   sourceAudio: z.lazy(() => sourceAudioBindingSchema).optional(),
   sourceVideo: z.lazy(() => sourceVideoBindingSchema).optional(),
   renderVariant: z.strictObject({ renderId: z.string().uuid(), durationSec: z.number().finite().positive(),
+    usedStockIds: z.array(z.number().int().positive().safe()).max(6).refine(ids => new Set(ids).size === ids.length).optional(),
     captionDiagnostics: clipRenderCaptionDiagnosticsSchema.optional() }).optional(),
 }).superRefine((value, context) => {
   for (const [field, role] of [["sourceAudio", "source_audio"], ["sourceVideo", "source_video"], ["renderVariant", "render_variant"]] as const) {

@@ -25,7 +25,7 @@ import {
 import type { ExecutionDispatchReference, ExecutionDisposition } from "@narriflow/validators/execution";
 import { renderGroupOutcomeSchema, renderVariantFailureSchema, type RenderGroupOutcome, type RenderVariantFailure } from "@narriflow/validators/render-execution";
 import { renderArtifactBindingHash } from "./render-artifact";
-import { appendExecutionDispatch } from "./execution-dispatch";
+import { appendExecutionDispatch, readExecutionDispatch } from "./execution-dispatch";
 import { lockWorkspaceUsage } from "./processing-usage";
 import type { ExecutorArtifactCommit, ExecutorDomainLock, ExecutorMutationResult, ExecutorFailureInput, ExecutorMutationContext, ExecutorProgressInput, ExecutorReleaseInput, ExecutorExpiryObservation, ExecutorExpiryResult } from "./executor-domain-control";
 
@@ -42,6 +42,7 @@ export type RenderGroupArtifactCommit = ExecutorArtifactCommit & ({
   renderId: string;
   durationSec: number;
   captionDiagnostics?: ClipRenderCaptionDiagnostics | null;
+  brollCredits?: Prisma.InputJsonValue | null;
 } | {
   role: "render_outcome";
   renderId: string;
@@ -567,7 +568,7 @@ export class RenderGroupLifecycle {
       accepted = await this.failClipRenderVariantWithinTransaction(tx, attempt, artifact.renderId, parsed.data.errorCode, parsed.data.disposition);
     } else {
       if (artifact.contentType !== "video/mp4" || !Number.isFinite(artifact.durationSec) || artifact.durationSec <= 0) throw new Error("Invalid prepared render artifact");
-      accepted = await this.completeClipRenderVariantWithinTransaction(tx, attempt, artifact.renderId, { storageKey: artifact.storageKey, sizeBytes: Number(artifact.byteLength), durationSec: artifact.durationSec, captionDiagnostics: artifact.captionDiagnostics });
+      accepted = await this.completeClipRenderVariantWithinTransaction(tx, attempt, artifact.renderId, { storageKey: artifact.storageKey, sizeBytes: Number(artifact.byteLength), durationSec: artifact.durationSec, captionDiagnostics: artifact.captionDiagnostics, brollCredits: artifact.brollCredits });
     }
     if (!accepted) {
       throw new RenderGroupAttemptLost(attempt);
@@ -600,11 +601,54 @@ export class RenderGroupLifecycle {
     return undefined;
   }
 
+  /** The same unstarted transition serves pre-input and admitted-native deadlines. */
+  private async expireQueuedExecution(tx: Tx, state: { group: RenderGroup; parent: WorkflowRun; ref: RenderGroupExecutionReference }, reference: ExecutionDispatchReference, eventId: string): Promise<ExecutorExpiryResult> {
+    const { group, parent, ref } = state;
+    const members = await memberSnapshot(tx, ref);
+    const clock = await renderGroupDatabaseNow(tx);
+    const failures: Array<{ renderId: string; status: "failed"; errorCode: string }> = [];
+    for (const member of members) {
+      if (!member.variant || member.status === "completed" || member.status === "superseded" ||
+        (member.status === "failed" && member.failureDisposition === "permanent")) continue;
+      await tx.clipRender.update({ where: { id: member.clipRenderId }, data: { status: "failed", failureDisposition: "permanent", errorCode: "operation_deadline_exceeded", completedAt: clock } });
+      await this.exportMutation(tx, member.variant.exportVariantId, { status: "failed", errorCode: "operation_deadline_exceeded", completedAt: clock });
+      member.status = "failed"; member.failureDisposition = "permanent";
+      if (!member.variant.exportVariantId) failures.push({ renderId: member.clipRenderId, status: "failed", errorCode: "operation_deadline_exceeded" });
+    }
+    const decision = deriveRenderGroupSettlement({ members, chargedAttemptCount: group.chargedAttemptCount, databaseNow: clock });
+    if (decision.status === "queued") throw new Error("Expired render group still has unsettled members");
+    await tx.renderGroup.update({ where: { id: group.id }, data: { status: decision.status, nextAttemptAt: null, settledAt: clock, errorCode: "operation_deadline_exceeded", failureDisposition: "permanent" } });
+    await appendWorkflowEvent(tx, { projectId: ref.projectId, workflowRunId: parent.id, attemptId: eventId, stage: "clip_rendering", status: parent.status as "queued" | "running" | "waiting",
+      progress: parent.progress, errorCode: null, transition: `unstarted_group_expired:${eventId}`, ...(failures.length ? { generationRenderResults: failures } : {}) },
+    { progressRequired: true, analyticsEnabled: false });
+    return { kind: "expired", ...await this.executionWakes(tx, ref, reference.inputHash, false) };
+  }
+
+  /** A preparation deadline owns no native token, lease, charge or process history. */
+  async expirePreparationDeadline(reference: ExecutionDispatchReference, observation: ExecutorExpiryObservation): Promise<ExecutorExpiryResult | { kind: "native"; attemptToken: string }> {
+    return this.transaction(async tx => {
+      const [epoch] = await tx.$queryRaw<Array<{ epoch: number }>>`SELECT epoch FROM "ExecutionEpoch" WHERE id = 1 FOR SHARE`;
+      const dispatch = await readExecutionDispatch(tx, reference.dispatchId);
+      if (!epoch || reference.deploymentEpoch !== epoch.epoch || reference.kind !== "operation_driver" || reference.subject.kind !== "render_group" || observation.kind !== "operation" ||
+        !dispatch || JSON.stringify(dispatch.reference) !== JSON.stringify(reference) || dispatch.deadlineKind !== "operation" ||
+        dispatch.observedDeadlineAt?.getTime() !== observation.observedDeadlineAt.getTime()) return { kind: "superseded" };
+      const initial = await tx.renderGroup.findUnique({ where: { id: reference.subject.id } });
+      const state = await this.executionState(tx, reference, initial?.attemptToken ?? reference.dispatchId);
+      if (state.kind === "terminal") return { kind: state.disposition.disposition === "superseded" ? "superseded" : "terminal" };
+      if (!state.group.operationDeadlineAt || state.group.operationDeadlineAt.getTime() !== observation.observedDeadlineAt.getTime()) return { kind: "superseded" };
+      if (state.group.status === "running") return state.group.attemptToken && state.group.leaseOwner && state.group.leaseExpiresAt
+        ? { kind: "native", attemptToken: state.group.attemptToken } : { kind: "superseded" };
+      if (state.group.status !== "queued" || state.group.attemptToken || state.group.leaseOwner || state.group.leaseExpiresAt) return { kind: "superseded" };
+      if (state.group.operationDeadlineAt > state.now) return { kind: "sleep", dueAt: state.group.operationDeadlineAt };
+      return this.expireQueuedExecution(tx, state, reference, reference.dispatchId);
+    });
+  }
+
   async expireExecution(tx: Tx, reference: ExecutionDispatchReference, attemptToken: string, observation: ExecutorExpiryObservation): Promise<ExecutorExpiryResult> {
     if (!["lease", "operation"].includes(observation.kind) || !Number.isFinite(observation.observedDeadlineAt.getTime())) throw new Error("Invalid execution deadline observation");
     const state = await this.executionState(tx, reference, attemptToken);
     if (state.kind === "terminal") return { kind: state.disposition.disposition === "superseded" ? "superseded" : "terminal" };
-    const { group, ref, now, parent } = state;
+    const { group, ref, now } = state;
     const admitted = await tx.executionAttempt.findFirst({ where: { attemptToken, deploymentEpoch: reference.deploymentEpoch, generation: reference.generation, inputHash: reference.inputHash,
       dispatch: { id: reference.dispatchId, kind: reference.kind, subjectKind: "render_group", subjectId: ref.groupId } } });
     if (!admitted || (group.operationDeadlineAt && group.operationDeadlineAt.getTime() !== admitted.operationDeadlineAt.getTime())) return { kind: "superseded" };
@@ -612,24 +656,7 @@ export class RenderGroupLifecycle {
     const absolute = admitted.operationDeadlineAt;
     if (group.status === "queued") {
       if (absolute > now) return { kind: "sleep", dueAt: absolute };
-      const members = await memberSnapshot(tx, ref);
-      const clock = await renderGroupDatabaseNow(tx);
-      const failures: Array<{ renderId: string; status: "failed"; errorCode: string }> = [];
-      for (const member of members) {
-        if (!member.variant || member.status === "completed" || member.status === "superseded" ||
-          (member.status === "failed" && member.failureDisposition === "permanent")) continue;
-        await tx.clipRender.update({ where: { id: member.clipRenderId }, data: { status: "failed", failureDisposition: "permanent", errorCode: "operation_deadline_exceeded", completedAt: clock } });
-        await this.exportMutation(tx, member.variant.exportVariantId, { status: "failed", errorCode: "operation_deadline_exceeded", completedAt: clock });
-        member.status = "failed"; member.failureDisposition = "permanent";
-        if (!member.variant.exportVariantId) failures.push({ renderId: member.clipRenderId, status: "failed", errorCode: "operation_deadline_exceeded" });
-      }
-      const decision = deriveRenderGroupSettlement({ members, chargedAttemptCount: group.chargedAttemptCount, databaseNow: clock });
-      if (decision.status === "queued") throw new Error("Expired render group still has unsettled members");
-      await tx.renderGroup.update({ where: { id: group.id }, data: { status: decision.status, nextAttemptAt: null, settledAt: clock, errorCode: "operation_deadline_exceeded", failureDisposition: "permanent" } });
-      await appendWorkflowEvent(tx, { projectId: ref.projectId, workflowRunId: parent.id, attemptId: attemptToken, stage: "clip_rendering", status: parent.status as "queued" | "running" | "waiting",
-        progress: parent.progress, errorCode: null, transition: `unstarted_group_expired:${attemptToken}`, ...(failures.length ? { generationRenderResults: failures } : {}) },
-      { progressRequired: true, analyticsEnabled: false });
-      return { kind: "expired", ...await this.executionWakes(tx, ref, reference.inputHash, false) };
+      return this.expireQueuedExecution(tx, state, reference, attemptToken);
     }
     if (group.attemptToken !== attemptToken || !group.leaseOwner || !group.leaseExpiresAt) return { kind: "terminal" };
     const deadline = new Date(Math.min(group.leaseExpiresAt.getTime(), absolute.getTime()));
@@ -848,6 +875,7 @@ export class RenderGroupLifecycle {
       durationSec: number;
       /** Caption characters the render left out; absent or empty clears it. */
       captionDiagnostics?: ClipRenderCaptionDiagnostics | null;
+      brollCredits?: Prisma.InputJsonValue | null;
     },
   ): Promise<boolean> {
     return this.transaction((tx) => this.completeClipRenderVariantWithinTransaction(tx, attempt, id, input));
@@ -862,6 +890,7 @@ export class RenderGroupLifecycle {
       durationSec: number;
       /** Caption characters the render left out; absent or empty clears it. */
       captionDiagnostics?: ClipRenderCaptionDiagnostics | null;
+      brollCredits?: Prisma.InputJsonValue | null;
     },
   ): Promise<boolean> {
 
@@ -908,7 +937,7 @@ export class RenderGroupLifecycle {
     };
     await tx.clipRender.update({
       where: { id },
-      data: { ...data, failureDisposition: null, captionDiagnostics: captionDiagnosticsColumn(input.captionDiagnostics) },
+      data: { ...data, failureDisposition: null, captionDiagnostics: captionDiagnosticsColumn(input.captionDiagnostics), brollCredits: input.brollCredits ?? Prisma.DbNull },
     });
     await this.exportMutation(tx, variant.exportVariantId, data);
     await tx.renderGroupVariantOutcome.create({
