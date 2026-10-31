@@ -1,0 +1,7 @@
+{
+ "name":"narriflow-local-device-runtime-probe", "main":"local-fetch-runtime-probe.ts", "compatibility_date":"2026-10-30",
+ "compatibility_flags":["nodejs_compat","disallow_importable_env"],
+ "durable_objects":{"bindings":[{"name":"LOCAL_FETCH_MAILBOX","class_name":"LocalFetchMailbox"}]},
+ "migrations":[{"tag":"v1","new_sqlite_classes":["LocalFetchMailbox"]}],
+ "workers_dev":false,"preview_urls":false,"routes":[]
+}

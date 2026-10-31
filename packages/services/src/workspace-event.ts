@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { appendWorkspaceNotificationRange } from "./notification-dispatch";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import {
   WORKSPACE_EVENT_DEFAULT_LIMIT,
@@ -68,6 +69,7 @@ export async function flushWorkspaceEvents(tx: Tx): Promise<void> {
   const byWorkspace = new Map<string, WorkspaceEventInput[]>();
   for (const event of fresh) byWorkspace.set(event.workspaceId, [...(byWorkspace.get(event.workspaceId) ?? []), event]);
   const rows: Prisma.Sql[] = [];
+  const ranges: Array<{ workspaceId: string; after: bigint; through: bigint }> = [];
   for (const workspaceId of [...byWorkspace.keys()].sort()) {
     const batch = byWorkspace.get(workspaceId)!;
     const [counter] = await tx.$queryRaw<Array<{ lastSeq: bigint }>>`
@@ -76,6 +78,7 @@ export async function flushWorkspaceEvents(tx: Tx): Promise<void> {
       RETURNING "lastSeq"
     `;
     const first = counter!.lastSeq - BigInt(batch.length) + 1n;
+    ranges.push({ workspaceId, after: first - 1n, through: counter!.lastSeq });
     for (const [index, event] of batch.entries()) {
       rows.push(Prisma.sql`(${randomUUID()}::uuid, ${workspaceId}::uuid, ${first + BigInt(index)}::bigint, ${event.type},
         ${EVENT_VERSION}, ${JSON.stringify(event.subject)}::jsonb, (${event.occurredAt!.toISOString()}::timestamptz AT TIME ZONE 'UTC'), ${event.dedupeKey})`);
@@ -85,6 +88,7 @@ export async function flushWorkspaceEvents(tx: Tx): Promise<void> {
     INSERT INTO "WorkspaceEvent" ("id", "workspaceId", "seq", "type", "version", "subject", "occurredAt", "dedupeKey")
     VALUES ${Prisma.join(rows)} ON CONFLICT ("dedupeKey") DO NOTHING
   `);
+  for (const range of ranges) await appendWorkspaceNotificationRange(tx, range.workspaceId, range.after, range.through);
 }
 
 /** Appends one Workspace Event as the last act of the transaction that made the

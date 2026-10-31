@@ -7,6 +7,8 @@ import { Pool } from "pg";
 import { appendExecutionDispatch } from "./execution-dispatch";
 import type { ExecutorDomainControl } from "./executor-domain-control";
 import { createExecutorControl } from "./executor-control";
+import { queueWorkspaceEvent } from "./workspace-event";
+import { encodeOperationId } from "./operation-status";
 
 const url = process.env.SERVERLESS_TEST_DATABASE_URL;
 const enabled = process.env.ALLOW_EXECUTION_CONTROL_DB_TESTS === "1" && Boolean(url);
@@ -70,6 +72,36 @@ dbDescribe("Executor control authority and replay", () => {
     await prisma.executionAttempt.create({ data: { attemptToken: token, dispatchId: dispatch.reference.dispatchId, deploymentEpoch: epoch.epoch, generation: 1, inputHash: "a".repeat(64), functionName: "fetch_source", operationDeadlineAt: new Date(Date.now() + 45 * 60_000) } });
     return { reference: dispatch.reference, token, job };
   }
+
+  test("native terminal receipts retain notification drains after a lost scheduler acknowledgement", async () => {
+    const f = await fixture();
+    const project = await prisma.project.findUniqueOrThrow({ where: { id: f.job.projectId } });
+    let mutations = 0;
+    const delivered: string[][] = [];
+    let loseAck = false;
+    const control = createExecutorControl({ database: prisma, subjectKind: "ingest_job", domain: { ...domain,
+      async failExecution(tx, ref) {
+        mutations++;
+        await domain.failExecution(tx, ref, {} as never, {} as never);
+        queueWorkspaceEvent(tx, { workspaceId: project.workspaceId, projectId: project.id, type: "operation.finished", dedupeKey: `native-notify:${f.job.id}`,
+          subject: { operation: { kind: "intake", id: encodeOperationId({ kind: "intake", id: f.job.id }) }, projectId: project.id, state: "failed" } });
+      },
+    }, deliverWakes: async ids => { delivered.push([...ids]); if (loseAck) throw new Error("lost notification acknowledgement"); } });
+    const owner = randomUUID(), fence = { reference: f.reference, attemptToken: f.token, owner };
+    await control.execute({ command: { action: "acquire", ...fence, leaseSeconds: 120 }, verifiedRequest: verified() });
+    const request = verified();
+    const command = { action: "fail" as const, fence, failureCode: "input_invalid", retryable: false };
+    loseAck = true;
+    await expect(control.execute({ command, verifiedRequest: request })).rejects.toThrow("lost notification acknowledgement");
+    const receipt = await prisma.executionInboxReceipt.findUniqueOrThrow({ where: { audience_deliveryId: { audience: request.metadata.audience, deliveryId: request.metadata.deliveryId } } });
+    expect(receipt.wakeDispatchIds).toHaveLength(1);
+    dispatches.push(...receipt.wakeDispatchIds);
+    expect(await prisma.executionDispatch.findUnique({ where: { id: receipt.wakeDispatchIds[0] } })).toMatchObject({ subjectKind: "maintenance", wakeKind: "notifications" });
+    loseAck = false;
+    expect((await control.execute({ command, verifiedRequest: request })).disposition).toBe("failed");
+    expect(delivered[1]).toEqual(delivered[0]);
+    expect(mutations).toBe(1);
+  });
   function verified(hash = "b".repeat(64), deliveryId = randomUUID()) {
     receipts.push(deliveryId);
     return { requestHash: hash, metadata: { version: 1 as const, keyId: "test-v1", audience: "executor-control" as const, method: "POST" as const,

@@ -7,6 +7,7 @@ import { encodeOperationId, type OperationKind, type OperationStatus, type Trust
 import { OperationIdempotencyConflictError, type IntegrationMutation, type ReceiptCallback } from "./operation-receipt";
 import { uuidV5 } from "./uuid-v5";
 import { assertPublicHttpUrl } from "./url-policy";
+import { appendCompletionCallbackDispatch, callbackReceiptWake } from "./notification-dispatch";
 
 /**
  * Completion Callback: a signed, at-least-once notification delivered to a
@@ -210,7 +211,7 @@ async function insertCompletionCallback(
   const secret = await tx.callbackSigningSecret.findFirst({ where: { workspaceId: input.workspaceId, retiresAt: null }, select: { id: true } });
   if (!secret) throw new CallbackSecretRequiredError();
   const acceptanceId = "receiptId" in input.acceptance ? input.acceptance.receiptId : input.acceptance.uploadSessionId;
-  await tx.completionCallback.create({
+  const row = await tx.completionCallback.create({
     data: {
       workspaceId: input.workspaceId,
       operationKind: input.operation.kind,
@@ -220,6 +221,7 @@ async function insertCompletionCallback(
       eventId: callbackEventId(acceptanceId),
     },
   });
+  await appendCompletionCallbackDispatch(tx, row);
 }
 
 /** The receipt executor hook for a command that starts an operation. */
@@ -244,9 +246,10 @@ export async function registerUploadCallback(
   tx: Tx,
   input: { workspaceId: string; sessionId: string; registration: CallbackRegistration },
 ) {
-  const existing = await tx.completionCallback.findUnique({ where: { uploadSessionId: input.sessionId }, select: { urlFingerprint: true } });
+  const existing = await tx.completionCallback.findUnique({ where: { uploadSessionId: input.sessionId } });
   if (existing) {
     if (existing.urlFingerprint !== input.registration.urlFingerprint) throw new OperationIdempotencyConflictError();
+    if (existing.state === "waiting" || existing.state === "pending") await appendCompletionCallbackDispatch(tx, existing);
     return;
   }
   await insertCompletionCallback(tx, {
@@ -315,11 +318,10 @@ export function createCallbackSigningSecrets(dependencies: { prisma: PrismaClien
 
 /** Resets an operation's delivered or failed callbacks to pending with a fresh
  * attempt budget and the same event IDs. Waiting and pending ones keep going. */
-export async function resetCompletionCallbacks(tx: Tx, scope: ActorScope, operation: { kind: OperationKind; id: string }, at: Date) {
+export async function resetCompletionCallbacks(tx: Tx, scope: ActorScope, operation: { kind: OperationKind; id: string }, at: Date, receiptId: string) {
   const rows = await tx.completionCallback.findMany({
     where: { workspaceId: scope.workspaceId, operationKind: operation.kind, operationId: operation.id },
     orderBy: { createdAt: "asc" },
-    select: { id: true, eventId: true, state: true },
   });
   if (rows.length === 0) {
     throw new ExpectedDomainFailureError({ code: "callback_not_found", kind: "missing", message: "This operation has no completion callback. Include callback.url when you start the work to receive one." });
@@ -331,5 +333,6 @@ export async function resetCompletionCallbacks(tx: Tx, scope: ActorScope, operat
       data: { state: "pending", attempts: 0, nextAttemptAt: at, leaseOwner: null, leaseExpiresAt: null, deliveredAt: null },
     });
   }
+  for (const row of rows) if (row.state !== "cancelled") await appendCompletionCallbackDispatch(tx, row, callbackReceiptWake(receiptId));
   return rows.map((row) => ({ eventId: row.eventId, state: reset.includes(row) ? "pending" : row.state }));
 }

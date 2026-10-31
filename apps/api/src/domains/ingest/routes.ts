@@ -23,9 +23,14 @@ import {
 import { createRouteApp, getActor } from "../../http/admission";
 import { validate } from "../../http/route";
 import { ingestAdmission as access } from "./admission";
+import type { youtubeImportCapability } from "@narriflow/services/source-fetch-capability";
+import type { ActorScope } from "@narriflow/services/actor-scope";
+import type { LocalFetchDeviceConfiguration } from "@narriflow/validators/api/local-fetch";
 
 /** Services the ingest routes call. `runtime.ts` supplies the production instances. */
 export interface IngestRouteDeps {
+  youtubeImportCapability: typeof youtubeImportCapability;
+  issueLocalFetchDevice(actor: ActorScope, bindings: unknown): Promise<LocalFetchDeviceConfiguration>;
   projectService: typeof projectService;
   recipeService: typeof recipeService;
   brandTemplateService: typeof brandTemplateService;
@@ -55,10 +60,15 @@ export function createIngestRoutes(deps: IngestRouteDeps) {
         projectService.getUsageSummary(actor),
         recipeService.list(actor),
       ]);
+      const youtubeImport = await deps.youtubeImportCapability(actor.workspaceId);
       return c.json(
-        { brandTemplates, brandProfiles: { items: brandProfiles, defaultId: defaultBrandProfileId }, usageSummary, recipes },
+        { brandTemplates, brandProfiles: { items: brandProfiles, defaultId: defaultBrandProfileId }, usageSummary, recipes, youtubeImport },
         200,
       );
+    })
+    .post("/ingest/local-fetch/session", async c => {
+      c.header("Cache-Control", "no-store");
+      return c.json(await deps.issueLocalFetchDevice(getActor(c), c.env), 201);
     })
 
     .get("/ingest/link/metadata", validate("query", linkMetadataQuerySchema), async (c) => {

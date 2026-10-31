@@ -5,6 +5,7 @@ import {
 	type OperationReceiptIdentity,
 	type OperationReceiptPersistence,
 } from "./operation-receipt";
+import { recoverReceiptNotificationDispatches } from "./notification-dispatch";
 
 function unique(identity: OperationReceiptIdentity) {
 	return { workspaceId_actorUserId_command_clientIdempotencyKey: identity };
@@ -14,6 +15,7 @@ export function prismaOperationReceiptPersistence(
 	prisma: PrismaClient,
 ): OperationReceiptPersistence<Prisma.TransactionClient> {
 	return {
+		recover: (receipt, tx) => tx ? recoverReceiptNotificationDispatches(tx, receipt) : prisma.$transaction(tx => recoverReceiptNotificationDispatches(tx, receipt)),
 		read: (identity) =>
 			prisma.operationReceipt.findUnique({ where: unique(identity) }),
 		transaction: (run) => prisma.$transaction(run),
