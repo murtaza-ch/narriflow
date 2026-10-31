@@ -1,0 +1,64 @@
+{
+  "observations": [
+    {
+      "copies": 1,
+      "status": 200,
+      "wallMs": 1730,
+      "runtime": "cloudflare-workerd",
+      "isolateId": "6b2496ea-e1c4-4e79-bd71-634d3b87ffbc",
+      "results": [
+        {
+          "byteLength": 16777216,
+          "instructions": 2200,
+          "totalBytes": 9227468800
+        }
+      ],
+      "productionRouteCount": 1082,
+      "databaseRequests": 0
+    },
+    {
+      "copies": 2,
+      "status": 200,
+      "wallMs": 1020,
+      "runtime": "cloudflare-workerd",
+      "isolateId": "6b2496ea-e1c4-4e79-bd71-634d3b87ffbc",
+      "results": [
+        {
+          "byteLength": 16777216,
+          "instructions": 2200,
+          "totalBytes": 9227468800
+        },
+        {
+          "byteLength": 16777216,
+          "instructions": 2200,
+          "totalBytes": 9227468800
+        }
+      ],
+      "productionRouteCount": 1082,
+      "databaseRequests": 0
+    },
+    {
+      "copies": 1,
+      "status": 200,
+      "wallMs": 645,
+      "runtime": "cloudflare-workerd",
+      "isolateId": "6b2496ea-e1c4-4e79-bd71-634d3b87ffbc",
+      "results": [
+        {
+          "byteLength": 16777216,
+          "instructions": 2200,
+          "totalBytes": 9227468800
+        }
+      ],
+      "productionRouteCount": 1082,
+      "databaseRequests": 0
+    }
+  ],
+  "sameIsolateAfterPair": true,
+  "status": "passed",
+  "workerVersion": "005f30e6-a90c-41c7-9791-b3fab74c40fe",
+  "observedAt": "2026-10-31T20:31:21.771907+00:00",
+  "scope": "Actual Cloudflare isolate with complete production router and simultaneous maximum 16 MiB publication payload decryption. SQL factory rejects access. Does not measure numerical RSS.",
+  "fixtureRecovery": "Initial probe refused absent fixture; exact synthetic object reuploaded and sequence rerun.",
+  "releaseCleanup": "Temporary CutoverVerification export and entrypoint removed from release source after this proof."
+}

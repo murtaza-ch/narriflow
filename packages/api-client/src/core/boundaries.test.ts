@@ -10,29 +10,32 @@ const FORBIDDEN_PACKAGES =
 const FORBIDDEN_WORKSPACES =
   /(^|\/)(apps\/api|apps\/web|packages\/(services|db|auth|email|mcp-core|ui))\//;
 
+async function browserGraph(entrypoint: string): Promise<string[]> {
+  // Bun 1.3.6's in-process bundler can retain invalid file handles after the
+  // transport suite forces GC. A fresh build process keeps this graph check
+  // independent of those runtime tests without weakening either boundary.
+  const child = Bun.spawn([process.execPath, "--eval", `
+    const result = await Bun.build({ entrypoints: [${JSON.stringify(entrypoint)}], target: "browser", write: false, metafile: true });
+    if (!result.success) { console.error(result.logs); process.exit(1); }
+    console.log(JSON.stringify(Object.keys(result.metafile.inputs)));
+  `], { stdout: "pipe", stderr: "pipe" });
+  const [output, errors, exitCode] = await Promise.all([
+    new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited,
+  ]);
+  expect(errors).toBe("");
+  expect(exitCode).toBe(0);
+  return JSON.parse(output);
+}
+
 describe("api-client core stays framework-agnostic", () => {
   test("the full client, including typed domain RPC clients, bundles without backend values", async () => {
-    const result = await Bun.build({
-      entrypoints: [resolve(repoRoot, "packages/api-client/src/index.ts")],
-      target: "browser",
-      write: false,
-      metafile: true,
-    } as Parameters<typeof Bun.build>[0]);
-    expect(result.success).toBe(true);
-    const graph = Object.keys((result as unknown as { metafile: { inputs: object } }).metafile.inputs);
+    const graph = await browserGraph(resolve(repoRoot, "packages/api-client/src/index.ts"));
     expect(graph.filter((path) => FORBIDDEN_WORKSPACES.test(path))).toEqual([]);
     expect(graph.filter((path) => /node_modules\/\.bun\/(next@|server-only@|@clerk\+|@prisma\+|stripe@|ioredis@)/.test(path))).toEqual([]);
   });
 
   test("browser bundle graph has no Next, React, Clerk, Hono or backend modules", async () => {
-    const result = await Bun.build({
-      entrypoints: [entry],
-      target: "browser",
-      write: false,
-      metafile: true,
-    } as Parameters<typeof Bun.build>[0]);
-    expect(result.success).toBe(true);
-    const graph = Object.keys((result as unknown as { metafile: { inputs: object } }).metafile.inputs);
+    const graph = await browserGraph(entry);
     expect(graph.length).toBeGreaterThan(5);
     expect(graph.filter((path) => FORBIDDEN_PACKAGES.test(path))).toEqual([]);
     expect(graph.filter((path) => FORBIDDEN_WORKSPACES.test(path))).toEqual([]);
