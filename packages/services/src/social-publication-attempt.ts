@@ -919,6 +919,7 @@ export function createPrismaSocialPublicationAttemptStore(database: () => Prisma
 					const nextAttemptId = randomUUID();
 					await tx.socialPublicationAttempt.create({
 						data: {
+                            providerCallCeiling:row.providerCallCeiling,nativeStartCeiling:row.nativeStartCeiling,executionActorUserId:row.executionActorUserId,
 							id: nextAttemptId,
 							socialPostId: row.socialPostId,
 							frozenStateId: row.frozenStateId,

@@ -1,3 +1,4 @@
+import { readExecutionAdmission, assertExecutionAdmissionOpen } from "./execution-admission";
 import { lockPublicationPost } from "./publication-locks";
 import { readServiceEnvironment } from "./runtime-environment";
 import { workspaceService } from "./workspace.service";
@@ -503,6 +504,7 @@ export const socialPublicationRecovery = {
           outcome: "unknown",
           nextActionAt: now,
           terminalAt: null,
+          executionActorUserId:input.actorUserId,
           ...(renewNative ? {nativeStartRound:{increment:1},nativeStartCount:0} : {}),
           ...(renewWindow ? {
             reconciliationDeadline: new Date(now.getTime() + budget.reconciliationDeadlineMs),
@@ -524,7 +526,7 @@ export const socialPublicationRecovery = {
           actorUserId: input.actorUserId,
           kind: "recheck_requested",
           reason: parsed.reason,
-          ...(renewNative ? {executionBudgetAudit:{kind:"native_round_renewal",previousRound:attempt.nativeStartRound,round:attempt.nativeStartRound+1,previousNativeStartCount:attempt.nativeStartCount,ceiling:attempt.nativeStartCeiling}} : {}),
+          executionBudgetAudit:{kind:renewNative?"native_round_renewal":"native_recheck_authority",previousRound:attempt.nativeStartRound,round:attempt.nativeStartRound+(renewNative?1:0),previousNativeStartCount:attempt.nativeStartCount,ceiling:attempt.nativeStartCeiling,previousActorUserId:attempt.executionActorUserId,actorUserId:input.actorUserId},
         },
       });
       return {
@@ -819,7 +821,9 @@ export const socialPublicationRecovery = {
     });
     const now = input.now ?? new Date();
     const mutate = async (tx: Prisma.TransactionClient) => {
+      const admission=await readExecutionAdmission(tx);
       const { post, attempt, frozen } = await loadRecoveryTarget(tx, input);
+      assertExecutionAdmissionOpen(admission);
       if (
         post.status !== "needs_attention" ||
         attempt.phase !== "needs_attention" ||
@@ -872,6 +876,7 @@ export const socialPublicationRecovery = {
           frozenStateId: frozen.id,
           attemptNumber: attempt.attemptNumber + 1,
           priorAttemptId: attempt.id,
+          executionActorUserId:input.actorUserId,
           idempotencyKey: `${attempt.idempotencyKey}:manual:${decisionId}`,
           phase: "retry_scheduled",
           nextActionAt: now,
