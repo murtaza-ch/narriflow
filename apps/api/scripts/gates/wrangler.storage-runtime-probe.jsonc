@@ -1,0 +1,16 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "narriflow-local-storage-probe",
+  "main": "../../../../packages/services/scripts/gates/storage-runtime-probe.ts",
+  "compatibility_date": "2026-10-30",
+  "compatibility_flags": [
+    "nodejs_compat",
+    "disallow_importable_env"
+  ],
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [],
+  "alias": {
+    "@aws-sdk/xml-builder": "@aws-sdk/xml-builder/dist-cjs/index.js"
+  }
+}

@@ -1,0 +1,35 @@
+{
+  "runtime": "workerd",
+  "checks": [
+    "create_multipart",
+    "sigv4_part_checksum_and_length",
+    "sigv4_exact_source_condition",
+    "complete_then_exact_head",
+    "embedded_http200_error_keeps_uncertain_object",
+    "no_abort_after_ambiguous_complete"
+  ],
+  "passed": 6,
+  "provider": "injected_s3_transport",
+  "date": "2026-10-31",
+  "command": "bun run --cwd apps/api test:storage:workerd",
+  "unitTests": {
+    "passed": 7,
+    "assertions": 30
+  },
+  "packageVersions": {
+    "@aws-sdk/client-s3": "3.1030.0",
+    "@aws-sdk/xml-builder": "3.972.17",
+    "@smithy/fetch-http-handler": "5.3.16"
+  },
+  "discoveredRuntimeGap": "The SDK browser XML parser requires DOMParser, absent in workerd. Wrangler aliases the same locked XML package to its existing pure JS CommonJS parser.",
+  "references": [
+    "https://developers.cloudflare.com/r2/api/s3/api/",
+    "https://github.com/aws/aws-sdk-js-v3/blob/main/packages/s3-request-presigner/README.md"
+  ],
+  "openGates": [
+    "live domain fence and durable multipart HTTP wiring",
+    "actual R2 checksum/list/complete/HEAD and ambiguous completion recovery",
+    "real 10 GiB upload and greater-than-5-GiB pin",
+    "Modal deployment"
+  ]
+}
