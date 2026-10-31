@@ -67,10 +67,12 @@ def _https(origin: str, target: str, body: bytes, headers: Mapping[str, str], ti
     parsed = urlsplit(origin)
     connection = http.client.HTTPSConnection(parsed.hostname, parsed.port or 443,
                                               timeout=timeout, context=ssl.create_default_context())
+    active_socket = None
     def interrupt():
-        if connection.sock is not None:
+        sock = connection.sock or active_socket
+        if sock is not None:
             try:
-                connection.sock.shutdown(socket.SHUT_RDWR)
+                sock.shutdown(socket.SHUT_RDWR)
             except OSError:
                 pass
         connection.close()
@@ -85,6 +87,7 @@ def _https(origin: str, target: str, body: bytes, headers: Mapping[str, str], ti
     watcher.start()
     try:
         connection.request('POST', target, body=body, headers=dict(headers))
+        active_socket = connection.sock
         response = connection.getresponse()
         chunks, size = [], 0
         while chunk := response.read1(min(8192, MAX_RESPONSE_BYTES + 1 - size)):

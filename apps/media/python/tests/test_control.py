@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
+import ssl
 import subprocess
 import sys
 import time
 from pathlib import Path
 from datetime import datetime, timezone
 import unittest
+import tempfile
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from narriflow_media.control import ControlResponse, ExecutionControlClient, ExecutionControlError, ExecutorSession
 from narriflow_media.process import MediaProcessError, run_owned_process
@@ -14,6 +20,53 @@ from narriflow_media.signing import verify_execution_request
 
 
 class SignedControlTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which('openssl'),'TLS fixture certificate requires openssl')
+    def test_https_deadline_interrupts_a_stalled_body_when_the_server_closes_connections(self):
+        release=threading.Event()
+        class Server(BaseHTTPRequestHandler):
+            def log_message(self,*args):
+                pass
+            def do_POST(self):
+                self.rfile.read(int(self.headers['Content-Length']))
+                self.send_response(200)
+                self.send_header('Connection','close')
+                self.send_header('Content-Length','100')
+                self.send_header('X-Execution-Server-Time',datetime.now(timezone.utc).isoformat().replace('+00:00','Z'))
+                self.end_headers()
+                try:
+                    self.wfile.write(b'{');self.wfile.flush()
+                    # Each chunk arrives within the socket's idle timeout.
+                    # Only the whole-response watchdog can bound this body.
+                    for _ in range(80):
+                        if release.wait(.05):
+                            break
+                        self.wfile.write(b' ');self.wfile.flush()
+                except OSError:
+                    pass
+        with tempfile.TemporaryDirectory() as directory:
+            cert,key=Path(directory)/'server.crt',Path(directory)/'server.key'
+            subprocess.run(['openssl','req','-x509','-newkey','rsa:2048','-nodes','-keyout',str(key),'-out',str(cert),
+                '-days','1','-subj','/CN=127.0.0.1','-addext','subjectAltName=IP:127.0.0.1'],
+                check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=10)
+            server=ThreadingHTTPServer(('127.0.0.1',0),Server)
+            context=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER);context.load_cert_chain(cert,key)
+            server.socket=context.wrap_socket(server.socket,server_side=True)
+            thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
+            previous=os.environ.get('SSL_CERT_FILE');os.environ['SSL_CERT_FILE']=str(cert)
+            began=time.monotonic()
+            try:
+                client=ExecutionControlClient(origin=f'https://127.0.0.1:{server.server_port}',key_id='dev',key=b'k'*32,
+                    timeout_seconds=.25,max_attempts=1)
+                with self.assertRaises(ExecutionControlError):
+                    client.command({'action':'process-start','fence':{}})
+                self.assertLess(time.monotonic()-began,2)
+            finally:
+                if previous is None:
+                    os.environ.pop('SSL_CERT_FILE',None)
+                else:
+                    os.environ['SSL_CERT_FILE']=previous
+                release.set();server.shutdown();server.server_close();thread.join(2)
+
     def test_a_transport_retry_reuses_the_exact_signed_delivery(self):
         deliveries = []
         def transport(origin, target, body, headers, timeout):
