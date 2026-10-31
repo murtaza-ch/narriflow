@@ -639,7 +639,8 @@
     "./publication-observations": "./src/publication-observations.ts",
     "./publication-observations-runtime": "./src/publication-observations-runtime.ts",
     "./performance-capture-contract": "./src/performance-capture-contract.ts",
-    "./social-provider-http": "./src/social-provider-http.ts"
+    "./social-provider-http": "./src/social-provider-http.ts",
+    "./autopilot-finishing-authority": "./src/autopilot-finishing-authority.ts"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",

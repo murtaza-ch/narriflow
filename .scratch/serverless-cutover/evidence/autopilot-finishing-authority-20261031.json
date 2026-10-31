@@ -1,0 +1,43 @@
+{
+  "date": "2026-10-31",
+  "scope": "ContentPack accepted Autopilot source authority and immutable Finishing handoff",
+  "database": "Dedicated local PostgreSQL 17 disposable schema; every migration applied fresh, shared database untouched",
+  "red": [
+    "Missing source authority module",
+    "Changed ContentPack settings paired with accepted Recipe originally admitted; new test failed before validation"
+  ],
+  "validation": {
+    "postgresql": {
+      "tests": 9,
+      "assertions": 43,
+      "files": [
+        "autopilot-finishing-authority.db.test.ts",
+        "generation-finishing-execution.db.test.ts"
+      ],
+      "log": "/tmp/narriflow-autopilot-authority-db.log"
+    },
+    "validator": {
+      "tests": 2,
+      "log": "/tmp/narriflow-autopilot-authority-validator-test.log"
+    },
+    "typechecks": [
+      "services",
+      "validators",
+      "api"
+    ],
+    "biome": "13 changed TypeScript/JSON files passed"
+  },
+  "verified": [
+    "Source Rule/Recipe edits refuse intake before Project or credit reservation",
+    "Settings must match accepted Recipe content",
+    "Publish and review grant id/revision/fingerprint or explicit null frozen on acceptance",
+    "Accepted episode replay never reads renewed grant authority",
+    "Ingest handoff copies unchanged authority after grant renewal/revocation",
+    "SQL rejects ContentPack authority and Recipe audit pointer rewrites"
+  ],
+  "limits": [
+    "No provider side effects or account mutations exercised in this slice",
+    "Parent Finishing runtime must consume expected grant tuples from immutable GenerationFinishing authority"
+  ],
+  "migration": "018; 017 index identifier shortened for Prisma PostgreSQL 63-byte limit"
+}

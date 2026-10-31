@@ -1,3 +1,4 @@
+import { autopilotFinishingAuthoritySchema } from "@narriflow/validators/autopilot-finishing-authority";
 import { appendProgressEventDispatch, flushProjectProgressDrains, queueProjectProgressCatchup } from "./progress-outbox";
 import { randomUUID } from "node:crypto";
 import { requireExecutionAdmissionOpen } from "./execution-admission";
@@ -1318,7 +1319,7 @@ export class IngestJobLifecycle {
   private async freezePackFinishing(
     tx: Tx,
     project: { id: string; workspaceId: string; createdByUserId: string | null },
-    pack: { finishing: Prisma.JsonValue; defaultAspectRatio: string; autopilotRuleId: string | null },
+    pack: { finishing: Prisma.JsonValue; defaultAspectRatio: string; autopilotRuleId: string | null; autopilotAuthority: Prisma.JsonValue },
     originRunId: string,
   ): Promise<boolean> {
     if (!pack.finishing) return false;
@@ -1329,6 +1330,7 @@ export class IngestJobLifecycle {
       actorUserId: project.createdByUserId,
       settings: finishingSettingsSchema.parse(pack.finishing),
       autopilotRuleId: pack.autopilotRuleId,
+      autopilotAuthority: pack.autopilotAuthority === null ? undefined : autopilotFinishingAuthoritySchema.parse(pack.autopilotAuthority),
       defaultAspectRatio: defaultAspectRatioSchema.catch("9:16").parse(pack.defaultAspectRatio),
     });
     if (!frozen.created && !frozen.matches)

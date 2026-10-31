@@ -578,6 +578,8 @@ model ContentPack {
   /// Set only by the Autopilot import, from the rule that imported the Project.
   /// A generation's finishing copies it, and Standing Grants cover finishing by it.
   autopilotRuleId         String?      @db.Uuid
+  /// Exact source settings and intended grant revisions at accepted intake.
+  autopilotAuthority      Json?
   /// Captioned-video settings (framing, caption source with normalized
   /// supplied utterances, export formats), validated by
   /// captionedVideoSettingsSchema. Requires mode "caption_only".
@@ -2805,7 +2807,7 @@ model FrozenPublicationState {
   socialAccount     SocialAccount?             @relation(fields: [socialAccountId], references: [id], onDelete: Restrict)
   attempts          SocialPublicationAttempt[]
 
-  @@index([retiredForPostId,confirmedScheduleRevision], map: "FrozenPublicationState_retiredForPostId_confirmedScheduleRev_idx")
+  @@index([retiredForPostId,confirmedScheduleRevision], map: "FrozenPublicationState_retired_confirmation_idx")
   @@index([clipExportId])
   @@index([clipExportVariantId])
   @@index([clipExportVariantId,socialPostId])

@@ -9,7 +9,7 @@ ALTER TABLE "FrozenPublicationState" ADD CONSTRAINT "FrozenPublicationState_owne
  (("socialPostId" IS NOT NULL)::integer+("retiredForPostId" IS NOT NULL)::integer)=1
  AND ("confirmedScheduleRevision" IS NULL OR "confirmedScheduleRevision">0)
 );
-CREATE INDEX "FrozenPublicationState_retiredForPostId_confirmedScheduleRev_idx"
+CREATE INDEX "FrozenPublicationState_retired_confirmation_idx"
  ON "FrozenPublicationState"("retiredForPostId","confirmedScheduleRevision");
 CREATE UNIQUE INDEX "FrozenPublicationState_approval_identity"
  ON "FrozenPublicationState"((COALESCE("socialPostId","retiredForPostId")),"confirmedScheduleRevision") WHERE "confirmedScheduleRevision" IS NOT NULL;

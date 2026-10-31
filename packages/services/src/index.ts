@@ -737,3 +737,5 @@ export * from "./export-bundle-runtime";
 export * from "./export-bundle-input";
 
 export * from "./export-bundle-expiry";
+
+export { readAutopilotImportSource, freezeAutopilotFinishingAuthority, AutopilotSourceChanged, type AutopilotImportSource } from "./autopilot-finishing-authority";
