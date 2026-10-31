@@ -309,12 +309,7 @@ export {
 	AnalyticsServiceError,
 	type AnalyticsFailureCode,
 } from "./analytics.service";
-export {
-	CAPTURE_OFFSETS_MINUTES,
-	createPerformanceSync,
-	type PerformanceSkipReason,
-} from "./performance-sync";
-export { getPerformanceSync } from "./performance-sync-runtime";
+export {CAPTURE_OFFSETS_MINUTES} from "./performance-capture-contract";
 export { performanceService, PerformanceService } from "./performance.service";
 export {
 	computePerformanceGuidance,

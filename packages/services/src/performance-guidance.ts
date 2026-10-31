@@ -1,4 +1,4 @@
-import { Prisma, type PrismaClient } from "@prisma/client";
+import type { PrismaClient } from "@prisma/client";
 import {
 	clipCategorySchema,
 	PERFORMANCE_GUIDANCE_DIMENSIONS,
@@ -15,7 +15,6 @@ import {
 	categoryLabel,
 	durationBandKey,
 	durationBandLabel,
-	readComparedVideos,
 	type PerformanceVideo,
 } from "./performance-summary";
 
@@ -248,9 +247,6 @@ export function rankClips<T extends RankableClip>(
 
 // --- Storing and reading ---------------------------------------------------------
 
-/** A Date as the UTC `timestamp` the tables store, whatever the session zone. */
-const utc = (date: Date) => Prisma.sql`(${date.toISOString()}::timestamptz AT TIME ZONE 'UTC')`;
-
 type StoredRow = { computedAt: Date; totalPosts: number; platforms: unknown; groups: unknown };
 
 /** The stored guidance as this code reads it: groups whose key it no longer knows are dropped. */
@@ -333,92 +329,9 @@ export async function readGuidanceView(
 	};
 }
 
-export interface PerformanceGuidanceDependencies {
-	prisma: PrismaClient;
-	now?: () => Date;
-}
-
-/**
- * The Workspace's guidance, kept fresh. `refreshStale` computes it for
- * Workspaces with enough tracked videos whose last attempt is missing or a day
- * old, oldest first, so every Workspace is recomputed about nightly without all
- * of them at once. A Workspace whose computation fails is stamped as attempted
- * and waits a day like the rest, so it cannot hold up the others. Two workers
- * computing the same Workspace write the same numbers.
- */
-export function createPerformanceGuidance(dependencies: PerformanceGuidanceDependencies) {
-	const { prisma } = dependencies;
-	const now = dependencies.now ?? (() => new Date());
-
-	async function refresh(workspaceId: string): Promise<PerformanceGuidance> {
-		const at = now();
-		const since = new Date(at.getTime() - GUIDANCE_WINDOW_DAYS * 24 * 60 * 60 * 1000);
-		const { measured } = await readComparedVideos(prisma, workspaceId, { since });
-		const guidance = computePerformanceGuidance(measured);
-		const data = {
-			computedAt: at,
-			attemptedAt: at,
-			totalPosts: guidance.totalPosts,
-			platforms: guidance.platforms as Prisma.InputJsonValue,
-			groups: guidance.groups as Prisma.InputJsonValue,
-		};
-		await prisma.performanceGuidance.upsert({
-			where: { workspaceId },
-			create: { workspaceId, ...data },
-			update: data,
-		});
-		return guidance;
-	}
-
-	/** Records a failed try without touching what was last computed. */
-	async function markAttempted(workspaceId: string) {
-		const at = now();
-		await prisma.performanceGuidance.upsert({
-			where: { workspaceId },
-			create: { workspaceId, computedAt: at, attemptedAt: at, totalPosts: 0, platforms: [], groups: [] },
-			update: { attemptedAt: at },
-		});
-	}
-
-	return {
-		refresh,
-		async refreshStale(limit = 20): Promise<number> {
-			const at = now();
-			// The count stops at the threshold, so a Workspace with thousands of
-			// videos costs no more than one with thirty.
-			const stale = await prisma.$queryRaw<Array<{ workspaceId: string }>>`
-				SELECT w."id" AS "workspaceId"
-				FROM "Workspace" w
-				LEFT JOIN "PerformanceGuidance" g ON g."workspaceId" = w."id"
-				WHERE (g."attemptedAt" IS NULL OR g."attemptedAt" <= ${utc(new Date(at.getTime() - GUIDANCE_REFRESH_MS))})
-					AND (SELECT COUNT(*) FROM (
-						SELECT 1 FROM "TrackedVideo" tv WHERE tv."workspaceId" = w."id" LIMIT ${MINIMUM_GUIDANCE_WORKSPACE_POSTS}
-					) capped) >= ${MINIMUM_GUIDANCE_WORKSPACE_POSTS}
-				ORDER BY g."attemptedAt" ASC NULLS FIRST, w."id"
-				LIMIT ${limit}`;
-			let refreshed = 0;
-			for (const { workspaceId } of stale) {
-				try {
-					await refresh(workspaceId);
-					refreshed += 1;
-				} catch (error) {
-					console.warn(
-						JSON.stringify({
-							level: "error",
-							message: "performance_guidance_refresh_failed",
-							workspaceId,
-							error: error instanceof Error ? error.message : "Unknown error",
-						}),
-					);
-					await markAttempted(workspaceId).catch(() => {});
-				}
-			}
-			return refreshed;
-		},
-		/** The moment-detection line for a Workspace, or null. */
-		async promptLine(workspaceId: string): Promise<string | null> {
-			const applied = await readAppliedGuidance(prisma, workspaceId);
-			return guidancePromptLine(applied?.guidance ?? null);
-		},
-	};
+/** Reading the applied cache is separate from the exact po1 nightly command. */
+export function createPerformanceGuidance(dependencies:{prisma:Pick<PrismaClient,'workspace'>}){
+ return {async promptLine(workspaceId:string):Promise<string|null>{
+  const applied=await readAppliedGuidance(dependencies.prisma,workspaceId);return guidancePromptLine(applied?.guidance??null);
+ }};
 }

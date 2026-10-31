@@ -216,15 +216,7 @@ export async function trackPublishedVideo(
 				postedHour: hour,
 			})
 		: null;
-	const video = await tx.trackedVideo.upsert({
-		where: {
-			workspaceId_platform_platformPostId: {
-				workspaceId: post.workspaceId,
-				platform: post.platform,
-				platformPostId: published.platformPostId,
-			},
-		},
-		create: {
+    await tx.trackedVideo.createMany({data:{
 			workspaceId: post.workspaceId,
 			socialAccountId: post.socialAccountId,
 			socialPostId: post.id,
@@ -233,9 +225,8 @@ export async function trackPublishedVideo(
 			platformPostId: published.platformPostId,
 			publishedAt: published.publishedAt,
 			...(facts?.success ? { clipFacts: facts.data, clipFactsAt: at } : {}),
-		},
-		update: {},
-	});
+		},skipDuplicates:true});
+    const video=await tx.trackedVideo.findUniqueOrThrow({where:{workspaceId_platform_platformPostId:{workspaceId:post.workspaceId,platform:post.platform,platformPostId:published.platformPostId}}});
 	await tx.performanceCapture.createMany({
 		data: CAPTURE_OFFSETS_MINUTES.map((minutes, slot) => ({
 			trackedVideoId: video.id,
@@ -631,26 +622,20 @@ export function createPublicationObservations(options: {
 		if (!accountId) return { kind: "skip", reason: "account_disconnected" };
 		try {
 			const account = await options.accounts.getPublishAccount(accountId);
-			if (
-				!(await db.$transaction(async (tx) => {
-					if (!(await ownedCapture(tx, row.id, row.leaseOwner!, epoch)))
-						return false;
-					return Boolean(
-						await tx.socialAccount.findFirst({
-							where: { id: accountId, status: "active" },
-							select: { id: true },
-						}),
-					);
-				}))
-			)
-				return { kind: "skip", reason: "account_disconnected" };
+            const observed=await db.$transaction(async tx=>{
+              if(!await ownedCapture(tx,row.id,row.leaseOwner!,epoch))return null;
+              const active=await tx.socialAccount.findFirst({where:{id:accountId,status:'active'},select:{id:true}});
+              return active?clock(tx):null;
+            });
+            if(!observed)return {kind:'skip',reason:'account_disconnected'};
+
 			return await PERFORMANCE_READERS[
 				row.trackedVideo.platform as PerformancePlatform
 			]({
 				fetch: safeFetch,
 				accessToken: account.accessToken,
 				videoIds: [row.trackedVideo.platformPostId],
-				now: new Date(),
+				now: observed,
 			});
 		} catch (error) {
 			const code = (error as { code?: string })?.code;

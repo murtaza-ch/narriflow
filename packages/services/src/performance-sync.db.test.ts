@@ -1,3 +1,4 @@
+import {createPerformanceTestRuntime,type KnownPerformanceSubjects} from "./publication-observation-test-support";
 import { bindServiceTestEnvironment } from "./runtime-test-support";
 import { createDatabaseTestContext } from "@narriflow/db/testing";
 import { randomUUID } from "node:crypto";
@@ -18,8 +19,7 @@ import { analyticsService } from "./analytics.service";
 import {
 	CAPTURE_OFFSETS_MINUTES,
 	COMPARISON_SLOT,
-	createPerformanceSync,
-} from "./performance-sync";
+} from "./performance-capture-contract";
 import { msUntilQuotaReset } from "./performance-providers";
 import { performanceService } from "./performance.service";
 import { socialService } from "./social.service";
@@ -73,6 +73,7 @@ dbDescribe("Performance sync PostgreSQL invariants", () => {
 	let pool: Pool;
 	let previousGlobalPrisma: PrismaClient | undefined;
 	const prismaGlobal = createDatabaseTestContext();
+  const subjects:KnownPerformanceSubjects={published:[],tracked:new Set()};
 
 	beforeAll(bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		pool = new Pool({ connectionString: databaseUrl!, max: 12 });
@@ -94,20 +95,20 @@ dbDescribe("Performance sync PostgreSQL invariants", () => {
 	// start each test with no tracked or published videos so a test's calls
 	// only ever see its own videos.
 	beforeEach(bindServiceTestEnvironment(prismaGlobal.bind(async () => {
-		await prisma.trackedVideo.deleteMany();
-		await prisma.publishedSocialVideo.deleteMany();
+    await prisma.trackedVideo.deleteMany({where:{id:{in:[...subjects.tracked]}}});
+    await prisma.publishedSocialVideo.deleteMany({where:{socialPostId:{in:subjects.published.map(row=>row.socialPostId)}}});
+    subjects.published.length=0;subjects.tracked.clear();
 	})));
 
 	function sync(
 		fetcher: typeof fetch,
 		options: { now?: () => Date; accounts?: { getPublishAccount(id: string): Promise<{ accessToken: string }> } } = {},
 	) {
-		return createPerformanceSync({
-			prisma,
+		return createPerformanceTestRuntime({
+      database:prisma,subjects,
 			fetch: fetcher,
 			accounts: options.accounts ?? accountsStub(),
 			now: options.now,
-			log: () => {},
 		});
 	}
 
@@ -284,6 +285,7 @@ dbDescribe("Performance sync PostgreSQL invariants", () => {
 			});
 		}
 		if (input.verified !== false) {
+      subjects.published.push({socialPostId:post.id,platformPostId:input.platformPostId});
 			await prisma.publishedSocialVideo.create({
 				data: {
 					socialPostId: post.id,
@@ -322,17 +324,18 @@ dbDescribe("Performance sync PostgreSQL invariants", () => {
 		await prisma.publishedSocialVideo.create({
 			data: { socialPostId: instagram.id, platformPostId: "instagram-1", publishedAt },
 		});
+    subjects.published.push({socialPostId:instagram.id,platformPostId:"instagram-1"});
 		await published(f, {
 			platformPostId: "ancient-1",
 			publishedAt: new Date(Date.now() - 40 * DAY),
 		});
 
 		await Promise.all(
-			Array.from({ length: 4 }, () => sync(youtube({}).fetcher).scheduleTrackedVideos()),
+			Array.from({ length: 4 }, () => sync(youtube({}).fetcher).scheduleKnownVideos()),
 		);
-		await sync(youtube({}).fetcher).scheduleTrackedVideos();
+		await sync(youtube({}).fetcher).scheduleKnownVideos();
 
-		expect(await prisma.trackedVideo.count()).toBe(1);
+		expect(await prisma.trackedVideo.count({where:{id:{in:[...subjects.tracked]}}})).toBe(1);
 		const tracked = await trackedFor("idempotent-1");
 		expect(tracked).toMatchObject({
 			workspaceId: f.workspace.id,
@@ -357,10 +360,10 @@ dbDescribe("Performance sync PostgreSQL invariants", () => {
 		await published(f, { platformPostId: "private-1", publishedAt, visibility: "private" });
 		await published(f, { platformPostId: "unlisted-1", publishedAt, visibility: "unlisted" });
 
-		await sync(youtube({}).fetcher).scheduleTrackedVideos();
+		await sync(youtube({}).fetcher).scheduleKnownVideos();
 
 		expect(
-			(await prisma.trackedVideo.findMany({ select: { platformPostId: true } })).map(
+			(await prisma.trackedVideo.findMany({where:{id:{in:[...subjects.tracked]}}, select: { platformPostId: true } })).map(
 				(video) => video.platformPostId,
 			),
 		).toEqual(["public-1"]);
@@ -369,15 +372,14 @@ dbDescribe("Performance sync PostgreSQL invariants", () => {
 	test("two workers racing for one due capture capture it once", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const f = await fixture();
 		await published(f, { platformPostId: "race-1", publishedAt: new Date(Date.now() - 2 * HOUR) });
-		await sync(youtube({}).fetcher).scheduleTrackedVideos();
+		await sync(youtube({}).fetcher).scheduleKnownVideos();
 
 		const platform = youtube({ "race-1": 500 });
-		const results = await Promise.all([
-			sync(platform.fetcher).captureDue(),
-			sync(platform.fetcher).captureDue(),
+		await Promise.all([
+			sync(platform.fetcher).driveKnownCaptures(),
+			sync(platform.fetcher).driveKnownCaptures(),
 		]);
 
-		expect(results.reduce((sum, count) => sum + count, 0)).toBe(1);
 		expect(platform.calls).toEqual([["race-1"]]);
 		const { captures } = await trackedFor("race-1");
 		expect(captures.map((capture) => capture.state)).toEqual([
@@ -403,7 +405,7 @@ dbDescribe("Performance sync PostgreSQL invariants", () => {
 		const f = await fixture();
 		const startedAt = new Date();
 		await published(f, { platformPostId: "fence-1", publishedAt: new Date(startedAt.getTime() - 2 * HOUR) });
-		await sync(youtube({}).fetcher).scheduleTrackedVideos();
+		await sync(youtube({}).fetcher).scheduleKnownVideos();
 
 		let release!: () => void;
 		let reading!: () => void;
@@ -413,16 +415,16 @@ dbDescribe("Performance sync PostgreSQL invariants", () => {
 			await new Promise<void>((resolve) => (release = resolve));
 			return json({ items: [{ id: "fence-1", statistics: { viewCount: "111" } }] });
 		}) as typeof fetch;
-		const stale = sync(slow, { now: () => startedAt }).captureDue();
+		const stale = sync(slow, { now: () => startedAt }).driveKnownCaptures();
 		await readingStarted;
 
 		// The first lease has expired, so a second worker takes the capture over.
 		const fresh = youtube({ "fence-1": 222 });
 		const later = () => new Date(startedAt.getTime() + 10 * 60_000);
-		expect(await sync(fresh.fetcher, { now: later }).captureDue()).toBe(1);
+		await sync(fresh.fetcher, { now: later }).driveKnownCaptures();
 
 		release();
-		expect(await stale).toBe(0);
+		await stale;
 		const { captures } = await trackedFor("fence-1");
 		expect(captures[0]).toMatchObject({ state: "captured", views: 222 });
 	})));
@@ -431,11 +433,11 @@ dbDescribe("Performance sync PostgreSQL invariants", () => {
 		const f = await fixture();
 		const start = new Date();
 		await published(f, { platformPostId: "backfill-1", publishedAt: new Date(start.getTime() - 4 * DAY) });
-		await sync(youtube({}).fetcher).scheduleTrackedVideos();
+		await sync(youtube({}).fetcher).scheduleKnownVideos();
 
 		const platform = youtube({ "backfill-1": 640 });
 		// 1 hour, 24 hours and 3 days are all due: one is captured, two are missed.
-		expect(await sync(platform.fetcher, { now: () => start }).captureDue()).toBe(3);
+		await sync(platform.fetcher, { now: () => start }).driveKnownCaptures();
 
 		expect(platform.calls).toEqual([["backfill-1"]]);
 		const { captures } = await trackedFor("backfill-1");
@@ -448,34 +450,30 @@ dbDescribe("Performance sync PostgreSQL invariants", () => {
 		]);
 	})));
 
-	test("batches due captures per account", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
+	test("each exact capture reads only its bound video and account", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const f = await fixture();
 		const second = await newAccount(f, "youtube_shorts");
 		const publishedAt = new Date(Date.now() - 2 * HOUR);
 		for (const id of ["a-1", "a-2", "a-3"]) await published(f, { platformPostId: id, publishedAt });
 		await published(f, { platformPostId: "b-1", publishedAt, account: second });
 		const worker = sync(youtube({}).fetcher);
-		await worker.scheduleTrackedVideos();
+		await worker.scheduleKnownVideos();
 
 		const platform = youtube({ "a-1": 1, "a-2": 2, "a-3": 3, "b-1": 4 });
 		const lookups: string[] = [];
-		expect(
-			await sync(platform.fetcher, { accounts: accountsStub(lookups) }).captureDue(),
-		).toBe(4);
-		expect(platform.calls.map((ids) => ids.sort())).toEqual(
-			expect.arrayContaining([["a-1", "a-2", "a-3"], ["b-1"]]),
-		);
-		expect(platform.calls).toHaveLength(2);
-		expect(lookups.sort()).toEqual([f.account.id, second.id].sort());
+		await sync(platform.fetcher, { accounts: accountsStub(lookups) }).driveKnownCaptures();
+		expect(platform.calls.map(ids=>ids[0]).sort()).toEqual(["a-1","a-2","a-3","b-1"]);
+    expect(platform.calls.every(ids=>ids.length===1)).toBe(true);
+    expect(lookups.filter(id=>id===f.account.id)).toHaveLength(3);expect(lookups.filter(id=>id===second.id)).toHaveLength(1);
 	})));
 
-	test("TikTok batches at the documented 20 IDs per query", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
+	test("TikTok capture commands stay within the documented query bound", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const f = await fixture("tiktok");
 		const publishedAt = new Date(Date.now() - 2 * HOUR);
 		for (let index = 0; index < 21; index += 1) {
 			await published(f, { platformPostId: `70000000000000000${String(index).padStart(2, "0")}`, publishedAt });
 		}
-		await sync(youtube({}).fetcher).scheduleTrackedVideos();
+		await sync(youtube({}).fetcher).scheduleKnownVideos();
 		const sizes: number[] = [];
 		const tiktok = (async (_url: string | URL | Request, init?: RequestInit) => {
 			const ids = JSON.parse(String(init?.body)).filters.video_ids as string[];
@@ -486,10 +484,10 @@ dbDescribe("Performance sync PostgreSQL invariants", () => {
 			});
 		}) as typeof fetch;
 
-		expect(await sync(tiktok).captureDue()).toBe(21);
-		expect(sizes.sort((a, b) => b - a)).toEqual([20, 1]);
+		await sync(tiktok).driveKnownCaptures();
+		expect(sizes).toHaveLength(21);expect(sizes.every(size=>size>=1&&size<=20)).toBe(true);
 		expect(
-			await prisma.performanceCapture.count({ where: { state: "captured", shares: 2 } }),
+			await prisma.performanceCapture.count({ where: {trackedVideoId:{in:[...subjects.tracked]}, state: "captured", shares: 2 } }),
 		).toBe(21);
 	})));
 
@@ -498,7 +496,7 @@ dbDescribe("Performance sync PostgreSQL invariants", () => {
 		const clockStart = new Date();
 		const publishedAt = new Date(clockStart.getTime() - 2 * HOUR);
 		const post = await published(f, { platformPostId: "history-1", publishedAt });
-		await sync(youtube({}).fetcher).scheduleTrackedVideos();
+		await sync(youtube({}).fetcher).scheduleKnownVideos();
 
 		// Frozen before any reading exists.
 		const tracked = await trackedFor("history-1");
@@ -526,10 +524,10 @@ dbDescribe("Performance sync PostgreSQL invariants", () => {
 			where: { id: f.clip.id },
 			data: { viralityScore: 10, category: "humor", hookStrengthScore: 5 },
 		});
-		await sync(youtube({}).fetcher).scheduleTrackedVideos();
+		await sync(youtube({}).fetcher).scheduleKnownVideos();
 		expect((await trackedFor("history-1")).clipFacts).toEqual(tracked.clipFacts);
 
-		await sync(youtube({ "history-1": 100 }).fetcher, { now: () => clockStart }).captureDue();
+		await sync(youtube({ "history-1": 100 }).fetcher, { now: () => clockStart }).driveKnownCaptures();
 		expect(
 			(await socialService.listProjectPosts(
 				{ actorUserId: f.user.id, workspaceId: f.workspace.id },
@@ -548,7 +546,7 @@ dbDescribe("Performance sync PostgreSQL invariants", () => {
 		});
 
 		const dayTwo = () => new Date(clockStart.getTime() + 26 * HOUR);
-		await sync(youtube({ "history-1": 900 }).fetcher, { now: dayTwo }).captureDue();
+		await sync(youtube({ "history-1": 900 }).fetcher, { now: dayTwo }).driveKnownCaptures();
 
 		// Deleting the Project cascades the Social Post but not the history.
 		await prisma.project.delete({ where: { id: f.project.id } });
@@ -563,9 +561,9 @@ dbDescribe("Performance sync PostgreSQL invariants", () => {
 
 		// Later slots keep capturing without the Project; the 7-day reading feeds the view.
 		const dayFour = () => new Date(clockStart.getTime() + 3 * DAY + 2 * HOUR);
-		await sync(youtube({ "history-1": 1_500 }).fetcher, { now: dayFour }).captureDue();
+		await sync(youtube({ "history-1": 1_500 }).fetcher, { now: dayFour }).driveKnownCaptures();
 		const dayEight = () => new Date(clockStart.getTime() + 8 * DAY);
-		await sync(youtube({ "history-1": 2_000 }).fetcher, { now: dayEight }).captureDue();
+		await sync(youtube({ "history-1": 2_000 }).fetcher, { now: dayEight }).driveKnownCaptures();
 		expect(
 			(await trackedFor("history-1")).captures
 				.filter((capture) => capture.state === "captured")
@@ -589,11 +587,11 @@ dbDescribe("Performance sync PostgreSQL invariants", () => {
 		await published(f, { platformPostId: "young-1", publishedAt: new Date(start.getTime() - 2 * DAY) });
 		await published(f, { platformPostId: "old-1", publishedAt: new Date(start.getTime() - 8 * DAY) });
 		await published(f, { platformPostId: "lost-1", publishedAt: new Date(start.getTime() - 8 * DAY) });
-		await sync(youtube({}).fetcher).scheduleTrackedVideos();
+		await sync(youtube({}).fetcher).scheduleKnownVideos();
 
 		// young-1 is two days old; old-1 reads at its newest due slot (the 7-day
 		// one); lost-1 is gone from the platform, so its 7-day capture is skipped.
-		await sync(youtube({ "young-1": 50, "old-1": 700 }).fetcher, { now: () => start }).captureDue();
+		await sync(youtube({ "young-1": 50, "old-1": 700 }).fetcher, { now: () => start }).driveKnownCaptures();
 
 		const summary = await performanceService.whatWorked(actor);
 		expect(summary).toMatchObject({
@@ -609,7 +607,7 @@ dbDescribe("Performance sync PostgreSQL invariants", () => {
 
 		// A skipped 7-day capture is not waiting: once young-1 reads at 7 days, nothing waits.
 		const sevenDays = () => new Date(start.getTime() + 6 * DAY);
-		await sync(youtube({ "young-1": 90, "old-1": 800 }).fetcher, { now: sevenDays }).captureDue();
+		await sync(youtube({ "young-1": 90, "old-1": 800 }).fetcher, { now: sevenDays }).driveKnownCaptures();
 		expect(await performanceService.whatWorked(actor)).toMatchObject({
 			measuredVideos: 2,
 			waitingVideos: 0,
@@ -676,14 +674,14 @@ dbDescribe("Performance sync PostgreSQL invariants", () => {
 			unauthorized: await published(f, { platformPostId: "unauthorized-1", publishedAt, account: unauthorized }),
 			reconnected: await published(f, { platformPostId: "reconnected-1", publishedAt, account: reconnected }),
 		};
-		await sync(youtube({}).fetcher).scheduleTrackedVideos();
+		await sync(youtube({}).fetcher).scheduleKnownVideos();
 		const accounts = {
 			async getPublishAccount(accountId: string) {
 				if (accountId === gone.id) throw Object.assign(new Error("gone"), { code: "social_account_missing" });
 				if (accountId === expired.id) throw Object.assign(new Error("expired"), { code: "social_account_expired" });
-				// The provider rejected the refresh token: a reconnect, not a transient failure.
+				// A started rotating-token refresh with no confirmed response requires reconnect.
 				if (accountId === rejected.id) {
-					throw Object.assign(new Error("rejected"), { code: "social_oauth_http_failed", status: 400 });
+					throw Object.assign(new Error("rejected"), { code: "social_account_refresh_unconfirmed", status: 409 });
 				}
 				return { accessToken: `token:${accountId}` };
 			},
@@ -697,7 +695,7 @@ dbDescribe("Performance sync PostgreSQL invariants", () => {
 			return json({ items: [{ id, statistics: { viewCount: "7" } }] });
 		}) as typeof fetch;
 
-		expect(await sync(fetcher, { accounts }).captureDue()).toBe(5);
+		await sync(fetcher, { accounts }).driveKnownCaptures();
 
 		const slotZero = async (platformPostId: string) =>
 			(await trackedFor(platformPostId)).captures[0]!;
@@ -719,8 +717,8 @@ dbDescribe("Performance sync PostgreSQL invariants", () => {
 	test("a video the platform no longer returns is skipped, not retried", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const f = await fixture();
 		await published(f, { platformPostId: "deleted-1", publishedAt: new Date(Date.now() - 2 * HOUR) });
-		await sync(youtube({}).fetcher).scheduleTrackedVideos();
-		expect(await sync(youtube({}).fetcher).captureDue()).toBe(1);
+		await sync(youtube({}).fetcher).scheduleKnownVideos();
+		await sync(youtube({}).fetcher).driveKnownCaptures();
 		expect((await trackedFor("deleted-1")).captures[0]).toMatchObject({
 			state: "skipped",
 			skipReason: "video_unavailable",
@@ -733,7 +731,7 @@ dbDescribe("Performance sync PostgreSQL invariants", () => {
 		const start = new Date();
 		await published(f, { platformPostId: "broken-1", publishedAt: new Date(start.getTime() - 3 * HOUR), account: broken });
 		await published(f, { platformPostId: "fine-1", publishedAt: new Date(start.getTime() - 2 * HOUR) });
-		await sync(youtube({}).fetcher).scheduleTrackedVideos();
+		await sync(youtube({}).fetcher).scheduleKnownVideos();
 
 		const fetcher = (async (url: string | URL | Request, init?: RequestInit) => {
 			if ((init?.headers as Record<string, string>).Authorization.endsWith(broken.id)) {
@@ -749,7 +747,7 @@ dbDescribe("Performance sync PostgreSQL invariants", () => {
 		}) as typeof fetch;
 
 		// The broken account's batch is first in line, yet the other one still captures.
-		expect(await sync(fetcher, { now: () => start }).captureDue()).toBe(1);
+		await sync(fetcher, { now: () => start }).driveKnownCaptures();
 		expect((await trackedFor("fine-1")).captures[0]).toMatchObject({ state: "captured", views: 9 });
 		expect((await trackedFor("broken-1")).captures[0]).toMatchObject({
 			state: "scheduled",
@@ -759,14 +757,14 @@ dbDescribe("Performance sync PostgreSQL invariants", () => {
 		expect((await trackedFor("broken-1")).captures[0]!.dueAt.getTime()).toBeGreaterThan(start.getTime());
 	})));
 
-	test("a rate limit backs off the batch, spares the platform for the run, and gives up after the budget", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
+	test("a rate limit backs off its exact target and gives up after the unchanged budget", bindServiceTestEnvironment(prismaGlobal.bind(async () => {
 		const f = await fixture();
 		const second = await newAccount(f, "youtube_shorts");
 		const start = new Date();
 		const publishedAt = new Date(start.getTime() - 2 * HOUR);
 		await published(f, { platformPostId: "limited-1", publishedAt });
 		await published(f, { platformPostId: "limited-2", publishedAt, account: second });
-		await sync(youtube({}).fetcher).scheduleTrackedVideos();
+		await sync(youtube({}).fetcher).scheduleKnownVideos();
 
 		let calls = 0;
 		const limited = (async () => {
@@ -774,16 +772,16 @@ dbDescribe("Performance sync PostgreSQL invariants", () => {
 			return new Response("slow down", { status: 429, headers: { "retry-after": "1800" } });
 		}) as typeof fetch;
 		const worker = sync(limited, { now: () => start });
-		expect(await worker.captureDue()).toBe(0);
+		await worker.driveKnownCaptures();
 
-		// One call hit the limit; the other account's batch was left alone.
-		expect(calls).toBe(1);
+		// Each independent accepted target owns its provider response and retry.
+		expect(calls).toBe(2);
 		const rows = (
 			await Promise.all(["limited-1", "limited-2"].map(async (id) => (await trackedFor(id)).captures[0]!))
 		).sort((left, right) => right.attempts - left.attempts);
 		expect(rows[0]).toMatchObject({ state: "scheduled", attempts: 1, leaseOwner: null });
 		expect(rows[0]!.dueAt.getTime()).toBeGreaterThanOrEqual(start.getTime() + 1_800_000);
-		expect(rows[1]).toMatchObject({ state: "scheduled", attempts: 0 });
+		expect(rows[1]).toMatchObject({ state: "scheduled", attempts: 1 });
 
 		// A capture that has used its budget is skipped, not retried forever.
 		await prisma.performanceCapture.update({
@@ -794,7 +792,7 @@ dbDescribe("Performance sync PostgreSQL invariants", () => {
 			where: { id: rows[0]!.id },
 			data: { attempts: 9, dueAt: start },
 		});
-		await worker.captureDue();
+		await worker.driveKnownCaptures();
 		expect(await prisma.performanceCapture.findUniqueOrThrow({ where: { id: rows[0]!.id } })).toMatchObject({
 			state: "skipped",
 			skipReason: "rate_limited",
@@ -805,11 +803,11 @@ dbDescribe("Performance sync PostgreSQL invariants", () => {
 		const f = await fixture();
 		const start = new Date();
 		await published(f, { platformPostId: "quota-1", publishedAt: new Date(start.getTime() - 2 * HOUR) });
-		await sync(youtube({}).fetcher).scheduleTrackedVideos();
+		await sync(youtube({}).fetcher).scheduleKnownVideos();
 		const exhausted = (async () =>
 			json({ error: { code: 403, errors: [{ reason: "quotaExceeded" }] } }, { status: 403 })) as typeof fetch;
 
-		await sync(exhausted, { now: () => start }).captureDue();
+		await sync(exhausted, { now: () => start }).driveKnownCaptures();
 
 		const capture = (await trackedFor("quota-1")).captures[0]!;
 		expect(capture).toMatchObject({ state: "scheduled", attempts: 0, leaseOwner: null });
