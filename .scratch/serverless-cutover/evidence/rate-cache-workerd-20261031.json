@@ -1,0 +1,34 @@
+{
+  "command": "bun run --cwd apps/api test:runtime:workerd",
+  "testedAt": "2026-10-31",
+  "node": "v24.8.0",
+  "wrangler": "4.156.0",
+  "compatibilityDate": "2026-10-30",
+  "scope": "Local workerd verifies SQLite Durable Object rate concurrency, read-only peek, window expiry, and Cache API reuse. No external database/provider calls. Deployed binding/native import acceptance remains pending.",
+  "result": {
+    "runtime": "workerd",
+    "checks": [
+      "static_liveness",
+      "cookie_is_not_a_bearer",
+      "clerk_rs256_bearer",
+      "clerk_authorized_party",
+      "invocation_settings",
+      "scribe_exact_signed_bytes",
+      "scribe_rejects_reserialized_bytes",
+      "durable_rate_concurrency",
+      "durable_rate_peek",
+      "durable_rate_window_expiry",
+      "pexels_cache_api"
+    ],
+    "passed": 11
+  },
+  "sha256": {
+    "apps/api/src/durable-objects/rate-limiter.ts": "0b3b4dfd9d371aead4d520c6e59219f276d6461fb7dbdcd2247f5bb0de8583ae",
+    "apps/api/src/rate-limiter-client.ts": "0ea5e214e920956383bb47dfa71e33244e30a46867ad6a985cc62a11c5f835d5",
+    "apps/api/src/pexels-cache.ts": "a470e88e7f5f3e9a310ccf0912e48c1be33d405aa25f1a7fc46b3948ae46efed",
+    "apps/api/src/worker-services.ts": "9d20fdce4bfa6465a20dc9a765c73458dff162e1f4bf92645d3aa6809264456f",
+    "packages/services/src/rate-limit.ts": "85924ee34e74a1d6113ca5087d7bdef344d54b947ba2c044e4f71f9277e95fbf",
+    "packages/services/src/pexels.service.ts": "d37396f492e7a1587bf35601912dec71491b8717047e029bc592e74ce3f13136",
+    "apps/api/scripts/gates/runtime-probe.ts": "5b4e48536919f5a6edd6497f1b794d3fe5ca44dead4b85be2b93b12bc472c3b6"
+  }
+}

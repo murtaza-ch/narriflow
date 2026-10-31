@@ -1,3 +1,5 @@
+import type { McpRequestScope } from "./mcp-server";
+export type { McpRequestScope } from "./mcp-server";
 import { readServiceEnvironment } from "@narriflow/services/runtime-environment";
 import { acceptedContent, inputRequired, inputResponse, type InputRequiredResult, type ToolAnnotations, type ClientCapabilities } from "@modelcontextprotocol/server";
 import { autopilotService } from "@narriflow/services/autopilot.service";
@@ -42,6 +44,7 @@ const uploadSessions = integrationUploadSessions(uploadSessionService);
 export interface NarriflowMcpServerOptions {
   /** Human handoffs and review pages on WEB_ORIGIN. */
   appOrigin?: string;
+  runInRequestScope?: McpRequestScope;
   /** API resource and direct media requests on API_ORIGIN. */
   apiOrigin?: string;
   protocolEra?: "modern" | "legacy";
@@ -65,7 +68,7 @@ export function buildNarriflowMcpServer(principal: NarriflowMcpPrincipal, option
     instructions: NARRIFLOW_MCP_INSTRUCTIONS,
     cacheHints: { "server/discover": { ttlMs: 300_000, cacheScope: "public" }, "tools/list": { ttlMs: 300_000, cacheScope: "public" } },
     requestState: { verify: async (state) => verifyMcpPreparation(state, { principal: await currentPrincipal() }) },
-  });
+  }, options.runInRequestScope);
   installNarriflowTasks(server, { principal, authenticatePrincipal: options.authenticatePrincipal, assertNewMutationAllowed: options.assertNewMutationAllowed, appOrigin });
   const mutation = (tool: NarriflowMcpToolName, current: NarriflowMcpPrincipal, workspaceId: string, key: string): IntegrationMutation => ({
     clientIdempotencyKey: key, beforeAccept: async () => { await options.assertNewMutationAllowed?.({ tool, principal: current, workspaceId }); },

@@ -1,60 +1,5 @@
-import { readServiceEnvironment } from "./runtime-environment";
-import Redis from "ioredis";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { ExpectedDomainFailureError } from "./expected-domain-failure";
-import {
-  boundedRedisRetryDelay,
-  installOptionalRedisErrorHandler,
-  OPTIONAL_REDIS_COMMAND_TIMEOUT_MS,
-  OPTIONAL_REDIS_CONNECT_TIMEOUT_MS,
-  OPTIONAL_REDIS_RECOVERY_COOLDOWN_MS,
-  optionalRedisUrl,
-} from "./optional-redis";
-
-let client: Redis | null = null;
-let connection: Promise<void> | null = null;
-let retryAfter = 0;
-
-function resetClient(failedClient: Redis) {
-  if (client === failedClient) {
-    client = null;
-    connection = null;
-    retryAfter = Date.now() + OPTIONAL_REDIS_RECOVERY_COOLDOWN_MS;
-  }
-  failedClient.disconnect();
-}
-
-function getClient(): Redis | null {
-  const url = optionalRedisUrl(readServiceEnvironment().UPSTASH_REDIS_URL);
-  if (!url) return null;
-  if (Date.now() < retryAfter) return null;
-  if (!client) {
-    let nextClient: Redis;
-    try {
-      nextClient = new Redis(url, {
-        lazyConnect: true,
-        maxRetriesPerRequest: 1,
-        enableOfflineQueue: false,
-        connectTimeout: OPTIONAL_REDIS_CONNECT_TIMEOUT_MS,
-        commandTimeout: OPTIONAL_REDIS_COMMAND_TIMEOUT_MS,
-        retryStrategy: (attempt) => boundedRedisRetryDelay(attempt, 2),
-      });
-    } catch {
-      retryAfter = Date.now() + OPTIONAL_REDIS_RECOVERY_COOLDOWN_MS;
-      return null;
-    }
-    installOptionalRedisErrorHandler(nextClient);
-    nextClient.on("end", () => {
-      if (client === nextClient) {
-        client = null;
-        connection = null;
-        retryAfter = Date.now() + OPTIONAL_REDIS_RECOVERY_COOLDOWN_MS;
-      }
-    });
-    client = nextClient;
-    connection = nextClient.connect();
-  }
-  return client;
-}
 
 export interface RateLimitResult {
   availability: "available" | "unavailable";
@@ -63,54 +8,49 @@ export interface RateLimitResult {
   limit: number;
 }
 
-/** Fixed-window per-key limiter. Callers choose their outage policy using availability. */
-export async function checkRateLimit(
-  key: string,
-  limit: number,
-  windowSeconds: number,
-): Promise<RateLimitResult> {
-  let redis: Redis | null = null;
+/** The Worker supplies a Durable Object client for exactly one invocation. */
+export interface RateLimiterPort {
+  check(key: string, limit: number, windowSeconds: number, consume: boolean): Promise<RateLimitResult>;
+}
+const currentLimiter = new AsyncLocalStorage<RateLimiterPort>();
+export function withRateLimiter<Result>(limiter: RateLimiterPort, operation: () => Result): Result {
+  return currentLimiter.run(limiter, operation);
+}
+
+/** Unknown availability carries no measured exhaustion. Admission rejects all
+ * new mutations using availability; reads and immutable receipt replays may proceed. */
+function unavailable(limit: number): RateLimitResult {
+  return { allowed: true, remaining: limit, limit, availability: "unavailable" };
+}
+
+async function check(key: string, limit: number, windowSeconds: number, consume: boolean): Promise<RateLimitResult> {
+  const limiter = currentLimiter.getStore();
+  if (!limiter) return unavailable(limit);
   try {
-    redis = getClient();
-    if (!redis) return { allowed: true, remaining: limit, limit, availability: "unavailable" };
-    // Offline queuing is disabled: every caller must await the same cold-start handshake.
-    await connection;
-    const bucket = `ratelimit:${key}:${Math.floor(Date.now() / 1000 / windowSeconds)}`;
-    const count = await redis.incr(bucket);
-    if (count === 1) await redis.expire(bucket, windowSeconds);
-    return { allowed: count <= limit, remaining: Math.max(0, limit - count), limit, availability: "available" };
+    const result = await limiter.check(key, limit, windowSeconds, consume);
+    if (result.availability !== "available" || result.limit !== limit ||
+      typeof result.allowed !== "boolean" || !Number.isSafeInteger(result.remaining) ||
+      result.remaining < 0 || result.remaining > limit) return unavailable(limit);
+    return result;
   } catch {
-    if (redis) resetClient(redis);
-    return { allowed: true, remaining: limit, limit, availability: "unavailable" };
+    return unavailable(limit);
   }
 }
 
-/** Reads a fixed-window bucket without counting. Pair with checkRateLimit when
- * only some outcomes should count, such as failed authentications. */
-export async function readRateLimit(
-  key: string,
-  limit: number,
-  windowSeconds: number,
-): Promise<RateLimitResult> {
-  let redis: Redis | null = null;
-  try {
-    redis = getClient();
-    if (!redis) return { allowed: true, remaining: limit, limit, availability: "unavailable" };
-    await connection;
-    const count = Number(await redis.get(`ratelimit:${key}:${Math.floor(Date.now() / 1000 / windowSeconds)}`) ?? 0);
-    return { allowed: count < limit, remaining: Math.max(0, limit - count), limit, availability: "available" };
-  } catch {
-    if (redis) resetClient(redis);
-    return { allowed: true, remaining: limit, limit, availability: "unavailable" };
-  }
+export function checkRateLimit(key: string, limit: number, windowSeconds: number): Promise<RateLimitResult> {
+  return check(key, limit, windowSeconds, true);
 }
 
-/** Integration admission for a new mutation. Invoke only after the owning
- * domain has checked its immutable replay identity, so accepted work still
- * replays while the limiter is unavailable. */
+/** Peeks without counting, so successful reviewer authentication does not use
+ * the failed-authentication budget. */
+export function readRateLimit(key: string, limit: number, windowSeconds: number): Promise<RateLimitResult> {
+  return check(key, limit, windowSeconds, false);
+}
+
+/** Run after immutable replay lookup, before accepting genuinely new work. */
 export function requireNewMutationAllowed(result: RateLimitResult) {
-  if (!result.allowed) throw new ExpectedDomainFailureError({ code: "request_limit_exceeded", kind: "rate_limited",
-    message: "Request limit exceeded", retryAfterSeconds: 60 });
   if (result.availability !== "available") throw new ExpectedDomainFailureError({ code: "mutations_unavailable", kind: "unavailable",
     message: "New mutations are paused while the request limiter is unavailable", retryAfterSeconds: 5 });
+  if (!result.allowed) throw new ExpectedDomainFailureError({ code: "request_limit_exceeded", kind: "rate_limited",
+    message: "Request limit exceeded", retryAfterSeconds: 60 });
 }

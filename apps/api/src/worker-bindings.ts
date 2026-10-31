@@ -1,3 +1,5 @@
+import type { ProjectProgress } from "./durable-objects/project-progress";
+import type { RateLimiter } from "./durable-objects/rate-limiter";
 /** Bindings are supplied to an invocation. They are never copied into process.env. */
 export interface ApiWorkerBindings {
   [name: string]: unknown;
@@ -7,8 +9,8 @@ export interface ApiWorkerBindings {
   RENDER_RUN: Workflow;
   OPERATION_DRIVER: Workflow;
   MAINTENANCE: Workflow;
-  PROJECT_PROGRESS: DurableObjectNamespace;
-  RATE_LIMITER: DurableObjectNamespace;
+  PROJECT_PROGRESS: DurableObjectNamespace<ProjectProgress>;
+  RATE_LIMITER: DurableObjectNamespace<RateLimiter>;
   LOCAL_FETCH_MAILBOX: DurableObjectNamespace;
   CF_VERSION_METADATA?: { readonly id: string; readonly tag?: string; readonly timestamp?: string };
 }

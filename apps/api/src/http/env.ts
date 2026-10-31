@@ -14,6 +14,7 @@ export interface ApiEnv {
   Variables: {
     /** Set by Hono's `requestId` middleware; the only ID a request ever has. */
     requestId: string;
+    requestStartedAt?: number;
     /** Original Bun request, retained when a body limiter rebuilds the readable request. */
     ingressRequest?: Request;
     /** Set once a response was built by the envelope helpers, so normalization skips it. */

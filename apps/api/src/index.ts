@@ -3,7 +3,11 @@ import { createProductionApp } from "./runtime";
 import { createApiWorker } from "./worker";
 
 export default createApiWorker({
-  createApp(environment) {
-    return createProductionApp(loadApiConfig(environment), environment);
+  createApp(environment, runInvocation) {
+    return createProductionApp(loadApiConfig(environment), environment, runInvocation);
   },
 });
+
+export { RateLimiter } from "./durable-objects/rate-limiter";
+
+export { ProjectProgress } from "./durable-objects/project-progress";
