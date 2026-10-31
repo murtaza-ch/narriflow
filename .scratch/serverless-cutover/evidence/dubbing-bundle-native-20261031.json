@@ -18,15 +18,15 @@
         "log": "/tmp/narriflow-serverless-gates/dub-restore-green2.log"
       },
       "regression": {
-        "tests": 48,
-        "assertions": 450,
+        "tests": 50,
+        "assertions": 479,
         "suites": [
           "dubbing-execution",
           "export-bundle-execution",
           "generation-usage",
           "targeted-workflow-execution"
         ],
-        "log": "/tmp/narriflow-serverless-gates/dub-finalizer-regression.log"
+        "log": "/tmp/narriflow-serverless-gates/dub-release-registration-regression-green2.log"
       }
     },
     "host": {
@@ -69,7 +69,13 @@
       "services",
       "media",
       "api"
-    ]
+    ],
+    "chargedRelease": {
+      "baseCommit": "4993b0f0",
+      "behavior": "Actual Popen charge remains1 after shutdown release and receipt replay; a sealed Dub audio recovery advances generation without repeating paid work or refunding that charge. Startup rejection stays0.",
+      "red": "/tmp/narriflow-serverless-gates/dub-sealed-release-red.log",
+      "green": "/tmp/narriflow-serverless-gates/dub-release-registration-regression-green2.log"
+    }
   },
   "registration": {
     "worker": "Authoritative current WorkflowRun.stage selects bundle or dubbing for control, transfer, preparation and exact unowned deadline handling.",
@@ -79,7 +85,6 @@
   "remaining": [
     "Actual Modal Function verifier and live Worker-to-native Bundle/Dub gates after root-owned migration/deployment coordination",
     "Large4GiB archive peak-RSS/resource gate",
-    "Global base Workflow release must preserve actual Popen charge; root owns the correction and a new sealed-Dub release regression is pending that checkpoint",
     "Ticket19 remaining producers/expiry/old-loop removal are tracked by their owners"
   ],
   "external_mutations": {

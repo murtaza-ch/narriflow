@@ -49,8 +49,8 @@ Bun1.3.6, Python3.13.5 and FFmpeg7.1.5. It reproduces and fixes a pinned-reader
 cleanup error without changing budgets or goldens. Worker stage routing and
 Modal `dub_mix` plus a credential-free verifier are registered in source; no
 paid provider call or deployment was made by this checkpoint. Actual Modal/live
-Bundle/Dub acceptance and the large-archive memory gate remain open. Root is also
-correcting the shared Workflow release path to retain actual charged starts.
+Bundle/Dub acceptance and the large-archive memory gate remain open. Shutdown release retains actual charged starts, including sealed-result Dub
+recovery; startup rejection stays uncharged.
 
 Targeted Finishing and email runtime checkpoint, 2026-10-31: each Finishing child
 admission/result transaction rechecks current claim authority. Copy generation
