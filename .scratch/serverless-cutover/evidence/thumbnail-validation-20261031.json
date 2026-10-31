@@ -1,0 +1,77 @@
+{
+  "recordedAt": "2026-10-31T03:51:54.719536+00:00",
+  "scope": "Ticket16 targeted thumbnail domain, native CLI and shared execution factory; actual Modal/deployed gates remain pending",
+  "verification": {
+    "isolatedPostgres": {
+      "tests": 2,
+      "assertions": 17,
+      "elapsedSeconds": 105.5,
+      "host": "ep-wispy-field-b5wyn9o3.c-7.us-east-2.aws.neon.tech",
+      "checks": [
+        "One operation per export/frame and replay-safe request key",
+        "Source must be a completed variant backed by sealed render artifact",
+        "Admission registers durable OperationDriver work and creates no VisualAsset",
+        "Different executor owner loses atomic acquisition",
+        "Process-start charged once",
+        "Metadata-first sealed output remains processing withnoasset",
+        "Binary plus metadata publishes one referenced extracted-frame asset",
+        "Exact inbox replay preserves committed result"
+      ],
+      "cleanup": "Tagged fixtures removed; noepochchanges"
+    },
+    "nativeCliAndWorkerArtifactPort": {
+      "passed": 7,
+      "assertions": 49
+    },
+    "servicesFast": {
+      "passed": 1577,
+      "skipped": 1016,
+      "failed": 0
+    },
+    "apiFast": {
+      "passed": 881,
+      "skipped": 36,
+      "failed": 0
+    },
+    "typecheck": [
+      "services",
+      "api",
+      "worker"
+    ],
+    "bundleAudit": {
+      "removed": [
+        "thumbnail child_process",
+        "fontkit",
+        "ffprobe-installer",
+        "R2 filesystem"
+      ],
+      "remaining": [
+        "Sharp from generated-media publisher",
+        "url-guard DNS/http/https/net"
+      ],
+      "accepted": false
+    }
+  },
+  "contract": {
+    "functionName": "asset_validation",
+    "subject": "thumbnail_frame",
+    "outputs": [
+      "thumbnail image/jpeg up to20MiB",
+      "probe application/json up to64KiB"
+    ],
+    "source": "Exact sealed completed export withIf-MatchETag, byteLength andSHA256",
+    "budget": "Atmost3charged process starts; explicit retry usesnewgeneration/currentactor andfresh10minute deadline without resetting chargedcount",
+    "runtime": "One-shot nativeCLI; obsolete Bun thumbnail poll/store/process loops removed"
+  },
+  "pending": [
+    "Rootsignedcontrol/Workflow/Modal composition must selectthumbnail_frame in shared factory",
+    "Deployed end-to-end native andresource/cancellation gates",
+    "Remaining16 arbitraryoutbound transport andgeneratedSharp relocation"
+  ],
+  "sha256": {
+    "packages/services/src/thumbnail-frame-execution.ts": "d3ce7a394febdc00c068ed00ae99fec5a9c0a8593477804dcbe3f6d13ce105e0",
+    "packages/services/src/thumbnail-frame-preparation-runtime.ts": "192e1f14935dc12b88a02b5e2cbbf44342f43a8e056a273401b39d5fb9c84bdd",
+    "packages/services/src/native-validation-execution.ts": "6ec13ac62a0401037f80f8a022cb63ba54beb8e97cfb96b265ca5198332baaee",
+    "apps/media/src/asset-validation.ts": "ed26341973e0f4810642eb168ea88ab5578979b7620ca3f507119a27458a001f"
+  }
+}

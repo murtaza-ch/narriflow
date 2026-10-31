@@ -19,4 +19,6 @@ RateLimiter DO and Cache API replacement are implemented, including local worker
 
 Font and visual finalization now return pending jobs. Native parsing/probing runs in the owned media CLI. The fenced domain publishes an asset only after the assigned binary and probe metadata are both sealed. Font reads use persisted face metrics, and null metrics cannot be selected. Storage control no longer imports filesystem transfer code. [Validation foundation evidence](../evidence/native-validation-20261031.json).
 
-Remaining: connect the real Modal/work-package runtime and thumbnail domain, move arbitrary outbound transport, clear the final native audit, and run deployed/resource gates. This ticket remains claimed.
+Thumbnail requests now use a targeted fenced domain and the same owned media CLI. The native polling path is removed. Its metadata-first publication and replay gates pass on isolated PostgreSQL. [Thumbnail evidence](../evidence/thumbnail-validation-20261031.json).
+
+Remaining: connect the signed HTTP/Workflow/Modal runtime, move generated-image validation and arbitrary outbound transport, clear the final native audit, and run deployed/resource gates. This ticket remains claimed.
