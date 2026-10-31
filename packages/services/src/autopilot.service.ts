@@ -19,7 +19,7 @@ import {
   type AutopilotRuleUpdate,
   type RssEpisodeInput,
 } from "@narriflow/validators";
-import { fetchRssFeed, redactUrlForDisplay, RssFeedError } from "./rss";
+import { fetchRssFeed, redactUrlForDisplay, RssFeedError, RssProbePending } from "./rss";
 import { RemoteFetchError, UnsafeUrlError } from "./url-guard";
 import { ProcessingUsageError } from "./processing-usage";
 import { projectService } from "./project.service";
@@ -273,7 +273,7 @@ export class AutopilotService {
     const parsed = autopilotRuleInputSchema.parse(input);
     let feed: Awaited<ReturnType<typeof fetchRssFeed>> | null = null;
     const prepare = async () => {
-      if (parsed.sourceKind === "rss") feed = await (this.dependencies.fetchFeed ?? fetchRssFeed)(parsed.rssUrl!);
+      if (parsed.sourceKind === "rss") feed = await (this.dependencies.fetchFeed ?? fetchRssFeed)(parsed.rssUrl!, { scope });
       else await zoomService.requireConnection(scope, parsed.zoomConnectionId!);
       // The Recipe's settings must be ones this saver could have chosen: its
       // Brand Profile applies now, and finishing fits the plan and queue rights.
@@ -384,7 +384,7 @@ export class AutopilotService {
     // Pointing a rule at a Recipe is a save of that Recipe's settings for it.
     if (parsed.recipeId !== undefined) await recipeService.resolveForRule(scope, parsed.recipeId, credential);
 
-    const feed = parsed.rssUrl ? await (this.dependencies.fetchFeed ?? fetchRssFeed)(parsed.rssUrl) : null;
+    const feed = parsed.rssUrl ? await (this.dependencies.fetchFeed ?? fetchRssFeed)(parsed.rssUrl, { scope }) : null;
     const mode = parsed.initialImportMode ?? existing.initialImportMode;
     const now = new Date();
     const resetFeed = Boolean(feed);
@@ -694,6 +694,11 @@ export class AutopilotService {
           claimLost += 1;
           continue;
         }
+        if (error instanceof RssProbePending) {
+          try { await this.updateClaim(claim, "rss_probe_wait", { status: "active", claimToken: null, leaseExpiresAt: null, nextRunAt: new Date(this.now().getTime() + 3000) }); }
+          catch (settlementError) { if (!(settlementError instanceof AutopilotClaimLost)) throw settlementError; this.reportClaimLost(settlementError); claimLost += 1; }
+          continue;
+        }
         const failures = rule.consecutiveFailures + 1;
         const permanent = isPermanentFeedError(error);
         const terminal = permanent || failures >= AUTOPILOT_MAX_CONSECUTIVE_FAILURES;
@@ -815,6 +820,7 @@ export class AutopilotService {
       return { imported: 0 };
     }
     const feed = await (this.dependencies.fetchFeed ?? fetchRssFeed)(rule.rssUrl!, {
+      scope, requestKey: `autopilot:${rule.id}:${rule.lastCheckedAt?.toISOString() ?? "initial"}`,
       etag: rule.initializedAt ? rule.etag : null,
       lastModified: rule.initializedAt ? rule.lastModified : null,
     });

@@ -1,13 +1,13 @@
+import { fetchRssFeed } from "./rss-fetch";
 import { describe, expect, test } from "bun:test";
 import {
   decodeXmlText,
-  fetchRssFeed,
   parseItunesDuration,
   parseRssFeed,
   redactUrlForDisplay,
   RssFeedError,
   xmlScalar,
-} from "./rss";
+} from "@narriflow/services/rss-parser";
 
 const RSS_HEAD = `<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd">

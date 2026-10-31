@@ -1,0 +1,75 @@
+{
+  "date": "2026-10-31",
+  "scope": "Outbound RSS foundation; ticket16 remains claimed",
+  "database": {
+    "target": "isolated PG17 disposable serverless_execution_test schema",
+    "migrations": 134,
+    "tests": 2,
+    "assertions": 21,
+    "durationMs": 448,
+    "cleanup": "disposable schema removed by guarded runner"
+  },
+  "native": {
+    "tests": 58,
+    "assertions": 127,
+    "covers": [
+      "public and private mixed DNS",
+      "connection pinned to validated addresses",
+      "SNI and Host preserved",
+      "redirect hop revalidation",
+      "cross-origin credential stripping",
+      "bounded decoded response",
+      "malformed resolver addresses",
+      "RSS XML entities and ordering",
+      "spawned poisoned-env native CLI rejects private target without URL diagnostics",
+      "exact four MiB outbound receipt read; other probes remain64KiB"
+    ],
+    "ownedPythonProcess": "real Bun child observed once; private URL rejected; no output file"
+  },
+  "fastSuites": {
+    "api": {
+      "pass": 885,
+      "skip": 36
+    },
+    "apiClient": {
+      "pass": 228
+    },
+    "services": {
+      "pass": 1528,
+      "skip": 1023
+    }
+  },
+  "routes": {
+    "mounted": 287,
+    "protocol": 44,
+    "problems": 0
+  },
+  "browser": {
+    "runtime": "Next16.4.3 Turbopack, actual UploadShell + real API-client against isolated HTTP fixture",
+    "pending": "one accepted job; no episode selection before ready",
+    "ready": "one verified episode selected, React rssEpisodes1/loadingfalse",
+    "nextErrors": {
+      "configErrors": [],
+      "sessionErrors": []
+    },
+    "compilationIssues": [],
+    "browserErrors": [],
+    "temporaryFixtures": "page removed; temporary IntakeContext export reverted; Chrome, Next and API fixture stopped"
+  },
+  "primaryReference": "https://github.com/OWASP/CheatSheetSeries/blob/master/cheatsheets/Server_Side_Request_Forgery_Prevention_Cheat_Sheet.md",
+  "strategy": "Reuse existing tested transport with all-answer validation and exact pinned lookup; isolate DNS/socket implementation in media; no generic HTTP tunnel or Worker DNS precheck substituted for pinned delivery",
+  "pending": [
+    "Root signedHTTP/Workflow/Modal composition must register outbound_probe and run_rss_probe",
+    "Maintenance Autopilot durable wake/wait integration replaces retiring loop glue",
+    "Generated image validation/publication and callback native delivery closure",
+    "Final candidate bundle audit and deployed end-to-end/resource/cancellation gates"
+  ],
+  "sha256": {
+    "packages/services/src/outbound-probe.ts": "3a8275ad1b80d2b8eb1d37dcc89ca1186ecb1acc2284d68a052105bf7123f8fb",
+    "packages/services/src/outbound-probe-execution.ts": "fe5347718df536be44fe92078ca188424fd2b29d03e60968f03c4d9ca6be4ae2",
+    "apps/media/src/outbound-transport.ts": "7f3d00740a4ec0591a15747e088abdbc2815698be8abb5b38aef4a89ebc2c24c",
+    "apps/media/src/outbound-rss-cli.ts": "b2553f7f0f970bcd70c9cbd2e785ab0998cb4b8322cbbc406523e3cb8ecbf1de",
+    "apps/media/python/narriflow_media/outbound_runtime.py": "dcc5d268813b2c1b5987bce46a578f437c59d65a0e2dd564ede5d706c4621011",
+    "packages/api-client/src/ingest/rss-probe.ts": "177b9fde5b2672d94510ecb91a65e3343b397cf1e6b40bb34f922c1665025e60"
+  }
+}

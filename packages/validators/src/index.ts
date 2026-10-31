@@ -73,3 +73,5 @@ export * from "./workspace-event";
 export * from "./zoom";
 
 export * from "./native-validation";
+
+export * from "./outbound-probe";

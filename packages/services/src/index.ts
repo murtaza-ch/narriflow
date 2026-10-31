@@ -1,6 +1,7 @@
 export { workflowRunExecutionInputHash, type WorkflowRunExecutionInput } from "./workflow-execution-input";
 export { createScribeProvider, ScribeSubmissionUnconfirmed, type ScribeAcceptance, type ScribeFetchResult, type ScribeSubmissionReference } from "./transcription-provider";
 export { createTranscriptionAdmission, scribeConcurrencyUnits, continueScribeCapacityRelease, type TranscriptionAdmissionResult } from "./transcription-admission";
+export { createTranscriptionControl, type TranscriptionControlPorts, type TranscriptionControlResult } from "./transcription-control";
 export {
 	boundedExpectedDomainFailureDetails,
 	ExpectedDomainFailureError,
@@ -670,3 +671,7 @@ export type { PutFileFromPath, DownloadObjectToFile } from "./r2-transfer-contra
 export { NativeValidationService, NativeValidationError, type NativeValidationCommit, type NativeValidationReference, type NativeValidationPreparation } from "./native-validation";
 
 export { ThumbnailFrameExecution, thumbnailFrameExecutionInputHash, type ThumbnailFrameExecutionReference } from "./thumbnail-frame-execution";
+
+export * from "./outbound-probe";
+export * from "./outbound-probe-runtime";
+export * from "./outbound-probe-execution";

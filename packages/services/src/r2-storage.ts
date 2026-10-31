@@ -838,3 +838,22 @@ export async function putObjectBytes(params: {
 
 /** Transitional old-worker adapter only. Candidate code uses scoped grants. */
 export const r2FileTransferControl = { getClient, getR2Config, projectStorageDeadline };
+
+
+/** Exact assigned object, independently measured bytes; descriptor fields never authorize another key. */
+export async function readAssignedArtifactJson(artifact: import("./executor-domain-control").ExecutorArtifactCommit, maxBytes: number): Promise<unknown> {
+  if (artifact.contentType !== "application/json" || maxBytes < 1 || maxBytes > (artifact.role === "outbound_receipt" ? 4 * 1024 * 1024 : 65536) || artifact.byteLength > BigInt(maxBytes)) throw new Error("execution_artifact_invalid");
+  const { bucket } = getR2Config();
+  const result = await getClient().send(new GetObjectCommand({ Bucket: bucket, Key: artifact.storageKey, IfMatch: artifact.etag, Range: `bytes=0-${maxBytes}` }));
+  if (!result.Body || result.ETag !== artifact.etag || BigInt(result.ContentLength ?? -1) !== artifact.byteLength || result.ContentType !== artifact.contentType ||
+    result.Metadata?.["execution-artifact-id"] !== artifact.artifactId || result.Metadata?.["execution-binding-hash"] !== artifact.bindingHash) {
+    (result.Body as { destroy?: () => void } | undefined)?.destroy?.();
+    throw new Error("execution_artifact_invalid");
+  }
+  const stream = result.Body as AsyncIterable<Uint8Array>;
+  const parts: Uint8Array[] = []; let length = 0;
+  for await (const part of stream) { length += part.byteLength; if (length > maxBytes) throw new Error("execution_artifact_invalid"); parts.push(part); }
+  const bytes = Buffer.concat(parts);
+  if (BigInt(length) !== artifact.byteLength || createHash("sha256").update(bytes).digest("hex") !== artifact.sha256) throw new Error("execution_artifact_invalid");
+  return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+}

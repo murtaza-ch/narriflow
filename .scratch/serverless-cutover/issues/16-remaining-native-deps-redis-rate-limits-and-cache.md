@@ -21,4 +21,6 @@ Font and visual finalization now return pending jobs. Native parsing/probing run
 
 Thumbnail requests now use a targeted fenced domain and the same owned media CLI. The native polling path is removed. Its metadata-first publication and replay gates pass on isolated PostgreSQL. [Thumbnail evidence](../evidence/thumbnail-validation-20261031.json).
 
-Remaining: connect the signed HTTP/Workflow/Modal runtime, move generated-image validation and arbitrary outbound transport, clear the final native audit, and run deployed/resource gates. This ticket remains claimed.
+RSS preview/import now use a frozen OutboundProbe and private sealed result. The native owner performs pinned DNS/HTTP and bounded parsing; browser commands await pending status without holding SQL. Fresh-schema publication/member-revocation gates, native transport tests and the actual Next upload screen pass. [Outbound RSS evidence](../evidence/outbound-rss-20261031.json).
+
+Remaining: connect the signed HTTP/Workflow/Modal runtime and durable maintenance waits, move generated-image validation and callback delivery, clear the final native audit, and run deployed/resource gates. This ticket remains claimed.

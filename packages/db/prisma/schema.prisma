@@ -651,6 +651,7 @@ model WorkflowRun {
   @@index([stage, status, nextAttemptAt, createdAt])
   @@index([status, leaseExpiresAt])
   @@index([status, nextPollAt])
+  @@index([projectId, deploymentEpoch, status, errorCode, updatedAt, id], map: "WorkflowRun_source_cancellation_page_idx")
 }
 
 enum RenderGroupStatus {
@@ -712,6 +713,7 @@ model RenderGroup {
   @@unique([attemptToken, id])
   @@index([status, nextAttemptAt, createdAt])
   @@index([status, leaseExpiresAt])
+  @@index([workflowRunId, deploymentEpoch, status, errorCode, updatedAt, id], map: "RenderGroup_source_cancellation_page_idx")
 }
 
 /// Historical membership survives deletion or reassignment of a ClipRender.
@@ -3400,6 +3402,7 @@ model ExecutionAttempt {
 
   @@index([status, leaseExpiresAt])
   @@index([status, operationDeadlineAt])
+  @@index([dispatchId])
 }
 
 /// Committed request dispositions are replayed only for the identical canonical digest.
@@ -3543,4 +3546,38 @@ model NativeValidationJob {
   @@unique([workspaceId, kind, requestFingerprint])
   @@index([status, retryAt, createdAt])
   @@index([workspaceId, createdAt])
+}
+
+
+/// One frozen outbound RSS request; only a fenced native execution may adopt its private result.
+model OutboundProbe {
+  id String @id @default(uuid()) @db.Uuid
+  workspaceId String @db.Uuid
+  createdByUserId String @db.Uuid
+  kind String @db.VarChar(24)
+  requestFingerprint String @db.Char(64)
+  input Json
+  inputHash String @db.Char(64)
+  status String @default("queued") @db.VarChar(24)
+  generation Int @default(1)
+  deploymentEpoch Int
+  attemptToken String? @db.Uuid
+  executorOwner String? @db.Uuid
+  leaseExpiresAt DateTime?
+  operationDeadlineAt DateTime
+  chargedAttempts Int @default(0)
+  maxAttempts Int @default(3)
+  retryAt DateTime?
+  resultArtifactId String? @db.Uuid
+  resultStorageKey String? @db.VarChar(1024)
+  resultEtag String? @db.VarChar(160)
+  resultSha256 String? @db.Char(64)
+  resultByteLength BigInt?
+  errorCode String? @db.VarChar(100)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  completedAt DateTime?
+
+  @@unique([workspaceId, createdByUserId, requestFingerprint])
+  @@index([status, retryAt, createdAt])
 }
