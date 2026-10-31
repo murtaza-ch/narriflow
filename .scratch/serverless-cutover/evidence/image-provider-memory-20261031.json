@@ -1,0 +1,340 @@
+{
+  "runtime": "local-workerd",
+  "limitsUnchanged": true,
+  "processRssIsNotIsolateMemory": true,
+  "heapAfterIsNotPeak": true,
+  "noEdgeDeployPerformed": true,
+  "externalProviderRequests": 0,
+  "nodeVersion": "24.8.0",
+  "results": [
+    {
+      "workerdVersion": "workerd 2026-10-23",
+      "inspectorMarkerVerified": true,
+      "inspectorTarget": {
+        "title": "Cloudflare Worker"
+      },
+      "inputBytes": 1000000,
+      "encodedBytes": 1333336,
+      "status": 200,
+      "body": {
+        "bytes": 1000000,
+        "first": 0,
+        "last": 0,
+        "calls": 1
+      },
+      "wallMs": 371,
+      "baselineWorkerdRssBytes": 209076224,
+      "peakWorkerdRssBytes": 218939392,
+      "beforeHeap": {
+        "usedSize": 11985072,
+        "totalSize": 19185664,
+        "embedderHeapUsedSize": 515872,
+        "backingStorageSize": 686002
+      },
+      "afterHeap": {
+        "usedSize": 15145880,
+        "totalSize": 21872640,
+        "embedderHeapUsedSize": 515872,
+        "backingStorageSize": 5363737
+      }
+    },
+    {
+      "workerdVersion": "workerd 2026-10-23",
+      "inspectorMarkerVerified": true,
+      "inspectorTarget": {
+        "title": "Cloudflare Worker"
+      },
+      "inputBytes": 4000000,
+      "encodedBytes": 5333336,
+      "status": 200,
+      "body": {
+        "bytes": 4000000,
+        "first": 0,
+        "last": 0,
+        "calls": 1
+      },
+      "wallMs": 388,
+      "baselineWorkerdRssBytes": 208060416,
+      "peakWorkerdRssBytes": 244547584,
+      "beforeHeap": {
+        "usedSize": 11974320,
+        "totalSize": 18661376,
+        "embedderHeapUsedSize": 515872,
+        "backingStorageSize": 686002
+      },
+      "afterHeap": {
+        "usedSize": 22788856,
+        "totalSize": 31440896,
+        "embedderHeapUsedSize": 902760,
+        "backingStorageSize": 14020249
+      }
+    },
+    {
+      "workerdVersion": "workerd 2026-10-23",
+      "inspectorMarkerVerified": true,
+      "inspectorTarget": {
+        "title": "Cloudflare Worker"
+      },
+      "inputBytes": 8000000,
+      "encodedBytes": 10666668,
+      "status": 200,
+      "body": {
+        "bytes": 8000000,
+        "first": 0,
+        "last": 0,
+        "calls": 1
+      },
+      "wallMs": 402,
+      "baselineWorkerdRssBytes": 208355328,
+      "peakWorkerdRssBytes": 279805952,
+      "beforeHeap": {
+        "usedSize": 11975048,
+        "totalSize": 18661376,
+        "embedderHeapUsedSize": 515872,
+        "backingStorageSize": 686002
+      },
+      "afterHeap": {
+        "usedSize": 34546536,
+        "totalSize": 43696128,
+        "embedderHeapUsedSize": 1418616,
+        "backingStorageSize": 27353581
+      }
+    },
+    {
+      "workerdVersion": "workerd 2026-10-23",
+      "inspectorMarkerVerified": true,
+      "inspectorTarget": {
+        "title": "Cloudflare Worker"
+      },
+      "inputBytes": 12000000,
+      "encodedBytes": 16000000,
+      "status": 200,
+      "body": {
+        "bytes": 12000000,
+        "first": 0,
+        "last": 0,
+        "calls": 1
+      },
+      "wallMs": 405,
+      "baselineWorkerdRssBytes": 207994880,
+      "peakWorkerdRssBytes": 308543488,
+      "beforeHeap": {
+        "usedSize": 11975076,
+        "totalSize": 18661376,
+        "embedderHeapUsedSize": 515872,
+        "backingStorageSize": 686002
+      },
+      "afterHeap": {
+        "usedSize": 46301672,
+        "totalSize": 56180736,
+        "embedderHeapUsedSize": 1934472,
+        "backingStorageSize": 40686913
+      }
+    },
+    {
+      "workerdVersion": "workerd 2026-10-23",
+      "inspectorMarkerVerified": true,
+      "inspectorTarget": {
+        "title": "Cloudflare Worker"
+      },
+      "inputBytes": 16000000,
+      "encodedBytes": 21333336,
+      "status": 200,
+      "body": {
+        "bytes": 16000000,
+        "first": 0,
+        "last": 0,
+        "calls": 1
+      },
+      "wallMs": 447,
+      "baselineWorkerdRssBytes": 210305024,
+      "peakWorkerdRssBytes": 345800704,
+      "beforeHeap": {
+        "usedSize": 11986568,
+        "totalSize": 18661376,
+        "embedderHeapUsedSize": 515872,
+        "backingStorageSize": 686002
+      },
+      "afterHeap": {
+        "usedSize": 58095044,
+        "totalSize": 68435968,
+        "embedderHeapUsedSize": 2450328,
+        "backingStorageSize": 54020249
+      }
+    },
+    {
+      "workerdVersion": "workerd 2026-10-23",
+      "inspectorMarkerVerified": true,
+      "inspectorTarget": {
+        "title": "Cloudflare Worker"
+      },
+      "inputBytes": 20971520,
+      "encodedBytes": 27962028,
+      "status": 200,
+      "body": {
+        "bytes": 20971520,
+        "first": 0,
+        "last": 0,
+        "calls": 1
+      },
+      "wallMs": 569,
+      "baselineWorkerdRssBytes": 208764928,
+      "peakWorkerdRssBytes": 388153344,
+      "beforeHeap": {
+        "usedSize": 11975096,
+        "totalSize": 18661376,
+        "embedderHeapUsedSize": 515872,
+        "backingStorageSize": 686002
+      },
+      "afterHeap": {
+        "usedSize": 72710636,
+        "totalSize": 84819968,
+        "embedderHeapUsedSize": 3095136,
+        "backingStorageSize": 70591981
+      }
+    },
+    {
+      "workerdVersion": "workerd 2026-10-23",
+      "inspectorMarkerVerified": true,
+      "inspectorTarget": {
+        "title": "Cloudflare Worker"
+      },
+      "inputBytes": 32000000,
+      "encodedBytes": 42666668,
+      "status": 200,
+      "body": {
+        "bytes": 32000000,
+        "first": 0,
+        "last": 0,
+        "calls": 1
+      },
+      "wallMs": 716,
+      "baselineWorkerdRssBytes": 209649664,
+      "peakWorkerdRssBytes": 485179392,
+      "beforeHeap": {
+        "usedSize": 11975048,
+        "totalSize": 18661376,
+        "embedderHeapUsedSize": 515872,
+        "backingStorageSize": 686002
+      },
+      "afterHeap": {
+        "usedSize": 105137612,
+        "totalSize": 119226368,
+        "embedderHeapUsedSize": 4513736,
+        "backingStorageSize": 107353581
+      }
+    },
+    {
+      "workerdVersion": "workerd 2026-10-23",
+      "inspectorMarkerVerified": true,
+      "inspectorTarget": {
+        "title": "Cloudflare Worker"
+      },
+      "inputBytes": 50000000,
+      "encodedBytes": 66666668,
+      "status": 200,
+      "body": {
+        "bytes": 50000000,
+        "first": 0,
+        "last": 0,
+        "calls": 1
+      },
+      "wallMs": 1013,
+      "baselineWorkerdRssBytes": 209551360,
+      "peakWorkerdRssBytes": 628670464,
+      "beforeHeap": {
+        "usedSize": 11975052,
+        "totalSize": 18399232,
+        "embedderHeapUsedSize": 515872,
+        "backingStorageSize": 686002
+      },
+      "afterHeap": {
+        "usedSize": 146366564,
+        "totalSize": 161464320,
+        "embedderHeapUsedSize": 2192488,
+        "backingStorageSize": 234138861
+      }
+    },
+    {
+      "workerdVersion": "workerd 2026-10-23",
+      "inspectorMarkerVerified": true,
+      "inspectorTarget": {
+        "title": "Cloudflare Worker"
+      },
+      "inputBytes": 75000000,
+      "encodedBytes": 100000000,
+      "status": 200,
+      "body": {
+        "bytes": 75000000,
+        "first": 0,
+        "last": 0,
+        "calls": 1
+      },
+      "wallMs": 1488,
+      "baselineWorkerdRssBytes": 208076800,
+      "peakWorkerdRssBytes": 820838400,
+      "beforeHeap": {
+        "usedSize": 11975072,
+        "totalSize": 18399232,
+        "embedderHeapUsedSize": 515872,
+        "backingStorageSize": 686002
+      },
+      "afterHeap": {
+        "usedSize": 214833816,
+        "totalSize": 227213312,
+        "embedderHeapUsedSize": 2450432,
+        "backingStorageSize": 350850497
+      }
+    },
+    {
+      "workerdVersion": "workerd 2026-10-23",
+      "inspectorMarkerVerified": true,
+      "inspectorTarget": {
+        "title": "Cloudflare Worker"
+      },
+      "inputBytes": 100000000,
+      "encodedBytes": 133333336,
+      "status": 200,
+      "body": {
+        "bytes": 100000000,
+        "first": 0,
+        "last": 0,
+        "calls": 1
+      },
+      "wallMs": 1188,
+      "baselineWorkerdRssBytes": 208896000,
+      "peakWorkerdRssBytes": 1014333440,
+      "beforeHeap": {
+        "usedSize": 11975136,
+        "totalSize": 18399232,
+        "embedderHeapUsedSize": 515872,
+        "backingStorageSize": 686002
+      },
+      "afterHeap": {
+        "usedSize": 277731312,
+        "totalSize": 292847616,
+        "embedderHeapUsedSize": 193552,
+        "backingStorageSize": 467431065
+      }
+    }
+  ],
+  "interpretation": {
+    "edgeMemorySafetyCertified": false,
+    "localFailureSizes": [],
+    "largestCompletedOutputBytes": 100000000,
+    "defaultOutputBytes": 20971520,
+    "measurement": "CDP samples the verified probe isolate after provider decode while its output remains live; process RSS is sampled separately and is not isolate memory or billing usage. These are not exact transient allocation peaks.",
+    "conclusion": "Local status200 is insufficient evidence for edge memory safety: at the configured upper output limit, used JavaScript heap alone exceeds the documented edge memory limit. The default also retains substantial heap plus backing storage.",
+    "recommendation": "Move the provider request, base64 decoding, pixel validation and assigned binary upload into a bounded native generated-image execution. Keep reference-only control and atomic GeneratedMediaJob/usage settlement in Workers; preserve configured caps."
+  },
+  "references": [
+    "https://developers.cloudflare.com/workers/platform/limits/",
+    "https://raw.githubusercontent.com/ChromeDevTools/devtools-protocol/master/pdl/js_protocol.pdl"
+  ],
+  "sha256": {
+    "packages/services/src/openai-image-provider.ts": "f15688ed55e0193f551e38a05818c9cd248c3f6609a11618b7fad095d0a6064c",
+    "packages/services/src/url-policy.ts": "b7f4888e8b4af9e961122d6d7a23ec86edda9c8a101b533b73b0229152237670",
+    "apps/api/scripts/gates/image-provider-memory-probe.ts": "e1c9162c795981adf7af0b8f900e014da0f28c1fae23d20d74c8c6c9a513bd91",
+    "apps/api/scripts/run-image-provider-memory-probe.ts": "acb196cf737f08a9353468c0a5b19cb4aebf41009e11cb54b2ffae69d88ac9cd"
+  }
+}
