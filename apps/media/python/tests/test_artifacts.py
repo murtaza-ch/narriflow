@@ -20,7 +20,7 @@ def instant(seconds):
 
 
 class AssignedArtifactTests(unittest.IsolatedAsyncioTestCase):
-    def session(self, output, *, lost_commit=False,lost_complete=False):
+    def session(self, output, *, lost_commit=False,lost_complete=False,render_group=None):
         calls, stored, failures = [], [], []
         def transport(origin,target,body,headers,timeout):
             command,now=json.loads(body),time.time(); calls.append((target,command,body,dict(headers)))
@@ -46,6 +46,7 @@ class AssignedArtifactTests(unittest.IsolatedAsyncioTestCase):
                 if lost_commit or len(failures)==1:
                     raise TimeoutError('commit succeeded, acknowledgement lost')
                 result={'disposition':'committed','artifactId':output['artifactId']}
+                if render_group is not None:result['renderGroup']=render_group
             else:
                 self.fail('completed object was aborted or deleted')
             return ControlResponse(200,{'X-Execution-Server-Time':instant(now)},json.dumps(result).encode())
@@ -93,6 +94,21 @@ class AssignedArtifactTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(ExecutionControlError):
                 await artifacts.commit_uploaded(output['artifactId'])
         self.assertEqual(stored,[b'hello'])
+
+    async def test_final_render_ack_preserves_authoritative_prior_retry_counts(self):
+        output={'artifactId':str(uuid4()),'role':'render_outcome','bindingHash':'1'*64,'maxBytes':10,
+            'contentType':'application/json','contentTypes':['application/json']}
+        outcome={'status':'partial','requested':3,'succeeded':2,'failed':1,'superseded':0}
+        session,calls,stored,storage=self.session(output,render_group=outcome)
+        with session,tempfile.TemporaryDirectory() as directory:
+            artifacts=AssignedArtifacts(session,await load_work_package(session))
+            path=Path(directory)/'outcome.json';path.write_bytes(b'hello')
+            result=await artifacts.upload(output['artifactId'],path,content_type='application/json',byte_length=5,
+                sha256=hashlib.sha256(b'hello').hexdigest(),transport=storage)
+            self.assertEqual(result.render_group,outcome)
+        self.assertEqual(stored,[b'hello'])
+        commits=[call for call in calls if call[1]['action']=='commit-artifact']
+        self.assertEqual(commits[0][2:],commits[1][2:])
 
     async def test_a_completed_pin_is_committed_without_reuploading_or_deleting_it(self):
         output={'artifactId':str(uuid4()),'role':'thumbnail','bindingHash':'1'*64,'maxBytes':10,
