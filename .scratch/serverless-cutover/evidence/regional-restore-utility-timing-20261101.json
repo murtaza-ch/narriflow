@@ -1,0 +1,105 @@
+{
+  "version": 1,
+  "recordedAtUtc": "2026-10-31T21:34:42.660020+00:00",
+  "status": "Regional utility timing preflight PASS; qualified restore gate NOT ESTABLISHED.",
+  "scope": "Evidence-only record of prior operator actions. No cloud or database write, provider call, job admission or ticket status change was performed while preparing this record.",
+  "macPreflight": {
+    "result": "timeout",
+    "utilityMajorVersion": 18,
+    "timeoutSeconds": 300,
+    "terminationSignal": "SIGTERM",
+    "singleTransactionRollback": true,
+    "candidateUntouched": true,
+    "provenance": "SIGTERM is present in the private preflight log. The 300 s timeout, transactional rollback and untouched candidate are operator-confirmed facts from Root. This failed run is not a successful restore."
+  },
+  "regionalPreflight": {
+    "result": "pass",
+    "elapsedSeconds": 26.670737439,
+    "freshDisposableDatabase": "serverless_restore_timing_preflight_20261101",
+    "restoredMigrations": 161,
+    "restoredDeploymentEpoch": 3,
+    "serverVersionBaseInReport": "18.6",
+    "serverVersionBaseProvenance": "The report writes the base 18.6 string as a fixed value; this field is not independent server-identity evidence.",
+    "actualServerIdentityFromStdout": "18.6 (4e5fd08)",
+    "actualUtilityIdentity": "pg_restore (PostgreSQL) 18.6 (Debian 18.6-1.pgdg12+2)",
+    "actualIdentityEvidence": "/tmp/narriflow-serverless-gates/regional-restore-preflight.stdout.log",
+    "modal": {
+      "baseImageTag": "postgres:18.6-bookworm",
+      "imageId": "im-eLOXuxnLewD81EngzOgXFy",
+      "sandboxId": "sb-01M69XYH8X4D1RJR2RZAA42M8N",
+      "region": "us-east",
+      "cloudProvider": "CLOUD_PROVIDER_UNSPECIFIED",
+      "cloudMeaning": "Provider unspecified; no AWS or other provider inference is made from the region name.",
+      "terminated": true,
+      "identityAndTerminationProvenance": "Exact image, Sandbox identity and termination are operator-confirmed by Root; this evidence task performed no cloud API action."
+    },
+    "candidateUntouched": true,
+    "nativeJobsAdmitted": 0,
+    "admissionScope": "Root confirms no native job was admitted; the report scope also states no accepted native clock started.",
+    "stderrByteLength": 0
+  },
+  "tlsTrust": {
+    "operatorDiagnosis": "Root diagnosed a missing Root YR trust anchor during preflight and supplied the trusted public Homebrew CA bundle as a transferred file.",
+    "publicCaBundle": {
+      "sourcePath": "/opt/homebrew/etc/ca-certificates/cert.pem",
+      "byteLength": 272881,
+      "sha256": "9ff422bd8926c5ba278dbd44b8b10e20d19160551557ff2be4b7379da464f840",
+      "contentsCommitted": false
+    },
+    "processTrustFile": "SSL_CERT_FILE points to the transferred public CA bundle.",
+    "PGSSLROOTCERT": "system",
+    "sslmode": "verify-full",
+    "verificationDisabled": false,
+    "scope": "The supplied trust bundle enables the existing strict TLS policy; no certificate or hostname verification relaxation is claimed."
+  },
+  "snapshot": {
+    "byteLength": 1196912,
+    "sha256": "9df1980f6fe99c12199da1bad905ba74b94b84dcbf1eec53e2812955b590d57e",
+    "migrations": 161,
+    "state": "pre029/030",
+    "retention": "Archive retained privately by Root; no dump contents are committed. The hash and length come from the private backup metadata and agree with the timing report archive length.",
+    "qualifiedRestoreSnapshot": false,
+    "reason": "This snapshot predates migrations 029 and 030. The timing run is not a qualified restore of the latest candidate schema or its final fence/fault scenario."
+  },
+  "cleanup": {
+    "successfulRegionalSandboxTerminated": true,
+    "allFailedPreflightSandboxesFinallyTerminated": true,
+    "provenance": "Root operator report; no cleanup action was performed by this evidence-only task."
+  },
+  "limitations": [
+    "Only pg_restore utility timing and the resulting 161-migration / epoch 3 check are established here.",
+    "This is not the actual qualified restore gate, a release pass, a native operation completion or a final migration qualification.",
+    "The closed candidate and pending real qualified run remain Root-owned. No ticket is marked done.",
+    "The earlier Mac timeout remains a failed observation; the regional timing result does not turn it into a pass."
+  ],
+  "rawPrivateEvidence": {
+    "/tmp/narriflow-serverless-gates/restore-timing-preflight.log": {
+      "byteLength": 1243,
+      "sha256": "c2426ab27c976e4a02d0916cf44161e309cea93746541eb5d26c55429e3155e4"
+    },
+    "/tmp/narriflow-serverless-gates/restore-timing-preflight.stderr.log": {
+      "byteLength": 31,
+      "sha256": "2e0b9d4d1db51a3f49405b9817047002ec923fc87d85dd42138e6bf9806dcf2a"
+    },
+    "/tmp/narriflow-serverless-gates/regional-restore-preflight.json": {
+      "byteLength": 487,
+      "sha256": "abdd8374eba475b6acf54048f065305cf68d8f9b78474eb85e48cdd45fdda07e"
+    },
+    "/tmp/narriflow-serverless-gates/regional-restore-preflight.stdout.log": {
+      "byteLength": 539,
+      "sha256": "9b8998b1bda3ac5c858cbdec9bb7179fcd9525f891629615d15db876944b030c"
+    },
+    "/tmp/narriflow-serverless-gates/regional-restore-preflight.stderr.log": {
+      "byteLength": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "/tmp/narriflow-serverless-gates/regional-restore-preflight.log": {
+      "byteLength": 543,
+      "sha256": "608772679a2018a9cf47732c486e9a9a7a9772e866653afd392ab774e67da376"
+    },
+    "/tmp/narriflow-serverless-gates/candidate-163-pre-migration-backup.json": {
+      "byteLength": 481,
+      "sha256": "b85c267c59efea16cf28f32c42b835c729d03556e7c1d13fcc38412ebd62f945"
+    }
+  }
+}

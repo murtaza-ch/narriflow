@@ -1,0 +1,82 @@
+{
+  "status": "prepared_only",
+  "date": "2026-11-01",
+  "baseSha": "494904c8",
+  "deployedCalls": 0,
+  "providerCalls": 0,
+  "databaseActions": 0,
+  "source": {
+    "file": "/tmp/narriflow-serverless-gates/spoken-smoke/gereon-english.webm",
+    "byteLength": 22741661,
+    "sha256": "32b20a20e84d46d17da126689572f9a431d01ddc23880b90240952875b2a3fe8",
+    "durationSeconds": 146.147,
+    "attributionEvidence": "spoken-smoke-source-20261101.json"
+  },
+  "journal": {
+    "path": "/tmp/narriflow-serverless-control-keys/spoken-file-journey.json",
+    "preparedSha256": "dcb19c69c366c1e7a85f097779cf04e8a20cf78f1756b4633b92ab9381125167",
+    "mode": "0600",
+    "contains": "Exact owned Workspace and fresh run/upload/generation keys before any network mutation. No server Project/Session/Task IDs exist yet. No credential, ticket or URL is stored."
+  },
+  "caller": "apps/api/scripts/run-deployed-file-journey.ts",
+  "recipe": "apps/api/scripts/gates/deployed-file-journey.md",
+  "productionReuse": [
+    "apps/mcp/src/upload.ts uploadVideo",
+    "packages/api-client/src/projects typed Project client",
+    "current modern MCP tools/call and tasks/get endpoints"
+  ],
+  "settings": {
+    "requestedClips": 12,
+    "clipLengthPreset": "under_30s",
+    "defaultAspectRatio": "9:16",
+    "languageCode": "en",
+    "forceRegenerate": false,
+    "finishing": null,
+    "socialActions": false,
+    "callbacks": false,
+    "renderResolution": "Current base-render policy requests1080p, subject to plan. Actual output not verified."
+  },
+  "operatorPrerequisites": [
+    "Root completes qualified restore and verifies final candidate/epoch",
+    "Root explicitly opens Worker HTTP and database admission for fixture",
+    "Root removes candidate-only RESEND_API_KEY and records guarded state until exact Project preference false",
+    "Root invokes upload then generate using same prepared journal",
+    "Positive TaskID must come from actual generation acceptance before invoking separate HTTP acceptance caller"
+  ],
+  "mailGuard": "No new product API. Existing Project row appears only at finalize. Caller immediately PUTs notifyOnComplete:false and observes false; temporary isolated mail unavailability closes earlier race. Notification preparation rechecks current preference, including sealed retry bodies.",
+  "bounds": {
+    "requestsPerInvocation": 90,
+    "uploadStatusDeadlineSeconds": 480,
+    "generateDeadlineSeconds": 720,
+    "sourceReadinessObservations": 60,
+    "sourceReadinessDelaySeconds": 10,
+    "responseBytes": 2097152,
+    "apiRequestDeadlineSeconds": 120
+  },
+  "tests": {
+    "scope": "Fixture-only with injected HTTP; real production uploader reads local test bytes. No deployed acceptance claimed.",
+    "bun": "1.3.6",
+    "pass": 9,
+    "fail": 0,
+    "assertions": 907,
+    "log": "/tmp/narriflow-file-journey-final-tests.log",
+    "logSha256": "eca333ab129d562c989ed8c1c893cb7f8e569a326a09ef665b563270ca93eb02",
+    "cases": [
+      "journal before assigned PUT and preference before MCP",
+      "exact lost-ACK generation replay with one fixture acceptance",
+      "finalized upload resumes without duplicate PUT",
+      "finite pending source does not generate",
+      "changed source refuses without network",
+      "foreign Workspace Task binding rejected",
+      "existing production uploader three tests"
+    ],
+    "callerTypecheck": "passed, non-test entry plus imported implementation",
+    "biome": "passed, three TypeScript files"
+  },
+  "pending": [
+    "All actual candidate upload/Scribe/selection/native render work",
+    "Positive deployed MCP Task and exact generation lineage/charge audit",
+    "Real output resolution/quality/latency/cleanup evidence",
+    "Actual read-only deployed HTTP acceptance caller with produced TaskID"
+  ]
+}

@@ -1,0 +1,327 @@
+{
+  "version": 1,
+  "recordedAtUtc": "2026-10-31T21:31:05.314466+00:00",
+  "scope": "Evidence-only record of already-performed isolated deployments and a failed large-transfer baseline. No cloud, provider or database action was performed while preparing this record.",
+  "overall": "Deployment verifier reports pass; combined 10 GiB upload+conditional-pin gate FAILS. Release acceptance remains open.",
+  "modal": {
+    "app": "narriflow-media-gates",
+    "workspaceProfile": "murtazach275",
+    "operatorReportedSourceCommit": "35ca2425dd61b8469ce89d7ea9ea2b0f65a0d678",
+    "preparedContext": {
+      "sourceCommit": "35ca2425dd61b8469ce89d7ea9ea2b0f65a0d678",
+      "archiveSha256": "f7fd3b9ba39ea808ba3d0b67e6b71cfa2685842c009143d6c6d5b79d99a54e36",
+      "wrapperSha256": "b1728e808ca1ab462a3bd051c5aa76c6a205602a2d914cf6cce3c3438f728068",
+      "deployedFlag": false,
+      "meaning": "Preparation metadata, not a deployment receipt. Its deployed:false flag is retained unchanged; Root identifies the subsequently refreshed Function source as 35ca2425."
+    },
+    "actualFunctionRefresh": {
+      "passed": true,
+      "reports": [
+        {
+          "function": "verify_lean_runtime",
+          "passed": true,
+          "fingerprint": "6235b66ae20332ba1024049d77166d850c4fed0b7d4378bbb5d5d9e74f1cb38d",
+          "elapsedSeconds": 5.581
+        },
+        {
+          "function": "verify_render_runtime",
+          "passed": true,
+          "fingerprint": "06a988fcee94757ba07d1d1cc410ca4fbf0f36ee4d8f4aab8c84711897a569b9",
+          "elapsedSeconds": 63.212
+        },
+        {
+          "function": "verify_render_native_fixture",
+          "passed": true,
+          "fingerprint": "06a988fcee94757ba07d1d1cc410ca4fbf0f36ee4d8f4aab8c84711897a569b9",
+          "elapsedSeconds": 108.113
+        },
+        {
+          "function": "verify_dubbing_bundle_native_fixture",
+          "passed": true,
+          "fingerprint": "6235b66ae20332ba1024049d77166d850c4fed0b7d4378bbb5d5d9e74f1cb38d",
+          "elapsedSeconds": 22.789
+        }
+      ],
+      "leanFingerprint": "6235b66ae20332ba1024049d77166d850c4fed0b7d4378bbb5d5d9e74f1cb38d",
+      "renderFingerprint": "06a988fcee94757ba07d1d1cc410ca4fbf0f36ee4d8f4aab8c84711897a569b9",
+      "fixtureToolchainId": "e00c091bc5a81bee",
+      "render": {
+        "success": {
+          "outcome": {
+            "status": "completed",
+            "requested": 1,
+            "succeeded": 1,
+            "failed": 0,
+            "superseded": 0
+          },
+          "starts": 1,
+          "detectorExecutions": 0,
+          "originalBytesTransferred": 164986,
+          "upstreamRequests": 2,
+          "artifactRoles": [
+            "render_variant"
+          ]
+        },
+        "permanentFailure": {
+          "outcome": {
+            "status": "failed",
+            "requested": 1,
+            "succeeded": 0,
+            "failed": 1,
+            "superseded": 0
+          },
+          "starts": 1,
+          "detectorExecutions": 0,
+          "originalBytesTransferred": 164986,
+          "upstreamRequests": 2,
+          "artifactRoles": [
+            "render_outcome"
+          ]
+        },
+        "lostAcknowledgementRetained": true,
+        "externalProviderRequests": 0,
+        "databaseRequests": 0
+      },
+      "dubbing": [
+        {
+          "mode": "success",
+          "nativeStarts": 2,
+          "controlledProviderRequests": 2,
+          "committedStageAcknowledgements": 7,
+          "completedObjectsRetained": 7
+        },
+        {
+          "mode": "lost_intent",
+          "nativeStarts": 1,
+          "controlledProviderRequests": 0,
+          "committedStageAcknowledgements": 1,
+          "completedObjectsRetained": 1
+        },
+        {
+          "mode": "revoked",
+          "nativeStarts": 1,
+          "controlledProviderRequests": 0,
+          "committedStageAcknowledgements": 1,
+          "completedObjectsRetained": 1
+        },
+        {
+          "mode": "lost_start",
+          "nativeStarts": 1,
+          "controlledProviderRequests": 0,
+          "committedStageAcknowledgements": 0,
+          "completedObjectsRetained": 0
+        },
+        {
+          "mode": "lost_final",
+          "nativeStarts": 1,
+          "controlledProviderRequests": 2,
+          "committedStageAcknowledgements": 6,
+          "completedObjectsRetained": 6
+        }
+      ],
+      "bundles": [
+        {
+          "nativeStarts": 1,
+          "completedObjectsRetained": 1,
+          "sourceBytesTransferred": 4194712,
+          "lostAcknowledgementRetained": false
+        },
+        {
+          "nativeStarts": 1,
+          "completedObjectsRetained": 1,
+          "sourceBytesTransferred": 4194712,
+          "lostAcknowledgementRetained": true
+        }
+      ],
+      "externalProviderRequests": 0,
+      "databaseRequests": 0,
+      "limits": "Actual Modal Function calls exercise credential-free controlled provider/control/storage fixtures. They do not establish a live business-domain transaction, actual paid provider call or the large-object/performance gate."
+    }
+  },
+  "workerCandidate": {
+    "scope": "Isolated candidate only; no shared development migration or resource mutation is claimed by this record.",
+    "currentDeployment": {
+      "versionPrefix": "76586c72",
+      "receipt": "/tmp/narriflow-serverless-gates/candidate-163-closed-deploy.log",
+      "intake": "closed, as reported by Root"
+    },
+    "migrationAudit": {
+      "startedAt": "2026-10-31T21:18:56.493Z",
+      "completedAt": "2026-10-31T21:19:11.077Z",
+      "workerVersionPrefix": "17c7818e",
+      "migrationCount": 163,
+      "lastMigration": "20261101060000_execution_native_restore",
+      "deploymentEpoch": 3,
+      "admissionOpen": false
+    },
+    "durableFenceAudit": {
+      "mode": "fenced",
+      "deploymentEpoch": 3,
+      "fencedAt": "2026-10-31T21:10:08.811Z",
+      "admissionOpen": false
+    },
+    "timeline": "The migration audit names earlier version 17c7818e; the later closed Worker deployment receipt names 76586c72. These are distinct observations, not interchangeable receipts.",
+    "qualifiedRestore": "Root is continuing the qualified regional restore after the reported Mac WAN 300 s rollback. This record asserts no successful qualified restore."
+  },
+  "regionalLargeTransferBaseline": {
+    "status": "failed",
+    "requestedBytes": 10737418240,
+    "uploadPhase": {
+      "status": "passed",
+      "requestedBytes": 10737418240,
+      "operationDeadlineSeconds": 2700,
+      "stage": "terminal_fence",
+      "allocatedFixtureBytes": 10737418240,
+      "uploadedBytes": 10737418240,
+      "downloadedBytes": 0,
+      "putRequests": 640,
+      "conditionalRangeRequests": 0,
+      "peakRssBytes": 281694208,
+      "stalePartStatus": 404,
+      "revokedGrantStatus": 409,
+      "elapsedSeconds": 1654.299,
+      "combinedElapsedSeconds": 1654.299,
+      "containerLifetimePeakBytes": null,
+      "containerMemoryLimitBytes": null,
+      "tracedPeakBytes": 68090850
+    },
+    "conditionalPinPhase": {
+      "status": "failed",
+      "requestedBytes": 10737418240,
+      "operationDeadlineSeconds": 2700,
+      "stage": "conditional_pin",
+      "peakRssBytes": 211939328,
+      "elapsedSeconds": 899.347,
+      "combinedElapsedSeconds": 2588.118,
+      "containerLifetimePeakBytes": null,
+      "containerMemoryLimitBytes": null,
+      "tracedPeakBytes": 67841909,
+      "failureCode": "TimeoutError"
+    },
+    "fixtureQualification": {
+      "uploadMeets10GiBSize": true,
+      "pinMeetsGreaterThan5GiBSize": true,
+      "meaning": "Requested-size qualification is not phase success; the pin phase failed."
+    },
+    "interpretation": "A 10 GiB upload phase passed in 1654.299 s with 640 PUT requests. The conditional pin failed with TimeoutError after 899.347 s, at measured combined 2588.118 s. The configured operation budget is 2700 s, but no combined successful completion or greater than 5 GiB pin pass was obtained. The pin report alone is not evidence that exactly 2700 s elapsed.",
+    "durableTerminalObservation": {
+      "jobCount": 2,
+      "jobs": [
+        {
+          "status": "failed",
+          "attemptCount": 1,
+          "operationDeadlineAt": "2026-10-31T21:05:35.358Z",
+          "errorPresent": true
+        },
+        {
+          "status": "failed",
+          "attemptCount": 1,
+          "operationDeadlineAt": "2026-10-31T21:34:29.253Z",
+          "errorPresent": true
+        }
+      ],
+      "artifacts": [
+        {
+          "role": "source_audio",
+          "attemptStatus": "failed",
+          "processStarted": true,
+          "committed": false,
+          "measuredChecksumRecorded": false,
+          "etagRecorded": false,
+          "multipartAbortIntentRecorded": false
+        },
+        {
+          "role": "source_video",
+          "attemptStatus": "failed",
+          "processStarted": true,
+          "committed": false,
+          "measuredChecksumRecorded": true,
+          "etagRecorded": true,
+          "multipartAbortIntentRecorded": false
+        },
+        {
+          "role": "source_audio",
+          "attemptStatus": "failed",
+          "processStarted": true,
+          "committed": false,
+          "measuredChecksumRecorded": false,
+          "etagRecorded": false,
+          "multipartAbortIntentRecorded": false
+        },
+        {
+          "role": "source_video",
+          "attemptStatus": "failed",
+          "processStarted": true,
+          "committed": false,
+          "measuredChecksumRecorded": false,
+          "etagRecorded": false,
+          "multipartAbortIntentRecorded": true
+        }
+      ],
+      "meaning": "Both jobs are failed and all four assigned artifact rows are uncommitted. Measured checksum/ETag on one source_video row does not mean domain publication succeeded."
+    },
+    "measurementLimits": [
+      "Reported RSS is process peak; containerLifetimePeakBytes and containerMemoryLimitBytes are null, so no cgroup peak/limit proof is claimed.",
+      "This is the failed baseline. Native batching fixture tests and successful small Function verifiers do not convert it into a successful batched 10 GiB or combined upload/pin gate.",
+      "No full gate, release, restore or ticket completion is claimed."
+    ]
+  },
+  "rawPrivateEvidence": {
+    "/tmp/narriflow-serverless-gates/modal-batched-context-proof.json": {
+      "sha256": "b4ae82e21edf8baeb3edfa4a9224d9eae731b88c8ff7adbf253e515d6e5d7785",
+      "byteLength": 403
+    },
+    "/tmp/narriflow-serverless-gates/modal-batched-function-refresh.json": {
+      "sha256": "c37810c7f1aacb326a13eab51a7f874df3247316dc858098f71464efbbecbf22",
+      "byteLength": 852
+    },
+    "/tmp/narriflow-serverless-gates/modal-batched-function-refresh.log": {
+      "sha256": "137679e3e8a9ee44cee1ccd4a02d4cf4c22b66a77304be1804ce526f66de0175",
+      "byteLength": 672
+    },
+    "/tmp/narriflow-serverless-gates/modal-batched-candidate-deploy.log": {
+      "sha256": "745d5514e47c6c4394c51271a6b6e8ca761de1d7d41c965b9e3e8c61fab0022d",
+      "byteLength": 225270
+    },
+    "/tmp/narriflow-serverless-gates/modal-batched-lean-runtime.json": {
+      "sha256": "78e8a887b08ef1511b9d0e330e7edada5fdf6f4808bde2d83537f2c1f798b577",
+      "byteLength": 1064
+    },
+    "/tmp/narriflow-serverless-gates/modal-batched-render-runtime.json": {
+      "sha256": "509d4f76a79b7bdaabf44ae54d7b01a38f8bc4f2df63c614835c1db1a0024f05",
+      "byteLength": 17949
+    },
+    "/tmp/narriflow-serverless-gates/modal-batched-render-native.json": {
+      "sha256": "d7b3114362a4832b7ebf4ee09035f8d0308f2ff73fe93e93bd9f9037ed37efdb",
+      "byteLength": 1118
+    },
+    "/tmp/narriflow-serverless-gates/modal-batched-dubbing-bundle-native.json": {
+      "sha256": "42dd64884aa8f15264f6b09cf79b7d45ff50722b37f37520551250f30180ba7e",
+      "byteLength": 1446
+    },
+    "/tmp/narriflow-serverless-gates/candidate-163-closed-deploy.log": {
+      "sha256": "67e09d74b908e9b6f088efe10807c2af15464025a2d91b73e0ecad02c050f371",
+      "byteLength": 1977
+    },
+    "/tmp/narriflow-serverless-gates/candidate-030-migration.json": {
+      "sha256": "b3471c20626b90adb6687a093cb60455b5ce1be9cfba12f45ea82ff46fe49333",
+      "byteLength": 407
+    },
+    "/tmp/narriflow-serverless-gates/candidate-163-epoch-fence.json": {
+      "sha256": "fb4da4eb7ba2f52b01efbd7de98a7a8f0dd933ca0acd7899d9b45d540b6e7d7f",
+      "byteLength": 408
+    },
+    "/tmp/narriflow-serverless-gates/regional-baseline-terminal-status.json": {
+      "sha256": "08ea0fce6468ca548daaa1a8e4dab955ce15a10114b987a091f6d90cb5ae305a",
+      "byteLength": 2032
+    },
+    "/tmp/narriflow-executor-r2-final/upload.json": {
+      "sha256": "502e8227996c32cad70d358e5de41b9cb02d0fa2505a2cfe47e83a919d11db87",
+      "byteLength": 2422
+    },
+    "/tmp/narriflow-executor-r2-final/pin.json": {
+      "sha256": "fb81d74ffabce80d09bd080457367fa1dc10fd139801444f394b5873da430f31",
+      "byteLength": 1922
+    }
+  }
+}
