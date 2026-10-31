@@ -4,6 +4,7 @@ import type { AdmissionTable } from "../platform/admission-table";
 export const brandAdmission = {
   "POST /projects/:id/brand-profiles/:profileId/scene-templates/:templateId/apply": { kind: "project", capability: "content.edit", projectParam: "id", rate: { scope: "actor", prefix: "apply-scene-template", limit: 20, windowSeconds: 3600 } },
   "GET /brand-kit": { kind: "workspace", capability: "content.view" },
+  "GET /asset-validations/:id": { kind: "workspace", capability: "content.view" },
   "GET /brand-profiles": { kind: "workspace", capability: "content.view" },
   "GET /brand-profiles/default": { kind: "workspace", capability: "content.view" },
   "GET /brand-profiles/:id": { kind: "workspace", capability: "content.view" },

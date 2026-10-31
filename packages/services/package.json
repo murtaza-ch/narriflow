@@ -42,10 +42,6 @@
       "types": "./src/workflow-execution-input.ts",
       "default": "./src/workflow-execution-input.ts"
     },
-    "./brand-font-parser": {
-      "types": "./src/brand-font-parser.ts",
-      "default": "./src/brand-font-parser.ts"
-    },
     "./clip-editor-document-codec": {
       "types": "./src/clip-editor-document-codec.ts",
       "default": "./src/clip-editor-document-codec.ts"
@@ -450,6 +446,14 @@
       "types": "./src/execution-storage.ts",
       "default": "./src/execution-storage.ts"
     },
+    "./execution-transfer": {
+      "types": "./src/execution-transfer.ts",
+      "default": "./src/execution-transfer.ts"
+    },
+    "./native-validation-execution": {
+      "types": "./src/native-validation-execution.ts",
+      "default": "./src/native-validation-execution.ts"
+    },
     "./modal-bridge": {
       "types": "./src/modal-bridge.ts",
       "default": "./src/modal-bridge.ts"
@@ -457,6 +461,26 @@
     "./language-probe-contract": {
       "types": "./src/language-probe-contract.ts",
       "default": "./src/language-probe-contract.ts"
+    },
+    "./brand-font-contract": {
+      "types": "./src/brand-font-contract.ts",
+      "default": "./src/brand-font-contract.ts"
+    },
+    "./native-validation": {
+      "types": "./src/native-validation.ts",
+      "default": "./src/native-validation.ts"
+    },
+    "./native-validation-runtime": {
+      "types": "./src/native-validation-runtime.ts",
+      "default": "./src/native-validation-runtime.ts"
+    },
+    "./native-validation-work": {
+      "types": "./src/native-validation-work.ts",
+      "default": "./src/native-validation-work.ts"
+    },
+    "./r2-transfer-contract": {
+      "types": "./src/r2-transfer-contract.ts",
+      "default": "./src/r2-transfer-contract.ts"
     }
   },
   "scripts": {
@@ -472,7 +496,6 @@
   "dependencies": {
     "@aws-sdk/client-s3": "^3.923.0",
     "@aws-sdk/s3-request-presigner": "^3.923.0",
-    "@ffprobe-installer/ffprobe": "2.1.2",
     "@narriflow/composition-plan": "workspace:*",
     "@narriflow/db": "workspace:*",
     "@narriflow/email": "workspace:*",
@@ -480,7 +503,6 @@
     "@node-rs/argon2": "^2.2.0",
     "@prisma/client": "7.7.0",
     "fast-xml-parser": "^5.11.2",
-    "fontkit": "2.0.4",
     "ioredis": "^5.9.3",
     "sharp": "^0.35.5",
     "stripe": "^22.5.0",
@@ -489,7 +511,6 @@
   },
   "devDependencies": {
     "@prisma/adapter-pg": "7.7.0",
-    "@types/fontkit": "2.0.8",
     "@types/node": "26.2.0",
     "@types/pg": "8.15.5",
     "pg": "8.17.2",

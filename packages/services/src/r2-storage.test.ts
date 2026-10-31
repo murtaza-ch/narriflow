@@ -1,3 +1,4 @@
+import { downloadObjectToFile, putFileFromPath } from "../../../apps/worker/src/r2-file-transfer";
 import { bindServiceTestEnvironment } from "./runtime-test-support";
 import { afterEach, describe, expect, setDefaultTimeout, spyOn, test } from "bun:test";
 import { randomUUID } from "node:crypto";
@@ -21,7 +22,6 @@ import {
   completeMultipartUpload,
   createMultipartUpload,
   deleteObject,
-  downloadObjectToFile,
   headObject,
   isExactMissingMultipartUploadError,
   InvalidObjectMetadataError,
@@ -30,7 +30,6 @@ import {
   listExactKeyMultipartUploads,
   listObjectPageByPrefix,
   presignMultipartPartUrls,
-  putFileFromPath,
   presignSingleUploadUrl,
   putJson,
   sanitizeObjectMetadata,

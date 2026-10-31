@@ -14,7 +14,7 @@ from urllib.parse import urlsplit
 
 from .fetch import DownloadedSource, ProviderAccessBlocked, ResolvedSource, SourceFetchFailure
 from .manifest import MAX_SOURCE_BYTES, YouTubeSource, toolchain_versions
-from .process import run_owned_process_async
+from .process import FILE_SIZE_LIMIT_EXIT_CODE, run_owned_process_async
 from .proxy import BoundProxySession
 from .token_helper import OwnedTokenHelper
 
@@ -99,9 +99,12 @@ class YtDlpSourceRuntime:
             [sys.executable, "-I", "-m", "yt_dlp", *self._arguments(session), *args],
             timeout_seconds=self._remaining(), env=self._environment(session), on_start=self._start,
             cancel_event=self._cancel,
+            max_file_bytes=MAX_SOURCE_BYTES,
         )
         if result.returncode:
             diagnostic = result.stderr.lower()
+            if result.returncode == FILE_SIZE_LIMIT_EXIT_CODE or b"file too large" in diagnostic or b"file size limit exceeded" in diagnostic:
+                raise SourceFetchFailure("source_size_exceeded")
             if (b"sign in to confirm" in diagnostic or re.search(rb"http(?: error)?[ :]+(?:403|429)\b", diagnostic)
                     or b"403 forbidden" in diagnostic):
                 raise ProviderAccessBlocked()

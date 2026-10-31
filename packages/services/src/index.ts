@@ -106,8 +106,6 @@ export {
 	BrandFontIntegrityError,
 	BrandFontReferenceError,
 	assertSceneBrandFontReferences,
-	parseBrandFontHeader,
-	brandFontRenderer,
 } from "./brand-font.service";
 export {
 	assertBrandManageAllowed,
@@ -439,13 +437,11 @@ export {
 	copyObject,
 	deleteObject,
 	deleteObjects,
-	downloadObjectToFile,
 	getJsonObject,
 	listObjectPageByPrefix,
 	listObjectsByPrefix,
 	presignDownloadUrl,
 	presignSingleUploadUrl,
-	putFileFromPath,
 	putObjectBytes,
 	putJson,
 	ProjectStorageUnavailableError,
@@ -662,7 +658,12 @@ export * from "./executor-domain-control";
 export * from "./execution-dispatch";
 
 export * from "./execution-storage";
+export * from "./execution-transfer";
+export * from "./native-validation-execution";
 
 export * from "./modal-bridge";
 
 export * from "./language-probe-contract";
+
+export type { PutFileFromPath, DownloadObjectToFile } from "./r2-transfer-contract";
+export { NativeValidationService, NativeValidationError, type NativeValidationCommit, type NativeValidationReference, type NativeValidationPreparation } from "./native-validation";

@@ -142,6 +142,47 @@ class SignedControlTests(unittest.TestCase):
             ExecutorSession.acquire(client, reference={'dispatchId': 'fixture'}, attempt_token='fixture')
         self.assertEqual(refused.exception.code, 'execution_authority_lost')
 
+    def test_sleep_invalidates_permission_before_another_native_spawn_and_still_allows_reconciliation(self):
+        wall, actions = [time.time()], []
+        def instant(seconds):
+            return datetime.fromtimestamp(seconds, timezone.utc).isoformat().replace('+00:00', 'Z')
+        def transport(origin, target, body, headers, timeout):
+            command, now = json.loads(body), wall[0]
+            actions.append(command['action'])
+            if command['action'] == 'acquire':
+                response = {'disposition': 'acquired',
+                            'fence': {'reference': command['reference'], 'attemptToken': command['attemptToken'], 'owner': command['owner']},
+                            'serverTime': instant(now), 'leaseExpiresAt': instant(now + 120), 'operationDeadlineAt': instant(now + 2700)}
+            else:
+                response = {'disposition': 'expired'}
+            return ControlResponse(200, {'X-Execution-Server-Time': instant(now)}, json.dumps(response).encode())
+        client = ExecutionControlClient(origin='https://api.example', key_id='dev', key=b'k' * 32,
+                                        transport=transport, clock=lambda: wall[0])
+        with ExecutorSession.acquire(client, reference={'dispatchId': 'fixture'}, attempt_token='fixture') as session:
+            wall[0] += 3600  # CLOCK_MONOTONIC can pause across laptop suspend.
+            with self.assertRaises(MediaProcessError):
+                run_owned_process([sys.executable, '-c', 'raise SystemExit(99)'], timeout_seconds=2,
+                                  on_start=session.on_process_start, cancel_event=session.cancel_event)
+            self.assertEqual(session.command('read-disposition').disposition, {'disposition': 'expired'})
+            self.assertTrue(session.cancel_event.is_set())
+        self.assertEqual(actions, ['acquire', 'read-disposition'])
+
+    def test_sleep_during_acquire_cannot_turn_an_old_tls_response_into_permission(self):
+        wall = [time.time()]
+        def instant(seconds):
+            return datetime.fromtimestamp(seconds, timezone.utc).isoformat().replace('+00:00', 'Z')
+        def transport(origin, target, body, headers, timeout):
+            command, now = json.loads(body), wall[0]
+            response = {'disposition': 'acquired',
+                        'fence': {'reference': command['reference'], 'attemptToken': command['attemptToken'], 'owner': command['owner']},
+                        'serverTime': instant(now), 'leaseExpiresAt': instant(now + 120), 'operationDeadlineAt': instant(now + 2700)}
+            wall[0] += 3600
+            return ControlResponse(200, {'X-Execution-Server-Time': instant(now)}, json.dumps(response).encode())
+        client = ExecutionControlClient(origin='https://api.example', key_id='dev', key=b'k' * 32,
+                                        transport=transport, clock=lambda: wall[0])
+        with self.assertRaises(ExecutionControlError):
+            ExecutorSession.acquire(client, reference={'dispatchId': 'fixture'}, attempt_token='fixture')
+
 
 if __name__ == '__main__':
     unittest.main()

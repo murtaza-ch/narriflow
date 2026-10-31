@@ -1,3 +1,4 @@
+import { validatedFontFaceSchema } from "@narriflow/validators/native-validation";
 import { Prisma, type BrandProfile, type BrandTemplate } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
 import {
@@ -352,7 +353,7 @@ async function toAggregate(profile: ProfileAggregate, options: { signAccess?: bo
     ),
     fonts: await Promise.all(
       profile.fonts
-        .filter(({ font }) => !font.deletedAt)
+        .filter(({ font }) => !font.deletedAt && validatedFontFaceSchema.safeParse(font.face).success)
         .map(async ({ font, role, position }) => {
           const accessUrl = await accessUrlOf(font.storageKey);
           return {
@@ -388,7 +389,7 @@ async function withFreshAccess(snapshot: ProfileAggregateView): Promise<ProfileA
   const prisma = requirePrisma();
   const [assets, fonts] = await Promise.all([
     prisma.visualAsset.findMany({ where: { id: { in: snapshot.assets.map(({ id }) => id) }, deletedAt: null }, select: { id: true, storageKey: true } }),
-    prisma.brandFont.findMany({ where: { id: { in: snapshot.fonts.map(({ id }) => id) }, deletedAt: null }, select: { id: true, storageKey: true } }),
+    prisma.brandFont.findMany({ where: { id: { in: snapshot.fonts.map(({ id }) => id) }, deletedAt: null }, select: { id: true, storageKey: true, face: true } }),
   ]);
   const resolve = async <T extends { id: string }>(items: T[], rows: Array<{ id: string; storageKey: string }>) =>
     Promise.all(
@@ -398,7 +399,7 @@ async function withFreshAccess(snapshot: ProfileAggregateView): Promise<ProfileA
         return { ...item, accessUrl, missing: accessUrl === null };
       }),
     );
-  return { ...snapshot, assets: await resolve(snapshot.assets, assets), fonts: await resolve(snapshot.fonts, fonts) };
+  return { ...snapshot, assets: await resolve(snapshot.assets, assets), fonts: await resolve(snapshot.fonts, fonts.filter(font => validatedFontFaceSchema.safeParse(font.face).success)) };
 }
 
 const LIST_ALL_MAX_PAGES = 5;
@@ -714,8 +715,8 @@ export class BrandProfileService {
         if (parsed.remove) {
           await tx.brandProfileFont.deleteMany({ where: { profileId, fontId: parsed.resourceId, role: parsed.role } });
         } else {
-          const resource = await tx.brandFont.findFirst({ where: { id: parsed.resourceId, ...owner, deletedAt: null }, select: { id: true } });
-          if (!resource) throw new BrandProfileMembershipError();
+          const resource = await tx.brandFont.findFirst({ where: { id: parsed.resourceId, ...owner, deletedAt: null }, select: { id: true, face: true } });
+          if (!resource || !validatedFontFaceSchema.safeParse(resource.face).success) throw new BrandProfileMembershipError();
           await tx.brandProfileFont.upsert({ where: { profileId_role: { profileId, role: parsed.role } }, create: { profileId, fontId: resource.id, role: parsed.role, position: parsed.position }, update: { fontId: resource.id, position: parsed.position } });
         }
       } else if (parsed.remove) {

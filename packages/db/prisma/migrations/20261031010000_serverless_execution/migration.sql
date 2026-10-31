@@ -121,6 +121,7 @@ CREATE TABLE "ExecutionArtifact" (
     "uploadByteLength" BIGINT,
     "multipartPartChecksums" JSONB,
     "multipartCompleteIntentAt" TIMESTAMP(3),
+    "multipartAbortIntentAt" TIMESTAMP(3),
     "grantExpiresAt" TIMESTAMP(3) NOT NULL,
     "committedAt" TIMESTAMP(3),
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -416,6 +417,7 @@ ALTER TABLE "ExecutionArtifact" ADD CONSTRAINT "ExecutionArtifact_upload_plan_ch
     AND jsonb_typeof("multipartPartChecksums") = 'array'
     AND jsonb_array_length("multipartPartChecksums") <= 640
     AND octet_length("multipartPartChecksums"::text) <= 65536))
+  AND NOT ("multipartCompleteIntentAt" IS NOT NULL AND "multipartAbortIntentAt" IS NOT NULL)
   AND ("multipartCompleteIntentAt" IS NULL OR ("uploadByteLength" IS NOT NULL
     AND "multipartUploadId" IS NOT NULL AND "checksumSha256" IS NOT NULL))
 );
@@ -433,7 +435,8 @@ BEGIN
     END IF;
     IF (OLD."uploadByteLength" IS NOT NULL AND (NEW."uploadByteLength", NEW."contentType") IS DISTINCT FROM (OLD."uploadByteLength", OLD."contentType"))
        OR (OLD."multipartUploadId" IS NOT NULL AND NEW."multipartUploadId" IS DISTINCT FROM OLD."multipartUploadId")
-       OR (OLD."multipartCompleteIntentAt" IS NOT NULL AND (NEW."multipartCompleteIntentAt", NEW."checksumSha256") IS DISTINCT FROM (OLD."multipartCompleteIntentAt", OLD."checksumSha256")) THEN
+       OR (OLD."multipartCompleteIntentAt" IS NOT NULL AND (NEW."multipartCompleteIntentAt", NEW."checksumSha256") IS DISTINCT FROM (OLD."multipartCompleteIntentAt", OLD."checksumSha256"))
+       OR (OLD."multipartAbortIntentAt" IS NOT NULL AND NEW."multipartAbortIntentAt" IS DISTINCT FROM OLD."multipartAbortIntentAt") THEN
       RAISE EXCEPTION 'execution multipart intent is immutable' USING ERRCODE='23514';
     END IF;
     IF OLD."multipartPartChecksums" IS NOT NULL THEN
@@ -466,7 +469,8 @@ FOR EACH ROW EXECUTE FUNCTION execution_artifact_transfer_identity();
 ALTER TABLE "ThumbnailFrameOperation" ADD COLUMN     "deploymentEpoch" INTEGER NOT NULL DEFAULT 1,
 ADD COLUMN     "executorOwner" UUID,
 ADD COLUMN     "generation" INTEGER NOT NULL DEFAULT 1,
-ADD COLUMN     "operationDeadlineAt" TIMESTAMP(3);
+ADD COLUMN     "operationDeadlineAt" TIMESTAMP(3),
+ADD COLUMN     "validationState" JSONB;
 
 -- AlterTable
 ALTER TABLE "BrandFont" ADD COLUMN     "face" JSONB;
@@ -560,6 +564,7 @@ WHERE "status" IN ('queued','processing');
 UPDATE "ThumbnailFrameOperation" SET "claimId"=NULL,"claimExpiresAt"=NULL WHERE "claimId" IS NOT NULL;
 ALTER TABLE "ThumbnailFrameOperation" ADD CONSTRAINT "ThumbnailFrameOperation_execution_check" CHECK (
   "generation" > 0 AND "deploymentEpoch" > 0 AND "attempt" >= 0
+  AND ("validationState" IS NULL OR (jsonb_typeof("validationState") = 'object' AND octet_length("validationState"::text) <= 65536))
   AND (("executorOwner" IS NULL) = ("claimExpiresAt" IS NULL))
   AND ("executorOwner" IS NULL OR "claimId" IS NOT NULL)
   AND ("operationDeadlineAt" IS NULL OR "operationDeadlineAt" > "createdAt")

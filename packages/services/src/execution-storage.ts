@@ -135,6 +135,24 @@ export function createExecutionStorage(config: ExecutionStorageConfig, options: 
     throw new ExecutionStorageError("storage_parts_invalid");
   }
   return {
+    async signSource(frozen: ExecutionPinSource, window: ExecutionGrantWindow): Promise<ExecutionStorageGrant> {
+      if (!key(frozen.storageKey) || !etag(frozen.etag) || !Number.isSafeInteger(frozen.byteLength) ||
+        frozen.byteLength < 1 || frozen.byteLength > MAX_UPLOAD_SIZE_BYTES) throw new ExecutionStorageError("storage_assignment_invalid");
+      const ttl = expiry(window);
+      const url = await provider(() => getSignedUrl(client, new GetObjectCommand({ Bucket: bucket, Key: frozen.storageKey, IfMatch: frozen.etag }), {
+        expiresIn: ttl.seconds, signingDate: ttl.issuedAt, signableHeaders: new Set(["if-match"]),
+      }));
+      return { url, headers: { "If-Match": frozen.etag }, expiresAt: ttl.expiresAt };
+    },
+    async signInput(frozen: ExecutionPinSource, window: ExecutionGrantWindow): Promise<ExecutionStorageGrant> {
+      if (!key(frozen.storageKey) || !frozen.storageKey.startsWith("execution-input/") || !etag(frozen.etag) ||
+        !Number.isSafeInteger(frozen.byteLength) || frozen.byteLength < 1 || frozen.byteLength > 16 * 1024 * 1024) throw new ExecutionStorageError("storage_assignment_invalid");
+      const ttl = expiry(window);
+      const url = await provider(() => getSignedUrl(client, new GetObjectCommand({ Bucket: bucket, Key: frozen.storageKey, IfMatch: frozen.etag }), {
+        expiresIn: ttl.seconds, signingDate: ttl.issuedAt, signableHeaders: new Set(["if-match"]),
+      }));
+      return { url, headers: { "If-Match": frozen.etag }, expiresAt: ttl.expiresAt };
+    },
     async create(value: ExecutionStorageObject, signal?: AbortSignal): Promise<ExecutionMultipartAssignment> {
       object(value);
       const result = await provider(abortSignal => client.send(new CreateMultipartUploadCommand({ Bucket: bucket, Key: value.storageKey,

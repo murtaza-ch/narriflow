@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+import base64
 import json
 import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -25,6 +26,7 @@ class ControlledProxyTests(unittest.TestCase):
             writer.writeframes(bytes(32000))
         payload = audio.getvalue()
         requests = []
+        expected_auth = "Basic " + base64.b64encode(b"sticky-11111111111111111111111111111111:test-only").decode()
 
         class Proxy(BaseHTTPRequestHandler):
             def log_message(self, *_args):
@@ -37,7 +39,14 @@ class ControlledProxyTests(unittest.TestCase):
                 self.respond(True)
 
             def respond(self, body):
-                requests.append((self.command, self.path, self.headers.get("Proxy-Authorization")))
+                authorization = self.headers.get("Proxy-Authorization")
+                if authorization != expected_auth:
+                    self.send_response(407)
+                    self.send_header("Proxy-Authenticate", 'Basic realm="narriflow-controlled-proxy"')
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                requests.append((self.command, self.path, authorization))
                 self.send_response(200)
                 self.send_header("Content-Type", "audio/wav")
                 self.send_header("Content-Length", str(len(payload)))
@@ -70,6 +79,7 @@ class ControlledProxyTests(unittest.TestCase):
                 for _method, path, _auth in requests[before:]:
                     parsed = urlsplit(path)
                     self.assertEqual((parsed.scheme, parsed.hostname, parsed.port or 80, parsed.path), ("http", "source.invalid", 80, "/sample.wav"))
+                    self.assertEqual(_auth, expected_auth)
             self.assertNotIn("test-only", repr(session))
         finally:
             server.shutdown()

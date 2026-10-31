@@ -21,7 +21,7 @@ import { decodeFrozenClipEditorDocument } from "@narriflow/services/clip-editor-
 import { motionRenderAnalyticsMetadata, type MotionRenderAnalyticsMetadata } from "@narriflow/services/motion-render-analytics";
 import { hasFeature } from "@narriflow/validators";
 import { rethrowWorkflowAttemptLost, WorkflowAttemptLost, WorkflowFailure, workflowFailureFromUnknown, type WorkflowAttemptContext, type WorkflowAttemptRef } from "@narriflow/services/workflow-attempt-contract";
-import type { audioAssetService as productionAudioAssetService, clipService as productionClipService, deleteObject as productionDeleteObject, downloadObjectToFile as productionDownloadObjectToFile, presignDownloadUrl as productionPresignDownloadUrl, putFileFromPath as productionPutFileFromPath, LayoutEvidenceLifecycle } from "@narriflow/services";
+import type { audioAssetService as productionAudioAssetService, clipService as productionClipService, deleteObject as productionDeleteObject, DownloadObjectToFile as productionDownloadObjectToFile, presignDownloadUrl as productionPresignDownloadUrl, PutFileFromPath as productionPutFileFromPath, LayoutEvidenceLifecycle } from "@narriflow/services";
 import {
 	AUDIO_UPLOAD_MAX_BYTES,
 	CLIP_AUTO_LAYOUT_ENGINE,
@@ -367,9 +367,9 @@ export interface ClipRenderAttemptAdapters {
 	storage: {
 		deleteObject: typeof productionDeleteObject;
 		sourceSizeBytes(key: string, signal: AbortSignal): Promise<number>;
-		downloadObjectToFile: typeof productionDownloadObjectToFile;
+		downloadObjectToFile: productionDownloadObjectToFile;
 		presignDownloadUrl: typeof productionPresignDownloadUrl;
-		putFileFromPath: typeof productionPutFileFromPath;
+		putFileFromPath: productionPutFileFromPath;
 	};
 	workspace: RenderWorkspaceAdapter & { statfs?: typeof statfs };
 	clock: RenderClockAdapter;
