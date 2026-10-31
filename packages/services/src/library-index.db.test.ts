@@ -130,4 +130,14 @@ suite("Targeted library indexing", () => {
     expect((await driver.run(value.reference)).kind).toBe("complete");
     expect(await db.transcript.findUniqueOrThrow({ where: { id: value.transcript.id } })).toMatchObject({ passagesIndexError: "embedding_not_configured", passagesAttempts: 0, passagesRetryAt: null, passagesClaimId: null });
   });
+  test("a lost continuation acknowledgement is repaired by replaying the old reference without another embedding request", async () => {
+    const value = await fixture(); let calls = 0; const registrations: string[][] = [];
+    const driver = createLibraryIndex({ database: db, batch: { maxInputs: 1, maxEstimatedTokens: 1000 }, register: async ids => {
+      registrations.push([...ids]); if (registrations.length === 2) throw Error("lost_continuation_ack");
+    }, embeddings: { configured: true, model: LIBRARY_EMBEDDING_MODEL, embed: async texts => { calls++; return { vectors: texts.map(vector), tokens: 10 }; } } });
+    await expect(driver.run(value.reference)).rejects.toThrow("lost_continuation_ack");
+    const next = await current(value.transcript.id);
+    expect((await driver.run(value.reference)).kind).toBe("superseded");
+    expect(calls).toBe(1); expect(registrations).toHaveLength(3); expect(registrations.at(-1)).toEqual([next.dispatchId]);
+  });
 });

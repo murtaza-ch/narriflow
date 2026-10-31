@@ -74,11 +74,12 @@ export function createLibraryIndex(options: { database: PrismaClient; embeddings
   const retryBaseMs = options.retryBaseMs ?? 30_000;
   if (!Number.isSafeInteger(retryBaseMs) || retryBaseMs < 0 || retryBaseMs > 60_000) throw Error("library_retry_invalid");
   async function owned(tx: Tx, reference: ExecutionDispatchReference, claimId?: string) {
-    const state = await lock(tx, reference.subject.id);
-    if (!state || reference.kind !== "operation_driver" || reference.subject.kind !== "library_index" || reference.deploymentEpoch !== state.epoch ||
-      state.row.passagesEpoch !== state.epoch || state.row.passagesGeneration !== reference.generation || sourceHash(state.row) !== state.row.passagesSourceHash || inputHash(state.row) !== reference.inputHash) return null;
+    if (reference.kind !== "operation_driver" || reference.subject.kind !== "library_index") return null;
     const record = await readExecutionDispatch(tx, reference.dispatchId);
     if (!record || JSON.stringify(record.reference) !== JSON.stringify(reference)) return null;
+    const state = await lock(tx, reference.subject.id);
+    if (!state || reference.deploymentEpoch !== state.epoch ||
+      state.row.passagesEpoch !== state.epoch || state.row.passagesGeneration !== reference.generation || sourceHash(state.row) !== state.row.passagesSourceHash || inputHash(state.row) !== reference.inputHash) return null;
     if (claimId && (state.row.passagesClaimId !== claimId || !state.row.passagesLeaseUntil || state.row.passagesLeaseUntil <= state.now || !state.row.passagesDeadlineAt || state.row.passagesDeadlineAt <= state.now)) return null;
     return state;
   }
@@ -119,7 +120,19 @@ export function createLibraryIndex(options: { database: PrismaClient; embeddings
       collectExecutionDispatch(tx, watchdog.reference.dispatchId);
       return { kind: "claimed" as const, batch, claimId, watchdogId: watchdog.reference.dispatchId, workspaceId: state.workspaceId, projectId: row.projectId, last: fresh.length === batch.length, hashes: drafts.map(draft => draft.contentHash) };
     });
-    if (prepared.kind !== "claimed") return prepared;
+    if (prepared.kind !== "claimed") {
+      if (prepared.kind === "superseded" && reference.kind === "operation_driver" && reference.subject.kind === "library_index") {
+        const current = await db.$transaction(async tx => {
+          const { epoch } = await readExecutionAdmission(tx), record = await readExecutionDispatch(tx,reference.dispatchId);
+          if (epoch !== reference.deploymentEpoch || !record || JSON.stringify(record.reference) !== JSON.stringify(reference)) return null;
+          return recoverLibraryIndex(tx,reference.subject.id);
+        });
+        // This only redelivers an already committed current obligation. It
+        // grants no new generation, lease, deadline or provider request.
+        if (current) await options.register([current.dispatchId]);
+      }
+      return prepared;
+    }
     try { await options.register([prepared.watchdogId]); }
     catch (error) {
       await db.$transaction(async tx => { const state = await owned(tx, reference, prepared.claimId); if (state) await tx.transcript.update({ where: { id: state.row.id }, data: { passagesClaimId: null, passagesLeaseUntil: null, passagesAttempts: { decrement: 1 } } }); });
