@@ -2760,6 +2760,8 @@ model SocialPost {
   @@index([socialAccountId])
   @@index([reviewApprovalOverrideId])
   @@index([standingGrantId])
+  @@index([deploymentEpoch,standingGrantId,id])
+  @@index([deploymentEpoch,id])
 }
 
 model FrozenPublicationState {
@@ -2791,6 +2793,7 @@ model FrozenPublicationState {
 
   @@index([clipExportId])
   @@index([clipExportVariantId])
+  @@index([clipExportVariantId,socialPostId])
   @@index([socialAccountId])
 }
 

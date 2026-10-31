@@ -1,3 +1,4 @@
+import {appendPublicationExportWake,appendPublicationGrantWake,appendPublicationGrantExpiry,createPublicationProducers,restorePublication} from "./publication-producers";
 import {withExecutionDispatches} from "./execution-dispatch-runtime";
 import {
 	createPublicationInputBuilder,
@@ -934,6 +935,63 @@ suite("Revision-bound publication execution", () => {
 			}),
 		).toBe(1);
 	});
+ async function duplicatePost(postId:string){
+  const {frozenState,...post}=await db.socialPost.findUniqueOrThrow({where:{id:postId},include:{frozenState:true}});
+  const {id:_id,socialPostId:_postId,...frozen}=frozenState!;
+  return db.socialPost.create({data:{...post,id:crypto.randomUUID(),clientIdempotencyKey:crypto.randomUUID(),immutableRequestHash:crypto.randomUUID(),frozenState:{create:frozen as never}}});
+ }
+ test("export-result pages freeze at32 posts and replay the exact committed continuation after lost registration",async()=>{
+  const f=await fixture(false);for(let n=0;n<33;n++)await duplicatePost(f.post.id);
+  const id=await db.$transaction(async tx=>{await tx.clipExportVariant.update({where:{id:f.variant.id},data:{status:"completed",storageKey:"test/ready.mp4",sizeBytes:1234n,durationSec:30,completedAt:new Date()}});return (await appendPublicationExportWake(tx,f.variant.id))!;});
+  const reference=(await readExecutionDispatch(db,id))!.reference;let lose=true;const deliveries:string[][]=[];
+  const producer=createPublicationProducers({database:db,register:async ids=>{deliveries.push([...ids]);if(lose)throw Error("lost_export_page_ack");}});
+  await expect(producer.dispatch(reference)).rejects.toThrow("lost_export_page_ack");
+  expect(await db.socialPost.count({where:{frozenState:{clipExportVariantId:f.variant.id},status:"scheduled"}})).toBe(32);
+  lose=false;const replay=await producer.dispatch(reference);expect(replay.dispatchIds).toEqual(deliveries[0]!);
+  expect(await db.socialPost.count({where:{frozenState:{clipExportVariantId:f.variant.id},status:"scheduled"}})).toBe(32);
+  const next=await db.executionDispatch.findFirstOrThrow({where:{id:{in:replay.dispatchIds},kind:"maintenance",subjectId:{startsWith:`pub1.e.${f.variant.id}.`}}});
+  await producer.dispatch((await readExecutionDispatch(db,next.id))!.reference);
+  expect(await db.socialPost.count({where:{frozenState:{clipExportVariantId:f.variant.id},status:"scheduled"}})).toBe(34);
+  expect(await db.socialPublicationAttempt.count({where:{socialPost:{frozenState:{clipExportVariantId:f.variant.id}}}})).toBe(0);
+ });
+ test("a targeted failed export settles its accepted post and never initializes a provider",async()=>{
+  const f=await active(false);await db.clipExportVariant.update({where:{id:f.variant.id},data:{status:"failed",errorCode:"fixture_render_failed"}});
+  expect((await f.domain.prepareExecution(f.reference)).kind).toBe("terminal");
+  expect((await db.socialPost.findUniqueOrThrow({where:{id:f.post.id}})).errorCode).toBe("social_export_failed");
+  expect(await db.socialPublicationAttempt.count({where:{socialPostId:f.post.id}})).toBe(0);
+ });
+ async function publicationGrant(f:Awaited<ReturnType<typeof fixture>>,expiresAt=new Date(Date.now()+86400000)){
+  const grant=await db.standingGrant.create({data:{workspaceId:f.post.workspaceId!,kind:"publish",socialAccountId:f.post.socialAccountId,dailyCap:10,weeklyCap:20,expiresAt,ruleFingerprint:"fixture",grantedByUserId:f.post.createdByUserId}});
+  await db.socialPost.update({where:{id:f.post.id},data:{standingGrantId:grant.id,standingGrantRevision:1}});return grant;
+ }
+ test("pause and revoke at one grant revision have distinct pages; expiry first delivery remains valid after a long sleep",async()=>{
+  const f=await fixture(),grant=await publicationGrant(f,new Date(Date.now()-1000));
+  const expiredId=await db.$transaction(tx=>appendPublicationGrantExpiry(tx,grant));
+  await db.executionDispatch.update({where:{id:expiredId},data:{createdAt:new Date(Date.now()-20*86400000)}});
+  const producer=createPublicationProducers({database:db,register:async()=>{}});
+  await producer.dispatch((await readExecutionDispatch(db,expiredId))!.reference);
+  expect((await db.standingGrant.findUniqueOrThrow({where:{id:grant.id}})).status).toBe("expired");
+  const expiryPage=await db.executionDispatch.findFirstOrThrow({where:{subjectId:{startsWith:`pub1.g.${grant.id}.`}}});
+  await producer.dispatch((await readExecutionDispatch(db,expiryPage.id))!.reference);
+  expect((await db.socialPost.findUniqueOrThrow({where:{id:f.post.id}})).status).toBe("draft");
+  expect(await db.frozenPublicationState.count({where:{socialPostId:f.post.id}})).toBe(0);
+  const paused=await db.$transaction(async tx=>{await tx.standingGrantEvent.create({data:{grantId:grant.id,kind:"paused",revision:1}});return (await appendPublicationGrantWake(tx,grant.id))!;});
+  const revoked=await db.$transaction(async tx=>{await tx.standingGrantEvent.create({data:{grantId:grant.id,kind:"revoked",revision:1}});return (await appendPublicationGrantWake(tx,grant.id))!;});
+  expect(paused).not.toBe(revoked);
+ });
+ test("restore preserves uncertain provider identity, charged counters and deadlines while invalidating the old physical claim",async()=>{
+  const f=await active(),p=await claimed(f);await f.call({action:"process-start",fence:p.fence});await p.command({kind:"checkpoint",operation:{kind:"upload_prepared",state:{providerOperation:"youtube_resumable_upload",uploadUrl:"https://www.googleapis.com/exact-session"}}});
+  const before=await db.socialPublicationAttempt.findFirstOrThrow({where:{socialPostId:f.post.id}});const sentinel=Error("rollback isolated restore proof");
+  await expect(db.$transaction(async tx=>{
+   await tx.executionEpoch.update({where:{id:1},data:{epoch:2,admissionOpen:false}});
+   await restorePublication(tx,f.post.id,2);
+   const post=await tx.socialPost.findUniqueOrThrow({where:{id:f.post.id}}),attempt=await tx.socialPublicationAttempt.findUniqueOrThrow({where:{id:before.id}}),claim=await tx.publicationClaim.findUniqueOrThrow({where:{id:p.fence.attemptToken}});
+   expect(post.deploymentEpoch).toBe(2);expect(claim.releasedAt).not.toBeNull();expect(claim.accountSlotKey).toBeNull();expect(attempt.currentClaimId).toBeNull();
+   expect(attempt.idempotencyKey).toBe(before.idempotencyKey);expect(attempt.checkpointEncrypted).toBe(before.checkpointEncrypted);expect(attempt.nativeStartCount).toBe(before.nativeStartCount);expect(attempt.processingDeadline).toEqual(before.processingDeadline);expect(attempt.reconciliationDeadline).toEqual(before.reconciliationDeadline);
+   throw sentinel;
+  })).rejects.toBe(sentinel);
+ });
+
 	test("registration is eligible now while the Workflow sleeps until the frozen due time", async () => {
 		const f = await fixture();
 		expect(f.record.nextDeliveryAt < f.post.scheduledFor!).toBe(true);
