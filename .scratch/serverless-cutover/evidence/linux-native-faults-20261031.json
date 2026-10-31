@@ -1,0 +1,100 @@
+{
+  "date": "2026-10-31",
+  "scope": "Pinned Linux native process and signed-control tests. Control/storage replies in these tests are controlled fixtures, not live domain fence evidence.",
+  "image": {
+    "id": "sha256:07ea1aae7d730d5231b6552c2ef35e3dc8918cd3d2d318a7de85a62c7f6fe518",
+    "profile": "render",
+    "architecture": "linux-x64",
+    "cpu": "QEMU TCG CPU version 2.5+",
+    "emulated": true,
+    "network": "none",
+    "cpus": 4,
+    "memoryBytes": 8589934592,
+    "startupFingerprintId": "1814023f7ff5b1d0c24d948c1425b960a7eb0edfc6bcb042b2e56caeff2af995",
+    "fixtureToolchainId": "e00c091bc5a81bee"
+  },
+  "source": {
+    "commit": "6a9e57eee4465e494daf4cd32a1167b7300d4d65",
+    "archiveSha256": "629aeb379a9f24d595b4d77499252cd52c42ab4772d94f37b627a6f55233d6d2",
+    "procedure": "git archive HEAD apps/media/python, extracted to /work/native-candidate; PYTHONPATH explicitly selects that snapshot."
+  },
+  "results": [
+    {
+      "suite": "test_process.py",
+      "passed": 12,
+      "elapsedSeconds": 16.628,
+      "observed": [
+        "Actual native PID exists before process-start callback",
+        "CLI work bytes withheld until callback succeeds",
+        "Lost process-start acknowledgement reaps child without releasing work bytes",
+        "Wrapper SIGKILL stops detached native descendants",
+        "Deadline and external cancellation stop and reap native descendants",
+        "Native output remains bounded",
+        "Native file writes stop at exact RLIMIT_FSIZE cap",
+        "Native children do not inherit database credentials"
+      ]
+    },
+    {
+      "suite": "test_*control.py",
+      "passed": 14,
+      "elapsedSeconds": 33.072,
+      "observed": [
+        "Actual 30-second running renewal loss stops native child",
+        "Replayed expired acquire does not restore authority",
+        "Wall/monotonic divergence rejects cached permission",
+        "Exact command/transfer retry bytes and signatures retained",
+        "Fresh TLS response time rejects old scoped grants",
+        "Conditional source range matches frozen ETag and exact byte window",
+        "Caller keys/URLs and oversized part batches rejected",
+        "Lost completion acknowledgement causes no abort or delete"
+      ]
+    }
+  ],
+  "logSha256": {
+    "linux-owned-process.log": "88dc7a17b2faba7ca4bf2f927ef7be328804461dc9f000e1f278ccbbdee5c3fd",
+    "linux-signed-control.log": "7d196e2ffcb8bbe6d961f3be35e4aeac080c37828dc286c8e350911466b334fc"
+  },
+  "open": [
+    "Final candidate image rebuild and deployed Modal proof",
+    "Full golden parity and end-to-end sibling-commit/SIGKILL, storage-hang and full-disk domain commit scenarios remain incomplete; isolated native faults above passed",
+    "Linux all-suite fixture reconstruction stopped on odd-321x181 strict historical SHA mismatch; no baseline/fixture refresh or tolerance change was made"
+  ],
+  "additionalProbes": {
+    "sourceCommit": "3b65cfa4ca6d741083284608b34b654c7398b2b0",
+    "sourceArchiveSha256": "92a1f6d14fa3533014fec1c0de3205c33e4a2d97f99501fde52bb34b66d40dbb",
+    "closedConnectionStorageRead": {
+      "scope": "native transfer/process fault probes only, controlled storage replies, no live domain fence claim",
+      "storageHang": {
+        "cancelledWithinSeconds": 0.287,
+        "requests": [
+          "GET",
+          "abort"
+        ],
+        "uploadedParts": 0,
+        "completedObjects": 0
+      },
+      "kernelEnospc": {
+        "actualNativeStarts": 1,
+        "returncode": 228,
+        "errorClass": "ENOSPC",
+        "commitAttempted": false
+      }
+    },
+    "httpsSlowTrickle": {
+      "passed": 1,
+      "elapsedSeconds": 1.222,
+      "scope": "Actual trusted loopback TLS response with Connection:close, periodic bytes remain within idle timeout, whole-response deadline still interrupts it."
+    },
+    "fix": "Retain and shut down the active response socket after http.client detaches it from HTTPConnection. A refused transfer sets the native cancellation event.",
+    "hostRegressions": {
+      "controlTestsPassed": 10,
+      "multipartTestsPassed": 9,
+      "transferTestsPassed": 8,
+      "artifactTestsPassed": 4
+    },
+    "logSha256": {
+      "linux-storage-disk-faults.json": "85e4a91757fcb3c734b40b6de9afcbda986b02e075a7dbdc02f77051f04ecac1",
+      "linux-socket-tls.log": "2a5276e0bebd1baddc0cd939c63c196fb2632c6cad57fcd067c4a21b65a8518d"
+    }
+  }
+}

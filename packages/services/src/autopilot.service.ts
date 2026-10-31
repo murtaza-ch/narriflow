@@ -20,7 +20,7 @@ import {
   type RssEpisodeInput,
 } from "@narriflow/validators";
 import { fetchRssFeed, redactUrlForDisplay, RssFeedError, RssProbePending } from "./rss";
-import { RemoteFetchError, UnsafeUrlError } from "./url-guard";
+import { RemoteFetchError, UnsafeUrlError } from "./url-policy";
 import { ProcessingUsageError } from "./processing-usage";
 import { projectService } from "./project.service";
 import { lockLiveRecipe, recipeService, type ResolvedRecipe } from "./recipe.service";

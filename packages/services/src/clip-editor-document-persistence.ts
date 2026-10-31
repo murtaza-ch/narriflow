@@ -24,7 +24,7 @@ import {
   type ClipStatus,
   type TranscriptUtterance,
 } from "@narriflow/validators";
-import { UnsafeUrlError } from "./url-guard";
+import { UnsafeUrlError } from "./url-policy";
 import { tryDerivePeaksStorageKey } from "./clip-preview-storage";
 import { computeDurationOptimality, computePlatformScore } from "./clip-scoring";
 import {

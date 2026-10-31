@@ -10,19 +10,18 @@ import {
   readDriveFileMetadata,
   verifyDriveAccessToken,
 } from "./drive-source";
-import { guardedFetch, type PinnedTransport } from "./url-guard";
 
 const TOKEN = "ya29.a0-super-secret-access-token";
 const FILE_ID = "1AbCdEfGhIjKlMnOpQrStUvWxYz_-0123";
-const resolver = async () => [{ address: "142.250.80.42", family: 4 }];
 
 function drive(respond: (url: URL, headers: Headers) => Response | Promise<Response>) {
-  const seen: Array<{ url: URL; headers: Headers }> = [];
-  const transport: PinnedTransport = async (url, request) => {
-    seen.push({ url, headers: request.headers });
-    return respond(url, request.headers);
-  };
-  return { seen, options: { transport, resolver } };
+  const seen: Array<{ url: URL; headers: Headers; init: RequestInit }> = [];
+  const request = (async (input: string | URL | Request, init: RequestInit = {}) => {
+    const url=new URL(String(input)), headers=new Headers(init.headers);
+    seen.push({url,headers,init});
+    return respond(url,headers);
+  }) as typeof globalThis.fetch;
+  return { seen, options: { fetch: request } };
 }
 
 const json = (body: unknown, status = 200) =>
@@ -61,6 +60,7 @@ describe("readDriveFileMetadata", () => {
     expect(seen[0]!.url.searchParams.get("supportsAllDrives")).toBe("true");
     expect(seen[0]!.url.searchParams.get("fields")).toContain("videoMediaMetadata");
     expect(seen[0]!.headers.get("authorization")).toBe(`Bearer ${TOKEN}`);
+    expect(seen[0]!.init.redirect).toBe("error");
   }));
 
   test("a video whose duration Drive hasn't measured yet is admitted without one", bindServiceTestEnvironment(async () => {
@@ -130,6 +130,9 @@ describe("verifyDriveAccessToken", () => {
     expect(seen).toHaveLength(1);
     expect(seen[0]!.url.href).toBe("https://oauth2.googleapis.com/tokeninfo");
     expect(seen[0]!.url.href).not.toContain(TOKEN);
+    expect(seen[0]!.init.redirect).toBe("error");
+    expect(seen[0]!.init.method).toBe("POST");
+    expect(new URLSearchParams(String(seen[0]!.init.body)).get("access_token")).toBe(TOKEN);
     expect(seen[0]!.headers.get("content-type")).toBe("application/x-www-form-urlencoded");
   }));
 
@@ -236,44 +239,6 @@ describe("driveDownloadRefusal", () => {
   }));
 });
 
-describe("Drive download credentials", () => {
-  test("guardedFetch drops Authorization when a redirect leaves the Drive origin", bindServiceTestEnvironment(async () => {
-    const seen: Array<{ url: URL; authorization: string | null }> = [];
-    const transport: PinnedTransport = async (url, request) => {
-      seen.push({ url, authorization: request.headers.get("authorization") });
-      if (url.hostname === "www.googleapis.com" && url.pathname.startsWith("/drive/v3/files/")) {
-        return new Response(null, { status: 302, headers: { location: "https://lh3.googleusercontent.com/dl/abc" } });
-      }
-      return new Response("video bytes", { status: 200, headers: { "content-type": "video/mp4" } });
-    };
-    const response = await guardedFetch(driveFileMediaUrl(FILE_ID), {
-      headers: { authorization: `Bearer ${TOKEN}` },
-      transport,
-      resolver,
-    });
-    expect(response.status).toBe(200);
-    expect(seen.map((request) => request.url.hostname)).toEqual(["www.googleapis.com", "lh3.googleusercontent.com"]);
-    expect(seen[0]!.authorization).toBe(`Bearer ${TOKEN}`);
-    expect(seen[1]!.authorization).toBeNull();
-  }));
-
-  test("a redirect within the Drive API origin keeps it", bindServiceTestEnvironment(async () => {
-    const seen: Array<string | null> = [];
-    const transport: PinnedTransport = async (url, request) => {
-      seen.push(request.headers.get("authorization"));
-      return url.pathname.startsWith("/drive/v3/")
-        ? new Response(null, { status: 307, headers: { location: "https://www.googleapis.com/download/drive/v3/files/x" } })
-        : new Response("ok", { status: 200 });
-    };
-    await guardedFetch(driveFileMediaUrl(FILE_ID), {
-      headers: { authorization: `Bearer ${TOKEN}` },
-      transport,
-      resolver,
-    });
-    expect(seen).toEqual([`Bearer ${TOKEN}`, `Bearer ${TOKEN}`]);
-  }));
-});
-
 describe("Drive references", () => {
   test("the download URL is the Drive API media endpoint", bindServiceTestEnvironment(() => {
     expect(driveFileMediaUrl(FILE_ID)).toBe(
@@ -303,4 +268,28 @@ describe("createDriveTokenCipher", () => {
     expect(() => createDriveTokenCipher(material).open("v2:a:b:c")).toThrow();
     expect(() => createDriveTokenCipher("  ")).toThrow("SOCIAL_TOKEN_ENCRYPTION_KEY");
   }));
+});
+
+describe("Worker Drive provider boundary",()=>{
+ test("metadata and token verification refuse provider redirects without following them",bindServiceTestEnvironment(async()=>{
+  const metadata=drive(()=>new Response(null,{status:302,headers:{location:"http://127.0.0.1/private"}}));
+  await expect(readDriveFileMetadata({fileId:FILE_ID,accessToken:TOKEN},metadata.options)).rejects.toMatchObject({code:"drive_file_unavailable"});
+  expect(metadata.seen).toHaveLength(1);expect(metadata.seen[0]!.init.redirect).toBe("error");
+  const token=drive(()=>new Response(null,{status:307,headers:{location:"https://other.example/collect"}}));
+  await expect(verifyDriveAccessToken(TOKEN,{clientId:CLIENT_ID},token.options)).rejects.toMatchObject({code:"drive_file_unavailable"});
+  expect(token.seen).toHaveLength(1);expect(token.seen[0]!.url.origin).toBe("https://oauth2.googleapis.com");
+ }));
+ test("a file identifier cannot change the fixed provider API path",bindServiceTestEnvironment(async()=>{
+  const f=drive(()=>json(video));
+  for(const fileId of ["../../tokeninfo","abc?alt=media","https://private.example/secret"]){
+   await expect(readDriveFileMetadata({fileId,accessToken:TOKEN},f.options)).rejects.toMatchObject({code:"drive_file_unavailable"});
+  }
+  expect(f.seen).toHaveLength(0);
+ }));
+ test("provider JSON remains bounded and failures contain no token",bindServiceTestEnvironment(async()=>{
+  let cancelled=false;
+  const f=drive(()=>new Response(new ReadableStream({start(c){c.enqueue(new Uint8Array(65537));},cancel(){cancelled=true;}})));
+  const error=await failure(()=>readDriveFileMetadata({fileId:FILE_ID,accessToken:TOKEN},f.options));
+  expect(error).toMatchObject({code:"drive_file_unavailable"});expect(cancelled).toBe(true);expect(JSON.stringify(error)).not.toContain(TOKEN);
+ }));
 });

@@ -16,7 +16,7 @@ import {
 	type ClipCompositionPlanInput,
 	type CompositionMode,
 } from "@narriflow/composition-plan";
-import { assertPublicHttpUrl } from "@narriflow/services/url-guard";
+import { assertPublicHttpUrl } from "@narriflow/services/url-policy";
 import { decodeFrozenClipEditorDocument } from "@narriflow/services/clip-editor-document-codec";
 import { motionRenderAnalyticsMetadata, type MotionRenderAnalyticsMetadata } from "@narriflow/services/motion-render-analytics";
 import { hasFeature } from "@narriflow/validators";

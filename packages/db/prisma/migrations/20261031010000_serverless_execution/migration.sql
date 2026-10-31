@@ -725,3 +725,32 @@ BEGIN
  RETURN NEW;
 END; $$;
 CREATE TRIGGER "OutboundProbe_input_immutable" BEFORE UPDATE ON "OutboundProbe" FOR EACH ROW EXECUTE FUNCTION outbound_probe_input_immutable();
+
+
+ALTER TABLE "GeneratedMediaJob" ADD COLUMN "validationJobId" UUID, ADD COLUMN "validationInput" JSONB;
+CREATE UNIQUE INDEX "GeneratedMediaJob_validationJobId_key" ON "GeneratedMediaJob"("validationJobId");
+ALTER TABLE "GeneratedMediaJob" ADD CONSTRAINT "GeneratedMediaJob_validation_wait_check" CHECK (
+ ("validationInput" IS NULL OR (jsonb_typeof("validationInput")='object' AND octet_length("validationInput"::text)<=65536))
+ AND ("validationJobId" IS NULL OR ("validationInput" IS NOT NULL AND "status" IN ('waiting','completed','failed','cancelled') AND "claimId" IS NULL AND "claimExpiresAt" IS NULL))
+);
+CREATE FUNCTION generated_media_validation_binding_immutable() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+ IF OLD."validationInput" IS NOT NULL AND NOT (OLD."validationJobId" IS NULL AND OLD."outcomeUnknown" AND NOT NEW."outcomeUnknown" AND NEW."status"='queued' AND NEW."validationInput" IS NULL AND NEW."validationJobId" IS NULL AND NEW."providerRef" IS NULL AND NEW."providerUsageImages" IS NULL AND NEW."providerResultContentType" IS NULL AND NEW."claimId" IS NULL AND NEW."claimExpiresAt" IS NULL) AND
+  (NEW."validationInput",NEW."workspaceId",NEW."projectId",NEW."createdByUserId",NEW."attempt",NEW."providerRef",NEW."providerResultContentType",NEW."providerUsageImages",NEW."usageReservationId",NEW."requestFingerprint") IS DISTINCT FROM
+  (OLD."validationInput",OLD."workspaceId",OLD."projectId",OLD."createdByUserId",OLD."attempt",OLD."providerRef",OLD."providerResultContentType",OLD."providerUsageImages",OLD."usageReservationId",OLD."requestFingerprint") THEN
+  RAISE EXCEPTION 'generated validation lineage is immutable' USING ERRCODE='23514';
+ END IF;
+ IF OLD."validationJobId" IS NOT NULL AND NEW."validationJobId" IS DISTINCT FROM OLD."validationJobId" THEN
+  RAISE EXCEPTION 'generated validation child is immutable' USING ERRCODE='23514';
+ END IF;
+ IF OLD."validationJobId" IS NOT NULL AND OLD."status" IN ('completed','failed','cancelled') AND NEW."status" IS DISTINCT FROM OLD."status" THEN
+  RAISE EXCEPTION 'generated validation terminal state is immutable' USING ERRCODE='23514';
+ END IF;
+ RETURN NEW;
+END; $$;
+CREATE TRIGGER "GeneratedMediaJob_validation_binding_immutable" BEFORE UPDATE ON "GeneratedMediaJob"
+ FOR EACH ROW EXECUTE FUNCTION generated_media_validation_binding_immutable();
+
+-- Pending progress catchup reads two indexed endpoints, never Project history.
+CREATE INDEX "WorkflowEvent_unpublished_progress_project_seq_idx" ON "WorkflowEvent"("projectId", "seq")
+ WHERE "progressRequired" = true AND "progressPublishedAt" IS NULL;

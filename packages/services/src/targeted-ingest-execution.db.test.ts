@@ -130,8 +130,11 @@ dbDescribe("Targeted Ingest execution", () => {
     expect(dispatches).toHaveLength(1);
     expect(dispatches[0]!.inputHash).toBe(await workflowRunExecutionInputHash({ id: run.id, projectId: f.project.id, stage: "stt", contentPackId: audio.pack.id,
       generation: run.generation, deploymentEpoch: run.deploymentEpoch, sourceAudioId: audio.sourceAudio.id, sourceRevision: 1 }));
-    expect(results[0]!.dispatchIds).toEqual([dispatches[0]!.id]);
-    expect(results[1]!.dispatchIds).toEqual([dispatches[0]!.id]);
+    expect(results[0]!.dispatchIds).toEqual(results[1]!.dispatchIds);
+    expect(results[0]!.dispatchIds).toContain(dispatches[0]!.id);
+    expect(results[0]!.dispatchIds).toHaveLength(2);
+    const progress = await db.executionDispatch.findUniqueOrThrow({ where: { id: results[0]!.dispatchIds.find(id => id !== dispatches[0]!.id)! } });
+    expect(progress).toMatchObject({ kind: "project_progress", subjectKind: "maintenance" });
   }, 120_000);
 
   test("audio handoff validates the ledger tuple and waits for a committed pack before charging", async () => {

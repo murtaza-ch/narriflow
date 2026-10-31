@@ -7,12 +7,41 @@ import tracemalloc
 from pathlib import Path
 import tempfile
 import threading
+import time
 import unittest
 
 from narriflow_media.multipart import CompletedObject, MultipartDestination, MultipartTransferError, SignedGrant, SignedHttpTransport, TransferResponse, pin_source, upload_file
 
 
 class NativeMultipartTests(unittest.IsolatedAsyncioTestCase):
+    async def test_cancellation_interrupts_a_stalled_response_when_the_server_closes_connections(self):
+        requested, release, cancelled = threading.Event(), threading.Event(), threading.Event()
+        class Storage(BaseHTTPRequestHandler):
+            def log_message(self,*args):
+                pass
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header('Connection','close')
+                self.send_header('Content-Length','3')
+                self.end_headers()
+                requested.set()
+                release.wait(4)
+        server=ThreadingHTTPServer(('127.0.0.1',0),Storage)
+        thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
+        def cancel_read():
+            if requested.wait(3):
+                time.sleep(.1)
+                cancelled.set()
+        timer=threading.Thread(target=cancel_read,daemon=True);timer.start()
+        began=time.monotonic()
+        try:
+            with self.assertRaises(MultipartTransferError):
+                await SignedHttpTransport(allow_loopback_http=True).request(SignedGrant(f'http://127.0.0.1:{server.server_port}/stalled'),
+                    'GET',None,{},3,cancelled.is_set)
+            self.assertLess(time.monotonic()-began,2)
+        finally:
+            release.set();server.shutdown();server.server_close();thread.join(2);timer.join(1)
+
     async def test_even_a_small_file_uses_only_an_upload_part_grant(self):
         calls, uploads = [], []
         class Control:

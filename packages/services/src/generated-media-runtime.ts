@@ -14,10 +14,11 @@ import {
 import { generatedImageProviderConfigured } from "./generation-usage";
 import { prismaGeneratedMediaStore } from "./generated-media-prisma-store";
 import { generatedMediaPromptProtectionFromEnv } from "./generated-media-prompt-protection";
-import { createProductionGeneratedMediaPublisher } from "./generated-media-production-publisher";
+import { createProductionGeneratedMediaPublisher } from "./generated-media-publication-runtime";
 import { createPrismaGenerationUsageLedger, summarizeGenerationUsage } from "./generated-media-usage-ledger";
 import { openAiImageProviderFromEnv } from "./openai-image-provider";
 import { analyticsService } from "./analytics.service";
+import { getNativeValidationService } from "./native-validation-runtime";
 import { visualAssetService } from "./visual-asset.service";
 
 function boundedInteger(value: string | undefined, fallback: number, minimum: number, maximum: number) {
@@ -150,6 +151,11 @@ export class GeneratedMediaService {
 
   async cancel(scope: BrandActorScope, id: string, projectId?: string) {
     await this.get(scope, id, projectId);
+    const job = await prismaGeneratedMediaStore.get(id);
+    if (job?.validationJobId) {
+      await getNativeValidationService().cancelGenerated(scope,id);
+      return this.get(scope,id,projectId);
+    }
     return this.runtime().cancel(scope, id);
   }
 

@@ -1,0 +1,237 @@
+{
+  "date": "2026-10-31",
+  "scope": "Local pinned Linux image relocation parity. Preliminary image snapshot, not deployed Modal or complete ticket21 acceptance.",
+  "image": {
+    "id": "sha256:07ea1aae7d730d5231b6552c2ef35e3dc8918cd3d2d318a7de85a62c7f6fe518",
+    "architecture": "linux-x64",
+    "cpu": "QEMU TCG CPU version2.5+",
+    "emulated": true,
+    "network": "none",
+    "cpus": 4,
+    "memoryBytes": 8589934592,
+    "fingerprintId": "1814023f7ff5b1d0c24d948c1425b960a7eb0edfc6bcb042b2e56caeff2af995",
+    "fixtureToolchainId": "e00c091bc5a81bee"
+  },
+  "frozenReference": {
+    "frozenCommit": "623aadca7e5790cf456100f7b7966fbaf74e8bf7",
+    "frozenArchiveSha256": "69f4d9e7d0679b40bd5b1e2d7774bc7d975bca42793ac8ee23f5582e15e0a542",
+    "originalFixtureManifestSha256": "cef099ee7942627bf4190c7b6805ba704a183f7c03646a0d7d50351d89887bce",
+    "recipeContentSha256": "7bdf92d7e4eb898d6e797f3b584c05874cfe9d2dda3dc45bd6b0314de8900aaf",
+    "historicalCaptureSha256": "ddd776add5a7d484687f8c199098692da733fe653b139fc265dc337c3ec8c7fe",
+    "fixtureToolchainId": "e00c091bc5a81bee",
+    "recoveredFixtureCount": 29,
+    "recoveredManifestSha256": "e87ca72642998347dbe6ffdffb9c16617ac7002e1b5604c928ca59399179b42f",
+    "procedure": "Recover existing historical Linux fixture hashes only. Recipes unchanged. No --pin or --rebuild. Generated fixture bytes must match historical hashes before any capture.",
+    "historicalLinuxManifestSha256": "e87ca72642998347dbe6ffdffb9c16617ac7002e1b5604c928ca59399179b42f",
+    "historicalEvidenceArchiveSha256": "eddbb2847eff8ecc44d8b77b7e432b496854c5b8efb7624b57afe67b696b223c",
+    "historicalLinuxManifestMatchesRecoveredSemantics": true
+  },
+  "exactNormalComparison": {
+    "passed": 18,
+    "failed": 0,
+    "baselineRefreshed": false,
+    "tolerancesChanged": false,
+    "suite": "normal",
+    "caseIds": [
+      "solo-auto-vertical",
+      "two-up-speaker-vertical",
+      "screen-pip-portrait",
+      "explicit-split-portrait",
+      "rtl-arabic-captions",
+      "cjk-dense-captions",
+      "logo-broll-music-sfx-censor",
+      "cut-and-inserted-scenes",
+      "exact-source-end",
+      "treatments-720p-watermark-1080p",
+      "image-background-fit",
+      "audio-only-audiogram",
+      "mono-44k",
+      "silent-video",
+      "ntsc-24000-1001",
+      "ntsc-30000-1001",
+      "text-layers-transition",
+      "speed-playback-rate-ui-only"
+    ],
+    "inputHashes": {
+      "manifest": "e87ca72642998347dbe6ffdffb9c16617ac7002e1b5604c928ca59399179b42f",
+      "documents": "d5a7e0b46a5c0cbdb2243ad872c31bd813d0887f3e57d2e8ad5874db7115ea3e",
+      "evidence": "cedcdddb939e558137c82ecdb6b82ad7e3dc155a6f1be7b29bfccbf6b1742848",
+      "knownDefects": "5d31a4dc0793e28ed846dc569d6934588816c95fc0abf78be4cee6082069fede",
+      "activations": {
+        "03-display-geometry.json": "d18e0ee3b2edcbe1852596805bf0de1604f767de6f9f5383974cf65333fbf47d",
+        "03b-output-sar.json": "fafa1a402e3aee4ceeb2825b8e6f7c85f02917bfcbb4d5af3cf344c547381861",
+        "04-audio-clock.json": "6e766f6169fea1e5096f5c0dd16bd62d63eb20bd01199beeec11b6858101a049",
+        "05-mix-clipping.json": "0b512c4f62b5bd21e76b67339de1222de6bf26d3c71fdd954de8dcf19f197ebd",
+        "06-vfr-clock.json": "9924a8052eb03cccafd85412bd00d03766446c5d172a277136dc2af7cc26fb5e",
+        "07-hdr-to-sdr.json": "04ac246ed095bbc1823a18b9753ee463ebbfd09fb32d2ef8a1a14bfba94d5f2f",
+        "08-emoji-and-glyphs.json": "64ccb798a387becd9d6eb0c95c33a34c007b27ef4014e2b8fb1e08efb9d55e5b",
+        "09-output-validation.json": "b68bf52435ab25a24ab3872e489cd52755ddac4b986861e0f7661b4ae9e6a0e9",
+        "09b-output-pixel-format.json": "a036a18d0281cfd2841d84a658a61576a37b99cf0d9a73eab6929c87273dde3e"
+      }
+    },
+    "fixtureHashes": {
+      "talk-720p": "b72876624412225a916465e47abd936c50f4d5acb806cf6ca7ec5614b945befa",
+      "talk-mono44": "7b6ed0cbd96eb2325757a484817772faa0935dfb8ca4868ac73d5b07f2e64c0b",
+      "talk-silent": "8e4627539031bd1882bb068ec32717dc63e1451063f562974bb1560988b5fff3",
+      "ntsc-24000-1001": "a422f6a711fb4e141a71aa6af751febe8b2f06216e06665a389d294a77c17f7e",
+      "ntsc-30000-1001": "bd529dfd650c668b8887c7747f6fdd6354932aaac7dd69ba1425c36e348df4a3",
+      "talk-audio": "aea06a607072334ec6a960df8b74436e6581b3d07290b4b4dc02e8c0e274b98f",
+      "logo": "e2b8bd149599eb8c3956f132ea01c9acbb9d4276126c9f78641da064a2ef7fb2",
+      "music-bed": "55e84c5840e34caf206c9a26b99e941c112f6ed47b922da545b220eaeb8c515a",
+      "sfx-hit": "587a0823ca1d9e02f4b47806eb7d36c3561076d0e6653af947a93981adcf8ea4",
+      "scene-card": "606cb2d28ffa25503579e16368d8cdbb5ece12febd47d9c893de022c9c863bbc",
+      "scene-clip": "110b1278711bec76d7b7baecd0921837844c21c6e5723791f25dc7a5f738d854",
+      "background": "8c67a0da4cd08309b860fdf986ce29c0d37373098d7a2fefdf3aca888212aa03",
+      "broll-card": "f4f0256a8e6f8a5b603fdf59825ed4a119c2c8bb239c96672b4d61420607256b"
+    },
+    "reportSha256": "2ddf2de1eef6867bafa63952741eb009ea9cb6abf60ee11131bf683e9de9aa65",
+    "referenceCaptureSha256": "73ca517650713f688570ce4cec3e5bffd71e7230a107fb4c57edd03d619b514a",
+    "candidateCaptureSha256": "a026d2be1780c77971feb42e6ccc28db6863c866c45cf65babf48778c4d017ad",
+    "procedure": "Frozen623aadca compiler/process/layout source generated reference in same image. Relocated unmodified verifySuite compares canonical plans/argv/filtergraphs, decoded frame/PCM hashes, ffprobe/decode/loudness facts and diagnostics exactly. Historical Linux fixture manifest supplied through supported external fixtureDir; source archive manifest restored. No --pin or --rebuild."
+  },
+  "cameraClock": {
+    "passed": 7,
+    "failed": 0,
+    "assertions": 41,
+    "elapsedSeconds": 79.09,
+    "testSha256": "9e95aba567472382d47d9b6934a6d0c8ca3540921394eee071242b3358178764",
+    "variants": [
+      "uncut",
+      "inserted",
+      "deleted",
+      "deleted-start",
+      "repeated-deletions",
+      "combined",
+      "sliver"
+    ],
+    "procedure": "Unmodified native camera-cut integration tests use original60000/1001 camera clock and retimed30fps proxy; inspect every output frame. Python face observations are controlled samples."
+  },
+  "detectors": {
+    "runtime": "CPython3.13.5 pinned render image",
+    "scope": "Actual OpenCV model inference and byte-exact frozen/relocated detector CLI comparison on synthetic frozen input only",
+    "opencv": "5.0.0",
+    "numpy": "2.5.4",
+    "opencvThreads": 4,
+    "model": {
+      "sha256": "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4",
+      "bytes": 232589,
+      "importSeconds": 1.677,
+      "loadSeconds": 0.198,
+      "firstInferenceSeconds": 0.256,
+      "readySeconds": 2.131,
+      "actualInputSize": [
+        320,
+        180
+      ],
+      "successful": true
+    },
+    "comparisons": [
+      {
+        "script": "reframe_detect.py",
+        "identical": true,
+        "stdoutSha256": "723ee0b2c72d788d2f0b325f9c334835bbf3ed0e030c00c82b6fae3e03414c02",
+        "referenceSeconds": 3.612,
+        "candidateSeconds": 3.01
+      },
+      {
+        "script": "pip_detect.py",
+        "identical": true,
+        "stdoutSha256": "c1a840cfd4a1f41d6b6ed0d216c3ae7778c6a96529943d3ea220d58059203ad8",
+        "referenceSeconds": 3.085,
+        "candidateSeconds": 3.015
+      }
+    ]
+  },
+  "explicitOpenCVThreadCaps": {
+    "environment": {
+      "OPENCV_FOR_THREADS_NUM": "MEDIA_THREADS",
+      "OPENCV_FFMPEG_THREADS": "MEDIA_THREADS"
+    },
+    "installedRuntimeProbe": {
+      "configured": 2,
+      "actualMathThreads": 2,
+      "actualDecoderThreads": 2
+    },
+    "renderProfileConfigured": 4,
+    "leanProfileConfigured": 2,
+    "cappedDetectorResult": {
+      "runtime": "CPython3.13.5 pinned render image",
+      "scope": "Actual OpenCV model inference and byte-exact frozen/relocated detector CLI comparison on synthetic frozen input only",
+      "opencv": "5.0.0",
+      "numpy": "2.5.4",
+      "opencvThreads": 4,
+      "model": {
+        "sha256": "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4",
+        "bytes": 232589,
+        "importSeconds": 0.962,
+        "loadSeconds": 0.068,
+        "firstInferenceSeconds": 0.204,
+        "readySeconds": 1.234,
+        "actualInputSize": [
+          320,
+          180
+        ],
+        "successful": true
+      },
+      "comparisons": [
+        {
+          "script": "reframe_detect.py",
+          "identical": true,
+          "stdoutSha256": "723ee0b2c72d788d2f0b325f9c334835bbf3ed0e030c00c82b6fae3e03414c02",
+          "referenceSeconds": 2.939,
+          "candidateSeconds": 2.9
+        },
+        {
+          "script": "pip_detect.py",
+          "identical": true,
+          "stdoutSha256": "c1a840cfd4a1f41d6b6ed0d216c3ae7778c6a96529943d3ea220d58059203ad8",
+          "referenceSeconds": 2.881,
+          "candidateSeconds": 3.128
+        }
+      ]
+    },
+    "outputsUnchanged": true,
+    "references": [
+      "https://docs.opencv.org/4.12.0/d6/dea/tutorial_env_reference.html",
+      "https://github.com/opencv/opencv/blob/5.0.0/modules/videoio/src/cap_ffmpeg_impl.hpp#L1096-L1102"
+    ]
+  },
+  "freshLocalContainerReadiness": {
+    "successful": true,
+    "modelBytes": 232589,
+    "opencvThreads": 4,
+    "importSeconds": 1.166,
+    "loadSeconds": 0.073,
+    "inferenceSeconds": 0.183,
+    "processReadySeconds": 1.422,
+    "containerInvocationTotalSeconds": 4.328,
+    "scope": "New local container, cached image layers and VM. Includes container invocation and exit, not a Modal cold-start measurement."
+  },
+  "allSuiteFailure": {
+    "stage": "immutable fixture staging",
+    "fixture": "odd-321x181",
+    "expectedSha256": "6da8c138f102bab7b25705dbc0345e52b8b483bbb8d309c0a4f7ce282152ba1e",
+    "actualSha256": "5caad1c3fac74c3f28eae0933ff1eb9f86f99fe7e6658207c2e1c0bd5f36f2ec",
+    "originalRecipeRepeatedIdentically": true,
+    "otherReconstructedFixtureHashesMatched": 21,
+    "diagnosticsOnly": {
+      "filterComplexThreads1Sha256": "5caad1c3fac74c3f28eae0933ff1eb9f86f99fe7e6658207c2e1c0bd5f36f2ec",
+      "ffmpegCpuFlags0Sha256": "7a5e1bab8c0626c0aaab0b31c7197d04a1068eb2d20f9e70ebc40ca1fce7ad88",
+      "x264CpuIndependent1Sha256": "a9bb6a54919967850c15d9803c530cddd5059b57cdfe24400ed73fb8c6159798"
+    },
+    "cause": "Unresolved. CPU-specific conversion/encoding is a possibility, not an established cause. No diagnostic flag entered production source or frozen fixture recipes."
+  },
+  "logSha256": {
+    "linux-reference-normal.log": "e37d66c1882c9294669fa1b322f00d8534d491389a3a3953ced12b10007040ea",
+    "linux-candidate-normal.log": "31504b6a8e0c093dffafe19de9a019180e0eedb055b22054a5785f58742fc840",
+    "linux-camera-clock.log": "1d250399689c7c46ee4559b6079c0a877edf518df147fdc86b0727e00cebd76b",
+    "linux-detectors.log": "bd75d5576cb4de10c39455b6040d79dc786579facc44609a06326f14d6d6302e",
+    "linux-detectors-capped.log": "ddd6b1150da697fa4ff52bf28d8619fa84fe7ce971c032cbbf23b2f7fbfc1bc1"
+  },
+  "open": [
+    "All36-case parity, including strict recovery of the mismatching historical odd fixture",
+    "Explicit standalone FFmpeg decoder/filter/encoder caps",
+    "Final candidate image rebuild, deployed Modal execution and actual Modal cold-start readiness",
+    "End-to-end domain commit crash matrix; isolated native faults are recorded separately"
+  ]
+}

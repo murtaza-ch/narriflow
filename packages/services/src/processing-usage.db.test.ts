@@ -983,9 +983,7 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
     const fileId = "1AbCdEfGhIjKlMnOpQrStUvWxYz_-0123";
     const clientId = "narriflow.apps.googleusercontent.com";
     const drive = (durationMillis: string, aud = clientId) => {
-      const resolver = async () => [{ address: "142.250.80.42", family: 4 }];
-      const transport = async (url: URL) =>
-        new Response(
+      const request = (async (raw: string | URL | Request) => { const url = new URL(String(raw)); return new Response(
           JSON.stringify(
             url.hostname === "oauth2.googleapis.com"
               ? { aud, scope: "https://www.googleapis.com/auth/drive.file" }
@@ -993,7 +991,8 @@ dbDescribe("Processing Usage PostgreSQL interface", () => {
           ),
           { status: 200 },
         );
-      return createGoogleDriveFileReader({ clientId, transport, resolver });
+      }) as typeof globalThis.fetch;
+      return createGoogleDriveFileReader({ clientId, fetch: request });
     };
     const input = { fileId, accessToken: "ya29.reader-token" };
 

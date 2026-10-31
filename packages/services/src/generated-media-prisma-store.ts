@@ -1,3 +1,5 @@
+import { Prisma } from "@prisma/client";
+import { generatedValidationPlanSchema } from "@narriflow/validators/native-validation";
 import type {
   GeneratedMediaJob as PrismaGeneratedMediaJob,
   VisualAsset,
@@ -75,6 +77,8 @@ async function record(row: Row): Promise<GeneratedMediaJobRecord> {
     providerUsageImages: row.providerUsageImages,
     providerResultContentType: row.providerResultContentType as GeneratedMediaJobRecord["providerResultContentType"],
     resultAsset: await assetRow(row.resultAsset),
+    validationJobId: row.validationJobId,
+    validationInput: row.validationInput===null?null:generatedValidationPlanSchema.parse(row.validationInput),
     attempt: row.attempt,
     retryAt: row.retryAt,
     claimId: row.claimId,
@@ -153,6 +157,8 @@ export const prismaGeneratedMediaStore: GeneratedMediaStore = {
         providerUsageImages: input.providerUsageImages,
         providerResultContentType: input.providerResultContentType,
         resultAssetId: input.resultAsset?.id ?? null,
+        validationJobId: input.validationJobId,
+        validationInput: input.validationInput??Prisma.DbNull,
         attempt: input.attempt,
         retryAt: input.retryAt,
         claimId: input.claimId,
@@ -207,6 +213,7 @@ export const prismaGeneratedMediaStore: GeneratedMediaStore = {
         ...(patch.status ? { status: patch.status } : {}),
         ...(patch.moderationStatus ? { moderationStatus: patch.moderationStatus } : {}),
         ...(patch.usageStatus ? { usageStatus: patch.usageStatus } : {}),
+        ...(patch.validationInput !== undefined ? { validationInput:patch.validationInput??Prisma.DbNull } : {}),
         ...(patch.providerRef !== undefined ? { providerRef: patch.providerRef } : {}),
         ...(patch.providerUsageImages !== undefined ? { providerUsageImages: patch.providerUsageImages } : {}),
         ...(patch.providerResultContentType !== undefined ? { providerResultContentType: patch.providerResultContentType } : {}),
@@ -236,6 +243,7 @@ export const prismaGeneratedMediaStore: GeneratedMediaStore = {
         ...(patch.status ? { status: patch.status } : {}),
         ...(patch.moderationStatus ? { moderationStatus: patch.moderationStatus } : {}),
         ...(patch.usageStatus ? { usageStatus: patch.usageStatus } : {}),
+        ...(patch.validationInput !== undefined ? { validationInput:patch.validationInput??Prisma.DbNull } : {}),
         ...(patch.providerRef !== undefined ? { providerRef: patch.providerRef } : {}),
         ...(patch.providerUsageImages !== undefined ? { providerUsageImages: patch.providerUsageImages } : {}),
         ...(patch.providerResultContentType !== undefined ? { providerResultContentType: patch.providerResultContentType } : {}),
@@ -270,6 +278,7 @@ export const prismaGeneratedMediaStore: GeneratedMediaStore = {
       where: {
         id,
         outcomeUnknown: false,
+        validationJobId: null,
         status: { in: intent === "cancel" ? ["queued", "waiting"] : ["queued", "running", "waiting"] },
         ...(intent === "cancel" ? { providerUsageImages: null, resultAssetId: null } : {}),
         ...(intent === "process" ? { OR: [{ retryAt: null }, { retryAt: { lte: now } }] } : {}),
@@ -289,6 +298,7 @@ export const prismaGeneratedMediaStore: GeneratedMediaStore = {
   async due(now, limit) {
     const rows = await requirePrisma().generatedMediaJob.findMany({
       where: {
+        validationJobId: null,
         status: { in: ["queued", "running", "waiting"] },
         OR: [{ retryAt: null }, { retryAt: { lte: now } }],
         AND: [

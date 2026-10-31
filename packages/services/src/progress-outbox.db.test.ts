@@ -4,7 +4,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@prisma/client";
 import { createDatabaseScope, withDatabaseScope } from "@narriflow/db/client";
 import { appendWorkflowEvent } from "./workflow-event-append";
-import { appendProgressRevocation, deliverProgressAfterCommit, deliverProgressDispatch } from "./progress-outbox";
+import { appendProgressRevocation, deliverProgressAfterCommit, deliverProgressDispatch, flushProjectProgressDrains } from "./progress-outbox";
 import { createExecutionDispatch } from "./execution-dispatch";
 import { withProgressDelivery } from "./progress-delivery";
 import { withServiceEnvironment } from "./runtime-environment";
@@ -33,7 +33,8 @@ suite("Durable progress delivery and revocation", () => {
   afterEach(async () => {
     const events = await database.workflowEvent.findMany({ where: { project: { workspaceId } }, select: { id: true } });
     const prefix = `pr1.${Buffer.from(workspaceId.replaceAll("-", ""), "hex").toString("base64url")}.`;
-    await database.executionDispatch.deleteMany({ where: { kind: "project_progress", OR: [{ subjectId: { in: events.map((row) => row.id) } }, { subjectId: { startsWith: prefix } }] } });
+    const eventPrefix = `pe1.${Buffer.from(projectId.replaceAll("-", ""), "hex").toString("base64url")}.`;
+    await database.executionDispatch.deleteMany({ where: { kind: "project_progress", OR: [{ subjectId: { in: events.map((row) => row.id) } }, { subjectId: { startsWith: prefix } }, { subjectId: { startsWith: eventPrefix } }] } });
     await database.workspace.delete({ where: { id: workspaceId } });
     await database.user.deleteMany({ where: { id: { in: [ownerId, ...extraUsers] } } }); extraUsers = [];
   });
@@ -46,6 +47,24 @@ suite("Durable progress delivery and revocation", () => {
     return { row, dispatch: await database.executionDispatch.findFirstOrThrow({ where: { kind: "project_progress", subjectId: row.id } }) };
   }
   const scheduler = () => createExecutionDispatch({ database, scheduler: { deliver: ({ reference }) => deliverProgressDispatch(database, reference) }, options: { retryBaseMs: 1, retryMaxMs: 1 } });
+
+  test("a transaction exposes one progress drain and confirms bounded continuation pages", async () => {
+    const ids = await database.$transaction(async tx => {
+      for (let index = 0; index < 101; index++) await appendWorkflowEvent(tx, { projectId, workflowRunId: crypto.randomUUID(), attemptId: crypto.randomUUID(), stage: "stt", status: "running", progress: 10, errorCode: null, transition: "page" }, { progressRequired: true, analyticsEnabled: false });
+      const drains = await flushProjectProgressDrains(tx);
+      expect(await flushProjectProgressDrains(tx)).toEqual([]);
+      return drains;
+    });
+    expect(ids).toHaveLength(1);
+    const published: number[] = [], registered: string[] = [];
+    await withProgressDelivery({ publish: async (_scope, payload) => { published.push(payload.seq); }, revoke: async () => {}, registerContinuations: async next => { registered.push(...next); } }, async () => {
+      expect((await scheduler().deliver(ids[0]!)).status).toBe("acknowledged");
+      expect(published).toHaveLength(100); expect(registered).toHaveLength(1);
+      expect((await scheduler().deliver(registered[0]!)).status).toBe("acknowledged");
+      expect(published.sort((a, b) => a - b)).toEqual(Array.from({ length: 101 }, (_, index) => index + 1));
+    });
+    expect(await database.workflowEvent.count({ where: { projectId, progressPublishedAt: null } })).toBe(0);
+  }, 60_000);
 
   test("event and destination obligation commit together; rollback leaves neither", async () => {
     const initial = await event(); expect(initial.dispatch.acknowledgedAt).toBeNull();

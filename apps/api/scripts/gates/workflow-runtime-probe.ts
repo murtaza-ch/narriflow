@@ -17,7 +17,7 @@ import { executionDispatchIdentity } from "@narriflow/services/execution-dispatc
 import { executionDispatchReferenceSchema, type ExecutionDispatchReference } from "@narriflow/validators/execution";
 import { ScopedDomainWorkflow } from "../../src/workflows/scoped-workflow";
 import { createWorkerExecutionScheduler } from "../../src/workflows/scheduler";
-import { workflowDispatchEventSchema, type WorkflowCommandHandler, type WorkflowHandlerRegistry } from "../../src/workflows/protocol";
+import { dispatchContinuationInstanceId, workflowDispatchEventSchema, type WorkflowCommandHandler, type WorkflowHandlerRegistry, type WorkflowKind } from "../../src/workflows/protocol";
 import type { ApiWorkerBindings } from "../../src/worker-bindings";
 
 export class GateState extends DurableObject {
@@ -25,9 +25,9 @@ export class GateState extends DurableObject {
   async record(kind: string, scope: string, detail: string) { this.ctx.storage.sql.exec("INSERT INTO log(kind, scope, detail) VALUES (?, ?, ?)", kind, scope, detail); }
   async read() { return this.ctx.storage.sql.exec<{ kind: string; scope: string; detail: string }>("SELECT kind, scope, detail FROM log ORDER BY id").toArray(); }
 }
-interface Bindings extends ApiWorkerBindings { GATE_WORKFLOW: Workflow<ExecutionDispatchReference>; GATE_STATE: DurableObjectNamespace<GateState> }
+interface Bindings extends ApiWorkerBindings { GATE_WORKFLOW: Workflow<ExecutionDispatchReference>; GATE_CONTINUATION: Workflow<ExecutionDispatchReference>; GATE_STATE: DurableObjectNamespace<GateState> }
 export class GateWorkflow extends ScopedDomainWorkflow {
-  protected readonly workflowKind = "import_pipeline" as const;
+  protected readonly workflowKind: WorkflowKind = "import_pipeline";
   private scopeId = "";
   private subject = "";
   protected override scope() {
@@ -48,6 +48,7 @@ export class GateWorkflow extends ScopedDomainWorkflow {
       const [row] = await client.$queryRaw<Array<{ answer: number }>>`SELECT 42::integer AS answer`;
       if (row?.answer !== 42) throw new Error("SQL result mismatch");
       await state.record("query", scopeId, wake.type);
+      if (reference.subject.id.startsWith("continuation")) return { type: "complete", disposition: "terminal" };
       if (reference.subject.id.startsWith("early") && wake.type === "start") return { type: "sleep", until: new Date(Date.now() + 1_000).toISOString() };
       if (wake.type === "start" || wake.type === "timer") return { type: "wait", until: new Date(Date.now() + (reference.subject.id.startsWith("timeout") ? 1_100 : 20_000)).toISOString(), deliveryId: crypto.randomUUID() };
       return { type: "complete", disposition: "terminal" };
@@ -55,6 +56,7 @@ export class GateWorkflow extends ScopedDomainWorkflow {
     return { import_pipeline: { ingest_job: handler } };
   }
 }
+export class GateContinuation extends GateWorkflow { protected override readonly workflowKind: WorkflowKind = "maintenance"; }
 
 const api = createApiWorker({ createApp(environment) {
   return { async fetch(request, resourceBindings, context) {
@@ -90,11 +92,17 @@ const api = createApiWorker({ createApp(environment) {
     const reference = executionDispatchReferenceSchema.parse(JSON.parse(url.searchParams.get("reference") ?? "null"));
     const identity = await executionDispatchIdentity(reference);
     if (url.pathname === "/stats") return Response.json(await bindings.GATE_STATE.getByName(reference.subject.id).read());
-    const actual = { ...bindings, IMPORT_PIPELINE: bindings.GATE_WORKFLOW };
+    const actual = { ...bindings, IMPORT_PIPELINE: bindings.GATE_WORKFLOW, MAINTENANCE: bindings.GATE_CONTINUATION };
     const scheduler = createWorkerExecutionScheduler(actual);
+    if (url.pathname === "/continuation-status") return Response.json(await (await bindings.GATE_CONTINUATION.get(dispatchContinuationInstanceId(reference))).status());
+    if (url.pathname === "/deadline") return Response.json(await scheduler.deliver({ reference, ...identity, dueAt: new Date(), mode: "registration", wakeKind: null, deadlineKind: "operation", observedDeadlineAt: new Date() }));
     if (url.pathname === "/create") return Response.json(await scheduler.deliver({ reference, ...identity, dueAt: new Date(), mode: "registration", wakeKind: null, deadlineKind: null, observedDeadlineAt: null }));
     const instance = await bindings.GATE_WORKFLOW.get(identity.instanceId);
-    if (url.pathname === "/wake") return Response.json(await scheduler.deliver({ reference, ...identity, dueAt: new Date(), mode: "wake", wakeKind: "audio.ready", deadlineKind: null, observedDeadlineAt: null }));
+    if (url.pathname === "/late-wake") return Response.json(await scheduler.deliver({ reference, ...identity, dueAt: new Date(), mode: "wake", wakeKind: "audio.ready", deadlineKind: null, observedDeadlineAt: null }));
+    if (url.pathname === "/wake") {
+      await instance.sendEvent({ type: "dispatch", payload: workflowDispatchEventSchema.parse({ reference, wakeKind: "audio.ready", deadlineKind: null, observedDeadlineAt: null }) });
+      return Response.json({ status: "confirmed_notified" });
+    }
     if (url.pathname === "/status") return Response.json(await instance.status());
     if (url.pathname === "/scope-mismatch") {
       await instance.sendEvent({ type: "dispatch", payload: workflowDispatchEventSchema.parse({ reference: { ...reference, subject: { ...reference.subject, id: "different-subject" } }, wakeKind: "audio.ready", deadlineKind: null, observedDeadlineAt: null }) });
