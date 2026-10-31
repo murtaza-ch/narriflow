@@ -545,6 +545,18 @@
     "./clip-selection-window": {
       "types": "./src/clip-selection-window.ts",
       "default": "./src/clip-selection-window.ts"
+    },
+    "./clip-selection-input": {
+      "types": "./src/clip-selection-input.ts",
+      "default": "./src/clip-selection-input.ts"
+    },
+    "./clip-selection-preparation": {
+      "types": "./src/clip-selection-preparation.ts",
+      "default": "./src/clip-selection-preparation.ts"
+    },
+    "./clip-detection-persistence": {
+      "types": "./src/clip-detection-persistence.ts",
+      "default": "./src/clip-detection-persistence.ts"
     }
   },
   "scripts": {

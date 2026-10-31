@@ -14,6 +14,7 @@ export * from "./caption-style";
 export * from "./captioned-video";
 export * from "./campaign-operation";
 export * from "./clip";
+export * from "./clip-selection";
 export * from "./clip-export";
 export * from "./clip-layout-analysis";
 export * from "./clip-auto-layout-analysis";

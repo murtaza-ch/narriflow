@@ -3,6 +3,7 @@ import { executionDispatchReferenceSchema, type ExecutionDispatchReference } fro
 import { appendExecutionDispatch, executionDispatchIdentity, readExecutionDispatch } from "./execution-dispatch";
 import { lockWorkspaceUsage } from "./processing-usage";
 import { accessibleProjectWhere } from "./project-access";
+import { workflowRunExecutionInputHash } from "./workflow-execution-input";
 
 type Tx = Prisma.TransactionClient;
 const CAPACITY_LOCK = "provider_capacity:openai:clip_selection";
@@ -48,7 +49,7 @@ function sameReference(left: ExecutionDispatchReference, right: ExecutionDispatc
 }
 function uuid(value: string): boolean { return /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(value); }
 
-async function lockWindow(tx: Tx, value: ExecutionDispatchReference, historicalResult = false): Promise<{ row: ClipSelectionWindow; now: Date } | null> {
+export async function lockClipSelectionWindow(tx: Tx, value: ExecutionDispatchReference, historicalResult = false): Promise<{ row: ClipSelectionWindow; now: Date } | null> {
   const parsed = executionDispatchReferenceSchema.safeParse(value);
   if (!parsed.success || value.kind !== "operation_driver" || value.subject.kind !== "clip_selection_window") return null;
   const [epoch] = await tx.$queryRaw<Array<{ epoch: number }>>`SELECT "epoch" FROM "ExecutionEpoch" WHERE id = 1 FOR SHARE`;
@@ -76,7 +77,31 @@ async function lockWindow(tx: Tx, value: ExecutionDispatchReference, historicalR
   return { row, now };
 }
 
-async function dispatchWindow(tx: Tx, row: ClipSelectionWindow): Promise<ExecutionDispatchReference> {
+/** Parent commands freeze inputs and finalize children without a long-lived lease. */
+export async function lockClipSelectionParent(tx: Tx, value: ExecutionDispatchReference) {
+  const parsed = executionDispatchReferenceSchema.safeParse(value);
+  if (!parsed.success || value.kind !== "operation_driver" || value.subject.kind !== "workflow_run") return null;
+  const [epoch] = await tx.$queryRaw<Array<{ epoch: number }>>`SELECT epoch FROM "ExecutionEpoch" WHERE id = 1 FOR SHARE`;
+  const registered = await readExecutionDispatch(tx, value.dispatchId);
+  if (epoch?.epoch !== value.deploymentEpoch || !registered || !sameReference(registered.reference, value)) return null;
+  const initial = await tx.workflowRun.findUnique({ where: { id: value.subject.id }, include: { project: { select: { workspaceId: true } } } });
+  if (!initial) return null;
+  await lockWorkspaceUsage(tx, initial.project.workspaceId);
+  await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${initial.projectId}, 0)) IS NULL AS "locked"`;
+  await tx.$queryRaw`SELECT id FROM "Project" WHERE id = ${initial.projectId}::uuid FOR UPDATE`;
+  await tx.$queryRaw`SELECT id FROM "WorkflowRun" WHERE id = ${initial.id}::uuid FOR UPDATE`;
+  const run = await tx.workflowRun.findUniqueOrThrow({ where: { id: initial.id }, include: { contentPack: true } }), now = await clock(tx);
+  const project = await tx.project.findFirst({ where: { id: initial.projectId, ...accessibleProjectWhere(now), ingestStatus: { not: "failed" }, workspace: { status: "active" } } });
+  const transcript = await tx.transcript.findUnique({ where: { projectId: initial.projectId }, include: { sourceAudio: true } });
+  if (!project || !transcript || transcript.status !== "completed" || project.sourceRevision !== transcript.sourceRevision || run.stage !== "moment_detection" ||
+    run.deploymentEpoch !== value.deploymentEpoch || run.generation !== value.generation || run.attemptId || run.leaseOwner || run.leaseExpiresAt || !["queued", "waiting", "completed", "failed", "cancelled"].includes(run.status)) return null;
+  const inputHash = await workflowRunExecutionInputHash({ id: run.id, projectId: run.projectId, stage: run.stage, contentPackId: run.contentPackId,
+    deploymentEpoch: run.deploymentEpoch, generation: run.generation, sourceAudioId: transcript.sourceAudioId, sourceRevision: transcript.sourceRevision,
+    sourceTranscript: { id: transcript.id, generation: transcript.selectionGeneration, attemptId: transcript.workflowAttemptId } });
+  return inputHash === value.inputHash ? { run, project, transcript, now } : null;
+}
+
+export async function registerClipSelectionWindow(tx: Tx, row: ClipSelectionWindow): Promise<ExecutionDispatchReference> {
   const identity = { deploymentEpoch: row.deploymentEpoch, kind: "operation_driver" as const, subject: { kind: "clip_selection_window" as const, id: row.id }, generation: row.generation };
   const key = await executionDispatchIdentity(identity);
   const existing = await tx.executionDispatch.findUnique({ where: { deliveryKey: key.deliveryKey }, select: { dueAt: true } });
@@ -104,7 +129,7 @@ async function replayWakes(tx: Tx, reference: ExecutionDispatchReference): Promi
   const row = await tx.clipSelectionWindow.findUnique({ where: { id: reference.subject.id } });
   if (!row || row.deploymentEpoch !== reference.deploymentEpoch || row.inputHash !== reference.inputHash || row.generation < reference.generation) return [];
   if (["completed", "failed", "cancelled"].includes(row.status)) return [await parentWake(tx, row)];
-  if (row.generation > reference.generation) return [(await dispatchWindow(tx, row)).dispatchId];
+  if (row.generation > reference.generation) return [(await registerClipSelectionWindow(tx, row)).dispatchId];
   return row.status === "running" ? [await leaseWake(tx, row, reference)] : [];
 }
 
@@ -135,7 +160,7 @@ async function capacity(tx: Tx, deploymentEpoch: number, now: Date) {
     WHERE w."deploymentEpoch" = ${deploymentEpoch} AND w.status = 'queued' AND (w."retryAt" IS NULL OR w."retryAt" <= (${now}::timestamptz AT TIME ZONE 'UTC') OR w."errorCode" = ${CLIP_SELECTION_CAPACITY_WAIT})
       AND w."operationDeadlineAt" > (${now}::timestamptz AT TIME ZONE 'UTC') AND ${current}
     ORDER BY (SELECT MAX(turn."lastProviderStartedAt") FROM "ClipSelectionWindow" turn WHERE turn."projectId" = w."projectId" AND turn."deploymentEpoch" = w."deploymentEpoch") ASC NULLS FIRST,
-      w."providerQueuedAt" ASC, w.id ASC LIMIT 1
+      w."providerQueuedAt" ASC, w."windowIndex" ASC, w.id ASC LIMIT 1
   `;
   return { ...usage, head };
 }
@@ -143,7 +168,7 @@ async function wakeHead(tx: Tx, deploymentEpoch: number, cause: string, now: Dat
   const { head } = await capacity(tx, deploymentEpoch, now);
   if (!head) return [];
   const row = await tx.clipSelectionWindow.findUniqueOrThrow({ where: { id: head.id } });
-  const reference = await dispatchWindow(tx, row);
+  const reference = await registerClipSelectionWindow(tx, row);
   // Epoch zero is a stable due time for replay of this exact release hint.
   const wake = await appendExecutionDispatch(tx, { ...reference, subject: reference.subject, dueAt: new Date(0), wakeKind: `sel_${cause.replaceAll("-", "")}` });
   return [wake.reference.dispatchId];
@@ -171,7 +196,7 @@ export function createClipSelectionLifecycle(config: { database: PrismaClient; m
     const next = await tx.clipSelectionWindow.update({ where: { id: row.id }, data: retry
       ? { status: "queued", generation: { increment: 1 }, attemptToken: null, executorOwner: null, leaseExpiresAt: null, retryAt, errorCode: input.failureCode }
       : { status: "failed", leaseExpiresAt: null, errorCode: input.failureCode, completedAt: now } });
-    const dispatchIds = retry ? [(await dispatchWindow(tx, next)).dispatchId] : [await parentWake(tx, next)];
+    const dispatchIds = retry ? [(await registerClipSelectionWindow(tx, next)).dispatchId] : [await parentWake(tx, next)];
     dispatchIds.push(...await wakeHead(tx, row.deploymentEpoch, row.attemptToken ?? row.id, now));
     return { kind: retry ? "retried" : "failed", dispatchIds };
   }
@@ -180,7 +205,7 @@ export function createClipSelectionLifecycle(config: { database: PrismaClient; m
     async admit(reference: ExecutionDispatchReference, invocation: { owner: string }): Promise<ClipSelectionWindowAdmission> {
       if (!uuid(invocation.owner)) throw new Error("Invalid selection invocation owner");
       return transaction(async tx => {
-        const state = await lockWindow(tx, reference, true);
+        const state = await lockClipSelectionWindow(tx, reference, true);
         if (!state) return { kind: "superseded", dispatchIds: await replayWakes(tx, reference) };
         const { row, now } = state;
         if (["completed", "failed", "cancelled"].includes(row.status)) return { kind: row.status as "completed" | "failed" | "cancelled", dispatchIds: [await parentWake(tx, row)] };
@@ -218,7 +243,7 @@ export function createClipSelectionLifecycle(config: { database: PrismaClient; m
       if (result.storageKey !== clipSelectionWindowResultKey(attempt, result.sha256) || !/^"[^\r\n"]+"$/.test(result.etag) || !Number.isSafeInteger(result.byteLength) || result.byteLength < 1 || result.byteLength > 1_048_576 ||
         !Number.isSafeInteger(result.tokensUsed) || result.tokensUsed < 0 || (result.providerRequestId !== null && result.providerRequestId.length > 160)) throw new Error("Invalid selection result reference");
       return transaction(async tx => {
-        const state = await lockWindow(tx, attempt.reference, true);
+        const state = await lockClipSelectionWindow(tx, attempt.reference, true);
         if (!state) return { kind: "superseded", dispatchIds: await replayWakes(tx, attempt.reference) };
         const { row, now } = state;
         if (row.status === "completed") {
@@ -240,14 +265,14 @@ export function createClipSelectionLifecycle(config: { database: PrismaClient; m
     async retry(attempt: ClipSelectionWindowAttempt, failure: { code: string; dueAt?: Date }): Promise<ClipSelectionWindowSettlement> {
       if (!/^[a-z][a-z0-9_]{0,99}$/.test(failure.code) || (failure.dueAt && !Number.isFinite(failure.dueAt.getTime()))) throw new Error("Invalid selection failure");
       return transaction(async tx => {
-        const state = await lockWindow(tx, attempt.reference);
+        const state = await lockClipSelectionWindow(tx, attempt.reference);
         if (!state || state.row.status !== "running" || state.row.attemptToken !== attempt.token || state.row.executorOwner !== attempt.owner || state.row.leaseExpiresAt! <= state.now || state.row.operationDeadlineAt <= state.now) return { kind: "superseded", dispatchIds: await replayWakes(tx, attempt.reference) };
         return finish(tx, state.row, state.now, { failureCode: failure.code, dueAt: failure.dueAt });
       });
     },
     async expire(reference: ExecutionDispatchReference): Promise<ClipSelectionWindowAdmission> {
       return transaction(async tx => {
-        const state = await lockWindow(tx, reference, true);
+        const state = await lockClipSelectionWindow(tx, reference, true);
         if (!state) return { kind: "superseded", dispatchIds: await replayWakes(tx, reference) };
         const { row, now } = state;
         if (["completed", "failed", "cancelled"].includes(row.status)) return { kind: row.status as "completed" | "failed" | "cancelled", dispatchIds: [await parentWake(tx, row)] };
