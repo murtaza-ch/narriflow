@@ -1,0 +1,265 @@
+{
+  "version": 1,
+  "recordedAtUtc": "2026-10-31T22:22:19.413049+00:00",
+  "status": "FAILED second actual qualified restore attempt. Source capture refused before pg_dump; no snapshot, restore or begin target 7.",
+  "scope": "Evidence-only record of prior Root actions against isolated resources. No cloud/database write, provider call, native admission, cancellation, cleanup or ticket-status change was performed by this evidence task.",
+  "separateAttempt": "This attempt accepted work at epoch5, fenced to6 and intended a restore to7. It is distinct from qualified-restore-first-attempt-failure-20261101.json (epochs3/4/5); it does not supersede or qualify that earlier failure.",
+  "attemptEpochs": {
+    "acceptedSource": 5,
+    "actualFencedSource": 6,
+    "intendedRestoreTarget": 7,
+    "restoreTargetBegun": false
+  },
+  "sameAcceptedOperation": {
+    "readyAt": "2026-10-31T22:11:01.197Z",
+    "readyEvent": "restore_fault_ready",
+    "acceptedSourceEpoch": 5,
+    "originalDeadlineAt": "2026-10-31T22:20:03.889Z",
+    "nativeDeadlineExtended": false,
+    "continuationUsedSameAcceptedJob": true,
+    "continuationStartedAt": "2026-10-31T22:13:18.906Z",
+    "continuationOriginalDeadlineAt": "2026-10-31T22:20:03.889Z",
+    "provenance": "The accepted operation and held native run are internally matched across the private ready, restore-plan and drain records. Their identities and credentials are omitted."
+  },
+  "initialInventoryFailure": {
+    "at": "2026-10-31T22:11:56.444Z",
+    "code": "workflow_inventory_incomplete",
+    "firstPageBound": 100,
+    "beforeDatabaseFence": true,
+    "remainingOriginalBudgetMs": 487445,
+    "meaning": "The first inventory conservatively refused at 100 entries before the database epoch fence. It did not establish a full consumer inventory or a qualified restore."
+  },
+  "continuation": {
+    "fullPaginatedInventory": true,
+    "inventoryPagesObserved": [
+      {
+        "pass": 0,
+        "page": 1,
+        "count": 0
+      },
+      {
+        "pass": 0,
+        "page": 1,
+        "count": 3
+      },
+      {
+        "pass": 0,
+        "page": 1,
+        "count": 67
+      },
+      {
+        "pass": 0,
+        "page": 1,
+        "count": 100
+      },
+      {
+        "pass": 0,
+        "page": 2,
+        "count": 2
+      }
+    ],
+    "stopAllStartedAt": "2026-10-31T22:13:18.909Z",
+    "stopAllCompletedAt": "2026-10-31T22:13:26.150Z",
+    "remainingActiveWorkflows": 0,
+    "databaseFence": {
+      "mode": "fenced",
+      "fencedAt": "2026-10-31T22:13:32.780Z",
+      "fencedSourceEpoch": 6,
+      "admissionOpen": false
+    },
+    "drainObservedAt": "2026-10-31T22:13:33.566Z",
+    "drainCounts": {
+      "new_dispatches": 0,
+      "other_active": 0,
+      "uncertain_complete": 0,
+      "claimed_cleanup": 0,
+      "other_active_sql": 0,
+      "source_local_fetch_dispatches": 0
+    },
+    "sourceTransferCompletedBeforeReady": true,
+    "heldProbeHadNoIssuedHttpBeforeRelease": true
+  },
+  "correctedLeaseChronology": {
+    "timestampInterpretation": "Raw PostgreSQL diagnostic dates without offsets are explicitly interpreted as UTC, as confirmed by Root. Raw artifacts and hashes are retained.",
+    "readyAt": "2026-10-31T22:11:01.197Z",
+    "attemptCreatedAtUtc": "2026-10-31T22:10:07.106Z",
+    "actualProcessStartedAtUtc": "2026-10-31T22:10:29.126Z",
+    "lastLeaseUntilUtc": "2026-10-31T22:13:01.086Z",
+    "finishedExpiredAtUtc": "2026-10-31T22:13:02.114Z",
+    "attemptStatus": "expired",
+    "leaseRemainingAtReadyMs": 119889,
+    "leaseRemainingAtInitialInventoryRefusalMs": 64642,
+    "expiryFinishedBeforeContinuationStartedMs": 16792,
+    "expiryFinishedBeforeStopAllCompletedMs": 24036,
+    "expiryFinishedBeforeDatabaseFenceMs": 30666,
+    "fencedDeploymentFinishedApproximately": "2026-10-31T22:11:43Z",
+    "fencedDeploymentTimingProvenance": "Root operator chronology; deployment took approximately 42 s. This approximate deployment timestamp is not used instead of the database lease evidence.",
+    "correctInterpretation": "Ready had 119.889 s of current lease remaining. Expiry completed later, during the delayed inventory-repair interval after fenced deployment, before full stop and before the database epoch changed. The old admitted Workflow still ran against epoch 5 and correctly expired the live lease. This was not a production lease bug, a too-short lease or expiry caused by the 42 s deployment alone.",
+    "supersedesEarlierInformalDiagnosis": true
+  },
+  "sourceCaptureGuard": {
+    "result": "refused",
+    "at": "2026-10-31T22:13:38.998Z",
+    "orchestrationCode": "qualified_step_failed_capture",
+    "privateGuardCode": "qualified_restore_gate_refused",
+    "remainingOriginalBudgetMs": 384891,
+    "originalDeadlineExpired": false,
+    "pgDumpInvoked": false,
+    "pgDumpNotInvokedProvenance": "Root operator confirmation and capture guard failure before the tool/file stage.",
+    "captureStdoutBytes": 0,
+    "snapshotFileProduced": false,
+    "snapshotRestorePerformed": false,
+    "beginTarget7Performed": false,
+    "missingStageFiles": [
+      "snapshot.dump",
+      "attest.stdout.log",
+      "restore-archive.stdout.log",
+      "begin.stdout.log"
+    ],
+    "meaning": "The source guard correctly refused expired old authority and a queued domain row. This safety refusal is not successful restore qualification."
+  },
+  "actualSourceDiagnostic": {
+    "deploymentEpoch": 6,
+    "admissionOpen": false,
+    "workerMode": "fenced",
+    "workerVersionMatches": true,
+    "job": {
+      "kind": "visual_asset",
+      "status": "queued",
+      "epoch": 5,
+      "charged": 1,
+      "maxAttempts": 3,
+      "tokenMatches": false,
+      "deadlineMatches": true,
+      "inputKind": "visual",
+      "inputType": "image/png",
+      "inputBytes": 201
+    },
+    "attempt": {
+      "epoch": 5,
+      "function": "asset_validation",
+      "started": true,
+      "status": "expired",
+      "deadlineMatches": true
+    },
+    "probeAssignment": {
+      "tokenMatches": true,
+      "ownerMatches": true,
+      "role": "probe",
+      "committed": false
+    },
+    "dispatchBinding": {
+      "matches": true,
+      "subject": "native_validation",
+      "subjectMatches": true
+    },
+    "committedBinaryArtifacts": 1,
+    "publishedAssets": 0,
+    "knownFixtureLaterEpochDispatches": 0,
+    "meaning": "The same source 5 job remains queued with one charged start and an unchanged original deadline; its current domain token no longer matches the expired old Generic attempt. One binary is committed, the probe remains uncommitted, no domain asset is published, and no known-fixture epoch 6 redispatch exists."
+  },
+  "retirement": {
+    "retiredAtUtc": "2026-10-31T22:17:08.022657+00:00",
+    "originalHeldFunctionCallCancelled": true,
+    "terminateContainersRequested": true,
+    "cancellationOptionsProvenance": "Root confirms actual Function-call cancellation with terminate_containers plus operator Sandbox termination.",
+    "operatorSandboxTerminated": true,
+    "currentEpochAtRetirement": 6,
+    "admissionOpenAtRetirement": false,
+    "qualifiedGatePassed": false
+  },
+  "followup": {
+    "correctedOperatorOrder": [
+      "After Ready, immediately perform full paginated StopAll while the Worker is closed.",
+      "Then deploy the fenced Worker.",
+      "Then fence the database epoch 6\u21927, before capture and any later begin 8."
+    ],
+    "freshSourceEpoch": 6,
+    "intendedSnapshotEpoch": 7,
+    "intendedRestoreTargetEpoch": 8,
+    "stateAtRootTaskAssignment": "Not prepared or admitted; execution agent is retargeting helpers.",
+    "acceptanceClaim": false,
+    "scope": "No outcome from a subsequent fresh 6/7/8 attempt is included here."
+  },
+  "rawPrivateEvidence": {
+    "/tmp/narriflow-serverless-control-keys/qualified-restore-epoch5-20261101/ready.json": {
+      "byteLength": 409,
+      "sha256": "14ba254b3bf1f85f17fda99d98aed87887107275600347082c6de626d47c1fd1"
+    },
+    "/tmp/narriflow-serverless-control-keys/qualified-restore-epoch5-20261101/operator-cutoffs.json": {
+      "byteLength": 191,
+      "sha256": "18584b93254f6d45d94bfa6308fcdd6d6c75ca3d1b1f6ae318304d923ff885f6"
+    },
+    "/tmp/narriflow-serverless-control-keys/qualified-restore-epoch5-20261101/inventory-continuation.json": {
+      "byteLength": 303,
+      "sha256": "e6faa82af7665e334a961fc4dcb512dfb83b6134d905e9fb625970a5c1384afc"
+    },
+    "/tmp/narriflow-serverless-control-keys/qualified-restore-epoch5-20261101/orchestration-start.json": {
+      "byteLength": 175,
+      "sha256": "dd7e7af14605b495d7b55361f08c41e30287d2b6da913e8d3ca2d1b578e98113"
+    },
+    "/tmp/narriflow-serverless-control-keys/qualified-restore-epoch5-20261101/orchestration-failure.json": {
+      "byteLength": 121,
+      "sha256": "566ecf5d4ccc2cb849618441a6b2cc6c61514499bf4e6eb860ee79c0e7056154"
+    },
+    "/tmp/narriflow-serverless-control-keys/qualified-restore-epoch5-20261101/orchestration-inventory-continuation-failure.json": {
+      "byteLength": 121,
+      "sha256": "070242d5748b7ea405c6973d3b0bc42da7f40403614b9fcbe5a547a29f2627cd"
+    },
+    "/tmp/narriflow-serverless-control-keys/qualified-restore-epoch5-20261101/lease-timing-diagnostic.json": {
+      "byteLength": 704,
+      "sha256": "674a8dd178b30e691f6b0f38e45401b12ff00e6aa243adb2b28d252811f9fa56"
+    },
+    "/tmp/narriflow-serverless-control-keys/qualified-restore-epoch5-20261101/stopped-workflows.json": {
+      "byteLength": 1235,
+      "sha256": "cc9b4b883bd45fffbdc3d60f523e3c2b4db9433cd2745d054938523426f5dc1a"
+    },
+    "/tmp/narriflow-serverless-control-keys/qualified-restore-epoch5-20261101/drain.json": {
+      "byteLength": 1034,
+      "sha256": "816eeac254c5c5cb7355bab57556cdcac377a3cda9150a36b2a8bf29c2967c5e"
+    },
+    "/tmp/narriflow-serverless-control-keys/qualified-restore-epoch5-20261101/fence.stdout.log": {
+      "byteLength": 408,
+      "sha256": "9ac49c88219af7a31402fbc0ef4ae892093f39126519f5da1c696265765e0d46"
+    },
+    "/tmp/narriflow-serverless-control-keys/qualified-restore-epoch5-20261101/deploy-fenced.stdout.log": {
+      "byteLength": 1977,
+      "sha256": "91d8727bb6272c14305a50197b846c060edd174b8b04e492b8719568717303d4"
+    },
+    "/tmp/narriflow-serverless-control-keys/qualified-restore-epoch5-20261101/capture.stdout.log": {
+      "byteLength": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "/tmp/narriflow-serverless-control-keys/qualified-restore-epoch5-20261101/capture.stderr.log": {
+      "byteLength": 58,
+      "sha256": "8e0e919c552ca95b1cb9d5128373608779f34fb3accba9fdce7b11aa8f5477b6"
+    },
+    "/tmp/narriflow-serverless-control-keys/qualified-restore-epoch5-20261101/failed-gate-retired.json": {
+      "byteLength": 347,
+      "sha256": "dc6989472b6252f5863ae326c47d84c4af6b16578c733bb29aa74a010ef112a2"
+    },
+    "/tmp/narriflow-serverless-gates/qualified-restore-epoch5-live.log": {
+      "byteLength": 755,
+      "sha256": "a96555a41f0277cbb1db7bd0a43f62d6e38215055f5208f253cbb4face6d347f"
+    },
+    "/tmp/narriflow-serverless-gates/qualified-restore-epoch5-continuation.log": {
+      "byteLength": 612,
+      "sha256": "96ffff5859cf105aad21b5eaa4d4fe67f2784d0067b4dddf34d4078b7858de3b"
+    },
+    "/tmp/narriflow-serverless-gates/qualified-source-epoch5-diagnostic.log": {
+      "byteLength": 604,
+      "sha256": "d31b5fc3af5f41878ac25582c2ac610caf934467c733c74fe7a03feb4419bc42"
+    },
+    "/tmp/narriflow-serverless-gates/retire-epoch5-restore-gate.log": {
+      "byteLength": 331,
+      "sha256": "b79a3e53d66f644b6202bcd24647daa9765bb27e4521e7f8aa3a2b184c81ade7"
+    }
+  },
+  "notEstablished": [
+    "Any source snapshot, attestation, pg_restore or begin 7 for this attempt",
+    "A successful qualified restore or current native continuation",
+    "A native deadline extension or a second completed native start",
+    "A production lease-duration defect",
+    "Any follow-up attempt or ticket/release qualification"
+  ]
+}

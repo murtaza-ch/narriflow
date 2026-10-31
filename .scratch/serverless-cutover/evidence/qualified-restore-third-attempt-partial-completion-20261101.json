@@ -1,0 +1,202 @@
+{
+  "version": 1,
+  "recordedAtUtc": "2026-10-31T23:08:45.937737+00:00",
+  "status": "FAILED third qualified restore attempt. Ordinary successor completed before its original deadline; timely stale Superseded proof was not observed.",
+  "scope": "Evidence-only record from retained private artifacts and prior operator observations. No cloud/database actions, production code changes, live helper/config changes, native invocation, release or cleanup performed by this evidence task.",
+  "attemptEpochs": {
+    "acceptedSource": 6,
+    "fencedSnapshot": 7,
+    "restoredTarget": 8
+  },
+  "separateAttempts": [
+    "qualified-restore-first-attempt-failure-20261101.json",
+    "qualified-restore-second-attempt-source-guard-20261101.json"
+  ],
+  "snapshotAndRestore": {
+    "capture": {
+      "mode": "snapshot_captured",
+      "sourceEpoch": 7,
+      "capturedAt": "2026-10-31T22:40:32.562Z",
+      "snapshotSha256": "16ede8b07c8a6b848fcf2db51f4cd242c0efe0ae3dddc2d53906454ee6c86f2a",
+      "postgres": {
+        "utilityVersion": "18.6",
+        "serverMajor": 18,
+        "serverVersion": "18.6 (4e5fd08)",
+        "serverVersionNumber": 180006,
+        "timeoutMs": 180000,
+        "elapsedMs": 4275,
+        "backend": "regional",
+        "byteLength": 1248094,
+        "sha256": "16ede8b07c8a6b848fcf2db51f4cd242c0efe0ae3dddc2d53906454ee6c86f2a"
+      }
+    },
+    "restore": {
+      "mode": "attested_snapshot_restored",
+      "sourceEpoch": 7,
+      "restoredAt": "2026-10-31T22:41:30.979Z",
+      "snapshotSha256": "16ede8b07c8a6b848fcf2db51f4cd242c0efe0ae3dddc2d53906454ee6c86f2a",
+      "postgres": {
+        "utilityVersion": "18.6",
+        "serverMajor": 18,
+        "serverVersion": "18.6 (4e5fd08)",
+        "serverVersionNumber": 180006,
+        "timeoutMs": 180000,
+        "elapsedMs": 32210,
+        "backend": "regional",
+        "byteLength": 1248094,
+        "sha256": "16ede8b07c8a6b848fcf2db51f4cd242c0efe0ae3dddc2d53906454ee6c86f2a"
+      }
+    },
+    "begin": {
+      "mode": "registered",
+      "previousEpoch": 7,
+      "deploymentEpoch": 8,
+      "admissionOpen": false
+    },
+    "qualificationMeaning": "Successful snapshot, restore and metadata stages are intermediate facts inside an overall failed gate."
+  },
+  "metadataBoundary": {
+    "observedAt": "2026-10-31T22:43:29.188Z",
+    "admissionOpen": false,
+    "status": "queued",
+    "generation": 2,
+    "deploymentEpoch": 8,
+    "unowned": true,
+    "domainTokenCleared": true,
+    "resultSqlNull": true,
+    "chargedAttempts": 1,
+    "oldAttemptStatus": "superseded",
+    "oldRevoked": true,
+    "publishedAssets": 0,
+    "deadlineUnchanged": true
+  },
+  "ordinarySuccessor": {
+    "observedAt": "2026-10-31T22:57:29.407Z",
+    "status": "completed",
+    "deploymentEpoch": 8,
+    "completedAtUtc": "2026-10-31T22:47:54.683Z",
+    "originalDeadlineAtUtc": "2026-10-31T22:48:32.146Z",
+    "completedWithinOriginalDeadline": true,
+    "completionBeforeDeadlineMs": 37463,
+    "actualStarts": 2,
+    "chargedAttempts": 2,
+    "publishedAssets": 1,
+    "currentBinaryPublications": 1,
+    "oldProbeUncommitted": true,
+    "timestampInterpretation": "Offset-free PostgreSQL diagnostic timestamps in the private proof are UTC, as confirmed by the operator.",
+    "prestartAttempt": {
+      "deploymentEpoch": 8,
+      "expiredBeforeProcessStart": true,
+      "charged": false,
+      "provenance": "Operator final SQL observation; the earlier state snapshot separately recorded the prestart expiry."
+    },
+    "meaning": "The ordinary Workflows/bridge/native path did complete. The earlier never-started snapshot does not describe the final successor outcome."
+  },
+  "failure": {
+    "qualifiedGatePassed": false,
+    "reason": "Stale callback refusal was not observed; replacement completion and charges are separate actual intermediate evidence",
+    "orchestration": {
+      "at": "2026-10-31T22:46:57.581Z",
+      "code": "operator_cutoff_exhausted",
+      "remainingOriginalBudgetMs": 94565
+    },
+    "cutoffs": {
+      "originalDeadlineAt": "2026-10-31T22:48:32.146Z",
+      "staleReleaseCutoffAt": "2026-10-31T22:47:02.146Z",
+      "grantStartedAt": "2026-10-31T22:38:20.922Z",
+      "nativeDeadlineChanged": false
+    },
+    "timelyStaleSupersededObserved": false,
+    "oldHeldCallbackReleasedWithinBound": false,
+    "provenance": "Retained failure/proof artifacts plus operator confirmation that the held old callback was not released/reported Superseded within its hold and original deadline.",
+    "meaning": "The soft cutoff failure was not original-deadline exhaustion. Later ordinary completion cannot replace the missing stale signed refusal or turn this attempt into a pass."
+  },
+  "firstOrdinaryControlFailure": {
+    "message": "native_control_unconfirmed",
+    "functionName": "asset_validation",
+    "stage": "work_package",
+    "errorCode": "execution_transport_unavailable",
+    "status": null,
+    "source": "ordinary-asset-function-logs.txt",
+    "rootCauseEstablished": false,
+    "meaning": "This log identifies an unconfirmed work-package request. It does not establish a bridge failure, a lease-duration defect, or a justified timeout change."
+  },
+  "followup": {
+    "plannedEpochs": "8/9/10",
+    "separateAcceptedOperationRequired": true,
+    "correctedOrder": "Generate the one-key release GET after fixture preparation. After metadata rebinding and selecting closed HTTP, prove stale Superseded with the current job still queued/unowned/result SQL NULL/charged1/assets0, then resume the same boundary for ordinary completion.",
+    "deadlineOrBudgetChanged": false,
+    "acceptanceClaim": false
+  },
+  "rawPrivateEvidence": {
+    "partial-completion-proof.json": {
+      "byteLength": 596,
+      "sha256": "b1ae21ff5e09567f77de859d3e20ee1521ea6c199a74baa13af1dcdb986acdf7"
+    },
+    "ready.json": {
+      "byteLength": 409,
+      "sha256": "c9acdf2086754e3ed0ce2272ccc48fe812a1517c00145d2ca75a57b0eeb914ed"
+    },
+    "capture.stdout.log": {
+      "byteLength": 631,
+      "sha256": "974d83e3808cb5a8ddf6d5f8d059d903b4e0a3aab777366636a8ca6f30736602"
+    },
+    "attest.stdout.log": {
+      "byteLength": 662,
+      "sha256": "e1fbb975274938ea5876abf70abc54ce243e900f21931e43143bc773ab654234"
+    },
+    "restore-archive.stdout.log": {
+      "byteLength": 644,
+      "sha256": "f6f31e049d4558c89bfaf48d882c99e67031d3952771a3d2e673f5b42d5f7016"
+    },
+    "begin.stdout.log": {
+      "byteLength": 734,
+      "sha256": "33ed720b937031f2f6edb993b59de91658d761a9c9a81088e454aaab214d16cd"
+    },
+    "metadata-native-boundary-proof.json": {
+      "byteLength": 492,
+      "sha256": "ffba920ede391af06a2d93c859b04a33049a2ee8b7acab8ddbbe2364772f450a"
+    },
+    "metadata-boundary.json": {
+      "byteLength": 565,
+      "sha256": "40fc6b2f78cab150465400fe229a6e7fbf408cd8434edd1687dfc425705c307e"
+    },
+    "ordinary-dispatches.json": {
+      "byteLength": 4424,
+      "sha256": "ac0905657d869c4c88404313efb81d8a0980b75605a7189a7b7dab5fc9808e6c"
+    },
+    "ordinary-asset-function-logs.txt": {
+      "byteLength": 173,
+      "sha256": "203ac101ff6d1294381975a6e460fb4cee5af4a889e72bb3a5ea6d52d59c8ddb"
+    },
+    "native-call.stderr.log": {
+      "byteLength": 3908,
+      "sha256": "5bf51dfe7e9ce7a8d2ef6c58cef0db4a33be323825199bff7f20cb986faabc4f"
+    },
+    "native-events.log": {
+      "byteLength": 1845,
+      "sha256": "eaa351aa62507e055db84a6c609e670bf5ae9cc0e57412027b353b81e7240fbc"
+    },
+    "orchestration-failure.json": {
+      "byteLength": 116,
+      "sha256": "c0f8747b670ecb33b8a23745690a3b625189ae46568ff1feab46c7b80e775746"
+    },
+    "operator-cutoffs.json": {
+      "byteLength": 191,
+      "sha256": "83987fb79492f41e5f9fdd9032dffa25145764a9b32fb11a8ba528853e171bab"
+    },
+    "current-qualified-native-state.log": {
+      "byteLength": 687,
+      "sha256": "fb8fb61002287f852dfe0f333f630294948f25e38723cb261ca0a131170853dd"
+    }
+  },
+  "notEstablished": [
+    "Full qualified restore acceptance",
+    "Timely signed Superseded refusal of this held old callback",
+    "Any production timeout or lease defect",
+    "Any result from the separate fourth 8/9/10 gate",
+    "Any ticket completion or release qualification"
+  ],
+  "privateArtifactDirectory": "/tmp/narriflow-serverless-control-keys/qualified-restore-epoch6-20261101",
+  "externalStateSnapshotPath": "/tmp/narriflow-serverless-gates/current-qualified-native-state.log"
+}
