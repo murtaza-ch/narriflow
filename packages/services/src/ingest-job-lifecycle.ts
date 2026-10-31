@@ -692,7 +692,7 @@ export class IngestJobLifecycle {
   async cancelQueuedOperation(input: { actorUserId: string; workspaceId: string; projectId: string; ingestJobId: string }): Promise<boolean> {
     await this.deps.requireRetryActor(input.actorUserId, input.workspaceId);
     return this.deps.prisma.$transaction(async (tx) => {
-      await requireExecutionAdmissionOpen(tx);
+      await readExecutionAdmission(tx);
       const job = await tx.ingestJob.findFirst({ where: { id: input.ingestJobId, projectId: input.projectId,
         status: "queued", project: { workspaceId: input.workspaceId, ...accessibleProjectWhere() } } });
       if (!job) return false;
@@ -721,6 +721,7 @@ export class IngestJobLifecycle {
   }> {
     await this.deps.requireRetryActor(input.actorUserId, input.workspaceId);
     return this.deps.prisma.$transaction(async (tx) => {
+      await requireExecutionAdmissionOpen(tx);
       const intake = await tx.project.findFirst({
         where: {
           id: input.projectId,

@@ -3,28 +3,35 @@
   "reported_failure": "Isolated candidate epoch2 fresh Ingest enqueue used schema default1, so canonical Import dispatch registration returned null. No candidate fixture was changed by this agent.",
   "fix": [
     "IngestJobLifecycle.enqueue reads the authoritative ExecutionEpoch FOR SHARE before Project lookup and explicitly stores that epoch. No new closed-admission bypass or legacy lookup.",
-    "Manual Ingest retry commits its canonical initial Import dispatch and progress drain in the same reservation/job transaction. Previously API retry could return an accepted row without an immediate work wake."
+    "Manual Ingest retry commits its canonical initial Import dispatch and progress drain in the same reservation/job transaction. Previously API retry could return an accepted row without an immediate work wake.",
+    "Move the open-admission check from queued cancellation to the first retry transaction lock. A replayable existing reservation must not authorize a new manual job while closed; cancel keeps the epoch SHARE lock and remains available."
   ],
   "red_evidence": [
     "ingest-epoch-red.log: newly enqueued job epoch1 while locked current epoch>1",
-    "ingest-epoch-retry-red.log: after epoch correction, actual permanent native failure followed by manual retry had no Import dispatch"
+    "ingest-epoch-retry-red.log: after epoch correction, actual permanent native failure followed by manual retry had no Import dispatch",
+    "ingest-closed-retry-red.log: with a real existing reserved reservation, manual retry resolved and created work while admissionOpen=false."
   ],
   "verification": {
     "bun": "1.3.6",
     "fresh_schema_migrations": "all including028",
     "snapshot_and_fresh_source_admission_postgresql": {
       "tests": 3,
-      "assertions": 22
+      "assertions": 30
     },
     "actual_source_regression": [
       "Fresh epoch>1 reservation plus enqueue plus aftercommit registration",
       "Real unowned native preparation/Core acquire/work-package/process-start and permanent failure",
       "Manual retry creates current-epoch row and commits its Import/progress wakes",
       "Real started automatic retry retains current epoch, increments source generation and keeps its original absolute deadline/charged count",
-      "Validated snapshot fence/begin with actual source metadata rebind, then fresh new-epoch admission/registration"
+      "Validated snapshot fence/begin with actual source metadata rebind, then fresh new-epoch admission/registration",
+      "Closed admission refuses manual retry even when usage reservation is replayable, with no new job; closed queued cancellation still succeeds."
     ],
     "services_typecheck": true,
-    "biome": true
+    "biome": true,
+    "existing_ingest_core_lifecycle_postgresql": {
+      "tests": 25,
+      "assertions": 145
+    }
   },
   "fresh_execution_admission_audit": {
     "explicit_current_or_parent_epoch": [
