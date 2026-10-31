@@ -530,10 +530,6 @@
       "types": "./src/outbound-probe-execution.ts",
       "default": "./src/outbound-probe-execution.ts"
     },
-    "./generated-media-validation": {
-      "types": "./src/generated-media-validation.ts",
-      "default": "./src/generated-media-validation.ts"
-    },
     "./clip-selection-plan": {
       "types": "./src/clip-selection-plan.ts",
       "default": "./src/clip-selection-plan.ts"
@@ -563,7 +559,10 @@
     "./outbound-delivery-execution": "./src/outbound-delivery-execution.ts",
     "./notification-body-storage": "./src/notification-body-storage.ts",
     "./outbound-delivery-runtime": "./src/outbound-delivery-runtime.ts",
-    "./drive-source-contract": "./src/drive-source-contract.ts"
+    "./drive-source-contract": "./src/drive-source-contract.ts",
+    "./generated-media-execution": "./src/generated-media-execution.ts",
+    "./generated-media-control": "./src/generated-media-control.ts",
+    "./generated-media-retention": "./src/generated-media-retention.ts"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",

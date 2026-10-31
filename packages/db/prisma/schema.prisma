@@ -2341,8 +2341,16 @@ model GeneratedMediaJob {
   providerUsageImages       Int?
   providerResultContentType String?
   resultAssetId             String?                    @db.Uuid
-  validationJobId           String?                    @unique @db.Uuid
-  validationInput           Json?
+  generation                Int                        @default(1)
+  deploymentEpoch           Int                        @default(1)
+  executorOwner             String?                    @db.Uuid
+  operationDeadlineAt       DateTime?
+  chargedAttempts           Int                        @default(0)
+  maxAttempts               Int                        @default(4)
+  outputByteLimit           Int                        @default(20971520)
+  providerQuality           String                     @default("medium") @db.VarChar(16)
+  executionMode             String                     @default("generate") @db.VarChar(16)
+  resultState               Json?
   attempt                   Int                        @default(0)
   retryAt                   DateTime?
   claimId                   String?                    @db.Uuid

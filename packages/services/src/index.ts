@@ -379,7 +379,7 @@ export {
 	type GeneratedMediaJobStatus,
 	type GeneratedMediaUsageStatus,
 } from "./generated-media";
-export { purgeExpiredGeneratedMediaPrompts } from "./generated-media-prisma-store";
+export { purgeExpiredGeneratedMediaPrompts } from "./generated-media-retention";
 export {
 	socialService,
 	SocialService,
@@ -691,3 +691,6 @@ export * from "./outbound-delivery-execution";
 export * from "./notification-body-storage";
 
 export * from "./outbound-delivery-runtime";
+
+export * from "./generated-media-execution";
+export * from "./generated-media-control";

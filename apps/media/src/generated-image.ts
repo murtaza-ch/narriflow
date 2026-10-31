@@ -9,7 +9,7 @@ import {
 import {
 	createOpenAiImageProvider,
 	GeneratedMediaProviderError,
-} from "@narriflow/services/openai-image-provider";
+} from "./openai-image-provider";
 import { validateNativeAsset } from "./asset-validation";
 
 export interface GeneratedImageNativeOptions {
@@ -111,7 +111,6 @@ export async function executeGeneratedImage(
 			} catch {
 				return unknown(providerRef);
 			}
-			outcome.result.bytes = undefined;
 		} catch (error) {
 			if (error instanceof GeneratedMediaProviderError)
 				return generatedImageEvidenceSchema.parse({
