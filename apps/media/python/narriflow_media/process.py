@@ -89,6 +89,11 @@ def run_owned_process(
             # only after the control API has acknowledged that native start.
             try:
                 os.write(write_fd, b'1')
+            except BrokenPipeError:
+                # The callback confirmed the actual start, but the supervisor
+                # already finished. Preserve its bounded exit result. With no
+                # reader, this write cannot release work to a live child.
+                pass
             except OSError:
                 raise MediaProcessError("media_process_start_unconfirmed") from None
     supervisor = None
