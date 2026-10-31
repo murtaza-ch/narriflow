@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { join } from "node:path";
 import {
 	automaticLayoutInputFingerprint,
+	compositionAssetRef,
 	planClipComposition,
 } from "@narriflow/composition-plan";
 import {
@@ -17,9 +18,11 @@ import {
 	compileCompositionPlanAudioSchedule,
 } from "./composition-ffmpeg-adapter";
 import { parseRenderConfig } from "./render-config";
-import { analyzeClipAutoLayout } from "./tasks/auto-layout-analysis";
+import { LayoutEvidence } from "./layout-evidence";
+import { createLayoutEvidenceDetectors } from "./layout-evidence-runtime";
 import {
 	productionWorkerProcessModule as worker,
+	resolveDisplayGeometry,
 	type WorkerProcessModule,
 } from "./worker-process";
 
@@ -151,28 +154,23 @@ test.each([
 							})
 						: worker.execute(request),
 			};
-			const analysis = await analyzeClipAutoLayout({
-				clip: {
-					id: "camera-clock",
-					projectId: "camera-clock",
-					startSec,
-					endSec: startSec + durationSec,
-					transcriptSlice: [],
-					deletedRanges,
-					editorRevision: 0,
-					sourceStorageKey: "source",
-					previewStorageKey: "proxy",
-					previewStartSec: startSec,
-					previewDurationSec: durationSec,
-					autoLayoutClaimToken: "claim",
-					leaseMs: 180000,
-				},
-				originalSourcePath: sourcePath,
-				previewPath: proxyPath,
-				workerProcess: analysisWorker,
-				config: parseRenderConfig({ REFRAME_SCENE_THRESHOLD: "0.1" }),
-				signal,
+			const original = await analysisWorker.inspectMedia({ sourcePath, signal, deadlineMs: 120000 });
+			const display = resolveDisplayGeometry(original);
+			const owner = new LayoutEvidence({
+				source: { identity: compositionAssetRef("source", "camera-clock"), hasVideo: true, width: display.width, height: display.height },
+				clip: { id: "camera-clock", startSec, endSec: startSec + durationSec, deletedRanges, utterances: [], editorRevision: 0, previewStorageKey: null },
+				durable: {}, enabled: { automatic: true, screen: false, split: false }, hasBroll: false, pipMotionThreshold: 0.12, signal,
+				preparationPreviewArtifactId: "1926d146-807b-4e55-8ef6-0ac87f95bea2",
+				sceneSource: { path: sourcePath, startSec },
+				getSegment: async () => ({ path: proxyPath, startSec: 0, durationSec }),
+			}, {
+				detectors: createLayoutEvidenceDetectors({ workerProcess: analysisWorker, config: parseRenderConfig({ REFRAME_SCENE_THRESHOLD: "0.1" }), signal }),
+				persist: async () => true, now: Date.now, rethrowControl: () => signal.throwIfAborted(), diagnose: () => {},
 			});
+			await owner.fulfill([{ key: "automatic", kind: "automatic-speaker-layout", engineVersion: CLIP_AUTO_LAYOUT_ENGINE }]);
+			const available = owner.availability.automaticLayout;
+			if (available.state !== "available") throw new Error("camera preparation unavailable");
+			const analysis = available.value.analysis;
 			if (!deletedRanges.length) {
 				expect(analysis.segments.map((segment) => segment.layout)).toEqual([
 					"single",
