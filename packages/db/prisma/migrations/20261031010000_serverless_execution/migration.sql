@@ -4,8 +4,7 @@ ALTER TABLE "Project" ADD COLUMN     "sourceRevision" INTEGER NOT NULL DEFAULT 1
 -- AlterTable
 ALTER TABLE "WorkflowRun" ADD COLUMN     "deploymentEpoch" INTEGER NOT NULL DEFAULT 1,
 ADD COLUMN     "generation" INTEGER NOT NULL DEFAULT 1,
-ADD COLUMN     "operationDeadlineAt" TIMESTAMP(3),
-ADD COLUMN     "validationState" JSONB;
+ADD COLUMN     "operationDeadlineAt" TIMESTAMP(3);
 
 -- AlterTable
 ALTER TABLE "RenderGroup" ADD COLUMN     "deploymentEpoch" INTEGER NOT NULL DEFAULT 1,
@@ -470,7 +469,8 @@ FOR EACH ROW EXECUTE FUNCTION execution_artifact_transfer_identity();
 ALTER TABLE "ThumbnailFrameOperation" ADD COLUMN     "deploymentEpoch" INTEGER NOT NULL DEFAULT 1,
 ADD COLUMN     "executorOwner" UUID,
 ADD COLUMN     "generation" INTEGER NOT NULL DEFAULT 1,
-ADD COLUMN     "operationDeadlineAt" TIMESTAMP(3);
+ADD COLUMN     "operationDeadlineAt" TIMESTAMP(3),
+ADD COLUMN     "validationState" JSONB;
 
 -- AlterTable
 ALTER TABLE "BrandFont" ADD COLUMN     "face" JSONB;
