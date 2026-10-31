@@ -220,12 +220,7 @@ export {
 	ProjectHasActiveWorkflowError,
 	ProjectNotFoundError,
 	ProjectServiceError,
-	purgeExpiredProjectSources,
-	purgeOldWorkflowEvents,
-	isProjectSourcePurgeEligible,
-	retentionCutoffDate,
 	type ProjectFailureCode,
-	type ProjectSourcePurgeCandidate,
 } from "./project.service";
 export {
 	createUploadSessionModule,
