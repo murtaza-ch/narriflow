@@ -45,7 +45,6 @@ import {
 	purgeExpiredGeneratedMediaPrompts,
 	reconcileGenerationUsageReservations,
 	getProcessingUsage,
-	thumbnailFramePreparationService,
 	uploadSessionService,
 	WorkflowAttemptLost,
 	type ClaimedWorkflowAttempt,
@@ -205,9 +204,7 @@ const mediaCleanupPollIntervalMs = Number(
 const generatedMediaPollIntervalMs = Number(
 	process.env.GENERATED_MEDIA_POLL_INTERVAL_MS ?? "2500",
 );
-const thumbnailFramePollIntervalMs = Number(
-	process.env.THUMBNAIL_FRAME_POLL_INTERVAL_MS ?? "2500",
-);
+
 const workspaceBillingPollIntervalMs = parseWorkspaceBillingPollInterval(
 	process.env.WORKSPACE_BILLING_POLL_INTERVAL_MS,
 );
@@ -800,9 +797,7 @@ createPollLoop("generated_media", generatedMediaPollIntervalMs, async () => {
 	return jobs.length;
 });
 
-const thumbnailFrameLoop = createPollLoop("thumbnail_frames", thumbnailFramePollIntervalMs, async () => {
-	return runBackgroundMedia("thumbnail_frames", () => thumbnailFramePreparationService.processPending(1));
-});
+
 
 /** Embeds completed transcripts into searchable passages. A provider failure
  * backs that transcript off and ends the tick without failing the loop. */
@@ -932,4 +927,3 @@ void renderGroupLoop.tick();
 void exportBundleLoop.tick();
 void notificationRetryLoop.tick();
 void mediaCleanupLoop.tick();
-void thumbnailFrameLoop.tick();

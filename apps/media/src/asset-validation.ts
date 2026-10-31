@@ -10,9 +10,9 @@ import { createWorkerProcessModule } from "./worker-process";
 const filePath = z.string().min(1).max(2048).refine(value => isAbsolute(value) && !value.includes("\0"));
 export const assetValidationCommandSchema = z.strictObject({
   kind: z.enum(["font", "visual", "thumbnail"]), sourcePath: filePath, outputPath: filePath,
-  expected: z.strictObject({ contentType: z.string().min(1).max(128), byteLength: z.number().int().positive().max(2 * 1024 ** 3), sha256: z.string().regex(/^[a-f0-9]{64}$/) }),
+  expected: z.strictObject({ contentType: z.string().min(1).max(128), byteLength: z.number().int().positive().max(10 * 1024 ** 3), sha256: z.string().regex(/^[a-f0-9]{64}$/) }),
   sourceTimeMs: z.number().int().nonnegative().max(86_400_000).optional(),
-}).refine(value => (value.kind === "thumbnail") === (value.sourceTimeMs !== undefined));
+}).refine(value => (value.kind === "thumbnail") === (value.sourceTimeMs !== undefined) && (value.kind === "thumbnail" || value.expected.byteLength <= 2 * 1024 ** 3));
 
 async function digest(path: string, signal: AbortSignal) {
   const hash = createHash("sha256");

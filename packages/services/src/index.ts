@@ -666,3 +666,5 @@ export * from "./language-probe-contract";
 
 export type { PutFileFromPath, DownloadObjectToFile } from "./r2-transfer-contract";
 export { NativeValidationService, NativeValidationError, type NativeValidationCommit, type NativeValidationReference, type NativeValidationPreparation } from "./native-validation";
+
+export { ThumbnailFrameExecution, thumbnailFrameExecutionInputHash, type ThumbnailFrameExecutionReference } from "./thumbnail-frame-execution";

@@ -277,7 +277,7 @@ export function createClipsRoutes(deps: ClipsRouteDeps) {
       async (c) => {
         const { id, operationId } = c.req.valid("param");
         return c.json(
-          await thumbnailFramePreparationService.retry(getActor(c).workspaceId, id, operationId),
+          await thumbnailFramePreparationService.retry(getActor(c).actorUserId, getActor(c).workspaceId, id, operationId),
           202,
         );
       },

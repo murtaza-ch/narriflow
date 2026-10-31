@@ -477,6 +477,10 @@
     "./r2-transfer-contract": {
       "types": "./src/r2-transfer-contract.ts",
       "default": "./src/r2-transfer-contract.ts"
+    },
+    "./thumbnail-frame-execution": {
+      "types": "./src/thumbnail-frame-execution.ts",
+      "default": "./src/thumbnail-frame-execution.ts"
     }
   },
   "scripts": {
