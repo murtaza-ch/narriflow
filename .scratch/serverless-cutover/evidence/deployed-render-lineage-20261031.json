@@ -1,0 +1,52 @@
+{
+  "status": "passed_deployed_synthetic_render_lineage",
+  "at": "2026-10-31T14:30:38.600Z",
+  "projectId": "322c7c24-5ee3-4421-807f-9b9ff5b3bc01",
+  "workflowRunId": "3735ff87-7c8d-4ec7-926a-37fe506d4200",
+  "parent": {
+    "status": "completed",
+    "requested": 2,
+    "succeeded": 2,
+    "failed": 0,
+    "attemptCount": 0,
+    "leaseOwner": null
+  },
+  "preparationChargedStarts": 1,
+  "renderChargedStarts": 1,
+  "outputs": [
+    {
+      "aspectRatio": "ratio_9_16",
+      "width": 720,
+      "height": 1280,
+      "durationSec": 4,
+      "videoCodec": "h264",
+      "audioCodec": "aac",
+      "byteLength": 553957,
+      "sha256": "fb1fa0f4c40afd596d2444c5e9244e667785a1a29c86ebc3a3f6698ad7a8056e",
+      "headMatched": true,
+      "committedArtifactMatched": true
+    },
+    {
+      "aspectRatio": "ratio_16_9",
+      "width": 1280,
+      "height": 720,
+      "durationSec": 4,
+      "videoCodec": "h264",
+      "audioCodec": "aac",
+      "byteLength": 975907,
+      "sha256": "5c986361947af04a95084730b750bdda79fe05e2d4ab8aaed73001110a15d83b",
+      "headMatched": true,
+      "committedArtifactMatched": true
+    }
+  ],
+  "scope": "Synthetic previously committed four-second source, caption-only, two720pformats.",
+  "workerVersion": "5317e3c6-2bd8-4bea-bf5b-09dd610b2f36",
+  "nativeCommit": "351142d1",
+  "renderToolchainFingerprint": "06a988fcee94757ba07d1d1cc410ca4fbf0f36ee4d8f4aab8c84711897a569b9",
+  "remaining": [
+    "Real intake and Scribe/selection lineage",
+    "Full frozen Linux parity and resource/fault matrix",
+    "Large-source I/O, throughput and accepted performance cohorts",
+    "Deletion-inclusive release and shared development cutover"
+  ]
+}
