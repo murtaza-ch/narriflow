@@ -1,0 +1,50 @@
+{
+  "date": "2026-11-01",
+  "scope": "Current Generic Core render-group admission, actual Bun child spawn before acknowledged process-start, release and retry in disposable PostgreSQL schemas",
+  "red": {
+    "chargedAttemptCountExpected": 1,
+    "chargedAttemptCountObserved": 0,
+    "result": "Started shutdown incorrectly refunded the first charge"
+  },
+  "green": {
+    "replicas": {
+      "passed": 12,
+      "assertions": 74
+    },
+    "contract": {
+      "passed": 30,
+      "assertions": 57
+    },
+    "servicesTypecheck": "pass",
+    "checks": [
+      "Actual Bun child receives work only after process-start acknowledgement",
+      "Lost release wake acknowledgement replays exact receipt without a second mutation",
+      "Started history remains charged; completed sibling object and outcome survive",
+      "Successor receives unfinished variant only and increments group count to two",
+      "SQL rejects clearing a started charge or decreasing group count",
+      "Both shutdown and startup_rejected before start consume zero",
+      "Existing cancellation/expiry and restore paths retain the same history/count"
+    ]
+  },
+  "migration": "20261101050000_execution_render_charge",
+  "historicalRewrite": false,
+  "logs": {
+    "render-group-release-red.log": {
+      "path": "/tmp/narriflow-serverless-gates/final-media-21/render-group-release-red.log",
+      "sha256": "00e82ec7b529988413b013f18926d1994276ef169474eee896f5372362013197"
+    },
+    "render-group-release-green.log": {
+      "path": "/tmp/narriflow-serverless-gates/final-media-21/render-group-release-green.log",
+      "sha256": "9de6fc8792e5413a34f3f4289ae525da00b9975a5737bf2cb2e12343817f32c3"
+    },
+    "render-group-charge-unit.log": {
+      "path": "/tmp/narriflow-serverless-gates/final-media-21/render-group-charge-unit.log",
+      "sha256": "b4742a2e9fb32ed74f8d049e0ec0397339a4118fb5978c6f022468ed560f4566"
+    },
+    "render-group-charge-tsc.log": {
+      "path": "/tmp/narriflow-serverless-gates/final-media-21/render-group-charge-tsc.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  },
+  "removed": "Unused render-telemetry-report expected retired Railway release/settlement messages; current runbook uses safe diagnostics and authoritative ledger facts"
+}
