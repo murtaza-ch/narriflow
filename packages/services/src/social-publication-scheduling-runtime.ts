@@ -1,3 +1,4 @@
+import {appendPublicationDispatch,recoverPublicationDispatches} from "./publication-dispatch";
 import { lockPublicationPost, lockPublicationScope } from "./publication-locks";
 import { readExecutionAdmission, assertExecutionAdmissionOpen } from "./execution-admission";
 import { randomUUID } from "node:crypto";
@@ -102,6 +103,11 @@ async function readIntentByKey(
 	});
 }
 
+async function recoverAcceptedIntent(row:PublicationIntentRow){
+ await requirePrisma().$transaction(async tx=>{await readExecutionAdmission(tx);await recoverPublicationDispatches(tx,row.id,row.workspaceId??undefined);});
+ return toPublicationIntent(row);
+}
+
 /** The rows the Social Post store writes when it freezes an intent. */
 function frozenStateData(candidate: PublicationIntent) {
 	return {
@@ -131,7 +137,7 @@ const isAdmitted = (row: { status: string }) => row.status !== "draft";
 export const prismaPublicationSchedulingStore: PublicationSchedulingStore = {
 	async readByKey(workspaceId, clientIdempotencyKey) {
 		const row = await readIntentByKey(workspaceId, clientIdempotencyKey);
-		return row && isAdmitted(row) ? toPublicationIntent(row) : null;
+		return row && isAdmitted(row) ? recoverAcceptedIntent(row) : null;
 	},
 
 	async open(input) {
@@ -143,7 +149,7 @@ export const prismaPublicationSchedulingStore: PublicationSchedulingStore = {
 			if (existing.immutableRequestHash !== input.immutableRequestHash) {
 				throw new PublicationIntentConflictError();
 			}
-			return toPublicationIntent(existing);
+			return recoverAcceptedIntent(existing);
 		}
 		if (existing && existing.id !== input.proposalId) {
 			throw new PublicationIntentConflictError();
@@ -168,6 +174,7 @@ export const prismaPublicationSchedulingStore: PublicationSchedulingStore = {
 						if (replay.immutableRequestHash !== input.immutableRequestHash) {
 							throw new PublicationIntentConflictError();
 						}
+      await recoverPublicationDispatches(tx,replay.id,input.workspaceId);
 						return replay;
 					}
 					if (replay && replay.id !== input.proposalId) {
@@ -213,6 +220,7 @@ export const prismaPublicationSchedulingStore: PublicationSchedulingStore = {
 						const converted = await tx.socialPost.updateMany({
 							where: { id: input.proposalId, workspaceId: input.workspaceId, status: "draft", caption: candidate.frozen.caption },
 							data: {
+								deploymentEpoch:admission.epoch,
 								status: candidate.status,
 								clientIdempotencyKey: candidate.clientIdempotencyKey,
 								immutableRequestHash: candidate.immutableRequestHash,
@@ -243,6 +251,7 @@ export const prismaPublicationSchedulingStore: PublicationSchedulingStore = {
 						row = await tx.socialPost.create({
 							data: {
 								id: candidate.id,
+        deploymentEpoch:admission.epoch,
 								workspaceId: candidate.workspaceId,
 								createdByUserId: candidate.createdByUserId,
 								projectId: candidate.projectId,
@@ -263,6 +272,7 @@ export const prismaPublicationSchedulingStore: PublicationSchedulingStore = {
 							include: publicationIntentInclude,
 						});
 					}
+					await appendPublicationDispatch(tx,row.id);
 					await tx.projectAnalyticsEvent.create({
 						data: {
 							projectId: candidate.projectId,
@@ -308,7 +318,7 @@ export const prismaPublicationSchedulingStore: PublicationSchedulingStore = {
 			const replay = await readIntentByKey(input.workspaceId, input.clientIdempotencyKey);
 			if (replay && isAdmitted(replay)) {
 				if (replay.immutableRequestHash !== input.immutableRequestHash) throw new PublicationIntentConflictError();
-				return toPublicationIntent(replay);
+				return recoverAcceptedIntent(replay);
 			}
 			throw error;
 		}
@@ -324,6 +334,7 @@ export const prismaPublicationSchedulingStore: PublicationSchedulingStore = {
 
 	async cancel(input) {
 		return requirePrisma().$transaction(async (tx) => {
+            await readExecutionAdmission(tx);
             await lockPublicationPost(tx,input.postId);
 			const cancelled = await tx.socialPost.updateMany({
 				where: {
@@ -334,7 +345,9 @@ export const prismaPublicationSchedulingStore: PublicationSchedulingStore = {
 				},
 				data: { status: "cancelled" },
 			});
-			if (cancelled.count === 0) {
+   if(cancelled.count===0){
+    const prior=await tx.socialPost.findFirst({where:{id:input.postId,workspaceId:input.workspaceId,status:"cancelled",project:{workspaceId:input.workspaceId,...accessibleProjectWhere()}},include:publicationIntentInclude});
+    if(prior){await recoverPublicationDispatches(tx,prior.id,input.workspaceId);return toPublicationIntent(prior);}
 				const exists = await tx.socialPost.findFirst({
 					where: { id: input.postId, workspaceId: input.workspaceId, project: { workspaceId: input.workspaceId, ...accessibleProjectWhere() } },
 					select: { id: true },
@@ -357,6 +370,7 @@ export const prismaPublicationSchedulingStore: PublicationSchedulingStore = {
 				where: { id: input.postId },
 				include: publicationIntentInclude,
 			});
+			await appendPublicationDispatch(tx,row.id,{dueAt:input.now,wakeKind:"publication_cancelled"});
 			await tx.projectAnalyticsEvent.create({
 				data: {
 					projectId: row.projectId,

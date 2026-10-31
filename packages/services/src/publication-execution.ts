@@ -125,6 +125,7 @@ export interface PublicationExecutionDependencies {
 }
 export type PublicationPreparation =
 	| { kind: "terminal" | "superseded" | "waiting_export" | "waiting_grant" }
+ | {kind:"dependency_wait";dueAt:Date;deadlineDispatchId:string;dispatchIds:string[]}
 	| { kind: "sleep"; dueAt: Date }
 	| {
 			kind: "waiting";
@@ -662,13 +663,26 @@ export class PublicationExecution
 				const other = await tx.publicationClaim.findUnique({
 					where: { accountSlotKey },
 				});
-				if (other && !other.releasedAt && other.leaseExpiresAt > now)
-					return { kind: "sleep" as const, dueAt: other.leaseExpiresAt };
-				if (other)
-					return {
-						kind: "sleep" as const,
-						dueAt: new Date(now.getTime() + 5000),
-					};
+    if(other){
+     // Never take another Post lock while this Post is locked. Its independent
+     // deadline continuation owns expiry, and this Post has its own fixed wake.
+     const execution=await tx.executionAttempt.findUnique({where:{attemptToken:other.id}});
+     let watch:Awaited<ReturnType<typeof readExecutionDispatch>>;
+     if(execution){
+      const modal=await readExecutionDispatch(tx,execution.dispatchId);
+      if(!modal||modal.reference.subject.kind!=="social_publication"||modal.reference.deploymentEpoch!==epoch)throw new PublicationExecutionError("publication_account_slot_invalid");
+      const until=other.executorOwner?other.leaseExpiresAt:other.operationDeadlineAt!;
+      watch=await appendExecutionDispatch(tx,{...modal.reference,subject:modal.reference.subject,kind:"operation_driver",dueAt:until,deadlineKind:other.executorOwner?"lease":"operation",observedDeadlineAt:until});
+     }else{
+      const peer=await tx.socialPublicationAttempt.findUniqueOrThrow({where:{id:other.attemptId},select:{socialPostId:true}});
+      const timer=await tx.executionDispatch.findFirst({where:{subjectKind:"social_publication",subjectId:peer.socialPostId,generation:other.generation,deploymentEpoch:epoch,wakeKind:"publication_preparation_deadline"},select:{id:true}});
+      watch=timer?await readExecutionDispatch(tx,timer.id):null;
+     }
+     if(!watch)throw new PublicationExecutionError("publication_account_slot_invalid");
+     const wakeKind=`pub_${createHash("sha256").update(JSON.stringify([other.id,watch.dueAt.toISOString()])).digest("hex").slice(0,32)}`;
+     const resume=await appendPublicationDispatch(tx,post.id,{dueAt:watch.dueAt,wakeKind});
+     return {kind:"dependency_wait" as const,dueAt:watch.dueAt,deadlineDispatchId:watch.reference.dispatchId,dispatchIds:[watch.reference.dispatchId,resume]};
+    }
 			}
 			const until = new Date(
 				Math.min(

@@ -1,3 +1,4 @@
+import {withExecutionDispatches} from "./execution-dispatch-runtime";
 import {
 	createPublicationInputBuilder,
 	publicationProviderPullReads,
@@ -694,6 +695,29 @@ suite("Revision-bound publication execution", () => {
 		expect(await db.socialPublicationAttempt.count({where:{socialPostId:post.id}})).toBe(1);
 	});
 
+ test("an occupied account confirms its peer deadline and an independent targeted continuation without polling",async()=>{
+  const f=await active(),p=await claimed(f);
+  const {frozenState,...post}=await db.socialPost.findUniqueOrThrow({where:{id:f.post.id},include:{frozenState:true}});
+  const {id:_id,socialPostId:_postId,...frozen}=frozenState!;
+  const second=await db.socialPost.create({data:{...post,id:crypto.randomUUID(),clientIdempotencyKey:crypto.randomUUID(),immutableRequestHash:crypto.randomUUID(),frozenState:{create:frozen as never}},include:{frozenState:true}});
+  const id=await db.$transaction(tx=>appendPublicationDispatch(tx,second.id));
+  await db.executionDispatch.update({where:{id},data:{acknowledgedAt:new Date()}});
+  const reference=(await readExecutionDispatch(db,id))!.reference;
+  const blocked=await f.domain.prepareExecution(reference);
+  expect(blocked.kind).toBe("dependency_wait");if(blocked.kind!=="dependency_wait")throw Error("Expected account dependency");
+  expect(blocked.dueAt).toEqual((await db.publicationClaim.findUniqueOrThrow({where:{id:p.fence.attemptToken}})).leaseExpiresAt);
+  const timer=await readExecutionDispatch(db,blocked.deadlineDispatchId);
+  expect(timer!.reference.subject.id).toBe(f.post.id);expect(timer!.deadlineKind).toBe("lease");expect(timer!.acknowledgedAt).not.toBeNull();
+  expect(await db.publicationClaim.count({where:{attempt:{socialPostId:second.id}}})).toBe(0);
+  const resume=await db.executionDispatch.findFirstOrThrow({where:{subjectId:second.id,wakeKind:{startsWith:"pub_"}}});expect(resume.dueAt).toEqual(blocked.dueAt);expect(resume.acknowledgedAt).not.toBeNull();
+  // Even if the peer's earlier watchdog was abandoned, this exact incoming
+  // continuation expires it outside the current Post lock before claiming.
+  await db.publicationClaim.update({where:{id:p.fence.attemptToken},data:{leaseExpiresAt:new Date(Date.now()-1000)}});
+  expect((await f.domain.prepareExecution(reference)).kind).toBe("waiting");
+  expect((await db.publicationClaim.findUniqueOrThrow({where:{id:p.fence.attemptToken}})).releasedAt).not.toBeNull();
+  expect(await db.publicationClaim.count({where:{accountSlotKey:f.post.socialAccountId}})).toBe(1);
+ });
+
 	test("targeted native publication seals private input before dispatch and charges only one real start", async () => {
 		const f = await active();
 		f.hooks.lostPut();
@@ -1371,17 +1395,13 @@ suite("Revision-bound publication execution", () => {
 		).toBe(2);
 		const context = createDatabaseTestContext();
 		context.client = db;
-		await withServiceEnvironment(
-			{ SOCIAL_PUBLISH_PROVIDER_CALL_BUDGET: "1" },
-			context.bind(() =>
-				socialPublicationRecovery.recheck({
-					workspaceId: f.post.workspaceId!,
-					actorUserId: f.post.createdByUserId!,
-					socialPostId: f.post.id,
-					reason: "Read the original provider operation again",
-				}),
-			),
-		);
+  const mutation={clientIdempotencyKey:crypto.randomUUID()};let loseRegistration=true;
+  const recheck=()=>withServiceEnvironment({SOCIAL_PUBLISH_PROVIDER_CALL_BUDGET:"1"},context.bind(()=>withExecutionDispatches(()=>socialPublicationRecovery.recheck({workspaceId:f.post.workspaceId!,actorUserId:f.post.createdByUserId!,socialPostId:f.post.id,reason:"Read the original provider operation again",mutation}),{database:db,deliver:async ids=>{if(loseRegistration){loseRegistration=false;throw Error("lost_manual_registration");}await db.executionDispatch.updateMany({where:{id:{in:[...ids]}},data:{acknowledgedAt:new Date()}});}})));
+  await expect(recheck()).rejects.toThrow("lost_manual_registration");
+  expect(await db.executionDispatch.count({where:{subjectId:f.post.id,generation:f.reference.generation+1,acknowledgedAt:null}})).toBe(1);
+  await recheck();
+  expect(await db.executionDispatch.count({where:{subjectId:f.post.id,generation:f.reference.generation+1,acknowledgedAt:null}})).toBe(0);
+  expect(await db.publicationManualDecision.count({where:{attemptId:attempt.id,kind:"recheck_requested"}})).toBe(1);
 		const updated = await db.socialPublicationAttempt.findUniqueOrThrow({
 			where: { id: attempt.id },
 		});
@@ -1407,9 +1427,7 @@ suite("Revision-bound publication execution", () => {
 			(await db.socialPost.findUniqueOrThrow({ where: { id: f.post.id } }))
 				.generation,
 		).toBe(f.reference.generation + 1);
-		const newDispatch = await db.$transaction((tx) =>
-			appendPublicationDispatch(tx, f.post.id, { dueAt: new Date() }),
-		);
+  const newDispatch=(await db.executionDispatch.findFirstOrThrow({where:{subjectKind:"social_publication",subjectId:f.post.id,generation:f.reference.generation+1,kind:"operation_driver",wakeKind:null}})).id;
 		const prepared = await f.domain.prepareExecution(
 			(await readExecutionDispatch(db, newDispatch))!.reference,
 		);

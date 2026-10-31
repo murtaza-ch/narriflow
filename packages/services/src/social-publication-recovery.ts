@@ -1,3 +1,4 @@
+import {appendPublicationDispatch} from "./publication-dispatch";
 import { readExecutionAdmission, assertExecutionAdmissionOpen } from "./execution-admission";
 import { lockPublicationPost } from "./publication-locks";
 import { readServiceEnvironment } from "./runtime-environment";
@@ -529,6 +530,7 @@ export const socialPublicationRecovery = {
           executionBudgetAudit:{kind:renewNative?"native_round_renewal":"native_recheck_authority",previousRound:attempt.nativeStartRound,round:attempt.nativeStartRound+(renewNative?1:0),previousNativeStartCount:attempt.nativeStartCount,ceiling:attempt.nativeStartCeiling,previousActorUserId:attempt.executionActorUserId,actorUserId:input.actorUserId},
         },
       });
+      await appendPublicationDispatch(tx,post.id,{dueAt:now});
       return {
         socialPostId: post.id,
         attemptId: attempt.id,
@@ -895,6 +897,7 @@ export const socialPublicationRecovery = {
           reason: parsed.reason,
         },
       });
+      await appendPublicationDispatch(tx,post.id,{dueAt:now});
       return {
         socialPostId: post.id,
         priorAttemptId: attempt.id,

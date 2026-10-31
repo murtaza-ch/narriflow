@@ -94,6 +94,7 @@ export async function appendPublicationDispatch(
 			post.createdAt,
 		...(options.wakeKind ? { wakeKind: options.wakeKind } : {}),
 	});
+	collectExecutionDispatch(tx,result.reference.dispatchId);
 	return result.reference.dispatchId;
 }
 
