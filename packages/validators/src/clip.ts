@@ -369,13 +369,13 @@ export const clipDownloadQuerySchema = z.object({
 });
 
 // Snake_case shape matching the raw LLM/JSON-schema layer (CLIP_DETECTION_JSON_SCHEMA
-// in apps/worker/src/tasks/detect-clips.ts uses at_sec/query/reason), which is
+// in packages/services/src/clip-selection-control.ts uses at_sec/query/reason), which is
 // NOT the same shape as brollCuesArraySchema (camelCase atSec) below —
 // normalizeLlmClip maps at_sec -> atSec once parsed, producing the canonical
 // camelCase BrollCue shape used everywhere past this LLM response boundary.
 // Deliberately lenient (no upper bound on string length or array size) beyond
 // what OpenAI's strict-mode JSON schema requires: brollCuesArraySchema already
-// re-validates the normalized cues downstream (apps/worker/src/tasks/clip-render-attempt.ts)
+// re-validates the normalized cues downstream (apps/media/src/tasks/clip-render-attempt.ts)
 // and degrades gracefully to the keyword-derived query on failure, so this layer
 // should never be the reason a whole clip gets dropped over an oversized B-roll field.
 const clipDetectionBrollCueSchema = z.object({

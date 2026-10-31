@@ -1,3 +1,4 @@
+import { assertIsolatedDatabaseGateTarget } from "./db-gate-target";
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -41,6 +42,7 @@ if (!/^integration_test_[a-z0-9_]+$/.test(schema)) {
 	throw new Error("Unsafe integration test schema name");
 }
 
+assertIsolatedDatabaseGateTarget(databaseUrl);
 const pool = new Pool({ connectionString: databaseUrl, max: 1 });
 
 async function run(command: string[], env: Record<string, string>) {

@@ -1,6 +1,6 @@
 /**
  * Shared conventions for a clip preview proxy's amplitude-peaks artifact —
- * used by both the worker (apps/worker/src/tasks/clip-preview.ts, which cuts
+ * used by both the worker (apps/media/src/prepare-clip.ts, which cuts
  * the proxy and writes this JSON alongside it) and this package's own
  * clip.service.ts (which reads and validates it for the studio timeline).
  *
@@ -8,7 +8,7 @@
  * key with the `.mp4` extension swapped for `.peaks.json` — a sibling
  * object under the exact same attempt-unique prefix
  * (`projects/<projectId>/previews/<clipId>/<attemptId>.mp4` — see
- * `clipPreviewAttemptStorageKey` in apps/worker/src/tasks/clip-preview.ts).
+ * `clipPreviewAttemptStorageKey` in apps/media/src/prepare-clip.ts).
  * This is DELIBERATELY a derived key rather than a new `Clip` column: the
  * worker only ever needs to swap the extension right after it already built
  * the mp4 key, and every reader that already has `Clip.previewStorageKey`

@@ -22,7 +22,7 @@ describe("repository verification commands", () => {
       "apps/api/package.json",
       "apps/mcp/package.json",
       "apps/web/package.json",
-      "apps/worker/package.json",
+      "apps/media/package.json",
       "packages/api-client/package.json",
       "packages/auth/package.json",
       "packages/composition-plan/package.json",
