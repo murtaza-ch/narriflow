@@ -41,3 +41,14 @@ test("failure preparation reads only the exact assigned object and rejects forei
   await expect(prepareRenderArtifact({ ...artifact, byteLength: 65537n }, reported, { inputHash, memberIds: [renderId], read })).rejects.toThrow("render_artifact_invalid");
   expect(reads).toBe(2);
 });
+
+test("successful render credits are derived only from used IDs in the immutable stock plan", async () => {
+  const renderId = crypto.randomUUID(), inputHash = "a".repeat(64);
+  const bindingHash = await renderArtifactBindingHash({ inputHash, renderId, role: "render_variant" });
+  const artifact = { artifactId: crypto.randomUUID(), role: "render_variant" as const, storageKey: "execution/assigned/video.mp4", contentType: "video/mp4", byteLength: 1024n, etag: '"assigned"', sha256: "b".repeat(64), bindingHash };
+  const stockCredits = [{ pexelsId: 72, authorName: "Author", authorUrl: null, pageUrl: "https://www.pexels.com/video/72/" }];
+  const reported = { ...artifact, byteLength: 1024, renderVariant: { renderId, durationSec: 4, usedStockIds: [72] } };
+  const read = async (): Promise<Uint8Array> => { throw new Error("Media bytes must never be read into the Worker"); };
+  expect(await prepareRenderArtifact(artifact, reported, { inputHash, memberIds: [renderId], stockCredits, read })).toMatchObject({ brollCredits: stockCredits });
+  await expect(prepareRenderArtifact(artifact, { ...reported, renderVariant: { ...reported.renderVariant, usedStockIds: [73] } }, { inputHash, memberIds: [renderId], stockCredits, read })).rejects.toThrow("render_artifact_invalid");
+});

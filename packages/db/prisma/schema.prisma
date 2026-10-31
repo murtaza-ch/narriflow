@@ -1756,6 +1756,8 @@ model ClipRender {
   /// skippedEmoji }, clipRenderCaptionDiagnosticsSchema). Written when the
   /// worker commits a successful render; null when nothing was left out.
   captionDiagnostics Json?
+  /// Actual used stock-media attribution, derived from the frozen render plan.
+  brollCredits       Json?
 
   // Export-bound rows are immutable render jobs. They carry a frozen clip
   // snapshot and survive later editor saves; ordinary rows keep acting as the

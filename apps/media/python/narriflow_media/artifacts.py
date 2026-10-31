@@ -63,10 +63,13 @@ def _facts(role, builder, completed):
             if not isinstance(facts['probe'],dict) or not isinstance(facts['probe'].get('facts'),dict):
                 raise ValueError()
         elif field == 'renderVariant' and field in value:
-            facts = _object(value[field], {'renderId','durationSec'}, {'captionDiagnostics'})
+            facts = _object(value[field], {'renderId','durationSec'}, {'captionDiagnostics','usedStockIds'})
             _id(facts['renderId'])
             if type(facts['durationSec']) not in {int,float} or not math.isfinite(facts['durationSec']) or facts['durationSec'] <= 0:
                 raise ValueError()
+            if 'usedStockIds' in facts:
+                ids=facts['usedStockIds']
+                if not isinstance(ids,list) or len(ids)>6 or any(type(identity) is not int or not 0<identity<=2**53-1 for identity in ids) or len(set(ids))!=len(ids):raise ValueError()
         if field in {'sourceAudio','sourceVideo'}:
             _id(facts['projectId'])
             _integer(facts['sourceRevision'],2**53-1)
