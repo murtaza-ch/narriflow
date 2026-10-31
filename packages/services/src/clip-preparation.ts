@@ -1,3 +1,5 @@
+import { assertExecutionRestorePage } from "./execution-restore-pages";
+import type { ExecutionRestorePage } from "./execution-restore";
 import { createHash } from "node:crypto";
 import { Prisma, type PrismaClient, type ClipPreparation, type ExecutionArtifact } from "@prisma/client";
 import { executionDispatchReferenceSchema, sourceVideoBindingSchema, type ExecutionDispatchReference, type ExecutionDeadline } from "@narriflow/validators/execution";
@@ -20,6 +22,8 @@ import { ExecutorControlError, type ExecutorLiveAuthority } from "./executor-con
 type Tx = Prisma.TransactionClient;
 const namespace = "7d4f8579-d68c-5240-bd5e-05411d012f22";
 const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
+export const clipPreparationIdentity = (epoch:number,clipId:string,bindingHash:string)=>uuidV5(namespace,JSON.stringify([epoch,clipId,bindingHash]));
+export const clipPreparationExecutionInputHash = (id:string,bindingHash:string)=>digest(["clip-preparation-v1",id,bindingHash]);
 const deadlineMs = 45 * 60_000;
 export class ClipPreparationError extends Error {
   constructor(readonly code: "clip_preparation_unavailable" | "clip_preparation_input_invalid", readonly preparationId?: string) { super(code); this.name = "ClipPreparationError"; }
@@ -60,6 +64,37 @@ async function now(tx: Tx): Promise<Date> {
   return clock.now;
 }
 
+export function validateClipPreparationManifest(input: ClipPreparationInput, raw: ClipPreparationResult): ClipPreparationResult {
+    const result = clipPreparationResultSchema.parse(raw), window = clipPreparationPreviewWindow(input), timing = clipPreparationTiming(input);
+    if (result.preparationId !== input.preparationId || result.bindingHash !== input.bindingHash || Math.abs(result.preview.startSec - window.startSec) > 0.001 ||
+      Math.abs(result.preview.durationSec - window.durationSec) > 0.001 || result.layout.automatic === null ||
+      (input.sourceProbe.video === null && (result.layout.screen !== null || result.layout.split !== null)) ||
+      (input.sourceProbe.video !== null && (result.layout.screen === null || result.layout.split === null)) ||
+      (result.peaks.state === "unavailable" && (result.peaks.reason === "no_audio") !== (input.sourceProbe.audio === null))) throw new ClipPreparationError("clip_preparation_input_invalid");
+    const sourceIdentity = compositionAssetRef("source", input.projectId);
+    const geometry = resolveDisplayGeometry({ width: input.sourceProbe.video?.width ?? 0, height: input.sourceProbe.video?.height ?? 0, facts: input.sourceProbe.facts });
+    const editedDurationSec = buildEditedTimeMap(input.document.deletedRanges, { startSec: timing.startSec, endSec: timing.endSec }).editedDurationSec;
+    for (const value of [result.layout.automatic, result.layout.split]) {
+      if (!value || "state" in value) continue;
+      if (value.sourceIdentity !== sourceIdentity || value.sourceWidth !== (geometry.width || 1) || value.sourceHeight !== (geometry.height || 1) ||
+        !clipAutoLayoutMatchesInputs(value, { clipStartSec: timing.startSec, clipEndSec: timing.endSec, deletedRanges: input.document.deletedRanges }) ||
+        Math.abs(value.editedDurationSec - editedDurationSec) > 0.075) throw new ClipPreparationError("clip_preparation_input_invalid");
+    }
+    const automatic = result.layout.automatic;
+    if (!("state" in automatic) && automatic.engine !== CLIP_AUTO_LAYOUT_ENGINE) throw new ClipPreparationError("clip_preparation_input_invalid");
+    const binding = { sourceIdentity, clipStartSec: timing.startSec, clipEndSec: timing.endSec, deletedRanges: input.document.deletedRanges };
+    const screen = result.layout.screen;
+    if (screen && (screen.sourceIdentity !== sourceIdentity || screen.inputFingerprint !== screenLayoutInputFingerprint({ ...binding, engineVersion: SCREEN_LAYOUT_ENGINE_VERSION }))) throw new ClipPreparationError("clip_preparation_input_invalid");
+    if (screen && !("state" in screen) && (screen.sourceWidth !== (geometry.width || 1) || screen.sourceHeight !== (geometry.height || 1) ||
+      Math.abs(screen.clipStartSec - timing.startSec) > 0.001 || Math.abs(screen.clipEndSec - timing.endSec) > 0.001 ||
+      Math.abs(screen.sourceStartSec - timing.startSec) > 0.001 || Math.abs(screen.sourceDurationSec - (timing.endSec - timing.startSec)) > 0.001 ||
+      digest(screen.deletedRanges) !== digest(input.document.deletedRanges))) throw new ClipPreparationError("clip_preparation_input_invalid");
+    const split = result.layout.split;
+    if (split && "state" in split && (split.sourceIdentity !== sourceIdentity || split.inputFingerprint !== splitLayoutInputFingerprint({ ...binding, engineVersion: "explicit-split-v1" }))) throw new ClipPreparationError("clip_preparation_input_invalid");
+    return result;
+  }
+
+
 /** Owns immutable preparation admission and publication. Native code receives
  * one sealed capsule and assigned artifacts; it never reads domain tables. */
 export class ClipPreparationService {
@@ -72,6 +107,11 @@ export class ClipPreparationService {
     const record = await readExecutionDispatch(tx, reference.dispatchId);
     if (!epoch || reference.kind !== "operation_driver" || reference.subject.kind !== "render_group" || reference.deploymentEpoch !== epoch.epoch ||
       !record || JSON.stringify(record.reference) !== JSON.stringify(reference)) throw new ClipPreparationError("clip_preparation_input_invalid");
+    return this.inputForGroupIdentity(tx, { id: reference.subject.id, generation: reference.generation, deploymentEpoch: epoch.epoch });
+  }
+
+  private async inputForGroupIdentity(tx: Tx, identity: { id: string; generation: number; deploymentEpoch: number }) {
+    const epoch = { epoch: identity.deploymentEpoch }, reference = { subject: { id: identity.id }, generation: identity.generation };
     const initial = await tx.renderGroup.findUnique({ where: { id: reference.subject.id }, include: { workflowRun: { include: { project: true } } } });
     if (!initial) throw new ClipPreparationError("clip_preparation_input_invalid");
     await lockWorkspaceUsage(tx, initial.workflowRun.project.workspaceId);
@@ -115,12 +155,21 @@ export class ClipPreparationService {
       sourceRevision: project.sourceRevision, editorRevision: configuration[2] as number, engineHash: this.dependencies.engineHash, toolchainFingerprint: this.dependencies.toolchainFingerprint,
       source: { storageKey: source.storageKey, etag: source.etag, byteLength: Number(source.byteLength), sha256: source.checksumSha256 }, sourceProbe: probe, document, wholeSource, llmModel };
     const bindingHash = await clipPreparationBinding(base);
-    const id = uuidV5(namespace, JSON.stringify([epoch.epoch, clip.id, bindingHash]));
+    const id = clipPreparationIdentity(epoch.epoch, clip.id, bindingHash);
     if ((group.preparationId !== null && group.preparationId !== id) || (group.status === "running" && group.preparationId === null)) throw new ClipPreparationError("clip_preparation_input_invalid");
     const input: ClipPreparationInput = { ...base, preparationId: id, bindingHash };
     const groupDeadlineAt = group.operationDeadlineAt ?? new Date(clock.getTime() + deadlineMs);
     if (!group.operationDeadlineAt) await tx.renderGroup.update({ where: { id: group.id }, data: { operationDeadlineAt: groupDeadlineAt } });
     return { input, groupId: group.id, deploymentEpoch: epoch.epoch, clock, groupDeadlineAt };
+  }
+
+  /** Reuses the same source/editor/export validation without registering any
+   * product permission while the proved restore remains fenced. */
+  async restoreInputForGroup(tx: Tx, groupId: string, page: ExecutionRestorePage) {
+    await assertExecutionRestorePage(tx,page);
+    const group=await tx.renderGroup.findUniqueOrThrow({where:{id:groupId},select:{generation:true,deploymentEpoch:true}});
+    if(group.deploymentEpoch!==page.deploymentEpoch)throw new ClipPreparationError("clip_preparation_input_invalid");
+    return this.inputForGroupIdentity(tx,{id:groupId,generation:group.generation,deploymentEpoch:group.deploymentEpoch});
   }
 
   private async admission(tx: Tx, row: ClipPreparation, groupId: string): Promise<ClipPreparationAdmission> {
@@ -160,7 +209,7 @@ export class ClipPreparationService {
         await lockPlannedExecutionObject(tx, { origin: "clip_preparation_input", storageKey: key });
         const row = await tx.clipPreparation.upsert({ where: { id: fresh.input.preparationId }, update: {}, create: {
           id: fresh.input.preparationId, projectId: fresh.input.projectId, clipId: fresh.input.clipId, sourceRevision: fresh.input.sourceRevision, editorRevision: fresh.input.editorRevision,
-          bindingHash: fresh.input.bindingHash, engineHash: fresh.input.engineHash, inputHash: digest(["clip-preparation-v1", fresh.input.preparationId, fresh.input.bindingHash]),
+          bindingHash: fresh.input.bindingHash, engineHash: fresh.input.engineHash, inputHash: clipPreparationExecutionInputHash(fresh.input.preparationId, fresh.input.bindingHash),
           inputStorageKey: key, inputEtag: stored.etag, inputByteLength: BigInt(stored.byteLength), inputChecksumSha256: stored.sha256,
           deploymentEpoch: fresh.deploymentEpoch, createdAt: fresh.clock, operationDeadlineAt: deadline,
         } });
@@ -349,35 +398,6 @@ export class ClipPreparationService {
     return { kind: "expired", dispatchIds: (await this.finishFailure(tx, job, clock, "clip_preparation_deadline", observation.kind === "lease")).dispatchIds };
   }
 
-  private validateManifest(input: ClipPreparationInput, raw: ClipPreparationResult): ClipPreparationResult {
-    const result = clipPreparationResultSchema.parse(raw), window = clipPreparationPreviewWindow(input), timing = clipPreparationTiming(input);
-    if (result.preparationId !== input.preparationId || result.bindingHash !== input.bindingHash || Math.abs(result.preview.startSec - window.startSec) > 0.001 ||
-      Math.abs(result.preview.durationSec - window.durationSec) > 0.001 || result.layout.automatic === null ||
-      (input.sourceProbe.video === null && (result.layout.screen !== null || result.layout.split !== null)) ||
-      (input.sourceProbe.video !== null && (result.layout.screen === null || result.layout.split === null)) ||
-      (result.peaks.state === "unavailable" && (result.peaks.reason === "no_audio") !== (input.sourceProbe.audio === null))) throw new ClipPreparationError("clip_preparation_input_invalid");
-    const sourceIdentity = compositionAssetRef("source", input.projectId);
-    const geometry = resolveDisplayGeometry({ width: input.sourceProbe.video?.width ?? 0, height: input.sourceProbe.video?.height ?? 0, facts: input.sourceProbe.facts });
-    const editedDurationSec = buildEditedTimeMap(input.document.deletedRanges, { startSec: timing.startSec, endSec: timing.endSec }).editedDurationSec;
-    for (const value of [result.layout.automatic, result.layout.split]) {
-      if (!value || "state" in value) continue;
-      if (value.sourceIdentity !== sourceIdentity || value.sourceWidth !== (geometry.width || 1) || value.sourceHeight !== (geometry.height || 1) ||
-        !clipAutoLayoutMatchesInputs(value, { clipStartSec: timing.startSec, clipEndSec: timing.endSec, deletedRanges: input.document.deletedRanges }) ||
-        Math.abs(value.editedDurationSec - editedDurationSec) > 0.075) throw new ClipPreparationError("clip_preparation_input_invalid");
-    }
-    const automatic = result.layout.automatic;
-    if (!("state" in automatic) && automatic.engine !== CLIP_AUTO_LAYOUT_ENGINE) throw new ClipPreparationError("clip_preparation_input_invalid");
-    const binding = { sourceIdentity, clipStartSec: timing.startSec, clipEndSec: timing.endSec, deletedRanges: input.document.deletedRanges };
-    const screen = result.layout.screen;
-    if (screen && (screen.sourceIdentity !== sourceIdentity || screen.inputFingerprint !== screenLayoutInputFingerprint({ ...binding, engineVersion: SCREEN_LAYOUT_ENGINE_VERSION }))) throw new ClipPreparationError("clip_preparation_input_invalid");
-    if (screen && !("state" in screen) && (screen.sourceWidth !== (geometry.width || 1) || screen.sourceHeight !== (geometry.height || 1) ||
-      Math.abs(screen.clipStartSec - timing.startSec) > 0.001 || Math.abs(screen.clipEndSec - timing.endSec) > 0.001 ||
-      Math.abs(screen.sourceStartSec - timing.startSec) > 0.001 || Math.abs(screen.sourceDurationSec - (timing.endSec - timing.startSec)) > 0.001 ||
-      digest(screen.deletedRanges) !== digest(input.document.deletedRanges))) throw new ClipPreparationError("clip_preparation_input_invalid");
-    const split = result.layout.split;
-    if (split && "state" in split && (split.sourceIdentity !== sourceIdentity || split.inputFingerprint !== splitLayoutInputFingerprint({ ...binding, engineVersion: "explicit-split-v1" }))) throw new ClipPreparationError("clip_preparation_input_invalid");
-    return result;
-  }
 
   private object(row: ExecutionArtifact): ClipPreparationObject {
     if (!row.committedAt || !row.etag || !row.checksumSha256 || row.byteLength === null) throw new ClipPreparationError("clip_preparation_input_invalid");
@@ -409,7 +429,7 @@ export class ClipPreparationService {
   async commitArtifactExecution(tx: Tx, ref: ClipPreparationExecutionReference, context: ExecutorMutationContext, artifact: ClipPreparationArtifactCommit): Promise<ExecutorMutationResult> {
     const { job, clock } = await this.owned(tx, ref, context);
     if (artifact.bindingHash !== job.bindingHash || !["clip_preview", "preview_peaks", "layout_evidence"].includes(artifact.role)) throw new ClipPreparationError("clip_preparation_input_invalid");
-    const result = artifact.role === "layout_evidence" ? this.validateManifest(ref.input, artifact.result) : job.result === null ? null : this.validateManifest(ref.input, job.result as ClipPreparationResult);
+    const result = artifact.role === "layout_evidence" ? validateClipPreparationManifest(ref.input, artifact.result) : job.result === null ? null : validateClipPreparationManifest(ref.input, job.result as ClipPreparationResult);
     if (!result) return undefined;
     if (artifact.role === "layout_evidence") await tx.clipPreparation.update({ where: { id: job.id }, data: { result: result as Prisma.InputJsonValue } });
     const ready = await this.ready(tx, job, result, { artifact, clock });
@@ -436,7 +456,7 @@ export class ClipPreparationService {
       const state = await this.inputForGroup(tx, executionDispatchReferenceSchema.parse(reference));
       const job = await tx.clipPreparation.findUnique({ where: { id: state.input.preparationId } });
       if (!job || job.status !== "completed" || job.result === null) return null;
-      const result = this.validateManifest(state.input, job.result as ClipPreparationResult);
+      const result = validateClipPreparationManifest(state.input, job.result as ClipPreparationResult);
       const objects = clipPreparationReadyObjectsSchema.safeParse(job.readyObjects);
       if (!objects.success || (result.peaks.state === "ready") !== (objects.data.peaks !== null)) throw new ClipPreparationError("clip_preparation_input_invalid");
       return { preparationId: job.id, bindingHash: job.bindingHash, input: { storageKey: job.inputStorageKey, etag: job.inputEtag,

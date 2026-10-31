@@ -277,8 +277,8 @@ export interface GenerationFinishingDependencies {
    * repeat finds it. A refusal says why, and the row ends with that reason. */
   sendReviewRound(input: { finishingId: string; workspaceId: string; projectId: string; exportIds: string[]; expectedGrant: FrozenStandingGrant | null }, authority: FinishingWorkAuthority): Promise<{ sent: true } | { sent: false; reason: FinishingReason }>;
   /** The "clips ready to review" notification to the acting user, through the
-   * existing path. `sourceId` is the finishing row's id. Best effort. */
-  notify(input: { projectId: string; sourceId: string; clipCount: number }, authority: FinishingWorkAuthority): Promise<void>;
+   * durable intent. It performs database work only in this settlement transaction. */
+  notify(input: { projectId: string; sourceId: string; clipCount: number }, authority: FinishingWorkAuthority, tx: Tx): Promise<void>;
 }
 
 class ClaimLost extends Error {
@@ -453,6 +453,7 @@ export function createGenerationFinishing(deps: GenerationFinishingDependencies)
         return (await appendFinishing(tx,parked,{kind:"operation",at:new Date(Math.min(parked.dueAt!.getTime()+FINISHING_MAX_WAIT_MS,parked.operationDeadlineAt!.getTime()))})).dispatchId;
       }
       const exportIds = outcome.picks.flatMap((pick) => (pick.exportId && !pick.exportError && EXPORT_USABLE.includes(statuses.get(pick.exportId) ?? "failed") ? [pick.exportId] : []));
+      if(exportIds.length)await deps.notify({projectId:row.projectId,sourceId:row.id,clipCount:exportIds.length},row,tx);
       const ended = await tx.generationFinishing.updateMany({
         where: { id: row.id, state: "running", claimToken: row.claimToken },
         data: { state: outcome.state, reason: outcome.reason, picks: outcome.picks as Prisma.InputJsonValue, finishedAt: state.clock, claimToken: null, leaseExpiresAt: null, nextAttemptAt: null },
@@ -647,7 +648,6 @@ export function createGenerationFinishing(deps: GenerationFinishingDependencies)
       }
     }
 
-    const exportCount = picks.filter(usable).length;
     const exportsReady = picks.every((pick) => usable(pick) && statuses.get(pick.exportId!) === "ready");
     const copyWritten = copyPlatforms.length === 0 || picks.every((pick) => pick.copyGenerationId);
     const queued = !queue || (queue.missing === 0 && picks.every((pick) => queue.accounts.every((account) => pick.queue?.[account.id] === "proposed")));
@@ -664,10 +664,6 @@ export function createGenerationFinishing(deps: GenerationFinishingDependencies)
         : !copyWritten ? "copy_failed"
           : !mayPropose ? "actor_lacks_publishing"
             : queue && queue.missing > 0 ? "queue_account_unavailable" : "queue_failed";
-    // The ledger keys the notification by the row, so a repeat sends nothing.
-    if (exportCount > 0) await deps.notify({ projectId: row.projectId, sourceId: row.id, clipCount: exportCount }, row).catch((error) => {
-      log("generation_finishing_notification_failed", { finishingId: row.id, code: error instanceof ExpectedDomainFailureError ? error.code : "notification_handoff_failed" });
-    });
     await finish(row, { state: complete && !reviewReason ? "ready" : "partial", reason, picks });
   }
 

@@ -1,3 +1,4 @@
+import {recoverNotificationDispatchIds} from "./notification-execution";
 import {recoverPublicationDispatches} from "./publication-dispatch";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
@@ -20,6 +21,7 @@ export function prismaOperationReceiptPersistence(
   if(!tx)return prisma.$transaction(tx=>recover(receipt,tx));
   await readExecutionAdmission(tx);
   await recoverReceiptNotificationDispatches(tx,receipt);
+  if(receipt.resourceType==="review"&&receipt.result&&typeof receipt.result==="object"&&!Array.isArray(receipt.result))await recoverNotificationDispatchIds(tx,(receipt.result as Record<string,unknown>).notificationDispatchIds);
   if(receipt.resourceType==="social_post"&&["recheck_social_publication","publish_social_publication_again"].includes(receipt.command))await recoverPublicationDispatches(tx,receipt.resourceId,receipt.workspaceId);
  };
 	return {

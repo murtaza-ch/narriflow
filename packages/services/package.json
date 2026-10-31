@@ -580,6 +580,10 @@
     "./outbound-delivery-execution": "./src/outbound-delivery-execution.ts",
     "./notification-body-storage": "./src/notification-body-storage.ts",
     "./outbound-delivery-runtime": "./src/outbound-delivery-runtime.ts",
+    "./notification-maintenance": "./src/notification-maintenance.ts",
+    "./notification-execution": "./src/notification-execution.ts",
+    "./notification-execution-runtime": "./src/notification-execution-runtime.ts",
+    "./notification.service": "./src/notification.service.ts",
     "./notification-dispatch": "./src/notification-dispatch.ts",
     "./drive-source-contract": "./src/drive-source-contract.ts",
     "./generated-media-execution": "./src/generated-media-execution.ts",
@@ -649,7 +653,11 @@
     "./execution-maintenance-ports": "./src/execution-maintenance-ports.ts",
     "./execution-retention-pages": "./src/execution-retention-pages.ts",
     "./execution-safety-pages": "./src/execution-safety-pages.ts",
-    "./execution-account-recovery-pages": "./src/execution-account-recovery-pages.ts"
+    "./execution-account-recovery-pages": "./src/execution-account-recovery-pages.ts",
+    "./execution-source-recovery-pages": "./src/execution-source-recovery-pages.ts",
+    "./execution-selection-restore": "./src/execution-selection-restore.ts",
+    "./execution-preparation-restore": "./src/execution-preparation-restore.ts",
+    "./execution-recovery-locks": "./src/execution-recovery-locks.ts"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",

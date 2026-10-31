@@ -1,10 +1,11 @@
+import {appendProjectNotificationIntent} from "./notification-execution";
 import type { Prisma } from "@prisma/client";
 import type { WorkspaceCapability } from "@narriflow/validators";
 import { getPrismaClient } from "@narriflow/db/client";
 import { assistedSocialCopyService } from "./assisted-social-copy-runtime";
 import { clipExportService } from "./clip-export.service";
 import { publishingQueue } from "./publishing-queue.service";
-import { assertGenerationFinishingAuthority, createGenerationFinishing, readProjectFinishing, type GenerationFinishingDependencies, type FinishingWorkAuthority } from "./generation-finishing";
+import { assertGenerationFinishingAuthority, createGenerationFinishing, readProjectFinishing, type FinishingWorkAuthority } from "./generation-finishing";
 import { ExpectedDomainFailureError } from "./expected-domain-failure";
 import { acceptProposalUnderGrant, sendReviewRoundUnderGrant } from "./standing-grant-runtime";
 import { workspaceService } from "./workspace.service";
@@ -21,7 +22,7 @@ function childFence(authority: FinishingWorkAuthority, scope: {workspaceId:strin
 }
 
 /** Fresh runtime wiring for one targeted Finishing command. */
-export function getGenerationFinishing(notify: GenerationFinishingDependencies["notify"]) {
+export function getGenerationFinishing() {
   return createGenerationFinishing({
     prisma: requirePrisma(),
     register: deliverExecutionDispatches,
@@ -47,7 +48,11 @@ export function getGenerationFinishing(notify: GenerationFinishingDependencies["
     ); },
     acceptUnderGrant: (input,authority) => acceptProposalUnderGrant(input,{beforeWrite:childFence(authority,{...input,capability:"publishing.manage"})}),
     sendReviewRound: (input,authority) => sendReviewRoundUnderGrant(input,{beforeWrite:childFence(authority,input)}),
-    notify,
+    notify: async (input,authority,tx) => {
+      if(input.sourceId!==authority.reference.subject.id)throw Error("finishing_notification_identity_invalid");
+      // The owner and current Project are locked by final settlement.
+      await appendProjectNotificationIntent(tx,{...input,outcome:"finishing_ready"});
+    },
   });
 }
 

@@ -1,3 +1,6 @@
+import {readExecutionAdmission} from "./execution-admission";
+import {takeExecutionDispatchIds} from "./execution-dispatch-runtime";
+import {recoverNotificationDispatchIds} from "./notification-execution";
 import { createHash } from "node:crypto";
 import { getPrismaClient } from "@narriflow/db/client";
 import type { Prisma } from "@prisma/client";
@@ -20,6 +23,7 @@ export async function executeGuestReviewCommand<Context extends { claims: Review
   if (!prisma) throw new Error("Database client unavailable");
   // Authorization precedes even caller-key refusal for direct service callers.
   return prisma.$transaction(async (tx) => {
+    await readExecutionAdmission(tx);
     let context = await input.authorize(tx);
     const key = input.mutation?.clientIdempotencyKey;
     if (!key || key.length > 128) throw new ExpectedDomainFailureError({ code: "idempotency_key_required", kind: "invalid", message: "A bounded client idempotency key is required." });
@@ -35,15 +39,24 @@ export async function executeGuestReviewCommand<Context extends { claims: Review
     const fingerprint = operationFingerprint(input.input);
     const existing = await tx.reviewAuditEvent.findFirst({ where: { reviewRoundId: roundId, guestId,
       AND: Object.entries(binding).map(([name, value]) => ({ metadata: { path: ["receipt", name], equals: value } })),
-    }, select: { metadata: true } });
+    }, select: { id:true, metadata: true } });
     if (existing) {
       const receipt = (existing.metadata as Prisma.JsonObject).receipt as Prisma.JsonObject;
       if (receipt.fingerprint !== fingerprint) throw new OperationIdempotencyConflictError();
+      await recoverNotificationDispatchIds(tx,receipt.dispatchIds);
       return { value: receipt.result as Result, replayed: true };
     }
     await input.mutation?.beforeAccept?.();
     const receipt = (result: Result): Prisma.InputJsonObject => ({ ...binding, fingerprint, result });
     const value = await input.mutate(tx, context, receipt);
+    const dispatchIds=takeExecutionDispatchIds(tx);
+    if(dispatchIds.length){
+      const audit=await tx.reviewAuditEvent.findFirst({where:{reviewRoundId:roundId,guestId,AND:Object.entries(binding).map(([name,value])=>({metadata:{path:["receipt",name],equals:value}}))},select:{id:true,metadata:true}});
+      if(!audit)throw Error("review_receipt_dispatch_binding_missing");
+      const metadata=audit.metadata as Prisma.JsonObject,accepted=metadata.receipt as Prisma.JsonObject;
+      if(dispatchIds.length>128)throw Error("review_receipt_dispatch_bound");
+      await tx.reviewAuditEvent.update({where:{id:audit.id},data:{metadata:{...metadata,receipt:{...accepted,dispatchIds}} as Prisma.InputJsonObject}});
+    }
     return { value, replayed: false };
   });
 }
@@ -68,7 +81,9 @@ export function createReviewsCommands(deps: ReviewsCommandDependencies) {
       authorize: () => deps.authorize(scope, command), beforeAccept: mutation.beforeAccept,
       mutate: async (tx) => {
         const value = await mutate(tx);
-        return { resourceType: "review", resourceId: scope.projectId, value: { protectedResult: deps.protect(value) } };
+        const notificationDispatchIds=takeExecutionDispatchIds(tx);
+        if(notificationDispatchIds.length>128)throw Error("review_receipt_dispatch_bound");
+        return { resourceType: "review", resourceId: scope.projectId, value: { protectedResult: deps.protect(value), notificationDispatchIds } };
       },
     });
     return { value: deps.reveal(accepted.value.protectedResult) as JsonSnapshot<T>, replayed: accepted.replayed };

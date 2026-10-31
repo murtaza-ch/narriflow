@@ -164,3 +164,17 @@ shape (`readyObjects`), which normal completion always writes. No legacy complet
 reader is retained; old isolated fixtures must be reset before applying the CHECK.
 The focused fresh-schema gate passes33tests/270assertions; module typechecks and
 Biome pass. Full factories/transforms are still being implemented, not mounted.
+
+Source restore now rebinds Ingest/Workflow/Render Group authority without changing
+accepted charges, absolute deadlines, frozen membership or waiting-provider lineage.
+Selection and Preparation use a server-owned preflight outside SQL locks, validate
+captured immutable objects, and re-encode successful results to the new binding at
+unique planned keys. Metadata adoption and each cursor/receipt commit together;
+replay does not repeat PUT or provider work. A separate bounded Preparation-link
+phase seals valid Group references before redispatch. Completed historical rows
+remain unchanged, and restored preparation reuses verified outputs through the
+sole current `readyObjects` shape without inventing Generic execution history.
+The focused fresh-schema gate passes 38 tests / 321 assertions (normal preparation,
+retention, object transformation and restore). Services/API typechecks and focused
+Biome pass. Remaining native/upload/retention adapters, final redispatch and full
+production factory/platform acceptance are still in progress.

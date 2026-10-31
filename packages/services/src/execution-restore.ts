@@ -8,13 +8,19 @@ import { appendExecutionDispatch, executionDispatchIdentity, readExecutionDispat
 export class ExecutionRestoreError extends Error {
   constructor(readonly code: "restore_epoch_changed" | "restore_reference_invalid" | "restore_phase_unavailable" | "restore_page_invalid") { super(code); }
 }
-export const EXECUTION_RESTORE_PHASES = ["attempts", "ingest", "workflows", "render_groups", "selection", "preparation", "native_validation", "thumbnail", "generated_media", "outbound", "publication", "bundle", "dubbing", "uploads", "billing", "library", "finishing", "devices", "redispatch"] as const;
+export const EXECUTION_RESTORE_PHASES = ["attempts", "ingest", "workflows", "render_groups", "selection", "preparation", "preparation_links", "native_validation", "thumbnail", "generated_media", "outbound", "publication", "bundle", "dubbing", "uploads", "billing", "library", "finishing", "autopilot", "zoom_notifications", "notifications", "review_notifications", "devices", "redispatch"] as const;
 
 export type ExecutionRestorePhase = typeof EXECUTION_RESTORE_PHASES[number];
 export interface ExecutionRestorePosition { at: Date; id: string }
 export interface ExecutionRestorePage { snapshotEpoch: number; fenceAboveEpoch: number; deploymentEpoch: number; cutoff: Date; after: ExecutionRestorePosition | null; limit: number }
 export interface ExecutionRestorePageResult { processed: number; next: ExecutionRestorePosition | null; dispatchIds?: readonly string[] }
 export type ExecutionRestorePhaseHandler = (tx: Prisma.TransactionClient, page: ExecutionRestorePage) => Promise<ExecutionRestorePageResult>;
+/** Server-owned preparation returns a typed transition closure. Bytes never
+ * enter Workflow state and storage I/O never runs while the apply Tx is held. */
+export type ExecutionRestorePreparedPhase = (reference: ExecutionDispatchReference, page: ExecutionRestorePage) => Promise<{
+  apply(tx: Prisma.TransactionClient, page: ExecutionRestorePage): Promise<ExecutionRestorePageResult>;
+}>;
+
 export interface ExecutionRestoreResult { kind: "complete" | "continue" | "superseded"; processed: number; dispatchIds: string[] }
 type Facts = Omit<ExecutionRestorePage, "limit" | "after">;
 const invalid = () => new ExecutionRestoreError("restore_reference_invalid");
@@ -44,7 +50,7 @@ async function hash(epoch: number, subjectId: string, attestation: string) {
  * any domain reset or redispatch. Recovery never reopens admission. */
 export class ExecutionRestoreService {
   private readonly limit: number;
-  constructor(private readonly options: { database: PrismaClient; register(ids: readonly string[]): Promise<void>; phases?: Partial<Record<ExecutionRestorePhase, ExecutionRestorePhaseHandler>>; limit?: number }) {
+  constructor(private readonly options: { database: PrismaClient; register(ids: readonly string[]): Promise<void>; phases?: Partial<Record<ExecutionRestorePhase, ExecutionRestorePhaseHandler>>; prepare?: Partial<Record<"selection" | "preparation", ExecutionRestorePreparedPhase>>; limit?: number }) {
     this.limit = options.limit ?? 100;
     if (!Number.isSafeInteger(this.limit) || this.limit < 1 || this.limit > 100) throw new ExecutionRestoreError("restore_page_invalid");
   }
@@ -129,6 +135,14 @@ export class ExecutionRestoreService {
     const validation = executionDispatchReferenceSchema.safeParse(value);
     if (!validation.success) throw invalid();
     const reference = validation.data;
+    const preparation = await this.options.database.$transaction(async tx => {
+      const page = await this.currentPage(tx, reference);
+      if (!page || await readExecutionPageReceipt(tx, reference, "restore-page")) return null;
+      if (page.phase !== "selection" && page.phase !== "preparation") return null;
+      const prepare = this.options.prepare?.[page.phase];
+      return prepare ? { prepare, page: { ...page.facts, after: page.after, limit: this.limit } } : null;
+    });
+    const prepared = preparation ? await preparation.prepare(reference, preparation.page) : null;
     const result = await this.options.database.$transaction(async tx => {
       const page = await this.currentPage(tx, reference);
       if (!page) return { kind: "superseded" as const, processed: 0, dispatchIds: [] };
@@ -137,9 +151,15 @@ export class ExecutionRestoreService {
         if (state.admissionOpen) throw new ExecutionRestoreError("restore_epoch_changed");
         for (let index = EXECUTION_RESTORE_PHASES.indexOf(phase); index < EXECUTION_RESTORE_PHASES.length; index++) {
           const current = EXECUTION_RESTORE_PHASES[index]!, handler = this.options.phases?.[current];
-          if (!handler) throw new ExecutionRestoreError("restore_phase_unavailable");
-          const cursor = current === phase ? after : null;
-          const outcome = await handler(tx, { ...facts, after: cursor, limit: this.limit });
+          const needsPreparation = (current === "selection" || current === "preparation") && this.options.prepare?.[current];
+          if (needsPreparation && current !== phase) {
+            const continuation = await this.append(tx, facts, current, null, attestation);
+            return { kind: "continue" as const, processed: 0, dispatchIds: [continuation.dispatchId] };
+          }
+          if (!handler && !needsPreparation) throw new ExecutionRestoreError("restore_phase_unavailable");
+          const cursor = current === phase ? after : null, page = { ...facts, after: cursor, limit: this.limit };
+          if (needsPreparation && !prepared) throw new ExecutionRestoreError("restore_page_invalid");
+          const outcome = needsPreparation ? await prepared!.apply(tx,page) : await handler!(tx,page);
           const ids = [...new Set(outcome.dispatchIds ?? [])];
           if (!Number.isSafeInteger(outcome.processed) || outcome.processed < 0 || outcome.processed > this.limit || ids.length > 127 || (outcome.processed === 0 && (outcome.next || ids.length))) throw new ExecutionRestoreError("restore_page_invalid");
           if (outcome.next) {

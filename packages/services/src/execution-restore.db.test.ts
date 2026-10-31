@@ -1,3 +1,5 @@
+import { restoreIngestJobsPage, restoreWorkflowRunsPage, restoreRenderGroupsPage } from "./execution-source-recovery-pages";
+import { renderGroupExportIdentity } from "./render-group-contract";
 import { restoreBillingPage, restoreLibraryPage } from "./execution-account-recovery-pages";
 import { queueLibraryIndex } from "./library-index";
 import { queueBillingReconciliation } from "./billing-reconciliation";
@@ -121,6 +123,7 @@ suite("Execution restore authority", () => {
     expect(await database.executionEpoch.findUniqueOrThrow({ where: { id: 1 } })).toEqual(before);
   });
   test("bounded account recovery reuses billing identity and paid library progress without extending budgets", async () => {
+    const [floor] = await database.$queryRaw<Array<{ at: Date }>>`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS at`;
     const user=await database.user.create({data:{clerkId:`restore-accounts-${crypto.randomUUID()}`}});
     const workspace=await database.workspace.create({data:{name:"Restored account",ownerUserId:user.id}});
     const project=await database.project.create({data:{workspaceId:workspace.id,title:"Restored library",sourceMediaUrl:"https://example.test/source",ingestStatus:"ready"}});
@@ -130,7 +133,7 @@ suite("Execution restore authority", () => {
     await database.transcript.update({where:{id:transcript.id},data:{passagesAttempts:2,passagesIndexedFor:null}});
     const original=await database.transcript.findUniqueOrThrow({where:{id:transcript.id}});
     const source=await capturedExecutionSnapshotFixture(database);
-    const restore=new ExecutionRestoreService({database,limit:1,register:async()=>{},phases:{...Object.fromEntries(EXECUTION_RESTORE_PHASES.map(phase=>[phase,async()=>({processed:0,next:null})])),billing:restoreBillingPage,library:restoreLibraryPage}});
+    const restore=new ExecutionRestoreService({database,limit:1,register:async()=>{},phases:{...Object.fromEntries(EXECUTION_RESTORE_PHASES.map(phase=>[phase,async()=>({processed:0,next:null})])),billing:(tx,page)=>restoreBillingPage(tx,{...page,after:page.after??{at:floor!.at,id:"00000000-0000-0000-0000-000000000000"}}),library:(tx,page)=>restoreLibraryPage(tx,{...page,after:page.after??{at:floor!.at,id:"00000000-0000-0000-0000-000000000000"}})}});
     const begun=await restore.begin(source);let reference=begun.reference;
     for(let i=0;i<250;i++){const outcome=await restore.run(reference);if(outcome.kind==="complete")break;reference=(await readExecutionDispatch(database,outcome.dispatchIds.at(-1)!))!.reference;}
     const afterBilling=await database.workspaceBillingAccount.findUniqueOrThrow({where:{id:billing.id}}),afterLibrary=await database.transcript.findUniqueOrThrow({where:{id:transcript.id}});
@@ -139,6 +142,46 @@ suite("Execution restore authority", () => {
     expect(afterLibrary.passagesGeneration).toBe(original.passagesGeneration+1);
     expect(await database.executionDispatch.count({where:{deploymentEpoch:begun.deploymentEpoch,subjectKind:{in:["workspace_billing","library_index"]}}})).toBe(0);
     await database.workspace.delete({where:{id:workspace.id}});
+  });
+
+  test("source and render authority rebind preserves provider lineage, deadlines, frozen membership and charged budgets",async()=>{
+    const [floor] = await database.$queryRaw<Array<{ at: Date }>>`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS at`;
+    const user=await database.user.create({data:{clerkId:`restore-source-${crypto.randomUUID()}`}}),workspace=await database.workspace.create({data:{name:"Source restore",ownerUserId:user.id}});
+    const project=await database.project.create({data:{workspaceId:workspace.id,title:"Source",sourceMediaUrl:"https://example.test/source",ingestStatus:"downloading"}});
+    const epoch=(await database.executionEpoch.findUniqueOrThrow({where:{id:1}})).epoch,deadline=new Date(Date.now()+30*60_000),token=crypto.randomUUID();
+    const ingest=await database.ingestJob.create({data:{projectId:project.id,jobType:"link_import",payload:{provider:"youtube",mediaId:"abcdefghijk"},deploymentEpoch:epoch,status:"queued",claimId:token,attemptCount:2,operationDeadlineAt:deadline}});
+    const sttToken=crypto.randomUUID(),stt=await database.workflowRun.create({data:{projectId:project.id,stage:"stt",status:"waiting",idempotencyKey:crypto.randomUUID(),deploymentEpoch:epoch,attemptId:sttToken,attemptCount:2,operationDeadlineAt:deadline,nextPollAt:deadline}});
+    const transcript=await database.transcript.create({data:{projectId:project.id,status:"processing",workflowAttemptId:sttToken,providerRequestId:"captured-request",providerJobId:"captured-job",providerSubmittedAt:new Date(),providerResultDeadlineAt:deadline}});
+    const workSet=crypto.randomUUID(),render=await database.workflowRun.create({data:{projectId:project.id,stage:"clip_rendering",status:"waiting",idempotencyKey:crypto.randomUUID(),deploymentEpoch:epoch,renderWorkSetGeneration:workSet,renderWorkSetFrozenAt:new Date(),requestedCount:1}});
+    const clip=await database.clip.create({data:{projectId:project.id,workflowRunId:render.id,index:0,startSec:0,endSec:10,hookText:"gate",reasoning:"gate",category:"hook",transcriptSlice:[],viralityScore:50,hookStrengthScore:50,emotionalIntensityScore:50,pacingScore:50,durationOptimalityScore:50,tiktokScore:50,youtubeScore:50,instagramScore:50,llmProvider:"gate",llmModel:"gate"}});
+    const variant=await database.clipRender.create({data:{clipId:clip.id,workflowRunId:render.id,aspectRatio:"ratio_9_16"}});
+    const prep=await database.clipPreparation.create({data:{projectId:project.id,clipId:clip.id,sourceRevision:1,editorRevision:0,bindingHash:"a".repeat(64),engineHash:"b".repeat(64),inputHash:"c".repeat(64),inputStorageKey:`projects/${project.id}/preparations/${crypto.randomUUID()}/${crypto.randomUUID()}.json`,inputEtag:'"input"',inputByteLength:100n,inputChecksumSha256:"d".repeat(64),deploymentEpoch:epoch,operationDeadlineAt:deadline}});
+    const group=await database.renderGroup.create({data:{workflowRunId:render.id,workSetGeneration:workSet,clipId:clip.id,deploymentEpoch:epoch,exportIdentity:renderGroupExportIdentity({clipId:clip.id,exportId:null,editorRevision:0,resolution:"1080p",watermark:true}),preparationId:prep.id,inputStorageKey:`projects/${project.id}/render-groups/${crypto.randomUUID()}/${crypto.randomUUID()}.json`,inputEtag:'"group"',inputByteLength:100n,inputChecksumSha256:"e".repeat(64),operationDeadlineAt:deadline,members:{create:{clipRenderId:variant.id}}}});
+    const source=await capturedExecutionSnapshotFixture(database),restore=new ExecutionRestoreService({database,register:async()=>{},phases:{...Object.fromEntries(EXECUTION_RESTORE_PHASES.map(phase=>[phase,async()=>({processed:0,next:null})])),ingest:(tx,page)=>restoreIngestJobsPage(tx,{...page,after:page.after??{at:floor!.at,id:"00000000-0000-0000-0000-000000000000"}}),workflows:(tx,page)=>restoreWorkflowRunsPage(tx,{...page,after:page.after??{at:floor!.at,id:"00000000-0000-0000-0000-000000000000"}}),render_groups:(tx,page)=>restoreRenderGroupsPage(tx,{...page,after:page.after??{at:floor!.at,id:"00000000-0000-0000-0000-000000000000"}})}});
+    const begun=await restore.begin(source);let reference=begun.reference;
+    for(let i=0;i<20;i++){const result=await restore.run(reference);if(result.kind==="complete")break;reference=(await readExecutionDispatch(database,result.dispatchIds.at(-1)!))!.reference;}
+    expect(await database.ingestJob.findUniqueOrThrow({where:{id:ingest.id}})).toMatchObject({deploymentEpoch:begun.deploymentEpoch,generation:2,status:"queued",claimId:null,executorOwner:null,attemptCount:2,operationDeadlineAt:deadline});
+    expect(await database.workflowRun.findUniqueOrThrow({where:{id:stt.id}})).toMatchObject({deploymentEpoch:begun.deploymentEpoch,generation:2,status:"waiting",attemptId:sttToken,attemptCount:2,operationDeadlineAt:deadline,nextPollAt:deadline,leaseOwner:null});
+    expect(await database.transcript.findUniqueOrThrow({where:{id:transcript.id}})).toMatchObject({providerRequestId:"captured-request",providerJobId:"captured-job",providerResultDeadlineAt:deadline,workflowAttemptId:sttToken});
+    expect(await database.renderGroup.findUniqueOrThrow({where:{id:group.id}})).toMatchObject({deploymentEpoch:begun.deploymentEpoch,generation:2,status:"queued",workSetGeneration:workSet,chargedAttemptCount:0,operationDeadlineAt:deadline,preparationId:null,inputStorageKey:null,inputEtag:null,inputByteLength:null,inputChecksumSha256:null});
+    expect(await database.renderGroupMember.count({where:{groupId:group.id}})).toBe(1);
+    expect(await database.executionDispatch.count({where:{deploymentEpoch:begun.deploymentEpoch,kind:{not:"maintenance"}}})).toBe(0);
+    await database.workspace.delete({where:{id:workspace.id}});
+  });
+
+  test("restore object preparation runs outside SQL locks and receipt replay never repeats prepared I/O or adoption",async()=>{
+    const id=crypto.randomUUID(),task=await database.mcpTask.create({data:{ownerUserId:id,callerId:id,workspaceId:id,toolName:"restore-preflight",domainKind:"generation",domainId:id,projectId:id,originatingOperationId:id,resultContract:{},initialResult:{},expiresAt:new Date(Date.now()+86400000)}});
+    const source=await capturedExecutionSnapshotFixture(database);let prepares=0,applies=0,lose=false;const deliveries:string[][]=[];
+    const restore=new ExecutionRestoreService({database,phases:Object.fromEntries(EXECUTION_RESTORE_PHASES.map(phase=>[phase,async()=>({processed:0,next:null})])),register:async ids=>{deliveries.push([...ids]);if(lose)throw Error("lost prepared page ACK");},prepare:{selection:async()=>{
+      prepares++;await database.$transaction(async tx=>{await tx.$queryRaw`SELECT epoch FROM "ExecutionEpoch" WHERE id=1 FOR UPDATE NOWAIT`;});
+      return {apply:async tx=>{applies++;await tx.mcpTask.update({where:{id:task.id},data:{cancellationRequestedAt:new Date(0)}});return {processed:1,next:null,dispatchIds:[]};}};
+    }}});
+    const begun=await restore.begin(source),boundary=await restore.run(begun.reference);
+    expect(boundary).toMatchObject({kind:"continue",processed:0});expect(prepares).toBe(0);
+    const selected=(await readExecutionDispatch(database,boundary.dispatchIds[0]!))!.reference;expect(selected.subject.id).toContain(".selection");
+    lose=true;await expect(restore.run(selected)).rejects.toThrow("lost prepared page ACK");
+    expect((await database.mcpTask.findUniqueOrThrow({where:{id:task.id}})).cancellationRequestedAt).toEqual(new Date(0));
+    lose=false;await restore.run(selected);expect(prepares).toBe(1);expect(applies).toBe(1);expect(deliveries.at(-1)).toEqual(deliveries.at(-2));
   });
 
 });

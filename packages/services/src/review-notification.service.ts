@@ -1,3 +1,4 @@
+import {retryNotificationDeliveryWithinTransaction} from "./notification-execution";
 import type { Prisma } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
 import { accessibleProjectWhere } from "./project-access";
@@ -161,6 +162,7 @@ export function createReviewNotificationStore(transaction?: Prisma.TransactionCl
         } } },
       });
       if (!ledger) return null;
+      if(ledger.kind==="round_sent"&&ledger.reviewRound.standingGrantId&&await (transaction??requirePrisma()).reviewerOptOut.findUnique({where:{workspaceId_email:{workspaceId:ledger.reviewRound.workspaceId,email:ledger.recipientEmail.trim().toLowerCase()}}}))return null;
       const kind = ledger.kind as ReviewNotificationKind;
       if (!(["round_sent", "first_change_requested", "all_approved", "mention"] as const).includes(kind)) return null;
       const internal = kind === "first_change_requested" || kind === "all_approved";
@@ -203,25 +205,17 @@ export function createReviewNotificationStore(transaction?: Prisma.TransactionCl
       });
       return updated.count === 1;
     },
-    async retry(scope, reviewRoundId, id, now) {
-      const updated = await (transaction ?? requirePrisma()).reviewNotificationLedger.updateMany({
-        where: {
-          id,
-          reviewRoundId,
-          status: "failed",
-          reviewRound: {
-            workspaceId: scope.workspaceId,
-            projectId: scope.projectId,
-          },
-        },
-        data: { status: "pending", attemptCount: 0, nextAttemptAt: now, failureCode: null },
-      });
-      return updated.count === 1;
+    async retry(scope, reviewRoundId, id, _now) {
+      const run=async(tx:Prisma.TransactionClient)=>{
+        const owned=await tx.reviewNotificationLedger.findFirst({where:{id,reviewRoundId,reviewRound:{workspaceId:scope.workspaceId,projectId:scope.projectId}},select:{id:true}});
+        return owned?retryNotificationDeliveryWithinTransaction(tx,{kind:"review",id},scope):false;
+      };
+      return transaction?run(transaction):requirePrisma().$transaction(run);
     },
   };
 }
 
-const defaultMailer: ReviewNotificationMailer = async (input) => {
+export async function buildReviewNotificationMail(input:ReviewNotificationMailInput) {
   const email = await import("@narriflow/email/worker");
   const template = email.reviewNotification({
     kind: input.kind,
@@ -230,11 +224,16 @@ const defaultMailer: ReviewNotificationMailer = async (input) => {
     reviewUrl: input.reviewUrl,
     optOut: input.optOut,
   });
-  return email.sendEmail({
+  return {
     to: input.to,
     ...template,
     idempotencyKey: input.idempotencyKey,
-  });
+  };
+}
+
+export const sendReviewNotificationMail: ReviewNotificationMailer = async(input)=>{
+ const email=await import("@narriflow/email/worker");
+ return email.sendEmail(await buildReviewNotificationMail(input));
 };
 
 function warn(message: string, context: Record<string, unknown>) {
@@ -383,5 +382,5 @@ export class ReviewNotificationService {
 
 export const reviewNotificationService = new ReviewNotificationService({
   store: createReviewNotificationStore(),
-  mailer: defaultMailer,
+  mailer: sendReviewNotificationMail,
 });

@@ -799,10 +799,20 @@ model NotificationLedger {
   id                String    @id @default(uuid()) @db.Uuid
   projectId         String    @db.Uuid
   sourceId          String    @db.Uuid
+  facts             Json?
   outcome           String
   status            String    @default("pending")
+  deploymentEpoch        Int       @default(1)
+  generation             Int       @default(1)
+  claimToken             String?   @db.Uuid
+  operationDeadlineAt    DateTime  @default(dbgenerated("(CURRENT_TIMESTAMP + '23 hours'::interval)"))
+  deliveryInputEncrypted String?
+  deliveryInputHash      String?
+  submissionStartedAt    DateTime?
   leaseExpiresAt    DateTime?
   attemptCount      Int       @default(0)
+  nextAttemptAt     DateTime  @default(now())
+  failureCode       String?
   providerMessageId String?
   sentAt            DateTime?
   createdAt         DateTime  @default(now())
@@ -2021,6 +2031,13 @@ model ReviewNotificationLedger {
   kind              String
   scopeKey          String
   status            String    @default("pending")
+  deploymentEpoch        Int       @default(1)
+  generation             Int       @default(1)
+  claimToken             String?   @db.Uuid
+  operationDeadlineAt    DateTime  @default(dbgenerated("(CURRENT_TIMESTAMP + '23 hours'::interval)"))
+  deliveryInputEncrypted String?
+  deliveryInputHash      String?
+  submissionStartedAt    DateTime?
   leaseExpiresAt    DateTime?
   attemptCount      Int       @default(0)
   nextAttemptAt     DateTime  @default(now())
