@@ -37,8 +37,6 @@ import {
 	purgeOldWorkflowEvents,
 	pruneExpiredMcpTasks,
 	purgeExpiredWorkspaceEvents,
-	generatedMediaService,
-	generatedImageProviderConfigured,
 	workerShutdownDrainMs,
 	purgeExpiredGeneratedMediaPrompts,
 	reconcileGenerationUsageReservations,
@@ -195,9 +193,6 @@ const notificationRetryPollIntervalMs = Number(
 );
 const mediaCleanupPollIntervalMs = Number(
 	process.env.MEDIA_CLEANUP_POLL_INTERVAL_MS ?? "10000",
-);
-const generatedMediaPollIntervalMs = Number(
-	process.env.GENERATED_MEDIA_POLL_INTERVAL_MS ?? "2500",
 );
 
 const workspaceBillingPollIntervalMs = parseWorkspaceBillingPollInterval(
@@ -765,13 +760,7 @@ const mediaCleanupLoop = createPollLoop("media_cleanup", mediaCleanupPollInterva
 	return result.claimed;
 });
 
-createPollLoop("generated_media", generatedMediaPollIntervalMs, async () => {
-	// Without image settings nothing can be admitted or generated; idle rather
-	// than failing every tick until the loop gives up.
-	if (!generatedImageProviderConfigured(process.env)) return 0;
-	const jobs = await generatedMediaService.processDue(1);
-	return jobs.length;
-});
+
 
 
 

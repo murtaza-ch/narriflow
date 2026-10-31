@@ -7,7 +7,6 @@ import {
   GeneratedMediaPromptProtectionError,
   generatedMediaPromptProtectionFromEnv,
 } from "./generated-media-prompt-protection";
-import { openAiImageProviderFromEnv } from "./openai-image-provider";
 
 /** `trial_metered` is Free's lifetime image sample; `metered` is a UTC-month allowance. */
 export type GenerationUsagePolicy = "trial_metered" | "metered";
@@ -33,7 +32,7 @@ export function generatedImageProviderConfigured(
   environment: Record<string, string | undefined> = readServiceEnvironment(),
 ): boolean {
   try {
-    openAiImageProviderFromEnv(environment);
+    if(environment.GENERATED_IMAGE_EXECUTOR_CONFIGURED!=="true"||!environment.OPENAI_IMAGE_MODEL?.trim())return false;
     generatedMediaPromptProtectionFromEnv(environment);
     return true;
   } catch (error) {

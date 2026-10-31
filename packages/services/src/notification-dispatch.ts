@@ -36,8 +36,6 @@ export interface NotificationDispatchScopeOptions {
  * committed notification obligations are read, never the global outbox. */
 export async function withNotificationDispatches<T>(operation: () => Promise<T>, options?: NotificationDispatchScopeOptions): Promise<T> {
   if (invocation.getStore()) return operation();
-  const database = options?.database ?? getPrismaClient();
-  if (!database) throw new Error("Notification dispatch requires a database scope");
   const deliver = options?.deliver ?? deliverExecutionDispatches;
   return invocation.run(new Set(), async () => {
     let result: T | undefined;
@@ -45,10 +43,13 @@ export async function withNotificationDispatches<T>(operation: () => Promise<T>,
     let failure: unknown;
     try { result = await operation(); } catch (error) { failed = true; failure = error; }
     const ids = [...invocation.getStore()!];
+    // DO-only invocations must retain the database scope's lazy construction.
+    const database = ids.length ? (options?.database ?? getPrismaClient()) : null;
+    if (ids.length && !database) throw new Error("Notification dispatch requires a database scope");
     for (let offset = 0; offset < ids.length; offset += 128) {
       // A rolled-back transaction may have collected a tentative UUID. It
       // never escaped into PostgreSQL and cannot be scheduled here.
-      const committed = await database.executionDispatch.findMany({ where: { id: { in: ids.slice(offset, offset + 128) } }, select: { id: true } });
+      const committed = await database!.executionDispatch.findMany({ where: { id: { in: ids.slice(offset, offset + 128) } }, select: { id: true } });
       if (committed.length) await deliver(committed.map(row => row.id));
     }
     if (failed) throw failure;

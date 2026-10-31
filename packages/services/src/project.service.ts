@@ -20,6 +20,7 @@ import { receiptCallback } from "./completion-callback";
 import { operationFingerprint, type IntegrationMutation } from "./operation-receipt";
 import { getIngestJobLifecycle } from "./ingest-job-lifecycle-runtime";
 import { freezeIngestAcquisition } from "./ingest-acquisition";
+import { requireYouTubeImport } from "./source-fetch-capability";
 import { getProcessingUsage } from "./processing-usage-runtime";
 import {
 	isProcessingUsageFailureCode,
@@ -1515,6 +1516,7 @@ export class ProjectService {
 				if (!provider) {
 					throw new LinkUnsupportedSourceError();
 				}
+				if (provider === "youtube") await requireYouTubeImport(scope.workspaceId);
 				return {
 					provider,
 					sourceType: provider === "youtube" ? "youtube" : "link",

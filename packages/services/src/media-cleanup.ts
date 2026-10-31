@@ -1,3 +1,4 @@
+import { generatedMediaObjectIsHeld } from "./generated-media-execution";
 import { readServiceEnvironment, type ServiceEnvironment } from "./runtime-environment";
 import { randomUUID } from "node:crypto";
 import { getPrismaClient } from "@narriflow/db/client";
@@ -1116,6 +1117,7 @@ function productionMediaCleanupWorker() {
   retainUntil: claim => claim.cleanupClass === "execution_input" ? executionInputRetainUntil(requirePrisma(), claim.objectKey) : Promise.resolve(null),
   async isProtected(claim) {
     if (claim.cleanupClass !== "generated_asset" && claim.cleanupClass !== "thumbnail_asset") return false;
+    if(claim.cleanupClass === "generated_asset" && await generatedMediaObjectIsHeld(requirePrisma(),claim.objectKey))return true;
     return Boolean(await requirePrisma().visualAsset.findFirst({
       where: { storageKey: claim.objectKey, deletedAt: null },
       select: { id: true },

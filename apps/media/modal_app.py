@@ -35,6 +35,7 @@ render_image = image("render")
 executor_secret = modal.Secret.from_name("narriflow-executor-control", required_keys=["API_ORIGIN", "EXECUTOR_CONTROL_KEY_ID", "EXECUTOR_CONTROL_KEYS_JSON"])
 bridge_secret = modal.Secret.from_name("narriflow-modal-bridge", required_keys=["MODAL_BRIDGE_KEYS_JSON"])
 youtube_secret = modal.Secret.from_name("narriflow-youtube-fetch", required_keys=["YOUTUBE_FETCH_MODE"])
+image_secret = modal.Secret.from_name("narriflow-image-generation", required_keys=["OPENAI_API_KEY"])
 dispatch_receipts = modal.Dict.from_name("narriflow-dispatch-receipts-v1", create_if_missing=True)
 
 # One active input per container is Modal's default without @modal.concurrent.
@@ -74,6 +75,16 @@ def verify_lean_runtime() -> dict:
     return _verify("lean")
 
 
+@app.function(image=lean_image, max_containers=1, timeout=300, **LEAN_RESOURCES)
+def verify_generated_image_resources() -> dict:
+    """Synthetic loopback resource gate; no provider or domain credentials."""
+    from narriflow_media.process import MediaProcessError, run_owned_process
+    result = run_owned_process(["bun", "/app/apps/media/scripts/gates/generated-image-memory-gate.ts"], timeout_seconds=280)
+    if result.returncode:
+        raise MediaProcessError("generated_image_resource_gate_failed", result.returncode)
+    return json.loads(result.stdout)
+
+
 @app.function(image=lean_image, secrets=[executor_secret], timeout=600,
               restrict_modal_access=True, **LEAN_RESOURCES)
 async def asset_validation(invocation: dict) -> dict:
@@ -107,12 +118,33 @@ async def fetch_source(invocation: dict) -> dict:
                                operation=run, max_operation_seconds=2700)
 
 
+@app.function(image=lean_image, secrets=[executor_secret], timeout=2700,
+              restrict_modal_access=True, **LEAN_RESOURCES)
+async def pin_source(invocation: dict) -> dict:
+    from narriflow_media.entrypoint import invoke_native, native_client
+    from narriflow_media.source_runtime import run_pin_source
+    return await invoke_native(invocation, "pin_source", client=native_client(os.environ),
+                               operation=run_pin_source, max_operation_seconds=2700)
+
+
+@app.function(image=lean_image, secrets=[executor_secret, image_secret], timeout=600,
+              restrict_modal_access=True, **LEAN_RESOURCES)
+async def generated_image(invocation: dict) -> dict:
+    from narriflow_media.entrypoint import invoke_native, native_client
+    from narriflow_media.native_runtime import run_generated_image
+    async def run(session, package, work):
+        await run_generated_image(session, package, work,
+            api_key=os.environ["OPENAI_API_KEY"] if package.command.get("mode") == "generate" else None)
+    return await invoke_native(invocation, "generated_image", client=native_client(os.environ),
+                               operation=run, max_operation_seconds=600)
+
+
 @app.function(image=lean_image, secrets=[bridge_secret], timeout=30, **BRIDGE_RESOURCES)
 @modal.asgi_app(label="narriflow-media-bridge")
 def dispatch_bridge():
     from narriflow_media.bridge import BridgeAsgiApp, ModalBridge
     from narriflow_media.bridge_runtime import ModalBackend, ModalDictStore, parse_bridge_keys
     bridge = ModalBridge(store=ModalDictStore(dispatch_receipts),
-        backend=ModalBackend(modal, {"asset_validation": asset_validation, "outbound_delivery": outbound_delivery, "fetch_source": fetch_source}),
+        backend=ModalBackend(modal, {"asset_validation": asset_validation, "outbound_delivery": outbound_delivery, "fetch_source": fetch_source, "pin_source": pin_source, "generated_image": generated_image}),
         key_ring=parse_bridge_keys(os.environ["MODAL_BRIDGE_KEYS_JSON"]))
     return BridgeAsgiApp(bridge, time.time)

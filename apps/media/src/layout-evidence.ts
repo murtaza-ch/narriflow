@@ -80,6 +80,8 @@ export interface LayoutEvidenceInput {
   durable: { automatic?: unknown; screen?: unknown; split?: unknown };
   enabled: { automatic: boolean; screen: boolean; split: boolean };
   hasBroll: boolean;
+  /** A verified completed preparation owns these observations, including unavailability. */
+  completedPreparation?: boolean;
   pipMotionThreshold: number;
   signal: AbortSignal;
   /** Background work uses the durable claim backoff instead of local retries. */
@@ -156,6 +158,19 @@ export class LayoutEvidence {
     if (input.enabled.split && !input.hasBroll && split && this.matchesEnvelope(split)) this.setSplit(split, "durable-explicit");
     const splitFailure = parseClipSplitLayoutFailure(input.durable.split);
     if (input.enabled.split && !split && splitFailure && splitFailure.reason !== "detection_unavailable" && splitFailure.sourceIdentity === source.identity && splitFailure.inputFingerprint === this.fingerprint("explicit-split-v1", "split")) this.availability.splitLayout = { state: "failed", reason: splitFailure.reason };
+    if (input.completedPreparation) {
+      const failedAutomatic = input.durable.automatic as { state?: unknown; reason?: unknown } | null;
+      if (input.durable.automatic != null && !automatic && !(failedAutomatic?.state === "failed" && failedAutomatic.reason === "analysis_unavailable") ||
+          input.durable.screen != null && !screen && !screenFailure || input.durable.split != null && !split && !splitFailure) throw new Error("layout_preparation_binding_mismatch");
+      const screenFailureMatches = screenFailure && screenFailure.sourceIdentity === source.identity && screenFailure.inputFingerprint === this.fingerprint(SCREEN_LAYOUT_ENGINE_VERSION, "screen");
+      const splitFailureMatches = splitFailure && splitFailure.sourceIdentity === source.identity && splitFailure.inputFingerprint === this.fingerprint("explicit-split-v1", "split");
+      if (automatic && !this.matchesEnvelope(automatic) || screen && !this.matchesScreen(screen) || split && !this.matchesEnvelope(split) ||
+          screenFailure && !screenFailureMatches || splitFailure && !splitFailureMatches) throw new Error("layout_preparation_binding_mismatch");
+      if (input.enabled.automatic && this.availability.automaticLayout.state !== "available") this.availability.automaticLayout = { state: "failed" };
+      if (input.enabled.screen && (input.hasBroll || this.availability.screenLayout.state !== "available")) this.availability.screenLayout = { state: "failed", reason: input.hasBroll ? "broll_conflict" : screenFailure?.reason ?? "analysis_unavailable" };
+      if (input.enabled.split && (input.hasBroll || this.availability.splitLayout.state !== "available")) this.availability.splitLayout = { state: "failed", reason: input.hasBroll ? "broll_conflict" : splitFailure?.reason ?? "detection_unavailable" };
+    }
+
   }
 
   async fulfill(requests: readonly CompositionEvidenceRequest[]): Promise<LayoutEvidenceAvailability> {

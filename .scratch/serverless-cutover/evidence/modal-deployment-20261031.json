@@ -1,0 +1,25 @@
+{
+  "workspace": "murtazach275",
+  "accountEmail": "murtazach275@gmail.com",
+  "sdk": "1.6.3",
+  "deployment": "https://modal.com/apps/murtazach275/main/deployed/narriflow-media-gates",
+  "profiles": {
+    "lean": {
+      "id": "6235b66ae20332ba1024049d77166d850c4fed0b7d4378bbb5d5d9e74f1cb38d",
+      "cpu": 2,
+      "memoryMiB": 4096
+    },
+    "render": {
+      "id": "06a988fcee94757ba07d1d1cc410ca4fbf0f36ee4d8f4aab8c84711897a569b9",
+      "fixtureToolchainId": "e00c091bc5a81bee",
+      "cpu": 4,
+      "memoryMiB": 8192
+    }
+  },
+  "minimumContainers": 0,
+  "bufferContainers": 0,
+  "scaledownSeconds": 2,
+  "retries": 0,
+  "ephemeralDisk": "provider default512GiB; no billed disk-memory request override",
+  "status": "image profiles verified; complete business pipeline remains gated"
+}

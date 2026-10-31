@@ -35,7 +35,7 @@ Dev only: laptop fetch agent (outbound WebSocket to LocalFetchMailbox; no inboun
 | Job | Service | Plan |
 |---|---|---|
 | Web | Vercel | Pro at launch |
-| API, workflows, progress, rate limits, cron | Cloudflare Workers + Workflows + Durable Objects + Hyperdrive | Free for dev, Workers Paid ($5) at launch |
+| API, workflows, progress, rate limits, cron | Cloudflare Workers + Workflows + Durable Objects + Hyperdrive | Workers Paid ($5/month plus usage); upgraded during development after deployed CPU gates exceeded Free limits |
 | Storage and playback | Cloudflare R2 (private, signed grants) | Pay-as-you-go |
 | Database | Neon (existing `narriflow-dev`) | Launch (usage-based) |
 | Media execution | Modal Functions | Starter, then Team when more than 100 containers |

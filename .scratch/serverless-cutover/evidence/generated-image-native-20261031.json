@@ -1,0 +1,145 @@
+{
+  "date": "2026-10-31",
+  "status": "native image implementation tested; root Workflow/HTTP/Modal composition and actual Linux4GiB resource confirmation pending",
+  "subjectKind": "generated_media",
+  "functionName": "generated_image",
+  "workerImageBytes": false,
+  "providerPostOwner": "native generated_image only",
+  "privateInputMaximumBytes": 16777216,
+  "nativeLocalCommandMaximumBytes": 262144,
+  "defaultImageMaximumBytes": 20971520,
+  "configuredImageMaximumBytes": 100000000,
+  "nativeAttemptDeadlineSeconds": 600,
+  "defaultChargedStartBudget": 4,
+  "unknownOutcome": {
+    "automaticProviderResubmission": false,
+    "coordinatorLeaseHeld": false,
+    "usageReservation": "reserved until explicit resolution",
+    "recovery": "exact original owner/attempt/binding/assigned artifact; conditional source with full SHA256 checked before decoding; no provider POST"
+  },
+  "publication": "usable VisualAsset, GeneratedMediaJob terminal result and GenerationUsage finalization commit in one SQL transaction after both assigned outputs seal",
+  "nativeArtifactOrder": [
+    "probe",
+    "validated_asset only when evidence outcome completed"
+  ],
+  "removed": [
+    "Worker base64/provider execution",
+    "generated-only NativeValidation child",
+    "old generated Prisma queue processor/publisher",
+    "provider poll/cancel/result stubs"
+  ],
+  "gates": {
+    "freshExecutionPostgres": {
+      "migrations": 134,
+      "files": 19,
+      "tests": 133,
+      "assertions": 871,
+      "target": "guarded dedicated local PG17 disposable schema"
+    },
+    "generationUsagePostgres": {
+      "tests": 15,
+      "assertions": 84,
+      "includes": [
+        "last allowance concurrency",
+        "period and lifetime policy",
+        "unknown reservation hold",
+        "deletion never refunds finalized usage",
+        "dub quota/settlement"
+      ]
+    },
+    "servicesFast": {
+      "passed": 1512,
+      "failed": 0
+    },
+    "generatedNativeAndPublicFast": {
+      "passed": 18,
+      "failed": 0
+    },
+    "pythonNative": {
+      "passed": 14,
+      "includes": [
+        "real Bun recovery and pixel validation",
+        "readonly local source",
+        "poisoned environment filtering",
+        "Unicode command above64KiB",
+        "lost start acknowledgment sends no stdin",
+        "probe-before-binary integration",
+        "unknown result uploads probe only"
+      ]
+    },
+    "workerBuild": {
+      "passed": true,
+      "forbiddenPackages": [],
+      "nativeServiceModules": [],
+      "obsoleteModules": []
+    },
+    "actualWorkerd": {
+      "passed": 11,
+      "includes": [
+        "Clerk bearer",
+        "raw signed Scribe bytes",
+        "request settings",
+        "Durable Object rate admission",
+        "Cache API"
+      ]
+    },
+    "typecheck": [
+      "services",
+      "api",
+      "media"
+    ],
+    "nativeResourceProbe": {
+      "gate": "native-generated-image-decode",
+      "results": [
+        {
+          "size": 20971520,
+          "calls": 1,
+          "decoded": {
+            "byteLength": 20971520,
+            "sha256": "cd52d81e25f372e6fa4db2c0dfceb59862c1969cab17096da352b34950c973cc"
+          },
+          "result": {
+            "outcome": "failed",
+            "code": "generated_media_output_invalid"
+          },
+          "peakRssBytes": 274841600,
+          "nativeMemoryLimitBytes": 4294967296,
+          "syntheticNonImageRejected": true,
+          "usableAssetPublished": false,
+          "platform": "darwin",
+          "bun": "1.4.2"
+        },
+        {
+          "size": 100000000,
+          "calls": 1,
+          "decoded": {
+            "byteLength": 100000000,
+            "sha256": "a993f8c574e0fea8c1cdcbcd9408d9e2e107ee6e4d120edcfa11decd53fa0cae"
+          },
+          "result": {
+            "outcome": "failed",
+            "code": "generated_media_output_invalid"
+          },
+          "peakRssBytes": 734347264,
+          "nativeMemoryLimitBytes": 4294967296,
+          "syntheticNonImageRejected": true,
+          "usableAssetPublished": false,
+          "platform": "darwin",
+          "bun": "1.4.2"
+        }
+      ]
+    }
+  },
+  "resourceLimitMeaning": "Host OS process peak RSS is measured. Synthetic100MB decoded bytes intentionally fail image validation and publish no asset. This does not certify deployed Linux cgroup behavior; actual deployed4GiB profile confirmation remains required. Tiny valid PNG full-pixel validation is separately covered.",
+  "primaryReferences": [
+    "https://github.com/openai/openai-node/blob/main/src/resources/images.ts",
+    "https://github.com/openai/openai-node/blob/main/examples/images/image-stream.ts",
+    "https://github.com/openai/openai-node/blob/main/docs/configuration.md"
+  ],
+  "pending": [
+    "root register generated_image Modal function with dedicated OpenAI Secret",
+    "root compose generated_media domain control/transfer and OperationDriver getter",
+    "deployed Linux4GiB resource gate",
+    "remaining ticket19 product coordinators"
+  ]
+}

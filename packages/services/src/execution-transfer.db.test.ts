@@ -85,18 +85,36 @@ suite("Scoped executor transfer authority", () => {
     if (work.disposition !== "work_package" || !work.outputs[0]) throw new Error("Expected assigned work package");
     return { fence, call, provider, artifactId: work.outputs[0].artifactId, job };
   }
-  test("replays existing grants without refreshing authority and rejects changed part content", async () => {
+  test("reissues grants only with fresh authority and stores no scoped URL in the inbox", async () => {
     const f = await fixture(), base = { fence: f.fence, artifactId: f.artifactId };
     await f.call({ action: "upload-initialize", ...base, byteLength: 128, contentType: "audio/webm" });
     const command = { action: "upload-parts", ...base, parts: [{ partNumber: 1, byteLength: 128, checksumMd5: md5, checksumSha256: sha }] };
-    const deliveryId = crypto.randomUUID(), first = await f.call(command, deliveryId);
+    const deliveryId = crypto.randomUUID();
+    await f.call(command, deliveryId);
+    await f.call(command, deliveryId);
+    const receipt = await db.executionInboxReceipt.findUniqueOrThrow({where:{audience_deliveryId:{audience:"executor-control",deliveryId}}});
+    expect(JSON.stringify(receipt.disposition)).not.toContain("private-storage.test");
+    expect(JSON.stringify(receipt.disposition)).not.toContain("public-test-token");
     await expect(f.call({ ...command, parts: [{ ...command.parts[0], checksumSha256: Buffer.alloc(32, 3).toString("base64") }] })).rejects.toMatchObject({ code: "artifact_invalid" });
     await db.executionAttempt.update({ where: { attemptToken: f.fence.attemptToken }, data: { leaseExpiresAt: new Date(Date.now() - 1000) } });
-    expect(await f.call(command, deliveryId)).toEqual(first);
+    await expect(f.call(command, deliveryId)).rejects.toMatchObject({code:"authority_lost"});
     await expect(f.call(command)).rejects.toMatchObject({ code: "authority_lost" });
-    expect(f.provider).toMatchObject({ creates: 1, grants: 1 });
+    expect(f.provider).toMatchObject({ creates: 1, grants: 2 });
     expect((await db.ingestJob.findUniqueOrThrow({ where: { id: f.job.id } })).attemptCount).toBe(1);
   }, 120_000);
+  test("a lost grant acknowledgment cannot regrant after owner revocation",async()=>{
+    const f=await fixture(),base={fence:f.fence,artifactId:f.artifactId};
+    await f.call({action:"upload-initialize",...base,byteLength:128,contentType:"audio/webm"});
+    const command={action:"upload-parts",...base,parts:[{partNumber:1,byteLength:128,checksumMd5:md5,checksumSha256:sha}]},deliveryId=crypto.randomUUID();
+    // The response is deliberately discarded, as after a receiver-side ACK loss.
+    await f.call(command,deliveryId);
+    await db.executionAttempt.update({where:{attemptToken:f.fence.attemptToken},data:{revokedAt:new Date()}});
+    await expect(f.call(command,deliveryId)).rejects.toMatchObject({code:"authority_lost"});
+    await expect(f.call(command)).rejects.toMatchObject({code:"authority_lost"});
+    expect(f.provider).toMatchObject({creates:1,grants:1});
+    const receipt=await db.executionInboxReceipt.findUniqueOrThrow({where:{audience_deliveryId:{audience:"executor-control",deliveryId}}});
+    expect(receipt.disposition).toEqual({disposition:"transfer_granted"});
+  },120000);
   test("uncertain completion recovers sealed facts, and abort cannot replace completion intent", async () => {
     const f = await fixture(), base = { fence: f.fence, artifactId: f.artifactId };
     await f.call({ action: "upload-initialize", ...base, byteLength: 128, contentType: "audio/webm" });

@@ -15,6 +15,16 @@ test("static liveness needs neither configuration nor a database", async () => {
   expect(getPrismaClient()).toBeNull();
 });
 
+test("a DO-only invocation with no committed notification keeps the database resource lazy", async () => {
+  let clients = 0;
+  const worker = createApiWorker({
+    createScope: () => createDatabaseScope({ createClient: () => { clients++; throw new Error("DO-only traffic must not construct Prisma"); } }),
+    createApp: () => new Hono().get("/device-presence", c => c.json({ available: false })),
+  });
+  expect((await worker.fetch(new Request("https://api.test/device-presence"), bindings("unused"), context)).status).toBe(200);
+  expect(clients).toBe(0);
+});
+
 test("overlapping requests use only their own settings and database scope", async () => {
   let resumeFirst!: () => void;
   const firstMayFinish = new Promise<void>((resolve) => { resumeFirst = resolve; });

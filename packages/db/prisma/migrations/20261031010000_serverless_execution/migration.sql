@@ -727,30 +727,6 @@ END; $$;
 CREATE TRIGGER "OutboundProbe_input_immutable" BEFORE UPDATE ON "OutboundProbe" FOR EACH ROW EXECUTE FUNCTION outbound_probe_input_immutable();
 
 
-ALTER TABLE "GeneratedMediaJob" ADD COLUMN "validationJobId" UUID, ADD COLUMN "validationInput" JSONB;
-CREATE UNIQUE INDEX "GeneratedMediaJob_validationJobId_key" ON "GeneratedMediaJob"("validationJobId");
-ALTER TABLE "GeneratedMediaJob" ADD CONSTRAINT "GeneratedMediaJob_validation_wait_check" CHECK (
- ("validationInput" IS NULL OR (jsonb_typeof("validationInput")='object' AND octet_length("validationInput"::text)<=65536))
- AND ("validationJobId" IS NULL OR ("validationInput" IS NOT NULL AND "status" IN ('waiting','completed','failed','cancelled') AND "claimId" IS NULL AND "claimExpiresAt" IS NULL))
-);
-CREATE FUNCTION generated_media_validation_binding_immutable() RETURNS trigger LANGUAGE plpgsql AS $$
-BEGIN
- IF OLD."validationInput" IS NOT NULL AND NOT (OLD."validationJobId" IS NULL AND OLD."outcomeUnknown" AND NOT NEW."outcomeUnknown" AND NEW."status"='queued' AND NEW."validationInput" IS NULL AND NEW."validationJobId" IS NULL AND NEW."providerRef" IS NULL AND NEW."providerUsageImages" IS NULL AND NEW."providerResultContentType" IS NULL AND NEW."claimId" IS NULL AND NEW."claimExpiresAt" IS NULL) AND
-  (NEW."validationInput",NEW."workspaceId",NEW."projectId",NEW."createdByUserId",NEW."attempt",NEW."providerRef",NEW."providerResultContentType",NEW."providerUsageImages",NEW."usageReservationId",NEW."requestFingerprint") IS DISTINCT FROM
-  (OLD."validationInput",OLD."workspaceId",OLD."projectId",OLD."createdByUserId",OLD."attempt",OLD."providerRef",OLD."providerResultContentType",OLD."providerUsageImages",OLD."usageReservationId",OLD."requestFingerprint") THEN
-  RAISE EXCEPTION 'generated validation lineage is immutable' USING ERRCODE='23514';
- END IF;
- IF OLD."validationJobId" IS NOT NULL AND NEW."validationJobId" IS DISTINCT FROM OLD."validationJobId" THEN
-  RAISE EXCEPTION 'generated validation child is immutable' USING ERRCODE='23514';
- END IF;
- IF OLD."validationJobId" IS NOT NULL AND OLD."status" IN ('completed','failed','cancelled') AND NEW."status" IS DISTINCT FROM OLD."status" THEN
-  RAISE EXCEPTION 'generated validation terminal state is immutable' USING ERRCODE='23514';
- END IF;
- RETURN NEW;
-END; $$;
-CREATE TRIGGER "GeneratedMediaJob_validation_binding_immutable" BEFORE UPDATE ON "GeneratedMediaJob"
- FOR EACH ROW EXECUTE FUNCTION generated_media_validation_binding_immutable();
-
 -- Pending progress catchup reads two indexed endpoints, never Project history.
 CREATE INDEX "WorkflowEvent_unpublished_progress_project_seq_idx" ON "WorkflowEvent"("projectId", "seq")
  WHERE "progressRequired" = true AND "progressPublishedAt" IS NULL;
@@ -829,3 +805,107 @@ BEGIN
 END; $$;
 CREATE TRIGGER "OutboundDelivery_input_immutable" BEFORE UPDATE ON "OutboundDelivery"
  FOR EACH ROW EXECUTE FUNCTION outbound_delivery_input_immutable();
+
+-- Targeted callback notification pages skip completed historical registrations.
+CREATE INDEX "CompletionCallback_notification_cursor_idx" ON "CompletionCallback" ("workspaceId", "operationKind", "operationId", "id") WHERE "state" IN ('waiting', 'pending');
+-- GeneratedMediaJob owns the complete native provider/validation attempt.
+ALTER TABLE "GeneratedMediaJob"
+ ADD COLUMN "generation" INTEGER NOT NULL DEFAULT 1,
+ ADD COLUMN "deploymentEpoch" INTEGER NOT NULL DEFAULT 1,
+ ADD COLUMN "executorOwner" UUID,
+ ADD COLUMN "operationDeadlineAt" TIMESTAMP(3),
+ ADD COLUMN "chargedAttempts" INTEGER NOT NULL DEFAULT 0,
+ ADD COLUMN "maxAttempts" INTEGER NOT NULL DEFAULT 4,
+ ADD COLUMN "outputByteLimit" INTEGER NOT NULL DEFAULT 20971520,
+ ADD COLUMN "providerQuality" VARCHAR(16) NOT NULL DEFAULT 'medium',
+ ADD COLUMN "executionMode" VARCHAR(16) NOT NULL DEFAULT 'generate',
+ ADD COLUMN "resultState" JSONB;
+-- No old coordinator may submit while the pre-production reset is applied.
+UPDATE "GeneratedMediaUsageReservation" SET "status"='released',"reason"='serverless_generation_reset',"settledAt"=CURRENT_TIMESTAMP
+ WHERE "status"='reserved' AND "kind"='image' AND "jobId" IN (SELECT "id" FROM "GeneratedMediaJob" WHERE "status" IN ('queued','running','waiting'));
+UPDATE "GeneratedMediaJob" SET "status"='failed',"usageStatus"=CASE WHEN "usageStatus"='reserved' THEN 'released'::"GeneratedMediaUsageStatus" ELSE "usageStatus" END,"outcomeUnknown"=false,"errorCode"='serverless_generation_reset',"claimId"=NULL,"claimExpiresAt"=NULL
+ WHERE "status" IN ('queued','running','waiting');
+UPDATE "GeneratedMediaJob" SET "chargedAttempts"="attempt", "maxAttempts"=GREATEST(4,"attempt"),"claimId"=NULL,"claimExpiresAt"=NULL;
+ALTER TABLE "GeneratedMediaJob" ADD CONSTRAINT "GeneratedMediaJob_native_shape" CHECK (
+ "generation">0 AND "deploymentEpoch">0 AND "chargedAttempts">=0 AND "attempt" BETWEEN 0 AND "chargedAttempts"
+ AND "maxAttempts" BETWEEN 1 AND 1000000 AND "chargedAttempts"<="maxAttempts"
+ AND "outputByteLimit" BETWEEN 1000000 AND 100000000 AND "providerQuality" IN ('low','medium','high')
+ AND "executionMode" IN ('generate','recover')
+ AND ("resultState" IS NULL OR (jsonb_typeof("resultState")='object' AND octet_length("resultState"::text)<=65536))
+ AND ("executorOwner" IS NULL)=("claimExpiresAt" IS NULL)
+ AND ("executorOwner" IS NULL OR ("claimId" IS NOT NULL AND "operationDeadlineAt" IS NOT NULL AND "status"='running'))
+ AND ("claimExpiresAt" IS NULL OR "claimExpiresAt"<="operationDeadlineAt")
+ AND ("status"<>'running' OR "executorOwner" IS NOT NULL)
+ AND (NOT "outcomeUnknown" OR ("status"='waiting' AND "executorOwner" IS NULL AND "claimExpiresAt" IS NULL))
+ AND ("status" NOT IN ('completed','failed','rejected','cancelled') OR ("executorOwner" IS NULL AND "claimExpiresAt" IS NULL))
+);
+CREATE FUNCTION generated_media_native_identity_immutable() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+ IF (NEW."id",NEW."workspaceId",NEW."projectId",NEW."clipId",NEW."createdByUserId",NEW."workspaceOwnerUserId",NEW."isPersonalWorkspace",NEW."requestFingerprint",NEW."promptFingerprint",NEW."promptOrigin",NEW."sourceStartSec",NEW."sourceEndSec",NEW."sourceCueAtSec",NEW."aspectRatio",NEW."style",NEW."title",NEW."provider",NEW."providerModel",NEW."providerQuality",NEW."outputByteLimit",NEW."usageReservationId",NEW."deploymentEpoch",NEW."createdAt") IS DISTINCT FROM
+    (OLD."id",OLD."workspaceId",OLD."projectId",OLD."clipId",OLD."createdByUserId",OLD."workspaceOwnerUserId",OLD."isPersonalWorkspace",OLD."requestFingerprint",OLD."promptFingerprint",OLD."promptOrigin",OLD."sourceStartSec",OLD."sourceEndSec",OLD."sourceCueAtSec",OLD."aspectRatio",OLD."style",OLD."title",OLD."provider",OLD."providerModel",OLD."providerQuality",OLD."outputByteLimit",OLD."usageReservationId",OLD."deploymentEpoch",OLD."createdAt") THEN
+  RAISE EXCEPTION 'generated media input is immutable' USING ERRCODE='23514';
+ END IF;
+ IF NEW."protectedPrompt" IS DISTINCT FROM OLD."protectedPrompt" AND NOT (OLD."status" IN ('completed','failed','rejected','cancelled') AND OLD."promptExpiresAt"<=CURRENT_TIMESTAMP AND NEW."protectedPrompt"='') THEN
+  RAISE EXCEPTION 'generated prompt is immutable until retention expiry' USING ERRCODE='23514';
+ END IF;
+ IF OLD."status" IN ('completed','failed','rejected','cancelled') AND NEW."status" IS DISTINCT FROM OLD."status" THEN
+  RAISE EXCEPTION 'generated media terminal state is immutable' USING ERRCODE='23514';
+ END IF;
+ IF NEW."generation" IS DISTINCT FROM OLD."generation" AND NOT (NEW."generation"=OLD."generation"+1 AND NEW."status"='queued' AND NEW."claimId" IS NULL AND NEW."executorOwner" IS NULL AND NEW."claimExpiresAt" IS NULL AND NEW."operationDeadlineAt" IS NULL AND NOT NEW."outcomeUnknown") THEN
+  RAISE EXCEPTION 'generated media retry generation is invalid' USING ERRCODE='23514';
+ END IF;
+ IF NEW."generation"=OLD."generation" AND (NEW."executionMode",NEW."resultState"->'recovery') IS DISTINCT FROM (OLD."executionMode",OLD."resultState"->'recovery') THEN
+  RAISE EXCEPTION 'generated media recovery source is immutable' USING ERRCODE='23514';
+ END IF;
+ IF NEW."chargedAttempts" IS DISTINCT FROM OLD."chargedAttempts" AND NOT (NEW."chargedAttempts"=OLD."chargedAttempts"+1 AND OLD."status"='running' AND NEW."claimId"=OLD."claimId" AND NEW."executorOwner"=OLD."executorOwner") THEN
+  RAISE EXCEPTION 'generated media charged start is invalid' USING ERRCODE='23514';
+ END IF;
+ IF NEW."maxAttempts" IS DISTINCT FROM OLD."maxAttempts" AND NOT (OLD."outcomeUnknown" AND NEW."generation"=OLD."generation"+1 AND NEW."maxAttempts" BETWEEN OLD."chargedAttempts"+1 AND OLD."chargedAttempts"+10) THEN
+  RAISE EXCEPTION 'generated media budget needs explicit reconciliation' USING ERRCODE='23514';
+ END IF;
+ RETURN NEW;
+END; $$;
+CREATE TRIGGER "GeneratedMediaJob_native_identity_immutable" BEFORE UPDATE ON "GeneratedMediaJob"
+ FOR EACH ROW EXECUTE FUNCTION generated_media_native_identity_immutable();
+
+
+-- Publication scheduling and native ownership extend the existing domain ledger.
+ALTER TABLE "SocialPost" ADD COLUMN "generation" INTEGER NOT NULL DEFAULT 1,
+ ADD COLUMN "deploymentEpoch" INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE "SocialPublicationAttempt" ADD COLUMN "nativeStartCount" INTEGER NOT NULL DEFAULT 0,
+ ADD COLUMN "nativeStartCeiling" INTEGER NOT NULL DEFAULT 104;
+ALTER TABLE "PublicationClaim" ADD COLUMN "executionMode" VARCHAR(16) NOT NULL DEFAULT 'publish', ADD COLUMN "deploymentEpoch" INTEGER NOT NULL DEFAULT 1,
+ ADD COLUMN "generation" INTEGER NOT NULL DEFAULT 1, ADD COLUMN "executorOwner" UUID,
+ ADD COLUMN "operationDeadlineAt" TIMESTAMP(3);
+ALTER TABLE "SocialPost" ADD CONSTRAINT "SocialPost_execution_shape" CHECK ("generation">0 AND "deploymentEpoch">0 AND "scheduleRevision">0);
+ALTER TABLE "SocialPublicationAttempt" ADD CONSTRAINT "SocialPublicationAttempt_native_budget" CHECK (
+ "nativeStartCount">=0 AND "nativeStartCeiling" BETWEEN 2 AND 110 AND "nativeStartCount"<="nativeStartCeiling"
+);
+ALTER TABLE "PublicationClaim" ADD CONSTRAINT "PublicationClaim_execution_shape" CHECK (
+ "executionMode" IN ('publish','resume','reconcile') AND "deploymentEpoch">0 AND "generation">0 AND ("executorOwner" IS NULL OR "operationDeadlineAt" IS NOT NULL)
+ AND ("operationDeadlineAt" IS NULL OR "leaseExpiresAt"<="operationDeadlineAt")
+);
+CREATE FUNCTION social_post_schedule_revision() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+ IF NEW."generation" < OLD."generation" OR NEW."scheduleRevision" < OLD."scheduleRevision" OR NEW."deploymentEpoch" <> OLD."deploymentEpoch" THEN
+  RAISE EXCEPTION 'publication execution identity cannot regress' USING ERRCODE='23514';
+ END IF;
+ IF (NEW."scheduledFor",NEW."caption",NEW."socialAccountId",NEW."immutableRequestHash",NEW."standingGrantId",NEW."standingGrantRevision") IS DISTINCT FROM
+    (OLD."scheduledFor",OLD."caption",OLD."socialAccountId",OLD."immutableRequestHash",OLD."standingGrantId",OLD."standingGrantRevision")
+    OR (NEW."status" IN ('cancelled','draft') AND NEW."status" IS DISTINCT FROM OLD."status") THEN
+  NEW."scheduleRevision" := GREATEST(NEW."scheduleRevision",OLD."scheduleRevision"+1);
+  NEW."generation" := GREATEST(NEW."generation",OLD."generation"+1);
+ END IF;
+ RETURN NEW;
+END; $$;
+CREATE TRIGGER "SocialPost_schedule_revision" BEFORE UPDATE ON "SocialPost"
+ FOR EACH ROW EXECUTE FUNCTION social_post_schedule_revision();
+CREATE FUNCTION publication_native_budget_immutable() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+ IF NEW."nativeStartCeiling" IS DISTINCT FROM OLD."nativeStartCeiling" OR NEW."nativeStartCount"<OLD."nativeStartCount" OR NEW."nativeStartCount">OLD."nativeStartCount"+1 THEN
+  RAISE EXCEPTION 'publication native start budget is immutable' USING ERRCODE='23514';
+ END IF;
+ RETURN NEW;
+END; $$;
+CREATE TRIGGER "SocialPublicationAttempt_native_budget_immutable" BEFORE UPDATE ON "SocialPublicationAttempt"
+ FOR EACH ROW EXECUTE FUNCTION publication_native_budget_immutable();

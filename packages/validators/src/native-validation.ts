@@ -15,20 +15,6 @@ export const nativeValidationInputSchema = z.discriminatedUnion("kind", [
   visualAssetFinalizeSchema.extend({ kind: z.literal("visual") }),
 ]);
 
-/** Stored-only lineage: public finalization schemas never accept this field. */
-export const generatedValidationPlanSchema = z.strictObject({ key:z.string().min(1).max(1024), fingerprint:digest,
-  contentType:z.enum(["image/png","image/jpeg","image/webp"]), sizeBytes:z.number().int().positive().max(100000000),
-  sourceClaimLineage:z.string().uuid(), parentAttempt:z.number().int().positive().max(100), providerRef:z.string().min(1).max(2048) });
-export type GeneratedValidationPlan = z.infer<typeof generatedValidationPlanSchema>;
-export const generatedValidationParentSchema = z.strictObject({ id: z.string().uuid(), projectId: z.string().uuid(), attempt: z.number().int().positive().max(100),
-  providerRef: z.string().min(1).max(2048), claimLineage: z.string().uuid(), admittingClaimLineage: z.string().uuid() });
-export const nativeValidationStoredInputSchema = z.discriminatedUnion("kind", [
-  brandFontFinalizeSchema.extend({ kind: z.literal("font") }),
-  visualAssetFinalizeSchema.extend({ kind: z.literal("visual"), generated: generatedValidationParentSchema.optional() }),
-]);
-export type GeneratedValidationParent = z.infer<typeof generatedValidationParentSchema>;
-export type NativeValidationStoredInput = z.infer<typeof nativeValidationStoredInputSchema>;
-
 const binary = { sha256: digest, byteLength: z.number().int().positive().max(2 * 1024 ** 3) };
 export const nativeValidationEvidenceSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("font"), ...binary, format: z.enum(["ttf", "otf", "woff2"]),

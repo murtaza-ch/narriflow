@@ -13,6 +13,7 @@ from typing import Sequence
 from .artifacts import AssignedArtifacts
 from .callback_delivery_runtime import run_callback_delivery
 from .control import ExecutionControlError, ExecutorSession
+from .generated_image_runtime import run_generated_image as execute_generated_image
 from .fetch import FileSnapshot
 from .multipart import TransferTransport
 from .outbound_runtime import run_rss_probe
@@ -317,3 +318,60 @@ async def run_outbound_delivery(session: ExecutorSession, package: WorkPackage, 
     size,sha=await asyncio.to_thread(_file_facts,path,session,maximum)
     path.chmod(0o400)
     await AssignedArtifacts(session,package).upload(output['artifactId'],path,content_type='application/json',byte_length=size,sha256=sha,transport=transport)
+
+
+async def run_generated_image(session: ExecutorSession, package: WorkPackage, work: Path, *,
+                              api_key: str | None = None, transport: TransferTransport | None = None,
+                              bun_executable: str = 'bun', curl_executable: str = 'curl') -> None:
+    """One provider POST or exact recovery; SQL remains the publication authority."""
+    package.assert_session(session)
+    command = package.command
+    if (package.function_name != 'generated_image' or not isinstance(command, dict) or
+            command.get('kind') != 'generated_image' or command.get('mode') not in {'generate', 'recover'} or
+            not _integer(command.get('maxOutputBytes'), 100000000, 1000000)):
+        raise NativeOperationFailure('native_command_invalid')
+    outputs = _outputs(package, {'validated_asset', 'probe'})
+    binary, proof = outputs['validated_asset'], outputs['probe']
+    if (binary['contentType'] != 'image/png' or binary['contentTypes'] != ['image/png'] or
+            binary['maxBytes'] != command['maxOutputBytes'] or proof['contentType'] != 'application/json' or
+            proof['maxBytes'] > MAX_PROBE_BYTES):
+        raise NativeOperationFailure('native_assignment_invalid')
+    directory = _work(work)
+    source_path = None
+    if command['mode'] == 'recover':
+        expected = command.get('expected')
+        if (not isinstance(expected, dict) or set(expected) != {'contentType', 'byteLength', 'sha256'} or
+                expected['contentType'] != 'image/png' or len(package.sources) != 1 or
+                package.sources[0]['name'] != 'generated_result' or
+                package.sources[0].get('sha256') != expected['sha256'] or
+                package.sources[0]['byteLength'] != expected['byteLength']):
+            raise NativeOperationFailure('native_source_invalid')
+        source_path = await download_assigned_source(session, package, directory,
+            source_name='generated_result', maximum_bytes=command['maxOutputBytes'], curl_executable=curl_executable)
+    elif package.sources:
+        raise NativeOperationFailure('native_source_invalid')
+    try:
+        files = await execute_generated_image(command, directory, binary_artifact_id=binary['artifactId'],
+            on_process_start=session.on_process_start, cancel_event=session.cancel_event,
+            api_key=api_key if command['mode'] == 'generate' else None, source_path=source_path,
+            bun_executable=bun_executable)
+    except MediaProcessError as error:
+        if error.code in {'media_process_start_unconfirmed', 'media_execution_cancelled'}:
+            raise ExecutionControlError('execution_start_unconfirmed' if error.code == 'media_process_start_unconfirmed' else 'execution_authority_lost') from None
+        raise
+    proof_size, proof_sha = await asyncio.to_thread(_file_facts, files.evidence_path, session, MAX_PROBE_BYTES)
+    artifacts = AssignedArtifacts(session, package)
+    # The probe freezes the accepted provider reference and binary fingerprint
+    # before any binary publication can be acknowledged. Lost upload ACKs can
+    # then recover this exact assigned object without another provider POST.
+    await artifacts.upload(proof['artifactId'], files.evidence_path, content_type='application/json',
+        byte_length=proof_size, sha256=proof_sha, transport=transport)
+    if files.image_path is None:
+        return
+    size, sha = await asyncio.to_thread(_file_facts, files.image_path, session, command['maxOutputBytes'])
+    image = files.evidence.get('image')
+    if (not isinstance(image, dict) or image.get('kind') != 'visual' or image.get('mediaKind') != 'image' or
+            image.get('contentType') != 'image/png' or image.get('sha256') != sha or image.get('byteLength') != size):
+        raise NativeOperationFailure('native_result_invalid')
+    await artifacts.upload(binary['artifactId'], files.image_path, content_type='image/png',
+        byte_length=size, sha256=sha, transport=transport)

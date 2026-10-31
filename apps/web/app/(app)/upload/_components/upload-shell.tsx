@@ -42,6 +42,7 @@ import {
   detectLinkProvider,
   googleDriveFileViewUrl,
   LINK_PROVIDERS,
+  MAX_UPLOAD_SIZE_BYTES,
 } from "@narriflow/validators";
 import { isApiError } from "@narriflow/api-client/core";
 import { formatDate, formatTimecode } from "@/lib/format";
@@ -84,7 +85,7 @@ import {
 type TabId = "file" | "link" | "rss";
 type PasteOverride = "auto" | "link" | "rss";
 
-const MAX_UPLOAD_BYTES = 5 * 1024 * 1024 * 1024; // 5 GB
+const MAX_UPLOAD_BYTES = MAX_UPLOAD_SIZE_BYTES;
 const RSS_EPISODE_PAGE_SIZE = 50;
 
 const FILE_ACCEPT =
@@ -161,6 +162,8 @@ interface UploadShellProps {
    *  Step 2 (Configure) resume, read from the resume query. */
   resumeData: LinkResumeData | null;
   usageSummary: UploadUsageSummary;
+  youtubeImportAvailable: boolean;
+  youtubeImportUnavailableMessage: string;
   /** Cloud file pickers the deployment has configured. */
   sourcePickers: SourcePickerConfig;
   onGenerating: (projectId: string) => void;
@@ -175,6 +178,8 @@ export function UploadShell({
   initialMode = "clip",
   resumeData,
   usageSummary,
+  youtubeImportAvailable,
+  youtubeImportUnavailableMessage,
   sourcePickers,
   onGenerating,
 }: UploadShellProps) {
@@ -609,7 +614,7 @@ export function UploadShell({
     }
     if (file.size > MAX_UPLOAD_BYTES) {
       setErrorMessage(
-        "That file is over the 5 GB limit. Trim it, or import via a video link/RSS instead.",
+        "That file is over the 10 GiB limit. Trim it before uploading.",
       );
       return;
     }
@@ -831,13 +836,14 @@ export function UploadShell({
                 </Box>
                 <Button
                   onClick={commitPastedLink}
-                  disabled={!detectedKind || busy}
+                  disabled={!detectedKind || busy || pasteDetectedProvider === "youtube" && !youtubeImportAvailable}
                   type="button"
                   size="md"
                 >
                   Continue <ArrowRight size={16} />
                 </Button>
               </Flex>
+              {pasteDetectedProvider === "youtube" && !youtubeImportAvailable && <ErrorNotice message={youtubeImportUnavailableMessage} />}
               {trimmedPaste && (
                 <Text
                   fontSize="12px"
@@ -912,7 +918,7 @@ export function UploadShell({
                     <chakra.span color="accent.fg">browse files</chakra.span>
                   </Text>
                   <Text fontSize="13px" color="fg.muted">
-                    Video or audio · Up to 5 GB
+                    Video or audio · Up to 10 GiB
                   </Text>
                 </Stack>
               </Stack>
@@ -989,6 +995,8 @@ export function UploadShell({
             {errorMessage && <ErrorNotice message={errorMessage} />}
           </Stack>
         </Stack>
+      ) : activeTab === "link" && linkProvider === "youtube" && !youtubeImportAvailable && !resumeData ? (
+        <Stack gap="3"><ErrorNotice message={youtubeImportUnavailableMessage} /><Button onClick={handleChangeSource}>Upload instead</Button></Stack>
       ) : activeTab === "link" ? (
         /* Link path: its own Commit → Configure state machine — see
            link-import-flow.tsx. File/RSS keep the unchanged single-step

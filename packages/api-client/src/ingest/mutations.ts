@@ -31,6 +31,7 @@ export function createIngestActions(transport: ApiTransport, scope: WorkspaceSco
   const uploads = client["upload-sessions"];
 
   return {
+    issueLocalFetchSession: async () => (await client.ingest["local-fetch"].session.$post()).json(),
     commitLink: async (input: LinkCommitRequest, signal?: AbortSignal) =>
       (await client.ingest.link.$post({ json: input }, { init: { signal } })).json(),
     /** The Drive access token travels only in this request body; it is never a query parameter or part of a result. */

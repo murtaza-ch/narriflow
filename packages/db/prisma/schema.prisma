@@ -2351,8 +2351,16 @@ model GeneratedMediaJob {
   providerUsageImages       Int?
   providerResultContentType String?
   resultAssetId             String?                    @db.Uuid
-  validationJobId           String?                    @unique @db.Uuid
-  validationInput           Json?
+  generation                Int                        @default(1)
+  deploymentEpoch           Int                        @default(1)
+  executorOwner             String?                    @db.Uuid
+  operationDeadlineAt       DateTime?
+  chargedAttempts           Int                        @default(0)
+  maxAttempts               Int                        @default(4)
+  outputByteLimit           Int                        @default(20971520)
+  providerQuality           String                     @default("medium") @db.VarChar(16)
+  executionMode             String                     @default("generate") @db.VarChar(16)
+  resultState               Json?
   attempt                   Int                        @default(0)
   retryAt                   DateTime?
   claimId                   String?                    @db.Uuid
@@ -2685,6 +2693,9 @@ model AudioAssetFavorite {
 }
 
 model SocialPost {
+  /// Physical execution cycle; scheduleRevision changes only with scheduling intent.
+  generation               Int                            @default(1)
+  deploymentEpoch          Int                            @default(1)
   scheduleRevision         Int                            @default(1)
   deliveryMode             SocialDeliveryMode             @default(direct)
   publishedVideos          PublishedSocialVideo[]
@@ -2794,6 +2805,8 @@ model SocialPostProposal {
 }
 
 model SocialPublicationAttempt {
+  nativeStartCount       Int                            @default(0)
+  nativeStartCeiling     Int                            @default(104)
   id                     String                         @id @default(uuid()) @db.Uuid
   socialPostId           String                         @db.Uuid
   frozenStateId          String                         @db.Uuid
@@ -2858,6 +2871,11 @@ model PublicationManualDecision {
 }
 
 model PublicationClaim {
+  executionMode String @default("publish") @db.VarChar(16)
+  deploymentEpoch Int       @default(1)
+  generation      Int       @default(1)
+  executorOwner   String?   @db.Uuid
+  operationDeadlineAt DateTime?
   id             String    @id @db.Uuid
   attemptId      String    @db.Uuid
   claimantId     String
