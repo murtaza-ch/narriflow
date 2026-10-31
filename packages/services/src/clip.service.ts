@@ -1510,12 +1510,8 @@ export class ClipService {
    * copies render/proxy assets for the OLD window and then deletes them once
    * the boundaries move to the selection's window, which can orphan copied
    * objects if the process dies between the two steps (plan constraint #7).
-   * This never copies renders or the preview proxy at all — the new clip
-   * gets neither, and the worker's preview-backfill poll
-   * (`getClipsNeedingPreview` / `processPendingClipPreviews` in
-   * apps/media/src/prepare-clip.ts) picks it up for a proxy on its
-   * own the same way every other proxy-less clip does; there is no separate
-   * trigger to fire from here.
+   * The new clip queues a preparation obligation for its own frozen window
+   * in the admission transaction. Rendering and Studio consume that evidence.
    *
    * `captionPreset`/`studioEdits`/`brollUrl`/`platformFit` ARE copied from the
    * source clip (Vizard: the new clip inherits the source's "look"), EXCEPT

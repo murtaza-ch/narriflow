@@ -7,14 +7,17 @@ const repoRoot = resolve(import.meta.dir, "../../..");
 const FORBIDDEN = /node_modules\/\.bun\/(next@|react@|react-dom@|server-only@|@clerk\+nextjs@)/;
 
 async function moduleGraph(entry: string): Promise<string[]> {
-  const result = await Bun.build({
-    entrypoints: [resolve(repoRoot, entry)],
-    target: "bun",
-    write: false,
-    metafile: true,
-  } as Parameters<typeof Bun.build>[0]);
-  expect(result.success).toBe(true);
-  return Object.keys((result as unknown as { metafile: { inputs: object } }).metafile.inputs);
+  // The pinned Bun test resolver differs from the fresh runtime resolver.
+  // Check the real dependency graph in its own process, like imports below.
+  const code = `const result = await Bun.build({ entrypoints: [${JSON.stringify(resolve(repoRoot, entry))}], target: "bun", write: false, metafile: true });
+    if (!result.success) { console.error(result.logs); process.exit(1); }
+    console.log(JSON.stringify(Object.keys(result.metafile.inputs)));`;
+  const child = Bun.spawn([process.execPath, "--no-env-file", "-e", code], {
+    cwd: repoRoot, stdout: "pipe", stderr: "pipe", env: { PATH: process.env.PATH ?? "" },
+  });
+  const [exitCode, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
+  expect({ exitCode, stderr }).toEqual({ exitCode: 0, stderr: "" });
+  return JSON.parse(stdout);
 }
 
 describe("backend packages stay framework-free", () => {
@@ -31,7 +34,7 @@ describe("backend packages stay framework-free", () => {
     "%s imports under plain Bun",
     async (entry) => {
       const child = Bun.spawn(
-        ["bun", "-e", `await import(${JSON.stringify(resolve(repoRoot, entry))})`],
+        [process.execPath, "--no-env-file", "-e", `await import(${JSON.stringify(resolve(repoRoot, entry))})`],
         { cwd: repoRoot, stdout: "pipe", stderr: "pipe", env: { PATH: process.env.PATH ?? "" } },
       );
       const [exitCode, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);

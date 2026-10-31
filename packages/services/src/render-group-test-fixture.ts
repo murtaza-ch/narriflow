@@ -1,8 +1,5 @@
-/** Test-only convenience for fixtures that need settled media. All writes use
- * the real group admission, token, start, outcome and settlement protocol. */
-import { randomUUID } from "node:crypto";
+
 import type { Prisma, PrismaClient } from "@prisma/client";
-import { RenderGroupLifecycle } from "./render-group-lifecycle";
 import { WorkflowRunLifecycle, type WorkflowAttemptRef, WorkflowAttemptLost } from "./workflow-run-lifecycle";
 import type { ExecutionDispatchReference } from "@narriflow/validators/execution";
 import { readExecutionDispatch } from "./execution-dispatch";
@@ -10,13 +7,11 @@ import { acquireFixtureRenderGroup, prepareFixtureSource } from "./render-execut
 
 export class RenderFixtureLifecycle extends WorkflowRunLifecycle {
   readonly fixturePrisma: PrismaClient;
-  readonly fixtureGroups: RenderGroupLifecycle;
   private readonly parents = new Map<string, ExecutionDispatchReference>();
   private readonly claims = new Map<string, Promise<Awaited<ReturnType<typeof acquireFixtureRenderGroup>>>>();
   constructor(deps: ConstructorParameters<typeof WorkflowRunLifecycle>[0] & { prisma: PrismaClient }) {
     super(deps);
     this.fixturePrisma = deps.prisma;
-    this.fixtureGroups = new RenderGroupLifecycle({ prisma: deps.prisma, leaseOwner: randomUUID() });
   }
   /** Select controlled fixture data, then use the production exact reference.
    * The UUID below is a test handle, never a parent execution or charged claim. */
@@ -81,22 +76,11 @@ export class RenderFixtureLifecycle extends WorkflowRunLifecycle {
     await this.groupFor(attempt, id);
     return true;
   }
-  async completeClipRenderVariant(attempt: WorkflowAttemptRef, id: string, input: Parameters<RenderGroupLifecycle["completeClipRenderVariant"]>[2]) {
+  async completeClipRenderVariant(attempt: WorkflowAttemptRef, id: string, input: { storageKey: string; sizeBytes: number; durationSec: number; captionDiagnostics?: { omittedCodePoints: string[]; skippedEmoji: string[] } | null; brollCredits?: Prisma.InputJsonValue | null }) {
     return (await this.groupFor(attempt, id)).complete(id, input);
   }
   async failClipRenderVariant(attempt: WorkflowAttemptRef, id: string, code: string, disposition: "retryable" | "permanent") {
     return (await this.groupFor(attempt, id)).fail(id, code, disposition);
-  }
-  async completeClipAutoLayoutAnalysis(attempt: WorkflowAttemptRef, input: Evidence) { return this.writeEvidence(attempt, input, "automatic"); }
-  async completeClipSplitLayoutAnalysis(attempt: WorkflowAttemptRef, input: Evidence) { return this.writeEvidence(attempt, input, "split"); }
-  async completeClipSplitLayoutFailure(attempt: WorkflowAttemptRef, input: Evidence) { return this.writeEvidence(attempt, input, "split"); }
-  async setClipLayoutAnalysis(attempt: WorkflowAttemptRef, input: Evidence) { return this.writeEvidence(attempt, input, "screen"); }
-  async setClipLayoutAnalysisFailure(attempt: WorkflowAttemptRef, input: Evidence) { return this.writeEvidence(attempt, input, "screen"); }
-  private async writeEvidence(attempt: WorkflowAttemptRef, input: Evidence, field: "automatic" | "split" | "screen") {
-    const variant = await this.fixturePrisma.clipRender.findFirst({ where: { workflowRunId: attempt.workflowRunId, clipId: input.clipId, status: "rendering" } });
-    if (!variant) throw new WorkflowAttemptLost(attempt);
-    const context = await this.groupFor(attempt, variant.id);
-    return new RenderGroupLifecycle({ prisma: this.fixturePrisma, leaseOwner: context.attempt.owner }).writeLayoutEvidence(context.attempt, { ...input, evidence: (input.analysis ?? input.failure)!, field });
   }
   async finishGroups() {
     for (const [id, pending] of this.claims) {
@@ -118,4 +102,3 @@ export class RenderFixtureLifecycle extends WorkflowRunLifecycle {
     return settled.outcome;
   }
 }
-type Evidence = { clipId: string; editorRevision: number; previewStorageKey: string; analysis?: Prisma.InputJsonValue; failure?: Prisma.InputJsonValue };

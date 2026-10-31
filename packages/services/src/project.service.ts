@@ -35,7 +35,6 @@ import {
 import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import type {
-	IngestStatus as PrismaIngestStatus,
 	Project,
 	Transcript as PrismaTranscript,
 	WorkflowRun as PrismaWorkflowRun,
@@ -389,7 +388,7 @@ export interface ProjectDeletionIoResult {
 /**
  * Executes a storage deletion plan resiliently: every key is attempted via
  * Promise.allSettled (one bad key can't stop the rest), and "already gone"
- * is treated as success exactly like purgeExpiredProjectSources does. Only
+ * is treated as success exactly like exact-key Media Cleanup does. Only
  * genuine failures are returned, since those are what must keep the DB row
  * alive for a retry.
  */
@@ -425,7 +424,7 @@ export type ProjectDeletionOutcome =
 
 export interface ProjectDeletionRow {
 	/** Whether any WorkflowRun for this project is still queued/running —
-	 *  same guard purgeExpiredProjectSources uses before touching a source. */
+	 *  same guard exact-key Media Cleanup uses before touching a source. */
 	hasActiveWorkflowRun: boolean;
 	hasActivePublication: boolean;
 	storage: ProjectStorageSnapshot;
@@ -664,7 +663,7 @@ export class ProjectService {
 
 	/**
 	 * Self-serve, user-initiated project deletion — distinct from
-	 * purgeExpiredProjectSources's time-based retention sweep (that only ever
+	 * the bounded source-retention planner (which only ever
 	 * reclaims the source object once it has aged out; this deletes the whole
 	 * project and everything it owns, right now, on the user's request).
 	 *
@@ -2532,213 +2531,3 @@ export class ProjectService {
 }
 
 export const projectService = new ProjectService();
-
-// ---------------------------------------------------------------------------
-// Retention / storage-reclamation jobs (FIX 4). Standalone functions — not
-// wired into apps/worker/src/index.ts here; the owner of that file adds the
-// periodic reap tick and its own SOURCE_RETENTION_DAYS /
-// WORKFLOW_EVENT_RETENTION_DAYS env var plumbing, mirroring how
-// purgeOldWebhookDeliveryLogs is called today.
-// ---------------------------------------------------------------------------
-
-const DEFAULT_SOURCE_RETENTION_DAYS = 90;
-const DEFAULT_WORKFLOW_EVENT_RETENTION_DAYS = 90;
-// Per-tick cap on how many source objects purgeExpiredProjectSources will
-// attempt to delete — each candidate costs a real R2 round trip, so this
-// bounds a single reaper tick's worst-case latency; remaining candidates are
-// simply picked up on the next tick.
-const SOURCE_PURGE_BATCH_SIZE = 200;
-
-/** Pure cutoff-date arithmetic shared by both retention jobs below, factored
- *  out so the date math has direct unit coverage independent of Prisma. */
-export function retentionCutoffDate(
-	retentionDays: number,
-	nowMs = Date.now(),
-): Date {
-	return new Date(nowMs - retentionDays * 24 * 60 * 60 * 1000);
-}
-
-export interface ProjectSourcePurgeCandidate {
-	sourceStorageKey: string | null;
-	ingestStatus: PrismaIngestStatus;
-	ingestCompletedAt: Date | string | null;
-	/** Whether any WorkflowRun for this project is still queued/running. */
-	hasActiveWorkflowRun: boolean;
-	/** Whether at least one ClipRender has already completed with an asset. */
-	hasCompletedRender: boolean;
-	/** Whether any clip still needs a preview proxy cut from this source.
-	 *  Proxies are generated lazily from the source, so purging first strands
-	 *  those clips on "Preview generating…" forever. */
-	hasClipAwaitingPreview: boolean;
-}
-
-/**
- * Pure eligibility gate for reclaiming a project's R2 source object. A
- * project only qualifies once: ingest finished successfully, nothing is
- * still mid-flight against the source, at least one clip already has a
- * completed render (never delete a source before any output exists), and
- * the source has aged past the retention window. Exported and tested in
- * isolation so the "don't delete a source whose renders don't exist yet"
- * invariant has direct coverage, independent of the Prisma query that feeds
- * it in purgeExpiredProjectSources below.
- */
-export function isProjectSourcePurgeEligible(
-	project: ProjectSourcePurgeCandidate,
-	options: { retentionDays: number; nowMs: number },
-): boolean {
-	if (!project.sourceStorageKey) return false;
-	if (project.ingestStatus !== "ready") return false;
-	if (project.hasActiveWorkflowRun) return false;
-	if (!project.hasCompletedRender) return false;
-	// Preview proxies are cut lazily from the source. Purging while a clip is
-	// still waiting for one strands it on "Preview generating…" permanently,
-	// because there is nothing left to cut from. Observed for real: three
-	// projects were purged on a first worker boot before any proxy existed.
-	if (project.hasClipAwaitingPreview) return false;
-	if (!project.ingestCompletedAt) return false;
-
-	const completedAtMs = new Date(project.ingestCompletedAt).getTime();
-	if (Number.isNaN(completedAtMs)) return false;
-
-	return (
-		completedAtMs <
-		retentionCutoffDate(options.retentionDays, options.nowMs).getTime()
-	);
-}
-
-/**
- * Reclaims R2 storage for source media no longer needed by any pipeline
- * stage. Idempotent and safe under concurrent runners: deleteObject is
- * itself idempotent (a key that's already gone is treated as success), and
- * the DB write is conditioned on the exact key just deleted so a racing
- * purge or a fresh re-upload can never be clobbered. Nulls sourceStorageKey
- * so the app can render a "source expired" state instead of a broken link.
- *
- * Mirrors purgeOldWebhookDeliveryLogs's shape (retention-days param with a
- * sensible default, returns a plain count) — the eligibility decision itself
- * lives in isProjectSourcePurgeEligible above, this just feeds it real rows
- * in bounded batches and executes the deletes.
- */
-export async function purgeExpiredProjectSources(
-	retentionDays = DEFAULT_SOURCE_RETENTION_DAYS,
-): Promise<number> {
-	const prisma = getPrismaClient();
-	if (!prisma)
-		throw new Error("DATABASE_URL is required for Project maintenance");
-
-	const candidates = await prisma.project.findMany({
-		where: {
-			sourceStorageKey: { not: null },
-			ingestStatus: "ready",
-		},
-		select: {
-			id: true,
-			sourceStorageKey: true,
-			ingestStatus: true,
-			ingestCompletedAt: true,
-			workflowRuns: {
-				where: { status: { in: ["queued", "running", "waiting"] } },
-				select: { id: true },
-				take: 1,
-			},
-			clips: {
-				where: {
-					renders: {
-						some: { status: "completed", storageKey: { not: null } },
-					},
-				},
-				select: { id: true },
-				take: 1,
-			},
-		},
-		take: SOURCE_PURGE_BATCH_SIZE,
-	});
-
-	// One extra query for the whole batch rather than per candidate: which of
-	// these projects still has a clip with no preview proxy cut yet.
-	const projectIdsAwaitingPreview = new Set(
-		(
-			await prisma.clip.findMany({
-				where: {
-					projectId: { in: candidates.map((project) => project.id) },
-					previewStorageKey: null,
-				},
-				select: { projectId: true },
-				distinct: ["projectId"],
-			})
-		).map((clip) => clip.projectId),
-	);
-
-	const nowMs = Date.now();
-	let purged = 0;
-
-	for (const project of candidates) {
-		const key = project.sourceStorageKey;
-		const eligible =
-			key !== null &&
-			isProjectSourcePurgeEligible(
-				{
-					sourceStorageKey: key,
-					ingestStatus: project.ingestStatus,
-					ingestCompletedAt: project.ingestCompletedAt,
-					hasActiveWorkflowRun: project.workflowRuns.length > 0,
-					hasCompletedRender: project.clips.length > 0,
-					hasClipAwaitingPreview: projectIdsAwaitingPreview.has(project.id),
-				},
-				{ retentionDays, nowMs },
-			);
-
-		if (!eligible || !key) continue;
-
-		try {
-			await deleteObject(key);
-		} catch (error) {
-			if (!isMissingObjectError(error)) {
-				console.warn(
-					JSON.stringify({
-						level: "warn",
-						message: "source_purge_delete_failed",
-						projectId: project.id,
-						error: error instanceof Error ? error.message : String(error),
-					}),
-				);
-				continue; // leave sourceStorageKey intact so a later tick retries
-			}
-			// Already gone from R2 (e.g. a previous run deleted it but crashed
-			// before the DB write below) — fall through and reconcile the row.
-		}
-
-		// Conditioned on the exact key we just deleted: a concurrent purge run,
-		// or a fresh re-upload that already changed sourceStorageKey, is left
-		// alone rather than clobbered.
-		const updated = await prisma.project.updateMany({
-			where: { id: project.id, sourceStorageKey: key },
-			data: { sourceStorageKey: null },
-		});
-
-		purged += updated.count;
-	}
-
-	return purged;
-}
-
-/** Deletes WorkflowEvent rows older than the retention window. Returns
- *  count. Same shape as purgeOldWebhookDeliveryLogs in webhook-log.service.ts. */
-export async function purgeOldWorkflowEvents(
-	olderThanDays = DEFAULT_WORKFLOW_EVENT_RETENTION_DAYS,
-): Promise<number> {
-	const prisma = getPrismaClient();
-	if (!prisma)
-		throw new Error("DATABASE_URL is required for Project maintenance");
-
-	const res = await prisma.workflowEvent.deleteMany({
-		where: {
-			emittedAt: { lt: retentionCutoffDate(olderThanDays) },
-			OR: [
-				{ notificationRequired: false },
-				{ notificationDeliveredAt: { not: null } },
-			],
-		},
-	});
-	return res.count;
-}

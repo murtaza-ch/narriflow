@@ -173,30 +173,16 @@ export {
 	adoptDurableMediaCopies,
 	admitMediaCleanupObligations,
 	admitRetiredClipMediaCleanup,
-	mediaCleanupWorker,
 	planRetiredClipMediaCleanup,
 	runDurableMediaCopies,
-	createMediaCleanupWorker,
-	createInMemoryMediaCleanupStore,
-	defaultMediaCleanupConfig,
-	mediaCleanupConfigFromEnv,
-	validateMediaCleanupConfig,
-	prismaMediaCleanupStore,
-	MediaCleanupClaimLost,
 	DurableMediaCopyClaimLost,
-	type ClaimedMediaCleanup,
 	type DurableMediaCopyAdoptionStore,
 	type DurableMediaCopyPlan,
 	type MediaCleanupAdmissionStore,
 	type MediaCleanupAdmissionOptions,
 	type MediaCleanupClass,
-	type MediaCleanupConfig,
-	type MediaCleanupDiagnostics,
-	type MediaCleanupHeartbeatScheduler,
 	type MediaCleanupObligationInput,
 	type MediaCleanupOrigin,
-	type MediaCleanupStorageOutcome,
-	type MediaCleanupStore,
 	type RetiredClipMedia,
 	type RetiredClipMediaCleanupStore,
 } from "./media-cleanup";
@@ -220,12 +206,7 @@ export {
 	ProjectHasActiveWorkflowError,
 	ProjectNotFoundError,
 	ProjectServiceError,
-	purgeExpiredProjectSources,
-	purgeOldWorkflowEvents,
-	isProjectSourcePurgeEligible,
-	retentionCutoffDate,
 	type ProjectFailureCode,
-	type ProjectSourcePurgeCandidate,
 } from "./project.service";
 export {
 	createUploadSessionModule,
@@ -594,8 +575,7 @@ export { getProcessingUsage } from "./processing-usage-runtime";
 export { createDriveTokenCipher, createGoogleDriveFileReader, driveDownloadRefusal, driveFileMediaUrl, DriveSourceError, googleDriveFileReader, readDriveFileMetadata, verifyDriveAccessToken, type DriveFileMetadata, type DriveFileReader, type DriveTokenCipher } from "./drive-source";
 export { IngestJobLifecycle, IngestJobClaimLost, IngestNotFailedError, IngestReselectRequiredError, IngestRetryLimitExceededError, type IngestClaimRef, type IngestFailureDecision, type IngestJobLifecycleDependencies } from "./ingest-job-lifecycle";
 
-export { LayoutEvidenceLifecycle, LayoutEvidenceClaimLost, type ClipPendingPreview, type ClipPendingAutoLayoutAnalysis } from "./layout-evidence";
-export { getLayoutEvidenceLifecycle } from "./layout-evidence-runtime";
+export type { DurableLayoutEvidence, DurableLayoutEvidenceReader, ClipPendingAutoLayoutAnalysis } from "./layout-evidence";
 export type { ActorScope } from "./actor-scope";
 
 export { createOperationReceiptExecutor, operationFingerprint, OperationIdempotencyConflictError, RECEIPT_COMMANDS, type ReceiptCommand, type IntegrationMutation, type OperationReceiptIdentity } from "./operation-receipt";
@@ -648,7 +628,7 @@ export { reviewsCommands } from "./reviews-commands-runtime";
 export { syncClipExportAggregate, syncClipExportAggregates } from "./clip-export-aggregates";
 
 export * from "./render-group-contract";
-export { RenderGroupLifecycle, RenderGroupAttemptLost, getRenderGroupLifecycle, invalidateRenderGroupMembersWithinTransaction, type RenderGroupAdmission, type RenderGroupLifecycleDependencies } from "./render-group-lifecycle";
+export { RenderGroupLifecycle, RenderGroupAttemptLost, invalidateRenderGroupMembersWithinTransaction, type RenderGroupAdmission, type RenderGroupLifecycleDependencies } from "./render-group-lifecycle";
 
 export { createPendingBusinessWorkspaceService, type PendingBusinessWorkspaceDependencies } from "./pending-business-workspace.service";
 

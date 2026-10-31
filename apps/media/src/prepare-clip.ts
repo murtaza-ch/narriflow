@@ -33,11 +33,12 @@ export async function prepareClip(options: {
   if (window.durationSec <= 0) throw new Error("clip_preparation_window_invalid");
   const previewPath = join(options.work, "preview.mp4"), layoutPath = join(options.work, "layout.json");
   const geometry = resolveDisplayGeometry(probe);
+  const expected = clipPreviewOutputExpectation(probe, window.durationSec, policy.preview.maxHeight);
   const shared = { sourcePath: options.sourcePath, outputPath: previewPath, windowStartSec: window.startSec, windowDurationSec: window.durationSec, ...policy.preview };
-  const args = probe.hasVideo ? buildClipPreviewArgs({ ...shared, hasAudio: probe.hasAudio,
+  const args = probe.hasVideo ? buildClipPreviewArgs({ ...shared, hasAudio: probe.hasAudio, frameRate: expected.frameRate,
     ...(geometry.anamorphic ? { squarePixelAspect: geometry.width / geometry.height } : {}) })
     : buildAudiogramPreviewArgs({ ...shared, captionPreset: input.document.captionPreset });
-  await encodeAndValidateClipPreview({ workerProcess, signal, args, outputPath: previewPath, expected: clipPreviewOutputExpectation(probe, window.durationSec, policy.preview.maxHeight), deadlineMs: policy.preview.timeoutMs });
+  await encodeAndValidateClipPreview({ workerProcess, signal, args, outputPath: previewPath, expected, deadlineMs: policy.preview.timeoutMs });
   let peaksPath: string | null = null;
   if (probe.hasAudio) {
     try {

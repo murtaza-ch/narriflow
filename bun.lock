@@ -32,7 +32,7 @@
         "@prisma/client": "7.7.0",
         "hono": "^4.13.11",
         "svix": "^1.86.0",
-        "zod": "^4.3.6",
+        "zod": "^4.6.7",
       },
       "devDependencies": {
         "@cloudflare/workers-types": "5.20261030.1",
@@ -58,7 +58,7 @@
         "@narriflow/mcp-core": "workspace:*",
         "@narriflow/services": "workspace:*",
         "@types/node": "26.2.0",
-        "zod": "^4.3.6",
+        "zod": "^4.6.7",
       },
     },
     "apps/media": {
@@ -73,7 +73,7 @@
         "fontkit": "2.0.4",
         "sharp": "0.35.5",
         "ws": "8.21.3",
-        "zod": "^4.3.6",
+        "zod": "^4.6.7",
       },
       "devDependencies": {
         "@types/archiver": "6.0.3",
@@ -106,7 +106,7 @@
         "next": "16.4.3",
         "react": "19.2.8",
         "react-dom": "19.2.8",
-        "zod": "^4.3.6",
+        "zod": "^4.6.7",
       },
       "devDependencies": {
         "@tanstack/react-query-devtools": "^5.105.0",
@@ -115,7 +115,7 @@
         "@types/react": "19.2.18",
         "@types/react-dom": "19.2.4",
         "fake-indexeddb": "6.2.4",
-        "happy-dom": "^20.11.12",
+        "happy-dom": "^21.0.4",
       },
     },
     "packages/api-client": {
@@ -210,7 +210,7 @@
         "@modelcontextprotocol/server": "2.4.0",
         "@narriflow/services": "workspace:*",
         "@narriflow/validators": "workspace:*",
-        "zod": "^4.3.6",
+        "zod": "^4.6.7",
       },
       "devDependencies": {
         "@modelcontextprotocol/client": "2.4.0",
@@ -251,7 +251,7 @@
         "@internationalized/date": "3.12.0",
         "lucide-react": "^0.577.0",
         "next-themes": "^0.4.6",
-        "zod": "^4.3.6",
+        "zod": "^4.6.7",
       },
       "devDependencies": {
         "@chakra-ui/cli": "3.34.0",
@@ -269,7 +269,7 @@
       "name": "@narriflow/validators",
       "version": "0.0.0",
       "dependencies": {
-        "zod": "^4.3.6",
+        "zod": "^4.6.7",
       },
     },
   },
@@ -279,7 +279,7 @@
   "overrides": {
     "brace-expansion": "2.1.7",
     "deepmerge-ts": "8.0.2",
-    "fast-uri": "3.1.6",
+    "fast-uri": "3.1.7",
     "fast-xml-builder": "1.2.1",
     "fast-xml-parser": "5.11.2",
     "hono": "4.13.11",
@@ -291,6 +291,7 @@
     "sharp": "0.35.5",
     "source-map-js": "1.2.2",
     "uuid": "11.1.1",
+    "zod": "4.6.7",
   },
   "packages": {
     "@ark-ui/react": ["@ark-ui/react@5.36.0", "", { "dependencies": { "@internationalized/date": "3.12.0", "@zag-js/accordion": "1.39.1", "@zag-js/anatomy": "1.39.1", "@zag-js/angle-slider": "1.39.1", "@zag-js/async-list": "1.39.1", "@zag-js/auto-resize": "1.39.1", "@zag-js/avatar": "1.39.1", "@zag-js/carousel": "1.39.1", "@zag-js/cascade-select": "1.39.1", "@zag-js/checkbox": "1.39.1", "@zag-js/clipboard": "1.39.1", "@zag-js/collapsible": "1.39.1", "@zag-js/collection": "1.39.1", "@zag-js/color-picker": "1.39.1", "@zag-js/color-utils": "1.39.1", "@zag-js/combobox": "1.39.1", "@zag-js/core": "1.39.1", "@zag-js/date-input": "1.39.1", "@zag-js/date-picker": "1.39.1", "@zag-js/date-utils": "1.39.1", "@zag-js/dialog": "1.39.1", "@zag-js/dom-query": "1.39.1", "@zag-js/drawer": "1.39.1", "@zag-js/editable": "1.39.1", "@zag-js/file-upload": "1.39.1", "@zag-js/file-utils": "1.39.1", "@zag-js/floating-panel": "1.39.1", "@zag-js/focus-trap": "1.39.1", "@zag-js/focus-visible": "1.39.1", "@zag-js/highlight-word": "1.39.1", "@zag-js/hover-card": "1.39.1", "@zag-js/i18n-utils": "1.39.1", "@zag-js/image-cropper": "1.39.1", "@zag-js/json-tree-utils": "1.39.1", "@zag-js/listbox": "1.39.1", "@zag-js/marquee": "1.39.1", "@zag-js/menu": "1.39.1", "@zag-js/navigation-menu": "1.39.1", "@zag-js/number-input": "1.39.1", "@zag-js/pagination": "1.39.1", "@zag-js/password-input": "1.39.1", "@zag-js/pin-input": "1.39.1", "@zag-js/popover": "1.39.1", "@zag-js/presence": "1.39.1", "@zag-js/progress": "1.39.1", "@zag-js/qr-code": "1.39.1", "@zag-js/radio-group": "1.39.1", "@zag-js/rating-group": "1.39.1", "@zag-js/react": "1.39.1", "@zag-js/scroll-area": "1.39.1", "@zag-js/select": "1.39.1", "@zag-js/signature-pad": "1.39.1", "@zag-js/slider": "1.39.1", "@zag-js/splitter": "1.39.1", "@zag-js/steps": "1.39.1", "@zag-js/switch": "1.39.1", "@zag-js/tabs": "1.39.1", "@zag-js/tags-input": "1.39.1", "@zag-js/timer": "1.39.1", "@zag-js/toast": "1.39.1", "@zag-js/toggle": "1.39.1", "@zag-js/toggle-group": "1.39.1", "@zag-js/tooltip": "1.39.1", "@zag-js/tour": "1.39.1", "@zag-js/tree-view": "1.39.1", "@zag-js/types": "1.39.1", "@zag-js/utils": "1.39.1" }, "peerDependencies": { "react": ">=18.0.0", "react-dom": ">=18.0.0" } }, "sha512-LjxQb1XyF3CqRnCoaRwm/eImOjIjAjRmrL3ZMzA1J41Is4KnDpc4Zvh1268LQIaRiX/3voUM0uLsjFxVx8MNQA=="],
@@ -1457,7 +1458,7 @@
 
     "fast-sha256": ["fast-sha256@1.3.0", "", {}, "sha512-n11RGP/lrWEFI/bWdygLxhI+pVeo1ZYIVwvvPkW7azl/rOy+F3HYRZ2K5zeE9mmkhQppyv9sQFx0JM9UabnpPQ=="],
 
-    "fast-uri": ["fast-uri@3.1.6", "", {}, "sha512-7Ical1vFEMr0onbVzEDIreM22I4khW+fzyQPwvAFWBp1iwdshSZRsL4jjRvPG9JP1uiqMHRto+YU6R2/CzDz5Q=="],
+    "fast-uri": ["fast-uri@3.1.7", "", {}, "sha512-dOvZVzjdZdz7phd9v6jCbwxrBW3fK6n8Rc0CtdmM4bumzMnxywBYhuph6J819RRw/ku+rLbelwfMunktuzVVHg=="],
 
     "fast-xml-builder": ["fast-xml-builder@1.2.1", "", { "dependencies": { "path-expression-matcher": "^1.5.0", "xml-naming": "^0.1.0" } }, "sha512-tPb5TTWfgfVx5BNSi2xV0eLr89POeXXn0dXIsCJ9m1narrWxeIyx6je9d7Rce/3NyXLbvuQmLkxq+RuxMWejvw=="],
 
@@ -1523,7 +1524,7 @@
 
     "gsap": ["gsap@3.15.0", "", {}, "sha512-dMW4CWBTUK1AEEDeZc1g4xpPGIrSf9fJF960qbTZmN/QwZIWY5wgliS6JWl9/25fpTGJrMRtSjGtOmPnfjZB+A=="],
 
-    "happy-dom": ["happy-dom@20.11.12", "", { "dependencies": { "@types/node": ">=20.0.0", "@types/whatwg-mimetype": "^3.0.2", "@types/ws": "^8.18.1", "buffer-image-size": "^0.6.4", "entities": "^7.0.1", "whatwg-mimetype": "^3.0.0", "ws": "^8.21.0" } }, "sha512-7+mrTTD+6fOG3dx0URrDLrCX8QDTE+YujSOQD4VPZcYze/yJ0vVhRKaIBTjqlk+R4NetxVz21odnevHYIjIJ+g=="],
+    "happy-dom": ["happy-dom@21.0.4", "", { "dependencies": { "@types/node": ">=20.0.0", "@types/whatwg-mimetype": "^3.0.2", "@types/ws": "^8.18.1", "buffer-image-size": "^0.6.4", "entities": "^7.0.1", "whatwg-mimetype": "^3.0.0", "ws": "^8.21.0" } }, "sha512-tFm+GaLBgo6o0awHnvHaNoraVo27qJ+2tZEtZ+cIa08hXbeitrxAJajLI05hsUy/2/YTKcUjQYzHe5mCcraLBw=="],
 
     "harfbuzzjs": ["harfbuzzjs@1.6.4", "", {}, "sha512-T/PyfhVt1gGR2Tkf5KJUj1DQFkVBXHw552lS1iLEEDhV1Lukb3eq1pk2ov85kgbT2YUiZtJBTak9w+M7YgzUEQ=="],
 
@@ -2206,8 +2207,6 @@
     "@babel/traverse/@babel/parser": ["@babel/parser@7.29.8", "", { "dependencies": { "@babel/types": "^7.29.8" }, "bin": "./bin/babel-parser.js" }, "sha512-E8lTAYNB1KW+FH+VGJuZM1ioAx2E6oVlvQFRrf5P8ZZmsiJXYAD9vTFV7yyEURNzgh1dFqMZuO6tUwcARbqFCA=="],
 
     "@chakra-ui/cli/esbuild": ["esbuild@0.27.7", "", { "optionalDependencies": { "@esbuild/aix-ppc64": "0.27.7", "@esbuild/android-arm": "0.27.7", "@esbuild/android-arm64": "0.27.7", "@esbuild/android-x64": "0.27.7", "@esbuild/darwin-arm64": "0.27.7", "@esbuild/darwin-x64": "0.27.7", "@esbuild/freebsd-arm64": "0.27.7", "@esbuild/freebsd-x64": "0.27.7", "@esbuild/linux-arm": "0.27.7", "@esbuild/linux-arm64": "0.27.7", "@esbuild/linux-ia32": "0.27.7", "@esbuild/linux-loong64": "0.27.7", "@esbuild/linux-mips64el": "0.27.7", "@esbuild/linux-ppc64": "0.27.7", "@esbuild/linux-riscv64": "0.27.7", "@esbuild/linux-s390x": "0.27.7", "@esbuild/linux-x64": "0.27.7", "@esbuild/netbsd-arm64": "0.27.7", "@esbuild/netbsd-x64": "0.27.7", "@esbuild/openbsd-arm64": "0.27.7", "@esbuild/openbsd-x64": "0.27.7", "@esbuild/openharmony-arm64": "0.27.7", "@esbuild/sunos-x64": "0.27.7", "@esbuild/win32-arm64": "0.27.7", "@esbuild/win32-ia32": "0.27.7", "@esbuild/win32-x64": "0.27.7" }, "bin": { "esbuild": "bin/esbuild" } }, "sha512-IxpibTjyVnmrIQo5aqNpCgoACA/dTKLTlhMHihVHhdkxKyPO1uBBthumT0rdHmcsk9uMonIWS0m4FljWzILh3w=="],
-
-    "@chakra-ui/cli/zod": ["zod@3.25.76", "", {}, "sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ=="],
 
     "@chakra-ui/react/@pandacss/is-valid-prop": ["@pandacss/is-valid-prop@1.9.1", "", {}, "sha512-G4UHGPbyDR8UnxITHLiv8h88KWEAAs8NBX8yXLeb98ny2GEEhS3RBMK1Lq/tpNwwWimgLXxHfATyUkzqfgLjtg=="],
 

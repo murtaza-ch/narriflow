@@ -10,16 +10,13 @@ import {
   setDefaultTimeout,
   test,
 } from "bun:test";
-import { Prisma, PrismaClient } from "@prisma/client";
+import { PrismaClient } from "@prisma/client";
 import {
   DEFAULT_CAPTION_PRESET,
-  CLIP_AUTO_LAYOUT_ENGINE,
-  CLIP_AUTO_LAYOUT_VERSION,
   captionPresetSchema,
   getCaptionPresetById,
   editorDocumentSchema,
   studioEditsSchema,
-  type ClipAutoLayoutAnalysis,
 } from "@narriflow/validators";
 import {
   ClipEditorRevisionConflictError,
@@ -35,7 +32,7 @@ import {
   openClipPersistenceTestDatabase,
 } from "./clip-persistence-db-test-support";
 import { prismaMediaCleanupStore } from "./media-cleanup";
-import { LayoutEvidenceLifecycle } from "./layout-evidence";
+import { clipService } from "./clip.service";
 
 const dbDescribe = clipPersistenceDbTestEnabled ? describe : describe.skip;
 
@@ -146,66 +143,19 @@ dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
     expect((await prisma.clip.findUniqueOrThrow({ where: { id: f.clip.id } })).editorRevision).toBe(saved.revision);
   }));
 
-  test("unknown automatic layout evidence is not upgraded or claimed", scopedDatabase.bind(async () => {
+  test("unknown automatic layout evidence fails closed without upgrading its stored facts", scopedDatabase.bind(async () => {
     const f = await fixture();
-    const evidence = new LayoutEvidenceLifecycle({ prisma });
     const unknownEvidence = { version: 99, engine: "shot-layout-v99" };
     await prisma.clip.update({
       where: { id: f.clip.id },
       data: { autoLayoutStatus: "completed", autoLayoutAnalysis: unknownEvidence },
     });
 
-    expect(await evidence.claimAutomatic(60_000)).toBeNull();
+    await expect(clipService.getClipAutoLayoutAnalysis(fixtureActorScope(f), f.project.id, f.clip.id)).rejects.toMatchObject({ code: "unsupported_clip_composition_evidence_version" });
     const stored = await prisma.clip.findUniqueOrThrow({ where: { id: f.clip.id } });
     expect(stored.autoLayoutStatus).toBe("completed");
     expect(stored.autoLayoutAnalysis).toEqual(unknownEvidence);
     expect(stored.autoLayoutClaimToken).toBeNull();
-  }));
-
-  test("automatic evidence rejects expired and edited claim owners", scopedDatabase.bind(async () => {
-    const f = await fixture();
-    let now = new Date();
-    const evidence = new LayoutEvidenceLifecycle({ prisma, now: () => now });
-    await prisma.clip.update({
-      where: { id: f.clip.id },
-      data: { autoLayoutAnalysis: Prisma.DbNull, viralityScore: 100 },
-    });
-    const claim = await evidence.claimAutomatic(60_000);
-    expect(claim?.id).toBe(f.clip.id);
-    if (!claim) throw new Error("expected evidence claim");
-    const duration = claim.endSec - claim.startSec;
-    const segment = { startSec: 0, endSec: duration, layout: "single" as const, cxNorm: 0.5, cyNorm: 0.5, zoom: 1, subjects: [] };
-    const analysis: ClipAutoLayoutAnalysis = {
-      version: CLIP_AUTO_LAYOUT_VERSION, engine: CLIP_AUTO_LAYOUT_ENGINE,
-      sourceIdentity: `source:${f.project.id}`, analyzedAtISO: now.toISOString(),
-      clipStartSec: claim.startSec, clipEndSec: claim.endSec,
-      deletedRanges: [], editedDurationSec: duration,
-      sourceWidth: 1920, sourceHeight: 1080,
-      segments: [segment], noSplitSegments: [segment],
-      shotCount: 0, soloShotCount: 0, multiShotCount: 0,
-      twoUpSegmentCount: 0, speakerCount: 0, mappedSpeakerCount: 0,
-    };
-    const expected = { editorRevision: claim.editorRevision, previewStorageKey: claim.previewStorageKey, claimToken: claim.autoLayoutClaimToken };
-    now = new Date(now.getTime() + 60_001);
-    expect(await evidence.completeAutomatic(claim.id, analysis, expected)).toBe(false);
-    expect(await evidence.deferAutomatic(claim.id, claim.autoLayoutClaimToken, new Date(now.getTime() + 60_000))).toBe(false);
-    const reclaimed = await evidence.claimAutomatic(60_000);
-    expect(reclaimed?.id).toBe(claim.id);
-    if (!reclaimed) throw new Error("expected reclaimed evidence");
-    expect(reclaimed.autoLayoutClaimToken).not.toBe(claim.autoLayoutClaimToken);
-    await prisma.clip.update({ where: { id: claim.id }, data: { editorRevision: { increment: 1 } } });
-    expect(await evidence.completeAutomatic(claim.id, analysis, { ...expected, claimToken: reclaimed.autoLayoutClaimToken })).toBe(false);
-    expect((await prisma.clip.findUniqueOrThrow({ where: { id: claim.id } })).autoLayoutAnalysis).toBeNull();
-  }));
-
-  test("preview completion rejects a proxy cut before an editor revision", scopedDatabase.bind(async () => {
-    const f = await fixture();
-    const evidence = new LayoutEvidenceLifecycle({ prisma });
-    await prisma.clip.update({ where: { id: f.clip.id }, data: { previewStorageKey: null, editorRevision: 1 } });
-    const input = { storageKey: "test/new-preview.mp4", startSec: 6, durationSec: 28, expectedClipStartSec: f.clip.startSec, expectedClipEndSec: f.clip.endSec, expectedEditorRevision: 0 };
-    expect((await evidence.completePreview(f.clip.id, input)).persisted).toBe(false);
-    expect((await prisma.clip.findUniqueOrThrow({ where: { id: f.clip.id } })).previewStorageKey).toBeNull();
-    expect((await evidence.completePreview(f.clip.id, { ...input, expectedEditorRevision: 1 })).persisted).toBe(true);
   }));
 
   test("document, revision, original, render retirement, and cleanup commit together", scopedDatabase.bind(async () => {

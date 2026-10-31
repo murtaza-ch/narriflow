@@ -1,0 +1,40 @@
+{
+  "date": "2026-10-31",
+  "removed": [
+    "purgeExpiredProjectSources global source scanner/direct R2 deletion",
+    "purgeOldWorkflowEvents unbounded legacy history deletion",
+    "unused pure source-purge candidate/cutoff model"
+  ],
+  "replacement": [
+    "retireSourceMediaPage indexed cursor with Workspace/Project locks, assigned artifact binding and exact cleanup admission",
+    "expireWorkflowEventPage bounded delivery-aware retention"
+  ],
+  "verification": {
+    "runtime": "Bun1.3.6",
+    "database": "isolated disposable PostgreSQL schema",
+    "passed": 8,
+    "failed": 0,
+    "assertions": 83
+  },
+  "sourceGuardMatrix": [
+    "missing source key",
+    "ingest not ready",
+    "waiting Workflow",
+    "queued Ingest",
+    "no completed render",
+    "missing preview",
+    "missing completed time",
+    "recent source",
+    "exact ninety-day boundary",
+    "Project purge in progress",
+    "one millisecond before retention cutoff is eligible"
+  ],
+  "preservedFacts": [
+    "SourceAudio row and key survive video retirement",
+    "No native storage HTTP in the planner",
+    "Current live holds produce zero cleanup intents and zero dispatches",
+    "One eligible assigned video admits one exact cleanup intent; history remains intact"
+  ],
+  "removedUnitCases": "Invalid ISO strings are not PostgreSQL timestamp states; date arithmetic and pure old-worker wrappers no longer authorize maintenance. All representable eligibility guards now run through the production SQL planner.",
+  "logSha256": "5c8dc86e3ecafce08663ef1347e0926efa24a814c4bba1480c34ea1ed59bb4d7"
+}

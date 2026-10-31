@@ -21,6 +21,6 @@
     "@narriflow/mcp-core": "workspace:*",
     "@narriflow/services": "workspace:*",
     "@types/node": "26.2.0",
-    "zod": "^4.3.6"
+    "zod": "^4.6.7"
   }
 }
