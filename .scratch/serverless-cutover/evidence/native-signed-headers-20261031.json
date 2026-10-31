@@ -1,0 +1,21 @@
+{
+  "status": "passed_actual_r2_and_host_transport_regression",
+  "date": "2026-10-31",
+  "problem": "Signed If-Match and Range headers were duplicated when grant and request keys used different casing.",
+  "red": {
+    "actualLoopbackHttp": "Two If-Match and two Range headers reached the server.",
+    "actualOwnedR2SourceReadStatus": 400
+  },
+  "green": {
+    "actualLoopbackHttp": "Exactly one If-Match and one Range header reached the server; a conflicting value was refused before HTTP.",
+    "actualOwnedR2SourceReadStatus": 206,
+    "byteLength": 165481,
+    "sha256": "7079df6ed9e704a2b4749ef3d1d2bf568ea99fb1a9c6d2bb67092082aa11aa7c",
+    "pythonMultipartTests": 10
+  },
+  "scope": "The real conditional read used the production Python transport against an owned synthetic R2 object. No database authority or product deadline was changed.",
+  "remaining": [
+    "Deploy the corrected native image and pass the full Workflow to Modal preparation/render/output lineage gate.",
+    "Preserve failed live attempts and their charged counts; never reset them into a passing result."
+  ]
+}
