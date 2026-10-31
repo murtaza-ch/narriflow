@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import nullcontext
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
@@ -11,7 +12,7 @@ import threading
 import unittest
 
 from narriflow_media.publication_runtime import run_publication, PublicationFailure
-from narriflow_media.process import MediaProcessError
+from narriflow_media.process import MediaProcessError, run_owned_process_async
 from narriflow_media.transfer import WorkPackage, _wire
 from narriflow_media.native_runtime import run_publication as run_native_publication
 from unittest.mock import AsyncMock,patch
@@ -48,7 +49,7 @@ class PublicationRuntimeTests(unittest.IsolatedAsyncioTestCase):
                     def command(self,action,**fields):
                         if action!='publication-command':raise AssertionError(action)
                         self.assert_live();command=fields['command'];calls.append(command)
-                        if mode=='revoked' and command.get('kind')=='provider_call' and command.get('operation')=='upload':
+                        if mode in ('revoked','revoked_fast_exit') and command.get('kind')=='provider_call' and command.get('operation')=='upload':
                             self.cancel_event.set();return type('Reply',(),{'disposition':{'disposition':'cancelled'}})()
                         if command['kind']=='accepted':result={'kind':'settled','outcome':'posted','attemptId':scope['attemptId'],'socialPostId':scope['socialPostId']}
                         elif command['kind'] in {'failed','unknown','interrupted'}:result={'kind':'settled','outcome':'needs_attention','attemptId':scope['attemptId'],'socialPostId':scope['socialPostId'],'code':'publication_unconfirmed'}
@@ -61,8 +62,14 @@ class PublicationRuntimeTests(unittest.IsolatedAsyncioTestCase):
                     if mode=='lost_start':
                         with self.assertRaises(MediaProcessError):await run_publication(session,package,work,media_path=media,cli_path=fixture)
                         self.assertEqual(calls,[]);self.assertEqual(requests,[]);self.assertFalse((work/'publication-invocation.json').exists());return
-                    if mode=='revoked':
-                        with self.assertRaises(MediaProcessError) as cancelled:await run_publication(session,package,work,media_path=media,cli_path=fixture)
+                    if mode in ('revoked','revoked_fast_exit'):
+                        async def before_next_cancel_poll(*args,**kwargs):
+                            # Force the child to finish before its supervisor's
+                            # next cancellation poll. Control still denies PUT.
+                            kwargs['cancel_event']=None
+                            return await run_owned_process_async(*args,**kwargs)
+                        with patch('narriflow_media.publication_runtime.run_owned_process_async',side_effect=before_next_cancel_poll) if mode=='revoked_fast_exit' else nullcontext():
+                            with self.assertRaises(MediaProcessError) as cancelled:await run_publication(session,package,work,media_path=media,cli_path=fixture)
                         self.assertEqual(cancelled.exception.code,'media_execution_cancelled')
                         self.assertEqual([method for method,_ in requests],['POST']);self.assertFalse((work/'publication-invocation.json').exists());return
                     result=await run_publication(session,package,work,media_path=media,cli_path=fixture)
@@ -81,6 +88,7 @@ class PublicationRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_real_bun_child_has_no_database_or_redis_and_every_provider_call_is_freshly_admitted(self):await self.actual()
     async def test_unconfirmed_process_start_releases_no_stdio_or_provider_request(self):await self.actual('lost_start')
     async def test_revocation_between_initialize_and_upload_prevents_the_next_http_request(self):await self.actual('revoked')
+    async def test_revocation_remains_cancelled_when_child_exits_before_the_next_cancel_poll(self):await self.actual('revoked_fast_exit')
 
     async def test_mismatched_private_input_binding_is_rejected_before_any_named_download(self):
         made=subprocess.run(['bun','-e',FIXTURE],cwd=ROOT,capture_output=True,timeout=15,check=True)
