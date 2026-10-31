@@ -75,6 +75,14 @@
       "behavior": "Actual Popen charge remains1 after shutdown release and receipt replay; a sealed Dub audio recovery advances generation without repeating paid work or refunding that charge. Startup rejection stays0.",
       "red": "/tmp/narriflow-serverless-gates/dub-sealed-release-red.log",
       "green": "/tmp/narriflow-serverless-gates/dub-release-registration-regression-green2.log"
+    },
+    "maximumArchive": {
+      "evidence": "export-bundle-maximum-input-20261031.json",
+      "sourceBytes": 4294967296,
+      "peakProcessRssBytes": 135233536,
+      "zip64CrcVerified": true,
+      "cpu": 2,
+      "memoryLimitBytes": 4294967296
     }
   },
   "registration": {
@@ -84,7 +92,6 @@
   },
   "remaining": [
     "Actual Modal Function verifier and live Worker-to-native Bundle/Dub gates after root-owned migration/deployment coordination",
-    "Large4GiB archive peak-RSS/resource gate",
     "Ticket19 remaining producers/expiry/old-loop removal are tracked by their owners"
   ],
   "external_mutations": {

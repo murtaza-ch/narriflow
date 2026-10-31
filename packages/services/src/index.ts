@@ -757,3 +757,7 @@ export * from "./execution-selection-restore";
 export * from "./execution-preparation-restore";
 export * from "./execution-recovery-locks";
 export { planPublicationRecoveryPage, planStandingGrantExpiryPage, planPublicationReceiptRecoveryPage, planPerformanceCaptureRecoveryPage, planPublicationRestorePage, planPublicationReceiptRedispatchPage, planPerformanceCaptureRedispatchPage, planStandingGrantRedispatchPage, planPublicationGuidanceRedispatchPage } from "./publication-maintenance";
+export { DubbingExecution, createDubbingExecution, type DubbingArtifactCommit } from "./dubbing-execution";
+export { getDubbingExecution } from "./dubbing-execution-runtime";
+export { dubbingInputBinding, encodeDubbingInput, decodeDubbingInput } from "./dubbing-input";
+export { restoreDubWithinTransaction, restoreDubbingPage, recoverDubbingWakesPage, type DubbingRestoreProof } from "./dubbing-recovery";
