@@ -57,6 +57,7 @@ const hash = (value: unknown) =>
 	createHash("sha256").update(JSON.stringify(value)).digest("hex");
 const namespace = "c22d9ae5-2920-5c0b-9bfe-72cdf2d8a0b9";
 import { webhookSubscriptionExecutionInputHash } from "./notification-identity";
+import { isCurrentNotificationTarget } from "./notification-dispatch";
 export { webhookSubscriptionExecutionInputHash } from "./notification-identity";
 export interface NotificationBodyPlan {
 	storageKey: string;
@@ -506,7 +507,9 @@ export class OutboundDeliveryService
 		});
 	}
 	/** Called by the operation's durable completion wake, with no parent lease. */
-	async prepareCompletion(callbackId: string) {
+	async prepareCompletion(callbackId: string, expectedReference?: ExecutionDispatchReference) {
+		if (expectedReference && (expectedReference.subject.kind !== "completion_callback" || expectedReference.subject.id !== callbackId ||
+			!await isCurrentNotificationTarget(this.database, expectedReference))) return { kind: "terminal" as const };
 		const initial = await this.database.completionCallback.findUnique({
 			where: { id: callbackId },
 		});
@@ -530,6 +533,7 @@ export class OutboundDeliveryService
 				targetKind: "completion_callback",
 				targetId: callbackId,
 			});
+			if (expectedReference && !await isCurrentNotificationTarget(tx, expectedReference)) return { invalidReference: true as const };
 			let callback = await tx.completionCallback.findUniqueOrThrow({
 				where: { id: callbackId },
 			});
@@ -582,6 +586,7 @@ export class OutboundDeliveryService
 				maxAttempts: 10,
 			});
 		});
+		if (admitted && "invalidReference" in admitted) return { kind: "terminal" as const };
 		if (!admitted)
 			return {
 				kind:
@@ -596,11 +601,14 @@ export class OutboundDeliveryService
 	 * Caught-up subscriptions own no timer, SQL poller, or renewable lease. */
 	async prepareSubscription(
 		id: string,
+		expectedReference?: ExecutionDispatchReference,
 	): Promise<
 		| { kind: "idle" | "terminal" }
 		| { kind: "sleep"; dueAt: Date }
 		| { kind: "accepted"; deliveryId: string }
 	> {
+		if (expectedReference && (expectedReference.subject.kind !== "webhook_subscription" || expectedReference.subject.id !== id ||
+			!await isCurrentNotificationTarget(this.database, expectedReference))) return { kind: "terminal" };
 		const initial = await this.database.webhookSubscription.findUnique({
 			where: { id },
 		});
@@ -612,6 +620,7 @@ export class OutboundDeliveryService
 				targetKind: "webhook_event",
 				targetId: id,
 			});
+			if (expectedReference && !await isCurrentNotificationTarget(tx, expectedReference)) return { kind: "terminal" as const };
 			const sub = await tx.webhookSubscription.findUniqueOrThrow({
 				where: { id },
 			});

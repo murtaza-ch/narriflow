@@ -52,3 +52,10 @@ focused Biome checks pass. The invocation wrapper must run inside the database s
 before API responses or Workflow directives are returned. Production composition and
 the remaining deployed native acceptance gates are still owned by integration, so this
 ticket remains claimed.
+
+Outbound preparation also accepts its expected immutable dispatch reference. It
+checks the reference before reading trusted operation status and checks it again
+under the existing epoch, Workspace and target locks before creating delivery
+intent. A callback input changed between those checks produces a terminal result
+without a frozen payload, body write or delivery row. The subscription and callback
+race regressions failed first, then passed with the authoritative recheck.
