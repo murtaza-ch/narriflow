@@ -56,22 +56,8 @@ const attemptMs = 120_000;
 const hash = (value: unknown) =>
 	createHash("sha256").update(JSON.stringify(value)).digest("hex");
 const namespace = "c22d9ae5-2920-5c0b-9bfe-72cdf2d8a0b9";
-/** Lifetime subscription identity; cursor changes never change the Workflow input. */
-export function webhookSubscriptionExecutionInputHash(
-	row: Pick<
-		WebhookSubscription,
-		"id" | "workspaceId" | "urlFingerprint" | "types" | "createdAt"
-	>,
-) {
-	return hash([
-		"webhook-subscription-v1",
-		row.id,
-		row.workspaceId,
-		row.urlFingerprint,
-		row.types,
-		row.createdAt.toISOString(),
-	]);
-}
+import { webhookSubscriptionExecutionInputHash } from "./notification-identity";
+export { webhookSubscriptionExecutionInputHash } from "./notification-identity";
 export interface NotificationBodyPlan {
 	storageKey: string;
 	sha256: string;

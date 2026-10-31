@@ -249,13 +249,13 @@ dbDescribe("Exact Workflow execution commands", () => {
         errorCode: "source_audio_video_mismatch", now: cancelledAt });
     }));
     expect(await db.workflowRun.count({ where: { projectId: f.run.projectId, status: "cancelled" } })).toBe(131);
-    expect(first.dispatchIds.length).toBeLessThanOrEqual(124);
-    expect(await db.executionDispatch.count({ where: { subjectId: { in: [f.run.id, ...ids] }, wakeKind: "source_cancelled" } })).toBe(123);
-    expect(await db.workflowEvent.count({ where: { projectId: f.run.projectId } })).toBe(123);
+    expect(first.dispatchIds.length).toBeLessThanOrEqual(123);
+    expect(await db.executionDispatch.count({ where: { subjectId: { in: [f.run.id, ...ids] }, wakeKind: "source_cancelled" } })).toBe(122);
+    expect(await db.workflowEvent.count({ where: { projectId: f.run.projectId } })).toBe(122);
     const continuation = (await Promise.all(first.dispatchIds.map(id => readExecutionDispatch(db, id)))).find(row => row?.wakeKind?.startsWith("cancel_"));
     if (!continuation) throw new Error("Expected a persisted cancellation continuation");
     const second = await withServiceEnvironment({}, () => f.lifecycle.continueSourceCancellation(continuation.reference));
-    expect(second.dispatchIds.length).toBe(9);
+    expect(second.dispatchIds.length).toBe(10);
     expect((await Promise.all(second.dispatchIds.map(id => readExecutionDispatch(db, id)))).filter(row => row?.reference.kind === "project_progress")).toHaveLength(1);
     expect(await db.executionDispatch.count({ where: { subjectId: { in: [f.run.id, ...ids] }, wakeKind: "source_cancelled" } })).toBe(131);
     expect(await db.workflowEvent.count({ where: { projectId: f.run.projectId } })).toBe(131);

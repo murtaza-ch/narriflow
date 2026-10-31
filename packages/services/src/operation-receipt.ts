@@ -80,6 +80,9 @@ export interface OperationReceiptPersistence<Tx> {
 		identity: OperationReceiptIdentity,
 	): Promise<OperationReceipt | null>;
 	create(tx: Tx, receipt: OperationReceipt): Promise<void>;
+	/** Called only after authorization and fingerprint validation. Recover the
+	 * original durable notification obligations without rerunning mutation. */
+	recover?(receipt: OperationReceipt, tx?: Tx): Promise<void>;
 }
 
 export class OperationIdempotencyConflictError extends ExpectedDomainFailureError<"operation_idempotency_conflict"> {
@@ -135,6 +138,7 @@ export function createOperationReceiptExecutor<Tx>(
 			 * commit, and a replay re-evaluates against the committed state. */
 			mutate: (
 				tx: Tx,
+				context: { receiptId: string },
 			) => Promise<
 				| { resourceType: string; resourceId: string; value: T }
 				| { refusal: ExpectedDomainFailureError }
@@ -156,9 +160,10 @@ export function createOperationReceiptExecutor<Tx>(
 					? { input: input.input, callback: input.callback.fingerprint }
 					: input.input,
 			);
-			const replay = (receipt: OperationReceipt) => {
+			const replay = async (receipt: OperationReceipt, tx?: Tx) => {
 				if (receipt.fingerprint !== fingerprint)
 					throw new OperationIdempotencyConflictError();
+				await persistence.recover?.(receipt, tx);
 				return {
 					receiptId: receipt.id,
 					replayed: true,
@@ -177,11 +182,11 @@ export function createOperationReceiptExecutor<Tx>(
 						tx,
 						input.identity,
 					);
-					if (accepted) return replay(accepted);
+					if (accepted) return replay(accepted, tx);
 					await input.beforeAccept?.();
-					const result = await input.mutate(tx);
-					if ("refusal" in result) return result;
 					const id = randomUUID();
+					const result = await input.mutate(tx, { receiptId: id });
+					if ("refusal" in result) return result;
 					// Store a JSON snapshot, never a mutable object owned by the caller.
 					const value = JSON.parse(canonicalJson(result.value)) as T;
 					await persistence.create(tx, {
