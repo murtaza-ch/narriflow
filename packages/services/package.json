@@ -41,6 +41,7 @@
     "@narriflow/db": "workspace:*",
     "@narriflow/email": "workspace:*",
     "@narriflow/validators": "workspace:*",
+    "@noble/hashes": "2.4.0",
     "@node-rs/argon2": "^2.2.0",
     "@prisma/client": "^7.4.2",
     "fast-xml-parser": "^5.11.2",
