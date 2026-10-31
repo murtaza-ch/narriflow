@@ -644,7 +644,11 @@
     "./execution-retention-pages": "./src/execution-retention-pages.ts",
     "./execution-safety-pages": "./src/execution-safety-pages.ts",
     "./execution-account-recovery-pages": "./src/execution-account-recovery-pages.ts",
-    "./autopilot-finishing-authority": "./src/autopilot-finishing-authority.ts"
+    "./autopilot-finishing-authority": "./src/autopilot-finishing-authority.ts",
+    "./execution-source-recovery-pages": "./src/execution-source-recovery-pages.ts",
+    "./execution-selection-restore": "./src/execution-selection-restore.ts",
+    "./execution-preparation-restore": "./src/execution-preparation-restore.ts",
+    "./execution-recovery-locks": "./src/execution-recovery-locks.ts"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",

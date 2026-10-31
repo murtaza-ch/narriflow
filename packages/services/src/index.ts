@@ -743,3 +743,8 @@ export * from "./execution-retention-pages";
 export * from "./execution-safety-pages";
 export * from "./execution-account-recovery-pages";
 export { readAutopilotImportSource, freezeAutopilotFinishingAuthority, AutopilotSourceChanged, type AutopilotImportSource } from "./autopilot-finishing-authority";
+
+export * from "./execution-source-recovery-pages";
+export * from "./execution-selection-restore";
+export * from "./execution-preparation-restore";
+export * from "./execution-recovery-locks";
