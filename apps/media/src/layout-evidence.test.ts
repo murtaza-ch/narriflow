@@ -113,6 +113,29 @@ describe("LayoutEvidence", () => {
     expect(reused.owner.resources.analysisExecutionCount).toBe(0);
   });
 
+  test("completed source observations retain the actual B-roll application gate without detector reruns", async () => {
+    const prepared = harness(); await prepared.owner.fulfill(requests);
+    const durable = Object.fromEntries(prepared.writes.map(write => [write.kind, write.value]));
+    for (const hasBroll of [true, false]) {
+      const render = harness(input({ durable, hasBroll, completedPreparation: true }));
+      const result = await render.owner.fulfill(requests);
+      expect(result.automaticLayout.state).toBe("available");
+      if (hasBroll) {
+        expect(result.screenLayout).toEqual({ state: "failed", reason: "broll_conflict" });
+        expect(result.splitLayout).toEqual({ state: "failed", reason: "broll_conflict" });
+      } else {
+        expect(result.screenLayout.state).toBe("available");
+        expect(result.splitLayout.state).toBe("available");
+      }
+      expect(render.calls).toEqual({ segment: 0, multi: 0, face: 0, pip: 0, cuts: 0 });
+    }
+    const unavailable = harness(input({ durable: { automatic: { state: "failed", reason: "analysis_unavailable" } }, completedPreparation: true }));
+    expect(await unavailable.owner.fulfill(requests)).toMatchObject({ automaticLayout: { state: "failed" }, screenLayout: { state: "failed" }, splitLayout: { state: "failed" } });
+    expect(unavailable.calls).toEqual({ segment: 0, multi: 0, face: 0, pip: 0, cuts: 0 });
+    expect(() => harness(input({ durable, completedPreparation: true, clip: { ...input().clip, editorRevision: 8, startSec: 11 } }))).toThrow("layout_preparation_binding_mismatch");
+    expect(() => harness(input({ durable: { ...durable, automatic: { ...durable.automatic, engine: "foreign-engine" } }, completedPreparation: true }))).toThrow("layout_preparation_binding_mismatch");
+  });
+
   test.each(["trim", "dimensions", "deleted ranges"])("rejects durable evidence after changing %s", async (change) => {
     const fresh = harness(); await fresh.owner.fulfill(requests);
     const durable = Object.fromEntries(fresh.writes.map((write) => [write.kind, write.value]));
