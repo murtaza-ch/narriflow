@@ -1,3 +1,4 @@
+import { assertExecutionDatabaseTestTarget } from "./execution-db-test-support";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@prisma/client";
@@ -15,7 +16,7 @@ suite("Scoped executor transfer authority", () => {
   let db: PrismaClient;
   const users: string[] = [], dispatches: string[] = [], receipts: string[] = [];
   beforeAll(async () => {
-    if (!url || new URL(url).hostname !== "ep-wispy-field-b5wyn9o3.c-7.us-east-2.aws.neon.tech") throw new Error("Transfer gates require the isolated database");
+    assertExecutionDatabaseTestTarget(url, process.env.SERVERLESS_TEST_DATABASE_SCHEMA ?? "public");
     const schema = process.env.SERVERLESS_TEST_DATABASE_SCHEMA ?? "public";
     if (schema !== "public" && !/^serverless_execution_test_[a-z0-9]+$/.test(schema)) throw new Error("Only disposable execution schemas are allowed");
     db = new PrismaClient({ adapter: new PrismaPg({ connectionString: url, max: 6 }, { schema }), transactionOptions: { timeout: 30_000, maxWait: 10_000 } });

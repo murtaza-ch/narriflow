@@ -1,3 +1,4 @@
+import { assertExecutionDatabaseTestTarget } from "./execution-db-test-support";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient, type Prisma } from "@prisma/client";
@@ -19,7 +20,7 @@ dbDescribe("Targeted Ingest execution", () => {
   let db: PrismaClient;
   const users: string[] = [], subjects: string[] = [], receipts: string[] = [];
   beforeAll(async () => {
-    if (!url || new URL(url).hostname !== "ep-wispy-field-b5wyn9o3.c-7.us-east-2.aws.neon.tech") throw new Error("Only the isolated serverless gate branch is allowed");
+    assertExecutionDatabaseTestTarget(url, process.env.SERVERLESS_TEST_DATABASE_SCHEMA ?? "public");
     const schema = process.env.SERVERLESS_TEST_DATABASE_SCHEMA ?? "public";
     if (schema !== "public" && !/^serverless_execution_test_[a-z0-9]+$/.test(schema)) throw new Error("Only disposable execution schemas are allowed");
     db = new PrismaClient({ adapter: new PrismaPg({ connectionString: url, max: 4 }, { schema }), transactionOptions: { timeout: 60_000, maxWait: 30_000 } });
@@ -275,10 +276,14 @@ dbDescribe("Targeted Ingest execution", () => {
     binding.video.probe.durationSec = 60;
     binding.video.probe.facts.format.durationSec = 60;
     for (const stream of [...binding.video.probe.facts.videos, ...binding.video.probe.facts.audios]) { stream.durationSec = 60; stream.endTimeSec = 60; }
+    const assigned = [];
     for (const role of ["source_video", "source_audio"] as const) {
       const contentType = role === "source_audio" ? "audio/mp4" : "video/mp4";
       const artifact = await db.executionArtifact.create({ data: { attemptToken: f.token, owner: f.owner, role, bindingHash: "b".repeat(64), storageKey: role === "source_audio" ? key : `${key}.mp4`,
         contentType, maxBytes: 4096n, grantExpiresAt: new Date(Date.now() + 60_000) } });
+      assigned.push({ role, contentType, artifact });
+    }
+    for (const { role, contentType, artifact } of assigned) {
       await withServiceEnvironment({}, () => f.control.execute({ command: { action: "commit-artifact", fence, artifact: { artifactId: artifact.id, role, contentType,
         byteLength: 1024, etag: '"audio-etag"', sha256: "c".repeat(64), bindingHash: artifact.bindingHash,
         ...(role === "source_audio" ? { sourceAudio: binding.audio } : { sourceVideo: binding.video }) } }, verifiedRequest: f.verified() }));
