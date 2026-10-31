@@ -1,0 +1,16 @@
+{
+  "runtime": "workerd",
+  "checks": [
+    "service_rpc_uses_same_durable_rate_counter",
+    "device_presence_over_rpc_without_database_configuration",
+    "invalid_reference_refused_before_database",
+    "private_helpers_do_not_expose_worker_bindings",
+    "http_proxy_restricts_existing_socket_routes"
+  ],
+  "passed": 5,
+  "postgresBindings": 0,
+  "externalProviderRequests": 0,
+  "transport": "Named WorkerEntrypoint service binding between two Workers in one real Workerd runtime",
+  "liveCloudRemoteConnection": "pending canonical API deployment",
+  "documentation": "https://developers.cloudflare.com/workers/local-development/#using-remote-resources-with-durable-objects-and-workflows"
+}
