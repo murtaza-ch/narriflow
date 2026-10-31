@@ -1833,6 +1833,7 @@ export class ProjectService {
 	async importZoomRecording(scope: ActorScope, input: {
 		source: AutopilotImportSource; ruleUpdatedAt: Date; connectionId: string;
 		beforeAutopilotAdmit?: (tx: Prisma.TransactionClient) => Promise<void>;
+    confirmIngest?: (ids: readonly string[]) => Promise<void>;
 		notification: ZoomRecordingNotification; titlePrefix: string | null;
 		recipe: ResolvedRecipe;
 	}) {
@@ -1845,6 +1846,7 @@ export class ProjectService {
 		}, {
 			autopilotSource: input.source,
 			beforeAutopilotAdmit: input.beforeAutopilotAdmit,
+      confirmIngest: input.confirmIngest,
 			generationContext: { contentPack: input.recipe.contentPack, languageCode: input.recipe.languageCode, finishing: input.recipe.finishing, recipe: acceptedRecipe(input.recipe) },
 			zoom: { connectionId: input.connectionId, meetingUuid: item.meetingUuid, recordingId: item.recordingId, ruleUpdatedAt: input.ruleUpdatedAt },
 		});
@@ -1875,6 +1877,7 @@ export class ProjectService {
 			generationContext?: IntakeGenerationContext;
 			autopilotSource?: AutopilotImportSource;
 			beforeAutopilotAdmit?: (tx: Prisma.TransactionClient) => Promise<void>;
+    confirmIngest?: (ids: readonly string[]) => Promise<void>;
 		} = {},
 	) {
 		const { rssUrl, ...media } = input;
@@ -1901,6 +1904,7 @@ export class ProjectService {
 			generationContext?: IntakeGenerationContext;
 			autopilotSource?: AutopilotImportSource;
 			beforeAutopilotAdmit?: (tx: Prisma.TransactionClient) => Promise<void>;
+    confirmIngest?: (ids: readonly string[]) => Promise<void>;
 			zoom?: { connectionId: string; meetingUuid: string; recordingId: string; ruleUpdatedAt: Date };
 		} = {},
 	) {
@@ -1919,13 +1923,16 @@ export class ProjectService {
 
 		const prisma = this.requirePrisma();
 		const actor = await this.requireActor(scope, "processing.consume");
-    const repairIngestWake = async (projectId: string) => prisma.$transaction(async tx => {
+    const repairIngestWake = async (projectId: string) => {
+      const reference = await prisma.$transaction(async tx => {
       const project = await tx.project.findFirst({ where: { id: projectId, workspaceId: actor.workspaceId }, select: { id: true } });
       if (!project) throw new ProjectNotFoundError();
       const job = await tx.ingestJob.findFirst({ where: { projectId }, orderBy: [{ createdAt: "desc" }, { id: "desc" }] });
       if (!job) throw new ProjectServiceError("rss_ingest_job_missing", "The RSS ingest job is unavailable.");
-      await getIngestJobLifecycle().queueExecutionWithinTransaction(tx, job.id);
-    });
+      return getIngestJobLifecycle().queueExecutionWithinTransaction(tx, job.id);
+      });
+      if (reference) await options.confirmIngest?.([reference.dispatchId]);
+    };
 
 		if (options.autopilotSource?.ruleId && input.episodes.length === 1) {
 			const existing = await prisma.autopilotEpisode.findUnique({
@@ -2073,7 +2080,7 @@ export class ProjectService {
 						acquisition,
 					});
 
-          await getIngestJobLifecycle().queueExecutionWithinTransaction(tx, createdJob.id);
+          const dispatch = await getIngestJobLifecycle().queueExecutionWithinTransaction(tx, createdJob.id);
 					if (options.autopilotSource?.ruleId) {
 						await tx.autopilotEpisode.update({
 							where: {
@@ -2097,8 +2104,9 @@ export class ProjectService {
 						});
 					}
 
-					return { project: createdProject, jobId: createdJob.id };
+					return { project: createdProject, jobId: createdJob.id, dispatchIds: dispatch ? [dispatch.dispatchId] : [] };
 				}, PROCESSING_USAGE_TRANSACTION);
+        await options.confirmIngest?.(created.dispatchIds);
 				project = created.project;
 				jobId = created.jobId;
 			} catch (error) {

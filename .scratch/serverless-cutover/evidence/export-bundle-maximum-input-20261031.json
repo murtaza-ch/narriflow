@@ -1,0 +1,46 @@
+{
+  "date": "2026-10-31",
+  "scope": "Existing native Archiver writer, maximum accepted single input, ZIP64 and bounded memory; no transport/domain/provider calls",
+  "environment": {
+    "image": "narriflow-media:cutover-render",
+    "context": "preliminary Linux image with current source overlay",
+    "cpu": 2,
+    "memoryBytes": 4294967296,
+    "network": "none"
+  },
+  "facts": {
+    "gate": "export-bundle-maximum-input",
+    "sourceBytes": 4294967296,
+    "sourceFixture": "one4GiBzero-byte stream; no source file",
+    "maximumConcurrentSourceStreams": 1,
+    "outputBytes": 4175183,
+    "outputSha256": "e1e604e7093ce028d1321446b09354311daa3289805d726b9568115d21ff11a0",
+    "peakProcessRssBytes": 135233536,
+    "cgroupMemoryMaxBytes": 4294967296,
+    "cgroupMemoryPeakBytes": 125620224,
+    "elapsedMs": 217154.263732,
+    "validation": {
+      "uncompressedBytes": 4294967296,
+      "zip64Version": 45,
+      "crcVerified": true,
+      "python": "3.13.5"
+    },
+    "runtime": {
+      "platform": "linux",
+      "arch": "x64",
+      "bun": "1.3.6",
+      "archiver": "7.0.1"
+    },
+    "providerRequests": 0,
+    "databaseRequests": 0,
+    "storageRequests": 0
+  },
+  "fixture": "One 4 GiB all-zero stream generated in 64 KiB chunks. Source SHA256 independently computed with Python and supplied to the existing writer; no source file is materialized.",
+  "validation": "Python zipfile independently reads ZIP64 metadata and inflates the complete 4 GiB entry to verify its CRC. Zip entry size is exactly one byte beyond the classic 32-bit unsigned maximum.",
+  "limits": [
+    "Compressible fixture measures stream-size correctness and memory, not maximum compressed-output throughput.",
+    "Actual Modal Function and live Bundle/R2 acceptance are separate gates."
+  ],
+  "log": "/tmp/narriflow-serverless-gates/linux-bundle-maximum-input.log",
+  "gate": "apps/media/scripts/gates/export-bundle-memory-gate.ts"
+}

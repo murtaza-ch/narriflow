@@ -20,6 +20,7 @@ export function getAutopilotExecution(): AutopilotExecution {
           autopilotSource: input.plan.source,
           generationContext: { contentPack: input.plan.recipe.contentPack, languageCode: input.plan.recipe.languageCode, finishing: input.plan.recipe.finishing, recipe: acceptedRecipe(input.plan.recipe) },
           beforeAutopilotAdmit: tx => driver.assertIntakeWithinTransaction(tx,input),
+          confirmIngest: deliverExecutionDispatches,
         });
       } catch (error) {
         if (input.plan.recipe.brandProfileId && (error instanceof BrandProfileNotFoundError || error instanceof BrandProfileMissingAssetError || error instanceof BrandProfileMembershipError || isBrandAccessRefusal(error))) return { count: 0, refusal: "brand_profile" };

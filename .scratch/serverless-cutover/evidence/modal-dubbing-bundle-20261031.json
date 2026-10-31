@@ -1,0 +1,78 @@
+{
+  "status": "passed_actual_modal_controlled_function",
+  "account": "murtazach275",
+  "environment": "main",
+  "application": "narriflow-media-gates",
+  "deployment": "https://modal.com/apps/murtazach275/main/deployed/narriflow-media-gates",
+  "deploymentSeconds": 196.075,
+  "function": "verify_dubbing_bundle_native_fixture",
+  "invocation": "modal.Function.from_name(application,function,environment_name=\"main\").remote()",
+  "configuredResources": {
+    "cpu": 2,
+    "memoryMiB": 4096,
+    "minContainers": 0
+  },
+  "result": {
+    "profile": "lean",
+    "toolchainFingerprint": "6235b66ae20332ba1024049d77166d850c4fed0b7d4378bbb5d5d9e74f1cb38d",
+    "dubbing": [
+      {
+        "mode": "success",
+        "nativeStarts": 2,
+        "controlledProviderRequests": 2,
+        "committedStageAcknowledgements": 7,
+        "completedObjectsRetained": 7
+      },
+      {
+        "mode": "lost_intent",
+        "nativeStarts": 1,
+        "controlledProviderRequests": 0,
+        "committedStageAcknowledgements": 1,
+        "completedObjectsRetained": 1
+      },
+      {
+        "mode": "revoked",
+        "nativeStarts": 1,
+        "controlledProviderRequests": 0,
+        "committedStageAcknowledgements": 1,
+        "completedObjectsRetained": 1
+      },
+      {
+        "mode": "lost_start",
+        "nativeStarts": 1,
+        "controlledProviderRequests": 0,
+        "committedStageAcknowledgements": 0,
+        "completedObjectsRetained": 0
+      },
+      {
+        "mode": "lost_final",
+        "nativeStarts": 1,
+        "controlledProviderRequests": 2,
+        "committedStageAcknowledgements": 6,
+        "completedObjectsRetained": 6
+      }
+    ],
+    "bundles": [
+      {
+        "nativeStarts": 1,
+        "completedObjectsRetained": 1,
+        "sourceBytesTransferred": 4194712,
+        "lostAcknowledgementRetained": false
+      },
+      {
+        "nativeStarts": 1,
+        "completedObjectsRetained": 1,
+        "sourceBytesTransferred": 4194712,
+        "lostAcknowledgementRetained": true
+      }
+    ],
+    "externalProviderRequests": 0,
+    "databaseRequests": 0
+  },
+  "scope": "Actual supervised native subprocesses and FFmpeg/ZIP within Modal, with owned loopback control/provider/storage fixtures. This does not prove a live database/R2/provider end-to-end pipeline.",
+  "remaining": [
+    "Live committed ClipExport to ExportBundle lineage through Worker/Modal/R2.",
+    "Live Dubbing accepted intent, quota and provider outcome through the final API revision.",
+    "Final deployment faults and long-source throughput matrix."
+  ]
+}

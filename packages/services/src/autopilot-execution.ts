@@ -4,7 +4,7 @@ import { roleHasWorkspaceCapability, workspaceAllowsCapability, type AutopilotPa
 import { rssFeedSnapshotSchema, type RssFeedSnapshot } from "@narriflow/validators/outbound-probe";
 import { executionDispatchReferenceSchema, type ExecutionDispatchReference } from "@narriflow/validators/execution";
 import { readExecutionAdmission, assertExecutionAdmissionOpen } from "./execution-admission";
-import { appendExecutionDispatch, executionDispatchIdentity, readExecutionDispatch } from "./execution-dispatch";
+import { ExecutionDispatchError, ExecutionDispatchPendingError, appendExecutionDispatch, executionDispatchIdentity, readExecutionDispatch } from "./execution-dispatch";
 import { collectExecutionDispatch } from "./execution-dispatch-runtime";
 import { lockWorkspaceUsage } from "./processing-usage";
 import { lockAutopilotImportPlan } from "./autopilot-finishing-authority";
@@ -134,6 +134,14 @@ export class AutopilotExecution {
     if ("result" in prepared) return prepared.result;
     try { return await this.runAction(reference,prepared); }
     catch (error) {
+      if (error instanceof ExecutionDispatchPendingError) {
+        await this.deps.database.$transaction(async tx => {
+          const row = await this.owned(tx,reference,prepared.claimToken);
+          if (row) await tx.autopilotRule.update({where:{id:row.id},data:{claimToken:null,leaseExpiresAt:null}});
+        });
+        throw error;
+      }
+      if (error instanceof ExecutionDispatchError) throw error;
       const ids = await this.deps.database.$transaction(async tx => {
         const row = await this.owned(tx,reference,prepared.claimToken);
         if (!row) return null;
