@@ -392,6 +392,21 @@ suite("Clip Preparation authority and publication", () => {
     expect(f.objects.size).toBe(writes);
     expect(await db.workflowRun.findUniqueOrThrow({ where: { id: f.run.id } })).toMatchObject({ status: "waiting", attemptId: null, leaseOwner: null, attemptCount: 0 });
   });
+  test("render input adoption rejects another group's key and a key granted to cleanup", async () => {
+    const f = await fixture(), execution = await native(f);
+    await execution.send(execution.commit(execution.preview)); await execution.send(execution.commit(execution.peaks)); await execution.send(execution.commit(execution.manifest));
+    const reference = f.references[0]!, domain = renderService(f).domain;
+    const tuple = { storageKey: `projects/${f.project.id}/render-groups/${f.references[1]!.subject.id}/${crypto.randomUUID()}.json`, etag: '"input"', byteLength: 2,
+      sha256: "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a" };
+    await expect(domain.adoptInput(reference, execution.admitted.preparationId, tuple)).rejects.toThrow("render_input_invalid");
+    const storageKey = await domain.planInputWrite(reference, execution.admitted.preparationId);
+    await db.mediaCleanupObligation.updateMany({ where: { objectKey: storageKey }, data: { claimId: crypto.randomUUID(), claimExpiresAt: new Date(Date.now() + 60000) } });
+    await expect(domain.adoptInput(reference, execution.admitted.preparationId, { ...tuple, storageKey })).rejects.toMatchObject({ code: "execution_object_deletion_admitted" });
+    expect((await db.renderGroup.findUniqueOrThrow({ where: { id: reference.subject.id } })).inputStorageKey).toBeNull();
+    const next = await domain.planInputWrite(reference, execution.admitted.preparationId);
+    expect(next).not.toBe(storageKey);
+    expect(await domain.adoptInput(reference, execution.admitted.preparationId, { ...tuple, storageKey: next })).toEqual({ ...tuple, storageKey: next });
+  });
 
   test("a failed preparation settles linked unstarted render members immediately without creating native history", async () => {
     const f = await fixture(), execution = await native(f);
