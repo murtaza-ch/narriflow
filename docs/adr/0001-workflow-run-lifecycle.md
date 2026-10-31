@@ -1,5 +1,7 @@
 # Workflow Runs own one fenced lifecycle
 
+**Serverless amendment:** [ADR 0019](0019-serverless-execution.md) revises runtime ownership and scheduling below at the single integrated cutover. See the dated amendment at the end; contract acceptance does not mean deployment is complete.
+
 Workflow Runs, but not Ingest Jobs, are owned by one deep lifecycle module. Each execution claim is itself an explicit `WorkflowAttemptRef`, with an immutable Workflow Attempt ID and renewable lease stored on the run. Workers pass that reference to every stage entrypoint and lifecycle command; dub rows inherit that attempt. Clip rendering uses the settled child-lease exception below. External-provider waits use an explicit lease-free `waiting` state, aggregate stages may terminate as `partial`, and the existing Workflow Event record is also the transactional outbox and replay source. This keeps one source of ownership truth and prevents a reaped worker, event-delivery failure, or telemetry failure from reversing newer domain state.
 
 ## Considered options
@@ -27,3 +29,7 @@ Every child write requires an open `clip_rendering` parent in `queued` or `runni
 Parent settlement waits for a complete partition and terminal or superseded groups, no live child lease and no scheduled retry, including retries already due. Expired running groups must be reaped first. Counts, terminal Workflow Event, notification intent and late-work admission commit together under the coordinator fence and project admission lock. A duplicate settlement returns the committed outcome; a group never sends the parent's notification.
 
 Migration `20261029160000_render_group_leases` is additive: a nullable parent generation, new tables, indexes and constraints. It can be applied while pre-group API and worker code runs, because that code never populates the new model. Deploy the schema/contracts, service protocol and worker integration together only after draining the old render workers. Applying this migration alone does not enable a second execution path or authorize shared-environment deployment.
+
+## Amendment 2026-10-31: serverless execution
+
+Workflow Run and Ingest Job lifecycles retain mutation and domain-attempt authority, but scheduling moves to Workflows and the reference-only Execution Dispatch ledger. This reopens the original rejection of a separate outbox: a progress/history event cannot represent all destination registration, future deadlines and non-Project obligations. Workflow Event stays the Project log; it no longer acts as the generic scheduler queue. Exact-id domain commands replace claim-next and reaper drivers. No coordinator claim or database connection survives a Workflow wait. RenderRun freezes membership, waits for child outcomes and settles in a short transaction after rereading every group. Cancellation revokes epoch/generation/token authority before external cancel. Project progress moves from Redis/SSE to authorized hibernating sockets. The existing retry budgets, immutable membership and single terminal notification remain domain-owned.

@@ -1,5 +1,7 @@
 # Processing Usage owns minute admission and settlement
 
+**Serverless amendment:** [ADR 0019](0019-serverless-execution.md) revises runtime ownership and scheduling below at the single integrated cutover. See the dated amendment at the end; contract acceptance does not mean deployment is complete.
+
 Workspaces buy a monthly allowance of source processing minutes per UTC calendar month and a per-video length limit. Usage used to be derived on every read by summing live Projects, so deleting or purging a Project returned its minutes, and admission checked nothing that concurrent requests couldn't race past. Usage is now recorded.
 
 One workspace-owned Processing Usage module owns admission, reservation sizing, settlement, release, operator refunds, the usage read model, and Processing Capacity. Link intake, RSS import, Autopilot, Upload Sessions, the Ingest Job lifecycle, web, MCP, and the future REST API call it; none of them computes usage.
@@ -31,3 +33,7 @@ The allowance is now sold as credits. The domain stays Processing Usage, and its
 - **Billing shares the lock.** `lockWorkspaceUsage` is exported, and Workspace Billing takes it before committing an access-projection change, so an admission cannot interleave with a restriction. Lock order is unchanged: usage lock, Project generation lock, row locks.
 
 Retrying or regenerating the same Project is free; a new import of the same source is a new Project and is charged again.
+
+## Amendment 2026-10-31: serverless execution
+
+Verified whole-source Source Audio may settle a link intake and admit STT before full video is ready. It must match the current Project/source revision, upstream media identity and selected audio track, and carry immutable stored bytes, exact probed whole-source duration and toolchain evidence. Workspace usage lock still precedes Project admission and row locks. Compare the exact duration with the plan cap before whole-credit rounding; settle once, record audio evidence and admit STT plus dispatch in the same transaction. The language probe also waits for this admission. Uploads still pin verified bytes and probe the whole source. Later video acceptance checks matching identity, revision, track, A/V offsets and duration within max(1 second, 2 frames); tolerance cannot change the credit debit or bypass the cap. Mismatch releases unsettled usage but preserves settled usage and records an operator-refund-needed fact. Same-Project retry, UTC month, capacity, restrictions and operator-only refunds are unchanged.

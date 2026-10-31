@@ -1,5 +1,7 @@
 # Clip Render Attempts execute leased Render Groups
 
+**Serverless amendment:** [ADR 0019](0019-serverless-execution.md) revises runtime ownership and scheduling below at the single integrated cutover. See the dated amendment at the end; contract acceptance does not mean deployment is complete.
+
 A Clip Render Attempt executes one Render Group under an immutable group token and renewable DB-time lease. One parent `clip_rendering` Workflow Run owns the fixed Render Work Set; each group contains one clip and one frozen export configuration, including aspect variants. This settled exception to ADR 0001 replaces the original parent-only render ownership, which prevented single-project scaling and isolated crash accounting poorly.
 
 One deep attempt module still owns Frozen Rendering State, asset resolution, command execution, bounded delivery, guarded variant persistence and cleanup behind one execution interface. Process, object-storage, media-analysis, temporary-workspace, clock, persistence and diagnostic adapters remain deterministic internal seams. There are no per-clip Workflow Runs and no second full render manifest. Existing export-bound snapshots remain authoritative; expiring access locations are refreshed without changing frozen inputs.
@@ -61,3 +63,7 @@ worker RSS, cgroup current/peak/page-cache bytes and CPU quota. Log-derived
 counts omit processes that crash before flushing; use the durable ledger when
 reporting attempt rates. No external telemetry service is required. The
 [render runbook](../runbooks/render-hardening.md) defines the read-only checks.
+
+## Amendment 2026-10-31: serverless execution
+
+The single hardened TypeScript attempt and FFmpeg adapter move to Bun in Modal under `apps/media`; geometry and caption policy do not change. Executor-control ports replace database defaults. One invocation must atomically acquire the existing Render Group token, then record a charged start after the real process starts; Modal spawn or delivery retries grant no extra attempt. Artifact destinations include invocation and attempt identity, and commit rechecks epoch, generation, current owner, live lease, immutable input and member validity. A lost commit response is resolved from its durable disposition before considering exact-key cleanup. RenderRun waits without a parent lease, and only its service settlement closes the parent. Native wrapper termination forwards signals and reaps descendants.
