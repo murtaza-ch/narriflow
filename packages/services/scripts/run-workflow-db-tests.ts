@@ -123,6 +123,7 @@ try {
     testCommand,
     {
       ALLOW_WORKFLOW_DB_TESTS: "1",
+      MEDIA_FETCH_TOOLCHAIN_FINGERPRINT: "f".repeat(64),
       DATABASE_URL: testUrl.toString(),
       DIRECT_URL: testUrl.toString(),
       WORKFLOW_TEST_DATABASE_URL: testUrl.toString(),

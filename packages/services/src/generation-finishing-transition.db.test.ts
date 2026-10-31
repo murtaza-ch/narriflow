@@ -103,7 +103,8 @@ dbDescribe("Finishing hooks on the generation lifecycle", () => {
     await selection.control.runParent(selection.reference);
     const clips = await prisma.clip.findMany({ where: { projectId: f.project.id } });
     const renderer = workflow();
-    const render = (await renderer.claim("clip_rendering"))!;
+    const run = await prisma.workflowRun.findFirstOrThrow({ where: { projectId: f.project.id, stage: "clip_rendering", status: { in: ["queued", "waiting"] } } });
+    const render = await renderer.renderParent(run.id);
     await renderer.beginRenderWorkSet(render);
     const renders = await prisma.clipRender.findMany({ where: { clipId: { in: clips.map((row) => row.id) } }, orderBy: { createdAt: "asc" } });
     return { stt, renderer, render, renders };

@@ -207,12 +207,22 @@
       "tests": 38,
       "assertions": 283,
       "failures": 0
+    },
+    "full_workflow_pg": {
+      "tests": 162,
+      "assertions": 954,
+      "failures": 0
+    },
+    "manual_retry_live_native_owner_pg": {
+      "tests": 5,
+      "assertions": 37,
+      "failures": 0
     }
   },
   "remaining": [
-    "full current Workflow runner including actor-scoped read/admission semantics",
-    "parent-owned full repository and deployed retirement acceptance",
-    "media-owned unused standalone native diagnostic wrapper test ports"
+    "MCP actual rendered-clip replacement exposes RenderGroup_preparationId_fkey blocking Clip cascade; history-preserving schema fix under coordination",
+    "parent-owned full repository/deployed acceptance",
+    "media-owned native diagnostic wrapper cleanup pending merge"
   ],
   "render_retirement": {
     "production": [
@@ -302,5 +312,11 @@
       "apps/media/src/layout-evidence.test.ts and camera-cut-timing.test.ts: actual shared detector owner, source identity/window compatibility, typed unavailable center-crop behavior",
       "apps/media/python/tests/test_control.py and test_process.py: actual child renewal loss, cancellation and SIGKILL ownership fences"
     ]
-  }
+  },
+  "fixture_hardening": [
+    "No global RenderFixture.claim alias remains; all callers resolve their accepted exact run/project lineage",
+    "Actor read/admission fixtures include normalized measured60s probe facts; rounded display duration is not billing evidence",
+    "Manual export live-retry guard uses an actual active native group and unsettled sibling, never hand-seeded parent charges",
+    "Workflow runner supplies explicit controlled MEDIA_FETCH_TOOLCHAIN_FINGERPRINT matching other isolated runners"
+  ]
 }

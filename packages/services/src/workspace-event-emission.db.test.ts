@@ -116,7 +116,8 @@ dbDescribe("Workspace Events written by operation settlement", () => {
     await selection.control.runParent(selection.reference);
     const clips = await prisma.clip.findMany({ where: { projectId: f.project.id } });
     const renderer = workflow();
-    const attempt = await renderer.claim("clip_rendering");
+    const run = await prisma.workflowRun.findFirstOrThrow({ where: { projectId: f.project.id, stage: "clip_rendering", status: { in: ["queued", "waiting"] } } });
+    const attempt = await renderer.renderParent(run.id);
     if (!attempt) throw new Error("render claim missing");
     await renderer.beginRenderWorkSet(attempt);
     const renders = await prisma.clipRender.findMany({ where: { clipId: { in: clips.map((row) => row.id) } }, orderBy: { createdAt: "asc" } });
@@ -213,8 +214,9 @@ dbDescribe("Workspace Events written by operation settlement", () => {
     }
     return { run, exported, renders, project: f.project, workspace: f.workspace, user: f.user };
   }
-  async function claimRender(lifecycle = workflow()) {
-    const attempt = await lifecycle.claim("clip_rendering");
+  async function prepareRenderForProject(projectId: string, lifecycle = workflow()) {
+    const run = await prisma.workflowRun.findFirstOrThrow({ where: { projectId, stage: "clip_rendering", status: { in: ["queued", "waiting"] } } });
+    const attempt = await lifecycle.renderParent(run.id);
     if (!attempt) throw new Error("render claim missing");
     await lifecycle.beginRenderWorkSet(attempt);
     return { lifecycle, attempt };
@@ -224,7 +226,7 @@ dbDescribe("Workspace Events written by operation settlement", () => {
   test("an export finishing writes one event when its last variant completes, and replays write none", bindServiceTestEnvironment(globals.bind(async () => {
     const f = await fixture();
     const x = await exportFixture(f, 2);
-    const { lifecycle, attempt } = await claimRender();
+    const { lifecycle, attempt } = await prepareRenderForProject(f.project.id);
     await lifecycle.markClipRenderVariantRendering(attempt, x.renders[0]!.id);
     await lifecycle.completeClipRenderVariant(attempt, x.renders[0]!.id, done);
     expect(await feed(f.workspace.id)).toEqual([]);
@@ -242,7 +244,7 @@ dbDescribe("Workspace Events written by operation settlement", () => {
   test("an export with a failed format and a completed one finishes partial once the format's retries are exhausted", bindServiceTestEnvironment(globals.bind(async () => {
     const f = await fixture();
     const x = await exportFixture(f, 2);
-    const current = await claimRender();
+    const current = await prepareRenderForProject(f.project.id);
     await current.lifecycle.markClipRenderVariantRendering(current.attempt, x.renders[0]!.id);
     await current.lifecycle.completeClipRenderVariant(current.attempt, x.renders[0]!.id, done);
     // A retryable failure beside a completed sibling is retried automatically (ADR 0003),
@@ -263,7 +265,7 @@ dbDescribe("Workspace Events written by operation settlement", () => {
   test("a retryable render failure that the run requeues is not a finished export; the retry's outcome is", bindServiceTestEnvironment(globals.bind(async () => {
     const f = await fixture();
     const x = await exportFixture(f);
-    const first = await claimRender();
+    const first = await prepareRenderForProject(f.project.id);
     await first.lifecycle.markClipRenderVariantRendering(first.attempt, x.renders[0]!.id);
     await first.lifecycle.failClipRenderVariant(first.attempt, x.renders[0]!.id, "transient_render_failure", "retryable");
     expect((await prisma.clipExport.findUniqueOrThrow({ where: { id: x.exported.id } })).status).toBe("queued");
@@ -283,7 +285,7 @@ dbDescribe("Workspace Events written by operation settlement", () => {
   test("an export whose retries are exhausted finishes failed when its run settles", bindServiceTestEnvironment(globals.bind(async () => {
     const f = await fixture();
     const x = await exportFixture(f);
-    const current = await claimRender();
+    const current = await prepareRenderForProject(f.project.id);
     for (let attempt = 1; attempt <= 3; attempt++) {
       await current.lifecycle.markClipRenderVariantRendering(current.attempt, x.renders[0]!.id);
       await current.lifecycle.failClipRenderVariant(current.attempt, x.renders[0]!.id, "transient_render_failure", "retryable");
@@ -320,7 +322,7 @@ dbDescribe("Workspace Events written by operation settlement", () => {
 
     // Another run settles in the same Project, and the old lineage is derived again.
     const x = await exportFixture(f);
-    const second = await claimRender();
+    const second = await prepareRenderForProject(f.project.id);
     await second.lifecycle.markClipRenderVariantRendering(second.attempt, x.renders[0]!.id);
     await second.lifecycle.completeClipRenderVariant(second.attempt, x.renders[0]!.id, done);
     await second.lifecycle.settleRenderWorkSet(second.attempt);
@@ -334,7 +336,7 @@ dbDescribe("Workspace Events written by operation settlement", () => {
   test("a retried export that finishes again is a second event: one per terminal transition", bindServiceTestEnvironment(globals.bind(async () => {
     const f = await fixture();
     const x = await exportFixture(f);
-    const first = await claimRender();
+    const first = await prepareRenderForProject(f.project.id);
     await first.lifecycle.markClipRenderVariantRendering(first.attempt, x.renders[0]!.id);
     await first.lifecycle.failClipRenderVariant(first.attempt, x.renders[0]!.id, "source_invalid", "permanent");
     await first.lifecycle.settleRenderWorkSet(first.attempt);
@@ -342,7 +344,7 @@ dbDescribe("Workspace Events written by operation settlement", () => {
 
     expect(await workflow().retryFailedClipExport({ projectId: f.project.id, exportId: x.exported.id, expectedRetryCount: 0,
       variantIds: [x.renders[0]!.exportVariantId!] })).toBe(true);
-    const second = await claimRender();
+    const second = await prepareRenderForProject(f.project.id);
     await second.lifecycle.markClipRenderVariantRendering(second.attempt, x.renders[0]!.id);
     await second.lifecycle.completeClipRenderVariant(second.attempt, x.renders[0]!.id, done);
     await second.lifecycle.settleRenderWorkSet(second.attempt);
@@ -576,7 +578,7 @@ dbDescribe("Workspace Events written by operation settlement", () => {
       prisma.clipExport.findFirstOrThrow({ where: { projectId: f.project.id }, include: { variants: { include: { render: true }, orderBy: { createdAt: "asc" } } } });
     async function finishVariants(f: Awaited<ReturnType<typeof fixture>>, how: "complete" | "fail") {
       const exported = await theExport(f);
-      const { lifecycle, attempt } = await claimRender();
+      const { lifecycle, attempt } = await prepareRenderForProject(f.project.id);
       for (const variant of exported.variants) {
         await lifecycle.markClipRenderVariantRendering(attempt, variant.render!.id);
         if (how === "complete") await lifecycle.completeClipRenderVariant(attempt, variant.render!.id, done);
@@ -593,7 +595,7 @@ dbDescribe("Workspace Events written by operation settlement", () => {
       expect(await feed(f.workspace.id)).toEqual([]);
       const exported = await theExport(f);
 
-      const { lifecycle: renderer, attempt } = await claimRender();
+      const { lifecycle: renderer, attempt } = await prepareRenderForProject(f.project.id);
       const [first, second] = exported.variants;
       await renderer.markClipRenderVariantRendering(attempt, first!.render!.id);
       await renderer.completeClipRenderVariant(attempt, first!.render!.id, done);
@@ -664,7 +666,7 @@ dbDescribe("Workspace Events written by operation settlement", () => {
       const registered = await prisma.workflowRun.findFirstOrThrow({ where: { projectId: f.project.id, stage: "clip_rendering" } });
       expect(await prisma.executionDispatch.count({ where: { subjectId: registered.id, kind: "render_run" } })).toBeGreaterThan(0);
       const exported = await theExport(f);
-      const { lifecycle, attempt } = await claimRender();
+      const { lifecycle, attempt } = await prepareRenderForProject(f.project.id);
       for (const variant of exported.variants) {
         await lifecycle.markClipRenderVariantRendering(attempt, variant.render!.id);
         await lifecycle.completeClipRenderVariant(attempt, variant.render!.id, done);
@@ -704,7 +706,7 @@ dbDescribe("Workspace Events written by operation settlement", () => {
 
       expect(await workflow().retryFailedClipExport({ projectId: f.project.id, exportId: exported.id, expectedRetryCount: 0,
         variantIds: exported.variants.map(variant => variant.id) })).toBe(true);
-      const retry = await claimRender();
+      const retry = await prepareRenderForProject(f.project.id);
       for (const variant of exported.variants) {
         await retry.lifecycle.markClipRenderVariantRendering(retry.attempt, variant.render!.id);
         await retry.lifecycle.completeClipRenderVariant(retry.attempt, variant.render!.id, done);
