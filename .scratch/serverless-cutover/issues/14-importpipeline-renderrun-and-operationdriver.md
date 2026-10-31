@@ -140,3 +140,18 @@ then passes15 cases/95 assertions. Two finite-driver cases pass, and services
 typechecking passes. API typechecking awaits the coordinated generic dependency
 wait adapter already being integrated by the parent agent. Full deployed pipeline
 acceptance remains open.
+
+The integrated parent checkpoint passes67 PostgreSQL cases/498 assertions across
+preparation, ingest, targeted render execution and library indexing after client
+generation. The existing Render Group invariant suite passes18 cases/181
+assertions. Seven finite parent/native driver tests pass, including divergent
+renewals choosing the nearest fresh deadline. API and services typechecks pass.
+Unowned deadline replay preserves all three committed wake IDs; if an unacquired
+Generic Attempt already exists, Core reconciles it without inventing process
+history or a charge. Completed STT commands repair their exact library wakes, and
+the registry runs the targeted library index command. The actual pinned Modal
+Function rendering gate is recorded separately in
+[Function evidence](../evidence/modal-render-function-20261031.json).
+
+Full live source-to-render publication, long-source transfer and batch throughput
+gates remain required. Ticket14 is still claimed.

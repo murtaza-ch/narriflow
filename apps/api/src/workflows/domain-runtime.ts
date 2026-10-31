@@ -10,6 +10,7 @@ import { getClipSelectionControl } from "@narriflow/services/clip-selection-runt
 import { getGeneratedMediaExecution } from "@narriflow/services/generated-media-runtime";
 import { getClipPreparationService } from "@narriflow/services/clip-preparation-runtime";
 import { getBillingReconciliation } from "@narriflow/services/billing-reconciliation-runtime";
+import { getLibraryIndex } from "@narriflow/services/library-index-runtime";
 import { createWorkspaceNotificationDispatcher, isCurrentNotificationTarget } from "@narriflow/services/notification-dispatch";
 import { prepareIngestSourceExecution } from "@narriflow/services/ingest-source-execution";
 import { getIngestJobLifecycle } from "@narriflow/services/ingest-job-lifecycle-runtime";
@@ -47,16 +48,21 @@ export function workflowDomainRegistry(bindings: ApiWorkerBindings): WorkflowHan
     if (!record.observedDeadlineAt) throw new NonRetryableError("missing_native_deadline");
     if (record.observedDeadlineAt.getTime() > Date.now()) return { kind: "sleep", dueAt: record.observedDeadlineAt };
     let attemptToken: string | undefined;
+    let unownedExpiry: ExecutorExpiryResult | undefined;
     if (record.reference.subject.kind === "render_group" && record.deadlineKind === "operation") {
       const service = await getWorkerRenderGroupService(bindings.MEDIA_BUCKET);
       const expiry = await service.domain.expirePreparationDeadline(record.reference, { kind: "operation", observedDeadlineAt: record.observedDeadlineAt });
-      if (expiry.kind !== "native") return expiry;
-      attemptToken = expiry.attemptToken;
+      if (expiry.kind === "native") attemptToken = expiry.attemptToken;
+      else {
+        if (expiry.kind === "sleep") return expiry;
+        unownedExpiry = expiry;
+        if ("dispatchIds" in expiry) await deliverExecutionDispatches(expiry.dispatchIds ?? []);
+      }
     }
     const attempts = await database.executionAttempt.findMany({ where: { ...(attemptToken ? { attemptToken } : {}), deploymentEpoch: record.reference.deploymentEpoch,
       generation: record.reference.generation, inputHash: record.reference.inputHash,
       dispatch: { subjectKind: record.reference.subject.kind, subjectId: record.reference.subject.id, kind: { in: ["modal_execution", "local_fetch"] } } }, take: 2 });
-    if (!attempts.length) return { kind: "superseded" };
+    if (!attempts.length) return unownedExpiry ?? { kind: "superseded" };
     if (attempts.length !== 1) throw new NonRetryableError("ambiguous_native_admission");
     const attempt = attempts[0]!;
     const target = await readExecutionDispatch(database, attempt.dispatchId);
@@ -132,6 +138,10 @@ export function workflowDomainRegistry(bindings: ApiWorkerBindings): WorkflowHan
       return result.kind === "wait" ? { type: "wait", until: result.dueAt.toISOString(), deliveryId: reference.dispatchId }
         : { type: "complete", disposition: result.outcome === "superseded" ? "superseded" : "terminal" };
     }
+    if (run.stage === "stt" && run.status === "completed") {
+      await deliverExecutionDispatches(await database.$transaction(tx => getWorkflowRunLifecycle().readCompletedTranscriptionWakesWithinTransaction(tx, reference)));
+      return { type: "complete", disposition: "terminal" };
+    }
     if (["completed", "cancelled", "failed"].includes(run.status)) return { type: "complete", disposition: "terminal" };
     if (run.stage !== "stt") throw new NonRetryableError(`unsupported_operation_stage:${run.stage}`);
     const result = await getTranscriptionControl().run(reference);
@@ -149,6 +159,12 @@ export function workflowDomainRegistry(bindings: ApiWorkerBindings): WorkflowHan
   };
   const billing: WorkflowCommandHandler = async ({ reference }) => {
     const result = await getBillingReconciliation().run(reference);
+    if (result.kind === "sleep") return { type: "sleep", until: result.dueAt.toISOString() };
+    if (result.kind === "wait") return { type: "wait", until: result.dueAt.toISOString(), deliveryId: reference.dispatchId };
+    return { type: "complete", disposition: result.kind === "superseded" ? "superseded" : "terminal" };
+  };
+  const library: WorkflowCommandHandler = async ({ reference }) => {
+    const result = await getLibraryIndex().run(reference);
     if (result.kind === "sleep") return { type: "sleep", until: result.dueAt.toISOString() };
     if (result.kind === "wait") return { type: "wait", until: result.dueAt.toISOString(), deliveryId: reference.dispatchId };
     return { type: "complete", disposition: result.kind === "superseded" ? "superseded" : "terminal" };
@@ -185,6 +201,6 @@ export function workflowDomainRegistry(bindings: ApiWorkerBindings): WorkflowHan
   return { project_progress: { maintenance: progress, workflow_event: progress },
     import_pipeline: { ingest_job: native }, render_run: { workflow_run: render, render_group: render },
     operation_driver: { native_validation: native, thumbnail_frame: native, outbound_probe: native, outbound_delivery: native, generated_media: native, clip_preparation: native, render_group: native, ingest_job: native,
-      workflow_run: workflow, clip_selection_window: selectionWindow, workspace_billing: billing, completion_callback: notification, webhook_subscription: notification,
+      workflow_run: workflow, clip_selection_window: selectionWindow, workspace_billing: billing, library_index: library, completion_callback: notification, webhook_subscription: notification,
       workspace_event: notificationEvents, maintenance: notificationEvents } };
 }

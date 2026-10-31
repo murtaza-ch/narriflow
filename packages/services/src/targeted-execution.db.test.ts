@@ -359,13 +359,32 @@ dbDescribe("Targeted serverless domain execution", () => {
       generation: 1, inputHash: value.reference.inputHash, dueAt: absolute, deadlineKind: "operation", observedDeadlineAt: absolute }));
     const observation = { kind: "operation" as const, observedDeadlineAt: absolute };
     expect(await value.lifecycle.expirePreparationDeadline(deadline.reference, { ...observation, observedDeadlineAt: new Date(1) })).toEqual({ kind: "superseded" });
-    expect((await value.lifecycle.expirePreparationDeadline(deadline.reference, observation)).kind).toBe("expired");
+    const expired = await value.lifecycle.expirePreparationDeadline(deadline.reference, observation);
+    expect(expired.kind).toBe("expired");
+    expect("dispatchIds" in expired ? expired.dispatchIds?.length : 0).toBe(3);
     expect(await db.renderGroup.findUniqueOrThrow({ where: { id: value.group.id } })).toMatchObject({ status: "failed", attemptToken: null, leaseOwner: null, chargedAttemptCount: 0, operationDeadlineAt: absolute });
     expect(await db.renderGroupExecution.count({ where: { groupId: value.group.id } })).toBe(0);
     expect(await db.executionAttempt.count({ where: { dispatch: { subjectId: value.group.id } } })).toBe(0);
     expect(await db.clipRender.findUniqueOrThrow({ where: { id: value.variant.id } })).toMatchObject({ status: "failed", failureDisposition: "permanent", errorCode: "operation_deadline_exceeded" });
-    expect((await value.lifecycle.expirePreparationDeadline(deadline.reference, observation)).kind).toBe("terminal");
+    const replay = await value.lifecycle.expirePreparationDeadline(deadline.reference, observation);
+    expect(replay.kind).toBe("terminal");
+    expect("dispatchIds" in replay ? [...replay.dispatchIds ?? []].sort() : []).toEqual("dispatchIds" in expired ? [...expired.dispatchIds ?? []].sort() : []);
   }, 90_000);
+
+  test("a direct queued deadline reconciles an admitted but unacquired Generic Attempt without charging it", async () => {
+    const absolute = new Date(0), value = await fixture(absolute), server = control(value);
+    await db.renderGroup.update({ where: { id: value.group.id }, data: { operationDeadlineAt: absolute } });
+    const watchdog = await db.$transaction(tx => appendExecutionDispatch(tx, { deploymentEpoch: epoch, kind: "operation_driver", subject: value.reference.subject,
+      generation: 1, inputHash: value.reference.inputHash, dueAt: absolute, deadlineKind: "operation", observedDeadlineAt: absolute }));
+    const direct = await value.lifecycle.expirePreparationDeadline(watchdog.reference, { kind: "operation", observedDeadlineAt: absolute });
+    expect(direct.kind).toBe("expired");
+    expect((await server.api.expireDeadline({ deadline: { reference: value.reference, attemptToken: value.attemptToken, kind: "operation", observedDeadlineAt: absolute.toISOString() }, deliveryId: watchdog.reference.dispatchId })).kind).toBe("terminal");
+    receipts.push(watchdog.reference.dispatchId);
+    expect(await db.executionAttempt.findUniqueOrThrow({ where: { attemptToken: value.attemptToken } })).toMatchObject({ status: "failed", owner: null, processStartedAt: null });
+    expect(await db.renderGroupExecution.count({ where: { groupId: value.group.id } })).toBe(0);
+    expect(await db.renderGroup.findUniqueOrThrow({ where: { id: value.group.id } })).toMatchObject({ chargedAttemptCount: 0 });
+    expect(server.wakes.slice().sort()).toEqual("dispatchIds" in direct ? [...direct.dispatchIds ?? []].sort() : []);
+  });
 
   test("sealed member failures retain permanent results and retry only failed retryable variants after the last success", async () => {
     let value = await fixture(undefined, ["ratio_9_16", "ratio_16_9", "ratio_1_1"]);

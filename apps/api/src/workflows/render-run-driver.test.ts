@@ -28,3 +28,12 @@ test("an elapsed group deadline executes its exact expiry before settling instea
   expect(await run({ reference, wake: { type: "deadline", until: child.observedDeadlineAt.toISOString(), deliveryId: child.reference.dispatchId } })).toEqual({ type: "complete", disposition: "terminal" });
   expect(expired).toEqual([child.reference.dispatchId]); expect(reads).toBe(2);
 });
+
+test("one old timer with divergent renewed deadlines waits for the nearest fresh observation", async () => {
+  const children = [50_000,10_000].map((delay,index) => ({ delay, reference: { ...reference, kind: "operation_driver" as const, dispatchId: crypto.randomUUID(), subject: { kind: "render_group" as const, id: crypto.randomUUID() } }, observedDeadlineAt: new Date(now - index - 1) }));
+  const run = createRenderRunDriver({ now: () => now, prepare: async () => prepared, deliver: async () => {},
+    settle: async () => ({ kind: "settled", outcome: { ...outcome, requested: 2, status: "pending", succeeded: 0 }, dispatchIds: [],
+      wait: { dueAt: children[0]!.observedDeadlineAt, deliveryId: children[0]!.reference.dispatchId, deadlines: children } }),
+    expire: async deadline => ({ kind: "sleep", dueAt: new Date(now + children.find(child => child.reference.dispatchId === deadline.reference.dispatchId)!.delay) }) });
+  expect(await run({ reference, wake: { type: "timer", until: new Date(now - 1).toISOString() } })).toEqual({ type: "wait", until: new Date(now + 10_000).toISOString(), deliveryId: children[0]!.reference.dispatchId });
+});

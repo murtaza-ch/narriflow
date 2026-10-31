@@ -34,10 +34,10 @@ export function createRenderRunDriver(ports: Ports): WorkflowCommandHandler {
       if (overdue.length) { settled = await ports.settle(reference); await deliver(settled.dispatchIds); }
     }
     const result = directive(settled);
-    if (result.type === "wait" && Date.parse(result.until) <= ports.now()) {
-      const fresh = observations.filter(dueAt => dueAt.getTime() > ports.now());
+    if (result.type === "wait") {
+      const fresh = [new Date(result.until), ...observations].filter(dueAt => dueAt.getTime() > ports.now());
       if (!fresh.length) throw new Error("render_deadline_unsettled");
-      return { ...result, until: new Date(Math.max(...fresh.map(date => date.getTime()))).toISOString() };
+      return { ...result, until: new Date(Math.min(...fresh.map(date => date.getTime()))).toISOString() };
     }
     return result;
   };
