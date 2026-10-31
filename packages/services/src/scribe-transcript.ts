@@ -6,7 +6,7 @@ import {
 import {
   WorkflowFailure,
   type CompleteTranscriptInput,
-  type ProviderAttemptKey,
+  type ProviderAttemptReference,
   type ProviderAttemptLookup,
   type ProviderIds,
   type ProviderSettlementResult,
@@ -14,26 +14,33 @@ import {
 
 export interface ScribeFinalizerDependencies {
   lifecycle: {
-    lookupProviderAttempt(key: ProviderAttemptKey, ids?: ProviderIds): Promise<ProviderAttemptLookup>;
-    completeProviderTranscript(key: ProviderAttemptKey, input: CompleteTranscriptInput): Promise<ProviderSettlementResult>;
-    failProviderAttempt(key: ProviderAttemptKey, failure: WorkflowFailure, ids?: ProviderIds): Promise<ProviderSettlementResult>;
+    lookupProviderAttempt(key: ProviderAttemptReference, ids?: ProviderIds): Promise<ProviderAttemptLookup>;
+    completeProviderTranscript(key: ProviderAttemptReference, input: CompleteTranscriptInput): Promise<ProviderSettlementResult>;
+    failProviderAttempt(key: ProviderAttemptReference, failure: WorkflowFailure, ids?: ProviderIds): Promise<ProviderSettlementResult>;
   };
   allowsEmptyTranscript(workflowRunId: string): Promise<boolean>;
   /** The source's exact probed duration, or null when unknown. */
-  sourceDurationSeconds(projectId: string): Promise<number | null>;
+  sourceDurationSeconds(input: { projectId: string; sourceAudioId: string | null; sourceRevision: number }): Promise<number | null>;
   storeRawJson(input: { key: string; value: unknown; metadata: Record<string, string> }): Promise<void>;
 }
 
 export interface FinalizeScribeTranscriptInput {
-  key: ProviderAttemptKey;
+  key: ProviderAttemptReference;
   /** The Scribe transcript object: the GET body, or the webhook's `data.transcription`. */
   payload: unknown;
   providerIds: ProviderIds;
 }
 
-/** Where an attempt's raw Scribe result is kept. */
-export function scribeRawStorageKey(projectId: string, key: ProviderAttemptKey): string {
-  return `projects/${projectId}/transcripts/${key.workflowRunId}-${key.attemptId}-elevenlabs-scribe_v2.json`;
+async function sha256(value: unknown): Promise<string> {
+  const bytes = new TextEncoder().encode(JSON.stringify(value));
+  const hash = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2, "0")).join("");
+}
+
+/** Content addressing prevents a stale racing delivery from replacing published evidence. */
+export async function scribeRawStorageKey(projectId: string, key: ProviderAttemptReference, ids: ProviderIds, payload: unknown): Promise<string> {
+  const [providerHash, payloadHash] = await Promise.all([sha256([ids.requestId ?? null, ids.transcriptionId ?? null]), sha256(payload)]);
+  return `projects/${projectId}/transcripts/${key.deploymentEpoch}/${key.sourceRevision}/${key.workflowRunId}-${key.attemptId}/${providerHash}-${payloadHash}.json`;
 }
 
 function providerJobIdOf(payload: unknown): string | null {
@@ -56,11 +63,11 @@ export function createScribeFinalizer(deps: ScribeFinalizerDependencies) {
     if (lookup.kind !== "waiting") return lookup;
 
     const { projectId } = lookup.attempt;
-    const rawStorageKey = scribeRawStorageKey(projectId, key);
     // An id this delivery omits (the documented webhook has no nested
     // transcription id; a GET has no request id) is the one acceptance recorded.
     const providerJobId = providerIds.transcriptionId ?? providerJobIdOf(payload) ?? lookup.providerJobId;
     const providerRequestId = providerIds.requestId ?? lookup.providerRequestId;
+    const rawStorageKey = await scribeRawStorageKey(projectId, key, { requestId: providerRequestId, transcriptionId: providerJobId }, payload);
 
     // The raw result is kept even when it turns out unusable: it is the evidence.
     await deps.storeRawJson({
@@ -70,6 +77,9 @@ export function createScribeFinalizer(deps: ScribeFinalizerDependencies) {
         project_id: projectId,
         workflow_run_id: key.workflowRunId,
         attempt_id: key.attemptId,
+        deployment_epoch: String(key.deploymentEpoch),
+        source_revision: String(key.sourceRevision),
+        ...(key.sourceAudioId ? { source_audio_id: key.sourceAudioId } : {}),
         provider: "elevenlabs",
         ...(providerJobId ? { provider_job_id: providerJobId } : {}),
         ...(providerRequestId ? { provider_request_id: providerRequestId } : {}),
@@ -82,7 +92,7 @@ export function createScribeFinalizer(deps: ScribeFinalizerDependencies) {
         allowEmpty: await deps.allowsEmptyTranscript(key.workflowRunId),
         providerJobId,
         providerRequestId,
-        durationSeconds: await deps.sourceDurationSeconds(projectId),
+        durationSeconds: await deps.sourceDurationSeconds({ projectId, sourceAudioId: key.sourceAudioId, sourceRevision: key.sourceRevision }),
       });
     } catch (error) {
       if (!(error instanceof TranscriptNormalizationError)) throw error;

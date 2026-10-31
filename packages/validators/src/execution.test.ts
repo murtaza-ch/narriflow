@@ -1,5 +1,14 @@
 import { describe, expect, test } from "bun:test";
-import { executionCommandSchema, executionDispatchReferenceSchema, executionSignatureSchema, executionDispositionSchema, sourceAudioBindingSchema } from "./execution";
+import { executionCommandSchema, executionDispatchReferenceSchema, executionSignatureSchema, executionDispositionSchema, sourceAudioBindingSchema, providerAttemptReferenceSchema } from "./execution";
+
+test("provider callbacks require exact epoch and source lineage instead of an underspecified attempt", () => {
+  const reference = { workflowRunId: "ce4d7e7e-caae-4d85-80f8-17f55e2eaf79", attemptId: "05bfd4bb-8ce2-455c-a598-1328f676a288",
+    deploymentEpoch: 3, sourceRevision: 2, sourceAudioId: "d5ab39a2-80e7-45d1-8da8-5bc90097075e" };
+  expect(providerAttemptReferenceSchema.parse(reference)).toEqual(reference);
+  expect(providerAttemptReferenceSchema.safeParse({ workflowRunId: reference.workflowRunId, attemptId: reference.attemptId }).success).toBe(false);
+  expect(providerAttemptReferenceSchema.safeParse({ ...reference, sourceRevision: 0 }).success).toBe(false);
+  expect(providerAttemptReferenceSchema.safeParse({ ...reference, signedUrl: "https://audio.example/private" }).success).toBe(false);
+});
 
 const dispatch = {
   dispatchId: "d66ad223-9e95-4cbe-8838-43ec01aa6df0",

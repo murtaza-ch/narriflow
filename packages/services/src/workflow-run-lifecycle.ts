@@ -32,7 +32,8 @@ import { finalizeGenerationUsage, releaseFailedDubUsage } from "./generated-medi
 import { appendWorkflowEvent, type WorkflowEventInput } from "./workflow-event-append";
 import { appendExecutionDispatch, readExecutionDispatch, executionDispatchIdentity, type ExecutionDispatchRecord } from "./execution-dispatch";
 import { workflowRunExecutionInputHash } from "./workflow-execution-input";
-import { executionDispatchReferenceSchema, type ExecutionDispatchReference, type ExecutionDisposition } from "@narriflow/validators/execution";
+import { executionDispatchReferenceSchema, type ExecutionDispatchReference, type ExecutionDisposition, providerAttemptReferenceSchema, type ProviderAttemptReference } from "@narriflow/validators/execution";
+export type { ProviderAttemptReference } from "@narriflow/validators/execution";
 import { lockWorkspaceUsage } from "./processing-usage";
 import type { ExecutorDomainLock, ExecutorMutationContext, ExecutorMutationResult, ExecutorFailureInput, ExecutorReleaseInput, ExecutorProgressInput, ExecutorArtifactCommit, ExecutorExpiryObservation, ExecutorExpiryResult } from "./executor-domain-control";
 
@@ -66,7 +67,7 @@ export interface WorkflowExecutionReference {
   attemptToken: string;
 }
 
-export interface ClaimedWorkflowAttempt extends WorkflowAttemptRef {
+export interface ClaimedWorkflowAttempt extends WorkflowAttemptRef, ProviderAttemptReference {
   status: "running";
   progress: number;
   contentPackId: string | null;
@@ -86,7 +87,7 @@ export interface ClaimedWorkflowAttempt extends WorkflowAttemptRef {
   };
 }
 
-export interface WaitingWorkflowAttempt extends WorkflowAttemptRef {
+export interface WaitingWorkflowAttempt extends WorkflowAttemptRef, ProviderAttemptReference {
   progress: number;
   /** Null while the submission is unconfirmed: the worker can only expire it. */
   providerJobId: string | null;
@@ -97,10 +98,6 @@ export interface WaitingWorkflowAttempt extends WorkflowAttemptRef {
 
 /** Identifies the attempt a provider callback belongs to. The webhook carries
  * only `webhook_metadata`, so the project is resolved from the run. */
-export interface ProviderAttemptKey {
-  workflowRunId: string;
-  attemptId: string;
-}
 
 /** Provider ids a callback or recovery read supplies, to fence against a
  * different submission recorded for the same attempt. */
@@ -120,6 +117,9 @@ export type ProviderSettlementResult =
       kind: "stale";
       reason:
         | "run_missing"
+        | "invalid_reference"
+        | "epoch_superseded"
+        | "source_superseded"
         | "attempt_superseded"
         | "provider_job_mismatch"
         | "not_waiting"
@@ -129,7 +129,24 @@ export type ProviderSettlementResult =
   /** The run already reached a terminal status (completed, failed, partial). */
   | { kind: "terminal"; status: WorkflowStatus };
 
+export interface ProviderSubmissionIntent {
+  kind: "begun" | "already_waiting";
+  reference: ProviderAttemptReference;
+  serverTime: Date;
+  submissionDeadlineAt: Date | null;
+  providerAudioGrantExpiresAt: Date;
+  dispatchIds: string[];
+}
+
 type ProviderSettlementIntent = "accept" | "complete" | "fail";
+
+function validProviderReference(key: ProviderAttemptReference): boolean {
+  // Internal claim records also carry progress/project fields. Only the strict
+  // lineage is projected here; HTTP metadata validates its entire object.
+  return providerAttemptReferenceSchema.safeParse({ workflowRunId: key.workflowRunId, attemptId: key.attemptId,
+    deploymentEpoch: key.deploymentEpoch, sourceRevision: key.sourceRevision, sourceAudioId: key.sourceAudioId }).success;
+}
+
 
 export type ProviderAttemptLookup =
   | {
@@ -548,6 +565,10 @@ export class WorkflowRunLifecycle {
       run.attemptCount >= WORKFLOW_MAX_ATTEMPTS || (run.nextAttemptAt && run.nextAttemptAt > now) || context.leaseExpiresAt <= now ||
       context.leaseExpiresAt > context.operationDeadlineAt || context.operationDeadlineAt <= now ||
       (run.operationDeadlineAt && run.operationDeadlineAt.getTime() !== context.operationDeadlineAt.getTime())) throw new WorkflowAttemptLost(attempt);
+    if (run.stage === "stt") {
+      const usage = await tx.processingUsageReservation.findUnique({ where: { projectId: run.projectId }, select: { state: true } });
+      if (usage?.state !== "settled" && usage?.state !== "refunded") throw new Error("processing_usage_not_settled");
+    }
     await tx.workflowRun.update({ where: { id: run.id }, data: { status: "running", progress: 10, attemptId: ref.attemptToken, leaseOwner: context.owner,
       leaseExpiresAt: context.leaseExpiresAt, heartbeatAt: now, operationDeadlineAt: context.operationDeadlineAt, nextAttemptAt: null, nextPollAt: null, waitingSince: null, errorCode: null,
       requestedCount: null, ...(run.stage === "dubbing" ? {} : { succeededCount: null }), failedCount: null } });
@@ -586,7 +607,7 @@ export class WorkflowRunLifecycle {
   }
 
   private async executionWakes(tx: TransactionClient, ref: WorkflowExecutionReference, inputHash: string, retry: boolean): Promise<{ dispatchIds: string[] }> {
-    if (retry) await tx.workflowRun.update({ where: { id: ref.id }, data: { generation: { increment: 1 } } });
+    if (retry) await tx.workflowRun.update({ where: { id: ref.id }, data: { generation: { increment: 1 }, operationDeadlineAt: null } });
     const finished = await appendExecutionDispatch(tx, { deploymentEpoch: ref.deploymentEpoch, kind: "operation_driver", subject: { kind: "workflow_run", id: ref.id },
       generation: ref.generation, inputHash, dueAt: await this.databaseNow(tx), wakeKind: "execution_finished" });
     const dispatchIds = [finished.reference.dispatchId];
@@ -1105,6 +1126,8 @@ export class WorkflowRunLifecycle {
               sourceType: true,
               sourceInput: true,
               sourceStorageKey: true,
+              sourceRevision: true,
+              transcript: { select: { sourceAudioId: true } },
               sourceMimeType: true,
               sourceDurationSeconds: true,
               sourceSizeBytes: true,
@@ -1158,6 +1181,9 @@ export class WorkflowRunLifecycle {
         projectId: run.projectId,
         stage,
         attemptId: run.attemptId,
+        deploymentEpoch: run.deploymentEpoch,
+        sourceRevision: run.project.sourceRevision,
+        sourceAudioId: run.project.transcript?.sourceAudioId ?? null,
         attemptCount: run.attemptCount,
         status: "running",
         progress: run.progress,
@@ -1901,6 +1927,7 @@ export class WorkflowRunLifecycle {
       take: batchSize,
       select: {
         id: true,
+        deploymentEpoch: true,
         projectId: true,
         stage: true,
         progress: true,
@@ -1909,8 +1936,10 @@ export class WorkflowRunLifecycle {
         waitingSince: true,
         project: {
           select: {
+            sourceRevision: true,
             transcript: {
               select: {
+                sourceAudioId: true,
                 providerJobId: true,
                 providerSubmissionDeadlineAt: true,
                 workflowAttemptId: true,
@@ -1942,6 +1971,9 @@ export class WorkflowRunLifecycle {
         projectId: run.projectId,
         stage: "stt",
         attemptId: run.attemptId,
+        deploymentEpoch: run.deploymentEpoch,
+        sourceRevision: run.project.sourceRevision,
+        sourceAudioId: transcript.sourceAudioId,
         attemptCount: run.attemptCount,
         progress: run.progress,
         providerJobId: transcript.providerJobId,
@@ -1996,12 +2028,12 @@ export class WorkflowRunLifecycle {
    * the deadline (`expireUnconfirmedProviderSubmission`) instead of stalling.
    * No lease is held afterwards; callbacks and the worker act lease-free.
    */
-  async beginProviderSubmission(
-    attempt: WorkflowAttemptRef,
-    input: { deadline: Date },
-  ) {
+  async beginProviderSubmission(attempt: WorkflowAttemptRef, input: { deadline: Date }) {
     if (attempt.stage !== "stt") throw new WorkflowAttemptLost(attempt);
-    await this.settlementTransaction(attempt, async (tx) => {
+    await this.settlementTransaction(attempt, tx => this.beginProviderSubmissionWithinTransaction(tx, attempt, input));
+  }
+
+  async beginProviderSubmissionWithinTransaction(tx: TransactionClient, attempt: WorkflowAttemptRef, input: { deadline: Date }): Promise<void> {
       const databaseNow = await this.databaseNow(tx);
       const won = await tx.workflowRun.updateMany({
         where: {
@@ -2014,7 +2046,7 @@ export class WorkflowRunLifecycle {
           leaseOwner: null,
           leaseExpiresAt: null,
           heartbeatAt: null,
-          waitingSince: new Date(),
+          waitingSince: databaseNow,
           nextPollAt: input.deadline,
         },
       });
@@ -2025,6 +2057,8 @@ export class WorkflowRunLifecycle {
           providerJobId: null,
           providerRequestId: null,
           providerSubmissionDeadlineAt: input.deadline,
+          providerSubmittedAt: databaseNow,
+          providerResultDeadlineAt: null,
           workflowAttemptId: attempt.attemptId,
           status: "processing",
         },
@@ -2039,7 +2073,59 @@ export class WorkflowRunLifecycle {
         errorCode: null,
         transition: "provider-submission-begun",
       });
-    });
+  }
+
+  /** Records intent and closes active TS ownership before the single provider POST. */
+  async beginProviderSubmissionExecution(tx: TransactionClient, ref: WorkflowExecutionReference, context: ExecutorMutationContext): Promise<ProviderSubmissionIntent> {
+    const identity = this.executionAttempt(ref, context);
+    const state = await this.executionState(tx, context.reference, ref.attemptToken);
+    if (state.kind === "terminal") throw new WorkflowAttemptLost(identity);
+    const history = await tx.executionAttempt.findUniqueOrThrow({ where: { attemptToken: ref.attemptToken }, include: { dispatch: true } });
+    if (history.dispatchId !== context.reference.dispatchId || history.deploymentEpoch !== ref.deploymentEpoch || history.generation !== ref.generation ||
+      history.inputHash !== context.reference.inputHash || history.dispatch.subjectKind !== "workflow_run" || history.dispatch.subjectId !== ref.id || history.functionName !== "stt") throw new WorkflowAttemptLost(identity);
+    if (state.run.status === "waiting") {
+      if (history.status !== "completed" || !history.revokedAt) throw new Error("provider_wait_execution_not_closed");
+      const prior = await tx.transcript.findUniqueOrThrow({ where: { projectId: ref.projectId } });
+      if (!prior.providerSubmittedAt || !prior.sourceAudioId) throw new Error("provider_intent_missing");
+      const obligations = await tx.executionDispatch.findMany({ where: { subjectKind: "workflow_run", subjectId: ref.id, deploymentEpoch: ref.deploymentEpoch,
+        generation: ref.generation, OR: [{ deadlineKind: "provider_submission" }, { wakeKind: "provider_wait" }] }, select: { id: true, deadlineKind: true }, take: 3 });
+      if (obligations.length !== 2) throw new Error("provider_intent_obligations_missing");
+      obligations.sort((left, right) => Number(left.deadlineKind === null) - Number(right.deadlineKind === null));
+      return { kind: "already_waiting", reference: { workflowRunId: ref.id, attemptId: ref.attemptToken, deploymentEpoch: ref.deploymentEpoch,
+        sourceRevision: prior.sourceRevision, sourceAudioId: prior.sourceAudioId }, serverTime: prior.providerSubmittedAt,
+        submissionDeadlineAt: prior.providerSubmissionDeadlineAt, providerAudioGrantExpiresAt: new Date(prior.providerSubmittedAt.getTime() + 4 * 60 * 60_000),
+        dispatchIds: obligations.map(obligation => obligation.id) };
+    }
+    const { run, attempt, now } = await this.ownedExecution(tx, ref, context);
+    if (ref.stage !== "stt") throw new WorkflowAttemptLost(attempt);
+    const active = await tx.executionAttempt.findUniqueOrThrow({ where: { attemptToken: ref.attemptToken }, include: { dispatch: true } });
+    if (active.dispatchId !== context.reference.dispatchId || active.deploymentEpoch !== ref.deploymentEpoch || active.generation !== ref.generation ||
+      active.inputHash !== context.reference.inputHash || active.owner !== context.owner || active.status !== "running" || active.revokedAt || !active.processStartedAt ||
+      !active.leaseExpiresAt || active.leaseExpiresAt <= now || active.operationDeadlineAt <= now ||
+      active.dispatch.subjectKind !== "workflow_run" || active.dispatch.subjectId !== ref.id) throw new WorkflowAttemptLost(attempt);
+    const transcript = await tx.transcript.findUniqueOrThrow({ where: { projectId: run.projectId }, select: { sourceAudioId: true, sourceRevision: true } });
+    const project = await tx.project.findUniqueOrThrow({ where: { id: run.projectId }, select: { sourceRevision: true } });
+    if (!transcript.sourceAudioId || transcript.sourceRevision !== project.sourceRevision) throw new Error("source_audio_pending");
+    const sourceAudio = await tx.sourceAudio.findFirst({ where: { id: transcript.sourceAudioId, projectId: run.projectId, sourceRevision: transcript.sourceRevision } });
+    if (!sourceAudio) throw new Error("source_audio_pending");
+    const sourceArtifact = await tx.executionArtifact.findUnique({ where: { storageKey: sourceAudio.storageKey } });
+    if (!sourceArtifact || sourceArtifact.role !== "source_audio" || !sourceArtifact.committedAt || sourceArtifact.etag !== sourceAudio.etag ||
+      sourceArtifact.byteLength !== sourceAudio.byteLength || sourceArtifact.checksumSha256 !== sourceAudio.checksumSha256) throw new Error("source_audio_unverified");
+    const reference: ProviderAttemptReference = { workflowRunId: run.id, attemptId: ref.attemptToken, deploymentEpoch: ref.deploymentEpoch,
+      sourceRevision: transcript.sourceRevision, sourceAudioId: transcript.sourceAudioId };
+    const submissionDeadlineAt = new Date(now.getTime() + 10 * 60_000);
+    await this.executionOwner(context.owner).beginProviderSubmissionWithinTransaction(tx, attempt, { deadline: submissionDeadlineAt });
+    await tx.executionAttempt.update({ where: { attemptToken: ref.attemptToken }, data: { status: "completed", revokedAt: now, finishedAt: now } });
+    const deadline = await appendExecutionDispatch(tx, { deploymentEpoch: ref.deploymentEpoch, kind: "operation_driver", subject: { kind: "workflow_run", id: ref.id },
+      generation: ref.generation, inputHash: context.reference.inputHash, dueAt: submissionDeadlineAt, deadlineKind: "provider_submission", observedDeadlineAt: submissionDeadlineAt });
+    const wake = await appendExecutionDispatch(tx, { deploymentEpoch: ref.deploymentEpoch, kind: "operation_driver", subject: { kind: "workflow_run", id: ref.id },
+      generation: ref.generation, inputHash: context.reference.inputHash, dueAt: now, wakeKind: "provider_wait" });
+    const persisted = await tx.transcript.findUniqueOrThrow({ where: { projectId: ref.projectId }, select: { providerSubmittedAt: true } });
+    if (!persisted.providerSubmittedAt) throw new Error("provider_intent_missing");
+    const providerAudioGrantExpiresAt = new Date(persisted.providerSubmittedAt.getTime() + 4 * 60 * 60_000);
+    await tx.executionArtifact.updateMany({ where: { id: sourceArtifact.id, grantExpiresAt: { lt: providerAudioGrantExpiresAt } }, data: { grantExpiresAt: providerAudioGrantExpiresAt } });
+    return { kind: "begun", reference, serverTime: persisted.providerSubmittedAt, submissionDeadlineAt, providerAudioGrantExpiresAt,
+      dispatchIds: [deadline.reference.dispatchId, wake.reference.dispatchId] };
   }
 
   /**
@@ -2049,7 +2135,7 @@ export class WorkflowRunLifecycle {
    * callback that beat this write: it never resurrects a run.
    */
   async recordProviderAcceptance(
-    key: ProviderAttemptKey,
+    key: ProviderAttemptReference,
     input: { requestId: string; transcriptionId: string; nextPollAt: Date },
   ): Promise<ProviderSettlementResult> {
     return this.transaction(async (tx) => {
@@ -2089,7 +2175,7 @@ export class WorkflowRunLifecycle {
   /** Reads where a provider callback stands, without writing. The finalizer
    * uses it to learn the project before it stores anything. */
   async lookupProviderAttempt(
-    key: ProviderAttemptKey,
+    key: ProviderAttemptReference,
     ids: ProviderIds = {},
   ): Promise<ProviderAttemptLookup> {
     return this.classifyProviderAttempt(this.prisma, key, "complete", ids);
@@ -2102,7 +2188,7 @@ export class WorkflowRunLifecycle {
    * delivery omits keeps its recorded value.
    */
   async completeProviderTranscript(
-    key: ProviderAttemptKey,
+    key: ProviderAttemptReference,
     input: CompleteTranscriptInput,
   ): Promise<ProviderSettlementResult> {
     return this.transaction(async (tx) => {
@@ -2130,7 +2216,7 @@ export class WorkflowRunLifecycle {
   /** Fails a waiting provider attempt (a `webhook_error`, a permanent provider
    * result) with the normal retry policy: retryable failures requeue. */
   async failProviderAttempt(
-    key: ProviderAttemptKey,
+    key: ProviderAttemptReference,
     failure: WorkflowFailure,
     ids: ProviderIds = {},
   ): Promise<ProviderSettlementResult> {
@@ -2148,7 +2234,7 @@ export class WorkflowRunLifecycle {
    * accepted in the meantime, is a no-op.
    */
   async expireUnconfirmedProviderSubmission(
-    key: ProviderAttemptKey,
+    key: ProviderAttemptReference,
   ): Promise<ProviderSettlementResult> {
     return this.transaction(async (tx) => {
       const lookup = await this.lockProviderAttempt(tx, key, "fail", {});
@@ -2193,24 +2279,38 @@ export class WorkflowRunLifecycle {
 
   private async lockProviderAttempt(
     tx: TransactionClient,
-    key: ProviderAttemptKey,
+    key: ProviderAttemptReference,
     intent: ProviderSettlementIntent,
     ids: ProviderIds,
   ): Promise<ProviderAttemptLookup> {
+    if (!validProviderReference(key)) return { kind: "stale", reason: "invalid_reference" };
+    const [epoch] = await tx.$queryRaw<Array<{ epoch: number }>>`SELECT "epoch" FROM "ExecutionEpoch" WHERE "id" = 1 FOR SHARE`;
+    if (!epoch || epoch.epoch !== key.deploymentEpoch) return { kind: "stale", reason: "epoch_superseded" };
+    const run = await tx.workflowRun.findUnique({ where: { id: key.workflowRunId }, include: { project: { select: { workspaceId: true } } } });
+    if (!run) return { kind: "stale", reason: "run_missing" };
+    await lockWorkspaceUsage(tx, run.project.workspaceId);
+    await this.lockAdmissionProject(tx, run.projectId);
+    await tx.$queryRaw`SELECT "id" FROM "Project" WHERE "id" = ${run.projectId}::uuid FOR UPDATE`;
     await tx.$queryRaw`SELECT "id" FROM "WorkflowRun" WHERE "id" = ${key.workflowRunId}::uuid FOR UPDATE`;
+    await tx.$queryRaw`SELECT "id" FROM "Transcript" WHERE "projectId" = ${run.projectId}::uuid FOR UPDATE`;
     return this.classifyProviderAttempt(tx, key, intent, ids);
   }
 
   private async classifyProviderAttempt(
     db: PrismaClient | TransactionClient,
-    key: ProviderAttemptKey,
+    key: ProviderAttemptReference,
     intent: ProviderSettlementIntent,
     ids: ProviderIds,
   ): Promise<ProviderAttemptLookup> {
+    if (!validProviderReference(key)) return { kind: "stale", reason: "invalid_reference" };
+    const epoch = await db.executionEpoch.findUnique({ where: { id: 1 }, select: { epoch: true } });
+    if (epoch?.epoch !== key.deploymentEpoch) return { kind: "stale", reason: "epoch_superseded" };
     const run = await db.workflowRun.findUnique({
       where: { id: key.workflowRunId },
       select: {
         id: true,
+        deploymentEpoch: true,
+        project: { select: { sourceRevision: true } },
         projectId: true,
         stage: true,
         status: true,
@@ -2221,6 +2321,8 @@ export class WorkflowRunLifecycle {
     if (!run || run.stage !== "stt") {
       return { kind: "stale", reason: "run_missing" };
     }
+    if (run.deploymentEpoch !== key.deploymentEpoch) return { kind: "stale", reason: "epoch_superseded" };
+    if (run.project.sourceRevision !== key.sourceRevision) return { kind: "stale", reason: "source_superseded" };
     if (run.attemptId !== key.attemptId) {
       return { kind: "stale", reason: "attempt_superseded" };
     }
@@ -2229,11 +2331,14 @@ export class WorkflowRunLifecycle {
       where: { projectId: run.projectId },
       select: {
         workflowAttemptId: true,
+        sourceAudioId: true,
+        sourceRevision: true,
         providerJobId: true,
         providerRequestId: true,
         providerSubmissionDeadlineAt: true,
       },
     });
+    if (transcript && (transcript.sourceRevision !== key.sourceRevision || transcript.sourceAudioId !== key.sourceAudioId)) return { kind: "stale", reason: "source_superseded" };
     if (status === "queued" || status === "running") {
       return { kind: "stale", reason: "not_waiting" };
     }

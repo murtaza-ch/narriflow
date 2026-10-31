@@ -346,6 +346,10 @@
       "types": "./src/scribe-transcript.ts",
       "default": "./src/scribe-transcript.ts"
     },
+    "./transcription-provider": {
+      "types": "./src/transcription-provider.ts",
+      "default": "./src/transcription-provider.ts"
+    },
     "./developer-commands": {
       "types": "./src/developer-commands.ts",
       "default": "./src/developer-commands.ts"
