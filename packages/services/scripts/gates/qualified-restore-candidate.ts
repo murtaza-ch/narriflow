@@ -14,8 +14,12 @@ import { hashSnapshotFile, hashSnapshotMigrations, readSnapshotJson } from "../e
 
 const host="ep-wispy-field-b5wyn9o3.c-7.us-east-2.aws.neon.tech",databaseName="serverless_pipeline_gates";
 const invocationEpoch=3,snapshotEpoch=4,restoredEpoch=5;
-const pgDirectory="/opt/homebrew/opt/postgresql@17/bin";
+const pgDirectory="/opt/homebrew/opt/libpq/bin",pgVersion="18.6",pgMajor=18;
 const invalid=()=>Error("qualified_restore_gate_refused");
+export function candidateRestorePostgresVersion(tool:"pg_dump"|"pg_restore",output:string,serverVersionNumber:number){
+ if(!Number.isInteger(serverVersionNumber)||Math.floor(serverVersionNumber/10000)!==pgMajor||output.trim()!==`${tool} (PostgreSQL) ${pgVersion}`)throw invalid();
+ return {utilityVersion:pgVersion,serverMajor:pgMajor};
+}
 const uuid=(value:unknown):value is string=>typeof value==="string"&&/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value);
 export function candidateRestoreTarget(raw:string){
  const target=new URL(raw);
@@ -49,11 +53,13 @@ async function main(){
  const j=candidateRestoreJournal(await readSnapshotJson(process.env.RESTORE_GATE_JOURNAL));
  const makeDatabase=()=>new PrismaClient({adapter:new PrismaPg({connectionString:target.toString(),max:1,connectionTimeoutMillis:10000,query_timeout:10000},{schema:"public"}),log:[],transactionOptions:{maxWait:10000,timeout:15000}});
  let db=makeDatabase();
+ let serverVersion:{version:string;number:number}|undefined;
  const deadline=Date.parse(j.operationDeadlineAt);
  async function identity(epoch:number){
-  const [bound]=await db.$queryRaw<Array<{database:string;schema:string}>>`SELECT current_database() AS database,current_schema() AS schema`;
+  const [bound]=await db.$queryRaw<Array<{database:string;schema:string;version:string;number:number}>>`SELECT current_database() AS database,current_schema() AS schema,current_setting('server_version') AS version,current_setting('server_version_num')::integer AS number`;
   const state=await db.executionEpoch.findUniqueOrThrow({where:{id:1}});
-  if(bound?.database!==databaseName||bound.schema!=="public"||state.epoch!==epoch||state.admissionOpen)throw invalid();
+  if(bound?.database!==databaseName||bound.schema!=="public"||!Number.isInteger(bound.number)||Math.floor(bound.number/10000)!==pgMajor||state.epoch!==epoch||state.admissionOpen)throw invalid();
+  serverVersion={version:bound.version,number:bound.number};
   return state;
  }
  async function original(){
@@ -75,26 +81,29 @@ async function main(){
  async function postgres(tool:"pg_dump"|"pg_restore",args:string[]){
   const env:NodeJS.ProcessEnv={PATH:process.env.PATH,HOME:process.env.HOME,PGHOST:host,PGPORT:"5432",PGDATABASE:databaseName,PGUSER:decodeURIComponent(target.username),PGPASSWORD:decodeURIComponent(target.password),PGSSLMODE:"verify-full",PGCONNECT_TIMEOUT:"10",PGOPTIONS:"-c statement_timeout=60000 -c lock_timeout=5000"};
   const timeout=Math.min(60000,deadline-Date.now()-10000);if(timeout<1000)throw invalid();
-  const binary=`${pgDirectory}/${tool}`,version=await runFile(binary,["--version"],{env,timeout:5000,maxBuffer:4096});if(!version.stdout.includes(" 17."))throw invalid();
+  if(!serverVersion)throw invalid();
+  const binary=`${pgDirectory}/${tool}`,version=await runFile(binary,["--version"],{env,timeout:5000,maxBuffer:4096});
+  const checked=candidateRestorePostgresVersion(tool,version.stdout,serverVersion.number);
   await runFile(binary,args,{env,timeout,maxBuffer:4*1024*1024});
+  return {tool,...checked,serverVersion:serverVersion.version,serverVersionNumber:serverVersion.number};
  }
  try{
   if(stage==="dump"){
    await source();
    const temporary=`${j.snapshotPath}.${j.runId}.partial`,file=await open(temporary,constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,0o600);await file.close();
    await db.$disconnect();
-   await postgres("pg_dump",["--format=custom","--compress=0","--no-owner","--no-privileges",`--file=${temporary}`]);
+   const postgresVersion=await postgres("pg_dump",["--format=custom","--compress=0","--no-owner","--no-privileges",`--file=${temporary}`]);
    await link(temporary,j.snapshotPath);await unlink(temporary);
-   console.log(JSON.stringify({mode:"snapshot_captured",runId:j.runId,sourceEpoch:snapshotEpoch,capturedAt:new Date().toISOString(),snapshotSha256:await hashSnapshotFile(j.snapshotPath)}));
+   console.log(JSON.stringify({mode:"snapshot_captured",runId:j.runId,sourceEpoch:snapshotEpoch,postgres:postgresVersion,capturedAt:new Date().toISOString(),snapshotSha256:await hashSnapshotFile(j.snapshotPath)}));
   }else if(stage==="restore"){
    const {state,worker}=await source();
    const evidence=await validateExecutionSnapshotEvidence({proof:await readSnapshotJson(j.proofPath),snapshotSha256:await hashSnapshotFile(j.snapshotPath),localMigrationSha256:await hashSnapshotMigrations(fileURLToPath(new URL("../../../db/prisma/migrations/",import.meta.url))),worker});
    if(evidence.proof.sourceEpoch!==snapshotEpoch||evidence.proof.schema!=="public")throw invalid();
    const validate=()=>db.$transaction(async tx=>{const [current]=await tx.$queryRaw<Array<typeof state>>`SELECT epoch,"admissionOpen","changedAt" FROM "ExecutionEpoch" WHERE id=1 FOR UPDATE`;if(!current)throw invalid();await assertExecutionSnapshotDatabase(tx,evidence,{...current,expectedEpoch:snapshotEpoch,fenceAboveEpoch:snapshotEpoch});});
    await validate();await db.$disconnect();
-   await postgres("pg_restore",["--clean","--if-exists","--single-transaction","--exit-on-error","--no-owner","--no-privileges",`--dbname=${databaseName}`,j.snapshotPath]);
-   db=makeDatabase();await validate();await original();
-   console.log(JSON.stringify({mode:"attested_snapshot_restored",runId:j.runId,sourceEpoch:snapshotEpoch,restoredAt:new Date().toISOString(),snapshotSha256:evidence.proof.snapshotSha256}));
+   const postgresVersion=await postgres("pg_restore",["--clean","--if-exists","--single-transaction","--exit-on-error","--no-owner","--no-privileges",`--dbname=${databaseName}`,j.snapshotPath]);
+   db=makeDatabase();await identity(snapshotEpoch);await validate();await original();
+   console.log(JSON.stringify({mode:"attested_snapshot_restored",runId:j.runId,sourceEpoch:snapshotEpoch,postgres:postgresVersion,restoredAt:new Date().toISOString(),snapshotSha256:evidence.proof.snapshotSha256}));
   }else{
    await identity(restoredEpoch);await readRestoreResumeWorker(origin,true);
    const {job,attempt}=await original();candidateRestoreRefusal(await readSnapshotJson(j.refusalPath),j);
@@ -106,7 +115,7 @@ async function main(){
    const result=job.result as {assetId?:string};if(!result?.assetId)throw invalid();
    const asset=await db.visualAsset.findUniqueOrThrow({where:{id:result.assetId}});
    if(asset.storageKey!==binary.storageKey||await db.visualAsset.count({where:{userId:job.ownerUserId,workspaceId:job.ownerWorkspaceId,fingerprint:asset.fingerprint}})!==1)throw invalid();
-   console.log(JSON.stringify({mode:"qualified_restore_verified",runId:j.runId,jobId:j.jobId,sourceEpoch:invocationEpoch,snapshotEpoch,targetEpoch:restoredEpoch,chargedStarts:2,staleCommit:"superseded",publishedAssets:1,operationDeadlineAt:j.operationDeadlineAt,completedAt:job.completedAt.toISOString()}));
+   console.log(JSON.stringify({mode:"qualified_restore_verified",runId:j.runId,jobId:j.jobId,sourceEpoch:invocationEpoch,snapshotEpoch,targetEpoch:restoredEpoch,serverVersion,chargedStarts:2,staleCommit:"superseded",publishedAssets:1,operationDeadlineAt:j.operationDeadlineAt,completedAt:job.completedAt.toISOString()}));
   }
  }finally{await db.$disconnect();}
 }
