@@ -10,6 +10,10 @@
       "types": "./src/clip-selection-policy.ts",
       "default": "./src/clip-selection-policy.ts"
     },
+    "./clip-selection-provider": {
+      "types": "./src/clip-selection-provider.ts",
+      "default": "./src/clip-selection-provider.ts"
+    },
     ".": {
       "types": "./src/index.ts",
       "default": "./src/index.ts"

@@ -5,6 +5,7 @@ export { createTranscriptionControl, type TranscriptionControlPorts, type Transc
 export { createTranscriptionProbe, type SourceLanguageProbeDescriptor, type TranscriptionProbePreparation } from "./transcription-probe";
 export { buildCaptionOnlyTranscriptSlice, buildMarketCompliantClipCandidates, buildUserPrompt, CLIP_DURATION_POLICY, formatTimestamp, formatTranscriptForLlm,
   normalizeLlmClip, resolveCandidateCountTarget, resolveClipCountTarget, resolveDefaultClipCountTarget } from "./clip-selection-policy";
+export { createClipSelectionProvider, classifyOpenAiHttpFailure, type ClipSelectionProviderResult } from "./clip-selection-provider";
 export {
 	boundedExpectedDomainFailureDetails,
 	ExpectedDomainFailureError,

@@ -1,3 +1,5 @@
+import { classifyOpenAiHttpFailure } from "@narriflow/services/clip-selection-provider";
+export { classifyOpenAiHttpFailure } from "@narriflow/services/clip-selection-provider";
 import { buildCaptionOnlyTranscriptSlice, buildMarketCompliantClipCandidates, buildUserPrompt, chunkUtterances, CLIP_DETECTION_JSON_SCHEMA,
   deduplicateClipCandidates, extractResponseText, formatTranscriptForLlm, normalizeLlmClip, resolveCandidateCountTarget, resolveClipCountTarget, resolveDurationPolicy,
   roundSeconds, selectDiverseClipCandidates, summarizeDurations, SYSTEM_PROMPT, type FinalDetectedClip, type RawDetectedClip } from "@narriflow/services/clip-selection-policy";
@@ -13,7 +15,6 @@ import {
   rethrowWorkflowAttemptLost,
   WorkflowFailure,
   workflowFailureFromUnknown,
-  workflowHttpFailureDisposition,
   type ClaimedWorkflowAttempt,
   type WorkflowAttemptContext,
 } from "@narriflow/services";
@@ -129,32 +130,6 @@ type OpenAiErrorPayload = {
     type?: string | null;
   };
 };
-
-const OPENAI_QUOTA_ERROR_MARKERS = new Set([
-  "credit_balance_exhausted",
-  "insufficient_quota",
-]);
-
-export function classifyOpenAiHttpFailure(
-  status: number,
-  payload: OpenAiErrorPayload | null,
-): { code: string; disposition: "retryable" | "permanent" } {
-  const providerCode = payload?.error?.code ?? null;
-  const providerType = payload?.error?.type ?? null;
-  const quotaExhausted =
-    (providerCode !== null && OPENAI_QUOTA_ERROR_MARKERS.has(providerCode)) ||
-    (providerType !== null && OPENAI_QUOTA_ERROR_MARKERS.has(providerType));
-
-  if (status === 429 && quotaExhausted) {
-    log("error", "openai_quota_exhausted", { status, providerCode, providerType });
-    return { code: "openai_quota_exhausted", disposition: "permanent" };
-  }
-
-  return {
-    code: "openai_request_failed",
-    disposition: workflowHttpFailureDisposition(status),
-  };
-}
 
 async function isRetryableOpenAiResponse(response: Response): Promise<boolean> {
   if (!isRetryableStatus(response.status)) return false;
