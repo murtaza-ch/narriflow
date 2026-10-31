@@ -23,11 +23,8 @@ const service = new ReviewService(async (_key, limit) => ({ allowed: true, avail
   let pool: Pool;
   let admin: Pool;
   let oldClient: PrismaClient | undefined;
-  let oldRedisUrl: string | undefined;
   const global = createDatabaseTestContext();
   beforeAll(bindServiceTestEnvironment(global.bind(async () => {
-    oldRedisUrl = process.env.UPSTASH_REDIS_URL;
-    delete process.env.UPSTASH_REDIS_URL;
     const url = process.env.DATABASE_URL!;
     if (!url.includes("localhost:55432/")) throw new Error("Run through .scratch/api-extraction/db-gate.sh");
     admin = new Pool({ connectionString: url, max: 1 });
@@ -42,7 +39,7 @@ const service = new ReviewService(async (_key, limit) => ({ allowed: true, avail
     prisma = new PrismaClient({ adapter: new PrismaPg(pool, { schema }) });
     oldClient = global.client; global.client = prisma;
   })), 30_000);
-  afterAll(bindServiceTestEnvironment(global.bind(async () => { if (oldRedisUrl === undefined) delete process.env.UPSTASH_REDIS_URL; else process.env.UPSTASH_REDIS_URL = oldRedisUrl; global.client = oldClient; await prisma?.$disconnect(); await pool?.end(); if (admin) { await admin.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`); await admin.end(); } })));
+  afterAll(bindServiceTestEnvironment(global.bind(async () => { global.client = oldClient; await prisma?.$disconnect(); await pool?.end(); if (admin) { await admin.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`); await admin.end(); } })));
   async function fixture() {
     const id = randomUUID();
     const user = await prisma.user.create({ data: { clerkId: id, primaryEmail: `${id}@example.test` } });
