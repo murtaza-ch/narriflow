@@ -14,6 +14,7 @@ function apiOrigin(): string {
   return new URL(value).origin;
 }
 const API_ORIGIN = apiOrigin();
+const API_SOCKET_ORIGIN = API_ORIGIN.replace(/^http/, "ws");
 
 const reviewScriptSource = process.env.NODE_ENV === "development"
   ? "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://*.clerk.accounts.dev https://*.clerk.com"
@@ -85,7 +86,7 @@ const nextConfig: NextConfig = {
           // violations but never blocks anything, so it is safe to ship. Hosts
           // are derived from images.remotePatterns (i.ytimg.com, img.youtube.com)
           // and the app's real backends: Clerk (auth), Cloudflare R2 (media),
-          // Upstash (rate limiting). Promote to enforced once violations are
+          // and the API progress socket. Promote to enforced once violations are
           // reviewed. TODO(follow-up): add a report-to/report-uri endpoint.
           {
             key: "Content-Security-Policy-Report-Only",
@@ -100,7 +101,7 @@ const nextConfig: NextConfig = {
               "style-src 'self' 'unsafe-inline'",
               // Google Identity Services and Picker, and the Dropbox Chooser, for the upload page's cloud pickers.
               "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://*.clerk.accounts.dev https://*.clerk.com https://accounts.google.com https://apis.google.com https://www.dropbox.com https://www.youtube.com",
-              `connect-src 'self' ${API_ORIGIN} https://*.clerk.accounts.dev https://*.clerk.com https://*.r2.cloudflarestorage.com https://accounts.google.com`,
+              `connect-src 'self' ${API_ORIGIN} ${API_SOCKET_ORIGIN} https://*.clerk.accounts.dev https://*.clerk.com https://*.r2.cloudflarestorage.com https://accounts.google.com`,
               "frame-src 'self' https://*.clerk.accounts.dev https://*.clerk.com https://accounts.google.com https://docs.google.com https://content.googleapis.com https://www.dropbox.com https://www.youtube.com https://www.youtube-nocookie.com",
               "worker-src 'self' blob:",
             ].join("; ") + ";",
@@ -123,7 +124,7 @@ const nextConfig: NextConfig = {
           { key: "Cache-Control", value: "private, no-store, max-age=0" },
           {
             key: "Content-Security-Policy",
-            value: `default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; img-src 'self' data: blob: https://*.clerk.accounts.dev https://*.clerk.com; media-src 'self' blob: https://*.r2.cloudflarestorage.com; font-src 'self' data:; style-src 'self' 'unsafe-inline'; ${reviewScriptSource}; connect-src 'self' ${API_ORIGIN} https://*.clerk.accounts.dev https://*.clerk.com; frame-src 'self' https://*.clerk.accounts.dev https://*.clerk.com; worker-src 'self' blob:;`,
+            value: `default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; img-src 'self' data: blob: https://*.clerk.accounts.dev https://*.clerk.com; media-src 'self' blob: https://*.r2.cloudflarestorage.com; font-src 'self' data:; style-src 'self' 'unsafe-inline'; ${reviewScriptSource}; connect-src 'self' ${API_ORIGIN} ${API_SOCKET_ORIGIN} https://*.clerk.accounts.dev https://*.clerk.com; frame-src 'self' https://*.clerk.accounts.dev https://*.clerk.com; worker-src 'self' blob:;`,
           },
         ],
       },

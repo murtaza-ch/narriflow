@@ -113,5 +113,13 @@ try {
   await reset.until(() => reset.frames.some((frame) => frame.type === "connected"));
   assert.ok(reset.frames.some((frame) => frame.type === "reset" && frame.cursor === 99));
   checks.push("retention_reset_to_snapshot");
+  const overflowProject = randomUUID();
+  await control(`replay/${overflowProject}`, { highWater: 300, events: Array.from({ length: 300 }, (_, index) => event(overflowProject, index + 1)), reset: false });
+  const overflow = connect(overflowProject);
+  assert.equal(await overflow.opened, 101);
+  await overflow.until(() => overflow.frames.some((frame) => frame.type === "connected"));
+  assert.ok(overflow.frames.some((frame) => frame.type === "reset" && frame.cursor === 300));
+  assert.equal(overflow.frames.filter((frame) => frame.type === "event").length, 0);
+  checks.push("bounded_replay_frames_reset_snapshot");
   process.stdout.write(`${JSON.stringify({ runtime: "workerd", checks, passed: checks.length })}\n`);
 } finally { for (const socket of sockets) socket.terminate(); await worker.stop(); }

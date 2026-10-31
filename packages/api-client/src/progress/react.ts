@@ -42,6 +42,7 @@ export function useProgressStream(
     return progressHubFor(runtime).subscribe({ userId, workspaceId }, projectId, {
       sinceSeq: latest.current.sinceSeq ?? 0,
       onEvent: (event) => latest.current.onEvent?.(event),
+      onStatus: (status) => latest.current.onStatus?.(status),
       onOpen: (info) => latest.current.onOpen?.(info),
       onRevoked: (control) => latest.current.onRevoked?.(control),
       onFatal: (error) => latest.current.onFatal?.(error),

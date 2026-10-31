@@ -1,4 +1,4 @@
-import type { ApiWorkerBindings } from "../worker-bindings";
+import type { ProgressConnection } from "@narriflow/services/progress-feed";
 import type { PlatformActor } from "@narriflow/auth";
 import type { ActiveProjectScope, RecordedRateLimit } from "./request-policy";
 import type {
@@ -10,7 +10,7 @@ import type {
 
 /** Hono bindings shared by every first-party route. */
 export interface ApiEnv {
-  Bindings: ApiWorkerBindings;
+  Bindings: { [name: string]: unknown; PROJECT_PROGRESS: { getByName(name: string): ProgressConnection } };
   Variables: {
     /** Set by Hono's `requestId` middleware; the only ID a request ever has. */
     requestId: string;

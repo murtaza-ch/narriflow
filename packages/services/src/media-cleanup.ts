@@ -1,4 +1,4 @@
-import { readServiceEnvironment } from "./runtime-environment";
+import { readServiceEnvironment, type ServiceEnvironment } from "./runtime-environment";
 import { randomUUID } from "node:crypto";
 import { getPrismaClient } from "@narriflow/db/client";
 import type { MediaCleanupObligation } from "@prisma/client";
@@ -581,7 +581,7 @@ export function validateMediaCleanupConfig(
 }
 
 export function mediaCleanupConfigFromEnv(
-  env: NodeJS.ProcessEnv = readServiceEnvironment(),
+  env: ServiceEnvironment = readServiceEnvironment(),
 ): MediaCleanupConfig {
   const defaults = defaultMediaCleanupConfig();
   const number = (name: string, fallback: number) => {

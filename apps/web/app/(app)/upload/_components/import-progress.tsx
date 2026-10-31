@@ -9,7 +9,7 @@ import { userErrorMessage } from "@narriflow/validators";
 import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useApiRuntime } from "@/app/_components/api-provider";
 import { useIntake } from "../_lib/intake-context";
 import { deriveImportProgress } from "../_lib/import-progress";
@@ -19,18 +19,20 @@ export function ImportProgress({ projectId }: { projectId: string }) {
   const router = useRouter();
   const runtime = useApiRuntime();
   const { scope, transport } = useIntake();
+  const [streamHealthy, setStreamHealthy] = useState(false);
   const client = useMemo(() => createProjectsClient(transport.scoped(scope)), [transport, scope]);
   const detail = useQuery({
     ...projectQueries.detail(client, scope, projectId),
     // A fresh read also covers a refresh with a cached, previously completed project.
     refetchOnMount: "always",
-    refetchInterval: (query) => query.state.data && deriveImportProgress(query.state.data).state !== "processing" ? false : 5_000,
+    refetchInterval: (query) => streamHealthy || (query.state.data && deriveImportProgress(query.state.data).state !== "processing") ? false : 5_000,
   });
   const progress = detail.data ? deriveImportProgress(detail.data) : null;
   const reread = () => { void clearProjectAccess(runtime.queryClient, scope, projectId); };
   useProgressStream(runtime, scope, projectId, {
     enabled: !progress || progress.state === "processing",
     sinceSeq: detail.data?.snapshot.lastSeq ?? 0,
+    onStatus: (status) => setStreamHealthy(status.state === "open"),
     onRevoked: reread,
     onFatal: reread,
   });
