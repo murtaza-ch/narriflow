@@ -39,6 +39,7 @@ import type { WorkflowCommandHandler, WorkflowHandlerRegistry } from "./protocol
 import { createNativeOperationDriver } from "./native-operation-driver";
 import { createPublicationDriver } from "./publication-driver";
 import { createRenderRunDriver } from "./render-run-driver";
+import { createZoomRuleWakes, isZoomRuleWakeReference } from "@narriflow/services/zoom-rule-wakes";
 import { getWorkerMaintenanceRuntime } from "./maintenance-runtime";
 
 async function nativeDomain(reference: ExecutionDispatchReference, bindings: ApiWorkerBindings) {
@@ -256,6 +257,12 @@ export function workflowDomainRegistry(bindings: ApiWorkerBindings): WorkflowHan
     deliver: ids => Promise.all(ids.map(id => getExecutionDispatch().deliver(id))),
   });
   const maintenance: WorkflowCommandHandler = async ({ reference }) => {
+    if (isZoomRuleWakeReference(reference)) {
+      const database = getPrismaClient();
+      if (!database) throw Error("Zoom Rule wake requires a database scope");
+      const result = await createZoomRuleWakes({ database, register: deliverExecutionDispatches }).dispatch(reference);
+      return { type: "complete", disposition: result.kind === "superseded" ? "superseded" : "terminal" };
+    }
     if (/^(?:mt1|rs2|pr1|pw1)\./.test(reference.subject.id)) return maintenancePage({ reference, wake: { type: "start" } });
     if (isFinishingProducerReference(reference)) {
       const database = getPrismaClient();
