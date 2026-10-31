@@ -17,7 +17,8 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping, Sequence
+from typing import Callable, Mapping, Sequence
+from threading import Event
 
 MAX_INPUT_BYTES = 64 * 1024
 MAX_OUTPUT_BYTES = 1024 * 1024
@@ -45,6 +46,8 @@ def run_owned_process(
     timeout_seconds: float,
     kill_grace_seconds: float = 5,
     env: Mapping[str, str] | None = None,
+    on_start: Callable[[int], None] | None = None,
+    cancel_event: Event | None = None,
 ) -> ProcessResult:
     """Run one finite command; never include its argv or raw stderr in errors."""
     if not argv or any(not isinstance(value, str) or "\x00" in value for value in argv):
@@ -53,24 +56,60 @@ def run_owned_process(
         raise ValueError("media_command_too_large")
     if not 0 < timeout_seconds <= 24 * 60 * 60 or not 0 < kill_grace_seconds <= 30:
         raise ValueError("invalid_media_deadline")
+    if cancel_event is not None and cancel_event.is_set():
+        raise MediaProcessError("media_execution_cancelled")
     child_env = dict(os.environ if env is None else env)
     for name in ("DATABASE_URL", "DIRECT_URL", "NEON_DATABASE_URL", "PGHOST", "PGUSER", "PGPASSWORD", "PGDATABASE", "PGPORT", "PGSERVICE", "PGSERVICEFILE", "PGPASSFILE"):
         child_env.pop(name, None)
     read_fd, write_fd = os.pipe()
+    start_read_fd, start_write_fd = os.pipe()
+    os.set_blocking(start_read_fd, False)
+    observed_start = False
+    def observe_start():
+        nonlocal observed_start
+        if observed_start:
+            return
+        try:
+            message = os.read(start_read_fd, 32)
+        except BlockingIOError:
+            return
+        if message:
+            observed_start = True
+            if on_start is not None:
+                try:
+                    on_start(int(message))
+                except Exception:
+                    raise MediaProcessError("media_process_start_unconfirmed") from None
     supervisor = None
     try:
-        supervisor = subprocess.Popen(
-            [sys.executable, str(Path(__file__).resolve()), "--supervise", str(read_fd),
-             json.dumps(list(argv)), str(timeout_seconds), str(kill_grace_seconds)],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            start_new_session=True, pass_fds=(read_fd,), env=child_env,
-        )
+        try:
+            supervisor = subprocess.Popen(
+                [sys.executable, str(Path(__file__).resolve()), "--supervise", str(read_fd),
+                 json.dumps(list(argv)), str(timeout_seconds), str(kill_grace_seconds), str(start_write_fd)],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                start_new_session=True, pass_fds=(read_fd, start_write_fd), env=child_env,
+            )
+        except OSError:
+            raise MediaProcessError("media_process_spawn_failed") from None
         os.close(read_fd)
         read_fd = -1
+        os.close(start_write_fd)
+        start_write_fd = -1
         try:
-            stdout, stderr = supervisor.communicate(
-                input_bytes, timeout=timeout_seconds + kill_grace_seconds + 5,
-            )
+            parent_deadline = time.monotonic() + timeout_seconds + kill_grace_seconds + 5
+            first = True
+            while True:
+                if cancel_event is not None and cancel_event.is_set():
+                    raise MediaProcessError("media_execution_cancelled")
+                observe_start()
+                try:
+                    stdout, stderr = supervisor.communicate(input_bytes if first else None, timeout=0.05)
+                    observe_start()
+                    break
+                except subprocess.TimeoutExpired:
+                    first = False
+                    if time.monotonic() >= parent_deadline:
+                        raise MediaProcessError("media_supervisor_timeout") from None
         except BaseException:
             os.close(write_fd)
             write_fd = -1
@@ -81,13 +120,14 @@ def run_owned_process(
                 supervisor.wait()
             raise
         return ProcessResult(supervisor.returncode, stdout, stderr)
-    except OSError as error:
-        raise MediaProcessError("media_process_spawn_failed") from error
     finally:
         if read_fd >= 0:
             os.close(read_fd)
         if write_fd >= 0:
             os.close(write_fd)
+        os.close(start_read_fd)
+        if start_write_fd >= 0:
+            os.close(start_write_fd)
 
 
 def _direct_children(pid: int) -> set[int]:
@@ -167,7 +207,7 @@ def _enable_subreaper() -> None:
             raise MediaProcessError("media_subreaper_unavailable")
 
 
-def _supervise(read_fd: int, argv: list[str], timeout: float, grace: float) -> int:
+def _supervise(read_fd: int, argv: list[str], timeout: float, grace: float, start_fd: int) -> int:
     _enable_subreaper()
     body = sys.stdin.buffer.read(MAX_INPUT_BYTES + 1)
     if len(body) > MAX_INPUT_BYTES:
@@ -182,6 +222,8 @@ def _supervise(read_fd: int, argv: list[str], timeout: float, grace: float) -> i
     signal.signal(signal.SIGINT, stop)
     child = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                              stderr=subprocess.PIPE, start_new_session=True)
+    os.write(start_fd, str(child.pid).encode())
+    os.close(start_fd)
     assert child.stdin and child.stdout and child.stderr
     selector = selectors.DefaultSelector()
     for stream, name in [(child.stdout, "stdout"), (child.stderr, "stderr")]:
@@ -273,11 +315,11 @@ def _supervise(read_fd: int, argv: list[str], timeout: float, grace: float) -> i
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 6 or sys.argv[1] != "--supervise":
+    if len(sys.argv) != 7 or sys.argv[1] != "--supervise":
         raise SystemExit(64)
     try:
         raise SystemExit(_supervise(int(sys.argv[2]), json.loads(sys.argv[3]),
-                                   float(sys.argv[4]), float(sys.argv[5])))
+                                   float(sys.argv[4]), float(sys.argv[5]), int(sys.argv[6])))
     except Exception:
         # Raw exceptions can contain argv, URLs or caller payloads.
         raise SystemExit(70)
