@@ -34,7 +34,7 @@ export const restoreBillingPage: ExecutionRestorePhaseHandler = async (tx,page) 
     WHERE "reconciliationEpoch"<${page.deploymentEpoch} AND "createdAt"<=(${page.cutoff}::timestamptz AT TIME ZONE 'UTC')
     ${after(page.after,Prisma.sql`"createdAt"`)} ORDER BY "createdAt",id LIMIT ${page.limit+1}`;
   const selected=rows.slice(0,page.limit);await lockParents(tx,selected);const dispatchIds:string[]=[];
-  for(const row of selected){const ref=await recoverBillingReconciliation(tx,row.workspaceId);if(ref)dispatchIds.push(ref.dispatchId);}
+  for(const row of selected){const ref=await recoverBillingReconciliation(tx,row.workspaceId,{deferDispatch:true});if(ref)dispatchIds.push(ref.dispatchId);}
   return {processed:selected.length,next:rows.length>page.limit?selected.at(-1)!:null,dispatchIds};
 };
 export const restoreLibraryPage: ExecutionRestorePhaseHandler = async(tx,page)=>{
@@ -43,6 +43,6 @@ export const restoreLibraryPage: ExecutionRestorePhaseHandler = async(tx,page)=>
     WHERE t.status='completed' AND t."passagesEpoch"<${page.deploymentEpoch} AND t."passagesGeneration">0 AND t."passagesRetryAt" IS NOT NULL
       AND t."createdAt"<=(${page.cutoff}::timestamptz AT TIME ZONE 'UTC') ${after(page.after,Prisma.sql`t."createdAt"`,Prisma.sql`t.id`)} ORDER BY t."createdAt",t.id LIMIT ${page.limit+1}`;
   const selected=rows.slice(0,page.limit);await lockParents(tx,selected);const dispatchIds:string[]=[];
-  for(const row of selected){const ref=await queueLibraryIndex(tx,row.id);if(ref)dispatchIds.push(ref.dispatchId);}
+  for(const row of selected){const ref=await queueLibraryIndex(tx,row.id,{deferDispatch:true});if(ref)dispatchIds.push(ref.dispatchId);}
   return {processed:selected.length,next:rows.length>page.limit?selected.at(-1)!:null,dispatchIds};
 };

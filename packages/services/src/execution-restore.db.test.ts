@@ -135,8 +135,9 @@ suite("Execution restore authority", () => {
     for(let i=0;i<250;i++){const outcome=await restore.run(reference);if(outcome.kind==="complete")break;reference=(await readExecutionDispatch(database,outcome.dispatchIds.at(-1)!))!.reference;}
     const afterBilling=await database.workspaceBillingAccount.findUniqueOrThrow({where:{id:billing.id}}),afterLibrary=await database.transcript.findUniqueOrThrow({where:{id:transcript.id}});
     expect(afterBilling).toMatchObject({providerCustomerId:billing.providerCustomerId,attemptCount:7,nextReconcileAt:billing.nextReconcileAt,reconcileAttemptId:null,leaseExpiresAt:null,reconciliationEpoch:begun.deploymentEpoch});
-    expect(afterLibrary).toMatchObject({passagesAttempts:2,passagesSourceHash:original.passagesSourceHash,passagesDeadlineAt:original.passagesDeadlineAt,passagesClaimId:null,passagesLeaseUntil:null,passagesEpoch:begun.deploymentEpoch});
+    expect(afterLibrary).toMatchObject({passagesAttempts:2,passagesRetryAt:original.passagesRetryAt,passagesSourceHash:original.passagesSourceHash,passagesDeadlineAt:original.passagesDeadlineAt,passagesClaimId:null,passagesLeaseUntil:null,passagesEpoch:begun.deploymentEpoch});
     expect(afterLibrary.passagesGeneration).toBe(original.passagesGeneration+1);
+    expect(await database.executionDispatch.count({where:{deploymentEpoch:begun.deploymentEpoch,subjectKind:{in:["workspace_billing","library_index"]}}})).toBe(0);
     await database.workspace.delete({where:{id:workspace.id}});
   });
 
