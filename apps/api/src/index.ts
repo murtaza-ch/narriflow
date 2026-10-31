@@ -1,12 +1,17 @@
 import { loadApiConfig } from "./config";
 import { createProductionApp } from "./runtime";
 import { createApiWorker } from "./worker";
+import { getWorkerMaintenanceRuntime } from "./workflows/maintenance-runtime";
+import { createMaintenanceScheduledHandler } from "./workflows/maintenance-scheduled";
 
-export default createApiWorker({
-  createApp(environment, runInvocation) {
-    return createProductionApp(loadApiConfig(environment), environment, runInvocation);
-  },
-});
+export default {
+  ...createApiWorker({
+    createApp(environment, runInvocation) {
+      return createProductionApp(loadApiConfig(environment), environment, runInvocation);
+    },
+  }),
+  scheduled: createMaintenanceScheduledHandler({ createRuntime: getWorkerMaintenanceRuntime }),
+};
 
 export { RateLimiter } from "./durable-objects/rate-limiter";
 

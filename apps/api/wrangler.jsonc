@@ -13,6 +13,10 @@
   // round trips; run fetch handlers near that database.
   "placement": { "region": "aws:us-east-2" },
   "routes": [],
+  // Each Cron registers one bounded metadata page; Workflows own continuation.
+  // Fenced snapshots refuse Cron before DB access. Remove both with crons: []
+  // while performing the explicit closed-mode restore redispatch procedure.
+  "triggers": { "crons": ["0 * * * *", "0 0 * * *"] },
   "durable_objects": { "bindings": [{ "name": "RATE_LIMITER", "class_name": "RateLimiter" }, { "name": "PROJECT_PROGRESS", "class_name": "ProjectProgress" }, { "name": "LOCAL_FETCH_MAILBOX", "class_name": "LocalFetchMailbox" }] },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RateLimiter", "ProjectProgress", "LocalFetchMailbox"] }],
   "workflows": [
