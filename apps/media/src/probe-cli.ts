@@ -28,7 +28,7 @@ async function main() {
  process.once("SIGTERM", cancel);
  process.once("SIGINT", cancel);
  try {
-  const facts = await createWorkerProcessModule().inspectMedia({ sourcePath, signal: controller.signal, deadlineMs: 30_000 });
+  const facts = await createWorkerProcessModule().inspectMedia({ sourcePath,localOnly:true, signal: controller.signal, deadlineMs: 30_000 });
   process.stdout.write(`${JSON.stringify({ ...facts, probeVersion: NORMALIZED_PROBE_VERSION })}\n`);
  } finally {
   process.removeListener("SIGTERM", cancel);

@@ -53,6 +53,16 @@ class SourceOperationTests(unittest.IsolatedAsyncioTestCase):
                 token_server_home=Path("/trusted/token-helper"),runtime_class=runtime,sink_class=sink,verify_runtime=verify,fetch=fetch)
         self.assertEqual(trace,["verify","runtime","start","seeded_probe","fetch"])
 
+    async def test_direct_sources_use_verified_native_work_without_a_youtube_proxy_configuration(self):
+        session,package,trace,_runtime,_sink,verify,_fetch=self.fixture()
+        command=package.command;command.pop('mediaId');command.update(kind='direct_source',mediaIdentity={'provider':'rss','mediaId':'episode1'},source={'provider':'rss','url':'https://feed.example/audio','authorization':None})
+        package=WorkPackage('fetch_source',package.input_hash,_wire(command),_wire([]),_wire([]),_wire(session.fence))
+        async def direct(session,package,work,**options):trace.append('direct')
+        with tempfile.TemporaryDirectory() as directory:
+            await run_fetch_source(session,package,Path(directory),mode='proxy',development=False,proxy_template=None,
+                token_server_home=Path('/trusted/token-helper'),verify_runtime=verify,direct_operation=direct)
+        self.assertEqual(trace,['verify','direct'])
+
     async def test_wrong_image_fingerprint_starts_no_metadata_or_media_process(self):
         session,package,trace,runtime,sink,verify,fetch = self.fixture(fingerprint="e"*64)
         with tempfile.TemporaryDirectory() as directory:

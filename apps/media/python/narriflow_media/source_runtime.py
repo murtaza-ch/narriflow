@@ -7,6 +7,7 @@ from pathlib import Path
 from .control import ExecutorSession
 from .fetch import ExistingSourceAudio, SourceFetchFailure, fetch_source
 from .fetch_runtime import YtDlpSourceRuntime
+from .file_source_runtime import run_direct_source
 from .manifest import YouTubeSource
 from .process import run_owned_process_async
 from .source_sink import ScopedSourceSink, _environment
@@ -32,17 +33,26 @@ async def verify_source_runtime(session, *, bun_executable="bun"):
 async def run_fetch_source(session: ExecutorSession, package: WorkPackage, work: Path, *, mode: str,
                            development: bool, token_server_home: Path, proxy_template: str | None = None,
                            bun_executable="bun", runtime_class=YtDlpSourceRuntime, sink_class=ScopedSourceSink,
-                           verify_runtime=verify_source_runtime, fetch=fetch_source):
+                           verify_runtime=verify_source_runtime, fetch=fetch_source,direct_operation=run_direct_source):
     session.assert_live()
-    if mode not in {"local", "proxy"} or mode == "local" and not development or mode == "proxy" and not proxy_template:
-        raise SourceFetchFailure("source_fetch_mode_forbidden")
     package.assert_session(session)
     command = package.command
-    if package.function_name != "fetch_source" or command.get("kind") != "youtube_source" or command.get("audioPolicy") not in {"required","none","pending_pack"}:
+    if package.function_name != "fetch_source":raise SourceFetchFailure("source_runtime_invalid")
+    if command.get("kind")=="source_refusal":
+        if (set(command)!={"kind","failureCode","retryable"} or type(command.get("retryable")) is not bool
+                or command.get("failureCode") not in {"drive_token_expired","drive_file_unavailable","zoom_recording_unavailable","zoom_connection_unavailable","worker_invalid_payload","source_download_failed","link_unsupported_source"}):
+            raise SourceFetchFailure("source_runtime_invalid")
+        raise SourceFetchFailure(command["failureCode"],command["retryable"])
+    if command.get("kind") not in {"youtube_source","direct_source"} or command.get("audioPolicy") not in {"required","none","pending_pack"}:
         raise SourceFetchFailure("source_runtime_invalid")
+    if command["kind"]=="youtube_source" and (mode not in {"local", "proxy"} or mode == "local" and not development or mode == "proxy" and not proxy_template):
+        raise SourceFetchFailure("source_fetch_mode_forbidden")
     fingerprint = await verify_runtime(session, bun_executable=bun_executable)
     if fingerprint != command.get("toolchainFingerprint"):
         raise SourceFetchFailure("source_runtime_invalid", True)
+    if command["kind"]=="direct_source":
+        await direct_operation(session,package,work,bun_executable=bun_executable,sink_class=sink_class)
+        return
     sink = sink_class(session, package, work, bun_executable=bun_executable)
     existing = ExistingSourceAudio(command["existingSourceAudio"]) if command["existingSourceAudio"] else None
     class SourceRuntime(runtime_class):

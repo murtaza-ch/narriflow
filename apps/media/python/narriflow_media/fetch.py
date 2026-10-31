@@ -202,13 +202,14 @@ async def _verified(download: DownloadedSource, selected: ResolvedSource, source
     return artifact
 
 
-def _same_audio_binding(audio: SourceAudioEvidence, video: VerifiedSourceFile):
+def verify_source_audio_binding(audio: SourceAudioEvidence, video: VerifiedSourceFile):
     frames_per_second = video.probe.get("fps")
     frame_tolerance = 2 / frames_per_second if type(frames_per_second) in {int, float} and math.isfinite(frames_per_second) and frames_per_second > 0 else 0
     tolerance = max(1, frame_tolerance)
     if (audio.manifest["mediaIdentity"] != video.manifest["mediaIdentity"] or
             audio.manifest["sourceRevision"] != video.manifest["sourceRevision"] or
             audio.manifest["audioTrack"] != video.manifest["audioTrack"] or
+            math.ceil(audio.manifest["durationSeconds"]/60) != math.ceil(video.manifest["durationSeconds"]/60) or
             abs(audio.manifest["durationSeconds"] - video.manifest["durationSeconds"]) > tolerance or
             abs(audio.manifest["audioStartTimeSec"] - video.manifest["audioStartTimeSec"]) > tolerance):
         raise SourceFetchFailure("source_audio_video_mismatch")
@@ -271,7 +272,7 @@ async def fetch_source(source: str | YouTubeSource, *, source_revision: int, mod
                     audio = candidate
                 video = await video_task
                 if audio is not None:
-                    _same_audio_binding(audio, video)
+                    verify_source_audio_binding(audio, video)
                 video.assert_unchanged()
                 await sink.video_ready(video, audio)
                 return FetchSourceResult(audio, video)
