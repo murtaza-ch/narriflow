@@ -14,7 +14,10 @@ import {
   openClipPersistenceTestDatabase,
 } from "./clip-persistence-db-test-support";
 import { ClipService } from "./clip.service";
-import { prismaMediaCleanupStore } from "./media-cleanup";
+import { createDatabaseTestContext } from "@narriflow/db/testing";
+import { bindServiceTestEnvironment } from "./runtime-test-support";
+import { createMediaCleanupControl, queueMediaCleanupWithinTransaction } from "./media-cleanup-control";
+import { mediaCleanupObjectRetainUntil } from "./media-cleanup-holds";
 
 const dbDescribe = clipPersistenceDbTestEnabled ? describe : describe.skip;
 
@@ -22,18 +25,20 @@ setDefaultTimeout(180_000);
 
 dbDescribe("Clip duplicate media PostgreSQL invariants", () => {
   let prisma: PrismaClient;
+  const databaseScope = createDatabaseTestContext();
   let testDatabase: Awaited<ReturnType<typeof openClipPersistenceTestDatabase>>;
 
   beforeAll(async () => {
     testDatabase = await openClipPersistenceTestDatabase();
     prisma = testDatabase.prisma;
+    databaseScope.client = prisma;
   });
 
   afterAll(async () => {
     await testDatabase?.close();
   });
 
-  test("a committed duplicate adopts every successful copy in the same transaction", async () => {
+  test("a committed duplicate adopts every successful copy in the same transaction", bindServiceTestEnvironment(databaseScope.bind(async () => {
     const fixture = await createClipPersistenceFixture(prisma);
     const copied: Array<{ sourceKey: string; destinationKey: string }> = [];
     const service = new ClipService({
@@ -81,9 +86,9 @@ dbDescribe("Clip duplicate media PostgreSQL invariants", () => {
         },
       }),
     ).toBe(2);
-  });
+  })));
 
-  test("partial duplicate copies adopt only successful media and release the rest", async () => {
+  test("partial duplicate copies adopt only successful media and release the rest", bindServiceTestEnvironment(databaseScope.bind(async () => {
     const fixture = await createClipPersistenceFixture(prisma);
     const service = new ClipService({
       clipDuplicationStorageAdapter: {
@@ -123,9 +128,9 @@ dbDescribe("Clip duplicate media PostgreSQL invariants", () => {
         completedAt: null,
       },
     ]);
-  });
+  })));
 
-  test("a duplicate with no copyable media commits without compensation work", async () => {
+  test("a duplicate with no copyable media commits without compensation work", bindServiceTestEnvironment(databaseScope.bind(async () => {
     const fixture = await createClipPersistenceFixture(prisma);
     await Promise.all([
       prisma.clip.update({
@@ -163,10 +168,10 @@ dbDescribe("Clip duplicate media PostgreSQL invariants", () => {
         },
       }),
     ).toBe(0);
-  });
+  })));
 
   for (const failedCopy of [null, "preview"] as const) {
-    test(`persistence failure releases ${failedCopy ?? "all"} copied destinations`, async () => {
+    test(`persistence failure releases ${failedCopy ?? "all"} copied destinations`, bindServiceTestEnvironment(databaseScope.bind(async () => {
       const fixture = await createClipPersistenceFixture(prisma);
       const copied: string[] = [];
       const attempted: string[] = [];
@@ -230,52 +235,44 @@ dbDescribe("Clip duplicate media PostgreSQL invariants", () => {
           .sort()
           .map((objectKey) => ({ objectKey, claimId: null, completedAt: null })),
       );
-    });
+    })));
   }
 
-  test("an interrupted duplicate's expired obligation is reclaimable", async () => {
+  test("an interrupted duplicate's expired obligation is reclaimed by its exact command", bindServiceTestEnvironment(databaseScope.bind(async () => {
     const fixture = await createClipPersistenceFixture(prisma);
-    await prisma.mediaCleanupObligation.updateMany({
-      where: { completedAt: null },
-      data: { nextAttemptAt: new Date("2100-01-01T00:00:00.000Z") },
-    });
     const interruptedClaimId = randomUUID();
-    const recoveryClaimId = randomUUID();
-    const obligation = await prisma.mediaCleanupObligation.create({
-      data: {
-        origin: "clip_duplicate_compensation",
-        projectId: fixture.project.id,
-        clipId: randomUUID(),
-        cleanupClass: "mutable_render",
-        objectKey: `projects/${fixture.project.id}/clips/interrupted.mp4`,
-        nextAttemptAt: new Date("2000-01-01T00:00:00.000Z"),
-        claimId: interruptedClaimId,
-        claimExpiresAt: new Date("2026-08-29T00:00:00.000Z"),
-      },
+    const obligation = await prisma.mediaCleanupObligation.create({ data: {
+      origin: "clip_duplicate_compensation", projectId: fixture.project.id,
+      clipId: randomUUID(), cleanupClass: "mutable_render",
+      objectKey: `projects/${fixture.project.id}/clips/interrupted.mp4`,
+      nextAttemptAt: new Date("2000-01-01T00:00:00.000Z"),
+      claimId: interruptedClaimId, claimExpiresAt: new Date(Date.now() - 60_000),
+    } });
+    const unrelated = await prisma.mediaCleanupObligation.create({ data: {
+      origin: "clip_duplicate_compensation", projectId: fixture.project.id,
+      clipId: randomUUID(), cleanupClass: "mutable_render",
+      objectKey: `projects/${fixture.project.id}/clips/unrelated.mp4`,
+      nextAttemptAt: new Date("2000-01-01T00:00:00.000Z"),
+    } });
+    const reference = await prisma.$transaction(tx => queueMediaCleanupWithinTransaction(tx, obligation.id));
+    if (!reference) throw Error("Expected cleanup command");
+    const deleted: string[] = [];
+    const control = createMediaCleanupControl({ database: prisma, register: async () => {},
+      hold: mediaCleanupObjectRetainUntil, storage: { deleteExact: async key => {
+        const claimed = await prisma.mediaCleanupObligation.findUniqueOrThrow({ where: { id: obligation.id } });
+        expect(claimed.claimId).not.toBe(interruptedClaimId);
+        expect(claimed.claimExpiresAt!.getTime()).toBeGreaterThan(Date.now());
+        deleted.push(key);
+      } },
     });
-    const now = new Date("2026-08-29T00:01:00.000Z");
-    const [claim] = await prismaMediaCleanupStore.claimDue({
-      now,
-      limit: 1,
-      leaseMs: 30_000,
-      createId: () => recoveryClaimId,
-    });
+    expect(await control.run(reference)).toMatchObject({ kind: "complete" });
+    expect(await control.run(reference)).toMatchObject({ kind: "complete" });
+    expect(deleted).toEqual([obligation.objectKey]);
+    expect(await prisma.mediaCleanupObligation.findUniqueOrThrow({ where: { id: obligation.id } })).toMatchObject({ claimId: null, attemptCount: 1, completedAt: expect.any(Date) });
+    expect(await prisma.mediaCleanupObligation.findUniqueOrThrow({ where: { id: unrelated.id } })).toMatchObject({ claimId: null, attemptCount: 0, completedAt: null });
+  })));
 
-    expect(claim).toMatchObject({
-      id: obligation.id,
-      claimId: recoveryClaimId,
-      objectKey: obligation.objectKey,
-    });
-    await expect(
-      prismaMediaCleanupStore.complete({
-        id: obligation.id,
-        claimId: recoveryClaimId,
-        now,
-      }),
-    ).resolves.toBe(true);
-  });
-
-  test("concurrent duplicate requests never expose winning media to cleanup", async () => {
+  test("concurrent duplicate requests never expose winning media to cleanup", bindServiceTestEnvironment(databaseScope.bind(async () => {
     const fixture = await createClipPersistenceFixture(prisma);
     const service = new ClipService({
       clipDuplicationStorageAdapter: { copy: async () => undefined },
@@ -322,5 +319,5 @@ dbDescribe("Clip duplicate media PostgreSQL invariants", () => {
     expect(cleanupKeys.map((item) => item.objectKey)).not.toContainAnyValues(
       winningKeys,
     );
-  });
+  })));
 });

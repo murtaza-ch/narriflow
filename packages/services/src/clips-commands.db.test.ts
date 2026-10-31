@@ -16,6 +16,8 @@ import { ClipService } from "./clip.service";
 import { createClipsCommands } from "./clips-commands";
 import { OperationIdempotencyConflictError } from "./operation-receipt";
 import { prismaOperationReceiptPersistence } from "./operation-receipt-runtime";
+import { createDatabaseTestContext } from "@narriflow/db/testing";
+import { bindServiceTestEnvironment } from "./runtime-test-support";
 
 const dbDescribe = clipPersistenceDbTestEnabled ? describe : describe.skip;
 
@@ -23,11 +25,13 @@ setDefaultTimeout(180_000);
 
 dbDescribe("Clip creation receipts on PostgreSQL", () => {
   let prisma: PrismaClient;
+  const databaseScope = createDatabaseTestContext();
   let testDatabase: Awaited<ReturnType<typeof openClipPersistenceTestDatabase>>;
 
   beforeAll(async () => {
     testDatabase = await openClipPersistenceTestDatabase();
     prisma = testDatabase.prisma;
+    databaseScope.client = prisma;
   });
 
   afterAll(async () => {
@@ -51,7 +55,7 @@ dbDescribe("Clip creation receipts on PostgreSQL", () => {
     return { commands, copies };
   }
 
-  test("a duplicate and its receipt commit together, and a retry copies nothing", async () => {
+  test("a duplicate and its receipt commit together, and a retry copies nothing", bindServiceTestEnvironment(databaseScope.bind(async () => {
     const fixture = await createClipPersistenceFixture(prisma);
     const actor = { actorUserId: fixture.user.id, workspaceId: fixture.workspace.id };
     const { commands, copies } = harness();
@@ -79,9 +83,9 @@ dbDescribe("Clip creation receipts on PostgreSQL", () => {
         clientIdempotencyKey: "duplicate-1",
       }),
     ).rejects.toBeInstanceOf(OperationIdempotencyConflictError);
-  });
+  })));
 
-  test("simultaneous requests with one key create a single clip and release the loser's copies", async () => {
+  test("simultaneous requests with one key create a single clip and release the loser's copies", bindServiceTestEnvironment(databaseScope.bind(async () => {
     const fixture = await createClipPersistenceFixture(prisma);
     const actor = { actorUserId: fixture.user.id, workspaceId: fixture.workspace.id };
     const { commands } = harness();
@@ -100,9 +104,9 @@ dbDescribe("Clip creation receipts on PostgreSQL", () => {
         where: { origin: "clip_duplicate_compensation", completedAt: null, claimId: { not: null } },
       }),
     ).toBe(0);
-  });
+  })));
 
-  test("a refused limiter creates neither a clip nor a receipt, before any copy", async () => {
+  test("a refused limiter creates neither a clip nor a receipt, before any copy", bindServiceTestEnvironment(databaseScope.bind(async () => {
     const fixture = await createClipPersistenceFixture(prisma);
     const actor = { actorUserId: fixture.user.id, workspaceId: fixture.workspace.id };
     const { commands, copies } = harness();
@@ -119,5 +123,5 @@ dbDescribe("Clip creation receipts on PostgreSQL", () => {
     expect(copies).toHaveLength(0);
     expect(await prisma.clip.count({ where: { projectId: fixture.project.id } })).toBe(1);
     expect(await prisma.operationReceipt.count({ where: { workspaceId: fixture.workspace.id } })).toBe(0);
-  });
+  })));
 });

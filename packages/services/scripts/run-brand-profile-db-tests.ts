@@ -30,6 +30,7 @@ try {
     for (const migration of migrations) {
       await client.query(readFileSync(resolve(root, "packages/db/prisma/migrations", migration, "migration.sql"), "utf8"));
     }
+    await client.query(`UPDATE "ExecutionEpoch" SET "admissionOpen" = true WHERE id = 1`);
   } finally {
     client.release();
   }
@@ -42,6 +43,7 @@ try {
     env: {
       ...process.env,
       ALLOW_BRAND_PROFILE_DB_TESTS: "1",
+      MEDIA_FETCH_TOOLCHAIN_FINGERPRINT: "f".repeat(64),
 
       DATABASE_URL: testUrl.toString(),
       BRAND_PROFILE_TEST_DATABASE_URL: testUrl.toString(),

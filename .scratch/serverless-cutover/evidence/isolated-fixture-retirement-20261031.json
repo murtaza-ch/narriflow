@@ -1,0 +1,41 @@
+{
+  "date": "2026-10-31",
+  "scope": "Only six Root-owned synthetic render-lineage projects in the isolated serverless_pipeline_gates database",
+  "candidateVersion": "8fd6c3a2-984b-4b11-88bb-d7f0de37b500",
+  "candidateAdmission": "closed",
+  "retiredProjects": 6,
+  "backupPurpose": "synthetic-fixture-retirement",
+  "backupReadable": true,
+  "backupSha256": "6acdfdac319bc7d36acce9fd585513056e6d47d0a939b9c6eb6e6a2ef8e66ca1",
+  "migrationCount": 158,
+  "migrationFingerprint": "6b0024b9dbfb0d1532f398d39bfee0f0276e009410b2943ab0d770a306217ab7",
+  "cleanup": {
+    "verifiedAt": "2026-10-31T17:33:38.905Z",
+    "database": "isolated-serverless_pipeline_gates",
+    "accountId": "5359f28d385b8632c3abee12d1f5b011",
+    "bucket": "narriflow-dev",
+    "intents": 30,
+    "completed": 30,
+    "pending": 0,
+    "exactHeads": 30,
+    "absent": 30,
+    "unconfirmed": 0,
+    "snapshotSha256": "6acdfdac319bc7d36acce9fd585513056e6d47d0a939b9c6eb6e6a2ef8e66ca1",
+    "knownExecutionArtifactCount": 23,
+    "knownCommittedArtifactBytes": "2478327",
+    "retainedExecutionHistory": true,
+    "sharedDatabaseTouched": false,
+    "bucketObjectListingRequests": 0
+  },
+  "oldHeldIntentsReconsidered": {
+    "count": 9,
+    "requiredPreviousReason": "object_retained",
+    "noLiveClaim": true,
+    "authoritativeCurrentHold": null,
+    "attemptCountAndOriginalDeadlinesPreserved": true
+  },
+  "logs": {
+    "migrationSha256": "136013bfb93f350db985e8dacea0a01b20d5498e4a4dc7abe496069a77e571e6",
+    "registrationSha256": "33b0c8e0f8983b39e07f83d40f31756d7464dd8af123f8b7a5b6ef2f3dfdad67"
+  }
+}
