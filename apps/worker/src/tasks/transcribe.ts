@@ -1,3 +1,4 @@
+import { extractTranscriptionAudio } from "../../../media/src/tasks/extract-audio";
 import { openAsBlob } from "node:fs";
 import { extname, join } from "node:path";
 import {
@@ -297,12 +298,7 @@ async function withExtractedAudio<T>(
     const sourcePath = join(tempDir, `source${extname(sourceStorageKey) || ".bin"}`);
     const audioPath = join(tempDir, "transcription-input.mp3");
     await downloadObjectToFile({ key: sourceStorageKey, filePath: sourcePath, signal });
-    await workerProcess.execute({
-      command: "ffmpeg",
-      args: ["-y", "-i", sourcePath, "-vn", "-ac", "1", "-ar", "16000", "-b:a", "64k", audioPath],
-      signal,
-      deadlineMs: TRANSCRIPTION_FFMPEG_TIMEOUT_MS,
-    });
+    await extractTranscriptionAudio({ workerProcess, sourcePath, outputPath: audioPath, signal, deadlineMs: TRANSCRIPTION_FFMPEG_TIMEOUT_MS });
     return use(audioPath);
   });
 }

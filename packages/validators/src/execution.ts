@@ -169,8 +169,8 @@ export const sourceAudioBindingSchema = z.strictObject({
   sourceRevision: generation,
   mediaIdentity: z.strictObject({
     provider: z.enum(["youtube", "upload", "rss", "direct", "drive", "zoom"]),
-    mediaId: executionId,
-  }),
+    mediaId: z.string().min(1).max(160).regex(/^[A-Za-z0-9_-][A-Za-z0-9._:-]*$/),
+  }).refine(value => value.provider !== "youtube" || /^[A-Za-z0-9_-]{11}$/.test(value.mediaId), "Invalid normalized YouTube media identity"),
   audioTrack: z.strictObject({
     id: executionId,
     language: z.string().min(1).max(32).regex(/^[A-Za-z0-9-]+$/).nullable(),

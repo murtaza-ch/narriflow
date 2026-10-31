@@ -37,7 +37,7 @@
     "@narriflow/services": "workspace:*",
     "@narriflow/validators": "workspace:*",
     "@node-rs/argon2": "^2.2.0",
-    "@prisma/client": "^7.4.2",
+    "@prisma/client": "7.7.0",
     "fontkit": "2.0.4",
     "hono": "^4.13.11",
     "ioredis": "^5.9.3",

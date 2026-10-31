@@ -62,6 +62,10 @@ describe("Source Audio evidence", () => {
       probeVersion: "normalized-probe-1", toolchainFingerprint: "f".repeat(64),
     };
     expect(sourceAudioBindingSchema.safeParse(binding).success).toBe(true);
+    for (const mediaId of ["_Qw4w9WgXcQ", "-Qw4w9WgXcQ"]) {
+      expect(sourceAudioBindingSchema.safeParse({ ...binding, mediaIdentity: { provider: "youtube", mediaId } }).success).toBe(true);
+    }
+    expect(sourceAudioBindingSchema.safeParse({ ...binding, mediaIdentity: { provider: "youtube", mediaId: "too-short" } }).success).toBe(false);
     expect(sourceAudioBindingSchema.safeParse({ ...binding, wholeSource: false }).success).toBe(false);
     expect(sourceAudioBindingSchema.safeParse({ ...binding, object: { ...binding.object, signedUrl: "https://storage.example/audio" } }).success).toBe(false);
     expect(sourceAudioBindingSchema.safeParse({ ...binding, object: { ...binding.object, key: "../other/audio.webm" } }).success).toBe(false);

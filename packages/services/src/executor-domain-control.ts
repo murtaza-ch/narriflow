@@ -39,6 +39,7 @@ export interface ExecutorArtifactCommit {
 export type ExecutorFailureInput = Pick<Extract<ExecutionCommand, { action: "fail" }>, "failureCode" | "retryable">;
 export type ExecutorReleaseInput = Pick<Extract<ExecutionCommand, { action: "release" }>, "reason">;
 export type ExecutorProgressInput = Pick<Extract<ExecutionCommand, { action: "progress" }>, "phase" | "progress">;
+export type ExecutorMutationResult = void | { dispatchIds: readonly string[] };
 
 export interface ExecutorExpiryObservation {
   kind: "lease" | "operation";

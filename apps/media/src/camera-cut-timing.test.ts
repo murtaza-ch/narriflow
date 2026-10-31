@@ -17,7 +17,7 @@ import {
 	compileCompositionPlanAudioSchedule,
 } from "./composition-ffmpeg-adapter";
 import { parseRenderConfig } from "./render-config";
-import { analyzeClipAutoLayout } from "../../worker/src/tasks/auto-layout-analysis";
+import { analyzeClipAutoLayout } from "./tasks/auto-layout-analysis";
 import {
 	productionWorkerProcessModule as worker,
 	type WorkerProcessModule,

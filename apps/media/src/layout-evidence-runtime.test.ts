@@ -59,7 +59,7 @@ describe("layout detector process boundary", () => {
 
 test("real Python helpers fail on inference exceptions or zero decoded frames", async () => {
   for (const [script, inference] of [["reframe_detect.py", true], ["reframe_detect.py", false], ["pip_detect.py", false]] as const) {
-    const scriptPath = fileURLToPath(new URL(`../scripts/${script}`, import.meta.url));
+    const scriptPath = fileURLToPath(new URL(`../python/detectors/${script}`, import.meta.url));
     const fakeDetector = `
 import runpy, sys, types
 class Capture:

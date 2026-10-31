@@ -1,0 +1,14 @@
+.git
+**/node_modules
+**/.next
+**/.turbo
+**/.env
+**/.env.*
+**/.venv
+.vercel
+**/dist
+
+**/.dev.vars*
+**/__pycache__
+**/*.pyc
+apps/media/models

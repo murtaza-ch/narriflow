@@ -530,15 +530,48 @@ export async function assertRenderEnvironment(options: CollectOptions & { stage?
 }
 
 /** `name==version --hash=sha256:...` lines for `pip install --require-hashes --no-deps`. */
-export function pipRequirements(lock: RuntimeLock): string {
-  return lock.platforms["linux-x64"]!.python.wheels.map((wheel) => `${wheel.name}==${wheel.version} --hash=sha256:${wheel.sha256}`).join("\n") + "\n";
+export function pipRequirements(lock: RuntimeLock, profile: "render" | "lean" = "render"): string {
+  return lock.platforms["linux-x64"]!.python.wheels.filter((wheel) => profile === "render" || !["numpy", "opencv-python-headless"].includes(wheel.name)).map((wheel) => `${wheel.name}==${wheel.version} --hash=sha256:${wheel.sha256}`).join("\n") + "\n";
+}
+
+/** Lean functions share the locked acquisition/probe toolchain, without detector or font payloads. */
+export async function assertLeanEnvironment(lock: RuntimeLock = loadLock()) {
+  if (platformKey() !== "linux-x64") throw new Error("Lean image verification requires linux-x64");
+  const expected = lock.platforms["linux-x64"]!;
+  const python = await pythonFacts();
+  const ffmpeg = await run("ffmpeg", ["-version"]);
+  const ffprobe = await run("ffprobe", ["-version"]);
+  const deno = await run("deno", ["--version"]);
+  const bun = (globalThis as { Bun?: { version: string } }).Bun?.version ?? process.versions.bun;
+  const wantedBun = lock.images.bun!.ref.split(":").at(-1);
+  if (bun !== wantedBun || python.version !== expected.python.version ||
+      !ffmpeg.stdout.includes(`ffmpeg version ${expected.ffmpeg.versionString} `) ||
+      !ffprobe.stdout.includes(`ffprobe version ${expected.ffmpeg.versionString} `) || deno.code !== 0) {
+    throw new Error("Lean media binary versions differ from runtime-lock.json");
+  }
+  for (const wheel of expected.python.wheels.filter((wheel) => !["numpy", "opencv-python-headless"].includes(wheel.name))) {
+    if (python.packages[wheel.name] !== wheel.version) throw new Error(`Lean media wheel ${wheel.name} differs from runtime-lock.json`);
+  }
+  const requiredPackages = ["ffmpeg", "python3", "python3-pip", "curl", "ca-certificates", ...Object.keys(expected.ffmpeg.libraries)];
+  const installed = await dpkgVersions(requiredPackages);
+  for (const name of requiredPackages) {
+    if (installed.get(name) !== expected.apt.installed[name]) throw new Error(`Lean media package ${name} differs from runtime-lock.json`);
+  }
+  const facts = { profile: "lean", bun, python, ffmpeg: ffmpeg.stdout.split("\n")[0], ffprobe: ffprobe.stdout.split("\n")[0], deno: deno.stdout.split("\n")[0], tokenImage: lock.images.youtubeTokens!.digest };
+  return { id: createHash("sha256").update(JSON.stringify(facts)).digest("hex"), facts };
 }
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const lock = loadLock();
+  const profile = args.includes("--profile") ? args[args.indexOf("--profile") + 1] : "render";
+  if (profile !== "render" && profile !== "lean") throw new Error("Unknown media runtime profile");
   if (args.includes("--emit-pip-requirements")) {
-    process.stdout.write(pipRequirements(lock));
+    process.stdout.write(pipRequirements(lock, profile));
+    return;
+  }
+  if (profile === "lean") {
+    console.log(JSON.stringify(await assertLeanEnvironment(lock)));
     return;
   }
   const stage = (args[args.indexOf("--stage") + 1] as Stage | undefined) ?? "start";
