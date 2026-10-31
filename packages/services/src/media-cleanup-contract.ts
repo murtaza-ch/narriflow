@@ -9,6 +9,7 @@ export const MEDIA_CLEANUP_ORIGINS = [
   "upload_source_pinning",
   "upload_session_termination",
   "clip_preparation_input",
+  "export_bundle_input",
   "selection_execution",
   "publication_execution",
   "assigned_execution_artifact",

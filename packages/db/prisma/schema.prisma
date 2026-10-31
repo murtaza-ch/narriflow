@@ -133,6 +133,7 @@ enum DubStatus {
   processing
   completed
   failed
+  unknown
 }
 
 enum ClipAspectRatio {
@@ -1929,11 +1930,20 @@ model ExportBundle {
   errorCode         String?
   createdAt         DateTime  @default(now())
   completedAt       DateTime?
+  operationDeadlineAt DateTime @default(dbgenerated("(CURRENT_TIMESTAMP + '00:45:00'::interval)"))
+  /// The Workflow Run owns execution. This binds only the sealed capsule to its restore epoch.
+  deploymentEpoch Int @default(1)
+  inputBindingHash String?
+  inputStorageKey String?
+  inputEtag String?
+  inputByteLength BigInt?
+  inputChecksumSha256 String?
 
   operation   CampaignOperation @relation(fields: [operationId], references: [id], onDelete: Cascade)
   workflowRun WorkflowRun       @relation(fields: [workflowRunId], references: [id], onDelete: Cascade)
 
   @@index([status, createdAt])
+  @@index([status, expiresAt, id])
 }
 
 model ReviewRound {

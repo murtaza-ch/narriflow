@@ -25,6 +25,7 @@ const tests = requestedTests.length ? requestedTests : [
   "outbound-probe", "outbound-delivery", "webhook-subscription", "notification-dispatch", "publication-execution", "modal-dispatch", "progress-outbox", "billing-reconciliation", "library-index", "generation-finishing-execution", "social-token-refresh",
 ].map(name => `packages/services/src/${name}.db.test.ts`);
 if (tests.some(path => !/^packages\/services\/src\/[a-z0-9-]+\.db\.test\.ts$/.test(path))) throw new Error("Only named execution database test files are allowed");
+for (const path of tests) if (!await Bun.file(new URL(`../../../${path}`, import.meta.url)).exists()) throw new Error(`Execution database test file does not exist: ${path}`);
 
 async function run(args: string[], env: Record<string, string>) {
   const child = Bun.spawn(args, {

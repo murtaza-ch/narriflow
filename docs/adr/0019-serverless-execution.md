@@ -72,6 +72,13 @@ ProjectProgress uses hibernating WebSockets with a one-use 30-second connect tic
 
 Publication wakeups bind the exact post schedule revision. Waking rechecks frozen export, editor, account, grant, cancellation and same-attempt provider identity. Pending or unknown acceptance reconciles that operation; unrecoverable unknown becomes Needs attention. It never blindly creates another post. Completion Callback and Webhook Subscription dispatches use the guarded `outbound_delivery` function. Each subscription advances its own cursor only after 2xx. Terminal transitions, Finishing, quota effects and follow-up admission remain transaction-owned.
 
+Dubbing records a paid provider intent before its one provider POST. An intent
+without a sealed result has status `unknown`, shown as "Dubbing outcome needs
+review". Its quota reservation stays counted. The same frozen tuple cannot
+automatically create another paid request. A deliberately repeated known failed
+request receives a new Clip Dub and reservation, preserving prior accounting and
+attempt history. The accepted Workflow Run remains the only execution owner.
+
 ## Failure state diagrams
 
 ```mermaid
