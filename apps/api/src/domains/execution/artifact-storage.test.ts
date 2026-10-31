@@ -42,3 +42,13 @@ test("an oversized stream is cancelled before buffering or parsing its body", as
   await expect(port.readJson(artifact, 65536)).rejects.toMatchObject({ code: "artifact_invalid" });
   expect(cancelled).toBe(true);
 });
+
+test("only assigned outbound receipts may use the bounded four MiB JSON reader", async () => {
+  const largeBytes = new TextEncoder().encode(JSON.stringify({ title: "r".repeat(70000) }));
+  const largeHash = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", largeBytes)), byte => byte.toString(16).padStart(2,"0")).join("");
+  const port = createAssignedArtifactStorage({ get: async () => ({ ...metadata, size: largeBytes.length, body: new Blob([largeBytes]).stream() }) } as unknown as R2Bucket);
+  const receipt = { ...artifact, role: "outbound_receipt" as const, byteLength: BigInt(largeBytes.length), sha256: largeHash };
+  expect((await port.readJson(receipt, 4194304) as { title: string }).title.length).toBe(70000);
+  await expect(port.readJson({ ...receipt, role: "probe" }, 4194304)).rejects.toMatchObject({ code: "artifact_invalid" });
+  await expect(port.readJson(receipt, 4194305)).rejects.toMatchObject({ code: "artifact_invalid" });
+});
