@@ -13,4 +13,4 @@
 
 ## Evidence
 
-Pending implementation and verification.
+[Actual Modal render parity](../evidence/modal-render-parity-20261031.json) passes all36 cases against the frozen pre-cutover623aadca source:18 exact normal,16 activated and2 unchanged expected failures. Original fixture recipes, captured expectations and tolerances are unchanged. Camera-clock7 tests/41 assertions pass. Final canonical image, standalone thread caps and full domain crash/commit gates remain open.
