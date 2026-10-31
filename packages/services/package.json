@@ -660,7 +660,14 @@
     "./execution-recovery-locks": "./src/execution-recovery-locks.ts",
     "./autopilot-execution": "./src/autopilot-execution.ts",
     "./autopilot-execution-runtime": "./src/autopilot-execution-runtime.ts",
-    "./autopilot-episode-policy": "./src/autopilot-episode-policy.ts"
+    "./autopilot-episode-policy": "./src/autopilot-episode-policy.ts",
+    "./dubbing-input": "./src/dubbing-input.ts",
+    "./dubbing-execution": "./src/dubbing-execution.ts",
+    "./dubbing-execution-runtime": "./src/dubbing-execution-runtime.ts",
+    "./dubbing-recovery": "./src/dubbing-recovery.ts",
+    "./execution-native-restore": "./src/execution-native-restore.ts",
+    "./execution-notification-recovery": "./src/execution-notification-recovery.ts",
+    "./execution-redispatch-pages": "./src/execution-redispatch-pages.ts"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",

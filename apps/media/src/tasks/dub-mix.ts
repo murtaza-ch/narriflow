@@ -9,12 +9,14 @@ export async function probeDubbedMediaDuration(
   workerProcess: WorkerProcessModule,
   signal: AbortSignal,
   filePath: string,
+  localOnly = false,
 ): Promise<number | null> {
   return (
     await workerProcess.inspectMedia({
       sourcePath: filePath,
       signal,
       deadlineMs: DUBBING_PROBE_TIMEOUT_MS,
+      ...(localOnly ? { localOnly: true } : {}),
     })
   ).durationSec;
 }
@@ -25,13 +27,16 @@ export async function muxDubbedVideo(params: {
   videoPath: string;
   audioPath: string;
   outputPath: string;
+  localOnly?: boolean;
 }) {
   await params.workerProcess.execute({
     command: "ffmpeg",
     args: [
       "-y",
+      ...(params.localOnly ? ["-protocol_whitelist", "file,pipe"] : []),
       "-i",
       params.videoPath,
+      ...(params.localOnly ? ["-protocol_whitelist", "file,pipe"] : []),
       "-i",
       params.audioPath,
       "-map",

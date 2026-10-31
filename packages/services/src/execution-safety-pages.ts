@@ -41,4 +41,4 @@ export const recoverNativeValidationWakePage = recovery("NativeValidationJob", "
 export const recoverThumbnailWakePage = recovery("ThumbnailFrameOperation", "thumbnail_frame", Prisma.sql`status IN ('queued','processing')`);
 export const recoverGeneratedMediaWakePage = recovery("GeneratedMediaJob", "generated_media", Prisma.sql`status IN ('queued','running','waiting')`);
 export const recoverOutboundProbeWakePage = recovery("OutboundProbe", "outbound_probe", Prisma.sql`status IN ('queued','processing')`);
-export const recoverOutboundDeliveryWakePage = recovery("OutboundDelivery", "outbound_delivery", Prisma.sql`status IN ('preparing','queued','processing')`);
+export const recoverOutboundDeliveryWakePage = recovery("OutboundDelivery", "outbound_delivery", Prisma.sql`status IN ('queued','processing')`);

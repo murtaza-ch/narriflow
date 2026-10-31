@@ -36,6 +36,7 @@ executor_secret = modal.Secret.from_name("narriflow-executor-control", required_
 bridge_secret = modal.Secret.from_name("narriflow-modal-bridge", required_keys=["MODAL_BRIDGE_KEYS_JSON"])
 youtube_secret = modal.Secret.from_name("narriflow-youtube-fetch", required_keys=["YOUTUBE_FETCH_MODE"])
 image_secret = modal.Secret.from_name("narriflow-image-generation", required_keys=["OPENAI_API_KEY"])
+dubbing_secret = modal.Secret.from_name("narriflow-dubbing", required_keys=["OPENAI_API_KEY"])
 dispatch_receipts = modal.Dict.from_name("narriflow-dispatch-receipts-v1", create_if_missing=True)
 
 # One active input per container is Modal's default without @modal.concurrent.
@@ -99,6 +100,24 @@ async def verify_render_native_fixture() -> dict:
     await case.actual_operation(fingerprint=fingerprint, enforce_runtime=True, lost_ack=True)
     return {"profile": "render", "toolchainFingerprint": fingerprint, "success": success,
             "permanentFailure": failure, "lostAcknowledgementRetained": True, "providerRequests": 0, "databaseRequests": 0}
+
+
+@app.function(image=lean_image, max_containers=1, timeout=900,
+              restrict_modal_access=True, **LEAN_RESOURCES)
+async def verify_dubbing_bundle_native_fixture() -> dict:
+    """Credential-free Function gate. Provider HTTP stays on owned loopback."""
+    import sys
+    sys.path.insert(0, "/app/apps/media/python/tests")
+    from test_dubbing_runtime import DubbingRuntimeTests
+    from test_export_bundle_runtime import ExportBundleRuntimeTests
+    fingerprint = _verify("lean")["id"]
+    dub = DubbingRuntimeTests("test_actual_child_commits_ordered_paid_stages_and_real_mux_then_recovery_posts_nothing")
+    dubbing = [await dub.operation(mode, fingerprint=fingerprint, enforce_runtime=True)
+               for mode in ("success", "lost_intent", "revoked", "lost_start", "lost_final")]
+    bundle = ExportBundleRuntimeTests("test_actual_zip_child_streams_frozen_inputs_after_real_start_and_commits_measured_archive")
+    bundles = [await bundle.operation(lost_ack=value, fingerprint=fingerprint, enforce_runtime=True) for value in (False, True)]
+    return {"profile": "lean", "toolchainFingerprint": fingerprint, "dubbing": dubbing, "bundles": bundles,
+            "externalProviderRequests": 0, "databaseRequests": 0}
 
 
 @app.function(image=lean_image, secrets=[executor_secret], timeout=600,
@@ -179,6 +198,17 @@ async def export_bundle(invocation: dict) -> dict:
                                operation=run_export_bundle, max_operation_seconds=2700)
 
 
+@app.function(image=lean_image, secrets=[executor_secret, dubbing_secret], timeout=2700,
+              max_containers=8, restrict_modal_access=True, **LEAN_RESOURCES)
+async def dub_mix(invocation: dict) -> dict:
+    from narriflow_media.entrypoint import invoke_native, native_client
+    from narriflow_media.dubbing_runtime import run_dubbing
+    async def run(session, package, work):
+        return await run_dubbing(session, package, work, api_key=os.environ["OPENAI_API_KEY"])
+    return await invoke_native(invocation, "dub_mix", client=native_client(os.environ),
+                               operation=run, max_operation_seconds=2700)
+
+
 @app.function(image=lean_image, secrets=[executor_secret, image_secret], timeout=600,
               restrict_modal_access=True, **LEAN_RESOURCES)
 async def generated_image(invocation: dict) -> dict:
@@ -197,6 +227,6 @@ def dispatch_bridge():
     from narriflow_media.bridge import BridgeAsgiApp, ModalBridge
     from narriflow_media.bridge_runtime import ModalBackend, ModalDictStore, parse_bridge_keys
     bridge = ModalBridge(store=ModalDictStore(dispatch_receipts),
-        backend=ModalBackend(modal, {"asset_validation": asset_validation, "outbound_delivery": outbound_delivery, "fetch_source": fetch_source, "pin_source": pin_source, "prepare_clip": prepare_clip, "render_group": render_group, "publication": publication, "export_bundle": export_bundle, "generated_image": generated_image}),
+        backend=ModalBackend(modal, {"asset_validation": asset_validation, "outbound_delivery": outbound_delivery, "fetch_source": fetch_source, "pin_source": pin_source, "prepare_clip": prepare_clip, "render_group": render_group, "publication": publication, "export_bundle": export_bundle, "dub_mix": dub_mix, "generated_image": generated_image}),
         key_ring=parse_bridge_keys(os.environ["MODAL_BRIDGE_KEYS_JSON"]))
     return BridgeAsgiApp(bridge, time.time)

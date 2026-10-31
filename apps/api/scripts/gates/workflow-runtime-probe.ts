@@ -13,7 +13,7 @@ import { DurableObject } from "cloudflare:workers";
 import { PrismaClient } from "@prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { createDatabaseScope, getPrismaClient } from "@narriflow/db/client";
-import { executionDispatchIdentity } from "@narriflow/services/execution-dispatch";
+import { ExecutionDispatchPendingError, executionDispatchIdentity } from "@narriflow/services/execution-dispatch";
 import { executionDispatchReferenceSchema, type ExecutionDispatchReference } from "@narriflow/validators/execution";
 import { ScopedDomainWorkflow } from "../../src/workflows/scoped-workflow";
 import { createWorkerExecutionScheduler } from "../../src/workflows/scheduler";
@@ -48,6 +48,11 @@ export class GateWorkflow extends ScopedDomainWorkflow {
       const [row] = await client.$queryRaw<Array<{ answer: number }>>`SELECT 42::integer AS answer`;
       if (row?.answer !== 42) throw new Error("SQL result mismatch");
       await state.record("query", scopeId, wake.type);
+      if(reference.subject.id.startsWith("pending")){
+        const queries=(await state.read()).filter(row=>row.kind==="query");
+        if(queries.length===1)throw new ExecutionDispatchPendingError(new Date(Date.now()+1000));
+        return{type:"complete",disposition:"terminal"};
+      }
       if (reference.subject.id.startsWith("continuation")) return { type: "complete", disposition: "terminal" };
       if (reference.subject.id.startsWith("early") && wake.type === "start") return { type: "sleep", until: new Date(Date.now() + 1_000).toISOString() };
       if (wake.type === "start" || wake.type === "timer") return { type: "wait", until: new Date(Date.now() + (reference.subject.id.startsWith("timeout") ? 1_100 : 20_000)).toISOString(), deliveryId: crypto.randomUUID() };

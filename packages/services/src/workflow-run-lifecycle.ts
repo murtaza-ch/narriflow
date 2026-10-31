@@ -664,9 +664,10 @@ export class WorkflowRunLifecycle {
   }
 
   async releaseExecution(tx: TransactionClient, ref: WorkflowExecutionReference, context: ExecutorMutationContext, release: ExecutorReleaseInput): Promise<ExecutorMutationResult> {
-    const { run, attempt } = await this.ownedExecution(tx, ref, context);
-    const execution = await tx.executionAttempt.findUniqueOrThrow({ where: { attemptToken: ref.attemptToken }, select: { processStartedAt: true } });
-    if (!await this.executionOwner(context.owner).releaseAttemptWithinTransaction(tx, attempt, { refundAttempt: execution.processStartedAt !== null && run.attemptCount > 0, reason: release.reason })) throw new WorkflowAttemptLost(attempt);
+    const { attempt } = await this.ownedExecution(tx, ref, context);
+    // Acquisition is uncharged; actual process-start records the charge.
+    // Releasing or shutting down cannot undo a process that already ran.
+    if (!await this.executionOwner(context.owner).releaseAttemptWithinTransaction(tx, attempt, { refundAttempt: false, reason: release.reason })) throw new WorkflowAttemptLost(attempt);
     return this.executionWakes(tx, ref, context.reference.inputHash, true);
   }
 
@@ -1898,7 +1899,10 @@ export class WorkflowRunLifecycle {
   }
 
   async markDubProcessing(attempt: WorkflowAttemptRef, dubId: string) {
-    return this.transaction(async (tx) => {
+    return this.transaction(tx => this.markDubProcessingWithinTransaction(tx, attempt, dubId));
+  }
+
+  async markDubProcessingWithinTransaction(tx: TransactionClient, attempt: WorkflowAttemptRef, dubId: string) {
       await this.fenceChildMutation(tx, attempt, "dubbing");
       // No provider call starts without the dub's own live count.
       const usage = await tx.generatedMediaUsageReservation.findUnique({
@@ -1926,7 +1930,6 @@ export class WorkflowRunLifecycle {
           errorCode: null,
         },
       });
-    });
   }
 
   async completeDub(
@@ -1934,7 +1937,10 @@ export class WorkflowRunLifecycle {
     dubId: string,
     data: CompletedDubArtifactInput,
   ) {
-    return this.transaction(async (tx) => {
+    return this.transaction(tx => this.completeDubWithinTransaction(tx, attempt, dubId, data));
+  }
+
+  async completeDubWithinTransaction(tx: TransactionClient, attempt: WorkflowAttemptRef, dubId: string, data: CompletedDubArtifactInput) {
       await this.fenceChildMutation(tx, attempt, "dubbing");
       const completed = await tx.clipDub.updateMany({
         where: {
@@ -1950,7 +1956,6 @@ export class WorkflowRunLifecycle {
         await finalizeGenerationUsage(tx, { kind: "dub", jobId: dubId, units: 1 });
       }
       return completed;
-    });
   }
 
   async failDub(

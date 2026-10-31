@@ -1,0 +1,24 @@
+{
+  "status": "passed_isolated_database",
+  "regression": "Workflow native release refunded a process-started attempt during shutdown.",
+  "change": "Native release never refunds the recorded process-start charge; acquisition and startup rejection remain uncharged.",
+  "database": {
+    "tests": 33,
+    "assertions": 369,
+    "suites": [
+      "targeted-workflow-execution",
+      "export-bundle-execution",
+      "dubbing-execution"
+    ],
+    "target": "disposable local PostgreSQL schema"
+  },
+  "checks": [
+    "A process-started shutdown retains count1 while revoking ownership and advancing to one exact retry generation.",
+    "An exact release receipt replay cannot decrement the charge again.",
+    "Startup rejection retains count0.",
+    "Recorded Generic process-start history remains intact."
+  ],
+  "remaining": [
+    "Actual supervised native/deployed fault gates on the final integrated revision."
+  ]
+}

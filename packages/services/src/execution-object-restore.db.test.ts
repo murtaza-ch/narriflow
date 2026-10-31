@@ -1,10 +1,11 @@
+import { redispatchWorkflowPage,redispatchRenderGroupPage,redispatchSelectionPage } from "./execution-redispatch-pages";
 import { editorDocumentSchema } from "@narriflow/validators";
 import documents from "../../../apps/media/src/__fixtures__/render-golden/documents.json";
 import { ClipPreparationService } from "./clip-preparation";
 import { clipPreparationEngineHash,clipPreparationPreviewWindow } from "./clip-preparation-policy";
 import { encodeClipEditorDocumentForStorage } from "./clip-editor-document-persistence";
 import { decodeClipPreparationInput,encodeClipPreparationResult,decodeClipPreparationResult } from "./clip-preparation-input";
-import { renderGroupExportIdentity,renderGroupExecutionInputHash,renderGroupConfigurationFromIdentity } from "./render-group-contract";
+import { renderGroupExportIdentity } from "./render-group-contract";
 import { createPreparationRestorePreparation,createPreparationLinkRestore } from "./execution-preparation-restore";
 import { restoreRenderGroupsPage } from "./execution-source-recovery-pages";
 import type { PrivateJsonStorage } from "./private-json-storage";
@@ -83,6 +84,7 @@ suite("Restore of immutable paid object results",()=>{
     expect(await decodeClipSelectionResult(await storage.read(resultRef),resultRef,{parentId:run.id,parentGeneration:2,selectionHash:row.selectionHash,windowIndex:0})).toMatchObject({tokensUsed:117,providerRequestId:"captured-paid-request",clips:[]});
     expect(writes-writesBefore).toBe(2);lose=false;await restore.run(reference);expect(writes-writesBefore).toBe(2);expect(providerCalls).toBe(1);expect(registrations.at(-1)).toEqual(registrations.at(-2));
     expect(await db.executionDispatch.count({where:{deploymentEpoch:parent.deploymentEpoch,kind:{not:"maintenance"}}})).toBe(0);
+    const finalPage={snapshotEpoch:captured.expectedEpoch,fenceAboveEpoch:captured.expectedEpoch,deploymentEpoch:parent.deploymentEpoch,cutoff:(await db.executionEpoch.findUniqueOrThrow({where:{id:1}})).changedAt,after:{at:floor!.at,id:"00000000-0000-0000-0000-000000000000"},limit:8};await db.$transaction(tx=>redispatchWorkflowPage(tx,finalPage));const windows=await db.$transaction(tx=>redispatchSelectionPage(tx,finalPage));expect(windows.dispatchIds).toHaveLength(2);expect(providerCalls).toBe(1);
     await db.workspace.delete({where:{id:workspace.id}});
   });
   test("a completed preparation rebinds verified outputs without inventing a native execution or resetting its charge",async()=>{
@@ -125,7 +127,8 @@ suite("Restore of immutable paid object results",()=>{
     expect(rebound).toEqual({...input,preparationId:restored.id});const refs=restored.readyObjects as typeof readyObjects;expect(await decodeClipPreparationResult(await storage.read(refs.manifest),refs.manifest)).toEqual({...result,preparationId:restored.id});
     expect(writes-writesBefore).toBe(2);await restore.run(reference);expect(writes-writesBefore).toBe(2);expect(await db.executionDispatch.count({where:{deploymentEpoch:captured.expectedEpoch+1,kind:{not:"maintenance"}}})).toBe(0);
     const link=(await readExecutionDispatch(db,transformed.dispatchIds.at(-1)!))!.reference;await restore.run(link);expect((await db.renderGroup.findUniqueOrThrow({where:{id:group.id}})).preparationId).toBe(restored.id);
-    const reboundGroup=await db.$transaction(async tx=>{const parent=await appendWorkflowRunDispatch(tx,run.id),current=await tx.renderGroup.findUniqueOrThrow({where:{id:group.id},include:{members:true}});return (await appendExecutionDispatch(tx,{kind:"operation_driver",subject:{kind:"render_group",id:current.id},deploymentEpoch:current.deploymentEpoch,generation:current.generation,dueAt:current.createdAt,inputHash:await renderGroupExecutionInputHash({workflowRunId:run.id,workSetGeneration:workSet,groupId:current.id,parentInputHash:parent.reference.inputHash,exportIdentity:current.exportIdentity,memberIds:current.members.map(member=>member.clipRenderId),configuration:renderGroupConfigurationFromIdentity(clip.id,current.exportIdentity)})})).reference;});
+    const redispatchPage={snapshotEpoch:captured.expectedEpoch,fenceAboveEpoch:captured.expectedEpoch,deploymentEpoch:captured.expectedEpoch+1,cutoff:(await db.executionEpoch.findUniqueOrThrow({where:{id:1}})).changedAt,after:{at:floor!.at,id:"00000000-0000-0000-0000-000000000000"},limit:8};
+    await db.$transaction(tx=>redispatchWorkflowPage(tx,redispatchPage));const groupWakes=await db.$transaction(tx=>redispatchRenderGroupPage(tx,redispatchPage));expect(groupWakes.dispatchIds).toHaveLength(1);const reboundGroup=(await readExecutionDispatch(db,groupWakes.dispatchIds![0]!))!.reference;
     expect(await service.readReadyForGroup(reboundGroup)).toMatchObject({preparationId:restored.id,preview:readyObjects.preview,result:{...result,preparationId:restored.id}});
 
     await db.workspace.delete({where:{id:workspace.id}});

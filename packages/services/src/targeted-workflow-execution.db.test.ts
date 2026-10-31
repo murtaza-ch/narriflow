@@ -302,6 +302,17 @@ dbDescribe("Exact Workflow execution commands", () => {
     expect(await db.executionAttempt.findUniqueOrThrow({ where: { attemptToken: f.token } })).toMatchObject({ status: "released" });
   }, 90_000);
 
+  test("shutdown after a recorded process start retains the charge and replay cannot refund it",async()=>{
+    const f=await fixture();await f.acquire();
+    await withServiceEnvironment({},()=>f.control.execute({command:{action:"process-start",fence:f.fence},verifiedRequest:f.verified()}));
+    const before=await db.workflowRun.findUniqueOrThrow({where:{id:f.run.id}});expect(before.attemptCount).toBe(1);
+    const command={action:"release" as const,fence:f.fence,reason:"shutdown" as const},verifiedRequest=f.verified();
+    await withServiceEnvironment({},()=>f.control.execute({command,verifiedRequest}));
+    await withServiceEnvironment({},()=>f.control.execute({command,verifiedRequest}));
+    expect(await db.workflowRun.findUniqueOrThrow({where:{id:f.run.id}})).toMatchObject({status:"queued",generation:2,attemptCount:1,attemptId:null,leaseOwner:null});
+    expect(await db.executionAttempt.findUniqueOrThrow({where:{attemptToken:f.token}})).toMatchObject({status:"released",processStartedAt:expect.any(Date)});
+  });
+
   test("start replay charges once and progress never extends the TS execution lease", async () => {
     const f = await fixture();
     await f.acquire();

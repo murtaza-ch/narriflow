@@ -31,7 +31,7 @@ async function main(){
         const reader=response.body.getReader();
         return Readable.from((async function*(){
           try{while(true){const result=await reader.read();if(result.done)break;yield result.value;}}
-          finally{await reader.cancel().catch(()=>{});reader.releaseLock();}
+          finally{await reader.cancel().catch(()=>{});}
         })());
       }};
     });

@@ -8,7 +8,7 @@ import type { ClipSelectionStorage } from "./clip-selection-preparation";
  * can become a successful empty phase. Native/provider I/O is elsewhere. */
 export interface ExecutionMaintenanceExternalPorts {
   maintenance: Record<"finishing_wakes" | "publication_wakes" | "publication_receipts" | "publication_captures" | "bundle_wakes" | "dubbing_wakes" | "grants" | "bundle_expiry" | "autopilot_wakes" | "zoom_notification_wakes" | "notification_wakes" | "review_notification_wakes", MaintenancePhaseHandler>;
-  redispatch: Record<"publication_receipts" | "publication_captures" | "grants" | "publication_guidance", MaintenancePhaseHandler>;
+  redispatch: Record<"publication_receipts" | "publication_captures" | "grants", MaintenancePhaseHandler> & {publication_guidance:ExecutionRestorePhaseHandler};
   restore: Record<"finishing" | "publication" | "bundle" | "dubbing" | "autopilot" | "zoom_notifications" | "notifications" | "review_notifications", ExecutionRestorePhaseHandler>;
 }
 export interface ExecutionMaintenanceRuntimeOptions {

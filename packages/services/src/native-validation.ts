@@ -11,6 +11,7 @@ import type { ExecutorArtifactCommit, ExecutorDomainControl, ExecutorMutationCon
 type Tx = Prisma.TransactionClient;
 const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 const deadlineMs = 10 * 60_000;
+export function nativeValidationExecutionInputHash(row: Pick<NativeValidationJob,"id"|"deploymentEpoch"|"requestFingerprint"|"inputEtag"|"inputByteLength">) { return digest(["native-validation-v1",row.id,row.deploymentEpoch,row.requestFingerprint,row.inputEtag,Number(row.inputByteLength)]); }
 export class NativeValidationError extends ExpectedDomainFailureError {
   constructor(code: "native_validation_unavailable" | "native_validation_missing" | "native_validation_conflict" | "native_validation_object_invalid", details?: { jobId?: string }) {
     super({ code, kind: code === "native_validation_missing" ? "missing" : code === "native_validation_conflict" ? "conflict" : code === "native_validation_object_invalid" ? "unprocessable" : "unavailable", message: "Asset validation is unavailable", details });
@@ -70,7 +71,7 @@ export class NativeValidationService implements ExecutorDomainControl<NativeVali
       const clock = await now(tx); const owner = resolveBrandOwner(scope); const id = randomUUID();
       const row = await tx.nativeValidationJob.create({ data: { id, workspaceId: scope.workspaceId, createdByUserId: scope.actorUserId,
         ownerUserId: owner.userId, ownerWorkspaceId: owner.workspaceId, kind, requestFingerprint,
-        input: input as Prisma.InputJsonValue, inputHash: digest(["native-validation-v1", id, epoch.epoch, requestFingerprint, object.etag, input.sizeBytes]),
+        input: input as Prisma.InputJsonValue, inputHash: nativeValidationExecutionInputHash({id,deploymentEpoch:epoch.epoch,requestFingerprint,inputEtag:object.etag,inputByteLength:BigInt(input.sizeBytes)}),
         inputStorageKey: input.key, inputEtag: object.etag, inputByteLength: BigInt(input.sizeBytes), deploymentEpoch: epoch.epoch,
         createdAt: clock, operationDeadlineAt: new Date(clock.getTime() + deadlineMs) } });
       return { row, ids: await this.registerJob(tx, row), replayed: false };

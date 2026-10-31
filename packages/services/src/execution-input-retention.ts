@@ -4,7 +4,7 @@ import type { PrismaClient } from "@prisma/client";
 /** Only producer-planned keys can enter this class. A referenced capsule stays
  * retained even after completion; deleting its Project/Clip removes the row.
  * A future check remains durable, so deletion cannot strand a forgotten key. */
-export async function executionInputRetainUntil(database: Pick<PrismaClient, "clipPreparation" | "renderGroup" | "exportBundle" | "$queryRaw">, objectKey: string): Promise<Date | null> {
+export async function executionInputRetainUntil(database: Pick<PrismaClient, "clipPreparation" | "renderGroup" | "exportBundle" | "clipDub" | "project" | "$queryRaw">, objectKey: string): Promise<Date | null> {
   const groupMatch = /^projects\/([a-f0-9-]{36})\/render-groups\/([a-f0-9-]{36})\/[a-f0-9-]{36}\.json$/.exec(objectKey);
   let deadlineAt: Date;
   if (groupMatch) {
@@ -17,6 +17,12 @@ export async function executionInputRetainUntil(database: Pick<PrismaClient, "cl
     const row=await database.exportBundle.findUnique({where:{id:match[2]!},select:{inputStorageKey:true,operationDeadlineAt:true,operation:{select:{projectId:true}}}});
     if(!row || row.operation.projectId!==match[1] || row.inputStorageKey!==objectKey)return null;
     deadlineAt=row.operationDeadlineAt;
+  } else if (/^projects\/[a-f0-9-]{36}\/dubs\//.test(objectKey)) {
+    const match=/^projects\/([a-f0-9-]{36})\/dubs\/([a-f0-9-]{36})\/[a-f0-9-]{36}\.json$/.exec(objectKey);
+    if(!match)throw Error("Invalid execution input cleanup key");
+    const row=await database.clipDub.findUnique({where:{id:match[2]!},select:{inputStorageKey:true,operationDeadlineAt:true,projectId:true}});
+    if(!row || row.projectId!==match[1] || row.inputStorageKey!==objectKey || !row.operationDeadlineAt)return null;
+    deadlineAt=row.operationDeadlineAt;
   } else {
     const match = /^projects\/([a-f0-9-]{36})\/preparations\/([a-f0-9-]{36})\/([a-f0-9-]{36})\.json$/.exec(objectKey);
     if (!match) throw new Error("Invalid execution input cleanup key");
@@ -27,5 +33,8 @@ export async function executionInputRetainUntil(database: Pick<PrismaClient, "cl
   }
   const [clock] = await database.$queryRaw<Array<{ now: Date }>>`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS now`;
   if (!clock) throw new Error("Cleanup clock unavailable");
+  const projectId=/^projects\/([a-f0-9-]{36})\//.exec(objectKey)?.[1];
+  const project=projectId?await database.project.findUnique({where:{id:projectId},select:{purgeStartedAt:true,expiresAt:true}}):null;
+  if(!project || project.purgeStartedAt || (project.expiresAt && project.expiresAt<=clock.now))return deadlineAt.getTime()+120000>clock.now.getTime()?new Date(deadlineAt.getTime()+120000):null;
   return new Date(Math.max(clock.now.getTime() + 24 * 60 * 60_000, deadlineAt.getTime() + 120_000));
 }

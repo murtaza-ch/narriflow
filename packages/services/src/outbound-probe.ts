@@ -14,6 +14,7 @@ import type { ExecutorArtifactCommit, ExecutorDomainControl, ExecutorMutationCon
 type Tx = Prisma.TransactionClient;
 const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 const deadlineMs = 10 * 60_000;
+export function outboundProbeExecutionInputHash(row:Pick<OutboundProbe,"id"|"deploymentEpoch"|"requestFingerprint">) {return digest(["outbound-probe-v1",row.id,row.deploymentEpoch,row.requestFingerprint]);}
 export class OutboundProbeError extends ExpectedDomainFailureError {
   constructor(code: "outbound_probe_unavailable" | "outbound_probe_missing" | "outbound_probe_conflict" | "outbound_probe_object_invalid", details?: { jobId?: string }) {
     super({ code, kind: code === "outbound_probe_missing" ? "missing" : code === "outbound_probe_conflict" ? "conflict" : code === "outbound_probe_object_invalid" ? "unprocessable" : "unavailable", message: "The RSS feed check is unavailable", details });
@@ -79,7 +80,7 @@ export class OutboundProbeService implements ExecutorDomainControl<OutboundProbe
       assertExecutionAdmissionOpen(epoch);
       const id = randomUUID();
       const row = await tx.outboundProbe.create({ data: { id, workspaceId: scope.workspaceId, createdByUserId: scope.actorUserId, kind: "rss_feed",
-        requestFingerprint, input: input as Prisma.InputJsonValue, inputHash: digest(["outbound-probe-v1", id, epoch.epoch, requestFingerprint]),
+        requestFingerprint, input: input as Prisma.InputJsonValue, inputHash: outboundProbeExecutionInputHash({id,deploymentEpoch:epoch.epoch,requestFingerprint}),
         deploymentEpoch: epoch.epoch, createdAt: clock, operationDeadlineAt: new Date(clock.getTime() + deadlineMs) } });
       return { row, ids: await this.registerJob(tx, row) };
   }

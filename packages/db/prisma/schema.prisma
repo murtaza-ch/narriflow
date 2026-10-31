@@ -2247,6 +2247,19 @@ model ClipDub {
   frozenRequest      Json?
   requestHash        String?
   operationDeadlineAt DateTime?
+  /// Capsule epoch binding only; ownership and charged attempts belong to WorkflowRun.
+  deploymentEpoch Int @default(1)
+  translationIntentArtifactId String? @db.Uuid
+  translationResultArtifactId String? @db.Uuid
+  speechIntentArtifactId String? @db.Uuid
+  audioArtifactId String? @db.Uuid
+  videoArtifactId String? @db.Uuid
+  outcomeArtifactId String? @db.Uuid
+  inputBindingHash String?
+  inputStorageKey String?
+  inputEtag String?
+  inputByteLength BigInt?
+  inputChecksumSha256 String?
 
   project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
   clip    Clip    @relation(fields: [clipId, projectId], references: [id, projectId], onDelete: Cascade)

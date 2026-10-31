@@ -1,3 +1,4 @@
+import {runWorkflowCommand} from "./dispatch-retry";
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
 import { NonRetryableError } from "cloudflare:workflows";
 import { createDatabaseScope, withDatabaseScope, type DatabaseScope } from "@narriflow/db/client";
@@ -29,7 +30,7 @@ export abstract class ScopedDomainWorkflow extends WorkflowEntrypoint<ApiWorkerB
     let wake: WorkflowWake = { type: "start" };
     for (let index = 0; index < MAX_COMMAND_STEPS; index++) {
       const input = { reference, wake };
-      const directive = await step.do(`command-${index}`, { retries: { limit: 3, delay: "1 second", backoff: "exponential" }, timeout: "2 minutes" }, () =>
+      const directive = await step.do(`command-${index}`, { retries: { limit: 3, delay: "1 second", backoff: "exponential" }, timeout: "2 minutes" }, () => runWorkflowCommand(() =>
         withWorkerServices(this.env, workerServiceEnvironment(this.env), () => withDatabaseScope(this.scope(), () => withExecutionDispatches(async () => {
           // Construct the registry after entering the new scope. A factory may
           // resolve service ports here but cannot retain a prior step's client.
@@ -38,7 +39,7 @@ export abstract class ScopedDomainWorkflow extends WorkflowEntrypoint<ApiWorkerB
           const output = await handler(input);
           try { assertMetadataBound(output); return workflowDirectiveSchema.parse(output); }
           catch { throw new NonRetryableError("invalid_workflow_directive"); }
-        }))),
+        })))),
       );
       if (directive.type === "complete") return { reference, disposition: directive.disposition };
       const until = new Date(directive.until).getTime();
