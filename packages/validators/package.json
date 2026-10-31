@@ -42,7 +42,8 @@
       "types": "./src/outbound-delivery.ts",
       "default": "./src/outbound-delivery.ts"
     },
-    "./generated-image-execution": "./src/generated-image-execution.ts"
+    "./generated-image-execution": "./src/generated-image-execution.ts",
+    "./publication-execution": "./src/publication-execution.ts"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",

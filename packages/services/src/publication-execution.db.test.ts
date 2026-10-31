@@ -3,7 +3,10 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@prisma/client";
 import { assertExecutionDatabaseTestTarget } from "./execution-db-test-support";
 import { appendPublicationDispatch,observePublicationSchedule,publicationExecutionInputHash } from "./publication-dispatch";
-import { readExecutionDispatch } from "./execution-dispatch";
+import { createHash } from "node:crypto";
+import { createExecutorControl } from "./executor-control";
+import type { ExecutorDomainControl } from "./executor-domain-control";
+import { appendExecutionDispatch, readExecutionDispatch } from "./execution-dispatch";
 const url=process.env.SERVERLESS_TEST_DATABASE_URL;
 const suite=process.env.ALLOW_SERVERLESS_DB_TESTS==="1"&&url?describe:describe.skip;
 suite("Revision-bound publication execution",()=>{
@@ -72,4 +75,45 @@ suite("Revision-bound publication execution",()=>{
   if(observed.kind==="ready")expect(publicationExecutionInputHash(observed.post)).toBe(ready.reference.inputHash);
   await db.executionDispatch.updateMany({where:{id:{in:[id,readyId]}},data:{acknowledgedAt:new Date()}});
  });
+ test("publication commands require a started owner and replay one atomic checkpoint plus wake after a lost ACK",async()=>{
+  const f=await fixture(),token=crypto.randomUUID(),owner=crypto.randomUUID();
+  const attempt=await db.socialPublicationAttempt.create({data:{socialPostId:f.post.id,frozenStateId:f.post.frozenState!.id,attemptNumber:1,idempotencyKey:`publication:${f.post.id}:1`,phase:"claimed",nextActionAt:new Date(),processingDeadline:new Date(Date.now()+3600000),reconciliationDeadline:new Date(Date.now()+7200000)}});
+  const dispatch=await db.$transaction(tx=>appendExecutionDispatch(tx,{deploymentEpoch:f.post.deploymentEpoch,generation:f.post.generation,kind:"modal_execution",subject:{kind:"social_publication",id:f.post.id},inputHash:publicationExecutionInputHash(f.post),dueAt:f.post.createdAt}));
+  await db.executionAttempt.create({data:{attemptToken:token,dispatchId:dispatch.reference.dispatchId,deploymentEpoch:f.post.deploymentEpoch,generation:f.post.generation,inputHash:dispatch.reference.inputHash,functionName:"publication",operationDeadlineAt:new Date(Date.now()+600000)}});
+  let lostAck=true,deliveries=0;
+  const domain:ExecutorDomainControl<{id:string}>={
+   lockExecution:async(tx)=>{await tx.$queryRaw`SELECT "id" FROM "SocialPost" WHERE "id"=${f.post.id}::uuid FOR UPDATE`;return {kind:"current",ref:{id:attempt.id}};},
+   acquireExecution:async()=>undefined,renewExecution:async()=>undefined,startExecution:async(tx)=>{await tx.socialPublicationAttempt.update({where:{id:attempt.id},data:{nativeStartCount:{increment:1}}});},
+   commitArtifactExecution:async()=>undefined,failExecution:async()=>undefined,releaseExecution:async()=>undefined,progressExecution:async()=>undefined,
+   publicationCommandExecution:async(tx,ref,_context,command)=>{
+    if(command.kind!=="provider_call")throw Error("unexpected command");
+    await tx.socialPublicationAttempt.update({where:{id:ref.id},data:{providerCallCount:{increment:1}}});
+    const id=await appendPublicationDispatch(tx,f.post.id,{dueAt:f.post.createdAt,wakeKind:"provider_call_saved"});
+    return {reply:{kind:"recorded"},dispatchIds:[id]};
+   },
+  };
+  const control=createExecutorControl({database:db,subjectKind:"social_publication",domain,deliverWakes:async ids=>{
+   deliveries++;await db.executionDispatch.updateMany({where:{id:{in:[...ids]}},data:{acknowledgedAt:new Date()}});if(lostAck)throw Error("lost_wake_ack");
+  }});
+  const fence={reference:dispatch.reference,attemptToken:token,owner};
+  const execute=(command:unknown,deliveryId=crypto.randomUUID())=>control.execute({command,verifiedRequest:{requestHash:createHash("sha256").update(JSON.stringify(command)).digest("hex"),metadata:{version:1,keyId:"fixture",audience:"executor-control",method:"POST",canonicalTarget:"/api/execution/command",bodySha256:"0".repeat(64),timestamp:Math.floor(Date.now()/1000),deliveryId,signature:"0".repeat(64)}}});
+  await execute({action:"acquire",reference:dispatch.reference,attemptToken:token,owner,leaseSeconds:120});
+  const command={action:"publication-command",fence,command:{kind:"provider_call",operation:"read"}};
+  await expect(execute(command)).rejects.toMatchObject({code:"authority_lost"});
+  expect((await db.socialPublicationAttempt.findUniqueOrThrow({where:{id:attempt.id}})).providerCallCount).toBe(0);
+  await execute({action:"process-start",fence});
+  const deliveryId=crypto.randomUUID();
+  await expect(execute(command,deliveryId)).rejects.toThrow("lost_wake_ack");
+  lostAck=false;
+  expect(await execute(command,deliveryId)).toEqual({disposition:"publication_recorded",result:{kind:"recorded"}});
+  expect((await db.socialPublicationAttempt.findUniqueOrThrow({where:{id:attempt.id}})).providerCallCount).toBe(1);
+  expect(deliveries).toBe(2);
+  await expect(execute({...command,command:{kind:"provider_call",operation:"submit"}},deliveryId)).rejects.toMatchObject({code:"replay_conflict"});
+  await expect(execute({...command,fence:{...fence,owner:crypto.randomUUID()}})).rejects.toMatchObject({code:"authority_lost"});
+  await db.executionAttempt.update({where:{attemptToken:token},data:{leaseExpiresAt:new Date(Date.now()-1000)}});
+  expect((await execute(command)).disposition).toBe("expired");
+  expect((await db.socialPublicationAttempt.findUniqueOrThrow({where:{id:attempt.id}})).providerCallCount).toBe(1);
+  await db.executionDispatch.update({where:{id:dispatch.reference.dispatchId},data:{acknowledgedAt:new Date()}});
+ });
+
 });

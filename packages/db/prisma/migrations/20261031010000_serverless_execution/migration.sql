@@ -874,7 +874,7 @@ ALTER TABLE "SocialPost" ADD COLUMN "generation" INTEGER NOT NULL DEFAULT 1,
  ADD COLUMN "deploymentEpoch" INTEGER NOT NULL DEFAULT 1;
 ALTER TABLE "SocialPublicationAttempt" ADD COLUMN "nativeStartCount" INTEGER NOT NULL DEFAULT 0,
  ADD COLUMN "nativeStartCeiling" INTEGER NOT NULL DEFAULT 104;
-ALTER TABLE "PublicationClaim" ADD COLUMN "deploymentEpoch" INTEGER NOT NULL DEFAULT 1,
+ALTER TABLE "PublicationClaim" ADD COLUMN "executionMode" VARCHAR(16) NOT NULL DEFAULT 'publish', ADD COLUMN "deploymentEpoch" INTEGER NOT NULL DEFAULT 1,
  ADD COLUMN "generation" INTEGER NOT NULL DEFAULT 1, ADD COLUMN "executorOwner" UUID,
  ADD COLUMN "operationDeadlineAt" TIMESTAMP(3);
 ALTER TABLE "SocialPost" ADD CONSTRAINT "SocialPost_execution_shape" CHECK ("generation">0 AND "deploymentEpoch">0 AND "scheduleRevision">0);
@@ -882,7 +882,7 @@ ALTER TABLE "SocialPublicationAttempt" ADD CONSTRAINT "SocialPublicationAttempt_
  "nativeStartCount">=0 AND "nativeStartCeiling" BETWEEN 2 AND 110 AND "nativeStartCount"<="nativeStartCeiling"
 );
 ALTER TABLE "PublicationClaim" ADD CONSTRAINT "PublicationClaim_execution_shape" CHECK (
- "deploymentEpoch">0 AND "generation">0 AND ("executorOwner" IS NULL OR "operationDeadlineAt" IS NOT NULL)
+ "executionMode" IN ('publish','resume','reconcile') AND "deploymentEpoch">0 AND "generation">0 AND ("executorOwner" IS NULL OR "operationDeadlineAt" IS NOT NULL)
  AND ("operationDeadlineAt" IS NULL OR "leaseExpiresAt"<="operationDeadlineAt")
 );
 CREATE FUNCTION social_post_schedule_revision() RETURNS trigger LANGUAGE plpgsql AS $$

@@ -2861,6 +2861,7 @@ model PublicationManualDecision {
 }
 
 model PublicationClaim {
+  executionMode String @default("publish") @db.VarChar(16)
   deploymentEpoch Int       @default(1)
   generation      Int       @default(1)
   executorOwner   String?   @db.Uuid
