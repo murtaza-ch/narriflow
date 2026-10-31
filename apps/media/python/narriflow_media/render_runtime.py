@@ -5,9 +5,11 @@ import asyncio
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import math
 from pathlib import Path
 import re
 import secrets
+import sys
 from threading import BoundedSemaphore, Event, Lock, Thread
 
 from .artifacts import AssignedArtifacts
@@ -27,7 +29,7 @@ class RenderControlServer:
     def __init__(self,session,package,work,sources,*,transport=None):
         self.session=session;self.work=work;self.sources=sources;self.transport=transport
         self.artifacts=AssignedArtifacts(session,package);self.outputs={};self.uploaded={};self.settled=set()
-        self.outcome=None;self.error=None;self._lock=Lock();self._started=Event();self._slots=BoundedSemaphore(4)
+        self.outcome=None;self.error=None;self.operations={};self._lock=Lock();self._started=Event();self._slots=BoundedSemaphore(4)
         self._path='/'+secrets.token_urlsafe(32)
         command=package.command;self._command=command
         members={variant['renderId'] for variant in command['variants']}
@@ -101,6 +103,7 @@ class RenderControlServer:
         fields={'authority':set(),'finish':set(),'upload':{'renderId','path','usedStockIds'},'complete':{'renderId','byteLength','durationSec','captionDiagnostics'},
             'fail':{'renderId','errorCode','disposition'},'download':{'sourceName','path','maxBytes'}}
         if operation not in fields or set(command)!={'operation'}|fields[operation]:raise NativeOperationFailure('render_command_invalid')
+        with self._lock:self.operations[operation]=self.operations.get(operation,0)+1
         if operation=='finish':
             if self.outcome is None or self.settled!=set(self.render_ids):raise ExecutionControlError('execution_result_unconfirmed')
             return self.outcome
@@ -173,12 +176,18 @@ async def run_render_group(session,package,work:Path,*,transport=None,source_tra
             if error.code in {'media_process_start_unconfirmed','media_execution_cancelled'}:raise ExecutionControlError('execution_authority_lost') from None
             raise NativeOperationFailure('render_process_unavailable',True) from None
         if control.error:raise control.error
-        if result.returncode or control.outcome is None or _json(result.stdout,65536)!=control.outcome:raise NativeOperationFailure('render_result_unconfirmed',True)
-        detector_executions=None
+        detector_executions=None;phases={}
         for line in result.stderr.splitlines():
             try:
                 diagnostic=json.loads(line)
                 value=diagnostic.get('counts',{}).get('detectorExecutions')
                 if diagnostic.get('message')=='clip_render_attempt_metrics' and type(value) is int and 0<=value<=32:detector_executions=value
+                if diagnostic.get('message')=='clip_render_attempt_metrics' and isinstance(diagnostic.get('phaseMs'),dict):
+                    phases={key:value for key,value in diagnostic['phaseMs'].items() if key in {'presign','probe','download','asset_validation','evidence_read','analysis','compose','encode','validate','upload','drain','persistence','cleanup'}
+                        and type(value) in {int,float} and math.isfinite(value) and 0<=value<=36_000_000}
             except (ValueError,AttributeError):pass
+        if result.returncode or control.outcome is None or _json(result.stdout,65536)!=control.outcome:
+            print(json.dumps({'level':'error','message':'render_native_child_unconfirmed','exitCode':result.returncode,'phaseMs':phases,
+                'controlOperations':control.operations,'sourceBytesTransferred':source_server.bytes_transferred,'sourceRequests':source_server.upstream_requests}),file=sys.stderr)
+            raise NativeOperationFailure('render_result_unconfirmed',True)
         return {'outcome':control.outcome,'bytesTransferred':source_server.bytes_transferred,'upstreamRequests':source_server.upstream_requests,'detectorExecutions':detector_executions}

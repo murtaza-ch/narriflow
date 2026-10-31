@@ -6,12 +6,17 @@ import subprocess
 import tempfile
 import threading
 import unittest
+from contextlib import redirect_stderr
+from io import StringIO
+from unittest.mock import patch, AsyncMock
 from uuid import uuid4
 
 from narriflow_media.render_runtime import run_render_group,artifact_binding
 from narriflow_media.multipart import TransferResponse
 from narriflow_media.transfer import load_work_package
 from narriflow_media.artifacts import ArtifactCommitUnconfirmed
+from narriflow_media.native_runtime import NativeOperationFailure
+from narriflow_media.process import ProcessResult
 
 
 class RenderRuntimeTests(unittest.IsolatedAsyncioTestCase):
@@ -23,6 +28,31 @@ class RenderRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_changed_source_probe_publishes_only_a_typed_permanent_failure_proof(self):
         await self.actual_operation(source_mismatch=True)
+
+    async def test_interruption_logs_only_bounded_numeric_phase_and_control_facts(self):
+        identity,group_id=str(uuid4()),str(uuid4());input_hash='d'*64
+        source={'storageKey':'execution/frozen/original','etag':'"source"','byteLength':5,'sha256':'a'*64}
+        command={'version':1,'kind':'render_group','groupId':group_id,'preparation':{'source':source,'toolchainFingerprint':'a'*64},
+            'variants':[{'renderId':identity}],'assets':{'visuals':[],'fonts':[],'audio':[],'logo':None},'autoBroll':{'resolved':[]}}
+        outputs=[{'artifactId':str(uuid4()),'role':role,'bindingHash':artifact_binding(input_hash,identity,role),'contentType':mime,'contentTypes':[mime],'maxBytes':maximum}
+            for role,mime,maximum in [('render_variant','video/mp4',1024),('render_outcome','application/json',65536)]]
+        class Session:
+            fence={'reference':{'inputHash':input_hash,'subject':{'kind':'render_group','id':group_id}},'attemptToken':str(uuid4()),'owner':str(uuid4())}
+            remaining_seconds=60;cancel_event=threading.Event()
+            def assert_live(self):pass
+            def transfer(self,action,**fields):
+                assert action=='work-package'
+                return type('Result',(),{'disposition':{'functionName':'render_group','inputHash':input_hash,'input':{'kind':'inline','command':command},'sources':[{'name':'original',**source}],'outputs':outputs}})()
+        async def verified(*_,**__):return 'a'*64
+        result=ProcessResult(70,b'',json.dumps({'message':'clip_render_attempt_metrics','counts':{'detectorExecutions':0},'phaseMs':{'probe':2,'encode':float('nan'),'private':'https://signed.invalid/?key=private'},'caption':'private caption'}).encode())
+        session=Session();package=await load_work_package(session);logs=StringIO()
+        with tempfile.TemporaryDirectory() as directory,patch('narriflow_media.render_runtime.run_owned_process_async',AsyncMock(return_value=result)),redirect_stderr(logs):
+            with self.assertRaises(NativeOperationFailure):await run_render_group(session,package,Path(directory),verify_runtime=verified)
+        measured=json.loads(logs.getvalue())
+        self.assertEqual(measured['phaseMs'],{'probe':2})
+        self.assertEqual(measured['controlOperations'],{})
+        self.assertEqual(measured['sourceBytesTransferred'],0)
+        self.assertNotIn('private',logs.getvalue())
 
     async def actual_operation(self,*,fingerprint='a'*64,enforce_runtime=False,lost_ack=False,source_mismatch=False):
         root=Path(__file__).resolve().parents[4]
