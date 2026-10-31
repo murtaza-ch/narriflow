@@ -1,0 +1,103 @@
+{
+  "date": "2026-10-31",
+  "scope": "Actual native Modal preparation child, FFmpeg and OpenCV with controlled scoped grant/commit ports; no live Worker domain HTTP claim",
+  "imageId": "im-p7MekQye4XJUt39iQpoqyd",
+  "runtimeId": "06a988fcee94757ba07d1d1cc410ca4fbf0f36ee4d8f4aab8c84711897a569b9",
+  "fixtureToolchainId": "e00c091bc5a81bee",
+  "cpuMax": null,
+  "memoryMax": null,
+  "opencvThreads": 2,
+  "seconds": 13.949,
+  "results": [
+    {
+      "kind": "audio",
+      "enforcedRuntime": true,
+      "starts": 1,
+      "roles": [
+        "clip_preview",
+        "preview_peaks",
+        "layout_evidence"
+      ],
+      "outputs": [
+        {
+          "role": "clip_preview",
+          "byteLength": 55791,
+          "sha256": "4a0d8b761b78531ac3e5004d2020d3dacd68de32a9a10b97532f07d03a985afc"
+        },
+        {
+          "role": "preview_peaks",
+          "byteLength": 331,
+          "sha256": "eec004cdb14bd25a29cac03b99b051c8954e5e14671fa23aa4a10cff81a3325a"
+        },
+        {
+          "role": "layout_evidence",
+          "byteLength": 773,
+          "sha256": "68e47eed7946ea5b7c5ba3d582fc411136875cf34a9e6a7cb8617f1e8b487787"
+        }
+      ],
+      "measurements": {
+        "bytesTransferred": 640156,
+        "upstreamRequests": 5,
+        "sourceBytes": 128078
+      },
+      "automaticEngine": "shot-layout-v1",
+      "screenObserved": false,
+      "splitObserved": false,
+      "seconds": 6.312
+    },
+    {
+      "kind": "video",
+      "enforcedRuntime": true,
+      "starts": 1,
+      "roles": [
+        "clip_preview",
+        "preview_peaks",
+        "layout_evidence"
+      ],
+      "outputs": [
+        {
+          "role": "clip_preview",
+          "byteLength": 284586,
+          "sha256": "159e59ff75d66a36e0325c7a1c8fc8fa6eabb0ff63e05e8ca3f1c531e91e2225"
+        },
+        {
+          "role": "preview_peaks",
+          "byteLength": 331,
+          "sha256": "57a055b0f35b9511c3a610e5da1d72dc5846f684212fa8f01de77f6ecdfaed64"
+        },
+        {
+          "role": "layout_evidence",
+          "byteLength": 1613,
+          "sha256": "5c7ee5c4f146a982515c227680555c9405a18ab14b20f83469b55b3de66f5bd0"
+        }
+      ],
+      "measurements": {
+        "bytesTransferred": 494085,
+        "upstreamRequests": 3,
+        "sourceBytes": 164695
+      },
+      "automaticEngine": "shot-layout-v1",
+      "screenObserved": true,
+      "splitObserved": true,
+      "seconds": 7.541
+    }
+  ],
+  "sandboxId": "sb-01M68RYJCVYFZWKG3FABVEEB7P",
+  "sandboxTerminated": true,
+  "requestedResources": {
+    "cpu": 2,
+    "memoryMiB": 4096,
+    "networkBlocked": true,
+    "secrets": []
+  },
+  "sourceCommit": "426d884b",
+  "sourceOverlaySha256": "4a3e2b3a26225501374bb2b894d1f05b832bcf81c86c9c24af8e347cf3333eff",
+  "gateFixtureSha256": "847074d4402271fac6e8b72502917eedae2f649e86ebcad8c160e243626edf95",
+  "logSha256": "77862a189295c6f6141ce0cfee4afb66a883288c70479f3131b2b3e03448fda2",
+  "scopeLimits": [
+    "Storage/control are controlled scoped ports; real Worker HTTP, SQL domain finalization and R2 networking are not exercised by this gate.",
+    "The fixtures cover their whole4-second sources and intentionally read several passes; this does not establish the long-source<=20% ranged-read acceptance.",
+    "This Sandbox hides cgroup files;2CPU/4GiB are explicit Modal requests, while OpenCV2 threads are measured.",
+    "Standalone FFmpeg decoder/filter caps remain a separate parity gate."
+  ]
+}
