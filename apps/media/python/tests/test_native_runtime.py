@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 from datetime import datetime,timezone
 import hashlib
 from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
@@ -16,11 +15,10 @@ import time
 import unittest
 from uuid import uuid4
 
-from narriflow_media.control import ControlResponse,ExecutionControlClient,ExecutorSession
+from narriflow_media.control import ControlResponse,ExecutionControlClient
 from narriflow_media.entrypoint import invoke_native
 from narriflow_media.multipart import TransferResponse
 from narriflow_media.native_runtime import run_asset_validation,run_outbound_delivery
-from narriflow_media.transfer import load_work_package
 from narriflow_media.signing import verify_execution_request
 
 
@@ -39,7 +37,9 @@ class NativeOperationTests(unittest.IsolatedAsyncioTestCase):
             def log_message(self,*args):pass
             def do_GET(self):
                 state['get_after_start']=state['started'];state['if_match']=self.headers.get('If-Match')
-                self.send_response(200);self.send_header('ETag','"changed"' if mode=='changed_source' else '"font"');self.send_header('Content-Length',str(len(payload)));self.end_headers();self.wfile.write(payload)
+                self.send_response(200)
+                if mode=='oversized_headers':self.send_header('X-Padding','a'*70000)
+                self.send_header('ETag','"changed"' if mode=='changed_source' else '"font"');self.send_header('Content-Length',str(len(payload)));self.end_headers();self.wfile.write(payload)
         with tempfile.TemporaryDirectory() as directory:
             path=Path(directory);cert,key=path/'cert.pem',path/'key.pem'
             subprocess.run(['openssl','req','-x509','-newkey','rsa:2048','-nodes','-keyout',str(key),'-out',str(cert),'-days','1',
@@ -86,7 +86,7 @@ class NativeOperationTests(unittest.IsolatedAsyncioTestCase):
                 if mode=='lost_start_ack':
                     self.assertEqual(outcome,{'disposition':'unconfirmed'});self.assertNotIn('get_after_start',state);self.assertEqual(uploads,{})
                     self.assertNotIn('fail',[c['action'] for c in calls]);return
-                if mode=='changed_source':
+                if mode in {'changed_source','oversized_headers'}:
                     self.assertEqual(outcome,{'disposition':'failed'});self.assertEqual(uploads,{})
                     self.assertNotIn('upload-initialize',[c['action'] for c in calls]);return
                 if mode=='lost_commit_ack':
@@ -111,6 +111,9 @@ class NativeOperationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_changed_source_etag_never_creates_an_upload(self):
         await self.font_operation('changed_source')
+
+    async def test_oversized_source_headers_are_rejected_before_upload(self):
+        await self.font_operation('oversized_headers')
 
     async def test_lost_native_start_ack_delivers_no_source_grant_and_makes_no_second_mutation(self):
         await self.font_operation('lost_start_ack')

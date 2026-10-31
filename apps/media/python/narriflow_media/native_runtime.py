@@ -148,7 +148,8 @@ async def download_assigned_source(session: ExecutorSession, package: WorkPackag
         result=await _execute(session,[curl_executable,'--disable','--config','-'],config.encode(),remaining,maximum_bytes)
         status=result.stdout.strip()
         if result.returncode==0 and status==b'200':
-            response=_source_headers(header_path.read_bytes())
+            with header_path.open('rb') as header_file:
+                response=_source_headers(header_file.read(65537))
             if response.get('etag')!=frozen['etag'] or response.get('content-length')!=str(frozen['byteLength']):
                 raise NativeOperationFailure('native_source_changed')
             size,sha=await asyncio.to_thread(_file_facts,destination,session,maximum_bytes)
