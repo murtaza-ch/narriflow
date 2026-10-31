@@ -1,5 +1,5 @@
 import { writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { compositionAssetRef, screenLayoutInputFingerprint, splitLayoutInputFingerprint, type CompositionEvidenceRequest } from "@narriflow/composition-plan";
 import { encodeClipPreparationInput, encodeClipPreparationResult } from "@narriflow/services/clip-preparation-input";
 import { CLIP_PREPARATION_POLICY, clipPreparationEngineHash, clipPreparationTiming, clipPreparationPreviewWindow } from "@narriflow/services/clip-preparation-policy";
@@ -10,6 +10,7 @@ import { createLayoutEvidenceDetectors } from "./layout-evidence-runtime";
 import type { RenderConfig } from "./render-config";
 import { executorProcessFailure, resolveDisplayGeometry, type WorkerProcessModule } from "./worker-process";
 import { buildAudiogramPreviewArgs, buildClipPreviewArgs, clipPreviewOutputExpectation, encodeAndValidateClipPreview, generateClipPreviewPeaks } from "./tasks/clip-preview";
+import { renderFfmpegArgs } from "./ffmpeg-thread-policy";
 
 /** Source observations are prepared once. Optional B-roll's application gate
  * remains with the renderer after its actual native asset validation. */
@@ -21,7 +22,12 @@ export async function prepareClip(options: {
 }) {
   const { input } = await encodeClipPreparationInput(options.input);
   if (input.engineHash !== await clipPreparationEngineHash(input.toolchainFingerprint)) throw new Error("clip_preparation_engine_invalid");
-  const { workerProcess, signal } = options;
+  const { signal } = options;
+  const native = options.workerProcess;
+  const workerProcess: WorkerProcessModule = {
+    execute: request => native.execute({ ...request, args: basename(request.command) === "ffmpeg" ? renderFfmpegArgs(request.args) : request.args }),
+    inspectMedia: native.inspectMedia.bind(native), withScratchDirectory: native.withScratchDirectory.bind(native),
+  };
   const policy = CLIP_PREPARATION_POLICY;
   const config = { ...options.config, reframeSampleFps: policy.observations.sampleFps, reframeSceneThreshold: policy.observations.sceneThreshold,
     pipMotionThreshold: policy.observations.pipMotionThreshold, probeCommandTimeoutMs: policy.observations.probeTimeoutMs,
