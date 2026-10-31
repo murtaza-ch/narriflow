@@ -7,7 +7,7 @@ import { uploadSessionService } from "@narriflow/services/upload-session.service
 import type { ApiConfig } from "../../config";
 import type { IngestRouteDeps } from "./routes";
 import { youtubeImportCapability } from "@narriflow/services/source-fetch-capability";
-import { issueLocalFetchDevice } from "../execution/local-device";
+import { issueLocalFetchDevice } from "../execution/local-device-runtime";
 import type { ApiWorkerBindings } from "../../worker-bindings";
 
 /** Production wiring of the ingest routes. */
