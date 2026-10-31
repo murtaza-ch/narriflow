@@ -159,6 +159,7 @@ export async function admitRenderGroupsWithinTransaction(
     const row = await tx.renderGroup.create({
       data: {
         workflowRunId: run.id,
+        deploymentEpoch: run.deploymentEpoch,
         workSetGeneration: generation,
         clipId: group.configuration.clipId,
         exportIdentity,
@@ -416,7 +417,7 @@ export class RenderGroupLifecycle {
     await tx.$queryRaw`SELECT "id" FROM "WorkflowRun" WHERE "id" = ${ref.workflowRunId}::uuid FOR UPDATE`;
     const parent = await tx.workflowRun.findUnique({ where: { id: ref.workflowRunId } });
     return parent?.stage === "clip_rendering" &&
-      ["queued", "running"].includes(parent.status) &&
+      ["queued", "running", "waiting"].includes(parent.status) &&
       parent.renderWorkSetGeneration === ref.workSetGeneration
       ? parent
       : null;
@@ -600,7 +601,7 @@ export class RenderGroupLifecycle {
       const decision = deriveRenderGroupSettlement({ members, chargedAttemptCount: group.chargedAttemptCount, databaseNow: clock });
       if (decision.status === "queued") throw new Error("Expired render group still has unsettled members");
       await tx.renderGroup.update({ where: { id: group.id }, data: { status: decision.status, nextAttemptAt: null, settledAt: clock, errorCode: "operation_deadline_exceeded", failureDisposition: "permanent" } });
-      await appendWorkflowEvent(tx, { projectId: ref.projectId, workflowRunId: parent.id, attemptId: attemptToken, stage: "clip_rendering", status: parent.status as "queued" | "running",
+      await appendWorkflowEvent(tx, { projectId: ref.projectId, workflowRunId: parent.id, attemptId: attemptToken, stage: "clip_rendering", status: parent.status as "queued" | "running" | "waiting",
         progress: parent.progress, errorCode: null, transition: `unstarted_group_expired:${attemptToken}`, ...(failures.length ? { generationRenderResults: failures } : {}) },
       { progressRequired: true, analyticsEnabled: false });
       return { kind: "expired", ...await this.executionWakes(tx, ref, reference.inputHash, false) };
@@ -629,7 +630,7 @@ export class RenderGroupLifecycle {
             { nextAttemptAt: null },
             { nextAttemptAt: { lte: await renderGroupDatabaseNow(tx) } },
           ],
-          workflowRun: { stage: "clip_rendering", status: { in: ["queued", "running"] } },
+          workflowRun: { stage: "clip_rendering", status: { in: ["queued", "running", "waiting"] } },
         },
         orderBy: [{ createdAt: "asc" }, { id: "asc" }],
         take: 32,
@@ -808,7 +809,7 @@ export class RenderGroupLifecycle {
     });
     await appendWorkflowEvent(tx, {
       projectId: parent.projectId, workflowRunId: parent.id, attemptId: attempt.token,
-      stage: "clip_rendering", status: parent.status as "queued" | "running", progress: parent.progress,
+      stage: "clip_rendering", status: parent.status as "queued" | "running" | "waiting", progress: parent.progress,
       errorCode: null, transition: `variant_started:${id}`,
     }, { progressRequired: false, analyticsEnabled: false });
     return true;
@@ -896,7 +897,7 @@ export class RenderGroupLifecycle {
     });
     if (!variant.exportVariantId) await appendWorkflowEvent(tx, {
       projectId: parent.projectId, workflowRunId: parent.id, attemptId: attempt.token,
-      stage: "clip_rendering", status: parent.status as "queued" | "running", progress: parent.progress,
+      stage: "clip_rendering", status: parent.status as "queued" | "running" | "waiting", progress: parent.progress,
       errorCode: null, transition: `child_completed:${id}`,
       generationRenderResults: [{ renderId: id, status: "completed", errorCode: null }],
     }, { progressRequired: true, analyticsEnabled: false });
@@ -959,7 +960,7 @@ export class RenderGroupLifecycle {
     });
     if (!variant.exportVariantId && disposition === "permanent") await appendWorkflowEvent(tx, {
       projectId: parent.projectId, workflowRunId: parent.id, attemptId: attempt.token,
-      stage: "clip_rendering", status: parent.status as "queued" | "running", progress: parent.progress,
+      stage: "clip_rendering", status: parent.status as "queued" | "running" | "waiting", progress: parent.progress,
       errorCode: null, transition: `child_failed:${id}`,
       generationRenderResults: [{ renderId: id, status: "failed", errorCode }],
     }, { progressRequired: true, analyticsEnabled: false });
@@ -1138,7 +1139,7 @@ export class RenderGroupLifecycle {
         workflowRunId: parent.id,
         attemptId: input.token,
         stage: "clip_rendering",
-        status: parent.status as "queued" | "running",
+        status: parent.status as "queued" | "running" | "waiting",
         progress: parent.progress,
         errorCode: null,
         transition: `group_finished:${input.token}`,

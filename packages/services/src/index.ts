@@ -497,6 +497,8 @@ export {
 	type WorkflowAggregateResult,
 	type RenderWorkSet,
 	type RenderWorkSetOutcome,
+	type RenderRunPreparation,
+	type RenderRunSettlement,
 	type RenderTerminalNotificationPayload,
 	type WorkflowFailureDisposition,
 	type CompleteTranscriptInput,

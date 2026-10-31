@@ -259,6 +259,14 @@ dbDescribe("Targeted Ingest execution", () => {
     expect((await commit(first)).disposition).toBe("committed");
     expect(await db.ingestJob.findUniqueOrThrow({ where: { id: f.job.id } })).toMatchObject({ status: "running" });
     expect((await db.project.findUniqueOrThrow({ where: { id: f.project.id } })).ingestStatus).not.toBe("ready");
+    let waitingRenderRunId: string | null = null;
+    if (first === "source_audio") {
+      const run = await withServiceEnvironment({}, () => f.workflow.admit({ projectId: f.project.id, stage: "clip_rendering", idempotencyKey: crypto.randomUUID() }));
+      waitingRenderRunId = run.id;
+      subjects.push(run.id);
+      const registered = await db.$transaction(tx => f.workflow.dispatchRunWithinTransaction(tx, run.id));
+      expect((await withServiceEnvironment({}, () => f.workflow.prepareRenderRun(registered.reference, []))).kind).toBe("waiting_for_video");
+    }
     if (first === "source_video") {
       expect((await db.executionArtifact.findUniqueOrThrow({ where: { id: video.id } })).sourceVideoBinding).toEqual(bindings.video);
       expect(await db.sourceAudio.findUnique({ where: { id: bindings.audio.sourceAudioId } })).toBeNull();
@@ -268,6 +276,7 @@ dbDescribe("Targeted Ingest execution", () => {
     expect(await db.project.findUniqueOrThrow({ where: { id: f.project.id } })).toMatchObject({ ingestStatus: "ready", sourceStorageKey: videoKey, sourceProbe: bindings.video.probe });
     expect(await db.executionAttempt.findUniqueOrThrow({ where: { attemptToken: f.token } })).toMatchObject({ status: "completed", owner: f.owner });
     expect(await db.executionDispatch.count({ where: { subjectId: f.job.id, kind: "import_pipeline", wakeKind: "video_ready" } })).toBe(1);
+    if (waitingRenderRunId) expect(await db.executionDispatch.count({ where: { subjectId: waitingRenderRunId, kind: "render_run", wakeKind: "video_ready" } })).toBe(1);
     expect(await db.processingUsageReservation.findUniqueOrThrow({ where: { projectId: f.project.id } })).toMatchObject({ state: "reserved", settledSeconds: null });
   }, 120_000);
 

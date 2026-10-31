@@ -357,6 +357,16 @@ export class IngestJobLifecycle {
     const parent = await appendExecutionDispatch(tx, { deploymentEpoch: ref.deploymentEpoch, kind: "import_pipeline", subject: { kind: "ingest_job", id: ref.id },
       generation: current.generation, inputHash, dueAt: now, wakeKind });
     const ids = [parent.reference.dispatchId];
+    if (wakeKind === "video_ready") {
+      const renders = await tx.workflowRun.findMany({ where: { projectId: current.projectId, stage: "clip_rendering", status: { in: ["queued", "running", "waiting"] } }, take: 2, select: { id: true } });
+      if (renders.length > 1) throw new Error("render_run_active_conflict");
+      for (const run of renders) {
+        const registered = await this.deps.workflow.dispatchRunWithinTransaction(tx, run.id);
+        const videoReady = await appendExecutionDispatch(tx, { deploymentEpoch: registered.reference.deploymentEpoch, kind: "render_run", subject: registered.reference.subject,
+          generation: registered.reference.generation, inputHash: registered.reference.inputHash, dueAt: now, wakeKind: "video_ready" });
+        ids.push(videoReady.reference.dispatchId);
+      }
+    }
     if (wakeKind !== "audio_ready" && wakeKind !== "video_evidence_ready") {
       const finished = await appendExecutionDispatch(tx, { deploymentEpoch: ref.deploymentEpoch, kind: "operation_driver", subject: { kind: "ingest_job", id: ref.id },
         generation: ref.generation, inputHash, dueAt: now, wakeKind: "execution_finished" });
