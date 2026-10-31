@@ -3,7 +3,7 @@
   "name": "narriflow-api-candidate",
   "account_id": "5359f28d385b8632c3abee12d1f5b011",
   "main": "src/index.ts",
-  "compatibility_date": "2026-10-31",
+  "compatibility_date": "2026-10-30",
   "compatibility_flags": ["nodejs_compat", "disallow_importable_env"],
   "workers_dev": false,
   "preview_urls": false,

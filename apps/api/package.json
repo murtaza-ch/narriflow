@@ -22,7 +22,8 @@
     "build:worker": "bun run migrations:generate && wrangler deploy --dry-run --outdir dist/worker --metafile",
     "deploy": "wrangler deploy",
     "migrations:generate": "bun scripts/generate-database-migrations.ts",
-    "migrations:check": "bun scripts/generate-database-migrations.ts --check"
+    "migrations:check": "bun scripts/generate-database-migrations.ts --check",
+    "test:runtime:workerd": "node --experimental-strip-types scripts/run-worker-runtime-gates.ts"
   },
   "dependencies": {
     "@ffprobe-installer/ffprobe": "2.1.2",
