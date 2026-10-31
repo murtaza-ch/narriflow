@@ -1,0 +1,190 @@
+import { z } from "zod";
+
+export const EXECUTION_ENVELOPE_MAX_BYTES = 64 * 1024;
+export const EXECUTION_COMMAND_MAX_BYTES = 64 * 1024;
+export const EXECUTOR_MAX_LEASE_SECONDS = 120;
+export const EXECUTION_SIGNATURE_MAX_AGE_SECONDS = 300;
+
+const executionId = z.string().min(1).max(160).regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/);
+const sha256 = z.string().regex(/^[a-f0-9]{64}$/);
+const generation = z.number().int().positive().safe();
+
+/** A dispatch names durable state. Workflow payloads never contain the state itself. */
+export const executionDispatchKindSchema = z.enum([
+  "import_pipeline", "render_run", "operation_driver", "maintenance",
+  "project_progress", "local_fetch", "modal_execution",
+]);
+
+export const executionSubjectKindSchema = z.enum([
+  "ingest_job", "workflow_run", "render_group", "clip_preparation", "upload_session",
+  "social_publication", "completion_callback", "webhook_subscription", "workspace_billing",
+  "autopilot_rule", "generation_finishing", "dubbing", "export_bundle", "generated_media",
+  "thumbnail_frame", "library_index", "notification", "media_cleanup", "workflow_event",
+  "workspace_event", "standing_grant", "pending_workspace", "retention", "maintenance",
+]);
+
+export const executionSubjectSchema = z.strictObject({
+  kind: executionSubjectKindSchema,
+  id: executionId,
+});
+
+export const executionDispatchReferenceSchema = z.strictObject({
+  dispatchId: z.string().uuid(),
+  deploymentEpoch: generation,
+  kind: executionDispatchKindSchema,
+  subject: executionSubjectSchema,
+  generation,
+  inputHash: sha256,
+});
+
+export type ExecutionDispatchKind = z.infer<typeof executionDispatchKindSchema>;
+export type ExecutionSubjectKind = z.infer<typeof executionSubjectKindSchema>;
+export type ExecutionSubject = z.infer<typeof executionSubjectSchema>;
+export type ExecutionDispatchReference = z.infer<typeof executionDispatchReferenceSchema>;
+
+/** Parsing a fence never grants authority. Services must compare it under locks. */
+export const executorFenceSchema = z.strictObject({
+  reference: executionDispatchReferenceSchema,
+  attemptToken: z.string().uuid(),
+  owner: z.string().uuid(),
+});
+
+export const executionArtifactRoleSchema = z.enum([
+  "source_audio", "source_video", "layout_evidence", "render_variant", "probe",
+  "thumbnail", "export_bundle", "dub_mix", "validated_font", "validated_asset", "outbound_receipt",
+]);
+
+/** artifactId identifies a server-assigned key. Executors cannot choose publication keys. */
+export const executionArtifactSchema = z.strictObject({
+  artifactId: z.string().uuid(),
+  role: executionArtifactRoleSchema,
+  contentType: z.string().min(1).max(128).regex(/^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/),
+  byteLength: z.number().int().positive().safe().max(10 * 1024 ** 3),
+  sha256,
+  etag: z.string().min(1).max(160).regex(/^[\x21-\x7e]+$/),
+  bindingHash: sha256,
+});
+
+const failureCode = z.string().min(1).max(100).regex(/^[a-z][a-z0-9_]*$/);
+const ownedCommand = { fence: executorFenceSchema };
+
+export const executionCommandSchema = z.discriminatedUnion("action", [
+  z.strictObject({
+    action: z.literal("acquire"),
+    reference: executionDispatchReferenceSchema,
+    attemptToken: z.string().uuid(),
+    owner: z.string().uuid(),
+    leaseSeconds: z.number().int().positive().max(EXECUTOR_MAX_LEASE_SECONDS),
+  }),
+  z.strictObject({
+    action: z.literal("renew"), ...ownedCommand,
+    leaseSeconds: z.number().int().positive().max(EXECUTOR_MAX_LEASE_SECONDS),
+  }),
+  z.strictObject({ action: z.literal("process-start"), ...ownedCommand }),
+  z.strictObject({ action: z.literal("read-disposition"), ...ownedCommand }),
+  z.strictObject({ action: z.literal("commit-artifact"), ...ownedCommand, artifact: executionArtifactSchema }),
+  z.strictObject({ action: z.literal("fail"), ...ownedCommand, failureCode, retryable: z.boolean() }),
+  z.strictObject({ action: z.literal("release"), ...ownedCommand, reason: z.enum(["shutdown", "startup_rejected", "cancelled"]) }),
+  z.strictObject({
+    action: z.literal("progress"), ...ownedCommand,
+    phase: z.enum(["acquiring", "downloading", "uploading", "preparing", "encoding", "delivering"]),
+    progress: z.number().min(0).max(100),
+  }),
+]);
+
+export type ExecutorFence = z.infer<typeof executorFenceSchema>;
+export type ExecutionArtifactRole = z.infer<typeof executionArtifactRoleSchema>;
+export type ExecutionArtifact = z.infer<typeof executionArtifactSchema>;
+export type ExecutionCommand = z.infer<typeof executionCommandSchema>;
+
+/** Timestamp is Unix seconds; signature is HMAC-SHA256 hex over the canonical fields. */
+export const executionSignatureSchema = z.strictObject({
+  version: z.literal(1),
+  keyId: z.string().min(1).max(64).regex(/^[A-Za-z0-9_-]+$/),
+  audience: z.enum(["modal-bridge", "executor-control", "dev-device"]),
+  method: z.enum(["GET", "POST"]),
+  canonicalTarget: z.string().min(1).max(2048).regex(/^\/(?!\/)[\x21-\x22\x24-\x7e]*$/),
+  bodySha256: sha256,
+  timestamp: z.number().int().positive().safe(),
+  deliveryId: z.string().uuid(),
+  signature: sha256,
+});
+export type ExecutionSignature = z.infer<typeof executionSignatureSchema>;
+
+const instant = z.iso.datetime();
+const acquiredDisposition = z.strictObject({
+  disposition: z.literal("acquired"),
+  fence: executorFenceSchema,
+  serverTime: instant,
+  leaseExpiresAt: instant,
+  operationDeadlineAt: instant,
+}).superRefine((value, context) => {
+  if (Date.parse(value.leaseExpiresAt) <= Date.parse(value.serverTime) ||
+    Date.parse(value.leaseExpiresAt) > Date.parse(value.operationDeadlineAt)) {
+    context.addIssue({ code: "custom", path: ["leaseExpiresAt"], message: "Lease must be live and bounded by the operation deadline" });
+  }
+});
+
+export const executionDispositionSchema = z.discriminatedUnion("disposition", [
+  acquiredDisposition,
+  z.strictObject({ disposition: z.literal("already_owned"), leaseExpiresAt: instant }),
+  z.strictObject({ disposition: z.literal("busy"), leaseExpiresAt: instant }),
+  z.strictObject({ disposition: z.literal("renewed"), leaseExpiresAt: instant }),
+  z.strictObject({ disposition: z.literal("started") }),
+  z.strictObject({ disposition: z.literal("committed"), artifactId: z.string().uuid() }),
+  z.strictObject({ disposition: z.literal("progress_recorded") }),
+  z.strictObject({ disposition: z.literal("released"), dueAt: instant.nullable() }),
+  z.strictObject({ disposition: z.literal("retry_due"), dueAt: instant }),
+  z.strictObject({ disposition: z.literal("completed") }),
+  z.strictObject({ disposition: z.literal("failed"), failureCode }),
+  z.strictObject({ disposition: z.literal("cancelled") }),
+  z.strictObject({ disposition: z.literal("expired") }),
+  z.strictObject({ disposition: z.literal("superseded") }),
+]);
+
+export const executionDeadlineSchema = z.strictObject({
+  reference: executionDispatchReferenceSchema,
+  attemptToken: z.string().uuid(),
+  kind: z.enum(["lease", "operation", "provider_submission", "provider_result", "retry"]),
+  observedDeadlineAt: instant,
+});
+
+export type ExecutionDisposition = z.infer<typeof executionDispositionSchema>;
+export type ExecutionDeadline = z.infer<typeof executionDeadlineSchema>;
+
+/** Durable object identity; never an access URL or a callback-chosen publication key. */
+export const executionObjectIdentitySchema = z.strictObject({
+  key: z.string().min(1).max(1024).regex(/^[A-Za-z0-9][A-Za-z0-9/_.-]*$/).refine(
+    (value) => !value.split("/").some((segment) => segment === ".." || segment === "." || segment === ""),
+    "Object key must contain only nonempty, exact path segments",
+  ),
+  etag: z.string().min(1).max(160).regex(/^[\x21-\x7e]+$/),
+  byteLength: z.number().int().positive().safe().max(10 * 1024 ** 3),
+  sha256,
+});
+
+export const sourceAudioBindingSchema = z.strictObject({
+  sourceAudioId: z.string().uuid(),
+  projectId: z.string().uuid(),
+  sourceRevision: generation,
+  mediaIdentity: z.strictObject({
+    provider: z.enum(["youtube", "upload", "rss", "direct", "drive", "zoom"]),
+    mediaId: executionId,
+  }),
+  audioTrack: z.strictObject({
+    id: executionId,
+    language: z.string().min(1).max(32).regex(/^[A-Za-z0-9-]+$/).nullable(),
+    codec: z.string().min(1).max(64).regex(/^[A-Za-z0-9_.-]+$/),
+    sampleRate: z.number().int().positive().max(768000),
+    channels: z.number().int().positive().max(64),
+  }),
+  object: executionObjectIdentitySchema,
+  durationSeconds: z.number().finite().positive(),
+  wholeSource: z.literal(true),
+  audioStartTimeSec: z.number().finite(),
+  probeVersion: executionId,
+  toolchainFingerprint: sha256,
+});
+
+export type ExecutionObjectIdentity = z.infer<typeof executionObjectIdentitySchema>;
+export type SourceAudioBinding = z.infer<typeof sourceAudioBindingSchema>;
