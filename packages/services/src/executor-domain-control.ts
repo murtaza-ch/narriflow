@@ -39,16 +39,17 @@ export interface ExecutorArtifactCommit {
 export type ExecutorFailureInput = Pick<Extract<ExecutionCommand, { action: "fail" }>, "failureCode" | "retryable">;
 export type ExecutorReleaseInput = Pick<Extract<ExecutionCommand, { action: "release" }>, "reason">;
 export type ExecutorProgressInput = Pick<Extract<ExecutionCommand, { action: "progress" }>, "phase" | "progress">;
+export type ExecutorMutationResult = void | { dispatchIds: readonly string[] };
 
 /** Trusted TypeScript service ports. None is exposed as a generic remote command. */
 export interface ExecutorDomainControl<TRef = unknown, TArtifact extends ExecutorArtifactCommit = ExecutorArtifactCommit> {
   /** Epoch is already locked. Take owner-defined domain locks before the attempt lock. */
   lockExecution(tx: ExecutorDomainTransaction, reference: ExecutionDispatchReference, attemptToken: string): Promise<ExecutorDomainLock<TRef>>;
-  acquireExecution(tx: ExecutorDomainTransaction, ref: TRef, context: ExecutorMutationContext): Promise<void>;
-  renewExecution(tx: ExecutorDomainTransaction, ref: TRef, context: ExecutorMutationContext): Promise<void>;
-  startExecution(tx: ExecutorDomainTransaction, ref: TRef, context: ExecutorMutationContext): Promise<void>;
-  commitArtifactExecution(tx: ExecutorDomainTransaction, ref: TRef, context: ExecutorMutationContext, artifact: TArtifact): Promise<void>;
-  failExecution(tx: ExecutorDomainTransaction, ref: TRef, context: ExecutorMutationContext, failure: ExecutorFailureInput): Promise<void>;
-  releaseExecution(tx: ExecutorDomainTransaction, ref: TRef, context: ExecutorMutationContext, release: ExecutorReleaseInput): Promise<void>;
-  progressExecution(tx: ExecutorDomainTransaction, ref: TRef, context: ExecutorMutationContext, progress: ExecutorProgressInput): Promise<void>;
+  acquireExecution(tx: ExecutorDomainTransaction, ref: TRef, context: ExecutorMutationContext): Promise<ExecutorMutationResult>;
+  renewExecution(tx: ExecutorDomainTransaction, ref: TRef, context: ExecutorMutationContext): Promise<ExecutorMutationResult>;
+  startExecution(tx: ExecutorDomainTransaction, ref: TRef, context: ExecutorMutationContext): Promise<ExecutorMutationResult>;
+  commitArtifactExecution(tx: ExecutorDomainTransaction, ref: TRef, context: ExecutorMutationContext, artifact: TArtifact): Promise<ExecutorMutationResult>;
+  failExecution(tx: ExecutorDomainTransaction, ref: TRef, context: ExecutorMutationContext, failure: ExecutorFailureInput): Promise<ExecutorMutationResult>;
+  releaseExecution(tx: ExecutorDomainTransaction, ref: TRef, context: ExecutorMutationContext, release: ExecutorReleaseInput): Promise<ExecutorMutationResult>;
+  progressExecution(tx: ExecutorDomainTransaction, ref: TRef, context: ExecutorMutationContext, progress: ExecutorProgressInput): Promise<ExecutorMutationResult>;
 }

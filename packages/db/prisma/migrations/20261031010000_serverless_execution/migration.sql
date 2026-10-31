@@ -343,3 +343,11 @@ ALTER TABLE "SocialPost" ADD CONSTRAINT "SocialPost_schedule_revision_check" CHE
 -- Revoke first in the same statement; review audits and recipient history remain.
 UPDATE "ReviewRound" SET "revokedAt" = COALESCE("revokedAt", now()), "passcodeHash" = NULL
   WHERE "passcodeHash" IS NOT NULL;
+
+ALTER TABLE "ExecutionAttempt" ADD COLUMN "inputStorageKey" VARCHAR(1024), ADD COLUMN "inputEtag" VARCHAR(160), ADD COLUMN "inputByteLength" BIGINT;
+ALTER TABLE "ExecutionAttempt" ADD CONSTRAINT "ExecutionAttempt_input_binding_check" CHECK (
+  ("inputStorageKey" IS NULL AND "inputEtag" IS NULL AND "inputByteLength" IS NULL)
+  OR ("inputStorageKey" IS NOT NULL AND "inputEtag" IS NOT NULL AND "inputByteLength" IS NOT NULL AND "inputByteLength" > 0 AND "inputByteLength" <= 16777216)
+);
+ALTER TABLE "ExecutionInboxReceipt" ADD COLUMN "wakeDispatchIds" UUID[] NOT NULL DEFAULT ARRAY[]::UUID[];
+ALTER TABLE "ExecutionInboxReceipt" ADD CONSTRAINT "ExecutionInboxReceipt_wake_bound_check" CHECK (cardinality("wakeDispatchIds") <= 128);
