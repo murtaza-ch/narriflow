@@ -1,4 +1,5 @@
 import { readServiceEnvironment, type ServiceEnvironment } from "./runtime-environment";
+import { readExecutionAdmission, assertExecutionAdmissionOpen } from "./execution-admission";
 import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
@@ -102,7 +103,12 @@ export const prismaAssistedCopyStore: AssistedCopyStore = {
 		if (existing) return { record: toGeneration(existing), replayed: true };
 		const candidate = input.create();
 		try {
-			const created = await requirePrisma().assistedCopyGeneration.create({
+			return await requirePrisma().$transaction(async tx => {
+				const admission = await readExecutionAdmission(tx);
+				const replay = await tx.assistedCopyGeneration.findUnique({ where: { workspaceId_idempotencyKey: { workspaceId: input.workspaceId, idempotencyKey: input.idempotencyKey } }, include: generationInclude });
+				if (replay) return { record: toGeneration(replay), replayed: true };
+				assertExecutionAdmissionOpen(admission);
+				const created = await tx.assistedCopyGeneration.create({
 				data: {
 					id: candidate.id,
 					workspaceId: candidate.workspaceId,
@@ -123,7 +129,8 @@ export const prismaAssistedCopyStore: AssistedCopyStore = {
 				},
 				include: generationInclude,
 			});
-			return { record: toGeneration(created), replayed: false };
+				return { record: toGeneration(created), replayed: false };
+			});
 		} catch (error) {
 			if (
 				!(error instanceof Prisma.PrismaClientKnownRequestError) ||

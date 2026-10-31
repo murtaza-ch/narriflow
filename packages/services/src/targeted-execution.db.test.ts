@@ -254,6 +254,23 @@ dbDescribe("Targeted serverless domain execution", () => {
     expect(await db.clipRender.findUniqueOrThrow({ where: { id: value.variant.id } })).toMatchObject({ status: "failed", errorCode: "operation_deadline_exceeded" });
   }, 90_000);
 
+  test("a durable pre-input deadline expires a queued group with no generic invocation or invented process history", async () => {
+    const value = await fixture();
+    await db.executionAttempt.delete({ where: { attemptToken: value.attemptToken } });
+    const absolute = new Date(0);
+    await db.renderGroup.update({ where: { id: value.group.id }, data: { operationDeadlineAt: absolute } });
+    const deadline = await db.$transaction(tx => appendExecutionDispatch(tx, { deploymentEpoch: epoch, kind: "operation_driver", subject: value.reference.subject,
+      generation: 1, inputHash: value.reference.inputHash, dueAt: absolute, deadlineKind: "operation", observedDeadlineAt: absolute }));
+    const observation = { kind: "operation" as const, observedDeadlineAt: absolute };
+    expect(await value.lifecycle.expirePreparationDeadline(deadline.reference, { ...observation, observedDeadlineAt: new Date(1) })).toEqual({ kind: "superseded" });
+    expect((await value.lifecycle.expirePreparationDeadline(deadline.reference, observation)).kind).toBe("expired");
+    expect(await db.renderGroup.findUniqueOrThrow({ where: { id: value.group.id } })).toMatchObject({ status: "failed", attemptToken: null, leaseOwner: null, chargedAttemptCount: 0, operationDeadlineAt: absolute });
+    expect(await db.renderGroupExecution.count({ where: { groupId: value.group.id } })).toBe(0);
+    expect(await db.executionAttempt.count({ where: { dispatch: { subjectId: value.group.id } } })).toBe(0);
+    expect(await db.clipRender.findUniqueOrThrow({ where: { id: value.variant.id } })).toMatchObject({ status: "failed", failureDisposition: "permanent", errorCode: "operation_deadline_exceeded" });
+    expect((await value.lifecycle.expirePreparationDeadline(deadline.reference, observation)).kind).toBe("terminal");
+  }, 90_000);
+
   test("sealed member failures retain permanent results and retry only failed retryable variants after the last success", async () => {
     let value = await fixture(undefined, ["ratio_9_16", "ratio_16_9", "ratio_1_1"]);
     const commit = async (renderId: string, failure?: { errorCode: string; disposition: "retryable" | "permanent" }) => {
@@ -261,7 +278,8 @@ dbDescribe("Targeted serverless domain execution", () => {
       const bindingHash = await renderArtifactBindingHash({ inputHash: value.reference.inputHash, renderId, role });
       const artifact = { artifactId: crypto.randomUUID(), role, storageKey: `execution/${epoch}/${value.attemptToken}/${value.owner}/${crypto.randomUUID()}`,
         contentType: failure ? "application/json" : "video/mp4", byteLength: 1024n, etag: '"gate-etag"', sha256: "a".repeat(64), bindingHash,
-        renderId, ...(failure ? { failure: { version: 1 as const, kind: "failed" as const, renderId, bindingHash, ...failure } } : { durationSec: 10 }) };
+        renderId, ...(failure ? { failure: { version: 1 as const, kind: "failed" as const, renderId, bindingHash, ...failure } } : { durationSec: 10,
+          brollCredits: [{ pexelsId: 72, authorName: "Author", authorUrl: null, pageUrl: "https://www.pexels.com/video/72/" }] }) };
       return mutate(value, (tx, ref, context) => value.lifecycle.commitArtifactExecution(tx, ref, context, artifact));
     };
     await mutate(value, (tx, ref, context) => value.lifecycle.acquireExecution(tx, ref, context));
@@ -273,7 +291,8 @@ dbDescribe("Targeted serverless domain execution", () => {
     expect(retry?.dispatchIds.length).toBe(3);
     expect(retry?.renderGroup).toEqual({ status: "queued", requested: 3, succeeded: 1, failed: 1, superseded: 0 });
     expect(await db.renderGroup.findUniqueOrThrow({ where: { id: value.group.id } })).toMatchObject({ status: "queued", generation: 2, chargedAttemptCount: 1, operationDeadlineAt: value.deadline });
-    expect(await db.clipRender.findUniqueOrThrow({ where: { id: value.variant.id } })).toMatchObject({ status: "completed", durationSec: 10 });
+    expect(await db.clipRender.findUniqueOrThrow({ where: { id: value.variant.id } })).toMatchObject({ status: "completed", durationSec: 10,
+      brollCredits: [{ pexelsId: 72, authorName: "Author", authorUrl: null, pageUrl: "https://www.pexels.com/video/72/" }] });
     expect(await db.clipRender.findUniqueOrThrow({ where: { id: value.variants[1]!.id } })).toMatchObject({ status: "pending", storageKey: null });
     expect(await db.clipRender.findUniqueOrThrow({ where: { id: value.variants[2]!.id } })).toMatchObject({ status: "failed", failureDisposition: "permanent", errorCode: "caption_glyph_unavailable" });
     const retainedSuccess = await db.clipRender.findUniqueOrThrow({ where: { id: value.variant.id } });

@@ -16,7 +16,16 @@ A Workflow orchestrates dispatch, waits and deadlines. Every step rereads the do
 
 ## Fencing and lock order
 
-Workspace usage advisory lock precedes Project admission lock. When required, domain rows follow in deterministic order: parent Workflow Run, Render Group, member, variant. Domain-specific locks retain their existing ordering. Event sequence counter locks remain last, as in ADR 0014. Observe database time after locks with `clock_timestamp() AT TIME ZONE 'UTC'`, never transaction-start or process time.
+An admission transaction first locks the singleton Execution Epoch `FOR SHARE`.
+Closing `admissionOpen` waits for earlier admissions to finish. Exact authorized
+durable replay returns while closed; fresh root work and new Finishing
+suboperations fail with retryable `execution_admission_closed` before their work
+is committed. Already-admitted pipeline transitions, completion, expiry and
+receipt recovery remain allowed. There is no environment override or HTTP-wide
+database gate. Synchronous provider features make the admission decision in a
+short transaction before HTTP, without retaining a database lock during HTTP.
+
+Workspace usage advisory lock follows the epoch and precedes Project admission lock. When required, domain rows follow in deterministic order: parent Workflow Run, Render Group, member, variant. Domain-specific locks retain their existing ordering. Event sequence counter locks remain last, as in ADR 0014. Observe database time after locks with `clock_timestamp() AT TIME ZONE 'UTC'`, never transaction-start or process time.
 
 Every external mutation compares current deployment epoch, subject generation, immutable input hash, existing domain attempt token, executor owner, live lease and allowed action. Domain cancellation or supersession revokes this authority in Postgres before best-effort external cancellation. A restore increments the deployment epoch before redispatch, fencing all earlier executors and device sessions.
 

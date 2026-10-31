@@ -1,5 +1,6 @@
 import { appendProgressEventDispatch, flushProjectProgressDrains, queueProjectProgressCatchup } from "./progress-outbox";
 import { randomUUID } from "node:crypto";
+import { requireExecutionAdmissionOpen } from "./execution-admission";
 import { Prisma, type PrismaClient, type IngestJob, type SourceAudio, type Project } from "@prisma/client";
 import {
   defaultAspectRatioSchema,
@@ -920,6 +921,7 @@ export class IngestJobLifecycle {
   async cancelQueuedOperation(input: { actorUserId: string; workspaceId: string; projectId: string; ingestJobId: string }): Promise<boolean> {
     await this.deps.requireRetryActor(input.actorUserId, input.workspaceId);
     return this.deps.prisma.$transaction(async (tx) => {
+      await requireExecutionAdmissionOpen(tx);
       const job = await tx.ingestJob.findFirst({ where: { id: input.ingestJobId, projectId: input.projectId,
         status: "queued", project: { workspaceId: input.workspaceId, ...accessibleProjectWhere() } } });
       if (!job) return false;

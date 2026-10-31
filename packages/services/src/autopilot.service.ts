@@ -1,4 +1,5 @@
 import { zoomService } from "./zoom.service";
+import { readExecutionAdmission, assertExecutionAdmissionOpen, requireExecutionAdmissionOpen } from "./execution-admission";
 import { ZoomError } from "./zoom";
 import { workspaceService, WorkspaceOperationError } from "./workspace.service";
 import { BrandProfileMembershipError, BrandProfileMissingAssetError, BrandProfileNotFoundError } from "./brand-profile.service";
@@ -282,6 +283,7 @@ export class AutopilotService {
 
     const prisma = requirePrisma();
     const create = async (tx: Prisma.TransactionClient) => {
+      await requireExecutionAdmissionOpen(tx);
       // Serialize the workspace rule budget with its write, including distinct keys.
       await lockWorkspaceAutopilotRules(tx, scope.workspaceId);
       await requireAutopilotRuleSlot(tx, { workspaceId: scope.workspaceId, tier: actor.pricingTier });
@@ -391,6 +393,7 @@ export class AutopilotService {
     const futureOnly = mode === "future_only";
     const head = feed?.episodes[0] ?? null;
     const row = await prisma.$transaction(async (tx) => {
+      const admission = await readExecutionAdmission(tx);
       // The Workspace's rules first, so a resume counts active rules with its write.
       await lockWorkspaceAutopilotRules(tx, scope.workspaceId);
       if (parsed.recipeId !== undefined) await lockLiveRecipe(tx, scope.workspaceId, parsed.recipeId);
@@ -402,6 +405,7 @@ export class AutopilotService {
       });
       const resumes = !holdsAutopilotSlot(current.status) && (parsed.status === "active" ||
         (current.status === "paused" && current.pauseKind === "brand_profile" && parsed.recipeId !== undefined));
+      if (resumes || parsed.rssUrl || parsed.zoomConnectionId || parsed.status === "active" || (current.status === "running" && parsed.status !== "paused")) assertExecutionAdmissionOpen(admission);
       if (resumes) await requireAutopilotRuleSlot(tx, { workspaceId: scope.workspaceId, tier: actor.pricingTier, ruleId });
       if (existing.sourceKind === "zoom" && (parsed.zoomConnectionId !== undefined || parsed.status === "active")) {
         const connectionId = parsed.zoomConnectionId ?? current.zoomConnectionId;
@@ -524,6 +528,7 @@ export class AutopilotService {
     requirePlanFeature(actor.pricingTier, "automation.autopilot");
     const prisma = requirePrisma();
     const trigger = async (tx: Prisma.TransactionClient) => {
+      const admission = await readExecutionAdmission(tx);
       await lockWorkspaceAutopilotRules(tx, scope.workspaceId);
       // A worker claim must remain visible before deciding to reset the rule.
       await tx.$queryRaw`SELECT "id" FROM "AutopilotRule" WHERE "id" = ${ruleId}::uuid FOR UPDATE`;
@@ -546,6 +551,8 @@ export class AutopilotService {
       if (!holdsAutopilotSlot(existing.status)) {
         await requireAutopilotRuleSlot(tx, { workspaceId: scope.workspaceId, tier: actor.pricingTier, ruleId });
       }
+
+      assertExecutionAdmissionOpen(admission);
 
       const row = await tx.autopilotRule.update({
         where: { id: ruleId },
@@ -602,6 +609,7 @@ export class AutopilotService {
     if (!UUID_PATTERN.test(ruleId)) throw new AutopilotError("autopilot_rule_not_found");
     requirePlanFeature(actor.pricingTier, "automation.autopilot");
     return requirePrisma().$transaction(async (tx) => {
+      await requireExecutionAdmissionOpen(tx);
       await lockWorkspaceAutopilotRules(tx, scope.workspaceId);
       await tx.$queryRaw`SELECT "id" FROM "AutopilotRule" WHERE "id" = ${ruleId}::uuid FOR UPDATE`;
       const existing = await tx.autopilotRule.findFirst({
@@ -669,7 +677,10 @@ export class AutopilotService {
     let claimLost = 0;
     for (const rule of due) {
       const claim = Object.freeze({ ruleId: rule.id, token: randomUUID() });
-      const claimed = await prisma.autopilotRule.updateMany({
+      const claimed = await prisma.$transaction(async tx => {
+        const admission = await readExecutionAdmission(tx);
+        if (!admission.admissionOpen) return { count: 0 };
+        return tx.autopilotRule.updateMany({
         where: {
           id: rule.id,
           status: "active",
@@ -681,6 +692,7 @@ export class AutopilotService {
           leaseExpiresAt: new Date(this.now().getTime() + AUTOPILOT_LEASE_MS),
           lastError: null,
         },
+        });
       });
       if (claimed.count === 0) continue;
 

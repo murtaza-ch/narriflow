@@ -1,4 +1,5 @@
 import { appendProgressRevocation, deliverProgressAfterCommit } from "./progress-outbox";
+import { queueBillingReconciliation } from "./billing-reconciliation";
 import type { ExecutionDispatchRecord } from "./execution-dispatch";
 import { createHash } from "node:crypto";
 import type { Prisma, WorkspaceRole } from "@prisma/client";
@@ -109,10 +110,11 @@ async function markMembershipChanged(
   seatDelta: number,
 ) {
   if (seatDelta === 0) {
-    await tx.workspaceBillingAccount.updateMany({
+    const changed = await tx.workspaceBillingAccount.updateMany({
       where: { workspaceId },
       data: { nextReconcileAt: new Date() },
     });
+    if (changed.count) await queueBillingReconciliation(tx, workspaceId);
     return;
   }
   await tx.workspaceBillingAccount.update({
@@ -123,6 +125,7 @@ async function markMembershipChanged(
       nextReconcileAt: new Date(),
     },
   });
+  await queueBillingReconciliation(tx, workspaceId);
 }
 
 export class WorkspaceMembershipService {

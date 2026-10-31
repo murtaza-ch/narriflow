@@ -1,3 +1,5 @@
+import { queueBillingReconciliation, recoverBillingReconciliation, type BillingReconciliationClaim } from "./billing-reconciliation";
+import { readExecutionAdmission } from "./execution-admission";
 import { appendProgressRevocation, deliverProgressAfterCommit } from "./progress-outbox";
 import type { ExecutionDispatchRecord } from "./execution-dispatch";
 import {
@@ -1105,9 +1107,13 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
   return {
     ...createPrismaWorkspacePlanChangeStore(prisma),
     async releasePlanChangeClaim(input) {
-      await prisma.workspaceBillingAccount.updateMany({
+      await prisma.$transaction(async tx => {
+      await readExecutionAdmission(tx);
+      const changed = await tx.workspaceBillingAccount.updateMany({
         where: { workspaceId: input.workspaceId, reconcileAttemptId: input.attemptId },
         data: { reconcileAttemptId: null, leaseExpiresAt: null, ...(input.wake ? { nextReconcileAt: input.now } : {}) },
+      });
+      if (changed.count) await queueBillingReconciliation(tx, input.workspaceId);
       });
     },
     async readProjection(workspaceId) {
@@ -1350,6 +1356,7 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
     },
     async bindCheckoutCustomer(input) {
       await prisma.$transaction(async (tx) => {
+        await readExecutionAdmission(tx);
         const attempt = await tx.workspaceCheckoutAttempt.findUnique({
           where: { id: input.attemptId },
           select: { billingAccount: { select: { id: true, workspaceId: true, providerCustomerId: true } } },
@@ -1376,6 +1383,7 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
           where: { id: input.attemptId },
           data: { providerPhase: "customer_bound" },
         });
+        await queueBillingReconciliation(tx, input.workspaceId);
       });
     },
     async bindCheckoutSession(input) {
@@ -1408,6 +1416,7 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
     },
     async recordCheckoutState(input) {
       return prisma.$transaction(async (tx) => {
+        await readExecutionAdmission(tx);
         const attempt = await tx.workspaceCheckoutAttempt.findUnique({
           where: { providerSessionId: input.sessionId },
           select: {
@@ -1526,6 +1535,7 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
               nextReconcileAt: input.now,
             },
           });
+          await queueBillingReconciliation(tx, attempt.billingAccount.workspaceId);
         }
         return {
           id: attempt.id,
@@ -1548,6 +1558,7 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
     async acceptDelivery(input) {
       try {
         return await prisma.$transaction(async (tx) => {
+        await readExecutionAdmission(tx);
           const existing = await tx.webhookDeliveryLog.findUnique({
             where: {
               provider_eventId: {
@@ -1560,6 +1571,7 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
             },
           });
           if (existing) {
+            if (input.wakeReconciliation && existing.workspaceBillingAccount) await recoverBillingReconciliation(tx, existing.workspaceBillingAccount.workspaceId);
             return {
               kind: "duplicate" as const,
               workspaceId:
@@ -1642,6 +1654,7 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
               where: { id: account.id },
               data: { nextReconcileAt: input.receivedAt },
             });
+            await queueBillingReconciliation(tx, account.workspaceId);
           }
           return {
             kind: "accepted" as const,
@@ -1732,51 +1745,48 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
       return claims;
     },
     async claimAccount(input) {
-      const attemptId = randomUUID();
-      const won = await prisma.workspaceBillingAccount.updateMany({
-        where: {
-          workspaceId: input.workspaceId,
-          OR: [{ leaseExpiresAt: null }, { leaseExpiresAt: { lte: input.now } }],
-        },
-        data: {
-          reconcileAttemptId: attemptId,
-          leaseExpiresAt: new Date(input.now.getTime() + input.leaseMs),
-          attemptCount: { increment: 1 },
-        },
+      return prisma.$transaction(async tx => {
+        const { epoch } = await readExecutionAdmission(tx);
+        await lockWorkspaceUsage(tx, input.workspaceId);
+        await tx.$queryRaw`SELECT "id" FROM "WorkspaceBillingAccount" WHERE "workspaceId"=${input.workspaceId}::uuid FOR UPDATE`;
+        const [clock] = await tx.$queryRaw<Array<{ now: Date }>>`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS "now"`;
+        if (!clock) throw new WorkspaceBillingAttemptLost();
+        const attemptId = randomUUID();
+        const won = await tx.workspaceBillingAccount.updateMany({ where: { workspaceId: input.workspaceId,
+          OR: [{ leaseExpiresAt: null }, { leaseExpiresAt: { lte: clock.now } }] },
+          data: { reconcileAttemptId: attemptId, reconciliationEpoch: epoch,
+            leaseExpiresAt: new Date(clock.now.getTime() + input.leaseMs), attemptCount: { increment: 1 } } });
+        if (!won.count) return null;
+        const account = await tx.workspaceBillingAccount.findUniqueOrThrow({ where: { workspaceId: input.workspaceId } });
+        return { workspaceId: account.workspaceId, attemptId, attemptCount: account.attemptCount, dueAt: account.nextReconcileAt };
       });
-      if (won.count === 0) return null;
-      const account = await prisma.workspaceBillingAccount.findUniqueOrThrow({
-        where: { workspaceId: input.workspaceId },
-        select: { attemptCount: true, nextReconcileAt: true },
-      });
-      return {
-        workspaceId: input.workspaceId,
-        attemptId,
-        attemptCount: account.attemptCount,
-        dueAt: account.nextReconcileAt,
-      };
     },
     async renewClaim(input) {
-      const renewed = await prisma.workspaceBillingAccount.updateMany({
-        where: {
-          workspaceId: input.workspaceId,
-          reconcileAttemptId: input.attemptId,
-          leaseExpiresAt: { gt: input.now },
-        },
-        data: {
-          leaseExpiresAt: new Date(input.now.getTime() + input.leaseMs),
-        },
+      return prisma.$transaction(async tx => {
+        const { epoch } = await readExecutionAdmission(tx);
+        await tx.$queryRaw`SELECT "id" FROM "WorkspaceBillingAccount" WHERE "workspaceId"=${input.workspaceId}::uuid FOR UPDATE`;
+        const [clock] = await tx.$queryRaw<Array<{ now: Date }>>`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS "now"`;
+        if (!clock) throw new WorkspaceBillingAttemptLost();
+        const renewed = await tx.workspaceBillingAccount.updateMany({ where: { workspaceId: input.workspaceId,
+          reconciliationEpoch: epoch, reconcileAttemptId: input.attemptId, leaseExpiresAt: { gt: clock.now } },
+          data: { leaseExpiresAt: new Date(clock.now.getTime() + input.leaseMs) } });
+        return renewed.count === 1;
       });
-      return renewed.count === 1;
     },
     async scheduleRetry(input) {
-      const settled = await prisma.workspaceBillingAccount.updateMany({
+      return prisma.$transaction(async tx => {
+      const { epoch } = await readExecutionAdmission(tx);
+      await lockWorkspaceUsage(tx, input.workspaceId);
+      const [clock] = await tx.$queryRaw<Array<{ now: Date }>>`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS "now"`;
+      if (!clock) throw new WorkspaceBillingAttemptLost();
+      const settled = await tx.workspaceBillingAccount.updateMany({
         where: {
           workspaceId: input.workspaceId,
+          reconciliationEpoch: epoch,
           ...(input.attemptId
             ? {
                 reconcileAttemptId: input.attemptId,
-                leaseExpiresAt: { gt: input.now },
+                leaseExpiresAt: { gt: clock.now },
               }
             : {}),
         },
@@ -1788,24 +1798,33 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
           attentionReason: input.reason,
         },
       });
+      if (settled.count) await queueBillingReconciliation(tx, input.workspaceId);
       return settled.count === 1;
+      });
     },
     async markSeatVerificationDue(input) {
-      await prisma.workspaceBillingAccount.update({
+      await prisma.$transaction(async tx => {
+      await readExecutionAdmission(tx);
+      await tx.workspaceBillingAccount.update({
         where: { workspaceId: input.workspaceId },
         data: {
           seatRevision: { increment: 1 },
           nextReconcileAt: input.now,
         },
       });
+      await queueBillingReconciliation(tx, input.workspaceId);
+      });
     },
     async commitNoSubscriptionState(input) {
       const revocations: ExecutionDispatchRecord[] = [];
       const result = await prisma.$transaction<WorkspaceBillingProjection>(async (tx) => {
+        const { epoch } = await readExecutionAdmission(tx);
         // Access projection changes share the Workspace usage lock so a
         // concurrent intake reservation observes either the old or new status.
         // Lock order: usage lock, then Project rows, then billing rows.
         await lockWorkspaceUsage(tx, input.workspaceId);
+        const [clock] = await tx.$queryRaw<Array<{ now: Date }>>`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS "now"`;
+        if (!clock) throw new WorkspaceBillingAttemptLost();
         const row = await tx.workspace.findUnique({
           where: { id: input.workspaceId },
           select: {
@@ -1836,7 +1855,8 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
           where: {
             workspaceId: input.workspaceId,
             reconcileAttemptId: input.attemptId,
-            leaseExpiresAt: { gt: input.now },
+              reconciliationEpoch: epoch,
+            leaseExpiresAt: { gt: clock.now },
           },
           data: {
             canonicalSubscriptionId: null,
@@ -1891,6 +1911,7 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
                 paymentStatus: latestCheckout.paymentStatus,
               }
             : null;
+        await queueBillingReconciliation(tx, row.id);
         return {
           workspaceId: row.id,
           ownerUserId: row.ownerUserId,
@@ -1924,8 +1945,11 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
     async commitVerifiedState(input) {
       const revocations: ExecutionDispatchRecord[] = [];
       const result = await prisma.$transaction<WorkspaceBillingProjection>(async (tx) => {
+        const { epoch } = await readExecutionAdmission(tx);
         // Same lock order as commitNoSubscriptionState: usage lock first.
         await lockWorkspaceUsage(tx, input.workspaceId);
+        const [clock] = await tx.$queryRaw<Array<{ now: Date }>>`SELECT clock_timestamp() AT TIME ZONE 'UTC' AS "now"`;
+        if (!clock) throw new WorkspaceBillingAttemptLost();
         const row = await tx.workspace.findUnique({
           where: { id: input.workspaceId },
           select: {
@@ -1953,7 +1977,8 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
             where: {
               id: row.billingAccount.id,
               reconcileAttemptId: input.attemptId,
-              leaseExpiresAt: { gt: input.now },
+              reconciliationEpoch: epoch,
+              leaseExpiresAt: { gt: clock.now },
             },
             data: { leaseExpiresAt: row.billingAccount.leaseExpiresAt },
           });
@@ -2083,6 +2108,7 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
             processedAt: input.now,
           },
         });
+        await queueBillingReconciliation(tx, row.id);
         return {
           workspaceId: row.id,
           ownerUserId: row.ownerUserId,
@@ -2781,6 +2807,27 @@ export function createWorkspaceBillingModule(dependencies: {
     }
   };
 
+  const reconcileClaim = async (claim: BillingReconciliationClaim) => {
+    metrics.observe("workspace_billing_claims_total", 1, { surface: "driver" });
+    metrics.observe("workspace_billing_queue_age_ms", Math.max(0, dependencies.clock.now().getTime() - claim.dueAt.getTime()), {});
+    try {
+      const result = await withProviderDeadline(reconcileOne(claim.workspaceId, claim.attemptId));
+      if (result.kind === "reconciled") return { reconciled: 1, retried: 0, unresolved: 0, staleSettlements: 0 };
+      const settled = await dependencies.store.scheduleRetry({ workspaceId: claim.workspaceId, attemptId: claim.attemptId,
+        now: dependencies.clock.now(), nextReconcileAt: new Date(dependencies.clock.now().getTime() + 6 * 60 * 60 * 1000),
+        reason: result.reason, health: "attention_required" });
+      return { reconciled: 0, retried: settled ? 1 : 0, unresolved: 1, staleSettlements: settled ? 0 : 1 };
+    } catch (error) {
+      if (error instanceof WorkspaceBillingAttemptLost) return { reconciled: 0, retried: 0, unresolved: 0, staleSettlements: 1 };
+      const delay = Math.min(60 * 60 * 1000, 60_000 * 2 ** Math.min(6, Math.max(0, claim.attemptCount - 1)));
+      const jitter = Math.floor((dependencies.random?.() ?? Math.random()) * Math.max(1, Math.floor(delay / 4)));
+      const settled = await dependencies.store.scheduleRetry({ workspaceId: claim.workspaceId, attemptId: claim.attemptId,
+        now: dependencies.clock.now(), nextReconcileAt: new Date(dependencies.clock.now().getTime() + delay + jitter),
+        reason: "retryable_provider", health: "retrying" });
+      return { reconciled: 0, retried: settled ? 1 : 0, unresolved: 0, staleSettlements: settled ? 0 : 1 };
+    }
+  };
+
   const checkoutProvider = () => {
     const provider = dependencies.provider;
     if (
@@ -3352,6 +3399,7 @@ export function createWorkspaceBillingModule(dependencies: {
         };
       }
     },
+    async reconcileClaim(claim: BillingReconciliationClaim): Promise<void> { await reconcileClaim(claim); },
     async reconcileDueAccounts() {
       const now = dependencies.clock.now();
       const claims = await dependencies.store.claimDueAccounts({
@@ -3388,67 +3436,13 @@ export function createWorkspaceBillingModule(dependencies: {
       let cursor = 0;
       const worker = async () => {
         for (;;) {
-          const claim = claims[cursor];
-          cursor += 1;
+          const claim = claims[cursor++];
           if (!claim) return;
-          try {
-            const result = await withProviderDeadline(
-              reconcileOne(claim.workspaceId, claim.attemptId),
-            );
-            if (result.kind === "reconciled") {
-              summary.reconciled += 1;
-              continue;
-            }
-            summary.unresolved += 1;
-            const attentionDelayMs = 6 * 60 * 60 * 1000;
-            const settled = await dependencies.store.scheduleRetry({
-              workspaceId: claim.workspaceId,
-              attemptId: claim.attemptId,
-              now: dependencies.clock.now(),
-              nextReconcileAt: new Date(
-                dependencies.clock.now().getTime() + attentionDelayMs,
-              ),
-              reason: result.reason,
-              health: "attention_required",
-            });
-            metrics.observe("workspace_billing_retry_delay_ms", attentionDelayMs, {
-              surface: "worker",
-              retryBand: retryBand(claim.attemptCount),
-              reason: "attention_required",
-            });
-            if (settled) summary.retried += 1;
-            else summary.staleSettlements += 1;
-          } catch (error) {
-            if (error instanceof WorkspaceBillingAttemptLost) {
-              summary.staleSettlements += 1;
-              continue;
-            }
-            const baseDelay = Math.min(
-              60 * 60 * 1000,
-              60_000 * 2 ** Math.min(6, Math.max(0, claim.attemptCount - 1)),
-            );
-            const jitter = Math.floor(
-              (dependencies.random?.() ?? Math.random()) *
-                Math.max(1, Math.floor(baseDelay / 4)),
-            );
-            const settled = await dependencies.store.scheduleRetry({
-              workspaceId: claim.workspaceId,
-              attemptId: claim.attemptId,
-              now: dependencies.clock.now(),
-              nextReconcileAt: new Date(
-                dependencies.clock.now().getTime() + baseDelay + jitter,
-              ),
-              reason: "retryable_provider",
-              health: "retrying",
-            });
-            metrics.observe("workspace_billing_retry_delay_ms", baseDelay + jitter, {
-              surface: "worker",
-              retryBand: retryBand(claim.attemptCount),
-              reason: "retryable_provider",
-            });
-            if (settled) summary.retried += 1;
-            else summary.staleSettlements += 1;
-          }
+          const outcome = await reconcileClaim(claim);
+          summary.reconciled += outcome.reconciled;
+          summary.retried += outcome.retried;
+          summary.unresolved += outcome.unresolved;
+          summary.staleSettlements += outcome.staleSettlements;
         }
       };
       await Promise.all(
