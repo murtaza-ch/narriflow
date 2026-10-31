@@ -1,17 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { realpath } from "node:fs/promises";
-import { resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { fileURLToPath } from "node:url";
 import {
-  productionWorkerProcessModule,
   WorkerProcessFailure,
   type WorkerPersistentProcess,
-  type WorkerProcessModule,
 } from "../../media/src/worker-process";
 
-export const YOUTUBE_TOKEN_SERVER_URL = "http://127.0.0.1:4416";
-export const YOUTUBE_TOKEN_SERVER_VERSION = "2.0.0";
+import { YOUTUBE_TOKEN_SERVER_URL } from "../../media/src/youtube-token-helper";
+export { startYoutubeTokenServer, YOUTUBE_TOKEN_SERVER_URL, YOUTUBE_TOKEN_SERVER_VERSION } from "../../media/src/youtube-token-helper";
 
 /** Operator configuration only. Never accept proxy credentials from import input. */
 export function getYoutubeProxyUrl(value = process.env.YTDLP_PROXY_URL): string {
@@ -61,67 +56,6 @@ export function ytdlpCommonArgs(provider: string, proxyUrl = process.env.YTDLP_P
   return args;
 }
 
-/** Never borrow an unrelated server already occupying our private port. */
-export async function startYoutubeTokenServer(
-  serverHome: string,
-  signal: AbortSignal,
-  workerProcess: WorkerProcessModule = productionWorkerProcessModule,
-): Promise<WorkerPersistentProcess> {
-  signal.throwIfAborted();
-  const home = await realpath(serverHome);
-  const modules = resolve(home, "node_modules");
-  let failure: Error | undefined;
-  const child = await workerProcess.start?.({ command: "deno", args: [
-    "run", "--cached-only", "--frozen", "--allow-env", "--allow-net",
-    `--allow-ffi=${modules}`, `--allow-read=${modules},${resolve(home, "src")}`,
-    // The provider image ships package.json and deno.lock but no deno.json;
-    // Deno discovers both from cwd, exactly like the image's own entrypoint.
-    fileURLToPath(new URL("../../media/src/owned-helper.ts", import.meta.url)),
-    resolve(home, "src/main.ts"), "--host", "127.0.0.1",
-  ],
-    cwd: home,
-    // Third-party token generation does not need application credentials.
-    env: {
-      PATH: process.env.PATH,
-      DENO_DIR: resolve(home, ".cache/deno"),
-      DENO_NO_PROMPT: "1",
-      DENO_NO_UPDATE_CHECK: "1",
-    },
-    signal,
-    startupDeadlineMs: 45_000,
-    startupReadyMarker: "Started POT server",
-  });
-  if (!child) throw new Error("Worker Process Module does not support persistent processes");
-  void child.exited.then(({ exitCode, signalCode }) => {
-    if (!signal.aborted && (exitCode !== 0 || signalCode !== null)) failure = new Error("YouTube token server exited");
-  });
-  const stop = () => child.stop();
-
-  try {
-    for (let attempt = 0; attempt < 60; attempt++) {
-      signal.throwIfAborted();
-      if (failure) throw failure;
-      try {
-        const response = await fetch(`${YOUTUBE_TOKEN_SERVER_URL}/ping`, {
-          signal: AbortSignal.any([signal, AbortSignal.timeout(500)]),
-        });
-        const status = await response.json() as { version?: string };
-        if (response.ok && status.version === YOUTUBE_TOKEN_SERVER_VERSION) {
-          console.warn(JSON.stringify({ level: "info", message: "youtube_token_server_ready", version: status.version }));
-          return child;
-        }
-      } catch {
-        signal.throwIfAborted();
-      }
-      await sleep(250, undefined, { signal });
-    }
-    throw new Error("YouTube token server did not become ready within 45 seconds");
-  } catch (error) {
-    stop();
-    await child.exited;
-    throw error;
-  }
-}
 
 type HelperFailure = Record<string, string | number | null>;
 const TERMINAL_COLOR = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");

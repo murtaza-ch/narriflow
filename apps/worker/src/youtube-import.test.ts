@@ -1,22 +1,11 @@
 import { expect, spyOn, test } from "bun:test";
-import { WorkerProcessFailure, type WorkerPersistentProcessRequest } from "../../media/src/worker-process";
+import { WorkerProcessFailure } from "../../media/src/worker-process";
 import {
   getYoutubeProxyUrl,
-  startYoutubeTokenServer,
   superviseYoutubeTokenServer,
   youtubeProxyRotates,
   ytdlpCommonArgs,
 } from "./youtube-import";
-
-test("the token provider launch needs only files the provider image ships", async () => {
-  let request: WorkerPersistentProcessRequest | undefined;
-  await expect(startYoutubeTokenServer(process.cwd(), new AbortController().signal, {
-    async start(input) { request = input; throw new Error("stop after capture"); },
-  } as never)).rejects.toThrow("stop after capture");
-  // The image copies package.json, deno.lock, node_modules and src, not deno.json.
-  expect(request!.args.join(" ")).not.toContain("deno.json");
-  expect(request!.args).not.toContainEqual(expect.stringMatching(/^--config/));
-});
 
 test("unavailable YouTube intake logs why and backs off until a start succeeds", async () => {
   const warn = spyOn(console, "warn").mockImplementation(() => {});
