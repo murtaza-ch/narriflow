@@ -36,6 +36,7 @@ describe("independently signed executor HTTP commands", () => {
       } });
     const response = await app.fetch(await request());
     expect(response.status).toBe(200);
+    expect(response.headers.get("X-Execution-Server-Time")).toBe(new Date(now * 1_000).toISOString());
     expect(await response.json()).toEqual({ disposition: "started" });
     expect(executions).toBe(1);
   });
