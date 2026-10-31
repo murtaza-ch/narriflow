@@ -1,0 +1,44 @@
+{
+  "status": "partial_platform_evidence_one_hour_gate_pending",
+  "accountId": "5359f28d385b8632c3abee12d1f5b011",
+  "worker": "narriflow-platform-gates",
+  "isolatedNeonProject": "ancient-violet-37185608",
+  "isolatedNeonBranch": "br-lucky-grass-b5n8xf3i",
+  "endpointId": "ep-silent-pine-b5ltneo6",
+  "hyperdriveId": "904f966de66a44b7b23ca90b65068764",
+  "hyperdrive": {
+    "queryCaching": false,
+    "originConnectionLimit": 5,
+    "directTls": true
+  },
+  "query": {
+    "startedAt": "2026-10-31T01:52:14.230Z",
+    "status": 200,
+    "result": {
+      "answer": 42,
+      "completedAt": "2026-10-31T01:52:14.126Z",
+      "scope": "single-query-then-dispose"
+    },
+    "workerVersion": "e451f6ac-b539-4050-95c0-b6591233a256",
+    "endpointId": "ep-silent-pine-b5ltneo6",
+    "hyperdriveId": "904f966de66a44b7b23ca90b65068764"
+  },
+  "observations": [
+    {
+      "observedAt": "2026-10-31T01:52:16Z",
+      "state": "active",
+      "lastActive": "2026-10-31T01:52:14Z"
+    },
+    {
+      "observedAt": "2026-10-31T02:04:12Z",
+      "state": "idle",
+      "suspendedAt": "2026-10-31T01:57:32Z",
+      "lastActive": "2026-10-31T01:52:14Z"
+    }
+  ],
+  "notes": [
+    "One fixed SELECT42 through the production request database scope and deployed Hyperdrive. Client disposed in finally.",
+    "Later observations use the Neon control plane only, without SQL that would wake compute.",
+    "This is a separate isolated test branch. It is not a measurement of the complete candidate."
+  ]
+}

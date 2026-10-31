@@ -280,7 +280,7 @@ ALTER TABLE "ExecutionAttempt" ADD CONSTRAINT "ExecutionAttempt_authority_check"
   AND ("status" IN ('admitted','running') OR "finishedAt" IS NOT NULL)
 );
 ALTER TABLE "ExecutionInboxReceipt" ADD CONSTRAINT "ExecutionInboxReceipt_bounded_check" CHECK (
-  "audience" IN ('modal-bridge','executor-control','dev-device')
+  "audience" IN ('modal-bridge','executor-control','dev-device','watchdog')
   AND "requestHash" ~ '^[a-f0-9]{64}$' AND octet_length("disposition"::text) <= 65536
   AND "expiresAt" > "committedAt"
 );

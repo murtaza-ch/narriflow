@@ -1,10 +1,10 @@
 import type { ExecutionArtifact as ArtifactRow, ExecutionAttempt as AttemptRow, ExecutionDispatch as DispatchRow, Prisma, PrismaClient } from "@prisma/client";
 import {
-  executionCommandSchema, executionDispositionSchema,
+  executionCommandSchema, executionDispositionSchema, executionDeadlineSchema,
   type ExecutionCommand, type ExecutionDispatchReference, type ExecutionDisposition, type ExecutionSubjectKind,
 } from "@narriflow/validators/execution";
 import type { VerifiedExecutionRequest } from "./execution-signature";
-import type { ExecutorArtifactCommit, ExecutorDomainControl, ExecutorMutationContext, ExecutorMutationResult } from "./executor-domain-control";
+import type { ExecutorArtifactCommit, ExecutorDomainControl, ExecutorMutationContext, ExecutorMutationResult, ExecutorExpiryResult } from "./executor-domain-control";
 
 type Tx = Prisma.TransactionClient;
 type Attempt = AttemptRow & { dispatch: DispatchRow };
@@ -223,7 +223,67 @@ export function createExecutorControl<TRef, TArtifact extends ExecutorArtifactCo
     });
     return finish(result);
   }
-  return { execute };
+  /** A scheduler observation can revoke authority, never grant or extend it.
+   * Mutating outcomes and their wakes are replayable; a sleep is always re-read. */
+  async function expireDeadline(input: { deadline: unknown; deliveryId: string }): Promise<ExecutorExpiryResult> {
+    const deadline = executionDeadlineSchema.parse(input.deadline);
+    if (!["lease", "operation"].includes(deadline.kind) || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(input.deliveryId)) throw new ExecutorControlError("invalid_reference");
+    if (!options.domain.expireExecution) throw new ExecutorControlError("scheduler_unavailable");
+    const requestHash = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(deadline)))), byte => byte.toString(16).padStart(2, "0")).join("");
+    const receiptKey = { audience: "watchdog", deliveryId: input.deliveryId };
+    const parseOutcome = (value: Prisma.JsonValue): ExecutorExpiryResult => {
+      if (!value || typeof value !== "object" || Array.isArray(value) || !["terminal", "superseded", "expired"].includes(String(value.kind))) throw new ExecutorControlError("invalid_reference");
+      return { kind: value.kind as "terminal" | "superseded" | "expired" };
+    };
+    const result = await db.$transaction(async tx => {
+      const [epoch] = await tx.$queryRaw<Array<{ epoch: number }>>`SELECT "epoch" FROM "ExecutionEpoch" WHERE "id"=1 FOR SHARE`;
+      if (!epoch) throw new ExecutorControlError("epoch_unavailable");
+      const inboxKey = `executor-inbox:watchdog:${input.deliveryId}`;
+      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${inboxKey},0)) IS NULL AS "locked"`;
+      const prior = await tx.executionInboxReceipt.findUnique({ where: { audience_deliveryId: receiptKey } });
+      if (prior) {
+        if (prior.requestHash !== requestHash) throw new ExecutorControlError("replay_conflict");
+        return { outcome: parseOutcome(prior.disposition), dispatchIds: prior.wakeDispatchIds };
+      }
+      const record = async (outcome: ExecutorExpiryResult, now: Date) => {
+        if (outcome.kind === "sleep") return { outcome, dispatchIds: [] };
+        const dispatchIds = [...new Set(outcome.dispatchIds ?? [])];
+        if (dispatchIds.length > 128) throw new ExecutorControlError("invalid_reference");
+        await tx.executionInboxReceipt.create({ data: { ...receiptKey, requestHash, keyId: "internal-watchdog",
+          disposition: { kind: outcome.kind }, wakeDispatchIds: dispatchIds, committedAt: now, expiresAt: new Date(now.getTime() + 7 * 24 * 60 * 60_000) } });
+        return { outcome, dispatchIds };
+      };
+      const reference = deadline.reference;
+      if (epoch.epoch !== reference.deploymentEpoch) return record({ kind: "superseded" }, await clock(tx));
+      const locked = await options.domain.lockExecution(tx, reference, deadline.attemptToken);
+      await tx.$queryRaw`SELECT "attemptToken" FROM "ExecutionAttempt" WHERE "attemptToken"=${deadline.attemptToken}::uuid FOR UPDATE`;
+      const attempt = await tx.executionAttempt.findUnique({ where: { attemptToken: deadline.attemptToken }, include: { dispatch: true } });
+      assertReference(attempt, reference, options.subjectKind);
+      const now = await clock(tx);
+      if (ended(attempt)) return record({ kind: "terminal" }, now);
+      if (locked.kind === "terminal") {
+        const status = locked.disposition.disposition;
+        await tx.executionAttempt.update({ where: { attemptToken: attempt.attemptToken }, data: {
+          status: ["completed", "cancelled", "expired", "superseded"].includes(status) ? status : "failed", finishedAt: now, revokedAt: now,
+        } });
+        return record({ kind: status === "superseded" ? "superseded" : "terminal" }, now);
+      }
+      if (deadline.kind === "operation" && new Date(deadline.observedDeadlineAt).getTime() !== attempt.operationDeadlineAt.getTime()) return record({ kind: "superseded" }, now);
+      const dueAt = new Date(Math.min(attempt.leaseExpiresAt?.getTime() ?? Infinity, attempt.operationDeadlineAt.getTime()));
+      if (dueAt > now) return { outcome: { kind: "sleep" as const, dueAt }, dispatchIds: [] };
+      const outcome = await options.domain.expireExecution!(tx, reference, deadline.attemptToken, {
+        kind: deadline.kind as "lease" | "operation", observedDeadlineAt: new Date(deadline.observedDeadlineAt),
+      });
+      if (outcome.kind === "expired") await tx.executionAttempt.update({ where: { attemptToken: attempt.attemptToken }, data: { status: "expired", finishedAt: now, revokedAt: now } });
+      return record(outcome, now);
+    });
+    if (result.dispatchIds.length) {
+      if (!options.deliverWakes) throw new ExecutorControlError("scheduler_unavailable");
+      await options.deliverWakes(result.dispatchIds);
+    }
+    return result.outcome.kind === "sleep" ? result.outcome : { kind: result.outcome.kind };
+  }
+  return { execute, expireDeadline };
 }
 
 async function clock(tx: Tx) {

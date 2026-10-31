@@ -52,6 +52,7 @@ export type ExecutorExpiryResult =
 
 /** Trusted TypeScript service ports. None is exposed as a generic remote command. */
 export interface ExecutorDomainControl<TRef = unknown, TArtifact extends ExecutorArtifactCommit = ExecutorArtifactCommit> {
+  expireExecution?(tx: ExecutorDomainTransaction, reference: ExecutionDispatchReference, attemptToken: string, observation: ExecutorExpiryObservation): Promise<ExecutorExpiryResult>;
   /** Epoch is already locked. Take owner-defined domain locks before the attempt lock. */
   lockExecution(tx: ExecutorDomainTransaction, reference: ExecutionDispatchReference, attemptToken: string): Promise<ExecutorDomainLock<TRef>>;
   acquireExecution(tx: ExecutorDomainTransaction, ref: TRef, context: ExecutorMutationContext): Promise<ExecutorMutationResult>;
