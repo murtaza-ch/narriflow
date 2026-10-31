@@ -339,6 +339,11 @@ CREATE INDEX "ExecutionDispatch_pending_epoch_due_idx"
 ALTER TABLE "WorkflowEvent" RENAME COLUMN "redisRequired" TO "progressRequired";
 ALTER TABLE "WorkflowEvent" RENAME COLUMN "redisPublishedAt" TO "progressPublishedAt";
 ALTER TABLE "Project" ADD CONSTRAINT "Project_source_revision_check" CHECK ("sourceRevision" > 0);
+CREATE INDEX "WorkflowRun_source_cancellation_page_idx" ON "WorkflowRun"("projectId","deploymentEpoch","status","errorCode","updatedAt","id");
+CREATE INDEX "RenderGroup_source_cancellation_page_idx" ON "RenderGroup"("workflowRunId","deploymentEpoch","status","errorCode","updatedAt","id");
+CREATE INDEX "WorkflowRun_scribe_capacity_wait_idx" ON "WorkflowRun"("deploymentEpoch","createdAt","id")
+  WHERE "stage"='stt' AND "status"='queued' AND "errorCode"='provider_capacity_wait';
+CREATE INDEX "ExecutionAttempt_dispatchId_idx" ON "ExecutionAttempt"("dispatchId");
 ALTER TABLE "WorkflowRun" ADD CONSTRAINT "WorkflowRun_execution_revision_check" CHECK ("deploymentEpoch" > 0 AND "generation" > 0);
 ALTER TABLE "RenderGroup" ADD CONSTRAINT "RenderGroup_execution_revision_check" CHECK ("deploymentEpoch" > 0 AND "generation" > 0);
 ALTER TABLE "IngestJob" ADD CONSTRAINT "IngestJob_execution_revision_check" CHECK ("deploymentEpoch" > 0 AND "generation" > 0 AND "sourceRevision" > 0);

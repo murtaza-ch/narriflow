@@ -651,6 +651,7 @@ model WorkflowRun {
   @@index([stage, status, nextAttemptAt, createdAt])
   @@index([status, leaseExpiresAt])
   @@index([status, nextPollAt])
+  @@index([projectId, deploymentEpoch, status, errorCode, updatedAt, id], map: "WorkflowRun_source_cancellation_page_idx")
 }
 
 enum RenderGroupStatus {
@@ -712,6 +713,7 @@ model RenderGroup {
   @@unique([attemptToken, id])
   @@index([status, nextAttemptAt, createdAt])
   @@index([status, leaseExpiresAt])
+  @@index([workflowRunId, deploymentEpoch, status, errorCode, updatedAt, id], map: "RenderGroup_source_cancellation_page_idx")
 }
 
 /// Historical membership survives deletion or reassignment of a ClipRender.
@@ -3402,6 +3404,7 @@ model ExecutionAttempt {
 
   @@index([status, leaseExpiresAt])
   @@index([status, operationDeadlineAt])
+  @@index([dispatchId])
 }
 
 /// Committed request dispositions are replayed only for the identical canonical digest.
