@@ -32,22 +32,31 @@
         "Result file is read-only",
         "Actual process-start callbacks fire for native download and probe"
       ]
-    }
-  ],
-  "notPassing": [
+    },
     {
       "suite": "test_proxy_transport.py",
-      "reason": "First native Python/yt-dlp command reached the fixture15second startup deadline under QEMU; the test was not widened and is not claimed passing."
+      "passed": 1,
+      "elapsedSeconds": 14.522,
+      "sourceCommit": "3b65cfa4ca6d741083284608b34b654c7398b2b0",
+      "perCommandDeadlineSeconds": 15,
+      "procedure": "Reran the unchanged test after renderer/model jobs finished. All yt-dlp,FFmpeg,Deno requests carry the same synthetic authenticated sticky session; no command deadline was widened."
     }
   ],
   "logSha256": {
     "linux-token-helper.log": "73f96e868212b72ae2738ef995a794f2fd5a49ee2ff6b4126b83f4002c0558a2",
     "linux-frozen-fetch.log": "b052a6fbf2325d8e5cab71c3e4af64f1240d29519cd135ef96fe31dd8bc1663f",
-    "linux-proxy-transport.log": "f8eaff131da59744867057ac1c4bf59ad5a55a8f8c8f5bec36c5a9df47fc0ad4"
+    "linux-proxy-transport.log": "f8eaff131da59744867057ac1c4bf59ad5a55a8f8c8f5bec36c5a9df47fc0ad4",
+    "linux-proxy-transport-isolated.log": "832295155ffe621a969c54c10f11331e673fa5f91428c72137b588801a0f2a72"
   },
   "open": [
     "Real YouTube acquisition and complete frozen local/proxy manifest parity",
     "Successful upstream TLS/token generation beyond the controlled rejecting proxy",
     "Final candidate rebuild and deployed Modal execution"
+  ],
+  "initialFailures": [
+    {
+      "suite": "test_proxy_transport.py",
+      "reason": "First native Python/yt-dlp command reached the fixture15second startup deadline under QEMU; the test was not widened and is not claimed passing."
+    }
   ]
 }
