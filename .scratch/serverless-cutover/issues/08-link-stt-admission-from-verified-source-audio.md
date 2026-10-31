@@ -4,7 +4,7 @@
 
 **Blocked by:** 05
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 **Spec:** [Serverless cutover](../spec.md)
 
@@ -14,4 +14,4 @@
 
 ## Evidence
 
-Pending implementation and verification.
+Root has exact whole-source audio usage settlement and A/V binding validation. Real isolated PostgreSQL verifies one debit under concurrent admissions, 60.01-second rounding, cap and restriction refusal, missing reservation and source revision fencing. Source-ready STT handoff, operator refund proof, truthful client readiness and full integration remain open.

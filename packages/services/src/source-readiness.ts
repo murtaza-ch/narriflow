@@ -15,7 +15,11 @@ export function sourceAudioMatchesVideo(audioInput: SourceAudioBinding, videoInp
   const tolerance = Math.max(1, rate ? 2 * rate.denominator / rate.numerator : 1);
   if (Math.abs(audio.durationSeconds - video.probe.durationSec) > tolerance || video.audioStartTimeSec === null ||
     Math.abs(audio.audioStartTimeSec - video.audioStartTimeSec) > tolerance) return false;
-  if (video.probe.video && (video.videoStartTimeSec === null || Math.abs(video.audioStartTimeSec - video.videoStartTimeSec) > tolerance)) return false;
+  const audioFacts = video.probe.facts.audios[0];
+  if (!audioFacts || audioFacts.codec !== video.audioTrack.codec || audioFacts.sampleRate !== video.audioTrack.sampleRate ||
+    audioFacts.channels !== video.audioTrack.channels || video.audioStartTimeSec !== (audioFacts.startTimeSec ?? 0)) return false;
+  const videoFacts = video.probe.facts.videos[0];
+  if (video.probe.video && (!videoFacts || video.videoStartTimeSec !== (videoFacts.startTimeSec ?? 0))) return false;
   return true;
 }
 
