@@ -5,6 +5,7 @@ import type { ProgressRevocation } from "./progress-feed";
 export interface ProgressDeliveryPort {
   publish(scope: { projectId: string; workspaceId: string }, event: WorkflowStageUpdatedEvent): Promise<void>;
   revoke(input: ProgressRevocation): Promise<void>;
+  registerContinuations(ids: readonly string[]): Promise<void>;
 }
 const delivery = new AsyncLocalStorage<ProgressDeliveryPort>();
 export function withProgressDelivery<T>(port: ProgressDeliveryPort, operation: () => T): T { return delivery.run(port, operation); }

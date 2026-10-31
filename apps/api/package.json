@@ -26,7 +26,8 @@
     "test:runtime:workerd": "node --experimental-strip-types scripts/run-worker-runtime-gates.ts",
     "audit:worker": "bun scripts/audit-worker-bundle.ts",
     "test:mcp:workerd": "node --experimental-strip-types scripts/run-mcp-runtime-gates.ts",
-    "test:progress:workerd": "node --experimental-strip-types scripts/run-progress-runtime-gates.ts"
+    "test:progress:workerd": "node --experimental-strip-types scripts/run-progress-runtime-gates.ts",
+    "test:workflows:workerd": "node --experimental-strip-types scripts/run-workflow-runtime-gates.ts"
   },
   "dependencies": {
     "@ffprobe-installer/ffprobe": "2.1.2",

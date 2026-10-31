@@ -10,6 +10,12 @@
   "routes": [],
   "durable_objects": { "bindings": [{ "name": "RATE_LIMITER", "class_name": "RateLimiter" }, { "name": "PROJECT_PROGRESS", "class_name": "ProjectProgress" }] },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RateLimiter", "ProjectProgress"] }],
+  "workflows": [
+    { "binding": "IMPORT_PIPELINE", "name": "narriflow-import-candidate", "class_name": "ImportPipeline" },
+    { "binding": "RENDER_RUN", "name": "narriflow-render-candidate", "class_name": "RenderRun" },
+    { "binding": "OPERATION_DRIVER", "name": "narriflow-operation-candidate", "class_name": "OperationDriver" },
+    { "binding": "MAINTENANCE", "name": "narriflow-maintenance-candidate", "class_name": "Maintenance" }
+  ],
   "version_metadata": { "binding": "CF_VERSION_METADATA" },
   "dev": { "port": 4000 },
   "hyperdrive": [
@@ -18,7 +24,7 @@
   "r2_buckets": [
     { "binding": "MEDIA_BUCKET", "bucket_name": "narriflow-cutover-gates" }
   ],
-  // This candidate intentionally has no public route, cron or Workflow
-  // bindings until their implementations and acceptance gates integrate.
+  // Admission stays closed until the domain handler registry and acceptance
+  // gates integrate. Unknown Workflow subjects fail explicitly.
   "vars": { "ADMISSION_STATE": "closed", "APP_ENV": "staging" }
 }
