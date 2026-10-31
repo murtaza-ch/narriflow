@@ -696,4 +696,6 @@ export * from "./notification-body-storage";
 
 export * from "./outbound-delivery-runtime";
 
-export { clipPreparationBinding, encodeClipPreparationInput, decodeClipPreparationInput } from "./clip-preparation-input";
+export { clipPreparationBinding, encodeClipPreparationInput, decodeClipPreparationInput, encodeClipPreparationResult, decodeClipPreparationResult } from "./clip-preparation-input";
+
+export { clipPreparationTiming, clipPreparationPreviewWindow } from "./clip-preparation-policy";
