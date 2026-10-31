@@ -1,5 +1,7 @@
 # Media Cleanup owns deferred exact-key deletion
 
+**Serverless amendment:** [ADR 0019](0019-serverless-execution.md) revises runtime ownership and scheduling below at the single integrated cutover. See the dated amendment at the end; contract acceptance does not mean deployment is complete.
+
 One Media Cleanup module owns durable removal of unreferenced private media after an approved producer commits its database state. A generic obligation records stable origin and cleanup class, optional Project and Clip identifiers, one exact private object key, scheduling and attempt state, an expiring claim, bounded failure state, and completion. Project and Clip identifiers are facts rather than cascading relations, so cleanup work survives deletion of its source rows.
 
 The module admits obligations idempotently by origin, class, and object key. It owns claim, renewal, missing-object success, storage outcome classification, bounded backoff, release, rescheduling, completion, claim fencing, and identifier-safe diagnostics. The worker polls only this module. Producers still own the decision and database transaction that create cleanup intent. Clip Editor Document Persistence creates obligations atomically with accepted mutations. Detected Clip replacement inventories renders, preview proxies, derived peaks, and dub media and admits their obligations in the same transaction that removes the old Clips.
@@ -13,3 +15,7 @@ We rejected one cleanup executor per producer because claim and retry policy wou
 ## Consequences
 
 Missing objects complete successfully. Temporary, persistent, configuration, cancelled, and claim-loss outcomes remain explicit and fenced. Diagnostics include origin, class, Project, Clip, attempt, phase, outcome, failure code, and elapsed time. They never include object keys, signed URLs, provider identifiers, provider bodies, or document content. New producers must use the same admission interface and add their stable origin or cleanup class to this module before creating obligations.
+
+## Amendment 2026-10-31: serverless execution
+
+A producer commits exact-key cleanup obligations and their dispatches together. OperationDriver executes targeted claims through lean media functions; it replaces the cleanup polling loop. The claim predicate also checks deployment epoch, subject generation, token, owner, live lease and operation deadline. Before deletion it rechecks all current references and provisional or grant-expiry holds. An ambiguous artifact commit is read from its durable disposition and never treated as evidence that an object is unreferenced. Daily bounded continuation and the hourly exact-key backstop reuse the same expiry/cleanup transitions. Referenced or held media survives restore and stale execution.

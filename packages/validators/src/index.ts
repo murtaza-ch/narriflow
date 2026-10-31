@@ -24,6 +24,7 @@ export * from "./dubbing";
 export * from "./edit-ranges";
 export * from "./editor-document";
 export * from "./error-messages";
+export * from "./execution";
 export * from "./finishing";
 export * from "./ingest";
 export * from "./generated-media";

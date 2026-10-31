@@ -1,5 +1,7 @@
 # One standalone API serves every client; the web app only presents
 
+**Serverless amendment:** [ADR 0019](0019-serverless-execution.md) revises runtime ownership and scheduling below at the single integrated cutover. See the dated amendment at the end; contract acceptance does not mean deployment is complete.
+
 Narriflow's backend is one Hono-on-Bun service (`apps/api`) on Railway, at its own origin. The web app (`apps/web`, Vercel) is a client of it, like the stdio MCP server, the public REST consumers and any future mobile app. Before this decision the Next.js app also hosted the API, the MCP transport, provider webhooks, the progress stream and every Server Action and server-rendered read, so each of those shared Vercel's deployment, timeouts and secrets.
 
 ## Decision
@@ -23,3 +25,7 @@ We rejected Vercel rewrites to the API (the coupling above, plus one more canoni
 ## Consequences
 
 Provider consoles list API-origin callbacks (Google and TikTok redirect URIs, the Stripe and Clerk webhook endpoints, the Clerk OAuth resource and audience); MCP clients, Zapier and Make connections, n8n variables and the CLI helper move to the API origin. The worker never calls the API; it shares the database, Redis and R2 with it, so `bun run env:check` compares the API, web, worker and database files. The Railway API service is sized by its Neon pool budget: pool size times replicas stays within the pooler's limit, and replicas share stream subscribers only through Redis. Rollback is a redeploy of the previous web and API revisions together; there is no compatibility layer to keep.
+
+## Amendment 2026-10-31: serverless execution
+
+The API moves from Hono-on-Bun on Railway to a Hono Cloudflare Worker with Workflows, Durable Objects and uncached Hyperdrive to Neon's direct TLS endpoint. Worker request and Workflow step clients are scoped, injected and closed in finally; static health and DO traffic do not open Postgres. Native media and arbitrary pinned-DNS egress run in Modal, and stdio MCP becomes an authenticated bridge to remote `/mcp` without database or Redis credentials. Two-origin Bearer admission, Workspace hints, domain route inventory, generated OpenAPI and the web/backend import boundary remain. Project progress replaces the SSE endpoint with a scoped one-use ticket and hibernating WebSocket; the web CSP permits the configured wss origin. API signatures/callbacks continue to use the configured API origin, never Host. The single cutover removes Railway, Redis and worker env/deploy wiring after the exact candidate gates; there is no parallel scheduler or runtime compatibility layer.

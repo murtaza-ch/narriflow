@@ -1,5 +1,7 @@
 # Worker Process Module owns subprocess and scratch lifetimes
 
+**Serverless amendment:** [ADR 0019](0019-serverless-execution.md) revises runtime ownership and scheduling below at the single integrated cutover. See the dated amendment at the end; contract acceptance does not mean deployment is complete.
+
 One Worker Process Module owns every production subprocess and scratch-directory lifetime in the worker. Callers choose the executable, arguments, accepted exit codes, operation deadline, bounded output capture, and cancellation signal. The module owns process groups, the global five-second TERM-to-KILL grace, descendant reaping, resource sampling, module-wide output ceilings, bounded redacted diagnostics, and typed Workflow Failure classification. Workflow Attempt cancellation keeps its exact abort reason after the process group has been reaped.
 
 The same module owns one normalized ffprobe read. It reports duration, audio and visual presence, playable-video dimensions, frame rate, and decodable visual presence; embedded cover art is visual media but is not playable video. Render, preview generation, transcription fallback, dubbing, ingest, auto-layout, and export bundles receive this module through construction or an options argument, with the production module as their default. Task-specific process wrappers and ffprobe parsers are not permitted.
@@ -13,3 +15,7 @@ We rejected keeping render-specific adapters because the same lifecycle rules ha
 ## Consequences
 
 New worker subprocesses and scratch directories must use this module. Task-specific deadlines remain visible at call sites, while kill escalation and diagnostic bounds remain global. Optional-media callers may still degrade according to their product contract, but they do so from the module's current typed failures and normalized inspection result rather than an older parser or execution path.
+
+## Amendment 2026-10-31: serverless execution
+
+The same module moves to Bun in short-lived `apps/media` containers. Its name and one normalized probe contract remain; no second FFmpeg/ffprobe parser is introduced. It owns each job's scratch and process group, startup checks, bounded capture, hard resources and TERM/KILL escalation. The Python Modal wrapper forwards signals and reaps the Bun child's descendants. Heartbeats run only during active owned work; renewal loss terminates the process group. Container startup replaces fleet health polling, and per-job limits replace the host-global scheduler. Source Audio supplies STT, so native extraction no longer silently falls back to whole-video transcription.
