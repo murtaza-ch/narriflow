@@ -132,7 +132,7 @@ suite("Targeted billing reconciliation", () => {
     const catalog = createBillingCatalog({
       basePrices: (["creator", "pro", "business"] as const).flatMap(tier => (["monthly", "annual"] as const).map(interval => ({ priceId: `price_${tier}_${interval}`, tier, interval }))),
       seatPrices: [{ priceId: "price_seat_monthly", interval: "monthly" }, { priceId: "price_seat_annual", interval: "annual" }],
-      worker: { batchSize: 1, concurrency: 1, leaseMs: 60_000, providerDeadlineMs: 10_000, providerCallBudget: 4 },
+      worker: { leaseMs: 60_000, providerDeadlineMs: 10_000, providerCallBudget: 4 },
     });
     const run = context.bind(async () => {
       const module = createWorkspaceBillingModule({ catalog, store: createPrismaWorkspaceBillingStore(), clock: { now: () => new Date() }, diagnostics: { record() {} },

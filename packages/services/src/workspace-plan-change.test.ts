@@ -8,7 +8,7 @@ import { createStripePlanChangeProvider, normalizeStripePlanChange } from "./wor
 const catalog = createBillingCatalog({
   basePrices: (["creator", "pro", "business"] as const).flatMap((tier) => (["monthly", "annual"] as const).map((interval) => ({ tier, interval, priceId: `${tier}_${interval}` }))),
   seatPrices: (["monthly", "annual"] as const).map((interval) => ({ interval, priceId: `seat_${interval}` })),
-  worker: { batchSize: 25, concurrency: 4, leaseMs: 60_000, providerDeadlineMs: 10_000, providerCallBudget: 4 },
+  worker: { leaseMs: 60_000, providerDeadlineMs: 10_000, providerCallBudget: 4 },
 });
 
 function fixture(price = "pro_monthly", desiredAdditionalSeats = 0) {
@@ -39,7 +39,12 @@ function fixture(price = "pro_monthly", desiredAdditionalSeats = 0) {
   const module = () => createWorkspaceBillingModule({ catalog, store, provider, clock: { now: () => now.value }, diagnostics: { record: () => undefined } });
   const billing = module();
   const input = { workspaceId, actorUserId, clientIdempotencyKey: randomUUID(), targetTier: "business" as const, interval: "monthly" as const };
-  return { workspaceId, actorUserId, now, source, store, provider, billing, module, input, mutations: () => mutations, loseOwnership: () => { ownership = "missing_metadata"; } };
+  const reconcile = async (worker = module()) => {
+    const claim = await store.claimAccount({ workspaceId, now: now.value, leaseMs: catalog.worker.leaseMs });
+    expect(claim).not.toBeNull();
+    await worker.reconcileClaim(claim!);
+  };
+  return { workspaceId, actorUserId, now, source, store, provider, billing, module, reconcile, input, mutations: () => mutations, loseOwnership: () => { ownership = "missing_metadata"; } };
 }
 
 function scheduleRecoveryFixture() {
@@ -219,11 +224,11 @@ describe("Workspace plan changes", () => {
     f.store.claimAccount = async (input) => { nestedClaims++; return claim(input); };
     f.store.releasePlanChangeClaim = async (input) => { claimReleases++; return release(input); };
     const worker = f.module();
-    expect(await worker.reconcileDueAccounts()).toMatchObject({ claimed: 1, reconciled: 1, unresolved: 0 });
+    await f.reconcile(worker);
     expect(f.creates.size).toBe(1);
     expect(f.createKeys).toEqual([`narriflow_plan_schedule_${quote.id}`, `narriflow_plan_schedule_${quote.id}`]);
     expect(f.updateCalls()).toBe(2);
-    expect(nestedClaims).toBe(0);
+    expect(nestedClaims).toBe(1);
     expect(claimReleases).toBe(0);
     expect((f.raw.schedule as Stripe.SubscriptionSchedule).metadata).toMatchObject({ app: "narriflow", workspaceId: f.workspaceId, quoteId: quote.id });
     expect((await f.store.readPlanChangeQuote({ workspaceId: f.workspaceId, id: quote.id }))?.phase).toBe("submitted");
@@ -239,7 +244,7 @@ describe("Workspace plan changes", () => {
     f.raw.schedule = foreign;
     const worker = f.module();
     // The confirmed change ends without touching the foreign schedule, and entitlements still reconcile.
-    expect(await worker.reconcileDueAccounts()).toMatchObject({ claimed: 1, reconciled: 1, unresolved: 0 });
+    await f.reconcile(worker);
     expect((f.raw.schedule as Stripe.SubscriptionSchedule).id).toBe("schedule_foreign");
     expect((f.raw.schedule as Stripe.SubscriptionSchedule).metadata).toEqual(foreign.metadata);
     expect(f.updateCalls()).toBe(1);
@@ -255,7 +260,7 @@ describe("Workspace plan changes", () => {
     await expect(f.billing.confirmPlanChange({ ...f.input, quoteId: quote.id })).rejects.toThrow("Provider unavailable");
     f.now.value = new Date("2026-10-27T12:11:00Z");
     const worker = f.module();
-    expect(await worker.reconcileDueAccounts()).toMatchObject({ claimed: 1, reconciled: 1 });
+    await f.reconcile(worker);
     expect(applyCalls).toBe(1);
     expect((await f.store.readPlanChangeQuote({ workspaceId: f.workspaceId, id: quote.id }))?.phase).toBe("expired");
     expect(await f.store.readConfirmingPlanChangeQuote(f.workspaceId)).toBeNull();
@@ -271,7 +276,7 @@ describe("Workspace plan changes", () => {
     await expect(f.billing.confirmPlanChange({ ...f.input, quoteId: quote.id })).rejects.toThrow("Provider unavailable");
     f.provider.previewPlanChange = async () => ({ amountDue: 1400, currency: "usd" });
     // The owner reviewed a different amount, so the change ends instead of charging it.
-    expect(await f.module().reconcileDueAccounts()).toMatchObject({ claimed: 1, reconciled: 1, unresolved: 0 });
+    await f.reconcile();
     expect(applyCalls).toBe(1);
     expect((await f.store.readPlanChangeQuote({ workspaceId: f.workspaceId, id: quote.id }))?.phase).toBe("expired");
     expect((await f.store.readProjection(f.workspaceId))?.health).toBe("current");
@@ -283,7 +288,7 @@ describe("Workspace plan changes", () => {
     const { quote } = await f.billing.previewPlanChange({ ...f.input, targetTier: "creator" });
     await expect(f.billing.confirmPlanChange({ ...f.input, quoteId: quote.id })).rejects.toThrow("Provider unavailable");
     f.source.periodEnd += 30 * 86400;
-    expect(await f.module().reconcileDueAccounts()).toMatchObject({ claimed: 1, reconciled: 1, unresolved: 0 });
+    await f.reconcile();
     expect((await f.store.readPlanChangeQuote({ workspaceId: f.workspaceId, id: quote.id }))?.phase).toBe("expired");
     expect((await f.store.readProjection(f.workspaceId))?.pricingTier).toBe("pro");
     expect((await f.store.readProjection(f.workspaceId))?.health).toBe("current");
@@ -309,7 +314,7 @@ describe("Workspace plan changes", () => {
     await expect(f.billing.confirmPlanChange({ ...f.input, quoteId: quote.id })).rejects.toThrow("Provider unavailable");
     f.source.status = "canceled";
     f.now.value = new Date("2026-10-27T18:30:00Z");
-    await f.module().reconcileDueAccounts();
+    await f.reconcile();
     expect((await f.store.readProjection(f.workspaceId))?.pricingTier).toBe("free");
     expect(await f.store.readConfirmingPlanChangeQuote(f.workspaceId)).toBeNull();
   });
@@ -321,7 +326,7 @@ describe("Workspace plan changes", () => {
     await expect(f.billing.confirmPlanChange({ ...f.input, quoteId: quote.id })).rejects.toThrow("Provider unavailable");
     f.source.cancelAtPeriodEnd = true;
     f.now.value = new Date("2026-10-27T12:11:00Z");
-    expect(await f.module().reconcileDueAccounts()).toMatchObject({ claimed: 1, reconciled: 1 });
+    await f.reconcile();
     expect((await f.store.readPlanChangeQuote({ workspaceId: f.workspaceId, id: quote.id }))?.phase).toBe("expired");
   });
 
@@ -332,7 +337,7 @@ describe("Workspace plan changes", () => {
     const { quote } = await f.billing.previewPlanChange(f.input);
     await expect(f.billing.confirmPlanChange({ ...f.input, quoteId: quote.id })).rejects.toThrow("Response lost");
     f.now.value = new Date("2026-10-27T12:11:00Z");
-    expect(await f.module().reconcileDueAccounts()).toMatchObject({ claimed: 1, reconciled: 1 });
+    await f.reconcile();
     expect(f.mutations()).toBe(1);
     expect((await f.store.readPlanChangeQuote({ workspaceId: f.workspaceId, id: quote.id }))?.phase).toBe("submitted");
     expect((await f.billing.readBillingState(f.workspaceId)).plan).toBe("pro");

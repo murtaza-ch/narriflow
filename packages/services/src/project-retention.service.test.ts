@@ -4,9 +4,7 @@ import { PAID_ACCESS_ENDED_GRACE_DAYS, planLimits } from "@narriflow/validators"
 import {
   RETENTION_POLICIES,
   ProjectRetentionService,
-  deleteProjectPrefixObjects,
   isProjectAccessible,
-  projectDeletionHash,
   retentionAssignmentForNewProject,
   retentionTransitionForTierChange,
 } from "./project-retention.service";
@@ -168,75 +166,4 @@ describe("project retention policy", () => {
     ).toBe(false);
   }));
 
-  test("deletion identity is a stable content-free SHA-256 hash", bindServiceTestEnvironment(() => {
-    const hash = projectDeletionHash("0beec7b5-ea3f-4b61-8c8b-35c7f34af830");
-    expect(hash).toMatch(/^[a-f0-9]{64}$/);
-    expect(hash).toBe(
-      projectDeletionHash("0beec7b5-ea3f-4b61-8c8b-35c7f34af830"),
-    );
-  }));
-});
-
-describe("project prefix deletion", () => {
-  test("deletes more than 1,000 objects in bounded batches until the prefix is empty", bindServiceTestEnvironment(async () => {
-    const objects = new Map(
-      Array.from({ length: 1_250 }, (_, index) => [
-        `projects/project-1/object-${index}`,
-        index + 1,
-      ]),
-    );
-    const batchSizes: number[] = [];
-    const result = await deleteProjectPrefixObjects("project-1", {
-      list: async (prefix, limit) =>
-        [...objects.entries()]
-          .filter(([key]) => key.startsWith(prefix))
-          .slice(0, limit)
-          .map(([key, sizeBytes]) => ({ key, sizeBytes })),
-      deleteBatch: async (keys) => {
-        batchSizes.push(keys.length);
-        for (const key of keys) objects.delete(key);
-      },
-    });
-
-    expect(batchSizes).toEqual([1000, 250]);
-    expect(result.objectCount).toBe(1_250);
-    expect(result.totalBytes).toBe((1_250 * 1_251) / 2);
-    expect(objects.size).toBe(0);
-  }));
-
-  test("a retry continues safely after a completed earlier batch", bindServiceTestEnvironment(async () => {
-    const objects = new Map(
-      Array.from({ length: 1_005 }, (_, index) => [
-        `projects/project-2/object-${index}`,
-        1,
-      ]),
-    );
-    let calls = 0;
-    const dependencies = {
-      list: async (prefix: string, limit: number) =>
-        [...objects.entries()]
-          .filter(([key]) => key.startsWith(prefix))
-          .slice(0, limit)
-          .map(([key, sizeBytes]) => ({ key, sizeBytes })),
-      deleteBatch: async (keys: string[]) => {
-        calls += 1;
-        if (calls === 2) throw new Error("temporary R2 failure");
-        for (const key of keys) objects.delete(key);
-      },
-    };
-
-    await expect(
-      deleteProjectPrefixObjects("project-2", dependencies),
-    ).rejects.toThrow("temporary R2 failure");
-    expect(objects.size).toBe(5);
-
-    const retried = await deleteProjectPrefixObjects("project-2", {
-      ...dependencies,
-      deleteBatch: async (keys) => {
-        for (const key of keys) objects.delete(key);
-      },
-    });
-    expect(retried.objectCount).toBe(5);
-    expect(objects.size).toBe(0);
-  }));
 });

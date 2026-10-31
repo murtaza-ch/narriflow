@@ -428,7 +428,7 @@ dbDescribe("Workspace Events written by operation settlement", () => {
     const handedOff = await handedOffJob(f.project.id, stt.id);
     const queuedImport = await prisma.ingestJob.create({ data: { projectId: f.project.id, jobType: "link_import", payload: {} } });
     const x = await exportFixture(f);
-    // ProjectRetentionService.claimDueProject cancels queued intakes and fails queued exports.
+    // The bounded Project privacy pages cancel queued intakes and fail queued exports.
     expect(await workflow().cancelQueuedProjectRuns({ projectId: f.project.id, errorCode: "PROJECT_EXPIRED" })).toBeGreaterThanOrEqual(2);
     await prisma.$transaction(async (tx) => {
       await tx.ingestJob.updateMany({ where: { projectId: f.project.id, status: "queued" }, data: { status: "cancelled", lastError: "PROJECT_EXPIRED", completedAt: new Date() } });

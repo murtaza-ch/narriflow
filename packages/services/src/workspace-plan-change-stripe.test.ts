@@ -7,7 +7,7 @@ import type { PlanChangeItem } from "./workspace-plan-change";
 const catalog = createBillingCatalog({
   basePrices: ["creator", "pro", "business"].flatMap((tier) => ["monthly", "annual"].map((interval) => ({ priceId: `${tier}_${interval}`, tier, interval }))) as Parameters<typeof createBillingCatalog>[0]["basePrices"],
   seatPrices: [{ priceId: "seat_monthly", interval: "monthly" }, { priceId: "seat_annual", interval: "annual" }],
-  worker: { batchSize: 1, concurrency: 1, leaseMs: 60_000, providerDeadlineMs: 10_000, providerCallBudget: 10 },
+  worker: { leaseMs: 60_000, providerDeadlineMs: 10_000, providerCallBudget: 10 },
 });
 const workspaceId = "workspace";
 const start = 1_790_000_000;

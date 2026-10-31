@@ -133,8 +133,6 @@ describe("Workspace Billing Stripe adapter contracts", () => {
         { priceId: "price_business_seat_annual", interval: "annual" },
       ],
       worker: {
-        batchSize: 25,
-        concurrency: 4,
         leaseMs: 60_000,
         providerDeadlineMs: 10_000,
         providerCallBudget: 4,
@@ -187,8 +185,6 @@ describe("Workspace Billing Stripe adapter contracts", () => {
           { priceId: "price_business_seat_annual", interval: "annual" },
         ],
         worker: {
-          batchSize: 25,
-          concurrency: 4,
           leaseMs: 60_000,
           providerDeadlineMs: 10_000,
           providerCallBudget: 4,
@@ -260,8 +256,6 @@ describe("Workspace Billing Stripe adapter contracts", () => {
           { priceId: "price_business_seat_annual", interval: "annual" },
         ],
         worker: {
-          batchSize: 25,
-          concurrency: 4,
           leaseMs: 60_000,
           providerDeadlineMs: 10_000,
           providerCallBudget: 4,
@@ -368,8 +362,6 @@ describe("Workspace Billing Stripe adapter contracts", () => {
           interval,
         })),
         worker: {
-          batchSize: 25,
-          concurrency: 4,
           leaseMs: 60_000,
           providerDeadlineMs: 10_000,
           providerCallBudget: 4,

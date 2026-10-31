@@ -29,8 +29,6 @@ const catalog = createBillingCatalog({
     { priceId: "price_business_seat_annual", interval: "annual" },
   ],
   worker: {
-    batchSize: 25,
-    concurrency: 4,
     leaseMs: 60_000,
     providerDeadlineMs: 10_000,
     providerCallBudget: 4,
@@ -44,6 +42,12 @@ function noSubscriptions(customerId: string, workspaceId: string) {
     ownership: { kind: "verified" as const, workspaceId },
     subscriptions: [],
   });
+}
+
+async function reconcileAccount(store: WorkspaceBillingStore, billing: ReturnType<typeof createWorkspaceBillingModule>, workspaceId: string, now: Date) {
+  const claim = await store.claimAccount({ workspaceId, now, leaseMs: catalog.worker.leaseMs });
+  expect(claim).not.toBeNull();
+  await billing.reconcileClaim(claim!);
 }
 
 describe("Workspace Billing", () => {
@@ -1429,112 +1433,6 @@ describe("Workspace Billing", () => {
     }
   });
 
-  test("rechecks activating accounts on the short recovery cadence", async () => {
-    let now = new Date("2026-08-28T10:00:00.000Z");
-    const records: string[] = [];
-    const store = createInMemoryWorkspaceBillingStore([
-      {
-        workspaceId: "workspace-activating-cadence",
-        personal: true,
-        hasNonOwnerMembers: false,
-        pricingTier: "free",
-        status: "pending_payment",
-        providerCustomerId: "cus_activating_cadence",
-      },
-    ]);
-    const billing = createWorkspaceBillingModule({
-      catalog,
-      store,
-      provider: {
-        verifyDelivery: () => {
-          throw new Error("not used");
-        },
-        retrieveCurrentState: async () => ({
-          customerId: "cus_activating_cadence",
-          ownership: {
-            kind: "verified",
-            workspaceId: "workspace-activating-cadence",
-          },
-          subscriptions: [
-            {
-              id: "sub_activating_cadence",
-              status: "incomplete",
-              items: [{ priceId: "price_creator_monthly", quantity: 1 }],
-              createdAt: now,
-              effectiveAt: now,
-              currentPeriodEnd: null,
-              trialEnd: null,
-              cancelAtPeriodEnd: false,
-            },
-          ],
-        }),
-      },
-      clock: { now: () => now },
-      diagnostics: { record: (event) => records.push(String(event.message)) },
-      metrics: { observe: (metric) => records.push(metric) },
-    });
-
-    expect(await billing.reconcileCurrentState("workspace-activating-cadence"))
-      .toMatchObject({ view: { health: "activating" } });
-    now = new Date(now.getTime() + 29_999);
-    records.length = 0;
-    expect(await billing.reconcileDueAccounts()).toEqual({
-      claimed: 0, reconciled: 0, retried: 0, unresolved: 0, staleSettlements: 0,
-    });
-    // An idle worker poll is silent.
-    expect(records).toEqual([]);
-    now = new Date(now.getTime() + 1);
-    expect(await billing.reconcileDueAccounts()).toMatchObject({ claimed: 1 });
-    expect(records).toEqual(expect.arrayContaining([
-      "workspace_billing_accounts_claimed",
-      "workspace_billing_claims_total",
-      "workspace_billing_batch_settled",
-      "workspace_billing_settlements_total",
-    ]));
-  });
-
-  test("billing accounts do not exhaust their leases waiting for a worker slot", async () => {
-    let now = new Date("2026-08-28T10:00:00.000Z");
-    const workspaces = Array.from({ length: 8 }, (_, index) => ({
-      workspaceId: `workspace-bounded-${index}`,
-      personal: true,
-      hasNonOwnerMembers: false,
-      pricingTier: "free" as const,
-      status: "active" as const,
-      providerCustomerId: `cus_bounded_${index}`,
-    }));
-    const store = createInMemoryWorkspaceBillingStore(workspaces);
-    const providerCustomers: string[] = [];
-    const billing = createWorkspaceBillingModule({
-      catalog: { ...catalog, worker: { ...catalog.worker, concurrency: 1 } },
-      store,
-      provider: {
-        verifyDelivery: () => { throw new Error("not used"); },
-        retrieveCurrentState: async (customerId) => {
-          providerCustomers.push(customerId);
-          // Each call fits its 10-second deadline, but a whole batch does
-          // not fit the 60-second lease granted before it starts running.
-          now = new Date(now.getTime() + 9_000);
-          const workspace = workspaces.find((row) => row.providerCustomerId === customerId)!;
-          return {
-            customerId,
-            ownership: { kind: "verified", workspaceId: workspace.workspaceId },
-            subscriptions: [],
-          };
-        },
-      },
-      clock: { now: () => now },
-      diagnostics: { record: () => undefined },
-    });
-
-    for (const _workspace of workspaces) {
-      expect(await billing.reconcileDueAccounts()).toMatchObject({
-        reconciled: 1, staleSettlements: 0,
-      });
-    }
-    expect(providerCustomers.sort()).toEqual(workspaces.map((workspace) => workspace.providerCustomerId).sort());
-  });
-
   test("an expired claimant cannot replace a newer reconciliation", async () => {
     let now = new Date("2026-08-28T10:00:00.000Z");
     let releaseFirst!: (state: Awaited<ReturnType<WorkspaceBillingProvider["retrieveCurrentState"]>>) => void;
@@ -1594,15 +1492,14 @@ describe("Workspace Billing", () => {
       diagnostics: { record: () => undefined },
     });
 
-    const staleRun = billing.reconcileDueAccounts();
+    const staleRun = reconcileAccount(store, billing, "workspace-a", now);
     await firstStarted;
     now = new Date(now.getTime() + 60_001);
-    const takeover = await billing.reconcileDueAccounts();
+    await reconcileAccount(store, billing, "workspace-a", now);
     releaseFirst(subscriptionState("price_creator_monthly"));
-    const stale = await staleRun;
+    await staleRun;
 
-    expect(takeover.reconciled).toBe(1);
-    expect(stale.staleSettlements).toBe(1);
+    expect(providerCalls).toBe(2);
     expect(await store.readProjection("workspace-a")).toMatchObject({
       pricingTier: "pro",
       canonicalSubscriptionId: "sub_a",
@@ -1691,22 +1588,19 @@ describe("Workspace Billing", () => {
       diagnostics: { record: () => undefined },
     });
 
-    const staleRun = billing.reconcileDueAccounts();
+    const staleRun = reconcileAccount(store, billing, "workspace-seat-fence", now);
     await oldCreateStarted;
     desired = 2;
     revision = 2;
     now = new Date(now.getTime() + catalog.worker.leaseMs + 1);
-    expect(await billing.reconcileDueAccounts()).toMatchObject({ reconciled: 1 });
+    await reconcileAccount(store, billing, "workspace-seat-fence", now);
     expect(providerQuantity).toBe(2);
 
     releaseOldCreate();
-    expect(await staleRun).toMatchObject({ staleSettlements: 1 });
+    await staleRun;
     expect(providerQuantity).toBe(1);
 
-    expect(await billing.reconcileDueAccounts()).toMatchObject({
-      claimed: 1,
-      reconciled: 1,
-    });
+    await reconcileAccount(store, billing, "workspace-seat-fence", now);
     expect(providerQuantity).toBe(2);
   });
 
@@ -1769,16 +1663,15 @@ describe("Workspace Billing", () => {
       diagnostics: { record: () => undefined },
     });
 
-    const staleRun = billing.reconcileDueAccounts();
+    const staleRun = reconcileAccount(store, billing, "workspace-retry-fence", now);
     await started;
     now = new Date(now.getTime() + catalog.worker.leaseMs + 1);
     rejectFirst(new Error("provider failed after lease expiry"));
-    expect(await staleRun).toMatchObject({ staleSettlements: 1, retried: 0 });
+    await staleRun;
+    expect(await store.readProjection("workspace-retry-fence")).toMatchObject({ pricingTier: "free", canonicalSubscriptionId: null });
 
-    expect(await billing.reconcileDueAccounts()).toMatchObject({
-      claimed: 1,
-      reconciled: 1,
-    });
+    await reconcileAccount(store, billing, "workspace-retry-fence", now);
+    expect(await store.readProjection("workspace-retry-fence")).toMatchObject({ pricingTier: "creator", canonicalSubscriptionId: "sub_retry_fence" });
   });
 
   test("uses provider-effective payment time and the fixed grace deadline", async () => {
@@ -1956,7 +1849,7 @@ describe("Workspace Billing", () => {
     ).toThrow("price_business_seat_monthly is mapped more than once");
   });
 
-  test("rejects incomplete catalogs and unsafe worker limits", () => {
+  test("rejects incomplete catalogs and unsafe execution limits", () => {
     expect(() =>
       createBillingCatalog({
         ...catalog,
@@ -1966,9 +1859,9 @@ describe("Workspace Billing", () => {
     expect(() =>
       createBillingCatalog({
         ...catalog,
-        worker: { ...catalog.worker, concurrency: Number.POSITIVE_INFINITY },
+        worker: { ...catalog.worker, leaseMs: Number.POSITIVE_INFINITY },
       }),
-    ).toThrow("worker.concurrency must be a finite integer between 1 and 32");
+    ).toThrow("worker.leaseMs must be a finite integer between 1000 and 300000");
   });
 
   test("reconciles one active monthly subscription into the Workspace projection", async () => {

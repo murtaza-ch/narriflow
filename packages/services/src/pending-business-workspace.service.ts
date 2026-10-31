@@ -3,7 +3,6 @@ import type { Prisma, PrismaClient } from "@prisma/client";
 import type { WorkspaceBillingProvider } from "./workspace-billing.service";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-const BATCH_SIZE = 25;
 const RECENT_UPDATE_MS = 60 * 60 * 1000;
 const ATTEMPT_LIMIT = 100;
 
@@ -21,6 +20,8 @@ const contentCounts = {
   thumbnailFrameOperations: true, audioAssetFavorites: true, socialOAuthStates: true,
   zoomOAuthStates: true, reviewApprovalOverrides: true, publicationManualDecisions: true,
   generationFinishings: true, reviewerOptOuts: true,
+  // Accepted notices are protected content until their own bounded retention removes them.
+  grantPauseNotifications: true, webhookDisabledNotifications: true,
 } as const;
 
 export const pendingBusinessWorkspaceSelection = {
@@ -171,41 +172,5 @@ export function createPendingBusinessWorkspaceService(deps: PendingBusinessWorks
   return {
     expire:(workspaceId:string,executionEpoch:number)=>remove(workspaceId,"expired",undefined,executionEpoch),
     cancel: (workspaceId: string, actorUserId: string) => remove(workspaceId, "canceled", actorUserId),
-    async sweep() {
-      let checked = 0;
-      let removed = 0;
-      try {
-        const candidates = await prisma.workspace.findMany({
-          where: {
-            status: "pending_payment", personalOwnerUserId: null,
-            createdAt: { lte: new Date(now().getTime() - 2 * DAY_MS) },
-            updatedAt: { lte: new Date(now().getTime() - RECENT_UPDATE_MS) },
-          },
-          // Rotate protected rows too, rather than starving later expired workspaces.
-          orderBy: [{ updatedAt: "asc" }, { id: "asc" }], take: BATCH_SIZE,
-          select: { id: true },
-        });
-        for (const candidate of candidates) {
-          checked++;
-          try {
-            if (await remove(candidate.id, "expired")) removed++;
-          } catch (error) {
-            logDeferred(error, candidate.id);
-          }
-          try {
-            await prisma.workspace.updateMany({ where: { id: candidate.id, status: "pending_payment" }, data: { updatedAt: now() } });
-          } catch (error) {
-            logDeferred(error, candidate.id);
-          }
-        }
-      } catch (error) {
-        logDeferred(error);
-      }
-      return { checked, removed };
-    },
   };
-}
-
-function logDeferred(error: unknown, workspaceId?: string) {
-  console.warn(JSON.stringify({ level: "warn", message: "pending_business_workspace_cleanup_deferred", workspaceId, errorName: error instanceof Error ? error.name : typeof error }));
 }
