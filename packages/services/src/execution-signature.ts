@@ -158,7 +158,7 @@ export interface VerifyExecutionRequestInput {
 
 export interface VerifiedExecutionRequest {
   metadata: ExecutionSignature;
-  /** Identifies the entire signed request for durable inbox conflict checks. */
+  /** Stable command identity. Authentication may refresh without changing a delivery. */
   requestHash: string;
 }
 
@@ -186,5 +186,9 @@ export async function verifyExecutionRequest(input: VerifyExecutionRequestInput)
   const signature = Uint8Array.from(metadata.signature.match(/../g)!, (pair) => Number.parseInt(pair, 16));
   const message = signatureMessage(metadata);
   if (!await crypto.subtle.verify("HMAC", key, signature, message)) throw new ExecutionSignatureError("signature_mismatch");
-  return { metadata, requestHash: await sha256(message) };
+  const delivery = encoder.encode([
+    metadata.version, metadata.audience, metadata.method,
+    metadata.canonicalTarget, metadata.bodySha256, metadata.deliveryId,
+  ].join("\n"));
+  return { metadata, requestHash: await sha256(delivery) };
 }
