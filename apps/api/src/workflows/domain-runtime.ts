@@ -11,6 +11,7 @@ import { getGeneratedMediaExecution } from "@narriflow/services/generated-media-
 import { getClipPreparationService } from "@narriflow/services/clip-preparation-runtime";
 import { getBillingReconciliation } from "@narriflow/services/billing-reconciliation-runtime";
 import { getMediaCleanupControl, getMediaCleanupDrain } from "@narriflow/services/media-cleanup-runtime";
+import { getPublicationExecution } from "@narriflow/services/publication-execution-runtime";
 import { getLibraryIndex } from "@narriflow/services/library-index-runtime";
 import { createWorkspaceNotificationDispatcher, isCurrentNotificationTarget } from "@narriflow/services/notification-dispatch";
 import { prepareIngestSourceExecution } from "@narriflow/services/ingest-source-execution";
@@ -26,6 +27,7 @@ import { createWorkerExecutor, getWorkerRenderGroupService } from "../domains/ex
 import { createWorkerExecutionScheduler } from "./scheduler";
 import type { WorkflowCommandHandler, WorkflowHandlerRegistry } from "./protocol";
 import { createNativeOperationDriver } from "./native-operation-driver";
+import { createPublicationDriver } from "./publication-driver";
 import { createRenderRunDriver } from "./render-run-driver";
 
 async function nativeDomain(reference: ExecutionDispatchReference, bindings: ApiWorkerBindings) {
@@ -197,6 +199,11 @@ export function workflowDomainRegistry(bindings: ApiWorkerBindings): WorkflowHan
     return result.kind === "wait" ? { type: "wait", until: result.until.toISOString(), deliveryId: reference.dispatchId }
       : { type: "complete", disposition: result.kind === "superseded" ? "superseded" : "terminal" };
   };
+  const publication = createPublicationDriver({ now: Date.now,
+    prepare: reference => getPublicationExecution().prepareExecution(reference),
+    expire: async (deadline, deliveryId) => (await createWorkerExecutor(deadline.reference,bindings)).control.expireDeadline({ deadline, deliveryId }),
+    deliver: ids => Promise.all(ids.map(id => getExecutionDispatch().deliver(id))),
+  });
   const maintenance: WorkflowCommandHandler = async ({ reference }) => {
     if (!reference.subject.id.startsWith("mc1.")) throw new NonRetryableError("unsupported_maintenance_subject");
     const result = await getMediaCleanupDrain().run(reference);
@@ -212,6 +219,6 @@ export function workflowDomainRegistry(bindings: ApiWorkerBindings): WorkflowHan
   return { maintenance: { maintenance }, project_progress: { maintenance: progress, workflow_event: progress },
     import_pipeline: { ingest_job: native }, render_run: { workflow_run: render, render_group: render },
     operation_driver: { native_validation: native, thumbnail_frame: native, outbound_probe: native, outbound_delivery: native, generated_media: native, clip_preparation: native, render_group: native, ingest_job: native,
-      workflow_run: workflow, clip_selection_window: selectionWindow, workspace_billing: billing, library_index: library, media_cleanup: cleanup, completion_callback: notification, webhook_subscription: notification,
+      workflow_run: workflow, clip_selection_window: selectionWindow, workspace_billing: billing, library_index: library, media_cleanup: cleanup, social_publication: publication, completion_callback: notification, webhook_subscription: notification,
       workspace_event: notificationEvents, maintenance: notificationEvents } };
 }
