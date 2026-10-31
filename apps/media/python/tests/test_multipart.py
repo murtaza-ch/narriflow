@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
+import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import tracemalloc
 from pathlib import Path
@@ -139,6 +141,24 @@ class NativeMultipartTests(unittest.IsolatedAsyncioTestCase):
             server.server_close()
             thread.join(timeout=2)
 
+    async def test_a_short_conditional_source_body_never_gets_an_upload_grant(self):
+        calls=[]
+        class Control:
+            async def authorize_source_range(self, *args):
+                calls.append('read');return SignedGrant('https://storage.invalid/source')
+            async def authorize_part(self, *args):
+                raise AssertionError('short source obtained an upload grant')
+            async def complete(self, *args):
+                raise AssertionError('short source completed')
+            async def abort(self, reason):calls.append('abort')
+        class Transport:
+            async def request(self, *args):
+                return TransferResponse(206,{'ETag':'"source"','Content-Length':'3','Content-Range':'bytes 0-2/3'},b'ab')
+        with self.assertRaisesRegex(MultipartTransferError,'multipart_short_read'):
+            await pin_source(MultipartDestination('assigned','upload',3),source_etag='"source"',
+                control=Control(),transport=Transport(),assert_owned=lambda:None,cancel_event=threading.Event())
+        self.assertEqual(calls,['read','abort'])
+
     async def test_a_failed_condition_cancels_a_stalled_sibling_and_aborts_before_completion(self):
         events = []
         part_size = 5 * 1024 * 1024
@@ -164,6 +184,58 @@ class NativeMultipartTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(changed.exception.code, 'multipart_source_changed')
         self.assertEqual(events[-1][0], 'abort')
         self.assertTrue(all(event[3] == '"original"' for event in events if event[0] == 'read'))
+
+    async def test_out_of_order_part_finishes_preserve_ascending_receipts_and_original_byte_hash(self):
+        part_size=5*1024*1024;finished=[];completed=[]
+        payload=b'a'*part_size+b'b'*part_size+b'c'
+        class Control:
+            async def authorize_part(self, number, *args):
+                return SignedGrant('https://storage.invalid/'+str(number))
+            async def complete(self, parts, sha256):
+                completed.extend(part.part_number for part in parts)
+                return CompletedObject('execution/assigned','"sealed"',len(payload),sha256)
+            async def abort(self, reason):
+                raise AssertionError('successful upload aborted')
+        class Transport:
+            async def request(self, grant, method, body, headers, *args):
+                number=int(grant.url.rsplit('/',1)[1])
+                await asyncio.sleep((4-number)*.04)
+                finished.append(number)
+                return TransferResponse(200,{'ETag':base64.b64decode(headers['Content-MD5']).hex()},b'')
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'source.mp4';path.write_bytes(payload)
+            result=await upload_file(path,MultipartDestination('assigned','upload',len(payload),part_size),
+                control=Control(),transport=Transport(),assert_owned=lambda:None,cancel_event=threading.Event())
+        self.assertEqual(finished,[3,2,1])
+        self.assertEqual(completed,[1,2,3])
+        self.assertEqual(result.sha256,hashlib.sha256(payload).hexdigest())
+
+    async def test_stalled_abort_keeps_the_original_part_failure_within_the_cleanup_grace(self):
+        calls = []
+        class Control:
+            async def authorize_part(self, *args):
+                calls.append('part')
+                return SignedGrant('https://storage.invalid/assigned')
+            async def complete(self, *args):
+                raise AssertionError('failed upload completed')
+            async def abort(self, reason):
+                calls.append('abort')
+                await asyncio.Event().wait()
+        class Transport:
+            async def request(self, *args):
+                return TransferResponse(400, {}, b'')
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'source.mp4'
+            path.write_bytes(b'abc')
+            began = time.monotonic()
+            with self.assertRaises(MultipartTransferError) as failed:
+                await asyncio.wait_for(upload_file(path, MultipartDestination('assigned', 'upload', 3),
+                    control=Control(), transport=Transport(), assert_owned=lambda: None,
+                    cancel_event=threading.Event()), 8)
+            self.assertEqual(failed.exception.code, 'multipart_part_refused')
+            self.assertGreaterEqual(time.monotonic() - began, 4.9)
+            self.assertLess(time.monotonic() - began, 7)
+            self.assertEqual(calls, ['part', 'abort'])
 
     async def test_lost_complete_ack_never_aborts_or_deletes_the_object(self):
         calls = []
@@ -212,18 +284,25 @@ class NativeMultipartTests(unittest.IsolatedAsyncioTestCase):
                                                   'Content-Length': str(part_size)}, b'x' * part_size)
                 active -= 1
                 return TransferResponse(200, {'ETag': base64.b64decode(headers['Content-MD5']).hex()}, b'')
+        loop=asyncio.get_running_loop();was_debug=loop.get_debug()
+        # Slow-task repr can copy a completed 16MiB result for diagnostics.
+        # Exclude that observer allocation from transfer-buffer measurement;
+        # keep the four-buffer limit and 80MiB ceiling unchanged.
+        loop.set_debug(False)
         tracemalloc.start()
         try:
             result = await pin_source(MultipartDestination('assigned', 'upload', size), source_etag='"original"',
                                       control=Control(), transport=Transport(), assert_owned=lambda: None, cancel_event=threading.Event())
             _current, peak = tracemalloc.get_traced_memory()
         finally:
-            tracemalloc.stop()
+            tracemalloc.stop();loop.set_debug(was_debug)
         self.assertEqual(result.byte_length, size)
         self.assertEqual(len(completed), 640)
         self.assertEqual([part.part_number for part in completed], list(range(1, 641)))
         self.assertLessEqual(maximum, 4)
         self.assertLess(peak, 80 * 1024 * 1024)
+        print(json.dumps({'message':'native_virtual_multipart_memory','sourceBytes':size,'parts':len(completed),
+                          'maxPartBuffers':maximum,'peakTrackedBytes':peak,'ceilingBytes':80*1024*1024}))
 
     async def test_stale_owner_stops_before_a_new_part_or_completion(self):
         calls, cancelled = [], threading.Event()
