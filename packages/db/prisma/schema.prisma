@@ -1179,6 +1179,8 @@ model WorkspaceBillingAccount {
   reconcileAttemptId          String?   @db.Uuid
   leaseExpiresAt              DateTime?
   attemptCount                Int       @default(0)
+  reconciliationGeneration    Int       @default(0)
+  reconciliationEpoch         Int       @default(1)
   snapshot                    Json?
   createdAt                   DateTime  @default(now())
   updatedAt                   DateTime  @updatedAt

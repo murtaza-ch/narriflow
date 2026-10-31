@@ -31,6 +31,7 @@ import { WorkspaceOperationError, workspaceService } from "./workspace.service";
 import { workspaceCommands } from "./workspace-commands-runtime";
 import type { WorkspaceMutation } from "./workspace-commands";
 import { uuidV5 } from "./uuid-v5";
+import type { BillingReconciliationClaim } from "./billing-reconciliation";
 
 const billingFailureCatalog = {
   billing_catalog_invalid: "unavailable",
@@ -656,6 +657,10 @@ export class BillingService {
 
   reconcileDueAccounts() {
     return this.workspaceBillingModule().reconcileDueAccounts();
+  }
+
+  reconcileClaim(claim: BillingReconciliationClaim) {
+    return this.workspaceBillingModule().reconcileClaim(claim);
   }
 
   private pendingBusinessWorkspaces() {

@@ -1,0 +1,146 @@
+import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
+import { PrismaPg } from "@prisma/adapter-pg";
+import { PrismaClient } from "@prisma/client";
+import { assertExecutionDatabaseTestTarget } from "./execution-db-test-support";
+import { createBillingReconciliation, queueBillingReconciliation } from "./billing-reconciliation";
+import { readExecutionDispatch } from "./execution-dispatch";
+import { withExecutionDispatches } from "./execution-dispatch-runtime";
+import { createDatabaseTestContext } from "@narriflow/db/testing";
+import { createBillingCatalog, createPrismaWorkspaceBillingStore, createWorkspaceBillingModule } from "./workspace-billing.service";
+
+const url = process.env.SERVERLESS_TEST_DATABASE_URL;
+const suite = process.env.ALLOW_SERVERLESS_DB_TESTS === "1" && url ? describe : describe.skip;
+suite("Targeted billing reconciliation", () => {
+  let db: PrismaClient;
+  const users: string[] = [], workspaces: string[] = [];
+  beforeAll(() => {
+    const schema = process.env.SERVERLESS_TEST_DATABASE_SCHEMA ?? "public";
+    assertExecutionDatabaseTestTarget(url, schema);
+    db = new PrismaClient({ adapter: new PrismaPg({ connectionString: url, max: 5 }, { schema }), transactionOptions: { timeout: 30_000, maxWait: 10_000 } });
+  });
+  afterEach(async () => {
+    await db.executionDispatch.deleteMany({ where: { subjectKind: "workspace_billing", subjectId: { in: workspaces } } });
+    await db.workspace.deleteMany({ where: { id: { in: workspaces } } });
+    await db.user.deleteMany({ where: { id: { in: users } } });
+    users.length = workspaces.length = 0;
+  });
+  afterAll(async () => { await db.$disconnect(); });
+  async function fixture(dueAt = new Date(0)) {
+    const user = await db.user.create({ data: { clerkId: `billing-dispatch:${crypto.randomUUID()}` } }); users.push(user.id);
+    const workspace = await db.workspace.create({ data: { name: "Billing dispatch gate", ownerUserId: user.id,
+      billingAccount: { create: { nextReconcileAt: dueAt } } } }); workspaces.push(workspace.id);
+    return workspace;
+  }
+  test("billing changes and their next wake commit or roll back together", async () => {
+    const workspace = await fixture();
+    const delivered: string[][] = [];
+    const options = { database: db, deliver: async (ids: readonly string[]) => { delivered.push([...ids]); } };
+    const reference = await withExecutionDispatches(() => db.$transaction(tx => queueBillingReconciliation(tx, workspace.id)), options);
+    expect(delivered).toEqual([[reference.dispatchId]]);
+    expect(await readExecutionDispatch(db, reference.dispatchId)).toMatchObject({ reference, dueAt: new Date(0) });
+    const before = await db.workspaceBillingAccount.findUniqueOrThrow({ where: { workspaceId: workspace.id } });
+    await expect(withExecutionDispatches(() => db.$transaction(async tx => {
+      await tx.workspaceBillingAccount.update({ where: { workspaceId: workspace.id }, data: { nextReconcileAt: new Date(1000) } });
+      await queueBillingReconciliation(tx, workspace.id);
+      throw new Error("injected_billing_rollback");
+    }), options)).rejects.toThrow("injected_billing_rollback");
+    expect(await db.workspaceBillingAccount.findUniqueOrThrow({ where: { workspaceId: workspace.id } })).toMatchObject({ reconciliationGeneration: before.reconciliationGeneration, nextReconcileAt: before.nextReconcileAt });
+    expect(await db.executionDispatch.count({ where: { subjectId: workspace.id } })).toBe(1);
+    expect(delivered).toHaveLength(1);
+  });
+  test("one exact due account owns provider work and registers expiry before calling it", async () => {
+    const workspace = await fixture(new Date(Date.now() + 60_000));
+    let reference = await db.$transaction(tx => queueBillingReconciliation(tx, workspace.id));
+    let providerCalls = 0, registrations = 0;
+    let release!: () => void;
+    const barrier = new Promise<void>(resolve => { release = resolve; });
+    let started!: () => void;
+    const entered = new Promise<void>(resolve => { started = resolve; });
+    const driver = createBillingReconciliation({ database: db, leaseMs: 60_000,
+      register: async ids => { expect(ids.length).toBeGreaterThan(0); registrations++; },
+      reconcile: async claim => {
+        expect(registrations).toBeGreaterThan(0); providerCalls++; started(); await barrier;
+        await db.$transaction(async tx => {
+          const row = await tx.workspaceBillingAccount.updateMany({ where: { workspaceId: claim.workspaceId, reconcileAttemptId: claim.attemptId },
+            data: { reconcileAttemptId: null, leaseExpiresAt: null, nextReconcileAt: new Date(Date.now() + 86_400_000) } });
+          expect(row.count).toBe(1);
+          await queueBillingReconciliation(tx, claim.workspaceId);
+        });
+      },
+    });
+    expect((await driver.run(reference)).kind).toBe("sleep");
+    expect(providerCalls).toBe(0);
+    expect((await driver.run({ ...reference, generation: reference.generation + 1 })).kind).toBe("superseded");
+    reference = await db.$transaction(async tx => {
+      await tx.workspaceBillingAccount.update({ where: { workspaceId: workspace.id }, data: { nextReconcileAt: new Date(0) } });
+      return queueBillingReconciliation(tx, workspace.id);
+    });
+    const first = driver.run(reference);
+    await entered;
+    expect((await driver.run(reference)).kind).toBe("wait");
+    expect(providerCalls).toBe(1);
+    release();
+    expect((await first).kind).toBe("complete");
+    expect((await driver.run(reference)).kind).toBe("superseded");
+    expect(providerCalls).toBe(1);
+    expect(await db.workspaceBillingAccount.findUniqueOrThrow({ where: { workspaceId: workspace.id } })).toMatchObject({ reconcileAttemptId: null, leaseExpiresAt: null, attemptCount: 1 });
+  });
+  test("registration failure releases an unstarted account before the same dispatch retries", async () => {
+    const workspace = await fixture();
+    const reference = await db.$transaction(tx => queueBillingReconciliation(tx, workspace.id));
+    let refuse = true, calls = 0;
+    const driver = createBillingReconciliation({ database: db, leaseMs: 60_000,
+      register: async () => { if (refuse) throw new Error("scheduler_unconfirmed"); },
+      reconcile: async claim => { calls++; await db.$transaction(async tx => {
+        await tx.workspaceBillingAccount.update({ where: { workspaceId: claim.workspaceId }, data: { nextReconcileAt: new Date(Date.now() + 60_000) } });
+        await queueBillingReconciliation(tx, claim.workspaceId);
+      }); },
+    });
+    await expect(driver.run(reference)).rejects.toThrow("scheduler_unconfirmed");
+    expect(calls).toBe(0);
+    expect(await db.workspaceBillingAccount.findUniqueOrThrow({ where: { workspaceId: workspace.id } })).toMatchObject({ reconcileAttemptId: null, leaseExpiresAt: null, attemptCount: 0 });
+    refuse = false;
+    expect((await driver.run(reference)).kind).toBe("complete");
+    expect(calls).toBe(1);
+  });
+  test("the real billing store verifies provider state and commits its next reconciliation wake", async () => {
+    const workspace = await fixture();
+    await db.workspaceBillingAccount.update({ where: { workspaceId: workspace.id }, data: { providerCustomerId: `cus_${workspace.id}` } });
+    const reference = await db.$transaction(tx => queueBillingReconciliation(tx, workspace.id));
+    const context = createDatabaseTestContext(); context.client = db;
+    let calls = 0;
+    let targetWorkspaceId = workspace.id, fenceOnReply = false;
+    const catalog = createBillingCatalog({
+      basePrices: (["creator", "pro", "business"] as const).flatMap(tier => (["monthly", "annual"] as const).map(interval => ({ priceId: `price_${tier}_${interval}`, tier, interval }))),
+      seatPrices: [{ priceId: "price_seat_monthly", interval: "monthly" }, { priceId: "price_seat_annual", interval: "annual" }],
+      worker: { batchSize: 1, concurrency: 1, leaseMs: 60_000, providerDeadlineMs: 10_000, providerCallBudget: 4 },
+    });
+    const run = context.bind(async () => {
+      const module = createWorkspaceBillingModule({ catalog, store: createPrismaWorkspaceBillingStore(), clock: { now: () => new Date() }, diagnostics: { record() {} },
+        provider: { verifyDelivery() { throw new Error("unused"); }, retrieveCurrentState: async customerId => {
+          calls++;
+          if (fenceOnReply) await db.executionEpoch.update({ where: { id: 1 }, data: { epoch: { increment: 1 } } });
+          return { customerId, ownership: { kind: "verified", workspaceId: targetWorkspaceId }, subscriptions: [] };
+        } } });
+      return createBillingReconciliation({ database: db, leaseMs: 60_000, register: async () => {}, reconcile: claim => module.reconcileClaim(claim) });
+    });
+    const driver = await run();
+    const invoke = context.bind(() => driver.run(reference));
+    expect((await invoke()).kind).toBe("complete");
+    expect(calls).toBe(1);
+    const account = await db.workspaceBillingAccount.findUniqueOrThrow({ where: { workspaceId: workspace.id } });
+    expect(account).toMatchObject({ reconciliationGeneration: 2, health: "current", reconcileAttemptId: null, leaseExpiresAt: null });
+    expect(account.nextReconcileAt.getTime()).toBeGreaterThan(Date.now());
+    expect(await db.executionDispatch.findFirst({ where: { subjectId: workspace.id, generation: 2 } })).not.toBeNull();
+
+    const stale = await fixture();
+    await db.workspace.update({ where: { id: stale.id }, data: { pricingTier: "creator" } });
+    await db.workspaceBillingAccount.update({ where: { workspaceId: stale.id }, data: { providerCustomerId: `cus_${stale.id}` } });
+    const staleReference = await db.$transaction(tx => queueBillingReconciliation(tx, stale.id));
+    targetWorkspaceId = stale.id; fenceOnReply = true;
+    await context.bind(() => driver.run(staleReference))();
+    expect((await db.workspace.findUniqueOrThrow({ where: { id: stale.id } })).pricingTier).toBe("creator");
+    expect((await db.workspaceBillingAccount.findUniqueOrThrow({ where: { workspaceId: stale.id } })).reconciliationGeneration).toBe(1);
+    expect((await driver.run(staleReference)).kind).toBe("superseded");
+  });
+});

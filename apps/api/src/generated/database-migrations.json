@@ -134,5 +134,6 @@
   "20261030170000_transcript_provider_submission",
   "20261031010000_serverless_execution",
   "20261031020000_clip_preparation",
-  "20261031030000_render_preparation_input"
+  "20261031030000_render_preparation_input",
+  "20261031050000_billing_reconciliation"
 ]

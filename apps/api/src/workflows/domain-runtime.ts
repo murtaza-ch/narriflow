@@ -7,6 +7,7 @@ import { getOutboundProbeService } from "@narriflow/services/outbound-probe-runt
 import { getOutboundDeliveryService } from "@narriflow/services/outbound-delivery-runtime";
 import { getClipSelectionControl } from "@narriflow/services/clip-selection-runtime";
 import { getGeneratedMediaExecution } from "@narriflow/services/generated-media-runtime";
+import { getBillingReconciliation } from "@narriflow/services/billing-reconciliation-runtime";
 import { createWorkspaceNotificationDispatcher, isCurrentNotificationTarget } from "@narriflow/services/notification-dispatch";
 import { prepareIngestSourceExecution } from "@narriflow/services/ingest-source-execution";
 import { getIngestJobLifecycle } from "@narriflow/services/ingest-job-lifecycle-runtime";
@@ -116,6 +117,12 @@ export function workflowDomainRegistry(bindings: ApiWorkerBindings): WorkflowHan
     return result.kind === "wait" ? { type: "wait", until: result.dueAt.toISOString(), deliveryId: reference.dispatchId }
       : { type: "complete", disposition: result.outcome === "superseded" ? "superseded" : "terminal" };
   };
+  const billing: WorkflowCommandHandler = async ({ reference }) => {
+    const result = await getBillingReconciliation().run(reference);
+    if (result.kind === "sleep") return { type: "sleep", until: result.dueAt.toISOString() };
+    if (result.kind === "wait") return { type: "wait", until: result.dueAt.toISOString(), deliveryId: reference.dispatchId };
+    return { type: "complete", disposition: result.kind === "superseded" ? "superseded" : "terminal" };
+  };
   const notification: WorkflowCommandHandler = async ({ reference }) => {
     const database = getPrismaClient();
     if (!database) throw new Error("Notification driver requires a database scope");
@@ -148,6 +155,6 @@ export function workflowDomainRegistry(bindings: ApiWorkerBindings): WorkflowHan
   return { project_progress: { maintenance: progress, workflow_event: progress },
     import_pipeline: { ingest_job: native },
     operation_driver: { native_validation: native, thumbnail_frame: native, outbound_probe: native, outbound_delivery: native, generated_media: native, ingest_job: native,
-      workflow_run: workflow, clip_selection_window: selectionWindow, completion_callback: notification, webhook_subscription: notification,
+      workflow_run: workflow, clip_selection_window: selectionWindow, workspace_billing: billing, completion_callback: notification, webhook_subscription: notification,
       workspace_event: notificationEvents, maintenance: notificationEvents } };
 }
