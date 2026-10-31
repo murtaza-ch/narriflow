@@ -133,13 +133,13 @@ export interface RenderGroupExecutionCharge {
 
 export interface RenderGroupChargeTransition {
   readonly charged: boolean;
-  readonly delta: -1 | 0 | 1;
+  readonly delta: 0 | 1;
   readonly chargedAttemptCount: number;
 }
 
 /** Applied with the ledger write under the group lock, once per token.
- * Claim/pre-start failure costs zero; a durable start costs one. Expiry keeps
- * that charge. Graceful shutdown refunds even a started execution. */
+ * Claim/pre-start failure costs zero; a durable start costs one. Release and
+ * expiry retain that charge, including graceful shutdown. */
 export function renderGroupChargeTransition(
   count: number,
   execution: RenderGroupExecutionCharge,
@@ -152,8 +152,8 @@ export function renderGroupChargeTransition(
   if (execution.finishedAt !== null) {
     return { charged: execution.charged, delta: 0, chargedAttemptCount: count };
   }
-  const charged = action === "start" ? true : action === "release" ? false : execution.charged;
-  const delta = (Number(charged) - Number(execution.charged)) as -1 | 0 | 1;
+  const charged = action === "start" || execution.charged;
+  const delta = (Number(charged) - Number(execution.charged)) as 0 | 1;
   const chargedAttemptCount = count + delta;
   assertAttemptCount(chargedAttemptCount);
   return { charged, delta, chargedAttemptCount };

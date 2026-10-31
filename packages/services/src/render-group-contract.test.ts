@@ -101,11 +101,11 @@ describe("Render Group charged starts", () => {
     expect(renderGroupChargeTransition(1, started, "start").delta).toBe(0);
     expect(renderGroupChargeTransition(1, started, "expire").chargedAttemptCount).toBe(1);
   });
-  test("graceful shutdown refunds a started token exactly once", () => {
-    expect(renderGroupChargeTransition(1, started, "release")).toEqual({ charged: false, delta: -1, chargedAttemptCount: 0 });
-    const released = { ...started, charged: false, finishedAt: now };
-    expect(renderGroupChargeTransition(0, released, "release").delta).toBe(0);
-    expect(renderGroupChargeTransition(0, released, "start").delta).toBe(0);
+  test("graceful shutdown retains a started token's charge through replay", () => {
+    expect(renderGroupChargeTransition(1, started, "release")).toEqual({ charged: true, delta: 0, chargedAttemptCount: 1 });
+    const released = { ...started, finishedAt: now };
+    expect(renderGroupChargeTransition(1, released, "release").delta).toBe(0);
+    expect(renderGroupChargeTransition(1, released, "start").delta).toBe(0);
   });
   test("an exhausted group cannot start a fourth charged attempt", () => {
     expect(() => renderGroupChargeTransition(3, unstarted, "start")).toThrow();
