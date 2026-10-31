@@ -1,0 +1,40 @@
+{
+  "date": "2026-11-01",
+  "runtime": "Bun1.3.6",
+  "versions": {
+    "happy-dom": "21.0.4",
+    "fast-uri": "3.1.7",
+    "zod": "4.6.7"
+  },
+  "changes": [
+    "Raised direct Zod minimums to4.6.7 and used the repository override policy for all copies, including Chakra CLI basic schema parsing",
+    "Updated Happy DOM past the advisory fix and fast-uri within its current major",
+    "Refreshed public OpenAPI to include the required frozen social scheduleRevision",
+    "Bundle-import tests use a fresh Bun process: the pinned in-process Bun test resolver failed despite a successful independent build and import"
+  ],
+  "verification": {
+    "productionHighSeverityAuditExit": 0,
+    "chakraTypegenExit": 0,
+    "frozenInstallExit": 0,
+    "workspaceTypechecksPassed": 15,
+    "publicOpenApiOperations": 32,
+    "mountedRoutes": 296,
+    "routePolicyProblems": 0
+  },
+  "advisories": [
+    "https://github.com/advisories/GHSA-834v-8h66-3h79",
+    "https://github.com/advisories/GHSA-c8p4-j97h-3vg8",
+    "https://github.com/advisories/GHSA-qw65-cvwx-89v3",
+    "https://github.com/advisories/GHSA-58mr-gqgx-xq4g",
+    "https://github.com/advisories/GHSA-mrhx-c7xc-m3w5"
+  ],
+  "logHashes": {
+    "security-patch-production-audit.log": "84bf4288524f3f6f2b6f3a331c7ea5cf45fa3b6dd1ff74afc4004edd7dccf069",
+    "security-patch-chakra-typegen.log": "1a1d8b988542f777250b80ab8b28d8bac4563113e265bcd148f71cdb8c9bfde6",
+    "security-patch-typecheck.log": "9fcd73c710e5b51877e52c06862d13caf2d8e172908a81b80e2e82dd70e2e4b7",
+    "security-patch-frozen-install.log": "41bff4f4c2f8bb2e689df095ac1d47893d383f3b0b9a55e90dc6ac47f3b537e6",
+    "deletion-openapi-check.log": "be692bcd1f036588ed56837637dfdbad9b4364e3579755e698459b5e0f0800ef",
+    "deletion-route-inventory.log": "c8defca3edb484fcc9c1daa4a7b11421d6b3e99a91e6bf421bdc34126c4d8c25"
+  },
+  "open": "Full exact release-SHA fast/native/database verification is still required after remaining deletions."
+}
