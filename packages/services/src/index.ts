@@ -489,14 +489,11 @@ export {
 	workflowHttpFailureDisposition,
 	rethrowWorkflowAttemptLost,
 	WORKFLOW_LEASE_DURATION_MS,
-	WORKFLOW_HEARTBEAT_INTERVAL_MS,
+	type WorkflowAttemptContext,
 	WORKFLOW_MAX_ATTEMPTS,
 	WORKFLOW_RETRIES_EXHAUSTED_CODE,
 	type WorkflowAttemptRef,
 	type WorkflowExecutionReference,
-	type ClaimedWorkflowAttempt,
-	type WorkflowAttemptContext,
-	type WaitingWorkflowAttempt,
 	type ProviderAttemptReference,
 	type ProviderSubmissionIntent,
 	type ProviderIds,
@@ -511,7 +508,6 @@ export {
 	type WorkflowFailureDisposition,
 	type CompleteTranscriptInput,
 	type AdmitWorkflowRunInput,
-	workerShutdownDrainMs,
 } from "./workflow-run-lifecycle";
 export { finalizeScribeTranscript } from "./scribe-transcript-runtime";
 export { scribeRawStorageKey, type FinalizeScribeTranscriptInput } from "./scribe-transcript";

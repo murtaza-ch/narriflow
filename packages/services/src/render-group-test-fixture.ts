@@ -3,66 +3,83 @@
 import { randomUUID } from "node:crypto";
 import type { Prisma, PrismaClient } from "@prisma/client";
 import { RenderGroupLifecycle } from "./render-group-lifecycle";
-import type { ClaimedRenderGroupAttempt } from "./render-group-contract";
 import { WorkflowRunLifecycle, type WorkflowAttemptRef, WorkflowAttemptLost } from "./workflow-run-lifecycle";
+import type { ExecutionDispatchReference } from "@narriflow/validators/execution";
+import { readExecutionDispatch } from "./execution-dispatch";
+import { acquireFixtureRenderGroup, prepareFixtureSource } from "./render-execution-test-fixture";
 
 export class RenderFixtureLifecycle extends WorkflowRunLifecycle {
   readonly fixturePrisma: PrismaClient;
   readonly fixtureGroups: RenderGroupLifecycle;
-  private readonly claims = new Map<string, Promise<ClaimedRenderGroupAttempt>>();
+  private readonly parents = new Map<string, ExecutionDispatchReference>();
+  private readonly claims = new Map<string, Promise<Awaited<ReturnType<typeof acquireFixtureRenderGroup>>>>();
   constructor(deps: ConstructorParameters<typeof WorkflowRunLifecycle>[0] & { prisma: PrismaClient }) {
     super(deps);
     this.fixturePrisma = deps.prisma;
     this.fixtureGroups = new RenderGroupLifecycle({ prisma: deps.prisma, leaseOwner: randomUUID() });
   }
-  override async beginRenderWorkSet(attempt: WorkflowAttemptRef) {
-    const workSet = await super.beginRenderWorkSet(attempt);
-    await this.prepareGroups(attempt);
-    return workSet;
+  /** Select controlled fixture data, then use the production exact reference.
+   * The UUID below is a test handle, never a parent execution or charged claim. */
+  async claim(stage: string) {
+    if (stage !== "clip_rendering") throw Error(`Use a targeted ${stage} fixture`);
+    const run = await this.fixturePrisma.workflowRun.findFirst({ where: { stage, status: { in: ["queued", "waiting"] } }, orderBy: [{ createdAt: "asc" }, { id: "asc" }], include: { project: true } });
+    if (!run) return null;
+    const reference = (await this.fixturePrisma.$transaction(tx => this.dispatchRunWithinTransaction(tx, run.id))).reference;
+    this.parents.set(reference.dispatchId, reference);
+    return { workflowRunId: run.id, projectId: run.projectId, stage: "clip_rendering" as const, attemptId: reference.dispatchId, attemptCount: 0,
+      contentPackId: run.contentPackId, progress: run.progress, status: run.status, leaseExpiresAt: null, project: run.project };
+  }
+  async assertOwnership(attempt: WorkflowAttemptRef) {
+    const reference = this.parents.get(attempt.attemptId);
+    if (!reference || reference.subject.id !== attempt.workflowRunId || attempt.stage !== "clip_rendering") throw new WorkflowAttemptLost(attempt);
+  }
+  async referenceFor(attempt: WorkflowAttemptRef) {
+    await this.assertOwnership(attempt);
+    return this.parents.get(attempt.attemptId)!;
+  }
+  async beginRenderWorkSet(attempt: WorkflowAttemptRef) {
+    await this.assertOwnership(attempt);
+    const prepared = await this.prepareRenderRun(this.parents.get(attempt.attemptId)!);
+    if (prepared.kind === "superseded") throw new WorkflowAttemptLost(attempt);
+    const run = await this.fixturePrisma.workflowRun.findUniqueOrThrow({ where: { id: attempt.workflowRunId } });
+    if (!run.renderWorkSetFrozenAt) throw Error("Render work set not prepared");
+    return { workflowRunId: run.id, frozenAt: run.renderWorkSetFrozenAt,
+      variantIds: (await this.fixturePrisma.clipRender.findMany({ where: { workflowRunId: run.id }, orderBy: [{ createdAt: "asc" }, { id: "asc" }], select: { id: true } })).map(row => row.id) };
   }
   async prepareGroups(attempt: WorkflowAttemptRef) {
-    await this.assertOwnership(attempt);
-    const parent = await this.fixturePrisma.workflowRun.findUniqueOrThrow({ where: { id: attempt.workflowRunId } });
-    if (parent.renderWorkSetGeneration) return [];
-    const rows = await this.fixturePrisma.clipRender.findMany({ where: { workflowRunId: attempt.workflowRunId }, include: { clip: true, exportVariant: { include: { export: true } } } });
-    const groups = new Map<string, typeof rows>();
-    for (const row of rows) {
-      const key = `${row.clipId}:${row.exportVariant?.exportId ?? "auto"}:${row.resolution}`;
-      groups.set(key, [...(groups.get(key) ?? []), row]);
-    }
-    return this.admitRenderGroups(attempt, [...groups.values()].map((members) => {
-      const row = members[0]!;
-      return { configuration: { clipId: row.clipId, exportId: row.exportVariant?.exportId ?? null,
-        editorRevision: row.editorRevision ?? row.clip.editorRevision, resolution: row.resolution as "720p" | "1080p",
-        watermark: row.exportVariant?.watermark ?? false }, variantIds: members.map((m) => m.id) };
-    }));
+    await this.beginRenderWorkSet(attempt);
+    return this.fixturePrisma.renderGroup.findMany({ where: { workflowRunId: attempt.workflowRunId } });
   }
   async groupFor(attempt: WorkflowAttemptRef, id: string) {
     await this.assertOwnership(attempt);
     if (attempt.stage !== "clip_rendering") throw new WorkflowAttemptLost(attempt);
+    await prepareFixtureSource(this.fixturePrisma, attempt.projectId);
     await this.prepareGroups(attempt);
     const member = await this.fixturePrisma.renderGroupMember.findFirst({ where: { workflowRunId: attempt.workflowRunId, clipRenderId: id } });
     if (!member) throw new WorkflowAttemptLost(attempt);
     let pending = this.claims.get(member.groupId);
     if (!pending) {
       pending = (async () => {
-        const group = await this.fixtureGroups.claim({ groupId: member.groupId });
-        if (!group) throw new WorkflowAttemptLost(attempt);
-        await this.fixtureGroups.start({ ...group, sourceFingerprint: "fixture-source", analysisFingerprint: null, toolchainFingerprint: "fixture-toolchain" });
-        return group;
+        const group = await this.fixturePrisma.renderGroup.findUniqueOrThrow({ where: { id: member.groupId } });
+        const row = await this.fixturePrisma.executionDispatch.findFirstOrThrow({ where: { kind: "operation_driver", subjectKind: "render_group", subjectId: group.id,
+          generation: group.generation, deploymentEpoch: group.deploymentEpoch, wakeKind: null, deadlineKind: null } });
+        return acquireFixtureRenderGroup(this.fixturePrisma, (await readExecutionDispatch(this.fixturePrisma, row.id))!.reference);
       })();
       this.claims.set(member.groupId, pending);
     }
     return pending;
   }
   async markClipRenderVariantRendering(attempt: WorkflowAttemptRef, id: string) {
-    return this.fixtureGroups.markClipRenderVariantRendering(await this.groupFor(attempt, id), id);
+    const row = await this.fixturePrisma.clipRender.findFirst({ where: { id, workflowRunId: attempt.workflowRunId } });
+    if (!row || row.status === "completed" || row.status === "failed" && row.failureDisposition !== "retryable") return false;
+    await this.groupFor(attempt, id);
+    return true;
   }
   async completeClipRenderVariant(attempt: WorkflowAttemptRef, id: string, input: Parameters<RenderGroupLifecycle["completeClipRenderVariant"]>[2]) {
-    return this.fixtureGroups.completeClipRenderVariant(await this.groupFor(attempt, id), id, input);
+    return (await this.groupFor(attempt, id)).complete(id, input);
   }
   async failClipRenderVariant(attempt: WorkflowAttemptRef, id: string, code: string, disposition: "retryable" | "permanent") {
-    return this.fixtureGroups.failClipRenderVariant(await this.groupFor(attempt, id), id, code, disposition);
+    return (await this.groupFor(attempt, id)).fail(id, code, disposition);
   }
   async completeClipAutoLayoutAnalysis(attempt: WorkflowAttemptRef, input: Evidence) { return this.writeEvidence(attempt, input, "automatic"); }
   async completeClipSplitLayoutAnalysis(attempt: WorkflowAttemptRef, input: Evidence) { return this.writeEvidence(attempt, input, "split"); }
@@ -72,12 +89,14 @@ export class RenderFixtureLifecycle extends WorkflowRunLifecycle {
   private async writeEvidence(attempt: WorkflowAttemptRef, input: Evidence, field: "automatic" | "split" | "screen") {
     const variant = await this.fixturePrisma.clipRender.findFirst({ where: { workflowRunId: attempt.workflowRunId, clipId: input.clipId, status: "rendering" } });
     if (!variant) throw new WorkflowAttemptLost(attempt);
-    return this.fixtureGroups.writeLayoutEvidence(await this.groupFor(attempt, variant.id), { ...input, evidence: (input.analysis ?? input.failure)!, field });
+    const context = await this.groupFor(attempt, variant.id);
+    return new RenderGroupLifecycle({ prisma: this.fixturePrisma, leaseOwner: context.attempt.owner }).writeLayoutEvidence(context.attempt, { ...input, evidence: (input.analysis ?? input.failure)!, field });
   }
   async finishGroups() {
     for (const [id, pending] of this.claims) {
       const group = await pending;
-      await this.fixtureGroups.finish({ ...group, result: "completed", errorCode: null, failureDisposition: null });
+      const current = await this.fixturePrisma.renderGroup.findUnique({ where: { id } });
+      if (current?.attemptToken === group.fence.attemptToken) await group.send({ action: "fail", fence: group.fence, failureCode: "fixture_interrupted", retryable: true });
       this.claims.delete(id);
     }
   }
@@ -85,9 +104,12 @@ export class RenderFixtureLifecycle extends WorkflowRunLifecycle {
     await this.finishGroups();
     await this.fixturePrisma.renderGroup.updateMany({ where: { workflowRunId, status: "queued" }, data: { nextAttemptAt: new Date(0) } });
   }
-  override async settleRenderWorkSet(attempt: WorkflowAttemptRef) {
+  async settleRenderWorkSet(attempt: WorkflowAttemptRef) {
     await this.finishGroups();
-    return super.settleRenderWorkSet(attempt);
+    await this.assertOwnership(attempt);
+    const settled = await this.settleRenderRun(this.parents.get(attempt.attemptId)!);
+    if (settled.kind !== "settled") throw new WorkflowAttemptLost(attempt);
+    return settled.outcome;
   }
 }
 type Evidence = { clipId: string; editorRevision: number; previewStorageKey: string; analysis?: Prisma.InputJsonValue; failure?: Prisma.InputJsonValue };
