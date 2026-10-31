@@ -280,6 +280,7 @@
       "types": "./src/content-suite.service.ts",
       "default": "./src/content-suite.service.ts"
     },
+    "./dubbing-policy": "./src/dubbing-policy.ts",
     "./dubbing.service": {
       "types": "./src/dubbing.service.ts",
       "default": "./src/dubbing.service.ts"

@@ -165,6 +165,8 @@ export const USER_ERROR_MESSAGES: Record<string, string> = {
 	dubbing_failed: "Voiceover dubbing didn't complete. Please try again.",
 	dub_failed: "Voiceover dubbing didn't complete. Please try again.",
 	dubbing_run_failed: "Voiceover dubbing didn't complete. Please try again.",
+	dubbing_outcome_unknown: "Dubbing outcome needs review. This request will not be repeated automatically.",
+	dub_provider_outcome_unknown: "Dubbing outcome needs review. This request will not be repeated automatically.",
 	// L10: `music_download_failed`/`sfx_download_failed` are RESERVED — render-
 	// clips.ts's music/SFX download failures are log-and-skip (the track is
 	// silently dropped from the render, never fails the clip; see the

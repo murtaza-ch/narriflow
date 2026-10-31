@@ -60,6 +60,7 @@
       "types": "./src/export-bundle-execution.ts",
       "default": "./src/export-bundle-execution.ts"
     },
+    "./dubbing-execution": "./src/dubbing-execution.ts",
     "./publication-input": "./src/publication-input.ts"
   },
   "scripts": {

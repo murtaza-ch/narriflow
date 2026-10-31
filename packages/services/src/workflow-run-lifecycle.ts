@@ -34,7 +34,7 @@ import {
 import { queueExportsFinishedByRun, queueFinishedGenerations } from "./operation-finished";
 import { flushWorkspaceEvents } from "./workspace-event";
 import { takeExecutionDispatchIds } from "./execution-dispatch-runtime";
-import { finalizeGenerationUsage, releaseFailedDubUsage } from "./generated-media-usage-ledger";
+import { finalizeGenerationUsage, releaseFailedDubUsage, lockGenerationUsage } from "./generated-media-usage-ledger";
 import { appendWorkflowEvent, type WorkflowEventInput } from "./workflow-event-append";
 import { flushProjectProgressDrains, queueProjectProgressCatchup } from "./progress-outbox";
 import { progressDeliveryPort } from "./progress-delivery";
@@ -1000,6 +1000,11 @@ export class WorkflowRunLifecycle {
     const admit = async (tx: TransactionClient) => {
       // A caller transaction is an already admitted parent's atomic handoff.
       const admission = transactionClient ? null : await readExecutionAdmission(tx);
+      if (input.stage === "dubbing") {
+        const project = await tx.project.findUniqueOrThrow({ where: { id: input.projectId }, select: { workspaceId: true } });
+        await lockWorkspaceUsage(tx, project.workspaceId);
+        await lockGenerationUsage(tx, project.workspaceId);
+      }
       await this.lockAdmissionProject(tx, input.projectId);
       const existing = await tx.workflowRun.findUnique({
         where: { projectId_idempotencyKey: { projectId: input.projectId, idempotencyKey: input.idempotencyKey } },
@@ -3520,7 +3525,7 @@ export class WorkflowRunLifecycle {
         where: {
           projectId: attempt.projectId,
           OR: [
-            { workflowAttemptId: attempt.attemptId, status: { in: ["processing", "failed"] } },
+            { workflowAttemptId: attempt.attemptId, status: { in: outcome.requeue ? ["processing", "failed"] : ["processing"] } },
             // Only one dubbing run may be live for a Project. A terminal
             // failure also owns queued siblings it never reached.
             ...(!outcome.requeue ? [{ workflowAttemptId: null, status: "queued" as const }] : []),

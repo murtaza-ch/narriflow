@@ -65,3 +65,20 @@ typechecks pass. These are local controlled-port gates; API/Modal registration,
 actual Linux/Modal and large archive memory gates remain open. Dubbing replacement
 is still in progress. The database runner now rejects nonexistent named suites
 before migration so a mistyped gate cannot silently run fewer files.
+
+Dubbing admission now creates a new accepted Clip Dub and reservation for each
+deliberately repeated known failure. Prior failed accounting is retained. A raw
+partial unique index permits failed history while keeping one current queued,
+processing, completed or unknown tuple. The accepted Workflow Run is linked by
+an exact project-scoped foreign key and remains the sole execution owner. Source
+render identity, script, language, voice, models and revisions freeze in the same
+admission transaction; the existing transcript policy has one shared pure owner.
+Unknown paid outcomes remain counted and reject a new request for the tuple.
+
+Generation usage, bundle and Workflow PostgreSQL regressions pass39/276 across
+three fresh-schema suites, including new frozen request/history and mixed older
+failed/current unknown cases. Existing worker policy/error copy cases pass26/106.
+Services typecheck passes. Migration014 has only run in disposable schemas.
+The native paid-intent/result, scoped recovery, mix/publication and deployed
+dubbing gates remain required; this admission checkpoint does not register a
+dubbing function.
