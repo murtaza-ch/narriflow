@@ -19,7 +19,7 @@ async function requireRestoreProof(tx: Tx, proof: ExportBundleRestoreProof) {
 
 /** Called only by the quiesced restore page, after the parent and historical
  * permissions have been fenced. Live preparation cannot rebind an old epoch. */
-export async function restoreExportBundleWithinTransaction(tx: Tx, bundleId: string, proof: ExportBundleRestoreProof): Promise<{ dispatchIds: string[] }> {
+export async function restoreExportBundleWithinTransaction(tx: Tx, bundleId: string, proof: ExportBundleRestoreProof, options: { deferDispatch?: boolean } = {}): Promise<{ dispatchIds: string[] }> {
   await requireRestoreProof(tx, proof);
   const initial = await tx.exportBundle.findUnique({ where: { id: bundleId }, select: { workflowRunId: true, operation: { select: { projectId: true, workspaceId: true } } } });
   if (!initial) return { dispatchIds: [] };
@@ -41,6 +41,7 @@ export async function restoreExportBundleWithinTransaction(tx: Tx, bundleId: str
   if (bundle.deploymentEpoch < proof.deploymentEpoch) await tx.exportBundle.update({ where: { id: bundle.id }, data: { deploymentEpoch: proof.deploymentEpoch,
     status: "queued", attemptStorageKey: null, inputBindingHash: null, inputStorageKey: null, inputEtag: null, inputByteLength: null, inputChecksumSha256: null } });
   if (!run.operationDeadlineAt) await tx.workflowRun.update({ where: { id: run.id }, data: { operationDeadlineAt: bundle.operationDeadlineAt } });
+  if (options.deferDispatch) return { dispatchIds: [] };
   const driver = await appendWorkflowRunDispatch(tx, run.id);
   const watchdog = await appendExecutionDispatch(tx, { ...driver.reference, dueAt: bundle.operationDeadlineAt, deadlineKind: "operation", observedDeadlineAt: bundle.operationDeadlineAt });
   const dispatchIds = [driver.reference.dispatchId, watchdog.reference.dispatchId];
@@ -88,8 +89,8 @@ export async function restoreExportBundlesPage(tx: Tx, page: ExecutionRestorePag
       AND bundle."createdAt"<=(${page.cutoff}::timestamptz AT TIME ZONE 'UTC') ${after} ORDER BY bundle."createdAt",bundle.id LIMIT ${limit + 1}`;
   const selected = rows.slice(0, limit);
   await lockPageParents(tx, selected);
-  for (const row of selected) await restoreExportBundleWithinTransaction(tx, row.id, page);
-  return { processed: selected.length, next: rows.length > limit ? { at: selected.at(-1)!.at, id: selected.at(-1)!.id } : null, dispatchIds: takeExecutionDispatchIds(tx) };
+  for (const row of selected) await restoreExportBundleWithinTransaction(tx, row.id, page, { deferDispatch: true });
+  return { processed: selected.length, next: rows.length > limit ? { at: selected.at(-1)!.at, id: selected.at(-1)!.id } : null, dispatchIds: [] };
 }
 
 /** Repairs known accepted obligations without admitting another native owner. */
