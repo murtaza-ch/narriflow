@@ -305,6 +305,8 @@ export async function inspectAudioTimestampGaps(
   request: {
     sourcePath: string;
     inspection: Pick<WorkerMediaInspection, "hasAudio" | "facts">;
+    /** Local-only preparation/extraction forbids network media protocols. */
+    localOnly?: boolean;
     /** The clip window on the source clock, as the render seeks it. */
     startSec: number;
     endSec: number;

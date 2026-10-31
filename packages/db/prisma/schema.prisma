@@ -684,6 +684,12 @@ enum RenderGroupVariantResult {
 /// A partition of one fixed Render Work Set, never another Workflow Run.
 /// clipId and exportIdentity are historical identities, not mutable inputs.
 model RenderGroup {
+  preparationId         String?           @db.Uuid
+  inputStorageKey       String?           @db.VarChar(1024)
+  inputEtag             String?           @db.VarChar(160)
+  inputByteLength       BigInt?
+  inputChecksumSha256   String?           @db.Char(64)
+  preparation           ClipPreparation?  @relation(fields: [preparationId], references: [id], onDelete: NoAction, onUpdate: Restrict)
   id                    String            @id @default(uuid()) @db.Uuid
   deploymentEpoch       Int               @default(1)
   generation            Int               @default(1)
@@ -710,6 +716,7 @@ model RenderGroup {
   executions       RenderGroupExecution[] @relation("RenderGroupExecutions")
   currentExecution RenderGroupExecution?  @relation("CurrentRenderGroupExecution", fields: [attemptToken, id], references: [token, groupId], onDelete: NoAction, onUpdate: Restrict)
 
+  @@index([preparationId, status, id])
   @@unique([workflowRunId, workSetGeneration, clipId, exportIdentity], map: "RenderGroup_identity_key")
   @@unique([id, workflowRunId, workSetGeneration])
   @@unique([attemptToken, id])
@@ -3672,6 +3679,7 @@ model OutboundDelivery {
 /// One immutable preview/layout preparation per source/editor/engine binding.
 /// Generic ExecutionAttempt owns invocation authority; this row owns its domain budget.
 model ClipPreparation {
+  renderGroups RenderGroup[]
   id String @id @default(uuid()) @db.Uuid
   projectId String @db.Uuid
   clipId String @db.Uuid
