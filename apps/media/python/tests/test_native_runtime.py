@@ -26,12 +26,24 @@ def instant(seconds): return datetime.fromtimestamp(seconds,timezone.utc).isofor
 
 
 class NativeOperationTests(unittest.IsolatedAsyncioTestCase):
-    async def font_operation(self,mode='success'):
+    async def asset_or_notification_operation(self,mode='success'):
         root=Path(__file__).resolve().parents[4]
         font=root/'packages/caption-fonts/fonts/Inter-SemiBold.ttf'
         payload=font.read_bytes();digest=hashlib.sha256(payload).hexdigest()
         state={'started':False};calls=[];uploads={};outputs=[]
-        for role,mime,limit in [('validated_font','font/ttf',len(payload)),('probe','application/json',65536)]:
+        notification=mode.startswith('notification')
+        event_id,workspace_id=str(uuid4()),str(uuid4())
+        if notification:
+            payload=json.dumps({'id':event_id,'workspaceId':workspace_id}).encode();digest=hashlib.sha256(payload).hexdigest()
+        command={'kind':'signed_notification','deliveryId':str(uuid4()),'eventId':event_id,'workspaceId':workspace_id,'inputHash':'d'*64,
+            'url':'https://127.0.0.1/private-NO-LOG','body':{'source':'notification_body','byteLength':len(payload),'sha256':digest},
+            'headers':{'content-type':'application/json','user-agent':'Narriflow-Callbacks/1','webhook-id':event_id,
+                'webhook-timestamp':str(int(time.time())),'webhook-signature':'v1,'+'a'*43+'='}} if notification else {
+            'kind':'font','expected':{'contentType':'font/ttf','byteLength':len(payload),'sha256':digest}}
+        if mode=='notification_changed_binding':command['body']['sha256']='f'*64
+        function_name='outbound_delivery' if notification else 'asset_validation'
+        roles=[('outbound_receipt','application/json',65536)] if notification else [('validated_font','font/ttf',len(payload)),('probe','application/json',65536)]
+        for role,mime,limit in roles:
             outputs.append({'artifactId':str(uuid4()),'role':role,'contentType':mime,'contentTypes':[mime], 'maxBytes':limit,'bindingHash':'a'*64})
         class Source(BaseHTTPRequestHandler):
             def log_message(self,*args):pass
@@ -47,13 +59,14 @@ class NativeOperationTests(unittest.IsolatedAsyncioTestCase):
             server=ThreadingHTTPServer(('127.0.0.1',0),Source);context=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER);context.load_cert_chain(cert,key)
             server.socket=context.wrap_socket(server.socket,server_side=True);thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
             previous=os.environ.get('CURL_CA_BUNDLE');os.environ['CURL_CA_BUNDLE']=str(cert)
+            command_value=command
             def transport(origin,target,body,headers,timeout):
                 verify_execution_request(signature=json.loads(headers['X-Execution-Signature']),key_ring={'fixture':b'k'*32},audience='executor-control',method='POST',target=target,body=body,now_seconds=int(time.time()))
                 command,now=json.loads(body),time.time();calls.append(command);action=command['action']
                 if action=='acquire':result={'disposition':'acquired','fence':{k:command[k] for k in ['reference','attemptToken','owner']},'serverTime':instant(now),'leaseExpiresAt':instant(now+120),'operationDeadlineAt':instant(now+600)}
-                elif action=='work-package':result={'disposition':'work_package','functionName':'asset_validation','inputHash':'a'*64,
-                    'input':{'kind':'inline','command':{'kind':'font','expected':{'contentType':'font/ttf','byteLength':len(payload),'sha256':digest}}},
-                    'sources':[{'name':'asset_source','storageKey':'frozen/font','etag':'"font"','byteLength':len(payload),'sha256':digest,
+                elif action=='work-package':result={'disposition':'work_package','functionName':function_name,'inputHash':'a'*64,
+                    'input':{'kind':'inline','command':command_value},
+                    'sources':[{'name':'notification_body' if notification else 'asset_source','storageKey':'frozen/font','etag':'"font"','byteLength':len(payload),'sha256':digest,
                         'url':f'https://127.0.0.1:{server.server_port}/font','headers':{'If-Match':'"font"'},'expiresAt':instant(now+90)}], 'outputs':outputs}
                 elif action=='process-start':
                     state['started']=True
@@ -64,7 +77,7 @@ class NativeOperationTests(unittest.IsolatedAsyncioTestCase):
                 elif action=='upload-complete':
                     output=next(v for v in outputs if v['artifactId']==command['artifactId']);result={'disposition':'upload_completed','artifactId':output['artifactId'],'object':{'key':f'execution/{output["artifactId"]}','etag':'"sealed"','byteLength':command['byteLength'],'sha256':command['sha256'],'contentType':output['contentType']}}
                 elif action=='commit-artifact':
-                    if command['artifact']['role']=='probe':state['completed']=True
+                    if command['artifact']['role'] in {'probe','outbound_receipt'}:state['completed']=True
                     if mode=='lost_commit_ack':raise TimeoutError('private commit acknowledgement')
                     result={'disposition':'committed','artifactId':command['artifact']['artifactId']}
                 elif action=='fail':state['failed']=True;result={'disposition':'retry_due','dueAt':instant(now+1)}
@@ -79,13 +92,17 @@ class NativeOperationTests(unittest.IsolatedAsyncioTestCase):
                     return TransferResponse(200,{'ETag':hashlib.md5(body,usedforsecurity=False).hexdigest()},b'')
             client=ExecutionControlClient(origin='https://api.example',key_id='fixture',key=b'k'*32,transport=transport,retry_delay_seconds=0)
             try:
-                invocation={'reference':{'dispatchId':str(uuid4()),'deploymentEpoch':1,'kind':'modal_execution','subject':{'kind':'native_validation','id':str(uuid4())},'generation':1,'inputHash':'a'*64},'attemptToken':str(uuid4())}
+                invocation={'reference':{'dispatchId':str(uuid4()),'deploymentEpoch':1,'kind':'modal_execution','subject':{'kind':'outbound_delivery' if notification else 'native_validation','id':str(uuid4())},'generation':1,'inputHash':'a'*64},'attemptToken':str(uuid4())}
                 async def operation(session,package,work):
-                    await run_asset_validation(session,package,work,transport=Storage())
-                outcome=await invoke_native(invocation,'asset_validation',client=client,operation=operation,max_operation_seconds=600)
+                    if notification:await run_outbound_delivery(session,package,work,transport=Storage())
+                    else:await run_asset_validation(session,package,work,transport=Storage())
+                outcome=await invoke_native(invocation,function_name,client=client,operation=operation,max_operation_seconds=600)
                 if mode=='lost_start_ack':
                     self.assertEqual(outcome,{'disposition':'unconfirmed'});self.assertNotIn('get_after_start',state);self.assertEqual(uploads,{})
                     self.assertNotIn('fail',[c['action'] for c in calls]);return
+                if mode=='notification_changed_binding':
+                    self.assertEqual(outcome,{'disposition':'failed'});self.assertNotIn('get_after_start',state);self.assertEqual(uploads,{})
+                    self.assertNotIn('process-start',[c['action'] for c in calls]);return
                 if mode in {'changed_source','oversized_headers'}:
                     self.assertEqual(outcome,{'disposition':'failed'});self.assertEqual(uploads,{})
                     self.assertNotIn('upload-initialize',[c['action'] for c in calls]);return
@@ -97,6 +114,11 @@ class NativeOperationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(outcome,{'disposition':'completed'})
                 self.assertTrue(state['get_after_start']);self.assertEqual(state['if_match'],'"font"')
                 self.assertEqual([c['action'] for c in calls].count('process-start'),1)
+                if notification:
+                    receipt=json.loads(uploads[outputs[0]['artifactId']]);self.assertEqual(receipt['kind'],'signed_notification')
+                    self.assertEqual(receipt['eventId'],event_id);self.assertEqual(receipt['workspaceId'],workspace_id)
+                    self.assertEqual(receipt['bodySha256'],digest);self.assertEqual(receipt['errorCode'],'remote_url_unsafe')
+                    self.assertNotIn('private-NO-LOG',json.dumps(receipt));self.assertEqual(len(uploads),1);return
                 self.assertEqual(uploads[outputs[0]['artifactId']],payload)
                 evidence=json.loads(uploads[outputs[1]['artifactId']]);self.assertEqual(evidence['kind'],'font');self.assertEqual(evidence['sha256'],digest)
                 self.assertEqual([c['artifact']['role'] for c in calls if c['action']=='commit-artifact'],['validated_font','probe'])
@@ -107,19 +129,25 @@ class NativeOperationTests(unittest.IsolatedAsyncioTestCase):
 
     @unittest.skipUnless(shutil.which('openssl') and shutil.which('curl') and shutil.which('bun'),'native tools required')
     async def test_actual_font_download_validation_and_two_commits_start_only_after_owned_process_ack(self):
-        await self.font_operation()
+        await self.asset_or_notification_operation()
+
+    async def test_signed_notification_downloads_verified_body_then_records_only_a_bounded_receipt(self):
+        await self.asset_or_notification_operation('notification')
+
+    async def test_notification_body_assignment_mismatch_starts_no_process_or_upload(self):
+        await self.asset_or_notification_operation('notification_changed_binding')
 
     async def test_changed_source_etag_never_creates_an_upload(self):
-        await self.font_operation('changed_source')
+        await self.asset_or_notification_operation('changed_source')
 
     async def test_oversized_source_headers_are_rejected_before_upload(self):
-        await self.font_operation('oversized_headers')
+        await self.asset_or_notification_operation('oversized_headers')
 
     async def test_lost_native_start_ack_delivers_no_source_grant_and_makes_no_second_mutation(self):
-        await self.font_operation('lost_start_ack')
+        await self.asset_or_notification_operation('lost_start_ack')
 
     async def test_lost_binary_commit_ack_preserves_object_and_stops_before_probe_upload(self):
-        await self.font_operation('lost_commit_ack')
+        await self.asset_or_notification_operation('lost_commit_ack')
 
     async def test_rss_typed_child_receipt_is_uploaded_only_after_start_ack_and_with_a_sanitized_environment(self):
         calls=[];stored=[];state={'completed':False};artifact=str(uuid4())

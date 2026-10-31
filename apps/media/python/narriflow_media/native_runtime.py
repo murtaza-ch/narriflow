@@ -11,6 +11,7 @@ import re
 from typing import Sequence
 
 from .artifacts import AssignedArtifacts
+from .callback_delivery_runtime import run_callback_delivery
 from .control import ExecutionControlError, ExecutorSession
 from .fetch import FileSnapshot
 from .multipart import TransferTransport
@@ -269,21 +270,37 @@ async def run_asset_validation(session: ExecutorSession, package: WorkPackage, w
 
 
 async def run_outbound_delivery(session: ExecutorSession, package: WorkPackage, work: Path, *,
-                                transport: TransferTransport | None=None, bun_executable: str='bun') -> None:
+                                transport: TransferTransport | None=None, bun_executable: str='bun',
+                                curl_executable: str='curl') -> None:
     package.assert_session(session)
     command=package.command
-    if package.function_name!='outbound_delivery' or not isinstance(command,dict) or command.get('kind')!='rss_feed':
+    if package.function_name!='outbound_delivery' or not isinstance(command,dict) or command.get('kind') not in {'rss_feed','signed_notification'}:
         raise NativeOperationFailure('native_command_invalid')
     outputs=_outputs(package,{'outbound_receipt'});output=outputs['outbound_receipt']
-    if package.sources or output['contentType']!='application/json' or output['maxBytes']>4*1024**2:
+    notification=command['kind']=='signed_notification'
+    maximum=MAX_PROBE_BYTES if notification else 4*1024**2
+    if output['contentType']!='application/json' or output['maxBytes']>maximum:
         raise NativeOperationFailure('native_assignment_invalid')
+    directory=_work(work)
     try:
-        path=await run_rss_probe(command,_work(work),on_process_start=session.on_process_start,
-            cancel_event=session.cancel_event,bun_executable=bun_executable)
+        if notification:
+            body=command.get('body');sources=package.sources
+            if (not isinstance(body,dict) or set(body)!={'source','sha256','byteLength'} or body['source']!='notification_body'
+                    or len(sources)!=1 or sources[0]['name']!='notification_body'
+                    or sources[0].get('sha256')!=body['sha256'] or sources[0]['byteLength']!=body['byteLength']):
+                raise NativeOperationFailure('native_source_invalid')
+            source=await download_assigned_source(session,package,directory,source_name='notification_body',
+                maximum_bytes=MAX_NOTIFICATION_BYTES,curl_executable=curl_executable)
+            path=await run_callback_delivery(command,source,directory,on_process_start=session.on_process_start,
+                cancel_event=session.cancel_event,bun_executable=bun_executable)
+        else:
+            if package.sources:raise NativeOperationFailure('native_assignment_invalid')
+            path=await run_rss_probe(command,directory,on_process_start=session.on_process_start,
+                cancel_event=session.cancel_event,bun_executable=bun_executable)
     except MediaProcessError as error:
         if error.code in {'media_process_start_unconfirmed','media_execution_cancelled'}:
             raise ExecutionControlError('execution_start_unconfirmed' if error.code=='media_process_start_unconfirmed' else 'execution_authority_lost') from None
         raise
-    size,sha=await asyncio.to_thread(_file_facts,path,session,4*1024**2)
+    size,sha=await asyncio.to_thread(_file_facts,path,session,maximum)
     path.chmod(0o400)
     await AssignedArtifacts(session,package).upload(output['artifactId'],path,content_type='application/json',byte_length=size,sha256=sha,transport=transport)
