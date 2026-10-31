@@ -1,3 +1,4 @@
+import type { PrismaClient } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
 import { ZoomNotificationExecution } from "./zoom-execution";
 import { deliverExecutionDispatches } from "./execution-dispatch-runtime";
@@ -7,16 +8,17 @@ import { ProcessingUsageError } from "./processing-usage";
 import { BrandProfileMembershipError, BrandProfileMissingAssetError, BrandProfileNotFoundError } from "./brand-profile.service";
 import { isBrandAccessRefusal } from "./brand-ownership";
 export function getZoomNotificationExecution():ZoomNotificationExecution {
-  const database=getPrismaClient();
-  if(!database)throw Error("zoom_notification_database_unavailable");
-  const driver:ZoomNotificationExecution=new ZoomNotificationExecution({database,register:deliverExecutionDispatches,
-    revokeConnection:(id,before)=>zoomService.revokeNotifiedConnection(id,before),
+  const database=getPrismaClient();if(!database)throw Error("zoom_notification_database_unavailable");
+  return createZoomNotificationExecutionRuntime({database,register:deliverExecutionDispatches,revokeConnection:(id,before)=>zoomService.revokeNotifiedConnection(id,before)});
+}
+export function createZoomNotificationExecutionRuntime(options:{database:PrismaClient;register(ids:readonly string[]):Promise<void>;revokeConnection(id:string,before:Date):Promise<void>}):ZoomNotificationExecution {
+  const driver:ZoomNotificationExecution=new ZoomNotificationExecution({...options,
     importRecording:async input=>{
       try{
         return await projectService.importZoomRecording(input.target.scope,{
           source:input.target.plan.source,connectionId:input.target.connectionId,
           notification:input.notification,titlePrefix:input.target.titlePrefix,recipe:input.target.plan.recipe,
-          beforeAutopilotAdmit:tx=>driver.assertIntakeWithinTransaction(tx,input),confirmIngest:deliverExecutionDispatches,
+          beforeAutopilotAdmit:tx=>driver.assertIntakeWithinTransaction(tx,input),confirmIngest:options.register,
         });
       }catch(error){
         if(input.target.plan.recipe.brandProfileId&&(error instanceof BrandProfileNotFoundError||error instanceof BrandProfileMissingAssetError||error instanceof BrandProfileMembershipError||isBrandAccessRefusal(error)))return {count:0,refusal:"brand_profile"};
