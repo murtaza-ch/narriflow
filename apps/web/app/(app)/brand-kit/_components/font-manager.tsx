@@ -131,8 +131,10 @@ type Draft = { file: File; bytes: ArrayBuffer; family: string } | { file: File; 
 
 /** "Upload font": pick a file, see it set in the face, confirm the license, upload. */
 export function FontUploadButton() {
-  const { mutations, queries, invalidate } = useBrandApi();
-  const [validationId, setValidationId] = useState<string | null>(null);
+  const { mutations, queries, invalidate, scope } = useBrandApi();
+  const [pendingValidation, setPendingValidation] = useState<{ id: string; scope: string } | null>(null);
+  const scopeKey = `${scope.userId}:${scope.workspaceId}`;
+  const validationId = pendingValidation?.scope === scopeKey ? pendingValidation.id : null;
   const validation = useQuery({ ...queries.validationJob(validationId ?? ""), enabled: validationId !== null });
   useEffect(() => {
     if (!validationId || !validation.data || validation.data.status === "pending") return;
@@ -144,7 +146,7 @@ export function FontUploadButton() {
         toaster.create({ type: "success", title: "Font is ready to use" });
         void invalidate();
       } else toaster.create({ type: "error", title: "Font validation failed", description: "Choose a valid TTF, OTF or WOFF2 file and upload it again." });
-      setValidationId(null);
+      setPendingValidation(null);
     });
     return () => { cancelled = true; };
   }, [validationId, validation.data, invalidate]);
@@ -217,7 +219,7 @@ export function FontUploadButton() {
       if (!uploaded.ok) throw new Error("Upload failed. Please try again.");
       const result = await mutations.finalizeFontUpload({ ...metadata, key: presigned.key, fingerprint });
       if (result.status === "failed") throw new Error("Font validation failed. Choose a valid file and upload it again.");
-      if (result.status === "pending") setValidationId(result.jobId);
+      if (result.status === "pending") setPendingValidation({ id: result.jobId, scope: scopeKey });
       toaster.create({
         type: result.status === "pending" ? "info" : "success",
         title: result.status === "pending" ? "Font uploaded, validation pending" : "Font is ready to use",

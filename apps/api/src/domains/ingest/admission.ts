@@ -7,6 +7,7 @@ export const ingestAdmission = {
   "POST /ingest/link": { kind: "workspace", capability: "processing.consume" },
   // Each commit makes one Drive API call on the person's behalf.
   "POST /ingest/drive": { kind: "workspace", capability: "processing.consume", rate: { scope: "workspace", prefix: "drive-import", limit: 10 } },
+  "GET /ingest/rss/probes/:id": { kind: "workspace", capability: "processing.consume" },
   "POST /ingest/rss/preview": { kind: "workspace", capability: "processing.consume", rate: { scope: "workspace", prefix: "rss-preview", limit: 20 } },
   "POST /ingest/rss/import": { kind: "workspace", capability: "processing.consume", rate: { scope: "workspace", prefix: "rss-import", limit: 5 } },
   "GET /ingest/:projectId": { kind: "project", capability: "content.view", projectParam: "projectId" },

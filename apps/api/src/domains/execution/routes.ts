@@ -9,13 +9,14 @@ import { ExecutionSignatureError, verifyExecutionRequest, type VerifiedExecution
 import { createRouteApp } from "../../http/admission";
 import { jsonError, markEnvelope, requestIdOf } from "../../http/errors";
 import { executionAdmission } from "./admission";
+import type { ApiWorkerBindings } from "../../worker-bindings";
 
 export interface ExecutionRouteDependencies {
   keyRing(): ReadonlyMap<string, Uint8Array>;
   nowSeconds(): number;
   /** Construct database/domain work only after the signature and command have passed. */
-  execute(command: ExecutionCommand, verifiedRequest: VerifiedExecutionRequest): Promise<ExecutionDisposition>;
-  transfer(command: ExecutionTransferCommand, verifiedRequest: VerifiedExecutionRequest): Promise<ExecutionTransferDisposition>;
+  execute(command: ExecutionCommand, verifiedRequest: VerifiedExecutionRequest, bindings?: ApiWorkerBindings): Promise<ExecutionDisposition>;
+  transfer(command: ExecutionTransferCommand, verifiedRequest: VerifiedExecutionRequest, bindings?: ApiWorkerBindings): Promise<ExecutionTransferDisposition>;
 }
 
 class CommandTooLarge extends Error {}
@@ -62,8 +63,8 @@ export function createExecutionRoutes(deps: ExecutionRouteDependencies) {
       const command = kind === "command" ? executionCommandSchema.safeParse(parsed) : executionTransferCommandSchema.safeParse(parsed);
       if (!command.success) return refuse(400, "execution_command_invalid", "Execution command is invalid");
       const disposition = kind === "command"
-        ? executionDispositionSchema.parse(await deps.execute(command.data as ExecutionCommand, verified))
-        : executionTransferDispositionSchema.parse(await deps.transfer(command.data as ExecutionTransferCommand, verified));
+        ? executionDispositionSchema.parse(await deps.execute(command.data as ExecutionCommand, verified, c.env as ApiWorkerBindings))
+        : executionTransferDispositionSchema.parse(await deps.transfer(command.data as ExecutionTransferCommand, verified, c.env as ApiWorkerBindings));
       c.header("X-Execution-Server-Time", serverTime());
       return c.json(disposition);
     } catch (error) {

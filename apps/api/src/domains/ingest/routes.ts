@@ -1,3 +1,4 @@
+import { getOutboundProbeService } from "@narriflow/services/outbound-probe-runtime";
 import { type IngestJobLifecycle } from "@narriflow/services/ingest-job-lifecycle";
 import { type UploadSessionService } from "@narriflow/services/upload-session.service";
 import { brandProfileService } from "@narriflow/services/brand-profile.service";
@@ -85,7 +86,12 @@ export function createIngestRoutes(deps: IngestRouteDeps) {
 
     .post("/ingest/rss/preview", validate("json", rssPreviewSchema), async (c) => {
       const response = await projectService.previewRssFeed(getActor(c), c.req.valid("json").rssUrl);
-      return c.json(response, 200);
+      return c.json(response, 202);
+    })
+
+    .get("/ingest/rss/probes/:id", async c => {
+      c.header("Cache-Control", "no-store");
+      return c.json(await getOutboundProbeService().get(getActor(c), c.req.param("id")), 200);
     })
 
     .post("/ingest/rss/import", validate("json", rssImportRequestSchema), async (c) => {

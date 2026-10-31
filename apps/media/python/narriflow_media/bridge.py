@@ -15,7 +15,7 @@ TARGET = "/bridge/command"
 _UUID = re.compile(r"[a-fA-F0-9]{8}(?:-[a-fA-F0-9]{4}){3}-[a-fA-F0-9]{12}")
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,159}")
 _CALL = re.compile(r"fc-[A-Za-z0-9_-]{1,160}")
-_SUBJECTS = {"ingest_job", "workflow_run", "render_group", "clip_preparation", "dubbing", "export_bundle", "generated_media", "thumbnail_frame", "native_validation", "completion_callback", "webhook_subscription"}
+_SUBJECTS = {"ingest_job", "workflow_run", "render_group", "clip_preparation", "dubbing", "export_bundle", "generated_media", "thumbnail_frame", "native_validation", "outbound_probe", "completion_callback", "webhook_subscription"}
 
 
 class BridgeError(RuntimeError):
